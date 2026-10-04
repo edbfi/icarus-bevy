@@ -3,6 +3,7 @@
 //! The separate loopback lab exercises short handshake framing only. The normal
 //! server does not enable it. None of these primitives implements game admission.
 
+pub mod archive;
 pub mod handshake;
 pub mod handshake_lab;
 
