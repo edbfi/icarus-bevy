@@ -25,6 +25,27 @@ fn snapshot(tick: u64) -> WorldSnapshot {
 }
 
 #[test]
+fn stale_snapshot_cannot_replace_acknowledged_newer_simulation_state() {
+    let directory = tempfile::tempdir().unwrap();
+    let mut store = SnapshotStore::open(directory.path()).unwrap();
+    let acknowledged = store.save(&snapshot(20)).unwrap();
+    let manifest_before = std::fs::read(directory.path().join("manifest.json")).unwrap();
+    let error = store.save(&snapshot(10)).unwrap_err();
+    assert!(error.to_string().contains("stale snapshot"));
+    assert_eq!(
+        std::fs::read(directory.path().join("manifest.json")).unwrap(),
+        manifest_before
+    );
+    assert!(!directory.path().join("snapshot-2.json").exists());
+    assert_eq!(store.load().unwrap().unwrap().snapshot, snapshot(20));
+    // Final shutdown publication may legitimately repeat the same tick.
+    assert_eq!(
+        store.save(&snapshot(20)).unwrap().generation,
+        acknowledged.generation + 1
+    );
+}
+
+#[test]
 fn configuration_precedence_and_unknown_fields() {
     let directory = tempfile::tempdir().unwrap();
     let path = directory.path().join("server.toml");

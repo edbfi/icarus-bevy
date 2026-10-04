@@ -201,7 +201,13 @@ impl SnapshotStore {
         let manifest = self.manifest()?;
         let (number, previous) = match &manifest {
             Some(manifest) => {
-                let (_, valid_generation, _) = self.select(manifest)?;
+                let (committed, valid_generation, _) = self.select(manifest)?;
+                ensure!(
+                    snapshot.tick >= committed.tick,
+                    "stale snapshot tick {} precedes committed tick {}",
+                    snapshot.tick,
+                    committed.tick
+                );
                 (
                     manifest
                         .current
