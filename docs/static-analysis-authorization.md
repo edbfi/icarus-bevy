@@ -1,7 +1,7 @@
 # Offline static analysis batch
 
-Status: pending. This extends the approved inventory scope; it does not authorize
-running the original server or copying assets into the replacement.
+Status: approved by the user on 2026-10-04. This extends the inventory scope; it
+does not authorize running the original server or copying assets into the replacement.
 
 The inventory identified `Icarus/Binaries/Win64/IcarusServer-Win64-Shipping.exe`
 (108,067,840 bytes, SHA-256
