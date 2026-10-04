@@ -36,11 +36,14 @@ def main():
     parser.add_argument("--run-name", required=True)
     parser.add_argument("--seconds", type=int, default=120)
     parser.add_argument("--startup-probe", choices=["none", "resume"], default="none")
+    parser.add_argument("--load-fixture", choices=["none", "missing", "truncated-json"], default="none")
     parser.add_argument("--handshake-probe", action="store_true")
     parser.add_argument("--complete-stateless", action="store_true")
     args = parser.parse_args()
     if args.complete_stateless and not args.handshake_probe:
         parser.error("--complete-stateless requires --handshake-probe")
+    if args.load_fixture != "none" and args.startup_probe != "none":
+        parser.error("select only one startup experiment")
     if not re.fullmatch(r"[a-z0-9][a-z0-9-]{0,39}", args.run_name) or not 15 <= args.seconds <= 780:
         parser.error("run-name must be short lowercase alphanumeric/hyphens; seconds must be 15..780 (cleanup reserve)")
     root = Path(__file__).resolve().parents[1]
@@ -62,6 +65,20 @@ def main():
     run.mkdir()  # Never overwrite a prior run.
     home = run / "home"
     home.mkdir()
+    fixture_manifest = None
+    if args.load_fixture != "none":
+        # Fixed authored name/path, never an arbitrary host save or game data.
+        relative = Path("Icarus/Saved/PlayerData/DedicatedServer/Prospects/overnight-authored.json")
+        fixture_manifest = {"kind": args.load_fixture, "relative_path": str(relative), "exists_at_start": False}
+        if args.load_fixture == "truncated-json":
+            payload = b'{"ProspectInfo":{},"ProspectBlob":'
+            inputs = run / "inputs"
+            inputs.mkdir()
+            (inputs / "overnight-authored.json").write_bytes(payload)
+            (home / relative).parent.mkdir(parents=True)
+            (home / relative).write_bytes(payload)
+            fixture_manifest.update(exists_at_start=True, bytes=len(payload), sha256=hashlib.sha256(payload).hexdigest())
+        (run / "fixture.json").write_text(json.dumps(fixture_manifest, indent=2) + "\n")
     name = "icarus-offline-" + args.run_name + "-" + str(os.getpid())
     label = "icarus.research.run=" + name
     launch = ('mkdir -p "$STEAM_COMPAT_DATA_PATH"; exec xvfb-run -a proton run '
@@ -70,6 +87,8 @@ def main():
               '-SteamServerName="icarus-research-offline" -PORT=17777 -QueryPort=27015')
     if args.startup_probe == "resume":
         launch += ' -ExecCmds="ResumeProspect"'
+    if args.load_fixture != "none":
+        launch += ' -LoadProspect=overnight-authored'
     argv = ["docker", "run", "--detach", "--pull", "never", "--name", name,
             "--label", label, "--cidfile", str(run / "container.cid"),
             "--network", "none", "--read-only", "--cap-drop", "ALL",
@@ -85,6 +104,8 @@ def main():
     journal = {"time": datetime.datetime.now(datetime.UTC).isoformat(), "argv": argv,
                "timeout_seconds": args.seconds + 120, "approval": session,
                "helpers": {"tools/run_reference_offline.py": hashlib.sha256(Path(__file__).read_bytes()).hexdigest()}}
+    if fixture_manifest:
+        journal["fixture"] = fixture_manifest
     if args.handshake_probe:
         if args.seconds < 60:
             raise RuntimeError("handshake probe requires at least 60 observation seconds")
