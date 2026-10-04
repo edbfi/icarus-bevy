@@ -56,8 +56,10 @@ Follow-up E-022/E-024 shows that generation itself has a cache, an optional
 callback and a default checksum-construction path. Default construction combines
 the project name, another string, NetCL, EngineNetVer and GameNetVer, then passes
 the formatted result through transformation and checksum helpers. It also checks
-a network-version override. The algorithm, normalization and runtime inputs still
-need recovery; the displayed game release number is not a substitute for this value.
+a network-version override. The subsequent overnight pass recovered the
+[default normalization and checksum primitive](network-checksum.md). Active runtime
+inputs and callbacks still need validation; the displayed game release number is
+not a substitute for this value.
 
 A failed comparison follows a branch with an incompatible-version diagnostic,
 connection operations and close accounting. Exact response bytes remain unknown.
