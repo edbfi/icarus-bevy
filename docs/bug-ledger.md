@@ -34,9 +34,13 @@ Evidence is scoped to `icarus-server-baseline`; see the
 | SL-001: Different error checks in staged file readers | E-010/E-014/E-015 | Recover the shared helper contract, then test missing/truncated inputs; later conversion may already reject them correctly |
 | SL-002: Load failure enters reporting with unknown termination behavior | E-010/E-016/E-020 | Resolve the virtual output target and observe exit status/state for disposable invalid files |
 | SL-003: Requested prospect name compared against loaded data | E-009/E-018 | Test controlled name mismatches and document the intended rejection; a rejection alone is not a bug |
+| SL-004: Encoded blob result and declared compressed length may diverge | Overnight E-009/E-022: caller does not visibly branch on Base64 result before passing `TotalLength` to decompression | Establish reachable loader and decoder allocation contract, then compare small authored valid/malformed inputs; do not infer a crash from decompilation |
 
 The [prospect-loading experiment matrix](specs/prospect-loading.md) defines the
 next evidence to collect. No native fix is attributed to these leads.
+SL-004 belongs to `icarus-overnight`, unlike the earlier leads. The independent
+envelope inspector checks decoded length before decompression, but that defensive
+choice is not proof of reproducing or fixing an original-server defect.
 
 ## Native foundation defects and fault tests
 
