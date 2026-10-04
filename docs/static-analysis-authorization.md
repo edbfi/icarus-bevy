@@ -1,0 +1,43 @@
+# Offline static analysis batch
+
+Status: pending. This extends the approved inventory scope; it does not authorize
+running the original server or copying assets into the replacement.
+
+The inventory identified `Icarus/Binaries/Win64/IcarusServer-Win64-Shipping.exe`
+(108,067,840 bytes, SHA-256
+`67cfc915d9d085b758057e2960d4a2018fb121123af1329c25ef7aa58b960104`).
+
+## Commands proposed for approval
+
+Run from the repository root after recording static binary inspection, strings
+inspection, and build-manifest reading in the existing offline case scope:
+
+```bash
+bash .agents/vendor/reverse-skill/skills/scripts/case-guard.sh \
+  --case-root work/icarus-server-baseline
+mkdir -p work/icarus-server-baseline/static
+/home/linuxbrew/.linuxbrew/bin/rabin2 -Ij \
+  icarus-orig/Icarus/Binaries/Win64/IcarusServer-Win64-Shipping.exe \
+  > work/icarus-server-baseline/static/server-info.json
+/home/linuxbrew/.linuxbrew/bin/rabin2 -ij \
+  icarus-orig/Icarus/Binaries/Win64/IcarusServer-Win64-Shipping.exe \
+  > work/icarus-server-baseline/static/server-imports.json
+/home/linuxbrew/.linuxbrew/bin/rabin2 -lj \
+  icarus-orig/Icarus/Binaries/Win64/IcarusServer-Win64-Shipping.exe \
+  > work/icarus-server-baseline/static/server-libraries.json
+/home/linuxbrew/.linuxbrew/bin/rabin2 -zj \
+  icarus-orig/Icarus/Binaries/Win64/IcarusServer-Win64-Shipping.exe \
+  > work/icarus-server-baseline/static/server-strings.json
+cp icarus-orig/steamapps/appmanifest_2089300.acf \
+  work/icarus-server-baseline/static/appmanifest_2089300.acf
+```
+
+Effects: read the authorized executable and manifest, create JSON/text analysis
+artifacts inside ignored `work/`, inspect those artifacts, and publish sanitized
+metadata/behavioral leads under `docs/`. No original files change. No target
+execution, downloads, network, services, GUI, global configuration or asset reuse.
+
+Decompilation and dynamic experiments remain separate subsequent batches. This
+approval is required by the vendored [AGENTS.md](../.agents/vendor/reverse-skill/AGENTS.md):
+"Explicit user approval is required before running any repository script."
+Target scope remains a separate requirement.
