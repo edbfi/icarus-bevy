@@ -55,6 +55,7 @@ These concern this repository's code, not the official server.
 | ID | Trigger and former behavior | Change and evidence |
 | --- | --- | --- |
 | N-001 | Save worker exits before acknowledging an in-flight request; polling returned an untyped error while leaving `busy` true, and the main loop treated it as a retryable write failure | Return a typed terminal error, clear the stale in-flight flag and stop simulation. A deterministic disconnected-channel test covers missing acknowledgement and rejected subsequent submission |
+| N-002 | Direct snapshot-store submission at tick 10 after acknowledged tick 20 succeeded as generation 2, allowing stale work to roll back the persisted simulation clock | Reject older ticks before any file publication. The regression first reproduced the rollback, then verified unchanged manifest/state and no orphan file on rejection. Equal-tick final saves and explicit previous-generation recovery remain permitted |
 
 Publication tests also inject Linux `ENOSPC` at the generation and manifest writer
 boundaries. Both preserve the acknowledged generation across reopening and permit
