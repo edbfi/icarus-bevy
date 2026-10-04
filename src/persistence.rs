@@ -50,6 +50,14 @@ struct Manifest {
     previous: Option<Generation>,
 }
 
+// Probe only the schema before typed decoding. Ignoring the entity fields avoids
+// allocating an intermediate JSON object tree for every saved entity.
+#[derive(Deserialize)]
+struct SnapshotHeader {
+    #[serde(default)]
+    schema_version: serde_json::Value,
+}
+
 #[derive(Debug)]
 pub struct LoadedSnapshot {
     pub snapshot: WorldSnapshot,
@@ -140,17 +148,13 @@ impl SnapshotStore {
             checksum(&bytes) == generation.sha256,
             "snapshot checksum mismatch"
         );
-        let value: serde_json::Value =
+        let header: SnapshotHeader =
             serde_json::from_slice(&bytes).context("decode native snapshot")?;
-        if value
-            .get("schema_version")
-            .and_then(serde_json::Value::as_u64)
-            != Some(1)
-        {
+        if header.schema_version.as_u64() != Some(1) {
             return Err(UnsupportedSchema.into());
         }
         let snapshot: WorldSnapshot =
-            serde_json::from_value(value).context("decode native snapshot fields")?;
+            serde_json::from_slice(&bytes).context("decode native snapshot fields")?;
         snapshot.validate()?;
         Ok(snapshot)
     }

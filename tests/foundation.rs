@@ -231,6 +231,24 @@ fn future_schema_is_not_silently_rolled_back() {
 }
 
 #[test]
+fn ambiguous_duplicate_fields_recover_previous_instead_of_selecting_a_value() {
+    let directory = tempfile::tempdir().unwrap();
+    let mut store = SnapshotStore::open(directory.path()).unwrap();
+    store.save(&snapshot(10)).unwrap();
+    store.save(&snapshot(20)).unwrap();
+    let bytes = br#"{"schema_version":1,"tick":20,"tick":21,"entities":[]}"#;
+    fs::write(directory.path().join("snapshot-2.json"), bytes).unwrap();
+    let path = directory.path().join("manifest.json");
+    let mut manifest: serde_json::Value =
+        serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+    manifest["current"]["sha256"] = format!("{:x}", Sha256::digest(bytes)).into();
+    fs::write(path, serde_json::to_vec(&manifest).unwrap()).unwrap();
+    let loaded = store.load().unwrap().unwrap();
+    assert!(loaded.recovered_previous);
+    assert_eq!(loaded.snapshot.tick, 10);
+}
+
+#[test]
 fn worker_backpressure_and_durable_completion() {
     let directory = tempfile::tempdir().unwrap();
     let store = SnapshotStore::open(directory.path()).unwrap();
