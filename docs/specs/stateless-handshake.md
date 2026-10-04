@@ -1,6 +1,7 @@
 # Candidate stateless handshake framing
 
-Status: **static interpretation and authored-fixture tests; original probe pending**.
+Status: **initial request/challenge exchange observed against the original;
+full stateless acknowledgement and game connection remain unvalidated**.
 Scope: shipping build 25621760, executable SHA-256
 `67cfc915d9d085b758057e2960d4a2018fb121123af1329c25ef7aa58b960104`.
 This is an early transport layer. It does not implement platform authentication,
@@ -66,10 +67,30 @@ server listener. The approved offline launcher can mount its compiled executable
 read-only and execute it inside the reference container's isolated namespace.
 It targets only `127.0.0.1:17777`, sends at most three 29-byte initial requests,
 waits two seconds per response, and records send/receive bytes itself. It never
-echoes a cookie, sends identity material or attempts a gameplay connection.
+uses identity material or attempts a gameplay connection. An explicit
+`--complete-stateless` option echoes the server-issued cookie through the independent
+encoder and checks the resulting acknowledgement; it does not send a control message
+or alter any identity check. Without that option it stops after the challenge.
 Do not run it on the host or outside an authorized case.
 
 Acceptance requires a response that agrees with this layout and the original
 server's relevant behavior. A timeout, decoder error or engine startup message
 alone cannot validate framing. A challenge response would validate only this
 limited exchange, leaving the connection state machine and stock-client tests open.
+
+## Original initial-exchange observation
+
+The isolated `run-02-handshake` received a 29-byte reply to its first request. The
+independent decoder found restart false, selector true, a finite positive timestamp
+and a 20-byte cookie. The game log recorded an accepted loopback connection at the
+probe time. No cookie response was sent in that run; the probe exited successfully
+and the launcher stopped and removed the container after its bounded observation.
+Raw bytes and logs remain in the private case. This validates that initial exchange
+for this build/configuration; it does not validate the entire decoder rejection
+policy or any later game protocol.
+
+The acknowledgement sender at `0x1437455c0` writes marker one, restart zero,
+selector one, timestamp `-1.0`, the supplied cookie and a termination bit. The
+connectionless receiver also checks a 40-second timestamp window and a selected
+secret before accepting a cookie response. These are static observations pending
+the separately recorded acknowledgement probe.
