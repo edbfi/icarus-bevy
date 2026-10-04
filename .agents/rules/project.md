@@ -30,3 +30,15 @@ be demonstrated rather than assumed.
   reusable source code and documentation outside those ignored directories.
 - `.agents/vendor/reverse-skill.upstream.json` records the upstream revision.
   Preserve the upstream package layout and licenses when updating it.
+
+# Checks
+
+- Run `prek install` after cloning to install pre-commit, commit-msg, and
+  pre-push hooks. Direct commits to `main` are blocked by the shared baseline.
+- Run `prek run --all-files --hook-stage manual` for the full check suite.
+- Rust formatting and Clippy run before commits; Rust tests run before pushes
+  and in the manual suite. These hooks activate when matching Rust/Cargo files
+  exist. Commit `Cargo.lock` once the Cargo project is initialized; Clippy and
+  tests use `--locked`.
+- Vendored skills and generated analysis artifacts are excluded from file
+  checks. Gitleaks independently scans the staged Git diff for secrets.
