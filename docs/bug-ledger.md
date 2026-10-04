@@ -32,7 +32,7 @@ Evidence is scoped to `icarus-server-baseline`; see the
 | Lead | Static evidence | What would establish or refute a problem |
 | --- | --- | --- |
 | SL-001: Different error checks in staged file readers | E-010/E-014/E-015 | Recover the shared helper contract, then test missing/truncated inputs; later conversion may already reject them correctly |
-| SL-002: Load failure enters reporting with unknown termination behavior | E-010/E-016/E-020 | Resolve the virtual output target and observe exit status/state for disposable invalid files |
+| SL-002: From-file load failure enters a fatal-output facility | Baseline E-010/E-016/E-020 plus [resolved output target](research/2026-10-04-save-failure-output.md) | Forced-exit and exception branches identified statically; demonstrate actual from-file entry, runtime guard state and process outcome before claiming a defect |
 | SL-003: Requested prospect name compared against loaded data | E-009/E-018 | Test controlled name mismatches and document the intended rejection; a rejection alone is not a bug |
 | SL-004: Encoded blob result and declared compressed length may diverge | Overnight E-009/E-022: caller does not visibly branch on Base64 result before passing `TotalLength` to decompression | Establish reachable loader and decoder allocation contract, then compare small authored valid/malformed inputs; do not infer a crash from decompilation |
 
@@ -41,6 +41,12 @@ next evidence to collect. No native fix is attributed to these leads.
 SL-004 belongs to `icarus-overnight`, unlike the earlier leads. The independent
 envelope inspector checks decoded length before decompression, but that defensive
 choice is not proof of reproducing or fixing an original-server defect.
+
+The [by-name startup rejection tests](research/2026-10-04-prospect-rejection.md)
+found graceful rejection for one missing file and two identical truncated JSON
+inputs. The repeated malformed case retained stateless handshake liveness. These
+negative crash results narrow SL-001's investigation but do not test the separate
+from-file branch, deeper blob decoding, or preservation of an already loaded world.
 
 ## Native foundation defects and fault tests
 

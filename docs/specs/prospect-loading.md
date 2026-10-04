@@ -1,6 +1,7 @@
 # Prospect loading: static observations and investigation contract
 
-Status: **observed call paths; inner schema and runtime behavior unresolved**. Applies
+Status: **observed call paths and by-name missing/truncated-file rejection;
+inner schema and other runtime behavior unresolved**. Applies
 only to dedicated server tool build 25621760. Evidence IDs below belong to
 `work/icarus-server-baseline/` and are described in the
 [targeted static report](../research/2026-10-04-targeted-static-report.md).
@@ -27,16 +28,21 @@ other proceeds to a conversion whose return becomes its result. There is no proo
 yet that this difference loses an error or permits inconsistent reads.
 
 On failure, the outer path calls a helper that sets a global flag and forwards
-to output formatting and a virtual call (E-016/E-020). Resolve the dynamic output
-target before deciding whether that path terminates the process. Cleanup and a
-false-return path exist in the caller; their presence alone does not prove that
-the reporting call returns.
+to output formatting and a virtual call (E-016/E-020). The overnight follow-up
+[resolved its statically initialized output target](../research/2026-10-04-save-failure-output.md):
+it can force process termination or raise an exception according to guard state.
+This is not an ordinary log-only path. Runtime reachability and final process
+outcome remain untested. Cleanup and a false-return path in the caller do not
+prove that the reporting call returns.
 
 ## Controlled reproduction matrix
 
-These are proposed experiments, not executed tests or confirmed bugs. They require
-a separate authorized runtime case and disposable fixtures. Do not use production
-saves, package assets, or extracted game data.
+The overnight case exercised by-name missing-file rejection once and truncated-JSON
+rejection twice; the second malformed case retained stateless handshake liveness.
+See the [runtime report](../research/2026-10-04-prospect-rejection.md).
+These observations establish neither a loaded-world preservation guarantee nor the
+distinct from-file path. Remaining scenarios require authorized disposable fixtures;
+do not use production saves, package assets, or extracted game data.
 
 | Scenario | Question to resolve | Evidence to retain |
 | --- | --- | --- |
