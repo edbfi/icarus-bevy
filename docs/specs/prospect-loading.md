@@ -1,6 +1,6 @@
 # Prospect loading: static observations and investigation contract
 
-Status: **observed call paths; schema and runtime behavior unresolved**. Applies
+Status: **observed call paths; inner schema and runtime behavior unresolved**. Applies
 only to dedicated server tool build 25621760. Evidence IDs below belong to
 `work/icarus-server-baseline/` and are described in the
 [targeted static report](../research/2026-10-04-targeted-static-report.md).
@@ -16,6 +16,10 @@ The by-name path constructs names with a `.json` suffix. That alone does not pro
 that every save is plain JSON or describe compressed/encoded fields, companion
 files, versioning, checksums, references or content requirements. The shared
 archive conversion includes indirect calls; its full schema is still unknown.
+The subsequent overnight pass recovered a candidate outer JSON envelope and its
+decode/decompression/hash chain. See [envelope inspection](prospect-envelope.md)
+for the address-backed fields and the bounded read-only inspector. This does not
+resolve the inner world archive or implement import.
 
 In the from-file path, both reader candidates receive the same path object and
 call the same initial helper. One immediately checks that helper's return; the

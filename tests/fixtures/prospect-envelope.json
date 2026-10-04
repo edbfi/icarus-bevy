@@ -1,0 +1,13 @@
+{
+  "ProspectInfo": {
+    "ResearchOnly": true
+  },
+  "ProspectBlob": {
+    "Key": "authored-fixture",
+    "Hash": "9e478165452fb1df499f9f5b6fe59db18deb9613",
+    "TotalLength": 50,
+    "DataLength": 0,
+    "UncompressedLength": 42,
+    "BinaryBlob": "eJxzLC3JyC9KTVFIzStLzckvSFVIy6woKS1KtVLIy1dIT8xNVSguSSxJ1eMCAFedD0w="
+  }
+}

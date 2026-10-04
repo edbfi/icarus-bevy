@@ -59,6 +59,13 @@ for local Linux storage, not network filesystems or physical power-loss testing.
 returns an explicit unsupported error without reading/writing the supplied paths.
 Do not use it to migrate a real world yet.
 
+`inspect-save --source PATH` performs bounded, read-only
+[experimental envelope checks](docs/specs/prospect-envelope.md). It reports sizes
+and integrity results without extracting the payload or importing a world.
+Validation currently uses authored fixtures, not original-save round trips.
+The [synthetic workload](docs/synthetic-workload.md) exercises native scheduling
+and durability; it is not an ICARUS performance benchmark.
+
 ## Development and reference research
 
 ```bash
