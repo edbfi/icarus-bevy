@@ -28,6 +28,7 @@ def fixture():
     struct.pack_into("<IIII", data, table + 8, 0x200, 0x1000, 0x100, 0x200)
     struct.pack_into("<I", data, table + 36, 0x60000020)
     struct.pack_into("<III", data, 0x280, 0x1000, 0x1020, 0x10A0)
+    data[0x2A0] = 1  # Version 1, no unwind codes or chaining.
     data[0x200:0x203] = b"\x48\x8d\x05"
     struct.pack_into("<i", data, 0x203, 0x50 - 7)
     data[0x210] = 0xE8
@@ -36,6 +37,20 @@ def fixture():
 
 
 class PETest(unittest.TestCase):
+    def test_chained_runtime_ranges_are_grouped_without_guessing_adjacency(self):
+        data = fixture()
+        struct.pack_into("<I", data, 0x98 + 140, 24)
+        struct.pack_into("<III", data, 0x280, 0x1000, 0x1010, 0x10A0)
+        struct.pack_into("<III", data, 0x28C, 0x1010, 0x1020, 0x10B0)
+        data[0x2B0] = 1 | (4 << 3)
+        struct.pack_into("<III", data, 0x2B4, 0x1000, 0x1010, 0x10A0)
+        pe = PE(data)
+        self.assertEqual(len(pe.related_ranges(BASE + 0x1015)), 2)
+        self.assertEqual(pe.related_ranges(BASE + 0x1000), pe.related_ranges(BASE + 0x1010))
+        struct.pack_into("<III", data, 0x2B4, 0x1010, 0x1020, 0x10B0)
+        with self.assertRaisesRegex(ValueError, "cyclic"):
+            PE(data).related_ranges(BASE + 0x1010)
+
     def test_file_mapping_rejects_virtual_padding_and_cross_section_reads(self):
         pe = PE(fixture())
         self.assertEqual(pe.offset(BASE + 0x1050, 4), 0x250)
