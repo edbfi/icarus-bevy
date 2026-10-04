@@ -1,7 +1,7 @@
 # Candidate stateless handshake framing
 
-Status: **initial request/challenge exchange observed against the original;
-full stateless acknowledgement and game connection remain unvalidated**.
+Status: **initial request/challenge/cookie response/acknowledgement observed against
+the original; authentication and game connection remain unvalidated**.
 Scope: shipping build 25621760, executable SHA-256
 `67cfc915d9d085b758057e2960d4a2018fb121123af1329c25ef7aa58b960104`.
 This is an early transport layer. It does not implement platform authentication,
@@ -92,5 +92,57 @@ policy or any later game protocol.
 The acknowledgement sender at `0x1437455c0` writes marker one, restart zero,
 selector one, timestamp `-1.0`, the supplied cookie and a termination bit. The
 connectionless receiver also checks a 40-second timestamp window and a selected
-secret before accepting a cookie response. These are static observations pending
-the separately recorded acknowledgement probe.
+secret before accepting a cookie response.
+
+In `run-03-stateless-ack`, the independent encoder echoed the issued timestamp,
+selector and cookie. The original returned a 29-byte acknowledgement with timestamp
+`-1.0`, selector one, restart zero and the same cookie. Its log recorded
+`Handler Handshake Complete` and an accepted connection. The probe sent no control
+messages or identity material. The original also logged that `SteamAuthComponent`
+was deactivated because requirements were missing in the offline environment.
+This is evidence for the stateless exchange only, not authenticated admission.
+Both containers were stopped and removed; private evidence E-071 through E-076
+preserves the observations and cleanup records.
+
+## Independent Bevy loopback lab
+
+`examples/handshake_lab.rs` installs a separate optional Bevy plugin. It binds only
+IPv4 loopback, defaults to an ephemeral port and exits after 30 seconds (maximum
+600). The normal `icarus-server run` command does not install it. It creates no
+game connections or entities and uses no original assets or code.
+
+```bash
+cargo run --locked --example handshake_lab -- --seconds 30
+cargo test --locked --test handshake_lab
+```
+
+Each `Update` processes at most 32 datagrams using a 30-byte stack buffer. Larger
+datagrams, unsupported restart forms and malformed frames are discarded. Responses
+are 29 bytes. There is no application packet queue or per-peer state allocation.
+UDP send/receive errors are counted; a blocked socket does not block simulation.
+These are research bounds, not production rate limiting or a denial-of-service
+qualification.
+
+The lab independently generates cookies using HMAC-SHA256 truncated to 20 bytes,
+with a fresh OS-random 32-byte secret per process. This is **not a claim about the
+original cookie algorithm**. A cookie covers the domain bytes
+`icarus-bevy/handshake-lab/v1\0`, IPv4 octets, big-endian port and little-endian
+binary64 timestamp. The selector is fixed at zero. Echoes must have a positive,
+nonfuture timestamp less than 40 seconds old and a matching cookie verified through
+RustCrypto's constant-time truncated-MAC API. Repeated valid echoes are idempotent;
+there is no player/session allocation. A restart invalidates previous cookies.
+
+The independent Python oracle uses `hmac.new(bytes([7])*32, message,
+hashlib.sha256).digest()[:20]`. For `127.0.0.1:12345` at timestamp 123.5 the result is
+`d38907b0827ab14de4527fa34d89e6dd3d8c8036`. Tests check this value, forged fields,
+wrong peer/key, expiration/future boundaries and actual UDP exchanges within a
+Bevy app. Oversized traffic tests check the packet budget and advancing simulation.
+
+New direct dependencies are RustCrypto `hmac` 0.12.1 (MIT OR Apache-2.0) and
+`getrandom` 0.4.3 (MIT OR Apache-2.0, already present transitively). Cargo.lock records
+registry checksums. Their documented APIs supply
+[constant-time truncated verification](https://docs.rs/digest/0.10.7/digest/trait.Mac.html)
+and [OS randomness](https://docs.rs/getrandom/0.4.3/getrandom/fn.fill.html).
+The lab has not been tested with the stock Windows client; its stricter initial
+packet policy, lack of secret rotation, optional prefixes, restarts and subsequent
+transport all remain separate compatibility questions.

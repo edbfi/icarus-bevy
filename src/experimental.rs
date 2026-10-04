@@ -1,9 +1,10 @@
 //! Independently authored compatibility primitives supported by static evidence.
 //!
-//! These are not a packet codec or an ICARUS admission policy. No listener uses
-//! this module. See `docs/specs/network-checksum.md` for evidence and limitations.
+//! The separate loopback lab exercises short handshake framing only. The normal
+//! server does not enable it. None of these primitives implements game admission.
 
 pub mod handshake;
+pub mod handshake_lab;
 
 /// Reflected CRC-32 of zero-extended UTF-16 units in little-endian order.
 ///
