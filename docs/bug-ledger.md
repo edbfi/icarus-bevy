@@ -22,3 +22,18 @@ Steam initialization failures, an auxiliary Xalia display exception and engine
 warnings. Engine initialization continued, and the harness stopped the container.
 These observations remain environment-confounded leads, not reproductions of the
 reported crashes. No cause or fix is assigned to them.
+
+## Static investigation leads
+
+These are hypotheses to test, not additional reported or reproduced defects.
+Evidence is scoped to `icarus-server-baseline`; see the
+[targeted report](research/2026-10-04-targeted-static-report.md).
+
+| Lead | Static evidence | What would establish or refute a problem |
+| --- | --- | --- |
+| SL-001: Different error checks in staged file readers | E-010/E-014/E-015 | Recover the shared helper contract, then test missing/truncated inputs; later conversion may already reject them correctly |
+| SL-002: Load failure enters reporting with unknown termination behavior | E-010/E-016/E-020 | Resolve the virtual output target and observe exit status/state for disposable invalid files |
+| SL-003: Requested prospect name compared against loaded data | E-009/E-018 | Test controlled name mismatches and document the intended rejection; a rejection alone is not a bug |
+
+The [prospect-loading experiment matrix](specs/prospect-loading.md) defines the
+next evidence to collect. No native fix is attributed to these leads.

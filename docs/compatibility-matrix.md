@@ -1,6 +1,7 @@
 # Compatibility matrix
 
-No official build pair has been validated. Every ICARUS-facing row below is unknown.
+No official build pair has been validated. Every complete ICARUS-facing surface
+below remains unknown; limited static observations are listed separately.
 Native foundation tests do not promote these rows. Each eventual row must identify
 the exact build/content, reference scenario, evidence IDs, specification, test and
 intentional differences. Status progression: unknown → observed → specified →
@@ -31,3 +32,13 @@ The [isolated startup](research/2026-10-04-offline-startup-report.md) reported a
 entry-world maximum tick rate of 30 and an IpNetDriver listener after Steam failed.
 Those observations do not promote gameplay timing or authenticated transport rows:
 no client connected and no playable prospect was loaded.
+
+## Partial static observations
+
+| Subsurface | Status | Evidence and remaining gate |
+| --- | --- | --- |
+| Inner control dispatch and version comparison | Observed | [Negotiation notes](specs/control-negotiation.md); outer framing, callback policy and runtime fixtures unknown |
+| Prospect-loading control flow | Observed | [Loading notes](specs/prospect-loading.md); schema, command reachability and runtime failures unknown |
+
+These observations apply only to tool build 25621760. They do not promote the
+complete transport, authentication or official-save-import surfaces above.
