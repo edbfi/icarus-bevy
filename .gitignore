@@ -25,3 +25,6 @@ rustc-ice-*.txt
 
 # Vanilla Icarus dedicated server files
 /icarus-orig/
+
+# Generated reverse-engineering cases, extracted files, and analysis databases
+/work/

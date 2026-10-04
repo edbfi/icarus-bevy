@@ -1,0 +1,13 @@
+{
+  "repository": "https://github.com/zhaoxuya520/reverse-skill",
+  "revision": "cab634bd855fc287f6e420c1f36fd1a6b9245960",
+  "package_path": ".agents/vendor/reverse-skill",
+  "skill_entry": ".agents/skills/reverse-skill-router/SKILL.md",
+  "scope": "project",
+  "installation": "Vendored source snapshot; relative skill symlink preserves upstream package layout.",
+  "homebrew_formulae": [
+    "radare2",
+    "ghidra",
+    "wireshark"
+  ]
+}
