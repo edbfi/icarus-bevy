@@ -37,3 +37,19 @@ Evidence is scoped to `icarus-server-baseline`; see the
 
 The [prospect-loading experiment matrix](specs/prospect-loading.md) defines the
 next evidence to collect. No native fix is attributed to these leads.
+
+## Native foundation defects and fault tests
+
+These concern this repository's code, not the official server.
+
+| ID | Trigger and former behavior | Change and evidence |
+| --- | --- | --- |
+| N-001 | Save worker exits before acknowledging an in-flight request; polling returned an untyped error while leaving `busy` true, and the main loop treated it as a retryable write failure | Return a typed terminal error, clear the stale in-flight flag and stop simulation. A deterministic disconnected-channel test covers missing acknowledgement and rejected subsequent submission |
+
+Publication tests also inject Linux `ENOSPC` at the generation and manifest writer
+boundaries. Both preserve the acknowledged generation across reopening and permit
+a successful retry. A separate test models an error after publication: it returns
+no success receipt, preserves the readable generation, and retains it as a fallback
+on the next save. These are injected I/O outcomes, not real disk exhaustion or
+physical power-loss tests. An actual rename obstruction verifies asynchronous
+write-error reporting and recovery without a false save receipt.

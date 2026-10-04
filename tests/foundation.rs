@@ -246,3 +246,32 @@ fn worker_backpressure_and_durable_completion() {
     assert!(!worker.is_busy());
     assert!(directory.path().join("manifest.json").exists());
 }
+
+#[test]
+fn worker_reports_write_failure_and_can_retry_without_false_receipt() {
+    let directory = tempfile::tempdir().unwrap();
+    let mut store = SnapshotStore::open(directory.path()).unwrap();
+    store.save(&snapshot(10)).unwrap();
+    let obstruction = directory.path().join("snapshot-2.json");
+    fs::create_dir(&obstruction).unwrap();
+    let mut worker = SaveWorker::spawn(store).unwrap();
+    worker.submit(snapshot(20)).unwrap();
+    assert!(
+        worker
+            .finish_before(Instant::now() + Duration::from_secs(5))
+            .is_err()
+    );
+    assert!(!worker.is_busy());
+    assert!(worker.poll().unwrap().is_none());
+    fs::remove_dir(obstruction).unwrap();
+    worker.submit(snapshot(30)).unwrap();
+    let receipt = worker
+        .finish_before(Instant::now() + Duration::from_secs(5))
+        .unwrap()
+        .unwrap();
+    assert_eq!(receipt.generation, 2);
+    assert_eq!(receipt.tick, 30);
+    let manifest: serde_json::Value =
+        serde_json::from_slice(&fs::read(directory.path().join("manifest.json")).unwrap()).unwrap();
+    assert_eq!(manifest["previous"]["number"], 1);
+}
