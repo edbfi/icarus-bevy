@@ -19,3 +19,13 @@ This tests native scheduling and persistence under synthetic load. It contains n
 ICARUS gameplay, networking or original content, and cannot establish stock-client
 compatibility or a performance improvement over the official server. The two-hour
 limit is also shorter than the release plan's sustained qualification runs.
+
+For repeated synchronous persistence measurements, use
+`cargo run --release --locked --example snapshot_bench -- --data-dir
+work/bench-new --entities 100000 --iterations 20`. It first performs two warm-up
+commits, then records each save and load separately and compares all recovered
+state. Use multiple fresh-directory runs per revision, the same CPU affinity and
+population, and retain the executable hashes. `/usr/bin/time -v` can record the
+whole process's peak RSS; that includes verification and must not be labeled
+steady-state server memory. Keep baseline binaries under ignored `work/` when
+comparing revisions.
