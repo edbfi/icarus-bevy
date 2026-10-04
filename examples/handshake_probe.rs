@@ -2,14 +2,23 @@
 use std::{net::UdpSocket, time::Duration};
 
 use anyhow::{Context, Result, ensure};
+use clap::Parser;
 use icarus_bevy::experimental::handshake;
 use serde_json::json;
+
+#[derive(Parser)]
+struct Options {
+    /// Echo the issued cookie and observe the stateless acknowledgement only.
+    #[arg(long)]
+    complete_stateless: bool,
+}
 
 fn hex(bytes: &[u8]) -> String {
     bytes.iter().map(|byte| format!("{byte:02x}")).collect()
 }
 
 fn main() -> Result<()> {
+    let options = Options::parse();
     ensure!(
         std::env::var("ICARUS_OFFLINE_PROBE").as_deref() == Ok("1"),
         "invoke only through the approved isolated reference launcher"
@@ -24,7 +33,7 @@ fn main() -> Result<()> {
         socket.send(&request)?;
         println!(
             "{}",
-            json!({"event":"probe_send", "attempt":attempt, "peer":"127.0.0.1:17777",
+            json!({"event":"probe_send", "attempt":attempt, "peer":"127.0.0.1:17777", "local":socket.local_addr()?.to_string(),
             "bytes":request.len(), "hex":hex(&request)})
         );
         match socket.recv(&mut response) {
@@ -45,6 +54,35 @@ fn main() -> Result<()> {
                     "secret_id":decoded.secret_id, "cookie_hex":hex(&decoded.cookie),
                     "cookie_echo_sent":false, "game_connection_established":false})
                 );
+                if options.complete_stateless {
+                    let echo = handshake::encode(&decoded)?;
+                    socket.send(&echo)?;
+                    println!(
+                        "{}",
+                        json!({"event":"probe_cookie_response", "bytes":echo.len(), "hex":hex(&echo)})
+                    );
+                    let size = socket
+                        .recv(&mut response)
+                        .context("stateless acknowledgement timed out or failed")?;
+                    println!(
+                        "{}",
+                        json!({"event":"probe_ack_receive", "bytes":size, "hex":hex(&response[..size])})
+                    );
+                    let acknowledgement = handshake::decode(&response[..size])?;
+                    ensure!(
+                        acknowledgement.timestamp == -1.0
+                            && !acknowledgement.restart
+                            && acknowledgement.secret_id
+                            && acknowledgement.cookie == decoded.cookie,
+                        "response differs from inspected stateless acknowledgement"
+                    );
+                    println!(
+                        "{}",
+                        json!({"event":"stateless_exchange_completed", "cookie_echo_sent":true,
+                        "identity_material_sent":false, "control_messages_sent":false,
+                        "game_connection_established":false})
+                    );
+                }
                 return Ok(());
             }
             Err(error)

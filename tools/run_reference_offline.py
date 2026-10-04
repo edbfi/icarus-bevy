@@ -37,7 +37,10 @@ def main():
     parser.add_argument("--seconds", type=int, default=120)
     parser.add_argument("--startup-probe", choices=["none", "resume"], default="none")
     parser.add_argument("--handshake-probe", action="store_true")
+    parser.add_argument("--complete-stateless", action="store_true")
     args = parser.parse_args()
+    if args.complete_stateless and not args.handshake_probe:
+        parser.error("--complete-stateless requires --handshake-probe")
     if not re.fullmatch(r"[a-z0-9][a-z0-9-]{0,39}", args.run_name) or not 15 <= args.seconds <= 780:
         parser.error("run-name must be short lowercase alphanumeric/hyphens; seconds must be 15..780 (cleanup reserve)")
     root = Path(__file__).resolve().parents[1]
@@ -91,6 +94,8 @@ def main():
         argv[2:2] = ["--mount", f"type=bind,src={probe.parent},dst=/probes,readonly"]
         journal["helpers"][str(probe.relative_to(root))] = hashlib.sha256(probe.read_bytes()).hexdigest()
         journal["probe_argv"] = ["docker", "exec", "--env", "ICARUS_OFFLINE_PROBE=1", name, "/probes/handshake_probe"]
+        if args.complete_stateless:
+            journal["probe_argv"].append("--complete-stateless")
     with (case / "commands.jsonl").open("a") as stream:
         stream.write(json.dumps(journal) + "\n")
     (run / "invocation.json").write_text(json.dumps(journal, indent=2) + "\n")

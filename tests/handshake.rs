@@ -1,4 +1,4 @@
-use icarus_bevy::experimental::handshake::{decode, initial_request};
+use icarus_bevy::experimental::handshake::{LegacyHandshake, decode, encode, initial_request};
 
 fn authored_challenge() -> Vec<u8> {
     // Python oracle: little-endian f64(123.5), cookie bytes 0..19, fields packed
@@ -17,6 +17,21 @@ fn authored_unaligned_challenge_decodes_exact_fields() {
     assert!(parsed.secret_id);
     assert!(!parsed.restart);
     assert_eq!(parsed.cookie, std::array::from_fn(|i| i as u8));
+}
+
+#[test]
+fn encoded_fields_match_independent_fixture_and_reject_nonfinite_time() {
+    let mut packet = LegacyHandshake {
+        restart: false,
+        secret_id: true,
+        timestamp: 123.5,
+        cookie: std::array::from_fn(|i| i as u8),
+    };
+    assert_eq!(encode(&packet).unwrap().as_slice(), authored_challenge());
+    for value in [f64::INFINITY, f64::NEG_INFINITY, f64::NAN] {
+        packet.timestamp = value;
+        assert!(encode(&packet).is_err());
+    }
 }
 
 #[test]

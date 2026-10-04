@@ -39,6 +39,28 @@ pub fn decode(bytes: &[u8]) -> Result<LegacyHandshake> {
     })
 }
 
+/// Encode the short form only. This does not authorize any connection or cookie.
+pub fn encode(packet: &LegacyHandshake) -> Result<[u8; 29]> {
+    ensure!(
+        packet.timestamp.is_finite(),
+        "nonfinite handshake timestamp"
+    );
+    let mut bytes = initial_request();
+    bytes[0] |= u8::from(packet.restart) << 1 | u8::from(packet.secret_id) << 2;
+    write_unaligned(&mut bytes, 3, &packet.timestamp.to_le_bytes());
+    write_unaligned(&mut bytes, 67, &packet.cookie);
+    Ok(bytes)
+}
+
+fn write_unaligned(bytes: &mut [u8; 29], start_bit: usize, input: &[u8]) {
+    for (index, byte) in input.iter().enumerate() {
+        for shift in 0..8 {
+            let target_bit = start_bit + index * 8 + shift;
+            bytes[target_bit / 8] |= ((byte >> shift) & 1) << (target_bit % 8);
+        }
+    }
+}
+
 fn read_unaligned<const N: usize>(bytes: &[u8], start_bit: usize) -> [u8; N] {
     let mut output = [0; N];
     for (index, byte) in output.iter_mut().enumerate() {
