@@ -26,3 +26,8 @@ implemented → validated. Expand rows for every supported content/game-mode var
 
 Native snapshot version 1 and a provisional 30 Hz loop are authored infrastructure,
 not reverse-engineered ICARUS formats or timing.
+
+The [isolated startup](research/2026-10-04-offline-startup-report.md) reported an
+entry-world maximum tick rate of 30 and an IpNetDriver listener after Steam failed.
+Those observations do not promote gameplay timing or authenticated transport rows:
+no client connected and no playable prospect was loaded.

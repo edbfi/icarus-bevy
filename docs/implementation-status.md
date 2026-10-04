@@ -8,8 +8,8 @@ has been demonstrated. Reliability and performance targets remain unproven.
 
 | Milestone | Status | Evidence or next gate |
 | --- | --- | --- |
-| M0: reference baseline | In progress | 435 files hashed; official server build 25621760 identified; matched client/startup pending |
-| M1: original bug reproduction | Pending | Requires separately approved dynamic lab execution |
+| M0: reference baseline | In progress | 435 files hashed; build 25621760; isolated entry-map startup observed; authenticated startup and matched client pending |
+| M1: original bug reproduction | Pending | Offline startup did not reproduce reported crashes; controlled workloads still required |
 | M2: interoperability/data feasibility | Pending | Requires protocol, platform and world-data evidence |
 | M3: Bevy gameplay slice | In progress, foundation only | Rust 1.99.0 / Bevy 0.19.1 foundation tested; stock-client slice pending M2 |
 | M4: complete behavior | Pending | All required compatibility matrix entries must pass |
@@ -47,9 +47,12 @@ See the [full plan](linux-dedicated-server-plan.md) and
 - [Inventory](research/2026-10-04-reference-inventory.md): hashed original baseline.
 - [Static inspection](research/2026-10-04-static-baseline.md): executable identity,
   imported interfaces and concrete diagnostic anchors; behavior remains unverified.
-- Bounded headless Ghidra analysis is approved and in progress.
-- [Offline Proton startup](offline-runtime-authorization.md) is prepared, pending
-  separate execution approval. No connected client tests are authorized yet.
+- [Bounded Ghidra pass](research/2026-10-04-decompilation-report.md) reached its
+  analysis time limit and exported zero functions; behavior remains unresolved.
+- [Offline Proton startup](research/2026-10-04-offline-startup-report.md) reached
+  the entry map, reporting game 3.0.30.158174 and engine 4.27.2. Steam initialization
+  failed in isolation; the harness stopped and removed the container. No connected
+  client tests are authorized yet.
 
 These checks demonstrate the authored foundation only. No original-server bug is
 claimed fixed, no save migration is supported, and no ICARUS performance or

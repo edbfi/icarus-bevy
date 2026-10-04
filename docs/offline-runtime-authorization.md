@@ -1,6 +1,6 @@
 # Offline Proton startup batch
 
-Status: pending. This is the first proposed execution of the original server.
+Status: approved by the user on 2026-10-04. This is the first execution of the original server.
 It cannot prove stock-client compatibility because the container has no network.
 
 Docker 29.8.2 is available. The user's Proton image is already installed at digest
