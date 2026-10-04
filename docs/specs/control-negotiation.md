@@ -79,11 +79,12 @@ E-021 identifies the reader used by the initial branch:
 - The wide branch includes conditional byte swapping and writes a trailing zero
   into the allocated result. Other normalization and conversion remain unverified.
 
-Do not infer a complete UTF-8/UTF-16 codec from these facts. Character conversion,
-embedded zeros, terminator requirements, invalid characters, archive flags and
-error propagation all need independent tests. A replacement should impose an
-explicit resource budget even if a reference archive leaves its maximum unset;
-record any resulting compatibility difference.
+The follow-up recovered the narrow character converter, the full chained reader
+and its termination/`U+FFFF` normalization. An independent
+[strict archive-string subset](archive-string.md) now has bounded authored tests.
+It explicitly rejects several original normalization cases. Actual network archive
+flags, field byte order and stock-client round trips still need validation; this
+primitive does not make the control protocol available.
 
 ## Requirements before implementation promotion
 
@@ -100,4 +101,6 @@ record any resulting compatibility difference.
 5. Show the native implementation passes those fixtures and the stock-client
    experiment before marking negotiation implemented and validated.
 
-The replacement currently has no socket listener or implementation of this protocol.
+The normal replacement run command has no socket listener or control-protocol
+implementation. A separate [loopback handshake lab](stateless-handshake.md) stops
+before this layer and creates no game connections.
