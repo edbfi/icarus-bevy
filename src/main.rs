@@ -12,7 +12,7 @@ use anyhow::{Context, Result, bail, ensure};
 use clap::{Parser, Subcommand};
 use icarus_bevy::{
     config::ConfigOptions,
-    persistence::{SaveReceipt, SaveWorker, SnapshotStore},
+    persistence::{SaveReceipt, SaveWorker, SaveWorkerDisconnected, SnapshotStore},
     simulation::{SimulationClock, TickMetrics, build_app, capture},
 };
 use serde_json::json;
@@ -162,6 +162,9 @@ fn run(options: ConfigOptions, max_ticks: Option<u64>) -> Result<()> {
             }
             Ok(None) => {}
             Err(error) => {
+                if error.is::<SaveWorkerDisconnected>() {
+                    return Err(error.context("stop simulation after terminal save-worker failure"));
+                }
                 save_failures += 1;
                 eprintln!(
                     "{}",

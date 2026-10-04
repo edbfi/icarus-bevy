@@ -8,7 +8,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use anyhow::{Context, Result, bail, ensure};
+use anyhow::{Context, Result, ensure};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use tempfile::NamedTempFile;
@@ -184,6 +184,15 @@ impl SnapshotStore {
     }
 
     pub fn save(&mut self, snapshot: &WorldSnapshot) -> Result<SaveReceipt> {
+        self.save_with_writer(snapshot, atomic_write)
+    }
+
+    // The writer boundary permits deterministic publication failures in tests.
+    fn save_with_writer(
+        &mut self,
+        snapshot: &WorldSnapshot,
+        mut write: impl FnMut(&Path, &str, &[u8]) -> Result<()>,
+    ) -> Result<SaveReceipt> {
         snapshot.validate()?;
         let manifest = self.manifest()?;
         let (number, previous) = match &manifest {
@@ -211,13 +220,13 @@ impl SnapshotStore {
         };
         // Replacing an uncommitted orphan at this number is safe: the manifest
         // still references only the previous committed generations.
-        atomic_write(&self.root, &generation.filename(), &bytes)?;
+        write(&self.root, &generation.filename(), &bytes)?;
         let next_manifest = Manifest {
             schema_version: 1,
             current: generation,
             previous,
         };
-        atomic_write(
+        write(
             &self.root,
             "manifest.json",
             &serde_json::to_vec(&next_manifest)?,
@@ -285,6 +294,18 @@ pub struct SaveWorker {
     busy: bool,
 }
 
+/// Terminal failure: this worker cannot accept or acknowledge another save.
+#[derive(Debug)]
+pub struct SaveWorkerDisconnected;
+
+impl std::fmt::Display for SaveWorkerDisconnected {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("snapshot worker disconnected; persistence unavailable")
+    }
+}
+
+impl std::error::Error for SaveWorkerDisconnected {}
+
 impl SaveWorker {
     pub fn spawn(mut store: SnapshotStore) -> Result<Self> {
         let (sender, requests) = mpsc::sync_channel::<WorldSnapshot>(1);
@@ -312,7 +333,12 @@ impl SaveWorker {
 
     pub fn submit(&mut self, snapshot: WorldSnapshot) -> Result<()> {
         ensure!(!self.busy, "snapshot worker busy");
-        self.sender.try_send(snapshot).context("submit snapshot")?;
+        self.sender
+            .try_send(snapshot)
+            .map_err(|error| match error {
+                mpsc::TrySendError::Disconnected(_) => anyhow::Error::new(SaveWorkerDisconnected),
+                mpsc::TrySendError::Full(_) => anyhow::anyhow!("snapshot request queue full"),
+            })?;
         self.busy = true;
         Ok(())
     }
@@ -324,7 +350,10 @@ impl SaveWorker {
                 result.map(Some)
             }
             Err(TryRecvError::Empty) => Ok(None),
-            Err(TryRecvError::Disconnected) => bail!("snapshot worker disconnected"),
+            Err(TryRecvError::Disconnected) => {
+                self.busy = false;
+                Err(SaveWorkerDisconnected.into())
+            }
         }
     }
 
@@ -340,5 +369,101 @@ impl SaveWorker {
             thread::sleep(Duration::from_millis(1));
         }
         Ok(None)
+    }
+}
+
+#[cfg(test)]
+mod worker_failure_tests {
+    use super::*;
+
+    #[test]
+    fn disconnected_worker_clears_in_flight_state_and_returns_terminal_error() {
+        let (sender, requests) = mpsc::sync_channel(1);
+        let (results, receiver) = mpsc::sync_channel(1);
+        let mut worker = SaveWorker {
+            sender,
+            receiver,
+            busy: false,
+        };
+        worker.submit(WorldSnapshot::default()).unwrap();
+        // Model the writer exiting after receipt, before any acknowledgement.
+        requests.recv().unwrap();
+        drop(requests);
+        drop(results);
+        assert!(worker.poll().unwrap_err().is::<SaveWorkerDisconnected>());
+        assert!(!worker.is_busy());
+        assert!(
+            worker
+                .submit(WorldSnapshot::default())
+                .unwrap_err()
+                .is::<SaveWorkerDisconnected>()
+        );
+        assert!(!worker.is_busy());
+        assert!(worker.poll().unwrap_err().is::<SaveWorkerDisconnected>());
+    }
+}
+
+#[cfg(test)]
+mod publication_tests {
+    use super::*;
+
+    fn snapshot(tick: u64) -> WorldSnapshot {
+        WorldSnapshot {
+            tick,
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn disk_full_before_manifest_publication_preserves_acknowledged_generation() {
+        for fail_at in ["snapshot-2.json", "manifest.json"] {
+            let directory = tempfile::tempdir().unwrap();
+            let mut store = SnapshotStore::open(directory.path()).unwrap();
+            store.save(&snapshot(10)).unwrap();
+            let error = store
+                .save_with_writer(&snapshot(20), |root, name, bytes| {
+                    if name == fail_at {
+                        return Err(std::io::Error::from_raw_os_error(28).into()); // Linux ENOSPC
+                    }
+                    atomic_write(root, name, bytes)
+                })
+                .unwrap_err();
+            assert_eq!(
+                error
+                    .downcast_ref::<std::io::Error>()
+                    .unwrap()
+                    .raw_os_error(),
+                Some(28)
+            );
+            drop(store);
+            let mut reopened = SnapshotStore::open(directory.path()).unwrap();
+            assert_eq!(reopened.load().unwrap().unwrap().snapshot.tick, 10);
+            // A failed manifest publication may leave an orphan; retry replaces it.
+            assert_eq!(reopened.save(&snapshot(30)).unwrap().generation, 2);
+            assert_eq!(reopened.load().unwrap().unwrap().snapshot.tick, 30);
+        }
+    }
+
+    #[test]
+    fn error_after_publication_never_acknowledges_but_preserves_readable_state() {
+        let directory = tempfile::tempdir().unwrap();
+        let mut store = SnapshotStore::open(directory.path()).unwrap();
+        store.save(&snapshot(10)).unwrap();
+        let outcome = store.save_with_writer(&snapshot(20), |root, name, bytes| {
+            atomic_write(root, name, bytes)?;
+            if name == "manifest.json" {
+                // Models an uncertain result after publication. This is not a
+                // physical power-loss or failing-filesystem qualification.
+                anyhow::bail!("injected completion failure after publication");
+            }
+            Ok(())
+        });
+        assert!(outcome.is_err());
+        drop(store);
+        let mut reopened = SnapshotStore::open(directory.path()).unwrap();
+        assert_eq!(reopened.load().unwrap().unwrap().snapshot.tick, 20);
+        assert_eq!(reopened.save(&snapshot(30)).unwrap().generation, 3);
+        fs::write(directory.path().join("snapshot-3.json"), b"corrupt").unwrap();
+        assert_eq!(reopened.load().unwrap().unwrap().snapshot.tick, 20);
     }
 }
