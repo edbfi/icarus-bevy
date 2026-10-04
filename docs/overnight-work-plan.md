@@ -1,8 +1,9 @@
 # Overnight research and implementation batch
 
-Status: **proposed; awaiting the user's single approval**. This document does not
-start the batch. Once approved, record the approval and start/end timestamps in
-the case scope and timeline before executing research commands.
+Status: **approved** by the user ("Go ahead") on 2026-10-04.
+Recorded window: 2026-10-04 21:13:19 UTC to 2026-10-05 05:13:19 UTC
+(23:13–07:13 Europe/Berlin). Scope and timestamps are in
+`work/icarus-overnight/scope.md` and `session.json`.
 
 ## Objective and duration
 
