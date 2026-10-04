@@ -42,3 +42,13 @@ fn finalized_seed_supports_incremental_units() {
         );
     }
 }
+
+#[test]
+fn checksum_agrees_with_observed_early_startup_value() {
+    // Tool build 25621760 logged this checksum before subsequently setting
+    // ProjectVersion and invalidating the cache. Not an admission value.
+    assert_eq!(
+        default_version_string_checksum("Icarus 1.0.0, NetCL: 0, EngineNetVer: 17, GameNetVer: 0"),
+        1_447_163_286
+    );
+}
