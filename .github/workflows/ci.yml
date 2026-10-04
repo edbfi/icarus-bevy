@@ -24,6 +24,8 @@ jobs:
         run: rustup toolchain install 1.99.0 --profile minimal --component rustfmt --component clippy
       - name: Check formatting
         run: cargo fmt --all -- --check
+      - name: Test research helpers with authored fixtures
+        run: python3 -m unittest discover -s tools/tests -v
       - name: Lint Rust
         run: cargo clippy --workspace --all-targets --locked -- -D warnings
       - name: Test headless behavior and persistence
