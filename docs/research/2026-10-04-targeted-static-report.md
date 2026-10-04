@@ -29,6 +29,9 @@ boundary in disassembly beginning at the corresponding runtime-function entry.
 This is stronger than a raw byte match; it still does not prove dynamic reachability.
 Linear disassembly can include embedded tables. The control dispatcher ends with
 such a table, which was interpreted as data rather than executable instructions.
+Runtime-function entries can also split a single routine: the version generator
+fell through its first range, so a follow-up covered five adjacent ranges and
+checked their branch targets. A range endpoint alone is not a function boundary.
 
 The subsequent pass inspected only selected direct callees, bounded to 16 KiB
 each and 60 seconds per radare2 command. One failure helper had no exact runtime
@@ -57,6 +60,9 @@ and diagnostic annotations remain in ignored `work/`.
 | E-019 | `0x1418e6140`, 251 bytes | Shared archive conversion used by E-014/E-015 |
 | E-020 | `0x141f31140`, 330 bytes | Output formatting and virtual output call |
 | E-021 | `0x141e15db0`, 1311 bytes | Signed-length string serialization used in negotiation |
+| E-022 | `0x141f2b220`, initial 172 bytes | Incomplete first runtime range of local version generation |
+| E-023 | `0x141804d30`, 339 bytes | Shared by-name loader forwards to unresolved conversion |
+| E-024 | `0x141f2b220`, extended 778 bytes | Version cache, callback and default checksum construction across five runtime ranges |
 
 For a bounded range in the table, reproduce with the installed tool, substituting
 the numeric address and byte count. The example is the version comparison:
@@ -85,8 +91,9 @@ The negotiation branch obtains a local 32-bit value and reads a remote 32-bit va
 then calls `0x141f2e6e0`. That helper returns equality when no usable callback is
 available. Otherwise it dispatches the two values through the callback. The caller's
 failure branch references an incompatible-version diagnostic and connection-close
-accounting; success proceeds to token handling. The local value's generation and
-whether ICARUS registers a custom callback remain unresolved. Hard-coding equality
+accounting; success proceeds to token handling. The follow-up partially identifies
+local value generation (F-007); whether ICARUS registers a custom callback remains
+unresolved. Hard-coding equality
 as the entire ICARUS compatibility policy would therefore be premature.
 
 **F-003 — Control negotiation has several distinct branches (high confidence;
@@ -125,6 +132,17 @@ case rules, schema and all error outcomes remain unconfirmed. Preserve these
 stages separately when designing import diagnostics; do not collapse every failure
 into an empty new world.
 
+**F-007 — Local version construction has its own cache and callback (high
+confidence; E-011/E-022/E-024).** The initial negotiation calls the generator with
+its callback option enabled. The generator first returns a cached value when
+available; otherwise it can obtain a checksum from a callback or enter default
+construction. That default path formats a string containing the project name,
+another string, NetCL, EngineNetVer and GameNetVer, transforms it through a helper,
+then calls a checksum-producing helper with a zero second argument and caches the
+result. It also inspects a network-version override. Exact checksum algorithm,
+string normalization, runtime inputs and active callback registration remain
+unknown. The visible game release number alone is not a discovered wire version.
+
 ## Paths and bug investigation
 
 P-002 (`callflow`): control-message validity check → dispatch ID 0 → read fields
@@ -155,7 +173,7 @@ to targeted references, then bounded direct-callee inspection and synthesis. The
 three original anchors are now located; the earlier timeout report remains valid
 as the result of that earlier pass.
 
-Next static targets are local version generation/callback registration, the
+Next static targets are active version callbacks and checksum construction, the
 archive converter's schema and the shared file-loading callee's contract. A
 working stock-client connection and controlled save fixtures are still required
 before promoting these observations to validated specifications. No additional
