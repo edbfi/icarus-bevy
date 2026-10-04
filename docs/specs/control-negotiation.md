@@ -52,6 +52,12 @@ It obtains a local version through `0x141f2b220`, checks input error state after
 reading the fields, and calls `0x141f2e6e0` with local and remote versions.
 That comparison has a default equality result and an optional callback route.
 Neither the local version value nor callback registration has been established.
+Follow-up E-022/E-024 shows that generation itself has a cache, an optional
+callback and a default checksum-construction path. Default construction combines
+the project name, another string, NetCL, EngineNetVer and GameNetVer, then passes
+the formatted result through transformation and checksum helpers. It also checks
+a network-version override. The algorithm, normalization and runtime inputs still
+need recovery; the displayed game release number is not a substitute for this value.
 
 A failed comparison follows a branch with an incompatible-version diagnostic,
 connection operations and close accounting. Exact response bytes remain unknown.
