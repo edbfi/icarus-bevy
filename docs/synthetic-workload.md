@@ -29,3 +29,12 @@ population, and retain the executable hashes. `/usr/bin/time -v` can record the
 whole process's peak RSS; that includes verification and must not be labeled
 steady-state server memory. Keep baseline binaries under ignored `work/` when
 comparing revisions.
+
+`python3 tools/native_recovery_campaign.py --binary target/release/icarus-server
+--output work/recovery-new --cycles 24` exercises repeated process termination and
+recovery with 10,000 authored entities. It alternates SIGKILL and SIGTERM around a
+later autosave window after observing an initial committed save. Every cycle checks
+the published checksum, restored clock, acknowledged generation and complete
+entity state. It does not claim deterministic interception of each filesystem
+operation, real disk exhaustion or physical power-loss qualification. Use a fresh
+output directory and retain the helper/binary provenance and per-cycle logs.
