@@ -13,13 +13,16 @@ path = "src/main.rs"
 
 [dependencies]
 anyhow = "1"
+base64 = "0.22.1"
 bevy = { version = "=0.19.1", default-features = false, features = ["std", "async_executor", "multi_threaded", "bevy_state", "bevy_log"] }
 clap = { version = "4", features = ["derive"] }
 ctrlc = { version = "3", features = ["termination"] }
 fs2 = "0.4"
+flate2 = { version = "1.1.10", default-features = false, features = ["rust_backend"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 sha2 = "0.10"
+sha1 = "0.10.6"
 tempfile = "3"
 toml = "0.9"
 
