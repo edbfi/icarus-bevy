@@ -49,6 +49,11 @@ See the [full plan](linux-dedicated-server-plan.md) and
   imported interfaces and concrete diagnostic anchors; behavior remains unverified.
 - [Bounded Ghidra pass](research/2026-10-04-decompilation-report.md) reached its
   analysis time limit and exported zero functions; behavior remains unresolved.
+- [Targeted static follow-up](research/2026-10-04-targeted-static-report.md) located
+  the selected references and inspected control negotiation, version comparison
+  and prospect-loading branches with radare2. Initial
+  [negotiation](specs/control-negotiation.md) and
+  [loading](specs/prospect-loading.md) notes remain incomplete and unvalidated.
 - [Offline Proton startup](research/2026-10-04-offline-startup-report.md) reached
   the entry map, reporting game 3.0.30.158174 and engine 4.27.2. Steam initialization
   failed in isolation; the harness stopped and removed the container. No connected
