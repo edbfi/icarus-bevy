@@ -139,8 +139,9 @@ wrong peer/key, expiration/future boundaries and actual UDP exchanges within a
 Bevy app. Oversized traffic tests check the packet budget and advancing simulation.
 
 New direct dependencies are RustCrypto `hmac` 0.12.1 (MIT OR Apache-2.0) and
-`getrandom` 0.4.3 (MIT OR Apache-2.0, already present transitively). Cargo.lock records
-registry checksums. Their documented APIs supply
+`getrandom` 0.4.3 (MIT OR Apache-2.0, already present transitively). The new transitive
+dependency `subtle` 2.6.1 is BSD-3-Clause. HMAC 0.12.1 uses the same digest 0.10 family
+as the existing SHA-256 dependency. Cargo.lock records registry checksums. Their APIs supply
 [constant-time truncated verification](https://docs.rs/digest/0.10.7/digest/trait.Mac.html)
 and [OS randomness](https://docs.rs/getrandom/0.4.3/getrandom/fn.fill.html).
 The lab has not been tested with the stock Windows client; its stricter initial
