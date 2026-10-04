@@ -36,6 +36,7 @@ def main():
     parser.add_argument("--run-name", required=True)
     parser.add_argument("--seconds", type=int, default=120)
     parser.add_argument("--startup-probe", choices=["none", "resume"], default="none")
+    parser.add_argument("--handshake-probe", action="store_true")
     args = parser.parse_args()
     if not re.fullmatch(r"[a-z0-9][a-z0-9-]{0,39}", args.run_name) or not 15 <= args.seconds <= 780:
         parser.error("run-name must be short lowercase alphanumeric/hyphens; seconds must be 15..780 (cleanup reserve)")
@@ -81,6 +82,15 @@ def main():
     journal = {"time": datetime.datetime.now(datetime.UTC).isoformat(), "argv": argv,
                "timeout_seconds": args.seconds + 120, "approval": session,
                "helpers": {"tools/run_reference_offline.py": hashlib.sha256(Path(__file__).read_bytes()).hexdigest()}}
+    if args.handshake_probe:
+        if args.seconds < 60:
+            raise RuntimeError("handshake probe requires at least 60 observation seconds")
+        probe = case / "probes/handshake_probe"
+        if not probe.is_file() or probe.resolve() != probe:
+            raise RuntimeError("missing or redirected case-local probe binary")
+        argv[2:2] = ["--mount", f"type=bind,src={probe.parent},dst=/probes,readonly"]
+        journal["helpers"][str(probe.relative_to(root))] = hashlib.sha256(probe.read_bytes()).hexdigest()
+        journal["probe_argv"] = ["docker", "exec", "--env", "ICARUS_OFFLINE_PROBE=1", name, "/probes/handshake_probe"]
     with (case / "commands.jsonl").open("a") as stream:
         stream.write(json.dumps(journal) + "\n")
     (run / "invocation.json").write_text(json.dumps(journal, indent=2) + "\n")
@@ -98,12 +108,19 @@ def main():
             raise RuntimeError("unexpected container ID")
         (run / "container-start.json").write_text(command(["docker", "inspect", container]).stdout)
         with (run / "resource-samples.jsonl").open("x") as samples:
+            probed = False
             while time.monotonic() - start < args.seconds:
                 if available_memory() < 3 * 1024**3 or shutil.disk_usage(case).free < 30 * 1024**3:
                     raise RuntimeError("resource floor reached during observation")
                 state = command(["docker", "inspect", "--format", "{{.State.Running}}", container]).stdout.strip()
                 if state != "true":
                     break
+                if args.handshake_probe and not probed and time.monotonic() - start >= 40:
+                    probe_result = command(journal["probe_argv"], timeout=15, check=False)
+                    (run / "probe.jsonl").write_text(probe_result.stdout)
+                    (run / "probe.stderr").write_text(probe_result.stderr)
+                    (run / "probe-exit.txt").write_text(str(probe_result.returncode) + "\n")
+                    probed = True
                 samples.write(command(["docker", "stats", "--no-stream", "--format", "{{json .}}", container]).stdout)
                 samples.flush()
                 time.sleep(min(5, max(0, args.seconds - (time.monotonic() - start))))

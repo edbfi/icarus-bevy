@@ -3,6 +3,8 @@
 //! These are not a packet codec or an ICARUS admission policy. No listener uses
 //! this module. See `docs/specs/network-checksum.md` for evidence and limitations.
 
+pub mod handshake;
+
 /// Reflected CRC-32 of zero-extended UTF-16 units in little-endian order.
 ///
 /// Each unit contributes four bytes, not two. Processing stops before the first
