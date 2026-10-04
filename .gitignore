@@ -28,3 +28,7 @@ rustc-ice-*.txt
 
 # Generated reverse-engineering cases, extracted files, and analysis databases
 /work/
+
+# Python analysis-helper bytecode
+__pycache__/
+*.py[cod]
