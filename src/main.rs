@@ -46,6 +46,9 @@ enum Command {
     InspectSave {
         #[arg(long)]
         source: PathBuf,
+        /// Also frame opaque root properties with the experimental memory-522 profile.
+        #[arg(long)]
+        inner_tags: bool,
     },
     /// Reserved interface: official format is unknown; fails without writing.
     ImportSave {
@@ -80,15 +83,19 @@ fn execute(cli: Cli) -> Result<()> {
         Command::ImportSave { .. } => bail!(
             "ICARUS save import is unavailable until the format and migration fidelity are validated; no files were written"
         ),
-        Command::InspectSave { source } => {
+        Command::InspectSave { source, inner_tags } => {
             ensure!(
                 std::fs::metadata(&source)?.is_file(),
                 "source must be a regular file"
             );
             let file = std::fs::File::open(&source).context("open prospect envelope")?;
             ensure!(file.metadata()?.is_file(), "source must be a regular file");
-            let inspection = icarus_bevy::prospect::inspect(file)?;
-            println!("{}", serde_json::to_string(&inspection)?);
+            let output = if inner_tags {
+                serde_json::to_string(&icarus_bevy::prospect::inspect_with_inner_tags(file)?)?
+            } else {
+                serde_json::to_string(&icarus_bevy::prospect::inspect(file)?)?
+            };
+            println!("{output}");
             Ok(())
         }
         Command::Run { options, max_ticks } => run(options, max_ticks),

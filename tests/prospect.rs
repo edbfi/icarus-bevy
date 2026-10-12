@@ -6,7 +6,9 @@ use std::{
 
 use base64::{Engine, engine::general_purpose::STANDARD};
 use flate2::{Compression, write::ZlibEncoder};
-use icarus_bevy::prospect::{MAX_ENVELOPE_BYTES, MAX_PAYLOAD_BYTES, inspect};
+use icarus_bevy::prospect::{
+    MAX_ENVELOPE_BYTES, MAX_PAYLOAD_BYTES, inspect, inspect_with_inner_tags,
+};
 use serde_json::{Value, json};
 use sha1::{Digest, Sha1};
 use tempfile::TempDir;
@@ -48,6 +50,32 @@ fn independently_authored_zlib_fixture_passes_only_envelope_checks() {
     assert_eq!(result.validation, "experimental_envelope_only");
     assert!(result.legacy_sha1_matches);
     assert!(!result.world_imported);
+    assert_eq!(
+        serde_json::to_value(&result).unwrap(),
+        json!({
+            "validation": "experimental_envelope_only", "compressed_bytes": 50,
+            "payload_bytes": 42, "declared_data_length": 0,
+            "legacy_sha1_matches": true, "world_imported": false
+        })
+    );
+}
+
+#[test]
+fn opt_in_tag_scan_requires_full_envelope_integrity_first() {
+    let mut document = authored_envelope(b"not a tagged archive");
+    document["ProspectBlob"]["Hash"] = json!("0".repeat(40));
+    let bytes = serde_json::to_vec(&document).unwrap();
+    let error = inspect_with_inner_tags(bytes.as_slice()).unwrap_err();
+    assert!(error.to_string().contains("legacy SHA-1 mismatch"));
+
+    let bytes = serde_json::to_vec(&authored_envelope(b"not a tagged archive")).unwrap();
+    assert!(inspect(bytes.as_slice()).is_ok());
+    assert!(
+        inspect_with_inner_tags(bytes.as_slice())
+            .unwrap_err()
+            .to_string()
+            .contains("invalid experimental root tags")
+    );
 }
 
 #[test]
@@ -283,4 +311,52 @@ fn inspector_cli_preserves_source_and_creates_no_state() {
             .unwrap()
             .contains("authored-fixture")
     );
+}
+
+#[test]
+fn opt_in_tag_cli_reports_only_counts_and_never_writes_or_exports_values() {
+    // Manually packed StrProperty: authored secret name/value, then None.
+    // The value deliberately is not an encoded FString: values are not decoded.
+    let payload = b"\x0d\0\0\0secret-field\0\x0c\0\0\0StrProperty\0\x06\0\0\0\0\0\0\0\0secret\x05\0\0\0None\0";
+    let root = TempDir::new().unwrap();
+    let source = root.path().join("authored.json");
+    let envelope = serde_json::to_vec(&authored_envelope(payload)).unwrap();
+    fs::write(&source, &envelope).unwrap();
+    let result = Command::new(env!("CARGO_BIN_EXE_icarus-server"))
+        .current_dir(root.path())
+        .args(["inspect-save", "--inner-tags", "--source"])
+        .arg(&source)
+        .output()
+        .unwrap();
+    assert!(result.status.success(), "{:?}", result.stderr);
+    assert!(result.stderr.is_empty());
+    let report: Value = serde_json::from_slice(&result.stdout).unwrap();
+    assert_eq!(report["validation"], "experimental_root_tags_only");
+    assert_eq!(report["world_imported"], false);
+    assert_eq!(report["envelope"]["world_imported"], false);
+    assert_eq!(
+        report["inner_tags"],
+        json!({
+            "profile": "experimental_memory_archive_522", "root_property_count": 1,
+            "opaque_payload_bytes": 6, "header_bytes": 51
+        })
+    );
+    assert!(!String::from_utf8(result.stdout).unwrap().contains("secret"));
+    assert_eq!(fs::read(&source).unwrap(), envelope);
+    assert_eq!(fs::read_dir(root.path()).unwrap().count(), 1);
+
+    // A failed framing scan must not emit a successful partial JSON report.
+    let invalid = serde_json::to_vec(&authored_envelope(&payload[..payload.len() - 1])).unwrap();
+    fs::write(&source, &invalid).unwrap();
+    let result = Command::new(env!("CARGO_BIN_EXE_icarus-server"))
+        .current_dir(root.path())
+        .args(["inspect-save", "--inner-tags", "--source"])
+        .arg(&source)
+        .output()
+        .unwrap();
+    assert!(!result.status.success());
+    assert!(result.stdout.is_empty());
+    assert!(!String::from_utf8(result.stderr).unwrap().contains("secret"));
+    assert_eq!(fs::read(&source).unwrap(), invalid);
+    assert_eq!(fs::read_dir(root.path()).unwrap().count(), 1);
 }

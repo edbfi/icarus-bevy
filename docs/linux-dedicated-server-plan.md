@@ -145,10 +145,12 @@ Use this dataset in the next work sequence:
 3. Recover inner binary framing and persisted relationships. Targeted static work
    on build 25621760 has resolved the reflected state/header, recorder array,
    version-dependent callbacks and tagged-property dispatch; see the loading spec
-   and `work/save-schema-20261012/`. Tag encoding and recorder bodies remain open.
+   and `work/save-schema-20261012/`. A bounded experimental root-tag reader now
+   preserves opaque spans after envelope integrity checks. Nested struct dispatch
+   and recorder bodies remain open.
    Eleven distinct prospect payloads and seven member tuples are observed, but
    structures, inventories, tames, missions and full ownership fidelity remain
-   unknown. Target the concrete tag/property readers, compare backed-up
+   unknown. Target nested struct selector `0x14200e610` and recorder dispatch, compare backed-up
    records only after interpreting them, and derive authored regression fixtures.
    Do not infer chronology/build compatibility from names or silently discard fields.
 4. Use disposable copies for a matched official-server load/save/reload baseline
