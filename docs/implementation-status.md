@@ -17,6 +17,13 @@ pass. The full manual check suite also passes. No production parser change was
 needed. Evidence:
 `work/native-c034-own-20261012/` (E-001–E-004).
 
+A fresh upstream metadata check confirms Rust 1.99.0 and Bevy 0.20.0 remain
+current stable. SHA-2 was updated from 0.11.0 to 0.11.1 in the lockfile; the other
+direct dependencies were already current. The full manual suite, release build
+and bounded save/restart smoke pass; independent SHA-256 verification matches
+both generations at ticks 3 and 8. Evidence: `work/dependency-refresh-20261012/`.
+The preceding C034 helper remains frozen against its original library snapshot.
+
 Two independent static tracks also completed. The older C034 own-array child
 selects tagged framing under the reviewed MemoryArchive522 path, with two
 optional immediate fields (Struct and Float),
