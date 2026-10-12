@@ -377,6 +377,37 @@ One bounded native batch independently matches 28 supplied arrays from the four
 selected parents (save-triage E-037): all are empty, with 2,624 count/shared-header
 bytes, zero element bytes and exact EOF. Source hashes are unchanged. The authored
 stdin transport is separate from the game format and retains no body file.
-Populated elements have authored-test coverage only. A wider independent metadata
-inventory finds all 9,058 arrays in this class empty across both copies (E-036);
-this is not native qualification of all those arrays.
+This C028 class has no supplied populated-element coverage. A wider independent
+metadata inventory finds all 9,058 arrays in this class empty across both copies
+(E-036); this is not native qualification of all those arrays.
+
+A separate [C034 comparison](prospect-loading.md#third-selected-class-bounded-top-header-comparison)
+now qualifies four arrays with the current eleven-kind library: two empty and two
+populated, totaling 428 elements, 856 immediate Struct/Float fields and 56,412
+bytes. All shared/element/header/value/terminator spans match independently with
+exact EOF. Supplied populated framing is therefore covered for these selections;
+all values, deeper widths and complete import semantics remain unqualified.
+
+## Matched-client static comparison
+
+The hash-qualified build-25793767 client provides independent addresses for the
+structured tag operator (`0x14212b0e0`) and generic Array serializer
+(`0x142123da0`). Bounded disassembly and independently checked builtin type
+identities agree with the examined older-server gates: Struct GUID at version
+441, Array inner name at 282 and common property GUID at 503. Float/Text reach
+the common path without type-specific extensions. The additional Map/Set gate
+at 509 is observed but outside the eleven-kind native subset.
+
+The client Array branch requires archive mask `0x20` clear, version at least
+500 and the inner Struct class flag. It reads a four-byte count and a shared
+header before the element loop, including count zero. The shared-size rewrite
+uses a 32-bit final-position minus element-start difference, supporting aggregate
+span interpretation for bounded non-overflowing cases. Original large-span safety,
+canonical flag enforcement and exact loader EOF policy are not established.
+The inner virtual dispatch remains generic; it does not prove concrete C034 tagged
+serialization or the client save archive's version/flags.
+
+Evidence, exact EXE/PDB bindings, independent byte/semantic review and strict case
+review: `work/client-tag-array-20261012/`. No original runtime, private payload,
+packaged asset or network experiment occurred. These static agreements do not
+establish matched dedicated-server behavior or supplied-save producing provenance.
