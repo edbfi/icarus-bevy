@@ -135,6 +135,11 @@ record historical research batches; the overnight runtime window has expired.
   checks, independent review and strict case review pass. Evidence: save-triage
   E-017/E-018 and `work/native-recorders-20261012/`. No gameplay counts or import
   fidelity follow from these framing checks.
+- The opaque header reader also accepts `NameProperty`, backed by the older
+  tag-reader switch and concrete value dispatch. Authored absent/present GUID and
+  truncation fixtures pass; full manual checks and release qualification preserve
+  both copies' existing envelope/root/recorder results and source hashes.
+  Evidence: `work/native-name-header-20261012/` and static case E-018.
 - Active normal dependency graph excludes Bevy rendering/window/audio backends;
   release executable links only the platform loader, libc and libgcc_s on this host.
 - CI definition validates formatting, Clippy, tests, release build and headless smoke.
@@ -171,7 +176,10 @@ record historical research batches; the overnight runtime window has expired.
   load method. The base method builds a memory reader over opaque `BinaryData`
   and calls component serialization. The base path selects filtered tagged fields,
   followed by a four-byte boolean and optional 16-byte GUID, then a component hook.
-  Concrete derived overrides and value semantics remain unresolved; component
+  One private singleton class inherits all three relevant base slots in the older
+  executable. Its first candidate body scan stopped at an unsupported header;
+  no successful component framing follows from that run (save-triage E-020).
+  Other derived overrides and value semantics remain unresolved; component
   contents are not decoded by the native inspector.
 - A private class-string inventory finds 38 identifiers in the current copy and
   36 in the backup, all with script-class path syntax; concrete implementation and

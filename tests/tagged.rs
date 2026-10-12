@@ -36,6 +36,20 @@ fn fixtures() -> Vec<(TagKind, Vec<u8>, Vec<u8>)> {
     [
         (TagKind::Int, INT.to_vec(), vec![42, 0, 0, 0]),
         (
+            TagKind::Name,
+            record(b"\x0d\0\0\0NameProperty\0", &[0], &opaque),
+            opaque.clone(),
+        ),
+        (
+            TagKind::Name,
+            record(
+                b"\x0d\0\0\0NameProperty\0",
+                &[&[1][..], &[9; 16]].concat(),
+                &opaque,
+            ),
+            opaque.clone(),
+        ),
+        (
             TagKind::String,
             record(b"\x0c\0\0\0StrProperty\0", &[0], &opaque),
             opaque.clone(),
@@ -99,7 +113,7 @@ fn manual_headers_preserve_opaque_source_spans_without_parsing_values() {
     assert_eq!(parsed.terminator, END);
     let summary = parsed.summary();
     assert_eq!(summary.profile, "experimental_memory_archive_522");
-    assert_eq!(summary.root_property_count, 7);
+    assert_eq!(summary.root_property_count, 9);
     assert_eq!(
         summary.header_bytes + summary.opaque_payload_bytes,
         bytes.len()

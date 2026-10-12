@@ -181,6 +181,35 @@ contracts. The case report links them to
 findings and call paths; strict review verified all artifact hashes with zero
 errors/warnings. Primary decompilation, disassembly and exact commands remain private.
 
+### Selected concrete component
+
+Static follow-up E-017 resolves one private singleton class (case-local ID C013)
+through registration, construction and its installed vtable. All three relevant
+slots inherit the base methods: recorder loading, serialization and the empty
+post-load hook. This identifies a candidate layout for that class in build 25621760;
+it does not prove identical methods in the user-reported newer build.
+
+The first bounded probe of that class's 548-byte saved body stopped at type-name
+offset 281 because the research parser supported only seven header kinds. It
+returned no successful framing result and did not scan the backup component body.
+Both complete envelopes and recorder arrays had passed before body inspection.
+The failure, source fixity and invocation are preserved as save-triage E-020; it is
+an unsupported-reader result, not evidence of save corruption or an original defect.
+
+The inherited metadata identifies `NameProperty` as a candidate missing kind.
+The existing tag-reader switch maps it to built-in name ID 6 and adds no
+type-specific header metadata, followed by the standard property-GUID field.
+Its value reader `0x1421580b0` calls archive `+0x140`, the same string/name primitive.
+The native opaque header reader now supports this kind; it does not decode values
+or apply the component layout to arbitrary saved classes.
+
+Metadata evidence E-018 identifies one declared struct field and four immediate-base
+fields carrying the necessary save-selection flag: enum, name, string and boolean.
+This is not a complete ancestor schema or a required-field list. The declared
+struct has one integer child and selects nested tagged serialization despite its
+four-byte in-memory size. The enum's loading path also reads an archive name;
+its byte-sized underlying type does not imply a one-byte serialized value.
+
 ## Controlled reproduction matrix
 
 The overnight case exercised by-name missing-file rejection once and truncated-JSON
