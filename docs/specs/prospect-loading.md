@@ -583,6 +583,16 @@ native/JS span equality and unchanged input hashes support the result:
 `work/native-c009-top-20261012/`. This qualifies top framing only; child dispatch,
 numeric values, original load success and newer-build equivalence remain open.
 
+A subsequent static case resolves both own child schemas as conditionally
+tagged: S02 has optional `ArrayProperty<IntProperty>` and Bool fields; S01 has
+optional Str and Int fields. The ordinary non-Struct array path has a four-byte
+count and four-byte element transfers, with no shared Struct header. This demand
+is conditional on the examined archive mode and successful nonnegative-count
+execution; original negative-count rejection and enclosing EOF are not proved.
+Tagged Bool takes its value from the header and demands zero payload bytes.
+The Int and Str targets join the existing scalar/FString contracts. These static
+results do not yet qualify child populations: `work/c009-own-children-20261012/`.
+
 ## Independent replacement requirements
 
 The importer must load into staging state, resolve references and validate the

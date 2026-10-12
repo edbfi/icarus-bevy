@@ -130,6 +130,11 @@ and 972 trailer bytes; opaque values total 2,877,588 bytes in current and
 Exact independent/native spans and input fixity agree; three authored helper
 tests pass. Static and executed evidence: `work/component-c009-20261012/` and
 `work/native-c009-top-20261012/`. Nested contracts and values remain open.
+The two own child schemas now have independently reviewed conditional tagged
+contracts: S02 Int array/Bool and S01 Str/Int, four optional fields total.
+Ordinary array transfer demand is count plus four bytes per element; tagged Bool
+uses its header and no payload bytes. These are static conditional demands,
+not observed child-value results: `work/c009-own-children-20261012/`.
 
 The exact C034 own Name property now links through its final factory/vtable and
 concrete archive virtual to the established FString reader. No separate wire
@@ -137,6 +142,13 @@ numeric-index transfer appears in that wrapper; internal name construction is
 not yet modeled. Original normalization and failure behavior remain broader than
 the native strict codec. Independent static review passes without reading private
 name values: `work/c034-name-contract-20261012/`.
+The separate structural comparison now passes all 1,658 selected Name values,
+14,922 bytes, after reproducing prior top/own spans and selecting the exact
+descriptor. Existing Rust strict decoding and independent framing agree on
+encoding, unit counts and exact consumption; no decoded names are reported.
+Six helper tests and independent review pass with unchanged inputs:
+`work/c034-name-values-20261012/`. Exact EOF and canonical string validation
+remain comparator policy, not original acceptance or name semantics.
 
 A live SSH fetch reconciled the stale remote cache: all checkpoint commits through
 `b55e4ce` were already delivered. No client files were removed and no original
