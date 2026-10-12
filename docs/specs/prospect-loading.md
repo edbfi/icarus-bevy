@@ -662,6 +662,16 @@ four independent structural checks pass: `work/c009-parent-leaf-values-20261012/
 PA03/PA04 still provide no leaf occurrences. No text, numeric values, enum lookup
 or equality of gameplay state is inferred from these structural results.
 
+The remaining six common-ancestor Structs and seven arrays now have exact retained
+descriptor/getter/schema joins to the earlier C028/C034 contracts. A separate
+top-header replay selects all 6,318 payloads across both copies, totaling 4,732,878
+bytes. All thirteen fields occur 243 times per copy. Selection leaves every child
+count, header and value unread; all 777 bound files remain unchanged.
+CA01 reaches 66,257 bytes, exceeding the default 64 KiB array-reader limit, so its
+child comparison needs a separately tested explicit byte limit. Other array maxima
+are at most 562 bytes; Struct maxima are at most 343 bytes. Evidence:
+`work/c009-common-child-selection-20261012/`.
+
 That case corrects the earlier own-child dimension provenance: the common
 property factory reads descriptor offset `+0x20`, including for Bool. Its
 `+0x24` word supplies Bool field size. All six affected Bool descriptors have

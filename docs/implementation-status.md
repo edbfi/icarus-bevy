@@ -197,6 +197,12 @@ helpers through factory recursion. Ordinary loading also reads Name/FString,
 then performs enum resolution and an internal byte store; that store adds no
 serialized byte. Independent review retains unresolved lookup, error, EOF and
 supplied-value behavior: `work/c009-top-enum-contract-20261012/`.
+The six common-ancestor Structs and seven arrays now match exact retained
+C028/C034 descriptor/getter/schema contracts. Header-only selection measures
+6,318 payloads and 4,732,878 bytes across both copies, with all 777 bindings
+unchanged: `work/c009-common-child-selection-20261012/`. CA01 reaches 66,257
+bytes, above the native array reader's default; child parsing awaits an explicit
+bounded API and validation. No child counts or headers were read in this run.
 
 The exact C034 own Name property now links through its final factory/vtable and
 concrete archive virtual to the established FString reader. No separate wire
