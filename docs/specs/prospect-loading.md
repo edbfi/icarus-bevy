@@ -369,7 +369,9 @@ target D02 to its own four-four-byte native transfer demand; these are not infer
 from the earlier 16/12-byte types. D01's four array children now have concrete
 tagged registrations and immediate schemas of two Int; Int/Str/Int; one Str; and
 Int/Str, respectively. These eight fields remain optional. Int demands four
-opaque bytes under the reviewed profile; Str leaf encoding remains unresolved.
+opaque bytes under the reviewed profile. A subsequent exact StrProperty adapter
+trace links to the existing FString contract, with original normalization broader
+than the native strict subset; see `work/str-value-contract-20261012/`.
 Independent semantic and strict review pass in
 `work/c028-d01-array-children-20261012/`; no supplied populated descendants or
 numeric/string values were read.
@@ -524,6 +526,14 @@ These are observations, not mandatory fields or universal count limits. Both
 complete top/own populations are reproduced before array entry, and width checks
 follow exact native agreement. Six helper tests pass, including under the
 512 MiB native address-space limit. Evidence: `work/c034-all-own-arrays-20261012/`.
+
+A separate inherited-array qualification joins all seven top-level Array
+descriptors to their exact shared ancestor contracts. All 5,803 arrays per copy
+are empty, with 543,824 count/shared-header bytes and zero element bytes. Every
+family contributes 829 arrays per copy. Independent and native shared spans
+agree exactly after reproducing all prior parent spans; inputs remain unchanged.
+This result does not qualify populated inherited descendants. Six helper tests
+and independent harness review pass: `work/c034-inherited-arrays-20261012/`.
 
 Matched-client generic tag/array functions now independently agree with the
 examined older version gates and shared-header branch. A subsequent concrete

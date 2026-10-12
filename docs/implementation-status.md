@@ -91,6 +91,15 @@ missing optional descriptors. Native spans, enclosing prior spans and source
 hashes agree. Six helper tests also pass under the reviewed memory limit.
 Evidence: `work/c034-all-own-arrays-20261012/`. Values remain opaque.
 
+The seven inherited C034 array families also pass full native/independent
+qualification: 11,606 arrays and 1,087,648 bytes across both copies, all empty.
+Every family has 829 arrays per copy; all bytes belong to counts/shared headers.
+This adds no populated descendant coverage. Evidence and six helper tests:
+`work/c034-inherited-arrays-20261012/`. The concrete older StrProperty adapter
+now links to the already-reviewed FString reader; its broader normalization and
+the native strict subset remain distinct. Independent static review:
+`work/str-value-contract-20261012/`. No string values were inspected.
+
 A live SSH fetch reconciled the stale remote cache: all checkpoint commits through
 `b55e4ce` were already delivered. No client files were removed and no original
 runtime or connected-client experiment has started.
@@ -138,7 +147,7 @@ committed evidence below:
 | --- | --- |
 | `save-triage-20261012/` | E-036: all 9,058 C028 arrays are empty. E-037: native framing matches 28 selected empty arrays. E-038: four C034 extrema match 21 top headers each, totaling 71,388 bytes with zero trailers/exact EOF. E-039: four own structs match eight immediate headers each across 58,356 bytes. Review 31 passes with 39 evidence entries and zero issues. All values remain opaque. |
 | `c028-array-children-20261012/` | 17 optional immediate array-element fields; independently verified Float/Text header contracts in `static/header-kind-contracts-v2.json` (SHA-256 `17abd2de90aea26129d13cc075c7a6268eef41cf653f14dcca29928433b97e09`). |
-| `c028-array-descendants-20261012/` | D01 uses tagged framing with eight optional fields and four consumed inner helpers. D02 independently demands four four-byte native transfers on success; no exact EOF guarantee. A later bounded trace resolves its four array children to tagged framing with eight optional Int/Str fields; Str value serialization remains unresolved. Strict reviews pass; see `c028-d01-array-children-20261012/`. |
+| `c028-array-descendants-20261012/` | D01 uses tagged framing with eight optional fields and four consumed inner helpers. D02 independently demands four four-byte native transfers on success; no exact EOF guarantee. A later bounded trace resolves its four array children to tagged framing with eight optional Int/Str fields; Str value serialization now links to the existing FString contract; supplied values remain opaque. Strict reviews pass; see `c028-d01-array-children-20261012/`. |
 | `component-c034-20261012/` | Exact older class registration/vtable resolves to the same reviewed load/serialize/postload targets as C028. Optional top schema has 21 fields: seven Struct, two Int, seven Array, two Name, one Enum, one Str, one Bool. Four supplied bodies match this top schema under bounded comparison (save case E-038); nested payloads remain opaque. |
 | `c034-own-struct-20261012/` | Own struct `0x145ee11d0` selects tagged framing; eight optional logical fields are Array, Bool, three Int, Struct, Float and Name. E-039 independently observes all eight in four selected own bodies, including Float; fresh native exact-span comparison now passes. Struct child matches earlier N02 (`0x145efe320`, successful 12-byte native demand); array child `0x145ee1220` now has a separate tagged/two-field contract. The array now has separately qualified populated element headers; Struct/Float values remain opaque. |
 
@@ -158,12 +167,13 @@ Continue in this order within the existing plan:
    bytes, exact EOF and no missing optional descriptors in these samples.
    Fresh eleven-kind native qualification now passes on every selected span.
    Own-array static review and populated shared-header/element comparison now pass.
-   Next expand inherited-array population coverage and recover
+   Next qualify inherited Struct populations and recover
    the next required value contract, keeping unknown values opaque. Selected
    own-array Struct/Float widths now agree individually with the older static
    transfer demands; all 1,658 C034 top bodies now have exact native/independent
    span agreement. All 1,658 own structs and own arrays now agree too; extend
-   inherited-array coverage under fresh per-copy bounds. The
+   inherited Struct coverage under fresh per-copy bounds. All 11,606 inherited
+   arrays are now natively qualified and empty. The
    existing component batch helper's 8 MiB transport cap cannot fit all C034
    records from both copies together; use separate per-copy batches or a newly
    reviewed helper rather than changing frozen evidence.
