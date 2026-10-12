@@ -62,6 +62,12 @@ repos:
         language: system
         pass_filenames: false
         files: ^tools/(research-scope\.cjs|tests/research-scope\.test\.cjs)$
+      - id: pe-candidate-tests
+        name: Test PE caller candidate bounds
+        entry: node --test tools/tests/pe_candidates.test.cjs tools/tests/pe_candidates_independent.test.cjs
+        language: system
+        pass_filenames: false
+        files: ^tools/(pe_candidates\.cjs|tests/pe_candidates.*\.cjs)$
       - id: python-typing-config
         name: Check Python typing policy
         entry: python3 tools/typing_gate.py

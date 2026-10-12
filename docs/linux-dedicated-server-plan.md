@@ -226,7 +226,10 @@ Use this dataset in the next work sequence:
    all 6,318 common-child payloads, 522 array elements and 9,018 immediate fields.
    Four exact retained binary/native child contracts now qualify 1,468 selected
    spans / 19,600 bytes against individual 16/12/12/16-byte demands after complete
-   prior replay. Continue other leaves/deeper grammars from these checked headers. See
+   prior replay. A subsequent exact scalar case qualifies 750 strict Name frames
+   and 6,522 individual Int/UInt32/Float/Bool widths; 26 descriptors have populated
+   coverage, with CA06 Name still empty. Continue the 278 opaque deeper arrays
+   from checked metadata and preserve unqualified meanings/restoration. See
    the current checkpoint in implementation status.
    Retain the lack of populated
    inherited-array coverage.

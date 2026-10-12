@@ -83,3 +83,42 @@ This is direct fallback evidence, not returned REA Evidence. It does not discove
 unknown references, indirect targets or missing instructions. No recorded caller
 in this partial database is not proof of no callers. Further work must locate a
 concrete dispatcher owner/call path before assigning archive or transport meaning.
+
+## Bounded file-pattern candidates
+
+A fresh independently reviewed fallback then scanned the pinned PE64 input using
+an authored bounded parser, without executing, disassembling or importing it.
+The installed REA portable layout profile supports ELF64, while its Ghidra path
+builds a fresh `-import` / `-deleteProject` invocation and autodetects `.hop`, not
+a retained `.gpr` database. Hash-matched installed source confirms this provider
+limitation; no third unchanged cold import was attempted.
+
+The parser requires standard PE64/x64 executable mappings, at most 96 sections
+and 128 MiB input before hashing or reading. It excludes resources, overlays,
+raw padding, virtual zero fill, writable data and executable sections without the
+CODE flag. It checks complete five-byte E8/E9 rel32 patterns in eligible code and
+eight-byte absolute pointers in eligible read-only initialized data. Combined
+candidates are capped at sixteen, with no partial successful result above that
+cap. Output contains neutral section IDs/offsets/addresses only, bounded to 64 KiB.
+These patterns do not establish instructions, callers or vtable ownership.
+
+Fifteen authored and thirteen independent synthetic PE checks pass. Review fixed
+alignment, resource mapping and code-section eligibility gaps before execution.
+Twenty-three actual-wrapper mocked checks and two independent pre-entry checks
+pass, including authorization before target reads, oversize before allocation,
+bounded result reads, complete schema validation and unconditional owned cleanup.
+The pure parser and synthetic checks are retained as `tools/pe_candidates.cjs`
+and `tools/tests/pe_candidates*.test.cjs`; fixtures read no original artifact.
+
+The fresh offline sixty-second run passed with all 317 bindings unchanged and
+verified cleanup. It examined 104,117,677 eligible starting offsets in eight
+sections and returned one candidate: an absolute pointer at `0x145468198`, file
+offset 88,501,656 / RVA 88,506,776, in read-only initialized section SEC02.
+No E8/E9 pattern matched this exact target. Indirect calls, RIP-relative addressing,
+RVA pointers, relocations and unscanned instruction forms remain unqualified.
+The next discriminator is bounded context/owner provenance for that exact pointer.
+
+Evidence: `work/control-caller-candidates-20261013/`; result SHA-256
+`e7a65b3efc7f0cc5210f526530bc0955b4b47024363b919f1d1289647ba56461`.
+This authored fallback result is not returned REA Evidence and establishes no
+control archive, byte order, admission rule or client compatibility.

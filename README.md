@@ -96,6 +96,11 @@ Offline research scope fixtures use Node.js (`node --test
 tools/tests/research-scope.test.cjs`) and run through prek and CI. Scope validation
 checks existing authorization and deadlines; it grants neither.
 
+The pure `tools/pe_candidates.cjs` module validates bounded PE64/x64 buffers and
+collects explicitly pinned address patterns. It opens no files and confirms no
+callers or instruction boundaries. Its authored and independent PE fixtures run
+through prek/CI using `node --test tools/tests/pe_candidates*.test.cjs`.
+
 Original files stay under ignored `icarus-orig/`; generated analysis, private saves,
 captures and dumps stay under ignored `work/`. Reusable tools and sanitized reports
 are tracked. No original assets are extracted or reused.

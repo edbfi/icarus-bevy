@@ -20,6 +20,32 @@ locked reinstallation and provider checks. This tooling change does not resume
 the research paused below, qualify the pending v2 retry, or extend historical
 authorization windows. Private inputs, frozen cases and evidence remain retained.
 
+### C009 common-child scalars — 2026-10-12, 23:29 UTC
+
+The fresh reviewed scalar case reproduces the complete top, selection, common
+header and binary-width results before entering 27 exact descriptor contracts.
+Twenty-six have populated sample coverage; CA06's Name descriptor has none.
+Across both copies, 750 Name frames / 9,070 bytes agree under strict independent
+and native structure checks: all are narrow, maximum 28 bytes. Individual widths
+also agree for 2,370 Int, 486 UInt32 and 198 Float spans at four bytes each, and
+3,468 Bool spans at zero. All 7,272 selected spans are accounted for; both copies
+are bounded before any Name decoding. Numeric values and Name identity remain
+unknown, as do original EOF/error behavior and restoration.
+
+Seven authored fixture suites and independent review pass. Review corrected an
+inherited success-receipt ordering defect before binding: returned JSON/counts
+and the final deadline must qualify before `success=true` is recorded. Tests reject
+malformed output with a failure receipt and no summary. A prior-gate test's wrong
+fixture member was also corrected before execution. All 1,017 bindings remain
+unchanged. Frozen helpers retain their exact older libraries; the current release
+library is unchanged. Evidence: `work/c009-common-scalar-values-20261013/`;
+summary SHA-256:
+`244e4919870e5b0ecf94826c791a67049823fcfa46e38fc774ff0fe5d3e22626`.
+
+The remaining observed common immediate values are 278 nested Array spans /
+3,902,784 bytes. Their counts, child grammar and meanings are not qualified by
+this scalar result. CA06 also supplies no populated Text/Name element coverage.
+
 ### C009 common-child binary widths — 2026-10-12, 23:04 UTC
 
 The fresh independently reviewed comparison reproduces all 486 top frames,
@@ -73,6 +99,16 @@ no containing function. This partial retained database does not establish caller
 absence or archive provenance. The reusable exporter compiles against Ghidra
 12.1.4/JDK 21; 24 wrapper boundary checks and full repository checks pass.
 See [bounded caller investigation](research/2026-10-12-control-caller-limit.md).
+
+A subsequent reviewed bounded PE candidate scan passes all 317 bindings and
+owned cleanup. Across 104,117,677 eligible offsets, it finds one absolute pointer
+at `0x145468198`, with no E8/E9 rel32 pattern match. This is a candidate, not an
+established vtable/caller; indirect and other addressing remain uncovered.
+Fifteen authored PE fixtures, thirteen independent regressions, twenty-three
+wrapper checks and two independent pre-entry checks pass. The reusable pure
+parser and fixtures now live under `tools/`, with hooks. Evidence:
+`work/control-caller-candidates-20261013/`, result SHA-256
+`e7a65b3efc7f0cc5210f526530bc0955b4b47024363b919f1d1289647ba56461`.
 
 ### C009 common-child headers — 2026-10-12, 22:15 UTC
 
@@ -818,7 +854,8 @@ supported, and no ICARUS performance or stability improvement has been measured.
    actor/inventory/construction/tame/mission fields and independent confirmation of
    the reported producing build remain unresolved. Preserve unknown fields and
    private inputs; no partial importer.
-2. Bind the concrete archive/outer framing path before promoting the experimental
+2. Resolve the exact `0x145468198` pointer candidate's bounded context/owner before
+   inferring the dispatcher caller. Bind the concrete archive/outer framing path before promoting the experimental
    control-body fields. Advance transport/control/authentication evidence and independently authored
    world-data feasibility; validate a small import before the heavy-world workload.
    The migrated original-server launcher requires explicit current sessions for
