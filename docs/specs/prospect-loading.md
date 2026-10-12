@@ -545,6 +545,14 @@ field identities, so it cannot alone assign distinct native width contracts by
 order or size. Six helper tests and independent review support the comparison:
 `work/c034-inherited-structs-20261012/`.
 
+A subsequent bounded header replay supplies exact descriptor identities for
+8,290 selected spans while reproducing all historical native top, own and
+inherited spans. Each of S01.F01/F02/F03 and OS01.F06/F07 occurs 1,658 times;
+their individual lengths agree with the respective 16/12/12/12/four-byte static
+transfer demands. Selection uses exact metadata, never position or observed
+size. No optional field is missing in this population. Numeric values and
+original payload EOF remain unqualified: `work/c034-field-widths-20261012/`.
+
 Matched-client generic tag/array functions now independently agree with the
 examined older version gates and shared-header branch. A subsequent concrete
 registration trace supports conditional C034 own-array tagged dispatch and a
