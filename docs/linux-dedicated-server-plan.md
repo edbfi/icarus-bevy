@@ -203,6 +203,80 @@ runtime game ID 1149460, and persistent data under `Icarus/Saved`. Pin container
 digest, Proton version, official build and configuration; disable automatic
 updates in experiments. Do not run its container installer unchanged on the host.
 
+## Autonomous execution and maintenance
+
+The user's 2026-10-12 instructions authorize autonomous progress, frequent
+Conventional Commits and feature-branch pushes, appropriate subagents, and periodic
+cleanup. Continue through implementation and verification; do not stop after
+proposing another plan or ask for approval of routine choices. A blocked experiment
+should yield a precise dependency and the next useful independent task. Existing
+target, privacy and isolation boundaries still apply. Historical approval records
+describe their original batches; they do not extend expired runtime deadlines.
+
+Use the Bevy and reverse-research skills listed above when their work is needed.
+Read relevant references selectively instead of loading the entire vendor package.
+The lead can assign GPT-6 Astra at high effort for ambiguous protocol/architecture
+work and GPT-6.1 Sol at medium or high effort for bounded implementation, tests and
+independent reviews. Adjust these choices to the task and available model IDs.
+Use supported identifiers such as `gpt-6-astra` and `gpt-6.1-sol`; when the tool
+requires it, use `fork_turns="none"` for explicit model/effort overrides and provide
+a self-contained task. Start with the lead and up to two workers; use another
+worker only for independent
+work that fits available slots and resources. Assign file ownership or separate
+worktrees; only the lead stages, commits and pushes integrated work. Review
+findings against real source and evidence before accepting them.
+
+For each coherent increment: implement, run relevant checks, update the existing
+status/specification when behavior or evidence changes, inspect the staged diff,
+commit with a Conventional Commit subject and matching `Signed-off-by`, then push
+the feature branch. A small related batch is acceptable; do not accumulate a day's
+validated work locally. Check Git status and remote state before changes, fetch
+before integration, and preserve collaborators' commits. The old no-push batch
+restriction is superseded. Leave `main` protected; never bypass hooks or disable
+CI to publish work. Report a failed push explicitly and continue useful local work
+while retaining a clear list of unpushed commits.
+
+The pre-existing 35 feature commits lack the sign-offs required by the newer PR
+policy. New commits must comply. Keep those historical commits intact and record
+the policy blocker before PR integration; do not rewrite history, invent attestations
+or weaken the policy merely to make a check green. A branch push does not resolve
+this PR gate. Register any PR worked on with T3 Code when its linking tools exist.
+
+Keep these documents authoritative, updating them in place:
+
+- This file: goal, order of work, constraints and release gates.
+- `implementation-status.md`: current tested behavior, failures and next actions.
+- `compatibility-matrix.md` and `bug-ledger.md`: evidence-backed coverage and defects.
+- `specs/` and dated `research/` reports: durable technical findings and provenance.
+
+Avoid overlapping roadmaps, generic agent-generated checklists and repeated
+session summaries. Keep temporary handoff prompts under `/tmp` only. Consolidate
+useful results into the documents above; retain dated reports as historical
+evidence and mark superseded planning instructions at the top. This replaces the
+old expectation of a separate `docs/overnight-report.md` with a maintained current
+checkpoint and the existing research reports.
+
+Perform a cleanup pass after each milestone or several completed increments:
+inspect pending changes, reconcile stale claims and links, stop/remove only owned
+finished experiments, and remove unreferenced reproducible scratch or abandoned
+generated duplicates after checking provenance references. Record significant
+removals in the commit or private case timeline. Retain primary evidence, inputs,
+hashes, failure reproductions and irreplaceable backups. Ignored does not mean
+disposable: never prune `reference-data/`, `icarus-orig/`, the original download,
+another agent's files, or historical evidence as routine cleanup. Do not run global
+Docker prune, blanket `git clean -fdx`, or delete data solely because it is old.
+
+Recheck host resources before heavy work. Start with two Cargo jobs and at most
+four CPU-heavy workers in total; serialize large builds, Ghidra and original-server
+runs when memory is tight. Target at most 10 GiB owned-job memory; defer heavy work
+below 3 GiB available RAM or 30 GiB free disk. Cap new case artifacts at 12 GiB and
+total batch disk growth including caches at 20 GiB, then reassess. For targeted
+Ghidra work, cap the heap at 4 GiB, use two CPUs, and limit each batch to 24 selected
+functions, 30 seconds per decompilation and 15 minutes overall. Bound every
+experiment and clean it up on timeout.
+Prefer a targeted experiment with a clear acceptance condition over repeating an
+unchanged failed environment or running broad analysis without a question.
+
 ## Milestones and exit criteria
 
 ### M0: Frozen baseline and evidence tracking

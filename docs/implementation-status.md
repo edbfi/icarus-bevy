@@ -1,27 +1,30 @@
 # Implementation status
 
 This is an independent server foundation, not yet an ICARUS-compatible server.
-No gameplay, protocol, authentication, world-data parity, or official-save import
-has been demonstrated. Reliability and performance targets remain unproven.
+One bounded stateless exchange has been observed against the original. Complete
+protocol interoperability, authentication, gameplay, world-data parity and
+official-save import have not been demonstrated. Release reliability and
+performance targets remain unproven. Last reconciled: 2026-10-12.
 
 ## Milestones
 
 | Milestone | Status | Evidence or next gate |
 | --- | --- | --- |
-| M0: reference baseline | In progress | 435 files hashed; build 25621760; isolated entry-map startup observed; authenticated startup and matched client pending |
+| M0: reference baseline | In progress | 435 files hashed; build 25621760; isolated entry-map startup observed; supplied heavy save preserved; its build pairing and matched client pending |
 | M1: original bug reproduction | Pending | Offline startup did not reproduce reported crashes; controlled workloads still required |
-| M2: interoperability/data feasibility | Pending | Requires protocol, platform and world-data evidence |
+| M2: interoperability/data feasibility | In progress, partial observations | Stateless exchange observed; authenticated protocol, world-data and import feasibility gates remain open |
 | M3: Bevy gameplay slice | In progress, foundation only | Rust 1.99.0 / Bevy 0.19.1 foundation tested; stock-client slice pending M2 |
 | M4: complete behavior | Pending | All required compatibility matrix entries must pass |
-| M5: migration/hardening | Pending | Official save format and failure scenarios unknown |
+| M5: migration/hardening | Pending, native hardening underway | Experimental envelope inspection and native fault coverage exist; real-save schema and migration fidelity remain unvalidated |
 | M6: optimization/qualification | Pending | Matched reference workloads and full release gates required |
 
 The 30 Hz development rate is provisional, not a discovered ICARUS property.
 Native snapshot version 1 stores authored foundation records; it is not the ICARUS
 save format. No official server bugs are marked reproduced or fixed.
 
-See the [full plan](linux-dedicated-server-plan.md) and
-[approved offline batch](research-authorization.md).
+See the [full plan](linux-dedicated-server-plan.md) for the active work order and
+autonomous execution policy. The October 4 authorization and checkpoint documents
+record historical research batches; the overnight runtime window has expired.
 
 ## Implemented and checked
 
@@ -34,9 +37,32 @@ See the [full plan](linux-dedicated-server-plan.md) and
 - Unsupported schemas and corrupt/missing manifests fail closed. Official-save
   import explicitly fails without accessing supplied paths.
 - SIGINT/SIGTERM final save and bounded shutdown; JSON lifecycle/status diagnostics.
-- 19 passing Rust tests, release build and native smoke run; full manual `prek`
-  checks passed. Separate process tests cover signals and acknowledged-save recovery
-  after SIGKILL. No physical power-loss, disk-full or long-soak qualification yet.
+- On 2026-10-12, the full manual `prek` suite, release build and bounded native
+  startup/save/shutdown smoke passed after integrating latest `main`. The suite
+  includes Rust tests, Clippy, formatting, authored helper tests and workflow checks.
+- Native fixes reject stale snapshots before publication and stop simulation on
+  terminal save-worker disconnect; regression evidence is in the
+  [bug ledger](bug-ledger.md). Injected publication failures preserve committed state.
+- The historical recovery campaign passed 24 cycles with 10,000 authored entities
+  (12 SIGKILL, 12 SIGTERM), preserving checksums and acknowledged state. Private
+  results/provenance: `work/icarus-overnight/native-recovery-02/`.
+- The historical synthetic soak completed 7,200.352 seconds with 100,000 entities,
+  719 save commits and verified final state; it reported no tick deadline misses.
+  Evidence: `work/icarus-overnight/native-soak.jsonl`, with the invocation and binary
+  provenance in `commands.jsonl`. It began at `cac76ec` before later persistence
+  changes, so it does not qualify the current revision or ICARUS gameplay.
+- The [snapshot measurement](research/2026-10-04-native-snapshot-performance.md)
+  documents improved native synthetic save/load cost after typed decoding. It is
+  not a comparison with the original server.
+- The real filesystem probe reached disk-full, but its wrapped-error recognition
+  failed before state-recovery/EACCES assertions. Private evidence:
+  `work/icarus-overnight/native-io-faults/probe.stderr` and `cleanup.json`; the
+  container was removed. Real filesystem fault qualification remains unfinished,
+  and physical power-loss and the required 72-hour runs remain untested.
+- Experimental [envelope inspection](specs/prospect-envelope.md),
+  [archive strings](specs/archive-string.md), [checksum](specs/network-checksum.md)
+  and the separate [Bevy loopback handshake lab](specs/stateless-handshake.md) have
+  authored tests. The production run command still has no game listener.
 - Active normal dependency graph excludes Bevy rendering/window/audio backends;
   release executable links only the platform loader, libc and libgcc_s on this host.
 - CI definition validates formatting, Clippy, tests, release build and headless smoke.
@@ -44,6 +70,15 @@ See the [full plan](linux-dedicated-server-plan.md) and
 
 ## Reference evidence
 
+- [Stateless handshake](specs/stateless-handshake.md): original-server challenge,
+  cookie echo and acknowledgement observed in isolation. Steam authentication was
+  inactive; this did not establish a stock-client or authenticated session.
+- [Checksum](specs/network-checksum.md): independent arithmetic matches one early
+  startup value, which is invalidated later. Active admission policy is unresolved.
+- [Prospect rejection](research/2026-10-04-prospect-rejection.md): missing/truncated
+  by-name inputs were rejected without an observed crash. The separate
+  [from-file failure path](research/2026-10-04-save-failure-output.md) remains a
+  static lead, not a reproduced original defect.
 - User-supplied heavy-world archive preserved on 2026-10-12 under ignored
   `reference-data/2026-10-04-heavy-save/`. The copy matches its source SHA-256;
   member CRC checks passed for 24 files (two JSON files and 22 backups). Private
@@ -68,6 +103,24 @@ See the [full plan](linux-dedicated-server-plan.md) and
   failed in isolation; the harness stopped and removed the container. No connected
   client tests are authorized yet.
 
-These checks demonstrate the authored foundation only. No original-server bug is
-claimed fixed, no save migration is supported, and no ICARUS performance or
-stability improvement has been measured.
+These results cover the authored foundation and the explicitly limited original
+observations above. No original-server bug is claimed fixed, no save migration is
+supported, and no ICARUS performance or stability improvement has been measured.
+
+## Next work and maintenance
+
+1. Fix wrapped errno recognition in `examples/io_fault_probe.rs`, then complete
+   bounded disk-full/retry/permission/reopen checks under a current lab scope.
+   Existing launchers bind to the expired overnight session; make new case/session
+   inputs explicit without changing historical records or bypassing guards.
+2. Characterize copies of the supplied save and backups, identify build/schema and
+   relationships, and determine justified parser bounds. Preserve raw player data.
+3. Advance transport/control/authentication evidence and independently authored
+   world-data feasibility; validate a small import before the heavy-world workload.
+
+Update this checkpoint and the existing plan/specifications as each step completes.
+Use frequent signed-off Conventional Commits and feature-branch pushes. Before PR
+integration, resolve the documented policy issue: 35 historical feature commits
+lack required sign-offs; preserve their history and keep the policy enabled.
+Clean only owned reproducible scratch and reconcile stale documentation at
+milestones. Historical reports and the private primary evidence remain retained.

@@ -33,12 +33,16 @@ entry-world maximum tick rate of 30 and an IpNetDriver listener after Steam fail
 Those observations do not promote gameplay timing or authenticated transport rows:
 no client connected and no playable prospect was loaded.
 
-## Partial static observations
+## Partial observations and experimental components
 
 | Subsurface | Status | Evidence and remaining gate |
 | --- | --- | --- |
 | Inner control dispatch and version comparison | Observed | [Negotiation notes](specs/control-negotiation.md); outer framing, callback policy and runtime fixtures unknown |
-| Prospect-loading control flow | Observed | [Loading notes](specs/prospect-loading.md); schema, command reachability and runtime failures unknown |
+| Prospect-loading control flow | Observed | [Loading notes](specs/prospect-loading.md) and [by-name rejection runs](research/2026-10-04-prospect-rejection.md); from-file runtime reachability and complete schema remain unresolved |
+| Short stateless handshake | Observed; independent loopback lab implemented | [Handshake notes](specs/stateless-handshake.md); original challenge/echo/ack observed with authentication inactive; stock-client admission pending |
+| Default network checksum | Experimental primitive implemented; early value observed | [Checksum notes](specs/network-checksum.md); final active inputs/callback policy unresolved |
+| Archive strings | Experimental strict subset implemented | [String codec](specs/archive-string.md); authored fixtures pass; actual network flags and original round trips pending |
+| Prospect envelope | Experimental read-only inspector implemented | [Envelope notes](specs/prospect-envelope.md); authored fixtures pass; supplied save characterization and complete import pending |
 
 These observations apply only to tool build 25621760. They do not promote the
 complete transport, authentication or official-save-import surfaces above.
