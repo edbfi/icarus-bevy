@@ -131,6 +131,13 @@ Exact independent/native spans and input fixity agree; three authored helper
 tests pass. Static and executed evidence: `work/component-c009-20261012/` and
 `work/native-c009-top-20261012/`. Nested contracts and values remain open.
 
+The exact C034 own Name property now links through its final factory/vtable and
+concrete archive virtual to the established FString reader. No separate wire
+numeric-index transfer appears in that wrapper; internal name construction is
+not yet modeled. Original normalization and failure behavior remain broader than
+the native strict codec. Independent static review passes without reading private
+name values: `work/c034-name-contract-20261012/`.
+
 A live SSH fetch reconciled the stale remote cache: all checkpoint commits through
 `b55e4ce` were already delivered. No client files were removed and no original
 runtime or connected-client experiment has started.
