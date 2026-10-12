@@ -616,9 +616,25 @@ The four immediate-parent Array element schemas and one standalone Struct now
 have exact older-build descriptor/getter/factory joins. All five conditionally
 select tagged framing, with null parents and disabled native/post callbacks.
 Their 15 optional immediate fields comprise four Int, three Name, two Str, five
-Bool and one enum-backed Byte; none is a recursive Struct or Array. Population
-bounds and child-header comparisons remain pending. Independent static review:
+Bool and one enum-backed Byte; none is a recursive Struct or Array. Independent static review:
 `work/c009-parent-children-20261012/`.
+
+A separate preflight reproduces every prior native top span before selecting
+these exact five parent fields. Both copies contain 243 of each, with no optional
+omissions: 2,430 selected payloads and 741,404 bytes in total. Per-copy bounds are:
+
+| Child | Total payload bytes | Minimum | Maximum |
+| --- | ---: | ---: | ---: |
+| PA01 Array | 191,290 | 692 | 950 |
+| PA02 Array | 20,004 | 81 | 188 |
+| PA03 Array | 22,599 | 93 | 93 |
+| PA04 Array | 23,085 | 95 | 95 |
+| PS01 Struct | 113,724 | 468 | 468 |
+
+All 382 bound files remain unchanged. This selection reads no child headers,
+array counts or leaf values; it establishes bounds for the next comparison and
+requires no increase to the native array byte cap. Evidence:
+`work/native-c009-parent-selection-20261012/`.
 
 That case corrects the earlier own-child dimension provenance: the common
 property factory reads descriptor offset `+0x20`, including for Bool. Its

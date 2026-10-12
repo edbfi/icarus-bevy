@@ -208,8 +208,9 @@ Use this dataset in the next work sequence:
    all 486 selected Int arrays now match native prefix/element spans, including
    four opaque elements. The selected Str structures and Int/Bool widths also
    pass. The next five immediate-parent child schemas now have conditional tagged
-   contracts with 15 optional fields and no immediate recursion. Establish exact
-   population bounds, then compare their child headers while retaining unresolved
+   contracts with 15 optional fields and no immediate recursion. Exact selection
+   bounds all 2,430 child payloads to at most 950 bytes. Compare their child
+   headers while retaining unresolved
    value meaning and runtime compatibility.
    Retain the lack of populated
    inherited-array coverage.
