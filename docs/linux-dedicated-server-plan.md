@@ -206,7 +206,9 @@ Use this dataset in the next work sequence:
    the reviewed 31-field contract and native spans under an explicit 71,956-byte
    comparison cap. Its 972 own child bodies now match immediate native spans;
    all 486 selected Int arrays now match native prefix/element spans, including
-   four opaque elements. Qualify the remaining selected Str/Int/Bool leaves next.
+   four opaque elements. The selected Str structures and Int/Bool widths also
+   pass. Recover the next immediate-parent child contracts while retaining
+   unresolved value meaning and runtime compatibility.
    Retain the lack of populated
    inherited-array coverage.
    Exact C034 own Name values also pass strict native/independent structural

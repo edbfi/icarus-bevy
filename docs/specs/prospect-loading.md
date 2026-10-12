@@ -580,8 +580,9 @@ bytes. Every optional descriptor appears in this population.
 The release helper preserves borrowed spans and passes three authored tests,
 including exact bounds, truncation and atomic failure. Independent review,
 native/JS span equality and unchanged input hashes support the result:
-`work/native-c009-top-20261012/`. This qualifies top framing only; child dispatch,
-numeric values, original load success and newer-build equivalence remain open.
+`work/native-c009-top-20261012/`. That run qualified top framing only, leaving
+child dispatch and values to subsequent work. Original load success and
+newer-build equivalence remain open.
 
 A subsequent static case resolves both own child schemas as conditionally
 tagged: S02 has optional `ArrayProperty<IntProperty>` and Bool fields; S01 has
@@ -591,15 +592,25 @@ is conditional on the examined archive mode and successful nonnegative-count
 execution; original negative-count rejection and enclosing EOF are not proved.
 Tagged Bool takes its value from the header and demands zero payload bytes.
 The Int and Str targets join the existing scalar/FString contracts. These static
-results do not yet qualify child populations: `work/c009-own-children-20261012/`.
+results alone do not qualify child populations: `work/c009-own-children-20261012/`.
 
 The subsequent header comparison qualifies all 972 own child bodies across both
 copies (134,182 bytes, 1,944 fields), after reproducing the complete parent result.
 Each copy has 243 S02 bodies totaling 30,626 bytes and 243 S01 bodies totaling
 36,465 bytes. No optional field is missing. The S02 array payloads total 980 bytes
 per copy, with individual sizes from four to 12 bytes; count and element bytes
-remain opaque. Exact native/independent child spans, unchanged inputs and two
+were left opaque in that header-only run. Exact native/independent child spans,
+unchanged inputs and two
 authored helper tests support the result: `work/native-c009-own-20261012/`.
+
+Separate leaf comparisons then qualify all 486 exact S02 Int arrays, including
+four opaque elements, and all 486 S01 Str values (14,124 bytes). Native and
+independent string structure/consumption agree under the strict codec policy.
+All 486 S01 Int spans individually have four bytes; all 486 S02 Bool spans have
+zero payload bytes. Each run first reproduces the frozen parent/child spans and
+joins exact descriptors. Array elements, string meanings and numerical values
+remain uninterpreted. Evidence: `work/native-c009-int-array-20261012/execution-v2/`
+and `work/c009-own-leaf-values-20261012/`.
 
 ## Independent replacement requirements
 
