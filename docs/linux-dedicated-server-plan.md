@@ -7,7 +7,7 @@ target activity by itself.
 
 **Resumed at the user's request on 2026-10-12.** The
 [continuation checkpoint](implementation-status.md#continuation--2026-10-12)
-records Float/Text qualification, bounded C034 observations and client debug identity.
+records native C034 own-header qualification, its array contract and targeted client symbols.
 The prior pause does not extend historical runtime authorization windows.
 
 ## Goal and agreed constraints
@@ -182,8 +182,11 @@ Use this dataset in the next work sequence:
    older-build top descriptors, zero trailers and exact EOF (save-triage E-038).
    A separately scoped own-struct observation now matches eight immediate
    headers in all four selected bodies, including Float (E-039). Values and
-   deeper children remain opaque. Next independently qualify the updated native
-   reader and recover the own-array contract before reading its elements.
+   deeper children remain opaque. Fresh eleven-kind native comparison now matches
+   every own header/value/terminator span. The own-array tagged contract and two
+   optional immediate fields are recovered; next compare bounded shared headers
+   and elements with both values opaque. Matched-client symbol reconnaissance
+   supplies 12 independently checked anchors for a subsequent semantic comparison.
    Eleven distinct prospect payloads and seven member tuples are observed, but
    structures, inventories, tames, missions and full ownership fidelity remain
    unknown. Target component-specific byte dispatch and schemas, compare backed-up

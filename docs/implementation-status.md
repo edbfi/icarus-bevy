@@ -8,8 +8,29 @@ performance targets remain unproven. Last reconciled: 2026-10-12.
 
 ## Continuation — 2026-10-12
 
-The user requested continuation after the paused handoff. No client files were
-removed and no original runtime or connected-client experiment has started.
+The invoked continuation has now qualified the current native reader on all four
+selected C034 own bodies. Every header/value/terminator span agrees with the
+independent probe, including Float: 32 fields across 58,356 bytes, exact EOF and
+unchanged input hashes. A fresh helper binds the eleven-kind library and immutable
+source snapshot; six authored helper tests and strict hash-verifying case review
+pass. The full manual check suite also passes. No production parser change was
+needed. Evidence:
+`work/native-c034-own-20261012/` (E-001–E-004).
+
+Two independent static tracks also completed. The older C034 own-array child
+selects tagged framing under the reviewed MemoryArchive522 path, with two
+optional immediate fields (Struct and Float),
+a signed count and one shared Struct header even when empty. Its Struct child
+matches prior N02; memory size is not serialized width. Contract and independent
+review: `work/c034-own-array-continuation-20261012/`. No array payload was entered.
+Matched-client reconnaissance mapped 12 archive/tag/version/serializer symbols,
+with PDB/PE section agreement and independent executable-byte checks. Nine are
+unwind-table starts; three are explained leaf/tail functions. Evidence:
+`work/client-static-continuation-20261012/`. Symbol locations do not prove behavior.
+
+A live SSH fetch reconciled the stale remote cache: all checkpoint commits through
+`b55e4ce` were already delivered. No client files were removed and no original
+runtime or connected-client experiment has started.
 
 The implemented Float/Text increment is `af8cf48`, following the previously
 qualified struct-array increment `93ef9e9`, on `feat/native-server-foundation`.
@@ -56,7 +77,7 @@ committed evidence below:
 | `c028-array-children-20261012/` | 17 optional immediate array-element fields; independently verified Float/Text header contracts in `static/header-kind-contracts-v2.json` (SHA-256 `17abd2de90aea26129d13cc075c7a6268eef41cf653f14dcca29928433b97e09`). |
 | `c028-array-descendants-20261012/` | D01 uses tagged framing with eight optional fields and four consumed inner helpers. D02 independently demands four four-byte native transfers on success; no exact EOF guarantee. Deeper D01 types remain unresolved. Strict review passes. |
 | `component-c034-20261012/` | Exact older class registration/vtable resolves to the same reviewed load/serialize/postload targets as C028. Optional top schema has 21 fields: seven Struct, two Int, seven Array, two Name, one Enum, one Str, one Bool. Four supplied bodies match this top schema under bounded comparison (save case E-038); nested payloads remain opaque. |
-| `c034-own-struct-20261012/` | Own struct `0x145ee11d0` selects tagged framing; eight optional logical fields are Array, Bool, three Int, Struct, Float and Name. E-039 independently observes all eight in four selected own bodies, including Float; no native comparison yet. Struct child matches earlier N02 (`0x145efe320`, successful 12-byte native demand); array child `0x145ee1220` is only identified. Neither child payload was entered. |
+| `c034-own-struct-20261012/` | Own struct `0x145ee11d0` selects tagged framing; eight optional logical fields are Array, Bool, three Int, Struct, Float and Name. E-039 independently observes all eight in four selected own bodies, including Float; fresh native exact-span comparison now passes. Struct child matches earlier N02 (`0x145efe320`, successful 12-byte native demand); array child `0x145ee1220` now has a separate tagged/two-field contract. Neither child payload was entered. |
 
 Continue in this order within the existing plan:
 
@@ -72,15 +93,15 @@ Continue in this order within the existing plan:
 3. Own-struct immediate-header observation is complete (E-039): 572/28,606 bytes
    per selected minimum/maximum, each with eight headers and 449 header/terminator
    bytes, exact EOF and no missing optional descriptors in these samples.
-   Independently qualify the native reader using a fresh helper linked to the
-   eleven-kind library; frozen nine-kind helpers cannot establish Float support.
-   Recover the own-array child contract before entering its payload. The
+   Fresh eleven-kind native qualification now passes on every selected span.
+   The own-array static contract and independent review are complete; prepare its
+   bounded shared-header/element comparison next, keeping both values opaque. The
    existing component batch helper's 8 MiB transport cap cannot fit all C034
    records from both copies together; use separate per-copy batches or a newly
    reviewed helper rather than changing frozen evidence.
-4. Client executable/manifest/PDB identity qualification is complete. Open a
-   separate bounded scope for targeted matched-client static comparison, including
-   import reconnaissance before function-level analysis. The older server
+4. Client identity and targeted import/symbol reconnaissance are complete. Use the
+   12 qualified anchors for a bounded semantic comparison of tag and array readers.
+   The older server
    remains build 25621760; do not transfer its addresses or behavior assumptions
    blindly to client build 25793767. No original runtime, client session or network
    experiment was started in this handoff.
