@@ -18,7 +18,7 @@ Its full manual suite, release build, independent review and selected supplied-a
 qualification passed. The project still cannot import an official world or admit
 an authenticated stock client.
 
-The pending Float/Text change has completed root integration and independent
+Float/Text support (`af8cf48`) has completed root integration and independent
 source review against the hash-bound frozen contract, the full manual suite and
 release build. Both supplied copies preserve their prior envelope/root/recorder
 outputs and input hashes. GUID, truncation, arbitrary opaque payload and privacy
@@ -47,28 +47,27 @@ committed evidence below:
 
 | Case | Completed result / next boundary |
 | --- | --- |
-| `save-triage-20261012/` | E-036: all 9,058 C028 arrays in both copies are empty; 848,864 count/shared-header bytes. E-037: one native batch matches the original 28 empty arrays / 2,624 bytes. Review 28 passes with 37 evidence entries and zero issues. No populated-element coverage. |
+| `save-triage-20261012/` | E-036: all 9,058 C028 arrays are empty. E-037: native framing matches 28 selected empty arrays. E-038: four C034 extrema match 21 top headers each, totaling 71,388 bytes with zero trailers/exact EOF. Review 30 passes with 38 evidence entries and zero issues. Nested C034 values remain opaque. |
 | `c028-array-children-20261012/` | 17 optional immediate array-element fields; independently verified Float/Text header contracts in `static/header-kind-contracts-v2.json` (SHA-256 `17abd2de90aea26129d13cc075c7a6268eef41cf653f14dcca29928433b97e09`). |
 | `c028-array-descendants-20261012/` | D01 uses tagged framing with eight optional fields and four consumed inner helpers. D02 independently demands four four-byte native transfers on success; no exact EOF guarantee. Deeper D01 types remain unresolved. Strict review passes. |
-| `component-c034-20261012/` | Exact older class registration/vtable resolves to the same reviewed load/serialize/postload targets as C028. Optional top schema has 21 fields: seven Struct, two Int, seven Array, two Name, one Enum, one Str, one Bool. No supplied C034 body has been read. Strict review passes. |
+| `component-c034-20261012/` | Exact older class registration/vtable resolves to the same reviewed load/serialize/postload targets as C028. Optional top schema has 21 fields: seven Struct, two Int, seven Array, two Name, one Enum, one Str, one Bool. Four supplied bodies match this top schema under bounded comparison (save case E-038); nested payloads remain opaque. |
 | `c034-own-struct-20261012/` | Own struct `0x145ee11d0` selects tagged framing; eight optional logical fields are Array, Bool, three Int, Struct, Float and Name. Struct child exactly matches earlier N02 (`0x145efe320`, successful 12-byte native demand); new array child `0x145ee1220` is only identified. Strict review passes; no supplied-body observation. |
 
 Continue in this order within the existing plan:
 
 1. Float/Text source review, full checks, release build and supplied-copy regression
    qualification are complete. Preserve historical helpers and their source snapshots.
-2. Review the **prepared-only** C034 probe at
-   `work/save-triage-20261012/component-c034-headers/` (`PREPARED.md`, `probe.cjs`,
-   `run-once.cjs`, `prepared.sha256`). No session or execution exists. It validates
-   both outer archives before selecting first minimum/maximum records per copy:
-   four bodies, each at most 31,864 bytes, combined cap 127,456 bytes (expected
-   71,388). It compares 21 exact top headers and a zero trailer/EOF, keeping all
-   struct/array payloads opaque. Its current strict sample policy rejects missing
-   descriptors; that is not proof of universally mandatory fields. Root has
-   reviewed the static class proof, but **not this prepared probe**.
-3. Bind a fresh bounded scope/session before executing that private probe. Reuse
-   the save case's preserved input hashes and review workflow. Only then select
-   deeper struct/array observations using the completed static contracts. The
+2. C034 top-header probe completed once after root/independent review and fresh
+   scope/session binding. The wrapper now enforces reviewed preparation hashes,
+   session/scope/prior-summary fixity and sufficient time immediately before
+   launch. Original prepared files remain in `component-c034-headers/prepared-v1/`.
+   Each minimum/maximum body has 21 fields, 1,451 header/terminator bytes,
+   2,375/30,409 opaque bytes and a zero four-byte trailer. Input hashes are
+   unchanged. Strict sample presence is not universal mandatory-field evidence.
+3. Select deeper struct/array observations using the completed static contracts
+   under a new reviewed scope. The own-struct candidate's conservative enclosing
+   bounds are 2,375/30,409 bytes per selected minimum/maximum parent and 65,568
+   combined; its actual width is unobserved. Native C034 comparison remains open. The
    existing component batch helper's 8 MiB transport cap cannot fit all C034
    records from both copies together; use separate per-copy batches or a newly
    reviewed helper rather than changing frozen evidence.
