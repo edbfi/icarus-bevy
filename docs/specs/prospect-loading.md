@@ -651,6 +651,17 @@ unchanged. Eight native helper tests, three independent parser checks and
 independent review support `work/native-c009-parent-headers-20261012/`.
 Leaf structures, widths and meanings were not checked in that run.
 
+A separate leaf comparison now qualifies 1,464 exact string-framed values totaling
+25,416 bytes: PA02 Name and PS01 Str, Name and enum-backed Byte. Each copy has 489
+narrow and 243 zero-count empty encodings. Native strict decoding and independent
+structure/consumption agree, including exact comparator EOF. All 7,886 selected
+Int payloads individually have four bytes and all 2,430 Bool payloads have zero.
+Every prior parent/selection/child result reproduces before exact descriptor
+selection, and all 601 bindings remain unchanged. Six native helper tests and
+four independent structural checks pass: `work/c009-parent-leaf-values-20261012/`.
+PA03/PA04 still provide no leaf occurrences. No text, numeric values, enum lookup
+or equality of gameplay state is inferred from these structural results.
+
 That case corrects the earlier own-child dimension provenance: the common
 property factory reads descriptor offset `+0x20`, including for Bool. Its
 `+0x24` word supplies Bool field size. All six affected Bool descriptors have

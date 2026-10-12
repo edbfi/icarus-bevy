@@ -211,8 +211,10 @@ Use this dataset in the next work sequence:
    contracts with 15 optional fields and no immediate recursion. Exact selection
    bounds all 2,430 child payloads to at most 950 bytes. Their native child-header
    comparison now passes 3,946 array elements and 486 standalone streams with
-   11,780 fields. Qualify selected leaves while retaining unresolved value meaning
-   and runtime compatibility.
+   11,780 fields. Their 1,464 selected string-framed leaves also match strict native
+   consumption; 7,886 Int and 2,430 Bool spans match individual widths. Continue
+   top-level scalars and unresolved common-ancestor children while retaining
+   unresolved value meaning and runtime compatibility.
    Retain the lack of populated
    inherited-array coverage.
    Exact C034 own Name values also pass strict native/independent structural
