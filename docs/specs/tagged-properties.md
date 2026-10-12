@@ -144,8 +144,8 @@ as framing; class resolution and semantic validity are not implied.
 Input is bounded to 32 MiB, recorders to 16,384, total fields to 65,536 and header or
 class strings to 1,024 units. Checks precede count-driven allocations. Parsed
 record/field collections expose immutable slices, preserving the validity of
-summary counts. Neither raw containers nor class values are serializable or
-debug-printable; the CLI exposes only summaries and publishes no partial result
+summary counts. Raw containers have no `Serialize` or `Debug` implementation;
+the CLI exposes only summaries and publishes no partial result
 when a nested check fails.
 
 The release Rust reader matches every independent recorder aggregate on both
@@ -157,3 +157,21 @@ pass. Qualification provenance and source snapshots: save-triage E-018,
 `work/save-triage-20261012/recorder-native/` and
 `work/native-recorders-20261012/`. Strict case review verifies the evidence graph
 and artifact hashes with zero errors/warnings.
+
+## Private class inventory and version scalar
+
+A bounded follow-up (save-triage E-019) identifies 38 distinct class strings in the
+current copy and 36 in the backup, with all 36 shared identifiers appearing at
+equal frequencies. Two additional identifiers account for three current entries.
+All strings have script-class path syntax. That classification does not establish
+native implementation, available serializers or independence from packaged data.
+Exact strings stay in the private case; neutral IDs are local to this inventory.
+Six shared classes differ in aggregate opaque byte length, which alone does not
+identify a semantic state change or establish chronology.
+
+The known root `Version` field is an index-zero `IntProperty` with exactly four
+payload bytes and signed value **2** in both copies. This is a serialization
+scalar, not the producing Steam build ID. It does not replace user-reported build
+25793767 or verify the older executable's migration behavior. All other root
+values and component byte contents remain uninterpreted. Independent aggregate,
+privacy and source-fixity checks and strict case review pass.

@@ -157,7 +157,7 @@ record historical research batches; the overnight runtime window has expired.
   by-name inputs were rejected without an observed crash. The separate
   [from-file failure path](research/2026-10-04-save-failure-output.md) remains a
   static lead, not a reproduced original defect.
-- [Inner save dispatch](specs/prospect-loading.md): thirty-two targeted exports plus
+- [Inner save dispatch](specs/prospect-loading.md): thirty-six targeted exports plus
   metadata and flag tracing identify the older build's reflected state/header,
   recorder blobs, version-dependent callbacks and concrete tagged-property reader.
   Object offsets are not disk offsets. Root tag framing and its archive-version
@@ -167,6 +167,16 @@ record historical research batches; the overnight runtime window has expired.
   counts. These findings
   do not establish newer-build migration.
   Static evidence and exact commands: `work/save-schema-20261012/`.
+- Recorder restoration resolves the saved class string and invokes a component
+  load method. The base method builds a memory reader over opaque `BinaryData`
+  and calls component serialization. Its flags, derived overrides and complete
+  byte contract remain unresolved; this is a concrete next static target, not a
+  claim that component contents are now decoded.
+- A private class-string inventory finds 38 identifiers in the current copy and
+  36 in the backup, all with script-class path syntax; concrete implementation and
+  dispatch coverage remain unverified. Both known root `Version` integers are 2,
+  separate from the user-reported Steam build. Exact identifiers remain private
+  (save-triage E-019); no component byte contents were interpreted.
 - Supplied archive remains preserved under ignored `reference-data/`; all 24 file
   sizes, CRCs and SHA-256 values match the private inventory. Read-only inspection
   found twelve UTF-16LE prospect envelopes and twelve identical small UTF-8 tracker
