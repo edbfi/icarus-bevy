@@ -295,6 +295,32 @@ Independent static follow-up in `work/c028-structs-20261012/` resolves the six
 direct struct types to tagged serialization under the concrete older-build archive
 flags, including one deferred operations registration. Six distinct types share
 four operations tables; shared operations do not make their schemas identical.
-This supports further nested-framing research only. Child fields, array-element
-schemas, runtime migration and newer-build equivalence remain unresolved, and no
-nested value decoding is implied by these component checks.
+Their immediate metadata contains 16 optional fields, including a `UInt32Property`
+whose type is verified through the concrete factory and name getter. Three child
+struct fields select binary/native serialization, so the tagged contract does not
+extend recursively to every descendant. Array-element schemas, runtime migration
+and newer-build equivalence remain unresolved.
+
+### Selected nested struct streams
+
+The initial eight-kind probe stopped at an unsupported S06 header and emitted no
+successful result (save-triage E-030). A separate equality-only check identified
+`UInt32Property` at that exact offset (E-031). The revised nine-kind scan then
+framed all six direct struct payloads in each of the four selected C028 records,
+after validating both complete outer payloads and all four parent header sets
+(E-032). Every nested sequence ends in `None` and exact EOF, without an object
+trailer.
+
+| Neutral struct ID | Fields | Total bytes | Headers and terminator | Opaque values |
+| --- | ---: | ---: | ---: | ---: |
+| S01 | 3 | 253 | 213 | 40 |
+| S02 | 7 | 343 | 318 | 25 |
+| S03, S04, S05, each | 1 | 48 | 48 | 0 |
+| S06 | 3 | 168 | 164 | 4 |
+
+These dimensions occur in each selected parent: 24 nested sequences total,
+64 fields and 3,632 bytes, divided into 3,356 header/terminator bytes and 276 opaque
+value bytes. One bounded native batch using the release `read_root` API matches
+all 24 sequences and their aggregates, with unchanged input hashes (E-033).
+This is framing agreement only; exact child metadata comparison,
+grandchild encoding, scalar semantics and world reconstruction are separate steps.

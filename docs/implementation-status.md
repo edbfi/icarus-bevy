@@ -224,8 +224,13 @@ record historical research batches; the overnight runtime window has expired.
   in this class: every header set agrees, and one native batch independently
   matches 29,762 fields across 4,326,044 body bytes with exact boundaries and
   unchanged input hashes (E-028/E-029). Static contracts select tagged framing
-  for six struct fields, but child schemas, seven array element schemas, values
-  and newer-build semantics remain unresolved. Private cases:
+  for six struct fields and recover 16 optional child descriptors. A separate
+  probe, extended after identifying `UInt32Property`, frames all 24 direct struct
+  payloads in the four selected parents: 64 fields and 3,632 bytes (E-030–E-032).
+  A native batch matches all 24 sequences with unchanged source hashes (E-033).
+  Three grandchild structs take binary/native paths and remain opaque. Child
+  metadata agreement, seven array element schemas, values and newer-build semantics
+  remain unresolved. Private cases:
   `work/component-c028-20261012/` and `work/c028-structs-20261012/`.
 - A private class-string inventory finds 38 identifiers in the current copy and
   36 in the backup, all with script-class path syntax; dispatch work above covers
