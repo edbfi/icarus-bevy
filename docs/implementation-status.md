@@ -155,6 +155,15 @@ record historical research batches; the overnight runtime window has expired.
   bounded stdin qualification reports only aggregates, with unchanged input hashes
   and no raw body artifact. Full manual checks and code review pass. Evidence:
   save-triage E-023 and `work/native-component-20261012/`.
+- A caller-selected tagged struct-array API validates a count, mandatory shared
+  struct header and exactly that many variable-length element streams. It bounds
+  input to 64 KiB, elements to 4,096 and fields per element to 256, preserving
+  immutable borrowed spans and reporting only aggregate counts/bytes. Six authored
+  tests, full manual checks, release build and code review pass. One bounded native
+  batch matches all 28 selected supplied arrays: 2,624 count/shared-header bytes
+  with exact EOF, unchanged source hashes and no exported body bytes (E-037).
+  All are empty, so populated elements have authored-test coverage only. The API
+  does not recognize schemas, interpret values or change CLI inspection.
 - Active normal dependency graph excludes Bevy rendering/window/audio backends;
   release executable links only the platform loader, libc and libgcc_s on this host.
 - CI definition validates formatting, Clippy, tests, release build and headless smoke.
@@ -228,10 +237,20 @@ record historical research batches; the overnight runtime window has expired.
   probe, extended after identifying `UInt32Property`, frames all 24 direct struct
   payloads in the four selected parents: 64 fields and 3,632 bytes (E-030–E-032).
   A native batch matches all 24 sequences with unchanged source hashes (E-033).
-  Three grandchild structs take binary/native paths and remain opaque. Child
-  metadata agreement, seven array element schemas, values and newer-build semantics
-  remain unresolved. Private cases:
+  All 64 observed child headers match their optional descriptors (E-034); no fields
+  are missing in these samples, without making them mandatory in other saves.
+  Three grandchild structs take binary/native paths and remain opaque. Static
+  contracts establish their successful 16/12-byte transfer demand and tagged
+  framing for seven array element types, with 17 optional immediate fields.
+  All 28 arrays in the four selected parents are empty; their mandatory shared
+  headers and exact boundaries pass independent inspection (E-035). This provides
+  no populated-element coverage. The wider metadata inventory finds all 9,058
+  arrays in this class empty across both copies, totaling 848,864 count/shared-header
+  bytes with no element payloads (E-036). Deeper child encoding, values and newer-build
+  semantics remain unresolved. Private cases:
   `work/component-c028-20261012/` and `work/c028-structs-20261012/`.
+  Further contracts: `work/c028-binary-children-20261012/` and
+  `work/c028-arrays-20261012/` and `work/c028-array-children-20261012/`.
 - A private class-string inventory finds 38 identifiers in the current copy and
   36 in the backup, all with script-class path syntax; dispatch work above covers
   two selected classes, leaving the others unverified. Both known root `Version` integers are 2,
@@ -252,8 +271,10 @@ record historical research batches; the overnight runtime window has expired.
   deferred until it is available under a concrete scope. Continue independent work.
   The user has offered client files for reference analysis. Prepared ignored intake:
   `icarus-client-orig/25793767/`, initially requesting `Icarus/Binaries/Win64/` and
-  the matching Steam app manifest. No files have been received or build identity
-  verified yet. This can support matched-build static comparison; it does not
+  the matching Steam app manifest. Files began arriving under Steam's `downloading`
+  directory on October 12. At inspection, the manifest targets 25793767 but reports
+  installed build 0 and an incomplete download; no binary identity is qualified
+  yet. This can support matched-build static comparison; it does not
   replace live Windows-client tests or require packaged assets for this first pass.
 - [Inventory](research/2026-10-04-reference-inventory.md): hashed original baseline.
 - [Static inspection](research/2026-10-04-static-baseline.md): executable identity,

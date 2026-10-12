@@ -8,6 +8,7 @@ pub mod component;
 pub mod handshake;
 pub mod handshake_lab;
 pub mod recorders;
+pub mod struct_array;
 pub mod tagged;
 
 /// Reflected CRC-32 of zero-extended UTF-16 units in little-endian order.
