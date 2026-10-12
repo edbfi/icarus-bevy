@@ -662,6 +662,17 @@ four independent structural checks pass: `work/c009-parent-leaf-values-20261012/
 PA03/PA04 still provide no leaf occurrences. No text, numeric values, enum lookup
 or equality of gameplay state is inferred from these structural results.
 
+A separate post-migration retry qualifies eleven exact top scalar descriptors
+after reproducing all 486 top frames. Strict native/independent Name/Str/Enum
+structure agrees on 3,402 spans and 136,170 bytes, comprising 2,916 narrow and
+486 zero-count empty encodings. Maximum selected string span is 121 bytes.
+All 1,458 selected Int spans individually have four bytes and all 486 Bool spans
+zero; no optional descriptor is absent in these samples. All 573 fresh bindings
+remain unchanged. Evidence: `work/c009-top-leaf-values-20261012/execution-v3/`.
+The failed original accumulator attempt and unexecuted v2 tooling rejection are
+preserved separately. This qualifies strict structure/width only, leaving text,
+numerical meaning, enum resolution and runtime restoration unknown.
+
 The remaining six common-ancestor Structs and seven arrays now have exact retained
 descriptor/getter/schema joins to the earlier C028/C034 contracts. A separate
 top-header replay selects all 6,318 payloads across both copies, totaling 4,732,878

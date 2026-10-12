@@ -20,7 +20,49 @@ locked reinstallation and provider checks. This tooling change does not resume
 the research paused below, qualify the pending v2 retry, or extend historical
 authorization windows. Private inputs, frozen cases and evidence remain retained.
 
-### Paused checkpoint — 2026-10-12, 21:36 UTC
+### Resumed scalar qualification — 2026-10-12, 22:02 UTC
+
+The user submitted the execution continuation after the REA migration. The
+preserved v2 retry passed final source review but could not execute: its wrapper
+and builder referenced the removed guard. Of its 538 historical bindings, 537
+still matched; the missing tooling file was recovered from Git into an immutable
+historical snapshot for comparison only. Neither old guard nor initializer ran.
+V1 failure receipts and v2 preparation/rejection remain preserved.
+
+A separate reviewed `execution-v3/` uses the project-owned offline scope
+validator, fresh authorization and a truthful fifteen-minute session. The wrapper
+withholds output until process, deadline and complete pre/post fixity checks pass.
+Review caught and corrected an intermediate post-hashing deadline defect before
+binding or execution. Three scope tests and eight source-extracted wrapper checks
+pass, alongside the original orchestration and decoder fixture tests.
+
+The executed retry reproduced all 486 native top frames and 6,781,758 bytes before
+entering eleven exactly joined scalar descriptors. Native and independent strict
+structure agree on 3,402 Name/Str/Enum spans totaling 136,170 bytes: 2,916 narrow
+and 486 zero-count empty encodings, maximum span 121 bytes. All 1,458 selected Int
+spans are four bytes and all 486 Bool spans zero. No optional descriptor is absent
+in these samples. All 573 new bindings remained unchanged. Evidence:
+`work/c009-top-leaf-values-20261012/execution-v3/`; summary SHA-256
+`f47801ede31b8c2a78efaad514c708362edd1758560c80f19318f144e7b90c47`.
+No text/numeric meanings, enum lookup, restoration or import is qualified.
+
+Live source/library remained unchanged throughout the retry. Before the next API
+increment, complete prior binding receipts and a source/test/library snapshot were
+retained under `work/array-limit-prechange-20261013/`. Historical receipts that
+bind earlier live revisions remain historical; they are not relabeled as current.
+The current common selection's 776 live bindings still match, with its sole removed
+tool represented by the same exact historical snapshot.
+
+The upstream stable manifest confirms Rust 1.99.0. Live official sparse-index
+metadata confirms current pinned direct versions, including Bevy 0.20.0,
+SHA-2 0.11.1 and TOML 1.1.8. No upgrade was needed. The crates.io JSON endpoints
+returned HTTP 403; raw sparse-index receipts and selection limitations are retained
+under `work/dependency-recheck-20261012/`.
+
+### Historical paused checkpoint — 2026-10-12, 21:36 UTC
+
+This subsection records the pause state; the resumed qualification above
+supersedes its pending scalar-review/execution instructions.
 
 Paused at the user's request for a new-chat handoff. Workers were interrupted;
 no research probe, build or original-server process remains running. Completed
@@ -661,8 +703,7 @@ supported, and no ICARUS performance or stability improvement has been measured.
 
 ## Next work and maintenance
 
-1. Finish independent review and fresh execution of the preserved top-scalar v2
-   retry described above. Then implement/test the explicit struct-array byte-limit
+1. Implement/test the explicit struct-array byte-limit
    API and qualify common-ancestor child headers within measured bounds. Continue
    unresolved value contracts.
    C009 own-child structure and selected C034 populations already pass the
