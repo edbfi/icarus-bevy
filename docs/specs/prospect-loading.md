@@ -39,8 +39,8 @@ prove that the reporting call returns.
 ## Inner state and version dispatch (2026-10-12)
 
 Targeted follow-up in `work/save-schema-20261012/` reverified the preserved executable
-hash, inspected metadata and exported 43 selected
-functions in eight bounded Ghidra batches. No original execution or packaged asset
+hash, inspected metadata and exported 44 selected
+functions in nine bounded Ghidra batches. No original execution or packaged asset
 extraction occurred. These observations belong to **build 25621760**; the user's
 supplied save is reported from **25793767**, so cross-build compatibility remains
 unvalidated.
@@ -177,11 +177,12 @@ E-007 serializer branches, E-008 archive mode initialization, E-009 tag/name
 primitives, E-010 payload/array boundaries, E-011 nested recorder dispatch and
 E-012 byte-array element encoding, E-013 recorder restoration, E-014 component
 archive dispatch, E-015 base component serialization and E-016 filtering/trailer
-contracts. The case report links them to
+contracts. Later E-017 through E-024 cover selected-class dispatch, metadata,
+capture and collection cleanup, as described below. The case report links them to
 findings and call paths; strict review verified all artifact hashes with zero
 errors/warnings. Primary decompilation, disassembly and exact commands remain private.
 
-### Selected concrete component
+### Selected singleton component (C013)
 
 Static follow-up E-017 resolves one private singleton class (case-local ID C013)
 through registration, construction and its installed vtable. All three relevant
@@ -208,11 +209,11 @@ position (save-triage E-021). A new bounded probe with only that header extensio
 framed both selected 548-byte bodies to exact EOF: five properties, 312 header and
 terminator bytes, 232 opaque value bytes and a zero four-byte trailer (E-022).
 See the [component framing subset](tagged-properties.md#explicit-base-component-framing).
-No property values were interpreted and no other saved classes were scanned.
+That probe interpreted no property values and scanned no other saved classes.
 
 Metadata evidence E-018 identifies one declared struct field and four immediate-base
 fields carrying the necessary save-selection flag: enum, name, string and boolean.
-This is not a complete ancestor schema or a required-field list. The declared
+These descriptors alone are not a required-field list. The declared
 struct has one integer child and selects nested tagged serialization despite its
 four-byte in-memory size. The enum's loading path also reads an archive name;
 its byte-sized underlying type does not imply a one-byte serialized value.
@@ -234,12 +235,81 @@ pointer and `+0x250` as its count, iterating eight-byte elements. The supported
 interpretation is a captured owner-collection count; the collection's gameplay
 identity and the saved scalar values remain unknown.
 
+The ninth batch and aligned callsite follow-up (static E-022/E-023) place capture
+before blob serialization on a conditional path. Caller `0x14189aa00` invokes
+`0x1418a3d90` only when owner validation passes and a caller-supplied byte is
+nonzero. That method refreshes inherited recorder fields and invokes capture slot
+`+0x448`; the caller then serializes through `0x1418aafb0`. Capture is therefore
+not established as mandatory for every save operation.
+
 Caller `0x1414bf530` invokes the related callback only for a live returned recorder,
 state byte `+0xb2 == 3`, and a successful virtual `+0x470` gate. That callback builds
-two pointer sets, calls helper `0x141899760`, and destroys temporary output. It does
-not read the saved `+0xd8` integer. The helper's operation, lifecycle phase and any
-use of that integer for restoration remain unresolved; count capture alone does
-not establish relationship reconstruction.
+two pointer sets and calls helper `0x141899760`, now resolved as set intersection.
+The caller discards that result without applying its contents or count.
+
+The callback does have a preceding mutation: helper `0x14148a160` compacts the
+owner's pointer array in place, preserving retained order and removing null entries
+or entries with the inspected non-live object flag. It uses `memmove`, updates the
+array count and returns the number removed (static E-024; no additional Ghidra
+export). Neither this cleanup nor the discarded intersection reads recorder
+`+0xd8` or restores the collection to its saved count. The supported observations
+are conditional count capture and pointer-collection cleanup; relationship
+reconstruction and the broader lifecycle meaning remain unresolved.
+
+### Selected repeated component (C028)
+
+The separate static case `work/component-c028-20261012/` matches the private C028
+package/class exactly and traces registration `0x1406ff5d0` through getter
+`0x141d2d770`, constructor callback `0x141d2e710` and instance constructor
+`0x1418c22f0` to vtable `0x144a70e90`. Its load and post-load methods differ from
+C013, so identical restoration must not be inferred from a shared serializer.
+
+Load slot `+0x4a0` targets `0x1418a9bb0`, which calls base `0x1418a9c80` first with
+the component and recorder arguments unchanged. After the base reader is destroyed,
+it conditionally passes the retained load context to virtual `+0x4b0`. Serialize
+slot `+0xa0` remains base `0x1418aaf70`. Post-load slot `+0x488` targets
+`0x14189d380`: when a component integer is below one, it traverses nested in-memory
+arrays and conditionally replaces name fields. This complete override never reads
+or preserves the incoming archive argument. These paths support a base-framing
+hypothesis while leaving migration and context-restoration work unimplemented.
+
+Metadata E-004/E-005 in that case closes the native ancestor chain: 3 entries in
+C028, 27 in its immediate parent, 11 in the recorder base, 19 in the next ancestor
+and none in the root. Of these 60 entries, 23 top-level descriptors carry the
+save-selection bit: three integers, three names, two booleans, six structs, seven
+arrays, one enum and one string. Seven preceding struct descriptors are array-inner
+helpers, not additional top-level fields. Exact private names, index-zero candidates
+and struct/enum/array header extras are available for comparison; field order,
+mandatory presence and arbitrary later runtime mutation remain unproved.
+
+Independent and release-native scans of four selected C028 records—the first
+minimum- and maximum-sized record in each copy—consume exactly 3,325 or 3,358 bytes.
+Each has 23 properties, 1,509 header/terminator bytes, 1,812 or 1,845 opaque value
+bytes and a zero four-byte trailer. A separate private comparison matches all 23
+header descriptors without assuming order (save-triage E-025/E-026/E-027). This
+qualifies those four records through both readers.
+
+A subsequent independent scan covers all 1,294 C028 records in the two supplied
+copies and matches the same exact 23-header metadata (save-triage E-028). Each copy
+contains 647 components and 14,881 fields: 976,323 header/terminator bytes,
+1,184,111 opaque value bytes and 2,588 zero-trailer bytes, totaling 2,163,022 bytes.
+The scan validates each complete outer payload before reading selected bodies.
+This extends observed framing and header agreement to every C028 record in these
+two copies. Release-native batch qualification independently matches the combined
+totals for all 1,294 bodies: 29,762 fields and 4,326,044 bytes, divided into 1,952,646
+header/terminator bytes, 2,368,222 opaque value bytes and 5,176 zero-trailer bytes
+(save-triage E-029). It establishes neither mandatory fields for other saves nor
+gameplay correctness.
+
+The follow-up `work/c028-structs-20261012/` resolves all six direct struct types to
+tagged serialization under the established older-build `MemoryArchive522` path.
+They are six distinct types using four operations tables. One initially missing
+ops factory is supplied by name-matched deferred registration `0x140729c20`; its
+capability checks, like the other tables, do not select native or post-serialization
+hooks on this path. This supplies a candidate nested framing contract, not a fixed
+disk width. Child schemas, the seven array-element schemas, newer-build method
+equivalence and complete world restoration remain unresolved; both full scans leave
+all property payloads opaque.
 
 ## Controlled reproduction matrix
 
