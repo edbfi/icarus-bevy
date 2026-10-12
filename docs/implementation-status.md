@@ -140,6 +140,15 @@ record historical research batches; the overnight runtime window has expired.
   truncation fixtures pass; full manual checks and release qualification preserve
   both copies' existing envelope/root/recorder results and source hashes.
   Evidence: `work/native-name-header-20261012/` and static case E-018.
+- A separate library API frames an explicitly selected base-component candidate:
+  opaque tagged properties, `None`, a zero four-byte trailer and EOF. It bounds
+  input to 64 KiB/256 fields, rejects GUID trailers and exposes immutable spans
+  plus a sanitized summary. Six authored tests cover boundaries, every truncation,
+  trailer policy and privacy. It does not select classes or change CLI inspection.
+  The release API matches the independent scan on both selected 548-byte bodies;
+  bounded stdin qualification reports only aggregates, with unchanged input hashes
+  and no raw body artifact. Full manual checks and code review pass. Evidence:
+  save-triage E-023 and `work/native-component-20261012/`.
 - Active normal dependency graph excludes Bevy rendering/window/audio backends;
   release executable links only the platform loader, libc and libgcc_s on this host.
 - CI definition validates formatting, Clippy, tests, release build and headless smoke.
@@ -177,8 +186,11 @@ record historical research batches; the overnight runtime window has expired.
   and calls component serialization. The base path selects filtered tagged fields,
   followed by a four-byte boolean and optional 16-byte GUID, then a component hook.
   One private singleton class inherits all three relevant base slots in the older
-  executable. Its first candidate body scan stopped at an unsupported header;
-  no successful component framing follows from that run (save-triage E-020).
+  executable. Its first candidate body scan stopped at an unsupported header
+  (save-triage E-020). A targeted check identified `NameProperty`; a new probe
+  then framed both selected 548-byte bodies to EOF: five properties, 312 header
+  and terminator bytes, 232 opaque value bytes and a zero four-byte trailer
+  (E-021/E-022). This does not establish equal values or complete class semantics.
   Other derived overrides and value semantics remain unresolved; component
   contents are not decoded by the native inspector.
 - A private class-string inventory finds 38 identifiers in the current copy and

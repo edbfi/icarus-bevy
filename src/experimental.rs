@@ -4,6 +4,7 @@
 //! server does not enable it. None of these primitives implements game admission.
 
 pub mod archive;
+pub mod component;
 pub mod handshake;
 pub mod handshake_lab;
 pub mod recorders;

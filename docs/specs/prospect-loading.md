@@ -203,6 +203,13 @@ Its value reader `0x1421580b0` calls archive `+0x140`, the same string/name prim
 The native opaque header reader now supports this kind; it does not decode values
 or apply the component layout to arbitrary saved classes.
 
+The subsequent equality-only discriminator matched `NameProperty` at the recorded
+position (save-triage E-021). A new bounded probe with only that header extension
+framed both selected 548-byte bodies to exact EOF: five properties, 312 header and
+terminator bytes, 232 opaque value bytes and a zero four-byte trailer (E-022).
+See the [component framing subset](tagged-properties.md#explicit-base-component-framing).
+No property values were interpreted and no other saved classes were scanned.
+
 Metadata evidence E-018 identifies one declared struct field and four immediate-base
 fields carrying the necessary save-selection flag: enum, name, string and boolean.
 This is not a complete ancestor schema or a required-field list. The declared

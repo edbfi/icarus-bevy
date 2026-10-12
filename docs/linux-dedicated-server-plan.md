@@ -149,7 +149,9 @@ Use this dataset in the next work sequence:
    preserves opaque spans after envelope integrity checks. The optional recorder
    reader now checks concrete nested field and byte-array boundaries; its release
    results match an independent bounded scan of both selected copies. Older-build
-   static evidence supports this framing; component byte contents remain opaque.
+   static evidence supports this framing. One selected singleton class's two
+   component bodies now pass independent and native opaque property/trailer scans;
+   the separate explicit library reader does not recognize classes or decode values.
    Eleven distinct prospect payloads and seven member tuples are observed, but
    structures, inventories, tames, missions and full ownership fidelity remain
    unknown. Target component-specific byte dispatch and schemas, compare backed-up
