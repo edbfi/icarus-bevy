@@ -15,30 +15,34 @@ be demonstrated rather than assumed.
   updating; retain exact toolchain/release pins and the lockfile for reproducible
   builds. Handle routine stable upgrades autonomously. Record concrete
   compatibility blockers instead of silently retaining an obsolete baseline.
-- The reverse-skill package is vendored at `.agents/vendor/reverse-skill/`.
-  `.agents/skills/reverse-skill-router` links to its `skills/` directory for
-  discovery. Use the canonical vendor path for scripts so package-relative
-  paths resolve correctly.
-- For reverse-engineering tasks, enter through the package's
-  `skills/SKILL.md`, `skills/MASTER-ROUTING.md`, and `skills/routing.md`.
-  Consult `skills/tool-index.md` for this machine's tool inventory.
+- For all reverse-engineering work, read and follow
+  `.agents/skills/reverse-engineer-anything/SKILL.md` and use the `rea` MCP server
+  as the primary analysis interface. This includes binary and package inspection,
+  decompilation, protocol recovery, runtime observation and version comparison.
+  Use the connected server's advertised tools and schemas. If MCP is unavailable,
+  use `.agents/rea/rea.sh` for supported CLI operations; use direct analysis tools
+  only for capabilities REA lacks or a diagnosed provider/connection limitation,
+  and record the reason. Do not fall back to the removed skill package.
+  REA is project-local: `.agents/rea/` pins `rea-agents@6.4.0`, and
+  `.agents/rea/rea.sh` launches the installed runtime. Codex uses
+  `.codex/config.toml`; Claude uses `.mcp.json` and the skill link under
+  `.claude/skills/`. Do not run upstream global setup or alter user-wide settings.
 - Prefer Homebrew for tool installation, as requested by the user. `Brewfile`
   records the initial binary and protocol analysis tools. Other package
   managers are fallbacks when a needed tool is unavailable through Homebrew.
-- Refresh the machine-local inventory from the project root with
-  `PATH="$(brew --prefix openjdk@21)/bin:$PATH" bash .agents/vendor/reverse-skill/skills/scripts/refresh-tool-index.sh`.
-  Upstream probes the Ghidra GUI for its version and does not index Wireshark
-  utilities. Verify Ghidra headlessly and check `tshark --version` separately;
-  a GUI launch error on this VPS does not mean headless Ghidra is broken.
-- Run Ghidra headlessly with
+- Check REA's installed provider from the project root with
+  `.agents/rea/rea.sh doctor --provider ghidra --json`. Use the installed
+  `Brewfile` tools and check `tshark --version` separately when needed.
+- When a direct Ghidra fallback is needed, run it headlessly with
   `JAVA_HOME="$(brew --prefix openjdk@21)/libexec" "$(brew --prefix ghidra)/libexec/support/analyzeHeadless" <arguments>`.
 - Keep original server files under the ignored `icarus-orig/` directory and
   generated analysis artifacts under the ignored `work/` directory. Keep
   reusable source code and documentation outside those ignored directories.
 - Preserve private supplied save archives and their inventories under ignored
   `reference-data/`; use disposable copies under `work/` for experiments.
-- `.agents/vendor/reverse-skill.upstream.json` records the upstream revision.
-  Preserve the upstream package layout and licenses when updating it.
+- Preserve the REA package lock, skill provenance and third-party licenses when
+  updating. Retain existing research scopes, fixity receipts and evidence;
+  replacing tooling does not resume paused research or extend runtime windows.
 
 # Execution and handoff
 

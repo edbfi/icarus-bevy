@@ -72,7 +72,8 @@ class NativeIoSessionTest(unittest.TestCase):
             case = root / "work/native-case"
             case.mkdir(parents=True)
             scope = case / "scope.md"
-            _ = scope.write_text("authored offline sample scope")
+            _ = scope.write_text("## auth\n- status: granted\n## network_profile\n- mode: offline\n"
+                                 + "## signoff\n- ready_for_act: true\n")
             probe = case / "probe"
             _ = probe.write_bytes(b"authored executable fixture")
             probe.chmod(0o700)
@@ -117,6 +118,25 @@ class NativeIoSessionTest(unittest.TestCase):
             _ = external_session.write_text(json.dumps(session))
             with self.assertRaisesRegex(ValueError, "case-local"):
                 _ = validate_session(root, case, external_session, probe, now)
+
+    def test_session_rejects_unsigned_scope_even_with_matching_hash(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            case = root / "work/native-case"
+            case.mkdir(parents=True)
+            scope = case / "scope.md"
+            _ = scope.write_text("## auth\n- status: pending\n")
+            probe = case / "probe"
+            _ = probe.write_bytes(b"authored fixture")
+            probe.chmod(0o700)
+            session_path = case / "session.json"
+            _ = session_path.write_text(json.dumps({
+                "scope": "native-io-faults", "authorization_source": "test instruction",
+                "case_root": str(case), "probe": str(probe),
+                "scope_sha256": digest(scope), "probe_sha256": digest(probe),
+            }))
+            with self.assertRaisesRegex(ValueError, "scope auth.status"):
+                _ = validate_session(root, case, session_path, probe, datetime.datetime.now(datetime.UTC))
 
     def test_expired_operation_budget_never_invokes_command(self) -> None:
         fixture = DockerFixture()

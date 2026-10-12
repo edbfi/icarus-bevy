@@ -83,6 +83,27 @@ def regular_path(path: Path) -> Path:
     return absolute
 
 
+def validate_offline_scope(scope: Path) -> None:
+    """Check the project runtime contract in the case's Markdown scope file."""
+    required = {("auth", "status"): "granted",
+                ("network_profile", "mode"): "offline",
+                ("signoff", "ready_for_act"): "true"}
+    fields: dict[tuple[str, str], str] = {}
+    section = ""
+    for line in scope.read_text().splitlines():
+        if line.startswith("## "):
+            section = line[3:].strip().lower()
+        elif match := re.fullmatch(r"\s*-\s+([a-z_]+):\s*(.*?)\s*", line):
+            key = (section, match[1])
+            if key in required:
+                if key in fields:
+                    raise ValueError(f"duplicate scope field: {section}.{match[1]}")
+                fields[key] = match[2].lower()
+    for key, expected in required.items():
+        if fields.get(key) != expected:
+            raise ValueError(f"scope {'.'.join(key)} must be {expected}")
+
+
 def selected_modes(args: Arguments) -> frozenset[str]:
     if args.complete_stateless and not args.handshake_probe:
         raise ValueError("--complete-stateless requires --handshake-probe")
@@ -157,6 +178,7 @@ def validate_session(root: Path, args: Arguments, now: datetime.datetime) -> App
         expected = string_field(session, field)
         if re.fullmatch(r"[0-9a-f]{64}", expected) is None or expected != digest(path):
             raise ValueError(f"{field} mismatch")
+    validate_offline_scope(scope)
     start = datetime.datetime.fromisoformat(string_field(session, "start_utc"))
     end = datetime.datetime.fromisoformat(string_field(session, "end_utc"))
     if start.utcoffset() is None or end.utcoffset() is None:
@@ -402,8 +424,6 @@ def main() -> None:
     args = parser.parse_args(namespace=Arguments())
     root = Path(__file__).resolve().parents[1]
     approved = validate_session(root, args, datetime.datetime.now(datetime.UTC))
-    _ = command(["bash", str(root / ".agents/vendor/reverse-skill/skills/scripts/case-guard.sh"),
-                 "--case-root", str(approved.case)])
     if available_memory() < 3 * 1024**3 or shutil.disk_usage(approved.case).free < 30 * 1024**3:
         raise RuntimeError("resource floor reached; defer original execution")
     with reserve_run(approved, args.run_name) as run:

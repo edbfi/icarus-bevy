@@ -1,5 +1,9 @@
 # Overnight research and implementation batch
 
+Historical record: the reverse-skill package was removed on 2026-10-12. Its
+commands and package requirements below are preserved as approval history, not
+current instructions. AGENTS.md links identify the former upstream revision.
+
 Status: **historical; execution window expired**. Approved by the user
 ("Go ahead") on 2026-10-04 for the window below.
 Recorded window: 2026-10-04 21:13:19 UTC to 2026-10-05 05:13:19 UTC
@@ -284,7 +288,7 @@ Before handoff:
    Report actual soak duration and workload; never promote it to the three 72-hour
    qualification runs or a production performance claim.
 
-The vendored [AGENTS.md](../.agents/vendor/reverse-skill/AGENTS.md) says:
+The vendored [AGENTS.md](https://github.com/zhaoxuya520/reverse-skill/blob/cab634bd855fc287f6e420c1f36fd1a6b9245960/AGENTS.md) says:
 "Explicit user approval is required before running any repository script."
 It also requires renewed consent for new side-effect categories. The user's approval
 of this enumerated batch supplies advance script/target authorization for these

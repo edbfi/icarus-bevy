@@ -2,7 +2,7 @@
 
 This is the reviewed implementation plan. Progress and evidence are tracked in
 [implementation-status.md](implementation-status.md); incomplete milestones are
-not claims of compatibility. This document authorizes no vendored script or
+not claims of compatibility. This document authorizes no tool execution or
 target activity by itself.
 
 **Resumed at the user's request on 2026-10-12.** The
@@ -248,54 +248,64 @@ and final research handoff synchronized with each completed step.
 
 ### Research workflow
 
-Read canonical vendored `skills/SKILL.md`, `skills/MASTER-ROUTING.md`, and
-`skills/routing.md`. Proposed overall PRIMARY is R0 `reverse-engineering`, because
-the work concerns recovering game-server behavior. Confirm through the approved
-router. Use these specialist handoffs:
+Read the project-local
+[REA skill](../.agents/skills/reverse-engineer-anything/SKILL.md) for binary
+inspection, decompilation, cross-references and recovery work. All reverse
+engineering uses this skill and the `rea` MCP server as the primary workflow,
+including protocol recovery, runtime observation and version comparison. Use
+the connected server's advertised schemas. If MCP is unavailable, use the local
+REA CLI wrapper; direct-tool fallbacks require a concrete missing capability or
+provider limitation recorded with the evidence. Use the repository
+Bevy skill for independent implementation. Keep lead, reverse-analysis and
+documentation ownership explicit; roles do not require separate agents.
 
-| Work | Skill |
-| --- | --- |
-| Binary triage and behavior | `reverse-engineering` |
-| Headless decompilation and cross-references | `ghidra-reverse` |
-| Binary inspection and cross-version comparison | `radare2`, `binary-diff` |
-| Transport, replication and sessions | `protocol-reverse` |
-| Evidence review and reports | `case-review`, `docs-generator` |
-| Independent replacement | Repository `bevy` skill |
+Tool installation does not authorize a target experiment. Preserve the existing
+case scopes, exact commands, input/output hashes, sessions and evidence-to-finding
+links under `work/`. Before new target work, record the assets, activities,
+authorization evidence, exclusions, network profile and bounded execution window.
+Check these records and the current authorization against the actual command;
+tool defaults cannot manufacture authorization. Continue already authorized
+deterministic work within its bounds and resolve new scope requirements before
+dependent experiments.
 
-Assign lead, reverse-analysis, and documentation responsibilities using the role
-map; roles do not require separate agents.
-
-The vendored `AGENTS.md` and `CLAUDE.md` separate script execution approval from
-target authorization. Reading the package grants neither. Disclose exact commands
-and expected writes, downloads, processes, network access and configuration changes
-before running package scripts. Continue already approved deterministic steps;
-new side-effect categories require new disclosure and approval.
-
-[research-authorization.md](research-authorization.md) contains the concrete first
-batch. Initialize `work/icarus-server-baseline/scope.md`, record explicit assets,
-activities, authorization evidence, exclusions and network profile. Target work
-requires `auth.status=granted`, readiness, and a successful canonical case guard.
-Presets and force flags cannot manufacture authorization.
+[research-authorization.md](research-authorization.md) preserves the historical
+first batch. Its old tooling commands are historical evidence, not current setup
+instructions. Preserve frozen case artifacts and their receipts; use fresh
+reviewed execution bindings when adapting a later probe to the current tooling.
 
 Separate offline and dynamic scopes. Identify legitimate external services for
 online authentication; lab-only and offline scopes do not permit those connections.
 
 ### Tools and reference environments
 
-Consult `skills/tool-index.md` for machine-local paths. Its initial inventory
-records radare2, headless Ghidra, Java and Wireshark CLI tools; IDA and Frida are
-not recorded as available. Use installed tools first. Prefer Homebrew and the
-existing `Brewfile`; preserve vendor layout, revision metadata and licenses.
-
-After approval, refresh inventory from the project root with:
+The project uses [REA](https://github.com/morluto/rea), pinned as
+`rea-agents@6.4.0` in `.agents/rea/package-lock.json`. Its wrapper and MCP
+configuration are local to this repository: Codex reads `.codex/config.toml`,
+Claude reads `.mcp.json`, and both discover the same skill through
+`.agents/skills/reverse-engineer-anything/` and its `.claude/skills/` link.
+Restore the locked runtime and check the Ghidra provider from the repository root:
 
 ```bash
-PATH="$(brew --prefix openjdk@21)/bin:$PATH" \
-  bash .agents/vendor/reverse-skill/skills/scripts/refresh-tool-index.sh
+npm ci --prefix .agents/rea --cache .agents/rea/.npm-cache
+.agents/rea/rea.sh doctor --provider ghidra --json
 ```
 
-Check `tshark --version` separately. A GUI probe failure does not mean headless
-Ghidra is broken. Resolve the arguments before presenting an analysis command:
+Restart Codex and Claude after configuration changes and accept their project/MCP
+trust prompts when presented. Do not run upstream global setup; it would change
+configuration outside this repository. Preserve the package lock, skill
+provenance and third-party licenses when updating.
+
+The scoped Ghidra doctor check reports provider readiness. Its informational
+checks inspect user-wide registrations and may report them missing because this
+installation deliberately uses project configuration. Verify registration with
+`codex mcp get rea` and `claude mcp get rea`; verify the live connection with the
+MCP `binary_session` tool. Installation validation discovered 170 MCP tools from
+REA 6.4.0 and confirmed the existing Ghidra 12.1.4/JDK 21 provider as healthy.
+
+Use the installed Homebrew tools recorded in `Brewfile`: radare2, headless Ghidra
+and Wireshark CLI utilities. Check `tshark --version` separately. A GUI failure
+does not mean headless Ghidra is broken. For a justified direct Ghidra fallback,
+resolve the arguments before presenting an analysis command:
 
 ```bash
 JAVA_HOME="$(brew --prefix openjdk@21)/libexec" \
@@ -330,7 +340,7 @@ work before necessary approval. Resolve skill instructions against the user's
 actual authorization; explain concrete conflicts instead of inventing approval gates.
 
 Use the Bevy and reverse-research skills listed above when their work is needed.
-Read relevant references selectively instead of loading the entire vendor package.
+Read relevant REA references selectively.
 If at any point you can parallelize work by delegating tasks to another agent
 (whether you are the root agent or a subagent), use collaboration tools when it
 could save time or improve quality. Keep delegation within the shared resource

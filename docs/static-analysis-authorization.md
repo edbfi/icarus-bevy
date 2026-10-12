@@ -1,5 +1,9 @@
 # Offline static analysis batch
 
+Historical record: the reverse-skill package was removed on 2026-10-12. Its
+commands and package requirements below are preserved as approval history, not
+current instructions. AGENTS.md links identify the former upstream revision.
+
 Status: approved by the user on 2026-10-04. This extends the inventory scope; it
 does not authorize running the original server or copying assets into the replacement.
 
@@ -38,6 +42,6 @@ metadata/behavioral leads under `docs/`. No original files change. No target
 execution, downloads, network, services, GUI, global configuration or asset reuse.
 
 Decompilation and dynamic experiments remain separate subsequent batches. This
-approval is required by the vendored [AGENTS.md](../.agents/vendor/reverse-skill/AGENTS.md):
+approval is required by the vendored [AGENTS.md](https://github.com/zhaoxuya520/reverse-skill/blob/cab634bd855fc287f6e420c1f36fd1a6b9245960/AGENTS.md):
 "Explicit user approval is required before running any repository script."
 Target scope remains a separate requirement.

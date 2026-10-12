@@ -9,7 +9,11 @@ authorization. Historical session files do not renew themselves. No original
 server was executed while testing this launcher revision.
 
 Use an existing case below the repository's ignored `work/` directory, with a
-`scope.md` accepted by the vendored case guard. The session JSON must contain:
+`scope.md` checked by the project launcher itself. Its Markdown sections must
+contain `## auth` with `- status: granted`, `## network_profile` with
+`- mode: offline`, and `## signoff` with `- ready_for_act: true`. Duplicate
+contract fields are rejected. These checks run again before launch alongside the
+session/hash checks; no external skill package is required. The session JSON must contain:
 
 | Field | Required value |
 | --- | --- |
@@ -68,6 +72,8 @@ save-load comparisons require their own concrete experiment setup.
 ## Historical first-startup authorization (2026-10-04)
 
 The following records the original approval, not a current executable recipe.
+The reverse-skill package was removed on 2026-10-12; its commands and package
+requirements below are historical. The AGENTS.md link identifies the former revision.
 Status: approved by the user on 2026-10-04. This was the first execution of the original server.
 It cannot prove stock-client compatibility because the container has no network.
 
@@ -111,6 +117,6 @@ Expected startup/network failures are observations, not confirmed original bugs.
 This does not authorize downloading SDKs, opening ports, using real save data, or
 starting connected client tests. The independent replacement remains native Bevy.
 
-The vendored [AGENTS.md](../.agents/vendor/reverse-skill/AGENTS.md) requires explicit
+The vendored [AGENTS.md](https://github.com/zhaoxuya520/reverse-skill/blob/cab634bd855fc287f6e420c1f36fd1a6b9245960/AGENTS.md) requires explicit
 script approval, and the original case explicitly excludes server execution. This
 batch therefore needs separate approval and its own target scope.

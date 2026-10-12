@@ -38,3 +38,7 @@ rustc-ice-*.txt
 # Python analysis-helper bytecode
 __pycache__/
 *.py[cod]
+
+# Project-local REA runtime dependencies and state
+/.agents/rea/node_modules/
+/.agents/rea/.npm-cache/

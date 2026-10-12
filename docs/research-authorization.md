@@ -1,10 +1,14 @@
 # Offline reference investigation approval
 
+Historical record: the reverse-skill package was removed on 2026-10-12. Its
+commands and package requirements below are preserved as approval history, not
+current instructions. AGENTS.md links identify the former upstream revision.
+
 Status: approved by the user on 2026-10-04 for the exact offline batch below and
 read-only inventory/hash analysis of `icarus-orig/`. Other target activities remain
 outside this approval.
 
-The vendored [AGENTS.md](../.agents/vendor/reverse-skill/AGENTS.md) requires explicit
+The vendored [AGENTS.md](https://github.com/zhaoxuya520/reverse-skill/blob/cab634bd855fc287f6e420c1f36fd1a6b9245960/AGENTS.md) requires explicit
 approval of repository scripts and their side effects. Its scope contract also
 requires target authorization before analysis.
 

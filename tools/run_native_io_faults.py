@@ -25,7 +25,7 @@ import uuid
 if __package__ in (None, ""):
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from tools.run_reference_offline import IMAGE, available_memory, command
+from tools.run_reference_offline import IMAGE, available_memory, command, validate_offline_scope
 from tools.runtime_types import JsonObject, integer_field, json_object, parse_container_identity, parse_container_state, parse_json, string_field
 
 
@@ -78,6 +78,7 @@ def validate_session(root: Path, case: Path, session_path: Path, probe: Path,
         expected = string_field(session, field)
         if not re.fullmatch(r"[0-9a-f]{64}", expected) or expected != digest(path):
             raise ValueError(f"{field} mismatch")
+    validate_offline_scope(scope)
     start = datetime.datetime.fromisoformat(string_field(session, "start_utc"))
     end = datetime.datetime.fromisoformat(string_field(session, "end_utc"))
     if start.utcoffset() is None or end.utcoffset() is None:
@@ -171,8 +172,6 @@ def main() -> None:
     root = Path(__file__).resolve().parents[1]
     approved = validate_session(root, Path(args.case_root), Path(args.session), Path(args.probe),
                                 datetime.datetime.now(datetime.UTC))
-    _ = command(["bash", str(root / ".agents/vendor/reverse-skill/skills/scripts/case-guard.sh"),
-                 "--case-root", str(approved.case)])
     if available_memory() < 3 * 1024**3 or shutil.disk_usage(approved.case).free < 30 * 1024**3:
         raise RuntimeError("resource floor reached")
     run = approved.case / "native-io-faults"

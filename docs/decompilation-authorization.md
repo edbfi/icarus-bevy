@@ -1,5 +1,9 @@
 # Bounded headless decompilation batch
 
+Historical record: the reverse-skill package was removed on 2026-10-12. Its
+commands and package requirements below are preserved as approval history, not
+current instructions. AGENTS.md links identify the former upstream revision.
+
 Status: approved by the user on 2026-10-04, including both Java helper scripts.
 Static analysis identified diagnostic string addresses for failed prospect loading
 and incompatible network versions. These are leads, not bugs.
@@ -40,6 +44,6 @@ only independent behavioral explanations and evidence locations under `docs/`.
 Incomplete analysis or missing cross-references must be reported, not interpreted
 as absence of behavior.
 
-Approval is required by the vendored [AGENTS.md](../.agents/vendor/reverse-skill/AGENTS.md):
+Approval is required by the vendored [AGENTS.md](https://github.com/zhaoxuya520/reverse-skill/blob/cab634bd855fc287f6e420c1f36fd1a6b9245960/AGENTS.md):
 "Explicit user approval is required before running any repository script."
 This includes the two new Java scripts above; their source is available for review.
