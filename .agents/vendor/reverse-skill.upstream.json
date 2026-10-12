@@ -1,6 +1,10 @@
 {
   "repository": "https://github.com/zhaoxuya520/reverse-skill",
   "revision": "cab634bd855fc287f6e420c1f36fd1a6b9245960",
+  "upstream_branch": "main",
+  "last_checked_date": "2026-10-12",
+  "upstream_status": "Recorded revision remains upstream main HEAD; no newer revision available.",
+  "snapshot_verification": "All 599 upstream files present: 557 byte-identical, 42 differ only by existing CRLF checkout line endings. Local generated tool inventory preserved.",
   "package_path": ".agents/vendor/reverse-skill",
   "skill_entry": ".agents/skills/reverse-skill-router/SKILL.md",
   "scope": "project",
