@@ -123,8 +123,13 @@ values remain unqualified. Its observed maximum body is 71,956 bytes, above the
 default comparator cap. The new explicit byte-limit API retains the 64 KiB
 default and 256-field cap while permitting a caller-selected limit up to a hard
 128 KiB research ceiling. Eight component tests and independent code review
-pass; private C009 population comparison is still pending. Static evidence:
-`work/component-c009-20261012/`.
+pass. The bounded population comparison now passes all 486 supplied C009 bodies
+and 6,781,758 bytes. Each copy has 7,533 fields, 514,674 header/terminator bytes
+and 972 trailer bytes; opaque values total 2,877,588 bytes in current and
+2,872,878 in backup. All 31 optional descriptors appear in every observed body.
+Exact independent/native spans and input fixity agree; three authored helper
+tests pass. Static and executed evidence: `work/component-c009-20261012/` and
+`work/native-c009-top-20261012/`. Nested contracts and values remain open.
 
 A live SSH fetch reconciled the stale remote cache: all checkpoint commits through
 `b55e4ce` were already delivered. No client files were removed and no original

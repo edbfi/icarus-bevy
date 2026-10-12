@@ -202,9 +202,9 @@ Use this dataset in the next work sequence:
    individual 12-/four-byte demands. All 11,606 inherited arrays now independently
    match native shared framing and are empty. All 9,948 inherited Struct bodies
    also match immediate native spans. Exact descriptor bindings now qualify
-   8,290 selected nested/own scalar widths. Qualify C009 top spans against its
-   reviewed 31-field contract
-   using an explicit 71,956-byte comparison cap; retain the lack of populated
+   8,290 selected nested/own scalar widths. All 486 C009 top bodies now match
+   the reviewed 31-field contract and native spans under an explicit 71,956-byte
+   comparison cap. Recover its next concrete child contract; retain the lack of populated
    inherited-array coverage.
    Generic framing and width agreement do not establish an importable world.
    Eleven distinct prospect payloads and seven member tuples are observed, but
