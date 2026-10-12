@@ -172,6 +172,10 @@ strict evidence review pass: `work/c009-parent-children-20261012/`. A corrected
 dimension offset for Bool leaves the earlier comparisons unchanged: all six
 affected descriptors have dimension one at the confirmed common-factory offset.
 Their population bounds and child-header comparisons remain pending.
+The exact enum-backed Byte field separately follows Name/FString transfer under
+the concrete loading profile; its internal byte size is not serialized width.
+Independent review preserves unresolved enum lookup, error and EOF behavior:
+`work/c009-byte-value-contract-20261012/`. No supplied enum value was read.
 
 The exact C034 own Name property now links through its final factory/vtable and
 concrete archive virtual to the established FString reader. No separate wire

@@ -625,8 +625,10 @@ property factory reads descriptor offset `+0x20`, including for Bool. Its
 `+0x24` word supplies Bool field size. All six affected Bool descriptors have
 both words equal to one, so the earlier index-zero qualification and observed
 header results are unchanged. Historical evidence is preserved with an additive
-correction. The enum-backed Byte must not be assigned a one-byte payload merely
-from its internal storage size; its value branch requires separate qualification.
+correction. A separate concrete Byte trace now establishes Name/FString transfer
+under the reviewed enum-present loading conditions, not a one-byte serialized
+payload. Enum resolution and supplied values remain unqualified; see the
+[exact Byte contract](archive-string.md#concrete-enum-backed-byte-link).
 
 ## Independent replacement requirements
 
