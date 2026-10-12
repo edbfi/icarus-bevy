@@ -356,6 +356,27 @@ fields would be allowed; none are missing in these samples. Order and fixed GUID
 values are not assumed. Grandchild encoding, scalar semantics and world
 reconstruction remain separate steps.
 
+## Explicit Int-array framing
+
+`experimental::int_array::read_int_array(bytes, profile)` frames a caller-selected
+ordinary IntProperty array as a little-endian signed count followed by exactly
+four opaque bytes per element. It returns borrowed prefix and element slices;
+only counts and byte totals are serialized by its summary. It does not decode
+element values, recognize a schema or import objects.
+
+The caller must establish the healthy non-swapping archive path, with archive
+`+0x28` bit `0x20` and `+0x2b` bit `0x10` clear. Selecting the profile alone does
+not establish those conditions. The exact older C009 child trace supports this
+ordinary path and the absence of a shared Struct header; alternate bulk and
+property-list modes remain unsupported. Evidence:
+`work/c009-own-children-20261012/`.
+
+The reader rejects negative counts, truncation, trailing bytes and more than
+4,096 elements. Its early input cap is 64 KiB; the element cap makes the largest
+accepted input 16,388 bytes. Negative-count rejection and exact EOF are research
+policy, not recovered original error behavior. Four authored tests cover opaque
+source identity, size/count boundaries, malformed input and summary privacy.
+
 ## Explicit tagged struct-array framing
 
 The separate library function

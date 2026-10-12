@@ -593,6 +593,14 @@ Tagged Bool takes its value from the header and demands zero payload bytes.
 The Int and Str targets join the existing scalar/FString contracts. These static
 results do not yet qualify child populations: `work/c009-own-children-20261012/`.
 
+The subsequent header comparison qualifies all 972 own child bodies across both
+copies (134,182 bytes, 1,944 fields), after reproducing the complete parent result.
+Each copy has 243 S02 bodies totaling 30,626 bytes and 243 S01 bodies totaling
+36,465 bytes. No optional field is missing. The S02 array payloads total 980 bytes
+per copy, with individual sizes from four to 12 bytes; count and element bytes
+remain opaque. Exact native/independent child spans, unchanged inputs and two
+authored helper tests support the result: `work/native-c009-own-20261012/`.
+
 ## Independent replacement requirements
 
 The importer must load into staging state, resolve references and validate the
