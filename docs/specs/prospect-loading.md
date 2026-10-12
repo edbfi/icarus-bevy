@@ -535,6 +535,16 @@ agree exactly after reproducing all prior parent spans; inputs remain unchanged.
 This result does not qualify populated inherited descendants. Six helper tests
 and independent harness review pass: `work/c034-inherited-arrays-20261012/`.
 
+The six inherited Struct families are separately joined to their exact child
+schemas and concrete tagged operations, including S01's deferred registration.
+All 4,974 bodies per copy match native/independent immediate spans and EOF, with
+13,264 fields, 695,531 header/terminator bytes and 58,174 opaque value bytes.
+Each family contributes 829 bodies; no optional descriptor is missing in these
+records. Nested native payloads remain opaque. The sanitized span output omits
+field identities, so it cannot alone assign distinct native width contracts by
+order or size. Six helper tests and independent review support the comparison:
+`work/c034-inherited-structs-20261012/`.
+
 Matched-client generic tag/array functions now independently agree with the
 examined older version gates and shared-header branch. A subsequent concrete
 registration trace supports conditional C034 own-array tagged dispatch and a

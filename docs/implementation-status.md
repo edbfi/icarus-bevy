@@ -100,6 +100,16 @@ now links to the already-reviewed FString reader; its broader normalization and
 the native strict subset remain distinct. Independent static review:
 `work/str-value-contract-20261012/`. No string values were inspected.
 
+All six inherited Struct families now pass immediate-header qualification: 9,948
+bodies and 1,507,410 bytes across both copies. Per copy, 13,264 fields partition
+753,705 bytes into 695,531 header/terminator bytes and 58,174 opaque value bytes.
+All optional descriptors appear in these records; every prior top/own span is
+reproduced before entering the six streams. Exact native agreement and input
+fixity pass, as do six authored helper tests. Evidence:
+`work/c034-inherited-structs-20261012/`. Distinct native child widths require
+exact descriptor identity; field order or an equal-width multiset cannot replace
+that binding. C009 is the next broader class under static investigation.
+
 A live SSH fetch reconciled the stale remote cache: all checkpoint commits through
 `b55e4ce` were already delivered. No client files were removed and no original
 runtime or connected-client experiment has started.
@@ -167,13 +177,13 @@ Continue in this order within the existing plan:
    bytes, exact EOF and no missing optional descriptors in these samples.
    Fresh eleven-kind native qualification now passes on every selected span.
    Own-array static review and populated shared-header/element comparison now pass.
-   Next qualify inherited Struct populations and recover
+   Next qualify descriptor-bound nested widths and recover
    the next required value contract, keeping unknown values opaque. Selected
    own-array Struct/Float widths now agree individually with the older static
    transfer demands; all 1,658 C034 top bodies now have exact native/independent
    span agreement. All 1,658 own structs and own arrays now agree too; extend
-   inherited Struct coverage under fresh per-copy bounds. All 11,606 inherited
-   arrays are now natively qualified and empty. The
+   descriptor-bound nested widths under fresh limits. All 9,948 inherited Struct
+   bodies now agree, and all 11,606 inherited arrays are qualified and empty. The
    existing component batch helper's 8 MiB transport cap cannot fit all C034
    records from both copies together; use separate per-copy batches or a newly
    reviewed helper rather than changing frozen evidence.
