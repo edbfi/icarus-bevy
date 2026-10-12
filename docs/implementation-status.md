@@ -175,7 +175,13 @@ Exact parent-header selection now bounds all 2,430 payloads across both copies,
 741,404 bytes total. Each family occurs 243 times per copy; their maxima are
 950/188/93/95/468 bytes. All prior native top spans reproduce and all 382 bound
 files remain unchanged: `work/native-c009-parent-selection-20261012/`. The
-existing array cap is sufficient. Child headers and counts remain unread.
+existing array cap is sufficient. That selection left child headers/counts unread.
+The subsequent native comparison now matches all 1,944 arrays (3,946 elements)
+and 486 standalone streams, with 11,780 fields across those 741,404 bytes. PA03
+and PA04 are entirely empty; PA01 and PA02 provide populated coverage. No optional
+field is missing in observed records. Prior spans reproduce and all 448 bindings
+stay unchanged. Eight native helper tests and three independent parser checks
+pass: `work/native-c009-parent-headers-20261012/`. Child values remain opaque.
 The exact enum-backed Byte field separately follows Name/FString transfer under
 the concrete loading profile; its internal byte size is not serialized width.
 Independent review preserves unresolved enum lookup, error and EOF behavior:
@@ -571,7 +577,7 @@ supported, and no ICARUS performance or stability improvement has been measured.
 
 ## Next work and maintenance
 
-1. Qualify C009 immediate-parent child headers and leaves within their measured
+1. Qualify C009 immediate-parent child leaves within their measured
    population bounds, with authored regressions.
    C009 own-child structure and selected C034 populations already pass the
    comparisons above. Older-build root/recorder framing, dispatch and version

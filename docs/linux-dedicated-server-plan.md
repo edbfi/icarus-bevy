@@ -209,9 +209,10 @@ Use this dataset in the next work sequence:
    four opaque elements. The selected Str structures and Int/Bool widths also
    pass. The next five immediate-parent child schemas now have conditional tagged
    contracts with 15 optional fields and no immediate recursion. Exact selection
-   bounds all 2,430 child payloads to at most 950 bytes. Compare their child
-   headers while retaining unresolved
-   value meaning and runtime compatibility.
+   bounds all 2,430 child payloads to at most 950 bytes. Their native child-header
+   comparison now passes 3,946 array elements and 486 standalone streams with
+   11,780 fields. Qualify selected leaves while retaining unresolved value meaning
+   and runtime compatibility.
    Retain the lack of populated
    inherited-array coverage.
    Exact C034 own Name values also pass strict native/independent structural

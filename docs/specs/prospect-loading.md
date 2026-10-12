@@ -636,6 +636,21 @@ array counts or leaf values; it establishes bounds for the next comparison and
 requires no increase to the native array byte cap. Evidence:
 `work/native-c009-parent-selection-20261012/`.
 
+The subsequent child-header comparison passes all these payloads against the
+existing native readers. Across both copies, 1,944 arrays contain 3,946 elements
+and 7,892 fields; 486 standalone PS01 streams contain 3,888 fields. Per copy,
+PA01 has 1,970 elements (one array with seven, 226 with eight, five with nine and
+11 with ten). PA02 has three single-element arrays and 240 empty arrays. All PA03
+and PA04 arrays are empty, providing no populated-element coverage for those
+schemas. No optional descriptor is missing in an observed element or PS01 stream.
+
+The 741,404 bytes partition into 174,474 array count/shared-header bytes, 509,970
+element/stream header and terminator bytes, and 56,960 opaque value bytes. Exact
+parent and selection replay precedes child entry; all 448 bindings remain
+unchanged. Eight native helper tests, three independent parser checks and
+independent review support `work/native-c009-parent-headers-20261012/`.
+Leaf structures, widths and meanings were not checked in that run.
+
 That case corrects the earlier own-child dimension provenance: the common
 property factory reads descriptor offset `+0x20`, including for Bool. Its
 `+0x24` word supplies Bool field size. All six affected Bool descriptors have
