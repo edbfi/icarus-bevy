@@ -395,7 +395,13 @@ array, and exactly that many `None`-terminated element sequences inside the shar
 header's declared payload. Elements have variable lengths and no object trailers.
 The full input must be consumed.
 
-Limits are 64 KiB per array, 4,096 elements and 256 fields per element. Count and
+The default limit remains 64 KiB per array with its original limit error.
+`read_tagged_struct_array_with_limit(bytes, profile, max_bytes)` accepts a
+caller-selected bound from one byte through a hard 128 KiB research ceiling.
+Invalid limits fail before parsing; oversize input fails before reading the count.
+The 4,096-element and 256-field limits remain identical under either API.
+The explicit bound supports the measured 66,257-byte C009 CA01 candidate; this
+is an authored resource policy, not a recovered original format limit. Count and
 minimum terminator space are checked before allocating element storage. Requiring
 a shared `StructProperty` is explicit research policy. The reader does not compare
 its name, nonnegative index, struct identity or GUID values against a caller's
@@ -408,9 +414,10 @@ bytes, element header/terminator bytes and opaque payload bytes; these partition
 conserve the input length. It reports `world_imported: false` and
 `values_interpreted: false`.
 
-Six authored tests cover empty arrays, variable elements with UInt32 and opaque
+Ten authored tests cover empty arrays, variable elements with UInt32 and opaque
 embedded terminators, GUID/truncation cases, incorrect counts/types/sizes, trailing
-bytes, exact limits and failure after an earlier valid element. The API does not
+bytes, exact/over/invalid byte limits, borrowed spans beyond the default limit,
+retained element/field caps and failure after a large valid element. The API does not
 recognize classes, recurse into values or change the CLI inspector. Static support
 is recorded in `work/c028-arrays-20261012/`.
 

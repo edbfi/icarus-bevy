@@ -9,6 +9,8 @@ use serde::Serialize;
 use super::tagged::{ParsedRecord, RootTag, TagKind, TagProfile, read_record};
 
 pub const MAX_STRUCT_ARRAY_BYTES: usize = 64 * 1024;
+/// Hard ceiling for caller-selected research bounds, not an original format limit.
+pub const MAX_BOUNDED_STRUCT_ARRAY_BYTES: usize = 128 * 1024;
 pub const MAX_STRUCT_ARRAY_ELEMENTS: usize = 4096;
 pub const MAX_STRUCT_ELEMENT_FIELDS: usize = 256;
 const MIN_TERMINATOR_BYTES: usize = 9;
@@ -104,6 +106,26 @@ pub fn read_tagged_struct_array(
     ensure!(
         input.len() <= MAX_STRUCT_ARRAY_BYTES,
         "struct array input exceeds 64 KiB research limit"
+    );
+    read_tagged_struct_array_with_limit(input, profile, MAX_STRUCT_ARRAY_BYTES)
+}
+
+/// Frame the same opaque layout under an explicit byte limit, up to 128 KiB.
+/// The 4,096-element and 256-field caps and all framing/EOF checks remain in
+/// force. The ceiling is research policy, not a recovered original format limit.
+/// A zero limit is invalid; selecting a larger limit does not recognize schemas.
+pub fn read_tagged_struct_array_with_limit(
+    input: &[u8],
+    profile: TagProfile,
+    max_bytes: usize,
+) -> Result<TaggedStructArray<'_>> {
+    ensure!(
+        (1..=MAX_BOUNDED_STRUCT_ARRAY_BYTES).contains(&max_bytes),
+        "struct array byte limit must be between 1 byte and 128 KiB"
+    );
+    ensure!(
+        input.len() <= max_bytes,
+        "struct array input exceeds selected byte limit"
     );
     let count_bytes = input.get(..4).context("truncated struct array count")?;
     let count = usize::try_from(i32::from_le_bytes(count_bytes.try_into()?))

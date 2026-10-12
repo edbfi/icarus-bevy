@@ -1,6 +1,7 @@
 use icarus_bevy::experimental::struct_array::{
-    MAX_STRUCT_ARRAY_BYTES, MAX_STRUCT_ARRAY_ELEMENTS, MAX_STRUCT_ELEMENT_FIELDS,
-    TaggedStructArray, read_tagged_struct_array,
+    MAX_BOUNDED_STRUCT_ARRAY_BYTES, MAX_STRUCT_ARRAY_BYTES, MAX_STRUCT_ARRAY_ELEMENTS,
+    MAX_STRUCT_ELEMENT_FIELDS, TaggedStructArray, read_tagged_struct_array,
+    read_tagged_struct_array_with_limit,
 };
 use icarus_bevy::experimental::tagged::{TagKind, TagProfile};
 
@@ -43,6 +44,208 @@ fn array(count: i32, payload: &[u8], guid: bool) -> Vec<u8> {
 
 fn element(fields: &[u8]) -> Vec<u8> {
     [fields, END].concat()
+}
+
+fn read_with_limit(bytes: &[u8], limit: usize) -> anyhow::Result<TaggedStructArray<'_>> {
+    read_tagged_struct_array_with_limit(bytes, TagProfile::MemoryArchive522, limit)
+}
+
+fn array_of_size(size: usize) -> Vec<u8> {
+    let overhead = array(1, &element(&field(NAME, 0, &[0], &[])), false).len();
+    array(
+        1,
+        &element(&field(NAME, 0, &[0], &vec![0x7b; size - overhead])),
+        false,
+    )
+}
+
+#[test]
+fn selected_byte_bounds_preserve_default_and_accept_measured_size() {
+    assert_eq!(MAX_BOUNDED_STRUCT_ARRAY_BYTES, 128 * 1024);
+    for size in [
+        MAX_STRUCT_ARRAY_BYTES,
+        MAX_STRUCT_ARRAY_BYTES + 1,
+        66_257,
+        MAX_BOUNDED_STRUCT_ARRAY_BYTES,
+    ] {
+        let bytes = array_of_size(size);
+        assert_eq!(bytes.len(), size);
+        assert!(read_with_limit(&bytes, size).is_ok());
+        assert_eq!(
+            read_with_limit(&bytes, size - 1).err().unwrap().to_string(),
+            "struct array input exceeds selected byte limit"
+        );
+        if size <= MAX_STRUCT_ARRAY_BYTES {
+            assert!(read(&bytes).is_ok());
+        } else {
+            assert_eq!(
+                read(&bytes).err().unwrap().to_string(),
+                "struct array input exceeds 64 KiB research limit"
+            );
+        }
+    }
+    let over = array_of_size(MAX_BOUNDED_STRUCT_ARRAY_BYTES + 1);
+    assert_eq!(
+        read_with_limit(&over, MAX_BOUNDED_STRUCT_ARRAY_BYTES)
+            .err()
+            .unwrap()
+            .to_string(),
+        "struct array input exceeds selected byte limit"
+    );
+    // Invalid policy limits fail before attempting any framing, even on empty input.
+    for invalid in [0, MAX_BOUNDED_STRUCT_ARRAY_BYTES + 1, usize::MAX] {
+        assert_eq!(
+            read_with_limit(&[], invalid).err().unwrap().to_string(),
+            "struct array byte limit must be between 1 byte and 128 KiB"
+        );
+    }
+    // A tiny nonzero limit is a valid policy, though it cannot hold a framed array.
+    assert_eq!(
+        read_with_limit(&[], 1).err().unwrap().to_string(),
+        "truncated struct array count"
+    );
+    let empty = array(0, &[], true);
+    assert!(read_with_limit(&empty, empty.len()).is_ok());
+    assert!(read_with_limit(&empty, empty.len() - 1).is_err());
+}
+
+#[test]
+fn larger_candidate_preserves_all_borrowed_spans_and_summary_privacy() {
+    let bytes = array_of_size(66_257);
+    let parsed = read_with_limit(&bytes, bytes.len()).unwrap();
+    let shared = parsed.shared();
+    assert_eq!(parsed.prefix().as_ptr(), bytes.as_ptr());
+    assert_eq!(shared.record.as_ptr(), bytes[4..].as_ptr());
+    assert_eq!(shared.header.as_ptr(), bytes[4..].as_ptr());
+    assert_eq!(
+        shared.payload.as_ptr(),
+        bytes[parsed.prefix().len()..].as_ptr()
+    );
+    let element = &parsed.elements()[0];
+    assert_eq!(element.record().as_ptr(), shared.payload.as_ptr());
+    assert_eq!(
+        element.terminator().as_ptr(),
+        bytes[bytes.len() - END.len()..].as_ptr()
+    );
+    let field = &element.fields()[0];
+    assert_eq!(field.record.as_ptr(), element.record().as_ptr());
+    assert_eq!(field.header.as_ptr(), field.record.as_ptr());
+    assert_eq!(
+        field.payload.as_ptr(),
+        field.record[field.header.len()..].as_ptr()
+    );
+    let summary = parsed.summary();
+    assert_eq!(summary.element_count, 1);
+    assert_eq!(summary.field_count, 1);
+    assert_eq!(summary.opaque_payload_bytes, field.payload.len());
+    assert_eq!(
+        summary.array_prefix_bytes + summary.element_header_bytes + summary.opaque_payload_bytes,
+        bytes.len()
+    );
+    assert!(!summary.world_imported && !summary.values_interpreted);
+    for text in [
+        format!("{summary:?}"),
+        serde_json::to_string(&summary).unwrap(),
+    ] {
+        assert!(!text.contains("AuthoredSecret"));
+        assert!(!text.contains("Demo"));
+    }
+}
+
+#[test]
+fn selected_bound_keeps_element_field_and_framing_caps() {
+    let property = field(NAME, 0, &[0], &[]);
+    let exact = array(
+        1,
+        &element(&property.repeat(MAX_STRUCT_ELEMENT_FIELDS)),
+        false,
+    );
+    assert_eq!(
+        read_with_limit(&exact, MAX_BOUNDED_STRUCT_ARRAY_BYTES)
+            .unwrap()
+            .elements()[0]
+            .fields()
+            .len(),
+        MAX_STRUCT_ELEMENT_FIELDS
+    );
+    let excessive_fields = array(
+        1,
+        &element(&property.repeat(MAX_STRUCT_ELEMENT_FIELDS + 1)),
+        false,
+    );
+    assert_eq!(
+        read_with_limit(&excessive_fields, MAX_BOUNDED_STRUCT_ARRAY_BYTES)
+            .err()
+            .unwrap()
+            .to_string(),
+        "struct array element field count exceeds research limit"
+    );
+    let exact_count = array(
+        MAX_STRUCT_ARRAY_ELEMENTS as i32,
+        &END.repeat(MAX_STRUCT_ARRAY_ELEMENTS),
+        false,
+    );
+    assert_eq!(
+        read_with_limit(&exact_count, MAX_BOUNDED_STRUCT_ARRAY_BYTES)
+            .unwrap()
+            .elements()
+            .len(),
+        MAX_STRUCT_ARRAY_ELEMENTS
+    );
+    let excessive_count = array(
+        MAX_STRUCT_ARRAY_ELEMENTS as i32 + 1,
+        &END.repeat(MAX_STRUCT_ARRAY_ELEMENTS + 1),
+        false,
+    );
+    assert_eq!(
+        read_with_limit(&excessive_count, MAX_BOUNDED_STRUCT_ARRAY_BYTES)
+            .err()
+            .unwrap()
+            .to_string(),
+        "struct array element count exceeds research limit"
+    );
+    let good = array(1, &element(&property), true);
+    for length in 0..good.len() {
+        assert!(read_with_limit(&good[..length], MAX_BOUNDED_STRUCT_ARRAY_BYTES).is_err());
+    }
+    for invalid in [
+        array(-1, END, false),
+        array(0, END, false),
+        array(2, END, false),
+        array(MAX_STRUCT_ARRAY_ELEMENTS as i32, &[], false),
+        [&1_i32.to_le_bytes()[..], &field(NAME, 0, &[0], END)].concat(),
+        [good.as_slice(), &[0]].concat(),
+    ] {
+        assert!(read_with_limit(&invalid, MAX_BOUNDED_STRUCT_ARRAY_BYTES).is_err());
+    }
+}
+
+#[test]
+fn selected_bound_rejects_late_failure_after_large_valid_element() {
+    let large = array_of_size(66_257);
+    let first = read_with_limit(&large, large.len()).unwrap().elements()[0]
+        .record()
+        .to_vec();
+    let bad = element(&field(
+        b"\x11\0\0\0AuthoredSecretZZ\0",
+        0,
+        &[0],
+        b"private-value-marker",
+    ));
+    let bytes = array(2, &[first.as_slice(), bad.as_slice()].concat(), false);
+    assert!(bytes.len() > MAX_STRUCT_ARRAY_BYTES);
+    let message = format!("{:#}", read_with_limit(&bytes, bytes.len()).err().unwrap());
+    assert!(message.contains("unsupported tag header kind"));
+    assert!(!message.contains("AuthoredSecret"));
+    assert!(!message.contains("private-value-marker"));
+    let valid = array(2, &[first.as_slice(), &element(&[])].concat(), false);
+    assert_eq!(
+        read_with_limit(&valid, valid.len())
+            .unwrap()
+            .elements()
+            .len(),
+        2
+    );
 }
 
 #[test]
