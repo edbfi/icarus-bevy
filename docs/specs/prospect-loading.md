@@ -561,6 +561,28 @@ profile propagation now reaches conditional ordinary-class dispatch in a bounded
 follow-up, but later field callbacks and supplied-save provenance remain unresolved;
 see [matched-client framing comparison](tagged-properties.md#matched-client-static-comparison).
 
+## C009 top-header comparison
+
+The exact older C009 registration, constructor and primary vtable reach the
+previously reviewed recorder targets. Its exact ancestry contributes 31 optional
+top fields: two own, nine immediate-parent and 20 common-ancestor fields.
+Enum and Struct header identities are separately resolved; nested contents are
+not inferred from them. Static evidence: `work/component-c009-20261012/`.
+
+All 243 current and 243 backup bodies match this schema and independent/native
+source ranges, including the zero trailer and exact comparator EOF. The observed
+maximum is 71,956 bytes, so this comparison uses that explicit byte cap through
+the bounded API; the default remains 64 KiB. Both copies contain 7,533 fields,
+514,674 header/terminator bytes and 972 trailer bytes each. Current opaque values
+total 2,877,588 bytes and backup values 2,872,878, giving 6,781,758 total body
+bytes. Every optional descriptor appears in this population.
+
+The release helper preserves borrowed spans and passes three authored tests,
+including exact bounds, truncation and atomic failure. Independent review,
+native/JS span equality and unchanged input hashes support the result:
+`work/native-c009-top-20261012/`. This qualifies top framing only; child dispatch,
+numeric values, original load success and newer-build equivalence remain open.
+
 ## Independent replacement requirements
 
 The importer must load into staging state, resolve references and validate the
