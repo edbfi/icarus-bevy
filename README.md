@@ -66,6 +66,8 @@ Do not use it to migrate a real world yet.
 and integrity results without extracting the payload or importing a world.
 The optional `--inner-tags` also checks [root property framing](docs/specs/tagged-properties.md)
 under an explicit experimental profile and reports counts; record values remain opaque.
+Use `--recorders` to additionally check recorder field and byte-array boundaries;
+it implies root framing and reports aggregates without class names or component data.
 Validation covers authored fixtures and supplied-save envelope integrity; the
 inner world schema and original-save round trips remain unvalidated.
 The [synthetic workload](docs/synthetic-workload.md) exercises native scheduling
