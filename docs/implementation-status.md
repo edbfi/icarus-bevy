@@ -135,6 +135,18 @@ contracts: S02 Int array/Bool and S01 Str/Int, four optional fields total.
 Ordinary array transfer demand is count plus four bytes per element; tagged Bool
 uses its header and no payload bytes. These are static conditional demands,
 not observed child-value results: `work/c009-own-children-20261012/`.
+All 972 own child bodies now independently/native match immediate headers,
+134,182 bytes and 1,944 fields, with no observed optional omissions. Each copy
+has 243 S02 bodies (30,626 bytes) and 243 S01 bodies (36,465 bytes). The S02 array
+payloads total 980 bytes per copy, ranging from four to 12 bytes; their counts
+and elements remain unread. Prior parent spans reproduce and inputs remain
+unchanged: `work/native-c009-own-20261012/`.
+
+A new explicit Int-array library primitive borrows four-byte opaque elements
+after a signed count, with a 4,096-element cap and exact EOF policy. It preserves
+the caller's obligation to establish the concrete ordinary non-swapping archive
+path. Four focused tests and independent review pass; private array-value
+comparison is pending. Numeric interpretation and world import remain absent.
 
 The exact C034 own Name property now links through its final factory/vtable and
 concrete archive virtual to the established FString reader. No separate wire

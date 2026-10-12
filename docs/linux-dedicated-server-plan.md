@@ -204,7 +204,9 @@ Use this dataset in the next work sequence:
    also match immediate native spans. Exact descriptor bindings now qualify
    8,290 selected nested/own scalar widths. All 486 C009 top bodies now match
    the reviewed 31-field contract and native spans under an explicit 71,956-byte
-   comparison cap. Recover its next concrete child contract; retain the lack of populated
+   comparison cap. Its 972 own child bodies now match immediate native spans;
+   qualify the selected Int-array values with the explicit bounded reader next.
+   Retain the lack of populated
    inherited-array coverage.
    Exact C034 own Name values also pass strict native/independent structural
    decoding across 1,658 spans; name construction and identity semantics remain
