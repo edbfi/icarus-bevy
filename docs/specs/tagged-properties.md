@@ -441,6 +441,14 @@ own-array comparison extends exact span and individual width agreement to all
 1,658 arrays, 15,342 elements and 30,684 fields across both copies; see
 `work/c034-all-own-arrays-20261012/`.
 
+The C009 common-ancestor comparison now also matches 3,402 selected arrays and
+522 populated elements across both copies, including a 66,257-byte CA01 body
+through the explicit-limit API. Six of seven array families have populated
+samples; CA06 is empty. Shared/element/header/value ranges agree exactly while
+values remain opaque. The combined common-child result includes six standalone
+Struct families; see [C009 comparison](prospect-loading.md#c009-top-header-comparison)
+and `work/c009-common-child-headers-20261012/`.
+
 ## Matched-client static comparison
 
 The hash-qualified build-25793767 client provides independent addresses for the

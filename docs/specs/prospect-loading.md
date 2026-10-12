@@ -685,6 +685,24 @@ bindings are still required before child comparison. Other array maxima
 are at most 562 bytes; Struct maxima are at most 343 bytes. Evidence:
 `work/c009-common-child-selection-20261012/`.
 
+The subsequent fresh comparison now qualifies all 6,318 common-child payloads,
+after reproducing both complete top results and every selected range. All 2,916
+standalone streams and 3,402 arrays match native/independent exact spans and older
+optional descriptors. Arrays contain 522 elements; combined immediate fields
+total 9,018, with no observed optional omissions. The 4,732,878 bytes conserve
+318,816 count/shared-header bytes, 470,392 element/stream header and terminator
+bytes and 3,943,670 opaque value bytes.
+
+Per-copy populated-element counts for CA01–CA07 are 139, 33, 41, 33, 10, zero and
+five; observed per-array maxima are four, one, two, four, two, zero and one.
+CA06 provides no populated-element coverage. The explicit measured byte cap
+handles CA01 without increasing count/field limits. All 26 family range/bound
+preflights precede child entry, with exact old/new library/source snapshots and
+876 unchanged bindings. Nine native fixtures, nine independent framing checks,
+main orchestration, six prior-gate checks and independent review pass. Evidence:
+`work/c009-common-child-headers-20261012/`. Leaf values, recursive grammars,
+restoration and complete import remain unknown.
+
 That case corrects the earlier own-child dimension provenance: the common
 property factory reads descriptor offset `+0x20`, including for Bool. Its
 `+0x24` word supplies Bool field size. All six affected Bool descriptors have

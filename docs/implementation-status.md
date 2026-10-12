@@ -20,6 +20,32 @@ locked reinstallation and provider checks. This tooling change does not resume
 the research paused below, qualify the pending v2 retry, or extend historical
 authorization windows. Private inputs, frozen cases and evidence remain retained.
 
+### C009 common-child headers — 2026-10-12, 22:15 UTC
+
+The separately reviewed fresh common-child comparison passes all 6,318 selected
+payloads and 4,732,878 bytes after reproducing both complete native top populations
+and every frozen selection range. Six Struct families contribute 2,916 streams;
+seven Array families contribute 3,402 arrays with 522 total elements. All 9,018
+immediate headers match their optional descriptors, with exact native/independent
+spans and no observed absences. Bytes partition into 318,816 count/shared-header
+bytes, 470,392 element/stream header and terminator bytes, and 3,943,670 opaque
+value bytes.
+
+Six array families have populated samples; CA06 remains entirely empty. Per copy,
+CA01/CA02/CA03/CA04/CA05/CA06/CA07 have 139/33/41/33/10/0/5 elements, with
+maxima 4/1/2/4/2/0/1 per array. These are sample observations, not format limits.
+The 66,257-byte CA01 body uses the explicit cap; count/field caps remain unchanged.
+No leaf values or deeper grammars were interpreted.
+
+Nine native fixture tests (also under 512 MiB), nine independent framing checks,
+actual main orchestration and six actual prior-gate checks pass. Review corrected
+per-copy preflight to complete all 26 measured family batches before any child
+entry; a malformed backup range makes zero child calls. All 876 execution bindings
+remain unchanged. Three explicit transitions preserve the prior source/library
+and removed guard; none of their historical artifacts were mutated.
+Evidence: `work/c009-common-child-headers-20261012/`; summary SHA-256
+`67939440788b396d31461a1c17bc3b4849a7ec6a26e19b11b5eee3e163e5b95f`.
+
 ### Explicit struct-array limits — 2026-10-12, 22:08 UTC
 
 `read_tagged_struct_array_with_limit` now accepts an explicit byte bound through
@@ -726,9 +752,10 @@ supported, and no ICARUS performance or stability improvement has been measured.
 
 ## Next work and maintenance
 
-1. Qualify common-ancestor child headers within measured bounds using the tested
-   explicit struct-array byte-limit API and exact old/new bindings. Continue
-   unresolved value contracts.
+1. Continue unresolved common-child leaf/deeper-value contracts from the qualified
+   immediate headers. Preserve exact descriptor bindings, byte/count/field bounds
+   and old/new source/library receipts. Automatic class/schema recognition and
+   value meanings remain open.
    C009 own-child structure and selected C034 populations already pass the
    comparisons above. Older-build root/recorder framing, dispatch and version
    callbacks are characterized; outer encoding,
