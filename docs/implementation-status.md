@@ -20,6 +20,29 @@ locked reinstallation and provider checks. This tooling change does not resume
 the research paused below, qualify the pending v2 retry, or extend historical
 authorization windows. Private inputs, frozen cases and evidence remain retained.
 
+### C009 deeper-array headers — 2026-10-12, 23:48 UTC
+
+The reviewed ND01 comparison reproduces every prior scalar result, rejoins
+actual CA01 headers to the exact nested Array descriptor, then bounds all 278
+selected spans / 3,902,784 bytes before child entry. Both native and independent
+readers agree on 3,206 elements and 25,648 immediate fields from eight optional
+descriptors, with no observed omissions. Current/backup have 1,604/1,602 elements,
+40 empty arrays each and maximum counts 48/50. These are observations, not limits.
+
+The measured 66,056-byte maximum uses the existing explicit API, preserving
+4,096-element/256-field caps. Bytes conserve 23,352 shared/count-prefix bytes,
+1,388,198 element/header/terminator bytes and 2,491,234 opaque value bytes.
+Native seven-fixture tests pass under 512 MiB; four JavaScript fixture programs
+and independent review pass. The new helper links an exact snapshot of the
+unchanged current `7b5430…` library, with source/tool/binary/log hashes and truthful
+fixity-versus-parsing receipts. All 1,112 bindings remained unchanged. Evidence:
+`work/c009-common-deeper-headers-20261013/`; summary SHA-256
+`ede5ffe4a6a1944f13dfd8c51373efa6c5eccd65a41db8454190a689182e3f96`.
+
+D01 Name/Str/two Int descriptor leaves are the next bounded scalar step. Its four
+Array inner getters remain unqualified; no deeper count/header or value meaning
+was inferred. Official restoration, recognition and gameplay remain open.
+
 ### C009 common-child scalars — 2026-10-12, 23:29 UTC
 
 The fresh reviewed scalar case reproduces the complete top, selection, common
@@ -42,9 +65,9 @@ library is unchanged. Evidence: `work/c009-common-scalar-values-20261013/`;
 summary SHA-256:
 `244e4919870e5b0ecf94826c791a67049823fcfa46e38fc774ff0fe5d3e22626`.
 
-The remaining observed common immediate values are 278 nested Array spans /
-3,902,784 bytes. Their counts, child grammar and meanings are not qualified by
-this scalar result. CA06 also supplies no populated Text/Name element coverage.
+This scalar result leaves 278 nested Array spans / 3,902,784 bytes opaque. The
+subsequent ND01 comparison above qualifies their immediate headers; values and
+deeper grammar remain open. CA06 supplies no populated Text/Name element coverage.
 
 ### C009 common-child binary widths — 2026-10-12, 23:04 UTC
 
@@ -109,6 +132,16 @@ wrapper checks and two independent pre-entry checks pass. The reusable pure
 parser and fixtures now live under `tools/`, with hooks. Evidence:
 `work/control-caller-candidates-20261013/`, result SHA-256
 `e7a65b3efc7f0cc5210f526530bc0955b4b47024363b919f1d1289647ba56461`.
+
+The separately reviewed pointer-context run preserves all 354 bindings and
+verified cleanup. Its 128-byte window contains nine executable-address pointers
+ending at the dispatcher, followed by seven unmapped words. No qualifying locator
+pointer exists in this window, so no locator bodies or optional LEA scan ran.
+RTTI absence, table identity and owner remain unproved. Evidence:
+`work/control-dispatch-owner-20261013/`; result SHA-256
+`23a603994a721697446b88cbf66693b07fd95423f1dd68f549c8a3e7c5737df1`.
+The next targeted discriminator is address-reference candidates to the nine exact
+observed slots, with instruction/constructor identity still requiring confirmation.
 
 ### C009 common-child headers — 2026-10-12, 22:15 UTC
 

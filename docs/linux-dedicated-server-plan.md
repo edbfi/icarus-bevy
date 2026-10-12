@@ -228,8 +228,10 @@ Use this dataset in the next work sequence:
    spans / 19,600 bytes against individual 16/12/12/16-byte demands after complete
    prior replay. A subsequent exact scalar case qualifies 750 strict Name frames
    and 6,522 individual Int/UInt32/Float/Bool widths; 26 descriptors have populated
-   coverage, with CA06 Name still empty. Continue the 278 opaque deeper arrays
-   from checked metadata and preserve unqualified meanings/restoration. See
+   coverage, with CA06 Name still empty. Those 278 deeper arrays subsequently
+   qualify 3,206 ND01 elements and 25,648 immediate fields with unchanged limits.
+   Continue ND01 scalar leaves and recover its four unresolved inner array
+   contracts; preserve unqualified meanings/restoration. See
    the current checkpoint in implementation status.
    Retain the lack of populated
    inherited-array coverage.

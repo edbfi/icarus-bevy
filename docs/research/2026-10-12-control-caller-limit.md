@@ -122,3 +122,30 @@ Evidence: `work/control-caller-candidates-20261013/`; result SHA-256
 `e7a65b3efc7f0cc5210f526530bc0955b4b47024363b919f1d1289647ba56461`.
 This authored fallback result is not returned REA Evidence and establishes no
 control archive, byte order, admission rule or client compatibility.
+
+## Exact pointer context
+
+A separately reviewed fresh case inspected a 128-byte window at
+`0x145468158`–`0x1454681d8`, including the exact candidate at `0x145468198`.
+It emits mapped addresses/flags only; unmapped values become `null`, without raw
+bytes or names. A structural locator discriminator uses a pinned public compiler
+profile: six u32 fields, image-relative signature/self relationships and bounded
+descriptor mappings. It never claims RTTI, class identity or table ownership.
+The primary ABI source is [LLVM MicrosoftCXXABI.cpp at e0416baf](https://github.com/llvm/llvm-project/blob/e0416baf412b44d09be9b300b50a15c57cdf148b/clang/lib/CodeGen/MicrosoftCXXABI.cpp).
+Source/license/retrieval provenance are retained separately from the strictly
+offline target run. The original compiler/profile is not established by this
+reference. The potential secondary LEA scan was explicitly disabled.
+
+Eighteen authored and eleven independent structural fixtures, twenty-eight
+wrapper checks and two independent pre-entry checks pass. The actual run passed
+with all 354 bindings unchanged and verified owned cleanup. The first nine
+window entries map executable addresses, ending at the dispatcher; seven following
+words are unmapped. No preceding slot points to a qualifying locator, so zero
+locator bodies were read and no table hypothesis or LEA result was produced.
+This does not prove RTTI is disabled or that the sequence is a vtable.
+
+Evidence: `work/control-dispatch-owner-20261013/`; result SHA-256
+`23a603994a721697446b88cbf66693b07fd95423f1dd68f549c8a3e7c5737df1`.
+The next bounded discriminator is reference-pattern candidates to these nine
+exact observed slots. Instruction boundaries, constructor/owner identity and
+the actual archive path still require separate confirmation.
