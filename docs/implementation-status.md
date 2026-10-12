@@ -58,9 +58,14 @@ large-span overflow safety is unproved. Evidence and independent semantic review
 now links the corresponding two descriptors to disabled native/post callbacks and
 conditional tagged dispatch. Its recorder restore constructs version 522/loading
 state with the relevant framing flags clear at the component Serialize handoff.
-The downstream serializer is not yet traced; profile propagation, deferred N02
-operations installation and dedicated-server equivalence remain unresolved.
 Independent semantic review passes: `work/client-c034-own-array-20261012/`.
+A follow-up follows the same archive through the structured wrapper to conditional
+ordinary-class tagged dispatch and links the N02 startup installer to its exact
+name-keyed deferred lookup. These are bounded static correspondences: object-only
+helper side effects, later field callbacks, runtime class selection, successful
+initialization/allocation and later registration replacement remain outside the
+proof. Dedicated-server equivalence remains unresolved. Independent review:
+`work/client-profile-ops-20261012/`.
 
 Broader C034 top framing now passes in two separate native batches: all 829
 records per copy, 1,658 records and 8,398,406 bytes in total. Every independent
@@ -68,8 +73,14 @@ header/value/terminator/trailer span matches the native reader, and input hashes
 are unchanged. Per copy, 17,409 fields account for 1,202,879 header/terminator
 bytes, 2,993,008 opaque value bytes and 3,316 trailer bytes. No optional descriptor
 is missing in these records; this is population observation, not mandatory-field
-evidence. Own/deeper parsing remains at the earlier selected coverage. Evidence:
-`work/c034-all-headers-20261012/`; five helper tests and independent harness review pass.
+evidence. Evidence: `work/c034-all-headers-20261012/`; five helper tests and independent
+harness review pass. A subsequent fresh own-struct comparison also passes for all
+1,658 bodies, totaling 2,958,178 bytes. Per copy, 6,632 fields account for 372,221
+header/terminator bytes and 1,106,868 opaque value bytes; all eight optional
+descriptors appear. Every prior parent span is reproduced before own parsing,
+and all own spans match the native reader with unchanged bindings. Six helper
+tests pass: `work/c034-all-own-headers-20261012/`. Own-array element coverage
+remains at the earlier four selections; broader comparison is next.
 
 A live SSH fetch reconciled the stale remote cache: all checkpoint commits through
 `b55e4ce` were already delivered. No client files were removed and no original
@@ -138,19 +149,21 @@ Continue in this order within the existing plan:
    bytes, exact EOF and no missing optional descriptors in these samples.
    Fresh eleven-kind native qualification now passes on every selected span.
    Own-array static review and populated shared-header/element comparison now pass.
-   Next trace matched-client downstream profile propagation and recover
+   Next complete the matched-client Float constructor/transfer contract and recover
    the next required value contract, keeping unknown values opaque. Selected
    own-array Struct/Float widths now agree individually with the older static
    transfer demands; all 1,658 C034 top bodies now have exact native/independent
-   span agreement. Extend own/deeper coverage under fresh per-copy bounds. The
+   span agreement. All 1,658 own structs now agree too; extend own-array element
+   coverage under fresh per-copy bounds. The
    existing component batch helper's 8 MiB transport cap cannot fit all C034
    records from both copies together; use separate per-copy batches or a newly
    reviewed helper rather than changing frozen evidence.
 4. Client identity and targeted import/symbol reconnaissance are complete. Use the
    qualified anchors: selected tag/array semantic comparison now agrees under its
    explicit branch conditions. Concrete C034 registration/conditional dispatch and
-   restore-entry profile are reviewed; trace downstream propagation and the nested
-   N02 deferred operations binding next. The older server
+   restore-entry profile are reviewed; conditional class dispatch propagation and
+   the N02 deferred installer/lookup now have bounded static correspondence.
+   Recover the exact client Float factory/transfer contract next. The older server
    remains build 25621760; do not transfer its addresses or behavior assumptions
    blindly to client build 25793767. No original runtime, client session or network
    experiment was started in this handoff.

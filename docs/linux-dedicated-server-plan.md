@@ -191,10 +191,13 @@ Use this dataset in the next work sequence:
    numeric values remain opaque.
    Matched-client generic tag/array branches also agree under explicit conditions;
    concrete client C034 registration now supports conditional tagged dispatch and
-   its restore entry constructs a version-522 loading archive. Downstream profile
-   propagation and deferred N02 operations binding remain next static checks.
+   its restore entry constructs a version-522 loading archive. A bounded follow-up
+   carries that profile to conditional ordinary-class dispatch and links the N02
+   deferred installer/lookup; later callbacks and initialization lifecycle remain
+   unproved. Resolve the exact client Float factory/transfer contract next.
    Separate bounded per-copy batches now qualify all 1,658 C034 top bodies with
-   exact native/independent spans; extend own/deeper coverage next.
+   exact native/independent spans. All 1,658 own structs now agree as well;
+   extend own-array element coverage next using the recorded enclosing spans.
    Generic framing and width agreement do not establish an importable world.
    Eleven distinct prospect payloads and seven member tuples are observed, but
    structures, inventories, tames, missions and full ownership fidelity remain
