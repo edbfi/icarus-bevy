@@ -112,6 +112,11 @@ record historical research batches; the overnight runtime window has expired.
   a distinct backup: decoded sizes 18,513,234 and 18,492,675 bytes, matching hashes,
   with `world_imported: false`. Source copies remained unchanged. No private fixture
   is tracked; inner world serialization remains unsupported.
+- N-005 closes an encoding-validation gap in ignored envelope metadata. Whole-input
+  UTF-8 validation precedes JSON field selection, preventing malformed skipped
+  strings from producing a successful inspection. Authored regressions cover
+  invalid bytes, overlong encodings and encoded surrogates, with valid Unicode
+  controls. Private reproduction: `work/native-codec-review-20261012/`.
 - Active normal dependency graph excludes Bevy rendering/window/audio backends;
   release executable links only the platform loader, libc and libgcc_s on this host.
 - CI definition validates formatting, Clippy, tests, release build and headless smoke.

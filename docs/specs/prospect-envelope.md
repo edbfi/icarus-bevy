@@ -51,6 +51,8 @@ The limits are conservative research choices, not recovered ICARUS limits:
 - Maximum raw input: 4 MiB; maximum declared output: 32 MiB.
 - Accept UTF-8 JSON or explicitly BOM-marked UTF-16LE JSON. Reject odd UTF-16 byte
   lengths and unpaired surrogates; do not guess encodings or replace malformed text.
+- Validate the entire UTF-8 input before skipping unknown JSON fields. Invalid
+  bytes in ignored metadata must not produce a successful integrity report.
 - Required known fields use exact names and types, with duplicates rejected.
   Unrelated JSON fields, including `ProspectInfo` and `Key`, are skipped.
 - Reject negative lengths, malformed lowercase SHA-1 and malformed Base64.
@@ -134,3 +136,5 @@ preserves the source and creates no state directory. Additional authored tests
 cover BOM-marked UTF-16LE, non-BMP characters, malformed surrogates/code units,
 rejected guessed encodings, exact raw bounds in both encodings, output above the
 former 16 MiB cap and streams that expand beyond their declared size.
+Malformed UTF-8 fixtures also cover ignored fields: raw invalid bytes, overlong
+encodings and encoded surrogates are rejected while valid Unicode is accepted.
