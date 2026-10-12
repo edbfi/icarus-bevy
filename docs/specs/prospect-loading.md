@@ -39,8 +39,8 @@ prove that the reporting call returns.
 ## Inner state and version dispatch (2026-10-12)
 
 Targeted follow-up in `work/save-schema-20261012/` reverified the preserved executable
-hash, inspected metadata and exported thirty-six selected
-functions in six bounded Ghidra batches. No original execution or packaged asset
+hash, inspected metadata and exported forty selected
+functions in seven bounded Ghidra batches. No original execution or packaged asset
 extraction occurred. These observations belong to **build 25621760**; the user's
 supplied save is reported from **25793767**, so cross-build compatibility remains
 unvalidated.
@@ -128,7 +128,9 @@ consumes one byte per element on that branch, so this array's payload is a signe
 scan described in the [tag specification](tagged-properties.md) reaches the exact
 recorder-array boundary on both selected saves. It does not interpret those bytes.
 
-The sixth batch identifies the concrete restore entry `0x1414b83c0`: it resolves
+### Component byte dispatch
+
+The concrete restore entry `0x1414b83c0` resolves
 the recorder's class string, constructs a component and invokes virtual slot
 `+0x4a0` with the recorder and load context. Failure to resolve or construct the
 component returns null through separate diagnostic paths. The decoded-state array
@@ -138,13 +140,34 @@ The base state-recorder component vtable at `0x144a5eb40` resolves `+0x4a0` to
 `0x1418a9c80`. This method constructs memory-reader vtable `0x1447a9470` over the
 recorder's `BinaryData`, sets loading, clears flag `0x80`, adds flag mask
 `0x04008000` at archive offset `+0x28`, then invokes component virtual `+0xa0`.
-The base target for that second slot is `0x1418aaf70`; derived overrides and its
-serialization contract remain to be resolved. The wrapper shows no exact EOF
+The base target for that second slot is `0x1418aaf70`. The wrapper shows no exact EOF
 check. Neither that absence nor a decompiled class-mismatch branch establishes an
 original defect or a supported migration.
 
-Next: resolve component `+0xa0` serialization, flag-dependent filtering and derived
-overrides before interpreting `BinaryData` or comparing semantic state. Preserve legacy fields
+The base serializer calls `0x14346c410` → structured wrapper `0x142123530` →
+`0x1421235a0` → property selector `0x142123f50`. On this loading path, the selector
+calls class-schema slot `+0x2a0`; both observed `UClass` vtables resolve that slot
+to `0x14200ea70`, and the clear archive `0x20` bit selects tagged properties.
+The concrete archive hooks checked on this path are return-only leaves.
+
+The added `0x04000000` archive flag also affects field eligibility: predicate
+`0x14215be10` rejects fields lacking property flag `0x01000000`, with other gates
+still applying. Rejected fields are skipped by declared size. Separately, that
+archive flag plus a false virtual `+0x200` result enables name/type-remapping
+branches. This does not establish how every saved field should be interpreted.
+
+After properties, `0x1421235a0` calls `0x14202f1f0`. With the observed flags it
+reads a four-byte boolean; a nonzero value reads four further 32-bit words through
+`0x141f1c300`, a 16-byte GUID, before registry handling. Thus property termination
+does not mark component EOF. The original's direct-buffer boolean path accepts
+nonzero values while its fallback flags values above one; a strict research reader
+may accept only zero/one without claiming identical original tolerance.
+
+Finally, the base component serializer invokes virtual `+0x488` when loading an
+eligible object. Its base target is a return-only leaf, but derived components may
+override this or earlier slots. Verify the concrete saved class's methods before
+applying this base layout to its bytes. Component values, reference resolution,
+post-load effects and newer-build fidelity remain unresolved. Preserve legacy fields
 and version-zero migration requirements; an importer cannot safely flatten them
 into the current native snapshot schema.
 
@@ -152,8 +175,9 @@ Case Evidence E-002 records registration/vtables, E-003 the property metadata,
 E-004 version callbacks, E-005 the caller chains, E-006 schema construction,
 E-007 serializer branches, E-008 archive mode initialization, E-009 tag/name
 primitives, E-010 payload/array boundaries, E-011 nested recorder dispatch and
-E-012 byte-array element encoding, E-013 recorder restoration and E-014 component
-archive dispatch. The case report links them to
+E-012 byte-array element encoding, E-013 recorder restoration, E-014 component
+archive dispatch, E-015 base component serialization and E-016 filtering/trailer
+contracts. The case report links them to
 findings and call paths; strict review verified all artifact hashes with zero
 errors/warnings. Primary decompilation, disassembly and exact commands remain private.
 
