@@ -186,6 +186,11 @@ The exact enum-backed Byte field separately follows Name/FString transfer under
 the concrete loading profile; its internal byte size is not serialized width.
 Independent review preserves unresolved enum lookup, error and EOF behavior:
 `work/c009-byte-value-contract-20261012/`. No supplied enum value was read.
+Both top-level EnumProperty fields separately bind their exact underlying Byte
+helpers through factory recursion. Ordinary loading also reads Name/FString,
+then performs enum resolution and an internal byte store; that store adds no
+serialized byte. Independent review retains unresolved lookup, error, EOF and
+supplied-value behavior: `work/c009-top-enum-contract-20261012/`.
 
 The exact C034 own Name property now links through its final factory/vtable and
 concrete archive virtual to the established FString reader. No separate wire
