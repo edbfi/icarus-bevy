@@ -199,8 +199,9 @@ Use this dataset in the next work sequence:
    Separate bounded per-copy batches now qualify all 1,658 C034 top bodies with
    exact native/independent spans. All 1,658 own structs now agree as well;
    all own arrays also agree across 15,342 elements/30,684 fields, including
-   individual 12-/four-byte demands. Extend inherited-array coverage next using
-   recorded enclosing spans and exact shared ancestor contracts.
+   individual 12-/four-byte demands. All 11,606 inherited arrays now independently
+   match native shared framing and are empty. Qualify the six inherited Struct
+   populations next; retain the lack of populated inherited-array coverage.
    Generic framing and width agreement do not establish an importable world.
    Eleven distinct prospect payloads and seven member tuples are observed, but
    structures, inventories, tames, missions and full ownership fidelity remain

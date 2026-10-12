@@ -318,7 +318,8 @@ tagged contracts and 17 optional immediate field descriptors. Further static wor
 resolves D01 to eight optional tagged fields and D02 to four four-byte native
 transfer demands. D01's four array-child registrations now resolve to tagged
 streams with eight optional leaf fields in total: five Int and three Str. Int
-demands four bytes under the reviewed profile; Str values remain opaque.
+demands four bytes under the reviewed profile; the later exact Str adapter
+links to the established FString contract. Supplied values remain opaque.
 Contracts and independent review: `work/c028-d01-array-children-20261012/`.
 These are conditional static grammars, not populated-save agreement; runtime
 migration and newer-build equivalence remain unresolved.
@@ -462,3 +463,8 @@ The buffered path precedes loading/swap checks, so no arbitrary-archive validity
 claim follows. No local version/custom-version or post callback changes the
 demand in these bodies. Outer selection, archive success, numeric semantics and
 exact EOF remain separate. Independent semantic and strict evidence reviews pass.
+
+All seven inherited C034 array families now have full empty-population
+qualification: 11,606 arrays across both copies, with exact native/independent
+shared spans and no elements. This adds no populated coverage for their deeper
+child grammars. Evidence: `work/c034-inherited-arrays-20261012/`.

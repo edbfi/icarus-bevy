@@ -55,3 +55,18 @@ cargo test --locked --test archive
 Before promoting this primitive into negotiation, validate the actual archive
 flags and byte order from controlled stock-client traffic, decide each normalization
 difference explicitly, and retain identity/platform checks above the field codec.
+
+## Concrete string-property link
+
+A later exact-build trace binds StrProperty vtable `0x144ef2918` virtual `0x90`
+to the 15-byte adapter `0x142166670`, which tailcalls the existing FString reader
+`0x141e15db0` with the same archive and destination. No intervening tag, version
+gate or post processing appears in the adapter. The frozen string research and
+fresh byte checks establish this concrete link without reading supplied values.
+
+Successful demand is four count bytes plus the declared narrow byte count or
+twice the declared wide-unit magnitude; zero and magnitude-one cases retain
+their distinct consumption. Original normalization, unit-based archive limits,
+transfer failure and the lack of enclosing EOF validation remain as documented
+above. The native strict subset is not an exact original acceptance oracle.
+Independent semantic and strict review: `work/str-value-contract-20261012/`.
