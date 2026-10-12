@@ -454,6 +454,15 @@ equal values. This scan does not enter own or deeper payloads. Five authored
 helper tests, independent harness review and unchanged bindings support the result:
 `work/c034-all-headers-20261012/`.
 
+A subsequent own-struct population comparison first reproduces every parent
+span, then independently checks all 829 own structs per copy against the current
+native reader. Per copy, 1,479,089 bytes contain 6,632 fields, 372,221
+header/terminator bytes and 1,106,868 opaque value bytes. All eight optional
+descriptors appear, without a mandatory-field claim. Own sizes range from 572 to
+28,606 bytes. No inner array or numeric value is parsed in this step. Exact EOF,
+source fixity, six helper tests and independent harness review pass; evidence:
+`work/c034-all-own-headers-20261012/`.
+
 The separate older-build own-array contract resolves child `0x145ee1220` through
 its exact getter and operations table to tagged serialization. Its two immediate
 optional descriptors are Struct and Float; the Struct getter resolves prior N02.
@@ -501,7 +510,8 @@ Matched-client generic tag/array functions now independently agree with the
 examined older version gates and shared-header branch. A subsequent concrete
 registration trace supports conditional C034 own-array tagged dispatch and a
 version-522 loading archive at the restore-to-Serialize handoff. Downstream
-profile propagation and supplied-save provenance remain unresolved;
+profile propagation now reaches conditional ordinary-class dispatch in a bounded
+follow-up, but later field callbacks and supplied-save provenance remain unresolved;
 see [matched-client framing comparison](tagged-properties.md#matched-client-static-comparison).
 
 ## Independent replacement requirements

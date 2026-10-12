@@ -423,9 +423,22 @@ No mandatory-field or unconditional runtime-selection rule follows.
 
 The concrete client restore path constructs version 522 with loading enabled and
 relevant binary/tagged, partial-selection and byte-swap flags clear immediately
-before component Serialize. Its downstream call to `0x1437016b0` remains untraced,
-so the handoff profile is not yet joined to the field dispatch path. The nested
-N02 has a corresponding three-four-byte-transfer operations candidate, but its
-null factory requires deferred-registry binding proof before claiming selection.
+before component Serialize. At this stage, its downstream call to `0x1437016b0` and the nested N02
+deferred-registry binding were still unresolved.
 Evidence and independent semantic review: `work/client-c034-own-array-20261012/`.
 No supplied-save load or matched dedicated-server behavior is established.
+
+The subsequent `work/client-profile-ops-20261012/` trace preserves the same archive
+through that component call and its structured wrapper to conditional ordinary-
+class tagged dispatch. This is a local dataflow argument under the reviewed
+memory-reader/class-table assumptions, not an audit of object-only helper side
+effects or later property callbacks. Runtime class selection remains unproved.
+
+N02 now has a concrete initializer-table entry installing the exact operations
+table under the matching private name; its deferred registration and preparation
+use the same registry and full name key. Successful normal initialization,
+allocation, canonical name matching and no later replacement remain conditions.
+The native branch precedes forced-binary fallback, supporting the selected
+three-four-byte transfer demand under those conditions. Initializer execution,
+ordering, exact EOF and numeric semantics are not established. Independent
+semantic and strict evidence reviews pass.
