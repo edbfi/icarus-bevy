@@ -222,8 +222,10 @@ Use this dataset in the next work sequence:
    top scalar structures/widths after complete top replay; original failures and
    preparation remain preserved. The tested explicit struct-array byte-limit API
    now supports the measured 66,257-byte common-ancestor array while retaining
-   default/count/field limits. Bind the exact source/library transition before
-   entering those child headers. See the current checkpoint in implementation status.
+   default/count/field limits. Fresh exact source/library bindings now qualify
+   all 6,318 common-child payloads, 522 array elements and 9,018 immediate fields.
+   Continue unresolved leaves/deeper grammars from these checked headers. See
+   the current checkpoint in implementation status.
    Retain the lack of populated
    inherited-array coverage.
    Exact C034 own Name values also pass strict native/independent structural
