@@ -734,6 +734,24 @@ explicit. Evidence: `work/c009-common-scalar-values-20261013/`, summary SHA-256
 The 278 observed nested Array payloads / 3,902,784 bytes remain opaque. No populated
 CA06 Text/Name, numeric meaning, recursive restoration or complete import is proved.
 
+The subsequent ND01 case rejoins actual CA01 headers to descriptor `0x144aba698`
+and exact inner helper/getter/schema/ops evidence, preserving ordinary tagged
+Array→Struct conditions. Both copies' 278 ranges / 3,902,784 bytes are bounded
+before any ND01 count/header entry. Independent and native exact framing agree
+on 3,206 elements / 25,648 fields from eight optional descriptors, with no observed
+omissions. Current/backup have 1,604/1,602 elements and 40 empty arrays each;
+observed per-array maxima are 48/50. The selected 66,056-byte cap preserves the
+library's 4,096-element/256-field limits.
+
+Byte conservation yields 23,352 prefix bytes, 1,388,198 header/terminator bytes
+and 2,491,234 opaque values. Seven native fixtures under 512 MiB, four JavaScript
+fixture programs and independent review pass; 1,112 execution bindings are exact.
+The helper links the unchanged current library through an explicit snapshot.
+Evidence: `work/c009-common-deeper-headers-20261013/`, summary SHA-256
+`ede5ffe4a6a1944f13dfd8c51373efa6c5eccd65a41db8454190a689182e3f96`.
+D01 scalar structures/widths and four Array inner schemas remain separate next
+steps. No numeric meaning, deeper restoration or complete import is qualified.
+
 The common-header case corrects the earlier own-child dimension provenance: the common
 property factory reads descriptor offset `+0x20`, including for Bool. Its
 `+0x24` word supplies Bool field size. All six affected Bool descriptors have
