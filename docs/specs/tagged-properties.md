@@ -45,7 +45,11 @@ unsupported normalizations instead of reproducing the original's corrections.
 
 Struct tags add a struct name and 16-byte struct GUID. Array tags add an inner type
 name. Byte and enum tags add an enum name. Boolean tags carry a one-byte value in
-the header. Integer, string and name tags have no extra type-specific metadata.
+the header. Signed integer, unsigned 32-bit integer, string and name tags have no
+extra type-specific metadata. The older built-in name table identifies
+`UInt32Property` as ID 25; it reaches the common GUID flag without type-specific
+extensions in `0x14215f530`. Supporting this header does not decode or validate
+its numeric payload.
 The older tag reader gates struct GUIDs at archive version 441, array inner types
 at 282 and property GUIDs at 503; all apply at 522. Other profiles are unsupported.
 
@@ -62,7 +66,7 @@ profile. The root scanner deliberately leaves that entire body opaque.
   including any terminator; check counts before allocating strings.
 - Reject negative sizes or indices, truncated headers/values, unsupported type
   headers and noncanonical boolean/GUID-presence bytes.
-- Accept canonical `ArrayProperty`, `StructProperty`, `StrProperty`, `IntProperty`,
+- Accept canonical `ArrayProperty`, `StructProperty`, `StrProperty`, `IntProperty`, `UInt32Property`,
   `NameProperty`, `ByteProperty`, `EnumProperty` and `BoolProperty` headers. Empty header names and
   other property kinds are unsupported by this initial subset.
 - Preserve original header and value spans, including unknown field names, without

@@ -140,6 +140,12 @@ record historical research batches; the overnight runtime window has expired.
   truncation fixtures pass; full manual checks and release qualification preserve
   both copies' existing envelope/root/recorder results and source hashes.
   Evidence: `work/native-name-header-20261012/` and static case E-018.
+- The header reader now accepts `UInt32Property` with common property-GUID
+  handling and no type-specific extensions, following the older built-in ID 25
+  and tag-reader path. Authored absent/present GUID fixtures preserve four-byte
+  and arbitrary opaque payloads; every truncation is rejected. Focused tests,
+  full manual checks, release build and independent review pass. Numeric values
+  remain uninterpreted. Static evidence: `work/c028-structs-20261012/`.
 - A separate library API frames an explicitly selected base-component candidate:
   opaque tagged properties, `None`, a zero four-byte trailer and EOF. It bounds
   input to 64 KiB/256 fields, rejects GUID trailers and exposes immutable spans
