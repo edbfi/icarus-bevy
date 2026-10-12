@@ -50,6 +50,35 @@ fn fixtures() -> Vec<(TagKind, Vec<u8>, Vec<u8>)> {
             opaque.clone(),
         ),
         (
+            TagKind::Float,
+            // Framing intentionally accepts a non-scalar-width opaque payload.
+            record(b"\x0e\0\0\0FloatProperty\0", &[0], &[1, 2, 3]),
+            vec![1, 2, 3],
+        ),
+        (
+            TagKind::Float,
+            record(
+                b"\x0e\0\0\0FloatProperty\0",
+                &[&[1][..], &[9; 16]].concat(),
+                &opaque,
+            ),
+            opaque.clone(),
+        ),
+        (
+            TagKind::Text,
+            record(b"\x0d\0\0\0TextProperty\0", &[0], &[]),
+            Vec::new(),
+        ),
+        (
+            TagKind::Text,
+            record(
+                b"\x0d\0\0\0TextProperty\0",
+                &[&[1][..], &[9; 16]].concat(),
+                &opaque,
+            ),
+            opaque.clone(),
+        ),
+        (
             TagKind::Name,
             record(b"\x0d\0\0\0NameProperty\0", &[0], &opaque),
             opaque.clone(),
@@ -127,11 +156,18 @@ fn manual_headers_preserve_opaque_source_spans_without_parsing_values() {
     assert_eq!(parsed.terminator, END);
     let summary = parsed.summary();
     assert_eq!(summary.profile, "experimental_memory_archive_522");
-    assert_eq!(summary.root_property_count, 11);
+    assert_eq!(summary.root_property_count, 15);
     assert_eq!(
         summary.header_bytes + summary.opaque_payload_bytes,
         bytes.len()
     );
+    for text in [
+        format!("{summary:?}"),
+        serde_json::to_string(&summary).unwrap(),
+    ] {
+        assert!(!text.contains("not another root tag"));
+        assert!(!text.contains("Demo"));
+    }
 }
 
 #[test]
@@ -164,6 +200,15 @@ fn invalid_sizes_indices_and_noncanonical_flags_fail() {
     let zero = record(b"\x0c\0\0\0IntProperty\0", &[0], &[]);
     // No IntProperty value-width validation is implied by root-only framing.
     assert!(read(&[zero.as_slice(), END].concat()).is_ok());
+    for kind in [
+        b"\x0e\0\0\0FloatProperty\0".as_slice(),
+        b"\x0d\0\0\0TextProperty\0".as_slice(),
+    ] {
+        let bytes = [record(kind, &[2], b"private-marker").as_slice(), END].concat();
+        let message = format!("{:#}", read(&bytes).err().unwrap());
+        assert!(message.contains("unsupported tag flag"));
+        assert!(!message.contains("private-marker"));
+    }
 }
 
 #[test]

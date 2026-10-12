@@ -67,7 +67,8 @@ profile. The root scanner deliberately leaves that entire body opaque.
 - Reject negative sizes or indices, truncated headers/values, unsupported type
   headers and noncanonical boolean/GUID-presence bytes.
 - Accept canonical `ArrayProperty`, `StructProperty`, `StrProperty`, `IntProperty`, `UInt32Property`,
-  `NameProperty`, `ByteProperty`, `EnumProperty` and `BoolProperty` headers. Empty header names and
+  `NameProperty`, `FloatProperty`, `TextProperty`, `ByteProperty`, `EnumProperty`
+  and `BoolProperty` headers. Empty header names and
   other property kinds are unsupported by this initial subset.
 - Preserve original header and value spans, including unknown field names, without
   rewriting, normalizing or interpreting their contents.
@@ -80,6 +81,16 @@ types, ownership, reference integrity, recorder counts or migration fidelity.
 Opaque integer or array values are not semantically validated by their tag names.
 Name values likewise remain opaque; their in-memory width is not their serialized
 width. The reference name-value reader uses the archive string/name primitive.
+
+Float/Text headers have no type-specific extensions in this profile; both use
+the common property-GUID flag and optional 16-byte GUID. Payloads remain opaque,
+including lengths that would not represent a scalar float or valid text value.
+The frozen contract in `work/c028-array-children-20261012/static/header-kind-contracts-v2.json`
+supports this header handling. Independent source review, the full manual suite
+and release build passed. Qualification in `work/native-float-text-20261012/`
+preserves both supplied copies' prior envelope/root/recorder results and hashes;
+it does not establish supplied Float/Text value coverage. Historical native helper
+binaries still contain the earlier nine-kind reader and remain preserved.
 
 ## Evidence and verification
 

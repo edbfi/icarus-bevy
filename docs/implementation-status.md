@@ -6,29 +6,26 @@ protocol interoperability, authentication, gameplay, world-data parity and
 official-save import have not been demonstrated. Release reliability and
 performance targets remain unproven. Last reconciled: 2026-10-12.
 
-## Paused handoff — 2026-10-12
+## Continuation — 2026-10-12
 
-The user explicitly paused work to continue with another agent. All three delegated
-research/implementation agents have stopped. Do not resume research, tests or
-implementation until requested. No client files were removed.
+The user requested continuation after the paused handoff. No client files were
+removed and no original runtime or connected-client experiment has started.
 
-The last implemented, fully checked and pushed increment is `93ef9e9`
+The previous implemented, fully checked and pushed increment was `93ef9e9`
 (`feat(saves): frame caller-selected tagged struct arrays`) on
 `feat/native-server-foundation`. Local and remote branch tips matched at pause.
 Its full manual suite, release build, independent review and selected supplied-array
 qualification passed. The project still cannot import an official world or admit
 an authenticated stock client.
 
-Two source files intentionally remain **uncommitted**:
-`src/experimental/tagged.rs` and `tests/tagged.rs`. They add opaque
-`FloatProperty` and `TextProperty` headers with common GUID handling and no
-type-specific extensions. The implementation agent reports formatting/diff checks
-and all six focused tagged tests passing, including new GUID, truncation, arbitrary
-payload and privacy fixtures. Root integration review, full manual checks, release
-build and supplied-data qualification have **not** run for this latest change.
-The existing release library and private native helpers still bind the earlier
-nine-kind reader; do not attribute Float/Text support to those frozen artifacts.
-The following status sections describe committed behavior unless stated otherwise.
+The pending Float/Text change has completed root integration and independent
+source review against the hash-bound frozen contract, the full manual suite and
+release build. Both supplied copies preserve their prior envelope/root/recorder
+outputs and input hashes. GUID, truncation, arbitrary opaque payload and privacy
+fixtures cover the new headers; no supplied Float/Text values are qualified.
+Evidence is retained in `work/native-float-text-20261012/`. The prior release
+executable/library were copied and hashed before rebuilding; historical private
+native helpers and source snapshots still bind the earlier nine-kind reader.
 
 The user reported SteamCMD's exact completion message, `Success! App '1149460'
 fully installed.`, for the **full** client at
@@ -56,11 +53,10 @@ committed evidence below:
 | `component-c034-20261012/` | Exact older class registration/vtable resolves to the same reviewed load/serialize/postload targets as C028. Optional top schema has 21 fields: seven Struct, two Int, seven Array, two Name, one Enum, one Str, one Bool. No supplied C034 body has been read. Strict review passes. |
 | `c034-own-struct-20261012/` | Own struct `0x145ee11d0` selects tagged framing; eight optional logical fields are Array, Bool, three Int, Struct, Float and Name. Struct child exactly matches earlier N02 (`0x145efe320`, successful 12-byte native demand); new array child `0x145ee1220` is only identified. Strict review passes; no supplied-body observation. |
 
-On resumption, use this order within the existing plan:
+Continue in this order within the existing plan:
 
-1. Review the pending Float/Text source diff against the frozen header contract;
-   complete the project checks and release build before committing/pushing it.
-   Preserve historical helper binaries and their source snapshots.
+1. Float/Text source review, full checks, release build and supplied-copy regression
+   qualification are complete. Preserve historical helpers and their source snapshots.
 2. Review the **prepared-only** C034 probe at
    `work/save-triage-20261012/component-c034-headers/` (`PREPARED.md`, `probe.cjs`,
    `run-once.cjs`, `prepared.sha256`). No session or execution exists. It validates
