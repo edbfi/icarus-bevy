@@ -425,6 +425,18 @@ the reviewed session, scope, scripts and static bindings under
 and Bool header values were not compared. Equal framing totals do not establish
 equal state, newer-build semantics, native-reader agreement or import fidelity.
 
+A separately scoped immediate own-struct scan revalidates both archives and all
+four parent results before selecting its spans. Each selected minimum owns a
+572-byte stream and maximum a 28,606-byte stream. Each has eight headers and 449
+header/terminator bytes; all four conserve 58,356 bytes and end at exact EOF.
+The observed kinds are Array, Bool, three Int, Struct, Float and Name, matching
+the eight optional static descriptors. No descriptors are missing here; the
+comparison permits absence rather than declaring universal mandatory fields.
+The native struct and unresolved array child remain opaque, including their
+widths/counts. Evidence E-039 and strict review 31 pass with unchanged inputs.
+This is independent header observation, not qualification of the Rust reader on
+these bodies or interpretation of the Float value.
+
 ## Independent replacement requirements
 
 The importer must load into staging state, resolve references and validate the

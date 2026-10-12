@@ -7,7 +7,7 @@ target activity by itself.
 
 **Resumed at the user's request on 2026-10-12.** The
 [continuation checkpoint](implementation-status.md#continuation--2026-10-12)
-records Float/Text header qualification and the next bounded C034 experiment.
+records Float/Text qualification, bounded C034 observations and client debug identity.
 The prior pause does not extend historical runtime authorization windows.
 
 ## Goal and agreed constraints
@@ -126,6 +126,12 @@ A stock
 Windows client is available on the user's separate machine for later tests, not
 accessible to the current offline lab.
 
+The completed local client installation has independently checked hashes and
+matching executable/PDB GUID and age (`work/client-identity-20261012/`). Its
+manifest associates the installation with build 25793767; this does not prove
+the supplied save's producing build or pair it with the older 25621760 server.
+Use a fresh bounded static scope before transferring any symbols or behavior.
+
 The archive and inventory are private, read-only local files. Preserve them and
 the original download; prepare any extraction, mutations, logs or runtime copies
 under a new `work/` case. `reference-data/` is not disposable build output and
@@ -174,8 +180,10 @@ Use this dataset in the next work sequence:
    or importing a world.
    Four selected extrema from a third class (C034) now match its 21 optional
    older-build top descriptors, zero trailers and exact EOF (save-triage E-038).
-   Their nested payloads remain opaque; proceed with a separately reviewed
-   own-struct observation and native comparison rather than inferring semantics.
+   A separately scoped own-struct observation now matches eight immediate
+   headers in all four selected bodies, including Float (E-039). Values and
+   deeper children remain opaque. Next independently qualify the updated native
+   reader and recover the own-array contract before reading its elements.
    Eleven distinct prospect payloads and seven member tuples are observed, but
    structures, inventories, tames, missions and full ownership fidelity remain
    unknown. Target component-specific byte dispatch and schemas, compare backed-up
