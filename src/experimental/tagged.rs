@@ -25,6 +25,7 @@ pub enum TagKind {
     String,
     Name,
     Int,
+    UInt32,
     Byte,
     Enum,
     Bool,
@@ -153,6 +154,7 @@ pub(crate) fn read_record(input: &[u8], profile: TagProfile) -> Result<ParsedRec
         ("StrProperty", TagKind::String),
         ("NameProperty", TagKind::Name),
         ("IntProperty", TagKind::Int),
+        ("UInt32Property", TagKind::UInt32),
         ("ByteProperty", TagKind::Byte),
         ("EnumProperty", TagKind::Enum),
         ("BoolProperty", TagKind::Bool),
@@ -178,7 +180,7 @@ pub(crate) fn read_record(input: &[u8], profile: TagProfile) -> Result<ParsedRec
                 TagKind::Bool => {
                     cursor.flag()?;
                 }
-                TagKind::String | TagKind::Name | TagKind::Int => {}
+                TagKind::String | TagKind::Name | TagKind::Int | TagKind::UInt32 => {}
             }
             if cursor.flag()? {
                 cursor.take(16)?;
