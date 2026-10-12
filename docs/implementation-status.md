@@ -108,7 +108,13 @@ reproduced before entering the six streams. Exact native agreement and input
 fixity pass, as do six authored helper tests. Evidence:
 `work/c034-inherited-structs-20261012/`. Distinct native child widths require
 exact descriptor identity; field order or an equal-width multiset cannot replace
-that binding.
+that binding. A subsequent exact-header replay now binds all 8,290 selected
+fields to five neutral descriptor IDs before checking widths. Each occurs
+1,658 times: inherited S01.F01 demands 16 bytes, S01.F02/F03 and own OS01.F06
+demand 12, and own OS01.F07 demands four. Every individual range agrees, with
+zero mismatches or observed absences. Prior native top/own/inherited spans are
+reproduced against their immutable historical snapshots; no new native build or
+numeric decoding is claimed. Evidence: `work/c034-field-widths-20261012/`.
 
 C009 now has an independently reviewed older-build top-header comparison
 contract: 31 optional fields across its exact class ancestry, with recorder
@@ -187,12 +193,12 @@ Continue in this order within the existing plan:
    bytes, exact EOF and no missing optional descriptors in these samples.
    Fresh eleven-kind native qualification now passes on every selected span.
    Own-array static review and populated shared-header/element comparison now pass.
-   Next qualify descriptor-bound nested widths and recover
+   Descriptor-bound selected nested widths now agree; recover
    the next required value contract, keeping unknown values opaque. Selected
    own-array Struct/Float widths now agree individually with the older static
    transfer demands; all 1,658 C034 top bodies now have exact native/independent
    span agreement. All 1,658 own structs and own arrays now agree too; extend
-   descriptor-bound nested widths under fresh limits. All 9,948 inherited Struct
+   remaining scalar/string value contracts under fresh limits. All 9,948 inherited Struct
    bodies now agree, and all 11,606 inherited arrays are qualified and empty. The
    existing component batch helper's 8 MiB transport cap cannot fit all C034
    records from both copies together; use separate per-copy batches or a newly
@@ -366,7 +372,7 @@ record historical research batches; the overnight runtime window has expired.
   remain uninterpreted. Static evidence: `work/c028-structs-20261012/`.
 - A separate library API frames an explicitly selected base-component candidate:
   opaque tagged properties, `None`, a zero four-byte trailer and EOF. It bounds
-  input to 64 KiB/256 fields, rejects GUID trailers and exposes immutable spans
+  input by default to 64 KiB/256 fields, rejects GUID trailers and exposes immutable spans
   plus a sanitized summary. Six authored tests cover boundaries, every truncation,
   trailer policy and privacy. It does not select classes or change CLI inspection.
   The release API matches the independent scan on both selected 548-byte bodies;
