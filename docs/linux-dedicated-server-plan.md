@@ -90,6 +90,7 @@ The initial repository had no root Cargo manifest or lockfile. Keep these bounda
 | Location | Contents |
 | --- | --- |
 | `icarus-orig/` | Ignored original server files and preserved installations |
+| `icarus-client-orig/` | Ignored user-owned original client binaries and build manifests for reference analysis |
 | `reference-data/` | Ignored user-supplied save archives and private provenance inventories; preserved inputs |
 | `work/` | Ignored cases, captures, dumps, private saves, generated analysis and benchmarks |
 | `src/`, `tests/`, `benches/`, `tools/` | Reusable implementation, authored tests and research tools |
@@ -308,7 +309,7 @@ finished experiments, and remove unreferenced reproducible scratch or abandoned
 generated duplicates after checking provenance references. Record significant
 removals in the commit or private case timeline. Retain primary evidence, inputs,
 hashes, failure reproductions and irreplaceable backups. Ignored does not mean
-disposable: never prune `reference-data/`, `icarus-orig/`, the original download,
+disposable: never prune `reference-data/`, `icarus-orig/`, `icarus-client-orig/`, the original download,
 another agent's files, or historical evidence as routine cleanup. Do not run global
 Docker prune, blanket `git clean -fdx`, or delete data solely because it is old.
 

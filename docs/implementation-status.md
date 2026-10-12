@@ -224,6 +224,11 @@ record historical research batches; the overnight runtime window has expired.
   older build 25621760 (`3.0.30.158174`).
   A stock Windows client exists on the user's machine but connected testing is
   deferred until it is available under a concrete scope. Continue independent work.
+  The user has offered client files for reference analysis. Prepared ignored intake:
+  `icarus-client-orig/25793767/`, initially requesting `Icarus/Binaries/Win64/` and
+  the matching Steam app manifest. No files have been received or build identity
+  verified yet. This can support matched-build static comparison; it does not
+  replace live Windows-client tests or require packaged assets for this first pass.
 - [Inventory](research/2026-10-04-reference-inventory.md): hashed original baseline.
 - [Static inspection](research/2026-10-04-static-baseline.md): executable identity,
   imported interfaces and concrete diagnostic anchors; behavior remains unverified.
