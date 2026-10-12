@@ -133,6 +133,12 @@ record historical research batches; the overnight runtime window has expired.
   by-name inputs were rejected without an observed crash. The separate
   [from-file failure path](research/2026-10-04-save-failure-output.md) remains a
   static lead, not a reproduced original defect.
+- [Inner save dispatch](specs/prospect-loading.md): twenty targeted exports plus
+  metadata and flag tracing identify the older build's reflected state/header,
+  recorder blobs, version-dependent callbacks and concrete tagged-property reader.
+  Object offsets are not disk offsets. This narrows the next investigation to tag
+  framing and nested recorder bodies; it does not establish newer-build migration.
+  Static evidence and exact commands: `work/save-schema-20261012/`.
 - Supplied archive remains preserved under ignored `reference-data/`; all 24 file
   sizes, CRCs and SHA-256 values match the private inventory. Read-only inspection
   found twelve UTF-16LE prospect envelopes and twelve identical small UTF-8 tracker
@@ -167,8 +173,9 @@ supported, and no ICARUS performance or stability improvement has been measured.
 
 ## Next work and maintenance
 
-1. Recover the inner binary save archive's serialization/version dispatch from
-   targeted existing evidence, then test bounded authored records. Outer encoding,
+1. Recover tag framing and recorder-body serialization from the concrete inner
+   archive reader, then test bounded authored records. Older-build dispatch and
+   version callbacks are characterized; outer encoding,
    integrity, measured bounds and initial membership relationships are characterized;
    actor/inventory/construction/tame/mission fields and exact producing build remain
    unresolved. Preserve unknown fields and private inputs; no partial importer.

@@ -39,6 +39,7 @@ no client connected and no playable prospect was loaded.
 | --- | --- | --- |
 | Inner control dispatch and version comparison | Observed | [Negotiation notes](specs/control-negotiation.md); outer framing, callback policy and runtime fixtures unknown |
 | Prospect-loading control flow | Observed | [Loading notes](specs/prospect-loading.md) and [by-name rejection runs](research/2026-10-04-prospect-rejection.md); from-file runtime reachability and complete schema remain unresolved |
+| Inner prospect state and serialization dispatch | Observed on older executable | [Loading notes](specs/prospect-loading.md); reflected header/recorder fields, version callbacks and tagged-property dispatch identified; exact tag framing, recorder payloads and newer-build fidelity unresolved |
 | Short stateless handshake | Observed; independent loopback lab implemented | [Handshake notes](specs/stateless-handshake.md); original challenge/echo/ack observed with authentication inactive; stock-client admission pending |
 | Default network checksum | Experimental primitive implemented; early value observed | [Checksum notes](specs/network-checksum.md); final active inputs/callback policy unresolved |
 | Archive strings | Experimental strict subset implemented | [String codec](specs/archive-string.md); authored fixtures pass; actual network flags and original round trips pending |
