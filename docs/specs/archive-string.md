@@ -116,3 +116,20 @@ values and range policy remain unqualified. It does not check archive error befo
 that resolution or establish enclosing EOF. This supports a future strict
 structural comparison, not enum interpretation or original load success.
 Independent static review: `work/c009-byte-value-contract-20261012/`.
+
+## Concrete top-level Enum links
+
+Both exact C009 top EnumProperty descriptors use generation 30 and final vtable
+`0x144ecb940`, whose value slot calls `0x14210a290`. Descriptor-table membership,
+factory recursion and the owner callback bind each to its preceding generation-zero
+Byte helper. This proves the underlying-property link under successful construction;
+adjacent descriptors or equal memory sizes alone would not suffice.
+
+With the concrete archive's special-mode callback false, loading calls the same
+Name/FString path, even if the enum pointer is null. Enum lookup remains separate.
+The underlying Byte setter writes the result to memory without an additional
+archive transfer; neither-loading-nor-saving uses a different underlying serializer
+branch. The string formulas and normalization/error caveats above apply. No direct
+version check or enclosing EOF validation appears in the examined Enum callback,
+and lookup, fallback, truncation policy and supplied values remain unqualified.
+Independent static review: `work/c009-top-enum-contract-20261012/`.
