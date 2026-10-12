@@ -1,8 +1,14 @@
-use std::{fs, io::Read, process::Command};
+use std::{
+    fs,
+    io::{Read, Write},
+    process::Command,
+};
 
 use base64::{Engine, engine::general_purpose::STANDARD};
-use icarus_bevy::prospect::{MAX_ENVELOPE_BYTES, inspect};
+use flate2::{Compression, write::ZlibEncoder};
+use icarus_bevy::prospect::{MAX_ENVELOPE_BYTES, MAX_PAYLOAD_BYTES, inspect};
 use serde_json::{Value, json};
+use sha1::{Digest, Sha1};
 use tempfile::TempDir;
 
 const FIXTURE: &[u8] = include_bytes!("fixtures/prospect-envelope.json");
@@ -11,6 +17,27 @@ fn changed(field: &str, value: Value) -> Vec<u8> {
     let mut document: Value = serde_json::from_slice(FIXTURE).unwrap();
     document["ProspectBlob"][field] = value;
     serde_json::to_vec(&document).unwrap()
+}
+
+fn utf16le(text: &str) -> Vec<u8> {
+    [0xff, 0xfe]
+        .into_iter()
+        .chain(text.encode_utf16().flat_map(u16::to_le_bytes))
+        .collect()
+}
+
+fn authored_envelope(payload: &[u8]) -> Value {
+    let mut encoder = ZlibEncoder::new(Vec::new(), Compression::fast());
+    encoder.write_all(payload).unwrap();
+    let compressed = encoder.finish().unwrap();
+    let hash = Sha1::digest(payload)
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect::<String>();
+    json!({"ProspectBlob": {
+        "Hash": hash, "TotalLength": compressed.len(), "DataLength": 0,
+        "UncompressedLength": payload.len(), "BinaryBlob": STANDARD.encode(compressed)
+    }})
 }
 
 #[test]
@@ -35,7 +62,7 @@ fn corrupt_hash_base64_and_lengths_fail() {
         ("UncompressedLength", json!(-1)),
         ("UncompressedLength", json!(41)),
         ("UncompressedLength", json!(43)),
-        ("UncompressedLength", json!(16 * 1024 * 1024 + 1)),
+        ("UncompressedLength", json!(MAX_PAYLOAD_BYTES + 1)),
         ("UncompressedLength", json!(2147483648_u64)),
     ] {
         assert!(
@@ -79,9 +106,115 @@ fn oversized_stream_stops_after_limit_plus_one() {
         inspect(&mut reader)
             .unwrap_err()
             .to_string()
-            .contains("1 MiB")
+            .contains("4 MiB")
     );
     assert_eq!(reader.consumed, MAX_ENVELOPE_BYTES + 1);
+}
+
+#[test]
+fn bom_tagged_utf16le_handles_surrogate_pairs_without_changing_payload_validation() {
+    let mut document: Value = serde_json::from_slice(FIXTURE).unwrap();
+    document["AuthoredUnicode"] = json!("snowman ☃ and rocket 🚀");
+    let encoded = utf16le(&serde_json::to_string(&document).unwrap());
+    let result = inspect(encoded.as_slice()).unwrap();
+    assert_eq!(result.payload_bytes, 42);
+    assert!(result.legacy_sha1_matches);
+    assert!(!result.world_imported);
+
+    document["ProspectBlob"]["Hash"] = json!("0".repeat(40));
+    let bad_hash = utf16le(&serde_json::to_string(&document).unwrap());
+    assert!(
+        inspect(bad_hash.as_slice())
+            .unwrap_err()
+            .to_string()
+            .contains("legacy SHA-1 mismatch")
+    );
+}
+
+#[test]
+fn utf16le_requires_bom_even_byte_count_and_paired_surrogates() {
+    let text = std::str::from_utf8(FIXTURE).unwrap();
+    let encoded = utf16le(text);
+    assert!(inspect(&encoded[2..]).is_err());
+    assert!(
+        inspect(&encoded[..encoded.len() - 1])
+            .unwrap_err()
+            .to_string()
+            .contains("odd UTF-16LE")
+    );
+    for invalid in [
+        vec![0x00, 0xd8],
+        vec![0x00, 0xdc],
+        vec![0x00, 0xd8, 0x41, 0x00],
+    ] {
+        let malformed = [encoded.as_slice(), &invalid].concat();
+        assert!(
+            inspect(malformed.as_slice())
+                .unwrap_err()
+                .to_string()
+                .contains("invalid UTF-16LE")
+        );
+    }
+    let big_endian: Vec<u8> = [0xfe, 0xff]
+        .into_iter()
+        .chain(text.encode_utf16().flat_map(u16::to_be_bytes))
+        .collect();
+    assert!(inspect(big_endian.as_slice()).is_err());
+}
+
+#[test]
+fn raw_limit_accepts_boundary_in_both_encodings_and_rejects_one_extra_byte() {
+    let text = std::str::from_utf8(FIXTURE).unwrap();
+    for mut bytes in [FIXTURE.to_vec(), utf16le(text)] {
+        if bytes.starts_with(&[0xff, 0xfe]) {
+            while bytes.len() < MAX_ENVELOPE_BYTES {
+                bytes.extend_from_slice(&[b' ', 0]);
+            }
+        } else {
+            bytes.resize(MAX_ENVELOPE_BYTES, b' ');
+        }
+        assert_eq!(bytes.len(), MAX_ENVELOPE_BYTES);
+        assert!(bytes.len() > 1024 * 1024);
+        assert_eq!(inspect(bytes.as_slice()).unwrap().payload_bytes, 42);
+        bytes.push(b' ');
+        assert!(
+            inspect(bytes.as_slice())
+                .unwrap_err()
+                .to_string()
+                .contains("envelope exceeds 4 MiB")
+        );
+    }
+}
+
+#[test]
+fn authored_payload_above_previous_limit_remains_bounded_and_hash_verified() {
+    let payload = vec![b'A'; 16 * 1024 * 1024 + 1];
+    let bytes = serde_json::to_vec(&authored_envelope(&payload)).unwrap();
+    assert!(bytes.len() < 256 * 1024);
+    let result = inspect(bytes.as_slice()).unwrap();
+    assert_eq!(result.payload_bytes, payload.len());
+    assert!(result.payload_bytes < MAX_PAYLOAD_BYTES);
+    assert!(result.legacy_sha1_matches);
+    assert!(!result.world_imported);
+}
+
+#[test]
+fn declared_output_limit_and_actual_expansion_are_checked_independently() {
+    let mut document = authored_envelope(&[b'B'; 64 * 1024]);
+    document["ProspectBlob"]["UncompressedLength"] = json!(MAX_PAYLOAD_BYTES + 1);
+    assert!(
+        inspect(serde_json::to_vec(&document).unwrap().as_slice())
+            .unwrap_err()
+            .to_string()
+            .contains("payload exceeds 32 MiB")
+    );
+    document["ProspectBlob"]["UncompressedLength"] = json!(128);
+    assert!(
+        inspect(serde_json::to_vec(&document).unwrap().as_slice())
+            .unwrap_err()
+            .to_string()
+            .contains("output exceeds declared length")
+    );
 }
 
 #[test]

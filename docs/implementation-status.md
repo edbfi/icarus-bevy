@@ -10,12 +10,12 @@ performance targets remain unproven. Last reconciled: 2026-10-12.
 
 | Milestone | Status | Evidence or next gate |
 | --- | --- | --- |
-| M0: reference baseline | In progress | 435 files hashed; build 25621760; isolated entry-map startup observed; supplied heavy save preserved; its build pairing and matched client pending |
+| M0: reference baseline | In progress | 435 files hashed; build 25621760; isolated entry-map startup observed; supplied save integrity/outer format characterized; exact build pairing and matched client pending |
 | M1: original bug reproduction | Pending | Offline startup did not reproduce reported crashes; controlled workloads still required |
 | M2: interoperability/data feasibility | In progress, partial observations | Stateless exchange observed; authenticated protocol, world-data and import feasibility gates remain open |
 | M3: Bevy gameplay slice | In progress, foundation only | Rust 1.99.0 / Bevy 0.20.0 foundation tested; stock-client slice pending M2 |
 | M4: complete behavior | Pending | All required compatibility matrix entries must pass |
-| M5: migration/hardening | Pending, native hardening underway | Experimental envelope inspection and native fault coverage exist; real-save schema and migration fidelity remain unvalidated |
+| M5: migration/hardening | Pending, native hardening underway | Real native filesystem faults and supplied envelope integrity pass; inner real-save schema and migration fidelity remain unvalidated |
 | M6: optimization/qualification | Pending | Matched reference workloads and full release gates required |
 
 The 30 Hz development rate is provisional, not a discovered ICARUS property.
@@ -90,6 +90,13 @@ record historical research batches; the overnight runtime window has expired.
   [archive strings](specs/archive-string.md), [checksum](specs/network-checksum.md)
   and the separate [Bevy loopback handshake lab](specs/stateless-handshake.md) have
   authored tests. The production run command still has no game listener.
+- The envelope inspector accepts strict BOM-marked UTF-16LE as well as UTF-8, with
+  measured 4 MiB raw-input and 32 MiB output policies. Eleven focused tests cover
+  malformed code units, surrogate pairs, exact bounds and decompression expansion.
+  The release CLI validated disposable copies of the supplied current prospect and
+  a distinct backup: decoded sizes 18,513,234 and 18,492,675 bytes, matching hashes,
+  with `world_imported: false`. Source copies remained unchanged. No private fixture
+  is tracked; inner world serialization remains unsupported.
 - Active normal dependency graph excludes Bevy rendering/window/audio backends;
   release executable links only the platform loader, libc and libgcc_s on this host.
 - CI definition validates formatting, Clippy, tests, release build and headless smoke.
@@ -106,15 +113,19 @@ record historical research batches; the overnight runtime window has expired.
   by-name inputs were rejected without an observed crash. The separate
   [from-file failure path](research/2026-10-04-save-failure-output.md) remains a
   static lead, not a reproduced original defect.
-- User-supplied heavy-world archive preserved on 2026-10-12 under ignored
-  `reference-data/2026-10-04-heavy-save/`. The copy matches its source SHA-256;
-  member CRC checks passed for 24 files (two JSON files and 22 backups). Private
-  provenance and per-member hashes are stored alongside it. No extraction, save
-  decoding, runtime loading or player-data validation was performed at intake.
-  The producing build is unknown, and the largest member exceeds the current
-  inspector's 1 MiB input limit. See the updated
-  [continuation order](linux-dedicated-server-plan.md#supplied-heavy-world-save-and-continuation-order)
-  for bounded inspection, backup comparison and later migration/workload validation.
+- Supplied archive remains preserved under ignored `reference-data/`; all 24 file
+  sizes, CRCs and SHA-256 values match the private inventory. Read-only inspection
+  found twelve UTF-16LE prospect envelopes and twelve identical small UTF-8 tracker
+  documents. All prospect envelopes pass independent Base64/zlib/length/SHA-1 checks;
+  eleven payloads are distinct. Seven account/character tuples occur per prospect,
+  with the claimed owner matching a member; this does not establish complete player
+  state or concurrency. Private case: `work/save-triage-20261012/`. The user describes
+  the producing release as “latest” and identified it as build 25793767, version
+  `3.0.31.158478-rel-DangerousHorizons`. This user-reported provenance is not an
+  embedded build marker or matched reference load; the preserved executable is
+  older build 25621760 (`3.0.30.158174`).
+  A stock Windows client exists on the user's machine but connected testing is
+  deferred until it is available under a concrete scope. Continue independent work.
 - [Inventory](research/2026-10-04-reference-inventory.md): hashed original baseline.
 - [Static inspection](research/2026-10-04-static-baseline.md): executable identity,
   imported interfaces and concrete diagnostic anchors; behavior remains unverified.
@@ -136,8 +147,11 @@ supported, and no ICARUS performance or stability improvement has been measured.
 
 ## Next work and maintenance
 
-1. Characterize copies of the supplied save and backups, identify build/schema and
-   relationships, and determine justified parser bounds. Preserve raw player data.
+1. Recover the inner binary save archive's serialization/version dispatch from
+   targeted existing evidence, then test bounded authored records. Outer encoding,
+   integrity, measured bounds and initial membership relationships are characterized;
+   actor/inventory/construction/tame/mission fields and exact producing build remain
+   unresolved. Preserve unknown fields and private inputs; no partial importer.
 2. Advance transport/control/authentication evidence and independently authored
    world-data feasibility; validate a small import before the heavy-world workload.
    Original-server launchers still need explicit current sessions before runtime
