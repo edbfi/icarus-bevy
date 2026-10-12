@@ -20,6 +20,32 @@ locked reinstallation and provider checks. This tooling change does not resume
 the research paused below, qualify the pending v2 retry, or extend historical
 authorization windows. Private inputs, frozen cases and evidence remain retained.
 
+### Initial control archive fields — 2026-10-12, 22:24 UTC
+
+A disconnected experimental initial-body reader now composes the statically
+observed byte/u32/FString sequence under caller-selected body boundaries and byte
+order. It retains borrowed opaque token spans and privacy-safe aggregates; all
+negotiation/identity/game-connection flags remain false. The existing strict
+string policy and a derived 131,081-byte ceiling bound decoding. No listener,
+version admission rule or token-handling state machine was added.
+
+Eight control tests, the existing archive/handshake/lab tests, independent review,
+the full manual suite, release build and subsequent checksum-verified native
+save/restart smoke pass. A fixture compile error was corrected before validation.
+No live control message or original executable ran. Exact evidence and old/new
+source/library snapshots: `work/protocol-next-increment-20261013/`. New release
+library SHA-256:
+`7b5430a53f1f252aa639bf037e8952cd11204266d84bda6c0691e240be8d4e38`.
+
+The next protocol question is the concrete archive/bit-position/byte-order path
+feeding the known control dispatcher, rather than another negative search for
+version delegate registration. REA MCP tools are absent from this turn despite
+project registration; the supported local CLI remains available. Its function
+command reimports into an ephemeral Ghidra project and its current decompiler
+uses timeout zero, so fresh function research needs a reviewed way to retain the
+project's thirty-second procedure limit. No new target operation is claimed.
+Existing source review and tests reused frozen binary findings.
+
 ### C009 common-child headers — 2026-10-12, 22:15 UTC
 
 The separately reviewed fresh common-child comparison passes all 6,318 selected
@@ -763,7 +789,8 @@ supported, and no ICARUS performance or stability improvement has been measured.
    actor/inventory/construction/tame/mission fields and independent confirmation of
    the reported producing build remain unresolved. Preserve unknown fields and
    private inputs; no partial importer.
-2. Advance transport/control/authentication evidence and independently authored
+2. Bind the concrete archive/outer framing path before promoting the experimental
+   control-body fields. Advance transport/control/authentication evidence and independently authored
    world-data feasibility; validate a small import before the heavy-world workload.
    The migrated original-server launcher requires explicit current sessions for
    each runtime experiment; historical authorization windows remain expired.

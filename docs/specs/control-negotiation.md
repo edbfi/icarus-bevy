@@ -107,6 +107,32 @@ primitive does not make the control protocol available.
 5. Show the native implementation passes those fixtures and the stock-client
    experiment before marking negotiation implemented and validated.
 
-The normal replacement run command has no socket listener or control-protocol
-implementation. A separate [loopback handshake lab](stateless-handshake.md) stops
-before this layer and creates no game connections.
+## Experimental initial archive-body fields
+
+`experimental::control::read_initial_control_body(input, order)` now composes
+the observed ID 0 field sequence for an explicitly caller-selected complete
+archive body: one uninterpreted byte, an explicit-endian u32 and the existing
+strict archive-string subset. The caller must establish message ID, byte order
+and body boundaries. No datagram/message dispatch, byte-order inference, active
+version comparison, token meaning or admission decision occurs.
+
+The resource ceiling is 131,081 bytes, derived from the existing 65,536-string-unit
+cap. The reader rejects oversize input before decoding, preserves borrowed exact
+field/token spans and retains no decoded token units. Raw containers implement
+neither `Debug` nor `Serialize`; the aggregate summary omits field/version/token
+values and reports negotiation, identity and game-connection validation as false.
+Errors contain no token data. Exact EOF and strict normalization rejection remain
+explicit research policies, not recovered original dispatcher tolerances.
+
+Eight authored tests cover both byte orders, all first-byte values, empty token
+representations, version extrema, borrowed spans, raw surrogates, every truncated
+prefix, trailing data, exact/over unit/body limits and summary/error privacy.
+Existing archive/handshake tests, full manual checks, independent codec review,
+release build and native save/restart smoke pass. Evidence and immutable
+source/library transitions: `work/protocol-next-increment-20261013/`.
+No original control message, live reference session or stock client was used.
+
+The normal replacement run command still has no game socket listener or control
+negotiation. This body-field reader is a disconnected library primitive. A
+separate [loopback handshake lab](stateless-handshake.md) stops before this layer
+and creates no game connections.

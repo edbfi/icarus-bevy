@@ -635,5 +635,12 @@ Pelican/service examples. For each official update, preserve a baseline, compare
 binaries/protocols, rerun affected scenarios and publish explicit support status.
 Unknown versions are not supported by assumption.
 
+The initial control archive-field reader now has authored boundary/privacy tests
+and native validation. It composes only a caller-selected byte/u32/strict-string
+body; concrete packet/bunch framing and archive byte-order provenance remain the
+next protocol evidence gate. It supplies no identity or admission decision and
+does not promote M2 or M3. The current checkpoint retains exact source/library
+transitions for subsequent research.
+
 Completion requires demonstrated compatibility, reliability and performance
 improvement while preserving the independent Rust/Bevy and no-original-assets rules.
