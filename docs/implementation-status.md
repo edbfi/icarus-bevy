@@ -8,6 +8,61 @@ performance targets remain unproven. Last reconciled: 2026-10-12.
 
 ## Continuation — 2026-10-12
 
+### Paused checkpoint — 2026-10-12, 21:36 UTC
+
+Paused at the user's request for a new-chat handoff. Workers were interrupted;
+no research probe, build or original-server process remains running. Completed
+research through commit `d30fedc` was pushed; the pause documentation follows it.
+The project is still an independent foundation, with all M0–M6 completion gates
+and compatibility limitations in the canonical plan retained.
+
+The latest top-scalar attempt is **failed, not qualified**:
+`work/c009-top-leaf-values-20261012/`. Its first current-copy top comparison ran,
+then a local `selected` header variable shadowed the outer accumulator and
+`selected.push` failed before backup/leaf comparison. Exit status was one, stdout
+empty, and all 538 bound files were unchanged. Original source, scope, session,
+invocation and failure receipts are preserved. Earlier review missed this defect.
+
+The separate `execution-v2/` subtree fixes only accumulator naming and execution
+paths, reusing the frozen helper. Its authored orchestration regression runs the
+actual reader/main with synthetic envelopes and mocked evidence/native boundaries:
+the original fails at the append, while the fix completes both top comparisons
+before the leaf hook. The lead reran this regression successfully. **Final v2
+independent review is unfinished; no v2 bindings/session/private execution exist.**
+Read its `PREPARED.md`, `failure-analysis.md` and `rejected-attempt.json`, finish
+review, freeze files, then create fresh bindings and a truthful 15-minute session.
+Never reuse the failed session or edit its bound artifacts.
+
+Finish that retry before changing source/library hashes. The current production
+source remains at the `437bfe5` Int-array increment (later commits are documentation),
+with release library SHA-256
+`84b50475c357c30c225b96924fb7f9e4c3200c3ae4ca5b0ff48d3d00205e07ca`.
+Then implement an explicit `read_tagged_struct_array_with_limit` API, preserving
+the default 64 KiB limit/error and 4,096-element/256-field caps, with a proposed
+hard 128 KiB ceiling. This is **not implemented yet**. The measured CA01 maximum
+of 66,257 bytes motivates it. Test exact/over/invalid limits, unchanged default
+behavior, borrowed spans, framing/count/field limits and late failures; obtain
+independent review, run the full manual suite and release build, commit and push.
+Before changing live hashes, preserve complete fixity receipts for affected prior
+cases; later helpers must record exact source/library transitions and snapshots.
+
+The completed common-child preflight is frozen at
+`work/c009-common-child-selection-20261012/`: summary SHA-256
+`8bcbc1d9b57cad46ab40e820465e46021b74ef44925115a3e28389c1b1fdec7d`,
+777 unchanged bindings and 6,318 exact selected spans. No child count/header was
+read. After the API increment, prepare and review the six Struct/seven Array
+header comparison from these bounds and exact retained contracts. Do not infer
+populated counts or promote internal sizes to wire widths. Any partial future
+helper preparation under `work/` requires fresh review; stopped agents are not
+active workers in the next chat.
+
+The last full application manual suite passed at the Int-array implementation.
+Subsequent increments were documentation and ignored research helpers: focused
+helper tests, independent comparisons, strict case reviews and publication hooks
+passed as recorded below. No new full-suite run is claimed for this pause.
+
+### Completed continuation work
+
 The invoked continuation has now qualified the current native reader on all four
 selected C034 own bodies. Every header/value/terminator span agrees with the
 independent probe, including Float: 32 fields across 58,356 bytes, exact EOF and
@@ -594,8 +649,10 @@ supported, and no ICARUS performance or stability improvement has been measured.
 
 ## Next work and maintenance
 
-1. Qualify C009 top-level scalar structures within their measured population
-   bounds, then continue unresolved common-ancestor children and value contracts.
+1. Finish independent review and fresh execution of the preserved top-scalar v2
+   retry described above. Then implement/test the explicit struct-array byte-limit
+   API and qualify common-ancestor child headers within measured bounds. Continue
+   unresolved value contracts.
    C009 own-child structure and selected C034 populations already pass the
    comparisons above. Older-build root/recorder framing, dispatch and version
    callbacks are characterized; outer encoding,

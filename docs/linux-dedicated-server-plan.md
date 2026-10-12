@@ -214,7 +214,12 @@ Use this dataset in the next work sequence:
    11,780 fields. Their 1,464 selected string-framed leaves also match strict native
    consumption; 7,886 Int and 2,430 Bool spans match individual widths. Continue
    top-level scalars and unresolved common-ancestor children while retaining
-   unresolved value meaning and runtime compatibility.
+   unresolved value meaning and runtime compatibility. At the user-requested
+   pause, the first top-scalar attempt failed from harness variable shadowing;
+   its separate v2 regression passes but final review/execution remain pending.
+   Finish it against the frozen library, then add/test an explicit struct-array
+   byte-limit API for the measured 66,257-byte common-ancestor array before entering
+   those child headers. See the pause checkpoint in implementation status.
    Retain the lack of populated
    inherited-array coverage.
    Exact C034 own Name values also pass strict native/independent structural
