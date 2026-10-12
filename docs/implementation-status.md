@@ -157,7 +157,7 @@ record historical research batches; the overnight runtime window has expired.
   by-name inputs were rejected without an observed crash. The separate
   [from-file failure path](research/2026-10-04-save-failure-output.md) remains a
   static lead, not a reproduced original defect.
-- [Inner save dispatch](specs/prospect-loading.md): thirty-six targeted exports plus
+- [Inner save dispatch](specs/prospect-loading.md): forty targeted exports plus
   metadata and flag tracing identify the older build's reflected state/header,
   recorder blobs, version-dependent callbacks and concrete tagged-property reader.
   Object offsets are not disk offsets. Root tag framing and its archive-version
@@ -169,9 +169,10 @@ record historical research batches; the overnight runtime window has expired.
   Static evidence and exact commands: `work/save-schema-20261012/`.
 - Recorder restoration resolves the saved class string and invokes a component
   load method. The base method builds a memory reader over opaque `BinaryData`
-  and calls component serialization. Its flags, derived overrides and complete
-  byte contract remain unresolved; this is a concrete next static target, not a
-  claim that component contents are now decoded.
+  and calls component serialization. The base path selects filtered tagged fields,
+  followed by a four-byte boolean and optional 16-byte GUID, then a component hook.
+  Concrete derived overrides and value semantics remain unresolved; component
+  contents are not decoded by the native inspector.
 - A private class-string inventory finds 38 identifiers in the current copy and
   36 in the backup, all with script-class path syntax; concrete implementation and
   dispatch coverage remain unverified. Both known root `Version` integers are 2,
@@ -215,8 +216,9 @@ supported, and no ICARUS performance or stability improvement has been measured.
    reader, then test authored records. Older-build root/recorder framing, dispatch and version
    callbacks are characterized; outer encoding,
    integrity, measured bounds and initial membership relationships are characterized;
-   actor/inventory/construction/tame/mission fields and exact producing build remain
-   unresolved. Preserve unknown fields and private inputs; no partial importer.
+   actor/inventory/construction/tame/mission fields and independent confirmation of
+   the reported producing build remain unresolved. Preserve unknown fields and
+   private inputs; no partial importer.
 2. Advance transport/control/authentication evidence and independently authored
    world-data feasibility; validate a small import before the heavy-world workload.
    The migrated original-server launcher requires explicit current sessions for
