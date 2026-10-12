@@ -403,6 +403,28 @@ and separate original-server behavior from Proton, missing platform services and
 resource constraints. A failed startup in the isolated container is not a substitute
 for these prospect-load experiments.
 
+## Third selected class: bounded top-header comparison
+
+The older C034 registration and complete relevant vtable path resolve to the
+reviewed base byte-loading/serialization path and the same postload target as
+C028. Its 21 optional descriptors comprise seven Struct, two Int, seven Array,
+two Name, one Enum, one Str and one Bool property. Private static bindings are
+retained in `work/component-c034-20261012/`.
+
+After validating both complete outer archives, one reviewed probe selected the
+first minimum and maximum body per copy: four bodies totaling 71,388 bytes.
+Each minimum is 3,830 bytes and maximum 31,864 bytes. Each matches all 21 exact
+header descriptors, has 1,451 header/terminator bytes and ends with a zero
+four-byte trailer at exact EOF. Opaque payload totals are 2,375 and 30,409 bytes.
+The strict presence comparison applies only to these samples; it does not make
+the static descriptors mandatory in every valid save.
+
+Evidence E-038 and strict case review 30 preserve unchanged input hashes and
+the reviewed session, scope, scripts and static bindings under
+`work/save-triage-20261012/component-c034-headers/`. Nested payloads, GUID values
+and Bool header values were not compared. Equal framing totals do not establish
+equal state, newer-build semantics, native-reader agreement or import fidelity.
+
 ## Independent replacement requirements
 
 The importer must load into staging state, resolve references and validate the

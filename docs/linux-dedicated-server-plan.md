@@ -172,6 +172,10 @@ Use this dataset in the next work sequence:
    candidate struct-array library reader passes authored tests and native
    qualification of the 28 selected empty arrays without changing the CLI inspector
    or importing a world.
+   Four selected extrema from a third class (C034) now match its 21 optional
+   older-build top descriptors, zero trailers and exact EOF (save-triage E-038).
+   Their nested payloads remain opaque; proceed with a separately reviewed
+   own-struct observation and native comparison rather than inferring semantics.
    Eleven distinct prospect payloads and seven member tuples are observed, but
    structures, inventories, tames, missions and full ownership fidelity remain
    unknown. Target component-specific byte dispatch and schemas, compare backed-up
