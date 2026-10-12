@@ -44,7 +44,7 @@ unsupported normalizations instead of reproducing the original's corrections.
 
 Struct tags add a struct name and 16-byte struct GUID. Array tags add an inner type
 name. Byte and enum tags add an enum name. Boolean tags carry a one-byte value in
-the header. Integer and string tags have no extra type-specific metadata.
+the header. Integer, string and name tags have no extra type-specific metadata.
 The older tag reader gates struct GUIDs at archive version 441, array inner types
 at 282 and property GUIDs at 503; all apply at 522. Other profiles are unsupported.
 
@@ -62,7 +62,7 @@ profile. The root scanner deliberately leaves that entire body opaque.
 - Reject negative sizes or indices, truncated headers/values, unsupported type
   headers and noncanonical boolean/GUID-presence bytes.
 - Accept canonical `ArrayProperty`, `StructProperty`, `StrProperty`, `IntProperty`,
-  `ByteProperty`, `EnumProperty` and `BoolProperty` headers. Empty header names and
+  `NameProperty`, `ByteProperty`, `EnumProperty` and `BoolProperty` headers. Empty header names and
   other property kinds are unsupported by this initial subset.
 - Preserve original header and value spans, including unknown field names, without
   rewriting, normalizing or interpreting their contents.
@@ -73,6 +73,8 @@ These are research limits and accepted subsets, not recovered universal format
 constraints. A successful scan does not establish required-field coverage, value
 types, ownership, reference integrity, recorder counts or migration fidelity.
 Opaque integer or array values are not semantically validated by their tag names.
+Name values likewise remain opaque; their in-memory width is not their serialized
+width. The reference name-value reader uses the archive string/name primitive.
 
 ## Evidence and verification
 
