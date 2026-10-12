@@ -1,5 +1,6 @@
 use icarus_bevy::experimental::component::{
-    BaseComponent, MAX_COMPONENT_BYTES, MAX_COMPONENT_FIELDS, read_base_component,
+    BaseComponent, MAX_BOUNDED_COMPONENT_BYTES, MAX_COMPONENT_BYTES, MAX_COMPONENT_FIELDS,
+    read_base_component, read_base_component_with_limit,
 };
 use icarus_bevy::experimental::tagged::{TagKind, TagProfile, read_root};
 
@@ -140,6 +141,49 @@ fn exact_field_and_byte_caps_are_enforced() {
     let excess = body(&field(NAME, &[0], &vec![0; payload_len + 1]));
     assert_eq!(excess.len(), MAX_COMPONENT_BYTES + 1);
     assert!(read(&excess).err().unwrap().to_string().contains("64 KiB"));
+}
+
+#[test]
+fn explicit_byte_limit_preserves_spans_and_default_policy() {
+    let overhead = field(NAME, &[0], &[]).len() + END.len() + 4;
+    for size in [MAX_COMPONENT_BYTES + 1, MAX_BOUNDED_COMPONENT_BYTES] {
+        let bytes = body(&field(NAME, &[0], &vec![7; size - overhead]));
+        assert_eq!(bytes.len(), size);
+        assert!(read(&bytes).is_err());
+        let parsed =
+            read_base_component_with_limit(&bytes, TagProfile::MemoryArchive522, size).unwrap();
+        assert_eq!(parsed.fields()[0].record.as_ptr(), bytes.as_ptr());
+        assert_eq!(parsed.fields()[0].payload, vec![7; size - overhead]);
+        assert_eq!(parsed.summary().opaque_payload_bytes, size - overhead);
+        assert!(
+            read_base_component_with_limit(&bytes, TagProfile::MemoryArchive522, size - 1).is_err()
+        );
+    }
+    for invalid in [0, MAX_BOUNDED_COMPONENT_BYTES + 1, usize::MAX] {
+        assert!(
+            read_base_component_with_limit(&body(&[]), TagProfile::MemoryArchive522, invalid)
+                .is_err()
+        );
+    }
+}
+
+#[test]
+fn larger_byte_limit_retains_field_and_trailer_checks() {
+    let read_bounded = |bytes: &[u8]| {
+        read_base_component_with_limit(
+            bytes,
+            TagProfile::MemoryArchive522,
+            MAX_BOUNDED_COMPONENT_BYTES,
+        )
+        .map(|parsed| parsed.summary())
+    };
+    let record = field(NAME, &[0], &[]);
+    assert!(read_bounded(&body(&record.repeat(MAX_COMPONENT_FIELDS))).is_ok());
+    assert!(read_bounded(&body(&record.repeat(MAX_COMPONENT_FIELDS + 1))).is_err());
+    for trailer in [vec![0; 3], vec![1, 0, 0, 0], vec![2, 0, 0, 0], vec![0; 5]] {
+        assert!(read_bounded(&[END, &trailer].concat()).is_err());
+    }
+    assert!(read_bounded(&[END, &[1, 0, 0, 0], &[0; 16]].concat()).is_err());
 }
 
 #[test]

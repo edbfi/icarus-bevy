@@ -207,7 +207,12 @@ establish whether this layout applies to the concrete class. The API does not
 recognize classes, validate required fields or interpret values; it is not enabled
 by `inspect-save --recorders`.
 
-Input is limited to 64 KiB and 256 properties. Unknown field names with supported
+The default input limit is 64 KiB and 256 properties.
+`read_base_component_with_limit(bytes, profile, max_bytes)` accepts an explicit
+positive byte cap up to a hard 128 KiB research ceiling, retaining the same field
+cap and framing checks. This permits separately reviewed larger candidates; it
+does not establish the original format's size limits. Invalid requested limits
+fail even for small inputs. Unknown field names with supported
 headers retain borrowed source spans. The parsed collection, terminator and
 trailer expose immutable accessors. Only aggregate counts/sizes can be serialized
 by the summary, which explicitly reports `world_imported: false` and

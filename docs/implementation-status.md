@@ -108,7 +108,17 @@ reproduced before entering the six streams. Exact native agreement and input
 fixity pass, as do six authored helper tests. Evidence:
 `work/c034-inherited-structs-20261012/`. Distinct native child widths require
 exact descriptor identity; field order or an equal-width multiset cannot replace
-that binding. C009 is the next broader class under static investigation.
+that binding.
+
+C009 now has an independently reviewed older-build top-header comparison
+contract: 31 optional fields across its exact class ancestry, with recorder
+virtual targets matching the previously examined base path. Child dispatch and
+values remain unqualified. Its observed maximum body is 71,956 bytes, above the
+default comparator cap. The new explicit byte-limit API retains the 64 KiB
+default and 256-field cap while permitting a caller-selected limit up to a hard
+128 KiB research ceiling. Eight component tests and independent code review
+pass; private C009 population comparison is still pending. Static evidence:
+`work/component-c009-20261012/`.
 
 A live SSH fetch reconciled the stale remote cache: all checkpoint commits through
 `b55e4ce` were already delivered. No client files were removed and no original
