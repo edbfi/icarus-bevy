@@ -72,7 +72,10 @@ pub fn inspect(reader: impl Read) -> Result<EnvelopeInspection> {
             .context("invalid UTF-16LE envelope")?;
         serde_json::from_str(&text)
     } else {
-        serde_json::from_slice(&bytes)
+        // IgnoredAny skips unknown strings without validating their UTF-8 when
+        // parsing bytes. Validate the whole document, including ignored metadata.
+        let text = std::str::from_utf8(&bytes).context("invalid UTF-8 envelope")?;
+        serde_json::from_str(text)
     }
     .context("invalid prospect envelope JSON")?;
     let blob = envelope.blob;

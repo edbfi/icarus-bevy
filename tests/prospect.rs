@@ -132,6 +132,38 @@ fn bom_tagged_utf16le_handles_surrogate_pairs_without_changing_payload_validatio
 }
 
 #[test]
+fn utf8_rejects_invalid_bytes_in_ignored_fields() {
+    for invalid in [vec![0xff], vec![0xc0, 0xaf], vec![0xed, 0xa0, 0x80]] {
+        for (prefix, suffix) in [
+            (b"{\"Ignored\":\"".as_slice(), b"\",".as_slice()),
+            (b"{\"".as_slice(), b"\":null,".as_slice()),
+            (
+                b"{\"Ignored\":{\"nested\":[\"".as_slice(),
+                b"\"]},".as_slice(),
+            ),
+            (b"{\"Ignored\":{\"".as_slice(), b"\":null},".as_slice()),
+        ] {
+            let bytes = [prefix, invalid.as_slice(), suffix, &FIXTURE[1..]].concat();
+            assert!(
+                inspect(bytes.as_slice()).is_err(),
+                "invalid bytes {invalid:x?} after authored prefix {prefix:?}"
+            );
+        }
+    }
+}
+
+#[test]
+fn utf8_accepts_non_ascii_unknown_keys_and_nested_values() {
+    let mut document: Value = serde_json::from_slice(FIXTURE).unwrap();
+    document["☃"] = json!({"🚀": ["authored café"]});
+    let bytes = serde_json::to_vec(&document).unwrap();
+    let result = inspect(bytes.as_slice()).unwrap();
+    assert_eq!(result.payload_bytes, 42);
+    assert!(result.legacy_sha1_matches);
+    assert!(!result.world_imported);
+}
+
+#[test]
 fn utf16le_requires_bom_even_byte_count_and_paired_surrogates() {
     let text = std::str::from_utf8(FIXTURE).unwrap();
     let encoded = utf16le(text);
