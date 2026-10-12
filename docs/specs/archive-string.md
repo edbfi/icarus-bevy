@@ -70,3 +70,18 @@ their distinct consumption. Original normalization, unit-based archive limits,
 transfer failure and the lack of enclosing EOF validation remain as documented
 above. The native strict subset is not an exact original acceptance oracle.
 Independent semantic and strict review: `work/str-value-contract-20261012/`.
+
+## Concrete name-property link
+
+The exact C034 own Name descriptor OS01.F08 reaches the generation-20 factory,
+final NameProperty vtable and value adapter, then the reviewed MemoryArchive's
+Name virtual. Its loading branch delegates to the same FString reader before
+constructing an internal name. This wrapper performs no separate serialized
+numeric-index transfer; its eight-byte internal copy is not a wire-width claim.
+Name interning and suffix semantics remain unqualified.
+
+The signed-count transfer formulas, normalization and failure caveats above
+therefore apply to this concrete path. Neither the Name wrapper nor FString
+requires enclosing property EOF, and normal return can follow an archive error.
+This static result reads no supplied names. Independent and strict review:
+`work/c034-name-contract-20261012/`.
