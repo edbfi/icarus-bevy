@@ -145,8 +145,14 @@ unchanged: `work/native-c009-own-20261012/`.
 A new explicit Int-array library primitive borrows four-byte opaque elements
 after a signed count, with a 4,096-element cap and exact EOF policy. It preserves
 the caller's obligation to establish the concrete ordinary non-swapping archive
-path. Four focused tests and independent review pass; private array-value
-comparison is pending. Numeric interpretation and world import remain absent.
+path. Four focused tests, independent review and the full check suite pass.
+The supplied-array comparison now passes all 486 exact S02 arrays: each copy has
+242 empty arrays and one two-element array, totaling 980 bytes per copy. Native
+and independent prefix/element spans agree for all four opaque elements.
+Evidence: `work/native-c009-int-array-20261012/execution-v2/`. Two prelaunch
+failures (offline-scope wording and a review-note binding race) are preserved;
+only the final fresh session invoked the private probe. Numeric interpretation
+and world import remain absent.
 
 The exact C034 own Name property now links through its final factory/vtable and
 concrete archive virtual to the established FString reader. No separate wire

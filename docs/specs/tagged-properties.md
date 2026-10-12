@@ -377,6 +377,14 @@ accepted input 16,388 bytes. Negative-count rejection and exact EOF are research
 policy, not recovered original error behavior. Four authored tests cover opaque
 source identity, size/count boundaries, malformed input and summary privacy.
 
+Bounded supplied-data qualification now passes 486 exact C009 S02 arrays across
+current and backup copies. Each has 242 empty arrays and one two-element array,
+980 bytes in total. All prefix and opaque four-byte element ranges match the
+independent parser after prior parent/child spans reproduce. The experiment uses
+the observed 12-byte maximum and a two-element cap, independently of the library's
+larger research limits. Inputs remain unchanged; numeric values remain unread.
+Evidence: `work/native-c009-int-array-20261012/execution-v2/`.
+
 ## Explicit tagged struct-array framing
 
 The separate library function
