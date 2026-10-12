@@ -443,6 +443,17 @@ reviewed session, source/library/helper snapshots, unchanged input hashes and
 strict case review are retained in `work/native-c034-own-20261012/`.
 No production code changed; Float values remain uninterpreted.
 
+A later full-population qualification uses separate bounded per-copy native
+batches. All 829 exact-class records per copy pass optional-schema validation and
+exact native/independent header, payload, terminator and trailer span comparison.
+Per copy, 4,199,203 bytes comprise 1,202,879 header/terminator bytes, 2,993,008
+opaque payload bytes and 3,316 trailer bytes across 17,409 fields. All 21 optional
+descriptors appear in these records, without becoming universally required.
+Both copies retain their distinct source hashes; equal dimensions do not establish
+equal values. This scan does not enter own or deeper payloads. Five authored
+helper tests, independent harness review and unchanged bindings support the result:
+`work/c034-all-headers-20261012/`.
+
 The separate older-build own-array contract resolves child `0x145ee1220` through
 its exact getter and operations table to tagged serialization. Its two immediate
 optional descriptors are Struct and Float; the Struct getter resolves prior N02.

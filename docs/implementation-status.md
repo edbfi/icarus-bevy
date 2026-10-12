@@ -62,6 +62,15 @@ The downstream serializer is not yet traced; profile propagation, deferred N02
 operations installation and dedicated-server equivalence remain unresolved.
 Independent semantic review passes: `work/client-c034-own-array-20261012/`.
 
+Broader C034 top framing now passes in two separate native batches: all 829
+records per copy, 1,658 records and 8,398,406 bytes in total. Every independent
+header/value/terminator/trailer span matches the native reader, and input hashes
+are unchanged. Per copy, 17,409 fields account for 1,202,879 header/terminator
+bytes, 2,993,008 opaque value bytes and 3,316 trailer bytes. No optional descriptor
+is missing in these records; this is population observation, not mandatory-field
+evidence. Own/deeper parsing remains at the earlier selected coverage. Evidence:
+`work/c034-all-headers-20261012/`; five helper tests and independent harness review pass.
+
 A live SSH fetch reconciled the stale remote cache: all checkpoint commits through
 `b55e4ce` were already delivered. No client files were removed and no original
 runtime or connected-client experiment has started.
@@ -132,7 +141,8 @@ Continue in this order within the existing plan:
    Next trace matched-client downstream profile propagation and recover
    the next required value contract, keeping unknown values opaque. Selected
    own-array Struct/Float widths now agree individually with the older static
-   transfer demands; broader C034 top-header qualification is being prepared. The
+   transfer demands; all 1,658 C034 top bodies now have exact native/independent
+   span agreement. Extend own/deeper coverage under fresh per-copy bounds. The
    existing component batch helper's 8 MiB transport cap cannot fit all C034
    records from both copies together; use separate per-copy batches or a newly
    reviewed helper rather than changing frozen evidence.
