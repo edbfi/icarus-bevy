@@ -194,10 +194,13 @@ Use this dataset in the next work sequence:
    its restore entry constructs a version-522 loading archive. A bounded follow-up
    carries that profile to conditional ordinary-class dispatch and links the N02
    deferred installer/lookup; later callbacks and initialization lifecycle remain
-   unproved. Resolve the exact client Float factory/transfer contract next.
+   unproved. Exact client Float factory/vtable dispatch now independently demands
+   four bytes, retaining transfer-success and numeric-semantics limits.
    Separate bounded per-copy batches now qualify all 1,658 C034 top bodies with
    exact native/independent spans. All 1,658 own structs now agree as well;
-   extend own-array element coverage next using the recorded enclosing spans.
+   all own arrays also agree across 15,342 elements/30,684 fields, including
+   individual 12-/four-byte demands. Extend inherited-array coverage next using
+   recorded enclosing spans and exact shared ancestor contracts.
    Generic framing and width agreement do not establish an importable world.
    Eleven distinct prospect payloads and seven member tuples are observed, but
    structures, inventories, tames, missions and full ownership fidelity remain

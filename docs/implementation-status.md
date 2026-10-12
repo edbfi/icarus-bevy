@@ -65,7 +65,11 @@ name-keyed deferred lookup. These are bounded static correspondences: object-onl
 helper side effects, later field callbacks, runtime class selection, successful
 initialization/allocation and later registration replacement remain outside the
 proof. Dedicated-server equivalence remains unresolved. Independent review:
-`work/client-profile-ops-20261012/`.
+`work/client-profile-ops-20261012/`. A separate exact client generation-10 factory
+trace now establishes Float identity through its final vtable and a four-byte
+transfer demand through virtual dispatch, including the byte-order fallback.
+Independent review passes: `work/client-float-contract-20261012/`. Shared scalar
+callback aliases alone were not used to establish type identity.
 
 Broader C034 top framing now passes in two separate native batches: all 829
 records per copy, 1,658 records and 8,398,406 bytes in total. Every independent
@@ -79,8 +83,13 @@ harness review pass. A subsequent fresh own-struct comparison also passes for al
 header/terminator bytes and 1,106,868 opaque value bytes; all eight optional
 descriptors appear. Every prior parent span is reproduced before own parsing,
 and all own spans match the native reader with unchanged bindings. Six helper
-tests pass: `work/c034-all-own-headers-20261012/`. Own-array element coverage
-remains at the earlier four selections; broader comparison is next.
+tests pass: `work/c034-all-own-headers-20261012/`. Full own-array population
+comparison now passes as well: 1,658 arrays, 15,342 elements, 30,684 fields and
+2,152,390 bytes. Each copy has 85 empty arrays; every observed Struct/Float span
+individually matches the older 12-/four-byte demand, with zero mismatches or
+missing optional descriptors. Native spans, enclosing prior spans and source
+hashes agree. Six helper tests also pass under the reviewed memory limit.
+Evidence: `work/c034-all-own-arrays-20261012/`. Values remain opaque.
 
 A live SSH fetch reconciled the stale remote cache: all checkpoint commits through
 `b55e4ce` were already delivered. No client files were removed and no original
@@ -129,7 +138,7 @@ committed evidence below:
 | --- | --- |
 | `save-triage-20261012/` | E-036: all 9,058 C028 arrays are empty. E-037: native framing matches 28 selected empty arrays. E-038: four C034 extrema match 21 top headers each, totaling 71,388 bytes with zero trailers/exact EOF. E-039: four own structs match eight immediate headers each across 58,356 bytes. Review 31 passes with 39 evidence entries and zero issues. All values remain opaque. |
 | `c028-array-children-20261012/` | 17 optional immediate array-element fields; independently verified Float/Text header contracts in `static/header-kind-contracts-v2.json` (SHA-256 `17abd2de90aea26129d13cc075c7a6268eef41cf653f14dcca29928433b97e09`). |
-| `c028-array-descendants-20261012/` | D01 uses tagged framing with eight optional fields and four consumed inner helpers. D02 independently demands four four-byte native transfers on success; no exact EOF guarantee. Deeper D01 types remain unresolved. Strict review passes. |
+| `c028-array-descendants-20261012/` | D01 uses tagged framing with eight optional fields and four consumed inner helpers. D02 independently demands four four-byte native transfers on success; no exact EOF guarantee. A later bounded trace resolves its four array children to tagged framing with eight optional Int/Str fields; Str value serialization remains unresolved. Strict reviews pass; see `c028-d01-array-children-20261012/`. |
 | `component-c034-20261012/` | Exact older class registration/vtable resolves to the same reviewed load/serialize/postload targets as C028. Optional top schema has 21 fields: seven Struct, two Int, seven Array, two Name, one Enum, one Str, one Bool. Four supplied bodies match this top schema under bounded comparison (save case E-038); nested payloads remain opaque. |
 | `c034-own-struct-20261012/` | Own struct `0x145ee11d0` selects tagged framing; eight optional logical fields are Array, Bool, three Int, Struct, Float and Name. E-039 independently observes all eight in four selected own bodies, including Float; fresh native exact-span comparison now passes. Struct child matches earlier N02 (`0x145efe320`, successful 12-byte native demand); array child `0x145ee1220` now has a separate tagged/two-field contract. The array now has separately qualified populated element headers; Struct/Float values remain opaque. |
 
@@ -149,12 +158,12 @@ Continue in this order within the existing plan:
    bytes, exact EOF and no missing optional descriptors in these samples.
    Fresh eleven-kind native qualification now passes on every selected span.
    Own-array static review and populated shared-header/element comparison now pass.
-   Next complete the matched-client Float constructor/transfer contract and recover
+   Next expand inherited-array population coverage and recover
    the next required value contract, keeping unknown values opaque. Selected
    own-array Struct/Float widths now agree individually with the older static
    transfer demands; all 1,658 C034 top bodies now have exact native/independent
-   span agreement. All 1,658 own structs now agree too; extend own-array element
-   coverage under fresh per-copy bounds. The
+   span agreement. All 1,658 own structs and own arrays now agree too; extend
+   inherited-array coverage under fresh per-copy bounds. The
    existing component batch helper's 8 MiB transport cap cannot fit all C034
    records from both copies together; use separate per-copy batches or a newly
    reviewed helper rather than changing frozen evidence.
@@ -163,7 +172,8 @@ Continue in this order within the existing plan:
    explicit branch conditions. Concrete C034 registration/conditional dispatch and
    restore-entry profile are reviewed; conditional class dispatch propagation and
    the N02 deferred installer/lookup now have bounded static correspondence.
-   Recover the exact client Float factory/transfer contract next. The older server
+   The exact client Float factory/final-vtable/transfer contract is now reviewed.
+   Continue bounded unresolved descendant grammar and population comparisons. The older server
    remains build 25621760; do not transfer its addresses or behavior assumptions
    blindly to client build 25793767. No original runtime, client session or network
    experiment was started in this handoff.

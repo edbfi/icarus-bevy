@@ -314,8 +314,14 @@ Their immediate metadata contains 16 optional fields, including a `UInt32Propert
 whose type is verified through the concrete factory and name getter. Three child
 struct fields select binary/native serialization, so the tagged contract does not
 extend recursively to every descendant. Seven array-element types have separate
-tagged contracts and 17 optional immediate field descriptors. Deeper descendants,
-runtime migration and newer-build equivalence remain unresolved.
+tagged contracts and 17 optional immediate field descriptors. Further static work
+resolves D01 to eight optional tagged fields and D02 to four four-byte native
+transfer demands. D01's four array-child registrations now resolve to tagged
+streams with eight optional leaf fields in total: five Int and three Str. Int
+demands four bytes under the reviewed profile; Str values remain opaque.
+Contracts and independent review: `work/c028-d01-array-children-20261012/`.
+These are conditional static grammars, not populated-save agreement; runtime
+migration and newer-build equivalence remain unresolved.
 
 ### Selected nested struct streams
 
@@ -388,7 +394,10 @@ bytes. All shared/element/header/value/terminator spans match independently with
 exact EOF. Supplied populated framing is therefore covered for these selections;
 a later range-only check individually confirms 428 Struct spans of 12 bytes and
 428 Float spans of four bytes against older static transfer demands. Numeric
-values and complete import semantics remain unqualified.
+values and complete import semantics remain unqualified. A later complete C034
+own-array comparison extends exact span and individual width agreement to all
+1,658 arrays, 15,342 elements and 30,684 fields across both copies; see
+`work/c034-all-own-arrays-20261012/`.
 
 ## Matched-client static comparison
 
@@ -442,3 +451,14 @@ The native branch precedes forced-binary fallback, supporting the selected
 three-four-byte transfer demand under those conditions. Initializer execution,
 ordering, exact EOF and numeric semantics are not established. Independent
 semantic and strict evidence reviews pass.
+
+The exact client Float construction path is separately qualified in
+`work/client-float-contract-20261012/`: generation 10 selects the Float factory
+arm, whose final vtable `0x145026a20` selects `0x142123ce0` at virtual `0x90`.
+Its shared Int/UInt32/Float callback aliases do not establish type identity; the
+factory and concrete vtable do. The complete callback demands four bytes on
+buffered and ordinary transfer paths; its byte-order fallback also demands four.
+The buffered path precedes loading/swap checks, so no arbitrary-archive validity
+claim follows. No local version/custom-version or post callback changes the
+demand in these bodies. Outer selection, archive success, numeric semantics and
+exact EOF remain separate. Independent semantic and strict evidence reviews pass.

@@ -362,10 +362,17 @@ fields across these types: seven names, three signed integers, three floats, one
 boolean, one text, one array and one struct. One additional raw descriptor belongs
 to the nested array's inner property. The float and text factories, class-name
 getters and built-in IDs independently identify their serialized header types;
-both use only the common property-GUID extension. The native header reader does
-not yet support these two types. The nested array and struct target two further
-types whose encoding remains unresolved; the earlier 16/12-byte contracts do not
-apply to them.
+both use only the common property-GUID extension. The current eleven-kind native
+header reader supports both types. Later static descendant work resolves the
+nested array target D01 to eight optional tagged fields and the distinct Struct
+target D02 to its own four-four-byte native transfer demand; these are not inferred
+from the earlier 16/12-byte types. D01's four array children now have concrete
+tagged registrations and immediate schemas of two Int; Int/Str/Int; one Str; and
+Int/Str, respectively. These eight fields remain optional. Int demands four
+opaque bytes under the reviewed profile; Str leaf encoding remains unresolved.
+Independent semantic and strict review pass in
+`work/c028-d01-array-children-20261012/`; no supplied populated descendants or
+numeric/string values were read.
 
 Independent inspection of all seven arrays in each of the four selected parent
 records finds 28 empty arrays (save-triage E-035). All include their required
@@ -505,6 +512,18 @@ not certify archive success; an earlier transfer may advance before a later one
 fails. Original global EOF policy, numeric representation and newer-build
 equivalence remain unproved. Contract, independent review and strict result review:
 `work/c034-value-widths-20261012/`.
+
+Full own-array population qualification subsequently covers all 829 arrays per
+copy, with exact native/independent spans and unchanged source bindings. Each
+copy has 7,671 elements, 15,342 fields and 85 empty arrays; the largest observed
+count is 214. The 1,076,195 bytes partition into 71,294 count/shared-header bytes,
+882,165 element-header/terminator bytes and 122,736 opaque value bytes. Every
+present Struct span is individually 12 bytes and every Float span four bytes,
+with zero mismatches; no optional descriptor is missing in these records.
+These are observations, not mandatory fields or universal count limits. Both
+complete top/own populations are reproduced before array entry, and width checks
+follow exact native agreement. Six helper tests pass, including under the
+512 MiB native address-space limit. Evidence: `work/c034-all-own-arrays-20261012/`.
 
 Matched-client generic tag/array functions now independently agree with the
 examined older version gates and shared-header branch. A subsequent concrete
