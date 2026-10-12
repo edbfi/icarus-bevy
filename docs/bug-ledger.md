@@ -56,6 +56,7 @@ These concern this repository's code, not the official server.
 | --- | --- | --- |
 | N-001 | Save worker exits before acknowledging an in-flight request; polling returned an untyped error while leaving `busy` true, and the main loop treated it as a retryable write failure | Return a typed terminal error, clear the stale in-flight flag and stop simulation. A deterministic disconnected-channel test covers missing acknowledgement and rejected subsequent submission |
 | N-002 | Direct snapshot-store submission at tick 10 after acknowledged tick 20 succeeded as generation 2, allowing stale work to roll back the persisted simulation clock | Reject older ticks before any file publication. The regression first reproduced the rollback, then verified unchanged manifest/state and no orphan file on rejection. Equal-tick final saves and explicit previous-generation recovery remain permitted |
+| N-003 | Native filesystem probe rejected a real ENOSPC because `tempfile` wraps the OS error with path context, retaining `ErrorKind` but hiding `raw_os_error()` | Classify typed `StorageFull`/`PermissionDenied` through the error chain. A real tempfile failure reproduces the lost errno; regressions reject misleading text. The isolated 2026-10-12 tmpfs run verified ENOSPC, EACCES, unchanged acknowledged state, both retries and reopened generation 4 |
 
 Publication tests also inject Linux `ENOSPC` at the generation and manifest writer
 boundaries. Both preserve the acknowledged generation across reopening and permit
@@ -64,3 +65,21 @@ no success receipt, preserves the readable generation, and retains it as a fallb
 on the next save. These are injected I/O outcomes, not real disk exhaustion or
 physical power-loss tests. An actual rename obstruction verifies asynchronous
 write-error reporting and recovery without a false save receipt.
+
+On 2026-10-12, the real unprivileged 256 KiB tmpfs probe completed: 245,760 filler
+bytes exhausted storage after acknowledged generation 2/tick 20; the failed save
+preserved manifest bytes and the full snapshot. Removing the filler allowed
+generation 3. Removing directory write permission rejected the next save without
+changing manifest/state; restoring permission allowed generation 4/tick 40 with
+1,100 entities, verified after reopening. Both failures returned errors, not save
+receipts. This qualifies those native filesystem paths, not physical power loss.
+
+Evidence: ignored `work/native-io-20261012/native-io-faults/` contains the exact
+invocation, helper/binary hashes, container configuration, probe events and verified
+cleanup. The case's scope/session records the current user authorization; the
+historical failed run remains under `work/icarus-overnight/native-io-faults/`.
+The reusable launcher now requires explicit case/session/probe inputs, current
+timezone-aware deadlines, matching scope/probe hashes and exact container ownership.
+It retains the offline, read-only, unprivileged resource contract and a total
+120-second maximum including cleanup. Unit tests cover invalid scope/deadlines,
+foreign containers, launch/log/removal/verification failures and missing probe events.

@@ -1,102 +1,250 @@
 #!/usr/bin/env python3
-"""Run the authored ENOSPC/EACCES probe in a disposable 256 KiB container tmpfs.
+"""Run the authored ENOSPC/EACCES probe under an explicit, current case scope.
 
-Requires the approved overnight case. No original execution, downloads, network
-traffic or host filesystem exhaustion. The existing image only supplies Linux.
+The session binds the case, scope and probe hashes and grants only this native
+experiment. All Docker operations share a <=120-second budget including cleanup.
+No original execution, downloads, networking or host filesystem exhaustion.
 """
+import argparse
+from collections.abc import Sequence
+from dataclasses import dataclass
 import datetime
 import hashlib
 import json
 import os
 from pathlib import Path
+import re
 import shutil
 import signal
-import time
+import subprocess
 import sys
+import time
 from types import FrameType
+import uuid
 
 if __package__ in (None, ""):
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from tools.run_reference_offline import IMAGE, Cleanup, available_memory, command
-from tools.runtime_types import json_object, parse_container_identity, parse_container_state, parse_json, string_field
+from tools.run_reference_offline import IMAGE, available_memory, command
+from tools.runtime_types import JsonObject, integer_field, json_object, parse_container_identity, parse_container_state, parse_json, string_field
+
+
+class Arguments(argparse.Namespace):
+    case_root: str = ""
+    session: str = ""
+    probe: str = ""
+
+
+@dataclass(frozen=True)
+class ApprovedRun:
+    case: Path
+    probe: Path
+    session: JsonObject
+    end: datetime.datetime
+    seconds: int
+
+
+def regular_path(path: Path) -> Path:
+    absolute = path.absolute()
+    if absolute.resolve() != absolute or not absolute.is_file():
+        raise ValueError(f"missing or redirected file: {absolute}")
+    return absolute
+
+
+def digest(path: Path) -> str:
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def validate_session(root: Path, case: Path, session_path: Path, probe: Path,
+                     now: datetime.datetime) -> ApprovedRun:
+    case = case.absolute()
+    if case.resolve() != case or not case.is_dir() or not case.is_relative_to(root / "work"):
+        raise ValueError("case must be an existing unredirected directory under work")
+    session_path = regular_path(session_path)
+    probe = regular_path(probe)
+    scope = regular_path(case / "scope.md")
+    if not session_path.is_relative_to(case) or not probe.is_relative_to(case):
+        raise ValueError("session and probe must be case-local")
+    if not os.access(probe, os.X_OK):
+        raise ValueError("probe must be executable")
+    session = json_object(parse_json(session_path.read_text()))
+    if string_field(session, "scope") != "native-io-faults":
+        raise ValueError("session does not authorize native-io-faults")
+    if not string_field(session, "authorization_source").strip():
+        raise ValueError("authorization_source must identify the current user instruction")
+    if string_field(session, "case_root") != str(case) or string_field(session, "probe") != str(probe):
+        raise ValueError("session case/probe binding mismatch")
+    for field, path in (("scope_sha256", scope), ("probe_sha256", probe)):
+        expected = string_field(session, field)
+        if not re.fullmatch(r"[0-9a-f]{64}", expected) or expected != digest(path):
+            raise ValueError(f"{field} mismatch")
+    start = datetime.datetime.fromisoformat(string_field(session, "start_utc"))
+    end = datetime.datetime.fromisoformat(string_field(session, "end_utc"))
+    if start.utcoffset() is None or end.utcoffset() is None:
+        raise ValueError("session timestamps must include timezone offsets")
+    seconds = integer_field(session, "run_timeout_seconds")
+    if not 1 <= seconds <= 120:
+        raise ValueError("run_timeout_seconds must be 1..120")
+    if not start <= now < end or now + datetime.timedelta(seconds=seconds) >= end:
+        raise ValueError("session is future, expired or has insufficient approved time")
+    return ApprovedRun(case, probe, session, end, seconds)
+
+
+@dataclass(frozen=True)
+class Budget:
+    deadline: float
+
+    def run(self, argv: Sequence[str], *, check: bool = True, cap: float = 10) -> subprocess.CompletedProcess[str]:
+        remaining = self.deadline - time.monotonic()
+        if remaining <= 0:
+            raise TimeoutError("native I/O run deadline exhausted")
+        return command(argv, timeout=min(cap, remaining), check=check)
+
+
+def owned_container(text: str, name: str, token: str, expected_id: str | None) -> str:
+    values = parse_json(text)
+    if not isinstance(values, list) or len(values) != 1:
+        raise RuntimeError("container ownership requires exactly one inspect result")
+    obj = json_object(values[0])
+    identity = parse_container_identity(text)
+    if (string_field(obj, "Name") != "/" + name
+            or identity.labels.get("icarus.research.run") != name
+            or identity.labels.get("icarus.research.owner") != token
+            or re.fullmatch(r"[0-9a-f]{64}", identity.container_id) is None
+            or (expected_id is not None and identity.container_id != expected_id)):
+        raise RuntimeError("container ownership mismatch")
+    return identity.container_id
+
+
+def cleanup_container(run: Path, name: str, token: str, expected_id: str | None,
+                      budget: Budget) -> JsonObject:
+    cleanup: JsonObject = {"removed": False}
+    try:
+        inspected = budget.run(["docker", "inspect", name],
+                               cap=min(10, (budget.deadline - time.monotonic()) / 4))
+        container = owned_container(inspected.stdout, name, token, expected_id)
+        cleanup["container_id"] = container
+        try:
+            _ = (run / "container.json").write_text(inspected.stdout)
+            # Leave most cleanup time for removal and its independent verification.
+            logs = budget.run(["docker", "logs", container],
+                              cap=min(5, (budget.deadline - time.monotonic()) / 4))
+            _ = (run / "probe.jsonl").write_text(logs.stdout)
+            _ = (run / "probe.stderr").write_text(logs.stderr)
+        finally:
+            _ = budget.run(["docker", "rm", "--force", container],
+                           cap=min(10, (budget.deadline - time.monotonic()) / 2))
+            remaining = budget.run(["docker", "ps", "--all", "--no-trunc", "--filter",
+                                    f"id={container}", "--format", "{{.ID}}"])
+            cleanup["removed"] = not remaining.stdout.strip()
+            if not cleanup["removed"]:
+                raise RuntimeError("owned container remains after removal")
+    except (Exception, KeyboardInterrupt) as exc:
+        cleanup["error"] = str(exc)
+        raise
+    finally:
+        _ = (run / "cleanup.json").write_text(json.dumps(cleanup, indent=2) + "\n")
+    return cleanup
+
+
+def validate_probe_events(text: str) -> None:
+    events = [json_object(parse_json(line)) for line in text.splitlines() if line.strip()]
+    if [string_field(event, "event") for event in events] != [
+            "enospc_verified", "eacces_verified", "io_fault_probe_complete"]:
+        raise RuntimeError("missing or unexpected native I/O probe events")
+    if any(event.get("state_verified") is not True for event in events):
+        raise RuntimeError("native I/O probe did not verify preserved state")
+    if any(event.get("manifest_unchanged") is not True for event in events[:2]):
+        raise RuntimeError("native I/O probe did not verify unchanged manifests")
+    complete = events[-1]
+    if (integer_field(complete, "generation"), integer_field(complete, "tick"),
+            integer_field(complete, "entities")) != (4, 40, 1100):
+        raise RuntimeError("native I/O probe completion state mismatch")
 
 
 def main() -> None:
+    parser = argparse.ArgumentParser(description=__doc__)
+    _ = parser.add_argument("--case-root", required=True)
+    _ = parser.add_argument("--session", required=True)
+    _ = parser.add_argument("--probe", required=True)
+    args = parser.parse_args(namespace=Arguments())
     root = Path(__file__).resolve().parents[1]
-    case = root / "work/icarus-overnight"
-    session = json_object(parse_json((case / "session.json").read_text()))
-    if datetime.datetime.now(datetime.UTC) + datetime.timedelta(seconds=180) >= datetime.datetime.fromisoformat(string_field(session, "end_utc")):
-        raise RuntimeError("insufficient approved time remaining")
-    _ = command(["bash", str(root / ".agents/vendor/reverse-skill/skills/scripts/case-guard.sh"), "--case-root", str(case)])
-    if available_memory() < 3 * 1024**3 or shutil.disk_usage(case).free < 30 * 1024**3:
+    approved = validate_session(root, Path(args.case_root), Path(args.session), Path(args.probe),
+                                datetime.datetime.now(datetime.UTC))
+    _ = command(["bash", str(root / ".agents/vendor/reverse-skill/skills/scripts/case-guard.sh"),
+                 "--case-root", str(approved.case)])
+    if available_memory() < 3 * 1024**3 or shutil.disk_usage(approved.case).free < 30 * 1024**3:
         raise RuntimeError("resource floor reached")
-    run = case / "native-io-faults"
-    run.mkdir()  # Preserve prior evidence; do not silently rerun.
+    run = approved.case / "native-io-faults"
+    run.mkdir()  # Preserve prior evidence; reruns need a fresh case.
     home = run / "home"
     home.mkdir()
-    probe = case / "probes/io_fault_probe"
-    if not probe.is_file() or probe.resolve() != probe:
-        raise RuntimeError("missing or redirected reviewed native probe")
-    name = "icarus-native-io-faults-" + str(os.getpid())
-    label = "icarus.research.run=" + name
+    token = uuid.uuid4().hex
+    name = "icarus-native-io-faults-" + token
     argv = ["docker", "run", "--detach", "--pull", "never", "--name", name,
-            "--label", label, "--network", "none", "--read-only", "--cap-drop", "ALL",
+            "--label", "icarus.research.run=" + name,
+            "--label", "icarus.research.owner=" + token,
+            "--network", "none", "--read-only", "--cap-drop", "ALL",
             "--security-opt", "no-new-privileges", "--memory", "6g", "--cpus", "2",
             "--pids-limit", "512", "--shm-size", "256m",
             "--tmpfs", "/tmp:rw,noexec,nosuid,size=256k", "--tmpfs", "/run:rw,nosuid,size=16m",
-            "--mount", f"type=bind,src={probe.parent},dst=/probes,readonly",
+            "--mount", f"type=bind,src={approved.probe},dst=/probes/io_fault_probe,readonly",
             "--mount", f"type=bind,src={home},dst=/home/container",
             "--workdir", "/tmp", "--env", "ICARUS_BOUNDED_TMPFS_BYTES=262144",
             IMAGE, "/probes/io_fault_probe"]
-    helpers = [Path(__file__), root / "tools/run_reference_offline.py", root / "tools/runtime_types.py", probe,
-               root / "examples/io_fault_probe.rs", root / "src/persistence.rs", root / "Cargo.lock"]
+    helpers = [Path(__file__), root / "tools/run_reference_offline.py", root / "tools/runtime_types.py",
+               approved.probe, root / "examples/io_fault_probe.rs", root / "src/persistence.rs", root / "Cargo.lock"]
     record = {"time": datetime.datetime.now(datetime.UTC).isoformat(), "argv": argv,
-              "timeout_seconds": 120, "approval": session,
-              "helpers": {str(p.relative_to(root)): hashlib.sha256(p.read_bytes()).hexdigest() for p in helpers}}
-    with (case / "commands.jsonl").open("a") as stream:
+              "timeout_seconds": approved.seconds, "approval": approved.session,
+              "helpers": {str(p.relative_to(root)): digest(p) for p in helpers}}
+    with (approved.case / "commands.jsonl").open("a") as stream:
         _ = stream.write(json.dumps(record) + "\n")
     _ = (run / "invocation.json").write_text(json.dumps(record, indent=2) + "\n")
+    # Recheck immediately before launch; preparation must not consume authorization.
+    if validate_session(root, approved.case, Path(args.session), approved.probe,
+                        datetime.datetime.now(datetime.UTC)) != approved:
+        raise RuntimeError("session changed during preparation; refuse unrecorded authorization")
 
     def interrupted(_signum: int, _frame: FrameType | None) -> None:
         raise KeyboardInterrupt("native I/O probe interrupted")
 
-    _ = signal.signal(signal.SIGTERM, interrupted)
-    cleanup: Cleanup = {"removed": False}
-    outcome = None
+    previous = signal.signal(signal.SIGTERM, interrupted)
+    previous_interrupt = signal.getsignal(signal.SIGINT)
+    start = time.monotonic()
+    budget = Budget(start + approved.seconds)
+    observation = Budget(start + approved.seconds * 2 / 3)
+    container: str | None = None
+    outcome: int | None = None
     try:
-        _ = command(argv, timeout=45)
-        deadline = time.monotonic() + 30
-        while time.monotonic() < deadline:
-            info = parse_container_state(command(["docker", "inspect", name]).stdout)
+        result = observation.run(argv, cap=min(25, approved.seconds / 3))
+        container = result.stdout.strip()
+        if re.fullmatch(r"[0-9a-f]{64}", container) is None:
+            container = None
+            raise RuntimeError("unexpected container ID")
+        while time.monotonic() < observation.deadline:
+            inspected = observation.run(["docker", "inspect", container])
+            _ = owned_container(inspected.stdout, name, token, container)
+            info = parse_container_state(inspected.stdout)
             if not info.running:
                 outcome = info.exit_code
                 break
-            time.sleep(1)
+            time.sleep(min(1, max(0, observation.deadline - time.monotonic())))
         if outcome is None:
-            raise RuntimeError("native probe exceeded 30-second observation deadline")
+            raise RuntimeError("native probe exceeded observation deadline")
     finally:
-        inspected = command(["docker", "inspect", name], check=False)
-        if inspected.returncode == 0:
-            info = parse_container_identity(inspected.stdout)
-            if info.labels.get("icarus.research.run") != name:
-                raise RuntimeError("container ownership mismatch")
-            container = info.container_id
-            try:
-                _ = (run / "container.json").write_text(inspected.stdout)
-                logs = command(["docker", "logs", container], check=False)
-                _ = (run / "probe.jsonl").write_text(logs.stdout)
-                _ = (run / "probe.stderr").write_text(logs.stderr)
-            finally:
-                _ = command(["docker", "rm", "--force", container])
-                remaining = command(["docker", "ps", "--all", "--filter", f"id={container}", "--format", "{{.ID}}"])
-                cleanup.update(container_id=container, removed=not remaining.stdout.strip())
-        else:
-            cleanup["no_container_found"] = True
-        _ = (run / "cleanup.json").write_text(json.dumps(cleanup, indent=2) + "\n")
-    if outcome != 0 or not cleanup["removed"]:
+        try:
+            # Repeated termination must not interrupt removal of an owned container.
+            _ = signal.signal(signal.SIGTERM, signal.SIG_IGN)
+            _ = signal.signal(signal.SIGINT, signal.SIG_IGN)
+            cleanup = cleanup_container(run, name, token, container, budget)
+        finally:
+            _ = signal.signal(signal.SIGTERM, previous)
+            _ = signal.signal(signal.SIGINT, previous_interrupt)
+    if outcome != 0 or cleanup["removed"] is not True:
         raise RuntimeError(f"native probe or cleanup failed: exit={outcome}, cleanup={cleanup}")
-    print((run / "probe.jsonl").read_text())
+    probe_events = (run / "probe.jsonl").read_text()
+    validate_probe_events(probe_events)
+    print(probe_events)
     print(json.dumps(cleanup))
 
 
