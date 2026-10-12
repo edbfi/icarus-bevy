@@ -44,6 +44,15 @@ See the [full plan](linux-dedicated-server-plan.md) and
 
 ## Reference evidence
 
+- User-supplied heavy-world archive preserved on 2026-10-12 under ignored
+  `reference-data/2026-10-04-heavy-save/`. The copy matches its source SHA-256;
+  member CRC checks passed for 24 files (two JSON files and 22 backups). Private
+  provenance and per-member hashes are stored alongside it. No extraction, save
+  decoding, runtime loading or player-data validation was performed at intake.
+  The producing build is unknown, and the largest member exceeds the current
+  inspector's 1 MiB input limit. See the updated
+  [continuation order](linux-dedicated-server-plan.md#supplied-heavy-world-save-and-continuation-order)
+  for bounded inspection, backup comparison and later migration/workload validation.
 - [Inventory](research/2026-10-04-reference-inventory.md): hashed original baseline.
 - [Static inspection](research/2026-10-04-static-baseline.md): executable identity,
   imported interfaces and concrete diagnostic anchors; behavior remains unverified.

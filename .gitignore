@@ -26,6 +26,9 @@ rustc-ice-*.txt
 # Vanilla Icarus dedicated server files
 /icarus-orig/
 
+# Private user-supplied save archives, player data, and provenance inventories
+/reference-data/
+
 # Generated reverse-engineering cases, extracted files, and analysis databases
 /work/
 

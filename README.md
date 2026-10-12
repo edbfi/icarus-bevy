@@ -81,6 +81,11 @@ Original files stay under ignored `icarus-orig/`; generated analysis, private sa
 captures and dumps stay under ignored `work/`. Reusable tools and sanitized reports
 are tracked. No original assets are extracted or reused.
 
+Preserved user-supplied saves live under ignored `reference-data/`, with private
+checksums and inventories. Use copies under `work/` for experiments. The supplied
+heavy-world archive and its role in save research are covered by the
+[continuation plan](docs/linux-dedicated-server-plan.md#supplied-heavy-world-save-and-continuation-order).
+
 Read [research authorization](docs/research-authorization.md) before running
 research scripts. Package-script approval and target scope are separate gates.
 The inventory/static reports are not evidence of a working protocol or a reproduced
