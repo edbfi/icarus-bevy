@@ -205,7 +205,8 @@ Use this dataset in the next work sequence:
    8,290 selected nested/own scalar widths. All 486 C009 top bodies now match
    the reviewed 31-field contract and native spans under an explicit 71,956-byte
    comparison cap. Its 972 own child bodies now match immediate native spans;
-   qualify the selected Int-array values with the explicit bounded reader next.
+   all 486 selected Int arrays now match native prefix/element spans, including
+   four opaque elements. Qualify the remaining selected Str/Int/Bool leaves next.
    Retain the lack of populated
    inherited-array coverage.
    Exact C034 own Name values also pass strict native/independent structural
