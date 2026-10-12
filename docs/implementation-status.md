@@ -20,6 +20,26 @@ locked reinstallation and provider checks. This tooling change does not resume
 the research paused below, qualify the pending v2 retry, or extend historical
 authorization windows. Private inputs, frozen cases and evidence remain retained.
 
+### C009 common-child binary widths — 2026-10-12, 23:04 UTC
+
+The fresh independently reviewed comparison reproduces all 486 top frames,
+6,318 selections and 26 common-child header batches before joining four exact
+child descriptors to retained conditional transfer contracts. All 1,468 selected
+opaque spans / 19,600 bytes meet their individual 16/12/12/16-byte demands. Per
+copy, BW01/BW02/BW03/BW04 contribute 243/243/243/5 fields. Descriptor joins use
+actual name/type/index/extra metadata; field order and equal aggregate sizes are
+insufficient. A swapped 16/12-byte fixture fails despite conserved totals.
+
+Twelve authored selector/orchestration/prior-gate checks and eight independent
+wrapper checks pass. Both copies are bounded before individual width checks;
+all 954 execution bindings remain unchanged. The frozen common-header native
+helper is reused against its old library, with two explicit exact source/library
+transitions accounting for the later control reader. Evidence:
+`work/c009-common-binary-widths-20261013/`; summary SHA-256
+`f7867196f10211aa7d00fb53d38048e7948053eab4ec37507bd6052e694b56a8`.
+Numeric meaning, original error/EOF equivalence, newer-build equivalence and
+restoration remain unqualified.
+
 ### Initial control archive fields — 2026-10-12, 22:24 UTC
 
 A disconnected experimental initial-body reader now composes the statically
@@ -37,14 +57,22 @@ source/library snapshots: `work/protocol-next-increment-20261013/`. New release
 library SHA-256:
 `7b5430a53f1f252aa639bf037e8952cd11204266d84bda6c0691e240be8d4e38`.
 
-The next protocol question is the concrete archive/bit-position/byte-order path
-feeding the known control dispatcher, rather than another negative search for
-version delegate registration. REA MCP tools are absent from this turn despite
-project registration; the supported local CLI remains available. Its function
-command reimports into an ephemeral Ghidra project and its current decompiler
-uses timeout zero, so fresh function research needs a reviewed way to retain the
-project's thirty-second procedure limit. No new target operation is claimed.
-Existing source review and tests reused frozen binary findings.
+The concrete archive/bit-position/byte-order path feeding the control dispatcher
+remains unresolved. A directly owned MCP client connected to the registered
+project REA server when the harness exposed no REA tools. The 170-tool handshake
+and metadata binding succeeded, but lazy Ghidra startup timed out at thirty
+seconds, then at its separately reviewed 330-second startup limit. No caller
+evidence returned; both attempts preserved their bindings and verified cleanup.
+
+A justified direct Ghidra fallback queried existing references from a disposable
+retained-project copy with analysis disabled. Its first lifecycle wrapper rejected
+after script output; an exiting-zombie ownership race was identified as a plausible
+cause and corrected in a separate reviewed retry. The retry passed, retaining all
+279 bindings and verified cleanup. Its single reference is marked non-call with
+no containing function. This partial retained database does not establish caller
+absence or archive provenance. The reusable exporter compiles against Ghidra
+12.1.4/JDK 21; 24 wrapper boundary checks and full repository checks pass.
+See [bounded caller investigation](research/2026-10-12-control-caller-limit.md).
 
 ### C009 common-child headers — 2026-10-12, 22:15 UTC
 
@@ -93,7 +121,8 @@ New release library SHA-256:
 `e9cb457f168ec214c54ad9931074b0f8070f179eecda6f5d79f97a3288ca87d2`.
 The previous `84b50475…` library remains preserved. Fresh common-child helpers
 must bind this transition explicitly and replay frozen parent/selection results
-before reading child headers. No supplied common-child header comparison has run.
+before reading child headers. The subsequent common-child comparison above now
+qualifies immediate headers; this API increment alone did not.
 
 ### Resumed scalar qualification — 2026-10-12, 22:02 UTC
 

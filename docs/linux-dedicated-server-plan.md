@@ -224,7 +224,9 @@ Use this dataset in the next work sequence:
    now supports the measured 66,257-byte common-ancestor array while retaining
    default/count/field limits. Fresh exact source/library bindings now qualify
    all 6,318 common-child payloads, 522 array elements and 9,018 immediate fields.
-   Continue unresolved leaves/deeper grammars from these checked headers. See
+   Four exact retained binary/native child contracts now qualify 1,468 selected
+   spans / 19,600 bytes against individual 16/12/12/16-byte demands after complete
+   prior replay. Continue other leaves/deeper grammars from these checked headers. See
    the current checkpoint in implementation status.
    Retain the lack of populated
    inherited-array coverage.
@@ -640,7 +642,10 @@ and native validation. It composes only a caller-selected byte/u32/strict-string
 body; concrete packet/bunch framing and archive byte-order provenance remain the
 next protocol evidence gate. It supplies no identity or admission decision and
 does not promote M2 or M3. The current checkpoint retains exact source/library
-transitions for subsequent research.
+transitions for subsequent research. Bounded REA startup attempts and a justified
+retained-database reference query recovered no caller; their coverage limits and
+failed attempts are preserved in the
+[caller investigation](research/2026-10-12-control-caller-limit.md).
 
 Completion requires demonstrated compatibility, reliability and performance
 improvement while preserving the independent Rust/Bevy and no-original-assets rules.
