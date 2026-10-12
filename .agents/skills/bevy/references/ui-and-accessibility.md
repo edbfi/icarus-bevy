@@ -2,7 +2,7 @@
 
 Build layout with `Node` and its flex/grid properties, style with components such
 as `BackgroundColor` and `BorderColor`, and use `Text` for UI text (`Text2d` for
-world-space text). In 0.19, `TextFont.font` is `FontSource` and `font_size` is
+world-space text). Since 0.19, `TextFont.font` is `FontSource` and `font_size` is
 `FontSize`, not a bare handle and float. Font loading is still asynchronous.
 The default embedded font is limited; ship fonts covering the required scripts.
 
@@ -12,7 +12,7 @@ interaction. It intentionally leaves the actual application action to the caller
 
 <!-- verify: presentation -->
 ```rust
-use bevy::{input_focus::{FocusCause, InputFocus}, prelude::*};
+use bevy::{picking::hover::Hovered, prelude::*, ui::Pressed, ui_widgets::Button};
 
 #[derive(Component)]
 struct StartButton;
@@ -37,6 +37,7 @@ fn setup(mut commands: Commands, assets: Res<AssetServer>) {
         children![(
             StartButton,
             Button,
+            Hovered::default(),
             Node {
                 padding: UiRect::all(px(16)),
                 border_radius: BorderRadius::all(px(6)),
@@ -57,31 +58,32 @@ fn setup(mut commands: Commands, assets: Res<AssetServer>) {
 }
 
 fn style_button(
-    mut focus: ResMut<InputFocus>,
-    mut buttons: Query<(Entity, &Interaction, &mut BackgroundColor),
-        (With<StartButton>, Changed<Interaction>)>,
+    mut buttons: Query<(&Hovered, Has<Pressed>, &mut BackgroundColor), With<StartButton>>,
 ) {
-    for (entity, interaction, mut background) in &mut buttons {
-        let color = match interaction {
-            Interaction::Pressed => {
-                focus.set(entity, FocusCause::Pressed);
-                Color::srgb(0.15, 0.4, 0.3)
-            }
-            Interaction::Hovered => Color::srgb(0.2, 0.3, 0.4),
-            Interaction::None => Color::srgb(0.1, 0.2, 0.3),
+    for (hovered, pressed, mut background) in &mut buttons {
+        let color = match (hovered.get(), pressed) {
+            (_, true) => Color::srgb(0.15, 0.4, 0.3),
+            (true, false) => Color::srgb(0.2, 0.3, 0.4),
+            (false, false) => Color::srgb(0.1, 0.2, 0.3),
         };
-        *background = BackgroundColor(color);
+        background.set_if_neq(BackgroundColor(color));
     }
 }
 ```
 
-`Changed<Interaction>` also matches insertion. Treat pointer hover, keyboard
-focus, and activation as separate states. Do not clear keyboard focus merely
-because the pointer leaves. `InputFocus::set(entity, FocusCause)` records why focus
-moved. Setting focus alone does not implement navigation or keyboard activation:
-wire focus/navigation support and route Enter/Space/gamepad confirmation to the
-same application action as clicking. Higher-level `bevy_ui_widgets` can provide
-behavior; inspect its current plugins and examples before composing widgets.
+In 0.20, use `bevy::ui_widgets::Button`; the old `ui::widget::Button` and
+`Interaction` are deprecated. The widget tracks `Pressed` and emits `Activate`;
+attach an `On<Activate>` observer for the application action. `Hovered` tracks
+pointer hover separately. The normal `ui` profile includes widget support; reduced
+builds must enable `bevy_ui_widgets` and install the required plugins.
+
+Treat pointer hover, keyboard focus, and activation as separate states. Do not
+clear keyboard focus merely because the pointer leaves. `InputFocus::set(entity,
+FocusCause)` records why focus moved. For Tab navigation, install
+`TabNavigationPlugin`, provide a `TabGroup`, and assign `TabIndex` to focusable
+widgets. Focused buttons can activate with Enter/Space through the same `Activate`
+event; configure gamepad navigation separately. The snippet only demonstrates
+pointer styling, not a complete keyboard or accessibility flow.
 
 Use marker components or stored entity references to update the intended text or
 bar; do not rely on a fixed child index after the hierarchy becomes dynamic.
@@ -102,7 +104,7 @@ and check its Bevy compatibility before adding a Fluent integration. Do not
 concatenate translated sentence fragments or encode game state in rendered text.
 Test long strings, right-to-left layouts where required, and locale changes.
 
-Sources: [UI](https://docs.rs/bevy/0.19.1/bevy/ui/index.html),
-[text](https://docs.rs/bevy/0.19.1/bevy/text/index.html),
-[input focus](https://docs.rs/bevy/0.19.1/bevy/input_focus/index.html),
-[UI examples](https://github.com/bevyengine/bevy/tree/v0.19.1/examples/ui).
+Sources: [UI](https://docs.rs/bevy/0.20.0/bevy/ui/index.html),
+[text](https://docs.rs/bevy/0.20.0/bevy/text/index.html),
+[input focus](https://docs.rs/bevy/0.20.0/bevy/input_focus/index.html),
+[button example](https://github.com/bevyengine/bevy/blob/v0.20.0/examples/ui/widgets/button.rs).

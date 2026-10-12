@@ -14,13 +14,13 @@ feature needs all referenced data. Hot reload can invalidate cached derived data
 respond to the relevant asset modifications instead of loading or allocating a
 replacement every frame.
 
-In 0.19 classic reflected world loading lives in `bevy_world_serialization`.
+Since 0.19, classic reflected world loading lives in `bevy_world_serialization`.
 `WorldAssetRoot` instantiates a world asset; `WorldInstanceReady` signals that its
 entity hierarchy exists. `bevy_scene` provides BSN scene authoring and templates,
 which is a different facility. For glTF, prefer typed `GltfAssetLabel`s when the
 glTF feature is enabled; `models/level.glb#Scene0` loads a world asset. A scene's
 animation player can be below the root, so wait for readiness and traverse children.
-The 0.19 `#Material0` subasset is `GltfMaterial`; `/std` selects its PBR
+The `#Material0` subasset is `GltfMaterial`; `/std` selects its PBR
 `StandardMaterial` conversion where enabled.
 
 ## Custom loader
@@ -74,9 +74,9 @@ their handles in the resulting asset, and mark dependency handle fields with
 `#[dependency]` for derived dependency visiting. Loading through an unrelated
 `AssetServer` does not express the loader's dependency relationship.
 
-Custom `Reader` implementations in 0.19 must implement `seekable`; use streaming
-fallbacks when a source cannot seek. Do not assume a Tokio runtime exists inside
-a Bevy loader. Expensive decoding and unbounded input sizes deserve explicit
+Since 0.19, custom `Reader` implementations must implement `seekable`; use
+streaming fallbacks when a source cannot seek. Do not assume a Tokio runtime exists
+inside a Bevy loader. Expensive decoding and unbounded input sizes deserve explicit
 resource limits when the asset source is untrusted.
 
 ## Durable saves
@@ -94,7 +94,7 @@ file and atomic replacement; browser storage needs an asynchronous backend such
 as IndexedDB and handling for quota/commit failures. Report success after storage
 commit, not merely after launching a background task.
 
-Sources: [assets](https://docs.rs/bevy/0.19.1/bevy/asset/index.html),
-[custom loader example](https://github.com/bevyengine/bevy/blob/v0.19.1/examples/asset/custom_asset.rs),
-[world serialization](https://docs.rs/bevy/0.19.1/bevy/world_serialization/index.html),
-[animated glTF example](https://github.com/bevyengine/bevy/blob/v0.19.1/examples/animation/animated_mesh.rs).
+Sources: [assets](https://docs.rs/bevy/0.20.0/bevy/asset/index.html),
+[custom loader example](https://github.com/bevyengine/bevy/blob/v0.20.0/examples/asset/custom_asset.rs),
+[world serialization](https://docs.rs/bevy/0.20.0/bevy/world_serialization/index.html),
+[animated glTF example](https://github.com/bevyengine/bevy/blob/v0.20.0/examples/animation/animated_mesh.rs).

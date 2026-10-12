@@ -29,6 +29,10 @@ record historical research batches; the overnight runtime window has expired.
 ## Implemented and checked
 
 - Pinned Rust 1.99.0, Bevy 0.19.1, headless features, committed Cargo lockfile.
+- Local Bevy skill updated from `edbfi/skills` commit `69cc23f` using `bunx skills`,
+  with an exact 14-file match, valid frontmatter and resolved relative links. Its
+  baseline is 0.20.0; the application remains pinned to 0.19.1. This was an
+  installation check, not a local rerun of the new skill's 0.20 examples.
 - Native configuration validation and CLI overrides; no-write config inspection.
 - Fixed-step ECS loop, stable authored domain IDs, coherent snapshot capture,
   bounded catch-up with diagnostic counters. Tick rate remains provisional.

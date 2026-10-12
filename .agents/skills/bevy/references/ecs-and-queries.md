@@ -5,7 +5,7 @@ components improve composition, but splitting every scalar is not a universal
 optimization. Ordinary helper methods on data types are fine. Add `Reflect` only
 when reflection, tooling, or serialization needs it.
 
-In 0.19, `Resource: Component` and resources occupy singleton entities. Deriving
+Since 0.19, `Resource: Component` and resources occupy singleton entities. Deriving
 both traits conflicts. Keep singleton and ordinary per-entity roles in distinct
 types; inserting a resource component on another entity can move its ownership.
 Broad queries can now see resource entities and conflict with `ResMut<T>`. Use
@@ -70,16 +70,20 @@ errors deserve explicit handling. `Single<...>` has system-parameter validation
 semantics; choose it only when those semantics fit the system. Missing a selected
 entity after despawn is normally a recoverable case.
 
+In 0.20, `iter_many` and related entity-list iterators yield `Result` items.
+Handle missing/mismatched entities explicitly, or use `.matched()` on iterators
+that support it when intentionally retaining the old skip-unmatched behavior.
+
 `ChildOf` is the source of truth for the standard hierarchy; let relationship
 hooks maintain `Children`. Standard parent despawning also removes linked children.
 Store local poses in `Transform`; `GlobalTransform` is propagated later. Order a
 consumer after `TransformSystems::Propagate` in `PostUpdate` when it needs the
 current frame's world pose.
 
-For generic query helpers, check 0.19's `IterQueryData` versus
+For generic query helpers, check 0.20's `IterQueryData` versus
 `SingleEntityQueryData` bounds. Reach for query lenses, custom `QueryData`, sparse
 storage, or parallel iteration only when access or measured workload calls for it.
 
-Sources: [queries](https://docs.rs/bevy/0.19.1/bevy/ecs/system/struct.Query.html),
-[resources](https://docs.rs/bevy/0.19.1/bevy/ecs/resource/index.html),
-[hierarchy example](https://github.com/bevyengine/bevy/blob/v0.19.1/examples/ecs/hierarchy.rs).
+Sources: [queries](https://docs.rs/bevy/0.20.0/bevy/ecs/system/struct.Query.html),
+[resources](https://docs.rs/bevy/0.20.0/bevy/ecs/resource/index.html),
+[hierarchy example](https://github.com/bevyengine/bevy/blob/v0.20.0/examples/ecs/hierarchy.rs).
