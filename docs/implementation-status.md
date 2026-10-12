@@ -66,6 +66,21 @@ record historical research batches; the overnight runtime window has expired.
 - Native fixes reject stale snapshots before publication and stop simulation on
   terminal save-worker disconnect; regression evidence is in the
   [bug ledger](bug-ledger.md). Injected publication failures preserve committed state.
+- N-004 closes overdue shutdown success: deadline checks precede and follow result
+  polling, and surround final-state capture/submission. An expired entry preserves
+  its pending result; an expired submission adds no request. Deterministic channel
+  regressions cover late completion, pending timeout, later draining and idle state.
+  This does not preempt an in-progress OS write or synchronous capture.
+- The N-004 revision completed a 120.157-second native synthetic run with 100,000
+  authored entities, 60 save commits and complete final-state comparison. It
+  reported zero tick deadline misses and zero clamped frames. Private inputs,
+  source diff, binary hashes and results: `work/native-deadline-20261012/`.
+  A subsequent 24-cycle campaign with 10,000 authored entities passed twelve
+  SIGKILL and twelve SIGTERM/restart cycles, checking full recovered state and
+  preservation of every observed acknowledged tick. Final published generation 55
+  restored tick 5,119. All owned native processes exited.
+  This short run exercises current code; it is not ICARUS performance or sustained
+  release qualification and does not replace the historical two-hour evidence.
 - The historical recovery campaign passed 24 cycles with 10,000 authored entities
   (12 SIGKILL, 12 SIGTERM), preserving checksums and acknowledged state. Private
   results/provenance: `work/icarus-overnight/native-recovery-02/`.

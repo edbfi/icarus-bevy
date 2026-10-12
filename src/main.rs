@@ -204,7 +204,11 @@ fn run(options: ConfigOptions, max_ticks: Option<u64>) -> Result<()> {
     if let Some(receipt) = writer.finish_before(deadline)? {
         saved(receipt);
     }
-    writer.submit(capture(app.world_mut())?)?;
+    ensure!(
+        Instant::now() < deadline,
+        "snapshot shutdown deadline exceeded before final capture"
+    );
+    writer.submit_before(capture(app.world_mut())?, deadline)?;
     if let Some(receipt) = writer.finish_before(deadline)? {
         saved(receipt);
     }

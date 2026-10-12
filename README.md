@@ -50,8 +50,10 @@ generation requires recovery from the previous one. Corrupt/missing manifests wi
 existing snapshots and unsupported schemas fail closed, rather than silently
 creating a fresh world. Preserve a copy before manual recovery.
 
-SIGINT/SIGTERM freezes simulation, waits for outstanding work, and commits the final
-snapshot within a configured deadline. Failure exits nonzero. Durability relies on
+SIGINT/SIGTERM freezes simulation, drains outstanding work and saves a final snapshot.
+Deadline checks reject overdue completion and final submission; failure exits nonzero.
+Synchronous capture, OS writes and scheduler pauses cannot be preempted by these
+checks, so this is not a hard process-exit-time guarantee. Durability relies on
 the filesystem honoring synchronization and atomic rename; qualification so far is
 for local Linux storage, not network filesystems or physical power-loss testing.
 

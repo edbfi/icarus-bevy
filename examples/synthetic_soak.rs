@@ -177,8 +177,12 @@ fn main() -> Result<()> {
     if worker.finish_before(deadline)?.is_some() {
         commits += 1;
     }
+    ensure!(
+        Instant::now() < deadline,
+        "snapshot shutdown deadline exceeded before final capture"
+    );
     let expected = capture(app.world_mut())?;
-    worker.submit(expected.clone())?;
+    worker.submit_before(expected.clone(), deadline)?;
     ensure!(
         worker.finish_before(deadline)?.is_some(),
         "final save receipt missing"
