@@ -71,6 +71,7 @@ The initial repository had no root Cargo manifest or lockfile. Keep these bounda
 | Location | Contents |
 | --- | --- |
 | `icarus-orig/` | Ignored original server files and preserved installations |
+| `reference-data/` | Ignored user-supplied save archives and private provenance inventories; preserved inputs |
 | `work/` | Ignored cases, captures, dumps, private saves, generated analysis and benchmarks |
 | `src/`, `tests/`, `benches/`, `tools/` | Reusable implementation, authored tests and research tools |
 | `docs/` | Plan, specifications, architecture decisions, sanitized findings and reports |
@@ -79,6 +80,60 @@ Keep reference installations immutable during experiments; place runtime data an
 disposable copies in the case directory. Commit only authored or reviewed,
 redistributable fixtures. Work on feature branches, use Conventional Commits, and
 retain the prohibition on direct commits to `main`.
+
+### Supplied heavy-world save and continuation order
+
+On 2026-10-12 the user supplied a ZIP described as savegame/player data from a
+heavy ICARUS world. The preserved local dataset is
+`reference-data/2026-10-04-heavy-save/`, containing
+`archive-2026-10-04T1921360200.zip`, `SHA256SUMS` and a private `inventory.json`.
+The inventory records source provenance, archive/member SHA-256 hashes, member
+paths, sizes and ZIP timestamps. The archive copy matches the supplied source;
+all member CRC checks passed. Intake found 24 files (two JSON files and 22
+backups), totaling 26,511,334 bytes before any inner-format decoding. The largest
+member is 2,239,534 bytes. These are ZIP observations, not a validated save schema,
+player-state inventory or measured gameplay workload. The producing game build
+and matching client/server pair remain unknown.
+
+The archive and inventory are private, read-only local files. Preserve them and
+the original download; prepare any extraction, mutations, logs or runtime copies
+under a new `work/` case. `reference-data/` is not disposable build output and
+must be included in local backup planning; Git does not back it up. Keep raw saves,
+player identifiers, names and member paths out of tracked fixtures, public reports,
+CI artifacts and uploads. Record aggregate findings and independently authored
+minimal fixtures in the repository. Player-created state may inform save import;
+the existing exclusion of packaged game assets remains in force.
+
+Use this dataset in the next work sequence:
+
+1. Finish the native filesystem fault probe. Its previous run encountered disk-full
+   but failed to recognize the wrapped error, leaving recovery and permission-denied
+   assertions incomplete. Revalidate these on disposable authored state.
+2. Establish a read-only real-save baseline. In a fresh case, selectively extract
+   copies with path and size bounds; identify file roles, format/build metadata,
+   prospect/player relationships and backup ordering. Do not infer chronology or
+   build compatibility from filenames alone. The current envelope inspector allows
+   only 1 MiB input and 16 MiB decoded output: confirm applicable member sizes and
+   format before designing bounded changes. An input-limit rejection is not evidence
+   of a corrupt save. Verify checksums and decode limits without importing state.
+3. Compare current files and backups to identify persisted fields and candidate
+   changes. Quantify structures, inventories, tames, ownership and other workload
+   dimensions only where decoding supports them. Derive small authored regression
+   fixtures; keep unknown fields and relationships explicit.
+4. Use disposable copies for a matched official-server load/save/reload baseline
+   once build pairing and the runtime experiment scope are established. Record
+   state fidelity, load/save time and resources. This intake does not revive the
+   expired overnight runtime window or establish that this world reproduces a bug.
+5. Continue authenticated negotiation, replication and the independently authored
+   gameplay slice. Use the save findings to inform M2's import-feasibility gate and
+   M5's field-preservation matrix. First validate a small supported import, then the
+   heavy dataset with stock-client play/save/reload. Use it for M1/M6 comparisons
+   only when both implementations can execute the same supported workload.
+
+This moves real-save characterization ahead of full migration implementation and
+heavy-world benchmarking. Possession of the archive does not complete any
+compatibility, bug-reproduction or performance gate. Keep the implementation status
+and final research handoff synchronized with each completed step.
 
 ### Research workflow
 
