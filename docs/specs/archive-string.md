@@ -71,6 +71,12 @@ transfer failure and the lack of enclosing EOF validation remain as documented
 above. The native strict subset is not an exact original acceptance oracle.
 Independent semantic and strict review: `work/str-value-contract-20261012/`.
 
+The later exact C009 S01 Str comparison qualifies 486 supplied spans totaling
+14,124 bytes against the native strict decoder and independent structural reader,
+without reporting text. This validates strict structure and consumption, not
+original normalization or round-trip identity:
+`work/c009-own-leaf-values-20261012/`.
+
 ## Concrete name-property link
 
 The exact C034 own Name descriptor OS01.F08 reaches the generation-20 factory,

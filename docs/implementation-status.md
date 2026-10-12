@@ -118,8 +118,9 @@ numeric decoding is claimed. Evidence: `work/c034-field-widths-20261012/`.
 
 C009 now has an independently reviewed older-build top-header comparison
 contract: 31 optional fields across its exact class ancestry, with recorder
-virtual targets matching the previously examined base path. Child dispatch and
-values remain unqualified. Its observed maximum body is 71,956 bytes, above the
+virtual targets matching the previously examined base path. That top-only
+comparison did not qualify child dispatch or values. Its observed maximum body
+is 71,956 bytes, above the
 default comparator cap. The new explicit byte-limit API retains the 64 KiB
 default and 256-field cap while permitting a caller-selected limit up to a hard
 128 KiB research ceiling. Eight component tests and independent code review
@@ -129,7 +130,7 @@ and 972 trailer bytes; opaque values total 2,877,588 bytes in current and
 2,872,878 in backup. All 31 optional descriptors appear in every observed body.
 Exact independent/native spans and input fixity agree; three authored helper
 tests pass. Static and executed evidence: `work/component-c009-20261012/` and
-`work/native-c009-top-20261012/`. Nested contracts and values remain open.
+`work/native-c009-top-20261012/`. Inherited child values remain open.
 The two own child schemas now have independently reviewed conditional tagged
 contracts: S02 Int array/Bool and S01 Str/Int, four optional fields total.
 Ordinary array transfer demand is count plus four bytes per element; tagged Bool
@@ -138,8 +139,9 @@ not observed child-value results: `work/c009-own-children-20261012/`.
 All 972 own child bodies now independently/native match immediate headers,
 134,182 bytes and 1,944 fields, with no observed optional omissions. Each copy
 has 243 S02 bodies (30,626 bytes) and 243 S01 bodies (36,465 bytes). The S02 array
-payloads total 980 bytes per copy, ranging from four to 12 bytes; their counts
-and elements remain unread. Prior parent spans reproduce and inputs remain
+payloads total 980 bytes per copy, ranging from four to 12 bytes; that header-only
+run left their counts and elements unread. Prior parent spans reproduce and
+inputs remain
 unchanged: `work/native-c009-own-20261012/`.
 
 A new explicit Int-array library primitive borrows four-byte opaque elements
@@ -153,6 +155,15 @@ Evidence: `work/native-c009-int-array-20261012/execution-v2/`. Two prelaunch
 failures (offline-scope wording and a review-note binding race) are preserved;
 only the final fresh session invoked the private probe. Numeric interpretation
 and world import remain absent.
+
+The remaining own-child leaves now pass: 486 Str values totaling 14,124 bytes
+have exact strict native/independent structural consumption; every one of the
+486 Int spans is four bytes and every one of the 486 Bool spans has zero payload
+bytes. Exact descriptor joins and prior parent/child span reproduction precede
+these checks. Six helper tests, four independent structural checks and unchanged
+inputs support `work/c009-own-leaf-values-20261012/`. Combined with the selected
+Int-array result, both own schemas have structural/width coverage. String and
+numeric meanings, runtime restoration and inherited child values remain open.
 
 The exact C034 own Name property now links through its final factory/vtable and
 concrete archive virtual to the established FString reader. No separate wire
