@@ -38,6 +38,14 @@ unchanged; no values or deeper widths were interpreted. Fresh helper provenance
 binds the SHA-2-updated library separately from the earlier own-header helper.
 Evidence: `work/c034-own-array-compare-20261012/`.
 
+A separate static review establishes conditional successful transfer demands of
+12 bytes for the exact N02 Struct and four bytes for Float. A guarded range-only
+check of the frozen comparison result confirms each of the 428 Struct spans and
+428 Float spans individually matches those demands. It opens no private payload
+files and decodes no numeric values. Original EOF policy, numeric semantics and
+newer-build equivalence remain unproved. Independent review and strict evidence
+review pass: `work/c034-value-widths-20261012/`.
+
 Matched-client reconnaissance mapped 12 archive/tag/version/serializer symbols,
 with PDB/PE section agreement and independent executable-byte checks. Nine are
 unwind-table starts; three are explained leaf/tail functions. Evidence:
@@ -46,8 +54,13 @@ comparison independently confirms the examined 441/282/503 tag-version gates,
 Float/Text common-GUID header path and generic array count/shared-header branch
 at version 500 or later. Aggregate size uses a 32-bit end-minus-start difference;
 large-span overflow safety is unproved. Evidence and independent semantic review:
-`work/client-tag-array-20261012/`. Concrete client C034 dispatch, its archive
-profile and dedicated-server equivalence remain unresolved.
+`work/client-tag-array-20261012/`. Concrete client C034 own-array registration
+now links the corresponding two descriptors to disabled native/post callbacks and
+conditional tagged dispatch. Its recorder restore constructs version 522/loading
+state with the relevant framing flags clear at the component Serialize handoff.
+The downstream serializer is not yet traced; profile propagation, deferred N02
+operations installation and dedicated-server equivalence remain unresolved.
+Independent semantic review passes: `work/client-c034-own-array-20261012/`.
 
 A live SSH fetch reconciled the stale remote cache: all checkpoint commits through
 `b55e4ce` were already delivered. No client files were removed and no original
@@ -116,14 +129,18 @@ Continue in this order within the existing plan:
    bytes, exact EOF and no missing optional descriptors in these samples.
    Fresh eleven-kind native qualification now passes on every selected span.
    Own-array static review and populated shared-header/element comparison now pass.
-   Next resolve concrete matched-client C034 registrations/dispatch and recover
-   the next required value contract, keeping unknown values opaque. The
+   Next trace matched-client downstream profile propagation and recover
+   the next required value contract, keeping unknown values opaque. Selected
+   own-array Struct/Float widths now agree individually with the older static
+   transfer demands; broader C034 top-header qualification is being prepared. The
    existing component batch helper's 8 MiB transport cap cannot fit all C034
    records from both copies together; use separate per-copy batches or a newly
    reviewed helper rather than changing frozen evidence.
 4. Client identity and targeted import/symbol reconnaissance are complete. Use the
    qualified anchors: selected tag/array semantic comparison now agrees under its
-   explicit branch conditions. Resolve concrete client C034 dispatch next. The older server
+   explicit branch conditions. Concrete C034 registration/conditional dispatch and
+   restore-entry profile are reviewed; trace downstream propagation and the nested
+   N02 deferred operations binding next. The older server
    remains build 25621760; do not transfer its addresses or behavior assumptions
    blindly to client build 25793767. No original runtime, client session or network
    experiment was started in this handoff.

@@ -453,7 +453,7 @@ on-disk stride. Exact names remain in the private comparison map; no fixed GUID,
 required-field or Float-value rule is inferred. Contract and independent review:
 `work/c034-own-array-continuation-20261012/`.
 
-The next fresh comparison enters only the four selected array bodies after
+The completed fresh comparison enters only the four selected array bodies after
 reproducing the complete prior parent/own results. Independent and native readers
 agree on each shared-header, element, field and terminator span:
 
@@ -469,14 +469,28 @@ agree on each shared-header, element, field and terminator span:
 Both copies have these dimensions; equal framing does not imply equal values.
 Across four arrays, 428 elements and 856 fields conserve 56,412 bytes and reach
 exact EOF. Every observed element has both optional Struct/Float descriptors;
-none is made universally mandatory. No deeper native width or value was checked.
+none is made universally mandatory. That comparison leaves deeper widths and
+values opaque.
 Five authored helper tests pass; exact source/library/helper snapshots, the
 explicit SHA-2-only build transition, fresh session, unchanged input hashes and
 strict evidence review remain under `work/c034-own-array-compare-20261012/`.
 
+A subsequent static review resolves the exact Float descriptor to a successful
+four-byte transfer and its N02 Struct sibling to three four-byte transfers. A
+separate guarded check uses only the frozen sanitized span summary: all 428 Struct
+payloads are individually 12 bytes and all 428 Float payloads are individually
+four bytes. This is not an inference from aggregate byte totals. No numeric values
+were read, and no private payload file was reopened. Native callback success does
+not certify archive success; an earlier transfer may advance before a later one
+fails. Original global EOF policy, numeric representation and newer-build
+equivalence remain unproved. Contract, independent review and strict result review:
+`work/c034-value-widths-20261012/`.
+
 Matched-client generic tag/array functions now independently agree with the
-examined older version gates and shared-header branch. This still does not resolve
-the concrete client C034 serializer or the archive profile used for these saves;
+examined older version gates and shared-header branch. A subsequent concrete
+registration trace supports conditional C034 own-array tagged dispatch and a
+version-522 loading archive at the restore-to-Serialize handoff. Downstream
+profile propagation and supplied-save provenance remain unresolved;
 see [matched-client framing comparison](tagged-properties.md#matched-client-static-comparison).
 
 ## Independent replacement requirements
