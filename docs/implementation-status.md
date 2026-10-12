@@ -165,6 +165,14 @@ inputs support `work/c009-own-leaf-values-20261012/`. Combined with the selected
 Int-array result, both own schemas have structural/width coverage. String and
 numeric meanings, runtime restoration and inherited child values remain open.
 
+The next five C009 parent-child schemas now have exact conditional tagged
+contracts: four Array element schemas and one standalone Struct expose 15
+optional immediate fields, with no immediate recursion. Independent review and
+strict evidence review pass: `work/c009-parent-children-20261012/`. A corrected
+dimension offset for Bool leaves the earlier comparisons unchanged: all six
+affected descriptors have dimension one at the confirmed common-factory offset.
+Their population bounds and child-header comparisons remain pending.
+
 The exact C034 own Name property now links through its final factory/vtable and
 concrete archive virtual to the established FString reader. No separate wire
 numeric-index transfer appears in that wrapper; internal name construction is
@@ -230,42 +238,19 @@ committed evidence below:
 | `component-c034-20261012/` | Exact older class registration/vtable resolves to the same reviewed load/serialize/postload targets as C028. Optional top schema has 21 fields: seven Struct, two Int, seven Array, two Name, one Enum, one Str, one Bool. Four supplied bodies match this top schema under bounded comparison (save case E-038); nested payloads remain opaque. |
 | `c034-own-struct-20261012/` | Own struct `0x145ee11d0` selects tagged framing; eight optional logical fields are Array, Bool, three Int, Struct, Float and Name. E-039 independently observes all eight in four selected own bodies, including Float; fresh native exact-span comparison now passes. Struct child matches earlier N02 (`0x145efe320`, successful 12-byte native demand); array child `0x145ee1220` now has a separate tagged/two-field contract. The array now has separately qualified populated element headers; Struct/Float values remain opaque. |
 
-Continue in this order within the existing plan:
+The completed C034 population and leaf qualifications are recorded above; the
+current sequence is maintained in [Next work and maintenance](#next-work-and-maintenance).
+Preserve historical helpers, source snapshots and prepared versions. Their caps
+remain binding: the original 8 MiB component transport cannot hold both complete
+C034 copies together, so those comparisons use separate per-copy batches.
 
-1. Float/Text source review, full checks, release build and supplied-copy regression
-   qualification are complete. Preserve historical helpers and their source snapshots.
-2. C034 top-header probe completed once after root/independent review and fresh
-   scope/session binding. The wrapper now enforces reviewed preparation hashes,
-   session/scope/prior-summary fixity and sufficient time immediately before
-   launch. Original prepared files remain in `component-c034-headers/prepared-v1/`.
-   Each minimum/maximum body has 21 fields, 1,451 header/terminator bytes,
-   2,375/30,409 opaque bytes and a zero four-byte trailer. Input hashes are
-   unchanged. Strict sample presence is not universal mandatory-field evidence.
-3. Own-struct immediate-header observation is complete (E-039): 572/28,606 bytes
-   per selected minimum/maximum, each with eight headers and 449 header/terminator
-   bytes, exact EOF and no missing optional descriptors in these samples.
-   Fresh eleven-kind native qualification now passes on every selected span.
-   Own-array static review and populated shared-header/element comparison now pass.
-   Descriptor-bound selected nested widths now agree; recover
-   the next required value contract, keeping unknown values opaque. Selected
-   own-array Struct/Float widths now agree individually with the older static
-   transfer demands; all 1,658 C034 top bodies now have exact native/independent
-   span agreement. All 1,658 own structs and own arrays now agree too; extend
-   remaining scalar/string value contracts under fresh limits. All 9,948 inherited Struct
-   bodies now agree, and all 11,606 inherited arrays are qualified and empty. The
-   existing component batch helper's 8 MiB transport cap cannot fit all C034
-   records from both copies together; use separate per-copy batches or a newly
-   reviewed helper rather than changing frozen evidence.
-4. Client identity and targeted import/symbol reconnaissance are complete. Use the
-   qualified anchors: selected tag/array semantic comparison now agrees under its
-   explicit branch conditions. Concrete C034 registration/conditional dispatch and
-   restore-entry profile are reviewed; conditional class dispatch propagation and
-   the N02 deferred installer/lookup now have bounded static correspondence.
-   The exact client Float factory/final-vtable/transfer contract is now reviewed.
-   Continue bounded unresolved descendant grammar and population comparisons. The older server
-   remains build 25621760; do not transfer its addresses or behavior assumptions
-   blindly to client build 25793767. No original runtime, client session or network
-   experiment was started in this handoff.
+Client identity and targeted symbol reconnaissance are complete. Selected generic
+tag/array semantics, concrete C034 conditional dispatch, restore-entry profile,
+conditional class propagation, N02 deferred installation/lookup and the Float
+factory/transfer path have bounded static correspondence. Older server build
+25621760 and client build 25793767 remain distinct; addresses and assumptions do
+not transfer automatically. No original runtime, client session or network
+experiment was started during this continuation.
 
 Key private bindings for the next agent:
 
@@ -578,8 +563,10 @@ supported, and no ICARUS performance or stability improvement has been measured.
 
 ## Next work and maintenance
 
-1. Recover component-specific byte schemas beyond the bounded recorder framing
-   reader, then test authored records. Older-build root/recorder framing, dispatch and version
+1. Establish C009 immediate-parent child population bounds from exact identities,
+   then qualify their supported headers and leaves with authored regressions.
+   C009 own-child structure and selected C034 populations already pass the
+   comparisons above. Older-build root/recorder framing, dispatch and version
    callbacks are characterized; outer encoding,
    integrity, measured bounds and initial membership relationships are characterized;
    actor/inventory/construction/tame/mission fields and independent confirmation of
