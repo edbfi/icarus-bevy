@@ -6,6 +6,98 @@ protocol interoperability, authentication, gameplay, world-data parity and
 official-save import have not been demonstrated. Release reliability and
 performance targets remain unproven. Last reconciled: 2026-10-12.
 
+## Paused handoff — 2026-10-12
+
+The user explicitly paused work to continue with another agent. All three delegated
+research/implementation agents have stopped. Do not resume research, tests or
+implementation until requested. No client files were removed.
+
+The last implemented, fully checked and pushed increment is `93ef9e9`
+(`feat(saves): frame caller-selected tagged struct arrays`) on
+`feat/native-server-foundation`. Local and remote branch tips matched at pause.
+Its full manual suite, release build, independent review and selected supplied-array
+qualification passed. The project still cannot import an official world or admit
+an authenticated stock client.
+
+Two source files intentionally remain **uncommitted**:
+`src/experimental/tagged.rs` and `tests/tagged.rs`. They add opaque
+`FloatProperty` and `TextProperty` headers with common GUID handling and no
+type-specific extensions. The implementation agent reports formatting/diff checks
+and all six focused tagged tests passing, including new GUID, truncation, arbitrary
+payload and privacy fixtures. Root integration review, full manual checks, release
+build and supplied-data qualification have **not** run for this latest change.
+The existing release library and private native helpers still bind the earlier
+nine-kind reader; do not attribute Float/Text support to those frozen artifacts.
+The following status sections describe committed behavior unless stated otherwise.
+
+The user reported SteamCMD's exact completion message, `Success! App '1149460'
+fully installed.`, for the **full** client at
+`/home/gvps/github/edbfi/icarus-bevy/icarus-client-orig/25793767`.
+At the pause checkpoint, `steamapps/appmanifest_1149460.acf` independently reports
+`StateFlags=4`, `buildid=25793767`, target 25793767, and completed download/staging
+byte totals. The final client executable and PDB exist under
+`Icarus/Binaries/Win64/`, sized 109,356,544 and 1,177,653,248 bytes respectively.
+Their hashes, PE/PDB identity match and behavior have **not** been verified. The
+whole directory is gitignored. The user permits careful removal of demonstrably
+unneeded files but cautions that they may support later analysis; preserve the
+installation until dependencies and provenance are understood. Its availability
+does not replace the deferred live Windows-client tests. The plan's restriction
+against extracting/reusing packaged content in the replacement remains in force.
+
+Private handoff artifacts remain under ignored `work/`; exact class/property names
+and supplied values must stay private. These completed results supplement the
+committed evidence below:
+
+| Case | Completed result / next boundary |
+| --- | --- |
+| `save-triage-20261012/` | E-036: all 9,058 C028 arrays in both copies are empty; 848,864 count/shared-header bytes. E-037: one native batch matches the original 28 empty arrays / 2,624 bytes. Review 28 passes with 37 evidence entries and zero issues. No populated-element coverage. |
+| `c028-array-children-20261012/` | 17 optional immediate array-element fields; independently verified Float/Text header contracts in `static/header-kind-contracts-v2.json` (SHA-256 `17abd2de90aea26129d13cc075c7a6268eef41cf653f14dcca29928433b97e09`). |
+| `c028-array-descendants-20261012/` | D01 uses tagged framing with eight optional fields and four consumed inner helpers. D02 independently demands four four-byte native transfers on success; no exact EOF guarantee. Deeper D01 types remain unresolved. Strict review passes. |
+| `component-c034-20261012/` | Exact older class registration/vtable resolves to the same reviewed load/serialize/postload targets as C028. Optional top schema has 21 fields: seven Struct, two Int, seven Array, two Name, one Enum, one Str, one Bool. No supplied C034 body has been read. Strict review passes. |
+| `c034-own-struct-20261012/` | Own struct `0x145ee11d0` selects tagged framing; eight optional logical fields are Array, Bool, three Int, Struct, Float and Name. Struct child exactly matches earlier N02 (`0x145efe320`, successful 12-byte native demand); new array child `0x145ee1220` is only identified. Strict review passes; no supplied-body observation. |
+
+On resumption, use this order within the existing plan:
+
+1. Review the pending Float/Text source diff against the frozen header contract;
+   complete the project checks and release build before committing/pushing it.
+   Preserve historical helper binaries and their source snapshots.
+2. Review the **prepared-only** C034 probe at
+   `work/save-triage-20261012/component-c034-headers/` (`PREPARED.md`, `probe.cjs`,
+   `run-once.cjs`, `prepared.sha256`). No session or execution exists. It validates
+   both outer archives before selecting first minimum/maximum records per copy:
+   four bodies, each at most 31,864 bytes, combined cap 127,456 bytes (expected
+   71,388). It compares 21 exact top headers and a zero trailer/EOF, keeping all
+   struct/array payloads opaque. Its current strict sample policy rejects missing
+   descriptors; that is not proof of universally mandatory fields. Root has
+   reviewed the static class proof, but **not this prepared probe**.
+3. Bind a fresh bounded scope/session before executing that private probe. Reuse
+   the save case's preserved input hashes and review workflow. Only then select
+   deeper struct/array observations using the completed static contracts. The
+   existing component batch helper's 8 MiB transport cap cannot fit all C034
+   records from both copies together; use separate per-copy batches or a newly
+   reviewed helper rather than changing frozen evidence.
+4. Inventory/hash the completed client executable, manifest and PDB; verify their
+   identity relationship before matched-build static comparison. The older server
+   remains build 25621760; do not transfer its addresses or behavior assumptions
+   blindly to client build 25793767. No original runtime, client session or network
+   experiment was started in this handoff.
+
+Key private bindings for the next agent:
+
+- C034 class proof: `component-c034-20261012/static/c034-candidate-framing-proof.json`,
+  SHA-256 `c5541899734b5c967ad4617680219d5778a8981529badcfe25d8ebad4e36212d`.
+- C034 optional top schema: `component-c034-20261012/static/c034-schema-private.json`,
+  SHA-256 `e7b04c3629d922b1597f57bf948c1ae6b312764c2b9ebc91b54ac5a41f7f857f`.
+- C034 own-struct private map SHA-256:
+  `0a9cc629c485777c63f56dd4a20aa21d553d5921436d13af74d11b62c1ab50aa`;
+  its report and artifact manifests locate the contract/map filenames.
+- C028 descendant map: `c028-array-descendants-20261012/static/descendant-contracts-private.json`,
+  SHA-256 `a39fa352ae09eb2684d05e73f9ec3ba6b811871eac6109bc7cc5c9b201a1a248`.
+- Frozen native array helper: `native-struct-array-20261012/probe`, SHA-256
+  `211570ebf49c4bd5e7e150fda3786fd65cf1be52442b1c38f30f502c9607c7fb`;
+  bound release library SHA-256
+  `16ee0c084c085ed09d8934a9253c70d6f59ebc9b9763273c8e8603d181f01346`.
+
 ## Milestones
 
 | Milestone | Status | Evidence or next gate |
@@ -271,10 +363,10 @@ record historical research batches; the overnight runtime window has expired.
   deferred until it is available under a concrete scope. Continue independent work.
   The user has offered client files for reference analysis. Prepared ignored intake:
   `icarus-client-orig/25793767/`, initially requesting `Icarus/Binaries/Win64/` and
-  the matching Steam app manifest. Files began arriving under Steam's `downloading`
-  directory on October 12. At inspection, the manifest targets 25793767 but reports
-  installed build 0 and an incomplete download; no binary identity is qualified
-  yet. This can support matched-build static comparison; it does not
+  the matching Steam app manifest. The full client installation subsequently
+  completed; the manifest reports installed build 25793767 and complete state.
+  Executable/PDB identity remains unqualified; see the paused handoff above.
+  This can support matched-build static comparison; it does not
   replace live Windows-client tests or require packaged assets for this first pass.
 - [Inventory](research/2026-10-04-reference-inventory.md): hashed original baseline.
 - [Static inspection](research/2026-10-04-static-baseline.md): executable identity,
