@@ -38,6 +38,7 @@ no client connected and no playable prospect was loaded.
 | Subsurface | Status | Evidence and remaining gate |
 | --- | --- | --- |
 | Inner control dispatch and version comparison | Observed | [Negotiation notes](specs/control-negotiation.md); outer framing, callback policy and runtime fixtures unknown |
+| Initial control archive fields | Experimental caller-selected reader implemented | [Initial archive-body fields](specs/control-negotiation.md#experimental-initial-archive-body-fields); authored explicit-endian byte/u32/strict-string fixtures pass. Message boundaries, active byte order, token handling and admission remain unknown |
 | Prospect-loading control flow | Observed | [Loading notes](specs/prospect-loading.md) and [by-name rejection runs](research/2026-10-04-prospect-rejection.md); from-file runtime reachability and complete schema remain unresolved |
 | Inner prospect state and serialization dispatch | Observed on older executable | [Loading notes](specs/prospect-loading.md); reflected header/recorder fields, version callbacks and tagged-property dispatch identified; recorder payloads and newer-build fidelity unresolved |
 | Root property tags | Observed on two copies; experimental opaque reader implemented | [Tag framing](specs/tagged-properties.md); memory522 profile, bounded root spans, authored malformed-input fixtures and independent/native agreement on six root records per copy; nested values and complete schema validity unsupported |
