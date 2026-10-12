@@ -15,9 +15,11 @@ to the task; they are part of this skill and need no sibling skill installations
 
 ## Establish the version first
 
-The verified baseline is **Bevy 0.19.1**, latest non-yanked stable release checked
-on **2026-10-04**, with Rust **1.95.0** minimum. The available 0.20 release candidate
-is not this baseline. This is dated evidence, not a permanent assertion of latest.
+The verified baseline is **Bevy 0.19.1**, with Rust **1.95.0** minimum. This project
+pins Bevy **0.19.1** and Rust **1.99.0**. Bevy **0.20.0** became stable on
+**2026-10-08**; the upstream refresh on **2026-10-12** retains the project's baseline.
+See [Sources and verification](references/sources-and-verification.md) for evidence
+and validation scope.
 
 Read `Cargo.toml`, workspace dependencies, `Cargo.lock`, the Rust toolchain, enabled
 features, and target before choosing APIs. Preserve an existing project's release
