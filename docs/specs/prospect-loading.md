@@ -39,8 +39,8 @@ prove that the reporting call returns.
 ## Inner state and version dispatch (2026-10-12)
 
 Targeted follow-up in `work/save-schema-20261012/` reverified the preserved executable
-hash, inspected metadata and exported forty selected
-functions in seven bounded Ghidra batches. No original execution or packaged asset
+hash, inspected metadata and exported 43 selected
+functions in eight bounded Ghidra batches. No original execution or packaged asset
 extraction occurred. These observations belong to **build 25621760**; the user's
 supplied save is reported from **25793767**, so cross-build compatibility remains
 unvalidated.
@@ -216,6 +216,30 @@ This is not a complete ancestor schema or a required-field list. The declared
 struct has one integer child and selects nested tagged serialization despite its
 four-byte in-memory size. The enum's loading path also reads an archive name;
 its byte-sized underlying type does not imply a one-byte serialized value.
+
+E-019 follows the remaining native superclass descriptors through the root's
+self-parent-to-null conversion. No further descriptor carries the selection bit:
+five positive entries occur among 31 total entries, which include inner-property
+helpers. Inspected type/link flag additions preserve that conclusion, but later
+runtime mutation was not exhaustively audited. The private exact comparison map
+then matches the two selected newer-save records' five headers, nested integer tag,
+three string encodings and empty boolean body (save-triage E-024). Neither static
+ancestry nor this sample agreement establishes mandatory field presence or world
+reconstruction semantics.
+
+The eighth batch (static E-020/E-021) identifies a concrete role for the selected
+struct: callback `0x1418a1850` copies four bytes from a validated owner's `+0x250`
+into recorder `+0xd8`. Related callback `0x1418ad0c0` uses owner `+0x248` as an array
+pointer and `+0x250` as its count, iterating eight-byte elements. The supported
+interpretation is a captured owner-collection count; the collection's gameplay
+identity and the saved scalar values remain unknown.
+
+Caller `0x1414bf530` invokes the related callback only for a live returned recorder,
+state byte `+0xb2 == 3`, and a successful virtual `+0x470` gate. That callback builds
+two pointer sets, calls helper `0x141899760`, and destroys temporary output. It does
+not read the saved `+0xd8` integer. The helper's operation, lifecycle phase and any
+use of that integer for restoration remain unresolved; count capture alone does
+not establish relationship reconstruction.
 
 ## Controlled reproduction matrix
 

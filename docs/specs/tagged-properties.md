@@ -224,3 +224,19 @@ invocations and unchanged input hashes are retained in the private case and
 `work/native-component-20261012/`. Six component tests cover exact spans and limits,
 every truncated prefix, embedded terminators, unsupported trailers, unchanged root
 EOF policy and sanitized errors. Full manual checks and code review pass.
+
+A further private comparison matches all five observed field names, types, indices
+and struct/enum metadata against the older native descriptors, without assuming
+field order (save-triage E-024). The selected struct contains one matching integer
+tag with four opaque value bytes and exact termination: 47 header/terminator bytes
+plus four value bytes. The three string-backed values have exact bounded archive
+string framing; the boolean has no value-body bytes. This checks those two samples,
+not a mandatory-field rule for every valid save. No scalar or string values were
+interpreted or published; all source and prior evidence hashes remain unchanged.
+
+Static E-019 closes the native superclass descriptor chain. Its 31 entries include
+inner-property helpers; exactly five carry the save-selection bit, all in the
+selected class and its immediate base. Inspected constructor/link flag updates do
+not add that bit to ancestor fields. Arbitrary later runtime mutation is not
+exhaustively ruled out. Agreement between the saved headers and these descriptors
+does not establish reconstruction, post-load relationships or gameplay correctness.

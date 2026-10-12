@@ -167,11 +167,16 @@ record historical research batches; the overnight runtime window has expired.
   inactive; this did not establish a stock-client or authenticated session.
 - [Checksum](specs/network-checksum.md): independent arithmetic matches one early
   startup value, which is invalidated later. Active admission policy is unresolved.
+  A bounded follow-up resolves the settings-derived setter and cache invalidation;
+  cache lookup precedes callback-enable selection. Candidate initializer references
+  register teardown, not compatibility callbacks. A broader direct-reference scan
+  still leaves indirect/runtime registration unresolved. Private case
+  `work/control-version-20261012/` passes strict review with unchanged original input.
 - [Prospect rejection](research/2026-10-04-prospect-rejection.md): missing/truncated
   by-name inputs were rejected without an observed crash. The separate
   [from-file failure path](research/2026-10-04-save-failure-output.md) remains a
   static lead, not a reproduced original defect.
-- [Inner save dispatch](specs/prospect-loading.md): forty targeted exports plus
+- [Inner save dispatch](specs/prospect-loading.md): 43 targeted exports plus
   metadata and flag tracing identify the older build's reflected state/header,
   recorder blobs, version-dependent callbacks and concrete tagged-property reader.
   Object offsets are not disk offsets. Root tag framing and its archive-version
@@ -191,6 +196,14 @@ record historical research batches; the overnight runtime window has expired.
   then framed both selected 548-byte bodies to EOF: five properties, 312 header
   and terminator bytes, 232 opaque value bytes and a zero four-byte trailer
   (E-021/E-022). This does not establish equal values or complete class semantics.
+  The complete older native ancestry has five descriptors with the save-selection
+  bit. Both samples match their exact header metadata, nested integer-tag framing,
+  three string encodings and empty boolean body (static E-019, save-triage E-024).
+  Values remain uninterpreted; no mandatory-presence or reconstruction claim follows.
+  A class-specific capture callback copies a runtime pointer-array count into its
+  sole declared integer struct. A separately gated related-component callback
+  builds two pointer sets but does not read that saved integer. The set helper,
+  lifecycle phase and gameplay identity remain unresolved (static E-020/E-021).
   Other derived overrides and value semantics remain unresolved; component
   contents are not decoded by the native inspector.
 - A private class-string inventory finds 38 identifiers in the current copy and
