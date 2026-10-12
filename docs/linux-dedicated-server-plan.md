@@ -158,7 +158,9 @@ Use this dataset in the next work sequence:
    and a native batch extend that coverage to all 1,294 records of this class in
    the two copies, with exact byte conservation. Its load and postload overrides are
    checked separately; six struct fields have candidate tagged contracts, while
-   their child schemas and seven array element schemas remain unresolved.
+   24 selected nested payloads pass independent and native one-level framing scans. Their
+   16 optional child descriptors are recovered; exact child metadata agreement,
+   deeper binary encodings and seven array element schemas remain unresolved.
    Eleven distinct prospect payloads and seven member tuples are observed, but
    structures, inventories, tames, missions and full ownership fidelity remain
    unknown. Target component-specific byte dispatch and schemas, compare backed-up

@@ -307,9 +307,29 @@ They are six distinct types using four operations tables. One initially missing
 ops factory is supplied by name-matched deferred registration `0x140729c20`; its
 capability checks, like the other tables, do not select native or post-serialization
 hooks on this path. This supplies a candidate nested framing contract, not a fixed
-disk width. Child schemas, the seven array-element schemas, newer-build method
-equivalence and complete world restoration remain unresolved; both full scans leave
-all property payloads opaque.
+disk width. Both full scans leave all property payloads opaque.
+
+Immediate child metadata adds 16 optional descriptors across those six structs
+(3/7/1/1/1/3): three structs, one name, four signed integers, seven booleans and one
+unsigned 32-bit integer. Their descriptors carry the save-selection bit; the
+struct-property path preserves the archive context through the child predicate.
+This does not establish mandatory presence, field order or value semantics.
+
+The unsigned field's generation kind was initially mistaken for a float. Tracing
+the actual factory and virtual type-name getter corrects that hypothesis:
+`0x14216eba6` installs vtable `0x144eebf50`; virtual `+0x100` resolves to
+`0x14214a630`, returning the class name token. Constructor `0x142017040` strips the
+leading UTF-16 `F` from the class literal before interning `UInt32Property`.
+Built-in name ID 25 independently agrees, and the tag reader adds no type-specific
+metadata before its common GUID flag. The native reader now supports this header
+while retaining opaque values. Evidence: static E-005 through E-008 in
+`work/c028-structs-20261012/`.
+
+The three struct children of the first tagged struct resolve to two distinct
+types whose flags select binary serialization. One uses the fallback binary path;
+the other has a native callback. Neither child can be recursively assumed tagged,
+and their memory sizes do not establish disk widths. Seven array-element schemas,
+newer-build method equivalence and complete world restoration remain unresolved.
 
 ## Controlled reproduction matrix
 
