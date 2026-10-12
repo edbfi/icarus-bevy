@@ -386,7 +386,9 @@ now qualifies four arrays with the current eleven-kind library: two empty and tw
 populated, totaling 428 elements, 856 immediate Struct/Float fields and 56,412
 bytes. All shared/element/header/value/terminator spans match independently with
 exact EOF. Supplied populated framing is therefore covered for these selections;
-all values, deeper widths and complete import semantics remain unqualified.
+a later range-only check individually confirms 428 Struct spans of 12 bytes and
+428 Float spans of four bytes against older static transfer demands. Numeric
+values and complete import semantics remain unqualified.
 
 ## Matched-client static comparison
 
@@ -404,10 +406,26 @@ header before the element loop, including count zero. The shared-size rewrite
 uses a 32-bit final-position minus element-start difference, supporting aggregate
 span interpretation for bounded non-overflowing cases. Original large-span safety,
 canonical flag enforcement and exact loader EOF policy are not established.
-The inner virtual dispatch remains generic; it does not prove concrete C034 tagged
-serialization or the client save archive's version/flags.
+That generic comparison alone does not prove concrete C034 tagged serialization
+or the client save archive's version/flags; the later concrete trace below narrows
+those questions.
 
 Evidence, exact EXE/PDB bindings, independent byte/semantic review and strict case
 review: `work/client-tag-array-20261012/`. No original runtime, private payload,
 packaged asset or network experiment occurred. These static agreements do not
 establish matched dedicated-server behavior or supplied-save producing provenance.
+
+A subsequent concrete registration trace links the client C034 own Struct and
+array helper to element schema `0x145ff68b0`, its two corresponding immediate
+descriptors and ops table `0x144faeff8`. Native/post callbacks are disabled; the
+reviewed selector reaches tagged dispatch under its explicit archive conditions.
+No mandatory-field or unconditional runtime-selection rule follows.
+
+The concrete client restore path constructs version 522 with loading enabled and
+relevant binary/tagged, partial-selection and byte-swap flags clear immediately
+before component Serialize. Its downstream call to `0x1437016b0` remains untraced,
+so the handoff profile is not yet joined to the field dispatch path. The nested
+N02 has a corresponding three-four-byte-transfer operations candidate, but its
+null factory requires deferred-registry binding proof before claiming selection.
+Evidence and independent semantic review: `work/client-c034-own-array-20261012/`.
+No supplied-save load or matched dedicated-server behavior is established.

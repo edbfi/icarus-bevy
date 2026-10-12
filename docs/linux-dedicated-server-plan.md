@@ -7,7 +7,8 @@ target activity by itself.
 
 **Resumed at the user's request on 2026-10-12.** The
 [continuation checkpoint](implementation-status.md#continuation--2026-10-12)
-records native C034 own-header qualification, its array contract and targeted client symbols.
+records native C034 own/array qualification, individual opaque widths and
+conditional matched-client dispatch.
 The prior pause does not extend historical runtime authorization windows.
 
 ## Goal and agreed constraints
@@ -185,10 +186,15 @@ Use this dataset in the next work sequence:
    deeper children remain opaque. Fresh eleven-kind native comparison now matches
    every own header/value/terminator span. The own-array tagged contract and two
    optional immediate fields now agree on four supplied arrays, including two
-   populated arrays with 428 total elements. Both values remain opaque.
+   populated arrays with 428 total elements. A separate range-only check confirms
+   each Struct/Float span matches the older successful 12/four-byte transfer demand;
+   numeric values remain opaque.
    Matched-client generic tag/array branches also agree under explicit conditions;
-   next resolve concrete client C034 registration/dispatch and required value
-   contracts. Generic framing does not establish an importable world.
+   concrete client C034 registration now supports conditional tagged dispatch and
+   its restore entry constructs a version-522 loading archive. Downstream profile
+   propagation and deferred N02 operations binding remain next static checks.
+   Extend C034 top-header coverage in separate bounded per-copy native batches.
+   Generic framing and width agreement do not establish an importable world.
    Eleven distinct prospect payloads and seven member tuples are observed, but
    structures, inventories, tames, missions and full ownership fidelity remain
    unknown. Target component-specific byte dispatch and schemas, compare backed-up
