@@ -7,7 +7,7 @@ use std::{
 use base64::{Engine, engine::general_purpose::STANDARD};
 use flate2::{Compression, write::ZlibEncoder};
 use icarus_bevy::prospect::{
-    MAX_ENVELOPE_BYTES, MAX_PAYLOAD_BYTES, inspect, inspect_with_inner_tags,
+    MAX_ENVELOPE_BYTES, MAX_PAYLOAD_BYTES, inspect, inspect_with_inner_tags, inspect_with_recorders,
 };
 use serde_json::{Value, json};
 use sha1::{Digest, Sha1};
@@ -67,6 +67,8 @@ fn opt_in_tag_scan_requires_full_envelope_integrity_first() {
     let bytes = serde_json::to_vec(&document).unwrap();
     let error = inspect_with_inner_tags(bytes.as_slice()).unwrap_err();
     assert!(error.to_string().contains("legacy SHA-1 mismatch"));
+    let error = inspect_with_recorders(bytes.as_slice()).unwrap_err();
+    assert!(error.to_string().contains("legacy SHA-1 mismatch"));
 
     let bytes = serde_json::to_vec(&authored_envelope(b"not a tagged archive")).unwrap();
     assert!(inspect(bytes.as_slice()).is_ok());
@@ -76,6 +78,106 @@ fn opt_in_tag_scan_requires_full_envelope_integrity_first() {
             .to_string()
             .contains("invalid experimental root tags")
     );
+}
+
+fn recorder_fixture(byte_count: i32) -> Vec<u8> {
+    // Authored framing, independent of the reader and archive codec encoder.
+    fn string(value: &str) -> Vec<u8> {
+        [
+            i32::try_from(value.len() + 1)
+                .unwrap()
+                .to_le_bytes()
+                .as_slice(),
+            value.as_bytes(),
+            &[0],
+        ]
+        .concat()
+    }
+    fn tag(name: &str, kind: &str, extra: &[u8], value: &[u8]) -> Vec<u8> {
+        [
+            string(name).as_slice(),
+            &string(kind),
+            &i32::try_from(value.len()).unwrap().to_le_bytes(),
+            &[0; 4],
+            extra,
+            &[0],
+            value,
+        ]
+        .concat()
+    }
+    let fields = [
+        tag(
+            "ComponentClassName",
+            "StrProperty",
+            &[],
+            &string("secret-class"),
+        ),
+        tag(
+            "BinaryData",
+            "ArrayProperty",
+            &string("ByteProperty"),
+            &[byte_count.to_le_bytes().as_slice(), b"secret-bytes"].concat(),
+        ),
+        tag("secret-unknown-field", "IntProperty", &[], b"opaque"),
+        string("None"),
+    ]
+    .concat();
+    let shared = tag(
+        "StateRecorderBlobs",
+        "StructProperty",
+        &[string("StateRecorderBlob"), vec![0; 16]].concat(),
+        &fields,
+    );
+    [
+        tag(
+            "StateRecorderBlobs",
+            "ArrayProperty",
+            &string("StructProperty"),
+            &[1_i32.to_le_bytes().as_slice(), &shared].concat(),
+        ),
+        string("None"),
+    ]
+    .concat()
+}
+
+#[test]
+fn recorder_cli_keeps_values_private_and_rejects_inner_failure_without_writes() {
+    let root = TempDir::new().unwrap();
+    let source = root.path().join("authored.json");
+    for (byte_count, valid) in [(12, true), (11, false)] {
+        let payload = recorder_fixture(byte_count);
+        let envelope = serde_json::to_vec(&authored_envelope(&payload)).unwrap();
+        // Both cases have intact envelopes and root tags. Only nested byte-array
+        // framing distinguishes the malformed case.
+        assert!(inspect_with_inner_tags(envelope.as_slice()).is_ok());
+        fs::write(&source, &envelope).unwrap();
+        let result = Command::new(env!("CARGO_BIN_EXE_icarus-server"))
+            .current_dir(root.path())
+            .args(["inspect-save", "--recorders", "--source"])
+            .arg(&source)
+            .output()
+            .unwrap();
+        assert_eq!(result.status.success(), valid, "{:?}", result.stderr);
+        assert!(!String::from_utf8_lossy(&result.stdout).contains("secret"));
+        assert!(!String::from_utf8_lossy(&result.stderr).contains("secret"));
+        if valid {
+            assert!(result.stderr.is_empty());
+            let report: Value = serde_json::from_slice(&result.stdout).unwrap();
+            assert_eq!(report["validation"], "experimental_recorder_framing_only");
+            assert_eq!(report["world_imported"], false);
+            assert_eq!(report["envelope"]["world_imported"], false);
+            assert_eq!(report["inner_tags"]["root_property_count"], 1);
+            assert!(report["recorders"].is_object());
+        } else {
+            assert!(result.stdout.is_empty());
+            assert!(
+                String::from_utf8_lossy(&result.stderr)
+                    .contains("invalid experimental recorder framing")
+            );
+        }
+        assert_eq!(fs::read(&source).unwrap(), envelope);
+        assert_eq!(fs::read_dir(root.path()).unwrap().count(), 1);
+    }
 }
 
 #[test]

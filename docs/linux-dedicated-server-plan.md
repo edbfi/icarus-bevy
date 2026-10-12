@@ -146,11 +146,13 @@ Use this dataset in the next work sequence:
    on build 25621760 has resolved the reflected state/header, recorder array,
    version-dependent callbacks and tagged-property dispatch; see the loading spec
    and `work/save-schema-20261012/`. A bounded experimental root-tag reader now
-   preserves opaque spans after envelope integrity checks. Nested struct dispatch
-   and recorder bodies remain open.
+   preserves opaque spans after envelope integrity checks. The optional recorder
+   reader now checks concrete nested field and byte-array boundaries; its release
+   results match an independent bounded scan of both selected copies. Older-build
+   static evidence supports this framing; component byte contents remain opaque.
    Eleven distinct prospect payloads and seven member tuples are observed, but
    structures, inventories, tames, missions and full ownership fidelity remain
-   unknown. Target nested struct selector `0x14200e610` and recorder dispatch, compare backed-up
+   unknown. Target component-specific byte dispatch and schemas, compare backed-up
    records only after interpreting them, and derive authored regression fixtures.
    Do not infer chronology/build compatibility from names or silently discard fields.
 4. Use disposable copies for a matched official-server load/save/reload baseline

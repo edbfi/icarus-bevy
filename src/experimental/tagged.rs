@@ -116,8 +116,86 @@ impl<'a> Cursor<'a> {
     }
 }
 
-fn is_name(units: &[u16], name: &str) -> bool {
+pub(crate) fn is_name(units: &[u16], name: &str) -> bool {
     units.iter().copied().eq(name.encode_utf16())
+}
+
+pub(crate) struct PropertyRecord<'a> {
+    pub tag: RootTag<'a>,
+    pub name: Vec<u16>,
+    pub extra: Option<Vec<u16>>,
+    pub index: i32,
+}
+
+pub(crate) enum ParsedRecord<'a> {
+    Property(PropertyRecord<'a>),
+    Terminator(&'a [u8]),
+}
+
+/// Read one bounded header and its declared opaque payload, or a terminal name.
+/// The caller owns sequence/count/EOF policy. No property values are decoded.
+pub(crate) fn read_record(input: &[u8], profile: TagProfile) -> Result<ParsedRecord<'_>> {
+    ensure!(
+        input.len() <= MAX_INPUT_BYTES,
+        "tag input exceeds 32 MiB limit"
+    );
+    let mut cursor = Cursor { input, position: 0 };
+    let name = cursor.name()?;
+    if is_name(&name, "None") {
+        return Ok(ParsedRecord::Terminator(&input[..cursor.position]));
+    }
+    let type_offset = cursor.position;
+    let type_name = cursor.name()?;
+    let kind = [
+        ("ArrayProperty", TagKind::Array),
+        ("StructProperty", TagKind::Struct),
+        ("StrProperty", TagKind::String),
+        ("IntProperty", TagKind::Int),
+        ("ByteProperty", TagKind::Byte),
+        ("EnumProperty", TagKind::Enum),
+        ("BoolProperty", TagKind::Bool),
+    ]
+    .into_iter()
+    .find_map(|(name, kind)| is_name(&type_name, name).then_some(kind))
+    .with_context(|| format!("unsupported tag header kind at offset {type_offset}"))?;
+    let size = cursor.i32()?;
+    let index = cursor.i32()?;
+    ensure!(size >= 0, "negative tag payload size");
+    ensure!(index >= 0, "negative tag array index");
+    let mut extra = None;
+    match profile {
+        TagProfile::MemoryArchive522 => {
+            match kind {
+                TagKind::Struct => {
+                    extra = Some(cursor.name()?);
+                    cursor.take(16)?;
+                }
+                TagKind::Array | TagKind::Byte | TagKind::Enum => {
+                    extra = Some(cursor.name()?);
+                }
+                TagKind::Bool => {
+                    cursor.flag()?;
+                }
+                TagKind::String | TagKind::Int => {}
+            }
+            if cursor.flag()? {
+                cursor.take(16)?;
+            }
+        }
+    }
+    let payload_start = cursor.position;
+    let payload = cursor.take(usize::try_from(size)?)?;
+    Ok(ParsedRecord::Property(PropertyRecord {
+        tag: RootTag {
+            kind,
+            record: &input[..cursor.position],
+            header: &input[..payload_start],
+            payload,
+        },
+        name,
+        extra,
+        index,
+    }))
 }
 
 /// Frame root tags only, skipping values by their declared size. Unknown names
@@ -149,51 +227,10 @@ pub fn read_root(input: &[u8], profile: TagProfile) -> Result<RootTags<'_>> {
             tags.len() < MAX_ROOT_TAGS,
             "root tag count exceeds research limit"
         );
-        let type_offset = cursor.position;
-        let type_name = cursor.name()?;
-        let kind = [
-            ("ArrayProperty", TagKind::Array),
-            ("StructProperty", TagKind::Struct),
-            ("StrProperty", TagKind::String),
-            ("IntProperty", TagKind::Int),
-            ("ByteProperty", TagKind::Byte),
-            ("EnumProperty", TagKind::Enum),
-            ("BoolProperty", TagKind::Bool),
-        ]
-        .into_iter()
-        .find_map(|(name, kind)| is_name(&type_name, name).then_some(kind))
-        .with_context(|| format!("unsupported tag header kind at offset {type_offset}"))?;
-        let size = cursor.i32()?;
-        let index = cursor.i32()?;
-        ensure!(size >= 0, "negative tag payload size at offset {start}");
-        ensure!(index >= 0, "negative tag array index at offset {start}");
-        match profile {
-            TagProfile::MemoryArchive522 => {
-                match kind {
-                    TagKind::Struct => {
-                        cursor.name()?;
-                        cursor.take(16)?; // Struct GUID is present at version 522.
-                    }
-                    TagKind::Array | TagKind::Byte | TagKind::Enum => {
-                        cursor.name()?; // Inner type or enum name, not a value.
-                    }
-                    TagKind::Bool => {
-                        cursor.flag()?;
-                    }
-                    TagKind::String | TagKind::Int => {}
-                }
-                if cursor.flag()? {
-                    cursor.take(16)?; // Optional property GUID.
-                }
-            }
-        }
-        let payload_start = cursor.position;
-        let payload = cursor.take(usize::try_from(size)?)?;
-        tags.push(RootTag {
-            kind,
-            record: &input[start..cursor.position],
-            header: &input[start..payload_start],
-            payload,
-        });
+        let ParsedRecord::Property(property) = read_record(&input[start..], profile)? else {
+            unreachable!("nonterminal name was checked above");
+        };
+        cursor.position = start + property.tag.record.len();
+        tags.push(property.tag);
     }
 }

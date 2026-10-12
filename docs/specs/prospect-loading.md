@@ -39,8 +39,8 @@ prove that the reporting call returns.
 ## Inner state and version dispatch (2026-10-12)
 
 Targeted follow-up in `work/save-schema-20261012/` reverified the preserved executable
-hash, inspected metadata and exported twenty-eight selected
-functions in four bounded Ghidra batches. No original execution or packaged asset
+hash, inspected metadata and exported thirty-two selected
+functions in five bounded Ghidra batches. No original execution or packaged asset
 extraction occurred. These observations belong to **build 25621760**; the user's
 supplied save is reported from **25793767**, so cross-build compatibility remains
 unvalidated.
@@ -114,15 +114,30 @@ reader is therefore preferable to assuming a custom-version prefix.
 The fourth batch recovered [root tag framing](tagged-properties.md), including
 archive-version gates, name encoding and payload sizes. Native inspection now
 preserves opaque root records under an explicit experimental profile.
-Next: resolve nested struct selector `0x14200e610` and component blob boundaries,
-then compare bounded private copies without discarding unknown fields. Preserve legacy fields
+The fifth batch resolves nested struct selector `0x14200e610` for this concrete
+recorder type. Its native-operations factory `0x141cfbd60` supplies neither a
+native serializer nor a post-serialization callback. The loading archive flags and
+the structure's flags select tagged traversal through schema slot `+0x2a0`.
+Each recorder therefore has its own `None`-terminated property sequence after the
+array's single shared inner tag. This does not establish the encoding of arbitrary
+nested structures or of the component's opaque data.
+
+The `BinaryData` inner byte property has no enum binding. Reader `0x142158d40`
+consumes one byte per element on that branch, so this array's payload is a signed
+32-bit count followed by that many raw bytes. The independent bounded private
+scan described in the [tag specification](tagged-properties.md) reaches the exact
+recorder-array boundary on both selected saves. It does not interpret those bytes.
+
+Next: recover component-specific `BinaryData` dispatch and schemas, then compare
+backed-up records without discarding unknown fields. Preserve legacy fields
 and version-zero migration requirements; an importer cannot safely flatten them
 into the current native snapshot schema.
 
 Case Evidence E-002 records registration/vtables, E-003 the property metadata,
 E-004 version callbacks, E-005 the caller chains, E-006 schema construction,
 E-007 serializer branches, E-008 archive mode initialization, E-009 tag/name
-primitives and E-010 payload/array boundaries. The case report links them to
+primitives, E-010 payload/array boundaries, E-011 nested recorder dispatch and
+E-012 byte-array element encoding. The case report links them to
 findings and call paths; strict review verified all artifact hashes with zero
 errors/warnings. Primary decompilation, disassembly and exact commands remain private.
 

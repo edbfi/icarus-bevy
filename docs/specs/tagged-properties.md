@@ -1,4 +1,4 @@
-# Experimental root property tags
+# Experimental property and recorder framing
 
 This reader checks outer record boundaries in an already verified prospect payload.
 It does not decode recorder bodies, validate gameplay values, apply version
@@ -8,12 +8,16 @@ producing build. The user reports build 25793767 for the supplied saves.
 
 ```bash
 cargo run --locked -- inspect-save --source /path/to/copied-prospect.json --inner-tags
+cargo run --locked -- inspect-save --source /path/to/copied-prospect.json --recorders
 ```
 
 The command verifies envelope integrity first, then reports
 `experimental_root_tags_only`, profile `experimental_memory_archive_522`, aggregate
 record sizes and `world_imported: false`. Without `--inner-tags`, the existing
-envelope-only behavior and result format are unchanged.
+envelope-only behavior and result format are unchanged. `--recorders` implies root
+framing and additionally validates the recorder structure described below. Its
+result is `experimental_recorder_framing_only`, with aggregate recorder statistics
+and `world_imported: false`; component byte contents remain opaque.
 
 ## Observed framing
 
@@ -99,3 +103,57 @@ flags, unsupported kinds and raw wide-name preservation. Fifteen prospect tests
 include integrity-before-framing and CLI privacy/no-write checks. The full manual
 suite, release build and independent code/static-contract review pass. No original
 runtime or stock-client migration test was performed.
+
+## Recorder framing
+
+Static evidence E-011/E-012 resolves this concrete recorder structure to tagged
+fields, each element ending in `None`. `StateRecorderBlobs` begins with its element
+count and one shared `StateRecorderBlob` struct tag whose declared payload covers
+all element bodies. `ComponentClassName` contains an archive string; `BinaryData`
+is an array of plain bytes, encoded as a signed 32-bit count and that many bytes.
+The root-only command leaves these bodies opaque; the optional recorder inspector
+checks only the described field and array framing.
+
+A separate private Node probe checked these boundaries after complete envelope
+verification, with limits of 16,384 recorders, 65,536 total fields and 1,024 string
+units, in addition to the input/output bounds. It traversed exactly the declared
+count and consumed the shared payload exactly on both copies:
+
+| Measurement | Current copy | Selected backup |
+| --- | ---: | ---: |
+| Recorder entries | 2,744 | 2,741 |
+| Field tags | 5,488 | 5,482 |
+| Opaque `BinaryData` bytes | 18,051,461 | 18,031,390 |
+
+Every entry had one class-name field and one byte-array field; no other fields
+were observed in these two copies. Class-name values and byte contents remain
+private. These are recorder counts, not actor, building, animal or player counts.
+Evidence E-017 in `work/save-triage-20261012/` binds probe versions, outputs and
+input hashes. Independent code/static-contract review and strict case review pass.
+The result supports further schema research, not a complete importer or a claim
+that the older executable accepts these newer saves.
+
+The native recorder reader shares the root header parser. It requires one selected
+array and exact agreement between declared count, shared size, every element's
+terminator and final boundary. Each element must have exactly one class string and
+one byte array at index zero. Unknown fields with supported headers retain exact
+borrowed spans; unsupported headers, duplicate/missing known fields or malformed
+values fail the whole scan. Empty class strings and raw UTF-16 units are accepted
+as framing; class resolution and semantic validity are not implied.
+
+Input is bounded to 32 MiB, recorders to 16,384, total fields to 65,536 and header or
+class strings to 1,024 units. Checks precede count-driven allocations. Parsed
+record/field collections expose immutable slices, preserving the validity of
+summary counts. Neither raw containers nor class values are serializable or
+debug-printable; the CLI exposes only summaries and publishes no partial result
+when a nested check fails.
+
+The release Rust reader matches every independent recorder aggregate on both
+copies. Envelope-only and root-only CLI output remains byte-identical to the
+preceding release, and input hashes are unchanged. Seven recorder, six root and
+sixteen prospect tests pass, including nested failure/privacy/no-write checks.
+Full manual checks, release build and independent static-contract/code review
+pass. Qualification provenance and source snapshots: save-triage E-018,
+`work/save-triage-20261012/recorder-native/` and
+`work/native-recorders-20261012/`. Strict case review verifies the evidence graph
+and artifact hashes with zero errors/warnings.

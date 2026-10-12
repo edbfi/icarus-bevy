@@ -126,10 +126,25 @@ record historical research batches; the overnight runtime window has expired.
   unchanged source hashes and unchanged default envelope output. Evidence:
   `work/native-tagged-20261012/` and save-triage E-015/E-016. This is root framing,
   not complete schema validation or import.
+- Opt-in `inspect-save --recorders` additionally validates exact recorder array,
+  field and byte-array boundaries. Unknown supported-header fields retain borrowed
+  spans; class values and component bytes remain opaque. The release reader
+  matches independent totals on both private copies: 2,744/2,741 recorders and
+  18,051,461/18,031,390 opaque bytes. Input hashes and previous CLI modes are
+  unchanged. Seven recorder, six root and sixteen prospect tests, full manual
+  checks, independent review and strict case review pass. Evidence: save-triage
+  E-017/E-018 and `work/native-recorders-20261012/`. No gameplay counts or import
+  fidelity follow from these framing checks.
 - Active normal dependency graph excludes Bevy rendering/window/audio backends;
   release executable links only the platform loader, libc and libgcc_s on this host.
 - CI definition validates formatting, Clippy, tests, release build and headless smoke.
   Local checks passed; hosted CI has not been run from this workspace.
+- The [offline reference launcher](offline-runtime-authorization.md) now requires
+  current case/session/hash/mode bindings, locks attempt quotas, reserves cleanup
+  time and verifies exact container ownership/removal. A final time check closes
+  the hashing/preparation gap before launch. Thirty mocked Python tests pass;
+  basedpyright reports zero errors/warnings, with no added suppressions. This
+  launcher revision has not executed the original server.
 
 ## Reference evidence
 
@@ -142,11 +157,14 @@ record historical research batches; the overnight runtime window has expired.
   by-name inputs were rejected without an observed crash. The separate
   [from-file failure path](research/2026-10-04-save-failure-output.md) remains a
   static lead, not a reproduced original defect.
-- [Inner save dispatch](specs/prospect-loading.md): twenty-eight targeted exports plus
+- [Inner save dispatch](specs/prospect-loading.md): thirty-two targeted exports plus
   metadata and flag tracing identify the older build's reflected state/header,
   recorder blobs, version-dependent callbacks and concrete tagged-property reader.
   Object offsets are not disk offsets. Root tag framing and its archive-version
-  gates are recovered; nested recorder bodies remain unresolved. These findings
+  gates and concrete nested recorder framing are recovered. An independent private
+  scan traverses 2,744 current and 2,741 backup recorder entries with exact array
+  boundaries; component byte contents remain opaque. These are not gameplay object
+  counts. These findings
   do not establish newer-build migration.
   Static evidence and exact commands: `work/save-schema-20261012/`.
 - Supplied archive remains preserved under ignored `reference-data/`; all 24 file
@@ -183,16 +201,16 @@ supported, and no ICARUS performance or stability improvement has been measured.
 
 ## Next work and maintenance
 
-1. Resolve nested struct dispatch and recorder-body serialization, then test
-   bounded authored records. Older-build root framing, dispatch and version
+1. Recover component-specific byte schemas beyond the bounded recorder framing
+   reader, then test authored records. Older-build root/recorder framing, dispatch and version
    callbacks are characterized; outer encoding,
    integrity, measured bounds and initial membership relationships are characterized;
    actor/inventory/construction/tame/mission fields and exact producing build remain
    unresolved. Preserve unknown fields and private inputs; no partial importer.
 2. Advance transport/control/authentication evidence and independently authored
    world-data feasibility; validate a small import before the heavy-world workload.
-   Original-server launchers still need explicit current sessions before runtime
-   work; the native I/O launcher migration does not renew historical authorization.
+   The migrated original-server launcher requires explicit current sessions for
+   each runtime experiment; historical authorization windows remain expired.
 
 Update this checkpoint and the existing plan/specifications as each step completes.
 Use frequent signed-off Conventional Commits and feature-branch pushes. Before PR

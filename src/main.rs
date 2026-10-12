@@ -49,6 +49,9 @@ enum Command {
         /// Also frame opaque root properties with the experimental memory-522 profile.
         #[arg(long)]
         inner_tags: bool,
+        /// Also frame recorder fields, leaving component bytes opaque; implies root framing.
+        #[arg(long)]
+        recorders: bool,
     },
     /// Reserved interface: official format is unknown; fails without writing.
     ImportSave {
@@ -83,14 +86,20 @@ fn execute(cli: Cli) -> Result<()> {
         Command::ImportSave { .. } => bail!(
             "ICARUS save import is unavailable until the format and migration fidelity are validated; no files were written"
         ),
-        Command::InspectSave { source, inner_tags } => {
+        Command::InspectSave {
+            source,
+            inner_tags,
+            recorders,
+        } => {
             ensure!(
                 std::fs::metadata(&source)?.is_file(),
                 "source must be a regular file"
             );
             let file = std::fs::File::open(&source).context("open prospect envelope")?;
             ensure!(file.metadata()?.is_file(), "source must be a regular file");
-            let output = if inner_tags {
+            let output = if recorders {
+                serde_json::to_string(&icarus_bevy::prospect::inspect_with_recorders(file)?)?
+            } else if inner_tags {
                 serde_json::to_string(&icarus_bevy::prospect::inspect_with_inner_tags(file)?)?
             } else {
                 serde_json::to_string(&icarus_bevy::prospect::inspect(file)?)?

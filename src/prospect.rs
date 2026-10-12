@@ -10,6 +10,7 @@ use flate2::{Decompress, FlushDecompress, Status};
 use serde::{Deserialize, Serialize};
 use sha1::{Digest, Sha1};
 
+use crate::experimental::recorders::{RecorderSummary, read_recorders};
 use crate::experimental::tagged::{RootTagSummary, TagProfile, read_root};
 
 /// Bounded research policy, not a recovered ICARUS format limit. Observed inputs
@@ -58,6 +59,15 @@ pub struct InnerTagInspection {
     pub world_imported: bool,
 }
 
+#[derive(Debug, Serialize)]
+pub struct RecorderInspection {
+    pub validation: &'static str,
+    pub envelope: EnvelopeInspection,
+    pub inner_tags: RootTagSummary,
+    pub recorders: RecorderSummary,
+    pub world_imported: bool,
+}
+
 /// Inspect one bounded JSON envelope without extracting payload or mutating state.
 ///
 /// Unknown JSON fields are skipped. Known fields must occur once and use the
@@ -79,6 +89,23 @@ pub fn inspect_with_inner_tags(reader: impl Read) -> Result<InnerTagInspection> 
         validation: "experimental_root_tags_only",
         envelope: validated.inspection,
         inner_tags: tags.summary(),
+        world_imported: false,
+    })
+}
+
+/// Opt-in recorder framing, with component byte contents remaining opaque.
+/// Reports aggregates only after all framing and envelope checks succeed.
+pub fn inspect_with_recorders(reader: impl Read) -> Result<RecorderInspection> {
+    let validated = decode_envelope(reader)?;
+    let profile = TagProfile::MemoryArchive522;
+    let tags = read_root(&validated.payload, profile).context("invalid experimental root tags")?;
+    let recorders =
+        read_recorders(&tags.tags, profile).context("invalid experimental recorder framing")?;
+    Ok(RecorderInspection {
+        validation: "experimental_recorder_framing_only",
+        envelope: validated.inspection,
+        inner_tags: tags.summary(),
+        recorders: recorders.summary(),
         world_imported: false,
     })
 }
