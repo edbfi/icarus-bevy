@@ -206,6 +206,9 @@ Use this dataset in the next work sequence:
    the reviewed 31-field contract and native spans under an explicit 71,956-byte
    comparison cap. Recover its next concrete child contract; retain the lack of populated
    inherited-array coverage.
+   Exact C034 own Name values also pass strict native/independent structural
+   decoding across 1,658 spans; name construction and identity semantics remain
+   open.
    Generic framing and width agreement do not establish an importable world.
    Eleven distinct prospect payloads and seven member tuples are observed, but
    structures, inventories, tames, missions and full ownership fidelity remain

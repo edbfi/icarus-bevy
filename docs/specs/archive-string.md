@@ -85,3 +85,12 @@ therefore apply to this concrete path. Neither the Name wrapper nor FString
 requires enclosing property EOF, and normal return can follow an archive error.
 This static result reads no supplied names. Independent and strict review:
 `work/c034-name-contract-20261012/`.
+
+A separate bounded comparison qualifies 1,658 exact OS01.F08 value spans
+(14,922 bytes) against the existing native strict decoder and independent
+structural parser. Each copy contributes 829 nine-byte values. Encoding category,
+unit counts and consumed length agree, with exact comparator EOF and unchanged
+inputs. Prior top/own spans are reproduced before exact field selection. No
+decoded names or name hashes are reported; internal name construction remains
+unqualified. Six helper tests, independent review and execution evidence:
+`work/c034-name-values-20261012/`.
