@@ -153,6 +153,12 @@ Use this dataset in the next work sequence:
    static evidence supports this framing. One selected singleton class's two
    component bodies now pass independent and native opaque property/trailer scans;
    the separate explicit library reader does not recognize classes or decode values.
+   Four selected bodies from a second class also pass both framing implementations
+   and match 23 older-build field descriptors. Follow-up independent header checks
+   and a native batch extend that coverage to all 1,294 records of this class in
+   the two copies, with exact byte conservation. Its load and postload overrides are
+   checked separately; six struct fields have candidate tagged contracts, while
+   their child schemas and seven array element schemas remain unresolved.
    Eleven distinct prospect payloads and seven member tuples are observed, but
    structures, inventories, tames, missions and full ownership fidelity remain
    unknown. Target component-specific byte dispatch and schemas, compare backed-up

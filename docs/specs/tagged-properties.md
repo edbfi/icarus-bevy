@@ -1,8 +1,9 @@
 # Experimental property and recorder framing
 
-This reader checks outer record boundaries in an already verified prospect payload.
-It does not decode recorder bodies, validate gameplay values, apply version
-migrations or import a world. Its explicit `MemoryArchive522` research profile is
+The CLI reader checks outer record boundaries in an already verified prospect
+payload. Component framing is a separate caller-selected library operation,
+described below. Neither operation validates gameplay values, applies version
+migrations or imports a world. The explicit `MemoryArchive522` research profile is
 based on the preserved build 25621760; selecting it does not identify a save's
 producing build. The user reports build 25793767 for the supplied saves.
 
@@ -240,3 +241,56 @@ selected class and its immediate base. Inspected constructor/link flag updates d
 not add that bit to ancestor fields. Arbitrary later runtime mutation is not
 exhaustively ruled out. Agreement between the saved headers and these descriptors
 does not establish reconstruction, post-load relationships or gameplay correctness.
+Later static capture/cleanup evidence distinguishes a conditional count snapshot
+before serialization from in-place pruning of null/non-live owner pointers and a
+discarded set intersection. Those inspected paths do not read the saved integer
+to reconstruct relationships; see the [loading investigation](prospect-loading.md).
+
+### C028 framing and header coverage
+
+The concrete C028 class has load and post-load overrides. Static evidence in
+`work/component-c028-20261012/` verifies that the load override delegates unchanged
+to the base reader before context work, and the post-load override changes
+in-memory fields without reading its incoming archive. The shared base serializer
+therefore supports a framing hypothesis, not equivalence of restoration behavior.
+
+An independent probe selected the first minimum- and maximum-sized C028 record
+in source order from each copy. Both complete envelopes, root sequences and recorder
+arrays passed before those four component bodies were read. The release Rust reader
+independently matched every selected body's framing aggregates:
+
+| Measurement | Selected minimum | Selected maximum |
+| --- | ---: | ---: |
+| Component bytes | 3,325 | 3,358 |
+| Properties | 23 | 23 |
+| Headers and terminator | 1,509 bytes | 1,509 bytes |
+| Opaque values | 1,812 bytes | 1,845 bytes |
+| Zero object trailer | 4 bytes | 4 bytes |
+
+A separate private comparison matched each selected record's exact names, types,
+indices and type-specific header names against the 23 selected native descriptors:
+integer 3, name 3, boolean 2, struct 6, array 7, enum 1 and string 1. Comparison did
+not assume field order or invent fixed GUID/boolean values. It establishes agreement
+for these four records without asserting mandatory presence in other saves.
+Evidence: save-triage E-025/E-026/E-027; source, helper and static metadata hashes
+are bound in the private cases. All property payloads remain opaque.
+
+The later independent E-028 scan covers all 1,294 C028 records in the two supplied
+copies after validating both complete outer payloads. Every record matches the same
+23 exact header descriptors, with lengths from 3,325 to 3,358 bytes. Each copy's
+647 components contain 14,881 fields, 976,323 header/terminator bytes, 1,184,111
+opaque value bytes and 2,588 zero-trailer bytes, conserving all 2,163,022 component
+bytes. The release-native batch helper independently matches all 1,294 bodies and
+their combined totals in E-029: 29,762 fields and 4,326,044 bytes, comprising
+1,952,646 header/terminator bytes, 2,368,222 opaque value bytes and 5,176 zero-trailer
+bytes. The batch wrapper is an authored test transport, not an ICARUS file format.
+Both scans interpret no values and establish neither mandatory fields nor
+newer-build method equivalence.
+
+Independent static follow-up in `work/c028-structs-20261012/` resolves the six
+direct struct types to tagged serialization under the concrete older-build archive
+flags, including one deferred operations registration. Six distinct types share
+four operations tables; shared operations do not make their schemas identical.
+This supports further nested-framing research only. Child fields, array-element
+schemas, runtime migration and newer-build equivalence remain unresolved, and no
+nested value decoding is implied by these component checks.
