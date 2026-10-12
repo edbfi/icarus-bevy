@@ -298,8 +298,9 @@ four operations tables; shared operations do not make their schemas identical.
 Their immediate metadata contains 16 optional fields, including a `UInt32Property`
 whose type is verified through the concrete factory and name getter. Three child
 struct fields select binary/native serialization, so the tagged contract does not
-extend recursively to every descendant. Array-element schemas, runtime migration
-and newer-build equivalence remain unresolved.
+extend recursively to every descendant. Seven array-element types have separate
+tagged contracts and 17 optional immediate field descriptors. Deeper descendants,
+runtime migration and newer-build equivalence remain unresolved.
 
 ### Selected nested struct streams
 
@@ -322,5 +323,45 @@ These dimensions occur in each selected parent: 24 nested sequences total,
 64 fields and 3,632 bytes, divided into 3,356 header/terminator bytes and 276 opaque
 value bytes. One bounded native batch using the release `read_root` API matches
 all 24 sequences and their aggregates, with unchanged input hashes (E-033).
-This is framing agreement only; exact child metadata comparison,
-grandchild encoding, scalar semantics and world reconstruction are separate steps.
+The separate E-034 comparison matches all 64 observed child headers to the optional
+descriptors, including exact names, types, indices and struct type names. Missing
+fields would be allowed; none are missing in these samples. Order and fixed GUID
+values are not assumed. Grandchild encoding, scalar semantics and world
+reconstruction remain separate steps.
+
+## Explicit tagged struct-array framing
+
+The separate library function
+[`read_tagged_struct_array`](../../src/experimental/struct_array.rs) accepts a
+caller-selected candidate array body and a `TagProfile`. It requires a nonnegative
+little-endian 32-bit count, one shared `StructProperty` header even for an empty
+array, and exactly that many `None`-terminated element sequences inside the shared
+header's declared payload. Elements have variable lengths and no object trailers.
+The full input must be consumed.
+
+Limits are 64 KiB per array, 4,096 elements and 256 fields per element. Count and
+minimum terminator space are checked before allocating element storage. Requiring
+a shared `StructProperty` is explicit research policy. The reader does not compare
+its name, nonnegative index, struct identity or GUID values against a caller's
+schema; those checks belong to a separate comparison layer.
+
+Immutable getters expose the exact borrowed prefix, shared header/payload, element
+records, fields and terminators. Raw containers implement neither `Debug` nor
+`Serialize`. The sanitized summary reports element/field counts, array prefix
+bytes, element header/terminator bytes and opaque payload bytes; these partitions
+conserve the input length. It reports `world_imported: false` and
+`values_interpreted: false`.
+
+Six authored tests cover empty arrays, variable elements with UInt32 and opaque
+embedded terminators, GUID/truncation cases, incorrect counts/types/sizes, trailing
+bytes, exact limits and failure after an earlier valid element. The API does not
+recognize classes, recurse into values or change the CLI inspector. Static support
+is recorded in `work/c028-arrays-20261012/`.
+
+One bounded native batch independently matches 28 supplied arrays from the four
+selected parents (save-triage E-037): all are empty, with 2,624 count/shared-header
+bytes, zero element bytes and exact EOF. Source hashes are unchanged. The authored
+stdin transport is separate from the game format and retains no body file.
+Populated elements have authored-test coverage only. A wider independent metadata
+inventory finds all 9,058 arrays in this class empty across both copies (E-036);
+this is not native qualification of all those arrays.

@@ -326,10 +326,59 @@ while retaining opaque values. Evidence: static E-005 through E-008 in
 `work/c028-structs-20261012/`.
 
 The three struct children of the first tagged struct resolve to two distinct
-types whose flags select binary serialization. One uses the fallback binary path;
-the other has a native callback. Neither child can be recursively assumed tagged,
-and their memory sizes do not establish disk widths. Seven array-element schemas,
-newer-build method equivalence and complete world restoration remain unresolved.
+types whose flags select binary serialization. Static follow-up in
+`work/c028-binary-children-20261012/` derives their successful transfer lengths
+from instructions: N01 uses four ordered four-byte property transfers, totaling
+16 bytes; N02 uses three explicit four-byte transfers, totaling 12 bytes. The
+selected archive performs raw little-endian copies. Neither path adds a count,
+terminator or post-serialization tail, but an original read error can stop position
+advancement and neither wrapper establishes exact EOF. Any replacement validator
+must enforce those lengths separately. Values and mathematical meaning remain
+uninterpreted; the observed parent's aggregate length is not the static proof.
+
+### Seven selected array contracts
+
+The private case `work/c028-arrays-20261012/` resolves seven distinct element
+types and operations tables. Each selects tagged serialization under the same
+older archive profile: its initial flags and concrete capability probes select
+neither a forced binary path nor native/post-serialization hooks.
+
+Array serializer `0x1421580d0` reads a signed 32-bit count, then one shared struct
+tag before the element loop, including when the count is zero. It invokes the
+inner struct serializer once per element. Each element is a variable-length,
+`None`-terminated property sequence without an object trailer. The shared tag's
+declared size spans the complete element sequence, not one element or a multiple
+of the in-memory stride.
+
+The tag constructor supplies index zero, the inner property name and the element
+struct name; all seven inner names equal their parent field names in these
+descriptors. The original loader does not separately enforce index/name/type
+equality, although it does handle struct name/GUID compatibility and may skip an
+incompatible declared span. Exact name/index/type checks in a strict subset
+must be identified as comparison policy.
+
+The follow-up `work/c028-array-children-20261012/` resolves 17 optional child
+fields across these types: seven names, three signed integers, three floats, one
+boolean, one text, one array and one struct. One additional raw descriptor belongs
+to the nested array's inner property. The float and text factories, class-name
+getters and built-in IDs independently identify their serialized header types;
+both use only the common property-GUID extension. The native header reader does
+not yet support these two types. The nested array and struct target two further
+types whose encoding remains unresolved; the earlier 16/12-byte contracts do not
+apply to them.
+
+Independent inspection of all seven arrays in each of the four selected parent
+records finds 28 empty arrays (save-triage E-035). All include their required
+shared headers: 112 count bytes plus 2,512 shared-header bytes, with exact EOF
+and no element payload. These samples provide no populated-element coverage.
+The follow-up metadata inventory covers all 9,058 arrays in the 1,294 records of
+this class: every count and element span is zero (E-036). The 848,864 array bytes
+comprise 36,232 count bytes and 812,632 shared-header bytes. Both outer archives
+and all parent header sets passed before this inventory; no element headers were
+scanned and no populated example was found in either copy.
+A bounded release-native batch matches the original 28 selected empty arrays and
+their exact byte totals with unchanged inputs (E-037).
+Newer-build method equivalence and complete world restoration remain unresolved.
 
 ## Controlled reproduction matrix
 

@@ -159,8 +159,14 @@ Use this dataset in the next work sequence:
    the two copies, with exact byte conservation. Its load and postload overrides are
    checked separately; six struct fields have candidate tagged contracts, while
    24 selected nested payloads pass independent and native one-level framing scans. Their
-   16 optional child descriptors are recovered; exact child metadata agreement,
-   deeper binary encodings and seven array element schemas remain unresolved.
+   16 optional child descriptors agree with all 64 observed child headers. Static
+   transfer widths and seven array-element framing contracts are recovered.
+   All 9,058 arrays in this class are empty and pass independent count/shared-header
+   checks across both copies; populated elements, deeper encoding and semantics remain
+   separate work. An explicit
+   candidate struct-array library reader passes authored tests and native
+   qualification of the 28 selected empty arrays without changing the CLI inspector
+   or importing a world.
    Eleven distinct prospect payloads and seven member tuples are observed, but
    structures, inventories, tames, missions and full ownership fidelity remain
    unknown. Target component-specific byte dispatch and schemas, compare backed-up
