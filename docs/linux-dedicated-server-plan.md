@@ -193,7 +193,8 @@ Use this dataset in the next work sequence:
    concrete client C034 registration now supports conditional tagged dispatch and
    its restore entry constructs a version-522 loading archive. Downstream profile
    propagation and deferred N02 operations binding remain next static checks.
-   Extend C034 top-header coverage in separate bounded per-copy native batches.
+   Separate bounded per-copy batches now qualify all 1,658 C034 top bodies with
+   exact native/independent spans; extend own/deeper coverage next.
    Generic framing and width agreement do not establish an importable world.
    Eleven distinct prospect payloads and seven member tuples are observed, but
    structures, inventories, tames, missions and full ownership fidelity remain
