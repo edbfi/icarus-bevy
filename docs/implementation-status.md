@@ -171,7 +171,11 @@ optional immediate fields, with no immediate recursion. Independent review and
 strict evidence review pass: `work/c009-parent-children-20261012/`. A corrected
 dimension offset for Bool leaves the earlier comparisons unchanged: all six
 affected descriptors have dimension one at the confirmed common-factory offset.
-Their population bounds and child-header comparisons remain pending.
+Exact parent-header selection now bounds all 2,430 payloads across both copies,
+741,404 bytes total. Each family occurs 243 times per copy; their maxima are
+950/188/93/95/468 bytes. All prior native top spans reproduce and all 382 bound
+files remain unchanged: `work/native-c009-parent-selection-20261012/`. The
+existing array cap is sufficient. Child headers and counts remain unread.
 The exact enum-backed Byte field separately follows Name/FString transfer under
 the concrete loading profile; its internal byte size is not serialized width.
 Independent review preserves unresolved enum lookup, error and EOF behavior:
@@ -567,8 +571,8 @@ supported, and no ICARUS performance or stability improvement has been measured.
 
 ## Next work and maintenance
 
-1. Establish C009 immediate-parent child population bounds from exact identities,
-   then qualify their supported headers and leaves with authored regressions.
+1. Qualify C009 immediate-parent child headers and leaves within their measured
+   population bounds, with authored regressions.
    C009 own-child structure and selected C034 populations already pass the
    comparisons above. Older-build root/recorder framing, dispatch and version
    callbacks are characterized; outer encoding,
