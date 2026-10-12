@@ -100,3 +100,19 @@ inputs. Prior top/own spans are reproduced before exact field selection. No
 decoded names or name hashes are reported; internal name construction remains
 unqualified. Six helper tests, independent review and execution evidence:
 `work/c034-name-values-20261012/`.
+
+## Concrete enum-backed Byte link
+
+C009 PS01.F04 is an exact generation-zero Byte descriptor with an installed enum
+pointer. Its final vtable dispatches to `0x142158d40`. Under the reviewed concrete
+MemoryArchive, virtual `+0x68` returns false; with loading set and the enum present,
+the adapter calls the same Name/FString path through virtual `+0x140`. Its raw
+one-byte branch does not apply under those conditions. An optional subsequent
+archive `+0x170` callback is return-only and adds no transfer.
+
+Successful string transfer follows the formulas above. The adapter then resolves
+the internal name against the enum, but lookup/fallback semantics, enumerator
+values and range policy remain unqualified. It does not check archive error before
+that resolution or establish enclosing EOF. This supports a future strict
+structural comparison, not enum interpretation or original load success.
+Independent static review: `work/c009-byte-value-contract-20261012/`.
