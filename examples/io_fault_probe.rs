@@ -1,5 +1,10 @@
 //! Real ENOSPC/EACCES probe, only for the approved disposable 256 KiB tmpfs lab.
-use std::{fs, io::Write, os::unix::fs::PermissionsExt, path::Path};
+use std::{
+    fs,
+    io::{ErrorKind, Write},
+    os::unix::fs::PermissionsExt,
+    path::Path,
+};
 
 use anyhow::{Context, Result, ensure};
 use icarus_bevy::{
@@ -21,10 +26,14 @@ fn snapshot(tick: u64, entities: u64) -> WorldSnapshot {
     }
 }
 
-fn raw_errno(error: &anyhow::Error) -> Option<i32> {
-    error
-        .chain()
-        .find_map(|cause| cause.downcast_ref::<std::io::Error>()?.raw_os_error())
+fn io_error_kind(error: &anyhow::Error) -> Option<ErrorKind> {
+    // tempfile adds path context in a custom io::Error. Its public contract
+    // preserves kind(), but not raw_os_error() or the underlying OS error source.
+    error.chain().find_map(|cause| {
+        cause
+            .downcast_ref::<std::io::Error>()
+            .map(std::io::Error::kind)
+    })
 }
 
 fn main() -> Result<()> {
@@ -63,7 +72,7 @@ fn main() -> Result<()> {
         match filler.write(&chunk) {
             Ok(0) => anyhow::bail!("unexpected zero-length filler write"),
             Ok(bytes) => written += bytes,
-            Err(error) if error.raw_os_error() == Some(28) => {
+            Err(error) if error.kind() == ErrorKind::StorageFull => {
                 full = true;
                 break;
             }
@@ -79,7 +88,7 @@ fn main() -> Result<()> {
         .save(&newer)
         .expect_err("full filesystem must reject snapshot publication");
     ensure!(
-        raw_errno(&error) == Some(28),
+        io_error_kind(&error) == Some(ErrorKind::StorageFull),
         "expected ENOSPC, got {error:#}"
     );
     ensure!(
@@ -114,7 +123,7 @@ fn main() -> Result<()> {
     fs::set_permissions(root, fs::Permissions::from_mode(0o755))?;
     let error = denied.expect_err("unwritable directory must reject snapshot publication");
     ensure!(
-        raw_errno(&error) == Some(13),
+        io_error_kind(&error) == Some(ErrorKind::PermissionDenied),
         "expected EACCES, got {error:#}"
     );
     ensure!(
@@ -152,4 +161,46 @@ fn main() -> Result<()> {
         "physical_power_loss_tested":false})
     );
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn tempfile_path_context_preserves_io_classification() {
+        let directory = tempfile::tempdir().unwrap();
+        let file = directory.path().join("not-a-directory");
+        fs::write(&file, b"authored").unwrap();
+        let error = tempfile::NamedTempFile::new_in(&file)
+            .context("create snapshot temporary file")
+            .unwrap_err();
+        assert_eq!(
+            error
+                .downcast_ref::<std::io::Error>()
+                .unwrap()
+                .raw_os_error(),
+            None
+        );
+        assert_eq!(io_error_kind(&error), Some(ErrorKind::NotADirectory));
+    }
+
+    #[test]
+    fn classifies_direct_and_wrapped_faults_without_matching_messages() {
+        for (errno, kind) in [
+            (28, ErrorKind::StorageFull),
+            (13, ErrorKind::PermissionDenied),
+        ] {
+            let direct = anyhow::Error::from(std::io::Error::from_raw_os_error(errno));
+            assert_eq!(io_error_kind(&direct), Some(kind));
+            let wrapped = std::io::Error::new(kind, "path context hides raw errno");
+            let contextual = anyhow::Error::from(wrapped).context("save failed");
+            assert_eq!(io_error_kind(&contextual), Some(kind));
+        }
+        let text_only = anyhow::anyhow!("No space left on device (os error 28)");
+        assert_eq!(io_error_kind(&text_only), None);
+        let unrelated =
+            anyhow::Error::from(std::io::Error::other("Permission denied (os error 13)"));
+        assert_eq!(io_error_kind(&unrelated), Some(ErrorKind::Other));
+    }
 }

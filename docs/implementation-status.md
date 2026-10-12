@@ -77,11 +77,15 @@ record historical research batches; the overnight runtime window has expired.
 - The [snapshot measurement](research/2026-10-04-native-snapshot-performance.md)
   documents improved native synthetic save/load cost after typed decoding. It is
   not a comparison with the original server.
-- The real filesystem probe reached disk-full, but its wrapped-error recognition
-  failed before state-recovery/EACCES assertions. Private evidence:
-  `work/icarus-overnight/native-io-faults/probe.stderr` and `cleanup.json`; the
-  container was removed. Real filesystem fault qualification remains unfinished,
-  and physical power-loss and the required 72-hour runs remain untested.
+- The real filesystem probe now passes ENOSPC/EACCES, unchanged acknowledged
+  manifest/state, space/permission restoration, retries and reopen verification.
+  N-003 corrected error classification using the typed I/O kind retained by tempfile.
+  The 2026-10-12 run used a disposable unprivileged 256 KiB tmpfs, completed at
+  generation 4/tick 40 with 1,100 entities and verified exact-container removal.
+  Private evidence: `work/native-io-20261012/native-io-faults/`. The historical failed
+  run remains preserved. The launcher requires explicit current case/session/probe
+  bindings and bounds launch, observation and cleanup to at most 120 seconds.
+  Physical power-loss and the required 72-hour runs remain untested.
 - Experimental [envelope inspection](specs/prospect-envelope.md),
   [archive strings](specs/archive-string.md), [checksum](specs/network-checksum.md)
   and the separate [Bevy loopback handshake lab](specs/stateless-handshake.md) have
@@ -132,14 +136,12 @@ supported, and no ICARUS performance or stability improvement has been measured.
 
 ## Next work and maintenance
 
-1. Fix wrapped errno recognition in `examples/io_fault_probe.rs`, then complete
-   bounded disk-full/retry/permission/reopen checks under a current lab scope.
-   Existing launchers bind to the expired overnight session; make new case/session
-   inputs explicit without changing historical records or bypassing guards.
-2. Characterize copies of the supplied save and backups, identify build/schema and
+1. Characterize copies of the supplied save and backups, identify build/schema and
    relationships, and determine justified parser bounds. Preserve raw player data.
-3. Advance transport/control/authentication evidence and independently authored
+2. Advance transport/control/authentication evidence and independently authored
    world-data feasibility; validate a small import before the heavy-world workload.
+   Original-server launchers still need explicit current sessions before runtime
+   work; the native I/O launcher migration does not renew historical authorization.
 
 Update this checkpoint and the existing plan/specifications as each step completes.
 Use frequent signed-off Conventional Commits and feature-branch pushes. Before PR

@@ -125,9 +125,11 @@ the existing exclusion of packaged game assets remains in force.
 
 Use this dataset in the next work sequence:
 
-1. Finish the native filesystem fault probe. Its previous run encountered disk-full
-   but failed to recognize the wrapped error, leaving recovery and permission-denied
-   assertions incomplete. Revalidate these on disposable authored state.
+1. Native filesystem fault probe completed on 2026-10-12: real ENOSPC/EACCES preserve
+   acknowledged state, both retries succeed, and reopen verifies generation 4.
+   See N-003 in the bug ledger and `work/native-io-20261012/` for fresh scope,
+   exact invocation/provenance and verified container cleanup. Historical failures
+   remain preserved; physical power-loss qualification remains open.
 2. Establish a read-only real-save baseline. In a fresh case, selectively extract
    copies with path and size bounds; identify file roles, format/build metadata,
    prospect/player relationships and backup ordering. Do not infer chronology or
