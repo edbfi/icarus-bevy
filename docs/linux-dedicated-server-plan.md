@@ -73,6 +73,16 @@ The local Bevy skill was refreshed using `bunx skills add edbfi/skills --skill b
 Bevy 0.20.0; all 14 installed files match upstream. `skills-lock.json` records the
 source and content hash. The application now targets the same 0.20.0 baseline.
 
+Python helpers target stable **3.15.0**, pinned in `.python-version` and CI.
+For every authored Python change, use `basedpyright-python-gate`: run
+`python3 tools/typing_gate.py --diff-ignores`, `uvx basedpyright@latest --warnings`
+and the authored unit tests. Require zero errors and zero warnings in recommended
+mode; type and validate inputs instead of suppressing diagnostics. The checked
+roots are `src`, `tests` and `tools`. The user explicitly excludes `.agents/` and
+skill code from this gate. Prek and CI enforce the same contract. Future authored
+Python must live in a checked root or extend the include list without weakening
+checks. Keep the checker on `@latest`, as required by the skill.
+
 ## Repository, tooling, and authorization
 
 The initial repository had no root Cargo manifest or lockfile. Keep these boundaries:

@@ -77,6 +77,14 @@ Rust checks use `--locked`; commit the lockfile. Use feature branches and
 Conventional Commits. CI runs headless tests with authored fixtures, without
 original server binaries. Read `.agents/rules/project.md` before changes.
 
+Authored Python helpers target Python 3.15.0 and require `uv` for type checking.
+Use the `basedpyright-python-gate` skill for Python work. Run
+`python3 tools/typing_gate.py --diff-ignores`, `uvx basedpyright@latest --warnings`
+and `python3 -m unittest discover -s tools/tests -v`; prek and CI enforce these
+checks too. Recommended mode must finish with zero errors and warnings. The
+checked roots are `src`, `tests` and `tools`; `.agents/` and skills are outside
+this project-authored-code gate.
+
 Original files stay under ignored `icarus-orig/`; generated analysis, private saves,
 captures and dumps stay under ignored `work/`. Reusable tools and sanitized reports
 are tracked. No original assets are extracted or reused.

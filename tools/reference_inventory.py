@@ -7,13 +7,33 @@ import json
 import os
 from pathlib import Path
 import tempfile
+from typing import TypedDict, final
 
 
-def collect(root: Path) -> dict:
+class FileRecord(TypedDict):
+    path: str
+    bytes: int
+    sha256: str
+
+
+class Inventory(TypedDict):
+    schema_version: int
+    files: list[FileRecord]
+
+
+@final
+class Arguments(argparse.Namespace):
+    def __init__(self) -> None:
+        super().__init__()
+        self.root: Path = Path()
+        self.output: Path = Path()
+
+
+def collect(root: Path) -> Inventory:
     root = root.resolve(strict=True)
     if not root.is_dir():
         raise ValueError("reference root must be a directory")
-    files = []
+    files: list[FileRecord] = []
     for directory, directories, names in os.walk(root, followlinks=False):
         base = Path(directory)
         if any((base / name).is_symlink() for name in directories + names):
@@ -41,9 +61,10 @@ def collect(root: Path) -> dict:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--root", type=Path, required=True)
-    parser.add_argument("--output", type=Path, required=True)
-    args = parser.parse_args()
+    _ = parser.add_argument("--root", type=Path, required=True)
+    _ = parser.add_argument("--output", type=Path, required=True)
+    args = Arguments()
+    _ = parser.parse_args(namespace=args)
     root = args.root.resolve(strict=True)
     output = args.output.resolve()
     if output.is_relative_to(root):
@@ -57,10 +78,10 @@ def main() -> None:
         ) as stream:
             temporary = Path(stream.name)
             json.dump(result, stream, indent=2)
-            stream.write("\n")
+            _ = stream.write("\n")
             stream.flush()
             os.fsync(stream.fileno())
-        temporary.replace(output)
+        _ = temporary.replace(output)
     finally:
         if temporary is not None:
             temporary.unlink(missing_ok=True)

@@ -43,6 +43,15 @@ record historical research batches; the overnight runtime window has expired.
   build and startup/save/restart smoke also passed; Python independently verified
   saved SHA-256 values at ticks 3 and 5. The active graph remains headless. Weekly Cargo updates
   now join the existing Dependabot action and hook checks.
+- Authored Python now passes basedpyright 1.40.2 in recommended mode on Python
+  3.15.0: 18 errors / 418 warnings reduced to 0 / 0 across 10 files, with no added
+  or removed ignores. Typed CLI/output schemas and validated JSON/binary inputs
+  replace untyped plumbing; runtime helper provenance includes the shared parser.
+  Eight authored unit tests and the full manual suite pass. Static-analysis CLI
+  output matches the previous implementation on authored fixtures. Runtime-helper
+  checks exercised parsing, checksums and collector failures without running an
+  original-server case. The policy gate and checker run in prek and CI; `.agents/`
+  and skill code are excluded as requested and were not modified.
 - Native configuration validation and CLI overrides; no-write config inspection.
 - Fixed-step ECS loop, stable authored domain IDs, coherent snapshot capture,
   bounded catch-up with diagnostic counters. Tick rate remains provisional.

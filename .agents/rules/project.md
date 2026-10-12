@@ -69,6 +69,16 @@ be demonstrated rather than assumed.
 
 # Checks
 
+- Whenever writing, editing or reviewing project-authored `.py` files, use the
+  `basedpyright-python-gate` skill. Its scope is our code under `src`, `tests` and
+  `tools`; the user explicitly excludes `.agents/` and skills. Keep authored
+  Python in those checked roots or add its new root to the include list.
+- Python targets stable 3.15.0. Run `python3 tools/typing_gate.py --diff-ignores`,
+  `uvx basedpyright@latest --warnings`, and the authored Python tests. Require
+  zero errors and zero warnings in `recommended` mode. Fix types at input
+  boundaries; do not add global overrides, baselines or blanket ignores. The
+  basedpyright table permits only `pythonVersion`, `typeCheckingMode` and
+  `include`. The same config gate and checker run through prek and CI.
 - Run `prek install` after cloning to install pre-commit, commit-msg, and
   pre-push hooks. Direct commits to `main` are blocked by the shared baseline.
 - Run `prek run --all-files --hook-stage manual` for the full check suite.

@@ -13,10 +13,65 @@ import json
 from pathlib import Path
 import re
 import struct
+from typing import NotRequired, TypedDict, TypeIs, cast, final
 
 
+RuntimeEntry = tuple[int, int, int]
+
+
+class Section(TypedDict):
+    name: str
+    rva: int
+    size: int
+    raw: int
+    virtual_size: int
+    executable: bool
+
+
+class RuntimeRange(TypedDict):
+    start: str
+    end: str
+    unwind: str
+
+
+class Reference(TypedDict):
+    address: str
+    target: str
+    bytes: str
+    runtime_range: RuntimeRange | None
+
+
+class Inspection(TypedDict):
+    sample_sha256: str
+    image_base: str
+    caveat: str
+    addresses: dict[str, RuntimeRange | None]
+    references: NotRequired[list[Reference]]
+    chained_ranges: NotRequired[dict[str, list[RuntimeRange]]]
+
+
+def is_object_tuple(value: object) -> TypeIs[tuple[object, ...]]:
+    return isinstance(value, tuple)
+
+
+@final
+class Arguments(argparse.Namespace):
+    def __init__(self) -> None:
+        super().__init__()
+        self.sample: Path = Path()
+        self.output: Path = Path()
+        self.address: list[int] = []
+        self.references: str | None = None
+        self.chained_ranges: bool = False
+
+
+def hex_address(value: str) -> int:
+    return int(value, 16)
+
+
+@final
 class PE:
-    def __init__(self, data: bytes):
+    def __init__(self, data: bytes | bytearray) -> None:
         self.data = data
         if len(data) < 64 or data[:2] != b"MZ":
             raise ValueError("not a PE executable")
@@ -29,19 +84,19 @@ class PE:
         if machine != 0x8664 or optional_size < 144 or self.unpack("<H", optional)[0] != 0x20B:
             raise ValueError("requires x64 PE32+ with an exception directory")
         self.base = self.unpack("<Q", optional + 24)[0]
-        self.sections = []
+        self.sections: list[Section] = []
         table = optional + optional_size
         for index in range(count):
             offset = table + 40 * index
-            self.unpack("<40s", offset)
+            _ = self.unpack("<10I", offset)
             name = data[offset:offset + 8].rstrip(b"\0").decode("ascii", errors="replace")
             virtual_size, rva, size, raw = self.unpack("<IIII", offset + 8)
             flags = self.unpack("<I", offset + 36)[0]
             if raw + size > len(data):
                 raise ValueError("section extends beyond input")
-            self.sections.append(dict(name=name, rva=rva, size=size, raw=raw,
+            self.sections.append(Section(name=name, rva=rva, size=size, raw=raw,
                                       virtual_size=virtual_size, executable=bool(flags & 0x20000000)))
-        self.ranges = []
+        self.ranges: list[RuntimeEntry] = []
         rva, size = self.unpack("<II", optional + 136)
         if size:
             if size % 12:
@@ -54,12 +109,21 @@ class PE:
                 self.ranges.append((self.base + start, self.base + end, self.base + unwind))
         self.ranges.sort()
         self.starts = [entry[0] for entry in self.ranges]
-        self._roots = {}
+        self._roots: dict[RuntimeEntry, RuntimeEntry] = {}
 
-    def unpack(self, fmt: str, offset: int):
+    def unpack(self, fmt: str, offset: int) -> tuple[int, ...]:
         if offset < 0 or offset + struct.calcsize(fmt) > len(self.data):
             raise ValueError("truncated PE structure")
-        return struct.unpack_from(fmt, self.data, offset)
+        # struct exposes untyped results; validate each field once at this boundary.
+        raw = cast(object, struct.unpack_from(fmt, self.data, offset))
+        if not is_object_tuple(raw):
+            raise ValueError("invalid unpack result")
+        values: list[int] = []
+        for value in raw:
+            if not isinstance(value, int):
+                raise ValueError("PE fields must be integers")
+            values.append(value)
+        return tuple(values)
 
     def offset(self, address: int, length: int = 1) -> int:
         if length <= 0:
@@ -70,15 +134,17 @@ class PE:
                 return section["raw"] + delta
         raise ValueError(f"address range is not file-backed: {address:#x}+{length}")
 
-    def runtime_range(self, address: int):
+    def runtime_range(self, address: int) -> RuntimeRange | None:
         index = bisect.bisect_right(self.starts, address) - 1
         if index >= 0:
             start, end, unwind = self.ranges[index]
             if start <= address < end:
-                return dict(start=hex(start), end=hex(end), unwind=hex(unwind))
+                return RuntimeRange(start=hex(start), end=hex(end), unwind=hex(unwind))
         return None
 
-    def unwind_root(self, entry, visiting=None):
+    def unwind_root(
+        self, entry: RuntimeEntry, visiting: set[RuntimeEntry] | None = None
+    ) -> RuntimeEntry:
         """Resolve chained UNWIND_INFO, including chains through intermediate ranges."""
         if entry in self._roots:
             return self._roots[entry]
@@ -105,19 +171,19 @@ class PE:
         self._roots[entry] = root
         return root
 
-    def related_ranges(self, address: int):
+    def related_ranges(self, address: int) -> list[RuntimeRange]:
         index = bisect.bisect_right(self.starts, address) - 1
         if index < 0 or address >= self.ranges[index][1]:
             return []
         root = self.unwind_root(self.ranges[index])
-        return [dict(start=hex(start), end=hex(end), unwind=hex(unwind))
+        return [RuntimeRange(start=hex(start), end=hex(end), unwind=hex(unwind))
                 for start, end, unwind in self.ranges
                 if self.unwind_root((start, end, unwind)) == root]
 
-    def references(self, targets: set[int], calls: bool):
+    def references(self, targets: set[int], calls: bool) -> list[Reference]:
         expression = rb"\xe8" if calls else rb"[\x48-\x4f][\x8d\x8b\x89][\x05\x0d\x15\x1d\x25\x2d\x35\x3d]"
         length, displacement = (5, 1) if calls else (7, 3)
-        rows = []
+        rows: list[Reference] = []
         for section in self.sections:
             if not section["executable"]:
                 continue
@@ -127,22 +193,23 @@ class PE:
                 if offset + length > len(code):
                     continue
                 address = self.base + section["rva"] + offset
-                target = address + length + struct.unpack_from("<i", code, offset + displacement)[0]
+                target = address + length + self.unpack("<i", section["raw"] + offset + displacement)[0]
                 if target in targets:
-                    rows.append(dict(address=hex(address), target=hex(target),
+                    rows.append(Reference(address=hex(address), target=hex(target),
                                      bytes=code[offset:offset + length].hex(),
                                      runtime_range=self.runtime_range(address)))
         return rows
 
 
-def main():
+def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--sample", type=Path, required=True)
-    parser.add_argument("--output", type=Path, required=True)
-    parser.add_argument("--address", type=lambda value: int(value, 16), action="append", required=True)
-    parser.add_argument("--references", choices=["rip", "calls"])
-    parser.add_argument("--chained-ranges", action="store_true")
-    args = parser.parse_args()
+    _ = parser.add_argument("--sample", type=Path, required=True)
+    _ = parser.add_argument("--output", type=Path, required=True)
+    _ = parser.add_argument("--address", type=hex_address, action="append", required=True)
+    _ = parser.add_argument("--references", choices=["rip", "calls"])
+    _ = parser.add_argument("--chained-ranges", action="store_true")
+    args = Arguments()
+    _ = parser.parse_args(namespace=args)
     sample = args.sample.resolve(strict=True)
     if sample.stat().st_size > 256 * 1024 * 1024:
         parser.error("sample exceeds 256 MiB analysis bound")
@@ -150,7 +217,7 @@ def main():
         parser.error("output must not replace sample")
     data = sample.read_bytes()
     pe = PE(data)
-    result = dict(sample_sha256=hashlib.sha256(data).hexdigest(), image_base=hex(pe.base),
+    result = Inspection(sample_sha256=hashlib.sha256(data).hexdigest(), image_base=hex(pe.base),
                   caveat="Static metadata and byte-pattern candidates; validate instruction alignment and complete control flow.",
                   addresses={hex(address): pe.runtime_range(address) for address in args.address})
     if args.references:
@@ -159,7 +226,7 @@ def main():
         result["chained_ranges"] = {hex(address): pe.related_ranges(address) for address in args.address}
     with args.output.open("x", encoding="utf-8") as stream:
         json.dump(result, stream, indent=2)
-        stream.write("\n")
+        _ = stream.write("\n")
     print(f"Recorded {len(args.address)} addresses; {len(result.get('references', []))} candidates")
 
 

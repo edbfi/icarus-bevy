@@ -12,17 +12,23 @@ from pathlib import Path
 import shutil
 import signal
 import time
+import sys
+from types import FrameType
 
-from run_reference_offline import IMAGE, available_memory, command
+if __package__ in (None, ""):
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+
+from tools.run_reference_offline import IMAGE, Cleanup, available_memory, command
+from tools.runtime_types import json_object, parse_container_identity, parse_container_state, parse_json, string_field
 
 
-def main():
+def main() -> None:
     root = Path(__file__).resolve().parents[1]
     case = root / "work/icarus-overnight"
-    session = json.loads((case / "session.json").read_text())
-    if datetime.datetime.now(datetime.UTC) + datetime.timedelta(seconds=180) >= datetime.datetime.fromisoformat(session["end_utc"]):
+    session = json_object(parse_json((case / "session.json").read_text()))
+    if datetime.datetime.now(datetime.UTC) + datetime.timedelta(seconds=180) >= datetime.datetime.fromisoformat(string_field(session, "end_utc")):
         raise RuntimeError("insufficient approved time remaining")
-    command(["bash", str(root / ".agents/vendor/reverse-skill/skills/scripts/case-guard.sh"), "--case-root", str(case)])
+    _ = command(["bash", str(root / ".agents/vendor/reverse-skill/skills/scripts/case-guard.sh"), "--case-root", str(case)])
     if available_memory() < 3 * 1024**3 or shutil.disk_usage(case).free < 30 * 1024**3:
         raise RuntimeError("resource floor reached")
     run = case / "native-io-faults"
@@ -43,28 +49,28 @@ def main():
             "--mount", f"type=bind,src={home},dst=/home/container",
             "--workdir", "/tmp", "--env", "ICARUS_BOUNDED_TMPFS_BYTES=262144",
             IMAGE, "/probes/io_fault_probe"]
-    helpers = [Path(__file__), root / "tools/run_reference_offline.py", probe,
+    helpers = [Path(__file__), root / "tools/run_reference_offline.py", root / "tools/runtime_types.py", probe,
                root / "examples/io_fault_probe.rs", root / "src/persistence.rs", root / "Cargo.lock"]
     record = {"time": datetime.datetime.now(datetime.UTC).isoformat(), "argv": argv,
               "timeout_seconds": 120, "approval": session,
               "helpers": {str(p.relative_to(root)): hashlib.sha256(p.read_bytes()).hexdigest() for p in helpers}}
     with (case / "commands.jsonl").open("a") as stream:
-        stream.write(json.dumps(record) + "\n")
-    (run / "invocation.json").write_text(json.dumps(record, indent=2) + "\n")
+        _ = stream.write(json.dumps(record) + "\n")
+    _ = (run / "invocation.json").write_text(json.dumps(record, indent=2) + "\n")
 
-    def interrupted(_signum, _frame):
+    def interrupted(_signum: int, _frame: FrameType | None) -> None:
         raise KeyboardInterrupt("native I/O probe interrupted")
 
-    signal.signal(signal.SIGTERM, interrupted)
-    cleanup = {"removed": False}
+    _ = signal.signal(signal.SIGTERM, interrupted)
+    cleanup: Cleanup = {"removed": False}
     outcome = None
     try:
-        command(argv, timeout=45)
+        _ = command(argv, timeout=45)
         deadline = time.monotonic() + 30
         while time.monotonic() < deadline:
-            info = json.loads(command(["docker", "inspect", name]).stdout)[0]
-            if not info["State"]["Running"]:
-                outcome = info["State"]["ExitCode"]
+            info = parse_container_state(command(["docker", "inspect", name]).stdout)
+            if not info.running:
+                outcome = info.exit_code
                 break
             time.sleep(1)
         if outcome is None:
@@ -72,22 +78,22 @@ def main():
     finally:
         inspected = command(["docker", "inspect", name], check=False)
         if inspected.returncode == 0:
-            info = json.loads(inspected.stdout)[0]
-            if info["Config"]["Labels"].get("icarus.research.run") != name:
+            info = parse_container_identity(inspected.stdout)
+            if info.labels.get("icarus.research.run") != name:
                 raise RuntimeError("container ownership mismatch")
-            container = info["Id"]
+            container = info.container_id
             try:
-                (run / "container.json").write_text(inspected.stdout)
+                _ = (run / "container.json").write_text(inspected.stdout)
                 logs = command(["docker", "logs", container], check=False)
-                (run / "probe.jsonl").write_text(logs.stdout)
-                (run / "probe.stderr").write_text(logs.stderr)
+                _ = (run / "probe.jsonl").write_text(logs.stdout)
+                _ = (run / "probe.stderr").write_text(logs.stderr)
             finally:
-                command(["docker", "rm", "--force", container])
+                _ = command(["docker", "rm", "--force", container])
                 remaining = command(["docker", "ps", "--all", "--filter", f"id={container}", "--format", "{{.ID}}"])
                 cleanup.update(container_id=container, removed=not remaining.stdout.strip())
         else:
             cleanup["no_container_found"] = True
-        (run / "cleanup.json").write_text(json.dumps(cleanup, indent=2) + "\n")
+        _ = (run / "cleanup.json").write_text(json.dumps(cleanup, indent=2) + "\n")
     if outcome != 0 or not cleanup["removed"]:
         raise RuntimeError(f"native probe or cleanup failed: exit={outcome}, cleanup={cleanup}")
     print((run / "probe.jsonl").read_text())

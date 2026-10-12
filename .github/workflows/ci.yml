@@ -20,6 +20,13 @@ jobs:
         with: { persist-credentials: false }
       - name: Install pinned stable toolchain
         run: rustup toolchain install 1.99.0 --profile minimal --component rustfmt --component clippy
+      - name: Set up Python typing tools
+        uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
+        with:
+          python-version: "3.15.0"
+          activate-environment: true
+          no-project: true
+          enable-cache: false
       - uses: j178/prek-action@1382ad72dea72f9d53832f2bcb65b3e87a947204 # v3.0.1
         with: { extra-args: "--all-files --hook-stage manual" }
       - name: Build native release
