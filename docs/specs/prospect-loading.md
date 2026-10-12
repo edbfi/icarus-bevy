@@ -718,6 +718,22 @@ and wrapper failure checks pass. Evidence:
 These conditional older-build transfer dimensions do not interpret numeric
 values or establish original error/EOF, newer-build or restoration equivalence.
 
+The subsequent common scalar case exactly joins 27 descriptors through corrected
+generation/type, descriptor `+0x20` dimension one, index zero and retained value
+dispatch. Twenty-six descriptors have populated sample coverage; CA06's Name
+descriptor has zero. Full prior top/selection/common/binary-width replay and both
+copy bounds precede scalar entry. All 750 Name frames / 9,070 bytes agree under
+strict independent/native structure checks, entirely narrow with maximum 28 bytes.
+Individual Int/UInt32/Float widths are four bytes across 2,370/486/198 spans;
+3,468 tagged Bool spans are zero bytes. Numeric and Name meanings remain unknown.
+
+Seven fixture suites, corrected failure-receipt qualification and independent
+review pass, with all 1,017 bindings unchanged and old helper/library provenance
+explicit. Evidence: `work/c009-common-scalar-values-20261013/`, summary SHA-256
+`244e4919870e5b0ecf94826c791a67049823fcfa46e38fc774ff0fe5d3e22626`.
+The 278 observed nested Array payloads / 3,902,784 bytes remain opaque. No populated
+CA06 Text/Name, numeric meaning, recursive restoration or complete import is proved.
+
 The common-header case corrects the earlier own-child dimension provenance: the common
 property factory reads descriptor offset `+0x20`, including for Bool. Its
 `+0x24` word supplies Bool field size. All six affected Bool descriptors have

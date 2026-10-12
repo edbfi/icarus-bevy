@@ -52,6 +52,16 @@ from-file branch, deeper blob decoding, or preservation of an already loaded wor
 
 These concern this repository's code, not the official server.
 
+The common-scalar research wrapper inherited a separate receipt-ordering defect:
+zero exit and unchanged bindings could record `success=true` before validating
+returned JSON/counts. Independent review reproduced this with mocked malformed
+output before any private execution. The fresh scalar variant now checks the
+qualified summary and deadline before recording success; regressions require
+failure receipts and no summary for malformed JSON, missing results, wrong counts,
+changed bindings or expiry. Historical frozen wrappers remain evidence, and their
+earlier successful outputs were valid. This is a research-harness correction, not
+an original-server fix. Evidence: `work/c009-common-scalar-values-20261013/`.
+
 | ID | Trigger and former behavior | Change and evidence |
 | --- | --- | --- |
 | N-001 | Save worker exits before acknowledging an in-flight request; polling returned an untyped error while leaving `busy` true, and the main loop treated it as a retryable write failure | Return a typed terminal error, clear the stale in-flight flag and stop simulation. A deterministic disconnected-channel test covers missing acknowledgement and rejected subsequent submission |

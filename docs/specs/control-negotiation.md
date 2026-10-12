@@ -137,6 +137,9 @@ encountered REA provider startup timeouts. A separately reviewed direct fallback
 queried the retained database without analysis and found one non-call reference
 to the dispatcher, with no recorded source function. Partial database coverage
 does not prove caller absence; archive and outer-framing provenance remain open.
+The subsequent authored PE scan finds one absolute pointer at `0x145468198` and
+no matching E8/E9 rel32 patterns. Its table/owner/instruction role is unproved;
+it prioritizes bounded context research, with no admission or archive conclusion.
 
 The normal replacement run command still has no game socket listener or control
 negotiation. This body-field reader is a disconnected library primitive. A
