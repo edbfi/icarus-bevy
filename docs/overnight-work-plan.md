@@ -1,9 +1,18 @@
 # Overnight research and implementation batch
 
-Status: **approved** by the user ("Go ahead") on 2026-10-04.
+Status: **historical; execution window expired**. Approved by the user
+("Go ahead") on 2026-10-04 for the window below.
 Recorded window: 2026-10-04 21:13:19 UTC to 2026-10-05 05:13:19 UTC
 (23:13–07:13 Europe/Berlin). Scope and timestamps are in
 `work/icarus-overnight/scope.md` and `session.json`.
+
+For current work, follow the [canonical plan](linux-dedicated-server-plan.md#autonomous-execution-and-maintenance)
+and [implementation status](implementation-status.md). The 2026-10-12 user
+instruction permits frequent feature-branch pushes and supersedes this batch's
+no-push rule. Its eight-hour clock and runtime authorization remain historical;
+do not reuse its session as a new approval. Maintain results in the existing status
+and research documents instead of creating the once-planned overnight report.
+The remaining text preserves the original batch contract and is not an active queue.
 
 ## Objective and duration
 

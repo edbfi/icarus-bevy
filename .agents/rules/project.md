@@ -28,8 +28,35 @@ be demonstrated rather than assumed.
 - Keep original server files under the ignored `icarus-orig/` directory and
   generated analysis artifacts under the ignored `work/` directory. Keep
   reusable source code and documentation outside those ignored directories.
+- Preserve private supplied save archives and their inventories under ignored
+  `reference-data/`; use disposable copies under `work/` for experiments.
 - `.agents/vendor/reverse-skill.upstream.json` records the upstream revision.
   Preserve the upstream package layout and licenses when updating it.
+
+# Execution and handoff
+
+- Work autonomously through the current project plan. Resolve routine choices,
+  fixes, tests and reversible local work without repeated permission questions.
+  When a task needs missing input or authorization, continue independent work and
+  report the precise dependency; never manufacture evidence or approval.
+- Use project skills for the actual task. The user permits a suitable number of
+  subagents and model/effort selection: GPT-6 Astra for difficult reasoning and
+  GPT-6.1 Sol for scoped implementation or review. Give agents explicit ownership;
+  the lead integrates, validates, commits and pushes. Bound aggregate resources.
+- Commit coherent tested increments frequently using Conventional Commits and
+  `git commit -s`; push the feature branch after each completed increment or small
+  related batch. Preserve history, keep hooks enabled, and verify remote delivery.
+  The 2026-10-12 instruction supersedes the old overnight batch's no-push rule.
+  Do not force-push, rewrite existing commits or merge into `main` as routine sync.
+- Maintain `docs/linux-dedicated-server-plan.md` as the canonical plan and
+  `docs/implementation-status.md` as the current checkpoint. Update the existing
+  bug ledger, compatibility matrix and specifications as evidence changes.
+  Avoid duplicate plans, generic AI prose and speculative completion claims.
+- At milestones, reconcile stale documentation and clean reproducible scratch
+  from owned work. Preserve original inputs, private saves/backups, evidence,
+  provenance, licenses and user changes. Check references before deleting stale
+  tracked files; mark historical reports clearly instead of rewriting observations.
+  Never use blanket `git clean -fdx`, global Docker prune or deletion by age alone.
 
 # Checks
 
