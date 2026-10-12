@@ -13,7 +13,7 @@ performance targets remain unproven. Last reconciled: 2026-10-12.
 | M0: reference baseline | In progress | 435 files hashed; build 25621760; isolated entry-map startup observed; supplied heavy save preserved; its build pairing and matched client pending |
 | M1: original bug reproduction | Pending | Offline startup did not reproduce reported crashes; controlled workloads still required |
 | M2: interoperability/data feasibility | In progress, partial observations | Stateless exchange observed; authenticated protocol, world-data and import feasibility gates remain open |
-| M3: Bevy gameplay slice | In progress, foundation only | Rust 1.99.0 / Bevy 0.19.1 foundation tested; stock-client slice pending M2 |
+| M3: Bevy gameplay slice | In progress, foundation only | Rust 1.99.0 / Bevy 0.20.0 foundation tested; stock-client slice pending M2 |
 | M4: complete behavior | Pending | All required compatibility matrix entries must pass |
 | M5: migration/hardening | Pending, native hardening underway | Experimental envelope inspection and native fault coverage exist; real-save schema and migration fidelity remain unvalidated |
 | M6: optimization/qualification | Pending | Matched reference workloads and full release gates required |
@@ -28,11 +28,21 @@ record historical research batches; the overnight runtime window has expired.
 
 ## Implemented and checked
 
-- Pinned Rust 1.99.0, Bevy 0.19.1, headless features, committed Cargo lockfile.
+- Pinned Rust 1.99.0, Bevy 0.20.0, headless features, committed Cargo lockfile.
 - Local Bevy skill updated from `edbfi/skills` commit `69cc23f` using `bunx skills`,
   with an exact 14-file match, valid frontmatter and resolved relative links. Its
-  baseline is 0.20.0; the application remains pinned to 0.19.1. This was an
-  installation check, not a local rerun of the new skill's 0.20 examples.
+  baseline matches the application at 0.20.0. Skill installation validation did
+  not rerun its graphical examples; application checks exercise the headless server.
+- On 2026-10-12, upgraded Bevy to 0.20.0 and refreshed all direct Cargo dependencies
+  to their latest stable releases: base64 0.23.1, hmac 0.13.0, sha1/sha2 0.11.0 and
+  toml 1.1.8 required new constraints; Cargo.lock includes compatible transitive
+  updates. Rust 1.99.0 and existing CI tool pins were already current. Adapted HMAC
+  initialization and digest hex encoding while retaining persisted checksum bytes.
+  Full manual checks passed, including independent legacy-envelope/HMAC fixtures,
+  fixed-step scheduling, persistence/recovery and CLI tests. The native release
+  build and startup/save/restart smoke also passed; Python independently verified
+  saved SHA-256 values at ticks 3 and 5. The active graph remains headless. Weekly Cargo updates
+  now join the existing Dependabot action and hook checks.
 - Native configuration validation and CLI overrides; no-write config inspection.
 - Fixed-step ECS loop, stable authored domain IDs, coherent snapshot capture,
   bounded catch-up with diagnostic counters. Tick rate remains provisional.

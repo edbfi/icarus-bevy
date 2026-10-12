@@ -61,9 +61,9 @@ only legacy-format inspection; it is not authentication or the native save hash.
 
 ## Dependencies and tests
 
-The implementation uses registry `base64` 0.22.1, `flate2` 1.1.10 with its Rust
-backend, and `sha1` 0.10.7, all locked in `Cargo.lock`. Their package metadata gives
-MIT/Apache-2.0 licensing. New transitive dependencies are `miniz_oxide` 0.9.1
+The implementation uses registry `base64` 0.23.1, `flate2` 1.1.10 with its Rust
+backend, and `sha1` 0.11.0, all locked in `Cargo.lock`. Their package metadata gives
+MIT/Apache-2.0 licensing. Compression dependencies include `miniz_oxide` 0.9.1
 (MIT/Zlib/Apache-2.0), `crc32fast` 1.5.2 (MIT/Apache-2.0), `adler2` 2.0.1
 (0BSD/MIT/Apache-2.0) and `simd-adler32` 0.3.10 (MIT). No proprietary SDK or assets
 are linked. Metadata/license review is not a full dependency security audit.
@@ -72,7 +72,7 @@ The low-level decompressor exposes consumed and produced byte counts, allowing
 the inspector to reject trailing input and length discrepancies. See the
 [versioned flate2 API](https://docs.rs/flate2/1.1.10/flate2/struct.Decompress.html).
 SHA-1's legacy-only purpose follows the
-[crate guidance](https://docs.rs/sha1/0.10.7/sha1/).
+[crate guidance](https://docs.rs/sha1/0.11.0/sha1/).
 
 The fixture is independently generated with Python `zlib.compress`,
 `base64.b64encode` and `hashlib.sha1` over the 42 bytes

@@ -267,7 +267,7 @@ impl SnapshotStore {
 }
 
 fn checksum(bytes: &[u8]) -> String {
-    format!("{:x}", Sha256::digest(bytes))
+    crate::hex_lower(&Sha256::digest(bytes))
 }
 
 fn read_bounded(path: &Path, limit: u64) -> Result<Vec<u8>> {
