@@ -10,6 +10,8 @@ use serde::Serialize;
 use super::tagged::{ParsedRecord, RootTag, TagProfile, read_record};
 
 pub const MAX_COMPONENT_BYTES: usize = 64 * 1024;
+/// Hard ceiling for caller-selected research bounds, not an original format limit.
+pub const MAX_BOUNDED_COMPONENT_BYTES: usize = 128 * 1024;
 pub const MAX_COMPONENT_FIELDS: usize = 256;
 
 /// Exact borrowed source spans; deliberately neither Debug nor Serialize.
@@ -74,6 +76,26 @@ pub fn read_base_component(input: &[u8], profile: TagProfile) -> Result<BaseComp
     ensure!(
         input.len() <= MAX_COMPONENT_BYTES,
         "component input exceeds 64 KiB research limit"
+    );
+    read_base_component_with_limit(input, profile, MAX_COMPONENT_BYTES)
+}
+
+/// Frame the same opaque layout under an explicit byte limit, up to 128 KiB.
+/// The 256-field cap and all trailer/EOF checks remain in force. This policy
+/// ceiling permits larger research candidates; it does not recognize classes
+/// or establish the original format's size limits. A zero limit is invalid.
+pub fn read_base_component_with_limit(
+    input: &[u8],
+    profile: TagProfile,
+    max_bytes: usize,
+) -> Result<BaseComponent<'_>> {
+    ensure!(
+        (1..=MAX_BOUNDED_COMPONENT_BYTES).contains(&max_bytes),
+        "component byte limit must be between 1 byte and 128 KiB"
+    );
+    ensure!(
+        input.len() <= max_bytes,
+        "component input exceeds selected byte limit"
     );
     let mut position = 0;
     let mut fields = Vec::new();
