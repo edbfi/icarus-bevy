@@ -703,7 +703,22 @@ main orchestration, six prior-gate checks and independent review pass. Evidence:
 `work/c009-common-child-headers-20261012/`. Leaf values, recursive grammars,
 restoration and complete import remain unknown.
 
-That case corrects the earlier own-child dimension provenance: the common
+The next exact width comparison replays all prior top/selection/common-header
+results before matching CS01.F01/F02/F03 and CA07.F02 to retained getter/schema/
+transfer contracts. Neutral BW01–BW04 require 16/12/12/16 bytes individually.
+Across both copies, 1,468 opaque spans totaling 19,600 bytes agree: each copy
+contributes 243/243/243/5 fields, with no observed optional absences. Metadata
+joins use exact names/types/indices/extras and descriptor identities, independent
+of field order; swapped widths fail even when totals match. All 954 bindings
+remain unchanged, with explicit old/new control source/library transitions and
+the immutable earlier native helper. Twelve authored checks, independent review
+and wrapper failure checks pass. Evidence:
+`work/c009-common-binary-widths-20261013/`, summary SHA-256
+`f7867196f10211aa7d00fb53d38048e7948053eab4ec37507bd6052e694b56a8`.
+These conditional older-build transfer dimensions do not interpret numeric
+values or establish original error/EOF, newer-build or restoration equivalence.
+
+The common-header case corrects the earlier own-child dimension provenance: the common
 property factory reads descriptor offset `+0x20`, including for Bool. Its
 `+0x24` word supplies Bool field size. All six affected Bool descriptors have
 both words equal to one, so the earlier index-zero qualification and observed

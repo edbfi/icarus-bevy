@@ -132,6 +132,12 @@ release build and native save/restart smoke pass. Evidence and immutable
 source/library transitions: `work/protocol-next-increment-20261013/`.
 No original control message, live reference session or stock client was used.
 
+A bounded [caller investigation](../research/2026-10-12-control-caller-limit.md)
+encountered REA provider startup timeouts. A separately reviewed direct fallback
+queried the retained database without analysis and found one non-call reference
+to the dispatcher, with no recorded source function. Partial database coverage
+does not prove caller absence; archive and outer-framing provenance remain open.
+
 The normal replacement run command still has no game socket listener or control
 negotiation. This body-field reader is a disconnected library primitive. A
 separate [loopback handshake lab](stateless-handshake.md) stops before this layer
