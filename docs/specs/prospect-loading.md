@@ -451,8 +451,33 @@ shared Struct header (also for count zero), then count terminated tagged element
 Shared size covers the aggregate element span. The 16-byte memory size is not an
 on-disk stride. Exact names remain in the private comparison map; no fixed GUID,
 required-field or Float-value rule is inferred. Contract and independent review:
-`work/c034-own-array-continuation-20261012/`. Supplied array payloads remain
-unentered; bounded independent/native comparison is the next step.
+`work/c034-own-array-continuation-20261012/`.
+
+The next fresh comparison enters only the four selected array bodies after
+reproducing the complete prior parent/own results. Independent and native readers
+agree on each shared-header, element, field and terminator span:
+
+| Per selected array | Minimum | Maximum |
+| --- | ---: | ---: |
+| Body bytes | 86 | 28,120 |
+| Elements | 0 | 214 |
+| Immediate fields | 0 | 428 |
+| Count/shared header bytes | 86 | 86 |
+| Element headers/terminators | 0 | 24,610 |
+| Opaque values | 0 | 3,424 |
+
+Both copies have these dimensions; equal framing does not imply equal values.
+Across four arrays, 428 elements and 856 fields conserve 56,412 bytes and reach
+exact EOF. Every observed element has both optional Struct/Float descriptors;
+none is made universally mandatory. No deeper native width or value was checked.
+Five authored helper tests pass; exact source/library/helper snapshots, the
+explicit SHA-2-only build transition, fresh session, unchanged input hashes and
+strict evidence review remain under `work/c034-own-array-compare-20261012/`.
+
+Matched-client generic tag/array functions now independently agree with the
+examined older version gates and shared-header branch. This still does not resolve
+the concrete client C034 serializer or the archive profile used for these saves;
+see [matched-client framing comparison](tagged-properties.md#matched-client-static-comparison).
 
 ## Independent replacement requirements
 

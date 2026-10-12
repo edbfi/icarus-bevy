@@ -43,14 +43,16 @@ no client connected and no playable prospect was loaded.
 | Root property tags | Observed on two copies; experimental opaque reader implemented | [Tag framing](specs/tagged-properties.md); memory522 profile, bounded root spans, authored malformed-input fixtures and independent/native agreement on six root records per copy; nested values and complete schema validity unsupported |
 | Recorder field framing | Observed; experimental bounded reader implemented | [Recorder framing](specs/tagged-properties.md); one shared struct header, exact element/field/byte-array boundaries, unknown fields preserved; component contents, class resolution and complete import unsupported |
 | Selected base-component framing | Observed on 1,296 records from two selected classes; explicit library subset implemented | [Component framing](specs/tagged-properties.md#explicit-base-component-framing); independent/native agreement on opaque properties plus zero object trailer; concrete dispatch checked per class, but library class recognition, value semantics, GUID trailers and import unsupported |
-| Selected tagged struct arrays | Experimental library reader; 28 supplied empty arrays qualified | [Struct-array framing](specs/tagged-properties.md#explicit-tagged-struct-array-framing); independent/native boundary agreement, malformed-input and populated authored fixtures; supplied populated elements, schema recognition and value semantics unqualified |
-| Third selected component and own struct | Selected own headers independently/native qualified; top framing independently observed | [C034 comparison](specs/prospect-loading.md#third-selected-class-bounded-top-header-comparison); 21 top and eight own headers per body; fresh native exact-span agreement includes Float across four own bodies. Own-array static contract recovered; its payloads and all values remain unqualified |
+| Selected tagged struct arrays | Experimental library reader; empty and selected populated arrays qualified | [Struct-array framing](specs/tagged-properties.md#explicit-tagged-struct-array-framing); 28 C028 empty arrays plus four C034 arrays (two populated, 428 elements/856 fields) have independent/native exact-span agreement. Automatic schema recognition and value semantics remain unqualified |
+| Third selected component and own struct | Selected own headers independently/native qualified; top framing independently observed | [C034 comparison](specs/prospect-loading.md#third-selected-class-bounded-top-header-comparison); 21 top and eight own headers per body; fresh native exact-span agreement includes Float across four own bodies. Own-array shared/element headers now qualified; all values remain opaque |
 | Short stateless handshake | Observed; independent loopback lab implemented | [Handshake notes](specs/stateless-handshake.md); original challenge/echo/ack observed with authentication inactive; stock-client admission pending |
 | Default network checksum | Experimental primitive implemented; early value observed | [Checksum notes](specs/network-checksum.md); final active inputs/callback policy unresolved |
 | Archive strings | Experimental strict subset implemented | [String codec](specs/archive-string.md); authored fixtures pass; actual network flags and original round trips pending |
 | Prospect envelope | Observed on supplied saves; experimental read-only inspector | [Envelope notes](specs/prospect-envelope.md); twelve UTF-16LE envelopes pass independent integrity checks, with measured bounds; user reports build 25793767; matched build pairing, binary schema and complete import remain unvalidated |
 
-The binary/protocol observations apply only to tool build 25621760. The supplied
-save's producing build is user-reported as 25793767, without a matched reference.
-Neither set of observations promotes the complete
-transport, authentication or official-save-import surfaces above.
+Server observations apply to build 25621760. Separate build-25793767 client
+static comparison supports selected generic tag/array branches only; it does not
+establish a matched dedicated-server baseline. The supplied save's producing
+build remains user-reported as 25793767, without a matched load. These observations
+do not promote the complete transport, authentication or official-save-import
+surfaces above.

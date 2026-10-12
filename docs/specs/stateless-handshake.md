@@ -138,7 +138,7 @@ hashlib.sha256).digest()[:20]`. For `127.0.0.1:12345` at timestamp 123.5 the res
 wrong peer/key, expiration/future boundaries and actual UDP exchanges within a
 Bevy app. Oversized traffic tests check the packet budget and advancing simulation.
 
-The lab uses RustCrypto `hmac` 0.13.0 and `sha2` 0.11.0 with digest 0.11.3,
+The lab uses RustCrypto `hmac` 0.13.0 and `sha2` 0.11.1 with digest 0.11.3,
 plus `getrandom` 0.4.3. Constant-time verification uses `ctutils` 0.4.3 and
 `cmov` 0.5.4; these packages declare MIT OR Apache-2.0 licensing. HMAC construction
 imports `KeyInit` separately from `Mac`. Cargo.lock records registry checksums.

@@ -184,9 +184,11 @@ Use this dataset in the next work sequence:
    headers in all four selected bodies, including Float (E-039). Values and
    deeper children remain opaque. Fresh eleven-kind native comparison now matches
    every own header/value/terminator span. The own-array tagged contract and two
-   optional immediate fields are recovered; next compare bounded shared headers
-   and elements with both values opaque. Matched-client symbol reconnaissance
-   supplies 12 independently checked anchors for a subsequent semantic comparison.
+   optional immediate fields now agree on four supplied arrays, including two
+   populated arrays with 428 total elements. Both values remain opaque.
+   Matched-client generic tag/array branches also agree under explicit conditions;
+   next resolve concrete client C034 registration/dispatch and required value
+   contracts. Generic framing does not establish an importable world.
    Eleven distinct prospect payloads and seven member tuples are observed, but
    structures, inventories, tames, missions and full ownership fidelity remain
    unknown. Target component-specific byte dispatch and schemas, compare backed-up

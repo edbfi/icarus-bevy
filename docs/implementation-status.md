@@ -26,14 +26,28 @@ The preceding C034 helper remains frozen against its original library snapshot.
 
 Two independent static tracks also completed. The older C034 own-array child
 selects tagged framing under the reviewed MemoryArchive522 path, with two
-optional immediate fields (Struct and Float),
-a signed count and one shared Struct header even when empty. Its Struct child
+optional immediate fields (Struct and Float), a signed count and one shared Struct header even when empty. Its Struct child
 matches prior N02; memory size is not serialized width. Contract and independent
-review: `work/c034-own-array-continuation-20261012/`. No array payload was entered.
+review: `work/c034-own-array-continuation-20261012/`. The subsequent supplied
+comparison now passes on four arrays: two empty 86-byte arrays and two 28,120-byte
+arrays with 214 elements each. All 428 elements/856 fields match optional Struct
+and Float headers with no missing descriptors in these samples. Independent and
+native spans account for 56,412 bytes: 344 count/shared-header bytes, 49,220
+element-header/terminator bytes and 6,848 opaque value bytes. All inputs are
+unchanged; no values or deeper widths were interpreted. Fresh helper provenance
+binds the SHA-2-updated library separately from the earlier own-header helper.
+Evidence: `work/c034-own-array-compare-20261012/`.
+
 Matched-client reconnaissance mapped 12 archive/tag/version/serializer symbols,
 with PDB/PE section agreement and independent executable-byte checks. Nine are
 unwind-table starts; three are explained leaf/tail functions. Evidence:
-`work/client-static-continuation-20261012/`. Symbol locations do not prove behavior.
+`work/client-static-continuation-20261012/`. A subsequent bounded client
+comparison independently confirms the examined 441/282/503 tag-version gates,
+Float/Text common-GUID header path and generic array count/shared-header branch
+at version 500 or later. Aggregate size uses a 32-bit end-minus-start difference;
+large-span overflow safety is unproved. Evidence and independent semantic review:
+`work/client-tag-array-20261012/`. Concrete client C034 dispatch, its archive
+profile and dedicated-server equivalence remain unresolved.
 
 A live SSH fetch reconciled the stale remote cache: all checkpoint commits through
 `b55e4ce` were already delivered. No client files were removed and no original
@@ -84,7 +98,7 @@ committed evidence below:
 | `c028-array-children-20261012/` | 17 optional immediate array-element fields; independently verified Float/Text header contracts in `static/header-kind-contracts-v2.json` (SHA-256 `17abd2de90aea26129d13cc075c7a6268eef41cf653f14dcca29928433b97e09`). |
 | `c028-array-descendants-20261012/` | D01 uses tagged framing with eight optional fields and four consumed inner helpers. D02 independently demands four four-byte native transfers on success; no exact EOF guarantee. Deeper D01 types remain unresolved. Strict review passes. |
 | `component-c034-20261012/` | Exact older class registration/vtable resolves to the same reviewed load/serialize/postload targets as C028. Optional top schema has 21 fields: seven Struct, two Int, seven Array, two Name, one Enum, one Str, one Bool. Four supplied bodies match this top schema under bounded comparison (save case E-038); nested payloads remain opaque. |
-| `c034-own-struct-20261012/` | Own struct `0x145ee11d0` selects tagged framing; eight optional logical fields are Array, Bool, three Int, Struct, Float and Name. E-039 independently observes all eight in four selected own bodies, including Float; fresh native exact-span comparison now passes. Struct child matches earlier N02 (`0x145efe320`, successful 12-byte native demand); array child `0x145ee1220` now has a separate tagged/two-field contract. Neither child payload was entered. |
+| `c034-own-struct-20261012/` | Own struct `0x145ee11d0` selects tagged framing; eight optional logical fields are Array, Bool, three Int, Struct, Float and Name. E-039 independently observes all eight in four selected own bodies, including Float; fresh native exact-span comparison now passes. Struct child matches earlier N02 (`0x145efe320`, successful 12-byte native demand); array child `0x145ee1220` now has a separate tagged/two-field contract. The array now has separately qualified populated element headers; Struct/Float values remain opaque. |
 
 Continue in this order within the existing plan:
 
@@ -101,14 +115,15 @@ Continue in this order within the existing plan:
    per selected minimum/maximum, each with eight headers and 449 header/terminator
    bytes, exact EOF and no missing optional descriptors in these samples.
    Fresh eleven-kind native qualification now passes on every selected span.
-   The own-array static contract and independent review are complete; prepare its
-   bounded shared-header/element comparison next, keeping both values opaque. The
+   Own-array static review and populated shared-header/element comparison now pass.
+   Next resolve concrete matched-client C034 registrations/dispatch and recover
+   the next required value contract, keeping unknown values opaque. The
    existing component batch helper's 8 MiB transport cap cannot fit all C034
    records from both copies together; use separate per-copy batches or a newly
    reviewed helper rather than changing frozen evidence.
 4. Client identity and targeted import/symbol reconnaissance are complete. Use the
-   12 qualified anchors for a bounded semantic comparison of tag and array readers.
-   The older server
+   qualified anchors: selected tag/array semantic comparison now agrees under its
+   explicit branch conditions. Resolve concrete client C034 dispatch next. The older server
    remains build 25621760; do not transfer its addresses or behavior assumptions
    blindly to client build 25793767. No original runtime, client session or network
    experiment was started in this handoff.
@@ -285,7 +300,8 @@ record historical research batches; the overnight runtime window has expired.
   tests, full manual checks, release build and code review pass. One bounded native
   batch matches all 28 selected supplied arrays: 2,624 count/shared-header bytes
   with exact EOF, unchanged source hashes and no exported body bytes (E-037).
-  All are empty, so populated elements have authored-test coverage only. The API
+  These C028 arrays are all empty; the later C034 comparison above separately
+  qualifies selected supplied populated elements. The API
   does not recognize schemas, interpret values or change CLI inspection.
 - Active normal dependency graph excludes Bevy rendering/window/audio backends;
   release executable links only the platform loader, libc and libgcc_s on this host.
