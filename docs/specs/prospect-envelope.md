@@ -5,6 +5,11 @@ candidate JSON save envelope without writing files, importing a world or exporti
 payload bytes. Success is labeled `experimental_envelope_only`, with
 `world_imported: false`. `import-save` remains unavailable.
 
+Add `--inner-tags` to check [root property framing](tagged-properties.md) after
+envelope integrity passes. This opt-in result uses `experimental_root_tags_only`
+and reports aggregate counts under a fixed research profile. It does not interpret
+record values or establish complete schema validity.
+
 This is based on static observations from build 25621760, executable SHA-256
 `67cfc915d9d085b758057e2960d4a2018fb121123af1329c25ef7aa58b960104`.
 The supplied save's outer schema agrees with these static observations, but its

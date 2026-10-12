@@ -64,6 +64,8 @@ Do not use it to migrate a real world yet.
 `inspect-save --source PATH` performs bounded, read-only
 [experimental envelope checks](docs/specs/prospect-envelope.md). It reports sizes
 and integrity results without extracting the payload or importing a world.
+The optional `--inner-tags` also checks [root property framing](docs/specs/tagged-properties.md)
+under an explicit experimental profile and reports counts; record values remain opaque.
 Validation covers authored fixtures and supplied-save envelope integrity; the
 inner world schema and original-save round trips remain unvalidated.
 The [synthetic workload](docs/synthetic-workload.md) exercises native scheduling

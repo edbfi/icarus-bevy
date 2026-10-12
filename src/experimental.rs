@@ -6,6 +6,7 @@
 pub mod archive;
 pub mod handshake;
 pub mod handshake_lab;
+pub mod tagged;
 
 /// Reflected CRC-32 of zero-extended UTF-16 units in little-endian order.
 ///

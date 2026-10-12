@@ -39,8 +39,8 @@ prove that the reporting call returns.
 ## Inner state and version dispatch (2026-10-12)
 
 Targeted follow-up in `work/save-schema-20261012/` reverified the preserved executable
-hash, inspected metadata and exported twenty selected
-functions in three bounded Ghidra batches. No original execution or packaged asset
+hash, inspected metadata and exported twenty-eight selected
+functions in four bounded Ghidra batches. No original execution or packaged asset
 extraction occurred. These observations belong to **build 25621760**; the user's
 supplied save is reported from **25793767**, so cross-build compatibility remains
 unvalidated.
@@ -111,15 +111,18 @@ not prove that a version table starts at decoded byte zero or that serialized
 returns without reading a table when loading; recovering the actual property
 reader is therefore preferable to assuming a custom-version prefix.
 
-Next: recover the tag reader's name/type/size framing and nested component blob
-boundaries, then compare
-bounded private copies without discarding unknown fields. Preserve legacy fields
+The fourth batch recovered [root tag framing](tagged-properties.md), including
+archive-version gates, name encoding and payload sizes. Native inspection now
+preserves opaque root records under an explicit experimental profile.
+Next: resolve nested struct selector `0x14200e610` and component blob boundaries,
+then compare bounded private copies without discarding unknown fields. Preserve legacy fields
 and version-zero migration requirements; an importer cannot safely flatten them
 into the current native snapshot schema.
 
 Case Evidence E-002 records registration/vtables, E-003 the property metadata,
 E-004 version callbacks, E-005 the caller chains, E-006 schema construction,
-E-007 serializer branches and E-008 archive mode initialization. The case report links them to
+E-007 serializer branches, E-008 archive mode initialization, E-009 tag/name
+primitives and E-010 payload/array boundaries. The case report links them to
 findings and call paths; strict review verified all artifact hashes with zero
 errors/warnings. Primary decompilation, disassembly and exact commands remain private.
 

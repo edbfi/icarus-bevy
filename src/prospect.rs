@@ -10,6 +10,8 @@ use flate2::{Decompress, FlushDecompress, Status};
 use serde::{Deserialize, Serialize};
 use sha1::{Digest, Sha1};
 
+use crate::experimental::tagged::{RootTagSummary, TagProfile, read_root};
+
 /// Bounded research policy, not a recovered ICARUS format limit. Observed inputs
 /// reached 2,239,534 raw bytes and 19,131,027 decompressed bytes.
 pub const MAX_ENVELOPE_BYTES: usize = 4 * 1024 * 1024;
@@ -43,6 +45,19 @@ pub struct EnvelopeInspection {
     pub world_imported: bool,
 }
 
+struct ValidatedEnvelope {
+    inspection: EnvelopeInspection,
+    payload: Vec<u8>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct InnerTagInspection {
+    pub validation: &'static str,
+    pub envelope: EnvelopeInspection,
+    pub inner_tags: RootTagSummary,
+    pub world_imported: bool,
+}
+
 /// Inspect one bounded JSON envelope without extracting payload or mutating state.
 ///
 /// Unknown JSON fields are skipped. Known fields must occur once and use the
@@ -51,6 +66,24 @@ pub struct EnvelopeInspection {
 /// Envelopes may use UTF-8 or explicitly BOM-tagged UTF-16LE. Other encodings are
 /// not guessed, and malformed UTF-16 is rejected without replacement characters.
 pub fn inspect(reader: impl Read) -> Result<EnvelopeInspection> {
+    Ok(decode_envelope(reader)?.inspection)
+}
+
+/// Opt-in root framing under an explicit research profile, after full envelope
+/// integrity validation. Opaque decoded values are never returned or exported.
+pub fn inspect_with_inner_tags(reader: impl Read) -> Result<InnerTagInspection> {
+    let validated = decode_envelope(reader)?;
+    let tags = read_root(&validated.payload, TagProfile::MemoryArchive522)
+        .context("invalid experimental root tags")?;
+    Ok(InnerTagInspection {
+        validation: "experimental_root_tags_only",
+        envelope: validated.inspection,
+        inner_tags: tags.summary(),
+        world_imported: false,
+    })
+}
+
+fn decode_envelope(reader: impl Read) -> Result<ValidatedEnvelope> {
     let mut bytes = Vec::new();
     reader
         .take(MAX_ENVELOPE_BYTES as u64 + 1)
@@ -129,12 +162,15 @@ pub fn inspect(reader: impl Read) -> Result<EnvelopeInspection> {
         crate::hex_lower(&Sha1::digest(&output)) == blob.hash,
         "legacy SHA-1 mismatch"
     );
-    Ok(EnvelopeInspection {
-        validation: "experimental_envelope_only",
-        compressed_bytes: compressed.len(),
-        payload_bytes: output.len(),
-        declared_data_length: blob.data_length,
-        legacy_sha1_matches: true,
-        world_imported: false,
+    Ok(ValidatedEnvelope {
+        inspection: EnvelopeInspection {
+            validation: "experimental_envelope_only",
+            compressed_bytes: compressed.len(),
+            payload_bytes: output.len(),
+            declared_data_length: blob.data_length,
+            legacy_sha1_matches: true,
+            world_imported: false,
+        },
+        payload: output,
     })
 }

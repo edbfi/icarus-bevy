@@ -117,6 +117,15 @@ record historical research batches; the overnight runtime window has expired.
   strings from producing a successful inspection. Authored regressions cover
   invalid bytes, overlong encodings and encoded surrogates, with valid Unicode
   controls. Private reproduction: `work/native-codec-review-20261012/`.
+- Opt-in `inspect-save --inner-tags` frames root properties under the explicit
+  experimental memory522 profile after envelope integrity passes. It preserves
+  borrowed opaque records and reports only counts/sizes; nested values remain
+  unsupported. Six reader and fifteen prospect tests, full manual checks, release
+  build and independent code review pass. Both private copies match an independent
+  Node scanner: six root records and 378 header/terminator bytes each, exact EOF,
+  unchanged source hashes and unchanged default envelope output. Evidence:
+  `work/native-tagged-20261012/` and save-triage E-015/E-016. This is root framing,
+  not complete schema validation or import.
 - Active normal dependency graph excludes Bevy rendering/window/audio backends;
   release executable links only the platform loader, libc and libgcc_s on this host.
 - CI definition validates formatting, Clippy, tests, release build and headless smoke.
@@ -133,11 +142,12 @@ record historical research batches; the overnight runtime window has expired.
   by-name inputs were rejected without an observed crash. The separate
   [from-file failure path](research/2026-10-04-save-failure-output.md) remains a
   static lead, not a reproduced original defect.
-- [Inner save dispatch](specs/prospect-loading.md): twenty targeted exports plus
+- [Inner save dispatch](specs/prospect-loading.md): twenty-eight targeted exports plus
   metadata and flag tracing identify the older build's reflected state/header,
   recorder blobs, version-dependent callbacks and concrete tagged-property reader.
-  Object offsets are not disk offsets. This narrows the next investigation to tag
-  framing and nested recorder bodies; it does not establish newer-build migration.
+  Object offsets are not disk offsets. Root tag framing and its archive-version
+  gates are recovered; nested recorder bodies remain unresolved. These findings
+  do not establish newer-build migration.
   Static evidence and exact commands: `work/save-schema-20261012/`.
 - Supplied archive remains preserved under ignored `reference-data/`; all 24 file
   sizes, CRCs and SHA-256 values match the private inventory. Read-only inspection
@@ -173,9 +183,9 @@ supported, and no ICARUS performance or stability improvement has been measured.
 
 ## Next work and maintenance
 
-1. Recover tag framing and recorder-body serialization from the concrete inner
-   archive reader, then test bounded authored records. Older-build dispatch and
-   version callbacks are characterized; outer encoding,
+1. Resolve nested struct dispatch and recorder-body serialization, then test
+   bounded authored records. Older-build root framing, dispatch and version
+   callbacks are characterized; outer encoding,
    integrity, measured bounds and initial membership relationships are characterized;
    actor/inventory/construction/tame/mission fields and exact producing build remain
    unresolved. Preserve unknown fields and private inputs; no partial importer.
