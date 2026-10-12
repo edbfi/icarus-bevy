@@ -10,9 +10,10 @@ use flate2::{Decompress, FlushDecompress, Status};
 use serde::{Deserialize, Serialize};
 use sha1::{Digest, Sha1};
 
-/// Conservative research policy, not a recovered ICARUS format limit.
-pub const MAX_ENVELOPE_BYTES: usize = 1024 * 1024;
-pub const MAX_PAYLOAD_BYTES: usize = 16 * 1024 * 1024;
+/// Bounded research policy, not a recovered ICARUS format limit. Observed inputs
+/// reached 2,239,534 raw bytes and 19,131,027 decompressed bytes.
+pub const MAX_ENVELOPE_BYTES: usize = 4 * 1024 * 1024;
+pub const MAX_PAYLOAD_BYTES: usize = 32 * 1024 * 1024;
 
 #[derive(Deserialize)]
 struct Envelope {
@@ -47,6 +48,8 @@ pub struct EnvelopeInspection {
 /// Unknown JSON fields are skipped. Known fields must occur once and use the
 /// expected types. Canonical padded Base64 and exactly one zlib stream are required
 /// by this inspector's conservative policy; original tolerance is unverified.
+/// Envelopes may use UTF-8 or explicitly BOM-tagged UTF-16LE. Other encodings are
+/// not guessed, and malformed UTF-16 is rejected without replacement characters.
 pub fn inspect(reader: impl Read) -> Result<EnvelopeInspection> {
     let mut bytes = Vec::new();
     reader
@@ -54,10 +57,24 @@ pub fn inspect(reader: impl Read) -> Result<EnvelopeInspection> {
         .read_to_end(&mut bytes)?;
     ensure!(
         bytes.len() <= MAX_ENVELOPE_BYTES,
-        "envelope exceeds 1 MiB research limit"
+        "envelope exceeds 4 MiB research limit"
     );
-    let envelope: Envelope =
-        serde_json::from_slice(&bytes).context("invalid prospect envelope JSON")?;
+    let envelope: Envelope = if let Some(encoded) = bytes.strip_prefix(&[0xff, 0xfe]) {
+        ensure!(encoded.len().is_multiple_of(2), "odd UTF-16LE byte length");
+        let units = encoded
+            .as_chunks::<2>()
+            .0
+            .iter()
+            .copied()
+            .map(u16::from_le_bytes);
+        let text = char::decode_utf16(units)
+            .collect::<std::result::Result<String, _>>()
+            .context("invalid UTF-16LE envelope")?;
+        serde_json::from_str(&text)
+    } else {
+        serde_json::from_slice(&bytes)
+    }
+    .context("invalid prospect envelope JSON")?;
     let blob = envelope.blob;
     ensure!(
         blob.total_length >= 0 && blob.data_length >= 0 && blob.uncompressed_length >= 0,
@@ -66,7 +83,7 @@ pub fn inspect(reader: impl Read) -> Result<EnvelopeInspection> {
     let expected = blob.uncompressed_length as usize;
     ensure!(
         expected <= MAX_PAYLOAD_BYTES,
-        "payload exceeds 16 MiB research limit"
+        "payload exceeds 32 MiB research limit"
     );
     ensure!(
         blob.hash.len() == 40

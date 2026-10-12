@@ -112,7 +112,13 @@ all member CRC checks passed. Intake found 24 files (two JSON files and 22
 backups), totaling 26,511,334 bytes before any inner-format decoding. The largest
 member is 2,239,534 bytes. These are ZIP observations, not a validated save schema,
 player-state inventory or measured gameplay workload. The producing game build
-and matching client/server pair remain unknown.
+and matching client/server pair remain unverified. On 2026-10-12 the user described
+the producing release as “latest”, then supplied build 25793767 and version
+`3.0.31.158478-rel-DangerousHorizons`. Treat this as user-reported provenance until
+paired with a matched reference; the preserved executable is older build 25621760.
+A stock
+Windows client is available on the user's separate machine for later tests, not
+accessible to the current offline lab.
 
 The archive and inventory are private, read-only local files. Preserve them and
 the original download; prepare any extraction, mutations, logs or runtime copies
@@ -130,17 +136,18 @@ Use this dataset in the next work sequence:
    See N-003 in the bug ledger and `work/native-io-20261012/` for fresh scope,
    exact invocation/provenance and verified container cleanup. Historical failures
    remain preserved; physical power-loss qualification remains open.
-2. Establish a read-only real-save baseline. In a fresh case, selectively extract
-   copies with path and size bounds; identify file roles, format/build metadata,
-   prospect/player relationships and backup ordering. Do not infer chronology or
-   build compatibility from filenames alone. The current envelope inspector allows
-   only 1 MiB input and 16 MiB decoded output: confirm applicable member sizes and
-   format before designing bounded changes. An input-limit rejection is not evidence
-   of a corrupt save. Verify checksums and decode limits without importing state.
-3. Compare current files and backups to identify persisted fields and candidate
-   changes. Quantify structures, inventories, tames, ownership and other workload
-   dimensions only where decoding supports them. Derive small authored regression
-   fixtures; keep unknown fields and relationships explicit.
+2. Outer real-save baseline established in `work/save-triage-20261012/`: all 24
+   file hashes/CRCs match, twelve UTF-16LE prospect envelopes pass independent
+   integrity checks, and twelve identical small tracker documents are identified.
+   The native inspector now handles the observed encoding and measured dimensions
+   with fixed 4 MiB input/32 MiB output bounds; current and distinct-backup copies
+   pass the release CLI. See the envelope spec for aggregate sizes and limitations.
+3. Recover inner binary serialization, version handling and persisted relationships.
+   Eleven distinct prospect payloads and seven member tuples are observed, but
+   structures, inventories, tames, missions and full ownership fidelity remain
+   unknown. Target the archive dispatch in existing decompilation, compare backed-up
+   records only after interpreting them, and derive authored regression fixtures.
+   Do not infer chronology/build compatibility from names or silently discard fields.
 4. Use disposable copies for a matched official-server load/save/reload baseline
    once build pairing and the runtime experiment scope are established. Record
    state fidelity, load/save time and resources. This intake does not revive the

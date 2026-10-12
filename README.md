@@ -62,7 +62,8 @@ Do not use it to migrate a real world yet.
 `inspect-save --source PATH` performs bounded, read-only
 [experimental envelope checks](docs/specs/prospect-envelope.md). It reports sizes
 and integrity results without extracting the payload or importing a world.
-Validation currently uses authored fixtures, not original-save round trips.
+Validation covers authored fixtures and supplied-save envelope integrity; the
+inner world schema and original-save round trips remain unvalidated.
 The [synthetic workload](docs/synthetic-workload.md) exercises native scheduling
 and durability; it is not an ICARUS performance benchmark.
 

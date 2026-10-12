@@ -42,7 +42,9 @@ no client connected and no playable prospect was loaded.
 | Short stateless handshake | Observed; independent loopback lab implemented | [Handshake notes](specs/stateless-handshake.md); original challenge/echo/ack observed with authentication inactive; stock-client admission pending |
 | Default network checksum | Experimental primitive implemented; early value observed | [Checksum notes](specs/network-checksum.md); final active inputs/callback policy unresolved |
 | Archive strings | Experimental strict subset implemented | [String codec](specs/archive-string.md); authored fixtures pass; actual network flags and original round trips pending |
-| Prospect envelope | Experimental read-only inspector implemented | [Envelope notes](specs/prospect-envelope.md); authored fixtures pass; supplied save characterization and complete import pending |
+| Prospect envelope | Observed on supplied saves; experimental read-only inspector | [Envelope notes](specs/prospect-envelope.md); twelve UTF-16LE envelopes pass independent integrity checks, with measured bounds; user reports build 25793767; matched build pairing, binary schema and complete import remain unvalidated |
 
-These observations apply only to tool build 25621760. They do not promote the
-complete transport, authentication or official-save-import surfaces above.
+The binary/protocol observations apply only to tool build 25621760. The supplied
+save's producing build is user-reported as 25793767, without a matched reference.
+Neither set of observations promotes the complete
+transport, authentication or official-save-import surfaces above.
