@@ -207,8 +207,10 @@ Use this dataset in the next work sequence:
    comparison cap. Its 972 own child bodies now match immediate native spans;
    all 486 selected Int arrays now match native prefix/element spans, including
    four opaque elements. The selected Str structures and Int/Bool widths also
-   pass. Recover the next immediate-parent child contracts while retaining
-   unresolved value meaning and runtime compatibility.
+   pass. The next five immediate-parent child schemas now have conditional tagged
+   contracts with 15 optional fields and no immediate recursion. Establish exact
+   population bounds, then compare their child headers while retaining unresolved
+   value meaning and runtime compatibility.
    Retain the lack of populated
    inherited-array coverage.
    Exact C034 own Name values also pass strict native/independent structural

@@ -612,6 +612,22 @@ joins exact descriptors. Array elements, string meanings and numerical values
 remain uninterpreted. Evidence: `work/native-c009-int-array-20261012/execution-v2/`
 and `work/c009-own-leaf-values-20261012/`.
 
+The four immediate-parent Array element schemas and one standalone Struct now
+have exact older-build descriptor/getter/factory joins. All five conditionally
+select tagged framing, with null parents and disabled native/post callbacks.
+Their 15 optional immediate fields comprise four Int, three Name, two Str, five
+Bool and one enum-backed Byte; none is a recursive Struct or Array. Population
+bounds and child-header comparisons remain pending. Independent static review:
+`work/c009-parent-children-20261012/`.
+
+That case corrects the earlier own-child dimension provenance: the common
+property factory reads descriptor offset `+0x20`, including for Bool. Its
+`+0x24` word supplies Bool field size. All six affected Bool descriptors have
+both words equal to one, so the earlier index-zero qualification and observed
+header results are unchanged. Historical evidence is preserved with an additive
+correction. The enum-backed Byte must not be assigned a one-byte payload merely
+from its internal storage size; its value branch requires separate qualification.
+
 ## Independent replacement requirements
 
 The importer must load into staging state, resolve references and validate the
