@@ -177,3 +177,50 @@ scalar, not the producing Steam build ID. It does not replace user-reported buil
 25793767 or verify the older executable's migration behavior. All other root
 values and component byte contents remain uninterpreted. Independent aggregate,
 privacy and source-fixity checks and strict case review pass.
+
+## Explicit base-component framing
+
+The library's `experimental::component::read_base_component(bytes, profile)`
+accepts a caller-selected candidate layout: supported tagged properties, a terminal
+`None`, a four-byte little-endian zero trailer flag and exact EOF. The caller must
+establish whether this layout applies to the concrete class. The API does not
+recognize classes, validate required fields or interpret values; it is not enabled
+by `inspect-save --recorders`.
+
+Input is limited to 64 KiB and 256 properties. Unknown field names with supported
+headers retain borrowed source spans. The parsed collection, terminator and
+trailer expose immutable accessors. Only aggregate counts/sizes can be serialized
+by the summary, which explicitly reports `world_imported: false` and
+`values_interpreted: false`. A flag of one returns an unsupported-GUID-trailer
+error even when 16 more bytes are present; other nonzero flags, truncation, missing
+terminators and trailing bytes fail. The root reader still requires EOF directly
+after its terminator.
+
+Static case E-017 confirms the older build's base-method inheritance for one
+private singleton class, and E-018 identifies its declared and immediate-base
+field metadata. The first seven-kind private probe failed at type-name offset 281
+(save-triage E-020). A separate equality-only check confirmed `NameProperty`
+(E-021); a new probe adding only that header kind reached exact EOF on the two
+selected 548-byte bodies (E-022):
+
+| Measurement | Each selected body |
+| --- | ---: |
+| Properties | 5: struct, enum, name, string, boolean |
+| Headers and terminator | 312 bytes |
+| Opaque property values | 232 bytes |
+| Zero object-trailer flag | 4 bytes |
+
+Both complete envelopes and recorder arrays passed before either component scan.
+Names, values and GUID bytes were not published; the earlier failure remains
+preserved. These results establish this framing observation only. Equal totals
+do not establish equal values, a complete class schema, newer-build method
+equivalence or gameplay fidelity.
+
+The release Rust library independently matches all four size/count aggregates on
+both selected bodies (save-triage E-023). A bounded private helper receives the
+selected bytes through stdin only after both envelopes and recorder arrays pass;
+it emits summaries and creates no raw component artifact. Source and binary hashes,
+invocations and unchanged input hashes are retained in the private case and
+`work/native-component-20261012/`. Six component tests cover exact spans and limits,
+every truncated prefix, embedded terminators, unsupported trailers, unchanged root
+EOF policy and sanitized errors. Full manual checks and code review pass.
