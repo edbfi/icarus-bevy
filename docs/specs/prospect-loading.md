@@ -432,10 +432,27 @@ header/terminator bytes; all four conserve 58,356 bytes and end at exact EOF.
 The observed kinds are Array, Bool, three Int, Struct, Float and Name, matching
 the eight optional static descriptors. No descriptors are missing here; the
 comparison permits absence rather than declaring universal mandatory fields.
-The native struct and unresolved array child remain opaque, including their
+The native struct and array child payloads remain opaque, including their
 widths/counts. Evidence E-039 and strict review 31 pass with unchanged inputs.
-This is independent header observation, not qualification of the Rust reader on
-these bodies or interpretation of the Float value.
+A fresh helper linked to the current eleven-kind Rust library now independently
+matches all 32 field kinds, exact header/value spans and four terminator ranges.
+The 58,356 bytes comprise 1,796 header/terminator bytes and 56,560 opaque bytes;
+all four streams end exactly. Six authored helper tests cover limits, GUIDs,
+truncation, unsupported headers and no partial/private output. The fresh scope,
+reviewed session, source/library/helper snapshots, unchanged input hashes and
+strict case review are retained in `work/native-c034-own-20261012/`.
+No production code changed; Float values remain uninterpreted.
+
+The separate older-build own-array contract resolves child `0x145ee1220` through
+its exact getter and operations table to tagged serialization. Its two immediate
+optional descriptors are Struct and Float; the Struct getter resolves prior N02.
+Under the reviewed MemoryArchive522 path, the array reads a signed count, one
+shared Struct header (also for count zero), then count terminated tagged elements.
+Shared size covers the aggregate element span. The 16-byte memory size is not an
+on-disk stride. Exact names remain in the private comparison map; no fixed GUID,
+required-field or Float-value rule is inferred. Contract and independent review:
+`work/c034-own-array-continuation-20261012/`. Supplied array payloads remain
+unentered; bounded independent/native comparison is the next step.
 
 ## Independent replacement requirements
 

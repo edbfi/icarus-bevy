@@ -91,6 +91,10 @@ and release build passed. Qualification in `work/native-float-text-20261012/`
 preserves both supplied copies' prior envelope/root/recorder results and hashes;
 it does not establish supplied Float/Text value coverage. Historical native helper
 binaries still contain the earlier nine-kind reader and remain preserved.
+A separately built eleven-kind helper now qualifies Float header framing in four
+selected C034 own streams: 32 fields, 58,356 bytes, identical independent/native
+header/value/terminator ranges and exact EOF. Values remain opaque. Evidence:
+`work/native-c034-own-20261012/`; no Text-bearing supplied body was qualified.
 
 ## Evidence and verification
 
