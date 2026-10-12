@@ -8,6 +8,10 @@ be demonstrated rather than assumed.
 # Project-local skills and tools
 
 - Use `.agents/skills/bevy/SKILL.md` for Bevy development.
+- The Bevy skill is installed from `edbfi/skills` using `bunx skills`; keep
+  `skills-lock.json` with updates. Its current examples target Bevy 0.20.0, while
+  this application's Cargo manifest still pins 0.19.1. Check version-matched APIs;
+  a skill update alone does not authorize changing the application's engine pin.
 - The reverse-skill package is vendored at `.agents/vendor/reverse-skill/`.
   `.agents/skills/reverse-skill-router` links to its `skills/` directory for
   discovery. Use the canonical vendor path for scripts so package-relative
@@ -41,7 +45,9 @@ be demonstrated rather than assumed.
   report the precise dependency; never manufacture evidence or approval.
 - Use project skills for the actual task. The user permits a suitable number of
   subagents and model/effort selection: GPT-6 Astra for difficult reasoning and
-  GPT-6.1 Sol for scoped implementation or review. Give agents explicit ownership;
+  GPT-6.1 Sol for scoped implementation or review. Whenever parallel delegation
+  could save time or improve quality, use collaboration tools, whether acting as
+  the root agent or a subagent. Give agents explicit ownership;
   the lead integrates, validates, commits and pushes. Bound aggregate resources.
 - Commit coherent tested increments frequently using Conventional Commits and
   `git commit -s`; push the feature branch after each completed increment or small

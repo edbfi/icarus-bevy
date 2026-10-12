@@ -64,6 +64,13 @@ floating release-build toolchain. Use version-matched Bevy documentation.
 Sources: [Rust 1.99.0](https://blog.rust-lang.org/2026/10/01/Rust-1.99.0/),
 [Bevy 0.19.1](https://crates.io/crates/bevy/0.19.1).
 
+The local Bevy skill was refreshed using `bunx skills add edbfi/skills --skill bevy
+--agent codex --copy --yes` from upstream commit
+`69cc23fa1b1bfce68143b2e289826e500b63ef26` on 2026-10-12. Skill version 1.1.0 targets
+Bevy 0.20.0; all 14 installed files match upstream. `skills-lock.json` records the
+source and content hash. The application remains on 0.19.1: use version-matched
+references for implementation and treat any engine migration as separate work.
+
 ## Repository, tooling, and authorization
 
 The initial repository had no root Cargo manifest or lockfile. Keep these boundaries:
@@ -213,17 +220,26 @@ should yield a precise dependency and the next useful independent task. Existing
 target, privacy and isolation boundaries still apply. Historical approval records
 describe their original batches; they do not extend expired runtime deadlines.
 
+Following OpenAI's [initiative guidance](https://developers.openai.com/api/docs/guides/latest-model#gpt-6-astra-initiative-and-follow-through),
+make reasonable assumptions, deliver complete increments, and prepare reviewable
+work before necessary approval. Resolve skill instructions against the user's
+actual authorization; explain concrete conflicts instead of inventing approval gates.
+
 Use the Bevy and reverse-research skills listed above when their work is needed.
 Read relevant references selectively instead of loading the entire vendor package.
+If at any point you can parallelize work by delegating tasks to another agent
+(whether you are the root agent or a subagent), use collaboration tools when it
+could save time or improve quality. Keep delegation within the shared resource
+budget and give each task a clear owner and acceptance checks.
 The lead can assign GPT-6 Astra at high effort for ambiguous protocol/architecture
 work and GPT-6.1 Sol at medium or high effort for bounded implementation, tests and
 independent reviews. Adjust these choices to the task and available model IDs.
 Use supported identifiers such as `gpt-6-astra` and `gpt-6.1-sol`; when the tool
 requires it, use `fork_turns="none"` for explicit model/effort overrides and provide
 a self-contained task. Start with the lead and up to two workers; use another
-worker only for independent
-work that fits available slots and resources. Assign file ownership or separate
-worktrees; only the lead stages, commits and pushes integrated work. Review
+worker only for independent work that fits available slots and resources.
+Assign file ownership or separate worktrees; only the lead stages, commits and
+pushes integrated work. Review
 findings against real source and evidence before accepting them.
 
 For each coherent increment: implement, run relevant checks, update the existing

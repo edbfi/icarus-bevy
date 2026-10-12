@@ -4,7 +4,7 @@ Start with the built-in renderer for a normal game. A physics plugin is independ
 of renderer choice. `2d` and `3d` feature profiles include rendering and platform
 support; `2d_api`/`3d_api` expose world-side types for a separately supplied renderer.
 
-The following is an asset-free 3D starting point for a project with `bevy = "0.19.1"`.
+The following is an asset-free 3D starting point for a project with `bevy = "0.20.0"`.
 The documentation verifier type-checks it; running it needs the actual renderer,
 window backend, and GPU environment.
 
@@ -48,6 +48,9 @@ For 2D, spawn `Camera2d` and a `Sprite` (for example `Sprite::from_image` or
 and material handles where appropriate. Mutating a shared material changes every
 user; allocate a separate asset when an object needs independent parameters.
 
+The sprite backend changed in 0.20, but normal `Sprite` components remain valid.
+Specify Z levels for overlapping sprites instead of relying on same-Z draw order.
+
 ## Cameras and visibility
 
 Check camera activation, projection, clipping, render layers, target, transform,
@@ -56,11 +59,14 @@ Bevy uses right-handed 3D coordinates, Y up, and camera forward along local -Z.
 Use camera conversion methods for cursor-to-world rays; handle their `Result` and
 account for the target viewport and scale factor.
 
-`RenderTarget` is a component in 0.19. Multiple cameras need explicit target,
+`RenderTarget` is a component since 0.19. Multiple cameras need explicit target,
 order, layer, and clear policies. Attach UI to the intended camera when the default
 selection is ambiguous. An orbit camera should keep yaw/pitch/distance state,
 clamp pitch, and apply mouse deltas once per frame. Obstruction testing belongs to
 physics/scene queries; smoothing should not alter the simulation's authoritative pose.
+
+In 0.20, screen-space transmission is opt-in: add `ScreenSpaceTransmission` to
+`Camera3d` when the scene needs it. Check translucent materials visually on upgrade.
 
 ## Choose the smallest rendering extension
 
@@ -71,9 +77,11 @@ physics/scene queries; smoothing should not alter the simulation's authoritative
 
 Custom material types generally derive `Asset`, `TypePath`, `AsBindGroup`, and
 `Clone`; register the matching material plugin. Keep Rust bind-group declarations
-and WGSL bindings/layout aligned. Consult the versioned shader example for the
-correct `ShaderRef` imports and group macros. A manual `AsBindGroup` implementation
-in 0.19 requires `label`; the derive handles that detail.
+and shader bindings/layout aligned. In 0.20, translate naga_oil preprocessing
+to WESL (`.wesl`); plain WGSL without those directives still works. GLSL support
+is removed. Consult versioned examples for `ShaderRef`, module paths, and binding
+constants; old `#import` and group-substitution syntax does not carry over. A manual
+`AsBindGroup` implementation requires `label`; the derive handles that detail.
 
 Camera render nodes/`ViewNode` were replaced by systems in `Core2d`/`Core3d` in
 0.19. Use current `ViewQuery`, `RenderContext`, and pass ordering rather than
@@ -86,7 +94,7 @@ tradeoff involving G-buffer bandwidth and MSAA constraints. Transparent content
 still needs its appropriate path. Validate custom pipelines and features on the
 minimum supported GPU and browser backend, not just with `cargo check`.
 
-Sources: [camera API](https://docs.rs/bevy/0.19.1/bevy/camera/index.html),
-[PBR](https://docs.rs/bevy/0.19.1/bevy/pbr/index.html),
-[shader examples](https://github.com/bevyengine/bevy/tree/v0.19.1/examples/shader),
-[render systems](https://github.com/bevyengine/bevy/tree/v0.19.1/examples/shader_advanced).
+Sources: [camera API](https://docs.rs/bevy/0.20.0/bevy/camera/index.html),
+[PBR](https://docs.rs/bevy/0.20.0/bevy/pbr/index.html),
+[shader examples](https://github.com/bevyengine/bevy/tree/v0.20.0/examples/shader),
+[render systems](https://github.com/bevyengine/bevy/tree/v0.20.0/examples/shader_advanced).

@@ -111,8 +111,8 @@ Gaussian splat rendering, capture encoders, inverse kinematics, and audio graphs
 are separate integrations, not implied Bevy-core features. Do not install a suite
 of plugins merely because this reference mentions them.
 
-Sources: [animation](https://docs.rs/bevy/0.19.1/bevy/animation/index.html),
-[animated mesh](https://github.com/bevyengine/bevy/blob/v0.19.1/examples/animation/animated_mesh.rs),
-[audio API](https://docs.rs/bevy/0.19.1/bevy/audio/index.html),
+Sources: [animation](https://docs.rs/bevy/0.20.0/bevy/animation/index.html),
+[animated mesh](https://github.com/bevyengine/bevy/blob/v0.20.0/examples/animation/animated_mesh.rs),
+[audio API](https://docs.rs/bevy/0.20.0/bevy/audio/index.html),
 [Hanabi](https://github.com/djeedai/bevy_hanabi),
 [Seedling](https://github.com/CorvusPrudens/bevy_seedling).

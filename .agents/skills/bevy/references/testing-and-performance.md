@@ -47,7 +47,7 @@ membership and values without depending on query iteration order.
 Move expensive pure work to `AsyncComputeTaskPool` and I/O to `IoTaskPool` when
 appropriate. Return owned results to the ECS; do not borrow the live `World` into
 a background task. Retain `Task<T>` handles while work matters: dropping a task
-cancels it unless detached. Poll with the version's nonblocking helper (0.19:
+cancels it unless detached. Poll with the version's nonblocking helper (0.20:
 `bevy::tasks::futures::check_ready`) or drain a channel without blocking a system.
 
 Prefer an injected deterministic executor/result in tests. When using real tasks,
@@ -83,8 +83,8 @@ For visual regression, capture through `Screenshot`/`ScreenshotCaptured`, await
 completion, and retain expected/actual/diff artifacts. Fix camera, assets, seed,
 time, viewport, backend, and warm-up conditions. Document a tolerance for driver
 variation and review baseline changes. Successful Rust compilation does not
-compile every WGSL shader or exercise GPU pipeline specialization.
+compile every WESL/WGSL shader or exercise GPU pipeline specialization.
 
-Sources: [time strategy](https://docs.rs/bevy/0.19.1/bevy/time/enum.TimeUpdateStrategy.html),
-[diagnostics](https://docs.rs/bevy/0.19.1/bevy/diagnostic/index.html),
-[screenshot example](https://github.com/bevyengine/bevy/blob/v0.19.1/examples/window/screenshot.rs).
+Sources: [time strategy](https://docs.rs/bevy/0.20.0/bevy/time/enum.TimeUpdateStrategy.html),
+[diagnostics](https://docs.rs/bevy/0.20.0/bevy/diagnostic/index.html),
+[screenshot example](https://github.com/bevyengine/bevy/blob/v0.20.0/examples/window/screenshot.rs).
