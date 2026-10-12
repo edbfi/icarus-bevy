@@ -5,10 +5,10 @@ This is the reviewed implementation plan. Progress and evidence are tracked in
 not claims of compatibility. This document authorizes no vendored script or
 target activity by itself.
 
-**Paused at the user's request on 2026-10-12.** The
-[handoff checkpoint](implementation-status.md#paused-handoff--2026-10-12) records
-the completed full-client installation, delivered changes, uncommitted Float/Text
-header work and prepared experiments. Resume only when the user requests it.
+**Resumed at the user's request on 2026-10-12.** The
+[continuation checkpoint](implementation-status.md#continuation--2026-10-12)
+records Float/Text header qualification and the next bounded C034 experiment.
+The prior pause does not extend historical runtime authorization windows.
 
 ## Goal and agreed constraints
 
