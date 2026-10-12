@@ -43,6 +43,29 @@ writes for the two delegate globals. It did not establish registration or its
 absence: indirect accesses and instruction encodings outside the search remain
 possible. This negative search does not justify removing the callback requirement.
 
+The 2026-10-12 follow-up resolves cache-valid storage to `0x146210cf0`, the cached
+checksum to `0x146210cf4`, and separate generation/comparison delegates to
+`0x1462116a0` / `0x1462116b0`. Generation checks the cache **before** its callback-enable
+argument: disabling that argument does not bypass an already cached result. On an
+uncached call, the delegate also needs nonzero occupancy, a nonnull object and a
+successful virtual predicate. Comparison has its own delegate checks and otherwise
+falls back to exact 32-bit equality.
+
+Setter `0x141f39000` ignores null/empty strings. Nonempty input updates project-version
+storage and clears cache-valid, including when the input already points at the
+stored buffer. Caller `0x143996c54` supplies a string from a `GeneralProjectSettings`
+default object. This corroborates the observed late version update without proving
+initialization order or the final admission-time checksum.
+
+A broader direct-reference scan checked neighboring delegate words, possible trailing
+immediates and absolute pointers. The two initializer candidates register delegate
+**teardown** through verified CRT on-exit imports; they do not install compatibility
+callbacks. Indirect addressing, dynamic modules and runtime writes remain outside
+that search. Further progress requires observing actual generation/comparison and
+delegate state in a working matched reference session, rather than repeating the
+same negative search. Private case `work/control-version-20261012/` E-001–E-003
+retains exact commands, hashes and a strict review with zero issues.
+
 Private evidence: `work/icarus-overnight/decompile-01/`, selected disassemblies in
 `static/`, and `static/checksum-table-verification.json`. These observations do not
 recover datagram framing, identity validation or the rest of the connection state

@@ -61,6 +61,12 @@ a network-version override. The subsequent overnight pass recovered the
 inputs and callbacks still need validation; the displayed game release number is
 not a substitute for this value.
 
+The [cache and settings follow-up](network-checksum.md) identifies the concrete
+project-version setter and invalidation path. A cache hit precedes the generator's
+callback-enable check, and comparison has a separate delegate. Candidate initializer
+references proved to register teardown routines; a broader static search still
+does not establish whether a compatibility implementation is active at admission.
+
 A failed comparison follows a branch with an incompatible-version diagnostic,
 connection operations and close accounting. Exact response bytes remain unknown.
 For a successful comparison, an empty-looking token takes a direct continuation;
