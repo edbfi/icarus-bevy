@@ -182,6 +182,12 @@ and PA04 are entirely empty; PA01 and PA02 provide populated coverage. No option
 field is missing in observed records. Prior spans reproduce and all 448 bindings
 stay unchanged. Eight native helper tests and three independent parser checks
 pass: `work/native-c009-parent-headers-20261012/`. Child values remain opaque.
+The following leaf run now matches 1,464 string-framed values (25,416 bytes),
+including the exact enum-backed Byte, against native strict consumption. All
+7,886 Int spans are four bytes and all 2,430 Bool payloads are empty. Prior spans
+reproduce and all 601 bindings stay unchanged; six native helper tests and four
+independent checks pass: `work/c009-parent-leaf-values-20261012/`. Numerical,
+string and enum meanings remain unqualified, with no PA03/PA04 leaf occurrences.
 The exact enum-backed Byte field separately follows Name/FString transfer under
 the concrete loading profile; its internal byte size is not serialized width.
 Independent review preserves unresolved enum lookup, error and EOF behavior:
@@ -582,8 +588,8 @@ supported, and no ICARUS performance or stability improvement has been measured.
 
 ## Next work and maintenance
 
-1. Qualify C009 immediate-parent child leaves within their measured
-   population bounds, with authored regressions.
+1. Qualify C009 top-level scalar structures within their measured population
+   bounds, then continue unresolved common-ancestor children and value contracts.
    C009 own-child structure and selected C034 populations already pass the
    comparisons above. Older-build root/recorder framing, dispatch and version
    callbacks are characterized; outer encoding,

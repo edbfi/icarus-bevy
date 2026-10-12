@@ -117,6 +117,11 @@ that resolution or establish enclosing EOF. This supports a future strict
 structural comparison, not enum interpretation or original load success.
 Independent static review: `work/c009-byte-value-contract-20261012/`.
 
+The subsequent exact child-leaf comparison qualifies all 486 occurrences as
+32-byte strict string frames with matching native/independent consumption.
+Enum lookup was not performed. That run also qualifies the selected parent-child
+Name and Str frames: `work/c009-parent-leaf-values-20261012/`.
+
 ## Concrete top-level Enum links
 
 Both exact C009 top EnumProperty descriptors use generation 30 and final vtable
