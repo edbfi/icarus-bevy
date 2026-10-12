@@ -20,6 +20,29 @@ locked reinstallation and provider checks. This tooling change does not resume
 the research paused below, qualify the pending v2 retry, or extend historical
 authorization windows. Private inputs, frozen cases and evidence remain retained.
 
+### Explicit struct-array limits — 2026-10-12, 22:08 UTC
+
+`read_tagged_struct_array_with_limit` now accepts an explicit byte bound through
+a hard 128 KiB research ceiling. The original API preserves its 64 KiB limit and
+error; both retain 4,096 elements, 256 fields per element, borrowed opaque spans
+and strict framing/EOF. The measured 66,257-byte CA01 body motivates this policy,
+without making it an original-format limit or qualifying its child contents.
+
+All ten array tests pass, including exact/over/invalid limits, an authored measured
+size, unchanged count/field caps, borrowing and failure after a large valid element.
+Independent codec review accepts the change. The full manual suite, release build
+and subsequent native save/restart smoke pass; independently checked generations
+restore ticks 3 and 8. An earlier smoke against the previous executable remains
+separately labeled and excluded from this release result. Evidence and exact old/new
+source/library snapshots: `work/array-limit-preparation-20261012/` and
+`work/array-limit-prechange-20261013/`.
+
+New release library SHA-256:
+`e9cb457f168ec214c54ad9931074b0f8070f179eecda6f5d79f97a3288ca87d2`.
+The previous `84b50475…` library remains preserved. Fresh common-child helpers
+must bind this transition explicitly and replay frozen parent/selection results
+before reading child headers. No supplied common-child header comparison has run.
+
 ### Resumed scalar qualification — 2026-10-12, 22:02 UTC
 
 The user submitted the execution continuation after the REA migration. The
@@ -703,8 +726,8 @@ supported, and no ICARUS performance or stability improvement has been measured.
 
 ## Next work and maintenance
 
-1. Implement/test the explicit struct-array byte-limit
-   API and qualify common-ancestor child headers within measured bounds. Continue
+1. Qualify common-ancestor child headers within measured bounds using the tested
+   explicit struct-array byte-limit API and exact old/new bindings. Continue
    unresolved value contracts.
    C009 own-child structure and selected C034 populations already pass the
    comparisons above. Older-build root/recorder framing, dispatch and version

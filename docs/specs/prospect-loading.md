@@ -678,8 +678,10 @@ descriptor/getter/schema joins to the earlier C028/C034 contracts. A separate
 top-header replay selects all 6,318 payloads across both copies, totaling 4,732,878
 bytes. All thirteen fields occur 243 times per copy. Selection leaves every child
 count, header and value unread; all 777 bound files remain unchanged.
-CA01 reaches 66,257 bytes, exceeding the default 64 KiB array-reader limit, so its
-child comparison needs a separately tested explicit byte limit. Other array maxima
+CA01 reaches 66,257 bytes, exceeding the default 64 KiB array-reader limit. The
+separately tested explicit-limit API now supports this bound with a hard 128 KiB
+ceiling and unchanged 4,096-element/256-field caps. Fresh helper source/library
+bindings are still required before child comparison. Other array maxima
 are at most 562 bytes; Struct maxima are at most 343 bytes. Evidence:
 `work/c009-common-child-selection-20261012/`.
 

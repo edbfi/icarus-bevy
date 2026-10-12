@@ -92,6 +92,10 @@ checks too. Recommended mode must finish with zero errors and warnings. The
 checked roots are `src`, `tests` and `tools`; `.agents/` and skills are outside
 this project-authored-code gate.
 
+Offline research scope fixtures use Node.js (`node --test
+tools/tests/research-scope.test.cjs`) and run through prek and CI. Scope validation
+checks existing authorization and deadlines; it grants neither.
+
 Original files stay under ignored `icarus-orig/`; generated analysis, private saves,
 captures and dumps stay under ignored `work/`. Reusable tools and sanitized reports
 are tracked. No original assets are extracted or reused.

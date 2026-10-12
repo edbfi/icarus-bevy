@@ -216,12 +216,14 @@ Use this dataset in the next work sequence:
    top-level scalars and unresolved common-ancestor children while retaining
    unresolved value meaning and runtime compatibility. At the user-requested
    pause, the first top-scalar attempt failed from harness variable shadowing;
-   its separate v2 regression passes but final review/execution remain pending.
+   its fixed v2 preparation was subsequently rejected because tooling migration
+   had removed its guard.
    A separately reviewed post-migration v3 retry now qualifies all eleven selected
    top scalar structures/widths after complete top replay; original failures and
-   preparation remain preserved. Add/test an explicit struct-array
-   byte-limit API for the measured 66,257-byte common-ancestor array before entering
-   those child headers. See the pause checkpoint in implementation status.
+   preparation remain preserved. The tested explicit struct-array byte-limit API
+   now supports the measured 66,257-byte common-ancestor array while retaining
+   default/count/field limits. Bind the exact source/library transition before
+   entering those child headers. See the current checkpoint in implementation status.
    Retain the lack of populated
    inherited-array coverage.
    Exact C034 own Name values also pass strict native/independent structural
