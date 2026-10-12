@@ -11,12 +11,11 @@ performance targets remain unproven. Last reconciled: 2026-10-12.
 The user requested continuation after the paused handoff. No client files were
 removed and no original runtime or connected-client experiment has started.
 
-The previous implemented, fully checked and pushed increment was `93ef9e9`
-(`feat(saves): frame caller-selected tagged struct arrays`) on
-`feat/native-server-foundation`. Local and remote branch tips matched at pause.
-Its full manual suite, release build, independent review and selected supplied-array
-qualification passed. The project still cannot import an official world or admit
-an authenticated stock client.
+The implemented Float/Text increment is `af8cf48`, following the previously
+qualified struct-array increment `93ef9e9`, on `feat/native-server-foundation`.
+Both increments are pushed. SSH authentication stalled; delivery succeeded using
+the existing repository-owner HTTPS credential without changing Git configuration.
+The project still cannot import an official world or admit an authenticated client.
 
 Float/Text support (`af8cf48`) has completed root integration and independent
 source review against the hash-bound frozen contract, the full manual suite and
@@ -34,8 +33,14 @@ At the pause checkpoint, `steamapps/appmanifest_1149460.acf` independently repor
 `StateFlags=4`, `buildid=25793767`, target 25793767, and completed download/staging
 byte totals. The final client executable and PDB exist under
 `Icarus/Binaries/Win64/`, sized 109,356,544 and 1,177,653,248 bytes respectively.
-Their hashes, PE/PDB identity match and behavior have **not** been verified. The
-whole directory is gitignored. The user permits careful removal of demonstrably
+Read-only identity qualification now verifies matching EXE CodeView and PDB stream-1
+GUID `cb7487f1-780f-49a8-bf30-55a023b53562`, age 1. Before/after streaming hashes
+and independent `sha256sum` agree; strict private case review passes. EXE SHA-256
+is `ab11ec1212127e9047128843e584ab636632353edd6808a0db9caedb35048179`,
+PDB SHA-256 is `944e38c941cdbdf4ec512f4307134fdd307e5e1c61602f06bd2f9600f7f98bef`.
+Evidence: `work/client-identity-20261012/`. This establishes debug identity, not
+publisher authenticity, complete symbol validity, save provenance or behavior.
+The whole directory is gitignored. The user permits careful removal of demonstrably
 unneeded files but cautions that they may support later analysis; preserve the
 installation until dependencies and provenance are understood. Its availability
 does not replace the deferred live Windows-client tests. The plan's restriction
@@ -47,11 +52,11 @@ committed evidence below:
 
 | Case | Completed result / next boundary |
 | --- | --- |
-| `save-triage-20261012/` | E-036: all 9,058 C028 arrays are empty. E-037: native framing matches 28 selected empty arrays. E-038: four C034 extrema match 21 top headers each, totaling 71,388 bytes with zero trailers/exact EOF. Review 30 passes with 38 evidence entries and zero issues. Nested C034 values remain opaque. |
+| `save-triage-20261012/` | E-036: all 9,058 C028 arrays are empty. E-037: native framing matches 28 selected empty arrays. E-038: four C034 extrema match 21 top headers each, totaling 71,388 bytes with zero trailers/exact EOF. E-039: four own structs match eight immediate headers each across 58,356 bytes. Review 31 passes with 39 evidence entries and zero issues. All values remain opaque. |
 | `c028-array-children-20261012/` | 17 optional immediate array-element fields; independently verified Float/Text header contracts in `static/header-kind-contracts-v2.json` (SHA-256 `17abd2de90aea26129d13cc075c7a6268eef41cf653f14dcca29928433b97e09`). |
 | `c028-array-descendants-20261012/` | D01 uses tagged framing with eight optional fields and four consumed inner helpers. D02 independently demands four four-byte native transfers on success; no exact EOF guarantee. Deeper D01 types remain unresolved. Strict review passes. |
 | `component-c034-20261012/` | Exact older class registration/vtable resolves to the same reviewed load/serialize/postload targets as C028. Optional top schema has 21 fields: seven Struct, two Int, seven Array, two Name, one Enum, one Str, one Bool. Four supplied bodies match this top schema under bounded comparison (save case E-038); nested payloads remain opaque. |
-| `c034-own-struct-20261012/` | Own struct `0x145ee11d0` selects tagged framing; eight optional logical fields are Array, Bool, three Int, Struct, Float and Name. Struct child exactly matches earlier N02 (`0x145efe320`, successful 12-byte native demand); new array child `0x145ee1220` is only identified. Strict review passes; no supplied-body observation. |
+| `c034-own-struct-20261012/` | Own struct `0x145ee11d0` selects tagged framing; eight optional logical fields are Array, Bool, three Int, Struct, Float and Name. E-039 independently observes all eight in four selected own bodies, including Float; no native comparison yet. Struct child matches earlier N02 (`0x145efe320`, successful 12-byte native demand); array child `0x145ee1220` is only identified. Neither child payload was entered. |
 
 Continue in this order within the existing plan:
 
@@ -64,15 +69,18 @@ Continue in this order within the existing plan:
    Each minimum/maximum body has 21 fields, 1,451 header/terminator bytes,
    2,375/30,409 opaque bytes and a zero four-byte trailer. Input hashes are
    unchanged. Strict sample presence is not universal mandatory-field evidence.
-3. Select deeper struct/array observations using the completed static contracts
-   under a new reviewed scope. The own-struct candidate's conservative enclosing
-   bounds are 2,375/30,409 bytes per selected minimum/maximum parent and 65,568
-   combined; its actual width is unobserved. Native C034 comparison remains open. The
+3. Own-struct immediate-header observation is complete (E-039): 572/28,606 bytes
+   per selected minimum/maximum, each with eight headers and 449 header/terminator
+   bytes, exact EOF and no missing optional descriptors in these samples.
+   Independently qualify the native reader using a fresh helper linked to the
+   eleven-kind library; frozen nine-kind helpers cannot establish Float support.
+   Recover the own-array child contract before entering its payload. The
    existing component batch helper's 8 MiB transport cap cannot fit all C034
    records from both copies together; use separate per-copy batches or a newly
    reviewed helper rather than changing frozen evidence.
-4. Inventory/hash the completed client executable, manifest and PDB; verify their
-   identity relationship before matched-build static comparison. The older server
+4. Client executable/manifest/PDB identity qualification is complete. Open a
+   separate bounded scope for targeted matched-client static comparison, including
+   import reconnaissance before function-level analysis. The older server
    remains build 25621760; do not transfer its addresses or behavior assumptions
    blindly to client build 25793767. No original runtime, client session or network
    experiment was started in this handoff.
@@ -340,7 +348,8 @@ record historical research batches; the overnight runtime window has expired.
   `work/c028-arrays-20261012/` and `work/c028-array-children-20261012/`.
 - A private class-string inventory finds 38 identifiers in the current copy and
   36 in the backup, all with script-class path syntax; dispatch work above covers
-  two selected classes, leaving the others unverified. Both known root `Version` integers are 2,
+  three selected classes, with differing coverage; the others remain unverified.
+  Both known root `Version` integers are 2,
   separate from the user-reported Steam build. Exact identifiers remain private
   (save-triage E-019); no component byte contents were interpreted.
 - Supplied archive remains preserved under ignored `reference-data/`; all 24 file
@@ -360,7 +369,9 @@ record historical research batches; the overnight runtime window has expired.
   `icarus-client-orig/25793767/`, initially requesting `Icarus/Binaries/Win64/` and
   the matching Steam app manifest. The full client installation subsequently
   completed; the manifest reports installed build 25793767 and complete state.
-  Executable/PDB identity remains unqualified; see the paused handoff above.
+  Executable/PDB GUID and age now match, with unchanged independently checked
+  hashes; see the continuation checkpoint above. Save-build provenance remains
+  user-reported and matched-client behavior is untested.
   This can support matched-build static comparison; it does not
   replace live Windows-client tests or require packaged assets for this first pass.
 - [Inventory](research/2026-10-04-reference-inventory.md): hashed original baseline.
