@@ -353,6 +353,16 @@ impl SaveWorker {
         Ok(())
     }
 
+    /// Check the budget after synchronous snapshot capture, before enqueueing.
+    /// This does not cancel an already running write or make scheduling realtime.
+    pub fn submit_before(&mut self, snapshot: WorldSnapshot, deadline: Instant) -> Result<()> {
+        ensure!(
+            Instant::now() < deadline,
+            "snapshot shutdown deadline exceeded"
+        );
+        self.submit(snapshot)
+    }
+
     pub fn poll(&mut self) -> Result<Option<SaveReceipt>> {
         match self.receiver.try_recv() {
             Ok(result) => {
@@ -367,16 +377,28 @@ impl SaveWorker {
         }
     }
 
+    /// Success requires observing a pending completion within the budget. An idle
+    /// worker has nothing to drain. An expired entry leaves queued results intact;
+    /// expiry during polling returns no receipt even if that poll consumed one.
+    /// Synchronous filesystem operations and scheduler pauses are not cancellable.
     pub fn finish_before(&mut self, deadline: Instant) -> Result<Option<SaveReceipt>> {
         while self.busy {
-            if let Some(receipt) = self.poll()? {
-                return Ok(Some(receipt));
-            }
             ensure!(
                 Instant::now() < deadline,
                 "snapshot shutdown deadline exceeded"
             );
-            thread::sleep(Duration::from_millis(1));
+            if let Some(receipt) = self.poll()? {
+                ensure!(
+                    Instant::now() < deadline,
+                    "snapshot shutdown deadline exceeded"
+                );
+                return Ok(Some(receipt));
+            }
+            thread::sleep(
+                deadline
+                    .saturating_duration_since(Instant::now())
+                    .min(Duration::from_millis(1)),
+            );
         }
         Ok(None)
     }
@@ -385,6 +407,97 @@ impl SaveWorker {
 #[cfg(test)]
 mod worker_failure_tests {
     use super::*;
+
+    fn controlled_worker() -> (
+        SaveWorker,
+        Receiver<WorldSnapshot>,
+        SyncSender<Result<SaveReceipt>>,
+    ) {
+        let (sender, requests) = mpsc::sync_channel(1);
+        let (results, receiver) = mpsc::sync_channel(1);
+        (
+            SaveWorker {
+                sender,
+                receiver,
+                busy: false,
+            },
+            requests,
+            results,
+        )
+    }
+
+    #[test]
+    fn shutdown_deadline_rejects_late_ready_receipt_without_consuming_it() {
+        let (mut worker, requests, results) = controlled_worker();
+        worker.submit(WorldSnapshot::default()).unwrap();
+        requests.recv().unwrap();
+        let deadline = Instant::now();
+        // The completion is created after the deadline, not merely consumed late.
+        results
+            .send(Ok(SaveReceipt {
+                generation: 1,
+                tick: 0,
+            }))
+            .unwrap();
+        assert!(worker.finish_before(deadline).is_err());
+        assert!(worker.is_busy());
+        assert!(worker.submit(WorldSnapshot::default()).is_err());
+        let receipt = worker.poll().unwrap().unwrap();
+        assert_eq!(receipt.generation, 1);
+        assert!(!worker.is_busy());
+    }
+
+    #[test]
+    fn shutdown_deadline_pending_timeout_keeps_request_in_flight() {
+        let (mut worker, requests, results) = controlled_worker();
+        worker.submit(WorldSnapshot::default()).unwrap();
+        requests.recv().unwrap();
+        assert!(worker.finish_before(Instant::now()).is_err());
+        assert!(worker.is_busy());
+        assert!(worker.poll().unwrap().is_none());
+        assert!(worker.submit(WorldSnapshot::default()).is_err());
+        results
+            .send(Ok(SaveReceipt {
+                generation: 1,
+                tick: 0,
+            }))
+            .unwrap();
+        assert_eq!(
+            worker
+                .finish_before(Instant::now() + Duration::from_secs(5))
+                .unwrap()
+                .unwrap()
+                .generation,
+            1
+        );
+        assert!(!worker.is_busy());
+    }
+
+    #[test]
+    fn shutdown_deadline_idle_worker_has_no_completion_to_wait_for() {
+        let (mut worker, _requests, _results) = controlled_worker();
+        assert!(worker.finish_before(Instant::now()).unwrap().is_none());
+        assert!(!worker.is_busy());
+    }
+
+    #[test]
+    fn shutdown_deadline_expired_submission_does_not_enqueue_final_snapshot() {
+        let (mut worker, requests, _results) = controlled_worker();
+        let deadline = Instant::now();
+        // Models capture completing after its caller's earlier budget check.
+        let snapshot = WorldSnapshot::default();
+        assert!(worker.submit_before(snapshot, deadline).is_err());
+        assert!(!worker.is_busy());
+        assert!(matches!(requests.try_recv(), Err(TryRecvError::Empty)));
+        worker
+            .submit_before(
+                WorldSnapshot::default(),
+                Instant::now() + Duration::from_secs(5),
+            )
+            .unwrap();
+        assert!(worker.is_busy());
+        assert_eq!(requests.recv().unwrap().tick, 0);
+    }
 
     #[test]
     fn disconnected_worker_clears_in_flight_state_and_returns_terminal_error() {

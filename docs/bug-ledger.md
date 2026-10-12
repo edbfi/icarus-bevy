@@ -57,6 +57,7 @@ These concern this repository's code, not the official server.
 | N-001 | Save worker exits before acknowledging an in-flight request; polling returned an untyped error while leaving `busy` true, and the main loop treated it as a retryable write failure | Return a typed terminal error, clear the stale in-flight flag and stop simulation. A deterministic disconnected-channel test covers missing acknowledgement and rejected subsequent submission |
 | N-002 | Direct snapshot-store submission at tick 10 after acknowledged tick 20 succeeded as generation 2, allowing stale work to roll back the persisted simulation clock | Reject older ticks before any file publication. The regression first reproduced the rollback, then verified unchanged manifest/state and no orphan file on rejection. Equal-tick final saves and explicit previous-generation recovery remain permitted |
 | N-003 | Native filesystem probe rejected a real ENOSPC because `tempfile` wraps the OS error with path context, retaining `ErrorKind` but hiding `raw_os_error()` | Classify typed `StorageFull`/`PermissionDenied` through the error chain. A real tempfile failure reproduces the lost errno; regressions reject misleading text. The isolated 2026-10-12 tmpfs run verified ENOSPC, EACCES, unchanged acknowledged state, both retries and reopened generation 4 |
+| N-004 | Shutdown accepted a success receipt created after its deadline because it polled before checking time; synchronous final capture could also exhaust the budget and still enqueue a new write | Check time before polling and before returning completion; check the budget before final capture and again before enqueueing. Deterministic channel regressions first reproduced overdue success, then verified rejection, preserved pending state, later draining and no expired submission |
 
 Publication tests also inject Linux `ENOSPC` at the generation and manifest writer
 boundaries. Both preserve the acknowledged generation across reopening and permit
@@ -83,3 +84,20 @@ timezone-aware deadlines, matching scope/probe hashes and exact container owners
 It retains the offline, read-only, unprivileged resource contract and a total
 120-second maximum including cleanup. Unit tests cover invalid scope/deadlines,
 foreign containers, launch/log/removal/verification failures and missing probe events.
+
+N-004's regression creates the deadline before creating the receipt, proving the
+completion is late rather than merely consumed late. `finish_before` now refuses
+an expired pending wait without consuming its queued result. If time expires while
+polling consumes a completion, it returns no success receipt. An idle worker still
+has nothing to wait for; the shutdown caller checks its remaining capture budget.
+`submit_before` rejects a snapshot whose synchronous capture exhausted that budget,
+without enqueueing a request. Neither method cancels an already running filesystem
+operation or prevents OS scheduling pauses; these are honest deadline checks, not
+a hard process-exit-time guarantee. Private red/green regression output is retained
+under `work/native-deadline-20261012/`.
+The updated native shutdown path and synthetic workload also pass startup/restart
+smoke and a 120-second, 100,000-entity run with 60 commits and verified final state.
+The current-revision recovery campaign then passed 24 cycles (twelve SIGKILL,
+twelve SIGTERM) with 10,000 entities, preserving checksums, complete entity state
+and acknowledged ticks. Its exact commands and binary/helper provenance reside
+under `work/native-deadline-20261012/recovery/`; no original-server workload ran.
