@@ -36,7 +36,8 @@ class Fixture:
         self.case: Path = self.root / "work/current-case"
         self.case.mkdir(parents=True)
         self.scope: Path = self.case / "scope.md"
-        _ = self.scope.write_text("Authored current offline scope.")
+        _ = self.scope.write_text("## auth\n- status: granted\n## network_profile\n- mode: offline\n"
+                                 + "## signoff\n- ready_for_act: true\n")
         self.reference: Path = self.root / "icarus-orig" / REFERENCE_EXE
         self.reference.parent.mkdir(parents=True)
         _ = self.reference.write_bytes(b"authored non-executable reference fixture")
@@ -126,6 +127,26 @@ class DockerFixture:
 
 
 class SessionTests(unittest.TestCase):
+    def test_scope_contract_rejects_unsigned_online_and_misplaced_fields(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            fixture = Fixture(directory)
+            valid = fixture.scope.read_text()
+            invalid_scopes = [
+                valid.replace("status: granted", "status: pending"),
+                valid.replace("ready_for_act: true", "ready_for_act: false"),
+                valid.replace("mode: offline", "mode: authorized_target_only"),
+                valid.replace("## auth", "## notes"),
+                valid.replace("- status: granted", "- status: granted\n- status: pending"),
+                "Authored current offline scope.",
+            ]
+            for scope in invalid_scopes:
+                with self.subTest(scope=scope):
+                    _ = fixture.scope.write_text(scope)
+                    fixture.session["scope_sha256"] = digest(fixture.scope)
+                    fixture.write()
+                    with self.assertRaisesRegex(ValueError, "scope"):
+                        _ = fixture.approve()
+
     def test_current_session_rejects_invalid_authorization_and_bindings(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             fixture = Fixture(directory)

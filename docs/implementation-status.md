@@ -8,6 +8,18 @@ performance targets remain unproven. Last reconciled: 2026-10-12.
 
 ## Continuation — 2026-10-12
 
+### Project-local REA tooling
+
+The old reverse-engineering skill package has been replaced with
+[REA](https://github.com/morluto/rea), pinned to `rea-agents@6.4.0` under
+`.agents/rea/`. Codex uses `.codex/config.toml`; Claude uses `.mcp.json` and the
+linked `.claude/skills/reverse-engineer-anything` skill. Both launch through
+`.agents/rea/rea.sh`. The canonical
+[plan](linux-dedicated-server-plan.md#tools-and-reference-environments) records
+locked reinstallation and provider checks. This tooling change does not resume
+the research paused below, qualify the pending v2 retry, or extend historical
+authorization windows. Private inputs, frozen cases and evidence remain retained.
+
 ### Paused checkpoint — 2026-10-12, 21:36 UTC
 
 Paused at the user's request for a new-chat handoff. Workers were interrupted;
