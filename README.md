@@ -11,7 +11,7 @@ See [implementation status](docs/implementation-status.md), the
 
 ## Run the foundation
 
-Requires native Linux and Rust 1.99.0 (pinned with Rustfmt and Clippy). Bevy 0.19.1
+Requires native Linux and Rust 1.99.0 (pinned with Rustfmt and Clippy). Bevy 0.20.0
 uses headless features; no GPU, display, original game files or Proton are required.
 
 ```bash

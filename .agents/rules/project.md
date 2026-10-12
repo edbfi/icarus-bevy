@@ -9,9 +9,12 @@ be demonstrated rather than assumed.
 
 - Use `.agents/skills/bevy/SKILL.md` for Bevy development.
 - The Bevy skill is installed from `edbfi/skills` using `bunx skills`; keep
-  `skills-lock.json` with updates. Its current examples target Bevy 0.20.0, while
-  this application's Cargo manifest still pins 0.19.1. Check version-matched APIs;
-  a skill update alone does not authorize changing the application's engine pin.
+  `skills-lock.json` with updates. The application and skill target Bevy 0.20.0.
+- Target the latest stable project dependencies and Rust toolchain, as requested
+  by the user. Verify current upstream releases, migrate APIs and run checks when
+  updating; retain exact toolchain/release pins and the lockfile for reproducible
+  builds. Handle routine stable upgrades autonomously. Record concrete
+  compatibility blockers instead of silently retaining an obsolete baseline.
 - The reverse-skill package is vendored at `.agents/vendor/reverse-skill/`.
   `.agents/skills/reverse-skill-router` links to its `skills/` directory for
   discovery. Use the canonical vendor path for scripts so package-relative

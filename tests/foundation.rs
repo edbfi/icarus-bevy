@@ -11,7 +11,6 @@ use icarus_bevy::{
         DomainId, EntityRecord, Position, SimulationClock, WorldSnapshot, build_app, capture,
     },
 };
-use sha2::{Digest, Sha256};
 
 fn snapshot(tick: u64) -> WorldSnapshot {
     WorldSnapshot {
@@ -239,7 +238,9 @@ fn future_schema_is_not_silently_rolled_back() {
     let path = directory.path().join("manifest.json");
     let mut manifest: serde_json::Value =
         serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
-    manifest["current"]["sha256"] = format!("{:x}", Sha256::digest(bytes)).into();
+    // Independently calculated with Python hashlib.sha256 over the fixture bytes.
+    manifest["current"]["sha256"] =
+        "1011c893e5d2c9dfc72aa7ebfa6bcc0db3f39447878b37377b24982295e897f9".into();
     fs::write(path, serde_json::to_vec(&manifest).unwrap()).unwrap();
     assert!(
         store
@@ -262,7 +263,9 @@ fn ambiguous_duplicate_fields_recover_previous_instead_of_selecting_a_value() {
     let path = directory.path().join("manifest.json");
     let mut manifest: serde_json::Value =
         serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
-    manifest["current"]["sha256"] = format!("{:x}", Sha256::digest(bytes)).into();
+    // Independently calculated with Python hashlib.sha256 over the fixture bytes.
+    manifest["current"]["sha256"] =
+        "527dc97b422859e4a021519b7a031130a1c45ffde3e9bcb86344d8e643e6d576".into();
     fs::write(path, serde_json::to_vec(&manifest).unwrap()).unwrap();
     let loaded = store.load().unwrap().unwrap();
     assert!(loaded.recovered_previous);

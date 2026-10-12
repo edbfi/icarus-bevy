@@ -106,7 +106,7 @@ pub fn inspect(reader: impl Read) -> Result<EnvelopeInspection> {
     output.truncate(expected);
     // SHA-1 is used only to inspect the legacy format, never for authentication.
     ensure!(
-        format!("{:x}", Sha1::digest(&output)) == blob.hash,
+        crate::hex_lower(&Sha1::digest(&output)) == blob.hash,
         "legacy SHA-1 mismatch"
     );
     Ok(EnvelopeInspection {

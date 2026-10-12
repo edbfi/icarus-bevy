@@ -52,24 +52,26 @@ or reduced functionality without an explicit scope decision.
 
 ### Toolchain
 
-Use Rust **1.99.0**, verified current stable on 2026-10-04, and Bevy **0.19.1**.
-Bevy declares Rust 1.95.0 as its minimum. Build, test, and runtime checks must
+Use Rust **1.99.0** and Bevy **0.20.0**, verified current stable on 2026-10-12.
+Bevy declares Rust 1.97.1 as its minimum. Build, test, and runtime checks must
 demonstrate actual compatibility with 1.99.0.
 
 Pin Rust in `rust-toolchain.toml` with matching Rustfmt and Clippy; use the same
 toolchain for development, CI, benchmarks, and releases. Commit `Cargo.lock` at
-initialization. Adopt newer stable Rust through tested updates rather than a
-floating release-build toolchain. Use version-matched Bevy documentation.
+initialization. Target the latest stable toolchain and project dependencies,
+including Bevy, through tested updates; routine stable upgrades are authorized.
+Verify upstream release metadata, migrate APIs and update pins and the lockfile
+together. Record concrete compatibility blockers when an upgrade cannot pass.
+Use version-matched documentation and keep release builds reproducible.
 
 Sources: [Rust 1.99.0](https://blog.rust-lang.org/2026/10/01/Rust-1.99.0/),
-[Bevy 0.19.1](https://crates.io/crates/bevy/0.19.1).
+[Bevy 0.20.0](https://crates.io/crates/bevy/0.20.0).
 
 The local Bevy skill was refreshed using `bunx skills add edbfi/skills --skill bevy
 --agent codex --copy --yes` from upstream commit
 `69cc23fa1b1bfce68143b2e289826e500b63ef26` on 2026-10-12. Skill version 1.1.0 targets
 Bevy 0.20.0; all 14 installed files match upstream. `skills-lock.json` records the
-source and content hash. The application remains on 0.19.1: use version-matched
-references for implementation and treat any engine migration as separate work.
+source and content hash. The application now targets the same 0.20.0 baseline.
 
 ## Repository, tooling, and authorization
 

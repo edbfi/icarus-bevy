@@ -138,11 +138,12 @@ hashlib.sha256).digest()[:20]`. For `127.0.0.1:12345` at timestamp 123.5 the res
 wrong peer/key, expiration/future boundaries and actual UDP exchanges within a
 Bevy app. Oversized traffic tests check the packet budget and advancing simulation.
 
-New direct dependencies are RustCrypto `hmac` 0.12.1 (MIT OR Apache-2.0) and
-`getrandom` 0.4.3 (MIT OR Apache-2.0, already present transitively). The new transitive
-dependency `subtle` 2.6.1 is BSD-3-Clause. HMAC 0.12.1 uses the same digest 0.10 family
-as the existing SHA-256 dependency. Cargo.lock records registry checksums. Their APIs supply
-[constant-time truncated verification](https://docs.rs/digest/0.10.7/digest/trait.Mac.html)
+The lab uses RustCrypto `hmac` 0.13.0 and `sha2` 0.11.0 with digest 0.11.3,
+plus `getrandom` 0.4.3. Constant-time verification uses `ctutils` 0.4.3 and
+`cmov` 0.5.4; these packages declare MIT OR Apache-2.0 licensing. HMAC construction
+imports `KeyInit` separately from `Mac`. Cargo.lock records registry checksums.
+Their APIs supply
+[constant-time truncated verification](https://docs.rs/digest/0.11.3/digest/trait.Mac.html)
 and [OS randomness](https://docs.rs/getrandom/0.4.3/getrandom/fn.fill.html).
 The lab has not been tested with the stock Windows client; its stricter initial
 packet policy, lack of secret rotation, optional prefixes, restarts and subsequent
