@@ -30,7 +30,7 @@ C001 constructor decoder is built but its exact-window case is not yet run
 
 | Milestone | Status | Evidence or next gate |
 | --- | --- | --- |
-| M0: reference baseline | In progress | 435 files hashed; build 25621760; isolated entry-map startup observed; supplied save integrity/outer format characterized; exact build pairing and matched client pending |
+| M0: reference baseline | In progress | 435 files hashed; build 25621760; isolated entry-map startup observed; supplied save integrity/outer format characterized; client identity checked (F-278); exact build pairing pending |
 | M1: original bug reproduction | Pending | Offline startup did not reproduce reported crashes; controlled workloads still required |
 | M2: interoperability/data feasibility | In progress, partial observations | Stateless exchange observed; authenticated protocol, world-data and import feasibility gates remain open |
 | M3: Bevy gameplay slice | In progress, foundation only | Rust 1.99.0 / Bevy 0.20.0 foundation tested; stock-client slice pending M2 |
@@ -88,7 +88,7 @@ No official server bug is marked reproduced or fixed (F-217).
 
 ## Gates
 
-Every precondition is quoted verbatim in [gates.md](gates.md). The ones that
+Every binding precondition is in [gates.md](gates.md). The ones that
 bind the next task: complete the independent fixture-v2 review and run its ten
 authored modes before preparing any C001 original-code case; do not execute the
 prepared files before that review; preserve the failed nine-mode receipt and

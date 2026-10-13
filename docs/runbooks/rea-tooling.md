@@ -36,11 +36,11 @@ does not mean headless Ghidra is broken. For a justified direct Ghidra fallback,
 resolve the arguments before presenting an analysis command:
 
 ```bash
-
-## Reference environments
-
+JAVA_HOME="$(brew --prefix openjdk@21)/libexec" \
   "$(brew --prefix ghidra)/libexec/support/analyzeHeadless" <arguments>
 ```
+
+## Reference environments
 
 Maintain three environments:
 

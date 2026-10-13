@@ -72,3 +72,6 @@ an unsuccessful cleanup receipt requires investigation before another run.
 
 Networking remains disabled, with no published ports, downloads, identity overrides
 or reference writes. The pinned image is local-only; CPU/memory/PID limits and
+3 GiB available-memory / 30 GiB disk floors remain enforced. The launcher has no
+mode for mounting private user saves. Connected Windows-client tests and matched
+save-load comparisons require their own concrete experiment setup.

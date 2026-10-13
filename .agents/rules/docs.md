@@ -17,7 +17,7 @@ rules through prek and CI; the rest are reviewed.
 | --- | --- |
 | Goal, milestones, exit criteria | `docs/linux-dedicated-server-plan.md` |
 | What works, what does not, next tasks | `docs/implementation-status.md` (fixed H2 set) |
-| Do-not-run preconditions, verbatim | `docs/gates.md` |
+| Preconditions that block actions, grouped by action | `docs/gates.md` |
 | Operating procedures and commands | `docs/runbooks/` |
 | Durable technical findings per format or protocol | `docs/specs/<area>/` (fixed H2 set) |
 | One row per conclusion, bug, compatibility item, open question | `docs/ledgers/` |
