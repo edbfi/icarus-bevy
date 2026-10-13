@@ -51,7 +51,7 @@ No official server bug is marked reproduced or fixed (F-217).
 - Validates configuration, applies CLI overrides and inspects config without writing (F-226).
 - Runs a fixed-step ECS loop with stable authored IDs, coherent snapshots and bounded catch-up counters (F-227).
 - Saves asynchronously with a writer lock, checksummed generations and atomic manifest publication (F-228).
-- Keeps two generations and recovers; corrupt/missing manifests, noncanonical checksum fields and unsupported schemas fail closed (F-228, F-229, F-417).
+- Keeps two generations and recovers; corrupt/missing manifests, noncanonical checksum fields and unsupported schemas fail closed (F-228, F-229, F-417, F-418).
 - Rejects stale snapshots and stops simulation on terminal save-worker disconnect (F-232).
 - Performs a final save and bounded shutdown on SIGINT/SIGTERM with JSON diagnostics (F-230, F-233).
 - 120.157 s synthetic run: 100,000 entities, 60 saves, zero deadline misses and clamped frames (F-234).
