@@ -8,6 +8,29 @@ performance targets remain unproven. Last reconciled: 2026-10-13.
 
 ## Continuation — 2026-10-12
 
+### World named local table pair — 2026-10-13, 06:12 UTC
+
+The fresh 40-output/6-lookahead case keeps the same 46 physical bytes and replays
+every earlier six-instruction record, operand, p-code operation and span hash
+before evaluating new output. Eight instructions / 25 p-code operations consume
+39 bytes. An eight-byte store at `0x143ca5a79` now qualifies the named secondary
+FNetworkNotify constant through the same unchanged unknown base as the primary
+store at `0x143ca5a64`: displacements `0` and `0x28`. The next instruction at
+`0x143ca5a81` crosses the nominal 40-byte output end; no effects are inferred.
+
+All 3,179 bindings remain unchanged and owned cleanup passes. Eleven real authored
+fixtures run from a captured, unchanged checker bundle; five injected guards and
+35 independent core plus 22 wrapper checks pass. The lead reproduces the eighteen
+mutation postrun proof without writes. Evidence:
+`work/control-world-secondary-store-20261013/`, payload SHA-256
+`c6637e7d8b68187ea5947c30ce89b22489c06d83eab8d4e25794876cddd90073`;
+additive interpretation SHA-256
+`09206f600bb385720cf9487309d744887fb21750cf68c65787d9fb34d3d70653`.
+World and Pending both have local zero/+0x28 store geometry. That equality cannot
+identify the older owner. Receiver, ABI, object layout, complete constructor,
+cross-call provenance and executed dispatch remain unqualified. Preserve the
+earlier partial result; its lookahead was not retroactively promoted.
+
 ### World local-store partial result — 2026-10-13, 05:15 UTC
 
 A fresh single-window decoder qualifies six instructions / 19 p-code operations
@@ -1479,10 +1502,11 @@ supported, and no ICARUS performance or stability improvement has been measured.
    alone do not prove bounded native flow. Current paired-client symbols and two
    exact named notify slots now guide bounded constructor metadata/instruction
    comparison, without establishing older owner identity or object offsets.
-   The accepted continuation windows now qualify local Pending stores of its named
-   primary/FNetworkNotify constants through an unchanged unknown base at zero/+0x28.
-   Both windows stop at calls. Establish base origin and a concrete receiver/type
-   join without carrying unproved provenance across those calls.
+   The accepted continuation windows qualify local Pending and World stores of
+   their named primary/FNetworkNotify constants through unchanged unknown bases
+   at zero/+0x28. The equal geometry does not discriminate the older owner.
+   Establish base origin and a same-build receiver/type-registration join without
+   carrying unproved provenance across calls.
    Establish actual owner/caller
    evidence before inferring the dispatcher caller. Bind the concrete archive/outer
    framing path before promoting the experimental
