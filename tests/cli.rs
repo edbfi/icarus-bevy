@@ -91,13 +91,17 @@ struct RunningServer {
 
 impl RunningServer {
     fn start(directory: &std::path::Path) -> Self {
+        Self::start_with_autosave(directory, "1")
+    }
+
+    fn start_with_autosave(directory: &std::path::Path, autosave: &str) -> Self {
         let mut child = cli()
             .args([
                 "run",
                 "--tick-hz",
                 "120",
                 "--autosave-seconds",
-                "1",
+                autosave,
                 "--data-dir",
             ])
             .arg(directory)
@@ -187,4 +191,96 @@ fn abrupt_process_death_preserves_acknowledged_autosave() {
     let loaded = store.load().unwrap().unwrap();
     assert!(!loaded.recovered_previous);
     assert!(loaded.snapshot.tick > 0);
+}
+
+#[test]
+fn special_snapshot_inputs_fail_promptly_without_publication() {
+    for name in ["manifest.json", "snapshot-1.json", "server.lock"] {
+        let directory = tempfile::tempdir().unwrap();
+        if name == "snapshot-1.json" {
+            fs::write(
+                directory.path().join("manifest.json"),
+                br#"{"schema_version":1,"current":{"number":1,"sha256":"unused"},"previous":null}"#,
+            )
+            .unwrap();
+        }
+        let path = directory.path().join(name);
+        rustix::fs::mkfifoat(
+            rustix::fs::CWD,
+            &path,
+            rustix::fs::Mode::RUSR | rustix::fs::Mode::WUSR,
+        )
+        .unwrap();
+        let manifest_before = (name == "snapshot-1.json")
+            .then(|| fs::read(directory.path().join("manifest.json")).unwrap());
+        let mut server = RunningServer::start(directory.path());
+        assert!(!server.wait_exit().success(), "accepted FIFO {name}");
+        let logs = server.logs.iter().collect::<Vec<_>>().join("\n");
+        assert!(logs.contains("regular file"), "{name}: {logs}");
+        assert!(!logs.contains("save_committed"));
+        assert!(!logs.contains("\"event\":\"started\""));
+        use std::os::unix::fs::FileTypeExt;
+        assert!(fs::symlink_metadata(path).unwrap().file_type().is_fifo());
+        if let Some(bytes) = manifest_before {
+            assert_eq!(
+                fs::read(directory.path().join("manifest.json")).unwrap(),
+                bytes
+            );
+        }
+        assert!(!directory.path().join("snapshot-2.json").exists());
+    }
+}
+
+#[test]
+fn fifo_current_generation_recovers_regular_previous_generation() {
+    use icarus_bevy::simulation::{DomainId, EntityRecord, Position, WorldSnapshot};
+    let directory = tempfile::tempdir().unwrap();
+    let previous = WorldSnapshot {
+        tick: 10,
+        entities: vec![EntityRecord {
+            id: DomainId(1),
+            position: Position([1.0, 2.0, 3.0]),
+        }],
+        ..Default::default()
+    };
+    let current = WorldSnapshot {
+        tick: 20,
+        entities: vec![EntityRecord {
+            id: DomainId(2),
+            position: Position([4.0, 5.0, 6.0]),
+        }],
+        ..Default::default()
+    };
+    let mut store = icarus_bevy::persistence::SnapshotStore::open(directory.path()).unwrap();
+    store.save(&previous).unwrap();
+    store.save(&current).unwrap();
+    drop(store);
+    let manifest = fs::read(directory.path().join("manifest.json")).unwrap();
+    let previous_bytes = fs::read(directory.path().join("snapshot-1.json")).unwrap();
+    let path = directory.path().join("snapshot-2.json");
+    fs::remove_file(&path).unwrap();
+    rustix::fs::mkfifoat(
+        rustix::fs::CWD,
+        &path,
+        rustix::fs::Mode::RUSR | rustix::fs::Mode::WUSR,
+    )
+    .unwrap();
+    let mut server = RunningServer::start_with_autosave(directory.path(), "3600");
+    server.wait_event("recovered_previous_generation");
+    server.wait_event("started");
+    assert_eq!(
+        fs::read(directory.path().join("manifest.json")).unwrap(),
+        manifest
+    );
+    assert_eq!(
+        fs::read(directory.path().join("snapshot-1.json")).unwrap(),
+        previous_bytes
+    );
+    server.signal("-TERM");
+    assert!(server.wait_exit().success());
+    server.wait_event("save_committed");
+    let store = icarus_bevy::persistence::SnapshotStore::open(directory.path()).unwrap();
+    let loaded = store.load().unwrap().unwrap();
+    assert!(loaded.snapshot.tick >= previous.tick);
+    assert_eq!(loaded.snapshot.entities, previous.entities);
 }

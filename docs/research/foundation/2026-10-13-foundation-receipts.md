@@ -19,6 +19,8 @@ Full text: fabd2f9:docs/implementation-status.md lines 1-13 and 941-1590.
 - Bevy skill updated from a pinned upstream commit with exact file match (F-220, M-131).
 - Authored Python passes basedpyright recommended at 0 errors / 0 warnings (F-224, F-225).
 - Config validation, fixed-step loop, checksummed atomic saves, two-generation recovery, fail-closed manifests, signal shutdown (F-226 to F-230).
+- FIFO manifest/generation startup hangs reproduced; opened-handle regular-file checks and nonblocking opens reject special inputs while retaining valid previous state (F-405; M-175).
+- Offline execution resumed; source/runtime scopes remain separate from connected lab authority (F-404; M-174).
 - Stale-snapshot rejection, save-worker disconnect stop and N-004 shutdown deadline fix are regression-tested (F-232, F-233, M-165).
 - Synthetic 120.157 s run and 24-cycle kill/restart campaign pass on the N-004 revision (F-234, F-235, M-132).
 - Real ENOSPC/EACCES faults preserve acknowledged state (F-239, M-138).

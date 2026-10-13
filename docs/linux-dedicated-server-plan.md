@@ -7,7 +7,7 @@ what is next; [gates](gates.md) lists preconditions that block actions;
 authorizes no tool execution or target activity. Full text before condensation:
 d5b0ae6:docs/linux-dedicated-server-plan.md.
 
-Research is paused at the user's request (2026-10-13). A pause or resumption
+Offline research resumed under the execution instruction (F-404). A resumption
 does not extend historical runtime authorization windows; those records are in
 [docs/history](history/authorizations-index.md).
 

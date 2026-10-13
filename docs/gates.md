@@ -9,10 +9,12 @@ Last reconciled: 2026-10-13
 
 ## Before any C001 original-code case
 
-- Complete independent review of corrected C001 fixture v2, then run its ten
-  authored modes under a fresh owned/offline source-only case (U-001).
-- Do not execute these prepared files without the remaining review/fixture gates.
-- Preserve that failed receipt and separate strict replay; neither is a passing
+- Fixture-v2 independent review and all ten fresh authored modes are qualified
+  (F-406, F-407; U-001 resolved). Preserve their exact bindings; changes require
+  renewed qualification.
+- Target execution still requires separate exact-byte case review and fresh
+  scope/session; fixture qualification supplies no construction proof.
+- Preserve the failed nine-mode receipt and separate strict replay; neither is a passing
   original suite.
 - Prepare/review a new C001 original-code case for the exact 305/296 physical
   bytes, zero outside lookahead, no Program/database and no flow following;
