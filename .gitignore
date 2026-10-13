@@ -42,3 +42,6 @@ __pycache__/
 # Project-local REA runtime dependencies and state
 /.agents/rea/node_modules/
 /.agents/rea/.npm-cache/
+
+# uv writes a lockfile when running uvx against pyproject.toml; not a project lockfile.
+uv.lock
