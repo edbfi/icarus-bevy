@@ -25,10 +25,12 @@ Full text: fabd2f9:docs/implementation-status.md lines 1-13 and 941-1590.
 - Offline execution resumed; source/runtime scopes remain separate from connected lab authority (F-404; M-174).
 - Stale-snapshot rejection, save-worker disconnect stop and N-004 shutdown deadline fix are regression-tested (F-232, F-233, M-165).
 - Synthetic 120.157 s run and 24-cycle kill/restart campaign pass on the N-004 revision (F-234, F-235, M-132).
+- Current 120.138 s workload passes at 100,000 entities with 60 saves, zero missed ticks/clamps, exact independent two-generation checks and 28,924 KiB whole-process peak RSS; source-only reviews were concurrent (F-427; M-212, M-213).
 - Real ENOSPC/EACCES faults preserve acknowledged state (F-239, M-138).
 - Envelope inspection, N-005 UTF-8 validation, root-tag and recorder framing match independent scans on both supplied copies (F-241 to F-245, M-139 to M-141).
 - Envelope object admission and malformed-input privacy regressions pass across all modes/encodings (F-411, F-412; M-182).
 - Native manifest/header/snapshot parse diagnostics drop raw Serde strings/keys and causes; eight disclosure reproductions and API/CLI preservation regressions pass, including both corrupt generations (F-423; M-203, M-204).
+- Release build and nine malformed cases pass with stable binary/input hashes, sanitized diagnostics and unchanged files; both corrupt generations report separately (F-425; M-207, M-208).
 - Current FIFO fix release build/save-restart smoke and release FIFO rejection pass (F-405; M-183).
 - NameProperty, UInt32Property and Float/Text headers plus bounded component, struct-array and Int-array APIs are tested (F-246 to F-249, F-206, F-207, F-198, F-200).
 - Float/Text and struct-array increments are pushed; all checkpoint commits through the reconciled head were delivered (F-204, F-205, M-109 to M-111).
@@ -79,7 +81,8 @@ Full text: fabd2f9:docs/implementation-status.md lines 1-13 and 941-1590.
 ## Receipts
 
 - Manifest digest admission reproduction/review/regressions (M-191); before/after release cases and recovery (M-192).
-- Native JSON diagnostic source review, disclosure reproduction and regressions (M-203, M-204).
+- Native JSON diagnostic source review, disclosure reproduction and regressions (M-203, M-204); independent release validator review and execution (M-207, M-208).
+- Current synthetic workload validator review and execution (M-212, M-213).
 - Dependency refresh and smoke (M-078, M-184); native deadline and recovery runs (M-132, M-133).
 - Historical soak, provenance and start commit (M-134 to M-136); snapshot measurement (M-137).
 - Filesystem fault probe (M-138); codec review (M-139); root tags (M-140); recorders (M-141).
