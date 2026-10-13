@@ -2,19 +2,17 @@
 //!
 //! Recovered field names and algorithm observations are documented in
 //! `docs/specs/save-format/prospect-envelope.md`. Payload serialization remains unknown.
-use std::{fmt, io::Read, marker::PhantomData};
+use std::io::Read;
 
 use anyhow::{Context, Result, ensure};
 use base64::{Engine, engine::general_purpose::STANDARD};
 use flate2::{Decompress, FlushDecompress, Status};
-use serde::{
-    Deserialize, Deserializer, Serialize,
-    de::{MapAccess, Visitor, value::MapAccessDeserializer},
-};
+use serde::{Deserialize, Serialize};
 use sha1::{Digest, Sha1};
 
 use crate::experimental::recorders::{RecorderSummary, read_recorders};
 use crate::experimental::tagged::{RootTagSummary, TagProfile, read_root};
+use crate::json::JsonObject;
 
 /// Bounded research policy, not a recovered ICARUS format limit. Observed inputs
 /// reached 2,239,534 raw bytes and 19,131,027 decompressed bytes.
@@ -25,33 +23,6 @@ pub const MAX_PAYLOAD_BYTES: usize = 32 * 1024 * 1024;
 struct Envelope {
     #[serde(rename = "ProspectBlob")]
     blob: JsonObject<Blob>,
-}
-
-// Derived struct visitors also accept positional sequences. This envelope
-// requires named JSON object fields at both the root and blob boundaries.
-struct JsonObject<T>(T);
-
-impl<'de, T: Deserialize<'de>> Deserialize<'de> for JsonObject<T> {
-    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> std::result::Result<Self, D::Error> {
-        struct ObjectVisitor<T>(PhantomData<T>);
-
-        impl<'de, T: Deserialize<'de>> Visitor<'de> for ObjectVisitor<T> {
-            type Value = JsonObject<T>;
-
-            fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-                formatter.write_str("a JSON object")
-            }
-
-            fn visit_map<A: MapAccess<'de>>(
-                self,
-                map: A,
-            ) -> std::result::Result<Self::Value, A::Error> {
-                T::deserialize(MapAccessDeserializer::new(map)).map(JsonObject)
-            }
-        }
-
-        deserializer.deserialize_map(ObjectVisitor(PhantomData))
-    }
 }
 
 #[derive(Deserialize)]

@@ -54,9 +54,11 @@ No official server bug is marked reproduced or fixed (F-217).
 - Runs a fixed-step ECS loop with stable authored IDs, coherent snapshots and bounded catch-up counters (F-227).
 - Saves asynchronously with a writer lock, checksummed generations and atomic manifest publication (F-228).
 - Keeps two generations and recovers; corrupt/missing manifests, noncanonical checksum fields and unsupported schemas fail closed (F-228, F-229, F-417, F-418).
+- Requires objects at native storage/record boundaries; malformed array headers recover valid preceding state, while future-schema objects refuse rollback (F-428).
 - Rejects stale snapshots and stops simulation on terminal save-worker disconnect (F-232).
 - Performs a final save and bounded shutdown on SIGINT/SIGTERM with JSON diagnostics (F-230, F-233).
-- Current 120.138 s synthetic run: 100,000 entities, 60 saves, exact recovered state and zero deadline misses or clamped frames (F-427); earlier result retained (F-234).
+- 120.138 s synthetic run before the object-admission change: 100,000 entities, 60 saves, exact recovery and zero deadline misses/clamps (F-427); earlier result retained (F-234).
+- Updated reader/writer passes 22 generations at 100,000 entities with exact state verification; 20 measured save/load pairs remain synthetic evidence (F-429).
 - Survives 24 SIGKILL/SIGTERM restart cycles at 10,000 entities with acknowledged ticks preserved (F-235, F-236).
 - Historical 7,200 s soak at 100,000 entities passed at an older revision (F-237).
 - Keeps acknowledged state through real ENOSPC/EACCES faults on tmpfs and reopens cleanly (F-239).
