@@ -29,9 +29,13 @@ they do not establish all archive flags or runtime callers.
 
 ## Deliberate strict subset
 
-`experimental::archive` implements both explicit byte orders, preserving UTF-16
-code units in a `Vec<u16>` and reporting the exact consumed byte count. It does not
-silently convert invalid surrogate sequences to a Rust `String`. Following fields
+`experimental::archive::read_string_frame` validates both explicit byte orders
+without allocating on success. Its private borrowed frame exposes original
+prefix/payload/content/terminator spans, signed/unit counts, encoding and consumed
+bytes, with allocation-free UTF-16 unit iteration. Raw frames implement neither
+`Debug` nor `Serialize`. The existing `decode_string` materializes those validated
+units in its `Vec<u16>` when ownership is needed. Neither reader
+silently converts invalid surrogate sequences to a Rust `String`. Following fields
 remain untouched. Empty output uses count zero; ASCII is preferred for writing.
 Forced-wide output is not implemented.
 
@@ -51,6 +55,20 @@ into the test suite.
 ```bash
 cargo test --locked --test archive
 ```
+
+The borrowed-frame migration preserves the prior strict decoder's results and
+error precedence: count/limit/payload checks, narrow ASCII, final terminator,
+embedded NUL, then U+FFFF. A retained pre-change decoder oracle agrees across
+10,752 authored corpus cases, with additional independent span/empty/surrogate/
+maximum/truncation/privacy fixtures. The control-body reader uses the borrowed
+frame directly, removing its temporary decoded-unit vector and count reread;
+its exact EOF and neutral-summary policy are unchanged. This is a native code
+allocation reduction, not an original-server benchmark or interoperability result.
+Independent source review, focused tests, full manual checks, release build and
+native save/restart smoke pass. Exact source/library snapshots and four changed
+bindings are recorded in `work/archive-frame-transition-20261013/`; all 2,085
+other paths in the preceding 2,089-path save manifest remain exact. Old helpers
+keep their separately identified library snapshots.
 
 Before promoting this primitive into negotiation, validate the actual archive
 flags and byte order from controlled stock-client traffic, decide each normalization

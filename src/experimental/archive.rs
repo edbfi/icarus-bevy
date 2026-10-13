@@ -21,12 +21,107 @@ pub struct ArchiveString {
     pub consumed: usize,
 }
 
-/// Decode zero length, positive ASCII count or negative UTF-16 count.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum StringEncoding {
+    /// Zero signed count, without a payload or terminator.
+    Empty,
+    Narrow,
+    Wide,
+}
+
+/// Validated original spans, deliberately neither Debug nor Serialize.
+/// Validation and unit iteration do not allocate or normalize text.
+pub struct ArchiveStringFrame<'a> {
+    frame: &'a [u8],
+    count: i32,
+    order: ByteOrder,
+}
+
+impl<'a> ArchiveStringFrame<'a> {
+    pub fn frame(&self) -> &'a [u8] {
+        self.frame
+    }
+
+    pub fn prefix(&self) -> &'a [u8] {
+        &self.frame[..4]
+    }
+
+    /// Original signed count, including the terminator for nonzero counts.
+    pub fn signed_count(&self) -> i32 {
+        self.count
+    }
+
+    pub fn declared_units(&self) -> usize {
+        self.count.unsigned_abs() as usize
+    }
+
+    /// Number of content units, excluding the terminator.
+    pub fn unit_count(&self) -> usize {
+        self.declared_units().saturating_sub(1)
+    }
+
+    pub fn encoding(&self) -> StringEncoding {
+        match self.count {
+            0 => StringEncoding::Empty,
+            1.. => StringEncoding::Narrow,
+            _ => StringEncoding::Wide,
+        }
+    }
+
+    /// Original payload, including the terminator when present.
+    pub fn payload(&self) -> &'a [u8] {
+        &self.frame[4..]
+    }
+
+    pub fn content(&self) -> &'a [u8] {
+        let payload = self.payload();
+        let terminator_bytes = match self.encoding() {
+            StringEncoding::Empty => 0,
+            StringEncoding::Narrow => 1,
+            StringEncoding::Wide => 2,
+        };
+        &payload[..payload.len() - terminator_bytes]
+    }
+
+    pub fn terminator(&self) -> Option<&'a [u8]> {
+        match self.encoding() {
+            StringEncoding::Empty => None,
+            StringEncoding::Narrow => Some(&self.frame[self.frame.len() - 1..]),
+            StringEncoding::Wide => Some(&self.frame[self.frame.len() - 2..]),
+        }
+    }
+
+    pub fn consumed(&self) -> usize {
+        self.frame.len()
+    }
+
+    /// Iterate copied UTF-16 content units without allocating. Unpaired
+    /// surrogates are preserved; this is not Unicode scalar/text conversion.
+    pub fn units(&self) -> impl DoubleEndedIterator<Item = u16> + ExactSizeIterator + '_ {
+        let wide = self.count < 0;
+        self.content()
+            .chunks(if wide { 2 } else { 1 })
+            .map(move |bytes| {
+                if wide {
+                    let unit = [bytes[0], bytes[1]];
+                    match self.order {
+                        ByteOrder::Little => u16::from_le_bytes(unit),
+                        ByteOrder::Big => u16::from_be_bytes(unit),
+                    }
+                } else {
+                    u16::from(bytes[0])
+                }
+            })
+    }
+}
+
+/// Borrow a validated zero-length, positive ASCII or negative UTF-16 frame.
 ///
 /// Nonzero counts include the terminator. Unlike the observed original reader,
 /// this strict subset rejects missing/embedded NUL, U+FFFF and non-ASCII narrow
-/// bytes. It does not attempt identity-changing normalization.
-pub fn decode_string(input: &[u8], order: ByteOrder) -> Result<ArchiveString> {
+/// bytes. No success-path heap allocation or normalization occurs. Following
+/// fields are untouched; exact input EOF is the caller's policy.
+pub fn read_string_frame(input: &[u8], order: ByteOrder) -> Result<ArchiveStringFrame<'_>> {
     let prefix: [u8; 4] = input
         .get(..4)
         .ok_or_else(|| anyhow::anyhow!("truncated archive string count"))?
@@ -41,42 +136,56 @@ pub fn decode_string(input: &[u8], order: ByteOrder) -> Result<ArchiveString> {
         "archive string exceeds research unit limit"
     );
     if magnitude == 0 {
-        return Ok(ArchiveString {
-            units: Vec::new(),
-            consumed: 4,
+        return Ok(ArchiveStringFrame {
+            frame: &input[..4],
+            count,
+            order,
         });
     }
     let wide = count < 0;
-    // The unit limit bounds this multiplication and every later allocation.
+    // The unit limit bounds this multiplication and every later slice.
     let consumed = 4 + magnitude * if wide { 2 } else { 1 };
     let payload = input
         .get(4..consumed)
         .ok_or_else(|| anyhow::anyhow!("truncated archive string payload"))?;
-    let units: Vec<u16> = if wide {
-        payload
-            .as_chunks::<2>()
-            .0
-            .iter()
-            .map(|bytes| match order {
-                ByteOrder::Little => u16::from_le_bytes(*bytes),
-                ByteOrder::Big => u16::from_be_bytes(*bytes),
-            })
-            .collect()
-    } else {
+    if !wide {
         ensure!(
             payload.is_ascii(),
             "non-ASCII narrow archive string unsupported"
         );
-        payload.iter().copied().map(u16::from).collect()
+    }
+    let frame = ArchiveStringFrame {
+        frame: &input[..consumed],
+        count,
+        order,
     };
     ensure!(
-        units.last() == Some(&0),
+        frame
+            .terminator()
+            .is_some_and(|bytes| bytes.iter().all(|byte| *byte == 0)),
         "missing archive string terminator"
     );
-    let mut units = units;
-    units.pop();
-    validate_units(&units)?;
-    Ok(ArchiveString { units, consumed })
+    // Preserve legacy precedence: missing terminator, then any embedded NUL,
+    // then U+FFFF, even when U+FFFF occurs before an embedded NUL in the source.
+    ensure!(
+        frame.units().all(|unit| unit != 0),
+        "embedded archive string NUL unsupported"
+    );
+    ensure!(
+        frame.units().all(|unit| unit != 0xffff),
+        "archive string U+FFFF normalization unsupported"
+    );
+    Ok(frame)
+}
+
+/// Materialize the strict frame's UTF-16 content units when the caller needs
+/// owned units. Acceptance, error precedence and consumed bytes match framing.
+pub fn decode_string(input: &[u8], order: ByteOrder) -> Result<ArchiveString> {
+    let frame = read_string_frame(input, order)?;
+    Ok(ArchiveString {
+        units: frame.units().collect(),
+        consumed: frame.consumed(),
+    })
 }
 
 /// Encode the strict subset with ASCII preferred and UTF-16 for other units.

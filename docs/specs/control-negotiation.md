@@ -132,6 +132,14 @@ release build and native save/restart smoke pass. Evidence and immutable
 source/library transitions: `work/protocol-next-increment-20261013/`.
 No original control message, live reference session or stock client was used.
 
+The subsequent [borrowed string-frame API](archive-string.md#deliberate-strict-subset)
+removes the temporary token-unit vector and signed-count reread. Successful body
+validation now allocates no heap storage. Nine control tests, six new frame tests
+and the three existing archive tests pass; full manual checks, independent review,
+release build and native restart also pass. Public fields, errors, EOF, byte cap and
+false compatibility/identity/admission flags are unchanged. Exact transitions:
+`work/archive-frame-transition-20261013/`. No reference/client result is promoted.
+
 A bounded [caller investigation](../research/2026-10-12-control-caller-limit.md)
 encountered REA provider startup timeouts. A separately reviewed direct fallback
 queried the retained database without analysis and found one non-call reference

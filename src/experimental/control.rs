@@ -7,7 +7,7 @@
 use anyhow::{Context, Result, ensure};
 use serde::Serialize;
 
-use super::archive::{ByteOrder, MAX_STRING_UNITS, decode_string};
+use super::archive::{ByteOrder, MAX_STRING_UNITS, StringEncoding, read_string_frame};
 
 const PREFIX_BYTES: usize = 5;
 /// Research ceiling derived from the existing string-unit cap, including its
@@ -114,25 +114,17 @@ pub fn read_initial_control_body(input: &[u8], order: ByteOrder) -> Result<Initi
         ByteOrder::Big => u32::from_be_bytes(version),
     };
     let token = &input[PREFIX_BYTES..];
-    let decoded = decode_string(token, order).context("invalid initial control token frame")?;
+    let frame = read_string_frame(token, order).context("invalid initial control token frame")?;
     ensure!(
-        decoded.consumed == token.len(),
+        frame.consumed() == token.len(),
         "trailing data after initial control token"
     );
-    // Successful decode checked the four-byte count and entire declared frame.
-    let count: [u8; 4] = token[..4].try_into()?;
-    let count = match order {
-        ByteOrder::Little => i32::from_le_bytes(count),
-        ByteOrder::Big => i32::from_be_bytes(count),
+    let token_encoding = match frame.encoding() {
+        StringEncoding::Empty => TokenEncoding::Empty,
+        StringEncoding::Narrow => TokenEncoding::Narrow,
+        StringEncoding::Wide => TokenEncoding::Wide,
     };
-    let token_encoding = match count {
-        0 => TokenEncoding::Empty,
-        1.. => TokenEncoding::Narrow,
-        _ => TokenEncoding::Wide,
-    };
-    let token_units = decoded.units.len();
-    // Retain only the original frame and aggregate structure, never decoded units.
-    drop(decoded);
+    let token_units = frame.unit_count();
     Ok(InitialControlBody {
         body: input,
         remote_version,
