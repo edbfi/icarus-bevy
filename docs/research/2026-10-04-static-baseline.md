@@ -1,5 +1,10 @@
 # Static baseline: build 25621760
 
+Historical baseline — 2026-10-04. Authorization status and unknowns below describe
+this initial static batch. Later [startup observations](2026-10-04-offline-startup-report.md)
+record the reported engine version. See the
+[current checkpoint](../implementation-status.md) for pending work and pause status.
+
 This report records offline static observations. It does not establish a matched
 client build, runtime compatibility, a reproduced failure, or a performance result.
 

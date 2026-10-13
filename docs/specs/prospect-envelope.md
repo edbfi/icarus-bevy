@@ -19,6 +19,9 @@ a reference load. Independent bounded inspection of all twelve prospect
 documents verified their envelopes. The inner serialized world, content references,
 version migration and stock-client round trips remain unresolved.
 
+Validation statements below describe the cited historical runs. Current priorities
+and the research pause are tracked in the [implementation checkpoint](../implementation-status.md).
+
 ## Observed schema and call path
 
 The JSON conversion at `0x141800e40` uses the reflected `ProspectSaveData` type.
@@ -113,8 +116,8 @@ unknown because the inner archive is binary and has not been schema-decoded.
 No explicit outer build/save-version marker was found. The user identifies the
 save's “latest” release as build 25793767/version `3.0.31.158478-rel-DangerousHorizons`.
 The preserved executable and static addresses belong to older build 25621760;
-schema agreement does not establish cross-build compatibility. Ownership fidelity, character
-profile linkage, content references, binary field semantics and unknown fields
+schema agreement does not establish cross-build compatibility. Ownership fidelity,
+character profile linkage, content references, binary field semantics and unknown fields
 remain unsupported; envelope success must never be reported as world import.
 
 ## Dependencies and tests

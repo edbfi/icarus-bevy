@@ -1,5 +1,10 @@
 # Original server inventory
 
+Historical inventory — 2026-10-04. Unknowns below describe this inventory stage;
+the later [static baseline](2026-10-04-static-baseline.md) records manifest
+inspection. See the [current checkpoint](../implementation-status.md) for pending
+work and pause status. Reproduction requires a fresh authorized case.
+
 The authorized offline inventory contains **435 files**, totaling **10,443,211,803
 bytes**. This establishes a reproducible local file baseline; it does not establish
 the official release version, protocol, runtime dependencies, or any server bug.

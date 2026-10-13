@@ -6,13 +6,18 @@ protocol interoperability, authentication, gameplay, world-data parity and
 official-save import have not been demonstrated. Release reliability and
 performance targets remain unproven. Last reconciled: 2026-10-13.
 
+The current paused checkpoint governs pending work. Later sections retain dated
+observations, failures and validation at each recorded revision; their next-step
+instructions and passing checks are historical unless confirmed in that checkpoint.
+Documentation cleanup does not rerun or promote those research results.
+
 ## Continuation — 2026-10-12
 
 ### Current paused checkpoint — 2026-10-13, 06:28 UTC
 
-Paused at the user's request. Workers are interrupted; process inspection finds
-no research JVM, Cargo build or native server running. Completed work through
-`cfa365d` is pushed. This pause record will be committed and pushed separately.
+Paused at the user's request. At this checkpoint, workers were interrupted and
+process inspection found no research JVM, Cargo build or native server running.
+Completed work through `cfa365d` was pushed; commit `771707c` records the pause.
 The foundation remains nonplayable, with no complete protocol/authentication,
 replication, world/gameplay, official-save import or matched performance proof.
 
@@ -293,7 +298,7 @@ preserved v2 guard/compile receipts and both preparation revisions. Independent
 engine interpretation SHA-256:
 `960e7f1ed944f65f06e33992fccce6976bbb96a1ad5331cdb77c13e7d92e0f53`.
 The next target case needs fresh scope, bindings and original-byte joins; fixture
-success does not establish constructor behaviour or network compatibility.
+success does not establish constructor behavior or network compatibility.
 
 ### C028 direct child leaves — 2026-10-13, 03:12 UTC
 
@@ -778,7 +783,7 @@ materialization of `0x145468180`, without object-store or owner proof.
 All 523 bindings and owned cleanup pass. The first attempt's fixture-class
 contamination is preserved separately; source-only script isolation fixes that
 failure. A forced metadata decompilation warns of blocks beyond its configured
-range, so it remains a limited lead. Direct operand/pcode checks precede any owner
+range, so it remains a limited lead. Direct operand/p-code checks precede any owner
 or archive conclusion. See the [control report](research/2026-10-12-control-caller-limit.md#targeted-instruction-context-and-preserved-failed-attempt).
 
 The subsequent instruction-only case validates eleven byte-matched instructions
@@ -1242,11 +1247,14 @@ The 30 Hz development rate is provisional, not a discovered ICARUS property.
 Native snapshot version 1 stores authored foundation records; it is not the ICARUS
 save format. No official server bugs are marked reproduced or fixed.
 
-See the [full plan](linux-dedicated-server-plan.md) for the active work order and
+See the [canonical plan](linux-dedicated-server-plan.md) for the work order and
 autonomous execution policy. The October 4 authorization and checkpoint documents
 record historical research batches; the overnight runtime window has expired.
 
 ## Implemented and checked
+
+Validation below belongs to the recorded increments and evidence cases. Test
+counts and library hashes are historical receipts, not a fresh aggregate result.
 
 - Pinned Rust 1.99.0, Bevy 0.20.0, headless features, committed Cargo lockfile.
 - Local Bevy skill updated from `edbfi/skills` commit `69cc23f` using `bunx skills`,
@@ -1398,6 +1406,10 @@ record historical research batches; the overnight runtime window has expired.
 
 ## Reference evidence
 
+This summary retains the scope of each recorded case. Later qualifications appear
+in the [continuation](#continuation--2026-10-12); earlier coverage counts and pending
+steps below are historical.
+
 - [Stateless handshake](specs/stateless-handshake.md): original-server challenge,
   cookie echo and acknowledgement observed in isolation. Steam authentication was
   inactive; this did not establish a stock-client or authenticated session.
@@ -1523,12 +1535,15 @@ supported, and no ICARUS performance or stability improvement has been measured.
 
 1. Establish C001's complete concrete construction/vtable/archive-dispatch bridge
    using retained exact native getter/callback/constructor seeds and fresh bounded
-   metadata. Exact 305/296-byte intervals now bound those seeds; recover the complete
-   retained instruction listing and account for reachable paths before claiming the
-   bridge. The first readonly listing query failed without a diagnostic stage;
-   preserve it. The fresh diagnostic variant locates the first listing-entry
+   metadata. Exact 305/296-byte intervals now bound those seeds; recover bounded
+   instruction evidence within those exact physical windows. Complete construction
+   and reachable-path proof remain separate gates. The first readonly listing query
+   failed without a diagnostic stage; preserve it. The fresh diagnostic variant locates the first listing-entry
    operation/check rejection without establishing its cause. A separately tested
-   standalone exact-window decoder is the next route.
+   standalone exact-window decoder is the next route. Complete the independent
+   fixture-v2 review and ten authored modes described in the
+   [paused checkpoint](#current-paused-checkpoint--2026-10-13-0628-utc) before
+   preparing any original-code case. Research remains paused.
    The retained incoming query supplies one non-call data reference only.
    Completed C028/C034 finite audits and historical C013 coverage determine the
    corrected census; do not repeat their completed populated value structures.
@@ -1539,9 +1554,8 @@ supported, and no ICARUS performance or stability improvement has been measured.
    boundaries qualified; native value meanings and seven empty inherited arrays'
    population coverage remain open. Reuse retained static evidence;
    the D01 populated Int/Str work is complete, and DA04's population is empty.
-   Preserve exact
-   descriptor bindings, byte/count/field bounds
-   and old/new source/library receipts. Automatic class/schema recognition and
+   Preserve exact descriptor bindings, byte/count/field bounds and old/new
+   source/library receipts. Automatic class/schema recognition and
    value meanings remain open.
    C009 own-child structure and selected C034 populations already pass the
    comparisons above. Older-build root/recorder framing, dispatch and version
@@ -1560,11 +1574,11 @@ supported, and no ICARUS performance or stability improvement has been measured.
    at zero/+0x28. The equal geometry does not discriminate the older owner.
    Establish base origin and a same-build receiver/type-registration join without
    carrying unproved provenance across calls.
-   Establish actual owner/caller
-   evidence before inferring the dispatcher caller. Bind the concrete archive/outer
-   framing path before promoting the experimental
-   control-body fields. Advance transport/control/authentication evidence and independently authored
-   world-data feasibility; validate a small import before the heavy-world workload.
+   Establish actual owner/caller evidence before inferring the dispatcher caller.
+   Bind the concrete archive/outer framing path before promoting the experimental
+   control-body fields. Advance transport/control/authentication evidence and
+   independently authored world-data feasibility; validate a small import before the
+   heavy-world workload.
    The migrated original-server launcher requires explicit current sessions for
    each runtime experiment; historical authorization windows remain expired.
 

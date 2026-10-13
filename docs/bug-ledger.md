@@ -10,7 +10,7 @@ reproduced defect or a claimed fix. Do not infer root cause from bundled DLL nam
 | 3 | Joining and reconnecting | Unreproduced | Paired client/server logs, lifecycle traces, session ownership |
 | 4 | Large worlds, tames, bases, players | Unreproduced | Workload dimensions, profiles, Windows/Proton comparison |
 
-For each reproduction record: build/configuration/hardware, starting-state hash,
+For each reproduction, record build/configuration/hardware, starting-state hash,
 actions, expected/actual behavior, failures/attempts, reference platform, minimized
 case, stack or call-flow evidence, confidence, root-cause classification, proposed
 replacement behavior and regression test. Separate server faults from Proton,
@@ -26,7 +26,7 @@ reported crashes. No cause or fix is assigned to them.
 ## Static investigation leads
 
 These are hypotheses to test, not additional reported or reproduced defects.
-Evidence is scoped to `icarus-server-baseline`; see the
+SL-001 through SL-003 are scoped to `icarus-server-baseline`; see the
 [targeted report](research/2026-10-04-targeted-static-report.md).
 
 | Lead | Static evidence | What would establish or refute a problem |
@@ -90,7 +90,7 @@ immediate MOV. Ghidra correctly emits an eight-byte zero-extending write. The
 separate corrected checker verifies both encoded operands and exact p-code
 register/constants; nine real recipes and five injected guard cases pass. The
 failed checker/source/review/results remain preserved. No original bytes were
-read, and no original-server behaviour was tested by this correction. Evidence:
+read, and no original-server behavior was tested by this correction. Evidence:
 `work/control-client-decoder-api-validation-v2-20261013/` and its fresh v3 retry.
 
 | ID | Trigger and former behavior | Change and evidence |

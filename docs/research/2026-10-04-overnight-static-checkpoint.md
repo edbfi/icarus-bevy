@@ -1,5 +1,9 @@
 # Overnight static analysis checkpoint
 
+Historical checkpoint — 2026-10-04. Observations and evidence gates below retain
+their batch scope. See the [current checkpoint](../implementation-status.md) for
+later findings, pending work and pause status.
+
 The targeted approach exported 25 distinct selected routines across four bounded
 Ghidra batches. One string routine was re-exported with its complete chained
 unwind ranges. Earlier whole-program analysis exported no functions before its

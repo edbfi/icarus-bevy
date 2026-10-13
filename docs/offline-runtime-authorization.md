@@ -1,5 +1,9 @@
 # Offline reference runtime scope and launcher
 
+Follow the [canonical plan](linux-dedicated-server-plan.md) and
+[implementation status](implementation-status.md) for current priorities and
+evidence. The historical authorization below does not renew an execution window.
+
 ## Current launcher (2026-10-12)
 
 `tools/run_reference_offline.py` and its shell wrapper require an explicit
@@ -13,7 +17,8 @@ Use an existing case below the repository's ignored `work/` directory, with a
 contain `## auth` with `- status: granted`, `## network_profile` with
 `- mode: offline`, and `## signoff` with `- ready_for_act: true`. Duplicate
 contract fields are rejected. These checks run again before launch alongside the
-session/hash checks; no external skill package is required. The session JSON must contain:
+session/hash checks; no external skill package is required. The session JSON must
+contain:
 
 | Field | Required value |
 | --- | --- |
@@ -56,9 +61,10 @@ The launcher locks the case quota through cleanup and never overwrites a run.
 It records invocation/session/helper hashes, container inspection, logs, resource
 samples and `cleanup.json`. The recorded timeout is a maximum: a fresh pre-launch
 time check caps the monotonic deadline at session expiry and rejects attempts
-without time for observation plus 120 seconds of cleanup. Container ownership requires a random token, the
-exact name and, once known, the exact ID. Removal targets that verified ID;
-inspection errors or failure to verify removal are errors, not successful cleanup.
+without time for observation plus 120 seconds of cleanup. Container ownership
+requires a random token, the exact name and, once known, the exact ID. Removal
+targets that verified ID; inspection errors or failure to verify removal are
+errors, not successful cleanup.
 Repeated interruption during cleanup does not skip removal. Local subprocess
 deadlines cannot guarantee daemon cessation after a host or daemon failure;
 an unsuccessful cleanup receipt requires investigation before another run.
@@ -73,7 +79,9 @@ save-load comparisons require their own concrete experiment setup.
 
 The following records the original approval, not a current executable recipe.
 The reverse-skill package was removed on 2026-10-12; its commands and package
-requirements below are historical. The AGENTS.md link identifies the former revision.
+requirements below are historical. The upstream `AGENTS.md` link identifies the
+former revision.
+
 Status: approved by the user on 2026-10-04. This was the first execution of the original server.
 It cannot prove stock-client compatibility because the container has no network.
 
@@ -81,7 +89,7 @@ Docker 29.8.2 is available. The user's Proton image is already installed at dige
 `sha256:967e40780cb46a5343bd7a5fd372612d1a1b90fbc95fdd803d74ec5b3bede237`.
 The image runs as `container` with its existing home at `/home/container`.
 
-## Commands proposed for approval
+### Historical commands proposed for approval
 
 ```bash
 bash .agents/vendor/reverse-skill/skills/scripts/case-init.sh \

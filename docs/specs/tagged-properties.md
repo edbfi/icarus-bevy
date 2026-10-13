@@ -7,6 +7,9 @@ migrations or imports a world. The explicit `MemoryArchive522` research profile 
 based on the preserved build 25621760; selecting it does not identify a save's
 producing build. The user reports build 25793767 for the supplied saves.
 
+Validation statements below describe the cited historical runs. Current work and
+the research pause are tracked in the [implementation checkpoint](../implementation-status.md).
+
 ```bash
 cargo run --locked -- inspect-save --source /path/to/copied-prospect.json --inner-tags
 cargo run --locked -- inspect-save --source /path/to/copied-prospect.json --recorders
@@ -66,10 +69,10 @@ profile. The root scanner deliberately leaves that entire body opaque.
   including any terminator; check counts before allocating strings.
 - Reject negative sizes or indices, truncated headers/values, unsupported type
   headers and noncanonical boolean/GUID-presence bytes.
-- Accept canonical `ArrayProperty`, `StructProperty`, `StrProperty`, `IntProperty`, `UInt32Property`,
-  `NameProperty`, `FloatProperty`, `TextProperty`, `ByteProperty`, `EnumProperty`
-  and `BoolProperty` headers. Empty header names and
-  other property kinds are unsupported by this initial subset.
+- Accept canonical `ArrayProperty`, `StructProperty`, `StrProperty`, `IntProperty`,
+  `UInt32Property`, `NameProperty`, `FloatProperty`, `TextProperty`, `ByteProperty`,
+  `EnumProperty` and `BoolProperty` headers. Empty header names and other property
+  kinds are unsupported by this initial subset.
 - Preserve original header and value spans, including unknown field names, without
   rewriting, normalizing or interpreting their contents.
 - Report aggregate sizes and record counts only. No property names or values are
@@ -278,18 +281,11 @@ to the base reader before context work, and the post-load override changes
 in-memory fields without reading its incoming archive. The shared base serializer
 therefore supports a framing hypothesis, not equivalence of restoration behavior.
 
-An independent probe selected the first minimum- and maximum-sized C028 record
-in source order from each copy. Both complete envelopes, root sequences and recorder
-arrays passed before those four component bodies were read. The release Rust reader
-independently matched every selected body's framing aggregates:
-
-| Measurement | Selected minimum | Selected maximum |
-| --- | ---: | ---: |
-| Component bytes | 3,325 | 3,358 |
-| Properties | 23 | 23 |
-| Headers and terminator | 1,509 bytes | 1,509 bytes |
-| Opaque values | 1,812 bytes | 1,845 bytes |
-| Zero object trailer | 4 bytes | 4 bytes |
+Independent and native readers matched four selected C028 bodies, then all 1,294
+bodies across both copies. The [C028 loading evidence](prospect-loading.md#selected-repeated-component-c028)
+records the selection method, dimensions, conserved byte totals and evidence IDs
+(save-triage E-025 through E-029). Both complete envelopes, root sequences and
+recorder arrays passed before component inspection.
 
 A separate private comparison matched each selected record's exact names, types,
 indices and type-specific header names against the 23 selected native descriptors:
@@ -299,17 +295,9 @@ for these four records without asserting mandatory presence in other saves.
 Evidence: save-triage E-025/E-026/E-027; source, helper and static metadata hashes
 are bound in the private cases. All property payloads remain opaque.
 
-The later independent E-028 scan covers all 1,294 C028 records in the two supplied
-copies after validating both complete outer payloads. Every record matches the same
-23 exact header descriptors, with lengths from 3,325 to 3,358 bytes. Each copy's
-647 components contain 14,881 fields, 976,323 header/terminator bytes, 1,184,111
-opaque value bytes and 2,588 zero-trailer bytes, conserving all 2,163,022 component
-bytes. The release-native batch helper independently matches all 1,294 bodies and
-their combined totals in E-029: 29,762 fields and 4,326,044 bytes, comprising
-1,952,646 header/terminator bytes, 2,368,222 opaque value bytes and 5,176 zero-trailer
-bytes. The batch wrapper is an authored test transport, not an ICARUS file format.
-Both scans interpret no values and establish neither mandatory fields nor
-newer-build method equivalence.
+The full-population scans match those same 23 exact header descriptors. The batch
+wrapper is an authored test transport, not an ICARUS file format. Neither scan
+interprets values or establishes mandatory fields or newer-build method equivalence.
 
 Independent static follow-up in `work/c028-structs-20261012/` resolves the six
 direct struct types to tagged serialization under the concrete older-build archive
@@ -453,7 +441,7 @@ and `work/c009-common-child-headers-20261012/`.
 
 The hash-qualified build-25793767 client provides independent addresses for the
 structured tag operator (`0x14212b0e0`) and generic Array serializer
-(`0x142123da0`). Bounded disassembly and independently checked builtin type
+(`0x142123da0`). Bounded disassembly and independently checked built-in type
 identities agree with the examined older-server gates: Struct GUID at version
 441, Array inner name at 282 and common property GUID at 503. Float/Text reach
 the common path without type-specific extensions. The additional Map/Set gate
@@ -482,8 +470,8 @@ No mandatory-field or unconditional runtime-selection rule follows.
 
 The concrete client restore path constructs version 522 with loading enabled and
 relevant binary/tagged, partial-selection and byte-swap flags clear immediately
-before component Serialize. At this stage, its downstream call to `0x1437016b0` and the nested N02
-deferred-registry binding were still unresolved.
+before component Serialize. At this stage, its downstream call to `0x1437016b0`
+and the nested N02 deferred-registry binding were still unresolved.
 Evidence and independent semantic review: `work/client-c034-own-array-20261012/`.
 No supplied-save load or matched dedicated-server behavior is established.
 
@@ -498,7 +486,7 @@ table under the matching private name; its deferred registration and preparation
 use the same registry and full name key. Successful normal initialization,
 allocation, canonical name matching and no later replacement remain conditions.
 The native branch precedes forced-binary fallback, supporting the selected
-three-four-byte transfer demand under those conditions. Initializer execution,
+demand for three four-byte transfers under those conditions. Initializer execution,
 ordering, exact EOF and numeric semantics are not established. Independent
 semantic and strict evidence reviews pass.
 

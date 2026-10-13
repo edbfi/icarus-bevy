@@ -1,5 +1,11 @@
 # Bounded control-caller investigation
 
+Historical investigation — 2026-10-12–13, through the 06:12 UTC result below.
+Sections preserve each attempt's evidence, limitations and proposed next step;
+later sections may resolve earlier local gaps. See the
+[current checkpoint](../implementation-status.md) for pending work and pause status.
+Completed sessions are expired; this report does not resume research.
+
 The concrete archive, bit-position and byte-order path into older dispatcher
 `0x1439ee7f0` remains unresolved. This investigation recovered no caller. Later
 current-client symbols establish named notify-table slots, separately from the
@@ -32,7 +38,7 @@ provider database offered no advertised retained-project reuse option. Repeating
 the same import was stopped. Evidence and raw errors:
 `work/rea-control-caller-20261013/` and its `execution-v2/`.
 
-All 1,352 / 1,377 bound files respectively remained unchanged. Owned REA server,
+All 1,352 and 1,377 bound files, respectively, remained unchanged. Owned REA server,
 Ghidra JVM and helper identities were verified gone. Metadata binding, tool
 availability and import progress are tooling observations, not protocol evidence.
 
@@ -225,8 +231,9 @@ neither has a generated reference record; the helper reports zero confirmed slot
 references. Independently joining those decoded boundaries with the frozen PE
 scan's exact RIP-relative target calculation supports static materialization of
 `0x145468180` at both sites. This does not prove reachability, an object store,
-table base, constructor, owner or caller. The second metadata start has an existing database function but no
-function containing the probe, so no decompilation input was selected for it.
+table base, constructor, owner or caller. The second metadata start has an existing
+database function but no function containing the probe, so no decompilation input
+was selected for it.
 
 The first site's decompiler input was explicitly forced from metadata; the known
 dispatcher used its retained definition. Two decompilations completed. This does
@@ -234,7 +241,7 @@ not establish complete or correctly identified functions. The first output warns
 about unreachable blocks beyond the approved metadata end: configuring a bounded
 function body does not prove that native decompiler flow stayed within that body.
 That output is retained as a limited local lead, not bounded-flow or owner proof.
-Direct operand/pcode checks at the two sites are the next discriminator; the
+Direct operand/p-code checks at the two sites are the next discriminator; the
 inferred object-pointer store still needs instruction confirmation. The additive
 independent post-run review retains these distinctions without changing bound
 artifacts: `execution-v2/notes/independent-postrun-analysis.md`, SHA-256
@@ -373,7 +380,7 @@ The pure reusable `tools/pdb_public_symbols.cjs` reader is independently authore
 from pinned LLVM layout documentation at revision
 `3623fe661ae35c6c80ac221f14d85be76aa870f1`; no LLVM implementation is copied.
 It validates strict MSF7/DBI framing, reserved/nonoverlapping blocks, explicit
-identity, no OMAP and readonly selected PE mappings. Input caps are 1,280 MiB PDB
+identity, no OMAP and read-only selected PE mappings. Input caps are 1,280 MiB PDB
 and 128 MiB executable, 4 MiB directory, 4,096 streams, 256 MiB symbol stream,
 2,500,000 records, 32 selected hits and 64 KiB output. Symbol records use a 64 KiB
 cache. Only explicitly selected public class/member names are exported; unselected
@@ -402,7 +409,7 @@ FNetworkNotify records is bounded-profile coverage, not absence of code.
 | UPendingNetGame NotifyControlMessage public symbol | `0x143a68e10` |
 
 A separate reviewed case reads exactly four little-endian qwords from each named
-secondary table. All eight stored targets map to readonly executable file-backed
+secondary table. All eight stored targets map to read-only executable file-backed
 CODE sections. Both fourth slots, at byte offset `+0x18`, equal the respective
 named NotifyControlMessage addresses. The producer and strict post-cleanup
 qualifier each read the same 64 distinct table bytes, 128 aggregate qword bytes;
@@ -440,8 +447,8 @@ was introduced.
 A separate current-client PE64/AMD64 case reuses the reviewed pure directory
 logic as source, with two exact public-symbol seeds and fresh target pins. Every
 12-byte record in the 4,008,648-byte exception directory validates: 334,054 sorted,
-nonoverlapping intervals, complete readonly file-backed executable CODE ranges,
-and aligned readonly mapped unwind-pointer geometry. Unwind bodies/chains and
+nonoverlapping intervals, complete read-only file-backed executable CODE ranges,
+and aligned read-only mapped unwind-pointer geometry. Unwind bodies/chains and
 code contents remain opaque. The directory is below the unchanged 4 MiB limit;
 no cap is raised. The strict policy can reject other valid producer profiles.
 
@@ -477,7 +484,7 @@ Final source review SHA-256:
 
 Live REA remains the preferred supported analysis interface. Exact installed
 Ghidra launcher/profile/environment source inspection shows a fixed ephemeral
-`-import`, readonly/delete-project route with default automatic analysis and no
+`-import`, read-only/delete-project route with default automatic analysis and no
 retained-program or `-noanalysis` branch. Optional seeds precede that analysis;
 they cannot confine it to a window. This is an installed-provider route limitation,
 not a claim that Ghidra itself lacks those capabilities. The new source-only routing
@@ -550,14 +557,14 @@ interval must reproduce exactly. No code or unwind body is read semantically.
 
 | Derived target | Containing interval, end exclusive | Bytes | Target equals interval beginning |
 | --- | --- | ---: | --- |
-| World fallthrough `0x143ca5a48` | `[0x143ca5a48, 0x143ca5eba)` | 1138 | Yes |
+| World fallthrough `0x143ca5a48` | `[0x143ca5a48, 0x143ca5eba)` | 1,138 | Yes |
 | Pending return `0x143a5865e` | `[0x143a58650, 0x143a58697)` | 71 | No |
 
 The latter leaves 57 bytes after its call. Fresh unknown register state is required
 for a subsequent post-call decode; neither the earlier COPY nor an unproved ABI
 assumption supplies receiver provenance. World's 1,138-byte extent is numerically
 equal to one older unidentified interval, but that comparison alone establishes
-no cross-build owner or behavioural equivalence. New fixed decoded windows need
+no cross-build owner or behavioral equivalence. New fixed decoded windows need
 new constants, real authored-engine fixtures, input joins and lifecycle acceptance.
 No automatic body expansion or branch/callee traversal follows from this result.
 
@@ -678,7 +685,7 @@ The accepted 06:12 UTC run exports eight instructions / 25 p-code operations and
 and span hash replays exactly before new analysis. All 3,179 bindings remain
 unchanged, instruction hashes match the original and owned cleanup passes.
 Thirty-five independent core and 22 wrapper checks include a late prefix mismatch
-that prevents any analyzer call. Producer and qualifier each read the same46 bytes;
+that prevents any analyzer call. Producer and qualifier each read the same 46 bytes;
 Java reads their derived copy. Whole-file fixity is separate.
 
 The store at `0x143ca5a79` is four instruction bytes, with raw p-code forming the

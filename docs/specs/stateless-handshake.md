@@ -7,6 +7,9 @@ Scope: shipping build 25621760, executable SHA-256
 This is an early transport layer. It does not implement platform authentication,
 the version/control channel, replicated state or gameplay admission.
 
+Validation statements below describe the cited historical runs. Current priorities
+and the research pause are tracked in the [implementation checkpoint](../implementation-status.md).
+
 ## Short frame with no optional prefix
 
 Bit positions below start at zero; bits within each byte are least-significant

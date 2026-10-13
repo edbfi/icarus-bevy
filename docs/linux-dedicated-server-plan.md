@@ -1,6 +1,6 @@
 # Independent ICARUS Linux dedicated server
 
-This is the reviewed implementation plan. Progress and evidence are tracked in
+This is the canonical implementation plan. Progress and evidence are tracked in
 [implementation-status.md](implementation-status.md); incomplete milestones are
 not claims of compatibility. This document authorizes no tool execution or
 target activity by itself.
@@ -12,7 +12,7 @@ The prior execution was resumed on 2026-10-12. The
 [continuation checkpoint](implementation-status.md#continuation--2026-10-12)
 records native C034 own/array qualification, individual opaque widths and
 conditional matched-client dispatch.
-The prior pause does not extend historical runtime authorization windows.
+Neither a pause nor a resumption extends historical runtime authorization windows.
 
 ## Goal and agreed constraints
 
@@ -126,9 +126,8 @@ and matching client/server pair remain unverified. On 2026-10-12 the user descri
 the producing release as “latest”, then supplied build 25793767 and version
 `3.0.31.158478-rel-DangerousHorizons`. Treat this as user-reported provenance until
 paired with a matched reference; the preserved executable is older build 25621760.
-A stock
-Windows client is available on the user's separate machine for later tests, not
-accessible to the current offline lab.
+A stock Windows client is available on the user's separate machine for later tests,
+not accessible to the current offline lab.
 
 The completed local client installation has independently checked hashes and
 matching executable/PDB GUID and age (`work/client-identity-20261012/`). Its
@@ -145,7 +144,11 @@ CI artifacts and uploads. Record aggregate findings and independently authored
 minimal fixtures in the repository. Player-created state may inform save import;
 the existing exclusion of packaged game assets remains in force.
 
-Use this dataset in the next work sequence:
+The sequence below retains completed findings and their evidence limits. The
+[current paused checkpoint](implementation-status.md#current-paused-checkpoint--2026-10-13-0628-utc)
+controls the next action; earlier next-step wording records its historical context.
+
+Use this dataset in the following work sequence:
 
 1. Native filesystem fault probe completed on 2026-10-12: real ENOSPC/EACCES preserve
    acknowledged state, both retries succeed, and reopen verifies generation 4.
@@ -273,11 +276,8 @@ Use this dataset in the next work sequence:
    The earlier provisional gap missed this retained static case. Populated leaves
    subsequently qualify 25,680 individual Int4 spans and 1,431 strict Str frames;
    DA04 has no populated coverage. Continue unresolved save relationships and
-   value contracts. Preserve unqualified
-   meanings/restoration. See
-   the current checkpoint in implementation status.
-   Retain the lack of populated
-   inherited-array coverage.
+   value contracts. Meanings, restoration and populated inherited-array coverage
+   remain unqualified; see the [current checkpoint](implementation-status.md).
    Exact C034 own Name values also pass strict native/independent structural
    decoding across 1,658 spans; name construction and identity semantics remain
    open.
@@ -382,11 +382,11 @@ updates in experiments. Do not run its container installer unchanged on the host
 
 ## Autonomous execution and maintenance
 
-The user's 2026-10-12 instructions authorize autonomous progress, frequent
-Conventional Commits and feature-branch pushes, appropriate subagents, and periodic
-cleanup. Continue through implementation and verification; do not stop after
-proposing another plan or ask for approval of routine choices. A blocked experiment
-should yield a precise dependency and the next useful independent task. Existing
+Subject to the current research pause, the user's 2026-10-12 instructions authorize
+autonomous progress, frequent Conventional Commits and feature-branch pushes,
+appropriate subagents, and periodic cleanup. Continue through implementation and
+verification; do not stop after proposing another plan or ask for approval of routine
+choices. A blocked experiment should yield a precise dependency and the next useful independent task. Existing
 target, privacy and isolation boundaries still apply. Historical approval records
 describe their original batches; they do not extend expired runtime deadlines.
 
@@ -409,8 +409,8 @@ requires it, use `fork_turns="none"` for explicit model/effort overrides and pro
 a self-contained task. Start with the lead and up to two workers; use another
 worker only for independent work that fits available slots and resources.
 Assign file ownership or separate worktrees; only the lead stages, commits and
-pushes integrated work. Review
-findings against real source and evidence before accepting them.
+pushes integrated work. Review findings against real source and evidence before
+accepting them.
 
 For each coherent increment: implement, run relevant checks, update the existing
 status/specification when behavior or evidence changes, inspect the staged diff,
@@ -600,7 +600,8 @@ and backlog, reject new admissions under overload, and expose missed deadlines.
 Seed randomness and stabilize command order for replay; demonstrate determinism.
 Validate physics/navigation semantics before accepting a backend or optimization.
 
-CLI interfaces:
+Planned CLI interfaces (see the [README](../README.md#native-persistence) for
+implemented commands and experimental inspection):
 
 - `icarus-server run`
 - `icarus-server check-config`
@@ -667,12 +668,14 @@ Install hooks with `prek install`. Run:
 
 ```bash
 prek run --all-files --hook-stage manual
-cargo fmt --all -- --check
-cargo clippy --workspace --all-targets --locked -- -D warnings
-cargo test --workspace --all-targets --locked
 ```
 
-Add Linux release-build/runtime checks and audit headless/shared-library dependencies.
+The manual suite includes Rust formatting, Clippy and locked workspace tests.
+[Hook configuration](../.pre-commit-config.yaml) defines the individual commands
+and stages.
+
+CI defines Linux release-build and headless smoke checks; retain these checks
+and audit headless/shared-library dependencies.
 Ordinary CI uses authored fixtures; authorized reference comparisons run separately
 in a private lab. Exclude secrets, captures, dumps and private saves from public
 artifacts; staged Gitleaks scanning remains independently necessary.
@@ -687,48 +690,14 @@ Pelican/service examples. For each official update, preserve a baseline, compare
 binaries/protocols, rerun affected scenarios and publish explicit support status.
 Unknown versions are not supported by assumption.
 
-The initial control archive-field reader now has authored boundary/privacy tests
-and native validation. It composes only a caller-selected byte/u32/strict-string
-body; concrete packet/bunch framing and archive byte-order provenance remain the
-next protocol evidence gate. It supplies no identity or admission decision and
-does not promote M2 or M3. The current checkpoint retains exact source/library
-transitions for subsequent research. Bounded REA startup attempts and a justified
-retained-database reference query recovered no caller; their coverage limits and
-failed attempts are preserved in the
+Current protocol findings and their retained validation belong in the
+[implementation checkpoint](implementation-status.md#current-paused-checkpoint--2026-10-13-0628-utc),
+[control specification](specs/control-negotiation.md), and
 [caller investigation](research/2026-10-12-control-caller-limit.md).
-Subsequent instruction-only windows prove two local constant stores and qualify
-their fixed prefixes. One base register remains unchanged through stores at zero
-and `+0x28`; the other prefix encounters a call before its store. A separately
-qualified suffix now closes that local gap with fresh unknown post-call register
-state, proving two constant stores and four zero stores. Join actual indirect
-receiver dispatch and same-build type
-registration. A separate current-client PDB/PE comparison now identifies named
-UWorld/UPendingNetGame FNetworkNotify tables and proves both fourth slots equal
-their named NotifyControlMessage public addresses. These current static mappings
-do not establish older-server ownership, object offsets or executed dispatch.
-The complete current exception directory now validates 334,054 records; named
-constructor symbols start measured eight/71-byte intervals, potentially fragments.
-Decode only separately frozen windows within these intervals before joining receiver/type evidence;
-never carry provenance across calls or infer object offsets from image placement.
-The first such current-client windows now qualify eight instructions / 34 p-code
-operations: World reaches its eight-byte fragment end, Pending reaches a call after
-fourteen bytes. Recover separately scoped continuation metadata before any new
-instruction reads; post-call state begins unknown. No table-store or receiver join
-is inferred from these prefixes.
-Fresh exception metadata now bounds World's exact fallthrough continuation to a
-1,138-byte interval and leaves 57 bytes after Pending's call inside its prior
-interval. These are derived continuation targets, not newly assigned class/symbol
-identities. The separately validated continuation decoder now exports eleven
-instructions / 32 p-code operations. Pending stores its named primary and
-FNetworkNotify table constants through one unchanged unknown base at zero/+0x28;
-both windows stop at calls. Establish that base's origin and actual receiver/type
-dispatch without assuming ABI retention or carrying provenance across calls.
-The separate World post-call window initially qualifies only the primary store;
-its fresh expanded-output case now replays the complete earlier prefix and
-qualifies both named table stores at unknown base plus zero/+0x28. Equal Pending
-geometry cannot identify the older owner. Reuse this completed local evidence and
-establish a same-build type-registration/receiver bridge; further prefix counting
-alone does not close that gap.
+The experimental body reader and local table-store proofs do not establish
+concrete packet/bunch framing, archive byte order, receiver/type-registration
+identity, executed dispatch or older-server ownership. Reuse completed bounded
+evidence before further work; these open gates do not promote M2 or M3.
 
 Completion requires demonstrated compatibility, reliability and performance
 improvement while preserving the independent Rust/Bevy and no-original-assets rules.
