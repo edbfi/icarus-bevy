@@ -8,6 +8,25 @@ performance targets remain unproven. Last reconciled: 2026-10-13.
 
 ## Continuation — 2026-10-12
 
+### C034 own selected widths — 2026-10-13, 01:06 UTC
+
+Four exact own descriptors now qualify 4,974 Int4 spans / 19,896 bytes and 1,658
+zero-payload Bool spans. All 6,632 individual demands pass after both copies'
+descriptor/range/population budgets and a complete inherited-result replay.
+Two inherited Name calls are replayed; there are zero new own-scalar native calls.
+Earlier own Name/Float/Struct/Array coverage is preserved, not requalified here.
+
+Independent review caught a source-assembly TDZ defect before any private run:
+the new result was inserted into its prior-result gate before declaration. The
+rejected preparation and missed fragment-only regression are retained. The fixed
+assembly targets only the final report, and the actual final probe regression
+reproduces the rejected failure and verifies healthy complete qualification.
+Seven authored fixture programs and seven independent regression groups pass.
+All 2,044 bindings remain exact; source/library pins are unchanged. Evidence:
+`work/c034-own-scalar-widths-20261013/`, summary SHA-256
+`eaaf3fb7382a13fcb3d5e2853dec868ad397ee9885f889d6aa1721b075a21879`.
+Numerical meaning and restoration remain open.
+
 ### C034 inherited scalars — 2026-10-13, 00:50 UTC
 
 Thirteen exact inherited descriptors now qualify 21,554 selected fields across
@@ -32,8 +51,8 @@ fixity and all transitions. Evidence: `work/c034-inherited-scalar-values-2026101
 summary SHA-256
 `54afada3f4608e0d9e11bb1b7c82e774bdc0c34fa653b00f6e5f4cc1c3869187`;
 transition evidence: `work/c034-scalar-transitions-20261013/`.
-Selected own Int/Bool widths are the next bounded step; meanings and import remain
-open.
+Selected own Int/Bool widths subsequently qualify above; meanings and import
+remain open.
 
 ### D01 nested array leaves — 2026-10-13, 00:30 UTC
 
@@ -267,6 +286,13 @@ contamination is preserved separately; source-only script isolation fixes that
 failure. A forced metadata decompilation warns of blocks beyond its configured
 range, so it remains a limited lead. Direct operand/pcode checks precede any owner
 or archive conclusion. See the [control report](research/2026-10-12-control-caller-limit.md#targeted-instruction-context-and-preserved-failed-attempt).
+
+The subsequent instruction-only case validates eleven byte-matched instructions
+and 31 raw p-code operations in two bounded windows, with all 592 bindings and
+owned cleanup passing. It proves two eight-byte stores of `0x145468180` at base
+register displacement `+0x28`; base parameters, class ownership and indirect
+dispatch remain unproved. The tested numeric exporter is now a tracked research
+tool. See the [local store proof](research/2026-10-12-control-caller-limit.md#instruction-only-operand-and-local-store-proof).
 
 ### C009 common-child headers — 2026-10-12, 22:15 UTC
 
@@ -1001,8 +1027,8 @@ supported, and no ICARUS performance or stability improvement has been measured.
 
 ## Next work and maintenance
 
-1. Qualify C034's three selected own Int descriptors and one Bool descriptor after
-   the completed inherited scalar checks. Reuse retained static evidence;
+1. Continue unresolved C034 top scalars after the completed inherited and own
+   Int/Bool checks. Reuse retained static evidence;
    the D01 populated Int/Str work is complete, and DA04's population is empty.
    Preserve exact
    descriptor bindings, byte/count/field bounds
@@ -1015,9 +1041,10 @@ supported, and no ICARUS performance or stability improvement has been measured.
    actor/inventory/construction/tame/mission fields and independent confirmation of
    the reported producing build remain unresolved. Preserve unknown fields and
    private inputs; no partial importer.
-2. Confirm operands/pcode and nearby stores for the two decoded LEA candidates
-   within their qualified metadata ranges. Configured decompiler bodies alone do
-   not prove bounded native flow. Establish actual owner/caller
+2. Trace base-register provenance in bounded prefixes before the two proven local
+   stores, then establish actual receiver/indirect dispatch and type-registration
+   joins. Configured decompiler bodies alone do not prove bounded native flow.
+   Establish actual owner/caller
    evidence before inferring the dispatcher caller. Bind the concrete archive/outer
    framing path before promoting the experimental
    control-body fields. Advance transport/control/authentication evidence and independently authored

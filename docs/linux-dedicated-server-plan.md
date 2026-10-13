@@ -205,8 +205,10 @@ Use this dataset in the next work sequence:
    8,290 selected nested/own scalar widths. Thirteen inherited scalar descriptors
    subsequently qualify 1,658 strict Name frames, 6,632 Int4, 1,658 UInt32 four-byte
    and 11,606 Bool0 spans, using preserved historical native headers and two new
-   native Name batches. Continue selected own Int/Bool widths; meanings/import
-   remain open. All 486 C009 top bodies now match
+   native Name batches. Four selected own descriptors then qualify 4,974 Int4 and
+   1,658 Bool0 spans, with historical native headers and two replayed Name batches.
+   Continue unresolved C034 top scalars; meanings/import remain open.
+   All 486 C009 top bodies now match
    the reviewed 31-field contract and native spans under an explicit 71,956-byte
    comparison cap. Its 972 own child bodies now match immediate native spans;
    all 486 selected Int arrays now match native prefix/element spans, including

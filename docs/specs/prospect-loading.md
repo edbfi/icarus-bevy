@@ -573,6 +573,17 @@ transitions separately reviewed and preserved. Values and restoration remain
 unqualified. Evidence: `work/c034-inherited-scalar-values-20261013/`, summary
 SHA-256 `54afada3f4608e0d9e11bb1b7c82e774bdc0c34fa653b00f6e5f4cc1c3869187`.
 
+Four selected own descriptors subsequently match 4,974 individual Int4 spans and
+1,658 Bool0 spans. Complete inherited-result replay and both-copy exact ranges
+precede all 6,632 demands. Two inherited Name calls are replayed, with zero new
+native own-scalar calls. Independent review catches and preserves a source-assembly
+TDZ defect before private execution; the corrected actual final-probe regression
+reproduces it and passes complete qualification. Seven authored fixture programs
+and seven independent regression groups pass; all 2,044 bindings are unchanged.
+Evidence: `work/c034-own-scalar-widths-20261013/`, summary SHA-256
+`eaaf3fb7382a13fcb3d5e2853dec868ad397ee9885f889d6aa1721b075a21879`.
+Numerical values and official restoration remain unqualified.
+
 ## C009 top-header comparison
 
 The exact older C009 registration, constructor and primary vtable reach the

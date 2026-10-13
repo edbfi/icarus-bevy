@@ -101,6 +101,14 @@ collects explicitly pinned address patterns. It opens no files and confirms no
 callers or instruction boundaries. Its authored and independent PE fixtures run
 through prek/CI using `node --test tools/tests/pe_candidates*.test.cjs`.
 
+`tools/ghidra/ExportBoundedInstructionOperands.java` exports only numeric operands,
+raw p-code and instruction hashes for two fixed, pinned-executable windows. It
+requests no decompiler, analyzers, function creation or outgoing flow. Target use
+requires a reviewed case, source-only script directory, disposable retained-project
+copy and the offline deadline/resource/ownership guards; fixture and compiler
+outputs must stay outside that script directory. See the
+[control investigation](docs/research/2026-10-12-control-caller-limit.md).
+
 Original files stay under ignored `icarus-orig/`; generated analysis, private saves,
 captures and dumps stay under ignored `work/`. Reusable tools and sanitized reports
 are tracked. No original assets are extracted or reused.
