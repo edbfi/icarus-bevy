@@ -44,10 +44,10 @@ Last reconciled: 2026-10-13
 | U-035 | Does native persistence survive physical power loss and the required 72-hour runs? | high | open | none stated | F-235, F-239 |  |
 | U-036 | Does the CI definition pass on hosted CI? | low | open | none stated | F-251 |  |
 | U-037 | What is the active checksum/admission policy, and how are compatibility callbacks registered indirectly at runtime? | high | open | none stated | F-254, F-255, F-267 |  |
-| U-038 | Can a stock client complete an authenticated session against the native server? | critical | blocked | advance transport/control/authentication evidence; connected tests need a concrete scope | F-186, F-187, F-240, F-253, F-264 |  |
+| U-038 | Can a stock client complete an authenticated session against the native server? | critical | blocked | Access deferred by user; continue offline evidence; connected tests need a concrete scope. | F-187, F-253, F-421 |  |
 | U-039 | What restoration use and gameplay identity does the singleton class's saved integer have? | medium | open | none stated | F-258 |  |
-| U-040 | Which actor/inventory/construction/tame/mission fields exist, and can the reported producing build be independently confirmed? | high | open | none stated | F-262, F-263 |  |
-| U-041 | Can C001's complete concrete construction/vtable/archive-dispatch bridge be established? | high | investigating | Qualify receiver continuity through the measured callee before archive-slot ownership. | F-410, F-414, F-416 |  |
+| U-040 | Which actor/inventory/construction/tame/mission fields exist, and can the reported producing build be independently confirmed? | high | open | Client/save compatibility is user-reported; producing build still needs independent evidence. | F-262, F-263, F-421 |  |
+| U-041 | Can C001's complete concrete construction/vtable/archive-dispatch bridge be established? | high | investigating | Qualify nested196/217-byte decoder/case, then receiver continuity before archive slots. | F-410, F-419, F-420 |  |
 | U-042 | What causes the first C001 listing-entry operation/check rejection? | medium | open | Separate listing diagnostic only if needed; completed decoder does not distinguish retained listing failure cause. | F-271, F-409 |  |
 | U-043 | What is the actual receiver/indirect dispatch, base origin and same-build type-registration join for the control stores? | high | open | bounded constructor metadata/instruction comparison guided by paired-client symbols | F-274 |  |
 | U-044 | What is the concrete archive/outer framing path for the experimental control-body fields? | medium | open | none stated | F-274 |  |
@@ -58,7 +58,7 @@ Last reconciled: 2026-10-13
 | U-049 | How do ICARUS performance and stability compare between original and native server? | high | open | matched reference workloads and full release gates (M6) | F-187, F-234, F-237, F-238, F-269 |  |
 | U-050 | What are the other derived overrides, value semantics and the unverified remaining class identifiers? | medium | open | none stated | F-258, F-260 |  |
 | U-051 | What are the original handshake's optional-prefix, extended-restart and malformed-frame tolerances? | medium | open | paired stock-client capture against a reference server | F-280 |  |
-| U-052 | Does the stock client complete the stateless exchange against the native loopback lab? | medium | blocked | run the lab under a concrete scope with the user's Windows client | F-253 |  |
+| U-052 | Does the stock client complete the stateless exchange against the native loopback lab? | medium | blocked | User defers access; retain reported client/save pair and prepare concrete lab scope later. | F-253, F-421 |  |
 | U-053 | Does Text header framing hold on a supplied Text-bearing body? None has been qualified. | low | open | bounded supplied-body selection containing a TextProperty header | F-206, F-207, F-288 |  |
 | U-054 | Can later runtime mutation add the save-selection bit to ancestor fields of the singleton class? | low | open | none stated | F-305 |  |
 | U-055 | How are Map/Set (gate 509) and other property kinds outside the eleven-kind subset framed, and do supplied saves contain them? | medium | open | none stated | F-318 |  |

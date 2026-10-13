@@ -22,7 +22,9 @@ Last reconciled: 2026-10-13
 - Qualify post-call receiver continuity before promoting the observed C001 table
   stores to concrete archive-slot ownership (F-410, U-041). New callee metadata
   and code are qualified (F-414, F-416); expanded paths still need separately
-  reviewed bounds, source, scope and fresh session.
+  reviewed bounds, source, scope and fresh session. The nested 196/217-byte
+  bounds qualify (F-420); changed decoder geometry needs fresh authored
+  qualification before its separately reviewed exact-byte case.
 - Retained exports already identify its exact native class getter and
   construction callback; reuse these before new bounded queries. Read the
   retained instruction listing within these exact intervals before expanding

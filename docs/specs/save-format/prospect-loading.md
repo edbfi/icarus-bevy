@@ -193,7 +193,8 @@ Acceptance conditions for any importer
   `0x1449d9f90` via RBX (F-409, F-410). Receiver continuity across the call and
   archive slots remain unqualified; the common callee decodes all 106 physical
   bytes as 24 instructions without function or receiver proof (F-416). No C001
-  payload is parsed.
+  payload is parsed. Nested direct calls at `0x142174bc0`/`0x143453c00` have
+  measured 196/217-byte intervals; their code remains undecoded (F-419, F-420).
 
 ## Open questions
 
