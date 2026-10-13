@@ -84,6 +84,15 @@ The separately reviewed path-only retry passes with all 2,401 bindings unchanged
 its actual session-creator and entry fixtures reproduce the mismatch rejection and
 verify exact scope-derived authority before exclusive session creation.
 
+The new bounded x64 decoder's first real authored-engine batch exposed a checker
+assumption: it expected a four-byte p-code register write for an encoded 32-bit
+immediate MOV. Ghidra correctly emits an eight-byte zero-extending write. The
+separate corrected checker verifies both encoded operands and exact p-code
+register/constants; nine real recipes and five injected guard cases pass. The
+failed checker/source/review/results remain preserved. No original bytes were
+read, and no original-server behaviour was tested by this correction. Evidence:
+`work/control-client-decoder-api-validation-v2-20261013/` and its fresh v3 retry.
+
 | ID | Trigger and former behavior | Change and evidence |
 | --- | --- | --- |
 | N-001 | Save worker exits before acknowledging an in-flight request; polling returned an untyped error while leaving `busy` true, and the main loop treated it as a retryable write failure | Return a typed terminal error, clear the stale in-flight flag and stop simulation. A deterministic disconnected-channel test covers missing acknowledgement and rejected subsequent submission |

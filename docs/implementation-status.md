@@ -8,6 +8,51 @@ performance targets remain unproven. Last reconciled: 2026-10-13.
 
 ## Continuation — 2026-10-12
 
+### Selected save coverage audit — 2026-10-13
+
+C028's 1,294 component bodies contain 29,762 top property fields and 20,704
+qualified direct-child fields across 39 observed descriptors. Seventeen declared
+array-child descriptors have zero population in 9,058 empty arrays. There is no
+remaining observed populated tagged-value structure gap for this selection;
+historical whole-top native individual spans, meanings and empty-family population
+coverage retain their separate limits. Evidence: `work/c028-coverage-audit-complete-20261013/`.
+The first frozen audit's ambiguous field label and omission of historical C013
+coverage are corrected additively, without rewriting that audit.
+
+The corrected census includes C009/C013/C028/C034: 3,440 of 5,485 records, leaving
+34 classes / 2,045 records outside those selected schema qualifications. C013's
+two historical singleton bodies already have exact independent metadata/string/
+Int/Bool structure and native top aggregates; do not repeat them as unfinished
+work. C001 has four records and useful retained parent metadata, but its complete
+construction/vtable/archive-dispatch bridge remains unqualified. Retained exports
+already identify its exact native class getter and construction callback; the
+reflection getter is a separate function. Reuse these before new bounded queries.
+Corrected neutral map SHA-256:
+`69b002c6648600c2a275d118f4138fc958669068c312cf96a7b13cae0516f185`.
+
+### Bounded decoder validation — 2026-10-13, 03:32 UTC
+
+A direct language/PseudoInstruction helper decodes fixed x64 byte buffers without
+creating a Program/database, importing a PE or running analyzers. It rejects
+delay-slot, next2/cross-build dependencies and UNKNOWN/UNIMPLEMENTED fallbacks.
+Compilation against Ghidra 12.1.4 passes with annotation processors disabled and
+all source lints fatal; path lint is excluded only for seven missing entries in
+installed third-party JAR manifests. That first compile rejection remains preserved.
+
+Nine real authored-engine recipes and five injected API guards pass. The first
+engine batch exposed a checker error: an encoded 32-bit MOV is represented as a
+zero-extending eight-byte p-code register write. The separately reviewed corrected
+checker verifies exact operand widths, register identity, constants and p-code
+writes; original failed source/review/results remain immutable. Internal decoder
+tail padding is explicitly acknowledged; accepted instruction lengths/hashes stay
+inside admitted physical bytes. No original code has been decoded by these tests.
+Evidence: `work/control-client-decoder-api-validation-v3-20261013/`, plus the
+preserved v2 guard/compile receipts and both preparation revisions. Independent
+engine interpretation SHA-256:
+`960e7f1ed944f65f06e33992fccce6976bbb96a1ad5331cdb77c13e7d92e0f53`.
+The next target case needs fresh scope, bindings and original-byte joins; fixture
+success does not establish constructor behaviour or network compatibility.
+
 ### C028 direct child leaves — 2026-10-13, 03:12 UTC
 
 All sixteen exact child descriptors now qualify individually: 5,176 Int4 spans /
