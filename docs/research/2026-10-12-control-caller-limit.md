@@ -539,3 +539,33 @@ Independent real synthetic result review SHA-256:
 `960e7f1ed944f65f06e33992fccce6976bbb96a1ad5331cdb77c13e7d92e0f53`.
 This is bounded static decoder evidence, not original execution, client admission,
 archive/bunch framing provenance or a playable native server.
+
+## Current-client constructor continuation metadata
+
+A new metadata-only case derives two exact targets from the accepted prefix output:
+World's physical fallthrough end and Pending's CALL sequential return address.
+It validates the full strict exception directory under the pinned input and does
+not name either continuation as a new public symbol. Pending's existing containing
+interval must reproduce exactly. No code or unwind body is read semantically.
+
+| Derived target | Containing interval, end exclusive | Bytes | Target equals interval beginning |
+| --- | --- | ---: | --- |
+| World fallthrough `0x143ca5a48` | `[0x143ca5a48, 0x143ca5eba)` | 1138 | Yes |
+| Pending return `0x143a5865e` | `[0x143a58650, 0x143a58697)` | 71 | No |
+
+The latter leaves 57 bytes after its call. Fresh unknown register state is required
+for a subsequent post-call decode; neither the earlier COPY nor an unproved ABI
+assumption supplies receiver provenance. World's 1,138-byte extent is numerically
+equal to one older unidentified interval, but that comparison alone establishes
+no cross-build owner or behavioural equivalence. New fixed decoded windows need
+new constants, real authored-engine fixtures, input joins and lifecycle acceptance.
+No automatic body expansion or branch/callee traversal follows from this result.
+
+Sixty-four authored checks and 48 independent core/lifecycle checks pass. The
+accepted 04:03 UTC run has all 2,315 bindings unchanged and owned cleanup verified.
+Evidence: `work/control-client-constructor-continuation-ranges-20261013/`, payload
+SHA-256 `d9fbb94daeccd5f1d8bb7510d87005a29bb78baee0ab5516abf2b30979688b9f`;
+final source review SHA-256
+`7430812aa6464caf1480a4e50c043a99c67aae1405984ce74cd992ccb42ff7d7`.
+These are static metadata bounds, not complete functions, original execution or
+client/network compatibility.

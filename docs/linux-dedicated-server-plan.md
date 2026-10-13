@@ -226,6 +226,9 @@ Use this dataset in the next work sequence:
    3,440 of 5,485 records. C001's four records offer retained parent-schema reuse,
    pending complete concrete registration/construction/vtable/archive-dispatch proof;
    its native class getter and constructor callback are already retained.
+   A retained readonly incoming-reference query yields one non-call data reference,
+   with no containing function, and does not establish registration flow. Bound the
+   exact callback and candidate constructor before completing its vtable bridge.
    Historical C028 native top evidence is aggregate-only; no individual
    native header spans are claimed. All 2,286 bindings remain exact with the
    separately reviewed borrowed-string API transitions.
@@ -704,6 +707,11 @@ operations: World reaches its eight-byte fragment end, Pending reaches a call af
 fourteen bytes. Recover separately scoped continuation metadata before any new
 instruction reads; post-call state begins unknown. No table-store or receiver join
 is inferred from these prefixes.
+Fresh exception metadata now bounds World's exact fallthrough continuation to a
+1,138-byte interval and leaves 57 bytes after Pending's call inside its prior
+interval. These are derived continuation targets, not newly assigned class/symbol
+identities. Validate new decoder constants/fixtures and a fresh original-byte case
+before interpreting further local stores.
 
 Completion requires demonstrated compatibility, reliability and performance
 improvement while preserving the independent Rust/Bevy and no-original-assets rules.
