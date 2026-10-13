@@ -320,3 +320,36 @@ manifest SHA-256
 The additive post-run interpretation is separate from the immutable 646-binding
 set; its SHA-256 is
 `5562bd5665f8fc1d1b404ba56a000f9d2e6f064bf749001c30b6e2875197b3b0`.
+
+## Local post-call gap closed
+
+A new reviewed case exports only `[0x1439da2fa,0x1439da30e)`, twenty bytes
+after the call and before the known LEA, with fourteen admitted lookahead bytes.
+Sixty-two fixture checks/modes pass. The 2026-10-13 01:35 UTC run qualifies four
+instructions / fifteen p-code operations, all 701 bindings unchanged, original
+byte-hash joins and owned cleanup verified. Both function associations are null.
+
+Joining the six earlier operand instructions supplies a continuous ten-instruction,
+31-operation local sequence ending at `0x1439da32c`. Start with unknown register
+`548:0x38` as base B; no overlapping write, call, branch or unknown operation is
+crossed. The sequence zeroes register `548:0xb8` through same-source four-byte XOR
+and eight-byte zero extension, stores constant `0x145467ef0` at B, and computes
+register `548:0x8 = B + 0x160`. It then stores constant `0x145468180` at B+0x28
+and eight-byte zero at B+0x68, +0x70, +0x78 and +0x80. Fourteen negative mutation
+checks independently reject invalid joins, widths, origins, spaces and clobbers.
+
+The local gap is closed; the preceding call still blocks attribution to its earlier
+register copy or an entry parameter. These two pointer-shaped stores resemble the
+other selected sequence but do not prove a common object, vtable, class,
+constructor, receiver, actual indirect dispatcher call or runtime reachability.
+The next discriminating evidence is same-build type registration plus the actual
+receiver-load/indirect-call join. Newer-client symbols can guide comparison but
+cannot substitute for older-build ownership proof.
+
+Evidence: `work/control-caller-postcall-20261013/`; payload SHA-256
+`235af121a2ea7c0885958404b40f25bf50becd6c83d5a9a6aba56b9d84b4d391`,
+manifest SHA-256
+`68314cebebce8abf25e84aceb3fb8878598e4a21df6d61124cdef374870ee0b8`.
+The additive post-run note SHA-256 is
+`912f51b381315b464ce8f1c4e1aeffa1ad114610583550c3f8be2febc7228370`;
+completed bound artifacts remain unchanged.

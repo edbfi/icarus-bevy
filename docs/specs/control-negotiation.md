@@ -154,8 +154,11 @@ sites for `0x145468180`; retained-project disassembly confirms seven-byte LEA
 instructions at both. Raw operand/p-code joins then prove local eight-byte stores
 of that constant at base-register offsets `+0x28`. One separately qualified prefix
 preserves its base register through two stores at offsets zero and `+0x28`; the
-other prefix stops at a call before its store. Neither identifies an object class,
-table owner, entry parameter or indirect caller. A forced metadata decompilation reports blocks outside its
+other prefix stops at a call before its store. A fresh post-call window closes that
+local gap and joins two constant stores plus four zero stores on an unchanged
+unknown post-call base. It does not connect the base across the call. Neither
+sequence identifies an object class, table owner, entry parameter or indirect
+caller. A forced metadata decompilation reports blocks outside its
 configured interval, so its bounded-flow assumption is not qualified. Direct
 operand/pcode evidence precedes further promotion; the caller report preserves
 the source-isolation failure and subsequent successful retry separately.
