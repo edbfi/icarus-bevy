@@ -242,3 +242,41 @@ Evidence: `work/control-caller-instructions-20261013/execution-v2/`; manifest
 SHA-256 `0d92507405781fafb5341e00b8cd552c33653aaaacfceff3e4ef21a560b3f77e`,
 context SHA-256 `fdfac273340bb962c9c71bd509def0c9d7a5eb37cca814801a0f50ab76b1d004`.
 Caller/owner/archive identity and authenticated interoperability remain open.
+
+## Instruction-only operand and local store proof
+
+The next separately reviewed case uses no decompiler or function creation. It
+exports at most eight sequential whole instructions from each fixed 32-byte
+window, with at most 14 decoder lookahead bytes inside the qualified metadata
+range. It stops at gaps, crossing instructions or non-fallthrough control; it
+follows no outgoing flow. Numeric operands and raw p-code origins/widths are
+bounded and validated. Every exported instruction hash matches the corresponding
+fixed file span in the fully hash-checked original PE. Internal engine/cache reads
+are not instrumented; the admitted decoder span and exported span are distinct.
+
+Seven Java main fixtures plus authored and independent schema, source-isolation
+and lifecycle checks pass, 58 checks/modes total. The target run passes with all
+592 bindings unchanged, verified owned cleanup, eleven instructions and 31 p-code
+operations. Both LEAs copy the eight-byte constant `0x145468180` into register
+space 548, offset zero. At `0x1439da319`, an eight-byte store writes that value to
+the address formed from register `548:0x38 + 0x28`; at `0x1439dae77`, the same
+store uses `548:0x8 + 0x28`. The intervening instruction in the first window does
+not overwrite the value or base register. Operand records independently agree
+with the p-code COPY/INT_ADD/STORE chain. Unique temporaries are local to each
+instruction and are not carried across instruction boundaries.
+
+This proves local static stores, without identifying the base as an entry
+parameter or an object of a particular class. Table identity, constructor status,
+runtime reachability, receiver ownership and indirect dispatch remain unproved.
+The next useful check traces the bounded prefixes before those LEAs, followed by
+an actual receiver-load/indirect-call join and same-build type registration.
+
+Evidence: `work/control-caller-operands-20261013/`; payload SHA-256
+`2f142c4296638943dd668f6ae99577737a27125dd9a078fc33ba5acb7a87e35c`,
+manifest SHA-256
+`c0562a56611dc7328b1827963502ff694d60c06d8c73f05f6e759ad7128c24b5`.
+The tested source is copied exactly to
+`tools/ghidra/ExportBoundedInstructionOperands.java` (SHA-256
+`1e0efbdcd66963dd888b70152b10c50fb9eb41f386dd29e4b214a5d9209b7831`)
+and separately compiles against the installed Ghidra 12.1.4/JDK 21 APIs. The
+tracked path is a source copy; the accepted target run used the isolated case path.
