@@ -8,6 +8,26 @@ performance targets remain unproven. Last reconciled: 2026-10-13.
 
 ## Continuation — 2026-10-12
 
+### C034 top scalars — 2026-10-13, 01:24 UTC
+
+Seven exact top descriptors now qualify 11,606 fields across both supplied copies:
+3,316 Name frames / 99,580 bytes, 1,658 Str frames / 229,626 bytes, 1,658 Enum
+transfer frames / 90,310 bytes, 3,316 individual Int4 spans and 1,658 Bool0 spans.
+The string frames all use narrow encoding; maximum sizes are 38, 143 and 55 bytes
+respectively. The exact Enum descriptor shares the previously reviewed conditional
+Name/FString loading transfer; its internal byte storage is not an archive width.
+
+Complete prior-result replay precedes both copies' exact descriptor selection and
+all eight new string-batch budgets. Each Name descriptor's bytes are measured
+through its actual identity, never assigned by tag order. Eight authored fixture
+programs and eight independent regression groups pass, including the actual final
+assembled probe and late-backup rejection before new demands or decoding. The
+qualifier rejects extra output keys. Two inherited Name calls are replayed and
+eight new top calls execute; the existing helper cap and library pins are unchanged.
+All 2,089 bindings remain exact. Evidence: `work/c034-top-scalar-values-20261013/`,
+summary SHA-256 `edbe6e9c7f0c550a31842ac328f7fa131da3ae0f90bce2b630eb8ba2c7bb3c55`.
+Text/Name identity, numerical meanings, Enum lookup and restoration remain open.
+
 ### C034 own selected widths — 2026-10-13, 01:06 UTC
 
 Four exact own descriptors now qualify 4,974 Int4 spans / 19,896 bytes and 1,658
@@ -1027,8 +1047,8 @@ supported, and no ICARUS performance or stability improvement has been measured.
 
 ## Next work and maintenance
 
-1. Continue unresolved C034 top scalars after the completed inherited and own
-   Int/Bool checks. Reuse retained static evidence;
+1. Audit the remaining populated save boundaries after the completed C034 top,
+   inherited and own scalar checks. Reuse retained static evidence;
    the D01 populated Int/Str work is complete, and DA04's population is empty.
    Preserve exact
    descriptor bindings, byte/count/field bounds

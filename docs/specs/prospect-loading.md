@@ -584,6 +584,26 @@ Evidence: `work/c034-own-scalar-widths-20261013/`, summary SHA-256
 `eaaf3fb7382a13fcb3d5e2853dec868ad397ee9885f889d6aa1721b075a21879`.
 Numerical values and official restoration remain unqualified.
 
+Seven exact top scalar descriptors subsequently qualify across both copies:
+3,316 strict Name frames / 99,580 bytes, 1,658 Str frames / 229,626 bytes, 1,658
+Enum transfer frames / 90,310 bytes, 3,316 individual Int4 spans and 1,658 Bool0
+spans. All string frames are narrow; observed maxima are 38/143/55 bytes. The
+exact Enum descriptor and underlying property match the retained C009 static
+contract for conditional Name/FString transfer under the reviewed loading archive.
+Neither enum identity/lookup nor internal byte storage defines its disk meaning.
+
+The complete preceding result is reproduced before selecting all 11,606 fields.
+Both copies' exact ranges and eight batch budgets precede every new width check
+and decode. The two Name descriptors are joined by identity and measured separately,
+not assigned aggregate bytes by order. Eight authored programs and eight independent
+regression groups pass, including actual final-source composition and strict output
+privacy checks. Ten native calls comprise two inherited Name replays and eight
+new top batches. All 2,089 bindings and old/current library pins remain unchanged.
+Evidence: `work/c034-top-scalar-values-20261013/`, summary SHA-256
+`edbe6e9c7f0c550a31842ac328f7fa131da3ae0f90bce2b630eb8ba2c7bb3c55`.
+These selected structures and widths do not establish semantics, newer-build
+equivalence, mandatory presence or official world import.
+
 ## C009 top-header comparison
 
 The exact older C009 registration, constructor and primary vtable reach the

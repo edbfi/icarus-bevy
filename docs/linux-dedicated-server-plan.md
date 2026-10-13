@@ -207,7 +207,11 @@ Use this dataset in the next work sequence:
    and 11,606 Bool0 spans, using preserved historical native headers and two new
    native Name batches. Four selected own descriptors then qualify 4,974 Int4 and
    1,658 Bool0 spans, with historical native headers and two replayed Name batches.
-   Continue unresolved C034 top scalars; meanings/import remain open.
+   Seven exact top scalars subsequently qualify 3,316 Name, 1,658 Str and 1,658
+   Enum transfer frames, 3,316 Int4 and 1,658 Bool0 spans after complete prior
+   replay and both-copy selection/budgets. Eight new top string batches preserve
+   existing limits; all 2,089 bindings remain unchanged. Audit the remaining
+   populated boundaries; meanings/import remain open.
    All 486 C009 top bodies now match
    the reviewed 31-field contract and native spans under an explicit 71,956-byte
    comparison cap. Its 972 own child bodies now match immediate native spans;
