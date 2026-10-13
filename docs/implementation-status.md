@@ -24,8 +24,8 @@ structure for four selected classes is qualified against both copies with
 values left opaque ([save-class digest](research/save-format/2026-10-13-save-class-audits.md));
 current-client control-table stores are located but their owner is not
 ([control-store digest](research/network/2026-10-13-control-stores.md)); the
-C001 constructor decoder passes all ten corrected authored modes; its
-exact-window case is not yet run
+C001 constructor decoder passes all ten corrected authored modes and the
+exact-window case; receiver/dispatch qualification remains open
 ([C001 digest](research/save-format/2026-10-13-c001-decoder.md)).
 
 ## Milestones
@@ -59,6 +59,8 @@ No official server bug is marked reproduced or fixed (F-217).
 - Historical 7,200 s soak at 100,000 entities passed at an older revision (F-237).
 - Keeps acknowledged state through real ENOSPC/EACCES faults on tmpfs and reopens cleanly (F-239).
 - Inspects supplied prospect envelopes (UTF-8 and BOM UTF-16LE) within measured bounds, reporting world_imported false (F-241, F-242, F-243).
+- Requires envelope objects and keeps malformed JSON values out of diagnostics in all inspection modes (F-411, F-412).
+- Decodes all 601 physical C001 bytes without a database or lookahead; post-call stores agree locally, with receiver continuity still open (F-409, F-410).
 - Frames supplied save root properties and recorder boundaries to exact EOF, matching independent scanners (F-244, F-245).
 - Opaque header reader covers NameProperty, UInt32Property, Float and Text headers with authored fixtures (F-246, F-247, F-206, F-207).
 - Bounded library APIs frame selected components, struct arrays and Int arrays with explicit caps (F-248, F-249, F-200, F-198).
@@ -91,8 +93,9 @@ No official server bug is marked reproduced or fixed (F-217).
 ## Gates
 
 Every binding precondition is in [gates.md](gates.md). Fixture-v2 review and
-ten authored engine modes are qualified (F-406, F-407). The C001 original-code
-case still needs fresh exact-byte joins, scope, session and independent review.
+ten authored engine modes are qualified (F-406, F-407). The C001 exact-byte
+case is qualified (F-409); new callee or slot cases still need fresh joins, scope,
+session and independent review.
 Preserve the failed nine-mode receipt and separate strict replay as non-passing.
 Do not repeat completed C013, C028, C034 or D01 structure work; each original
 runtime experiment requires its own current launcher session.
@@ -102,8 +105,8 @@ runtime experiment requires its own current launcher session.
 Continue authorized offline work in this order; connected proof retains its gates.
 
 1. Fixture-v2 review and ten authored modes are complete (F-406, F-407); retain their qualified receipts.
-2. Build and test a standalone exact-window decoder to recover C001 instruction evidence within the 305/296-byte windows (F-270, F-271, U-041, U-042).
-3. Establish C001's complete concrete construction/vtable/archive-dispatch bridge from retained seeds and fresh bounded metadata (F-270, U-041).
+2. Preserve the qualified 305/296-byte decoder result (F-409, F-410); do not retry the completed exact-window case.
+3. Bound the observed common callee and qualify receiver continuity, then establish C001 archive slots (F-410, U-041).
 4. Close the census using completed C028/C034/C013 audits; leave native value meanings and empty inherited arrays open (F-272, F-273, U-046).
 5. Keep automatic class/schema recognition and value meanings open; no partial importer (U-046, U-040).
 6. Resolve actor/inventory/construction/tame/mission fields and confirm the reported producing build independently (F-262, F-263, U-040).

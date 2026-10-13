@@ -16,10 +16,12 @@ Last reconciled: 2026-10-13
   scope/session; fixture qualification supplies no construction proof.
 - Preserve the failed nine-mode receipt and separate strict replay; neither is a passing
   original suite.
-- Prepare/review a new C001 original-code case for the exact 305/296 physical
-  bytes, zero outside lookahead, no Program/database and no flow following;
-  linear instruction coverage alone must not be promoted to complete
-  control-flow/function or construction proof (U-002).
+- The exact 305/296-byte case is qualified (F-409; U-002 resolved). Keep zero
+  lookahead, no Program/database or flow following in its claims; linear
+  coverage does not prove a complete function or construction bridge.
+- Qualify post-call receiver continuity before promoting the observed C001 table
+  stores to concrete archive-slot ownership (F-410, U-041). New callee metadata
+  and code need separately reviewed bounds, source, scope and fresh session.
 - Retained exports already identify its exact native class getter and
   construction callback; reuse these before new bounded queries. Read the
   retained instruction listing within these exact intervals before expanding

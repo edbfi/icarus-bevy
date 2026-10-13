@@ -2,12 +2,15 @@
 //!
 //! Recovered field names and algorithm observations are documented in
 //! `docs/specs/save-format/prospect-envelope.md`. Payload serialization remains unknown.
-use std::io::Read;
+use std::{fmt, io::Read, marker::PhantomData};
 
 use anyhow::{Context, Result, ensure};
 use base64::{Engine, engine::general_purpose::STANDARD};
 use flate2::{Decompress, FlushDecompress, Status};
-use serde::{Deserialize, Serialize};
+use serde::{
+    Deserialize, Deserializer, Serialize,
+    de::{MapAccess, Visitor, value::MapAccessDeserializer},
+};
 use sha1::{Digest, Sha1};
 
 use crate::experimental::recorders::{RecorderSummary, read_recorders};
@@ -21,7 +24,34 @@ pub const MAX_PAYLOAD_BYTES: usize = 32 * 1024 * 1024;
 #[derive(Deserialize)]
 struct Envelope {
     #[serde(rename = "ProspectBlob")]
-    blob: Blob,
+    blob: JsonObject<Blob>,
+}
+
+// Derived struct visitors also accept positional sequences. This envelope
+// requires named JSON object fields at both the root and blob boundaries.
+struct JsonObject<T>(T);
+
+impl<'de, T: Deserialize<'de>> Deserialize<'de> for JsonObject<T> {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> std::result::Result<Self, D::Error> {
+        struct ObjectVisitor<T>(PhantomData<T>);
+
+        impl<'de, T: Deserialize<'de>> Visitor<'de> for ObjectVisitor<T> {
+            type Value = JsonObject<T>;
+
+            fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+                formatter.write_str("a JSON object")
+            }
+
+            fn visit_map<A: MapAccess<'de>>(
+                self,
+                map: A,
+            ) -> std::result::Result<Self::Value, A::Error> {
+                T::deserialize(MapAccessDeserializer::new(map)).map(JsonObject)
+            }
+        }
+
+        deserializer.deserialize_map(ObjectVisitor(PhantomData))
+    }
 }
 
 #[derive(Deserialize)]
@@ -119,7 +149,7 @@ fn decode_envelope(reader: impl Read) -> Result<ValidatedEnvelope> {
         bytes.len() <= MAX_ENVELOPE_BYTES,
         "envelope exceeds 4 MiB research limit"
     );
-    let envelope: Envelope = if let Some(encoded) = bytes.strip_prefix(&[0xff, 0xfe]) {
+    let envelope: JsonObject<Envelope> = if let Some(encoded) = bytes.strip_prefix(&[0xff, 0xfe]) {
         ensure!(encoded.len().is_multiple_of(2), "odd UTF-16LE byte length");
         let units = encoded
             .as_chunks::<2>()
@@ -137,8 +167,17 @@ fn decode_envelope(reader: impl Read) -> Result<ValidatedEnvelope> {
         let text = std::str::from_utf8(&bytes).context("invalid UTF-8 envelope")?;
         serde_json::from_str(text)
     }
-    .context("invalid prospect envelope JSON")?;
-    let blob = envelope.blob;
+    .map_err(|error| {
+        // Serde's data-error formatter can embed private input strings. Keep
+        // useful error class/location without retaining that error as a cause.
+        anyhow::anyhow!(
+            "invalid prospect envelope JSON: {:?} at line {}, column {}",
+            error.classify(),
+            error.line(),
+            error.column()
+        )
+    })?;
+    let blob = envelope.0.blob.0;
     ensure!(
         blob.total_length >= 0 && blob.data_length >= 0 && blob.uncompressed_length >= 0,
         "negative prospect length"
