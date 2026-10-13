@@ -1,15 +1,18 @@
 # Compatibility matrix
 
-No official build pair has been validated. Every complete ICARUS-facing surface
-below remains unknown; limited static observations are listed separately.
-Native foundation tests do not promote these rows. Each eventual row must identify
-the exact build/content, reference scenario, evidence IDs, specification, test and
-intentional differences. Status progression: unknown → observed → specified →
-implemented → validated. Expand rows for every supported content/game-mode variant.
+No official build pair is validated. Every complete ICARUS-facing surface
+remains unknown; bounded static observations are listed separately and do not
+promote a surface. Status progression: unknown, observed, specified,
+implemented, validated. Each eventual row names the exact build and content,
+reference scenario, evidence IDs, specification, test and intentional
+differences. Server observations apply to build 25621760 (M-168); client static
+comparisons apply to build 25793767 (M-167) and do not establish a matched
+dedicated-server baseline. Full text before condensation:
+16d1a9d:docs/ledgers/compatibility.md.
 
-For current priorities and the research pause, see the
-[implementation checkpoint](../implementation-status.md). The
-[canonical plan](../linux-dedicated-server-plan.md) defines the completion gates.
+Last reconciled: 2026-10-13
+
+## Surfaces
 
 | Surface | Status | Required proof |
 | --- | --- | --- |
@@ -29,57 +32,31 @@ For current priorities and the research pause, see the
 | Official save import | Unknown | Complete field preservation and stock-client validation |
 | Large-world capacity | Unknown | Matched representative workloads within verified player limit |
 
-Native snapshot version 1 and a provisional 30 Hz loop are authored infrastructure,
-not reverse-engineered ICARUS formats or timing.
+Native snapshot version 1 and the provisional 30 Hz loop are authored
+infrastructure (F-215, F-216). The isolated startup reported an entry-world
+maximum tick rate of 30 and an IpNetDriver listener after Steam failed; no
+client connected and no prospect loaded (F-268).
 
-The [isolated startup](../research/archive/2026-10-04-offline-startup-report.md) reported an
-entry-world maximum tick rate of 30 and an IpNetDriver listener after Steam failed.
-Those observations do not promote gameplay timing or authenticated transport rows:
-no client connected and no playable prospect was loaded.
+## Bounded observations and experimental components
 
-## Partial observations and experimental components
-
-| Subsurface | Status | Evidence and remaining gate |
-| --- | --- | --- |
-| Inner control dispatch and version comparison | Observed | [Negotiation notes](../specs/network/control-negotiation.md); outer framing, callback policy and runtime fixtures unknown |
-| Control-dispatch pointer stores | Local static stores and bounded register sequences qualified | [Caller investigation](../research/archive/2026-10-12-control-caller-limit.md#local-post-call-gap-closed); original-byte joins prove eight-byte stores at offsets zero and `+0x28` in both selected sequences. A post-call suffix closes the local gap with unknown register state; no provenance crosses its earlier call. Class, table identity, actual receiver/caller and runtime reachability remain open |
-| Initial control archive fields | Experimental caller-selected reader implemented | [Initial archive-body fields](../specs/network/control-negotiation.md#experimental-initial-archive-body-fields); authored explicit-endian byte/u32/strict-string fixtures pass. Message boundaries, active byte order, token handling and admission remain unknown |
-| Current-client named notify tables | Two static slot/name equalities qualified | [Current-client symbols](../research/archive/2026-10-12-control-caller-limit.md#current-client-public-symbols-and-named-notify-slots); paired build-25793767 public symbols identify UWorld and UPendingNetGame FNetworkNotify secondary tables; both `+0x18` pointers equal named NotifyControlMessage addresses. No code dereference, object-offset, older-owner or runtime proof |
-| Current-client constructor intervals | Two bounded metadata associations qualified | [Constructor metadata](../research/archive/2026-10-12-control-caller-limit.md#current-client-constructor-metadata-bounds); all 334,054 exception records validate. Named UWorld/UPendingNetGame beginnings match eight/71-byte intervals; procedure fragments are not complete functions or decoded entry/receiver evidence |
-| Current-client constructor instruction prefixes | Eight bounded instructions qualified | [Constructor prefixes](../research/archive/2026-10-12-control-caller-limit.md#current-client-bounded-constructor-prefixes); eight instructions / 34 p-code operations match original-byte hashes. World ends at its eight-byte fragment; Pending stops at a call. No cross-call provenance, receiver/ABI assumption, table-store or older-owner proof |
-| Current-client constructor continuation bounds | Two exact derived metadata targets qualified | [Continuation metadata](../research/archive/2026-10-12-control-caller-limit.md#current-client-constructor-continuation-metadata); World fallthrough begins a 1,138-byte interval, Pending's return address remains inside its prior 71-byte interval. No new public-symbol identity, cross-call state or owner proof |
-| Current-client continuation instructions | Local named Pending table stores qualified | [Continuation instructions](../research/archive/2026-10-12-control-caller-limit.md#current-client-constructor-continuation-instructions); eleven instructions / 32 p-code operations match original bytes. Pending's unchanged unknown base receives primary/FNetworkNotify constants at zero/+0x28; both windows stop at calls. Base/receiver origin, ABI, executed dispatch and older ownership remain open |
-| Current-client World local table stores | Named local primary/secondary pair qualified | [World pair](../research/archive/2026-10-12-control-caller-limit.md#world-named-local-table-pair); fresh eight-instruction / 39-byte output replays the earlier six-instruction partial result and qualifies eight-byte stores at unknown base +0/+0x28. Equal Pending geometry does not identify the older owner; receiver/layout/ABI/executed dispatch remain open |
-| Prospect-loading control flow | Observed | [Loading notes](../specs/save-format/prospect-loading.md) and [by-name rejection runs](../research/archive/2026-10-04-prospect-rejection.md); from-file runtime reachability and complete schema remain unresolved |
-| Inner prospect state and serialization dispatch | Observed on older executable | [Loading notes](../specs/save-format/prospect-loading.md); reflected header/recorder fields, version callbacks and tagged-property dispatch identified; recorder payloads and newer-build fidelity unresolved |
-| Root property tags | Observed on two copies; experimental opaque reader implemented | [Tag framing](../specs/save-format/tagged-properties.md); memory522 profile, bounded root spans, authored malformed-input fixtures and independent/native agreement on six root records per copy; nested values and complete schema validity unsupported |
-| Recorder field framing | Observed; experimental bounded reader implemented | [Recorder framing](../specs/save-format/tagged-properties.md); one shared struct header, exact element/field/byte-array boundaries, unknown fields preserved; component contents, class resolution and complete import unsupported |
-| Selected base-component framing | Observed on 1,296 records from two selected classes; explicit library subset implemented | [Component framing](../specs/save-format/tagged-properties.md#explicit-base-component-framing); independent/native agreement on opaque properties plus zero object trailer; concrete dispatch checked per class, but library class recognition, value semantics, GUID trailers and import unsupported |
-| C028 top scalar selection | Exact neutral ranges, Int/Bool widths and strict string structure qualified | [C028 comparison](../specs/save-format/prospect-loading.md#selected-repeated-component-c028); 12,940 ranges across ten descriptors reproduce prior headers/native aggregates; 3,882 Int4 and 2,588 Bool0 spans match individually. Ten new native batches qualify 6,470 strict string frames / 328,878 bytes. Old native individual header spans remain unavailable; meanings and restoration remain open |
-| Selected tagged struct arrays | Experimental library reader; C034 own-array population qualified | [Struct-array framing](../specs/save-format/tagged-properties.md#explicit-tagged-struct-array-framing); 28 selected C028 empty arrays, all 11,606 empty C034 inherited arrays, and all 1,658 C034 own arrays (15,342 elements/30,684 fields) have independent/native exact-span agreement. Automatic schema recognition and value semantics remain unqualified |
-| C028 direct Struct-child headers | Complete supplied population qualified | [C028 comparison](../specs/save-format/prospect-loading.md#selected-repeated-component-c028); twelve fresh native batches match all 7,764 payloads / 1,174,952 bytes and 20,704 individual headers. All optional descriptors appear in these copies; values, grandchildren and restoration remain unqualified |
-| C028 direct child leaves | Sixteen exact structures/widths qualified | [C028 comparison](../specs/save-format/prospect-loading.md#selected-repeated-component-c028); 1,294 strict Name frames, 5,176 Int4, 1,294 UInt32 four-byte, 9,058 Bool0 and 3,882 opaque binary Struct spans at 16/12/12 bytes match individual contracts. No value meanings, recursive binary schemas or restoration proof |
-| Third selected component and own struct | All supplied top and own headers qualified by independent and native readers | [C034 comparison](../specs/save-format/prospect-loading.md#third-selected-class-bounded-top-header-comparison); all 1,658 supplied top and own bodies and 9,948 inherited Struct bodies have exact native/independent immediate spans; descriptors remain optional. Own-array shared/element headers now qualified; 15,342 Struct and 15,342 Float spans individually match older 12/four-byte transfer demands. Numeric values remain opaque |
-| C034 inherited scalars | Thirteen exact descriptor structures/widths qualified | [C034 comparison](../specs/save-format/prospect-loading.md#third-selected-class-bounded-top-header-comparison); 1,658 strict Name frames, 6,632 Int4, 1,658 UInt32 four-byte and 11,606 Bool0 spans agree. Historical native headers are reused, with two fresh native Name batches. Value meanings and import remain open |
-| C034 own selected Int/Bool spans | Four exact individual-width contracts qualified | [C034 comparison](../specs/save-format/prospect-loading.md#third-selected-class-bounded-top-header-comparison); 4,974 Int4 and 1,658 Bool0 spans match after full inherited-result replay and both-copy bounds. No new native own-scalar calls; historical header spans remain separate from numerical meaning/import |
-| C034 top selected scalars | Seven exact descriptor structures/widths qualified | [C034 comparison](../specs/save-format/prospect-loading.md#third-selected-class-bounded-top-header-comparison); 3,316 Name, 1,658 Str and 1,658 conditional Enum transfer frames match strict structure; 3,316 Int4 and 1,658 Bool0 spans match individually. Eight new top batches follow complete prior replay and both-copy budgets. Meanings, enum lookup and restoration remain open |
-| C009 top component framing | All 486 supplied bodies qualified by independent and native readers | [C009 comparison](../specs/save-format/prospect-loading.md#c009-top-header-comparison); exact 31-field optional schema and spans agree across 6,781,758 bytes under an explicit 71,956-byte cap. Inherited child values and import remain unqualified |
-| C009 selected top scalars | Strict string structure and individual widths qualified | [C009 comparison](../specs/save-format/prospect-loading.md#c009-top-header-comparison); 3,402 Name/Str/Enum spans agree across 136,170 bytes; 1,458 Int4 and 486 Bool0 spans match. Text/numeric/enum meaning and restoration remain unqualified |
-| C009 own children and leaves | Headers, array/string structure and scalar widths qualified | [C009 comparison](../specs/save-format/prospect-loading.md#c009-top-header-comparison); 972 child bodies, 486 Int arrays and 486 Str values match native/independent structure. All selected Int/Bool widths agree. Numerical/string meaning and import remain unqualified |
-| C009 immediate-parent children | Headers, string structure and scalar widths qualified | [C009 comparison](../specs/save-format/prospect-loading.md#c009-top-header-comparison); 11,780 fields match across 1,944 arrays and 486 standalone streams. All 1,464 string-framed leaves and selected Int/Bool widths agree. Two array families are empty; value meanings remain unqualified |
-| C009 common-ancestor children | Immediate and selected deeper headers, binary widths and populated scalar structures qualified | [C009 comparison](../specs/save-format/prospect-loading.md#c009-top-header-comparison); common 9,018 headers, 1,468 binary and 7,272 scalar spans agree. ND01's 278 arrays contain 3,206 elements/25,648 qualified headers; selected deeper coverage appears below. CA06 is empty; meanings and restoration remain unqualified |
-| C009 ND01 leaves | Four exact descriptor structures/widths qualified | [ND01 comparison](../specs/save-format/prospect-loading.md#c009-top-header-comparison); 6,412 strict Name/Str frames and 6,412 Int4 spans agree. Meanings and import remain open |
-| C009 D01 nested array children | Four exact schemas, supplied headers and populated leaf structures/widths qualified | [D01 comparison](../specs/save-format/prospect-loading.md#c009-top-header-comparison); 12,824 arrays contain 12,868 elements/27,111 immediate fields with exact spans. All 25,680 Int4 and 1,431 strict Str frames match. DA04 is empty throughout; meanings and restoration remain open |
-| C001 construction seeds | Two older-server metadata bounds qualified | [C001 candidate](../specs/save-format/prospect-loading.md#next-selected-class-candidate-c001); exact callback/candidate constructor seeds begin 305/296-byte exception intervals after all 323,249 records validate. Fragment, instruction, construction/vtable bridge and save-body qualification remain separate |
-| Short stateless handshake | Observed; independent loopback lab implemented | [Handshake notes](../specs/network/stateless-handshake.md); original challenge/echo/ack observed with authentication inactive; stock-client admission pending |
-| Default network checksum | Experimental primitive implemented; early value observed | [Checksum notes](../specs/network/network-checksum.md); final active inputs/callback policy unresolved |
-| Archive strings | Experimental strict subset implemented | [String codec](../specs/save-format/archive-string.md); authored fixtures pass; actual network flags and original round trips pending |
-| Prospect envelope | Observed on supplied saves; experimental read-only inspector | [Envelope notes](../specs/save-format/prospect-envelope.md); twelve UTF-16LE envelopes pass independent integrity checks, with measured bounds; user reports build 25793767; matched build pairing, binary schema and complete import remain unvalidated |
-
-Server observations apply to build 25621760. Separate build-25793767 client
-static comparisons support the selected framing, descriptor and constructor/table
-relationships described in the linked evidence; they do not
-establish a matched dedicated-server baseline. The supplied save's producing
-build remains user-reported as 25793767, without a matched load. These observations
-do not promote the complete transport, authentication or official-save-import
-surfaces above.
+| Subsurface | Status | Evidence | Remaining gate |
+| --- | --- | --- | --- |
+| Control dispatch and version comparison | Observed | F-284; [spec](../specs/network/control-negotiation.md) | Outer framing, callback policy, runtime fixtures (U-014, U-037) |
+| Initial control archive fields | Experimental reader | F-096, F-097 | Message boundaries, byte order, token handling, admission (U-044) |
+| Control-dispatch pointer stores | Local stores qualified | F-091, F-095, F-110, F-113 | Class, table identity, receiver, runtime reachability (U-016, U-018) |
+| Current-client notify tables | Two slot/name equalities | F-088 | No dereference, object offset, older owner or runtime proof (U-010, U-011) |
+| Current-client constructor intervals and prefixes | Bounded metadata and instructions | F-082, F-083, F-093 | Fragments only; no cross-call provenance or ABI (U-008, U-009) |
+| Current-client World/Pending table stores | Named local pair at +0/+0x28 | F-062, F-063, F-071, F-076, F-274 | Receiver origin, layout, executed dispatch, older owner (U-007, U-043) |
+| Prospect-loading control flow | Observed | [spec](../specs/save-format/prospect-loading.md); F-256 | From-file reachability and complete schema (U-040) |
+| Inner prospect state and dispatch | Observed on older build | F-257 | Recorder payloads and newer-build fidelity (U-025) |
+| Root property tags and recorder framing | Observed on two copies; experimental readers | F-244, F-245; [spec](../specs/save-format/tagged-properties.md) | Nested values, class resolution, import (U-046) |
+| Selected base-component framing | Observed on 1,296 records; library subset | F-259, F-260 | Class recognition, value semantics, GUID trailers (U-046) |
+| Selected tagged struct arrays | Library reader; C034 own arrays qualified | F-316, F-196 | Schema recognition and value semantics (U-046) |
+| C028 top, child headers and leaves | Complete supplied population qualified | F-115, F-128, F-135, F-137, F-123, F-124, F-125 | Meanings, grandchildren, restoration (U-020, U-027) |
+| C034 top, own and inherited scalars | Exact structures and widths qualified | F-146, F-147, F-150, F-152, F-196 | Meanings, enum lookup, restoration (U-020, U-033) |
+| C009 top, children and D01 arrays | Headers, string structure and widths qualified | F-182, F-183, F-174, F-158, F-162 | Meanings and restoration; DA04 and CA06 empty (U-020, U-021) |
+| C001 construction seeds | Two metadata bounds | F-270, F-034 | Instruction, construction/vtable bridge, save body (U-023) |
+| Short stateless handshake | Observed; loopback lab | F-253, F-280; [spec](../specs/network/stateless-handshake.md) | Stock-client admission (U-051, U-052) |
+| Default network checksum | Experimental primitive; early value observed | F-254, F-255, F-281; [spec](../specs/network/network-checksum.md) | Active inputs and callback policy (U-037) |
+| Archive strings | Experimental strict subset | F-142, F-282, F-285; [spec](../specs/save-format/archive-string.md) | Network flags and original round trips (U-026) |
+| Prospect envelope | Observed on supplied saves; read-only inspector | F-261, F-283, F-241; [spec](../specs/save-format/prospect-envelope.md) | Build pairing, binary schema, import (U-025, U-040) |
