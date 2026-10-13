@@ -121,6 +121,14 @@ copy and the offline deadline/resource/ownership guards; fixture and compiler
 outputs must stay outside that script directory. See the
 [control investigation](docs/research/2026-10-12-control-caller-limit.md).
 
+`tools/ghidra/DecodeConstructorWindows.java` is the independently authored minimal
+x64 decoder used in the reviewed current-client prefix case. It decodes two fixed
+derived byte windows without creating a Program/database or importing an executable.
+It requires Ghidra 12.1.4, exact input sizes/hashes and separately reviewed original
+slice provenance, scope and lifecycle guards. Nine real authored decoder recipes
+and five injected API guards pass. Case wrappers enforce authorization; invoking
+this helper alone does not establish input provenance or authorize target reads.
+
 Original files stay under ignored `icarus-orig/`; generated analysis, private saves,
 captures and dumps stay under ignored `work/`. Reusable tools and sanitized reports
 are tracked. No original assets are extracted or reused.

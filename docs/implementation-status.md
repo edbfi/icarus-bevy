@@ -8,6 +8,29 @@ performance targets remain unproven. Last reconciled: 2026-10-13.
 
 ## Continuation — 2026-10-12
 
+### Constructor continuation metadata and C001 references — 2026-10-13, 04:03 UTC
+
+Fresh current-client metadata places the exact World fallthrough address
+`0x143ca5a48` at the beginning of a 1,138-byte interval ending `0x143ca5eba`.
+Pending's sequential post-call address `0x143a5865e` remains inside its prior
+71-byte interval, leaving 57 bytes. All 2,315 bindings remain unchanged and owned
+cleanup passes. Sixty-four authored and 48 independent checks pass. These targets
+are derived continuations, not new public symbols or receiver/class identities.
+Evidence: `work/control-client-constructor-continuation-ranges-20261013/`, payload
+SHA-256 `d9fbb94daeccd5f1d8bb7510d87005a29bb78baee0ab5516abf2b30979688b9f`.
+
+The separate C001 metadata query opens only a disposable nine-file retained-project
+copy under readonly/no-analysis guards. Its one recorded incoming reference to
+native getter `0x1419fe200` is DEFAULT/non-call from `0x14655d468`, with no containing
+function. Retained coverage supplies no registration argument flow or caller-absence
+proof. All 334 bindings remain unchanged and cleanup passes, after source review,
+fresh preparation session/copy/readback and a separate fresh runtime session.
+Five authored fixture programs and 59 independent checks pass. Evidence:
+`work/c001-incoming-getter-20261013/`, reference TSV SHA-256
+`589c493c56039973eff41b1c1399f15df9ab7f761908c3d39b0d6a3541d0e58c`.
+Recover fresh bounds for the already identified construction callback and candidate
+instance constructor; do not infer its vtable bridge or parse C001 bodies yet.
+
 ### Current-client bounded constructor instructions — 2026-10-13, 03:49 UTC
 
 The reviewed fixed-window decoder exports eight instructions / 34 p-code operations
@@ -1305,9 +1328,11 @@ supported, and no ICARUS performance or stability improvement has been measured.
 
 ## Next work and maintenance
 
-1. Audit completed C028 selected child leaf structures/widths and full-population
-   direct Struct-child native spans, then choose the next uncovered save boundary
-   from retained census/schema evidence.
+1. Establish C001's complete concrete construction/vtable/archive-dispatch bridge
+   using retained exact native getter/callback/constructor seeds and fresh bounded
+   metadata. The retained incoming query supplies one non-call data reference only.
+   Completed C028/C034 finite audits and historical C013 coverage determine the
+   corrected census; do not repeat their completed populated value structures.
    All five top string descriptors pass ten measured native batches after the
    both-copy range preflight. The first child session rejection and successful
    separate retry remain preserved. Its old native top batch qualifies aggregate totals, not retained
@@ -1331,6 +1356,9 @@ supported, and no ICARUS performance or stability improvement has been measured.
    alone do not prove bounded native flow. Current paired-client symbols and two
    exact named notify slots now guide bounded constructor metadata/instruction
    comparison, without establishing older owner identity or object offsets.
+   The accepted prefixes stop at an eight-byte fragment end and a call; new metadata
+   bounds their exact continuation points. Separately validate fixed decoded windows
+   with fresh post-call unknown state before any table/receiver/type join.
    Establish actual owner/caller
    evidence before inferring the dispatcher caller. Bind the concrete archive/outer
    framing path before promoting the experimental

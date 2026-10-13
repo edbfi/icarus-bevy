@@ -938,3 +938,29 @@ tests. It is not an official-save reader. `import-save` intentionally remains
 unavailable until field coverage and stock-client validation can demonstrate a
 correct migration. Those preventative design choices are not evidence of fixing
 an original-server bug.
+
+### Next selected-class candidate (C001)
+
+The corrected retained census includes earlier singleton C013 alongside C009,
+C028 and C034: four selected classes cover 3,440 of 5,485 observed records. C001
+has four records across the two copies, with useful retained direct-parent metadata.
+That is a candidate for concrete proof reuse, not an accepted component schema.
+The exact native class getter `0x1419fe200` and construction callback `0x1419fe870`
+are already exported; reflection getter `0x141a00220` is a separate function.
+The callback's old 24-byte export ends in a partial instruction, while candidate
+instance constructor `0x141788530` has only a retained prefix. Their complete
+bridge and archive-related vtable slots remain unqualified. No C001 payloads are
+parsed under those incomplete facts.
+
+A new scoped readonly/no-analysis query of a disposable retained-project copy
+finds one incoming DEFAULT/non-call reference at `0x14655d468` to the native getter,
+with no containing source function. This is ReferenceManager coverage only; it
+neither supplies class-registration argument flow nor proves caller absence. All
+334 bindings remain unchanged and owned cleanup passes. Source/fixture review,
+a fresh preparation session and exact nine-file copy/readback precede a separate
+fresh runtime session. Five authored fixture programs and 59 independent checks
+pass. Evidence: `work/c001-incoming-getter-20261013/`, TSV SHA-256
+`589c493c56039973eff41b1c1399f15df9ab7f761908c3d39b0d6a3541d0e58c`, manifest SHA-256
+`715936778e0b83a1404f3d429c91a8fb3fb6da40a38499b44065c7092bddbfc8`.
+Bound the identified callback/constructor before new complete instruction or
+vtable-slot queries; do not transfer derived-class dispatch to this candidate.
