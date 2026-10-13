@@ -173,3 +173,5 @@ Rows were extracted from fabd2f9:docs/implementation-status.md on 2026-10-13.
 | M-163 | specs/prospect-envelope.md | unstated | unstated | Implemented and checked | external |
 | M-164 | specs/archive-string.md | unstated | unstated | Implemented and checked | external |
 | M-165 | bug-ledger.md | unstated | unstated | Implemented and checked | external |
+| M-166 | reference-data/2026-10-04-heavy-save/ | unstated | 2026-10-12 | Supplied heavy-world save intake (archive, SHA256SUMS, private inventory.json) | local-private |
+| M-167 | work/client-identity-20261012/ | unstated | 2026-10-12 | Client installation identity check | local-private |
