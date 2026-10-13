@@ -200,6 +200,10 @@ Acceptance conditions for any importer
   remain open and receiver preservation unproved (F-426).
   Callback/candidate replay qualifies99local edges, two common-callee calls and
   two returns, with both graphs likewise open (F-430).
+  Three12-byte v1 unwind records declare register3 pushes ending at offset2 and
+  fixed48/32/48-byte allocations ending at offset6. Each has flags2 with an opaque
+  handler RVA. Metadata intent qualifies; handler data is unread and local
+  stack/receiver joins remain open (F-434).
 
 ## Open questions
 

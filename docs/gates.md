@@ -30,6 +30,12 @@ Last reconciled: 2026-10-14
   declared CFGs qualify while graphs stay open and calls/returns opaque (F-426,
   F-430). Receiver
   analysis and expanded paths retain fresh source/scope/session gates.
+- Conditional normal-return ABI inference requires local stack, save-slot/home-area
+  and call-argument joins; unwind intent alone does not clear receiver or archive
+  ownership (F-431, U-041).
+- Three selected unwind records are qualified (F-433, F-434). Reuse their exact
+  metadata; local instruction joins still need reviewed source, bounds and a fresh
+  session. No handler-data or chain expansion follows from their qualification.
 - Retained exports already identify its exact native class getter and
   construction callback; reuse these before new bounded queries. Read the
   retained instruction listing within these exact intervals before expanding

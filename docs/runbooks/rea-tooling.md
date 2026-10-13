@@ -29,6 +29,10 @@ installation deliberately uses project configuration. Verify registration with
 `codex mcp get rea` and `claude mcp get rea`; verify the live connection with the
 MCP `binary_session` tool. Installation validation discovered 170 MCP tools from
 REA 6.4.0 and confirmed the existing Ghidra 12.1.4/JDK 21 provider as healthy.
+The connected catalog is aligned (F-432). Ghidra byte reads require default
+auto-analysis and return loader-adjusted Program memory. For exact physical
+metadata work, record that capability/effect gap and use a reviewed bounded
+fallback; connected readiness does not qualify target bytes.
 
 Use the installed Homebrew tools recorded in `Brewfile`: radare2, headless Ghidra
 and Wireshark CLI utilities. Check `tshark --version` separately. A GUI failure
