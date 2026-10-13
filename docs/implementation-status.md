@@ -8,6 +8,46 @@ performance targets remain unproven. Last reconciled: 2026-10-13.
 
 ## Continuation — 2026-10-12
 
+### World local-store partial result — 2026-10-13, 05:15 UTC
+
+A fresh single-window decoder qualifies six instructions / 19 p-code operations
+and 31 consumed bytes after World's observed call. Both named table constants
+are materialized; only an eight-byte primary-table store at an unchanged unknown
+base plus zero is exported. The last accepted instruction stores a different
+value at base plus `0x68`. The next instruction at `0x143ca5a79` crosses the
+32-byte output limit; its length, mnemonic and meaning are not exported. No
+secondary store or local table pair is qualified.
+
+All 2,883 bindings remain unchanged and owned cleanup passes. Producer and
+qualifier each read the same 46 physical original bytes; Java reads their derived
+copy. The reviewed analyzer now invalidates overlapping temporary writes as well
+as register writes. Earlier builder/runtime/temporary-alias defects and source
+revisions remain preserved. Ten real authored-engine outputs pass strict replay,
+five injected guards pass, and 59 independent core plus 21 wrapper checks pass.
+The lead reproduces the sixteen-mutation neutral postrun proof without writes.
+Evidence: `work/control-world-table-bridge-20261013/`, payload SHA-256
+`d173899c02d111245fc5a51ac5f84411e86c4a18c471f423103f8f116220b93a`;
+additive interpretation SHA-256
+`c0f1c52c99d8c007c0595f95ebed96b891365341a2e6394a32175da563cc1777`.
+Any expanded output needs new source/classes/scope/session and byte qualification;
+old lookahead is not silently promoted to decoded evidence. Receiver, object
+layout, constructor identity, runtime dispatch and older ownership remain open.
+
+### C001 diagnostic observation — 2026-10-13, 05:12 UTC
+
+The fresh diagnostic variant qualifies a rejection at the first listing-entry
+operation/check, `0x1419fe870`. It does not distinguish an absent/mismatched entry
+from an API exception, and qualifies no instruction listing or construction bridge.
+All 910 bindings remain unchanged and cleanup passes. The helper compiles against
+the installed API; sixteen actual Java API-stub entry-point checks pass after
+preserving and correcting the stub's discarded println output. Sixty independent
+schema/marker and 26 wrapper checks pass. Fresh copy and runtime sessions remain
+separate; the earlier rejected case and all sources/reviews/receipts are preserved.
+Evidence: `work/c001-constructor-listing-diagnostic-20261013/`.
+Prepare a standalone decoder for the exact 305/296-byte physical windows without
+database dependence or outside lookahead; linear instruction coverage alone must
+not be promoted to complete control-flow/function or construction proof.
+
 ### C001 retained listing rejection — 2026-10-13, 04:53 UTC
 
 The reviewed readonly/no-analysis query rejects its result after a Ghidra script
@@ -1410,7 +1450,9 @@ supported, and no ICARUS performance or stability improvement has been measured.
    metadata. Exact 305/296-byte intervals now bound those seeds; recover the complete
    retained instruction listing and account for reachable paths before claiming the
    bridge. The first readonly listing query failed without a diagnostic stage;
-   preserve it and recover bounded diagnostics in a fresh variant before retry.
+   preserve it. The fresh diagnostic variant locates the first listing-entry
+   operation/check rejection without establishing its cause. A separately tested
+   standalone exact-window decoder is the next route.
    The retained incoming query supplies one non-call data reference only.
    Completed C028/C034 finite audits and historical C013 coverage determine the
    corrected census; do not repeat their completed populated value structures.

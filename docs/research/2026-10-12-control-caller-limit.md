@@ -618,3 +618,48 @@ final production review `c39870a76259276900ecfbf745d7151df76bb9f60f10c52573f5f8c
 additive interpretation `223ffe8cab6e51d26bf98835ba2b02a6e796f363ab9e9a3ddb8a1c3962de42af`.
 This is static local-store evidence, not client admission, network compatibility,
 archive/bunch provenance, complete constructor identity or a playable server.
+
+## World post-call local-store partial result
+
+The fresh single-window case admits 46 physical bytes beginning `0x143ca5a5a`,
+with 32 decoded-output bytes and fourteen lookahead bytes. Ten real authored-engine
+outputs pass the exact strict checker replay, including two authored local table
+stores; five injected guards pass. Independent review catches and preserves
+prebinding filename/runtime-metadata errors and a false positive from overlapping
+unique-temporary writes. Corrected register and temporary overlap invalidation,
+actual retained-file inventory, runtime composition and expanded command checks
+pass before any target execution. Fifty-nine independent core and 21 wrapper
+checks pass. Unknown initial JS fixture-checker loading remains explicit; final
+qualification uses known strict replay of immutable real-engine outputs.
+
+The 05:15 UTC target run exports six instructions / 19 p-code operations and
+31 consumed bytes. Each instruction hash matches the original. All 2,883 bindings
+remain unchanged and owned cleanup passes. Producer and qualifier each read the
+same 46 original bytes, and Java reads the derived copy. Whole-file fixity is
+separate. No Program/import, analyzer, decompiler or outgoing-flow traversal runs.
+
+| Accepted location | Local observation |
+| --- | --- |
+| `0x143ca5a5d` | Materializes named primary constant `0x145567750` |
+| `0x143ca5a64` | Stores that constant, eight bytes, at unknown register-base `548:0x38:8` plus zero |
+| `0x143ca5a67` | Forms that base plus `0x160` in another register |
+| `0x143ca5a6e` | Materializes named secondary constant `0x1455679e0` |
+| `0x143ca5a75` | Stores a different value at that base plus `0x68` |
+
+The next unaccepted instruction starts at `0x143ca5a79`, one byte before the nominal
+output end `0x143ca5a7a`; its length, mnemonic and meaning are not exported. There
+is no qualified secondary store or local table pair. A separately reviewed scope,
+source/class revision, session and byte qualification must precede any expansion
+of decoded output. Lookahead in this receipt is not silently reclassified as
+accepted instructions. The base has no receiver, object-layout, constructor,
+ABI or older-server owner identity; no state is carried across an earlier call.
+
+Independent interpretation checks local values and overlapping storage, exact
+symbol associations, strict result/lifecycle joins and sixteen rejecting mutations.
+The lead reproduces its exact result without writes. Original-byte equality rests
+on the separate accepted root qualifier receipt; the reviewer reads no raw code.
+
+Evidence: `work/control-world-table-bridge-20261013/`, payload SHA-256
+`d173899c02d111245fc5a51ac5f84411e86c4a18c471f423103f8f116220b93a`;
+source review `f19106c5345c797942b3ea086456a0d1970a86c14bc3f724f3a5b722ed842c76`;
+additive interpretation `c0f1c52c99d8c007c0595f95ebed96b891365341a2e6394a32175da563cc1777`.
