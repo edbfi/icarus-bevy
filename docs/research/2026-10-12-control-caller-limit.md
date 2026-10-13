@@ -205,3 +205,40 @@ or noncontiguous code. They do not prove instruction boundaries, primary entries
 complete functions, constructors, callers or owner/archive identity. Targeted
 instruction evidence must preserve that distinction, including any analyst-defined
 function used solely as bounded decompiler input.
+
+## Targeted instruction context and preserved failed attempt
+
+The first retained-project run failed before exporting results: Ghidra recursively
+compiled the script directory's authored fixture API stubs, and the resulting
+helper referenced `ProgramStub` instead of the installed API. All 476 bindings
+remained exact and owned cleanup passed. The failed session, bundle, receipts and
+diagnosis remain under `work/control-caller-instructions-20261013/`.
+
+The reviewed retry uses the same Java source in an exclusive source-only leaf and
+a fresh project copy/home/cache. Forty-four fixture groups pass, including classes,
+fixture subtrees and symlinks rejected before target reads or launch. At 00:34 UTC
+on 2026-10-13 the run passed with all 523 bindings unchanged and verified cleanup.
+Both candidate sites decode as seven-byte LEA instructions. With analyzers disabled,
+neither has a generated reference record; the helper reports zero confirmed slot
+references. Independently joining those decoded boundaries with the frozen PE
+scan's exact RIP-relative target calculation supports static materialization of
+`0x145468180` at both sites. This does not prove reachability, an object store,
+table base, constructor, owner or caller. The second metadata start has an existing database function but no
+function containing the probe, so no decompilation input was selected for it.
+
+The first site's decompiler input was explicitly forced from metadata; the known
+dispatcher used its retained definition. Two decompilations completed. This does
+not establish complete or correctly identified functions. The first output warns
+about unreachable blocks beyond the approved metadata end: configuring a bounded
+function body does not prove that native decompiler flow stayed within that body.
+That output is retained as a limited local lead, not bounded-flow or owner proof.
+Direct operand/pcode checks at the two sites are the next discriminator; the
+inferred object-pointer store still needs instruction confirmation. The additive
+independent post-run review retains these distinctions without changing bound
+artifacts: `execution-v2/notes/independent-postrun-analysis.md`, SHA-256
+`93e34312b12ebca7dd4cab8f2cae971da24e1b15a3e55f66adcbd8bdb6156ca5`.
+
+Evidence: `work/control-caller-instructions-20261013/execution-v2/`; manifest
+SHA-256 `0d92507405781fafb5341e00b8cd552c33653aaaacfceff3e4ef21a560b3f77e`,
+context SHA-256 `fdfac273340bb962c9c71bd509def0c9d7a5eb37cca814801a0f50ab76b1d004`.
+Caller/owner/archive identity and authenticated interoperability remain open.
