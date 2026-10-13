@@ -973,3 +973,11 @@ These metadata intervals may be fragments; they do not qualify instruction
 boundaries, complete functions, receiver origin or the concrete bridge. Read the
 retained listing within these exact bounds before a vtable-slot query; do not
 transfer derived-class dispatch to this candidate.
+
+The first readonly/no-analysis existing-listing query fails with a generic script
+exception before creating its result directory. The wrapper rejects the absent
+result despite Ghidra's exit zero, with all 738 bindings unchanged and cleanup
+verified. This gives no instruction coverage, gap location or construction bridge.
+The producer discarded its failing stage/address; a fresh diagnostic variant is
+needed before another exact-window attempt. Source/reviews/copy/session/failure
+remain preserved in `work/c001-constructor-listing-20261013/`.
