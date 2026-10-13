@@ -15,7 +15,7 @@ Full text: fabd2f9:docs/implementation-status.md lines 1-13 and 941-1590.
 ## Answered
 
 - Not yet ICARUS-compatible; only an independent foundation (F-186, F-187).
-- Pinned Rust 1.99.0 / Bevy 0.20.0, confirmed current; direct dependencies refreshed and checks pass (F-219, F-221, F-222, F-189, F-190, M-078).
+- Pinned Rust 1.99.0 / Bevy 0.20.0 remain current; stable-compatible lock refresh, fixed-tree full suite, release save/restart and five rejection cases pass (F-413; M-174, M-184). Earlier direct refresh: F-219, F-221, F-222, F-189, F-190, M-078.
 - Bevy skill updated from a pinned upstream commit with exact file match (F-220, M-131).
 - Authored Python passes basedpyright recommended at 0 errors / 0 warnings (F-224, F-225).
 - Config validation, fixed-step loop, checksummed atomic saves, two-generation recovery, fail-closed manifests, signal shutdown (F-226 to F-230).
@@ -75,7 +75,7 @@ Full text: fabd2f9:docs/implementation-status.md lines 1-13 and 941-1590.
 
 ## Receipts
 
-- Dependency refresh and smoke (M-078); native deadline and recovery runs (M-132, M-133).
+- Dependency refresh and smoke (M-078, M-184); native deadline and recovery runs (M-132, M-133).
 - Historical soak, provenance and start commit (M-134 to M-136); snapshot measurement (M-137).
 - Filesystem fault probe (M-138); codec review (M-139); root tags (M-140); recorders (M-141).
 - Header readers and component API (M-142 to M-144); Float/Text (M-112).
