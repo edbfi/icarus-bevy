@@ -8,6 +8,32 @@ performance targets remain unproven. Last reconciled: 2026-10-13.
 
 ## Continuation — 2026-10-12
 
+### C028 direct child leaves — 2026-10-13, 03:12 UTC
+
+All sixteen exact child descriptors now qualify individually: 5,176 Int4 spans /
+20,704 bytes, 1,294 UInt32 four-byte spans / 5,176 bytes, 9,058 Bool0 spans, and
+3,882 opaque binary Struct spans at exact 16/12/12-byte widths / 51,760 bytes.
+Two new borrowed native batches agree on 1,294 strict Name frames / 11,646 bytes,
+each nine bytes. Every field is selected through exact descriptor/type/index/extra
+identity; all 32 both-copy budgets precede new demands or decoding. Complete prior
+results, ten string batches and twelve child-header batches replay first.
+
+Nine authored fixture programs and 27 independent checks pass, including the
+actual final main, equal-total unequal-width rejection and a late prior-result
+failure that blocks both new Name calls. Exact scope-derived session creation,
+strict whole-result qualification, deadline and post-fixity guards pass with all
+2,464 bindings unchanged. Source/library/helper pins remain unchanged. Evidence:
+`work/c028-child-leaf-preparation-20261013/summary.json`, SHA-256
+`5a65b500d1e72610bfd21190be2edbc3a0e41dd3bf6e1cefb42990dbdefd7802`.
+Independent post-run interpretation reproduces the frozen qualifier, verifies 24
+successful helper receipts and rejects seven metadata mutations. The lead
+reproduces its exact output without writes. Additive note SHA-256:
+`a71fa4158f4cfe51359b63409655a9c1f9816a0705b00c5d66147ce83c2fde67`.
+Binary bodies remain opaque; neither numerical/text meaning nor restoration is
+qualified. Seven inherited arrays contain zero elements, so their population
+coverage remains open. Audit the selected coverage before choosing another save
+boundary; do not repeat completed header/string comparisons.
+
 ### Current-client constructor metadata bounds — 2026-10-13, 03:04 UTC
 
 The separately reviewed metadata case validates all 334,054 exception-directory
@@ -1208,8 +1234,9 @@ supported, and no ICARUS performance or stability improvement has been measured.
 
 ## Next work and maintenance
 
-1. Qualify C028 selected child leaf structures/widths using retained exact contracts
-   after completed full-population direct Struct-child native span comparison.
+1. Audit completed C028 selected child leaf structures/widths and full-population
+   direct Struct-child native spans, then choose the next uncovered save boundary
+   from retained census/schema evidence.
    All five top string descriptors pass ten measured native batches after the
    both-copy range preflight. The first child session rejection and successful
    separate retry remain preserved. Its old native top batch qualifies aggregate totals, not retained
