@@ -663,3 +663,44 @@ Evidence: `work/control-world-table-bridge-20261013/`, payload SHA-256
 `d173899c02d111245fc5a51ac5f84411e86c4a18c471f423103f8f116220b93a`;
 source review `f19106c5345c797942b3ea086456a0d1970a86c14bc3f724f3a5b722ed842c76`;
 additive interpretation `c0f1c52c99d8c007c0595f95ebed96b891365341a2e6394a32175da563cc1777`.
+
+## World named local table pair
+
+A separately reviewed decoder revision changes only output/lookahead geometry to
+40/6 over the same 46 physical bytes. Eleven authored-engine recipes, including a
+store crossing the earlier output boundary, run from an exact captured seven-file
+checker bundle. The stale REX count is corrected and preserved before that run.
+Five injected guards pass. New source/runtime/scope/bindings/session are separate;
+the old partial receipt and lookahead classification remain unchanged.
+
+The accepted 06:12 UTC run exports eight instructions / 25 p-code operations and
+39 consumed bytes. Every earlier six-instruction record, operand, p-code operation
+and span hash replays exactly before new analysis. All 3,179 bindings remain
+unchanged, instruction hashes match the original and owned cleanup passes.
+Thirty-five independent core and 22 wrapper checks include a late prefix mismatch
+that prevents any analyzer call. Producer and qualifier each read the same46 bytes;
+Java reads their derived copy. Whole-file fixity is separate.
+
+The store at `0x143ca5a79` is four instruction bytes, with raw p-code forming the
+unchanged unknown base plus `0x28` and storing eight bytes from the previously
+materialized secondary constant `0x1455679e0`. Its primary counterpart at
+`0x143ca5a64` stores `0x145567750` at the same base plus zero. The base is initial
+register-space `548:0x38:8`, first used in the primary store; it has no receiver or
+ABI identity. A subsequent store at `0x143ca5a7d` uses a different value at base
+plus `0x70`. The next instruction at `0x143ca5a81` crosses the nominal output end
+`0x143ca5a82`; its length, mnemonic and effects are unexported.
+
+Independent neutral interpretation confirms both exact public-symbol associations,
+continuous local dataflow, overlapping register/temporary invalidation and the
+strict earlier-prefix/lifecycle joins. Eighteen rejecting mutations pass, and the
+lead reproduces the exact result without writes. Original-byte equality rests on
+the root qualifier receipt; the reviewer reads no raw code. Both selected newer
+World and Pending sequences now have local primary/secondary store offsets zero
+and `0x28`. Equal geometry and image placement cannot identify the older owner or
+prove receiver layout, full constructor, cross-call retention or executed dispatch.
+A same-build registration/receiver bridge remains the next substantive question.
+
+Evidence: `work/control-world-secondary-store-20261013/`, payload SHA-256
+`c6637e7d8b68187ea5947c30ce89b22489c06d83eab8d4e25794876cddd90073`;
+source review `ae5f41d250ac8d51fc0ce1b5d0ee380f441c503df0402a4a23016e9dcae5c165`;
+additive interpretation `09206f600bb385720cf9487309d744887fb21750cf68c65787d9fb34d3d70653`.
