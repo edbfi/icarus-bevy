@@ -47,7 +47,7 @@ Last reconciled: 2026-10-13
 | U-038 | Can a stock client complete an authenticated session against the native server? | critical | blocked | advance transport/control/authentication evidence; connected tests need a concrete scope | F-186, F-187, F-240, F-253, F-264 |  |
 | U-039 | What restoration use and gameplay identity does the singleton class's saved integer have? | medium | open | none stated | F-258 |  |
 | U-040 | Which actor/inventory/construction/tame/mission fields exist, and can the reported producing build be independently confirmed? | high | open | none stated | F-262, F-263 |  |
-| U-041 | Can C001's complete concrete construction/vtable/archive-dispatch bridge be established? | high | investigating | Qualify a decoder for the 106-byte window, then receiver continuity and archive slots. | F-409, F-410, F-414 |  |
+| U-041 | Can C001's complete concrete construction/vtable/archive-dispatch bridge be established? | high | investigating | Qualify receiver continuity through the measured callee before archive-slot ownership. | F-410, F-414, F-416 |  |
 | U-042 | What causes the first C001 listing-entry operation/check rejection? | medium | open | Separate listing diagnostic only if needed; completed decoder does not distinguish retained listing failure cause. | F-271, F-409 |  |
 | U-043 | What is the actual receiver/indirect dispatch, base origin and same-build type-registration join for the control stores? | high | open | bounded constructor metadata/instruction comparison guided by paired-client symbols | F-274 |  |
 | U-044 | What is the concrete archive/outer framing path for the experimental control-body fields? | medium | open | none stated | F-274 |  |

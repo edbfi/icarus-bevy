@@ -21,7 +21,8 @@ Last reconciled: 2026-10-13
   coverage does not prove a complete function or construction bridge.
 - Qualify post-call receiver continuity before promoting the observed C001 table
   stores to concrete archive-slot ownership (F-410, U-041). New callee metadata
-  and code need separately reviewed bounds, source, scope and fresh session.
+  and code are qualified (F-414, F-416); expanded paths still need separately
+  reviewed bounds, source, scope and fresh session.
 - Retained exports already identify its exact native class getter and
   construction callback; reuse these before new bounded queries. Read the
   retained instruction listing within these exact intervals before expanding

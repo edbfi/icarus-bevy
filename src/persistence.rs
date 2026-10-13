@@ -38,6 +38,18 @@ struct Generation {
 }
 
 impl Generation {
+    fn validate_checksum(&self) -> Result<()> {
+        ensure!(
+            self.sha256.len() == 64
+                && self
+                    .sha256
+                    .bytes()
+                    .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte)),
+            "invalid snapshot checksum in manifest"
+        );
+        Ok(())
+    }
+
     fn filename(&self) -> String {
         format!("snapshot-{}.json", self.number)
     }
@@ -139,11 +151,13 @@ impl SnapshotStore {
             serde_json::from_slice(&bytes).context("invalid snapshot manifest")?;
         ensure!(manifest.schema_version == 1, "unsupported manifest schema");
         ensure!(manifest.current.number > 0, "invalid snapshot generation");
+        manifest.current.validate_checksum()?;
         if let Some(previous) = &manifest.previous {
             ensure!(
                 previous.number > 0 && previous.number < manifest.current.number,
                 "invalid previous generation"
             );
+            previous.validate_checksum()?;
         }
         Ok(Some(manifest))
     }

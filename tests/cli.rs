@@ -167,6 +167,49 @@ impl Drop for RunningServer {
 }
 
 #[test]
+fn malformed_manifest_checksums_stop_startup_without_rewriting_state() {
+    use icarus_bevy::{persistence::SnapshotStore, simulation::WorldSnapshot};
+
+    for generation in ["current", "previous"] {
+        let directory = tempfile::tempdir().unwrap();
+        let mut store = SnapshotStore::open(directory.path()).unwrap();
+        for tick in [10, 20] {
+            store
+                .save(&WorldSnapshot {
+                    tick,
+                    ..Default::default()
+                })
+                .unwrap();
+        }
+        drop(store);
+        let manifest_path = directory.path().join("manifest.json");
+        let mut manifest: serde_json::Value =
+            serde_json::from_slice(&fs::read(&manifest_path).unwrap()).unwrap();
+        manifest[generation]["sha256"] = "".into();
+        let manifest_bytes = serde_json::to_vec(&manifest).unwrap();
+        fs::write(&manifest_path, &manifest_bytes).unwrap();
+        let snapshots = [1, 2].map(|number| {
+            fs::read(directory.path().join(format!("snapshot-{number}.json"))).unwrap()
+        });
+        let mut server = RunningServer::start(directory.path());
+        assert!(!server.wait_exit().success());
+        assert_eq!(fs::read(manifest_path).unwrap(), manifest_bytes);
+        for (index, bytes) in snapshots.iter().enumerate() {
+            assert_eq!(
+                fs::read(
+                    directory
+                        .path()
+                        .join(format!("snapshot-{}.json", index + 1))
+                )
+                .unwrap(),
+                *bytes
+            );
+        }
+        assert!(!directory.path().join("snapshot-3.json").exists());
+    }
+}
+
+#[test]
 fn termination_signals_commit_before_clean_exit() {
     for signal in ["-TERM", "-INT"] {
         let directory = tempfile::tempdir().unwrap();
@@ -200,7 +243,7 @@ fn special_snapshot_inputs_fail_promptly_without_publication() {
         if name == "snapshot-1.json" {
             fs::write(
                 directory.path().join("manifest.json"),
-                br#"{"schema_version":1,"current":{"number":1,"sha256":"unused"},"previous":null}"#,
+                br#"{"schema_version":1,"current":{"number":1,"sha256":"0000000000000000000000000000000000000000000000000000000000000000"},"previous":null}"#,
             )
             .unwrap();
         }

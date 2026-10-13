@@ -191,7 +191,9 @@ Acceptance conditions for any importer
   Exact windows now decode as 51/49 instructions; both call `0x1418824d0` and
   share 40 typed post-call instructions, including a local store of
   `0x1449d9f90` via RBX (F-409, F-410). Receiver continuity across the call and
-  archive slots remain unqualified; no C001 payload is parsed.
+  archive slots remain unqualified; the common callee decodes all 106 physical
+  bytes as 24 instructions without function or receiver proof (F-416). No C001
+  payload is parsed.
 
 ## Open questions
 

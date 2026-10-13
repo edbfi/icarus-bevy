@@ -415,6 +415,99 @@ fn both_corrupt_generations_fail_without_reset() {
 }
 
 #[test]
+fn malformed_manifest_checksums_fail_before_recovery_or_publication() {
+    for generation in ["current", "previous"] {
+        for digest in [
+            String::new(),
+            "a".repeat(63),
+            "a".repeat(65),
+            "g".repeat(64),
+            "A".repeat(64),
+            "é".repeat(32),
+        ] {
+            let directory = tempfile::tempdir().unwrap();
+            let mut store = SnapshotStore::open(directory.path()).unwrap();
+            store.save(&snapshot(10)).unwrap();
+            store.save(&snapshot(20)).unwrap();
+            let manifest_path = directory.path().join("manifest.json");
+            let mut manifest: serde_json::Value =
+                serde_json::from_slice(&fs::read(&manifest_path).unwrap()).unwrap();
+            manifest[generation]["sha256"] = digest.into();
+            let manifest_bytes = serde_json::to_vec(&manifest).unwrap();
+            fs::write(&manifest_path, &manifest_bytes).unwrap();
+            let snapshots = [1, 2].map(|number| {
+                fs::read(directory.path().join(format!("snapshot-{number}.json"))).unwrap()
+            });
+            assert!(
+                store.load().is_err(),
+                "malformed {generation} checksum admitted"
+            );
+            assert!(store.save(&snapshot(30)).is_err());
+            assert_eq!(fs::read(&manifest_path).unwrap(), manifest_bytes);
+            for (index, bytes) in snapshots.iter().enumerate() {
+                assert_eq!(
+                    fs::read(
+                        directory
+                            .path()
+                            .join(format!("snapshot-{}.json", index + 1))
+                    )
+                    .unwrap(),
+                    *bytes
+                );
+            }
+            assert!(!directory.path().join("snapshot-3.json").exists());
+        }
+    }
+}
+
+#[test]
+fn well_formed_checksum_mismatch_still_recovers_previous() {
+    let directory = tempfile::tempdir().unwrap();
+    let mut store = SnapshotStore::open(directory.path()).unwrap();
+    store.save(&snapshot(10)).unwrap();
+    store.save(&snapshot(20)).unwrap();
+    let manifest_path = directory.path().join("manifest.json");
+    let mut manifest: serde_json::Value =
+        serde_json::from_slice(&fs::read(&manifest_path).unwrap()).unwrap();
+    manifest["current"]["sha256"] = "0".repeat(64).into();
+    fs::write(manifest_path, serde_json::to_vec(&manifest).unwrap()).unwrap();
+    let recovered = store.load().unwrap().unwrap();
+    assert!(recovered.recovered_previous);
+    assert_eq!(recovered.snapshot, snapshot(10));
+    assert_eq!(store.save(&snapshot(30)).unwrap().generation, 3);
+}
+
+#[test]
+fn malformed_first_generation_checksum_fails_at_manifest_admission() {
+    let directory = tempfile::tempdir().unwrap();
+    let mut store = SnapshotStore::open(directory.path()).unwrap();
+    store.save(&snapshot(10)).unwrap();
+    let manifest_path = directory.path().join("manifest.json");
+    let mut manifest: serde_json::Value =
+        serde_json::from_slice(&fs::read(&manifest_path).unwrap()).unwrap();
+    manifest["current"]["sha256"] = "".into();
+    let manifest_bytes = serde_json::to_vec(&manifest).unwrap();
+    fs::write(&manifest_path, &manifest_bytes).unwrap();
+    let saved = fs::read(directory.path().join("snapshot-1.json")).unwrap();
+    for error in [
+        store.load().unwrap_err(),
+        store.save(&snapshot(20)).unwrap_err(),
+    ] {
+        assert!(
+            error
+                .to_string()
+                .contains("invalid snapshot checksum in manifest")
+        );
+    }
+    assert_eq!(fs::read(manifest_path).unwrap(), manifest_bytes);
+    assert_eq!(
+        fs::read(directory.path().join("snapshot-1.json")).unwrap(),
+        saved
+    );
+    assert!(!directory.path().join("snapshot-2.json").exists());
+}
+
+#[test]
 fn future_schema_is_not_silently_rolled_back() {
     let directory = tempfile::tempdir().unwrap();
     let mut store = SnapshotStore::open(directory.path()).unwrap();
