@@ -43,6 +43,10 @@ Default state location: ignored `work/runtime/`. Each directory has one writer,
 enforced by an advisory lock. Autosave runs every 60 seconds through a bounded
 worker. Saves contain authored domain records and a simulation clock, not ICARUS
 gameplay or its save format.
+Snapshot capture requires every entity with a domain ID to have its required
+position; incomplete state fails before submission instead of silently dropping
+that entity from the durable generation. Entities without domain identity remain
+outside the current native snapshot schema.
 
 Each generation is checksummed and synchronized before the manifest is atomically
 published. Keep two committed generations. Startup reports when a corrupt current

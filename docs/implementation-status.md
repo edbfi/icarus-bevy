@@ -8,6 +8,32 @@ performance targets remain unproven. Last reconciled: 2026-10-13.
 
 ## Continuation — 2026-10-12
 
+### Native capture completeness — 2026-10-13, 04:38 UTC
+
+Snapshot capture now visits every domain-identified entity and rejects missing
+required Position data before returning a snapshot. The old required-component
+query silently omitted those entities: three new regressions reproduce that
+failure, including an acknowledged truncated generation. Four regressions now
+verify unchanged committed bytes, no worker queue entry or receipt, repair/retry
+through the same worker, exact sorted durable state and duplicate-ID rejection.
+Entities without domain identity remain outside this authored schema.
+
+All 21 foundation tests and the full manual suite pass on Rust 1.99.0 / Bevy 0.20.0,
+including formatting, Clippy, Rust targets, authored Python typing/tests and Node
+research fixtures. The release build passes; a native smoke test saves tick 10,
+restarts at tick 10 and saves tick 30 as generation 2. Independent source review
+and the fully qualified anyhow-call compile correction are retained. No original
+runtime, private save parsing or ICARUS compatibility test runs for this fix.
+
+Before mutation, all 2,464 latest save-case bindings are verified and exact native
+source/binaries preserved. The transition qualifies 2,461 unchanged paths plus
+the exact simulation source/library/server changes and separate test-file change.
+Evidence: `work/native-capture-transition-20261013/transition.json` and
+`work/native-capture-completeness-20261013/`. New release library SHA-256:
+`744fcb62bfbcbbace33fa73cb1134adb466c3f617c0f7c028bb899e8b386a183`.
+Subsequent private-save helpers must bind this transition; frozen prior helpers
+continue to name their preserved original sources/libraries.
+
 ### Current-client continuation instructions — 2026-10-13, 04:28 UTC
 
 The separately compiled fixed-window derivative passes nine real synthetic
