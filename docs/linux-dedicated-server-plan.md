@@ -5,7 +5,10 @@ This is the reviewed implementation plan. Progress and evidence are tracked in
 not claims of compatibility. This document authorizes no tool execution or
 target activity by itself.
 
-**Resumed at the user's request on 2026-10-12.** The
+**Paused at the user's request on 2026-10-13, 06:28 UTC.** Read the
+[current paused checkpoint](implementation-status.md#current-paused-checkpoint--2026-10-13-0628-utc)
+before preparing new work. Creating or sharing a handoff does not resume research.
+The prior execution was resumed on 2026-10-12. The
 [continuation checkpoint](implementation-status.md#continuation--2026-10-12)
 records native C034 own/array qualification, individual opaque widths and
 conditional matched-client dispatch.

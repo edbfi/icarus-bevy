@@ -8,6 +8,59 @@ performance targets remain unproven. Last reconciled: 2026-10-13.
 
 ## Continuation — 2026-10-12
 
+### Current paused checkpoint — 2026-10-13, 06:28 UTC
+
+Paused at the user's request. Workers are interrupted; process inspection finds
+no research JVM, Cargo build or native server running. Completed work through
+`cfa365d` is pushed. This pause record will be committed and pushed separately.
+The foundation remains nonplayable, with no complete protocol/authentication,
+replication, world/gameplay, official-save import or matched performance proof.
+
+The last native implementation is `af4270b`: incomplete domain capture fails
+before publication. All 21 foundation tests, the full manual suite, release build
+and tick 0→10 / restart 10→30 smoke test pass. Exact source/library transition
+and all 2,464 prechange bindings are preserved under
+`work/native-capture-transition-20261013/`; release library SHA-256 is
+`744fcb62bfbcbbace33fa73cb1134adb466c3f617c0f7c028bb899e8b386a183`.
+No later live Rust/library changes occurred. Completed save qualifications and
+World/Pending local-store proofs below should be reused, not repeated.
+
+First pending task: complete independent review of corrected C001 fixture v2,
+then run its ten authored modes under a fresh owned/offline source-only case.
+The original nine-mode engine process emitted all nine outputs, but its Node
+checker exited one: a relative-zero CALL mnemonic has jump/type-1/BRANCH p-code
+in the pinned decoder. Preserve that failed receipt and separate strict replay;
+neither is a passing original suite. The unchanged producer is independently
+source-reviewed and compiled warning-free. Fixture v2 adds an exact nonzero-call
+oracle and strengthens the final p-code target check. Its latest frozen source
+is `work/c001-standalone-linear-fixtures-v2-20261013/`, freeze SHA-256
+`4c9e8ca21314d595de4064aafa59399518fac1398bb9ac54ce38bc5705f40668`.
+Sixteen late-backup mutations reject. Final independent v2 note and ten-mode
+engine execution are unfinished. A fresh v2 installed-API compile has already
+passed in `work/c001-standalone-api-validation-v2-20261013/`; decoder source is
+unchanged, so no further compile is needed unless the Java sources change.
+Do not execute these prepared files without the remaining review/fixture gates.
+
+After fixture qualification, prepare/review a new C001 original-code case for the
+exact 305/296 physical bytes, zero outside lookahead, no Program/database and no
+flow following. No standalone C001 original-code copies, target scope/bindings,
+session or execution exist. Earlier listing rejection and diagnostic observation
+remain separate: the latter locates the first listing-entry operation/check at
+`0x1419fe870`, without proving its cause or any instruction/class bridge.
+
+Independent owner track: `work/older-control-owner-next-20261013/PROPOSAL.md`
+finds no retained exact older World/Pending registration seed. Current REA
+metadata in `work/older-control-owner-routing-20261013/binary-session.json`
+is aligned at 6.4.0/170 tools, with no target open; native string tools report
+`target_required`. Ghidra is available. Preserve the specific provider reuse/
+cold-import limitations, and do not repeat an unchanged third import. A bounded
+exact-name locator fallback has only been assigned; no source case was created
+before the worker interruption. Metadata/readiness is not target authority.
+
+Submitting a future execution prompt resumes work; this pause, documentation and
+handoff creation do not. Old target sessions remain immutable and expired.
+No original executable runtime/container or connected client ran in this sequence.
+
 ### World named local table pair — 2026-10-13, 06:12 UTC
 
 The fresh 40-output/6-lookahead case keeps the same 46 physical bytes and replays
