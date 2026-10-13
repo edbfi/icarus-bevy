@@ -561,6 +561,18 @@ profile propagation now reaches conditional ordinary-class dispatch in a bounded
 follow-up, but later field callbacks and supplied-save provenance remain unresolved;
 see [matched-client framing comparison](tagged-properties.md#matched-client-static-comparison).
 
+The inherited scalar follow-up rejoins thirteen exact S02–S06 descriptors after
+reproducing full historical top/own/inherited native header spans. Both copies'
+population/range/byte budgets precede two new strict Name batches. All 1,658 Name
+frames / 16,868 bytes match independent/native structure, maximum 25 bytes; all
+6,632 Int spans and 1,658 UInt32 spans individually have four bytes, and 11,606
+Bool spans have zero payload bytes. No header helpers or prior own-Name checks
+are rerun. Eight authored fixture programs and seven independent regression
+groups pass; all 2,000 bindings remain exact, with four legacy source/tool/library
+transitions separately reviewed and preserved. Values and restoration remain
+unqualified. Evidence: `work/c034-inherited-scalar-values-20261013/`, summary
+SHA-256 `54afada3f4608e0d9e11bb1b7c82e774bdc0c34fa653b00f6e5f4cc1c3869187`.
+
 ## C009 top-header comparison
 
 The exact older C009 registration, constructor and primary vtable reach the

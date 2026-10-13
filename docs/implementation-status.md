@@ -8,6 +8,33 @@ performance targets remain unproven. Last reconciled: 2026-10-13.
 
 ## Continuation — 2026-10-12
 
+### C034 inherited scalars — 2026-10-13, 00:50 UTC
+
+Thirteen exact inherited descriptors now qualify 21,554 selected fields across
+both copies: 1,658 strict Name frames / 16,868 bytes, 6,632 individual Int4 spans,
+1,658 UInt32 four-byte spans and 11,606 zero-payload Bool spans. The Name frames
+fit two 829-frame native batches, maximum 25 bytes. Text/Name identity and numerical
+meanings remain unqualified.
+
+This case reproduces complete top/own/inherited headers against frozen historical
+native spans before exact descriptor selection. It makes two new native Name
+calls; it does not rerun header helpers or the already qualified own-Name checks.
+Eight authored fixture programs and seven independent regression groups pass.
+All 2,000 new bindings remain exact. The older 574-path manifest is reconciled
+explicitly: 570 paths unchanged, three source/library transitions with exact old
+snapshots, and one removed guard archived from Git solely as evidence. Its old path
+is never restored or invoked. The current library remains unchanged; the frozen
+string-helper library remains separately identified.
+
+Preparation records the worker's disclosed fixity-byte read beyond its narrower
+delegation boundary, separately from parsing or execution. The lead verifies final
+fixity and all transitions. Evidence: `work/c034-inherited-scalar-values-20261013/`,
+summary SHA-256
+`54afada3f4608e0d9e11bb1b7c82e774bdc0c34fa653b00f6e5f4cc1c3869187`;
+transition evidence: `work/c034-scalar-transitions-20261013/`.
+Selected own Int/Bool widths are the next bounded step; meanings and import remain
+open.
+
 ### D01 nested array leaves — 2026-10-13, 00:30 UTC
 
 The reviewed follow-up reproduces all earlier results and rejoins eight exact
@@ -974,9 +1001,10 @@ supported, and no ICARUS performance or stability improvement has been measured.
 
 ## Next work and maintenance
 
-1. Continue the next unresolved save relationships/value boundaries after the
-   completed D01 populated Int/Str leaf comparisons. Reuse retained static evidence;
-   DA04's supplied population is empty. Preserve exact
+1. Qualify C034's three selected own Int descriptors and one Bool descriptor after
+   the completed inherited scalar checks. Reuse retained static evidence;
+   the D01 populated Int/Str work is complete, and DA04's population is empty.
+   Preserve exact
    descriptor bindings, byte/count/field bounds
    and old/new source/library receipts. Automatic class/schema recognition and
    value meanings remain open.
