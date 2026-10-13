@@ -749,8 +749,24 @@ fixture programs and independent review pass; 1,112 execution bindings are exact
 The helper links the unchanged current library through an explicit snapshot.
 Evidence: `work/c009-common-deeper-headers-20261013/`, summary SHA-256
 `ede5ffe4a6a1944f13dfd8c51373efa6c5eccd65a41db8454190a689182e3f96`.
-D01 scalar structures/widths and four Array inner schemas remain separate next
+D01 scalar structures/widths subsequently qualify below. The four Array inner
+schemas are already resolved by retained static evidence described earlier in
+this specification; a provisional continuation gap note missed that case and is
+corrected additively. Their supplied counts/headers and values remain separate
 steps. No numeric meaning, deeper restoration or complete import is qualified.
+
+The D01 leaf comparison matches exact Name/Str/two Int descriptors after complete
+ND01 replay and all-copy bounds. Native/independent strict framing agrees on 3,206
+Name frames / 46,951 bytes and 3,206 Str frames / 13,022 bytes. Names are narrow,
+maximum 47 bytes; Str has 3,200 zero-count empty and six narrow spans, maximum
+37 bytes. Each of 6,412 Int spans has width four. Seven fixture programs and
+independent review pass, with 1,172 unchanged bindings. Evidence:
+`work/c009-d01-leaf-values-20261013/`, summary SHA-256
+`6f53c189ea8c33edc7c736b08f5685da14c7bfee93968c7b98ca9878b10e0ee1`.
+Original normalization/EOF/error behavior, text/numerical meaning and restoration
+remain unqualified. The remaining 12,824 arrays / 2,405,613 bytes are still opaque;
+reuse frozen `work/c028-d01-array-children-20261012/` for their exact static joins
+before supplied child-header comparison, without rerunning completed research.
 
 The common-header case corrects the earlier own-child dimension provenance: the common
 property factory reads descriptor offset `+0x20`, including for Bool. Its

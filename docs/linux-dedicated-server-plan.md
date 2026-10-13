@@ -230,8 +230,11 @@ Use this dataset in the next work sequence:
    and 6,522 individual Int/UInt32/Float/Bool widths; 26 descriptors have populated
    coverage, with CA06 Name still empty. Those 278 deeper arrays subsequently
    qualify 3,206 ND01 elements and 25,648 immediate fields with unchanged limits.
-   Continue ND01 scalar leaves and recover its four unresolved inner array
-   contracts; preserve unqualified meanings/restoration. See
+   Its scalar leaves subsequently qualify 6,412 strict Name/Str frames and 6,412
+   individual Int widths. Reuse the already resolved four inner Array registrations
+   from frozen C028 descendant evidence for the next supplied child-header check;
+   the earlier provisional gap missed this retained case. Preserve unqualified
+   meanings/restoration. See
    the current checkpoint in implementation status.
    Retain the lack of populated
    inherited-array coverage.
