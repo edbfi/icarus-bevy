@@ -57,6 +57,7 @@ Defects in this repository's code, each with a regression test.
 | N-008 | FIFO manifest or selected generation blocked startup before signal handling | Nonblocking opens and opened-handle regular-file checks; bounded CLI rejection/preservation and valid preceding-generation recovery tests | F-405 |
 | N-009 | Envelope structs accepted unlabeled positional arrays, bypassing named-object policy | Map-only root/blob boundaries; all modes reject at envelope parsing in both encodings | F-411 |
 | N-010 | Wrong known-field types exposed input strings through Serde diagnostics on stderr | Category/line/column only; original cause discarded; CLI/API privacy and source-preservation regressions | F-412 |
+| N-011 | Malformed checksum references caused rollback or left invalid previous metadata admitted | Validate both canonical digest strings before selection; load/save/CLI preservation and valid-mismatch recovery regressions | F-417 |
 
 Injected ENOSPC at the generation and manifest writer boundaries preserves the
 acknowledged generation and permits retry; an error after publication returns

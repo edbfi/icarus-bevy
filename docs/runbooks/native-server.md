@@ -46,8 +46,9 @@ outside the current native snapshot schema.
 Each generation is checksummed and synchronized before the manifest is atomically
 published. The store retains two committed generations. Startup reports when a
 corrupt current generation requires recovery from the previous one. Corrupt/missing manifests with
-existing snapshots and unsupported schemas fail closed, rather than silently
-creating a fresh world. Preserve a copy before manual recovery.
+existing snapshots, noncanonical checksum fields and unsupported schemas fail closed, rather than silently
+creating a fresh world. Each manifest digest must contain exactly 64 lowercase
+ASCII hexadecimal digits (F-417). Preserve a copy before manual recovery.
 
 SIGINT/SIGTERM freezes simulation, drains outstanding work and saves a final snapshot.
 Deadline checks reject overdue completion and final submission; failure exits nonzero.

@@ -51,7 +51,7 @@ No official server bug is marked reproduced or fixed (F-217).
 - Validates configuration, applies CLI overrides and inspects config without writing (F-226).
 - Runs a fixed-step ECS loop with stable authored IDs, coherent snapshots and bounded catch-up counters (F-227).
 - Saves asynchronously with a writer lock, checksummed generations and atomic manifest publication (F-228).
-- Keeps two generations and recovers; corrupt/missing manifests and unsupported schemas fail closed (F-228, F-229).
+- Keeps two generations and recovers; corrupt/missing manifests, noncanonical checksum fields and unsupported schemas fail closed (F-228, F-229, F-417).
 - Rejects stale snapshots and stops simulation on terminal save-worker disconnect (F-232).
 - Performs a final save and bounded shutdown on SIGINT/SIGTERM with JSON diagnostics (F-230, F-233).
 - 120.157 s synthetic run: 100,000 entities, 60 saves, zero deadline misses and clamped frames (F-234).
@@ -60,7 +60,7 @@ No official server bug is marked reproduced or fixed (F-217).
 - Keeps acknowledged state through real ENOSPC/EACCES faults on tmpfs and reopens cleanly (F-239).
 - Inspects supplied prospect envelopes (UTF-8 and BOM UTF-16LE) within measured bounds, reporting world_imported false (F-241, F-242, F-243).
 - Requires envelope objects and keeps malformed JSON values out of diagnostics in all inspection modes (F-411, F-412).
-- Decodes all 601 physical C001 bytes without a database or lookahead; post-call stores agree locally, with receiver continuity still open (F-409, F-410).
+- Decodes all 601 physical C001 bytes without a database or lookahead; post-call stores agree locally and the 106-byte callee decodes, with receiver continuity still open (F-409, F-410, F-416).
 - Frames supplied save root properties and recorder boundaries to exact EOF, matching independent scanners (F-244, F-245).
 - Opaque header reader covers NameProperty, UInt32Property, Float and Text headers with authored fixtures (F-246, F-247, F-206, F-207).
 - Bounded library APIs frame selected components, struct arrays and Int arrays with explicit caps (F-248, F-249, F-200, F-198).
@@ -106,7 +106,7 @@ Continue authorized offline work in this order; connected proof retains its gate
 
 1. Fixture-v2 review and ten authored modes are complete (F-406, F-407); retain their qualified receipts.
 2. Preserve the qualified 305/296-byte decoder result (F-409, F-410); do not retry the completed exact-window case.
-3. Qualify a single-window decoder for the common callee's measured 106-byte interval, then receiver continuity and C001 archive slots (F-414, U-041).
+3. Preserve qualified 106-byte callee decode; qualify receiver continuity before C001 archive slots (F-415, F-416, U-041).
 4. Close the census using completed C028/C034/C013 audits; leave native value meanings and empty inherited arrays open (F-272, F-273, U-046).
 5. Keep automatic class/schema recognition and value meanings open; no partial importer (U-046, U-040).
 6. Resolve actor/inventory/construction/tame/mission fields and confirm the reported producing build independently (F-262, F-263, U-040).

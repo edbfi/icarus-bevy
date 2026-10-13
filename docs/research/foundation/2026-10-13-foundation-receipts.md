@@ -20,6 +20,7 @@ Full text: fabd2f9:docs/implementation-status.md lines 1-13 and 941-1590.
 - Authored Python passes basedpyright recommended at 0 errors / 0 warnings (F-224, F-225).
 - Config validation, fixed-step loop, checksummed atomic saves, two-generation recovery, fail-closed manifests, signal shutdown (F-226 to F-230).
 - FIFO manifest/generation startup hangs reproduced; opened-handle regular-file checks and nonblocking opens reject special inputs while retaining valid previous state (F-405; M-175).
+- Both manifest digest fields require canonical 64-digit lowercase hex before selection; load/save/startup reject malformed references without rewriting state, while valid mismatch recovery remains (F-417; M-191).
 - Offline execution resumed; source/runtime scopes remain separate from connected lab authority (F-404; M-174).
 - Stale-snapshot rejection, save-worker disconnect stop and N-004 shutdown deadline fix are regression-tested (F-232, F-233, M-165).
 - Synthetic 120.157 s run and 24-cycle kill/restart campaign pass on the N-004 revision (F-234, F-235, M-132).
@@ -75,6 +76,7 @@ Full text: fabd2f9:docs/implementation-status.md lines 1-13 and 941-1590.
 
 ## Receipts
 
+- Manifest digest admission reproduction/review/regressions (M-191).
 - Dependency refresh and smoke (M-078, M-184); native deadline and recovery runs (M-132, M-133).
 - Historical soak, provenance and start commit (M-134 to M-136); snapshot measurement (M-137).
 - Filesystem fault probe (M-138); codec review (M-139); root tags (M-140); recorders (M-141).
