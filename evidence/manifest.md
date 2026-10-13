@@ -41,18 +41,18 @@ Rows were extracted from fabd2f9:docs/implementation-status.md on 2026-10-13.
 | M-031 | work/control-client-constructor-ranges-20261013/ | ff838e96a61252573c95ba09b93f2a4c76d457cefd4a34c6dc727a0752b3b3dd | 2026-10-13 | Current-client constructor metadata bounds — 2026-10-13, 03:04 UTC; payload | local-private |
 | M-032 | work/control-client-constructor-ranges-20261013/ | 3222b5fbc7de908d4921291bb010618cbe634500422fe93fbfcf329bbf06ae8f | 2026-10-13 | Current-client constructor metadata bounds — 2026-10-13, 03:04 UTC; additive note | local-private |
 | M-033 | work/control-client-instruction-routing-20261013/ | unstated | 2026-10-13 | Current-client constructor metadata bounds — 2026-10-13, 03:04 UTC | local-private |
-| M-034 | research/archive/2026-10-12-control-caller-limit.md#current-client-public-symbols-and-named-notify-slots | unstated | 2026-10-13 | Current-client public symbols and notify slots — 2026-10-13, 02:31 UTC | external |
-| M-035 | research/archive/2026-10-12-control-caller-limit.md#local-post-call-gap-closed | unstated | 2026-10-13 | Post-call local stores — 2026-10-13, 01:35 UTC | external |
-| M-036 | research/archive/2026-10-12-control-caller-limit.md#fixed-prefixes-and-base-register-limits | unstated | 2026-10-13 | Control-store prefixes — 2026-10-13, 01:21 UTC | external |
+| M-034 | docs/research/archive/2026-10-12-control-caller-limit.md#current-client-public-symbols-and-named-notify-slots | unstated | 2026-10-13 | Current-client public symbols and notify slots — 2026-10-13, 02:31 UTC | external |
+| M-035 | docs/research/archive/2026-10-12-control-caller-limit.md#local-post-call-gap-closed | unstated | 2026-10-13 | Post-call local stores — 2026-10-13, 01:35 UTC | external |
+| M-036 | docs/research/archive/2026-10-12-control-caller-limit.md#fixed-prefixes-and-base-register-limits | unstated | 2026-10-13 | Control-store prefixes — 2026-10-13, 01:21 UTC | external |
 | M-037 | work/protocol-next-increment-20261013/ | unstated | 2026-10-12 | Initial control archive fields — 2026-10-12, 22:24 UTC | local-private |
 | M-038 | work/protocol-next-increment-20261013/ | 7b5430a53f1f252aa639bf037e8952cd11204266d84bda6c0691e240be8d4e38 | 2026-10-12 | Initial control archive fields — 2026-10-12, 22:24 UTC; new release library | local-private |
-| M-039 | research/archive/2026-10-12-control-caller-limit.md | unstated | 2026-10-12 | Initial control archive fields — 2026-10-12, 22:24 UTC | external |
+| M-039 | docs/research/archive/2026-10-12-control-caller-limit.md | unstated | 2026-10-12 | Initial control archive fields — 2026-10-12, 22:24 UTC | external |
 | M-040 | work/control-caller-candidates-20261013/ | e7a65b3efc7f0cc5210f526530bc0955b4b47024363b919f1d1289647ba56461 | 2026-10-12 | Initial control archive fields — 2026-10-12, 22:24 UTC; result | local-private |
 | M-041 | work/control-dispatch-owner-20261013/ | 23a603994a721697446b88cbf66693b07fd95423f1dd68f549c8a3e7c5737df1 | 2026-10-12 | Initial control archive fields — 2026-10-12, 22:24 UTC; result | local-private |
 | M-042 | work/control-dispatch-table-references-20261013/ | eb10c15cb2aec7982956e4a37c2b22214407385b808ff3548b0869d27434f9e7 | 2026-10-12 | Initial control archive fields — 2026-10-12, 22:24 UTC; result | local-private |
 | M-043 | work/control-caller-function-ranges-20261013/ | 71f74cc712d962b570f63361dc6cd81d512625e5e72cee69fe4dccf92b717eff | 2026-10-12 | Initial control archive fields — 2026-10-12, 22:24 UTC; result | local-private |
-| M-044 | research/archive/2026-10-12-control-caller-limit.md#targeted-instruction-context-and-preserved-failed-attempt | unstated | 2026-10-12 | Initial control archive fields — 2026-10-12, 22:24 UTC | external |
-| M-045 | research/archive/2026-10-12-control-caller-limit.md#instruction-only-operand-and-local-store-proof | unstated | 2026-10-12 | Initial control archive fields — 2026-10-12, 22:24 UTC | external |
+| M-044 | docs/research/archive/2026-10-12-control-caller-limit.md#targeted-instruction-context-and-preserved-failed-attempt | unstated | 2026-10-12 | Initial control archive fields — 2026-10-12, 22:24 UTC | external |
+| M-045 | docs/research/archive/2026-10-12-control-caller-limit.md#instruction-only-operand-and-local-store-proof | unstated | 2026-10-12 | Initial control archive fields — 2026-10-12, 22:24 UTC | external |
 | M-046 | tools/ | unstated | 2026-10-12 | Initial control archive fields — 2026-10-12, 22:24 UTC; reusable pure PE parser and fixtures | external |
 | M-047 | work/c028-coverage-audit-complete-20261013/ | unstated | 2026-10-13 | Selected save coverage audit — 2026-10-13 | local-private |
 | M-048 | unstated | 69b002c6648600c2a275d118f4138fc958669068c312cf96a7b13cae0516f185 | 2026-10-13 | Selected save coverage audit — 2026-10-13; corrected neutral map | external |
@@ -144,7 +144,7 @@ Rows were extracted from fabd2f9:docs/implementation-status.md on 2026-10-13.
 | M-134 | work/icarus-overnight/native-soak.jsonl | unstated | unstated | Implemented and checked | local-private |
 | M-135 | commands.jsonl | unstated | unstated | Implemented and checked | external |
 | M-136 | commit cac76ec (historical soak start) | unstated | unstated | Implemented and checked | external |
-| M-137 | research/archive/2026-10-04-native-snapshot-performance.md | unstated | unstated | Implemented and checked | external |
+| M-137 | docs/research/archive/2026-10-04-native-snapshot-performance.md | unstated | unstated | Implemented and checked | external |
 | M-138 | work/native-io-20261012/native-io-faults/ | unstated | unstated | Implemented and checked | local-private |
 | M-139 | work/native-codec-review-20261012/ | unstated | unstated | Implemented and checked | local-private |
 | M-140 | work/native-tagged-20261012/ | unstated | unstated | Implemented and checked | local-private |
@@ -159,19 +159,23 @@ Rows were extracted from fabd2f9:docs/implementation-status.md on 2026-10-13.
 | M-149 | work/c028-binary-children-20261012/ | unstated | unstated | Reference evidence | local-private |
 | M-150 | work/c028-arrays-20261012/ | unstated | unstated | Reference evidence | local-private |
 | M-151 | reference-data/ | unstated | unstated | Reference evidence | local-private |
-| M-152 | specs/stateless-handshake.md | unstated | unstated | Reference evidence | external |
-| M-153 | specs/network-checksum.md | unstated | unstated | Reference evidence | external |
-| M-154 | research/archive/2026-10-04-prospect-rejection.md | unstated | unstated | Reference evidence | external |
-| M-155 | research/archive/2026-10-04-save-failure-output.md | unstated | unstated | Reference evidence | external |
-| M-156 | specs/prospect-loading.md | unstated | unstated | Reference evidence | external |
-| M-157 | research/archive/2026-10-04-reference-inventory.md | unstated | unstated | Reference evidence | external |
-| M-158 | research/archive/2026-10-04-static-baseline.md | unstated | unstated | Reference evidence | external |
-| M-159 | research/archive/2026-10-04-decompilation-report.md | unstated | unstated | Reference evidence | external |
-| M-160 | research/archive/2026-10-04-targeted-static-report.md | unstated | unstated | Reference evidence | external |
-| M-161 | specs/control-negotiation.md | unstated | unstated | Reference evidence | external |
-| M-162 | research/archive/2026-10-04-offline-startup-report.md | unstated | unstated | Reference evidence | external |
-| M-163 | specs/prospect-envelope.md | unstated | unstated | Implemented and checked | external |
-| M-164 | specs/archive-string.md | unstated | unstated | Implemented and checked | external |
+| M-152 | docs/specs/network/stateless-handshake.md | unstated | unstated | Reference evidence | external |
+| M-153 | docs/specs/network/network-checksum.md | unstated | unstated | Reference evidence | external |
+| M-154 | docs/research/archive/2026-10-04-prospect-rejection.md | unstated | unstated | Reference evidence | external |
+| M-155 | docs/research/archive/2026-10-04-save-failure-output.md | unstated | unstated | Reference evidence | external |
+| M-156 | docs/specs/save-format/prospect-loading.md | unstated | unstated | Reference evidence | external |
+| M-157 | docs/research/archive/2026-10-04-reference-inventory.md | unstated | unstated | Reference evidence | external |
+| M-158 | docs/research/archive/2026-10-04-static-baseline.md | unstated | unstated | Reference evidence | external |
+| M-159 | docs/research/archive/2026-10-04-decompilation-report.md | unstated | unstated | Reference evidence | external |
+| M-160 | docs/research/archive/2026-10-04-targeted-static-report.md | unstated | unstated | Reference evidence | external |
+| M-161 | docs/specs/network/control-negotiation.md | unstated | unstated | Reference evidence | external |
+| M-162 | docs/research/archive/2026-10-04-offline-startup-report.md | unstated | unstated | Reference evidence | external |
+| M-163 | docs/specs/save-format/prospect-envelope.md | unstated | unstated | Implemented and checked | external |
+| M-164 | docs/specs/save-format/archive-string.md | unstated | unstated | Implemented and checked | external |
 | M-165 | bug-ledger.md | unstated | unstated | Implemented and checked | external |
 | M-166 | reference-data/2026-10-04-heavy-save/ | unstated | 2026-10-12 | Supplied heavy-world save intake (archive, SHA256SUMS, private inventory.json) | local-private |
 | M-167 | work/client-identity-20261012/ | unstated | 2026-10-12 | Client installation identity check | local-private |
+| M-168 | icarus-orig/Icarus/Binaries/Win64/IcarusServer-Win64-Shipping.exe | 67cfc915d9d085b758057e2960d4a2018fb121123af1329c25ef7aa58b960104 | 2026-10-04 | Reference inventory; preserved dedicated-server build 25621760, 108,067,840 bytes | local-private |
+| M-169 | work/icarus-overnight/ | unstated | 2026-10-04 | Overnight case: decompile-01/05/06, handshake runs run-02-handshake and run-03-stateless-ack, evidence E-004 to E-087 | local-private |
+| M-170 | work/icarus-server-baseline/ | unstated | 2026-10-04 | Baseline case: inventory, static reports, control dispatch evidence E-011/E-013/E-021/E-022/E-024, Ghidra export | local-private |
+| M-171 | work/save-triage-20261012/recorder-native/ | unstated | 2026-10-12 | Native recorder qualification (save-triage E-018) | local-private |

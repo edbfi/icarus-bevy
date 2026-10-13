@@ -1,161 +1,89 @@
-# Experimental archive-string subset
+# Archive string codec
 
-Status: **bounded independent codec with authored tests; original wire round trip
-pending**. This is a field codec, not a UDP packet or game admission implementation.
-The caller must establish archive byte order and framing before using it.
+## Status
 
-Validation statements below describe the cited historical runs. Current priorities
-and the research pause are tracked in the [implementation checkpoint](../../implementation-status.md).
+Experimental: bounded independent codec with authored tests; original wire
+round trip pending. Scope: build 25621760 (M-168) for the original reader, with
+supplied-save comparisons on both copies. Last reconciled: 2026-10-13.
+Full text: d5b0ae6:docs/specs/save-format/archive-string.md.
 
-The reader/writer at preferred address `0x141e15db0` in tool build 25621760 uses a
-signed 32-bit count. Zero is empty, a positive count measures narrow bytes, and a
-negative count measures UTF-16 units. Nonzero counts include one terminating unit.
-The reader rejects `i32::MIN` before negation and respects an archive maximum when
-one is configured. Wide units may be byte-swapped according to archive flags.
+## Scope
 
-The complete chained function ranges and follow-up character converters establish
-more than the initial partial disassembly:
+The FString archive reader/writer, the strict native subset that models it, and
+the property adapters shown to reach the same reader. Not covered: archive byte
+order and framing (the caller establishes them), UDP packets, game admission,
+and the meaning of any decoded value.
 
-- The reader overwrites the final unit with zero instead of requiring a terminator
-  in the input. A count of one becomes an empty string.
-- Narrow conversion at `0x1408a91f0` handles ASCII directly. Negative signed-byte
-  values are replaced by the caller's `?` fallback; this is not UTF-8 decoding.
-- The wide reader has special handling for `U+FFFF` that inserts a zero and may
-  shorten the resulting string. Raw surrogate-pair validation was not observed.
-- The default writer selects narrow encoding for ASCII; other units select wide
-  encoding. A separate archive flag can force wide output. The narrow output helper
-  at `0x1409d1a30` also has a replacement path for unrepresentable units.
+## Confirmed
 
-Private evidence: overnight E-021 (complete reader/writer), E-085 (follow-up unwind
-ranges), E-086/E-087 (character converters). These observations are build-specific;
-they do not establish all archive flags or runtime callers.
+- The reader/writer at `0x141e15db0` uses a signed 32-bit count: zero is empty,
+  a positive count measures narrow bytes, a negative count measures UTF-16
+  units, and nonzero counts include one terminating unit. `i32::MIN` is rejected
+  before negation; a configured archive maximum bounds the absolute count; wide
+  units may be byte-swapped by archive flags (F-282).
+- The reader overwrites the final unit with zero instead of requiring a
+  terminator, so a count of one yields an empty string. Narrow conversion at
+  `0x1408a91f0` handles ASCII directly and replaces negative signed bytes with
+  the caller's `?` fallback; it is not UTF-8 decoding. The wide reader inserts a
+  zero for `U+FFFF` and may shorten the result; surrogate validation was not
+  observed. The default writer selects narrow for ASCII and wide otherwise, a
+  flag can force wide, and the narrow helper at `0x1409d1a30` has a replacement
+  path (F-282).
+- Successful demand is four count bytes plus the declared narrow byte count or
+  twice the declared wide-unit magnitude; zero and magnitude-one cases keep
+  their distinct consumption (F-285).
+- Concrete adapters reaching this reader (F-285): StrProperty vtable
+  `0x144ef2918` virtual `0x90` tailcalls through the 15-byte adapter
+  `0x142166670`; the C034 NameProperty descriptor OS01.F08 (generation 20)
+  delegates its loading branch to the same reader before internal name
+  construction, with no separate numeric-index transfer; the C009 enum-backed
+  Byte descriptor PS01.F04 (generation zero, vtable target `0x142158d40`) calls
+  the Name/FString path through virtual `+0x140` when loading with an enum
+  present, its raw one-byte branch not applying and an optional `+0x170`
+  callback adding no transfer; both C009 top EnumProperty descriptors
+  (generation 30, vtable `0x144ecb940`, value slot `0x14210a290`) call the same
+  path even with a null enum pointer, and the underlying Byte setter adds no
+  archive transfer.
+- Supplied-save comparisons (structure and consumption only, no text): 486 C009
+  S01 Str spans, 14,124 bytes (M-099); 1,658 C034 OS01.F08 Name spans, 14,922
+  bytes, 829 nine-byte values per copy (M-108); 486 C009 PS01.F04 occurrences as
+  32-byte strict frames plus the parent-child Name/Str frames (M-103).
 
-## Deliberate strict subset
+## Candidate
 
-`experimental::archive::read_string_frame` validates both explicit byte orders
-without allocating on success. Its private borrowed frame exposes original
-prefix/payload/content/terminator spans, signed/unit counts, encoding and consumed
-bytes, with allocation-free UTF-16 unit iteration. Raw frames implement neither
-`Debug` nor `Serialize`. The existing `decode_string` materializes those validated
-units in its `Vec<u16>` when ownership is needed. Neither reader
-silently converts invalid surrogate sequences to a Rust `String`. Following fields
-remain untouched. Empty output uses count zero; ASCII is preferred for writing.
-Forced-wide output is not implemented.
+- `experimental::archive::read_string_frame` validates both explicit byte orders
+  without allocating on success, exposing prefix/payload/content/terminator
+  spans, counts, encoding and consumed bytes with allocation-free UTF-16 unit
+  iteration; `decode_string` materializes units into a `Vec<u16>` when ownership
+  is needed. Neither converts invalid surrogates to a Rust `String`; following
+  fields are untouched; empty output uses count zero; ASCII is preferred for
+  writing; forced-wide output is not implemented (F-142).
+- Research cap: 65,536 units including the terminator, checked before
+  allocation or multiplication. The decoder checks the full declared range
+  before output and rejects non-ASCII narrow bytes, missing terminators,
+  embedded NUL and `U+FFFF`. Error precedence: count/limit/payload, narrow
+  ASCII, final terminator, embedded NUL, then `U+FFFF`. These are documented
+  compatibility differences, not original-server fixes.
+- Neither the Name wrapper nor FString requires enclosing property EOF, and a
+  normal return can follow an archive error; enum lookup, fallback, enumerator
+  values, range policy and name interning remain unqualified.
 
-The research cap is **65,536 units including the terminator**, checked before
-allocation or length multiplication. The decoder checks the complete declared
-input range before building its output. It rejects non-ASCII narrow bytes, missing
-terminators, embedded NUL and `U+FFFF`. These choices deliberately reject original
-normalization cases rather than silently changing an identity-bearing value.
-They are documented compatibility differences, not original-server bug fixes.
+## Open questions
 
-Tests independently pack ASCII and supplementary-character fixtures in both byte
-orders, check every truncation boundary, preserve raw surrogate units, leave a
-following field untouched, and exercise minimum/maximum signed counts and the
-allocation boundary. No original serialized string fixture or game data is copied
-into the test suite.
+- Original normalization, EOF and error equivalence (U-026); name construction
+  and identity semantics (U-033); archive flags and byte order from controlled
+  stock-client traffic before promotion into negotiation.
+
+## Evidence
+
+- Original reader observations: M-169 (overnight E-021, E-085 to E-087).
+  Adapter traces: M-091, M-107, M-104, M-105. Borrowed-frame migration
+  snapshot and corpus oracle (10,752 cases agree with the prior decoder): M-056.
+- Authored tests pack ASCII and supplementary-character fixtures in both byte
+  orders, check every truncation boundary, preserve raw surrogates, leave a
+  following field untouched, and exercise minimum/maximum counts and the
+  allocation boundary. No original serialized string is copied into tests.
 
 ```bash
-cargo test --locked --test archive
+cargo test --locked --test archive --test archive_frame
 ```
-
-The borrowed-frame migration preserves the prior strict decoder's results and
-error precedence: count/limit/payload checks, narrow ASCII, final terminator,
-embedded NUL, then U+FFFF. A retained pre-change decoder oracle agrees across
-10,752 authored corpus cases, with additional independent span/empty/surrogate/
-maximum/truncation/privacy fixtures. The control-body reader uses the borrowed
-frame directly, removing its temporary decoded-unit vector and count reread;
-its exact EOF and neutral-summary policy are unchanged. This is a native code
-allocation reduction, not an original-server benchmark or interoperability result.
-Independent source review, focused tests, full manual checks, release build and
-native save/restart smoke pass. Exact source/library snapshots and four changed
-bindings are recorded in `work/archive-frame-transition-20261013/`; all 2,085
-other paths in the preceding 2,089-path save manifest remain exact. Old helpers
-keep their separately identified library snapshots.
-
-Before promoting this primitive into negotiation, validate the actual archive
-flags and byte order from controlled stock-client traffic, decide each normalization
-difference explicitly, and retain identity/platform checks above the field codec.
-
-## Concrete string-property link
-
-A later exact-build trace binds StrProperty vtable `0x144ef2918` virtual `0x90`
-to the 15-byte adapter `0x142166670`, which tailcalls the existing FString reader
-`0x141e15db0` with the same archive and destination. No intervening tag, version
-gate or post-processing appears in the adapter. The frozen string research and
-fresh byte checks establish this concrete link without reading supplied values.
-
-Successful demand is four count bytes plus the declared narrow byte count or
-twice the declared wide-unit magnitude; zero and magnitude-one cases retain
-their distinct consumption. Original normalization, unit-based archive limits,
-transfer failure and the lack of enclosing EOF validation remain as documented
-above. The native strict subset is not an exact original acceptance oracle.
-Independent semantic and strict review: `work/str-value-contract-20261012/`.
-
-The later exact C009 S01 Str comparison qualifies 486 supplied spans totaling
-14,124 bytes against the native strict decoder and independent structural reader,
-without reporting text. This validates strict structure and consumption, not
-original normalization or round-trip identity:
-`work/c009-own-leaf-values-20261012/`.
-
-## Concrete name-property link
-
-The exact C034 own Name descriptor OS01.F08 reaches the generation-20 factory,
-final NameProperty vtable and value adapter, then the reviewed MemoryArchive's
-Name virtual. Its loading branch delegates to the same FString reader before
-constructing an internal name. This wrapper performs no separate serialized
-numeric-index transfer; its eight-byte internal copy is not a wire-width claim.
-Name interning and suffix semantics remain unqualified.
-
-The signed-count transfer formulas, normalization and failure caveats above
-therefore apply to this concrete path. Neither the Name wrapper nor FString
-requires enclosing property EOF, and normal return can follow an archive error.
-This static result reads no supplied names. Independent and strict review:
-`work/c034-name-contract-20261012/`.
-
-A separate bounded comparison qualifies 1,658 exact OS01.F08 value spans
-(14,922 bytes) against the existing native strict decoder and independent
-structural parser. Each copy contributes 829 nine-byte values. Encoding category,
-unit counts and consumed length agree, with exact comparator EOF and unchanged
-inputs. Prior top/own spans are reproduced before exact field selection. No
-decoded names or name hashes are reported; internal name construction remains
-unqualified. Six helper tests, independent review and execution evidence:
-`work/c034-name-values-20261012/`.
-
-## Concrete enum-backed Byte link
-
-C009 PS01.F04 is an exact generation-zero Byte descriptor with an installed enum
-pointer. Its final vtable dispatches to `0x142158d40`. Under the reviewed concrete
-MemoryArchive, virtual `+0x68` returns false; with loading set and the enum present,
-the adapter calls the same Name/FString path through virtual `+0x140`. Its raw
-one-byte branch does not apply under those conditions. An optional subsequent
-archive `+0x170` callback is return-only and adds no transfer.
-
-Successful string transfer follows the formulas above. The adapter then resolves
-the internal name against the enum, but lookup/fallback semantics, enumerator
-values and range policy remain unqualified. It does not check archive error before
-that resolution or establish enclosing EOF. This supports a future strict
-structural comparison, not enum interpretation or original load success.
-Independent static review: `work/c009-byte-value-contract-20261012/`.
-
-The subsequent exact child-leaf comparison qualifies all 486 occurrences as
-32-byte strict string frames with matching native/independent consumption.
-Enum lookup was not performed. That run also qualifies the selected parent-child
-Name and Str frames: `work/c009-parent-leaf-values-20261012/`.
-
-## Concrete top-level Enum links
-
-Both exact C009 top EnumProperty descriptors use generation 30 and final vtable
-`0x144ecb940`, whose value slot calls `0x14210a290`. Descriptor-table membership,
-factory recursion and the owner callback bind each to its preceding generation-zero
-Byte helper. This proves the underlying-property link under successful construction;
-adjacent descriptors or equal memory sizes alone would not suffice.
-
-With the concrete archive's special-mode callback false, loading calls the same
-Name/FString path, even if the enum pointer is null. Enum lookup remains separate.
-The underlying Byte setter writes the result to memory without an additional
-archive transfer; neither-loading-nor-saving uses a different underlying serializer
-branch. The string formulas and normalization/error caveats above apply. No direct
-version check or enclosing EOF validation appears in the examined Enum callback,
-and lookup, fallback, truncation policy and supplied values remain unqualified.
-Independent static review: `work/c009-top-enum-contract-20261012/`.

@@ -57,3 +57,8 @@ Last reconciled: 2026-10-13
 | U-048 | What are deeper C028 child encodings, values and newer-build semantics? | medium | open | none stated | F-212, F-259 |  |
 | U-049 | How do ICARUS performance and stability compare between original and native server? | high | open | matched reference workloads and full release gates (M6) | F-187, F-234, F-237, F-238, F-269 |  |
 | U-050 | What are the other derived overrides, value semantics and the unverified remaining class identifiers? | medium | open | none stated | F-258, F-260 |  |
+| U-051 | What are the original handshake's optional-prefix, extended-restart and malformed-frame tolerances? | medium | open | paired stock-client capture against a reference server | F-280 |  |
+| U-052 | Does the stock client complete the stateless exchange against the native loopback lab? | medium | blocked | run the lab under a concrete scope with the user's Windows client | F-253 |  |
+| U-053 | Does Text header framing hold on a supplied Text-bearing body? None has been qualified. | low | open | bounded supplied-body selection containing a TextProperty header | F-206, F-207, F-288 |  |
+| U-054 | Can later runtime mutation add the save-selection bit to ancestor fields of the singleton class? | low | open | none stated | F-305 |  |
+| U-055 | How are Map/Set (gate 509) and other property kinds outside the eleven-kind subset framed, and do supplied saves contain them? | medium | open | none stated | F-318 |  |

@@ -121,7 +121,7 @@ are tracked. No original assets are extracted or reused.
 Preserved user-supplied saves live under ignored `reference-data/`, with private
 checksums and inventories. Use copies under `work/` for experiments. The supplied
 heavy-world archive and its role in save research are covered by the
-[continuation plan](docs/linux-dedicated-server-plan.md#supplied-heavy-world-save-and-continuation-order).
+[continuation plan](docs/linux-dedicated-server-plan.md#supplied-heavy-world-save).
 
 Historical approvals are indexed in [docs/history](docs/history/authorizations-index.md);
 the [launcher runbook](docs/runbooks/original-server-launcher.md) describes current runs. Package-script approval and target scope are separate gates.
