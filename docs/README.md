@@ -9,9 +9,9 @@ Rules: [`.agents/rules/docs.md`](../.agents/rules/docs.md). Lint: `python3 tools
 | [gates.md](gates.md) | do-not-run preconditions, verbatim | 16 KB |
 | [architecture.md](architecture.md) | components and interfaces | 16 KB |
 | [runbooks/](runbooks/) | operating procedures | 16 KB each |
-| [specs/](specs/) | durable findings per format or protocol | 16 KB each, fixed headings |
+| [specs/](specs/) | durable findings per format or protocol (`save-format/`, `network/`) | 16 KB each, fixed headings |
 | [ledgers/](ledgers/) | findings, unknowns, bugs, compatibility; one row per item | 64 KB each, findings 128 KB |
-| [research/](research/) | digests, one per question cluster | 16 KB each, fixed headings |
+| [research/](research/) | digests by area (`save-format/`, `network/`, `foundation/`), one per question cluster | 16 KB each, fixed headings |
 | [research/archive/](research/archive/) | dated reports, verbatim, frozen | none |
 | [history/](history/) | historical authorizations, verbatim, frozen | none |
 | [../evidence/manifest.md](../evidence/manifest.md) | evidence artifacts: path, digest, session, class | none |

@@ -94,7 +94,7 @@ repos:
         files: ^tools/.*\.py$
       - id: docs-lint
         name: Lint documentation surface (caps, headings, links, ledger IDs)
-        entry: python3 tools/docs_lint.py --warn
+        entry: python3 tools/docs_lint.py
         language: system
         pass_filenames: false
         files: (\.md$|^tools/docs_lint\.py$|^src/.*\.rs$|^tools/|^\.github/)
