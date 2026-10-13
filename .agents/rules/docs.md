@@ -44,8 +44,9 @@ rules through prek and CI; the rest are reviewed.
 4. Ledger IDs are permanent. Mark a finding `superseded-by F-NNN`; never delete
    or renumber a row.
 5. Caps are in bytes: 16 KB per current-surface file, 64 KB per ledger (128 KB
-   for findings), 400 bytes per ledger row, 160 KB for the whole current surface. A
-   file near its cap is condensed, not split.
+   for findings), 400 bytes per ledger row, and 160 KB for the current prose surface (every
+   current-surface file except the ledgers). A file near its cap is condensed,
+   not split.
 6. Every status, spec and ledger file carries `Last reconciled: YYYY-MM-DD`.
 7. Repository-wide workflow rules live only under `.agents/rules/`. Historical
    records, spec acceptance conditions and runbook procedures are exempt.

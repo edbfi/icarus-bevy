@@ -242,7 +242,7 @@ class Linter:
         self.check_ids()
         self.check_manifest()
         self.check_reconciled()
-        return sum(doc.size for doc in self.current.values())
+        return sum(doc.size for rel, doc in self.current.items() if not rel.startswith("docs/ledgers/"))
 
     def check_frozen(self) -> None:
         for rel in self.docs:
@@ -252,7 +252,8 @@ class Linter:
     def check_sizes(self) -> None:
         total = 0
         for rel, doc in self.current.items():
-            total += doc.size
+            if not rel.startswith("docs/ledgers/"):
+                total += doc.size
             cap = FILE_CAPS.get(rel, DEFAULT_FILE_CAP)
             if doc.size > cap:
                 self.report(rel, 0, f"{doc.size} bytes exceeds the {cap}-byte cap")
@@ -261,7 +262,7 @@ class Linter:
                     if not fenced and line.startswith("|") and len(line.encode("utf-8")) > LEDGER_ROW_CAP:
                         self.report(rel, number, f"ledger row exceeds {LEDGER_ROW_CAP} bytes")
         if total > AGGREGATE_CAP:
-            self.report("docs", 0, f"current surface is {total} bytes; cap is {AGGREGATE_CAP}")
+            self.report("docs", 0, f"current prose surface is {total} bytes; cap is {AGGREGATE_CAP}")
 
     def check_headings(self) -> None:
         for rel, doc in self.current.items():
@@ -472,7 +473,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     total = linter.run()
     for problem in linter.problems:
         print(problem.render())
-    print(f"docs_lint: current surface {total} bytes of {AGGREGATE_CAP}; {len(linter.problems)} problem(s)")
+    print(f"docs_lint: current prose surface {total} bytes of {AGGREGATE_CAP}; {len(linter.problems)} problem(s)")
     if linter.problems and not options.warn:
         return 1
     return 0

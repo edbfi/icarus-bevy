@@ -95,7 +95,7 @@ class DocsLintTest(unittest.TestCase):
         for index in range(docs_lint.AGGREGATE_CAP // docs_lint.DEFAULT_FILE_CAP + 2):
             fx.write(f"docs/part{index}.md", f"# Part\n\n{chunk}\n")
         problems = fx.lint()
-        self.assertTrue(any("current surface is" in problem for problem in problems), problems)
+        self.assertTrue(any("current prose surface is" in problem for problem in problems), problems)
 
     def test_links_and_fragments(self) -> None:
         fx = self.make()

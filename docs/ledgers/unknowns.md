@@ -62,3 +62,11 @@ Last reconciled: 2026-10-13
 | U-053 | Does Text header framing hold on a supplied Text-bearing body? None has been qualified. | low | open | bounded supplied-body selection containing a TextProperty header | F-206, F-207, F-288 |  |
 | U-054 | Can later runtime mutation add the save-selection bit to ancestor fields of the singleton class? | low | open | none stated | F-305 |  |
 | U-055 | How are Map/Set (gate 509) and other property kinds outside the eleven-kind subset framed, and do supplied saves contain them? | medium | open | none stated | F-318 |  |
+| U-056 | What are the from-file path's caller, reader contracts, schema, atomicity and dynamic error behavior, and does the reader-return difference lose an error? | medium | open | none stated | F-326, F-333, F-334 |  |
+| U-057 | What are the by-name path's dedicated command entry, field identities, name case rules and complete outcomes? | medium | open | none stated | F-325 |  |
+| U-058 | Is the failure-reporting call reachable at runtime, and does it terminate the process, raise or return? | high | open | authorized disposable-fixture runtime case | F-327 |  |
+| U-059 | What do 0x14089a1c0 and version-zero helper 0x14170a4c0 migrate, and which enum value is byte +0x0c = 1? | medium | open | none stated | F-331, F-337, F-338 |  |
+| U-060 | Does any version table start at decoded byte zero, and does serialized Version relate to the game build number? | medium | open | recover the actual property reader rather than assume a custom-version prefix | F-339 |  |
+| U-061 | What do C028 load-context slot +0x4b0 and post-load 0x14189d380 require for migration and context restoration? | medium | open | none stated | F-360, F-361 |  |
+| U-062 | Are any statically optional C013/C028/C034/C009 descriptors mandatory, and is their serialized order fixed? | medium | open | none stated | F-352, F-362, F-367, F-375 |  |
+| U-063 | For missing, empty/truncated, malformed/unsupported-version, name-mismatch, changed-during-load and interrupted-save inputs, how do both entry paths behave and is state preserved? | high | open | controlled reproduction matrix with authorized disposable fixtures | F-325, F-326 |  |

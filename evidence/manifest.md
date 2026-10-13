@@ -179,3 +179,5 @@ Rows were extracted from fabd2f9:docs/implementation-status.md on 2026-10-13.
 | M-169 | work/icarus-overnight/ | unstated | 2026-10-04 | Overnight case: decompile-01/05/06, handshake runs run-02-handshake and run-03-stateless-ack, evidence E-004 to E-087 | local-private |
 | M-170 | work/icarus-server-baseline/ | unstated | 2026-10-04 | Baseline case: inventory, static reports, control dispatch evidence E-011/E-013/E-021/E-022/E-024, Ghidra export | local-private |
 | M-171 | work/save-triage-20261012/recorder-native/ | unstated | 2026-10-12 | Native recorder qualification (save-triage E-018) | local-private |
+| M-172 | work/save-triage-20261012/component-c034-headers/ | unstated | 2026-10-12 | C034 bounded top-header comparison (save-triage E-038, strict review 30) | local-private |
+| M-173 | work/c001-incoming-getter-20261013/` manifest | 715936778e0b83a1404f3d429c91a8fb3fb6da40a38499b44065c7092bddbfc8 | 2026-10-13 | Constructor continuation metadata and C001 references; manifest digest (TSV digest is M-013) | local-private |
