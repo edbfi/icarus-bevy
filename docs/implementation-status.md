@@ -1293,7 +1293,7 @@ counts and library hashes are historical receipts, not a fresh aggregate result.
   includes Rust tests, Clippy, formatting, authored helper tests and workflow checks.
 - Native fixes reject stale snapshots before publication and stop simulation on
   terminal save-worker disconnect; regression evidence is in the
-  [bug ledger](bug-ledger.md). Injected publication failures preserve committed state.
+  [bug ledger](ledgers/bugs.md). Injected publication failures preserve committed state.
 - N-004 closes overdue shutdown success: deadline checks precede and follow result
   polling, and surround final-state capture/submission. An expired entry preserves
   its pending result; an expired submission adds no request. Deterministic channel

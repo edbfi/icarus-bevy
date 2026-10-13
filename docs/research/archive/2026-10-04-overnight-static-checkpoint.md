@@ -56,7 +56,7 @@ complete network string codec has been committed from these observations.
 
 The encoded-blob caller does not visibly branch on the Base64 decoder's return
 before using the declared compressed count. This is a bounds/error-handling lead,
-not a reproduced defect. See SL-004 in the [bug ledger](../../bug-ledger.md).
+not a reproduced defect. See SL-004 in the [bug ledger](../../ledgers/bugs.md).
 
 ## Remaining evidence gates
 

@@ -4,7 +4,7 @@
 
 Historical report — 2026-10-04. The observations below retain their static scope.
 See the [current checkpoint](../../implementation-status.md) and
-[bug ledger](../../bug-ledger.md) for later findings and unresolved validation gates.
+[bug ledger](../../ledgers/bugs.md) for later findings and unresolved validation gates.
 
 The previously unresolved output target is now statically identified for original
 tool build **25621760**. The separate from-file failure path reaches an output
