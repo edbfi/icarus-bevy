@@ -778,6 +778,20 @@ under the reviewed enum-present loading conditions, not a one-byte serialized
 payload. Enum resolution and supplied values remain unqualified; see the
 [exact Byte contract](archive-string.md#concrete-enum-backed-byte-link).
 
+The subsequent exact D01 array-child header comparison reuses that retained
+four-schema proof. All 12,824 selected arrays / 2,405,613 bytes match strict native
+and independent framing, with 12,868 elements, 27,111 immediate fields and zero
+missing occurrences. Prefixes total 1,211,868 bytes, element headers/terminators
+1,063,266 bytes and opaque leaves 130,479 bytes. DA01/DA02/DA03 have populated
+samples (5,737/5,700, 701/702 and 14/14 elements respectively); DA04 is empty
+throughout. Leaf meanings and populated DA04 coverage remain unqualified.
+The measured 1,050-byte helper ceiling uses the unchanged default array API and
+4,096-element/256-field caps. Six JS fixture programs, five independent regression
+groups and seven native fixture tests pass, with all 1,308 bindings unchanged.
+Evidence: `work/c009-d01-array-child-headers-20261013/`, summary SHA-256
+`1d4961524431734e7199a0e16c0e1e983448eb594cb1d3b01f789dd729641623`.
+This is structure qualification, not value interpretation or restoration.
+
 ## Independent replacement requirements
 
 The importer must load into staging state, resolve references and validate the

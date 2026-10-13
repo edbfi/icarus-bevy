@@ -232,8 +232,10 @@ Use this dataset in the next work sequence:
    qualify 3,206 ND01 elements and 25,648 immediate fields with unchanged limits.
    Its scalar leaves subsequently qualify 6,412 strict Name/Str frames and 6,412
    individual Int widths. Reuse the already resolved four inner Array registrations
-   from frozen C028 descendant evidence for the next supplied child-header check;
-   the earlier provisional gap missed this retained case. Preserve unqualified
+   from frozen C028 descendant evidence for the supplied child-header check;
+   all 12,824 arrays subsequently qualify 12,868 elements/27,111 immediate fields.
+   The earlier provisional gap missed this retained static case. Continue populated
+   Int/Str leaf widths/structure; DA04 has no populated coverage. Preserve unqualified
    meanings/restoration. See
    the current checkpoint in implementation status.
    Retain the lack of populated
