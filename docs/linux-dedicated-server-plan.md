@@ -222,6 +222,10 @@ Use this dataset in the next work sequence:
    and 3,882 opaque binary Struct widths at 16/12/12 bytes. All 2,464 bindings remain
    unchanged. Audit this selected coverage and use the retained census to choose
    the next uncovered save boundary; meanings and empty-array population remain open.
+   The corrected audit includes historical C013, yielding four selected classes /
+   3,440 of 5,485 records. C001's four records offer retained parent-schema reuse,
+   pending complete concrete registration/construction/vtable/archive-dispatch proof;
+   its native class getter and constructor callback are already retained.
    Historical C028 native top evidence is aggregate-only; no individual
    native header spans are claimed. All 2,286 bindings remain exact with the
    separately reviewed borrowed-string API transitions.
