@@ -80,6 +80,9 @@ preserved; a separate reviewed retry derives the exact authorization source from
 its scope and validates it before creating a fresh session. This is a session
 construction error, not an original-server defect. Evidence:
 `work/c028-all-struct-child-headers-20261013/rejected-attempt.json`.
+The separately reviewed path-only retry passes with all 2,401 bindings unchanged;
+its actual session-creator and entry fixtures reproduce the mismatch rejection and
+verify exact scope-derived authority before exclusive session creation.
 
 | ID | Trigger and former behavior | Change and evidence |
 | --- | --- | --- |

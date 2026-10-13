@@ -215,8 +215,10 @@ Use this dataset in the next work sequence:
    population coverage remain open. C028's subsequent exact top range preflight
    selects 12,940 fields, qualifying 3,882 Int4 and 2,588 Bool0 spans. Its 6,470
    string frames / 328,878 bytes subsequently agree in ten measured strict native
-   batches, with all 2,327 bindings unchanged. Full-population direct Struct-child
-   headers are the next bounded comparison. Historical C028 native top evidence is aggregate-only; no individual
+   batches, with all 2,327 bindings unchanged. Twelve fresh native batches then
+   qualify all 7,764 direct Struct payloads / 1,174,952 bytes and 20,704 headers;
+   all 2,401 bindings remain unchanged. Selected leaf structures/widths are next.
+   Historical C028 native top evidence is aggregate-only; no individual
    native header spans are claimed. All 2,286 bindings remain exact with the
    separately reviewed borrowed-string API transitions.
    All 486 C009 top bodies now match
