@@ -49,6 +49,10 @@ corrupt current generation requires recovery from the previous one. Corrupt/miss
 existing snapshots, noncanonical checksum fields and unsupported schemas fail closed, rather than silently
 creating a fresh world. Each manifest digest must contain exactly 64 lowercase
 ASCII hexadecimal digits (F-417). Preserve a copy before manual recovery.
+Storage roots, generation references and entity records require named JSON
+objects; position triples remain arrays. Malformed array headers can recover a
+valid previous generation, while proper future-schema objects refuse rollback
+(F-428).
 
 SIGINT/SIGTERM freezes simulation, drains outstanding work and saves a final snapshot.
 Deadline checks reject overdue completion and final submission; failure exits nonzero.

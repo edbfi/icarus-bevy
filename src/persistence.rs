@@ -14,6 +14,7 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use tempfile::NamedTempFile;
 
+use crate::json::JsonObject;
 use crate::simulation::WorldSnapshot;
 
 const MAX_SNAPSHOT_BYTES: u64 = 64 * 1024 * 1024;
@@ -59,7 +60,9 @@ impl Generation {
 #[serde(deny_unknown_fields)]
 struct Manifest {
     schema_version: u32,
+    #[serde(deserialize_with = "crate::json::object")]
     current: Generation,
+    #[serde(default, deserialize_with = "crate::json::optional_object")]
     previous: Option<Generation>,
 }
 
@@ -147,8 +150,9 @@ impl SnapshotStore {
             }
             Err(error) => return Err(error.context("read native snapshot manifest")),
         };
-        let manifest: Manifest = serde_json::from_slice(&bytes)
-            .map_err(|error| crate::json_parse_error("invalid snapshot manifest JSON", error))?;
+        let manifest = serde_json::from_slice::<JsonObject<Manifest>>(&bytes)
+            .map_err(|error| crate::json_parse_error("invalid snapshot manifest JSON", error))?
+            .0;
         ensure!(manifest.schema_version == 1, "unsupported manifest schema");
         ensure!(manifest.current.number > 0, "invalid snapshot generation");
         manifest.current.validate_checksum()?;
@@ -168,14 +172,15 @@ impl SnapshotStore {
             checksum(&bytes) == generation.sha256,
             "snapshot checksum mismatch"
         );
-        let header: SnapshotHeader = serde_json::from_slice(&bytes)
-            .map_err(|error| crate::json_parse_error("decode native snapshot JSON", error))?;
+        let header = serde_json::from_slice::<JsonObject<SnapshotHeader>>(&bytes)
+            .map_err(|error| crate::json_parse_error("decode native snapshot JSON", error))?
+            .0;
         if header.schema_version.as_u64() != Some(1) {
             return Err(UnsupportedSchema.into());
         }
-        let snapshot: WorldSnapshot = serde_json::from_slice(&bytes).map_err(|error| {
-            crate::json_parse_error("decode native snapshot fields JSON", error)
-        })?;
+        let snapshot = serde_json::from_slice::<JsonObject<WorldSnapshot>>(&bytes)
+            .map_err(|error| crate::json_parse_error("decode native snapshot fields JSON", error))?
+            .0;
         snapshot.validate()?;
         Ok(snapshot)
     }

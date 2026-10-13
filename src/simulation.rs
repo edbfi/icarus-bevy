@@ -26,6 +26,7 @@ pub struct EntityRecord {
 pub struct WorldSnapshot {
     pub schema_version: u32,
     pub tick: u64,
+    #[serde(deserialize_with = "crate::json::objects")]
     pub entities: Vec<EntityRecord>,
 }
 
