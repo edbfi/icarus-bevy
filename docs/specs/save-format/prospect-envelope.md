@@ -58,7 +58,10 @@ unavailable.
   4 MiB, declared output at most 32 MiB; accept UTF-8 or BOM-marked UTF-16LE
   only, rejecting odd UTF-16 lengths and unpaired surrogates; validate the
   entire UTF-8 input before skipping unknown fields (N-005, F-243); exact field
-  names and types with duplicates rejected; reject negative lengths, malformed
+  names and types with duplicates rejected; require named objects at root and
+  blob boundaries, rejecting positional arrays (F-411); keep only error
+  category/line/column in malformed JSON diagnostics, with raw causes removed
+  (F-412); reject negative lengths, malformed
   SHA-1 or Base64; require canonical padded Base64, exact compressed count, one
   complete zlib stream, no trailing bytes and exact output length; verify the
   legacy hash without retaining the world; report `DataLength` uninterpreted
@@ -82,6 +85,8 @@ unavailable.
 - Dependencies in `Cargo.lock`: `base64` 0.23.1, `flate2` 1.1.10 (Rust backend,
   `miniz_oxide` 0.9.1, `crc32fast` 1.5.2, `adler2` 2.0.1, `simd-adler32`
   0.3.10), `sha1` 0.11.0; permissive licenses; no proprietary SDK.
+- Native admission and diagnostic regressions: M-182; UTF-8/BOM UTF-16LE,
+  all inspection modes, exact failure boundary and source preservation.
 - Fixture: Python `zlib.compress`, `base64.b64encode` and `hashlib.sha1` over
   the 42 bytes `Authored envelope fixture: no game state.\n`. Tests cover
   malformed and truncated input, duplicates, invalid lengths, trailing bytes,

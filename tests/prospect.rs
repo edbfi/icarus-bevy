@@ -389,6 +389,74 @@ fn duplicate_required_fields_and_truncated_json_fail() {
 }
 
 #[test]
+fn required_envelope_objects_reject_positional_arrays() {
+    let document: Value = serde_json::from_slice(FIXTURE).unwrap();
+    let blob = &document["ProspectBlob"];
+    let positional = json!([
+        blob["Hash"],
+        blob["TotalLength"],
+        blob["DataLength"],
+        blob["UncompressedLength"],
+        blob["BinaryBlob"]
+    ]);
+    for malformed in [
+        json!([positional]),
+        json!([blob]),
+        json!({"ProspectBlob": positional}),
+    ] {
+        let text = serde_json::to_string(&malformed).unwrap();
+        for bytes in [text.as_bytes().to_vec(), utf16le(&text)] {
+            for error in [
+                inspect(bytes.as_slice()).unwrap_err(),
+                inspect_with_inner_tags(bytes.as_slice()).unwrap_err(),
+                inspect_with_recorders(bytes.as_slice()).unwrap_err(),
+            ] {
+                assert!(
+                    error
+                        .to_string()
+                        .starts_with("invalid prospect envelope JSON")
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn malformed_envelope_diagnostics_keep_values_private_in_every_cli_mode() {
+    const MARKER: &str = "authored-private-marker-keep-out-of-logs";
+    let mut document: Value = serde_json::from_slice(FIXTURE).unwrap();
+    document["ProspectBlob"]["UncompressedLength"] = json!(MARKER);
+    let text = serde_json::to_string(&document).unwrap();
+    let root = TempDir::new().unwrap();
+    for bytes in [text.as_bytes().to_vec(), utf16le(&text)] {
+        let error = inspect(bytes.as_slice()).unwrap_err();
+        assert!(!format!("{error:#}").contains(MARKER));
+        let source = root.path().join("authored.json");
+        fs::write(&source, &bytes).unwrap();
+        for flag in [None, Some("--inner-tags"), Some("--recorders")] {
+            let mut command = Command::new(env!("CARGO_BIN_EXE_icarus-server"));
+            command
+                .current_dir(root.path())
+                .args(["inspect-save", "--source"])
+                .arg(&source);
+            if let Some(flag) = flag {
+                command.arg(flag);
+            }
+            let result = command.output().unwrap();
+            assert!(!result.status.success());
+            assert!(result.stdout.is_empty());
+            let report: Value = serde_json::from_slice(&result.stderr).unwrap();
+            let diagnostic = report["error"].as_str().unwrap();
+            assert!(diagnostic.contains("invalid prospect envelope JSON: Data at line"));
+            assert!(diagnostic.contains("column"));
+            assert!(!diagnostic.contains(MARKER));
+            assert_eq!(fs::read(&source).unwrap(), bytes);
+            assert_eq!(fs::read_dir(root.path()).unwrap().count(), 1);
+        }
+    }
+}
+
+#[test]
 fn inspector_cli_preserves_source_and_creates_no_state() {
     let root = TempDir::new().unwrap();
     let source = root.path().join("authored.json");

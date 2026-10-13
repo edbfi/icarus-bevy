@@ -188,7 +188,10 @@ Acceptance conditions for any importer
   candidate constructor `0x141788530` (`[0x141788530, 0x141788658)`, 296 bytes);
   one DEFAULT non-call reference from `0x14655d468` (F-032, F-034, F-040, F-121,
   F-122, F-401, F-402). Listing queries were rejected at `0x1419fe870` (F-014, F-019).
-  No C001 payload is parsed.
+  Exact windows now decode as 51/49 instructions; both call `0x1418824d0` and
+  share 40 typed post-call instructions, including a local store of
+  `0x1449d9f90` via RBX (F-409, F-410). Receiver continuity across the call and
+  archive slots remain unqualified; no C001 payload is parsed.
 
 ## Open questions
 
@@ -206,7 +209,7 @@ Acceptance conditions for any importer
 - Static: M-147, M-148, M-143, M-149, M-150, M-119, M-122, M-123, M-079, M-094,
   M-096, M-100, M-170; runtime and reports: M-154, M-155, M-160.
 - Framing receipts: M-118, M-172, M-087..M-093, M-095, M-097..M-103, M-106,
-  M-058..M-070, M-049..M-055; C001: M-007, M-008, M-011, M-013, M-173.
+  M-058..M-070, M-049..M-055; C001: M-007, M-008, M-011, M-013, M-173, M-179, M-180, M-181.
 - Tests: `tests/tagged.rs`, `tests/recorders.rs`, `tests/component.rs`,
   `tests/struct_array.rs`, `tests/int_array.rs`, `tests/archive_frame.rs`,
   `tests/prospect.rs`, `tests/cli.rs`.

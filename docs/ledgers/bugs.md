@@ -55,6 +55,8 @@ Defects in this repository's code, each with a regression test.
 | N-006 | Offline harness could report failed inspection as cleanup, used a predictable ownership label and could overrun its reserved lifetime | Current session, hash and mode bindings, locked quotas, random exact ownership, bounded phases, launch budget clamped to session expiry | F-252 |
 | N-007 | Removing Position from a domain-identified entity silently dropped it from snapshot capture; generation 2 acknowledged a truncated world | Query every DomainId and require Position before capture; four regressions | F-003 |
 | N-008 | FIFO manifest or selected generation blocked startup before signal handling | Nonblocking opens and opened-handle regular-file checks; bounded CLI rejection/preservation and valid preceding-generation recovery tests | F-405 |
+| N-009 | Envelope structs accepted unlabeled positional arrays, bypassing named-object policy | Map-only root/blob boundaries; all modes reject at envelope parsing in both encodings | F-411 |
+| N-010 | Wrong known-field types exposed input strings through Serde diagnostics on stderr | Category/line/column only; original cause discarded; CLI/API privacy and source-preservation regressions | F-412 |
 
 Injected ENOSPC at the generation and manifest writer boundaries preserves the
 acknowledged generation and permits retry; an error after publication returns

@@ -8,9 +8,9 @@ Last reconciled: 2026-10-13
 | ID | Question | Severity | Status | Next probe | Findings | REA id |
 | --- | --- | --- | --- | --- | --- | --- |
 | U-001 | Does corrected C001 fixture v2 pass final independent review and all ten authored modes in a fresh owned/offline source-only case? | high | resolved | Exact-window target needs separate case review. | F-406, F-407 |  |
-| U-002 | What do the exact 305/296 physical bytes of the C001 callback and candidate constructor decode to under the standalone decoder? | high | investigating | Prepare/review fresh exact-byte joins and offline scope; no Program/database or flow following. | F-013, F-050, F-407 |  |
+| U-002 | What do the exact 305/296 physical bytes of the C001 callback and candidate constructor decode to under the standalone decoder? | high | resolved | Preserve qualified exact-window result; receiver/dispatch proof remains U-041. | F-409, F-410 |  |
 | U-003 | Is the listing rejection at 0x1419fe870 an absent/mismatched listing entry or an API exception? | medium | open | none stated (standalone decoder prepared instead of further listing retries) | F-014, F-015, F-019, F-021 |  |
-| U-004 | Is there a construction/vtable bridge between callback 0x1419fe870 and candidate constructor 0x141788530, and what are the C001 bodies? | high | open | Read the retained instruction listing within the exact intervals; gaps and outgoing paths need separate evidence. | F-015, F-032, F-034 |  |
+| U-004 | Is there a construction/vtable bridge between callback 0x1419fe870 and candidate constructor 0x141788530, and what are the C001 bodies? | high | investigating | Qualify common callee receiver continuity, then exact archive slots; callback inlines matching stores. | F-409, F-410 |  |
 | U-005 | Are the 305/296-byte metadata intervals complete functions or procedure fragments? | medium | open | none stated | F-032, F-034 |  |
 | U-006 | What registration argument flow reaches native getter 0x1419fe200, and are there other callers? | medium | open | none stated | F-040, F-041 |  |
 | U-007 | What receiver origin, ABI and object type/layout does the unchanged unknown base in the World/Pending zero/+0x28 table stores have? | high | open | none stated | F-063, F-065, F-076, F-089 |  |
@@ -47,7 +47,7 @@ Last reconciled: 2026-10-13
 | U-038 | Can a stock client complete an authenticated session against the native server? | critical | blocked | advance transport/control/authentication evidence; connected tests need a concrete scope | F-186, F-187, F-240, F-253, F-264 |  |
 | U-039 | What restoration use and gameplay identity does the singleton class's saved integer have? | medium | open | none stated | F-258 |  |
 | U-040 | Which actor/inventory/construction/tame/mission fields exist, and can the reported producing build be independently confirmed? | high | open | none stated | F-262, F-263 |  |
-| U-041 | Can C001's complete concrete construction/vtable/archive-dispatch bridge be established? | high | open | Review/run exact-window case after qualified authored fixtures. | F-270, F-407 |  |
+| U-041 | Can C001's complete concrete construction/vtable/archive-dispatch bridge be established? | high | investigating | Bound common direct callee 0x1418824d0 and prove post-call receiver continuity before archive slots. | F-409, F-410 |  |
 | U-042 | What causes the first C001 listing-entry operation/check rejection? | medium | open | separately tested standalone exact-window decoder | F-271 |  |
 | U-043 | What is the actual receiver/indirect dispatch, base origin and same-build type-registration join for the control stores? | high | open | bounded constructor metadata/instruction comparison guided by paired-client symbols | F-274 |  |
 | U-044 | What is the concrete archive/outer framing path for the experimental control-body fields? | medium | open | none stated | F-274 |  |

@@ -25,6 +25,8 @@ Full text: fabd2f9:docs/implementation-status.md lines 1-13 and 941-1590.
 - Synthetic 120.157 s run and 24-cycle kill/restart campaign pass on the N-004 revision (F-234, F-235, M-132).
 - Real ENOSPC/EACCES faults preserve acknowledged state (F-239, M-138).
 - Envelope inspection, N-005 UTF-8 validation, root-tag and recorder framing match independent scans on both supplied copies (F-241 to F-245, M-139 to M-141).
+- Envelope object admission and malformed-input privacy regressions pass across all modes/encodings (F-411, F-412; M-182).
+- Current FIFO fix release build/save-restart smoke and release FIFO rejection pass (F-405; M-183).
 - NameProperty, UInt32Property and Float/Text headers plus bounded component, struct-array and Int-array APIs are tested (F-246 to F-249, F-206, F-207, F-198, F-200).
 - Float/Text and struct-array increments are pushed; all checkpoint commits through the reconciled head were delivered (F-204, F-205, M-109 to M-111).
 - Release executable has no rendering/window/audio backends (F-250).
@@ -41,7 +43,7 @@ Full text: fabd2f9:docs/implementation-status.md lines 1-13 and 941-1590.
 - Older-build inner save dispatch and framing recovered; values and newer-build migration not (F-257, F-258, U-039).
 - C034 Struct/Float widths bound by static demand and range checks; semantics open (F-192, U-029).
 - C009 common-child selection measured; CA01 exceeds the default array cap (F-203, U-032).
-- C001 seeds bounded to exact windows; listing rejection located without cause (F-270, F-271, U-041, U-042).
+- C001 exact windows now decode; local table stores match, while receiver continuity, archive dispatch and retained listing rejection cause remain open (F-409, F-410, U-041, U-042).
 - Control Pending/World stores qualified at fixed offsets; owner not discriminated (F-274, U-043, U-044).
 - Seven account/character tuples per prospect; player state incomplete (F-262, U-040).
 - Historical soak and recovery evidence predates current persistence code (F-236, F-237).
