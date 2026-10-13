@@ -101,6 +101,13 @@ collects explicitly pinned address patterns. It opens no files and confirms no
 callers or instruction boundaries. Its authored and independent PE fixtures run
 through prek/CI using `node --test tools/tests/pe_candidates*.test.cjs`.
 
+The pure `tools/pdb_public_symbols.cjs` reader validates a bounded MSF7/DBI/PUB32
+profile against explicit PE debug identity and section geometry. It uses a caller
+supplied bounded reader, opens no files, and exports only selected public symbols.
+Its authored and independent fixtures run through prek/CI. Target use requires a
+separate authorized case with streaming input hashes and resource/deadline guards;
+symbol names alone establish neither instruction boundaries nor runtime behavior.
+
 The experimental [archive-string subset](docs/specs/archive-string.md) offers a
 borrowed strict frame validator and an owning decoder. Initial-control validation
 uses borrowed spans without temporary decoded-unit allocation. Archive byte order

@@ -214,8 +214,9 @@ Use this dataset in the next work sequence:
    no unqualified observed populated tagged boundary; meanings and empty-family
    population coverage remain open. C028's subsequent exact top range preflight
    selects 12,940 fields, qualifying 3,882 Int4 and 2,588 Bool0 spans. Its 6,470
-   string frames / 328,878 bytes remain undecoded pending measured strict native
-   batches. Historical C028 native evidence is aggregate-only; no individual
+   string frames / 328,878 bytes subsequently agree in ten measured strict native
+   batches, with all 2,327 bindings unchanged. Full-population direct Struct-child
+   headers are the next bounded comparison. Historical C028 native top evidence is aggregate-only; no individual
    native header spans are claimed. All 2,286 bindings remain exact with the
    separately reviewed borrowed-string API transitions.
    All 486 C009 top bodies now match
@@ -680,7 +681,12 @@ and `+0x28`; the other prefix encounters a call before its store. A separately
 qualified suffix now closes that local gap with fresh unknown post-call register
 state, proving two constant stores and four zero stores. Join actual indirect
 receiver dispatch and same-build type
-registration. These facts do not identify a class or promote network compatibility.
+registration. A separate current-client PDB/PE comparison now identifies named
+UWorld/UPendingNetGame FNetworkNotify tables and proves both fourth slots equal
+their named NotifyControlMessage public addresses. These current static mappings
+do not establish older-server ownership, object offsets or executed dispatch.
+Decode bounded named-constructor local stores before joining receiver/type evidence;
+never carry provenance across calls or infer object offsets from image placement.
 
 Completion requires demonstrated compatibility, reliability and performance
 improvement while preserving the independent Rust/Bevy and no-original-assets rules.

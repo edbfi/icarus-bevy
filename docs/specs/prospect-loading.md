@@ -308,7 +308,7 @@ bounded before individual demands. All 3,882 Int spans are four bytes and 2,588
 Bool spans have zero payload. The remaining 6,470 Name/Enum/Str payloads total
 328,878 bytes, maximum 116 bytes, without reading units or interpreting content.
 Five exact string descriptors each contribute 647 occurrences per copy. These
-measured budgets support a future strict native string-structure comparison.
+measured budgets support the subsequent strict native string-structure comparison.
 
 The prior native helper emitted aggregates only; it supplies no retained individual
 span comparator. This preflight makes zero native calls and identifies its new
@@ -322,6 +322,20 @@ summary SHA-256
 `112315a4bb5f9f8c07c90b943899174227f8e7567078989399b90f22bdaed9bf`.
 No strict string structure, native individual header-span agreement, value meaning,
 newer-loader equivalence or world import is claimed here.
+
+The separate `work/c028-top-string-values-20261013/` case replays every accepted
+range and prior result, then checks all ten measured budgets before new decoding.
+Ten 647-frame batches compare the current borrowed native string-frame reader
+against independent strict unit structure. All 6,470 frames / 328,878 bytes agree,
+all narrow, maximum 116 bytes. Seven authored fixture programs and 25 independent
+checks include actual-final-main execution, late-backup rejection with zero new
+calls/demands/output and rejection of equal-total individual-frame swaps.
+All 2,327 bindings remain unchanged; summary SHA-256
+`64c60e41fa3b67527609cf4ff8d2fde3b85a4ae654ff00c51040cfa41aa7db04`.
+This supplies new native string structure only. The earlier aggregate-only header
+limitation persists; text, enum lookup, numerical meanings and restoration remain
+unqualified. Full-population direct child headers are the next bounded comparison;
+the older four-extrema child evidence is not promoted to that population.
 
 The follow-up `work/c028-structs-20261012/` resolves all six direct struct types to
 tagged serialization under the established older-build `MemoryArchive522` path.
