@@ -8,6 +8,18 @@ performance targets remain unproven. Last reconciled: 2026-10-13.
 
 ## Continuation — 2026-10-12
 
+### Post-call local stores — 2026-10-13, 01:35 UTC
+
+The fixed twenty-byte suffix closes the first control-prefix instruction gap with
+four instructions / fifteen p-code operations. All 701 bindings remain unchanged;
+original-byte joins and owned cleanup pass. Sixty-two fixture checks/modes pass.
+Independent local interpretation joins ten instructions / 31 operations, proving
+two constant stores and four eight-byte zero stores on an unchanged unknown
+post-call base, with fourteen rejecting mutations. No provenance crosses the
+preceding call. Class, type registration, actual receiver/caller and runtime
+reachability remain open. Exact hashes:
+[caller investigation](research/2026-10-12-control-caller-limit.md#local-post-call-gap-closed).
+
 ### Borrowed strict string frames — 2026-10-13
 
 `read_string_frame` validates borrowed original spans and unit structure without
@@ -1080,8 +1092,11 @@ supported, and no ICARUS performance or stability improvement has been measured.
 
 ## Next work and maintenance
 
-1. Audit the remaining populated save boundaries after the completed C034 top,
-   inherited and own scalar checks. Reuse retained static evidence;
+1. Continue C028's ten top scalar descriptors after a reviewed both-copy range
+   preflight. Its old native batch qualifies aggregate totals, not retained
+   individual spans. A finite C034 audit finds all observed populated tagged
+   boundaries qualified; native value meanings and seven empty inherited arrays'
+   population coverage remain open. Reuse retained static evidence;
    the D01 populated Int/Str work is complete, and DA04's population is empty.
    Preserve exact
    descriptor bindings, byte/count/field bounds
@@ -1094,9 +1109,10 @@ supported, and no ICARUS performance or stability improvement has been measured.
    actor/inventory/construction/tame/mission fields and independent confirmation of
    the reported producing build remain unresolved. Preserve unknown fields and
    private inputs; no partial importer.
-2. Close the first prefix's local post-call instruction gap without assuming
-   entry-parameter or ABI provenance, then establish actual receiver/indirect dispatch and type-registration
-   joins. Configured decompiler bodies alone do not prove bounded native flow.
+2. Establish actual receiver/indirect dispatch and same-build type-registration
+   joins after the completed local post-call gap. Configured decompiler bodies
+   alone do not prove bounded native flow. Newer paired-client symbols may guide
+   targeted comparison, without establishing older owner identity.
    Establish actual owner/caller
    evidence before inferring the dispatcher caller. Bind the concrete archive/outer
    framing path before promoting the experimental

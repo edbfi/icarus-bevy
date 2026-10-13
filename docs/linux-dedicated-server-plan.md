@@ -670,8 +670,10 @@ failed attempts are preserved in the
 [caller investigation](research/2026-10-12-control-caller-limit.md).
 Subsequent instruction-only windows prove two local constant stores and qualify
 their fixed prefixes. One base register remains unchanged through stores at zero
-and `+0x28`; the other prefix encounters a call before its store. Close that local
-post-call gap, then join actual indirect receiver dispatch and same-build type
+and `+0x28`; the other prefix encounters a call before its store. A separately
+qualified suffix now closes that local gap with fresh unknown post-call register
+state, proving two constant stores and four zero stores. Join actual indirect
+receiver dispatch and same-build type
 registration. These facts do not identify a class or promote network compatibility.
 
 Completion requires demonstrated compatibility, reliability and performance
