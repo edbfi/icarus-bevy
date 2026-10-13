@@ -4,10 +4,10 @@ Status: **observed, incomplete, not wire-validated**. Applies only to dedicated
 server tool build 25621760. This is an independently written behavioral note, not
 an implementation copied from the original or a complete protocol specification.
 Evidence and reproduction are in the
-[targeted static report](../research/archive/2026-10-04-targeted-static-report.md).
+[targeted static report](../../research/archive/2026-10-04-targeted-static-report.md).
 
 Validation statements below describe the cited historical runs. Current priorities
-and the research pause are tracked in the [implementation checkpoint](../implementation-status.md).
+and the research pause are tracked in the [implementation checkpoint](../../implementation-status.md).
 
 ## Layer boundary
 
@@ -92,7 +92,7 @@ E-021 identifies the reader used by the initial branch:
 
 The follow-up recovered the narrow character converter, the full chained reader
 and its termination/`U+FFFF` normalization. An independent
-[strict archive-string subset](archive-string.md) now has bounded authored tests.
+[strict archive-string subset](../save-format/archive-string.md) now has bounded authored tests.
 It explicitly rejects several original normalization cases. Actual network archive
 flags, field byte order and stock-client round trips still need validation; this
 primitive does not make the control protocol available.
@@ -137,7 +137,7 @@ release build and native save/restart smoke pass. Evidence and immutable
 source/library transitions: `work/protocol-next-increment-20261013/`.
 No original control message, live reference session or stock client was used.
 
-The subsequent [borrowed string-frame API](archive-string.md#deliberate-strict-subset)
+The subsequent [borrowed string-frame API](../save-format/archive-string.md#deliberate-strict-subset)
 removes the temporary token-unit vector and signed-count reread. Successful body
 validation now allocates no heap storage. Nine control tests, six new frame tests
 and the three existing archive tests pass; full manual checks, independent review,
@@ -145,7 +145,7 @@ release build and native restart also pass. Public fields, errors, EOF, byte cap
 false compatibility/identity/admission flags are unchanged. Exact transitions:
 `work/archive-frame-transition-20261013/`. No reference/client result is promoted.
 
-A bounded [caller investigation](../research/archive/2026-10-12-control-caller-limit.md)
+A bounded [caller investigation](../../research/archive/2026-10-12-control-caller-limit.md)
 encountered REA provider startup timeouts. A separately reviewed direct fallback
 queried the retained database without analysis and found one non-call reference
 to the dispatcher, with no recorded source function. Partial database coverage
@@ -192,6 +192,6 @@ show that both `+0x18` slots equal their respective named NotifyControlMessage
 public-symbol addresses. These build-25793767 static relationships do not identify
 the older dispatcher owner, establish object offsets or prove executed dispatch.
 The table targets remain undereferenced and no complete vtable extent is claimed.
-[Exact inputs, bounded fallback and independent evidence](../research/archive/2026-10-12-control-caller-limit.md#current-client-public-symbols-and-named-notify-slots)
+[Exact inputs, bounded fallback and independent evidence](../../research/archive/2026-10-12-control-caller-limit.md#current-client-public-symbols-and-named-notify-slots)
 preserve the next constructor/receiver/type gate. Image-address deltas cannot
 stand in for object-layout offsets, and provenance cannot cross calls unchecked.

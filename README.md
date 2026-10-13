@@ -69,9 +69,9 @@ returns an explicit unsupported error without reading/writing the supplied paths
 Do not use it to migrate a real world yet.
 
 `inspect-save --source PATH` performs bounded, read-only
-[experimental envelope checks](docs/specs/prospect-envelope.md). It reports sizes
+[experimental envelope checks](docs/specs/save-format/prospect-envelope.md). It reports sizes
 and integrity results without extracting the payload or importing a world.
-The optional `--inner-tags` also checks [root property framing](docs/specs/tagged-properties.md)
+The optional `--inner-tags` also checks [root property framing](docs/specs/save-format/tagged-properties.md)
 under an explicit experimental profile and reports counts; record values remain opaque.
 Use `--recorders` to additionally check recorder field and byte-array boundaries;
 it implies root framing and reports aggregates without class names or component data.

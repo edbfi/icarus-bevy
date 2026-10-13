@@ -16,7 +16,7 @@ Its authored and independent fixtures run through prek/CI. Target use requires a
 separate authorized case with streaming input hashes and resource/deadline guards;
 symbol names alone establish neither instruction boundaries nor runtime behavior.
 
-The experimental [archive-string subset](../specs/archive-string.md) offers a
+The experimental [archive-string subset](../specs/save-format/archive-string.md) offers a
 borrowed strict frame validator and an owning decoder. Initial-control validation
 uses borrowed spans without temporary decoded-unit allocation. Archive byte order
 and enclosing message boundaries remain the caller's responsibility.

@@ -6,13 +6,13 @@ payloads and other runtime behavior unresolved**. Applies
 to dedicated-server build 25621760 unless a later client comparison is explicitly
 identified. Entry-path evidence IDs belong to
 `work/icarus-server-baseline/` and are described in the
-[targeted static report](../research/archive/2026-10-04-targeted-static-report.md).
+[targeted static report](../../research/archive/2026-10-04-targeted-static-report.md).
 
 This specification retains the sequence and limits of historical investigations.
 Validation statements describe the cited runs, not fresh checks of the current
 revision. For current priorities and the research pause, use the
-[implementation checkpoint](../implementation-status.md) and
-[canonical plan](../linux-dedicated-server-plan.md).
+[implementation checkpoint](../../implementation-status.md) and
+[canonical plan](../../linux-dedicated-server-plan.md).
 
 ## Keep the two entry paths distinct
 
@@ -37,7 +37,7 @@ yet that this difference loses an error or permits inconsistent reads.
 
 On failure, the outer path calls a helper that sets a global flag and forwards
 to output formatting and a virtual call (E-016/E-020). The overnight follow-up
-[resolved its statically initialized output target](../research/archive/2026-10-04-save-failure-output.md):
+[resolved its statically initialized output target](../../research/archive/2026-10-04-save-failure-output.md):
 it can force process termination or raise an exception according to guard state.
 This is not an ordinary log-only path. Runtime reachability and final process
 outcome remain untested. Cleanup and a false-return path in the caller do not
@@ -480,7 +480,7 @@ Newer-build method equivalence and complete world restoration remain unresolved.
 
 The overnight case exercised by-name missing-file rejection once and truncated-JSON
 rejection twice; the second malformed case retained stateless handshake liveness.
-See the [runtime report](../research/archive/2026-10-04-prospect-rejection.md).
+See the [runtime report](../../research/archive/2026-10-04-prospect-rejection.md).
 These observations establish neither a loaded-world preservation guarantee nor the
 distinct from-file path. Remaining scenarios require authorized disposable fixtures;
 do not use production saves, package assets, or extracted game data.
@@ -1001,5 +1001,5 @@ Evidence: `work/c001-constructor-listing-diagnostic-20261013/`, accepted
 decoder with exact physical 305/296-byte inputs and no outside lookahead or
 database dependence. **Needs confirmation:** the corrected authored fixture suite
 still requires its final review and execution; no standalone C001 original-code
-execution is qualified. See the [paused checkpoint](../implementation-status.md#gates)
+execution is qualified. See the [paused checkpoint](../../implementation-status.md#gates)
 for the remaining gates. This cleanup does not resume that work.

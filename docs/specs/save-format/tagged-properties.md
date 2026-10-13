@@ -8,7 +8,7 @@ based on the preserved build 25621760; selecting it does not identify a save's
 producing build. The user reports build 25793767 for the supplied saves.
 
 Validation statements below describe the cited historical runs. Current work and
-the research pause are tracked in the [implementation checkpoint](../implementation-status.md).
+the research pause are tracked in the [implementation checkpoint](../../implementation-status.md).
 
 ```bash
 cargo run --locked -- inspect-save --source /path/to/copied-prospect.json --inner-tags
@@ -376,7 +376,7 @@ Evidence: `work/native-c009-int-array-20261012/execution-v2/`.
 ## Explicit tagged struct-array framing
 
 The separate library function
-[`read_tagged_struct_array`](../../src/experimental/struct_array.rs) accepts a
+[`read_tagged_struct_array`](../../../src/experimental/struct_array.rs) accepts a
 caller-selected candidate array body and a `TagProfile`. It requires a nonnegative
 little-endian 32-bit count, one shared `StructProperty` header even for an empty
 array, and exactly that many `None`-terminated element sequences inside the shared

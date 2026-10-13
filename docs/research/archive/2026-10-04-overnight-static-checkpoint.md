@@ -26,11 +26,11 @@ Decompiler completion is not a correctness or reachability verdict.
 
 ## Results implemented independently
 
-- [Default version checksum](../../specs/network-checksum.md): ASCII-only lowercase
+- [Default version checksum](../../specs/network/network-checksum.md): ASCII-only lowercase
   and reflected CRC over zero-extended UTF-16 units. Authored vectors agree with
   an independent arithmetic oracle. Active runtime inputs and callbacks remain
   unresolved, so this primitive is disconnected from admission.
-- [Prospect envelope](../../specs/prospect-envelope.md): reflected field names,
+- [Prospect envelope](../../specs/save-format/prospect-envelope.md): reflected field names,
   encoded/compressed input and legacy hash observations support a bounded,
   read-only inspector. It does not deserialize the inner archive or import a world.
 

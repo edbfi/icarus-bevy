@@ -20,7 +20,7 @@ documents verified their envelopes. The inner serialized world, content referenc
 version migration and stock-client round trips remain unresolved.
 
 Validation statements below describe the cited historical runs. Current priorities
-and the research pause are tracked in the [implementation checkpoint](../implementation-status.md).
+and the research pause are tracked in the [implementation checkpoint](../../implementation-status.md).
 
 ## Observed schema and call path
 

@@ -5,7 +5,7 @@ pending**. This is a field codec, not a UDP packet or game admission implementat
 The caller must establish archive byte order and framing before using it.
 
 Validation statements below describe the cited historical runs. Current priorities
-and the research pause are tracked in the [implementation checkpoint](../implementation-status.md).
+and the research pause are tracked in the [implementation checkpoint](../../implementation-status.md).
 
 The reader/writer at preferred address `0x141e15db0` in tool build 25621760 uses a
 signed 32-bit count. Zero is empty, a positive count measures narrow bytes, and a

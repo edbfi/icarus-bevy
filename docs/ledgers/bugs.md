@@ -36,7 +36,7 @@ SL-001 through SL-003 are scoped to `icarus-server-baseline`; see the
 | SL-003: Requested prospect name compared against loaded data | E-009/E-018 | Test controlled name mismatches and document the intended rejection; a rejection alone is not a bug |
 | SL-004: Encoded blob result and declared compressed length may diverge | Overnight E-009/E-022: caller does not visibly branch on Base64 result before passing `TotalLength` to decompression | Establish reachable loader and decoder allocation contract, then compare small authored valid/malformed inputs; do not infer a crash from decompilation |
 
-The [prospect-loading experiment matrix](../specs/prospect-loading.md) defines the
+The [prospect-loading experiment matrix](../specs/save-format/prospect-loading.md) defines the
 next evidence to collect. No native fix is attributed to these leads.
 SL-004 belongs to `icarus-overnight`, unlike the earlier leads. The independent
 envelope inspector checks decoded length before decompression, but that defensive

@@ -50,4 +50,4 @@ The distinct `LocalSavePath`/from-file path, deeper blob decoding, valid world l
 state application, interrupted saves and full prospect restart remain untested.
 There was no previously loaded world whose atomic preservation could be checked.
 Do not generalize these results to all corrupt saves or to the separate fatal-output
-lead. The [loading specification](../../specs/prospect-loading.md) retains those gates.
+lead. The [loading specification](../../specs/save-format/prospect-loading.md) retains those gates.

@@ -5,7 +5,7 @@ early-startup original checksum**. No stock-client negotiation has been validate
 The native server does not use this module for admission.
 
 Validation statements below describe the cited historical runs. Current priorities
-and the research pause are tracked in the [implementation checkpoint](../implementation-status.md).
+and the research pause are tracked in the [implementation checkpoint](../../implementation-status.md).
 
 Reference build 25621760, shipping executable SHA-256
 `67cfc915d9d085b758057e2960d4a2018fb121123af1329c25ef7aa58b960104`.

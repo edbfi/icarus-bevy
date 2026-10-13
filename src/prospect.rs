@@ -1,7 +1,7 @@
 //! Experimental read-only envelope inspection, never world import.
 //!
 //! Recovered field names and algorithm observations are documented in
-//! `docs/specs/prospect-envelope.md`. Payload serialization remains unknown.
+//! `docs/specs/save-format/prospect-envelope.md`. Payload serialization remains unknown.
 use std::io::Read;
 
 use anyhow::{Context, Result, ensure};

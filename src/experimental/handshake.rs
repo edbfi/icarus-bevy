@@ -2,7 +2,7 @@
 //!
 //! No authentication policy, cookie generation, connection state or gameplay
 //! transport is implemented here. Optional prefix and extended restart framing
-//! remain unsupported. See `docs/specs/stateless-handshake.md`.
+//! remain unsupported. See `docs/specs/network/stateless-handshake.md`.
 use anyhow::{Result, ensure};
 
 #[derive(Debug, PartialEq)]

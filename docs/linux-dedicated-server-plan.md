@@ -692,7 +692,7 @@ Unknown versions are not supported by assumption.
 
 Current protocol findings and their retained validation belong in the
 [implementation checkpoint](implementation-status.md#current-paused-checkpoint--2026-10-13-0628-utc),
-[control specification](specs/control-negotiation.md), and
+[control specification](specs/network/control-negotiation.md), and
 [caller investigation](research/archive/2026-10-12-control-caller-limit.md).
 The experimental body reader and local table-store proofs do not establish
 concrete packet/bunch framing, archive byte order, receiver/type-registration
