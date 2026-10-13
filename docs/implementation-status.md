@@ -8,6 +8,19 @@ performance targets remain unproven. Last reconciled: 2026-10-13.
 
 ## Continuation — 2026-10-12
 
+### Control-store prefixes — 2026-10-13, 01:21 UTC
+
+The fixed instruction-only prefix case qualifies eleven instructions / 34 p-code
+operations with original-byte hash joins, unchanged 646 bindings and owned cleanup.
+Sixty-one fixture checks/modes pass. One prefix ends at a call and leaves twenty
+bytes before its known LEA unexported; no register provenance crosses that call.
+The other joins continuously to the prior local store, preserving its base register
+through an eight-byte load from `+0x620` and two constant stores at offsets zero
+and `+0x28`. Independent interpretation rejects nine origin/width/space/clobber/
+gap/control mutations. No runtime instructions execute or decompiler flow is used.
+Class, primary-entry/parameter, vtable, receiver and caller identity remain open.
+Evidence and exact hashes: [caller investigation](research/2026-10-12-control-caller-limit.md#fixed-prefixes-and-base-register-limits).
+
 ### C034 top scalars — 2026-10-13, 01:24 UTC
 
 Seven exact top descriptors now qualify 11,606 fields across both supplied copies:
@@ -1061,8 +1074,8 @@ supported, and no ICARUS performance or stability improvement has been measured.
    actor/inventory/construction/tame/mission fields and independent confirmation of
    the reported producing build remain unresolved. Preserve unknown fields and
    private inputs; no partial importer.
-2. Trace base-register provenance in bounded prefixes before the two proven local
-   stores, then establish actual receiver/indirect dispatch and type-registration
+2. Close the first prefix's local post-call instruction gap without assuming
+   entry-parameter or ABI provenance, then establish actual receiver/indirect dispatch and type-registration
    joins. Configured decompiler bodies alone do not prove bounded native flow.
    Establish actual owner/caller
    evidence before inferring the dispatcher caller. Bind the concrete archive/outer

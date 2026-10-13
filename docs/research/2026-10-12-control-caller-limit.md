@@ -280,3 +280,43 @@ The tested source is copied exactly to
 `1e0efbdcd66963dd888b70152b10c50fb9eb41f386dd29e4b214a5d9209b7831`)
 and separately compiles against the installed Ghidra 12.1.4/JDK 21 APIs. The
 tracked path is a source copy; the accepted target run used the isolated case path.
+
+## Fixed prefixes and base-register limits
+
+A separate instruction-only case covers fixed 38-/32-byte prefixes before the
+two known LEAs, with fourteen admitted lookahead bytes and twelve instruction
+attempts per window. Calls and other control operations stop export. The target
+run passes at 2026-10-13 01:21 UTC: eleven instructions, 34 p-code operations,
+all 646 bindings unchanged, original-byte hash joins and owned cleanup verified.
+Seven Java main fixtures and the remaining independent/authored schema, source
+isolation and lifecycle checks pass, 61 checks/modes total.
+
+TARGET01 exports four instructions through the call at `0x1439da2f5`. Its earlier
+eight-byte COPY at `0x1439da2ed` moves register `548:0x8` into `548:0x38`.
+The call is a provenance barrier, and twenty bytes before the later LEA remain
+unexported. No base-register connection across that call is asserted. A separately
+scoped post-call window can close the local instruction gap without attributing
+post-call register values to entry arguments or assuming ABI preservation.
+
+TARGET02 exports seven consecutive fallthrough instructions to the earlier LEA.
+Joining the two previously qualified LEA/store instructions gives the continuous
+static interval `[0x1439dae50,0x1439dae7b)`. Register `548:0x8` is unchanged
+throughout. An eight-byte LOAD at `0x1439dae5f` reads program memory at base
+`+0x620` into register `548:0x38`. The sequence then stores `0x145467ef0` at
+the base and `0x145468180` at base `+0x28`, both eight bytes. These are decoded
+static semantics; no runtime load or instruction was executed. Instruction-local
+temporaries, origins, widths and memory-space selectors are checked explicitly.
+
+Independent interpretation and nine rejecting mutations corroborate these joins.
+Metadata association at the selected prefix boundary still does not establish a
+primary entry, parameter, constructor, class, vtable or actual receiver/caller.
+Same-build type registration and an actual receiver-load/indirect-call join remain
+required. No decompiler/function creation or outgoing flow is used in this case.
+
+Evidence: `work/control-caller-prefixes-20261013/`; payload SHA-256
+`1b19d44ba6fe627bccd15e99fd7124ea98b7b8a75aebbb74306296258ef8a61d`,
+manifest SHA-256
+`d86b32d71102b66b8d19b3ab14583e000711632d3dd536719ff88666b4f2f62c`.
+The additive post-run interpretation is separate from the immutable 646-binding
+set; its SHA-256 is
+`5562bd5665f8fc1d1b404ba56a000f9d2e6f064bf749001c30b6e2875197b3b0`.
