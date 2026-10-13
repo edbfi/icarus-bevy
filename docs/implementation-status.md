@@ -47,7 +47,7 @@ No official server bug is marked reproduced or fixed (F-217).
 ## Works
 
 - Builds on pinned Rust 1.99.0 / Bevy 0.20.0 with headless features and a committed lockfile (F-219, F-189).
-- Direct dependencies refreshed to current stable; full suite, release build and save/restart smoke pass (F-221, F-222, F-190).
+- Stable dependency refresh and current lockfile checks pass with release save/restart and rejection coverage; prior receipts preserved (F-221, F-222, F-413).
 - Validates configuration, applies CLI overrides and inspects config without writing (F-226).
 - Runs a fixed-step ECS loop with stable authored IDs, coherent snapshots and bounded catch-up counters (F-227).
 - Saves asynchronously with a writer lock, checksummed generations and atomic manifest publication (F-228).
@@ -106,7 +106,7 @@ Continue authorized offline work in this order; connected proof retains its gate
 
 1. Fixture-v2 review and ten authored modes are complete (F-406, F-407); retain their qualified receipts.
 2. Preserve the qualified 305/296-byte decoder result (F-409, F-410); do not retry the completed exact-window case.
-3. Bound the observed common callee and qualify receiver continuity, then establish C001 archive slots (F-410, U-041).
+3. Qualify a single-window decoder for the common callee's measured 106-byte interval, then receiver continuity and C001 archive slots (F-414, U-041).
 4. Close the census using completed C028/C034/C013 audits; leave native value meanings and empty inherited arrays open (F-272, F-273, U-046).
 5. Keep automatic class/schema recognition and value meanings open; no partial importer (U-046, U-040).
 6. Resolve actor/inventory/construction/tame/mission fields and confirm the reported producing build independently (F-262, F-263, U-040).
