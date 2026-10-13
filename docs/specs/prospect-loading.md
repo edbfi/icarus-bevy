@@ -301,6 +301,28 @@ header/terminator bytes, 2,368,222 opaque value bytes and 5,176 zero-trailer byt
 (save-triage E-029). It establishes neither mandatory fields for other saves nor
 gameplay correctness.
 
+A separately reviewed top-scalar range preflight reproduces the complete old
+header summary and native aggregate, then selects ten exact descriptors across
+both copies. Its 12,940 neutral ranges match exact optional metadata and are
+bounded before individual demands. All 3,882 Int spans are four bytes and 2,588
+Bool spans have zero payload. The remaining 6,470 Name/Enum/Str payloads total
+328,878 bytes, maximum 116 bytes, without reading units or interpreting content.
+Five exact string descriptors each contribute 647 occurrences per copy. These
+measured budgets support a future strict native string-structure comparison.
+
+The prior native helper emitted aggregates only; it supplies no retained individual
+span comparator. This preflight makes zero native calls and identifies its new
+ranges as independent JS observations. Seven authored programs and sixteen
+independent regression groups pass; all 2,286 bindings remain exact. Eight older
+local checksum manifests and old helper/source snapshots are preserved, including
+the explicit limitation that the old live library pin has no identified archived
+library. Current source/library transitions are separately bound; old wrappers and
+helpers are not invoked. Evidence: `work/c028-top-scalar-selection-20261013/`,
+summary SHA-256
+`112315a4bb5f9f8c07c90b943899174227f8e7567078989399b90f22bdaed9bf`.
+No strict string structure, native individual header-span agreement, value meaning,
+newer-loader equivalence or world import is claimed here.
+
 The follow-up `work/c028-structs-20261012/` resolves all six direct struct types to
 tagged serialization under the established older-build `MemoryArchive522` path.
 They are six distinct types using four operations tables. One initially missing

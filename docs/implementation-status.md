@@ -8,6 +8,42 @@ performance targets remain unproven. Last reconciled: 2026-10-13.
 
 ## Continuation — 2026-10-12
 
+### C028 top scalar range preflight — 2026-10-13, 02:00 UTC
+
+The reviewed preflight replays both complete archives, exact 23-header schemas and
+the historical native aggregate before selecting ten exact scalar descriptors.
+All 12,940 neutral ranges are measured and bounded across both copies before
+6,470 individual demands: 3,882 Int4 spans / 15,528 bytes and 2,588 Bool0 spans.
+The 6,470 string payloads / 328,878 bytes remain undecoded; maximum observed
+frame size is 116 bytes. Each descriptor has 647 occurrences per copy, permitting
+ten bounded strict-string batches in the next case. Names are selected by exact
+identity, not assigned budgets by tag order.
+
+Seven authored fixture programs and sixteen independent regressions pass, including
+the actual final main, late-backup rejection, streaming fixity boundaries and
+strict per-ordinal range consistency. All 2,286 new bindings remain exact; the
+preceding archive API's four changes and 2,085 unchanged paths are reconciled,
+and eight historical local checksum manifests are preserved.
+Evidence: `work/c028-top-scalar-selection-20261013/`, summary SHA-256
+`112315a4bb5f9f8c07c90b943899174227f8e7567078989399b90f22bdaed9bf`.
+
+The older C028 native batch exports only aggregate counts/bytes, not individual
+spans. New ranges here are independent JS observations; there are zero native
+calls. Its historical live library pin lacks an identified immutable library
+snapshot, while source/helper snapshots and receipts are preserved and unused.
+Neither limitation is hidden by the current preservation anchor. String structure,
+meanings, restoration and matched-client fidelity remain open.
+
+### Live REA connection — 2026-10-13, 01:46 UTC
+
+The harness now exposes the 170 REA MCP tools. A target-free `binary_session`
+checks the exact project-local server path, package 6.4.0 and catalog digest and
+reports aligned identity with no target open. Earlier harness absence is historical;
+the diagnosed cold-import/retained-provider limits remain separate. Evidence:
+`work/rea-live-connection-20261013/binary-session.json`, SHA-256
+`f513b499fef466e842e41217f29c9c70a21db60f730da91ce976fbf30748b9c3`.
+This connection check is not a target-analysis or compatibility result.
+
 ### Post-call local stores — 2026-10-13, 01:35 UTC
 
 The fixed twenty-byte suffix closes the first control-prefix instruction gap with
@@ -1092,8 +1128,8 @@ supported, and no ICARUS performance or stability improvement has been measured.
 
 ## Next work and maintenance
 
-1. Continue C028's ten top scalar descriptors after a reviewed both-copy range
-   preflight. Its old native batch qualifies aggregate totals, not retained
+1. Qualify C028's five top string descriptors after the completed both-copy range
+   preflight and individual Int/Bool widths. Its old native batch qualifies aggregate totals, not retained
    individual spans. A finite C034 audit finds all observed populated tagged
    boundaries qualified; native value meanings and seven empty inherited arrays'
    population coverage remain open. Reuse retained static evidence;

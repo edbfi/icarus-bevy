@@ -210,8 +210,14 @@ Use this dataset in the next work sequence:
    Seven exact top scalars subsequently qualify 3,316 Name, 1,658 Str and 1,658
    Enum transfer frames, 3,316 Int4 and 1,658 Bool0 spans after complete prior
    replay and both-copy selection/budgets. Eight new top string batches preserve
-   existing limits; all 2,089 bindings remain unchanged. Audit the remaining
-   populated boundaries; meanings/import remain open.
+   existing limits; all 2,089 bindings remain unchanged. A finite C034 audit finds
+   no unqualified observed populated tagged boundary; meanings and empty-family
+   population coverage remain open. C028's subsequent exact top range preflight
+   selects 12,940 fields, qualifying 3,882 Int4 and 2,588 Bool0 spans. Its 6,470
+   string frames / 328,878 bytes remain undecoded pending measured strict native
+   batches. Historical C028 native evidence is aggregate-only; no individual
+   native header spans are claimed. All 2,286 bindings remain exact with the
+   separately reviewed borrowed-string API transitions.
    All 486 C009 top bodies now match
    the reviewed 31-field contract and native spans under an explicit 71,956-byte
    comparison cap. Its 972 own child bodies now match immediate native spans;
