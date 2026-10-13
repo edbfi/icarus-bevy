@@ -1,9 +1,175 @@
 # Evidence manifest
 
 One row per retained artifact. Class `local-private` means the file lives under
-ignored `work/` or `reference-data/` on the analyst's machine and is never
-deleted by cleanup; `external` means it is held outside this repository.
-`python3 tools/docs_lint.py --local` verifies local-private digests.
+ignored `work/`, `reference-data/` or `icarus-client-orig/` on the analyst's machine and is never
+deleted by cleanup; `external` means it is held outside this repository or is a digest without
+a recorded path. `python3 tools/docs_lint.py --local` verifies local-private digests when stated.
+Rows were extracted from fabd2f9:docs/implementation-status.md on 2026-10-13.
 
 | ID | Path | SHA-256 | Date | Producing session | Class |
 | --- | --- | --- | --- | --- | --- |
+| M-001 | work/native-capture-transition-20261013/ | unstated | 2026-10-13 | Current paused checkpoint — 2026-10-13, 06:28 UTC | local-private |
+| M-002 | release library (af4270b native capture fix) | 744fcb62bfbcbbace33fa73cb1134adb466c3f617c0f7c028bb899e8b386a183 | 2026-10-13 | Native capture completeness — 2026-10-13, 04:38 UTC | external |
+| M-003 | work/c001-standalone-linear-fixtures-v2-20261013/ | 4c9e8ca21314d595de4064aafa59399518fac1398bb9ac54ce38bc5705f40668 | 2026-10-13 | Current paused checkpoint — 2026-10-13, 06:28 UTC | local-private |
+| M-004 | work/c001-standalone-api-validation-v2-20261013/ | unstated | 2026-10-13 | Current paused checkpoint — 2026-10-13, 06:28 UTC | local-private |
+| M-005 | work/older-control-owner-next-20261013/PROPOSAL.md | unstated | 2026-10-13 | Current paused checkpoint — 2026-10-13, 06:28 UTC | local-private |
+| M-006 | work/older-control-owner-routing-20261013/binary-session.json | unstated | 2026-10-13 | Current paused checkpoint — 2026-10-13, 06:28 UTC | local-private |
+| M-007 | work/c001-constructor-listing-diagnostic-20261013/ | unstated | 2026-10-13 | C001 diagnostic observation — 2026-10-13, 05:12 UTC | local-private |
+| M-008 | work/c001-constructor-listing-20261013/ | unstated | 2026-10-13 | C001 retained listing rejection — 2026-10-13, 04:53 UTC | local-private |
+| M-009 | work/native-capture-transition-20261013/transition.json | unstated | 2026-10-13 | Native capture completeness — 2026-10-13, 04:38 UTC | local-private |
+| M-010 | work/native-capture-completeness-20261013/ | unstated | 2026-10-13 | Native capture completeness — 2026-10-13, 04:38 UTC | local-private |
+| M-011 | work/c001-constructor-ranges-20261013/ | 9f8191a0c0fa32d06942f9373580a02768b4ebed1750a4d6bc45ecfa9ae72624 | 2026-10-13 | C001 constructor metadata bounds — 2026-10-13, 04:18 UTC; payload | local-private |
+| M-012 | work/control-client-constructor-continuation-ranges-20261013/ | d9fbb94daeccd5f1d8bb7510d87005a29bb78baee0ab5516abf2b30979688b9f | 2026-10-13 | Constructor continuation metadata and C001 references — 2026-10-13, 04:03 UTC; payload | local-private |
+| M-013 | work/c001-incoming-getter-20261013/ | 589c493c56039973eff41b1c1399f15df9ab7f761908c3d39b0d6a3541d0e58c | 2026-10-13 | Constructor continuation metadata and C001 references — 2026-10-13, 04:03 UTC; reference TSV | local-private |
+| M-014 | work/control-client-decoder-api-validation-v3-20261013/ | 960e7f1ed944f65f06e33992fccce6976bbb96a1ad5331cdb77c13e7d92e0f53 | 2026-10-13 | Bounded decoder validation — 2026-10-13, 03:32 UTC; independent engine interpretation | local-private |
+| M-015 | work/rea-live-connection-20261013/binary-session.json | f513b499fef466e842e41217f29c9c70a21db60f730da91ce976fbf30748b9c3 | 2026-10-13 | Live REA connection — 2026-10-13, 01:46 UTC | local-private |
+| M-016 | work/c009-top-leaf-values-20261012/ | unstated | 2026-10-12 | Historical paused checkpoint — 2026-10-12, 21:36 UTC | local-private |
+| M-017 | execution-v2/ | unstated | 2026-10-12 | Historical paused checkpoint — 2026-10-12, 21:36 UTC | local-private |
+| M-018 | release library (437bfe5 Int-array increment) | 84b50475c357c30c225b96924fb7f9e4c3200c3ae4ca5b0ff48d3d00205e07ca | 2026-10-12 | Historical paused checkpoint — 2026-10-12, 21:36 UTC | external |
+| M-019 | work/c009-common-child-selection-20261012/ | 8bcbc1d9b57cad46ab40e820465e46021b74ef44925115a3e28389c1b1fdec7d | 2026-10-12 | Historical paused checkpoint — 2026-10-12, 21:36 UTC; summary | local-private |
+| M-020 | PREPARED.md | unstated | 2026-10-12 | Historical paused checkpoint — 2026-10-12, 21:36 UTC | local-private |
+| M-021 | failure-analysis.md | unstated | 2026-10-12 | Historical paused checkpoint — 2026-10-12, 21:36 UTC | local-private |
+| M-022 | rejected-attempt.json | unstated | 2026-10-12 | Historical paused checkpoint — 2026-10-12, 21:36 UTC | local-private |
+| M-023 | work/control-world-secondary-store-20261013/ | c6637e7d8b68187ea5947c30ce89b22489c06d83eab8d4e25794876cddd90073 | 2026-10-13 | World named local table pair — 2026-10-13, 06:12 UTC; payload | local-private |
+| M-024 | work/control-world-secondary-store-20261013/ | 09206f600bb385720cf9487309d744887fb21750cf68c65787d9fb34d3d70653 | 2026-10-13 | World named local table pair — 2026-10-13, 06:12 UTC; additive interpretation | local-private |
+| M-025 | work/control-world-table-bridge-20261013/ | d173899c02d111245fc5a51ac5f84411e86c4a18c471f423103f8f116220b93a | 2026-10-13 | World local-store partial result — 2026-10-13, 05:15 UTC; payload | local-private |
+| M-026 | work/control-world-table-bridge-20261013/ | c0f1c52c99d8c007c0595f95ebed96b891365341a2e6394a32175da563cc1777 | 2026-10-13 | World local-store partial result — 2026-10-13, 05:15 UTC; additive interpretation | local-private |
+| M-027 | work/control-client-constructor-continuation-instructions-20261013/ | 1aeb670aa28494e50fa5a936b3a9728370245913b0c6ffc663e74f26df1e3e69 | 2026-10-13 | Current-client continuation instructions — 2026-10-13, 04:28 UTC; payload | local-private |
+| M-028 | work/control-client-constructor-continuation-instructions-20261013/ | 223ffe8cab6e51d26bf98835ba2b02a6e796f363ab9e9a3ddb8a1c3962de42af | 2026-10-13 | Current-client continuation instructions — 2026-10-13, 04:28 UTC; additive note | local-private |
+| M-029 | work/control-client-constructor-instructions-20261013/ | 7ce6ed4742425bcb1e3d6cd6759586853166078e5c986f1797316ad7b7117815 | 2026-10-13 | Current-client bounded constructor instructions — 2026-10-13, 03:49 UTC; payload | local-private |
+| M-030 | work/control-client-constructor-instructions-20261013/ | 3eadad29122dbc2d6d6cb49441e0c00a93d94c1e96c2f3a2aefff425da1cc4fd | 2026-10-13 | Current-client bounded constructor instructions — 2026-10-13, 03:49 UTC; additive note | local-private |
+| M-031 | work/control-client-constructor-ranges-20261013/ | ff838e96a61252573c95ba09b93f2a4c76d457cefd4a34c6dc727a0752b3b3dd | 2026-10-13 | Current-client constructor metadata bounds — 2026-10-13, 03:04 UTC; payload | local-private |
+| M-032 | work/control-client-constructor-ranges-20261013/ | 3222b5fbc7de908d4921291bb010618cbe634500422fe93fbfcf329bbf06ae8f | 2026-10-13 | Current-client constructor metadata bounds — 2026-10-13, 03:04 UTC; additive note | local-private |
+| M-033 | work/control-client-instruction-routing-20261013/ | unstated | 2026-10-13 | Current-client constructor metadata bounds — 2026-10-13, 03:04 UTC | local-private |
+| M-034 | research/archive/2026-10-12-control-caller-limit.md#current-client-public-symbols-and-named-notify-slots | unstated | 2026-10-13 | Current-client public symbols and notify slots — 2026-10-13, 02:31 UTC | external |
+| M-035 | research/archive/2026-10-12-control-caller-limit.md#local-post-call-gap-closed | unstated | 2026-10-13 | Post-call local stores — 2026-10-13, 01:35 UTC | external |
+| M-036 | research/archive/2026-10-12-control-caller-limit.md#fixed-prefixes-and-base-register-limits | unstated | 2026-10-13 | Control-store prefixes — 2026-10-13, 01:21 UTC | external |
+| M-037 | work/protocol-next-increment-20261013/ | unstated | 2026-10-12 | Initial control archive fields — 2026-10-12, 22:24 UTC | local-private |
+| M-038 | work/protocol-next-increment-20261013/ | 7b5430a53f1f252aa639bf037e8952cd11204266d84bda6c0691e240be8d4e38 | 2026-10-12 | Initial control archive fields — 2026-10-12, 22:24 UTC; new release library | local-private |
+| M-039 | research/archive/2026-10-12-control-caller-limit.md | unstated | 2026-10-12 | Initial control archive fields — 2026-10-12, 22:24 UTC | external |
+| M-040 | work/control-caller-candidates-20261013/ | e7a65b3efc7f0cc5210f526530bc0955b4b47024363b919f1d1289647ba56461 | 2026-10-12 | Initial control archive fields — 2026-10-12, 22:24 UTC; result | local-private |
+| M-041 | work/control-dispatch-owner-20261013/ | 23a603994a721697446b88cbf66693b07fd95423f1dd68f549c8a3e7c5737df1 | 2026-10-12 | Initial control archive fields — 2026-10-12, 22:24 UTC; result | local-private |
+| M-042 | work/control-dispatch-table-references-20261013/ | eb10c15cb2aec7982956e4a37c2b22214407385b808ff3548b0869d27434f9e7 | 2026-10-12 | Initial control archive fields — 2026-10-12, 22:24 UTC; result | local-private |
+| M-043 | work/control-caller-function-ranges-20261013/ | 71f74cc712d962b570f63361dc6cd81d512625e5e72cee69fe4dccf92b717eff | 2026-10-12 | Initial control archive fields — 2026-10-12, 22:24 UTC; result | local-private |
+| M-044 | research/archive/2026-10-12-control-caller-limit.md#targeted-instruction-context-and-preserved-failed-attempt | unstated | 2026-10-12 | Initial control archive fields — 2026-10-12, 22:24 UTC | external |
+| M-045 | research/archive/2026-10-12-control-caller-limit.md#instruction-only-operand-and-local-store-proof | unstated | 2026-10-12 | Initial control archive fields — 2026-10-12, 22:24 UTC | external |
+| M-046 | tools/ | unstated | 2026-10-12 | Initial control archive fields — 2026-10-12, 22:24 UTC; reusable pure PE parser and fixtures | external |
+| M-047 | work/c028-coverage-audit-complete-20261013/ | unstated | 2026-10-13 | Selected save coverage audit — 2026-10-13 | local-private |
+| M-048 | unstated | 69b002c6648600c2a275d118f4138fc958669068c312cf96a7b13cae0516f185 | 2026-10-13 | Selected save coverage audit — 2026-10-13; corrected neutral map | external |
+| M-049 | work/c028-child-leaf-preparation-20261013/summary.json | 5a65b500d1e72610bfd21190be2edbc3a0e41dd3bf6e1cefb42990dbdefd7802 | 2026-10-13 | C028 direct child leaves — 2026-10-13, 03:12 UTC | local-private |
+| M-050 | unstated | a71fa4158f4cfe51359b63409655a9c1f9816a0705b00c5d66147ce83c2fde67 | 2026-10-13 | C028 direct child leaves — 2026-10-13, 03:12 UTC; additive note, C028 child leaves | external |
+| M-051 | work/c028-all-struct-child-headers-20261013/ | unstated | 2026-10-13 | C028 complete direct Struct-child headers — 2026-10-13, 02:53 UTC | local-private |
+| M-052 | summary-v2.json` | df61f3f910216ea3443aa237307d388e97f30f001a1bfa8a15ebc111c2023681 | 2026-10-13 | C028 complete direct Struct-child headers — 2026-10-13, 02:53 UTC; in `work/c028-all-struct-child-headers-20261013/` | local-private |
+| M-053 | unstated | 9cb59c06892d3d3484ebc920c854ef47c03b72b0561a34dc37b2d8a326a92495 | 2026-10-13 | C028 complete direct Struct-child headers — 2026-10-13, 02:53 UTC; additive note, C028 Struct-child headers | external |
+| M-054 | work/c028-top-string-values-20261013/ | 64c60e41fa3b67527609cf4ff8d2fde3b85a4ae654ff00c51040cfa41aa7db04 | 2026-10-13 | C028 top string structures — 2026-10-13, 02:19 UTC | local-private |
+| M-055 | work/c028-top-scalar-selection-20261013/ | 112315a4bb5f9f8c07c90b943899174227f8e7567078989399b90f22bdaed9bf | 2026-10-13 | C028 top scalar range preflight — 2026-10-13, 02:00 UTC | local-private |
+| M-056 | work/archive-frame-transition-20261013/ | unstated | 2026-10-13 | Borrowed strict string frames — 2026-10-13 | local-private |
+| M-057 | unstated | 1f54114fd2382bb8809071e61929868cd2c836d7002bf717bf92f39adda31549 | 2026-10-13 | Borrowed strict string frames — 2026-10-13; new release library after borrowed-frame change | external |
+| M-058 | work/c034-top-scalar-values-20261013/ | edbe6e9c7f0c550a31842ac328f7fa131da3ae0f90bce2b630eb8ba2c7bb3c55 | 2026-10-13 | C034 top scalars — 2026-10-13, 01:24 UTC | local-private |
+| M-059 | work/c034-own-scalar-widths-20261013/ | eaaf3fb7382a13fcb3d5e2853dec868ad397ee9885f889d6aa1721b075a21879 | 2026-10-13 | C034 own selected widths — 2026-10-13, 01:06 UTC | local-private |
+| M-060 | work/c034-inherited-scalar-values-20261013/ | 54afada3f4608e0d9e11bb1b7c82e774bdc0c34fa653b00f6e5f4cc1c3869187 | 2026-10-13 | C034 inherited scalars — 2026-10-13, 00:50 UTC | local-private |
+| M-061 | work/c034-scalar-transitions-20261013/ | unstated | 2026-10-13 | C034 inherited scalars — 2026-10-13, 00:50 UTC | local-private |
+| M-062 | work/c009-d01-array-child-leaves-20261013/ | da619895c34bb48cced66efccede2db5ded96d7e96f6ae7166168ceef197c244 | 2026-10-13 | D01 nested array leaves — 2026-10-13, 00:30 UTC | local-private |
+| M-063 | work/c009-d01-array-child-headers-20261013/ | 1d4961524431734e7199a0e16c0e1e983448eb594cb1d3b01f789dd729641623 | 2026-10-13 | D01 nested array headers — 2026-10-13, 00:17 UTC | local-private |
+| M-064 | work/c009-d01-leaf-values-20261013/ | 6f53c189ea8c33edc7c736b08f5685da14c7bfee93968c7b98ca9878b10e0ee1 | 2026-10-13 | D01 leaves — 2026-10-13, 00:01 UTC | local-private |
+| M-065 | work/c028-d01-array-children-20261012/ | unstated | 2026-10-13 | D01 leaves — 2026-10-13, 00:01 UTC | local-private |
+| M-066 | work/c009-common-deeper-headers-20261013/ | ede5ffe4a6a1944f13dfd8c51373efa6c5eccd65a41db8454190a689182e3f96 | 2026-10-12 | C009 deeper-array headers — 2026-10-12, 23:48 UTC | local-private |
+| M-067 | unstated | unstated | 2026-10-12 | C009 deeper-array headers — 2026-10-12, 23:48 UTC; current library `7b5430…`, prefix only | external |
+| M-068 | work/c009-common-scalar-values-20261013/ | 244e4919870e5b0ecf94826c791a67049823fcfa46e38fc774ff0fe5d3e22626 | 2026-10-12 | C009 common-child scalars — 2026-10-12, 23:29 UTC | local-private |
+| M-069 | work/c009-common-binary-widths-20261013/ | f7867196f10211aa7d00fb53d38048e7948053eab4ec37507bd6052e694b56a8 | 2026-10-12 | C009 common-child binary widths — 2026-10-12, 23:04 UTC | local-private |
+| M-070 | work/c009-common-child-headers-20261012/ | 67939440788b396d31461a1c17bc3b4849a7ec6a26e19b11b5eee3e163e5b95f | 2026-10-12 | C009 common-child headers — 2026-10-12, 22:15 UTC | local-private |
+| M-071 | work/array-limit-preparation-20261012/ | unstated | 2026-10-12 | Explicit struct-array limits — 2026-10-12, 22:08 UTC | local-private |
+| M-072 | work/array-limit-prechange-20261013/ | unstated | 2026-10-12 | Explicit struct-array limits — 2026-10-12, 22:08 UTC | local-private |
+| M-073 | unstated | e9cb457f168ec214c54ad9931074b0f8070f179eecda6f5d79f97a3288ca87d2 | 2026-10-12 | Explicit struct-array limits — 2026-10-12, 22:08 UTC; new release library after struct-array limit change | external |
+| M-074 | unstated | unstated | 2026-10-12 | Explicit struct-array limits — 2026-10-12, 22:08 UTC; previous library `84b50475…`, prefix only | external |
+| M-075 | work/c009-top-leaf-values-20261012/execution-v3/ | f47801ede31b8c2a78efaad514c708362edd1758560c80f19318f144e7b90c47 | 2026-10-12 | Resumed scalar qualification — 2026-10-12, 22:02 UTC | local-private |
+| M-076 | work/dependency-recheck-20261012/ | unstated | 2026-10-12 | Resumed scalar qualification — 2026-10-12, 22:02 UTC | local-private |
+| M-077 | work/native-c034-own-20261012/ | unstated | 2026-10-12 | Completed continuation work (under Continuation — 2026-10-12) | local-private |
+| M-078 | work/dependency-refresh-20261012/ | unstated | 2026-10-12 | Completed continuation work (under Continuation — 2026-10-12) | local-private |
+| M-079 | work/c034-own-array-continuation-20261012/ | unstated | 2026-10-12 | Completed continuation work (under Continuation — 2026-10-12) | local-private |
+| M-080 | work/c034-own-array-compare-20261012/ | unstated | 2026-10-12 | Completed continuation work (under Continuation — 2026-10-12) | local-private |
+| M-081 | work/c034-value-widths-20261012/ | unstated | 2026-10-12 | Completed continuation work (under Continuation — 2026-10-12) | local-private |
+| M-082 | work/client-static-continuation-20261012/ | unstated | 2026-10-12 | Completed continuation work (under Continuation — 2026-10-12) | local-private |
+| M-083 | work/client-tag-array-20261012/ | unstated | 2026-10-12 | Completed continuation work (under Continuation — 2026-10-12) | local-private |
+| M-084 | work/client-c034-own-array-20261012/ | unstated | 2026-10-12 | Completed continuation work (under Continuation — 2026-10-12) | local-private |
+| M-085 | work/client-profile-ops-20261012/ | unstated | 2026-10-12 | Completed continuation work (under Continuation — 2026-10-12) | local-private |
+| M-086 | work/client-float-contract-20261012/ | unstated | 2026-10-12 | Completed continuation work (under Continuation — 2026-10-12) | local-private |
+| M-087 | work/c034-all-headers-20261012/ | unstated | 2026-10-12 | Completed continuation work (under Continuation — 2026-10-12) | local-private |
+| M-088 | work/c034-all-own-headers-20261012/ | unstated | 2026-10-12 | Completed continuation work (under Continuation — 2026-10-12) | local-private |
+| M-089 | work/c034-all-own-arrays-20261012/ | unstated | 2026-10-12 | Completed continuation work (under Continuation — 2026-10-12) | local-private |
+| M-090 | work/c034-inherited-arrays-20261012/ | unstated | 2026-10-12 | Completed continuation work (under Continuation — 2026-10-12) | local-private |
+| M-091 | work/str-value-contract-20261012/ | unstated | 2026-10-12 | Completed continuation work (under Continuation — 2026-10-12) | local-private |
+| M-092 | work/c034-inherited-structs-20261012/ | unstated | 2026-10-12 | Completed continuation work (under Continuation — 2026-10-12) | local-private |
+| M-093 | work/c034-field-widths-20261012/ | unstated | 2026-10-12 | Completed continuation work (under Continuation — 2026-10-12) | local-private |
+| M-094 | work/component-c009-20261012/ | unstated | 2026-10-12 | Completed continuation work (under Continuation — 2026-10-12) | local-private |
+| M-095 | work/native-c009-top-20261012/ | unstated | 2026-10-12 | Completed continuation work (under Continuation — 2026-10-12) | local-private |
+| M-096 | work/c009-own-children-20261012/ | unstated | 2026-10-12 | Completed continuation work (under Continuation — 2026-10-12) | local-private |
+| M-097 | work/native-c009-own-20261012/ | unstated | 2026-10-12 | Completed continuation work (under Continuation — 2026-10-12) | local-private |
+| M-098 | work/native-c009-int-array-20261012/execution-v2/ | unstated | 2026-10-12 | Completed continuation work (under Continuation — 2026-10-12) | local-private |
+| M-099 | work/c009-own-leaf-values-20261012/ | unstated | 2026-10-12 | Completed continuation work (under Continuation — 2026-10-12) | local-private |
+| M-100 | work/c009-parent-children-20261012/ | unstated | 2026-10-12 | Completed continuation work (under Continuation — 2026-10-12) | local-private |
+| M-101 | work/native-c009-parent-selection-20261012/ | unstated | 2026-10-12 | Completed continuation work (under Continuation — 2026-10-12) | local-private |
+| M-102 | work/native-c009-parent-headers-20261012/ | unstated | 2026-10-12 | Completed continuation work (under Continuation — 2026-10-12) | local-private |
+| M-103 | work/c009-parent-leaf-values-20261012/ | unstated | 2026-10-12 | Completed continuation work (under Continuation — 2026-10-12) | local-private |
+| M-104 | work/c009-byte-value-contract-20261012/ | unstated | 2026-10-12 | Completed continuation work (under Continuation — 2026-10-12) | local-private |
+| M-105 | work/c009-top-enum-contract-20261012/ | unstated | 2026-10-12 | Completed continuation work (under Continuation — 2026-10-12) | local-private |
+| M-106 | work/c009-common-child-selection-20261012/ | unstated | 2026-10-12 | Completed continuation work (under Continuation — 2026-10-12) | local-private |
+| M-107 | work/c034-name-contract-20261012/ | unstated | 2026-10-12 | Completed continuation work (under Continuation — 2026-10-12) | local-private |
+| M-108 | work/c034-name-values-20261012/ | unstated | 2026-10-12 | Completed continuation work (under Continuation — 2026-10-12) | local-private |
+| M-109 | commit b55e4ce (checkpoint commits delivered) | unstated | 2026-10-12 | Completed continuation work (under Continuation — 2026-10-12) | external |
+| M-110 | commit af8cf48 (Float/Text increment) | unstated | 2026-10-12 | Completed continuation work (under Continuation — 2026-10-12) | external |
+| M-111 | commit 93ef9e9 (struct-array increment) | unstated | 2026-10-12 | Completed continuation work (under Continuation — 2026-10-12) | external |
+| M-112 | work/native-float-text-20261012/ | unstated | 2026-10-12 | Completed continuation work (under Continuation — 2026-10-12) | local-private |
+| M-113 | icarus-client-orig/25793767 | unstated | 2026-10-12 | Completed continuation work (under Continuation — 2026-10-12) | external |
+| M-114 | steamapps/appmanifest_1149460.acf | unstated | 2026-10-12 | Completed continuation work (under Continuation — 2026-10-12) | external |
+| M-115 | Icarus/Binaries/Win64/ | ab11ec1212127e9047128843e584ab636632353edd6808a0db9caedb35048179 | 2026-10-12 | Completed continuation work (under Continuation — 2026-10-12); client executable | external |
+| M-116 | Icarus/Binaries/Win64/ | 944e38c941cdbdf4ec512f4307134fdd307e5e1c61602f06bd2f9600f7f98bef | 2026-10-12 | Completed continuation work (under Continuation — 2026-10-12); client PDB | external |
+| M-117 | work/client-identity-20261012/ | unstated | 2026-10-12 | Completed continuation work (under Continuation — 2026-10-12) | local-private |
+| M-118 | save-triage-20261012/ | unstated | 2026-10-12 | Completed continuation work (under Continuation — 2026-10-12) | local-private |
+| M-119 | c028-array-children-20261012/ | unstated | 2026-10-12 | Completed continuation work (under Continuation — 2026-10-12) | local-private |
+| M-120 | c028-array-children-20261012/static/header-kind-contracts-v2.json | 17abd2de90aea26129d13cc075c7a6268eef41cf653f14dcca29928433b97e09 | 2026-10-12 | Completed continuation work (under Continuation — 2026-10-12) | local-private |
+| M-121 | c028-array-descendants-20261012/ | unstated | 2026-10-12 | Completed continuation work (under Continuation — 2026-10-12) | local-private |
+| M-122 | c028-d01-array-children-20261012/ | unstated | 2026-10-12 | Completed continuation work (under Continuation — 2026-10-12) | local-private |
+| M-123 | component-c034-20261012/ | unstated | 2026-10-12 | Completed continuation work (under Continuation — 2026-10-12) | local-private |
+| M-124 | c034-own-struct-20261012/ | unstated | 2026-10-12 | Completed continuation work (under Continuation — 2026-10-12) | local-private |
+| M-125 | component-c034-20261012/static/c034-candidate-framing-proof.json | c5541899734b5c967ad4617680219d5778a8981529badcfe25d8ebad4e36212d | 2026-10-12 | Completed continuation work (under Continuation — 2026-10-12) | local-private |
+| M-126 | component-c034-20261012/static/c034-schema-private.json | e7b04c3629d922b1597f57bf948c1ae6b312764c2b9ebc91b54ac5a41f7f857f | 2026-10-12 | Completed continuation work (under Continuation — 2026-10-12) | local-private |
+| M-127 | c034-own-struct-20261012/ | 0a9cc629c485777c63f56dd4a20aa21d553d5921436d13af74d11b62c1ab50aa | 2026-10-12 | Completed continuation work (under Continuation — 2026-10-12); own-struct private map; filename unstated | local-private |
+| M-128 | c028-array-descendants-20261012/static/descendant-contracts-private.json | a39fa352ae09eb2684d05e73f9ec3ba6b811871eac6109bc7cc5c9b201a1a248 | 2026-10-12 | Completed continuation work (under Continuation — 2026-10-12) | local-private |
+| M-129 | native-struct-array-20261012/probe | 211570ebf49c4bd5e7e150fda3786fd65cf1be52442b1c38f30f502c9607c7fb | 2026-10-12 | Completed continuation work (under Continuation — 2026-10-12) | local-private |
+| M-130 | native-struct-array-20261012/ | 16ee0c084c085ed09d8934a9253c70d6f59ebc9b9763273c8e8603d181f01346 | 2026-10-12 | Completed continuation work (under Continuation — 2026-10-12); bound release library; filename unstated | local-private |
+| M-131 | edbfi/skills commit 69cc23f | unstated | unstated | Implemented and checked | external |
+| M-132 | work/native-deadline-20261012/ | unstated | unstated | Implemented and checked | local-private |
+| M-133 | work/icarus-overnight/native-recovery-02/ | unstated | unstated | Implemented and checked | local-private |
+| M-134 | work/icarus-overnight/native-soak.jsonl | unstated | unstated | Implemented and checked | local-private |
+| M-135 | commands.jsonl | unstated | unstated | Implemented and checked | external |
+| M-136 | commit cac76ec (historical soak start) | unstated | unstated | Implemented and checked | external |
+| M-137 | research/archive/2026-10-04-native-snapshot-performance.md | unstated | unstated | Implemented and checked | external |
+| M-138 | work/native-io-20261012/native-io-faults/ | unstated | unstated | Implemented and checked | local-private |
+| M-139 | work/native-codec-review-20261012/ | unstated | unstated | Implemented and checked | local-private |
+| M-140 | work/native-tagged-20261012/ | unstated | unstated | Implemented and checked | local-private |
+| M-141 | work/native-recorders-20261012/ | unstated | unstated | Implemented and checked | local-private |
+| M-142 | work/native-name-header-20261012/ | unstated | unstated | Implemented and checked | local-private |
+| M-143 | work/c028-structs-20261012/ | unstated | unstated | Implemented and checked | local-private |
+| M-144 | work/native-component-20261012/ | unstated | unstated | Implemented and checked | local-private |
+| M-145 | history/offline-runtime-authorization.md | unstated | unstated | Implemented and checked | external |
+| M-146 | work/control-version-20261012/ | unstated | unstated | Reference evidence | local-private |
+| M-147 | work/save-schema-20261012/ | unstated | unstated | Reference evidence | local-private |
+| M-148 | work/component-c028-20261012/ | unstated | unstated | Reference evidence | local-private |
+| M-149 | work/c028-binary-children-20261012/ | unstated | unstated | Reference evidence | local-private |
+| M-150 | work/c028-arrays-20261012/ | unstated | unstated | Reference evidence | local-private |
+| M-151 | reference-data/ | unstated | unstated | Reference evidence | local-private |
+| M-152 | specs/stateless-handshake.md | unstated | unstated | Reference evidence | external |
+| M-153 | specs/network-checksum.md | unstated | unstated | Reference evidence | external |
+| M-154 | research/archive/2026-10-04-prospect-rejection.md | unstated | unstated | Reference evidence | external |
+| M-155 | research/archive/2026-10-04-save-failure-output.md | unstated | unstated | Reference evidence | external |
+| M-156 | specs/prospect-loading.md | unstated | unstated | Reference evidence | external |
+| M-157 | research/archive/2026-10-04-reference-inventory.md | unstated | unstated | Reference evidence | external |
+| M-158 | research/archive/2026-10-04-static-baseline.md | unstated | unstated | Reference evidence | external |
+| M-159 | research/archive/2026-10-04-decompilation-report.md | unstated | unstated | Reference evidence | external |
+| M-160 | research/archive/2026-10-04-targeted-static-report.md | unstated | unstated | Reference evidence | external |
+| M-161 | specs/control-negotiation.md | unstated | unstated | Reference evidence | external |
+| M-162 | research/archive/2026-10-04-offline-startup-report.md | unstated | unstated | Reference evidence | external |
+| M-163 | specs/prospect-envelope.md | unstated | unstated | Implemented and checked | external |
+| M-164 | specs/archive-string.md | unstated | unstated | Implemented and checked | external |
+| M-165 | bug-ledger.md | unstated | unstated | Implemented and checked | external |

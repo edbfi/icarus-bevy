@@ -5,7 +5,7 @@ Runbook copied from the "Current launcher" section of the retained
 experiment needs its own concrete current scope under the user's standing
 instruction; historical session files do not renew themselves.
 
-## Current launcher (2026-10-12)
+## Current launcher
 
 `tools/run_reference_offline.py` and its shell wrapper require an explicit
 case-local session. The user's current autonomous-work instruction permits bounded

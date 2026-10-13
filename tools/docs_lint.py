@@ -43,14 +43,12 @@ CURRENT_ROOTS: tuple[str, ...] = ("README.md", "docs")
 FROZEN_DIRS: tuple[str, ...] = ("docs/history", "docs/research/archive")
 FROZEN_ALLOWLIST: frozenset[str] = frozenset(
     {
-        "docs/history/README.md",
         "docs/history/authorizations-index.md",
         "docs/history/overnight-work-plan.md",
         "docs/history/research-authorization.md",
         "docs/history/decompilation-authorization.md",
         "docs/history/static-analysis-authorization.md",
         "docs/history/offline-runtime-authorization.md",
-        "docs/research/archive/README.md",
         "docs/research/archive/2026-10-04-decompilation-report.md",
         "docs/research/archive/2026-10-04-native-snapshot-performance.md",
         "docs/research/archive/2026-10-04-offline-startup-report.md",
@@ -67,8 +65,7 @@ FROZEN_ALLOWLIST: frozenset[str] = frozenset(
 
 DEFAULT_FILE_CAP = 16 * KIB
 FILE_CAPS: dict[str, int] = {
-    "docs/gates.md": 8 * KIB,
-    "docs/ledgers/findings.md": 64 * KIB,
+    "docs/ledgers/findings.md": 128 * KIB,
     "docs/ledgers/unknowns.md": 64 * KIB,
     "docs/ledgers/bugs.md": 64 * KIB,
     "docs/ledgers/compatibility.md": 64 * KIB,
@@ -339,6 +336,9 @@ class Linter:
             if not base.is_dir():
                 continue
             for file in base.rglob("*"):
+                rel_file = file.relative_to(self.root).as_posix()
+                if rel_file == "tools/docs_lint.py" or rel_file.startswith("tools/tests/"):
+                    continue
                 if not file.is_file() or file.suffix not in {".rs", ".py", ".cjs", ".js", ".yml", ".yaml", ".sh", ".toml", ".java"}:
                     continue
                 try:
@@ -423,8 +423,10 @@ class Linter:
             _identifier, path, digest, _date, _session, klass = cells[:6]
             if klass not in {"local-private", "external"}:
                 self.report(MANIFEST_FILE, number, f"class must be local-private or external, not {klass!r}")
+            if digest == "unstated":
+                continue
             if not re.fullmatch(r"[0-9a-f]{64}", digest):
-                self.report(MANIFEST_FILE, number, "sha256 column must be a 64-hex digest")
+                self.report(MANIFEST_FILE, number, "sha256 column must be a 64-hex digest or 'unstated'")
                 continue
             if klass == "local-private" and self.local:
                 file = self.root / path

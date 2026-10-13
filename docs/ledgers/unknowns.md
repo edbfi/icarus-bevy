@@ -7,3 +7,53 @@ Last reconciled: 2026-10-13
 
 | ID | Question | Severity | Status | Next probe | Findings | REA id |
 | --- | --- | --- | --- | --- | --- | --- |
+| U-001 | Does corrected C001 fixture v2 pass final independent review and all ten authored modes in a fresh owned/offline source-only case? | high | blocked | Complete independent review of fixture v2, then run its ten authored modes under a fresh owned/offline source-only case. | F-006, F-007, F-009, F-010, F-011 |  |
+| U-002 | What do the exact 305/296 physical bytes of the C001 callback and candidate constructor decode to under the standalone decoder? | high | blocked | After fixture qualification, prepare/review a new C001 original-code case: exact 305/296 bytes, zero outside lookahead, no Program/database, no flow following. | F-013, F-050 |  |
+| U-003 | Is the listing rejection at 0x1419fe870 an absent/mismatched listing entry or an API exception? | medium | open | none stated (standalone decoder prepared instead of further listing retries) | F-014, F-015, F-019, F-021 |  |
+| U-004 | Is there a construction/vtable bridge between callback 0x1419fe870 and candidate constructor 0x141788530, and what are the C001 bodies? | high | open | Read the retained instruction listing within the exact intervals; gaps and outgoing paths need separate evidence. | F-015, F-032, F-034 |  |
+| U-005 | Are the 305/296-byte metadata intervals complete functions or procedure fragments? | medium | open | none stated | F-032, F-034 |  |
+| U-006 | What registration argument flow reaches native getter 0x1419fe200, and are there other callers? | medium | open | none stated | F-040, F-041 |  |
+| U-007 | What receiver origin, ABI and object type/layout does the unchanged unknown base in the World/Pending zero/+0x28 table stores have? | high | open | none stated | F-063, F-065, F-076, F-089 |  |
+| U-008 | What are the complete UWorld and UPendingNetGame constructors beyond the measured metadata fragments? | medium | open | none stated (continuation targets require separately reviewed metadata bounds first) | F-065, F-079, F-080, F-083 |  |
+| U-009 | Does any register/value provenance cross the observed constructor and prefix calls? | medium | open | none stated | F-074, F-075, F-076, F-080, F-091, F-094 |  |
+| U-010 | Are the qualified stores and notify slots exercised by executed runtime dispatch? | high | open | none stated | F-063, F-076, F-088, F-092 |  |
+| U-011 | Does any older-server owner correspond to the current-client World/Pending stores and notify slots? | high | open | none stated | F-065, F-076, F-088 |  |
+| U-012 | What is the length, mnemonic and effect of the instruction at 0x143ca5a81 past the 40-byte World output? | low | open | new source/classes/scope/session with byte qualification for any expanded output | F-062 |  |
+| U-013 | What class, type registration, vtable, primary entry/parameters, receiver and caller own the control-store prefixes and post-call base? | medium | open | none stated | F-092, F-093, F-095 |  |
+| U-014 | Which concrete archive/bit-position/byte-order path feeds the control dispatcher? | high | open | bounded targeted instruction analysis; direct operand/p-code checks before any owner or archive conclusion | F-096, F-099, F-101 |  |
+| U-015 | Do dispatcher callers exist via indirect or other addressing not covered by the absolute-pointer and E8/E9 rel32 scans? | medium | open | none stated | F-101, F-104 |  |
+| U-016 | What are RTTI presence, table identity and owner of the dispatcher pointer window? | medium | open | none stated | F-106 |  |
+| U-017 | What primary entries, complete functions and owner/archive provenance correspond to the selected caller exception ranges? | medium | investigating | direct operand/p-code checks | F-107, F-108, F-109, F-110, F-112 |  |
+| U-018 | What base parameters, class ownership and indirect dispatch apply to the two +0x28 stores of 0x145468180? | medium | open | none stated | F-113 |  |
+| U-019 | Can the live REA provider decode exact windows or start lazy Ghidra within its limits? | low | blocked | none stated | F-085, F-100 |  |
+| U-020 | What are the numerical/text meanings, Name identities and Enum lookups of the qualified C009/C013/C028/C034/D01 values? | high | open | none stated | F-115, F-120, F-123, F-125, F-135, F-146, F-147, F-148, F-150, F-152, F-155, F-158, F-162, F-165, F-170, F-172, F-174, F-182 |  |
+| U-021 | What do empty families contain when populated: 17 C028 array-child descriptors (incl. seven inherited arrays), DA04's two descriptors, CA06 Text/Name? | medium | open | none stated | F-116, F-117, F-156, F-160, F-169, F-176 |  |
+| U-022 | How are the 34 classes / 2,045 records outside the C009/C013/C028/C034 selections structured? | medium | open | none stated | F-119 |  |
+| U-023 | What is C001's complete construction/vtable/archive-dispatch bridge? | medium | open | Reuse retained exports (exact native class getter, construction callback) before new bounded queries | F-121, F-122 |  |
+| U-024 | Do C028 whole-top fields have individual native spans, and which immutable library backed the historical live pin? | medium | open | none stated | F-117, F-134, F-136, F-137, F-140, F-141 |  |
+| U-025 | Do the qualified saves restore/import officially and remain compatible with stock/matched clients and newer builds? | high | open | none stated | F-126, F-144, F-149, F-157, F-183 |  |
+| U-026 | Does the original server's normalization, EOF and error behavior match the strict readers? | medium | open | none stated | F-143, F-155, F-170, F-172 |  |
+| U-027 | What do the opaque C028 binary Struct bodies and Struct-child grandchildren contain? | medium | open | none stated | F-124, F-128 |  |
+| U-028 | How does project save-archive performance compare with the original server? | low | open | none stated | F-142 |  |
+| U-029 | Do original EOF policy, numeric semantics and newer-build equivalence hold for C034 Struct/Float values? | medium | open | none stated | F-191, F-192 |  |
+| U-030 | Is client aggregate-size computation (32-bit end-minus-start) safe for large spans? | low | open | none stated | F-193 |  |
+| U-031 | Do the bounded client static correspondences hold for the dedicated server (runtime class selection, init, registration replacement)? | high | open | none stated | F-193, F-194, F-214 |  |
+| U-032 | What are C009 inherited child values and string/numeric/enum meanings, and how does runtime restoration use them? | medium | open | explicit bounded array API and validation for CA01 child parsing | F-199, F-202, F-203 |  |
+| U-033 | How are C034 internal names constructed, and what are original normalization/failure behaviors? | low | open | none stated | F-197 |  |
+| U-034 | Is the client build publisher-authentic with complete valid symbols, and does it match the save provenance? | medium | open | none stated | F-210 |  |
+| U-035 | Does native persistence survive physical power loss and the required 72-hour runs? | high | open | none stated | F-235, F-239 |  |
+| U-036 | Does the CI definition pass on hosted CI? | low | open | none stated | F-251 |  |
+| U-037 | What is the active checksum/admission policy, and how are compatibility callbacks registered indirectly at runtime? | high | open | none stated | F-254, F-255, F-267 |  |
+| U-038 | Can a stock client complete an authenticated session against the native server? | critical | blocked | advance transport/control/authentication evidence; connected tests need a concrete scope | F-186, F-187, F-240, F-253, F-264 |  |
+| U-039 | What restoration use and gameplay identity does the singleton class's saved integer have? | medium | open | none stated | F-258 |  |
+| U-040 | Which actor/inventory/construction/tame/mission fields exist, and can the reported producing build be independently confirmed? | high | open | none stated | F-262, F-263 |  |
+| U-041 | Can C001's complete concrete construction/vtable/archive-dispatch bridge be established? | high | blocked | standalone exact-window decoder after fixture-v2 review and ten authored modes | F-270 |  |
+| U-042 | What causes the first C001 listing-entry operation/check rejection? | medium | open | separately tested standalone exact-window decoder | F-271 |  |
+| U-043 | What is the actual receiver/indirect dispatch, base origin and same-build type-registration join for the control stores? | high | open | bounded constructor metadata/instruction comparison guided by paired-client symbols | F-274 |  |
+| U-044 | What is the concrete archive/outer framing path for the experimental control-body fields? | medium | open | none stated | F-274 |  |
+| U-045 | Is authored world-data import feasible? | high | open | validate a small import before the heavy-world workload | F-187, F-242 |  |
+| U-046 | Can classes/schemas be recognized automatically, and what are native value meanings incl. seven empty inherited arrays' population coverage? | medium | open | none stated | F-195, F-196, F-211, F-273 |  |
+| U-047 | Can reported original-server crashes be reproduced under controlled workloads? | high | open | controlled workloads (M1) | F-217, F-256, F-268 |  |
+| U-048 | What are deeper C028 child encodings, values and newer-build semantics? | medium | open | none stated | F-212, F-259 |  |
+| U-049 | How do ICARUS performance and stability compare between original and native server? | high | open | matched reference workloads and full release gates (M6) | F-187, F-234, F-237, F-238, F-269 |  |
+| U-050 | What are the other derived overrides, value semantics and the unverified remaining class identifiers? | medium | open | none stated | F-258, F-260 |  |
