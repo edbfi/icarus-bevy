@@ -110,7 +110,7 @@ Continue authorized offline work in this order; connected proof retains its gate
 
 1. Fixture-v2 review and ten authored modes are complete (F-406, F-407); retain their qualified receipts.
 2. Preserve the qualified 305/296-byte decoder result (F-409, F-410); do not retry the completed exact-window case.
-3. Preserve qualified nested196/217-byte result and declared CFG; qualify receiver preservation through opaque calls before C001 archive slots (F-419, F-424, F-426, U-041).
+3. Preserve qualified constructor/nested results and declared CFGs; qualify receiver preservation through opaque calls before C001 archive slots (F-419, F-424, F-426, F-430, U-041).
 4. Close the census using completed C028/C034/C013 audits; leave native value meanings and empty inherited arrays open (F-272, F-273, U-046).
 5. Keep automatic class/schema recognition and value meanings open; no partial importer (U-046, U-040).
 6. Resolve actor/inventory/construction/tame/mission fields and confirm the reported producing build independently (F-262, F-263, U-040).

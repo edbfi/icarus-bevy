@@ -198,6 +198,8 @@ Acceptance conditions for any importer
   complete-function or receiver proof (F-419, F-420, F-424). Declared local CFG
   replay qualifies93edges, ten opaque calls and three return sites; both graphs
   remain open and receiver preservation unproved (F-426).
+  Callback/candidate replay qualifies99local edges, two common-callee calls and
+  two returns, with both graphs likewise open (F-430).
 
 ## Open questions
 
