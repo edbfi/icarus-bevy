@@ -8,6 +8,27 @@ performance targets remain unproven. Last reconciled: 2026-10-13.
 
 ## Continuation — 2026-10-12
 
+### Current-client constructor metadata bounds — 2026-10-13, 03:04 UTC
+
+The separately reviewed metadata case validates all 334,054 exception-directory
+records / 4,008,648 bytes under the unchanged 4 MiB cap. Both named constructor
+symbols equal their containing interval beginnings: UWorld's selected interval
+is eight bytes, UPendingNetGame's is 71 bytes. All 1,525 bindings remain unchanged
+and owned cleanup passes. Ninety-three synthetic checks cover complete directory
+bounds, unselected late corruption, source/identity joins, strict reconstruction,
+session authority and lifecycle rejection. No instruction or unwind body is decoded.
+Evidence: `work/control-client-constructor-ranges-20261013/`, payload SHA-256
+`ff838e96a61252573c95ba09b93f2a4c76d457cefd4a34c6dc727a0752b3b3dd`.
+Independent neutral interpretation verifies receipt/public-symbol/range joins and
+rejects eight metadata mutations; the lead reproduces its frozen output without
+writes. Additive note SHA-256:
+`3222b5fbc7de908d4921291bb010618cbe634500422fe93fbfcf329bbf06ae8f`.
+These are procedure-fragment metadata bounds, not complete function identities.
+Later decoding must honor those measured spans without automatic expansion or
+flow following. The reviewed live REA provider uses default-analysis ephemeral
+imports; its limitation for exact-window decoding is separately recorded in
+`work/control-client-instruction-routing-20261013/` with no new import attempt.
+
 ### C028 complete direct Struct-child headers — 2026-10-13, 02:53 UTC
 
 Twelve new 647-parent native batches qualify all 7,764 direct Struct payloads /

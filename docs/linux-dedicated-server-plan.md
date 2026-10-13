@@ -687,7 +687,9 @@ registration. A separate current-client PDB/PE comparison now identifies named
 UWorld/UPendingNetGame FNetworkNotify tables and proves both fourth slots equal
 their named NotifyControlMessage public addresses. These current static mappings
 do not establish older-server ownership, object offsets or executed dispatch.
-Decode bounded named-constructor local stores before joining receiver/type evidence;
+The complete current exception directory now validates 334,054 records; named
+constructor symbols start measured eight/71-byte intervals, potentially fragments.
+Decode only separately frozen windows within these intervals before joining receiver/type evidence;
 never carry provenance across calls or infer object offsets from image placement.
 
 Completion requires demonstrated compatibility, reliability and performance

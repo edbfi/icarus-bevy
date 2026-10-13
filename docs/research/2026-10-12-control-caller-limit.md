@@ -434,3 +434,54 @@ Additive independent symbol/slot notes SHA-256 respectively:
 Completed source/session/receipts and failures remain immutable. No original-server
 runtime, connected Steam session, stock-client admission or native game listener
 was introduced.
+
+## Current-client constructor metadata bounds
+
+A separate current-client PE64/AMD64 case reuses the reviewed pure directory
+logic as source, with two exact public-symbol seeds and fresh target pins. Every
+12-byte record in the 4,008,648-byte exception directory validates: 334,054 sorted,
+nonoverlapping intervals, complete readonly file-backed executable CODE ranges,
+and aligned readonly mapped unwind-pointer geometry. Unwind bodies/chains and
+code contents remain opaque. The directory is below the unchanged 4 MiB limit;
+no cap is raised. The strict policy can reject other valid producer profiles.
+
+| Public constructor association | Selected metadata interval | Bytes | Directory record index |
+| --- | --- | ---: | ---: |
+| UWorld | `[0x143ca5a40, 0x143ca5a48)` | 8 | 269706 |
+| UPendingNetGame | `[0x143a58650, 0x143a58697)` | 71 | 258411 |
+
+Both symbols equal their containing interval beginnings. These are numeric
+exception metadata associations, potentially procedure fragments. Neither is a
+complete function identity or decoded instruction boundary. The eight-byte extent
+must not be silently expanded to seek a useful store; any separate destination or
+suffix requires new evidence and scope. No receiver origin or older-owner inference
+follows from either named seed.
+
+Ninety-three authored/independent checks cover full cap/one-over, late unselected
+record corruption, mapping/order/overlap, exact symbol identity, strict complete
+result reconstruction and false proof flags, source-hash checks, session authority
+and owned lifecycle failures. The lead verifies the author freeze, allowing only
+the reviewed readiness boolean change, and bound session-creator/imported modules
+before invocation. The creator derives exact authority from scope and validates a
+fresh 900-second session. The same offline 120-second job / 135-second acceptance
+watch / 140-second reservation, CPU/RSS/heap guards and owned cleanup apply.
+
+The accepted run reports all 1,525 bindings unchanged and owned processes gone.
+Its producer and post-cleanup qualifier each validate the complete directory;
+whole-file hashes/header reads are separate. PDB fixity is inherited hash-only;
+there is no new PDB parse or engine/database open. Evidence:
+`work/control-client-constructor-ranges-20261013/`, payload SHA-256
+`ff838e96a61252573c95ba09b93f2a4c76d457cefd4a34c6dc727a0752b3b3dd`.
+Final source review SHA-256:
+`565ffa6592d7f30ad0e6e0de4bae2064a37335a632772205495fb49985aec773`.
+
+Live REA remains the preferred supported analysis interface. Exact installed
+Ghidra launcher/profile/environment source inspection shows a fixed ephemeral
+`-import`, readonly/delete-project route with default automatic analysis and no
+retained-program or `-noanalysis` branch. Optional seeds precede that analysis;
+they cannot confine it to a window. This is an installed-provider route limitation,
+not a claim that Ghidra itself lacks those capabilities. The new source-only routing
+review SHA-256 is `f444533558c85ac6b729f59d45c0fe243737b1dfdee64a73a8ed52a042da7847`.
+No unchanged cold import was repeated. Later bounded decoding requires a separately
+reviewed fallback, original-byte joins and fixed windows inside these intervals,
+with no analyzer, decompiler, function expansion or unchecked call provenance.
