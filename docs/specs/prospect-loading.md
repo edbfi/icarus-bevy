@@ -1001,5 +1001,5 @@ Evidence: `work/c001-constructor-listing-diagnostic-20261013/`, accepted
 decoder with exact physical 305/296-byte inputs and no outside lookahead or
 database dependence. **Needs confirmation:** the corrected authored fixture suite
 still requires its final review and execution; no standalone C001 original-code
-execution is qualified. See the [paused checkpoint](../implementation-status.md#current-paused-checkpoint--2026-10-13-0628-utc)
+execution is qualified. See the [paused checkpoint](../implementation-status.md#gates)
 for the remaining gates. This cleanup does not resume that work.

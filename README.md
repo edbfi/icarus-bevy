@@ -9,7 +9,7 @@ The [canonical plan](docs/linux-dedicated-server-plan.md) defines the goal and g
 See the [current checkpoint](docs/implementation-status.md), the
 [compatibility matrix](docs/ledgers/compatibility.md), and [bug ledger](docs/ledgers/bugs.md).
 
-Research is paused at the [2026-10-13 checkpoint](docs/implementation-status.md#current-paused-checkpoint--2026-10-13-0628-utc).
+Research is paused at the [2026-10-13 checkpoint](docs/implementation-status.md#summary).
 Documentation maintenance does not resume research or extend authorization windows.
 
 ## Run the foundation
