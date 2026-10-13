@@ -359,6 +359,27 @@ All 2,401 bindings remain unchanged. Evidence:
 This fresh child evidence does not repair missing historical individual top spans
 or supply value semantics, original EOF fidelity, populated arrays or restoration.
 
+The subsequent exact child-leaf case reuses sixteen recovered concrete contracts
+and matches actual field names/types/index/extra inside each qualified parent.
+Every one of the 32 both-copy descriptor batches is bounded before new individual
+demands or Name decoding. Complete accepted results and 22 native prior batches
+replay first. All 5,176 Int4, 1,294 UInt32 four-byte, 9,058 Bool0 and 3,882 binary
+Struct spans satisfy their individual demands; the three binary families are
+16/12/12 bytes with contents opaque. Their byte totals are respectively 20,704,
+5,176, zero and 51,760. Two new borrowed native batches agree with independent
+strict structure on 1,294 Name frames / 11,646 bytes, all nine bytes.
+
+Nine authored fixture programs and 27 independent checks pass, including complete
+actual-main execution, same-total unequal-width rejection and late prior failure
+before new native calls. All 2,464 bindings remain unchanged with no source/library
+transition. Evidence: `work/c028-child-leaf-preparation-20261013/summary.json`, SHA-256
+`5a65b500d1e72610bfd21190be2edbc3a0e41dd3bf6e1cefb42990dbdefd7802`.
+Exact same-kind field identities come from the bound actual-header selector;
+the older neutral kind/range output cannot independently recover property names.
+No numeric, Name, vector/quaternion meaning, original EOF/normalization parity,
+newer-loader equivalence or restoration is proved. Binary Struct bodies do not
+become recursively tagged schemas; empty arrays supply no populated-element proof.
+
 The follow-up `work/c028-structs-20261012/` resolves all six direct struct types to
 tagged serialization under the established older-build `MemoryArchive522` path.
 They are six distinct types using four operations tables. One initially missing

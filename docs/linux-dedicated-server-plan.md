@@ -217,7 +217,11 @@ Use this dataset in the next work sequence:
    string frames / 328,878 bytes subsequently agree in ten measured strict native
    batches, with all 2,327 bindings unchanged. Twelve fresh native batches then
    qualify all 7,764 direct Struct payloads / 1,174,952 bytes and 20,704 headers;
-   all 2,401 bindings remain unchanged. Selected leaf structures/widths are next.
+   all 2,401 bindings remain unchanged. Sixteen selected child descriptors then
+   qualify 1,294 strict Name frames, 5,176 Int4, 1,294 UInt32 four-byte, 9,058 Bool0
+   and 3,882 opaque binary Struct widths at 16/12/12 bytes. All 2,464 bindings remain
+   unchanged. Audit this selected coverage and use the retained census to choose
+   the next uncovered save boundary; meanings and empty-array population remain open.
    Historical C028 native top evidence is aggregate-only; no individual
    native header spans are claimed. All 2,286 bindings remain exact with the
    separately reviewed borrowed-string API transitions.
