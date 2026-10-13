@@ -234,8 +234,10 @@ Use this dataset in the next work sequence:
    individual Int widths. Reuse the already resolved four inner Array registrations
    from frozen C028 descendant evidence for the supplied child-header check;
    all 12,824 arrays subsequently qualify 12,868 elements/27,111 immediate fields.
-   The earlier provisional gap missed this retained static case. Continue populated
-   Int/Str leaf widths/structure; DA04 has no populated coverage. Preserve unqualified
+   The earlier provisional gap missed this retained static case. Populated leaves
+   subsequently qualify 25,680 individual Int4 spans and 1,431 strict Str frames;
+   DA04 has no populated coverage. Continue unresolved save relationships and
+   value contracts. Preserve unqualified
    meanings/restoration. See
    the current checkpoint in implementation status.
    Retain the lack of populated
