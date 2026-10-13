@@ -8,6 +8,34 @@ performance targets remain unproven. Last reconciled: 2026-10-13.
 
 ## Continuation — 2026-10-12
 
+### D01 nested array headers — 2026-10-13, 00:17 UTC
+
+The fresh reviewed case replays every prior result, reuses the complete retained
+four-schema proof and exactly selects all eight copy/family batches before reading
+new child counts. All 12,824 arrays / 2,405,613 bytes match native and independent
+header framing: 12,868 elements, 27,111 optional fields and zero missing occurrences.
+Count/shared prefixes account for 1,211,868 bytes, element headers/terminators for
+1,063,266 bytes and opaque leaves for 130,479 bytes, exactly partitioning input.
+
+DA01 has 5,737/5,700 elements, DA02 701/702, DA03 14/14 and DA04 zero in both
+copies. Observed maximum counts are 11/6/2/0. Each family has 1,604 current and
+1,602 backup arrays. DA04's empty framing passes but its leaf values have no
+supplied population coverage. These are measured samples, not format limits.
+
+The native helper links the unchanged release library and tightens input to the
+measured 1,050-byte ceiling while retaining the default 64 KiB API and existing
+4,096-element/256-field caps. Six JS fixture programs, five independent regression
+groups and seven native fixture tests pass. Entry gates now check every imported
+project module/helper binding before use. The synchronous helper/outer timeout
+controls apply; this case does not claim the protocol harness's separate process
+identity cleanup proof. All 1,308 bindings remain exact. Evidence:
+`work/c009-d01-array-child-headers-20261013/`; summary SHA-256
+`1d4961524431734e7199a0e16c0e1e983448eb594cb1d3b01f789dd729641623`.
+
+Immediate Int/Str leaves remain opaque pending individual width/string framing
+comparison. No numerical/text meaning, automatic schema recognition, restoration
+or stock-client result follows from this header qualification.
+
 ### D01 leaves — 2026-10-13, 00:01 UTC
 
 The reviewed leaf case reproduces all prior ND01 results and exactly rejoins four
@@ -30,7 +58,8 @@ were already resolved in frozen `work/c028-d01-array-children-20261012/` and
 documented in the prospect spec. That evidence was missed during this continuation
 and is now being reused, with its reviewed artifact manifest. No new target analysis
 is needed to rediscover those chains. Historical bound notes remain unchanged;
-supplied child counts/headers and subsequent values still need qualification.
+supplied child counts/headers subsequently qualify above; leaf values still need
+qualification.
 
 ### Project-local REA tooling
 
@@ -915,8 +944,10 @@ supported, and no ICARUS performance or stability improvement has been measured.
 
 ## Next work and maintenance
 
-1. Continue unresolved common-child leaf/deeper-value contracts from the qualified
-   immediate headers. Preserve exact descriptor bindings, byte/count/field bounds
+1. Continue the qualified four D01 nested array families' populated Int/Str leaf
+   structure/width comparisons. Reuse the retained C028 exact registration/schema
+   evidence; DA04's supplied population is empty. Preserve exact
+   descriptor bindings, byte/count/field bounds
    and old/new source/library receipts. Automatic class/schema recognition and
    value meanings remain open.
    C009 own-child structure and selected C034 populations already pass the
@@ -926,8 +957,10 @@ supported, and no ICARUS performance or stability improvement has been measured.
    actor/inventory/construction/tame/mission fields and independent confirmation of
    the reported producing build remain unresolved. Preserve unknown fields and
    private inputs; no partial importer.
-2. Resolve the exact `0x145468198` pointer candidate's bounded context/owner before
-   inferring the dispatcher caller. Bind the concrete archive/outer framing path before promoting the experimental
+2. Confirm instruction context for the two observed-slot LEA candidates within
+   their qualified exception metadata ranges. Establish actual owner/caller
+   evidence before inferring the dispatcher caller. Bind the concrete archive/outer
+   framing path before promoting the experimental
    control-body fields. Advance transport/control/authentication evidence and independently authored
    world-data feasibility; validate a small import before the heavy-world workload.
    The migrated original-server launcher requires explicit current sessions for
