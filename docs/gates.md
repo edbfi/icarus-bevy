@@ -26,7 +26,8 @@ Last reconciled: 2026-10-14
   bounds qualify (F-420); changed decoder geometry needs fresh authored
   qualification before its separately reviewed exact-byte case. The current
   two-window source/API/ten-mode fixture case is qualified (F-422); its
-  original-byte case is separately qualified (F-424). New control/receiver
+  original-byte case is separately qualified (F-424). Declared local CFG qualifies
+  while both graphs remain open and calls/returns opaque (F-426). Receiver
   analysis and expanded paths retain fresh source/scope/session gates.
 - Retained exports already identify its exact native class getter and
   construction callback; reuse these before new bounded queries. Read the

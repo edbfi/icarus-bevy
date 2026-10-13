@@ -56,12 +56,12 @@ No official server bug is marked reproduced or fixed (F-217).
 - Keeps two generations and recovers; corrupt/missing manifests, noncanonical checksum fields and unsupported schemas fail closed (F-228, F-229, F-417, F-418).
 - Rejects stale snapshots and stops simulation on terminal save-worker disconnect (F-232).
 - Performs a final save and bounded shutdown on SIGINT/SIGTERM with JSON diagnostics (F-230, F-233).
-- 120.157 s synthetic run: 100,000 entities, 60 saves, zero deadline misses and clamped frames (F-234).
+- Current 120.138 s synthetic run: 100,000 entities, 60 saves, exact recovered state and zero deadline misses or clamped frames (F-427); earlier result retained (F-234).
 - Survives 24 SIGKILL/SIGTERM restart cycles at 10,000 entities with acknowledged ticks preserved (F-235, F-236).
 - Historical 7,200 s soak at 100,000 entities passed at an older revision (F-237).
 - Keeps acknowledged state through real ENOSPC/EACCES faults on tmpfs and reopens cleanly (F-239).
 - Inspects supplied prospect envelopes (UTF-8 and BOM UTF-16LE) within measured bounds, reporting world_imported false (F-241, F-242, F-243).
-- Requires envelope objects and keeps malformed JSON values/keys out of inspection and native persistence diagnostics (F-411, F-412, F-423).
+- Requires envelope objects and keeps malformed JSON values/keys out of inspection and native persistence diagnostics, with nine release cases preserving state (F-411, F-412, F-423, F-425).
 - Decodes all 601 physical C001 bytes without a database or lookahead; post-call stores agree locally and the 106-byte callee decodes, with receiver continuity still open (F-409, F-410, F-416).
 - Frames supplied save root properties and recorder boundaries to exact EOF, matching independent scanners (F-244, F-245).
 - Opaque header reader covers NameProperty, UInt32Property, Float and Text headers with authored fixtures (F-246, F-247, F-206, F-207).
@@ -108,7 +108,7 @@ Continue authorized offline work in this order; connected proof retains its gate
 
 1. Fixture-v2 review and ten authored modes are complete (F-406, F-407); retain their qualified receipts.
 2. Preserve the qualified 305/296-byte decoder result (F-409, F-410); do not retry the completed exact-window case.
-3. Preserve qualified original nested196/217-byte result; qualify local control/receiver flow through opaque calls before C001 archive slots (F-419, F-424, U-041).
+3. Preserve qualified nested196/217-byte result and declared CFG; qualify receiver preservation through opaque calls before C001 archive slots (F-419, F-424, F-426, U-041).
 4. Close the census using completed C028/C034/C013 audits; leave native value meanings and empty inherited arrays open (F-272, F-273, U-046).
 5. Keep automatic class/schema recognition and value meanings open; no partial importer (U-046, U-040).
 6. Resolve actor/inventory/construction/tame/mission fields and confirm the reported producing build independently (F-262, F-263, U-040).

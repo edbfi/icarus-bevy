@@ -195,7 +195,9 @@ Acceptance conditions for any importer
   bytes as 24 instructions without function or receiver proof (F-416). No C001
   payload is parsed. Nested direct calls at `0x142174bc0`/`0x143453c00` have
   measured 196/217-byte intervals, decoded as45/48 instructions without
-  complete-function or receiver proof (F-419, F-420, F-424).
+  complete-function or receiver proof (F-419, F-420, F-424). Declared local CFG
+  replay qualifies93edges, ten opaque calls and three return sites; both graphs
+  remain open and receiver preservation unproved (F-426).
 
 ## Open questions
 
