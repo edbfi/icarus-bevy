@@ -5,7 +5,7 @@ Kind: observed, inferred or unknown. Evidence: `M-NNN` manifest rows, a commit:p
 Rows F-001 to F-275 were extracted from fabd2f9:docs/implementation-status.md on 2026-10-13;
 the topic digests under docs/research/ group them.
 
-Last reconciled: 2026-10-13
+Last reconciled: 2026-10-14
 
 | ID | Claim | Kind | Evidence type | Evidence | Source revision | Confidence | Boundary | Limitations | Unknowns | Status |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
@@ -430,3 +430,6 @@ Last reconciled: 2026-10-13
 | F-419 | Typed C001 callee CALLs target 0x142174bc0/0x143453c00; numeric COPY and local stack shape qualify in successful fresh replay | observed | static-pcode | M-193..M-196 | unstated | high | retained106-byte result | prior exit capture missing; no cross-call preservation or receiver proof | U-041 | active |
 | F-420 | Both nested C001 calls start measured 196/217-byte exception intervals; full323249-record validation, independent mappings and41pins qualify | observed | static-metadata | M-197..M-199 | unstated | high | older server |413B total; no code/unwind decode, complete function or receiver proof | U-041 | active |
 | F-421 | User reports local client/save pair compatible; authenticated client/reference access comes later | reported | user-report | M-200 | unstated | medium | local client/save pair | no runtime/build-pair proof; producing save build unconfirmed; offline work continues | U-038, U-040, U-052 | active |
+| F-422 | Reviewed nested C001 two-window decoder compiles; ten fresh authored modes and independent413-byte recipes/replay pass;326pins/classes unchanged and cleanup gone | observed | tool-receipt | M-201, M-202 | unstated | high | authored196/217-byte buffers | no original nested code or receiver proof yet | U-041 | active |
+| F-423 | Eight native JSON cases disclosed supplied strings/keys through Serde causes; shared stage/category/location diagnostics now drop causes at all3decode boundaries | observed | regression-test | M-203, M-204 | unstated | high | authored API/CLI | preserves unsupported schema, recovery and raw I/O causes; no private inputs | none | active |
+| F-424 | Original nested C001196/217-byte case decodes45/48instructions, all413physical bytes; strict replay,353pins/classes and owned cleanup qualify | observed | static-instruction | M-205, M-206 | unstated | high | older server | zero lookahead; no complete function, receiver/ABI or archive proof | U-041 | active |

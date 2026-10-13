@@ -2,7 +2,7 @@
 
 ## Status
 
-Experimental; scope dedicated-server build 25621760 (supplied saves are user-reported from 25793767). Last reconciled: 2026-10-13.
+Experimental; scope dedicated-server build 25621760 (supplied saves are user-reported from 25793767). Last reconciled: 2026-10-14.
 Full text: d5b0ae6:docs/specs/save-format/prospect-loading.md
 
 ## Scope
@@ -194,7 +194,8 @@ Acceptance conditions for any importer
   archive slots remain unqualified; the common callee decodes all 106 physical
   bytes as 24 instructions without function or receiver proof (F-416). No C001
   payload is parsed. Nested direct calls at `0x142174bc0`/`0x143453c00` have
-  measured 196/217-byte intervals; their code remains undecoded (F-419, F-420).
+  measured 196/217-byte intervals, decoded as45/48 instructions without
+  complete-function or receiver proof (F-419, F-420, F-424).
 
 ## Open questions
 
