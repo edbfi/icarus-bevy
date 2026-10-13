@@ -1,5 +1,11 @@
 # Bounded control-caller investigation
 
+Historical investigation — 2026-10-12–13, through the 06:12 UTC result below.
+Sections preserve each attempt's evidence, limitations and proposed next step;
+later sections may resolve earlier local gaps. See the
+[current checkpoint](../implementation-status.md) for pending work and pause status.
+Completed sessions are expired; this report does not resume research.
+
 The concrete archive, bit-position and byte-order path into older dispatcher
 `0x1439ee7f0` remains unresolved. This investigation recovered no caller. Later
 current-client symbols establish named notify-table slots, separately from the
@@ -225,8 +231,9 @@ neither has a generated reference record; the helper reports zero confirmed slot
 references. Independently joining those decoded boundaries with the frozen PE
 scan's exact RIP-relative target calculation supports static materialization of
 `0x145468180` at both sites. This does not prove reachability, an object store,
-table base, constructor, owner or caller. The second metadata start has an existing database function but no
-function containing the probe, so no decompilation input was selected for it.
+table base, constructor, owner or caller. The second metadata start has an existing
+database function but no function containing the probe, so no decompilation input
+was selected for it.
 
 The first site's decompiler input was explicitly forced from metadata; the known
 dispatcher used its retained definition. Two decompilations completed. This does
@@ -234,7 +241,7 @@ not establish complete or correctly identified functions. The first output warns
 about unreachable blocks beyond the approved metadata end: configuring a bounded
 function body does not prove that native decompiler flow stayed within that body.
 That output is retained as a limited local lead, not bounded-flow or owner proof.
-Direct operand/pcode checks at the two sites are the next discriminator; the
+Direct operand/p-code checks at the two sites are the next discriminator; the
 inferred object-pointer store still needs instruction confirmation. The additive
 independent post-run review retains these distinctions without changing bound
 artifacts: `execution-v2/notes/independent-postrun-analysis.md`, SHA-256
@@ -557,7 +564,7 @@ The latter leaves 57 bytes after its call. Fresh unknown register state is requi
 for a subsequent post-call decode; neither the earlier COPY nor an unproved ABI
 assumption supplies receiver provenance. World's 1,138-byte extent is numerically
 equal to one older unidentified interval, but that comparison alone establishes
-no cross-build owner or behavioural equivalence. New fixed decoded windows need
+no cross-build owner or behavioral equivalence. New fixed decoded windows need
 new constants, real authored-engine fixtures, input joins and lifecycle acceptance.
 No automatic body expansion or branch/callee traversal follows from this result.
 
@@ -678,7 +685,7 @@ The accepted 06:12 UTC run exports eight instructions / 25 p-code operations and
 and span hash replays exactly before new analysis. All 3,179 bindings remain
 unchanged, instruction hashes match the original and owned cleanup passes.
 Thirty-five independent core and 22 wrapper checks include a late prefix mismatch
-that prevents any analyzer call. Producer and qualifier each read the same46 bytes;
+that prevents any analyzer call. Producer and qualifier each read the same 46 bytes;
 Java reads their derived copy. Whole-file fixity is separate.
 
 The store at `0x143ca5a79` is four instruction bytes, with raw p-code forming the

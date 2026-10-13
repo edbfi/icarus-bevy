@@ -5,9 +5,12 @@ An independent native Linux dedicated-server project in Rust and Bevy.
 Networking, authentication, gameplay, original-world compatibility and official-save
 import remain unimplemented and unvalidated.
 
-The [full plan](docs/linux-dedicated-server-plan.md) defines the goal and gates.
-See [implementation status](docs/implementation-status.md), the
+The [canonical plan](docs/linux-dedicated-server-plan.md) defines the goal and gates.
+See the [current checkpoint](docs/implementation-status.md), the
 [compatibility matrix](docs/compatibility-matrix.md), and [bug ledger](docs/bug-ledger.md).
+
+Research is paused at the [2026-10-13 checkpoint](docs/implementation-status.md#current-paused-checkpoint--2026-10-13-0628-utc).
+Documentation maintenance does not resume research or extend authorization windows.
 
 ## Run the foundation
 
@@ -85,7 +88,8 @@ prek run --all-files --hook-stage manual
 ```
 
 Rust checks use `--locked`; commit the lockfile. Use feature branches and
-Conventional Commits. CI runs headless tests with authored fixtures, without
+signed-off Conventional Commits (`git commit -s`). Push completed, checked
+increments with hooks enabled. CI runs headless tests with authored fixtures, without
 original server binaries. Read `.agents/rules/project.md` before changes.
 
 Authored Python helpers target Python 3.15.0 and require `uv` for type checking.
@@ -106,8 +110,9 @@ callers or instruction boundaries. Its authored and independent PE fixtures run
 through prek/CI using `node --test tools/tests/pe_candidates*.test.cjs`.
 
 The pure `tools/pdb_public_symbols.cjs` reader validates a bounded MSF7/DBI/PUB32
-profile against explicit PE debug identity and section geometry. It uses a caller
-supplied bounded reader, opens no files, and exports only selected public symbols.
+profile against explicit PE debug identity and section geometry. It uses a
+caller-supplied bounded reader, opens no files, and exports only selected public
+symbols.
 Its authored and independent fixtures run through prek/CI. Target use requires a
 separate authorized case with streaming input hashes and resource/deadline guards;
 symbol names alone establish neither instruction boundaries nor runtime behavior.

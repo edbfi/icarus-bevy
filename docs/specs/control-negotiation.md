@@ -23,8 +23,9 @@ the complete client-to-server or server-to-client vocabulary from this one table
 
 Source: E-011/E-013 in `icarus-server-baseline`. The descriptions are inferred from
 control flow and nearby diagnostic strings; they are not recovered symbols.
+**Inferred** labels below describe those interpretations, not wire-validated meanings.
 
-| Inner ID | Branch entry | Static interpretation |
+| Inner ID | Branch entry | Inferred meaning |
 | --- | --- | --- |
 | 0 | `0x1439eebec` | Initial version/token negotiation |
 | 4 | `0x1439ef03b` | Client netspeed handling |
@@ -83,7 +84,8 @@ E-021 identifies the reader used by the initial branch:
 - It explicitly rejects the minimum signed 32-bit value before negation.
 - A positive archive maximum, when configured, limits the absolute element count.
 - The wide branch includes conditional byte swapping and writes a trailing zero
-  into the allocated result. Other normalization and conversion remain unverified.
+  into the allocated result. At that stage, other normalization and conversion
+  remained unverified.
 
 The follow-up recovered the narrow character converter, the full chained reader
 and its termination/`U+FFFF` normalization. An independent

@@ -3,9 +3,16 @@
 Status: **observed call paths, reflected inner types, tagged-property dispatch and
 by-name missing/truncated-file rejection; complete binary encoding, component
 payloads and other runtime behavior unresolved**. Applies
-only to dedicated server tool build 25621760. Entry-path evidence IDs belong to
+to dedicated-server build 25621760 unless a later client comparison is explicitly
+identified. Entry-path evidence IDs belong to
 `work/icarus-server-baseline/` and are described in the
 [targeted static report](../research/2026-10-04-targeted-static-report.md).
+
+This specification retains the sequence and limits of historical investigations.
+Validation statements describe the cited runs, not fresh checks of the current
+revision. For current priorities and the research pause, use the
+[implementation checkpoint](../implementation-status.md) and
+[canonical plan](../linux-dedicated-server-plan.md).
 
 ## Keep the two entry paths distinct
 
@@ -171,7 +178,7 @@ post-load effects and newer-build fidelity remain unresolved. Preserve legacy fi
 and version-zero migration requirements; an importer cannot safely flatten them
 into the current native snapshot schema.
 
-Case Evidence E-002 records registration/vtables, E-003 the property metadata,
+Case evidence E-002 records registration/vtables, E-003 the property metadata,
 E-004 version callbacks, E-005 the caller chains, E-006 schema construction,
 E-007 serializer branches, E-008 archive mode initialization, E-009 tag/name
 primitives, E-010 payload/array boundaries, E-011 nested recorder dispatch and
@@ -231,8 +238,8 @@ reconstruction semantics.
 The eighth batch (static E-020/E-021) identifies a concrete role for the selected
 struct: callback `0x1418a1850` copies four bytes from a validated owner's `+0x250`
 into recorder `+0xd8`. Related callback `0x1418ad0c0` uses owner `+0x248` as an array
-pointer and `+0x250` as its count, iterating eight-byte elements. The supported
-interpretation is a captured owner-collection count; the collection's gameplay
+pointer and `+0x250` as its count, iterating eight-byte elements.
+**Inferred:** the field captures an owner-collection count; the collection's gameplay
 identity and the saved scalar values remain unknown.
 
 The ninth batch and aligned callsite follow-up (static E-022/E-023) place capture
@@ -334,8 +341,9 @@ All 2,327 bindings remain unchanged; summary SHA-256
 `64c60e41fa3b67527609cf4ff8d2fde3b85a4ae654ff00c51040cfa41aa7db04`.
 This supplies new native string structure only. The earlier aggregate-only header
 limitation persists; text, enum lookup, numerical meanings and restoration remain
-unqualified. Full-population direct child headers are the next bounded comparison;
-the older four-extrema child evidence is not promoted by the string case.
+unqualified. At that stage, full-population direct child headers were the next
+bounded comparison; the older four-extrema child evidence is not promoted by the
+string case.
 
 The subsequent full-population direct Struct comparison supplies new exact native
 child spans for all six families in both copies: 7,764 payloads / 1,174,952 bytes
@@ -803,8 +811,8 @@ count, header and value unread; all 777 bound files remain unchanged.
 CA01 reaches 66,257 bytes, exceeding the default 64 KiB array-reader limit. The
 separately tested explicit-limit API now supports this bound with a hard 128 KiB
 ceiling and unchanged 4,096-element/256-field caps. Fresh helper source/library
-bindings are still required before child comparison. Other array maxima
-are at most 562 bytes; Struct maxima are at most 343 bytes. Evidence:
+bindings were still required before the subsequent child comparison. Other array
+maxima are at most 562 bytes; Struct maxima are at most 343 bytes. Evidence:
 `work/c009-common-child-selection-20261012/`.
 
 The subsequent fresh comparison now qualifies all 6,318 common-child payloads,
@@ -886,9 +894,9 @@ independent review pass, with 1,172 unchanged bindings. Evidence:
 `work/c009-d01-leaf-values-20261013/`, summary SHA-256
 `6f53c189ea8c33edc7c736b08f5685da14c7bfee93968c7b98ca9878b10e0ee1`.
 Original normalization/EOF/error behavior, text/numerical meaning and restoration
-remain unqualified. The remaining 12,824 arrays / 2,405,613 bytes are still opaque;
-reuse frozen `work/c028-d01-array-children-20261012/` for their exact static joins
-before supplied child-header comparison, without rerunning completed research.
+remain unqualified. At that stage, the remaining 12,824 arrays / 2,405,613 bytes
+were still opaque. The subsequent child-header comparison below reuses frozen
+`work/c028-d01-array-children-20261012/` for their exact static joins.
 
 The common-header case corrects the earlier own-child dimension provenance: the common
 property factory reads descriptor offset `+0x20`, including for Bool. Its
@@ -988,5 +996,9 @@ cleanup verified. It does not distinguish a null/mismatched listing entry from
 an API exception. Diagnostic observation is explicitly separate from listing
 qualification; no complete function or construction bridge is recovered.
 Evidence: `work/c001-constructor-listing-diagnostic-20261013/`, accepted
-2026-10-13 05:12 UTC. A standalone fixed-window decoder is prepared next, with
-exact physical 305/296-byte inputs and no outside lookahead or database dependence.
+2026-10-13 05:12 UTC. Subsequent preparation targets a standalone fixed-window
+decoder with exact physical 305/296-byte inputs and no outside lookahead or
+database dependence. **Needs confirmation:** the corrected authored fixture suite
+still requires its final review and execution; no standalone C001 original-code
+execution is qualified. See the [paused checkpoint](../implementation-status.md#current-paused-checkpoint--2026-10-13-0628-utc)
+for the remaining gates. This cleanup does not resume that work.

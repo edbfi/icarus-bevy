@@ -6,13 +6,18 @@ protocol interoperability, authentication, gameplay, world-data parity and
 official-save import have not been demonstrated. Release reliability and
 performance targets remain unproven. Last reconciled: 2026-10-13.
 
+The current paused checkpoint governs pending work. Later sections retain dated
+observations, failures and validation at each recorded revision; their next-step
+instructions and passing checks are historical unless confirmed in that checkpoint.
+Documentation cleanup does not rerun or promote those research results.
+
 ## Continuation — 2026-10-12
 
 ### Current paused checkpoint — 2026-10-13, 06:28 UTC
 
-Paused at the user's request. Workers are interrupted; process inspection finds
-no research JVM, Cargo build or native server running. Completed work through
-`cfa365d` is pushed. This pause record will be committed and pushed separately.
+Paused at the user's request. At this checkpoint, workers were interrupted and
+process inspection found no research JVM, Cargo build or native server running.
+Completed work through `cfa365d` was pushed; commit `771707c` records the pause.
 The foundation remains nonplayable, with no complete protocol/authentication,
 replication, world/gameplay, official-save import or matched performance proof.
 
@@ -1242,11 +1247,14 @@ The 30 Hz development rate is provisional, not a discovered ICARUS property.
 Native snapshot version 1 stores authored foundation records; it is not the ICARUS
 save format. No official server bugs are marked reproduced or fixed.
 
-See the [full plan](linux-dedicated-server-plan.md) for the active work order and
+See the [canonical plan](linux-dedicated-server-plan.md) for the work order and
 autonomous execution policy. The October 4 authorization and checkpoint documents
 record historical research batches; the overnight runtime window has expired.
 
 ## Implemented and checked
+
+Validation below belongs to the recorded increments and evidence cases. Test
+counts and library hashes are historical receipts, not a fresh aggregate result.
 
 - Pinned Rust 1.99.0, Bevy 0.20.0, headless features, committed Cargo lockfile.
 - Local Bevy skill updated from `edbfi/skills` commit `69cc23f` using `bunx skills`,
@@ -1523,12 +1531,15 @@ supported, and no ICARUS performance or stability improvement has been measured.
 
 1. Establish C001's complete concrete construction/vtable/archive-dispatch bridge
    using retained exact native getter/callback/constructor seeds and fresh bounded
-   metadata. Exact 305/296-byte intervals now bound those seeds; recover the complete
-   retained instruction listing and account for reachable paths before claiming the
-   bridge. The first readonly listing query failed without a diagnostic stage;
-   preserve it. The fresh diagnostic variant locates the first listing-entry
+   metadata. Exact 305/296-byte intervals now bound those seeds; recover bounded
+   instruction evidence within those exact physical windows. Complete construction
+   and reachable-path proof remain separate gates. The first readonly listing query
+   failed without a diagnostic stage; preserve it. The fresh diagnostic variant locates the first listing-entry
    operation/check rejection without establishing its cause. A separately tested
-   standalone exact-window decoder is the next route.
+   standalone exact-window decoder is the next route. Complete the independent
+   fixture-v2 review and ten authored modes described in the
+   [paused checkpoint](#current-paused-checkpoint--2026-10-13-0628-utc) before
+   preparing any original-code case. Research remains paused.
    The retained incoming query supplies one non-call data reference only.
    Completed C028/C034 finite audits and historical C013 coverage determine the
    corrected census; do not repeat their completed populated value structures.

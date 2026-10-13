@@ -4,6 +4,10 @@ Historical record: the reverse-skill package was removed on 2026-10-12. Its
 commands and package requirements below are preserved as approval history, not
 current instructions. AGENTS.md links identify the former upstream revision.
 
+For current work, follow the [canonical plan](linux-dedicated-server-plan.md)
+and [implementation status](implementation-status.md). This record does not
+resume research or extend an execution window.
+
 Status: approved by the user on 2026-10-04 for the exact offline batch below and
 read-only inventory/hash analysis of `icarus-orig/`. Other target activities remain
 outside this approval.
@@ -12,7 +16,7 @@ The vendored [AGENTS.md](https://github.com/zhaoxuya520/reverse-skill/blob/cab63
 approval of repository scripts and their side effects. Its scope contract also
 requires target authorization before analysis.
 
-## Proposed first batch
+## Historical proposed first batch
 
 Run these commands from the project root only after approval:
 

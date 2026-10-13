@@ -4,6 +4,10 @@ Historical record: the reverse-skill package was removed on 2026-10-12. Its
 commands and package requirements below are preserved as approval history, not
 current instructions. AGENTS.md links identify the former upstream revision.
 
+For current work, follow the [canonical plan](linux-dedicated-server-plan.md)
+and [implementation status](implementation-status.md). This record does not
+resume research or extend an execution window.
+
 Status: approved by the user on 2026-10-04. This extends the inventory scope; it
 does not authorize running the original server or copying assets into the replacement.
 
@@ -11,7 +15,7 @@ The inventory identified `Icarus/Binaries/Win64/IcarusServer-Win64-Shipping.exe`
 (108,067,840 bytes, SHA-256
 `67cfc915d9d085b758057e2960d4a2018fb121123af1329c25ef7aa58b960104`).
 
-## Commands proposed for approval
+## Historical commands proposed for approval
 
 Run from the repository root after recording static binary inspection, strings
 inspection, and build-manifest reading in the existing offline case scope:

@@ -7,6 +7,10 @@ the exact build/content, reference scenario, evidence IDs, specification, test a
 intentional differences. Status progression: unknown → observed → specified →
 implemented → validated. Expand rows for every supported content/game-mode variant.
 
+For current priorities and the research pause, see the
+[implementation checkpoint](implementation-status.md). The
+[canonical plan](linux-dedicated-server-plan.md) defines the completion gates.
+
 | Surface | Status | Required proof |
 | --- | --- | --- |
 | Discovery and queries | Unknown | Stock-client browser/query behavior |
@@ -73,7 +77,8 @@ no client connected and no playable prospect was loaded.
 | Prospect envelope | Observed on supplied saves; experimental read-only inspector | [Envelope notes](specs/prospect-envelope.md); twelve UTF-16LE envelopes pass independent integrity checks, with measured bounds; user reports build 25793767; matched build pairing, binary schema and complete import remain unvalidated |
 
 Server observations apply to build 25621760. Separate build-25793767 client
-static comparison supports selected generic tag/array branches only; it does not
+static comparisons support the selected framing, descriptor and constructor/table
+relationships described in the linked evidence; they do not
 establish a matched dedicated-server baseline. The supplied save's producing
 build remains user-reported as 25793767, without a matched load. These observations
 do not promote the complete transport, authentication or official-save-import

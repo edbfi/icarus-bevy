@@ -4,11 +4,15 @@ Historical record: the reverse-skill package was removed on 2026-10-12. Its
 commands and package requirements below are preserved as approval history, not
 current instructions. AGENTS.md links identify the former upstream revision.
 
+For current work, follow the [canonical plan](linux-dedicated-server-plan.md)
+and [implementation status](implementation-status.md). This record does not
+resume research or extend an execution window.
+
 Status: approved by the user on 2026-10-04, including both Java helper scripts.
 Static analysis identified diagnostic string addresses for failed prospect loading
 and incompatible network versions. These are leads, not bugs.
 
-## Proposed command
+## Historical proposed command
 
 After adding offline decompilation to the existing scope and rerunning its guard,
 execute from the project root:

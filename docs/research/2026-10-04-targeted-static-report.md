@@ -1,5 +1,13 @@
 # Targeted connection and prospect-load analysis
 
+Historical report — 2026-10-04. Findings and proposed next steps retain their
+original scope. Later reports cover the
+[default checksum](../specs/network-checksum.md) and
+[failure-output target](2026-10-04-save-failure-output.md); they do not rewrite
+the earlier unknowns below. See the [current checkpoint](../implementation-status.md)
+for pending work and pause status. Reproduction commands are historical, not
+authorization for a new batch; current tooling follows the project REA rules.
+
 The targeted pass located three diagnostic references that the earlier bounded
 Ghidra pass did not recover. Inspection identifies a control-message dispatcher,
 a version comparison with an optional callback, and two prospect-loading paths.
@@ -93,8 +101,8 @@ available. Otherwise it dispatches the two values through the callback. The call
 failure branch references an incompatible-version diagnostic and connection-close
 accounting; success proceeds to token handling. The follow-up partially identifies
 local value generation (F-007); whether ICARUS registers a custom callback remains
-unresolved. Hard-coding equality
-as the entire ICARUS compatibility policy would therefore be premature.
+unresolved. Hard-coding equality as the entire ICARUS compatibility policy would
+therefore be premature.
 
 **F-003 — Control negotiation has several distinct branches (high confidence;
 E-011/E-013/E-021).** The server-side dispatcher checks message validity before

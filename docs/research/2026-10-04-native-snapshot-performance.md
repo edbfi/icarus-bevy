@@ -1,5 +1,9 @@
 # Native snapshot decoding measurement
 
+Historical measurement — 2026-10-04. Results and test claims apply to the source
+and workload recorded below. See the [current checkpoint](../implementation-status.md)
+for later implementation changes and validation.
+
 The snapshot reader previously decoded a full `serde_json::Value` tree and then
 converted it into typed state. Every periodic save also verifies the preceding
 generation, so this allocation affected both save and load time. The reader now

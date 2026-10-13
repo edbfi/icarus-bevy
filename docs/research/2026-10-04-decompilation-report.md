@@ -1,5 +1,10 @@
 # Bounded decompilation result
 
+Historical report — 2026-10-04. The later
+[targeted analysis](2026-10-04-targeted-static-report.md) recovered selected
+references without changing this unsuccessful result. See the
+[current checkpoint](../implementation-status.md) for pending work and pause status.
+
 The approved Ghidra pass did not recover any of the selected functions. Its
 automatic analysis reached the 180-second limit; most analysis time was spent
 disassembling entry points. The database was saved, but a successful process exit

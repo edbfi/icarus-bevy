@@ -1,5 +1,9 @@
 # Original prospect-startup rejection observations
 
+Historical report — 2026-10-04. The runtime windows below have ended. See the
+[current checkpoint](../implementation-status.md) for later findings, pending work
+and pause status.
+
 The original build **25621760** rejected a missing prospect file once and an
 independently authored truncated JSON file twice. All three runs remained running
 until the harness stopped them after about 150 seconds. The repeated malformed
@@ -24,7 +28,7 @@ The malformed input contains only an empty `ProspectInfo` object and an unfinish
 state. Each run preserves the pristine input separately from the writable copy.
 Source bytes, hashes, exact command vectors, Docker inspection, pre/post-stop logs,
 resource samples and cleanup results are in `work/icarus-overnight/`. Evidence
-E-077–E-080 and E-089–E-092 records these runs.
+E-077–E-080 and E-089–E-092 record these runs.
 
 All used the approved pinned image, read-only originals, disabled networking,
 unprivileged user, dropped capabilities and bounded resources. Exit code 130
