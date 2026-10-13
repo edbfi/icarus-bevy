@@ -5,6 +5,16 @@ pub mod persistence;
 pub mod prospect;
 pub mod simulation;
 
+/// Keep input strings and unknown keys out of JSON diagnostics and error causes.
+fn json_parse_error(context: &'static str, error: serde_json::Error) -> anyhow::Error {
+    anyhow::anyhow!(
+        "{context}: {:?} at line {}, column {}",
+        error.classify(),
+        error.line(),
+        error.column()
+    )
+}
+
 /// Stable lowercase, zero-padded encoding for persisted and legacy checksums.
 fn hex_lower(bytes: &[u8]) -> String {
     use std::fmt::Write;

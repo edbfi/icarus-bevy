@@ -3,7 +3,7 @@
 One row per open question. Tracked here; REA sessions mirror it. IDs are permanent.
 Status: open, investigating, blocked, contradicted, resolved.
 
-Last reconciled: 2026-10-13
+Last reconciled: 2026-10-14
 
 | ID | Question | Severity | Status | Next probe | Findings | REA id |
 | --- | --- | --- | --- | --- | --- | --- |
@@ -47,7 +47,7 @@ Last reconciled: 2026-10-13
 | U-038 | Can a stock client complete an authenticated session against the native server? | critical | blocked | Access deferred by user; continue offline evidence; connected tests need a concrete scope. | F-187, F-253, F-421 |  |
 | U-039 | What restoration use and gameplay identity does the singleton class's saved integer have? | medium | open | none stated | F-258 |  |
 | U-040 | Which actor/inventory/construction/tame/mission fields exist, and can the reported producing build be independently confirmed? | high | open | Client/save compatibility is user-reported; producing build still needs independent evidence. | F-262, F-263, F-421 |  |
-| U-041 | Can C001's complete concrete construction/vtable/archive-dispatch bridge be established? | high | investigating | Qualify nested196/217-byte decoder/case, then receiver continuity before archive slots. | F-410, F-419, F-420 |  |
+| U-041 | Can C001's complete concrete construction/vtable/archive-dispatch bridge be established? | high | investigating | Qualify local control/receiver flow through opaque calls before archive slots. | F-419, F-424 |  |
 | U-042 | What causes the first C001 listing-entry operation/check rejection? | medium | open | Separate listing diagnostic only if needed; completed decoder does not distinguish retained listing failure cause. | F-271, F-409 |  |
 | U-043 | What is the actual receiver/indirect dispatch, base origin and same-build type-registration join for the control stores? | high | open | bounded constructor metadata/instruction comparison guided by paired-client symbols | F-274 |  |
 | U-044 | What is the concrete archive/outer framing path for the experimental control-body fields? | medium | open | none stated | F-274 |  |

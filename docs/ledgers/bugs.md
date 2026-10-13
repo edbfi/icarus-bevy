@@ -5,7 +5,7 @@ foundation defects. No original defect is reproduced or fixed. Native
 persistence tests are preventative engineering, not fixes of the original.
 Full text before condensation: 16d1a9d:docs/ledgers/bugs.md.
 
-Last reconciled: 2026-10-13
+Last reconciled: 2026-10-14
 
 ## Reported campaigns
 
@@ -58,6 +58,7 @@ Defects in this repository's code, each with a regression test.
 | N-009 | Envelope structs accepted unlabeled positional arrays, bypassing named-object policy | Map-only root/blob boundaries; all modes reject at envelope parsing in both encodings | F-411 |
 | N-010 | Wrong known-field types exposed input strings through Serde diagnostics on stderr | Category/line/column only; original cause discarded; CLI/API privacy and source-preservation regressions | F-412 |
 | N-011 | Malformed checksum references caused rollback or left invalid previous metadata admitted | Validate both canonical digest strings before selection; load/save/CLI preservation and valid-mismatch recovery regressions | F-417 |
+| N-012 | Native JSON parse causes exposed supplied strings/unknown keys, including both unusable generations | Shared static stage/category/location errors discard raw Serde cause; API/CLI preservation regressions | F-423 |
 
 Injected ENOSPC at the generation and manifest writer boundaries preserves the
 acknowledged generation and permits retry; an error after publication returns

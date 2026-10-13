@@ -147,8 +147,8 @@ impl SnapshotStore {
             }
             Err(error) => return Err(error.context("read native snapshot manifest")),
         };
-        let manifest: Manifest =
-            serde_json::from_slice(&bytes).context("invalid snapshot manifest")?;
+        let manifest: Manifest = serde_json::from_slice(&bytes)
+            .map_err(|error| crate::json_parse_error("invalid snapshot manifest JSON", error))?;
         ensure!(manifest.schema_version == 1, "unsupported manifest schema");
         ensure!(manifest.current.number > 0, "invalid snapshot generation");
         manifest.current.validate_checksum()?;
@@ -168,13 +168,14 @@ impl SnapshotStore {
             checksum(&bytes) == generation.sha256,
             "snapshot checksum mismatch"
         );
-        let header: SnapshotHeader =
-            serde_json::from_slice(&bytes).context("decode native snapshot")?;
+        let header: SnapshotHeader = serde_json::from_slice(&bytes)
+            .map_err(|error| crate::json_parse_error("decode native snapshot JSON", error))?;
         if header.schema_version.as_u64() != Some(1) {
             return Err(UnsupportedSchema.into());
         }
-        let snapshot: WorldSnapshot =
-            serde_json::from_slice(&bytes).context("decode native snapshot fields")?;
+        let snapshot: WorldSnapshot = serde_json::from_slice(&bytes).map_err(|error| {
+            crate::json_parse_error("decode native snapshot fields JSON", error)
+        })?;
         snapshot.validate()?;
         Ok(snapshot)
     }

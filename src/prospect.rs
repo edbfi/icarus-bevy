@@ -167,16 +167,7 @@ fn decode_envelope(reader: impl Read) -> Result<ValidatedEnvelope> {
         let text = std::str::from_utf8(&bytes).context("invalid UTF-8 envelope")?;
         serde_json::from_str(text)
     }
-    .map_err(|error| {
-        // Serde's data-error formatter can embed private input strings. Keep
-        // useful error class/location without retaining that error as a cause.
-        anyhow::anyhow!(
-            "invalid prospect envelope JSON: {:?} at line {}, column {}",
-            error.classify(),
-            error.line(),
-            error.column()
-        )
-    })?;
+    .map_err(|error| crate::json_parse_error("invalid prospect envelope JSON", error))?;
     let blob = envelope.0.blob.0;
     ensure!(
         blob.total_length >= 0 && blob.data_length >= 0 && blob.uncompressed_length >= 0,

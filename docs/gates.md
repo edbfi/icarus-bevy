@@ -5,7 +5,7 @@ from the checkpoint that set it (fabd2f9:docs/implementation-status.md, which
 also holds the sentences dropped here as facts rather than gates). Grouped by the
 action they block.
 
-Last reconciled: 2026-10-13
+Last reconciled: 2026-10-14
 
 ## Before any C001 original-code case
 
@@ -24,7 +24,10 @@ Last reconciled: 2026-10-13
   and code are qualified (F-414, F-416); expanded paths still need separately
   reviewed bounds, source, scope and fresh session. The nested 196/217-byte
   bounds qualify (F-420); changed decoder geometry needs fresh authored
-  qualification before its separately reviewed exact-byte case.
+  qualification before its separately reviewed exact-byte case. The current
+  two-window source/API/ten-mode fixture case is qualified (F-422); its
+  original-byte case is separately qualified (F-424). New control/receiver
+  analysis and expanded paths retain fresh source/scope/session gates.
 - Retained exports already identify its exact native class getter and
   construction callback; reuse these before new bounded queries. Read the
   retained instruction listing within these exact intervals before expanding
