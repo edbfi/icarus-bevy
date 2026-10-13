@@ -8,6 +8,26 @@ performance targets remain unproven. Last reconciled: 2026-10-13.
 
 ## Continuation — 2026-10-12
 
+### D01 nested array leaves — 2026-10-13, 00:30 UTC
+
+The reviewed follow-up reproduces all earlier results and rejoins eight exact
+child descriptors before checking both copies' ranges and every string budget.
+All 25,680 Int spans individually have four bytes. All 1,431 Str frames / 27,759
+bytes match strict native and independent framing; each is narrow, maximum 24
+bytes. Four batches retain the frozen 1,701-frame helper cap and library snapshot.
+Six descriptors have populated coverage; DA04's two remain empty/unqualified.
+No decoded units, text or numerical values are emitted or interpreted.
+
+Eight authored JS fixture programs and seven independent regression groups pass,
+including reordered exact descriptors, width failures hidden by equal aggregate
+sizes, late backup mutations and changed entry bindings. The fresh fifteen-minute
+session budgets 48 native calls with a 290-second outer timeout; element/field/API
+limits and live source/library are unchanged. All 1,383 bindings remain exact.
+Evidence: `work/c009-d01-array-child-leaves-20261013/`; summary SHA-256
+`da619895c34bb48cced66efccede2db5ded96d7e96f6ae7166168ceef197c244`.
+Original normalization/EOF behavior, value meanings, newer-build fidelity and
+official restoration remain unqualified.
+
 ### D01 nested array headers — 2026-10-13, 00:17 UTC
 
 The fresh reviewed case replays every prior result, reuses the complete retained
@@ -32,8 +52,8 @@ identity cleanup proof. All 1,308 bindings remain exact. Evidence:
 `work/c009-d01-array-child-headers-20261013/`; summary SHA-256
 `1d4961524431734e7199a0e16c0e1e983448eb594cb1d3b01f789dd729641623`.
 
-Immediate Int/Str leaves remain opaque pending individual width/string framing
-comparison. No numerical/text meaning, automatic schema recognition, restoration
+Immediate populated Int/Str widths/string framing subsequently qualify above.
+No numerical/text meaning, automatic schema recognition, restoration
 or stock-client result follows from this header qualification.
 
 ### D01 leaves — 2026-10-13, 00:01 UTC
@@ -944,9 +964,9 @@ supported, and no ICARUS performance or stability improvement has been measured.
 
 ## Next work and maintenance
 
-1. Continue the qualified four D01 nested array families' populated Int/Str leaf
-   structure/width comparisons. Reuse the retained C028 exact registration/schema
-   evidence; DA04's supplied population is empty. Preserve exact
+1. Continue the next unresolved save relationships/value boundaries after the
+   completed D01 populated Int/Str leaf comparisons. Reuse retained static evidence;
+   DA04's supplied population is empty. Preserve exact
    descriptor bindings, byte/count/field bounds
    and old/new source/library receipts. Automatic class/schema recognition and
    value meanings remain open.

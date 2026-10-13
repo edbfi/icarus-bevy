@@ -792,6 +792,16 @@ Evidence: `work/c009-d01-array-child-headers-20261013/`, summary SHA-256
 `1d4961524431734e7199a0e16c0e1e983448eb594cb1d3b01f789dd729641623`.
 This is structure qualification, not value interpretation or restoration.
 
+The leaf follow-up reproduces every prior result and exactly rejoins all eight
+descriptors before both-copy range and string-budget checks. All 25,680 selected
+Int spans individually have four bytes; 1,431 Str frames / 27,759 bytes match strict
+native/independent framing, all narrow and at most 24 bytes. Six descriptors have
+populated coverage; DA04's two have none. Eight authored fixture programs and seven
+independent regression groups pass, with all 1,383 bindings unchanged. No text or
+numbers are interpreted, and no original EOF/normalization equivalence is proved.
+Evidence: `work/c009-d01-array-child-leaves-20261013/`, summary SHA-256
+`da619895c34bb48cced66efccede2db5ded96d7e96f6ae7166168ceef197c244`.
+
 ## Independent replacement requirements
 
 The importer must load into staging state, resolve references and validate the
