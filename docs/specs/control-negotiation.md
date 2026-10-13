@@ -180,3 +180,13 @@ The normal replacement run command still has no game socket listener or control
 negotiation. This body-field reader is a disconnected library primitive. A
 separate [loopback handshake lab](stateless-handshake.md) stops before this layer
 and creates no game connections.
+
+A subsequent strict paired current-client PDB/PE case identifies named UWorld and
+UPendingNetGame FNetworkNotify secondary tables. Exactly four qwords per table
+show that both `+0x18` slots equal their respective named NotifyControlMessage
+public-symbol addresses. These build-25793767 static relationships do not identify
+the older dispatcher owner, establish object offsets or prove executed dispatch.
+The table targets remain undereferenced and no complete vtable extent is claimed.
+[Exact inputs, bounded fallback and independent evidence](../research/2026-10-12-control-caller-limit.md#current-client-public-symbols-and-named-notify-slots)
+preserve the next constructor/receiver/type gate. Image-address deltas cannot
+stand in for object-layout offsets, and provenance cannot cross calls unchecked.

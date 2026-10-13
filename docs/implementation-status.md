@@ -8,13 +8,44 @@ performance targets remain unproven. Last reconciled: 2026-10-13.
 
 ## Continuation — 2026-10-12
 
+### Current-client public symbols and notify slots — 2026-10-13, 02:31 UTC
+
+A strict bounded reader frames 1,897,302 PDB symbol records / 193,365,180 bytes,
+validates the pinned build-25793767 executable/PDB GUID, age and identical section
+headers, and selects 17 public records / 15 unique addresses. A separate case reads
+four qwords from each named UWorld/UPendingNetGame FNetworkNotify secondary table.
+Both slots at `+0x18` equal the respective named NotifyControlMessage addresses.
+All 1,357 / 1,433 bindings remain unchanged and owned cleanup passes. These are
+static current-client relationships; older-server ownership, object offsets,
+decoded entries, actual receivers and runtime dispatch remain unqualified.
+The 0x290 distance between primary/secondary image addresses is image placement,
+not an object-layout measurement. Exact inputs, hashes and limits:
+[caller investigation](research/2026-10-12-control-caller-limit.md#current-client-public-symbols-and-named-notify-slots).
+The reusable pure PDB reader has 29 authored/independent tests, including an actual
+10 MB synthetic stream at exactly 2,500,000 records and one over the cap. It runs
+through the repository hooks and CI alongside the existing PE fixtures.
+
+### C028 top string structures — 2026-10-13, 02:19 UTC
+
+Ten measured 647-frame native batches now agree with independent strict readers
+for all 6,470 Name/Enum/Str frames / 328,878 bytes; all are narrow, maximum 116
+bytes. Complete prior range/result replay and all both-copy budgets precede any
+new unit decoding or native call. Seven authored fixture programs and 25 independent
+checks pass, including the actual assembled main, late-backup atomic rejection and
+same-total frame swaps. All 2,327 bindings remain unchanged. The borrowed frame
+helper uses the current release library with separately frozen source/binary pins.
+Evidence: `work/c028-top-string-values-20261013/`, summary SHA-256
+`64c60e41fa3b67527609cf4ff8d2fde3b85a4ae654ff00c51040cfa41aa7db04`.
+These new native string comparisons do not retroactively supply individual native
+header spans or qualify text, Enum lookup, numerical meaning or restoration.
+
 ### C028 top scalar range preflight — 2026-10-13, 02:00 UTC
 
 The reviewed preflight replays both complete archives, exact 23-header schemas and
 the historical native aggregate before selecting ten exact scalar descriptors.
 All 12,940 neutral ranges are measured and bounded across both copies before
 6,470 individual demands: 3,882 Int4 spans / 15,528 bytes and 2,588 Bool0 spans.
-The 6,470 string payloads / 328,878 bytes remain undecoded; maximum observed
+At this preflight, 6,470 string payloads / 328,878 bytes remained undecoded; maximum observed
 frame size is 116 bytes. Each descriptor has 647 occurrences per copy, permitting
 ten bounded strict-string batches in the next case. Names are selected by exact
 identity, not assigned budgets by tag order.
@@ -31,8 +62,9 @@ The older C028 native batch exports only aggregate counts/bytes, not individual
 spans. New ranges here are independent JS observations; there are zero native
 calls. Its historical live library pin lacks an identified immutable library
 snapshot, while source/helper snapshots and receipts are preserved and unused.
-Neither limitation is hidden by the current preservation anchor. String structure,
-meanings, restoration and matched-client fidelity remain open.
+Neither limitation is hidden by the current preservation anchor. The following
+case qualifies string structure; meanings, restoration and matched-client fidelity
+remain open.
 
 ### Live REA connection — 2026-10-13, 01:46 UTC
 
@@ -1128,8 +1160,13 @@ supported, and no ICARUS performance or stability improvement has been measured.
 
 ## Next work and maintenance
 
-1. Qualify C028's five top string descriptors after the completed both-copy range
-   preflight and individual Int/Bool widths. Its old native batch qualifies aggregate totals, not retained
+1. Compare every C028 direct Struct-child header against fresh native individual
+   spans, then qualify its selected leaf structures/widths using retained exact
+   contracts. All five top string descriptors now pass ten measured native batches
+   after the both-copy range preflight. The first child invocation was rejected
+   before private fixity/probe because the manually written session authority text
+   differed from its scope; preserve it and use the separately reviewed retry with
+   exact scope-derived authority. Its old native top batch qualifies aggregate totals, not retained
    individual spans. A finite C034 audit finds all observed populated tagged
    boundaries qualified; native value meanings and seven empty inherited arrays'
    population coverage remain open. Reuse retained static evidence;
@@ -1147,8 +1184,9 @@ supported, and no ICARUS performance or stability improvement has been measured.
    private inputs; no partial importer.
 2. Establish actual receiver/indirect dispatch and same-build type-registration
    joins after the completed local post-call gap. Configured decompiler bodies
-   alone do not prove bounded native flow. Newer paired-client symbols may guide
-   targeted comparison, without establishing older owner identity.
+   alone do not prove bounded native flow. Current paired-client symbols and two
+   exact named notify slots now guide bounded constructor metadata/instruction
+   comparison, without establishing older owner identity or object offsets.
    Establish actual owner/caller
    evidence before inferring the dispatcher caller. Bind the concrete archive/outer
    framing path before promoting the experimental

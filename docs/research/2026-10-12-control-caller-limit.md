@@ -1,8 +1,10 @@
 # Bounded control-caller investigation
 
-The concrete archive, bit-position and byte-order path into dispatcher
-`0x1439ee7f0` remains unresolved. This investigation recovered no caller. It does
-not qualify the disconnected control-body reader, admission or client compatibility.
+The concrete archive, bit-position and byte-order path into older dispatcher
+`0x1439ee7f0` remains unresolved. This investigation recovered no caller. Later
+current-client symbols establish named notify-table slots, separately from the
+older dispatcher and its unidentified local stores. Neither result qualifies the
+disconnected control-body reader, admission or client compatibility.
 
 ## Inputs and scope
 
@@ -353,3 +355,82 @@ manifest SHA-256
 The additive post-run note SHA-256 is
 `912f51b381315b464ce8f1c4e1aeffa1ad114610583550c3f8be2febc7228370`;
 completed bound artifacts remain unchanged.
+
+## Current-client public symbols and named notify slots
+
+The live REA MCP connection is now available and its project-local identity was
+checked without a target. The advertised provider has no standalone MSF7/PUB32
+reader or explicit retained-project route; the earlier cold-import limit remains.
+A separately reviewed authored PE/PDB fallback therefore reads the paired client
+build 25793767 without launching it. Executable SHA-256:
+`ab11ec1212127e9047128843e584ab636632353edd6808a0db9caedb35048179`;
+PDB SHA-256: `944e38c941cdbdf4ec512f4307134fdd307e5e1c61602f06bd2f9600f7f98bef`.
+Raw GUID `f18774cb0f78a849bf3055a023b53562`, age one, matches both debug identities;
+PDB/PE section-header bytes agree. This newer client does not establish a matched
+older dedicated-server or save-loader baseline.
+
+The pure reusable `tools/pdb_public_symbols.cjs` reader is independently authored
+from pinned LLVM layout documentation at revision
+`3623fe661ae35c6c80ac221f14d85be76aa870f1`; no LLVM implementation is copied.
+It validates strict MSF7/DBI framing, reserved/nonoverlapping blocks, explicit
+identity, no OMAP and readonly selected PE mappings. Input caps are 1,280 MiB PDB
+and 128 MiB executable, 4 MiB directory, 4,096 streams, 256 MiB symbol stream,
+2,500,000 records, 32 selected hits and 64 KiB output. Symbol records use a 64 KiB
+cache. Only explicitly selected public class/member names are exported; unselected
+names and debug path bytes stay opaque. Callers supply authorized bounded readers
+and verify hashes; the pure module opens no files or original processes.
+
+The isolated producer uses descriptor identity checks and streaming hashes before
+and after reads, a 120-second process timeout, 135-second wrapper watch, 140-second
+reservation and fresh 900-second scope. Heap is 384 MiB and owned RSS is bounded
+at 512 MiB; the inherited offline filter and verified owned cleanup apply. There
+is no claim of a filesystem/network namespace or hard cgroup boundary. The frozen
+case passed at 02:15:23 UTC with all 1,357 bindings unchanged. It frames 1,897,302
+records / 193,365,180 symbol bytes and selects 17 records / 15 unique addresses;
+scalar deleting destructor names may alias. Absence of selected standalone
+FNetworkNotify records is bounded-profile coverage, not absence of code.
+
+| Current-client association | Address |
+| --- | --- |
+| UWorld constructor public symbol | `0x143ca5a40` |
+| UWorld primary UObject table | `0x145567750` |
+| UWorld FNetworkNotify secondary table | `0x1455679e0` |
+| UWorld NotifyControlMessage public symbol | `0x143cba590` |
+| UPendingNetGame constructor public symbol | `0x143a58650` |
+| UPendingNetGame primary table | `0x14551be10` |
+| UPendingNetGame FNetworkNotify secondary table | `0x1454a3f48` |
+| UPendingNetGame NotifyControlMessage public symbol | `0x143a68e10` |
+
+A separate reviewed case reads exactly four little-endian qwords from each named
+secondary table. All eight stored targets map to readonly executable file-backed
+CODE sections. Both fourth slots, at byte offset `+0x18`, equal the respective
+named NotifyControlMessage addresses. The producer and strict post-cleanup
+qualifier each read the same 64 distinct table bytes, 128 aggregate qword bytes;
+whole-file fixity/header reads are separate. No target is dereferenced or decoded,
+no later slots are sampled and no complete table extent is inferred. The case
+passes at 02:31:22 UTC with all 1,433 bindings unchanged and owned cleanup verified.
+The independent additive proof reproduces both identities and rejects ten synthetic
+mapping/offset/owner/extent mutations; the lead reproduces its exact frozen output
+without writes.
+
+These equalities establish a current-client slot/name relationship. They do not
+prove instruction boundaries, thunk behavior, actual receiver adjustment, object
+base offsets, older-server owner or runtime dispatch. The shared slot `+0x08`
+value is numeric evidence only. The 0x290 image-address difference between the
+selected UWorld primary and secondary tables cannot be substituted for an object
+layout measurement, even though two earlier older-build store constants have the
+same image-address distance. Both classes satisfy the current interface pattern;
+this alone does not discriminate an older-server owner hypothesis. The next gate
+is bounded decoded constructor/local-store dataflow and an actual receiver/type
+join, with fresh unknown state after calls.
+
+Evidence: `work/control-client-symbols-20261013/`, payload SHA-256
+`31ca4e6fffec82fa4821b72e73b04dfb035509cb4664aa0e4752ba167b14fd67`;
+`work/control-client-notify-slots-20261013/`, payload SHA-256
+`7b8a368df206b5508926a18cd6c1b83c315eb8508db53884fac5befaa6688b16`.
+Additive independent symbol/slot notes SHA-256 respectively:
+`247306e8b46449acbb04b21dfb46bf15bfc71a3bcd315840313eb5db34e5105b`,
+`92081a720a3a1c7050db18c4824331c345102088a812a46f40496351265eb245`.
+Completed source/session/receipts and failures remain immutable. No original-server
+runtime, connected Steam session, stock-client admission or native game listener
+was introduced.

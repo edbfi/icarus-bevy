@@ -72,6 +72,15 @@ cleanup subsequently pass. This corrects research tooling, not an official-serve
 defect. Evidence: `work/control-caller-instructions-20261013/`, including the
 preserved failed attempt and `execution-v2/`.
 
+The first full-population C028 child-header invocation was rejected by the scope
+guard before private fixity or probe launch: the lead-authored session repeated
+the scope's authorization text with different wording. No native calls or accepted
+output occurred. The original session, bindings and rejected-attempt receipt are
+preserved; a separate reviewed retry derives the exact authorization source from
+its scope and validates it before creating a fresh session. This is a session
+construction error, not an original-server defect. Evidence:
+`work/c028-all-struct-child-headers-20261013/rejected-attempt.json`.
+
 | ID | Trigger and former behavior | Change and evidence |
 | --- | --- | --- |
 | N-001 | Save worker exits before acknowledging an in-flight request; polling returned an untyped error while leaving `busy` true, and the main loop treated it as a retryable write failure | Return a typed terminal error, clear the stale in-flight flag and stop simulation. A deterministic disconnected-channel test covers missing acknowledgement and rejected subsequent submission |
