@@ -141,14 +141,18 @@ fn finish_tick(
 
 pub fn capture(world: &mut World) -> Result<WorldSnapshot> {
     let tick = world.resource::<SimulationClock>().tick;
-    let mut entities = world
-        .query::<(&DomainId, &Position)>()
-        .iter(world)
-        .map(|(id, position)| EntityRecord {
+    // Domain identity opts an entity into the current native snapshot schema.
+    // Missing required data is an incomplete world, not a despawn to persist.
+    let mut entities = Vec::new();
+    for (id, position) in world.query::<(&DomainId, Option<&Position>)>().iter(world) {
+        let position = anyhow::Context::with_context(position, || {
+            format!("domain entity {} lacks required Position", id.0)
+        })?;
+        entities.push(EntityRecord {
             id: *id,
             position: *position,
-        })
-        .collect::<Vec<_>>();
+        });
+    }
     entities.sort_by_key(|entity| entity.id);
     let snapshot = WorldSnapshot {
         schema_version: 1,

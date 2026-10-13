@@ -610,6 +610,8 @@ Persistence uses versioned domain snapshots: coherent simulation boundary,
 worker serialization, checksummed new generation, synchronized storage, atomic
 manifest publication, preceding valid generation retained. Autosave defaults to
 60 seconds. Acknowledge only durable publication; validate/migrate before activation.
+Capture requires all components declared by the current native domain schema;
+an identified entity with missing required data must fail before publication.
 Reverse export to official saves is not promised. Rollback uses original backups;
 replacement-only progress is not assumed transferable.
 

@@ -137,6 +137,193 @@ fn invalid_world_is_rejected_before_building_app() {
 }
 
 #[test]
+fn incomplete_domain_capture_preserves_commit_and_repair_retries_exact_state() {
+    let directory = tempfile::tempdir().unwrap();
+    let original = snapshot(100);
+    let mut store = SnapshotStore::open(directory.path()).unwrap();
+    assert_eq!(store.save(&original).unwrap().generation, 1);
+    let manifest_before = fs::read(directory.path().join("manifest.json")).unwrap();
+    let generation_before = fs::read(directory.path().join("snapshot-1.json")).unwrap();
+    let mut app = build_app(&ServerConfig::default(), &original).unwrap();
+    let entity = app
+        .world_mut()
+        .query::<(Entity, &DomainId)>()
+        .iter(app.world())
+        .find_map(|(entity, id)| (id.0 == 42).then_some(entity))
+        .unwrap();
+    app.world_mut().entity_mut(entity).remove::<Position>();
+    app.world_mut().resource_mut::<SimulationClock>().tick = 101;
+    // Exercise the same capture-before-save boundary as the native runner.
+    let failed_save = capture(app.world_mut()).and_then(|state| store.save(&state));
+    assert!(
+        failed_save
+            .unwrap_err()
+            .to_string()
+            .contains("required Position")
+    );
+    assert_eq!(
+        fs::read(directory.path().join("manifest.json")).unwrap(),
+        manifest_before
+    );
+    assert_eq!(
+        fs::read(directory.path().join("snapshot-1.json")).unwrap(),
+        generation_before
+    );
+    assert!(!directory.path().join("snapshot-2.json").exists());
+    drop(store);
+    let mut reopened = SnapshotStore::open(directory.path()).unwrap();
+    assert_eq!(reopened.load().unwrap().unwrap().snapshot, original);
+
+    let repaired_position = Position([4.0, 5.0, 6.0]);
+    app.world_mut().entity_mut(entity).insert(repaired_position);
+    // Deliberately spawn in reverse domain order and include transient state.
+    app.world_mut()
+        .spawn((DomainId(90), Position([9.0, 0.0, 0.0])));
+    app.world_mut()
+        .spawn((DomainId(7), Position([7.0, 0.0, 0.0])));
+    app.world_mut().spawn(Position([f32::NAN, 0.0, 0.0]));
+    let expected = WorldSnapshot {
+        tick: 101,
+        entities: vec![
+            EntityRecord {
+                id: DomainId(7),
+                position: Position([7.0, 0.0, 0.0]),
+            },
+            EntityRecord {
+                id: DomainId(42),
+                position: repaired_position,
+            },
+            EntityRecord {
+                id: DomainId(90),
+                position: Position([9.0, 0.0, 0.0]),
+            },
+        ],
+        ..Default::default()
+    };
+    let captured = capture(app.world_mut()).unwrap();
+    assert_eq!(captured, expected);
+    assert_eq!(reopened.save(&captured).unwrap().generation, 2);
+    drop(reopened);
+    assert_eq!(
+        SnapshotStore::open(directory.path())
+            .unwrap()
+            .load()
+            .unwrap()
+            .unwrap()
+            .snapshot,
+        expected
+    );
+}
+
+#[test]
+fn incomplete_capture_never_enters_worker_and_repair_uses_same_worker() {
+    let directory = tempfile::tempdir().unwrap();
+    let mut store = SnapshotStore::open(directory.path()).unwrap();
+    let original = snapshot(10);
+    store.save(&original).unwrap();
+    let manifest_before = fs::read(directory.path().join("manifest.json")).unwrap();
+    let mut worker = SaveWorker::spawn(store).unwrap();
+    let mut app = build_app(&ServerConfig::default(), &original).unwrap();
+    let entity = app
+        .world_mut()
+        .query::<(Entity, &DomainId)>()
+        .iter(app.world())
+        .next()
+        .unwrap()
+        .0;
+    app.world_mut().entity_mut(entity).remove::<Position>();
+    app.world_mut().resource_mut::<SimulationClock>().tick = 11;
+    let submission = capture(app.world_mut()).and_then(|state| worker.submit(state));
+    assert!(
+        submission
+            .unwrap_err()
+            .to_string()
+            .contains("required Position")
+    );
+    assert!(!worker.is_busy());
+    assert!(worker.poll().unwrap().is_none());
+    assert_eq!(
+        fs::read(directory.path().join("manifest.json")).unwrap(),
+        manifest_before
+    );
+    assert!(!directory.path().join("snapshot-2.json").exists());
+
+    app.world_mut()
+        .entity_mut(entity)
+        .insert(original.entities[0].position);
+    let repaired = snapshot(11);
+    capture(app.world_mut())
+        .and_then(|state| worker.submit(state))
+        .unwrap();
+    assert!(worker.is_busy());
+    let receipt = worker
+        .finish_before(Instant::now() + Duration::from_secs(5))
+        .unwrap()
+        .unwrap();
+    assert_eq!(receipt.tick, 11);
+    assert_eq!(receipt.generation, 2);
+    assert!(!worker.is_busy());
+    drop(worker);
+    // Dropping the sender lets its owned writer exit; wait only for that lock.
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let reopened = loop {
+        match SnapshotStore::open(directory.path()) {
+            Ok(store) => break store,
+            Err(error) => {
+                assert!(
+                    error
+                        .downcast_ref::<std::io::Error>()
+                        .is_some_and(|error| error.kind() == std::io::ErrorKind::WouldBlock,)
+                );
+                assert!(
+                    Instant::now() < deadline,
+                    "writer did not release data lock"
+                );
+                std::thread::sleep(Duration::from_millis(1));
+            }
+        }
+    };
+    assert_eq!(reopened.load().unwrap().unwrap().snapshot, repaired);
+}
+
+#[test]
+fn incomplete_duplicate_domain_is_rejected_instead_of_hidden() {
+    let mut app = build_app(&ServerConfig::default(), &snapshot(0)).unwrap();
+    app.world_mut().spawn(DomainId(42));
+    assert!(
+        capture(app.world_mut())
+            .unwrap_err()
+            .to_string()
+            .contains("required Position")
+    );
+    // Even a complete duplicate remains invalid under the existing schema.
+    let missing = app
+        .world_mut()
+        .query_filtered::<Entity, (With<DomainId>, Without<Position>)>()
+        .iter(app.world())
+        .next()
+        .unwrap();
+    app.world_mut()
+        .entity_mut(missing)
+        .insert(Position([1.0, 2.0, 3.0]));
+    assert!(
+        capture(app.world_mut())
+            .unwrap_err()
+            .to_string()
+            .contains("duplicate domain ID")
+    );
+}
+
+#[test]
+fn capture_ignores_entities_without_domain_identity() {
+    let mut app = build_app(&ServerConfig::default(), &snapshot(0)).unwrap();
+    app.world_mut()
+        .spawn(Position([f32::NAN, f32::INFINITY, 0.0]));
+    app.world_mut().spawn_empty();
+    assert_eq!(capture(app.world_mut()).unwrap(), snapshot(0));
+}
+
+#[test]
 fn snapshots_round_trip_and_keep_only_two_committed_generations() {
     let directory = tempfile::tempdir().unwrap();
     let mut store = SnapshotStore::open(directory.path()).unwrap();
