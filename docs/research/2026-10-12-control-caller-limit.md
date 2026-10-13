@@ -149,3 +149,59 @@ Evidence: `work/control-dispatch-owner-20261013/`; result SHA-256
 The next bounded discriminator is reference-pattern candidates to these nine
 exact observed slots. Instruction boundaries, constructor/owner identity and
 the actual archive path still require separate confirmation.
+
+## Observed-slot address-reference candidates
+
+A new reviewed case checks only REX.W LEA RIP-relative seven-byte patterns
+targeting the nine exact observed slot addresses, selected from the hash-bound
+accepted context output. These slots are not assumed table bases. It scans complete
+eligible code offsets only, with the same sixteen-candidate/64 KiB fail-closed
+limits and offline resource/ownership contract. Exception records and instructions
+are not interpreted by this scan.
+
+Twelve authored and nine independent PE checks, twenty-seven wrapper checks,
+three actual-probe composition checks and two independent pre-entry checks pass.
+Composition tests corrected a copied import/call mismatch before target work.
+The fresh run passed with all 387 bindings unchanged and verified cleanup,
+examining 73,913,697 eligible offsets. It returns two byte-pattern candidates:
+
+| Candidate source | Target observed slot |
+| --- | --- |
+| `0x1439da30e` | `0x145468180` |
+| `0x1439dae70` | `0x145468180` |
+
+Evidence: `work/control-dispatch-table-references-20261013/`; result SHA-256
+`eb10c15cb2aec7982956e4a37c2b22214407385b808ff3548b0869d27434f9e7`.
+Neither is a confirmed instruction, constructor or caller. The next bounded
+operation locates metadata containment in PE exception records, then checks
+selected code with explicit fragment/whole-function limits before owner or
+archive conclusions. No connection, admission or stock-client result is implied.
+
+## Complete bounded exception metadata
+
+The next reviewed case validates the complete AMD64 exception directory before
+selecting the two exact candidates and known dispatcher. Its additional profile
+requires sorted nonoverlapping intervals, complete executable file mappings and
+aligned opaque unwind pointers; it rejects unusual variants rather than treating
+this profile as universal. No code or unwind bodies are decoded.
+
+All 323,249 records / 3,878,988 bytes pass. The recorded ranges are:
+
+| Selected target | Recorded begin | Recorded end, exclusive | Bytes |
+| --- | --- | --- | --- |
+| `0x1439da30e` | `0x1439da2e8` | `0x1439da75a` | 1,138 |
+| `0x1439dae70` | `0x1439dae50` | `0x1439db145` | 757 |
+| `0x1439ee7f0` | `0x1439ee7f0` | `0x1439f0578` | 7,560 |
+
+Twelve authored PE fixtures, nine independent PE fixtures, twenty-nine wrapper
+checks, three actual-probe mocks and six independent boundary/schema checks pass.
+The review added rejection of contradictory shared-record tuples. All 428 bound
+files remain exact and owned cleanup passes. Evidence:
+`work/control-caller-function-ranges-20261013/`; result SHA-256
+`71f74cc712d962b570f63361dc6cd81d512625e5e72cee69fe4dccf92b717eff`.
+
+These are recorded containment intervals, possibly procedure fragments in chained
+or noncontiguous code. They do not prove instruction boundaries, primary entries,
+complete functions, constructors, callers or owner/archive identity. Targeted
+instruction evidence must preserve that distinction, including any analyst-defined
+function used solely as bounded decompiler input.

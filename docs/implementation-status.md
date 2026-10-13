@@ -4,9 +4,33 @@ This is an independent server foundation, not yet an ICARUS-compatible server.
 One bounded stateless exchange has been observed against the original. Complete
 protocol interoperability, authentication, gameplay, world-data parity and
 official-save import have not been demonstrated. Release reliability and
-performance targets remain unproven. Last reconciled: 2026-10-12.
+performance targets remain unproven. Last reconciled: 2026-10-13.
 
 ## Continuation — 2026-10-12
+
+### D01 leaves — 2026-10-13, 00:01 UTC
+
+The reviewed leaf case reproduces all prior ND01 results and exactly rejoins four
+leaf descriptors before bounding both copies and every string batch. All 3,206
+Name frames / 46,951 bytes and 3,206 Str frames / 13,022 bytes match strict native
+and independent structure. Names are narrow, maximum 47 bytes; Str has 3,200
+zero-count empty and six narrow frames, maximum 37 bytes. All 6,412 Int spans are
+four bytes. No text, decoded units, numerical meanings or Name identity is emitted
+or qualified. Four split native batches preserve the old 1,701-frame helper cap.
+
+Seven authored fixture programs and independent review pass. Thirty-six bounded
+native calls plus headroom use an explicit 210-second case timeout within a fresh
+fifteen-minute session; count/field/library limits are unchanged. All 1,172 bindings
+remain exact. Evidence: `work/c009-d01-leaf-values-20261013/`; summary SHA-256
+`6f53c189ea8c33edc7c736b08f5685da14c7bfee93968c7b98ca9878b10e0ee1`.
+
+The remaining 12,824 Array payloads / 2,405,613 bytes are opaque. Correction to
+the preceding provisional gap notes: their four exact getter/schema/ops chains
+were already resolved in frozen `work/c028-d01-array-children-20261012/` and
+documented in the prospect spec. That evidence was missed during this continuation
+and is now being reused, with its reviewed artifact manifest. No new target analysis
+is needed to rediscover those chains. Historical bound notes remain unchanged;
+supplied child counts/headers and subsequent values still need qualification.
 
 ### Project-local REA tooling
 
@@ -39,9 +63,10 @@ fixity-versus-parsing receipts. All 1,112 bindings remained unchanged. Evidence:
 `work/c009-common-deeper-headers-20261013/`; summary SHA-256
 `ede5ffe4a6a1944f13dfd8c51373efa6c5eccd65a41db8454190a689182e3f96`.
 
-D01 Name/Str/two Int descriptor leaves are the next bounded scalar step. Its four
-Array inner getters remain unqualified; no deeper count/header or value meaning
-was inferred. Official restoration, recognition and gameplay remain open.
+D01 Name/Str/two Int leaves subsequently qualify above. Its four Array registrations
+and immediate schemas are resolved in retained static evidence, correcting the
+provisional gap identified at this increment. Supplied deeper counts/headers and
+value meanings remain unqualified. Official restoration and gameplay remain open.
 
 ### C009 common-child scalars — 2026-10-12, 23:29 UTC
 
@@ -140,8 +165,22 @@ pointer exists in this window, so no locator bodies or optional LEA scan ran.
 RTTI absence, table identity and owner remain unproved. Evidence:
 `work/control-dispatch-owner-20261013/`; result SHA-256
 `23a603994a721697446b88cbf66693b07fd95423f1dd68f549c8a3e7c5737df1`.
-The next targeted discriminator is address-reference candidates to the nine exact
-observed slots, with instruction/constructor identity still requiring confirmation.
+The subsequent reviewed address-reference scan finds two LEA byte-pattern
+candidates, `0x1439da30e` and `0x1439dae70`, both targeting observed slot
+`0x145468180`. All 387 bindings and cleanup pass; 73,913,697 eligible offsets
+were checked. Candidates are not confirmed instructions, constructors or callers.
+Evidence: `work/control-dispatch-table-references-20261013/`; result SHA-256
+`eb10c15cb2aec7982956e4a37c2b22214407385b808ff3548b0869d27434f9e7`.
+The reviewed exception metadata case subsequently validates all 323,249 records
+in the 3,878,988-byte directory before selecting three ranges. The two candidates
+fall within `0x1439da2e8..0x1439da75a` (1,138 bytes) and
+`0x1439dae50..0x1439db145` (757 bytes); the known dispatcher falls within
+`0x1439ee7f0..0x1439f0578` (7,560 bytes). All 428 bindings and cleanup pass.
+Evidence: `work/control-caller-function-ranges-20261013/`; result SHA-256
+`71f74cc712d962b570f63361dc6cd81d512625e5e72cee69fe4dccf92b717eff`.
+Recorded intervals may describe procedure fragments. Instruction boundaries,
+primary entries, complete functions and owner/archive provenance remain unproved;
+bounded targeted instruction analysis is next.
 
 ### C009 common-child headers — 2026-10-12, 22:15 UTC
 
