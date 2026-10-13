@@ -229,6 +229,9 @@ Use this dataset in the next work sequence:
    A retained readonly incoming-reference query yields one non-call data reference,
    with no containing function, and does not establish registration flow. Bound the
    exact callback and candidate constructor before completing its vtable bridge.
+   Fresh metadata now supplies 305/296-byte intervals for those exact seeds;
+   read their retained instruction listing and account for reachable paths before
+   promoting the construction bridge or selecting vtable slots.
    Historical C028 native top evidence is aggregate-only; no individual
    native header spans are claimed. All 2,286 bindings remain exact with the
    separately reviewed borrowed-string API transitions.
@@ -710,8 +713,11 @@ is inferred from these prefixes.
 Fresh exception metadata now bounds World's exact fallthrough continuation to a
 1,138-byte interval and leaves 57 bytes after Pending's call inside its prior
 interval. These are derived continuation targets, not newly assigned class/symbol
-identities. Validate new decoder constants/fixtures and a fresh original-byte case
-before interpreting further local stores.
+identities. The separately validated continuation decoder now exports eleven
+instructions / 32 p-code operations. Pending stores its named primary and
+FNetworkNotify table constants through one unchanged unknown base at zero/+0x28;
+both windows stop at calls. Establish that base's origin and actual receiver/type
+dispatch without assuming ABI retention or carrying provenance across calls.
 
 Completion requires demonstrated compatibility, reliability and performance
 improvement while preserving the independent Rust/Bevy and no-original-assets rules.

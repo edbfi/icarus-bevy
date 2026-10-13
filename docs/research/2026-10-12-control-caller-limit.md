@@ -569,3 +569,52 @@ final source review SHA-256
 `7430812aa6464caf1480a4e50c043a99c67aae1405984ce74cd992ccb42ff7d7`.
 These are static metadata bounds, not complete functions, original execution or
 client/network compatibility.
+
+## Current-client constructor continuation instructions
+
+The fixed-window derivative changes only the admitted geometry: World starts at
+`0x143ca5a48` with 64 output bytes and fourteen lookahead bytes; Pending starts at
+`0x143a5865e` with 43 output bytes and fourteen lookahead bytes. Both metadata joins
+precede original-file access. Fresh compiled classes pass the nine adapted real
+synthetic recipes and five injected guards; the earlier failed compile/checker
+attempts and original helper remain preserved. Runtime and output qualification
+retain the same explicitly bounded provenance and decoder-padding limitations.
+
+The accepted 04:28 UTC target run exports eleven instructions / 32 p-code operations
+and matches every instruction hash to selected original bytes. All 2,581 bindings
+remain unchanged and owned cleanup passes. The producer and qualifier each read
+135 selected original bytes (270 aggregate); Java reads their derived copies.
+Sixty-four authored and sixty independent source/mocked checks pass. No Program,
+PE import, analyzer, decompiler, function creation or outgoing-flow traversal runs.
+
+| Window | Instructions | Consumed bytes | Barrier / sequential return |
+| --- | ---: | ---: | --- |
+| World from `0x143ca5a48` | 4 | 18 | CALL `0x143ca5a55` / `0x143ca5a5a` |
+| Pending from `0x143a5865e` | 7 | 32 | CALL `0x143a58679` / `0x143a5867e` |
+
+Pending's state begins unknown after the previous call. Before its next call,
+local p-code establishes eight-byte stores through one unchanged unknown initial
+register base: constant `0x14551be10` at displacement zero and constant
+`0x1454a3f48` at displacement `0x28`. These constants exactly match the paired
+public symbols for Pending's primary UObject and secondary FNetworkNotify tables.
+The separately qualified secondary table's slot `+0x18` equals its named
+NotifyControlMessage address. A further local assignment forms that base plus
+`0x40` in another register. Neither assignment gives the base an entry-ABI,
+receiver or object identity. No provenance crosses either call. The local numeric
+store displacement is separate from a confirmed receiver layout or executed
+indirect dispatch, and current-client symbols do not name older-server owners.
+
+Independent neutral interpretation joins the prior symbol/slot evidence, accepted
+lifecycle receipts, strict result schema and per-instruction temporary boundaries;
+thirteen mutations reject, including partial-register clobbers, wrong spaces,
+widths, constants, displacements and unsupported proof claims. The first clobber
+checker failure remains preserved separately. The lead reproduces the exact
+corrected result without writes. Original-byte equality rests on the root target
+qualifier receipt; the independent interpretation does not rehash proprietary code.
+
+Evidence: `work/control-client-constructor-continuation-instructions-20261013/`,
+payload SHA-256 `1aeb670aa28494e50fa5a936b3a9728370245913b0c6ffc663e74f26df1e3e69`;
+final production review `c39870a76259276900ecfbf745d7151df76bb9f60f10c52573f5f8ce3bc5bd2e`;
+additive interpretation `223ffe8cab6e51d26bf98835ba2b02a6e796f363ab9e9a3ddb8a1c3962de42af`.
+This is static local-store evidence, not client admission, network compatibility,
+archive/bunch provenance, complete constructor identity or a playable server.
