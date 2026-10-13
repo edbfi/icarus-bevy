@@ -16,14 +16,16 @@ original (F-253). Complete protocol interoperability, authentication, gameplay,
 world-data parity and official-save import are not demonstrated; release
 reliability and performance targets are unproven.
 
-Research is paused at the user's request (F-001). The last native change is
-commit af4270b, which makes incomplete domain capture fail before publication;
-its tests, manual suite, release build and smoke pass (F-003). Supplied-save
+Offline research resumed under the execution instruction (F-404); connected
+client and original-runtime scopes remain unavailable. Native persistence now
+rejects FIFO inputs without blocking and preserves valid preceding-generation
+recovery (F-405). Complete domain capture remains required (F-003). Supplied-save
 structure for four selected classes is qualified against both copies with
 values left opaque ([save-class digest](research/save-format/2026-10-13-save-class-audits.md));
 current-client control-table stores are located but their owner is not
 ([control-store digest](research/network/2026-10-13-control-stores.md)); the
-C001 constructor decoder is built but its exact-window case is not yet run
+C001 constructor decoder passes all ten corrected authored modes; its
+exact-window case is not yet run
 ([C001 digest](research/save-format/2026-10-13-c001-decoder.md)).
 
 ## Milestones
@@ -88,19 +90,18 @@ No official server bug is marked reproduced or fixed (F-217).
 
 ## Gates
 
-Every binding precondition is in [gates.md](gates.md). The ones that
-bind the next task: complete the independent fixture-v2 review and run its ten
-authored modes before preparing any C001 original-code case; do not execute the
-prepared files before that review; preserve the failed nine-mode receipt and
-the separate strict replay as non-passing; do not repeat completed C013, C028,
-C034 or D01 structure work; each original-server run needs an explicit current
-launcher session, since historical authorization windows are expired.
+Every binding precondition is in [gates.md](gates.md). Fixture-v2 review and
+ten authored engine modes are qualified (F-406, F-407). The C001 original-code
+case still needs fresh exact-byte joins, scope, session and independent review.
+Preserve the failed nine-mode receipt and separate strict replay as non-passing.
+Do not repeat completed C013, C028, C034 or D01 structure work; each original
+runtime experiment requires its own current launcher session.
 
 ## Next tasks
 
-Research remains paused; these resume in order when work is reauthorized.
+Continue authorized offline work in this order; connected proof retains its gates.
 
-1. Complete independent fixture-v2 review and the ten authored modes before preparing any original-code case (U-041).
+1. Fixture-v2 review and ten authored modes are complete (F-406, F-407); retain their qualified receipts.
 2. Build and test a standalone exact-window decoder to recover C001 instruction evidence within the 305/296-byte windows (F-270, F-271, U-041, U-042).
 3. Establish C001's complete concrete construction/vtable/archive-dispatch bridge from retained seeds and fresh bounded metadata (F-270, U-041).
 4. Close the census using completed C028/C034/C013 audits; leave native value meanings and empty inherited arrays open (F-272, F-273, U-046).
@@ -113,4 +114,4 @@ Research remains paused; these resume in order when work is reauthorized.
 11. Advance transport/control/authentication evidence (F-253, F-254, U-037, U-038).
 12. Advance independently authored world-data feasibility; validate a small import before the heavy-world workload (F-242, U-045).
 13. Run each original-server experiment only under an explicit current launcher session (F-218, F-252).
-14. Resolve the 35 unsigned historical commits policy issue before PR integration (F-275).
+14. Resolve the 35 unsigned historical commits policy issue before PR integration (F-279; F-275 superseded).

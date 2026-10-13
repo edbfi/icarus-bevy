@@ -3,8 +3,8 @@
 An independent native Linux dedicated-server project in Rust and Bevy.
 **This currently runs a headless foundation, not an ICARUS-compatible server.**
 Networking, authentication, gameplay, original-world compatibility and
-official-save import remain unimplemented and unvalidated. Research is paused at
-the [2026-10-13 checkpoint](docs/implementation-status.md#summary).
+official-save import remain unimplemented and unvalidated. Offline research has resumed; current results and remaining gates are in the
+[checkpoint](docs/implementation-status.md#summary).
 
 ## Quick start
 

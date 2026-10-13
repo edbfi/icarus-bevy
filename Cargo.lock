@@ -1862,6 +1862,7 @@ dependencies = [
  "fs2",
  "getrandom",
  "hmac",
+ "rustix",
  "serde",
  "serde_json",
  "sha1",

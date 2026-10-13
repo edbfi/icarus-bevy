@@ -2,6 +2,7 @@
 use std::{
     fs::{self, File, OpenOptions},
     io::{Read, Write},
+    os::unix::fs::OpenOptionsExt,
     path::{Path, PathBuf},
     sync::mpsc::{self, Receiver, SyncSender, TryRecvError},
     thread,
@@ -90,7 +91,12 @@ impl SnapshotStore {
             .write(true)
             .create(true)
             .truncate(false)
+            .custom_flags(nonblocking_flag())
             .open(root.join("server.lock"))?;
+        ensure!(
+            lock.metadata()?.is_file(),
+            "server lock must be a regular file"
+        );
         fs2::FileExt::try_lock_exclusive(&lock)
             .context("data directory is already locked by another server")?;
         // Persist newly created directory entries before acknowledging later saves.
@@ -271,14 +277,29 @@ fn checksum(bytes: &[u8]) -> String {
 }
 
 fn read_bounded(path: &Path, limit: u64) -> Result<Vec<u8>> {
+    // A byte limit does not bound opening a FIFO. Nonblocking open followed by
+    // handle metadata also rejects special files swapped in during path lookup.
+    let file = OpenOptions::new()
+        .read(true)
+        .custom_flags(nonblocking_flag())
+        .open(path)?;
+    ensure!(
+        file.metadata()?.is_file(),
+        "snapshot input must be a regular file: {}",
+        path.display()
+    );
     let mut bytes = Vec::new();
-    File::open(path)?.take(limit + 1).read_to_end(&mut bytes)?;
+    file.take(limit + 1).read_to_end(&mut bytes)?;
     ensure!(
         bytes.len() as u64 <= limit,
         "file exceeds size limit: {}",
         path.display()
     );
     Ok(bytes)
+}
+
+fn nonblocking_flag() -> i32 {
+    rustix::fs::OFlags::NONBLOCK.bits() as i32
 }
 
 fn sync_directory(path: &Path) -> Result<()> {

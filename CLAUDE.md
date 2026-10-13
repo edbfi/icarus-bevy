@@ -4,7 +4,8 @@ Build an independent native Linux ICARUS dedicated server in Rust and Bevy:
 stock-client compatibility, player-state save import, reliability and
 performance for a pinned official release. The replacement contains no original
 assets, data tables, binaries, code or Proton. Today it is a headless foundation;
-compatibility is not demonstrated. Research is paused until the user resumes it.
+compatibility is not demonstrated. Offline research has resumed; original-runtime
+and connected-client experiments retain their separate current-scope gates.
 
 ## Read first
 
