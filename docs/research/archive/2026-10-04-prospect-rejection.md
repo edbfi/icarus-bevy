@@ -1,7 +1,9 @@
+> Archived research report, retained verbatim. Current conclusions live in [the ledgers](../../ledgers/findings.md). Moved from `docs/research/` on 2026-10-13.
+
 # Original prospect-startup rejection observations
 
 Historical report — 2026-10-04. The runtime windows below have ended. See the
-[current checkpoint](../implementation-status.md) for later findings, pending work
+[current checkpoint](../../implementation-status.md) for later findings, pending work
 and pause status.
 
 The original build **25621760** rejected a missing prospect file once and an
@@ -48,4 +50,4 @@ The distinct `LocalSavePath`/from-file path, deeper blob decoding, valid world l
 state application, interrupted saves and full prospect restart remain untested.
 There was no previously loaded world whose atomic preservation could be checked.
 Do not generalize these results to all corrupt saves or to the separate fatal-output
-lead. The [loading specification](../specs/prospect-loading.md) retains those gates.
+lead. The [loading specification](../../specs/prospect-loading.md) retains those gates.

@@ -4,7 +4,7 @@ Status: **observed, incomplete, not wire-validated**. Applies only to dedicated
 server tool build 25621760. This is an independently written behavioral note, not
 an implementation copied from the original or a complete protocol specification.
 Evidence and reproduction are in the
-[targeted static report](../research/2026-10-04-targeted-static-report.md).
+[targeted static report](../research/archive/2026-10-04-targeted-static-report.md).
 
 Validation statements below describe the cited historical runs. Current priorities
 and the research pause are tracked in the [implementation checkpoint](../implementation-status.md).
@@ -145,7 +145,7 @@ release build and native restart also pass. Public fields, errors, EOF, byte cap
 false compatibility/identity/admission flags are unchanged. Exact transitions:
 `work/archive-frame-transition-20261013/`. No reference/client result is promoted.
 
-A bounded [caller investigation](../research/2026-10-12-control-caller-limit.md)
+A bounded [caller investigation](../research/archive/2026-10-12-control-caller-limit.md)
 encountered REA provider startup timeouts. A separately reviewed direct fallback
 queried the retained database without analysis and found one non-call reference
 to the dispatcher, with no recorded source function. Partial database coverage
@@ -192,6 +192,6 @@ show that both `+0x18` slots equal their respective named NotifyControlMessage
 public-symbol addresses. These build-25793767 static relationships do not identify
 the older dispatcher owner, establish object offsets or prove executed dispatch.
 The table targets remain undereferenced and no complete vtable extent is claimed.
-[Exact inputs, bounded fallback and independent evidence](../research/2026-10-12-control-caller-limit.md#current-client-public-symbols-and-named-notify-slots)
+[Exact inputs, bounded fallback and independent evidence](../research/archive/2026-10-12-control-caller-limit.md#current-client-public-symbols-and-named-notify-slots)
 preserve the next constructor/receiver/type gate. Image-address deltas cannot
 stand in for object-layout offsets, and provenance cannot cross calls unchecked.

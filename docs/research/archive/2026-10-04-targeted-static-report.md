@@ -1,10 +1,12 @@
+> Archived research report, retained verbatim. Current conclusions live in [the ledgers](../../ledgers/findings.md). Moved from `docs/research/` on 2026-10-13.
+
 # Targeted connection and prospect-load analysis
 
 Historical report — 2026-10-04. Findings and proposed next steps retain their
 original scope. Later reports cover the
-[default checksum](../specs/network-checksum.md) and
+[default checksum](../../specs/network-checksum.md) and
 [failure-output target](2026-10-04-save-failure-output.md); they do not rewrite
-the earlier unknowns below. See the [current checkpoint](../implementation-status.md)
+the earlier unknowns below. See the [current checkpoint](../../implementation-status.md)
 for pending work and pause status. Reproduction commands are historical, not
 authorization for a new batch; current tooling follows the project REA rules.
 
@@ -112,7 +114,7 @@ connection swapping and debug text respectively. ID 0 reads one byte, a 32-bit
 version and a string-shaped value before checking archive error state and version
 compatibility. This establishes an inner message-processing observation, not a
 complete packet layout: framing, bit alignment, reliability and connection state
-are still unknown. See the [negotiation notes](../specs/control-negotiation.md).
+are still unknown. See the [negotiation notes](../../specs/control-negotiation.md).
 
 **F-004 — A from-file load stages two reads before state application (medium
 confidence; E-010/E-014/E-015/E-019).** The outer function checks both reader

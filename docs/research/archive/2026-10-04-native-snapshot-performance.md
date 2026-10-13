@@ -1,7 +1,9 @@
+> Archived research report, retained verbatim. Current conclusions live in [the ledgers](../../ledgers/findings.md). Moved from `docs/research/` on 2026-10-13.
+
 # Native snapshot decoding measurement
 
 Historical measurement — 2026-10-04. Results and test claims apply to the source
-and workload recorded below. See the [current checkpoint](../implementation-status.md)
+and workload recorded below. See the [current checkpoint](../../implementation-status.md)
 for later implementation changes and validation.
 
 The snapshot reader previously decoded a full `serde_json::Value` tree and then
@@ -54,7 +56,7 @@ intermediate object tree could collapse before validation. An ambiguous current
 generation is now treated as corrupt and may recover a valid previous generation.
 The native writer never produces duplicate fields.
 
-Reproduce with the [snapshot workload instructions](../synthetic-workload.md).
+Reproduce with the [snapshot workload instructions](../../runbooks/synthetic-workload.md).
 Keep executable hashes, source revision, population, affinity and concurrent work
 with results. Re-evaluate on real implemented gameplay and larger supported saves
 before setting production capacity targets.

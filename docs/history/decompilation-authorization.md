@@ -1,11 +1,14 @@
+> Historical record, retained verbatim for provenance. Not a current instruction or approval.
+> Index: [authorizations-index.md](authorizations-index.md). Moved from `docs/` on 2026-10-13.
+
 # Historical bounded headless decompilation batch
 
 Historical record: the reverse-skill package was removed on 2026-10-12. Its
 commands and package requirements below are preserved as approval history, not
 current instructions. The upstream `AGENTS.md` link identifies the former revision.
 
-For current work, follow the [canonical plan](linux-dedicated-server-plan.md)
-and [implementation status](implementation-status.md). This record does not
+For current work, follow the [canonical plan](../linux-dedicated-server-plan.md)
+and [implementation status](../implementation-status.md). This record does not
 resume research or extend an execution window.
 
 Status: approved by the user on 2026-10-04, including both Java helper scripts.

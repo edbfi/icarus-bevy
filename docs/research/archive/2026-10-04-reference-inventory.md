@@ -1,8 +1,10 @@
+> Archived research report, retained verbatim. Current conclusions live in [the ledgers](../../ledgers/findings.md). Moved from `docs/research/` on 2026-10-13.
+
 # Original server inventory
 
 Historical inventory — 2026-10-04. Unknowns below describe this inventory stage;
 the later [static baseline](2026-10-04-static-baseline.md) records manifest
-inspection. See the [current checkpoint](../implementation-status.md) for pending
+inspection. See the [current checkpoint](../../implementation-status.md) for pending
 work and pause status. Reproduction requires a fresh authorized case.
 
 The authorized offline inventory contains **435 files**, totaling **10,443,211,803
@@ -51,4 +53,4 @@ flowchart LR
 No assets were extracted or reused. Original files were not changed. No original
 process was launched, and there were no reference-target network connections.
 
-Next: [offline static-analysis batch](../static-analysis-authorization.md).
+Next: [offline static-analysis batch](../../history/static-analysis-authorization.md).

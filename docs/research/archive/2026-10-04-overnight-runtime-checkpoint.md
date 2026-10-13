@@ -1,9 +1,11 @@
+> Archived research report, retained verbatim. Current conclusions live in [the ledgers](../../ledgers/findings.md). Moved from `docs/research/` on 2026-10-13.
+
 # Offline reference resume experiment
 
 Historical report — 2026-10-04. The runtime window below has ended. Later
 [by-name rejection tests](2026-10-04-prospect-rejection.md) used a separate entry
 path and do not resolve this command probe. See the
-[current checkpoint](../implementation-status.md) for pending work and pause status.
+[current checkpoint](../../implementation-status.md) for pending work and pause status.
 
 The overnight reference run observed the original for **120 seconds**, then stopped
 and removed its container. It remained running until the harness stopped it; the
@@ -23,7 +25,7 @@ retained as a negative result, not silently converted into a missing-file test.
 
 ## Isolation and provenance
 
-The approved [overnight contract](../overnight-work-plan.md) authorized this run.
+The approved [overnight contract](../../history/overnight-work-plan.md) authorized this run.
 `tools/run_reference_offline.py` creates a fresh run directory, journals arguments
 and its source hash, invokes the case guard, and captures logs before and after
 stopping the exact labeled container. Docker inspection verified:

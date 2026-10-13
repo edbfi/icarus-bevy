@@ -386,7 +386,7 @@ static current-client relationships; older-server ownership, object offsets,
 decoded entries, actual receivers and runtime dispatch remain unqualified.
 The 0x290 distance between primary/secondary image addresses is image placement,
 not an object-layout measurement. Exact inputs, hashes and limits:
-[caller investigation](research/2026-10-12-control-caller-limit.md#current-client-public-symbols-and-named-notify-slots).
+[caller investigation](research/archive/2026-10-12-control-caller-limit.md#current-client-public-symbols-and-named-notify-slots).
 The reusable pure PDB reader has 29 authored/independent tests, including an actual
 10 MB synthetic stream at exactly 2,500,000 records and one over the cap. It runs
 through the repository hooks and CI alongside the existing PE fixtures.
@@ -452,7 +452,7 @@ two constant stores and four eight-byte zero stores on an unchanged unknown
 post-call base, with fourteen rejecting mutations. No provenance crosses the
 preceding call. Class, type registration, actual receiver/caller and runtime
 reachability remain open. Exact hashes:
-[caller investigation](research/2026-10-12-control-caller-limit.md#local-post-call-gap-closed).
+[caller investigation](research/archive/2026-10-12-control-caller-limit.md#local-post-call-gap-closed).
 
 ### Borrowed strict string frames — 2026-10-13
 
@@ -485,7 +485,7 @@ through an eight-byte load from `+0x620` and two constant stores at offsets zero
 and `+0x28`. Independent interpretation rejects nine origin/width/space/clobber/
 gap/control mutations. No runtime instructions execute or decompiler flow is used.
 Class, primary-entry/parameter, vtable, receiver and caller identity remain open.
-Evidence and exact hashes: [caller investigation](research/2026-10-12-control-caller-limit.md#fixed-prefixes-and-base-register-limits).
+Evidence and exact hashes: [caller investigation](research/archive/2026-10-12-control-caller-limit.md#fixed-prefixes-and-base-register-limits).
 
 ### C034 top scalars — 2026-10-13, 01:24 UTC
 
@@ -740,7 +740,7 @@ cause and corrected in a separate reviewed retry. The retry passed, retaining al
 no containing function. This partial retained database does not establish caller
 absence or archive provenance. The reusable exporter compiles against Ghidra
 12.1.4/JDK 21; 24 wrapper boundary checks and full repository checks pass.
-See [bounded caller investigation](research/2026-10-12-control-caller-limit.md).
+See [bounded caller investigation](research/archive/2026-10-12-control-caller-limit.md).
 
 A subsequent reviewed bounded PE candidate scan passes all 317 bindings and
 owned cleanup. Across 104,117,677 eligible offsets, it finds one absolute pointer
@@ -784,14 +784,14 @@ All 523 bindings and owned cleanup pass. The first attempt's fixture-class
 contamination is preserved separately; source-only script isolation fixes that
 failure. A forced metadata decompilation warns of blocks beyond its configured
 range, so it remains a limited lead. Direct operand/p-code checks precede any owner
-or archive conclusion. See the [control report](research/2026-10-12-control-caller-limit.md#targeted-instruction-context-and-preserved-failed-attempt).
+or archive conclusion. See the [control report](research/archive/2026-10-12-control-caller-limit.md#targeted-instruction-context-and-preserved-failed-attempt).
 
 The subsequent instruction-only case validates eleven byte-matched instructions
 and 31 raw p-code operations in two bounded windows, with all 592 bindings and
 owned cleanup passing. It proves two eight-byte stores of `0x145468180` at base
 register displacement `+0x28`; base parameters, class ownership and indirect
 dispatch remain unproved. The tested numeric exporter is now a tracked research
-tool. See the [local store proof](research/2026-10-12-control-caller-limit.md#instruction-only-operand-and-local-store-proof).
+tool. See the [local store proof](research/archive/2026-10-12-control-caller-limit.md#instruction-only-operand-and-local-store-proof).
 
 ### C009 common-child headers — 2026-10-12, 22:15 UTC
 
@@ -1317,7 +1317,7 @@ counts and library hashes are historical receipts, not a fresh aggregate result.
   Evidence: `work/icarus-overnight/native-soak.jsonl`, with the invocation and binary
   provenance in `commands.jsonl`. It began at `cac76ec` before later persistence
   changes, so it does not qualify the current revision or ICARUS gameplay.
-- The [snapshot measurement](research/2026-10-04-native-snapshot-performance.md)
+- The [snapshot measurement](research/archive/2026-10-04-native-snapshot-performance.md)
   documents improved native synthetic save/load cost after typed decoding. It is
   not a comparison with the original server.
 - The real filesystem probe now passes ENOSPC/EACCES, unchanged acknowledged
@@ -1397,7 +1397,7 @@ counts and library hashes are historical receipts, not a fresh aggregate result.
   release executable links only the platform loader, libc and libgcc_s on this host.
 - CI definition validates formatting, Clippy, tests, release build and headless smoke.
   Local checks passed; hosted CI has not been run from this workspace.
-- The [offline reference launcher](offline-runtime-authorization.md) now requires
+- The [offline reference launcher](history/offline-runtime-authorization.md) now requires
   current case/session/hash/mode bindings, locks attempt quotas, reserves cleanup
   time and verifies exact container ownership/removal. A final time check closes
   the hashing/preparation gap before launch. Thirty mocked Python tests pass;
@@ -1420,9 +1420,9 @@ steps below are historical.
   register teardown, not compatibility callbacks. A broader direct-reference scan
   still leaves indirect/runtime registration unresolved. Private case
   `work/control-version-20261012/` passes strict review with unchanged original input.
-- [Prospect rejection](research/2026-10-04-prospect-rejection.md): missing/truncated
+- [Prospect rejection](research/archive/2026-10-04-prospect-rejection.md): missing/truncated
   by-name inputs were rejected without an observed crash. The separate
-  [from-file failure path](research/2026-10-04-save-failure-output.md) remains a
+  [from-file failure path](research/archive/2026-10-04-save-failure-output.md) remains a
   static lead, not a reproduced original defect.
 - [Inner save dispatch](specs/prospect-loading.md): 44 targeted exports plus
   metadata and flag tracing identify the older build's reflected state/header,
@@ -1512,17 +1512,17 @@ steps below are historical.
   user-reported and matched-client behavior is untested.
   This can support matched-build static comparison; it does not
   replace live Windows-client tests or require packaged assets for this first pass.
-- [Inventory](research/2026-10-04-reference-inventory.md): hashed original baseline.
-- [Static inspection](research/2026-10-04-static-baseline.md): executable identity,
+- [Inventory](research/archive/2026-10-04-reference-inventory.md): hashed original baseline.
+- [Static inspection](research/archive/2026-10-04-static-baseline.md): executable identity,
   imported interfaces and concrete diagnostic anchors; behavior remains unverified.
-- [Bounded Ghidra pass](research/2026-10-04-decompilation-report.md) reached its
+- [Bounded Ghidra pass](research/archive/2026-10-04-decompilation-report.md) reached its
   analysis time limit and exported zero functions; behavior remains unresolved.
-- [Targeted static follow-up](research/2026-10-04-targeted-static-report.md) located
+- [Targeted static follow-up](research/archive/2026-10-04-targeted-static-report.md) located
   the selected references and inspected control negotiation, version comparison
   and prospect-loading branches with radare2. Initial
   [negotiation](specs/control-negotiation.md) and
   [loading](specs/prospect-loading.md) notes remain incomplete and unvalidated.
-- [Offline Proton startup](research/2026-10-04-offline-startup-report.md) reached
+- [Offline Proton startup](research/archive/2026-10-04-offline-startup-report.md) reached
   the entry map, reporting game 3.0.30.158174 and engine 4.27.2. Steam initialization
   failed in isolation; the harness stopped and removed the container. No connected
   client tests are authorized yet.

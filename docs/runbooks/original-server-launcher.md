@@ -1,8 +1,9 @@
-# Offline reference runtime scope and launcher
+# Original-server offline launcher
 
-Follow the [canonical plan](linux-dedicated-server-plan.md) and
-[implementation status](implementation-status.md) for current priorities and
-evidence. The historical authorization below does not renew an execution window.
+Runbook copied from the "Current launcher" section of the retained
+[offline runtime record](../history/offline-runtime-authorization.md). Each
+experiment needs its own concrete current scope under the user's standing
+instruction; historical session files do not renew themselves.
 
 ## Current launcher (2026-10-12)
 
@@ -71,60 +72,3 @@ an unsuccessful cleanup receipt requires investigation before another run.
 
 Networking remains disabled, with no published ports, downloads, identity overrides
 or reference writes. The pinned image is local-only; CPU/memory/PID limits and
-3 GiB available-memory / 30 GiB disk floors remain enforced. The launcher has no
-mode for mounting private user saves. Connected Windows-client tests and matched
-save-load comparisons require their own concrete experiment setup.
-
-## Historical first-startup authorization (2026-10-04)
-
-The following records the original approval, not a current executable recipe.
-The reverse-skill package was removed on 2026-10-12; its commands and package
-requirements below are historical. The upstream `AGENTS.md` link identifies the
-former revision.
-
-Status: approved by the user on 2026-10-04. This was the first execution of the original server.
-It cannot prove stock-client compatibility because the container has no network.
-
-Docker 29.8.2 is available. The user's Proton image is already installed at digest
-`sha256:967e40780cb46a5343bd7a5fd372612d1a1b90fbc95fdd803d74ec5b3bede237`.
-The image runs as `container` with its existing home at `/home/container`.
-
-### Historical commands proposed for approval
-
-```bash
-bash .agents/vendor/reverse-skill/skills/scripts/case-init.sh \
-  --hint "game reverse ICARUS offline startup" \
-  --case-name icarus-offline-startup --project-root "$PWD" \
-  --auth-granted --auth-basis own_system \
-  --evidence-of-auth "User approval of docs/offline-runtime-authorization.md" \
-  --sample "$PWD/icarus-orig/Icarus/Binaries/Win64/IcarusServer-Win64-Shipping.exe" \
-  --in-scope-asset "$PWD/icarus-orig" --network-profile offline
-```
-
-Complete the scope with `offline_execution`, local log inspection and resource
-measurement, roles `lead`, `cre`, `doc`, and explicit exclusion of network access,
-asset extraction, instrumentation, real players and production saves. Then run:
-
-```bash
-timeout 90s bash tools/run_reference_offline.sh
-```
-
-Review the exact Docker command in the script before approval. Effects:
-
-- Create a separate ignored case and writable Proton prefix/runtime directory.
-- Start one container from the pinned local image, with no pull or downloads.
-- Run the original server under Proton, with original installation mounted read-only.
-- Disable container networking and publish no host ports; attempted external
-  connections cannot leave the network namespace.
-- Limit CPU, memory and process counts; write only temporary/container state and
-  local case artifacts. The case directory is mounted at the image's existing home.
-- Observe for roughly 30–45 seconds, save container logs/inspection/resource data,
-  stop the exact created container, and remove it. Preserve all case artifacts.
-
-Expected startup/network failures are observations, not confirmed original bugs.
-This does not authorize downloading SDKs, opening ports, using real save data, or
-starting connected client tests. The independent replacement remains native Bevy.
-
-The vendored [AGENTS.md](https://github.com/zhaoxuya520/reverse-skill/blob/cab634bd855fc287f6e420c1f36fd1a6b9245960/AGENTS.md) requires explicit
-script approval, and the original case explicitly excludes server execution. This
-batch therefore needs separate approval and its own target scope.

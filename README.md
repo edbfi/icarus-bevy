@@ -77,7 +77,7 @@ Use `--recorders` to additionally check recorder field and byte-array boundaries
 it implies root framing and reports aggregates without class names or component data.
 Validation covers authored fixtures and supplied-save envelope integrity; the
 inner world schema and original-save round trips remain unvalidated.
-The [synthetic workload](docs/synthetic-workload.md) exercises native scheduling
+The [synthetic workload](docs/runbooks/synthetic-workload.md) exercises native scheduling
 and durability; it is not an ICARUS performance benchmark.
 
 ## Development and reference research
@@ -110,39 +110,7 @@ Scope validation checks existing authorization and deadlines; it grants neither.
 
 ### Research helpers
 
-The pure `tools/pe_candidates.cjs` module validates bounded PE64/x64 buffers and
-collects explicitly pinned address patterns. It opens no files and confirms no
-callers or instruction boundaries. Its authored and independent PE fixtures run
-through prek/CI using `node --test tools/tests/pe_candidates*.test.cjs`.
-
-The pure `tools/pdb_public_symbols.cjs` reader validates a bounded MSF7/DBI/PUB32
-profile against explicit PE debug identity and section geometry. It uses a
-caller-supplied bounded reader, opens no files, and exports only selected public
-symbols.
-Its authored and independent fixtures run through prek/CI. Target use requires a
-separate authorized case with streaming input hashes and resource/deadline guards;
-symbol names alone establish neither instruction boundaries nor runtime behavior.
-
-The experimental [archive-string subset](docs/specs/archive-string.md) offers a
-borrowed strict frame validator and an owning decoder. Initial-control validation
-uses borrowed spans without temporary decoded-unit allocation. Archive byte order
-and enclosing message boundaries remain the caller's responsibility.
-
-`tools/ghidra/ExportBoundedInstructionOperands.java` exports only numeric operands,
-raw p-code and instruction hashes for two fixed, pinned-executable windows. It
-requests no decompiler, analyzers, function creation or outgoing flow. Target use
-requires a reviewed case, source-only script directory, disposable retained-project
-copy and the offline deadline/resource/ownership guards; fixture and compiler
-outputs must stay outside that script directory. See the
-[control investigation](docs/research/2026-10-12-control-caller-limit.md).
-
-`tools/ghidra/DecodeConstructorWindows.java` is the independently authored minimal
-x64 decoder used in the reviewed current-client prefix case. It decodes two fixed
-derived byte windows without creating a Program/database or importing an executable.
-It requires Ghidra 12.1.4, exact input sizes/hashes and separately reviewed original
-slice provenance, scope and lifecycle guards. Nine real authored decoder recipes
-and five injected API guards pass. Case wrappers enforce authorization; invoking
-this helper alone does not establish input provenance or authorize target reads.
+See the [research helpers runbook](docs/runbooks/research-helpers.md).
 
 ### Reference inputs and authorization
 
@@ -155,8 +123,8 @@ checksums and inventories. Use copies under `work/` for experiments. The supplie
 heavy-world archive and its role in save research are covered by the
 [continuation plan](docs/linux-dedicated-server-plan.md#supplied-heavy-world-save-and-continuation-order).
 
-Read [research authorization](docs/research-authorization.md) before running
-research scripts. Package-script approval and target scope are separate gates.
+Historical approvals are indexed in [docs/history](docs/history/authorizations-index.md);
+the [launcher runbook](docs/runbooks/original-server-launcher.md) describes current runs. Package-script approval and target scope are separate gates.
 The inventory/static reports are not evidence of a working protocol or a reproduced
 server bug. Original Windows/Proton runs remain separately authorized lab work.
 

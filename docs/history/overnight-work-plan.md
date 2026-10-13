@@ -1,3 +1,6 @@
+> Historical record, retained verbatim for provenance. Not a current instruction or approval.
+> Index: [authorizations-index.md](authorizations-index.md). Moved from `docs/` on 2026-10-13.
+
 # Historical overnight research and implementation batch
 
 Historical record: the reverse-skill package was removed on 2026-10-12. Its
@@ -10,8 +13,8 @@ Recorded window: 2026-10-04 21:13:19 UTC to 2026-10-05 05:13:19 UTC
 (23:13–07:13 Europe/Berlin). Scope and timestamps are in
 `work/icarus-overnight/scope.md` and `session.json`.
 
-For current work, follow the [canonical plan](linux-dedicated-server-plan.md#autonomous-execution-and-maintenance)
-and [implementation status](implementation-status.md). The 2026-10-12 user
+For current work, follow the [canonical plan](../linux-dedicated-server-plan.md#autonomous-execution-and-maintenance)
+and [implementation status](../implementation-status.md). The 2026-10-12 user
 instruction permits frequent feature-branch pushes and supersedes this batch's
 no-push rule. Its eight-hour clock and runtime authorization remain historical;
 do not reuse its session as a new approval. Maintain results in the existing status
@@ -24,7 +27,7 @@ Use an **eight-hour window from approval** to advance the independent native Lin
 Rust/Bevy server: recover connection and persistence behavior, implement justified
 pieces, investigate failure handling, and test the native foundation. Preserve
 Rust 1.99.0 and Bevy 0.19.1. The existing comprehensive
-[project plan](linux-dedicated-server-plan.md) and its release gates remain in force.
+[project plan](../linux-dedicated-server-plan.md) and its release gates remain in force.
 
 Deliver a morning report with findings, code changes, test and measurement results,
 commits, unresolved questions and the next useful experiment. A playable replacement

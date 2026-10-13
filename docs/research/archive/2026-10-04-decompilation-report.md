@@ -1,9 +1,11 @@
+> Archived research report, retained verbatim. Current conclusions live in [the ledgers](../../ledgers/findings.md). Moved from `docs/research/` on 2026-10-13.
+
 # Bounded decompilation result
 
 Historical report — 2026-10-04. The later
 [targeted analysis](2026-10-04-targeted-static-report.md) recovered selected
 references without changing this unsuccessful result. See the
-[current checkpoint](../implementation-status.md) for pending work and pause status.
+[current checkpoint](../../implementation-status.md) for pending work and pause status.
 
 The approved Ghidra pass did not recover any of the selected functions. Its
 automatic analysis reached the 180-second limit; most analysis time was spent
@@ -13,7 +15,7 @@ be derived from this pass.
 
 ## Scope and reproduction
 
-The [approved command](../decompilation-authorization.md) used Ghidra 12.1.4,
+The [approved command](../../history/decompilation-authorization.md) used Ghidra 12.1.4,
 Java 21, two analysis CPUs and the local shipping executable identified in the
 [static baseline](2026-10-04-static-baseline.md). PDB Universal was disabled;
 the import loaded no additional library files. No original execution or asset

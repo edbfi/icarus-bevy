@@ -1,9 +1,11 @@
+> Archived research report, retained verbatim. Current conclusions live in [the ledgers](../../ledgers/findings.md). Moved from `docs/research/` on 2026-10-13.
+
 # Static baseline: build 25621760
 
 Historical baseline — 2026-10-04. Authorization status and unknowns below describe
 this initial static batch. Later [startup observations](2026-10-04-offline-startup-report.md)
 record the reported engine version. See the
-[current checkpoint](../implementation-status.md) for pending work and pause status.
+[current checkpoint](../../implementation-status.md) for pending work and pause status.
 
 This report records offline static observations. It does not establish a matched
 client build, runtime compatibility, a reproduced failure, or a performance result.
@@ -70,7 +72,7 @@ replacement source or content.
 
 ## Remaining gates
 
-- Bounded decompilation: [proposed batch](../decompilation-authorization.md).
+- Bounded decompilation: [proposed batch](../../history/decompilation-authorization.md).
 - Dynamic reference runs, packet capture, crash reproduction and stock clients:
   not yet authorized or performed.
 - Asset independence and full-world compatibility: unresolved feasibility gate.

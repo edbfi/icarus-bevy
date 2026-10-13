@@ -21,7 +21,7 @@ build commit, binary hash, host resources and concurrent workloads with results.
 This tests native scheduling and persistence under synthetic load. It contains no
 ICARUS gameplay, networking or original content, and cannot establish stock-client
 compatibility or a performance improvement over the official server. The two-hour
-limit is also shorter than the [canonical plan's](linux-dedicated-server-plan.md)
+limit is also shorter than the [canonical plan's](../linux-dedicated-server-plan.md)
 sustained qualification runs.
 
 For repeated synchronous persistence measurements, use:

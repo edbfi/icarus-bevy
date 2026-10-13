@@ -1,9 +1,11 @@
+> Archived research report, retained verbatim. Current conclusions live in [the ledgers](../../ledgers/findings.md). Moved from `docs/research/` on 2026-10-13.
+
 # Bounded control-caller investigation
 
 Historical investigation — 2026-10-12–13, through the 06:12 UTC result below.
 Sections preserve each attempt's evidence, limitations and proposed next step;
 later sections may resolve earlier local gaps. See the
-[current checkpoint](../implementation-status.md) for pending work and pause status.
+[current checkpoint](../../implementation-status.md) for pending work and pause status.
 Completed sessions are expired; this report does not resume research.
 
 The concrete archive, bit-position and byte-order path into older dispatcher

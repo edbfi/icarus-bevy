@@ -1,8 +1,10 @@
+> Archived research report, retained verbatim. Current conclusions live in [the ledgers](../../ledgers/findings.md). Moved from `docs/research/` on 2026-10-13.
+
 # Offline reference startup report
 
 Historical report — 2026-10-04. Scope, authorization and next steps below describe
 this completed batch; they do not authorize another run. See the
-[current checkpoint](../implementation-status.md) for pending work and pause status.
+[current checkpoint](../../implementation-status.md) for pending work and pause status.
 
 The original server reached its dedicated-server entry map under Proton during
 the approved isolated run. It reported game version `3.0.30.158174-Shipping-DangerousHorizons`
@@ -14,8 +16,8 @@ nor demonstrates any performance advantage for the replacement.
 
 ## Scope and environment
 
-The user approved [this batch](../offline-runtime-authorization.md), implemented
-by [the launcher](../../tools/run_reference_offline.sh). The local authorization
+The user approved [this batch](../../history/offline-runtime-authorization.md), implemented
+by [the launcher](../../../tools/run_reference_offline.sh). The local authorization
 record is `work/icarus-offline-startup/scope.md`. The separate static-analysis case
 continues to exclude original execution.
 

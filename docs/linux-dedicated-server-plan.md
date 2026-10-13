@@ -324,7 +324,7 @@ tool defaults cannot manufacture authorization. Continue already authorized
 deterministic work within its bounds and resolve new scope requirements before
 dependent experiments.
 
-[research-authorization.md](research-authorization.md) preserves the historical
+[research-authorization.md](history/research-authorization.md) preserves the historical
 first batch. Its old tooling commands are historical evidence, not current setup
 instructions. Preserve frozen case artifacts and their receipts; use fresh
 reviewed execution bindings when adapting a later probe to the current tooling.
@@ -693,7 +693,7 @@ Unknown versions are not supported by assumption.
 Current protocol findings and their retained validation belong in the
 [implementation checkpoint](implementation-status.md#current-paused-checkpoint--2026-10-13-0628-utc),
 [control specification](specs/control-negotiation.md), and
-[caller investigation](research/2026-10-12-control-caller-limit.md).
+[caller investigation](research/archive/2026-10-12-control-caller-limit.md).
 The experimental body reader and local table-store proofs do not establish
 concrete packet/bunch framing, archive byte order, receiver/type-registration
 identity, executed dispatch or older-server ownership. Reuse completed bounded
