@@ -485,3 +485,57 @@ review SHA-256 is `f444533558c85ac6b729f59d45c0fe243737b1dfdee64a73a8ed52a042da7
 No unchanged cold import was repeated. Later bounded decoding requires a separately
 reviewed fallback, original-byte joins and fixed windows inside these intervals,
 with no analyzer, decompiler, function expansion or unchecked call provenance.
+
+## Current-client bounded constructor prefixes
+
+The standalone language/PseudoInstruction decoder passes real installed-API
+compilation, nine authored byte recipes and five injected dependency/fallback guards
+before target use. Its first checker incorrectly equated encoded operand width with
+p-code register-write width; the corrected derivative distinguishes 16-bit COPY2
+from 32-bit MOV's zero-extending COPY8. Both failed compile/checker attempts remain
+preserved. Compilation disables annotation processors and only third-party manifest
+path lint; all other source warnings remain fatal. Internal Sleigh tail padding is
+explicit, and every accepted instruction length/hash is within the physical input.
+There is no Program, database, PE import, analyzer, decompiler or function creation.
+
+The fresh target case binds the exact current-client input and prior range evidence,
+validates both ranges before selected-byte reads, and admits only eight World bytes
+plus 71 Pending bytes. Output windows are eight/57 bytes with zero/14 decoder
+lookahead and at most sixteen attempts each. Streaming file identity/hash checks,
+244 runtime paths including 195 JARs/three compiled classes/selected x86 data,
+authenticated scope authority, owned lifecycle and post-cleanup strict qualification
+pass. This inventory does not cover every host/JDK native library or unrelated
+language enumeration. The offline socket filter remains active; failed hostname
+logging diagnostics are preserved, not permission for external networking.
+
+The producer and result qualifier each read the same 79 distinct original code
+bytes, 158 aggregate semantic slice bytes; Java reads only the derived copies.
+Whole-file fixity is separate. All 2,229 bindings remain unchanged and owned cleanup
+passes. Sixty-four authored and sixty independent source/mocked checks include
+bounds, exact geometry, hashes, strict typed space/varnode provenance, lifecycle,
+privacy and proof limits. The typed result qualifier is not a second instruction
+decoder; the independently authored real fixture results qualify selected semantics.
+
+| Window | Exported instructions | Consumed bytes | Stop |
+| --- | ---: | ---: | --- |
+| World from `0x143ca5a40` | 4 | 8 | Physical output interval ends at `0x143ca5a48` |
+| Pending from `0x143a58650` | 4 | 14 | CALL at `0x143a58659`; sequential return address `0x143a5865e` |
+
+World's prefix has three PUSH instructions and a SUB. Pending's prefix has PUSH,
+SUB, a register COPY, then CALL. No named table store is observed in either exported
+prefix. The pre-call register copy does not identify a receiver or establish state
+across the call. All ordinary boundary registers are unknown; no entry-ABI assumption
+is introduced. The complete World constructor is outside its eight-byte metadata
+fragment. Neither call target nor another fragment is followed. A new continuation
+metadata case is needed before further decoded windows, and any post-call prefix
+starts with fresh unknown register state. Current symbols never automatically name
+older-server owners or object-layout offsets.
+
+Evidence: `work/control-client-constructor-instructions-20261013/`, payload SHA-256
+`7ce6ed4742425bcb1e3d6cd6759586853166078e5c986f1797316ad7b7117815`;
+final production review SHA-256
+`40bdbd6071f776203b163b6937438c558c0ccab7b1efceff386c1d2d587a0906`.
+Independent real synthetic result review SHA-256:
+`960e7f1ed944f65f06e33992fccce6976bbb96a1ad5331cdb77c13e7d92e0f53`.
+This is bounded static decoder evidence, not original execution, client admission,
+archive/bunch framing provenance or a playable native server.

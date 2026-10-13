@@ -8,6 +8,32 @@ performance targets remain unproven. Last reconciled: 2026-10-13.
 
 ## Continuation — 2026-10-12
 
+### Current-client bounded constructor instructions — 2026-10-13, 03:49 UTC
+
+The reviewed fixed-window decoder exports eight instructions / 34 p-code operations
+with exact original instruction-byte hashes. All 2,229 bindings remain unchanged
+and owned cleanup passes. The producer and post-cleanup qualifier each read the
+same 79 selected original bytes; Java reads the derived copies. Streaming whole-file
+fixity is separate. Sixty-four authored and sixty independent source/mocked checks
+pass in addition to the nine real synthetic recipes and five injected API guards.
+No Program/database, PE import, analyzer, decompiler or outgoing-flow traversal runs.
+
+UWorld's eight-byte interval exports four prologue instructions ending at
+`0x143ca5a48`; the complete constructor is not in that fragment. Pending's fixed
+window exports four instructions / fourteen bytes, stopping at a call at
+`0x143a58659` with sequential return address `0x143a5865e`. No provenance crosses
+that call, and no ordinary entry register is assigned receiver/ABI meaning.
+Continuation targets need separately reviewed metadata bounds before new code reads.
+Evidence: `work/control-client-constructor-instructions-20261013/`, payload SHA-256
+`7ce6ed4742425bcb1e3d6cd6759586853166078e5c986f1797316ad7b7117815`.
+Independent neutral interpretation joins the accepted receipts and instruction/
+p-code boundaries and rejects eleven mutations; the lead reproduces its exact
+output without writes. Original-byte correspondence rests on the separate root
+qualifier receipt. Additive note SHA-256:
+`3eadad29122dbc2d6d6cb49441e0c00a93d94c1e96c2f3a2aefff425da1cc4fd`.
+Original runtime, actual dispatch, receiver layout and older-owner equivalence
+remain unqualified. Failed offline hostname logging diagnostics remain local evidence.
+
 ### Selected save coverage audit — 2026-10-13
 
 C028's 1,294 component bodies contain 29,762 top property fields and 20,704
