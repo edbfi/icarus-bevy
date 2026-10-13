@@ -141,6 +141,27 @@ The subsequent authored PE scan finds one absolute pointer at `0x145468198` and
 no matching E8/E9 rel32 patterns. Its table/owner/instruction role is unproved;
 it prioritizes bounded context research, with no admission or archive conclusion.
 
+Later bounded context and PE scans identify two exact address-materialization
+sites for `0x145468180`; retained-project disassembly confirms seven-byte LEA
+instructions at both. Their object stores, table ownership and indirect caller
+remain unproved. A forced metadata decompilation reports blocks outside its
+configured interval, so its bounded-flow assumption is not qualified. Direct
+operand/pcode evidence precedes further promotion; the caller report preserves
+the source-isolation failure and subsequent successful retry separately.
+
+Public Epic API documentation offers a testable interface hypothesis:
+[FNetworkNotify](https://dev.epicgames.com/documentation/en-us/unreal-engine/API/Runtime/Engine/Engine/FNetworkNotify?application_version=4.27)
+has four virtual callbacks, including control handling with a connection, byte
+message ID and `FInBunch&`. Both
+[UWorld](https://dev.epicgames.com/documentation/en-us/unreal-engine/API/Runtime/Engine/Engine/UWorld?application_version=4.27)
+and [UPendingNetGame](https://dev.epicgames.com/documentation/en-us/unreal-engine/API/Runtime/Engine/Engine/UPendingNetGame?application_version=4.27)
+inherit UObject and this interface; the
+[driver's Notify field](https://dev.epicgames.com/documentation/en-us/unreal-engine/API/Runtime/Engine/Engine/UNetDriver?application_version=4.27)
+allows other implementations too. This shape does not identify the binary owner
+or establish base/vtable offsets or method order. The pages select 4.27 but give
+no historical source revision and include modern-looking fields. Same-build type
+registration and an actual indirect call/receiver join are still required.
+
 The normal replacement run command still has no game socket listener or control
 negotiation. This body-field reader is a disconnected library primitive. A
 separate [loopback handshake lab](stateless-handshake.md) stops before this layer

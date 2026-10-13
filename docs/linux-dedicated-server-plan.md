@@ -202,7 +202,11 @@ Use this dataset in the next work sequence:
    individual 12-/four-byte demands. All 11,606 inherited arrays now independently
    match native shared framing and are empty. All 9,948 inherited Struct bodies
    also match immediate native spans. Exact descriptor bindings now qualify
-   8,290 selected nested/own scalar widths. All 486 C009 top bodies now match
+   8,290 selected nested/own scalar widths. Thirteen inherited scalar descriptors
+   subsequently qualify 1,658 strict Name frames, 6,632 Int4, 1,658 UInt32 four-byte
+   and 11,606 Bool0 spans, using preserved historical native headers and two new
+   native Name batches. Continue selected own Int/Bool widths; meanings/import
+   remain open. All 486 C009 top bodies now match
    the reviewed 31-field contract and native spans under an explicit 71,956-byte
    comparison cap. Its 972 own child bodies now match immediate native spans;
    all 486 selected Int arrays now match native prefix/element spans, including
