@@ -8,6 +8,18 @@ performance targets remain unproven. Last reconciled: 2026-10-13.
 
 ## Continuation — 2026-10-12
 
+### C001 retained listing rejection — 2026-10-13, 04:53 UTC
+
+The reviewed readonly/no-analysis query rejects its result after a Ghidra script
+exception. Headless exit zero is not accepted as success: no output directory
+exists, all 738 bindings remain unchanged and owned cleanup passes. The producer's
+generic exception discards its failing stage/address, so this establishes neither
+a listing gap nor an instruction/type/bridge result. Preserve the source, both
+reviews, fresh copy/session and failed receipts in
+`work/c001-constructor-listing-20261013/`. A separately reviewed diagnostic variant
+must expose only enumerated checks and bounded numeric locations before retrying
+the same exact intervals; no unchanged retry or broader analysis is justified.
+
 ### Native capture completeness — 2026-10-13, 04:38 UTC
 
 Snapshot capture now visits every domain-identified entity and rejects missing
@@ -1397,7 +1409,9 @@ supported, and no ICARUS performance or stability improvement has been measured.
    using retained exact native getter/callback/constructor seeds and fresh bounded
    metadata. Exact 305/296-byte intervals now bound those seeds; recover the complete
    retained instruction listing and account for reachable paths before claiming the
-   bridge. The retained incoming query supplies one non-call data reference only.
+   bridge. The first readonly listing query failed without a diagnostic stage;
+   preserve it and recover bounded diagnostics in a fresh variant before retry.
+   The retained incoming query supplies one non-call data reference only.
    Completed C028/C034 finite audits and historical C013 coverage determine the
    corrected census; do not repeat their completed populated value structures.
    All five top string descriptors pass ten measured native batches after the
