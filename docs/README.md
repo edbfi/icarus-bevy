@@ -16,5 +16,6 @@ Rules: [`.agents/rules/docs.md`](../.agents/rules/docs.md). Lint: `python3 tools
 | [history/](history/) | historical authorizations, verbatim, frozen | none |
 | [../evidence/manifest.md](../evidence/manifest.md) | evidence artifacts: path, digest, session, class | none |
 
-The current prose surface (everything except archive, history, the ledgers and
-the manifest) is capped at 160 KB in total; ledgers carry their own caps.
+The current prose surface (root `README.md` and everything here except archive,
+history, the ledgers and the manifest) is capped at 160 KB in total; ledgers
+carry their own caps.

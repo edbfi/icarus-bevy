@@ -48,8 +48,9 @@ rules through prek and CI; the rest are reviewed.
    current-surface file except the ledgers). A file near its cap is condensed,
    not split.
 6. Every status, spec and ledger file carries `Last reconciled: YYYY-MM-DD`.
-7. Repository-wide workflow rules live only under `.agents/rules/`. Historical
-   records, spec acceptance conditions and runbook procedures are exempt.
+7. Canonical workflow rules live under `.agents/rules/`; `AGENTS.md` summarizes
+   and links to them. Historical records, spec acceptance conditions and runbook
+   procedures are exempt from the no-duplication rule.
 8. Condensing a current document preserves every observation, qualification,
    limitation, scope and outcome as a ledger row, gate line or digest line. The
    file header cites the commit and path that still hold the full text.
@@ -57,8 +58,8 @@ rules through prek and CI; the rest are reviewed.
 ## Milestone checklist
 
 1. Reconcile `docs/implementation-status.md` against the newest commit.
-2. Mark superseded findings; move resolved bug and compatibility rows to the
-   matching digest with their evidence IDs.
+2. Mark superseded findings and resolved bug or compatibility rows in place
+   (status column, linked digest); rows are never deleted.
 3. Refresh every `Last reconciled` date.
 4. Run `python3 tools/docs_lint.py --local`. Paths listed as `local-private` in
    the manifest are never deleted by cleanup.
