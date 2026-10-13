@@ -699,6 +699,11 @@ The complete current exception directory now validates 334,054 records; named
 constructor symbols start measured eight/71-byte intervals, potentially fragments.
 Decode only separately frozen windows within these intervals before joining receiver/type evidence;
 never carry provenance across calls or infer object offsets from image placement.
+The first such current-client windows now qualify eight instructions / 34 p-code
+operations: World reaches its eight-byte fragment end, Pending reaches a call after
+fourteen bytes. Recover separately scoped continuation metadata before any new
+instruction reads; post-call state begins unknown. No table-store or receiver join
+is inferred from these prefixes.
 
 Completion requires demonstrated compatibility, reliability and performance
 improvement while preserving the independent Rust/Bevy and no-original-assets rules.
