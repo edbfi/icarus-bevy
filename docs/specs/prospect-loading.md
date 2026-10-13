@@ -335,7 +335,29 @@ All 2,327 bindings remain unchanged; summary SHA-256
 This supplies new native string structure only. The earlier aggregate-only header
 limitation persists; text, enum lookup, numerical meanings and restoration remain
 unqualified. Full-population direct child headers are the next bounded comparison;
-the older four-extrema child evidence is not promoted to that population.
+the older four-extrema child evidence is not promoted by the string case.
+
+The subsequent full-population direct Struct comparison supplies new exact native
+child spans for all six families in both copies: 7,764 payloads / 1,174,952 bytes
+and 20,704 headers (3,882 Struct, 1,294 Name, 5,176 Int, 9,058 Bool, 1,294 UInt32).
+Each family contains 647 parents per copy. Payload sizes are respectively 253,
+343, 48, 48, 48 and 168 bytes; all recovered optional descriptors are present in
+these observations. Both copies' twelve batch budgets are bounded before child
+entry, after complete prior evidence and ten native string replays. Twelve new
+native batches agree on each kind/header/payload/terminator span and conservation.
+No child values or grandchildren are entered. This qualifies headers, not widths
+or meanings. The general root cap remains 4,096 tags and this bounded helper checks
+seven fields after parsing; the separate array reader is unused.
+
+Seven authored fixture programs and 31 independent checks pass. An initial exact
+scope-authority rejection before private fixity/probe is preserved. The separately
+reviewed retry changes only metadata/output paths, adds scope-derived fresh session
+creation and passes five actual-source programs plus twelve independent checks.
+All 2,401 bindings remain unchanged. Evidence:
+`work/c028-all-struct-child-headers-20261013/summary-v2.json`, SHA-256
+`df61f3f910216ea3443aa237307d388e97f30f001a1bfa8a15ebc111c2023681`.
+This fresh child evidence does not repair missing historical individual top spans
+or supply value semantics, original EOF fidelity, populated arrays or restoration.
 
 The follow-up `work/c028-structs-20261012/` resolves all six direct struct types to
 tagged serialization under the established older-build `MemoryArchive522` path.

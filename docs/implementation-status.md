@@ -8,6 +8,33 @@ performance targets remain unproven. Last reconciled: 2026-10-13.
 
 ## Continuation — 2026-10-12
 
+### C028 complete direct Struct-child headers — 2026-10-13, 02:53 UTC
+
+Twelve new 647-parent native batches qualify all 7,764 direct Struct payloads /
+1,174,952 bytes, with 20,704 exact child headers. Counts are 3,882 Struct, 1,294
+Name, 5,176 Int, 9,058 Bool and 1,294 UInt32. All optional descriptors are present
+in these two copies; this does not make them mandatory for other saves. Per-family
+payload sizes are 253, 343, 48, 48, 48 and 168 bytes. Values and grandchildren remain
+opaque. All twelve both-copy range/budget checks precede child entry; fresh native
+kind/header/payload/terminator spans and conservation agree individually.
+
+Complete accepted top evidence and ten string batches replay first. Seven authored
+fixture programs and 31 independent checks pass; the path-only retry adds five
+actual-source programs and twelve independent checks. The first session-authority
+rejection is retained unchanged. Its retry derives exact authority from scope,
+validates it before writing a fresh 900-second session and passes with all 2,401
+bindings unchanged. Evidence: `work/c028-all-struct-child-headers-20261013/`,
+`summary-v2.json` SHA-256
+`df61f3f910216ea3443aa237307d388e97f30f001a1bfa8a15ebc111c2023681`.
+Independent post-run interpretation reruns the frozen qualifier and verifies all
+totals and 22 successful helper receipts; seven synthetic metadata mutations reject.
+The lead reproduces its exact frozen output without writes. Additive note SHA-256:
+`9cb59c06892d3d3484ebc920c854ef47c03b72b0561a34dc37b2d8a326a92495`.
+The native helper's seven-field post-parse cap and general root reader's 4,096-tag
+cap are unchanged; no array reader/count cap is raised. The historical top native
+aggregate limitation persists. Selected leaf structure/width qualification is next;
+meanings, restoration and client compatibility remain open.
+
 ### Current-client public symbols and notify slots — 2026-10-13, 02:31 UTC
 
 A strict bounded reader frames 1,897,302 PDB symbol records / 193,365,180 bytes,
@@ -1160,13 +1187,11 @@ supported, and no ICARUS performance or stability improvement has been measured.
 
 ## Next work and maintenance
 
-1. Compare every C028 direct Struct-child header against fresh native individual
-   spans, then qualify its selected leaf structures/widths using retained exact
-   contracts. All five top string descriptors now pass ten measured native batches
-   after the both-copy range preflight. The first child invocation was rejected
-   before private fixity/probe because the manually written session authority text
-   differed from its scope; preserve it and use the separately reviewed retry with
-   exact scope-derived authority. Its old native top batch qualifies aggregate totals, not retained
+1. Qualify C028 selected child leaf structures/widths using retained exact contracts
+   after completed full-population direct Struct-child native span comparison.
+   All five top string descriptors pass ten measured native batches after the
+   both-copy range preflight. The first child session rejection and successful
+   separate retry remain preserved. Its old native top batch qualifies aggregate totals, not retained
    individual spans. A finite C034 audit finds all observed populated tagged
    boundaries qualified; native value meanings and seven empty inherited arrays'
    population coverage remain open. Reuse retained static evidence;
