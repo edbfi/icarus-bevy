@@ -8,6 +8,26 @@ performance targets remain unproven. Last reconciled: 2026-10-13.
 
 ## Continuation — 2026-10-12
 
+### Borrowed strict string frames — 2026-10-13
+
+`read_string_frame` validates borrowed original spans and unit structure without
+success-path heap allocation. The owning decoder collects only when its caller
+needs units; initial-control validation uses the borrowed frame directly. Existing
+strict errors, acceptance, consumption, limits, EOF and public control output remain
+unchanged. Six new frame tests include 10,752 differential authored corpus cases
+against the retained prior decoder; eighteen focused archive/control tests pass.
+Independent review, the full manual suite, release build and native save/restart
+smoke pass. One Clippy test-literal issue was corrected before final validation.
+The restart resumes tick 10 and durably publishes generation 2 at tick 30.
+
+Complete pre-change fixity is retained. Of 2,089 preceding save-case bindings,
+2,085 remain unchanged and four exact source/test/library transitions have preserved
+old snapshots. New release library SHA-256:
+`1f54114fd2382bb8809071e61929868cd2c836d7002bf717bf92f39adda31549`.
+Evidence: `work/archive-frame-transition-20261013/`. Earlier helpers retain their
+frozen pins. This allocation reduction does not prove original performance,
+normalization parity, save restoration or networking compatibility.
+
 ### Control-store prefixes — 2026-10-13, 01:21 UTC
 
 The fixed instruction-only prefix case qualifies eleven instructions / 34 p-code

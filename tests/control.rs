@@ -257,3 +257,46 @@ fn summaries_and_late_errors_do_not_render_fields_or_token_contents() {
         assert!(!summary.game_connection_established);
     }
 }
+
+#[test]
+fn frame_validation_preserves_complete_context_error_chains_and_precedence() {
+    for order in [ByteOrder::Little, ByteOrder::Big] {
+        for (token, expected) in [
+            // U+FFFF precedes NUL, but NUL validation still takes precedence.
+            (
+                wide(&[0xffff, 0], order),
+                "embedded archive string NUL unsupported",
+            ),
+            (
+                wide(&[0, 0xffff], order),
+                "embedded archive string NUL unsupported",
+            ),
+            (
+                wide(&[0xffff], order),
+                "archive string U+FFFF normalization unsupported",
+            ),
+            (
+                [count(3, order).as_slice(), &[0, 128, 65]].concat(),
+                "non-ASCII narrow archive string unsupported",
+            ),
+            (
+                [count(3, order).as_slice(), &[0, 65, 65]].concat(),
+                "missing archive string terminator",
+            ),
+        ] {
+            let bytes = body(0, 0, &token, order);
+            assert_eq!(
+                error(&bytes, order),
+                format!("invalid initial control token frame: {expected}")
+            );
+        }
+        let mut token = wide(&[0xffff, 0], order);
+        // Missing terminator dominates both unsupported content conditions.
+        *token.last_mut().unwrap() = 1;
+        let bytes = body(0, 0, &token, order);
+        assert_eq!(
+            error(&bytes, order),
+            "invalid initial control token frame: missing archive string terminator"
+        );
+    }
+}

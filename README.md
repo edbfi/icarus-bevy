@@ -101,6 +101,11 @@ collects explicitly pinned address patterns. It opens no files and confirms no
 callers or instruction boundaries. Its authored and independent PE fixtures run
 through prek/CI using `node --test tools/tests/pe_candidates*.test.cjs`.
 
+The experimental [archive-string subset](docs/specs/archive-string.md) offers a
+borrowed strict frame validator and an owning decoder. Initial-control validation
+uses borrowed spans without temporary decoded-unit allocation. Archive byte order
+and enclosing message boundaries remain the caller's responsibility.
+
 `tools/ghidra/ExportBoundedInstructionOperands.java` exports only numeric operands,
 raw p-code and instruction hashes for two fixed, pinned-executable windows. It
 requests no decompiler, analyzers, function creation or outgoing flow. Target use
