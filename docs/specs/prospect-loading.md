@@ -962,5 +962,14 @@ fresh runtime session. Five authored fixture programs and 59 independent checks
 pass. Evidence: `work/c001-incoming-getter-20261013/`, TSV SHA-256
 `589c493c56039973eff41b1c1399f15df9ab7f761908c3d39b0d6a3541d0e58c`, manifest SHA-256
 `715936778e0b83a1404f3d429c91a8fb3fb6da40a38499b44065c7092bddbfc8`.
-Bound the identified callback/constructor before new complete instruction or
-vtable-slot queries; do not transfer derived-class dispatch to this candidate.
+A fresh older-server exception-directory query validates 323,249 records /
+3,878,988 bytes and places both seeds at interval beginnings: callback
+`[0x1419fe870, 0x1419fe9a1)` is 305 bytes; candidate instance constructor
+`[0x141788530, 0x141788658)` is 296 bytes. All 572 bindings remain unchanged and
+owned cleanup passes after 52 authored and 46 independent checks. Evidence:
+`work/c001-constructor-ranges-20261013/`, payload SHA-256
+`9f8191a0c0fa32d06942f9373580a02768b4ebed1750a4d6bc45ecfa9ae72624`.
+These metadata intervals may be fragments; they do not qualify instruction
+boundaries, complete functions, receiver origin or the concrete bridge. Read the
+retained listing within these exact bounds before a vtable-slot query; do not
+transfer derived-class dispatch to this candidate.

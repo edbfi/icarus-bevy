@@ -8,6 +8,45 @@ performance targets remain unproven. Last reconciled: 2026-10-13.
 
 ## Continuation — 2026-10-12
 
+### Current-client continuation instructions — 2026-10-13, 04:28 UTC
+
+The separately compiled fixed-window derivative passes nine real synthetic
+decoder recipes and five injected guards before target use. Its guarded target
+run qualifies eleven instructions / 32 p-code operations; all 2,581 bindings
+remain unchanged and owned cleanup passes. Producer and qualifier each read the
+same 135 selected code bytes, and Java reads only their derived copies. Sixty-four
+authored and sixty independent source/mocked checks pass. No Program, PE import,
+analyzer, decompiler or branch/callee traversal runs.
+
+World exports eighteen bytes to CALL `0x143ca5a55`, with sequential return
+`0x143ca5a5a`. Pending exports 32 bytes to CALL `0x143a58679`, with return
+`0x143a5867e`. Within Pending's fresh unknown post-call state, two eight-byte
+constant stores use the same unchanged unknown base at displacements zero and
+`0x28`. Their constants match the current paired public symbols for Pending's
+primary table and FNetworkNotify table. This qualifies local store geometry and
+same-build table constants, not the base's receiver origin, ABI, object type,
+cross-call provenance, executed dispatch or older-server ownership.
+Evidence: `work/control-client-constructor-continuation-instructions-20261013/`,
+payload SHA-256 `1aeb670aa28494e50fa5a936b3a9728370245913b0c6ffc663e74f26df1e3e69`.
+The lead reproduces the independent neutral interpretation and thirteen mutation
+rejections without writes. Additive note SHA-256:
+`223ffe8cab6e51d26bf98835ba2b02a6e796f363ab9e9a3ddb8a1c3962de42af`.
+Its first rejected partial-register-clobber checker and failure remain preserved.
+
+### C001 constructor metadata bounds — 2026-10-13, 04:18 UTC
+
+The fresh older-server query validates all 323,249 exception records / 3,878,988
+bytes. Construction callback `0x1419fe870` begins the 305-byte interval ending
+`0x1419fe9a1`; candidate instance constructor `0x141788530` begins the 296-byte
+interval ending `0x141788658`. All 572 bindings remain unchanged and owned cleanup
+passes. Fifty-two authored and 46 independent checks pass. These are metadata
+bounds, potentially procedure fragments, not decoded complete functions or a
+construction/vtable bridge. No C001 save body is parsed. Evidence:
+`work/c001-constructor-ranges-20261013/`, payload SHA-256
+`9f8191a0c0fa32d06942f9373580a02768b4ebed1750a4d6bc45ecfa9ae72624`.
+Read the retained instruction listing within these exact intervals before expanding
+analysis; gaps and outgoing paths require separate evidence.
+
 ### Constructor continuation metadata and C001 references — 2026-10-13, 04:03 UTC
 
 Fresh current-client metadata places the exact World fallthrough address
@@ -28,8 +67,8 @@ fresh preparation session/copy/readback and a separate fresh runtime session.
 Five authored fixture programs and 59 independent checks pass. Evidence:
 `work/c001-incoming-getter-20261013/`, reference TSV SHA-256
 `589c493c56039973eff41b1c1399f15df9ab7f761908c3d39b0d6a3541d0e58c`.
-Recover fresh bounds for the already identified construction callback and candidate
-instance constructor; do not infer its vtable bridge or parse C001 bodies yet.
+The subsequent bounded metadata query supplies the callback and candidate constructor
+intervals above; their construction bridge and C001 bodies remain unqualified.
 
 ### Current-client bounded constructor instructions — 2026-10-13, 03:49 UTC
 
@@ -1330,7 +1369,9 @@ supported, and no ICARUS performance or stability improvement has been measured.
 
 1. Establish C001's complete concrete construction/vtable/archive-dispatch bridge
    using retained exact native getter/callback/constructor seeds and fresh bounded
-   metadata. The retained incoming query supplies one non-call data reference only.
+   metadata. Exact 305/296-byte intervals now bound those seeds; recover the complete
+   retained instruction listing and account for reachable paths before claiming the
+   bridge. The retained incoming query supplies one non-call data reference only.
    Completed C028/C034 finite audits and historical C013 coverage determine the
    corrected census; do not repeat their completed populated value structures.
    All five top string descriptors pass ten measured native batches after the
@@ -1356,9 +1397,10 @@ supported, and no ICARUS performance or stability improvement has been measured.
    alone do not prove bounded native flow. Current paired-client symbols and two
    exact named notify slots now guide bounded constructor metadata/instruction
    comparison, without establishing older owner identity or object offsets.
-   The accepted prefixes stop at an eight-byte fragment end and a call; new metadata
-   bounds their exact continuation points. Separately validate fixed decoded windows
-   with fresh post-call unknown state before any table/receiver/type join.
+   The accepted continuation windows now qualify local Pending stores of its named
+   primary/FNetworkNotify constants through an unchanged unknown base at zero/+0x28.
+   Both windows stop at calls. Establish base origin and a concrete receiver/type
+   join without carrying unproved provenance across those calls.
    Establish actual owner/caller
    evidence before inferring the dispatcher caller. Bind the concrete archive/outer
    framing path before promoting the experimental
