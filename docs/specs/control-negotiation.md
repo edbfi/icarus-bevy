@@ -143,8 +143,11 @@ it prioritizes bounded context research, with no admission or archive conclusion
 
 Later bounded context and PE scans identify two exact address-materialization
 sites for `0x145468180`; retained-project disassembly confirms seven-byte LEA
-instructions at both. Their object stores, table ownership and indirect caller
-remain unproved. A forced metadata decompilation reports blocks outside its
+instructions at both. Raw operand/p-code joins then prove local eight-byte stores
+of that constant at base-register offsets `+0x28`. One separately qualified prefix
+preserves its base register through two stores at offsets zero and `+0x28`; the
+other prefix stops at a call before its store. Neither identifies an object class,
+table owner, entry parameter or indirect caller. A forced metadata decompilation reports blocks outside its
 configured interval, so its bounded-flow assumption is not qualified. Direct
 operand/pcode evidence precedes further promotion; the caller report preserves
 the source-isolation failure and subsequent successful retry separately.
