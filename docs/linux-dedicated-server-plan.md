@@ -720,6 +720,10 @@ instructions / 32 p-code operations. Pending stores its named primary and
 FNetworkNotify table constants through one unchanged unknown base at zero/+0x28;
 both windows stop at calls. Establish that base's origin and actual receiver/type
 dispatch without assuming ABI retention or carrying provenance across calls.
+The separate World post-call window qualifies both table constants but only the
+primary store at unknown base plus zero. Its next instruction crosses the output
+limit, so a secondary store/pair remains open. A fresh source/scope/session is
+required before expanding decoded output within measured physical bounds.
 
 Completion requires demonstrated compatibility, reliability and performance
 improvement while preserving the independent Rust/Bevy and no-original-assets rules.

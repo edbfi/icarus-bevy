@@ -981,3 +981,12 @@ verified. This gives no instruction coverage, gap location or construction bridg
 The producer discarded its failing stage/address; a fresh diagnostic variant is
 needed before another exact-window attempt. Source/reviews/copy/session/failure
 remain preserved in `work/c001-constructor-listing-20261013/`.
+
+The separately scoped diagnostic variant locates its rejection at the first
+listing-entry operation/check, `0x1419fe870`, with all 910 bindings unchanged and
+cleanup verified. It does not distinguish a null/mismatched listing entry from
+an API exception. Diagnostic observation is explicitly separate from listing
+qualification; no complete function or construction bridge is recovered.
+Evidence: `work/c001-constructor-listing-diagnostic-20261013/`, accepted
+2026-10-13 05:12 UTC. A standalone fixed-window decoder is prepared next, with
+exact physical 305/296-byte inputs and no outside lookahead or database dependence.
