@@ -62,9 +62,18 @@ be demonstrated rather than assumed.
   The 2026-10-12 instruction supersedes the old overnight batch's no-push rule.
   Do not force-push, rewrite existing commits or merge into `main` as routine sync.
 - Maintain `docs/linux-dedicated-server-plan.md` as the canonical plan and
-  `docs/implementation-status.md` as the current checkpoint. Update the existing
-  bug ledger, compatibility matrix and specifications as evidence changes.
-  Avoid duplicate plans, generic AI prose and speculative completion claims.
+  `docs/implementation-status.md` as the current checkpoint. Record conclusions,
+  open questions, bugs and compatibility as ledger rows under `docs/ledgers/`,
+  session results as digests under `docs/research/`, and evidence artifacts in
+  `evidence/manifest.md`, following `.agents/rules/docs.md`. Avoid duplicate
+  plans, generic AI prose and speculative completion claims.
+- Resource budgets for heavy work: start with two Cargo jobs and at most four
+  CPU-heavy workers; serialize large builds, Ghidra and original-server runs when
+  memory is tight. Keep owned jobs under 10 GiB; defer heavy work below 3 GiB
+  available RAM or 30 GiB free disk. Cap new case artifacts at 12 GiB and total
+  batch disk growth at 20 GiB, then reassess. Targeted Ghidra runs use a 4 GiB
+  heap, two CPUs, at most 24 selected functions, 30 seconds per decompilation and
+  15 minutes overall. Bound every experiment and clean it up on timeout.
 - At milestones, reconcile stale documentation and clean reproducible scratch
   from owned work. Preserve original inputs, private saves/backups, evidence,
   provenance, licenses and user changes. Check references before deleting stale
