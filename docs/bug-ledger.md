@@ -62,6 +62,16 @@ changed bindings or expiry. Historical frozen wrappers remain evidence, and thei
 earlier successful outputs were valid. This is a research-harness correction, not
 an original-server fix. Evidence: `work/c009-common-scalar-values-20261013/`.
 
+The first bounded instruction-context job also failed due to authored fixture API
+sources beneath Ghidra's production script search directory. Its compiled bundle
+referenced the stub `ProgramStub` field type and threw `NoSuchFieldError` against
+the real engine. No result was accepted; all 476 bindings and owned cleanup passed.
+The fresh retry retains the unchanged reviewed helper in a source-only leaf,
+rejecting classes, subdirectories and symlinks before launch. All 523 bindings and
+cleanup subsequently pass. This corrects research tooling, not an official-server
+defect. Evidence: `work/control-caller-instructions-20261013/`, including the
+preserved failed attempt and `execution-v2/`.
+
 | ID | Trigger and former behavior | Change and evidence |
 | --- | --- | --- |
 | N-001 | Save worker exits before acknowledging an in-flight request; polling returned an untyped error while leaving `busy` true, and the main loop treated it as a retryable write failure | Return a typed terminal error, clear the stale in-flight flag and stop simulation. A deterministic disconnected-channel test covers missing acknowledgement and rejected subsequent submission |

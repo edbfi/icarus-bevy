@@ -231,6 +231,16 @@ Recorded intervals may describe procedure fragments. Instruction boundaries,
 primary entries, complete functions and owner/archive provenance remain unproved;
 bounded targeted instruction analysis is next.
 
+The targeted retained-project retry subsequently confirms both seven-byte LEA
+instruction boundaries, with zero generated references under disabled analyzers.
+Joined with the exact frozen PE target calculations, this supports static address
+materialization of `0x145468180`, without object-store or owner proof.
+All 523 bindings and owned cleanup pass. The first attempt's fixture-class
+contamination is preserved separately; source-only script isolation fixes that
+failure. A forced metadata decompilation warns of blocks beyond its configured
+range, so it remains a limited lead. Direct operand/pcode checks precede any owner
+or archive conclusion. See the [control report](research/2026-10-12-control-caller-limit.md#targeted-instruction-context-and-preserved-failed-attempt).
+
 ### C009 common-child headers — 2026-10-12, 22:15 UTC
 
 The separately reviewed fresh common-child comparison passes all 6,318 selected
@@ -977,8 +987,9 @@ supported, and no ICARUS performance or stability improvement has been measured.
    actor/inventory/construction/tame/mission fields and independent confirmation of
    the reported producing build remain unresolved. Preserve unknown fields and
    private inputs; no partial importer.
-2. Confirm instruction context for the two observed-slot LEA candidates within
-   their qualified exception metadata ranges. Establish actual owner/caller
+2. Confirm operands/pcode and nearby stores for the two decoded LEA candidates
+   within their qualified metadata ranges. Configured decompiler bodies alone do
+   not prove bounded native flow. Establish actual owner/caller
    evidence before inferring the dispatcher caller. Bind the concrete archive/outer
    framing path before promoting the experimental
    control-body fields. Advance transport/control/authentication evidence and independently authored
