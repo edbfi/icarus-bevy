@@ -79,7 +79,8 @@ save-load comparisons require their own concrete experiment setup.
 
 The following records the original approval, not a current executable recipe.
 The reverse-skill package was removed on 2026-10-12; its commands and package
-requirements below are historical. The AGENTS.md link identifies the former revision.
+requirements below are historical. The upstream `AGENTS.md` link identifies the
+former revision.
 
 Status: approved by the user on 2026-10-04. This was the first execution of the original server.
 It cannot prove stock-client compatibility because the container has no network.

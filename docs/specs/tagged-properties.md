@@ -69,10 +69,10 @@ profile. The root scanner deliberately leaves that entire body opaque.
   including any terminator; check counts before allocating strings.
 - Reject negative sizes or indices, truncated headers/values, unsupported type
   headers and noncanonical boolean/GUID-presence bytes.
-- Accept canonical `ArrayProperty`, `StructProperty`, `StrProperty`, `IntProperty`, `UInt32Property`,
-  `NameProperty`, `FloatProperty`, `TextProperty`, `ByteProperty`, `EnumProperty`
-  and `BoolProperty` headers. Empty header names and
-  other property kinds are unsupported by this initial subset.
+- Accept canonical `ArrayProperty`, `StructProperty`, `StrProperty`, `IntProperty`,
+  `UInt32Property`, `NameProperty`, `FloatProperty`, `TextProperty`, `ByteProperty`,
+  `EnumProperty` and `BoolProperty` headers. Empty header names and other property
+  kinds are unsupported by this initial subset.
 - Preserve original header and value spans, including unknown field names, without
   rewriting, normalizing or interpreting their contents.
 - Report aggregate sizes and record counts only. No property names or values are
@@ -441,7 +441,7 @@ and `work/c009-common-child-headers-20261012/`.
 
 The hash-qualified build-25793767 client provides independent addresses for the
 structured tag operator (`0x14212b0e0`) and generic Array serializer
-(`0x142123da0`). Bounded disassembly and independently checked builtin type
+(`0x142123da0`). Bounded disassembly and independently checked built-in type
 identities agree with the examined older-server gates: Struct GUID at version
 441, Array inner name at 282 and common property GUID at 503. Float/Text reach
 the common path without type-specific extensions. The additional Map/Set gate
@@ -470,8 +470,8 @@ No mandatory-field or unconditional runtime-selection rule follows.
 
 The concrete client restore path constructs version 522 with loading enabled and
 relevant binary/tagged, partial-selection and byte-swap flags clear immediately
-before component Serialize. At this stage, its downstream call to `0x1437016b0` and the nested N02
-deferred-registry binding were still unresolved.
+before component Serialize. At this stage, its downstream call to `0x1437016b0`
+and the nested N02 deferred-registry binding were still unresolved.
 Evidence and independent semantic review: `work/client-c034-own-array-20261012/`.
 No supplied-save load or matched dedicated-server behavior is established.
 
@@ -486,7 +486,7 @@ table under the matching private name; its deferred registration and preparation
 use the same registry and full name key. Successful normal initialization,
 allocation, canonical name matching and no later replacement remain conditions.
 The native branch precedes forced-binary fallback, supporting the selected
-three-four-byte transfer demand under those conditions. Initializer execution,
+demand for three four-byte transfers under those conditions. Initializer execution,
 ordering, exact EOF and numeric semantics are not established. Independent
 semantic and strict evidence reviews pass.
 

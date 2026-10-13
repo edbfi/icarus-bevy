@@ -452,7 +452,7 @@ getters and built-in IDs independently identify their serialized header types;
 both use only the common property-GUID extension. The current eleven-kind native
 header reader supports both types. Later static descendant work resolves the
 nested array target D01 to eight optional tagged fields and the distinct Struct
-target D02 to its own four-four-byte native transfer demand; these are not inferred
+target D02 to its own demand for four four-byte native transfers; these are not inferred
 from the earlier 16/12-byte types. D01's four array children now have concrete
 tagged registrations and immediate schemas of two Int; Int/Str/Int; one Str; and
 Int/Str, respectively. These eight fields remain optional. Int demands four
@@ -502,7 +502,7 @@ for these prospect-load experiments.
 ## Third selected class: bounded top-header comparison
 
 The older C034 registration and complete relevant vtable path resolve to the
-reviewed base byte-loading/serialization path and the same postload target as
+reviewed base byte-loading/serialization path and the same post-load target as
 C028. Its 21 optional descriptors comprise seven Struct, two Int, seven Array,
 two Name, one Enum, one Str and one Bool property. Private static bindings are
 retained in `work/component-c034-20261012/`.
@@ -730,8 +730,8 @@ Each copy has 243 S02 bodies totaling 30,626 bytes and 243 S01 bodies totaling
 36,465 bytes. No optional field is missing. The S02 array payloads total 980 bytes
 per copy, with individual sizes from four to 12 bytes; count and element bytes
 were left opaque in that header-only run. Exact native/independent child spans,
-unchanged inputs and two
-authored helper tests support the result: `work/native-c009-own-20261012/`.
+unchanged inputs and two authored helper tests support the result:
+`work/native-c009-own-20261012/`.
 
 Separate leaf comparisons then qualify all 486 exact S02 Int arrays, including
 four opaque elements, and all 486 S01 Str values (14,124 bytes). Native and
@@ -746,7 +746,8 @@ The four immediate-parent Array element schemas and one standalone Struct now
 have exact older-build descriptor/getter/factory joins. All five conditionally
 select tagged framing, with null parents and disabled native/post callbacks.
 Their 15 optional immediate fields comprise four Int, three Name, two Str, five
-Bool and one enum-backed Byte; none is a recursive Struct or Array. Independent static review:
+Bool and one enum-backed Byte; none is a recursive Struct or Array.
+Independent static review:
 `work/c009-parent-children-20261012/`.
 
 A separate preflight reproduces every prior native top span before selecting
@@ -960,7 +961,7 @@ instance constructor `0x141788530` has only a retained prefix. Their complete
 bridge and archive-related vtable slots remain unqualified. No C001 payloads are
 parsed under those incomplete facts.
 
-A new scoped readonly/no-analysis query of a disposable retained-project copy
+A new scoped read-only/no-analysis query of a disposable retained-project copy
 finds one incoming DEFAULT/non-call reference at `0x14655d468` to the native getter,
 with no containing source function. This is ReferenceManager coverage only; it
 neither supplies class-registration argument flow nor proves caller absence. All
@@ -982,7 +983,7 @@ boundaries, complete functions, receiver origin or the concrete bridge. Read the
 retained listing within these exact bounds before a vtable-slot query; do not
 transfer derived-class dispatch to this candidate.
 
-The first readonly/no-analysis existing-listing query fails with a generic script
+The first read-only/no-analysis existing-listing query fails with a generic script
 exception before creating its result directory. The wrapper rejects the absent
 result despite Ghidra's exit zero, with all 738 bindings unchanged and cleanup
 verified. This gives no instruction coverage, gap location or construction bridge.

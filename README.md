@@ -52,8 +52,8 @@ that entity from the durable generation. Entities without domain identity remain
 outside the current native snapshot schema.
 
 Each generation is checksummed and synchronized before the manifest is atomically
-published. Keep two committed generations. Startup reports when a corrupt current
-generation requires recovery from the previous one. Corrupt/missing manifests with
+published. The store retains two committed generations. Startup reports when a
+corrupt current generation requires recovery from the previous one. Corrupt/missing manifests with
 existing snapshots and unsupported schemas fail closed, rather than silently
 creating a fresh world. Preserve a copy before manual recovery.
 
@@ -100,9 +100,15 @@ checks too. Recommended mode must finish with zero errors and warnings. The
 checked roots are `src`, `tests` and `tools`; `.agents/` and skills are outside
 this project-authored-code gate.
 
-Offline research scope fixtures use Node.js (`node --test
-tools/tests/research-scope.test.cjs`) and run through prek and CI. Scope validation
-checks existing authorization and deadlines; it grants neither.
+Offline research scope fixtures use Node.js and run through prek and CI:
+
+```bash
+node --test tools/tests/research-scope.test.cjs
+```
+
+Scope validation checks existing authorization and deadlines; it grants neither.
+
+### Research helpers
 
 The pure `tools/pe_candidates.cjs` module validates bounded PE64/x64 buffers and
 collects explicitly pinned address patterns. It opens no files and confirms no
@@ -137,6 +143,8 @@ It requires Ghidra 12.1.4, exact input sizes/hashes and separately reviewed orig
 slice provenance, scope and lifecycle guards. Nine real authored decoder recipes
 and five injected API guards pass. Case wrappers enforce authorization; invoking
 this helper alone does not establish input provenance or authorize target reads.
+
+### Reference inputs and authorization
 
 Original files stay under ignored `icarus-orig/`; generated analysis, private saves,
 captures and dumps stay under ignored `work/`. Reusable tools and sanitized reports

@@ -4,6 +4,9 @@ Status: **bounded independent codec with authored tests; original wire round tri
 pending**. This is a field codec, not a UDP packet or game admission implementation.
 The caller must establish archive byte order and framing before using it.
 
+Validation statements below describe the cited historical runs. Current priorities
+and the research pause are tracked in the [implementation checkpoint](../implementation-status.md).
+
 The reader/writer at preferred address `0x141e15db0` in tool build 25621760 uses a
 signed 32-bit count. Zero is empty, a positive count measures narrow bytes, and a
 negative count measures UTF-16 units. Nonzero counts include one terminating unit.
@@ -79,7 +82,7 @@ difference explicitly, and retain identity/platform checks above the field codec
 A later exact-build trace binds StrProperty vtable `0x144ef2918` virtual `0x90`
 to the 15-byte adapter `0x142166670`, which tailcalls the existing FString reader
 `0x141e15db0` with the same archive and destination. No intervening tag, version
-gate or post processing appears in the adapter. The frozen string research and
+gate or post-processing appears in the adapter. The frozen string research and
 fresh byte checks establish this concrete link without reading supplied values.
 
 Successful demand is four count bytes plus the declared narrow byte count or

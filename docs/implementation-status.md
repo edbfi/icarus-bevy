@@ -298,7 +298,7 @@ preserved v2 guard/compile receipts and both preparation revisions. Independent
 engine interpretation SHA-256:
 `960e7f1ed944f65f06e33992fccce6976bbb96a1ad5331cdb77c13e7d92e0f53`.
 The next target case needs fresh scope, bindings and original-byte joins; fixture
-success does not establish constructor behaviour or network compatibility.
+success does not establish constructor behavior or network compatibility.
 
 ### C028 direct child leaves — 2026-10-13, 03:12 UTC
 
@@ -783,7 +783,7 @@ materialization of `0x145468180`, without object-store or owner proof.
 All 523 bindings and owned cleanup pass. The first attempt's fixture-class
 contamination is preserved separately; source-only script isolation fixes that
 failure. A forced metadata decompilation warns of blocks beyond its configured
-range, so it remains a limited lead. Direct operand/pcode checks precede any owner
+range, so it remains a limited lead. Direct operand/p-code checks precede any owner
 or archive conclusion. See the [control report](research/2026-10-12-control-caller-limit.md#targeted-instruction-context-and-preserved-failed-attempt).
 
 The subsequent instruction-only case validates eleven byte-matched instructions
@@ -1406,6 +1406,10 @@ counts and library hashes are historical receipts, not a fresh aggregate result.
 
 ## Reference evidence
 
+This summary retains the scope of each recorded case. Later qualifications appear
+in the [continuation](#continuation--2026-10-12); earlier coverage counts and pending
+steps below are historical.
+
 - [Stateless handshake](specs/stateless-handshake.md): original-server challenge,
   cookie echo and acknowledgement observed in isolation. Steam authentication was
   inactive; this did not establish a stock-client or authenticated session.
@@ -1550,9 +1554,8 @@ supported, and no ICARUS performance or stability improvement has been measured.
    boundaries qualified; native value meanings and seven empty inherited arrays'
    population coverage remain open. Reuse retained static evidence;
    the D01 populated Int/Str work is complete, and DA04's population is empty.
-   Preserve exact
-   descriptor bindings, byte/count/field bounds
-   and old/new source/library receipts. Automatic class/schema recognition and
+   Preserve exact descriptor bindings, byte/count/field bounds and old/new
+   source/library receipts. Automatic class/schema recognition and
    value meanings remain open.
    C009 own-child structure and selected C034 populations already pass the
    comparisons above. Older-build root/recorder framing, dispatch and version
@@ -1571,11 +1574,11 @@ supported, and no ICARUS performance or stability improvement has been measured.
    at zero/+0x28. The equal geometry does not discriminate the older owner.
    Establish base origin and a same-build receiver/type-registration join without
    carrying unproved provenance across calls.
-   Establish actual owner/caller
-   evidence before inferring the dispatcher caller. Bind the concrete archive/outer
-   framing path before promoting the experimental
-   control-body fields. Advance transport/control/authentication evidence and independently authored
-   world-data feasibility; validate a small import before the heavy-world workload.
+   Establish actual owner/caller evidence before inferring the dispatcher caller.
+   Bind the concrete archive/outer framing path before promoting the experimental
+   control-body fields. Advance transport/control/authentication evidence and
+   independently authored world-data feasibility; validate a small import before the
+   heavy-world workload.
    The migrated original-server launcher requires explicit current sessions for
    each runtime experiment; historical authorization windows remain expired.
 

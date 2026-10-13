@@ -1,8 +1,8 @@
-# Offline reference investigation approval
+# Historical offline reference investigation approval
 
 Historical record: the reverse-skill package was removed on 2026-10-12. Its
 commands and package requirements below are preserved as approval history, not
-current instructions. AGENTS.md links identify the former upstream revision.
+current instructions. The upstream `AGENTS.md` link identifies the former revision.
 
 For current work, follow the [canonical plan](linux-dedicated-server-plan.md)
 and [implementation status](implementation-status.md). This record does not
@@ -16,7 +16,7 @@ The vendored [AGENTS.md](https://github.com/zhaoxuya520/reverse-skill/blob/cab63
 approval of repository scripts and their side effects. Its scope contract also
 requires target authorization before analysis.
 
-## Historical proposed first batch
+## Historical first batch proposed for approval
 
 Run these commands from the project root only after approval:
 

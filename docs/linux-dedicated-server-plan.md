@@ -126,9 +126,8 @@ and matching client/server pair remain unverified. On 2026-10-12 the user descri
 the producing release as “latest”, then supplied build 25793767 and version
 `3.0.31.158478-rel-DangerousHorizons`. Treat this as user-reported provenance until
 paired with a matched reference; the preserved executable is older build 25621760.
-A stock
-Windows client is available on the user's separate machine for later tests, not
-accessible to the current offline lab.
+A stock Windows client is available on the user's separate machine for later tests,
+not accessible to the current offline lab.
 
 The completed local client installation has independently checked hashes and
 matching executable/PDB GUID and age (`work/client-identity-20261012/`). Its
@@ -277,11 +276,8 @@ Use this dataset in the following work sequence:
    The earlier provisional gap missed this retained static case. Populated leaves
    subsequently qualify 25,680 individual Int4 spans and 1,431 strict Str frames;
    DA04 has no populated coverage. Continue unresolved save relationships and
-   value contracts. Preserve unqualified
-   meanings/restoration. See
-   the current checkpoint in implementation status.
-   Retain the lack of populated
-   inherited-array coverage.
+   value contracts. Meanings, restoration and populated inherited-array coverage
+   remain unqualified; see the [current checkpoint](implementation-status.md).
    Exact C034 own Name values also pass strict native/independent structural
    decoding across 1,658 spans; name construction and identity semantics remain
    open.
@@ -388,9 +384,9 @@ updates in experiments. Do not run its container installer unchanged on the host
 
 Subject to the current research pause, the user's 2026-10-12 instructions authorize
 autonomous progress, frequent Conventional Commits and feature-branch pushes,
-appropriate subagents, and periodic cleanup. Continue through implementation and verification; do not stop after
-proposing another plan or ask for approval of routine choices. A blocked experiment
-should yield a precise dependency and the next useful independent task. Existing
+appropriate subagents, and periodic cleanup. Continue through implementation and
+verification; do not stop after proposing another plan or ask for approval of routine
+choices. A blocked experiment should yield a precise dependency and the next useful independent task. Existing
 target, privacy and isolation boundaries still apply. Historical approval records
 describe their original batches; they do not extend expired runtime deadlines.
 
@@ -413,8 +409,8 @@ requires it, use `fork_turns="none"` for explicit model/effort overrides and pro
 a self-contained task. Start with the lead and up to two workers; use another
 worker only for independent work that fits available slots and resources.
 Assign file ownership or separate worktrees; only the lead stages, commits and
-pushes integrated work. Review
-findings against real source and evidence before accepting them.
+pushes integrated work. Review findings against real source and evidence before
+accepting them.
 
 For each coherent increment: implement, run relevant checks, update the existing
 status/specification when behavior or evidence changes, inspect the staged diff,
@@ -672,10 +668,11 @@ Install hooks with `prek install`. Run:
 
 ```bash
 prek run --all-files --hook-stage manual
-cargo fmt --all -- --check
-cargo clippy --workspace --all-targets --locked -- -D warnings
-cargo test --workspace --all-targets --locked
 ```
+
+The manual suite includes Rust formatting, Clippy and locked workspace tests.
+[Hook configuration](../.pre-commit-config.yaml) defines the individual commands
+and stages.
 
 CI defines Linux release-build and headless smoke checks; retain these checks
 and audit headless/shared-library dependencies.

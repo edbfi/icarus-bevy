@@ -1,8 +1,8 @@
-# Overnight research and implementation batch
+# Historical overnight research and implementation batch
 
 Historical record: the reverse-skill package was removed on 2026-10-12. Its
 commands and package requirements below are preserved as approval history, not
-current instructions. AGENTS.md links identify the former upstream revision.
+current instructions. The upstream `AGENTS.md` link identifies the former revision.
 
 Status: **historical; execution window expired**. Approved by the user
 ("Go ahead") on 2026-10-04 for the window below.

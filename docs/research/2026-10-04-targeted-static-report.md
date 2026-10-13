@@ -55,9 +55,9 @@ and diagnostic annotations remain in ignored `work/`.
 | Evidence | Address / range size | Observed role; names are analyst descriptions |
 | --- | --- | --- |
 | E-008 | Three anchors below | Candidate references and enclosing runtime ranges |
-| E-009 | `0x14146e6c0`, 3162 bytes | By-name prospect loader; reference to `0x1449f1550` at `0x14146f195` |
-| E-010 | `0x1414baf60`, 1239 bytes | From-file prospect loader; reference to `0x1449f6660` at `0x1414bb176` |
-| E-011 | `0x1439ee7f0`, 7560 bytes | Control dispatcher; version diagnostic reference to `0x14546d780` at `0x1439eecd4` |
+| E-009 | `0x14146e6c0`, 3,162 bytes | By-name prospect loader; reference to `0x1449f1550` at `0x14146f195` |
+| E-010 | `0x1414baf60`, 1,239 bytes | From-file prospect loader; reference to `0x1449f6660` at `0x1414bb176` |
+| E-011 | `0x1439ee7f0`, 7,560 bytes | Control dispatcher; version diagnostic reference to `0x14546d780` at `0x1439eecd4` |
 | E-012 | `0x141f2e6e0`, 99 bytes | Version equality fallback or callback dispatch |
 | E-013 | `0x1439f0530`, 18 entries | Message-ID dispatch table |
 | E-014 | `0x141824760`, 959 bytes | First reader called by E-010 |
@@ -67,7 +67,7 @@ and diagnostic annotations remain in ignored `work/`.
 | E-018 | `0x14181e530`, 577 bytes | Data loader called by E-009; `.json` suffix and name comparison |
 | E-019 | `0x1418e6140`, 251 bytes | Shared archive conversion used by E-014/E-015 |
 | E-020 | `0x141f31140`, 330 bytes | Output formatting and virtual output call |
-| E-021 | `0x141e15db0`, 1311 bytes | Signed-length string serialization used in negotiation |
+| E-021 | `0x141e15db0`, 1,311 bytes | Signed-length string serialization used in negotiation |
 | E-022 | `0x141f2b220`, initial 172 bytes | Incomplete first runtime range of local version generation |
 | E-023 | `0x141804d30`, 339 bytes | Shared by-name loader forwards to unresolved conversion |
 | E-024 | `0x141f2b220`, extended 778 bytes | Version cache, callback and default checksum construction across five runtime ranges |
