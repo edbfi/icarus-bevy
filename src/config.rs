@@ -1,8 +1,16 @@
-use std::{fs, path::PathBuf, time::Duration};
+use std::{
+    fs::OpenOptions,
+    io::Read,
+    os::unix::fs::OpenOptionsExt,
+    path::{Path, PathBuf},
+    time::Duration,
+};
 
 use anyhow::{Context, Result, ensure};
 use clap::Args;
 use serde::{Deserialize, Serialize};
+
+const MAX_CONFIG_BYTES: u64 = 64 * 1024;
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(default, deny_unknown_fields)]
@@ -30,7 +38,7 @@ impl Default for ServerConfig {
 
 #[derive(Args, Debug, Default)]
 pub struct ConfigOptions {
-    /// Read a native TOML configuration. Relative data paths use the working directory.
+    /// Read up to 64 KiB of native TOML. Relative data paths use the working directory.
     #[arg(long)]
     pub config: Option<PathBuf>,
     #[arg(long)]
@@ -46,7 +54,7 @@ impl ConfigOptions {
     pub fn resolve(&self) -> Result<ServerConfig> {
         let mut config = match &self.config {
             Some(path) => toml::from_str::<ServerConfig>(
-                &fs::read_to_string(path)
+                &read_configuration(path)
                     .with_context(|| format!("read configuration {}", path.display()))?,
             )
             .context("parse native configuration")?,
@@ -64,6 +72,32 @@ impl ConfigOptions {
         config.validate()?;
         Ok(config)
     }
+}
+
+fn read_configuration(path: &Path) -> Result<String> {
+    // Follow normal config symlinks, but check the opened handle so a FIFO
+    // cannot block startup or replace a regular file between path checks.
+    let file = OpenOptions::new()
+        .read(true)
+        .custom_flags(rustix::fs::OFlags::NONBLOCK.bits() as i32)
+        .open(path)?;
+    let metadata = file.metadata()?;
+    ensure!(
+        metadata.is_file(),
+        "configuration input must be a regular file"
+    );
+    ensure!(
+        metadata.len() <= MAX_CONFIG_BYTES,
+        "configuration exceeds 64 KiB limit"
+    );
+    let mut text = String::new();
+    file.take(MAX_CONFIG_BYTES + 1).read_to_string(&mut text)?;
+    // The metadata bound alone does not cover growth after the handle check.
+    ensure!(
+        text.len() as u64 <= MAX_CONFIG_BYTES,
+        "configuration exceeds 64 KiB limit"
+    );
+    Ok(text)
 }
 
 impl ServerConfig {

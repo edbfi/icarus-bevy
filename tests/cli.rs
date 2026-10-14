@@ -95,7 +95,8 @@ impl RunningServer {
     }
 
     fn start_with_autosave(directory: &std::path::Path, autosave: &str) -> Self {
-        let mut child = cli()
+        let mut command = cli();
+        command
             .args([
                 "run",
                 "--tick-hz",
@@ -104,7 +105,12 @@ impl RunningServer {
                 autosave,
                 "--data-dir",
             ])
-            .arg(directory)
+            .arg(directory);
+        Self::spawn(command)
+    }
+
+    fn spawn(mut command: Command) -> Self {
+        let mut child = command
             .stdout(Stdio::null())
             .stderr(Stdio::piped())
             .spawn()
@@ -164,6 +170,138 @@ impl Drop for RunningServer {
         let _ = self.child.kill();
         let _ = self.child.wait();
     }
+}
+
+#[test]
+fn configuration_inputs_are_bounded_before_runtime_state_creation() {
+    use std::os::unix::fs::{FileTypeExt, symlink};
+
+    for mode in ["check-config", "run"] {
+        for kind in [
+            "fifo",
+            "fifo-symlink",
+            "oversized",
+            "directory",
+            "invalid-utf8",
+        ] {
+            let directory = tempfile::tempdir().unwrap();
+            let config = directory.path().join("server.toml");
+            let state = directory.path().join("state");
+            let source_bytes = match kind {
+                "fifo" | "fifo-symlink" => {
+                    rustix::fs::mkfifoat(
+                        rustix::fs::CWD,
+                        &config,
+                        rustix::fs::Mode::RUSR | rustix::fs::Mode::WUSR,
+                    )
+                    .unwrap();
+                    None
+                }
+                "directory" => {
+                    fs::create_dir(&config).unwrap();
+                    None
+                }
+                "oversized" => {
+                    // Valid empty/default TOML except for a single long comment.
+                    let bytes = vec![b'#'; 64 * 1024 + 1];
+                    fs::write(&config, &bytes).unwrap();
+                    Some(bytes)
+                }
+                "invalid-utf8" => {
+                    let bytes = b"#\xff".to_vec();
+                    fs::write(&config, &bytes).unwrap();
+                    Some(bytes)
+                }
+                _ => unreachable!(),
+            };
+            let link = directory.path().join("linked.toml");
+            let selected = if kind == "fifo-symlink" {
+                symlink(&config, &link).unwrap();
+                &link
+            } else {
+                &config
+            };
+            let mut command = cli();
+            command
+                .arg(mode)
+                .arg("--config")
+                .arg(selected)
+                .arg("--data-dir")
+                .arg(&state);
+            let mut child = RunningServer::spawn(command);
+            assert!(!child.wait_exit().success(), "accepted {kind} in {mode}");
+            let logs = child.logs.iter().collect::<Vec<_>>().join("\n");
+            let expected = match kind {
+                "fifo" | "fifo-symlink" | "directory" => "regular file",
+                "oversized" => "64 KiB",
+                "invalid-utf8" => "UTF-8",
+                _ => unreachable!(),
+            };
+            assert!(logs.contains(expected), "{mode}/{kind}: {logs}");
+            assert!(!logs.contains("\"event\":\"started\""));
+            assert!(!logs.contains("save_committed"));
+            assert!(!state.exists());
+            if let Some(bytes) = source_bytes {
+                assert_eq!(fs::read(&config).unwrap(), bytes);
+            } else if kind == "directory" {
+                assert!(config.is_dir());
+                assert_eq!(fs::read_dir(&config).unwrap().count(), 0);
+            } else {
+                assert!(fs::symlink_metadata(&config).unwrap().file_type().is_fifo());
+            }
+            if kind == "fifo-symlink" {
+                assert!(
+                    fs::symlink_metadata(&link)
+                        .unwrap()
+                        .file_type()
+                        .is_symlink()
+                );
+                assert_eq!(fs::read_link(&link).unwrap(), config);
+            }
+        }
+    }
+}
+
+#[test]
+fn configuration_at_byte_limit_and_regular_symlink_preserve_overrides() {
+    let directory = tempfile::tempdir().unwrap();
+    let config = directory.path().join("server.toml");
+    let linked = directory.path().join("linked.toml");
+    let state = directory.path().join("state");
+    let mut bytes = b"tick_hz = 20\nautosave_seconds = 30\n#".to_vec();
+    bytes.resize(64 * 1024, b' ');
+    fs::write(&config, &bytes).unwrap();
+    std::os::unix::fs::symlink(&config, &linked).unwrap();
+    for selected in [&config, &linked] {
+        let output = cli()
+            .arg("check-config")
+            .arg("--config")
+            .arg(selected)
+            .arg("--data-dir")
+            .arg(&state)
+            .args(["--tick-hz", "120"])
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let effective: icarus_bevy::config::ServerConfig =
+            toml::from_str(&String::from_utf8(output.stdout).unwrap()).unwrap();
+        assert_eq!(effective.tick_hz, 120);
+        assert_eq!(effective.autosave_seconds, 30);
+        assert_eq!(effective.max_catch_up_ticks, 4);
+        assert_eq!(effective.data_dir, state);
+        assert!(!state.exists());
+        assert_eq!(fs::read(&config).unwrap(), bytes);
+    }
+    assert!(
+        fs::symlink_metadata(&linked)
+            .unwrap()
+            .file_type()
+            .is_symlink()
+    );
 }
 
 #[test]

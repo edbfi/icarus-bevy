@@ -29,6 +29,9 @@ not representative gameplay performance.
 
 Configuration precedence is CLI → TOML → defaults. Unknown fields and invalid
 limits are rejected. Relative paths resolve from the working directory.
+Config inputs must resolve to an opened regular file of at most64KiB; regular
+symlinks are supported. FIFO and oversized inputs fail before runtime state opens
+(F-443).
 `check-config` prints effective configuration without creating the data directory.
 Use `--help` on each subcommand for supported overrides.
 

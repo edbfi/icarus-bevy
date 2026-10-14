@@ -60,6 +60,7 @@ Defects in this repository's code, each with a regression test.
 | N-011 | Malformed checksum references caused rollback or left invalid previous metadata admitted | Validate both canonical digest strings before selection; load/save/CLI preservation and valid-mismatch recovery regressions | F-417 |
 | N-012 | Native JSON parse causes exposed supplied strings/unknown keys, including both unusable generations | Shared static stage/category/location errors discard raw causes; API/CLI and nine release cases preserve files | F-423, F-425 |
 | N-013 | Positional native metadata/entity arrays were admitted; malformed array headers could suppress valid backup recovery as future schema | Storage/record object gates reject arrays; malformed headers recover valid backup and proper future objects still refuse rollback | F-428 |
+| N-014 | Config FIFO blocked startup before signal handling; TOML reads allocated entire files before validating limits | Nonblocking opened regular-file guard and64KiB/cap+1 reads; both CLI modes reject special/oversized inputs, retain symlinks, exact-boundary configs and overrides | F-443 |
 
 Injected ENOSPC at the generation and manifest writer boundaries preserves the
 acknowledged generation and permits retry; an error after publication returns
