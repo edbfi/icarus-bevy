@@ -92,7 +92,7 @@ one table. The native run command has no game listener.
   M-146, the caller investigation under
   [research/archive](../../research/archive/2026-10-12-control-caller-limit.md),
   and the control-store rows M-023 to M-045 summarized in the
-  [control-store digest](../../research/network/2026-10-13-control-stores.md).
+  [control-store digest](../../research/network/control-stores.md).
 - Requirements before promotion: identify version generation and callback
   registration and record the legitimate decision rule; recover archive
   conversion and outer framing with bounds and errors; obtain a paired trace of

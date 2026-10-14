@@ -23,12 +23,12 @@ local client/save pair compatible; authenticated/reference access is deferred
 rejects FIFO inputs without blocking and preserves valid preceding-generation
 recovery (F-405). Complete domain capture remains required (F-003). Supplied-save
 structure for four selected classes is qualified against both copies with
-values left opaque ([save-class digest](research/save-format/2026-10-13-save-class-audits.md));
+values left opaque ([save-class digest](research/save-format/save-class-audits.md));
 current-client control-table stores are located but their owner is not
-([control-store digest](research/network/2026-10-13-control-stores.md)); the
+([control-store digest](research/network/control-stores.md)); the
 C001 constructor decoder passes all ten corrected authored modes and the
 exact-window case; receiver/dispatch qualification remains open
-([C001 digest](research/save-format/2026-10-13-c001-decoder.md)).
+([C001 digest](research/save-format/c001-constructor.md)).
 
 ## Milestones
 
