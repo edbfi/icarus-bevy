@@ -44,6 +44,53 @@ JAVA_HOME="$(brew --prefix openjdk@21)/libexec" \
   "$(brew --prefix ghidra)/libexec/support/analyzeHeadless" <arguments>
 ```
 
+## Evidence at session close
+
+The exported bundle is the canonical record of a session; the repository holds
+only its index row and citations (rules in
+[`.agents/rules/docs.md`](../../.agents/rules/docs.md)).
+
+1. Call the MCP `export_evidence_bundle` tool with an absolute `path` ending in
+   `work/<case>/rea-bundle.json`. It reports the record and unknown counts.
+2. Allocate an ID with `python3 tools/docs_lint.py --next-id M` and append one
+   record to the area shard in `evidence/`: `kind` `rea-bundle`, the file's
+   `sha256sum`, `records` from the export, and in `ev` and `unk` only the IDs
+   that rows cite.
+3. Cite `M-NNN/ev_<12 hex>` in finding Evidence cells and `M-NNN/unk_<12 hex>`
+   in U- rows; never paste a full identifier.
+4. Run `python3 tools/docs_lint.py --local`; it checks the digest and that every
+   listed ID is a member of the bundle.
+
+Read a bundle by summary and exact filter, never whole. Take the full ID from
+the row (`grep -hw M-NNN evidence/*.jsonl`), then:
+
+```bash
+.agents/rea/rea.sh inspect-evidence-bundle \
+  '{"path":"/abs/work/<case>/rea-bundle.json","detail":"summary","filters":{"evidence_id":"ev_<64 hex>"}}'
+```
+
+Inside a live session, `get_evidence_bundle` with `detail: "summary"` and the
+same filters does the same without exporting.
+
+## Private evidence backup
+
+`local-private` evidence exists only on the analyst machine; Git holds its index
+rows, not its bytes. Back up every active path to storage outside the repository
+named by `ICARUS_EVIDENCE_BACKUP`, then prove a restore into a scratch clone:
+
+```bash
+python3 tools/docs_lint.py --list-local |
+  rsync -a -r --relative --files-from=- ./ "$ICARUS_EVIDENCE_BACKUP/"
+git clone -q . "$RESTORE_CHECK" && rsync -a "$ICARUS_EVIDENCE_BACKUP/" "$RESTORE_CHECK/"
+python3 tools/docs_lint.py --local --root "$RESTORE_CHECK"
+```
+
+`--files-from` disables recursion unless `-r` is given. A dry run (`-n --stats`)
+on 2026-10-14 listed 224 paths and about 60 GB, mostly the client copy under
+`icarus-client-orig/` and `reference-data/`. Back up after each
+session close that adds rows; deleting an artifact still requires its row to be
+retired first.
+
 ## Reference environments
 
 Maintain three environments:
