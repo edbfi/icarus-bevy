@@ -67,3 +67,46 @@ test('class-selected names keep the ASCII/1024-byte profile and long prefixes',(
  const r=run([...Array.from({length:31},()=>max),pub(helper)],{class_names:['UFoo',long]});
  a.equal(r.hit_count,32);a.equal(r.hits[31].family,'vtable_helper_constructor_caller');a.equal(r.hits[31].class_name,long);a.equal(r.hits[0].name.length,1024);
 });
+
+const M=(class_name,method)=>({class_name,method});
+test('class_methods select exact ?method@class@@ pairs with class and method fields',()=>{
+ const hit='?ApplyState@UFoo@@QEAAXH@Z',misses=['?ApplyState@UFooX@@QEAAXH@Z','?ApplyState@XUFoo@@QEAAXH@Z','?ApplyStateX@UFoo@@QEAAXH@Z','?XApplyState@UFoo@@QEAAXH@Z','?ApplyState@UFoo@Outer@@QEAAXH@Z','?applystate@UFoo@@QEAAXH@Z','?ApplyState@@YAXXZ','?Serialize@UFoo@@UEAAXAEAVFArchive@@@Z'];
+ const r=run([...misses.map(n=>pub(n)),pub(hit,1,0x30)],{class_methods:[M('UFoo','ApplyState')]});
+ a.deepEqual(r.hits.map(h=>[h.name,h.family,h.class_name,h.method,h.executable]),[[hit,'selected_class_method','UFoo','ApplyState',true]]);
+ a.deepEqual(r.class_method_queries,[M('UFoo','ApplyState')]);a.deepEqual(r.class_name_queries,[]);a.equal(r.selected_name_profile,'caller_class_fixed_decorated_ascii_forms_max1024_not_all_class_members');
+ const json=JSON.stringify(r);for(const n of misses)a(!json.includes(JSON.stringify(n)),n);
+ a.equal(run(undefined,{class_methods:[M('UFoo','ApplyState')]}).hit_count,0);a.deepEqual(run().class_method_queries,[]);
+});
+
+test('class_methods do not select operator or special decorated names',()=>{
+ const special=['??0UFoo@@QEAA@XZ','??1UFoo@@UEAA@XZ','??_GUFoo@@UEAAPEAXI@Z','??_EUFoo@@UEAAPEAXI@Z','??$InternalConstructor@VUFoo@@@@YAXXZ','??$InternalVTableHelperCtorCaller@VUFoo@@@@YAXXZ','??4UFoo@@QEAAAEAV0@AEBV0@@Z','??_GUFoo@UFoo@@QEAA@XZ'];
+ const r=run([...special.map(n=>pub(n)),pub('??_7UFoo@@6B@',2,0x40,0)],{class_methods:[M('UFoo','_G'),M('UFoo','UFoo'),M('UFoo','_7'),M('UFoo','InternalConstructor'),M('UFoo','_E')]});
+ a.equal(r.hit_count,0);
+});
+
+test('class_methods OR with class_names and addresses; method pairs win overlaps',()=>{
+ const r=run([pub('?Helper@@YAXXZ',1,0x30),pub('??0AFooActor@@QEAA@XZ',1,0x20),pub('?Serialize@AFooActor@@UEAAXAEAVFArchive@@@Z',1,0x24),pub('?Tick@UBarThing@@UEAAXM@Z',1,0x28),pub('?Tick@UBarOther@@UEAAXM@Z',1,0x2c)],
+  {addresses:['0x140001030'],class_names:['AFooActor'],class_methods:[M('UBarThing','Tick'),M('AFooActor','Serialize')]});
+ a.deepEqual(r.hits.map(h=>[h.family,h.class_name,h.method]),[['address_query',undefined,undefined],['constructor_or_destructor','AFooActor',undefined],['selected_class_method','AFooActor','Serialize'],['selected_class_method','UBarThing','Tick']]);
+ a(!('method' in r.hits[1])&&!('class_name' in r.hits[0]));a.deepEqual(r.class_name_queries,['AFooActor']);a.deepEqual(r.class_method_queries,[M('UBarThing','Tick'),M('AFooActor','Serialize')]);a.deepEqual(r.address_queries,['0x140001030']);
+});
+
+test('class method query validation fails closed',()=>{
+ const sixteen=Array.from({length:16},(_,i)=>M('UFoo','Method'+i));
+ for(const [query,msg]of [[{class_methods:[]},/class method query shape/],[{class_methods:[...sixteen,M('UFoo','Extra')]},/class method query shape/],[{class_methods:M('UFoo','Tick')},/class method query shape/],
+  [{class_methods:[null]},/class method query shape/],[{class_methods:[['UFoo','Tick']]},/class method query shape/],[{class_methods:[{class_name:'UFoo'}]},/class method query shape/],[{class_methods:[{...M('UFoo','Tick'),extra:1}]},/class method query shape/],
+  [{class_methods:[Object.assign(Object.create({method:'Tick'}),{class_name:'UFoo',other:1})]},/class method query shape/],
+  [{class_methods:[M('U-Foo','Tick')]},/class method query format/],[{class_methods:[M('UFoo','1Tick')]},/class method query format/],[{class_methods:[M('UFoo','')]},/class method query format/],[{class_methods:[M('UFoo','T'.repeat(97))]},/class method query format/],[{class_methods:[M('UFoo',7)]},/class method query format/],
+  [{class_methods:[M('UFoo','Tick'),M('UFoo','Tick')]},/duplicate class method query/],[{class_methods:[M('UFoo','Tick')],extra:1},/query shape/],[{class_methods:[M('UFoo','Tick')],class_names:[]},/class query shape/],[{class_methods:[M('UFoo','Tick')],addresses:[]},/address query shape/]])
+  a.throws(()=>run(undefined,query),msg,JSON.stringify(query));
+ a.equal(run([pub('?Method15@UFoo@@QEAAXXZ'),pub('?'+'T'.repeat(96)+'@'+'C'.repeat(96)+'@@QEAAXXZ',1,0x24)],{class_methods:[...sixteen.slice(1),M('C'.repeat(96),'T'.repeat(96))]}).hit_count,2);
+});
+
+test('class_methods share the 32-hit cap and keep code-only strict mapping',()=>{
+ const q={class_methods:[M('UFoo','Tick')]},tick=i=>pub('?Tick@UFoo@@UEAAXM@Z',1,0x20+i);
+ a.equal(run(Array.from({length:32},(_,i)=>tick(i)),q).hit_count,32);
+ a.throws(()=>run(Array.from({length:33},(_,i)=>tick(i)),q),/selected public hit cap/);
+ a.throws(()=>run([...Array.from({length:31},(_,i)=>tick(i)),pub('??0UFoo@@QEAA@XZ',1,0x60),pub('?Helper@@YAXXZ',1,0x100)],{...q,class_names:['UFoo'],addresses:['0x140001100']}),/selected public hit cap/);
+ for(const p of [pub('?Tick@UFoo@@UEAAXM@Z',2,0x40),pub('?Tick@UFoo@@UEAAXM@Z',3,0x40,0),pub('?Tick@UFoo@@UEAAXM@Z',1,0x180)])a.throws(()=>run([p],q),/strict source mapping/);
+ a.throws(()=>run([pub('?Tick@UFoo@@'+'A'.repeat(1100))],q),/selected public name profile/);
+});
