@@ -31,6 +31,10 @@ success-path allocation (F-142) and explicit struct-array and comparator limits
 up to a 128 KiB research ceiling while the original API keeps 64 KiB (F-178,
 F-198).
 
+Every one of the save's 38 class identifiers is registered in both the older
+server and the newer client, so class identity cannot confirm the reported
+producing build (F-498).
+
 Counts and maxima are samples from the two supplied copies, not format limits.
 No decoded value, text or number was emitted or interpreted.
 
@@ -45,4 +49,4 @@ No decoded value, text or number was emitted or interpreted.
 
 ## Artifacts
 
-M-047..M-077, M-079..M-108, M-118..M-130.
+M-047..M-077, M-079..M-108, M-118..M-130, M-278..M-280.
