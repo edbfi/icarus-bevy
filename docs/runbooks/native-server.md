@@ -45,6 +45,11 @@ Snapshot capture requires every entity with a domain ID to have its required
 position; incomplete state fails before submission instead of silently dropping
 that entity from the durable generation. Entities without domain identity remain
 outside the current native snapshot schema.
+Native schema 1 holds only those records and the clock (64 MiB per generation).
+Schema 2 adds exactly one lossless, value-opaque preserved prospect section,
+carried unchanged into every later generation; a generation may then reach
+128 MiB. Schema 1 with a section, schema 2 without one and other schemas fail
+closed (F-560).
 
 Each generation is checksummed and synchronized before the manifest is atomically
 published. The store retains two committed generations. Startup reports when a
@@ -82,7 +87,11 @@ The optional `--inner-tags` also checks [root property framing](../specs/save-fo
 under an explicit experimental profile and reports counts; record values remain opaque.
 Use `--recorders` to additionally check recorder field and byte-array boundaries;
 it implies root framing and reports aggregates without class names or component data.
-Validation covers authored fixtures and supplied-save envelope integrity; the
-inner world schema and original-save round trips remain unvalidated.
+`--preserve-check` preserves the payload losslessly, saves and reloads it through
+a temporary schema-2 store that it removes, and reports counts, sizes and timings
+with `world_imported: false` (F-560).
+Validation covers authored fixtures, supplied-save envelope integrity and the
+lossless preservation; value meanings and original-server round trips remain
+unvalidated.
 The [synthetic workload](synthetic-workload.md) exercises native scheduling
 and durability; it is not an ICARUS performance benchmark.

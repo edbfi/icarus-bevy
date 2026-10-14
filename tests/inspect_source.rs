@@ -15,11 +15,12 @@ use flate2::{Compression, write::ZlibEncoder};
 use serde_json::{Value, json};
 use sha1::{Digest, Sha1};
 
-const MODES: [&[&str]; 4] = [
+const MODES: [&[&str]; 5] = [
     &[],
     &["--inner-tags"],
     &["--recorders"],
     &["--inner-tags", "--recorders"],
+    &["--preserve-check"],
 ];
 const MARKER: &str = "AUTHORED_INSPECT_VALUE_MARKER";
 
@@ -237,7 +238,16 @@ fn regular_sources_and_regular_symlinks_preserve_private_values_and_files() {
             assert!(!String::from_utf8_lossy(&output.stdout).contains(MARKER));
             let report: Value = serde_json::from_slice(&output.stdout).unwrap();
             assert_eq!(report["world_imported"], false);
-            let validation = if mode.contains(&"--recorders") {
+            let validation = if mode.contains(&"--preserve-check") {
+                let preservation = &report["preservation"];
+                assert_eq!(preservation["recorder_count"], 1);
+                assert_eq!(preservation["byte_identical"], true);
+                assert_eq!(preservation["values_interpreted"], false);
+                assert_eq!(report["native_schema"], 2);
+                assert_eq!(report["native_round_trip"], true);
+                assert!(report["native_generation_bytes"].as_u64().unwrap() > 0);
+                "experimental_lossless_preservation"
+            } else if mode.contains(&"--recorders") {
                 assert_eq!(report["recorders"]["recorder_count"], 1);
                 assert_eq!(report["inner_tags"]["root_property_count"], 1);
                 "experimental_recorder_framing_only"

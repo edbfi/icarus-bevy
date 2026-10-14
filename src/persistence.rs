@@ -14,9 +14,14 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 use crate::json::JsonObject;
-use crate::simulation::WorldSnapshot;
+use crate::preservation::MAX_PRESERVED_BASE64_BYTES;
+use crate::simulation::{SNAPSHOT_SCHEMA_DOMAIN, SNAPSHOT_SCHEMA_PRESERVED, WorldSnapshot};
 
-const MAX_SNAPSHOT_BYTES: u64 = 64 * 1024 * 1024;
+/// Schema 1 bound, unchanged: domain records and the clock only.
+const MAX_DOMAIN_SNAPSHOT_BYTES: u64 = 64 * 1024 * 1024;
+/// Schema 2 adds at most one 64 MiB Base64 preserved section (whose decoded
+/// size is checked separately), so a generation file may reach 128 MiB.
+const MAX_SNAPSHOT_BYTES: u64 = MAX_DOMAIN_SNAPSHOT_BYTES + MAX_PRESERVED_BASE64_BYTES as u64;
 
 #[derive(Debug)]
 struct UnsupportedSchema;
@@ -175,8 +180,13 @@ impl SnapshotStore {
         let header = serde_json::from_slice::<JsonObject<SnapshotHeader>>(&bytes)
             .map_err(|error| crate::json_parse_error("decode native snapshot JSON", error))?
             .0;
-        if header.schema_version.as_u64() != Some(1) {
-            return Err(UnsupportedSchema.into());
+        match header.schema_version.as_u64() {
+            Some(schema) if schema == u64::from(SNAPSHOT_SCHEMA_DOMAIN) => ensure!(
+                bytes.len() as u64 <= MAX_DOMAIN_SNAPSHOT_BYTES,
+                "schema 1 native snapshot exceeds 64 MiB limit"
+            ),
+            Some(schema) if schema == u64::from(SNAPSHOT_SCHEMA_PRESERVED) => {}
+            _ => return Err(UnsupportedSchema.into()),
         }
         let snapshot = serde_json::from_slice::<JsonObject<WorldSnapshot>>(&bytes)
             .map_err(|error| crate::json_parse_error("decode native snapshot fields JSON", error))?
@@ -264,10 +274,17 @@ impl SnapshotStore {
             }
             None => (1, None),
         };
+        // Encoding the preserved section checks its own 48 MiB decoded cap.
         let bytes = serde_json::to_vec(snapshot)?;
+        let limit = if snapshot.preserved_prospect.is_some() {
+            MAX_SNAPSHOT_BYTES
+        } else {
+            MAX_DOMAIN_SNAPSHOT_BYTES
+        };
         ensure!(
-            bytes.len() as u64 <= MAX_SNAPSHOT_BYTES,
-            "native snapshot exceeds 64 MiB limit"
+            bytes.len() as u64 <= limit,
+            "native snapshot exceeds {} MiB limit",
+            limit / (1024 * 1024)
         );
         let generation = Generation {
             number,

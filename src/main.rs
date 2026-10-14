@@ -53,6 +53,10 @@ enum Command {
         /// Also frame recorder fields, leaving component bytes opaque; implies root framing.
         #[arg(long)]
         recorders: bool,
+        /// Preserve the payload losslessly, then save and reload it through a
+        /// temporary native schema-2 store; reports counts, sizes and timings.
+        #[arg(long, conflicts_with_all = ["inner_tags", "recorders"])]
+        preserve_check: bool,
     },
     /// Reserved interface: official format is unknown; fails without writing.
     ImportSave {
@@ -91,6 +95,7 @@ fn execute(cli: Cli) -> Result<()> {
             source,
             inner_tags,
             recorders,
+            preserve_check,
         } => {
             // Check the opened handle: a path can change to a FIFO after a
             // regular-file precheck. Normal regular-file symlinks still work.
@@ -100,7 +105,9 @@ fn execute(cli: Cli) -> Result<()> {
                 .open(&source)
                 .context("open prospect envelope")?;
             ensure!(file.metadata()?.is_file(), "source must be a regular file");
-            let output = if recorders {
+            let output = if preserve_check {
+                serde_json::to_string(&preserve_check_report(file)?)?
+            } else if recorders {
                 serde_json::to_string(&icarus_bevy::prospect::inspect_with_recorders(file)?)?
             } else if inner_tags {
                 serde_json::to_string(&icarus_bevy::prospect::inspect_with_inner_tags(file)?)?
@@ -112,6 +119,64 @@ fn execute(cli: Cli) -> Result<()> {
         }
         Command::Run { options, max_ticks } => run(options, max_ticks),
     }
+}
+
+/// Preserve a supplied envelope and prove the native persistence round trip in
+/// a private temporary store that is removed afterwards. Nothing is imported.
+fn preserve_check_report(file: std::fs::File) -> Result<serde_json::Value> {
+    use icarus_bevy::{
+        persistence::SnapshotStore,
+        preservation::PreserveLimits,
+        simulation::{SNAPSHOT_SCHEMA_PRESERVED, WorldSnapshot},
+    };
+    use std::{sync::Arc, time::Instant};
+
+    let started = Instant::now();
+    let preserved = icarus_bevy::prospect::preserve(file, PreserveLimits::default())?;
+    let preserve_ms = started.elapsed().as_millis();
+    let payload_sha256 = preserved.preserved.payload_sha256();
+    let summary = serde_json::to_value(preserved.preserved.summary())?;
+    let snapshot = WorldSnapshot {
+        schema_version: SNAPSHOT_SCHEMA_PRESERVED,
+        preserved_prospect: Some(Arc::new(preserved.preserved)),
+        ..WorldSnapshot::default()
+    };
+    let directory = tempfile::tempdir().context("create temporary native store")?;
+    let mut store = SnapshotStore::open(directory.path())?;
+    let saved = Instant::now();
+    store.save(&snapshot)?;
+    let save_ms = saved.elapsed().as_millis();
+    let generation_bytes = std::fs::read_dir(directory.path())?
+        .filter_map(|entry| entry.ok())
+        .filter(|entry| entry.file_name().to_string_lossy().starts_with("snapshot-"))
+        .map(|entry| entry.metadata().map(|metadata| metadata.len()))
+        .sum::<std::io::Result<u64>>()?;
+    let loaded_at = Instant::now();
+    let loaded = store
+        .load()?
+        .context("saved native generation is missing")?;
+    let load_ms = loaded_at.elapsed().as_millis();
+    let reloaded = loaded
+        .snapshot
+        .preserved_prospect
+        .context("reloaded generation lost its preserved section")?;
+    ensure!(
+        reloaded.payload_sha256() == payload_sha256
+            && reloaded.to_inner_payload()?.len() == reloaded.payload_bytes(),
+        "reloaded preserved section differs"
+    );
+    drop(store);
+    directory.close().context("remove temporary native store")?;
+    Ok(json!({
+        "validation": "experimental_lossless_preservation",
+        "envelope": preserved.envelope,
+        "preservation": summary,
+        "native_schema": SNAPSHOT_SCHEMA_PRESERVED,
+        "native_generation_bytes": generation_bytes,
+        "native_round_trip": true,
+        "preserve_ms": preserve_ms, "save_ms": save_ms, "load_ms": load_ms,
+        "world_imported": false,
+    }))
 }
 
 fn saved(receipt: SaveReceipt) {
@@ -163,7 +228,8 @@ fn run(options: ConfigOptions, max_ticks: Option<u64>) -> Result<()> {
     eprintln!(
         "{}",
         json!({"event": "started", "tick": snapshot.tick, "tick_hz": config.tick_hz,
-        "icarus_compatible": false, "gameplay_ready": false, "native_schema": 1})
+        "icarus_compatible": false, "gameplay_ready": false,
+        "native_schema": snapshot.schema_version})
     );
 
     loop {
