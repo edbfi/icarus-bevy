@@ -44,7 +44,7 @@ What the foundation does is in the
 
 Offline work, in order; connected proof keeps its gates.
 
-1. C001 records: the static bridge is named (F-509, F-510, F-512); audit C001's four records through the shared recorder restore path (F-343, F-344) under the save-class gates, keeping runtime and register preservation conditional (U-022, U-041).
+1. C001 records: the top level of all four bodies matches C001's 20 save-selected descriptors (F-534); audit their nested Struct and Array children as for C028, keeping values opaque (U-022, U-023).
 2. Player state: resolve actor, inventory, construction, tame and mission fields and confirm the reported producing build by evidence other than class registration (F-262, F-277, F-498, U-040).
 3. Control stores: owner, dispatcher and its static virtual call site are identified (F-505, F-506, F-520); qualify register preservation across the constructor super calls and base origin (U-043).
 4. Control stores: compare constructor metadata and instructions guided by paired-client symbols and the two named notify slots (F-479, F-480, U-043).
