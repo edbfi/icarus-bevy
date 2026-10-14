@@ -38,10 +38,14 @@ Last reconciled: 2026-10-14
   session. No handler-data or chain expansion follows from their qualification.
 - Named register storage shapes qualify (F-436), while global/subbyte aliases and
   live values do not. Reviewed frame sources (F-437, F-438) supply no target proof;
-  Byte address units qualify (F-439); bind exact physical/metadata adapters before
-  replay. Register/unique storage addresses have32bits; register values can be64bit.
+  Byte address units and exact retained-input joins qualify (F-439 to F-442).
+  Register/unique storage addresses have32bits; register values can be64bit.
   Handler-aware analysis preserves flags/RVAs and excludes exceptional paths;
   ordinary-entry/ABI applicability remains an explicit condition.
+- The frame case stops at opcode27 in all three selected prologues (F-442).
+  Preserve its controlled partial result. Qualify the bitvector-carrier source,
+  fixtures and installed opcode mapping before a separately reviewed fresh case;
+  do not repeat the unchanged helper or promote partial receiver claims.
 - Retained exports already identify its exact native class getter and
   construction callback; reuse these before new bounded queries. Read the
   retained instruction listing within these exact intervals before expanding

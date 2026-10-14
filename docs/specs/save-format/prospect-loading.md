@@ -209,7 +209,9 @@ Acceptance conditions for any importer
   Conditional frame models are source-qualified, including opaque handler
   headers (F-437, F-438). Four spaces use byte units; RAM/constant addresses have
   64bits and register/unique addresses32bits, separate from register value widths
-  (F-439). Exact adapters and actual target replay remain open.
+  (F-439). Exact adapters/input joins qualify, but all three frame replays stop
+  at opcode27; local allocation, calls, returns and receiver continuity remain
+  unqualified (F-440 to F-442).
 
 ## Open questions
 
