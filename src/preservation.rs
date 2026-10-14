@@ -48,7 +48,7 @@ use crate::experimental::struct_array::MAX_BOUNDED_STRUCT_ARRAY_BYTES;
 use crate::experimental::tagged::{TagKind, TagProfile, read_root};
 use crate::prospect::MAX_PAYLOAD_BYTES;
 
-/// The only native encoding accepted inside native snapshot schema 2.
+/// The only native encoding accepted inside native snapshot schemas 2 and 3.
 pub const PRESERVED_ENCODING_VERSION: u32 = 1;
 /// Native encoding cap: the 32 MiB payload cap plus 16 MiB of structural
 /// framing. Research policy, not an ICARUS limit; checked before decoding.
@@ -237,6 +237,10 @@ pub struct PreservedProspect {
     root_terminator: Vec<u8>,
     payload_bytes: usize,
     payload_sha256: [u8; 32],
+    /// Identity of the canonical native encoding, recorded at construction so
+    /// a save can reference an existing sidecar without re-encoding.
+    encoded_bytes: usize,
+    encoded_sha256: [u8; 32],
     summary: PreservationSummary,
 }
 
@@ -369,6 +373,9 @@ impl PreservedProspect {
             decoded.summary == preserved.summary,
             "preserved native encoding does not round-trip"
         );
+        let mut preserved = preserved;
+        preserved.encoded_bytes = decoded.encoded_bytes;
+        preserved.encoded_sha256 = decoded.encoded_sha256;
         Ok(preserved)
     }
 
@@ -389,6 +396,9 @@ impl PreservedProspect {
             root_terminator,
             payload_bytes,
             payload_sha256,
+            // Set by the constructors once the encoding is known.
+            encoded_bytes: 0,
+            encoded_sha256: [0; 32],
             summary: PreservationSummary {
                 validation: "experimental_lossless_preservation",
                 profile: "experimental_memory_archive_522",
@@ -555,6 +565,16 @@ impl PreservedProspect {
         &self.summary
     }
 
+    /// Length of the canonical native encoding.
+    pub fn encoded_bytes(&self) -> usize {
+        self.encoded_bytes
+    }
+
+    /// SHA-256 of the canonical native encoding; names its schema-3 sidecar.
+    pub fn encoded_sha256(&self) -> [u8; 32] {
+        self.encoded_sha256
+    }
+
     /// The deterministic native encoding version 1, at most 48 MiB.
     pub fn to_native_encoding(&self) -> Result<Vec<u8>> {
         let mut out = Encoder(Vec::new());
@@ -604,6 +624,17 @@ impl PreservedProspect {
         payload_bytes: usize,
         payload_sha256: [u8; 32],
     ) -> Result<Self> {
+        Self::from_hashed_native_encoding(encoded, sha256(encoded), payload_bytes, payload_sha256)
+    }
+
+    /// As `from_native_encoding`, for a caller that has already verified
+    /// `encoded_sha256` over exactly `encoded`, avoiding a second digest pass.
+    pub(crate) fn from_hashed_native_encoding(
+        encoded: &[u8],
+        encoded_sha256: [u8; 32],
+        payload_bytes: usize,
+        payload_sha256: [u8; 32],
+    ) -> Result<Self> {
         ensure!(
             encoded.len() <= MAX_PRESERVED_ENCODED_BYTES,
             "preserved native encoding exceeds 48 MiB limit"
@@ -635,7 +666,10 @@ impl PreservedProspect {
             input.position == encoded.len(),
             "trailing data after preserved native encoding"
         );
-        Self::assemble(roots, root_terminator, payload_bytes, payload_sha256)
+        let mut preserved = Self::assemble(roots, root_terminator, payload_bytes, payload_sha256)?;
+        preserved.encoded_bytes = encoded.len();
+        preserved.encoded_sha256 = encoded_sha256;
+        Ok(preserved)
     }
 }
 
@@ -1062,8 +1096,10 @@ impl fmt::Debug for PreservedBody {
     }
 }
 
-/// Persisted form inside native snapshot schema 2. The data is the native
-/// encoding in canonical padded Base64; it is decoded and verified on load.
+/// Persisted form inside native snapshot schema 2, now load-only: the native
+/// encoding inline in canonical padded Base64, decoded and verified on load.
+/// The serializer remains only so the legacy form stays authorable; native
+/// persistence writes schema 3 with a [`SectionReference`].
 #[derive(Serialize)]
 struct SectionOut<'a> {
     encoding: u32,
@@ -1082,12 +1118,16 @@ struct SectionIn<'a> {
     data: Cow<'a, str>,
 }
 
+fn is_lower_hex_digest(text: &str) -> bool {
+    text.len() == 64
+        && text
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+}
+
 fn parse_digest(text: &str) -> Result<[u8; 32]> {
     ensure!(
-        text.len() == 64
-            && text
-                .bytes()
-                .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte)),
+        is_lower_hex_digest(text),
         "invalid preserved payload digest"
     );
     let mut digest = [0; 32];
@@ -1118,6 +1158,103 @@ impl SectionIn<'_> {
             .decode(self.data.as_bytes())
             .context("invalid canonical Base64 in preserved section")?;
         PreservedProspect::from_native_encoding(&encoded, payload_bytes, digest)
+    }
+}
+
+/// File name prefix of a schema-3 sidecar; the full name is the prefix, the
+/// encoding's lowercase SHA-256 and [`SIDECAR_SUFFIX`].
+pub const SIDECAR_PREFIX: &str = "preserved-";
+pub const SIDECAR_SUFFIX: &str = ".bin";
+
+/// Whether `name` is exactly a sidecar name: prefix, 64 lowercase hexadecimal
+/// digits, suffix. Retention cleanup removes only names that match.
+pub fn is_sidecar_name(name: &str) -> bool {
+    name.strip_prefix(SIDECAR_PREFIX)
+        .and_then(|rest| rest.strip_suffix(SIDECAR_SUFFIX))
+        .is_some_and(is_lower_hex_digest)
+}
+
+/// Persisted form inside native snapshot schema 3: a reference to the
+/// content-addressed sidecar holding the raw native encoding (no Base64). The
+/// sidecar is verified by size and SHA-256 before the bounded decoder runs.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct SectionReference {
+    encoding: u32,
+    payload_bytes: u64,
+    payload_sha256: String,
+    encoded_bytes: u64,
+    encoded_sha256: String,
+}
+
+impl SectionReference {
+    /// Reference a constructed section by its recorded encoding identity.
+    pub(crate) fn of(preserved: &PreservedProspect) -> Self {
+        Self {
+            encoding: PRESERVED_ENCODING_VERSION,
+            payload_bytes: preserved.payload_bytes as u64,
+            payload_sha256: crate::hex_lower(&preserved.payload_sha256),
+            encoded_bytes: preserved.encoded_bytes as u64,
+            encoded_sha256: crate::hex_lower(&preserved.encoded_sha256),
+        }
+    }
+
+    /// Fixed-message checks of every field before any sidecar is opened.
+    pub(crate) fn validate(&self) -> Result<()> {
+        ensure!(
+            self.encoding == PRESERVED_ENCODING_VERSION,
+            "unsupported preserved native encoding"
+        );
+        ensure!(
+            usize::try_from(self.payload_bytes).is_ok_and(|bytes| bytes <= MAX_PAYLOAD_BYTES),
+            "preserved payload exceeds 32 MiB research limit"
+        );
+        ensure!(
+            usize::try_from(self.encoded_bytes)
+                .is_ok_and(|bytes| bytes <= MAX_PRESERVED_ENCODED_BYTES),
+            "preserved native encoding exceeds 48 MiB limit"
+        );
+        parse_digest(&self.payload_sha256)?;
+        ensure!(
+            is_lower_hex_digest(&self.encoded_sha256),
+            "invalid preserved encoding digest"
+        );
+        Ok(())
+    }
+
+    /// The content-addressed sidecar file name; call after `validate`.
+    pub(crate) fn sidecar_name(&self) -> String {
+        format!("{SIDECAR_PREFIX}{}{SIDECAR_SUFFIX}", self.encoded_sha256)
+    }
+
+    pub(crate) fn encoded_bytes(&self) -> u64 {
+        self.encoded_bytes
+    }
+
+    /// Lowercase hexadecimal SHA-256 of the sidecar contents.
+    pub(crate) fn encoded_sha256(&self) -> &str {
+        &self.encoded_sha256
+    }
+
+    /// Verify the sidecar bytes' size and SHA-256, then decode them with the
+    /// bounded decoder against the recorded payload length and digest.
+    pub(crate) fn decode(&self, encoded: &[u8]) -> Result<PreservedProspect> {
+        self.validate()?;
+        ensure!(
+            encoded.len() as u64 == self.encoded_bytes,
+            "preserved sidecar size mismatch"
+        );
+        let digest = sha256(encoded);
+        ensure!(
+            crate::hex_lower(&digest) == self.encoded_sha256,
+            "preserved sidecar checksum mismatch"
+        );
+        PreservedProspect::from_hashed_native_encoding(
+            encoded,
+            digest,
+            usize::try_from(self.payload_bytes)?,
+            parse_digest(&self.payload_sha256)?,
+        )
     }
 }
 

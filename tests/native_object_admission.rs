@@ -217,8 +217,8 @@ fn proper_future_schema_objects_still_refuse_rollback_without_writes() {
     let _fixture = FIXTURE_LOCK.lock().unwrap();
     let directory = initial(true);
     let root = directory.path();
-    // Schema 2 is the defined preserved-section schema; 3 is the future one.
-    replace_current(root, &json!({"schema_version":3,"tick":20,"entities":[]}));
+    // Schemas 2 and 3 are the defined preserved-section schemas; 4 is the future one.
+    replace_current(root, &json!({"schema_version":4,"tick":20,"entities":[]}));
     let before = inventory(root);
     let mut store = SnapshotStore::open(root).unwrap();
     for error in [

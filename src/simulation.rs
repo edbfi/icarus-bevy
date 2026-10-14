@@ -8,8 +8,12 @@ use crate::{config::ServerConfig, metrics::LatencyHistogram, preservation::Prese
 
 /// Native schema without a preserved section; still written when none exists.
 pub const SNAPSHOT_SCHEMA_DOMAIN: u32 = 1;
-/// Native schema 1 plus exactly one verified preserved prospect section.
+/// Native schema 1 plus exactly one verified preserved prospect section,
+/// inline as Base64. Still loaded; no longer written (migrates to schema 3).
 pub const SNAPSHOT_SCHEMA_PRESERVED: u32 = 2;
+/// Native schema 1 plus a reference to exactly one preserved prospect section
+/// held in a write-once, content-addressed sidecar file of the snapshot store.
+pub const SNAPSHOT_SCHEMA_REFERENCED: u32 = 3;
 
 /// Stable domain identity, independent of Bevy's runtime entity allocation.
 #[derive(Component, Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
@@ -34,7 +38,9 @@ pub struct WorldSnapshot {
     #[serde(deserialize_with = "crate::json::objects")]
     pub entities: Vec<EntityRecord>,
     /// Lossless, value-opaque supplied-save state carried unchanged between
-    /// generations; present exactly in schema 2. Shared, never interpreted.
+    /// generations; present exactly in schemas 2 and 3. Shared, never interpreted.
+    /// Serialization emits the legacy inline schema-2 form; the snapshot store
+    /// writes schema 3 itself.
     #[serde(
         default,
         skip_serializing_if = "Option::is_none",
@@ -57,12 +63,13 @@ impl Default for WorldSnapshot {
 impl WorldSnapshot {
     pub fn validate(&self) -> Result<()> {
         match (self.schema_version, &self.preserved_prospect) {
-            (SNAPSHOT_SCHEMA_DOMAIN, None) | (SNAPSHOT_SCHEMA_PRESERVED, Some(_)) => {}
+            (SNAPSHOT_SCHEMA_DOMAIN, None)
+            | (SNAPSHOT_SCHEMA_PRESERVED | SNAPSHOT_SCHEMA_REFERENCED, Some(_)) => {}
             (SNAPSHOT_SCHEMA_DOMAIN, Some(_)) => {
                 bail!("native snapshot schema 1 cannot hold a preserved section")
             }
-            (SNAPSHOT_SCHEMA_PRESERVED, None) => {
-                bail!("native snapshot schema 2 requires its preserved section")
+            (schema @ (SNAPSHOT_SCHEMA_PRESERVED | SNAPSHOT_SCHEMA_REFERENCED), None) => {
+                bail!("native snapshot schema {schema} requires its preserved section")
             }
             (other, _) => bail!("unsupported native snapshot schema {other}"),
         }
@@ -206,7 +213,7 @@ pub fn capture(world: &mut World) -> Result<WorldSnapshot> {
         .map(|state| Arc::clone(&state.0));
     let snapshot = WorldSnapshot {
         schema_version: if preserved_prospect.is_some() {
-            SNAPSHOT_SCHEMA_PRESERVED
+            SNAPSHOT_SCHEMA_REFERENCED
         } else {
             SNAPSHOT_SCHEMA_DOMAIN
         },

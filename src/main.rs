@@ -121,13 +121,37 @@ fn execute(cli: Cli) -> Result<()> {
     }
 }
 
+/// Store files after a save: current generation bytes and every sidecar's
+/// (name, bytes, inode, modification time in nanoseconds).
+type StoreFiles = (u64, Vec<(String, u64, u64, i128)>);
+
+fn store_files(root: &std::path::Path, generation: u64) -> Result<StoreFiles> {
+    use std::os::unix::fs::MetadataExt;
+
+    let generation_bytes =
+        std::fs::metadata(root.join(format!("snapshot-{generation}.json")))?.len();
+    let mut sidecars = Vec::new();
+    for entry in std::fs::read_dir(root)? {
+        let entry = entry?;
+        let name = entry.file_name().to_string_lossy().into_owned();
+        if icarus_bevy::preservation::is_sidecar_name(&name) {
+            let metadata = entry.metadata()?;
+            let modified =
+                i128::from(metadata.mtime()) * 1_000_000_000 + i128::from(metadata.mtime_nsec());
+            sidecars.push((name, metadata.len(), metadata.ino(), modified));
+        }
+    }
+    Ok((generation_bytes, sidecars))
+}
+
 /// Preserve a supplied envelope and prove the native persistence round trip in
 /// a private temporary store that is removed afterwards. Nothing is imported.
+/// A second save shows the write-once sidecar is reused rather than rewritten.
 fn preserve_check_report(file: std::fs::File) -> Result<serde_json::Value> {
     use icarus_bevy::{
         persistence::SnapshotStore,
         preservation::PreserveLimits,
-        simulation::{SNAPSHOT_SCHEMA_PRESERVED, WorldSnapshot},
+        simulation::{SNAPSHOT_SCHEMA_REFERENCED, WorldSnapshot},
     };
     use std::{sync::Arc, time::Instant};
 
@@ -136,21 +160,30 @@ fn preserve_check_report(file: std::fs::File) -> Result<serde_json::Value> {
     let preserve_ms = started.elapsed().as_millis();
     let payload_sha256 = preserved.preserved.payload_sha256();
     let summary = serde_json::to_value(preserved.preserved.summary())?;
-    let snapshot = WorldSnapshot {
-        schema_version: SNAPSHOT_SCHEMA_PRESERVED,
+    let mut snapshot = WorldSnapshot {
+        schema_version: SNAPSHOT_SCHEMA_REFERENCED,
         preserved_prospect: Some(Arc::new(preserved.preserved)),
         ..WorldSnapshot::default()
     };
     let directory = tempfile::tempdir().context("create temporary native store")?;
     let mut store = SnapshotStore::open(directory.path())?;
     let saved = Instant::now();
-    store.save(&snapshot)?;
+    let first = store.save(&snapshot)?;
     let save_ms = saved.elapsed().as_millis();
-    let generation_bytes = std::fs::read_dir(directory.path())?
-        .filter_map(|entry| entry.ok())
-        .filter(|entry| entry.file_name().to_string_lossy().starts_with("snapshot-"))
-        .map(|entry| entry.metadata().map(|metadata| metadata.len()))
-        .sum::<std::io::Result<u64>>()?;
+    let (generation_bytes, sidecars) = store_files(directory.path(), first.generation)?;
+    ensure!(
+        sidecars.len() == 1,
+        "expected exactly one preserved sidecar"
+    );
+    snapshot.tick += 1;
+    let saved = Instant::now();
+    let second = store.save(&snapshot)?;
+    let second_save_ms = saved.elapsed().as_millis();
+    let (second_generation_bytes, after) = store_files(directory.path(), second.generation)?;
+    ensure!(
+        after == sidecars,
+        "second save rewrote the preserved sidecar"
+    );
     let loaded_at = Instant::now();
     let loaded = store
         .load()?
@@ -171,10 +204,14 @@ fn preserve_check_report(file: std::fs::File) -> Result<serde_json::Value> {
         "validation": "experimental_lossless_preservation",
         "envelope": preserved.envelope,
         "preservation": summary,
-        "native_schema": SNAPSHOT_SCHEMA_PRESERVED,
+        "native_schema": SNAPSHOT_SCHEMA_REFERENCED,
         "native_generation_bytes": generation_bytes,
+        "native_second_generation_bytes": second_generation_bytes,
+        "native_sidecar_bytes": sidecars[0].1,
+        "native_sidecar_rewritten": false,
         "native_round_trip": true,
-        "preserve_ms": preserve_ms, "save_ms": save_ms, "load_ms": load_ms,
+        "preserve_ms": preserve_ms, "save_ms": save_ms,
+        "second_save_ms": second_save_ms, "load_ms": load_ms,
         "world_imported": false,
     }))
 }

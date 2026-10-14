@@ -243,9 +243,13 @@ fn regular_sources_and_regular_symlinks_preserve_private_values_and_files() {
                 assert_eq!(preservation["recorder_count"], 1);
                 assert_eq!(preservation["byte_identical"], true);
                 assert_eq!(preservation["values_interpreted"], false);
-                assert_eq!(report["native_schema"], 2);
+                assert_eq!(report["native_schema"], 3);
                 assert_eq!(report["native_round_trip"], true);
                 assert!(report["native_generation_bytes"].as_u64().unwrap() > 0);
+                assert!(report["native_second_generation_bytes"].as_u64().unwrap() > 0);
+                assert!(report["native_sidecar_bytes"].as_u64().unwrap() > 0);
+                assert_eq!(report["native_sidecar_rewritten"], false);
+                assert!(report["second_save_ms"].is_u64());
                 "experimental_lossless_preservation"
             } else if mode.contains(&"--recorders") {
                 assert_eq!(report["recorders"]["recorder_count"], 1);

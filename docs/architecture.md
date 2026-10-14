@@ -53,7 +53,7 @@ Capture requires all components declared by the current native domain schema;
 an identified entity with missing required data must fail before publication.
 Supplied-save state may ride along as one lossless, value-opaque preserved
 section that reconstructs the verified payload byte-identically, is carried
-unchanged into every later generation and is never interpreted (F-560).
+unchanged into every later generation and is never interpreted; it is written once as a content-addressed sidecar (F-567).
 Reverse export to official saves is not promised. Rollback uses original backups;
 replacement-only progress is not assumed transferable.
 
