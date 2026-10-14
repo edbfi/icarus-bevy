@@ -159,7 +159,10 @@ game listener.
   reader: one terminated data datagram, read as the server reads client
   packets, to its control-channel messages (control identified by name index
   255 or channel index 0, both inferred); only ID 0 is decoded, and summaries
-  carry no token, first field or version.
+  carry no token, first field or version. `experimental::control_messages`
+  types the whole vocabulary table with readers and writers, including the
+  unique-net-id flags, type and encoded forms (the non-encoded string form is
+  inferred); summaries carry kinds and lengths only.
 - Epic's FNetworkNotify documentation (four virtual callbacks; UWorld and
   UPendingNetGame implement it; the driver's Notify field admits others) is a
   testable interface hypothesis for the slots other than `+0x18`, whose owner and
@@ -192,9 +195,9 @@ game listener.
   transitions, token failures); pass those fixtures and the stock-client
   experiment before marking negotiation implemented.
 - Authored tests (14 control tests, including the inferred sender-order entry
-  point (F-519), 14 packet codec and 9 control-receive tests, plus archive and
-  handshake suites):
+  point (F-519), 14 packet codec, 9 control-receive and 7 control-message
+  tests, plus archive and handshake suites):
 
 ```bash
-cargo test --locked --test control --test packet --test control_receive --test archive --test handshake
+cargo test --locked --test control --test packet --test control_receive --test control_messages --test archive --test handshake
 ```
