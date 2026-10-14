@@ -40,8 +40,8 @@ use sha2::{Digest, Sha256};
 
 use crate::experimental::component::MAX_BOUNDED_COMPONENT_BYTES;
 use crate::experimental::property_tree::{
-    BaseComponentTree, MAX_TREE_DEPTH, MAX_TREE_NODES, NodeValue, PropertyNode, PropertyTree,
-    TreeLimits,
+    BaseComponentTree, ContainerItem, MAX_TREE_DEPTH, MAX_TREE_NODES, NodeValue, PropertyNode,
+    PropertyTree, TreeLimits,
 };
 use crate::experimental::recorders::{RecorderArray, read_recorders};
 use crate::experimental::struct_array::MAX_BOUNDED_STRUCT_ARRAY_BYTES;
@@ -69,6 +69,7 @@ const MIN_RECORD: usize = 8;
 const MIN_FIELD: usize = 10;
 const MIN_NODE: usize = 10;
 const MIN_TREE: usize = 8;
+const MIN_ITEM: usize = 5;
 
 const PROFILE: TagProfile = TagProfile::MemoryArchive522;
 
@@ -722,9 +723,44 @@ impl Encoder {
                         self.tree(element)?;
                     }
                 }
+                NodeValue::Map { removed, entries } => {
+                    self.byte(3);
+                    self.items(removed)?;
+                    self.count(entries.len())?;
+                    for (key, value) in entries {
+                        self.item(key)?;
+                        self.item(value)?;
+                    }
+                }
+                NodeValue::Set { removed, elements } => {
+                    self.byte(4);
+                    self.items(removed)?;
+                    self.items(elements)?;
+                }
             }
         }
         self.chunk(&tree.terminator)
+    }
+
+    fn items(&mut self, items: &[ContainerItem]) -> Result<()> {
+        self.count(items.len())?;
+        for item in items {
+            self.item(item)?;
+        }
+        Ok(())
+    }
+
+    fn item(&mut self, item: &ContainerItem) -> Result<()> {
+        match item {
+            ContainerItem::Bytes(bytes) => {
+                self.byte(0);
+                self.chunk(bytes)
+            }
+            ContainerItem::Struct(tree) => {
+                self.byte(1);
+                self.tree(tree)
+            }
+        }
     }
 }
 
@@ -883,6 +919,20 @@ impl Decoder<'_> {
                         elements,
                     }
                 }
+                3 => {
+                    let removed = self.items(nodes, depth)?;
+                    let count = self.count(MAX_BODY_NODES, 2 * MIN_ITEM)?;
+                    let mut entries = Vec::new();
+                    for _ in 0..count {
+                        let key = self.item(nodes, depth)?;
+                        entries.push((key, self.item(nodes, depth)?));
+                    }
+                    NodeValue::Map { removed, entries }
+                }
+                4 => NodeValue::Set {
+                    removed: self.items(nodes, depth)?,
+                    elements: self.items(nodes, depth)?,
+                },
                 _ => bail!("unknown preserved node value code"),
             };
             properties.push(PropertyNode {
@@ -894,6 +944,23 @@ impl Decoder<'_> {
         Ok(PropertyTree {
             properties,
             terminator: self.chunk()?,
+        })
+    }
+
+    fn items(&mut self, nodes: &mut usize, depth: usize) -> Result<Vec<ContainerItem>> {
+        let count = self.count(MAX_BODY_NODES, MIN_ITEM)?;
+        let mut items = Vec::new();
+        for _ in 0..count {
+            items.push(self.item(nodes, depth)?);
+        }
+        Ok(items)
+    }
+
+    fn item(&mut self, nodes: &mut usize, depth: usize) -> Result<ContainerItem> {
+        Ok(match self.byte()? {
+            0 => ContainerItem::Bytes(self.chunk()?),
+            1 => ContainerItem::Struct(self.tree(nodes, depth + 1)?),
+            _ => bail!("unknown preserved container item code"),
         })
     }
 }

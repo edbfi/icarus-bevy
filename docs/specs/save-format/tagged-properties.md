@@ -152,6 +152,13 @@ objects):
   other payload stays opaque, and writing checks each declared size. Every
   body of every class in both copies frames under 1 MiB and re-serializes
   byte-identically; names, types and values are not interpreted (F-557).
+- Map and Set payloads load as an i32 removal count with removal items, then
+  an i32 count with key-value pairs (Map) or elements (Set), each through the
+  inner property's item serializer; Bool items are one byte and Struct items
+  delegate to the struct (F-559, client build). The tree frames them when every
+  item is a 1/4/8-byte scalar, an archive string or a tagged struct stream
+  (scalar widths and string items inferred) and consumes the payload exactly;
+  otherwise the payload stays opaque. All supplied Maps frame (F-562).
 - Applying the older-build framing to the newer saves is supported by prefix
   agreement and the scans above, not by a matched official load (F-297, U-025).
 - Base-component layout is a caller-selected hypothesis per class; static
@@ -191,7 +198,8 @@ objects):
   M-140 root, M-141 and M-171 recorders, M-142 Name, M-143 C028 structs, M-144
   component, M-148 C028 overrides, M-150 C028 arrays, M-112 and M-120 Float/Text,
   M-096 and M-098 Int array, M-070, M-077, M-089, M-090, M-122; client M-083 to
-  M-086; Map/Set/Int64 headers M-387, M-388; all-class framing M-389, M-390.
+  M-086; Map/Set/Int64 headers M-387, M-388; all-class framing M-389, M-390;
+  container items M-392 to M-396, M-401 to M-404.
 - Tests: `tests/tagged.rs`, `tests/recorders.rs`, `tests/component.rs`,
   `tests/int_array.rs`, `tests/struct_array.rs`, `tests/prospect.rs`; authored
   byte fixtures only. Private saves stay outside tests, source control and CI.

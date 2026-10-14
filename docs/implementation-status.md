@@ -44,7 +44,7 @@ What the foundation does is in the
 
 Offline work, in order; connected proof keeps its gates.
 
-1. Save classes: with Map, Set and Int64 headers (F-556) and a 1 MiB component ceiling, every body of every class frames and round-trips byte-identically in both copies (F-557); next the Map/Set payload layout and the opaque binary Structs (U-055, U-027).
+1. Save classes: with Map, Set and Int64 headers and a 1 MiB ceiling, every body of every class frames and round-trips in both copies, and every Map frames into items (F-556, F-557, F-559, F-562); next the opaque binary Structs and item meanings (U-027, U-020).
 2. Player state: candidate mission, mount, inventory and player classes frame except C016 over the 128 KiB ceiling (F-550); construction classes and field meanings remain; class and field names do not discriminate the producing build (F-498, F-547), so confirming it needs value-level or runtime evidence (F-262, F-277, U-040).
 3. Control stores: owner, dispatcher, static virtual call site and base origin across the super calls are qualified (F-505, F-506, F-520, F-544); runtime dispatch needs a connected or original-runtime scope (U-043).
 4. Control stores: constructors and notify tables correspond by position (F-505, F-546); the older dispatcher (7,560-byte record) and the client's differ in record length, so a function-level comparison needs a flow decompile of both (F-480, U-043).
