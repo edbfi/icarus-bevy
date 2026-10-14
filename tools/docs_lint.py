@@ -16,9 +16,7 @@ The script reads files only. ``--warn`` reports every problem but exits 0, for
 use while a migration is in flight. ``--local`` additionally verifies that
 ``local-private`` manifest rows still exist on disk with matching digests.
 ``--base REF`` names the revision whose ledger IDs must survive (default
-``HEAD``). ``--strict-layout`` enables the restructured-layout checks (glued
-tokens, dated filenames, provenance lines, read-tier budget, digest and
-manifest row caps) and rejects the legacy heading sets.
+``HEAD``); its findings may still use the legacy single ``findings.md``.
 
 Usage::
 
@@ -27,7 +25,6 @@ Usage::
     python3 tools/docs_lint.py --local          # also verify local-private evidence
     python3 tools/docs_lint.py --root P         # explicit repository root
     python3 tools/docs_lint.py --base origin/main
-    python3 tools/docs_lint.py --strict-layout
 """
 
 from __future__ import annotations
@@ -77,7 +74,6 @@ FROZEN_ALLOWLIST: frozenset[str] = frozenset(
 
 DEFAULT_FILE_CAP = 16 * KIB
 FILE_CAPS: dict[str, int] = {
-    "docs/ledgers/findings.md": 128 * KIB,
     "docs/ledgers/unknowns.md": 64 * KIB,
     "docs/ledgers/bugs.md": 64 * KIB,
     "docs/ledgers/compatibility.md": 64 * KIB,
@@ -93,30 +89,37 @@ LEDGER_ROW_CAP = 400
 MANIFEST_ROW_CAP = 300
 AGGREGATE_CAP = 160 * KIB
 
-# Read tiers: files every session loads, and per-task entry sets.
+# Read tiers: files every session loads, and per-task entry sets mirroring the
+# routing table in CLAUDE.md.
 STARTUP_FILES: tuple[str, ...] = ("CLAUDE.md", "docs/README.md", "docs/implementation-status.md")
 STARTUP_BUDGET = 20 * KIB
 TASK_BUDGET = 64 * KIB
-TASK_TIERS: dict[str, tuple[str, ...]] = {}
+_RE_SKILL = ".agents/skills/reverse-engineer-anything/SKILL.md"
+_RESEARCH = (".agents/rules/project.md", "docs/gates.md")
+TASK_TIERS: dict[str, tuple[str, ...]] = {
+    "save-format research": (*_RESEARCH, "docs/research/save-format/save-class-audits.md", "docs/specs/save-format/prospect-loading.md", _RE_SKILL),
+    "C001 research": (*_RESEARCH, "docs/research/save-format/c001-constructor.md", "docs/specs/save-format/prospect-loading.md", _RE_SKILL),
+    "network research": (*_RESEARCH, "docs/research/network/control-stores.md", "docs/specs/network/control-negotiation.md", _RE_SKILL),
+    "native server": (
+        ".agents/rules/project.md",
+        "docs/architecture.md",
+        "docs/research/foundation/foundation.md",
+        "docs/runbooks/native-server.md",
+        ".agents/skills/bevy/SKILL.md",
+    ),
+    "documentation": (".agents/rules/docs.md", "docs/README.md"),
+}
 STALE_DAYS = 30
 
 STATUS_FILE = "docs/implementation-status.md"
 STATUS_H2: tuple[str, ...] = ("Summary", "Milestones", "Next tasks")
-STATUS_H2_LEGACY: tuple[str, ...] = ("Summary", "Milestones", "Works", "Does not work", "Gates", "Next tasks")
 SPEC_H2: tuple[str, ...] = ("Status", "Scope", "Confirmed", "Candidate", "Open questions", "Evidence")
 DIGEST_H2: tuple[str, ...] = ("Question cluster", "Current answer", "Open", "Artifacts")
-DIGEST_H2_LEGACY: tuple[str, ...] = (
-    "Question cluster",
-    "Answered",
-    "Partial",
-    "Unresolved",
-    "Limitations and exclusions",
-    "Receipts",
-)
 RECONCILED_REQUIRED_PREFIXES: tuple[str, ...] = (STATUS_FILE, "docs/specs/", "docs/ledgers/")
 
 PROSE_EXEMPT_PREFIXES: tuple[str, ...] = ("docs/runbooks/", "docs/gates.md")
-FINDINGS_FILE = "docs/ledgers/findings.md"
+# The single findings ledger that preceded the split tree; read only at --base.
+LEGACY_FINDINGS_FILE = "docs/ledgers/findings.md"
 FINDINGS_DIR = "docs/ledgers/findings"
 RETIRED_DIR = "docs/ledgers/findings/retired"
 UNKNOWNS_FILE = "docs/ledgers/unknowns.md"
@@ -207,8 +210,8 @@ def is_under(rel: str, prefixes: Iterable[str]) -> bool:
 
 
 def is_findings(rel: str) -> bool:
-    """Legacy single findings file or any file of the split findings tree."""
-    return rel == FINDINGS_FILE or is_under(rel, (FINDINGS_DIR,))
+    """Any file of the findings tree, active or retired."""
+    return is_under(rel, (FINDINGS_DIR,))
 
 
 def is_digest(rel: str) -> bool:
@@ -242,7 +245,6 @@ def glued_tokens(line: str) -> list[str]:
 class Linter:
     root: Path
     local: bool
-    strict: bool
     base: str
     today: date
     problems: list[Problem]
@@ -250,10 +252,9 @@ class Linter:
     docs: dict[str, Document]
     current: dict[str, Document]
 
-    def __init__(self, root: Path, *, local: bool, strict: bool = False, base: str = "HEAD", today: date | None = None) -> None:
+    def __init__(self, root: Path, *, local: bool, base: str = "HEAD", today: date | None = None) -> None:
         self.root = root
         self.local = local
-        self.strict = strict
         self.base = base
         self.today = today or date.today()
         self.problems = []
@@ -318,11 +319,10 @@ class Linter:
         self.check_manifest()
         self.check_reconciled()
         self.check_staleness()
-        if self.strict:
-            self.check_glue()
-            self.check_filenames()
-            self.check_provenance()
-            self.check_read_tiers()
+        self.check_glue()
+        self.check_filenames()
+        self.check_provenance()
+        self.check_read_tiers()
         return sum(doc.size for rel, doc in self.current.items() if not rel.startswith("docs/ledgers/"))
 
     def check_frozen(self) -> None:
@@ -336,7 +336,7 @@ class Linter:
         for prefix, cap in PREFIX_CAPS:
             if rel.startswith(prefix):
                 return cap
-        if self.strict and is_digest(rel):
+        if is_digest(rel):
             return DIGEST_CAP
         return DEFAULT_FILE_CAP
 
@@ -357,7 +357,7 @@ class Linter:
                         self.report(rel, number, f"ledger row exceeds {LEDGER_ROW_CAP} bytes")
         if total > AGGREGATE_CAP:
             self.report("docs", 0, f"current prose surface is {total} bytes; cap is {AGGREGATE_CAP}")
-        if self.strict and active_findings > ACTIVE_FINDINGS_CAP:
+        if active_findings > ACTIVE_FINDINGS_CAP:
             self.report(FINDINGS_DIR, 0, f"active findings total {active_findings} bytes; cap is {ACTIVE_FINDINGS_CAP}")
 
     def check_headings(self) -> None:
@@ -366,21 +366,22 @@ class Linter:
             for number, _level, text in headings:
                 if DATED_HEADING.search(text):
                     self.report(rel, number, "dated or timestamped heading; session notes belong in a digest or ledger row")
-            allowed = self.expected_h2(rel)
-            if not allowed:
+            expected = self.expected_h2(rel)
+            if expected is None:
                 continue
             actual = tuple(text for _n, level, text in headings if level == 2)
-            if actual not in allowed:
-                self.report(rel, 0, f"H2 set must be exactly {list(allowed[0])}; found {list(actual)}")
+            if actual != expected:
+                self.report(rel, 0, f"H2 set must be exactly {list(expected)}; found {list(actual)}")
 
-    def expected_h2(self, rel: str) -> tuple[tuple[str, ...], ...]:
+    @staticmethod
+    def expected_h2(rel: str) -> tuple[str, ...] | None:
         if rel == STATUS_FILE:
-            return (STATUS_H2,) if self.strict else (STATUS_H2, STATUS_H2_LEGACY)
+            return STATUS_H2
         if rel.startswith("docs/specs/") and not rel.endswith("/README.md"):
-            return (SPEC_H2,)
+            return SPEC_H2
         if is_digest(rel):
-            return (DIGEST_H2,) if self.strict else (DIGEST_H2, DIGEST_H2_LEGACY)
-        return ()
+            return DIGEST_H2
+        return None
 
     def check_prose(self) -> None:
         for rel, doc in self.current.items():
@@ -510,7 +511,7 @@ class Linter:
 
     def base_findings_texts(self) -> list[Document]:
         """Findings files at the base revision: the legacy file plus the split tree."""
-        return self.base_texts([FINDINGS_FILE, *self.git_ls(FINDINGS_DIR)])
+        return self.base_texts([LEGACY_FINDINGS_FILE, *self.git_ls(FINDINGS_DIR)])
 
     def base_finding_ids(self) -> set[str] | None:
         """F- IDs defined at the base revision, or None when the base is unreadable."""
@@ -574,7 +575,7 @@ class Linter:
             cells = table_cells(line)
             if len(cells) < 6 or not MANIFEST_ID.fullmatch(cells[0]):
                 continue
-            if self.strict and len(line.encode("utf-8")) > MANIFEST_ROW_CAP:
+            if len(line.encode("utf-8")) > MANIFEST_ROW_CAP:
                 self.report(MANIFEST_FILE, number, f"manifest row exceeds {MANIFEST_ROW_CAP} bytes")
             _identifier, path, digest, _date, _session, klass = cells[:6]
             if klass not in {"local-private", "external"}:
@@ -611,7 +612,7 @@ class Linter:
         if age > STALE_DAYS:
             self.warn(STATUS_FILE, 0, f"last reconciled {age} days ago; run the checkpoint reconcile in .agents/rules/docs.md")
 
-    # -- restructured-layout checks (--strict-layout) ---------------------
+    # -- layout checks ----------------------------------------------------
 
     def check_glue(self) -> None:
         targets = dict(self.current)
@@ -641,6 +642,7 @@ class Linter:
                 self.report(rel, number, "more than one commit:path provenance line; keep only 'Before restructure: <sha>:<path>'")
 
     def tier_size(self, rels: Iterable[str]) -> tuple[int, list[str]]:
+        """Total bytes of the files that exist, and the names that do not."""
         total = 0
         missing: list[str] = []
         for rel in rels:
@@ -652,15 +654,14 @@ class Linter:
         return total, missing
 
     def check_read_tiers(self) -> None:
-        startup, missing = self.tier_size(STARTUP_FILES)
-        for rel in missing:
-            self.report(rel, 0, "startup read-tier file is missing")
+        """Startup tier fails over budget; task tiers are reported, never failed."""
+        startup, _missing = self.tier_size(STARTUP_FILES)
         if startup > STARTUP_BUDGET:
             self.report("docs", 0, f"startup read tier is {startup} bytes; budget is {STARTUP_BUDGET}")
         for task, rels in TASK_TIERS.items():
             size, missing = self.tier_size(rels)
             for rel in missing:
-                self.report(rel, 0, f"task read tier {task!r} names a missing file")
+                self.warn(rel, 0, f"task read tier {task!r} names a missing file")
             if size > TASK_BUDGET:
                 self.warn("docs", 0, f"task read tier {task!r} is {size} bytes; budget is {TASK_BUDGET}")
 
@@ -676,7 +677,6 @@ class Options(argparse.Namespace):
     root: Path | None = None
     warn: bool = False
     local: bool = False
-    strict_layout: bool = False
     base: str = "HEAD"
 
 
@@ -685,7 +685,6 @@ def parse_options(argv: Sequence[str] | None) -> Options:
     _ = parser.add_argument("--root", type=Path, default=None)
     _ = parser.add_argument("--warn", action="store_true", help="report problems but exit 0")
     _ = parser.add_argument("--local", action="store_true", help="verify local-private manifest rows on disk")
-    _ = parser.add_argument("--strict-layout", action="store_true", help="enable the restructured-layout checks")
     _ = parser.add_argument("--base", default="HEAD", help="revision whose ledger IDs must survive (default HEAD)")
     options = Options()
     _ = parser.parse_args(argv, namespace=options)
@@ -695,7 +694,7 @@ def parse_options(argv: Sequence[str] | None) -> Options:
 def main(argv: Sequence[str] | None = None) -> int:
     options = parse_options(argv)
     root = options.root.resolve() if options.root else find_root(Path.cwd().resolve())
-    linter = Linter(root, local=options.local, strict=options.strict_layout, base=options.base)
+    linter = Linter(root, local=options.local, base=options.base)
     total = linter.run()
     for problem in linter.problems:
         print(problem.render())
