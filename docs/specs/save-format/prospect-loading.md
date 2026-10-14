@@ -210,10 +210,10 @@ Acceptance conditions for any importer
   headers (F-437, F-438). Four spaces use byte units; RAM/constant addresses have
   64bits and register/unique addresses32bits, separate from register value widths
   (F-439). Exact input/prolog joins qualify. Earlier bitvector COPY-width stops
-  lack locations; narrow/zeroing siblings report exact opcode26/partial-COPY
-  stops. Seven low32 register pairs and nine opcode constants join without
+  lack locations; later siblings report exact opcode26/partial-COPY/vector-COPY/
+  byte-LOAD stops. Seven low32 register pairs and nine opcode constants join without
   independent reachability. Calls, returns, receiver/escape/ABI/ownership proof
-  remain open (F-440 to F-457).
+  remain open (F-440 to F-460).
 
 ## Open questions
 

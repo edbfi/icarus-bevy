@@ -50,8 +50,10 @@ Last reconciled: 2026-10-14
   (F-448 to F-450): exact row/index stops identify unsupported opcode26, without
   independent reachability. Zeroing source/adapter/parser and fresh case qualify
   (F-453 to F-457): seven register pairs/nine constants join before exact partial-COPY
-  stops. Qualify low32 read-copy source/fixtures before another reviewed fresh
-  case. Do not repeat unchanged helpers or promote
+  stops. Read-copy source/caller and fresh case qualify (F-458 to F-460): exact
+  mixed vector-COPY/byte-LOAD stops remain. Qualify opaque-data/vector source,
+  mappings and fixtures before another reviewed fresh case; preserve unknown
+  original data contents. Do not repeat unchanged helpers or promote
   partial receiver claims. Stack-derived unknown carriers do not prove no escape;
   ordinary-entry, default ABI, protected-frame integrity and nonalias conditions
   remain explicit and unproved.
