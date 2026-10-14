@@ -105,13 +105,14 @@ impl SnapshotStore {
             .write(true)
             .create(true)
             .truncate(false)
-            .custom_flags(nonblocking_flag())
+            .custom_flags(crate::nonblocking_flag())
             .open(root.join("server.lock"))?;
         ensure!(
             lock.metadata()?.is_file(),
             "server lock must be a regular file"
         );
-        fs2::FileExt::try_lock_exclusive(&lock)
+        lock.try_lock()
+            .map_err(std::io::Error::from)
             .context("data directory is already locked by another server")?;
         // Persist newly created directory entries before acknowledging later saves.
         sync_directory(root)?;
@@ -327,7 +328,7 @@ fn read_bounded(path: &Path, limit: u64) -> Result<Vec<u8>> {
     // handle metadata also rejects special files swapped in during path lookup.
     let file = OpenOptions::new()
         .read(true)
-        .custom_flags(nonblocking_flag())
+        .custom_flags(crate::nonblocking_flag())
         .open(path)?;
     ensure!(
         file.metadata()?.is_file(),
@@ -342,10 +343,6 @@ fn read_bounded(path: &Path, limit: u64) -> Result<Vec<u8>> {
         path.display()
     );
     Ok(bytes)
-}
-
-fn nonblocking_flag() -> i32 {
-    rustix::fs::OFlags::NONBLOCK.bits() as i32
 }
 
 fn sync_directory(path: &Path) -> Result<()> {
@@ -512,10 +509,15 @@ impl SaveWorker {
     }
 
     pub fn poll(&mut self) -> Result<Option<SaveReceipt>> {
+        self.poll_completion()?.transpose()
+    }
+
+    /// The outer error is the terminal disconnect; the inner one is the save's own.
+    fn poll_completion(&mut self) -> Result<Option<Result<SaveReceipt>>> {
         match self.receiver.try_recv() {
             Ok(result) => {
                 self.busy = false;
-                result.map(Some)
+                Ok(Some(result))
             }
             Err(TryRecvError::Empty) => Ok(None),
             Err(TryRecvError::Disconnected) => {
@@ -530,17 +532,24 @@ impl SaveWorker {
     /// expiry during polling returns no receipt even if that poll consumed one.
     /// Synchronous filesystem operations and scheduler pauses are not cancellable.
     pub fn finish_before(&mut self, deadline: Instant) -> Result<Option<SaveReceipt>> {
+        self.settle_before(deadline)?.transpose()
+    }
+
+    /// Like `finish_before`, but returns the in-flight save's own failure as the
+    /// inner result so shutdown can still attempt its final save. Deadline expiry
+    /// and a disconnected worker remain outer errors.
+    pub fn settle_before(&mut self, deadline: Instant) -> Result<Option<Result<SaveReceipt>>> {
         while self.busy {
             ensure!(
                 Instant::now() < deadline,
                 "snapshot shutdown deadline exceeded"
             );
-            if let Some(receipt) = self.poll()? {
+            if let Some(result) = self.poll_completion()? {
                 ensure!(
                     Instant::now() < deadline,
                     "snapshot shutdown deadline exceeded"
                 );
-                return Ok(Some(receipt));
+                return Ok(Some(result));
             }
             thread::sleep(
                 deadline
@@ -619,6 +628,40 @@ mod worker_failure_tests {
             1
         );
         assert!(!worker.is_busy());
+    }
+
+    #[test]
+    fn shutdown_settle_reports_failed_in_flight_save_and_accepts_final_save() {
+        let (mut worker, requests, results) = controlled_worker();
+        worker.submit(WorldSnapshot::default()).unwrap();
+        requests.recv().unwrap();
+        results
+            .send(Err(anyhow::anyhow!("transient write failure")))
+            .unwrap();
+        let settled = worker
+            .settle_before(Instant::now() + Duration::from_secs(5))
+            .unwrap()
+            .unwrap();
+        assert!(settled.is_err());
+        assert!(!worker.is_busy());
+        worker.submit(WorldSnapshot::default()).unwrap();
+        assert_eq!(requests.recv().unwrap().tick, 0);
+    }
+
+    #[test]
+    fn shutdown_settle_keeps_deadline_and_disconnect_terminal() {
+        let (mut worker, requests, results) = controlled_worker();
+        worker.submit(WorldSnapshot::default()).unwrap();
+        requests.recv().unwrap();
+        assert!(worker.settle_before(Instant::now()).is_err());
+        assert!(worker.is_busy());
+        drop(results);
+        assert!(
+            worker
+                .settle_before(Instant::now() + Duration::from_secs(5))
+                .unwrap_err()
+                .is::<SaveWorkerDisconnected>()
+        );
     }
 
     #[test]

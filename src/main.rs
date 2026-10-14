@@ -96,7 +96,7 @@ fn execute(cli: Cli) -> Result<()> {
             // regular-file precheck. Normal regular-file symlinks still work.
             let file = std::fs::OpenOptions::new()
                 .read(true)
-                .custom_flags(rustix::fs::OFlags::NONBLOCK.bits() as i32)
+                .custom_flags(icarus_bevy::nonblocking_flag())
                 .open(&source)
                 .context("open prospect envelope")?;
             ensure!(file.metadata()?.is_file(), "source must be a regular file");
@@ -222,8 +222,14 @@ fn run(options: ConfigOptions, max_ticks: Option<u64>) -> Result<()> {
     }
 
     let deadline = Instant::now() + Duration::from_secs(config.shutdown_timeout_seconds);
-    if let Some(receipt) = writer.finish_before(deadline)? {
-        saved(receipt);
+    // A failed in-flight autosave is reported as in the loop; the final save still runs.
+    match writer.settle_before(deadline)? {
+        Some(Ok(receipt)) => saved(receipt),
+        Some(Err(error)) => eprintln!(
+            "{}",
+            json!({"event": "save_failed", "error": format!("{error:#}")})
+        ),
+        None => {}
     }
     ensure!(
         Instant::now() < deadline,

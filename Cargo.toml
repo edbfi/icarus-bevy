@@ -17,7 +17,6 @@ base64 = "0.23.1"
 bevy = { version = "=0.20.0", default-features = false, features = ["std", "async_executor", "multi_threaded", "bevy_state", "bevy_log"] }
 clap = { version = "4", features = ["derive"] }
 ctrlc = { version = "3", features = ["termination"] }
-fs2 = "0.4"
 flate2 = { version = "1.1.10", default-features = false, features = ["rust_backend"] }
 getrandom = "0.4.3"
 hmac = "0.13.0"

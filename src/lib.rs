@@ -7,6 +7,12 @@ pub mod persistence;
 pub mod prospect;
 pub mod simulation;
 
+/// Open without blocking so a FIFO or device cannot stall a read; callers then
+/// check the opened handle's file type.
+pub fn nonblocking_flag() -> i32 {
+    rustix::fs::OFlags::NONBLOCK.bits() as i32
+}
+
 /// Keep input strings and unknown keys out of JSON diagnostics and error causes.
 fn json_parse_error(context: &'static str, error: serde_json::Error) -> anyhow::Error {
     anyhow::anyhow!(

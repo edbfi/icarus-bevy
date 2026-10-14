@@ -79,7 +79,7 @@ fn read_configuration(path: &Path) -> Result<String> {
     // cannot block startup or replace a regular file between path checks.
     let file = OpenOptions::new()
         .read(true)
-        .custom_flags(rustix::fs::OFlags::NONBLOCK.bits() as i32)
+        .custom_flags(crate::nonblocking_flag())
         .open(path)?;
     let metadata = file.metadata()?;
     ensure!(
