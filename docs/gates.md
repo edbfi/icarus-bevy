@@ -39,8 +39,10 @@ Last reconciled: 2026-10-14
   remain explicit conditions (F-476).
 - Frame cases stop at controlled unsupported operations with null failure sites;
   preserve their partial results (F-477). Linear copy shapes do not prove
-  reachability. Qualify two-vector (XMM1 quarter) mappings, source and fixtures
-  before a fresh bounded case; original data stays unread. Do not repeat
+  reachability. Two-vector (XMM0/XMM1) mappings are qualified and their case
+  replayed; both constructors then stop at a narrow RAX (AX) read. Admit AX/AL
+  reads only through an independently reviewed sibling, caller and fresh bounded
+  case, and widen nothing else; original data stays unread. Do not repeat
   unchanged helpers or promote partial receiver claims. Stack-derived unknown
   carriers do not prove no escape; ordinary-entry, default ABI, protected-frame
   integrity and nonalias conditions remain explicit and unproved.
