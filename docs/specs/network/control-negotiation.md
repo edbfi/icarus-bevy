@@ -105,7 +105,12 @@ game listener.
   handshake ack the client seeds its incoming and outgoing sequences from the
   cookie's first two little-endian 16-bit words masked to 14 bits; initial
   reliable sequences are the low 10 bits. Reliable bunches out of order are
-  queued per channel (at most 255) and delivered in sequence.
+  queued per channel (at most 255) and delivered in sequence. A received
+  acknowledged sequence 1 to 8191 ahead resolves each newly acknowledged
+  outgoing packet in order: beyond the newest 256 lost, otherwise history bit
+  (acknowledged minus packet) set means delivered, bit 0 being the
+  acknowledged packet; lost packets resend their unacknowledged reliable
+  bunches (F-538, F-539).
 - Current client control vocabulary (F-529, F-530); strings are archive
   strings, `u32` values follow the swap rule above:
 
