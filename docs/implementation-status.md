@@ -56,7 +56,7 @@ No official server bug is marked reproduced or fixed (F-217).
 - Keeps two generations and recovers; corrupt/missing manifests, noncanonical checksum fields and unsupported schemas fail closed (F-228, F-229, F-417, F-418).
 - Requires objects at native storage/record boundaries; malformed array headers recover valid preceding state, while future-schema objects refuse rollback (F-428).
 - Rejects stale snapshots and stops simulation on terminal save-worker disconnect (F-232).
-- Rejects special or oversized config inputs before state creation; accepts regular symlinks and exact64KiB TOML with CLI overrides (F-443).
+- Rejects special or oversized config inputs before state creation; accepts regular symlinks and exact 64 KiB TOML with CLI overrides (F-443).
 - Save inspection opens sources nonblocking and rejects nonregular handles across all modes; regular symlinks, bounded framing and private diagnostics remain (F-468).
 - Stops on current-generation I/O errors other than NotFound before backup selection; permission repair preserves newest state, while missing/corrupt recovery remains (F-452).
 - Performs a final save and bounded shutdown on SIGINT/SIGTERM with JSON diagnostics (F-230, F-233).
