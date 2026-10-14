@@ -73,7 +73,10 @@ one table. The native run command has no game listener.
   archive string) for a caller-bounded body under a 131,081-byte ceiling,
   preserving borrowed spans, retaining no token units, implementing neither
   `Debug` nor `Serialize` for raw containers, and reporting negotiation,
-  identity and game-connection validation as false (F-096, F-097). Exact EOF
+  identity and game-connection validation as false (F-096, F-097). The
+  dispatcher's input is an FInBunch, a bit-oriented archive (F-507); whether the
+  ID 0 fields are byte-aligned is unverified, so this byte framing stays
+  experimental. Exact EOF
   and strict normalization rejection are research policies, not recovered
   tolerances.
 - Epic's FNetworkNotify documentation (four virtual callbacks; UWorld and
