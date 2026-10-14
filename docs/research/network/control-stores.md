@@ -46,7 +46,8 @@ body, so its stored constants are UWorld's primary and FNetworkNotify tables, an
 the older UPendingNetGame constructor installs its own pair at the client's
 positions (F-505). This answers the older-owner question for both classes. The
 dispatcher's only pointer is slot +0x18 of the older UWorld FNetworkNotify table,
-so the dispatcher is the older UWorld::NotifyControlMessage (F-506). The dispatcher validates message IDs and
+so the dispatcher is the older UWorld::NotifyControlMessage (F-506). Both
+builds' notify tables have four code slots, matched by position only (F-546). The dispatcher validates message IDs and
 reads the ID 0 body (F-284). The client's receive path reads that body from the
 FInBunch through FBitReader::Serialize, after the ID byte, with byte order set
 from the first field (F-514, F-515); the server's ID 0 reads take the same archive
@@ -75,4 +76,4 @@ complete functions.
 
 ## Artifacts
 
-M-005, M-012, M-023..M-046, M-281..M-283, M-288..M-297, M-301, M-302, M-315..M-346, M-353..M-357, M-370.
+M-005, M-012, M-023..M-046, M-281..M-283, M-288..M-297, M-301, M-302, M-315..M-346, M-353..M-357, M-370, M-371.
