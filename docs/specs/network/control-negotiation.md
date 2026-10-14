@@ -155,6 +155,11 @@ game listener.
   names, and payload copies from bunch bit 0. Callers supply the channel limit,
   maximum packet size and string cap; it keeps no connection state and
   reconstructs no reliable sequence. Not wire-validated.
+  `experimental::control_receive` composes it with the strict initial-body
+  reader: one terminated data datagram, read as the server reads client
+  packets, to its control-channel messages (control identified by name index
+  255 or channel index 0, both inferred); only ID 0 is decoded, and summaries
+  carry no token, first field or version.
 - Epic's FNetworkNotify documentation (four virtual callbacks; UWorld and
   UPendingNetGame implement it; the driver's Notify field admits others) is a
   testable interface hypothesis for the slots other than `+0x18`, whose owner and
@@ -187,8 +192,9 @@ game listener.
   transitions, token failures); pass those fixtures and the stock-client
   experiment before marking negotiation implemented.
 - Authored tests (14 control tests, including the inferred sender-order entry
-  point (F-519), 14 packet codec tests, plus archive and handshake suites):
+  point (F-519), 14 packet codec and 9 control-receive tests, plus archive and
+  handshake suites):
 
 ```bash
-cargo test --locked --test control --test packet --test archive --test handshake
+cargo test --locked --test control --test packet --test control_receive --test archive --test handshake
 ```

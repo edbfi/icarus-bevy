@@ -6,6 +6,7 @@
 pub mod archive;
 pub mod component;
 pub mod control;
+pub mod control_receive;
 pub mod handshake;
 pub mod handshake_lab;
 pub mod int_array;
