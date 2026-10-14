@@ -41,6 +41,7 @@ No decoded value, text or number was emitted or interpreted.
 - The 34 classes and 2,045 records outside the selection (U-022); C001's construction bridge (U-023).
 - Individual C028 native top spans and the historical library snapshot (U-024); opaque C028 binary Struct bodies (U-027).
 - Restoration and import, client and newer-build compatibility (U-025); original normalization, EOF and error equivalence (U-026); original performance (U-028).
+- Heavy-world save work order after this structural work: a matched official-server load/save/reload baseline on disposable copies once build pairing and a runtime scope exist (U-040, U-047); then authenticated negotiation, replication and the gameplay slice, validating a small supported import before the heavy dataset (U-038, U-045). Generic framing agreement is not an importable world; no partial importer.
 
 ## Artifacts
 

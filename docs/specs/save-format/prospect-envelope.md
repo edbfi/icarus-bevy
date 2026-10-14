@@ -51,6 +51,14 @@ unavailable.
   `world_imported: false` (F-242).
 - No explicit outer build or save-version marker exists; the producing build is
   user-reported (F-277).
+- Provenance: the user supplied the archive from a heavy ICARUS world; it is
+  preserved privately with an inventory (M-166). Intake: 24 members (2 JSON, 22
+  backups), 26,511,334 bytes, all member CRCs pass (F-276). The user-reported
+  producing build 25793767 is unverified against the preserved older server
+  build 25621760 and the local client identity (F-277, F-486). A stock Windows
+  client exists on the user's separate machine, outside the offline lab.
+  Possession of the archive completes no compatibility, bug-reproduction or
+  performance gate.
 
 ## Candidate
 

@@ -1,8 +1,10 @@
 # Architecture and interfaces
 
-Design constraints for the native server. The [plan](linux-dedicated-server-plan.md)
-sets goals and gates; [implementation status](implementation-status.md) records
-what exists. Full text before condensation: d5b0ae6:docs/linux-dedicated-server-plan.md.
+Design constraints for the native server, repository boundaries and the
+toolchain. The [plan](linux-dedicated-server-plan.md) sets goals and exit
+criteria; [implementation status](implementation-status.md) records what exists.
+
+Before restructure: 96ddb0b:docs/architecture.md
 
 ## Structure
 
@@ -63,3 +65,34 @@ and exits with a timeout. Unexpected restarts count as reliability failures.
 For large worlds, measure spatial indexing, replication relevancy, AI scheduling,
 incremental structure updates and snapshots. Sleeping or slower updates must
 preserve verified gameplay semantics.
+
+## Toolchain
+
+Rust **1.99.0** and Bevy **0.20.0**, verified current stable on 2026-10-13 (F-483)
+([Rust](https://blog.rust-lang.org/2026/10/01/Rust-1.99.0/),
+[Bevy](https://crates.io/crates/bevy/0.20.0)). Pin Rust in `rust-toolchain.toml`
+with matching Rustfmt and Clippy; commit `Cargo.lock`; use one toolchain for
+development, CI, benchmarks and releases. Routine stable upgrades are authorized:
+verify upstream release metadata, migrate APIs, update pins and lockfile together,
+and record concrete blockers when an upgrade cannot pass.
+
+The Bevy skill under `.agents/skills/bevy/` is installed from `edbfi/skills`
+with `bunx skills`; `skills-lock.json` records source and content hash. Python
+helpers target stable 3.15.0 under the basedpyright gate described in
+[`.agents/rules/project.md`](../.agents/rules/project.md).
+
+## Repository boundaries
+
+| Location | Contents |
+| --- | --- |
+| `icarus-orig/` | Ignored original server files and preserved installations |
+| `icarus-client-orig/` | Ignored user-owned original client binaries and manifests |
+| `reference-data/` | Ignored user-supplied save archives and private inventories; preserved inputs, not backed up by Git |
+| `work/` | Ignored cases, captures, dumps, private saves, generated analysis and benchmarks |
+| `src/`, `tests/`, `benches/`, `tools/` | Reusable implementation, authored tests and research tools |
+| `docs/`, `evidence/` | Plan, specifications, ledgers, digests, runbooks, frozen history and the evidence manifest |
+
+Keep reference installations immutable during experiments; put runtime data and
+disposable copies in a case directory. Commit only authored or reviewed,
+redistributable fixtures. Keep raw saves, player identifiers, names and member
+paths out of tracked fixtures, public reports, CI artifacts and uploads.
