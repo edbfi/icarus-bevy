@@ -14,8 +14,8 @@ string reader it uses, and the static evidence linking UWorld / UPendingNetGame
 notify tables to it, and the current client's packet and bunch header parse
 order with its outer frame and integer encodings. Not covered: other packet
 handler components, reassembly of partial bunches, compression, integrity
-protection, connection-state admission, the sender side, the negotiated version
-values, and the vocabulary beyond this table. The native run command has no
+protection, connection-state admission, the packet-header sender, runtime
+version overrides, and the vocabulary beyond this table. The native run command has no
 game listener.
 
 ## Confirmed
@@ -93,7 +93,11 @@ game listener.
   nonzero last byte, a termination bit (F-524). A value with maximum M is
   LSB-first bits with masks 1, 2, 4, ... while value plus mask is below M; a
   packed value is up to five bytes, each bit 0 a continuation flag and bits 1-7
-  the next 7-bit group, low group first (F-523).
+  the next 7-bit group, low group first (F-523). The client's SendRawBunch
+  writes the same bunch header order; its reliable sequence and payload count
+  use the same bit loop without clamping the value (F-526). The client's engine
+  network protocol version starts at 17 in its image, so every version gate
+  above takes its current path (F-527).
 - Older server ID 0 reads use the archive's inline buffer or `+0x150`; the
   u32 takes `0x141f60c00` when `+0x29` bit `0x20` is set (F-516). Exact and
   masked searches miss the server ReceivedBunch (F-516); a getter,
