@@ -80,7 +80,7 @@ be demonstrated rather than assumed.
   as the only home of preconditions. Record findings by area under
   `docs/ledgers/findings/`, open questions, bugs and compatibility in the other
   ledgers, research state in digests under `docs/research/`, and evidence
-  artifacts in `evidence/manifest.md`, following `.agents/rules/docs.md`. Avoid
+  artifacts in the `evidence/` index, following `.agents/rules/docs.md`. Avoid
   duplicate plans, generic AI prose and speculative completion claims.
 - Resource budgets for heavy work: start with two Cargo jobs and at most four
   CPU-heavy workers; serialize large builds, Ghidra and original-server runs when

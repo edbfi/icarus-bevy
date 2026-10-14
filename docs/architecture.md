@@ -90,7 +90,7 @@ helpers target stable 3.15.0 under the basedpyright gate described in
 | `reference-data/` | Ignored user-supplied save archives and private inventories; preserved inputs, not backed up by Git |
 | `work/` | Ignored cases, captures, dumps, private saves, generated analysis and benchmarks |
 | `src/`, `tests/`, `benches/`, `tools/` | Reusable implementation, authored tests and research tools |
-| `docs/`, `evidence/` | Plan, specifications, ledgers, digests, runbooks, frozen history and the evidence manifest |
+| `docs/`, `evidence/` | Plan, specifications, ledgers, digests, runbooks, frozen history and the evidence index |
 
 Keep reference installations immutable during experiments; put runtime data and
 disposable copies in a case directory. Commit only authored or reviewed,

@@ -153,7 +153,7 @@ RETIRED_DIR = "docs/ledgers/findings/retired"
 UNKNOWNS_FILE = "docs/ledgers/unknowns.md"
 MANIFEST_FILE = "evidence/manifest.md"
 CODE_REFERENCE_ROOTS: tuple[str, ...] = ("src", "tools", ".github")
-# Execution receipts belong in the evidence manifest, not in new finding rows.
+# Execution receipts belong in the evidence index, not in new finding rows.
 RECEIPT_CLASSES: tuple[str, ...] = ("tool-receipt", "tooling-receipt")
 
 HEX64 = re.compile(r"(?<![0-9a-fA-F])[0-9a-f]{64}(?![0-9a-fA-F])")
@@ -846,7 +846,7 @@ class Linter:
                     continue
                 evidence = cells[evidence_column] if evidence_column < len(cells) else ""
                 if evidence.startswith(RECEIPT_CLASSES):
-                    self.report(doc.rel, number, f"new finding {cells[0]} is an execution receipt; record it as a manifest row")
+                    self.report(doc.rel, number, f"new finding {cells[0]} is an execution receipt; record it as an evidence index row")
 
     def git(self, *args: str) -> subprocess.CompletedProcess[str] | None:
         try:

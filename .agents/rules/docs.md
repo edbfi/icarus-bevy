@@ -26,8 +26,8 @@ a claim.
 | Findings by area; retired rows | `docs/ledgers/findings/<area>.md`; `docs/ledgers/findings/retired/` |
 | Open questions, bugs, compatibility | `docs/ledgers/unknowns.md`, `bugs.md`, `compatibility.md` |
 | Research digest per question cluster | `docs/research/<area>/<topic>.md` (fixed H2 set) |
-| Evidence artifacts: path, digest, session label, class | `evidence/manifest.md` |
-| Working REA session ledgers and scratch | `work/` (never tracked) |
+| Evidence index: one record per artifact (path, digest, class, kind, status, cited REA IDs) | `evidence/<area>.jsonl`; schema in `evidence/README.md` |
+| Exported REA bundles, session ledgers and scratch | `work/` (never tracked) |
 | Historical authorizations and reports | `docs/history/`, `docs/research/archive/` |
 | How agents work in this repository | `.agents/rules/` only |
 
@@ -44,7 +44,7 @@ Status.
 | --- | --- | --- |
 | Startup | `CLAUDE.md`, `docs/README.md`, `docs/implementation-status.md` | 20 KB, lint fails over |
 | Task entry | one rules file, `gates.md`, the area digest, one spec, the task's skill (routing table in `CLAUDE.md`) | 64 KB, lint reports |
-| Retrieval | single F-, U- or M- rows by `grep -w ID`; never a whole ledger | per row |
+| Retrieval | one F- or U- row by `grep -w ID -r docs/ledgers`, one M- row by `grep -hw ID evidence/*.jsonl`; never a whole ledger or shard | per row |
 
 ## Rules
 
@@ -52,14 +52,18 @@ Status.
    protocol; a measured native-server property; or a conclusion that a spec,
    gate, decision or the avoidance of repeated work depends on, including
    negative results. Classify by substance. Receipts (ran, compiled, reviewed,
-   cleaned up, paused) are manifest rows: lint rejects new finding rows whose
-   evidence starts with `tool-receipt` or `tooling-receipt`. The exported
-   Evidence bundle behind a manifest row is the canonical record of what a
-   session observed; REA session ledgers stay under `work/`.
+   cleaned up, paused) are evidence index rows: lint rejects new finding rows
+   whose evidence starts with `tool-receipt` or `tooling-receipt`. Each REA
+   session's exported bundle (`work/<case>/rea-bundle.json`) is the canonical
+   record of what it observed; its `rea-bundle` row lists the Evidence and
+   unknown IDs that rows cite as `M-NNN/ev_<12 hex>` or `M-NNN/unk_<12 hex>`.
+   Full `ev_`/`unk_` identifiers never appear in documents, and pre-REA case
+   notes are cited as `M-NNN/E-NNN`.
 2. Session close edits only documents whose authoritative content changed: the
    area digest; a spec if a durable fact changed; finding rows added or
-   superseded; `unknowns.md`; `gates.md`; manifest rows (export an Evidence
-   bundle under `work/` for each newly cited `ev_` identifier). In status, only
+   superseded; `unknowns.md`; `gates.md`; evidence index rows (one `rea-bundle`
+   row per REA session, one receipt row per bounded run; a new row names one
+   digested file, never a directory; reuse a row before adding one). In status, only
    Next-tasks items may be marked done or removed. Create a digest only for a
    new question cluster.
 3. Consolidate before adding. When a new row would extend a chain of
@@ -72,7 +76,10 @@ Status.
    criterion, and negative results stay active. Deleting prose that restates an
    ID-retrievable claim is permitted and preferred; rewording a row to fit its
    cap is permitted. Frozen directories are never a destination. Removing
-   whitespace to fit a cap is a lint failure.
+   whitespace to fit a cap is a lint failure. Index rows are retired in place
+   (`status: retired` with `superseded_by` or `note`); a `local-private`
+   artifact may be deleted only after its row is retired, and `missing` records
+   an artifact that can no longer be located.
 5. Checkpoint reconcile when status `Last reconciled` is older than 30 days or
    the lint staleness warning fires: reconcile status against HEAD, consolidate,
    retire and refresh dates.
@@ -83,7 +90,9 @@ Status.
    gates and ledger cells are exempt. A rewritten file keeps exactly one
    `Before restructure: <sha>:<old path>` provenance line.
 7. IDs are permanent and form one space per prefix. Never delete or renumber a
-   row; retire it with its full text. Every status, spec and ledger file carries
+   row; retire it with its full text. A pushed M- row changes only its
+   `status`, `superseded_by`, `note`, `label` and, for legacy rows, `kind`; a
+   corrected `path` or `sha256` keeps the old value in `note`. Every status, spec and ledger file carries
    `Last reconciled: YYYY-MM-DD`. Canonical workflow rules live under
    `.agents/rules/`; `CLAUDE.md` (`AGENTS.md`) summarizes and links to them.
 
@@ -91,8 +100,10 @@ Status.
 
 Bytes: 16 KB per current-surface file, 8 KB per digest; active findings 48 KB
 per file and 96 KB in total, retired findings 64 KB per file; unknowns, bugs and
-compatibility 64 KB each; 400 bytes per ledger row, 300 per manifest row; 160 KB
-for the current prose surface (every current file except the ledgers).
+compatibility 64 KB each; 400 bytes per ledger row; evidence shards 64 KB with
+numbered rollover, records 2 KB, labels 160 characters; 2 KB for
+`evidence/README.md`; 160 KB for the current prose surface (every current file
+except the ledgers).
 
 ## Lint
 
@@ -100,14 +111,17 @@ for the current prose surface (every current file except the ledgers).
 document paths named in code, `CLAUDE.md` and `.agents/rules/`, ID definition
 and uniqueness across `docs/ledgers/findings/`, IDs removed since `--base`
 (default `HEAD`), new receipt findings, evidence detail in prose, glued tokens,
-dated filenames, provenance lines, read tiers and manifest rows. `--local`
-also verifies `local-private` manifest digests; paths listed as `local-private`
-are never deleted by cleanup.
+dated filenames, provenance lines, read tiers, evidence records and their
+citations. `--local` also verifies active `local-private` paths, digests and
+bundle membership of listed IDs; `--next-id` allocates IDs and `--list-local`
+lists paths to back up. Paths of active `local-private` rows are never deleted
+by cleanup.
 
 ## Milestone checklist
 
 1. Reconcile `docs/implementation-status.md` against the newest commit.
-2. Consolidate and retire findings; mark resolved bug and compatibility rows.
+2. Consolidate and retire findings; mark resolved bug and compatibility rows;
+   retire index rows whose artifacts were consolidated or cleaned.
 3. Refresh every `Last reconciled` date.
 4. Run `python3 tools/docs_lint.py --local`, then fix every problem the strict
    run reports.
