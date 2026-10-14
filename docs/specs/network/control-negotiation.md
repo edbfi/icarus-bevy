@@ -176,6 +176,16 @@ game listener.
   types the whole vocabulary table with readers and writers, including the
   unique-net-id flags, type and encoded forms (the non-encoded string form is
   inferred); summaries carry kinds and lengths only.
+  `experimental::sequencing` models the client's sequencing state (F-535 to
+  F-539): cookie-seeded notify state, history shifting, header word counts, the
+  sent-record ring, ack/nak notifications with full packet IDs, and per-channel
+  reliable send, ack release, nak resend selection and ordered receive. The
+  sent-record push site, ring capacity, zero-filled unreceived history words and
+  the reliable comparison window are marked inferred or assumed.
+- Current client unique-net-id type hashes (F-543): 1 NULL, 2 MCP, 3 STEAM,
+  4 PS4, 6 GOOGLE, 7 GOOGLEPLAY, 8 FACEBOOK, 9 IOS, 10 APPLE, 11 TENCENT,
+  12 SWITCH, 13 AMAZON, 14 GAMECIRCLE, 15 THUNDERHEAD, 18 Oculus, 19 Quail,
+  20 PS4SERVER; 5, 16, 17 and 21 are runtime FName globals; 31 carries a name.
 - Epic's FNetworkNotify documentation (four virtual callbacks; UWorld and
   UPendingNetGame implement it; the driver's Notify field admits others) is a
   testable interface hypothesis for the slots other than `+0x18`, whose owner and
@@ -212,5 +222,5 @@ game listener.
   tests, plus archive and handshake suites):
 
 ```bash
-cargo test --locked --test control --test packet --test control_receive --test control_messages --test archive --test handshake
+cargo test --locked --test control --test packet --test control_receive --test control_messages --test sequencing --test archive --test handshake
 ```
