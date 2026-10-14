@@ -19,7 +19,8 @@ The census is closed for its selection: C009, C013, C028 and C034 cover 3,440
 of 5,485 records, and every observed populated tagged boundary in them is
 qualified in both copies; 34 classes with 2,045 records lay outside (F-496). C001
 now joins them at the top level: its four bodies match its 20 save-selected
-descriptors exactly, leaving 33 classes and 2,041 records (F-534).
+descriptors exactly, leaving 33 classes and 2,041 records (F-534), and its
+nested Struct and Array children frame in both copies (F-540).
 The qualified populations are C028 bodies, top frames and direct Structs (F-488, F-489); C034 top, own and
 inherited populations (F-490), compared in per-copy batches because the original
 8 MiB component transport cannot hold both copies (F-213); C009 top, own and
@@ -44,7 +45,7 @@ No decoded value, text or number was emitted or interpreted.
 
 - Meanings, Name identity and Enum lookup for every qualified value (U-020).
 - Unpopulated families: 17 C028 array-child descriptors, DA04, CA06 Text/Name and the empty inherited arrays (U-021, U-046).
-- The 33 classes and 2,041 records still outside (U-022); C001's nested Struct and Array values and runtime dispatch (U-023).
+- The 33 classes and 2,041 records still outside (U-022); C001's nested values and runtime dispatch (U-023).
 - Individual C028 native top spans and the historical library snapshot (U-024); opaque C028 binary Struct bodies (U-027).
 - Restoration and import, client and newer-build compatibility (U-025); original normalization, EOF and error equivalence (U-026); original performance (U-028).
 - Heavy-world save work order after this structural work: a matched official-server load/save/reload baseline on disposable copies once build pairing and a runtime scope exist (U-040, U-047); then authenticated negotiation, replication and the gameplay slice, validating a small supported import before the heavy dataset (U-038, U-045). Generic framing agreement is not an importable world; no partial importer.
