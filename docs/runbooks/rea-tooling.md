@@ -59,7 +59,7 @@ only its index row and citations (rules in
 3. Cite `M-NNN/ev_<12 hex>` in finding Evidence cells and `M-NNN/unk_<12 hex>`
    in U- rows; never paste a full identifier.
 4. Run `python3 tools/docs_lint.py --local`; it checks the digest and that every
-   listed ID is a member of the bundle.
+   listed ID is a member of the bundle (export layout: F-494).
 
 Read a bundle by summary and exact filter, never whole. Take the full ID from
 the row (`grep -hw M-NNN evidence/*.jsonl`), then:
