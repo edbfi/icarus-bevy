@@ -28,7 +28,9 @@ not object layout (F-480).
 
 Caller scans find one absolute pointer to the dispatcher and two LEA
 materializations of slot 0x145468180 stored at base +0x28, but no direct call
-and no archive provenance (F-481). The dispatcher validates message IDs and
+and no archive provenance (F-481). The same build's read-only data holds exactly
+one registration literal each for UWorld and UPendingNetGame, the anchors for a
+registration join; no reference to them has been followed yet (F-499). The dispatcher validates message IDs and
 reads the ID 0 body (F-284). A disconnected experimental reader composes the
 observed initial body within a derived 131,081-byte ceiling; negotiation,
 identity and game-connection flags stay false (F-096, F-097).
@@ -47,4 +49,4 @@ complete functions.
 
 ## Artifacts
 
-M-005, M-012, M-023..M-046.
+M-005, M-012, M-023..M-046, M-281..M-283.
