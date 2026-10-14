@@ -66,3 +66,29 @@ test('actual total-record cap accepts exactly2500000 and rejects2500001', () => 
     const extra = largeEnvelope(symbols);
     a.throws(() => inspect(extra.reader, extra.exe, extra.identity), /symbol record\/count cap/);
 });
+
+test('address queries export only names at exact queried code addresses', () => {
+    const f = pack(fixture([pub('?Helper@@YAXXZ', 1, 0x30), pub('?Other@@YAXXZ', 1, 0x34), pub('??0UWorld@@QEAA@XZ', 1, 0x20)]));
+    const r = inspect(f.reader, f.exe, f.identity, { addresses: ['0x140001030', '0x140001020'] });
+    a.deepEqual(r.hits.map(h => [h.name, h.family, h.address]), [
+        ['?Helper@@YAXXZ', 'address_query', '0x140001030'],
+        ['??0UWorld@@QEAA@XZ', 'constructor_or_destructor', '0x140001020'],
+    ]);
+    a.deepEqual(r.address_queries, ['0x140001030', '0x140001020']);
+    a.equal(r.unselected_names_exported, false);
+    a.deepEqual(get(f).hits.map(h => h.name), ['??0UWorld@@QEAA@XZ']);
+});
+
+test('address queries are bounded, exact and fail closed', () => {
+    const f = pack(fixture([pub('?Helper@@YAXXZ', 1, 0x30)]));
+    a.equal(inspect(f.reader, f.exe, f.identity, { addresses: ['0x140001031'] }).hit_count, 0);
+    for (const query of [{}, { addresses: [] }, { addresses: ['140001030'] }, { addresses: ['0x140001030', '0x140001030'] },
+        { addresses: ['0x140001030'], extra: 1 }, { addresses: Array.from({ length: 33 }, (_, i) => '0x' + (0x140001000 + i).toString(16)) }]) {
+        a.throws(() => inspect(f.reader, f.exe, f.identity, query), /address query/);
+    }
+    const data = pack(fixture([pub('?Table@@3PAXA', 2, 0x40, 0)]));
+    a.throws(() => inspect(data.reader, data.exe, data.identity, { addresses: ['0x140002040'] }), /strict source mapping/);
+    const odd = pub('?Helper@@YAXXZ', 1, 0x30);
+    odd[15] = 0x7f;
+    a.throws(() => inspect(pack(fixture([odd])).reader, f.exe, f.identity, { addresses: ['0x140001030'] }), /queried public name/);
+});

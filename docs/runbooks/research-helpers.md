@@ -11,7 +11,8 @@ through prek/CI using `node --test tools/tests/pe_candidates*.test.cjs`.
 The pure `tools/pdb_public_symbols.cjs` reader validates a bounded MSF7/DBI/PUB32
 profile against explicit PE debug identity and section geometry. It uses a
 caller-supplied bounded reader, opens no files, and exports only selected public
-symbols.
+symbols: a fixed name allowlist and, optionally, the names at up to 32 exact
+queried code addresses.
 Its authored and independent fixtures run through prek/CI. Target use requires a
 separate authorized case with streaming input hashes and resource/deadline guards;
 symbol names alone establish neither instruction boundaries nor runtime behavior.
