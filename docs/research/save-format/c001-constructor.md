@@ -51,7 +51,9 @@ constructor apart from image displacements, so the two stored tables are C001's
 primary and IInterface_AssetUserData vftables and the common callee is its base
 recorder's default constructor (F-509). In the client those vftable slots at the
 three save-path offsets are the base's Serialize, C001's version-upgrade hook
-and its state restore (F-510); the server's slots stay unread.
+and its state restore (F-510). The server's three slot targets match those
+functions, and C028 inherits the last two (F-512). The static bridge is thus
+named; runtime dispatch and register preservation remain conditions.
 
 ## Open
 
@@ -61,4 +63,4 @@ and its state restore (F-510); the server's slots stay unread.
 
 ## Artifacts
 
-M-003, M-004, M-007, M-008, M-011, M-013, M-014, M-176, M-177, M-179..M-181, M-185..M-190, M-193..M-199, M-201, M-202, M-205, M-206, M-209..M-211, M-221..M-239, M-242..M-250, M-253..M-268, M-272..M-276, M-284..M-286, M-298..M-310.
+M-003, M-004, M-007, M-008, M-011, M-013, M-014, M-176, M-177, M-179..M-181, M-185..M-190, M-193..M-199, M-201, M-202, M-205, M-206, M-209..M-211, M-221..M-239, M-242..M-250, M-253..M-268, M-272..M-276, M-284..M-286, M-298..M-313.
