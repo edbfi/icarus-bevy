@@ -186,12 +186,31 @@ impl SnapshotStore {
     }
 
     fn select(&self, manifest: &Manifest) -> Result<(WorldSnapshot, Generation, bool)> {
-        match self.read_generation(&manifest.current) {
+        self.select_with_reader(manifest, |generation| self.read_generation(generation))
+    }
+
+    // The reader boundary permits operational read faults without requiring a
+    // failing disk or privileged permission changes in regression tests.
+    fn select_with_reader(
+        &self,
+        manifest: &Manifest,
+        mut read: impl FnMut(&Generation) -> Result<WorldSnapshot>,
+    ) -> Result<(WorldSnapshot, Generation, bool)> {
+        match read(&manifest.current) {
             Ok(snapshot) => Ok((snapshot, manifest.current.clone(), false)),
-            Err(error) if error.is::<UnsupportedSchema>() => Err(error),
+            Err(error)
+                if error.is::<UnsupportedSchema>()
+                    || error
+                        .downcast_ref::<std::io::Error>()
+                        .is_some_and(|error| error.kind() != std::io::ErrorKind::NotFound) =>
+            {
+                // Inaccessible storage does not establish corrupt state. Keep
+                // the acknowledged generation intact until its read can retry.
+                Err(error)
+            }
             Err(current_error) => match &manifest.previous {
                 Some(previous) => {
-                    let snapshot = self.read_generation(previous).with_context(|| {
+                    let snapshot = read(previous).with_context(|| {
                         format!("both snapshots unusable; current: {current_error:#}")
                     })?;
                     Ok((snapshot, previous.clone(), true))
@@ -575,6 +594,45 @@ mod publication_tests {
         WorldSnapshot {
             tick,
             ..Default::default()
+        }
+    }
+
+    #[test]
+    fn operational_current_read_faults_do_not_select_the_previous_generation() {
+        let directory = tempfile::tempdir().unwrap();
+        let store = SnapshotStore::open(directory.path()).unwrap();
+        let manifest = Manifest {
+            schema_version: 1,
+            current: Generation {
+                number: 2,
+                sha256: "a".repeat(64),
+            },
+            previous: Some(Generation {
+                number: 1,
+                sha256: "b".repeat(64),
+            }),
+        };
+        for code in [13, 5] {
+            let mut reads = Vec::new();
+            let error = store
+                .select_with_reader(&manifest, |generation| {
+                    reads.push(generation.number);
+                    if generation.number == 2 {
+                        Err(anyhow::Error::new(std::io::Error::from_raw_os_error(code))
+                            .context("injected current generation read"))
+                    } else {
+                        Ok(snapshot(10))
+                    }
+                })
+                .unwrap_err();
+            assert_eq!(reads, [2]);
+            assert_eq!(
+                error
+                    .downcast_ref::<std::io::Error>()
+                    .unwrap()
+                    .raw_os_error(),
+                Some(code)
+            );
         }
     }
 

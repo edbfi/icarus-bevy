@@ -56,6 +56,10 @@ Storage roots, generation references and entity records require named JSON
 objects; position triples remain arrays. Malformed array headers can recover a
 valid previous generation, while proper future-schema objects refuse rollback
 (F-428).
+Current-generation I/O errors other than a missing file stop loading and saving
+before backup selection. Repair permissions or the storage fault, then retry;
+an unreadable file does not establish corrupt state. Missing or corrupt current
+generations can still recover the preceding valid generation (F-452).
 
 SIGINT/SIGTERM freezes simulation, drains outstanding work and saves a final snapshot.
 Deadline checks reject overdue completion and final submission; failure exits nonzero.

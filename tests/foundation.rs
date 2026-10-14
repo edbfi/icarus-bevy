@@ -365,6 +365,95 @@ fn corrupt_current_recovers_previous_and_next_save_retains_valid_fallback() {
 }
 
 #[test]
+fn unreadable_current_preserves_acknowledged_state_until_permissions_are_repaired() {
+    use std::os::unix::fs::{MetadataExt, PermissionsExt};
+
+    struct RestorePermissions {
+        path: std::path::PathBuf,
+        permissions: fs::Permissions,
+    }
+
+    impl RestorePermissions {
+        fn restore(&self) {
+            fs::set_permissions(&self.path, self.permissions.clone()).unwrap();
+        }
+    }
+
+    impl Drop for RestorePermissions {
+        fn drop(&mut self) {
+            let _ = fs::set_permissions(&self.path, self.permissions.clone());
+        }
+    }
+
+    let directory = tempfile::tempdir().unwrap();
+    let mut store = SnapshotStore::open(directory.path()).unwrap();
+    let mut previous = snapshot(10);
+    previous.entities[0].position = Position([10.0, 0.0, 0.0]);
+    let mut current = snapshot(20);
+    current.entities[0].position = Position([20.0, 0.0, 0.0]);
+    store.save(&previous).unwrap();
+    store.save(&current).unwrap();
+    let manifest_path = directory.path().join("manifest.json");
+    let previous_path = directory.path().join("snapshot-1.json");
+    let current_path = directory.path().join("snapshot-2.json");
+    let manifest_bytes = fs::read(&manifest_path).unwrap();
+    let previous_bytes = fs::read(&previous_path).unwrap();
+    let current_bytes = fs::read(&current_path).unwrap();
+    let current_metadata = fs::metadata(&current_path).unwrap();
+    let restore = RestorePermissions {
+        path: current_path.clone(),
+        permissions: current_metadata.permissions(),
+    };
+    fs::set_permissions(&current_path, fs::Permissions::from_mode(0o0)).unwrap();
+    match fs::read(&current_path) {
+        Err(error) => assert_eq!(error.kind(), std::io::ErrorKind::PermissionDenied),
+        Ok(_) => {
+            // A privileged process can bypass mode000. The deterministic reader
+            // tests still exercise terminal read faults under that account.
+            eprintln!("mode000 read fault unavailable to this privileged test account");
+            return;
+        }
+    }
+    for error in [
+        store.load().unwrap_err(),
+        store.save(&snapshot(30)).unwrap_err(),
+    ] {
+        assert_eq!(
+            error.downcast_ref::<std::io::Error>().unwrap().kind(),
+            std::io::ErrorKind::PermissionDenied
+        );
+    }
+    assert_eq!(fs::read(&manifest_path).unwrap(), manifest_bytes);
+    assert_eq!(fs::read(&previous_path).unwrap(), previous_bytes);
+    assert!(!directory.path().join("snapshot-3.json").exists());
+    let unreadable_metadata = fs::metadata(&current_path).unwrap();
+    assert_eq!(unreadable_metadata.ino(), current_metadata.ino());
+    assert_eq!(unreadable_metadata.len(), current_metadata.len());
+    assert_eq!(unreadable_metadata.permissions().mode() & 0o777, 0);
+    restore.restore();
+    assert_eq!(fs::read(&current_path).unwrap(), current_bytes);
+    let loaded = store.load().unwrap().unwrap();
+    assert!(!loaded.recovered_previous);
+    assert_eq!(loaded.snapshot, current);
+    assert_eq!(store.save(&snapshot(30)).unwrap().generation, 3);
+}
+
+#[test]
+fn missing_current_still_recovers_and_retains_the_previous_generation() {
+    let directory = tempfile::tempdir().unwrap();
+    let mut store = SnapshotStore::open(directory.path()).unwrap();
+    store.save(&snapshot(10)).unwrap();
+    store.save(&snapshot(20)).unwrap();
+    fs::remove_file(directory.path().join("snapshot-2.json")).unwrap();
+    let loaded = store.load().unwrap().unwrap();
+    assert!(loaded.recovered_previous);
+    assert_eq!(loaded.snapshot, snapshot(10));
+    assert_eq!(store.save(&snapshot(30)).unwrap().generation, 3);
+    fs::write(directory.path().join("snapshot-3.json"), b"corrupt").unwrap();
+    assert_eq!(store.load().unwrap().unwrap().snapshot, snapshot(10));
+}
+
+#[test]
 fn interrupted_uncommitted_generation_does_not_replace_saved_state() {
     let directory = tempfile::tempdir().unwrap();
     let mut store = SnapshotStore::open(directory.path()).unwrap();

@@ -41,7 +41,7 @@ Last reconciled: 2026-10-14
 | U-032 | What are C009 inherited child values and string/numeric/enum meanings, and how does runtime restoration use them? | medium | open | explicit bounded array API and validation for CA01 child parsing | F-199, F-202, F-203 |  |
 | U-033 | How are C034 internal names constructed, and what are original normalization/failure behaviors? | low | open | none stated | F-197 |  |
 | U-034 | Is the client build publisher-authentic with complete valid symbols, and does it match the save provenance? | medium | open | none stated | F-210 |  |
-| U-035 | Does native persistence survive physical power loss and the required 72-hour runs? | high | open | Short synthetic workloads, bounded snapshot cycles and config-admission regressions do not qualify these outcomes. | F-235, F-239, F-427, F-429, F-443 |  |
+| U-035 | Does native persistence survive physical power loss and the required 72-hour runs? | high | open | Short synthetic workloads, bounded cycles and config/read-fault regressions do not qualify these outcomes. | F-235, F-239, F-427, F-429, F-443, F-452 |  |
 | U-036 | Does the CI definition pass on hosted CI? | low | open | none stated | F-251 |  |
 | U-037 | What is the active checksum/admission policy, and how are compatibility callbacks registered indirectly at runtime? | high | open | none stated | F-254, F-255, F-267 |  |
 | U-038 | Can a stock client complete an authenticated session against the native server? | critical | blocked | Access deferred by user; continue offline evidence; connected tests need a concrete scope. | F-187, F-253, F-421 |  |
