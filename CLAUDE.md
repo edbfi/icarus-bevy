@@ -12,7 +12,8 @@ and connected-client experiments retain their separate current-scope gates.
 Every session: this file, `docs/README.md` and `docs/implementation-status.md`.
 Rules in `.agents/rules/` are authoritative; this file summarizes them. Then
 load the entry set for the task, check `docs/gates.md` before acting, and fetch
-ledger rows by ID (`grep -w F-487 -r docs/ledgers`), never whole ledgers.
+rows by ID (`grep -w F-487 -r docs/ledgers`, `grep -hw M-147 evidence/*.jsonl`),
+never whole ledgers or shards.
 
 | Task | Entry set |
 | --- | --- |
@@ -36,7 +37,8 @@ REA fallbacks follow `project.md`. Project-authored Python uses
   state only.
 - Preserve original inputs, private saves, evidence, provenance, licenses and
   user changes. Never delete `icarus-orig/`, `icarus-client-orig/`,
-  `reference-data/`, manifest `local-private` paths or another agent's files.
+  `reference-data/`, active `local-private` evidence paths or another agent's
+  files.
 - Keep scratch under `work/`. Bound every experiment and its resources; clean up
   owned experiments on timeout. Delete only owned reproducible scratch; never
   blanket cleanup or deletion by age. Coordinate file ownership; the lead
@@ -46,9 +48,10 @@ REA fallbacks follow `project.md`. Project-authored Python uses
 
 `.agents/rules/docs.md` holds the layout, read tiers, caps and rules. In short:
 admit a finding only for a claim about the original, a measured native property
-or a conclusion something depends on (receipts are manifest rows); at session
-close edit only what changed: digest, spec, finding rows (consolidate chains into
-a summary row), `unknowns.md`, `gates.md`, manifest. Cite IDs instead of
+or a conclusion something depends on (receipts are evidence index rows); at
+session close edit only what changed: digest, spec, finding rows (consolidate
+chains into a summary row), `unknowns.md`, `gates.md`, evidence rows (one REA
+bundle per session, cited as `M-NNN/ev_<12 hex>`). Cite IDs instead of
 restating claims; near a cap, split by topic or retire rows, never strip spaces.
 IDs are permanent. Run the milestone checklist in `docs.md` at milestones.
 
