@@ -87,7 +87,10 @@ one table. The native run command has no game listener.
   dispatcher's input is an FInBunch, a bit-oriented archive (F-507). Within the
   bunch the fields follow the ID byte, and the first field (1 = sender little
   endian) selects the remote version's byte order (F-517); packet-to-bunch
-  framing is unbound, so this framing stays experimental. Exact EOF
+  framing is unbound, so this framing stays experimental.
+  `read_initial_control_body_with_sender_order` applies that inferred rule (1
+  selects little-endian, any other value big-endian) before the same strict
+  reader. Exact EOF
   and strict normalization rejection are research policies, not recovered
   tolerances.
 - Epic's FNetworkNotify documentation (four virtual callbacks; UWorld and
@@ -121,7 +124,8 @@ one table. The native run command has no game listener.
   zero/negative/minimum/oversized lengths, incompatible versions, invalid
   transitions, token failures); pass those fixtures and the stock-client
   experiment before marking negotiation implemented.
-- Authored tests (eight control tests plus archive and handshake suites):
+- Authored tests (14 control tests, including the inferred sender-order entry
+  point (F-517), plus archive and handshake suites):
 
 ```bash
 cargo test --locked --test control --test archive --test handshake
