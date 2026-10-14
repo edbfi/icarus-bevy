@@ -10,7 +10,7 @@ Rules: [`.agents/rules/docs.md`](../.agents/rules/docs.md). Lint: `python3 tools
 | [architecture.md](architecture.md) | components and interfaces | 16 KB |
 | [runbooks/](runbooks/) | operating procedures | 16 KB each |
 | [specs/](specs/) | durable findings per format or protocol (`save-format/`, `network/`) | 16 KB each, fixed headings |
-| [ledgers/](ledgers/) | findings, unknowns, bugs, compatibility; one row per item | 64 KB each, findings 128 KB |
+| [ledgers/](ledgers/) | findings (by area under `findings/`), unknowns, bugs, compatibility; one row per item | 64 KB each; active findings 48 KB per file, retired 64 KB |
 | [research/](research/) | digests by area (`save-format/`, `network/`, `foundation/`), one per question cluster | 16 KB each, fixed headings |
 | [research/archive/](research/archive/) | dated reports, verbatim, frozen | none |
 | [history/](history/) | historical authorizations, verbatim, frozen | none |

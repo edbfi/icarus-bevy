@@ -1,7 +1,7 @@
 # Implementation status
 
 What the native foundation does, what it does not, and what comes next. One row
-per claim lives in the [findings ledger](ledgers/findings.md); open questions in
+per claim lives in the [findings ledgers](ledgers/findings/); open questions in
 the [unknowns ledger](ledgers/unknowns.md); preconditions in [gates](gates.md);
 session detail in the [research digests](research/). Full text before
 condensation: fabd2f9:docs/implementation-status.md.

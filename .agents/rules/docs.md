@@ -29,7 +29,7 @@ rules through prek and CI; the rest are reviewed.
 ## Rules
 
 1. A research session finalizes by updating or adding finding rows in
-   `docs/ledgers/findings.md`, updating `docs/ledgers/unknowns.md`, and updating
+   `docs/ledgers/findings/`, updating `docs/ledgers/unknowns.md`, and updating
    the matching digest. Create a new digest only for a new question cluster.
    Export an Evidence bundle under `work/` and add a manifest row whenever a new
    `ev_` identifier is cited. REA sessions are a working copy; the tracked
