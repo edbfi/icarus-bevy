@@ -50,10 +50,11 @@ Last reconciled: 2026-10-14
   integrity and nonalias conditions remain explicit and unproved.
 - Old slot preparation mis-stated two addresses (F-465); base and offsets have
   independent same-build provenance, so the candidate slots are 0x1449da030,
-  0x1449da418 and 0x1449da430 (F-495). They stay candidates: conditional
-  register continuity also needs concrete object-origin,
-  construction-path, final-vptr and slot-contract joins before ownership or any
-  three-slot read.
+  0x1449da418 and 0x1449da430 (F-495). Client-PDB correspondence names the
+  construction path, the final vptr and the client slot contracts (F-509,
+  F-510). A server three-slot read needs its own reviewed case that compares
+  the slot targets with the client's named functions; ownership claims keep
+  register preservation across the super call as an explicit condition.
 - Retained exports already identify the exact native class getter and
   construction callback (F-472); reuse them before new bounded queries. Read the
   retained instruction listing within these exact intervals before expanding

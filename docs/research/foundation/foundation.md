@@ -33,7 +33,9 @@ save-inspection inputs (F-405, F-443, F-468), malformed manifest digests
 and diagnostics that leaked supplied strings (F-412, F-423); real ENOSPC and
 EACCES faults keep acknowledged state (F-239). Synthetic runs pass at 100,000
 entities and across kill/restart cycles (F-485); the 7,200 s soak predates later
-persistence changes (F-237). None of this measures ICARUS performance.
+persistence changes (F-237). A modeled POSIX power-loss harness over the real
+write path recovers acknowledged state in every enumerated crash state and found
+stranded temporaries, now removed (F-511). None of this measures ICARUS performance.
 
 Save inspection reads supplied prospect envelopes within measured bounds and
 frames root properties and recorders to exact EOF, matching independent
@@ -60,4 +62,4 @@ original server (F-252), and historical runtime windows have expired (F-218).
 
 ## Artifacts
 
-M-001, M-002, M-006, M-009, M-010, M-015..M-022, M-076, M-078, M-109..M-117, M-131..M-165, M-174, M-175, M-178, M-182..M-184, M-191, M-192, M-200, M-203, M-204, M-207, M-208, M-212..M-220, M-225, M-240, M-241, M-251, M-252, M-269, M-270, M-271, M-277.
+M-001, M-002, M-006, M-009, M-010, M-015..M-022, M-076, M-078, M-109..M-117, M-131..M-165, M-174, M-175, M-178, M-182..M-184, M-191, M-192, M-200, M-203, M-204, M-207, M-208, M-212..M-220, M-225, M-240, M-241, M-251, M-252, M-269, M-270, M-271, M-277, M-311.

@@ -92,7 +92,8 @@ Recorders and base component
   32-bit words via `0x141f1c300`). Property termination is not component EOF.
   Original direct-buffer path accepts any nonzero; its fallback flags values > 1
   (F-346). Post-load `+0x488` base target is return-only; derived classes may
-  override (F-347).
+  override (F-347). Client PDB names agree: on C001 `+0x4a0` is the state
+  restore, `+0xa0` Serialize(FArchive&), `+0x488` a version-upgrade hook (F-510).
 
 C013 (singleton)
 
@@ -217,8 +218,9 @@ Acceptance conditions for any importer
   rejects pretty-output cap before publication, with no retained model result
   (F-461 to F-464). Compact replay reports common conditional completion and
   constructor XMM1-quarter stops; the qualified two-vector case then stops both
-  constructors at a narrow RAX low16 read, while slot arithmetic and concrete
-  origin/final-vptr contracts gate archive reads (F-465 to F-467, F-477).
+  constructors at a narrow RAX low16 read (F-465 to F-467, F-477). Client
+  correspondence names both tables as C001's vftables (F-509); server slots
+  stay unread.
 
 ## Open questions
 

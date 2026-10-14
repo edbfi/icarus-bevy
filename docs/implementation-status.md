@@ -44,7 +44,7 @@ What the foundation does is in the
 
 Offline work, in order; connected proof keeps its gates.
 
-1. C001 ownership: establish concrete object-origin, final-vptr and slot contracts for the replayed candidate's two entry-RCX table stores and the reconciled candidate slots before any archive-slot read; the callback still stops at its role cap (F-431, F-495, F-508, U-041).
+1. C001 ownership: the tables and client slot contracts are named (F-509, F-510); compare the server's three slot targets with the client's named functions in a reviewed case, keeping register preservation conditional (F-495, U-041).
 2. Player state: resolve actor, inventory, construction, tame and mission fields and confirm the reported producing build by evidence other than class registration (F-262, F-277, F-498, U-040).
 3. Control stores: establish base origin, actual receiver/indirect dispatch and a same-build type-registration join before inferring the dispatcher caller; with owner and dispatcher identified, qualify register preservation across the constructor super calls and locate the virtual call sites (F-505, F-506, U-015, U-043).
 4. Control stores: compare constructor metadata and instructions guided by paired-client symbols and the two named notify slots (F-479, F-480, U-043).
