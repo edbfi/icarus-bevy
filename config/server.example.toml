@@ -1,0 +1,8 @@
+# Development foundation only: ICARUS protocol and gameplay are not implemented.
+data_dir = "work/runtime"
+# Provisional local simulation rate; not a claim about ICARUS's tick rate.
+tick_hz = 30
+max_catch_up_ticks = 4
+autosave_seconds = 60
+shutdown_timeout_seconds = 10
+status_interval_seconds = 10

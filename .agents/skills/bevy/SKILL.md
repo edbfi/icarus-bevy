@@ -4,7 +4,7 @@ description: Build, debug, test, and migrate Rust games and applications using t
 license: AGPL-3.0
 metadata:
   author: engels74
-  version: "1.0.0"
+  version: "1.1.0"
   vendor: bevy
 ---
 
@@ -15,9 +15,10 @@ to the task; they are part of this skill and need no sibling skill installations
 
 ## Establish the version first
 
-The verified baseline is **Bevy 0.19.1**, latest non-yanked stable release checked
-on **2026-10-04**, with Rust **1.95.0** minimum. The available 0.20 release candidate
-is not this baseline. This is dated evidence, not a permanent assertion of latest.
+The verified baseline is **Bevy 0.20.0**, latest non-yanked stable release checked
+on **2026-10-12**, with Rust **1.97.1** minimum. The final release was published on
+2026-10-08, superseding the earlier 0.20 release candidate and 0.19.1 baseline.
+This is dated evidence, not a permanent assertion of latest.
 
 Read `Cargo.toml`, workspace dependencies, `Cargo.lock`, the Rust toolchain, enabled
 features, and target before choosing APIs. Preserve an existing project's release
@@ -56,7 +57,7 @@ crate sources and explicitly leave latest-release verification unconfirmed.
 | Buffered messages, observers, entity events, lifecycle hooks | [Messages and observers](references/messages-and-observers.md) |
 | Keyboard/gamepad actions, fixed input, physics integration | [Input and physics](references/input-and-physics.md) |
 | Loading, handles, custom loaders, glTF, scenes, durable saves | [Assets and persistence](references/assets-and-persistence.md) |
-| 2D/3D, cameras, materials, WGSL, renderer extensions | [Rendering and cameras](references/rendering-and-cameras.md) |
+| 2D/3D, cameras, materials, WESL/WGSL, renderer extensions | [Rendering and cameras](references/rendering-and-cameras.md) |
 | Layout, text, interaction, focus, accessibility, localization | [UI and accessibility](references/ui-and-accessibility.md) |
 | Animation graphs, transitions, audio playback, effects | [Animation, audio, and VFX](references/animation-audio-and-vfx.md) |
 | Headless tests, async work, diagnostics, performance, screenshots | [Testing and performance](references/testing-and-performance.md) |
@@ -71,7 +72,7 @@ crate sources and explicitly leave latest-release verification unconfirmed.
   `ParamSet`; ordering separate systems cannot repair that conflict.
 - `Commands` are deferred. Do not immediately query a just-queued spawn from the
   same system and assume the component exists.
-- In 0.19, resources are singleton components. Derive `Resource` alone and audit
+- Since 0.19, resources are singleton components. Derive `Resource` alone and audit
   broad entity queries that now encounter resource entities.
 - Use current components such as `Camera2d`, `Sprite`, `Mesh3d`, and `Node` instead
   of obsolete built-in bundles. Custom `Bundle` types still exist.

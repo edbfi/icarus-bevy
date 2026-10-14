@@ -56,6 +56,48 @@ repos:
 
   - repo: local
     hooks:
+      - id: research-scope-tests
+        name: Test offline research scope boundaries
+        entry: node --test tools/tests/research-scope.test.cjs
+        language: system
+        pass_filenames: false
+        files: ^tools/(research-scope\.cjs|tests/research-scope\.test\.cjs)$
+      - id: pe-candidate-tests
+        name: Test PE caller candidate bounds
+        entry: node --test tools/tests/pe_candidates.test.cjs tools/tests/pe_candidates_independent.test.cjs
+        language: system
+        pass_filenames: false
+        files: ^tools/(pe_candidates\.cjs|tests/pe_candidates.*\.cjs)$
+      - id: pdb-public-symbol-tests
+        name: Test bounded PDB public symbol reader
+        entry: node --test tools/tests/pdb_public_symbols.test.cjs tools/tests/pdb_public_symbols_review.test.cjs tools/tests/pdb_public_symbols_classes.test.cjs
+        language: system
+        pass_filenames: false
+        files: ^tools/(pdb_public_symbols\.cjs|tests/pdb_public_symbols.*\.cjs)$
+      - id: python-typing-config
+        name: Check Python typing policy
+        entry: python3 tools/typing_gate.py
+        language: system
+        pass_filenames: false
+        files: (\.py$|(^|/)(pyproject\.toml|pyrightconfig\.json)$|^\.basedpyright/)
+      - id: basedpyright
+        name: Type-check authored Python (warnings are failures)
+        entry: uvx basedpyright@latest --warnings
+        language: system
+        pass_filenames: false
+        files: (\.pyi?$|^pyproject\.toml$|^\.python-version$)
+      - id: research-helper-tests
+        name: Test authored research fixtures
+        entry: python3 -m unittest discover -s tools/tests -v
+        language: system
+        pass_filenames: false
+        files: ^tools/.*\.py$
+      - id: docs-lint
+        name: Lint documentation surface (caps, headings, links, ledger IDs)
+        entry: python3 tools/docs_lint.py
+        language: system
+        pass_filenames: false
+        files: (\.md$|^evidence/|^tools/docs_lint\.py$|^src/.*\.rs$|^tools/|^\.github/)
       - id: cargo-fmt
         name: Check Rust formatting
         entry: cargo fmt --all -- --check

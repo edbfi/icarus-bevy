@@ -1,0 +1,8 @@
+{
+  "name": "icarus-rea-tools",
+  "private": true,
+  "description": "Project-local REA runtime for Codex and Claude Code",
+  "dependencies": {
+    "rea-agents": "6.4.0"
+  }
+}

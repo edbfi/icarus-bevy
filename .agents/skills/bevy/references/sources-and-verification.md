@@ -36,17 +36,25 @@ In particular, the synthesis does not carry forward these misleading shortcuts:
 
 ## Primary baseline
 
-Checked on **2026-10-04**:
+Checked on **2026-10-12**:
 
-- [crates.io metadata](https://crates.io/api/v1/crates/bevy): latest non-yanked stable
-  **0.19.1**, published 2026-08-13. `cargo info bevy@0.19.1` reports Rust **1.95.0**
-  minimum and also advertises a newer **0.20.0-rc.2** prerelease.
-- [Bevy 0.19.1 Rust docs](https://docs.rs/bevy/0.19.1/bevy/).
-- [Release source](https://github.com/bevyengine/bevy/tree/b56fc29d3016e641754765244b5ba3f9cc504671),
-  the `v0.19.1` tag: checked Cargo features, examples, resource/query behavior,
-  time strategies, text/focus, assets, animation, audio, and render-system APIs.
-- [Official migration guides](https://bevy.org/learn/migration-guides/), especially
-  [0.18 → 0.19](https://bevy.org/learn/migration-guides/0-18-to-0-19/).
+- [crates.io metadata](https://crates.io/api/v1/crates/bevy), read through the browser:
+  latest non-yanked stable **0.20.0**, published **2026-10-08**.
+  `cargo info bevy@0.20.0` independently confirms Rust **1.97.1** minimum.
+- [Final release](https://github.com/bevyengine/bevy/releases/tag/v0.20.0) and
+  [Bevy 0.20.0 Rust docs](https://docs.rs/bevy/0.20.0/bevy/).
+- [Release source](https://github.com/bevyengine/bevy/tree/b3bdd75becaffe9a16677cf5bae5bd6d198f052b),
+  the `v0.20.0` tag: reviewed features, examples, and prose-only API claims across
+  ECS, scheduling, input, assets, rendering, UI, animation, audio, and platforms.
+- [0.19 → 0.20 migration guide](https://bevy.org/learn/migration-guides/0-19-to-0-20/):
+  reconciled observer generics, pointer events, WESL, button widgets, entity-list
+  queries, weak schedule ordering, and opt-in screen-space transmission.
+
+The previous verification on **2026-10-04** recorded **0.19.1** (published
+2026-08-13, Rust 1.95.0) and **0.20.0-rc.2** as a prerelease. That was dated
+evidence: the final 0.20.0 release now supersedes it. The RC's Rust 1.96.0 minimum
+also differs from the final release. New 0.20 guidance applies to that release
+line; it does not justify applying 0.20 APIs to a project locked to 0.19.
 
 Versioned official sources take precedence over every researched community skill.
 An upstream example may demonstrate one API without supplying a complete product
@@ -54,24 +62,27 @@ behavior, such as keyboard navigation or a durable save format.
 
 ## Reproduce the executable checks
 
-Verified on 2026-10-04 using `rustc 1.98.1`, Cargo 1.98.1, and
-`x86_64-unknown-linux-gnu`: **6 core tests passed and all 4 presentation blocks
-type-checked**, with no skipped Rust blocks. The skill frontmatter validator,
-repository content contract (including this skill), and all applicable
-prek hygiene hooks passed. The minimum supported Rust version was read from
-package metadata; this run did not separately test Rust 1.95.0.
+Verified on **2026-10-12** using Python 3.13.13, `rustc 1.99.0`, Cargo 1.99.0,
+and `aarch64-apple-darwin`: **6 core tests passed and all 4 presentation blocks
+type-checked** against exact Bevy **0.20.0**, with no skipped Rust blocks or compiler
+warnings. The UI example was migrated to `ui_widgets::Button`, `Hovered`, and
+`Pressed`; the presentation feature set now includes the widget and picking APIs.
+The MSRV was read from package metadata, not separately tested on Rust 1.97.1.
 
-Discovery and installation were also verified using Bun 1.4.2 and `skills` 1.7.0:
+The skill frontmatter validator, repository content contract, and CI's manual-stage
+prek checks passed. These hygiene checks do not validate Bevy API behavior.
+
+Historical installation validation on 2026-10-04 used Bun 1.4.2 and `skills` 1.7.0:
 `bunx skills add /path/to/this/repository --list` found `bevy`, and an isolated
 project install with `--skill bevy --agent codex --copy --yes` preserved all 14
-skill files byte-for-byte, including references and the verifier script.
+skill files byte-for-byte. Discovery/installation was not rerun for this refresh.
 
-From the repository root:
+From the repository root, with Python 3.10+ and a suitable Rust toolchain:
 
 ```sh
 python3 bevy/bevy/scripts/verify-examples.py
 python3 scripts/check-content.py
-SKIP=no-commit-to-branch prek run --all-files
+prek run --all-files --hook-stage manual
 ```
 
 The first command extracts **every Rust fence** in the skill and its references.
@@ -85,8 +96,9 @@ Use `--target-dir PATH` to relocate that cache or `--core-only` for a faster rer
   `bevy_state`. Exercises required components/disjoint queries, buffered input,
   messages/observers, deferred command visibility, state cleanup, and fixed time.
 - **Presentation:** `cargo check --tests` with the same core features plus
-  `2d_api`, `3d_api`, `ui_api`, `bevy_pbr`, and `bevy_world_serialization`.
-  Checks the asset loader, 3D setup, UI/focus/text, and glTF animation wiring.
+  `2d_api`, `3d_api`, `ui_api`, `bevy_ui_widgets`, `bevy_picking`, `bevy_pbr`,
+  and `bevy_world_serialization`.
+  Checks the asset loader, 3D setup, UI/widget/text, and glTF animation wiring.
 
 The repository content checker only discovers Git-indexed skill files. When
 validating a newly created skill before staging, include its files in a temporary
@@ -94,7 +106,7 @@ Git index or use a separate structural check; a success count that omits the new
 skill is not evidence that it passed.
 
 These checks do **not** run a GPU window, load the example font/glTF files, exercise
-an audio device, compile third-party plugins, validate all WGSL paths, or launch a
+an audio device, compile third-party plugins, validate all WESL/WGSL paths, or launch a
 browser. Platform and specialized workflow advice is source-reviewed, not a claim
 that every integration was executed. Keep those distinctions in user-facing reports.
 

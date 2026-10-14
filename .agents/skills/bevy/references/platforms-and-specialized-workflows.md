@@ -7,10 +7,10 @@ version is certified by this skill's core snippet check.
 ## Browser builds
 
 Build the application for `wasm32-unknown-unknown` with an intentional feature set.
-The 0.19 normal profiles include the default WebGL2 path; select `webgpu` when the
+The 0.20 normal profiles include the default WebGL2 path; select `webgpu` when the
 application requires WebGPU and inspect resolved features. Enabling WebGPU is not
 evidence of automatic runtime fallback. Consult the
-[versioned browser build guide](https://github.com/bevyengine/bevy/blob/v0.19.1/examples/README.md)
+[versioned browser build guide](https://github.com/bevyengine/bevy/blob/v0.20.0/examples/README.md)
 for the selected backend and tooling.
 
 Use the repository's existing Trunk, wasm-bindgen, or other pipeline. With direct
@@ -22,7 +22,7 @@ an HTML file directly is not an equivalent test.
 Validate canvas sizing, device-pixel ratio, resize, pointer lock, touch, focus,
 asset URLs/case/CORS, loading errors, and audio activation. WebGPU requires an
 appropriate secure context and browser/device support. A WASM compile alone tests
-neither adapter creation nor WGSL validation. Native filesystem APIs and blocking
+neither adapter creation nor shader validation. Native filesystem APIs and blocking
 threads are not portable save/task strategies for the browser. Budget downloads,
 memory, texture formats, and first-frame shader compilation for actual devices.
 
@@ -69,7 +69,7 @@ map. Check physics units and timing, UI behavior, animation events, and audio
 mixing against the original. Engine-specific extraction tools are separate tasks;
 this skill does not silently install or execute external asset converters.
 
-Sources: [Bevy examples and platform instructions](https://github.com/bevyengine/bevy/blob/v0.19.1/examples/README.md),
-[render API](https://docs.rs/bevy/0.19.1/bevy/render/index.html),
-[mesh API](https://docs.rs/bevy/0.19.1/bevy/mesh/index.html),
-[task pools](https://docs.rs/bevy/0.19.1/bevy/tasks/index.html).
+Sources: [Bevy examples and platform instructions](https://github.com/bevyengine/bevy/blob/v0.20.0/examples/README.md),
+[render API](https://docs.rs/bevy/0.20.0/bevy/render/index.html),
+[mesh API](https://docs.rs/bevy/0.20.0/bevy/mesh/index.html),
+[task pools](https://docs.rs/bevy/0.20.0/bevy/tasks/index.html).

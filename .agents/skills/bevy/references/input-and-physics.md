@@ -99,7 +99,7 @@ query APIs, shape units, and schedule sets.
 - Test collision layers, event opt-in flags, tunneling/CCD, scaling, and kinematic
   motion. A kinematic target by itself does not guarantee obstacle avoidance.
 
-Sources: [input](https://docs.rs/bevy/0.19.1/bevy/input/index.html),
-[fixed timestep example](https://github.com/bevyengine/bevy/blob/v0.19.1/examples/movement/physics_in_fixed_timestep.rs),
+Sources: [input](https://docs.rs/bevy/0.20.0/bevy/input/index.html),
+[fixed timestep example](https://github.com/bevyengine/bevy/blob/v0.20.0/examples/movement/physics_in_fixed_timestep.rs),
 [Rapier integration](https://github.com/dimforge/bevy_rapier),
 [Avian](https://github.com/avianphysics/avian).

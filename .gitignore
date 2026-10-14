@@ -26,5 +26,22 @@ rustc-ice-*.txt
 # Vanilla Icarus dedicated server files
 /icarus-orig/
 
+# User-owned original ICARUS client files for reference analysis
+/icarus-client-orig/
+
+# Private user-supplied save archives, player data, and provenance inventories
+/reference-data/
+
 # Generated reverse-engineering cases, extracted files, and analysis databases
 /work/
+
+# Python analysis-helper bytecode
+__pycache__/
+*.py[cod]
+
+# Project-local REA runtime dependencies and state
+/.agents/rea/node_modules/
+/.agents/rea/.npm-cache/
+
+# uv writes a lockfile when running uvx against pyproject.toml; not a project lockfile.
+uv.lock

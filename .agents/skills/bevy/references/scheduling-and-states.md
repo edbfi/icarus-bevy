@@ -16,6 +16,11 @@ Ordering two conflicting systems is different from repairing conflicting
 parameters in one system. Chain a sequence that truly depends on previous
 results; independent systems should retain scheduling freedom.
 
+In 0.20, several built-in render and UI sets use weak ordering: non-conflicting
+systems in adjacent sets may run unordered. Dependencies carried by channels,
+atomics, or interior mutability need explicit strict `.before()`/`.after()` edges;
+set membership alone may no longer enforce them.
+
 `Commands` queues structural changes. Normal ordered dependencies insert deferred
 application when needed, so a chained consumer can see a producer's spawn. Do not
 use `chain_ignore_deferred` when that visibility is required. Exclusive `&mut World`
@@ -93,6 +98,6 @@ Do not confuse running a schedule with advancing an app's time, maintaining
 messages, and applying state transitions. Headless tests should usually step
 `App::update()`; see [testing](testing-and-performance.md).
 
-Sources: [App](https://docs.rs/bevy/0.19.1/bevy/app/struct.App.html),
-[schedule configuration](https://docs.rs/bevy/0.19.1/bevy/ecs/schedule/trait.IntoScheduleConfigs.html),
-[state example](https://github.com/bevyengine/bevy/blob/v0.19.1/examples/state/states.rs).
+Sources: [App](https://docs.rs/bevy/0.20.0/bevy/app/struct.App.html),
+[schedule configuration](https://docs.rs/bevy/0.20.0/bevy/ecs/schedule/trait.IntoScheduleConfigs.html),
+[state example](https://github.com/bevyengine/bevy/blob/v0.20.0/examples/state/states.rs).

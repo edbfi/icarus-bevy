@@ -67,11 +67,14 @@ plugin types still end in `Event` but implement `Message`. Inspect the definitio
 before selecting a reader or observer. `AnimationEvent` has its own trigger data.
 
 For lifecycle code, distinguish `Add`, `Insert`, `Discard`, `Remove`, and `Despawn`.
-In 0.19 the former replacement lifecycle is named `Discard`/`on_discard`. Hooks
+Since 0.19 the former replacement lifecycle is named `Discard`/`on_discard`. Hooks
 receive a `DeferredWorld`; they are not ordinary systems with arbitrary parameters.
+In 0.20, lifecycle observers put the component bundle on the event type, such as
+`On<Add<MyComponent>>`, rather than `On<Add, MyComponent>`. Pointer observers use
+flat event types such as `On<PointerPress>` instead of `On<Pointer<Press>>`.
 Read the current lifecycle ordering before maintaining a reverse index or cleaning
 up external state.
 
-Sources: [messages example](https://github.com/bevyengine/bevy/blob/v0.19.1/examples/ecs/message.rs),
-[observers](https://docs.rs/bevy/0.19.1/bevy/ecs/observer/index.html),
-[lifecycle](https://docs.rs/bevy/0.19.1/bevy/ecs/lifecycle/index.html).
+Sources: [messages example](https://github.com/bevyengine/bevy/blob/v0.20.0/examples/ecs/message.rs),
+[observers](https://docs.rs/bevy/0.20.0/bevy/ecs/observer/index.html),
+[lifecycle](https://docs.rs/bevy/0.20.0/bevy/ecs/lifecycle/index.html).
