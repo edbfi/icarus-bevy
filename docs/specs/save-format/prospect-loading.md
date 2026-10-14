@@ -219,8 +219,8 @@ Acceptance conditions for any importer
   (F-461 to F-464). Compact replay reports common conditional completion and
   constructor XMM1-quarter stops; the qualified two-vector case then stops both
   constructors at a narrow RAX low16 read (F-465 to F-467, F-477). Client
-  correspondence names both tables as C001's vftables (F-509); server slots
-  stay unread.
+  correspondence names both tables as C001's vftables and its server slots
+  as those functions (F-509, F-512).
 
 ## Open questions
 
