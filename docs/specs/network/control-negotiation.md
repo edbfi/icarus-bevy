@@ -189,7 +189,11 @@ game listener.
   message and validates no negotiation, identity or game connection.
   `experimental::peer_lab` runs that state in the Bevy loopback lab: a peer is
   created only when its handshake acknowledgement is sent, in a bounded table
-  with idle expiry, and each update coalesces one ack per peer (F-558).
+  with idle expiry, and each update coalesces one ack per peer (F-558). As an
+  inferred proxy of the client's listen-server parser, it answers a Hello with
+  Upgrade on a configured version mismatch, otherwise Challenge (lab random
+  string) for a token under two units, and a Login with Failure; it never sends
+  Welcome. Replies are reliable control bunches resent after a nak (F-561).
 - Current client unique-net-id type hashes (F-543): 1 NULL, 2 MCP, 3 STEAM,
   4 PS4, 6 GOOGLE, 7 GOOGLEPLAY, 8 FACEBOOK, 9 IOS, 10 APPLE, 11 TENCENT,
   12 SWITCH, 13 AMAZON, 14 GAMECIRCLE, 15 THUNDERHEAD, 18 Oculus, 19 Quail,

@@ -5,14 +5,41 @@
 //! a peer is created (or replaced) when the lab sends it a handshake
 //! acknowledgement, its later data datagrams pass through [`LabPeer::receive`]
 //! and every accepted packet is answered with [`LabPeer::ack_packet`]. No
-//! admission, Login/Join handling, identity check, version selection, resend,
-//! channel other than control, or gameplay. Delivered control messages are only
-//! counted by kind and then discarded.
+//! admission, identity check, Welcome, channel other than control, or
+//! gameplay. Delivered control messages are counted by kind and then
+//! discarded, except that Hello and Login get the mapped control replies below.
 //!
 //! The server side is an INFERRED mirror of client-build observations (cookie
 //! seeding F-536, sequencing F-535..F-539, framing F-521..F-527); the original
 //! server's peer table, timeouts, ack cadence and limits were not observed.
 //! Nothing here demonstrates compatibility with any client.
+//!
+//! Control replies are an INFERRED proxy: they follow the client build's own
+//! listen-server parser (F-530, F-531), not an observed original dedicated
+//! server, and are sent as reliable control bunches through
+//! [`LabPeer::reliable_control_packet`] (each also carries the ack state):
+//! - Hello, when [`PeerLabConfig::local_network_version`] is set and differs
+//!   from the Hello version: Upgrade (ID 2) carrying the configured version,
+//!   then the peer is removed (`peers_closed`). The comparison is plain
+//!   equality; the original compatibility check and the real runtime version
+//!   are unknown (U-037). `None` skips the comparison.
+//! - Otherwise a Hello whose token has fewer than two UTF-16 units: Challenge
+//!   (ID 3) carrying 32 lowercase hex digits of fresh OS randomness. The
+//!   original challenge is counter-derived (F-531); this string is a lab
+//!   choice, is not retained and is never claimed to match. Every such Hello is
+//!   answered, including repeats.
+//! - A Hello with a longer token (the encryption path) is counted in
+//!   `hello_unanswered` and not answered: unsupported.
+//! - Login (ID 5): counted by unique-net-id form only, then Failure (ID 6)
+//!   carrying [`ADMISSION_DISABLED_MESSAGE`] and the peer is removed. The
+//!   response and challenge are not checked (the client's response is the
+//!   literal "0", F-548). Welcome is never sent.
+//! - Messages after a closing reply in the same delivery are not processed.
+//!
+//! Removing a peer is the lab's close: no close bunch is written, so a lost
+//! Upgrade or Failure is never resent. Naked reliable replies of live peers are
+//! resent only inside later ack or reply datagrams (see `packet_lab`), which
+//! the lab writes only after accepting a client packet; there is no timer.
 //!
 //! Policy (lab choices):
 //! - At most [`PeerLabConfig::max_peers`] peers. When the table is full, a
@@ -32,7 +59,8 @@
 //!   packets are not acknowledged.
 //!
 //! Stats and `Debug` carry counts and message kinds only: never payload bytes,
-//! cookies, tokens, sequence values or numeric message fields.
+//! cookies, tokens, challenge strings, URLs, unique net ids, versions, sequence
+//! values or numeric message fields.
 use std::{
     collections::{BTreeMap, HashMap},
     fmt, io,
@@ -44,6 +72,7 @@ use anyhow::{Context, Result, ensure};
 use bevy::prelude::{App, Plugin, ResMut, Resource, Update};
 use serde::Serialize;
 
+use super::control_messages::{ArchiveText, ControlMessage, Decoded, NetIdValue};
 use super::handshake::decode;
 use super::handshake_lab::{
     CookieAuthority, HANDSHAKE_BYTES, HandshakeReply, PACKETS_PER_UPDATE, bind_loopback,
@@ -51,6 +80,13 @@ use super::handshake_lab::{
 };
 use super::packet::BunchLimits;
 use super::packet_lab::{DeliveredSummary, LabPeer, PacketDisposition, PacketLabConfig};
+
+/// Lab text of the Failure reply to Login; not an original message.
+pub const ADMISSION_DISABLED_MESSAGE: &str = "icarus-bevy peer lab: game admission is disabled";
+/// Hello tokens shorter than this (UTF-16 units) get a Challenge (F-530).
+pub const CHALLENGE_TOKEN_THRESHOLD: usize = 2;
+/// Random bytes behind the lab challenge string (twice as many hex digits).
+pub const LAB_CHALLENGE_BYTES: usize = 16;
 
 /// Lab choice: default peer-table capacity.
 pub const DEFAULT_MAX_PEERS: usize = 16;
@@ -68,7 +104,7 @@ pub const DEFAULT_MAX_CHANNELS: u32 = 32;
 pub const DEFAULT_MAX_STRING_UNITS: usize = 256;
 
 /// Caller-supplied lab parameters.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy)]
 pub struct PeerLabConfig {
     /// Per-peer packet state; `packet.limits.max_packet_bytes` is also the
     /// maximum accepted datagram size and sizes the receive buffer.
@@ -77,6 +113,26 @@ pub struct PeerLabConfig {
     pub max_peers: usize,
     /// Nonzero idle interval after which a peer is removed.
     pub idle_timeout: Duration,
+    /// Caller-supplied local network version compared with each Hello version
+    /// (plain equality); a mismatch is answered with Upgrade. `None` skips the
+    /// comparison. The original runtime value is unknown (U-037). `Debug`
+    /// shows only whether it is set.
+    pub local_network_version: Option<u32>,
+}
+
+impl fmt::Debug for PeerLabConfig {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("PeerLabConfig")
+            .field("packet", &self.packet)
+            .field("max_peers", &self.max_peers)
+            .field("idle_timeout", &self.idle_timeout)
+            .field(
+                "local_network_version_set",
+                &self.local_network_version.is_some(),
+            )
+            .finish()
+    }
 }
 
 impl Default for PeerLabConfig {
@@ -89,6 +145,7 @@ impl Default for PeerLabConfig {
             }),
             max_peers: DEFAULT_MAX_PEERS,
             idle_timeout: DEFAULT_IDLE_TIMEOUT,
+            local_network_version: None,
         }
     }
 }
@@ -159,6 +216,26 @@ pub struct PeerLabStats {
     pub control_by_id: BTreeMap<u8, u64>,
     /// Control bunches carrying the close flag; the lab does not act on them.
     pub control_close_seen: u64,
+    /// Challenge (ID 3) replies sent to Hello.
+    pub control_challenges_sent: u64,
+    /// Upgrade (ID 2) replies sent to a mismatched Hello version.
+    pub upgrades_sent: u64,
+    /// Hello messages with a token of two or more units (encryption path):
+    /// counted, not answered.
+    pub hello_unanswered: u64,
+    /// Login messages delivered and parsed.
+    pub logins_received: u64,
+    /// Delivered Login messages per unique-net-id form (`encoded_empty`,
+    /// `encoded` or the inferred `text`); kinds only.
+    pub login_net_id_forms: BTreeMap<&'static str, u64>,
+    /// Failure (ID 6) replies sent to Login.
+    pub failures_sent: u64,
+    /// Welcome replies sent; always zero, admission is disabled.
+    pub welcomes_sent: u64,
+    /// Peers removed after an Upgrade or Failure reply.
+    pub peers_closed: u64,
+    /// Replies that could not be built (the peer is kept unless it failed).
+    pub reply_errors: u64,
 }
 
 impl PeerLabStats {
@@ -176,6 +253,38 @@ impl PeerLabStats {
 
 fn bump(counter: &mut u64) {
     *counter = counter.saturating_add(1);
+}
+
+/// A control reply chosen for one delivered message.
+enum Reply {
+    Challenge,
+    Upgrade(u32),
+    Failure,
+}
+
+impl Reply {
+    /// Upgrade and Failure end the peer (the client closes after them, F-530).
+    fn closes(&self) -> bool {
+        matches!(self, Self::Upgrade(_) | Self::Failure)
+    }
+}
+
+/// 32 lowercase hex digits of fresh OS randomness; a lab choice, not the
+/// original counter-derived challenge (F-531).
+fn lab_challenge() -> Result<ArchiveText> {
+    let mut bytes = [0; LAB_CHALLENGE_BYTES];
+    getrandom::fill(&mut bytes)
+        .map_err(|error| anyhow::anyhow!("challenge randomness: {error}"))?;
+    let hex: String = bytes.iter().map(|byte| format!("{byte:02x}")).collect();
+    ArchiveText::text(&hex)
+}
+
+fn net_id_form(value: &NetIdValue) -> &'static str {
+    match value {
+        NetIdValue::EncodedEmpty => "encoded_empty",
+        NetIdValue::Encoded { .. } => "encoded",
+        NetIdValue::Text(_) => "text",
+    }
 }
 
 struct PeerEntry {
@@ -309,7 +418,7 @@ impl PeerLab {
             bump(&mut self.stats.unknown_peer);
             return;
         };
-        match entry.peer.receive(&self.buffer[..length]) {
+        let messages = match entry.peer.receive(&self.buffer[..length]) {
             Ok(received) => {
                 let summary = received.summary();
                 match summary.disposition {
@@ -324,7 +433,7 @@ impl PeerLab {
                     }
                     PacketDisposition::Rejected => bump(&mut self.stats.data_rejected),
                 }
-                // Decoded messages are dropped here unexamined.
+                received.into_messages()
             }
             Err(_) => {
                 bump(&mut self.stats.data_malformed);
@@ -332,8 +441,93 @@ impl PeerLab {
                     self.peers.remove(&address);
                     bump(&mut self.stats.peers_failed);
                 }
+                return;
+            }
+        };
+        self.answer(address, &messages);
+        // Decoded messages are dropped here; nothing of them is retained.
+    }
+
+    /// Apply the reply policy (module docs) to delivered messages in order,
+    /// stopping after a reply that closes the peer.
+    fn answer(&mut self, address: SocketAddrV4, messages: &[Decoded]) {
+        for decoded in messages {
+            let Decoded::Message(message) = decoded else {
+                continue;
+            };
+            let Some(reply) = self.reply_for(message) else {
+                continue;
+            };
+            if !self.send_reply(address, &reply) || reply.closes() {
+                return;
             }
         }
+    }
+
+    fn reply_for(&mut self, message: &ControlMessage) -> Option<Reply> {
+        match message {
+            ControlMessage::Hello { version, token, .. } => {
+                match self.config.local_network_version {
+                    Some(local) if local != *version => Some(Reply::Upgrade(local)),
+                    _ if token.units().len() < CHALLENGE_TOKEN_THRESHOLD => Some(Reply::Challenge),
+                    _ => {
+                        bump(&mut self.stats.hello_unanswered);
+                        None
+                    }
+                }
+            }
+            ControlMessage::Login { unique_net_id, .. } => {
+                bump(&mut self.stats.logins_received);
+                let count = self
+                    .stats
+                    .login_net_id_forms
+                    .entry(net_id_form(&unique_net_id.value))
+                    .or_default();
+                *count = count.saturating_add(1);
+                Some(Reply::Failure)
+            }
+            _ => None,
+        }
+    }
+
+    /// Build and send one reply; a closing reply then removes the peer.
+    /// Returns `false` when the peer is gone or the reply could not be built.
+    fn send_reply(&mut self, address: SocketAddrV4, reply: &Reply) -> bool {
+        let message = match reply {
+            Reply::Challenge => lab_challenge().map(|token| ControlMessage::Challenge { token }),
+            Reply::Upgrade(version) => Ok(ControlMessage::Upgrade { version: *version }),
+            Reply::Failure => ArchiveText::text(ADMISSION_DISABLED_MESSAGE)
+                .map(|message| ControlMessage::Failure { message }),
+        };
+        let Some(entry) = self.peers.get_mut(&address) else {
+            return false;
+        };
+        let datagram = match message.and_then(|message| entry.peer.reliable_control_packet(message))
+        {
+            Ok(datagram) => datagram,
+            Err(_) => {
+                bump(&mut self.stats.reply_errors);
+                if entry.peer.is_failed() {
+                    self.peers.remove(&address);
+                    bump(&mut self.stats.peers_failed);
+                }
+                return false;
+            }
+        };
+        // The reply datagram carries the ack state.
+        entry.ack_pending = false;
+        if reply.closes() {
+            self.peers.remove(&address);
+            bump(&mut self.stats.peers_closed);
+        }
+        if self.send(&datagram, address) {
+            bump(match reply {
+                Reply::Challenge => &mut self.stats.control_challenges_sent,
+                Reply::Upgrade(_) => &mut self.stats.upgrades_sent,
+                Reply::Failure => &mut self.stats.failures_sent,
+            });
+        }
+        true
     }
 
     fn send_acks(&mut self) {

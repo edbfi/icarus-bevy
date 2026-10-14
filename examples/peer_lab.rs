@@ -1,5 +1,6 @@
-//! Bounded loopback peer-lab endpoint: handshake plus inferred per-peer packet
-//! state. No game admission, identity check or original assets.
+//! Bounded loopback peer-lab endpoint: handshake, inferred per-peer packet
+//! state and the inferred Hello/Login control replies (Challenge, Upgrade,
+//! Failure). No Welcome, game admission, identity check or original assets.
 use std::{
     thread,
     time::{Duration, Instant},
@@ -21,6 +22,10 @@ struct Options {
     port: u16,
     #[arg(long, default_value_t = 30)]
     seconds: u64,
+    /// Local network version compared with each Hello (mismatch: Upgrade);
+    /// omitted skips the comparison. The original runtime value is unknown.
+    #[arg(long)]
+    local_network_version: Option<u32>,
 }
 
 fn main() -> Result<()> {
@@ -30,7 +35,11 @@ fn main() -> Result<()> {
         "seconds must be 1..=600"
     );
     let mut app = build_app(&ServerConfig::default(), &WorldSnapshot::default())?;
-    let lab = PeerLab::bind(options.port, PeerLabConfig::default())?;
+    let config = PeerLabConfig {
+        local_network_version: options.local_network_version,
+        ..PeerLabConfig::default()
+    };
+    let lab = PeerLab::bind(options.port, config)?;
     println!(
         "{}",
         json!({"event":"peer_lab_listening", "address":lab.local_addr()?.to_string(), "game_admission":false})

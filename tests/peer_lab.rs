@@ -10,8 +10,8 @@ use icarus_bevy::{
     config::ServerConfig,
     experimental::{
         control_messages::{
-            ArchiveText, ControlCodec, ControlMessage, HELLO, JOIN, NETSPEED,
-            encode_control_message,
+            ArchiveText, ControlCodec, ControlMessage, Decoded, HELLO, JOIN, LOGIN, NETSPEED,
+            NetIdType, NetIdValue, UniqueNetId, encode_control_message, read_control_messages,
         },
         handshake::{LegacyHandshake, decode, encode, initial_request},
         handshake_lab::PACKETS_PER_UPDATE,
@@ -20,8 +20,12 @@ use icarus_bevy::{
             read_packet, write_packet,
         },
         packet_lab::client_cookie_seeds,
-        peer_lab::{PeerLab, PeerLabConfig, PeerLabPlugin, PeerLabStats},
-        sequencing::{Notification, PacketSequencer, ReliableChannel, wire_reliable_sequence},
+        peer_lab::{
+            ADMISSION_DISABLED_MESSAGE, PeerLab, PeerLabConfig, PeerLabPlugin, PeerLabStats,
+        },
+        sequencing::{
+            Notification, PacketSequencer, ReliableChannel, ReliableReceive, wire_reliable_sequence,
+        },
     },
     simulation::{WorldSnapshot, build_app, capture},
 };
@@ -195,11 +199,47 @@ impl Client {
 
     /// Parse a lab ack datagram as the client and return its notifications.
     fn receive_ack(&mut self, datagram: &[u8]) -> Vec<Notification> {
+        let (notifications, messages) = self.receive_reply(datagram);
+        assert!(messages.is_empty());
+        notifications
+    }
+
+    /// Parse a lab datagram as the client: the header through the client
+    /// sequencing model and every bunch as a reliable control bunch decoded
+    /// with the client-side readers. Returns notifications and the control
+    /// messages released in order.
+    fn receive_reply(&mut self, datagram: &[u8]) -> (Vec<Notification>, Vec<ControlMessage>) {
         let packet = read_packet(datagram, &to_client()).unwrap();
-        assert!(packet.bunches.is_empty());
         let received = self.sequencer.receive(&packet.header).unwrap().unwrap();
+        let mut messages = Vec::new();
+        for bunch in &packet.bunches {
+            let header = &bunch.header;
+            assert!(header.reliable && !header.open && !header.close);
+            assert_eq!(header.channel_index, 0);
+            let decoded =
+                read_control_messages(&mut bunch.payload.reader(), &ControlCodec::default())
+                    .unwrap();
+            let [Decoded::Message(message)] = decoded.as_slice() else {
+                panic!("one known control message per lab bunch");
+            };
+            let raw = header.reliable_sequence_raw.unwrap();
+            if let ReliableReceive::Delivered(batch) =
+                self.control.receive_reliable(raw, message.clone()).unwrap()
+            {
+                messages.extend(batch);
+            }
+        }
         self.sequencer.ack_seq(received.sequence, true).unwrap();
-        received.notifications
+        (received.notifications, messages)
+    }
+
+    /// Send `message` reliably in its own packet and run one lab update.
+    fn exchange(&mut self, app: &mut App, message: ControlMessage, open: bool) -> u32 {
+        let bunch = self.reliable_bunch(message, open);
+        let (datagram, packet_id) = self.packet(vec![bunch]);
+        self.send(&datagram);
+        app.update();
+        packet_id
     }
 }
 
@@ -484,4 +524,227 @@ fn failed_peer_is_dropped() {
     client.send(&next);
     app.update();
     assert_eq!(stats(&app).unknown_peer, 1);
+}
+
+const URL_SENTINEL: &str = "SENTINEL-URL-91c2?Name=Player";
+const PLATFORM_SENTINEL: &str = "SENTINEL-PLATFORM-44d0";
+const NET_ID_HEX: &str = "0123456789ABCDEF7654";
+const LOCAL_VERSION: u32 = 0x0a0b_0c0d;
+
+fn short_hello(token: &str, version: u32) -> ControlMessage {
+    ControlMessage::Hello {
+        first_field: 1,
+        version,
+        token: ArchiveText::text(token).unwrap(),
+    }
+}
+
+fn login() -> ControlMessage {
+    ControlMessage::Login {
+        response: ArchiveText::text("0").unwrap(),
+        url: ArchiveText::text(URL_SENTINEL).unwrap(),
+        unique_net_id: UniqueNetId {
+            kind: NetIdType::Default,
+            value: NetIdValue::from_hex(NET_ID_HEX).unwrap(),
+        },
+        platform: ArchiveText::text(PLATFORM_SENTINEL).unwrap(),
+    }
+}
+
+/// Every reportable rendering of the lab: Debug, stats Debug and JSON, config.
+fn reports(app: &App) -> Vec<String> {
+    let stats = stats(app);
+    vec![
+        format!("{:?}", lab(app)),
+        format!("{stats:?}"),
+        serde_json::to_string(&stats).unwrap(),
+        format!("{:?}", lab(app).config()),
+    ]
+}
+
+fn assert_no_secrets(app: &App, secrets: &[&str]) {
+    for text in reports(app) {
+        for secret in secrets {
+            assert!(!text.contains(secret), "{secret} in {text}");
+        }
+    }
+}
+
+#[test]
+fn hello_gets_a_challenge_and_login_gets_failure_then_close() {
+    let (mut app, address) = lab_app(PeerLabConfig::default());
+    let mut client = Client::connect(&mut app, address);
+
+    // A compatible Hello (no local version configured) with an empty token.
+    let hello_id = client.exchange(&mut app, short_hello("", 0x0102_0304), true);
+    let (notifications, messages) = client.receive_reply(&recv(&client.socket));
+    assert!(
+        try_recv(&client.socket).is_none(),
+        "one datagram per update"
+    );
+    assert_eq!(
+        notifications,
+        [Notification {
+            packet_id: hello_id,
+            delivered: true
+        }]
+    );
+    let [ControlMessage::Challenge { token }] = messages.as_slice() else {
+        panic!("expected one Challenge, got {messages:?}");
+    };
+    let challenge = String::from_utf16(token.units()).unwrap();
+    assert_eq!(challenge.len(), 32);
+    assert!(challenge.bytes().all(|byte| byte.is_ascii_hexdigit()));
+    let after_hello = stats(&app);
+    assert_eq!(after_hello.control_challenges_sent, 1);
+    assert_eq!(after_hello.acks_sent, 0, "the reply carried the ack");
+    assert_eq!(after_hello.control_by_id.get(&HELLO), Some(&1));
+
+    // A one-unit token is also below the threshold; each Hello is answered
+    // with a fresh lab string.
+    client.exchange(&mut app, short_hello("x", 0x0102_0304), false);
+    let (_, messages) = client.receive_reply(&recv(&client.socket));
+    let [ControlMessage::Challenge { token: second }] = messages.as_slice() else {
+        panic!("expected one Challenge");
+    };
+    assert_ne!(second, token);
+    let second = String::from_utf16(second.units()).unwrap();
+    assert_eq!(stats(&app).control_challenges_sent, 2);
+
+    // Login: counted, answered with Failure, then the peer is removed.
+    client.exchange(&mut app, login(), false);
+    let (_, messages) = client.receive_reply(&recv(&client.socket));
+    assert_eq!(
+        messages,
+        [ControlMessage::Failure {
+            message: ArchiveText::text(ADMISSION_DISABLED_MESSAGE).unwrap()
+        }]
+    );
+    assert!(try_recv(&client.socket).is_none());
+    let closed = stats(&app);
+    assert_eq!(closed.logins_received, 1);
+    assert_eq!(closed.control_by_id.get(&LOGIN), Some(&1));
+    assert_eq!(
+        closed.login_net_id_forms.into_iter().collect::<Vec<_>>(),
+        [("encoded", 1)]
+    );
+    assert_eq!((closed.failures_sent, closed.peers_closed), (1, 1));
+    assert_eq!((closed.welcomes_sent, closed.upgrades_sent), (0, 0));
+    assert_eq!(closed.peers_failed, 0);
+    assert!(!lab(&app).has_peer(client.address()));
+
+    // The removed peer's later packets are unknown and unanswered.
+    let (next, _) = client.packet(Vec::new());
+    client.send(&next);
+    app.update();
+    assert!(try_recv(&client.socket).is_none());
+    assert_eq!(stats(&app).unknown_peer, 1);
+
+    let cookie_hex: String = client.cookie.iter().map(|b| format!("{b:02x}")).collect();
+    assert_no_secrets(
+        &app,
+        &[
+            &challenge,
+            &second,
+            URL_SENTINEL,
+            PLATFORM_SENTINEL,
+            NET_ID_HEX,
+            &NET_ID_HEX.to_lowercase(),
+            &cookie_hex,
+            "16909060",
+            "127.0.0.1",
+        ],
+    );
+    assert!(capture(app.world_mut()).unwrap().entities.is_empty());
+}
+
+#[test]
+fn mismatched_version_gets_upgrade_then_close() {
+    let config = PeerLabConfig {
+        local_network_version: Some(LOCAL_VERSION),
+        ..PeerLabConfig::default()
+    };
+    let (mut app, address) = lab_app(config);
+
+    // The configured version is compatible: a short token gets a Challenge.
+    let mut matching = Client::connect(&mut app, address);
+    matching.exchange(&mut app, short_hello("", LOCAL_VERSION), true);
+    let (_, messages) = matching.receive_reply(&recv(&matching.socket));
+    assert!(matches!(
+        messages.as_slice(),
+        [ControlMessage::Challenge { .. }]
+    ));
+
+    // A different version gets Upgrade carrying the local version; a Login
+    // queued behind it in the same delivery is not processed.
+    let mut client = Client::connect(&mut app, address);
+    let hello = client.reliable_bunch(short_hello("", 0x0102_0304), true);
+    let login = client.reliable_bunch(login(), false);
+    let (datagram, _) = client.packet(vec![hello, login]);
+    client.send(&datagram);
+    app.update();
+    let (_, messages) = client.receive_reply(&recv(&client.socket));
+    assert_eq!(
+        messages,
+        [ControlMessage::Upgrade {
+            version: LOCAL_VERSION
+        }]
+    );
+    assert!(try_recv(&client.socket).is_none());
+    let closed = stats(&app);
+    assert_eq!((closed.upgrades_sent, closed.peers_closed), (1, 1));
+    assert_eq!(closed.control_challenges_sent, 1);
+    assert_eq!((closed.logins_received, closed.failures_sent), (0, 0));
+    assert!(!lab(&app).has_peer(client.address()));
+    assert!(lab(&app).has_peer(matching.address()));
+    assert_no_secrets(&app, &["168496141", "16909060", "a0b0c0d", "A0B0C0D"]);
+}
+
+#[test]
+fn long_hello_token_is_counted_and_not_answered() {
+    let (mut app, address) = lab_app(PeerLabConfig::default());
+    let mut client = Client::connect(&mut app, address);
+    let packet_id = client.exchange(&mut app, hello(), true);
+    // Only the plain ack arrives; no control reply.
+    assert_eq!(
+        client.receive_ack(&recv(&client.socket)),
+        [Notification {
+            packet_id,
+            delivered: true
+        }]
+    );
+    assert!(try_recv(&client.socket).is_none());
+    let counted = stats(&app);
+    assert_eq!(counted.hello_unanswered, 1);
+    assert_eq!(counted.acks_sent, 1);
+    assert_eq!(
+        counted.control_challenges_sent + counted.upgrades_sent + counted.failures_sent,
+        0
+    );
+    assert!(lab(&app).has_peer(client.address()));
+    assert_no_secrets(&app, &[SENTINEL, "16909060"]);
+}
+
+#[test]
+fn lost_challenge_is_resent_after_the_client_naks_it() {
+    let (mut app, address) = lab_app(PeerLabConfig::default());
+    let mut client = Client::connect(&mut app, address);
+    client.exchange(&mut app, short_hello("", 1), true);
+    let _lost = recv(&client.socket);
+    // The client's next packet acknowledges nothing from the lab, so the
+    // lab's ack carries no resend yet; its own history then naks the reply.
+    let (empty, _) = client.packet(Vec::new());
+    client.send(&empty);
+    app.update();
+    let (_, messages) = client.receive_reply(&recv(&client.socket));
+    assert!(messages.is_empty());
+    let (empty, _) = client.packet(Vec::new());
+    client.send(&empty);
+    app.update();
+    let (_, messages) = client.receive_reply(&recv(&client.socket));
+    assert!(matches!(
+        messages.as_slice(),
+        [ControlMessage::Challenge { .. }]
+    ));
+    assert_eq!(stats(&app).control_challenges_sent, 1);
 }
