@@ -26,7 +26,7 @@ a claim.
 | Findings by area; retired rows | `docs/ledgers/findings/<area>.md`; `docs/ledgers/findings/retired/` |
 | Open questions, bugs, compatibility | `docs/ledgers/unknowns.md`, `bugs.md`, `compatibility.md` |
 | Research digest per question cluster | `docs/research/<area>/<topic>.md` (fixed H2 set) |
-| Evidence index: one record per artifact (path, digest, class, kind, status, cited REA IDs) | `evidence/<area>.jsonl`; schema in `evidence/README.md` |
+| Evidence index: one record per artifact (path, digest, class, kind, status, cited REA IDs) | `evidence/<area>[/<topic>]/NNN.jsonl`, the folder named after its findings ledger; schema in `evidence/README.md` |
 | Exported REA bundles, session ledgers and scratch | `work/` (never tracked) |
 | Historical authorizations and reports | `docs/history/`, `docs/research/archive/` |
 | How agents work in this repository | `.agents/rules/` only |
@@ -44,7 +44,7 @@ Status.
 | --- | --- | --- |
 | Startup | `CLAUDE.md`, `docs/README.md`, `docs/implementation-status.md` | 20 KB, lint fails over |
 | Task entry | one rules file, `gates.md`, the area digest, one spec, the task's skill (routing table in `CLAUDE.md`) | 64 KB, lint reports |
-| Retrieval | one F- or U- row by `grep -w ID -r docs/ledgers`, one M- row by `grep -hw ID evidence/*.jsonl`; never a whole ledger or shard | per row |
+| Retrieval | one F- or U- row by `grep -w ID -r docs/ledgers`, one M- row by `grep -rhw --include='*.jsonl' ID evidence/`; never a whole ledger or shard | per row |
 
 ## Rules
 
@@ -101,7 +101,7 @@ Status.
 Bytes: 16 KB per current-surface file, 8 KB per digest; active findings 48 KB
 per file and 96 KB in total, retired findings 64 KB per file; unknowns, bugs and
 compatibility 64 KB each; 400 bytes per ledger row; evidence shards 64 KB with
-numbered rollover, records 2 KB, labels 160 characters; 2 KB for
+numbered rollover per folder, records 2 KB, labels 160 characters; 2 KB for
 `evidence/README.md`; 160 KB for the current prose surface (every current file
 except the ledgers).
 
