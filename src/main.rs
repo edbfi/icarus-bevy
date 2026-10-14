@@ -212,7 +212,9 @@ fn run(options: ConfigOptions, max_ticks: Option<u64>) -> Result<()> {
                 "clamped_frames": clamped_frames,
                 "tick_deadline_misses": metrics.deadline_misses,
                 "last_tick_micros": metrics.last_tick_micros,
-                "max_tick_micros": metrics.max_tick_micros})
+                "max_tick_micros": metrics.max_tick_micros,
+                "tick_p50_micros": metrics.tick_micros.quantile_micros(50),
+                "tick_p99_micros": metrics.tick_micros.quantile_micros(99)})
             );
             last_status = Instant::now();
         }

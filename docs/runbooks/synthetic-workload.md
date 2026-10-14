@@ -10,19 +10,26 @@ cargo run --release --locked --example synthetic_soak -- \
   --data-dir work/soak-new --duration-seconds 7200 --entities 100000 --save-seconds 10
 ```
 
-The workload emits JSON lines on stdout. Tick measurements cover the fixed
-simulation systems; they exclude snapshot capture and the outer loop. Save latency
-is submission-to-observation, including polling delay. Snapshot capture is measured
-separately. Quantiles use the sorted sample at `floor((n - 1) * percentile / 100)`.
-Periodic RSS samples describe the live process; final RSS also includes recovery
-verification allocations. No warm-up samples are discarded. Record CPU affinity,
-build commit, binary hash, host resources and concurrent workloads with results.
+The workload emits JSON lines on stdout and accepts up to 259,200 seconds, the
+plan's 72-hour stability run. Tick measurements cover the fixed simulation
+systems; they exclude snapshot capture and the outer loop. Save latency is
+submission-to-observation, including polling delay. Snapshot capture is measured
+separately. Every sample goes into a fixed-memory histogram (ticks at 1 µs up to
+131,072 µs; saves and captures at 100 µs up to 10 s), so memory does not grow
+with duration. Quantiles use the sorted-sample rank `floor((n - 1) * percentile /
+100)`, rounded down to the resolution, and are `null` when the rank falls past the
+histogram range; maxima are exact. Periodic RSS samples describe the live
+process. `--warmup-seconds` (default 600) selects the first status sample used as
+the growth baseline; `rss_growth_after_warmup_percent` compares it with the RSS
+just before recovery verification, whose allocations only the final `rss_kib`
+includes. No tick samples are discarded. Record CPU affinity, build commit,
+binary hash, host resources and concurrent workloads with results.
 
 This tests native scheduling and persistence under synthetic load. It contains no
 ICARUS gameplay, networking or original content, and cannot establish stock-client
-compatibility or a performance improvement over the official server. The two-hour
-limit is also shorter than the [canonical plan's](../linux-dedicated-server-plan.md)
-sustained qualification runs.
+compatibility or a performance improvement over the official server. A 72-hour
+synthetic run is not the [canonical plan's](../linux-dedicated-server-plan.md)
+stability target, which needs heavy ICARUS worlds.
 
 For repeated synchronous persistence measurements, use:
 
