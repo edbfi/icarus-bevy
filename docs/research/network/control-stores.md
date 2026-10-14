@@ -52,7 +52,9 @@ FInBunch through FBitReader::Serialize, after the ID byte, with byte order set
 from the first field (F-514, F-515); the server's ID 0 reads take the same archive
 route (F-516), and its ReceivedBunch, found through the UControlChannel vftable,
 applies the same rule (F-518, F-519). In both builds ReceivedBunch reaches the
-dispatcher through the driver's notify object, vtable slot +0x18 (F-520). A disconnected experimental reader composes the
+dispatcher through the driver's notify object, vtable slot +0x18 (F-520). The
+client's ReceivedPacket parses a packet word and ack history, then bunch headers
+whose payload bits are copied to the bunch from bit 0 (F-521, F-522). A disconnected experimental reader composes the
 observed initial body within a derived 131,081-byte ceiling; negotiation,
 identity and game-connection flags stay false (F-096, F-097).
 
@@ -70,4 +72,4 @@ complete functions.
 
 ## Artifacts
 
-M-005, M-012, M-023..M-046, M-281..M-283, M-288..M-297, M-301, M-302, M-315..M-323.
+M-005, M-012, M-023..M-046, M-281..M-283, M-288..M-297, M-301, M-302, M-315..M-327.

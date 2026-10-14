@@ -11,10 +11,11 @@ Full text: d5b0ae6:docs/specs/network/control-negotiation.md.
 
 The server-side control-message dispatcher and its initial (ID 0) branch, the
 string reader it uses, and the static evidence linking UWorld / UPendingNetGame
-notify tables to it. Not covered: packet headers, bit packing, sequencing,
-fragmentation, channels, compression, integrity protection, connection-state
-admission, and the client-to-server or server-to-client vocabulary beyond this
-one table. The native run command has no game listener.
+notify tables to it, and the current client's packet and bunch header parse
+order. Not covered: the packet-handler prefix, the integer encodings' bit
+layouts, reassembly of partial bunches, compression, integrity protection,
+connection-state admission, the sender side, and the vocabulary beyond this
+table. The native run command has no game listener.
 
 ## Confirmed
 
@@ -66,6 +67,26 @@ one table. The native run command has no game listener.
   unless the bunch holds at least 16 bits and byte 0 is 0; byte 1 equal to 1
   clears archive byte-swap bit `0x20` at `+0x29`, other values set it. It then
   reads one ID byte per message until the bunch ends.
+- Current client packet and bunch headers (F-521, F-522), read LSB-first from
+  the packet reader when its internal-ack flag is clear; the integer readers
+  are FBitReader vtable `+0x160` (value with a maximum) and `+0x168` (packed):
+
+  | Order | Field | Encoding |
+  | --- | --- | --- |
+  | 1 | Packet word | 32 bits: history words minus one (bits 0-3, at most 8 words), acked sequence (4-17), sequence (18-31) |
+  | 2 | Ack history | that many 32-bit words |
+  | 3 | Packet info | above reader version 13: one bit; if set, a value below 1024 and more fields (ReadPacketInfo) |
+  | 4 | Control | one bit; if set, open and close bits |
+  | 5 | Close reason | if closing: value below 15 (below version 7: one bit) |
+  | 6 | Paused, reliable | one bit each |
+  | 7 | Channel index | packed, below the connection's channel limit (version above 2) |
+  | 8 | Exports, mapped GUIDs, partial | one bit each |
+  | 9 | Reliable sequence | if reliable: value below 1024, relative to the channel's last |
+  | 10 | Partial initial, final | if partial: one bit each |
+  | 11 | Channel name | if open or reliable: a serialized name (version above 5) |
+  | 12 | Payload | a bit count below eight times the maximum packet size, then those bits copied to the bunch from bit 0 |
+
+  Bunches repeat until the packet reader ends.
 - Older server ID 0 reads use the archive's inline buffer or `+0x150`; the
   u32 takes `0x141f60c00` when `+0x29` bit `0x20` is set (F-516). Exact and
   masked searches miss the server ReceivedBunch (F-516); a getter,
