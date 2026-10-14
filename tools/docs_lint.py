@@ -12,11 +12,17 @@ The repository documentation has two surfaces (see ``.agents/rules/docs.md``):
 ``CLAUDE.md`` and ``.agents/rules/`` join the link and document-path checks
 without becoming part of the current surface.
 
+The evidence index is ``evidence/<area>.jsonl``: one JSON record per line per
+retained artifact, fetched by ID and never loaded whole. The legacy Markdown
+manifest ``evidence/manifest.md`` is still read while the migration is in flight.
+
 The script reads files only. ``--warn`` reports every problem but exits 0, for
 use while a migration is in flight. ``--local`` additionally verifies that
-``local-private`` manifest rows still exist on disk with matching digests.
-``--base REF`` names the revision whose ledger IDs must survive (default
-``HEAD``); its findings may still use the legacy single ``findings.md``.
+active ``local-private`` evidence exists on disk with matching digests and that
+the Evidence and unknown IDs listed on a ``rea-bundle`` row are members of that
+exported bundle. ``--base REF`` names the revision whose ledger and manifest IDs
+must survive (default ``HEAD``); its findings may still use the legacy single
+``findings.md``.
 
 Usage::
 
@@ -25,20 +31,23 @@ Usage::
     python3 tools/docs_lint.py --local          # also verify local-private evidence
     python3 tools/docs_lint.py --root P         # explicit repository root
     python3 tools/docs_lint.py --base origin/main
+    python3 tools/docs_lint.py --next-id M      # next free M-, F- or U- ID
+    python3 tools/docs_lint.py --list-local     # active local-private evidence paths
 """
 
 from __future__ import annotations
 
 import argparse
-from collections.abc import Iterable, Iterator, Sequence
+from collections.abc import Callable, Iterable, Iterator, Sequence
 from dataclasses import dataclass, field
 from datetime import date
 import hashlib
+import json
 from pathlib import Path
 import re
 import subprocess
 import sys
-from typing import final
+from typing import TypeIs, cast, final
 
 KIB = 1024
 
@@ -46,7 +55,7 @@ KIB = 1024
 # Policy constants. Changing these is a deliberate, reviewed act.
 # ---------------------------------------------------------------------------
 
-CURRENT_ROOTS: tuple[str, ...] = ("README.md", "docs")
+CURRENT_ROOTS: tuple[str, ...] = ("README.md", "docs", "evidence/README.md")
 # Agent instructions: link and document-path checks only, never the current surface.
 INSTRUCTION_ROOTS: tuple[str, ...] = ("CLAUDE.md", ".agents/rules")
 FROZEN_DIRS: tuple[str, ...] = ("docs/history", "docs/research/archive")
@@ -77,6 +86,7 @@ FILE_CAPS: dict[str, int] = {
     "docs/ledgers/unknowns.md": 64 * KIB,
     "docs/ledgers/bugs.md": 64 * KIB,
     "docs/ledgers/compatibility.md": 64 * KIB,
+    "evidence/README.md": 2 * KIB,
 }
 # Directory caps; the first matching prefix wins.
 PREFIX_CAPS: tuple[tuple[str, int], ...] = (
@@ -88,6 +98,24 @@ ACTIVE_FINDINGS_CAP = 96 * KIB
 LEDGER_ROW_CAP = 400
 MANIFEST_ROW_CAP = 300
 AGGREGATE_CAP = 160 * KIB
+
+# Evidence index: retrieval-tier data, outside the prose surface and read tiers.
+EVIDENCE_DIR = "evidence"
+SHARD_NAME = re.compile(r"[a-z][a-z0-9]*(?:-[a-z0-9]+)*\.jsonl")
+SHARD_CAP = 64 * KIB
+RECORD_CAP = 2 * KIB
+LABEL_CAP = 160
+NOTE_CAP = 200
+LISTED_ID_LIMIT = 32
+BUNDLE_PARSE_CAP = 64 * KIB * KIB
+# M-001..M-270 predate the index; they may keep directory paths, unknown digests and long labels.
+LEGACY_LAST = 270
+RECORD_CLASSES: frozenset[str] = frozenset({"local-private", "tracked", "external"})
+RECORD_KINDS: frozenset[str] = frozenset({"rea-bundle", "receipt", "review", "input", "build", "report", "revision"})
+RECORD_STATUSES: frozenset[str] = frozenset({"active", "retired", "missing"})
+REQUIRED_KEYS: tuple[str, ...] = ("id", "path", "sha256", "class", "kind", "date", "label", "status")
+OPTIONAL_KEYS: tuple[str, ...] = ("ev", "unk", "records", "superseded_by", "note", "legacy")
+LOCAL_PREFIXES: tuple[str, ...] = ("work/", "reference-data/", "icarus-client-orig/", "icarus-orig/")
 
 # Read tiers: files every session loads, and per-task entry sets mirroring the
 # routing table in CLAUDE.md.
@@ -141,7 +169,16 @@ HEADING = re.compile(r"^(#{1,6})\s+(.*?)\s*#*\s*$")
 FINDING_ID = re.compile(r"\bF-\d{3,}\b")
 UNKNOWN_ID = re.compile(r"\bU-\d{3,}\b")
 MANIFEST_ID = re.compile(r"\bM-\d{3,}\b")
+RECORD_ID = re.compile(r"M-(?:\d{3}|[1-9]\d{3,})")
 EVIDENCE_ID = re.compile(r"\bev_[0-9a-f]{64}\b")
+REA_UNKNOWN_ID = re.compile(r"\bunk_[0-9a-f]{64}\b")
+# Citation of one Evidence or REA unknown ID through the index row that lists it.
+LISTED_SELECTOR = re.compile(r"\b(M-\d{3,})/(ev|unk)_([0-9a-f]+)")
+SELECTOR_HEX = 12
+# Pre-REA case notes (E-NNN) number from E-001 in every case; cite them through their row.
+LEGACY_NOTE = re.compile(r"\b(M-\d{3,})/(E-\d{3,})\b")
+BARE_LEGACY_NOTE = re.compile(r"(?<![/\w-])E-\d{3,}\b")
+JSON_RECORD_ID = re.compile(r'"id"\s*:\s*"(M-\d{3,})"')
 SUPERSEDED_BY = re.compile(r"superseded-by\s+(F-\d{3,})")
 RECONCILED = re.compile(r"Last reconciled:\s*(\d{4}-\d{2}-\d{2})")
 CODE_DOC_REF = re.compile(r"docs/[\w./-]+\.md")
@@ -241,6 +278,215 @@ def glued_tokens(line: str) -> list[str]:
     return [token for token in tokens if not HEXISH.fullmatch(token)]
 
 
+# ---------------------------------------------------------------------------
+# Evidence index records
+# ---------------------------------------------------------------------------
+
+
+class RecordError(ValueError):
+    """A malformed evidence index line."""
+
+
+def _object_dict(value: object) -> TypeIs[dict[object, object]]:
+    return isinstance(value, dict)
+
+
+def _object_list(value: object) -> TypeIs[list[object]]:
+    return isinstance(value, list)
+
+
+def _unique_pairs(pairs: list[tuple[str, object]]) -> dict[str, object]:
+    found: dict[str, object] = {}
+    for key, value in pairs:
+        if key in found:
+            raise RecordError(f"duplicate key {key!r}")
+        found[key] = value
+    return found
+
+
+def parse_json_object(text: str | bytes) -> dict[str, object]:
+    """One JSON object with string keys; duplicate keys are rejected."""
+    try:
+        # json.loads is untyped; every value is an object until narrowed.
+        value = cast(object, json.loads(text, object_pairs_hook=_unique_pairs))
+    except json.JSONDecodeError as error:
+        raise RecordError(f"invalid JSON: {error.msg}") from error
+    if not _object_dict(value):
+        raise RecordError("record must be a JSON object")
+    return {str(key): item for key, item in value.items()}
+
+
+def _required_text(record: dict[str, object], key: str) -> str:
+    value = record[key]
+    if not isinstance(value, str) or not value:
+        raise RecordError(f"{key} must be a nonempty string")
+    return value
+
+
+def _nullable_text(record: dict[str, object], key: str) -> str | None:
+    value = record.get(key)
+    if value is None:
+        return None
+    if not isinstance(value, str) or not value:
+        raise RecordError(f"{key} must be a nonempty string or null")
+    return value
+
+
+def _text_list(record: dict[str, object], key: str) -> tuple[str, ...]:
+    if key not in record:
+        return ()
+    value = record[key]
+    if not _object_list(value) or not value:
+        raise RecordError(f"{key} must be a nonempty list; omit the key instead")
+    items: list[str] = []
+    for item in value:
+        if not isinstance(item, str):
+            raise RecordError(f"{key} entries must be strings")
+        items.append(item)
+    return tuple(items)
+
+
+@dataclass(frozen=True)
+class ManifestRow:
+    """One evidence index record: where an artifact lives, its identity and state."""
+
+    rel: str
+    line: int
+    identifier: str
+    path: str
+    sha256: str | None
+    klass: str
+    kind: str
+    date: str | None
+    label: str
+    status: str
+    ev: tuple[str, ...] = ()
+    unk: tuple[str, ...] = ()
+    records: int | None = None
+    superseded_by: str | None = None
+    note: str | None = None
+    legacy: bool = False
+
+    @property
+    def number(self) -> int:
+        return int(self.identifier.removeprefix("M-"))
+
+    @classmethod
+    def from_record(cls, rel: str, line: int, record: dict[str, object]) -> ManifestRow:
+        missing = [key for key in REQUIRED_KEYS if key not in record]
+        if missing:
+            raise RecordError(f"missing keys {', '.join(missing)}")
+        unknown = sorted(set(record) - set(REQUIRED_KEYS) - set(OPTIONAL_KEYS))
+        if unknown:
+            raise RecordError(f"unknown keys {', '.join(unknown)}")
+        absent_null = [key for key in OPTIONAL_KEYS if key in record and record[key] is None]
+        if absent_null:
+            raise RecordError(f"omit optional keys instead of null: {', '.join(absent_null)}")
+        count = record.get("records")
+        records: int | None = None
+        if count is not None:
+            if not isinstance(count, int) or isinstance(count, bool) or count < 0:
+                raise RecordError("records must be a nonnegative integer")
+            records = count
+        if "legacy" in record and record["legacy"] is not True:
+            raise RecordError("legacy must be true when present; omit it otherwise")
+        legacy = "legacy" in record
+        return cls(
+            rel=rel,
+            line=line,
+            identifier=_required_text(record, "id"),
+            path=_required_text(record, "path"),
+            sha256=_nullable_text(record, "sha256"),
+            klass=_required_text(record, "class"),
+            kind=_required_text(record, "kind"),
+            date=_nullable_text(record, "date"),
+            label=_required_text(record, "label"),
+            status=_required_text(record, "status"),
+            ev=_text_list(record, "ev"),
+            unk=_text_list(record, "unk"),
+            records=records,
+            superseded_by=_nullable_text(record, "superseded_by"),
+            note=_nullable_text(record, "note"),
+            legacy=legacy,
+        )
+
+
+def parse_shard(rel: str, text: str) -> tuple[list[ManifestRow], list[Problem]]:
+    """Parse one JSONL shard; every malformed line is a problem at its line."""
+    rows: list[ManifestRow] = []
+    problems: list[Problem] = []
+    lines = text.split("\n")
+    if lines and lines[-1] == "":
+        _ = lines.pop()
+    for number, line in enumerate(lines, start=1):
+        if not line.strip():
+            problems.append(Problem(rel, number, "blank line in evidence shard"))
+            continue
+        try:
+            rows.append(ManifestRow.from_record(rel, number, parse_json_object(line)))
+        except RecordError as error:
+            problems.append(Problem(rel, number, f"invalid evidence record: {error}"))
+    return rows, problems
+
+
+def legacy_markdown_rows(doc: Document) -> list[ManifestRow]:
+    """Rows of the Markdown manifest that precedes the JSONL index; read until migration."""
+    rows: list[ManifestRow] = []
+    for number, line, fenced in iter_lines(doc.lines):
+        if fenced or not line.startswith("|"):
+            continue
+        cells = table_cells(line)
+        if len(cells) < 6 or not MANIFEST_ID.fullmatch(cells[0]):
+            continue
+        identifier, path, digest, day, session, klass = cells[:6]
+        rows.append(
+            ManifestRow(
+                rel=doc.rel,
+                line=number,
+                identifier=identifier,
+                path=path,
+                sha256=None if digest == "unstated" else digest,
+                klass=klass,
+                kind="receipt",
+                date=None if day == "unstated" else day,
+                label=session,
+                status="active",
+                legacy=True,
+            )
+        )
+    return rows
+
+
+def sha256_file(path: Path) -> str:
+    with path.open("rb") as handle:
+        return hashlib.file_digest(handle, "sha256").hexdigest()
+
+
+def bundle_members(path: Path) -> tuple[set[str], set[str]]:
+    """Evidence IDs (records[].evidence_id) and unknown IDs (unknowns[].unknown_id) of an exported REA bundle."""
+    bundle = parse_json_object(path.read_bytes())
+    found: list[set[str]] = []
+    for section, key in (("records", "evidence_id"), ("unknowns", "unknown_id")):
+        items = bundle.get(section)
+        if not _object_list(items):
+            raise RecordError(f"bundle {section} must be a list")
+        identifiers: set[str] = set()
+        for item in items:
+            if _object_dict(item):
+                value = item.get(key)
+                if isinstance(value, str):
+                    identifiers.add(value)
+        found.append(identifiers)
+    return found[0], found[1]
+
+
+def headings_of(path: Path) -> set[str]:
+    try:
+        return {slugify(text) for _n, _l, text in Document(path.name, path.read_text(encoding="utf-8")).headings()}
+    except (OSError, UnicodeDecodeError):
+        return set()
+
+
 @final
 class Linter:
     root: Path
@@ -251,6 +497,9 @@ class Linter:
     warnings: list[Problem]
     docs: dict[str, Document]
     current: dict[str, Document]
+    rows: list[ManifestRow]
+    manifest: dict[str, ManifestRow]
+    shards: dict[str, str]
 
     def __init__(self, root: Path, *, local: bool, base: str = "HEAD", today: date | None = None) -> None:
         self.root = root
@@ -261,6 +510,9 @@ class Linter:
         self.warnings = []
         self.docs = {}
         self.current = {}
+        self.rows = []
+        self.manifest = {}
+        self.shards = {}
 
     # -- loading ----------------------------------------------------------
 
@@ -276,6 +528,36 @@ class Linter:
             self.docs[rel] = doc
             if self.is_current(rel):
                 self.current[rel] = doc
+        self.load_manifest()
+
+    def load_manifest(self) -> None:
+        """Index rows in shard order; the first definition of an ID wins."""
+        directory = self.root / EVIDENCE_DIR
+        if directory.is_dir():
+            for path in sorted(directory.glob("*.jsonl")):
+                rel = path.relative_to(self.root).as_posix()
+                try:
+                    text = path.read_text(encoding="utf-8")
+                except UnicodeDecodeError:
+                    self.report(rel, 0, "not valid UTF-8")
+                    continue
+                self.shards[rel] = text
+                rows, problems = parse_shard(rel, text)
+                self.problems.extend(problems)
+                self.rows.extend(rows)
+        legacy = self.docs.get(MANIFEST_FILE)
+        if legacy is not None:
+            self.rows.extend(legacy_markdown_rows(legacy))
+        for row in self.rows:
+            if row.identifier in self.manifest:
+                first = self.manifest[row.identifier]
+                self.report(row.rel, row.line, f"duplicate ID {row.identifier} (first at {first.rel}:{first.line})")
+                continue
+            self.manifest[row.identifier] = row
+
+    @property
+    def index_bytes(self) -> int:
+        return sum(len(text.encode("utf-8")) for text in self.shards.values())
 
     def tracked_markdown(self) -> set[str]:
         tracked: set[str] = set()
@@ -317,6 +599,7 @@ class Linter:
         self.check_ids()
         self.check_new_findings()
         self.check_manifest()
+        self.check_legacy_notes()
         self.check_reconciled()
         self.check_staleness()
         self.check_glue()
@@ -394,7 +677,7 @@ class Linter:
                 if HEX64.search(line):
                     self.report(rel, number, "64-hex digest in prose; cite a manifest or finding ID")
                 if UTC_TIME.search(line):
-                    self.report(rel, number, "clock time in prose; session timing belongs in the evidence manifest")
+                    self.report(rel, number, "clock time in prose; remove it (evidence rows carry the date)")
                 stripped = INLINE_CODE.sub("", line)
                 if PRIVATE_PATH.search(stripped):
                     self.report(rel, number, "work/ or reference-data/ path in prose; cite a manifest ID or use a code span")
@@ -459,11 +742,10 @@ class Linter:
 
     def check_ids(self) -> None:
         unknowns = self.docs.get(UNKNOWNS_FILE)
-        manifest = self.docs.get(MANIFEST_FILE)
         findings = self.findings_docs()
         defined_f: set[str] = self.unique_ids(findings, FINDING_ID)
         defined_u: set[str] = self.unique_ids([unknowns], UNKNOWN_ID) if unknowns else set()
-        defined_m: set[str] = self.unique_ids([manifest], MANIFEST_ID) if manifest else set()
+        defined_m: set[str] = set(self.manifest)
         self.check_no_removed_ids(self.base_findings_texts(), defined_f, FINDING_ID)
         for doc in findings:
             for number, line, fenced in iter_lines(doc.lines):
@@ -481,8 +763,29 @@ class Linter:
                 self.check_references(rel, number, line, FINDING_ID, defined_f, "finding")
                 self.check_references(rel, number, line, UNKNOWN_ID, defined_u, "unknown")
                 self.check_references(rel, number, line, MANIFEST_ID, defined_m, "manifest row")
-                if EVIDENCE_ID.search(line) and not MANIFEST_ID.search(line):
-                    self.report(rel, number, "ev_ identifier cited without a manifest row (M-NNN) on the same line")
+                self.check_listed_citations(rel, number, line)
+
+    def check_listed_citations(self, rel: str, number: int, line: str) -> None:
+        """Evidence, REA unknown and legacy note IDs are cited through the index row that lists them."""
+        if EVIDENCE_ID.search(line) or REA_UNKNOWN_ID.search(line):
+            self.report(rel, number, f"full ev_/unk_ identifier in prose; cite M-NNN/ev_<{SELECTOR_HEX} hex> from its index row")
+        for match in LISTED_SELECTOR.finditer(line):
+            identifier, prefix, digits = match.groups()
+            cited = f"{identifier}/{prefix}_{digits}"
+            if len(digits) != SELECTOR_HEX:
+                self.report(rel, number, f"{cited}: cite exactly {SELECTOR_HEX} hex digits")
+                continue
+            row = self.manifest.get(identifier)
+            if row is None:
+                continue
+            listed = row.ev if prefix == "ev" else row.unk
+            hits = [entry for entry in listed if entry.startswith(f"{prefix}_{digits}")]
+            if len(hits) != 1:
+                self.report(rel, number, f"{cited} matches {len(hits)} entries of the {prefix} list of {identifier}")
+        for match in LEGACY_NOTE.finditer(line):
+            row = self.manifest.get(match.group(1))
+            if row is not None and not row.legacy:
+                self.report(rel, number, f"{match.group(0)}: E- notes exist only under legacy rows")
 
     def unique_ids(self, docs: Sequence[Document], pattern: re.Pattern[str]) -> set[str]:
         """IDs defined across the given files; each must be defined exactly once."""
@@ -555,42 +858,248 @@ class Linter:
         result = self.git("show", f"{self.base}:{rel}")
         return result.stdout if result is not None and result.returncode == 0 else None
 
-    def git_ls(self, directory: str) -> list[str]:
+    def git_ls(self, directory: str, suffix: str = ".md") -> list[str]:
         result = self.git("ls-tree", "-r", "--name-only", self.base, "--", directory)
         if result is None or result.returncode != 0:
             return []
-        return [line for line in result.stdout.split("\n") if line.endswith(".md")]
+        return [line for line in result.stdout.split("\n") if line.endswith(suffix)]
 
     def base_exists(self) -> bool:
         result = self.git("rev-parse", "--verify", "--quiet", f"{self.base}^{{commit}}")
         return result is not None and result.returncode == 0
 
+    # -- evidence index ----------------------------------------------------
+
     def check_manifest(self) -> None:
-        manifest = self.docs.get(MANIFEST_FILE)
-        if manifest is None:
+        self.check_shards()
+        legacy = self.docs.get(MANIFEST_FILE)
+        if legacy is not None:
+            for number, line, fenced in iter_lines(legacy.lines):
+                if not fenced and line.startswith("| M-") and len(line.encode("utf-8")) > MANIFEST_ROW_CAP:
+                    self.report(MANIFEST_FILE, number, f"manifest row exceeds {MANIFEST_ROW_CAP} bytes")
+        for row in self.manifest.values():
+            self.check_row(row)
+            if self.local:
+                self.check_row_on_disk(row)
+        numbers = {row.number for row in self.manifest.values()}
+        if numbers:
+            gaps = sorted(set(range(1, max(numbers) + 1)) - numbers)
+            if gaps:
+                self.report(EVIDENCE_DIR, 0, f"manifest IDs are not contiguous; missing {', '.join(f'M-{n:03d}' for n in gaps[:10])}")
+        self.check_manifest_history()
+
+    def check_shards(self) -> None:
+        for rel, text in self.shards.items():
+            name = rel.rsplit("/", 1)[-1]
+            if not SHARD_NAME.fullmatch(name):
+                self.report(rel, 0, "shard name must be <area>.jsonl or <area>-<n>.jsonl in lowercase")
+            size = len(text.encode("utf-8"))
+            if size > SHARD_CAP:
+                self.report(rel, 0, f"{size} bytes exceeds the {SHARD_CAP}-byte shard cap; roll over to a numbered shard")
+            previous = 0
+            for row in self.rows:
+                if row.rel != rel or not RECORD_ID.fullmatch(row.identifier):
+                    continue
+                if row.number <= previous:
+                    self.report(rel, row.line, f"{row.identifier} is out of order; sort records by ID")
+                previous = max(previous, row.number)
+            for number, line in enumerate(text.split("\n"), start=1):
+                if len(line.encode("utf-8")) > RECORD_CAP:
+                    self.report(rel, number, f"record exceeds {RECORD_CAP} bytes")
+
+    def check_row(self, row: ManifestRow) -> None:
+        def problem(message: str) -> None:
+            self.report(row.rel, row.line, f"{row.identifier}: {message}")
+
+        if not RECORD_ID.fullmatch(row.identifier):
+            problem("ID must be M- followed by at least three digits without extra leading zeros")
             return
-        for number, line, fenced in iter_lines(manifest.lines):
-            if fenced or not line.startswith("|"):
+        if row.legacy and row.number > LEGACY_LAST:
+            problem(f"legacy applies only to M-001..M-{LEGACY_LAST:03d}")
+        for value, allowed, name in (
+            (row.klass, RECORD_CLASSES, "class"),
+            (row.kind, RECORD_KINDS, "kind"),
+            (row.status, RECORD_STATUSES, "status"),
+        ):
+            if value not in allowed:
+                problem(f"{name} must be one of {', '.join(sorted(allowed))}, not {value!r}")
+        if row.sha256 is not None and not re.fullmatch(r"[0-9a-f]{64}", row.sha256):
+            problem("sha256 must be 64 lowercase hex digits or null")
+        if row.date is not None:
+            try:
+                _ = date.fromisoformat(row.date)
+            except ValueError:
+                problem(f"invalid date {row.date!r}")
+        if row.note is not None and len(row.note) > NOTE_CAP:
+            problem(f"note exceeds {NOTE_CAP} characters")
+        self.check_row_lists(row, problem)
+        self.check_row_lifecycle(row, problem)
+        if row.status != "missing":
+            self.check_row_path(row, problem)
+        if not row.legacy:
+            self.check_new_row(row, problem)
+
+    def check_row_lists(self, row: ManifestRow, problem: Callable[[str], None]) -> None:
+        if (row.ev or row.unk or row.records is not None) and row.kind != "rea-bundle":
+            problem("ev, unk and records belong only to rea-bundle rows")
+        for name, values, pattern in (("ev", row.ev, EVIDENCE_ID), ("unk", row.unk, REA_UNKNOWN_ID)):
+            if len(values) > LISTED_ID_LIMIT:
+                problem(f"{name} lists more than {LISTED_ID_LIMIT} IDs; list only cited IDs")
+            if len(set(values)) != len(values):
+                problem(f"{name} lists an ID twice")
+            for value in values:
+                if not pattern.fullmatch(value):
+                    problem(f"{name} entry {value!r} is not a full {name}_ identifier")
+
+    def check_row_lifecycle(self, row: ManifestRow, problem: Callable[[str], None]) -> None:
+        if row.superseded_by is not None:
+            if row.status != "retired":
+                problem("superseded_by requires status retired")
+            if row.superseded_by == row.identifier or row.superseded_by not in self.manifest:
+                problem(f"superseded_by {row.superseded_by} is not another defined row")
+        if row.status in {"retired", "missing"} and row.note is None and row.superseded_by is None:
+            problem(f"status {row.status} needs a note or superseded_by")
+        if row.status == "missing" and not row.legacy and row.date is not None:
+            try:
+                age = (self.today - date.fromisoformat(row.date)).days
+            except ValueError:
+                return
+            if age > STALE_DAYS:
+                self.warn(row.rel, row.line, f"{row.identifier}: missing for over {STALE_DAYS} days; restore or retire it")
+
+    def check_row_path(self, row: ManifestRow, problem: Callable[[str], None]) -> None:
+        if row.klass == "local-private" and not row.path.startswith(LOCAL_PREFIXES):
+            message = f"local-private path must start with {', '.join(LOCAL_PREFIXES)}: {row.path}"
+            if row.legacy:
+                self.warn(row.rel, row.line, f"{row.identifier}: {message}")
+            else:
+                problem(message)
+        if row.klass == "tracked":
+            path_part, _, fragment = row.path.partition("#")
+            target = self.root / path_part
+            if not target.exists():
+                problem(f"tracked path does not exist: {path_part}")
+            elif fragment and target.suffix == ".md" and fragment not in headings_of(target):
+                problem(f"tracked path has no heading anchor #{fragment}")
+
+    def check_new_row(self, row: ManifestRow, problem: Callable[[str], None]) -> None:
+        if row.sha256 is None:
+            problem("new rows need the artifact's sha256")
+        if row.date is None:
+            problem("new rows need a date")
+        if row.path.endswith("/") or row.path == "unstated":
+            problem("new rows name one file, never a directory or an unstated path")
+        if row.kind == "rea-bundle" and row.records is None:
+            problem("rea-bundle rows record the bundle's record count")
+        if len(row.label) > LABEL_CAP:
+            problem(f"label exceeds {LABEL_CAP} characters")
+        if UTC_TIME.search(row.label) or HEX64.search(row.label) or PRIVATE_PATH.search(row.label):
+            problem("label carries a clock time, digest or private path")
+
+    def check_row_on_disk(self, row: ManifestRow) -> None:
+        if row.klass != "local-private" or row.status != "active":
+            return
+        path = self.root / row.path
+        if not path.exists():
+            self.report(row.rel, row.line, f"{row.identifier}: local-private evidence missing: {row.path}")
+            return
+        if not path.is_file():
+            if not row.legacy:
+                self.report(row.rel, row.line, f"{row.identifier}: local-private evidence is not a file: {row.path}")
+            return
+        if row.sha256 is not None and sha256_file(path) != row.sha256:
+            self.report(row.rel, row.line, f"{row.identifier}: local-private evidence digest mismatch: {row.path}")
+            return
+        if row.kind == "rea-bundle":
+            self.check_bundle_membership(row, path)
+
+    def check_bundle_membership(self, row: ManifestRow, path: Path) -> None:
+        if path.stat().st_size > BUNDLE_PARSE_CAP:
+            self.warn(row.rel, row.line, f"{row.identifier}: bundle exceeds {BUNDLE_PARSE_CAP} bytes; membership unverified")
+            return
+        try:
+            evidence, unknowns = bundle_members(path)
+        except (RecordError, UnicodeDecodeError) as error:
+            self.report(row.rel, row.line, f"{row.identifier}: unreadable REA bundle: {error}")
+            return
+        if row.records is not None and row.records != len(evidence):
+            self.report(row.rel, row.line, f"{row.identifier}: bundle holds {len(evidence)} records, row says {row.records}")
+        for name, listed, members in (("ev", row.ev, evidence), ("unk", row.unk, unknowns)):
+            for identifier in listed:
+                if identifier not in members:
+                    self.report(row.rel, row.line, f"{row.identifier}: {name} entry {identifier} is not in the bundle")
+
+    def base_manifest_rows(self) -> dict[str, ManifestRow]:
+        """Rows defined at the base revision, in either the Markdown or the JSONL layout."""
+        rows: dict[str, ManifestRow] = {}
+        legacy = self.git_show(MANIFEST_FILE)
+        if legacy is not None:
+            for row in legacy_markdown_rows(Document(MANIFEST_FILE, legacy)):
+                _ = rows.setdefault(row.identifier, row)
+        for rel in self.git_ls(EVIDENCE_DIR, ".jsonl"):
+            text = self.git_show(rel)
+            if text is None:
                 continue
-            cells = table_cells(line)
-            if len(cells) < 6 or not MANIFEST_ID.fullmatch(cells[0]):
+            parsed, _problems = parse_shard(rel, text)
+            for row in parsed:
+                _ = rows.setdefault(row.identifier, row)
+            # A base line that no longer parses still defines its ID.
+            for match in JSON_RECORD_ID.finditer(text):
+                identifier = match.group(1)
+                if identifier not in rows:
+                    rows[identifier] = ManifestRow(rel, 0, identifier, "", None, "", "", None, "", "")
+        return rows
+
+    def check_manifest_history(self) -> None:
+        """Pushed IDs survive; pushed facts change only as the rules allow."""
+        for identifier, before in sorted(self.base_manifest_rows().items()):
+            after = self.manifest.get(identifier)
+            if after is None:
+                self.report(before.rel, 0, f"ID {identifier} existed at {self.base} and was removed; retire it instead")
                 continue
-            if len(line.encode("utf-8")) > MANIFEST_ROW_CAP:
-                self.report(MANIFEST_FILE, number, f"manifest row exceeds {MANIFEST_ROW_CAP} bytes")
-            _identifier, path, digest, _date, _session, klass = cells[:6]
-            if klass not in {"local-private", "external"}:
-                self.report(MANIFEST_FILE, number, f"class must be local-private or external, not {klass!r}")
-            if digest == "unstated":
+            if before.rel.endswith(".md") or not before.kind:
                 continue
-            if not re.fullmatch(r"[0-9a-f]{64}", digest):
-                self.report(MANIFEST_FILE, number, "sha256 column must be a 64-hex digest or 'unstated'")
-                continue
-            if klass == "local-private" and self.local:
-                file = self.root / path
-                if not file.is_file():
-                    self.report(MANIFEST_FILE, number, f"local-private evidence missing: {path}")
-                elif hashlib.sha256(file.read_bytes()).hexdigest() != digest:
-                    self.report(MANIFEST_FILE, number, f"local-private evidence digest mismatch: {path}")
+            for name, old, new in (
+                ("date", before.date, after.date),
+                ("ev", before.ev, after.ev),
+                ("unk", before.unk, after.unk),
+                ("records", before.records, after.records),
+                ("kind", before.kind, after.kind if not before.legacy else before.kind),
+            ):
+                if old != new:
+                    self.report(after.rel, after.line, f"{identifier}: {name} changed since {self.base}; it is immutable")
+            for name, old, new in (("path", before.path, after.path), ("sha256", before.sha256, after.sha256)):
+                if new != old and (after.note is None or str(old) not in after.note):
+                    self.report(after.rel, after.line, f"{identifier}: {name} changed; keep the old value in note")
+
+    def check_legacy_notes(self) -> None:
+        """Bare E-NNN case notes are ambiguous; lines added since the base cite them as M-NNN/E-NNN."""
+        if not self.base_exists():
+            return
+        for rel, doc in self.current.items():
+            base_text = self.git_show(rel)
+            base_lines = set(base_text.split("\n")) if base_text is not None else set[str]()
+            for number, line, fenced in iter_lines(doc.lines):
+                if fenced or line in base_lines:
+                    continue
+                stripped = LEGACY_NOTE.sub("", INLINE_CODE.sub("", line))
+                match = BARE_LEGACY_NOTE.search(stripped)
+                if match:
+                    self.report(rel, number, f"bare case note {match.group(0)}; cite it as M-NNN/{match.group(0)} through its row")
+
+    def next_id(self, prefix: str) -> str:
+        if prefix == "M":
+            numbers = [row.number for row in self.manifest.values() if RECORD_ID.fullmatch(row.identifier)]
+        else:
+            pattern = FINDING_ID if prefix == "F" else UNKNOWN_ID
+            docs = self.findings_docs() if prefix == "F" else [doc for rel, doc in self.docs.items() if rel == UNKNOWNS_FILE]
+            numbers = [int(identifier.split("-")[1]) for doc in docs for _n, identifier in ledger_ids(doc, pattern)]
+        return f"{prefix}-{max(numbers, default=0) + 1:03d}"
+
+    def local_paths(self) -> list[str]:
+        return sorted(
+            {row.path for row in self.manifest.values() if row.klass == "local-private" and row.status == "active"}
+        )
 
     def check_reconciled(self) -> None:
         for rel, doc in self.current.items():
@@ -625,6 +1134,11 @@ class Linter:
                 tokens = glued_tokens(line)
                 if tokens:
                     self.report(rel, number, f"glued tokens {', '.join(tokens)}; restore the spaces or reword")
+        for row in self.rows:
+            if row.rel.endswith(".jsonl"):
+                tokens = glued_tokens(f"{row.label} {row.note or ''}")
+                if tokens:
+                    self.report(row.rel, row.line, f"glued tokens {', '.join(tokens)}; restore the spaces or reword")
 
     def check_filenames(self) -> None:
         for rel in self.current:
@@ -678,6 +1192,8 @@ class Options(argparse.Namespace):
     warn: bool = False
     local: bool = False
     base: str = "HEAD"
+    next_id: str | None = None
+    list_local: bool = False
 
 
 def parse_options(argv: Sequence[str] | None) -> Options:
@@ -686,6 +1202,8 @@ def parse_options(argv: Sequence[str] | None) -> Options:
     _ = parser.add_argument("--warn", action="store_true", help="report problems but exit 0")
     _ = parser.add_argument("--local", action="store_true", help="verify local-private manifest rows on disk")
     _ = parser.add_argument("--base", default="HEAD", help="revision whose ledger IDs must survive (default HEAD)")
+    _ = parser.add_argument("--next-id", choices=("M", "F", "U"), default=None, help="print the next free ID and exit")
+    _ = parser.add_argument("--list-local", action="store_true", help="print active local-private evidence paths and exit")
     options = Options()
     _ = parser.parse_args(argv, namespace=options)
     return options
@@ -695,6 +1213,11 @@ def main(argv: Sequence[str] | None = None) -> int:
     options = parse_options(argv)
     root = options.root.resolve() if options.root else find_root(Path.cwd().resolve())
     linter = Linter(root, local=options.local, base=options.base)
+    if options.next_id is not None or options.list_local:
+        linter.load()
+        lines = [linter.next_id(options.next_id)] if options.next_id is not None else linter.local_paths()
+        print("\n".join(lines))
+        return 0
     total = linter.run()
     for problem in linter.problems:
         print(problem.render())
@@ -703,6 +1226,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     startup, _missing = linter.tier_size(STARTUP_FILES)
     print(
         f"docs_lint: current prose surface {total} bytes of {AGGREGATE_CAP}; startup tier {startup} bytes of {STARTUP_BUDGET}; "
+        + f"evidence index {len(linter.manifest)} rows, {linter.index_bytes} bytes in {len(linter.shards)} shard(s); "
         + f"{len(linter.problems)} problem(s), {len(linter.warnings)} warning(s)"
     )
     if linter.problems and not options.warn:

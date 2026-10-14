@@ -97,7 +97,7 @@ repos:
         entry: python3 tools/docs_lint.py
         language: system
         pass_filenames: false
-        files: (\.md$|^tools/docs_lint\.py$|^src/.*\.rs$|^tools/|^\.github/)
+        files: (\.md$|^evidence/|^tools/docs_lint\.py$|^src/.*\.rs$|^tools/|^\.github/)
       - id: cargo-fmt
         name: Check Rust formatting
         entry: cargo fmt --all -- --check
