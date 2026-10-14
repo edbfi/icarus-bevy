@@ -28,7 +28,7 @@ Last reconciled: 2026-10-14
 | U-019 | Can the live REA provider decode exact windows or start lazy Ghidra within its limits? | low | blocked | none stated | F-085, F-100 |  |
 | U-020 | What are the numerical/text meanings, Name identities and Enum lookups of the qualified C009/C013/C028/C034/D01 values? | high | open | none stated | F-115, F-120, F-123, F-125, F-135, F-146, F-147, F-148, F-150, F-152, F-155, F-158, F-162, F-165, F-170, F-172, F-174, F-182 |  |
 | U-021 | What do empty families contain when populated: 17 C028 array-child descriptors (incl. seven inherited arrays), DA04's two descriptors, CA06 Text/Name? | medium | open | none stated | F-116, F-117, F-156, F-160, F-169, F-176 |  |
-| U-022 | How are the 34 classes / 2,045 records outside the C009/C013/C028/C034 selections structured? | medium | open | none stated | F-119 |  |
+| U-022 | How are the 34 classes / 2,045 records outside the C009/C013/C028/C034 selections structured? | medium | open | none stated | F-496 |  |
 | U-023 | What is C001's complete construction/vtable/archive-dispatch bridge? | medium | open | Reuse retained exports (exact native class getter, construction callback) before new bounded queries | F-121, F-122 |  |
 | U-024 | Do C028 whole-top fields have individual native spans, and which immutable library backed the historical live pin? | medium | open | none stated | F-117, F-134, F-136, F-137, F-140, F-141 |  |
 | U-025 | Do the qualified saves restore/import officially and remain compatible with stock/matched clients and newer builds? | high | open | none stated | F-126, F-144, F-149, F-157, F-183 |  |
@@ -52,7 +52,7 @@ Last reconciled: 2026-10-14
 | U-043 | What is the actual receiver/indirect dispatch, base origin and same-build type-registration join for the control stores? | high | open | bounded constructor metadata/instruction comparison guided by paired-client symbols | F-274 |  |
 | U-044 | What is the concrete archive/outer framing path for the experimental control-body fields? | medium | open | none stated | F-274 |  |
 | U-045 | Is authored world-data import feasible? | high | open | validate a small import before the heavy-world workload | F-187, F-242 |  |
-| U-046 | Can classes/schemas be recognized automatically, and what are native value meanings incl. seven empty inherited arrays' population coverage? | medium | open | none stated | F-195, F-196, F-211, F-273 |  |
+| U-046 | Can classes/schemas be recognized automatically, and what are native value meanings incl. seven empty inherited arrays' population coverage? | medium | open | none stated | F-195, F-196, F-211, F-496 |  |
 | U-047 | Can reported original-server crashes be reproduced under controlled workloads? | high | open | controlled workloads (M1) | F-217, F-256, F-268 |  |
 | U-048 | What are deeper C028 child encodings, values and newer-build semantics? | medium | open | none stated | F-212, F-259 |  |
 | U-049 | How do ICARUS performance and stability compare between original and native server? | high | open | matched reference workloads and full release gates (M6) | F-187, F-234, F-237, F-238, F-269 |  |
