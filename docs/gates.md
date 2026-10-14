@@ -48,8 +48,10 @@ Last reconciled: 2026-10-14
   joins pass before COPY-width stops. Failure sites are null; linear copy shapes
   do not prove reachability. Narrow source/caller and fresh retained replay qualify
   (F-448 to F-450): exact row/index stops identify unsupported opcode26, without
-  independent reachability. Qualify zeroing/low-register source, mappings and
-  fixtures before another reviewed fresh case. Do not repeat unchanged helpers or promote
+  independent reachability. Zeroing source/adapter/parser and fresh case qualify
+  (F-453 to F-457): seven register pairs/nine constants join before exact partial-COPY
+  stops. Qualify low32 read-copy source/fixtures before another reviewed fresh
+  case. Do not repeat unchanged helpers or promote
   partial receiver claims. Stack-derived unknown carriers do not prove no escape;
   ordinary-entry, default ABI, protected-frame integrity and nonalias conditions
   remain explicit and unproved.

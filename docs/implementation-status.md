@@ -112,7 +112,7 @@ Continue authorized offline work in this order; connected proof retains its gate
 
 1. Fixture-v2 review and ten authored modes are complete (F-406, F-407); retain their qualified receipts.
 2. Preserve the qualified 305/296-byte decoder result (F-409, F-410); do not retry the completed exact-window case.
-3. Preserve frame-input/prolog joins and partial results. Qualify typed zeroing/low-register support before fresh frame/receiver replay; narrow replay now reports exact opcode26 row/index stops, while archive ownership remains open (F-440 to F-450, U-041).
+3. Preserve frame-input/prolog/register/opcode joins and partial results. Qualify low32 read-copy support before fresh frame/receiver replay; zeroing replay reports exact partial-COPY row/index stops, while archive ownership remains open (F-440 to F-457, U-041).
 4. Close the census using completed C028/C034/C013 audits; leave native value meanings and empty inherited arrays open (F-272, F-273, U-046).
 5. Keep automatic class/schema recognition and value meanings open; no partial importer (U-046, U-040).
 6. Resolve actor/inventory/construction/tame/mission fields and confirm the reported producing build independently (F-262, F-263, U-040).
