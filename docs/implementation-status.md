@@ -49,7 +49,7 @@ Offline work, in order; connected proof keeps its gates.
 3. Control stores: owner, dispatcher and its static virtual call site are identified (F-505, F-506, F-520); qualify register preservation across the constructor super calls and base origin (U-043).
 4. Control stores: compare constructor metadata and instructions guided by paired-client symbols and the two named notify slots (F-479, F-480, U-043).
 5. Packet framing: the client receive and bunch-send formats, integer encodings and version 17 are recorded and implemented as an experimental codec (F-519, F-521 to F-527); next the packet-header sender, server-side correspondence and the stateless handshake to data transition (F-096, U-044).
-6. Transport: the control vocabulary and Hello replies are mapped (F-529, F-530); decode the unique-net-id serializer and challenge sender, then advance checksum admission and authentication (F-253, F-254, U-037, U-038).
+6. Transport: the control vocabulary, Hello replies, challenge and unique-net-id format are mapped (F-529 to F-531); next the local network version value, the unique-net-id type table and authentication (F-253, F-254, U-037, U-038).
 7. World data: advance independently authored world-data feasibility; validate a small import before the heavy-world workload (F-242, U-045).
 8. Reliability: collect the running 72-hour synthetic soak at its end and record it against U-035; it stays synthetic, not ICARUS performance (F-485, U-035).
 9. Integration: the 35 unsigned historical commits and the 250-commit PR cap need a user decision on policy, rewrite or staged integration (F-279, F-528).
