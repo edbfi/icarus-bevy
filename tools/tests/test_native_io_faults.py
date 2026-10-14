@@ -118,6 +118,13 @@ class NativeIoSessionTest(unittest.TestCase):
             _ = external_session.write_text(json.dumps(session))
             with self.assertRaisesRegex(ValueError, "case-local"):
                 _ = validate_session(root, case, external_session, probe, now)
+            _ = session_path.write_text(json.dumps({**session, "padding": "x" * 65536}))
+            with self.assertRaisesRegex(ValueError, "64 KiB"):
+                _ = validate_session(root, case, session_path, probe, now)
+            mount_option_case = root / "work/native,readonly=false"
+            mount_option_case.mkdir()
+            with self.assertRaisesRegex(ValueError, "unsupported path"):
+                _ = validate_session(root, mount_option_case, session_path, probe, now)
 
     def test_session_rejects_unsigned_scope_even_with_matching_hash(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

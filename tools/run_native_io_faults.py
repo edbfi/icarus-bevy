@@ -25,7 +25,7 @@ import uuid
 if __package__ in (None, ""):
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from tools.run_reference_offline import IMAGE, available_memory, command, validate_offline_scope
+from tools.run_reference_offline import IMAGE, available_memory, command, unredirected, validate_offline_scope
 from tools.runtime_types import JsonObject, integer_field, json_object, parse_container_identity, parse_container_state, parse_json, string_field
 
 
@@ -45,9 +45,10 @@ class ApprovedRun:
 
 
 def regular_path(path: Path) -> Path:
-    absolute = path.absolute()
-    if absolute.resolve() != absolute or not absolute.is_file():
-        raise ValueError(f"missing or redirected file: {absolute}")
+    # Paths reach Docker's comma-separated --mount syntax, so reuse its character check.
+    absolute = unredirected(path)
+    if not absolute.is_file():
+        raise ValueError(f"missing regular file: {absolute}")
     return absolute
 
 
@@ -57,8 +58,8 @@ def digest(path: Path) -> str:
 
 def validate_session(root: Path, case: Path, session_path: Path, probe: Path,
                      now: datetime.datetime) -> ApprovedRun:
-    case = case.absolute()
-    if case.resolve() != case or not case.is_dir() or not case.is_relative_to(root / "work"):
+    case = unredirected(case)
+    if not case.is_dir() or not case.is_relative_to(root / "work"):
         raise ValueError("case must be an existing unredirected directory under work")
     session_path = regular_path(session_path)
     probe = regular_path(probe)
@@ -67,7 +68,11 @@ def validate_session(root: Path, case: Path, session_path: Path, probe: Path,
         raise ValueError("session and probe must be case-local")
     if not os.access(probe, os.X_OK):
         raise ValueError("probe must be executable")
-    session = json_object(parse_json(session_path.read_text()))
+    with session_path.open("rb") as stream:
+        raw_session = stream.read(65537)
+    if len(raw_session) > 65536:
+        raise ValueError("session exceeds 64 KiB")
+    session = json_object(parse_json(raw_session))
     if string_field(session, "scope") != "native-io-faults":
         raise ValueError("session does not authorize native-io-faults")
     if not string_field(session, "authorization_source").strip():
