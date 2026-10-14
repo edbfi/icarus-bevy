@@ -19,6 +19,8 @@ be demonstrated rather than assumed.
   `.agents/skills/reverse-engineer-anything/SKILL.md` and use the `rea` MCP server
   as the primary analysis interface. This includes binary and package inspection,
   decompilation, protocol recovery, runtime observation and version comparison.
+  `docs/runbooks/rea-tooling.md` restores the runtime and names the three
+  reference environments.
   Use the connected server's advertised tools and schemas. If MCP is unavailable,
   use `.agents/rea/rea.sh` for supported CLI operations; use direct analysis tools
   only for capabilities REA lacks or a diagnosed provider/connection limitation,
@@ -43,6 +45,18 @@ be demonstrated rather than assumed.
 - Preserve the REA package lock, skill provenance and third-party licenses when
   updating. Retain existing research scopes, fixity receipts and evidence;
   replacing tooling does not resume paused research or extend runtime windows.
+
+# Research scope
+
+- Tool installation does not authorize a target experiment. Before new target
+  work, record assets, activities, authorization evidence, exclusions, network
+  profile and a bounded execution window under `work/`, and check the actual
+  command against them.
+- Separate offline and dynamic scopes; lab-only scopes permit no external service
+  connections. Preserve frozen case artifacts and receipts; adapt later probes
+  with fresh reviewed bindings.
+- A session closes as `.agents/rules/docs.md` requires; preconditions that block
+  actions live only in `docs/gates.md`.
 
 # Execution and handoff
 

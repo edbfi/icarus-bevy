@@ -1,15 +1,14 @@
 # Independent ICARUS Linux dedicated server
 
-This is the canonical plan: goal, constraints, work order, milestones and release
-gates. [Implementation status](implementation-status.md) records what exists and
-what is next; [gates](gates.md) lists preconditions that block actions;
-[architecture](architecture.md) holds design constraints. This document
-authorizes no tool execution or target activity. Full text before condensation:
-d5b0ae6:docs/linux-dedicated-server-plan.md.
+This is the canonical plan: goal, constraints, milestones, exit criteria and
+release targets. [Implementation status](implementation-status.md) records what
+exists and what is next; [gates](gates.md) is the only home of preconditions that
+block actions; [architecture](architecture.md) holds design constraints,
+repository boundaries and the toolchain; research workflow rules live in
+[`.agents/rules/project.md`](../.agents/rules/project.md). This document
+authorizes no tool execution or target activity.
 
-Offline research resumed under the execution instruction (F-404). A resumption
-does not extend historical runtime authorization windows; those records are in
-[docs/history](history/authorizations-index.md).
+Before restructure: 96ddb0b:docs/linux-dedicated-server-plan.md
 
 ## Goal and constraints
 
@@ -48,81 +47,6 @@ architectural references only; both use original game data in ways excluded here
 independently authored server world data. If original data proves indispensable,
 document the blocker and keep the full goal unmet. Do not substitute modified
 clients, asset extraction or reduced functionality without an explicit scope decision.
-
-### Toolchain
-
-Rust **1.99.0** and Bevy **0.20.0**, verified current stable on 2026-10-13 (F-413)
-([Rust](https://blog.rust-lang.org/2026/10/01/Rust-1.99.0/),
-[Bevy](https://crates.io/crates/bevy/0.20.0)). Pin Rust in `rust-toolchain.toml`
-with matching Rustfmt and Clippy; commit `Cargo.lock`; use one toolchain for
-development, CI, benchmarks and releases. Routine stable upgrades are authorized:
-verify upstream release metadata, migrate APIs, update pins and lockfile together,
-and record concrete blockers when an upgrade cannot pass.
-
-The Bevy skill under `.agents/skills/bevy/` is installed from `edbfi/skills`
-with `bunx skills`; `skills-lock.json` records source and content hash. Python
-helpers target stable 3.15.0 under the basedpyright gate described in
-[`.agents/rules/project.md`](../.agents/rules/project.md).
-
-## Repository boundaries
-
-| Location | Contents |
-| --- | --- |
-| `icarus-orig/` | Ignored original server files and preserved installations |
-| `icarus-client-orig/` | Ignored user-owned original client binaries and manifests |
-| `reference-data/` | Ignored user-supplied save archives and private inventories; preserved inputs, not backed up by Git |
-| `work/` | Ignored cases, captures, dumps, private saves, generated analysis and benchmarks |
-| `src/`, `tests/`, `benches/`, `tools/` | Reusable implementation, authored tests and research tools |
-| `docs/`, `evidence/` | Plan, specifications, ledgers, digests, runbooks, frozen history and the evidence manifest |
-
-Keep reference installations immutable during experiments; put runtime data and
-disposable copies in a case directory. Commit only authored or reviewed,
-redistributable fixtures. Keep raw saves, player identifiers, names and member
-paths out of tracked fixtures, public reports, CI artifacts and uploads.
-
-## Research workflow
-
-All reverse engineering follows the project-local
-[REA skill](../.agents/skills/reverse-engineer-anything/SKILL.md) with the `rea`
-MCP server as the primary interface; the [tooling runbook](runbooks/rea-tooling.md)
-restores the runtime and names the three reference environments. Tool
-installation does not authorize a target experiment. Before new target work,
-record assets, activities, authorization evidence, exclusions, network profile
-and a bounded execution window under `work/`, and check the actual command
-against them. Separate offline and dynamic scopes; lab-only scopes permit no
-external service connections. Preserve frozen case artifacts and receipts; adapt
-later probes with fresh reviewed bindings. Each session ends with ledger rows and
-a digest as required by [`.agents/rules/docs.md`](../.agents/rules/docs.md).
-
-## Supplied heavy-world save
-
-On 2026-10-12 the user supplied a save archive from a heavy ICARUS world,
-preserved under `reference-data/2026-10-04-heavy-save/` with a private
-inventory (M-166). Intake facts (F-276), the user-reported producing build
-25793767 (F-277), the preserved older server build 25621760 and the local
-client identity check (F-278) are ledger rows; pairing with a matched reference
-remains unverified. A stock Windows client exists on the user's separate machine, outside
-the offline lab.
-
-Work order for this dataset:
-
-1. Native filesystem fault probe: completed (bug ledger N-003).
-2. Outer real-save baseline and envelope inspector: completed; see the
-   [envelope spec](specs/save-format/prospect-envelope.md).
-3. Inner binary framing and persisted relationships: framing, dispatch and
-   selected class audits are recorded in the
-   [loading spec](specs/save-format/prospect-loading.md) and the
-   [save-class digest](research/save-format/save-class-audits.md).
-   Value meanings, restoration, inherited-array population and C001's
-   construction bridge remain open ([unknowns](ledgers/unknowns.md)). Generic
-   framing agreement does not establish an importable world; no partial importer.
-4. Matched official-server load/save/reload baseline on disposable copies, once
-   build pairing and a runtime scope exist.
-5. Authenticated negotiation, replication and the gameplay slice; validate a
-   small supported import before the heavy dataset.
-
-Possession of the archive completes no compatibility, bug-reproduction or
-performance gate.
 
 ## Milestones and exit criteria
 
@@ -170,14 +94,6 @@ rollback procedures. For each official update, preserve a baseline, compare
 binaries and protocols, rerun affected scenarios and publish support status.
 Unknown versions are not supported by assumption.
 
-## Maintenance
-
-Workflow, commit, delegation, resource and cleanup rules live in
-[`.agents/rules/project.md`](../.agents/rules/project.md); documentation rules in
-[`.agents/rules/docs.md`](../.agents/rules/docs.md). Known policy blocker: 35
-historical feature commits lack the sign-offs the PR policy now requires (F-279);
-preserve their history, keep the policy enabled and record the blocker before PR
-integration.
-
 Completion requires demonstrated compatibility, reliability and performance
-improvement while preserving the independent Rust/Bevy and no-original-assets rules.
+improvement while preserving the independent Rust/Bevy and no-original-assets
+rules.

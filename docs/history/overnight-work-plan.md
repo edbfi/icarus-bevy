@@ -13,7 +13,7 @@ Recorded window: 2026-10-04 21:13:19 UTC to 2026-10-05 05:13:19 UTC
 (23:13–07:13 Europe/Berlin). Scope and timestamps are in
 `work/icarus-overnight/scope.md` and `session.json`.
 
-For current work, follow the [canonical plan](../linux-dedicated-server-plan.md#maintenance)
+For current work, follow the [canonical plan](../linux-dedicated-server-plan.md)
 and [implementation status](../implementation-status.md). The 2026-10-12 user
 instruction permits frequent feature-branch pushes and supersedes this batch's
 no-push rule. Its eight-hour clock and runtime authorization remain historical;
