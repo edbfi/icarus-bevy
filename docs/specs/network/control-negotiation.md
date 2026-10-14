@@ -121,7 +121,7 @@ game listener.
   | 2 Upgrade | to client | u32 local version (sent on incompatible Hello, then close) |
   | 3 Challenge | to client | string (a counter-derived token, F-531) |
   | 4 Netspeed | to server | u32 (client sends it after Welcome) |
-  | 5 Login | to server | string response, string URL, unique-net-id (F-531), string platform |
+  | 5 Login | to server | string response (literal "0", F-548), string URL, unique-net-id (F-531), string platform |
   | 6 Failure | to client | string, then the client closes |
   | 9 Join | to server | none |
   | 10 Split join | to server | string URL, unique-net-id |
