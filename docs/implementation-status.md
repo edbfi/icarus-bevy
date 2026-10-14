@@ -52,4 +52,4 @@ Offline work, in order; connected proof keeps its gates.
 6. Transport: advance control negotiation, checksum admission and authentication evidence (F-253, F-254, U-037, U-038).
 7. World data: advance independently authored world-data feasibility; validate a small import before the heavy-world workload (F-242, U-045).
 8. Reliability: collect the running 72-hour synthetic soak at its end and record it against U-035; it stays synthetic, not ICARUS performance (F-485, U-035).
-9. Integration: resolve the 35 historical commits without sign-offs before PR integration (F-279).
+9. Integration: the 35 unsigned historical commits and the 250-commit PR cap need a user decision on policy, rewrite or staged integration (F-279, F-528).
