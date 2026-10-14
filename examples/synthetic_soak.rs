@@ -14,6 +14,7 @@ use bevy::prelude::*;
 use clap::Parser;
 use icarus_bevy::{
     config::ServerConfig,
+    metrics::LatencyHistogram,
     persistence::{SaveWorker, SnapshotStore},
     simulation::{
         DomainId, EntityRecord, Position, SimulationClock, SimulationSet, TickMetrics,
@@ -32,21 +33,20 @@ struct Options {
     entities: u64,
     #[arg(long, default_value_t = 10)]
     save_seconds: u64,
+    /// RSS growth is measured from the first status sample after this point.
+    #[arg(long, default_value_t = 600)]
+    warmup_seconds: u64,
 }
 
-#[derive(Resource, Default)]
-struct Samples(Vec<u64>);
+/// Up to 72 hours, the length of the plan's stability runs.
+const MAX_DURATION_SECONDS: u64 = 72 * 60 * 60;
+/// Save and capture latencies: 100 µs resolution up to 10 s (800 KiB each).
+const SAVE_RESOLUTION_MICROS: u64 = 100;
+const SAVE_BUCKETS: usize = 100_000;
 
 fn mutate(clock: Res<SimulationClock>, mut positions: Query<(&DomainId, &mut Position)>) {
     for (id, mut position) in &mut positions {
         position.0[0] = ((clock.tick + id.0) % 10_000) as f32;
-    }
-}
-
-fn sample_tick(metrics: Res<TickMetrics>, mut samples: ResMut<Samples>) {
-    // This bound exceeds two hours at 30 Hz, including permitted catch-up.
-    if samples.0.len() < 1_000_000 {
-        samples.0.push(metrics.last_tick_micros);
     }
 }
 
@@ -63,19 +63,11 @@ fn resident_kib() -> Option<u64> {
         })
 }
 
-fn quantile(samples: &mut [u64], numerator: usize) -> u64 {
-    samples.sort_unstable();
-    if samples.is_empty() {
-        return 0;
-    }
-    samples[((samples.len() - 1) * numerator) / 100]
-}
-
 fn main() -> Result<()> {
     let options = Options::parse();
     ensure!(
-        (1..=7200).contains(&options.duration_seconds),
-        "duration must be 1..7200 seconds"
+        (1..=MAX_DURATION_SECONDS).contains(&options.duration_seconds),
+        "duration must be 1..{MAX_DURATION_SECONDS} seconds"
     );
     ensure!(
         (1..=250_000).contains(&options.entities),
@@ -104,9 +96,7 @@ fn main() -> Result<()> {
         ..Default::default()
     };
     let mut app = build_app(&config, &snapshot)?;
-    app.init_resource::<Samples>()
-        .add_systems(FixedUpdate, mutate.in_set(SimulationSet::Gameplay))
-        .add_systems(FixedUpdate, sample_tick.after(SimulationSet::Finish));
+    app.add_systems(FixedUpdate, mutate.in_set(SimulationSet::Gameplay));
     app.finish();
     app.cleanup();
     drop(snapshot);
@@ -118,8 +108,10 @@ fn main() -> Result<()> {
     let mut last_save = start;
     let mut last_status = start;
     let mut pending = None::<Instant>;
-    let mut latencies = Vec::new();
-    let mut captures = Vec::new();
+    let mut latencies = LatencyHistogram::new(SAVE_RESOLUTION_MICROS, SAVE_BUCKETS);
+    let mut captures = LatencyHistogram::new(SAVE_RESOLUTION_MICROS, SAVE_BUCKETS);
+    let mut rss_warmup_kib = None::<u64>;
+    let mut rss_max_kib = None::<u64>;
     let mut commits = 0_u64;
     let mut clamped_frames = 0_u64;
     let mut previous_frame = start;
@@ -127,7 +119,8 @@ fn main() -> Result<()> {
         "{}",
         json!({"event":"soak_started", "entities":options.entities,
         "requested_seconds":options.duration_seconds, "save_seconds":options.save_seconds,
-        "tick_hz":config.tick_hz, "icarus_workload":false})
+        "warmup_seconds":options.warmup_seconds, "tick_hz":config.tick_hz,
+        "icarus_workload":false})
     );
     while start.elapsed() < Duration::from_secs(options.duration_seconds)
         && !stopping.load(Ordering::SeqCst)
@@ -144,7 +137,7 @@ fn main() -> Result<()> {
                 .take()
                 .expect("receipt must match submitted save")
                 .elapsed();
-            latencies.push(elapsed.as_micros() as u64);
+            latencies.record(elapsed.as_micros() as u64);
             commits += 1;
             println!(
                 "{}",
@@ -155,24 +148,37 @@ fn main() -> Result<()> {
         if last_save.elapsed() >= Duration::from_secs(options.save_seconds) && !worker.is_busy() {
             let capture_start = Instant::now();
             let snapshot = capture(app.world_mut())?;
-            captures.push(capture_start.elapsed().as_micros() as u64);
+            captures.record(capture_start.elapsed().as_micros() as u64);
             worker.submit(snapshot)?;
             pending = Some(Instant::now());
             last_save = Instant::now();
         }
         if last_status.elapsed() >= Duration::from_secs(30) {
+            let rss = resident_kib();
+            if let Some(rss) = rss {
+                rss_max_kib = Some(rss_max_kib.map_or(rss, |max| max.max(rss)));
+                if rss_warmup_kib.is_none()
+                    && start.elapsed() >= Duration::from_secs(options.warmup_seconds)
+                {
+                    rss_warmup_kib = Some(rss);
+                }
+            }
             let metrics = app.world().resource::<TickMetrics>();
             println!(
                 "{}",
                 json!({"event":"soak_status", "elapsed_seconds":start.elapsed().as_secs_f64(),
-                "tick":app.world().resource::<SimulationClock>().tick, "rss_kib":resident_kib(),
+                "tick":app.world().resource::<SimulationClock>().tick, "rss_kib":rss,
                 "save_commits":commits, "save_in_flight":worker.is_busy(),
-                "tick_deadline_misses":metrics.deadline_misses, "clamped_frames":clamped_frames})
+                "tick_deadline_misses":metrics.deadline_misses,
+                "tick_p99_micros":metrics.tick_micros.quantile_micros(99),
+                "clamped_frames":clamped_frames})
             );
             last_status = Instant::now();
         }
         thread::sleep(config.tick_interval().saturating_sub(frame.elapsed()));
     }
+    // Recovery verification allocates; growth is judged before it starts.
+    let rss_before_verification_kib = resident_kib();
     let deadline = Instant::now() + Duration::from_secs(30);
     if worker.finish_before(deadline)?.is_some() {
         commits += 1;
@@ -209,18 +215,29 @@ fn main() -> Result<()> {
         "final state failed round trip"
     );
     let metrics = app.world().resource::<TickMetrics>();
-    let missed = metrics.deadline_misses;
-    let mut ticks = app.world_mut().resource_mut::<Samples>();
-    let p50 = quantile(&mut ticks.0, 50);
-    let p99 = quantile(&mut ticks.0, 99);
+    let ticks = &metrics.tick_micros;
+    let growth_percent = match (rss_warmup_kib, rss_before_verification_kib) {
+        (Some(warmup), Some(end)) if warmup > 0 => {
+            Some((end as f64 - warmup as f64) * 100.0 / warmup as f64)
+        }
+        _ => None,
+    };
     println!(
         "{}",
         json!({"event":"soak_completed", "elapsed_seconds":start.elapsed().as_secs_f64(),
-        "entities":options.entities, "tick":expected.tick, "tick_samples":ticks.0.len(),
-        "tick_p50_micros":p50, "tick_p99_micros":p99, "tick_deadline_misses":missed,
+        "entities":options.entities, "tick":expected.tick, "tick_samples":ticks.count(),
+        "tick_p50_micros":ticks.quantile_micros(50), "tick_p99_micros":ticks.quantile_micros(99),
+        "tick_max_micros":ticks.max_micros(), "tick_histogram_overflow":ticks.overflow(),
+        "tick_deadline_misses":metrics.deadline_misses,
         "clamped_frames":clamped_frames, "save_commits":commits,
-        "save_observed_p99_micros":quantile(&mut latencies,99),
-        "capture_p99_micros":quantile(&mut captures,99), "final_state_verified":true,
+        "save_observed_p99_micros":latencies.quantile_micros(99),
+        "save_observed_max_micros":latencies.max_micros(),
+        "capture_p99_micros":captures.quantile_micros(99),
+        "capture_max_micros":captures.max_micros(),
+        "latency_resolution_micros":SAVE_RESOLUTION_MICROS, "final_state_verified":true,
+        "rss_warmup_kib":rss_warmup_kib, "rss_max_kib":rss_max_kib,
+        "rss_before_verification_kib":rss_before_verification_kib,
+        "rss_growth_after_warmup_percent":growth_percent,
         "rss_kib":resident_kib(), "interrupted":stopping.load(Ordering::SeqCst)})
     );
     Ok(())

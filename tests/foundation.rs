@@ -8,7 +8,8 @@ use icarus_bevy::{
     config::{ConfigOptions, ServerConfig},
     persistence::{SaveWorker, SnapshotStore},
     simulation::{
-        DomainId, EntityRecord, Position, SimulationClock, WorldSnapshot, build_app, capture,
+        DomainId, EntityRecord, Position, SimulationClock, TICK_HISTOGRAM_BUCKETS, TickMetrics,
+        WorldSnapshot, build_app, capture,
     },
 };
 
@@ -108,6 +109,30 @@ fn bevy_advances_fixed_time_and_preserves_domain_state() {
         app.update();
     }
     assert_eq!(capture(app.world_mut()).unwrap(), snapshot(110));
+}
+
+#[test]
+fn every_fixed_tick_is_recorded_in_the_bounded_tick_histogram() {
+    let mut app = build_app(&ServerConfig::default(), &snapshot(0)).unwrap();
+    app.insert_resource(TimeUpdateStrategy::FixedTimesteps(1));
+    for _ in 0..25 {
+        app.update();
+    }
+    let ticks = app.world().resource::<SimulationClock>().tick;
+    let metrics = app.world().resource::<TickMetrics>();
+    assert_eq!(ticks, 24);
+    assert_eq!(metrics.tick_micros.count(), ticks);
+    assert_eq!(
+        metrics.tick_micros.range_micros(),
+        TICK_HISTOGRAM_BUCKETS as u64
+    );
+    assert_eq!(
+        metrics.tick_micros.max_micros(),
+        Some(metrics.max_tick_micros)
+    );
+    let p50 = metrics.tick_micros.quantile_micros(50).unwrap();
+    let p99 = metrics.tick_micros.quantile_micros(99).unwrap();
+    assert!(p50 <= p99 && p99 <= metrics.max_tick_micros);
 }
 
 #[test]

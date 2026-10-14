@@ -2,6 +2,7 @@
 pub mod config;
 pub mod experimental;
 mod json;
+pub mod metrics;
 pub mod persistence;
 pub mod prospect;
 pub mod simulation;
