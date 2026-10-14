@@ -40,8 +40,11 @@ InternalConstructor<UPendingNetGame> at 0x143b21830 (F-503). Each callback
 tail-jumps to its class constructor with the constructed object as this; in the
 client those targets are the PDB-named constructors that contain the F-478
 stores, so the store base is the object under construction, conditional on
-register preservation across the super call. The older UWorld constructor
-begins 8 bytes before the older T1 store sequence (F-504). The dispatcher validates message IDs and
+register preservation across the super call (F-504). The older constructors
+match the client's apart from displacements: T1 is the older UWorld constructor
+body, so its stored constants are UWorld's primary and FNetworkNotify tables, and
+the older UPendingNetGame constructor installs its own pair at the client's
+positions (F-505). This answers the older-owner question for both classes. The dispatcher validates message IDs and
 reads the ID 0 body (F-284). A disconnected experimental reader composes the
 observed initial body within a derived 131,081-byte ceiling; negotiation,
 identity and game-connection flags stay false (F-096, F-097).
@@ -60,4 +63,4 @@ complete functions.
 
 ## Artifacts
 
-M-005, M-012, M-023..M-046, M-281..M-283, M-288..M-297.
+M-005, M-012, M-023..M-046, M-281..M-283, M-288..M-297, M-301, M-302.
