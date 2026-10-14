@@ -90,8 +90,9 @@ Last reconciled: 2026-10-14
   qualification; old lookahead is not silently promoted to decoded evidence.
   Later decoding must honor measured spans without automatic expansion.
 - Establish base origin and a same-build receiver/type-registration join without
-  carrying unproved provenance across calls; establish actual owner/caller
-  evidence before inferring the dispatcher caller (U-043).
+  carrying unproved provenance across calls (U-043). The static dispatcher
+  caller is the ReceivedBunch virtual call (F-520); runtime dispatch stays
+  unobserved.
 - Bind the concrete archive/outer framing path before promoting the experimental
   control-body fields (U-044).
 - Older server build 25621760 and client build 25793767 remain distinct;
