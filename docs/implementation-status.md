@@ -44,7 +44,7 @@ What the foundation does is in the
 
 Offline work, in order; connected proof keeps its gates.
 
-1. C001 frame replay: qualify two-vector (XMM1 quarter) mappings, source and fixtures before a fresh bounded case; preserve completed joins and partial results (F-476, F-477, U-041).
+1. C001 frame replay: take the AX/AL read-only sibling through independent review, caller, fresh case and replay; add narrow-alias support only as stops dictate and preserve partial results (F-476, F-477, U-041).
 2. C001 ownership: reconcile the slot-preparation arithmetic and concrete object-origin, final-vptr and slot contracts before any archive-slot read (F-431, F-465, U-041).
 3. Save census: close it from the completed C009, C013, C028 and C034 audits, leaving value meanings and empty inherited arrays open (F-119, F-273, U-046).
 4. Player state: resolve actor, inventory, construction, tame and mission fields and confirm the reported producing build independently (F-262, F-277, U-040).
