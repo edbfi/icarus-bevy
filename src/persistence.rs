@@ -12,7 +12,6 @@ use std::{
 use anyhow::{Context, Result, ensure};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use tempfile::NamedTempFile;
 
 use crate::json::JsonObject;
 use crate::simulation::WorldSnapshot;
@@ -290,6 +289,14 @@ impl SnapshotStore {
         let entries = fs::read_dir(&self.root).ok().into_iter().flatten();
         for entry in entries.flatten() {
             let name = entry.file_name().to_string_lossy().into_owned();
+            // A crash can strand an unpublished temporary; the lock makes this
+            // the only writer, so any regular file with the prefix is stale.
+            if name.starts_with(TEMPORARY_PREFIX)
+                && entry.file_type().is_ok_and(|kind| kind.is_file())
+            {
+                let _ = fs::remove_file(entry.path());
+                continue;
+            }
             let number = name
                 .strip_prefix("snapshot-")
                 .and_then(|name| name.strip_suffix(".json"))
@@ -344,17 +351,98 @@ fn nonblocking_flag() -> i32 {
 fn sync_directory(path: &Path) -> Result<()> {
     File::open(path)?
         .sync_all()
-        .context("synchronize snapshot directory")
+        .context("synchronize snapshot directory")?;
+    #[cfg(test)]
+    durability_probe::record(|| durability_probe::Effect::SyncDirectory(path.to_path_buf()));
+    Ok(())
 }
 
+/// Prefix of this server's unpublished temporaries; cleanup removes only these.
+const TEMPORARY_PREFIX: &str = ".snapshot-write-";
+
 fn atomic_write(root: &Path, name: &str, bytes: &[u8]) -> Result<()> {
-    let mut temporary = NamedTempFile::new_in(root)?;
+    let mut temporary = tempfile::Builder::new()
+        .prefix(TEMPORARY_PREFIX)
+        .tempfile_in(root)?;
+    #[cfg(test)]
+    let temporary_name = durability_probe::file_name(temporary.path());
+    #[cfg(test)]
+    durability_probe::record(|| durability_probe::Effect::CreateTemporary(temporary_name.clone()));
     temporary.write_all(bytes)?;
+    #[cfg(test)]
+    durability_probe::record(|| {
+        durability_probe::Effect::WriteData(temporary_name.clone(), bytes.to_vec())
+    });
     temporary.as_file().sync_all()?;
+    #[cfg(test)]
+    durability_probe::record(|| durability_probe::Effect::SyncFile(temporary_name.clone()));
     temporary
         .persist(root.join(name))
         .context("publish snapshot file")?;
+    #[cfg(test)]
+    durability_probe::record(|| durability_probe::Effect::Rename {
+        from: temporary_name.clone(),
+        to: name.to_owned(),
+    });
     sync_directory(root)
+}
+
+/// Test-only trace of durability-relevant effects in the order the real code
+/// issues them. Disabled unless a test enables it on its own thread.
+#[cfg(test)]
+mod durability_probe {
+    use std::{
+        cell::RefCell,
+        path::{Path, PathBuf},
+    };
+
+    #[derive(Clone, Debug, PartialEq, Eq)]
+    pub(super) enum Effect {
+        /// New directory entry for an empty inode, not durable until a directory sync.
+        CreateTemporary(String),
+        /// File data, not durable until a file sync.
+        WriteData(String, Vec<u8>),
+        SyncFile(String),
+        /// Directory entry change, not durable until a directory sync.
+        Rename {
+            from: String,
+            to: String,
+        },
+        SyncDirectory(PathBuf),
+        /// Directory entry removal, not durable until a directory sync.
+        Unlink(String),
+    }
+
+    thread_local! {
+        static TRACE: RefCell<Option<Vec<Effect>>> = const { RefCell::new(None) };
+    }
+
+    pub(super) fn record(effect: impl FnOnce() -> Effect) {
+        TRACE.with_borrow_mut(|trace| {
+            if let Some(trace) = trace {
+                trace.push(effect());
+            }
+        });
+    }
+
+    pub(super) fn file_name(path: &Path) -> String {
+        path.file_name()
+            .expect("temporary file has a name")
+            .to_string_lossy()
+            .into_owned()
+    }
+
+    pub(super) fn start() {
+        TRACE.with_borrow_mut(|trace| *trace = Some(Vec::new()));
+    }
+
+    pub(super) fn drain() -> Vec<Effect> {
+        TRACE.with_borrow_mut(|trace| trace.as_mut().map(std::mem::take).unwrap_or_default())
+    }
+
+    pub(super) fn stop() -> Vec<Effect> {
+        TRACE.with_borrow_mut(|trace| trace.take().unwrap_or_default())
+    }
 }
 
 /// One in-flight save; owned snapshots never borrow the live ECS world.
@@ -637,6 +725,24 @@ mod publication_tests {
     }
 
     #[test]
+    fn save_removes_stranded_own_temporaries_but_not_other_entries() {
+        let directory = tempfile::tempdir().unwrap();
+        let mut store = SnapshotStore::open(directory.path()).unwrap();
+        store.save(&snapshot(10)).unwrap();
+        let stranded = directory.path().join(format!("{TEMPORARY_PREFIX}crashed"));
+        fs::write(&stranded, b"unpublished").unwrap();
+        let foreign = directory.path().join(".tmp-operator-note");
+        fs::write(&foreign, b"keep").unwrap();
+        let prefixed_directory = directory.path().join(format!("{TEMPORARY_PREFIX}dir"));
+        fs::create_dir(&prefixed_directory).unwrap();
+        store.save(&snapshot(20)).unwrap();
+        assert!(!stranded.exists());
+        assert!(foreign.exists());
+        assert!(prefixed_directory.is_dir());
+        assert_eq!(store.load().unwrap().unwrap().snapshot, snapshot(20));
+    }
+
+    #[test]
     fn disk_full_before_manifest_publication_preserves_acknowledged_generation() {
         for fail_at in ["snapshot-2.json", "manifest.json"] {
             let directory = tempfile::tempdir().unwrap();
@@ -687,5 +793,513 @@ mod publication_tests {
         assert_eq!(reopened.save(&snapshot(30)).unwrap().generation, 3);
         fs::write(directory.path().join("snapshot-3.json"), b"corrupt").unwrap();
         assert_eq!(reopened.load().unwrap().unwrap().snapshot.tick, 20);
+    }
+}
+
+/// Simulated power loss over the real save path (U-035, power-loss part).
+///
+/// The effect log comes from `durability_probe` inside `atomic_write` and
+/// `sync_directory`, plus cleanup unlinks observed by diffing the directory
+/// after every writer call. For each crash point the model exposes every state
+/// a POSIX filesystem may leave: effects before the last directory sync are
+/// durable; each later create/rename/unlink is independently kept or lost;
+/// unsynced file data is whole, empty or half-written. Each state is
+/// materialized and recovered through the real `open` + `load`.
+#[cfg(test)]
+mod crash_consistency_tests {
+    use std::collections::{BTreeMap, BTreeSet};
+
+    use super::durability_probe::{self, Effect};
+    use super::*;
+    use crate::simulation::{DomainId, EntityRecord, Position};
+
+    /// File name to bytes, excluding the lock file that `open` recreates.
+    type DiskState = BTreeMap<String, Vec<u8>>;
+
+    const LOCK: &str = "server.lock";
+    /// Bounds the subset enumeration at 2^12 directory states per crash point.
+    const MAX_PENDING_DIRECTORY_EFFECTS: usize = 12;
+
+    enum Step {
+        Effect(Effect),
+        Attempt(WorldSnapshot),
+        Acknowledge(WorldSnapshot),
+        /// Durable external damage lowers the floor to the generation it leaves.
+        Damage(WorldSnapshot),
+    }
+
+    struct Trace {
+        root: PathBuf,
+        base: DiskState,
+        /// Durable recovered snapshot the trace starts from, if any.
+        initial: Option<WorldSnapshot>,
+        steps: Vec<Step>,
+    }
+
+    #[derive(Debug, Default)]
+    struct Counts {
+        crash_points: usize,
+        states: usize,
+        empty_worlds: usize,
+        recovered_previous: usize,
+        refused_orphans: usize,
+    }
+
+    #[derive(Debug, Default)]
+    struct Tally {
+        main: Counts,
+        after_recovery: Counts,
+        recovery_saves: usize,
+    }
+
+    type Writer = fn(&Path, &str, &[u8]) -> Result<()>;
+
+    fn snapshot(tick: u64) -> WorldSnapshot {
+        WorldSnapshot {
+            tick,
+            entities: (1..=tick / 10 + 1)
+                .map(|id| EntityRecord {
+                    id: DomainId(id),
+                    position: Position([id as f32, 0.5, -(tick as f32)]),
+                })
+                .collect(),
+            ..Default::default()
+        }
+    }
+
+    fn listing(root: &Path) -> BTreeSet<String> {
+        fs::read_dir(root)
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name().into_string().unwrap())
+            .filter(|name| name != LOCK)
+            .collect()
+    }
+
+    /// Moves probed effects into the log and records unprobed removals as
+    /// unlinks at this point; unprobed creations fail the test.
+    fn drain_into(root: &Path, steps: &mut Vec<Step>, names: &mut BTreeSet<String>) {
+        for effect in durability_probe::drain() {
+            match &effect {
+                Effect::CreateTemporary(name) => {
+                    names.insert(name.clone());
+                }
+                Effect::Rename { from, to } => {
+                    names.remove(from);
+                    names.insert(to.clone());
+                }
+                Effect::Unlink(name) => {
+                    names.remove(name);
+                }
+                Effect::WriteData(..) | Effect::SyncFile(_) | Effect::SyncDirectory(_) => {}
+            }
+            steps.push(Step::Effect(effect));
+        }
+        let actual = listing(root);
+        let unobserved: Vec<_> = actual.difference(names).collect();
+        assert!(unobserved.is_empty(), "unprobed entries: {unobserved:?}");
+        for removed in names.difference(&actual) {
+            steps.push(Step::Effect(Effect::Unlink(removed.clone())));
+        }
+        *names = actual;
+    }
+
+    fn traced_save(
+        store: &mut SnapshotStore,
+        root: &Path,
+        snapshot: &WorldSnapshot,
+        steps: &mut Vec<Step>,
+        writer: Writer,
+    ) -> Result<SaveReceipt> {
+        steps.push(Step::Attempt(snapshot.clone()));
+        let mut names = listing(root);
+        durability_probe::start();
+        let outcome = store.save_with_writer(snapshot, |root, name, bytes| {
+            let written = writer(root, name, bytes);
+            drain_into(root, steps, &mut names);
+            written
+        });
+        drain_into(root, steps, &mut names);
+        durability_probe::stop();
+        if outcome.is_ok() {
+            steps.push(Step::Acknowledge(snapshot.clone()));
+        }
+        outcome
+    }
+
+    #[derive(Clone, Copy)]
+    enum Inode<'a> {
+        Durable(&'a [u8]),
+        Temporary(&'a str),
+    }
+
+    fn crash_states(trace: &Trace, prefix: &[Step]) -> BTreeSet<DiskState> {
+        let effects: Vec<&Effect> = prefix
+            .iter()
+            .filter_map(|step| match step {
+                Step::Effect(effect) => Some(effect),
+                _ => None,
+            })
+            .collect();
+        let barrier = effects
+            .iter()
+            .rposition(
+                |effect| matches!(effect, Effect::SyncDirectory(path) if *path == trace.root),
+            )
+            .map_or(0, |index| index + 1);
+        let directory_effects: Vec<(usize, &Effect)> = effects
+            .iter()
+            .enumerate()
+            .filter(|(_, effect)| {
+                matches!(
+                    effect,
+                    Effect::CreateTemporary(_) | Effect::Rename { .. } | Effect::Unlink(_)
+                )
+            })
+            .map(|(index, effect)| (index, *effect))
+            .collect();
+        let pending = directory_effects
+            .iter()
+            .filter(|(index, _)| *index >= barrier)
+            .count();
+        assert!(
+            pending <= MAX_PENDING_DIRECTORY_EFFECTS,
+            "{pending} unsynced directory effects exceed the enumeration bound"
+        );
+        // Inode data: last written bytes and whether a file sync followed.
+        let mut data: BTreeMap<&str, (&[u8], bool)> = BTreeMap::new();
+        for effect in &effects {
+            match effect {
+                Effect::CreateTemporary(name) => {
+                    data.insert(name, (&[], true));
+                }
+                Effect::WriteData(name, bytes) => {
+                    data.insert(name, (bytes, false));
+                }
+                Effect::SyncFile(name) => {
+                    data.get_mut(name.as_str())
+                        .expect("sync of created inode")
+                        .1 = true;
+                }
+                _ => {}
+            }
+        }
+        let mut states = BTreeSet::new();
+        for mask in 0u32..1 << pending {
+            let mut names: BTreeMap<&str, Inode> = trace
+                .base
+                .iter()
+                .map(|(name, bytes)| (name.as_str(), Inode::Durable(bytes)))
+                .collect();
+            let mut bit = 0;
+            for &(index, effect) in &directory_effects {
+                if index >= barrier {
+                    let kept = mask >> bit & 1 == 1;
+                    bit += 1;
+                    if !kept {
+                        continue;
+                    }
+                }
+                match effect {
+                    Effect::CreateTemporary(name) => {
+                        names.insert(name, Inode::Temporary(name));
+                    }
+                    Effect::Rename { from, to } => {
+                        names.remove(from.as_str());
+                        names.insert(to, Inode::Temporary(from));
+                    }
+                    Effect::Unlink(name) => {
+                        names.remove(name.as_str());
+                    }
+                    _ => unreachable!(),
+                }
+            }
+            // Unsynced inode contents vary independently, once per inode.
+            let unsynced: BTreeSet<&str> = names
+                .values()
+                .filter_map(|inode| match inode {
+                    Inode::Temporary(inode) if !data[inode].1 => Some(*inode),
+                    _ => None,
+                })
+                .collect();
+            let mut choices: Vec<BTreeMap<&str, &[u8]>> = vec![BTreeMap::new()];
+            for inode in unsynced {
+                let bytes = data[inode].0;
+                let options: [&[u8]; 3] = [bytes, &[], &bytes[..bytes.len() / 2]];
+                choices = choices
+                    .into_iter()
+                    .flat_map(|choice| {
+                        options.into_iter().map(move |option| {
+                            let mut choice = choice.clone();
+                            choice.insert(inode, option);
+                            choice
+                        })
+                    })
+                    .collect();
+            }
+            for choice in choices {
+                states.insert(
+                    names
+                        .iter()
+                        .map(|(name, inode)| {
+                            let bytes = match inode {
+                                Inode::Durable(bytes) => bytes,
+                                Inode::Temporary(inode) => {
+                                    choice.get(inode).copied().unwrap_or(data[inode].0)
+                                }
+                            };
+                            ((*name).to_owned(), bytes.to_vec())
+                        })
+                        .collect(),
+                );
+            }
+        }
+        states
+    }
+
+    /// Enumerates every crash point of `trace`; `depth > 0` also saves after
+    /// each recovery and enumerates that save's own crash points.
+    fn enumerate(trace: &Trace, depth: u32, tally: &mut Tally) -> Result<(), String> {
+        let mut attempted: Vec<WorldSnapshot> = trace.initial.iter().cloned().collect();
+        let mut floor = trace.initial.clone();
+        for point in 0..=trace.steps.len() {
+            if let Some(step) = point.checked_sub(1).map(|index| &trace.steps[index]) {
+                match step {
+                    Step::Attempt(snapshot) => attempted.push(snapshot.clone()),
+                    Step::Acknowledge(snapshot) | Step::Damage(snapshot) => {
+                        floor = Some(snapshot.clone());
+                    }
+                    Step::Effect(_) => {}
+                }
+            }
+            let counts = if depth > 0 {
+                &mut tally.main
+            } else {
+                &mut tally.after_recovery
+            };
+            counts.crash_points += 1;
+            for state in crash_states(trace, &trace.steps[..point]) {
+                let names: Vec<_> = state.keys().collect();
+                check_state(&state, &attempted, floor.as_ref(), depth, tally)
+                    .map_err(|violation| format!("crash point {point}, {names:?}: {violation}"))?;
+            }
+        }
+        Ok(())
+    }
+
+    fn check_state(
+        state: &DiskState,
+        attempted: &[WorldSnapshot],
+        floor: Option<&WorldSnapshot>,
+        depth: u32,
+        tally: &mut Tally,
+    ) -> Result<(), String> {
+        let counts = if depth > 0 {
+            &mut tally.main
+        } else {
+            &mut tally.after_recovery
+        };
+        counts.states += 1;
+        let directory = tempfile::tempdir().unwrap();
+        for (name, bytes) in state {
+            fs::write(directory.path().join(name), bytes).unwrap();
+        }
+        let mut store = SnapshotStore::open(directory.path())
+            .map_err(|error| format!("open failed: {error:#}"))?;
+        let loaded = match store.load() {
+            Ok(loaded) => loaded,
+            Err(error) => {
+                let error = format!("{error:#}");
+                // Fail-closed refusal is tolerated only before any acknowledgement.
+                if floor.is_none() && error.contains("manifest missing with existing snapshots") {
+                    counts.refused_orphans += 1;
+                    return Ok(());
+                }
+                return Err(match floor {
+                    Some(floor) => {
+                        format!("acknowledged tick {} unrecoverable: {error}", floor.tick)
+                    }
+                    None => format!("unexpected recovery failure: {error}"),
+                });
+            }
+        };
+        match (&loaded, floor) {
+            (None, Some(floor)) => {
+                return Err(format!(
+                    "reset to empty after acknowledged tick {}",
+                    floor.tick
+                ));
+            }
+            (None, None) => counts.empty_worlds += 1,
+            (Some(loaded), floor) => {
+                if !attempted.contains(&loaded.snapshot) {
+                    return Err(format!(
+                        "tick {} is not a saved snapshot",
+                        loaded.snapshot.tick
+                    ));
+                }
+                if let Some(floor) = floor
+                    && loaded.snapshot.tick < floor.tick
+                {
+                    return Err(format!(
+                        "loaded tick {} precedes acknowledged tick {}",
+                        loaded.snapshot.tick, floor.tick
+                    ));
+                }
+                counts.recovered_previous += usize::from(loaded.recovered_previous);
+            }
+        }
+        if depth == 0 {
+            return Ok(());
+        }
+        let recovered = loaded.map(|loaded| loaded.snapshot);
+        let next = snapshot(recovered.as_ref().map_or(0, |snapshot| snapshot.tick) + 1);
+        let mut steps = Vec::new();
+        traced_save(
+            &mut store,
+            directory.path(),
+            &next,
+            &mut steps,
+            atomic_write,
+        )
+        .map_err(|error| format!("save after recovery failed: {error:#}"))?;
+        tally.recovery_saves += 1;
+        drop(store);
+        let reopened = SnapshotStore::open(directory.path()).unwrap();
+        let reloaded = reopened.load().map_err(|error| format!("{error:#}"))?;
+        if reloaded.map(|loaded| loaded.snapshot) != Some(next) {
+            return Err("save after recovery did not reload exactly".into());
+        }
+        drop(reopened);
+        if listing(directory.path())
+            .iter()
+            .any(|name| name.starts_with(TEMPORARY_PREFIX))
+        {
+            return Err("save after recovery left a stale temporary".into());
+        }
+        let trace = Trace {
+            root: directory.path().to_path_buf(),
+            base: state.clone(),
+            initial: recovered,
+            steps,
+        };
+        enumerate(&trace, depth - 1, tally)
+            .map_err(|violation| format!("after recovery save: {violation}"))
+    }
+
+    fn effect_count(steps: &[Step]) -> usize {
+        steps
+            .iter()
+            .filter(|step| matches!(step, Step::Effect(_)))
+            .count()
+    }
+
+    #[test]
+    fn power_loss_at_every_crash_point_preserves_acknowledged_generation() {
+        let directory = tempfile::tempdir().unwrap();
+        let root = directory.path().to_path_buf();
+        let mut store = SnapshotStore::open(&root).unwrap();
+        let mut steps = Vec::new();
+        for (tick, generation) in [(10, 1), (20, 2), (30, 3), (40, 4)] {
+            let receipt =
+                traced_save(&mut store, &root, &snapshot(tick), &mut steps, atomic_write).unwrap();
+            assert_eq!(receipt.generation, generation);
+        }
+        // Durable loss of the current generation forces a recovered-previous save.
+        steps.push(Step::Damage(snapshot(30)));
+        durability_probe::start();
+        fs::remove_file(root.join("snapshot-4.json")).unwrap();
+        durability_probe::record(|| Effect::Unlink("snapshot-4.json".into()));
+        sync_directory(&root).unwrap();
+        steps.extend(durability_probe::stop().into_iter().map(Step::Effect));
+        let recovered = store.load().unwrap().unwrap();
+        assert!(recovered.recovered_previous);
+        assert_eq!(recovered.snapshot, snapshot(30));
+        for (tick, generation) in [(50, 5), (60, 6)] {
+            let receipt =
+                traced_save(&mut store, &root, &snapshot(tick), &mut steps, atomic_write).unwrap();
+            assert_eq!(receipt.generation, generation);
+        }
+        drop(store);
+        // Cleanup of generations 1, 2 and 3 plus the injected loss of 4; the
+        // recovered-previous save finds generation 4 already gone.
+        let unlinks: Vec<&str> = steps
+            .iter()
+            .filter_map(|step| match step {
+                Step::Effect(Effect::Unlink(name)) => Some(name.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            unlinks,
+            [
+                "snapshot-1.json",
+                "snapshot-2.json",
+                "snapshot-4.json",
+                "snapshot-3.json"
+            ]
+        );
+
+        let trace = Trace {
+            root,
+            base: DiskState::new(),
+            initial: None,
+            steps,
+        };
+        let mut tally = Tally::default();
+        if let Err(violation) = enumerate(&trace, 1, &mut tally) {
+            panic!("{violation}");
+        }
+        eprintln!("effects {}, {tally:?}", effect_count(&trace.steps));
+        assert_eq!(tally.main.crash_points, trace.steps.len() + 1);
+        // Recovery is exercised from every outcome class the save path admits.
+        assert!(tally.main.empty_worlds > 0);
+        assert!(tally.main.refused_orphans > 0);
+        assert!(tally.main.recovered_previous > 0);
+        assert!(tally.after_recovery.states > tally.main.states);
+        assert_eq!(
+            tally.recovery_saves,
+            tally.main.states - tally.main.refused_orphans
+        );
+    }
+
+    /// Harness self-check: publishing before the data sync must be caught.
+    fn publish_before_data_sync(root: &Path, name: &str, bytes: &[u8]) -> Result<()> {
+        let mut temporary = tempfile::NamedTempFile::new_in(root)?;
+        let temporary_name = durability_probe::file_name(temporary.path());
+        durability_probe::record(|| Effect::CreateTemporary(temporary_name.clone()));
+        temporary.write_all(bytes)?;
+        durability_probe::record(|| Effect::WriteData(temporary_name.clone(), bytes.to_vec()));
+        temporary.persist(root.join(name))?;
+        durability_probe::record(|| Effect::Rename {
+            from: temporary_name.clone(),
+            to: name.to_owned(),
+        });
+        sync_directory(root)
+    }
+
+    #[test]
+    fn power_loss_model_rejects_publication_before_data_sync() {
+        let directory = tempfile::tempdir().unwrap();
+        let root = directory.path().to_path_buf();
+        let mut store = SnapshotStore::open(&root).unwrap();
+        let mut steps = Vec::new();
+        traced_save(&mut store, &root, &snapshot(10), &mut steps, atomic_write).unwrap();
+        traced_save(
+            &mut store,
+            &root,
+            &snapshot(20),
+            &mut steps,
+            publish_before_data_sync,
+        )
+        .unwrap();
+        drop(store);
+        let trace = Trace {
+            root,
+            base: DiskState::new(),
+            initial: None,
+            steps,
+        };
+        let violation = enumerate(&trace, 0, &mut Tally::default()).unwrap_err();
+        assert!(violation.contains("acknowledged tick 10"), "{violation}");
     }
 }
