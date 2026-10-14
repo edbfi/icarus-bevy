@@ -44,7 +44,7 @@ What the foundation does is in the
 
 Offline work, in order; connected proof keeps its gates.
 
-1. C001 frame replay: take the AX/AL read-only sibling through independent review, caller, fresh case and replay; add narrow-alias support only as stops dictate and preserve partial results (F-476, F-477, U-041).
+1. C001 frame replay: the AX/AL case overflows the 64 KiB bundle cap; prepare and review a per-role output sibling without raising caps, rerun fresh and replay (F-476, F-477, U-041).
 2. C001 ownership: establish concrete object-origin, final-vptr and slot contracts for the reconciled candidate slots before any archive-slot read (F-431, F-495, U-041).
 3. Player state: resolve actor, inventory, construction, tame and mission fields and confirm the reported producing build by evidence other than class registration (F-262, F-277, F-498, U-040).
 4. Control stores: establish base origin, actual receiver/indirect dispatch and a same-build type-registration join before inferring the dispatcher caller; confirm the older UWorld/UPendingNetGame constructor store sequences and register preservation across their super calls (F-478, F-481, F-504, U-043).
