@@ -63,6 +63,11 @@ Defects in this repository's code, each with a regression test.
 | N-014 | Config FIFO blocked startup before signal handling; TOML reads allocated entire files before validating limits | Nonblocking opened regular-file guard and 64 KiB/cap+1 reads; both CLI modes reject special/oversized inputs, retain symlinks, exact-boundary configs and overrides | F-443 |
 | N-015 | Permission error on valid newest snapshot recovered older state; next save deleted the unreadable acknowledged generation | Non-NotFound I/O fails closed before backup selection; permission repair, missing/corrupt recovery, injected EACCES/EIO and five release cases pass | F-452 |
 | N-016 | Save inspection checked a regular path then blocked if replaced by FIFO before open | Nonblocking open and opened-handle admission; matched authored race/28 CLI/16 release cases pass; regular symlinks/privacy/caps retained | F-468 |
+| N-017 | A crash between writing and publishing a snapshot stranded its temporary file, and later saves never removed it (up to 64 MiB each) | Dedicated temporary prefix; post-commit cleanup removes stale prefixed regular files; power-loss harness asserts none remain | F-511 |
+
+An intermittent `tests/cli.rs` failure in the pre-push hook at 46e64d4 lost its
+output and did not recur in 20 loaded runs (M-347); capture the full output if
+it recurs.
 
 Injected ENOSPC at the generation and manifest writer boundaries preserves the
 acknowledged generation and permits retry; an error after publication returns
