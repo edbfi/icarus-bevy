@@ -56,6 +56,7 @@ No official server bug is marked reproduced or fixed (F-217).
 - Keeps two generations and recovers; corrupt/missing manifests, noncanonical checksum fields and unsupported schemas fail closed (F-228, F-229, F-417, F-418).
 - Requires objects at native storage/record boundaries; malformed array headers recover valid preceding state, while future-schema objects refuse rollback (F-428).
 - Rejects stale snapshots and stops simulation on terminal save-worker disconnect (F-232).
+- Rejects special or oversized config inputs before state creation; accepts regular symlinks and exact64KiB TOML with CLI overrides (F-443).
 - Performs a final save and bounded shutdown on SIGINT/SIGTERM with JSON diagnostics (F-230, F-233).
 - 120.138 s synthetic run before the object-admission change: 100,000 entities, 60 saves, exact recovery and zero deadline misses/clamps (F-427); earlier result retained (F-234).
 - Updated reader/writer passes 22 generations at 100,000 entities with exact state verification; 20 measured save/load pairs remain synthetic evidence (F-429).
