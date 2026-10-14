@@ -15,10 +15,10 @@ Before restructure: 96ddb0b:docs/research/save-format/2026-10-13-save-class-audi
 
 ## Current answer
 
-The corrected census covers 3,440 of 5,485 records through C009, C013, C028
-and C034; 34 classes with 2,045 records lie outside it (F-119). Within the
-selection every observed populated tagged boundary is qualified (F-273): C028
-bodies, top frames and direct Structs (F-488, F-489); C034 top, own and
+The census is closed for its selection: C009, C013, C028 and C034 cover 3,440
+of 5,485 records, and every observed populated tagged boundary in them is
+qualified in both copies; 34 classes with 2,045 records lie outside (F-496).
+The qualified populations are C028 bodies, top frames and direct Structs (F-488, F-489); C034 top, own and
 inherited populations (F-490), compared in per-copy batches because the original
 8 MiB component transport cannot hold both copies (F-213); C009 top, own and
 parent structure (F-491) and its common children with ND01 and D01 nested

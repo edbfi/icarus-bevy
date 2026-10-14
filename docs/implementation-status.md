@@ -46,11 +46,10 @@ Offline work, in order; connected proof keeps its gates.
 
 1. C001 frame replay: take the AX/AL read-only sibling through independent review, caller, fresh case and replay; add narrow-alias support only as stops dictate and preserve partial results (F-476, F-477, U-041).
 2. C001 ownership: establish concrete object-origin, final-vptr and slot contracts for the reconciled candidate slots before any archive-slot read (F-431, F-495, U-041).
-3. Save census: close it from the completed C009, C013, C028 and C034 audits, leaving value meanings and empty inherited arrays open (F-119, F-273, U-046).
-4. Player state: resolve actor, inventory, construction, tame and mission fields and confirm the reported producing build independently (F-262, F-277, U-040).
-5. Control stores: establish base origin, actual receiver/indirect dispatch and a same-build type-registration join before inferring the dispatcher caller (F-478, F-481, U-043).
-6. Control stores: compare constructor metadata and instructions guided by paired-client symbols and the two named notify slots (F-479, F-480, U-043).
-7. Control body: bind the concrete archive/outer framing path, then promote the experimental initial-body fields (F-096, U-044).
-8. Transport: advance control negotiation, checksum admission and authentication evidence (F-253, F-254, U-037, U-038).
-9. World data: advance independently authored world-data feasibility; validate a small import before the heavy-world workload (F-242, U-045).
-10. Integration: resolve the 35 historical commits without sign-offs before PR integration (F-279).
+3. Player state: resolve actor, inventory, construction, tame and mission fields and confirm the reported producing build independently (F-262, F-277, U-040).
+4. Control stores: establish base origin, actual receiver/indirect dispatch and a same-build type-registration join before inferring the dispatcher caller (F-478, F-481, U-043).
+5. Control stores: compare constructor metadata and instructions guided by paired-client symbols and the two named notify slots (F-479, F-480, U-043).
+6. Control body: bind the concrete archive/outer framing path, then promote the experimental initial-body fields (F-096, U-044).
+7. Transport: advance control negotiation, checksum admission and authentication evidence (F-253, F-254, U-037, U-038).
+8. World data: advance independently authored world-data feasibility; validate a small import before the heavy-world workload (F-242, U-045).
+9. Integration: resolve the 35 historical commits without sign-offs before PR integration (F-279).
