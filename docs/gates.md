@@ -112,3 +112,7 @@ Last reconciled: 2026-10-14
 
 - Resolve the documented policy issue: 35 historical feature commits lack
   required sign-offs; preserve their history and keep the policy enabled (F-279).
+  The policy checks each non-merge commit's own sign-off, so a remediation
+  commit cannot clear it, and it caps a PR at 250 commits (F-528). Resolution
+  needs a user decision: amend the policy, approve a rewrite, or integrate in
+  stages.
