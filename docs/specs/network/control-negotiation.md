@@ -98,6 +98,25 @@ game listener.
   use the same bit loop without clamping the value (F-526). The client's engine
   network protocol version starts at 17 in its image, so every version gate
   above takes its current path (F-527).
+- Current client control vocabulary (F-529, F-530); strings are archive
+  strings, `u32` values follow the swap rule above:
+
+  | ID | Direction | Fields |
+  | --- | --- | --- |
+  | 0 Hello | to server | byte, u32 version, string token |
+  | 1 Welcome | to client | three strings: map URL, game name, redirect URL |
+  | 2 Upgrade | to client | u32 local version (sent on incompatible Hello, then close) |
+  | 3 Challenge | to client | string |
+  | 4 Netspeed | to server | u32 (client sends it after Welcome) |
+  | 5 Login | to server | string response, string URL, unique-net-id (0x1439a23f0), string platform |
+  | 6 Failure | to client | string, then the client closes |
+  | 9 Join | to server | none |
+  | 10 Split join | to server | string URL, unique-net-id |
+  | 15 Swap | to server | u32 |
+  | 17 Debug | to server | string |
+  | 18 NetGUID | to client | packed int, string |
+  | 21 Encryption ack | to client | none |
+
 - Older server ID 0 reads use the archive's inline buffer or `+0x150`; the
   u32 takes `0x141f60c00` when `+0x29` bit `0x20` is set (F-516). Exact and
   masked searches miss the server ReceivedBunch (F-516); a getter,

@@ -55,7 +55,8 @@ applies the same rule (F-518, F-519). In both builds ReceivedBunch reaches the
 dispatcher through the driver's notify object, vtable slot +0x18 (F-520). The
 client's ReceivedPacket parses a packet word and ack history, then bunch headers
 whose payload bits are copied to the bunch from bit 0, inside a handler prefix
-and termination-bit frame with fixed integer encodings (F-521 to F-524). A disconnected experimental reader composes the
+and termination-bit frame with fixed integer encodings (F-521 to F-524). The
+client's parsers map the control vocabulary in both directions (F-529, F-530). A disconnected experimental reader composes the
 observed initial body within a derived 131,081-byte ceiling; negotiation,
 identity and game-connection flags stay false (F-096, F-097).
 
@@ -73,4 +74,4 @@ complete functions.
 
 ## Artifacts
 
-M-005, M-012, M-023..M-046, M-281..M-283, M-288..M-297, M-301, M-302, M-315..M-341.
+M-005, M-012, M-023..M-046, M-281..M-283, M-288..M-297, M-301, M-302, M-315..M-344.
