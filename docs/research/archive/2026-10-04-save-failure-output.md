@@ -1,4 +1,4 @@
-> Archived research report, retained verbatim. Current conclusions live in [the ledgers](../../ledgers/findings.md). Moved from `docs/research/` on 2026-10-13.
+> Archived research report, retained verbatim. Current conclusions live in [the ledgers](../../ledgers/findings/). Moved from `docs/research/` on 2026-10-13.
 
 # From-file load failure reaches a fatal-output facility
 
