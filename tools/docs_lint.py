@@ -13,8 +13,8 @@ The repository documentation has two surfaces (see ``.agents/rules/docs.md``):
 without becoming part of the current surface.
 
 The evidence index is ``evidence/<area>.jsonl``: one JSON record per line per
-retained artifact, fetched by ID and never loaded whole. The legacy Markdown
-manifest ``evidence/manifest.md`` is still read while the migration is in flight.
+retained artifact, fetched by ID and never loaded whole. The Markdown manifest
+it replaced is read only at ``--base`` so its IDs must survive.
 
 The script reads files only. ``--warn`` reports every problem but exits 0, for
 use while a migration is in flight. ``--local`` additionally verifies that
@@ -96,7 +96,6 @@ PREFIX_CAPS: tuple[tuple[str, int], ...] = (
 DIGEST_CAP = 8 * KIB
 ACTIVE_FINDINGS_CAP = 96 * KIB
 LEDGER_ROW_CAP = 400
-MANIFEST_ROW_CAP = 300
 AGGREGATE_CAP = 160 * KIB
 
 # Evidence index: retrieval-tier data, outside the prose surface and read tiers.
@@ -151,7 +150,8 @@ LEGACY_FINDINGS_FILE = "docs/ledgers/findings.md"
 FINDINGS_DIR = "docs/ledgers/findings"
 RETIRED_DIR = "docs/ledgers/findings/retired"
 UNKNOWNS_FILE = "docs/ledgers/unknowns.md"
-MANIFEST_FILE = "evidence/manifest.md"
+# The Markdown manifest that preceded the JSONL index; read only at --base.
+LEGACY_MANIFEST_FILE = "evidence/manifest.md"
 CODE_REFERENCE_ROOTS: tuple[str, ...] = ("src", "tools", ".github")
 # Execution receipts belong in the evidence index, not in new finding rows.
 RECEIPT_CLASSES: tuple[str, ...] = ("tool-receipt", "tooling-receipt")
@@ -430,7 +430,7 @@ def parse_shard(rel: str, text: str) -> tuple[list[ManifestRow], list[Problem]]:
 
 
 def legacy_markdown_rows(doc: Document) -> list[ManifestRow]:
-    """Rows of the Markdown manifest that precedes the JSONL index; read until migration."""
+    """Rows of the Markdown manifest that preceded the JSONL index."""
     rows: list[ManifestRow] = []
     for number, line, fenced in iter_lines(doc.lines):
         if fenced or not line.startswith("|"):
@@ -545,9 +545,6 @@ class Linter:
                 rows, problems = parse_shard(rel, text)
                 self.problems.extend(problems)
                 self.rows.extend(rows)
-        legacy = self.docs.get(MANIFEST_FILE)
-        if legacy is not None:
-            self.rows.extend(legacy_markdown_rows(legacy))
         for row in self.rows:
             if row.identifier in self.manifest:
                 first = self.manifest[row.identifier]
@@ -561,7 +558,7 @@ class Linter:
 
     def tracked_markdown(self) -> set[str]:
         tracked: set[str] = set()
-        for root in CURRENT_ROOTS + INSTRUCTION_ROOTS + (MANIFEST_FILE,):
+        for root in CURRENT_ROOTS + INSTRUCTION_ROOTS:
             path = self.root / root
             if path.is_file() and path.suffix == ".md":
                 tracked.add(root)
@@ -572,7 +569,7 @@ class Linter:
 
     @staticmethod
     def is_current(rel: str) -> bool:
-        if rel == MANIFEST_FILE or is_under(rel, INSTRUCTION_ROOTS):
+        if is_under(rel, INSTRUCTION_ROOTS):
             return False
         return not is_under(rel, FROZEN_DIRS)
 
@@ -872,11 +869,6 @@ class Linter:
 
     def check_manifest(self) -> None:
         self.check_shards()
-        legacy = self.docs.get(MANIFEST_FILE)
-        if legacy is not None:
-            for number, line, fenced in iter_lines(legacy.lines):
-                if not fenced and line.startswith("| M-") and len(line.encode("utf-8")) > MANIFEST_ROW_CAP:
-                    self.report(MANIFEST_FILE, number, f"manifest row exceeds {MANIFEST_ROW_CAP} bytes")
         for row in self.manifest.values():
             self.check_row(row)
             if self.local:
@@ -1032,9 +1024,9 @@ class Linter:
     def base_manifest_rows(self) -> dict[str, ManifestRow]:
         """Rows defined at the base revision, in either the Markdown or the JSONL layout."""
         rows: dict[str, ManifestRow] = {}
-        legacy = self.git_show(MANIFEST_FILE)
+        legacy = self.git_show(LEGACY_MANIFEST_FILE)
         if legacy is not None:
-            for row in legacy_markdown_rows(Document(MANIFEST_FILE, legacy)):
+            for row in legacy_markdown_rows(Document(LEGACY_MANIFEST_FILE, legacy)):
                 _ = rows.setdefault(row.identifier, row)
         for rel in self.git_ls(EVIDENCE_DIR, ".jsonl"):
             text = self.git_show(rel)
@@ -1124,10 +1116,7 @@ class Linter:
     # -- layout checks ----------------------------------------------------
 
     def check_glue(self) -> None:
-        targets = dict(self.current)
-        if MANIFEST_FILE in self.docs:
-            targets[MANIFEST_FILE] = self.docs[MANIFEST_FILE]
-        for rel, doc in targets.items():
+        for rel, doc in self.current.items():
             for number, line, fenced in iter_lines(doc.lines):
                 if fenced:
                     continue
@@ -1135,10 +1124,9 @@ class Linter:
                 if tokens:
                     self.report(rel, number, f"glued tokens {', '.join(tokens)}; restore the spaces or reword")
         for row in self.rows:
-            if row.rel.endswith(".jsonl"):
-                tokens = glued_tokens(f"{row.label} {row.note or ''}")
-                if tokens:
-                    self.report(row.rel, row.line, f"glued tokens {', '.join(tokens)}; restore the spaces or reword")
+            tokens = glued_tokens(f"{row.label} {row.note or ''}")
+            if tokens:
+                self.report(row.rel, row.line, f"glued tokens {', '.join(tokens)}; restore the spaces or reword")
 
     def check_filenames(self) -> None:
         for rel in self.current:
