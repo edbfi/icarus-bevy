@@ -12,10 +12,11 @@ Full text: d5b0ae6:docs/specs/network/control-negotiation.md.
 The server-side control-message dispatcher and its initial (ID 0) branch, the
 string reader it uses, and the static evidence linking UWorld / UPendingNetGame
 notify tables to it, and the current client's packet and bunch header parse
-order. Not covered: the packet-handler prefix, the integer encodings' bit
-layouts, reassembly of partial bunches, compression, integrity protection,
-connection-state admission, the sender side, and the vocabulary beyond this
-table. The native run command has no game listener.
+order with its outer frame and integer encodings. Not covered: other packet
+handler components, reassembly of partial bunches, compression, integrity
+protection, connection-state admission, the sender side, the negotiated version
+values, and the vocabulary beyond this table. The native run command has no
+game listener.
 
 ## Confirmed
 
@@ -86,7 +87,13 @@ table. The native run command has no game listener.
   | 11 | Channel name | if open or reliable: a serialized name (version above 5) |
   | 12 | Payload | a bit count below eight times the maximum packet size, then those bits copied to the bunch from bit 0 |
 
-  Bunches repeat until the packet reader ends.
+  Bunches repeat until the packet reader ends. Before this, the stateless
+  handler consumes optional magic-header bits and one handshake bit (0 for
+  data), and the packet's bit length ends below the highest set bit of its
+  nonzero last byte, a termination bit (F-524). A value with maximum M is
+  LSB-first bits with masks 1, 2, 4, ... while value plus mask is below M; a
+  packed value is up to five bytes, each bit 0 a continuation flag and bits 1-7
+  the next 7-bit group, low group first (F-523).
 - Older server ID 0 reads use the archive's inline buffer or `+0x150`; the
   u32 takes `0x141f60c00` when `+0x29` bit `0x20` is set (F-516). Exact and
   masked searches miss the server ReceivedBunch (F-516); a getter,

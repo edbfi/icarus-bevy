@@ -44,6 +44,12 @@ JAVA_HOME="$(brew --prefix openjdk@21)/libexec" \
   "$(brew --prefix ghidra)/libexec/support/analyzeHeadless" <arguments>
 ```
 
+For a targeted decompilation of a few PDB-named functions in a large image,
+import with `-noanalysis` and run `tools/ghidra/DecompileFlowFunctions.java`
+with the starts: it disassembles each start by flow within 64 KiB, lets Ghidra
+compute the body (the PE loader already creates one-byte functions at exception
+records, so guessed end ranges overlap) and decompiles with a 30-second cap.
+
 ## Evidence at session close
 
 The exported bundle is the canonical record of a session; the repository holds
