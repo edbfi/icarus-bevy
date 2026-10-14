@@ -33,7 +33,7 @@ Last reconciled: 2026-10-15
 | U-024 | Do C028 whole-top fields have individual native spans, and which immutable library backed the historical live pin? | medium | open | none stated | F-117, F-134, F-136, F-137, F-140, F-141 |  |
 | U-025 | Do the qualified saves restore/import officially and remain compatible with stock/matched clients and newer builds? | high | open | none stated | F-126, F-144, F-149, F-157, F-183 |  |
 | U-026 | Does the original server's normalization, EOF and error behavior match the strict readers? | medium | open | none stated | F-143, F-155, F-170, F-172 |  |
-| U-027 | What do the opaque C028 binary Struct bodies and Struct-child grandchildren contain? | medium | open | none stated | F-124, F-128 |  |
+| U-027 | What do the opaque C028 binary Struct bodies and Struct-child grandchildren contain? | medium | investigating | All opaque Struct leaves are four fixed-width engine math types (F-565); next their native serializers' component layout | F-124, F-128, F-565 |  |
 | U-028 | How does project save-archive performance compare with the original server? | low | open | none stated | F-142 |  |
 | U-029 | Do original EOF policy, numeric semantics and newer-build equivalence hold for C034 Struct/Float values? | medium | open | none stated | F-191, F-192 |  |
 | U-030 | Is client aggregate-size computation (32-bit end-minus-start) safe for large spans? | low | open | none stated | F-193 |  |
