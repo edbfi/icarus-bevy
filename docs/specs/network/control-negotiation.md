@@ -67,8 +67,11 @@ one table. The native run command has no game listener.
   clears archive byte-swap bit `0x20` at `+0x29`, other values set it. It then
   reads one ID byte per message until the bunch ends.
 - Older server ID 0 reads use the archive's inline buffer or `+0x150`; the
-  u32 takes `0x141f60c00` when `+0x29` bit `0x20` is set (F-516). The server's
-  ReceivedBunch is not located (negative searches, F-516).
+  u32 takes `0x141f60c00` when `+0x29` bit `0x20` is set (F-516). Exact and
+  masked searches miss the server ReceivedBunch (F-516); a getter,
+  InternalConstructor and vftable chain finds it at UControlChannel vftable
+  `0x1454cb368` `+0x290` = `0x143536420`, applying the same first-bunch rule
+  with added verbose logging (F-518).
 - Older server: that pointer is slot `+0x18` of the UWorld FNetworkNotify table
   `0x145468180`, which the older UWorld constructor installs at `+0x28` (F-505).
   The dispatcher is therefore UWorld::NotifyControlMessage, reached through the
@@ -86,7 +89,8 @@ one table. The native run command has no game listener.
   identity and game-connection validation as false (F-096, F-097). The
   dispatcher's input is an FInBunch, a bit-oriented archive (F-507). Within the
   bunch the fields follow the ID byte, and the first field (1 = sender little
-  endian) selects the remote version's byte order (F-517); packet-to-bunch
+  endian) selects the remote version's byte order in both builds (F-518,
+  F-519); packet-to-bunch
   framing is unbound, so this framing stays experimental.
   `read_initial_control_body_with_sender_order` applies that inferred rule (1
   selects little-endian, any other value big-endian) before the same strict
@@ -125,7 +129,7 @@ one table. The native run command has no game listener.
   transitions, token failures); pass those fixtures and the stock-client
   experiment before marking negotiation implemented.
 - Authored tests (14 control tests, including the inferred sender-order entry
-  point (F-517), plus archive and handshake suites):
+  point (F-519), plus archive and handshake suites):
 
 ```bash
 cargo test --locked --test control --test archive --test handshake

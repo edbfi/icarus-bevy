@@ -4,8 +4,8 @@
 //! takes a caller-selected archive byte order and leaves the first byte
 //! uninterpreted. The separate experimental
 //! `read_initial_control_body_with_sender_order` derives the order from the
-//! first byte with a rule inferred from the original client receive path
-//! (F-517); it is not validated against the original server. Neither decodes
+//! first byte with a rule inferred statically from the client and server
+//! receive paths (F-519); no live exchange has validated it. Neither decodes
 //! UDP packet-to-bunch framing, interprets the token, selects a local version,
 //! validates identity or admits a game connection. The exact-EOF policy and
 //! string restrictions are independent research choices.
@@ -56,7 +56,7 @@ impl<'a> InitialControlBody<'a> {
     }
 
     /// Raw byte. Only `read_initial_control_body_with_sender_order` derives an
-    /// archive byte order from it (inferred, F-517); it selects no other policy.
+    /// archive byte order from it (inferred, F-519); it selects no other policy.
     pub fn first_field(&self) -> u8 {
         self.body[0]
     }
@@ -139,12 +139,12 @@ pub fn read_initial_control_body(input: &[u8], order: ByteOrder) -> Result<Initi
     })
 }
 
-/// Experimental archive byte order implied by the ID0 first field (F-517).
+/// Experimental archive byte order implied by the ID0 first field (F-519).
 ///
-/// Inferred from the original client receive path on its little-endian host:
-/// exactly 1 means a little-endian sender (no swap); every other value means the
-/// opposite endianness, so big-endian here. Not validated against the original
-/// server's sender flag; independent of this process's host byte order.
+/// Inferred statically from the client and server receive paths on their
+/// little-endian hosts: exactly 1 means a little-endian sender (no swap); every
+/// other value means the opposite endianness, so big-endian here. No live
+/// exchange has validated it; independent of this process's host byte order.
 pub fn sender_byte_order(first_field: u8) -> ByteOrder {
     if first_field == 1 {
         ByteOrder::Little
@@ -155,7 +155,7 @@ pub fn sender_byte_order(first_field: u8) -> ByteOrder {
 
 /// Experimental: `read_initial_control_body` with the order from `sender_byte_order`.
 ///
-/// The rule is inferred (F-517), not validated against the original server, and
+/// The rule is inferred statically (F-519), not validated by a live exchange, and
 /// packet-to-bunch framing is still not decoded. Ceiling, truncation, token and
 /// exact-EOF validation are those of the explicit-order reader, unchanged. The
 /// summary still reports no negotiation, identity or game connection.
