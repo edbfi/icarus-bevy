@@ -194,23 +194,23 @@ Acceptance conditions for any importer
   archive slots remain unqualified; the common callee decodes all 106 physical
   bytes as 24 instructions without function or receiver proof (F-416). No C001
   payload is parsed. Nested direct calls at `0x142174bc0`/`0x143453c00` have
-  measured 196/217-byte intervals, decoded as45/48 instructions without
+  measured 196/217-byte intervals, decoded as 45/48 instructions without
   complete-function or receiver proof (F-419, F-420, F-424). Declared local CFG
-  replay qualifies93edges, ten opaque calls and three return sites; both graphs
+  replay qualifies 93 edges, ten opaque calls and three return sites; both graphs
   remain open and receiver preservation unproved (F-426).
-  Callback/candidate replay qualifies99local edges, two common-callee calls and
+  Callback/candidate replay qualifies 99 local edges, two common-callee calls and
   two returns, with both graphs likewise open (F-430).
-  Three12-byte v1 unwind records declare register3 pushes ending at offset2 and
-  fixed48/32/48-byte allocations ending at offset6. Each has flags2 with an opaque
+  Three 12-byte v1 unwind records declare register 3 pushes ending at offset 2 and
+  fixed 48/32/48-byte allocations ending at offset 6. Each has flags 2 with an opaque
   handler RVA. Metadata intent qualifies; handler data is unread and local
   stack/receiver joins remain open (F-434).
-  Installed-language query qualifies RBX/RCX/RSP storage offsets and32-bit
+  Installed-language query qualifies RBX/RCX/RSP storage offsets and 32-bit
   variants; global/subbyte aliases and live values remain unproved (F-436).
   Conditional frame models are source-qualified, including opaque handler
   headers (F-437, F-438). Four spaces use byte units; RAM/constant addresses have
-  64bits and register/unique addresses32bits, separate from register value widths
+  64 bits and register/unique addresses 32 bits, separate from register value widths
   (F-439). Exact input/prolog joins qualify. Earlier bitvector COPY-width stops
-  lack locations; later siblings report exact opcode26/partial-COPY/vector-COPY/
+  lack locations; later siblings report exact opcode 26/partial-COPY/vector-COPY/
   byte-LOAD stops. Seven low32 register pairs and nine opcode constants join without
   independent reachability. Calls, returns, receiver/escape/ABI/ownership proof
   remain open (F-440 to F-460). Opaque-data/vector sources qualify; fresh caller

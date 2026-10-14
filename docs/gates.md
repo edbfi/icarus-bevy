@@ -39,20 +39,20 @@ Last reconciled: 2026-10-14
 - Named register storage shapes qualify (F-436), while global/subbyte aliases and
   live values do not. Reviewed frame sources (F-437, F-438) supply no target proof;
   Byte address units and exact retained-input joins qualify (F-439 to F-442).
-  Register/unique storage addresses have32bits; register values can be64bit.
+  Register/unique storage addresses have 32 bits; register values can be 64-bit.
   Handler-aware analysis preserves flags/RVAs and excludes exceptional paths;
   ordinary-entry/ABI applicability remains an explicit condition.
-- The frame case stops at opcode27 in all three selected prologues (F-442).
+- The frame case stops at opcode 27 in all three selected prologues (F-442).
   Preserve its controlled partial result. Bitvector source, installed opcode
   mapping and fresh retained replay qualify (F-444 to F-447): three local prolog
   joins pass before COPY-width stops. Failure sites are null; linear copy shapes
   do not prove reachability. Narrow source/caller and fresh retained replay qualify
-  (F-448 to F-450): exact row/index stops identify unsupported opcode26, without
+  (F-448 to F-450): exact row/index stops identify unsupported opcode 26, without
   independent reachability. Zeroing source/adapter/parser and fresh case qualify
   (F-453 to F-457): seven register pairs/nine constants join before exact partial-COPY
   stops. Read-copy source/caller and fresh case qualify (F-458 to F-460): exact
   mixed vector-COPY/byte-LOAD stops remain. Opaque-data/vector sources and caller
-  qualify (F-461 to F-463); fresh case exits1 at pretty-output cap before publication
+  qualify (F-461 to F-463); fresh case exits 1 at pretty-output cap before publication
   (F-464). Compact serialization and fresh replay qualify (F-466, F-467): common
   conditional paths complete; constructors stop at XMM1 quarters. Qualify two-vector
   mappings/source/fixtures before a fresh bounded case; original data stays unknown. Do not repeat unchanged helpers or promote
