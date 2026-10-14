@@ -600,9 +600,8 @@ fn hello_gets_a_challenge_and_login_gets_failure_then_close() {
     assert_eq!(after_hello.acks_sent, 0, "the reply carried the ack");
     assert_eq!(after_hello.control_by_id.get(&HELLO), Some(&1));
 
-    // A one-unit token is also below the threshold; each Hello is answered
-    // with a fresh lab string.
-    client.exchange(&mut app, short_hello("x", 0x0102_0304), false);
+    // Each empty-token Hello is answered with a fresh lab string.
+    client.exchange(&mut app, short_hello("", 0x0102_0304), false);
     let (_, messages) = client.receive_reply(&recv(&client.socket));
     let [ControlMessage::Challenge { token: second }] = messages.as_slice() else {
         panic!("expected one Challenge");
@@ -747,4 +746,24 @@ fn lost_challenge_is_resent_after_the_client_naks_it() {
         [ControlMessage::Challenge { .. }]
     ));
     assert_eq!(stats(&app).control_challenges_sent, 1);
+}
+
+#[test]
+fn one_unit_hello_token_takes_the_unanswered_encryption_path() {
+    // The original compares the token count including its terminator with two,
+    // so only an empty token is challenged (F-563).
+    let (mut app, address) = lab_app(PeerLabConfig::default());
+    let mut client = Client::connect(&mut app, address);
+    let packet_id = client.exchange(&mut app, short_hello("x", 0x0102_0304), true);
+    assert_eq!(
+        client.receive_ack(&recv(&client.socket)),
+        [Notification {
+            packet_id,
+            delivered: true
+        }]
+    );
+    assert!(try_recv(&client.socket).is_none());
+    let counted = stats(&app);
+    assert_eq!(counted.hello_unanswered, 1);
+    assert_eq!(counted.control_challenges_sent, 0);
 }

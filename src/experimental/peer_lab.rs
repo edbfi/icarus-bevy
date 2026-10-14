@@ -23,12 +23,13 @@
 //!   then the peer is removed (`peers_closed`). The comparison is plain
 //!   equality; the original compatibility check and the real runtime version
 //!   are unknown (U-037). `None` skips the comparison.
-//! - Otherwise a Hello whose token has fewer than two UTF-16 units: Challenge
+//! - Otherwise a Hello whose token is empty (declared count, terminator
+//!   included, below two, as the server and client compare it, F-563): Challenge
 //!   (ID 3) carrying 32 lowercase hex digits of fresh OS randomness. The
 //!   original challenge is counter-derived (F-531); this string is a lab
 //!   choice, is not retained and is never claimed to match. Every such Hello is
 //!   answered, including repeats.
-//! - A Hello with a longer token (the encryption path) is counted in
+//! - A Hello with a nonempty token (the encryption path) is counted in
 //!   `hello_unanswered` and not answered: unsupported.
 //! - Login (ID 5): counted by unique-net-id form only, then Failure (ID 6)
 //!   carrying [`ADMISSION_DISABLED_MESSAGE`] and the peer is removed. The
@@ -83,7 +84,8 @@ use super::packet_lab::{DeliveredSummary, LabPeer, PacketDisposition, PacketLabC
 
 /// Lab text of the Failure reply to Login; not an original message.
 pub const ADMISSION_DISABLED_MESSAGE: &str = "icarus-bevy peer lab: game admission is disabled";
-/// Hello tokens shorter than this (UTF-16 units) get a Challenge (F-530).
+/// Hello tokens whose declared count, including the terminator, is below this
+/// get a Challenge: only an empty token does (server and client, F-563).
 pub const CHALLENGE_TOKEN_THRESHOLD: usize = 2;
 /// Random bytes behind the lab challenge string (twice as many hex digits).
 pub const LAB_CHALLENGE_BYTES: usize = 16;
@@ -469,7 +471,9 @@ impl PeerLab {
             ControlMessage::Hello { version, token, .. } => {
                 match self.config.local_network_version {
                     Some(local) if local != *version => Some(Reply::Upgrade(local)),
-                    _ if token.units().len() < CHALLENGE_TOKEN_THRESHOLD => Some(Reply::Challenge),
+                    _ if token.declared_units() < CHALLENGE_TOKEN_THRESHOLD => {
+                        Some(Reply::Challenge)
+                    }
                     _ => {
                         bump(&mut self.stats.hello_unanswered);
                         None

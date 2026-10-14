@@ -190,10 +190,18 @@ game listener.
   `experimental::peer_lab` runs that state in the Bevy loopback lab: a peer is
   created only when its handshake acknowledgement is sent, in a bounded table
   with idle expiry, and each update coalesces one ack per peer (F-558). As an
-  inferred proxy of the client's listen-server parser, it answers a Hello with
-  Upgrade on a configured version mismatch, otherwise Challenge (lab random
-  string) for a token under two units, and a Login with Failure; it never sends
-  Welcome. Replies are reliable control bunches resent after a nak (F-561).
+  inferred mirror, it answers a Hello with Upgrade on a configured version
+  mismatch, otherwise Challenge (lab random string) for an empty token, and a
+  Login with Failure; it never sends Welcome. Replies are reliable control
+  bunches resent after a nak (F-564).
+- Server `UWorld::NotifyControlMessage` (`0x1439ee7f0`, F-563): Hello sends
+  Upgrade with the local version and closes on a version mismatch; only an
+  empty token (count with terminator under two) reaches the challenge sender;
+  a nonempty token fails and closes unless an encryption delegate is
+  registered. Netspeed is clamped to at least 1,800. Login stores the response,
+  URL, unique id and platform, validates the URL, calls the game mode's
+  PreLogin and welcomes the player on an empty error, otherwise sends the
+  error and closes.
 - Current client unique-net-id type hashes (F-543): 1 NULL, 2 MCP, 3 STEAM,
   4 PS4, 6 GOOGLE, 7 GOOGLEPLAY, 8 FACEBOOK, 9 IOS, 10 APPLE, 11 TENCENT,
   12 SWITCH, 13 AMAZON, 14 GAMECIRCLE, 15 THUNDERHEAD, 18 Oculus, 19 Quail,
