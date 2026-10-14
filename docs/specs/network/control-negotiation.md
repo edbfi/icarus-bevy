@@ -59,6 +59,12 @@ one table. The native run command has no game listener.
   rel32 callers match; a 128-byte pointer window ends at the dispatcher (F-106).
   The retained database shows one non-call reference with no containing
   function; partial coverage does not prove caller absence.
+- Older server: that pointer is slot `+0x18` of the UWorld FNetworkNotify table
+  `0x145468180`, which the older UWorld constructor installs at `+0x28` (F-505).
+  The dispatcher is therefore UWorld::NotifyControlMessage, reached through the
+  FNetworkNotify virtual slot rather than a direct call (F-506). The older
+  UPendingNetGame tables are `0x14540a038` (primary) and `0x14537cb18`
+  (FNetworkNotify).
 
 ## Candidate
 
@@ -72,8 +78,8 @@ one table. The native run command has no game listener.
   tolerances.
 - Epic's FNetworkNotify documentation (four virtual callbacks; UWorld and
   UPendingNetGame implement it; the driver's Notify field admits others) is a
-  testable interface hypothesis, not an identification of the binary owner,
-  offsets or method order.
+  testable interface hypothesis for the slots other than `+0x18`, whose owner and
+  role F-506 identifies.
 - Image-address deltas are not object-layout offsets; provenance may not cross
   calls unchecked. A forced metadata decompilation reported blocks outside its
   interval, so its bounded-flow assumption is unqualified.

@@ -44,7 +44,9 @@ register preservation across the super call (F-504). The older constructors
 match the client's apart from displacements: T1 is the older UWorld constructor
 body, so its stored constants are UWorld's primary and FNetworkNotify tables, and
 the older UPendingNetGame constructor installs its own pair at the client's
-positions (F-505). This answers the older-owner question for both classes. The dispatcher validates message IDs and
+positions (F-505). This answers the older-owner question for both classes. The
+dispatcher's only pointer is slot +0x18 of the older UWorld FNetworkNotify table,
+so the dispatcher is the older UWorld::NotifyControlMessage (F-506). The dispatcher validates message IDs and
 reads the ID 0 body (F-284). A disconnected experimental reader composes the
 observed initial body within a derived 131,081-byte ceiling; negotiation,
 identity and game-connection flags stay false (F-096, F-097).
