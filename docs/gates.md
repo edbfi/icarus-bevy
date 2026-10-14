@@ -43,8 +43,8 @@ Last reconciled: 2026-10-14
   replayed; both constructors then stop at a narrow RAX (AX) read. The reviewed
   AX/AL case overflows the 64 KiB bundle cap; the reviewed per-role split case
   qualifies the candidate's conditional model and stops the callback at its
-  role cap (F-508). Replay the split outputs independently before relying on
-  them, and never raise a cap; original data stays unread. Do not repeat
+  role cap (F-508); its split outputs are independently replayed (M-307).
+  Never raise a cap; original data stays unread. Do not repeat
   unchanged helpers or promote partial receiver claims. Stack-derived unknown
   carriers do not prove no escape; ordinary-entry, default ABI, protected-frame
   integrity and nonalias conditions remain explicit and unproved.

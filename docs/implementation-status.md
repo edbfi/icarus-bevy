@@ -44,12 +44,12 @@ What the foundation does is in the
 
 Offline work, in order; connected proof keeps its gates.
 
-1. C001 frame replay: independently replay the split AX/AL outputs; the callback still stops at its per-role cap (F-477, F-508, U-041).
-2. C001 ownership: establish concrete object-origin, final-vptr and slot contracts for the reconciled candidate slots before any archive-slot read (F-431, F-495, U-041).
-3. Player state: resolve actor, inventory, construction, tame and mission fields and confirm the reported producing build by evidence other than class registration (F-262, F-277, F-498, U-040).
-4. Control stores: establish base origin, actual receiver/indirect dispatch and a same-build type-registration join before inferring the dispatcher caller; with owner and dispatcher identified, qualify register preservation across the constructor super calls and locate the virtual call sites (F-505, F-506, U-015, U-043).
-5. Control stores: compare constructor metadata and instructions guided by paired-client symbols and the two named notify slots (F-479, F-480, U-043).
-6. Control body: the input is an FInBunch (F-507); qualify bunch framing and field bit alignment, then promote or revise the experimental initial-body fields (F-096, U-044).
-7. Transport: advance control negotiation, checksum admission and authentication evidence (F-253, F-254, U-037, U-038).
-8. World data: advance independently authored world-data feasibility; validate a small import before the heavy-world workload (F-242, U-045).
+1. C001 ownership: establish concrete object-origin, final-vptr and slot contracts for the replayed candidate's two entry-RCX table stores and the reconciled candidate slots before any archive-slot read; the callback still stops at its role cap (F-431, F-495, F-508, U-041).
+2. Player state: resolve actor, inventory, construction, tame and mission fields and confirm the reported producing build by evidence other than class registration (F-262, F-277, F-498, U-040).
+3. Control stores: establish base origin, actual receiver/indirect dispatch and a same-build type-registration join before inferring the dispatcher caller; with owner and dispatcher identified, qualify register preservation across the constructor super calls and locate the virtual call sites (F-505, F-506, U-015, U-043).
+4. Control stores: compare constructor metadata and instructions guided by paired-client symbols and the two named notify slots (F-479, F-480, U-043).
+5. Control body: the input is an FInBunch (F-507); qualify bunch framing and field bit alignment, then promote or revise the experimental initial-body fields (F-096, U-044).
+6. Transport: advance control negotiation, checksum admission and authentication evidence (F-253, F-254, U-037, U-038).
+7. World data: advance independently authored world-data feasibility; validate a small import before the heavy-world workload (F-242, U-045).
+8. Reliability: collect the running 72-hour synthetic soak at its end and record it against U-035; it stays synthetic, not ICARUS performance (F-485, U-035).
 9. Integration: resolve the 35 historical commits without sign-offs before PR integration (F-279).
