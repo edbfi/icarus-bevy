@@ -46,7 +46,7 @@ Offline work, in order; connected proof keeps its gates.
 
 1. C001 records: the top level matches its 20 save-selected descriptors and nested children frame in both copies (F-534, F-540); next compare nested struct types with C001's static descriptors, keeping values opaque (U-022, U-023).
 2. Player state: resolve actor, inventory, construction, tame and mission fields and confirm the reported producing build by evidence other than class registration (F-262, F-277, F-498, U-040).
-3. Control stores: owner, dispatcher and its static virtual call site are identified (F-505, F-506, F-520); qualify register preservation across the constructor super calls and base origin (U-043).
+3. Control stores: owner, dispatcher, static virtual call site and base origin across the super calls are qualified (F-505, F-506, F-520, F-544); runtime dispatch needs a connected or original-runtime scope (U-043).
 4. Control stores: compare constructor metadata and instructions guided by paired-client symbols and the two named notify slots (F-479, F-480, U-043).
 5. Packet framing: formats, version 17 and the reliability layer (cookie-seeded sequences, ack history, reliable queue) are recorded, with an experimental codec (F-519, F-521 to F-527, F-535 to F-539), with an experimental codec and sequencing model; next compose them in the loopback lab without admission (F-096, U-044).
 6. Transport: the control vocabulary, Hello replies, challenge and unique-net-id format are mapped (F-529 to F-531), with the client's version construction and type table (F-541 to F-543); next authentication and the client's runtime project version (F-253, F-254, U-037, U-038).

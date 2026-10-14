@@ -39,8 +39,8 @@ callbacks are InternalConstructor<UWorld> at 0x143b856c0 and
 InternalConstructor<UPendingNetGame> at 0x143b21830 (F-503). Each callback
 tail-jumps to its class constructor with the constructed object as this; in the
 client those targets are the PDB-named constructors that contain the F-478
-stores, so the store base is the object under construction, conditional on
-register preservation across the super call (F-504). The older constructors
+stores, so the store base is the object under construction (F-504); both builds hold
+it in a nonvolatile register across the super call (F-544). The older constructors
 match the client's apart from displacements: T1 is the older UWorld constructor
 body, so its stored constants are UWorld's primary and FNetworkNotify tables, and
 the older UPendingNetGame constructor installs its own pair at the client's
@@ -68,11 +68,11 @@ complete functions.
 ## Open
 
 - Receiver origin, ABI and layout of the store base (U-007); cross-call provenance (U-009); class, registration and caller of the prefixes (U-013).
-- Complete constructors (U-008) and the instruction past 0x143ca5a81 (U-012).
+- Complete constructors (U-008).
 - Executed runtime dispatch (U-010) and older-server ownership (U-011).
 - Archive, bit-position and byte-order input path (U-014); indirect callers, RTTI, table identity and owner provenance (U-015 to U-018).
 - Exact-window decoding through live REA and lazy Ghidra startup (U-019).
 
 ## Artifacts
 
-M-005, M-012, M-023..M-046, M-281..M-283, M-288..M-297, M-301, M-302, M-315..M-346, M-353..M-357.
+M-005, M-012, M-023..M-046, M-281..M-283, M-288..M-297, M-301, M-302, M-315..M-346, M-353..M-357, M-370.

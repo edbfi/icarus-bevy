@@ -89,8 +89,9 @@ Last reconciled: 2026-10-14
 - Any expanded output needs new source/classes/scope/session and byte
   qualification; old lookahead is not silently promoted to decoded evidence.
   Later decoding must honor measured spans without automatic expansion.
-- Establish base origin and a same-build receiver/type-registration join without
-  carrying unproved provenance across calls (U-043). The static dispatcher
+- Base origin is the constructed object held across the super call (F-544);
+  keep the same-build receiver/type-registration join without carrying
+  unproved provenance across other calls (U-043). The static dispatcher
   caller is the ReceivedBunch virtual call (F-520); runtime dispatch stays
   unobserved.
 - Bind the concrete archive/outer framing path before promoting the experimental
