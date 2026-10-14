@@ -22,6 +22,7 @@ Full text: fabd2f9:docs/implementation-status.md lines 1-13 and 941-1590.
 - FIFO manifest/generation startup hangs reproduced; opened-handle regular-file checks and nonblocking opens reject special inputs while retaining valid previous state (F-405; M-175).
 - Config FIFO startup hang reproduces; opened-handle regular/64KiB guards pass10CLI tests and four fixed release cases. Exact-boundary configs, regular symlinks, UTF8/I/O causes and overrides remain supported, with no source/state writes; full suite passes (F-443; M-240, M-241).
 - Current-generation EACCES reproduced rollback from valid tick20 to10 and deletion of the unreadable generation. Non-NotFound I/O now fails closed;17source checks,26foundation tests,injectedEACCES/EIO and five UID1000 release cases pass. Permission repair, missing/corrupt recovery and future-schema refusal remain; failed lead oracle and initial Clippy suite are preserved, final manual suite passes (F-452; M-251, M-252).
+- Save inspection path-swap hang reproduces in all four modes. Nonblocking opened-handle admission passes24source checks,28bounded CLI and16release cases/full suite; regular symlinks/privacy/caps stay intact, owned children gone. Compiler and lead framing-fixture failures remain preserved; no arbitrary regular-file latency or ICARUS proof (F-468; M-269, M-270).
 - Both manifest digest fields require canonical 64-digit lowercase hex before selection; load/save/startup reject malformed references without rewriting state, while valid mismatch recovery remains (F-417; M-191).
 - Release reproduction confirms twelve malformed current/previous references were admitted before and reject without writes after; valid mismatch recovery still publishes generation three retaining generation one (F-418; M-192).
 - Offline execution resumed; source/runtime scopes remain separate from connected lab authority (F-404; M-174).
@@ -90,6 +91,7 @@ Full text: fabd2f9:docs/implementation-status.md lines 1-13 and 941-1590.
 - Current synthetic workload validator review and execution (M-212, M-213).
 - Native object audit, source/test/release reviews and execution, preserved failed suite and final qualification (M-214 to M-220).
 - Config input source review, FIFO reproduction, bounded CLI/release validation and preserved lead receipt-checker oracle failure (M-240, M-241).
+- Save-inspection opened-input source review, matched authored race, bounded CLI/release controls and final full suite (M-269, M-270).
 - Current-generation read-fault review, rollback/deletion reproduction, preservation/repair controls and final full suite (M-251, M-252).
 - Dependency refresh and smoke (M-078, M-184); native deadline and recovery runs (M-132, M-133).
 - Historical soak, provenance and start commit (M-134 to M-136); snapshot measurement (M-137).

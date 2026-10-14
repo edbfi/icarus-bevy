@@ -57,6 +57,7 @@ No official server bug is marked reproduced or fixed (F-217).
 - Requires objects at native storage/record boundaries; malformed array headers recover valid preceding state, while future-schema objects refuse rollback (F-428).
 - Rejects stale snapshots and stops simulation on terminal save-worker disconnect (F-232).
 - Rejects special or oversized config inputs before state creation; accepts regular symlinks and exact64KiB TOML with CLI overrides (F-443).
+- Save inspection opens sources nonblocking and rejects nonregular handles across all modes; regular symlinks, bounded framing and private diagnostics remain (F-468).
 - Stops on current-generation I/O errors other than NotFound before backup selection; permission repair preserves newest state, while missing/corrupt recovery remains (F-452).
 - Performs a final save and bounded shutdown on SIGINT/SIGTERM with JSON diagnostics (F-230, F-233).
 - 120.138 s synthetic run before the object-admission change: 100,000 entities, 60 saves, exact recovery and zero deadline misses/clamps (F-427); earlier result retained (F-234).

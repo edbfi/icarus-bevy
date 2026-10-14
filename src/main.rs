@@ -1,4 +1,5 @@
 use std::{
+    os::unix::fs::OpenOptionsExt,
     path::PathBuf,
     sync::{
         Arc,
@@ -91,11 +92,13 @@ fn execute(cli: Cli) -> Result<()> {
             inner_tags,
             recorders,
         } => {
-            ensure!(
-                std::fs::metadata(&source)?.is_file(),
-                "source must be a regular file"
-            );
-            let file = std::fs::File::open(&source).context("open prospect envelope")?;
+            // Check the opened handle: a path can change to a FIFO after a
+            // regular-file precheck. Normal regular-file symlinks still work.
+            let file = std::fs::OpenOptions::new()
+                .read(true)
+                .custom_flags(rustix::fs::OFlags::NONBLOCK.bits() as i32)
+                .open(&source)
+                .context("open prospect envelope")?;
             ensure!(file.metadata()?.is_file(), "source must be a regular file");
             let output = if recorders {
                 serde_json::to_string(&icarus_bevy::prospect::inspect_with_recorders(file)?)?
