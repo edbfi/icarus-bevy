@@ -36,7 +36,10 @@ descriptors and public opcode constants (F-476). Every case stops at an
 unsupported operation before any receiver or frame claim. The common callee's
 conditional model completes; with both vector registers admitted, the callback
 and candidate stop at the same narrow store of RAX's low 16 bits, and admitting
-that read grows the report past the 64 KiB bundle cap (F-477). Normal-return
+that read grows the report past the 64 KiB bundle cap (F-477). Publishing per
+role, the candidate qualifies its conditional model: after its one call it
+stores two table constants at +0 and +0x28 of its entry RCX, while the callback
+stops at its own output cap (F-508). Normal-return
 ABI inference could preserve RBX only with local stack, save-slot, home-area and
 argument joins (F-431). The old slot preparation mis-stated two addresses
 (F-465); same-build base and offsets give three candidate slots, but none is
@@ -50,4 +53,4 @@ selected before origin, final-vptr and slot contracts join (F-495).
 
 ## Artifacts
 
-M-003, M-004, M-007, M-008, M-011, M-013, M-014, M-176, M-177, M-179..M-181, M-185..M-190, M-193..M-199, M-201, M-202, M-205, M-206, M-209..M-211, M-221..M-239, M-242..M-250, M-253..M-268, M-272..M-276, M-284..M-286, M-298..M-300.
+M-003, M-004, M-007, M-008, M-011, M-013, M-014, M-176, M-177, M-179..M-181, M-185..M-190, M-193..M-199, M-201, M-202, M-205, M-206, M-209..M-211, M-221..M-239, M-242..M-250, M-253..M-268, M-272..M-276, M-284..M-286, M-298..M-306.
