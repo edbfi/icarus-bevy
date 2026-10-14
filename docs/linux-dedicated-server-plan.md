@@ -112,7 +112,7 @@ Work order for this dataset:
 3. Inner binary framing and persisted relationships: framing, dispatch and
    selected class audits are recorded in the
    [loading spec](specs/save-format/prospect-loading.md) and the
-   [save-class digest](research/save-format/2026-10-13-save-class-audits.md).
+   [save-class digest](research/save-format/save-class-audits.md).
    Value meanings, restoration, inherited-array population and C001's
    construction bridge remain open ([unknowns](ledgers/unknowns.md)). Generic
    framing agreement does not establish an importable world; no partial importer.
