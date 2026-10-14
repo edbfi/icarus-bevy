@@ -204,6 +204,11 @@ Acceptance conditions for any importer
   fixed48/32/48-byte allocations ending at offset6. Each has flags2 with an opaque
   handler RVA. Metadata intent qualifies; handler data is unread and local
   stack/receiver joins remain open (F-434).
+  Installed-language query qualifies RBX/RCX/RSP storage offsets and32-bit
+  variants; global/subbyte aliases and live values remain unproved (F-436).
+  Conditional frame models are source-qualified, including opaque handler
+  headers; address units, exact adapters and actual target replay remain open
+  (F-437, F-438).
 
 ## Open questions
 
