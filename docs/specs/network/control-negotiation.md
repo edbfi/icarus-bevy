@@ -76,7 +76,7 @@ game listener.
   | --- | --- | --- |
   | 1 | Packet word | 32 bits: history words minus one (bits 0-3, at most 8 words), acked sequence (4-17), sequence (18-31) |
   | 2 | Ack history | that many 32-bit words |
-  | 3 | Packet info | above reader version 13: one bit; if set, a value below 1024 and more fields (ReadPacketInfo) |
+  | 3 | Packet info | above reader version 13: one bit; if set, a value below 1024, a frame-time bit and, to a client, one frame-time byte (F-525) |
   | 4 | Control | one bit; if set, open and close bits |
   | 5 | Close reason | if closing: value below 15 (below version 7: one bit) |
   | 6 | Paused, reliable | one bit each |
@@ -84,7 +84,7 @@ game listener.
   | 8 | Exports, mapped GUIDs, partial | one bit each |
   | 9 | Reliable sequence | if reliable: value below 1024, relative to the channel's last |
   | 10 | Partial initial, final | if partial: one bit each |
-  | 11 | Channel name | if open or reliable: a serialized name (version above 5) |
+  | 11 | Channel name | if open or reliable: one bit; if set a packed hard-coded index (at most 702, 0 none), else an archive string and a 32-bit number (F-525) |
   | 12 | Payload | a bit count below eight times the maximum packet size, then those bits copied to the bunch from bit 0 |
 
   Bunches repeat until the packet reader ends. Before this, the stateless
