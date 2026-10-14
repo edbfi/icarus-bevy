@@ -45,7 +45,7 @@ What the foundation does is in the
 Offline work, in order; connected proof keeps its gates.
 
 1. C001 records: the top level matches its 20 save-selected descriptors and nested children frame in both copies (F-534, F-540); next compare nested struct types with C001's static descriptors, keeping values opaque (U-022, U-023).
-2. Player state: resolve actor, inventory, construction, tame and mission fields and confirm the reported producing build by evidence other than class registration (F-262, F-277, F-498, U-040).
+2. Player state: resolve actor, inventory, construction, tame and mission fields; class and field names do not discriminate the producing build (F-498, F-547), so confirming it needs value-level or runtime evidence (F-262, F-277, U-040).
 3. Control stores: owner, dispatcher, static virtual call site and base origin across the super calls are qualified (F-505, F-506, F-520, F-544); runtime dispatch needs a connected or original-runtime scope (U-043).
 4. Control stores: constructors and notify tables correspond by position (F-505, F-546); the older dispatcher (7,560-byte record) and the client's differ in record length, so a function-level comparison needs a flow decompile of both (F-480, U-043).
 5. Packet framing: formats, version 17 and the reliability layer (cookie-seeded sequences, ack history, reliable queue) are recorded, with an experimental codec (F-519, F-521 to F-527, F-535 to F-539), with an experimental codec and sequencing model; next compose them in the loopback lab without admission (F-096, U-044).

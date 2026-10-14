@@ -36,7 +36,8 @@ F-198).
 
 Every one of the save's 38 class identifiers is registered in both the older
 server and the newer client, so class identity cannot confirm the reported
-producing build (F-498).
+producing build (F-498); the same holds for all 332 field and type names of
+the framed bodies in the current copy (F-547).
 
 Counts and maxima are samples from the two supplied copies, not format limits.
 No decoded value, text or number was emitted or interpreted.
