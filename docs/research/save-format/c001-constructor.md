@@ -37,8 +37,9 @@ unsupported operation before any receiver or frame claim. The common callee's
 conditional model completes; with both vector registers admitted, the callback
 and candidate stop at the same narrow store of RAX's low 16 bits (F-477). Normal-return
 ABI inference could preserve RBX only with local stack, save-slot, home-area and
-argument joins (F-431). The old slot-preparation arithmetic is inconsistent, so
-no archive slot is selected (F-465).
+argument joins (F-431). The old slot preparation mis-stated two addresses
+(F-465); same-build base and offsets give three candidate slots, but none is
+selected before origin, final-vptr and slot contracts join (F-495).
 
 ## Open
 

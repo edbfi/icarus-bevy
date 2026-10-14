@@ -46,9 +46,10 @@ Last reconciled: 2026-10-14
   unchanged helpers or promote partial receiver claims. Stack-derived unknown
   carriers do not prove no escape; ordinary-entry, default ABI, protected-frame
   integrity and nonalias conditions remain explicit and unproved.
-- Old slot preparation has inconsistent base/offset/address arithmetic (F-465;
-  M-265, M-266). Select no replacement until same-build provenance is reconciled.
-  Conditional register continuity also needs concrete object-origin,
+- Old slot preparation mis-stated two addresses (F-465); base and offsets have
+  independent same-build provenance, so the candidate slots are 0x1449da030,
+  0x1449da418 and 0x1449da430 (F-495). They stay candidates: conditional
+  register continuity also needs concrete object-origin,
   construction-path, final-vptr and slot-contract joins before ownership or any
   three-slot read.
 - Retained exports already identify the exact native class getter and
