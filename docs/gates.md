@@ -46,8 +46,10 @@ Last reconciled: 2026-10-14
   Preserve its controlled partial result. Bitvector source, installed opcode
   mapping and fresh retained replay qualify (F-444 to F-447): three local prolog
   joins pass before COPY-width stops. Failure sites are null; linear copy shapes
-  do not prove reachability. Qualify diagnostic/narrow-width source and fixtures
-  before another reviewed fresh case; do not repeat unchanged helpers or promote
+  do not prove reachability. Narrow source/caller and fresh retained replay qualify
+  (F-448 to F-450): exact row/index stops identify unsupported opcode26, without
+  independent reachability. Qualify zeroing/low-register source, mappings and
+  fixtures before another reviewed fresh case. Do not repeat unchanged helpers or promote
   partial receiver claims. Stack-derived unknown carriers do not prove no escape;
   ordinary-entry, default ABI, protected-frame integrity and nonalias conditions
   remain explicit and unproved.
