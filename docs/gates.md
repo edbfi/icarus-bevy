@@ -43,9 +43,14 @@ Last reconciled: 2026-10-14
   Handler-aware analysis preserves flags/RVAs and excludes exceptional paths;
   ordinary-entry/ABI applicability remains an explicit condition.
 - The frame case stops at opcode27 in all three selected prologues (F-442).
-  Preserve its controlled partial result. Qualify the bitvector-carrier source,
-  fixtures and installed opcode mapping before a separately reviewed fresh case;
-  do not repeat the unchanged helper or promote partial receiver claims.
+  Preserve its controlled partial result. Bitvector source, installed opcode
+  mapping and fresh retained replay qualify (F-444 to F-447): three local prolog
+  joins pass before COPY-width stops. Failure sites are null; linear copy shapes
+  do not prove reachability. Qualify diagnostic/narrow-width source and fixtures
+  before another reviewed fresh case; do not repeat unchanged helpers or promote
+  partial receiver claims. Stack-derived unknown carriers do not prove no escape;
+  ordinary-entry, default ABI, protected-frame integrity and nonalias conditions
+  remain explicit and unproved.
 - Retained exports already identify its exact native class getter and
   construction callback; reuse these before new bounded queries. Read the
   retained instruction listing within these exact intervals before expanding
