@@ -10,6 +10,10 @@ use flate2::{Decompress, FlushDecompress, Status};
 use serde::{Deserialize, Serialize};
 use sha1::{Digest, Sha1};
 
+use crate::experimental::archive::{ByteOrder, decode_string};
+use crate::experimental::component::{
+    BaseComponent, MAX_BOUNDED_COMPONENT_BYTES, read_base_component_with_limit,
+};
 use crate::experimental::recorders::{RecorderSummary, read_recorders};
 use crate::experimental::tagged::{RootTagSummary, TagProfile, read_root};
 use crate::json::JsonObject;
@@ -109,6 +113,84 @@ pub fn inspect_with_recorders(reader: impl Read) -> Result<RecorderInspection> {
         recorders: recorders.summary(),
         world_imported: false,
     })
+}
+
+/// One caller-selected recorder handed to a [`visit_class_components`] visitor.
+///
+/// `component` is the framing outcome as a value: `Ok` borrows the framed
+/// component's exact source spans, and `Err` borrows the framing error. Both are
+/// valid only for the duration of the call, so nothing escapes the visitor.
+pub struct ComponentVisit<'a> {
+    /// Zero-based position in the recorder array, counting every class.
+    pub recorder_index: usize,
+    /// Length of the recorder's opaque BinaryData bytes.
+    pub binary_bytes: usize,
+    pub component: std::result::Result<&'a BaseComponent<'a>, &'a anyhow::Error>,
+}
+
+/// Aggregate counts only; never the class string, field names or values.
+#[derive(Debug, Serialize)]
+pub struct ClassComponentReport {
+    pub validation: &'static str,
+    pub recorder_count: usize,
+    pub matched_count: usize,
+    pub framed_count: usize,
+    pub failed_count: usize,
+    pub world_imported: bool,
+}
+
+/// Explicitly experimental: after the same envelope, root-tag and recorder
+/// validation as [`inspect_with_recorders`], frame the BinaryData of every
+/// recorder whose decoded class string equals `class` exactly (UTF-16 unit
+/// equality, array order) as a caller-selected base-component candidate under
+/// `limit` bytes (1..=128 KiB, checked before any input is read). A framing
+/// failure is passed to `visit` as a value and the walk continues; an `Err`
+/// returned by `visit` aborts the walk and is returned unchanged. The visitor
+/// receives borrowed spans and owns their privacy; the report holds counts only.
+/// Matching a class string does not recognize the class or verify its schema.
+pub fn visit_class_components(
+    reader: impl Read,
+    class: &str,
+    limit: usize,
+    mut visit: impl FnMut(ComponentVisit<'_>) -> Result<()>,
+) -> Result<ClassComponentReport> {
+    ensure!(
+        (1..=MAX_BOUNDED_COMPONENT_BYTES).contains(&limit),
+        "component byte limit must be between 1 byte and 128 KiB"
+    );
+    let validated = decode_envelope(reader)?;
+    let profile = TagProfile::MemoryArchive522;
+    let tags = read_root(&validated.payload, profile).context("invalid experimental root tags")?;
+    let recorders =
+        read_recorders(&tags.tags, profile).context("invalid experimental recorder framing")?;
+    let mut report = ClassComponentReport {
+        validation: "experimental_class_component_framing_only",
+        recorder_count: recorders.records().len(),
+        matched_count: 0,
+        framed_count: 0,
+        failed_count: 0,
+        world_imported: false,
+    };
+    for (recorder_index, recorder) in recorders.records().iter().enumerate() {
+        // read_recorders validated this exact FString; decoding cannot leak it.
+        let decoded = decode_string(recorder.class_value, ByteOrder::Little)
+            .context("invalid experimental recorder class string")?;
+        if !decoded.units.iter().copied().eq(class.encode_utf16()) {
+            continue;
+        }
+        report.matched_count += 1;
+        let framed = read_base_component_with_limit(recorder.binary_data, profile, limit);
+        match &framed {
+            Ok(_) => report.framed_count += 1,
+            Err(_) => report.failed_count += 1,
+        }
+        visit(ComponentVisit {
+            recorder_index,
+            binary_bytes: recorder.binary_data.len(),
+            component: framed.as_ref(),
+        })?;
+    }
+    Ok(report)
 }
 
 fn decode_envelope(reader: impl Read) -> Result<ValidatedEnvelope> {
