@@ -51,12 +51,18 @@ Last reconciled: 2026-10-14
   independent reachability. Zeroing source/adapter/parser and fresh case qualify
   (F-453 to F-457): seven register pairs/nine constants join before exact partial-COPY
   stops. Read-copy source/caller and fresh case qualify (F-458 to F-460): exact
-  mixed vector-COPY/byte-LOAD stops remain. Qualify opaque-data/vector source,
-  mappings and fixtures before another reviewed fresh case; preserve unknown
-  original data contents. Do not repeat unchanged helpers or promote
+  mixed vector-COPY/byte-LOAD stops remain. Opaque-data/vector sources and caller
+  qualify (F-461 to F-463); fresh case exits1 at pretty-output cap before publication
+  (F-464). Compact serialization and fresh replay qualify (F-466, F-467): common
+  conditional paths complete; constructors stop at XMM1 quarters. Qualify two-vector
+  mappings/source/fixtures before a fresh bounded case; original data stays unknown. Do not repeat unchanged helpers or promote
   partial receiver claims. Stack-derived unknown carriers do not prove no escape;
   ordinary-entry, default ABI, protected-frame integrity and nonalias conditions
   remain explicit and unproved.
+- Old slot preparation has inconsistent base/offset/address arithmetic (F-465; M-265, M-266).
+  Select no replacements until same-build provenance is reconciled. Conditional
+  register continuity also needs concrete object-origin/construction-path/final-vptr
+  and slot-contract joins before ownership or any three-slot read.
 - Retained exports already identify its exact native class getter and
   construction callback; reuse these before new bounded queries. Read the
   retained instruction listing within these exact intervals before expanding

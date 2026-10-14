@@ -213,7 +213,11 @@ Acceptance conditions for any importer
   lack locations; later siblings report exact opcode26/partial-COPY/vector-COPY/
   byte-LOAD stops. Seven low32 register pairs and nine opcode constants join without
   independent reachability. Calls, returns, receiver/escape/ABI/ownership proof
-  remain open (F-440 to F-460).
+  remain open (F-440 to F-460). Opaque-data/vector sources qualify; fresh caller
+  rejects pretty-output cap before publication, with no retained model result
+  (F-461 to F-464). Compact replay reports common conditional completion and
+  constructor XMM1-quarter stops; two-vector mappings remain pending, while slot
+  arithmetic and concrete origin/final-vptr contracts gate archive reads (F-465 to F-467).
 
 ## Open questions
 
