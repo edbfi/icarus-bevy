@@ -38,13 +38,13 @@ class Fixture:
         path.parent.mkdir(parents=True, exist_ok=True)
         _ = path.write_text(text, encoding="utf-8")
 
-    def linter(self, *, local: bool = False, strict: bool = False, base: str = "HEAD", today: date = TODAY) -> docs_lint.Linter:
-        linter = docs_lint.Linter(self.root, local=local, strict=strict, base=base, today=today)
+    def linter(self, *, local: bool = False, base: str = "HEAD", today: date = TODAY) -> docs_lint.Linter:
+        linter = docs_lint.Linter(self.root, local=local, base=base, today=today)
         _ = linter.run()
         return linter
 
-    def lint(self, *, local: bool = False, strict: bool = False, base: str = "HEAD") -> list[str]:
-        return [problem.render() for problem in self.linter(local=local, strict=strict, base=base).problems]
+    def lint(self, *, local: bool = False, base: str = "HEAD") -> list[str]:
+        return [problem.render() for problem in self.linter(local=local, base=base).problems]
 
     def git_init(self) -> None:
         (self.root / ".git").rmdir()
@@ -101,7 +101,7 @@ class DocsLintTest(unittest.TestCase):
     def test_runbook_and_ledger_cells_are_exempt(self) -> None:
         fx = self.make()
         fx.write("docs/runbooks/run.md", "# Run\n\nUse work/case-1 as the data directory.\n")
-        fx.write("docs/ledgers/findings.md", f"# Findings\n\nLast reconciled: 2026-10-13\n\n| ID | claim |\n| --- | --- |\n| F-001 | digest {DIGEST} |\n")
+        fx.write("docs/ledgers/findings/a.md", f"# Findings\n\nLast reconciled: 2026-10-13\n\n| ID | claim |\n| --- | --- |\n| F-001 | digest {DIGEST} |\n")
         self.assertEqual(fx.lint(), [])
 
     def test_size_caps(self) -> None:
@@ -140,7 +140,7 @@ class DocsLintTest(unittest.TestCase):
 
     def test_ledger_ids(self) -> None:
         fx = self.make()
-        fx.write("docs/ledgers/findings.md", "# F\n\nLast reconciled: 2026-10-13\n\n| ID | status |\n| --- | --- |\n| F-001 | superseded-by F-009 |\n| F-001 | active |\n")
+        fx.write("docs/ledgers/findings/a.md", "# F\n\nLast reconciled: 2026-10-13\n\n| ID | status |\n| --- | --- |\n| F-001 | superseded-by F-009 |\n| F-001 | active |\n")
         fx.write("docs/ledgers/unknowns.md", "# U\n\nLast reconciled: 2026-10-13\n\n| ID |\n| --- |\n| U-001 |\n")
         fx.write("docs/specs/s.md", SPEC_OK + "\nSee F-001, F-002, U-001, U-002.\n")
         problems = fx.lint()
@@ -153,9 +153,9 @@ class DocsLintTest(unittest.TestCase):
     def test_removed_ledger_id_detected_against_git_head(self) -> None:
         fx = self.make()
         fx.git_init()
-        fx.write("docs/ledgers/findings.md", "# F\n\nLast reconciled: 2026-10-13\n\n| ID |\n| --- |\n| F-001 |\n| F-002 |\n")
+        fx.write("docs/ledgers/findings/a.md", "# F\n\nLast reconciled: 2026-10-13\n\n| ID |\n| --- |\n| F-001 |\n| F-002 |\n")
         _ = fx.commit("ledger")
-        fx.write("docs/ledgers/findings.md", "# F\n\nLast reconciled: 2026-10-13\n\n| ID |\n| --- |\n| F-001 |\n")
+        fx.write("docs/ledgers/findings/a.md", "# F\n\nLast reconciled: 2026-10-13\n\n| ID |\n| --- |\n| F-001 |\n")
         problems = fx.lint()
         self.assertTrue(any("ID F-002 existed at HEAD" in problem for problem in problems), problems)
 
@@ -210,35 +210,36 @@ class DocsLintTest(unittest.TestCase):
         self.assertFalse(any("retired/big.md" in problem for problem in problems), problems)
         fx.write("docs/ledgers/findings/big.md", FINDINGS_HEAD + "".join(row.format(n) for n in range(1, 140)))
         fx.write("docs/ledgers/findings/more.md", FINDINGS_HEAD + "".join(row.format(n) for n in range(400, 539)))
-        self.assertFalse(any("active findings total" in problem for problem in fx.lint()))
-        self.assertTrue(any("active findings total" in problem for problem in fx.lint(strict=True)))
+        self.assertTrue(any("active findings total" in problem for problem in fx.lint()))
 
-    def test_legacy_layouts_accepted_until_strict(self) -> None:
+    def test_legacy_layouts_rejected(self) -> None:
         fx = self.make()
         fx.write("docs/implementation-status.md", STATUS_LEGACY)
         fx.write("docs/research/area/topic.md", DIGEST_LEGACY)
-        self.assertEqual(fx.lint(), [])
-        problems = fx.lint(strict=True)
+        fx.write("docs/ledgers/findings.md", "# F\n\nLast reconciled: 2026-10-13\n\n| ID |\n| --- |\n| F-001 |\n")
+        fx.write("docs/specs/s.md", SPEC_OK + "\nSee F-001.\n")
+        problems = fx.lint()
         self.assertTrue(any("implementation-status.md: H2 set" in problem for problem in problems), problems)
         self.assertTrue(any("topic.md: H2 set" in problem for problem in problems), problems)
+        self.assertTrue(any("finding F-001 is not defined" in problem for problem in problems), problems)
         fx.write("docs/implementation-status.md", STATUS_OK)
         fx.write("docs/research/area/topic.md", DIGEST_OK)
-        fx.write("CLAUDE.md", "# Agents\n")
-        fx.write("docs/README.md", "# Map\n")
-        self.assertEqual(fx.lint(strict=True), [])
-
-    def test_strict_digest_cap(self) -> None:
-        fx = self.make()
-        fx.write("docs/research/area/topic.md", DIGEST_OK + "d" * docs_lint.DIGEST_CAP)
+        fx.write("docs/specs/s.md", SPEC_OK)
+        (fx.root / "docs/ledgers/findings.md").unlink()
         self.assertEqual(fx.lint(), [])
-        self.assertTrue(any("topic.md" in problem and "cap" in problem for problem in fx.lint(strict=True)))
+
+    def test_digest_cap(self) -> None:
+        fx = self.make()
+        fx.write("docs/research/area/topic.md", DIGEST_OK + "d" * (docs_lint.DIGEST_CAP - 200))
+        self.assertEqual(fx.lint(), [])
+        fx.write("docs/research/area/topic.md", DIGEST_OK + "d" * docs_lint.DIGEST_CAP)
+        self.assertTrue(any("topic.md" in problem and "cap" in problem for problem in fx.lint()))
 
     def test_glued_tokens(self) -> None:
         fx = self.make()
         fx.write("docs/notes.md", "# Notes\n\nCase passes128authored checks at100000entities.\n\nCommit cac76ec, `passes128authored`, [x](a1b2c3d4e5f.md), memory522 and x86LE64 are fine.\n")
         fx.write("docs/a1b2c3d4e5f.md", "# Target\n")
-        self.assertEqual(fx.lint(), [])
-        problems = fx.lint(strict=True)
+        problems = fx.lint()
         self.assertTrue(any("notes.md:3: glued tokens passes128authored, at100000entities" in problem for problem in problems), problems)
         self.assertFalse(any("notes.md:5" in problem for problem in problems), problems)
 
@@ -246,39 +247,41 @@ class DocsLintTest(unittest.TestCase):
         fx = self.make()
         fx.write("docs/research/area/2026-10-13-topic.md", DIGEST_OK)
         fx.write("docs/notes.md", "# Notes\n\nBefore restructure: abc1234:docs/old.md\n\nFull text: def5678:docs/older.md\n\n| a | 1234567:docs/cell.md |\n")
-        self.assertEqual(fx.lint(), [])
-        problems = fx.lint(strict=True)
+        problems = fx.lint()
         self.assertTrue(any("2026-10-13-topic.md: dated filename" in problem for problem in problems), problems)
         self.assertTrue(any("notes.md:5: more than one commit:path provenance" in problem for problem in problems), problems)
         self.assertFalse(any("notes.md:3" in problem or "notes.md:7" in problem for problem in problems), problems)
 
     def test_read_tiers(self) -> None:
         fx = self.make()
-        fx.write("CLAUDE.md", "# Agents\n\n" + "a" * docs_lint.STARTUP_BUDGET)
+        fx.write("CLAUDE.md", "# Agents\n\n" + "a" * (docs_lint.STARTUP_BUDGET - 2000))
         fx.write("docs/README.md", "# Map\n")
         fx.write("docs/implementation-status.md", STATUS_OK)
         self.assertEqual(fx.lint(), [])
-        self.assertTrue(any("startup read tier is" in problem for problem in fx.lint(strict=True)))
+        fx.write("CLAUDE.md", "# Agents\n\n" + "a" * docs_lint.STARTUP_BUDGET)
+        self.assertTrue(any("startup read tier is" in problem for problem in fx.lint()))
         fx.write("CLAUDE.md", "# Agents\n")
         fx.write("docs/big.md", "# Big\n\n" + "b" * (docs_lint.TASK_BUDGET + 1))
         original = docs_lint.TASK_TIERS
         docs_lint.TASK_TIERS = {"research": ("docs/big.md",), "stale": ("docs/gone.md",)}
         self.addCleanup(setattr, docs_lint, "TASK_TIERS", original)
-        linter = fx.linter(strict=True)
-        self.assertTrue(any("task read tier 'research'" in warning.render() for warning in linter.warnings))
-        self.assertTrue(any("gone.md: task read tier 'stale' names a missing file" in problem.render() for problem in linter.problems))
+        linter = fx.linter()
+        warnings = [warning.render() for warning in linter.warnings]
+        self.assertTrue(any("task read tier 'research'" in warning for warning in warnings), warnings)
+        self.assertTrue(any("gone.md: task read tier 'stale' names a missing file" in warning for warning in warnings), warnings)
+        self.assertFalse(any("task read tier" in problem.render() for problem in linter.problems))
 
-    def test_manifest_row_cap_is_strict(self) -> None:
+    def test_manifest_row_cap(self) -> None:
         fx = self.make()
         long_session = "s" * docs_lint.MANIFEST_ROW_CAP
         fx.write("evidence/manifest.md", f"# M\n\n| ID | path | sha256 | date | session | class |\n| --- | --- | --- | --- | --- | --- |\n| M-001 | work/x | unstated | 2026-10-13 | {long_session} | local-private |\n")
-        self.assertEqual(fx.lint(), [])
-        self.assertTrue(any("manifest row exceeds" in problem for problem in fx.lint(strict=True)))
+        self.assertTrue(any("manifest row exceeds" in problem for problem in fx.lint()))
 
     def test_staleness_warning(self) -> None:
         fx = self.make()
         fx.write("docs/implementation-status.md", STATUS_OK)
-        self.assertEqual(fx.linter(today=date(2026, 11, 12)).warnings, [])
+        fresh = [warning.render() for warning in fx.linter(today=date(2026, 11, 12)).warnings]
+        self.assertFalse(any("last reconciled" in warning for warning in fresh), fresh)
         warnings = [warning.render() for warning in fx.linter(today=date(2026, 11, 13)).warnings]
         self.assertTrue(any("last reconciled 31 days ago" in warning for warning in warnings), warnings)
 
@@ -312,7 +315,7 @@ class DocsLintTest(unittest.TestCase):
             f"| M-003 | work/x | nothex | 2026-10-13 | s1 | tracked |\n"
         )
         fx.write("evidence/manifest.md", rows)
-        fx.write("docs/ledgers/findings.md", f"# F\n\nLast reconciled: 2026-10-13\n\n| ID | evidence |\n| --- | --- |\n| F-001 | M-001 ev_{DIGEST} |\n| F-002 | ev_{DIGEST} |\n")
+        fx.write("docs/ledgers/findings/a.md", f"# F\n\nLast reconciled: 2026-10-13\n\n| ID | evidence |\n| --- | --- |\n| F-001 | M-001 ev_{DIGEST} |\n| F-002 | ev_{DIGEST} |\n")
         problems = fx.lint()
         self.assertTrue(any("class must be" in problem for problem in problems), problems)
         self.assertTrue(any("sha256 column" in problem for problem in problems), problems)
