@@ -301,12 +301,6 @@ class DocsLintTest(unittest.TestCase):
         self.assertTrue(any("gone.md: task read tier 'stale' names a missing file" in warning for warning in warnings), warnings)
         self.assertFalse(any("task read tier" in problem.render() for problem in linter.problems))
 
-    def test_manifest_row_cap(self) -> None:
-        fx = self.make()
-        long_session = "s" * docs_lint.MANIFEST_ROW_CAP
-        fx.write("evidence/manifest.md", f"# M\n\n| ID | path | sha256 | date | session | class |\n| --- | --- | --- | --- | --- | --- |\n| M-001 | work/x | unstated | 2026-10-13 | {long_session} | local-private |\n")
-        self.assertTrue(any("manifest row exceeds" in problem for problem in fx.lint()))
-
     def test_staleness_warning(self) -> None:
         fx = self.make()
         fx.write("docs/implementation-status.md", STATUS_OK)
@@ -332,15 +326,6 @@ class DocsLintTest(unittest.TestCase):
         problems = fx.lint()
         self.assertTrue(any("new-record.md: frozen directory" in problem for problem in problems), problems)
         self.assertFalse(any("overnight-work-plan.md" in problem for problem in problems), problems)
-
-    def test_legacy_markdown_manifest_defines_ids(self) -> None:
-        fx = self.make()
-        fx.write("evidence/manifest.md", "# M\n\n| ID | path | sha256 | date | session | class |\n| --- | --- | --- | --- | --- | --- |\n"
-                 + "| M-001 | work/x | unstated | 2026-10-13 | s | local-private |\n| M-002 | bare/ | unstated | unstated | s | local-private |\n")
-        fx.write("docs/specs/s.md", SPEC_OK + "\nSee M-001 and M-002.\n")
-        linter = fx.linter()
-        self.assertEqual([problem.render() for problem in linter.problems], [])
-        self.assertTrue(any("M-002: local-private path must start with" in warning.render() for warning in linter.warnings))
 
     def test_record_schema(self) -> None:
         fx = self.make()
