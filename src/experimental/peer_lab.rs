@@ -46,7 +46,8 @@
 //! - At most [`PeerLabConfig::max_peers`] peers. When the table is full, a
 //!   valid challenge echo from a new address is rejected: no acknowledgement is
 //!   sent and `peers_rejected` counts it. Nothing is ever evicted to make room;
-//!   a known address that completes the handshake again replaces its own peer.
+//!   a known address that completes a new handshake replaces its own peer; a
+//!   repeated echo of its current cookie is only re-acknowledged.
 //! - Peers idle longer than [`PeerLabConfig::idle_timeout`] (no accepted data
 //!   packet since creation or the last accepted one) are removed at the start of
 //!   an update. Failed peers ([`LabPeer::is_failed`]) and peers whose ack packet
@@ -193,6 +194,9 @@ pub struct PeerLabStats {
     pub handshake_rejected: u64,
     pub peers_created: u64,
     pub peers_replaced: u64,
+    /// Repeated echoes of a live peer's own cookie, re-acknowledged without
+    /// resetting its packet state.
+    pub acknowledgements_resent: u64,
     /// Valid challenge echoes refused because the table was full.
     pub peers_rejected: u64,
     pub peers_expired: u64,
@@ -291,6 +295,8 @@ fn net_id_form(value: &NetIdValue) -> &'static str {
 
 struct PeerEntry {
     peer: LabPeer,
+    /// The cookie that created this peer; compared only, never reported.
+    cookie: [u8; 20],
     last_seen: Instant,
     ack_pending: bool,
 }
@@ -383,6 +389,19 @@ impl PeerLab {
                 }
             }
             HandshakeReply::Acknowledgement { datagram, cookie } => {
+                // A repeated echo of the live peer's own cookie (a retransmission
+                // or a delayed duplicate) is answered again without resetting its
+                // packet state; only a different cookie starts a new peer.
+                if self
+                    .peers
+                    .get(&address)
+                    .is_some_and(|entry| entry.cookie == cookie)
+                {
+                    if self.send(&datagram, address) {
+                        bump(&mut self.stats.acknowledgements_resent);
+                    }
+                    return true;
+                }
                 let known = self.peers.contains_key(&address);
                 if !known && self.peers.len() >= self.config.max_peers {
                     bump(&mut self.stats.peers_rejected);
@@ -406,6 +425,7 @@ impl PeerLab {
                     address,
                     PeerEntry {
                         peer,
+                        cookie,
                         last_seen: now,
                         ack_pending: false,
                     },

@@ -27,7 +27,9 @@ pub const MAX_TREE_NODES: usize = 1 << 20;
 
 /// Research policy bounds. Root properties are at depth 1; a payload is framed
 /// as a nested stream only when its properties would not exceed `max_depth`.
-/// Exceeding `max_nodes` fails the whole parse rather than truncating it.
+/// `max_nodes` counts properties and Map/Set items at every depth. A property
+/// beyond it fails the whole parse rather than truncating it; a Map or Set
+/// that would exceed it stays an exact opaque leaf.
 #[derive(Clone, Copy, Debug)]
 pub struct TreeLimits {
     pub max_depth: usize,
@@ -241,11 +243,19 @@ impl Builder {
                 }
                 Err(_) => NodeValue::Opaque(tag.payload.to_vec()),
             },
-            TagKind::Map | TagKind::Set if nested => match self.container(tag, depth) {
-                Ok(value) => value,
-                Err(error) if error.is::<NodeBudget>() => return Err(error),
-                Err(_) => NodeValue::Opaque(tag.payload.to_vec()),
-            },
+            TagKind::Map | TagKind::Set if nested => {
+                // Any failed attempt, including one that ran out of budget,
+                // keeps the exact payload and releases what it charged; the
+                // budget still bounds the items it could allocate.
+                let charged = self.nodes;
+                match self.container(tag, depth) {
+                    Ok(value) => value,
+                    Err(_) => {
+                        self.nodes = charged;
+                        NodeValue::Opaque(tag.payload.to_vec())
+                    }
+                }
+            }
             _ => NodeValue::Opaque(tag.payload.to_vec()),
         };
         Ok(PropertyNode {
@@ -256,7 +266,7 @@ impl Builder {
     }
 }
 
-/// The node budget is the only container error that fails the whole parse.
+/// Budget exhaustion; outside a container attempt it fails the whole parse.
 #[derive(Debug)]
 struct NodeBudget;
 
@@ -312,6 +322,12 @@ impl Builder {
         position: &mut usize,
         depth: usize,
     ) -> Result<ContainerItem> {
+        // Items are charged like properties, so a payload of many tiny items
+        // cannot allocate past the selected budget.
+        if self.nodes >= self.limits.max_nodes {
+            return Err(NodeBudget.into());
+        }
+        self.nodes += 1;
         let input = &payload[*position..];
         if let Some(width) = scalar_item_bytes(kind) {
             let bytes = input.get(..width).context("truncated container item")?;

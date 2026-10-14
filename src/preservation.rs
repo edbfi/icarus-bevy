@@ -957,6 +957,8 @@ impl Decoder<'_> {
     }
 
     fn item(&mut self, nodes: &mut usize, depth: usize) -> Result<ContainerItem> {
+        ensure!(*nodes < MAX_BODY_NODES, "preserved tree exceeds node limit");
+        *nodes += 1;
         Ok(match self.byte()? {
             0 => ContainerItem::Bytes(self.chunk()?),
             1 => ContainerItem::Struct(self.tree(nodes, depth + 1)?),

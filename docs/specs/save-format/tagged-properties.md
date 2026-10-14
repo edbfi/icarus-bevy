@@ -158,7 +158,9 @@ objects):
   delegate to the struct (F-559, client build). The tree frames them when every
   item is a 1/4/8-byte scalar, an archive string or a tagged struct stream
   (scalar widths and string items inferred) and consumes the payload exactly;
-  otherwise the payload stays opaque. All supplied Maps frame (F-562).
+  otherwise the payload stays opaque. Items count against the node budget; an
+  attempt that would exceed it also stays opaque. All supplied Maps frame
+  (F-562; unchanged under the budget, M-411, M-412).
 - Applying the older-build framing to the newer saves is supported by prefix
   agreement and the scans above, not by a matched official load (F-297, U-025).
 - Base-component layout is a caller-selected hypothesis per class; static

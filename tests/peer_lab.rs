@@ -767,3 +767,45 @@ fn one_unit_hello_token_takes_the_unanswered_encryption_path() {
     assert_eq!(counted.hello_unanswered, 1);
     assert_eq!(counted.control_challenges_sent, 0);
 }
+
+#[test]
+fn duplicate_handshake_echo_keeps_live_peer_state() {
+    let (mut app, address) = lab_app(PeerLabConfig::default());
+    let socket = socket(address);
+    socket.send(&initial_request()).unwrap();
+    app.update();
+    let echo = recv(&socket);
+    let cookie = decode(&echo).unwrap().cookie;
+    socket.send(&echo).unwrap();
+    app.update();
+    assert!(try_recv(&socket).is_some(), "handshake acknowledgement");
+    let (incoming, outgoing) = client_cookie_seeds(&cookie);
+    let sequencer = PacketSequencer::new(incoming, outgoing, 64).unwrap();
+    let control = sequencer.new_channel();
+    let mut client = Client {
+        socket,
+        cookie,
+        sequencer,
+        control,
+    };
+    client.exchange(&mut app, short_hello("", 0x0102_0304), false);
+    let _ = client.receive_reply(&recv(&client.socket));
+
+    // A delayed duplicate of the same echo is re-acknowledged, not a reset.
+    client.socket.send(&echo).unwrap();
+    app.update();
+    let ack = decode(&recv(&client.socket)).unwrap();
+    assert_eq!(ack.cookie, cookie);
+    let counted = stats(&app);
+    assert_eq!(counted.acknowledgements_resent, 1);
+    assert_eq!((counted.peers_created, counted.peers_replaced), (1, 0));
+
+    // Reliable state survived: the next Login is delivered and answered.
+    client.exchange(&mut app, login(), false);
+    let (_, messages) = client.receive_reply(&recv(&client.socket));
+    assert!(matches!(
+        messages.as_slice(),
+        [ControlMessage::Failure { .. }]
+    ));
+    assert_eq!(stats(&app).failures_sent, 1);
+}

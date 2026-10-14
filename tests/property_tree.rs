@@ -592,16 +592,73 @@ fn container_struct_items_respect_depth_and_node_budgets() {
     let shallow = depth_limited(&bytes, 1).unwrap();
     assert!(matches!(shallow.properties[0].value, NodeValue::Opaque(_)));
     assert_eq!(shallow.to_bytes().unwrap(), bytes);
-    // A node budget below the struct item's needs fails the whole parse.
+    // The map, its key and value items and the two struct properties need five
+    // budget units; with one fewer the map stays an exact opaque leaf.
     let limits = TreeLimits {
-        max_nodes: 2,
+        max_nodes: 4,
         ..TreeLimits::default()
     };
-    assert!(PropertyTree::parse(&bytes, TagProfile::MemoryArchive522, limits).is_err());
+    let opaque = PropertyTree::parse(&bytes, TagProfile::MemoryArchive522, limits).unwrap();
+    assert!(matches!(opaque.properties[0].value, NodeValue::Opaque(_)));
+    assert_eq!(opaque.to_bytes().unwrap(), bytes);
+    // A budget too small for a later root property still fails the parse.
     let limits = TreeLimits {
-        max_nodes: 3,
+        max_nodes: 1,
+        ..TreeLimits::default()
+    };
+    let two = stream(&[map.clone(), int(1)]);
+    assert!(PropertyTree::parse(&two, TagProfile::MemoryArchive522, limits).is_err());
+    let limits = TreeLimits {
+        max_nodes: 5,
         ..TreeLimits::default()
     };
     let tree = PropertyTree::parse(&bytes, TagProfile::MemoryArchive522, limits).unwrap();
     assert!(matches!(tree.properties[0].value, NodeValue::Map { .. }));
+}
+
+#[test]
+fn many_tiny_container_items_are_bounded_by_the_node_budget() {
+    // 4,096 one-byte Bool items: within the default budget they frame, but a
+    // budget of 100 stops after 99 items and keeps the payload opaque.
+    let elements = vec![1u8; 4096];
+    let set = set_prop(BOOL, &[count(0), count(elements.len()), elements].concat());
+    let bytes = stream(std::slice::from_ref(&set));
+    assert!(matches!(
+        round_trip(&bytes).properties[0].value,
+        NodeValue::Set { .. }
+    ));
+    let limits = TreeLimits {
+        max_nodes: 100,
+        ..TreeLimits::default()
+    };
+    let tree = PropertyTree::parse(&bytes, TagProfile::MemoryArchive522, limits).unwrap();
+    assert!(matches!(tree.properties[0].value, NodeValue::Opaque(_)));
+    assert_eq!(tree.to_bytes().unwrap(), bytes);
+}
+
+#[test]
+fn a_discarded_container_attempt_does_not_consume_the_node_budget() {
+    // The map frames its struct item before a trailing byte forces the opaque
+    // fallback; the retained tree needs only the map and the following Int.
+    let map = map_prop(
+        INT,
+        STRUCT,
+        &[
+            count(0),
+            count(1),
+            vec![1, 0, 0, 0],
+            stream(&[int(1)]),
+            vec![0],
+        ]
+        .concat(),
+    );
+    let bytes = stream(&[map, int(2)]);
+    let limits = TreeLimits {
+        max_nodes: 2,
+        ..TreeLimits::default()
+    };
+    let tree = PropertyTree::parse(&bytes, TagProfile::MemoryArchive522, limits).unwrap();
+    assert!(matches!(tree.properties[0].value, NodeValue::Opaque(_)));
+    assert_eq!(tree.properties.len(), 2);
+    assert_eq!(tree.to_bytes().unwrap(), bytes);
 }
