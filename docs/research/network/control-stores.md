@@ -49,8 +49,9 @@ dispatcher's only pointer is slot +0x18 of the older UWorld FNetworkNotify table
 so the dispatcher is the older UWorld::NotifyControlMessage (F-506). The dispatcher validates message IDs and
 reads the ID 0 body (F-284). The client's receive path reads that body from the
 FInBunch through FBitReader::Serialize, after the ID byte, with byte order set
-from the first field (F-514, F-515, F-517); the server's ID 0 reads take the same
-archive route, but its ReceivedBunch is unlocated (F-516). A disconnected experimental reader composes the
+from the first field (F-514, F-515); the server's ID 0 reads take the same archive
+route (F-516), and its ReceivedBunch, found through the UControlChannel vftable,
+applies the same rule (F-518, F-519). A disconnected experimental reader composes the
 observed initial body within a derived 131,081-byte ceiling; negotiation,
 identity and game-connection flags stay false (F-096, F-097).
 
@@ -68,4 +69,4 @@ complete functions.
 
 ## Artifacts
 
-M-005, M-012, M-023..M-046, M-281..M-283, M-288..M-297, M-301, M-302, M-315..M-319.
+M-005, M-012, M-023..M-046, M-281..M-283, M-288..M-297, M-301, M-302, M-315..M-322.

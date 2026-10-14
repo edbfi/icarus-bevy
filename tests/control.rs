@@ -302,7 +302,7 @@ fn frame_validation_preserves_complete_context_error_chains_and_precedence() {
     }
 }
 
-// Sender-order entry point: rule inferred from the client receive path (F-517).
+// Sender-order entry point: rule inferred from the receive paths (F-519).
 
 fn is_little(order: ByteOrder) -> bool {
     matches!(order, ByteOrder::Little)
