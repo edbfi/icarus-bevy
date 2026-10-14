@@ -4,7 +4,7 @@
 
 Experimental: static interpretation with independent arithmetic tests and one
 matching early-startup original value. Scope: build 25621760 (M-168); addresses
-are preferred virtual addresses in that file. Last reconciled: 2026-10-13.
+are preferred virtual addresses in that file. Last reconciled: 2026-10-14.
 Full text: d5b0ae6:docs/specs/network/network-checksum.md.
 
 ## Scope
@@ -42,6 +42,12 @@ native server does not use this module for admission.
   project-version storage and clears cache-valid, even when the input already
   points at the stored buffer. Caller `0x143996c54` supplies a string from a
   `GeneralProjectSettings` default object (F-255).
+- Client build 25793767 builds the same string from its own inputs: image
+  project name `Icarus`, engine protocol 17, a zero-filled game protocol
+  global, and NetCL taken from `-networkversionoverride=` or the
+  `networkversionoverride` console variable, else 0. Hello sends this value
+  with the override delegate allowed; its project version is runtime state, so
+  a matching value needs the client's active version (F-541, F-542).
 - The two initializer candidates found by a broader direct-reference scan
   register delegate teardown through CRT on-exit imports; they do not install
   compatibility callbacks (F-255).
