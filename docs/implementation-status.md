@@ -48,7 +48,7 @@ Offline work, in order; connected proof keeps its gates.
 2. Player state: resolve actor, inventory, construction, tame and mission fields and confirm the reported producing build by evidence other than class registration (F-262, F-277, F-498, U-040).
 3. Control stores: establish base origin, actual receiver/indirect dispatch and a same-build type-registration join before inferring the dispatcher caller; with owner and dispatcher identified, qualify register preservation across the constructor super calls and locate the virtual call sites (F-505, F-506, U-015, U-043).
 4. Control stores: compare constructor metadata and instructions guided by paired-client symbols and the two named notify slots (F-479, F-480, U-043).
-5. Control body: the input is an FInBunch (F-507); qualify bunch framing and field bit alignment, then promote or revise the experimental initial-body fields (F-096, U-044).
+5. Control body: bunch-internal layout and byte order are inferred (F-517); locate the server ReceivedBunch (exact searches fail, F-516) and the packet-to-bunch framing before promoting the experimental initial-body fields (F-096, U-044).
 6. Transport: advance control negotiation, checksum admission and authentication evidence (F-253, F-254, U-037, U-038).
 7. World data: advance independently authored world-data feasibility; validate a small import before the heavy-world workload (F-242, U-045).
 8. Reliability: collect the running 72-hour synthetic soak at its end and record it against U-035; it stays synthetic, not ICARUS performance (F-485, U-035).

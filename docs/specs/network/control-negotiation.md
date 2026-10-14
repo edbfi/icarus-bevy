@@ -4,7 +4,7 @@
 
 Experimental: static observations, not wire-validated. Scope: dedicated-server
 build 25621760 (M-168) unless a current-client (build 25793767) comparison is
-named. Last reconciled: 2026-10-13.
+named. Last reconciled: 2026-10-14.
 Full text: d5b0ae6:docs/specs/network/control-negotiation.md.
 
 ## Scope
@@ -59,6 +59,16 @@ one table. The native run command has no game listener.
   rel32 callers match; a 128-byte pointer window ends at the dispatcher (F-106).
   The retained database shows one non-call reference with no containing
   function; partial coverage does not prove caller absence.
+- Current client receive path (F-514, F-515): FInBunch inherits
+  FBitReader::Serialize at vftable `+0x150`, a leaf that tail-calls SerializeBits
+  (`+0x158`) with the length times eight. UControlChannel::ReceivedBunch, while
+  its inspection flag (`+0x68`) is set, hands the connection to `0x143984190`
+  unless the bunch holds at least 16 bits and byte 0 is 0; byte 1 equal to 1
+  clears archive byte-swap bit `0x20` at `+0x29`, other values set it. It then
+  reads one ID byte per message until the bunch ends.
+- Older server ID 0 reads use the archive's inline buffer or `+0x150`; the
+  u32 takes `0x141f60c00` when `+0x29` bit `0x20` is set (F-516). The server's
+  ReceivedBunch is not located (negative searches, F-516).
 - Older server: that pointer is slot `+0x18` of the UWorld FNetworkNotify table
   `0x145468180`, which the older UWorld constructor installs at `+0x28` (F-505).
   The dispatcher is therefore UWorld::NotifyControlMessage, reached through the
@@ -74,9 +84,10 @@ one table. The native run command has no game listener.
   preserving borrowed spans, retaining no token units, implementing neither
   `Debug` nor `Serialize` for raw containers, and reporting negotiation,
   identity and game-connection validation as false (F-096, F-097). The
-  dispatcher's input is an FInBunch, a bit-oriented archive (F-507); whether the
-  ID 0 fields are byte-aligned is unverified, so this byte framing stays
-  experimental. Exact EOF
+  dispatcher's input is an FInBunch, a bit-oriented archive (F-507). Within the
+  bunch the fields follow the ID byte, and the first field (1 = sender little
+  endian) selects the remote version's byte order (F-517); packet-to-bunch
+  framing is unbound, so this framing stays experimental. Exact EOF
   and strict normalization rejection are research policies, not recovered
   tolerances.
 - Epic's FNetworkNotify documentation (four virtual callbacks; UWorld and
