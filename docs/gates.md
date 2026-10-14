@@ -38,7 +38,8 @@ Last reconciled: 2026-10-14
   session. No handler-data or chain expansion follows from their qualification.
 - Named register storage shapes qualify (F-436), while global/subbyte aliases and
   live values do not. Reviewed frame sources (F-437, F-438) supply no target proof;
-  bind language address units and exact physical/metadata adapters before replay.
+  Byte address units qualify (F-439); bind exact physical/metadata adapters before
+  replay. Register/unique storage addresses have32bits; register values can be64bit.
   Handler-aware analysis preserves flags/RVAs and excludes exceptional paths;
   ordinary-entry/ABI applicability remains an explicit condition.
 - Retained exports already identify its exact native class getter and
