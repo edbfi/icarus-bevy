@@ -129,6 +129,13 @@ game listener.
   reader. Exact EOF
   and strict normalization rejection are research policies, not recovered
   tolerances.
+- `experimental::packet` is an independently authored codec for the receive
+  format above (F-521 to F-527): LSB-first bit reader and writer with sticky
+  overflow, capped, wrapped and packed integers, termination-bit framing, the
+  data prefix, packet header and info, bunch headers with hard-coded and string
+  names, and payload copies from bunch bit 0. Callers supply the channel limit,
+  maximum packet size and string cap; it keeps no connection state and
+  reconstructs no reliable sequence. Not wire-validated.
 - Epic's FNetworkNotify documentation (four virtual callbacks; UWorld and
   UPendingNetGame implement it; the driver's Notify field admits others) is a
   testable interface hypothesis for the slots other than `+0x18`, whose owner and
@@ -161,8 +168,8 @@ game listener.
   transitions, token failures); pass those fixtures and the stock-client
   experiment before marking negotiation implemented.
 - Authored tests (14 control tests, including the inferred sender-order entry
-  point (F-519), plus archive and handshake suites):
+  point (F-519), 14 packet codec tests, plus archive and handshake suites):
 
 ```bash
-cargo test --locked --test control --test archive --test handshake
+cargo test --locked --test control --test packet --test archive --test handshake
 ```

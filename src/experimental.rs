@@ -9,6 +9,7 @@ pub mod control;
 pub mod handshake;
 pub mod handshake_lab;
 pub mod int_array;
+pub mod packet;
 pub mod recorders;
 pub mod struct_array;
 pub mod tagged;
