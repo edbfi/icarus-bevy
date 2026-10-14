@@ -49,7 +49,7 @@ Offline work, in order; connected proof keeps its gates.
 3. Player state: resolve actor, inventory, construction, tame and mission fields and confirm the reported producing build by evidence other than class registration (F-262, F-277, F-498, U-040).
 4. Control stores: establish base origin, actual receiver/indirect dispatch and a same-build type-registration join before inferring the dispatcher caller; with owner and dispatcher identified, qualify register preservation across the constructor super calls and locate the virtual call sites (F-505, F-506, U-015, U-043).
 5. Control stores: compare constructor metadata and instructions guided by paired-client symbols and the two named notify slots (F-479, F-480, U-043).
-6. Control body: bind the concrete archive/outer framing path, then promote the experimental initial-body fields (F-096, U-044).
+6. Control body: the input is an FInBunch (F-507); qualify bunch framing and field bit alignment, then promote or revise the experimental initial-body fields (F-096, U-044).
 7. Transport: advance control negotiation, checksum admission and authentication evidence (F-253, F-254, U-037, U-038).
 8. World data: advance independently authored world-data feasibility; validate a small import before the heavy-world workload (F-242, U-045).
 9. Integration: resolve the 35 historical commits without sign-offs before PR integration (F-279).
