@@ -47,7 +47,7 @@ Offline work, in order; connected proof keeps its gates.
 1. C001 frame replay: take the AX/AL read-only sibling through independent review, caller, fresh case and replay; add narrow-alias support only as stops dictate and preserve partial results (F-476, F-477, U-041).
 2. C001 ownership: establish concrete object-origin, final-vptr and slot contracts for the reconciled candidate slots before any archive-slot read (F-431, F-495, U-041).
 3. Player state: resolve actor, inventory, construction, tame and mission fields and confirm the reported producing build by evidence other than class registration (F-262, F-277, F-498, U-040).
-4. Control stores: establish base origin, actual receiver/indirect dispatch and a same-build type-registration join before inferring the dispatcher caller; join the identified InternalConstructor callbacks to their constructors and the table stores (F-478, F-481, F-503, U-043).
+4. Control stores: establish base origin, actual receiver/indirect dispatch and a same-build type-registration join before inferring the dispatcher caller; confirm the older UWorld/UPendingNetGame constructor store sequences and register preservation across their super calls (F-478, F-481, F-504, U-043).
 5. Control stores: compare constructor metadata and instructions guided by paired-client symbols and the two named notify slots (F-479, F-480, U-043).
 6. Control body: bind the concrete archive/outer framing path, then promote the experimental initial-body fields (F-096, U-044).
 7. Transport: advance control negotiation, checksum admission and authentication evidence (F-253, F-254, U-037, U-038).

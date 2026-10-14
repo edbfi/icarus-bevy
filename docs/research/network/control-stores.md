@@ -36,8 +36,12 @@ getters differ only in displacement fields, and each class has three
 class-specific code-pointer arguments (F-502). The client PDB names them, and the
 shared call is GetPrivateStaticClassBody, so the older server's constructor
 callbacks are InternalConstructor<UWorld> at 0x143b856c0 and
-InternalConstructor<UPendingNetGame> at 0x143b21830 (F-503). Their joins to the
-constructors and the table stores of F-478 are not yet made. The dispatcher validates message IDs and
+InternalConstructor<UPendingNetGame> at 0x143b21830 (F-503). Each callback
+tail-jumps to its class constructor with the constructed object as this; in the
+client those targets are the PDB-named constructors that contain the F-478
+stores, so the store base is the object under construction, conditional on
+register preservation across the super call. The older UWorld constructor
+begins 8 bytes before the older T1 store sequence (F-504). The dispatcher validates message IDs and
 reads the ID 0 body (F-284). A disconnected experimental reader composes the
 observed initial body within a derived 131,081-byte ceiling; negotiation,
 identity and game-connection flags stay false (F-096, F-097).
@@ -56,4 +60,4 @@ complete functions.
 
 ## Artifacts
 
-M-005, M-012, M-023..M-046, M-281..M-283, M-288..M-295.
+M-005, M-012, M-023..M-046, M-281..M-283, M-288..M-297.
