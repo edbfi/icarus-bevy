@@ -207,8 +207,9 @@ Acceptance conditions for any importer
   Installed-language query qualifies RBX/RCX/RSP storage offsets and32-bit
   variants; global/subbyte aliases and live values remain unproved (F-436).
   Conditional frame models are source-qualified, including opaque handler
-  headers; address units, exact adapters and actual target replay remain open
-  (F-437, F-438).
+  headers (F-437, F-438). Four spaces use byte units; RAM/constant addresses have
+  64bits and register/unique addresses32bits, separate from register value widths
+  (F-439). Exact adapters and actual target replay remain open.
 
 ## Open questions
 
