@@ -60,6 +60,11 @@ server listener or game client.
 
 ## Candidate
 
+- Current client (build 25793767): after a negative-timestamp acknowledgement
+  the client seeds its connection's incoming and outgoing sequences from the
+  cookie's first and second little-endian 16-bit words, masked to 14 bits
+  (F-536), and data packets carry a zero handshake bit after any magic header
+  (F-524). The original server's matching seed is inferred, not read.
 - The handler supports an optional binary prefix of up to 32 bits and extended
   restart responses with a second 20-byte cookie; neither is implemented or
   observed (U-051).
