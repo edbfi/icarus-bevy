@@ -25,10 +25,12 @@ persistence, recovery and save inspection.
 | Read | For |
 | --- | --- |
 | [docs/README.md](docs/README.md) | map of every document and its rules |
-| [Plan](docs/linux-dedicated-server-plan.md) | goal, constraints, milestones, release gates |
-| [Status](docs/implementation-status.md) | what works, what does not, next tasks |
-| [Ledgers](docs/ledgers/) | findings, unknowns, bugs, compatibility matrix |
-| [Specs](docs/specs/) | save-format and network findings |
+| [Plan](docs/linux-dedicated-server-plan.md) | goal, constraints, milestones, release targets |
+| [Status](docs/implementation-status.md) | summary, milestone state, next tasks |
+| [Gates](docs/gates.md) | preconditions that block actions |
+| [Ledgers](docs/ledgers/) | findings by area, unknowns, bugs, compatibility matrix |
+| [Specs](docs/specs/) | save-format and network facts |
+| [Research](docs/research/) | one digest per question cluster |
 | [Runbooks](docs/runbooks/) | server, synthetic workload, original-server launcher, REA tooling, research helpers |
 
 ## Contributing

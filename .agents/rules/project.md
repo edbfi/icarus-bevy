@@ -75,12 +75,13 @@ be demonstrated rather than assumed.
   related batch. Preserve history, keep hooks enabled, and verify remote delivery.
   The 2026-10-12 instruction supersedes the old overnight batch's no-push rule.
   Do not force-push, rewrite existing commits or merge into `main` as routine sync.
-- Maintain `docs/linux-dedicated-server-plan.md` as the canonical plan and
-  `docs/implementation-status.md` as the current checkpoint. Record conclusions,
-  open questions, bugs and compatibility as ledger rows under `docs/ledgers/`,
-  session results as digests under `docs/research/`, and evidence artifacts in
-  `evidence/manifest.md`, following `.agents/rules/docs.md`. Avoid duplicate
-  plans, generic AI prose and speculative completion claims.
+- Maintain `docs/linux-dedicated-server-plan.md` as the canonical plan,
+  `docs/implementation-status.md` as the current checkpoint and `docs/gates.md`
+  as the only home of preconditions. Record findings by area under
+  `docs/ledgers/findings/`, open questions, bugs and compatibility in the other
+  ledgers, research state in digests under `docs/research/`, and evidence
+  artifacts in `evidence/manifest.md`, following `.agents/rules/docs.md`. Avoid
+  duplicate plans, generic AI prose and speculative completion claims.
 - Resource budgets for heavy work: start with two Cargo jobs and at most four
   CPU-heavy workers; serialize large builds, Ghidra and original-server runs when
   memory is tight. Keep owned jobs under 10 GiB; defer heavy work below 3 GiB

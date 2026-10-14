@@ -9,15 +9,21 @@ and connected-client experiments retain their separate current-scope gates.
 
 ## Read first
 
-- All `.agents/rules/*.md`. They are authoritative; this file summarizes them.
-- `docs/README.md` (document map), `docs/implementation-status.md` (checkpoint),
-  `docs/gates.md` (preconditions). Check applicable gates before acting.
-- The plan section, digest and existing `F-`/`U-`/`M-` rows for your area, before
-  repeating work: `docs/linux-dedicated-server-plan.md`, `docs/research/<area>/`,
-  `docs/ledgers/`.
-- Bevy work: `.agents/skills/bevy/SKILL.md`. Reverse engineering:
-  `.agents/skills/reverse-engineer-anything/SKILL.md` with the `rea` MCP server;
-  fallbacks per `project.md`. Project-authored Python: `basedpyright-python-gate`.
+Every session: this file, `docs/README.md` and `docs/implementation-status.md`.
+Rules in `.agents/rules/` are authoritative; this file summarizes them. Then
+load the entry set for the task, check `docs/gates.md` before acting, and fetch
+ledger rows by ID (`grep -w F-487 -r docs/ledgers`), never whole ledgers.
+
+| Task | Entry set |
+| --- | --- |
+| Save-format research | `.agents/rules/project.md`, `docs/gates.md`, `docs/research/save-format/save-class-audits.md`, the relevant `docs/specs/save-format/` file, `.agents/skills/reverse-engineer-anything/SKILL.md` with the `rea` MCP server |
+| C001 research | as save-format, with `docs/research/save-format/c001-constructor.md` |
+| Network research | `.agents/rules/project.md`, `docs/gates.md`, `docs/research/network/control-stores.md`, the relevant `docs/specs/network/` file, the reverse-engineering skill |
+| Native server (Rust/Bevy) | `.agents/rules/project.md`, `docs/architecture.md`, `docs/research/foundation/foundation.md`, `docs/runbooks/native-server.md`, `.agents/skills/bevy/SKILL.md` |
+| Documentation | `.agents/rules/docs.md`, `docs/README.md` |
+
+REA fallbacks follow `project.md`. Project-authored Python uses
+`basedpyright-python-gate`.
 
 ## Research and preservation
 
@@ -38,29 +44,13 @@ and connected-client experiments retain their separate current-scope gates.
 
 ## Documentation
 
-| Content | Location |
-| --- | --- |
-| Goal, milestones, gates | `docs/linux-dedicated-server-plan.md` |
-| What works, what does not, next tasks | `docs/implementation-status.md` |
-| Preconditions that block work | `docs/gates.md` |
-| Design constraints | `docs/architecture.md` |
-| Procedures and commands | `docs/runbooks/` |
-| Durable format and protocol facts | `docs/specs/<area>/` |
-| Conclusions, questions, bugs, compatibility | `docs/ledgers/` (`F-`, `U-`, bug and matrix rows) |
-| Research digests, one per question cluster | `docs/research/<area>/` |
-| Evidence artifacts | `evidence/manifest.md` (`M-`) |
-| Frozen history | `docs/history/`, `docs/research/archive/` |
-
-- Ledger IDs are permanent: never delete or renumber; mark superseded or resolved.
-- Rewrite current documents in place. No dated headings, session narrative, tool
-  output or restated background. Prose cites IDs, not hashes, clock times or
-  `work/` paths; `docs.md` lists the exceptions (code, runbooks, gates, cells).
-- Respect byte caps and fixed headings. Condense near a cap; never split to
-  evade it. Condensation keeps every observation, qualification and provenance.
-- A research session ends with finding rows, unknown rows and the matching
-  digest. Each newly cited `ev_` identifier needs an exported Evidence bundle
-  under `work/` and a manifest row. Update affected current documents.
-- At milestones, run the checklist in `docs.md`.
+`.agents/rules/docs.md` holds the layout, read tiers, caps and rules. In short:
+admit a finding only for a claim about the original, a measured native property
+or a conclusion something depends on (receipts are manifest rows); at session
+close edit only what changed: digest, spec, finding rows (consolidate chains into
+a summary row), `unknowns.md`, `gates.md`, manifest. Cite IDs instead of
+restating claims; near a cap, split by topic or retire rows, never strip spaces.
+IDs are permanent. Run the milestone checklist in `docs.md` at milestones.
 
 ## Validate and deliver
 
