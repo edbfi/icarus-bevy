@@ -46,7 +46,7 @@ Offline work, in order; connected proof keeps its gates.
 
 1. C001 records: the static bridge is named (F-509, F-510, F-512); audit C001's four records through the shared recorder restore path (F-343, F-344) under the save-class gates, keeping runtime and register preservation conditional (U-022, U-041).
 2. Player state: resolve actor, inventory, construction, tame and mission fields and confirm the reported producing build by evidence other than class registration (F-262, F-277, F-498, U-040).
-3. Control stores: establish base origin, actual receiver/indirect dispatch and a same-build type-registration join before inferring the dispatcher caller; with owner and dispatcher identified, qualify register preservation across the constructor super calls and locate the virtual call sites (F-505, F-506, U-015, U-043).
+3. Control stores: owner, dispatcher and its static virtual call site are identified (F-505, F-506, F-520); qualify register preservation across the constructor super calls and base origin (U-043).
 4. Control stores: compare constructor metadata and instructions guided by paired-client symbols and the two named notify slots (F-479, F-480, U-043).
 5. Control body: bunch-internal layout and byte order hold in both builds (F-518, F-519); recover the packet-to-bunch framing (UNetConnection::ReceivedPacket, UChannel::ReceivedRawBunch) before promoting the experimental initial-body fields (F-096, U-044).
 6. Transport: advance control negotiation, checksum admission and authentication evidence (F-253, F-254, U-037, U-038).
