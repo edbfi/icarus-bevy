@@ -12,8 +12,8 @@ and connected-client experiments retain their separate current-scope gates.
 Every session: this file, `docs/README.md` and `docs/implementation-status.md`.
 Rules in `.agents/rules/` are authoritative; this file summarizes them. Then
 load the entry set for the task, check `docs/gates.md` before acting, and fetch
-rows by ID (`grep -w F-487 -r docs/ledgers`, `grep -hw M-147 evidence/*.jsonl`),
-never whole ledgers or shards.
+rows by ID (`grep -w F-487 -r docs/ledgers`,
+`grep -rhw --include='*.jsonl' M-147 evidence/`), never whole ledgers or shards.
 
 | Task | Entry set |
 | --- | --- |

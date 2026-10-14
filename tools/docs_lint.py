@@ -12,8 +12,10 @@ The repository documentation has two surfaces (see ``.agents/rules/docs.md``):
 ``CLAUDE.md`` and ``.agents/rules/`` join the link and document-path checks
 without becoming part of the current surface.
 
-The evidence index is ``evidence/<area>.jsonl``: one JSON record per line per
-retained artifact, fetched by ID and never loaded whole. The Markdown manifest
+The evidence index is ``evidence/<area>[/<topic>]/NNN.jsonl``: one JSON record
+per line per retained artifact, fetched by ID and never loaded whole. A shard
+folder joined with ``-`` names its findings ledger (``save-format/c001`` holds
+the evidence of ``save-format-c001.md``). The Markdown manifest
 it replaced is read only at ``--base`` so its IDs must survive.
 
 The script reads files only. ``--warn`` reports every problem but exits 0, for
@@ -100,7 +102,9 @@ AGGREGATE_CAP = 160 * KIB
 
 # Evidence index: retrieval-tier data, outside the prose surface and read tiers.
 EVIDENCE_DIR = "evidence"
-SHARD_NAME = re.compile(r"[a-z][a-z0-9]*(?:-[a-z0-9]+)*\.jsonl")
+SHARD_NAME = re.compile(r"\d{3}\.jsonl")
+CATEGORY_NAME = re.compile(r"[a-z][a-z0-9]*(?:-[a-z0-9]+)*")
+CATEGORY_DEPTH = 2
 SHARD_CAP = 64 * KIB
 RECORD_CAP = 2 * KIB
 LABEL_CAP = 160
@@ -534,7 +538,7 @@ class Linter:
         """Index rows in shard order; the first definition of an ID wins."""
         directory = self.root / EVIDENCE_DIR
         if directory.is_dir():
-            for path in sorted(directory.glob("*.jsonl")):
+            for path in sorted(directory.rglob("*.jsonl")):
                 rel = path.relative_to(self.root).as_posix()
                 try:
                     text = path.read_text(encoding="utf-8")
@@ -881,10 +885,14 @@ class Linter:
         self.check_manifest_history()
 
     def check_shards(self) -> None:
+        numbers: dict[str, list[int]] = {}
         for rel, text in self.shards.items():
-            name = rel.rsplit("/", 1)[-1]
-            if not SHARD_NAME.fullmatch(name):
-                self.report(rel, 0, "shard name must be <area>.jsonl or <area>-<n>.jsonl in lowercase")
+            *folders, name = rel.split("/")[1:]
+            if self.check_category(rel, folders):
+                if not SHARD_NAME.fullmatch(name):
+                    self.report(rel, 0, "shard name must be three digits, NNN.jsonl")
+                else:
+                    numbers.setdefault("/".join(folders), []).append(int(name[:3]))
             size = len(text.encode("utf-8"))
             if size > SHARD_CAP:
                 self.report(rel, 0, f"{size} bytes exceeds the {SHARD_CAP}-byte shard cap; roll over to a numbered shard")
@@ -898,6 +906,23 @@ class Linter:
             for number, line in enumerate(text.split("\n"), start=1):
                 if len(line.encode("utf-8")) > RECORD_CAP:
                     self.report(rel, number, f"record exceeds {RECORD_CAP} bytes")
+        for folder, found in sorted(numbers.items()):
+            if sorted(found) != list(range(1, len(found) + 1)):
+                self.report(f"{EVIDENCE_DIR}/{folder}", 0, "shards must be numbered 001, 002, ... without gaps")
+
+    def check_category(self, rel: str, folders: Sequence[str]) -> bool:
+        """A shard folder is evidence/<area>[/<topic>] and names a findings ledger, active or retired."""
+        if not folders:
+            self.report(rel, 0, "shards live in a category folder: evidence/<area>[/<topic>]/NNN.jsonl")
+            return False
+        if len(folders) > CATEGORY_DEPTH or not all(CATEGORY_NAME.fullmatch(folder) for folder in folders):
+            self.report(rel, 0, f"category folders are lowercase and at most {CATEGORY_DEPTH} deep")
+            return False
+        ledger = "-".join(folders) + ".md"
+        if not any((self.root / directory / ledger).is_file() for directory in (FINDINGS_DIR, RETIRED_DIR)):
+            self.report(rel, 0, f"category {'/'.join(folders)} has no findings ledger {ledger}")
+            return False
+        return True
 
     def check_row(self, row: ManifestRow) -> None:
         def problem(message: str) -> None:

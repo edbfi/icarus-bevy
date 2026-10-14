@@ -1,13 +1,14 @@
 # Evidence index
 
-One JSON record per line per retained artifact, sharded by findings area
-(`foundation`, `network`, `save-format`, `save-format-c001`,
-`save-format-classes`; `<area>-2.jsonl` after a rollover). Rules:
-[`.agents/rules/docs.md`](../.agents/rules/docs.md). Fetch one row; never load a
-shard:
+One JSON record per line per retained artifact. Rules:
+[`.agents/rules/docs.md`](../.agents/rules/docs.md). Category folders mirror the
+findings ledgers: a folder path joined with `-` names its ledger, active or
+retired (`save-format/c001/` holds the evidence of `save-format-c001.md`). Each
+folder holds `001.jsonl`, `002.jsonl`, ... with the highest open; its shards hold
+only its own rows, not those of its subfolders. Fetch one row, never a shard:
 
 ```bash
-grep -hw M-147 evidence/*.jsonl
+grep -rhw --include='*.jsonl' M-NNN evidence/
 python3 tools/docs_lint.py --next-id M
 ```
 
@@ -16,9 +17,9 @@ python3 tools/docs_lint.py --next-id M
 | `id` | `M-NNN`, permanent |
 | `path` | repository-relative path, anchor, or external locator |
 | `sha256` | digest of the file's bytes, or null (legacy only) |
-| `class` | `local-private` (ignored path on the analyst machine), `tracked` (in Git), `external` |
+| `class` | `local-private`, `tracked` or `external` |
 | `kind` | `rea-bundle`, `receipt`, `review`, `input`, `build`, `report`, `revision` |
-| `date`, `label` | ISO date; artifact label of at most 160 characters |
+| `date`, `label` | ISO date; label of at most 160 characters |
 | `status` | `active`, `retired` or `missing` (needs `note` or `superseded_by`) |
 | `ev`, `unk`, `records` | `rea-bundle` only: cited Evidence and unknown IDs, record count |
 | `superseded_by`, `note`, `legacy` | optional; `legacy` marks M-001..M-270 |

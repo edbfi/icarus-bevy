@@ -69,6 +69,13 @@ class Fixture:
         path.parent.mkdir(parents=True, exist_ok=True)
         _ = path.write_text(text, encoding="utf-8")
 
+    def shard(self, text: str, category: str = "foundation", number: int = 1) -> None:
+        """Write evidence/<category>/NNN.jsonl and the findings ledger its category names."""
+        ledger = self.root / "docs/ledgers/findings" / (category.replace("/", "-") + ".md")
+        if not ledger.exists():
+            self.write(ledger.relative_to(self.root).as_posix(), FINDINGS_HEAD)
+        self.write(f"evidence/{category}/{number:03d}.jsonl", text)
+
     def linter(self, *, local: bool = False, base: str = "HEAD", today: date = TODAY) -> docs_lint.Linter:
         linter = docs_lint.Linter(self.root, local=local, base=base, today=today)
         _ = linter.run()
@@ -224,7 +231,7 @@ class DocsLintTest(unittest.TestCase):
         fx.write("docs/ledgers/findings/a.md", FINDINGS_HEAD + "| F-001 | ran | observed | tool-receipt; M-001 | s | none | active |\n"
                  + "| F-002 | ran again | observed | tooling-receipt; M-002 | s | none | active |\n"
                  + "| F-003 | claim | observed | static-decompile; M-003 | s | none | active |\n")
-        fx.write("evidence/foundation.jsonl", "".join(legacy(n) for n in (1, 2, 3)))
+        fx.shard("".join(legacy(n) for n in (1, 2, 3)))
         problems = fx.lint()
         self.assertTrue(any("new finding F-002 is an execution receipt" in problem for problem in problems), problems)
         self.assertFalse(any("F-001" in problem or "F-003" in problem for problem in problems), problems)
@@ -341,7 +348,7 @@ class DocsLintTest(unittest.TestCase):
             record(9, legacy=True),
             record(271, legacy=True),
         ]
-        fx.write("evidence/foundation.jsonl", "".join(lines))
+        fx.shard("".join(lines))
         problems = fx.lint()
         for expected in (
             ":2: invalid evidence record: unknown keys extra",
@@ -358,7 +365,7 @@ class DocsLintTest(unittest.TestCase):
 
     def test_new_rows_are_strict_and_legacy_rows_tolerated(self) -> None:
         fx = self.make()
-        fx.write("evidence/foundation.jsonl", "".join([
+        fx.shard("".join([
             legacy(1, path="work/old/", sha256=None, date=None, label="Long " * 60 + "at 04:38 UTC"),
             legacy(2, path="bare-name/"),
             record(271, sha256=None, date=None, path="work/dir/", label="x" * 200),
@@ -384,24 +391,51 @@ class DocsLintTest(unittest.TestCase):
 
     def test_ids_unique_contiguous_and_ordered(self) -> None:
         fx = self.make()
-        fx.write("evidence/foundation.jsonl", legacy(1) + legacy(3) + legacy(2))
-        fx.write("evidence/network.jsonl", legacy(2) + legacy(5))
-        fx.write("evidence/Bad_Name.jsonl", "")
-        fx.write("evidence/big.jsonl", legacy(6, label="x" * 1500) + legacy(7, label="y" * 2100))
+        fx.shard(legacy(1) + legacy(3) + legacy(2))
+        fx.shard(legacy(2) + legacy(5), "network")
+        fx.shard("".join(legacy(n, label="x" * 1500) for n in (6, 7)) + legacy(8, label="y" * 2100), "network", 2)
         problems = fx.lint()
-        self.assertTrue(any("evidence/network.jsonl:1: duplicate ID M-002 (first at evidence/foundation.jsonl:3)" in problem for problem in problems), problems)
+        self.assertTrue(any("evidence/network/001.jsonl:1: duplicate ID M-002 (first at evidence/foundation/001.jsonl:3)" in problem for problem in problems), problems)
         self.assertTrue(any("missing M-004" in problem for problem in problems), problems)
-        self.assertTrue(any("foundation.jsonl:3: M-002 is out of order" in problem for problem in problems), problems)
-        self.assertTrue(any("Bad_Name.jsonl: shard name" in problem for problem in problems), problems)
-        self.assertTrue(any("big.jsonl:2: record exceeds" in problem for problem in problems), problems)
-        fx.write("evidence/big.jsonl", "".join(legacy(n, label="z" * 1500) for n in (6, 7, 8) ) * 1)
-        fx.write("evidence/huge.jsonl", "".join(legacy(n, label="w" * 1500) for n in range(9, 60)))
-        self.assertTrue(any("huge.jsonl: " in problem and "shard cap" in problem for problem in fx.lint()))
+        self.assertTrue(any("foundation/001.jsonl:3: M-002 is out of order" in problem for problem in problems), problems)
+        self.assertTrue(any("network/002.jsonl:3: record exceeds" in problem for problem in problems), problems)
+        fx.shard("".join(legacy(n, label="w" * 1500) for n in range(9, 60)), "network", 3)
+        self.assertTrue(any("network/003.jsonl: " in problem and "shard cap" in problem for problem in fx.lint()))
+
+    def test_shard_categories(self) -> None:
+        fx = self.make()
+        fx.shard(legacy(1))
+        fx.shard(legacy(2), "save-format")
+        fx.shard(legacy(3), "save-format/c001")
+        fx.shard(legacy(4), "save-format/c001", 3)
+        fx.write("docs/ledgers/findings/retired/network-replication.md", FINDINGS_HEAD)
+        fx.write("evidence/network/replication/001.jsonl", legacy(5))
+        fx.write("evidence/loose.jsonl", legacy(6))
+        fx.write("evidence/unknown/001.jsonl", legacy(7))
+        fx.write("evidence/save-format/c001/deep/001.jsonl", legacy(8))
+        fx.write("evidence/foundation/1.jsonl", legacy(9))
+        problems = fx.lint()
+        for expected in (
+            "evidence/loose.jsonl: shards live in a category folder",
+            "evidence/unknown/001.jsonl: category unknown has no findings ledger unknown.md",
+            "evidence/save-format/c001/deep/001.jsonl: category folders are lowercase and at most 2 deep",
+            "evidence/foundation/1.jsonl: shard name must be three digits",
+            "evidence/save-format/c001: shards must be numbered 001, 002",
+        ):
+            self.assertTrue(any(expected in problem for problem in problems), (expected, problems))
+        self.assertFalse(any("replication" in problem or "evidence/save-format/001" in problem for problem in problems), problems)
+
+    def test_retrieval_command_returns_only_the_row(self) -> None:
+        fx = self.make()
+        fx.write("evidence/README.md", "# Evidence index\n\n`grep -rhw --include='*.jsonl' M-001 evidence/`\n")
+        fx.shard(legacy(1), "save-format/c001")
+        result = subprocess.run(["grep", "-rhw", "--include=*.jsonl", "M-001", "evidence/"], cwd=fx.root, check=True, capture_output=True, text=True)
+        self.assertEqual(result.stdout, legacy(1))
 
     def test_lifecycle_and_tracked_paths(self) -> None:
         fx = self.make()
         fx.write("docs/specs/s.md", SPEC_OK)
-        fx.write("evidence/foundation.jsonl", "".join([
+        fx.shard("".join([
             record(1),
             record(2, superseded_by="M-001"),
             record(3, status="retired"),
@@ -433,7 +467,7 @@ class DocsLintTest(unittest.TestCase):
         (fx.root / "work/old").mkdir(parents=True)
         bundle_digest = hashlib.sha256((fx.root / "work/b/rea-bundle.json").read_bytes()).hexdigest()
         receipt_digest = hashlib.sha256(b"{}").hexdigest()
-        fx.write("evidence/foundation.jsonl", "".join([
+        fx.shard("".join([
             legacy(1, path="work/old/", sha256=None),
             legacy(2, path="work/gone/", sha256=None),
             record(3, path="work/r/receipt.json", sha256=receipt_digest),
@@ -452,7 +486,7 @@ class DocsLintTest(unittest.TestCase):
 
     def test_listed_citations(self) -> None:
         fx = self.make()
-        fx.write("evidence/foundation.jsonl", legacy(1) + record(2, kind="rea-bundle", path="work/b/rea-bundle.json", records=3, ev=[EV_A, EV_B, EV_C], unk=[UNK_A]))
+        fx.shard(legacy(1) + record(2, kind="rea-bundle", path="work/b/rea-bundle.json", records=3, ev=[EV_A, EV_B, EV_C], unk=[UNK_A]))
         fx.write("docs/specs/s.md", SPEC_OK + "\n".join([
             "",
             "Good: M-002/ev_222222222222 and M-002/unk_333333333333 and M-001/E-021.",
@@ -471,9 +505,9 @@ class DocsLintTest(unittest.TestCase):
     def test_manifest_history_against_base(self) -> None:
         fx = self.make()
         fx.git_init()
-        fx.write("evidence/foundation.jsonl", legacy(1, path="old/") + legacy(2) + record(3) + record(4, kind="rea-bundle", records=1, ev=[EV_A]))
+        fx.shard(legacy(1, path="old/") + legacy(2) + record(3) + record(4, kind="rea-bundle", records=1, ev=[EV_A]))
         _ = fx.commit("index")
-        fx.write("evidence/foundation.jsonl", legacy(1, path="work/old/", kind="review", note="path corrected from old/")
+        fx.shard(legacy(1, path="work/old/", kind="review", note="path corrected from old/")
                  + record(3, kind="review", date="2026-10-14", path="work/moved.json")
                  + record(4, kind="rea-bundle", records=1, ev=[EV_B]))
         problems = fx.lint()
@@ -491,7 +525,7 @@ class DocsLintTest(unittest.TestCase):
                  + "| M-001 | work/x | unstated | 2026-10-13 | s | local-private |\n| M-002 | work/y | unstated | 2026-10-13 | s | local-private |\n")
         _ = fx.commit("markdown manifest")
         (fx.root / "evidence/manifest.md").unlink()
-        fx.write("evidence/foundation.jsonl", legacy(1, path="work/x", sha256=None))
+        fx.shard(legacy(1, path="work/x", sha256=None))
         problems = fx.lint()
         self.assertTrue(any("ID M-002 existed at HEAD and was removed" in problem for problem in problems), problems)
         self.assertFalse(any("M-001" in problem for problem in problems), problems)
@@ -499,7 +533,7 @@ class DocsLintTest(unittest.TestCase):
     def test_bare_case_notes_rejected_only_on_new_lines(self) -> None:
         fx = self.make()
         fx.git_init()
-        fx.write("evidence/foundation.jsonl", legacy(1))
+        fx.shard(legacy(1))
         fx.write("docs/specs/s.md", SPEC_OK + "\nOld note E-021 stays.\n")
         _ = fx.commit("spec")
         fx.write("docs/specs/s.md", SPEC_OK + "\nOld note E-021 stays.\nNew note E-022.\nCited M-001/E-023 and `E-024`.\n")
@@ -509,7 +543,7 @@ class DocsLintTest(unittest.TestCase):
 
     def test_next_id_and_list_local(self) -> None:
         fx = self.make()
-        fx.write("evidence/foundation.jsonl", legacy(1, path="work/a/") + record(2, status="retired", note="cleaned") + record(3, **{"class": "external"}, path="https://example.invalid/x"))
+        fx.shard(legacy(1, path="work/a/") + record(2, status="retired", note="cleaned") + record(3, **{"class": "external"}, path="https://example.invalid/x"))
         fx.write("docs/ledgers/findings/a.md", FINDINGS_HEAD + "| F-007 | c | observed | review | s | none | active |\n")
         for argv, expected in ((["--next-id", "M"], "M-004"), (["--next-id", "F"], "F-008"), (["--next-id", "U"], "U-001"), (["--list-local"], "work/a/")):
             output = io.StringIO()

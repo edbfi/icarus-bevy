@@ -53,16 +53,16 @@ only its index row and citations (rules in
 1. Call the MCP `export_evidence_bundle` tool with an absolute `path` ending in
    `work/<case>/rea-bundle.json`. It reports the record and unknown counts.
 2. Allocate an ID with `python3 tools/docs_lint.py --next-id M` and append one
-   record to the area shard in `evidence/`: `kind` `rea-bundle`, the file's
-   `sha256sum`, `records` from the export, and in `ev` and `unk` only the IDs
-   that rows cite.
+   record to the highest-numbered shard of its category folder in `evidence/`:
+   `kind` `rea-bundle`, the file's `sha256sum`, `records` from the export, and
+   in `ev` and `unk` only the IDs that rows cite.
 3. Cite `M-NNN/ev_<12 hex>` in finding Evidence cells and `M-NNN/unk_<12 hex>`
    in U- rows; never paste a full identifier.
 4. Run `python3 tools/docs_lint.py --local`; it checks the digest and that every
    listed ID is a member of the bundle (export layout: F-494).
 
 Read a bundle by summary and exact filter, never whole. Take the full ID from
-the row (`grep -hw M-NNN evidence/*.jsonl`), then:
+the row (`grep -rhw --include='*.jsonl' M-NNN evidence/`), then:
 
 ```bash
 .agents/rea/rea.sh inspect-evidence-bundle \
