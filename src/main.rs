@@ -58,6 +58,15 @@ enum Command {
         #[arg(long, conflicts_with_all = ["inner_tags", "recorders"])]
         preserve_check: bool,
     },
+    /// Seed a NEW native world whose only content is the lossless, value-opaque
+    /// preservation of a supplied prospect. Nothing is interpreted or imported;
+    /// an existing world is never overwritten.
+    PreserveSave {
+        #[arg(long)]
+        source: PathBuf,
+        #[arg(long)]
+        data_dir: PathBuf,
+    },
     /// Reserved interface: official format is unknown; fails without writing.
     ImportSave {
         #[arg(long)]
@@ -88,6 +97,11 @@ fn execute(cli: Cli) -> Result<()> {
             println!("{}", toml::to_string_pretty(&options.resolve()?)?);
             Ok(())
         }
+        Command::PreserveSave { source, data_dir } => {
+            let file = open_regular_source(&source)?;
+            println!("{}", preserve_save(file, &data_dir)?);
+            Ok(())
+        }
         Command::ImportSave { .. } => bail!(
             "ICARUS save import is unavailable until the format and migration fidelity are validated; no files were written"
         ),
@@ -99,12 +113,7 @@ fn execute(cli: Cli) -> Result<()> {
         } => {
             // Check the opened handle: a path can change to a FIFO after a
             // regular-file precheck. Normal regular-file symlinks still work.
-            let file = std::fs::OpenOptions::new()
-                .read(true)
-                .custom_flags(icarus_bevy::nonblocking_flag())
-                .open(&source)
-                .context("open prospect envelope")?;
-            ensure!(file.metadata()?.is_file(), "source must be a regular file");
+            let file = open_regular_source(&source)?;
             let output = if preserve_check {
                 serde_json::to_string(&preserve_check_report(file)?)?
             } else if recorders {
@@ -147,6 +156,50 @@ fn store_files(root: &std::path::Path, generation: u64) -> Result<StoreFiles> {
 /// Preserve a supplied envelope and prove the native persistence round trip in
 /// a private temporary store that is removed afterwards. Nothing is imported.
 /// A second save shows the write-once sidecar is reused rather than rewritten.
+/// Open a supplied envelope nonblocking and admit only an opened regular file.
+fn open_regular_source(source: &std::path::Path) -> Result<std::fs::File> {
+    let file = std::fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(icarus_bevy::nonblocking_flag())
+        .open(source)
+        .context("open prospect envelope")?;
+    ensure!(file.metadata()?.is_file(), "source must be a regular file");
+    Ok(file)
+}
+
+/// Preserve a supplied envelope into a fresh native world at tick 0. The
+/// directory may exist but must hold no committed world.
+fn preserve_save(file: std::fs::File, data_dir: &std::path::Path) -> Result<serde_json::Value> {
+    use icarus_bevy::{
+        preservation::PreserveLimits,
+        simulation::{SNAPSHOT_SCHEMA_REFERENCED, WorldSnapshot},
+    };
+
+    let preserved = icarus_bevy::prospect::preserve(file, PreserveLimits::default())?;
+    let summary = serde_json::to_value(preserved.preserved.summary())?;
+    let mut store = SnapshotStore::open(data_dir)?;
+    ensure!(
+        store.load()?.is_none(),
+        "data directory already holds a native world; refusing to overwrite it"
+    );
+    let snapshot = WorldSnapshot {
+        schema_version: SNAPSHOT_SCHEMA_REFERENCED,
+        preserved_prospect: Some(std::sync::Arc::new(preserved.preserved)),
+        ..WorldSnapshot::default()
+    };
+    let receipt = store.save(&snapshot)?;
+    Ok(json!({
+        "event": "preserved_world_created",
+        "validation": "experimental_lossless_preservation",
+        "envelope": preserved.envelope,
+        "preservation": summary,
+        "native_schema": SNAPSHOT_SCHEMA_REFERENCED,
+        "generation": receipt.generation,
+        "world_imported": false,
+        "gameplay_ready": false,
+    }))
+}
+
 fn preserve_check_report(file: std::fs::File) -> Result<serde_json::Value> {
     use icarus_bevy::{
         persistence::SnapshotStore,

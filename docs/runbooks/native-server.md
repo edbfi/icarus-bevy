@@ -77,6 +77,11 @@ checks, so this is not a hard process-exit-time guarantee. Durability relies on
 the filesystem honoring synchronization and atomic rename; qualification so far is
 for local Linux storage, not network filesystems or physical power-loss testing.
 
+`preserve-save --source … --data-dir …` seeds a new native world whose only
+content is the lossless preservation of a supplied prospect (schema 3, tick 0,
+`world_imported: false`); it refuses a directory that already holds a world.
+The world then runs and autosaves like any other; nothing in it is interpreted.
+
 `import-save --source … --destination … --dry-run` is a reserved interface: it
 returns an explicit unsupported error without reading/writing the supplied paths.
 Do not use it to migrate a real world yet.
