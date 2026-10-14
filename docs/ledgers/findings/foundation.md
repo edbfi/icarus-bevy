@@ -7,7 +7,7 @@ full text under `retired/`. Admission and columns follow `.agents/rules/docs.md`
 
 Before restructure: 96ddb0b:docs/ledgers/findings.md
 
-Last reconciled: 2026-10-14
+Last reconciled: 2026-10-15
 
 | ID | Claim | Kind | Evidence | Scope and limits | Unknowns | Status |
 | --- | --- | --- | --- | --- | --- | --- |
@@ -51,3 +51,4 @@ Last reconciled: 2026-10-14
 | F-497 | The CI definition (formatting, Clippy, Rust tests, full manual prek suite, locked release build, headless smoke) passes on hosted ubuntu-24.04 for feature commit a3f1265 | observed | runtime-capture; M-277 | high; one workflow_dispatch run; no game files or ICARUS behavior | U-036 | active |
 | F-511 | Power-loss model of the real write path (65 traced effects): 2,536 crash points, 5,720 POSIX crash states all recover the latest acknowledged or a newer saved generation; a crash before the first manifest refuses with manual recovery; stranded temporaries leaked until fixed | observed | native-test; M-311 | high; modeled POSIX, not hardware; data whole/empty/half | U-035 | active |
 | F-555 | PR policy: at most 250 commits, every non-merge commit signed off by its author; squash merges only. A user-approved message-only rewrite signed the 35 old commits, keeping trees; PR #3 passed at 248. Pre-rewrite SHAs resolve via tag `archive/native-server-foundation-pre-signoff` | observed | authorization; review; M-342 | high; settings as configured | | active |
+| F-558 | The Bevy loopback peer lab creates per-peer packet state only after sending a handshake acknowledgement, caps its table without eviction, expires idle peers, coalesces one ack per peer per update and rejects unknown, oversize and malformed datagrams | observed | authored-test; M-391 | high; loopback authored tests; inferred server mirror, no admission or client | U-038, U-044 | active |

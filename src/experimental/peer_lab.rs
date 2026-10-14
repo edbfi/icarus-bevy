@@ -1,0 +1,460 @@
+//! EXPERIMENTAL loopback Bevy lab with a bounded per-peer packet table.
+//!
+//! Extends the stateless handshake lab (`handshake_lab`, same lab cookie policy,
+//! not the original algorithm) with one [`LabPeer`] per IPv4 loopback address:
+//! a peer is created (or replaced) when the lab sends it a handshake
+//! acknowledgement, its later data datagrams pass through [`LabPeer::receive`]
+//! and every accepted packet is answered with [`LabPeer::ack_packet`]. No
+//! admission, Login/Join handling, identity check, version selection, resend,
+//! channel other than control, or gameplay. Delivered control messages are only
+//! counted by kind and then discarded.
+//!
+//! The server side is an INFERRED mirror of client-build observations (cookie
+//! seeding F-536, sequencing F-535..F-539, framing F-521..F-527); the original
+//! server's peer table, timeouts, ack cadence and limits were not observed.
+//! Nothing here demonstrates compatibility with any client.
+//!
+//! Policy (lab choices):
+//! - At most [`PeerLabConfig::max_peers`] peers. When the table is full, a
+//!   valid challenge echo from a new address is rejected: no acknowledgement is
+//!   sent and `peers_rejected` counts it. Nothing is ever evicted to make room;
+//!   a known address that completes the handshake again replaces its own peer.
+//! - Peers idle longer than [`PeerLabConfig::idle_timeout`] (no accepted data
+//!   packet since creation or the last accepted one) are removed at the start of
+//!   an update. Failed peers ([`LabPeer::is_failed`]) and peers whose ack packet
+//!   cannot be built are removed at once.
+//! - At most [`PACKETS_PER_UPDATE`] datagrams per update. The receive buffer is
+//!   one byte longer than the configured maximum datagram size
+//!   (`limits.max_packet_bytes`), so a longer, kernel-truncated datagram is
+//!   detected and rejected as oversize.
+//! - At most one ack packet per peer per update, sent after the receive loop
+//!   when that peer had at least one accepted data packet. Stale or duplicate
+//!   packets are not acknowledged.
+//!
+//! Stats and `Debug` carry counts and message kinds only: never payload bytes,
+//! cookies, tokens, sequence values or numeric message fields.
+use std::{
+    collections::{BTreeMap, HashMap},
+    fmt, io,
+    net::{SocketAddr, SocketAddrV4, UdpSocket},
+    time::{Duration, Instant},
+};
+
+use anyhow::{Context, Result, ensure};
+use bevy::prelude::{App, Plugin, ResMut, Resource, Update};
+use serde::Serialize;
+
+use super::handshake::decode;
+use super::handshake_lab::{
+    CookieAuthority, HANDSHAKE_BYTES, HandshakeReply, PACKETS_PER_UPDATE, bind_loopback,
+    lab_seconds,
+};
+use super::packet::BunchLimits;
+use super::packet_lab::{DeliveredSummary, LabPeer, PacketDisposition, PacketLabConfig};
+
+/// Lab choice: default peer-table capacity.
+pub const DEFAULT_MAX_PEERS: usize = 16;
+/// Upper bound accepted for [`PeerLabConfig::max_peers`].
+pub const MAX_PEERS_LIMIT: usize = 1024;
+/// Lab choice: default idle timeout; the original timeout was not observed.
+pub const DEFAULT_IDLE_TIMEOUT: Duration = Duration::from_secs(30);
+/// Lab choice: default maximum datagram size; the negotiated value is unknown.
+pub const DEFAULT_MAX_DATAGRAM_BYTES: u32 = 1024;
+/// Largest UDP payload over IPv4.
+pub const MAX_UDP_PAYLOAD_BYTES: u32 = 65_507;
+/// Lab choice: default channel-index limit for bunch parsing.
+pub const DEFAULT_MAX_CHANNELS: u32 = 32;
+/// Lab choice: default archive-string unit cap for channel names.
+pub const DEFAULT_MAX_STRING_UNITS: usize = 256;
+
+/// Caller-supplied lab parameters.
+#[derive(Clone, Copy, Debug)]
+pub struct PeerLabConfig {
+    /// Per-peer packet state; `packet.limits.max_packet_bytes` is also the
+    /// maximum accepted datagram size and sizes the receive buffer.
+    pub packet: PacketLabConfig,
+    /// Peer-table capacity, `1..=MAX_PEERS_LIMIT`.
+    pub max_peers: usize,
+    /// Nonzero idle interval after which a peer is removed.
+    pub idle_timeout: Duration,
+}
+
+impl Default for PeerLabConfig {
+    fn default() -> Self {
+        Self {
+            packet: PacketLabConfig::new(BunchLimits {
+                max_channels: DEFAULT_MAX_CHANNELS,
+                max_packet_bytes: DEFAULT_MAX_DATAGRAM_BYTES,
+                max_string_units: DEFAULT_MAX_STRING_UNITS,
+            }),
+            max_peers: DEFAULT_MAX_PEERS,
+            idle_timeout: DEFAULT_IDLE_TIMEOUT,
+        }
+    }
+}
+
+impl PeerLabConfig {
+    /// Maximum accepted datagram size in bytes.
+    pub fn max_datagram_bytes(&self) -> usize {
+        self.packet.packet.limits.max_packet_bytes as usize
+    }
+
+    fn validate(&self) -> Result<()> {
+        ensure!(
+            (1..=MAX_PEERS_LIMIT).contains(&self.max_peers),
+            "max_peers must be 1..={MAX_PEERS_LIMIT}"
+        );
+        ensure!(!self.idle_timeout.is_zero(), "idle timeout must be nonzero");
+        let max = self.packet.packet.limits.max_packet_bytes;
+        ensure!(
+            (HANDSHAKE_BYTES as u32..=MAX_UDP_PAYLOAD_BYTES).contains(&max),
+            "maximum datagram size must be {HANDSHAKE_BYTES}..={MAX_UDP_PAYLOAD_BYTES} bytes"
+        );
+        self.packet
+            .validate()
+            .context("invalid packet-lab configuration")
+    }
+}
+
+/// Counters only; no addresses, payloads, cookies or field values.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize)]
+pub struct PeerLabStats {
+    /// Datagrams taken from the socket, including rejected ones.
+    pub received: u64,
+    /// Longer than the maximum datagram size (possibly kernel-truncated).
+    pub oversize: u64,
+    /// Non-IPv4 sources.
+    pub non_ipv4: u64,
+    pub io_errors: u64,
+    pub challenges_sent: u64,
+    /// Handshake acknowledgements sent; each created or replaced a peer.
+    pub acknowledgements_sent: u64,
+    /// Exact 29-byte handshake forms that were not answered (forged, expired,
+    /// restart or acknowledgement forms), from known or unknown addresses.
+    pub handshake_rejected: u64,
+    pub peers_created: u64,
+    pub peers_replaced: u64,
+    /// Valid challenge echoes refused because the table was full.
+    pub peers_rejected: u64,
+    pub peers_expired: u64,
+    /// Peers removed after a failed receive or ack.
+    pub peers_failed: u64,
+    /// Non-handshake datagrams from addresses without a peer.
+    pub unknown_peer: u64,
+    /// Data packets that passed the sequence gate.
+    pub data_accepted: u64,
+    /// Stale or duplicate data packets (state unchanged).
+    pub data_rejected: u64,
+    /// Datagrams from a known peer that failed to parse or decode (including
+    /// non-short handshake forms), or that failed the peer.
+    pub data_malformed: u64,
+    pub acks_sent: u64,
+    /// Ack packets that could not be built; the peer is removed.
+    pub ack_errors: u64,
+    /// Control messages delivered in order, of any kind.
+    pub control_delivered: u64,
+    /// Delivered entries whose ID has no known layout.
+    pub control_unknown: u64,
+    /// Delivered control messages per message ID (kind), known or not.
+    pub control_by_id: BTreeMap<u8, u64>,
+    /// Control bunches carrying the close flag; the lab does not act on them.
+    pub control_close_seen: u64,
+}
+
+impl PeerLabStats {
+    fn count_delivered(&mut self, delivered: &[DeliveredSummary]) {
+        for entry in delivered {
+            self.control_delivered = self.control_delivered.saturating_add(1);
+            if matches!(entry, DeliveredSummary::Unknown { .. }) {
+                self.control_unknown = self.control_unknown.saturating_add(1);
+            }
+            let count = self.control_by_id.entry(entry.id()).or_default();
+            *count = count.saturating_add(1);
+        }
+    }
+}
+
+fn bump(counter: &mut u64) {
+    *counter = counter.saturating_add(1);
+}
+
+struct PeerEntry {
+    peer: LabPeer,
+    last_seen: Instant,
+    ack_pending: bool,
+}
+
+/// The loopback peer lab. `Debug` reports only the peer count and counters.
+#[derive(Resource)]
+pub struct PeerLab {
+    socket: UdpSocket,
+    authority: CookieAuthority,
+    started: Instant,
+    config: PeerLabConfig,
+    peers: HashMap<SocketAddrV4, PeerEntry>,
+    buffer: Vec<u8>,
+    stats: PeerLabStats,
+}
+
+impl fmt::Debug for PeerLab {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("PeerLab")
+            .field("peers", &self.peers.len())
+            .field("max_peers", &self.config.max_peers)
+            .field("stats", &self.stats)
+            .finish_non_exhaustive()
+    }
+}
+
+impl PeerLab {
+    /// Validate `config` and bind IPv4 loopback only; zero selects an
+    /// ephemeral port. A fresh random cookie secret is drawn per lab.
+    pub fn bind(port: u16, config: PeerLabConfig) -> Result<Self> {
+        config.validate()?;
+        let authority = CookieAuthority::random().context("cookie secret")?;
+        let socket = bind_loopback(port).context("bind IPv4 loopback")?;
+        Ok(Self {
+            socket,
+            authority,
+            started: Instant::now(),
+            peers: HashMap::with_capacity(config.max_peers),
+            // One excess byte detects datagrams longer than the maximum.
+            buffer: vec![0; config.max_datagram_bytes() + 1],
+            config,
+            stats: PeerLabStats::default(),
+        })
+    }
+
+    pub fn local_addr(&self) -> io::Result<SocketAddr> {
+        self.socket.local_addr()
+    }
+
+    pub fn config(&self) -> &PeerLabConfig {
+        &self.config
+    }
+
+    pub fn stats(&self) -> &PeerLabStats {
+        &self.stats
+    }
+
+    pub fn peer_count(&self) -> usize {
+        self.peers.len()
+    }
+
+    pub fn has_peer(&self, address: SocketAddrV4) -> bool {
+        self.peers.contains_key(&address)
+    }
+
+    fn expire_idle(&mut self, now: Instant) {
+        let timeout = self.config.idle_timeout;
+        let before = self.peers.len();
+        self.peers
+            .retain(|_, entry| now.saturating_duration_since(entry.last_seen) <= timeout);
+        let expired = (before - self.peers.len()) as u64;
+        self.stats.peers_expired = self.stats.peers_expired.saturating_add(expired);
+    }
+
+    /// Answer a handshake form; returns `false` when `bytes` is not one the
+    /// authority answers.
+    fn handshake(&mut self, address: SocketAddrV4, length: usize, now: Instant) -> bool {
+        let seconds = lab_seconds(self.started);
+        let Some(reply) = self
+            .authority
+            .respond(address, &self.buffer[..length], seconds)
+        else {
+            return false;
+        };
+        match reply {
+            HandshakeReply::Challenge(datagram) => {
+                if self.send(&datagram, address) {
+                    bump(&mut self.stats.challenges_sent);
+                }
+            }
+            HandshakeReply::Acknowledgement { datagram, cookie } => {
+                let known = self.peers.contains_key(&address);
+                if !known && self.peers.len() >= self.config.max_peers {
+                    bump(&mut self.stats.peers_rejected);
+                    return true;
+                }
+                // The configuration was validated at bind, so this cannot fail.
+                let Ok(peer) = LabPeer::from_cookie(&cookie, self.config.packet) else {
+                    bump(&mut self.stats.peers_failed);
+                    return true;
+                };
+                if !self.send(&datagram, address) {
+                    return true;
+                }
+                bump(&mut self.stats.acknowledgements_sent);
+                bump(if known {
+                    &mut self.stats.peers_replaced
+                } else {
+                    &mut self.stats.peers_created
+                });
+                self.peers.insert(
+                    address,
+                    PeerEntry {
+                        peer,
+                        last_seen: now,
+                        ack_pending: false,
+                    },
+                );
+            }
+        }
+        true
+    }
+
+    fn data(&mut self, address: SocketAddrV4, length: usize, now: Instant) {
+        let Some(entry) = self.peers.get_mut(&address) else {
+            bump(&mut self.stats.unknown_peer);
+            return;
+        };
+        match entry.peer.receive(&self.buffer[..length]) {
+            Ok(received) => {
+                let summary = received.summary();
+                match summary.disposition {
+                    PacketDisposition::Accepted { .. } => {
+                        entry.last_seen = now;
+                        entry.ack_pending = true;
+                        bump(&mut self.stats.data_accepted);
+                        if summary.control_close_seen {
+                            bump(&mut self.stats.control_close_seen);
+                        }
+                        self.stats.count_delivered(&summary.delivered);
+                    }
+                    PacketDisposition::Rejected => bump(&mut self.stats.data_rejected),
+                }
+                // Decoded messages are dropped here unexamined.
+            }
+            Err(_) => {
+                bump(&mut self.stats.data_malformed);
+                if entry.peer.is_failed() {
+                    self.peers.remove(&address);
+                    bump(&mut self.stats.peers_failed);
+                }
+            }
+        }
+    }
+
+    fn send_acks(&mut self) {
+        let mut failed = Vec::new();
+        let mut acks = Vec::new();
+        for (address, entry) in &mut self.peers {
+            if !std::mem::take(&mut entry.ack_pending) {
+                continue;
+            }
+            match entry.peer.ack_packet() {
+                Ok(datagram) => acks.push((*address, datagram)),
+                Err(_) => failed.push(*address),
+            }
+        }
+        for address in failed {
+            self.peers.remove(&address);
+            bump(&mut self.stats.ack_errors);
+            bump(&mut self.stats.peers_failed);
+        }
+        for (address, datagram) in acks {
+            if self.send(&datagram, address) {
+                bump(&mut self.stats.acks_sent);
+            }
+        }
+    }
+
+    fn send(&mut self, datagram: &[u8], address: SocketAddrV4) -> bool {
+        match self.socket.send_to(datagram, address) {
+            Ok(sent) if sent == datagram.len() => true,
+            _ => {
+                bump(&mut self.stats.io_errors);
+                false
+            }
+        }
+    }
+
+    /// One bounded update: expire idle peers, process at most
+    /// [`PACKETS_PER_UPDATE`] datagrams, then send pending acks.
+    fn poll(&mut self) {
+        self.expire_idle(Instant::now());
+        let max = self.config.max_datagram_bytes();
+        for _ in 0..PACKETS_PER_UPDATE {
+            let (length, source) = match self.socket.recv_from(&mut self.buffer) {
+                Ok(received) => received,
+                Err(error) if error.kind() == io::ErrorKind::WouldBlock => break,
+                Err(_) => {
+                    bump(&mut self.stats.io_errors);
+                    break;
+                }
+            };
+            bump(&mut self.stats.received);
+            let SocketAddr::V4(address) = source else {
+                bump(&mut self.stats.non_ipv4);
+                continue;
+            };
+            if length > max {
+                bump(&mut self.stats.oversize);
+                continue;
+            }
+            let now = Instant::now();
+            if self.handshake(address, length, now) {
+                continue;
+            }
+            if decode(&self.buffer[..length]).is_ok() {
+                // An exact short handshake form the authority did not answer.
+                bump(&mut self.stats.handshake_rejected);
+                continue;
+            }
+            self.data(address, length, now);
+        }
+        self.send_acks();
+    }
+}
+
+/// Insert a bound [`PeerLab`] before adding this optional research plugin.
+pub struct PeerLabPlugin;
+
+impl Plugin for PeerLabPlugin {
+    fn build(&self, app: &mut App) {
+        app.add_systems(Update, poll_peer_lab);
+    }
+}
+
+fn poll_peer_lab(mut lab: ResMut<PeerLab>) {
+    lab.poll();
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn config_is_validated() {
+        assert!(PeerLabConfig::default().validate().is_ok());
+        for max_peers in [0, MAX_PEERS_LIMIT + 1] {
+            let config = PeerLabConfig {
+                max_peers,
+                ..PeerLabConfig::default()
+            };
+            assert!(config.validate().is_err(), "{max_peers}");
+        }
+        let config = PeerLabConfig {
+            idle_timeout: Duration::ZERO,
+            ..PeerLabConfig::default()
+        };
+        assert!(config.validate().is_err());
+        for bytes in [28, MAX_UDP_PAYLOAD_BYTES + 1] {
+            let mut config = PeerLabConfig::default();
+            config.packet.packet.limits.max_packet_bytes = bytes;
+            assert!(config.validate().is_err(), "{bytes}");
+        }
+        let mut config = PeerLabConfig::default();
+        config.packet.sent_capacity = 0;
+        assert!(config.validate().is_err());
+    }
+
+    #[test]
+    fn debug_carries_counts_only() {
+        let lab = PeerLab::bind(0, PeerLabConfig::default()).unwrap();
+        let text = format!("{lab:?}");
+        assert!(text.starts_with("PeerLab { peers: 0, max_peers: 16, stats: "));
+        assert!(!text.contains("127.0.0.1"));
+    }
+}

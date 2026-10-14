@@ -99,7 +99,8 @@ impl PacketLabConfig {
         }
     }
 
-    fn validate(&self) -> Result<()> {
+    /// Check the configuration that [`LabPeer::from_cookie`] enforces.
+    pub fn validate(&self) -> Result<()> {
         ensure!(
             self.packet.receiver == Receiver::Server,
             "the lab peer reads client packets as the server"
@@ -108,6 +109,10 @@ impl PacketLabConfig {
         ensure!(
             self.max_bunches_per_packet >= 1,
             "at least one bunch per packet must be allowed"
+        );
+        ensure!(
+            self.sent_capacity >= 1,
+            "sent-record capacity must be at least one"
         );
         ensure!(
             self.control_channel_index < self.packet.limits.max_channels,
