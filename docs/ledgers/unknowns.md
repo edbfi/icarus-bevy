@@ -3,7 +3,7 @@
 One row per open question. Tracked here; REA sessions mirror it. IDs are permanent.
 Status: open, investigating, blocked, contradicted, resolved.
 
-Last reconciled: 2026-10-14
+Last reconciled: 2026-10-15
 
 | ID | Question | Severity | Status | Next probe | Findings | REA id |
 | --- | --- | --- | --- | --- | --- | --- |
@@ -28,7 +28,7 @@ Last reconciled: 2026-10-14
 | U-019 | Can the live REA provider decode exact windows or start lazy Ghidra within its limits? | low | blocked | none stated | F-085, F-100 |  |
 | U-020 | What are the numerical/text meanings, Name identities and Enum lookups of the qualified C009/C013/C028/C034/D01 values? | high | open | none stated | F-115, F-120, F-123, F-125, F-135, F-146, F-147, F-148, F-150, F-152, F-155, F-158, F-162, F-165, F-170, F-172, F-174, F-182 |  |
 | U-021 | What do empty families contain when populated: 17 C028 array-child descriptors (incl. seven inherited arrays), DA04's two descriptors, CA06 Text/Name? | medium | open | none stated | F-116, F-117, F-156, F-160, F-169, F-176 |  |
-| U-022 | How are the classes and records outside the C009/C013/C028/C034 selections structured? | medium | investigating | C001 and the player-state candidates frame (F-540, F-550); 23 of 25 remaining classes frame; C004/C016 exceed 128 KiB and C015 needs MapProperty/Int64Property (F-551, F-552) | F-496, F-534, F-540, F-550 to F-553 |  |
+| U-022 | How are the classes and records outside the C009/C013/C028/C034 selections structured? | medium | investigating | Every body of all classes frames and round-trips in both copies (F-557); open: Map/Set payloads, binary Structs and meanings (U-020, U-027, U-055) | F-496, F-534, F-540, F-550, F-551, F-557 |  |
 | U-023 | What is C001's complete construction/vtable/archive-dispatch bridge? | medium | open | Static bridge and load path closed (F-512, F-513, F-532); top fields match (F-534) and nested children frame (F-540); values, runtime dispatch and register preservation open | F-121, F-122, F-512, F-513, F-532, F-534, F-540 |  |
 | U-024 | Do C028 whole-top fields have individual native spans, and which immutable library backed the historical live pin? | medium | open | none stated | F-117, F-134, F-136, F-137, F-140, F-141 |  |
 | U-025 | Do the qualified saves restore/import officially and remain compatible with stock/matched clients and newer builds? | high | open | none stated | F-126, F-144, F-149, F-157, F-183 |  |
@@ -51,7 +51,7 @@ Last reconciled: 2026-10-14
 | U-042 | What causes the first C001 listing-entry operation/check rejection? | medium | open | Separate listing diagnostic only if needed; completed decoder does not distinguish retained listing failure cause. | F-271, F-409 |  |
 | U-043 | What is the actual receiver/indirect dispatch, base origin and same-build type-registration join for the control stores? | high | open | Owner, registration, dispatch and the static virtual call site are identified (F-505, F-506, F-520); register preservation qualified (F-544); runtime dispatch stays open | F-274, F-501 to F-506, F-520, F-544, F-546 |  |
 | U-044 | What is the concrete archive/outer framing path for the experimental control-body fields? | medium | investigating | Client receive frame, headers and integer encodings are observed (F-521 to F-525). Open: packet-header sender, runtime version overrides, other handler components, server correspondence. | F-274, F-507, F-518, F-519, F-521 to F-527, F-535 to F-539 |  |
-| U-045 | Is authored world-data import feasible? | high | investigating | Every framed body round-trips byte-identically through a lossless value-opaque tree (F-554); next an import that preserves it natively | F-187, F-242, F-554 |  |
+| U-045 | Is authored world-data import feasible? | high | investigating | Every body round-trips byte-identically through a lossless value-opaque tree (F-557); next an import that preserves it natively | F-187, F-242, F-557 |  |
 | U-046 | Can classes/schemas be recognized automatically, and what are native value meanings incl. seven empty inherited arrays' population coverage? | medium | open | none stated | F-195, F-196, F-211, F-496 |  |
 | U-047 | Can reported original-server crashes be reproduced under controlled workloads? | high | open | controlled workloads (M1) | F-217, F-256, F-268 |  |
 | U-048 | What are deeper C028 child encodings, values and newer-build semantics? | medium | open | none stated | F-212, F-259 |  |
@@ -61,7 +61,7 @@ Last reconciled: 2026-10-14
 | U-052 | Does the stock client complete the stateless exchange against the native loopback lab? | medium | blocked | User defers access; retain reported client/save pair and prepare concrete lab scope later. | F-253, F-421 |  |
 | U-053 | Does Text header framing hold on a supplied Text-bearing body? None has been qualified. | low | open | bounded supplied-body selection containing a TextProperty header | F-206, F-207, F-288 |  |
 | U-054 | Can later runtime mutation add the save-selection bit to ancestor fields of the singleton class? | low | open | none stated | F-305 |  |
-| U-055 | How are Map/Set (gate 509) and other property kinds outside the eleven-kind subset framed, and do supplied saves contain them? | medium | open | none stated | F-318 |  |
+| U-055 | How are Map/Set (gate 509) and other property kinds outside the eleven-kind subset framed, and do supplied saves contain them? | medium | investigating | Map/Set/Int64 headers qualified and present in the supplied saves (F-556, F-557); next the Map/Set payload layout | F-318, F-556, F-557 |  |
 | U-056 | What are the from-file path's caller, reader contracts, schema, atomicity and dynamic error behavior, and does the reader-return difference lose an error? | medium | open | none stated | F-326, F-333, F-334 |  |
 | U-057 | What are the by-name path's dedicated command entry, field identities, name case rules and complete outcomes? | medium | open | none stated | F-325 |  |
 | U-058 | Is the failure-reporting call reachable at runtime, and does it terminate the process, raise or return? | high | open | authorized disposable-fixture runtime case | F-327 |  |

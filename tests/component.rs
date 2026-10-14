@@ -145,6 +145,8 @@ fn exact_field_and_byte_caps_are_enforced() {
 
 #[test]
 fn explicit_byte_limit_preserves_spans_and_default_policy() {
+    // Research policy ceiling sized by F-553, not an original format limit.
+    assert_eq!(MAX_BOUNDED_COMPONENT_BYTES, 1024 * 1024);
     let overhead = field(NAME, &[0], &[]).len() + END.len() + 4;
     for size in [MAX_COMPONENT_BYTES + 1, MAX_BOUNDED_COMPONENT_BYTES] {
         let bytes = body(&field(NAME, &[0], &vec![7; size - overhead]));

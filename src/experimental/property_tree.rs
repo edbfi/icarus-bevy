@@ -107,6 +107,9 @@ pub struct KindCounts {
     #[serde(rename = "enum")]
     pub enum_: usize,
     pub bool: usize,
+    pub map: usize,
+    pub set: usize,
+    pub int64: usize,
 }
 
 #[derive(Debug, Serialize)]
@@ -275,6 +278,9 @@ impl PropertyTree {
                 TagKind::Byte => &mut counts.byte,
                 TagKind::Enum => &mut counts.enum_,
                 TagKind::Bool => &mut counts.bool,
+                TagKind::Map => &mut counts.map,
+                TagKind::Set => &mut counts.set,
+                TagKind::Int64 => &mut counts.int64,
             } += 1;
             match &property.value {
                 NodeValue::Opaque(bytes) => {
@@ -347,7 +353,7 @@ pub struct BaseComponentTree {
 }
 
 impl BaseComponentTree {
-    /// Frame with `read_base_component_with_limit` (1 byte to 128 KiB), then
+    /// Frame with `read_base_component_with_limit` (1 byte to 1 MiB), then
     /// apply the same nested framing and limits as `PropertyTree::parse`.
     pub fn parse(
         input: &[u8],

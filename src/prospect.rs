@@ -143,7 +143,7 @@ pub struct ClassComponentReport {
 /// validation as [`inspect_with_recorders`], frame the BinaryData of every
 /// recorder whose decoded class string equals `class` exactly (UTF-16 unit
 /// equality, array order) as a caller-selected base-component candidate under
-/// `limit` bytes (1..=128 KiB, checked before any input is read). A framing
+/// `limit` bytes (1..=1 MiB, checked before any input is read). A framing
 /// failure is passed to `visit` as a value and the walk continues; an `Err`
 /// returned by `visit` aborts the walk and is returned unchanged. The visitor
 /// receives borrowed spans and owns their privacy; the report holds counts only.
@@ -156,7 +156,7 @@ pub fn visit_class_components(
 ) -> Result<ClassComponentReport> {
     ensure!(
         (1..=MAX_BOUNDED_COMPONENT_BYTES).contains(&limit),
-        "component byte limit must be between 1 byte and 128 KiB"
+        "component byte limit must be between 1 byte and 1 MiB"
     );
     let validated = decode_envelope(reader)?;
     let profile = TagProfile::MemoryArchive522;

@@ -31,6 +31,12 @@ pub enum TagKind {
     Byte,
     Enum,
     Bool,
+    /// Key and value type names follow the array index (F-556).
+    Map,
+    /// One inner type name follows the array index (F-556).
+    Set,
+    /// No type-specific metadata (F-556).
+    Int64,
 }
 
 /// Exact source slices; intentionally not serializable or debug-printable.
@@ -162,6 +168,9 @@ pub(crate) fn read_record(input: &[u8], profile: TagProfile) -> Result<ParsedRec
         ("ByteProperty", TagKind::Byte),
         ("EnumProperty", TagKind::Enum),
         ("BoolProperty", TagKind::Bool),
+        ("MapProperty", TagKind::Map),
+        ("SetProperty", TagKind::Set),
+        ("Int64Property", TagKind::Int64),
     ]
     .into_iter()
     .find_map(|(name, kind)| is_name(&type_name, name).then_some(kind))
@@ -178,8 +187,13 @@ pub(crate) fn read_record(input: &[u8], profile: TagProfile) -> Result<ParsedRec
                     extra = Some(cursor.name()?);
                     cursor.take(16)?;
                 }
-                TagKind::Array | TagKind::Byte | TagKind::Enum => {
+                TagKind::Array | TagKind::Byte | TagKind::Enum | TagKind::Set => {
                     extra = Some(cursor.name()?);
+                }
+                TagKind::Map => {
+                    // Key type, then value type; both gated at version 509.
+                    extra = Some(cursor.name()?);
+                    cursor.name()?;
                 }
                 TagKind::Bool => {
                     cursor.flag()?;
@@ -189,7 +203,8 @@ pub(crate) fn read_record(input: &[u8], profile: TagProfile) -> Result<ParsedRec
                 | TagKind::Int
                 | TagKind::UInt32
                 | TagKind::Float
-                | TagKind::Text => {}
+                | TagKind::Text
+                | TagKind::Int64 => {}
             }
             if cursor.flag()? {
                 cursor.take(16)?;
