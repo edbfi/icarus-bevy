@@ -45,15 +45,21 @@ rules through prek and CI; the rest are reviewed.
    or renumber a row.
 5. Caps are in bytes: 16 KB per current-surface file, 64 KB per ledger (128 KB
    for findings), 400 bytes per ledger row, and 160 KB for the current prose surface (every
-   current-surface file except the ledgers). A file near its cap is condensed,
-   not split.
+   current-surface file except the ledgers). A file near its cap follows the
+   drop policy (rule 9).
 6. Every status, spec and ledger file carries `Last reconciled: YYYY-MM-DD`.
 7. Canonical workflow rules live under `.agents/rules/`; `AGENTS.md` summarizes
    and links to them. Historical records, spec acceptance conditions and runbook
    procedures are exempt from the no-duplication rule.
-8. Condensing a current document preserves every observation, qualification,
-   limitation, scope and outcome as a ledger row, gate line or digest line. The
-   file header cites the commit and path that still hold the full text.
+8. Condensing a current document keeps every observation, qualification,
+   limitation, scope and outcome retrievable by ID as a ledger row, gate line or
+   digest line. The file header cites the commit and path that still hold the
+   full text.
+9. Drop policy. Near a cap, split by topic (specs, digests, active findings,
+   numbered retired findings files) or supersede and retire finding rows.
+   Deleting prose that restates an ID-retrievable claim is permitted and
+   preferred; rewording a row to fit its cap is permitted. Frozen directories
+   are never a destination. Removing whitespace to fit a cap is a lint failure.
 
 ## Milestone checklist
 

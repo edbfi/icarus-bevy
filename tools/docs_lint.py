@@ -9,16 +9,25 @@ The repository documentation has two surfaces (see ``.agents/rules/docs.md``):
 * *retained history*: ``docs/history/`` and ``docs/research/archive/``; verbatim,
   append-only, and frozen to the allowlist below.
 
+``CLAUDE.md`` and ``.agents/rules/`` join the link and document-path checks
+without becoming part of the current surface.
+
 The script reads files only. ``--warn`` reports every problem but exits 0, for
 use while a migration is in flight. ``--local`` additionally verifies that
 ``local-private`` manifest rows still exist on disk with matching digests.
+``--base REF`` names the revision whose ledger IDs must survive (default
+``HEAD``). ``--strict-layout`` enables the restructured-layout checks (glued
+tokens, dated filenames, provenance lines, read-tier budget, digest and
+manifest row caps) and rejects the legacy heading sets.
 
 Usage::
 
-    python3 tools/docs_lint.py            # strict, repository root found from cwd
-    python3 tools/docs_lint.py --warn     # report only
-    python3 tools/docs_lint.py --local    # also verify local-private evidence
-    python3 tools/docs_lint.py --root P   # explicit repository root
+    python3 tools/docs_lint.py                  # strict, repository root found from cwd
+    python3 tools/docs_lint.py --warn           # report only
+    python3 tools/docs_lint.py --local          # also verify local-private evidence
+    python3 tools/docs_lint.py --root P         # explicit repository root
+    python3 tools/docs_lint.py --base origin/main
+    python3 tools/docs_lint.py --strict-layout
 """
 
 from __future__ import annotations
@@ -26,6 +35,7 @@ from __future__ import annotations
 import argparse
 from collections.abc import Iterable, Iterator, Sequence
 from dataclasses import dataclass, field
+from datetime import date
 import hashlib
 from pathlib import Path
 import re
@@ -40,6 +50,8 @@ KIB = 1024
 # ---------------------------------------------------------------------------
 
 CURRENT_ROOTS: tuple[str, ...] = ("README.md", "docs")
+# Agent instructions: link and document-path checks only, never the current surface.
+INSTRUCTION_ROOTS: tuple[str, ...] = ("CLAUDE.md", ".agents/rules")
 FROZEN_DIRS: tuple[str, ...] = ("docs/history", "docs/research/archive")
 FROZEN_ALLOWLIST: frozenset[str] = frozenset(
     {
@@ -70,13 +82,30 @@ FILE_CAPS: dict[str, int] = {
     "docs/ledgers/bugs.md": 64 * KIB,
     "docs/ledgers/compatibility.md": 64 * KIB,
 }
+# Directory caps; the first matching prefix wins.
+PREFIX_CAPS: tuple[tuple[str, int], ...] = (
+    ("docs/ledgers/findings/retired/", 64 * KIB),
+    ("docs/ledgers/findings/", 48 * KIB),
+)
+DIGEST_CAP = 8 * KIB
+ACTIVE_FINDINGS_CAP = 96 * KIB
 LEDGER_ROW_CAP = 400
+MANIFEST_ROW_CAP = 300
 AGGREGATE_CAP = 160 * KIB
 
+# Read tiers: files every session loads, and per-task entry sets.
+STARTUP_FILES: tuple[str, ...] = ("CLAUDE.md", "docs/README.md", "docs/implementation-status.md")
+STARTUP_BUDGET = 20 * KIB
+TASK_BUDGET = 64 * KIB
+TASK_TIERS: dict[str, tuple[str, ...]] = {}
+STALE_DAYS = 30
+
 STATUS_FILE = "docs/implementation-status.md"
-STATUS_H2: tuple[str, ...] = ("Summary", "Milestones", "Works", "Does not work", "Gates", "Next tasks")
+STATUS_H2: tuple[str, ...] = ("Summary", "Milestones", "Next tasks")
+STATUS_H2_LEGACY: tuple[str, ...] = ("Summary", "Milestones", "Works", "Does not work", "Gates", "Next tasks")
 SPEC_H2: tuple[str, ...] = ("Status", "Scope", "Confirmed", "Candidate", "Open questions", "Evidence")
-DIGEST_H2: tuple[str, ...] = (
+DIGEST_H2: tuple[str, ...] = ("Question cluster", "Current answer", "Open", "Artifacts")
+DIGEST_H2_LEGACY: tuple[str, ...] = (
     "Question cluster",
     "Answered",
     "Partial",
@@ -88,15 +117,21 @@ RECONCILED_REQUIRED_PREFIXES: tuple[str, ...] = (STATUS_FILE, "docs/specs/", "do
 
 PROSE_EXEMPT_PREFIXES: tuple[str, ...] = ("docs/runbooks/", "docs/gates.md")
 FINDINGS_FILE = "docs/ledgers/findings.md"
+FINDINGS_DIR = "docs/ledgers/findings"
+RETIRED_DIR = "docs/ledgers/findings/retired"
 UNKNOWNS_FILE = "docs/ledgers/unknowns.md"
 MANIFEST_FILE = "evidence/manifest.md"
 CODE_REFERENCE_ROOTS: tuple[str, ...] = ("src", "tools", ".github")
+# Execution receipts belong in the evidence manifest, not in new finding rows.
+RECEIPT_CLASSES: tuple[str, ...] = ("tool-receipt", "tooling-receipt")
 
 HEX64 = re.compile(r"(?<![0-9a-fA-F])[0-9a-f]{64}(?![0-9a-fA-F])")
 UTC_TIME = re.compile(r"\b\d{1,2}:\d{2}\s*UTC\b")
 DATED_HEADING = re.compile(r"\d{4}-\d{2}-\d{2}|\d{1,2}:\d{2}\s*UTC")
+DATED_NAME = re.compile(r"\d{4}-\d{2}-\d{2}")
 PRIVATE_PATH = re.compile(r"(?<![\w/.-])(work|reference-data)/[\w./-]*")
 MD_LINK = re.compile(r"(?<!!)\[[^\]]*\]\(([^)\s]+)\)")
+LINK_TARGET = re.compile(r"\]\([^)\s]*\)")
 FENCE = re.compile(r"^\s*(```|~~~)")
 INLINE_CODE = re.compile(r"`[^`\n]*`")
 HEADING = re.compile(r"^(#{1,6})\s+(.*?)\s*#*\s*$")
@@ -105,8 +140,12 @@ UNKNOWN_ID = re.compile(r"\bU-\d{3,}\b")
 MANIFEST_ID = re.compile(r"\bM-\d{3,}\b")
 EVIDENCE_ID = re.compile(r"\bev_[0-9a-f]{64}\b")
 SUPERSEDED_BY = re.compile(r"superseded-by\s+(F-\d{3,})")
-RECONCILED = re.compile(r"Last reconciled:\s*\d{4}-\d{2}-\d{2}")
+RECONCILED = re.compile(r"Last reconciled:\s*(\d{4}-\d{2}-\d{2})")
 CODE_DOC_REF = re.compile(r"docs/[\w./-]+\.md")
+# Words glued to numbers by whitespace stripping, e.g. "passes128authored".
+GLUE = re.compile(r"\b[a-z]{2,}\d+[a-z]{2,}\b|\b\d+[a-z]{4,}\b")
+HEXISH = re.compile(r"[0-9a-f]{7,}")
+PROVENANCE = re.compile(r"\b[0-9a-f]{7,40}:docs/\S+")
 
 
 @dataclass
@@ -167,30 +206,58 @@ def is_under(rel: str, prefixes: Iterable[str]) -> bool:
     return any(rel == prefix or rel.startswith(prefix.rstrip("/") + "/") for prefix in prefixes)
 
 
+def is_findings(rel: str) -> bool:
+    """Legacy single findings file or any file of the split findings tree."""
+    return rel == FINDINGS_FILE or is_under(rel, (FINDINGS_DIR,))
+
+
+def is_digest(rel: str) -> bool:
+    return rel.startswith("docs/research/") and not rel.endswith("/README.md") and not is_under(rel, FROZEN_DIRS)
+
+
+def table_cells(line: str) -> list[str]:
+    return [cell.strip() for cell in line.strip().strip("|").split("|")]
+
+
 def ledger_ids(doc: Document, pattern: re.Pattern[str]) -> list[tuple[int, str]]:
     """IDs defined in the first cell of each table row."""
     defined: list[tuple[int, str]] = []
     for number, line, fenced in iter_lines(doc.lines):
         if fenced or not line.startswith("|"):
             continue
-        cells = [cell.strip() for cell in line.strip("|").split("|")]
+        cells = table_cells(line)
         if cells and pattern.fullmatch(cells[0]):
             defined.append((number, cells[0]))
     return defined
+
+
+def glued_tokens(line: str) -> list[str]:
+    """Glue-regex hits outside inline code and link targets; hex identifiers are exempt."""
+    stripped = LINK_TARGET.sub("]()", INLINE_CODE.sub("", line))
+    tokens = (match.group(0) for match in GLUE.finditer(stripped))
+    return [token for token in tokens if not HEXISH.fullmatch(token)]
 
 
 @final
 class Linter:
     root: Path
     local: bool
+    strict: bool
+    base: str
+    today: date
     problems: list[Problem]
+    warnings: list[Problem]
     docs: dict[str, Document]
     current: dict[str, Document]
 
-    def __init__(self, root: Path, *, local: bool) -> None:
+    def __init__(self, root: Path, *, local: bool, strict: bool = False, base: str = "HEAD", today: date | None = None) -> None:
         self.root = root
         self.local = local
+        self.strict = strict
+        self.base = base
+        self.today = today or date.today()
         self.problems = []
+        self.warnings = []
         self.docs = {}
         self.current = {}
 
@@ -211,7 +278,7 @@ class Linter:
 
     def tracked_markdown(self) -> set[str]:
         tracked: set[str] = set()
-        for root in CURRENT_ROOTS + (MANIFEST_FILE,):
+        for root in CURRENT_ROOTS + INSTRUCTION_ROOTS + (MANIFEST_FILE,):
             path = self.root / root
             if path.is_file() and path.suffix == ".md":
                 tracked.add(root)
@@ -222,12 +289,18 @@ class Linter:
 
     @staticmethod
     def is_current(rel: str) -> bool:
-        if rel == MANIFEST_FILE:
+        if rel == MANIFEST_FILE or is_under(rel, INSTRUCTION_ROOTS):
             return False
         return not is_under(rel, FROZEN_DIRS)
 
     def report(self, rel: str, line: int, message: str) -> None:
         self.problems.append(Problem(rel, line, message))
+
+    def warn(self, rel: str, line: int, message: str) -> None:
+        self.warnings.append(Problem(rel, line, message))
+
+    def findings_docs(self) -> list[Document]:
+        return [doc for rel, doc in sorted(self.docs.items()) if is_findings(rel)]
 
     # -- checks -----------------------------------------------------------
 
@@ -239,9 +312,17 @@ class Linter:
         self.check_prose()
         self.check_links()
         self.check_code_references()
+        self.check_instruction_references()
         self.check_ids()
+        self.check_new_findings()
         self.check_manifest()
         self.check_reconciled()
+        self.check_staleness()
+        if self.strict:
+            self.check_glue()
+            self.check_filenames()
+            self.check_provenance()
+            self.check_read_tiers()
         return sum(doc.size for rel, doc in self.current.items() if not rel.startswith("docs/ledgers/"))
 
     def check_frozen(self) -> None:
@@ -249,12 +330,25 @@ class Linter:
             if is_under(rel, FROZEN_DIRS) and rel not in FROZEN_ALLOWLIST:
                 self.report(rel, 0, "frozen directory accepts no new files; add to FROZEN_ALLOWLIST deliberately")
 
+    def file_cap(self, rel: str) -> int:
+        if rel in FILE_CAPS:
+            return FILE_CAPS[rel]
+        for prefix, cap in PREFIX_CAPS:
+            if rel.startswith(prefix):
+                return cap
+        if self.strict and is_digest(rel):
+            return DIGEST_CAP
+        return DEFAULT_FILE_CAP
+
     def check_sizes(self) -> None:
         total = 0
+        active_findings = 0
         for rel, doc in self.current.items():
             if not rel.startswith("docs/ledgers/"):
                 total += doc.size
-            cap = FILE_CAPS.get(rel, DEFAULT_FILE_CAP)
+            if is_under(rel, (FINDINGS_DIR,)) and not is_under(rel, (RETIRED_DIR,)):
+                active_findings += doc.size
+            cap = self.file_cap(rel)
             if doc.size > cap:
                 self.report(rel, 0, f"{doc.size} bytes exceeds the {cap}-byte cap")
             if rel.startswith("docs/ledgers/"):
@@ -263,6 +357,8 @@ class Linter:
                         self.report(rel, number, f"ledger row exceeds {LEDGER_ROW_CAP} bytes")
         if total > AGGREGATE_CAP:
             self.report("docs", 0, f"current prose surface is {total} bytes; cap is {AGGREGATE_CAP}")
+        if self.strict and active_findings > ACTIVE_FINDINGS_CAP:
+            self.report(FINDINGS_DIR, 0, f"active findings total {active_findings} bytes; cap is {ACTIVE_FINDINGS_CAP}")
 
     def check_headings(self) -> None:
         for rel, doc in self.current.items():
@@ -270,22 +366,21 @@ class Linter:
             for number, _level, text in headings:
                 if DATED_HEADING.search(text):
                     self.report(rel, number, "dated or timestamped heading; session notes belong in a digest or ledger row")
-            expected = self.expected_h2(rel)
-            if expected is None:
+            allowed = self.expected_h2(rel)
+            if not allowed:
                 continue
             actual = tuple(text for _n, level, text in headings if level == 2)
-            if actual != expected:
-                self.report(rel, 0, f"H2 set must be exactly {list(expected)}; found {list(actual)}")
+            if actual not in allowed:
+                self.report(rel, 0, f"H2 set must be exactly {list(allowed[0])}; found {list(actual)}")
 
-    @staticmethod
-    def expected_h2(rel: str) -> tuple[str, ...] | None:
+    def expected_h2(self, rel: str) -> tuple[tuple[str, ...], ...]:
         if rel == STATUS_FILE:
-            return STATUS_H2
+            return (STATUS_H2,) if self.strict else (STATUS_H2, STATUS_H2_LEGACY)
         if rel.startswith("docs/specs/") and not rel.endswith("/README.md"):
-            return SPEC_H2
-        if rel.startswith("docs/research/") and not rel.endswith("/README.md"):
-            return DIGEST_H2
-        return None
+            return (SPEC_H2,)
+        if is_digest(rel):
+            return (DIGEST_H2,) if self.strict else (DIGEST_H2, DIGEST_H2_LEGACY)
+        return ()
 
     def check_prose(self) -> None:
         for rel, doc in self.current.items():
@@ -351,23 +446,33 @@ class Linter:
                         if not (self.root / match.group(0)).exists():
                             self.report(file.relative_to(self.root).as_posix(), number, f"references missing document {match.group(0)}")
 
+    def check_instruction_references(self) -> None:
+        """Agent instructions must not name document paths that no longer exist."""
+        for rel, doc in self.docs.items():
+            if not is_under(rel, INSTRUCTION_ROOTS):
+                continue
+            for number, line, _fenced in iter_lines(doc.lines):
+                for match in CODE_DOC_REF.finditer(line):
+                    if not (self.root / match.group(0)).exists():
+                        self.report(rel, number, f"references missing document {match.group(0)}")
+
     def check_ids(self) -> None:
-        findings = self.docs.get(FINDINGS_FILE)
         unknowns = self.docs.get(UNKNOWNS_FILE)
         manifest = self.docs.get(MANIFEST_FILE)
-        defined_f: set[str] = self.unique_ids(findings, FINDING_ID) if findings else set()
-        defined_u: set[str] = self.unique_ids(unknowns, UNKNOWN_ID) if unknowns else set()
-        defined_m: set[str] = self.unique_ids(manifest, MANIFEST_ID) if manifest else set()
-        if findings:
-            self.check_no_removed_ids(FINDINGS_FILE, defined_f, FINDING_ID)
-            for number, line, fenced in iter_lines(findings.lines):
+        findings = self.findings_docs()
+        defined_f: set[str] = self.unique_ids(findings, FINDING_ID)
+        defined_u: set[str] = self.unique_ids([unknowns], UNKNOWN_ID) if unknowns else set()
+        defined_m: set[str] = self.unique_ids([manifest], MANIFEST_ID) if manifest else set()
+        self.check_no_removed_ids(self.base_findings_texts(), defined_f, FINDING_ID)
+        for doc in findings:
+            for number, line, fenced in iter_lines(doc.lines):
                 if fenced:
                     continue
                 for match in SUPERSEDED_BY.finditer(line):
                     if match.group(1) not in defined_f:
-                        self.report(FINDINGS_FILE, number, f"superseded-by target {match.group(1)} is not defined")
+                        self.report(doc.rel, number, f"superseded-by target {match.group(1)} is not defined")
         if unknowns:
-            self.check_no_removed_ids(UNKNOWNS_FILE, defined_u, UNKNOWN_ID)
+            self.check_no_removed_ids(self.base_texts([UNKNOWNS_FILE]), defined_u, UNKNOWN_ID)
         for rel, doc in self.current.items():
             for number, line, fenced in iter_lines(doc.lines):
                 if fenced:
@@ -378,12 +483,16 @@ class Linter:
                 if EVIDENCE_ID.search(line) and not MANIFEST_ID.search(line):
                     self.report(rel, number, "ev_ identifier cited without a manifest row (M-NNN) on the same line")
 
-    def unique_ids(self, doc: Document, pattern: re.Pattern[str]) -> set[str]:
-        seen: dict[str, int] = {}
-        for number, identifier in ledger_ids(doc, pattern):
-            if identifier in seen:
-                self.report(doc.rel, number, f"duplicate ID {identifier} (first at line {seen[identifier]})")
-            _ = seen.setdefault(identifier, number)
+    def unique_ids(self, docs: Sequence[Document], pattern: re.Pattern[str]) -> set[str]:
+        """IDs defined across the given files; each must be defined exactly once."""
+        seen: dict[str, tuple[str, int]] = {}
+        for doc in docs:
+            for number, identifier in ledger_ids(doc, pattern):
+                if identifier in seen:
+                    first_rel, first_line = seen[identifier]
+                    self.report(doc.rel, number, f"duplicate ID {identifier} (first at {first_rel}:{first_line})")
+                    continue
+                seen[identifier] = (doc.rel, number)
         return set(seen)
 
     def check_references(self, rel: str, number: int, line: str, pattern: re.Pattern[str], defined: set[str], kind: str) -> None:
@@ -391,25 +500,69 @@ class Linter:
             if match.group(0) not in defined:
                 self.report(rel, number, f"{kind} {match.group(0)} is not defined in its ledger")
 
-    def check_no_removed_ids(self, rel: str, defined: set[str], pattern: re.Pattern[str]) -> None:
-        previous = self.git_show(rel)
-        if previous is None:
-            return
-        for _number, identifier in ledger_ids(Document(rel, previous), pattern):
-            if identifier not in defined:
-                self.report(rel, 0, f"ID {identifier} existed at HEAD and was removed; mark it superseded instead")
+    def base_texts(self, rels: Iterable[str]) -> list[Document]:
+        found: list[Document] = []
+        for rel in rels:
+            text = self.git_show(rel)
+            if text is not None:
+                found.append(Document(rel, text))
+        return found
 
-    def git_show(self, rel: str) -> str | None:
+    def base_findings_texts(self) -> list[Document]:
+        """Findings files at the base revision: the legacy file plus the split tree."""
+        return self.base_texts([FINDINGS_FILE, *self.git_ls(FINDINGS_DIR)])
+
+    def base_finding_ids(self) -> set[str] | None:
+        """F- IDs defined at the base revision, or None when the base is unreadable."""
+        if not self.base_exists():
+            return None
+        return {identifier for doc in self.base_findings_texts() for _n, identifier in ledger_ids(doc, FINDING_ID)}
+
+    def check_no_removed_ids(self, previous: Sequence[Document], defined: set[str], pattern: re.Pattern[str]) -> None:
+        for doc in previous:
+            for _number, identifier in ledger_ids(doc, pattern):
+                if identifier not in defined:
+                    self.report(doc.rel, 0, f"ID {identifier} existed at {self.base} and was removed; mark it superseded instead")
+
+    def check_new_findings(self) -> None:
+        """Rows added since the base revision must not be execution receipts."""
+        base_ids = self.base_finding_ids() or set()
+        for doc in self.findings_docs():
+            if not is_under(doc.rel, (FINDINGS_DIR,)):
+                continue
+            evidence_column: int | None = None
+            for number, line, fenced in iter_lines(doc.lines):
+                if fenced or not line.startswith("|"):
+                    continue
+                cells = table_cells(line)
+                if "Evidence" in cells and cells[0] == "ID":
+                    evidence_column = cells.index("Evidence")
+                    continue
+                if evidence_column is None or not cells or not FINDING_ID.fullmatch(cells[0]) or cells[0] in base_ids:
+                    continue
+                evidence = cells[evidence_column] if evidence_column < len(cells) else ""
+                if evidence.startswith(RECEIPT_CLASSES):
+                    self.report(doc.rel, number, f"new finding {cells[0]} is an execution receipt; record it as a manifest row")
+
+    def git(self, *args: str) -> subprocess.CompletedProcess[str] | None:
         try:
-            result = subprocess.run(
-                ["git", "-C", str(self.root), "show", f"HEAD:{rel}"],
-                capture_output=True,
-                text=True,
-                check=False,
-            )
+            return subprocess.run(["git", "-C", str(self.root), *args], capture_output=True, text=True, check=False)
         except OSError:
             return None
-        return result.stdout if result.returncode == 0 else None
+
+    def git_show(self, rel: str) -> str | None:
+        result = self.git("show", f"{self.base}:{rel}")
+        return result.stdout if result is not None and result.returncode == 0 else None
+
+    def git_ls(self, directory: str) -> list[str]:
+        result = self.git("ls-tree", "-r", "--name-only", self.base, "--", directory)
+        if result is None or result.returncode != 0:
+            return []
+        return [line for line in result.stdout.split("\n") if line.endswith(".md")]
+
+    def base_exists(self) -> bool:
+        result = self.git("rev-parse", "--verify", "--quiet", f"{self.base}^{{commit}}")
+        return result is not None and result.returncode == 0
 
     def check_manifest(self) -> None:
         manifest = self.docs.get(MANIFEST_FILE)
@@ -418,9 +571,11 @@ class Linter:
         for number, line, fenced in iter_lines(manifest.lines):
             if fenced or not line.startswith("|"):
                 continue
-            cells = [cell.strip() for cell in line.strip("|").split("|")]
+            cells = table_cells(line)
             if len(cells) < 6 or not MANIFEST_ID.fullmatch(cells[0]):
                 continue
+            if self.strict and len(line.encode("utf-8")) > MANIFEST_ROW_CAP:
+                self.report(MANIFEST_FILE, number, f"manifest row exceeds {MANIFEST_ROW_CAP} bytes")
             _identifier, path, digest, _date, _session, klass = cells[:6]
             if klass not in {"local-private", "external"}:
                 self.report(MANIFEST_FILE, number, f"class must be local-private or external, not {klass!r}")
@@ -442,6 +597,73 @@ class Linter:
                 if not RECONCILED.search(doc.text):
                     self.report(rel, 0, "missing 'Last reconciled: YYYY-MM-DD'")
 
+    def check_staleness(self) -> None:
+        status = self.current.get(STATUS_FILE)
+        match = RECONCILED.search(status.text) if status else None
+        if match is None:
+            return
+        try:
+            reconciled = date.fromisoformat(match.group(1))
+        except ValueError:
+            self.report(STATUS_FILE, 0, f"invalid Last reconciled date {match.group(1)}")
+            return
+        age = (self.today - reconciled).days
+        if age > STALE_DAYS:
+            self.warn(STATUS_FILE, 0, f"last reconciled {age} days ago; run the checkpoint reconcile in .agents/rules/docs.md")
+
+    # -- restructured-layout checks (--strict-layout) ---------------------
+
+    def check_glue(self) -> None:
+        targets = dict(self.current)
+        if MANIFEST_FILE in self.docs:
+            targets[MANIFEST_FILE] = self.docs[MANIFEST_FILE]
+        for rel, doc in targets.items():
+            for number, line, fenced in iter_lines(doc.lines):
+                if fenced:
+                    continue
+                tokens = glued_tokens(line)
+                if tokens:
+                    self.report(rel, number, f"glued tokens {', '.join(tokens)}; restore the spaces or reword")
+
+    def check_filenames(self) -> None:
+        for rel in self.current:
+            if DATED_NAME.search(rel.rsplit("/", 1)[-1]):
+                self.report(rel, 0, "dated filename on the current surface; name the topic, not the session")
+
+    def check_provenance(self) -> None:
+        for rel, doc in self.current.items():
+            found: list[int] = []
+            for number, line, fenced in iter_lines(doc.lines):
+                if fenced or line.startswith("|"):
+                    continue
+                found.extend(number for _match in PROVENANCE.finditer(line))
+            for number in found[1:]:
+                self.report(rel, number, "more than one commit:path provenance line; keep only 'Before restructure: <sha>:<path>'")
+
+    def tier_size(self, rels: Iterable[str]) -> tuple[int, list[str]]:
+        total = 0
+        missing: list[str] = []
+        for rel in rels:
+            path = self.root / rel
+            if path.is_file():
+                total += path.stat().st_size
+            else:
+                missing.append(rel)
+        return total, missing
+
+    def check_read_tiers(self) -> None:
+        startup, missing = self.tier_size(STARTUP_FILES)
+        for rel in missing:
+            self.report(rel, 0, "startup read-tier file is missing")
+        if startup > STARTUP_BUDGET:
+            self.report("docs", 0, f"startup read tier is {startup} bytes; budget is {STARTUP_BUDGET}")
+        for task, rels in TASK_TIERS.items():
+            size, missing = self.tier_size(rels)
+            for rel in missing:
+                self.report(rel, 0, f"task read tier {task!r} names a missing file")
+            if size > TASK_BUDGET:
+                self.warn("docs", 0, f"task read tier {task!r} is {size} bytes; budget is {TASK_BUDGET}")
+
 
 def find_root(start: Path) -> Path:
     for candidate in (start, *start.parents):
@@ -454,6 +676,8 @@ class Options(argparse.Namespace):
     root: Path | None = None
     warn: bool = False
     local: bool = False
+    strict_layout: bool = False
+    base: str = "HEAD"
 
 
 def parse_options(argv: Sequence[str] | None) -> Options:
@@ -461,6 +685,8 @@ def parse_options(argv: Sequence[str] | None) -> Options:
     _ = parser.add_argument("--root", type=Path, default=None)
     _ = parser.add_argument("--warn", action="store_true", help="report problems but exit 0")
     _ = parser.add_argument("--local", action="store_true", help="verify local-private manifest rows on disk")
+    _ = parser.add_argument("--strict-layout", action="store_true", help="enable the restructured-layout checks")
+    _ = parser.add_argument("--base", default="HEAD", help="revision whose ledger IDs must survive (default HEAD)")
     options = Options()
     _ = parser.parse_args(argv, namespace=options)
     return options
@@ -469,11 +695,17 @@ def parse_options(argv: Sequence[str] | None) -> Options:
 def main(argv: Sequence[str] | None = None) -> int:
     options = parse_options(argv)
     root = options.root.resolve() if options.root else find_root(Path.cwd().resolve())
-    linter = Linter(root, local=options.local)
+    linter = Linter(root, local=options.local, strict=options.strict_layout, base=options.base)
     total = linter.run()
     for problem in linter.problems:
         print(problem.render())
-    print(f"docs_lint: current prose surface {total} bytes of {AGGREGATE_CAP}; {len(linter.problems)} problem(s)")
+    for warning in linter.warnings:
+        print(f"warning: {warning.render()}")
+    startup, _missing = linter.tier_size(STARTUP_FILES)
+    print(
+        f"docs_lint: current prose surface {total} bytes of {AGGREGATE_CAP}; startup tier {startup} bytes of {STARTUP_BUDGET}; "
+        + f"{len(linter.problems)} problem(s), {len(linter.warnings)} warning(s)"
+    )
     if linter.problems and not options.warn:
         return 1
     return 0
