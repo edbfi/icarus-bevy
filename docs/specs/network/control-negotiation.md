@@ -98,6 +98,14 @@ game listener.
   use the same bit loop without clamping the value (F-526). The client's engine
   network protocol version starts at 17 in its image, so every version gate
   above takes its current path (F-527).
+- Current client reliability (F-535 to F-537): the sender packs its outgoing
+  sequence (bits 18-31), the last acknowledged incoming sequence (4-17) and the
+  history word count minus one (0-3), then that many 32-bit history words
+  covering the unacknowledged incoming span (1 to 8 words). After the
+  handshake ack the client seeds its incoming and outgoing sequences from the
+  cookie's first two little-endian 16-bit words masked to 14 bits; initial
+  reliable sequences are the low 10 bits. Reliable bunches out of order are
+  queued per channel (at most 255) and delivered in sequence.
 - Current client control vocabulary (F-529, F-530); strings are archive
   strings, `u32` values follow the swap rule above:
 
