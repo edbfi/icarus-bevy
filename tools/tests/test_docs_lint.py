@@ -1,6 +1,9 @@
 """Authored fixtures for the documentation lint; no repository files are read."""
 
+import contextlib
 import hashlib
+import io
+import json
 from pathlib import Path
 import subprocess
 import sys
@@ -20,6 +23,34 @@ DIGEST_LEGACY = "# Digest\n\n## Question cluster\n\n## Answered\n\n## Partial\n\
 FINDINGS_HEAD = "# F\n\nLast reconciled: 2026-10-13\n\n| ID | Claim | Kind | Evidence | Scope and limits | Unknowns | Status |\n| --- | --- | --- | --- | --- | --- | --- |\n"
 TODAY = date(2026, 10, 14)
 SPEC_OK = "# Spec\n\n## Status\n\nLast reconciled: 2026-10-13\n\n## Scope\n\n## Confirmed\n\n## Candidate\n\n## Open questions\n\n## Evidence\n"
+EV_A = "ev_" + "1" * 12 + "a" * 52
+EV_B = "ev_" + "1" * 12 + "b" * 52
+EV_C = "ev_" + "2" * 64
+UNK_A = "unk_" + "3" * 64
+
+
+def record(number: int, **fields: object) -> str:
+    """One evidence index line for M-<number>; defaults describe a valid new row."""
+    row: dict[str, object] = {
+        "id": f"M-{number:03d}",
+        "path": f"work/case-{number}/receipt.json",
+        "sha256": DIGEST,
+        "class": "local-private",
+        "kind": "receipt",
+        "date": "2026-10-13",
+        "label": f"Receipt {number}",
+        "status": "active",
+    }
+    for key, value in fields.items():
+        if value is None and key not in {"sha256", "date"}:
+            _ = row.pop(key, None)
+        else:
+            row[key] = value
+    return json.dumps(row, separators=(",", ":")) + "\n"
+
+
+def legacy(number: int, **fields: object) -> str:
+    return record(number, legacy=True, **fields)
 
 
 @final
@@ -193,8 +224,7 @@ class DocsLintTest(unittest.TestCase):
         fx.write("docs/ledgers/findings/a.md", FINDINGS_HEAD + "| F-001 | ran | observed | tool-receipt; M-001 | s | none | active |\n"
                  + "| F-002 | ran again | observed | tooling-receipt; M-002 | s | none | active |\n"
                  + "| F-003 | claim | observed | static-decompile; M-003 | s | none | active |\n")
-        fx.write("evidence/manifest.md", "# M\n\n| ID | path | sha256 | date | session | class |\n| --- | --- | --- | --- | --- | --- |\n"
-                 + "".join(f"| M-00{n} | work/x | unstated | 2026-10-13 | s | local-private |\n" for n in (1, 2, 3)))
+        fx.write("evidence/foundation.jsonl", "".join(legacy(n) for n in (1, 2, 3)))
         problems = fx.lint()
         self.assertTrue(any("new finding F-002 is an execution receipt" in problem for problem in problems), problems)
         self.assertFalse(any("F-001" in problem or "F-003" in problem for problem in problems), problems)
@@ -303,27 +333,204 @@ class DocsLintTest(unittest.TestCase):
         self.assertTrue(any("new-record.md: frozen directory" in problem for problem in problems), problems)
         self.assertFalse(any("overnight-work-plan.md" in problem for problem in problems), problems)
 
-    def test_manifest_rows_and_local_verification(self) -> None:
+    def test_legacy_markdown_manifest_defines_ids(self) -> None:
         fx = self.make()
-        (fx.root / "work").mkdir()
-        _ = (fx.root / "work" / "bundle.json").write_bytes(b"{}")
-        real = hashlib.sha256(b"{}").hexdigest()
-        rows = (
-            "# Manifest\n\n| ID | path | sha256 | date | session | class |\n| --- | --- | --- | --- | --- | --- |\n"
-            f"| M-001 | work/bundle.json | {real} | 2026-10-13 | s1 | local-private |\n"
-            f"| M-002 | work/gone.json | {DIGEST} | 2026-10-13 | s1 | local-private |\n"
-            f"| M-003 | work/x | nothex | 2026-10-13 | s1 | tracked |\n"
-        )
-        fx.write("evidence/manifest.md", rows)
-        fx.write("docs/ledgers/findings/a.md", f"# F\n\nLast reconciled: 2026-10-13\n\n| ID | evidence |\n| --- | --- |\n| F-001 | M-001 ev_{DIGEST} |\n| F-002 | ev_{DIGEST} |\n")
+        fx.write("evidence/manifest.md", "# M\n\n| ID | path | sha256 | date | session | class |\n| --- | --- | --- | --- | --- | --- |\n"
+                 + "| M-001 | work/x | unstated | 2026-10-13 | s | local-private |\n| M-002 | bare/ | unstated | unstated | s | local-private |\n")
+        fx.write("docs/specs/s.md", SPEC_OK + "\nSee M-001 and M-002.\n")
+        linter = fx.linter()
+        self.assertEqual([problem.render() for problem in linter.problems], [])
+        self.assertTrue(any("M-002: local-private path must start with" in warning.render() for warning in linter.warnings))
+
+    def test_record_schema(self) -> None:
+        fx = self.make()
+        lines = [
+            record(1),
+            record(2, extra=1),
+            '{"id":"M-003","id":"M-003"}\n',
+            record(4, note=None, superseded_by=None).replace('"status":"active"', '"status":"active","note":null'),
+            record(5, kind="guess"),
+            record(6, sha256="ABC"),
+            "not json\n",
+            "\n",
+            record(9, legacy=True),
+            record(271, legacy=True),
+        ]
+        fx.write("evidence/foundation.jsonl", "".join(lines))
         problems = fx.lint()
-        self.assertTrue(any("class must be" in problem for problem in problems), problems)
-        self.assertTrue(any("sha256 column" in problem for problem in problems), problems)
-        self.assertTrue(any("ev_ identifier cited without a manifest row" in problem and ":8:" in problem for problem in problems), problems)
-        self.assertFalse(any("missing: work/gone.json" in problem for problem in problems), problems)
+        for expected in (
+            ":2: invalid evidence record: unknown keys extra",
+            ":3: invalid evidence record: duplicate key 'id'",
+            ":4: invalid evidence record: omit optional keys instead of null: note",
+            "M-005: kind must be one of",
+            "M-006: sha256 must be 64 lowercase hex",
+            ":7: invalid evidence record: invalid JSON",
+            ":8: blank line in evidence shard",
+            "M-271: legacy applies only to M-001..M-270",
+        ):
+            self.assertTrue(any(expected in problem for problem in problems), (expected, problems))
+        self.assertFalse(any(": M-001:" in problem or ": M-009:" in problem for problem in problems), problems)
+
+    def test_new_rows_are_strict_and_legacy_rows_tolerated(self) -> None:
+        fx = self.make()
+        fx.write("evidence/foundation.jsonl", "".join([
+            legacy(1, path="work/old/", sha256=None, date=None, label="Long " * 60 + "at 04:38 UTC"),
+            legacy(2, path="bare-name/"),
+            record(271, sha256=None, date=None, path="work/dir/", label="x" * 200),
+            record(272, label="Checked at 04:38 UTC"),
+            record(273, path="bare.json"),
+            record(274, ev=[EV_A]),
+            record(275, kind="rea-bundle", path="work/b/rea-bundle.json"),
+        ]))
+        problems = fx.lint()
+        for expected in (
+            "M-271: new rows need the artifact's sha256",
+            "M-271: new rows need a date",
+            "M-271: new rows name one file",
+            "M-271: label exceeds 160 characters",
+            "M-272: label carries a clock time",
+            "M-273: local-private path must start with",
+            "M-274: ev, unk and records belong only to rea-bundle rows",
+            "M-275: rea-bundle rows record the bundle's record count",
+        ):
+            self.assertTrue(any(expected in problem for problem in problems), (expected, problems))
+        self.assertFalse(any("M-001" in problem or "M-002" in problem for problem in problems), problems)
+        self.assertTrue(any("M-002: local-private path" in warning.render() for warning in fx.linter().warnings))
+
+    def test_ids_unique_contiguous_and_ordered(self) -> None:
+        fx = self.make()
+        fx.write("evidence/foundation.jsonl", legacy(1) + legacy(3) + legacy(2))
+        fx.write("evidence/network.jsonl", legacy(2) + legacy(5))
+        fx.write("evidence/Bad_Name.jsonl", "")
+        fx.write("evidence/big.jsonl", legacy(6, label="x" * 1500) + legacy(7, label="y" * 2100))
+        problems = fx.lint()
+        self.assertTrue(any("evidence/network.jsonl:1: duplicate ID M-002 (first at evidence/foundation.jsonl:3)" in problem for problem in problems), problems)
+        self.assertTrue(any("missing M-004" in problem for problem in problems), problems)
+        self.assertTrue(any("foundation.jsonl:3: M-002 is out of order" in problem for problem in problems), problems)
+        self.assertTrue(any("Bad_Name.jsonl: shard name" in problem for problem in problems), problems)
+        self.assertTrue(any("big.jsonl:2: record exceeds" in problem for problem in problems), problems)
+        fx.write("evidence/big.jsonl", "".join(legacy(n, label="z" * 1500) for n in (6, 7, 8) ) * 1)
+        fx.write("evidence/huge.jsonl", "".join(legacy(n, label="w" * 1500) for n in range(9, 60)))
+        self.assertTrue(any("huge.jsonl: " in problem and "shard cap" in problem for problem in fx.lint()))
+
+    def test_lifecycle_and_tracked_paths(self) -> None:
+        fx = self.make()
+        fx.write("docs/specs/s.md", SPEC_OK)
+        fx.write("evidence/foundation.jsonl", "".join([
+            record(1),
+            record(2, superseded_by="M-001"),
+            record(3, status="retired"),
+            record(4, status="retired", superseded_by="M-099", note="gone"),
+            record(5),
+            record(6, **{"class": "tracked"}, path="docs/specs/s.md#scope"),
+            record(7, **{"class": "tracked"}, path="docs/specs/s.md#nope"),
+            record(8, **{"class": "tracked"}, path="docs/specs/gone.md"),
+            record(9, status="missing", note="lost", date="2026-09-01"),
+        ]))
+        linter = fx.linter()
+        problems = [problem.render() for problem in linter.problems]
+        for expected in (
+            "M-002: superseded_by requires status retired",
+            "M-003: status retired needs a note or superseded_by",
+            "M-004: superseded_by M-099 is not another defined row",
+            "M-007: tracked path has no heading anchor #nope",
+            "M-008: tracked path does not exist: docs/specs/gone.md",
+        ):
+            self.assertTrue(any(expected in problem for problem in problems), (expected, problems))
+        self.assertFalse(any("M-006" in problem or "M-009" in problem for problem in problems), problems)
+        self.assertTrue(any("M-009: missing for over 30 days" in warning.render() for warning in linter.warnings))
+
+    def test_local_verification_and_bundle_membership(self) -> None:
+        fx = self.make()
+        bundle = {"records": [{"evidence_id": EV_A}, {"evidence_id": EV_C}], "unknowns": [{"unknown_id": UNK_A}]}
+        fx.write("work/b/rea-bundle.json", json.dumps(bundle))
+        fx.write("work/r/receipt.json", "{}")
+        (fx.root / "work/old").mkdir(parents=True)
+        bundle_digest = hashlib.sha256((fx.root / "work/b/rea-bundle.json").read_bytes()).hexdigest()
+        receipt_digest = hashlib.sha256(b"{}").hexdigest()
+        fx.write("evidence/foundation.jsonl", "".join([
+            legacy(1, path="work/old/", sha256=None),
+            legacy(2, path="work/gone/", sha256=None),
+            record(3, path="work/r/receipt.json", sha256=receipt_digest),
+            record(4, path="work/r/receipt.json"),
+            record(5, kind="rea-bundle", path="work/b/rea-bundle.json", sha256=bundle_digest, records=2, ev=[EV_A, EV_C], unk=[UNK_A]),
+            record(6, kind="rea-bundle", path="work/b/rea-bundle.json", sha256=bundle_digest, records=3, ev=[EV_B]),
+            record(7, path="work/old/x.json", status="retired", note="cleaned"),
+        ]))
+        self.assertEqual(fx.lint(), [])
         problems = fx.lint(local=True)
-        self.assertTrue(any("missing: work/gone.json" in problem for problem in problems), problems)
-        self.assertFalse(any("mismatch: work/bundle.json" in problem for problem in problems), problems)
+        self.assertTrue(any("M-002: local-private evidence missing: work/gone/" in problem for problem in problems), problems)
+        self.assertTrue(any("M-004: local-private evidence digest mismatch" in problem for problem in problems), problems)
+        self.assertTrue(any("M-006: bundle holds 2 records, row says 3" in problem for problem in problems), problems)
+        self.assertTrue(any(f"M-006: ev entry {EV_B} is not in the bundle" in problem for problem in problems), problems)
+        self.assertFalse(any(f"M-{n:03d}" in problem for n in (1, 3, 5, 7) for problem in problems), problems)
+
+    def test_listed_citations(self) -> None:
+        fx = self.make()
+        fx.write("evidence/foundation.jsonl", legacy(1) + record(2, kind="rea-bundle", path="work/b/rea-bundle.json", records=3, ev=[EV_A, EV_B, EV_C], unk=[UNK_A]))
+        fx.write("docs/specs/s.md", SPEC_OK + "\n".join([
+            "",
+            "Good: M-002/ev_222222222222 and M-002/unk_333333333333 and M-001/E-021.",
+            "Ambiguous: M-002/ev_111111111111.",
+            "Short: M-002/ev_2222.",
+            f"Full: {EV_C}.",
+            "Note: M-002/E-004.",
+        ]) + "\n")
+        problems = fx.lint()
+        self.assertTrue(any(":18: M-002/ev_111111111111 matches 2 entries" in problem for problem in problems), problems)
+        self.assertTrue(any(":19: M-002/ev_2222: cite exactly 12 hex digits" in problem for problem in problems), problems)
+        self.assertTrue(any(":20: full ev_/unk_ identifier in prose" in problem for problem in problems), problems)
+        self.assertTrue(any(":21: M-002/E-004: E- notes exist only under legacy rows" in problem for problem in problems), problems)
+        self.assertFalse(any(":17:" in problem for problem in problems), problems)
+
+    def test_manifest_history_against_base(self) -> None:
+        fx = self.make()
+        fx.git_init()
+        fx.write("evidence/foundation.jsonl", legacy(1, path="old/") + legacy(2) + record(3) + record(4, kind="rea-bundle", records=1, ev=[EV_A]))
+        _ = fx.commit("index")
+        fx.write("evidence/foundation.jsonl", legacy(1, path="work/old/", kind="review", note="path corrected from old/")
+                 + record(3, kind="review", date="2026-10-14", path="work/moved.json")
+                 + record(4, kind="rea-bundle", records=1, ev=[EV_B]))
+        problems = fx.lint()
+        self.assertTrue(any("ID M-002 existed at HEAD and was removed" in problem for problem in problems), problems)
+        self.assertTrue(any("M-003: kind changed" in problem for problem in problems), problems)
+        self.assertTrue(any("M-003: date changed" in problem for problem in problems), problems)
+        self.assertTrue(any("M-003: path changed; keep the old value in note" in problem for problem in problems), problems)
+        self.assertTrue(any("M-004: ev changed" in problem for problem in problems), problems)
+        self.assertFalse(any("M-001" in problem for problem in problems), problems)
+
+    def test_markdown_manifest_ids_survive_migration(self) -> None:
+        fx = self.make()
+        fx.git_init()
+        fx.write("evidence/manifest.md", "# M\n\n| ID | path | sha256 | date | session | class |\n| --- | --- | --- | --- | --- | --- |\n"
+                 + "| M-001 | work/x | unstated | 2026-10-13 | s | local-private |\n| M-002 | work/y | unstated | 2026-10-13 | s | local-private |\n")
+        _ = fx.commit("markdown manifest")
+        (fx.root / "evidence/manifest.md").unlink()
+        fx.write("evidence/foundation.jsonl", legacy(1, path="work/x", sha256=None))
+        problems = fx.lint()
+        self.assertTrue(any("ID M-002 existed at HEAD and was removed" in problem for problem in problems), problems)
+        self.assertFalse(any("M-001" in problem for problem in problems), problems)
+
+    def test_bare_case_notes_rejected_only_on_new_lines(self) -> None:
+        fx = self.make()
+        fx.git_init()
+        fx.write("evidence/foundation.jsonl", legacy(1))
+        fx.write("docs/specs/s.md", SPEC_OK + "\nOld note E-021 stays.\n")
+        _ = fx.commit("spec")
+        fx.write("docs/specs/s.md", SPEC_OK + "\nOld note E-021 stays.\nNew note E-022.\nCited M-001/E-023 and `E-024`.\n")
+        problems = fx.lint()
+        self.assertTrue(any(":18: bare case note E-022" in problem for problem in problems), problems)
+        self.assertFalse(any(":17:" in problem or ":19:" in problem for problem in problems), problems)
+
+    def test_next_id_and_list_local(self) -> None:
+        fx = self.make()
+        fx.write("evidence/foundation.jsonl", legacy(1, path="work/a/") + record(2, status="retired", note="cleaned") + record(3, **{"class": "external"}, path="https://example.invalid/x"))
+        fx.write("docs/ledgers/findings/a.md", FINDINGS_HEAD + "| F-007 | c | observed | review | s | none | active |\n")
+        for argv, expected in ((["--next-id", "M"], "M-004"), (["--next-id", "F"], "F-008"), (["--next-id", "U"], "U-001"), (["--list-local"], "work/a/")):
+            output = io.StringIO()
+            with contextlib.redirect_stdout(output):
+                self.assertEqual(docs_lint.main(["--root", str(fx.root), *argv]), 0)
+            self.assertEqual(output.getvalue().strip(), expected)
 
     def test_reconciled_date_required(self) -> None:
         fx = self.make()
