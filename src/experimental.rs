@@ -12,6 +12,8 @@ pub mod handshake;
 pub mod handshake_lab;
 pub mod int_array;
 pub mod packet;
+pub mod packet_lab;
+pub mod property_tree;
 pub mod recorders;
 pub mod sequencing;
 pub mod struct_array;

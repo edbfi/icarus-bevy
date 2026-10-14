@@ -2,7 +2,7 @@
 
 ## Status
 
-experimental; older-server build 25621760 profile `MemoryArchive522`, with bounded static comparison to client build 25793767. Last reconciled: 2026-10-13
+experimental; older-server build 25621760 profile `MemoryArchive522`, with bounded static comparison to client build 25793767. Last reconciled: 2026-10-14
 Full text: d5b0ae6:docs/specs/save-format/tagged-properties.md
 
 ## Scope
@@ -142,6 +142,11 @@ objects):
 
 ## Candidate
 
+- `experimental::property_tree` holds one stream as an owned value-opaque tree:
+  tagged Struct payloads and tagged struct arrays nest to a depth limit, every
+  other payload stays opaque, and writing checks each declared size. Every
+  framed body of both copies re-serializes byte-identically; names, types and
+  values are not interpreted (F-554).
 - Applying the older-build framing to the newer saves is supported by prefix
   agreement and the scans above, not by a matched official load (F-297, U-025).
 - Base-component layout is a caller-selected hypothesis per class; static
@@ -189,5 +194,5 @@ objects):
 ```bash
 cargo run --locked -- inspect-save --source /path/to/copied-prospect.json --inner-tags
 cargo run --locked -- inspect-save --source /path/to/copied-prospect.json --recorders
-cargo test --locked --test tagged --test recorders --test component --test int_array --test struct_array --test prospect
+cargo test --locked --test tagged --test recorders --test component --test int_array --test struct_array --test property_tree --test prospect
 ```

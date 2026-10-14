@@ -182,6 +182,11 @@ game listener.
   reliable send, ack release, nak resend selection and ordered receive. The
   sent-record push site, ring capacity, zero-filled unreceived history words and
   the reliable comparison window are marked inferred or assumed.
+  `experimental::packet_lab` composes codec, sequencing and the control
+  vocabulary into one disconnected per-peer state after the handshake: the
+  cookie seeds mirrored for the server (inferred), gated receive, ordered
+  reliable control delivery and ack-only replies. It answers no control
+  message and validates no negotiation, identity or game connection.
 - Current client unique-net-id type hashes (F-543): 1 NULL, 2 MCP, 3 STEAM,
   4 PS4, 6 GOOGLE, 7 GOOGLEPLAY, 8 FACEBOOK, 9 IOS, 10 APPLE, 11 TENCENT,
   12 SWITCH, 13 AMAZON, 14 GAMECIRCLE, 15 THUNDERHEAD, 18 Oculus, 19 Quail,
@@ -222,5 +227,5 @@ game listener.
   tests, plus archive and handshake suites):
 
 ```bash
-cargo test --locked --test control --test packet --test control_receive --test control_messages --test sequencing --test archive --test handshake
+cargo test --locked --test control --test packet --test control_receive --test control_messages --test sequencing --test packet_lab --test archive --test handshake
 ```

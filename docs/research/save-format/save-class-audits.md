@@ -37,7 +37,11 @@ F-198).
 Every one of the save's 38 class identifiers is registered in both the older
 server and the newer client, so class identity cannot confirm the reported
 producing build (F-498); the same holds for all 332 field and type names of
-the framed bodies in the current copy (F-547).
+the framed bodies in the current copy (F-547). Eight player-state candidates
+frame to depth 4 in both copies apart from two size ceilings (F-550), as do 23
+of the 25 remaining classes; C004 and C016 exceed the 128 KiB component
+ceiling and C015 needs Map and Int64 headers (F-551, F-552). Every framed body
+round-trips byte-identically through a lossless value-opaque tree (F-554).
 
 Counts and maxima are samples from the two supplied copies, not format limits.
 No decoded value, text or number was emitted or interpreted.

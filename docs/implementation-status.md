@@ -44,12 +44,12 @@ What the foundation does is in the
 
 Offline work, in order; connected proof keeps its gates.
 
-1. C001 records: the top level matches its 20 save-selected descriptors and nested children frame in both copies (F-534, F-540); next compare nested struct types with C001's static descriptors, keeping values opaque (U-022, U-023).
-2. Player state: resolve actor, inventory, construction, tame and mission fields; class and field names do not discriminate the producing build (F-498, F-547), so confirming it needs value-level or runtime evidence (F-262, F-277, U-040).
+1. Save classes: C001 and all but three remaining classes frame to depth 4 in both copies (F-540, F-550, F-551); next Map and Int64 header framing and a 1 MiB component ceiling for C004, C015 and C016 (F-552, F-553, U-022).
+2. Player state: candidate mission, mount, inventory and player classes frame except C016 over the 128 KiB ceiling (F-550); construction classes and field meanings remain; class and field names do not discriminate the producing build (F-498, F-547), so confirming it needs value-level or runtime evidence (F-262, F-277, U-040).
 3. Control stores: owner, dispatcher, static virtual call site and base origin across the super calls are qualified (F-505, F-506, F-520, F-544); runtime dispatch needs a connected or original-runtime scope (U-043).
 4. Control stores: constructors and notify tables correspond by position (F-505, F-546); the older dispatcher (7,560-byte record) and the client's differ in record length, so a function-level comparison needs a flow decompile of both (F-480, U-043).
-5. Packet framing: formats, version 17 and the reliability layer (cookie-seeded sequences, ack history, reliable queue) are recorded, with an experimental codec (F-519, F-521 to F-527, F-535 to F-539), with an experimental codec and sequencing model; next compose them in the loopback lab without admission (F-096, U-044).
+5. Packet framing: formats, version 17 and the reliability layer (cookie-seeded sequences, ack history, reliable queue) are recorded, with an experimental codec (F-519, F-521 to F-527, F-535 to F-539), with an experimental codec, sequencing model and per-peer packet-lab state; next wire that state into the Bevy loopback lab, still without admission (F-096, U-044).
 6. Transport: the control vocabulary, Hello replies, challenge and unique-net-id format are mapped (F-529 to F-531), with the client's version construction and type table (F-541 to F-543); Login carries no credential, and no Steam packet-handler class is evidenced (F-548, F-549); next the runtime handler configuration, game-level identity checks and the client's runtime project version (F-253, U-037, U-038).
-7. World data: advance independently authored world-data feasibility; validate a small import before the heavy-world workload (F-242, U-045).
+7. World data: every framed body round-trips byte-identically through a lossless value-opaque tree (F-554); next a native import that preserves it in the server's own snapshots before the heavy-world workload (F-242, U-045).
 8. Reliability: collect the running 72-hour synthetic soak at its end and record it against U-035; it stays synthetic, not ICARUS performance (F-485, U-035).
 9. Integration: the 35 unsigned historical commits and the 250-commit PR cap need a user decision on policy, rewrite or staged integration (F-279, F-528).
