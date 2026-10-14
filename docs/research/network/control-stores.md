@@ -31,8 +31,10 @@ materializations of slot 0x145468180 stored at base +0x28, but no direct call
 and no archive provenance (F-481). The same build's UWorld and UPendingNetGame
 registration getters are 171-byte exception intervals that load their class-name
 literal plus two; the client's PDB-named GetPrivateStaticClass functions have the
-identical shape, which identifies the older getters (F-501). Their arguments,
-including the constructor callbacks, are not yet decoded. The dispatcher validates message IDs and
+identical shape, which identifies the older getters (F-501). Across builds the
+getters differ only in displacement fields, and each class has three
+class-specific code-pointer arguments, one of which should be its constructor
+callback; their roles are not yet assigned (F-502). The dispatcher validates message IDs and
 reads the ID 0 body (F-284). A disconnected experimental reader composes the
 observed initial body within a derived 131,081-byte ceiling; negotiation,
 identity and game-connection flags stay false (F-096, F-097).
@@ -51,4 +53,4 @@ complete functions.
 
 ## Artifacts
 
-M-005, M-012, M-023..M-046, M-281..M-283, M-288..M-292.
+M-005, M-012, M-023..M-046, M-281..M-283, M-288..M-293.
