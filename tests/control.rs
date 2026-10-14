@@ -1,6 +1,7 @@
 use icarus_bevy::experimental::archive::{ByteOrder, MAX_STRING_UNITS};
 use icarus_bevy::experimental::control::{
-    MAX_INITIAL_CONTROL_BODY_BYTES, TokenEncoding, read_initial_control_body,
+    InitialControlBody, MAX_INITIAL_CONTROL_BODY_BYTES, TokenEncoding, read_initial_control_body,
+    read_initial_control_body_with_sender_order, sender_byte_order,
 };
 
 // Independently authored archive bytes; no production encoder or client data.
@@ -298,5 +299,146 @@ fn frame_validation_preserves_complete_context_error_chains_and_precedence() {
             error(&bytes, order),
             "invalid initial control token frame: missing archive string terminator"
         );
+    }
+}
+
+// Sender-order entry point: rule inferred from the client receive path (F-517).
+
+fn is_little(order: ByteOrder) -> bool {
+    matches!(order, ByteOrder::Little)
+}
+
+fn sender_error(bytes: &[u8]) -> String {
+    format!(
+        "{:#}",
+        read_initial_control_body_with_sender_order(bytes)
+            .err()
+            .unwrap()
+    )
+}
+
+fn assert_same_fields(left: &InitialControlBody<'_>, right: &InitialControlBody<'_>) {
+    assert_eq!(left.body().as_ptr(), right.body().as_ptr());
+    assert_eq!(left.body(), right.body());
+    assert_eq!(left.first_field(), right.first_field());
+    assert_eq!(left.remote_version(), right.remote_version());
+    assert_eq!(left.remote_version_bytes(), right.remote_version_bytes());
+    assert_eq!(left.token_frame(), right.token_frame());
+    let (left, right) = (left.summary(), right.summary());
+    assert_eq!(format!("{left:?}"), format!("{right:?}"));
+    assert_eq!(
+        serde_json::to_string(&left).unwrap(),
+        serde_json::to_string(&right).unwrap()
+    );
+}
+
+#[test]
+fn sender_order_maps_only_first_field_one_to_little_endian() {
+    let little: Vec<u8> = (0..=u8::MAX)
+        .filter(|&first| is_little(sender_byte_order(first)))
+        .collect();
+    assert_eq!(little, [1]);
+}
+
+#[test]
+fn sender_order_first_field_one_decodes_little_endian_version() {
+    let token = [count(4, ByteOrder::Little).as_slice(), b"LAB\0"].concat();
+    let bytes = body(1, 0x0102_0304, &token, ByteOrder::Little);
+    assert_eq!(&bytes[1..5], [4, 3, 2, 1]);
+    let parsed = read_initial_control_body_with_sender_order(&bytes).unwrap();
+    assert_eq!(parsed.first_field(), 1);
+    assert_eq!(parsed.remote_version(), 0x0102_0304);
+    assert_eq!(parsed.token_frame(), token);
+    let summary = parsed.summary();
+    assert_eq!(summary.token_encoding, TokenEncoding::Narrow);
+    assert_eq!(summary.token_units, 3);
+    assert!(!summary.negotiation_validated);
+    assert!(!summary.identity_verified);
+    assert!(!summary.game_connection_established);
+}
+
+#[test]
+fn sender_order_other_first_fields_decode_big_endian_version() {
+    for first in [0, 2, 0x7f, 0xff] {
+        let token = wide(&[65, 0xd83d, 0xde00], ByteOrder::Big);
+        let bytes = body(first, 0x0102_0304, &token, ByteOrder::Big);
+        assert_eq!(&bytes[1..5], [1, 2, 3, 4]);
+        let parsed = read_initial_control_body_with_sender_order(&bytes).unwrap();
+        assert_eq!(parsed.first_field(), first);
+        assert_eq!(parsed.remote_version(), 0x0102_0304);
+        assert_eq!(parsed.summary().token_encoding, TokenEncoding::Wide);
+        assert_eq!(parsed.summary().token_units, 3);
+        assert!(!parsed.summary().negotiation_validated);
+    }
+}
+
+#[test]
+fn sender_order_agrees_with_matching_explicit_order_and_not_with_the_other() {
+    for first in 0..=u8::MAX {
+        let derived = sender_byte_order(first);
+        let other = if is_little(derived) {
+            ByteOrder::Big
+        } else {
+            ByteOrder::Little
+        };
+        // Empty tokens are order-independent, so the mismatched order parses too.
+        let bytes = body(first, 0x0102_0304, &count(0, derived), derived);
+        let sender = read_initial_control_body_with_sender_order(&bytes).unwrap();
+        let explicit = read_initial_control_body(&bytes, derived).unwrap();
+        assert_same_fields(&sender, &explicit);
+        let mismatched = read_initial_control_body(&bytes, other).unwrap();
+        assert_eq!(sender.remote_version(), 0x0102_0304);
+        assert_eq!(mismatched.remote_version(), 0x0403_0201);
+        assert_eq!(mismatched.token_frame(), sender.token_frame());
+    }
+}
+
+#[test]
+fn sender_order_rejections_match_the_explicit_reader_exactly() {
+    for first in [0, 1, 2, 0xff] {
+        let order = sender_byte_order(first);
+        let mut cases = vec![Vec::new(), vec![0; MAX_INITIAL_CONTROL_BODY_BYTES + 1]];
+        for token in [
+            count(0, order).to_vec(),
+            [count(4, order).as_slice(), b"LAB\0"].concat(),
+            wide(&[65, 0xd83d, 0xde00], order),
+            count(i32::MIN, order).to_vec(),
+            count(2, order).to_vec(),
+            [count(2, order).as_slice(), b"AB"].concat(),
+            wide(&[0xffff], order),
+        ] {
+            let bytes = body(first, 0x0102_0304, &token, order);
+            for length in 0..bytes.len() {
+                cases.push(bytes[..length].to_vec());
+            }
+            cases.push([bytes.as_slice(), &[0]].concat());
+            cases.push(bytes);
+        }
+        let mut limit = wide(&vec![0x1234; MAX_STRING_UNITS - 1], order);
+        limit = body(first, 0, &limit, order);
+        assert_eq!(limit.len(), MAX_INITIAL_CONTROL_BODY_BYTES);
+        cases.push([limit.as_slice(), &[0]].concat());
+        cases.push(limit);
+        for case in cases {
+            let sender = read_initial_control_body_with_sender_order(&case);
+            // Empty input fails before any order is used; either explicit order agrees.
+            let explicit = read_initial_control_body(&case, order);
+            match (sender, explicit) {
+                (Ok(sender), Ok(explicit)) => assert_same_fields(&sender, &explicit),
+                (Err(sender), Err(explicit)) => {
+                    assert_eq!(format!("{sender:#}"), format!("{explicit:#}"));
+                }
+                _ => panic!("outcomes differ for {} bytes", case.len()),
+            }
+        }
+        assert!(sender_error(&[]).contains("first field"));
+        assert!(sender_error(&[first; 4]).contains("remote version"));
+        assert!(
+            sender_error(&vec![first; MAX_INITIAL_CONTROL_BODY_BYTES + 1])
+                .contains("research byte limit")
+        );
+        let complete = body(first, 0, &count(0, order), order);
+        let excess = [complete.as_slice(), &[0]].concat();
+        assert!(sender_error(&excess).contains("trailing data"));
     }
 }
