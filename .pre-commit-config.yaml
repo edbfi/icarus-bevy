@@ -70,7 +70,7 @@ repos:
         files: ^tools/(pe_candidates\.cjs|tests/pe_candidates.*\.cjs)$
       - id: pdb-public-symbol-tests
         name: Test bounded PDB public symbol reader
-        entry: node --test tools/tests/pdb_public_symbols.test.cjs tools/tests/pdb_public_symbols_review.test.cjs
+        entry: node --test tools/tests/pdb_public_symbols.test.cjs tools/tests/pdb_public_symbols_review.test.cjs tools/tests/pdb_public_symbols_classes.test.cjs
         language: system
         pass_filenames: false
         files: ^tools/(pdb_public_symbols\.cjs|tests/pdb_public_symbols.*\.cjs)$
