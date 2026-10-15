@@ -238,17 +238,24 @@ fn run(options: &Options, stopping: &AtomicBool) -> Result<serde_json::Value> {
         if elapsed.saturating_sub(last_save) >= Duration::from_secs(options.save_seconds) {
             if options.compressed && worker.is_busy() {
                 // Await the previous save so the run keeps the duration's save count.
+                // A stop request leaves the wait; shutdown collects the save.
                 let waited = Instant::now();
                 let receipt = loop {
                     if let Some(receipt) = worker.poll()? {
-                        break receipt;
+                        break Some(receipt);
+                    }
+                    if stopping.load(Ordering::SeqCst) {
+                        break None;
                     }
                     thread::sleep(Duration::from_millis(1));
                 };
                 save_waits += 1;
                 save_wait_micros = save_wait_micros
                     .saturating_add(waited.elapsed().as_micros().min(u128::from(u64::MAX)) as u64);
-                saves.committed(&receipt);
+                match receipt {
+                    Some(receipt) => saves.committed(&receipt),
+                    None => break,
+                }
             }
             if !worker.is_busy() {
                 let capture_start = Instant::now();
@@ -256,7 +263,8 @@ fn run(options: &Options, stopping: &AtomicBool) -> Result<serde_json::Value> {
                 captures.record(capture_start.elapsed().as_micros() as u64);
                 worker.submit(snapshot)?;
                 saves.submitted();
-                last_save = elapsed;
+                // The interval runs from submission, after capture.
+                last_save = clock.elapsed(tick(&app));
             }
         }
         if elapsed.saturating_sub(last_status) >= Duration::from_secs(STATUS_SECONDS) {

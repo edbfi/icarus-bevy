@@ -457,13 +457,21 @@ fn run(options: ConfigOptions, max_ticks: Option<u64>, compressed: bool) -> Resu
             break;
         }
         if now.saturating_sub(last_save_request) >= Duration::from_secs(config.autosave_seconds) {
-            // A compressed run keeps every autosave by awaiting the one in flight.
+            // A compressed run keeps every autosave by awaiting the one in
+            // flight; a stop request leaves the wait for the bounded shutdown.
             while compressed && writer.is_busy() && !autosave.observe(writer.poll(), now)? {
+                if stopping.load(Ordering::SeqCst) {
+                    break;
+                }
                 thread::sleep(Duration::from_millis(1));
+            }
+            if stopping.load(Ordering::SeqCst) {
+                break;
             }
             if !writer.is_busy() {
                 writer.submit(capture(app.world_mut())?)?;
-                last_save_request = now;
+                // The interval runs from submission, after capture.
+                last_save_request = clock.elapsed(tick);
                 autosave.submitted = Some(Instant::now());
             }
         }
