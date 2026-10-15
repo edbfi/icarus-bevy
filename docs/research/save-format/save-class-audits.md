@@ -33,7 +33,7 @@ names over placed pieces that share the grid's frame (F-643).
 No saved class identifier, field or type name, or recorder version tells the
 older server from the newer client (F-635). Client recorder code gives every
 class's fields their meanings (F-645, F-646, F-648, F-650 to F-654, F-656 to
-F-662, F-665, F-666); item stats, alterations and slots are row references
+F-661, F-665, F-666, F-676, F-677); item stats, alterations and slots are row references
 (F-660). The validate, stitch and restore rules are in the
 [restore-rules spec](../../specs/save-format/restore-rules.md) (F-663). The
 readers rest on borrowed strict string frames with no success-path allocation

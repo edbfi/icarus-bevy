@@ -45,7 +45,7 @@ What the foundation does is in the
 
 Offline work, in order; connected proof keeps its gates.
 
-1. Save classes: every body of every class frames and round-trips in both copies (F-557, F-565, F-602) and recorder fields have meanings (F-645 to F-666); Name identities and row meanings sit in packaged tables (F-660), whose use is your call (U-020).
+1. Save classes: every body of every class frames and round-trips in both copies (F-557, F-565, F-602) and recorder fields have meanings (F-645 to F-661, F-665, F-666, F-676, F-677); Name identities and row meanings sit in packaged tables (F-660), whose use is your call (U-020).
 2. Player state: candidates and construction grids frame (F-668, F-643); no saved identifier discriminates the producing build (F-635), so confirming it needs runtime evidence (U-040).
 3. Control stores: owner, dispatcher, static call site, base origin, notify tables and both builds' NotifyControlMessage correspond statically (F-505, F-506, F-520, F-544, F-546, F-579); runtime dispatch needs a connected or original-runtime scope (U-043).
 4. Packet framing and transport: formats, reliability, control vocabulary, unique net ids and the engine's login checks are recorded, with experimental codecs, a loopback peer lab and a native login mirror (F-519, F-521 to F-527, F-529 to F-531, F-535 to F-539, F-541 to F-543, F-548, F-549, F-558, F-563, F-564, F-580, F-622, F-623); next the runtime version value, handler configuration, PreLogin delegates and Welcome strings (U-037, U-038, U-044).
