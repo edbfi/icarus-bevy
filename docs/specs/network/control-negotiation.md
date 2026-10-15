@@ -173,9 +173,8 @@ game listener.
   packets, to its control-channel messages (control identified by name index
   255 or channel index 0, both inferred); only ID 0 is decoded, and summaries
   carry no token, first field or version. `experimental::control_messages`
-  types the whole vocabulary table with readers and writers, including the
-  unique-net-id flags, type and encoded forms (the non-encoded string form is
-  inferred); summaries carry kinds and lengths only.
+  types the whole vocabulary with readers and writers, including every
+  unique-net-id form (F-531, F-636); summaries carry kinds and lengths only.
   `experimental::sequencing` models the client's sequencing state (F-535 to
   F-539): cookie-seeded notify state, history shifting, header word counts, the
   sent-record ring, ack/nak notifications with full packet IDs, and per-channel
