@@ -91,6 +91,15 @@ dormancy, channel close reasons and every server-side writer.
   (set when empty), then a count of a tag-manager width W, capped by the
   writer at 2^W - 1, then that many tags. `experimental::rep_layout`
   re-encodes the name and net-index forms with caller widths (F-594).
+- Hit results (F-597), client and server alike: a flags byte whose bits 0
+  and 1 carry struct flags and whose bits 2 to 6 replace the impact point
+  (with the location), the impact normal (with the normal), the item, the
+  face index and the penetration depth (with defaults); bit 7 replaces the
+  element index on read but is never written. Then a 4-byte time, location
+  and normal, the unreplaced impact fields, trace start and end, the gated
+  4-byte penetration depth and item, three NetGUID object references (weak
+  pointers reach the package map's `SerializeObject`), the bone name as a
+  network name, the gated face index and element byte (F-598 re-encodes it).
 - Name and Str items (F-595): the name item serializer calls the archive
   name operator, which net bit archives send to the package map's
   `SerializeName` (the same in `UPackageMapClient`) or, without a package
@@ -117,8 +126,8 @@ dormancy, channel close reasons and every server-side writer.
 
 ## Open questions
 
-- Property encodings beyond the read items: hit results, Text and soft
-  objects (U-064); which levels each movement property uses (a property default).
+- Property encodings beyond the read items: Text, soft objects and other
+  native structs (U-064); which levels each movement property uses (a property default).
 - Server writers for these records and their byte order and bounds (U-044).
 - Gameplay-tag replication mode, widths and an independent tag table (U-065).
 
@@ -129,4 +138,5 @@ dormancy, channel close reasons and every server-side writer.
   M-449; server writers M-455 to M-462;
   server struct items M-463 to M-470; handle walk M-428; movement and scaled
   vectors M-477 to M-491; tags M-493 to M-495; Name and Str routing M-497 to
-  M-510; codec tests M-475, M-476, M-492, M-496, M-511.
+  M-510; hit results M-468, M-512 to M-521; codec tests M-475, M-476, M-492,
+  M-496, M-511, M-522.

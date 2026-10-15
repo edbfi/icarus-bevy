@@ -29,13 +29,15 @@ property defaults that never cross the wire (F-588, F-589). Gameplay tags go
 as names or as split net indices whose widths, like the container count
 width, are tag configuration (F-591, F-592). Name items take the
 network-name form through the package map, and Str items are archive strings
-(F-595). These are
+(F-595). Hit results carry a flags byte that elides duplicate or default
+fields, quantized vectors, NetGUID references and a bone name (F-597). These
+are
 client-build observations, with the older server's content-block and NetGUID
 writers mirroring them (F-581); nothing is wire-validated.
 
 ## Open
 
-- Hit results, Text and soft objects (U-064); server send policy (U-044).
+- Text, soft objects and other native structs (U-064); server send policy (U-044).
 - Tag replication by net index would need an identical tag table (F-583, U-065).
 
 ## Artifacts

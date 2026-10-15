@@ -42,6 +42,9 @@
 //!   caller-supplied first segment and total width (F-591);
 //! - [`RepCommand::GameplayTagContainer`]: an empty bit, then a count of a
 //!   caller-supplied width and that many tags (F-592);
+//! - [`RepCommand::HitResult`]: a flags byte, a 4-byte time, quantized and
+//!   normal vectors with flag-gated duplicates, flag-gated 4-byte and 1-byte
+//!   fields, three NetGUID references and a network name (F-597);
 //! - [`RepCommand::Rotator`]: the compressed rotator of
 //!   [`super::actor_channel::read_rotator`] (F-573);
 //! - [`RepCommand::DynamicArray`]: count and nested stream (F-571);
@@ -81,7 +84,7 @@
 //!   values are raw 16-bit fields like the rotator's.
 //!
 //! Unsupported and failing closed: any item the spec does not encode, such as
-//! 32-bit integers, floats, text, soft objects, hit results and other
+//! 32-bit integers, floats, text, soft objects and other
 //! native structs ([`UnsupportedItem`]); the optional bit and the preamble
 //! before the handle loop (M-426); non-canonical packed integers and tag net
 //! indices (the original reader may be more lenient), so every accepted stream
@@ -172,8 +175,6 @@ pub enum UnsupportedItem {
     Text,
     /// Archive soft-path operator (F-574), unread.
     SoftObject,
-    /// Flags byte and gated fields (F-593); the gated layout is unread.
-    HitResult,
     /// Any other native net-serialize struct.
     OtherNativeStruct,
 }
@@ -206,6 +207,8 @@ pub enum RepCommand {
         encoding: TagEncoding,
         count_bits: u8,
     },
+    /// `FHitResult` (F-597).
+    HitResult,
     /// `FRepMovement` at the property's quantization levels (F-588, F-589).
     Movement {
         location: MovementLevel,
@@ -328,6 +331,48 @@ pub fn write_tag_net_index(writer: &mut BitWriter, index: u16, first: u8, total:
         writer.write_bits(index >> first, total - first);
     }
     Ok(())
+}
+
+/// Hit-result flag bits that replace a field with a default (F-597); bits 0
+/// and 1 are carried struct flags, and the writer never sets bit 7.
+pub const HIT_IMPACT_POINT_IS_LOCATION: u8 = 1 << 2;
+pub const HIT_IMPACT_NORMAL_IS_NORMAL: u8 = 1 << 3;
+pub const HIT_NO_ITEM: u8 = 1 << 4;
+pub const HIT_NO_FACE_INDEX: u8 = 1 << 5;
+pub const HIT_NO_PENETRATION: u8 = 1 << 6;
+pub const HIT_NO_ELEMENT_INDEX: u8 = 1 << 7;
+
+/// `FHitResult` as read (F-597): integers and raw 4-byte words, never floats.
+/// Field roles follow the stock layout (inferred); each `Option` is `None`
+/// exactly when its flag bit replaces it.
+#[derive(Clone, PartialEq, Eq)]
+pub struct HitResult {
+    pub flags: u8,
+    pub time: u32,
+    pub location: QuantizedVector,
+    pub normal: QuantizedNormal,
+    pub impact_point: Option<QuantizedVector>,
+    pub impact_normal: Option<QuantizedNormal>,
+    pub trace_start: QuantizedVector,
+    pub trace_end: QuantizedVector,
+    pub penetration_depth: Option<u32>,
+    pub item: Option<u32>,
+    pub phys_material: NetGuidRef,
+    pub actor: NetGuidRef,
+    pub component: NetGuidRef,
+    pub bone_name: NetworkName,
+    pub face_index: Option<u32>,
+    pub element_index: Option<u8>,
+}
+
+impl std::fmt::Debug for HitResult {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("HitResult")
+            .field("actor", &self.actor)
+            .field("bone_name", &self.bone_name)
+            .finish_non_exhaustive()
+    }
 }
 
 /// A movement vector quantization level (F-589); the value is a struct field
@@ -577,6 +622,7 @@ pub enum RepValue {
     VectorQuantizeNormal(QuantizedNormal),
     Rotator(CompressedRotator),
     GameplayTag(GameplayTag),
+    HitResult(Box<HitResult>),
     /// `None` when the empty bit is set; otherwise the counted tags.
     GameplayTagContainer(Option<Vec<GameplayTag>>),
     Movement(RepMovement),
@@ -600,6 +646,7 @@ pub enum ItemKind {
     Rotator,
     GameplayTag,
     GameplayTagContainer,
+    HitResult,
     Movement,
     DynamicArray,
     Opaque,
@@ -621,6 +668,7 @@ impl RepValue {
             Self::Rotator(_) => ItemKind::Rotator,
             Self::GameplayTag(_) => ItemKind::GameplayTag,
             Self::GameplayTagContainer(_) => ItemKind::GameplayTagContainer,
+            Self::HitResult(_) => ItemKind::HitResult,
             Self::Movement(_) => ItemKind::Movement,
             Self::DynamicArray(_) => ItemKind::DynamicArray,
             Self::Opaque(_) => ItemKind::Opaque,
@@ -662,6 +710,7 @@ impl std::fmt::Debug for RepValue {
                 .debug_tuple("GameplayTagContainer")
                 .field(&tags.as_ref().map(Vec::len))
                 .finish(),
+            Self::HitResult(hit) => formatter.debug_tuple("HitResult").field(hit).finish(),
             Self::Movement(movement) => formatter.debug_tuple("Movement").field(movement).finish(),
             Self::DynamicArray(array) => {
                 formatter.debug_tuple("DynamicArray").field(array).finish()
@@ -804,6 +853,7 @@ impl RepEntry {
             | RepValue::Byte(_)
             | RepValue::Enum(_)
             | RepValue::GameplayTag(GameplayTag::NetIndex(_))
+            | RepValue::HitResult(_)
             | RepValue::VectorQuantizeNormal(_) => {}
         }
         summary
@@ -891,6 +941,7 @@ fn validate_layout_at(layout: &[RepCommand], limits: &RepLayoutLimits, depth: us
             | RepCommand::VectorQuantizeNormal
             | RepCommand::Rotator
             | RepCommand::Movement { .. }
+            | RepCommand::HitResult
             | RepCommand::Unsupported(_) => {}
         }
     }
@@ -1296,6 +1347,147 @@ pub fn write_movement(
     Ok(())
 }
 
+fn read_normal(reader: &mut BitReader<'_>) -> Result<QuantizedNormal> {
+    let mut values = [0u16; 3];
+    for value in &mut values {
+        *value = read_field(reader, 16, "quantized normal component")? as u16;
+    }
+    Ok(QuantizedNormal(values))
+}
+
+fn write_normal(writer: &mut BitWriter, normal: &QuantizedNormal) {
+    for value in normal.0 {
+        writer.write_bits(u32::from(value), 16);
+    }
+}
+
+/// `FHitResult` (F-597): flags byte, time, location, normal, impact point and
+/// normal unless flagged equal, trace start and end, penetration depth and
+/// item unless flagged, three object references, the bone name, then face and
+/// element index unless flagged.
+pub fn read_hit_result(reader: &mut BitReader<'_>, codec: &RepLayoutCodec) -> Result<HitResult> {
+    let order = codec.actor.order;
+    let flags = read_field(reader, 8, "hit result flags")? as u8;
+    let gated_word = |reader: &mut BitReader<'_>, bit: u8, what: &str| -> Result<Option<u32>> {
+        Ok(if flags & bit == 0 {
+            Some(read_u32(reader, order, what)?)
+        } else {
+            None
+        })
+    };
+    let time = read_u32(reader, order, "hit result time")?;
+    let location = read_vector(reader, VectorPacking::NetQuantize).context("hit location")?;
+    let normal = read_normal(reader).context("hit normal")?;
+    let impact_point = if flags & HIT_IMPACT_POINT_IS_LOCATION == 0 {
+        Some(read_vector(reader, VectorPacking::NetQuantize).context("hit impact point")?)
+    } else {
+        None
+    };
+    let impact_normal = if flags & HIT_IMPACT_NORMAL_IS_NORMAL == 0 {
+        Some(read_normal(reader).context("hit impact normal")?)
+    } else {
+        None
+    };
+    let trace_start = read_vector(reader, VectorPacking::NetQuantize).context("hit trace start")?;
+    let trace_end = read_vector(reader, VectorPacking::NetQuantize).context("hit trace end")?;
+    let penetration_depth = gated_word(reader, HIT_NO_PENETRATION, "hit penetration depth")?;
+    let item = gated_word(reader, HIT_NO_ITEM, "hit item")?;
+    let phys_material = read_guid_ref(reader, &codec.actor).context("hit physical material")?;
+    let actor = read_guid_ref(reader, &codec.actor).context("hit actor")?;
+    let component = read_guid_ref(reader, &codec.actor).context("hit component")?;
+    let bone_name = read_network_name(reader, codec).context("hit bone name")?;
+    let face_index = gated_word(reader, HIT_NO_FACE_INDEX, "hit face index")?;
+    let element_index = if flags & HIT_NO_ELEMENT_INDEX == 0 {
+        Some(read_field(reader, 8, "hit element index")? as u8)
+    } else {
+        None
+    };
+    Ok(HitResult {
+        flags,
+        time,
+        location,
+        normal,
+        impact_point,
+        impact_normal,
+        trace_start,
+        trace_end,
+        penetration_depth,
+        item,
+        phys_material,
+        actor,
+        component,
+        bone_name,
+        face_index,
+        element_index,
+    })
+}
+
+/// Mirror of [`read_hit_result`]; each optional field must be present exactly
+/// when its flag bit is clear.
+pub fn write_hit_result(
+    writer: &mut BitWriter,
+    hit: &HitResult,
+    codec: &RepLayoutCodec,
+) -> Result<()> {
+    let order = codec.actor.order;
+    let gated = |present: bool, bit: u8, what: &str| -> Result<()> {
+        ensure!(
+            present == (hit.flags & bit == 0),
+            "hit result {what} must be present exactly when its flag bit is clear"
+        );
+        Ok(())
+    };
+    gated(
+        hit.impact_point.is_some(),
+        HIT_IMPACT_POINT_IS_LOCATION,
+        "impact point",
+    )?;
+    gated(
+        hit.impact_normal.is_some(),
+        HIT_IMPACT_NORMAL_IS_NORMAL,
+        "impact normal",
+    )?;
+    gated(
+        hit.penetration_depth.is_some(),
+        HIT_NO_PENETRATION,
+        "penetration depth",
+    )?;
+    gated(hit.item.is_some(), HIT_NO_ITEM, "item")?;
+    gated(hit.face_index.is_some(), HIT_NO_FACE_INDEX, "face index")?;
+    gated(
+        hit.element_index.is_some(),
+        HIT_NO_ELEMENT_INDEX,
+        "element index",
+    )?;
+    writer.write_bits(u32::from(hit.flags), 8);
+    write_u32(writer, hit.time, order);
+    write_vector(writer, &hit.location, VectorPacking::NetQuantize).context("hit location")?;
+    write_normal(writer, &hit.normal);
+    if let Some(point) = &hit.impact_point {
+        write_vector(writer, point, VectorPacking::NetQuantize).context("hit impact point")?;
+    }
+    if let Some(normal) = &hit.impact_normal {
+        write_normal(writer, normal);
+    }
+    write_vector(writer, &hit.trace_start, VectorPacking::NetQuantize)
+        .context("hit trace start")?;
+    write_vector(writer, &hit.trace_end, VectorPacking::NetQuantize).context("hit trace end")?;
+    for word in [hit.penetration_depth, hit.item].into_iter().flatten() {
+        write_u32(writer, word, order);
+    }
+    for reference in [&hit.phys_material, &hit.actor, &hit.component] {
+        write_guid_ref(writer, reference, &codec.actor).context("hit object reference")?;
+    }
+    write_network_name(writer, &hit.bone_name, codec).context("hit bone name")?;
+    if let Some(face) = hit.face_index {
+        write_u32(writer, face, order);
+    }
+    if let Some(element) = hit.element_index {
+        writer.write_bits(u32::from(element), 8);
+    }
+    Ok(())
+}
+
 fn read_tag(
     reader: &mut BitReader<'_>,
     encoding: TagEncoding,
@@ -1387,6 +1579,9 @@ fn read_value(
                 RepValue::GameplayTagContainer(Some(tags))
             }
         }
+        RepCommand::HitResult => RepValue::HitResult(Box::new(
+            read_hit_result(reader, codec).context("hit result item")?,
+        )),
         RepCommand::Movement {
             location,
             velocity,
@@ -1394,13 +1589,7 @@ fn read_value(
         } => RepValue::Movement(
             read_movement(reader, *location, *velocity, *rotation).context("movement item")?,
         ),
-        RepCommand::VectorQuantizeNormal => {
-            let mut values = [0u16; 3];
-            for value in &mut values {
-                *value = read_field(reader, 16, "quantized normal component")? as u16;
-            }
-            RepValue::VectorQuantizeNormal(QuantizedNormal(values))
-        }
+        RepCommand::VectorQuantizeNormal => RepValue::VectorQuantizeNormal(read_normal(reader)?),
         RepCommand::Rotator => RepValue::Rotator(read_rotator(reader).context("rotator item")?),
         RepCommand::DynamicArray { element } => {
             let count = read_u16(reader, codec.actor.order, "dynamic array count")?;
@@ -1581,9 +1770,10 @@ fn write_value(
                 .context("movement item")?;
         }
         (RepCommand::VectorQuantizeNormal, RepValue::VectorQuantizeNormal(normal)) => {
-            for value in normal.0 {
-                writer.write_bits(u32::from(value), 16);
-            }
+            write_normal(writer, normal);
+        }
+        (RepCommand::HitResult, RepValue::HitResult(hit)) => {
+            write_hit_result(writer, hit, codec).context("hit result item")?;
         }
         (RepCommand::Rotator, RepValue::Rotator(rotator)) => write_rotator(writer, rotator),
         (RepCommand::DynamicArray { element }, RepValue::DynamicArray(array)) => {
