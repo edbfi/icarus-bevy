@@ -43,7 +43,7 @@ dormancy, channel close reasons and every server-side writer.
   loop) before its field-header loop (M-426, M-427). Each field until the
   payload ends is an index read like `SerializeInt` below the class cache's
   maximum index plus one, a packed bit count and exactly that payload; an
-  unknown index is skipped (F-637). A property field's custom-delta payload
+  unknown index is skipped (F-644). A property field's custom-delta payload
   starts with a bit at engine net version 11 or later and, for a static
   array, a packed index below its dimension; the struct's delta serializer
   reads the rest. A fast array's body is four 4-byte fields (array and base
@@ -51,11 +51,11 @@ dormancy, channel close reasons and every server-side writer.
   4-byte ID per delete, then per change a 4-byte ID and either the item
   struct's commands in order or, when the struct-delta bit is set and the
   array uses delta serialization, a set bit and the item's rep-layout property
-  stream; native item structs use their own serializer (F-641). A function field is an RPC, accepted with the net flag and,
+  stream; native item structs use their own serializer (F-644). A function field is an RPC, accepted with the net flag and,
   on a server, the server flag: each parameter, static-array elements apart,
   is a bare bit if a bool, else a presence bit then its commands' item
   encodings without handles; arrays are a 2-byte count of at most `0xFFFE`
-  and elements in order, and the payload must be consumed exactly (F-638).
+  and elements in order, and the payload must be consumed exactly (F-644).
   `experimental::rep_rpc` reads and re-encodes all of these.
 - Rep-layout stream (F-571): packed handles select layout commands and handle
   0 ends a stream; a dynamic array carries a 2-byte element count and a nested
