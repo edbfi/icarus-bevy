@@ -4,7 +4,7 @@ Rows retired from [the active ledger](../save-format-classes.md): superseded by 
 execution receipts, or historical session state. Full text is kept and IDs stay
 permanent; cite the superseding row where one exists.
 
-Last reconciled: 2026-10-14
+Last reconciled: 2026-10-15
 
 | ID | Claim | Kind | Evidence | Scope and limits | Unknowns | Status |
 | --- | --- | --- | --- | --- | --- | --- |
@@ -128,3 +128,4 @@ Last reconciled: 2026-10-14
 | F-631 | The save's five recorder-version Ints hold one value each (F-625); both builds assign each its saved value as a literal at its reflected offset in corresponding code, so they cannot discriminate the builds | observed | static-decompile, static-bytes; M-597, M-606 to M-613 | high; values and names private | U-040 | superseded-by F-635 |
 | F-633 | Construction candidates by private name (bed C003, building grid C004, trap C007, crop plot C008, deployable C009, drill C010, prebuilt C027, sign C030, spline C032) frame; grids nest per-type row names over placed pieces: 1,102 pieces, 174 types, 66 grids | observed | structural-comparison; M-616 | high; current copy; roles inferred | U-040 | superseded-by F-643 |
 | F-642 | Saved grid piece transforms share the grid transform's frame: the client grid recorder's transform adjustment composes one transform into the grid transform and every piece transform, at offsets matching both builds' reflected record offsets | observed | static-decompile, static-bytes; M-636 to M-638 | high; client code; offsets in both builds | U-020 | superseded-by F-643 |
+| F-640 | Every saved enum property value (9 types, 20 enumerators) resolves in its type's compiled table, and the nine tables (45 enumerators) are identical in both builds: the save's enum lookups are complete and cannot tell the builds apart | observed | structural-comparison, static-bytes; M-626, M-627 | high; two copies; tables not shipped | U-020, U-040 | superseded-by F-647 |
