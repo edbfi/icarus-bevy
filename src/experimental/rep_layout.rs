@@ -28,11 +28,9 @@
 //!   bytes or 2-byte units with a terminator (F-595);
 //! - [`RepCommand::SoftObject`]: the soft-object path as one archive string,
 //!   which net archives send in place of the path fields (F-599);
-//! - [`RepCommand::Text`]: the shared FText serializer at the archive version
-//!   client bunches carry (F-613, F-614): a 4-byte flags word, a history-type
-//!   byte and, for a Base history (type 0, the only one supported), the
-//!   namespace and key as archive-string text keys and the source string;
-//!   every other history type fails closed;
+//! - [`RepCommand::Text`]: the shared FText serializer at the archive versions
+//!   client bunches carry (F-614, F-624, F-627), in [`super::rep_text`]: every
+//!   history but StringTableEntry and TextGenerator, which fail closed;
 //! - [`RepCommand::VectorQuantize`]: `FVector_NetQuantize`, a capped component
 //!   bit count and three biased integers, unscaled (F-593, server writer);
 //! - [`RepCommand::VectorQuantizeNormal`]: three 16-bit values biased by 32768;
@@ -110,6 +108,8 @@ use super::archive::{ByteOrder, StringEncoding, read_string_frame};
 use super::control::TokenEncoding;
 use super::control_messages::ArchiveText;
 use super::packet::{BitReader, BitWriter, MAX_HARDCODED_NAME_INDEX, Payload};
+pub use super::rep_text::TextValue;
+use super::rep_text::{TextHistory, read_text, write_text};
 
 /// Maximum of the capped `FVector_NetQuantize` component bit count (F-593).
 pub const NET_QUANTIZE_BITS_MAX: u32 = 20;
@@ -200,7 +200,7 @@ pub enum RepCommand {
     Str,
     /// A soft-object path as an archive string (F-599).
     SoftObject,
-    /// A Text item; only Base histories are supported (F-613, F-614).
+    /// A Text item; StringTableEntry and TextGenerator fail closed (F-624).
     Text,
     VectorQuantize,
     VectorQuantize10,
@@ -605,22 +605,6 @@ impl std::fmt::Debug for NetworkName {
     }
 }
 
-/// A Text item carrying a Base history (type 0): the flags word, then the
-/// namespace and key as text keys, then the source string (F-613). A text key
-/// is an archive-string frame; an empty key is saved as count 1 and a
-/// terminator, which the preserved encoding round-trips. `Debug` shows lengths
-/// only.
-#[derive(Clone, PartialEq, Eq)]
-pub struct BaseText {
-    pub flags: u32,
-    pub namespace: ArchiveText,
-    pub key: ArchiveText,
-    pub source: ArchiveText,
-}
-
-/// FText history type byte of a Base history.
-const TEXT_HISTORY_BASE: u32 = 0;
-
 /// A dynamic array: its element count and nested stream (F-571).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RepArray {
@@ -640,7 +624,7 @@ pub enum RepValue {
     NetworkName(NetworkName),
     Str(ArchiveText),
     SoftObject(ArchiveText),
-    Text(BaseText),
+    Text(TextValue),
     VectorQuantize(QuantizedVector),
     VectorQuantize10(QuantizedVector),
     VectorQuantize100(QuantizedVector),
@@ -721,10 +705,7 @@ impl std::fmt::Debug for RepValue {
                 .debug_struct("SoftObject")
                 .field("units", &text.declared_units())
                 .finish(),
-            Self::Text(text) => formatter
-                .debug_struct("Text")
-                .field("source_units", &text.source.declared_units())
-                .finish_non_exhaustive(),
+            Self::Text(text) => text.fmt(formatter),
             Self::VectorQuantize(vector) => formatter
                 .debug_tuple("VectorQuantize")
                 .field(vector)
@@ -863,7 +844,10 @@ impl RepEntry {
             RepValue::NetworkName(name) => summary.name = Some(name.summary()),
             RepValue::Str(text)
             | RepValue::SoftObject(text)
-            | RepValue::Text(BaseText { source: text, .. }) => {
+            | RepValue::Text(TextValue {
+                history: TextHistory::Base { source: text, .. },
+                ..
+            }) => {
                 summary.string_units = Some(text.declared_units());
             }
             RepValue::VectorQuantize(vector)
@@ -895,6 +879,7 @@ impl RepEntry {
             | RepValue::Enum(_)
             | RepValue::GameplayTag(GameplayTag::NetIndex(_))
             | RepValue::HitResult(_)
+            | RepValue::Text(_)
             | RepValue::VectorQuantizeNormal(_) => {}
         }
         summary
@@ -1030,7 +1015,7 @@ fn read_flag(reader: &mut BitReader<'_>, what: &str) -> Result<bool> {
     Ok(bit)
 }
 
-fn read_field(reader: &mut BitReader<'_>, bits: u32, what: &str) -> Result<u32> {
+pub(super) fn read_field(reader: &mut BitReader<'_>, bits: u32, what: &str) -> Result<u32> {
     let value = reader.read_bits(bits);
     ensure!(!reader.is_error(), "truncated {what}");
     Ok(value)
@@ -1058,7 +1043,7 @@ fn write_u16(writer: &mut BitWriter, value: u16, order: ByteOrder) {
     writer.write_bits(u32::from(value), 16);
 }
 
-fn read_u32(reader: &mut BitReader<'_>, order: ByteOrder, what: &str) -> Result<u32> {
+pub(super) fn read_u32(reader: &mut BitReader<'_>, order: ByteOrder, what: &str) -> Result<u32> {
     let value = read_field(reader, 32, what)?;
     Ok(match order {
         ByteOrder::Little => value,
@@ -1066,7 +1051,7 @@ fn read_u32(reader: &mut BitReader<'_>, order: ByteOrder, what: &str) -> Result<
     })
 }
 
-fn write_u32(writer: &mut BitWriter, value: u32, order: ByteOrder) {
+pub(super) fn write_u32(writer: &mut BitWriter, value: u32, order: ByteOrder) {
     writer.write_u32(match order {
         ByteOrder::Little => value,
         ByteOrder::Big => value.swap_bytes(),
@@ -1096,7 +1081,7 @@ fn append_bits(writer: &mut BitWriter, payload: &Payload) {
 /// An archive string: a signed 4-byte count, narrow bytes for a positive
 /// count, 2-byte units for a negative one, each with a terminator; network
 /// names and Str items both use it (F-575, F-595).
-fn read_archive_string(
+pub(super) fn read_archive_string(
     reader: &mut BitReader<'_>,
     codec: &RepLayoutCodec,
     max_units: usize,
@@ -1128,7 +1113,7 @@ fn read_archive_string(
     ArchiveText::with_encoding(&parsed.units().collect::<Vec<_>>(), encoding)
 }
 
-fn write_archive_string(
+pub(super) fn write_archive_string(
     writer: &mut BitWriter,
     text: &ArchiveText,
     codec: &RepLayoutCodec,
@@ -1159,32 +1144,6 @@ fn write_archive_string(
         }
     }
     Ok(())
-}
-
-/// Read a Text item; any history but Base fails closed (F-613).
-fn read_base_text(reader: &mut BitReader<'_>, codec: &RepLayoutCodec) -> Result<BaseText> {
-    let flags = read_u32(reader, codec.actor.order, "text flags")?;
-    let history = read_field(reader, 8, "text history type")?;
-    ensure!(
-        history == TEXT_HISTORY_BASE,
-        "text history type {history} unsupported"
-    );
-    let units = codec.limits.max_string_units;
-    Ok(BaseText {
-        flags,
-        namespace: read_archive_string(reader, codec, units, "text namespace")?,
-        key: read_archive_string(reader, codec, units, "text key")?,
-        source: read_archive_string(reader, codec, units, "text source string")?,
-    })
-}
-
-fn write_base_text(writer: &mut BitWriter, text: &BaseText, codec: &RepLayoutCodec) -> Result<()> {
-    let units = codec.limits.max_string_units;
-    write_u32(writer, text.flags, codec.actor.order);
-    writer.write_bits(TEXT_HISTORY_BASE, 8);
-    write_archive_string(writer, &text.namespace, codec, units, "text namespace")?;
-    write_archive_string(writer, &text.key, codec, units, "text key")?;
-    write_archive_string(writer, &text.source, codec, units, "text source string")
 }
 
 /// Read one network name (F-575).
@@ -1609,7 +1568,7 @@ fn read_value(
             RepValue::Object(read_guid_ref(reader, &codec.actor).context("object item")?)
         }
         RepCommand::NetworkName => RepValue::NetworkName(read_network_name(reader, codec)?),
-        RepCommand::Text => RepValue::Text(read_base_text(reader, codec)?),
+        RepCommand::Text => RepValue::Text(read_text(reader, codec, 0)?),
         RepCommand::Str => RepValue::Str(read_archive_string(
             reader,
             codec,
@@ -1789,7 +1748,7 @@ fn write_value(
         (RepCommand::NetworkName, RepValue::NetworkName(name)) => {
             write_network_name(writer, name, codec)?;
         }
-        (RepCommand::Text, RepValue::Text(text)) => write_base_text(writer, text, codec)?,
+        (RepCommand::Text, RepValue::Text(text)) => write_text(writer, text, codec, 0)?,
         (RepCommand::Str, RepValue::Str(text)) => {
             write_archive_string(
                 writer,
