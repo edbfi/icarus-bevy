@@ -67,7 +67,7 @@ fn selected_byte_bounds_preserve_default_and_accept_measured_size() {
         MAX_STRUCT_ARRAY_BYTES + 1,
         66_257,
         128 * 1024 + 1,
-        // The largest measured building-type array (F-633).
+        // The largest measured building-type array (F-634).
         646_614,
         MAX_BOUNDED_STRUCT_ARRAY_BYTES,
     ] {

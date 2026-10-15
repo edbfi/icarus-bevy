@@ -1,7 +1,7 @@
 //! EXPERIMENTAL login approval mirroring the client build's engine checks.
 //!
 //! The ICARUS game mode and session add no PreLogin or ApproveLogin checks of
-//! their own; the engine's run instead (F-621). This module reproduces the
+//! their own; the engine's run instead (F-622). This module reproduces the
 //! parts a dedicated server decides from its own state and the Login options:
 //! - Options are `?`-delimited from their start; each option splits at its
 //!   first `=` (no `=` means an empty value). Keys compare ASCII

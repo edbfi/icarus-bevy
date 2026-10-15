@@ -548,8 +548,8 @@ fn write_text(
 /// Otherwise the type part (31: a type-name string) precedes the value.
 /// Strict research choices, not original checks: encoded-empty ids must not be
 /// odd (the original returns before looking); odd encoded ids need at least one
-/// byte with a zero leading nibble; the inferred text form rejects the empty
-/// and odd bits.
+/// byte with a zero leading nibble; the text form rejects the empty and odd
+/// bits (F-636).
 pub fn read_unique_net_id(reader: &mut BitReader<'_>, codec: &ControlCodec) -> Result<UniqueNetId> {
     let flags = read_byte(reader, "unique net id flags")?;
     let (encoded, empty, odd) = (flags & 1 != 0, flags & 2 != 0, flags & 4 != 0);

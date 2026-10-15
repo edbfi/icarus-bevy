@@ -114,7 +114,7 @@ Reader policy (authored; research limits, not recovered format limits):
   one shared `StructProperty` header even when empty, exactly count `None`-
   terminated variable-length elements inside the shared payload, no object
   trailers, full input consumed. Default 64 KiB; `_with_limit` accepts 1 byte to
-  a hard 128 KiB ceiling, invalid limits fail before parsing, oversize fails before
+  a hard 1 MiB ceiling (F-634), invalid limits fail before parsing, oversize fails before
   reading the count. 4,096 elements and 256 fields per element under either API;
   count and minimum terminator space checked before allocation. Name, index,
   struct identity and GUID are not compared to a schema. Summary partitions
@@ -189,7 +189,7 @@ objects):
 
 - Original normalization, EOF and error behavior versus the strict readers (U-026).
 - Official restore/import and newer-build migration of these saves (U-025).
-- Value meanings, Name identities and Enum lookups (U-020); empty-family
+- Value meanings and Name identities (U-020); empty-family
   population (U-021); deeper C028 children (U-048).
 - Client large-span safety (U-030) and dedicated-server correspondence (U-031).
 - Singleton saved integer's restoration role (U-039); remaining classes (U-050).

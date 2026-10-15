@@ -3,7 +3,7 @@ use icarus_bevy::experimental::admission::{
 };
 
 // Independently authored option strings for the engine's login checks
-// (F-621); no captured traffic.
+// (F-622); no captured traffic.
 
 fn units(text: &str) -> Vec<u16> {
     text.encode_utf16().collect()

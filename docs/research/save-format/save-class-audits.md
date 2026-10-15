@@ -30,9 +30,8 @@ behind the measured widths are separate rows, for example F-655, F-369
 to F-373, F-664, F-386, F-388 and F-391.
 
 Two library changes enabled the work: borrowed strict string frames with no
-success-path allocation (F-142) and explicit struct-array and comparator limits
-up to a 128 KiB research ceiling while the original API keeps 64 KiB (F-178,
-F-198).
+success-path allocation (F-142) and explicit struct-array limits up to 1 MiB
+(F-634) and comparator limits up to 128 KiB (F-198), defaults keeping 64 KiB.
 
 Every one of the save's 38 class identifiers and 332 framed field and type
 names occurs in both the older server and the newer client, and both assign

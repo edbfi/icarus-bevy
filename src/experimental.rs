@@ -2,7 +2,7 @@
 //!
 //! The separate loopback labs exercise short handshake framing and, in
 //! `peer_lab`, inferred per-peer packet state. The normal server enables
-//! neither. None of these primitives implements game admission.
+//! neither. `admission` mirrors only the engine's login approval decisions.
 
 pub mod actor_channel;
 pub mod admission;

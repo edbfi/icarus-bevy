@@ -170,7 +170,7 @@ Acceptance conditions for any importer
 - Strict readers must enforce the binary transfer lengths and treat name/index/type
   equality and 0/1-only trailer booleans as comparison policy (F-346, F-369, F-371).
 - Reader limits used for these populations: component and struct-array default
-  64 KiB, explicit limit up to a hard 128 KiB ceiling (measured caps 71,956, 66,056;
+  64 KiB, explicit limit up to a hard 1 MiB ceiling (F-634) (measured caps 71,956, 66,056;
   D01 helper 1,050 bytes), 4,096 elements and 256 fields per element, Int-array
   4,096 elements, root 4,096 tags, seven-field post-parse helper check and a
   512 MiB native address-space test limit (F-134, F-161, F-178, F-198, F-200,

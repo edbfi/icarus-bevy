@@ -12,7 +12,7 @@ use icarus_bevy::experimental::rep_rpc::{
 };
 
 // Independently authored bit fixtures for the client replicator's field
-// headers and RPC parameters (F-637), built bit by bit; no captured traffic.
+// headers and RPC parameters (F-644), built bit by bit; no captured traffic.
 
 fn codec(order: ByteOrder) -> RepLayoutCodec {
     RepLayoutCodec {
