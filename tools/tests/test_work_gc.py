@@ -168,10 +168,22 @@ class WorkGcTest(unittest.TestCase):
         self.project("a")
         self.age()
         root = ["--root", str(self.root), "--settle-hours", "0"]
+        output = io.StringIO()
         with contextlib.redirect_stdout(io.StringIO()):
             self.assertEqual(work_gc.main([*root, "--check"]), 1)
+        with contextlib.redirect_stdout(output), contextlib.redirect_stderr(io.StringIO()):
             self.assertEqual(work_gc.main([*root, "--prune", "--json"]), 0)
+        report: object = work_gc.load_object(output.getvalue())
+        self.assertIsInstance(report, dict)
+        with contextlib.redirect_stdout(io.StringIO()):
             self.assertEqual(work_gc.main([*root, "--check"]), 0)
+
+    def test_relative_arguments_resolve_against_the_process_directory(self) -> None:
+        cwd = self.root
+        found = work_gc.argument_paths(cwd, ["ghidraRun", "work/a/project/Case.gpr", "--data-dir=work/b", "/abs/c"])
+        self.assertIn(self.root / "work/a/project/Case.gpr", found)
+        self.assertIn(self.root / "work/b", found)
+        self.assertIn(Path("/abs/c"), found)
 
 
 if __name__ == "__main__":

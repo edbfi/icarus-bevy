@@ -18,7 +18,8 @@ within the settle window. Age is only a guard, never a reason to delete.
 
 The default run reports and deletes nothing. ``--prune`` removes eligible
 candidates and appends one line per removal to ``work/.gc/log.jsonl``.
-``--check`` exits 1 while eligible scratch remains, for the milestone checklist.
+``--check`` exits 1 while eligible scratch remains, or when ``/proc`` is unavailable
+and liveness is unknown, for the milestone checklist.
 
 Usage::
 
@@ -190,10 +191,21 @@ def live_paths() -> set[Path] | None:
                 continue
         try:
             words = (entry / "cmdline").read_bytes().split(b"\0")
+            cwd = Path(os.readlink(entry / "cwd"))
         except OSError:
             continue
-        seen.update(Path(os.fsdecode(word)) for word in words if word.startswith(b"/"))
+        seen.update(argument_paths(cwd, [os.fsdecode(word) for word in words if word]))
     return seen
+
+
+def argument_paths(cwd: Path, words: Sequence[str]) -> set[Path]:
+    """Every command-line word, and every ``--option=value`` value, as a path resolved against ``cwd``."""
+    found: set[Path] = set()
+    for word in words:
+        for text in (word, word.partition("=")[2]):
+            if text:
+                found.add(Path(os.path.normpath(cwd / text)))
+    return found
 
 
 def is_within(path: Path, parent: Path) -> bool:
@@ -282,9 +294,12 @@ def find_candidates(case: Path, originals: OriginalIndex) -> list[Candidate]:
             path = here / name
             if path in claimed or path.is_symlink():
                 continue
-            size = path.lstat().st_size
-            if size >= COPY_MIN_BYTES and originals.is_copy(path, size):
-                found.append(Candidate(path, "original-copy", size))
+            try:
+                size = path.lstat().st_size
+                if size >= COPY_MIN_BYTES and originals.is_copy(path, size):
+                    found.append(Candidate(path, "original-copy", size))
+            except OSError:
+                continue
     return found
 
 
@@ -355,8 +370,6 @@ def prune(report: Report, now: float) -> list[Candidate]:
     with log.open("a", encoding="utf-8") as handle:
         for case in report.cases:
             for candidate in case.candidates:
-                remove(candidate.path, work)
-                removed.append(candidate)
                 entry = {
                     "removed_at": datetime.fromtimestamp(now, UTC).isoformat(timespec="seconds"),
                     "case": case.name,
@@ -364,7 +377,12 @@ def prune(report: Report, now: float) -> list[Candidate]:
                     "kind": candidate.kind,
                     "bytes": candidate.size,
                 }
+                # The entry is durable before the removal, so the log never misses a deleted path.
                 _ = handle.write(json.dumps(entry, sort_keys=True) + "\n")
+                handle.flush()
+                os.fsync(handle.fileno())
+                remove(candidate.path, work)
+                removed.append(candidate)
             case.candidates = []
     return removed
 
@@ -472,12 +490,16 @@ def main(argv: Sequence[str] | None = None) -> int:
     report = scan(root, now=now, settle_hours=options.settle_hours)
     if options.prune:
         removed = prune(report, now)
-        print(f"work_gc: removed {len(removed)} candidate(s), {mib(sum(item.size for item in removed))}")
+        summary = f"work_gc: removed {len(removed)} candidate(s), {mib(sum(item.size for item in removed))}"
+        print(summary, file=sys.stderr if options.json else sys.stdout)
         report = scan(root, now=now, settle_hours=options.settle_hours)
     if options.json:
         print(json.dumps(as_json(report), indent=1, sort_keys=True))
     else:
         print("\n".join(render(report)))
+    if options.check and not report.live_known:
+        print("work_gc: --check needs /proc to tell live cases apart", file=sys.stderr)
+        return 1
     if options.check and any(case.candidates for case in report.cases):
         return 1
     return 0
