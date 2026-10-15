@@ -42,7 +42,9 @@ frames root properties and recorders to exact EOF, matching independent
 scanners with values opaque and `world_imported` false (F-241 to F-245, F-411).
 Both supplied copies are preserved losslessly in a write-once schema-3
 sidecar and reload byte-identically; later saves stay small (F-567). A seeded world
-runs 180 autosaves without deadline misses (F-584).
+runs 180 autosaves without deadline misses (F-584). Randomized mutations
+never panic preservation or the replication codecs, accepted inputs re-encode
+exactly, and the streaming verifier matches the tree decoder (F-604, F-605).
 Bounded header, component, struct-array and Int-array readers are tested
 (F-246 to F-249, F-200, F-207). The production run command has no game listener
 (F-240).
