@@ -173,6 +173,24 @@ class DocsLintTest(unittest.TestCase):
         warnings = [warning.render() for warning in linter.warnings]
         self.assertFalse(any("current prose surface is" in problem.render() for problem in linter.problems))
         self.assertTrue(any("consolidate before adding" in warning for warning in warnings), warnings)
+        self.assertFalse(any(warning.startswith(docs_lint.FINDINGS_DIR) for warning in warnings), warnings)
+
+    def test_findings_review_warning(self) -> None:
+        fx = self.make()
+        row = "| F-{:03d} | " + "c" * 300 + " | observed | review | s | none | active |\n"
+        target = docs_lint.ACTIVE_FINDINGS_CAP * docs_lint.AGGREGATE_REVIEW_PERCENT // 100
+        per_file = len(row.format(1).encode()) * 100
+        for index in range(target // per_file + 1):
+            start = 1 + index * 100
+            rows = "".join(row.format(n) for n in range(start, start + 100))
+            fx.write(f"docs/ledgers/findings/part{index}.md", FINDINGS_HEAD + rows)
+        linter = fx.linter()
+        self.assertFalse(any("active findings total" in problem.render() for problem in linter.problems))
+        warnings = [warning.render() for warning in linter.warnings]
+        self.assertTrue(
+            any(w.startswith(docs_lint.FINDINGS_DIR) and "consolidate before adding" in w for w in warnings),
+            warnings,
+        )
 
     def test_links_and_fragments(self) -> None:
         fx = self.make()
