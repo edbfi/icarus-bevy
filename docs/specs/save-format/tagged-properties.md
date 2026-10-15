@@ -181,7 +181,7 @@ objects):
 - Client C034: schema `0x145ff68b0`, ops table `0x144faeff8`; restore builds version
   522 with loading on and binary/tagged, partial-selection and byte-swap flags
   clear before component Serialize, reaching conditional tagged dispatch
-  (F-659). N02 native branch demands three 4-byte transfers (F-659).
+  (F-659). N02 native branch demands three 4-byte transfers (F-667).
   Float: generation 10, vtable `0x145026a20` selects `0x142123ce0` at virtual
   `0x90`, 4 bytes on every transfer path (F-659).
 
