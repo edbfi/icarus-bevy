@@ -169,8 +169,8 @@ objects):
   superclass chain has 31 entries, exactly 5 with the save-selection bit (F-305).
 - C028 six direct structs are tagged with 16 optional fields; three child struct
   fields use binary/native serialization, so tagged framing is not recursive
-  (F-308). D01: 8 optional leaves (5 Int, 3 Str); D02: four 4-byte native
-  transfers (F-309, F-212). Conditional static grammars only.
+  (F-655). D01: 8 optional leaves (5 Int, 3 Str); D02: four 4-byte native
+  transfers (F-309, F-655). Conditional static grammars only.
 - Every opaque Struct leaf is one of four fixed-width engine math types
   (F-565): three or four ordered 4-byte components, no count or tail (F-602).
 - Client build 25793767: tag operator `0x14212b0e0`, Array serializer

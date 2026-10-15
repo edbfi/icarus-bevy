@@ -26,7 +26,7 @@ Structs; C034 top, own and inherited populations, compared in per-copy batches
 because the original 8 MiB component transport cannot hold both copies (F-213);
 C009 top, own and parent structure and its common children with ND01 and D01
 nested arrays; and C013's two singleton bodies. The static contracts
-behind the measured widths are separate rows, for example F-308, F-367, F-369
+behind the measured widths are separate rows, for example F-655, F-369
 to F-373, F-375, F-380, F-386, F-388 and F-391.
 
 Two library changes enabled the work: borrowed strict string frames with no
