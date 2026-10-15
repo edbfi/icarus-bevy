@@ -29,11 +29,21 @@ dormancy, channel close reasons and every server-side writer.
 - The replicator hands rep-layout properties to `FRepLayout::ReceiveProperties`
   (an optional bit, a packed handle, an optional checksum word, then a handle
   loop) before its field-header loop (M-426, M-427).
+- Rep-layout stream (F-571): packed handles select layout commands and handle
+  0 ends a stream; a dynamic array carries a 2-byte element count and a nested
+  zero-terminated handle stream; each value goes through its property's net
+  serializer, and a 4-byte checksum may follow each handle.
+- Spawn vectors (F-571): after the presence bit, archives at engine net
+  version 13 or later read a quantized bit; an unquantized vector is three
+  4-byte floats, a quantized one a component bit count (at most 24) and three
+  integers bounded by `1 << (bits + 2)`, each decoded as the value minus
+  `1 << (bits + 1)` times a float scale constant.
 
 ## Candidate
 
-- The block grammar and the spawn order match the stock engine shape of this
-  generation; quantization precision and the handle loop are unread (U-064).
+- The block grammar, spawn order and handle stream match the stock engine
+  shape of this generation; the vector scale constant, the compressed rotator
+  and individual property net serializers are unread (U-064).
 
 ## Open questions
 
@@ -43,4 +53,4 @@ dormancy, channel close reasons and every server-side writer.
 ## Evidence
 
 - Symbols M-420 (failed-closed attempts M-421, M-422); pseudocode M-423 to
-  M-427.
+  M-430.

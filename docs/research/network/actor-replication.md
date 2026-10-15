@@ -15,8 +15,10 @@ once the control channel has admitted it; the spec is
 An open actor bunch carries the actor NetGUID and, for dynamic actors, the
 archetype, a gated level and optional location, rotation, scale and velocity
 blocks (F-569). Later content blocks name the actor or a sub-object and carry a
-packed payload-bit count for the object's replicator (F-570). The property
-stream itself and the quantization helpers are unread (U-064). These are
+packed payload-bit count for the object's replicator (F-570). Inside a block,
+packed rep handles drive the layout, with nested streams for dynamic arrays,
+and spawn vectors are raw floats or bias-packed integers (F-571); the scale
+constant, the rotator encoding and per-property serializers are unread (U-064). These are
 client-build observations only; no server writer has been read and nothing is
 wire-validated.
 
@@ -26,4 +28,4 @@ wire-validated.
 
 ## Artifacts
 
-M-420..M-427.
+M-420..M-430.
