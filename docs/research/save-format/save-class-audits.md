@@ -21,11 +21,11 @@ qualified in both copies; 34 classes with 2,045 records lay outside (F-496). C00
 now joins them at the top level: its four bodies match its 20 save-selected
 descriptors exactly, leaving 33 classes and 2,041 records (F-534), and its
 nested Struct and Array children frame in both copies (F-540).
-The qualified populations are C028 bodies, top frames and direct Structs (F-488, F-489); C034 top, own and
-inherited populations (F-490), compared in per-copy batches because the original
-8 MiB component transport cannot hold both copies (F-213); C009 top, own and
-parent structure (F-491) and its common children with ND01 and D01 nested
-arrays (F-492); and C013's two singleton bodies (F-493). The static contracts
+The qualified populations (F-496) are C028 bodies, top frames and direct
+Structs; C034 top, own and inherited populations, compared in per-copy batches
+because the original 8 MiB component transport cannot hold both copies (F-213);
+C009 top, own and parent structure and its common children with ND01 and D01
+nested arrays; and C013's two singleton bodies. The static contracts
 behind the measured widths are separate rows, for example F-308, F-367, F-369
 to F-373, F-375, F-380, F-386, F-388 and F-391.
 
