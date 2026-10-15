@@ -24,6 +24,26 @@ the growth baseline; `rss_growth_after_warmup_percent` compares it with the RSS
 just before recovery verification, whose allocations only the final `rss_kib`
 includes. No tick samples are discarded. Record CPU affinity, build commit,
 binary hash, host resources and concurrent workloads with results.
+`rss_slope_kib_per_hour` fits a least-squares line to every status sample
+after warm-up, a steadier leak signal than the two-point growth.
+
+Long runs need not take their wall time. `--compressed` treats the duration as
+simulated time: each update runs exactly one fixed step with no pacing, saves
+fall due every `--save-seconds` of simulated time and a save still in flight is
+awaited (`save_waits`), so a run executes the duration's exact tick and save
+counts as fast as the host allows. `--start-tick` starts the clock high to
+exercise long-uptime counters. Warm-up, status and growth use simulated time.
+
+```bash
+cargo run --release --locked --example synthetic_soak -- --compressed \
+  --data-dir work/soak-new --duration-seconds 259200 --entities 100000 --save-seconds 10
+```
+
+Compression covers operation counts, retained growth per operation and
+counter ranges. It does not cover behavior paced by the wall clock (the
+production loop's autosave timer, peer idle timeouts), real-time deadline
+pressure between ticks, or storage, page-cache and host effects that accrue
+over days; pair it with a short paced run for those.
 
 This tests native scheduling and persistence under synthetic load. It contains no
 ICARUS gameplay, networking or original content, and cannot establish stock-client

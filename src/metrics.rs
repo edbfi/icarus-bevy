@@ -85,9 +85,85 @@ impl LatencyHistogram {
     }
 }
 
+/// Least-squares trend of samples over time in constant memory, for resident
+/// memory growth after warm-up. The fit centers on the first sample so that
+/// long runs keep their precision.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct GrowthTrend {
+    origin: Option<(f64, f64)>,
+    count: u64,
+    sum_x: f64,
+    sum_y: f64,
+    sum_xx: f64,
+    sum_xy: f64,
+}
+
+impl GrowthTrend {
+    /// Records `value` at time `x`; nonfinite inputs are ignored.
+    pub fn record(&mut self, x: f64, value: f64) {
+        if !x.is_finite() || !value.is_finite() {
+            return;
+        }
+        let (x0, y0) = *self.origin.get_or_insert((x, value));
+        let (x, y) = (x - x0, value - y0);
+        self.count += 1;
+        self.sum_x += x;
+        self.sum_y += y;
+        self.sum_xx += x * x;
+        self.sum_xy += x * y;
+    }
+
+    pub fn count(&self) -> u64 {
+        self.count
+    }
+
+    /// Change in value per unit of `x`; `None` below two distinct times.
+    pub fn slope(&self) -> Option<f64> {
+        let n = self.count as f64;
+        let denominator = n * self.sum_xx - self.sum_x * self.sum_x;
+        (self.count >= 2 && denominator > 0.0)
+            .then(|| (n * self.sum_xy - self.sum_x * self.sum_y) / denominator)
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use super::LatencyHistogram;
+    use super::{GrowthTrend, LatencyHistogram};
+
+    #[test]
+    fn growth_trend_fits_the_least_squares_slope() {
+        let mut trend = GrowthTrend::default();
+        assert_eq!(trend.slope(), None);
+        trend.record(0.0, 7.0);
+        assert_eq!(trend.slope(), None);
+        // y = 3x + 7 with noise orthogonal to x - mean(x), so the fit is exact.
+        for (x, noise) in [(1.0, 0.5), (2.0, -0.5), (3.0, -0.5), (4.0, 0.5)] {
+            trend.record(x, 3.0 * x + 7.0 + noise);
+        }
+        trend.record(f64::NAN, 1.0);
+        assert_eq!(trend.count(), 5);
+        let slope = trend.slope().expect("slope");
+        assert!((slope - 3.0).abs() < 1e-9, "{slope}");
+    }
+
+    #[test]
+    fn growth_trend_keeps_precision_far_from_the_origin() {
+        let mut trend = GrowthTrend::default();
+        for step in 0..10_000_u32 {
+            let x = 1.0e9 + f64::from(step);
+            trend.record(x, 5.0e6 - 0.25 * f64::from(step));
+        }
+        let slope = trend.slope().expect("slope");
+        assert!((slope + 0.25).abs() < 1e-9, "{slope}");
+    }
+
+    #[test]
+    fn growth_trend_needs_two_distinct_times() {
+        let mut trend = GrowthTrend::default();
+        trend.record(4.0, 1.0);
+        trend.record(4.0, 9.0);
+        assert_eq!(trend.slope(), None);
+    }
 
     fn sorted_rank(samples: &[u64], percentile: u64) -> u64 {
         let mut sorted = samples.to_vec();
