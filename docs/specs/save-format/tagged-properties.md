@@ -140,7 +140,7 @@ objects):
   sequences, 64 fields, 3,632 = 3,356 + 276 bytes (F-310, F-311).
 - Int arrays: 486 C009 S02 arrays, 980 bytes (F-314). Struct arrays: 28 C028 arrays,
   2,624 bytes, all empty (F-249); C034 four arrays, 428 elements, 56,412 bytes,
-  Struct 12 / Float 4 bytes (F-191, F-192); all 1,658 C034 own arrays, 15,342
+  Struct 12 / Float 4 bytes (F-191, F-664); all 1,658 C034 own arrays, 15,342
   elements, 30,684 fields (F-316); 11,606 inherited C034 arrays, all empty (F-196);
   C009 3,402 arrays, 522 elements, CA01 66,257 bytes via `_with_limit` (F-174,
   F-203, F-317); C034 Float headers: 32 fields over 58,356 bytes (F-188).

@@ -22,6 +22,7 @@ pub mod recorders;
 pub mod rep_layout;
 pub mod rep_rpc;
 pub mod rep_text;
+pub mod restore_rules;
 pub mod sequencing;
 pub mod struct_array;
 pub mod tagged;

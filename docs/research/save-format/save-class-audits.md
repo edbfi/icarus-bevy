@@ -27,7 +27,7 @@ because the original 8 MiB component transport cannot hold both copies (F-213);
 C009 top, own and parent structure and its common children with ND01 and D01
 nested arrays; and C013's two singleton bodies. The static contracts
 behind the measured widths are separate rows, for example F-655, F-369
-to F-373, F-375, F-380, F-386, F-388 and F-391.
+to F-373, F-664, F-386, F-388 and F-391.
 
 Two library changes enabled the work: borrowed strict string frames with no
 success-path allocation (F-142) and explicit struct-array and comparator limits
@@ -52,7 +52,8 @@ gives the deposit, voxel, deployable and FLOD fields their meanings (F-645, F-64
 as it does player, history, quest-link, container, mount-restore, rocket and
 game-clock fields (F-648, F-650 to F-653), and the remaining world classes theirs
 (F-654, F-656 to F-658, F-661, F-662); item stats, alterations and slots are row
-references (F-660).
+references (F-660). The validate, stitch and restore rules are in the
+[restore-rules spec](../../specs/save-format/restore-rules.md) (F-663).
 With struct arrays bounded at the 1 MiB component
 ceiling, a 646,614-byte grid array frames and both copies still round-trip
 (F-634).

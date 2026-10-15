@@ -138,11 +138,11 @@ C028 (repeated)
 C034
 
 - Base load/serialize, C028 post-load; 21 optional fields: 7 Struct, 2 Int, 7 Array,
-  2 Name, 1 Enum, 1 Str, 1 Bool (F-375, F-211). Per copy 829 records, 4,199,203 bytes,
+  2 Name, 1 Enum, 1 Str, 1 Bool (F-664, F-211). Per copy 829 records, 4,199,203 bytes,
   17,409 fields (F-376, F-378, F-195); own structs 572–28,606 bytes (F-377, F-379, F-188).
 - Own array child `0x145ee1220`: tagged, optional Struct (N02) and Float, signed
   count and shared Struct header even at zero; 16-byte memory size is not a stride
-  (F-380). Struct spans 12 bytes and Float four (F-192); max count 214 (F-381, F-382).
+  (F-664). Struct spans 12 bytes and Float four (F-664); max count 214 (F-381, F-382).
 - Inherited arrays all empty; inherited Struct widths 16/12/12/12/4 bytes
   (F-383, F-384, F-385, F-196). Scalars: F-146..F-153.
 
@@ -183,7 +183,7 @@ Acceptance conditions for any importer
 - The C013 struct field captures the world FLOD manager's tile count (F-646).
 - C028/C034/C009 struct and array contracts are conditional older-build framing
   contracts, not fixed disk widths; the 16/12-byte transfers assume successful
-  archive reads (F-655, F-369, F-380, F-172).
+  archive reads (F-655, F-369, F-664, F-172).
 - C001 (four records): native getter `0x1419fe200`, callback `0x1419fe870`
   (`[0x1419fe870, 0x1419fe9a1)`, 305 bytes), reflection getter `0x141a00220`,
   candidate constructor `0x141788530` (`[0x141788530, 0x141788658)`, 296 bytes);
