@@ -1,4 +1,4 @@
-//! EXPERIMENTAL Text items for the replication codec (F-624, F-627).
+//! EXPERIMENTAL Text items for the replication codec (F-639).
 //!
 //! The shared FText serializer at the archive versions client bunches carry
 //! (UE4 522, editor-object custom version 40): a 4-byte flags word, a
@@ -7,7 +7,7 @@
 //! layouts below are unconditional. Names take the network-name form, the
 //! net archives' name operator (F-595, F-629). A TextGenerator payload is
 //! an opaque counted byte array that follows unless the generator-type Name
-//! is None (F-630); the hardcoded None index marks that case, and a
+//! is None (F-639); the hardcoded None index marks that case, and a
 //! string-form None fails closed because its name-table resolution is unread.
 //!
 //! Bools are 4-byte words of 0 or 1; larger values fail closed, as the engine

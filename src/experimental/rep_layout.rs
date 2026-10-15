@@ -28,7 +28,7 @@
 //! - [`RepCommand::SoftObject`]: the soft-object path as one archive string,
 //!   which net archives send in place of the path fields (F-599);
 //! - [`RepCommand::Text`]: the shared FText serializer at the archive versions
-//!   client bunches carry (F-614, F-624, F-627, F-630), in
+//!   client bunches carry (F-639), in
 //!   [`super::rep_text`]: every history;
 //! - [`RepCommand::VectorQuantize`]: `FVector_NetQuantize`, a capped component
 //!   bit count and three biased integers, unscaled (F-593, server writer);
@@ -230,7 +230,7 @@ pub enum RepCommand {
     Str,
     /// A soft-object path as an archive string (F-599).
     SoftObject,
-    /// A Text item (F-624, F-630).
+    /// A Text item (F-639).
     Text,
     VectorQuantize,
     VectorQuantize10,
@@ -1057,7 +1057,7 @@ fn read_capped(reader: &mut BitReader<'_>, max: u32, what: &str) -> Result<u32> 
     Ok(value)
 }
 
-fn read_u16(reader: &mut BitReader<'_>, order: ByteOrder, what: &str) -> Result<u16> {
+pub(super) fn read_u16(reader: &mut BitReader<'_>, order: ByteOrder, what: &str) -> Result<u16> {
     let value = read_field(reader, 16, what)? as u16;
     Ok(match order {
         ByteOrder::Little => value,
@@ -1065,7 +1065,7 @@ fn read_u16(reader: &mut BitReader<'_>, order: ByteOrder, what: &str) -> Result<
     })
 }
 
-fn write_u16(writer: &mut BitWriter, value: u16, order: ByteOrder) {
+pub(super) fn write_u16(writer: &mut BitWriter, value: u16, order: ByteOrder) {
     let value = match order {
         ByteOrder::Little => value,
         ByteOrder::Big => value.swap_bytes(),
@@ -1088,7 +1088,7 @@ pub(super) fn write_u32(writer: &mut BitWriter, value: u32, order: ByteOrder) {
     });
 }
 
-fn copy_bits(reader: &mut BitReader<'_>, mut bits: usize) -> Payload {
+pub(super) fn copy_bits(reader: &mut BitReader<'_>, mut bits: usize) -> Payload {
     let mut writer = BitWriter::new();
     while bits > 0 {
         let chunk = bits.min(32) as u32;
@@ -1098,7 +1098,7 @@ fn copy_bits(reader: &mut BitReader<'_>, mut bits: usize) -> Payload {
     Payload::from_writer(writer)
 }
 
-fn append_bits(writer: &mut BitWriter, payload: &Payload) {
+pub(super) fn append_bits(writer: &mut BitWriter, payload: &Payload) {
     let mut reader = payload.reader();
     let mut bits = payload.bit_len();
     while bits > 0 {
@@ -1267,12 +1267,12 @@ fn write_checksum(
     Ok(())
 }
 
-struct Budget {
-    remaining: usize,
+pub(super) struct Budget {
+    pub(super) remaining: usize,
 }
 
 impl Budget {
-    fn take(&mut self) -> Result<()> {
+    pub(super) fn take(&mut self) -> Result<()> {
         ensure!(
             self.remaining > 0,
             "property stream exceeds the entry limit"
@@ -1579,7 +1579,7 @@ fn write_tag(
     }
 }
 
-fn read_value(
+pub(super) fn read_value(
     reader: &mut BitReader<'_>,
     command: &RepCommand,
     codec: &RepLayoutCodec,
@@ -1746,7 +1746,7 @@ pub fn parse_property_stream(
     Ok(stream)
 }
 
-fn write_value(
+pub(super) fn write_value(
     writer: &mut BitWriter,
     command: &RepCommand,
     value: &RepValue,

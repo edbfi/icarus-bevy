@@ -12,7 +12,7 @@ use icarus_bevy::experimental::rep_text::{
     TextHistory,
 };
 
-// Independently authored byte fixtures for Text items (F-624, F-627): each
+// Independently authored byte fixtures for Text items (F-639): each
 // field written by hand in archive order; no captured traffic.
 
 fn codec(order: ByteOrder, change: impl Fn(&mut RepLayoutLimits)) -> RepLayoutCodec {
@@ -179,7 +179,7 @@ fn base_history_round_trips_with_an_empty_key_in_its_saved_form() {
     for order in [ByteOrder::Little, ByteOrder::Big] {
         let mut fixture = Fixture::new(order);
         fixture.word(2).byte(0).string("UI");
-        // An empty key is saved as count 1 and a terminator (F-624).
+        // An empty key is saved as count 1 and a terminator (F-639).
         fixture.word(1).byte(0);
         fixture.word((-3i32) as u32);
         for unit in [0x48u16, 0x00e9, 0] {
