@@ -23,8 +23,8 @@ use super::{
     },
     handshake::{self, LegacyHandshake},
     packet::{
-        BitWriter, Bunch, BunchHeader, Name, Packet, PacketConfig, Payload, Receiver, read_packet,
-        write_packet,
+        BitReader, BitWriter, Bunch, BunchHeader, Name, Packet, PacketConfig, Payload, Receiver,
+        read_data_prefix, read_packet, read_packet_header, split_termination, write_packet,
     },
     packet_lab::client_cookie_seeds,
     sequencing::{PacketSequencer, ReliableChannel, ReliableReceive, wire_reliable_sequence},
@@ -177,47 +177,81 @@ impl ProbeClient {
             version,
             token: ArchiveText::text(token)?,
         };
-        let hello_packet_id = self.sequencer.out_packet_id();
-        let sequence = self
-            .control
-            .send_reliable(hello_packet_id, message.clone())?;
-        let mut payload = BitWriter::new();
-        payload.write_bytes(&encode_control_message(&message, &self.config.codec)?);
-        let bunch = Bunch {
-            header: BunchHeader {
-                control: true,
-                open: true,
-                close: false,
-                close_reason: None,
-                paused: false,
-                reliable: true,
-                channel_index: 0,
-                has_package_map_exports: false,
-                has_must_be_mapped_guids: false,
-                partial: false,
-                reliable_sequence_raw: Some(wire_reliable_sequence(sequence)),
-                partial_initial: false,
-                partial_final: false,
-                channel_name: Some(Name::Hardcoded(CONTROL_CHANNEL_NAME)),
-            },
-            payload: Payload::from_writer(payload),
-        };
+        let (hello_datagram, hello_packet_id) = self.send_control(&[message], true)?;
+        let collected = self.collect(self.config.reply_window, self.config.max_datagrams)?;
+        Ok(HelloReport {
+            hello_datagram,
+            hello_packet_id,
+            hello_acked: collected.acked.contains(&hello_packet_id),
+            replies: collected.replies,
+        })
+    }
+
+    /// Send `messages` as reliable control bunches in one packet; the first
+    /// opens the control channel when `open`. Returns the datagram and its
+    /// packet ID.
+    pub fn send_control(
+        &mut self,
+        messages: &[ControlMessage],
+        open: bool,
+    ) -> Result<(Vec<u8>, u32)> {
+        let packet_id = self.sequencer.out_packet_id();
+        let mut bunches = Vec::with_capacity(messages.len());
+        for (index, message) in messages.iter().enumerate() {
+            let sequence = self.control.send_reliable(packet_id, message.clone())?;
+            let mut payload = BitWriter::new();
+            payload.write_bytes(&encode_control_message(message, &self.config.codec)?);
+            let opens = open && index == 0;
+            bunches.push(Bunch {
+                header: BunchHeader {
+                    control: opens,
+                    open: opens,
+                    close: false,
+                    close_reason: None,
+                    paused: false,
+                    reliable: true,
+                    channel_index: 0,
+                    has_package_map_exports: false,
+                    has_must_be_mapped_guids: false,
+                    partial: false,
+                    reliable_sequence_raw: Some(wire_reliable_sequence(sequence)),
+                    partial_initial: false,
+                    partial_final: false,
+                    channel_name: Some(Name::Hardcoded(CONTROL_CHANNEL_NAME)),
+                },
+                payload: Payload::from_writer(payload),
+            });
+        }
+        self.send_packet(bunches)
+    }
+
+    /// Send a packet without bunches: it carries the acks of every packet
+    /// received so far and keeps the connection alive.
+    pub fn keepalive(&mut self) -> Result<u32> {
+        Ok(self.send_packet(Vec::new())?.1)
+    }
+
+    fn send_packet(&mut self, bunches: Vec<Bunch>) -> Result<(Vec<u8>, u32)> {
+        let packet_id = self.sequencer.out_packet_id();
         let packet = Packet {
             magic: 0,
             header: self.sequencer.header()?,
             info: None,
-            bunches: vec![bunch],
+            bunches,
         };
-        let hello_datagram = write_packet(&packet, &self.config.packet)?;
+        let datagram = write_packet(&packet, &self.config.packet)?;
         let committed = self.sequencer.commit()?;
-        ensure!(committed == hello_packet_id, "packet id moved during send");
-        self.socket.send(&hello_datagram)?;
+        ensure!(committed == packet_id, "packet id moved during send");
+        self.socket.send(&datagram)?;
+        Ok((datagram, packet_id))
+    }
 
-        let mut replies = Vec::new();
-        let mut hello_acked = false;
-        let deadline = Instant::now() + self.config.reply_window;
+    /// Receive and decode datagrams until `window` passes or `max` arrive.
+    pub fn collect(&mut self, window: Duration, max: usize) -> Result<Collected> {
+        let mut collected = Collected::default();
+        let deadline = Instant::now() + window;
         let mut buffer = [0_u8; 65_536];
-        while replies.len() < self.config.max_datagrams {
+        while collected.replies.len() < max {
             let left = deadline.saturating_duration_since(Instant::now());
             if left.is_zero() {
                 break;
@@ -227,42 +261,55 @@ impl ProbeClient {
                 break;
             };
             let bytes = buffer[..size].to_vec();
-            let decode = match self.decode_reply(&bytes) {
-                Ok((acked, decode)) => {
-                    hello_acked |= acked.contains(&hello_packet_id);
-                    decode
-                }
-                Err(error) => ReplyDecode::Undecoded(format!("{error:#}")),
-            };
-            replies.push(ReplyDatagram { bytes, decode });
+            let (acked, decode) = self.decode_reply(&bytes);
+            collected.acked.extend(acked);
+            collected.replies.push(ReplyDatagram { bytes, decode });
         }
-        Ok(HelloReport {
-            hello_datagram,
-            hello_packet_id,
-            hello_acked,
-            replies,
-        })
+        Ok(collected)
     }
 
     /// Parse a reply as the client: the header through the sequencing model,
-    /// then every reliable bunch on channel 0 as control messages. Returns the
-    /// delivered packet IDs and the decode.
-    fn decode_reply(&mut self, bytes: &[u8]) -> Result<(Vec<u32>, ReplyDecode)> {
+    /// then every reliable bunch on channel 0 as control messages. A packet
+    /// whose bunches do not parse is still acknowledged from its header, so
+    /// the server does not resend it forever. Returns the delivered packet IDs
+    /// and the decode.
+    fn decode_reply(&mut self, bytes: &[u8]) -> (Vec<u32>, ReplyDecode) {
         let config = PacketConfig {
             receiver: Receiver::Client,
             ..self.config.packet
         };
-        let packet = read_packet(bytes, &config)?;
+        match read_packet(bytes, &config) {
+            Ok(packet) => match self.decode_packet(&packet) {
+                Ok(result) => result,
+                Err(error) => (Vec::new(), ReplyDecode::Undecoded(format!("{error:#}"))),
+            },
+            Err(error) => {
+                let acked = self.acknowledge_header(bytes).unwrap_or_default();
+                (acked, ReplyDecode::Undecoded(format!("{error:#}")))
+            }
+        }
+    }
+
+    fn acknowledge_header(&mut self, bytes: &[u8]) -> Result<Vec<u32>> {
+        let (data, bit_len) = split_termination(bytes)?;
+        let mut reader = BitReader::new(data, bit_len)?;
+        read_data_prefix(&mut reader, self.config.packet.magic_bits)?;
+        reader.split_connection_termination()?;
+        let (header, _info) = read_packet_header(&mut reader, Receiver::Client)?;
+        let received = self
+            .sequencer
+            .receive(&header)?
+            .context("stale or duplicate packet sequence")?;
+        self.sequencer.ack_seq(received.sequence, true)?;
+        Ok(delivered(&received.notifications))
+    }
+
+    fn decode_packet(&mut self, packet: &Packet) -> Result<(Vec<u32>, ReplyDecode)> {
         let received = self
             .sequencer
             .receive(&packet.header)?
             .context("stale or duplicate packet sequence")?;
-        let acked = received
-            .notifications
-            .iter()
-            .filter(|notification| notification.delivered)
-            .map(|notification| notification.packet_id)
-            .collect();
+        let acked = delivered(&received.notifications);
         let mut messages = Vec::new();
         let mut notes = Vec::new();
         for (index, bunch) in packet.bunches.iter().enumerate() {
@@ -304,6 +351,31 @@ impl ProbeClient {
         self.sequencer.ack_seq(received.sequence, true)?;
         Ok((acked, ReplyDecode::Decoded { messages, notes }))
     }
+}
+
+/// Datagrams received in one window and the packet IDs they acknowledged.
+#[derive(Clone, Debug, Default)]
+pub struct Collected {
+    pub replies: Vec<ReplyDatagram>,
+    pub acked: Vec<u32>,
+}
+
+impl Collected {
+    /// Every decoded control message, in arrival order.
+    pub fn messages(&self) -> impl Iterator<Item = &ControlMessage> {
+        self.replies.iter().flat_map(|reply| match &reply.decode {
+            ReplyDecode::Decoded { messages, .. } => messages.as_slice(),
+            ReplyDecode::Undecoded(_) => &[],
+        })
+    }
+}
+
+fn delivered(notifications: &[super::sequencing::Notification]) -> Vec<u32> {
+    notifications
+        .iter()
+        .filter(|notification| notification.delivered)
+        .map(|notification| notification.packet_id)
+        .collect()
 }
 
 /// One datagram, or `None` on timeout.

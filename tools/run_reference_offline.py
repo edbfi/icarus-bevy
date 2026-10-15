@@ -35,7 +35,7 @@ from tools.runtime_types import JsonObject, integer_field, json_object, parse_co
 IMAGE = "ghcr.io/pelican-eggs/steamcmd@sha256:967e40780cb46a5343bd7a5fd372612d1a1b90fbc95fdd803d74ec5b3bede237"
 REFERENCE_EXE = Path("Icarus/Binaries/Win64/IcarusServer-Win64-Shipping.exe")
 MODES = frozenset({"startup", "resume", "missing", "truncated-json", "save-load", "handshake",
-                   "complete-stateless", "hello"})
+                   "complete-stateless", "hello", "join"})
 PROSPECT_FILE = re.compile(r"[A-Za-z0-9_-]{1,64}\.json")
 PROSPECTS = Path("Icarus/Saved/PlayerData/DedicatedServer/Prospects")
 PLAYER_DATA = Path("Icarus/Saved/PlayerData")
@@ -53,6 +53,7 @@ class Arguments(argparse.Namespace):
     handshake_probe: bool = False
     complete_stateless: bool = False
     hello_probe: bool = False
+    join_probe: bool = False
 
 
 def command(args: Sequence[str], timeout: float = 30, check: bool = True) -> subprocess.CompletedProcess[str]:
@@ -116,6 +117,8 @@ def selected_modes(args: Arguments) -> frozenset[str]:
         raise ValueError("--complete-stateless requires --handshake-probe")
     if args.hello_probe and (not args.handshake_probe or args.complete_stateless):
         raise ValueError("--hello-probe requires --handshake-probe without --complete-stateless")
+    if args.join_probe and not args.hello_probe:
+        raise ValueError("--join-probe requires --hello-probe")
     if args.startup_probe not in {"none", "resume"} or args.load_fixture not in {"none", "missing", "truncated-json"}:
         raise ValueError("unknown experiment mode")
     if sum((args.load_fixture != "none", args.startup_probe != "none", args.save_load)) > 1:
@@ -130,6 +133,8 @@ def selected_modes(args: Arguments) -> frozenset[str]:
         modes.add("complete-stateless")
     if args.hello_probe:
         modes.add("hello")
+    if args.join_probe:
+        modes.add("join")
     return frozenset(modes)
 
 
@@ -144,6 +149,8 @@ class ApprovedRun:
     save_input: Path | None
     shutdown_seconds: int | None
     hello_version: int | None
+    join_seconds: int | None
+    probe_delay_seconds: int
     observation_seconds: int
     lifetime_seconds: int
     max_runs: int
@@ -213,6 +220,23 @@ def validate_session(root: Path, args: Arguments, now: datetime.datetime) -> App
             raise ValueError("hello_version must be an unsigned 32-bit value")
     elif "hello_version" in session:
         raise ValueError("hello_version requires hello authorization")
+    join_seconds: int | None = None
+    if "join" in allowed:
+        # Synthetic ids only; the probe holds the connection, then lets it lapse.
+        if "hello" not in allowed:
+            raise ValueError("join requires hello authorization")
+        join_seconds = integer_field(session, "join_seconds")
+        if not 30 <= join_seconds <= 600:
+            raise ValueError("join_seconds must be 30..600")
+    elif "join_seconds" in session:
+        raise ValueError("join_seconds requires join authorization")
+    probe_delay = 40
+    if "probe_delay_seconds" in session:
+        if "handshake" not in allowed:
+            raise ValueError("probe_delay_seconds requires handshake authorization")
+        probe_delay = integer_field(session, "probe_delay_seconds")
+        if not 40 <= probe_delay <= 600:
+            raise ValueError("probe_delay_seconds must be 40..600")
     for field, path in checks:
         expected = string_field(session, field)
         if re.fullmatch(r"[0-9a-f]{64}", expected) is None or expected != digest(path):
@@ -227,6 +251,8 @@ def validate_session(root: Path, args: Arguments, now: datetime.datetime) -> App
     max_runs = integer_field(session, "max_runs")
     if not 15 <= observation <= 780 or args.seconds != observation:
         raise ValueError("observation must match session and be 15..780 seconds")
+    if join_seconds is not None and observation < probe_delay + join_seconds + 60:
+        raise ValueError("observation must cover the probe delay, the join hold and 60 seconds")
     if not observation + 120 <= lifetime <= 900:
         raise ValueError("lifetime must reserve 120 cleanup seconds and be <=900 seconds")
     if not 1 <= max_runs <= 12:
@@ -234,7 +260,8 @@ def validate_session(root: Path, args: Arguments, now: datetime.datetime) -> App
     if not start <= now < end or now + datetime.timedelta(seconds=lifetime) >= end:
         raise ValueError("session is future, expired or has insufficient approved time")
     return ApprovedRun(case, session_path, session, hashlib.sha256(raw_session).hexdigest(),
-                       reference, probe, save_input, shutdown, hello_version, observation, lifetime, max_runs)
+                       reference, probe, save_input, shutdown, hello_version, join_seconds, probe_delay,
+                       observation, lifetime, max_runs)
 
 
 def revalidate(root: Path, args: Arguments, approved: ApprovedRun) -> None:
@@ -440,7 +467,7 @@ def observe(args: Arguments, approved: ApprovedRun, run: Path,
                 _ = owned_container(inspected.stdout, name, token, container)
                 if not parse_container_state(inspected.stdout).running:
                     break
-                if args.handshake_probe and not probed and time.monotonic() - start >= 40:
+                if args.handshake_probe and not probed and time.monotonic() - start >= approved.probe_delay_seconds:
                     probe_argv = ["docker", "exec", "--env", "ICARUS_OFFLINE_PROBE=1",
                                   container, "/probes/handshake_probe"]
                     if args.complete_stateless:
@@ -449,8 +476,14 @@ def observe(args: Arguments, approved: ApprovedRun, run: Path,
                         if approved.hello_version is None:
                             raise ValueError("missing authorized hello version")
                         probe_argv += ["--hello", str(approved.hello_version)]
+                    cap = 15
+                    if args.join_probe:
+                        if approved.join_seconds is None:
+                            raise ValueError("missing authorized join hold")
+                        probe_argv += ["--join", str(approved.join_seconds)]
+                        cap = approved.join_seconds + 60
                     _ = (run / "probe-invocation.json").write_text(json.dumps(probe_argv) + "\n")
-                    probe = observation.run(probe_argv, cap=15, check=False)
+                    probe = observation.run(probe_argv, cap=cap, check=False)
                     _ = (run / "probe.jsonl").write_text(probe.stdout)
                     _ = (run / "probe.stderr").write_text(probe.stderr)
                     _ = (run / "probe-exit.txt").write_text(str(probe.returncode) + "\n")
@@ -521,6 +554,7 @@ def main() -> None:
     _ = parser.add_argument("--handshake-probe", action="store_true")
     _ = parser.add_argument("--complete-stateless", action="store_true")
     _ = parser.add_argument("--hello-probe", action="store_true")
+    _ = parser.add_argument("--join-probe", action="store_true")
     args = parser.parse_args(namespace=Arguments())
     root = Path(__file__).resolve().parents[1]
     approved = validate_session(root, args, datetime.datetime.now(datetime.UTC))

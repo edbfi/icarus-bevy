@@ -499,6 +499,48 @@ class InvocationTests(unittest.TestCase):
             probe = next(call for call in docker.calls if call[1] == "exec")
             self.assertEqual(probe[4:], [CONTAINER, "/probes/handshake_probe", "--hello", "1379612455"])
 
+    def test_join_mode_binds_a_bounded_hold_after_the_probe_delay(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            fixture = Fixture(directory)
+            fixture.args.handshake_probe = True
+            fixture.args.hello_probe = True
+            fixture.args.join_probe = True
+            fixture.args.seconds = 600
+            fixture.session.update(allowed_modes=["startup", "handshake", "hello", "join"], hello_version=7,
+                                   join_seconds=300, probe_delay_seconds=150, observation_seconds=600,
+                                   run_timeout_seconds=720, probe=str(fixture.probe),
+                                   probe_sha256=digest(fixture.probe))
+            fixture.write()
+            approved = fixture.approve()
+            self.assertEqual((approved.join_seconds, approved.probe_delay_seconds), (300, 150))
+            updates: list[JsonObject] = [
+                {"join_seconds": 29}, {"join_seconds": 601}, {"probe_delay_seconds": 39},
+                {"allowed_modes": ["startup", "handshake", "join"]},
+                {"join_seconds": 400},  # 150 + 400 + 60 exceeds the 600-second observation
+            ]
+            for update in updates:
+                with self.subTest(update=update):
+                    fixture.write(update)
+                    with self.assertRaises(ValueError):
+                        _ = fixture.approve()
+            fixture.write()
+            run = fixture.case / "run"
+            run.mkdir()
+            docker = DockerFixture(handshake=True)
+            clock = Clock()
+            with patch("tools.run_reference_offline.command", new=docker), \
+                 patch("tools.run_reference_offline.time.monotonic", new=clock), \
+                 patch("tools.run_reference_offline.time.sleep", new=clock.sleep), \
+                 patch("tools.run_reference_offline.available_memory", return_value=4 * 1024**3), \
+                 patch("tools.run_reference_offline.shutil.disk_usage", new=disk_space):
+                _ = observe(fixture.args, approved, run, NAME, TOKEN, ["docker", "run"])
+            probe_index = next(i for i, call in enumerate(docker.calls) if call[1] == "exec")
+            self.assertEqual(docker.calls[probe_index][6:], ["--hello", "7", "--join", "300"])
+            self.assertEqual(docker.timeouts[probe_index], 360)
+            fixture.args.hello_probe = False
+            with self.assertRaisesRegex(ValueError, "--join-probe"):
+                _ = fixture.approve()
+
     def test_save_load_binds_one_case_local_prospect_copy(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             fixture = Fixture(directory)

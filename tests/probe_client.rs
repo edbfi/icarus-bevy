@@ -9,11 +9,13 @@ use bevy::app::App;
 use icarus_bevy::{
     config::ServerConfig,
     experimental::{
-        control_messages::{ControlCodec, ControlMessage},
+        control_messages::{
+            ArchiveText, ControlCodec, ControlMessage, NetIdType, NetIdValue, UniqueNetId,
+        },
         default_version_string_checksum,
         handshake::{LegacyHandshake, encode},
         packet::{PacketConfig, Receiver},
-        peer_lab::{PeerLab, PeerLabConfig, PeerLabPlugin},
+        peer_lab::{ADMISSION_DISABLED_MESSAGE, PeerLab, PeerLabConfig, PeerLabPlugin},
         probe_client::{HelloReport, ProbeClient, ProbeConfig, ReplyDecode},
     },
     simulation::{WorldSnapshot, build_app},
@@ -163,4 +165,37 @@ fn a_silent_server_yields_an_error_not_a_hang() {
     let started = Instant::now();
     assert!(ProbeClient::connect(socket, config).is_err());
     assert!(started.elapsed() < Duration::from_secs(2));
+}
+
+#[test]
+fn login_after_a_challenge_is_answered_and_keepalives_carry_acks() {
+    let (mut app, address) = lab_app(PeerLabConfig::default());
+    let (messages, keepalive) = with_lab(&mut app, address, |socket| {
+        let mut client = ProbeClient::connect(socket, probe_config()).unwrap();
+        let report = client.hello(1, "").unwrap();
+        assert!(matches!(
+            report.messages().collect::<Vec<_>>().as_slice(),
+            [ControlMessage::Challenge { .. }]
+        ));
+        let keepalive = client.keepalive().unwrap();
+        let login = ControlMessage::Login {
+            response: ArchiveText::text("0").unwrap(),
+            url: ArchiveText::text("?Name=probe").unwrap(),
+            unique_net_id: UniqueNetId {
+                kind: NetIdType::Named(ArchiveText::text("NULL").unwrap()),
+                value: NetIdValue::Text(ArchiveText::text("probe-0001").unwrap()),
+            },
+            platform: ArchiveText::text("").unwrap(),
+        };
+        client.send_control(&[login], false).unwrap();
+        let collected = client.collect(Duration::from_millis(500), 8).unwrap();
+        (collected.messages().cloned().collect::<Vec<_>>(), keepalive)
+    });
+    assert!(keepalive > 0);
+    assert_eq!(
+        messages,
+        [ControlMessage::Failure {
+            message: ArchiveText::text(ADMISSION_DISABLED_MESSAGE).unwrap()
+        }]
+    );
 }
