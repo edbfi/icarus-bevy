@@ -335,7 +335,7 @@ pub struct SpawnRecord {
     pub dynamic: Option<DynamicSpawn>,
 }
 
-/// Class of a non-actor content block (F-570).
+/// Class of a non-actor content block (F-576).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum SubObjectClass {
     /// Stably-named bit set; no class reference follows.
@@ -905,7 +905,7 @@ pub fn write_spawn(
     Ok(())
 }
 
-/// Read one content block header and its opaque payload (F-570). A deletion
+/// Read one content block header and its opaque payload (F-576). A deletion
 /// block (zero class reference) carries no payload count: the client reads the
 /// count only when the header did not delete the sub-object (M-424, M-425).
 pub fn read_content_block(
