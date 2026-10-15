@@ -1,6 +1,6 @@
 use icarus_bevy::experimental::control_messages::{
     ArchiveText, ControlCodec, ControlMessage, Decoded, HELLO, JOIN, NETSPEED,
-    encode_control_message,
+    encode_control_message, read_control_messages,
 };
 use icarus_bevy::experimental::handshake::initial_request;
 use icarus_bevy::experimental::packet::{
@@ -8,11 +8,11 @@ use icarus_bevy::experimental::packet::{
     Payload, Receiver, read_packet, write_packet,
 };
 use icarus_bevy::experimental::packet_lab::{
-    DeliveredSummary, LabPeer, PacketDisposition, PacketLabConfig, client_cookie_seeds,
-    server_cookie_seeds,
+    DeliveredSummary, LabPeer, MAX_PENDING_RELIABLE, PacketDisposition, PacketLabConfig,
+    client_cookie_seeds, server_cookie_seeds,
 };
 use icarus_bevy::experimental::sequencing::{
-    Notification, PacketSequencer, ReliableChannel, wire_reliable_sequence,
+    Notification, PacketSequencer, ReliableChannel, ReliableReceive, wire_reliable_sequence,
 };
 
 // Independently authored synthetic client built from the experimental codec and
@@ -454,4 +454,197 @@ fn reliable_queue_overflow_fails_the_peer_closed() {
     assert!(peer.ack_packet().is_err());
     let (next, _) = client.send(Vec::new());
     assert!(peer.receive(&next).is_err());
+}
+
+/// Read a lab datagram as the client: deliver its header and every reliable
+/// control bunch through the client model; returns the notifications and the
+/// messages released in order.
+fn client_receive(client: &mut Client, datagram: &[u8]) -> (Vec<Notification>, Vec<Decoded>) {
+    let packet = read_packet(datagram, &to_client()).unwrap();
+    let received = client.sequencer.receive(&packet.header).unwrap().unwrap();
+    let mut messages = Vec::new();
+    for bunch in &packet.bunches {
+        let header = &bunch.header;
+        assert!(header.reliable && !header.open && !header.close && !header.partial);
+        assert_eq!(header.channel_index, 0);
+        assert_eq!(header.channel_name, Some(Name::Hardcoded(255)));
+        let decoded =
+            read_control_messages(&mut bunch.payload.reader(), &ControlCodec::default()).unwrap();
+        let [Decoded::Message(message)] = decoded.as_slice() else {
+            panic!("one known message per lab bunch");
+        };
+        let raw = header.reliable_sequence_raw.unwrap();
+        if let ReliableReceive::Delivered(batch) = client
+            .control
+            .receive_reliable(raw, message.clone())
+            .unwrap()
+        {
+            messages.extend(batch.into_iter().map(Decoded::Message));
+        }
+    }
+    client.sequencer.ack_seq(received.sequence, true).unwrap();
+    (received.notifications, messages)
+}
+
+fn challenge(text: &str) -> ControlMessage {
+    ControlMessage::Challenge {
+        token: ArchiveText::text(text).unwrap(),
+    }
+}
+
+fn raw_sequences(datagram: &[u8]) -> Vec<u32> {
+    read_packet(datagram, &to_client())
+        .unwrap()
+        .bunches
+        .iter()
+        .map(|bunch| bunch.header.reliable_sequence_raw.unwrap())
+        .collect()
+}
+
+#[test]
+fn reliable_control_packets_advance_sequences_and_carry_acks() {
+    let mut peer = peer();
+    let mut client = Client::new();
+    let (hello_datagram, hello_id) = client.send_reliable(hello(), true);
+    peer.receive(&hello_datagram).unwrap();
+    let (_, initial_out) = peer.sequencer().initial_reliable();
+    assert_eq!(peer.control_out_reliable(), initial_out);
+    let first_id = peer.sequencer().out_packet_id();
+
+    let first = peer.reliable_control_packet(challenge(SENTINEL)).unwrap();
+    let packet = read_packet(&first, &to_client()).unwrap();
+    assert_eq!(packet.header.sequence, 0x1234);
+    assert_eq!(packet.header.acked_sequence, 0x0405);
+    assert_eq!(packet.header.history, [1]);
+    assert_eq!(packet.bunches.len(), 1);
+    assert_eq!(
+        packet.bunches[0].header.reliable_sequence_raw,
+        Some(wire_reliable_sequence(initial_out + 1))
+    );
+    assert_eq!(write_packet(&packet, &to_client()).unwrap(), first);
+    assert_eq!(peer.sequencer().out_packet_id(), first_id + 1);
+    assert_eq!(peer.control_out_reliable(), initial_out + 1);
+    assert_eq!(peer.pending_reliable(), 1);
+
+    let second = peer
+        .reliable_control_packet(ControlMessage::Upgrade { version: 7 })
+        .unwrap();
+    let header = read_packet(&second, &to_client()).unwrap().header;
+    assert_eq!(header.sequence, 0x1235);
+    assert_eq!(raw_sequences(&second), [initial_out + 2]);
+    assert_eq!(peer.pending_reliable(), 2);
+
+    // The client acks its Hello packet and receives both messages in order.
+    let (notifications, messages) = client_receive(&mut client, &first);
+    assert_eq!(
+        notifications,
+        [Notification {
+            packet_id: hello_id,
+            delivered: true
+        }]
+    );
+    assert_eq!(messages, [Decoded::Message(challenge(SENTINEL))]);
+    let (_, messages) = client_receive(&mut client, &second);
+    assert_eq!(
+        messages,
+        [Decoded::Message(ControlMessage::Upgrade { version: 7 })]
+    );
+
+    // The client's next packet acknowledges both; the bunches are released.
+    let (next, _) = client.send(Vec::new());
+    let summary = peer.receive(&next).unwrap().summary().clone();
+    assert_eq!(summary.acked, [first_id, first_id + 1]);
+    assert_eq!((summary.released_reliable, summary.resend_queued), (2, 0));
+    assert_eq!(peer.pending_reliable(), 0);
+    // Debug and summaries carry counts only.
+    for text in [
+        format!("{peer:?}"),
+        serde_json::to_string(&summary).unwrap(),
+    ] {
+        assert!(!text.contains(SENTINEL), "{text}");
+    }
+}
+
+#[test]
+fn naked_reliable_bunches_are_resent_in_the_next_datagram() {
+    let mut config = PacketLabConfig::new(LIMITS);
+    config.max_bunches_per_packet = 2;
+    let mut peer = LabPeer::from_cookie(&COOKIE, config).unwrap();
+    let mut client = Client::new();
+    let (opening, _) = client.send(Vec::new());
+    peer.receive(&opening).unwrap();
+    let (_, initial_out) = peer.sequencer().initial_reliable();
+    let lost_id = peer.sequencer().out_packet_id();
+    for index in 0..3 {
+        let _lost = peer
+            .reliable_control_packet(challenge(&format!("lost-{index}")))
+            .unwrap();
+    }
+    let ack = peer.ack_packet().unwrap();
+    assert!(raw_sequences(&ack).is_empty(), "nothing naked yet");
+    let (_, messages) = client_receive(&mut client, &ack);
+    assert!(messages.is_empty());
+
+    // The client's ack history naks the three lost packets.
+    let (next, _) = client.send(Vec::new());
+    let summary = peer.receive(&next).unwrap().summary().clone();
+    assert_eq!(summary.naked, [lost_id, lost_id + 1, lost_id + 2]);
+    assert_eq!(summary.acked, [lost_id + 3]);
+    assert_eq!((summary.resend_queued, summary.released_reliable), (3, 0));
+    assert_eq!((peer.pending_resends(), peer.pending_reliable()), (3, 3));
+
+    // At most two bunches per datagram: two resends now, the third next.
+    let resent = peer.ack_packet().unwrap();
+    assert_eq!(raw_sequences(&resent), [initial_out + 1, initial_out + 2]);
+    assert_eq!(peer.pending_resends(), 1);
+    let rest = peer.reliable_control_packet(challenge("fresh")).unwrap();
+    assert_eq!(raw_sequences(&rest), [initial_out + 3, initial_out + 4]);
+    assert_eq!((peer.pending_resends(), peer.pending_reliable()), (0, 4));
+    let (_, first) = client_receive(&mut client, &resent);
+    let (_, second) = client_receive(&mut client, &rest);
+    let delivered: Vec<Decoded> = first.into_iter().chain(second).collect();
+    assert_eq!(
+        delivered,
+        ["lost-0", "lost-1", "lost-2", "fresh"].map(|text| Decoded::Message(challenge(text)))
+    );
+    let (next, _) = client.send(Vec::new());
+    assert_eq!(peer.receive(&next).unwrap().summary().released_reliable, 4);
+    assert_eq!(peer.pending_reliable(), 0);
+}
+
+#[test]
+fn outgoing_limits_fail_without_state_change() {
+    let mut peer = peer();
+    let mut client = Client::new();
+    let (opening, _) = client.send(Vec::new());
+    peer.receive(&opening).unwrap();
+    let before = format!("{peer:?}");
+    let out_id = peer.sequencer().out_packet_id();
+    // A payload above the bunch bit limit, then one under it whose datagram
+    // still exceeds the maximum packet size.
+    for length in [1100, 1015] {
+        let message = ControlMessage::Failure {
+            message: ArchiveText::text(&"x".repeat(length)).unwrap(),
+        };
+        assert!(peer.reliable_control_packet(message).is_err(), "{length}");
+        assert_eq!(format!("{peer:?}"), before);
+        assert_eq!(peer.sequencer().out_packet_id(), out_id);
+        assert!(!peer.is_failed());
+    }
+    // A message that fits is sent within the size limit.
+    let fits = ControlMessage::Failure {
+        message: ArchiveText::text(&"x".repeat(900)).unwrap(),
+    };
+    assert!(peer.reliable_control_packet(fits).unwrap().len() <= 1024);
+
+    // The outstanding reliable bound.
+    while peer.pending_reliable() < MAX_PENDING_RELIABLE {
+        peer.reliable_control_packet(ControlMessage::Upgrade { version: 1 })
+            .unwrap();
+    }
+    let before = format!("{peer:?}");
+    let upgrade = ControlMessage::Upgrade { version: 1 };
+    assert!(peer.reliable_control_packet(upgrade).is_err());
+    assert_eq!(format!("{peer:?}"), before);
+    assert!(peer.ack_packet().is_ok());
 }

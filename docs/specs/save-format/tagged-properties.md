@@ -2,7 +2,7 @@
 
 ## Status
 
-experimental; older-server build 25621760 profile `MemoryArchive522`, with bounded static comparison to client build 25793767. Last reconciled: 2026-10-14
+experimental; older-server build 25621760 profile `MemoryArchive522`, with bounded static comparison to client build 25793767. Last reconciled: 2026-10-15
 Full text: d5b0ae6:docs/specs/save-format/tagged-properties.md
 
 ## Scope
@@ -46,7 +46,10 @@ Recovered tag layout (older server):
 
 - Type metadata: Struct adds struct name + 16-byte struct GUID; Array adds inner
   type name; Byte and Enum add enum name; Bool carries a one-byte value in the
-  header; Int, UInt32, Str, Name, Float and Text add nothing (F-288). `UInt32Property`
+  header; Int, UInt32, Str, Name, Float and Text add nothing (F-288). At
+  version 509 and above, Map (built-in name 28) adds key-type then value-type
+  names and Set (29) one inner-type name; Int64 (20) adds nothing. The client
+  tag operator `0x14212b0e0` branches identically (F-556). `UInt32Property`
   is built-in name ID 25 and reaches the common GUID flag without extensions
   (F-290, F-247). Float/Text use only the common GUID flag (F-206, F-207).
 - Version gates in `0x14215f530`: Struct GUID at 441, Array inner type at 282,
@@ -73,8 +76,10 @@ Reader policy (authored; research limits, not recovered format limits):
   unsupported headers and noncanonical Bool/GUID-presence bytes (F-294).
 - Accepted headers: `ArrayProperty`, `StructProperty`, `StrProperty`,
   `IntProperty`, `UInt32Property`, `NameProperty`, `FloatProperty`,
-  `TextProperty`, `ByteProperty`, `EnumProperty`, `BoolProperty`. Empty header
-  names and other kinds are unsupported (F-294, F-246, F-247, F-206).
+  `TextProperty`, `ByteProperty`, `EnumProperty`, `BoolProperty`,
+  `MapProperty`, `SetProperty`, `Int64Property`; Map and Set payloads stay
+  opaque. Empty header names and other kinds are unsupported (F-294, F-246,
+  F-247, F-206, F-556).
 - Preserve original header and value spans, including unknown field names,
   without rewriting. Report aggregate sizes and counts only; no names or values in
   results or errors. Opaque payloads are not validated by tag name, including
@@ -95,7 +100,7 @@ Reader policy (authored; research limits, not recovered format limits):
   properties, terminal `None`, 4-byte LE trailer flag 0, exact EOF. Flag 1 fails
   as unsupported GUID trailer even with 16 more bytes; other nonzero flags,
   truncation, missing terminator and trailing bytes fail. Default 64 KiB and 256
-  properties; `read_base_component_with_limit` accepts 1 byte up to a hard 128 KiB
+  properties; `read_base_component_with_limit` accepts 1 byte up to a hard 1 MiB
   ceiling with the same field cap; invalid limits fail even for small inputs.
   Summary adds `values_interpreted: false`. Not enabled by `--recorders`
   (F-302, F-248, F-198).
@@ -145,8 +150,17 @@ objects):
 - `experimental::property_tree` holds one stream as an owned value-opaque tree:
   tagged Struct payloads and tagged struct arrays nest to a depth limit, every
   other payload stays opaque, and writing checks each declared size. Every
-  framed body of both copies re-serializes byte-identically; names, types and
-  values are not interpreted (F-554).
+  body of every class in both copies frames under 1 MiB and re-serializes
+  byte-identically; names, types and values are not interpreted (F-557).
+- Map and Set payloads load as an i32 removal count with removal items, then
+  an i32 count with key-value pairs (Map) or elements (Set), each through the
+  inner property's item serializer; Bool items are one byte and Struct items
+  delegate to the struct (F-559, client build). The tree frames them when every
+  item is a 1/4/8-byte scalar, an archive string or a tagged struct stream
+  (scalar widths and string items inferred) and consumes the payload exactly;
+  otherwise the payload stays opaque. Items count against the node budget; an
+  attempt that would exceed it also stays opaque. All supplied Maps frame
+  (F-562; unchanged under the budget, M-411, M-412).
 - Applying the older-build framing to the newer saves is supported by prefix
   agreement and the scans above, not by a matched official load (F-297, U-025).
 - Base-component layout is a caller-selected hypothesis per class; static
@@ -157,6 +171,8 @@ objects):
   fields use binary/native serialization, so tagged framing is not recursive
   (F-308). D01: 8 optional leaves (5 Int, 3 Str); D02: four 4-byte native
   transfers (F-309, F-212). Conditional static grammars only.
+- Every opaque Struct leaf is one of four fixed-width engine math types
+  (F-565): three or four ordered 4-byte components, no count or tail (F-602).
 - Client build 25793767: tag operator `0x14212b0e0`, Array serializer
   `0x142123da0`; same 441/282/503 gates; Map/Set gate 509. Array branch needs mask
   `0x20` clear, version >= 500 and the inner Struct class flag; reads a 4-byte
@@ -174,11 +190,11 @@ objects):
 - Original normalization, EOF and error behavior versus the strict readers (U-026).
 - Official restore/import and newer-build migration of these saves (U-025).
 - Value meanings, Name identities and Enum lookups (U-020); empty-family
-  population (U-021); deeper C028 children (U-027, U-048).
+  population (U-021); deeper C028 children (U-048).
 - Client large-span safety (U-030) and dedicated-server correspondence (U-031).
 - Singleton saved integer's restoration role (U-039); remaining classes (U-050).
 - Supplied Text-bearing body (U-053); runtime save-bit mutation (U-054); Map/Set
-  and other kinds (U-055).
+  payload layout and other kinds (U-055).
 
 ## Evidence
 
@@ -186,7 +202,8 @@ objects):
   M-140 root, M-141 and M-171 recorders, M-142 Name, M-143 C028 structs, M-144
   component, M-148 C028 overrides, M-150 C028 arrays, M-112 and M-120 Float/Text,
   M-096 and M-098 Int array, M-070, M-077, M-089, M-090, M-122; client M-083 to
-  M-086.
+  M-086; Map/Set/Int64 headers M-387, M-388; all-class framing M-389, M-390;
+  container items M-392 to M-396, M-401 to M-404.
 - Tests: `tests/tagged.rs`, `tests/recorders.rs`, `tests/component.rs`,
   `tests/int_array.rs`, `tests/struct_array.rs`, `tests/prospect.rs`; authored
   byte fixtures only. Private saves stay outside tests, source control and CI.

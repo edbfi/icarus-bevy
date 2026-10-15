@@ -1,10 +1,14 @@
 //! Native snapshots only. Official ICARUS save import requires a recovered spec.
 use std::{
+    collections::BTreeMap,
     fs::{self, File, OpenOptions},
     io::{Read, Write},
     os::unix::fs::OpenOptionsExt,
     path::{Path, PathBuf},
-    sync::mpsc::{self, Receiver, SyncSender, TryRecvError},
+    sync::{
+        Arc, Mutex,
+        mpsc::{self, Receiver, SyncSender, TryRecvError},
+    },
     thread,
     time::{Duration, Instant},
 };
@@ -14,9 +18,22 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 use crate::json::JsonObject;
-use crate::simulation::WorldSnapshot;
+use crate::preservation::{MAX_PRESERVED_BASE64_BYTES, SectionReference, is_sidecar_name};
+use crate::simulation::{
+    EntityRecord, SNAPSHOT_SCHEMA_DOMAIN, SNAPSHOT_SCHEMA_PRESERVED, SNAPSHOT_SCHEMA_REFERENCED,
+    WorldSnapshot,
+};
 
-const MAX_SNAPSHOT_BYTES: u64 = 64 * 1024 * 1024;
+/// Schema 1 bound, unchanged: domain records and the clock only.
+const MAX_DOMAIN_SNAPSHOT_BYTES: u64 = 64 * 1024 * 1024;
+/// Schema 2 adds at most one 64 MiB Base64 preserved section (whose decoded
+/// size is checked separately), so a generation file may reach 128 MiB.
+const MAX_SNAPSHOT_BYTES: u64 = MAX_DOMAIN_SNAPSHOT_BYTES + MAX_PRESERVED_BASE64_BYTES as u64;
+/// Schema 3 adds only a fixed-size sidecar reference to the schema 1 bound;
+/// the sidecar itself is bounded by the 48 MiB native encoding cap.
+const MAX_REFERENCED_SNAPSHOT_BYTES: u64 = MAX_DOMAIN_SNAPSHOT_BYTES + 4 * 1024;
+/// Streaming verification buffer, so checking a sidecar never holds it whole.
+const VERIFY_CHUNK_BYTES: usize = 1024 * 1024;
 
 #[derive(Debug)]
 struct UnsupportedSchema;
@@ -73,6 +90,35 @@ struct SnapshotHeader {
     schema_version: serde_json::Value,
 }
 
+/// Schema 3 generation as written: schema 1 fields in their schema 1 order,
+/// then the sidecar reference. The preserved data itself is never inline.
+#[derive(Serialize)]
+struct ReferencedOut<'a> {
+    schema_version: u32,
+    tick: u64,
+    entities: &'a [EntityRecord],
+    preserved_prospect: &'a SectionReference,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ReferencedIn {
+    schema_version: u32,
+    tick: u64,
+    #[serde(deserialize_with = "crate::json::objects")]
+    entities: Vec<EntityRecord>,
+    #[serde(deserialize_with = "crate::json::object")]
+    preserved_prospect: SectionReference,
+}
+
+/// What a save needs from a committed generation: its tick and the sidecar it
+/// keeps retained.
+#[derive(Clone, Debug)]
+struct Committed {
+    tick: u64,
+    sidecar: Option<SectionReference>,
+}
+
 #[derive(Debug)]
 pub struct LoadedSnapshot {
     pub snapshot: WorldSnapshot,
@@ -89,6 +135,13 @@ pub struct SaveReceipt {
 pub struct SnapshotStore {
     root: PathBuf,
     _lock: File,
+    /// Generation checksum to its committed facts, recorded only after that
+    /// exact generation decoded completely here (or was written here from a
+    /// validated snapshot). Decoding is a pure function of the checksummed
+    /// generation and digest-verified sidecar bytes, so a save re-reads and
+    /// re-verifies both but does not decode the preserved section again.
+    /// Pruned to the retained generations after every publication.
+    verified: Mutex<BTreeMap<String, Committed>>,
 }
 
 impl SnapshotStore {
@@ -126,6 +179,7 @@ impl SnapshotStore {
         Ok(Self {
             root: root.to_path_buf(),
             _lock: lock,
+            verified: Mutex::new(BTreeMap::new()),
         })
     }
 
@@ -139,6 +193,7 @@ impl SnapshotStore {
                     .is_some_and(|error| error.kind() == std::io::ErrorKind::NotFound) =>
             {
                 // An empty directory is a new world; an orphan generation is not.
+                // A stranded sidecar alone references nothing and is not a world.
                 for entry in fs::read_dir(&self.root)? {
                     let name = entry?.file_name();
                     ensure!(
@@ -166,23 +221,115 @@ impl SnapshotStore {
         Ok(Some(manifest))
     }
 
-    fn read_generation(&self, generation: &Generation) -> Result<WorldSnapshot> {
+    /// Read a generation and verify the manifest checksum over its bytes.
+    fn read_checked(&self, generation: &Generation) -> Result<Vec<u8>> {
         let bytes = read_bounded(&self.root.join(generation.filename()), MAX_SNAPSHOT_BYTES)?;
         ensure!(
             checksum(&bytes) == generation.sha256,
             "snapshot checksum mismatch"
         );
-        let header = serde_json::from_slice::<JsonObject<SnapshotHeader>>(&bytes)
+        Ok(bytes)
+    }
+
+    fn read_generation(&self, generation: &Generation) -> Result<WorldSnapshot> {
+        let bytes = self.read_checked(generation)?;
+        let (snapshot, sidecar) = self.decode_generation(&bytes)?;
+        self.remember(
+            generation,
+            Committed {
+                tick: snapshot.tick,
+                sidecar,
+            },
+        );
+        Ok(snapshot)
+    }
+
+    /// Decode checksummed generation bytes completely, including a schema-3
+    /// sidecar, which is verified by size and digest before it is decoded.
+    fn decode_generation(&self, bytes: &[u8]) -> Result<(WorldSnapshot, Option<SectionReference>)> {
+        let header = serde_json::from_slice::<JsonObject<SnapshotHeader>>(bytes)
             .map_err(|error| crate::json_parse_error("decode native snapshot JSON", error))?
             .0;
-        if header.schema_version.as_u64() != Some(1) {
-            return Err(UnsupportedSchema.into());
+        match header.schema_version.as_u64() {
+            Some(schema) if schema == u64::from(SNAPSHOT_SCHEMA_DOMAIN) => ensure!(
+                bytes.len() as u64 <= MAX_DOMAIN_SNAPSHOT_BYTES,
+                "schema 1 native snapshot exceeds 64 MiB limit"
+            ),
+            Some(schema) if schema == u64::from(SNAPSHOT_SCHEMA_PRESERVED) => {}
+            Some(schema) if schema == u64::from(SNAPSHOT_SCHEMA_REFERENCED) => {
+                return self.decode_referenced(bytes);
+            }
+            _ => return Err(UnsupportedSchema.into()),
         }
-        let snapshot = serde_json::from_slice::<JsonObject<WorldSnapshot>>(&bytes)
+        let snapshot = serde_json::from_slice::<JsonObject<WorldSnapshot>>(bytes)
             .map_err(|error| crate::json_parse_error("decode native snapshot fields JSON", error))?
             .0;
         snapshot.validate()?;
-        Ok(snapshot)
+        Ok((snapshot, None))
+    }
+
+    fn decode_referenced(&self, bytes: &[u8]) -> Result<(WorldSnapshot, Option<SectionReference>)> {
+        ensure!(
+            bytes.len() as u64 <= MAX_REFERENCED_SNAPSHOT_BYTES,
+            "schema 3 native snapshot exceeds its size limit"
+        );
+        let referenced = serde_json::from_slice::<JsonObject<ReferencedIn>>(bytes)
+            .map_err(|error| crate::json_parse_error("decode native snapshot fields JSON", error))?
+            .0;
+        let reference = referenced.preserved_prospect;
+        reference.validate()?;
+        // A missing sidecar is a NotFound I/O error: this generation is
+        // corrupt, so recovery selects the previous one exactly as it would
+        // for a missing generation. Other I/O errors stay operational.
+        let encoded = read_bounded(
+            &self.root.join(reference.sidecar_name()),
+            reference.encoded_bytes(),
+        )?;
+        // Verified once, streaming, to prove it reconstructs the recorded
+        // payload; only the verified encoding is kept and no value tree is built.
+        let preserved = reference.decode(encoded)?;
+        let snapshot = WorldSnapshot {
+            schema_version: referenced.schema_version,
+            tick: referenced.tick,
+            entities: referenced.entities,
+            preserved_prospect: Some(Arc::new(preserved)),
+        };
+        snapshot.validate()?;
+        Ok((snapshot, Some(reference)))
+    }
+
+    /// The committed facts a save needs, with the outcomes of a full read: the
+    /// generation checksum and any sidecar size and digest are re-verified on
+    /// every call; the preserved section is decoded only on a cache miss.
+    fn probe_generation(&self, generation: &Generation) -> Result<Committed> {
+        let bytes = self.read_checked(generation)?;
+        let cached = self
+            .verified
+            .lock()
+            .ok()
+            .and_then(|verified| verified.get(&generation.sha256).cloned());
+        if let Some(committed) = cached {
+            if let Some(reference) = &committed.sidecar {
+                ensure!(
+                    sidecar_contents_match(&self.root.join(reference.sidecar_name()), reference)?,
+                    "preserved sidecar size or checksum mismatch"
+                );
+            }
+            return Ok(committed);
+        }
+        let (snapshot, sidecar) = self.decode_generation(&bytes)?;
+        let committed = Committed {
+            tick: snapshot.tick,
+            sidecar,
+        };
+        self.remember(generation, committed.clone());
+        Ok(committed)
+    }
+
+    fn remember(&self, generation: &Generation, committed: Committed) {
+        if let Ok(mut verified) = self.verified.lock() {
+            verified.insert(generation.sha256.clone(), committed);
+        }
     }
 
     fn select(&self, manifest: &Manifest) -> Result<(WorldSnapshot, Generation, bool)> {
@@ -191,11 +338,11 @@ impl SnapshotStore {
 
     // The reader boundary permits operational read faults without requiring a
     // failing disk or privileged permission changes in regression tests.
-    fn select_with_reader(
+    fn select_with_reader<T>(
         &self,
         manifest: &Manifest,
-        mut read: impl FnMut(&Generation) -> Result<WorldSnapshot>,
-    ) -> Result<(WorldSnapshot, Generation, bool)> {
+        mut read: impl FnMut(&Generation) -> Result<T>,
+    ) -> Result<(T, Generation, bool)> {
         match read(&manifest.current) {
             Ok(snapshot) => Ok((snapshot, manifest.current.clone(), false)),
             Err(error)
@@ -237,6 +384,10 @@ impl SnapshotStore {
     }
 
     // The writer boundary permits deterministic publication failures in tests.
+    // A snapshot with a preserved section is written as schema 3, whichever of
+    // schemas 2 and 3 it was loaded from: its sidecar is durable (data, rename
+    // and directory synchronized) before the generation referencing it is
+    // written, and a sidecar that already verifies is reused, never rewritten.
     fn save_with_writer(
         &mut self,
         snapshot: &WorldSnapshot,
@@ -244,9 +395,10 @@ impl SnapshotStore {
     ) -> Result<SaveReceipt> {
         snapshot.validate()?;
         let manifest = self.manifest()?;
-        let (number, previous) = match &manifest {
+        let (number, previous, previous_sidecar) = match &manifest {
             Some(manifest) => {
-                let (committed, valid_generation, _) = self.select(manifest)?;
+                let (committed, valid_generation, _) = self
+                    .select_with_reader(manifest, |generation| self.probe_generation(generation))?;
                 ensure!(
                     snapshot.tick >= committed.tick,
                     "stale snapshot tick {} precedes committed tick {}",
@@ -260,14 +412,43 @@ impl SnapshotStore {
                         .checked_add(1)
                         .context("snapshot generation overflow")?,
                     Some(valid_generation),
+                    committed.sidecar,
                 )
             }
-            None => (1, None),
+            None => (1, None, None),
         };
-        let bytes = serde_json::to_vec(snapshot)?;
+        let reference = snapshot
+            .preserved_prospect
+            .as_ref()
+            .map(|preserved| SectionReference::of(preserved));
+        let (bytes, limit) = match &reference {
+            Some(reference) => {
+                reference.validate()?;
+                if previous_sidecar.as_ref() == Some(reference) {
+                    // The probe just verified this sidecar's size and digest,
+                    // and the committed generation's publication made it durable.
+                    #[cfg(test)]
+                    durability_probe::record(|| {
+                        durability_probe::Effect::ReuseSidecar(reference.sidecar_name())
+                    });
+                } else {
+                    self.publish_sidecar(snapshot, reference, &mut write)?;
+                }
+                let bytes = serde_json::to_vec(&ReferencedOut {
+                    schema_version: SNAPSHOT_SCHEMA_REFERENCED,
+                    tick: snapshot.tick,
+                    entities: &snapshot.entities,
+                    preserved_prospect: reference,
+                })?;
+                (bytes, MAX_REFERENCED_SNAPSHOT_BYTES)
+            }
+            // Schema 1 serialization is unchanged.
+            None => (serde_json::to_vec(snapshot)?, MAX_DOMAIN_SNAPSHOT_BYTES),
+        };
         ensure!(
-            bytes.len() as u64 <= MAX_SNAPSHOT_BYTES,
-            "native snapshot exceeds 64 MiB limit"
+            bytes.len() as u64 <= limit,
+            "native snapshot exceeds {} MiB limit",
+            limit / (1024 * 1024)
         );
         let generation = Generation {
             number,
@@ -286,7 +467,30 @@ impl SnapshotStore {
             "manifest.json",
             &serde_json::to_vec(&next_manifest)?,
         )?;
-        // The save is durable now. Cleanup is best effort and cannot revoke it.
+        // The save is durable now. Bookkeeping and cleanup cannot revoke it.
+        if let Ok(mut verified) = self.verified.lock() {
+            verified.retain(|sha256, _| {
+                next_manifest
+                    .previous
+                    .as_ref()
+                    .is_some_and(|previous| previous.sha256 == *sha256)
+            });
+            // Serialized here from a validated snapshot whose section was
+            // verified at construction, so a full decode would succeed.
+            verified.insert(
+                next_manifest.current.sha256.clone(),
+                Committed {
+                    tick: snapshot.tick,
+                    sidecar: reference.clone(),
+                },
+            );
+        }
+        // Exactly the sidecars of the two retained generations survive.
+        let retained_sidecars: Vec<String> = [&reference, &previous_sidecar]
+            .into_iter()
+            .flatten()
+            .map(SectionReference::sidecar_name)
+            .collect();
         let entries = fs::read_dir(&self.root).ok().into_iter().flatten();
         for entry in entries.flatten() {
             let name = entry.file_name().to_string_lossy().into_owned();
@@ -296,6 +500,17 @@ impl SnapshotStore {
                 && entry.file_type().is_ok_and(|kind| kind.is_file())
             {
                 let _ = fs::remove_file(entry.path());
+                continue;
+            }
+            // Only regular files with the exact content-addressed name are
+            // collected; the new manifest is durable, so no retained
+            // generation can reference a removed sidecar after a crash.
+            if is_sidecar_name(&name) {
+                if !retained_sidecars.contains(&name)
+                    && entry.file_type().is_ok_and(|kind| kind.is_file())
+                {
+                    let _ = fs::remove_file(entry.path());
+                }
                 continue;
             }
             let number = name
@@ -317,6 +532,89 @@ impl SnapshotStore {
             tick: snapshot.tick,
         })
     }
+
+    /// Make the snapshot's sidecar durable before anything references it. An
+    /// existing regular file with the exact size and digest is kept, never
+    /// rewritten; anything else under that name is atomically replaced.
+    fn publish_sidecar(
+        &self,
+        snapshot: &WorldSnapshot,
+        reference: &SectionReference,
+        write: &mut impl FnMut(&Path, &str, &[u8]) -> Result<()>,
+    ) -> Result<()> {
+        let name = reference.sidecar_name();
+        let path = self.root.join(&name);
+        let existing = match sidecar_contents_match(&path, reference) {
+            Err(error)
+                if error
+                    .downcast_ref::<std::io::Error>()
+                    .is_some_and(|error| error.kind() == std::io::ErrorKind::NotFound) =>
+            {
+                false
+            }
+            outcome => outcome?,
+        };
+        if existing {
+            // An earlier process may have exited before its data or entry
+            // reached storage; make both durable before referencing them.
+            let file = OpenOptions::new()
+                .read(true)
+                .custom_flags(crate::nonblocking_flag())
+                .open(&path)?;
+            ensure!(
+                file.metadata()?.is_file(),
+                "preserved sidecar must be a regular file"
+            );
+            file.sync_all().context("synchronize preserved sidecar")?;
+            sync_directory(&self.root)?;
+            #[cfg(test)]
+            durability_probe::record(|| durability_probe::Effect::ReuseSidecar(name.clone()));
+            return Ok(());
+        }
+        let preserved = snapshot
+            .preserved_prospect
+            .as_ref()
+            .context("preserved section required for its sidecar")?;
+        // The held encoding was proven to decode at construction; it is written
+        // as is, after a digest check against the identity it is named by.
+        let encoded = preserved.native_encoding();
+        ensure!(
+            encoded.len() as u64 == reference.encoded_bytes()
+                && checksum(encoded) == reference.encoded_sha256(),
+            "preserved native encoding differs from its recorded identity"
+        );
+        write(&self.root, &name, encoded)
+    }
+}
+
+/// Stream a sidecar through SHA-256 with a fixed buffer, so verification never
+/// holds it whole. `Ok(false)` is corruption (wrong type, size or digest); a
+/// missing file is a `NotFound` I/O error and other I/O errors stay operational.
+fn sidecar_contents_match(path: &Path, reference: &SectionReference) -> Result<bool> {
+    let mut file = OpenOptions::new()
+        .read(true)
+        .custom_flags(crate::nonblocking_flag())
+        .open(path)?;
+    let metadata = file.metadata()?;
+    if !metadata.is_file() || metadata.len() != reference.encoded_bytes() {
+        return Ok(false);
+    }
+    let mut hasher = Sha256::new();
+    let mut buffer = vec![0; VERIFY_CHUNK_BYTES];
+    let mut total = 0_u64;
+    loop {
+        let read = file.read(&mut buffer)?;
+        if read == 0 {
+            break;
+        }
+        total += read as u64;
+        if total > reference.encoded_bytes() {
+            return Ok(false);
+        }
+        hasher.update(&buffer[..read]);
+    }
+    Ok(total == reference.encoded_bytes()
+        && crate::hex_lower(&hasher.finalize()) == reference.encoded_sha256())
 }
 
 fn checksum(bytes: &[u8]) -> String {
@@ -330,12 +628,16 @@ fn read_bounded(path: &Path, limit: u64) -> Result<Vec<u8>> {
         .read(true)
         .custom_flags(crate::nonblocking_flag())
         .open(path)?;
+    let metadata = file.metadata()?;
     ensure!(
-        file.metadata()?.is_file(),
+        metadata.is_file(),
         "snapshot input must be a regular file: {}",
         path.display()
     );
-    let mut bytes = Vec::new();
+    // Size the buffer once from the opened file, never beyond the limit, so a
+    // large sidecar is not grown by doubling into a larger held allocation.
+    let expected = metadata.len().min(limit);
+    let mut bytes = Vec::with_capacity(usize::try_from(expected)?.saturating_add(1));
     file.take(limit + 1).read_to_end(&mut bytes)?;
     ensure!(
         bytes.len() as u64 <= limit,
@@ -408,6 +710,9 @@ mod durability_probe {
         SyncDirectory(PathBuf),
         /// Directory entry removal, not durable until a directory sync.
         Unlink(String),
+        /// A save referenced this existing, verified sidecar instead of
+        /// writing it; no storage change. The model checks the decision.
+        ReuseSidecar(String),
     }
 
     thread_local! {
@@ -854,7 +1159,8 @@ mod crash_consistency_tests {
 
     use super::durability_probe::{self, Effect};
     use super::*;
-    use crate::simulation::{DomainId, EntityRecord, Position};
+    use crate::preservation::{PreserveLimits, PreservedSection};
+    use crate::simulation::{DomainId, Position};
 
     /// File name to bytes, excluding the lock file that `open` recreates.
     type DiskState = BTreeMap<String, Vec<u8>>;
@@ -869,6 +1175,9 @@ mod crash_consistency_tests {
         Acknowledge(WorldSnapshot),
         /// Durable external damage lowers the floor to the generation it leaves.
         Damage(WorldSnapshot),
+        /// Generations numbered at most this may reference a sidecar that
+        /// injected damage removed; later generations are always checked.
+        Exempt(u64),
     }
 
     struct Trace {
@@ -876,6 +1185,12 @@ mod crash_consistency_tests {
         base: DiskState,
         /// Durable recovered snapshot the trace starts from, if any.
         initial: Option<WorldSnapshot>,
+        /// Sidecar-check exemption in effect at the start of the trace.
+        exempt: u64,
+        /// Snapshots attempted in enclosing traces. Rewriting a lost sidecar
+        /// makes generations that reference it readable again, so one of
+        /// these may load (never below the floor) until the next publication.
+        history: Vec<WorldSnapshot>,
         steps: Vec<Step>,
     }
 
@@ -886,6 +1201,12 @@ mod crash_consistency_tests {
         empty_worlds: usize,
         recovered_previous: usize,
         refused_orphans: usize,
+        /// Intact manifest-referenced schema-3 generations whose sidecar was
+        /// present with its recorded size and digest.
+        referenced_sidecars: usize,
+        /// Loads of a snapshot from an enclosing trace that a rewritten
+        /// sidecar made readable again; never below the floor.
+        resurrected: usize,
     }
 
     #[derive(Debug, Default)]
@@ -908,6 +1229,123 @@ mod crash_consistency_tests {
                 .collect(),
             ..Default::default()
         }
+    }
+
+    // Authored framing only; every name and value is invented for this model.
+    fn string(value: &str) -> Vec<u8> {
+        let length = i32::try_from(value.len() + 1).unwrap().to_le_bytes();
+        [length.as_slice(), value.as_bytes(), &[0]].concat()
+    }
+
+    fn tag(name: &str, kind: &str, extra: &[u8], value: &[u8]) -> Vec<u8> {
+        let length = i32::try_from(value.len()).unwrap().to_le_bytes();
+        [
+            string(name).as_slice(),
+            &string(kind),
+            &length,
+            &[0; 4],
+            extra,
+            &[0],
+            value,
+        ]
+        .concat()
+    }
+
+    /// One recorder whose opaque body is `variant` repeated, so each variant
+    /// is a distinct section with a distinct sidecar.
+    fn section(variant: u8) -> Arc<PreservedSection> {
+        let body = vec![variant; 8];
+        let binary = [
+            i32::try_from(body.len()).unwrap().to_le_bytes().as_slice(),
+            &body,
+        ]
+        .concat();
+        let record = [
+            tag(
+                "ComponentClassName",
+                "StrProperty",
+                &[],
+                &string("UModelAuthoredClass"),
+            ),
+            tag(
+                "BinaryData",
+                "ArrayProperty",
+                &string("ByteProperty"),
+                &binary,
+            ),
+            string("None"),
+        ]
+        .concat();
+        let shared = tag(
+            "StateRecorderBlobs",
+            "StructProperty",
+            &[string("StateRecorderBlob"), vec![7; 16]].concat(),
+            &record,
+        );
+        let array = [1_i32.to_le_bytes().as_slice(), &shared].concat();
+        let payload = [
+            tag(
+                "StateRecorderBlobs",
+                "ArrayProperty",
+                &string("StructProperty"),
+                &array,
+            ),
+            string("None"),
+        ]
+        .concat();
+        Arc::new(PreservedSection::from_inner_payload(&payload, PreserveLimits::default()).unwrap())
+    }
+
+    fn preserved(tick: u64, section: &Arc<PreservedSection>) -> WorldSnapshot {
+        WorldSnapshot {
+            schema_version: SNAPSHOT_SCHEMA_REFERENCED,
+            preserved_prospect: Some(Arc::clone(section)),
+            ..snapshot(tick)
+        }
+    }
+
+    fn sidecar_name(section: &PreservedSection) -> String {
+        SectionReference::of(section).sidecar_name()
+    }
+
+    /// Every intact, manifest-referenced schema-3 generation must find its
+    /// sidecar present with the recorded size and digest, whether or not the
+    /// generation is ultimately selected by recovery.
+    fn referenced_sidecars(state: &DiskState, exempt: u64) -> Result<usize, String> {
+        let Some(manifest) = state
+            .get("manifest.json")
+            .and_then(|bytes| serde_json::from_slice::<Manifest>(bytes).ok())
+        else {
+            return Ok(0);
+        };
+        let mut intact = 0;
+        for generation in std::iter::once(&manifest.current).chain(&manifest.previous) {
+            let Some(bytes) = state.get(&generation.filename()) else {
+                continue;
+            };
+            if checksum(bytes) != generation.sha256 {
+                continue;
+            }
+            let Ok(referenced) = serde_json::from_slice::<ReferencedIn>(bytes) else {
+                continue;
+            };
+            let reference = referenced.preserved_prospect;
+            let present = state.get(&reference.sidecar_name()).is_some_and(|sidecar| {
+                sidecar.len() as u64 == reference.encoded_bytes()
+                    && checksum(sidecar) == reference.encoded_sha256()
+            });
+            if !present && generation.number <= exempt {
+                continue;
+            }
+            if !present {
+                return Err(format!(
+                    "generation {} references a missing or damaged sidecar",
+                    generation.number
+                ));
+            }
+            intact += 1;
+        }
+        Ok(intact)
     }
 
     fn listing(root: &Path) -> BTreeSet<String> {
@@ -933,7 +1371,10 @@ mod crash_consistency_tests {
                 Effect::Unlink(name) => {
                     names.remove(name);
                 }
-                Effect::WriteData(..) | Effect::SyncFile(_) | Effect::SyncDirectory(_) => {}
+                Effect::WriteData(..)
+                | Effect::SyncFile(_)
+                | Effect::SyncDirectory(_)
+                | Effect::ReuseSidecar(_) => {}
             }
             steps.push(Step::Effect(effect));
         }
@@ -1104,6 +1545,7 @@ mod crash_consistency_tests {
     fn enumerate(trace: &Trace, depth: u32, tally: &mut Tally) -> Result<(), String> {
         let mut attempted: Vec<WorldSnapshot> = trace.initial.iter().cloned().collect();
         let mut floor = trace.initial.clone();
+        let mut exempt = trace.exempt;
         for point in 0..=trace.steps.len() {
             if let Some(step) = point.checked_sub(1).map(|index| &trace.steps[index]) {
                 match step {
@@ -1111,6 +1553,7 @@ mod crash_consistency_tests {
                     Step::Acknowledge(snapshot) | Step::Damage(snapshot) => {
                         floor = Some(snapshot.clone());
                     }
+                    Step::Exempt(through) => exempt = exempt.max(*through),
                     Step::Effect(_) => {}
                 }
             }
@@ -1122,26 +1565,47 @@ mod crash_consistency_tests {
             counts.crash_points += 1;
             for state in crash_states(trace, &trace.steps[..point]) {
                 let names: Vec<_> = state.keys().collect();
-                check_state(&state, &attempted, floor.as_ref(), depth, tally)
+                let admissible = Admissible {
+                    attempted: &attempted,
+                    history: &trace.history,
+                    floor: floor.as_ref(),
+                    exempt,
+                };
+                check_state(&state, &admissible, depth, tally)
                     .map_err(|violation| format!("crash point {point}, {names:?}: {violation}"))?;
             }
         }
         Ok(())
     }
 
+    /// What recovery may load at one crash point.
+    struct Admissible<'a> {
+        /// Snapshots attempted in this trace, including its initial one.
+        attempted: &'a [WorldSnapshot],
+        history: &'a [WorldSnapshot],
+        floor: Option<&'a WorldSnapshot>,
+        exempt: u64,
+    }
+
     fn check_state(
         state: &DiskState,
-        attempted: &[WorldSnapshot],
-        floor: Option<&WorldSnapshot>,
+        admissible: &Admissible<'_>,
         depth: u32,
         tally: &mut Tally,
     ) -> Result<(), String> {
+        let Admissible {
+            attempted,
+            history,
+            floor,
+            exempt,
+        } = *admissible;
         let counts = if depth > 0 {
             &mut tally.main
         } else {
             &mut tally.after_recovery
         };
         counts.states += 1;
+        counts.referenced_sidecars += referenced_sidecars(state, exempt)?;
         let directory = tempfile::tempdir().unwrap();
         for (name, bytes) in state {
             fs::write(directory.path().join(name), bytes).unwrap();
@@ -1174,7 +1638,9 @@ mod crash_consistency_tests {
             }
             (None, None) => counts.empty_worlds += 1,
             (Some(loaded), floor) => {
-                if !attempted.contains(&loaded.snapshot) {
+                if !attempted.contains(&loaded.snapshot) && history.contains(&loaded.snapshot) {
+                    counts.resurrected += 1;
+                } else if !attempted.contains(&loaded.snapshot) {
                     return Err(format!(
                         "tick {} is not a saved snapshot",
                         loaded.snapshot.tick
@@ -1195,7 +1661,15 @@ mod crash_consistency_tests {
             return Ok(());
         }
         let recovered = loaded.map(|loaded| loaded.snapshot);
-        let next = snapshot(recovered.as_ref().map_or(0, |snapshot| snapshot.tick) + 1);
+        let tick = recovered.as_ref().map_or(0, |snapshot| snapshot.tick) + 1;
+        // Like capture, the recovery save carries a recovered section forward.
+        let next = match recovered
+            .as_ref()
+            .and_then(|snapshot| snapshot.preserved_prospect.as_ref())
+        {
+            Some(section) => preserved(tick, section),
+            None => snapshot(tick),
+        };
         let mut steps = Vec::new();
         traced_save(
             &mut store,
@@ -1223,6 +1697,8 @@ mod crash_consistency_tests {
             root: directory.path().to_path_buf(),
             base: state.clone(),
             initial: recovered,
+            exempt,
+            history: [history, attempted].concat(),
             steps,
         };
         enumerate(&trace, depth - 1, tally)
@@ -1286,6 +1762,8 @@ mod crash_consistency_tests {
             root,
             base: DiskState::new(),
             initial: None,
+            exempt: 0,
+            history: Vec::new(),
             steps,
         };
         let mut tally = Tally::default();
@@ -1340,9 +1818,260 @@ mod crash_consistency_tests {
             root,
             base: DiskState::new(),
             initial: None,
+            exempt: 0,
+            history: Vec::new(),
             steps,
         };
         let violation = enumerate(&trace, 0, &mut Tally::default()).unwrap_err();
         assert!(violation.contains("acknowledged tick 10"), "{violation}");
+    }
+
+    /// Sidecar writes, reuses and collections in trace order.
+    fn sidecar_events(steps: &[Step]) -> Vec<String> {
+        steps
+            .iter()
+            .filter_map(|step| match step {
+                Step::Effect(Effect::Rename { to, .. }) if is_sidecar_name(to) => {
+                    Some(format!("write {to}"))
+                }
+                Step::Effect(Effect::ReuseSidecar(name)) => Some(format!("reuse {name}")),
+                Step::Effect(Effect::Unlink(name)) if is_sidecar_name(name) => {
+                    Some(format!("unlink {name}"))
+                }
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// Each sidecar rename is made durable by a directory sync before the
+    /// temporary of the generation that references it is created.
+    fn assert_sidecar_durable_before_generation(steps: &[Step]) {
+        let effects: Vec<&Effect> = steps
+            .iter()
+            .filter_map(|step| match step {
+                Step::Effect(effect) => Some(effect),
+                _ => None,
+            })
+            .collect();
+        for (index, effect) in effects.iter().enumerate() {
+            if let Effect::Rename { to, .. } = effect
+                && is_sidecar_name(to)
+            {
+                let rest = &effects[index + 1..];
+                let sync = rest
+                    .iter()
+                    .position(|effect| matches!(effect, Effect::SyncDirectory(_)))
+                    .expect("sidecar rename is synchronized");
+                let generation = rest
+                    .iter()
+                    .position(|effect| matches!(effect, Effect::CreateTemporary(_)))
+                    .expect("a generation follows its sidecar");
+                assert!(sync < generation, "sidecar published after its generation");
+            }
+        }
+    }
+
+    /// Durable external loss of one sidecar; the floor drops to `floor`, and
+    /// generations up to `through` may reference the lost sidecar.
+    fn damage(root: &Path, steps: &mut Vec<Step>, name: &str, floor: WorldSnapshot, through: u64) {
+        steps.push(Step::Damage(floor));
+        steps.push(Step::Exempt(through));
+        durability_probe::start();
+        fs::remove_file(root.join(name)).unwrap();
+        durability_probe::record(|| Effect::Unlink(name.into()));
+        sync_directory(root).unwrap();
+        steps.extend(durability_probe::stop().into_iter().map(Step::Effect));
+    }
+
+    #[test]
+    fn power_loss_during_sidecar_publication_and_collection_preserves_acknowledged_generation() {
+        let directory = tempfile::tempdir().unwrap();
+        let root = directory.path().to_path_buf();
+        let mut store = SnapshotStore::open(&root).unwrap();
+        let (first, second) = (section(1), section(2));
+        let (one, two) = (sidecar_name(&first), sidecar_name(&second));
+        let mut steps = Vec::new();
+        let save = |store: &mut SnapshotStore, steps: &mut Vec<Step>, tick, section| {
+            traced_save(store, &root, &preserved(tick, section), steps, atomic_write).unwrap();
+        };
+        for (tick, section) in [(10, &first), (20, &first), (30, &second)] {
+            save(&mut store, &mut steps, tick, section);
+        }
+        // Losing only the current generation's sidecar makes it corrupt; the
+        // previous generation, with the other sidecar, is recovered.
+        damage(&root, &mut steps, &two, preserved(20, &first), 3);
+        let recovered = store.load().unwrap().unwrap();
+        assert!(recovered.recovered_previous);
+        assert_eq!(recovered.snapshot, preserved(20, &first));
+        for (tick, section) in [(40, &second), (50, &second)] {
+            save(&mut store, &mut steps, tick, section);
+        }
+        drop(store);
+        // Write once, reuse while referenced, rewrite after loss, and collect
+        // only after neither retained generation (50, 40) references it.
+        assert_eq!(
+            sidecar_events(&steps),
+            [
+                format!("write {one}"),
+                format!("reuse {one}"),
+                format!("write {two}"),
+                format!("unlink {two}"),
+                format!("write {two}"),
+                format!("reuse {two}"),
+                format!("unlink {one}"),
+            ]
+        );
+        assert_sidecar_durable_before_generation(&steps);
+        let trace = Trace {
+            root,
+            base: DiskState::new(),
+            initial: None,
+            exempt: 0,
+            history: Vec::new(),
+            steps,
+        };
+        let mut tally = Tally::default();
+        if let Err(violation) = enumerate(&trace, 1, &mut tally) {
+            panic!("{violation}");
+        }
+        eprintln!("effects {}, {tally:?}", effect_count(&trace.steps));
+        assert_eq!(tally.main.crash_points, trace.steps.len() + 1);
+        assert!(tally.main.empty_worlds > 0);
+        assert!(tally.main.refused_orphans > 0);
+        assert!(tally.main.recovered_previous > 0);
+        assert!(tally.main.referenced_sidecars > 0);
+        assert!(tally.after_recovery.referenced_sidecars > tally.main.referenced_sidecars);
+        assert_eq!(
+            tally.recovery_saves,
+            tally.main.states - tally.main.refused_orphans
+        );
+    }
+
+    #[test]
+    fn power_loss_during_schema_two_migration_preserves_acknowledged_generation() {
+        let directory = tempfile::tempdir().unwrap();
+        let root = directory.path().to_path_buf();
+        let section = section(3);
+        // A durable schema-2 world written by an earlier binary: inline section.
+        let legacy = WorldSnapshot {
+            schema_version: SNAPSHOT_SCHEMA_PRESERVED,
+            ..preserved(10, &section)
+        };
+        let generation_bytes = serde_json::to_vec(&legacy).unwrap();
+        let manifest = Manifest {
+            schema_version: 1,
+            current: Generation {
+                number: 1,
+                sha256: checksum(&generation_bytes),
+            },
+            previous: None,
+        };
+        let base = DiskState::from([
+            ("snapshot-1.json".to_owned(), generation_bytes),
+            (
+                "manifest.json".to_owned(),
+                serde_json::to_vec(&manifest).unwrap(),
+            ),
+        ]);
+        for (name, bytes) in &base {
+            fs::write(root.join(name), bytes).unwrap();
+        }
+        let mut store = SnapshotStore::open(&root).unwrap();
+        let loaded = store.load().unwrap().unwrap();
+        assert_eq!(loaded.snapshot, legacy);
+        let name = sidecar_name(&section);
+        let mut steps = Vec::new();
+        let save = |store: &mut SnapshotStore, steps: &mut Vec<Step>, tick| {
+            traced_save(
+                store,
+                &root,
+                &preserved(tick, &section),
+                steps,
+                atomic_write,
+            )
+            .unwrap();
+        };
+        save(&mut store, &mut steps, 20);
+        // A lost sidecar recovers the inline schema-2 generation, and the next
+        // save writes the sidecar again.
+        damage(&root, &mut steps, &name, legacy.clone(), 2);
+        let recovered = store.load().unwrap().unwrap();
+        assert!(recovered.recovered_previous);
+        assert_eq!(recovered.snapshot, legacy);
+        save(&mut store, &mut steps, 30);
+        save(&mut store, &mut steps, 40);
+        drop(store);
+        // The first schema-3 save writes the sidecar; the next one reuses it.
+        assert_eq!(
+            sidecar_events(&steps),
+            [
+                format!("write {name}"),
+                format!("unlink {name}"),
+                format!("write {name}"),
+                format!("reuse {name}"),
+            ]
+        );
+        assert_sidecar_durable_before_generation(&steps);
+        let trace = Trace {
+            root,
+            base,
+            initial: Some(legacy),
+            exempt: 0,
+            history: Vec::new(),
+            steps,
+        };
+        let mut tally = Tally::default();
+        if let Err(violation) = enumerate(&trace, 1, &mut tally) {
+            panic!("{violation}");
+        }
+        eprintln!("effects {}, {tally:?}", effect_count(&trace.steps));
+        assert_eq!(tally.main.empty_worlds, 0);
+        assert_eq!(tally.main.refused_orphans, 0);
+        // A recovery save from the legacy generation rewrites the lost sidecar
+        // before its own generation, so a crash in between can load the newer
+        // acknowledged generation 2 again; the floor check still applies.
+        assert!(tally.after_recovery.resurrected > 0);
+        assert!(tally.main.recovered_previous > 0);
+        assert!(tally.main.referenced_sidecars > 0);
+        assert_eq!(tally.recovery_saves, tally.main.states);
+    }
+
+    /// Harness self-check: a sidecar renamed before its data sync must be caught.
+    fn sidecar_before_data_sync(root: &Path, name: &str, bytes: &[u8]) -> Result<()> {
+        if is_sidecar_name(name) {
+            publish_before_data_sync(root, name, bytes)
+        } else {
+            atomic_write(root, name, bytes)
+        }
+    }
+
+    #[test]
+    fn power_loss_model_rejects_sidecar_publication_before_data_sync() {
+        let directory = tempfile::tempdir().unwrap();
+        let root = directory.path().to_path_buf();
+        let mut store = SnapshotStore::open(&root).unwrap();
+        let mut steps = Vec::new();
+        traced_save(
+            &mut store,
+            &root,
+            &preserved(10, &section(4)),
+            &mut steps,
+            sidecar_before_data_sync,
+        )
+        .unwrap();
+        drop(store);
+        let trace = Trace {
+            root,
+            base: DiskState::new(),
+            initial: None,
+            exempt: 0,
+            history: Vec::new(),
+            steps,
+        };
+        let violation = enumerate(&trace, 0, &mut Tally::default()).unwrap_err();
+        assert!(
+            violation.contains("references a missing or damaged sidecar"),
+            "{violation}"
+        );
     }
 }

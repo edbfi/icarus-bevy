@@ -4,7 +4,7 @@ Rows retired from [the active ledger](../network.md): superseded by a summary ro
 execution receipts, or historical session state. Full text is kept and IDs stay
 permanent; cite the superseding row where one exists.
 
-Last reconciled: 2026-10-14
+Last reconciled: 2026-10-15
 
 | ID | Claim | Kind | Evidence | Scope and limits | Unknowns | Status |
 | --- | --- | --- | --- | --- | --- | --- |
@@ -68,3 +68,7 @@ Last reconciled: 2026-10-14
 | F-499 | Older server 25621760 .rdata holds one whole UTF-16LE registration literal each, UWorld at 0x145631fb0 and UPendingNetGame at 0x1455af520, plus bare World (UTF-16 0x1446f4960, ASCII 0x14474d078) and ASCII PendingNetGame (0x1454dc9f0) | observed | static-bytes; M-281..M-283 | high; anchors only; no xrefs, registration flow or owner | U-043 | superseded-by F-501 |
 | F-500 | In server 25621760 each literal has three LEA-shaped rel32 references and no absolute pointer: UWorld via rdx 0x140864e16, r8 0x140865ad2 and +2 via rdx 0x143b86add; UPendingNetGame via rdx 0x140854b96, r8 0x140855532 and +2 via rdx 0x143b21d5d | observed | static-bytes; M-288 | medium; byte patterns; boundaries unconfirmed; +2 fits getter name arguments | U-043 | superseded-by F-501 |
 | F-517 | Within a control bunch each message is its ID byte then consecutive archive reads; ID 0's first field (1 = no swap) selects the remote version's byte order; offsets hold for the first message from bunch byte 0 | inferred | static-bytes; F-514..F-516 | medium; client receive path; server setter and packet-to-bunch framing unbound | U-044 | superseded-by F-519 |
+| F-570 | Client actor bunches: SerializeNewActor on open, then until the bunch ends content blocks: rep-layout and is-actor bits, else sub-object NetGUID, stable bit and class NetGUID (zero deletes), then a packed payload-bit count whose bits go to the replicator | observed | static-decompile; M-424 to M-427; build 25793767 | high; client; property stream unread | U-064 | superseded-by F-576 |
+| F-566 | Server and client UWorld::NotifyControlMessage correspond function-level: the same seven cases (0, 4, 5, 9, 10, 15, 17), four empty-string checks, six +0x2c0 closes, one +0x2c8 send, two +0x750 PreLogin calls and the 1,800 Netspeed floor | observed | static-decompile; M-344, M-405 | high; two flow decompiles; callees unread | U-043 | superseded-by F-579 |
+| F-582 | Server native struct items: NetQuantize vectors a bit count (max 20) and three biased unscaled ints; NetQuantizeNormal three 16-bit values biased by 32768 times a constant; tag containers an empty bit, a count byte and packed tags; hit results a flags byte then such vectors and gated fields | observed | static-decompile; M-463 to M-469 | high; server | U-064 | superseded-by F-593 |
+| F-608 | Client rep layouts follow a class's replicated-property list: the super's list, then own net properties (field order if class flag 0x80 is set, else sorted), one entry per static array element; InitFromClass makes one parent per entry in order, then commands, a return command, handles | observed | static-decompile; M-552 to M-554 | high; key unread | U-064, U-066 | superseded-by F-609 |

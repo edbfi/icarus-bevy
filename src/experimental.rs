@@ -1,8 +1,10 @@
 //! Independently authored compatibility primitives supported by static evidence.
 //!
-//! The separate loopback lab exercises short handshake framing only. The normal
-//! server does not enable it. None of these primitives implements game admission.
+//! The separate loopback labs exercise short handshake framing and, in
+//! `peer_lab`, inferred per-peer packet state. The normal server enables
+//! neither. None of these primitives implements game admission.
 
+pub mod actor_channel;
 pub mod archive;
 pub mod component;
 pub mod control;
@@ -13,8 +15,10 @@ pub mod handshake_lab;
 pub mod int_array;
 pub mod packet;
 pub mod packet_lab;
+pub mod peer_lab;
 pub mod property_tree;
 pub mod recorders;
+pub mod rep_layout;
 pub mod sequencing;
 pub mod struct_array;
 pub mod tagged;

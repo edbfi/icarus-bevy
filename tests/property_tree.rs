@@ -1,5 +1,5 @@
 use icarus_bevy::experimental::property_tree::{
-    BaseComponentTree, NodeValue, PropertyTree, TreeLimits,
+    BaseComponentTree, ContainerItem, NodeValue, PropertyTree, TreeLimits,
 };
 use icarus_bevy::experimental::tagged::{TagKind, TagProfile};
 
@@ -434,4 +434,231 @@ fn base_component_wrapper_round_trips_with_trailer() {
     let mut broken = component;
     broken.trailer.pop();
     assert!(broken.to_bytes().is_err());
+}
+
+const MAP: &[u8] = b"\x0c\0\0\0MapProperty\0";
+const SET: &[u8] = b"\x0c\0\0\0SetProperty\0";
+
+fn count(value: usize) -> Vec<u8> {
+    i32::try_from(value).unwrap().to_le_bytes().to_vec()
+}
+
+fn string(value: &[u8]) -> Vec<u8> {
+    [count(value.len() + 1).as_slice(), value, &[0]].concat()
+}
+
+/// Map header: key type, value type, absent GUID (F-556).
+fn map_prop(key: &[u8], value: &[u8], payload: &[u8]) -> Vec<u8> {
+    prop(MAP, 0, &[key, value, &[0]].concat(), payload)
+}
+
+fn set_prop(inner: &[u8], payload: &[u8]) -> Vec<u8> {
+    prop(SET, 0, &[inner, &[0]].concat(), payload)
+}
+
+#[test]
+fn map_and_set_payloads_frame_into_items_and_round_trip() {
+    // Map<Str, Int>: no removals, two entries (F-559 layout).
+    let scalar_map = map_prop(
+        STR,
+        INT,
+        &[
+            count(0),
+            count(2),
+            string(SECRET),
+            vec![1, 0, 0, 0],
+            string(b"second"),
+            vec![2, 0, 0, 0],
+        ]
+        .concat(),
+    );
+    // Map<Int, Struct>: one removal key, one entry whose value is a tagged stream.
+    let struct_map = map_prop(
+        INT,
+        STRUCT,
+        &[
+            count(1),
+            vec![9, 0, 0, 0],
+            count(1),
+            vec![3, 0, 0, 0],
+            stream(&[int(7), prop(STR, 0, &[0], &string(SECRET))]),
+        ]
+        .concat(),
+    );
+    // Set<Name> and Set<Bool>.
+    let name_set = set_prop(
+        NAME,
+        &[count(0), count(2), string(b"A"), string(SECRET)].concat(),
+    );
+    let bool_set = set_prop(BOOL, &[count(0), count(2), vec![1], vec![0]].concat());
+    let bytes = stream(&[scalar_map, struct_map, name_set, bool_set]);
+    let tree = round_trip(&bytes);
+    match &tree.properties[0].value {
+        NodeValue::Map { removed, entries } => {
+            assert!(removed.is_empty());
+            assert_eq!(entries.len(), 2);
+        }
+        _ => panic!("scalar map should frame"),
+    }
+    match &tree.properties[1].value {
+        NodeValue::Map { removed, entries } => {
+            assert_eq!(removed.len(), 1);
+            assert!(matches!(entries[0].1, ContainerItem::Struct(_)));
+        }
+        _ => panic!("struct map should frame"),
+    }
+    assert!(matches!(tree.properties[2].value, NodeValue::Set { .. }));
+    assert!(matches!(tree.properties[3].value, NodeValue::Set { .. }));
+    let summary = tree.summary();
+    assert_eq!(summary.containers, 4);
+    assert_eq!(summary.container_items, 4 + 3 + 2 + 2);
+    assert_eq!(summary.properties_by_kind.map, 2);
+    assert_eq!(summary.properties_by_kind.set, 2);
+    // The struct item's two properties count as nested nodes.
+    assert_eq!(summary.property_count, 6);
+    let text = format!("{tree:?} {summary:?}");
+    assert!(!text.contains("Sentinel"));
+}
+
+#[test]
+fn malformed_or_unsupported_containers_stay_exact_opaque_leaves() {
+    let cases = [
+        // Trailing byte after the items.
+        map_prop(STR, INT, &[count(0), count(0), vec![0]].concat()),
+        // Count exceeding the remaining payload.
+        set_prop(INT, &[count(0), count(5), vec![1, 0, 0, 0]].concat()),
+        // Negative count.
+        set_prop(
+            INT,
+            &count(usize::MAX >> 33)
+                .iter()
+                .map(|b| !b)
+                .collect::<Vec<_>>(),
+        ),
+        // Truncated scalar item.
+        set_prop(INT, &[count(0), count(1), vec![1, 0]].concat()),
+        // Unsupported inner kinds: Enum and Byte items carry no enum name here.
+        set_prop(ENUM, &[count(0), count(1), vec![1]].concat()),
+        map_prop(
+            b"\x0d\0\0\0ByteProperty\0",
+            INT,
+            &[count(0), count(1), vec![1, 1, 0, 0, 0]].concat(),
+        ),
+        // Binary struct item that is not a tagged stream.
+        map_prop(
+            INT,
+            STRUCT,
+            &[count(0), count(1), vec![1, 0, 0, 0], vec![0xff; 12]].concat(),
+        ),
+        // Unknown inner type name.
+        set_prop(
+            b"\x10\0\0\0DoublePropertyX\0",
+            &[count(0), count(1), vec![0; 8]].concat(),
+        ),
+    ];
+    for (index, case) in cases.iter().enumerate() {
+        let bytes = stream(std::slice::from_ref(case));
+        let tree = round_trip(&bytes);
+        assert!(
+            matches!(tree.properties[0].value, NodeValue::Opaque(_)),
+            "case {index} should stay opaque"
+        );
+    }
+    // An empty container needs no item width, so even an unknown inner kind
+    // frames exactly.
+    let empty = set_prop(
+        b"\x10\0\0\0DoublePropertyX\0",
+        &[count(0), count(0)].concat(),
+    );
+    let tree = round_trip(&stream(std::slice::from_ref(&empty)));
+    assert!(matches!(tree.properties[0].value, NodeValue::Set { .. }));
+}
+
+#[test]
+fn container_struct_items_respect_depth_and_node_budgets() {
+    let map = map_prop(
+        INT,
+        STRUCT,
+        &[
+            count(0),
+            count(1),
+            vec![1, 0, 0, 0],
+            stream(&[int(1), int(2)]),
+        ]
+        .concat(),
+    );
+    let bytes = stream(std::slice::from_ref(&map));
+    // At depth 1 no nested stream is allowed, so the whole map stays opaque.
+    let shallow = depth_limited(&bytes, 1).unwrap();
+    assert!(matches!(shallow.properties[0].value, NodeValue::Opaque(_)));
+    assert_eq!(shallow.to_bytes().unwrap(), bytes);
+    // The map, its key and value items and the two struct properties need five
+    // budget units; with one fewer the map stays an exact opaque leaf.
+    let limits = TreeLimits {
+        max_nodes: 4,
+        ..TreeLimits::default()
+    };
+    let opaque = PropertyTree::parse(&bytes, TagProfile::MemoryArchive522, limits).unwrap();
+    assert!(matches!(opaque.properties[0].value, NodeValue::Opaque(_)));
+    assert_eq!(opaque.to_bytes().unwrap(), bytes);
+    // A budget too small for a later root property still fails the parse.
+    let limits = TreeLimits {
+        max_nodes: 1,
+        ..TreeLimits::default()
+    };
+    let two = stream(&[map.clone(), int(1)]);
+    assert!(PropertyTree::parse(&two, TagProfile::MemoryArchive522, limits).is_err());
+    let limits = TreeLimits {
+        max_nodes: 5,
+        ..TreeLimits::default()
+    };
+    let tree = PropertyTree::parse(&bytes, TagProfile::MemoryArchive522, limits).unwrap();
+    assert!(matches!(tree.properties[0].value, NodeValue::Map { .. }));
+}
+
+#[test]
+fn many_tiny_container_items_are_bounded_by_the_node_budget() {
+    // 4,096 one-byte Bool items: within the default budget they frame, but a
+    // budget of 100 stops after 99 items and keeps the payload opaque.
+    let elements = vec![1u8; 4096];
+    let set = set_prop(BOOL, &[count(0), count(elements.len()), elements].concat());
+    let bytes = stream(std::slice::from_ref(&set));
+    assert!(matches!(
+        round_trip(&bytes).properties[0].value,
+        NodeValue::Set { .. }
+    ));
+    let limits = TreeLimits {
+        max_nodes: 100,
+        ..TreeLimits::default()
+    };
+    let tree = PropertyTree::parse(&bytes, TagProfile::MemoryArchive522, limits).unwrap();
+    assert!(matches!(tree.properties[0].value, NodeValue::Opaque(_)));
+    assert_eq!(tree.to_bytes().unwrap(), bytes);
+}
+
+#[test]
+fn a_discarded_container_attempt_does_not_consume_the_node_budget() {
+    // The map frames its struct item before a trailing byte forces the opaque
+    // fallback; the retained tree needs only the map and the following Int.
+    let map = map_prop(
+        INT,
+        STRUCT,
+        &[
+            count(0),
+            count(1),
+            vec![1, 0, 0, 0],
+            stream(&[int(1)]),
+            vec![0],
+        ]
+        .concat(),
+    );
+    let bytes = stream(&[map, int(2)]);
+    let limits = TreeLimits {
+        max_nodes: 2,
+        ..TreeLimits::default()
+    };
+    let tree = PropertyTree::parse(&bytes, TagProfile::MemoryArchive522, limits).unwrap();
+    assert!(matches!(tree.properties[0].value, NodeValue::Opaque(_)));
+    assert_eq!(tree.properties.len(), 2);
+    assert_eq!(tree.to_bytes().unwrap(), bytes);
 }

@@ -4,7 +4,7 @@
 
 Experimental: static observations, not wire-validated. Scope: dedicated-server
 build 25621760 (M-168) unless a current-client (build 25793767) comparison is
-named. Last reconciled: 2026-10-14.
+named. Last reconciled: 2026-10-15.
 Full text: d5b0ae6:docs/specs/network/control-negotiation.md.
 
 ## Scope
@@ -187,6 +187,24 @@ game listener.
   cookie seeds mirrored for the server (inferred), gated receive, ordered
   reliable control delivery and ack-only replies. It answers no control
   message and validates no negotiation, identity or game connection.
+  `experimental::peer_lab` runs that state in the Bevy loopback lab: a peer is
+  created only when its handshake acknowledgement is sent, in a bounded table
+  with idle expiry, and each update coalesces one ack per peer (F-558). As an
+  inferred mirror, it answers a Hello with Upgrade on a configured version
+  mismatch, otherwise Challenge (lab random string) for an empty token, and a
+  Login with Failure; it never sends Welcome. Replies are reliable control
+  bunches resent after a nak (F-564).
+- Server `UWorld::NotifyControlMessage` (`0x1439ee7f0`, F-563): Hello sends
+  Upgrade with the local version and closes on a version mismatch; only an
+  empty token (count with terminator under two) reaches the challenge sender;
+  a nonempty token fails and closes unless an encryption delegate is
+  registered. Netspeed is clamped to at least 1,800. Login stores the response,
+  URL, unique id and platform, validates the URL, calls the game mode's
+  PreLogin and welcomes the player on an empty error, otherwise sends the
+  error and closes.
+- Server `UWorld::WelcomePlayer` (`0x1439fdeb0`, F-580): Welcome is type 1 with
+  three strings (level or travel name, game-mode class name, a game-mode
+  supplied string), followed by a flush, a queued-bits reset and login state 2.
 - Current client unique-net-id type hashes (F-543): 1 NULL, 2 MCP, 3 STEAM,
   4 PS4, 6 GOOGLE, 7 GOOGLEPLAY, 8 FACEBOOK, 9 IOS, 10 APPLE, 11 TENCENT,
   12 SWITCH, 13 AMAZON, 14 GAMECIRCLE, 15 THUNDERHEAD, 18 Oculus, 19 Quail,
@@ -227,5 +245,5 @@ game listener.
   tests, plus archive and handshake suites):
 
 ```bash
-cargo test --locked --test control --test packet --test control_receive --test control_messages --test sequencing --test packet_lab --test archive --test handshake
+cargo test --locked --test control --test packet --test control_receive --test control_messages --test sequencing --test packet_lab --test peer_lab --test archive --test handshake
 ```

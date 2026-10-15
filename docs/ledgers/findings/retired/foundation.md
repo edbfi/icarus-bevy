@@ -4,7 +4,7 @@ Rows retired from [the active ledger](../foundation.md): superseded by a summary
 execution receipts, or historical session state. Full text is kept and IDs stay
 permanent; cite the superseding row where one exists.
 
-Last reconciled: 2026-10-14
+Last reconciled: 2026-10-15
 
 | ID | Claim | Kind | Evidence | Scope and limits | Unknowns | Status |
 | --- | --- | --- | --- | --- | --- | --- |
@@ -63,3 +63,8 @@ Last reconciled: 2026-10-14
 | F-251 | CI definition validates formatting, Clippy, tests, release build and headless smoke; local checks passed. | observed | review | high; CI definition; Hosted CI not run from this workspace | U-036 | superseded-by F-497 |
 | F-279 | Thirty-five pre-existing feature commits lack the sign-offs required by the current PR policy; new commits comply. | observed | review | high; branch history; blocks PR integration until resolved without rewriting history |  | superseded-by F-555 |
 | F-528 | The PR policy rejects a PR above 250 commits and any non-merge commit lacking its author's exact sign-off line; at d3f626a the branch is 231 commits ahead of main (230 non-merge), so a remediation commit cannot clear F-279 and about 19 more commits reach the cap | observed | review; M-342 | high; workflow as committed; merges exempt | | superseded-by F-555 |
+| F-561 | The peer lab answers a mismatched Hello with Upgrade and a short-token Hello with Challenge, and a Login with Failure then removal; replies are reliable control bunches resent after a nak; Welcome is never sent | observed | authored-test; M-400 | high; loopback authored tests; inferred proxy of F-530, lab challenge string | U-037, U-038 | superseded-by F-564 |
+| F-560 | Native schema-2 preservation keeps each supplied copy whole: all 2,744/2,741 bodies framed, none opaque, byte-identical; a 28.5 MB generation saves in about 170 ms and reloads in 180 ms at 229 MB peak RSS | observed | structural-comparison; M-397 to M-399 | high; two copies, release CLI; values opaque; section rewritten each save | U-045 | superseded-by F-567 |
+| F-568 | A world seeded from a preserved copy ran 54,000 ticks with 180 ten-second autosaves, no failures or deadline misses and no sidecar rewrite; tick p99 stayed at or under 74 us against 70 us for an empty control; peak RSS 107 MB against 8 MB | observed | native-test; M-417 to M-419 | high; one 30-minute run each, shared host; synthetic | U-045, U-049 | superseded-by F-578 |
+| F-578 | Seeded preserved worlds run through 10-second autosaves without failures or deadline misses (180 saves in 30 minutes; tick p99 at most 74 us). Holding the section as its verified encoding cuts steady RSS from 107 MB to about 42 MB; load peaks at 110 MB | observed | native-test; M-417 to M-419, M-452 to M-454 | high; shared host; synthetic | U-045, U-049 | superseded-by F-584 |
+| F-585 | An experimental rep-layout codec reads and re-encodes property streams from a caller layout (handles, nested arrays, checksums; Bool, Byte, Enum, object, name, quantized vector, normal, rotator, opaque items) bit-identically from authored fixtures, failing closed otherwise | observed | authored-test; M-475 | high; fixtures; array addressing unread | U-064 | superseded-by F-587 |

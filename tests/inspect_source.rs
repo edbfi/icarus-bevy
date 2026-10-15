@@ -15,11 +15,12 @@ use flate2::{Compression, write::ZlibEncoder};
 use serde_json::{Value, json};
 use sha1::{Digest, Sha1};
 
-const MODES: [&[&str]; 4] = [
+const MODES: [&[&str]; 5] = [
     &[],
     &["--inner-tags"],
     &["--recorders"],
     &["--inner-tags", "--recorders"],
+    &["--preserve-check"],
 ];
 const MARKER: &str = "AUTHORED_INSPECT_VALUE_MARKER";
 
@@ -237,7 +238,33 @@ fn regular_sources_and_regular_symlinks_preserve_private_values_and_files() {
             assert!(!String::from_utf8_lossy(&output.stdout).contains(MARKER));
             let report: Value = serde_json::from_slice(&output.stdout).unwrap();
             assert_eq!(report["world_imported"], false);
-            let validation = if mode.contains(&"--recorders") {
+            let validation = if mode.contains(&"--preserve-check") {
+                let preservation = &report["preservation"];
+                assert_eq!(preservation["recorder_count"], 1);
+                assert_eq!(preservation["byte_identical"], true);
+                assert_eq!(preservation["values_interpreted"], false);
+                assert_eq!(report["native_schema"], 3);
+                assert_eq!(report["native_round_trip"], true);
+                assert!(report["native_generation_bytes"].as_u64().unwrap() > 0);
+                assert!(report["native_second_generation_bytes"].as_u64().unwrap() > 0);
+                assert!(report["native_sidecar_bytes"].as_u64().unwrap() > 0);
+                assert_eq!(report["native_sidecar_rewritten"], false);
+                assert!(report["second_save_ms"].is_u64());
+                assert!(report["decode_ms"].is_u64());
+                // The held section is its sidecar encoding plus a fixed constant.
+                let held = report["held_section_bytes"].as_u64().unwrap();
+                let sidecar = report["native_sidecar_bytes"].as_u64().unwrap();
+                assert!(held > sidecar && held - sidecar <= 512, "{held} {sidecar}");
+                // Linux reports VmRSS; other platforms report null.
+                for key in ["section_only", "with_decoded_tree", "after_tree_dropped"] {
+                    let resident = &report["resident_bytes"][key];
+                    assert!(resident.is_u64() || resident.is_null(), "{key}");
+                    if cfg!(target_os = "linux") {
+                        assert!(resident.as_u64().unwrap() > 0, "{key}");
+                    }
+                }
+                "experimental_lossless_preservation"
+            } else if mode.contains(&"--recorders") {
                 assert_eq!(report["recorders"]["recorder_count"], 1);
                 assert_eq!(report["inner_tags"]["root_property_count"], 1);
                 "experimental_recorder_framing_only"
@@ -287,4 +314,93 @@ fn regular_file_size_and_private_json_diagnostics_remain_bounded() {
             assert_eq!(inventory(directory.path()), before);
         }
     }
+}
+
+fn server_bounded(root: &Path, args: &[&std::ffi::OsStr]) -> Output {
+    let mut child = OwnedChild(Some(
+        Command::new(env!("CARGO_BIN_EXE_icarus-server"))
+            .current_dir(root)
+            .args(args)
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap(),
+    ));
+    let deadline = Instant::now() + Duration::from_secs(20);
+    while child.0.as_mut().unwrap().try_wait().unwrap().is_none() {
+        assert!(Instant::now() < deadline, "server command did not exit");
+        thread::sleep(Duration::from_millis(1));
+    }
+    child.0.take().unwrap().wait_with_output().unwrap()
+}
+
+#[test]
+fn preserve_save_seeds_a_new_world_that_runs_and_never_overwrites() {
+    let directory = tempfile::tempdir().unwrap();
+    let source = directory.path().join("authored.json");
+    fs::write(&source, authored_envelope()).unwrap();
+    let world = directory.path().join("world");
+    let preserve = |root: &Path| {
+        server_bounded(
+            root,
+            &[
+                "preserve-save".as_ref(),
+                "--source".as_ref(),
+                source.as_os_str(),
+                "--data-dir".as_ref(),
+                world.as_os_str(),
+            ],
+        )
+    };
+    let output = preserve(directory.path());
+    assert!(output.status.success(), "{:?}", output.stderr);
+    assert!(!String::from_utf8_lossy(&output.stdout).contains(MARKER));
+    let report: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(report["event"], "preserved_world_created");
+    assert_eq!(report["native_schema"], 3);
+    assert_eq!(report["world_imported"], false);
+    assert_eq!(report["preservation"]["byte_identical"], true);
+    let sidecars = || {
+        fs::read_dir(&world)
+            .unwrap()
+            .filter(|entry| {
+                let name = entry.as_ref().unwrap().file_name();
+                name.to_string_lossy().starts_with("preserved-")
+            })
+            .count()
+    };
+    assert_eq!(sidecars(), 1);
+
+    // A second preservation into the same world is refused without writes.
+    let before = inventory(&world);
+    let refused = preserve(directory.path());
+    assert_eq!(refused.status.code(), Some(1));
+    assert!(String::from_utf8_lossy(&refused.stderr).contains("refusing to overwrite"));
+    assert_eq!(inventory(&world), before);
+
+    // The world runs, autosaves keep its section and report schema 3.
+    let run = server_bounded(
+        directory.path(),
+        &[
+            "run".as_ref(),
+            "--data-dir".as_ref(),
+            world.as_os_str(),
+            "--max-ticks".as_ref(),
+            "5".as_ref(),
+        ],
+    );
+    assert!(run.status.success(), "{:?}", run.stderr);
+    let started = String::from_utf8_lossy(&run.stderr)
+        .lines()
+        .map(|line| serde_json::from_str::<Value>(line).unwrap())
+        .find(|event| event["event"] == "started")
+        .unwrap();
+    assert_eq!(started["native_schema"], 3);
+    let committed = String::from_utf8_lossy(&run.stderr)
+        .lines()
+        .map(|line| serde_json::from_str::<Value>(line).unwrap())
+        .rfind(|event| event["event"] == "save_committed")
+        .unwrap();
+    assert!(committed["save_latency_micros"].as_u64().is_some());
+    assert_eq!(sidecars(), 1);
 }

@@ -6,7 +6,7 @@ here instead of restating them.
 
 Before restructure: 96ddb0b:docs/gates.md
 
-Last reconciled: 2026-10-14
+Last reconciled: 2026-10-15
 
 ## Before any C001 original-code case
 
@@ -98,6 +98,14 @@ Last reconciled: 2026-10-14
   control-body fields (U-044).
 - Older server build 25621760 and client build 25793767 remain distinct;
   addresses and assumptions do not transfer automatically.
+
+## Before deriving replication schema for the server
+
+- A server that replicates to stock clients needs the client's gameplay-tag
+  table (U-065) and each replicated class's property list (U-066). Deriving
+  either from the stock client, its configuration or packaged data, and
+  shipping the result, needs an explicit user decision first; static reads
+  of engine code stay research inputs only.
 
 ## Before any original-server or client run
 

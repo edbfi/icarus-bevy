@@ -53,6 +53,20 @@ enum Command {
         /// Also frame recorder fields, leaving component bytes opaque; implies root framing.
         #[arg(long)]
         recorders: bool,
+        /// Preserve the payload losslessly, then save and reload it through a
+        /// temporary native schema-3 store; reports counts, sizes, timings and
+        /// the resident set with and without the decoded tree (Linux only).
+        #[arg(long, conflicts_with_all = ["inner_tags", "recorders"])]
+        preserve_check: bool,
+    },
+    /// Seed a NEW native world whose only content is the lossless, value-opaque
+    /// preservation of a supplied prospect. Nothing is interpreted or imported;
+    /// an existing world is never overwritten.
+    PreserveSave {
+        #[arg(long)]
+        source: PathBuf,
+        #[arg(long)]
+        data_dir: PathBuf,
     },
     /// Reserved interface: official format is unknown; fails without writing.
     ImportSave {
@@ -84,6 +98,11 @@ fn execute(cli: Cli) -> Result<()> {
             println!("{}", toml::to_string_pretty(&options.resolve()?)?);
             Ok(())
         }
+        Command::PreserveSave { source, data_dir } => {
+            let file = open_regular_source(&source)?;
+            println!("{}", preserve_save(file, &data_dir)?);
+            Ok(())
+        }
         Command::ImportSave { .. } => bail!(
             "ICARUS save import is unavailable until the format and migration fidelity are validated; no files were written"
         ),
@@ -91,16 +110,14 @@ fn execute(cli: Cli) -> Result<()> {
             source,
             inner_tags,
             recorders,
+            preserve_check,
         } => {
             // Check the opened handle: a path can change to a FIFO after a
             // regular-file precheck. Normal regular-file symlinks still work.
-            let file = std::fs::OpenOptions::new()
-                .read(true)
-                .custom_flags(icarus_bevy::nonblocking_flag())
-                .open(&source)
-                .context("open prospect envelope")?;
-            ensure!(file.metadata()?.is_file(), "source must be a regular file");
-            let output = if recorders {
+            let file = open_regular_source(&source)?;
+            let output = if preserve_check {
+                serde_json::to_string(&preserve_check_report(file)?)?
+            } else if recorders {
                 serde_json::to_string(&icarus_bevy::prospect::inspect_with_recorders(file)?)?
             } else if inner_tags {
                 serde_json::to_string(&icarus_bevy::prospect::inspect_with_inner_tags(file)?)?
@@ -114,10 +131,186 @@ fn execute(cli: Cli) -> Result<()> {
     }
 }
 
-fn saved(receipt: SaveReceipt) {
+/// Store files after a save: current generation bytes and every sidecar's
+/// (name, bytes, inode, modification time in nanoseconds).
+type StoreFiles = (u64, Vec<(String, u64, u64, i128)>);
+
+fn store_files(root: &std::path::Path, generation: u64) -> Result<StoreFiles> {
+    use std::os::unix::fs::MetadataExt;
+
+    let generation_bytes =
+        std::fs::metadata(root.join(format!("snapshot-{generation}.json")))?.len();
+    let mut sidecars = Vec::new();
+    for entry in std::fs::read_dir(root)? {
+        let entry = entry?;
+        let name = entry.file_name().to_string_lossy().into_owned();
+        if icarus_bevy::preservation::is_sidecar_name(&name) {
+            let metadata = entry.metadata()?;
+            let modified =
+                i128::from(metadata.mtime()) * 1_000_000_000 + i128::from(metadata.mtime_nsec());
+            sidecars.push((name, metadata.len(), metadata.ino(), modified));
+        }
+    }
+    Ok((generation_bytes, sidecars))
+}
+
+/// Open a supplied envelope nonblocking and admit only an opened regular file.
+fn open_regular_source(source: &std::path::Path) -> Result<std::fs::File> {
+    let file = std::fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(icarus_bevy::nonblocking_flag())
+        .open(source)
+        .context("open prospect envelope")?;
+    ensure!(file.metadata()?.is_file(), "source must be a regular file");
+    Ok(file)
+}
+
+/// Preserve a supplied envelope into a fresh native world at tick 0. The
+/// directory may exist but must hold no committed world.
+fn preserve_save(file: std::fs::File, data_dir: &std::path::Path) -> Result<serde_json::Value> {
+    use icarus_bevy::{
+        preservation::PreserveLimits,
+        simulation::{SNAPSHOT_SCHEMA_REFERENCED, WorldSnapshot},
+    };
+
+    let preserved = icarus_bevy::prospect::preserve(file, PreserveLimits::default())?;
+    let summary = serde_json::to_value(preserved.preserved.summary())?;
+    let mut store = SnapshotStore::open(data_dir)?;
+    ensure!(
+        store.load()?.is_none(),
+        "data directory already holds a native world; refusing to overwrite it"
+    );
+    let snapshot = WorldSnapshot {
+        schema_version: SNAPSHOT_SCHEMA_REFERENCED,
+        preserved_prospect: Some(std::sync::Arc::new(preserved.preserved)),
+        ..WorldSnapshot::default()
+    };
+    let receipt = store.save(&snapshot)?;
+    Ok(json!({
+        "event": "preserved_world_created",
+        "validation": "experimental_lossless_preservation",
+        "envelope": preserved.envelope,
+        "preservation": summary,
+        "native_schema": SNAPSHOT_SCHEMA_REFERENCED,
+        "generation": receipt.generation,
+        "world_imported": false,
+        "gameplay_ready": false,
+    }))
+}
+
+/// Resident set size of this process from `/proc/self/status` (`VmRSS`), or
+/// `None` where that interface is unavailable.
+fn resident_bytes() -> Option<u64> {
+    let status = std::fs::read_to_string("/proc/self/status").ok()?;
+    let line = status
+        .lines()
+        .find_map(|line| line.strip_prefix("VmRSS:"))?;
+    let kibibytes = line.trim().strip_suffix("kB")?.trim().parse::<u64>().ok()?;
+    kibibytes.checked_mul(1024)
+}
+
+/// Preserve a supplied envelope and prove the native persistence round trip in
+/// a private temporary store that is removed afterwards. Nothing is imported.
+/// A second save shows the write-once sidecar is reused rather than rewritten.
+/// The reloaded compact section is then decoded on demand to its full tree to
+/// report the resident set with and without that tree.
+fn preserve_check_report(file: std::fs::File) -> Result<serde_json::Value> {
+    use icarus_bevy::{
+        persistence::SnapshotStore,
+        preservation::PreserveLimits,
+        simulation::{SNAPSHOT_SCHEMA_REFERENCED, WorldSnapshot},
+    };
+    use std::{sync::Arc, time::Instant};
+
+    let started = Instant::now();
+    let preserved = icarus_bevy::prospect::preserve(file, PreserveLimits::default())?;
+    let preserve_ms = started.elapsed().as_millis();
+    let payload_sha256 = preserved.preserved.payload_sha256();
+    let summary = serde_json::to_value(preserved.preserved.summary())?;
+    let mut snapshot = WorldSnapshot {
+        schema_version: SNAPSHOT_SCHEMA_REFERENCED,
+        preserved_prospect: Some(Arc::new(preserved.preserved)),
+        ..WorldSnapshot::default()
+    };
+    let original = snapshot
+        .preserved_prospect
+        .clone()
+        .context("preserved section missing before save")?;
+    let directory = tempfile::tempdir().context("create temporary native store")?;
+    let mut store = SnapshotStore::open(directory.path())?;
+    let saved = Instant::now();
+    let first = store.save(&snapshot)?;
+    let save_ms = saved.elapsed().as_millis();
+    let (generation_bytes, sidecars) = store_files(directory.path(), first.generation)?;
+    ensure!(
+        sidecars.len() == 1,
+        "expected exactly one preserved sidecar"
+    );
+    snapshot.tick += 1;
+    let saved = Instant::now();
+    let second = store.save(&snapshot)?;
+    let second_save_ms = saved.elapsed().as_millis();
+    let (second_generation_bytes, after) = store_files(directory.path(), second.generation)?;
+    ensure!(
+        after == sidecars,
+        "second save rewrote the preserved sidecar"
+    );
+    let loaded_at = Instant::now();
+    let loaded = store
+        .load()?
+        .context("saved native generation is missing")?;
+    let load_ms = loaded_at.elapsed().as_millis();
+    let reloaded = loaded
+        .snapshot
+        .preserved_prospect
+        .context("reloaded generation lost its preserved section")?;
+    ensure!(*reloaded == *original, "reloaded preserved section differs");
+    drop((snapshot, original));
+    let section_only = resident_bytes();
+    let decoded_at = Instant::now();
+    // Verified again: re-hashed, bounded decode and byte-identical reconstruction.
+    let tree = reloaded.decode()?;
+    let decode_ms = decoded_at.elapsed().as_millis();
+    let with_tree = resident_bytes();
+    ensure!(
+        tree.payload_sha256() == payload_sha256 && tree.payload_bytes() == reloaded.payload_bytes(),
+        "decoded preserved section differs"
+    );
+    drop(tree);
+    let after_tree_dropped = resident_bytes();
+    let held_section_bytes = reloaded.held_bytes();
+    drop(store);
+    directory.close().context("remove temporary native store")?;
+    Ok(json!({
+        "validation": "experimental_lossless_preservation",
+        "envelope": preserved.envelope,
+        "preservation": summary,
+        "native_schema": SNAPSHOT_SCHEMA_REFERENCED,
+        "native_generation_bytes": generation_bytes,
+        "native_second_generation_bytes": second_generation_bytes,
+        "native_sidecar_bytes": sidecars[0].1,
+        "native_sidecar_rewritten": false,
+        "native_round_trip": true,
+        "preserve_ms": preserve_ms, "save_ms": save_ms,
+        "second_save_ms": second_save_ms, "load_ms": load_ms, "decode_ms": decode_ms,
+        "held_section_bytes": held_section_bytes,
+        // Linux VmRSS; null elsewhere. Freed memory may stay with the allocator.
+        "resident_bytes": {
+            "section_only": section_only,
+            "with_decoded_tree": with_tree,
+            "after_tree_dropped": after_tree_dropped,
+        },
+        "world_imported": false,
+    }))
+}
+
+/// `submitted` is when the committed snapshot was handed to the save worker;
+/// the latency covers queueing, serialization and durable publication.
+fn saved(receipt: SaveReceipt, submitted: Option<Instant>) {
     eprintln!(
         "{}",
-        json!({"event": "save_committed", "generation": receipt.generation, "tick": receipt.tick})
+        json!({"event": "save_committed", "generation": receipt.generation, "tick": receipt.tick,
+        "save_latency_micros": submitted.map(|time| time.elapsed().as_micros())})
     );
 }
 
@@ -154,6 +347,7 @@ fn run(options: ConfigOptions, max_ticks: Option<u64>) -> Result<()> {
         .context("install SIGINT/SIGTERM handler")?;
 
     let mut last_save_request = Instant::now();
+    let mut save_submitted = None::<Instant>;
     let mut last_status = Instant::now();
     let mut last_commit = None::<Instant>;
     let mut save_failures = 0_u64;
@@ -163,7 +357,8 @@ fn run(options: ConfigOptions, max_ticks: Option<u64>) -> Result<()> {
     eprintln!(
         "{}",
         json!({"event": "started", "tick": snapshot.tick, "tick_hz": config.tick_hz,
-        "icarus_compatible": false, "gameplay_ready": false, "native_schema": 1})
+        "icarus_compatible": false, "gameplay_ready": false,
+        "native_schema": snapshot.schema_version})
     );
 
     loop {
@@ -177,7 +372,7 @@ fn run(options: ConfigOptions, max_ticks: Option<u64>) -> Result<()> {
         match writer.poll() {
             Ok(Some(receipt)) => {
                 last_commit = Some(Instant::now());
-                saved(receipt);
+                saved(receipt, save_submitted.take());
             }
             Ok(None) => {}
             Err(error) => {
@@ -200,6 +395,7 @@ fn run(options: ConfigOptions, max_ticks: Option<u64>) -> Result<()> {
         {
             writer.submit(capture(app.world_mut())?)?;
             last_save_request = Instant::now();
+            save_submitted = Some(last_save_request);
         }
         if last_status.elapsed() >= Duration::from_secs(config.status_interval_seconds) {
             let metrics = app.world().resource::<TickMetrics>();
@@ -224,7 +420,7 @@ fn run(options: ConfigOptions, max_ticks: Option<u64>) -> Result<()> {
     let deadline = Instant::now() + Duration::from_secs(config.shutdown_timeout_seconds);
     // A failed in-flight autosave is reported as in the loop; the final save still runs.
     match writer.settle_before(deadline)? {
-        Some(Ok(receipt)) => saved(receipt),
+        Some(Ok(receipt)) => saved(receipt, save_submitted.take()),
         Some(Err(error)) => eprintln!(
             "{}",
             json!({"event": "save_failed", "error": format!("{error:#}")})
@@ -235,9 +431,10 @@ fn run(options: ConfigOptions, max_ticks: Option<u64>) -> Result<()> {
         Instant::now() < deadline,
         "snapshot shutdown deadline exceeded before final capture"
     );
+    let final_submitted = Instant::now();
     writer.submit_before(capture(app.world_mut())?, deadline)?;
     if let Some(receipt) = writer.finish_before(deadline)? {
-        saved(receipt);
+        saved(receipt, Some(final_submitted));
     }
     eprintln!(
         "{}",

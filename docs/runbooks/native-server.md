@@ -45,6 +45,15 @@ Snapshot capture requires every entity with a domain ID to have its required
 position; incomplete state fails before submission instead of silently dropping
 that entity from the durable generation. Entities without domain identity remain
 outside the current native snapshot schema.
+Native schema 1 holds only those records and the clock (64 MiB per generation).
+A world with a lossless, value-opaque preserved prospect section saves schema 3:
+the generation references a content-addressed `preserved-<sha256>.bin` sidecar,
+written and synchronized once before any generation that references it and
+verified by size and digest on load. A missing or damaged sidecar makes its
+generation corrupt, so the previous one recovers. After publication, sidecars
+no retained generation references are removed (exact name pattern, regular
+files only). Schema-2 worlds with an inline section still load and move to
+schema 3 at their next save; other schemas fail closed (F-567).
 
 Each generation is checksummed and synchronized before the manifest is atomically
 published. The store retains two committed generations. Startup reports when a
@@ -68,6 +77,11 @@ checks, so this is not a hard process-exit-time guarantee. Durability relies on
 the filesystem honoring synchronization and atomic rename; qualification so far is
 for local Linux storage, not network filesystems or physical power-loss testing.
 
+`preserve-save --source … --data-dir …` seeds a new native world whose only
+content is the lossless preservation of a supplied prospect (schema 3, tick 0,
+`world_imported: false`); it refuses a directory that already holds a world.
+The world then runs and autosaves like any other; nothing in it is interpreted.
+
 `import-save --source … --destination … --dry-run` is a reserved interface: it
 returns an explicit unsupported error without reading/writing the supplied paths.
 Do not use it to migrate a real world yet.
@@ -82,7 +96,14 @@ The optional `--inner-tags` also checks [root property framing](../specs/save-fo
 under an explicit experimental profile and reports counts; record values remain opaque.
 Use `--recorders` to additionally check recorder field and byte-array boundaries;
 it implies root framing and reports aggregates without class names or component data.
-Validation covers authored fixtures and supplied-save envelope integrity; the
-inner world schema and original-save round trips remain unvalidated.
+`--preserve-check` preserves the payload losslessly, saves and reloads it through
+a temporary schema-3 store that it removes, saving twice to show the sidecar is
+not rewritten, and reports counts, sizes, timings and resident memory with
+`world_imported: false` (F-567). A running server holds the section as its
+verified encoding, not as a decoded tree, and verifies it on load in one
+streaming pass without building the tree (F-584).
+Validation covers authored fixtures, supplied-save envelope integrity and the
+lossless preservation; value meanings and original-server round trips remain
+unvalidated.
 The [synthetic workload](synthetic-workload.md) exercises native scheduling
 and durability; it is not an ICARUS performance benchmark.

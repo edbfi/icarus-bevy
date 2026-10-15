@@ -1,10 +1,19 @@
-use std::{collections::BTreeSet, time::Instant};
+use std::{collections::BTreeSet, sync::Arc, time::Instant};
 
-use anyhow::{Result, ensure};
+use anyhow::{Result, bail, ensure};
 use bevy::prelude::*;
 use serde::{Deserialize, Serialize};
 
-use crate::{config::ServerConfig, metrics::LatencyHistogram};
+use crate::{config::ServerConfig, metrics::LatencyHistogram, preservation::PreservedSection};
+
+/// Native schema without a preserved section; still written when none exists.
+pub const SNAPSHOT_SCHEMA_DOMAIN: u32 = 1;
+/// Native schema 1 plus exactly one verified preserved prospect section,
+/// inline as Base64. Still loaded; no longer written (migrates to schema 3).
+pub const SNAPSHOT_SCHEMA_PRESERVED: u32 = 2;
+/// Native schema 1 plus a reference to exactly one preserved prospect section
+/// held in a write-once, content-addressed sidecar file of the snapshot store.
+pub const SNAPSHOT_SCHEMA_REFERENCED: u32 = 3;
 
 /// Stable domain identity, independent of Bevy's runtime entity allocation.
 #[derive(Component, Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
@@ -28,25 +37,44 @@ pub struct WorldSnapshot {
     pub tick: u64,
     #[serde(deserialize_with = "crate::json::objects")]
     pub entities: Vec<EntityRecord>,
+    /// Lossless, value-opaque supplied-save state carried unchanged between
+    /// generations; present exactly in schemas 2 and 3. Shared, never interpreted,
+    /// and held compactly as its verified native encoding (no value tree).
+    /// Serde writes the section inline under the stored `schema_version`, which is
+    /// a loadable document only for schema 2; the snapshot store writes schema 3
+    /// itself, as a sidecar reference.
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        with = "crate::preservation::snapshot_section"
+    )]
+    pub preserved_prospect: Option<Arc<PreservedSection>>,
 }
 
 impl Default for WorldSnapshot {
     fn default() -> Self {
         Self {
-            schema_version: 1,
+            schema_version: SNAPSHOT_SCHEMA_DOMAIN,
             tick: 0,
             entities: Vec::new(),
+            preserved_prospect: None,
         }
     }
 }
 
 impl WorldSnapshot {
     pub fn validate(&self) -> Result<()> {
-        ensure!(
-            self.schema_version == 1,
-            "unsupported native snapshot schema {}",
-            self.schema_version
-        );
+        match (self.schema_version, &self.preserved_prospect) {
+            (SNAPSHOT_SCHEMA_DOMAIN, None)
+            | (SNAPSHOT_SCHEMA_PRESERVED | SNAPSHOT_SCHEMA_REFERENCED, Some(_)) => {}
+            (SNAPSHOT_SCHEMA_DOMAIN, Some(_)) => {
+                bail!("native snapshot schema 1 cannot hold a preserved section")
+            }
+            (schema @ (SNAPSHOT_SCHEMA_PRESERVED | SNAPSHOT_SCHEMA_REFERENCED), None) => {
+                bail!("native snapshot schema {schema} requires its preserved section")
+            }
+            (other, _) => bail!("unsupported native snapshot schema {other}"),
+        }
         let mut ids = BTreeSet::new();
         for entity in &self.entities {
             ensure!(
@@ -67,6 +95,10 @@ impl WorldSnapshot {
         Ok(())
     }
 }
+
+/// The loaded preserved section, handed back unchanged to every capture.
+#[derive(Resource, Clone)]
+pub struct PreservedProspectState(pub Arc<PreservedSection>);
 
 #[derive(Resource, Default)]
 pub struct SimulationClock {
@@ -134,6 +166,9 @@ pub fn build_app(config: &ServerConfig, snapshot: &WorldSnapshot) -> Result<App>
     for entity in &snapshot.entities {
         app.world_mut().spawn((entity.id, entity.position));
     }
+    if let Some(preserved) = &snapshot.preserved_prospect {
+        app.insert_resource(PreservedProspectState(Arc::clone(preserved)));
+    }
     Ok(app)
 }
 
@@ -174,10 +209,20 @@ pub fn capture(world: &mut World) -> Result<WorldSnapshot> {
         });
     }
     entities.sort_by_key(|entity| entity.id);
+    // Sharing the immutable section keeps capture cheap; the worker writes its
+    // held encoding only when no verified sidecar already holds it.
+    let preserved_prospect = world
+        .get_resource::<PreservedProspectState>()
+        .map(|state| Arc::clone(&state.0));
     let snapshot = WorldSnapshot {
-        schema_version: 1,
+        schema_version: if preserved_prospect.is_some() {
+            SNAPSHOT_SCHEMA_REFERENCED
+        } else {
+            SNAPSHOT_SCHEMA_DOMAIN
+        },
         tick,
         entities,
+        preserved_prospect,
     };
     snapshot.validate()?;
     Ok(snapshot)

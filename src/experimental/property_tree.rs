@@ -14,7 +14,9 @@ use serde::Serialize;
 use super::archive::{ByteOrder, read_string_frame};
 use super::component::read_base_component_with_limit;
 use super::struct_array::{MAX_BOUNDED_STRUCT_ARRAY_BYTES, read_tagged_struct_array_with_limit};
-use super::tagged::{RootTag, TagKind, TagProfile, read_root};
+use super::tagged::{
+    ParsedRecord, RootTag, TagKind, TagProfile, container_kinds, read_record, read_root,
+};
 
 pub const DEFAULT_MAX_TREE_DEPTH: usize = 8;
 /// Hard ceiling for caller-selected nesting, not an original format limit.
@@ -25,7 +27,9 @@ pub const MAX_TREE_NODES: usize = 1 << 20;
 
 /// Research policy bounds. Root properties are at depth 1; a payload is framed
 /// as a nested stream only when its properties would not exceed `max_depth`.
-/// Exceeding `max_nodes` fails the whole parse rather than truncating it.
+/// `max_nodes` counts properties and Map/Set items at every depth. A property
+/// beyond it fails the whole parse rather than truncating it; a Map or Set
+/// that would exceed it stays an exact opaque leaf.
 #[derive(Clone, Copy, Debug)]
 pub struct TreeLimits {
     pub max_depth: usize,
@@ -89,6 +93,24 @@ pub enum NodeValue {
         shared_header: Vec<u8>,
         elements: Vec<PropertyTree>,
     },
+    /// A Map payload that framed exactly (F-559): removal keys, then entries.
+    Map {
+        removed: Vec<ContainerItem>,
+        entries: Vec<(ContainerItem, ContainerItem)>,
+    },
+    /// A Set payload that framed exactly (F-559): removed, then elements.
+    Set {
+        removed: Vec<ContainerItem>,
+        elements: Vec<ContainerItem>,
+    },
+}
+
+/// One Map or Set item, framed by its inner header kind.
+pub enum ContainerItem {
+    /// Exact item bytes: a fixed-width scalar or one archive string.
+    Bytes(Vec<u8>),
+    /// A tagged struct item: properties ending in a terminal name.
+    Struct(PropertyTree),
 }
 
 /// Counts and lengths only; never names, types or values.
@@ -107,6 +129,42 @@ pub struct KindCounts {
     #[serde(rename = "enum")]
     pub enum_: usize,
     pub bool: usize,
+    pub map: usize,
+    pub set: usize,
+    pub int64: usize,
+}
+
+/// Item widths for Map and Set payloads. Bool items are one byte (F-559);
+/// 4- and 8-byte scalar widths and Str/Name items as archive strings follow the
+/// tag-level encodings and are inferred for the item path. Other inner kinds,
+/// including Byte and Enum whose enum is not named here, stay unsupported.
+fn scalar_item_bytes(kind: TagKind) -> Option<usize> {
+    match kind {
+        TagKind::Bool => Some(1),
+        TagKind::Int | TagKind::UInt32 | TagKind::Float => Some(4),
+        TagKind::Int64 => Some(8),
+        _ => None,
+    }
+}
+
+fn read_count(input: &[u8], position: &mut usize) -> Result<usize> {
+    let bytes = input
+        .get(*position..*position + 4)
+        .context("truncated container count")?;
+    *position += 4;
+    let count = usize::try_from(i32::from_le_bytes(bytes.try_into()?))
+        .context("negative container count")?;
+    // Every item occupies at least one byte, so no count exceeds what remains.
+    ensure!(
+        count <= input.len() - *position,
+        "container count exceeds remaining payload"
+    );
+    Ok(count)
+}
+
+fn write_count(out: &mut Vec<u8>, count: usize) -> Result<()> {
+    out.extend_from_slice(&i32::try_from(count)?.to_le_bytes());
+    Ok(())
 }
 
 #[derive(Debug, Serialize)]
@@ -117,6 +175,9 @@ pub struct PropertyTreeSummary {
     pub nested_structs: usize,
     pub struct_arrays: usize,
     pub struct_array_elements: usize,
+    /// Map and Set payloads framed into items (F-559).
+    pub containers: usize,
+    pub container_items: usize,
     pub opaque_leaves: usize,
     pub opaque_payload_bytes: usize,
     /// Deepest property depth; root properties are depth 1, an empty root is 0.
@@ -150,10 +211,9 @@ impl Builder {
 
     /// Only the node budget propagates; framing failures select an opaque value.
     fn node(&mut self, tag: &RootTag<'_>, depth: usize) -> Result<PropertyNode> {
-        ensure!(
-            self.nodes < self.limits.max_nodes,
-            "property tree node count exceeds selected limit"
-        );
+        if self.nodes >= self.limits.max_nodes {
+            return Err(NodeBudget.into());
+        }
         self.nodes += 1;
         let nested = depth < self.limits.max_depth;
         let value = match tag.kind {
@@ -183,6 +243,19 @@ impl Builder {
                 }
                 Err(_) => NodeValue::Opaque(tag.payload.to_vec()),
             },
+            TagKind::Map | TagKind::Set if nested => {
+                // Any failed attempt, including one that ran out of budget,
+                // keeps the exact payload and releases what it charged; the
+                // budget still bounds the items it could allocate.
+                let charged = self.nodes;
+                match self.container(tag, depth) {
+                    Ok(value) => value,
+                    Err(_) => {
+                        self.nodes = charged;
+                        NodeValue::Opaque(tag.payload.to_vec())
+                    }
+                }
+            }
             _ => NodeValue::Opaque(tag.payload.to_vec()),
         };
         Ok(PropertyNode {
@@ -193,9 +266,128 @@ impl Builder {
     }
 }
 
+/// Budget exhaustion; outside a container attempt it fails the whole parse.
+#[derive(Debug)]
+struct NodeBudget;
+
+impl fmt::Display for NodeBudget {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("property tree node count exceeds selected limit")
+    }
+}
+
+impl std::error::Error for NodeBudget {}
+
+impl Builder {
+    /// Frame a whole Map or Set payload exactly, or fail without partial items.
+    fn container(&mut self, tag: &RootTag<'_>, depth: usize) -> Result<NodeValue> {
+        let (first, second) = container_kinds(tag.header, self.profile)?;
+        let payload = tag.payload;
+        let mut position = 0;
+        let items = |builder: &mut Self, kind: Option<TagKind>, position: &mut usize| {
+            let kind = kind.context("unsupported container item kind")?;
+            builder.item(kind, payload, position, depth)
+        };
+        let removed_count = read_count(payload, &mut position)?;
+        let mut removed = Vec::new();
+        for _ in 0..removed_count {
+            removed.push(items(self, first, &mut position)?);
+        }
+        let count = read_count(payload, &mut position)?;
+        let value = if tag.kind == TagKind::Map {
+            let mut entries = Vec::new();
+            for _ in 0..count {
+                let key = items(self, first, &mut position)?;
+                entries.push((key, items(self, second, &mut position)?));
+            }
+            NodeValue::Map { removed, entries }
+        } else {
+            let mut elements = Vec::new();
+            for _ in 0..count {
+                elements.push(items(self, first, &mut position)?);
+            }
+            NodeValue::Set { removed, elements }
+        };
+        ensure!(
+            position == payload.len(),
+            "trailing data after container items"
+        );
+        Ok(value)
+    }
+
+    fn item(
+        &mut self,
+        kind: TagKind,
+        payload: &[u8],
+        position: &mut usize,
+        depth: usize,
+    ) -> Result<ContainerItem> {
+        // Items are charged like properties, so a payload of many tiny items
+        // cannot allocate past the selected budget.
+        if self.nodes >= self.limits.max_nodes {
+            return Err(NodeBudget.into());
+        }
+        self.nodes += 1;
+        let input = &payload[*position..];
+        if let Some(width) = scalar_item_bytes(kind) {
+            let bytes = input.get(..width).context("truncated container item")?;
+            *position += width;
+            return Ok(ContainerItem::Bytes(bytes.to_vec()));
+        }
+        match kind {
+            TagKind::String | TagKind::Name => {
+                let consumed = read_string_frame(input, ByteOrder::Little)
+                    .context("invalid container string item")?
+                    .consumed();
+                *position += consumed;
+                Ok(ContainerItem::Bytes(input[..consumed].to_vec()))
+            }
+            TagKind::Struct if depth < self.limits.max_depth => {
+                let mut offset = 0;
+                let mut tags = Vec::new();
+                let terminator = loop {
+                    match read_record(&input[offset..], self.profile)? {
+                        ParsedRecord::Property(property) => {
+                            offset += property.tag.record.len();
+                            tags.push(property.tag);
+                        }
+                        ParsedRecord::Terminator(terminator) => {
+                            offset += terminator.len();
+                            break terminator;
+                        }
+                    }
+                };
+                let tree = self.tree(&tags, terminator, depth + 1)?;
+                *position += offset;
+                Ok(ContainerItem::Struct(tree))
+            }
+            _ => anyhow::bail!("unsupported container item kind"),
+        }
+    }
+}
+
+impl ContainerItem {
+    fn write(&self, out: &mut Vec<u8>) -> Result<()> {
+        match self {
+            Self::Bytes(bytes) => out.extend_from_slice(bytes),
+            Self::Struct(tree) => tree.write(out)?,
+        }
+        Ok(())
+    }
+
+    fn accumulate(&self, summary: &mut PropertyTreeSummary, depth: usize) {
+        summary.container_items += 1;
+        if let Self::Struct(tree) = self {
+            summary.nested_structs += 1;
+            tree.accumulate(summary, depth + 1);
+        }
+    }
+}
+
 /// Read the declared payload size from a header without decoding its names.
 /// The size follows the name and type strings under the supported profile.
-fn declared_size(header: &[u8]) -> Result<usize> {
+/// Shared with the streaming preservation verifier, which must match it exactly.
+pub(crate) fn declared_size(header: &[u8]) -> Result<usize> {
     let name = read_string_frame(header, ByteOrder::Little)
         .context("invalid property header name")?
         .consumed();
@@ -248,6 +440,8 @@ impl PropertyTree {
             nested_structs: 0,
             struct_arrays: 0,
             struct_array_elements: 0,
+            containers: 0,
+            container_items: 0,
             opaque_leaves: 0,
             opaque_payload_bytes: 0,
             max_depth: 0,
@@ -275,6 +469,9 @@ impl PropertyTree {
                 TagKind::Byte => &mut counts.byte,
                 TagKind::Enum => &mut counts.enum_,
                 TagKind::Bool => &mut counts.bool,
+                TagKind::Map => &mut counts.map,
+                TagKind::Set => &mut counts.set,
+                TagKind::Int64 => &mut counts.int64,
             } += 1;
             match &property.value {
                 NodeValue::Opaque(bytes) => {
@@ -290,6 +487,22 @@ impl PropertyTree {
                     summary.struct_array_elements += elements.len();
                     for element in elements {
                         element.accumulate(summary, depth + 1);
+                    }
+                }
+                NodeValue::Map { removed, entries } => {
+                    summary.containers += 1;
+                    for item in removed {
+                        item.accumulate(summary, depth);
+                    }
+                    for (key, value) in entries {
+                        key.accumulate(summary, depth);
+                        value.accumulate(summary, depth);
+                    }
+                }
+                NodeValue::Set { removed, elements } => {
+                    summary.containers += 1;
+                    for item in removed.iter().chain(elements) {
+                        item.accumulate(summary, depth);
                     }
                 }
             }
@@ -330,6 +543,27 @@ impl PropertyNode {
                     "struct array elements do not match shared declared size"
                 );
             }
+            NodeValue::Map { removed, entries } => {
+                write_count(out, removed.len())?;
+                for item in removed {
+                    item.write(out)?;
+                }
+                write_count(out, entries.len())?;
+                for (key, value) in entries {
+                    key.write(out)?;
+                    value.write(out)?;
+                }
+            }
+            NodeValue::Set { removed, elements } => {
+                write_count(out, removed.len())?;
+                for item in removed {
+                    item.write(out)?;
+                }
+                write_count(out, elements.len())?;
+                for item in elements {
+                    item.write(out)?;
+                }
+            }
         }
         ensure!(
             out.len() - start == declared,
@@ -347,7 +581,7 @@ pub struct BaseComponentTree {
 }
 
 impl BaseComponentTree {
-    /// Frame with `read_base_component_with_limit` (1 byte to 128 KiB), then
+    /// Frame with `read_base_component_with_limit` (1 byte to 1 MiB), then
     /// apply the same nested framing and limits as `PropertyTree::parse`.
     pub fn parse(
         input: &[u8],
@@ -420,6 +654,28 @@ impl fmt::Debug for NodeValue {
                 .field("shared_header_bytes", &shared_header.len())
                 .field("elements", elements)
                 .finish(),
+            Self::Map { removed, entries } => f
+                .debug_struct("Map")
+                .field("removed", removed)
+                .field("entries", entries)
+                .finish(),
+            Self::Set { removed, elements } => f
+                .debug_struct("Set")
+                .field("removed", removed)
+                .field("elements", elements)
+                .finish(),
+        }
+    }
+}
+
+impl fmt::Debug for ContainerItem {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Bytes(bytes) => f
+                .debug_struct("Bytes")
+                .field("bytes", &bytes.len())
+                .finish(),
+            Self::Struct(tree) => f.debug_tuple("Struct").field(tree).finish(),
         }
     }
 }

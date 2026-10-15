@@ -110,3 +110,31 @@ test('class_methods share the 32-hit cap and keep code-only strict mapping',()=>
  for(const p of [pub('?Tick@UFoo@@UEAAXM@Z',2,0x40),pub('?Tick@UFoo@@UEAAXM@Z',3,0x40,0),pub('?Tick@UFoo@@UEAAXM@Z',1,0x180)])a.throws(()=>run([p],q),/strict source mapping/);
  a.throws(()=>run([pub('?Tick@UFoo@@'+'A'.repeat(1100))],q),/selected public name profile/);
 });
+
+const S=(struct_name,method)=>({struct_name,method});
+test('struct_ops_methods select exact TCppStructOps instance methods',()=>{
+ const ops=s=>'?NetSerialize@?$TCppStructOps@U'+s+'@@@UScriptStruct@@UEAA_NAEAVFArchive@@PEAVUPackageMap@@AEA_N@Z',hit=ops('FExampleMove');
+ const misses=[ops('FExampleMoveX'),ops('XFExampleMove'),'?NetSerializeX@?$TCppStructOps@UFExampleMove@@@UScriptStruct@@UEAA_NXZ','?NetSerialize@?$TCppStructOps@VFExampleMove@@@UScriptStruct@@UEAA_NXZ',
+  '?NetSerialize@?$TCppStructOps@UFExampleMove@@@UOther@@UEAA_NXZ','?NetSerialize@?$TOtherOps@UFExampleMove@@@UScriptStruct@@UEAA_NXZ','?NetSerialize@FExampleMove@@QEAA_NXZ','?Copy@?$TCppStructOps@UFExampleMove@@@UScriptStruct@@UEAA_NXZ'];
+ const r=run([...misses.map(n=>pub(n)),pub(hit,1,0x30)],{struct_ops_methods:[S('FExampleMove','NetSerialize')]});
+ a.deepEqual(r.hits.map(h=>[h.name,h.family,h.struct_name,h.method,h.executable]),[[hit,'selected_struct_ops_method','FExampleMove','NetSerialize',true]]);
+ a.deepEqual(r.struct_ops_queries,[S('FExampleMove','NetSerialize')]);a.deepEqual(r.class_method_queries,[]);a.deepEqual(r.class_name_queries,[]);
+ const json=JSON.stringify(r);for(const n of misses)a(!json.includes(JSON.stringify(n)),n);
+ a.deepEqual(run().struct_ops_queries,[]);
+ const both=run([pub(hit,1,0x30),pub('?Tick@UFoo@@UEAAXM@Z',1,0x34)],{struct_ops_methods:[S('FExampleMove','NetSerialize')],class_methods:[M('UFoo','Tick')]});
+ a.deepEqual(both.hits.map(h=>h.family),['selected_struct_ops_method','selected_class_method']);
+});
+
+test('struct ops query validation fails closed and keeps code-only mapping',()=>{
+ const eight=Array.from({length:8},(_,i)=>S('FMove'+i,'NetSerialize'));
+ for(const [query,msg]of [[{struct_ops_methods:[]},/struct ops query shape/],[{struct_ops_methods:[...eight,S('FMore','NetSerialize')]},/struct ops query shape/],[{struct_ops_methods:S('FMove','NetSerialize')},/struct ops query shape/],
+  [{struct_ops_methods:[null]},/struct ops query shape/],[{struct_ops_methods:[{struct_name:'FMove'}]},/struct ops query shape/],[{struct_ops_methods:[{...S('FMove','NetSerialize'),extra:1}]},/struct ops query shape/],
+  [{struct_ops_methods:[S('F-Move','NetSerialize')]},/struct ops query format/],[{struct_ops_methods:[S('FMove','')]},/struct ops query format/],[{struct_ops_methods:[S('FMove@','NetSerialize')]},/struct ops query format/],
+  [{struct_ops_methods:[S('FMove','NetSerialize'),S('FMove','NetSerialize')]},/duplicate struct ops query/],[{struct_ops_methods:[S('FMove','NetSerialize')],extra:1},/query shape/]])
+  a.throws(()=>run(undefined,query),msg,JSON.stringify(query));
+ a.equal(run(undefined,{struct_ops_methods:eight}).hit_count,0);
+ const name='?NetSerialize@?$TCppStructOps@UFMove@@@UScriptStruct@@UEAA_NXZ',q={struct_ops_methods:[S('FMove','NetSerialize')]};
+ for(const p of [pub(name,2,0x40),pub(name,3,0x40,0)])a.throws(()=>run([p],q),/strict source mapping/);
+ a.equal(run(Array.from({length:32},(_,i)=>pub(name,1,0x20+i)),q).hit_count,32);
+ a.throws(()=>run(Array.from({length:33},(_,i)=>pub(name,1,0x20+i)),q),/selected public hit cap/);
+});

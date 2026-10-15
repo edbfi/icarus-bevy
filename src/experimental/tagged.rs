@@ -31,6 +31,12 @@ pub enum TagKind {
     Byte,
     Enum,
     Bool,
+    /// Key and value type names follow the array index (F-556).
+    Map,
+    /// One inner type name follows the array index (F-556).
+    Set,
+    /// No type-specific metadata (F-556).
+    Int64,
 }
 
 /// Exact source slices; intentionally not serializable or debug-printable.
@@ -124,6 +130,54 @@ pub(crate) fn is_name(units: &[u16], name: &str) -> bool {
     units.iter().copied().eq(name.encode_utf16())
 }
 
+const KIND_NAMES: [(&str, TagKind); 14] = [
+    ("ArrayProperty", TagKind::Array),
+    ("StructProperty", TagKind::Struct),
+    ("StrProperty", TagKind::String),
+    ("NameProperty", TagKind::Name),
+    ("IntProperty", TagKind::Int),
+    ("UInt32Property", TagKind::UInt32),
+    ("FloatProperty", TagKind::Float),
+    ("TextProperty", TagKind::Text),
+    ("ByteProperty", TagKind::Byte),
+    ("EnumProperty", TagKind::Enum),
+    ("BoolProperty", TagKind::Bool),
+    ("MapProperty", TagKind::Map),
+    ("SetProperty", TagKind::Set),
+    ("Int64Property", TagKind::Int64),
+];
+
+fn kind_of(type_name: &[u16]) -> Option<TagKind> {
+    KIND_NAMES
+        .into_iter()
+        .find_map(|(name, kind)| is_name(type_name, name).then_some(kind))
+}
+
+/// Inner type kinds named by a Map (key, value) or Set (element, `None`)
+/// header; `None` marks an inner type name outside the supported kinds.
+/// Fails for other header kinds. Names are compared, never returned.
+pub(crate) fn container_kinds(
+    header: &[u8],
+    profile: TagProfile,
+) -> Result<(Option<TagKind>, Option<TagKind>)> {
+    let TagProfile::MemoryArchive522 = profile;
+    let mut cursor = Cursor {
+        input: header,
+        position: 0,
+    };
+    cursor.name()?;
+    let kind = kind_of(&cursor.name()?);
+    cursor.take(8)?;
+    match kind {
+        Some(TagKind::Map) => {
+            let key = kind_of(&cursor.name()?);
+            Ok((key, kind_of(&cursor.name()?)))
+        }
+        Some(TagKind::Set) => Ok((kind_of(&cursor.name()?), None)),
+        _ => bail!("header is not a Map or Set header"),
+    }
+}
+
 pub(crate) struct PropertyRecord<'a> {
     pub tag: RootTag<'a>,
     pub name: Vec<u16>,
@@ -150,22 +204,8 @@ pub(crate) fn read_record(input: &[u8], profile: TagProfile) -> Result<ParsedRec
     }
     let type_offset = cursor.position;
     let type_name = cursor.name()?;
-    let kind = [
-        ("ArrayProperty", TagKind::Array),
-        ("StructProperty", TagKind::Struct),
-        ("StrProperty", TagKind::String),
-        ("NameProperty", TagKind::Name),
-        ("IntProperty", TagKind::Int),
-        ("UInt32Property", TagKind::UInt32),
-        ("FloatProperty", TagKind::Float),
-        ("TextProperty", TagKind::Text),
-        ("ByteProperty", TagKind::Byte),
-        ("EnumProperty", TagKind::Enum),
-        ("BoolProperty", TagKind::Bool),
-    ]
-    .into_iter()
-    .find_map(|(name, kind)| is_name(&type_name, name).then_some(kind))
-    .with_context(|| format!("unsupported tag header kind at offset {type_offset}"))?;
+    let kind = kind_of(&type_name)
+        .with_context(|| format!("unsupported tag header kind at offset {type_offset}"))?;
     let size = cursor.i32()?;
     let index = cursor.i32()?;
     ensure!(size >= 0, "negative tag payload size");
@@ -178,8 +218,13 @@ pub(crate) fn read_record(input: &[u8], profile: TagProfile) -> Result<ParsedRec
                     extra = Some(cursor.name()?);
                     cursor.take(16)?;
                 }
-                TagKind::Array | TagKind::Byte | TagKind::Enum => {
+                TagKind::Array | TagKind::Byte | TagKind::Enum | TagKind::Set => {
                     extra = Some(cursor.name()?);
+                }
+                TagKind::Map => {
+                    // Key type, then value type; both gated at version 509.
+                    extra = Some(cursor.name()?);
+                    cursor.name()?;
                 }
                 TagKind::Bool => {
                     cursor.flag()?;
@@ -189,7 +234,8 @@ pub(crate) fn read_record(input: &[u8], profile: TagProfile) -> Result<ParsedRec
                 | TagKind::Int
                 | TagKind::UInt32
                 | TagKind::Float
-                | TagKind::Text => {}
+                | TagKind::Text
+                | TagKind::Int64 => {}
             }
             if cursor.flag()? {
                 cursor.take(16)?;

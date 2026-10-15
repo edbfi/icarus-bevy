@@ -7,7 +7,7 @@ three reference environments. Rules for when to use REA are in
 ## REA runtime
 
 The project uses [REA](https://github.com/morluto/rea), pinned as
-`rea-agents@6.4.0` in `.agents/rea/package-lock.json`. Its wrapper and MCP
+`rea-agents@6.5.0` in `.agents/rea/package-lock.json`. Its wrapper and MCP
 configuration are local to this repository: Codex reads `.codex/config.toml`,
 Claude reads `.mcp.json`, and both discover the same skill through
 `.agents/skills/reverse-engineer-anything/` and its `.claude/skills/` link.
@@ -27,9 +27,10 @@ The scoped Ghidra doctor check reports provider readiness. Its informational
 checks inspect user-wide registrations and may report them missing because this
 installation deliberately uses project configuration. Verify registration with
 `codex mcp get rea` and `claude mcp get rea`; verify the live connection with the
-MCP `binary_session` tool. Installation validation discovered 170 MCP tools from
-REA 6.4.0 and confirmed the existing Ghidra 12.1.4/JDK 21 provider as healthy.
-The connected catalog is aligned (F-432). Ghidra byte reads require default
+MCP `binary_session` tool. REA 6.5.0's skill metadata lists 207 MCP tools; its
+scoped doctor reported the existing Ghidra 12.1.4/JDK 21 provider healthy on
+2026-10-15 (M-563). The connected 6.4.0 catalog of 170 tools was aligned (F-432); recheck
+alignment with `binary_session` after restarting on 6.5.0. Ghidra byte reads require default
 auto-analysis and return loader-adjusted Program memory. For exact physical
 metadata work, record that capability/effect gap and use a reviewed bounded
 fallback; connected readiness does not qualify target bytes.
@@ -49,6 +50,11 @@ import with `-noanalysis` and run `tools/ghidra/DecompileFlowFunctions.java`
 with the starts: it disassembles each start by flow within 64 KiB, lets Ghidra
 compute the body (the PE loader already creates one-byte functions at exception
 records, so guessed end ranges overlap) and decompiles with a 30-second cap.
+When pseudocode drops a call argument, `tools/ghidra/ListFlowInstructions.java`
+lists the same flow (jumps and fallthrough, never calls, at most 4096
+instructions per start) with address, bytes and instruction text. Header-inline
+struct methods have no class-method symbol; `tools/pdb_public_symbols.cjs`
+selects their `TCppStructOps` instance through `struct_ops_methods` pairs.
 
 ## Evidence at session close
 

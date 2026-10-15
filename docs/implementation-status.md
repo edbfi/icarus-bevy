@@ -7,7 +7,7 @@ the [unknowns ledger](ledgers/unknowns.md); preconditions live only in
 
 Before restructure: 96ddb0b:docs/implementation-status.md
 
-Last reconciled: 2026-10-14
+Last reconciled: 2026-10-15
 
 ## Summary
 
@@ -25,8 +25,9 @@ access deferred (F-421).
 What the foundation does is in the
 [foundation digest](research/foundation/foundation.md). Research state is in the
 [C001](research/save-format/c001-constructor.md),
-[save-class](research/save-format/save-class-audits.md) and
-[control-store](research/network/control-stores.md) digests.
+[save-class](research/save-format/save-class-audits.md),
+[control-store](research/network/control-stores.md) and
+[actor-replication](research/network/actor-replication.md) digests.
 
 ## Milestones
 
@@ -37,18 +38,19 @@ What the foundation does is in the
 | M2: interoperability/data feasibility | In progress, partial observations | Stateless exchange observed; authenticated protocol, world-data and import feasibility gates remain open |
 | M3: Bevy gameplay slice | In progress, foundation only | Rust 1.99.0 / Bevy 0.20.0 foundation tested; stock-client slice pending M2 |
 | M4: complete behavior | Pending | All required compatibility matrix entries must pass |
-| M5: migration/hardening | Pending, native hardening underway | Real native filesystem faults and supplied envelope integrity pass; inner real-save schema and migration fidelity remain unvalidated |
+| M5: migration/hardening | Pending, native hardening underway | Real native filesystem faults pass; real saves preserve losslessly in native generations and run through autosaves (F-567, F-584); randomized inputs never panic the readers or the peer lab, and corrupted stores load a committed snapshot or fail closed (F-604 to F-607, F-611); value meanings and migration fidelity remain unvalidated |
 | M6: optimization/qualification | Pending | Matched reference workloads and full release gates required |
 
 ## Next tasks
 
 Offline work, in order; connected proof keeps its gates.
 
-1. Save classes: C001 and all but three remaining classes frame to depth 4 in both copies (F-540, F-550, F-551); next Map and Int64 header framing and a 1 MiB component ceiling for C004, C015 and C016 (F-552, F-553, U-022).
-2. Player state: candidate mission, mount, inventory and player classes frame except C016 over the 128 KiB ceiling (F-550); construction classes and field meanings remain; class and field names do not discriminate the producing build (F-498, F-547), so confirming it needs value-level or runtime evidence (F-262, F-277, U-040).
+1. Save classes: with Map, Set and Int64 headers and a 1 MiB ceiling, every body of every class frames and round-trips in both copies, and every Map frames into items (F-556, F-557, F-559, F-562); the only opaque Structs are four fixed-width engine math types of three or four ordered 4-byte components (F-565, F-602); next value meanings (U-020).
+2. Player state: candidate mission, mount, inventory and player classes frame, C016 and C026 included once the ceiling rose to 1 MiB (F-550, F-557); construction classes and field meanings remain; class and field names do not discriminate the producing build (F-498, F-547), so confirming it needs value-level or runtime evidence (F-262, F-277, U-040).
 3. Control stores: owner, dispatcher, static virtual call site and base origin across the super calls are qualified (F-505, F-506, F-520, F-544); runtime dispatch needs a connected or original-runtime scope (U-043).
-4. Control stores: constructors and notify tables correspond by position (F-505, F-546); the older dispatcher (7,560-byte record) and the client's differ in record length, so a function-level comparison needs a flow decompile of both (F-480, U-043).
-5. Packet framing: formats, version 17 and the reliability layer (cookie-seeded sequences, ack history, reliable queue) are recorded, with an experimental codec (F-519, F-521 to F-527, F-535 to F-539), with an experimental codec, sequencing model and per-peer packet-lab state; next wire that state into the Bevy loopback lab, still without admission (F-096, U-044).
+4. Control stores: constructors and notify tables correspond by position (F-505, F-546) and both builds' NotifyControlMessage functions correspond function-level (F-579); runtime dispatch still needs a connected or original-runtime scope (U-043).
+5. Packet framing: formats, version 17 and the reliability layer are recorded with an experimental codec, sequencing model and per-peer state (F-519, F-521 to F-527, F-535 to F-539); the Bevy loopback peer lab runs them and answers Hello and Login without admission (F-558, F-564); the server's own Hello, Login and Welcome are read (F-563, F-580); the runtime version value and Welcome strings need connected evidence (U-037, U-044); admission stays gated.
 6. Transport: the control vocabulary, Hello replies, challenge and unique-net-id format are mapped (F-529 to F-531), with the client's version construction and type table (F-541 to F-543); Login carries no credential, and no Steam packet-handler class is evidenced (F-548, F-549); next the runtime handler configuration, game-level identity checks and the client's runtime project version (F-253, U-037, U-038).
-7. World data: every framed body round-trips byte-identically through a lossless value-opaque tree (F-554); next a native import that preserves it in the server's own snapshots before the heavy-world workload (F-242, U-045).
+7. World data: both copies preserve losslessly in write-once schema-3 sidecars (F-557, F-567), and seeded worlds, alone or two at once, run autosaves without misses at 27.6 MB peak RSS (F-584); next value meanings for an interpreted import, which needs U-020 and the gates (U-045).
 8. Reliability: collect the running 72-hour synthetic soak at its end and record it against U-035; it stays synthetic, not ICARUS performance (F-485, U-035).
+9. Replication: the client's actor spawn record, content blocks, rep-handle stream, NetGUIDs, spawn quantization and common item and name encodings are read (F-569 to F-575); experimental codecs re-encode spawn records, blocks and property streams bit-identically, the latter enforcing the client handle walk (F-577, F-586, F-587); the server's content-block and NetGUID writers mirror them (F-581); several native struct items, the movement struct, gameplay-tag packing, Name, Str and soft-object routing and hit results are read, and the codec re-encodes them with caller-supplied levels and widths (F-588 to F-600); the server composes actor bunches in client read order (F-610); Text stays gated on runtime version state, and layouts and tag tables need your call (U-064, U-065, U-066).

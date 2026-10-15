@@ -2,6 +2,8 @@
 //!
 //! This does not create connections, authenticate players or implement ICARUS
 //! gameplay. Its HMAC policy is independently designed, not the original algorithm.
+//! The sibling `peer_lab` reuses the same cookie authority and adds per-peer
+//! packet state; this lab keeps no peer table.
 use std::{
     io,
     net::{Ipv4Addr, SocketAddr, SocketAddrV4, UdpSocket},
@@ -16,11 +18,41 @@ use super::handshake::{LegacyHandshake, decode, encode, initial_request};
 
 /// Bound the work of one Bevy update, including malformed datagrams.
 pub const PACKETS_PER_UPDATE: usize = 32;
+/// Exact length of the short handshake framing (`handshake`).
+pub const HANDSHAKE_BYTES: usize = 29;
 const COOKIE_LIFETIME_SECONDS: f64 = 40.0;
 
-struct CookieAuthority([u8; 32]);
+/// A valid reply to an exact handshake datagram.
+pub(super) enum HandshakeReply {
+    /// Answer to the initial request; carries a fresh cookie.
+    Challenge([u8; HANDSHAKE_BYTES]),
+    /// Answer to a valid, unexpired echo of a challenge from the same peer.
+    /// `cookie` is the echoed cookie; callers must not log or expose it.
+    Acknowledgement {
+        datagram: [u8; HANDSHAKE_BYTES],
+        cookie: [u8; 20],
+    },
+}
+
+impl HandshakeReply {
+    pub(super) fn datagram(&self) -> &[u8; HANDSHAKE_BYTES] {
+        match self {
+            Self::Challenge(datagram) | Self::Acknowledgement { datagram, .. } => datagram,
+        }
+    }
+}
+
+/// Lab cookie policy; not the original algorithm.
+pub(super) struct CookieAuthority([u8; 32]);
 
 impl CookieAuthority {
+    /// A fresh OS-random secret; restarts invalidate earlier cookies.
+    pub(super) fn random() -> io::Result<Self> {
+        let mut secret = [0; 32];
+        getrandom::fill(&mut secret).map_err(io::Error::other)?;
+        Ok(Self(secret))
+    }
+
     fn mac(&self, peer: SocketAddrV4, timestamp: f64) -> Hmac<Sha256> {
         let mut mac = Hmac::<Sha256>::new_from_slice(&self.0).expect("fixed HMAC key size");
         mac.update(b"icarus-bevy/handshake-lab/v1\0");
@@ -30,7 +62,14 @@ impl CookieAuthority {
         mac
     }
 
-    fn reply(&self, peer: SocketAddrV4, bytes: &[u8], now: f64) -> Option<[u8; 29]> {
+    /// Answer an exact initial request or a valid challenge echo; `None` for
+    /// every other datagram, including data packets.
+    pub(super) fn respond(
+        &self,
+        peer: SocketAddrV4,
+        bytes: &[u8],
+        now: f64,
+    ) -> Option<HandshakeReply> {
         if !now.is_finite() || now <= 0.0 {
             return None;
         }
@@ -44,7 +83,8 @@ impl CookieAuthority {
                 timestamp: now,
                 cookie,
             })
-            .ok();
+            .ok()
+            .map(HandshakeReply::Challenge);
         }
         let packet = decode(bytes).ok()?;
         if packet.restart
@@ -65,7 +105,30 @@ impl CookieAuthority {
             cookie: packet.cookie,
         })
         .ok()
+        .map(|datagram| HandshakeReply::Acknowledgement {
+            datagram,
+            cookie: packet.cookie,
+        })
     }
+
+    #[cfg(test)]
+    fn reply(&self, peer: SocketAddrV4, bytes: &[u8], now: f64) -> Option<[u8; HANDSHAKE_BYTES]> {
+        self.respond(peer, bytes, now)
+            .map(|reply| *reply.datagram())
+    }
+}
+
+/// Bind a nonblocking socket on IPv4 loopback only; zero selects an ephemeral port.
+pub(super) fn bind_loopback(port: u16) -> io::Result<UdpSocket> {
+    let socket = UdpSocket::bind((Ipv4Addr::LOCALHOST, port))?;
+    socket.set_nonblocking(true)?;
+    Ok(socket)
+}
+
+/// Lab handshake clock in seconds: monotonic, starting positive so a challenge
+/// timestamp cannot be confused with the initial form.
+pub(super) fn lab_seconds(started: Instant) -> f64 {
+    1.0 + started.elapsed().as_secs_f64()
 }
 
 #[derive(Clone, Copy, Debug, Default)]
@@ -88,13 +151,11 @@ pub struct HandshakeLab {
 impl HandshakeLab {
     /// Bind IPv4 loopback only; zero lets the OS select an ephemeral port.
     pub fn bind(port: u16) -> io::Result<Self> {
-        let mut secret = [0; 32];
-        getrandom::fill(&mut secret).map_err(io::Error::other)?;
-        let socket = UdpSocket::bind((Ipv4Addr::LOCALHOST, port))?;
-        socket.set_nonblocking(true)?;
+        let authority = CookieAuthority::random()?;
+        let socket = bind_loopback(port)?;
         Ok(Self {
             socket,
-            authority: CookieAuthority(secret),
+            authority,
             started: Instant::now(),
             stats: LabStats::default(),
         })
@@ -121,7 +182,7 @@ impl Plugin for HandshakeLabPlugin {
 fn poll_lab(mut lab: ResMut<HandshakeLab>) {
     // One excess byte distinguishes an exact short frame from a truncated larger
     // UDP datagram. No peer table, application queue or per-peer allocation.
-    let mut buffer = [0; 30];
+    let mut buffer = [0; HANDSHAKE_BYTES + 1];
     for _ in 0..PACKETS_PER_UPDATE {
         let (length, peer) = match lab.socket.recv_from(&mut buffer) {
             Ok(received) => received,
@@ -136,21 +197,21 @@ fn poll_lab(mut lab: ResMut<HandshakeLab>) {
             lab.stats.rejected = lab.stats.rejected.saturating_add(1);
             continue;
         };
-        // Start positive, so a challenge cannot be confused with the initial form.
-        let now = 1.0 + lab.started.elapsed().as_secs_f64();
-        let Some(response) = lab.authority.reply(peer, &buffer[..length], now) else {
+        let now = lab_seconds(lab.started);
+        let Some(response) = lab.authority.respond(peer, &buffer[..length], now) else {
             lab.stats.rejected = lab.stats.rejected.saturating_add(1);
             continue;
         };
-        match lab.socket.send_to(&response, peer) {
-            Ok(29) => {
-                if buffer[..length] == initial_request() {
+        match lab.socket.send_to(response.datagram(), peer) {
+            Ok(HANDSHAKE_BYTES) => match response {
+                HandshakeReply::Challenge(_) => {
                     lab.stats.challenges_sent = lab.stats.challenges_sent.saturating_add(1);
-                } else {
+                }
+                HandshakeReply::Acknowledgement { .. } => {
                     lab.stats.acknowledgements_sent =
                         lab.stats.acknowledgements_sent.saturating_add(1);
                 }
-            }
+            },
             _ => lab.stats.io_errors = lab.stats.io_errors.saturating_add(1),
         }
     }

@@ -119,12 +119,51 @@ fn fixtures() -> Vec<(TagKind, Vec<u8>, Vec<u8>)> {
         (
             TagKind::Enum,
             record(b"\x0d\0\0\0EnumProperty\0", b"\x05\0\0\0Demo\0\0", &opaque),
-            opaque,
+            opaque.clone(),
         ),
         (
             TagKind::Bool,
             record(b"\x0d\0\0\0BoolProperty\0", &[1, 0], &[]),
             Vec::new(),
+        ),
+        (
+            // Key type then value type before the property GUID flag (F-556).
+            TagKind::Map,
+            record(
+                b"\x0c\0\0\0MapProperty\0",
+                b"\x0c\0\0\0StrProperty\0\x0c\0\0\0IntProperty\0\0",
+                &opaque,
+            ),
+            opaque.clone(),
+        ),
+        (
+            TagKind::Map,
+            record(
+                b"\x0c\0\0\0MapProperty\0",
+                &[
+                    b"\x0f\0\0\0StructProperty\0".as_slice(),
+                    b"\x0f\0\0\0StructProperty\0",
+                    &[1],
+                    &[9; 16],
+                ]
+                .concat(),
+                &opaque,
+            ),
+            opaque.clone(),
+        ),
+        (
+            TagKind::Set,
+            record(
+                b"\x0c\0\0\0SetProperty\0",
+                b"\x0d\0\0\0NameProperty\0\0",
+                &opaque,
+            ),
+            opaque.clone(),
+        ),
+        (
+            TagKind::Int64,
+            record(b"\x0e\0\0\0Int64Property\0", &[0], &[1; 8]),
+            vec![1; 8],
         ),
     ]
     .into()
@@ -156,7 +195,7 @@ fn manual_headers_preserve_opaque_source_spans_without_parsing_values() {
     assert_eq!(parsed.terminator, END);
     let summary = parsed.summary();
     assert_eq!(summary.profile, "experimental_memory_archive_522");
-    assert_eq!(summary.root_property_count, 15);
+    assert_eq!(summary.root_property_count, 19);
     assert_eq!(
         summary.header_bytes + summary.opaque_payload_bytes,
         bytes.len()
@@ -214,8 +253,8 @@ fn invalid_sizes_indices_and_noncanonical_flags_fail() {
 #[test]
 fn unsupported_type_headers_fail_without_exposing_names() {
     for kind in [
-        b"\x0c\0\0\0MapProperty\0".as_slice(),
-        b"\x0c\0\0\0SetProperty\0".as_slice(),
+        b"\x0f\0\0\0UInt64Property\0".as_slice(),
+        b"\x0f\0\0\0DoubleProperty\0".as_slice(),
         b"\x11\0\0\0AuthoredSecretZZ\0".as_slice(),
     ] {
         let stream = [record(kind, &[0], b"private-marker").as_slice(), END].concat();
@@ -224,6 +263,25 @@ fn unsupported_type_headers_fail_without_exposing_names() {
         assert!(!message.contains("AuthoredSecret"));
         assert!(!message.contains("private-marker"));
     }
+}
+
+#[test]
+fn map_and_set_type_names_are_strict_header_strings() {
+    // A Map missing its value type, or with an empty one, is not a Map header.
+    let missing = record(
+        b"\x0c\0\0\0MapProperty\0",
+        b"\x0c\0\0\0StrProperty\0\0",
+        &[],
+    );
+    assert!(read(&[missing.as_slice(), END].concat()).is_err());
+    let empty = record(
+        b"\x0c\0\0\0MapProperty\0",
+        b"\x0c\0\0\0StrProperty\0\0\0\0\0\0",
+        &[],
+    );
+    assert!(read(&[empty.as_slice(), END].concat()).is_err());
+    let unterminated = record(b"\x0c\0\0\0SetProperty\0", b"\x0c\0\0\0IntPropertyX\0", &[]);
+    assert!(read(&[unterminated.as_slice(), END].concat()).is_err());
 }
 
 #[test]

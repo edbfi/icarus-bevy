@@ -25,7 +25,7 @@ be demonstrated rather than assumed.
   use `.agents/rea/rea.sh` for supported CLI operations; use direct analysis tools
   only for capabilities REA lacks or a diagnosed provider/connection limitation,
   and record the reason. Do not fall back to the removed skill package.
-  REA is project-local: `.agents/rea/` pins `rea-agents@6.4.0`, and
+  REA is project-local: `.agents/rea/` pins `rea-agents@6.5.0`, and
   `.agents/rea/rea.sh` launches the installed runtime. Codex uses
   `.codex/config.toml`; Claude uses `.mcp.json` and the skill link under
   `.claude/skills/`. Do not run upstream global setup or alter user-wide settings.
