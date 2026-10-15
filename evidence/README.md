@@ -24,5 +24,8 @@ python3 tools/docs_lint.py --next-id M
 | `ev`, `unk`, `records` | `rea-bundle` only: cited Evidence and unknown IDs, record count |
 | `superseded_by`, `note`, `legacy` | optional; `legacy` marks M-001..M-270 |
 
+A row whose `path` ends in `fixity.sha256` pins every file that manifest lists
+(`.agents/rules/work.md`).
+
 Prose cites `M-NNN`, `M-NNN/ev_<12 hex>`, `M-NNN/unk_<12 hex>` or, for
 pre-REA case notes, `M-NNN/E-NNN`.

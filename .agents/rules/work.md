@@ -39,14 +39,21 @@ until their case is deliberately retired.
 2. Milestone: run `python3 tools/work_gc.py --prune`, then
    `python3 tools/work_gc.py --check`, which fails while eligible scratch
    remains. Review the reported signals:
-   - scratch held by an active evidence row: narrow a directory row to the
-     digested files the findings cite, superseding it (`docs.md` rule 7), or
-     retire it; prune on the next run;
-   - unindexed cases: keep them, or retire one by deleting it once nothing
-     cites its path;
-   - loose top-level files: move them into their case.
+   - scratch held by a row naming a whole directory: write the directory's
+     manifest with `python3 tools/work_gc.py --fixity <dir>`, add a row naming
+     `<dir>/fixity.sha256` with its digest, retire the directory row with
+     `superseded_by` (`docs.md` rule 4), then prune. The manifest pins every
+     kept file; `docs_lint.py --local` verifies and `--list-local` backs up
+     each one;
+   - unindexed cases that no tracked or untracked, non-ignored file mentions:
+     retire the ones no longer needed with
+     `python3 tools/work_gc.py --retire <name>...`, which refuses any name an
+     active row covers, such a file mentions, or a guard holds;
+     cases cited by `docs/history/` or `docs/research/archive/` stay;
+   - loose top-level files: move them into their case, or retire them.
 3. Before deleting anything else in `work/`, grep the path in `evidence/`,
    `docs/` and `.agents/`, and retire every active row that names it first.
+   Every removal by the tool is logged in `work/.gc/log.jsonl`.
 
 ## Never
 
