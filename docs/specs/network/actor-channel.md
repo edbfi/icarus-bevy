@@ -118,7 +118,7 @@ dormancy, channel close reasons and every server-side writer.
   reach the shared archive FText serializer, which net archives do not
   override: from archive version `0x170` a 4-byte flags word, then a
   history-type byte (0 to 12 select per-history bodies, 0xFF none); the
-  codec reads and re-encodes Base histories only (F-624, F-618). Client net archives carry UE4
+  codec re-encodes every history but 11 and 12 (F-628). Client net archives carry UE4
   version 522, so the version gates below pass (F-614). Each history writes
   its own type byte on save, then:
   - 0 Base: no body of its own; the display-string step that follows any
@@ -194,7 +194,7 @@ dormancy, channel close reasons and every server-side writer.
   M-510; hit results M-468, M-512 to M-521; soft objects M-445, M-523 to
   M-529; Text M-531 to M-536, M-545 to M-547, M-570;
   net archive version M-571 to M-576;
-  display strings M-581 to M-584; Text codec M-585; Text callees M-586,
+  display strings M-581 to M-584; Text codec M-585, M-602; Text callees M-586,
   M-587; custom versions M-588; codec tests M-475, M-476, M-492, M-496,
   M-511, M-522, M-530, M-548; layout source M-552 to M-555; send order M-461, M-556 to
   M-560.
