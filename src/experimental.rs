@@ -18,6 +18,7 @@ pub mod packet_lab;
 pub mod peer_lab;
 pub mod property_tree;
 pub mod recorders;
+pub mod rep_layout;
 pub mod sequencing;
 pub mod struct_array;
 pub mod tagged;

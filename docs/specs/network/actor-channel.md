@@ -34,7 +34,9 @@ dormancy, channel close reasons and every server-side writer.
   packed payload counts, and NetGUIDs with export flags, path and checksum
   (F-581).
 - `experimental::actor_channel` reads and re-encodes these structures
-  bit-identically from authored fixtures, with payloads opaque (F-577).
+  bit-identically from authored fixtures, with payloads opaque (F-577), and
+  `experimental::rep_layout` reads and re-encodes property streams from a
+  caller-supplied layout (F-585).
 - The replicator hands rep-layout properties to `FRepLayout::ReceiveProperties`
   (an optional bit, a packed handle, an optional checksum word, then a handle
   loop) before its field-header loop (M-426, M-427).

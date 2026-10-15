@@ -285,8 +285,8 @@ impl SnapshotStore {
             &self.root.join(reference.sidecar_name()),
             reference.encoded_bytes(),
         )?;
-        // Decoded once to prove it reconstructs the recorded payload; only the
-        // verified encoding is kept, never the value tree.
+        // Verified once, streaming, to prove it reconstructs the recorded
+        // payload; only the verified encoding is kept and no value tree is built.
         let preserved = reference.decode(encoded)?;
         let snapshot = WorldSnapshot {
             schema_version: referenced.schema_version,

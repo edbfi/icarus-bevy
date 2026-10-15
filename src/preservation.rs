@@ -31,6 +31,9 @@
 //!
 //! Decoding limits are owned by this encoding, not by the reader policies, so a
 //! later reader change cannot make an already published generation unreadable.
+//! Loading a held [`PreservedSection`] verifies the encoding in one streaming
+//! pass that accepts exactly what decoding plus reconstruction accepts, without
+//! building the value tree.
 use std::{borrow::Cow, fmt, sync::Arc};
 
 use anyhow::{Context, Result, bail, ensure};
@@ -41,7 +44,7 @@ use sha2::{Digest, Sha256};
 use crate::experimental::component::MAX_BOUNDED_COMPONENT_BYTES;
 use crate::experimental::property_tree::{
     BaseComponentTree, ContainerItem, MAX_TREE_DEPTH, MAX_TREE_NODES, NodeValue, PropertyNode,
-    PropertyTree, TreeLimits,
+    PropertyTree, TreeLimits, declared_size,
 };
 use crate::experimental::recorders::{RecorderArray, read_recorders};
 use crate::experimental::struct_array::MAX_BOUNDED_STRUCT_ARRAY_BYTES;
@@ -230,6 +233,43 @@ pub struct PreservationSummary {
     pub values_interpreted: bool,
 }
 
+impl PreservationSummary {
+    /// All counts zero, before any structure has been counted or verified.
+    fn empty(payload_bytes: usize) -> Self {
+        Self {
+            validation: "experimental_lossless_preservation",
+            profile: "experimental_memory_archive_522",
+            payload_bytes,
+            root_tags: 0,
+            opaque_root_tags: 0,
+            recorder_count: 0,
+            recorder_fields: 0,
+            unknown_recorder_fields: 0,
+            class_value_bytes: 0,
+            framed_bodies: 0,
+            framed_body_bytes: 0,
+            framed_property_nodes: 0,
+            opaque_bodies: 0,
+            opaque_body_bytes: 0,
+            opaque_exceeds_component_limit: 0,
+            opaque_framing_rejected: 0,
+            opaque_round_trip_mismatch: 0,
+            byte_identical: false,
+            world_imported: false,
+            values_interpreted: false,
+        }
+    }
+
+    /// The counter for one opaque body reason.
+    fn opaque_reason(&mut self, reason: OpaqueReason) -> &mut usize {
+        match reason {
+            OpaqueReason::ExceedsComponentLimit => &mut self.opaque_exceeds_component_limit,
+            OpaqueReason::FramingRejected => &mut self.opaque_framing_rejected,
+            OpaqueReason::RoundTripMismatch => &mut self.opaque_round_trip_mismatch,
+        }
+    }
+}
+
 /// Immutable, verified preservation of one inner payload. Fields are private so
 /// a constructed value always reconstructs its recorded payload exactly.
 pub struct PreservedProspect {
@@ -405,28 +445,7 @@ impl PreservedProspect {
             // Set by the constructors once the encoding is known.
             encoded_bytes: 0,
             encoded_sha256: [0; 32],
-            summary: PreservationSummary {
-                validation: "experimental_lossless_preservation",
-                profile: "experimental_memory_archive_522",
-                payload_bytes,
-                root_tags: 0,
-                opaque_root_tags: 0,
-                recorder_count: 0,
-                recorder_fields: 0,
-                unknown_recorder_fields: 0,
-                class_value_bytes: 0,
-                framed_bodies: 0,
-                framed_body_bytes: 0,
-                framed_property_nodes: 0,
-                opaque_bodies: 0,
-                opaque_body_bytes: 0,
-                opaque_exceeds_component_limit: 0,
-                opaque_framing_rejected: 0,
-                opaque_round_trip_mismatch: 0,
-                byte_identical: false,
-                world_imported: false,
-                values_interpreted: false,
-            },
+            summary: PreservationSummary::empty(payload_bytes),
         };
         preserved.summarize()?;
         let rebuilt = preserved.to_inner_payload()?;
@@ -473,17 +492,7 @@ impl PreservedProspect {
                                 PreservedBody::Opaque { reason, bytes } => {
                                     summary.opaque_bodies += 1;
                                     summary.opaque_body_bytes += bytes.len();
-                                    *match reason {
-                                        OpaqueReason::ExceedsComponentLimit => {
-                                            &mut summary.opaque_exceeds_component_limit
-                                        }
-                                        OpaqueReason::FramingRejected => {
-                                            &mut summary.opaque_framing_rejected
-                                        }
-                                        OpaqueReason::RoundTripMismatch => {
-                                            &mut summary.opaque_round_trip_mismatch
-                                        }
-                                    } += 1;
+                                    *summary.opaque_reason(*reason) += 1;
                                 }
                             }
                         }
@@ -715,8 +724,10 @@ impl PreservedSection {
 
     /// Hold native encoding version 1 after proving, once, that it decodes and
     /// reconstructs a payload of exactly `payload_bytes` with digest
-    /// `payload_sha256`. The decoded tree is dropped before returning; any
-    /// failure returns no value. Takes the buffer to avoid copying it.
+    /// `payload_sha256`. The proof streams the reconstruction into a digest
+    /// and accepts exactly what [`PreservedProspect::from_native_encoding`]
+    /// accepts, without building the tree; any failure returns no value.
+    /// Takes the buffer to avoid copying it.
     pub fn from_native_encoding(
         encoded: Vec<u8>,
         payload_bytes: usize,
@@ -738,35 +749,10 @@ impl PreservedSection {
         payload_bytes: usize,
         payload_sha256: [u8; 32],
     ) -> Result<Self> {
-        // Settle the held buffer before the transient tree allocates.
         let encoded = encoded.into_boxed_slice();
-        // Decode once, keeping only the summary; the tree drops in the closure.
-        let verify = || -> Result<PreservationSummary> {
-            PreservedProspect::from_hashed_native_encoding(
-                &encoded,
-                encoded_sha256,
-                payload_bytes,
-                payload_sha256,
-            )
-            .map(|tree| tree.summary.clone())
-        };
-        // The transient tree is many small allocations. Building and freeing it
-        // on its own short-lived thread keeps them apart from the caller's
-        // long-lived allocations, so the allocator can return that memory
-        // (glibc gives such a thread its own arena; measured on Linux, a
-        // same-thread decode left the freed tree resident). Behavior is
-        // identical if the thread cannot be started; a panic fails closed.
-        let summary = std::thread::scope(|scope| {
-            match std::thread::Builder::new()
-                .name("preserved-verify".into())
-                .spawn_scoped(scope, verify)
-            {
-                Ok(handle) => handle.join().unwrap_or_else(|_| {
-                    Err(anyhow::anyhow!("preserved section verification failed"))
-                }),
-                Err(_) => verify(),
-            }
-        })?;
+        // One streaming pass with the decoder's acceptance: no value tree and
+        // no per-node allocation, so the load peak stays near the held buffer.
+        let summary = verify_native_encoding(&encoded, payload_bytes, payload_sha256)?;
         Ok(Self {
             encoded,
             payload_bytes,
@@ -993,17 +979,18 @@ struct Decoder<'a> {
     fields: usize,
 }
 
-impl Decoder<'_> {
+impl<'a> Decoder<'a> {
     fn remaining(&self) -> usize {
         self.input.len() - self.position
     }
 
-    fn take(&mut self, length: usize) -> Result<&[u8]> {
+    fn take(&mut self, length: usize) -> Result<&'a [u8]> {
         ensure!(
             length <= self.remaining(),
             "truncated preserved native encoding"
         );
-        let bytes = &self.input[self.position..self.position + length];
+        let input: &'a [u8] = self.input;
+        let bytes = &input[self.position..self.position + length];
         self.position += length;
         Ok(bytes)
     }
@@ -1017,19 +1004,38 @@ impl Decoder<'_> {
         Ok(usize::try_from(u32::from_le_bytes(bytes))?)
     }
 
-    /// The length is checked against the remaining input before allocating.
-    fn chunk(&mut self) -> Result<Vec<u8>> {
+    /// A borrowed chunk; its length is checked against the remaining input.
+    fn slice(&mut self) -> Result<&'a [u8]> {
         let length = self.u32()?;
-        Ok(self.take(length)?.to_vec())
+        self.take(length)
     }
 
-    fn exact_chunk(&mut self, length: usize) -> Result<Vec<u8>> {
-        let bytes = self.chunk()?;
+    fn exact_slice(&mut self, length: usize) -> Result<&'a [u8]> {
+        let bytes = self.slice()?;
         ensure!(
             bytes.len() == length,
             "preserved fixed-width field has the wrong length"
         );
         Ok(bytes)
+    }
+
+    /// The length is checked against the remaining input before allocating.
+    fn chunk(&mut self) -> Result<Vec<u8>> {
+        Ok(self.slice()?.to_vec())
+    }
+
+    fn exact_chunk(&mut self, length: usize) -> Result<Vec<u8>> {
+        Ok(self.exact_slice(length)?.to_vec())
+    }
+
+    /// Count recorder fields across the whole section against its ceiling.
+    fn charge_fields(&mut self, field_count: usize) -> Result<()> {
+        self.fields = self
+            .fields
+            .checked_add(field_count)
+            .filter(|total| *total <= MAX_RECORD_FIELDS)
+            .context("preserved recorder fields exceed encoding limit")?;
+        Ok(())
     }
 
     fn count(&mut self, ceiling: usize, minimum_each: usize) -> Result<usize> {
@@ -1052,11 +1058,7 @@ impl Decoder<'_> {
         let mut records = Vec::new();
         for _ in 0..record_count {
             let field_count = self.count(MAX_RECORD_FIELDS, MIN_FIELD)?;
-            self.fields = self
-                .fields
-                .checked_add(field_count)
-                .filter(|total| *total <= MAX_RECORD_FIELDS)
-                .context("preserved recorder fields exceed encoding limit")?;
+            self.charge_fields(field_count)?;
             let mut fields = Vec::new();
             for _ in 0..field_count {
                 fields.push(self.field()?);
@@ -1186,6 +1188,328 @@ impl Decoder<'_> {
             1 => ContainerItem::Struct(self.tree(nodes, depth + 1)?),
             _ => bail!("unknown preserved container item code"),
         })
+    }
+}
+
+/// The reconstructed inner payload, kept only as a running length and SHA-256.
+struct PayloadSink {
+    hasher: Sha256,
+    written: usize,
+    limit: usize,
+}
+
+impl PayloadSink {
+    /// Growth past the recorded length can never end byte-identical, so it
+    /// fails here exactly where the final length check would fail later.
+    fn write(&mut self, bytes: &[u8]) -> Result<()> {
+        self.written = self
+            .written
+            .checked_add(bytes.len())
+            .filter(|written| *written <= self.limit)
+            .context("preserved payload reconstruction exceeds its recorded length")?;
+        self.hasher.update(bytes);
+        Ok(())
+    }
+
+    /// A Map or Set count as the property tree writer emits it.
+    fn count(&mut self, count: usize) -> Result<()> {
+        self.write(&i32::try_from(count)?.to_le_bytes())
+    }
+}
+
+/// Per-body budgets and counts: every node and item, and properties alone.
+#[derive(Default)]
+struct BodyCounts {
+    nodes: usize,
+    properties: usize,
+}
+
+/// The role a verified recorder field played.
+enum FieldRole {
+    Unknown,
+    ClassName,
+    BinaryData,
+}
+
+/// Single-pass verifier for native encoding version 1. It reads the encoding
+/// with the decoder's own primitives (counts against fixed ceilings and the
+/// remaining input, codes, depth, node and field budgets, trailing bytes) and,
+/// instead of building values, streams the bytes `to_inner_payload` and
+/// `PropertyTree::write` would emit into a digest, applying the same writer
+/// checks (declared payload sizes, struct-array counts and shared sizes) and
+/// the same summary rules. State is a fixed digest plus recursion bounded by
+/// the depth ceiling; no allocation depends on the input.
+struct Verifier<'a> {
+    input: Decoder<'a>,
+    sink: PayloadSink,
+    summary: PreservationSummary,
+}
+
+/// Accept exactly the encodings [`PreservedProspect::from_native_encoding`]
+/// accepts for this payload identity, returning the same summary, without
+/// materializing the value tree.
+fn verify_native_encoding(
+    encoded: &[u8],
+    payload_bytes: usize,
+    payload_sha256: [u8; 32],
+) -> Result<PreservationSummary> {
+    ensure!(
+        encoded.len() <= MAX_PRESERVED_ENCODED_BYTES,
+        "preserved native encoding exceeds 48 MiB limit"
+    );
+    ensure!(
+        payload_bytes <= MAX_PAYLOAD_BYTES,
+        "preserved payload exceeds 32 MiB research limit"
+    );
+    let mut verifier = Verifier {
+        input: Decoder {
+            input: encoded,
+            position: 0,
+            fields: 0,
+        },
+        sink: PayloadSink {
+            hasher: Sha256::new(),
+            written: 0,
+            limit: payload_bytes,
+        },
+        summary: PreservationSummary::empty(payload_bytes),
+    };
+    verifier.section()?;
+    let Verifier {
+        sink, mut summary, ..
+    } = verifier;
+    ensure!(
+        sink.written == payload_bytes && sink.hasher.finalize().as_slice() == payload_sha256,
+        "preserved payload reconstruction is not byte-identical"
+    );
+    summary.byte_identical = true;
+    Ok(summary)
+}
+
+impl Verifier<'_> {
+    fn section(&mut self) -> Result<()> {
+        // Encoded first, reconstructed last.
+        let root_terminator = self.input.slice()?;
+        let root_count = self.input.count(MAX_ROOTS, MIN_ROOT)?;
+        let mut recorder_roots = 0;
+        for _ in 0..root_count {
+            self.summary.root_tags += 1;
+            match self.input.byte()? {
+                0 => {
+                    kind_from(self.input.byte()?)?;
+                    let header = self.input.slice()?;
+                    let payload = self.input.slice()?;
+                    self.sink.write(header)?;
+                    self.sink.write(payload)?;
+                    self.summary.opaque_root_tags += 1;
+                }
+                1 => {
+                    self.recorders()?;
+                    recorder_roots += 1;
+                }
+                _ => bail!("unknown preserved root code"),
+            }
+        }
+        ensure!(
+            self.input.remaining() == 0,
+            "trailing data after preserved native encoding"
+        );
+        ensure!(
+            recorder_roots == 1,
+            "preserved payload needs exactly one recorder root"
+        );
+        self.sink.write(root_terminator)
+    }
+
+    fn recorders(&mut self) -> Result<()> {
+        let header = self.input.slice()?;
+        let count_prefix = self.input.exact_slice(4)?;
+        let shared_header = self.input.slice()?;
+        let record_count = self.input.count(MAX_RECORDS, MIN_RECORD)?;
+        for bytes in [header, count_prefix, shared_header] {
+            self.sink.write(bytes)?;
+        }
+        for _ in 0..record_count {
+            self.record()?;
+        }
+        Ok(())
+    }
+
+    fn record(&mut self) -> Result<()> {
+        let field_count = self.input.count(MAX_RECORD_FIELDS, MIN_FIELD)?;
+        self.input.charge_fields(field_count)?;
+        let (mut classes, mut binaries) = (0, 0);
+        for _ in 0..field_count {
+            match self.field()? {
+                FieldRole::Unknown => {}
+                FieldRole::ClassName => classes += 1,
+                FieldRole::BinaryData => binaries += 1,
+            }
+        }
+        let terminator = self.input.slice()?;
+        self.sink.write(terminator)?;
+        self.summary.recorder_count += 1;
+        ensure!(
+            classes == 1 && binaries == 1,
+            "preserved recorder needs exactly one class and one binary field"
+        );
+        Ok(())
+    }
+
+    fn field(&mut self) -> Result<FieldRole> {
+        let role = self.input.byte()?;
+        kind_from(self.input.byte()?)?;
+        let header = self.input.slice()?;
+        self.sink.write(header)?;
+        self.summary.recorder_fields += 1;
+        match role {
+            0 => {
+                let bytes = self.input.slice()?;
+                self.sink.write(bytes)?;
+                self.summary.unknown_recorder_fields += 1;
+                Ok(FieldRole::Unknown)
+            }
+            1 => {
+                let bytes = self.input.slice()?;
+                self.sink.write(bytes)?;
+                self.summary.class_value_bytes += bytes.len();
+                Ok(FieldRole::ClassName)
+            }
+            2 => {
+                let count_prefix = self.input.exact_slice(4)?;
+                self.sink.write(count_prefix)?;
+                self.body()?;
+                Ok(FieldRole::BinaryData)
+            }
+            _ => bail!("unknown preserved field role"),
+        }
+    }
+
+    fn body(&mut self) -> Result<()> {
+        match self.input.byte()? {
+            0 => {
+                let reason = *REASONS
+                    .get(usize::from(self.input.byte()?))
+                    .context("unknown preserved opaque reason code")?;
+                let bytes = self.input.slice()?;
+                self.sink.write(bytes)?;
+                self.summary.opaque_bodies += 1;
+                self.summary.opaque_body_bytes += bytes.len();
+                *self.summary.opaque_reason(reason) += 1;
+            }
+            1 => {
+                let start = self.sink.written;
+                let mut counts = BodyCounts::default();
+                self.tree(&mut counts, 1)?;
+                let trailer = self.input.exact_slice(4)?;
+                self.sink.write(trailer)?;
+                self.summary.framed_bodies += 1;
+                self.summary.framed_body_bytes += self.sink.written - start;
+                self.summary.framed_property_nodes += counts.properties;
+            }
+            _ => bail!("unknown preserved body code"),
+        }
+        Ok(())
+    }
+
+    /// Recursion is bounded by the encoding's depth ceiling.
+    fn tree(&mut self, body: &mut BodyCounts, depth: usize) -> Result<()> {
+        ensure!(depth <= MAX_DEPTH, "preserved tree exceeds depth limit");
+        let count = self.input.count(MAX_BODY_NODES, MIN_NODE)?;
+        for _ in 0..count {
+            self.node(body, depth)?;
+        }
+        let terminator = self.input.slice()?;
+        self.sink.write(terminator)
+    }
+
+    fn node(&mut self, body: &mut BodyCounts, depth: usize) -> Result<()> {
+        ensure!(
+            body.nodes < MAX_BODY_NODES,
+            "preserved tree exceeds node limit"
+        );
+        body.nodes += 1;
+        body.properties += 1;
+        kind_from(self.input.byte()?)?;
+        let header = self.input.slice()?;
+        let declared = declared_size(header)?;
+        self.sink.write(header)?;
+        let start = self.sink.written;
+        match self.input.byte()? {
+            0 => {
+                let bytes = self.input.slice()?;
+                self.sink.write(bytes)?;
+            }
+            1 => self.tree(body, depth + 1)?,
+            2 => self.struct_array(body, depth)?,
+            // Map: removal keys, then key and value per entry.
+            3 => {
+                self.items(body, depth, 1)?;
+                self.items(body, depth, 2)?;
+            }
+            // Set: removed, then elements.
+            4 => {
+                self.items(body, depth, 1)?;
+                self.items(body, depth, 1)?;
+            }
+            _ => bail!("unknown preserved node value code"),
+        }
+        ensure!(
+            self.sink.written - start == declared,
+            "property payload does not match declared size"
+        );
+        Ok(())
+    }
+
+    fn struct_array(&mut self, body: &mut BodyCounts, depth: usize) -> Result<()> {
+        let prefix = self.input.exact_slice(4)?;
+        let shared_header = self.input.slice()?;
+        let element_count = self.input.count(MAX_BODY_NODES, MIN_TREE)?;
+        let count: [u8; 4] = prefix.try_into()?;
+        ensure!(
+            usize::try_from(i32::from_le_bytes(count)).ok() == Some(element_count),
+            "struct array count does not match element count"
+        );
+        let shared = declared_size(shared_header)?;
+        self.sink.write(prefix)?;
+        self.sink.write(shared_header)?;
+        let start = self.sink.written;
+        for _ in 0..element_count {
+            self.tree(body, depth + 1)?;
+        }
+        ensure!(
+            self.sink.written - start == shared,
+            "struct array elements do not match shared declared size"
+        );
+        Ok(())
+    }
+
+    /// A counted run of `group`-item entries (1 for lists, 2 for Map pairs).
+    fn items(&mut self, body: &mut BodyCounts, depth: usize, group: usize) -> Result<()> {
+        let count = self.input.count(MAX_BODY_NODES, group * MIN_ITEM)?;
+        self.sink.count(count)?;
+        for _ in 0..count {
+            for _ in 0..group {
+                self.item(body, depth)?;
+            }
+        }
+        Ok(())
+    }
+
+    fn item(&mut self, body: &mut BodyCounts, depth: usize) -> Result<()> {
+        ensure!(
+            body.nodes < MAX_BODY_NODES,
+            "preserved tree exceeds node limit"
+        );
+        body.nodes += 1;
+        match self.input.byte()? {
+            0 => {
+                let bytes = self.input.slice()?;
+                self.sink.write(bytes)
+            }
+            1 => self.tree(body, depth + 1),
+            _ => bail!("unknown preserved container item code"),
+        }
     }
 }
 
@@ -1364,7 +1688,7 @@ pub fn is_sidecar_name(name: &str) -> bool {
 
 /// Persisted form inside native snapshot schema 3: a reference to the
 /// content-addressed sidecar holding the raw native encoding (no Base64). The
-/// sidecar is verified by size and SHA-256 before the bounded decoder runs.
+/// sidecar is verified by size and SHA-256 before the bounded verifier runs.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct SectionReference {
@@ -1425,8 +1749,8 @@ impl SectionReference {
     }
 
     /// Verify the sidecar bytes' size and SHA-256, then prove once with the
-    /// bounded decoder that they reconstruct the recorded payload; only the
-    /// compact form is kept.
+    /// bounded streaming verifier that they reconstruct the recorded payload;
+    /// only the compact form is kept and no value tree is built.
     pub(crate) fn decode(&self, encoded: Vec<u8>) -> Result<PreservedSection> {
         self.validate()?;
         ensure!(

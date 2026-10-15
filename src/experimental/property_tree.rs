@@ -386,7 +386,8 @@ impl ContainerItem {
 
 /// Read the declared payload size from a header without decoding its names.
 /// The size follows the name and type strings under the supported profile.
-fn declared_size(header: &[u8]) -> Result<usize> {
+/// Shared with the streaming preservation verifier, which must match it exactly.
+pub(crate) fn declared_size(header: &[u8]) -> Result<usize> {
     let name = read_string_frame(header, ByteOrder::Little)
         .context("invalid property header name")?
         .consumed();

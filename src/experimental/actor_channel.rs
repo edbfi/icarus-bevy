@@ -504,7 +504,7 @@ fn read_capped(reader: &mut BitReader<'_>, max: u32, what: &str) -> Result<u32> 
 }
 
 /// Packed integer that must re-encode to exactly the bytes read.
-fn read_packed(reader: &mut BitReader<'_>, what: &str) -> Result<u32> {
+pub(crate) fn read_packed(reader: &mut BitReader<'_>, what: &str) -> Result<u32> {
     let mut raw = [0u8; 5];
     let mut len = 0;
     let mut value = 0u32;
