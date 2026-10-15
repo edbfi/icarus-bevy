@@ -61,9 +61,10 @@ dormancy, channel close reasons and every server-side writer.
   integers bounded by `1 << (bits + 2)`, each decoded as the value minus
   `1 << (bits + 1)` times 0.1 (F-573).
 - Property net items (F-574): Bool is one bit; Byte is 8 bits, or with an
-  enum a width derived from its maximum value, at most 8 bits (formula split at
-  engine net version 16); Enum a width derived from its maximum (split at
-  version 12); object references a NetGUID; structs with the native
+  enum `min(8, CeilLogTwo64(max + 1))` bits, max being the signed maximum of
+  the enum's entry values (0 if none), so a maximum of 0 or -1 sends no bits;
+  Enum is that count capped at its underlying integer's bits (F-632; other
+  formulas apply below engine net versions 17 and 12); object references a NetGUID; structs with the native
   net-serialize flag their own serializer, other structs and arrays are
   flattened by the layout; soft objects the archive soft-path operator. Other
   types (Str, Name, Text) use the base item path, which forwards to the
@@ -174,13 +175,12 @@ dormancy, channel close reasons and every server-side writer.
   references and single rotation bit as the client's; its quantizers are
   inlined and unread.
 - The block grammar, spawn order and handle stream match the stock engine
-  shape of this generation; the exact enum-width formulas and the remaining
-  native struct serializers are unread (U-064).
+  shape of this generation; the remaining native struct serializers are
+  unread (U-064).
 
 ## Open questions
 
-- Text custom-version gates, slot-0x140 Name routing and other native
-  structs (U-064); which levels each movement property uses (a property default).
+- Other native structs (U-064); which levels each movement property uses (a property default).
 - Server writers for these records and their byte order and bounds (U-044).
 - Gameplay-tag replication mode, widths and an independent tag table (U-065).
 - The source of each class's replicated-property list for a server (U-066).
@@ -196,6 +196,6 @@ dormancy, channel close reasons and every server-side writer.
   M-529; Text M-531 to M-536, M-545 to M-547, M-570;
   net archive version M-571 to M-576;
   display strings M-581 to M-584; Text codec M-585, M-602 to M-605; Text callees M-586,
-  M-587; custom versions M-588; codec tests M-475, M-476, M-492, M-496,
+  M-587; custom versions M-588; enum widths M-614, M-615; codec tests M-475, M-476, M-492, M-496,
   M-511, M-522, M-530, M-548; layout source M-552 to M-555; send order M-461, M-556 to
   M-560.
