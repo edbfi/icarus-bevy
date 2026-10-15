@@ -204,6 +204,10 @@ class WorkGcTest(unittest.TestCase):
         self.assertIn(notes, work_gc.protected_paths(self.root))
         self.assertTrue(self.case(report, "a").indexed)
         self.assertEqual(len(self.case(report, "a").candidates), 3)
+        _ = self.write("work/b/odd\x1cname")
+        with self.assertRaises(SystemExit):
+            _ = work_gc.write_fixity(self.root, self.root / "work/b")
+        self.assertFalse((self.root / "work/b/fixity.sha256").exists())
         _ = (self.root / "work/a/fixity.sha256").write_text("0" * 64 + "  ../escape\n")
         with self.assertRaises(SystemExit):
             _ = work_gc.protected_paths(self.root)
@@ -214,15 +218,17 @@ class WorkGcTest(unittest.TestCase):
         _ = self.write("work/open/case.json", b'{"state": "open"}')
         _ = self.write("work/stray.log")
         _ = self.write("work/receipt.log")
+        _ = self.write("work/busy.log")
         self.evidence("work/indexed/notes.md", "work/receipt.log")
         self.age()
+        _ = self.write("work/fresh.log")
 
         def mentions(_root: Path, name: str) -> list[str]:
             return ["docs/x.md"] if name == "mentioned" else []
 
-        report = work_gc.scan(self.root, now=NOW, live=no_processes, references=mentions)
+        report = work_gc.scan(self.root, now=NOW, live=lambda: {self.root / "work/busy.log"}, references=mentions)
         self.assertEqual([case.name for case in report.retirable()], ["free", "open"])
-        for name in ("indexed", "mentioned", "open", "missing", "receipt.log"):
+        for name in ("indexed", "mentioned", "open", "missing", "receipt.log", "busy.log", "fresh.log"):
             with self.assertRaises(SystemExit):
                 _ = work_gc.retire(report, ["free", name], NOW)
             self.assertTrue((self.root / "work/free").exists(), name)

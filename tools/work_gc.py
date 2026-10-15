@@ -27,9 +27,9 @@ can be superseded by a row naming that one digested file. Files a manifest
 lists are protected like the manifest itself.
 
 ``--retire NAME...`` deletes whole cases or loose top-level files that no
-active evidence row covers and no tracked file mentions (``git grep``), under
-the same open, live and settling guards; every name is checked before any is
-removed.
+active evidence row covers and no tracked or untracked, non-ignored file
+mentions (``git grep --untracked``), under the same open, live and settling
+guards; every name is checked before any is removed.
 
 Usage::
 
@@ -190,8 +190,12 @@ def fixity_entries(manifest: Path) -> list[Path]:
 
 
 def tracked_references(root: Path, name: str) -> list[str]:
-    """Tracked files mentioning ``name``; a failing ``git grep`` counts as a reference."""
-    result = subprocess.run(["git", "-C", str(root), "grep", "-l", "-F", "-e", name], capture_output=True, text=True)
+    """Tracked and untracked, non-ignored files mentioning ``name``; a failing search counts as a reference."""
+    command = ["git", "-C", str(root), "grep", "--untracked", "-l", "-F", "-e", name]
+    try:
+        result = subprocess.run(command, capture_output=True, text=True)
+    except OSError as error:
+        return [f"<git grep failed: {error}>"]
     if result.returncode == 1:
         return []
     if result.returncode != 0:
@@ -357,6 +361,7 @@ class Loose:
     size: int
     references: list[str]
     indexed: bool = False
+    guard: str | None = None
 
 
 @dataclass
@@ -407,7 +412,10 @@ def scan(
             continue
         if not entry.is_dir() or entry.is_symlink():
             covered = any(is_within(entry, path) for path in protected)
-            loose.append(Loose(entry, tree_size(entry)[0], references(root, entry.name), covered))
+            size, newest = tree_size(entry)
+            in_use = running is None or any(is_within(path, entry) for path in running)
+            hold = "live" if in_use else "settling" if now - newest < settle_hours * 3600 else None
+            loose.append(Loose(entry, size, references(root, entry.name), covered, hold))
             continue
         case = Case(entry.name, entry)
         case.size, case.newest = tree_size(entry)
@@ -488,6 +496,8 @@ def retire(report: Report, names: Sequence[str], now: float) -> list[Candidate]:
                 refusals.append(f"{name}: an active evidence row covers it; retire the row first")
             elif item.references:
                 refusals.append(f"{name}: mentioned by {', '.join(item.references[:3])}")
+            elif item.guard is not None:
+                refusals.append(f"{name}: {item.guard}")
             else:
                 removals.append((name, Candidate(item.path, "retired-loose", item.size)))
         else:
@@ -520,10 +530,17 @@ def write_fixity(root: Path, directory: Path) -> tuple[Path, int, int]:
             if overlaps(path, scratch):
                 continue
             rel = path.relative_to(directory).as_posix()
-            if "\n" in rel or "\\" in rel or rel != rel.strip():
+            # Readers split manifests with str.splitlines(), so no line boundary may appear in a name.
+            if len(rel.splitlines()) != 1 or "\\" in rel or rel != rel.strip():
                 raise SystemExit(f"work_gc: {path}: name cannot be written to a fixity manifest")
             lines.append(f"{sha256_file(path)}  {rel}")
-    _ = manifest.write_text("".join(f"{line}\n" for line in sorted(lines, key=lambda line: line[66:])), encoding="utf-8")
+    staged = directory / f".{FIXITY_NAME}.partial"
+    with staged.open("w", encoding="utf-8") as handle:
+        _ = handle.write("".join(f"{line}\n" for line in sorted(lines, key=lambda line: line[66:])))
+        handle.flush()
+        os.fsync(handle.fileno())
+    # A crash leaves only the staged file, never a truncated manifest that write-once would refuse to replace.
+    os.replace(staged, manifest)
     return manifest, len(lines), symlinks
 
 
