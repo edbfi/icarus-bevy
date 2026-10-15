@@ -51,7 +51,7 @@ over placed pieces whose transforms share the grid's frame (F-643). Client recor
 gives the deposit, voxel, deployable and FLOD fields their meanings (F-645, F-646),
 as it does player, history, quest-link, container, mount-restore, rocket and
 game-clock fields (F-648, F-650 to F-653), and the remaining world classes theirs
-(F-654, F-656 to F-658, F-661); item stats, alterations and slots are row
+(F-654, F-656 to F-658, F-661, F-662); item stats, alterations and slots are row
 references (F-660).
 With struct arrays bounded at the 1 MiB component
 ceiling, a 646,614-byte grid array frames and both copies still round-trip
