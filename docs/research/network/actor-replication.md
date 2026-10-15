@@ -39,7 +39,7 @@ writers mirroring them (F-581); nothing is wire-validated.
 
 - Text history bodies (F-601) and other native structs (U-064); server send policy (U-044).
 - Tag replication by net index would need an identical tag table (F-583, U-065).
-- Rep handles follow each class's replicated-property list (F-608), so a server
+- Rep handles follow each class's replicated-property list (F-609), so a server
   needs the same lists as the client; their source is a user decision (U-066).
 
 ## Artifacts

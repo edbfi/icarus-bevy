@@ -45,9 +45,10 @@ dormancy, channel close reasons and every server-side writer.
   0 ends a stream; a dynamic array carries a 2-byte element count and a nested
   zero-terminated handle stream; each value goes through its property's net
   serializer, and a 4-byte checksum may follow each handle.
-- Layout source (F-608): a class's layout follows its replicated-property
+- Layout source (F-609): a class's layout follows its replicated-property
   list, the super class's list first, then its own net properties (field
-  order when class flag `0x80` is set, otherwise sorted by an unread key),
+  order when class flag `0x80` is set, otherwise by ascending property
+  offset with ties broken by name),
   one entry per static array element; one parent per entry, in order, then a
   terminating return command and the handle table.
 - Handle walk (F-586): handles strictly increase within a stream; an array
@@ -158,4 +159,4 @@ dormancy, channel close reasons and every server-side writer.
   vectors M-477 to M-491; tags M-493 to M-495; Name and Str routing M-497 to
   M-510; hit results M-468, M-512 to M-521; soft objects M-445, M-523 to
   M-529; Text M-531 to M-536, M-545 to M-547; codec tests M-475, M-476, M-492, M-496,
-  M-511, M-522, M-530, M-548; layout source M-552 to M-554.
+  M-511, M-522, M-530, M-548; layout source M-552 to M-555.
