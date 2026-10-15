@@ -191,9 +191,13 @@ def live_paths() -> set[Path] | None:
                 continue
         try:
             words = (entry / "cmdline").read_bytes().split(b"\0")
-            cwd = Path(os.readlink(entry / "cwd"))
         except OSError:
             continue
+        try:
+            cwd = Path(os.readlink(entry / "cwd"))
+        except OSError:
+            # Another user's process: absolute arguments still count.
+            cwd = Path("/")
         seen.update(argument_paths(cwd, [os.fsdecode(word) for word in words if word]))
     return seen
 
