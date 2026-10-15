@@ -62,6 +62,9 @@ dormancy, channel close reasons and every server-side writer.
   tag containers an empty bit, a count byte and packed tags; hit results a
   flags byte followed by those vectors and flag-gated fields. The movement
   struct and the 10/100 vector quantizers are not public symbols.
+- Gameplay tags (F-583): sent as network names unless the tag manager's
+  fast-replication flag is set; then as a net index into the runtime tag
+  table, which both sides must share in the same order.
 - Network names (F-575): a hardcoded bit; when set, the hardcoded name index
   (packed at engine net version 6 or later, otherwise bounded by 411; indices
   above 702 are rejected), which senders use only for indices up to 410; when
@@ -85,10 +88,11 @@ dormancy, channel close reasons and every server-side writer.
 
 - The rep-handle loop, property encodings and quantization helpers (U-064).
 - Server writers for these records and their byte order and bounds (U-044).
+- Gameplay-tag replication mode and an independent tag table (U-065).
 
 ## Evidence
 
 - Symbols M-420 (failed-closed attempts M-421, M-422); pseudocode M-423 to
   M-431, M-433; constants M-432, M-435 to M-437 (scope deviation M-434); net items M-438 to
   M-449; server writers M-455 to M-462;
-  server struct items M-463 to M-469.
+  server struct items M-463 to M-470.

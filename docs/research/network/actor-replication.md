@@ -28,7 +28,8 @@ writers mirroring them (F-581); nothing is wire-validated.
 ## Open
 
 - Property stream, rep handles and quantization (U-064); server writers (U-044).
+- Tag replication by net index would need an identical tag table (F-583, U-065).
 
 ## Artifacts
 
-M-420..M-449, M-455..M-469.
+M-420..M-449, M-455..M-470.
