@@ -521,3 +521,55 @@ fn fast_array_counts_fail_closed_when_negative_or_over_the_cap() {
     assert!(write_fast_array_delta(&mut BitWriter::new(), &over, &whole, &codec, 2).is_err());
     assert_eq!(FAST_ARRAY_COUNT_CAP, 2048);
 }
+
+#[test]
+fn fast_array_delta_items_share_one_entry_budget() {
+    let mut codec = codec(ByteOrder::Little);
+    codec.limits.max_entries = 1;
+    let layout = FastArrayItemLayout::Delta(vec![byte(None)]);
+    let item = |value: u8| {
+        FastArrayItem::Delta(PropertyStream {
+            entries: vec![RepEntry {
+                handle: 1,
+                checksum: None,
+                value: RepValue::Byte(value),
+            }],
+            terminator_checksum: None,
+        })
+    };
+    let one = FastArrayDelta {
+        array_replication_key: 0,
+        base_replication_key: 0,
+        deleted_ids: vec![],
+        changed: vec![(1, item(1))],
+    };
+    let two = FastArrayDelta {
+        changed: vec![(1, item(1)), (2, item(2))],
+        ..one.clone()
+    };
+    let mut writer = BitWriter::new();
+    write_fast_array_delta(&mut writer, &one, &layout, &codec, FAST_ARRAY_COUNT_CAP).unwrap();
+    assert!(
+        write_fast_array_delta(
+            &mut BitWriter::new(),
+            &two,
+            &layout,
+            &codec,
+            FAST_ARRAY_COUNT_CAP
+        )
+        .is_err()
+    );
+    // Encoded under a larger budget, the two items exceed one entry on read.
+    let mut roomy = codec;
+    roomy.limits.max_entries = 2;
+    let mut writer = BitWriter::new();
+    write_fast_array_delta(&mut writer, &two, &layout, &roomy, FAST_ARRAY_COUNT_CAP).unwrap();
+    let bytes = Payload::from_writer(writer);
+    assert!(
+        read_fast_array_delta(&mut bytes.reader(), &layout, &codec, FAST_ARRAY_COUNT_CAP).is_err()
+    );
+    assert_eq!(
+        read_fast_array_delta(&mut bytes.reader(), &layout, &roomy, FAST_ARRAY_COUNT_CAP).unwrap(),
+        two
+    );
+}

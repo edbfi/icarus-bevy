@@ -1685,7 +1685,7 @@ pub(super) fn read_value(
     })
 }
 
-fn read_stream(
+pub(super) fn read_stream(
     reader: &mut BitReader<'_>,
     layout: &[RepCommand],
     instances: usize,
@@ -1881,7 +1881,7 @@ pub(super) fn write_value(
     Ok(())
 }
 
-fn write_stream(
+pub(super) fn write_stream(
     writer: &mut BitWriter,
     stream: &PropertyStream,
     layout: &[RepCommand],

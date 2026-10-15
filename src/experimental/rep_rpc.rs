@@ -1,7 +1,7 @@
 //! EXPERIMENTAL replicator field headers, RPC parameters and fast-array delta
 //! bodies, against caller-supplied layouts.
 //!
-//! Static client observations only (F-637, F-638, F-641); nothing is
+//! Static client observations only (F-644); nothing is
 //! wire-validated, no
 //! original function or field list is known or shipped, and no RPC is
 //! dispatched. Writers mirror the readers for round-trip research only.
@@ -23,7 +23,7 @@
 //! requires a parameter payload to be consumed exactly. Which values a sender
 //! marks present is not read here.
 //!
-//! Fast-array delta bodies (F-641): four signed 4-byte fields (the array
+//! Fast-array delta bodies (F-644): four signed 4-byte fields (the array
 //! replication key, the base replication key, the delete count and the change
 //! count, each count at most its cap), a 4-byte ID per deleted element, then
 //! per changed element a 4-byte ID and either the item struct's commands in
@@ -37,8 +37,8 @@ use super::actor_channel::read_packed;
 use super::packet::{BitReader, BitWriter, Payload};
 use super::rep_layout::{
     Budget, PropertyStream, RepCommand, RepLayoutCodec, RepValue, append_bits, copy_bits,
-    read_property_stream, read_u16, read_u32, read_value, validate_layout, write_property_stream,
-    write_u16, write_u32, write_value,
+    read_stream, read_u16, read_u32, read_value, validate_layout, write_stream, write_u16,
+    write_u32, write_value,
 };
 
 /// Largest dynamic-array count the client accepts in RPC parameters.
@@ -423,8 +423,9 @@ pub fn read_fast_array_delta(
                 let bit = reader.read_bit();
                 ensure!(!reader.is_error(), "truncated fast-array item {index}");
                 ensure!(bit, "fast-array delta item {index} without its set bit");
+                // Every item draws on the body's one entry budget.
                 FastArrayItem::Delta(
-                    read_property_stream(reader, element, codec)
+                    read_stream(reader, element, 1, codec, 0, &mut budget)
                         .with_context(|| format!("fast-array item {index}"))?,
                 )
             }
@@ -482,7 +483,7 @@ pub fn write_fast_array_delta(
             }
             (FastArrayItemLayout::Delta(element), FastArrayItem::Delta(stream)) => {
                 writer.write_bit(true);
-                write_property_stream(writer, stream, element, codec)
+                write_stream(writer, stream, element, 1, codec, 0, &mut budget)
                     .with_context(|| format!("fast-array item {index}"))?;
             }
             _ => anyhow::bail!("fast-array item {index} does not match its layout"),
