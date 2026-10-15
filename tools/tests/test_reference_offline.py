@@ -13,8 +13,8 @@ import unittest
 from unittest.mock import Mock, patch
 
 from tools.run_reference_offline import (IMAGE, REFERENCE_EXE, ApprovedRun, Arguments, Budget,
-    cleanup_container, digest, observe, owned_container, prepare_launch, record_save_outputs,
-    reserve_run, revalidate, validate_session)
+    cleanup_container, digest, observe, observe_and_record, owned_container, prepare_launch,
+    record_save_outputs, reserve_run, revalidate, validate_session)
 from tools.runtime_types import JsonObject, json_object, parse_json
 
 CONTAINER = "a" * 64
@@ -499,6 +499,33 @@ class InvocationTests(unittest.TestCase):
             self.assertIsInstance(files, list)
             self.assertEqual(len(files) if isinstance(files, list) else 0, 2)
             self.assertTrue((run / "save-outputs.json").is_file())
+
+    def test_save_output_recording_never_hides_a_run_failure(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            fixture = Fixture(directory)
+            save = fixture.case / "authored_prospect.json"
+            _ = save.write_text("{}")
+            fixture.args.save_load = True
+            fixture.write({"allowed_modes": ["save-load"], "save_input": str(save),
+                           "save_input_sha256": digest(save), "shutdown_if_not_joined_seconds": 0})
+            approved = fixture.approve()
+            run = fixture.case / "run"
+            run.mkdir()
+            run_failure = RuntimeError("authored run failure")
+            with (patch("tools.run_reference_offline.observe", side_effect=run_failure),
+                  patch("tools.run_reference_offline.record_save_outputs",
+                        side_effect=PermissionError("authored unreadable output"))):
+                with self.assertRaises(RuntimeError) as raised:
+                    _ = observe_and_record(fixture.args, approved, run, NAME, TOKEN, [])
+            self.assertIs(raised.exception, run_failure)
+            self.assertIn("save outputs not recorded: authored unreadable output",
+                          getattr(raised.exception, "__notes__", []))
+            recorder = Mock(return_value={})
+            with (patch("tools.run_reference_offline.observe", return_value={"removed": True}),
+                  patch("tools.run_reference_offline.record_save_outputs", recorder)):
+                self.assertEqual(observe_and_record(fixture.args, approved, run, NAME, TOKEN, []),
+                                 {"removed": True})
+            recorder.assert_called_once_with(run, approved)
 
     def test_shell_forwards_exact_arguments_and_requires_explicit_session(self) -> None:
         wrapper = ROOT / "tools/run_reference_offline.sh"

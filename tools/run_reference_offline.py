@@ -470,6 +470,23 @@ def record_save_outputs(run: Path, approved: ApprovedRun) -> JsonObject:
     return outputs
 
 
+def observe_and_record(args: Arguments, approved: ApprovedRun, run: Path,
+                       name: str, token: str, argv: list[str]) -> JsonObject:
+    """Observe, then record save outputs; a recording failure never hides a run failure."""
+    try:
+        cleanup = observe(args, approved, run, name, token, argv)
+    except BaseException as failure:
+        if args.save_load:
+            try:
+                _ = record_save_outputs(run, approved)
+            except Exception as recording:
+                failure.add_note(f"save outputs not recorded: {recording}")
+        raise
+    if args.save_load:
+        _ = record_save_outputs(run, approved)
+    return cleanup
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     _ = parser.add_argument("--case-root", required=True)
@@ -491,11 +508,7 @@ def main() -> None:
         name = "icarus-offline-" + token
         argv = prepare_launch(root, args, approved, run, name, token)
         revalidate(root, args, approved)
-        try:
-            cleanup = observe(args, approved, run, name, token, argv)
-        finally:
-            if args.save_load:
-                _ = record_save_outputs(run, approved)
+        cleanup = observe_and_record(args, approved, run, name, token, argv)
         print(json.dumps({"run": str(run), **cleanup}))
 
 
