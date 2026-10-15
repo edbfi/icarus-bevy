@@ -148,11 +148,14 @@ game listener.
 - Experimental modules, none wire-validated: `control` reads the ID 0 body
   (one uninterpreted byte, explicit-endian u32, strict archive string) under a
   131,081-byte ceiling, a variant applying the inferred first-field byte-order
-  rule (F-096, F-097, F-518, F-519); `packet` codes the receive format above
+  rule (F-096, F-097, F-518, F-519), retaining no token units and giving raw
+  containers neither `Debug` nor `Serialize`; `packet` codes the receive format above
   (F-521 to F-527); `control_receive` decodes one terminated datagram's control
   messages up to ID 0; `control_messages` types the whole vocabulary, every
   unique-net-id form included (F-531, F-636); `sequencing` models the client's
-  notify and reliable state, some sites inferred (F-535 to F-539); and
+  notify and reliable state, its sent-record push site, ring capacity,
+  zero-filled history words and reliable comparison window inferred or
+  assumed (F-535 to F-539); and
   `packet_lab` and `peer_lab` run them as one disconnected per-peer state in
   the Bevy loopback lab, answering Hello and Login but never sending Welcome
   (F-558, F-564). The dispatcher's input is an FInBunch (F-507);
