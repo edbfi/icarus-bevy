@@ -42,7 +42,7 @@ read order (F-610); nothing is wire-validated.
 
 ## Open
 
-- Text custom-version gates and Name routing (F-624) and other native
+- Text Name routing (F-624, F-627) and other native
   structs (U-064); server send policy (U-044).
 - Tag replication by net index would need an identical tag table (F-583, U-065).
 - Rep handles follow each class's replicated-property list (F-609), so a server
@@ -50,4 +50,4 @@ read order (F-610); nothing is wire-validated.
 
 ## Artifacts
 
-M-420..M-449, M-455..M-470, M-570..M-576, M-581..M-588.
+M-420..M-449, M-455..M-470, M-570..M-576, M-581..M-588, M-600, M-601.

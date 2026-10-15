@@ -151,8 +151,8 @@ dormancy, channel close reasons and every server-side writer.
   implied below custom version 5 on load), then an int32 (0), a float (2),
   a nested Text (4) or a gender byte (5). A loading archive takes custom
   versions from the client's registry of current versions (F-624); the
-  gating key is registered at version 40, so both gates pass (F-626), and
-  the none form's threshold on that key is unread; Names here use archive slot 0x140, whose net
+  gating key is registered at version 40, so both gates pass, as does the
+  none form's (version 32: a 4-byte bool, then a string if set; F-627); Names here use archive slot 0x140, whose net
   routing is unread (U-064).
 - Network names (F-575): a hardcoded bit; when set, the hardcoded name index
   (packed at engine net version 6 or later, otherwise bounded by 411; indices
