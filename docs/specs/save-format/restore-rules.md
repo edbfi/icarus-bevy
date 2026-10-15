@@ -27,6 +27,8 @@ data-table row meanings (F-660).
   player, player-state and rocket records; rocket restore applies only with an
   active list holding the player and a positive version, else destroys (F-663).
 - Container entries keep their list positions, empty ones skipped (F-651).
+- A forecast saves `now`'s offset into its first containing block and that
+  block's pattern; else `now` and the first pattern; zeros if none (F-665).
 
 ## Candidate
 

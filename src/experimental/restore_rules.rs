@@ -1,7 +1,7 @@
 //! EXPERIMENTAL restoration rules the client's state recorders apply.
 //!
 //! Each function is a pure rule over authored domain values, read from the
-//! client recorders' record, validate, stitch and restore code (F-645 to F-663).
+//! client recorders' record, validate, stitch and restore code (F-645 to F-665).
 //! Nothing here decodes a save, looks up a class, constructs an object or
 //! imports state: the rules pin the behavior a native world must reproduce when
 //! it restores recorded actors. The normal server does not call them yet, and
@@ -163,4 +163,49 @@ pub fn container_entries<T>(list: &[Option<T>]) -> impl Iterator<Item = (usize, 
     list.iter()
         .enumerate()
         .filter_map(|(index, entry)| entry.as_ref().map(|entry| (index, entry)))
+}
+
+/// One weather-forecast block: the time values `[start, end)` it covers and
+/// its pattern index.
+#[derive(Clone, Copy, Debug)]
+pub struct ForecastBlock {
+    pub start: i32,
+    pub end: i32,
+    pub pattern_index: i32,
+}
+
+/// Where a forecast's current time value sits, as its record saves it (F-665).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct ForecastPosition {
+    pub start_time_delta: i32,
+    pub pattern_index: i32,
+    pub recorded_now: i32,
+}
+
+/// The saved position of `now` in a forecast's blocks: the offset into the
+/// first block containing it and that block's pattern index. With no
+/// containing block the offset is `now` itself and the first block's pattern
+/// is kept; with no blocks or a negative `now` every value is zero.
+pub fn forecast_position(blocks: &[ForecastBlock], now: i32) -> ForecastPosition {
+    let Some(first) = blocks.first() else {
+        return ForecastPosition::default();
+    };
+    if now < 0 {
+        return ForecastPosition::default();
+    }
+    match blocks
+        .iter()
+        .find(|block| block.start <= now && now < block.end)
+    {
+        Some(block) => ForecastPosition {
+            start_time_delta: now.wrapping_sub(block.start),
+            pattern_index: block.pattern_index,
+            recorded_now: now,
+        },
+        None => ForecastPosition {
+            start_time_delta: now,
+            pattern_index: first.pattern_index,
+            recorded_now: now,
+        },
+    }
 }

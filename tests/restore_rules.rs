@@ -164,3 +164,41 @@ fn container_positions_keep_gaps() {
     assert_eq!(entries, [(0, &'a'), (2, &'c')]);
     assert_eq!(container_entries::<u8>(&[]).count(), 0);
 }
+
+#[test]
+fn forecast_position_follows_the_containing_block() {
+    use icarus_bevy::experimental::restore_rules::{
+        ForecastBlock, ForecastPosition, forecast_position,
+    };
+    let blocks = [
+        ForecastBlock {
+            start: 0,
+            end: 10,
+            pattern_index: 3,
+        },
+        ForecastBlock {
+            start: 10,
+            end: 25,
+            pattern_index: 7,
+        },
+    ];
+    let at = |start_time_delta, pattern_index, recorded_now| ForecastPosition {
+        start_time_delta,
+        pattern_index,
+        recorded_now,
+    };
+    assert_eq!(forecast_position(&blocks, 0), at(0, 3, 0));
+    assert_eq!(
+        forecast_position(&blocks, 10),
+        at(0, 7, 10),
+        "ends are exclusive"
+    );
+    assert_eq!(forecast_position(&blocks, 24), at(14, 7, 24));
+    assert_eq!(
+        forecast_position(&blocks, 40),
+        at(40, 3, 40),
+        "past every block keeps the first pattern"
+    );
+    assert_eq!(forecast_position(&blocks, -1), ForecastPosition::default());
+    assert_eq!(forecast_position(&[], 5), ForecastPosition::default());
+}
