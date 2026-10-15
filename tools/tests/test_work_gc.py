@@ -213,7 +213,8 @@ class WorkGcTest(unittest.TestCase):
             _ = self.write(f"work/{name}/notes.md")
         _ = self.write("work/open/case.json", b'{"state": "open"}')
         _ = self.write("work/stray.log")
-        self.evidence("work/indexed/notes.md")
+        _ = self.write("work/receipt.log")
+        self.evidence("work/indexed/notes.md", "work/receipt.log")
         self.age()
 
         def mentions(_root: Path, name: str) -> list[str]:
@@ -221,7 +222,7 @@ class WorkGcTest(unittest.TestCase):
 
         report = work_gc.scan(self.root, now=NOW, live=no_processes, references=mentions)
         self.assertEqual([case.name for case in report.retirable()], ["free", "open"])
-        for name in ("indexed", "mentioned", "open", "missing"):
+        for name in ("indexed", "mentioned", "open", "missing", "receipt.log"):
             with self.assertRaises(SystemExit):
                 _ = work_gc.retire(report, ["free", name], NOW)
             self.assertTrue((self.root / "work/free").exists(), name)

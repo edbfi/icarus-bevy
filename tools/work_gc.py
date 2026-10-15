@@ -356,6 +356,7 @@ class Loose:
     path: Path
     size: int
     references: list[str]
+    indexed: bool = False
 
 
 @dataclass
@@ -405,7 +406,8 @@ def scan(
         if entry.name == LOG_DIR:
             continue
         if not entry.is_dir() or entry.is_symlink():
-            loose.append(Loose(entry, tree_size(entry)[0], references(root, entry.name)))
+            covered = any(is_within(entry, path) for path in protected)
+            loose.append(Loose(entry, tree_size(entry)[0], references(root, entry.name), covered))
             continue
         case = Case(entry.name, entry)
         case.size, case.newest = tree_size(entry)
@@ -482,7 +484,9 @@ def retire(report: Report, names: Sequence[str], now: float) -> list[Candidate]:
                 removals.append((name, Candidate(case.path, "retired-case", case.size)))
         elif name in loose:
             item = loose[name]
-            if item.references:
+            if item.indexed:
+                refusals.append(f"{name}: an active evidence row covers it; retire the row first")
+            elif item.references:
                 refusals.append(f"{name}: mentioned by {', '.join(item.references[:3])}")
             else:
                 removals.append((name, Candidate(item.path, "retired-loose", item.size)))
