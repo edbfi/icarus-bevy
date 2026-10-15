@@ -180,7 +180,7 @@ Acceptance conditions for any importer
 
 - Base-component framing is a candidate layout for C013 and C028 in build 25621760;
   it is not established for the user-reported newer build (F-348, F-360, U-025).
-- The C013 struct field captures an owner-collection count (inferred, F-355).
+- The C013 struct field captures the world FLOD manager's tile count (F-646).
 - C028/C034/C009 struct and array contracts are conditional older-build framing
   contracts, not fixed disk widths; the 16/12-byte transfers assume successful
   archive reads (F-366, F-369, F-380, F-172).
