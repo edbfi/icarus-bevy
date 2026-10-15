@@ -56,7 +56,8 @@ No decoded value, text or number was emitted or interpreted.
 
 ## Open
 
-- Meanings, Name identity and Enum lookup for every qualified value (U-020).
+- Meanings and Name identity for every qualified value (U-020); every saved
+  enum property value already resolves in both builds' identical tables (F-640).
 - Unpopulated families: 17 C028 array-child descriptors, DA04, CA06 Text/Name and the empty inherited arrays (U-021, U-046).
 - Map item meanings and binary Struct component values (U-055, U-020); meanings of the classes outside the audited selections (U-022); C001's nested values and runtime dispatch (U-023).
 - Individual C028 native top spans and the historical library snapshot (U-024).
@@ -65,4 +66,4 @@ No decoded value, text or number was emitted or interpreted.
 
 ## Artifacts
 
-M-047..M-077, M-079..M-108, M-118..M-130, M-278..M-280, M-351, M-352, M-376..M-384, M-389, M-390, M-401..M-404, M-407..M-410, M-606..M-613, M-616..M-618.
+M-047..M-077, M-079..M-108, M-118..M-130, M-278..M-280, M-351, M-352, M-376..M-384, M-389, M-390, M-401..M-404, M-407..M-410, M-606..M-613, M-616..M-618, M-626, M-627.
