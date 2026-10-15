@@ -30,7 +30,10 @@ as names or as split net indices whose widths, like the container count
 width, are tag configuration (F-591, F-592). Name items take the
 network-name form through the package map, and Str items are archive strings
 (F-595), as are soft-object paths on net archives (F-599). Hit results carry a flags byte that elides duplicate or default
-fields, quantized vectors, NetGUID references and a bone name (F-597). These
+fields, quantized vectors, NetGUID references and a bone name (F-597).
+Text items take the shared FText serializer at the archive version client
+bunches are built with, 522, and every history body but TextGenerator is
+read (F-613, F-614). These
 are
 client-build observations, with the older server's content-block and NetGUID
 writers mirroring them (F-581) and composing actor bunches in the client's
@@ -38,7 +41,8 @@ read order (F-610); nothing is wire-validated.
 
 ## Open
 
-- Text history bodies (F-601) and other native structs (U-064); server send policy (U-044).
+- TextGenerator bodies, Text argument and option serializers (F-613) and other
+  native structs (U-064); server send policy (U-044).
 - Tag replication by net index would need an identical tag table (F-583, U-065).
 - Rep handles follow each class's replicated-property list (F-609), so a server
   needs the same lists as the client; their source is a user decision (U-066).

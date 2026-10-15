@@ -118,12 +118,27 @@ dormancy, channel close reasons and every server-side writer.
   reach the shared archive FText serializer, which net archives do not
   override: from archive version `0x170` a 4-byte flags word, then a
   history-type byte (0 to 12 select per-history bodies, 0xFF none); the
-  bodies are only partly read and the codec fails closed on Text (F-601).
-  Histories write their own type byte on save; Base carries no body of its
-  own (its strings follow through a separate display-string serializer),
-  Transform nests a whole Text and a byte, and the 0xFF none form is
-  custom-version gated with a culture-invariant flag and optional string
-  (F-603).
+  codec still fails closed on Text (F-613). Client net archives carry UE4
+  version 522, so the version gates below pass (F-614). Each history writes
+  its own type byte on save, then:
+  - 0 Base: no body of its own; its strings follow through a separate
+    display-string serializer. 0xFF none: custom-version gated, a
+    culture-invariant flag and optional string.
+  - 1 NamedFormat: the format as a nested Text, then a map of arguments.
+    2 OrderedFormat and 3 ArgumentDataFormat: the format Text, a 4-byte
+    count, then that many argument records (0x30- and 0x40-byte in memory,
+    read by separate serializers).
+  - 4 AsNumber, 5 AsPercent: a format-argument value, a has-options flag,
+    the options when set, then a target-culture string; 6 AsCurrency
+    first writes a currency-code string.
+  - 7 AsDate: an 8-byte date-time, a style byte, a time-zone string from
+    version `0x1a6`, then the culture string. 8 AsTime: the same with the
+    zone string always. 9 AsDateTime: date and time style bytes, then
+    zone and culture strings.
+  - 10 Transform: a nested Text and a transform byte. 11 StringTableEntry:
+    a table Name, then a key string. 12 TextGenerator: unread.
+  Argument values, number options and map items are separate serializers,
+  unread (U-064).
 - Network names (F-575): a hardcoded bit; when set, the hardcoded name index
   (packed at engine net version 6 or later, otherwise bounded by 411; indices
   above 702 are rejected), which senders use only for indices up to 410; when
@@ -148,8 +163,8 @@ dormancy, channel close reasons and every server-side writer.
 
 ## Open questions
 
-- Text history bodies, the net archive version and other native structs
-  (U-064); which levels each movement property uses (a property default).
+- Text argument values, number options, TextGenerator bodies and other
+  native structs (U-064); which levels each movement property uses (a property default).
 - Server writers for these records and their byte order and bounds (U-044).
 - Gameplay-tag replication mode, widths and an independent tag table (U-065).
 - The source of each class's replicated-property list for a server (U-066).
@@ -162,6 +177,7 @@ dormancy, channel close reasons and every server-side writer.
   server struct items M-463 to M-470; handle walk M-428; movement and scaled
   vectors M-477 to M-491; tags M-493 to M-495; Name and Str routing M-497 to
   M-510; hit results M-468, M-512 to M-521; soft objects M-445, M-523 to
-  M-529; Text M-531 to M-536, M-545 to M-547; codec tests M-475, M-476, M-492, M-496,
+  M-529; Text M-531 to M-536, M-545 to M-547, M-570;
+  net archive version M-571 to M-576; codec tests M-475, M-476, M-492, M-496,
   M-511, M-522, M-530, M-548; layout source M-552 to M-555; send order M-461, M-556 to
   M-560.
