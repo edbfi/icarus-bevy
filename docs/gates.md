@@ -116,8 +116,12 @@ Last reconciled: 2026-10-15
   scenarios the user approves one by one. Each run observes 15 to 780 seconds
   plus 120 seconds of cleanup, at most 900 seconds.
 - Connected scenarios need the user at the client, its build bound in the
-  scope, approved ingress and egress and bounded capture; the launcher has no
-  networked mode yet.
+  scope, approved ingress and egress and bounded capture. Route A of the
+  [connected-scenarios runbook](runbooks/connected-scenarios.md) runs the
+  official server and client on the user's own PC with matched builds and no
+  exposure of this host; each scenario still needs the user's approval and an
+  intake case. Route B, a networked mode of this host's launcher, does not
+  exist yet.
 - Preserve the client installation until dependencies and provenance are
   understood; the restriction against reusing packaged content remains in force.
 
