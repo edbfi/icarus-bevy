@@ -107,7 +107,11 @@ dormancy, channel close reasons and every server-side writer.
   items are archive strings: a signed 4-byte count, then narrow bytes or
   2-byte units with a terminator (F-596 re-encodes them). Soft-object items
   reach the archive path operator, which net bit archives override to send
-  the path as one archive string (F-599; F-600 re-encodes it).
+  the path as one archive string (F-599; F-600 re-encodes it). Text items
+  reach the shared archive FText serializer, which net archives do not
+  override: from archive version `0x170` a 4-byte flags word, then a
+  history-type byte (0 to 12 select per-history bodies, 0xFF none); the
+  bodies are unread and the codec fails closed on Text (F-601).
 - Network names (F-575): a hardcoded bit; when set, the hardcoded name index
   (packed at engine net version 6 or later, otherwise bounded by 411; indices
   above 702 are rejected), which senders use only for indices up to 410; when
@@ -128,7 +132,7 @@ dormancy, channel close reasons and every server-side writer.
 
 ## Open questions
 
-- Property encodings beyond the read items: Text and other native structs
+- Text history bodies, the net archive version and other native structs
   (U-064); which levels each movement property uses (a property default).
 - Server writers for these records and their byte order and bounds (U-044).
 - Gameplay-tag replication mode, widths and an independent tag table (U-065).
@@ -141,4 +145,5 @@ dormancy, channel close reasons and every server-side writer.
   server struct items M-463 to M-470; handle walk M-428; movement and scaled
   vectors M-477 to M-491; tags M-493 to M-495; Name and Str routing M-497 to
   M-510; hit results M-468, M-512 to M-521; soft objects M-445, M-523 to
-  M-529; codec tests M-475, M-476, M-492, M-496, M-511, M-522, M-530.
+  M-529; Text M-531 to M-536; codec tests M-475, M-476, M-492, M-496,
+  M-511, M-522, M-530.

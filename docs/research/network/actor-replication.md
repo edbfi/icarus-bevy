@@ -37,7 +37,7 @@ writers mirroring them (F-581); nothing is wire-validated.
 
 ## Open
 
-- Text and other native structs (U-064); server send policy (U-044).
+- Text history bodies (F-601) and other native structs (U-064); server send policy (U-044).
 - Tag replication by net index would need an identical tag table (F-583, U-065).
 
 ## Artifacts

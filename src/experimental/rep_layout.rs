@@ -173,7 +173,7 @@ pub enum UnsupportedItem {
     Int32,
     UInt32,
     Float,
-    /// Base item path (F-575); the ordinary serializer is unread.
+    /// The shared FText serializer (F-601); history bodies are unread.
     Text,
     /// Any other native net-serialize struct.
     OtherNativeStruct,
