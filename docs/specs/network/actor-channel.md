@@ -36,7 +36,7 @@ dormancy, channel close reasons and every server-side writer.
 - `experimental::actor_channel` reads and re-encodes these structures
   bit-identically from authored fixtures, with payloads opaque (F-577), and
   `experimental::rep_layout` reads and re-encodes property streams from a
-  caller-supplied layout (F-585).
+  caller-supplied layout (F-587).
 - The replicator hands rep-layout properties to `FRepLayout::ReceiveProperties`
   (an optional bit, a packed handle, an optional checksum word, then a handle
   loop) before its field-header loop (M-426, M-427).
@@ -44,6 +44,10 @@ dormancy, channel close reasons and every server-side writer.
   0 ends a stream; a dynamic array carries a 2-byte element count and a nested
   zero-terminated handle stream; each value goes through its property's net
   serializer, and a 4-byte checksum may follow each handle.
+- Handle walk (F-586): handles strictly increase within a stream; an array
+  stream numbers its elements' commands consecutively, handle `h` addressing
+  element `(h - 1) / N` of an `N`-command element layout, and a nested array
+  is one handle. `experimental::rep_layout` enforces both rules.
 - Spawn vectors (F-571): after the presence bit, archives at engine net
   version 13 or later read a quantized bit; an unquantized vector is three
   4-byte floats, a quantized one a component bit count (at most 24) and three
@@ -88,7 +92,8 @@ dormancy, channel close reasons and every server-side writer.
 
 ## Open questions
 
-- The rep-handle loop, property encodings and quantization helpers (U-064).
+- Property encodings beyond the read items, the movement struct and tag
+  packing (U-064).
 - Server writers for these records and their byte order and bounds (U-044).
 - Gameplay-tag replication mode and an independent tag table (U-065).
 

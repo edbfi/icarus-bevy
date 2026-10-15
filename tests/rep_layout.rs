@@ -199,6 +199,7 @@ fn every_item_layout() -> Vec<RepCommand> {
         RepCommand::Rotator,
         RepCommand::Opaque { bits: 13 },
         RepCommand::Unsupported(UnsupportedItem::Float),
+        RepCommand::NetworkName,
     ]
 }
 
@@ -220,10 +221,6 @@ fn every_item_type_round_trips() {
     packed(&mut writer, 6);
     writer.write_bit(true);
     packed(&mut writer, 255);
-    packed(&mut writer, 6);
-    writer.write_bit(false);
-    narrow(&mut writer, "Door");
-    le32(&mut writer, 7);
     packed(&mut writer, 7);
     // Bit count 5 below 20 takes four bits; components below 1 << 7 take seven.
     let before = writer.bit_len();
@@ -244,6 +241,10 @@ fn every_item_type_round_trips() {
     writer.write_bits(1, 16);
     packed(&mut writer, 10);
     append(&mut writer, &span);
+    packed(&mut writer, 12);
+    writer.write_bit(false);
+    narrow(&mut writer, "Door");
+    le32(&mut writer, 7);
     packed(&mut writer, 0);
     let expected = stream(vec![
         entry(1, RepValue::Bool(true)),
@@ -252,13 +253,6 @@ fn every_item_type_round_trips() {
         entry(4, RepValue::Enum(1500)),
         entry(5, RepValue::Object(NetGuidRef::plain(300))),
         entry(6, RepValue::NetworkName(NetworkName::Hardcoded(255))),
-        entry(
-            6,
-            RepValue::NetworkName(NetworkName::String {
-                text: text("Door"),
-                number: 7,
-            }),
-        ),
         entry(
             7,
             RepValue::VectorQuantize(QuantizedVector {
@@ -279,6 +273,13 @@ fn every_item_type_round_trips() {
             }),
         ),
         entry(10, RepValue::Opaque(span)),
+        entry(
+            12,
+            RepValue::NetworkName(NetworkName::String {
+                text: text("Door"),
+                number: 7,
+            }),
+        ),
     ]);
     assert_stream(&bits(&writer), &layout, &expected, &plain());
 }
@@ -335,22 +336,107 @@ fn vector_bit_count_is_below_twenty() {
 }
 
 #[test]
-fn handles_are_accepted_in_any_order() {
+fn handles_must_strictly_increase() {
     let layout = [RepCommand::Bool, RepCommand::Byte { enum_bits: Some(2) }];
+    // Skipping a handle is a sparse stream, not an ordering error.
     let mut writer = BitWriter::new();
     packed(&mut writer, 2);
     writer.write_bits(3, 2);
+    packed(&mut writer, 0);
+    let expected = stream(vec![entry(2, RepValue::Byte(3))]);
+    assert_stream(&bits(&writer), &layout, &expected, &plain());
+    // A descending or repeated handle fails on read and on write.
+    for (first, second) in [(2, 1), (1, 1)] {
+        let mut writer = BitWriter::new();
+        packed(&mut writer, first);
+        if first == 2 {
+            writer.write_bits(3, 2);
+        } else {
+            writer.write_bit(true);
+        }
+        packed(&mut writer, second);
+        writer.write_bit(false);
+        packed(&mut writer, 0);
+        let payload = to_payload(&bits(&writer));
+        assert!(
+            error_of(parse_property_stream(&payload, &layout, &plain()))
+                .contains("does not follow"),
+            "{first} then {second}"
+        );
+        let value = |handle| {
+            if handle == 2 {
+                RepValue::Byte(3)
+            } else {
+                RepValue::Bool(true)
+            }
+        };
+        let bad = stream(vec![
+            entry(first, value(first)),
+            entry(second, value(second)),
+        ]);
+        assert!(
+            error_of(encode_property_stream(&bad, &layout, &plain())).contains("does not follow")
+        );
+    }
+}
+
+#[test]
+fn array_handles_address_elements_consecutively() {
+    // Two commands per element: element e, command c is handle e * 2 + c + 1.
+    let layout = [RepCommand::DynamicArray {
+        element: vec![RepCommand::Bool, RepCommand::Byte { enum_bits: Some(2) }],
+    }];
+    let mut writer = BitWriter::new();
     packed(&mut writer, 1);
-    writer.write_bit(false);
+    u16_le(&mut writer, 3);
     packed(&mut writer, 2);
     writer.write_bits(1, 2);
+    packed(&mut writer, 3);
+    writer.write_bit(true);
+    packed(&mut writer, 6);
+    writer.write_bits(2, 2);
     packed(&mut writer, 0);
-    let expected = stream(vec![
-        entry(2, RepValue::Byte(3)),
-        entry(1, RepValue::Bool(false)),
-        entry(2, RepValue::Byte(1)),
-    ]);
+    packed(&mut writer, 0);
+    let expected = stream(vec![entry(
+        1,
+        RepValue::DynamicArray(RepArray {
+            count: 3,
+            stream: stream(vec![
+                entry(2, RepValue::Byte(1)),
+                entry(3, RepValue::Bool(true)),
+                entry(6, RepValue::Byte(2)),
+            ]),
+        }),
+    )]);
     assert_stream(&bits(&writer), &layout, &expected, &plain());
+    // Handle 7 would be a fourth element of a three-element array.
+    let mut writer = BitWriter::new();
+    packed(&mut writer, 1);
+    u16_le(&mut writer, 3);
+    packed(&mut writer, 7);
+    writer.write_bit(true);
+    packed(&mut writer, 0);
+    packed(&mut writer, 0);
+    let payload = to_payload(&bits(&writer));
+    assert!(error_of(parse_property_stream(&payload, &layout, &plain())).contains("unknown"));
+    let bad = stream(vec![entry(
+        1,
+        RepValue::DynamicArray(RepArray {
+            count: 3,
+            stream: stream(vec![entry(7, RepValue::Bool(true))]),
+        }),
+    )]);
+    assert!(error_of(encode_property_stream(&bad, &layout, &plain())).contains("unknown"));
+    // A zero-count array addresses no element at all.
+    let mut writer = BitWriter::new();
+    packed(&mut writer, 1);
+    u16_le(&mut writer, 0);
+    packed(&mut writer, 1);
+    writer.write_bit(true);
+    packed(&mut writer, 0);
+    packed(&mut writer, 0);
+    let payload = to_payload(&bits(&writer));
+    assert!(error_of(parse_property_stream(&payload, &layout, &plain())).contains("unknown"));
 }
 
 #[test]
@@ -461,8 +547,9 @@ fn array_layout() -> Vec<RepCommand> {
     ]
 }
 
-/// An array of two elements holding a bool, an empty inner array and a
-/// one-element inner array, then a top-level bool: six entries in all.
+/// An array of two elements, the first holding a bool and an empty inner array
+/// (handles 1 and 2), the second only a one-element inner array (handle 4),
+/// then a top-level bool: six entries in all.
 fn array_fixture() -> ((Vec<u8>, usize), PropertyStream) {
     let mut writer = BitWriter::new();
     packed(&mut writer, 1);
@@ -472,7 +559,7 @@ fn array_fixture() -> ((Vec<u8>, usize), PropertyStream) {
     packed(&mut writer, 2);
     u16_le(&mut writer, 0);
     packed(&mut writer, 0);
-    packed(&mut writer, 2);
+    packed(&mut writer, 4);
     u16_le(&mut writer, 1);
     packed(&mut writer, 1);
     writer.write_bits(9, 4);
@@ -495,7 +582,7 @@ fn array_fixture() -> ((Vec<u8>, usize), PropertyStream) {
                 vec![
                     entry(1, RepValue::Bool(true)),
                     entry(2, inner(0, Vec::new())),
-                    entry(2, inner(1, vec![entry(1, RepValue::Byte(9))])),
+                    entry(4, inner(1, vec![entry(1, RepValue::Byte(9))])),
                 ],
             ),
         ),

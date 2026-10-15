@@ -35,13 +35,12 @@
 //! Interpretations, not observations:
 //! - a checksum word follows every handle read, including the terminating 0
 //!   ("each handle"); its value is preserved raw and never checked;
-//! - handles index the commands of their stream's level, 1-based in order; how
-//!   nested handles address array elements beyond the element layout is unread,
-//!   so handles above the element command count are rejected as unknown, and
-//!   the element count is preserved without a relation to the nested entries;
-//! - the nested stream is read even for a zero element count;
-//! - the original's handle ordering rule is unread: any order, including
-//!   repeated handles, is accepted, bounded by the entry limit;
+//! - handles follow the client's single sequential walk (F-586): they strictly
+//!   increase within a stream, a top-level stream addresses its layout once,
+//!   and an array stream numbers `count` copies of the element layout
+//!   consecutively, so handle `h` is command `(h - 1) % N` of element
+//!   `(h - 1) / N`; a nested array is one handle;
+//! - the nested stream is read even for a zero element count (F-586);
 //! - the component bit count of `FVector_NetQuantize` ("at most 20") is read as
 //!   a capped integer with maximum 20, so it is below 20, like the spawn-vector
 //!   field of `actor_channel` (F-573);
@@ -349,7 +348,9 @@ impl std::fmt::Debug for RepValue {
 /// One handle and its value.
 #[derive(Clone, PartialEq, Eq)]
 pub struct RepEntry {
-    /// 1-based command position in this stream's level.
+    /// 1-based position in the stream's sequential walk; in an array stream,
+    /// element `(handle - 1) / N` and command `(handle - 1) % N` of an
+    /// `N`-command element layout (F-586).
     pub handle: u32,
     /// Present exactly when the codec selects checksums; raw and unchecked.
     pub checksum: Option<u32>,
@@ -521,12 +522,27 @@ fn validate_layout_at(layout: &[RepCommand], limits: &RepLayoutLimits, depth: us
     Ok(())
 }
 
-fn command_at(layout: &[RepCommand], handle: u32) -> Result<&RepCommand> {
-    usize::try_from(handle)
-        .ok()
-        .and_then(|handle| handle.checked_sub(1))
-        .and_then(|index| layout.get(index))
-        .with_context(|| format!("unknown property handle {handle}"))
+/// Resolve a handle the way the client's single sequential walk does (F-586):
+/// handles strictly increase within a stream, and a stream over `instances`
+/// copies of the layout (1 at top level, the element count in an array)
+/// numbers their commands consecutively, so handle `h` is command
+/// `(h - 1) % layout.len()` of instance `(h - 1) / layout.len()`.
+fn command_at(
+    layout: &[RepCommand],
+    handle: u32,
+    previous: u32,
+    instances: usize,
+) -> Result<&RepCommand> {
+    ensure!(
+        handle > previous,
+        "property handle {handle} does not follow handle {previous}"
+    );
+    let index = usize::try_from(handle - 1)?;
+    ensure!(
+        !layout.is_empty() && index / layout.len() < instances,
+        "unknown property handle {handle}"
+    );
+    Ok(&layout[index % layout.len()])
 }
 
 fn read_flag(reader: &mut BitReader<'_>, what: &str) -> Result<bool> {
@@ -806,8 +822,15 @@ fn read_value(
                 count <= codec.limits.max_array_elements,
                 "dynamic array count exceeds the element limit"
             );
-            let stream = read_stream(reader, element, codec, depth + 1, budget)
-                .context("dynamic array stream")?;
+            let stream = read_stream(
+                reader,
+                element,
+                usize::from(count),
+                codec,
+                depth + 1,
+                budget,
+            )
+            .context("dynamic array stream")?;
             RepValue::DynamicArray(RepArray { count, stream })
         }
         RepCommand::Opaque { bits } => {
@@ -825,6 +848,7 @@ fn read_value(
 fn read_stream(
     reader: &mut BitReader<'_>,
     layout: &[RepCommand],
+    instances: usize,
     codec: &RepLayoutCodec,
     depth: usize,
     budget: &mut Budget,
@@ -833,7 +857,7 @@ fn read_stream(
         depth <= codec.limits.max_depth,
         "property stream nesting exceeds the depth limit"
     );
-    let mut entries = Vec::new();
+    let mut entries: Vec<RepEntry> = Vec::new();
     loop {
         let handle = read_packed(reader, "property handle")?;
         let checksum = read_checksum(reader, codec)?;
@@ -843,7 +867,8 @@ fn read_stream(
                 terminator_checksum: checksum,
             });
         }
-        let command = command_at(layout, handle)?;
+        let previous = entries.last().map_or(0, |entry| entry.handle);
+        let command = command_at(layout, handle, previous, instances)?;
         budget.take()?;
         let value = read_value(reader, command, codec, depth, budget)
             .with_context(|| format!("property handle {handle}"))?;
@@ -866,7 +891,7 @@ pub fn read_property_stream(
     let mut budget = Budget {
         remaining: codec.limits.max_entries,
     };
-    read_stream(reader, layout, codec, 0, &mut budget)
+    read_stream(reader, layout, 1, codec, 0, &mut budget)
 }
 
 /// Parse a payload that must hold exactly one property stream.
@@ -940,8 +965,16 @@ fn write_value(
                 "dynamic array count exceeds the element limit"
             );
             write_u16(writer, array.count, codec.actor.order);
-            write_stream(writer, &array.stream, element, codec, depth + 1, budget)
-                .context("dynamic array stream")?;
+            write_stream(
+                writer,
+                &array.stream,
+                element,
+                usize::from(array.count),
+                codec,
+                depth + 1,
+                budget,
+            )
+            .context("dynamic array stream")?;
         }
         (RepCommand::Opaque { bits }, RepValue::Opaque(payload)) => {
             ensure!(
@@ -960,6 +993,7 @@ fn write_stream(
     writer: &mut BitWriter,
     stream: &PropertyStream,
     layout: &[RepCommand],
+    instances: usize,
     codec: &RepLayoutCodec,
     depth: usize,
     budget: &mut Budget,
@@ -968,9 +1002,11 @@ fn write_stream(
         depth <= codec.limits.max_depth,
         "property stream nesting exceeds the depth limit"
     );
+    let mut previous = 0;
     for entry in &stream.entries {
         ensure!(entry.handle != 0, "handle 0 is the stream terminator");
-        let command = command_at(layout, entry.handle)?;
+        let command = command_at(layout, entry.handle, previous, instances)?;
+        previous = entry.handle;
         budget.take()?;
         writer.write_int_packed(entry.handle);
         write_checksum(writer, entry.checksum, codec)?;
@@ -1005,6 +1041,6 @@ pub fn encode_property_stream(
         remaining: codec.limits.max_entries,
     };
     let mut writer = BitWriter::new();
-    write_stream(&mut writer, stream, layout, codec, 0, &mut budget)?;
+    write_stream(&mut writer, stream, layout, 1, codec, 0, &mut budget)?;
     Ok(Payload::from_writer(writer))
 }
