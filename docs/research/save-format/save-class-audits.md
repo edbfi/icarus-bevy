@@ -49,8 +49,8 @@ three or four ordered 4-byte components with no count or tail (F-602).
 Construction candidates frame too, building grids nesting per-type row names
 over placed pieces whose transforms share the grid's frame (F-643). Client recorder code
 gives the deposit, voxel, deployable and FLOD fields their meanings (F-645, F-646),
-as it does player, history, quest-link, container, mount-restore and rocket fields
-(F-648, F-650 to F-652).
+as it does player, history, quest-link, container, mount-restore, rocket and
+game-clock fields (F-648, F-650 to F-653).
 With struct arrays bounded at the 1 MiB component
 ceiling, a 646,614-byte grid array frames and both copies still round-trip
 (F-634).
