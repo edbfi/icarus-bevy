@@ -10,9 +10,13 @@
 //! whose own first field selects the order of its version and token. Unknown
 //! IDs stop decoding because their fields are unknown.
 //!
-//! The non-encoded unique-net-id form (an archive string after the type part)
-//! is an inference; only the encoded branch was read in detail (F-531). The
-//! type table is unread, so type indices stay raw. No connection state, reply,
+//! Unique-net-ids follow the client reader (F-531, F-636): a non-encoded id
+//! is one archive string after the type part, and a type-name string naming
+//! None ends the id with no value. The client ignores the empty and odd bits
+//! of a non-encoded id and drops an odd id's first digit unchecked; this codec
+//! rejects both to keep one canonical form. Whether a default-type id is read
+//! depends on the runtime's default type and is assumed. The type table is
+//! unread, so type indices stay raw. No connection state, reply,
 //! version selection, identity check or admission occurs. Summaries and `Debug`
 //! output carry kinds and lengths only, never string or id contents.
 use anyhow::{Context, Result, ensure};
@@ -40,6 +44,8 @@ pub const ENCRYPTION_ACK: u8 = 21;
 pub const NAMED_NET_ID_TYPE: u8 = 31;
 /// Encoded unique-net-id bytes follow a one-byte length.
 pub const MAX_ENCODED_NET_ID_BYTES: usize = 255;
+/// The engine's Name length limit; longer type names are left undetermined.
+pub const NAME_SIZE: usize = 1024;
 
 /// Per-call codec parameters.
 #[derive(Clone, Copy, Debug)]
@@ -167,8 +173,11 @@ pub enum NetIdValue {
     /// Encoded: a length byte and these bytes, rendered as uppercase hex with
     /// the leading (zero) digit dropped when `odd`.
     Encoded { odd: bool, bytes: Vec<u8> },
-    /// INFERRED non-encoded form: one archive string after the type part.
+    /// Non-encoded: one archive string after the type part (F-636).
     Text(ArchiveText),
+    /// After a type-name string naming None the client reads nothing more,
+    /// in either form (F-636); `encoded` keeps the flag bit.
+    Absent { encoded: bool },
 }
 
 impl std::fmt::Debug for NetIdValue {
@@ -181,6 +190,10 @@ impl std::fmt::Debug for NetIdValue {
                 .field("bytes", &bytes.len())
                 .finish(),
             Self::Text(text) => formatter.debug_tuple("Text").field(text).finish(),
+            Self::Absent { encoded } => formatter
+                .debug_struct("Absent")
+                .field("encoded", encoded)
+                .finish(),
         }
     }
 }
@@ -212,7 +225,7 @@ impl NetIdValue {
         Ok(Self::Encoded { odd, bytes })
     }
 
-    /// Uppercase hex rendering of the encoded forms; `None` for text.
+    /// Uppercase hex rendering of the encoded forms; `None` for text or absent.
     pub fn hex(&self) -> Option<String> {
         match self {
             Self::EncodedEmpty => Some(String::new()),
@@ -220,9 +233,24 @@ impl NetIdValue {
                 let hex: String = bytes.iter().map(|byte| format!("{byte:02X}")).collect();
                 Some(if *odd { hex[1..].to_owned() } else { hex })
             }
-            Self::Text(_) => None,
+            Self::Text(_) | Self::Absent { .. } => None,
         }
     }
+}
+
+/// Whether a type-name string makes the Name None: empty, or `None` in any
+/// ASCII case with no number suffix. Names at the engine's length limit and
+/// beyond are not modelled and fail closed.
+fn names_none(name: &ArchiveText) -> Result<bool> {
+    ensure!(
+        name.units.len() < NAME_SIZE,
+        "unique net id type name at or beyond the Name length limit"
+    );
+    Ok(name.units.is_empty()
+        || (name.units.len() == 4
+            && name.units.iter().zip(b"none").all(|(unit, letter)| {
+                u8::try_from(*unit).is_ok_and(|unit| unit.eq_ignore_ascii_case(letter))
+            })))
 }
 
 /// Replicated unique net id (F-531); `Debug` shows kinds and lengths only.
@@ -303,6 +331,7 @@ pub enum NetIdForm {
     EncodedEmpty,
     Encoded,
     Text,
+    Absent,
 }
 
 #[derive(Clone, Copy, Debug, Serialize)]
@@ -312,7 +341,7 @@ pub struct UniqueNetIdSummary {
     pub type_name: Option<TextSummary>,
     pub form: NetIdForm,
     pub odd: bool,
-    /// Encoded byte count, or text units for the inferred text form.
+    /// Encoded byte count, text units, or 0 when absent.
     pub length: usize,
 }
 
@@ -339,6 +368,7 @@ impl UniqueNetId {
             NetIdValue::EncodedEmpty => (NetIdForm::EncodedEmpty, false, 0),
             NetIdValue::Encoded { odd, bytes } => (NetIdForm::Encoded, *odd, bytes.len()),
             NetIdValue::Text(text) => (NetIdForm::Text, false, text.units.len()),
+            NetIdValue::Absent { .. } => (NetIdForm::Absent, false, 0),
         };
         UniqueNetIdSummary {
             type_index: self.type_index(),
@@ -544,6 +574,15 @@ pub fn read_unique_net_id(reader: &mut BitReader<'_>, codec: &ControlCodec) -> R
         )?),
         index => NetIdType::Indexed(index),
     };
+    if let NetIdType::Named(name) = &kind
+        && names_none(name)?
+    {
+        ensure!(!empty && !odd, "absent unique net id with form flags");
+        return Ok(UniqueNetId {
+            kind,
+            value: NetIdValue::Absent { encoded },
+        });
+    }
     let value = if encoded {
         let length = read_byte(reader, "unique net id length")?;
         let bytes = reader.read_bytes(usize::from(length));
@@ -588,6 +627,14 @@ pub fn write_unique_net_id(
         NetIdType::Named(_) => ensure!(!empty, "encoded-empty unique net id carries no type name"),
         NetIdType::Default => {}
     }
+    let named_none = match &id.kind {
+        NetIdType::Named(name) => names_none(name)?,
+        _ => false,
+    };
+    ensure!(
+        named_none == matches!(id.value, NetIdValue::Absent { .. }),
+        "a unique net id has no value exactly when its type name is None"
+    );
     let flags = match &id.value {
         NetIdValue::EncodedEmpty => 0b011,
         NetIdValue::Encoded { odd, bytes } => {
@@ -604,13 +651,14 @@ pub fn write_unique_net_id(
             0b001 | u8::from(*odd) << 2
         }
         NetIdValue::Text(_) => 0,
+        NetIdValue::Absent { encoded } => u8::from(*encoded),
     };
     writer.write_bits(u32::from(flags | id.type_index() << 3), 8);
     if let NetIdType::Named(name) = &id.kind {
         write_text(writer, name, codec.order, codec.max_string_units)?;
     }
     match &id.value {
-        NetIdValue::EncodedEmpty => {}
+        NetIdValue::EncodedEmpty | NetIdValue::Absent { .. } => {}
         NetIdValue::Encoded { bytes, .. } => {
             writer.write_bits(bytes.len() as u32, 8);
             writer.write_bytes(bytes);

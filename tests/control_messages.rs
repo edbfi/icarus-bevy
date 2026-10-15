@@ -292,6 +292,64 @@ fn unique_net_id_flags_lengths_and_hex_rendering_are_exact() {
 }
 
 #[test]
+fn a_type_name_naming_none_ends_the_id() {
+    let little = codec(ByteOrder::Little);
+    for (encoded, name) in [(true, "None"), (false, "none"), (true, "NONE"), (false, "")] {
+        let id = UniqueNetId {
+            kind: NetIdType::Named(text(name)),
+            value: NetIdValue::Absent { encoded },
+        };
+        let mut writer = BitWriter::new();
+        write_unique_net_id(&mut writer, &id, &little).unwrap();
+        let written = writer.bit_len();
+        // Would-be value bytes after the type name stay unread.
+        writer.write_bytes(&[2, 0xab, 0xcd]);
+        let bytes = writer.into_bytes();
+        assert_eq!(bytes[0], 0xf8 | u8::from(encoded), "{name:?}");
+        let mut reader = BitReader::new(&bytes, bytes.len() * 8).unwrap();
+        assert_eq!(read_unique_net_id(&mut reader, &little).unwrap(), id);
+        assert_eq!(reader.position(), written);
+        assert!(matches!(id.summary().form, NetIdForm::Absent));
+        assert_eq!(id.summary().length, 0);
+    }
+    // Other names, a number suffix included, carry a value.
+    for name in ["None_0", "Nonee", " None", "STEAM"] {
+        let absent = UniqueNetId {
+            kind: NetIdType::Named(text(name)),
+            value: NetIdValue::Absent { encoded: true },
+        };
+        assert!(write_unique_net_id(&mut BitWriter::new(), &absent, &little).is_err());
+        let id = hex_id(NetIdType::Named(text(name)), "AB");
+        let mut writer = BitWriter::new();
+        write_unique_net_id(&mut writer, &id, &little).unwrap();
+        let bytes = writer.into_bytes();
+        let mut reader = BitReader::new(&bytes, bytes.len() * 8).unwrap();
+        assert_eq!(read_unique_net_id(&mut reader, &little).unwrap(), id);
+        assert!(reader.at_end());
+    }
+    // A None type name cannot carry a value, nor other types be absent.
+    let valued = hex_id(NetIdType::Named(text("None")), "AB");
+    assert!(write_unique_net_id(&mut BitWriter::new(), &valued, &little).is_err());
+    let unnamed = UniqueNetId {
+        kind: NetIdType::Indexed(3),
+        value: NetIdValue::Absent { encoded: false },
+    };
+    assert!(write_unique_net_id(&mut BitWriter::new(), &unnamed, &little).is_err());
+    // Form flags on an absent id fail closed, as do names at the Name limit.
+    let mut writer = BitWriter::new();
+    writer.write_bits(0xfd, 8);
+    writer.write_bits(5, 32);
+    writer.write_bytes(b"None\0");
+    let bytes = writer.into_bytes();
+    let mut reader = BitReader::new(&bytes, bytes.len() * 8).unwrap();
+    assert!(read_unique_net_id(&mut reader, &little).is_err());
+    let long = hex_id(NetIdType::Named(text(&"A".repeat(1024))), "AB");
+    assert!(write_unique_net_id(&mut BitWriter::new(), &long, &little).is_err());
+    let fits = hex_id(NetIdType::Named(text(&"A".repeat(1023))), "AB");
+    assert!(write_unique_net_id(&mut BitWriter::new(), &fits, &little).is_ok());
+}
+
+#[test]
 fn unknown_ids_stop_decoding_without_reading_fields() {
     let codec = ControlCodec::default();
     for id in [7u8, 8, 11, 14, 16, 19, 20, 22, 255] {
