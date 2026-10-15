@@ -36,7 +36,8 @@ dormancy, channel close reasons and every server-side writer.
 - `experimental::actor_channel` reads and re-encodes these structures
   bit-identically from authored fixtures, with payloads opaque (F-577), and
   `experimental::rep_layout` reads and re-encodes property streams from a
-  caller-supplied layout (F-587).
+  caller-supplied layout (F-587). Randomized and mutated inputs never panic
+  either reader, and every accepted input re-encodes exactly (F-604).
 - The replicator hands rep-layout properties to `FRepLayout::ReceiveProperties`
   (an optional bit, a packed handle, an optional checksum word, then a handle
   loop) before its field-header loop (M-426, M-427).
@@ -151,4 +152,4 @@ dormancy, channel close reasons and every server-side writer.
   vectors M-477 to M-491; tags M-493 to M-495; Name and Str routing M-497 to
   M-510; hit results M-468, M-512 to M-521; soft objects M-445, M-523 to
   M-529; Text M-531 to M-536, M-545 to M-547; codec tests M-475, M-476, M-492, M-496,
-  M-511, M-522, M-530.
+  M-511, M-522, M-530, M-548.
