@@ -40,7 +40,18 @@ dormancy, channel close reasons and every server-side writer.
   either reader, and every accepted input re-encodes exactly (F-604).
 - The replicator hands rep-layout properties to `FRepLayout::ReceiveProperties`
   (an optional bit, a packed handle, an optional checksum word, then a handle
-  loop) before its field-header loop (M-426, M-427).
+  loop) before its field-header loop (M-426, M-427). Each field until the
+  payload ends is an index read like `SerializeInt` below the class cache's
+  maximum index plus one, a packed bit count and exactly that payload; an
+  unknown index is skipped (F-637). A property field's custom-delta payload
+  starts with a bit at engine net version 11 or later and, for a static
+  array, a packed index below its dimension; the struct's delta serializer
+  reads the rest. A function field is an RPC, accepted with the net flag and,
+  on a server, the server flag: each parameter, static-array elements apart,
+  is a bare bit if a bool, else a presence bit then its commands' item
+  encodings without handles; arrays are a 2-byte count of at most `0xFFFE`
+  and elements in order, and the payload must be consumed exactly (F-638).
+  `experimental::rep_rpc` reads and re-encodes all three.
 - Rep-layout stream (F-571): packed handles select layout commands and handle
   0 ends a stream; a dynamic array carries a 2-byte element count and a nested
   zero-terminated handle stream; each value goes through its property's net
@@ -119,12 +130,12 @@ dormancy, channel close reasons and every server-side writer.
   reach the shared archive FText serializer, which net archives do not
   override: from archive version `0x170` a 4-byte flags word, then a
   history-type byte (0 to 12 select per-history bodies, 0xFF none); the
-  codec re-encodes every history (F-630). Client net archives carry UE4
-  version 522, so the version gates below pass (F-614). Each history writes
+  codec re-encodes every history (F-639). Client net archives carry UE4
+  version 522, so the version gates below pass (F-639). Each history writes
   its own type byte on save, then:
   - 0 Base: no body of its own; the display-string step that follows any
     body sends its namespace and key as text keys, then the source string
-    (F-624). A text key is an archive-string frame, but its saver writes an
+    (F-639). A text key is an archive-string frame, but its saver writes an
     empty key as count 1 and a terminator. Other histories' display-string
     steps send nothing. 0xFF none: custom-version gated, a
     culture-invariant flag and optional string.
@@ -140,11 +151,11 @@ dormancy, channel close reasons and every server-side writer.
     zone string always. 9 AsDateTime: date and time style bytes, then
     zone and culture strings.
   - 10 Transform: a nested Text and a transform byte. 11 StringTableEntry:
-    a table Name in the network-name form (F-630), then a key string.
+    a table Name in the network-name form (F-639), then a key string.
     12 TextGenerator: a generator-type
     Name, then, unless it is None, the generator's payload as a 4-byte
-    count and bytes (F-630).
-  Text callees (F-624): an argument value is a type byte, then an int64
+    count and bytes (F-639).
+  Text callees (F-639): an argument value is a type byte, then an int64
   (0, 1), a float (2), a double (3), a nested Text (4) or nothing. Number
   options are an AlwaysSign bool when a custom version exceeds 0x14, a
   UseGrouping bool, a rounding byte and four int32 digit bounds; bools are
@@ -152,9 +163,9 @@ dormancy, channel close reasons and every server-side writer.
   argument values. Argument data is a name string, a type byte (Text is
   implied below custom version 5 on load), then an int32 (0), a float (2),
   a nested Text (4) or a gender byte (5). A loading archive takes custom
-  versions from the client's registry of current versions (F-624); the
+  versions from the client's registry of current versions (F-639); the
   gating key is registered at version 40, so both gates pass, as does the
-  none form's (version 32: a 4-byte bool, then a string if set; F-627); Names here use archive slot 0x140, whose net
+  none form's (version 32: a 4-byte bool, then a string if set; F-639); Names here use archive slot 0x140, whose net
   routing is unread (U-064).
 - Network names (F-575): a hardcoded bit; when set, the hardcoded name index
   (packed at engine net version 6 or later, otherwise bounded by 411; indices
@@ -196,6 +207,6 @@ dormancy, channel close reasons and every server-side writer.
   M-529; Text M-531 to M-536, M-545 to M-547, M-570;
   net archive version M-571 to M-576;
   display strings M-581 to M-584; Text codec M-585, M-602 to M-605; Text callees M-586,
-  M-587; custom versions M-588; enum widths M-614, M-615; codec tests M-475, M-476, M-492, M-496,
+  M-587; custom versions M-588; enum widths M-614, M-615; fields and RPCs M-620 to M-624; codec tests M-475, M-476, M-492, M-496,
   M-511, M-522, M-530, M-548; layout source M-552 to M-555; send order M-461, M-556 to
   M-560.
