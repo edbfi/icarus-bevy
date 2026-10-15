@@ -90,8 +90,8 @@ be demonstrated rather than assumed.
   heap, two CPUs, at most 24 selected functions, 30 seconds per decompilation and
   15 minutes overall. Bound every experiment and clean it up on timeout.
 - At milestones, reconcile stale documentation and clean reproducible scratch
-  from owned work as `.agents/rules/work.md` directs. Preserve original inputs, private saves/backups, evidence,
-  provenance, licenses and user changes. Check references before deleting stale
+  from owned work as `.agents/rules/work.md` directs. Preserve original inputs,
+  private saves/backups, evidence, provenance, licenses and user changes. Check references before deleting stale
   tracked files; mark historical reports clearly instead of rewriting observations.
   Never use blanket `git clean -fdx`, global Docker prune or deletion by age alone.
 
