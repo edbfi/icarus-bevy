@@ -15,7 +15,8 @@ Before restructure: 96ddb0b:docs/linux-dedicated-server-plan.md
 Build an independent native Linux dedicated server with authoritative simulation
 in Rust and Bevy. Demonstrate compatibility with unmodified ICARUS clients,
 existing-save import, reliable persistence, improved stability and improved
-performance for a pinned official client/server release.
+performance for a pinned official client/server release, a pin that moves
+with ICARUS's weekly releases ([architecture](architecture.md#release-tracking)).
 
 Investigation priorities, in order: crashes, hangs and save integrity;
 long-session degradation; joining, reconnecting and session cleanup; large worlds

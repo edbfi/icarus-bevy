@@ -1,0 +1,8 @@
+# The official release this repository targets. ICARUS ships weekly; move this
+# pin with `python3 tools/release_watch.py pin --install <fetched install>`
+# (docs/architecture.md, "Release tracking"). The checksum is derived and checked.
+[release]
+app_id = 2089300
+build_id = 25793607
+project_version = "3.0.31.158478-rel-DangerousHorizons"
+network_checksum = 2406501229

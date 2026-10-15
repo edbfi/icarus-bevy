@@ -1,0 +1,55 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Opens or updates an issue when Steam's public dedicated-server build moves past
+# config/release.toml (docs/architecture.md, "Release tracking"). Reads anonymous
+# app info only; nothing is downloaded or pinned here.
+name: Release watch
+on:
+  schedule: [{ cron: "41 7 * * *" }]   # daily; ICARUS releases land on Thursday evenings UTC
+  workflow_dispatch:
+permissions: {}
+concurrency: { group: release-watch, cancel-in-progress: false }
+jobs:
+  watch:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions: { contents: read, issues: write }
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with: { persist-credentials: false }
+      - uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
+        with:
+          python-version: "3.15.0"
+          activate-environment: true
+          no-project: true
+          enable-cache: false
+      - name: Install SteamCMD
+        run: |
+          sudo apt-get update -qq && sudo apt-get install -y -qq lib32gcc-s1
+          mkdir -p "$RUNNER_TEMP/steamcmd"
+          curl -fsSL https://steamcdn-a.akamaihd.net/client/installer/steamcmd_linux.tar.gz | tar -xz -C "$RUNNER_TEMP/steamcmd"
+      - name: Compare the public build with the pin
+        id: check
+        run: |
+          set +e
+          python tools/release_watch.py check --steamcmd "$RUNNER_TEMP/steamcmd/steamcmd.sh" > result.json
+          status=$?
+          set -e
+          cat result.json
+          if [ "$status" -ne 0 ] && [ "$status" -ne 3 ]; then exit "$status"; fi
+          echo "behind=$([ "$status" -eq 3 ] && echo true || echo false)" >> "$GITHUB_OUTPUT"
+      - name: Open or update the release issue
+        if: steps.check.outputs.behind == 'true'
+        env: { GH_TOKEN: "${{ github.token }}" }
+        run: |
+          live="$(python -c 'import json; print(json.load(open("result.json"))["live_build"])')"
+          title="Official release moved: build $live"
+          {
+            echo "Steam public build $live differs from config/release.toml:"
+            echo
+            cat result.json
+            echo
+            echo "Fetch the build, run tools/release_watch.py pin --install DIR, then qualify the bump"
+            echo "(docs/architecture.md, Release tracking)."
+          } > body.md
+          existing="$(gh issue list --state open --search "in:title \"$title\"" --json number --jq '.[0].number')"
+          if [ -n "$existing" ]; then gh issue comment "$existing" --body-file body.md; else gh issue create --title "$title" --body-file body.md; fi

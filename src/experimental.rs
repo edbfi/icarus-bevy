@@ -20,6 +20,7 @@ pub mod peer_lab;
 pub mod probe_client;
 pub mod property_tree;
 pub mod recorders;
+pub mod release;
 pub mod rep_layout;
 pub mod rep_rpc;
 pub mod rep_text;

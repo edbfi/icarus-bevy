@@ -116,12 +116,10 @@ Last reconciled: 2026-10-15
   scenarios the user approves one by one. Each run observes 15 to 780 seconds
   plus 120 seconds of cleanup, at most 900 seconds.
 - Connected scenarios need the user at the client, its build bound in the
-  scope, approved ingress and egress and bounded capture. Route A of the
-  [connected-scenarios runbook](runbooks/connected-scenarios.md) runs the
-  official server and client on the user's own PC with matched builds and no
-  exposure of this host; each scenario still needs the user's approval and an
-  intake case. Route B, a networked mode of this host's launcher, does not
-  exist yet.
+  scope, approved ingress and egress and bounded capture. The user directed (2026-10-16)
+  that this host fetch and run the matched official server for them to join
+  (route B of the [connected-scenarios runbook](runbooks/connected-scenarios.md));
+  each scenario still needs their approval, a case and a bounded run.
 - A Hello probe against the offline original (launcher `hello` mode) is
   outside the save-load authorization and needs the user's approval.
 - Preserve the client installation until dependencies and provenance are
