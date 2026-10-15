@@ -4,7 +4,7 @@
 
 Experimental: static interpretation with independent arithmetic tests and one
 matching early-startup original value. Scope: build 25621760 (M-168); addresses
-are preferred virtual addresses in that file. Last reconciled: 2026-10-14.
+are preferred virtual addresses in that file. Last reconciled: 2026-10-15.
 Full text: d5b0ae6:docs/specs/network/network-checksum.md.
 
 ## Scope
@@ -54,13 +54,16 @@ native server does not use this module for admission.
 
 ## Candidate
 
-- If no override delegate is bound and the client runs the user-reported
-  version `3.0.31.158478-rel-DangerousHorizons` (F-277), its Hello carries
-  2406501229; the preserved server's logged version gives 1379612455 under
-  the same rule (F-254, F-541, F-542). Both are computed here, not observed.
-  The comparison is the server's, so a native server may set its own admission
-  policy; the client sees the server's version only in an Upgrade reply
-  (F-529).
+- The installed client's own configuration gives 3.0.31 changelist 158478
+  (F-683). If it composes `3.0.31.158478-rel-DangerousHorizons` as the server's
+  log does and no override delegate is bound, its Hello carries 2406501229;
+  the preserved server's logged version gives 1379612455 under the same rule
+  (F-254, F-541, F-542). Both are computed here, not observed. With exact
+  equality the preserved server would answer that client with Upgrade and
+  close (F-563), so a connected scenario needs a server build matching the
+  client. The comparison is the server's, so a native server may set its own
+  admission policy; the client sees the server's version only in an Upgrade
+  reply (F-529).
 - The string getter at `0x141f2bae0` has fallback literal `1.0.0`; mutable
   state and a generator callback can replace defaults, so it does not prove the
   active version input.
