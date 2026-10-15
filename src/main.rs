@@ -269,10 +269,13 @@ fn preserve_check_report(file: std::fs::File) -> Result<serde_json::Value> {
     }))
 }
 
-fn saved(receipt: SaveReceipt) {
+/// `submitted` is when the committed snapshot was handed to the save worker;
+/// the latency covers queueing, serialization and durable publication.
+fn saved(receipt: SaveReceipt, submitted: Option<Instant>) {
     eprintln!(
         "{}",
-        json!({"event": "save_committed", "generation": receipt.generation, "tick": receipt.tick})
+        json!({"event": "save_committed", "generation": receipt.generation, "tick": receipt.tick,
+        "save_latency_micros": submitted.map(|time| time.elapsed().as_micros())})
     );
 }
 
@@ -309,6 +312,7 @@ fn run(options: ConfigOptions, max_ticks: Option<u64>) -> Result<()> {
         .context("install SIGINT/SIGTERM handler")?;
 
     let mut last_save_request = Instant::now();
+    let mut save_submitted = None::<Instant>;
     let mut last_status = Instant::now();
     let mut last_commit = None::<Instant>;
     let mut save_failures = 0_u64;
@@ -333,7 +337,7 @@ fn run(options: ConfigOptions, max_ticks: Option<u64>) -> Result<()> {
         match writer.poll() {
             Ok(Some(receipt)) => {
                 last_commit = Some(Instant::now());
-                saved(receipt);
+                saved(receipt, save_submitted.take());
             }
             Ok(None) => {}
             Err(error) => {
@@ -356,6 +360,7 @@ fn run(options: ConfigOptions, max_ticks: Option<u64>) -> Result<()> {
         {
             writer.submit(capture(app.world_mut())?)?;
             last_save_request = Instant::now();
+            save_submitted = Some(last_save_request);
         }
         if last_status.elapsed() >= Duration::from_secs(config.status_interval_seconds) {
             let metrics = app.world().resource::<TickMetrics>();
@@ -380,7 +385,7 @@ fn run(options: ConfigOptions, max_ticks: Option<u64>) -> Result<()> {
     let deadline = Instant::now() + Duration::from_secs(config.shutdown_timeout_seconds);
     // A failed in-flight autosave is reported as in the loop; the final save still runs.
     match writer.settle_before(deadline)? {
-        Some(Ok(receipt)) => saved(receipt),
+        Some(Ok(receipt)) => saved(receipt, save_submitted.take()),
         Some(Err(error)) => eprintln!(
             "{}",
             json!({"event": "save_failed", "error": format!("{error:#}")})
@@ -391,9 +396,10 @@ fn run(options: ConfigOptions, max_ticks: Option<u64>) -> Result<()> {
         Instant::now() < deadline,
         "snapshot shutdown deadline exceeded before final capture"
     );
+    let final_submitted = Instant::now();
     writer.submit_before(capture(app.world_mut())?, deadline)?;
     if let Some(receipt) = writer.finish_before(deadline)? {
-        saved(receipt);
+        saved(receipt, Some(final_submitted));
     }
     eprintln!(
         "{}",

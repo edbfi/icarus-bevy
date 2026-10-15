@@ -383,5 +383,11 @@ fn preserve_save_seeds_a_new_world_that_runs_and_never_overwrites() {
         .find(|event| event["event"] == "started")
         .unwrap();
     assert_eq!(started["native_schema"], 3);
+    let committed = String::from_utf8_lossy(&run.stderr)
+        .lines()
+        .map(|line| serde_json::from_str::<Value>(line).unwrap())
+        .rfind(|event| event["event"] == "save_committed")
+        .unwrap();
+    assert!(committed["save_latency_micros"].as_u64().is_some());
     assert_eq!(sidecars(), 1);
 }
