@@ -37,7 +37,8 @@ F-198).
 Every one of the save's 38 class identifiers is registered in both the older
 server and the newer client, so class identity cannot confirm the reported
 producing build (F-498); the same holds for all 332 field and type names of
-the framed bodies in the current copy (F-547). Eight player-state candidates
+the framed bodies in the current copy (F-547) and for the five saved
+recorder versions, which both builds assign as the same literals (F-631). Eight player-state candidates
 frame to depth 4 in both copies apart from two size ceilings (F-550), as do 23
 of the 25 remaining classes (F-551). With statically qualified Map, Set and
 Int64 headers (F-556) and a 1 MiB component ceiling, every body of every class
@@ -61,4 +62,4 @@ No decoded value, text or number was emitted or interpreted.
 
 ## Artifacts
 
-M-047..M-077, M-079..M-108, M-118..M-130, M-278..M-280, M-351, M-352, M-376..M-384, M-389, M-390, M-401..M-404, M-407..M-410.
+M-047..M-077, M-079..M-108, M-118..M-130, M-278..M-280, M-351, M-352, M-376..M-384, M-389, M-390, M-401..M-404, M-407..M-410, M-606..M-613.
