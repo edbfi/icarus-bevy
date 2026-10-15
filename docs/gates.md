@@ -109,11 +109,15 @@ Last reconciled: 2026-10-15
 
 ## Before any original-server or client run
 
-- Each runtime experiment requires an explicit current launcher session;
-  historical authorization windows remain expired (F-218, F-252). The launcher bounds launch,
-  observation and cleanup to at most 120 seconds.
-- No connected client tests are authorized yet; the user's Windows client is
-  used only under a concrete scope.
+- Each runtime experiment requires its own case scope and current launcher
+  session; historical authorization windows remain expired (F-218, F-252). The
+  user authorized (2026-10-15) bounded offline save-load runs on disposable
+  save copies, and Steam egress and connected Windows-client tests only for
+  scenarios the user approves one by one. Each run observes 15 to 780 seconds
+  plus 120 seconds of cleanup, at most 900 seconds.
+- Connected scenarios need the user at the client, its build bound in the
+  scope, approved ingress and egress and bounded capture; the launcher has no
+  networked mode yet.
 - Preserve the client installation until dependencies and provenance are
   understood; the restriction against reusing packaged content remains in force.
 

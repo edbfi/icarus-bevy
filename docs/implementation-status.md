@@ -18,7 +18,8 @@ world-data parity, official-save import and the release reliability and
 performance targets are not demonstrated.
 
 Offline research resumed under the user's execution instruction (F-404);
-connected-client and original-runtime scopes remain unavailable. The user
+offline original-server save-load runs are now authorized, connected-client
+tests only per approved scenario ([gates](gates.md)). The user
 reports the local client/save pair compatible, with authenticated and reference
 access deferred (F-421).
 
