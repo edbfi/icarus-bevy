@@ -13,8 +13,8 @@ import unittest
 from unittest.mock import Mock, patch
 
 from tools.run_reference_offline import (IMAGE, REFERENCE_EXE, ApprovedRun, Arguments, Budget,
-    cleanup_container, digest, observe, owned_container, prepare_launch, reserve_run,
-    revalidate, validate_session)
+    cleanup_container, digest, observe, observe_and_record, owned_container, prepare_launch,
+    record_save_outputs, reserve_run, revalidate, validate_session)
 from tools.runtime_types import JsonObject, json_object, parse_json
 
 CONTAINER = "a" * 64
@@ -431,6 +431,101 @@ class InvocationTests(unittest.TestCase):
             record = json_object(parse_json((run / "invocation.json").read_text()))
             self.assertEqual(record["session_sha256"], approved.session_sha256)
             self.assertEqual(record["reference_binding"], "executable_only_not_full_tree")
+
+    def test_save_load_binds_one_case_local_prospect_copy(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            fixture = Fixture(directory)
+            save = fixture.case / "inputs" / "authored_prospect.json"
+            save.parent.mkdir()
+            _ = save.write_text('{"ProspectInfo":{},"ProspectBlob":{}}')
+            binding: JsonObject = {"allowed_modes": ["save-load"], "save_input": str(save),
+                                   "save_input_sha256": digest(save), "shutdown_if_not_joined_seconds": 60}
+            fixture.write({**binding, "allowed_modes": ["startup"]})
+            with self.assertRaisesRegex(ValueError, "requires save-load authorization"):
+                _ = fixture.approve()
+            fixture.args.save_load = True
+            fixture.write(binding)
+            approved = fixture.approve()
+            self.assertEqual(approved.save_input, save)
+            self.assertEqual(approved.shutdown_seconds, 60)
+            fixture.args.load_fixture = "missing"
+            with self.assertRaisesRegex(ValueError, "only one startup experiment"):
+                _ = fixture.approve()
+            fixture.args.load_fixture = "none"
+            fixture.write({**binding, "save_input_sha256": "0" * 64})
+            with self.assertRaisesRegex(ValueError, "save_input_sha256"):
+                _ = fixture.approve()
+            fixture.write({**binding, "shutdown_if_not_joined_seconds": 781})
+            with self.assertRaisesRegex(ValueError, "0..780"):
+                _ = fixture.approve()
+            outside = fixture.root / "outside.json"
+            _ = outside.write_text("{}")
+            fixture.write({**binding, "save_input": str(outside), "save_input_sha256": digest(outside)})
+            with self.assertRaisesRegex(ValueError, "case-local"):
+                _ = fixture.approve()
+            renamed = fixture.case / "inputs" / "bad name.json"
+            _ = renamed.write_text("{}")
+            fixture.write({**binding, "save_input": str(renamed), "save_input_sha256": digest(renamed)})
+            with self.assertRaisesRegex(ValueError, "case-local"):
+                _ = fixture.approve()
+
+    def test_save_load_launch_copies_the_save_and_records_outputs(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            fixture = Fixture(directory)
+            save = fixture.case / "authored_prospect.json"
+            _ = save.write_text('{"ProspectInfo":{},"ProspectBlob":{}}')
+            fixture.args.save_load = True
+            fixture.write({"allowed_modes": ["save-load"], "save_input": str(save),
+                           "save_input_sha256": digest(save), "shutdown_if_not_joined_seconds": 45})
+            approved = fixture.approve()
+            run = fixture.case / "run"
+            run.mkdir()
+            argv = prepare_launch(ROOT, fixture.args, approved, run, NAME, TOKEN)
+            self.assertEqual(argv[argv.index("--network") + 1], "none")
+            self.assertTrue(argv[-1].endswith(" -LoadProspect=authored_prospect"))
+            prospects = run / "home/Icarus/Saved/PlayerData/DedicatedServer/Prospects"
+            self.assertEqual((prospects / "authored_prospect.json").read_bytes(), save.read_bytes())
+            settings = (run / "home/Icarus/Saved/Config/WindowsServer/ServerSettings.ini").read_text()
+            self.assertIn("ResumeProspect=False\nShutdownIfNotJoinedFor=45\nShutdownIfEmptyFor=45\n", settings)
+            recorded = json_object(parse_json((run / "fixture.json").read_text()))
+            self.assertEqual(recorded["kind"], "save-load")
+            self.assertEqual(recorded["sha256"], digest(save))
+            self.assertTrue(record_save_outputs(run, approved)["input_unchanged"])
+            _ = (prospects / "authored_prospect.json").write_text('{"ProspectInfo":{"Changed":1}}')
+            _ = (prospects / "authored_prospect.json.backup").write_text("{}")
+            outputs = record_save_outputs(run, approved)
+            self.assertFalse(outputs["input_unchanged"])
+            files = outputs["files"]
+            self.assertIsInstance(files, list)
+            self.assertEqual(len(files) if isinstance(files, list) else 0, 2)
+            self.assertTrue((run / "save-outputs.json").is_file())
+
+    def test_save_output_recording_never_hides_a_run_failure(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            fixture = Fixture(directory)
+            save = fixture.case / "authored_prospect.json"
+            _ = save.write_text("{}")
+            fixture.args.save_load = True
+            fixture.write({"allowed_modes": ["save-load"], "save_input": str(save),
+                           "save_input_sha256": digest(save), "shutdown_if_not_joined_seconds": 0})
+            approved = fixture.approve()
+            run = fixture.case / "run"
+            run.mkdir()
+            run_failure = RuntimeError("authored run failure")
+            with (patch("tools.run_reference_offline.observe", side_effect=run_failure),
+                  patch("tools.run_reference_offline.record_save_outputs",
+                        side_effect=PermissionError("authored unreadable output"))):
+                with self.assertRaises(RuntimeError) as raised:
+                    _ = observe_and_record(fixture.args, approved, run, NAME, TOKEN, [])
+            self.assertIs(raised.exception, run_failure)
+            self.assertIn("save outputs not recorded: authored unreadable output",
+                          getattr(raised.exception, "__notes__", []))
+            recorder = Mock(return_value={})
+            with (patch("tools.run_reference_offline.observe", return_value={"removed": True}),
+                  patch("tools.run_reference_offline.record_save_outputs", recorder)):
+                self.assertEqual(observe_and_record(fixture.args, approved, run, NAME, TOKEN, []),
+                                 {"removed": True})
+            recorder.assert_called_once_with(run, approved)
 
     def test_shell_forwards_exact_arguments_and_requires_explicit_session(self) -> None:
         wrapper = ROOT / "tools/run_reference_offline.sh"

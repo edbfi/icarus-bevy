@@ -35,7 +35,7 @@ contain:
 | `observation_seconds` | 15–780, matching `--seconds` |
 | `run_timeout_seconds` | At least observation + 120, at most 900 |
 | `max_runs` | 1–12 attempts; failed attempts also consume quota |
-| `allowed_modes` | Selected base mode: `startup`, `resume`, `missing` or `truncated-json`; add `handshake` / `complete-stateless` if needed |
+| `allowed_modes` | Selected base mode: `startup`, `resume`, `missing`, `truncated-json` or `save-load`; add `handshake` / `complete-stateless` if needed |
 
 When `handshake` is allowed, also provide `probe` (an absolute executable file
 inside the case) and its `probe_sha256`. A handshake invocation requires at least
@@ -72,6 +72,23 @@ an unsuccessful cleanup receipt requires investigation before another run.
 
 Networking remains disabled, with no published ports, downloads, identity overrides
 or reference writes. The pinned image is local-only; CPU/memory/PID limits and
-3 GiB available-memory / 30 GiB disk floors remain enforced. The launcher has no
-mode for mounting private user saves. Connected Windows-client tests and matched
-save-load comparisons require their own concrete experiment setup.
+3 GiB available-memory / 30 GiB disk floors remain enforced. Connected
+Windows-client tests need their own approved scenario and a networked mode the
+launcher does not have yet.
+
+## Save-load mode
+
+`--save-load` loads one disposable save copy. The session adds `save-load` to
+`allowed_modes` and binds `save_input` (a case-local `<prospect>.json`, letters,
+digits, `_` and `-`), its `save_input_sha256` and
+`shutdown_if_not_joined_seconds` (0 to 780; the dedicated-server wiki gives 0
+as "as soon as possible" and negative values as never, which the launcher
+rejects). The launcher copies the file into
+the run's own `home/Icarus/Saved/PlayerData/DedicatedServer/Prospects/`,
+re-verifies the copy's digest, writes a `ServerSettings.ini` with
+`ResumeProspect=False` and both shutdown timers set to that value, and adds
+`-LoadProspect=<prospect>`. With no player joining, the server returns to its
+lobby after the timer. After cleanup, `save-outputs.json` digests every file
+left under the run's `PlayerData` tree and says whether the input survived
+unchanged. Never point `save_input` at `reference-data/`; extract a copy into
+the case first.

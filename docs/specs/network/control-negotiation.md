@@ -145,54 +145,22 @@ game listener.
 
 ## Candidate
 
-- `experimental::control::read_initial_control_body(input, order)` composes the
-  ID 0 field sequence (one uninterpreted byte, explicit-endian u32, strict
-  archive string) for a caller-bounded body under a 131,081-byte ceiling,
-  preserving borrowed spans, retaining no token units, implementing neither
-  `Debug` nor `Serialize` for raw containers, and reporting negotiation,
-  identity and game-connection validation as false (F-096, F-097). The
-  dispatcher's input is an FInBunch, a bit-oriented archive (F-507). Within the
-  bunch the fields follow the ID byte, and the first field (1 = sender little
-  endian) selects the remote version's byte order in both builds (F-518,
-  F-519); packet-to-bunch
-  framing is unbound, so this framing stays experimental.
-  `read_initial_control_body_with_sender_order` applies that inferred rule (1
-  selects little-endian, any other value big-endian) before the same strict
-  reader. Exact EOF
-  and strict normalization rejection are research policies, not recovered
-  tolerances.
-- `experimental::packet` is an independently authored codec for the receive
-  format above (F-521 to F-527): LSB-first bit reader and writer with sticky
-  overflow, capped, wrapped and packed integers, termination-bit framing, the
-  data prefix, packet header and info, bunch headers with hard-coded and string
-  names, and payload copies from bunch bit 0. Callers supply the channel limit,
-  maximum packet size and string cap; it keeps no connection state and
-  reconstructs no reliable sequence. Not wire-validated.
-  `experimental::control_receive` composes it with the strict initial-body
-  reader: one terminated data datagram, read as the server reads client
-  packets, to its control-channel messages (control identified by name index
-  255 or channel index 0, both inferred); only ID 0 is decoded, and summaries
-  carry no token, first field or version. `experimental::control_messages`
-  types the whole vocabulary with readers and writers, including every
-  unique-net-id form (F-531, F-636); summaries carry kinds and lengths only.
-  `experimental::sequencing` models the client's sequencing state (F-535 to
-  F-539): cookie-seeded notify state, history shifting, header word counts, the
-  sent-record ring, ack/nak notifications with full packet IDs, and per-channel
-  reliable send, ack release, nak resend selection and ordered receive. The
-  sent-record push site, ring capacity, zero-filled unreceived history words and
-  the reliable comparison window are marked inferred or assumed.
-  `experimental::packet_lab` composes codec, sequencing and the control
-  vocabulary into one disconnected per-peer state after the handshake: the
-  cookie seeds mirrored for the server (inferred), gated receive, ordered
-  reliable control delivery and ack-only replies. It answers no control
-  message and validates no negotiation, identity or game connection.
-  `experimental::peer_lab` runs that state in the Bevy loopback lab: a peer is
-  created only when its handshake acknowledgement is sent, in a bounded table
-  with idle expiry, and each update coalesces one ack per peer (F-558). As an
-  inferred mirror, it answers a Hello with Upgrade on a configured version
-  mismatch, otherwise Challenge (lab random string) for an empty token, and a
-  Login with Failure; it never sends Welcome. Replies are reliable control
-  bunches resent after a nak (F-564).
+- Experimental modules, none wire-validated: `control` reads the ID 0 body
+  (one uninterpreted byte, explicit-endian u32, strict archive string) under a
+  131,081-byte ceiling, a variant applying the inferred first-field byte-order
+  rule (F-096, F-097, F-518, F-519), retaining no token units and giving raw
+  containers neither `Debug` nor `Serialize`; `packet` codes the receive format above
+  (F-521 to F-527); `control_receive` decodes one terminated datagram's control
+  messages up to ID 0; `control_messages` types the whole vocabulary, every
+  unique-net-id form included (F-531, F-636); `sequencing` models the client's
+  notify and reliable state, its sent-record push site, ring capacity,
+  zero-filled history words and reliable comparison window inferred or
+  assumed (F-535 to F-539); and
+  `packet_lab` and `peer_lab` run them as one disconnected per-peer state in
+  the Bevy loopback lab, answering Hello and Login but never sending Welcome
+  (F-558, F-564). The dispatcher's input is an FInBunch (F-507);
+  packet-to-bunch framing is unbound, and exact EOF and normalization rejection
+  are research policy. Summaries carry kinds and lengths only.
 - Server `UWorld::NotifyControlMessage` (`0x1439ee7f0`, F-563): Hello sends
   Upgrade with the local version and closes on a version mismatch; only an
   empty token (count with terminator under two) reaches the challenge sender;
