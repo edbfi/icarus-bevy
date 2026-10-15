@@ -33,7 +33,7 @@ save-inspection inputs (F-405, F-443, F-468), malformed manifest digests
 and diagnostics that leaked supplied strings (F-412, F-423); real ENOSPC and
 EACCES faults keep acknowledged state (F-239). Synthetic runs pass at 100,000
 entities and across kill/restart cycles (F-485); the 7,200 s soak predates later
-persistence changes (F-237). A modeled POSIX power-loss harness over the real
+persistence changes (F-237), and a later soak stopped early at 21.9 h (F-612). A modeled POSIX power-loss harness over the real
 write path recovers acknowledged state in every enumerated crash state and found
 stranded temporaries, now removed (F-511). None of this measures ICARUS performance.
 

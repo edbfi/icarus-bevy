@@ -27,7 +27,7 @@ a claim.
 | Open questions, bugs, compatibility | `docs/ledgers/unknowns.md`, `bugs.md`, `compatibility.md` |
 | Research digest per question cluster | `docs/research/<area>/<topic>.md` (fixed H2 set) |
 | Evidence index: one record per artifact (path, digest, class, kind, status, cited REA IDs) | `evidence/<area>[/<topic>]/NNN.jsonl`, the folder named after its findings ledger; schema in `evidence/README.md` |
-| Exported REA bundles, session ledgers and scratch | `work/` (never tracked) |
+| Exported REA bundles, session ledgers and scratch | `work/` (never tracked; `.agents/rules/work.md`) |
 | Historical authorizations and reports | `docs/history/`, `docs/research/archive/` |
 | How agents work in this repository | `.agents/rules/` only |
 
@@ -125,3 +125,4 @@ by cleanup.
 3. Refresh every `Last reconciled` date.
 4. Run `python3 tools/docs_lint.py --local`, then fix every problem the strict
    run reports.
+5. Prune `work/` and review its signals (`.agents/rules/work.md` routine 2).

@@ -39,7 +39,8 @@ REA fallbacks follow `project.md`. Project-authored Python uses
   user changes. Never delete `icarus-orig/`, `icarus-client-orig/`,
   `reference-data/`, active `local-private` evidence paths or another agent's
   files.
-- Keep scratch under `work/`. Bound every experiment and its resources; clean up
+- Keep scratch under `work/`, one case per directory with a `case.json`
+  (`.agents/rules/work.md`). Bound every experiment and its resources; clean up
   owned experiments on timeout. Delete only owned reproducible scratch; never
   blanket cleanup or deletion by age. Coordinate file ownership; the lead
   integrates, commits and pushes.
