@@ -34,8 +34,7 @@ fields, quantized vectors, NetGUID references and a bone name (F-597).
 Text items take the shared FText serializer at the archive version client
 bunches are built with, 522, and every history body but TextGenerator is
 read (F-624, F-614); Base histories add their namespace, key and source
-(F-624); the codec re-encodes every history but StringTableEntry and
-TextGenerator (F-628). These
+(F-624); the codec re-encodes every history but TextGenerator (F-629). These
 are
 client-build observations, with the older server's content-block and NetGUID
 writers mirroring them (F-581) and composing actor bunches in the client's
@@ -51,4 +50,4 @@ read order (F-610); nothing is wire-validated.
 
 ## Artifacts
 
-M-420..M-449, M-455..M-470, M-570..M-576, M-581..M-588, M-600..M-602.
+M-420..M-449, M-455..M-470, M-570..M-576, M-581..M-588, M-600..M-603.
