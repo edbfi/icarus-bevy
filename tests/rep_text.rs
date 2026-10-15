@@ -404,7 +404,7 @@ fn transform_nests_a_whole_text_and_a_byte() {
 
 #[test]
 fn unread_history_types_and_malformed_fields_fail_closed() {
-    for history in [12u8, 13, 0x80, 0xfe] {
+    for history in [13u8, 0x80, 0xfe] {
         let mut fixture = Fixture::new(ByteOrder::Little);
         fixture.word(0).byte(history).string("x").string("y");
         let error = error_of(parse_property_stream(
@@ -536,4 +536,106 @@ fn string_table_entries_send_a_network_name_then_a_key() {
         },
         &codec(ByteOrder::Big, |_| {}),
     );
+}
+
+#[test]
+fn generator_payloads_follow_unless_the_type_name_is_none() {
+    let mut with = Fixture::new(ByteOrder::Little);
+    with.word(0).byte(12);
+    with.writer.write_bit(true);
+    with.packed(300);
+    with.word(3).byte(7).byte(8).byte(9);
+    assert_text(
+        &with.finish(),
+        TextValue {
+            flags: 0,
+            history: TextHistory::Generator {
+                generator_type: NetworkName::Hardcoded(300),
+                payload: Some(vec![7, 8, 9]),
+            },
+        },
+        &plain(),
+    );
+    let mut none = Fixture::new(ByteOrder::Little);
+    none.word(0).byte(12);
+    none.writer.write_bit(true);
+    none.packed(0);
+    assert_text(
+        &none.finish(),
+        TextValue {
+            flags: 0,
+            history: TextHistory::Generator {
+                generator_type: NetworkName::Hardcoded(0),
+                payload: None,
+            },
+        },
+        &plain(),
+    );
+    let mut empty = Fixture::new(ByteOrder::Big);
+    empty.word(0).byte(12);
+    empty.writer.write_bit(false);
+    empty.string("Generator").word(0).word(0);
+    assert_text(
+        &empty.finish(),
+        TextValue {
+            flags: 0,
+            history: TextHistory::Generator {
+                generator_type: NetworkName::String {
+                    text: narrow("Generator"),
+                    number: 0,
+                },
+                payload: Some(Vec::new()),
+            },
+        },
+        &codec(ByteOrder::Big, |_| {}),
+    );
+}
+
+#[test]
+fn malformed_generators_fail_closed() {
+    // A string-form None has unread name-table resolution.
+    let mut spelled = Fixture::new(ByteOrder::Little);
+    spelled.word(0).byte(12);
+    spelled.writer.write_bit(false);
+    spelled.string("NONE").word(0);
+    assert!(
+        error_of(parse_property_stream(
+            &to_payload(&spelled.finish()),
+            &LAYOUT,
+            &plain()
+        ))
+        .contains("None")
+    );
+    // Negative and oversized payload counts.
+    for count in [u32::MAX, 9] {
+        let mut fixture = Fixture::new(ByteOrder::Little);
+        fixture.word(0).byte(12);
+        fixture.writer.write_bit(true);
+        fixture.packed(5);
+        fixture.word(count).byte(1);
+        let tight = codec(ByteOrder::Little, |limits| limits.max_opaque_bits = 64);
+        assert!(
+            error_of(parse_property_stream(
+                &to_payload(&fixture.finish()),
+                &LAYOUT,
+                &tight
+            ))
+            .contains("payload"),
+            "{count}"
+        );
+    }
+    // A payload must accompany exactly the non-None type Names.
+    for (generator_type, payload) in [
+        (NetworkName::Hardcoded(0), Some(vec![1])),
+        (NetworkName::Hardcoded(5), None),
+    ] {
+        let value = single(RepValue::Text(TextValue {
+            flags: 0,
+            history: TextHistory::Generator {
+                generator_type,
+                payload,
+            },
+        }));
+        assert!(encode_property_stream(&value, &LAYOUT, &plain()).is_err());
+    }
 }

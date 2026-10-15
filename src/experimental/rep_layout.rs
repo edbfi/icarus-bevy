@@ -29,8 +29,8 @@
 //! - [`RepCommand::SoftObject`]: the soft-object path as one archive string,
 //!   which net archives send in place of the path fields (F-599);
 //! - [`RepCommand::Text`]: the shared FText serializer at the archive versions
-//!   client bunches carry (F-614, F-624, F-627), in [`super::rep_text`]: every
-//!   history but TextGenerator, which fails closed;
+//!   client bunches carry (F-614, F-624, F-627, F-630), in
+//!   [`super::rep_text`]: every history;
 //! - [`RepCommand::VectorQuantize`]: `FVector_NetQuantize`, a capped component
 //!   bit count and three biased integers, unscaled (F-593, server writer);
 //! - [`RepCommand::VectorQuantizeNormal`]: three 16-bit values biased by 32768;
@@ -200,7 +200,7 @@ pub enum RepCommand {
     Str,
     /// A soft-object path as an archive string (F-599).
     SoftObject,
-    /// A Text item; TextGenerator fails closed (F-624).
+    /// A Text item (F-624, F-630).
     Text,
     VectorQuantize,
     VectorQuantize10,

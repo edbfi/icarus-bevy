@@ -5,8 +5,10 @@
 //! history-type byte, the history body and, for Base only, the display
 //! strings. Every version gate on that path passes at those versions, so the
 //! layouts below are unconditional. Names take the network-name form, the
-//! net archives' name operator (F-595, F-629). TextGenerator (12) fails
-//! closed: its byte-array serializer is unread.
+//! net archives' name operator (F-595, F-629). A TextGenerator payload is
+//! an opaque counted byte array that follows unless the generator-type Name
+//! is None (F-630); the hardcoded None index marks that case, and a
+//! string-form None fails closed because its name-table resolution is unread.
 //!
 //! Bools are 4-byte words of 0 or 1; larger values fail closed, as the engine
 //! flags them as an archive error. Multi-byte numbers follow the archive byte
@@ -78,7 +80,16 @@ pub enum TextHistory {
         table: NetworkName,
         key: ArchiveText,
     },
+    /// Type 12: the generator type's Name, then its opaque payload unless that
+    /// Name is the hardcoded None.
+    Generator {
+        generator_type: NetworkName,
+        payload: Option<Vec<u8>>,
+    },
 }
+
+/// The hardcoded network-name index of None.
+const NAME_NONE: u32 = 0;
 
 #[derive(Clone, PartialEq, Eq)]
 pub enum NumberKind {
@@ -159,6 +170,7 @@ impl TextHistory {
             },
             Self::Transform { .. } => 10,
             Self::StringTableEntry { .. } => 11,
+            Self::Generator { .. } => 12,
         }
     }
 }
@@ -241,6 +253,11 @@ impl Io<'_> {
         }
     }
 
+    /// The opaque-span bound, capped at the bit archives' 16 MiB array limit.
+    fn max_payload_bytes(&self) -> usize {
+        (self.codec.limits.max_opaque_bits / 8).min(0x0100_0000)
+    }
+
     fn read_bool(&self, reader: &mut BitReader<'_>, what: &str) -> Result<bool> {
         match self.read_u32(reader, what)? {
             0 => Ok(false),
@@ -270,6 +287,24 @@ impl Io<'_> {
         );
         self.write_u32(writer, count as u32);
         Ok(())
+    }
+}
+
+/// Whether a generator-type Name is None; a string-form None fails closed.
+fn generator_is_none(name: &NetworkName) -> Result<bool> {
+    match name {
+        NetworkName::Hardcoded(index) => Ok(*index == NAME_NONE),
+        NetworkName::String { text, .. } => {
+            let spelled_none = text.units().len() == 4
+                && text.units().iter().zip(b"none").all(|(unit, lower)| {
+                    *unit < 0x80 && (*unit as u8).to_ascii_lowercase() == *lower
+                });
+            ensure!(
+                !spelled_none,
+                "string-form None generator Name is unsupported"
+            );
+            Ok(false)
+        }
     }
 }
 
@@ -375,6 +410,25 @@ pub(super) fn read_text(
             table: read_network_name(reader, codec)?,
             key: io.read_string(reader, "string table key")?,
         },
+        12 => {
+            let generator_type = read_network_name(reader, codec)?;
+            let payload = if generator_is_none(&generator_type)? {
+                None
+            } else {
+                let count = io.read_u32(reader, "generator payload count")? as i32;
+                ensure!(
+                    count >= 0 && count as usize <= io.max_payload_bytes(),
+                    "generator payload count {count} outside its limit"
+                );
+                let bytes = reader.read_bytes(count as usize);
+                ensure!(!reader.is_error(), "truncated generator payload");
+                Some(bytes)
+            };
+            TextHistory::Generator {
+                generator_type,
+                payload,
+            }
+        }
         other => bail!("text history type {other} unsupported"),
     };
     Ok(TextValue { flags, history })
@@ -556,6 +610,24 @@ pub(super) fn write_text(
         TextHistory::StringTableEntry { table, key } => {
             write_network_name(writer, table, codec)?;
             io.write_string(writer, key, "string table key")?;
+        }
+        TextHistory::Generator {
+            generator_type,
+            payload,
+        } => {
+            ensure!(
+                generator_is_none(generator_type)? == payload.is_none(),
+                "a generator payload follows exactly when its type Name is not None"
+            );
+            write_network_name(writer, generator_type, codec)?;
+            if let Some(payload) = payload {
+                ensure!(
+                    payload.len() <= io.max_payload_bytes(),
+                    "generator payload exceeds its limit"
+                );
+                io.write_u32(writer, payload.len() as u32);
+                writer.write_bytes(payload);
+            }
         }
     }
     Ok(())
