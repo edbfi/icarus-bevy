@@ -188,7 +188,8 @@ objects):
 - Original normalization, EOF and error behavior versus the strict readers (U-026).
 - Official restore/import and newer-build migration of these saves (U-025).
 - Value meanings, Name identities and Enum lookups (U-020); empty-family
-  population (U-021); deeper C028 children (U-027, U-048).
+  population (U-021); deeper C028 children (U-048); opaque binary Struct
+  leaves are three or four 4-byte components (F-602).
 - Client large-span safety (U-030) and dedicated-server correspondence (U-031).
 - Singleton saved integer's restoration role (U-039); remaining classes (U-050).
 - Supplied Text-bearing body (U-053); runtime save-bit mutation (U-054); Map/Set

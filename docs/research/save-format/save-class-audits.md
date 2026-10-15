@@ -44,7 +44,8 @@ Int64 headers (F-556) and a 1 MiB component ceiling, every body of every class
 frames and round-trips byte-identically through a lossless value-opaque tree
 in both copies (F-557); all 163 Maps per copy also frame into items under the
 client item layout, and no Set occurs (F-559, F-562). Every Struct payload
-that stays opaque is one of four fixed-width engine math types (F-565).
+that stays opaque is one of four fixed-width engine math types (F-565), each
+three or four ordered 4-byte components with no count or tail (F-602).
 
 Counts and maxima are samples from the two supplied copies, not format limits.
 No decoded value, text or number was emitted or interpreted.
@@ -53,8 +54,8 @@ No decoded value, text or number was emitted or interpreted.
 
 - Meanings, Name identity and Enum lookup for every qualified value (U-020).
 - Unpopulated families: 17 C028 array-child descriptors, DA04, CA06 Text/Name and the empty inherited arrays (U-021, U-046).
-- Map item meanings and binary Struct items (U-055, U-027); meanings of the classes outside the audited selections (U-022); C001's nested values and runtime dispatch (U-023).
-- Individual C028 native top spans and the historical library snapshot (U-024); opaque C028 binary Struct bodies (U-027).
+- Map item meanings and binary Struct component values (U-055, U-020); meanings of the classes outside the audited selections (U-022); C001's nested values and runtime dispatch (U-023).
+- Individual C028 native top spans and the historical library snapshot (U-024).
 - Restoration and import, client and newer-build compatibility (U-025); original normalization, EOF and error equivalence (U-026); original performance (U-028).
 - Heavy-world save work order after this structural work: a matched official-server load/save/reload baseline on disposable copies once build pairing and a runtime scope exist (U-040, U-047); then authenticated negotiation, replication and the gameplay slice, validating a small supported import before the heavy dataset (U-038, U-045). Generic framing agreement is not an importable world; no partial importer.
 
