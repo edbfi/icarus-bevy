@@ -4,8 +4,8 @@ use icarus_bevy::experimental::control::TokenEncoding;
 use icarus_bevy::experimental::control_messages::ArchiveText;
 use icarus_bevy::experimental::packet::{BitReader, BitWriter, Payload};
 use icarus_bevy::experimental::rep_layout::{
-    ItemKind, PropertyStream, RepCommand, RepEntry, RepLayoutCodec, RepLayoutLimits, RepValue,
-    TextValue, encode_property_stream, parse_property_stream, read_property_stream,
+    ItemKind, NetworkName, PropertyStream, RepCommand, RepEntry, RepLayoutCodec, RepLayoutLimits,
+    RepValue, TextValue, encode_property_stream, parse_property_stream, read_property_stream,
 };
 use icarus_bevy::experimental::rep_text::{
     ArgumentData, ArgumentValue, DateTimeKind, FormatArgument, NumberKind, NumberOptions,
@@ -404,7 +404,7 @@ fn transform_nests_a_whole_text_and_a_byte() {
 
 #[test]
 fn unread_history_types_and_malformed_fields_fail_closed() {
-    for history in [11u8, 12, 13, 0x80, 0xfe] {
+    for history in [12u8, 13, 0x80, 0xfe] {
         let mut fixture = Fixture::new(ByteOrder::Little);
         fixture.word(0).byte(history).string("x").string("y");
         let error = error_of(parse_property_stream(
@@ -496,4 +496,44 @@ fn text_summaries_and_debug_carry_no_content() {
 fn text_values_need_a_text_command() {
     let value = single(RepValue::Text(base(0, "", "", "x")));
     assert!(encode_property_stream(&value, &[RepCommand::Str], &plain()).is_err());
+}
+
+#[test]
+fn string_table_entries_send_a_network_name_then_a_key() {
+    // Hardcoded form: the bit, then the packed index (engine net version 13).
+    let mut hardcoded = Fixture::new(ByteOrder::Little);
+    hardcoded.word(0).byte(11);
+    hardcoded.writer.write_bit(true);
+    hardcoded.packed(300);
+    hardcoded.string("Greeting");
+    assert_text(
+        &hardcoded.finish(),
+        TextValue {
+            flags: 0,
+            history: TextHistory::StringTableEntry {
+                table: NetworkName::Hardcoded(300),
+                key: narrow("Greeting"),
+            },
+        },
+        &plain(),
+    );
+    // String form: the bit clear, an archive string and a 4-byte number.
+    let mut named = Fixture::new(ByteOrder::Big);
+    named.word(1).byte(11);
+    named.writer.write_bit(false);
+    named.string("UI_Table").word(0).string("Key");
+    assert_text(
+        &named.finish(),
+        TextValue {
+            flags: 1,
+            history: TextHistory::StringTableEntry {
+                table: NetworkName::String {
+                    text: narrow("UI_Table"),
+                    number: 0,
+                },
+                key: narrow("Key"),
+            },
+        },
+        &codec(ByteOrder::Big, |_| {}),
+    );
 }

@@ -4,8 +4,9 @@
 //! (UE4 522, editor-object custom version 40): a 4-byte flags word, a
 //! history-type byte, the history body and, for Base only, the display
 //! strings. Every version gate on that path passes at those versions, so the
-//! layouts below are unconditional. StringTableEntry (11) and TextGenerator
-//! (12) fail closed: their Name routing and byte-array serializer are unread.
+//! layouts below are unconditional. Names take the network-name form, the
+//! net archives' name operator (F-595, F-629). TextGenerator (12) fails
+//! closed: its byte-array serializer is unread.
 //!
 //! Bools are 4-byte words of 0 or 1; larger values fail closed, as the engine
 //! flags them as an archive error. Multi-byte numbers follow the archive byte
@@ -17,7 +18,8 @@ use anyhow::{Result, bail, ensure};
 use super::control_messages::ArchiveText;
 use super::packet::{BitReader, BitWriter};
 use super::rep_layout::{
-    RepLayoutCodec, read_archive_string, read_field, read_u32, write_archive_string, write_u32,
+    NetworkName, RepLayoutCodec, read_archive_string, read_field, read_network_name, read_u32,
+    write_archive_string, write_network_name, write_u32,
 };
 
 /// One Text item.
@@ -71,6 +73,11 @@ pub enum TextHistory {
     },
     /// Type 10.
     Transform { text: Box<TextValue>, transform: u8 },
+    /// Type 11: the table's Name, then the entry key.
+    StringTableEntry {
+        table: NetworkName,
+        key: ArchiveText,
+    },
 }
 
 #[derive(Clone, PartialEq, Eq)]
@@ -151,6 +158,7 @@ impl TextHistory {
                 DateTimeKind::DateTime { .. } => 9,
             },
             Self::Transform { .. } => 10,
+            Self::StringTableEntry { .. } => 11,
         }
     }
 }
@@ -363,6 +371,10 @@ pub(super) fn read_text(
             text: Box::new(read_text(reader, codec, depth + 1)?),
             transform: io.read_u8(reader, "transform type")?,
         },
+        11 => TextHistory::StringTableEntry {
+            table: read_network_name(reader, codec)?,
+            key: io.read_string(reader, "string table key")?,
+        },
         other => bail!("text history type {other} unsupported"),
     };
     Ok(TextValue { flags, history })
@@ -540,6 +552,10 @@ pub(super) fn write_text(
         TextHistory::Transform { text, transform } => {
             write_text(writer, text, codec, depth + 1)?;
             writer.write_bits(u32::from(*transform), 8);
+        }
+        TextHistory::StringTableEntry { table, key } => {
+            write_network_name(writer, table, codec)?;
+            io.write_string(writer, key, "string table key")?;
         }
     }
     Ok(())
