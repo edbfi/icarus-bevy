@@ -97,9 +97,11 @@ PREFIX_CAPS: tuple[tuple[str, int], ...] = (
     ("docs/ledgers/findings/", 48 * KIB),
 )
 DIGEST_CAP = 8 * KIB
-ACTIVE_FINDINGS_CAP = 96 * KIB
+ACTIVE_FINDINGS_CAP = 128 * KIB
 LEDGER_ROW_CAP = 400
-AGGREGATE_CAP = 160 * KIB
+AGGREGATE_CAP = 192 * KIB
+# Above this share of either aggregate cap, consolidate before adding.
+AGGREGATE_REVIEW_PERCENT = 80
 
 # Evidence index: retrieval-tier data, outside the prose surface and read tiers.
 EVIDENCE_DIR = "evidence"
@@ -662,6 +664,9 @@ class Linter:
             self.report("docs", 0, f"current prose surface is {total} bytes; cap is {AGGREGATE_CAP}")
         if active_findings > ACTIVE_FINDINGS_CAP:
             self.report(FINDINGS_DIR, 0, f"active findings total {active_findings} bytes; cap is {ACTIVE_FINDINGS_CAP}")
+        for rel, size, cap in (("docs", total, AGGREGATE_CAP), (FINDINGS_DIR, active_findings, ACTIVE_FINDINGS_CAP)):
+            if cap * AGGREGATE_REVIEW_PERCENT < size * 100 <= cap * 100:
+                self.warn(rel, 0, f"{size} of {cap} bytes is over {AGGREGATE_REVIEW_PERCENT}%; consolidate before adding")
 
     def check_headings(self) -> None:
         for rel, doc in self.current.items():

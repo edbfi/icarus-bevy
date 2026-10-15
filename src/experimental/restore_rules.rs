@@ -1,7 +1,8 @@
 //! EXPERIMENTAL restoration rules the client's state recorders apply.
 //!
 //! Each function is a pure rule over authored domain values, read from the
-//! client recorders' record, validate, stitch and restore code (F-645 to F-665).
+//! client recorders' record, validate, stitch and restore code (F-645 to F-665,
+//! F-677).
 //! Nothing here decodes a save, looks up a class, constructs an object or
 //! imports state: the rules pin the behavior a native world must reproduce when
 //! it restores recorded actors. The normal server does not call them yet, and
@@ -208,4 +209,36 @@ pub fn forecast_position(blocks: &[ForecastBlock], now: i32) -> ForecastPosition
             recorded_now: now,
         },
     }
+}
+
+/// One cave-AI class's spawn times, on a spawner or in its record.
+#[derive(Clone, Debug, PartialEq)]
+pub struct CaveSpawnTimes {
+    pub class_name: Vec<u16>,
+    pub times: Vec<f32>,
+}
+
+/// Restores a cave-AI spawner's per-class spawn times from its record
+/// (F-677). Each saved class with at least one time replaces the times of
+/// the first configured class whose name matches it; saved classes without
+/// times or without a match change nothing. The client compares with a
+/// case-insensitive `Stricmp`; this rule folds ASCII only, as [`names_match`]
+/// does, since its non-ASCII folding is unverified. Returns whether any saved
+/// class had times: then the spawner's restored event runs, otherwise its
+/// tick is re-enabled.
+pub fn restore_cave_spawn_times(
+    configured: &mut [CaveSpawnTimes],
+    saved: &[CaveSpawnTimes],
+) -> bool {
+    let mut restored = false;
+    for record in saved.iter().filter(|record| !record.times.is_empty()) {
+        restored = true;
+        if let Some(class) = configured
+            .iter_mut()
+            .find(|class| names_match(&record.class_name, &class.class_name))
+        {
+            class.times.clone_from(&record.times);
+        }
+    }
+    restored
 }

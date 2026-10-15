@@ -15,47 +15,29 @@ Before restructure: 96ddb0b:docs/research/save-format/2026-10-13-save-class-audi
 
 ## Current answer
 
-The census is closed for its selection: C009, C013, C028 and C034 cover 3,440
-of 5,485 records, and every observed populated tagged boundary in them is
-qualified in both copies; 34 classes with 2,045 records lay outside (F-496). C001
-now joins them at the top level: its four bodies match its 20 save-selected
-descriptors exactly, leaving 33 classes and 2,041 records (F-534), and its
-nested Struct and Array children frame in both copies (F-540).
-The qualified populations (F-496) are C028 bodies, top frames and direct
-Structs; C034 top, own and inherited populations, compared in per-copy batches
-because the original 8 MiB component transport cannot hold both copies (F-213);
-C009 top, own and parent structure and its common children with ND01 and D01
-nested arrays; and C013's two singleton bodies. The static contracts
-behind the measured widths are separate rows, for example F-655, F-369
-to F-373, F-664, F-386, F-388 and F-391.
+Every body of every one of the save's 38 classes frames and round-trips
+byte-identically through a lossless value-opaque tree in both copies, under
+statically qualified Map, Set and Int64 headers and 1 MiB component and
+struct-array bounds (F-556, F-557, F-634); all 163 Maps per copy frame into
+items and no Set occurs (F-559, F-562). The census behind this began with
+C009, C013, C028 and C034, qualified per boundary in both copies (F-496),
+then C001 (F-534, F-540), the player-state candidates and the
+remaining classes (F-668); C034 copies are compared in separate batches
+because the original 8 MiB component transport cannot hold both (F-213). The
+static contracts behind the measured widths are separate rows (F-655, F-369 to
+F-373, F-664, F-386, F-388, F-391). Every opaque Struct payload is one of four
+fixed-width engine math types of three or four ordered 4-byte components
+(F-565, F-602). Construction candidates frame too, grids nesting per-type row
+names over placed pieces that share the grid's frame (F-643).
 
-Two library changes enabled the work: borrowed strict string frames with no
-success-path allocation (F-142) and explicit struct-array limits up to 1 MiB
-(F-634) and comparator limits up to 128 KiB (F-198), defaults keeping 64 KiB.
-
-Every one of the save's 38 class identifiers and 332 framed field and type
-names occurs in both the older server and the newer client, and both assign
-the five saved recorder versions the same literals, so no saved identifier
-confirms the reported producing build (F-635). Eight player-state candidates
-frame to depth 4 in both copies apart from two size ceilings (F-550), as do 23
-of the 25 remaining classes (F-551). With statically qualified Map, Set and
-Int64 headers (F-556) and a 1 MiB component ceiling, every body of every class
-frames and round-trips byte-identically through a lossless value-opaque tree
-in both copies (F-557); all 163 Maps per copy also frame into items under the
-client item layout, and no Set occurs (F-559, F-562). Every Struct payload
-that stays opaque is one of four fixed-width engine math types (F-565), each
-three or four ordered 4-byte components with no count or tail (F-602).
-Construction candidates frame too, building grids nesting per-type row names
-over placed pieces whose transforms share the grid's frame (F-643). Client recorder code
-gives the deposit, voxel, deployable and FLOD fields their meanings (F-645, F-646),
-as it does player, history, quest-link, container, mount-restore, rocket and
-game-clock fields (F-648, F-650 to F-653), and the remaining world classes theirs
-(F-654, F-656 to F-658, F-661, F-662); item stats, alterations and slots are row
-references (F-660). The validate, stitch and restore rules are in the
-[restore-rules spec](../../specs/save-format/restore-rules.md) (F-663).
-With struct arrays bounded at the 1 MiB component
-ceiling, a 646,614-byte grid array frames and both copies still round-trip
-(F-634).
+No saved class identifier, field or type name, or recorder version tells the
+older server from the newer client (F-635). Client recorder code gives every
+class's fields their meanings (F-645, F-646, F-648, F-650 to F-654, F-656 to
+F-661, F-665, F-666, F-676, F-677); item stats, alterations and slots are row references
+(F-660). The validate, stitch and restore rules are in the
+[restore-rules spec](../../specs/save-format/restore-rules.md) (F-663). The
+readers rest on borrowed strict string frames with no success-path allocation
+(F-142); comparator limits stay at 128 KiB (F-198).
 
 Counts and maxima are samples from the two supplied copies, not format limits.
 No decoded value, text or number was emitted or interpreted.

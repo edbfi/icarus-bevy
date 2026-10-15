@@ -36,7 +36,7 @@ dormancy, channel close reasons and every server-side writer.
 - `experimental::actor_channel` reads and re-encodes these structures
   bit-identically from authored fixtures, with payloads opaque (F-577), and
   `experimental::rep_layout` reads and re-encodes property streams from a
-  caller-supplied layout (F-587). Randomized and mutated inputs never panic
+  caller-supplied layout (F-673). Randomized and mutated inputs never panic
   either reader, and every accepted input re-encodes exactly (F-604).
 - The replicator hands rep-layout properties to `FRepLayout::ReceiveProperties`
   (an optional bit, a packed handle, an optional checksum word, then a handle
@@ -104,7 +104,7 @@ dormancy, channel close reasons and every server-side writer.
   The levels are struct fields and never cross the wire. The byte rotator is
   per axis a nonzero bit, then a byte of `round(angle * 256 / 360)`, decoded
   times `360 / 256`. `experimental::rep_layout` re-encodes all of these
-  (F-590).
+  (F-673).
 - Gameplay tags (F-583, F-591, F-592): sent as names unless the tag
   manager's fast-replication flag is set; then as a net index into the
   runtime tag table, which both sides must share in the same order. With a
@@ -115,7 +115,7 @@ dormancy, channel close reasons and every server-side writer.
   archive call instead (slot meaning inferred). A container is an empty bit
   (set when empty), then a count of a tag-manager width W, capped by the
   writer at 2^W - 1, then that many tags. `experimental::rep_layout`
-  re-encodes the name and net-index forms with caller widths (F-594).
+  re-encodes the name and net-index forms with caller widths (F-674).
 - Hit results (F-597), client and server alike: a flags byte whose bits 0
   and 1 carry struct flags and whose bits 2 to 6 replace the impact point
   (with the location), the impact normal (with the normal), the item, the
@@ -124,15 +124,15 @@ dormancy, channel close reasons and every server-side writer.
   and normal, the unreplaced impact fields, trace start and end, the gated
   4-byte penetration depth and item, three NetGUID object references (weak
   pointers reach the package map's `SerializeObject`), the bone name as a
-  network name, the gated face index and element byte (F-598 re-encodes it).
+  network name, the gated face index and element byte (F-674 re-encodes it).
 - Name and Str items (F-595): the name item serializer calls the archive
   name operator, which net bit archives send to the package map's
   `SerializeName` (the same in `UPackageMapClient`) or, without a package
   map, to `StaticSerializeName`; both are the network-name form below. Str
   items are archive strings: a signed 4-byte count, then narrow bytes or
-  2-byte units with a terminator (F-596 re-encodes them). Soft-object items
+  2-byte units with a terminator (F-675 re-encodes them). Soft-object items
   reach the archive path operator, which net bit archives override to send
-  the path as one archive string (F-599; F-600 re-encodes it). Text items
+  the path as one archive string (F-599; F-675 re-encodes it). Text items
   reach the shared archive FText serializer, which net archives do not
   override: from archive version `0x170` a 4-byte flags word, then a
   history-type byte (0 to 12 select per-history bodies, 0xFF none); the

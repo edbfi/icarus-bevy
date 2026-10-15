@@ -14,29 +14,23 @@ once the control channel has admitted it; the spec is
 
 An open actor bunch carries the actor NetGUID and, for dynamic actors, the
 archetype, a gated level and optional location, rotation, scale and velocity
-blocks (F-569). Later content blocks name the actor or a sub-object and carry a
-packed payload-bit count for the object's replicator (F-576). Inside a block,
-packed rep handles drive the layout, with nested streams for dynamic arrays,
-and spawn vectors are raw floats or bias-packed integers in tenths, with
-16-bit compressed rotators (F-571, F-573). Bool, Byte, Enum, object, native
-struct and soft-object items are read; Str, Name, Text and native struct bodies
-are not (F-574, U-064). Enum widths derive from the enum's maximum value
-(F-632). Several native struct serializers are read on the server: quantized and normal vectors, tag containers and hit results (F-593).
-Handles walk the layout in strictly increasing order, numbering array elements
-consecutively (F-586), and the movement struct sends flags, level-quantized
-location and velocities and a byte or 16-bit rotation, its levels being
-property defaults that never cross the wire (F-588, F-589). Gameplay tags go
-as names or as split net indices whose widths, like the container count
-width, are tag configuration (F-591, F-592). Name items take the
-network-name form through the package map, and Str items are archive strings
-(F-595), as are soft-object paths on net archives (F-599). Hit results carry a flags byte that elides duplicate or default
-fields, quantized vectors, NetGUID references and a bone name (F-597).
-Text items take the shared FText serializer at the archive version client
-bunches are built with, 522; every history body is read and the codec
-re-encodes them all (F-639). After the properties, field headers carry
-RPCs and custom-delta payloads, both read, fast arrays included (F-644). These are client-build observations, with the older server's content-block and NetGUID
-writers mirroring them (F-581) and composing actor bunches in the client's
-read order (F-610); nothing is wire-validated.
+blocks (F-569). Later content blocks name the actor or a sub-object and carry
+a packed payload-bit count for its replicator (F-576). Inside a block, packed
+rep handles walk the layout in strictly increasing order, numbering array
+elements consecutively, with nested streams for dynamic arrays (F-586); spawn
+vectors are raw floats or bias-packed tenths, with 16-bit rotators (F-571,
+F-573). Bool, Byte, Enum, object and soft-object items are read (F-574), enum
+widths deriving from the enum's maximum (F-632). Name items take the
+network-name form, Str items and net soft-object paths are archive strings
+(F-595, F-599), and Text items use the shared serializer at archive version
+522, every history read (F-639). Native struct serializers read so far:
+quantized and normal vectors, tag containers and hit results (F-593, F-597),
+and the movement struct, whose quantization levels are property defaults
+(F-588, F-589). Gameplay tags go as names or as split net indices with
+configured widths (F-591, F-592). Field headers then carry RPCs, custom-delta
+payloads and fast arrays (F-644). These are client-build observations; the
+older server's content-block and NetGUID writers mirror them (F-581) and
+compose actor bunches in client read order (F-610). Nothing is wire-validated.
 
 ## Open
 

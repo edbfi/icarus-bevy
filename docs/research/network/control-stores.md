@@ -17,50 +17,30 @@ Before restructure: 96ddb0b:docs/research/network/2026-10-13-control-stores.md
 
 ## Current answer
 
-After their constructor calls, World and Pending each store their primary and
-FNetworkNotify table constants at +0 and +0x28 of one unchanged base whose
-receiver origin is unknown; the equal geometry does not identify the
-older-server owner (F-478). The constructor symbols start 8- and 71-byte
-metadata fragments, and fixed windows export only prologues and pre-call
-prefixes (F-479). Each FNetworkNotify table's +0x18 slot equals its
-NotifyControlMessage, and the 0x290 distance between tables is image placement,
-not object layout (F-480).
+In both builds the UWorld and UPendingNetGame constructors store their primary
+and FNetworkNotify table constants at +0 and +0x28 of the object under
+construction, held in a nonvolatile register across the super call (F-478,
+F-504, F-544). Client PDB names identify the older server's registration
+getters and InternalConstructor callbacks (UWorld at 0x143b856c0,
+UPendingNetGame at 0x143b21830), whose constructors match the client's apart
+from displacements (F-501 to F-503, F-505). Each FNetworkNotify table's +0x18
+slot is NotifyControlMessage (F-480); the dispatcher's only pointer is that
+slot of the older UWorld table, so it is UWorld::NotifyControlMessage (F-506),
+and both builds' four-slot notify tables match by position (F-546). Constructor
+symbols start 8- and 71-byte metadata fragments (F-479), and caller scans find
+no direct call or archive provenance (F-481).
 
-Caller scans find one absolute pointer to the dispatcher and two LEA
-materializations of slot 0x145468180 stored at base +0x28, but no direct call
-and no archive provenance (F-481). The same build's UWorld and UPendingNetGame
-registration getters are 171-byte exception intervals that load their class-name
-literal plus two; the client's PDB-named GetPrivateStaticClass functions have the
-identical shape, which identifies the older getters (F-501). Across builds the
-getters differ only in displacement fields, and each class has three
-class-specific code-pointer arguments (F-502). The client PDB names them, and the
-shared call is GetPrivateStaticClassBody, so the older server's constructor
-callbacks are InternalConstructor<UWorld> at 0x143b856c0 and
-InternalConstructor<UPendingNetGame> at 0x143b21830 (F-503). Each callback
-tail-jumps to its class constructor with the constructed object as this; in the
-client those targets are the PDB-named constructors that contain the F-478
-stores, so the store base is the object under construction (F-504); both builds hold
-it in a nonvolatile register across the super call (F-544). The older constructors
-match the client's apart from displacements: T1 is the older UWorld constructor
-body, so its stored constants are UWorld's primary and FNetworkNotify tables, and
-the older UPendingNetGame constructor installs its own pair at the client's
-positions (F-505). This answers the older-owner question for both classes. The
-dispatcher's only pointer is slot +0x18 of the older UWorld FNetworkNotify table,
-so the dispatcher is the older UWorld::NotifyControlMessage (F-506). Both
-builds' notify tables have four code slots, matched by position only (F-546). The dispatcher validates message IDs and
-reads the ID 0 body (F-284). The client's receive path reads that body from the
-FInBunch through FBitReader::Serialize, after the ID byte, with byte order set
-from the first field (F-514, F-515); the server's ID 0 reads take the same archive
-route (F-516), and its ReceivedBunch, found through the UControlChannel vftable,
-applies the same rule (F-518, F-519). In both builds ReceivedBunch reaches the
-dispatcher through the driver's notify object, vtable slot +0x18 (F-520). The
-client's ReceivedPacket parses a packet word and ack history, then bunch headers
-whose payload bits are copied to the bunch from bit 0, inside a handler prefix
-and termination-bit frame with fixed integer encodings (F-521 to F-524). The
-client's parsers map the control vocabulary in both directions (F-529, F-530),
-and its reliability layer is seeded from the handshake cookie (F-535 to F-539). A disconnected experimental reader composes the
-observed initial body within a derived 131,081-byte ceiling; negotiation,
-identity and game-connection flags stay false (F-096, F-097).
+The dispatcher validates message IDs and reads the ID 0 body (F-284) from the
+FInBunch through FBitReader::Serialize after the ID byte, byte order set by the
+first field, in client and server alike (F-514 to F-516, F-518, F-519);
+ReceivedBunch reaches it through the driver's notify object, slot +0x18
+(F-520). ReceivedPacket parses a packet word and ack history, then bunch
+headers inside a handler prefix and termination-bit frame (F-521 to F-524);
+the client's parsers map the control vocabulary both ways (F-529, F-530), and
+its reliability layer is seeded from the handshake cookie (F-535 to F-539). A
+disconnected experimental reader composes the observed initial body within a
+derived 131,081-byte ceiling; negotiation, identity and game-connection flags
+stay false (F-096, F-097).
 
 All results are static: no original executable, runtime instruction or live
 control message ran, and metadata intervals are fragment bounds rather than

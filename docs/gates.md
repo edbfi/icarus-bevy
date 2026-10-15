@@ -52,7 +52,7 @@ Last reconciled: 2026-10-15
   independent same-build provenance, so the candidate slots are 0x1449da030,
   0x1449da418 and 0x1449da430 (F-495). Client-PDB correspondence names the
   construction path, the final vptr and the client slot contracts (F-509,
-  F-510); the reviewed server slot read matches them (F-512). Ownership and
+  F-669); the reviewed server slot read matches them (F-670). Ownership and
   runtime claims keep register preservation across the super call as an
   explicit condition; do not repeat these reads.
 - Retained exports already identify the exact native class getter and

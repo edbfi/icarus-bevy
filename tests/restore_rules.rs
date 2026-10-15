@@ -202,3 +202,41 @@ fn forecast_position_follows_the_containing_block() {
     assert_eq!(forecast_position(&blocks, -1), ForecastPosition::default());
     assert_eq!(forecast_position(&[], 5), ForecastPosition::default());
 }
+
+#[test]
+fn cave_spawn_times_replace_the_first_matching_class() {
+    use icarus_bevy::experimental::restore_rules::{CaveSpawnTimes, restore_cave_spawn_times};
+    let class = |name: &str, times: &[f32]| CaveSpawnTimes {
+        class_name: units(name),
+        times: times.to_vec(),
+    };
+    let mut configured = vec![
+        class("BP_Wolf", &[1.0]),
+        class("bp_wolf", &[2.0]),
+        class("BP_Bear", &[3.0]),
+    ];
+    let saved = [
+        class("BP_WOLF", &[10.0, 11.0]),
+        class("BP_Bear", &[]),
+        class("BP_Unknown", &[5.0]),
+    ];
+    assert!(restore_cave_spawn_times(&mut configured, &saved));
+    assert_eq!(
+        configured,
+        [
+            class("BP_Wolf", &[10.0, 11.0]),
+            class("bp_wolf", &[2.0]),
+            class("BP_Bear", &[3.0]),
+        ],
+        "only the first match changes; empty and unmatched records change nothing"
+    );
+    assert!(
+        restore_cave_spawn_times(&mut configured, &[class("BP_Unknown", &[1.0])]),
+        "an unmatched class with times still runs the restored event"
+    );
+    assert!(!restore_cave_spawn_times(
+        &mut configured,
+        &[class("BP_Wolf", &[])]
+    ));
+    assert!(!restore_cave_spawn_times(&mut configured, &[]));
+}

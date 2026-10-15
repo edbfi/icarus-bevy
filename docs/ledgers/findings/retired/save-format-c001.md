@@ -4,7 +4,7 @@ Rows retired from [the active ledger](../save-format-c001.md): superseded by a s
 execution receipts, or historical session state. Full text is kept and IDs stay
 permanent; cite the superseding row where one exists.
 
-Last reconciled: 2026-10-14
+Last reconciled: 2026-10-15
 
 | ID | Claim | Kind | Evidence | Scope and limits | Unknowns | Status |
 | --- | --- | --- | --- | --- | --- | --- |
@@ -91,3 +91,7 @@ Last reconciled: 2026-10-14
 | F-464 | Fresh data replay exits 1 at caller pretty-JSON 64 KiB cap before result publication | observed | rejected-case; M-264 | high; 52-pin retained 707 code/36 metadata case; authored source checks pass; actual result/count not retained, no model qualification or proof; failed receipt preserved; compact sibling needs review/fresh scope | U-041 | superseded-by F-477 |
 | F-466 | Compact caller passes 115 VM/39 static/3 delta checks and 51 authored/11 independent serialization cases | observed | source-review; M-267 | high; serialization-only 52-pin sibling; 64 KiB unchanged; exact JSON value preservation; setup identical/scope path changed; failed authored size oracles retained; no actual semantics proof | U-041 | superseded-by F-477 |
 | F-467 | Fresh compact and independent replays exit 0; common callee conditional model completes while constructors stop at XMM1 COPY | observed | controlled-partial; M-268 | high; 52 pins/707 code+36 metadata; 40736-byte result; 229 source checks; exact two index 1 stops; common 1 return/9 stores/2 calls/24 states reported, semantics unproved; all 17 proofs false | U-041 | superseded-by F-477 |
+| F-510 | Client C001 primary vftable +0xa0/+0x488/+0x4a0 hold the base recorder's Serialize(FArchive&), C001's version-upgrade hook (FArchive&) and its state restore (recorder blob, FTransform); the super call is that base's default ctor | observed | static-bytes; M-310 | high; client slots only; server slots unread, positional by F-509 | U-041 | superseded-by F-669 |
+| F-532 | Client C001 load path has no extra archive branch: Serialize (+0xa0) calls UActorComponent::Serialize then virtual +0x488, a 24-byte call-free version hook; restore (+0x4a0) calls the base recorder's restore then virtual +0x4b0, C001's apply-transform; +0x4a8 is make-relative-transform | observed | static-bytes; M-348 | high; client; server by F-512 | U-041 | superseded-by F-669 |
+| F-512 | Server C001 slots +0xa0/+0x488/+0x4a0 hold 0x1418aaf70/0x14189d380/0x1418a9bb0, matching the client's named Serialize, version-upgrade hook and state restore (59/24/195 B) except one call (the F-344 chain) and RIP constants; C028 inherits the latter two (F-360) | inferred | static-bytes; M-312, M-313 | high; positional; static image data, not runtime vptrs | U-041 | superseded-by F-670 |
+| F-533 | Server C001 slot +0x4b0 (0x141887d20) matches the client's apply-transform (121 B) except one RIP constant displacement; the server base restore 0x1418a9c80 (696 B) and client 0x1418ae6c0 (507 B) differ in record length and stay uncompared | observed | static-bytes; M-349, M-350 | high; positional; base restore correspondence open | U-041 | superseded-by F-670 |
