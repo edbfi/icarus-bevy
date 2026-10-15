@@ -33,8 +33,8 @@ network-name form through the package map, and Str items are archive strings
 fields, quantized vectors, NetGUID references and a bone name (F-597).
 Text items take the shared FText serializer at the archive version client
 bunches are built with, 522, and every history body but TextGenerator is
-read (F-613, F-614); Base histories add their namespace, key and source
-(F-617), and the codec re-encodes them (F-618). These
+read (F-624, F-614); Base histories add their namespace, key and source
+(F-624), and the codec re-encodes them (F-618). These
 are
 client-build observations, with the older server's content-block and NetGUID
 writers mirroring them (F-581) and composing actor bunches in the client's
@@ -42,7 +42,7 @@ read order (F-610); nothing is wire-validated.
 
 ## Open
 
-- Text custom-version gates and Name routing (F-619) and other native
+- Text custom-version gates and Name routing (F-624) and other native
   structs (U-064); server send policy (U-044).
 - Tag replication by net index would need an identical tag table (F-583, U-065).
 - Rep handles follow each class's replicated-property list (F-609), so a server

@@ -118,12 +118,12 @@ dormancy, channel close reasons and every server-side writer.
   reach the shared archive FText serializer, which net archives do not
   override: from archive version `0x170` a 4-byte flags word, then a
   history-type byte (0 to 12 select per-history bodies, 0xFF none); the
-  codec reads and re-encodes Base histories only (F-613, F-618). Client net archives carry UE4
+  codec reads and re-encodes Base histories only (F-624, F-618). Client net archives carry UE4
   version 522, so the version gates below pass (F-614). Each history writes
   its own type byte on save, then:
   - 0 Base: no body of its own; the display-string step that follows any
     body sends its namespace and key as text keys, then the source string
-    (F-617). A text key is an archive-string frame, but its saver writes an
+    (F-624). A text key is an archive-string frame, but its saver writes an
     empty key as count 1 and a terminator. Other histories' display-string
     steps send nothing. 0xFF none: custom-version gated, a
     culture-invariant flag and optional string.
@@ -141,8 +141,8 @@ dormancy, channel close reasons and every server-side writer.
   - 10 Transform: a nested Text and a transform byte. 11 StringTableEntry:
     a table Name, then a key string. 12 TextGenerator: a generator-type
     Name, then, unless it is None, a byte array of the generator's own
-    payload (F-619).
-  Text callees (F-619): an argument value is a type byte, then an int64
+    payload (F-624).
+  Text callees (F-624): an argument value is a type byte, then an int64
   (0, 1), a float (2), a double (3), a nested Text (4) or nothing. Number
   options are an AlwaysSign bool when a custom version exceeds 0x14, a
   UseGrouping bool, a rounding byte and four int32 digit bounds; bools are
@@ -150,7 +150,7 @@ dormancy, channel close reasons and every server-side writer.
   argument values. Argument data is a name string, a type byte (Text is
   implied below custom version 5 on load), then an int32 (0), a float (2),
   a nested Text (4) or a gender byte (5). A loading archive takes custom
-  versions from the client's registry of current versions (F-620), whose
+  versions from the client's registry of current versions (F-624), whose
   values are unread, so those gates and the none form stay open; Names here use archive slot 0x140, whose net
   routing is unread (U-064).
 - Network names (F-575): a hardcoded bit; when set, the hardcoded name index
