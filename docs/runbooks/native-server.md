@@ -36,7 +36,7 @@ Configuration precedence is CLI → TOML → defaults. Unknown fields and invali
 limits are rejected. Relative paths resolve from the working directory.
 Config inputs must resolve to an opened regular file of at most64KiB; regular
 symlinks are supported. FIFO and oversized inputs fail before runtime state opens
-(F-443).
+(F-671).
 `check-config` prints effective configuration without creating the data directory.
 Use `--help` on each subcommand for supported overrides.
 
@@ -94,7 +94,7 @@ Do not use it to migrate a real world yet.
 `inspect-save --source PATH` opens nonblocking and admits only an opened regular
 file; regular symlinks remain supported in every mode. Path-swap/FIFO regression
 controls qualify this boundary, without a deadline for arbitrary regular-file
-latency (F-468). It performs bounded, read-only
+latency (F-671). It performs bounded, read-only
 [experimental envelope checks](../specs/save-format/prospect-envelope.md). It reports sizes
 and integrity results without extracting the payload or importing a world.
 The optional `--inner-tags` also checks [root property framing](../specs/save-format/tagged-properties.md)

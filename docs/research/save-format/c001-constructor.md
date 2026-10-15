@@ -53,12 +53,12 @@ constructor apart from image displacements, so the two stored tables are C001's
 primary and IInterface_AssetUserData vftables and the common callee is its base
 recorder's default constructor (F-509). In the client those vftable slots at the
 three save-path offsets are the base's Serialize, C001's version-upgrade hook
-and its state restore (F-510). The server's three slot targets match those
-functions, and C028 inherits the last two (F-512). The static bridge is thus
+and its state restore (F-669). The server's three slot targets match those
+functions, and C028 inherits the last two (F-670). The static bridge is thus
 named; runtime dispatch and register preservation remain conditions. Its load
 path reads no archive beyond the base recorder's restore and Serialize: the
-version hook is call-free and the restore then only applies a transform (F-532,
-F-533).
+version hook is call-free and the restore then only applies a transform (F-669,
+F-670).
 
 ## Open
 

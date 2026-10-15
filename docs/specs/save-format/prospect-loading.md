@@ -93,7 +93,7 @@ Recorders and base component
   Original direct-buffer path accepts any nonzero; its fallback flags values > 1
   (F-346). Post-load `+0x488` base target is return-only; derived classes may
   override (F-347). Client PDB names agree: on C001 `+0x4a0` is the state
-  restore, `+0xa0` Serialize(FArchive&), `+0x488` a version-upgrade hook (F-510).
+  restore, `+0xa0` Serialize(FArchive&), `+0x488` a version-upgrade hook (F-669).
 
 C013 (singleton)
 
@@ -184,43 +184,15 @@ Acceptance conditions for any importer
 - C028/C034/C009 struct and array contracts are conditional older-build framing
   contracts, not fixed disk widths; the 16/12-byte transfers assume successful
   archive reads (F-655, F-369, F-664, F-172).
-- C001 (four records): native getter `0x1419fe200`, callback `0x1419fe870`
-  (`[0x1419fe870, 0x1419fe9a1)`, 305 bytes), reflection getter `0x141a00220`,
-  candidate constructor `0x141788530` (`[0x141788530, 0x141788658)`, 296 bytes);
-  one DEFAULT non-call reference from `0x14655d468` (F-032, F-034, F-040, F-121,
-  F-122, F-401, F-402). Listing queries were rejected at `0x1419fe870` (F-014, F-019).
-  Exact windows now decode as 51/49 instructions; both call `0x1418824d0` and
-  share 40 typed post-call instructions, including a local store of
-  `0x1449d9f90` via RBX (F-409, F-410). Receiver continuity across the call and
-  archive slots remain unqualified; the common callee decodes all 106 physical
-  bytes as 24 instructions without function or receiver proof (F-416). No C001
-  payload is parsed. Nested direct calls at `0x142174bc0`/`0x143453c00` have
-  measured 196/217-byte intervals, decoded as 45/48 instructions without
-  complete-function or receiver proof (F-419, F-420, F-424). Declared local CFG
-  replay qualifies 93 edges, ten opaque calls and three return sites; both graphs
-  remain open and receiver preservation unproved (F-426).
-  Callback/candidate replay qualifies 99 local edges, two common-callee calls and
-  two returns, with both graphs likewise open (F-430).
-  Three 12-byte v1 unwind records declare register 3 pushes ending at offset 2 and
-  fixed 48/32/48-byte allocations ending at offset 6. Each has flags 2 with an opaque
-  handler RVA. Metadata intent qualifies; handler data is unread and local
-  stack/receiver joins remain open (F-434).
-  Installed-language query qualifies RBX/RCX/RSP storage offsets and 32-bit
-  variants; global/subbyte aliases and live values remain unproved (F-436).
-  Conditional frame models are source-qualified, including opaque handler
-  headers (F-437, F-438). Four spaces use byte units; RAM/constant addresses have
-  64 bits and register/unique addresses 32 bits, separate from register value widths
-  (F-439). Exact input/prolog joins qualify. Earlier bitvector COPY-width stops
-  lack locations; later siblings report exact opcode 26/partial-COPY/vector-COPY/
-  byte-LOAD stops. Seven low32 register pairs and nine opcode constants join without
-  independent reachability. Calls, returns, receiver/escape/ABI/ownership proof
-  remain open (F-440 to F-460). Opaque-data/vector sources qualify; fresh caller
-  rejects pretty-output cap before publication, with no retained model result
-  (F-461 to F-464). Compact replay reports common conditional completion and
-  constructor XMM1-quarter stops; the qualified two-vector case then stops both
-  constructors at a narrow RAX low16 read (F-465 to F-467, F-477). Client
-  correspondence names both tables as C001's vftables and its server slots
-  as those functions (F-509, F-512).
+- C001 (four records): native getter `0x1419fe200`, construction callback
+  `0x1419fe870` (305 bytes) and candidate constructor `0x141788530` (296
+  bytes) start validated exception-metadata intervals; the getter has one
+  retained non-call reference (F-471, F-472). Client correspondence names both
+  tables as C001's vftables and its server slots as those functions (F-509,
+  F-670). Decoding, frame replay and where each case stops are in the
+  [C001 digest](../../research/save-format/c001-constructor.md) (F-469 to
+  F-477); receiver continuity and archive-slot ownership stay unproved (U-041).
+  No C001 payload is parsed.
 
 ## Open questions
 

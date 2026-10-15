@@ -24,11 +24,11 @@ provisional 30 Hz (F-227, F-215) and persists checksummed native generations
 with atomic manifest publication and two-generation recovery (F-228, F-229);
 native snapshot v1 is not the ICARUS save format (F-216). Capture rejects
 incomplete domain state before publication (F-482), stale snapshots and
-save-worker loss stop safely (F-232), and signals trigger a final save within a
-bounded shutdown (F-230, F-233).
+save-worker loss stop safely (F-672), and signals trigger a final save within a
+bounded shutdown (F-230, F-672).
 
 Reproduced faults are fixed for FIFO manifests, generations, configs and
-save-inspection inputs (F-405, F-443, F-468), malformed manifest digests
+save-inspection inputs (F-671), malformed manifest digests
 (F-417), positional JSON arrays (F-428), current-generation read errors (F-452)
 and diagnostics that leaked supplied strings (F-412, F-423); real ENOSPC and
 EACCES faults keep acknowledged state (F-239). Synthetic runs pass at 100,000
