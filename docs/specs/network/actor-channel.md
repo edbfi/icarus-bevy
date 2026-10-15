@@ -15,6 +15,10 @@ dormancy, channel close reasons and every server-side writer.
 
 ## Confirmed
 
+- NetGUID references (F-572): a packed GUID value, 0 meaning none and
+  recursion capped at 16 levels; GUID 1 or an export-enabled archive adds an
+  export-flags byte: bit 0 a recursive outer GUID and a path string, bit 2 a
+  4-byte network checksum, bit 1 no-load. Nonzero even GUIDs are dynamic.
 - Open bunch (F-569): `SerializeNewActor` reads the actor NetGUID through the
   package map. For a dynamic GUID (nonzero, even) it then reads the archetype
   NetGUID, a level reference gated on archive flags, and four optional blocks
@@ -53,4 +57,4 @@ dormancy, channel close reasons and every server-side writer.
 ## Evidence
 
 - Symbols M-420 (failed-closed attempts M-421, M-422); pseudocode M-423 to
-  M-430.
+  M-431.
