@@ -5,6 +5,7 @@
 //! neither. None of these primitives implements game admission.
 
 pub mod actor_channel;
+pub mod admission;
 pub mod archive;
 pub mod component;
 pub mod control;
