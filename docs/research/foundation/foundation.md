@@ -45,7 +45,8 @@ sidecar and reload byte-identically; later saves stay small (F-567). A seeded wo
 runs 180 autosaves without deadline misses (F-584). Randomized mutations
 never panic preservation or the replication codecs, accepted inputs re-encode
 exactly, and the streaming verifier matches the tree decoder (F-604, F-605);
-mutated datagrams and control bodies never panic their readers (F-606).
+mutated datagrams and control bodies never panic their readers or the peer
+lab, whose table stays within capacity (F-606, F-607).
 Bounded header, component, struct-array and Int-array readers are tested
 (F-246 to F-249, F-200, F-207). The production run command has no game listener
 (F-240).
