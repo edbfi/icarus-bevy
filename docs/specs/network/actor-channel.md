@@ -135,6 +135,10 @@ dormancy, channel close reasons and every server-side writer.
 
 ## Candidate
 
+- Server send order (F-610): the older server writes an actor bunch in the
+  order the client reads it: the spawn record (when the initial and
+  locally opened flags are set) and an actor hook that is empty in the base
+  class, the actor's property block, then subobject blocks.
 - The older server's `SerializeNewActor` (M-460) makes the same three object
   references and single rotation bit as the client's; its quantizers are
   inlined and unread.
@@ -159,4 +163,5 @@ dormancy, channel close reasons and every server-side writer.
   vectors M-477 to M-491; tags M-493 to M-495; Name and Str routing M-497 to
   M-510; hit results M-468, M-512 to M-521; soft objects M-445, M-523 to
   M-529; Text M-531 to M-536, M-545 to M-547; codec tests M-475, M-476, M-492, M-496,
-  M-511, M-522, M-530, M-548; layout source M-552 to M-555.
+  M-511, M-522, M-530, M-548; layout source M-552 to M-555; send order M-461, M-556 to
+  M-560.

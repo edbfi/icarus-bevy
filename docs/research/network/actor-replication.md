@@ -33,7 +33,8 @@ network-name form through the package map, and Str items are archive strings
 fields, quantized vectors, NetGUID references and a bone name (F-597). These
 are
 client-build observations, with the older server's content-block and NetGUID
-writers mirroring them (F-581); nothing is wire-validated.
+writers mirroring them (F-581) and composing actor bunches in the client's
+read order (F-610); nothing is wire-validated.
 
 ## Open
 
