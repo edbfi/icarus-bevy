@@ -47,7 +47,13 @@ dormancy, channel close reasons and every server-side writer.
   engine net version 16); Enum a width derived from its maximum (split at
   version 12); object references a NetGUID; structs with the native
   net-serialize flag their own serializer, other structs and arrays are
-  flattened by the layout; soft objects the archive soft-path operator.
+  flattened by the layout; soft objects the archive soft-path operator. Other
+  types (Str, Name, Text) use the base item path, which forwards to the
+  property's ordinary item serializer (F-575).
+- Network names (F-575): a hardcoded bit; when set, the hardcoded name index
+  (packed at engine net version 6 or later, otherwise bounded by 411; indices
+  above 702 are rejected), which senders use only for indices up to 410; when
+  clear, an archive string and a 4-byte number.
 - Compressed rotator (F-573): pitch, yaw and roll in that order, each a bit set
   when its 16-bit quantized angle is nonzero and then, if set, that 2-byte
   value; quantization is `angle * 65536 / 360` rounded, decoding multiplies by
@@ -56,8 +62,9 @@ dormancy, channel close reasons and every server-side writer.
 ## Candidate
 
 - The block grammar, spawn order and handle stream match the stock engine
-  shape of this generation; Str, Name and Text items, the exact enum-width
-  formulas and individual native struct serializers are unread (U-064).
+  shape of this generation; whether Name items reach the network-name path,
+  the exact enum-width formulas and native struct serializers are unread
+  (U-064).
 
 ## Open questions
 
@@ -68,4 +75,4 @@ dormancy, channel close reasons and every server-side writer.
 
 - Symbols M-420 (failed-closed attempts M-421, M-422); pseudocode M-423 to
   M-431, M-433; constants M-432, M-435 to M-437 (scope deviation M-434); net items M-438 to
-  M-445.
+  M-449.
