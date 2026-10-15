@@ -8,8 +8,8 @@ use icarus_bevy::{
     config::{ConfigOptions, ServerConfig},
     persistence::{SaveWorker, SnapshotStore},
     simulation::{
-        DomainId, EntityRecord, Position, SimulationClock, TICK_HISTOGRAM_BUCKETS, TickMetrics,
-        WorldSnapshot, build_app, capture,
+        DomainId, EntityRecord, Position, RunClock, SimulationClock, TICK_HISTOGRAM_BUCKETS,
+        TickMetrics, WorldSnapshot, build_app, capture,
     },
 };
 
@@ -712,4 +712,22 @@ fn worker_reports_write_failure_and_can_retry_without_false_receipt() {
     let manifest: serde_json::Value =
         serde_json::from_slice(&fs::read(directory.path().join("manifest.json")).unwrap()).unwrap();
     assert_eq!(manifest["previous"]["number"], 1);
+}
+
+#[test]
+fn compressed_run_clock_counts_exact_simulated_time() {
+    let clock = RunClock {
+        compressed: true,
+        start: Instant::now(),
+        start_tick: 100,
+        tick_hz: 30,
+    };
+    assert_eq!(clock.elapsed(100), Duration::ZERO);
+    // 30 Hz has no exact nanosecond interval; summing a truncated one would drift.
+    assert_eq!(clock.elapsed(101), Duration::from_nanos(33_333_333));
+    assert_eq!(
+        clock.elapsed(100 + 30 * 259_200),
+        Duration::from_secs(259_200)
+    );
+    assert_eq!(clock.elapsed(u64::MAX), Duration::from_nanos(u64::MAX));
 }

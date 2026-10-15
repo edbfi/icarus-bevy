@@ -15,7 +15,7 @@ use clap::{Parser, Subcommand};
 use icarus_bevy::{
     config::ConfigOptions,
     persistence::{SaveReceipt, SaveWorker, SaveWorkerDisconnected, SnapshotStore},
-    simulation::{SimulationClock, TickMetrics, build_app, capture},
+    simulation::{RunClock, SimulationClock, TickMetrics, build_app, capture},
 };
 use serde_json::json;
 
@@ -322,27 +322,6 @@ fn saved(receipt: SaveReceipt, submitted: Option<Instant>) {
         json!({"event": "save_committed", "generation": receipt.generation, "tick": receipt.tick,
         "save_latency_micros": submitted.map(|time| time.elapsed().as_micros())})
     );
-}
-
-/// Elapsed time on the run's clock: wall time, or exact simulated time when
-/// compressed (the truncated tick interval would drift).
-struct RunClock {
-    compressed: bool,
-    start: Instant,
-    start_tick: u64,
-    tick_hz: u32,
-}
-
-impl RunClock {
-    fn elapsed(&self, tick: u64) -> Duration {
-        if self.compressed {
-            let nanos =
-                u128::from(tick - self.start_tick) * 1_000_000_000 / u128::from(self.tick_hz);
-            Duration::from_nanos(u64::try_from(nanos).unwrap_or(u64::MAX))
-        } else {
-            self.start.elapsed()
-        }
-    }
 }
 
 /// Autosave bookkeeping shared by the loop and a compressed run's wait.

@@ -18,7 +18,7 @@ use icarus_bevy::{
     metrics::{GrowthTrend, LatencyHistogram},
     persistence::{SaveReceipt, SaveWorker, SnapshotStore},
     simulation::{
-        DomainId, EntityRecord, Position, SimulationClock, SimulationSet, TickMetrics,
+        DomainId, EntityRecord, Position, RunClock, SimulationClock, SimulationSet, TickMetrics,
         WorldSnapshot, build_app, capture,
     },
 };
@@ -88,27 +88,6 @@ impl SaveObserver {
             json!({"event":"save_committed", "generation":receipt.generation,
             "tick":receipt.tick, "observed_latency_micros":elapsed.as_micros()})
         );
-    }
-}
-
-/// Elapsed time on the run's clock: wall time, or simulated ticks when compressed.
-/// Simulated time is exact: the truncated tick interval would drift.
-struct RunClock {
-    compressed: bool,
-    start: Instant,
-    start_tick: u64,
-    tick_hz: u32,
-}
-
-impl RunClock {
-    fn elapsed(&self, tick: u64) -> Duration {
-        if self.compressed {
-            let nanos =
-                u128::from(tick - self.start_tick) * 1_000_000_000 / u128::from(self.tick_hz);
-            Duration::from_nanos(u64::try_from(nanos).unwrap_or(u64::MAX))
-        } else {
-            self.start.elapsed()
-        }
     }
 }
 
