@@ -81,7 +81,9 @@ launcher does not have yet.
 `--save-load` loads one disposable save copy. The session adds `save-load` to
 `allowed_modes` and binds `save_input` (a case-local `<prospect>.json`, letters,
 digits, `_` and `-`), its `save_input_sha256` and
-`shutdown_if_not_joined_seconds` (0 to 780). The launcher copies the file into
+`shutdown_if_not_joined_seconds` (0 to 780; the dedicated-server wiki gives 0
+as "as soon as possible" and negative values as never, which the launcher
+rejects). The launcher copies the file into
 the run's own `home/Icarus/Saved/PlayerData/DedicatedServer/Prospects/`,
 re-verifies the copy's digest, writes a `ServerSettings.ini` with
 `ResumeProspect=False` and both shutdown timers set to that value, and adds
