@@ -37,7 +37,7 @@ Last reconciled: 2026-10-15
 | U-028 | How does project save-archive performance compare with the original server? | low | open | none stated | F-142 |  |
 | U-029 | Do original EOF policy, numeric semantics and newer-build equivalence hold for C034 Struct/Float values? | medium | open | none stated | F-191, F-192 |  |
 | U-030 | Is client aggregate-size computation (32-bit end-minus-start) safe for large spans? | low | open | none stated | F-193 |  |
-| U-031 | Do the bounded client static correspondences hold for the dedicated server (runtime class selection, init, registration replacement)? | high | open | none stated | F-193, F-194, F-214 |  |
+| U-031 | Do the bounded client static correspondences hold for the dedicated server (runtime class selection, init, registration replacement)? | high | open | none stated | F-193, F-659, F-214 |  |
 | U-032 | What are C009 inherited child values and string/numeric/enum meanings, and how does runtime restoration use them? | medium | open | explicit bounded array API and validation for CA01 child parsing | F-199, F-202, F-203 |  |
 | U-033 | How are C034 internal names constructed, and what are original normalization/failure behaviors? | low | open | none stated | F-197 |  |
 | U-034 | Is the client build publisher-authentic with complete valid symbols, and does it match the save provenance? | medium | open | none stated | F-210 |  |
