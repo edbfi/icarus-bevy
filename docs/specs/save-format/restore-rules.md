@@ -35,7 +35,8 @@ data-table row meanings (F-660).
 
 ## Open questions
 
-- The clocks behind cooldown and game time, and owner-side save code (U-020).
+- Cooldowns read world seconds plus a game-state offset (F-665); the game
+  time's clock and script-side owner saves stay open (U-020).
 
 ## Evidence
 
