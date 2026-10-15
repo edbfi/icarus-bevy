@@ -25,8 +25,9 @@ access deferred (F-421).
 What the foundation does is in the
 [foundation digest](research/foundation/foundation.md). Research state is in the
 [C001](research/save-format/c001-constructor.md),
-[save-class](research/save-format/save-class-audits.md) and
-[control-store](research/network/control-stores.md) digests.
+[save-class](research/save-format/save-class-audits.md),
+[control-store](research/network/control-stores.md) and
+[actor-replication](research/network/actor-replication.md) digests.
 
 ## Milestones
 
