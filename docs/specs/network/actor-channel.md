@@ -67,7 +67,19 @@ dormancy, channel close reasons and every server-side writer.
   16-bit values biased by 32768 and multiplied by an unread constant; gameplay
   tag containers an empty bit, a count byte and packed tags; hit results a
   flags byte followed by those vectors and flag-gated fields. The movement
-  struct and the 10/100 vector quantizers are not public symbols.
+  struct and the 10/100 vector quantizers have no class-method symbols; they
+  live in their `TCppStructOps` instances.
+- Movement struct (F-588, F-589), client and server alike: two flag bits;
+  location at the location level; rotation as bytes at rotation level 0, as
+  the compressed rotator at 1, absent otherwise; linear velocity at the
+  velocity level; angular velocity at that level only when flag bit 1 is set.
+  Vector levels 0, 1 and 2 cap the bit count below 24, 27 and 30 and scale by
+  1, 0.1 and 0.01 (levels other than 1 and 2 behave as 0);
+  `FVector_NetQuantize10` and `100` cap below 24 and 30 with 0.1 and 0.01.
+  The levels are struct fields and never cross the wire. The byte rotator is
+  per axis a nonzero bit, then a byte of `round(angle * 256 / 360)`, decoded
+  times `360 / 256`. `experimental::rep_layout` re-encodes all of these
+  (F-590).
 - Gameplay tags (F-583): sent as network names unless the tag manager's
   fast-replication flag is set; then as a net index into the runtime tag
   table, which both sides must share in the same order.
@@ -92,8 +104,8 @@ dormancy, channel close reasons and every server-side writer.
 
 ## Open questions
 
-- Property encodings beyond the read items, the movement struct and tag
-  packing (U-064).
+- Property encodings beyond the read items, hit results and tag packing
+  (U-064); which levels each movement property uses (a property default).
 - Server writers for these records and their byte order and bounds (U-044).
 - Gameplay-tag replication mode and an independent tag table (U-065).
 
@@ -102,4 +114,5 @@ dormancy, channel close reasons and every server-side writer.
 - Symbols M-420 (failed-closed attempts M-421, M-422); pseudocode M-423 to
   M-431, M-433; constants M-432, M-435 to M-437 (scope deviation M-434); net items M-438 to
   M-449; server writers M-455 to M-462;
-  server struct items M-463 to M-470.
+  server struct items M-463 to M-470; handle walk M-428; movement and scaled
+  vectors M-477 to M-491; codec tests M-475, M-476, M-492.

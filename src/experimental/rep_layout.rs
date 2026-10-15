@@ -4,7 +4,8 @@
 //! Static observations only: the client handle stream (F-571), NetGUID
 //! references (F-572), the compressed rotator (F-573), client property net items
 //! (F-574), client network names (F-575) and the older server's native struct
-//! items (F-582). Nothing here is wire-validated, no original layout is known
+//! items (F-582), the movement struct and its quantization levels (F-588,
+//! F-589). Nothing here is wire-validated, no original layout is known
 //! or shipped, and no property state, object resolution, admission or gameplay
 //! occurs. Writers mirror the readers for round-trip research only.
 //!
@@ -27,6 +28,13 @@
 //! - [`RepCommand::VectorQuantizeNormal`]: three 16-bit values biased by 32768;
 //!   the scale constant is unread, so only raw values are kept (F-582, server
 //!   writer);
+//! - [`RepCommand::VectorQuantize10`] and [`RepCommand::VectorQuantize100`]:
+//!   the same shape with bit counts below 24 and 30, read times 0.1 and 0.01
+//!   (F-589);
+//! - [`RepCommand::Movement`]: `FRepMovement` (F-588): two flag bits, location,
+//!   rotation, linear velocity and, when flag bit 1 is set, angular velocity,
+//!   each at a quantization level the layout supplies, because the levels are
+//!   struct fields and never cross the wire (F-589);
 //! - [`RepCommand::Rotator`]: the compressed rotator of
 //!   [`super::actor_channel::read_rotator`] (F-573);
 //! - [`RepCommand::DynamicArray`]: count and nested stream (F-571);
@@ -48,6 +56,11 @@
 //!   capped integer with maximum 411; indices above 702 are rejected (F-575);
 //!   senders use the hardcoded form only up to 410, but the writer accepts every
 //!   readable index so read streams re-encode;
+//! - the byte rotator's byte, like each movement field, follows the packet
+//!   reader's bit order; a level other than 1 or 2 is read as level 0, as the
+//!   observed helper does, so the layout names only the three packings;
+//! - which property uses which movement level is a property default and stays
+//!   caller-supplied;
 //! - whether Name properties reach the network-name path is unread, so the
 //!   caller selects [`RepCommand::NetworkName`] explicitly; whether rotator
 //!   properties reach the compressed-rotator helper is likewise inferred;
@@ -58,7 +71,7 @@
 //!
 //! Unsupported and failing closed: any item the spec does not encode, such as
 //! 32-bit integers, floats, strings, text, soft objects, gameplay tag
-//! containers, hit results, the movement struct and other native structs
+//! containers, hit results and other native structs
 //! ([`UnsupportedItem`]); the optional bit and the preamble before the handle
 //! loop (M-426); non-canonical packed integers (the original reader may be more
 //! lenient), so every accepted stream re-encodes bit-identically.
@@ -79,6 +92,10 @@ use super::packet::{BitReader, BitWriter, MAX_HARDCODED_NAME_INDEX, Payload};
 
 /// Maximum of the capped `FVector_NetQuantize` component bit count (F-582).
 pub const NET_QUANTIZE_BITS_MAX: u32 = 20;
+/// Maximum of the `FVector_NetQuantize10` bit count (F-589).
+pub const NET_QUANTIZE10_BITS_MAX: u32 = 24;
+/// Maximum of the `FVector_NetQuantize100` bit count (F-589).
+pub const NET_QUANTIZE100_BITS_MAX: u32 = 30;
 /// Bias of `FVector_NetQuantizeNormal` components (F-582).
 pub const NET_QUANTIZE_NORMAL_BIAS: u32 = 32_768;
 /// First engine net version whose hardcoded name index is packed (F-575).
@@ -146,8 +163,6 @@ pub enum UnsupportedItem {
     GameplayTagContainer,
     /// Flags byte and gated fields (F-582); the gated layout is unread.
     HitResult,
-    /// Not a public symbol (F-582).
-    Movement,
     /// Any other native net-serialize struct.
     OtherNativeStruct,
 }
@@ -167,8 +182,16 @@ pub enum RepCommand {
     Object,
     NetworkName,
     VectorQuantize,
+    VectorQuantize10,
+    VectorQuantize100,
     VectorQuantizeNormal,
     Rotator,
+    /// `FRepMovement` at the property's quantization levels (F-588, F-589).
+    Movement {
+        location: MovementLevel,
+        velocity: MovementLevel,
+        rotation: RotationLevel,
+    },
     /// The element layout, addressed by the nested stream's handles.
     DynamicArray {
         element: Vec<RepCommand>,
@@ -181,20 +204,200 @@ pub enum RepCommand {
     Unsupported(UnsupportedItem),
 }
 
-/// `FVector_NetQuantize` integers as read; no float is applied (F-582).
+/// A capped-bit-count vector packing (F-582, F-589): the bit-count maximum and
+/// the divisor the reader scales the unbiased integers by.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum VectorPacking {
+    /// `FVector_NetQuantize`: below 20, unscaled.
+    NetQuantize,
+    /// `FVector_NetQuantize10`: below 24, divided by 10.
+    NetQuantize10,
+    /// `FVector_NetQuantize100`: below 30, divided by 100.
+    NetQuantize100,
+    /// Movement level 0: below 24, unscaled.
+    MovementWhole,
+    /// Movement level 1: below 27, divided by 10.
+    MovementTenths,
+    /// Movement level 2: below 30, divided by 100.
+    MovementHundredths,
+}
+
+impl VectorPacking {
+    /// The bit count is below this value.
+    pub fn bits_max(self) -> u32 {
+        match self {
+            Self::NetQuantize => NET_QUANTIZE_BITS_MAX,
+            Self::NetQuantize10 | Self::MovementWhole => NET_QUANTIZE10_BITS_MAX,
+            Self::MovementTenths => 27,
+            Self::NetQuantize100 | Self::MovementHundredths => NET_QUANTIZE100_BITS_MAX,
+        }
+    }
+
+    /// The reader multiplies by the reciprocal of this divisor (F-589).
+    pub fn divisor(self) -> u32 {
+        match self {
+            Self::NetQuantize | Self::MovementWhole => 1,
+            Self::NetQuantize10 | Self::MovementTenths => 10,
+            Self::NetQuantize100 | Self::MovementHundredths => 100,
+        }
+    }
+}
+
+/// A movement vector quantization level (F-589); the value is a struct field
+/// and never crosses the wire.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MovementLevel {
+    /// Level 0, and every level other than 1 and 2.
+    Whole,
+    Tenths,
+    Hundredths,
+}
+
+impl MovementLevel {
+    pub fn packing(self) -> VectorPacking {
+        match self {
+            Self::Whole => VectorPacking::MovementWhole,
+            Self::Tenths => VectorPacking::MovementTenths,
+            Self::Hundredths => VectorPacking::MovementHundredths,
+        }
+    }
+}
+
+/// A movement rotation quantization level (F-588).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RotationLevel {
+    /// Level 0: the byte rotator.
+    Bytes,
+    /// Level 1: the 16-bit compressed rotator (F-573).
+    Shorts,
+    /// Any other level: no rotation is written.
+    Omitted,
+}
+
+/// Byte rotator (F-589): per axis, `None` when the bit is clear, else the raw
+/// byte. `Some(0)` is preserved as read, although the observed writer sets the
+/// bit only for nonzero bytes.
+#[derive(Clone, Copy, Default, PartialEq, Eq)]
+pub struct ByteRotator {
+    pub pitch: Option<u8>,
+    pub yaw: Option<u8>,
+    pub roll: Option<u8>,
+}
+
+/// `round(degrees * 256 / 360)` modulo 256, rounding half up (inferred, F-589).
+pub fn quantize_byte_angle(degrees: f32) -> Result<u8> {
+    ensure!(degrees.is_finite(), "rotator angle must be finite");
+    let scaled = (degrees * 256.0 / 360.0 + 0.5).floor();
+    ensure!(
+        scaled.abs() < 2f32.powi(62),
+        "rotator angle is out of the quantization range"
+    );
+    Ok((scaled as i64 & 0xff) as u8)
+}
+
+/// `value * 360 / 256` degrees (F-589).
+pub fn dequantize_byte_angle(value: u8) -> f32 {
+    f32::from(value) * 360.0 / 256.0
+}
+
+impl ByteRotator {
+    /// Canonical encoding: an axis is present exactly when its byte is nonzero.
+    pub fn from_degrees(pitch: f32, yaw: f32, roll: f32) -> Result<Self> {
+        let axis =
+            |degrees| quantize_byte_angle(degrees).map(|value| (value != 0).then_some(value));
+        Ok(Self {
+            pitch: axis(pitch)?,
+            yaw: axis(yaw)?,
+            roll: axis(roll)?,
+        })
+    }
+
+    /// Pitch, yaw and roll in degrees; absent axes are zero.
+    pub fn degrees(&self) -> [f32; 3] {
+        self.axes()
+            .map(|axis| dequantize_byte_angle(axis.unwrap_or(0)))
+    }
+
+    fn axes(&self) -> [Option<u8>; 3] {
+        [self.pitch, self.yaw, self.roll]
+    }
+
+    pub fn axes_present(&self) -> usize {
+        self.axes().iter().filter(|axis| axis.is_some()).count()
+    }
+}
+
+impl std::fmt::Debug for ByteRotator {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("ByteRotator")
+            .field("axes_present", &self.axes_present())
+            .finish()
+    }
+}
+
+/// A movement rotation as read at its level.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum MovementRotation {
+    Bytes(ByteRotator),
+    Shorts(CompressedRotator),
+}
+
+impl std::fmt::Debug for MovementRotation {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Bytes(rotator) => formatter.debug_tuple("Bytes").field(rotator).finish(),
+            Self::Shorts(rotator) => formatter.debug_tuple("Shorts").field(rotator).finish(),
+        }
+    }
+}
+
+/// `FRepMovement` as read (F-588); integers only, no float is applied.
+#[derive(Clone, PartialEq, Eq)]
+pub struct RepMovement {
+    /// The two flag bits, below 4; bit 1 gates the angular velocity (F-588).
+    /// The stock layout names bit 0 the physics-sleep flag and bit 1 the
+    /// replicate-physics flag (inferred).
+    pub flags: u8,
+    pub location: QuantizedVector,
+    /// Present exactly when the rotation level is bytes or shorts.
+    pub rotation: Option<MovementRotation>,
+    pub linear_velocity: QuantizedVector,
+    /// Present exactly when flag bit 1 is set.
+    pub angular_velocity: Option<QuantizedVector>,
+}
+
+/// Flag bit that gates the angular velocity (F-588).
+pub const MOVEMENT_ANGULAR_FLAG: u8 = 2;
+
+impl std::fmt::Debug for RepMovement {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("RepMovement")
+            .field("rotation", &self.rotation)
+            .field("angular_velocity", &self.angular_velocity.is_some())
+            .finish_non_exhaustive()
+    }
+}
+
+/// Capped-bit-count vector integers as read; no float is applied (F-582,
+/// F-589).
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub struct QuantizedVector {
-    /// The capped bit-count field, below 20.
+    /// The capped bit-count field, below its packing's maximum.
     pub bits: u32,
     /// Each below `1 << (bits + 2)`.
     pub components: [u32; 3],
 }
 
 impl QuantizedVector {
-    /// Components minus the bias `1 << (bits + 1)`; the server writer applies
-    /// no scale (F-582). Defined for valid bit counts only.
+    /// Components minus the bias `1 << (bits + 1)`, before the packing's
+    /// divisor (F-582, F-589). Defined for valid bit counts only.
     pub fn unbiased(&self) -> [i64; 3] {
-        let bias = 1i64 << (self.bits.min(NET_QUANTIZE_BITS_MAX) + 1);
+        let bias = 1i64 << (self.bits.min(NET_QUANTIZE100_BITS_MAX) + 1);
         self.components.map(|value| i64::from(value) - bias)
     }
 }
@@ -282,8 +485,11 @@ pub enum RepValue {
     Object(NetGuidRef),
     NetworkName(NetworkName),
     VectorQuantize(QuantizedVector),
+    VectorQuantize10(QuantizedVector),
+    VectorQuantize100(QuantizedVector),
     VectorQuantizeNormal(QuantizedNormal),
     Rotator(CompressedRotator),
+    Movement(RepMovement),
     DynamicArray(RepArray),
     Opaque(Payload),
 }
@@ -297,8 +503,11 @@ pub enum ItemKind {
     Object,
     NetworkName,
     VectorQuantize,
+    VectorQuantize10,
+    VectorQuantize100,
     VectorQuantizeNormal,
     Rotator,
+    Movement,
     DynamicArray,
     Opaque,
 }
@@ -312,8 +521,11 @@ impl RepValue {
             Self::Object(_) => ItemKind::Object,
             Self::NetworkName(_) => ItemKind::NetworkName,
             Self::VectorQuantize(_) => ItemKind::VectorQuantize,
+            Self::VectorQuantize10(_) => ItemKind::VectorQuantize10,
+            Self::VectorQuantize100(_) => ItemKind::VectorQuantize100,
             Self::VectorQuantizeNormal(_) => ItemKind::VectorQuantizeNormal,
             Self::Rotator(_) => ItemKind::Rotator,
+            Self::Movement(_) => ItemKind::Movement,
             Self::DynamicArray(_) => ItemKind::DynamicArray,
             Self::Opaque(_) => ItemKind::Opaque,
         }
@@ -332,11 +544,20 @@ impl std::fmt::Debug for RepValue {
                 .debug_tuple("VectorQuantize")
                 .field(vector)
                 .finish(),
+            Self::VectorQuantize10(vector) => formatter
+                .debug_tuple("VectorQuantize10")
+                .field(vector)
+                .finish(),
+            Self::VectorQuantize100(vector) => formatter
+                .debug_tuple("VectorQuantize100")
+                .field(vector)
+                .finish(),
             Self::VectorQuantizeNormal(normal) => formatter
                 .debug_tuple("VectorQuantizeNormal")
                 .field(normal)
                 .finish(),
             Self::Rotator(rotator) => formatter.debug_tuple("Rotator").field(rotator).finish(),
+            Self::Movement(movement) => formatter.debug_tuple("Movement").field(movement).finish(),
             Self::DynamicArray(array) => {
                 formatter.debug_tuple("DynamicArray").field(array).finish()
             }
@@ -408,8 +629,16 @@ pub struct EntrySummary {
     pub name: Option<NameSummary>,
     pub vector_bits: Option<u32>,
     pub rotator: Option<RotatorSummary>,
+    pub movement: Option<MovementSummary>,
     pub opaque_bits: Option<usize>,
     pub array: Option<Box<ArraySummary>>,
+}
+
+/// Movement shape only: which optional parts are present.
+#[derive(Clone, Debug, Serialize)]
+pub struct MovementSummary {
+    pub rotation_axes_present: Option<usize>,
+    pub angular_velocity: bool,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -428,13 +657,25 @@ impl RepEntry {
             name: None,
             vector_bits: None,
             rotator: None,
+            movement: None,
             opaque_bits: None,
             array: None,
         };
         match &self.value {
             RepValue::Object(guid) => summary.object = Some(guid.summary()),
             RepValue::NetworkName(name) => summary.name = Some(name.summary()),
-            RepValue::VectorQuantize(vector) => summary.vector_bits = Some(vector.bits),
+            RepValue::VectorQuantize(vector)
+            | RepValue::VectorQuantize10(vector)
+            | RepValue::VectorQuantize100(vector) => summary.vector_bits = Some(vector.bits),
+            RepValue::Movement(movement) => {
+                summary.movement = Some(MovementSummary {
+                    rotation_axes_present: movement.rotation.map(|rotation| match rotation {
+                        MovementRotation::Bytes(rotator) => rotator.axes_present(),
+                        MovementRotation::Shorts(rotator) => rotator.summary().axes_present,
+                    }),
+                    angular_velocity: movement.angular_velocity.is_some(),
+                });
+            }
             RepValue::Rotator(rotator) => summary.rotator = Some(rotator.summary()),
             RepValue::Opaque(payload) => summary.opaque_bits = Some(payload.bit_len()),
             RepValue::DynamicArray(array) => {
@@ -514,8 +755,11 @@ fn validate_layout_at(layout: &[RepCommand], limits: &RepLayoutLimits, depth: us
             | RepCommand::Object
             | RepCommand::NetworkName
             | RepCommand::VectorQuantize
+            | RepCommand::VectorQuantize10
+            | RepCommand::VectorQuantize100
             | RepCommand::VectorQuantizeNormal
             | RepCommand::Rotator
+            | RepCommand::Movement { .. }
             | RepCommand::Unsupported(_) => {}
         }
     }
@@ -780,6 +1024,125 @@ fn byte_width(enum_bits: Option<u8>) -> u32 {
     u32::from(enum_bits.unwrap_or(ENUM_BYTE_BITS_MAX))
 }
 
+fn read_vector(reader: &mut BitReader<'_>, packing: VectorPacking) -> Result<QuantizedVector> {
+    let bits = read_capped(reader, packing.bits_max(), "quantized vector bit count")?;
+    let max = 1u32 << (bits + 2);
+    let mut components = [0u32; 3];
+    for component in &mut components {
+        *component = read_capped(reader, max, "quantized vector component")?;
+    }
+    Ok(QuantizedVector { bits, components })
+}
+
+fn write_vector(
+    writer: &mut BitWriter,
+    vector: &QuantizedVector,
+    packing: VectorPacking,
+) -> Result<()> {
+    let bits_max = packing.bits_max();
+    ensure!(
+        vector.bits < bits_max,
+        "quantized vector bit count must be below {bits_max}"
+    );
+    let max = 1u32 << (vector.bits + 2);
+    ensure!(
+        vector.components.iter().all(|component| *component < max),
+        "quantized vector component exceeds its bit count"
+    );
+    writer.write_int_max(vector.bits, bits_max)?;
+    for component in vector.components {
+        writer.write_int_max(component, max)?;
+    }
+    Ok(())
+}
+
+/// Byte rotator (F-589): per axis a presence bit, then 8 bits when set.
+pub fn read_byte_rotator(reader: &mut BitReader<'_>) -> Result<ByteRotator> {
+    let mut axes = [None; 3];
+    for axis in &mut axes {
+        if read_flag(reader, "byte rotator axis")? {
+            *axis = Some(read_field(reader, 8, "byte rotator axis")? as u8);
+        }
+    }
+    let [pitch, yaw, roll] = axes;
+    Ok(ByteRotator { pitch, yaw, roll })
+}
+
+pub fn write_byte_rotator(writer: &mut BitWriter, rotator: &ByteRotator) {
+    for axis in rotator.axes() {
+        writer.write_bit(axis.is_some());
+        if let Some(value) = axis {
+            writer.write_bits(u32::from(value), 8);
+        }
+    }
+}
+
+/// `FRepMovement` (F-588): flags, location, rotation, linear velocity, then
+/// angular velocity at the velocity level when flag bit 1 is set.
+pub fn read_movement(
+    reader: &mut BitReader<'_>,
+    location: MovementLevel,
+    velocity: MovementLevel,
+    rotation: RotationLevel,
+) -> Result<RepMovement> {
+    let flags = read_field(reader, 2, "movement flags")? as u8;
+    let location = read_vector(reader, location.packing()).context("movement location")?;
+    let rotation = match rotation {
+        RotationLevel::Bytes => Some(MovementRotation::Bytes(read_byte_rotator(reader)?)),
+        RotationLevel::Shorts => Some(MovementRotation::Shorts(
+            read_rotator(reader).context("movement rotation")?,
+        )),
+        RotationLevel::Omitted => None,
+    };
+    let linear_velocity =
+        read_vector(reader, velocity.packing()).context("movement linear velocity")?;
+    let angular_velocity = if flags & MOVEMENT_ANGULAR_FLAG != 0 {
+        Some(read_vector(reader, velocity.packing()).context("movement angular velocity")?)
+    } else {
+        None
+    };
+    Ok(RepMovement {
+        flags,
+        location,
+        rotation,
+        linear_velocity,
+        angular_velocity,
+    })
+}
+
+/// Mirror of [`read_movement`]; parts must match the flags and levels.
+pub fn write_movement(
+    writer: &mut BitWriter,
+    movement: &RepMovement,
+    location: MovementLevel,
+    velocity: MovementLevel,
+    rotation: RotationLevel,
+) -> Result<()> {
+    ensure!(movement.flags < 4, "movement flags exceed two bits");
+    ensure!(
+        movement.angular_velocity.is_some() == (movement.flags & MOVEMENT_ANGULAR_FLAG != 0),
+        "movement angular velocity must be present exactly when flag bit 1 is set"
+    );
+    writer.write_bits(u32::from(movement.flags), 2);
+    write_vector(writer, &movement.location, location.packing()).context("movement location")?;
+    match (rotation, &movement.rotation) {
+        (RotationLevel::Bytes, Some(MovementRotation::Bytes(rotator))) => {
+            write_byte_rotator(writer, rotator);
+        }
+        (RotationLevel::Shorts, Some(MovementRotation::Shorts(rotator))) => {
+            write_rotator(writer, rotator);
+        }
+        (RotationLevel::Omitted, None) => {}
+        _ => bail!("movement rotation does not match its rotation level"),
+    }
+    write_vector(writer, &movement.linear_velocity, velocity.packing())
+        .context("movement linear velocity")?;
+    if let Some(angular) = &movement.angular_velocity {
+        write_vector(writer, angular, velocity.packing()).context("movement angular velocity")?;
+    }
+    Ok(())
+}
+
 fn read_value(
     reader: &mut BitReader<'_>,
     command: &RepCommand,
@@ -800,14 +1163,21 @@ fn read_value(
         }
         RepCommand::NetworkName => RepValue::NetworkName(read_network_name(reader, codec)?),
         RepCommand::VectorQuantize => {
-            let bits = read_capped(reader, NET_QUANTIZE_BITS_MAX, "quantized vector bit count")?;
-            let max = 1u32 << (bits + 2);
-            let mut components = [0u32; 3];
-            for component in &mut components {
-                *component = read_capped(reader, max, "quantized vector component")?;
-            }
-            RepValue::VectorQuantize(QuantizedVector { bits, components })
+            RepValue::VectorQuantize(read_vector(reader, VectorPacking::NetQuantize)?)
         }
+        RepCommand::VectorQuantize10 => {
+            RepValue::VectorQuantize10(read_vector(reader, VectorPacking::NetQuantize10)?)
+        }
+        RepCommand::VectorQuantize100 => {
+            RepValue::VectorQuantize100(read_vector(reader, VectorPacking::NetQuantize100)?)
+        }
+        RepCommand::Movement {
+            location,
+            velocity,
+            rotation,
+        } => RepValue::Movement(
+            read_movement(reader, *location, *velocity, *rotation).context("movement item")?,
+        ),
         RepCommand::VectorQuantizeNormal => {
             let mut values = [0u16; 3];
             for value in &mut values {
@@ -939,19 +1309,24 @@ fn write_value(
             write_network_name(writer, name, codec)?;
         }
         (RepCommand::VectorQuantize, RepValue::VectorQuantize(vector)) => {
-            ensure!(
-                vector.bits < NET_QUANTIZE_BITS_MAX,
-                "quantized vector bit count must be below 20"
-            );
-            let max = 1u32 << (vector.bits + 2);
-            ensure!(
-                vector.components.iter().all(|component| *component < max),
-                "quantized vector component exceeds its bit count"
-            );
-            writer.write_int_max(vector.bits, NET_QUANTIZE_BITS_MAX)?;
-            for component in vector.components {
-                writer.write_int_max(component, max)?;
-            }
+            write_vector(writer, vector, VectorPacking::NetQuantize)?;
+        }
+        (RepCommand::VectorQuantize10, RepValue::VectorQuantize10(vector)) => {
+            write_vector(writer, vector, VectorPacking::NetQuantize10)?;
+        }
+        (RepCommand::VectorQuantize100, RepValue::VectorQuantize100(vector)) => {
+            write_vector(writer, vector, VectorPacking::NetQuantize100)?;
+        }
+        (
+            RepCommand::Movement {
+                location,
+                velocity,
+                rotation,
+            },
+            RepValue::Movement(movement),
+        ) => {
+            write_movement(writer, movement, *location, *velocity, *rotation)
+                .context("movement item")?;
         }
         (RepCommand::VectorQuantizeNormal, RepValue::VectorQuantizeNormal(normal)) => {
             for value in normal.0 {
