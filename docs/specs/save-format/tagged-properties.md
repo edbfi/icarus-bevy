@@ -7,26 +7,22 @@ Full text: d5b0ae6:docs/specs/save-format/tagged-properties.md
 
 ## Scope
 
-Covers outer framing of an already verified prospect payload: root tagged
-properties, the `StateRecorderBlobs` recorder array, and four caller-selected
-library framers (base component, Int array, tagged struct array, nested struct
-streams via `read_root`). The `MemoryArchive522` profile is based on build
-25621760; selecting it does not identify a save's producing build, which the user
-reports as 25793767 (F-323). Envelope integrity is in
-[prospect envelope](prospect-envelope.md) and the string codec in
-[archive string](archive-string.md); class-level results are in
-[prospect loading](prospect-loading.md). Not covered: value
-interpretation, version migration, class recognition, required-field coverage,
-reference integrity and world import. Every reader reports
+Outer framing of an already verified prospect payload: root tagged properties,
+the `StateRecorderBlobs` recorder array, and four caller-selected library framers
+(base component, Int array, tagged struct array, nested struct streams via
+`read_root`). The `MemoryArchive522` profile is based on build 25621760 and does
+not identify a save's producing build, user-reported as 25793767 (F-323).
+Envelope: [prospect envelope](prospect-envelope.md); strings:
+[archive string](archive-string.md); class results: [prospect loading](prospect-loading.md).
+Not covered: values, version migration, class recognition, required-field
+coverage, reference integrity and world import. Every reader reports
 `world_imported: false`.
 
 ## Confirmed
 
 Recovered tag layout (older server):
 
-- Reader chain: tagged traversal `0x14200f5b0`; tag reader `0x14215f530`; names
-  via archive virtual `+0x140` = `0x140962300`, string reader `0x141e15db0`. The
-  archive resets to version 522 with byte swapping off (F-286, F-257).
+- Reader chain and archive reset to version 522, no byte swapping: F-286, F-257.
 - Names use the archive string: little-endian signed 32-bit count; positive =
   narrow bytes, negative = UTF-16 code units; nonzero counts include a
   terminating zero. The native strict subset rejects malformed terminators and
@@ -44,82 +40,66 @@ Recovered tag layout (older server):
   | Property GUID presence | 1 byte; followed by 16 bytes when present |
   | Value | exactly the declared payload size |
 
-- Type metadata: Struct adds struct name + 16-byte struct GUID; Array adds inner
-  type name; Byte and Enum add enum name; Bool carries a one-byte value in the
-  header; Int, UInt32, Str, Name, Float and Text add nothing (F-288). At
-  version 509 and above, Map (built-in name 28) adds key-type then value-type
-  names and Set (29) one inner-type name; Int64 (20) adds nothing. The client
-  tag operator `0x14212b0e0` branches identically (F-556). `UInt32Property`
-  is built-in name ID 25 and reaches the common GUID flag without extensions
-  (F-290, F-247). Float/Text use only the common GUID flag (F-206, F-207).
+- Type metadata per kind: F-288; from version 509, Map (name 28), Set (29) and
+  Int64 (20): F-556, with identical client branching. `UInt32Property` is built-in
+  name ID 25 (F-290, F-247); Float/Text use only the common GUID flag (F-206, F-207).
 - Version gates in `0x14215f530`: Struct GUID at 441, Array inner type at 282,
-  property GUID at 503; all apply at 522. Other profiles are unsupported (F-289).
-- Size counts only the value bytes after the complete header; `0x142166850`
-  compares the property reader's position change against it. A C++ object offset
-  is not a file offset (F-291).
-- Struct-array body: count, then one shared inner tag, then elements; the root
-  scanner leaves the whole body opaque (F-292).
-- Recorder structure: `StateRecorderBlobs` = element count + one shared
-  `StateRecorderBlob` struct tag whose payload covers all element bodies; each
-  element is tagged fields ending in `None`; `ComponentClassName` is an archive
-  string; `BinaryData` is a signed 32-bit count and that many plain bytes (F-298).
-- Root `Version` is an index-zero `IntProperty` with exactly 4 payload bytes and
-  signed value 2 in both copies: a serialization scalar, not the Steam build ID
-  (F-260).
+  property GUID at 503; all apply at 522; other profiles unsupported (F-289).
+- Size counts only the value bytes after the complete header; a C++ object
+  offset is not a file offset (F-291).
+- Struct-array body: count, one shared inner tag, then elements; the root scanner
+  leaves it opaque (F-292). Recorder array layout: F-298.
+- Root `Version` is an index-zero `IntProperty`, 4 payload bytes, signed value 2
+  in both copies: a serialization scalar, not the Steam build ID (F-260).
 - Name values remain opaque; in-memory width is not serialized width (F-293).
 
 Reader policy (authored; research limits, not recovered format limits):
 
 - Root: complete sequence ending in canonical `None` at exact EOF; input 32 MiB;
   4,096 root records; 1,024 units per header string including terminator; counts
-  checked before allocating. Reject negative sizes/indices, truncation,
-  unsupported headers and noncanonical Bool/GUID-presence bytes (F-294).
+  checked before allocating; negative, truncated, unsupported and noncanonical
+  Bool/GUID-presence input rejected (F-294).
 - Accepted headers: `ArrayProperty`, `StructProperty`, `StrProperty`,
   `IntProperty`, `UInt32Property`, `NameProperty`, `FloatProperty`,
   `TextProperty`, `ByteProperty`, `EnumProperty`, `BoolProperty`,
   `MapProperty`, `SetProperty`, `Int64Property`; Map and Set payloads stay
   opaque. Empty header names and other kinds are unsupported (F-294, F-246,
   F-247, F-206, F-556).
-- Preserve original header and value spans, including unknown field names,
-  without rewriting. Report aggregate sizes and counts only; no names or values in
-  results or errors. Opaque payloads are not validated by tag name, including
-  lengths that are not a valid float or text (F-295).
+- Original header and value spans, including unknown field names, are preserved
+  unrewritten; results and errors carry aggregates only, never names or values;
+  opaque payloads are not validated by tag name (F-295).
 - CLI: `--inner-tags` reports `experimental_root_tags_only`, profile
   `experimental_memory_archive_522`; `--recorders` implies root framing and
   reports `experimental_recorder_framing_only`. Without `--inner-tags` the
   envelope-only output is unchanged (F-295, F-244, F-245).
-- Recorder reader: one selected array; declared count, shared size, every element
-  terminator and the final boundary must agree. Each element has exactly one class
-  string and one byte array at index 0; supported unknown fields keep borrowed
-  spans; unsupported headers, duplicate/missing known fields or malformed values
-  fail the whole scan. Empty class strings and raw UTF-16 are accepted as framing.
-  Limits: 32 MiB input, 16,384 recorders, 65,536 total fields, 1,024 units per
-  header or class string, checked before count-driven allocation. Raw containers
-  have no `Serialize`/`Debug`; no partial result on nested failure (F-300).
+- Recorder reader: declared count, shared size, every element terminator and the
+  final boundary must agree; one class string and one byte array at index 0 per
+  element; unknown supported fields keep borrowed spans; unsupported headers,
+  duplicate or missing known fields and malformed values fail the whole scan.
+  Empty class strings and raw UTF-16 are accepted as framing. Limits 32 MiB,
+  16,384 recorders, 65,536 fields, 1,024 units per header or class string,
+  checked before count-driven allocation. Raw
+  containers have no `Serialize`/`Debug`; no partial result (F-300).
 - Base component (`experimental::component::read_base_component`): tagged
-  properties, terminal `None`, 4-byte LE trailer flag 0, exact EOF. Flag 1 fails
+  properties, terminal `None`, 4-byte LE trailer flag 0, exact EOF; flag 1 fails
   as unsupported GUID trailer even with 16 more bytes; other nonzero flags,
   truncation, missing terminator and trailing bytes fail. Default 64 KiB and 256
   properties; `read_base_component_with_limit` accepts 1 byte up to a hard 1 MiB
-  ceiling with the same field cap; invalid limits fail even for small inputs.
-  Summary adds `values_interpreted: false`. Not enabled by `--recorders`
-  (F-302, F-248, F-198).
+  ceiling with the same field cap; invalid limits fail even for small inputs. Summary adds `values_interpreted: false`. Not
+  enabled by `--recorders` (F-302, F-248, F-198).
 - Int array (`experimental::int_array::read_int_array`): LE signed count, then
-  exactly 4 opaque bytes per element. Rejects negative counts, truncation,
-  trailing bytes and more than 4,096 elements; early cap 64 KiB; largest accepted
-  input 16,388 bytes. The caller must establish the ordinary non-swapping path:
-  archive `+0x28` bit `0x20` and `+0x2b` bit `0x10` clear; no shared Struct header;
-  bulk and property-list modes unsupported (F-312, F-313, F-200).
-- Tagged struct array (`read_tagged_struct_array`): nonnegative LE 32-bit count,
-  one shared `StructProperty` header even when empty, exactly count `None`-
-  terminated variable-length elements inside the shared payload, no object
-  trailers, full input consumed. Default 64 KiB; `_with_limit` accepts 1 byte to
-  a hard 1 MiB ceiling (F-634), invalid limits fail before parsing, oversize fails before
-  reading the count. 4,096 elements and 256 fields per element under either API;
-  count and minimum terminator space checked before allocation. Name, index,
-  struct identity and GUID are not compared to a schema. Summary partitions
-  (prefix, element header/terminator, opaque payload) conserve input length
-  (F-315, F-178, F-249).
+  exactly 4 opaque bytes per element; rejects negative counts, truncation,
+  trailing bytes and more than 4,096 elements; early cap 64 KiB,
+  largest accepted input 16,388 bytes (F-313, F-200). Caller-established archive
+  path conditions: F-312.
+- Tagged struct array (`read_tagged_struct_array`): nonnegative count, one shared
+  `StructProperty` header even when empty, count `None`-terminated elements in the
+  shared payload, no trailers, full input consumed (F-315). Default 64 KiB;
+  `_with_limit` accepts 1 byte to a hard 1 MiB ceiling (F-634); invalid limits fail
+  before parsing and oversize before reading the count; 4,096 elements and 256
+  fields per element, with count and minimum terminator space checked before
+  allocation; no schema comparison; summary partitions (prefix, element
+  header/terminator, opaque payload) conserve input length (F-178, F-249).
 
 Supplied-data measurements (two private copies; byte/record counts, not gameplay
 objects):
@@ -141,47 +121,38 @@ objects):
 - Int arrays: 486 C009 S02 arrays, 980 bytes (F-314). Struct arrays: 28 C028 arrays,
   2,624 bytes, all empty (F-249); C034 four arrays, 428 elements, 56,412 bytes,
   Struct 12 / Float 4 bytes (F-191, F-664); all 1,658 C034 own arrays, 15,342
-  elements, 30,684 fields (F-316); 11,606 inherited C034 arrays, all empty (F-196);
-  C009 3,402 arrays, 522 elements, CA01 66,257 bytes via `_with_limit` (F-174,
-  F-203, F-317); C034 Float headers: 32 fields over 58,356 bytes (F-188).
+  elements, 30,684 fields (F-316); 11,606
+  inherited C034 arrays, all empty (F-196); C009 3,402 arrays, 522 elements, CA01
+  66,257 bytes via `_with_limit` (F-174, F-203, F-317); C034 Float headers: 32
+  fields over 58,356 bytes (F-188).
 
 ## Candidate
 
 - `experimental::property_tree` holds one stream as an owned value-opaque tree:
-  tagged Struct payloads and tagged struct arrays nest to a depth limit, every
-  other payload stays opaque, and writing checks each declared size. Every
-  body of every class in both copies frames under 1 MiB and re-serializes
-  byte-identically; names, types and values are not interpreted (F-557).
-- Map and Set payloads load as an i32 removal count with removal items, then
-  an i32 count with key-value pairs (Map) or elements (Set), each through the
-  inner property's item serializer; Bool items are one byte and Struct items
-  delegate to the struct (F-559, client build). The tree frames them when every
-  item is a 1/4/8-byte scalar, an archive string or a tagged struct stream
-  (scalar widths and string items inferred) and consumes the payload exactly;
-  otherwise the payload stays opaque. Items count against the node budget; an
-  attempt that would exceed it also stays opaque. All supplied Maps frame
-  (F-562; unchanged under the budget, M-411, M-412).
+  tagged Struct payloads and struct arrays nest to a depth limit, other payloads
+  stay opaque and writing checks each declared size; every body in both copies
+  frames under 1 MiB and re-serializes byte-identically; names, types and values
+  are not interpreted (F-557).
+- Map and Set item layout (client build): F-559. The tree frames them when every
+  item is a 1/4/8-byte scalar, an archive string or a tagged struct stream and the
+  payload is consumed exactly, within the node budget; otherwise the payload stays
+  opaque. All supplied Maps frame (F-562; unchanged under the budget, M-411, M-412).
 - Applying the older-build framing to the newer saves is supported by prefix
   agreement and the scans above, not by a matched official load (F-297, U-025).
 - Base-component layout is a caller-selected hypothesis per class; static
-  evidence confirms base-method inheritance for the singleton class and that the
-  C028 load override delegates unchanged to the base reader (F-306, F-258). The
-  superclass chain has 31 entries, exactly 5 with the save-selection bit (F-305).
+  evidence confirms singleton base-method inheritance and unchanged C028 delegation
+  to the base reader (F-306, F-258); superclass selection bits: F-305.
 - C028 six direct structs are tagged with 16 optional fields; three child struct
   fields use binary/native serialization, so tagged framing is not recursive
-  (F-655). D01: 8 optional leaves (5 Int, 3 Str); D02: four 4-byte native
-  transfers (F-309, F-655). Conditional static grammars only.
+  (F-655). D01 leaves and D02 transfers: F-309, F-655. Conditional static grammars only.
 - Every opaque Struct leaf is one of four fixed-width engine math types
   (F-565): three or four ordered 4-byte components, no count or tail (F-602).
 - Client build 25793767: tag operator `0x14212b0e0`, Array serializer
-  `0x142123da0`; same 441/282/503 gates; Map/Set gate 509. Array branch needs mask
-  `0x20` clear, version >= 500 and the inner Struct class flag; reads a 4-byte
-  count and a shared header before elements, including count 0; shared size is a
-  32-bit end-minus-start difference (F-193, F-318, U-030).
-- Client C034: schema `0x145ff68b0`, ops table `0x144faeff8`; restore builds version
-  522 with loading on and binary/tagged, partial-selection and byte-swap flags
-  clear before component Serialize, reaching conditional tagged dispatch
-  (F-659). N02 native branch demands three 4-byte transfers (F-667).
+  `0x142123da0`; same 441/282/503 gates; Map/Set gate 509; Array branch conditions
+  and count/shared-header layout match, shared size a 32-bit end-minus-start
+  difference (F-193, F-318, U-030).
+- Client C034: restore reaches conditional tagged dispatch with version 522 and
+  loading on (F-659); N02 native branch demands three 4-byte transfers (F-667).
   Float: generation 10, vtable `0x145026a20` selects `0x142123ce0` at virtual
   `0x90`, 4 bytes on every transfer path (F-659).
 

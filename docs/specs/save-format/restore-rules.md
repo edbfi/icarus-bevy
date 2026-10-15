@@ -46,12 +46,13 @@ data-table row meanings (F-660).
 
 ## Open questions
 
-- A physics-dynamic tree record ends on restore and is not saved again; how
-  the tree prefab's runtime creation decides it is unread (F-681).
+- A physics-dynamic tree record ends on restore and is not saved again: the
+  respawn recreates the actor with the saved flag, and the actor's own code,
+  unread, ends the record (F-681).
 - Cooldowns read world seconds plus a game-state offset (F-665); the game
   time's clock and script-side owner saves stay open (U-020).
 
 ## Evidence
 
 F-645, F-648, F-650 to F-653, F-657, F-660, F-663, F-676, F-677, F-680, F-681;
-M-642, M-666, M-682, M-683, M-687 to M-692, M-694, M-695.
+M-642, M-666, M-682, M-683, M-687 to M-692, M-694, M-695, M-698.
