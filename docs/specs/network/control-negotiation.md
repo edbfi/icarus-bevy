@@ -204,11 +204,13 @@ game listener.
   error and closes.
 - Current client PreLogin (F-621): the ICARUS game mode and session add no
   checks of their own. The engine rejects a valid unique net id the online
-  interface finds incompatible, then takes the game session's ApproveLogin
-  error: a full server (player cap from a global override or MaxPlayers,
-  spectators counted separately, never in standalone) or a per-connection
-  splitscreen excess, each from integer URL options; registered PreLogin
-  delegates run last and are unread.
+  interface finds incompatible (`incompatible_unique_net_id`), then takes
+  the game session's ApproveLogin error: `Server full.` when at capacity
+  (player cap from a global override or MaxPlayers; the `SpectatorOnly`
+  URL option selects the spectator count instead; never in standalone) or
+  `Maximum splitscreen players` when the `SplitscreenCount` option exceeds
+  the per-connection limit. Registered PreLogin delegates run last and are
+  unread (literals M-591).
 - Server `UWorld::WelcomePlayer` (`0x1439fdeb0`, F-580): Welcome is type 1 with
   three strings (level or travel name, game-mode class name, a game-mode
   supplied string), followed by a flush, a queued-bits reset and login state 2.
