@@ -24,6 +24,8 @@ pub const MAX_TREE_DEPTH: usize = 16;
 pub const DEFAULT_MAX_TREE_NODES: usize = 65_536;
 /// Hard ceiling for caller-selected node budgets, not an original format limit.
 pub const MAX_TREE_NODES: usize = 1 << 20;
+/// Default struct-array bound; callers may select up to the reader's ceiling.
+pub const DEFAULT_TREE_STRUCT_ARRAY_BYTES: usize = 128 * 1024;
 
 /// Research policy bounds. Root properties are at depth 1; a payload is framed
 /// as a nested stream only when its properties would not exceed `max_depth`.
@@ -34,7 +36,8 @@ pub const MAX_TREE_NODES: usize = 1 << 20;
 pub struct TreeLimits {
     pub max_depth: usize,
     pub max_nodes: usize,
-    /// Passed to the struct-array reader; larger Array payloads stay opaque.
+    /// Passed to the struct-array reader, up to its 1 MiB ceiling; larger
+    /// Array payloads stay opaque.
     pub struct_array_bytes: usize,
 }
 
@@ -43,7 +46,7 @@ impl Default for TreeLimits {
         Self {
             max_depth: DEFAULT_MAX_TREE_DEPTH,
             max_nodes: DEFAULT_MAX_TREE_NODES,
-            struct_array_bytes: MAX_BOUNDED_STRUCT_ARRAY_BYTES,
+            struct_array_bytes: DEFAULT_TREE_STRUCT_ARRAY_BYTES,
         }
     }
 }
@@ -60,7 +63,7 @@ impl TreeLimits {
         );
         ensure!(
             (1..=MAX_BOUNDED_STRUCT_ARRAY_BYTES).contains(&self.struct_array_bytes),
-            "struct array byte limit must be between 1 byte and 128 KiB"
+            "struct array byte limit must be between 1 byte and 1 MiB"
         );
         Ok(())
     }

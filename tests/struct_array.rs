@@ -61,11 +61,14 @@ fn array_of_size(size: usize) -> Vec<u8> {
 
 #[test]
 fn selected_byte_bounds_preserve_default_and_accept_measured_size() {
-    assert_eq!(MAX_BOUNDED_STRUCT_ARRAY_BYTES, 128 * 1024);
+    assert_eq!(MAX_BOUNDED_STRUCT_ARRAY_BYTES, 1024 * 1024);
     for size in [
         MAX_STRUCT_ARRAY_BYTES,
         MAX_STRUCT_ARRAY_BYTES + 1,
         66_257,
+        128 * 1024 + 1,
+        // The largest measured building-type array (F-633).
+        646_614,
         MAX_BOUNDED_STRUCT_ARRAY_BYTES,
     ] {
         let bytes = array_of_size(size);
@@ -96,7 +99,7 @@ fn selected_byte_bounds_preserve_default_and_accept_measured_size() {
     for invalid in [0, MAX_BOUNDED_STRUCT_ARRAY_BYTES + 1, usize::MAX] {
         assert_eq!(
             read_with_limit(&[], invalid).err().unwrap().to_string(),
-            "struct array byte limit must be between 1 byte and 128 KiB"
+            "struct array byte limit must be between 1 byte and 1 MiB"
         );
     }
     // A tiny nonzero limit is a valid policy, though it cannot hold a framed array.

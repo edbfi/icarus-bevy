@@ -9,8 +9,9 @@ use serde::Serialize;
 use super::tagged::{ParsedRecord, RootTag, TagKind, TagProfile, read_record};
 
 pub const MAX_STRUCT_ARRAY_BYTES: usize = 64 * 1024;
-/// Hard ceiling for caller-selected research bounds, not an original format limit.
-pub const MAX_BOUNDED_STRUCT_ARRAY_BYTES: usize = 128 * 1024;
+/// Hard ceiling for caller-selected research bounds, equal to the 1 MiB
+/// component ceiling; not an original format limit.
+pub const MAX_BOUNDED_STRUCT_ARRAY_BYTES: usize = 1024 * 1024;
 pub const MAX_STRUCT_ARRAY_ELEMENTS: usize = 4096;
 pub const MAX_STRUCT_ELEMENT_FIELDS: usize = 256;
 const MIN_TERMINATOR_BYTES: usize = 9;
@@ -110,7 +111,7 @@ pub fn read_tagged_struct_array(
     read_tagged_struct_array_with_limit(input, profile, MAX_STRUCT_ARRAY_BYTES)
 }
 
-/// Frame the same opaque layout under an explicit byte limit, up to 128 KiB.
+/// Frame the same opaque layout under an explicit byte limit, up to 1 MiB.
 /// The 4,096-element and 256-field caps and all framing/EOF checks remain in
 /// force. The ceiling is research policy, not a recovered original format limit.
 /// A zero limit is invalid; selecting a larger limit does not recognize schemas.
@@ -121,7 +122,7 @@ pub fn read_tagged_struct_array_with_limit(
 ) -> Result<TaggedStructArray<'_>> {
     ensure!(
         (1..=MAX_BOUNDED_STRUCT_ARRAY_BYTES).contains(&max_bytes),
-        "struct array byte limit must be between 1 byte and 128 KiB"
+        "struct array byte limit must be between 1 byte and 1 MiB"
     );
     ensure!(
         input.len() <= max_bytes,
