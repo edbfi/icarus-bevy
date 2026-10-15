@@ -149,9 +149,9 @@ dormancy, channel close reasons and every server-side writer.
   4-byte words. A named map is a 4-byte count, then string keys with
   argument values. Argument data is a name string, a type byte (Text is
   implied below custom version 5 on load), then an int32 (0), a float (2),
-  a nested Text (4) or a gender byte (5). Custom versions come from the
-  archive's container, unread for net archives, so those gates and the
-  none form stay open; Names here use archive slot 0x140, whose net
+  a nested Text (4) or a gender byte (5). A loading archive takes custom
+  versions from the client's registry of current versions (F-620), whose
+  values are unread, so those gates and the none form stay open; Names here use archive slot 0x140, whose net
   routing is unread (U-064).
 - Network names (F-575): a hardcoded bit; when set, the hardcoded name index
   (packed at engine net version 6 or later, otherwise bounded by 411; indices
@@ -194,6 +194,6 @@ dormancy, channel close reasons and every server-side writer.
   M-529; Text M-531 to M-536, M-545 to M-547, M-570;
   net archive version M-571 to M-576;
   display strings M-581 to M-584; Text codec M-585; Text callees M-586,
-  M-587; codec tests M-475, M-476, M-492, M-496,
+  M-587; custom versions M-588; codec tests M-475, M-476, M-492, M-496,
   M-511, M-522, M-530, M-548; layout source M-552 to M-555; send order M-461, M-556 to
   M-560.

@@ -50,4 +50,4 @@ read order (F-610); nothing is wire-validated.
 
 ## Artifacts
 
-M-420..M-449, M-455..M-470, M-570..M-576, M-581..M-587.
+M-420..M-449, M-455..M-470, M-570..M-576, M-581..M-588.
