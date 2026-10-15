@@ -411,7 +411,9 @@ pub fn read_fast_array_delta(
     let mut budget = Budget {
         remaining: codec.limits.max_entries,
     };
-    let mut changed = Vec::with_capacity(changes);
+    // Each change carries at least its 4-byte ID, so the reserve never
+    // exceeds what the remaining bits can back.
+    let mut changed = Vec::with_capacity(changes.min(reader.remaining() / 32));
     for index in 0..changes {
         let id = read_i32(reader, codec, "changed element ID")?;
         let item = match layout {

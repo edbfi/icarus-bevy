@@ -515,6 +515,9 @@ fn fast_array_counts_fail_closed_when_negative_or_over_the_cap() {
         }
     });
     assert!(read_fast_array_delta(&mut truncated.reader(), &layout, &codec, 2).is_err());
+    // A header alone cannot reserve room for the largest declarable count.
+    let hostile = header(0, i32::MAX);
+    assert!(read_fast_array_delta(&mut hostile.reader(), &layout, &codec, i32::MAX).is_err());
     let mut over = whole_delta();
     over.deleted_ids = vec![1, 2, 3];
     let whole = FastArrayItemLayout::Whole(vec![byte(None), RepCommand::Bool]);
