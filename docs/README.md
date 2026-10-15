@@ -13,11 +13,11 @@ Lint: `python3 tools/docs_lint.py`. Startup reads stop at this map and
 | [runbooks/](runbooks/) | operating procedures | 16 KB each |
 | [specs/](specs/) | durable format and protocol facts (`save-format/`, `network/`) | 16 KB each, fixed headings |
 | [research/](research/) | one digest per question cluster (`save-format/`, `network/`, `foundation/`) | 8 KB each, fixed headings |
-| [ledgers/findings/](ledgers/findings/) | active findings by area; `retired/` keeps retired rows in full | 48 KB per active file, 96 KB active total, 64 KB per retired file |
+| [ledgers/findings/](ledgers/findings/) | active findings by area; `retired/` keeps retired rows in full | 48 KB per active file, 128 KB active total, 64 KB per retired file |
 | [ledgers/](ledgers/) | unknowns, bugs, compatibility; one row per item | 64 KB each; 400-byte rows |
 | [research/archive/](research/archive/) | dated reports, verbatim, frozen | none |
 | [history/](history/) | historical authorizations, verbatim, frozen | none |
 | [../evidence/](../evidence/README.md) | evidence index, one JSONL record per artifact; category folders mirror the findings ledgers; fetch by `grep -rhw --include='*.jsonl' M-ID evidence/` | 64 KB per shard, 2 KB records |
 
 The current prose surface (root `README.md` and everything here except archive,
-history and the ledgers, plus `evidence/README.md`) is capped at 160 KB in total.
+history and the ledgers, plus `evidence/README.md`) is capped at 192 KB in total.
