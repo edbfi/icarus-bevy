@@ -60,7 +60,7 @@ No decoded value, text or number was emitted or interpreted.
 
 - Meanings and Name identity for every qualified value (U-020); every saved
   enum property value and item dynamic-data Type already resolves in both builds'
-  identical tables (F-647).
+  identical tables (F-649).
 - Unpopulated families: 17 C028 array-child descriptors, DA04, CA06 Text/Name and the empty inherited arrays (U-021, U-046).
 - Map item meanings and binary Struct component values (U-055, U-020); meanings of the classes outside the audited selections (U-022); C001's nested values and runtime dispatch (U-023).
 - Individual C028 native top spans and the historical library snapshot (U-024).
