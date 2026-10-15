@@ -2,7 +2,8 @@
 
 ## Status
 
-Experimental: static observations, not wire-validated. Scope: dedicated-server
+Experimental: static observations; the framing and Hello exchange are
+wire-validated offline (F-688, F-689). Scope: dedicated-server
 build 25621760 (M-168) unless a current-client (build 25793767) comparison is
 named. Last reconciled: 2026-10-15.
 Full text: d5b0ae6:docs/specs/network/control-negotiation.md.
@@ -87,10 +88,11 @@ game listener.
   | 11 | Channel name | if open or reliable: one bit; if set a packed hard-coded index (at most 702, 0 none), else an archive string and a 32-bit number (F-525) |
   | 12 | Payload | a bit count below eight times the maximum packet size, then those bits copied to the bunch from bit 0 |
 
-  Bunches repeat until the packet reader ends. Before this, the stateless
-  handler consumes optional magic-header bits and one handshake bit (0 for
-  data), and the packet's bit length ends below the highest set bit of its
-  nonzero last byte, a termination bit (F-524). A value with maximum M is
+  Bunches repeat until the packet reader ends. Before this, the handlers
+  consume optional magic-header bits, the stateless-connect bit and the
+  Steam-auth bit (both 0 for data); the packet ends with the connection's
+  termination bit, then the handler's in the highest set bit of the nonzero
+  last byte (F-524, F-688). A value with maximum M is
   LSB-first bits with masks 1, 2, 4, ... while value plus mask is below M; a
   packed value is up to five bytes, each bit 0 a continuation flag and bits 1-7
   the next 7-bit group, low group first (F-523). The client's SendRawBunch
@@ -145,7 +147,7 @@ game listener.
 
 ## Candidate
 
-- Experimental modules, none wire-validated: `control` reads the ID 0 body
+- Experimental modules, wire-validated only through Hello (F-689): `control` reads the ID 0 body
   (one uninterpreted byte, explicit-endian u32, strict archive string) under a
   131,081-byte ceiling, a variant applying the inferred first-field byte-order
   rule (F-096, F-097, F-518, F-519), retaining no token units and giving raw

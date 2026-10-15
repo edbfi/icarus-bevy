@@ -155,6 +155,7 @@ class SessionTests(unittest.TestCase):
                 {"scope": "native-io-faults"}, {"authorization_source": " "},
                 {"case_root": str(fixture.root)}, {"image": "different-image"},
                 {"reference_root": str(fixture.case)}, {"reference_executable": str(fixture.probe)},
+                {"reference_root": str(fixture.root / "icarus-server-x")},
                 {"reference_sha256": "0" * 64}, {"scope_sha256": "0" * 64},
                 {"start_utc": (fixture.now + datetime.timedelta(seconds=1)).isoformat()},
                 {"end_utc": fixture.now.isoformat()}, {"start_utc": "2026-10-12T00:00:00"},
@@ -178,6 +179,16 @@ class SessionTests(unittest.TestCase):
             _ = fixture.reference.write_bytes(b"changed")
             with self.assertRaisesRegex(ValueError, "reference_sha256"):
                 revalidate(fixture.root, fixture.args, approved)
+
+    def test_a_fetched_server_install_may_be_the_reference(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            fixture = Fixture(directory)
+            fetched = fixture.root / "icarus-server-25793607" / REFERENCE_EXE
+            fetched.parent.mkdir(parents=True)
+            _ = fetched.write_bytes(b"authored fetched fixture")
+            fixture.write({"reference_root": str(fixture.root / "icarus-server-25793607"),
+                           "reference_executable": str(fetched), "reference_sha256": digest(fetched)})
+            self.assertEqual(fixture.approve().reference, fixture.root / "icarus-server-25793607")
 
     def test_probe_modes_redirects_and_scope_mutation(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

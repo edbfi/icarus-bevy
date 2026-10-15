@@ -394,6 +394,7 @@ impl LabPeer {
         let (bytes, bit_len) = split_termination(datagram)?;
         let mut reader = BitReader::new(bytes, bit_len)?;
         read_data_prefix(&mut reader, self.config.packet.magic_bits)?;
+        reader.split_connection_termination()?;
         let (header, _info) = read_packet_header(&mut reader, self.config.packet.receiver)?;
         let mut bunches = Vec::new();
         while !reader.at_end() {

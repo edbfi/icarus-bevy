@@ -7,7 +7,7 @@ use icarus_bevy::experimental::control_receive::{
 use icarus_bevy::experimental::handshake::initial_request;
 use icarus_bevy::experimental::packet::{
     BitWriter, Bunch, BunchHeader, BunchLimits, HandshakePacket, Name, PacketHeader, Payload,
-    Receiver, finish_with_termination, write_bunch, write_data_prefix, write_packet_header,
+    Receiver, finish_data_packet, write_bunch, write_data_prefix, write_packet_header,
 };
 
 // Synthetic datagrams built with the experimental codec writers; no captures.
@@ -88,7 +88,7 @@ fn datagram(bunches: &[Bunch]) -> Vec<u8> {
     for bunch in bunches {
         write_bunch(&mut writer, bunch, &LIMITS).unwrap();
     }
-    finish_with_termination(writer)
+    finish_data_packet(writer)
 }
 
 fn messages(disposition: &ControlDisposition) -> &[ControlMessageSummary] {
@@ -370,7 +370,7 @@ fn sample_datagram_bits() -> BitWriter {
 #[test]
 fn truncation_and_bit_flips_of_a_sample_datagram_never_panic() {
     let full = sample_datagram_bits();
-    let complete = finish_with_termination(full.clone());
+    let complete = finish_data_packet(full.clone());
     assert!(read_control_datagram(&complete, &config()).is_ok());
     let mut source =
         icarus_bevy::experimental::packet::BitReader::new(full.as_bytes(), full.bit_len()).unwrap();
@@ -378,7 +378,7 @@ fn truncation_and_bit_flips_of_a_sample_datagram_never_panic() {
     let mut accepted = 0;
     for _ in 0..full.bit_len() {
         // Re-terminate every proper bit prefix.
-        if read_control_datagram(&finish_with_termination(prefix.clone()), &config()).is_ok() {
+        if read_control_datagram(&finish_data_packet(prefix.clone()), &config()).is_ok() {
             accepted += 1;
         }
         prefix.write_bit(source.read_bit());

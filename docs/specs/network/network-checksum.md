@@ -42,6 +42,11 @@ native server does not use this module for admission.
   project-version storage and clears cache-valid, even when the input already
   points at the stored buffer. Caller `0x143996c54` supplies a string from a
   `GeneralProjectSettings` default object (F-255).
+- On the wire both builds compare a Hello's version exactly: 3.0.31 answers its
+  own 2406501229 with a Challenge and 1379612455 with Upgrade, 3.0.30 the
+  reverse, each logging its value (F-689). A connected client needs a server of
+  its own build; the comparison is the server's, so a native server sets its
+  own policy (F-529).
 - Client build 25793767 builds the same string from its own inputs: image
   project name `Icarus`, engine protocol 17, a zero-filled game protocol
   global, and NetCL taken from `-networkversionoverride=` or the
@@ -54,16 +59,6 @@ native server does not use this module for admission.
 
 ## Candidate
 
-- The installed client's own configuration gives 3.0.31 changelist 158478
-  (F-683). If it composes `3.0.31.158478-rel-DangerousHorizons` as the server's
-  log does and no override delegate is bound, its Hello carries 2406501229;
-  the preserved server's logged version gives 1379612455 under the same rule
-  (F-254, F-541, F-542). Both are computed here, not observed. With exact
-  equality the preserved server would answer that client with Upgrade and
-  close (F-563), so a connected scenario needs a server build matching the
-  client. The comparison is the server's, so a native server may set its own
-  admission policy; the client sees the server's version only in an Upgrade
-  reply (F-529).
 - The string getter at `0x141f2bae0` has fallback literal `1.0.0`; mutable
   state and a generator callback can replace defaults, so it does not prove the
   active version input.

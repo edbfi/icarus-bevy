@@ -120,8 +120,9 @@ Last reconciled: 2026-10-15
   that this host fetch and run the matched official server for them to join
   (route B of the [connected-scenarios runbook](runbooks/connected-scenarios.md));
   each scenario still needs their approval, a case and a bounded run.
-- A Hello probe against the offline original (launcher `hello` mode) is
-  outside the save-load authorization and needs the user's approval.
+- Protocol probes against the offline original (launcher `hello` mode and
+  later Login/Join steps) run under the user's 2026-10-16 directive, each in
+  its own bounded case; synthetic net ids only, never real account data.
 - Preserve the client installation until dependencies and provenance are
   understood; the restriction against reusing packaged content remains in force.
 

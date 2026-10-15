@@ -168,10 +168,12 @@ def validate_session(root: Path, args: Arguments, now: datetime.datetime) -> App
         raise ValueError("authorization_source must identify the current instruction")
     if string_field(session, "case_root") != str(case) or string_field(session, "image") != IMAGE:
         raise ValueError("session case/image binding mismatch")
-    reference = unredirected(root / "icarus-orig")
+    # The preserved install or a fetched icarus-server-<buildid> sibling.
+    reference = unredirected(Path(string_field(session, "reference_root")))
+    if reference.parent != root or re.fullmatch(r"icarus-orig|icarus-server-[0-9]+", reference.name) is None:
+        raise ValueError("session reference binding mismatch")
     executable = regular_path(reference / REFERENCE_EXE)
-    if (string_field(session, "reference_root") != str(reference)
-            or string_field(session, "reference_executable") != str(executable)):
+    if string_field(session, "reference_executable") != str(executable):
         raise ValueError("session reference binding mismatch")
     checks = [("scope_sha256", scope), ("reference_sha256", executable)]
     requested_modes = selected_modes(args)
