@@ -28,8 +28,8 @@ checks inspect user-wide registrations and may report them missing because this
 installation deliberately uses project configuration. Verify registration with
 `codex mcp get rea` and `claude mcp get rea`; verify the live connection with the
 MCP `binary_session` tool. REA 6.5.0's skill metadata lists 207 MCP tools; its
-scoped doctor reported the existing Ghidra 12.1.4 provider healthy on
-2026-10-15. The connected 6.4.0 catalog of 170 tools was aligned (F-432); recheck
+scoped doctor reported the existing Ghidra 12.1.4/JDK 21 provider healthy on
+2026-10-15 (M-563). The connected 6.4.0 catalog of 170 tools was aligned (F-432); recheck
 alignment with `binary_session` after restarting on 6.5.0. Ghidra byte reads require default
 auto-analysis and return loader-adjusted Program memory. For exact physical
 metadata work, record that capability/effect gap and use a reviewed bounded
