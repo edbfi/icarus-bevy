@@ -55,6 +55,13 @@ dormancy, channel close reasons and every server-side writer.
   flattened by the layout; soft objects the archive soft-path operator. Other
   types (Str, Name, Text) use the base item path, which forwards to the
   property's ordinary item serializer (F-575).
+- Native struct items on the older server (F-582): `FVector_NetQuantize` is a
+  component bit count (at most 20) and three integers with the same bias and
+  bound as spawn vectors but no scale; `FVector_NetQuantizeNormal` three
+  16-bit values biased by 32768 and multiplied by an unread constant; gameplay
+  tag containers an empty bit, a count byte and packed tags; hit results a
+  flags byte followed by those vectors and flag-gated fields. The movement
+  struct and the 10/100 vector quantizers are not public symbols.
 - Network names (F-575): a hardcoded bit; when set, the hardcoded name index
   (packed at engine net version 6 or later, otherwise bounded by 411; indices
   above 702 are rejected), which senders use only for indices up to 410; when
@@ -80,4 +87,5 @@ dormancy, channel close reasons and every server-side writer.
 
 - Symbols M-420 (failed-closed attempts M-421, M-422); pseudocode M-423 to
   M-431, M-433; constants M-432, M-435 to M-437 (scope deviation M-434); net items M-438 to
-  M-449; server writers M-455 to M-462.
+  M-449; server writers M-455 to M-462;
+  server struct items M-463 to M-469.

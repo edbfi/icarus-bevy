@@ -20,7 +20,8 @@ packed rep handles drive the layout, with nested streams for dynamic arrays,
 and spawn vectors are raw floats or bias-packed integers in tenths, with
 16-bit compressed rotators (F-571, F-573). Bool, Byte, Enum, object, native
 struct and soft-object items are read; Str, Name, Text and native struct bodies
-are not (F-574, U-064). These are
+are not (F-574, U-064). Several native struct serializers are read on the
+server: quantized and normal vectors, tag containers and hit results (F-582). These are
 client-build observations, with the older server's content-block and NetGUID
 writers mirroring them (F-581); nothing is wire-validated.
 
@@ -30,4 +31,4 @@ writers mirroring them (F-581); nothing is wire-validated.
 
 ## Artifacts
 
-M-420..M-449, M-455..M-462.
+M-420..M-449, M-455..M-469.
