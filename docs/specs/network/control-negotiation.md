@@ -202,6 +202,13 @@ game listener.
   URL, unique id and platform, validates the URL, calls the game mode's
   PreLogin and welcomes the player on an empty error, otherwise sends the
   error and closes.
+- Current client PreLogin (F-621): the ICARUS game mode and session add no
+  checks of their own. The engine rejects a valid unique net id the online
+  interface finds incompatible, then takes the game session's ApproveLogin
+  error: a full server (player cap from a global override or MaxPlayers,
+  spectators counted separately, never in standalone) or a per-connection
+  splitscreen excess, each from integer URL options; registered PreLogin
+  delegates run last and are unread.
 - Server `UWorld::WelcomePlayer` (`0x1439fdeb0`, F-580): Welcome is type 1 with
   three strings (level or travel name, game-mode class name, a game-mode
   supplied string), followed by a flush, a queued-bits reset and login state 2.
