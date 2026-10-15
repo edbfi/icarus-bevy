@@ -473,6 +473,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     if options.prune:
         removed = prune(report, now)
         print(f"work_gc: removed {len(removed)} candidate(s), {mib(sum(item.size for item in removed))}")
+        report = scan(root, now=now, settle_hours=options.settle_hours)
     if options.json:
         print(json.dumps(as_json(report), indent=1, sort_keys=True))
     else:
