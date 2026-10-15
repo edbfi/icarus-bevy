@@ -22,7 +22,8 @@ The script reads files only. ``--warn`` reports every problem but exits 0, for
 use while a migration is in flight. ``--local`` additionally verifies that
 active ``local-private`` evidence exists on disk with matching digests and that
 the Evidence and unknown IDs listed on a ``rea-bundle`` row are members of that
-exported bundle. ``--base REF`` names the revision whose ledger and manifest IDs
+exported bundle, and that every file a ``fixity.sha256`` row lists still matches
+its digest. ``--base REF`` names the revision whose ledger and manifest IDs
 must survive (default ``HEAD``); its findings may still use the legacy single
 ``findings.md``.
 
@@ -111,6 +112,10 @@ LABEL_CAP = 160
 NOTE_CAP = 200
 LISTED_ID_LIMIT = 32
 BUNDLE_PARSE_CAP = 64 * KIB * KIB
+# A row naming this file pins every file it lists (``sha256sum`` format, paths
+# relative to its directory); ``tools/work_gc.py --fixity`` writes it.
+FIXITY_NAME = "fixity.sha256"
+FIXITY_LINE = re.compile(r"([0-9a-f]{64})  (\S(?:.*\S)?)")
 # M-001..M-270 predate the index; they may keep directory paths, unknown digests and long labels.
 LEGACY_LAST = 270
 RECORD_CLASSES: frozenset[str] = frozenset({"local-private", "tracked", "external"})
@@ -289,6 +294,20 @@ def glued_tokens(line: str) -> list[str]:
 
 class RecordError(ValueError):
     """A malformed evidence index line."""
+
+
+def read_fixity(path: Path) -> list[tuple[str, str]]:
+    """``(sha256, relative path)`` pairs of a fixity manifest; paths stay inside its directory."""
+    entries: list[tuple[str, str]] = []
+    for number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), start=1):
+        match = FIXITY_LINE.fullmatch(line)
+        if match is None:
+            raise RecordError(f"line {number} is not '<sha256>  <path>'")
+        rel = match.group(2)
+        if rel.startswith("/") or ".." in Path(rel).parts:
+            raise RecordError(f"line {number} leaves the manifest directory")
+        entries.append((match.group(1), rel))
+    return entries
 
 
 def _object_dict(value: object) -> TypeIs[dict[object, object]]:
@@ -1029,6 +1048,21 @@ class Linter:
             return
         if row.kind == "rea-bundle":
             self.check_bundle_membership(row, path)
+        if path.name == FIXITY_NAME:
+            self.check_fixity(row, path)
+
+    def check_fixity(self, row: ManifestRow, path: Path) -> None:
+        try:
+            entries = read_fixity(path)
+        except (RecordError, UnicodeDecodeError) as error:
+            self.report(row.rel, row.line, f"{row.identifier}: unreadable fixity manifest: {error}")
+            return
+        for digest, rel in entries:
+            listed = path.parent / rel
+            if not listed.is_file() or listed.is_symlink():
+                self.report(row.rel, row.line, f"{row.identifier}: fixity entry missing: {rel}")
+            elif sha256_file(listed) != digest:
+                self.report(row.rel, row.line, f"{row.identifier}: fixity entry digest mismatch: {rel}")
 
     def check_bundle_membership(self, row: ManifestRow, path: Path) -> None:
         if path.stat().st_size > BUNDLE_PARSE_CAP:
@@ -1114,9 +1148,21 @@ class Linter:
         return f"{prefix}-{max(numbers, default=0) + 1:03d}"
 
     def local_paths(self) -> list[str]:
-        return sorted(
-            {row.path for row in self.manifest.values() if row.klass == "local-private" and row.status == "active"}
-        )
+        """Active local-private paths to back up, with every file a fixity manifest lists."""
+        paths: set[str] = set()
+        for row in self.manifest.values():
+            if row.klass != "local-private" or row.status != "active":
+                continue
+            paths.add(row.path)
+            manifest = self.root / row.path
+            if manifest.name == FIXITY_NAME and manifest.is_file():
+                try:
+                    entries = read_fixity(manifest)
+                except (RecordError, UnicodeDecodeError) as error:
+                    raise SystemExit(f"docs_lint: {row.identifier}: unreadable fixity manifest: {error}") from error
+                parent = Path(row.path).parent
+                paths.update((parent / rel).as_posix() for _digest, rel in entries)
+        return sorted(paths)
 
     def check_reconciled(self) -> None:
         for rel, doc in self.current.items():

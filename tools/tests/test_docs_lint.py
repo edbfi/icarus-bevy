@@ -29,6 +29,10 @@ EV_C = "ev_" + "2" * 64
 UNK_A = "unk_" + "3" * 64
 
 
+def sha(text: str) -> str:
+    return hashlib.sha256(text.encode()).hexdigest()
+
+
 def record(number: int, **fields: object) -> str:
     """One evidence index line for M-<number>; defaults describe a valid new row."""
     row: dict[str, object] = {
@@ -550,6 +554,28 @@ class DocsLintTest(unittest.TestCase):
             with contextlib.redirect_stdout(output):
                 self.assertEqual(docs_lint.main(["--root", str(fx.root), *argv]), 0)
             self.assertEqual(output.getvalue().strip(), expected)
+
+    def test_fixity_manifest_rows(self) -> None:
+        fx = self.make()
+        fx.write("work/c/notes.md", "kept")
+        fx.write("work/c/sub/out.json", "{}")
+        fx.write("work/c/fixity.sha256", f"{sha('kept')}  notes.md\n{sha('{}')}  sub/out.json\n")
+        fx.write("work/d/fixity.sha256", f"{sha('x')}  gone.md\n{sha('y')}  ../c/notes.md\n")
+        fx.write("work/e/notes.md", "changed")
+        fx.write("work/e/fixity.sha256", f"{sha('kept')}  notes.md\n")
+        rows = [("work/c/fixity.sha256", 1), ("work/d/fixity.sha256", 2), ("work/e/fixity.sha256", 3)]
+        fx.shard("".join(record(n, path=path, sha256=hashlib.sha256((fx.root / path).read_bytes()).hexdigest()) for path, n in rows))
+        problems = fx.lint(local=True)
+        self.assertFalse(any("M-001" in problem for problem in problems), problems)
+        self.assertTrue(any("M-002: unreadable fixity manifest: line 2 leaves the manifest directory" in problem for problem in problems), problems)
+        self.assertTrue(any("M-003: fixity entry digest mismatch: notes.md" in problem for problem in problems), problems)
+        fx.write("work/d/fixity.sha256", f"{sha('x')}  gone.md\n")
+        fx.shard("".join(record(n, path=path, sha256=hashlib.sha256((fx.root / path).read_bytes()).hexdigest()) for path, n in rows[:2]))
+        self.assertTrue(any("M-002: fixity entry missing: gone.md" in problem for problem in fx.lint(local=True)))
+        listed = fx.linter().local_paths()
+        self.assertIn("work/c/notes.md", listed)
+        self.assertIn("work/c/sub/out.json", listed)
+        self.assertIn("work/c/fixity.sha256", listed)
 
     def test_reconciled_date_required(self) -> None:
         fx = self.make()
