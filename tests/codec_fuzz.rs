@@ -12,7 +12,7 @@ use icarus_bevy::experimental::control::TokenEncoding;
 use icarus_bevy::experimental::control_messages::ArchiveText;
 use icarus_bevy::experimental::packet::{BitWriter, Payload};
 use icarus_bevy::experimental::rep_layout::{
-    ByteRotator, GameplayTag, HitResult, MovementLevel, MovementRotation, NetworkName,
+    BaseText, ByteRotator, GameplayTag, HitResult, MovementLevel, MovementRotation, NetworkName,
     PropertyStream, QuantizedNormal, QuantizedVector, RepArray, RepCommand, RepEntry,
     RepLayoutCodec, RepLayoutLimits, RepMovement, RepValue, RotationLevel, TagEncoding,
     encode_property_stream, read_property_stream, write_property_stream,
@@ -139,6 +139,7 @@ fn layout() -> Vec<RepCommand> {
             ],
         },
         RepCommand::Opaque { bits: 7 },
+        RepCommand::Text,
     ]
 }
 
@@ -272,6 +273,16 @@ fn property_corpus(codec: &RepLayoutCodec) -> Vec<Vec<bool>> {
                     c,
                 ),
                 entry(17, RepValue::Opaque(payload_of(&[true; 7])), c),
+                entry(
+                    18,
+                    RepValue::Text(BaseText {
+                        flags: 2,
+                        namespace: narrow("ns"),
+                        key: ArchiveText::with_encoding(&[], TokenEncoding::Narrow).unwrap(),
+                        source: narrow("text"),
+                    }),
+                    c,
+                ),
             ],
             c,
         ),

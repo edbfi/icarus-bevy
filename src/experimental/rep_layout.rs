@@ -28,6 +28,11 @@
 //!   bytes or 2-byte units with a terminator (F-595);
 //! - [`RepCommand::SoftObject`]: the soft-object path as one archive string,
 //!   which net archives send in place of the path fields (F-599);
+//! - [`RepCommand::Text`]: the shared FText serializer at the archive version
+//!   client bunches carry (F-613, F-614): a 4-byte flags word, a history-type
+//!   byte and, for a Base history (type 0, the only one supported), the
+//!   namespace and key as archive-string text keys and the source string;
+//!   every other history type fails closed;
 //! - [`RepCommand::VectorQuantize`]: `FVector_NetQuantize`, a capped component
 //!   bit count and three biased integers, unscaled (F-593, server writer);
 //! - [`RepCommand::VectorQuantizeNormal`]: three 16-bit values biased by 32768;
@@ -173,8 +178,6 @@ pub enum UnsupportedItem {
     Int32,
     UInt32,
     Float,
-    /// The shared FText serializer (F-601); history bodies are unread.
-    Text,
     /// Any other native net-serialize struct.
     OtherNativeStruct,
 }
@@ -197,6 +200,8 @@ pub enum RepCommand {
     Str,
     /// A soft-object path as an archive string (F-599).
     SoftObject,
+    /// A Text item; only Base histories are supported (F-613, F-614).
+    Text,
     VectorQuantize,
     VectorQuantize10,
     VectorQuantize100,
@@ -600,6 +605,22 @@ impl std::fmt::Debug for NetworkName {
     }
 }
 
+/// A Text item carrying a Base history (type 0): the flags word, then the
+/// namespace and key as text keys, then the source string (F-613). A text key
+/// is an archive-string frame; an empty key is saved as count 1 and a
+/// terminator, which the preserved encoding round-trips. `Debug` shows lengths
+/// only.
+#[derive(Clone, PartialEq, Eq)]
+pub struct BaseText {
+    pub flags: u32,
+    pub namespace: ArchiveText,
+    pub key: ArchiveText,
+    pub source: ArchiveText,
+}
+
+/// FText history type byte of a Base history.
+const TEXT_HISTORY_BASE: u32 = 0;
+
 /// A dynamic array: its element count and nested stream (F-571).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RepArray {
@@ -619,6 +640,7 @@ pub enum RepValue {
     NetworkName(NetworkName),
     Str(ArchiveText),
     SoftObject(ArchiveText),
+    Text(BaseText),
     VectorQuantize(QuantizedVector),
     VectorQuantize10(QuantizedVector),
     VectorQuantize100(QuantizedVector),
@@ -643,6 +665,7 @@ pub enum ItemKind {
     NetworkName,
     Str,
     SoftObject,
+    Text,
     VectorQuantize,
     VectorQuantize10,
     VectorQuantize100,
@@ -666,6 +689,7 @@ impl RepValue {
             Self::NetworkName(_) => ItemKind::NetworkName,
             Self::Str(_) => ItemKind::Str,
             Self::SoftObject(_) => ItemKind::SoftObject,
+            Self::Text(_) => ItemKind::Text,
             Self::VectorQuantize(_) => ItemKind::VectorQuantize,
             Self::VectorQuantize10(_) => ItemKind::VectorQuantize10,
             Self::VectorQuantize100(_) => ItemKind::VectorQuantize100,
@@ -697,6 +721,10 @@ impl std::fmt::Debug for RepValue {
                 .debug_struct("SoftObject")
                 .field("units", &text.declared_units())
                 .finish(),
+            Self::Text(text) => formatter
+                .debug_struct("Text")
+                .field("source_units", &text.source.declared_units())
+                .finish_non_exhaustive(),
             Self::VectorQuantize(vector) => formatter
                 .debug_tuple("VectorQuantize")
                 .field(vector)
@@ -833,7 +861,9 @@ impl RepEntry {
         match &self.value {
             RepValue::Object(guid) => summary.object = Some(guid.summary()),
             RepValue::NetworkName(name) => summary.name = Some(name.summary()),
-            RepValue::Str(text) | RepValue::SoftObject(text) => {
+            RepValue::Str(text)
+            | RepValue::SoftObject(text)
+            | RepValue::Text(BaseText { source: text, .. }) => {
                 summary.string_units = Some(text.declared_units());
             }
             RepValue::VectorQuantize(vector)
@@ -947,6 +977,7 @@ fn validate_layout_at(layout: &[RepCommand], limits: &RepLayoutLimits, depth: us
             | RepCommand::NetworkName
             | RepCommand::Str
             | RepCommand::SoftObject
+            | RepCommand::Text
             | RepCommand::VectorQuantize
             | RepCommand::VectorQuantize10
             | RepCommand::VectorQuantize100
@@ -1128,6 +1159,32 @@ fn write_archive_string(
         }
     }
     Ok(())
+}
+
+/// Read a Text item; any history but Base fails closed (F-613).
+fn read_base_text(reader: &mut BitReader<'_>, codec: &RepLayoutCodec) -> Result<BaseText> {
+    let flags = read_u32(reader, codec.actor.order, "text flags")?;
+    let history = read_field(reader, 8, "text history type")?;
+    ensure!(
+        history == TEXT_HISTORY_BASE,
+        "text history type {history} unsupported"
+    );
+    let units = codec.limits.max_string_units;
+    Ok(BaseText {
+        flags,
+        namespace: read_archive_string(reader, codec, units, "text namespace")?,
+        key: read_archive_string(reader, codec, units, "text key")?,
+        source: read_archive_string(reader, codec, units, "text source string")?,
+    })
+}
+
+fn write_base_text(writer: &mut BitWriter, text: &BaseText, codec: &RepLayoutCodec) -> Result<()> {
+    let units = codec.limits.max_string_units;
+    write_u32(writer, text.flags, codec.actor.order);
+    writer.write_bits(TEXT_HISTORY_BASE, 8);
+    write_archive_string(writer, &text.namespace, codec, units, "text namespace")?;
+    write_archive_string(writer, &text.key, codec, units, "text key")?;
+    write_archive_string(writer, &text.source, codec, units, "text source string")
 }
 
 /// Read one network name (F-575).
@@ -1552,6 +1609,7 @@ fn read_value(
             RepValue::Object(read_guid_ref(reader, &codec.actor).context("object item")?)
         }
         RepCommand::NetworkName => RepValue::NetworkName(read_network_name(reader, codec)?),
+        RepCommand::Text => RepValue::Text(read_base_text(reader, codec)?),
         RepCommand::Str => RepValue::Str(read_archive_string(
             reader,
             codec,
@@ -1731,6 +1789,7 @@ fn write_value(
         (RepCommand::NetworkName, RepValue::NetworkName(name)) => {
             write_network_name(writer, name, codec)?;
         }
+        (RepCommand::Text, RepValue::Text(text)) => write_base_text(writer, text, codec)?,
         (RepCommand::Str, RepValue::Str(text)) => {
             write_archive_string(
                 writer,
