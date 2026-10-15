@@ -35,7 +35,7 @@ from tools.runtime_types import JsonObject, integer_field, json_object, parse_co
 IMAGE = "ghcr.io/pelican-eggs/steamcmd@sha256:967e40780cb46a5343bd7a5fd372612d1a1b90fbc95fdd803d74ec5b3bede237"
 REFERENCE_EXE = Path("Icarus/Binaries/Win64/IcarusServer-Win64-Shipping.exe")
 MODES = frozenset({"startup", "resume", "missing", "truncated-json", "save-load", "handshake",
-                   "complete-stateless"})
+                   "complete-stateless", "hello"})
 PROSPECT_FILE = re.compile(r"[A-Za-z0-9_-]{1,64}\.json")
 PROSPECTS = Path("Icarus/Saved/PlayerData/DedicatedServer/Prospects")
 PLAYER_DATA = Path("Icarus/Saved/PlayerData")
@@ -52,6 +52,7 @@ class Arguments(argparse.Namespace):
     save_load: bool = False
     handshake_probe: bool = False
     complete_stateless: bool = False
+    hello_probe: bool = False
 
 
 def command(args: Sequence[str], timeout: float = 30, check: bool = True) -> subprocess.CompletedProcess[str]:
@@ -113,6 +114,8 @@ def validate_offline_scope(scope: Path) -> None:
 def selected_modes(args: Arguments) -> frozenset[str]:
     if args.complete_stateless and not args.handshake_probe:
         raise ValueError("--complete-stateless requires --handshake-probe")
+    if args.hello_probe and (not args.handshake_probe or args.complete_stateless):
+        raise ValueError("--hello-probe requires --handshake-probe without --complete-stateless")
     if args.startup_probe not in {"none", "resume"} or args.load_fixture not in {"none", "missing", "truncated-json"}:
         raise ValueError("unknown experiment mode")
     if sum((args.load_fixture != "none", args.startup_probe != "none", args.save_load)) > 1:
@@ -125,6 +128,8 @@ def selected_modes(args: Arguments) -> frozenset[str]:
         modes.add("handshake")
     if args.complete_stateless:
         modes.add("complete-stateless")
+    if args.hello_probe:
+        modes.add("hello")
     return frozenset(modes)
 
 
@@ -138,6 +143,7 @@ class ApprovedRun:
     probe: Path | None
     save_input: Path | None
     shutdown_seconds: int | None
+    hello_version: int | None
     observation_seconds: int
     lifetime_seconds: int
     max_runs: int
@@ -195,6 +201,16 @@ def validate_session(root: Path, args: Arguments, now: datetime.datetime) -> App
             raise ValueError("shutdown_if_not_joined_seconds must be 0..780")
     elif any(key in session for key in ("save_input", "save_input_sha256", "shutdown_if_not_joined_seconds")):
         raise ValueError("save binding requires save-load authorization")
+    hello_version: int | None = None
+    if "hello" in allowed:
+        # One Hello with an empty token: no identity material, no Login.
+        if "handshake" not in allowed:
+            raise ValueError("hello requires handshake authorization")
+        hello_version = integer_field(session, "hello_version")
+        if not 0 <= hello_version <= 0xFFFF_FFFF:
+            raise ValueError("hello_version must be an unsigned 32-bit value")
+    elif "hello_version" in session:
+        raise ValueError("hello_version requires hello authorization")
     for field, path in checks:
         expected = string_field(session, field)
         if re.fullmatch(r"[0-9a-f]{64}", expected) is None or expected != digest(path):
@@ -216,7 +232,7 @@ def validate_session(root: Path, args: Arguments, now: datetime.datetime) -> App
     if not start <= now < end or now + datetime.timedelta(seconds=lifetime) >= end:
         raise ValueError("session is future, expired or has insufficient approved time")
     return ApprovedRun(case, session_path, session, hashlib.sha256(raw_session).hexdigest(),
-                       reference, probe, save_input, shutdown, observation, lifetime, max_runs)
+                       reference, probe, save_input, shutdown, hello_version, observation, lifetime, max_runs)
 
 
 def revalidate(root: Path, args: Arguments, approved: ApprovedRun) -> None:
@@ -427,6 +443,10 @@ def observe(args: Arguments, approved: ApprovedRun, run: Path,
                                   container, "/probes/handshake_probe"]
                     if args.complete_stateless:
                         probe_argv.append("--complete-stateless")
+                    if args.hello_probe:
+                        if approved.hello_version is None:
+                            raise ValueError("missing authorized hello version")
+                        probe_argv += ["--hello", str(approved.hello_version)]
                     _ = (run / "probe-invocation.json").write_text(json.dumps(probe_argv) + "\n")
                     probe = observation.run(probe_argv, cap=15, check=False)
                     _ = (run / "probe.jsonl").write_text(probe.stdout)
@@ -498,6 +518,7 @@ def main() -> None:
     _ = parser.add_argument("--save-load", action="store_true")
     _ = parser.add_argument("--handshake-probe", action="store_true")
     _ = parser.add_argument("--complete-stateless", action="store_true")
+    _ = parser.add_argument("--hello-probe", action="store_true")
     args = parser.parse_args(namespace=Arguments())
     root = Path(__file__).resolve().parents[1]
     approved = validate_session(root, args, datetime.datetime.now(datetime.UTC))

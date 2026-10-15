@@ -76,6 +76,10 @@ or reference writes. The pinned image is local-only; CPU/memory/PID limits and
 Windows-client tests need their own approved scenario and a networked mode the
 launcher does not have yet.
 
+`--hello-probe` (with `--handshake-probe`, without `--complete-stateless`)
+runs the probe with `--hello <hello_version>`; the session allows `hello`
+beside `handshake` and binds `hello_version`, an unsigned 32-bit value.
+
 ## Save-load mode
 
 `--save-load` loads one disposable save copy. The session adds `save-load` to

@@ -3,7 +3,13 @@ use std::{net::UdpSocket, time::Duration};
 
 use anyhow::{Context, Result, ensure};
 use clap::Parser;
-use icarus_bevy::experimental::handshake;
+use icarus_bevy::experimental::{
+    control_messages::{ControlCodec, ControlMessage},
+    handshake,
+    packet::{PacketConfig, Receiver},
+    peer_lab::PeerLabConfig,
+    probe_client::{ProbeClient, ProbeConfig, ReplyDecode},
+};
 use serde_json::json;
 
 #[derive(Parser)]
@@ -11,6 +17,10 @@ struct Options {
     /// Echo the issued cookie and observe the stateless acknowledgement only.
     #[arg(long)]
     complete_stateless: bool,
+    /// After the stateless exchange, send one reliable Hello carrying this
+    /// network version with an empty token and record every reply.
+    #[arg(long, conflicts_with = "complete_stateless")]
+    hello: Option<u32>,
 }
 
 fn hex(bytes: &[u8]) -> String {
@@ -25,6 +35,9 @@ fn main() -> Result<()> {
     );
     let socket = UdpSocket::bind("127.0.0.1:0")?;
     socket.connect("127.0.0.1:17777")?;
+    if let Some(version) = options.hello {
+        return hello(socket, version);
+    }
     socket.set_read_timeout(Some(Duration::from_secs(2)))?;
     socket.set_write_timeout(Some(Duration::from_secs(2)))?;
     let request = handshake::initial_request();
@@ -97,4 +110,60 @@ fn main() -> Result<()> {
         }
     }
     anyhow::bail!("no response after three bounded initial requests")
+}
+
+/// Handshake, one Hello, and every reply, raw and decoded. The packet model is
+/// this repository's own (no magic header, peer-lab limits); a reply it cannot
+/// read is recorded, not an error.
+fn hello(socket: UdpSocket, version: u32) -> Result<()> {
+    let config = ProbeConfig {
+        packet: PacketConfig {
+            magic_bits: 0,
+            receiver: Receiver::Server,
+            limits: PeerLabConfig::default().packet.packet.limits,
+        },
+        codec: ControlCodec::default(),
+        handshake_timeout: Duration::from_secs(2),
+        handshake_attempts: 3,
+        reply_window: Duration::from_secs(5),
+        max_datagrams: 16,
+    };
+    let mut client = ProbeClient::connect(socket, config)?;
+    let handshake = client.handshake();
+    println!(
+        "{}",
+        json!({"event":"stateless_exchange_completed", "challenge_hex":hex(&handshake.challenge_datagram),
+        "ack_hex":hex(&handshake.ack_datagram), "identity_material_sent":false})
+    );
+    let report = client.hello(version, "")?;
+    println!(
+        "{}",
+        json!({"event":"hello_sent", "version":version, "token_units":0,
+        "packet_id":report.hello_packet_id, "hex":hex(&report.hello_datagram)})
+    );
+    for reply in &report.replies {
+        let decode = match &reply.decode {
+            ReplyDecode::Decoded { messages, notes } => json!({
+                "messages": messages.iter().map(|message| {
+                    let upgrade = match message {
+                        ControlMessage::Upgrade { version } => Some(*version),
+                        _ => None,
+                    };
+                    json!({"summary": message.summary(), "upgrade_version": upgrade})
+                }).collect::<Vec<_>>(),
+                "notes": notes,
+            }),
+            ReplyDecode::Undecoded(error) => json!({"undecoded": error}),
+        };
+        println!(
+            "{}",
+            json!({"event":"reply", "bytes":reply.bytes.len(), "hex":hex(&reply.bytes), "decode":decode})
+        );
+    }
+    println!(
+        "{}",
+        json!({"event":"hello_done", "hello_acked":report.hello_acked, "replies":report.replies.len(),
+        "login_sent":false, "game_connection_established":false})
+    );
+    Ok(())
 }

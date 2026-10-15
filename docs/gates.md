@@ -122,6 +122,8 @@ Last reconciled: 2026-10-15
   exposure of this host; each scenario still needs the user's approval and an
   intake case. Route B, a networked mode of this host's launcher, does not
   exist yet.
+- A Hello probe against the offline original (launcher `hello` mode) is
+  outside the save-load authorization and needs the user's approval.
 - Preserve the client installation until dependencies and provenance are
   understood; the restriction against reusing packaged content remains in force.
 

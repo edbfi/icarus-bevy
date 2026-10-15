@@ -432,6 +432,62 @@ class InvocationTests(unittest.TestCase):
             self.assertEqual(record["session_sha256"], approved.session_sha256)
             self.assertEqual(record["reference_binding"], "executable_only_not_full_tree")
 
+    def test_hello_mode_binds_one_u32_version_behind_handshake(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            fixture = Fixture(directory)
+            fixture.args.handshake_probe = True
+            fixture.args.hello_probe = True
+            fixture.session.update(allowed_modes=["startup", "handshake", "hello"], hello_version=2406501229,
+                                   probe=str(fixture.probe), probe_sha256=digest(fixture.probe))
+            fixture.write()
+            self.assertEqual(fixture.approve().hello_version, 2406501229)
+            updates: list[JsonObject] = [
+                {"hello_version": -1}, {"hello_version": 2**32}, {"hello_version": True},
+                {"hello_version": "2406501229"}, {"allowed_modes": ["startup", "hello"]},
+                {"allowed_modes": ["startup", "handshake"]},
+            ]
+            for update in updates:
+                with self.subTest(update=update):
+                    fixture.write(update)
+                    with self.assertRaises(ValueError):
+                        _ = fixture.approve()
+            fixture.args.hello_probe = False
+            fixture.write({"allowed_modes": ["startup", "handshake"]})
+            with self.assertRaisesRegex(ValueError, "requires hello authorization"):
+                _ = fixture.approve()
+            fixture.args.hello_probe = True
+            fixture.write()
+            fixture.args.complete_stateless = True
+            with self.assertRaisesRegex(ValueError, "--hello-probe"):
+                _ = fixture.approve()
+            fixture.args.complete_stateless = False
+            fixture.args.handshake_probe = False
+            with self.assertRaisesRegex(ValueError, "--hello-probe"):
+                _ = fixture.approve()
+
+    def test_hello_probe_receives_only_the_bound_version(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            fixture = Fixture(directory)
+            fixture.args.handshake_probe = True
+            fixture.args.hello_probe = True
+            fixture.session.update(allowed_modes=["startup", "handshake", "hello"], hello_version=1379612455,
+                                   probe=str(fixture.probe), probe_sha256=digest(fixture.probe))
+            fixture.write()
+            approved = fixture.approve()
+            run = fixture.case / "run"
+            run.mkdir()
+            docker = DockerFixture(handshake=True)
+            clock = Clock()
+            with patch("tools.run_reference_offline.command", new=docker), \
+                 patch("tools.run_reference_offline.time.monotonic", new=clock), \
+                 patch("tools.run_reference_offline.time.sleep", new=clock.sleep), \
+                 patch("tools.run_reference_offline.available_memory", return_value=4 * 1024**3), \
+                 patch("tools.run_reference_offline.shutil.disk_usage", new=disk_space):
+                result = observe(fixture.args, approved, run, NAME, TOKEN, ["docker", "run"])
+            self.assertIs(result["removed"], True)
+            probe = next(call for call in docker.calls if call[1] == "exec")
+            self.assertEqual(probe[4:], [CONTAINER, "/probes/handshake_probe", "--hello", "1379612455"])
+
     def test_save_load_binds_one_case_local_prospect_copy(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             fixture = Fixture(directory)

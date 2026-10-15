@@ -17,6 +17,7 @@ pub mod int_array;
 pub mod packet;
 pub mod packet_lab;
 pub mod peer_lab;
+pub mod probe_client;
 pub mod property_tree;
 pub mod recorders;
 pub mod rep_layout;
