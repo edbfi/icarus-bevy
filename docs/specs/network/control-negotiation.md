@@ -202,6 +202,9 @@ game listener.
   URL, unique id and platform, validates the URL, calls the game mode's
   PreLogin and welcomes the player on an empty error, otherwise sends the
   error and closes.
+- Server `UWorld::WelcomePlayer` (`0x1439fdeb0`, F-580): Welcome is type 1 with
+  three strings (level or travel name, game-mode class name, a game-mode
+  supplied string), followed by a flush, a queued-bits reset and login state 2.
 - Current client unique-net-id type hashes (F-543): 1 NULL, 2 MCP, 3 STEAM,
   4 PS4, 6 GOOGLE, 7 GOOGLEPLAY, 8 FACEBOOK, 9 IOS, 10 APPLE, 11 TENCENT,
   12 SWITCH, 13 AMAZON, 14 GAMECIRCLE, 15 THUNDERHEAD, 18 Oculus, 19 Quail,

@@ -2,8 +2,8 @@
 
 ## Status
 
-Experimental: static observations of client build 25793767, not wire-validated
-and not compared with the server. Last reconciled: 2026-10-15.
+Experimental: static observations of client build 25793767, with server
+build 25621760 writers for content blocks and NetGUIDs; not wire-validated. Last reconciled: 2026-10-15.
 
 ## Scope
 
@@ -30,6 +30,9 @@ dormancy, channel close reasons and every server-side writer.
   NetGUID and a stably-named bit, and a dynamic sub-object a class NetGUID
   whose zero value deletes it and ends the block. Otherwise a packed count of
   payload bits follows, and exactly those bits go to the object's replicator.
+- The older server's writers mirror these layouts: content-block headers with
+  packed payload counts, and NetGUIDs with export flags, path and checksum
+  (F-581).
 - `experimental::actor_channel` reads and re-encodes these structures
   bit-identically from authored fixtures, with payloads opaque (F-577).
 - The replicator hands rep-layout properties to `FRepLayout::ReceiveProperties`
@@ -77,4 +80,4 @@ dormancy, channel close reasons and every server-side writer.
 
 - Symbols M-420 (failed-closed attempts M-421, M-422); pseudocode M-423 to
   M-431, M-433; constants M-432, M-435 to M-437 (scope deviation M-434); net items M-438 to
-  M-449.
+  M-449; server writers M-455 to M-462.
