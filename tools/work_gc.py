@@ -524,13 +524,15 @@ def write_fixity(root: Path, directory: Path) -> tuple[Path, int, int]:
     symlinks = 0
     for parent, dirs, files in os.walk(directory, followlinks=False):
         here = Path(parent)
-        dirs[:] = [name for name in dirs if not overlaps(here / name, scratch)]
+        # Skip only what lies inside scratch: a directory that merely contains
+        # scratch still holds kept files.
+        dirs[:] = [name for name in dirs if not any(is_within(here / name, other) for other in scratch)]
         for name in files:
             path = here / name
             if path.is_symlink():
                 symlinks += 1
                 continue
-            if overlaps(path, scratch):
+            if any(is_within(path, other) for other in scratch):
                 continue
             rel = path.relative_to(directory).as_posix()
             # Readers split manifests with str.splitlines(), so no line boundary may appear in a name.

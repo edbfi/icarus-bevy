@@ -180,6 +180,19 @@ class WorkGcTest(unittest.TestCase):
         with contextlib.redirect_stdout(io.StringIO()):
             self.assertEqual(work_gc.main([*root, "--check"]), 0)
 
+    def test_fixity_manifest_keeps_files_beside_nested_scratch(self) -> None:
+        _ = self.write("work/c/runtime/run-1/home/.cache/CACHEDIR.TAG", b"Signature: 8a477f597d28d172789f06886806bc55")
+        _ = self.write("work/c/runtime/run-1/home/.cache/blob", b"c" * 4096)
+        _ = self.write("work/c/runtime/run-1/home/Saved/Logs/server.log", b"kept log")
+        _ = self.write("work/c/runtime/run-1/cleanup.json", b"{}")
+        _ = self.write("work/c/scope.md", b"scope")
+        manifest, entries, _symlinks = work_gc.write_fixity(self.root, self.root / "work/c")
+        self.assertEqual(entries, 3)
+        self.assertEqual(
+            [line.split("  ")[1] for line in manifest.read_text().splitlines()],
+            ["runtime/run-1/cleanup.json", "runtime/run-1/home/Saved/Logs/server.log", "scope.md"],
+        )
+
     def test_fixity_manifest_pins_kept_files_and_frees_scratch(self) -> None:
         self.project("a")
         notes = self.write("work/a/notes.md", b"kept")
