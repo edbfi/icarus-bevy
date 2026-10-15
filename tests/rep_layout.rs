@@ -6,9 +6,9 @@ use icarus_bevy::experimental::control_messages::ArchiveText;
 use icarus_bevy::experimental::packet::{BitReader, BitWriter, Payload};
 use icarus_bevy::experimental::rep_layout::{
     NetworkName, PropertyStream, QuantizedNormal, QuantizedVector, RepArray, RepCommand, RepEntry,
-    RepLayoutCodec, RepLayoutLimits, RepValue, UnsupportedItem, encode_property_stream,
-    parse_property_stream, read_network_name, read_property_stream, validate_layout,
-    write_network_name, write_property_stream,
+    RepLayoutCodec, RepLayoutLimits, RepValue, UnsupportedItem, encode_property_stream, enum_bits,
+    enum_byte_bits, enum_max_value, parse_property_stream, read_network_name, read_property_stream,
+    validate_layout, write_network_name, write_property_stream,
 };
 
 // Independently authored bit fixtures from the actor-channel spec (F-571 to
@@ -809,16 +809,14 @@ fn layout_validation() {
     let limits = RepLayoutLimits::default();
     assert!(validate_layout(&every_item_layout(), &limits).is_ok());
     for bad in [
-        RepCommand::Byte { enum_bits: Some(0) },
         RepCommand::Byte { enum_bits: Some(9) },
-        RepCommand::Enum { bits: 0 },
         RepCommand::Enum { bits: 33 },
         RepCommand::Opaque { bits: 0 },
         RepCommand::Opaque {
             bits: limits.max_opaque_bits + 1,
         },
         RepCommand::DynamicArray {
-            element: vec![RepCommand::Enum { bits: 0 }],
+            element: vec![RepCommand::Enum { bits: 33 }],
         },
     ] {
         assert!(
@@ -983,6 +981,74 @@ fn writer_validates_values_against_the_layout() {
         parse_property_stream(&encoded, &wide, &plain()).unwrap(),
         full
     );
+}
+
+#[test]
+fn enum_widths_follow_the_client_formula() {
+    assert_eq!(enum_max_value(&[]), 0);
+    assert_eq!(enum_max_value(&[0, 5, 2]), 5);
+    assert_eq!(enum_max_value(&[-3, -1]), -1);
+    // The maximum's bit length, capped at 8 for enum bytes.
+    for (max, bits) in [
+        (0, 0),
+        (1, 1),
+        (3, 2),
+        (4, 3),
+        (8, 4),
+        (255, 8),
+        (256, 8),
+        (i64::MAX, 8),
+        // A maximum of -1 wraps max + 1 to zero; other negatives are wide.
+        (-1, 0),
+        (-2, 8),
+        (i64::MIN, 8),
+    ] {
+        assert_eq!(enum_byte_bits(max), bits, "{max}");
+    }
+    // Enum items cap at the underlying integer's bits instead.
+    for (max, bytes, bits) in [
+        (0, 1, 0),
+        (3, 1, 2),
+        (300, 1, 8),
+        (300, 2, 9),
+        (70_000, 2, 16),
+        (70_000, 4, 17),
+        (-1, 4, 0),
+        (-2, 4, 32),
+        (-2, 8, 64),
+        (i64::MAX, 8, 63),
+    ] {
+        assert_eq!(enum_bits(max, bytes), bits, "{max} {bytes}");
+    }
+}
+
+#[test]
+fn zero_width_enum_items_send_no_bits() {
+    let layout = [
+        RepCommand::Byte {
+            enum_bits: Some(enum_byte_bits(0)),
+        },
+        RepCommand::Enum {
+            bits: enum_bits(-1, 1),
+        },
+    ];
+    let zero = stream(vec![
+        entry(1, RepValue::Byte(0)),
+        entry(2, RepValue::Enum(0)),
+    ]);
+    let encoded = encode_property_stream(&zero, &layout, &plain()).unwrap();
+    // Two handles and the terminator, no item bits.
+    assert_eq!(encoded.bit_len(), 8 + 8 + 8);
+    assert_eq!(
+        parse_property_stream(&encoded, &layout, &plain()).unwrap(),
+        zero
+    );
+    for bad in [
+        stream(vec![entry(1, RepValue::Byte(1))]),
+        stream(vec![entry(2, RepValue::Enum(1))]),
+    ] {
+        assert!(encode_property_stream(&bad, &layout, &plain()).is_err());
+    }
 }
 
 #[test]

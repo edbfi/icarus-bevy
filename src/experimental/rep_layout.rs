@@ -14,11 +14,10 @@
 //! carries a 2-byte element count and a nested zero-terminated handle stream
 //! (F-571). Item encodings:
 //! - [`RepCommand::Bool`]: one bit (F-574);
-//! - [`RepCommand::Byte`]: 8 bits, or for an enum byte a width derived from the
-//!   enum maximum, at most 8 bits; the formula is unread and version-split, so
-//!   the caller supplies the width (F-574);
-//! - [`RepCommand::Enum`]: an enum-derived width, likewise caller-supplied
-//!   (F-574);
+//! - [`RepCommand::Byte`]: 8 bits, or for an enum byte the width
+//!   [`enum_byte_bits`] derives from the enum's maximum value (F-574, F-632);
+//! - [`RepCommand::Enum`]: the width [`enum_bits`] derives from the maximum and
+//!   the underlying integer's size (F-574, F-632); a zero width sends no bits;
 //! - [`RepCommand::Object`]: a NetGUID reference through
 //!   [`super::actor_channel::read_guid_ref`] (F-572, F-574);
 //! - [`RepCommand::NetworkName`]: a hardcoded bit, then a hardcoded index or an
@@ -125,10 +124,40 @@ pub const PACKED_NAME_NET_VERSION: u32 = 6;
 pub const LEGACY_NAME_INDEX_BOUND: u32 = 411;
 /// Highest hardcoded index observed senders use (F-575); informational only.
 pub const SENDER_HARDCODED_NAME_MAX: u32 = 410;
-/// Widest caller-supplied enum byte (F-574).
+/// Widest enum byte (F-574).
 pub const ENUM_BYTE_BITS_MAX: u8 = 8;
-/// Widest caller-supplied enum item; the original maximum is unread.
+/// Widest enum item this codec carries; 8-byte underlying integers can need
+/// up to 64 bits, which it rejects.
 pub const ENUM_BITS_MAX: u8 = 32;
+
+/// The client's enum maximum: the signed maximum of the entry values, 0 for
+/// an enum without entries (F-632). Entries are the enum's registered values.
+pub fn enum_max_value(values: &[i64]) -> i64 {
+    values.iter().copied().max().unwrap_or(0)
+}
+
+/// `CeilLogTwo64(max + 1)`: the maximum's unsigned bit length, except 0 when
+/// `max + 1` wraps to 0, so a maximum of -1 or 0 takes no bits (F-632).
+fn enum_value_bits(max_value: i64) -> u32 {
+    let max = max_value as u64;
+    if max == u64::MAX {
+        0
+    } else {
+        u64::BITS - max.leading_zeros()
+    }
+}
+
+/// Width of an enum byte item at the client's engine net version 17 (above
+/// 16): the maximum's bit length, at most 8 (F-632).
+pub fn enum_byte_bits(max_value: i64) -> u8 {
+    enum_value_bits(max_value).min(u32::from(ENUM_BYTE_BITS_MAX)) as u8
+}
+
+/// Width of an enum item at engine net version 17 (12 or above): the
+/// maximum's bit length, at most the underlying integer's bits (F-632).
+pub fn enum_bits(max_value: i64, underlying_bytes: u8) -> u8 {
+    enum_value_bits(max_value).min(u32::from(underlying_bytes) * 8) as u8
+}
 
 /// Research resource policy; the original bounds are unknown.
 #[derive(Clone, Copy, Debug)]
@@ -186,11 +215,12 @@ pub enum UnsupportedItem {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum RepCommand {
     Bool,
-    /// `None`: 8 bits. `Some(width)`: a caller-supplied enum width, 1 to 8.
+    /// `None`: 8 bits. `Some(width)`: an enum byte's width, 0 to 8 (see
+    /// [`enum_byte_bits`]).
     Byte {
         enum_bits: Option<u8>,
     },
-    /// A caller-supplied enum width, 1 to 32.
+    /// An enum's width, 0 to 32 (see [`enum_bits`]).
     Enum {
         bits: u8,
     },
@@ -928,12 +958,12 @@ fn validate_layout_at(layout: &[RepCommand], limits: &RepLayoutLimits, depth: us
             RepCommand::Byte {
                 enum_bits: Some(bits),
             } => ensure!(
-                (1..=ENUM_BYTE_BITS_MAX).contains(bits),
-                "layout handle {handle}: enum byte width must be 1 to 8"
+                *bits <= ENUM_BYTE_BITS_MAX,
+                "layout handle {handle}: enum byte width must be 0 to 8"
             ),
             RepCommand::Enum { bits } => ensure!(
-                (1..=ENUM_BITS_MAX).contains(bits),
-                "layout handle {handle}: enum width must be 1 to 32"
+                *bits <= ENUM_BITS_MAX,
+                "layout handle {handle}: enum width must be 0 to 32"
             ),
             RepCommand::Opaque { bits } => ensure!(
                 (1..=limits.max_opaque_bits).contains(bits),
