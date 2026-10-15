@@ -188,3 +188,37 @@ fn string_limits_and_malformed_frames_fail_closed() {
         .contains("i32::MIN")
     );
 }
+
+#[test]
+fn soft_object_paths_are_archive_strings() {
+    let mut writer = BitWriter::new();
+    packed(&mut writer, 1);
+    writer.write_bytes(&10u32.to_le_bytes());
+    writer.write_bytes(b"/Game/A.A\0");
+    packed(&mut writer, 0);
+    let fixture = bits(&writer);
+    let layout = [RepCommand::SoftObject];
+    let path = narrow("/Game/A.A");
+    let expected = single(RepValue::SoftObject(path));
+    let payload = to_payload(&fixture);
+    assert_eq!(
+        parse_property_stream(&payload, &layout, &plain()).unwrap(),
+        expected
+    );
+    assert_eq!(
+        encode_property_stream(&expected, &layout, &plain()).unwrap(),
+        payload
+    );
+    assert_eq!(expected.entries[0].summary().string_units, Some(10));
+    assert!(!format!("{expected:?}").contains("Game"));
+    // The same bits under a Str layout read as a Str item, not a soft path.
+    assert!(matches!(
+        parse_property_stream(&payload, &[RepCommand::Str], &plain())
+            .unwrap()
+            .entries[0]
+            .value,
+        RepValue::Str(_)
+    ));
+    let four = codec(ByteOrder::Little, |limits| limits.max_string_units = 4);
+    assert!(error_of(parse_property_stream(&payload, &layout, &four)).contains("soft-object path"));
+}

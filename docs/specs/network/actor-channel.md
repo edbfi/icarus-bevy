@@ -105,7 +105,9 @@ dormancy, channel close reasons and every server-side writer.
   `SerializeName` (the same in `UPackageMapClient`) or, without a package
   map, to `StaticSerializeName`; both are the network-name form below. Str
   items are archive strings: a signed 4-byte count, then narrow bytes or
-  2-byte units with a terminator (F-596 re-encodes them).
+  2-byte units with a terminator (F-596 re-encodes them). Soft-object items
+  reach the archive path operator, which net bit archives override to send
+  the path as one archive string (F-599; F-600 re-encodes it).
 - Network names (F-575): a hardcoded bit; when set, the hardcoded name index
   (packed at engine net version 6 or later, otherwise bounded by 411; indices
   above 702 are rejected), which senders use only for indices up to 410; when
@@ -126,8 +128,8 @@ dormancy, channel close reasons and every server-side writer.
 
 ## Open questions
 
-- Property encodings beyond the read items: Text, soft objects and other
-  native structs (U-064); which levels each movement property uses (a property default).
+- Property encodings beyond the read items: Text and other native structs
+  (U-064); which levels each movement property uses (a property default).
 - Server writers for these records and their byte order and bounds (U-044).
 - Gameplay-tag replication mode, widths and an independent tag table (U-065).
 
@@ -138,5 +140,5 @@ dormancy, channel close reasons and every server-side writer.
   M-449; server writers M-455 to M-462;
   server struct items M-463 to M-470; handle walk M-428; movement and scaled
   vectors M-477 to M-491; tags M-493 to M-495; Name and Str routing M-497 to
-  M-510; hit results M-468, M-512 to M-521; codec tests M-475, M-476, M-492,
-  M-496, M-511, M-522.
+  M-510; hit results M-468, M-512 to M-521; soft objects M-445, M-523 to
+  M-529; codec tests M-475, M-476, M-492, M-496, M-511, M-522, M-530.

@@ -26,6 +26,8 @@
 //!   the net archive and the package map (F-595);
 //! - [`RepCommand::Str`]: an archive string, a signed 4-byte count then narrow
 //!   bytes or 2-byte units with a terminator (F-595);
+//! - [`RepCommand::SoftObject`]: the soft-object path as one archive string,
+//!   which net archives send in place of the path fields (F-599);
 //! - [`RepCommand::VectorQuantize`]: `FVector_NetQuantize`, a capped component
 //!   bit count and three biased integers, unscaled (F-593, server writer);
 //! - [`RepCommand::VectorQuantizeNormal`]: three 16-bit values biased by 32768;
@@ -84,7 +86,7 @@
 //!   values are raw 16-bit fields like the rotator's.
 //!
 //! Unsupported and failing closed: any item the spec does not encode, such as
-//! 32-bit integers, floats, text, soft objects and other
+//! 32-bit integers, floats, text and other
 //! native structs ([`UnsupportedItem`]); the optional bit and the preamble
 //! before the handle loop (M-426); non-canonical packed integers and tag net
 //! indices (the original reader may be more lenient), so every accepted stream
@@ -136,8 +138,8 @@ pub struct RepLayoutLimits {
     pub max_opaque_bits: usize,
     /// Declared network-name string units, including the terminator.
     pub max_name_units: usize,
-    /// Declared Str item units, including the terminator; the original bound
-    /// is the archive's maximum serialize size, unread.
+    /// Declared Str and soft-object path units, including the terminator; the
+    /// original bound is the archive's maximum serialize size, unread.
     pub max_string_units: usize,
 }
 
@@ -173,8 +175,6 @@ pub enum UnsupportedItem {
     Float,
     /// Base item path (F-575); the ordinary serializer is unread.
     Text,
-    /// Archive soft-path operator (F-574), unread.
-    SoftObject,
     /// Any other native net-serialize struct.
     OtherNativeStruct,
 }
@@ -195,6 +195,8 @@ pub enum RepCommand {
     NetworkName,
     /// An archive string through the Str item serializer (F-595).
     Str,
+    /// A soft-object path as an archive string (F-599).
+    SoftObject,
     VectorQuantize,
     VectorQuantize10,
     VectorQuantize100,
@@ -616,6 +618,7 @@ pub enum RepValue {
     Object(NetGuidRef),
     NetworkName(NetworkName),
     Str(ArchiveText),
+    SoftObject(ArchiveText),
     VectorQuantize(QuantizedVector),
     VectorQuantize10(QuantizedVector),
     VectorQuantize100(QuantizedVector),
@@ -639,6 +642,7 @@ pub enum ItemKind {
     Object,
     NetworkName,
     Str,
+    SoftObject,
     VectorQuantize,
     VectorQuantize10,
     VectorQuantize100,
@@ -661,6 +665,7 @@ impl RepValue {
             Self::Object(_) => ItemKind::Object,
             Self::NetworkName(_) => ItemKind::NetworkName,
             Self::Str(_) => ItemKind::Str,
+            Self::SoftObject(_) => ItemKind::SoftObject,
             Self::VectorQuantize(_) => ItemKind::VectorQuantize,
             Self::VectorQuantize10(_) => ItemKind::VectorQuantize10,
             Self::VectorQuantize100(_) => ItemKind::VectorQuantize100,
@@ -686,6 +691,10 @@ impl std::fmt::Debug for RepValue {
             Self::NetworkName(name) => formatter.debug_tuple("NetworkName").field(name).finish(),
             Self::Str(text) => formatter
                 .debug_struct("Str")
+                .field("units", &text.declared_units())
+                .finish(),
+            Self::SoftObject(text) => formatter
+                .debug_struct("SoftObject")
                 .field("units", &text.declared_units())
                 .finish(),
             Self::VectorQuantize(vector) => formatter
@@ -781,7 +790,7 @@ pub struct EntrySummary {
     pub checksum: bool,
     pub object: Option<GuidSummary>,
     pub name: Option<NameSummary>,
-    /// Declared Str units, including the terminator.
+    /// Declared Str or soft-object path units, including the terminator.
     pub string_units: Option<usize>,
     pub vector_bits: Option<u32>,
     pub rotator: Option<RotatorSummary>,
@@ -824,7 +833,9 @@ impl RepEntry {
         match &self.value {
             RepValue::Object(guid) => summary.object = Some(guid.summary()),
             RepValue::NetworkName(name) => summary.name = Some(name.summary()),
-            RepValue::Str(text) => summary.string_units = Some(text.declared_units()),
+            RepValue::Str(text) | RepValue::SoftObject(text) => {
+                summary.string_units = Some(text.declared_units());
+            }
             RepValue::VectorQuantize(vector)
             | RepValue::VectorQuantize10(vector)
             | RepValue::VectorQuantize100(vector) => summary.vector_bits = Some(vector.bits),
@@ -935,6 +946,7 @@ fn validate_layout_at(layout: &[RepCommand], limits: &RepLayoutLimits, depth: us
             | RepCommand::Object
             | RepCommand::NetworkName
             | RepCommand::Str
+            | RepCommand::SoftObject
             | RepCommand::VectorQuantize
             | RepCommand::VectorQuantize10
             | RepCommand::VectorQuantize100
@@ -1546,6 +1558,12 @@ fn read_value(
             codec.limits.max_string_units,
             "string item",
         )?),
+        RepCommand::SoftObject => RepValue::SoftObject(read_archive_string(
+            reader,
+            codec,
+            codec.limits.max_string_units,
+            "soft-object path",
+        )?),
         RepCommand::VectorQuantize => {
             RepValue::VectorQuantize(read_vector(reader, VectorPacking::NetQuantize)?)
         }
@@ -1720,6 +1738,15 @@ fn write_value(
                 codec,
                 codec.limits.max_string_units,
                 "string item",
+            )?;
+        }
+        (RepCommand::SoftObject, RepValue::SoftObject(text)) => {
+            write_archive_string(
+                writer,
+                text,
+                codec,
+                codec.limits.max_string_units,
+                "soft-object path",
             )?;
         }
         (RepCommand::VectorQuantize, RepValue::VectorQuantize(vector)) => {
