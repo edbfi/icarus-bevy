@@ -91,6 +91,12 @@ dormancy, channel close reasons and every server-side writer.
   (set when empty), then a count of a tag-manager width W, capped by the
   writer at 2^W - 1, then that many tags. `experimental::rep_layout`
   re-encodes the name and net-index forms with caller widths (F-594).
+- Name and Str items (F-595): the name item serializer calls the archive
+  name operator, which net bit archives send to the package map's
+  `SerializeName` (the same in `UPackageMapClient`) or, without a package
+  map, to `StaticSerializeName`; both are the network-name form below. Str
+  items are archive strings: a signed 4-byte count, then narrow bytes or
+  2-byte units with a terminator (F-596 re-encodes them).
 - Network names (F-575): a hardcoded bit; when set, the hardcoded name index
   (packed at engine net version 6 or later, otherwise bounded by 411; indices
   above 702 are rejected), which senders use only for indices up to 410; when
@@ -106,14 +112,13 @@ dormancy, channel close reasons and every server-side writer.
   references and single rotation bit as the client's; its quantizers are
   inlined and unread.
 - The block grammar, spawn order and handle stream match the stock engine
-  shape of this generation; whether Name items reach the network-name path,
-  the exact enum-width formulas and native struct serializers are unread
-  (U-064).
+  shape of this generation; the exact enum-width formulas and the remaining
+  native struct serializers are unread (U-064).
 
 ## Open questions
 
-- Property encodings beyond the read items, hit results and Name routing
-  (U-064); which levels each movement property uses (a property default).
+- Property encodings beyond the read items: hit results, Text and soft
+  objects (U-064); which levels each movement property uses (a property default).
 - Server writers for these records and their byte order and bounds (U-044).
 - Gameplay-tag replication mode, widths and an independent tag table (U-065).
 
@@ -123,5 +128,5 @@ dormancy, channel close reasons and every server-side writer.
   M-431, M-433; constants M-432, M-435 to M-437 (scope deviation M-434); net items M-438 to
   M-449; server writers M-455 to M-462;
   server struct items M-463 to M-470; handle walk M-428; movement and scaled
-  vectors M-477 to M-491; tags M-493 to M-495; codec tests M-475, M-476,
-  M-492, M-496.
+  vectors M-477 to M-491; tags M-493 to M-495; Name and Str routing M-497 to
+  M-510; codec tests M-475, M-476, M-492, M-496, M-511.

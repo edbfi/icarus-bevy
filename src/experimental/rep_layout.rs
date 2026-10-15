@@ -22,7 +22,10 @@
 //! - [`RepCommand::Object`]: a NetGUID reference through
 //!   [`super::actor_channel::read_guid_ref`] (F-572, F-574);
 //! - [`RepCommand::NetworkName`]: a hardcoded bit, then a hardcoded index or an
-//!   archive string and a 4-byte number (F-575);
+//!   archive string and a 4-byte number (F-575); Name items reach it through
+//!   the net archive and the package map (F-595);
+//! - [`RepCommand::Str`]: an archive string, a signed 4-byte count then narrow
+//!   bytes or 2-byte units with a terminator (F-595);
 //! - [`RepCommand::VectorQuantize`]: `FVector_NetQuantize`, a capped component
 //!   bit count and three biased integers, unscaled (F-593, server writer);
 //! - [`RepCommand::VectorQuantizeNormal`]: three 16-bit values biased by 32768;
@@ -68,17 +71,17 @@
 //! - tag widths and the replication mode come from tag configuration, which
 //!   this codec neither reads nor ships (U-065): the caller supplies them, and
 //!   an index is never resolved to a tag; the per-connection table path is
-//!   not supported; a name-mode tag uses the network-name path (inferred);
-//! - whether Name properties reach the network-name path is unread, so the
-//!   caller selects [`RepCommand::NetworkName`] explicitly; whether rotator
-//!   properties reach the compressed-rotator helper is likewise inferred;
+//!   not supported; a name-mode tag uses the network-name path, as the
+//!   archive's name operator does (F-595);
+//! - whether rotator properties reach the compressed-rotator helper is
+//!   inferred, so the caller selects [`RepCommand::Rotator`] explicitly;
 //! - byte-wide fields follow the bit order of the packet reader; 2-byte counts
 //!   and 4-byte fields (checksums, name numbers, string counts) follow the
 //!   caller's byte order, as the original byte order is unread; 16-bit item
 //!   values are raw 16-bit fields like the rotator's.
 //!
 //! Unsupported and failing closed: any item the spec does not encode, such as
-//! 32-bit integers, floats, strings, text, soft objects, hit results and other
+//! 32-bit integers, floats, text, soft objects, hit results and other
 //! native structs ([`UnsupportedItem`]); the optional bit and the preamble
 //! before the handle loop (M-426); non-canonical packed integers and tag net
 //! indices (the original reader may be more lenient), so every accepted stream
@@ -130,6 +133,9 @@ pub struct RepLayoutLimits {
     pub max_opaque_bits: usize,
     /// Declared network-name string units, including the terminator.
     pub max_name_units: usize,
+    /// Declared Str item units, including the terminator; the original bound
+    /// is the archive's maximum serialize size, unread.
+    pub max_string_units: usize,
 }
 
 impl Default for RepLayoutLimits {
@@ -140,6 +146,7 @@ impl Default for RepLayoutLimits {
             max_array_elements: 4096,
             max_opaque_bits: 65_536,
             max_name_units: 1024,
+            max_string_units: 65_536,
         }
     }
 }
@@ -161,8 +168,6 @@ pub enum UnsupportedItem {
     Int32,
     UInt32,
     Float,
-    /// Base item path (F-575); the ordinary serializer is unread.
-    Str,
     /// Base item path (F-575); the ordinary serializer is unread.
     Text,
     /// Archive soft-path operator (F-574), unread.
@@ -187,6 +192,8 @@ pub enum RepCommand {
     },
     Object,
     NetworkName,
+    /// An archive string through the Str item serializer (F-595).
+    Str,
     VectorQuantize,
     VectorQuantize10,
     VectorQuantize100,
@@ -563,6 +570,7 @@ pub enum RepValue {
     Enum(u32),
     Object(NetGuidRef),
     NetworkName(NetworkName),
+    Str(ArchiveText),
     VectorQuantize(QuantizedVector),
     VectorQuantize10(QuantizedVector),
     VectorQuantize100(QuantizedVector),
@@ -584,6 +592,7 @@ pub enum ItemKind {
     Enum,
     Object,
     NetworkName,
+    Str,
     VectorQuantize,
     VectorQuantize10,
     VectorQuantize100,
@@ -604,6 +613,7 @@ impl RepValue {
             Self::Enum(_) => ItemKind::Enum,
             Self::Object(_) => ItemKind::Object,
             Self::NetworkName(_) => ItemKind::NetworkName,
+            Self::Str(_) => ItemKind::Str,
             Self::VectorQuantize(_) => ItemKind::VectorQuantize,
             Self::VectorQuantize10(_) => ItemKind::VectorQuantize10,
             Self::VectorQuantize100(_) => ItemKind::VectorQuantize100,
@@ -626,6 +636,10 @@ impl std::fmt::Debug for RepValue {
             Self::Enum(_) => formatter.write_str("Enum"),
             Self::Object(guid) => formatter.debug_tuple("Object").field(guid).finish(),
             Self::NetworkName(name) => formatter.debug_tuple("NetworkName").field(name).finish(),
+            Self::Str(text) => formatter
+                .debug_struct("Str")
+                .field("units", &text.declared_units())
+                .finish(),
             Self::VectorQuantize(vector) => formatter
                 .debug_tuple("VectorQuantize")
                 .field(vector)
@@ -718,6 +732,8 @@ pub struct EntrySummary {
     pub checksum: bool,
     pub object: Option<GuidSummary>,
     pub name: Option<NameSummary>,
+    /// Declared Str units, including the terminator.
+    pub string_units: Option<usize>,
     pub vector_bits: Option<u32>,
     pub rotator: Option<RotatorSummary>,
     pub movement: Option<MovementSummary>,
@@ -748,6 +764,7 @@ impl RepEntry {
             checksum: self.checksum.is_some(),
             object: None,
             name: None,
+            string_units: None,
             vector_bits: None,
             rotator: None,
             movement: None,
@@ -758,6 +775,7 @@ impl RepEntry {
         match &self.value {
             RepValue::Object(guid) => summary.object = Some(guid.summary()),
             RepValue::NetworkName(name) => summary.name = Some(name.summary()),
+            RepValue::Str(text) => summary.string_units = Some(text.declared_units()),
             RepValue::VectorQuantize(vector)
             | RepValue::VectorQuantize10(vector)
             | RepValue::VectorQuantize100(vector) => summary.vector_bits = Some(vector.bits),
@@ -866,6 +884,7 @@ fn validate_layout_at(layout: &[RepCommand], limits: &RepLayoutLimits, depth: us
             | RepCommand::Byte { enum_bits: None }
             | RepCommand::Object
             | RepCommand::NetworkName
+            | RepCommand::Str
             | RepCommand::VectorQuantize
             | RepCommand::VectorQuantize10
             | RepCommand::VectorQuantize100
@@ -980,30 +999,32 @@ fn append_bits(writer: &mut BitWriter, payload: &Payload) {
     }
 }
 
-fn read_name_string(reader: &mut BitReader<'_>, codec: &RepLayoutCodec) -> Result<ArchiveText> {
+/// An archive string: a signed 4-byte count, narrow bytes for a positive
+/// count, 2-byte units for a negative one, each with a terminator; network
+/// names and Str items both use it (F-575, F-595).
+fn read_archive_string(
+    reader: &mut BitReader<'_>,
+    codec: &RepLayoutCodec,
+    max_units: usize,
+    what: &str,
+) -> Result<ArchiveText> {
     let order = codec.actor.order;
-    let count = read_u32(reader, order, "network name string count")? as i32;
-    ensure!(
-        count != i32::MIN,
-        "network name string count i32::MIN unsupported"
-    );
+    let count = read_u32(reader, order, what)? as i32;
+    ensure!(count != i32::MIN, "{what} count i32::MIN unsupported");
     let units = count.unsigned_abs() as usize;
-    ensure!(
-        units <= codec.limits.max_name_units,
-        "network name string exceeds the name unit limit"
-    );
+    ensure!(units <= max_units, "{what} exceeds its unit limit");
     // The cap bounds the allocation; overflowing reads allocate nothing.
     let payload = reader.read_bytes(units * if count < 0 { 2 } else { 1 });
-    ensure!(!reader.is_error(), "truncated network name string payload");
+    ensure!(!reader.is_error(), "truncated {what} payload");
     let prefix = match order {
         ByteOrder::Little => count.to_le_bytes(),
         ByteOrder::Big => count.to_be_bytes(),
     };
     let frame = [prefix.as_slice(), &payload].concat();
-    let parsed = read_string_frame(&frame, order).context("invalid network name string")?;
+    let parsed = read_string_frame(&frame, order).with_context(|| format!("invalid {what}"))?;
     ensure!(
         parsed.consumed() == frame.len(),
-        "network name string frame length mismatch"
+        "{what} frame length mismatch"
     );
     let encoding = match parsed.encoding() {
         StringEncoding::Empty => TokenEncoding::Empty,
@@ -1013,17 +1034,16 @@ fn read_name_string(reader: &mut BitReader<'_>, codec: &RepLayoutCodec) -> Resul
     ArchiveText::with_encoding(&parsed.units().collect::<Vec<_>>(), encoding)
 }
 
-fn write_name_string(
+fn write_archive_string(
     writer: &mut BitWriter,
     text: &ArchiveText,
     codec: &RepLayoutCodec,
+    max_units: usize,
+    what: &str,
 ) -> Result<()> {
     let order = codec.actor.order;
     let declared = text.declared_units();
-    ensure!(
-        declared <= codec.limits.max_name_units,
-        "network name string exceeds the name unit limit"
-    );
+    ensure!(declared <= max_units, "{what} exceeds its unit limit");
     let wide = text.encoding() == TokenEncoding::Wide;
     let count = if wide {
         -(declared as i32)
@@ -1053,7 +1073,12 @@ pub fn read_network_name(
     codec: &RepLayoutCodec,
 ) -> Result<NetworkName> {
     if !read_flag(reader, "network name hardcoded bit")? {
-        let text = read_name_string(reader, codec)?;
+        let text = read_archive_string(
+            reader,
+            codec,
+            codec.limits.max_name_units,
+            "network name string",
+        )?;
         let number = read_u32(reader, codec.actor.order, "network name number")?;
         return Ok(NetworkName::String { text, number });
     }
@@ -1093,7 +1118,13 @@ pub fn write_network_name(
         }
         NetworkName::String { text, number } => {
             writer.write_bit(false);
-            write_name_string(writer, text, codec)?;
+            write_archive_string(
+                writer,
+                text,
+                codec,
+                codec.limits.max_name_units,
+                "network name string",
+            )?;
             write_u32(writer, *number, codec.actor.order);
         }
     }
@@ -1317,6 +1348,12 @@ fn read_value(
             RepValue::Object(read_guid_ref(reader, &codec.actor).context("object item")?)
         }
         RepCommand::NetworkName => RepValue::NetworkName(read_network_name(reader, codec)?),
+        RepCommand::Str => RepValue::Str(read_archive_string(
+            reader,
+            codec,
+            codec.limits.max_string_units,
+            "string item",
+        )?),
         RepCommand::VectorQuantize => {
             RepValue::VectorQuantize(read_vector(reader, VectorPacking::NetQuantize)?)
         }
@@ -1486,6 +1523,15 @@ fn write_value(
         }
         (RepCommand::NetworkName, RepValue::NetworkName(name)) => {
             write_network_name(writer, name, codec)?;
+        }
+        (RepCommand::Str, RepValue::Str(text)) => {
+            write_archive_string(
+                writer,
+                text,
+                codec,
+                codec.limits.max_string_units,
+                "string item",
+            )?;
         }
         (RepCommand::VectorQuantize, RepValue::VectorQuantize(vector)) => {
             write_vector(writer, vector, VectorPacking::NetQuantize)?;

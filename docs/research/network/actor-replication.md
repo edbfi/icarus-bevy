@@ -27,13 +27,15 @@ consecutively (F-586), and the movement struct sends flags, level-quantized
 location and velocities and a byte or 16-bit rotation, its levels being
 property defaults that never cross the wire (F-588, F-589). Gameplay tags go
 as names or as split net indices whose widths, like the container count
-width, are tag configuration (F-591, F-592). These are
+width, are tag configuration (F-591, F-592). Name items take the
+network-name form through the package map, and Str items are archive strings
+(F-595). These are
 client-build observations, with the older server's content-block and NetGUID
 writers mirroring them (F-581); nothing is wire-validated.
 
 ## Open
 
-- Name routing, hit results and remaining items (U-064); server send policy (U-044).
+- Hit results, Text and soft objects (U-064); server send policy (U-044).
 - Tag replication by net index would need an identical tag table (F-583, U-065).
 
 ## Artifacts
