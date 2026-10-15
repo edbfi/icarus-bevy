@@ -47,7 +47,7 @@ client item layout, and no Set occurs (F-559, F-562). Every Struct payload
 that stays opaque is one of four fixed-width engine math types (F-565), each
 three or four ordered 4-byte components with no count or tail (F-602).
 Construction candidates frame too, building grids nesting per-type row names
-over placed pieces (F-633); with struct arrays bounded at the 1 MiB component
+over placed pieces whose transforms share the grid's frame (F-643); with struct arrays bounded at the 1 MiB component
 ceiling, a 646,614-byte grid array frames and both copies still round-trip
 (F-634).
 
@@ -66,4 +66,4 @@ No decoded value, text or number was emitted or interpreted.
 
 ## Artifacts
 
-M-047..M-077, M-079..M-108, M-118..M-130, M-278..M-280, M-351, M-352, M-376..M-384, M-389, M-390, M-401..M-404, M-407..M-410, M-606..M-613, M-616..M-618, M-626, M-627.
+M-047..M-077, M-079..M-108, M-118..M-130, M-278..M-280, M-351, M-352, M-376..M-384, M-389, M-390, M-401..M-404, M-407..M-410, M-606..M-613, M-616..M-618, M-626, M-627, M-636..M-638.
