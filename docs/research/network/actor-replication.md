@@ -34,7 +34,8 @@ fields, quantized vectors, NetGUID references and a bone name (F-597).
 Text items take the shared FText serializer at the archive version client
 bunches are built with, 522; every history body is read and the codec
 re-encodes them all (F-639). After the properties, field headers carry
-RPCs and custom-delta payloads, both read (F-637, F-638). These are client-build observations, with the older server's content-block and NetGUID
+RPCs and custom-delta payloads, both read, fast arrays included (F-637, F-638,
+F-641). These are client-build observations, with the older server's content-block and NetGUID
 writers mirroring them (F-581) and composing actor bunches in the client's
 read order (F-610); nothing is wire-validated.
 

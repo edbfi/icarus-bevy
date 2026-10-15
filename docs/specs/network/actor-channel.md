@@ -46,12 +46,17 @@ dormancy, channel close reasons and every server-side writer.
   unknown index is skipped (F-637). A property field's custom-delta payload
   starts with a bit at engine net version 11 or later and, for a static
   array, a packed index below its dimension; the struct's delta serializer
-  reads the rest. A function field is an RPC, accepted with the net flag and,
+  reads the rest. A fast array's body is four 4-byte fields (array and base
+  replication keys, delete and change counts, each at most 2048 initially), a
+  4-byte ID per delete, then per change a 4-byte ID and either the item
+  struct's commands in order or, when the struct-delta bit is set and the
+  array uses delta serialization, a set bit and the item's rep-layout property
+  stream; native item structs use their own serializer (F-641). A function field is an RPC, accepted with the net flag and,
   on a server, the server flag: each parameter, static-array elements apart,
   is a bare bit if a bool, else a presence bit then its commands' item
   encodings without handles; arrays are a 2-byte count of at most `0xFFFE`
   and elements in order, and the payload must be consumed exactly (F-638).
-  `experimental::rep_rpc` reads and re-encodes all three.
+  `experimental::rep_rpc` reads and re-encodes all of these.
 - Rep-layout stream (F-571): packed handles select layout commands and handle
   0 ends a stream; a dynamic array carries a 2-byte element count and a nested
   zero-terminated handle stream; each value goes through its property's net
@@ -207,6 +212,6 @@ dormancy, channel close reasons and every server-side writer.
   M-529; Text M-531 to M-536, M-545 to M-547, M-570;
   net archive version M-571 to M-576;
   display strings M-581 to M-584; Text codec M-585, M-602 to M-605; Text callees M-586,
-  M-587; custom versions M-588; enum widths M-614, M-615; fields and RPCs M-620 to M-624; codec tests M-475, M-476, M-492, M-496,
+  M-587; custom versions M-588; enum widths M-614, M-615; fields and RPCs M-620 to M-624; fast arrays M-628 to M-635; codec tests M-475, M-476, M-492, M-496,
   M-511, M-522, M-530, M-548; layout source M-552 to M-555; send order M-461, M-556 to
   M-560.
