@@ -73,6 +73,9 @@ dormancy, channel close reasons and every server-side writer.
 
 ## Candidate
 
+- The older server's `SerializeNewActor` (M-460) makes the same three object
+  references and single rotation bit as the client's; its quantizers are
+  inlined and unread.
 - The block grammar, spawn order and handle stream match the stock engine
   shape of this generation; whether Name items reach the network-name path,
   the exact enum-width formulas and native struct serializers are unread
