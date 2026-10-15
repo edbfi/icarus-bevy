@@ -45,9 +45,10 @@ until their case is deliberately retired.
      `superseded_by` (`docs.md` rule 4), then prune. The manifest pins every
      kept file; `docs_lint.py --local` verifies and `--list-local` backs up
      each one;
-   - unindexed cases that no tracked file mentions: retire the ones no longer
-     needed with `python3 tools/work_gc.py --retire <name>...`, which refuses
-     any name an active row covers, a tracked file mentions, or a guard holds;
+   - unindexed cases that no tracked or untracked, non-ignored file mentions:
+     retire the ones no longer needed with
+     `python3 tools/work_gc.py --retire <name>...`, which refuses any name an
+     active row covers, such a file mentions, or a guard holds;
      cases cited by `docs/history/` or `docs/research/archive/` stay;
    - loose top-level files: move them into their case, or retire them.
 3. Before deleting anything else in `work/`, grep the path in `evidence/`,
