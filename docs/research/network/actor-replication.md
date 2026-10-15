@@ -18,8 +18,9 @@ blocks (F-569). Later content blocks name the actor or a sub-object and carry a
 packed payload-bit count for the object's replicator (F-570). Inside a block,
 packed rep handles drive the layout, with nested streams for dynamic arrays,
 and spawn vectors are raw floats or bias-packed integers in tenths, with
-16-bit compressed rotators (F-571, F-573); per-property serializers are unread
-(U-064). These are
+16-bit compressed rotators (F-571, F-573). Bool, Byte, Enum, object, native
+struct and soft-object items are read; Str, Name, Text and native struct bodies
+are not (F-574, U-064). These are
 client-build observations only; no server writer has been read and nothing is
 wire-validated.
 
@@ -29,4 +30,4 @@ wire-validated.
 
 ## Artifacts
 
-M-420..M-437.
+M-420..M-445.

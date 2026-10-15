@@ -42,6 +42,12 @@ dormancy, channel close reasons and every server-side writer.
   4-byte floats, a quantized one a component bit count (at most 24) and three
   integers bounded by `1 << (bits + 2)`, each decoded as the value minus
   `1 << (bits + 1)` times 0.1 (F-573).
+- Property net items (F-574): Bool is one bit; Byte is 8 bits, or with an
+  enum a width derived from its maximum value, at most 8 bits (formula split at
+  engine net version 16); Enum a width derived from its maximum (split at
+  version 12); object references a NetGUID; structs with the native
+  net-serialize flag their own serializer, other structs and arrays are
+  flattened by the layout; soft objects the archive soft-path operator.
 - Compressed rotator (F-573): pitch, yaw and roll in that order, each a bit set
   when its 16-bit quantized angle is nonzero and then, if set, that 2-byte
   value; quantization is `angle * 65536 / 360` rounded, decoding multiplies by
@@ -50,8 +56,8 @@ dormancy, channel close reasons and every server-side writer.
 ## Candidate
 
 - The block grammar, spawn order and handle stream match the stock engine
-  shape of this generation; individual property net serializers are unread
-  (U-064).
+  shape of this generation; Str, Name and Text items, the exact enum-width
+  formulas and individual native struct serializers are unread (U-064).
 
 ## Open questions
 
@@ -61,4 +67,5 @@ dormancy, channel close reasons and every server-side writer.
 ## Evidence
 
 - Symbols M-420 (failed-closed attempts M-421, M-422); pseudocode M-423 to
-  M-431, M-433; constants M-432, M-435 to M-437 (scope deviation M-434).
+  M-431, M-433; constants M-432, M-435 to M-437 (scope deviation M-434); net items M-438 to
+  M-445.
