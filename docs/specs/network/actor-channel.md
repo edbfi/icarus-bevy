@@ -41,13 +41,17 @@ dormancy, channel close reasons and every server-side writer.
   version 13 or later read a quantized bit; an unquantized vector is three
   4-byte floats, a quantized one a component bit count (at most 24) and three
   integers bounded by `1 << (bits + 2)`, each decoded as the value minus
-  `1 << (bits + 1)` times a float scale constant.
+  `1 << (bits + 1)` times 0.1 (F-573).
+- Compressed rotator (F-573): pitch, yaw and roll in that order, each a bit set
+  when its 16-bit quantized angle is nonzero and then, if set, that 2-byte
+  value; quantization is `angle * 65536 / 360` rounded, decoding multiplies by
+  `360 / 65536`.
 
 ## Candidate
 
 - The block grammar, spawn order and handle stream match the stock engine
-  shape of this generation; the vector scale constant, the compressed rotator
-  and individual property net serializers are unread (U-064).
+  shape of this generation; individual property net serializers are unread
+  (U-064).
 
 ## Open questions
 
@@ -57,4 +61,4 @@ dormancy, channel close reasons and every server-side writer.
 ## Evidence
 
 - Symbols M-420 (failed-closed attempts M-421, M-422); pseudocode M-423 to
-  M-431.
+  M-431, M-433; constants M-432, M-435 to M-437 (scope deviation M-434).
