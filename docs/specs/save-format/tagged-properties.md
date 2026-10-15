@@ -171,6 +171,8 @@ objects):
   fields use binary/native serialization, so tagged framing is not recursive
   (F-308). D01: 8 optional leaves (5 Int, 3 Str); D02: four 4-byte native
   transfers (F-309, F-212). Conditional static grammars only.
+- Every opaque Struct leaf is one of four fixed-width engine math types
+  (F-565): three or four ordered 4-byte components, no count or tail (F-602).
 - Client build 25793767: tag operator `0x14212b0e0`, Array serializer
   `0x142123da0`; same 441/282/503 gates; Map/Set gate 509. Array branch needs mask
   `0x20` clear, version >= 500 and the inner Struct class flag; reads a 4-byte
@@ -188,8 +190,7 @@ objects):
 - Original normalization, EOF and error behavior versus the strict readers (U-026).
 - Official restore/import and newer-build migration of these saves (U-025).
 - Value meanings, Name identities and Enum lookups (U-020); empty-family
-  population (U-021); deeper C028 children (U-048); opaque binary Struct
-  leaves are three or four 4-byte components (F-602).
+  population (U-021); deeper C028 children (U-048).
 - Client large-span safety (U-030) and dedicated-server correspondence (U-031).
 - Singleton saved integer's restoration role (U-039); remaining classes (U-050).
 - Supplied Text-bearing body (U-053); runtime save-bit mutation (U-054); Map/Set
