@@ -21,12 +21,24 @@ candidates and appends one line per removal to ``work/.gc/log.jsonl``.
 ``--check`` exits 1 while eligible scratch remains, or when ``/proc`` is unavailable
 and liveness is unknown, for the milestone checklist.
 
+``--fixity DIR`` writes ``DIR/fixity.sha256`` listing every regular file under
+``DIR`` except reproducible scratch, so an evidence row naming a whole directory
+can be superseded by a row naming that one digested file. Files a manifest
+lists are protected like the manifest itself.
+
+``--retire NAME...`` deletes whole cases or loose top-level files that no
+active evidence row covers and no tracked file mentions (``git grep``), under
+the same open, live and settling guards; every name is checked before any is
+removed.
+
 Usage::
 
     python3 tools/work_gc.py              # report per case and review signals
     python3 tools/work_gc.py --prune      # remove eligible reproducible scratch
     python3 tools/work_gc.py --check      # exit 1 if eligible scratch remains
     python3 tools/work_gc.py --json       # machine-readable report
+    python3 tools/work_gc.py --fixity work/case/      # pin a directory's kept files
+    python3 tools/work_gc.py --retire case-20261013  # delete an unneeded case
 """
 
 from __future__ import annotations
@@ -43,6 +55,8 @@ import shutil
 import stat
 import sys
 import time
+import re
+import subprocess
 from typing import TypeIs, cast
 
 MIB = 1024 * 1024
@@ -59,6 +73,9 @@ ORIGINAL_ROOTS: tuple[str, ...] = ("icarus-orig", "icarus-client-orig", "referen
 COPY_MIN_BYTES = MIB
 SETTLE_HOURS = 6.0
 CACHEDIR_SIGNATURE = b"Signature: 8a477f597d28d172789f06886806bc55"
+# Same format and name as ``FIXITY_NAME`` in ``tools/docs_lint.py``, which verifies it.
+FIXITY_NAME = "fixity.sha256"
+FIXITY_LINE = re.compile(r"([0-9a-f]{64})  (\S(?:.*\S)?)")
 
 
 def _object_dict(value: object) -> TypeIs[dict[object, object]]:
@@ -89,6 +106,8 @@ class Case:
     state_error: str | None = None
     indexed: bool = False
     live: bool = False
+    guard: str | None = None
+    references: list[str] = field(default_factory=list)
     candidates: list[Candidate] = field(default_factory=list)
     held: list[Candidate] = field(default_factory=list)
     deferred: list[Candidate] = field(default_factory=list)
@@ -152,7 +171,32 @@ def protected_paths(root: Path) -> set[Path]:
                 continue
             if path.startswith(f"{WORK}/"):
                 protected.add(root / path.rstrip("/"))
+                protected.update(fixity_entries(root / path))
     return protected
+
+
+def fixity_entries(manifest: Path) -> list[Path]:
+    """Files a fixity manifest lists; an unreadable or escaping manifest stops the run."""
+    if manifest.name != FIXITY_NAME or not manifest.is_file():
+        return []
+    entries: list[Path] = []
+    for number, line in enumerate(manifest.read_text(encoding="utf-8").splitlines(), start=1):
+        match = FIXITY_LINE.fullmatch(line)
+        rel = match.group(2) if match else ""
+        if not rel or rel.startswith("/") or ".." in Path(rel).parts:
+            raise SystemExit(f"work_gc: {manifest}:{number}: not a '<sha256>  <relative path>' line")
+        entries.append(manifest.parent / rel)
+    return entries
+
+
+def tracked_references(root: Path, name: str) -> list[str]:
+    """Tracked files mentioning ``name``; a failing ``git grep`` counts as a reference."""
+    result = subprocess.run(["git", "-C", str(root), "grep", "-l", "-F", "-e", name], capture_output=True, text=True)
+    if result.returncode == 1:
+        return []
+    if result.returncode != 0:
+        return [f"<git grep failed: {result.stderr.strip()}>"]
+    return result.stdout.split()
 
 
 def read_state(case: Path) -> tuple[str | None, str | None]:
@@ -307,20 +351,40 @@ def find_candidates(case: Path, originals: OriginalIndex) -> list[Candidate]:
     return found
 
 
+@dataclass(frozen=True)
+class Loose:
+    path: Path
+    size: int
+    references: list[str]
+
+
 @dataclass
 class Report:
     root: Path
     cases: list[Case]
-    loose: list[tuple[Path, int]]
+    loose: list[Loose]
     live_known: bool
 
     @property
     def total(self) -> int:
-        return sum(case.size for case in self.cases) + sum(size for _path, size in self.loose)
+        return sum(case.size for case in self.cases) + sum(item.size for item in self.loose)
+
+    def retirable(self) -> list[Case]:
+        """Unindexed cases nothing tracked mentions; still subject to the guards."""
+        return [case for case in self.cases if not case.indexed and not case.references]
 
 
-def is_eligible(case: Case, now: float, settle_hours: float) -> bool:
-    return case.state != "open" and case.state_error is None and not case.live and now - case.newest >= settle_hours * 3600
+def guard(case: Case, now: float, settle_hours: float) -> str | None:
+    """Why nothing in the case may be removed now, or None."""
+    if case.state_error is not None:
+        return "invalid case.json"
+    if case.state == "open":
+        return "open"
+    if case.live:
+        return "live"
+    if now - case.newest < settle_hours * 3600:
+        return "settling"
+    return None
 
 
 def scan(
@@ -329,27 +393,31 @@ def scan(
     now: float,
     settle_hours: float = SETTLE_HOURS,
     live: Callable[[], set[Path] | None] = live_paths,
+    references: Callable[[Path, str], list[str]] = tracked_references,
 ) -> Report:
     work = root / WORK
     protected = protected_paths(root)
     running = live()
     originals = OriginalIndex([root / name for name in ORIGINAL_ROOTS])
     cases: list[Case] = []
-    loose: list[tuple[Path, int]] = []
+    loose: list[Loose] = []
     for entry in sorted(work.iterdir()) if work.is_dir() else []:
         if entry.name == LOG_DIR:
             continue
         if not entry.is_dir() or entry.is_symlink():
-            loose.append((entry, tree_size(entry)[0]))
+            loose.append(Loose(entry, tree_size(entry)[0], references(root, entry.name)))
             continue
         case = Case(entry.name, entry)
         case.size, case.newest = tree_size(entry)
         case.state, case.state_error = read_state(entry)
         case.indexed = any(is_within(path, entry) for path in protected)
         case.live = running is None or any(is_within(path, entry) for path in running)
+        case.guard = guard(case, now, settle_hours)
+        if not case.indexed:
+            case.references = references(root, entry.name)
         for candidate in find_candidates(entry, originals):
             (case.held if overlaps(candidate.path, protected) else case.candidates).append(candidate)
-        if not is_eligible(case, now, settle_hours):
+        if case.guard is not None:
             case.deferred, case.candidates = case.candidates, []
         cases.append(case)
     return Report(root, cases, loose, running is not None)
@@ -366,29 +434,93 @@ def remove(path: Path, work: Path) -> None:
         path.unlink()
 
 
-def prune(report: Report, now: float) -> list[Candidate]:
+def remove_logged(report: Report, removals: Sequence[tuple[str, Candidate]], now: float) -> None:
+    """Remove each ``(case, candidate)``, writing its log entry durably first."""
     work = report.root / WORK
     log = work / LOG_DIR / "log.jsonl"
     log.parent.mkdir(exist_ok=True)
-    removed: list[Candidate] = []
     with log.open("a", encoding="utf-8") as handle:
-        for case in report.cases:
-            for candidate in case.candidates:
-                entry = {
-                    "removed_at": datetime.fromtimestamp(now, UTC).isoformat(timespec="seconds"),
-                    "case": case.name,
-                    "path": candidate.path.relative_to(report.root).as_posix(),
-                    "kind": candidate.kind,
-                    "bytes": candidate.size,
-                }
-                # The entry is durable before the removal, so the log never misses a deleted path.
-                _ = handle.write(json.dumps(entry, sort_keys=True) + "\n")
-                handle.flush()
-                os.fsync(handle.fileno())
-                remove(candidate.path, work)
-                removed.append(candidate)
-            case.candidates = []
-    return removed
+        for case, candidate in removals:
+            entry = {
+                "removed_at": datetime.fromtimestamp(now, UTC).isoformat(timespec="seconds"),
+                "case": case,
+                "path": candidate.path.relative_to(report.root).as_posix(),
+                "kind": candidate.kind,
+                "bytes": candidate.size,
+            }
+            # The entry is durable before the removal, so the log never misses a deleted path.
+            _ = handle.write(json.dumps(entry, sort_keys=True) + "\n")
+            handle.flush()
+            os.fsync(handle.fileno())
+            remove(candidate.path, work)
+
+
+def prune(report: Report, now: float) -> list[Candidate]:
+    removals = [(case.name, candidate) for case in report.cases for candidate in case.candidates]
+    remove_logged(report, removals, now)
+    for case in report.cases:
+        case.candidates = []
+    return [candidate for _case, candidate in removals]
+
+
+def retire(report: Report, names: Sequence[str], now: float) -> list[Candidate]:
+    """Delete whole cases or loose files; refuse all of them if any one fails a guard."""
+    cases = {case.name: case for case in report.cases}
+    loose = {item.path.name: item for item in report.loose}
+    removals: list[tuple[str, Candidate]] = []
+    refusals: list[str] = []
+    for name in dict.fromkeys(names):
+        if name in cases:
+            case = cases[name]
+            if case.indexed:
+                refusals.append(f"{name}: an active evidence row covers it; retire the row first")
+            elif case.references:
+                refusals.append(f"{name}: mentioned by {', '.join(case.references[:3])}")
+            elif case.guard is not None:
+                refusals.append(f"{name}: {case.guard}")
+            else:
+                removals.append((name, Candidate(case.path, "retired-case", case.size)))
+        elif name in loose:
+            item = loose[name]
+            if item.references:
+                refusals.append(f"{name}: mentioned by {', '.join(item.references[:3])}")
+            else:
+                removals.append((name, Candidate(item.path, "retired-loose", item.size)))
+        else:
+            refusals.append(f"{name}: no such case or loose file under {WORK}/")
+    if refusals:
+        raise SystemExit("work_gc: nothing retired:\n  " + "\n  ".join(refusals))
+    remove_logged(report, removals, now)
+    return [candidate for _name, candidate in removals]
+
+
+def write_fixity(root: Path, directory: Path) -> tuple[Path, int, int]:
+    """Write ``directory/fixity.sha256``; returns the manifest, its entries and skipped symlinks."""
+    directory = directory.resolve()
+    if not is_within(directory, (root / WORK).resolve()) or not directory.is_dir():
+        raise SystemExit(f"work_gc: --fixity needs a directory under {WORK}/: {directory}")
+    manifest = directory / FIXITY_NAME
+    if manifest.exists():
+        raise SystemExit(f"work_gc: {manifest} exists; manifests are write-once")
+    scratch = [candidate.path for candidate in find_candidates(directory, OriginalIndex([root / name for name in ORIGINAL_ROOTS]))]
+    lines: list[str] = []
+    symlinks = 0
+    for parent, dirs, files in os.walk(directory, followlinks=False):
+        here = Path(parent)
+        dirs[:] = [name for name in dirs if not overlaps(here / name, scratch)]
+        for name in files:
+            path = here / name
+            if path.is_symlink():
+                symlinks += 1
+                continue
+            if overlaps(path, scratch):
+                continue
+            rel = path.relative_to(directory).as_posix()
+            if "\n" in rel or "\\" in rel or rel != rel.strip():
+                raise SystemExit(f"work_gc: {path}: name cannot be written to a fixity manifest")
+            lines.append(f"{sha256_file(path)}  {rel}")
+    _ = manifest.write_text("".join(f"{line}\n" for line in sorted(lines, key=lambda line: line[66:])), encoding="utf-8")
+    return manifest, len(lines), symlinks
 
 
 def mib(size: int) -> str:
@@ -413,15 +545,19 @@ def render(report: Report) -> list[str]:
     held = [case for case in report.cases if case.held]
     deferred = sum(case.deferred_bytes for case in report.cases)
     unindexed = [case.name for case in report.cases if not case.indexed]
+    retirable = report.retirable()
     missing_state = [case.name for case in report.cases if case.state is None]
     lines.append("review signals:")
-    lines.append(f"  {len(unindexed)} case(s) without an active evidence row (keep notes, or retire the case deliberately)")
+    lines.append(
+        f"  {len(unindexed)} case(s) without an active evidence row; {len(retirable)} of them, "
+        + f"{mib(sum(case.size for case in retirable))}, are mentioned by no tracked file (--retire deliberately)"
+    )
     lines.append(f"  {len(missing_state)} case(s) without a valid {CASE_FILE}")
     lines.append(
         f"  {len(held)} case(s) hold {mib(sum(case.held_bytes for case in held))} of scratch under active evidence rows; "
         + "narrow a directory row to its digested files, or retire it, before pruning"
     )
-    lines.append(f"  {len(report.loose)} loose top-level file(s), {mib(sum(size for _path, size in report.loose))}; new scratch belongs in a case")
+    lines.append(f"  {len(report.loose)} loose top-level file(s), {mib(sum(item.size for item in report.loose))}; new scratch belongs in a case")
     for case in report.cases:
         if case.state_error:
             lines.append(f"  {case.name}: {case.state_error}")
@@ -441,7 +577,10 @@ def as_json(report: Report) -> dict[str, object]:
     return {
         "total_bytes": report.total,
         "live_known": report.live_known,
-        "loose": [{"path": path.relative_to(report.root).as_posix(), "bytes": size} for path, size in report.loose],
+        "loose": [
+            {"path": item.path.relative_to(report.root).as_posix(), "bytes": item.size, "references": item.references}
+            for item in report.loose
+        ],
         "cases": [
             {
                 "name": case.name,
@@ -450,6 +589,8 @@ def as_json(report: Report) -> dict[str, object]:
                 "state_error": case.state_error,
                 "indexed": case.indexed,
                 "live": case.live,
+                "guard": case.guard,
+                "references": case.references,
                 "eligible": candidates(case.candidates),
                 "held": candidates(case.held),
                 "deferred": candidates(case.deferred),
@@ -472,6 +613,8 @@ class Options(argparse.Namespace):
     check: bool = False
     json: bool = False
     settle_hours: float = SETTLE_HOURS
+    fixity: list[Path] | None = None
+    retire: list[str] | None = None
 
 
 def parse_options(argv: Sequence[str] | None) -> Options:
@@ -480,6 +623,8 @@ def parse_options(argv: Sequence[str] | None) -> Options:
     mode = parser.add_mutually_exclusive_group()
     _ = mode.add_argument("--prune", action="store_true", help="remove eligible reproducible scratch")
     _ = mode.add_argument("--check", action="store_true", help="exit 1 while eligible scratch remains")
+    _ = mode.add_argument("--fixity", type=Path, action="append", metavar="DIR", help="write DIR/fixity.sha256")
+    _ = mode.add_argument("--retire", nargs="+", metavar="NAME", help="delete unneeded cases or loose files")
     _ = parser.add_argument("--json", action="store_true", help="print the report as JSON")
     _ = parser.add_argument("--settle-hours", type=float, default=SETTLE_HOURS, help="skip cases changed more recently")
     options = Options()
@@ -491,7 +636,18 @@ def main(argv: Sequence[str] | None = None) -> int:
     options = parse_options(argv)
     root = options.root.resolve() if options.root else find_root(Path.cwd().resolve())
     now = time.time()
+    if options.fixity:
+        for directory in options.fixity:
+            manifest, entries, symlinks = write_fixity(root, directory)
+            print(f"work_gc: wrote {manifest.relative_to(root).as_posix()}: {entries} file(s), {symlinks} symlink(s) not listed")
+            print(f"  sha256 {sha256_file(manifest)}")
+        return 0
     report = scan(root, now=now, settle_hours=options.settle_hours)
+    if options.retire:
+        removed = retire(report, options.retire, now)
+        summary = f"work_gc: retired {len(removed)} case(s) or file(s), {mib(sum(item.size for item in removed))}"
+        print(summary, file=sys.stderr if options.json else sys.stdout)
+        report = scan(root, now=now, settle_hours=options.settle_hours)
     if options.prune:
         removed = prune(report, now)
         summary = f"work_gc: removed {len(removed)} candidate(s), {mib(sum(item.size for item in removed))}"
