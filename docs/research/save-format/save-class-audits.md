@@ -34,11 +34,10 @@ success-path allocation (F-142) and explicit struct-array and comparator limits
 up to a 128 KiB research ceiling while the original API keeps 64 KiB (F-178,
 F-198).
 
-Every one of the save's 38 class identifiers is registered in both the older
-server and the newer client, so class identity cannot confirm the reported
-producing build (F-498); the same holds for all 332 field and type names of
-the framed bodies in the current copy (F-547) and for the five saved
-recorder versions, which both builds assign as the same literals (F-631). Eight player-state candidates
+Every one of the save's 38 class identifiers and 332 framed field and type
+names occurs in both the older server and the newer client, and both assign
+the five saved recorder versions the same literals, so no saved identifier
+confirms the reported producing build (F-635). Eight player-state candidates
 frame to depth 4 in both copies apart from two size ceilings (F-550), as do 23
 of the 25 remaining classes (F-551). With statically qualified Map, Set and
 Int64 headers (F-556) and a 1 MiB component ceiling, every body of every class
