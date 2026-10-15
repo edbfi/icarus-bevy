@@ -114,7 +114,7 @@ Reader policy (authored; research limits, not recovered format limits):
   one shared `StructProperty` header even when empty, exactly count `None`-
   terminated variable-length elements inside the shared payload, no object
   trailers, full input consumed. Default 64 KiB; `_with_limit` accepts 1 byte to
-  a hard 128 KiB ceiling, invalid limits fail before parsing, oversize fails before
+  a hard 1 MiB ceiling (F-634), invalid limits fail before parsing, oversize fails before
   reading the count. 4,096 elements and 256 fields per element under either API;
   count and minimum terminator space checked before allocation. Name, index,
   struct identity and GUID are not compared to a schema. Summary partitions
@@ -140,7 +140,7 @@ objects):
   sequences, 64 fields, 3,632 = 3,356 + 276 bytes (F-310, F-311).
 - Int arrays: 486 C009 S02 arrays, 980 bytes (F-314). Struct arrays: 28 C028 arrays,
   2,624 bytes, all empty (F-249); C034 four arrays, 428 elements, 56,412 bytes,
-  Struct 12 / Float 4 bytes (F-191, F-192); all 1,658 C034 own arrays, 15,342
+  Struct 12 / Float 4 bytes (F-191, F-664); all 1,658 C034 own arrays, 15,342
   elements, 30,684 fields (F-316); 11,606 inherited C034 arrays, all empty (F-196);
   C009 3,402 arrays, 522 elements, CA01 66,257 bytes via `_with_limit` (F-174,
   F-203, F-317); C034 Float headers: 32 fields over 58,356 bytes (F-188).
@@ -169,8 +169,8 @@ objects):
   superclass chain has 31 entries, exactly 5 with the save-selection bit (F-305).
 - C028 six direct structs are tagged with 16 optional fields; three child struct
   fields use binary/native serialization, so tagged framing is not recursive
-  (F-308). D01: 8 optional leaves (5 Int, 3 Str); D02: four 4-byte native
-  transfers (F-309, F-212). Conditional static grammars only.
+  (F-655). D01: 8 optional leaves (5 Int, 3 Str); D02: four 4-byte native
+  transfers (F-309, F-655). Conditional static grammars only.
 - Every opaque Struct leaf is one of four fixed-width engine math types
   (F-565): three or four ordered 4-byte components, no count or tail (F-602).
 - Client build 25793767: tag operator `0x14212b0e0`, Array serializer
@@ -181,15 +181,15 @@ objects):
 - Client C034: schema `0x145ff68b0`, ops table `0x144faeff8`; restore builds version
   522 with loading on and binary/tagged, partial-selection and byte-swap flags
   clear before component Serialize, reaching conditional tagged dispatch
-  (F-194, F-319, F-320). N02 native branch demands three 4-byte transfers (F-321).
+  (F-659). N02 native branch demands three 4-byte transfers (F-667).
   Float: generation 10, vtable `0x145026a20` selects `0x142123ce0` at virtual
-  `0x90`, 4 bytes on every transfer path (F-322).
+  `0x90`, 4 bytes on every transfer path (F-659).
 
 ## Open questions
 
 - Original normalization, EOF and error behavior versus the strict readers (U-026).
 - Official restore/import and newer-build migration of these saves (U-025).
-- Value meanings, Name identities and Enum lookups (U-020); empty-family
+- Value meanings and Name identities (U-020); empty-family
   population (U-021); deeper C028 children (U-048).
 - Client large-span safety (U-030) and dedicated-server correspondence (U-031).
 - Singleton saved integer's restoration role (U-039); remaining classes (U-050).

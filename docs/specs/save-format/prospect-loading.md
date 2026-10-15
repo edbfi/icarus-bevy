@@ -118,11 +118,11 @@ C028 (repeated)
   (base, then conditional `+0x4b0` with load context); `+0xa0` base; `+0x488` =
   `0x14189d380`, which ignores the archive argument (F-360, F-361).
 - 60 ancestry entries (3/27/11/19/0); 23 selection-bit fields: 3 Int, 3 Name,
-  2 Bool, 6 Struct, 7 Array, 1 Enum, 1 Str (F-362). All 1,294 records frame:
+  2 Bool, 6 Struct, 7 Array, 1 Enum, 1 Str (F-655). All 1,294 records frame:
   29,762 fields, 4,326,044 bytes; per copy 647 components (F-259, F-363, F-364, F-365).
 - Six direct struct types are tagged under `MemoryArchive522`; deferred registration
-  `0x140729c20` supplies one ops factory (F-366). Their 16 children (3/7/1/1/1/3):
-  3 Struct, 1 Name, 4 Int, 7 Bool, 1 UInt32 (F-367). `UInt32Property` is built-in ID
+  `0x140729c20` supplies one ops factory (F-655). Their 16 children (3/7/1/1/1/3):
+  3 Struct, 1 Name, 4 Int, 7 Bool, 1 UInt32 (F-655). `UInt32Property` is built-in ID
   25 via vtable `0x144eebf50`, getter `0x14214a630` and constructor `0x142017040`
   (F-368, F-247). Binary N01 is four ordered four-byte little-endian transfers
   (16 bytes), N02 three (12 bytes), no count, terminator or tail (F-369, F-124).
@@ -130,19 +130,19 @@ C028 (repeated)
   at count 0, then `None`-terminated elements without object trailers; the shared
   size spans all elements (F-370). Shared tag: index 0, inner name = field name,
   element struct name; the loader does not enforce equality (F-371). Children:
-  7 Name, 3 Int, 3 Float, 1 Bool, 1 Text, 1 Array, 1 Struct (F-372); D01 eight
-  optional fields, D02 four four-byte transfers (F-212, F-373).
+  7 Name, 3 Int, 3 Float, 1 Bool, 1 Text, 1 Array, 1 Struct (F-655); D01 eight
+  optional fields, D02 four four-byte transfers (F-655, F-373).
 - All 9,058 arrays are empty: 848,864 bytes = 36,232 count + 812,632 shared-header
   (F-374, F-116). Top and child receipts: F-123..F-141.
 
 C034
 
 - Base load/serialize, C028 post-load; 21 optional fields: 7 Struct, 2 Int, 7 Array,
-  2 Name, 1 Enum, 1 Str, 1 Bool (F-375, F-211). Per copy 829 records, 4,199,203 bytes,
+  2 Name, 1 Enum, 1 Str, 1 Bool (F-664, F-211). Per copy 829 records, 4,199,203 bytes,
   17,409 fields (F-376, F-378, F-195); own structs 572–28,606 bytes (F-377, F-379, F-188).
 - Own array child `0x145ee1220`: tagged, optional Struct (N02) and Float, signed
   count and shared Struct header even at zero; 16-byte memory size is not a stride
-  (F-380). Struct spans 12 bytes and Float four (F-192); max count 214 (F-381, F-382).
+  (F-664). Struct spans 12 bytes and Float four (F-664); max count 214 (F-381, F-382).
 - Inherited arrays all empty; inherited Struct widths 16/12/12/12/4 bytes
   (F-383, F-384, F-385, F-196). Scalars: F-146..F-153.
 
@@ -170,7 +170,7 @@ Acceptance conditions for any importer
 - Strict readers must enforce the binary transfer lengths and treat name/index/type
   equality and 0/1-only trailer booleans as comparison policy (F-346, F-369, F-371).
 - Reader limits used for these populations: component and struct-array default
-  64 KiB, explicit limit up to a hard 128 KiB ceiling (measured caps 71,956, 66,056;
+  64 KiB, explicit limit up to a hard 1 MiB ceiling (F-634) (measured caps 71,956, 66,056;
   D01 helper 1,050 bytes), 4,096 elements and 256 fields per element, Int-array
   4,096 elements, root 4,096 tags, seven-field post-parse helper check and a
   512 MiB native address-space test limit (F-134, F-161, F-178, F-198, F-200,
@@ -180,10 +180,10 @@ Acceptance conditions for any importer
 
 - Base-component framing is a candidate layout for C013 and C028 in build 25621760;
   it is not established for the user-reported newer build (F-348, F-360, U-025).
-- The C013 struct field captures an owner-collection count (inferred, F-355).
+- The C013 struct field captures the world FLOD manager's tile count (F-646).
 - C028/C034/C009 struct and array contracts are conditional older-build framing
   contracts, not fixed disk widths; the 16/12-byte transfers assume successful
-  archive reads (F-366, F-369, F-380, F-172).
+  archive reads (F-655, F-369, F-664, F-172).
 - C001 (four records): native getter `0x1419fe200`, callback `0x1419fe870`
   (`[0x1419fe870, 0x1419fe9a1)`, 305 bytes), reflection getter `0x141a00220`,
   candidate constructor `0x141788530` (`[0x141788530, 0x141788658)`, 296 bytes);

@@ -1,5 +1,6 @@
 use icarus_bevy::experimental::property_tree::{
-    BaseComponentTree, ContainerItem, NodeValue, PropertyTree, TreeLimits,
+    BaseComponentTree, ContainerItem, DEFAULT_TREE_STRUCT_ARRAY_BYTES, NodeValue, PropertyTree,
+    TreeLimits,
 };
 use icarus_bevy::experimental::tagged::{TagKind, TagProfile};
 
@@ -195,6 +196,27 @@ fn struct_arrays_with_zero_one_and_three_elements_round_trip() {
 }
 
 #[test]
+fn struct_arrays_above_the_default_bound_frame_under_a_selected_limit() {
+    assert_eq!(DEFAULT_TREE_STRUCT_ARRAY_BYTES, 128 * 1024);
+    let element = stream(&[prop(STR, 0, &[0], &vec![b'x'; 200 * 1024])]);
+    let bytes = stream(&[struct_array(std::slice::from_ref(&element))]);
+    // The default keeps the larger array an exact opaque leaf.
+    let default = round_trip(&bytes);
+    assert!(matches!(default.properties[0].value, NodeValue::Opaque(_)));
+    let limits = TreeLimits {
+        struct_array_bytes: 1024 * 1024,
+        ..TreeLimits::default()
+    };
+    let tree = PropertyTree::parse(&bytes, TagProfile::MemoryArchive522, limits).unwrap();
+    let NodeValue::StructArray { elements, .. } = &tree.properties[0].value else {
+        panic!("a selected 1 MiB bound should frame the array");
+    };
+    assert_eq!(elements.len(), 1);
+    assert_eq!(elements[0].to_bytes().unwrap(), element);
+    assert_eq!(tree.to_bytes().unwrap(), bytes);
+}
+
+#[test]
 fn nested_arrays_inside_struct_elements_round_trip() {
     let leaf = stream(&[int(9)]);
     let inner_array = struct_array(&[leaf.clone(), leaf]);
@@ -273,7 +295,7 @@ fn malformed_inputs_and_invalid_limits_fail() {
             ..TreeLimits::default()
         },
         TreeLimits {
-            struct_array_bytes: 128 * 1024 + 1,
+            struct_array_bytes: 1024 * 1024 + 1,
             ..TreeLimits::default()
         },
     ] {

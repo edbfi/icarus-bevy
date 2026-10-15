@@ -21,6 +21,11 @@ Use SIGINT or SIGTERM to stop and save. For a bounded smoke run:
 target/release/icarus-server run --data-dir work/smoke-world --max-ticks 10
 ```
 
+For qualification, `--compressed` (requires `--max-ticks`) runs those ticks
+as simulated time without pacing: autosave and status intervals count
+simulated seconds, and a due autosave awaits one still in flight, so a long
+schedule of saves runs in minutes ([synthetic workload](synthetic-workload.md)).
+
 The development default is 30 Hz with at most four catch-up ticks per update.
 This is provisional, not a discovered ICARUS tick rate. No game/query sockets open.
 The process emits JSON lifecycle/status/save records to stderr and always reports

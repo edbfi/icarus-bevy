@@ -14,11 +14,10 @@
 //! carries a 2-byte element count and a nested zero-terminated handle stream
 //! (F-571). Item encodings:
 //! - [`RepCommand::Bool`]: one bit (F-574);
-//! - [`RepCommand::Byte`]: 8 bits, or for an enum byte a width derived from the
-//!   enum maximum, at most 8 bits; the formula is unread and version-split, so
-//!   the caller supplies the width (F-574);
-//! - [`RepCommand::Enum`]: an enum-derived width, likewise caller-supplied
-//!   (F-574);
+//! - [`RepCommand::Byte`]: 8 bits, or for an enum byte the width
+//!   [`enum_byte_bits`] derives from the enum's maximum value (F-574, F-632);
+//! - [`RepCommand::Enum`]: the width [`enum_bits`] derives from the maximum and
+//!   the underlying integer's size (F-574, F-632); a zero width sends no bits;
 //! - [`RepCommand::Object`]: a NetGUID reference through
 //!   [`super::actor_channel::read_guid_ref`] (F-572, F-574);
 //! - [`RepCommand::NetworkName`]: a hardcoded bit, then a hardcoded index or an
@@ -28,6 +27,9 @@
 //!   bytes or 2-byte units with a terminator (F-595);
 //! - [`RepCommand::SoftObject`]: the soft-object path as one archive string,
 //!   which net archives send in place of the path fields (F-599);
+//! - [`RepCommand::Text`]: the shared FText serializer at the archive versions
+//!   client bunches carry (F-639), in
+//!   [`super::rep_text`]: every history;
 //! - [`RepCommand::VectorQuantize`]: `FVector_NetQuantize`, a capped component
 //!   bit count and three biased integers, unscaled (F-593, server writer);
 //! - [`RepCommand::VectorQuantizeNormal`]: three 16-bit values biased by 32768;
@@ -105,6 +107,8 @@ use super::archive::{ByteOrder, StringEncoding, read_string_frame};
 use super::control::TokenEncoding;
 use super::control_messages::ArchiveText;
 use super::packet::{BitReader, BitWriter, MAX_HARDCODED_NAME_INDEX, Payload};
+pub use super::rep_text::TextValue;
+use super::rep_text::{TextHistory, read_text, write_text};
 
 /// Maximum of the capped `FVector_NetQuantize` component bit count (F-593).
 pub const NET_QUANTIZE_BITS_MAX: u32 = 20;
@@ -120,10 +124,40 @@ pub const PACKED_NAME_NET_VERSION: u32 = 6;
 pub const LEGACY_NAME_INDEX_BOUND: u32 = 411;
 /// Highest hardcoded index observed senders use (F-575); informational only.
 pub const SENDER_HARDCODED_NAME_MAX: u32 = 410;
-/// Widest caller-supplied enum byte (F-574).
+/// Widest enum byte (F-574).
 pub const ENUM_BYTE_BITS_MAX: u8 = 8;
-/// Widest caller-supplied enum item; the original maximum is unread.
+/// Widest enum item this codec carries; 8-byte underlying integers can need
+/// up to 64 bits, which it rejects.
 pub const ENUM_BITS_MAX: u8 = 32;
+
+/// The client's enum maximum: the signed maximum of the entry values, 0 for
+/// an enum without entries (F-632). Entries are the enum's registered values.
+pub fn enum_max_value(values: &[i64]) -> i64 {
+    values.iter().copied().max().unwrap_or(0)
+}
+
+/// `CeilLogTwo64(max + 1)`: the maximum's unsigned bit length, except 0 when
+/// `max + 1` wraps to 0, so a maximum of -1 or 0 takes no bits (F-632).
+fn enum_value_bits(max_value: i64) -> u32 {
+    let max = max_value as u64;
+    if max == u64::MAX {
+        0
+    } else {
+        u64::BITS - max.leading_zeros()
+    }
+}
+
+/// Width of an enum byte item at the client's engine net version 17 (above
+/// 16): the maximum's bit length, at most 8 (F-632).
+pub fn enum_byte_bits(max_value: i64) -> u8 {
+    enum_value_bits(max_value).min(u32::from(ENUM_BYTE_BITS_MAX)) as u8
+}
+
+/// Width of an enum item at engine net version 17 (12 or above): the
+/// maximum's bit length, at most the underlying integer's bits (F-632).
+pub fn enum_bits(max_value: i64, underlying_bytes: u8) -> u8 {
+    enum_value_bits(max_value).min(u32::from(underlying_bytes) * 8) as u8
+}
 
 /// Research resource policy; the original bounds are unknown.
 #[derive(Clone, Copy, Debug)]
@@ -173,8 +207,6 @@ pub enum UnsupportedItem {
     Int32,
     UInt32,
     Float,
-    /// The shared FText serializer (F-601); history bodies are unread.
-    Text,
     /// Any other native net-serialize struct.
     OtherNativeStruct,
 }
@@ -183,11 +215,12 @@ pub enum UnsupportedItem {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum RepCommand {
     Bool,
-    /// `None`: 8 bits. `Some(width)`: a caller-supplied enum width, 1 to 8.
+    /// `None`: 8 bits. `Some(width)`: an enum byte's width, 0 to 8 (see
+    /// [`enum_byte_bits`]).
     Byte {
         enum_bits: Option<u8>,
     },
-    /// A caller-supplied enum width, 1 to 32.
+    /// An enum's width, 0 to 32 (see [`enum_bits`]).
     Enum {
         bits: u8,
     },
@@ -197,6 +230,8 @@ pub enum RepCommand {
     Str,
     /// A soft-object path as an archive string (F-599).
     SoftObject,
+    /// A Text item (F-639).
+    Text,
     VectorQuantize,
     VectorQuantize10,
     VectorQuantize100,
@@ -619,6 +654,7 @@ pub enum RepValue {
     NetworkName(NetworkName),
     Str(ArchiveText),
     SoftObject(ArchiveText),
+    Text(TextValue),
     VectorQuantize(QuantizedVector),
     VectorQuantize10(QuantizedVector),
     VectorQuantize100(QuantizedVector),
@@ -643,6 +679,7 @@ pub enum ItemKind {
     NetworkName,
     Str,
     SoftObject,
+    Text,
     VectorQuantize,
     VectorQuantize10,
     VectorQuantize100,
@@ -666,6 +703,7 @@ impl RepValue {
             Self::NetworkName(_) => ItemKind::NetworkName,
             Self::Str(_) => ItemKind::Str,
             Self::SoftObject(_) => ItemKind::SoftObject,
+            Self::Text(_) => ItemKind::Text,
             Self::VectorQuantize(_) => ItemKind::VectorQuantize,
             Self::VectorQuantize10(_) => ItemKind::VectorQuantize10,
             Self::VectorQuantize100(_) => ItemKind::VectorQuantize100,
@@ -697,6 +735,7 @@ impl std::fmt::Debug for RepValue {
                 .debug_struct("SoftObject")
                 .field("units", &text.declared_units())
                 .finish(),
+            Self::Text(text) => text.fmt(formatter),
             Self::VectorQuantize(vector) => formatter
                 .debug_tuple("VectorQuantize")
                 .field(vector)
@@ -833,7 +872,12 @@ impl RepEntry {
         match &self.value {
             RepValue::Object(guid) => summary.object = Some(guid.summary()),
             RepValue::NetworkName(name) => summary.name = Some(name.summary()),
-            RepValue::Str(text) | RepValue::SoftObject(text) => {
+            RepValue::Str(text)
+            | RepValue::SoftObject(text)
+            | RepValue::Text(TextValue {
+                history: TextHistory::Base { source: text, .. },
+                ..
+            }) => {
                 summary.string_units = Some(text.declared_units());
             }
             RepValue::VectorQuantize(vector)
@@ -865,6 +909,7 @@ impl RepEntry {
             | RepValue::Enum(_)
             | RepValue::GameplayTag(GameplayTag::NetIndex(_))
             | RepValue::HitResult(_)
+            | RepValue::Text(_)
             | RepValue::VectorQuantizeNormal(_) => {}
         }
         summary
@@ -913,12 +958,12 @@ fn validate_layout_at(layout: &[RepCommand], limits: &RepLayoutLimits, depth: us
             RepCommand::Byte {
                 enum_bits: Some(bits),
             } => ensure!(
-                (1..=ENUM_BYTE_BITS_MAX).contains(bits),
-                "layout handle {handle}: enum byte width must be 1 to 8"
+                *bits <= ENUM_BYTE_BITS_MAX,
+                "layout handle {handle}: enum byte width must be 0 to 8"
             ),
             RepCommand::Enum { bits } => ensure!(
-                (1..=ENUM_BITS_MAX).contains(bits),
-                "layout handle {handle}: enum width must be 1 to 32"
+                *bits <= ENUM_BITS_MAX,
+                "layout handle {handle}: enum width must be 0 to 32"
             ),
             RepCommand::Opaque { bits } => ensure!(
                 (1..=limits.max_opaque_bits).contains(bits),
@@ -947,6 +992,7 @@ fn validate_layout_at(layout: &[RepCommand], limits: &RepLayoutLimits, depth: us
             | RepCommand::NetworkName
             | RepCommand::Str
             | RepCommand::SoftObject
+            | RepCommand::Text
             | RepCommand::VectorQuantize
             | RepCommand::VectorQuantize10
             | RepCommand::VectorQuantize100
@@ -999,7 +1045,7 @@ fn read_flag(reader: &mut BitReader<'_>, what: &str) -> Result<bool> {
     Ok(bit)
 }
 
-fn read_field(reader: &mut BitReader<'_>, bits: u32, what: &str) -> Result<u32> {
+pub(super) fn read_field(reader: &mut BitReader<'_>, bits: u32, what: &str) -> Result<u32> {
     let value = reader.read_bits(bits);
     ensure!(!reader.is_error(), "truncated {what}");
     Ok(value)
@@ -1011,7 +1057,7 @@ fn read_capped(reader: &mut BitReader<'_>, max: u32, what: &str) -> Result<u32> 
     Ok(value)
 }
 
-fn read_u16(reader: &mut BitReader<'_>, order: ByteOrder, what: &str) -> Result<u16> {
+pub(super) fn read_u16(reader: &mut BitReader<'_>, order: ByteOrder, what: &str) -> Result<u16> {
     let value = read_field(reader, 16, what)? as u16;
     Ok(match order {
         ByteOrder::Little => value,
@@ -1019,7 +1065,7 @@ fn read_u16(reader: &mut BitReader<'_>, order: ByteOrder, what: &str) -> Result<
     })
 }
 
-fn write_u16(writer: &mut BitWriter, value: u16, order: ByteOrder) {
+pub(super) fn write_u16(writer: &mut BitWriter, value: u16, order: ByteOrder) {
     let value = match order {
         ByteOrder::Little => value,
         ByteOrder::Big => value.swap_bytes(),
@@ -1027,7 +1073,7 @@ fn write_u16(writer: &mut BitWriter, value: u16, order: ByteOrder) {
     writer.write_bits(u32::from(value), 16);
 }
 
-fn read_u32(reader: &mut BitReader<'_>, order: ByteOrder, what: &str) -> Result<u32> {
+pub(super) fn read_u32(reader: &mut BitReader<'_>, order: ByteOrder, what: &str) -> Result<u32> {
     let value = read_field(reader, 32, what)?;
     Ok(match order {
         ByteOrder::Little => value,
@@ -1035,14 +1081,14 @@ fn read_u32(reader: &mut BitReader<'_>, order: ByteOrder, what: &str) -> Result<
     })
 }
 
-fn write_u32(writer: &mut BitWriter, value: u32, order: ByteOrder) {
+pub(super) fn write_u32(writer: &mut BitWriter, value: u32, order: ByteOrder) {
     writer.write_u32(match order {
         ByteOrder::Little => value,
         ByteOrder::Big => value.swap_bytes(),
     });
 }
 
-fn copy_bits(reader: &mut BitReader<'_>, mut bits: usize) -> Payload {
+pub(super) fn copy_bits(reader: &mut BitReader<'_>, mut bits: usize) -> Payload {
     let mut writer = BitWriter::new();
     while bits > 0 {
         let chunk = bits.min(32) as u32;
@@ -1052,7 +1098,7 @@ fn copy_bits(reader: &mut BitReader<'_>, mut bits: usize) -> Payload {
     Payload::from_writer(writer)
 }
 
-fn append_bits(writer: &mut BitWriter, payload: &Payload) {
+pub(super) fn append_bits(writer: &mut BitWriter, payload: &Payload) {
     let mut reader = payload.reader();
     let mut bits = payload.bit_len();
     while bits > 0 {
@@ -1065,7 +1111,7 @@ fn append_bits(writer: &mut BitWriter, payload: &Payload) {
 /// An archive string: a signed 4-byte count, narrow bytes for a positive
 /// count, 2-byte units for a negative one, each with a terminator; network
 /// names and Str items both use it (F-575, F-595).
-fn read_archive_string(
+pub(super) fn read_archive_string(
     reader: &mut BitReader<'_>,
     codec: &RepLayoutCodec,
     max_units: usize,
@@ -1097,7 +1143,7 @@ fn read_archive_string(
     ArchiveText::with_encoding(&parsed.units().collect::<Vec<_>>(), encoding)
 }
 
-fn write_archive_string(
+pub(super) fn write_archive_string(
     writer: &mut BitWriter,
     text: &ArchiveText,
     codec: &RepLayoutCodec,
@@ -1221,12 +1267,12 @@ fn write_checksum(
     Ok(())
 }
 
-struct Budget {
-    remaining: usize,
+pub(super) struct Budget {
+    pub(super) remaining: usize,
 }
 
 impl Budget {
-    fn take(&mut self) -> Result<()> {
+    pub(super) fn take(&mut self) -> Result<()> {
         ensure!(
             self.remaining > 0,
             "property stream exceeds the entry limit"
@@ -1533,7 +1579,7 @@ fn write_tag(
     }
 }
 
-fn read_value(
+pub(super) fn read_value(
     reader: &mut BitReader<'_>,
     command: &RepCommand,
     codec: &RepLayoutCodec,
@@ -1552,6 +1598,7 @@ fn read_value(
             RepValue::Object(read_guid_ref(reader, &codec.actor).context("object item")?)
         }
         RepCommand::NetworkName => RepValue::NetworkName(read_network_name(reader, codec)?),
+        RepCommand::Text => RepValue::Text(read_text(reader, codec, 0)?),
         RepCommand::Str => RepValue::Str(read_archive_string(
             reader,
             codec,
@@ -1638,7 +1685,7 @@ fn read_value(
     })
 }
 
-fn read_stream(
+pub(super) fn read_stream(
     reader: &mut BitReader<'_>,
     layout: &[RepCommand],
     instances: usize,
@@ -1699,7 +1746,7 @@ pub fn parse_property_stream(
     Ok(stream)
 }
 
-fn write_value(
+pub(super) fn write_value(
     writer: &mut BitWriter,
     command: &RepCommand,
     value: &RepValue,
@@ -1731,6 +1778,7 @@ fn write_value(
         (RepCommand::NetworkName, RepValue::NetworkName(name)) => {
             write_network_name(writer, name, codec)?;
         }
+        (RepCommand::Text, RepValue::Text(text)) => write_text(writer, text, codec, 0)?,
         (RepCommand::Str, RepValue::Str(text)) => {
             write_archive_string(
                 writer,
@@ -1833,7 +1881,7 @@ fn write_value(
     Ok(())
 }
 
-fn write_stream(
+pub(super) fn write_stream(
     writer: &mut BitWriter,
     stream: &PropertyStream,
     layout: &[RepCommand],

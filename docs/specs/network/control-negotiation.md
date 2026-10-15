@@ -173,9 +173,8 @@ game listener.
   packets, to its control-channel messages (control identified by name index
   255 or channel index 0, both inferred); only ID 0 is decoded, and summaries
   carry no token, first field or version. `experimental::control_messages`
-  types the whole vocabulary table with readers and writers, including the
-  unique-net-id flags, type and encoded forms (the non-encoded string form is
-  inferred); summaries carry kinds and lengths only.
+  types the whole vocabulary with readers and writers, including every
+  unique-net-id form (F-531, F-636); summaries carry kinds and lengths only.
   `experimental::sequencing` models the client's sequencing state (F-535 to
   F-539): cookie-seeded notify state, history shifting, header word counts, the
   sent-record ring, ack/nak notifications with full packet IDs, and per-channel
@@ -202,6 +201,16 @@ game listener.
   URL, unique id and platform, validates the URL, calls the game mode's
   PreLogin and welcomes the player on an empty error, otherwise sends the
   error and closes.
+- Current client PreLogin (F-622; native mirror F-623): the ICARUS game mode and session add no
+  checks of their own. The engine rejects a valid unique net id the online
+  interface finds incompatible (`incompatible_unique_net_id`), then takes
+  the game session's ApproveLogin error: `Server full.` when at capacity
+  (player cap from a global override or MaxPlayers; the `SpectatorOnly`
+  URL option selects the spectator count instead; never in standalone) or
+  `Maximum splitscreen players` when the `SplitscreenCount` option exceeds
+  the per-connection limit. Registered PreLogin delegates run last, unread
+  (literals M-591). Options are `?`-delimited from their start and
+  split at the first `=`; keys match ASCII case-insensitively, first wins.
 - Server `UWorld::WelcomePlayer` (`0x1439fdeb0`, F-580): Welcome is type 1 with
   three strings (level or travel name, game-mode class name, a game-mode
   supplied string), followed by a flush, a queued-bits reset and login state 2.

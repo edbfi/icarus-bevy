@@ -232,7 +232,7 @@ pub struct PeerLabStats {
     /// Login messages delivered and parsed.
     pub logins_received: u64,
     /// Delivered Login messages per unique-net-id form (`encoded_empty`,
-    /// `encoded` or the inferred `text`); kinds only.
+    /// `encoded`, `text` or `absent`); kinds only.
     pub login_net_id_forms: BTreeMap<&'static str, u64>,
     /// Failure (ID 6) replies sent to Login.
     pub failures_sent: u64,
@@ -290,6 +290,7 @@ fn net_id_form(value: &NetIdValue) -> &'static str {
         NetIdValue::EncodedEmpty => "encoded_empty",
         NetIdValue::Encoded { .. } => "encoded",
         NetIdValue::Text(_) => "text",
+        NetIdValue::Absent { .. } => "absent",
     }
 }
 

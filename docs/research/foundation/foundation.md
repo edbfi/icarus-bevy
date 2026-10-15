@@ -33,7 +33,11 @@ save-inspection inputs (F-405, F-443, F-468), malformed manifest digests
 and diagnostics that leaked supplied strings (F-412, F-423); real ENOSPC and
 EACCES faults keep acknowledged state (F-239). Synthetic runs pass at 100,000
 entities and across kill/restart cycles (F-485); the 7,200 s soak predates later
-persistence changes (F-237), and a later soak stopped early at 21.9 h (F-612). A modeled POSIX power-loss harness over the real
+persistence changes (F-237), and a later soak stopped early at 21.9 h (F-612).
+Compressed simulated time now runs the full 72-hour tick and save schedule
+in under an hour, at 100,000 synthetic entities and for a world seeded from
+the supplied save, without save failures or retained growth, one tick missing its deadline
+(F-615, F-616). A modeled POSIX power-loss harness over the real
 write path recovers acknowledged state in every enumerated crash state and found
 stranded temporaries, now removed (F-511). None of this measures ICARUS performance.
 
@@ -65,9 +69,9 @@ original server (F-252), and historical runtime windows have expired (F-218).
 
 - Authenticated protocol and stock-client session (U-038); world-data import feasibility (U-045).
 - Original bug reproduction under controlled workloads (U-047); ICARUS performance and stability comparison (U-049).
-- Power-loss and 72-hour runs (U-035).
+- Paced multi-day effects and physical power loss (U-035).
 - Client publisher authenticity and symbol validity (U-034).
 
 ## Artifacts
 
-M-001, M-002, M-006, M-009, M-010, M-015..M-022, M-076, M-078, M-109..M-117, M-131..M-165, M-174, M-175, M-178, M-182..M-184, M-191, M-192, M-200, M-203, M-204, M-207, M-208, M-212..M-220, M-225, M-240, M-241, M-251, M-252, M-269, M-270, M-271, M-277, M-311, M-391, M-397..M-399, M-411..M-419, M-452..M-454, M-471..M-475.
+M-001, M-002, M-006, M-009, M-010, M-015..M-022, M-076, M-078, M-109..M-117, M-131..M-165, M-174, M-175, M-178, M-182..M-184, M-191, M-192, M-200, M-203, M-204, M-207, M-208, M-212..M-220, M-225, M-240, M-241, M-251, M-252, M-269, M-270, M-271, M-277, M-311, M-391, M-397..M-399, M-411..M-419, M-452..M-454, M-471..M-475, M-577, M-578.

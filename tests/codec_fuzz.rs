@@ -14,9 +14,10 @@ use icarus_bevy::experimental::packet::{BitWriter, Payload};
 use icarus_bevy::experimental::rep_layout::{
     ByteRotator, GameplayTag, HitResult, MovementLevel, MovementRotation, NetworkName,
     PropertyStream, QuantizedNormal, QuantizedVector, RepArray, RepCommand, RepEntry,
-    RepLayoutCodec, RepLayoutLimits, RepMovement, RepValue, RotationLevel, TagEncoding,
+    RepLayoutCodec, RepLayoutLimits, RepMovement, RepValue, RotationLevel, TagEncoding, TextValue,
     encode_property_stream, read_property_stream, write_property_stream,
 };
+use icarus_bevy::experimental::rep_text::{FormatArgument, TextHistory};
 
 /// xorshift64*: a fixed-seed generator, so every run checks the same inputs.
 struct Rng(u64);
@@ -139,6 +140,7 @@ fn layout() -> Vec<RepCommand> {
             ],
         },
         RepCommand::Opaque { bits: 7 },
+        RepCommand::Text,
     ]
 }
 
@@ -272,6 +274,25 @@ fn property_corpus(codec: &RepLayoutCodec) -> Vec<Vec<bool>> {
                     c,
                 ),
                 entry(17, RepValue::Opaque(payload_of(&[true; 7])), c),
+                entry(
+                    18,
+                    RepValue::Text(TextValue {
+                        flags: 2,
+                        history: TextHistory::OrderedFormat {
+                            format: Box::new(TextValue {
+                                flags: 0,
+                                history: TextHistory::Base {
+                                    namespace: narrow("ns"),
+                                    key: ArchiveText::with_encoding(&[], TokenEncoding::Narrow)
+                                        .unwrap(),
+                                    source: narrow("{0}"),
+                                },
+                            }),
+                            arguments: vec![FormatArgument::Int(-3)],
+                        },
+                    }),
+                    c,
+                ),
             ],
             c,
         ),

@@ -20,8 +20,8 @@ packed rep handles drive the layout, with nested streams for dynamic arrays,
 and spawn vectors are raw floats or bias-packed integers in tenths, with
 16-bit compressed rotators (F-571, F-573). Bool, Byte, Enum, object, native
 struct and soft-object items are read; Str, Name, Text and native struct bodies
-are not (F-574, U-064). Several native struct serializers are read on the
-server: quantized and normal vectors, tag containers and hit results (F-593).
+are not (F-574, U-064). Enum widths derive from the enum's maximum value
+(F-632). Several native struct serializers are read on the server: quantized and normal vectors, tag containers and hit results (F-593).
 Handles walk the layout in strictly increasing order, numbering array elements
 consecutively (F-586), and the movement struct sends flags, level-quantized
 location and velocities and a byte or 16-bit rotation, its levels being
@@ -30,19 +30,21 @@ as names or as split net indices whose widths, like the container count
 width, are tag configuration (F-591, F-592). Name items take the
 network-name form through the package map, and Str items are archive strings
 (F-595), as are soft-object paths on net archives (F-599). Hit results carry a flags byte that elides duplicate or default
-fields, quantized vectors, NetGUID references and a bone name (F-597). These
-are
-client-build observations, with the older server's content-block and NetGUID
+fields, quantized vectors, NetGUID references and a bone name (F-597).
+Text items take the shared FText serializer at the archive version client
+bunches are built with, 522; every history body is read and the codec
+re-encodes them all (F-639). After the properties, field headers carry
+RPCs and custom-delta payloads, both read, fast arrays included (F-644). These are client-build observations, with the older server's content-block and NetGUID
 writers mirroring them (F-581) and composing actor bunches in the client's
 read order (F-610); nothing is wire-validated.
 
 ## Open
 
-- Text history bodies (F-601) and other native structs (U-064); server send policy (U-044).
+- Other native structs (U-064); server send policy (U-044).
 - Tag replication by net index would need an identical tag table (F-583, U-065).
 - Rep handles follow each class's replicated-property list (F-609), so a server
   needs the same lists as the client; their source is a user decision (U-066).
 
 ## Artifacts
 
-M-420..M-449, M-455..M-470.
+M-420..M-449, M-455..M-470, M-570..M-576, M-581..M-588, M-600..M-605.

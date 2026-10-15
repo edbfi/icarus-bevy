@@ -1,4 +1,8 @@
-use std::{collections::BTreeSet, sync::Arc, time::Instant};
+use std::{
+    collections::BTreeSet,
+    sync::Arc,
+    time::{Duration, Instant},
+};
 
 use anyhow::{Result, bail, ensure};
 use bevy::prelude::*;
@@ -103,6 +107,30 @@ pub struct PreservedProspectState(pub Arc<PreservedSection>);
 #[derive(Resource, Default)]
 pub struct SimulationClock {
     pub tick: u64,
+}
+
+/// Elapsed time on a run's clock: wall time, or exact simulated time when
+/// compressed (the truncated tick interval would drift).
+#[derive(Clone, Copy, Debug)]
+pub struct RunClock {
+    pub compressed: bool,
+    pub start: Instant,
+    pub start_tick: u64,
+    pub tick_hz: u32,
+}
+
+impl RunClock {
+    /// `tick` must not precede `start_tick`; simulation ticks only increase.
+    #[must_use]
+    pub fn elapsed(&self, tick: u64) -> Duration {
+        if self.compressed {
+            let nanos =
+                u128::from(tick - self.start_tick) * 1_000_000_000 / u128::from(self.tick_hz);
+            Duration::from_nanos(u64::try_from(nanos).unwrap_or(u64::MAX))
+        } else {
+            self.start.elapsed()
+        }
+    }
 }
 
 /// Tick-duration histogram range: 1 µs buckets up to 131,072 µs (1 MiB).

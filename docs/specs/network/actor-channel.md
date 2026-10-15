@@ -40,7 +40,23 @@ dormancy, channel close reasons and every server-side writer.
   either reader, and every accepted input re-encodes exactly (F-604).
 - The replicator hands rep-layout properties to `FRepLayout::ReceiveProperties`
   (an optional bit, a packed handle, an optional checksum word, then a handle
-  loop) before its field-header loop (M-426, M-427).
+  loop) before its field-header loop (M-426, M-427). Each field until the
+  payload ends is an index read like `SerializeInt` below the class cache's
+  maximum index plus one, a packed bit count and exactly that payload; an
+  unknown index is skipped (F-644). A property field's custom-delta payload
+  starts with a bit at engine net version 11 or later and, for a static
+  array, a packed index below its dimension; the struct's delta serializer
+  reads the rest. A fast array's body is four 4-byte fields (array and base
+  replication keys, delete and change counts, each at most 2048 initially), a
+  4-byte ID per delete, then per change a 4-byte ID and either the item
+  struct's commands in order or, when the struct-delta bit is set and the
+  array uses delta serialization, a set bit and the item's rep-layout property
+  stream; native item structs use their own serializer (F-644). A function field is an RPC, accepted with the net flag and,
+  on a server, the server flag: each parameter, static-array elements apart,
+  is a bare bit if a bool, else a presence bit then its commands' item
+  encodings without handles; arrays are a 2-byte count of at most `0xFFFE`
+  and elements in order, and the payload must be consumed exactly (F-644).
+  `experimental::rep_rpc` reads and re-encodes all of these.
 - Rep-layout stream (F-571): packed handles select layout commands and handle
   0 ends a stream; a dynamic array carries a 2-byte element count and a nested
   zero-terminated handle stream; each value goes through its property's net
@@ -61,10 +77,12 @@ dormancy, channel close reasons and every server-side writer.
   integers bounded by `1 << (bits + 2)`, each decoded as the value minus
   `1 << (bits + 1)` times 0.1 (F-573).
 - Property net items (F-574): Bool is one bit; Byte is 8 bits, or with an
-  enum a width derived from its maximum value, at most 8 bits (formula split at
-  engine net version 16); Enum a width derived from its maximum (split at
-  version 12); object references a NetGUID; structs with the native
-  net-serialize flag their own serializer, other structs and arrays are
+  enum `min(8, CeilLogTwo64(max + 1))` bits, max being the signed maximum of
+  the enum's entry values (0 if none), so a maximum of 0 or -1 sends no bits;
+  Enum is that count capped at its underlying integer's bits (F-632; other
+  formulas apply below engine net versions 17 and 12); object references a
+  NetGUID; structs with the native net-serialize flag their own serializer,
+  other structs and arrays are
   flattened by the layout; soft objects the archive soft-path operator. Other
   types (Str, Name, Text) use the base item path, which forwards to the
   property's ordinary item serializer (F-575).
@@ -118,12 +136,43 @@ dormancy, channel close reasons and every server-side writer.
   reach the shared archive FText serializer, which net archives do not
   override: from archive version `0x170` a 4-byte flags word, then a
   history-type byte (0 to 12 select per-history bodies, 0xFF none); the
-  bodies are only partly read and the codec fails closed on Text (F-601).
-  Histories write their own type byte on save; Base carries no body of its
-  own (its strings follow through a separate display-string serializer),
-  Transform nests a whole Text and a byte, and the 0xFF none form is
-  custom-version gated with a culture-invariant flag and optional string
-  (F-603).
+  codec re-encodes every history (F-639). Client net archives carry UE4
+  version 522, so the version gates below pass (F-639). Each history writes
+  its own type byte on save, then:
+  - 0 Base: no body of its own; the display-string step that follows any
+    body sends its namespace and key as text keys, then the source string
+    (F-639). A text key is an archive-string frame, but its saver writes an
+    empty key as count 1 and a terminator. Other histories' display-string
+    steps send nothing. 0xFF none: custom-version gated, a
+    culture-invariant flag and optional string.
+  - 1 NamedFormat: the format as a nested Text, then a map of arguments.
+    2 OrderedFormat and 3 ArgumentDataFormat: the format Text, a 4-byte
+    count, then that many argument records (0x30- and 0x40-byte in memory,
+    read by separate serializers).
+  - 4 AsNumber, 5 AsPercent: a format-argument value, a has-options flag,
+    the options when set, then a target-culture string; 6 AsCurrency
+    first writes a currency-code string.
+  - 7 AsDate: an 8-byte date-time, a style byte, a time-zone string from
+    version `0x1a6`, then the culture string. 8 AsTime: the same with the
+    zone string always. 9 AsDateTime: date and time style bytes, then
+    zone and culture strings.
+  - 10 Transform: a nested Text and a transform byte. 11 StringTableEntry:
+    a table Name in the network-name form (F-639), then a key string.
+    12 TextGenerator: a generator-type
+    Name, then, unless it is None, the generator's payload as a 4-byte
+    count and bytes (F-639).
+  Text callees (F-639): an argument value is a type byte, then an int64
+  (0, 1), a float (2), a double (3), a nested Text (4) or nothing. Number
+  options are an AlwaysSign bool when a custom version exceeds 0x14, a
+  UseGrouping bool, a rounding byte and four int32 digit bounds; bools are
+  4-byte words. A named map is a 4-byte count, then string keys with
+  argument values. Argument data is a name string, a type byte (Text is
+  implied below custom version 5 on load), then an int32 (0), a float (2),
+  a nested Text (4) or a gender byte (5). A loading archive takes custom
+  versions from the client's registry of current versions (F-639); the
+  gating key is registered at version 40, so both gates pass, as does the
+  none form's (version 32: a 4-byte bool, then a string if set; F-639);
+  Names here use archive slot 0x140, whose net routing is unread (U-064).
 - Network names (F-575): a hardcoded bit; when set, the hardcoded name index
   (packed at engine net version 6 or later, otherwise bounded by 411; indices
   above 702 are rejected), which senders use only for indices up to 410; when
@@ -143,13 +192,12 @@ dormancy, channel close reasons and every server-side writer.
   references and single rotation bit as the client's; its quantizers are
   inlined and unread.
 - The block grammar, spawn order and handle stream match the stock engine
-  shape of this generation; the exact enum-width formulas and the remaining
-  native struct serializers are unread (U-064).
+  shape of this generation; the remaining native struct serializers are
+  unread (U-064).
 
 ## Open questions
 
-- Text history bodies, the net archive version and other native structs
-  (U-064); which levels each movement property uses (a property default).
+- Other native structs (U-064); which levels each movement property uses (a property default).
 - Server writers for these records and their byte order and bounds (U-044).
 - Gameplay-tag replication mode, widths and an independent tag table (U-065).
 - The source of each class's replicated-property list for a server (U-066).
@@ -162,6 +210,9 @@ dormancy, channel close reasons and every server-side writer.
   server struct items M-463 to M-470; handle walk M-428; movement and scaled
   vectors M-477 to M-491; tags M-493 to M-495; Name and Str routing M-497 to
   M-510; hit results M-468, M-512 to M-521; soft objects M-445, M-523 to
-  M-529; Text M-531 to M-536, M-545 to M-547; codec tests M-475, M-476, M-492, M-496,
+  M-529; Text M-531 to M-536, M-545 to M-547, M-570;
+  net archive version M-571 to M-576;
+  display strings M-581 to M-584; Text codec M-585, M-602 to M-605; Text callees M-586,
+  M-587; custom versions M-588; enum widths M-614, M-615; fields and RPCs M-620 to M-624; fast arrays M-628 to M-635; codec tests M-475, M-476, M-492, M-496,
   M-511, M-522, M-530, M-548; layout source M-552 to M-555; send order M-461, M-556 to
   M-560.

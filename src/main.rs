@@ -10,11 +10,12 @@ use std::{
 };
 
 use anyhow::{Context, Result, bail, ensure};
+use bevy::time::TimeUpdateStrategy;
 use clap::{Parser, Subcommand};
 use icarus_bevy::{
     config::ConfigOptions,
     persistence::{SaveReceipt, SaveWorker, SaveWorkerDisconnected, SnapshotStore},
-    simulation::{SimulationClock, TickMetrics, build_app, capture},
+    simulation::{RunClock, SimulationClock, TickMetrics, build_app, capture},
 };
 use serde_json::json;
 
@@ -37,6 +38,11 @@ enum Command {
         /// Exit after this many additional simulation ticks (smoke testing).
         #[arg(long)]
         max_ticks: Option<u64>,
+        /// Qualification only: run the ticks as simulated time, one fixed step
+        /// per update without pacing; autosave and status intervals count
+        /// simulated seconds and a due autosave awaits one still in flight.
+        #[arg(long, requires = "max_ticks")]
+        compressed: bool,
     },
     /// Validate and print effective native configuration without writing files.
     CheckConfig {
@@ -127,7 +133,11 @@ fn execute(cli: Cli) -> Result<()> {
             println!("{output}");
             Ok(())
         }
-        Command::Run { options, max_ticks } => run(options, max_ticks),
+        Command::Run {
+            options,
+            max_ticks,
+            compressed,
+        } => run(options, max_ticks, compressed),
     }
 }
 
@@ -314,9 +324,46 @@ fn saved(receipt: SaveReceipt, submitted: Option<Instant>) {
     );
 }
 
-fn run(options: ConfigOptions, max_ticks: Option<u64>) -> Result<()> {
+/// Autosave bookkeeping shared by the loop and a compressed run's wait.
+struct Autosave {
+    submitted: Option<Instant>,
+    last_commit: Option<Duration>,
+    failures: u64,
+}
+
+impl Autosave {
+    /// Reports one poll result; only a lost worker is fatal.
+    fn observe(&mut self, polled: Result<Option<SaveReceipt>>, now: Duration) -> Result<bool> {
+        match polled {
+            Ok(Some(receipt)) => {
+                self.last_commit = Some(now);
+                saved(receipt, self.submitted.take());
+                Ok(true)
+            }
+            Ok(None) => Ok(false),
+            Err(error) => {
+                if error.is::<SaveWorkerDisconnected>() {
+                    return Err(error.context("stop simulation after terminal save-worker failure"));
+                }
+                self.submitted = None;
+                self.failures += 1;
+                eprintln!(
+                    "{}",
+                    json!({"event": "save_failed", "error": format!("{error:#}")})
+                );
+                Ok(true)
+            }
+        }
+    }
+}
+
+fn run(options: ConfigOptions, max_ticks: Option<u64>, compressed: bool) -> Result<()> {
     let config = options.resolve()?;
     ensure!(max_ticks != Some(0), "max_ticks must be positive");
+    ensure!(
+        !compressed || max_ticks.is_some(),
+        "a compressed run needs max_ticks"
+    );
     let store = SnapshotStore::open(&config.data_dir)?;
     let loaded = store.load()?;
     if loaded
@@ -338,6 +385,9 @@ fn run(options: ConfigOptions, max_ticks: Option<u64>) -> Result<()> {
         })
         .transpose()?;
     let mut app = build_app(&config, &snapshot)?;
+    if compressed {
+        app.insert_resource(TimeUpdateStrategy::FixedTimesteps(1));
+    }
     app.finish();
     app.cleanup();
     let mut writer = SaveWorker::spawn(store)?;
@@ -346,11 +396,19 @@ fn run(options: ConfigOptions, max_ticks: Option<u64>) -> Result<()> {
     ctrlc::set_handler(move || signal.store(true, Ordering::SeqCst))
         .context("install SIGINT/SIGTERM handler")?;
 
-    let mut last_save_request = Instant::now();
-    let mut save_submitted = None::<Instant>;
-    let mut last_status = Instant::now();
-    let mut last_commit = None::<Instant>;
-    let mut save_failures = 0_u64;
+    let clock = RunClock {
+        compressed,
+        start: Instant::now(),
+        start_tick: snapshot.tick,
+        tick_hz: config.tick_hz,
+    };
+    let mut last_save_request = Duration::ZERO;
+    let mut last_status = Duration::ZERO;
+    let mut autosave = Autosave {
+        submitted: None,
+        last_commit: None,
+        failures: 0,
+    };
     let mut clamped_frames = 0_u64;
     let mut previous_frame = Instant::now();
     let interval = config.tick_interval();
@@ -358,69 +416,70 @@ fn run(options: ConfigOptions, max_ticks: Option<u64>) -> Result<()> {
         "{}",
         json!({"event": "started", "tick": snapshot.tick, "tick_hz": config.tick_hz,
         "icarus_compatible": false, "gameplay_ready": false,
-        "native_schema": snapshot.schema_version})
+        "native_schema": snapshot.schema_version, "compressed": compressed})
     );
 
     loop {
         let frame = Instant::now();
-        if frame.duration_since(previous_frame) > interval * config.max_catch_up_ticks {
+        if !compressed
+            && frame.duration_since(previous_frame) > interval * config.max_catch_up_ticks
+        {
             clamped_frames += 1;
         }
         previous_frame = frame;
         // Manual runner still executes Bevy's complete app schedules and clocks.
         app.update();
-        match writer.poll() {
-            Ok(Some(receipt)) => {
-                last_commit = Some(Instant::now());
-                saved(receipt, save_submitted.take());
-            }
-            Ok(None) => {}
-            Err(error) => {
-                if error.is::<SaveWorkerDisconnected>() {
-                    return Err(error.context("stop simulation after terminal save-worker failure"));
-                }
-                save_failures += 1;
-                eprintln!(
-                    "{}",
-                    json!({"event": "save_failed", "error": format!("{error:#}")})
-                );
-            }
-        }
         let tick = app.world().resource::<SimulationClock>().tick;
+        let now = clock.elapsed(tick);
+        autosave.observe(writer.poll(), now)?;
         if stopping.load(Ordering::SeqCst) || target_tick.is_some_and(|target| tick >= target) {
             break;
         }
-        if !writer.is_busy()
-            && last_save_request.elapsed() >= Duration::from_secs(config.autosave_seconds)
-        {
-            writer.submit(capture(app.world_mut())?)?;
-            last_save_request = Instant::now();
-            save_submitted = Some(last_save_request);
+        if now.saturating_sub(last_save_request) >= Duration::from_secs(config.autosave_seconds) {
+            // A compressed run keeps every autosave by awaiting the one in
+            // flight; a stop request leaves the wait for the bounded shutdown.
+            while compressed && writer.is_busy() && !autosave.observe(writer.poll(), now)? {
+                if stopping.load(Ordering::SeqCst) {
+                    break;
+                }
+                thread::sleep(Duration::from_millis(1));
+            }
+            if stopping.load(Ordering::SeqCst) {
+                break;
+            }
+            if !writer.is_busy() {
+                writer.submit(capture(app.world_mut())?)?;
+                // The interval runs from submission, after capture.
+                last_save_request = clock.elapsed(tick);
+                autosave.submitted = Some(Instant::now());
+            }
         }
-        if last_status.elapsed() >= Duration::from_secs(config.status_interval_seconds) {
+        if now.saturating_sub(last_status) >= Duration::from_secs(config.status_interval_seconds) {
             let metrics = app.world().resource::<TickMetrics>();
             eprintln!(
                 "{}",
                 json!({"event": "status", "tick": tick,
                 "gameplay_ready": false, "save_in_flight": writer.is_busy(),
-                "save_failures": save_failures,
-                "seconds_since_save": last_commit.map(|time| time.elapsed().as_secs()),
-                "clamped_frames": clamped_frames,
+                "save_failures": autosave.failures,
+                "seconds_since_save": autosave.last_commit.map(|time| now.saturating_sub(time).as_secs()),
+                "clamped_frames": (!compressed).then_some(clamped_frames),
                 "tick_deadline_misses": metrics.deadline_misses,
                 "last_tick_micros": metrics.last_tick_micros,
                 "max_tick_micros": metrics.max_tick_micros,
                 "tick_p50_micros": metrics.tick_micros.quantile_micros(50),
                 "tick_p99_micros": metrics.tick_micros.quantile_micros(99)})
             );
-            last_status = Instant::now();
+            last_status = now;
         }
-        thread::sleep(interval.saturating_sub(frame.elapsed()));
+        if !compressed {
+            thread::sleep(interval.saturating_sub(frame.elapsed()));
+        }
     }
 
     let deadline = Instant::now() + Duration::from_secs(config.shutdown_timeout_seconds);
     // A failed in-flight autosave is reported as in the loop; the final save still runs.
     match writer.settle_before(deadline)? {
-        Some(Ok(receipt)) => saved(receipt, save_submitted.take()),
+        Some(Ok(receipt)) => saved(receipt, autosave.submitted.take()),
         Some(Err(error)) => eprintln!(
             "{}",
             json!({"event": "save_failed", "error": format!("{error:#}")})

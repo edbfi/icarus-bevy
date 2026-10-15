@@ -138,3 +138,29 @@ test('struct ops query validation fails closed and keeps code-only mapping',()=>
  a.equal(run(Array.from({length:32},(_,i)=>pub(name,1,0x20+i)),q).hit_count,32);
  a.throws(()=>run(Array.from({length:33},(_,i)=>pub(name,1,0x20+i)),q),/selected public hit cap/);
 });
+
+test('name_contains selects decorated names holding a literal substring in code or read-only data',()=>{
+ const hitCode='??$DeltaSerializeExample@UFExampleItem@@UFExampleArray@@@FExampleSerializer@@SA_NXZ',hitData='??_7?$TExampleOps@UFExampleArray@@@@6B@';
+ const misses=['?Other@@YAXXZ','DeltaSerializeExample_undecorated','?DeltaSerializeExampl@@YAXXZ','?deltaserializeexample@@YAXXZ'];
+ const r=run([...misses.map(n=>pub(n)),pub(hitCode,1,0x30),pub(hitData,2,0x40,0)],{name_contains:['DeltaSerializeExample','TExampleOps@UFExampleArray']});
+ a.deepEqual(r.hits.map(h=>[h.name,h.family,h.substring,h.executable]),[[hitCode,'name_substring','DeltaSerializeExample',true],[hitData,'name_substring','TExampleOps@UFExampleArray',false]]);
+ a.deepEqual(r.name_contains_queries,['DeltaSerializeExample','TExampleOps@UFExampleArray']);a.equal(r.selected_name_profile,'caller_name_substrings_decorated_ascii_max1024');
+ const json=JSON.stringify(r);for(const n of misses)a(!json.includes(JSON.stringify(n)),n);
+ // Substring mode replaces the default allowlist; default mode reports no substrings.
+ a.equal(run(undefined,{name_contains:['NothingMatchesThis']}).hit_count,0);a.deepEqual(run().name_contains_queries,[]);
+ // Exact class methods take precedence and combine with substrings.
+ const both=run([pub('?Tick@UFoo@@UEAAXM@Z',1,0x34),pub(hitCode,1,0x30)],{name_contains:['UEAAXM@Z_none','DeltaSerializeExample'],class_methods:[{class_name:'UFoo',method:'Tick'}]});
+ a.deepEqual(both.hits.map(h=>h.family),['selected_class_method','name_substring']);
+});
+
+test('name_contains validation fails closed and keeps writable data and the hit cap strict',()=>{
+ for(const [query,msg]of [[{name_contains:[]},/name substring query shape/],[{name_contains:['AAAAAAAA','BBBBBBBB','CCCCCCCC','DDDDDDDD','EEEEEEEE']},/name substring query shape/],[{name_contains:'DeltaSerialize'},/name substring query shape/],
+  [{name_contains:['short']},/name substring query format/],[{name_contains:['A'.repeat(97)]},/name substring query format/],[{name_contains:['has space here']},/name substring query format/],[{name_contains:[7]},/name substring query format/],
+  [{name_contains:['DeltaSerialize','DeltaSerialize']},/duplicate name substring query/]])
+  a.throws(()=>run(undefined,query),msg,JSON.stringify(query));
+ const name='?DeltaSerializeItem@@YAXXZ',q={name_contains:['DeltaSerializeItem']};
+ a.throws(()=>run([pub(name,3,0x40,0)],q),/strict source mapping/);
+ a.throws(()=>run([pub(name+'A'.repeat(1100))],q),/selected public name profile/);
+ a.equal(run(Array.from({length:32},(_,i)=>pub(name,1,0x20+i)),q).hit_count,32);
+ a.throws(()=>run(Array.from({length:33},(_,i)=>pub(name,1,0x20+i)),q),/selected public hit cap/);
+});
