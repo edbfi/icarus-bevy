@@ -2,8 +2,9 @@
 
 How a scenario with a real player is prepared, run and taken in. Each scenario
 needs the user's approval and a case (gates "Before any original-server or
-client run"). An empty server pauses the game (F-684), so play-driven behavior
-needs a connected player.
+client run"). An empty server pauses the game (F-684); the offline launcher's
+join mode lifts the pause with a synthetic player (F-691), which covers
+time-driven state. Map, harvest and build actions need a real player.
 
 ## Route B: matched server on this host
 
@@ -48,9 +49,9 @@ connection and version lines, and index the case (`docs.md` rule 2).
 
 ## Scenarios
 
-S1, player present (about 25 minutes, one player, the supplied prospect):
+S1, player actions (about 15 minutes, one player, the supplied prospect):
 
-1. Join, then stand still inside the base near the crop plots for 10 minutes.
+1. Join and stand inside the base near the crop plots.
 2. Open the map, place one marker, close it.
 3. Harvest one grown crop, if any, and plant one seed in one plot; note which.
 4. Leave.

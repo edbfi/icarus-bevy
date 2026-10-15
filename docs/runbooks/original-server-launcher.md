@@ -78,6 +78,9 @@ or reference writes. The pinned image is local-only; CPU/memory/PID limits and
 `--hello-probe` (with `--handshake-probe`, without `--complete-stateless`)
 runs the probe with `--hello <hello_version>`; the session allows `hello`
 beside `handshake` and binds `hello_version`, an unsigned 32-bit value.
+`--join-probe` adds `--join <join_seconds>` (30 to 600): synthetic ids log
+in, join and hold the connection from `probe_delay_seconds` after start
+(F-690); allow `join` too.
 
 ## Save-load mode
 

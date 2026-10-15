@@ -12,7 +12,7 @@ use icarus_bevy::experimental::{
         ArchiveText, ControlCodec, ControlMessage, NetIdType, NetIdValue, UniqueNetId,
     },
     handshake,
-    packet::{PacketConfig, Receiver},
+    packet::{BunchLimits, PacketConfig, Receiver},
     peer_lab::PeerLabConfig,
     probe_client::{ProbeClient, ProbeConfig, ReplyDecode},
 };
@@ -32,6 +32,9 @@ struct Options {
     #[arg(long, requires = "hello")]
     join: Option<u64>,
 }
+
+/// Channel-index ceiling for decoding replies; observation only.
+const PROBE_MAX_CHANNELS: u32 = 32_767;
 
 fn hex(bytes: &[u8]) -> String {
     bytes.iter().map(|byte| format!("{byte:02x}")).collect()
@@ -134,7 +137,13 @@ fn probe_config() -> ProbeConfig {
         packet: PacketConfig {
             magic_bits: 0,
             receiver: Receiver::Server,
-            limits: PeerLabConfig::default().packet.packet.limits,
+            // The original's channel limit is unknown; a joined server opens
+            // channels past the lab's 32, so the probe decodes up to the
+            // largest packed index the engine allocates by default.
+            limits: BunchLimits {
+                max_channels: PROBE_MAX_CHANNELS,
+                ..PeerLabConfig::default().packet.packet.limits
+            },
         },
         codec: ControlCodec::default(),
         handshake_timeout: Duration::from_secs(2),
