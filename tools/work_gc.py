@@ -376,7 +376,7 @@ class Report:
         return sum(case.size for case in self.cases) + sum(item.size for item in self.loose)
 
     def retirable(self) -> list[Case]:
-        """Unindexed cases nothing tracked mentions; still subject to the guards."""
+        """Unindexed cases no tracked or untracked, non-ignored file mentions; still subject to the guards."""
         return [case for case in self.cases if not case.indexed and not case.references]
 
 
@@ -516,6 +516,9 @@ def write_fixity(root: Path, directory: Path) -> tuple[Path, int, int]:
     manifest = directory / FIXITY_NAME
     if manifest.exists():
         raise SystemExit(f"work_gc: {manifest} exists; manifests are write-once")
+    staged = directory / f".{FIXITY_NAME}.partial"
+    # A leftover from a crashed run is not a kept file and must not be listed.
+    staged.unlink(missing_ok=True)
     scratch = [candidate.path for candidate in find_candidates(directory, OriginalIndex([root / name for name in ORIGINAL_ROOTS]))]
     lines: list[str] = []
     symlinks = 0
@@ -534,7 +537,6 @@ def write_fixity(root: Path, directory: Path) -> tuple[Path, int, int]:
             if len(rel.splitlines()) != 1 or "\\" in rel or rel != rel.strip():
                 raise SystemExit(f"work_gc: {path}: name cannot be written to a fixity manifest")
             lines.append(f"{sha256_file(path)}  {rel}")
-    staged = directory / f".{FIXITY_NAME}.partial"
     with staged.open("w", encoding="utf-8") as handle:
         _ = handle.write("".join(f"{line}\n" for line in sorted(lines, key=lambda line: line[66:])))
         handle.flush()
@@ -571,7 +573,7 @@ def render(report: Report) -> list[str]:
     lines.append("review signals:")
     lines.append(
         f"  {len(unindexed)} case(s) without an active evidence row; {len(retirable)} of them, "
-        + f"{mib(sum(case.size for case in retirable))}, are mentioned by no tracked file (--retire deliberately)"
+        + f"{mib(sum(case.size for case in retirable))}, are mentioned by no repository file outside ignored paths (--retire deliberately)"
     )
     lines.append(f"  {len(missing_state)} case(s) without a valid {CASE_FILE}")
     lines.append(

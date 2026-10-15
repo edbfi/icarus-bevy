@@ -185,6 +185,7 @@ class WorkGcTest(unittest.TestCase):
         notes = self.write("work/a/notes.md", b"kept")
         _ = self.write("work/a/sub/out.json", b"{}")
         (self.root / "work/a/link").symlink_to(notes)
+        _ = self.write("work/a/.fixity.sha256.partial", b"crashed run")
         self.evidence("work/a/")
         self.age()
         self.assertEqual(self.case(self.scan(), "a").candidates, [])
