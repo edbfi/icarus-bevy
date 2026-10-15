@@ -80,8 +80,9 @@ dormancy, channel close reasons and every server-side writer.
   enum `min(8, CeilLogTwo64(max + 1))` bits, max being the signed maximum of
   the enum's entry values (0 if none), so a maximum of 0 or -1 sends no bits;
   Enum is that count capped at its underlying integer's bits (F-632; other
-  formulas apply below engine net versions 17 and 12); object references a NetGUID; structs with the native
-  net-serialize flag their own serializer, other structs and arrays are
+  formulas apply below engine net versions 17 and 12); object references a
+  NetGUID; structs with the native net-serialize flag their own serializer,
+  other structs and arrays are
   flattened by the layout; soft objects the archive soft-path operator. Other
   types (Str, Name, Text) use the base item path, which forwards to the
   property's ordinary item serializer (F-575).
@@ -170,8 +171,8 @@ dormancy, channel close reasons and every server-side writer.
   a nested Text (4) or a gender byte (5). A loading archive takes custom
   versions from the client's registry of current versions (F-639); the
   gating key is registered at version 40, so both gates pass, as does the
-  none form's (version 32: a 4-byte bool, then a string if set; F-639); Names here use archive slot 0x140, whose net
-  routing is unread (U-064).
+  none form's (version 32: a 4-byte bool, then a string if set; F-639);
+  Names here use archive slot 0x140, whose net routing is unread (U-064).
 - Network names (F-575): a hardcoded bit; when set, the hardcoded name index
   (packed at engine net version 6 or later, otherwise bounded by 411; indices
   above 702 are rejected), which senders use only for indices up to 410; when

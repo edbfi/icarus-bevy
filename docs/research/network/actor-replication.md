@@ -20,8 +20,8 @@ packed rep handles drive the layout, with nested streams for dynamic arrays,
 and spawn vectors are raw floats or bias-packed integers in tenths, with
 16-bit compressed rotators (F-571, F-573). Bool, Byte, Enum, object, native
 struct and soft-object items are read; Str, Name, Text and native struct bodies
-are not (F-574, U-064). Enum widths derive from the enum's maximum value (F-632). Several native struct serializers are read on the
-server: quantized and normal vectors, tag containers and hit results (F-593).
+are not (F-574, U-064). Enum widths derive from the enum's maximum value
+(F-632). Several native struct serializers are read on the server: quantized and normal vectors, tag containers and hit results (F-593).
 Handles walk the layout in strictly increasing order, numbering array elements
 consecutively (F-586), and the movement struct sends flags, level-quantized
 location and velocities and a byte or 16-bit rotation, its levels being

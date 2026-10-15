@@ -36,7 +36,8 @@ entities and across kill/restart cycles (F-485); the 7,200 s soak predates later
 persistence changes (F-237), and a later soak stopped early at 21.9 h (F-612).
 Compressed simulated time now runs the full 72-hour tick and save schedule
 in under an hour, at 100,000 synthetic entities and for a world seeded from
-the supplied save, without failures or retained growth (F-615, F-616). A modeled POSIX power-loss harness over the real
+the supplied save, without save failures or retained growth, one tick missing its deadline
+(F-615, F-616). A modeled POSIX power-loss harness over the real
 write path recovers acknowledged state in every enumerated crash state and found
 stranded temporaries, now removed (F-511). None of this measures ICARUS performance.
 
