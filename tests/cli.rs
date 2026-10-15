@@ -84,6 +84,74 @@ fn headless_process_saves_then_resumes_its_clock() {
     assert!(saved["tick"].as_u64().unwrap() >= 6);
 }
 
+#[test]
+fn compressed_run_keeps_every_autosave_of_its_simulated_time() {
+    let directory = tempfile::tempdir().unwrap();
+    assert!(
+        !cli()
+            .args(["run", "--compressed", "--data-dir"])
+            .arg(directory.path())
+            .output()
+            .unwrap()
+            .status
+            .success(),
+        "a compressed run must be bounded by max_ticks"
+    );
+    let started = Instant::now();
+    // 7,200 ticks at 30 Hz are 240 simulated seconds.
+    let output = cli()
+        .args([
+            "run",
+            "--compressed",
+            "--max-ticks",
+            "7200",
+            "--autosave-seconds",
+            "10",
+            "--data-dir",
+        ])
+        .arg(directory.path())
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(
+        started.elapsed() < Duration::from_secs(120),
+        "a compressed run must not pace to the wall clock"
+    );
+    let events: Vec<serde_json::Value> = String::from_utf8_lossy(&output.stderr)
+        .lines()
+        .map(|line| serde_json::from_str(line).unwrap())
+        .collect();
+    let count = |name: &str| events.iter().filter(|event| event["event"] == name).count();
+    // Autosaves fall due at 10..=230 simulated seconds; the run stops at 240,
+    // before that autosave, and the final save follows.
+    assert_eq!(count("save_committed"), 24);
+    assert_eq!(count("save_failed"), 0);
+    // Status every 10 simulated seconds (the default), also stopping at 240.
+    assert_eq!(count("status"), 23);
+    assert!(
+        events
+            .iter()
+            .filter(|event| event["event"] == "status")
+            .all(|event| event["clamped_frames"].is_null())
+    );
+    let stopped = events
+        .iter()
+        .find(|event| event["event"] == "stopped")
+        .unwrap();
+    assert_eq!(stopped["tick"], 7_200);
+    let saved_ticks: Vec<u64> = events
+        .iter()
+        .filter(|event| event["event"] == "save_committed")
+        .map(|event| event["tick"].as_u64().unwrap())
+        .collect();
+    assert_eq!(saved_ticks.first(), Some(&300));
+    assert_eq!(saved_ticks.last(), Some(&7_200));
+}
+
 struct RunningServer {
     child: Child,
     logs: Receiver<String>,
