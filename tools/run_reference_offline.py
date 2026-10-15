@@ -34,7 +34,12 @@ from tools.runtime_types import JsonObject, integer_field, json_object, parse_co
 
 IMAGE = "ghcr.io/pelican-eggs/steamcmd@sha256:967e40780cb46a5343bd7a5fd372612d1a1b90fbc95fdd803d74ec5b3bede237"
 REFERENCE_EXE = Path("Icarus/Binaries/Win64/IcarusServer-Win64-Shipping.exe")
-MODES = frozenset({"startup", "resume", "missing", "truncated-json", "handshake", "complete-stateless"})
+MODES = frozenset({"startup", "resume", "missing", "truncated-json", "save-load", "handshake",
+                   "complete-stateless"})
+PROSPECT_FILE = re.compile(r"[A-Za-z0-9_-]{1,64}\.json")
+PROSPECTS = Path("Icarus/Saved/PlayerData/DedicatedServer/Prospects")
+PLAYER_DATA = Path("Icarus/Saved/PlayerData")
+SERVER_SETTINGS = Path("Icarus/Saved/Config/WindowsServer/ServerSettings.ini")
 
 
 class Arguments(argparse.Namespace):
@@ -44,6 +49,7 @@ class Arguments(argparse.Namespace):
     seconds: int = 120
     startup_probe: str = "none"
     load_fixture: str = "none"
+    save_load: bool = False
     handshake_probe: bool = False
     complete_stateless: bool = False
 
@@ -109,9 +115,9 @@ def selected_modes(args: Arguments) -> frozenset[str]:
         raise ValueError("--complete-stateless requires --handshake-probe")
     if args.startup_probe not in {"none", "resume"} or args.load_fixture not in {"none", "missing", "truncated-json"}:
         raise ValueError("unknown experiment mode")
-    if args.load_fixture != "none" and args.startup_probe != "none":
+    if sum((args.load_fixture != "none", args.startup_probe != "none", args.save_load)) > 1:
         raise ValueError("select only one startup experiment")
-    modes = {args.load_fixture if args.load_fixture != "none" else
+    modes = {"save-load" if args.save_load else args.load_fixture if args.load_fixture != "none" else
              ("resume" if args.startup_probe == "resume" else "startup")}
     if args.handshake_probe:
         if args.seconds < 60:
@@ -130,6 +136,8 @@ class ApprovedRun:
     session_sha256: str
     reference: Path
     probe: Path | None
+    save_input: Path | None
+    shutdown_seconds: int | None
     observation_seconds: int
     lifetime_seconds: int
     max_runs: int
@@ -174,6 +182,19 @@ def validate_session(root: Path, args: Arguments, now: datetime.datetime) -> App
         checks.append(("probe_sha256", probe))
     elif "probe" in session or "probe_sha256" in session:
         raise ValueError("probe binding requires handshake authorization")
+    save_input: Path | None = None
+    shutdown: int | None = None
+    if "save-load" in allowed:
+        # A disposable copy of a supplied save, never the private original.
+        save_input = regular_path(Path(string_field(session, "save_input")))
+        if not save_input.is_relative_to(case) or PROSPECT_FILE.fullmatch(save_input.name) is None:
+            raise ValueError("save input must be a case-local <prospect>.json file")
+        checks.append(("save_input_sha256", save_input))
+        shutdown = integer_field(session, "shutdown_if_not_joined_seconds")
+        if not 0 <= shutdown <= 780:
+            raise ValueError("shutdown_if_not_joined_seconds must be 0..780")
+    elif any(key in session for key in ("save_input", "save_input_sha256", "shutdown_if_not_joined_seconds")):
+        raise ValueError("save binding requires save-load authorization")
     for field, path in checks:
         expected = string_field(session, field)
         if re.fullmatch(r"[0-9a-f]{64}", expected) is None or expected != digest(path):
@@ -195,7 +216,7 @@ def validate_session(root: Path, args: Arguments, now: datetime.datetime) -> App
     if not start <= now < end or now + datetime.timedelta(seconds=lifetime) >= end:
         raise ValueError("session is future, expired or has insufficient approved time")
     return ApprovedRun(case, session_path, session, hashlib.sha256(raw_session).hexdigest(),
-                       reference, probe, observation, lifetime, max_runs)
+                       reference, probe, save_input, shutdown, observation, lifetime, max_runs)
 
 
 def revalidate(root: Path, args: Arguments, approved: ApprovedRun) -> None:
@@ -307,6 +328,23 @@ def prepare_launch(root: Path, args: Arguments, approved: ApprovedRun,
             (home / relative).parent.mkdir(parents=True)
             _ = (home / relative).write_bytes(payload)
             fixture.update(exists_at_start=True, bytes=len(payload), sha256=hashlib.sha256(payload).hexdigest())
+    if args.save_load:
+        if approved.save_input is None or approved.shutdown_seconds is None:
+            raise ValueError("missing authorized save input")
+        relative = PROSPECTS / approved.save_input.name
+        (home / relative).parent.mkdir(parents=True)
+        _ = shutil.copyfile(approved.save_input, home / relative)
+        if digest(home / relative) != string_field(approved.session, "save_input_sha256"):
+            raise ValueError("save copy digest mismatch")
+        settings = ("[/Script/Icarus.DedicatedServerSettings]\nResumeProspect=False\n"
+                    + f"ShutdownIfNotJoinedFor={approved.shutdown_seconds}\n"
+                    + f"ShutdownIfEmptyFor={approved.shutdown_seconds}\n")
+        (home / SERVER_SETTINGS).parent.mkdir(parents=True)
+        _ = (home / SERVER_SETTINGS).write_text(settings)
+        fixture = {"kind": "save-load", "relative_path": str(relative), "exists_at_start": True,
+                   "bytes": (home / relative).stat().st_size, "sha256": digest(home / relative),
+                   "server_settings": settings, "server_settings_sha256": digest(home / SERVER_SETTINGS)}
+    if fixture is not None:
         _ = (run / "fixture.json").write_text(json.dumps(fixture, indent=2) + "\n")
     launch = ('mkdir -p "$STEAM_COMPAT_DATA_PATH"; exec xvfb-run -a proton run '
               '/reference/Icarus/Binaries/Win64/IcarusServer-Win64-Shipping.exe '
@@ -316,6 +354,8 @@ def prepare_launch(root: Path, args: Arguments, approved: ApprovedRun,
         launch += ' -ExecCmds="ResumeProspect"'
     if args.load_fixture != "none":
         launch += ' -LoadProspect=overnight-authored'
+    if args.save_load and approved.save_input is not None:
+        launch += ' -LoadProspect=' + approved.save_input.stem
     argv = ["docker", "run", "--detach", "--pull", "never", "--name", name,
             "--label", "icarus.research.run=" + name,
             "--label", "icarus.research.owner=" + token, "--cidfile", str(run / "container.cid"),
@@ -411,6 +451,25 @@ def observe(args: Arguments, approved: ApprovedRun, run: Path,
     return cleanup
 
 
+def record_save_outputs(run: Path, approved: ApprovedRun) -> JsonObject:
+    """Digest every file the server left under its PlayerData tree."""
+    player_data = run / "home" / PLAYER_DATA
+    files: list[JsonObject] = []
+    if player_data.is_dir():
+        for path in sorted(player_data.rglob("*")):
+            if path.is_symlink() or not path.is_file():
+                continue
+            files.append({"relative_path": str(path.relative_to(run / "home")),
+                          "bytes": path.stat().st_size, "sha256": digest(path)})
+    input_path = str(PROSPECTS / approved.save_input.name) if approved.save_input is not None else None
+    expected = string_field(approved.session, "save_input_sha256")
+    unchanged = any(entry["relative_path"] == input_path and entry["sha256"] == expected for entry in files)
+    outputs: JsonObject = {"input_relative_path": input_path, "input_sha256": expected,
+                           "input_unchanged": unchanged, "files": list(files)}
+    _ = (run / "save-outputs.json").write_text(json.dumps(outputs, indent=2) + "\n")
+    return outputs
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     _ = parser.add_argument("--case-root", required=True)
@@ -419,6 +478,7 @@ def main() -> None:
     _ = parser.add_argument("--seconds", type=int, default=120)
     _ = parser.add_argument("--startup-probe", choices=["none", "resume"], default="none")
     _ = parser.add_argument("--load-fixture", choices=["none", "missing", "truncated-json"], default="none")
+    _ = parser.add_argument("--save-load", action="store_true")
     _ = parser.add_argument("--handshake-probe", action="store_true")
     _ = parser.add_argument("--complete-stateless", action="store_true")
     args = parser.parse_args(namespace=Arguments())
@@ -431,7 +491,11 @@ def main() -> None:
         name = "icarus-offline-" + token
         argv = prepare_launch(root, args, approved, run, name, token)
         revalidate(root, args, approved)
-        cleanup = observe(args, approved, run, name, token, argv)
+        try:
+            cleanup = observe(args, approved, run, name, token, argv)
+        finally:
+            if args.save_load:
+                _ = record_save_outputs(run, approved)
         print(json.dumps({"run": str(run), **cleanup}))
 
 
