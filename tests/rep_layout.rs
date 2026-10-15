@@ -12,7 +12,7 @@ use icarus_bevy::experimental::rep_layout::{
 };
 
 // Independently authored bit fixtures from the actor-channel spec (F-571 to
-// F-575, F-582), built field by field with the packet bit writer and the
+// F-575, F-593), built field by field with the packet bit writer and the
 // hand-written helpers below; no captured traffic.
 
 fn codec(version: u32, checksums: bool, order: ByteOrder) -> RepLayoutCodec {

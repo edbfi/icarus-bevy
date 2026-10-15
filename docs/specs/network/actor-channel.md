@@ -61,11 +61,11 @@ dormancy, channel close reasons and every server-side writer.
   flattened by the layout; soft objects the archive soft-path operator. Other
   types (Str, Name, Text) use the base item path, which forwards to the
   property's ordinary item serializer (F-575).
-- Native struct items on the older server (F-582): `FVector_NetQuantize` is a
+- Native struct items on the older server (F-593): `FVector_NetQuantize` is a
   component bit count (at most 20) and three integers with the same bias and
   bound as spawn vectors but no scale; `FVector_NetQuantizeNormal` three
   16-bit values biased by 32768 and multiplied by an unread constant; gameplay
-  tag containers an empty bit, a count byte and packed tags; hit results a
+  tag containers as below; hit results a
   flags byte followed by those vectors and flag-gated fields. The movement
   struct and the 10/100 vector quantizers have no class-method symbols; they
   live in their `TCppStructOps` instances.
@@ -80,9 +80,17 @@ dormancy, channel close reasons and every server-side writer.
   per axis a nonzero bit, then a byte of `round(angle * 256 / 360)`, decoded
   times `360 / 256`. `experimental::rep_layout` re-encodes all of these
   (F-590).
-- Gameplay tags (F-583): sent as network names unless the tag manager's
-  fast-replication flag is set; then as a net index into the runtime tag
-  table, which both sides must share in the same order.
+- Gameplay tags (F-583, F-591, F-592): sent as names unless the tag
+  manager's fast-replication flag is set; then as a net index into the
+  runtime tag table, which both sides must share in the same order. With a
+  first segment F and total width T from the tag manager, the index is T raw
+  bits when F is below 1 or at least T; otherwise F low bits and a
+  continuation bit, then the T - F high bits when set. Connections with a
+  per-connection table flag send a 16-bit table index through a packed
+  archive call instead (slot meaning inferred). A container is an empty bit
+  (set when empty), then a count of a tag-manager width W, capped by the
+  writer at 2^W - 1, then that many tags. `experimental::rep_layout`
+  re-encodes the name and net-index forms with caller widths (F-594).
 - Network names (F-575): a hardcoded bit; when set, the hardcoded name index
   (packed at engine net version 6 or later, otherwise bounded by 411; indices
   above 702 are rejected), which senders use only for indices up to 410; when
@@ -104,10 +112,10 @@ dormancy, channel close reasons and every server-side writer.
 
 ## Open questions
 
-- Property encodings beyond the read items, hit results and tag packing
+- Property encodings beyond the read items, hit results and Name routing
   (U-064); which levels each movement property uses (a property default).
 - Server writers for these records and their byte order and bounds (U-044).
-- Gameplay-tag replication mode and an independent tag table (U-065).
+- Gameplay-tag replication mode, widths and an independent tag table (U-065).
 
 ## Evidence
 
@@ -115,4 +123,5 @@ dormancy, channel close reasons and every server-side writer.
   M-431, M-433; constants M-432, M-435 to M-437 (scope deviation M-434); net items M-438 to
   M-449; server writers M-455 to M-462;
   server struct items M-463 to M-470; handle walk M-428; movement and scaled
-  vectors M-477 to M-491; codec tests M-475, M-476, M-492.
+  vectors M-477 to M-491; tags M-493 to M-495; codec tests M-475, M-476,
+  M-492, M-496.

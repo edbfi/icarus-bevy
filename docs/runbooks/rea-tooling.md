@@ -49,6 +49,11 @@ import with `-noanalysis` and run `tools/ghidra/DecompileFlowFunctions.java`
 with the starts: it disassembles each start by flow within 64 KiB, lets Ghidra
 compute the body (the PE loader already creates one-byte functions at exception
 records, so guessed end ranges overlap) and decompiles with a 30-second cap.
+When pseudocode drops a call argument, `tools/ghidra/ListFlowInstructions.java`
+lists the same flow (jumps and fallthrough, never calls, at most 4096
+instructions per start) with address, bytes and instruction text. Header-inline
+struct methods have no class-method symbol; `tools/pdb_public_symbols.cjs`
+selects their `TCppStructOps` instance through `struct_ops_methods` pairs.
 
 ## Evidence at session close
 

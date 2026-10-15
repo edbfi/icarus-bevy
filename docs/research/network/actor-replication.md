@@ -21,17 +21,19 @@ and spawn vectors are raw floats or bias-packed integers in tenths, with
 16-bit compressed rotators (F-571, F-573). Bool, Byte, Enum, object, native
 struct and soft-object items are read; Str, Name, Text and native struct bodies
 are not (F-574, U-064). Several native struct serializers are read on the
-server: quantized and normal vectors, tag containers and hit results (F-582).
+server: quantized and normal vectors, tag containers and hit results (F-593).
 Handles walk the layout in strictly increasing order, numbering array elements
 consecutively (F-586), and the movement struct sends flags, level-quantized
 location and velocities and a byte or 16-bit rotation, its levels being
-property defaults that never cross the wire (F-588, F-589). These are
+property defaults that never cross the wire (F-588, F-589). Gameplay tags go
+as names or as split net indices whose widths, like the container count
+width, are tag configuration (F-591, F-592). These are
 client-build observations, with the older server's content-block and NetGUID
 writers mirroring them (F-581); nothing is wire-validated.
 
 ## Open
 
-- Tag packing, hit results and remaining items (U-064); server send policy (U-044).
+- Name routing, hit results and remaining items (U-064); server send policy (U-044).
 - Tag replication by net index would need an identical tag table (F-583, U-065).
 
 ## Artifacts

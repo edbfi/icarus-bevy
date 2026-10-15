@@ -4,8 +4,8 @@
 //! Static observations only: the client handle stream (F-571), NetGUID
 //! references (F-572), the compressed rotator (F-573), client property net items
 //! (F-574), client network names (F-575) and the older server's native struct
-//! items (F-582), the movement struct and its quantization levels (F-588,
-//! F-589). Nothing here is wire-validated, no original layout is known
+//! items (F-593), the movement struct and its quantization levels (F-588,
+//! F-589) and gameplay tags (F-591, F-592). Nothing here is wire-validated, no original layout is known
 //! or shipped, and no property state, object resolution, admission or gameplay
 //! occurs. Writers mirror the readers for round-trip research only.
 //!
@@ -24,9 +24,9 @@
 //! - [`RepCommand::NetworkName`]: a hardcoded bit, then a hardcoded index or an
 //!   archive string and a 4-byte number (F-575);
 //! - [`RepCommand::VectorQuantize`]: `FVector_NetQuantize`, a capped component
-//!   bit count and three biased integers, unscaled (F-582, server writer);
+//!   bit count and three biased integers, unscaled (F-593, server writer);
 //! - [`RepCommand::VectorQuantizeNormal`]: three 16-bit values biased by 32768;
-//!   the scale constant is unread, so only raw values are kept (F-582, server
+//!   the scale constant is unread, so only raw values are kept (F-593, server
 //!   writer);
 //! - [`RepCommand::VectorQuantize10`] and [`RepCommand::VectorQuantize100`]:
 //!   the same shape with bit counts below 24 and 30, read times 0.1 and 0.01
@@ -35,6 +35,10 @@
 //!   rotation, linear velocity and, when flag bit 1 is set, angular velocity,
 //!   each at a quantization level the layout supplies, because the levels are
 //!   struct fields and never cross the wire (F-589);
+//! - [`RepCommand::GameplayTag`]: a network name, or a net index packed in a
+//!   caller-supplied first segment and total width (F-591);
+//! - [`RepCommand::GameplayTagContainer`]: an empty bit, then a count of a
+//!   caller-supplied width and that many tags (F-592);
 //! - [`RepCommand::Rotator`]: the compressed rotator of
 //!   [`super::actor_channel::read_rotator`] (F-573);
 //! - [`RepCommand::DynamicArray`]: count and nested stream (F-571);
@@ -61,6 +65,10 @@
 //!   observed helper does, so the layout names only the three packings;
 //! - which property uses which movement level is a property default and stays
 //!   caller-supplied;
+//! - tag widths and the replication mode come from tag configuration, which
+//!   this codec neither reads nor ships (U-065): the caller supplies them, and
+//!   an index is never resolved to a tag; the per-connection table path is
+//!   not supported; a name-mode tag uses the network-name path (inferred);
 //! - whether Name properties reach the network-name path is unread, so the
 //!   caller selects [`RepCommand::NetworkName`] explicitly; whether rotator
 //!   properties reach the compressed-rotator helper is likewise inferred;
@@ -70,11 +78,11 @@
 //!   values are raw 16-bit fields like the rotator's.
 //!
 //! Unsupported and failing closed: any item the spec does not encode, such as
-//! 32-bit integers, floats, strings, text, soft objects, gameplay tag
-//! containers, hit results and other native structs
-//! ([`UnsupportedItem`]); the optional bit and the preamble before the handle
-//! loop (M-426); non-canonical packed integers (the original reader may be more
-//! lenient), so every accepted stream re-encodes bit-identically.
+//! 32-bit integers, floats, strings, text, soft objects, hit results and other
+//! native structs ([`UnsupportedItem`]); the optional bit and the preamble
+//! before the handle loop (M-426); non-canonical packed integers and tag net
+//! indices (the original reader may be more lenient), so every accepted stream
+//! re-encodes bit-identically.
 //!
 //! `Debug` output and summaries carry handles, kinds, counts and lengths only,
 //! never values, GUIDs, names, checksums or raw bits.
@@ -90,13 +98,13 @@ use super::control::TokenEncoding;
 use super::control_messages::ArchiveText;
 use super::packet::{BitReader, BitWriter, MAX_HARDCODED_NAME_INDEX, Payload};
 
-/// Maximum of the capped `FVector_NetQuantize` component bit count (F-582).
+/// Maximum of the capped `FVector_NetQuantize` component bit count (F-593).
 pub const NET_QUANTIZE_BITS_MAX: u32 = 20;
 /// Maximum of the `FVector_NetQuantize10` bit count (F-589).
 pub const NET_QUANTIZE10_BITS_MAX: u32 = 24;
 /// Maximum of the `FVector_NetQuantize100` bit count (F-589).
 pub const NET_QUANTIZE100_BITS_MAX: u32 = 30;
-/// Bias of `FVector_NetQuantizeNormal` components (F-582).
+/// Bias of `FVector_NetQuantizeNormal` components (F-593).
 pub const NET_QUANTIZE_NORMAL_BIAS: u32 = 32_768;
 /// First engine net version whose hardcoded name index is packed (F-575).
 pub const PACKED_NAME_NET_VERSION: u32 = 6;
@@ -159,9 +167,7 @@ pub enum UnsupportedItem {
     Text,
     /// Archive soft-path operator (F-574), unread.
     SoftObject,
-    /// Empty bit, count byte and packed tags (F-582); tag packing is unread.
-    GameplayTagContainer,
-    /// Flags byte and gated fields (F-582); the gated layout is unread.
+    /// Flags byte and gated fields (F-593); the gated layout is unread.
     HitResult,
     /// Any other native net-serialize struct.
     OtherNativeStruct,
@@ -186,6 +192,13 @@ pub enum RepCommand {
     VectorQuantize100,
     VectorQuantizeNormal,
     Rotator,
+    /// One gameplay tag in the caller's encoding (F-591, F-592).
+    GameplayTag(TagEncoding),
+    /// A gameplay tag container (F-592); `count_bits` is 1 to 8.
+    GameplayTagContainer {
+        encoding: TagEncoding,
+        count_bits: u8,
+    },
     /// `FRepMovement` at the property's quantization levels (F-588, F-589).
     Movement {
         location: MovementLevel,
@@ -204,7 +217,7 @@ pub enum RepCommand {
     Unsupported(UnsupportedItem),
 }
 
-/// A capped-bit-count vector packing (F-582, F-589): the bit-count maximum and
+/// A capped-bit-count vector packing (F-593, F-589): the bit-count maximum and
 /// the divisor the reader scales the unbiased integers by.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -242,6 +255,72 @@ impl VectorPacking {
             Self::NetQuantize100 | Self::MovementHundredths => 100,
         }
     }
+}
+
+/// How a gameplay tag crosses the wire (F-591, F-592); both depend on tag
+/// configuration the caller supplies.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TagEncoding {
+    /// Fast replication off: a network name.
+    Name,
+    /// Fast replication on: a net index of `total_bits` (1 to 16), split after
+    /// `first_segment` bits when that is 1 to `total_bits - 1`.
+    NetIndex { first_segment: u8, total_bits: u8 },
+}
+
+/// One gameplay tag as read; an index is never resolved to a tag.
+#[derive(Clone, PartialEq, Eq)]
+pub enum GameplayTag {
+    Name(NetworkName),
+    NetIndex(u16),
+}
+
+impl std::fmt::Debug for GameplayTag {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Name(name) => formatter.debug_tuple("Name").field(name).finish(),
+            Self::NetIndex(_) => formatter.write_str("NetIndex"),
+        }
+    }
+}
+
+/// Tag net index (F-591): `total` raw bits when `first` is 0 or at least
+/// `total`; otherwise `first` low bits and a continuation bit, then the
+/// `total - first` high bits when the continuation bit is set.
+pub fn read_tag_net_index(reader: &mut BitReader<'_>, first: u8, total: u8) -> Result<u16> {
+    ensure!((1..=16).contains(&total), "tag index width must be 1 to 16");
+    let (first, total) = (u32::from(first), u32::from(total));
+    if first == 0 || first >= total {
+        return Ok(read_field(reader, total, "tag net index")? as u16);
+    }
+    let low = read_field(reader, first + 1, "tag net index")?;
+    let index = if low >> first & 1 == 0 {
+        low
+    } else {
+        let high = read_field(reader, total - first, "tag net index high bits")?;
+        // The original reader accepts a zero high part, but its writer never
+        // sends one; rejecting it keeps every accepted stream re-encodable.
+        ensure!(high != 0, "non-canonical tag net index");
+        low & ((1 << first) - 1) | high << first
+    };
+    Ok(index as u16)
+}
+
+/// Mirror of [`read_tag_net_index`]; the index must fit `total` bits.
+pub fn write_tag_net_index(writer: &mut BitWriter, index: u16, first: u8, total: u8) -> Result<()> {
+    ensure!((1..=16).contains(&total), "tag index width must be 1 to 16");
+    let (first, total, index) = (u32::from(first), u32::from(total), u32::from(index));
+    ensure!(index >> total == 0, "tag net index exceeds its width");
+    if first == 0 || first >= total {
+        writer.write_bits(index, total);
+    } else if index < 1 << first {
+        writer.write_bits(index, first + 1);
+    } else {
+        writer.write_bits(index & ((1 << first) - 1) | 1 << first, first + 1);
+        writer.write_bits(index >> first, total - first);
+    }
+    Ok(())
 }
 
 /// A movement vector quantization level (F-589); the value is a struct field
@@ -383,7 +462,7 @@ impl std::fmt::Debug for RepMovement {
     }
 }
 
-/// Capped-bit-count vector integers as read; no float is applied (F-582,
+/// Capped-bit-count vector integers as read; no float is applied (F-593,
 /// F-589).
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub struct QuantizedVector {
@@ -395,7 +474,7 @@ pub struct QuantizedVector {
 
 impl QuantizedVector {
     /// Components minus the bias `1 << (bits + 1)`, before the packing's
-    /// divisor (F-582, F-589). Defined for valid bit counts only.
+    /// divisor (F-593, F-589). Defined for valid bit counts only.
     pub fn unbiased(&self) -> [i64; 3] {
         let bias = 1i64 << (self.bits.min(NET_QUANTIZE100_BITS_MAX) + 1);
         self.components.map(|value| i64::from(value) - bias)
@@ -416,7 +495,7 @@ impl std::fmt::Debug for QuantizedVector {
 pub struct QuantizedNormal(pub [u16; 3]);
 
 impl QuantizedNormal {
-    /// Values minus the 32768 bias (F-582), before the unread scale.
+    /// Values minus the 32768 bias (F-593), before the unread scale.
     pub fn unbiased(&self) -> [i32; 3] {
         self.0
             .map(|value| i32::from(value) - NET_QUANTIZE_NORMAL_BIAS as i32)
@@ -489,6 +568,9 @@ pub enum RepValue {
     VectorQuantize100(QuantizedVector),
     VectorQuantizeNormal(QuantizedNormal),
     Rotator(CompressedRotator),
+    GameplayTag(GameplayTag),
+    /// `None` when the empty bit is set; otherwise the counted tags.
+    GameplayTagContainer(Option<Vec<GameplayTag>>),
     Movement(RepMovement),
     DynamicArray(RepArray),
     Opaque(Payload),
@@ -507,6 +589,8 @@ pub enum ItemKind {
     VectorQuantize100,
     VectorQuantizeNormal,
     Rotator,
+    GameplayTag,
+    GameplayTagContainer,
     Movement,
     DynamicArray,
     Opaque,
@@ -525,6 +609,8 @@ impl RepValue {
             Self::VectorQuantize100(_) => ItemKind::VectorQuantize100,
             Self::VectorQuantizeNormal(_) => ItemKind::VectorQuantizeNormal,
             Self::Rotator(_) => ItemKind::Rotator,
+            Self::GameplayTag(_) => ItemKind::GameplayTag,
+            Self::GameplayTagContainer(_) => ItemKind::GameplayTagContainer,
             Self::Movement(_) => ItemKind::Movement,
             Self::DynamicArray(_) => ItemKind::DynamicArray,
             Self::Opaque(_) => ItemKind::Opaque,
@@ -557,6 +643,11 @@ impl std::fmt::Debug for RepValue {
                 .field(normal)
                 .finish(),
             Self::Rotator(rotator) => formatter.debug_tuple("Rotator").field(rotator).finish(),
+            Self::GameplayTag(tag) => formatter.debug_tuple("GameplayTag").field(tag).finish(),
+            Self::GameplayTagContainer(tags) => formatter
+                .debug_tuple("GameplayTagContainer")
+                .field(&tags.as_ref().map(Vec::len))
+                .finish(),
             Self::Movement(movement) => formatter.debug_tuple("Movement").field(movement).finish(),
             Self::DynamicArray(array) => {
                 formatter.debug_tuple("DynamicArray").field(array).finish()
@@ -630,6 +721,8 @@ pub struct EntrySummary {
     pub vector_bits: Option<u32>,
     pub rotator: Option<RotatorSummary>,
     pub movement: Option<MovementSummary>,
+    /// Container tag count; `None` for an empty-bit container or another kind.
+    pub tag_count: Option<usize>,
     pub opaque_bits: Option<usize>,
     pub array: Option<Box<ArraySummary>>,
 }
@@ -658,6 +751,7 @@ impl RepEntry {
             vector_bits: None,
             rotator: None,
             movement: None,
+            tag_count: None,
             opaque_bits: None,
             array: None,
         };
@@ -684,9 +778,14 @@ impl RepEntry {
                     stream: array.stream.summary(),
                 }));
             }
+            RepValue::GameplayTag(GameplayTag::Name(name)) => summary.name = Some(name.summary()),
+            RepValue::GameplayTagContainer(tags) => {
+                summary.tag_count = tags.as_ref().map(Vec::len);
+            }
             RepValue::Bool(_)
             | RepValue::Byte(_)
             | RepValue::Enum(_)
+            | RepValue::GameplayTag(GameplayTag::NetIndex(_))
             | RepValue::VectorQuantizeNormal(_) => {}
         }
         summary
@@ -746,6 +845,19 @@ fn validate_layout_at(layout: &[RepCommand], limits: &RepLayoutLimits, depth: us
                 (1..=limits.max_opaque_bits).contains(bits),
                 "layout handle {handle}: opaque span must be 1 bit to the opaque limit"
             ),
+            RepCommand::GameplayTag(encoding) => validate_tag_encoding(*encoding)
+                .with_context(|| format!("layout handle {handle}"))?,
+            RepCommand::GameplayTagContainer {
+                encoding,
+                count_bits,
+            } => {
+                validate_tag_encoding(*encoding)
+                    .with_context(|| format!("layout handle {handle}"))?;
+                ensure!(
+                    (1..=8).contains(count_bits),
+                    "layout handle {handle}: tag count width must be 1 to 8"
+                );
+            }
             RepCommand::DynamicArray { element } => {
                 validate_layout_at(element, limits, depth + 1)
                     .with_context(|| format!("layout handle {handle}"))?;
@@ -762,6 +874,16 @@ fn validate_layout_at(layout: &[RepCommand], limits: &RepLayoutLimits, depth: us
             | RepCommand::Movement { .. }
             | RepCommand::Unsupported(_) => {}
         }
+    }
+    Ok(())
+}
+
+fn validate_tag_encoding(encoding: TagEncoding) -> Result<()> {
+    if let TagEncoding::NetIndex { total_bits, .. } = encoding {
+        ensure!(
+            (1..=16).contains(&total_bits),
+            "tag index width must be 1 to 16"
+        );
     }
     Ok(())
 }
@@ -1143,6 +1265,39 @@ pub fn write_movement(
     Ok(())
 }
 
+fn read_tag(
+    reader: &mut BitReader<'_>,
+    encoding: TagEncoding,
+    codec: &RepLayoutCodec,
+) -> Result<GameplayTag> {
+    Ok(match encoding {
+        TagEncoding::Name => GameplayTag::Name(read_network_name(reader, codec)?),
+        TagEncoding::NetIndex {
+            first_segment,
+            total_bits,
+        } => GameplayTag::NetIndex(read_tag_net_index(reader, first_segment, total_bits)?),
+    })
+}
+
+fn write_tag(
+    writer: &mut BitWriter,
+    tag: &GameplayTag,
+    encoding: TagEncoding,
+    codec: &RepLayoutCodec,
+) -> Result<()> {
+    match (encoding, tag) {
+        (TagEncoding::Name, GameplayTag::Name(name)) => write_network_name(writer, name, codec),
+        (
+            TagEncoding::NetIndex {
+                first_segment,
+                total_bits,
+            },
+            GameplayTag::NetIndex(index),
+        ) => write_tag_net_index(writer, *index, first_segment, total_bits),
+        _ => bail!("gameplay tag does not match its encoding"),
+    }
+}
+
 fn read_value(
     reader: &mut BitReader<'_>,
     command: &RepCommand,
@@ -1170,6 +1325,30 @@ fn read_value(
         }
         RepCommand::VectorQuantize100 => {
             RepValue::VectorQuantize100(read_vector(reader, VectorPacking::NetQuantize100)?)
+        }
+        RepCommand::GameplayTag(encoding) => {
+            RepValue::GameplayTag(read_tag(reader, *encoding, codec).context("gameplay tag")?)
+        }
+        RepCommand::GameplayTagContainer {
+            encoding,
+            count_bits,
+        } => {
+            validate_tag_encoding(*encoding)?;
+            ensure!(
+                (1..=8).contains(count_bits),
+                "tag count width must be 1 to 8"
+            );
+            if read_flag(reader, "tag container empty bit")? {
+                RepValue::GameplayTagContainer(None)
+            } else {
+                let count = read_field(reader, u32::from(*count_bits), "tag container count")?;
+                let mut tags = Vec::with_capacity(count as usize);
+                for _ in 0..count {
+                    budget.take()?;
+                    tags.push(read_tag(reader, *encoding, codec).context("container tag")?);
+                }
+                RepValue::GameplayTagContainer(Some(tags))
+            }
         }
         RepCommand::Movement {
             location,
@@ -1316,6 +1495,33 @@ fn write_value(
         }
         (RepCommand::VectorQuantize100, RepValue::VectorQuantize100(vector)) => {
             write_vector(writer, vector, VectorPacking::NetQuantize100)?;
+        }
+        (RepCommand::GameplayTag(encoding), RepValue::GameplayTag(tag)) => {
+            write_tag(writer, tag, *encoding, codec).context("gameplay tag")?;
+        }
+        (
+            RepCommand::GameplayTagContainer {
+                encoding,
+                count_bits,
+            },
+            RepValue::GameplayTagContainer(tags),
+        ) => {
+            ensure!(
+                (1..=8).contains(count_bits),
+                "tag count width must be 1 to 8"
+            );
+            writer.write_bit(tags.is_none());
+            if let Some(tags) = tags {
+                ensure!(
+                    tags.len() >> count_bits == 0,
+                    "tag container count exceeds its width"
+                );
+                writer.write_bits(tags.len() as u32, u32::from(*count_bits));
+                for tag in tags {
+                    budget.take()?;
+                    write_tag(writer, tag, *encoding, codec).context("container tag")?;
+                }
+            }
         }
         (
             RepCommand::Movement {
