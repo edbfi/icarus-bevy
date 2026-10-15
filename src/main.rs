@@ -54,7 +54,8 @@ enum Command {
         #[arg(long)]
         recorders: bool,
         /// Preserve the payload losslessly, then save and reload it through a
-        /// temporary native schema-2 store; reports counts, sizes and timings.
+        /// temporary native schema-3 store; reports counts, sizes, timings and
+        /// the resident set with and without the decoded tree (Linux only).
         #[arg(long, conflicts_with_all = ["inner_tags", "recorders"])]
         preserve_check: bool,
     },
@@ -153,9 +154,6 @@ fn store_files(root: &std::path::Path, generation: u64) -> Result<StoreFiles> {
     Ok((generation_bytes, sidecars))
 }
 
-/// Preserve a supplied envelope and prove the native persistence round trip in
-/// a private temporary store that is removed afterwards. Nothing is imported.
-/// A second save shows the write-once sidecar is reused rather than rewritten.
 /// Open a supplied envelope nonblocking and admit only an opened regular file.
 fn open_regular_source(source: &std::path::Path) -> Result<std::fs::File> {
     let file = std::fs::OpenOptions::new()
@@ -200,6 +198,22 @@ fn preserve_save(file: std::fs::File, data_dir: &std::path::Path) -> Result<serd
     }))
 }
 
+/// Resident set size of this process from `/proc/self/status` (`VmRSS`), or
+/// `None` where that interface is unavailable.
+fn resident_bytes() -> Option<u64> {
+    let status = std::fs::read_to_string("/proc/self/status").ok()?;
+    let line = status
+        .lines()
+        .find_map(|line| line.strip_prefix("VmRSS:"))?;
+    let kibibytes = line.trim().strip_suffix("kB")?.trim().parse::<u64>().ok()?;
+    kibibytes.checked_mul(1024)
+}
+
+/// Preserve a supplied envelope and prove the native persistence round trip in
+/// a private temporary store that is removed afterwards. Nothing is imported.
+/// A second save shows the write-once sidecar is reused rather than rewritten.
+/// The reloaded compact section is then decoded on demand to its full tree to
+/// report the resident set with and without that tree.
 fn preserve_check_report(file: std::fs::File) -> Result<serde_json::Value> {
     use icarus_bevy::{
         persistence::SnapshotStore,
@@ -218,6 +232,10 @@ fn preserve_check_report(file: std::fs::File) -> Result<serde_json::Value> {
         preserved_prospect: Some(Arc::new(preserved.preserved)),
         ..WorldSnapshot::default()
     };
+    let original = snapshot
+        .preserved_prospect
+        .clone()
+        .context("preserved section missing before save")?;
     let directory = tempfile::tempdir().context("create temporary native store")?;
     let mut store = SnapshotStore::open(directory.path())?;
     let saved = Instant::now();
@@ -246,11 +264,21 @@ fn preserve_check_report(file: std::fs::File) -> Result<serde_json::Value> {
         .snapshot
         .preserved_prospect
         .context("reloaded generation lost its preserved section")?;
+    ensure!(*reloaded == *original, "reloaded preserved section differs");
+    drop((snapshot, original));
+    let section_only = resident_bytes();
+    let decoded_at = Instant::now();
+    // Verified again: re-hashed, bounded decode and byte-identical reconstruction.
+    let tree = reloaded.decode()?;
+    let decode_ms = decoded_at.elapsed().as_millis();
+    let with_tree = resident_bytes();
     ensure!(
-        reloaded.payload_sha256() == payload_sha256
-            && reloaded.to_inner_payload()?.len() == reloaded.payload_bytes(),
-        "reloaded preserved section differs"
+        tree.payload_sha256() == payload_sha256 && tree.payload_bytes() == reloaded.payload_bytes(),
+        "decoded preserved section differs"
     );
+    drop(tree);
+    let after_tree_dropped = resident_bytes();
+    let held_section_bytes = reloaded.held_bytes();
     drop(store);
     directory.close().context("remove temporary native store")?;
     Ok(json!({
@@ -264,7 +292,14 @@ fn preserve_check_report(file: std::fs::File) -> Result<serde_json::Value> {
         "native_sidecar_rewritten": false,
         "native_round_trip": true,
         "preserve_ms": preserve_ms, "save_ms": save_ms,
-        "second_save_ms": second_save_ms, "load_ms": load_ms,
+        "second_save_ms": second_save_ms, "load_ms": load_ms, "decode_ms": decode_ms,
+        "held_section_bytes": held_section_bytes,
+        // Linux VmRSS; null elsewhere. Freed memory may stay with the allocator.
+        "resident_bytes": {
+            "section_only": section_only,
+            "with_decoded_tree": with_tree,
+            "after_tree_dropped": after_tree_dropped,
+        },
         "world_imported": false,
     }))
 }

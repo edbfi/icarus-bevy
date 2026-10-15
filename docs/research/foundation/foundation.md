@@ -42,7 +42,7 @@ frames root properties and recorders to exact EOF, matching independent
 scanners with values opaque and `world_imported` false (F-241 to F-245, F-411).
 Both supplied copies are preserved losslessly in a write-once schema-3
 sidecar and reload byte-identically; later saves stay small (F-567). A seeded world
-runs 180 autosaves without deadline misses (F-568).
+runs 180 autosaves without deadline misses (F-578).
 Bounded header, component, struct-array and Int-array readers are tested
 (F-246 to F-249, F-200, F-207). The production run command has no game listener
 (F-240).
@@ -65,4 +65,4 @@ original server (F-252), and historical runtime windows have expired (F-218).
 
 ## Artifacts
 
-M-001, M-002, M-006, M-009, M-010, M-015..M-022, M-076, M-078, M-109..M-117, M-131..M-165, M-174, M-175, M-178, M-182..M-184, M-191, M-192, M-200, M-203, M-204, M-207, M-208, M-212..M-220, M-225, M-240, M-241, M-251, M-252, M-269, M-270, M-271, M-277, M-311, M-391, M-397..M-399, M-411..M-419.
+M-001, M-002, M-006, M-009, M-010, M-015..M-022, M-076, M-078, M-109..M-117, M-131..M-165, M-174, M-175, M-178, M-182..M-184, M-191, M-192, M-200, M-203, M-204, M-207, M-208, M-212..M-220, M-225, M-240, M-241, M-251, M-252, M-269, M-270, M-271, M-277, M-311, M-391, M-397..M-399, M-411..M-419, M-452..M-454.

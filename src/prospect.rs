@@ -17,7 +17,7 @@ use crate::experimental::component::{
 use crate::experimental::recorders::{RecorderSummary, read_recorders};
 use crate::experimental::tagged::{RootTagSummary, TagProfile, read_root};
 use crate::json::JsonObject;
-use crate::preservation::{PreserveLimits, PreservedProspect};
+use crate::preservation::{PreserveLimits, PreservedSection};
 
 /// Bounded research policy, not a recovered ICARUS format limit. Observed inputs
 /// reached 2,239,534 raw bytes and 19,131,027 decompressed bytes.
@@ -119,15 +119,16 @@ pub fn inspect_with_recorders(reader: impl Read) -> Result<RecorderInspection> {
 /// Envelope observations plus a verified lossless preservation of its payload.
 pub struct PreservedEnvelope {
     pub envelope: EnvelopeInspection,
-    pub preserved: PreservedProspect,
+    pub preserved: PreservedSection,
 }
 
 /// Fully validate the envelope, then preserve its inner payload losslessly and
 /// value-opaquely. The decoded payload itself is never returned; the preserved
-/// structure reconstructs it byte-identically or construction fails.
+/// structure reconstructs it byte-identically or construction fails. Only the
+/// compact form (verified native encoding and summary) is returned.
 pub fn preserve(reader: impl Read, limits: PreserveLimits) -> Result<PreservedEnvelope> {
     let validated = decode_envelope(reader)?;
-    let preserved = PreservedProspect::from_inner_payload(&validated.payload, limits)
+    let preserved = PreservedSection::from_inner_payload(&validated.payload, limits)
         .context("invalid experimental preservation")?;
     Ok(PreservedEnvelope {
         envelope: validated.inspection,

@@ -4,6 +4,7 @@
 //! `peer_lab`, inferred per-peer packet state. The normal server enables
 //! neither. None of these primitives implements game admission.
 
+pub mod actor_channel;
 pub mod archive;
 pub mod component;
 pub mod control;

@@ -15,7 +15,7 @@ once the control channel has admitted it; the spec is
 An open actor bunch carries the actor NetGUID and, for dynamic actors, the
 archetype, a gated level and optional location, rotation, scale and velocity
 blocks (F-569). Later content blocks name the actor or a sub-object and carry a
-packed payload-bit count for the object's replicator (F-570). Inside a block,
+packed payload-bit count for the object's replicator (F-576). Inside a block,
 packed rep handles drive the layout, with nested streams for dynamic arrays,
 and spawn vectors are raw floats or bias-packed integers in tenths, with
 16-bit compressed rotators (F-571, F-573). Bool, Byte, Enum, object, native

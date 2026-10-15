@@ -4,7 +4,7 @@ use anyhow::{Result, bail, ensure};
 use bevy::prelude::*;
 use serde::{Deserialize, Serialize};
 
-use crate::{config::ServerConfig, metrics::LatencyHistogram, preservation::PreservedProspect};
+use crate::{config::ServerConfig, metrics::LatencyHistogram, preservation::PreservedSection};
 
 /// Native schema without a preserved section; still written when none exists.
 pub const SNAPSHOT_SCHEMA_DOMAIN: u32 = 1;
@@ -38,7 +38,8 @@ pub struct WorldSnapshot {
     #[serde(deserialize_with = "crate::json::objects")]
     pub entities: Vec<EntityRecord>,
     /// Lossless, value-opaque supplied-save state carried unchanged between
-    /// generations; present exactly in schemas 2 and 3. Shared, never interpreted.
+    /// generations; present exactly in schemas 2 and 3. Shared, never interpreted,
+    /// and held compactly as its verified native encoding (no value tree).
     /// Serialization emits the legacy inline schema-2 form; the snapshot store
     /// writes schema 3 itself.
     #[serde(
@@ -46,7 +47,7 @@ pub struct WorldSnapshot {
         skip_serializing_if = "Option::is_none",
         with = "crate::preservation::snapshot_section"
     )]
-    pub preserved_prospect: Option<Arc<PreservedProspect>>,
+    pub preserved_prospect: Option<Arc<PreservedSection>>,
 }
 
 impl Default for WorldSnapshot {
@@ -96,7 +97,7 @@ impl WorldSnapshot {
 
 /// The loaded preserved section, handed back unchanged to every capture.
 #[derive(Resource, Clone)]
-pub struct PreservedProspectState(pub Arc<PreservedProspect>);
+pub struct PreservedProspectState(pub Arc<PreservedSection>);
 
 #[derive(Resource, Default)]
 pub struct SimulationClock {
@@ -207,7 +208,8 @@ pub fn capture(world: &mut World) -> Result<WorldSnapshot> {
         });
     }
     entities.sort_by_key(|entity| entity.id);
-    // Sharing the immutable section keeps capture cheap; the worker encodes it.
+    // Sharing the immutable section keeps capture cheap; the worker writes its
+    // held encoding only when no verified sidecar already holds it.
     let preserved_prospect = world
         .get_resource::<PreservedProspectState>()
         .map(|state| Arc::clone(&state.0));

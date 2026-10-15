@@ -38,7 +38,7 @@ What the foundation does is in the
 | M2: interoperability/data feasibility | In progress, partial observations | Stateless exchange observed; authenticated protocol, world-data and import feasibility gates remain open |
 | M3: Bevy gameplay slice | In progress, foundation only | Rust 1.99.0 / Bevy 0.20.0 foundation tested; stock-client slice pending M2 |
 | M4: complete behavior | Pending | All required compatibility matrix entries must pass |
-| M5: migration/hardening | Pending, native hardening underway | Real native filesystem faults pass; real saves preserve losslessly in native generations and run through autosaves (F-567, F-568); value meanings and migration fidelity remain unvalidated |
+| M5: migration/hardening | Pending, native hardening underway | Real native filesystem faults pass; real saves preserve losslessly in native generations and run through autosaves (F-567, F-578); value meanings and migration fidelity remain unvalidated |
 | M6: optimization/qualification | Pending | Matched reference workloads and full release gates required |
 
 ## Next tasks
@@ -51,6 +51,6 @@ Offline work, in order; connected proof keeps its gates.
 4. Control stores: constructors and notify tables correspond by position (F-505, F-546) and both builds' NotifyControlMessage functions correspond function-level (F-566); runtime dispatch still needs a connected or original-runtime scope (U-043).
 5. Packet framing: formats, version 17 and the reliability layer are recorded with an experimental codec, sequencing model and per-peer state (F-519, F-521 to F-527, F-535 to F-539); the Bevy loopback peer lab runs them and answers Hello and Login without admission (F-558, F-564); the server's own Hello/Login branches are read (F-563); next the server's own version check and Welcome contents once connected evidence exists (U-037, U-044).
 6. Transport: the control vocabulary, Hello replies, challenge and unique-net-id format are mapped (F-529 to F-531), with the client's version construction and type table (F-541 to F-543); Login carries no credential, and no Steam packet-handler class is evidenced (F-548, F-549); next the runtime handler configuration, game-level identity checks and the client's runtime project version (F-253, U-037, U-038).
-7. World data: both copies preserve losslessly in a write-once schema-3 sidecar (F-557, F-567), and a seeded world runs 30 minutes of 10-second autosaves without deadline misses (F-568); next reduce the section's in-memory footprint before longer or multi-world runs (U-045).
+7. World data: both copies preserve losslessly in a write-once schema-3 sidecar (F-557, F-567); seeded worlds run autosaves without misses, holding the section in about 42 MB (F-578); next a streaming verifier to lower the 110 MB load peak, then multi-world runs (U-045).
 8. Reliability: collect the running 72-hour synthetic soak at its end and record it against U-035; it stays synthetic, not ICARUS performance (F-485, U-035).
-9. Replication: the client's actor spawn record, content blocks, rep-handle stream, NetGUIDs, spawn quantization and common item and name encodings are read (F-569 to F-575); an experimental codec is in progress; next native struct serializers, then server writers (U-064, U-044).
+9. Replication: the client's actor spawn record, content blocks, rep-handle stream, NetGUIDs, spawn quantization and common item and name encodings are read (F-569 to F-575); an experimental codec re-encodes them bit-identically (F-577); next native struct serializers, then server writers (U-064, U-044).

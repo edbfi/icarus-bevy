@@ -98,8 +98,9 @@ Use `--recorders` to additionally check recorder field and byte-array boundaries
 it implies root framing and reports aggregates without class names or component data.
 `--preserve-check` preserves the payload losslessly, saves and reloads it through
 a temporary schema-3 store that it removes, saving twice to show the sidecar is
-not rewritten, and reports counts, sizes and timings with `world_imported:
-false` (F-567).
+not rewritten, and reports counts, sizes, timings and resident memory with
+`world_imported: false` (F-567). A running server holds the section as its
+verified encoding, not as a decoded tree (F-578).
 Validation covers authored fixtures, supplied-save envelope integrity and the
 lossless preservation; value meanings and original-server round trips remain
 unvalidated.

@@ -35,7 +35,7 @@ use std::{borrow::Cow, fmt, sync::Arc};
 
 use anyhow::{Context, Result, bail, ensure};
 use base64::{Engine, engine::general_purpose::STANDARD};
-use serde::{Deserialize, Deserializer, Serialize, Serializer, de, ser};
+use serde::{Deserialize, Deserializer, Serialize, Serializer, de};
 use sha2::{Digest, Sha256};
 
 use crate::experimental::component::MAX_BOUNDED_COMPONENT_BYTES;
@@ -334,6 +334,12 @@ impl PreservedProspect {
     /// after exact-length and SHA-256 reconstruction and a native encoding round
     /// trip. No partial structure is returned on failure.
     pub fn from_inner_payload(payload: &[u8], limits: PreserveLimits) -> Result<Self> {
+        Ok(Self::preserve_with_encoding(payload, limits)?.0)
+    }
+
+    /// As `from_inner_payload`, also returning the verified canonical native
+    /// encoding so a [`PreservedSection`] can hold it without encoding again.
+    fn preserve_with_encoding(payload: &[u8], limits: PreserveLimits) -> Result<(Self, Vec<u8>)> {
         ensure!(
             payload.len() <= MAX_PAYLOAD_BYTES,
             "preserved payload exceeds 32 MiB research limit"
@@ -376,7 +382,7 @@ impl PreservedProspect {
         let mut preserved = preserved;
         preserved.encoded_bytes = decoded.encoded_bytes;
         preserved.encoded_sha256 = decoded.encoded_sha256;
-        Ok(preserved)
+        Ok((preserved, encoded))
     }
 
     /// Validate the structural invariants, then require byte-identical
@@ -670,6 +676,188 @@ impl PreservedProspect {
         preserved.encoded_bytes = encoded.len();
         preserved.encoded_sha256 = encoded_sha256;
         Ok(preserved)
+    }
+}
+
+/// The compact form a running server holds: only the verified canonical native
+/// encoding (one immutable buffer), its identity, the payload identity and the
+/// counts-only summary. The value tree is not kept; [`PreservedSection::decode`]
+/// rebuilds it on demand. Fields are private, so every value was proven at
+/// construction to decode and reconstruct its recorded payload byte-identically.
+pub struct PreservedSection {
+    encoded: Box<[u8]>,
+    payload_bytes: usize,
+    payload_sha256: [u8; 32],
+    encoded_sha256: [u8; 32],
+    summary: PreservationSummary,
+}
+
+impl PreservedSection {
+    /// Preserve a verified inner payload exactly as
+    /// [`PreservedProspect::from_inner_payload`] does (including its native
+    /// encoding round trip), then keep only the verified encoding.
+    pub fn from_inner_payload(payload: &[u8], limits: PreserveLimits) -> Result<Self> {
+        let (tree, encoded) = PreservedProspect::preserve_with_encoding(payload, limits)?;
+        Ok(Self::from_verified(encoded.into_boxed_slice(), &tree))
+    }
+
+    /// The compact form of an already verified tree. Its canonical encoding was
+    /// proven to decode at the tree's construction; it must still match the
+    /// recorded encoding identity exactly.
+    pub fn of(tree: &PreservedProspect) -> Result<Self> {
+        let encoded = tree.to_native_encoding()?;
+        ensure!(
+            encoded.len() == tree.encoded_bytes && sha256(&encoded) == tree.encoded_sha256,
+            "preserved native encoding differs from its recorded identity"
+        );
+        Ok(Self::from_verified(encoded.into_boxed_slice(), tree))
+    }
+
+    /// Hold native encoding version 1 after proving, once, that it decodes and
+    /// reconstructs a payload of exactly `payload_bytes` with digest
+    /// `payload_sha256`. The decoded tree is dropped before returning; any
+    /// failure returns no value. Takes the buffer to avoid copying it.
+    pub fn from_native_encoding(
+        encoded: Vec<u8>,
+        payload_bytes: usize,
+        payload_sha256: [u8; 32],
+    ) -> Result<Self> {
+        ensure!(
+            encoded.len() <= MAX_PRESERVED_ENCODED_BYTES,
+            "preserved native encoding exceeds 48 MiB limit"
+        );
+        let digest = sha256(&encoded);
+        Self::from_hashed_native_encoding(encoded, digest, payload_bytes, payload_sha256)
+    }
+
+    /// As `from_native_encoding`, for a caller that has already verified
+    /// `encoded_sha256` over exactly `encoded`.
+    pub(crate) fn from_hashed_native_encoding(
+        encoded: Vec<u8>,
+        encoded_sha256: [u8; 32],
+        payload_bytes: usize,
+        payload_sha256: [u8; 32],
+    ) -> Result<Self> {
+        // Settle the held buffer before the transient tree allocates.
+        let encoded = encoded.into_boxed_slice();
+        // Decode once, keeping only the summary; the tree drops in the closure.
+        let verify = || -> Result<PreservationSummary> {
+            PreservedProspect::from_hashed_native_encoding(
+                &encoded,
+                encoded_sha256,
+                payload_bytes,
+                payload_sha256,
+            )
+            .map(|tree| tree.summary.clone())
+        };
+        // The transient tree is many small allocations. Building and freeing it
+        // on its own short-lived thread keeps them apart from the caller's
+        // long-lived allocations, so the allocator can return that memory
+        // (glibc gives such a thread its own arena; measured on Linux, a
+        // same-thread decode left the freed tree resident). Behavior is
+        // identical if the thread cannot be started; a panic fails closed.
+        let summary = std::thread::scope(|scope| {
+            match std::thread::Builder::new()
+                .name("preserved-verify".into())
+                .spawn_scoped(scope, verify)
+            {
+                Ok(handle) => handle.join().unwrap_or_else(|_| {
+                    Err(anyhow::anyhow!("preserved section verification failed"))
+                }),
+                Err(_) => verify(),
+            }
+        })?;
+        Ok(Self {
+            encoded,
+            payload_bytes,
+            payload_sha256,
+            encoded_sha256,
+            summary,
+        })
+    }
+
+    /// `encoded` must be `tree`'s verified canonical encoding.
+    fn from_verified(encoded: Box<[u8]>, tree: &PreservedProspect) -> Self {
+        Self {
+            encoded,
+            payload_bytes: tree.payload_bytes,
+            payload_sha256: tree.payload_sha256,
+            encoded_sha256: tree.encoded_sha256,
+            summary: tree.summary.clone(),
+        }
+    }
+
+    /// Rebuild the full value-opaque tree for interpretation. The held bytes
+    /// are re-hashed and decoded with the bounded decoder, and the result must
+    /// reconstruct the recorded payload exactly and match the held summary.
+    pub fn decode(&self) -> Result<PreservedProspect> {
+        let digest = sha256(&self.encoded);
+        ensure!(
+            digest == self.encoded_sha256,
+            "preserved section encoding differs from its recorded identity"
+        );
+        let tree = PreservedProspect::from_hashed_native_encoding(
+            &self.encoded,
+            digest,
+            self.payload_bytes,
+            self.payload_sha256,
+        )?;
+        ensure!(
+            tree.summary == self.summary,
+            "preserved section decodes to a different structure"
+        );
+        Ok(tree)
+    }
+
+    /// The verified canonical native encoding; a schema-3 sidecar's contents.
+    pub fn native_encoding(&self) -> &[u8] {
+        &self.encoded
+    }
+
+    pub fn payload_bytes(&self) -> usize {
+        self.payload_bytes
+    }
+
+    pub fn payload_sha256(&self) -> [u8; 32] {
+        self.payload_sha256
+    }
+
+    pub fn summary(&self) -> &PreservationSummary {
+        &self.summary
+    }
+
+    pub fn encoded_bytes(&self) -> usize {
+        self.encoded.len()
+    }
+
+    /// SHA-256 of the canonical native encoding; names its schema-3 sidecar.
+    pub fn encoded_sha256(&self) -> [u8; 32] {
+        self.encoded_sha256
+    }
+
+    /// Bytes this value owns: its fixed size plus the encoding buffer. The
+    /// summary holds only counts and static labels, so nothing else is owned.
+    pub fn held_bytes(&self) -> usize {
+        std::mem::size_of::<Self>() + self.encoded.len()
+    }
+}
+
+/// Same identity as [`PreservedProspect`] equality, plus the encoding digest.
+impl PartialEq for PreservedSection {
+    fn eq(&self, other: &Self) -> bool {
+        self.payload_bytes == other.payload_bytes
+            && self.payload_sha256 == other.payload_sha256
+            && self.encoded_sha256 == other.encoded_sha256
+            && self.summary == other.summary
+    }
+}
+
+impl fmt::Debug for PreservedSection {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("PreservedSection")
+            .field("encoded_bytes", &self.encoded.len())
+            .field("summary", &self.summary)
+            .finish_non_exhaustive()
     }
 }
 
@@ -1138,7 +1326,7 @@ fn parse_digest(text: &str) -> Result<[u8; 32]> {
 }
 
 impl SectionIn<'_> {
-    fn decode(&self) -> Result<PreservedProspect> {
+    fn decode(&self) -> Result<PreservedSection> {
         ensure!(
             self.encoding == PRESERVED_ENCODING_VERSION,
             "unsupported preserved native encoding"
@@ -1157,7 +1345,7 @@ impl SectionIn<'_> {
         let encoded = STANDARD
             .decode(self.data.as_bytes())
             .context("invalid canonical Base64 in preserved section")?;
-        PreservedProspect::from_native_encoding(&encoded, payload_bytes, digest)
+        PreservedSection::from_native_encoding(encoded, payload_bytes, digest)
     }
 }
 
@@ -1189,12 +1377,12 @@ pub(crate) struct SectionReference {
 
 impl SectionReference {
     /// Reference a constructed section by its recorded encoding identity.
-    pub(crate) fn of(preserved: &PreservedProspect) -> Self {
+    pub(crate) fn of(preserved: &PreservedSection) -> Self {
         Self {
             encoding: PRESERVED_ENCODING_VERSION,
             payload_bytes: preserved.payload_bytes as u64,
             payload_sha256: crate::hex_lower(&preserved.payload_sha256),
-            encoded_bytes: preserved.encoded_bytes as u64,
+            encoded_bytes: preserved.encoded.len() as u64,
             encoded_sha256: crate::hex_lower(&preserved.encoded_sha256),
         }
     }
@@ -1236,20 +1424,21 @@ impl SectionReference {
         &self.encoded_sha256
     }
 
-    /// Verify the sidecar bytes' size and SHA-256, then decode them with the
-    /// bounded decoder against the recorded payload length and digest.
-    pub(crate) fn decode(&self, encoded: &[u8]) -> Result<PreservedProspect> {
+    /// Verify the sidecar bytes' size and SHA-256, then prove once with the
+    /// bounded decoder that they reconstruct the recorded payload; only the
+    /// compact form is kept.
+    pub(crate) fn decode(&self, encoded: Vec<u8>) -> Result<PreservedSection> {
         self.validate()?;
         ensure!(
             encoded.len() as u64 == self.encoded_bytes,
             "preserved sidecar size mismatch"
         );
-        let digest = sha256(encoded);
+        let digest = sha256(&encoded);
         ensure!(
             crate::hex_lower(&digest) == self.encoded_sha256,
             "preserved sidecar checksum mismatch"
         );
-        PreservedProspect::from_hashed_native_encoding(
+        PreservedSection::from_hashed_native_encoding(
             encoded,
             digest,
             usize::try_from(self.payload_bytes)?,
@@ -1264,17 +1453,14 @@ pub(crate) mod snapshot_section {
     use super::*;
 
     pub(crate) fn serialize<S: Serializer>(
-        value: &Option<Arc<PreservedProspect>>,
+        value: &Option<Arc<PreservedSection>>,
         serializer: S,
     ) -> std::result::Result<S::Ok, S::Error> {
         let Some(preserved) = value else {
             return serializer.serialize_none();
         };
-        let encoded = preserved
-            .to_native_encoding()
-            .map_err(|_| ser::Error::custom("preserved section cannot be encoded"))?;
-        let data = STANDARD.encode(&encoded);
-        drop(encoded);
+        // The held encoding was verified at construction; no re-encoding.
+        let data = STANDARD.encode(preserved.native_encoding());
         SectionOut {
             encoding: PRESERVED_ENCODING_VERSION,
             payload_bytes: preserved.payload_bytes,
@@ -1286,7 +1472,7 @@ pub(crate) mod snapshot_section {
 
     pub(crate) fn deserialize<'de, D: Deserializer<'de>>(
         deserializer: D,
-    ) -> std::result::Result<Option<Arc<PreservedProspect>>, D::Error> {
+    ) -> std::result::Result<Option<Arc<PreservedSection>>, D::Error> {
         let Some(section) =
             Option::<crate::json::JsonObject<SectionIn<'de>>>::deserialize(deserializer)?
         else {
@@ -1297,5 +1483,92 @@ pub(crate) mod snapshot_section {
             .decode()
             .map(|preserved| Some(Arc::new(preserved)))
             .map_err(|_| de::Error::custom("invalid preserved prospect section"))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // Authored framing only; every name and value is invented here.
+    fn string(value: &str) -> Vec<u8> {
+        let length = i32::try_from(value.len() + 1).unwrap().to_le_bytes();
+        [length.as_slice(), value.as_bytes(), &[0]].concat()
+    }
+
+    fn tag(name: &str, kind: &str, extra: &[u8], value: &[u8]) -> Vec<u8> {
+        let length = i32::try_from(value.len()).unwrap().to_le_bytes();
+        [
+            string(name).as_slice(),
+            &string(kind),
+            &length,
+            &[0; 4],
+            extra,
+            &[0],
+            value,
+        ]
+        .concat()
+    }
+
+    fn payload() -> Vec<u8> {
+        let body = [5_u8; 8];
+        let binary = [8_i32.to_le_bytes().as_slice(), &body].concat();
+        let record = [
+            tag(
+                "ComponentClassName",
+                "StrProperty",
+                &[],
+                &string("UHeldSentinelQQ"),
+            ),
+            tag(
+                "BinaryData",
+                "ArrayProperty",
+                &string("ByteProperty"),
+                &binary,
+            ),
+            string("None"),
+        ]
+        .concat();
+        let shared = tag(
+            "StateRecorderBlobs",
+            "StructProperty",
+            &[string("StateRecorderBlob"), vec![7; 16]].concat(),
+            &record,
+        );
+        let array = [1_i32.to_le_bytes().as_slice(), &shared].concat();
+        [
+            tag(
+                "StateRecorderBlobs",
+                "ArrayProperty",
+                &string("StructProperty"),
+                &array,
+            ),
+            string("None"),
+        ]
+        .concat()
+    }
+
+    #[test]
+    fn decode_reverifies_the_held_encoding() {
+        let payload = payload();
+        let held = PreservedSection::from_inner_payload(&payload, PreserveLimits::default())
+            .expect("authored payload preserves");
+        assert_eq!(held.decode().unwrap().to_inner_payload().unwrap(), payload);
+        // Any change to the held bytes after construction is caught on decode.
+        let mut damaged = PreservedSection {
+            encoded: held.encoded.clone(),
+            summary: held.summary.clone(),
+            ..held
+        };
+        let middle = damaged.encoded.len() / 2;
+        damaged.encoded[middle] ^= 0x40;
+        let error = damaged.decode().unwrap_err();
+        assert!(!format!("{error:#}").contains("Sentinel"), "{error:#}");
+        // A held encoding consistent with its digest but a different summary
+        // (an impossible state) is rejected rather than trusted.
+        let mut inconsistent =
+            PreservedSection::from_inner_payload(&payload, PreserveLimits::default()).unwrap();
+        inconsistent.summary.root_tags += 1;
+        assert!(inconsistent.decode().is_err());
     }
 }

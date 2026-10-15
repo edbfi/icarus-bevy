@@ -8,7 +8,7 @@ use icarus_bevy::{
     persistence::SnapshotStore,
     preservation::{
         FieldValue, MAX_PRESERVED_ENCODED_BYTES, OpaqueReason, PreserveLimits, PreservedBody,
-        PreservedProspect, PreservedRoot, is_sidecar_name,
+        PreservedProspect, PreservedRoot, PreservedSection, is_sidecar_name,
     },
     prospect::MAX_PAYLOAD_BYTES,
     simulation::{DomainId, EntityRecord, Position, WorldSnapshot, build_app, capture},
@@ -162,6 +162,11 @@ fn preserve(payload: &[u8]) -> PreservedProspect {
     PreservedProspect::from_inner_payload(payload, PreserveLimits::default()).unwrap()
 }
 
+/// The compact form a running world holds and the snapshot store persists.
+fn section(payload: &[u8]) -> Arc<PreservedSection> {
+    Arc::new(PreservedSection::from_inner_payload(payload, PreserveLimits::default()).unwrap())
+}
+
 fn digest(bytes: &[u8]) -> [u8; 32] {
     Sha256::digest(bytes).into()
 }
@@ -187,7 +192,7 @@ fn bodies(preserved: &PreservedProspect) -> Vec<&PreservedBody> {
 }
 
 /// The in-memory form capture produces and the store writes: schema 3.
-fn preserved_snapshot(tick: u64, preserved: &Arc<PreservedProspect>) -> WorldSnapshot {
+fn preserved_snapshot(tick: u64, preserved: &Arc<PreservedSection>) -> WorldSnapshot {
     WorldSnapshot {
         schema_version: 3,
         tick,
@@ -220,7 +225,7 @@ fn rewrite_generation(root: &Path, number: u64, value: &Value) {
 
 /// A schema-2 snapshot as an earlier binary loaded it; it serializes to the
 /// legacy inline Base64 generation form.
-fn legacy_snapshot(tick: u64, preserved: &Arc<PreservedProspect>) -> WorldSnapshot {
+fn legacy_snapshot(tick: u64, preserved: &Arc<PreservedSection>) -> WorldSnapshot {
     WorldSnapshot {
         schema_version: 2,
         ..preserved_snapshot(tick, preserved)
@@ -232,11 +237,14 @@ fn write_legacy(root: &Path, number: u64, snapshot: &WorldSnapshot) {
     rewrite_generation(root, number, &serde_json::to_value(snapshot).unwrap());
 }
 
-/// Expected sidecar name, derived independently from the native encoding.
-fn sidecar_name(preserved: &PreservedProspect) -> String {
+/// Expected sidecar name, derived independently of the held bytes: the
+/// decoded tree is encoded again.
+fn sidecar_name(preserved: &PreservedSection) -> String {
     format!(
         "preserved-{}.bin",
-        hex(&digest(&preserved.to_native_encoding().unwrap()))
+        hex(&digest(
+            &preserved.decode().unwrap().to_native_encoding().unwrap()
+        ))
     )
 }
 
@@ -490,7 +498,7 @@ fn schema_one_snapshots_still_load_and_stay_schema_one() {
     assert_eq!(loaded.snapshot.entities[0].id, DomainId(3));
 
     // A preserved section is legal only under schemas 2 and 3, which need one.
-    let preserved = Arc::new(preserve(&mixed_payload()));
+    let preserved = section(&mixed_payload());
     let mut mismatched = preserved_snapshot(6, &preserved);
     mismatched.schema_version = 1;
     assert!(store.save(&mismatched).is_err());
@@ -509,8 +517,9 @@ fn schema_one_snapshots_still_load_and_stay_schema_one() {
 #[test]
 fn schema_three_round_trips_through_the_snapshot_store_and_sidecar() {
     let payload = mixed_payload();
-    let preserved = Arc::new(preserve(&payload));
-    let encoded = preserved.to_native_encoding().unwrap();
+    let preserved = section(&payload);
+    // Independently encoded from a separately built tree.
+    let encoded = preserve(&payload).to_native_encoding().unwrap();
     let directory = tempfile::tempdir().unwrap();
     let mut store = SnapshotStore::open(directory.path()).unwrap();
     // A schema-1 world upgrades to schema 3 when a section is first added.
@@ -553,6 +562,7 @@ fn schema_three_round_trips_through_the_snapshot_store_and_sidecar() {
     assert_eq!(fs::read(directory.path().join(&name)).unwrap(), encoded);
     assert_eq!(preserved.encoded_bytes(), encoded.len());
     assert_eq!(preserved.encoded_sha256(), digest(&encoded));
+    assert_eq!(preserved.native_encoding(), encoded.as_slice());
 
     let store = SnapshotStore::open(directory.path()).unwrap();
     let loaded = store.load().unwrap().unwrap();
@@ -560,7 +570,11 @@ fn schema_three_round_trips_through_the_snapshot_store_and_sidecar() {
     assert_eq!(loaded.snapshot, preserved_snapshot(10, &preserved));
     let reloaded = loaded.snapshot.preserved_prospect.unwrap();
     assert!(!Arc::ptr_eq(&reloaded, &preserved));
-    assert_eq!(reloaded.to_inner_payload().unwrap(), payload);
+    assert_eq!(
+        reloaded.decode().unwrap().to_inner_payload().unwrap(),
+        payload
+    );
+    assert_eq!(reloaded.native_encoding(), encoded.as_slice());
     assert_eq!(reloaded.summary(), preserved.summary());
     assert_eq!(reloaded.encoded_sha256(), preserved.encoded_sha256());
 }
@@ -569,7 +583,7 @@ fn schema_three_round_trips_through_the_snapshot_store_and_sidecar() {
 fn later_saves_reuse_the_sidecar_without_rewriting_it() {
     use std::os::unix::fs::MetadataExt;
 
-    let preserved = Arc::new(preserve(&mixed_payload()));
+    let preserved = section(&mixed_payload());
     let directory = tempfile::tempdir().unwrap();
     let root = directory.path();
     let mut store = SnapshotStore::open(root).unwrap();
@@ -600,7 +614,7 @@ fn later_saves_reuse_the_sidecar_without_rewriting_it() {
 #[test]
 fn schema_two_inline_worlds_migrate_to_schema_three_on_the_next_save() {
     let payload = mixed_payload();
-    let preserved = Arc::new(preserve(&payload));
+    let preserved = section(&payload);
     let directory = tempfile::tempdir().unwrap();
     let root = directory.path();
     let mut store = SnapshotStore::open(root).unwrap();
@@ -645,6 +659,8 @@ fn schema_two_inline_worlds_migrate_to_schema_three_on_the_next_save() {
             .snapshot
             .preserved_prospect
             .unwrap()
+            .decode()
+            .unwrap()
             .to_inner_payload()
             .unwrap(),
         payload
@@ -685,8 +701,8 @@ const SIDECAR_DAMAGE: [&str; 5] = ["missing", "flipped", "truncated", "extended"
 
 #[test]
 fn damaged_current_sidecar_recovers_the_previous_generation() {
-    let first = Arc::new(preserve(&payload_with(&[recorder(CLASS, &[1], false)])));
-    let second = Arc::new(preserve(&payload_with(&[recorder(CLASS, &[2], false)])));
+    let first = section(&payload_with(&[recorder(CLASS, &[1], false)]));
+    let second = section(&payload_with(&[recorder(CLASS, &[2], false)]));
     for damage in SIDECAR_DAMAGE {
         let directory = tempfile::tempdir().unwrap();
         let root = directory.path();
@@ -718,8 +734,8 @@ fn damaged_current_sidecar_recovers_the_previous_generation() {
 
 #[test]
 fn an_unverified_file_at_the_sidecar_name_is_replaced_never_trusted() {
-    let preserved = Arc::new(preserve(&mixed_payload()));
-    let encoded = preserved.to_native_encoding().unwrap();
+    let preserved = section(&mixed_payload());
+    let encoded = preserve(&mixed_payload()).to_native_encoding().unwrap();
     for damage in SIDECAR_DAMAGE {
         let directory = tempfile::tempdir().unwrap();
         let root = directory.path();
@@ -755,7 +771,7 @@ fn an_unverified_file_at_the_sidecar_name_is_replaced_never_trusted() {
 
 #[test]
 fn damaged_sidecar_recovers_a_legacy_schema_two_previous_generation() {
-    let preserved = Arc::new(preserve(&mixed_payload()));
+    let preserved = section(&mixed_payload());
     for damage in SIDECAR_DAMAGE {
         let directory = tempfile::tempdir().unwrap();
         let root = directory.path();
@@ -776,7 +792,7 @@ fn damaged_sidecar_recovers_a_legacy_schema_two_previous_generation() {
 
 #[test]
 fn damaged_shared_sidecar_fails_closed_like_two_corrupt_generations() {
-    let preserved = Arc::new(preserve(&mixed_payload()));
+    let preserved = section(&mixed_payload());
     for damage in SIDECAR_DAMAGE {
         for two_generations in [true, false] {
             let directory = tempfile::tempdir().unwrap();
@@ -804,7 +820,7 @@ fn damaged_shared_sidecar_fails_closed_like_two_corrupt_generations() {
 
 #[test]
 fn corrupted_sidecar_references_fail_closed() {
-    let preserved = Arc::new(preserve(&mixed_payload()));
+    let preserved = section(&mixed_payload());
     let mutations: [SectionMutation; 10] = [
         ("other sidecar", |section| {
             section["encoded_sha256"] = "0".repeat(64).into();
@@ -874,8 +890,8 @@ fn corrupted_sidecar_references_fail_closed() {
 
 #[test]
 fn unreferenced_sidecars_are_collected_only_after_both_generations_drop_them() {
-    let first = Arc::new(preserve(&payload_with(&[recorder(CLASS, &[1], false)])));
-    let second = Arc::new(preserve(&payload_with(&[recorder(CLASS, &[2], false)])));
+    let first = section(&payload_with(&[recorder(CLASS, &[1], false)]));
+    let second = section(&payload_with(&[recorder(CLASS, &[2], false)]));
     let (one, two) = (sidecar_name(&first), sidecar_name(&second));
     let directory = tempfile::tempdir().unwrap();
     let root = directory.path();
@@ -930,7 +946,7 @@ fn unreferenced_sidecars_are_collected_only_after_both_generations_drop_them() {
 #[test]
 fn schema_three_recovery_from_previous_generation_is_unchanged() {
     let payload = mixed_payload();
-    let preserved = Arc::new(preserve(&payload));
+    let preserved = section(&payload);
     let directory = tempfile::tempdir().unwrap();
     let mut store = SnapshotStore::open(directory.path()).unwrap();
     store.save(&preserved_snapshot(10, &preserved)).unwrap();
@@ -943,6 +959,8 @@ fn schema_three_recovery_from_previous_generation_is_unchanged() {
         recovered
             .snapshot
             .preserved_prospect
+            .unwrap()
+            .decode()
             .unwrap()
             .to_inner_payload()
             .unwrap(),
@@ -961,7 +979,7 @@ fn schema_three_recovery_from_previous_generation_is_unchanged() {
 
 #[test]
 fn corrupted_legacy_inline_sections_fail_closed() {
-    let preserved = Arc::new(preserve(&mixed_payload()));
+    let preserved = section(&mixed_payload());
     let mutations: [SectionMutation; 8] = [
         ("changed data", |section| {
             let data = section["data"].as_str().unwrap();
@@ -1032,7 +1050,7 @@ fn corrupted_legacy_inline_sections_fail_closed() {
 
 #[test]
 fn capture_carries_the_preserved_section_forward_unchanged() {
-    let preserved = Arc::new(preserve(&mixed_payload()));
+    let preserved = section(&mixed_payload());
     let mut app = build_app(&ServerConfig::default(), &preserved_snapshot(3, &preserved)).unwrap();
     let captured = capture(app.world_mut()).unwrap();
     assert_eq!(captured.schema_version, 3);
@@ -1052,9 +1070,12 @@ fn capture_carries_the_preserved_section_forward_unchanged() {
 fn debug_summary_and_errors_never_expose_names_or_values() {
     let payload = mixed_payload();
     assert!(String::from_utf8_lossy(&payload).contains(MARKER));
-    let preserved = Arc::new(preserve(&payload));
+    let preserved = section(&payload);
+    let tree = preserved.decode().unwrap();
     assert_private(&format!("{preserved:?}"));
-    assert_private(&format!("{:#?}", preserved.roots()));
+    assert_private(&format!("{preserved:#?}"));
+    assert_private(&format!("{tree:?}"));
+    assert_private(&format!("{:#?}", tree.roots()));
     assert_private(&serde_json::to_string(preserved.summary()).unwrap());
     assert_private(&format!("{:#?}", preserved_snapshot(1, &preserved)));
 
@@ -1067,4 +1088,107 @@ fn debug_summary_and_errors_never_expose_names_or_values() {
         &fs::read(directory.path().join("snapshot-1.json")).unwrap(),
     ));
     assert_private(&format!("{:#?}", store.load().unwrap()));
+}
+
+#[test]
+fn compact_section_round_trips_and_matches_the_tree() {
+    let payload = mixed_payload();
+    let tree = preserve(&payload);
+    let encoded = tree.to_native_encoding().unwrap();
+    let held = PreservedSection::from_inner_payload(&payload, PreserveLimits::default()).unwrap();
+    assert_eq!(held.native_encoding(), encoded.as_slice());
+    assert_eq!(held.payload_bytes(), payload.len());
+    assert_eq!(held.payload_sha256(), digest(&payload));
+    assert_eq!(held.encoded_bytes(), encoded.len());
+    assert_eq!(held.encoded_sha256(), digest(&encoded));
+    assert_eq!(held.summary(), tree.summary());
+
+    // Every construction path yields the same compact value.
+    let of_tree = PreservedSection::of(&tree).unwrap();
+    let from_encoding =
+        PreservedSection::from_native_encoding(encoded.clone(), payload.len(), digest(&payload))
+            .unwrap();
+    assert_eq!(of_tree, held);
+    assert_eq!(from_encoding, held);
+    assert_eq!(from_encoding.native_encoding(), encoded.as_slice());
+
+    // On-demand decoding rebuilds the full tree and the exact payload.
+    let decoded = held.decode().unwrap();
+    assert_eq!(decoded, tree);
+    assert_eq!(decoded.to_inner_payload().unwrap(), payload);
+    assert_eq!(decoded.to_native_encoding().unwrap(), encoded);
+    assert_eq!(bodies(&decoded).len(), 4);
+}
+
+#[test]
+fn compact_section_from_a_damaged_encoding_fails_closed() {
+    let payload = payload_with(&[
+        recorder(CLASS, &framed_body(), true),
+        recorder(OTHER_CLASS, &[], false),
+    ]);
+    let encoded = preserve(&payload).to_native_encoding().unwrap();
+    let (bytes, sha) = (payload.len(), digest(&payload));
+    let build = |input: &[u8]| PreservedSection::from_native_encoding(input.to_vec(), bytes, sha);
+    assert!(build(&encoded).is_ok());
+
+    let mut flipped = encoded.clone();
+    let middle = flipped.len() / 2;
+    flipped[middle] ^= 0x40;
+    let mut trailing = encoded.clone();
+    trailing.push(0);
+    let mut huge_count = encoded.clone();
+    huge_count[..4].copy_from_slice(&u32::MAX.to_le_bytes());
+    let mut wrong_sha = sha;
+    wrong_sha[0] ^= 1;
+    let errors = [
+        build(&encoded[..encoded.len() - 1]).unwrap_err(),
+        build(&encoded[..encoded.len() / 2]).unwrap_err(),
+        build(&[]).unwrap_err(),
+        build(&flipped).unwrap_err(),
+        build(&trailing).unwrap_err(),
+        build(&huge_count).unwrap_err(),
+        PreservedSection::from_native_encoding(encoded.clone(), bytes, wrong_sha).unwrap_err(),
+        PreservedSection::from_native_encoding(encoded.clone(), bytes - 1, sha).unwrap_err(),
+        PreservedSection::from_native_encoding(encoded.clone(), MAX_PAYLOAD_BYTES + 1, sha)
+            .unwrap_err(),
+        // The encoding cap is checked before hashing or decoding.
+        PreservedSection::from_native_encoding(
+            vec![0; MAX_PRESERVED_ENCODED_BYTES + 1],
+            bytes,
+            sha,
+        )
+        .unwrap_err(),
+    ];
+    for error in errors {
+        assert_private(&format!("{error:#}"));
+        assert_private(&format!("{error:?}"));
+    }
+    // Every single-byte change is rejected or still reconstructs the payload.
+    for index in 0..encoded.len() {
+        let mut altered = encoded.clone();
+        altered[index] ^= 0x01;
+        if let Ok(section) = build(&altered) {
+            assert_eq!(
+                section.decode().unwrap().to_inner_payload().unwrap(),
+                payload,
+                "byte {index}"
+            );
+        }
+    }
+}
+
+#[test]
+fn compact_section_holds_only_its_encoding_plus_a_small_constant() {
+    let fixed = std::mem::size_of::<PreservedSection>();
+    assert!(fixed <= 512, "{fixed}");
+    let held = section(&mixed_payload());
+    assert_eq!(held.held_bytes(), held.encoded_bytes() + fixed);
+    // The same constant at a larger size: only the encoding grows.
+    let large = section(&payload_with(&[recorder(
+        CLASS,
+        &vec![b'Q'; 1 << 20],
+        false,
+    )]));
+    assert!(large.encoded_bytes() > 1 << 20);
+    assert_eq!(large.held_bytes(), large.encoded_bytes() + fixed);
 }

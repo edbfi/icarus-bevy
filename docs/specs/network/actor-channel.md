@@ -25,11 +25,13 @@ dormancy, channel close reasons and every server-side writer.
   in this order, each a presence bit followed by its data: location (quantized
   vector), rotation (compressed rotator), scale (quantized vector) and
   velocity (quantized vector). Static GUIDs carry none of these.
-- Content blocks (F-570): after the open, until the bunch ends, each block is a
+- Content blocks (F-576): after the open, until the bunch ends, each block is a
   rep-layout bit and an is-actor bit; a non-actor block adds the sub-object
   NetGUID and a stably-named bit, and a dynamic sub-object a class NetGUID
-  whose zero value deletes it. A packed count of payload bits follows, and
-  exactly those bits go to the object's replicator.
+  whose zero value deletes it and ends the block. Otherwise a packed count of
+  payload bits follows, and exactly those bits go to the object's replicator.
+- `experimental::actor_channel` reads and re-encodes these structures
+  bit-identically from authored fixtures, with payloads opaque (F-577).
 - The replicator hands rep-layout properties to `FRepLayout::ReceiveProperties`
   (an optional bit, a packed handle, an optional checksum word, then a handle
   loop) before its field-header loop (M-426, M-427).

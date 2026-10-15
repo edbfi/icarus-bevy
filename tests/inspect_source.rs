@@ -250,6 +250,19 @@ fn regular_sources_and_regular_symlinks_preserve_private_values_and_files() {
                 assert!(report["native_sidecar_bytes"].as_u64().unwrap() > 0);
                 assert_eq!(report["native_sidecar_rewritten"], false);
                 assert!(report["second_save_ms"].is_u64());
+                assert!(report["decode_ms"].is_u64());
+                // The held section is its sidecar encoding plus a fixed constant.
+                let held = report["held_section_bytes"].as_u64().unwrap();
+                let sidecar = report["native_sidecar_bytes"].as_u64().unwrap();
+                assert!(held > sidecar && held - sidecar <= 512, "{held} {sidecar}");
+                // Linux reports VmRSS; other platforms report null.
+                for key in ["section_only", "with_decoded_tree", "after_tree_dropped"] {
+                    let resident = &report["resident_bytes"][key];
+                    assert!(resident.is_u64() || resident.is_null(), "{key}");
+                    if cfg!(target_os = "linux") {
+                        assert!(resident.as_u64().unwrap() > 0, "{key}");
+                    }
+                }
                 "experimental_lossless_preservation"
             } else if mode.contains(&"--recorders") {
                 assert_eq!(report["recorders"]["recorder_count"], 1);

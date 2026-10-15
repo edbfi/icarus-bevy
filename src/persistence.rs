@@ -285,8 +285,9 @@ impl SnapshotStore {
             &self.root.join(reference.sidecar_name()),
             reference.encoded_bytes(),
         )?;
-        let preserved = reference.decode(&encoded)?;
-        drop(encoded);
+        // Decoded once to prove it reconstructs the recorded payload; only the
+        // verified encoding is kept, never the value tree.
+        let preserved = reference.decode(encoded)?;
         let snapshot = WorldSnapshot {
             schema_version: referenced.schema_version,
             tick: referenced.tick,
@@ -574,13 +575,15 @@ impl SnapshotStore {
             .preserved_prospect
             .as_ref()
             .context("preserved section required for its sidecar")?;
-        let encoded = preserved.to_native_encoding()?;
+        // The held encoding was proven to decode at construction; it is written
+        // as is, after a digest check against the identity it is named by.
+        let encoded = preserved.native_encoding();
         ensure!(
             encoded.len() as u64 == reference.encoded_bytes()
-                && checksum(&encoded) == reference.encoded_sha256(),
+                && checksum(encoded) == reference.encoded_sha256(),
             "preserved native encoding differs from its recorded identity"
         );
-        write(&self.root, &name, &encoded)
+        write(&self.root, &name, encoded)
     }
 }
 
@@ -625,12 +628,16 @@ fn read_bounded(path: &Path, limit: u64) -> Result<Vec<u8>> {
         .read(true)
         .custom_flags(crate::nonblocking_flag())
         .open(path)?;
+    let metadata = file.metadata()?;
     ensure!(
-        file.metadata()?.is_file(),
+        metadata.is_file(),
         "snapshot input must be a regular file: {}",
         path.display()
     );
-    let mut bytes = Vec::new();
+    // Size the buffer once from the opened file, never beyond the limit, so a
+    // large sidecar is not grown by doubling into a larger held allocation.
+    let expected = metadata.len().min(limit);
+    let mut bytes = Vec::with_capacity(usize::try_from(expected)?.saturating_add(1));
     file.take(limit + 1).read_to_end(&mut bytes)?;
     ensure!(
         bytes.len() as u64 <= limit,
@@ -1152,7 +1159,7 @@ mod crash_consistency_tests {
 
     use super::durability_probe::{self, Effect};
     use super::*;
-    use crate::preservation::{PreserveLimits, PreservedProspect};
+    use crate::preservation::{PreserveLimits, PreservedSection};
     use crate::simulation::{DomainId, Position};
 
     /// File name to bytes, excluding the lock file that `open` recreates.
@@ -1246,7 +1253,7 @@ mod crash_consistency_tests {
 
     /// One recorder whose opaque body is `variant` repeated, so each variant
     /// is a distinct section with a distinct sidecar.
-    fn section(variant: u8) -> Arc<PreservedProspect> {
+    fn section(variant: u8) -> Arc<PreservedSection> {
         let body = vec![variant; 8];
         let binary = [
             i32::try_from(body.len()).unwrap().to_le_bytes().as_slice(),
@@ -1286,12 +1293,10 @@ mod crash_consistency_tests {
             string("None"),
         ]
         .concat();
-        Arc::new(
-            PreservedProspect::from_inner_payload(&payload, PreserveLimits::default()).unwrap(),
-        )
+        Arc::new(PreservedSection::from_inner_payload(&payload, PreserveLimits::default()).unwrap())
     }
 
-    fn preserved(tick: u64, section: &Arc<PreservedProspect>) -> WorldSnapshot {
+    fn preserved(tick: u64, section: &Arc<PreservedSection>) -> WorldSnapshot {
         WorldSnapshot {
             schema_version: SNAPSHOT_SCHEMA_REFERENCED,
             preserved_prospect: Some(Arc::clone(section)),
@@ -1299,7 +1304,7 @@ mod crash_consistency_tests {
         }
     }
 
-    fn sidecar_name(section: &PreservedProspect) -> String {
+    fn sidecar_name(section: &PreservedSection) -> String {
         SectionReference::of(section).sidecar_name()
     }
 
