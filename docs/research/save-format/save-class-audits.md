@@ -51,7 +51,7 @@ No decoded value, text or number was emitted or interpreted.
 - Map item meanings and binary Struct component values (U-055, U-020); meanings of the classes outside the audited selections (U-022); C001's nested values and runtime dispatch (U-023).
 - Individual C028 native top spans and the historical library snapshot (U-024).
 - Restoration and import, client and newer-build compatibility (U-025); original normalization, EOF and error equivalence (U-026); original performance (U-028).
-- Heavy-world save work order after this structural work: a matched official-server load/save/reload baseline on disposable copies once build pairing and a runtime scope exist (U-040, U-047); then authenticated negotiation, replication and the gameplay slice, validating a small supported import before the heavy dataset (U-038, U-045). Generic framing agreement is not an importable world; no partial importer.
+- Heavy-world save work order: the preserved server's offline load/save/reload baseline on a disposable copy passes (F-678, F-679), build pairing still open (U-040); then authenticated negotiation, replication and the gameplay slice, validating a small supported import before the heavy dataset (U-038, U-045). Generic framing agreement is not an importable world; no partial importer.
 
 ## Artifacts
 
