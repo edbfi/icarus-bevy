@@ -1,7 +1,8 @@
-//! EXPERIMENTAL replicator field headers and RPC parameters, against a
-//! caller-supplied parameter layout.
+//! EXPERIMENTAL replicator field headers, RPC parameters and fast-array delta
+//! bodies, against caller-supplied layouts.
 //!
-//! Static client observations only (F-637, F-638); nothing is wire-validated, no
+//! Static client observations only (F-637, F-638, F-641); nothing is
+//! wire-validated, no
 //! original function or field list is known or shipped, and no RPC is
 //! dispatched. Writers mirror the readers for round-trip research only.
 //!
@@ -21,13 +22,23 @@
 //! [`RPC_ARRAY_COUNT_MAX`], then each element's commands in order. The client
 //! requires a parameter payload to be consumed exactly. Which values a sender
 //! marks present is not read here.
+//!
+//! Fast-array delta bodies (F-641): four signed 4-byte fields (the array
+//! replication key, the base replication key, the delete count and the change
+//! count, each count at most its cap), a 4-byte ID per deleted element, then
+//! per changed element a 4-byte ID and either the item struct's commands in
+//! order (whole items) or, when the sender's struct-delta bit is set and the
+//! array uses delta serialization, a set bit and the item's rep-layout property
+//! stream (delta items). Negative counts, which the client treats as empty,
+//! fail closed here.
 use anyhow::{Context, Result, ensure};
 
 use super::actor_channel::read_packed;
 use super::packet::{BitReader, BitWriter, Payload};
 use super::rep_layout::{
-    Budget, RepCommand, RepLayoutCodec, RepValue, append_bits, copy_bits, read_u16, read_value,
-    validate_layout, write_u16, write_value,
+    Budget, PropertyStream, RepCommand, RepLayoutCodec, RepValue, append_bits, copy_bits,
+    read_property_stream, read_u16, read_u32, read_value, validate_layout, write_property_stream,
+    write_u16, write_u32, write_value,
 };
 
 /// Largest dynamic-array count the client accepts in RPC parameters.
@@ -332,4 +343,150 @@ pub fn encode_rpc_payload(
     let mut writer = BitWriter::new();
     write_rpc_arguments(&mut writer, parameters, arguments, codec)?;
     Ok(Payload::from_writer(writer))
+}
+
+/// The client's initial fast-array delete and change caps; both are runtime
+/// console values.
+pub const FAST_ARRAY_COUNT_CAP: i32 = 2048;
+
+/// How a fast array's changed items are carried.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum FastArrayItemLayout {
+    /// Each item's commands in order, as for RPC array elements.
+    Whole(Vec<RepCommand>),
+    /// Each item as a set bit and a rep-layout property stream over this
+    /// element layout.
+    Delta(Vec<RepCommand>),
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum FastArrayItem {
+    Whole(Vec<RpcItem>),
+    Delta(PropertyStream),
+}
+
+/// One fast-array delta body.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct FastArrayDelta {
+    pub array_replication_key: i32,
+    pub base_replication_key: i32,
+    pub deleted_ids: Vec<i32>,
+    /// Changed elements by ID, in wire order.
+    pub changed: Vec<(i32, FastArrayItem)>,
+}
+
+fn read_i32(reader: &mut BitReader<'_>, codec: &RepLayoutCodec, what: &str) -> Result<i32> {
+    Ok(read_u32(reader, codec.actor.order, what)? as i32)
+}
+
+fn read_count(
+    reader: &mut BitReader<'_>,
+    codec: &RepLayoutCodec,
+    cap: i32,
+    what: &str,
+) -> Result<usize> {
+    let count = read_i32(reader, codec, what)?;
+    ensure!(count >= 0, "negative fast-array {what}");
+    ensure!(count <= cap, "fast-array {what} exceeds its cap");
+    Ok(count as usize)
+}
+
+pub fn read_fast_array_delta(
+    reader: &mut BitReader<'_>,
+    layout: &FastArrayItemLayout,
+    codec: &RepLayoutCodec,
+    cap: i32,
+) -> Result<FastArrayDelta> {
+    let element = match layout {
+        FastArrayItemLayout::Whole(element) | FastArrayItemLayout::Delta(element) => element,
+    };
+    validate_layout(element, &codec.limits)?;
+    let array_replication_key = read_i32(reader, codec, "array replication key")?;
+    let base_replication_key = read_i32(reader, codec, "base replication key")?;
+    let deletes = read_count(reader, codec, cap, "delete count")?;
+    let changes = read_count(reader, codec, cap, "change count")?;
+    let deleted_ids = (0..deletes)
+        .map(|_| read_i32(reader, codec, "deleted element ID"))
+        .collect::<Result<Vec<_>>>()?;
+    let mut budget = Budget {
+        remaining: codec.limits.max_entries,
+    };
+    let mut changed = Vec::with_capacity(changes);
+    for index in 0..changes {
+        let id = read_i32(reader, codec, "changed element ID")?;
+        let item = match layout {
+            FastArrayItemLayout::Whole(element) => FastArrayItem::Whole(
+                read_items(reader, element, codec, 0, &mut budget)
+                    .with_context(|| format!("fast-array item {index}"))?,
+            ),
+            FastArrayItemLayout::Delta(element) => {
+                let bit = reader.read_bit();
+                ensure!(!reader.is_error(), "truncated fast-array item {index}");
+                ensure!(bit, "fast-array delta item {index} without its set bit");
+                FastArrayItem::Delta(
+                    read_property_stream(reader, element, codec)
+                        .with_context(|| format!("fast-array item {index}"))?,
+                )
+            }
+        };
+        changed.push((id, item));
+    }
+    Ok(FastArrayDelta {
+        array_replication_key,
+        base_replication_key,
+        deleted_ids,
+        changed,
+    })
+}
+
+pub fn write_fast_array_delta(
+    writer: &mut BitWriter,
+    delta: &FastArrayDelta,
+    layout: &FastArrayItemLayout,
+    codec: &RepLayoutCodec,
+    cap: i32,
+) -> Result<()> {
+    let element = match layout {
+        FastArrayItemLayout::Whole(element) | FastArrayItemLayout::Delta(element) => element,
+    };
+    validate_layout(element, &codec.limits)?;
+    let count = |len: usize, what: &str| {
+        i32::try_from(len)
+            .ok()
+            .filter(|count| *count <= cap)
+            .with_context(|| format!("fast-array {what} exceeds its cap"))
+    };
+    let deletes = count(delta.deleted_ids.len(), "delete count")?;
+    let changes = count(delta.changed.len(), "change count")?;
+    let order = codec.actor.order;
+    for value in [
+        delta.array_replication_key,
+        delta.base_replication_key,
+        deletes,
+        changes,
+    ]
+    .into_iter()
+    .chain(delta.deleted_ids.iter().copied())
+    {
+        write_u32(writer, value as u32, order);
+    }
+    let mut budget = Budget {
+        remaining: codec.limits.max_entries,
+    };
+    for (index, (id, item)) in delta.changed.iter().enumerate() {
+        write_u32(writer, *id as u32, order);
+        match (layout, item) {
+            (FastArrayItemLayout::Whole(element), FastArrayItem::Whole(items)) => {
+                write_items(writer, element, items, codec, 0, &mut budget)
+                    .with_context(|| format!("fast-array item {index}"))?;
+            }
+            (FastArrayItemLayout::Delta(element), FastArrayItem::Delta(stream)) => {
+                writer.write_bit(true);
+                write_property_stream(writer, stream, element, codec)
+                    .with_context(|| format!("fast-array item {index}"))?;
+            }
+            _ => anyhow::bail!("fast-array item {index} does not match its layout"),
+        }
+    }
+    Ok(())
 }

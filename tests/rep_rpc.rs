@@ -2,12 +2,13 @@ use icarus_bevy::experimental::actor_channel::{ActorChannelCodec, ActorChannelLi
 use icarus_bevy::experimental::archive::ByteOrder;
 use icarus_bevy::experimental::packet::{BitWriter, Payload};
 use icarus_bevy::experimental::rep_layout::{
-    RepCommand, RepLayoutCodec, RepLayoutLimits, RepValue,
+    PropertyStream, RepCommand, RepEntry, RepLayoutCodec, RepLayoutLimits, RepValue,
 };
 use icarus_bevy::experimental::rep_rpc::{
-    CustomDeltaHeader, FieldHeader, RPC_ARRAY_COUNT_MAX, RpcArgument, RpcItem, RpcParameter,
-    encode_rpc_payload, parse_rpc_payload, read_custom_delta_header, read_field_header,
-    write_custom_delta_header, write_field_header,
+    CustomDeltaHeader, FAST_ARRAY_COUNT_CAP, FastArrayDelta, FastArrayItem, FastArrayItemLayout,
+    FieldHeader, RPC_ARRAY_COUNT_MAX, RpcArgument, RpcItem, RpcParameter, encode_rpc_payload,
+    parse_rpc_payload, read_custom_delta_header, read_fast_array_delta, read_field_header,
+    write_custom_delta_header, write_fast_array_delta, write_field_header,
 };
 
 // Independently authored bit fixtures for the client replicator's field
@@ -358,4 +359,165 @@ fn mutated_payloads_never_panic_and_accepted_ones_reencode_exactly() {
         let _ = read_custom_delta_header(&mut mutated.reader(), 17, 3);
     }
     assert!(accepted > 0);
+}
+
+fn word(writer: &mut BitWriter, value: i32, order: ByteOrder) {
+    let bytes = match order {
+        ByteOrder::Little => value.to_le_bytes(),
+        ByteOrder::Big => value.to_be_bytes(),
+    };
+    bytes
+        .iter()
+        .for_each(|byte| writer.write_bits(u32::from(*byte), 8));
+}
+
+fn whole_delta() -> FastArrayDelta {
+    FastArrayDelta {
+        array_replication_key: 7,
+        base_replication_key: 5,
+        deleted_ids: vec![3, -1],
+        changed: vec![
+            (
+                10,
+                FastArrayItem::Whole(vec![
+                    RpcItem::Value(RepValue::Byte(0x22)),
+                    RpcItem::Value(RepValue::Bool(true)),
+                ]),
+            ),
+            (
+                11,
+                FastArrayItem::Whole(vec![
+                    RpcItem::Value(RepValue::Byte(0x01)),
+                    RpcItem::Value(RepValue::Bool(false)),
+                ]),
+            ),
+        ],
+    }
+}
+
+#[test]
+fn fast_array_whole_items_follow_a_four_word_header_and_deleted_ids() {
+    let layout = FastArrayItemLayout::Whole(vec![byte(None), RepCommand::Bool]);
+    for order in [ByteOrder::Little, ByteOrder::Big] {
+        let expected = payload(|writer| {
+            for value in [7, 5, 2, 2, 3, -1] {
+                word(writer, value, order);
+            }
+            word(writer, 10, order);
+            writer.write_bits(0x22, 8);
+            writer.write_bit(true);
+            word(writer, 11, order);
+            writer.write_bits(0x01, 8);
+            writer.write_bit(false);
+        });
+        let codec = codec(order);
+        let mut writer = BitWriter::new();
+        write_fast_array_delta(
+            &mut writer,
+            &whole_delta(),
+            &layout,
+            &codec,
+            FAST_ARRAY_COUNT_CAP,
+        )
+        .unwrap();
+        assert_eq!(Payload::from_writer(writer), expected);
+        let mut reader = expected.reader();
+        assert_eq!(
+            read_fast_array_delta(&mut reader, &layout, &codec, FAST_ARRAY_COUNT_CAP).unwrap(),
+            whole_delta()
+        );
+        assert!(reader.at_end());
+    }
+}
+
+#[test]
+fn fast_array_delta_items_are_a_set_bit_and_a_property_stream() {
+    let codec = codec(ByteOrder::Little);
+    let layout = FastArrayItemLayout::Delta(vec![byte(None)]);
+    let delta = FastArrayDelta {
+        array_replication_key: 1,
+        base_replication_key: 0,
+        deleted_ids: vec![],
+        changed: vec![(
+            4,
+            FastArrayItem::Delta(PropertyStream {
+                entries: vec![RepEntry {
+                    handle: 1,
+                    checksum: None,
+                    value: RepValue::Byte(0xab),
+                }],
+                terminator_checksum: None,
+            }),
+        )],
+    };
+    let expected = payload(|writer| {
+        for value in [1, 0, 0, 1, 4] {
+            word(writer, value, ByteOrder::Little);
+        }
+        writer.write_bit(true);
+        writer.write_bits(1 << 1, 8);
+        writer.write_bits(0xab, 8);
+        writer.write_bits(0, 8);
+    });
+    let mut writer = BitWriter::new();
+    write_fast_array_delta(&mut writer, &delta, &layout, &codec, FAST_ARRAY_COUNT_CAP).unwrap();
+    assert_eq!(Payload::from_writer(writer), expected);
+    let mut reader = expected.reader();
+    assert_eq!(
+        read_fast_array_delta(&mut reader, &layout, &codec, FAST_ARRAY_COUNT_CAP).unwrap(),
+        delta
+    );
+    assert!(reader.at_end());
+    // A clear bit fails the item.
+    let clear = payload(|writer| {
+        for value in [1, 0, 0, 1, 4] {
+            word(writer, value, ByteOrder::Little);
+        }
+        writer.write_bit(false);
+    });
+    assert!(
+        read_fast_array_delta(&mut clear.reader(), &layout, &codec, FAST_ARRAY_COUNT_CAP).is_err()
+    );
+    // Whole items do not fit a delta layout.
+    let mut writer = BitWriter::new();
+    let mismatch = write_fast_array_delta(
+        &mut writer,
+        &whole_delta(),
+        &layout,
+        &codec,
+        FAST_ARRAY_COUNT_CAP,
+    );
+    assert!(mismatch.is_err());
+}
+
+#[test]
+fn fast_array_counts_fail_closed_when_negative_or_over_the_cap() {
+    let codec = codec(ByteOrder::Little);
+    let layout = FastArrayItemLayout::Whole(vec![RepCommand::Bool]);
+    let header = |deletes: i32, changes: i32| {
+        payload(|writer| {
+            for value in [0, 0, deletes, changes] {
+                word(writer, value, ByteOrder::Little);
+            }
+        })
+    };
+    let empty = read_fast_array_delta(&mut header(0, 0).reader(), &layout, &codec, 2).unwrap();
+    assert!(empty.deleted_ids.is_empty() && empty.changed.is_empty());
+    for (deletes, changes) in [(-1, 0), (0, -1), (3, 0), (0, 3)] {
+        let bytes = header(deletes, changes);
+        let read = read_fast_array_delta(&mut bytes.reader(), &layout, &codec, 2);
+        assert!(read.is_err(), "{deletes} {changes}");
+    }
+    // Two deletes declared but only one present.
+    let truncated = payload(|writer| {
+        for value in [0, 0, 2, 0, 9] {
+            word(writer, value, ByteOrder::Little);
+        }
+    });
+    assert!(read_fast_array_delta(&mut truncated.reader(), &layout, &codec, 2).is_err());
+    let mut over = whole_delta();
+    over.deleted_ids = vec![1, 2, 3];
+    let whole = FastArrayItemLayout::Whole(vec![byte(None), RepCommand::Bool]);
+    assert!(write_fast_array_delta(&mut BitWriter::new(), &over, &whole, &codec, 2).is_err());
+    assert_eq!(FAST_ARRAY_COUNT_CAP, 2048);
 }
