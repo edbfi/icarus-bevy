@@ -29,7 +29,7 @@
 //! as a sub-object whose stably-named bit is clear; recursion depth counts
 //! outer references, so a top-level reference plus 16 outers is the deepest
 //! accepted chain. Angle rounding (half up) is inferred (F-573). Deletion
-//! blocks carry a payload count, as the spec records (F-570).
+//! blocks (zero class reference) carry no payload count (F-576).
 //!
 //! `Debug` output and summaries carry kinds, counts and lengths only, never
 //! GUID values, paths, checksums, vector or angle values, or payload bits.

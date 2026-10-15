@@ -40,8 +40,9 @@ pub struct WorldSnapshot {
     /// Lossless, value-opaque supplied-save state carried unchanged between
     /// generations; present exactly in schemas 2 and 3. Shared, never interpreted,
     /// and held compactly as its verified native encoding (no value tree).
-    /// Serialization emits the legacy inline schema-2 form; the snapshot store
-    /// writes schema 3 itself.
+    /// Serde writes the section inline under the stored `schema_version`, which is
+    /// a loadable document only for schema 2; the snapshot store writes schema 3
+    /// itself, as a sidecar reference.
     #[serde(
         default,
         skip_serializing_if = "Option::is_none",
