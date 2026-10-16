@@ -51,12 +51,12 @@ replicated property order, types, offsets and static array sizes for `AActor`
 `UActorComponent` (handles 1..2) and native Icarus subclasses (F-703), with
 layout constructors in `experimental::rep_layout`. `FNumericProperty::NetSerializeItem`
 (1/2/4/8 archive bytes for `Int8`..`UInt64`, `Float`, `Double`), `FVector`,
-`FVector2D`, `FRotator` (`SerializeCompressedShort`), `FUniqueNetIdRepl`,
-`FRowHandle`, `FStatPairRepState` and the 1-bit `bDoChecksum` preamble of
-`FRepLayout::ReceiveProperties` are qualified and modeled in
-`experimental::rep_layout`, decoding the captured M-707 channel 2
-`AIcarusPlayerControllerSurvival` (199 bits) and `UActorComponent` (18 bits)
-property blocks bit-identically (F-704).
+`FVector2D`, `FRotator` (`SerializeCompressedShort`), `FUniqueNetIdRepl` and
+the 1-bit `bDoChecksum` preamble of `FRepLayout::ReceiveProperties` are
+qualified and modeled in `experimental::rep_layout`, while `FRowHandle` and
+`FStatPairRepState` are statically qualified, decoding the captured M-707
+channel 2 `AIcarusPlayerControllerSurvival` (199 bits) and `UActorComponent`
+(18 bits) property blocks bit-identically (F-704).
 
 ## Open
 

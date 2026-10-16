@@ -132,27 +132,32 @@ dormancy, channel close reasons and every server-side writer.
   (`0x143f8a530`) sends a 2-byte table index (`0xffff` unmapped) and a 0/1/2/4-byte
   row index sized by table row count; `FStatPairRepState::NetSerialize` (`0x141c10c50`)
   sends two 4-byte fields. `FVector_NetQuantize` is a bit count (`<= 20`) and three biased unscaled
-  integers; `FVector_NetQuantizeNormal` is three 16-bit values biased by 32768.
+  integers; `FVector_NetQuantizeNormal` is three 16-bit values biased by 32768
+  and multiplied by an unread constant. `FRepMovement` and the `10`/`100`
+  vector quantizers live in `TCppStructOps` with no class-method symbols;
   `FRepMovement` sends two flag bits, location, rotation (byte rotator at level
   0: per-axis nonzero bit plus `round(angle * 256 / 360)` byte; compressed
   rotator at level 1), linear velocity, and (when flag bit 1 is set) angular
   velocity; vector levels 0, 1 and 2 cap bits below 24, 27 and 30 with scales
-  1, 0.1 and 0.01 (`NetQuantize10` and `100` match levels 1 and 2). Hit results
-  send an 8-bit flags byte (bits 2..6 replace impact point/normal, item, face
-  index and penetration depth), 4-byte time, location, normal, unreplaced impact
-  fields, trace start/end, gated depth/item, three NetGUID references, bone
-  network name, and gated face index and element byte.
+  1, 0.1 and 0.01 (levels other than 1 and 2 behave as 0; `NetQuantize10` and
+  `100` match levels 1 and 2). Hit results send an 8-bit flags byte (bits 2..6
+  replace impact point/normal, item, face index and penetration depth), 4-byte
+  time, location, normal, unreplaced impact fields, trace start/end, gated
+  depth/item, three NetGUID references, bone network name, and gated face index
+  and element byte.
 - Gameplay tags (F-583, F-591, F-592, F-674): sent as names unless fast
   replication is set; then as a net index (`T` raw bits when `F < 1` or
   `F >= T`, else `F` low bits, a continuation bit and `T - F` high bits when
-  set; per-connection table flag sends a packed 16-bit index). Containers send
-  an empty bit, a `W`-bit count (`<= 2^W - 1`) and that many tags.
+  set; per-connection table flag sends a packed 16-bit index, slot meaning
+  inferred). Containers send an empty bit, a `W`-bit count (`<= 2^W - 1`) and
+  that many tags.
 - Name, Str, soft-object and Text items (F-595, F-599, F-639, F-675): Name items
   call the archive name operator (`SerializeName` or `StaticSerializeName`, the
   network-name form below). Str items and net soft-object paths are archive
   strings (signed 4-byte count, then narrow bytes or 2-byte units with a
   terminator). Text items use the shared FText serializer at UE4 archive version
-  522 (`0x170+` 4-byte flags word, then history byte `0..12` or `0xFF` none):
+  522 (`0x170+` 4-byte flags word, then history byte `0..12` or `0xFF` none;
+  Names here use archive slot `0x140`, whose net routing is unread, U-064):
   - `0` Base sends namespace and key as text keys (empty key saved as count 1
     plus terminator), then source string; `0xFF` none (Dev-Editor custom version
     40 >= 32) sends a 4-byte culture-invariant bool and optional string (F-639).

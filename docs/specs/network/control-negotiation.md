@@ -158,7 +158,9 @@ game listener.
   F-636); `sequencing` models notify and reliable state (F-535 to F-539); and
   `packet_lab` and `peer_lab` run them as disconnected per-peer state in the
   Bevy loopback lab, answering Hello and Login without sending Welcome (F-558,
-  F-564). The dispatcher's input is an FInBunch (F-507).
+  F-564). The dispatcher's input is an FInBunch (F-507); packet-to-bunch
+  framing is unbound, and exact EOF and normalization rejection are research
+  policy. Summaries carry kinds and lengths only.
 - Server `UWorld::NotifyControlMessage` (`0x1439ee7f0`, F-563) and
   `UWorld::WelcomePlayer` (`0x1439fdeb0`, F-580): Hello sends Upgrade with the
   local version and closes on mismatch; an empty token (count < 2) sends
@@ -194,8 +196,14 @@ game listener.
 - Static cases: M-170 (`icarus-server-baseline`, E-011/E-013/E-021/E-022/E-024),
   M-146, [research/archive](../../research/archive/2026-10-12-control-caller-limit.md),
   and M-023 to M-045 in the [control-store digest](../../research/network/control-stores.md).
-- Promotion requires version/callback decision rules, paired reference traces,
-  sanitized accept/reject fixtures across every field, and a stock-client test.
+- Requirements before promotion: identify version generation and callback
+  registration and record the legitimate decision rule; recover archive
+  conversion and outer framing with bounds and errors; obtain a paired trace of
+  a matching stock client and reference server; create sanitized fixtures for
+  accepted negotiation and each rejection class (truncation at each field,
+  zero/negative/minimum/oversized lengths, incompatible versions, invalid
+  transitions, token failures); pass those fixtures and the stock-client
+  experiment before marking negotiation implemented.
 - Authored suites:
 
 ```bash
