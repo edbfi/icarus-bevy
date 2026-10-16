@@ -34,20 +34,35 @@ compose actor bunches in client read order (F-610). Generic framing and content
 blocks now parse the original's recorded traffic (F-693, F-694); typed class
 layouts and tag dictionaries remain unvalidated.
 
-Offline schema derivation is authorized ([gates](../../gates.md)). The packaged
-tag configuration supplies declarations, including an unresolved external source
-(F-697). It cannot establish the runtime index order. The native
-`experimental::tag_dictionary` consumes an explicitly supplied complete order;
-its sentinel contract remains a static candidate (F-698). Native engine-class
-property names and candidate indices are located, but their full schemas are
-not recovered (F-699).
+Offline schema derivation is authorized ([gates](../../gates.md)). The runtime
+gameplay-tag net-index table is derived solely from `Data/Tags/D_Tags` (130
+rows; 3 row keys differ from `Tag`) and `DefaultGameplayTags.ini` (1,886 tags
+in 3.0.31; 1,889 in 3.0.32): expanding dot-separated parent prefixes yields
+2,299 and 2,302 unique nodes, sorted ASCII-case-insensitively (`total_bits` 12,
+clamped `first_segment` 12, `container_bits` 6), and their chained lowercase
+UTF-16 CRC-32 matches the logged `NetworkGameplayTagNodeIndexHash` (`dc780a27`
+and `6d0f676f`, F-702; U-065 resolved). `experimental::tag_dictionary` models
+both ordered lists and declaration expansion with `net_index_hash`. Native
+`UE4CodeGen_Private` descriptors across all 4,000 `ConstructUClass` sites fix
+replicated property order, types, offsets and static array sizes for `AActor`
+(10 net properties -> 15 leaf handles: `FRepAttachment` flattened at 7..12,
+3-bit `ENetRole` at 5 and 14), `AController` (handles 16..17),
+`APlayerController` (handles 18..19), `APlayerState` (handles 16..26),
+`UActorComponent` (handles 1..2) and native Icarus subclasses (F-703), with
+layout constructors in `experimental::rep_layout`. `FNumericProperty::NetSerializeItem`
+(1/2/4/8 archive bytes for `Int8`..`UInt64`, `Float`, `Double`), `FVector`,
+`FVector2D`, `FRotator` (`SerializeCompressedShort`), `FUniqueNetIdRepl` and
+the 1-bit `bDoChecksum` preamble of `FRepLayout::ReceiveProperties` are
+qualified and modeled in `experimental::rep_layout`, while `FRowHandle` and
+`FStatPairRepState` are statically qualified, decoding the captured M-707
+channel 2 `AIcarusPlayerControllerSurvival` (199 bits) and `UActorComponent`
+(18 bits) property blocks bit-identically (F-704).
 
 ## Open
 
-- Other native structs (U-064); server send policy (U-044).
-- Complete tag sources, index ordering and effective widths (F-697, F-698; U-065).
-- Property types, offsets, arrays and gameplay-class schemas (F-699; U-066).
+- Remaining native structs (e.g., `FRowHandle` table row-count oracle, `FDateTime`/`FTimespan`, `FPlane`) and movement level defaults (U-064); server send policy (U-044).
+- Cooked Blueprint class property extensions and full capture replay (F-702 to F-704; U-066).
 
 ## Artifacts
 
-M-420..M-449, M-455..M-470, M-570..M-576, M-581..M-588, M-600..M-605, M-707, M-709..M-717.
+M-420..M-449, M-455..M-470, M-570..M-576, M-581..M-588, M-600..M-605, M-707, M-708, M-709..M-717, M-720, M-728..M-734.

@@ -44,12 +44,16 @@ pub fn checksum_utf16(units: &[u16], seed: u32) -> u32 {
 /// This does not select the actual version string, engine/game version numbers,
 /// cache state or optional callbacks. It cannot determine client compatibility.
 pub fn default_version_string_checksum(text: &str) -> u32 {
+    checksum_ascii_lowercase(text, 0)
+}
+
+pub(crate) fn checksum_ascii_lowercase(text: &str, seed: u32) -> u32 {
     checksum_units(
         text.encode_utf16().map(|unit| match unit {
             0x41..=0x5a => unit + 0x20,
             _ => unit,
         }),
-        0,
+        seed,
     )
 }
 

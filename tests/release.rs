@@ -14,6 +14,10 @@ fn checksums_match_the_logged_formula() {
         network_checksum("3.0.31.158478-rel-DangerousHorizons"),
         2_406_501_229
     );
+    assert_eq!(
+        network_checksum("3.0.32.158743-rel-DangerousHorizons"),
+        243_431_684
+    );
 }
 
 #[test]

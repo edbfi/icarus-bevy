@@ -52,8 +52,8 @@ No decoded value, text or number was emitted or interpreted.
 - Map item meanings and binary Struct component values (U-055, U-020); meanings of the classes outside the audited selections (U-022); C001's nested values and runtime dispatch (U-023).
 - Individual C028 native top spans and the historical library snapshot (U-024).
 - Restoration and import, client and newer-build compatibility (U-025); original normalization, EOF and error equivalence (U-026); original performance (U-028).
-- Heavy-world save work order: the preserved server's offline load/save/reload baseline on a disposable copy passes, its three dropped records explained by restore validation and felled-tree handling (F-678 to F-681), build pairing still open (U-040); then authenticated negotiation, replication and the gameplay slice, validating a small supported import before the heavy dataset (U-038, U-045). Generic framing agreement is not an importable world; no partial importer.
+- Heavy-world save work order: the preserved server's offline load/save/reload baseline (F-678 to F-681) and connected scenario S1 on server 25956137 (3.0.32, F-701) both frame and preserve byte-identically; build pairing of the original save remains open (U-040), and native interpreted import stays gated (U-038, U-045). Generic framing agreement is not an importable world; no partial importer.
 
 ## Artifacts
 
-M-047..M-077, M-079..M-108, M-118..M-130, M-278..M-280, M-351, M-352, M-376..M-384, M-389, M-390, M-401..M-404, M-407..M-410, M-606..M-613, M-616..M-618, M-626, M-627, M-636..M-638.
+M-047..M-077, M-079..M-108, M-118..M-130, M-278..M-280, M-351, M-352, M-376..M-384, M-389, M-390, M-401..M-404, M-407..M-410, M-606..M-613, M-616..M-618, M-626, M-627, M-636..M-638, M-727.

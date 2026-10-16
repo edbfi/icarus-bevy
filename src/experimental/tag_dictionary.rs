@@ -1,11 +1,11 @@
-//! A supplied, ordered gameplay-tag schema for the experimental net-index codec.
+//! Gameplay-tag net-index dictionary for the experimental net-index codec.
 //!
-//! The caller must supply the complete runtime sequence and explicit widths.
-//! Configuration entries and partial inventories do not establish that sequence;
-//! this module neither imports them nor sorts, normalizes or adds parent tags.
-//! Its ASCII name profile and count/sentinel rules are an experimental contract
-//! derived from static research, pending instruction and capture validation.
-//! Construction establishes neither a matching client dictionary nor compatibility.
+//! Callers may supply an already-ordered runtime sequence with explicit widths
+//! (`from_ordered_names`) or build the node sequence from declared tag strings
+//! (`from_tag_declarations`, which expands dot-separated parent prefixes,
+//! deduplicates and sorts ASCII-case-insensitively, derives `total_bits` and
+//! clamps `first_segment`, and computes `net_index_hash`).
+//! This module does not load original assets or configuration files directly.
 
 use std::collections::HashMap;
 use std::fmt;
@@ -135,6 +135,60 @@ impl TagDictionary {
             return Err(TagDictionaryError::InsufficientIndexWidth);
         }
         Ok(dictionary)
+    }
+
+    /// Expand dot-separated parent prefixes from declared tags, sort nodes
+    /// ASCII-case-insensitively (`GetAllNodes` + `FName::LexicalLess`), and
+    /// derive `total_bits` and clamped `first_segment` (`ConstructNetIndex`).
+    pub fn from_tag_declarations(
+        declarations: impl IntoIterator<Item = impl AsRef<str>>,
+        first_segment: u8,
+        container_bits: u8,
+    ) -> Result<Self, TagDictionaryError> {
+        if first_segment > 16 {
+            return Err(TagDictionaryError::InvalidFirstSegment);
+        }
+        if !(1..=8).contains(&container_bits) {
+            return Err(TagDictionaryError::InvalidContainerBits);
+        }
+        let mut seen = HashMap::<String, String>::new();
+        for decl in declarations {
+            let decl = decl.as_ref();
+            if !valid_name(decl) {
+                return Err(TagDictionaryError::InvalidName);
+            }
+            for (idx, _) in decl.match_indices('.') {
+                let prefix = &decl[..idx];
+                let folded = prefix.to_ascii_lowercase();
+                seen.entry(folded).or_insert_with(|| prefix.to_owned());
+            }
+            let folded = decl.to_ascii_lowercase();
+            seen.entry(folded).or_insert_with(|| decl.to_owned());
+            if seen.len() > MAX_TAGS {
+                return Err(TagDictionaryError::TooManyTags);
+            }
+        }
+        let mut ordered: Vec<(String, String)> = seen.into_iter().collect();
+        ordered.sort_by(|a, b| a.0.cmp(&b.0));
+        let invalid_sentinel = (ordered.len() as u32) + 1;
+        let total_bits = (invalid_sentinel + 1)
+            .next_power_of_two()
+            .trailing_zeros()
+            .max(1) as u8;
+        let clamped_first = first_segment.min(total_bits);
+        Self::from_ordered_names(
+            ordered.into_iter().map(|(_, original)| original),
+            total_bits,
+            clamped_first,
+            container_bits,
+        )
+    }
+
+    /// Compute the chained lowercase UTF-16 CRC-32 (`NetworkGameplayTagNodeIndexHash`).
+    pub fn net_index_hash(&self) -> u32 {
+        self.names
+            .iter()
+            .fold(0, |crc, name| super::checksum_ascii_lowercase(name, crc))
     }
 
     pub fn len(&self) -> usize {

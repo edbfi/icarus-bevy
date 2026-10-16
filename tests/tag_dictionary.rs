@@ -227,3 +227,67 @@ fn explicit_widths_and_count_bound_include_both_reserved_slots() {
         TagDictionaryError::TooManyTags
     );
 }
+
+#[test]
+fn declarations_expand_parents_sort_case_insensitively_and_hash() {
+    let table = TagDictionary::from_tag_declarations(
+        [
+            "Zeta.Leaf.Deep",
+            "Alpha.Beta",
+            "alpha.BETA",
+            "Alpha.aardvark",
+        ],
+        16,
+        6,
+    )
+    .unwrap();
+    let expected = [
+        "Alpha",
+        "Alpha.aardvark",
+        "Alpha.Beta",
+        "Zeta",
+        "Zeta.Leaf",
+        "Zeta.Leaf.Deep",
+    ];
+    assert_eq!(table.len(), expected.len());
+    for (index, name) in expected.iter().enumerate() {
+        assert_eq!(table.name_of(index as u16), Some(*name));
+        assert_eq!(table.index_of(name), Some(index as u16));
+    }
+    // 6 nodes -> invalid sentinel = 7 -> total_bits = 3, clamped first_segment = 3
+    assert_eq!(
+        table.encoding(),
+        TagEncoding::NetIndex {
+            first_segment: 3,
+            total_bits: 3,
+        }
+    );
+    assert_eq!(table.container_bits(), 6);
+    let ordered = TagDictionary::from_ordered_names(expected, 3, 3, 6).unwrap();
+    assert_eq!(table.net_index_hash(), 0xaa1c_5e52);
+    assert_eq!(ordered.net_index_hash(), 0xaa1c_5e52);
+}
+
+#[test]
+fn tag_declarations_reject_bad_widths_names_and_overflow() {
+    assert_eq!(
+        TagDictionary::from_tag_declarations(["A.B"], 17, 6).unwrap_err(),
+        TagDictionaryError::InvalidFirstSegment
+    );
+    for bad in [0, 9] {
+        assert_eq!(
+            TagDictionary::from_tag_declarations(["A.B"], 12, bad).unwrap_err(),
+            TagDictionaryError::InvalidContainerBits
+        );
+    }
+    assert_eq!(
+        TagDictionary::from_tag_declarations([""], 12, 6).unwrap_err(),
+        TagDictionaryError::InvalidName
+    );
+    // Parent expansion can exceed MAX_TAGS even when fewer leaf declarations are supplied.
+    let overflow = (0..=MAX_TAGS / 2).map(|i| format!("Root{i}.Leaf{i}"));
+    assert_eq!(
+        TagDictionary::from_tag_declarations(overflow, 16, 6).unwrap_err(),
+        TagDictionaryError::TooManyTags
+    );
+}
