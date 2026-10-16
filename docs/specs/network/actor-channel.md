@@ -21,10 +21,17 @@ dormancy, channel close reasons and every server-side writer.
   export-flags byte: bit 0 a recursive outer GUID and a path string, bit 2 a
   4-byte network checksum after the path (none without one, F-692), bit 1
   no-load. Nonzero even GUIDs are dynamic.
-- The pinned client's packaged gameplay-tag config declares fast replication,
-  container width 6 and first segment 16, with 1,886 explicit tags and an
-  external tag source (F-697). These declarations establish neither the
-  effective runtime settings nor the complete net-index mapping.
+- Gameplay-tag net-index dictionary (F-702; U-065 resolved): `ConstructGameplayTagTree`
+  populates the tree solely from `Data/Tags/D_Tags` (130 rows; 3 row keys differ
+  from `Tag`) and `DefaultGameplayTags.ini` (1,886 explicit tags in 3.0.31; 1,889
+  in 3.0.32), expanding dot-separated parent prefixes into 2,299 and 2,302 unique
+  nodes (`LegacyNativeTags` and `NativeTagsToAdd` are empty). `ConstructNetIndex`
+  sorts nodes ASCII-case-insensitively (`GetAllNodes` + `FName::LexicalLess`),
+  derives `InvalidTagNetIndex = N + 1`, `total_bits = 12` and clamped
+  `first_segment = 12` (`container_bits = 6`), and logs the chained lowercase
+  UTF-16 CRC-32 `NetworkGameplayTagNodeIndexHash` (`dc780a27` in 3.0.31,
+  `6d0f676f` in 3.0.32). `experimental::tag_dictionary` models both supplied
+  ordered lists and declaration expansion with `net_index_hash`.
 - NetGUID exports (F-694, wire-consistent, not statically read) ride
   export-only partial bunches: a rep-layout bit, an i32 count, then that many
   exported references.
@@ -49,139 +56,81 @@ dormancy, channel close reasons and every server-side writer.
   either reader, and every accepted input re-encodes exactly (F-604).
 - The replicator hands rep-layout properties to `FRepLayout::ReceiveProperties`
   (an optional bit, a packed handle, an optional checksum word, then a handle
-  loop) before its field-header loop (M-426, M-427). Each field until the
-  payload ends is an index read like `SerializeInt` below the class cache's
-  maximum index plus one, a packed bit count and exactly that payload; an
-  unknown index is skipped (F-644). A property field's custom-delta payload
-  starts with a bit at engine net version 11 or later and, for a static
-  array, a packed index below its dimension; the struct's delta serializer
-  reads the rest. A fast array's body is four 4-byte fields (array and base
-  replication keys, delete and change counts, each at most 2048 initially), a
-  4-byte ID per delete, then per change a 4-byte ID and either the item
-  struct's commands in order or, when the struct-delta bit is set and the
-  array uses delta serialization, a set bit and the item's rep-layout property
-  stream; native item structs use their own serializer (F-644). A function field is an RPC, accepted with the net flag and,
-  on a server, the server flag: each parameter, static-array elements apart,
-  is a bare bit if a bool, else a presence bit then its commands' item
-  encodings without handles; arrays are a 2-byte count of at most `0xFFFE`
-  and elements in order, and the payload must be consumed exactly (F-644).
-  `experimental::rep_rpc` reads and re-encodes all of these.
+  loop) before its field-header loop (M-426, M-427; F-644). Each field until the
+  payload ends is a `SerializeInt` index below `max_index + 1`, a packed bit
+  count and that payload (unknown indices skipped). Custom-delta property
+  payloads start with a bit (net version 11+) and, for a static array, a packed
+  index below its dimension, then the struct's delta serializer. Fast-array
+  bodies carry four 4-byte fields (array and base keys, delete and change counts
+  capped at 2048 initially), a 4-byte ID per delete, and per change a 4-byte ID
+  plus either item commands in order, a set bit and rep-layout property stream
+  in struct-delta mode, or a native item serializer. Function fields are RPCs
+  (requiring the net flag and, on a server, the server flag): bool parameters
+  are a bare bit, others a presence bit plus handle-free item encodings, and
+  arrays a 2-byte count (`<= 0xFFFE`) plus elements, consuming the payload
+  exactly (`experimental::rep_rpc` re-encodes all, F-644).
 - Rep-layout stream (F-571): packed handles select layout commands and handle
   0 ends a stream; a dynamic array carries a 2-byte element count and a nested
   zero-terminated handle stream; each value goes through its property's net
   serializer, and a 4-byte checksum may follow each handle.
-- Layout source (F-609): a class's layout follows its replicated-property
-  list, the super class's list first, then its own net properties (field
-  order when class flag `0x80` is set, otherwise by ascending property
-  offset with ties broken by name),
-  one entry per static array element; one parent per entry, in order, then a
-  terminating return command and the handle table.
-- Handle walk (F-586): handles strictly increase within a stream; an array
-  stream numbers its elements' commands consecutively, handle `h` addressing
-  element `(h - 1) / N` of an `N`-command element layout, and a nested array
-  is one handle. `experimental::rep_layout` enforces both rules.
-- Spawn vectors (F-571): after the presence bit, archives at engine net
-  version 13 or later read a quantized bit; an unquantized vector is three
-  4-byte floats, a quantized one a component bit count (at most 24) and three
-  integers bounded by `1 << (bits + 2)`, each decoded as the value minus
-  `1 << (bits + 1)` times 0.1 (F-573).
-- Property net items (F-574): Bool is one bit; Byte is 8 bits, or with an
-  enum `min(8, CeilLogTwo64(max + 1))` bits, max being the signed maximum of
-  the enum's entry values (0 if none), so a maximum of 0 or -1 sends no bits;
-  Enum is that count capped at its underlying integer's bits (F-632; other
-  formulas apply below engine net versions 17 and 12); object references a
-  NetGUID; structs with the native net-serialize flag their own serializer,
-  other structs and arrays are
-  flattened by the layout; soft objects the archive soft-path operator. Other
-  types (Str, Name, Text) use the base item path, which forwards to the
-  property's ordinary item serializer (F-575).
-- Native struct items on the older server (F-593): `FVector_NetQuantize` is a
-  component bit count (at most 20) and three integers with the same bias and
-  bound as spawn vectors but no scale; `FVector_NetQuantizeNormal` three
-  16-bit values biased by 32768 and multiplied by an unread constant; gameplay
-  tag containers as below; hit results a
-  flags byte followed by those vectors and flag-gated fields. The movement
-  struct and the 10/100 vector quantizers have no class-method symbols; they
-  live in their `TCppStructOps` instances.
-- Movement struct (F-588, F-589), client and server alike: two flag bits;
-  location at the location level; rotation as bytes at rotation level 0, as
-  the compressed rotator at 1, absent otherwise; linear velocity at the
-  velocity level; angular velocity at that level only when flag bit 1 is set.
-  Vector levels 0, 1 and 2 cap the bit count below 24, 27 and 30 and scale by
-  1, 0.1 and 0.01 (levels other than 1 and 2 behave as 0);
-  `FVector_NetQuantize10` and `100` cap below 24 and 30 with 0.1 and 0.01.
-  The levels are struct fields and never cross the wire. The byte rotator is
-  per axis a nonzero bit, then a byte of `round(angle * 256 / 360)`, decoded
-  times `360 / 256`. `experimental::rep_layout` re-encodes all of these
-  (F-673).
-- Gameplay tags (F-583, F-591, F-592): sent as names unless the tag
-  manager's fast-replication flag is set; then as a net index into the
-  runtime tag table, which both sides must share in the same order. With a
-  first segment F and total width T from the tag manager, the index is T raw
-  bits when F is below 1 or at least T; otherwise F low bits and a
-  continuation bit, then the T - F high bits when set. Connections with a
-  per-connection table flag send a 16-bit table index through a packed
-  archive call instead (slot meaning inferred). A container is an empty bit
-  (set when empty), then a count of a tag-manager width W, capped by the
-  writer at 2^W - 1, then that many tags. `experimental::rep_layout`
-  re-encodes the name and net-index forms with caller widths (F-674).
-- Hit results (F-597), client and server alike: a flags byte whose bits 0
-  and 1 carry struct flags and whose bits 2 to 6 replace the impact point
-  (with the location), the impact normal (with the normal), the item, the
-  face index and the penetration depth (with defaults); bit 7 replaces the
-  element index on read but is never written. Then a 4-byte time, location
-  and normal, the unreplaced impact fields, trace start and end, the gated
-  4-byte penetration depth and item, three NetGUID object references (weak
-  pointers reach the package map's `SerializeObject`), the bone name as a
-  network name, the gated face index and element byte (F-674 re-encodes it).
-- Name and Str items (F-595): the name item serializer calls the archive
-  name operator, which net bit archives send to the package map's
-  `SerializeName` (the same in `UPackageMapClient`) or, without a package
-  map, to `StaticSerializeName`; both are the network-name form below. Str
-  items are archive strings: a signed 4-byte count, then narrow bytes or
-  2-byte units with a terminator (F-675 re-encodes them). Soft-object items
-  reach the archive path operator, which net bit archives override to send
-  the path as one archive string (F-599; F-675 re-encodes it). Text items
-  reach the shared archive FText serializer, which net archives do not
-  override: from archive version `0x170` a 4-byte flags word, then a
-  history-type byte (0 to 12 select per-history bodies, 0xFF none); the
-  codec re-encodes every history (F-639). Client net archives carry UE4
-  version 522, so the version gates below pass (F-639). Each history writes
-  its own type byte on save, then:
-  - 0 Base: no body of its own; the display-string step that follows any
-    body sends its namespace and key as text keys, then the source string
-    (F-639). A text key is an archive-string frame, but its saver writes an
-    empty key as count 1 and a terminator. Other histories' display-string
-    steps send nothing. 0xFF none: custom-version gated, a
-    culture-invariant flag and optional string.
-  - 1 NamedFormat: the format as a nested Text, then a map of arguments.
-    2 OrderedFormat and 3 ArgumentDataFormat: the format Text, a 4-byte
-    count, then that many argument records (0x30- and 0x40-byte in memory,
-    read by separate serializers).
-  - 4 AsNumber, 5 AsPercent: a format-argument value, a has-options flag,
-    the options when set, then a target-culture string; 6 AsCurrency
-    first writes a currency-code string.
-  - 7 AsDate: an 8-byte date-time, a style byte, a time-zone string from
-    version `0x1a6`, then the culture string. 8 AsTime: the same with the
-    zone string always. 9 AsDateTime: date and time style bytes, then
-    zone and culture strings.
-  - 10 Transform: a nested Text and a transform byte. 11 StringTableEntry:
-    a table Name in the network-name form (F-639), then a key string.
-    12 TextGenerator: a generator-type
-    Name, then, unless it is None, the generator's payload as a 4-byte
-    count and bytes (F-639).
-  Text callees (F-639): an argument value is a type byte, then an int64
-  (0, 1), a float (2), a double (3), a nested Text (4) or nothing. Number
-  options are an AlwaysSign bool when a custom version exceeds 0x14, a
-  UseGrouping bool, a rounding byte and four int32 digit bounds; bools are
-  4-byte words. A named map is a 4-byte count, then string keys with
-  argument values. Argument data is a name string, a type byte (Text is
-  implied below custom version 5 on load), then an int32 (0), a float (2),
-  a nested Text (4) or a gender byte (5). A loading archive takes custom
-  versions from the client's registry of current versions (F-639); the
-  gating key is registered at version 40, so both gates pass, as does the
-  none form's (version 32: a 4-byte bool, then a string if set; F-639);
-  Names here use archive slot 0x140, whose net routing is unread (U-064).
+- Layout source and handle walk (F-586, F-609): a class's layout orders the
+  super class's list before its own net properties (field order under class flag
+  `0x80`, else ascending offset with name tie-break), one entry per static array
+  element, then a terminating return command and handle table. Handles strictly
+  increase within a stream; an `N`-command array element layout numbers element
+  commands consecutively (`(h - 1) / N`), and a nested array is one handle.
+- Spawn vectors (F-571, F-573): after the presence bit, archives at engine net
+  version 13+ read a quantized bit; unquantized is three 4-byte floats,
+  quantized a component bit count (`<= 24`) and three integers bounded by
+  `1 << (bits + 2)`, decoded as `(v - (1 << (bits + 1))) * 0.1`.
+- Property net items (F-574, F-575, F-632): Bool is 1 bit; Byte is 8 bits or
+  `min(8, CeilLogTwo64(max + 1))` with an enum (`max <= 0` sends 0 bits); Enum
+  is that width capped at its underlying integer's bits (at net version 17+);
+  object references are a NetGUID; native net-serialize structs use their own
+  serializer while other structs and arrays flatten into the layout; soft
+  objects, Str, Name and Text use their archive/item operators below.
+- Native struct items (F-588, F-589, F-593, F-597, F-673, F-674):
+  `FVector_NetQuantize` is a bit count (`<= 20`) and three biased unscaled
+  integers; `FVector_NetQuantizeNormal` is three 16-bit values biased by 32768.
+  `FRepMovement` sends two flag bits, location, rotation (byte rotator at level
+  0: per-axis nonzero bit plus `round(angle * 256 / 360)` byte; compressed
+  rotator at level 1), linear velocity, and (when flag bit 1 is set) angular
+  velocity; vector levels 0, 1 and 2 cap bits below 24, 27 and 30 with scales
+  1, 0.1 and 0.01 (`NetQuantize10` and `100` match levels 1 and 2). Hit results
+  send an 8-bit flags byte (bits 2..6 replace impact point/normal, item, face
+  index and penetration depth), 4-byte time, location, normal, unreplaced impact
+  fields, trace start/end, gated depth/item, three NetGUID references, bone
+  network name, and gated face index and element byte.
+- Gameplay tags (F-583, F-591, F-592, F-674): sent as names unless fast
+  replication is set; then as a net index (`T` raw bits when `F < 1` or
+  `F >= T`, else `F` low bits, a continuation bit and `T - F` high bits when
+  set; per-connection table flag sends a packed 16-bit index). Containers send
+  an empty bit, a `W`-bit count (`<= 2^W - 1`) and that many tags.
+- Name, Str, soft-object and Text items (F-595, F-599, F-639, F-675): Name items
+  call the archive name operator (`SerializeName` or `StaticSerializeName`, the
+  network-name form below). Str items and net soft-object paths are archive
+  strings (signed 4-byte count, then narrow bytes or 2-byte units with a
+  terminator). Text items use the shared FText serializer at UE4 archive version
+  522 (`0x170+` 4-byte flags word, then history byte `0..12` or `0xFF` none):
+  - `0` Base sends namespace and key as text keys (empty key saved as count 1
+    plus terminator), then source string; `0xFF` none (Dev-Editor custom version
+    40 >= 32) sends a 4-byte culture-invariant bool and optional string (F-639).
+  - `1` NamedFormat nests a format Text and a count-prefixed map of string keys
+    to argument values (type byte: `0/1` int64, `2` float, `3` double, `4` Text);
+    `2` OrderedFormat and `3` ArgumentDataFormat send a format Text, a 4-byte
+    count and argument records (`3` carries name string, type byte and int32,
+    float, Text or gender byte; Dev-Editor 40 >= 5) (F-639).
+  - `4` AsNumber, `5` AsPercent and `6` AsCurrency (`6` prefixes currency code)
+    send a format-argument value, a 4-byte has-options bool, optional number
+    options (AlwaysSign bool at Dev-Editor > `0x14`, UseGrouping bool, rounding
+    byte, four int32 digit bounds) and target-culture string (F-639).
+  - `7` AsDate, `8` AsTime and `9` AsDateTime send an 8-byte date-time, style
+    byte(s), time-zone string (from version `0x1a6` on Date, always on Time and
+    DateTime) and culture string; `10` Transform sends a nested Text and
+    transform byte; `11` StringTableEntry sends a network-name table Name and
+    key string; `12` TextGenerator sends a generator Name and, unless `None`, a
+    4-byte byte count and payload (`experimental::rep_text` re-encodes all,
+    F-639).
 - Network names (F-575): a hardcoded bit; when set, the hardcoded name index
   (packed at engine net version 6 or later, otherwise bounded by 411; indices
   above 702 are rejected), which senders use only for indices up to 410; when
@@ -193,15 +142,13 @@ dormancy, channel close reasons and every server-side writer.
 
 ## Candidate
 
-- `experimental::tag_dictionary` consumes an explicit complete tag order and
-  codec widths. It preserves spelling and order, supports ASCII case lookup,
-  and distinguishes assigned indices from the two reserved slots (F-698).
-  It does not turn config declarations into a runtime dictionary. Native class
-  name/index candidates (F-699) still lack property types, offsets and arrays.
+- Native class name/index candidates (F-699) still lack property types, offsets
+  and arrays.
 - Server send order (F-610): the older server writes an actor bunch in the
   order the client reads it: the spawn record (when the initial and
   locally opened flags are set) and an actor hook that is empty in the base
-  class, the actor's property block, then subobject blocks.
+  class (nonempty 8-bit net player index on channel 2's player controller open,
+  F-696), the actor's property block, then subobject blocks.
 - The older server's `SerializeNewActor` (M-460) makes the same three object
   references and single rotation bit as the client's; its quantizers are
   inlined and unread.
@@ -213,8 +160,7 @@ dormancy, channel close reasons and every server-side writer.
 
 - Other native structs (U-064); which levels each movement property uses (a property default).
 - Server writers for these records and their byte order and bounds (U-044).
-- Effective gameplay-tag settings, complete sources and runtime index order (U-065).
-- Each class's complete property schema, including gameplay classes (U-066).
+- Each class's complete property schema, including gameplay classes, and typed capture replay (U-066).
 
 ## Evidence
 

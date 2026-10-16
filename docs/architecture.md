@@ -48,7 +48,7 @@ Provide official-settings import/mapping and report unsupported settings.
 ICARUS ships weekly, and each release moves both what the stock client sends
 and what the server runs: the Hello network version hashes the project version
 string, compared for exact equality (F-541, F-563), and the server code itself
-changes between weekly builds (F-686). The target is therefore a moving pin:
+changes between weekly builds (F-700). The target is therefore a moving pin:
 
 - `config/release.toml` names one official build (Steam build, project version
   and the derived network checksum, checked by `experimental::release`).

@@ -148,54 +148,38 @@ game listener.
 
 ## Candidate
 
-- Experimental modules, wire-validated only through Hello (F-689): `control` reads the ID 0 body
-  (one uninterpreted byte, explicit-endian u32, strict archive string) under a
-  131,081-byte ceiling, a variant applying the inferred first-field byte-order
-  rule (F-096, F-097, F-518, F-519), retaining no token units and giving raw
-  containers neither `Debug` nor `Serialize`; `packet` codes the receive format above
-  (F-521 to F-527); `control_receive` decodes one terminated datagram's control
-  messages up to ID 0; `control_messages` types the whole vocabulary, every
-  unique-net-id form included (F-531, F-636); `sequencing` models the client's
-  notify and reliable state, its sent-record push site, ring capacity,
-  zero-filled history words and reliable comparison window inferred or
-  assumed (F-535 to F-539); and
-  `packet_lab` and `peer_lab` run them as one disconnected per-peer state in
-  the Bevy loopback lab, answering Hello and Login but never sending Welcome
-  (F-558, F-564). The dispatcher's input is an FInBunch (F-507);
-  packet-to-bunch framing is unbound, and exact EOF and normalization rejection
-  are research policy. Summaries carry kinds and lengths only.
-- Server `UWorld::NotifyControlMessage` (`0x1439ee7f0`, F-563): Hello sends
-  Upgrade with the local version and closes on a version mismatch; only an
-  empty token (count with terminator under two) reaches the challenge sender;
-  a nonempty token fails and closes unless an encryption delegate is
-  registered. Netspeed is clamped to at least 1,800. Login stores the response,
-  URL, unique id and platform, validates the URL, calls the game mode's
-  PreLogin and welcomes the player on an empty error, otherwise sends the
-  error and closes.
-- Current client PreLogin (F-622; native mirror F-623): the ICARUS game mode and session add no
-  checks of their own. The engine rejects a valid unique net id the online
-  interface finds incompatible (`incompatible_unique_net_id`), then takes
-  the game session's ApproveLogin error: `Server full.` when at capacity
-  (player cap from a global override or MaxPlayers; the `SpectatorOnly`
-  URL option selects the spectator count instead; never in standalone) or
-  `Maximum splitscreen players` when the `SplitscreenCount` option exceeds
-  the per-connection limit. Registered PreLogin delegates run last, unread
-  (literals M-591). Options are `?`-delimited from their start and
-  split at the first `=`; keys match ASCII case-insensitively, first wins.
-- Server `UWorld::WelcomePlayer` (`0x1439fdeb0`, F-580): Welcome is type 1 with
-  three strings (level or travel name, game-mode class name, a game-mode
-  supplied string), followed by a flush, a queued-bits reset and login state 2.
+- Experimental modules, wire-validated through Hello and offline Login/Join
+  (F-689, F-690): `control` reads the ID 0 body under a 131,081-byte ceiling
+  with the inferred first-field byte-order rule (F-096, F-097, F-518, F-519),
+  retaining no token units and omitting `Debug`/`Serialize` on raw containers;
+  `packet` codes the receive format above (F-521 to F-527); `control_receive`
+  decodes one terminated datagram's control messages up to ID 0;
+  `control_messages` types the whole vocabulary and unique-net-id forms (F-531,
+  F-636); `sequencing` models notify and reliable state (F-535 to F-539); and
+  `packet_lab` and `peer_lab` run them as disconnected per-peer state in the
+  Bevy loopback lab, answering Hello and Login without sending Welcome (F-558,
+  F-564). The dispatcher's input is an FInBunch (F-507).
+- Server `UWorld::NotifyControlMessage` (`0x1439ee7f0`, F-563) and
+  `UWorld::WelcomePlayer` (`0x1439fdeb0`, F-580): Hello sends Upgrade with the
+  local version and closes on mismatch; an empty token (count < 2) sends
+  Challenge, and a nonempty token fails unless an encryption delegate is
+  registered. Netspeed clamps to >= 1,800. Login validates the URL, runs
+  `PreLogin`, and welcomes the player (type 1: level/travel name, game-mode
+  class, redirect string, flush, queued-bits reset, login state 2) on an empty
+  error or sends Failure and closes.
+- Current client `PreLogin` (F-622; native mirror `experimental::admission`,
+  F-623): the ICARUS game mode and session add no checks beyond the engine's
+  (`incompatible_unique_net_id`, `Server full.` against override or
+  `MaxPlayers` or `SpectatorOnly`, `Maximum splitscreen players` on
+  `SplitscreenCount`, then registered delegates; literals M-591). `?`-delimited
+  options split at the first `=` and match ASCII case-insensitively, first wins.
 - Current client unique-net-id type hashes (F-543): 1 NULL, 2 MCP, 3 STEAM,
   4 PS4, 6 GOOGLE, 7 GOOGLEPLAY, 8 FACEBOOK, 9 IOS, 10 APPLE, 11 TENCENT,
   12 SWITCH, 13 AMAZON, 14 GAMECIRCLE, 15 THUNDERHEAD, 18 Oculus, 19 Quail,
   20 PS4SERVER; 5, 16, 17 and 21 are runtime FName globals; 31 carries a name.
-- Epic's FNetworkNotify documentation (four virtual callbacks; UWorld and
-  UPendingNetGame implement it; the driver's Notify field admits others) is a
-  testable interface hypothesis for the slots other than `+0x18`, whose owner and
-  role F-506 identifies.
-- Image-address deltas are not object-layout offsets; provenance may not cross
-  calls unchecked. A forced metadata decompilation reported blocks outside its
-  interval, so its bounded-flow assumption is unqualified.
+- Epic's FNetworkNotify interface (four virtual callbacks) is a testable
+  hypothesis for the slots other than `+0x18` (identified by F-506). Image
+  deltas are not object offsets; provenance does not cross calls unchecked.
 
 ## Open questions
 
@@ -208,21 +192,11 @@ game listener.
 ## Evidence
 
 - Static cases: M-170 (`icarus-server-baseline`, E-011/E-013/E-021/E-022/E-024),
-  M-146, the caller investigation under
-  [research/archive](../../research/archive/2026-10-12-control-caller-limit.md),
-  and the control-store rows M-023 to M-045 summarized in the
-  [control-store digest](../../research/network/control-stores.md).
-- Requirements before promotion: identify version generation and callback
-  registration and record the legitimate decision rule; recover archive
-  conversion and outer framing with bounds and errors; obtain a paired trace of
-  a matching stock client and reference server; create sanitized fixtures for
-  accepted negotiation and each rejection class (truncation at each field,
-  zero/negative/minimum/oversized lengths, incompatible versions, invalid
-  transitions, token failures); pass those fixtures and the stock-client
-  experiment before marking negotiation implemented.
-- Authored tests (14 control tests, including the inferred sender-order entry
-  point (F-519), 14 packet codec, 9 control-receive and 7 control-message
-  tests, plus archive and handshake suites):
+  M-146, [research/archive](../../research/archive/2026-10-12-control-caller-limit.md),
+  and M-023 to M-045 in the [control-store digest](../../research/network/control-stores.md).
+- Promotion requires version/callback decision rules, paired reference traces,
+  sanitized accept/reject fixtures across every field, and a stock-client test.
+- Authored suites:
 
 ```bash
 cargo test --locked --test control --test packet --test control_receive --test control_messages --test sequencing --test packet_lab --test peer_lab --test archive --test handshake

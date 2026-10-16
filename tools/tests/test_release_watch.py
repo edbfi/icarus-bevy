@@ -37,6 +37,7 @@ class ReleaseWatchTests(unittest.TestCase):
         self.assertEqual(network_checksum("1.0.0"), 1447163286)
         self.assertEqual(network_checksum("3.0.30.158174-rel-DangerousHorizons"), 1379612455)
         self.assertEqual(network_checksum("3.0.31.158478-rel-DangerousHorizons"), 2406501229)
+        self.assertEqual(network_checksum("3.0.32.158743-rel-DangerousHorizons"), 243431684)
         with self.assertRaises(ValueError):
             _ = network_checksum("3.0.31-ü")
 
@@ -70,7 +71,7 @@ class ReleaseWatchTests(unittest.TestCase):
 
     def test_tracked_pin_matches_the_renderer(self) -> None:
         tracked = Path(__file__).resolve().parents[2] / "config/release.toml"
-        self.assertEqual(tracked.read_text(), render_pin(pinned_build(tracked), "3.0.31.158478-rel-DangerousHorizons"))
+        self.assertEqual(tracked.read_text(), render_pin(pinned_build(tracked), "3.0.32.158743-rel-DangerousHorizons"))
 
 
 if __name__ == "__main__":
