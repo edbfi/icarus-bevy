@@ -3,6 +3,6 @@
 # (docs/architecture.md, "Release tracking"). The checksum is derived and checked.
 [release]
 app_id = 2089300
-build_id = 25793607
-project_version = "3.0.31.158478-rel-DangerousHorizons"
-network_checksum = 2406501229
+build_id = 25956137
+project_version = "3.0.32.158743-rel-DangerousHorizons"
+network_checksum = 243431684
