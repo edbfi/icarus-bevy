@@ -456,12 +456,15 @@ class InvocationTests(unittest.TestCase):
                 {"hello_version": -1}, {"hello_version": 2**32}, {"hello_version": True},
                 {"hello_version": "2406501229"}, {"allowed_modes": ["startup", "hello"]},
                 {"allowed_modes": ["startup", "handshake"]},
+                {"probe_delay_seconds": 106},  # 106 + 15 exceeds the 120-second observation
             ]
             for update in updates:
                 with self.subTest(update=update):
                     fixture.write(update)
                     with self.assertRaises(ValueError):
                         _ = fixture.approve()
+            fixture.write({"probe_delay_seconds": 105})
+            self.assertEqual(fixture.approve().probe_delay_seconds, 105)
             fixture.args.hello_probe = False
             fixture.write({"allowed_modes": ["startup", "handshake"]})
             with self.assertRaisesRegex(ValueError, "requires hello authorization"):

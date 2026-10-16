@@ -251,8 +251,10 @@ def validate_session(root: Path, args: Arguments, now: datetime.datetime) -> App
     max_runs = integer_field(session, "max_runs")
     if not 15 <= observation <= 780 or args.seconds != observation:
         raise ValueError("observation must match session and be 15..780 seconds")
-    if join_seconds is not None and observation < probe_delay + join_seconds + 60:
-        raise ValueError("observation must cover the probe delay, the join hold and 60 seconds")
+    # A probe starts after its delay and needs its own cap inside the window.
+    probe_window = probe_delay + (join_seconds + 60 if join_seconds is not None else 15)
+    if args.handshake_probe and observation < probe_window:
+        raise ValueError("observation must cover the probe delay and the probe (the join hold and 60 seconds, else 15)")
     if not observation + 120 <= lifetime <= 900:
         raise ValueError("lifetime must reserve 120 cleanup seconds and be <=900 seconds")
     if not 1 <= max_runs <= 12:
