@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: AGPL-3.0-only
-# Opens or updates an issue when Steam's public dedicated-server build moves past
+# Opens one issue per build when Steam's public dedicated-server build moves past
 # config/release.toml (docs/architecture.md, "Release tracking"). Reads anonymous
 # app info only; nothing is downloaded or pinned here.
 name: Release watch
@@ -37,7 +37,7 @@ jobs:
           cat result.json
           if [ "$status" -ne 0 ] && [ "$status" -ne 3 ]; then exit "$status"; fi
           echo "behind=$([ "$status" -eq 3 ] && echo true || echo false)" >> "$GITHUB_OUTPUT"
-      - name: Open or update the release issue
+      - name: Open the release issue
         if: steps.check.outputs.behind == 'true'
         env: { GH_TOKEN: "${{ github.token }}" }
         run: |
@@ -51,5 +51,6 @@ jobs:
             echo "Fetch the build, run tools/release_watch.py pin --install DIR, then qualify the bump"
             echo "(docs/architecture.md, Release tracking)."
           } > body.md
-          existing="$(gh issue list --state open --search "in:title \"$title\"" --json number --jq '.[0].number')"
-          if [ -n "$existing" ]; then gh issue comment "$existing" --body-file body.md; else gh issue create --title "$title" --body-file body.md; fi
+          # One issue per live build: later runs leave an open issue for the same build alone.
+          existing="$(gh issue list --state open --search "in:title \"$title\"" --json number,title --jq "map(select(.title == \"$title\")) | .[0].number // empty")"
+          if [ -z "$existing" ]; then gh issue create --title "$title" --body-file body.md; else echo "issue #$existing already tracks build $live"; fi
