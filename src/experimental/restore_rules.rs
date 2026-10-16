@@ -61,6 +61,37 @@ pub fn voxel_location_matches(saved: [f32; 3], actual: [f32; 3]) -> bool {
         .all(|(saved, actual)| (actual - saved).abs() <= VOXEL_LOCATION_TOLERANCE)
 }
 
+/// How a state recorder finds its owner on restore: the four values of the
+/// recorders' owner-resolve policy, saved with every record (F-680).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum OwnerResolvePolicy {
+    FindOnly,
+    RespawnOnly,
+    FindOrRespawn,
+    ManuallyResolved,
+}
+
+impl OwnerResolvePolicy {
+    /// The policy a saved enum value names, or `None` for any other value.
+    pub const fn from_saved(value: u8) -> Option<Self> {
+        match value {
+            0 => Some(Self::FindOnly),
+            1 => Some(Self::RespawnOnly),
+            2 => Some(Self::FindOrRespawn),
+            3 => Some(Self::ManuallyResolved),
+            _ => None,
+        }
+    }
+}
+
+/// Whether a voxel record validates (F-680): a fully mined voxel whose owner
+/// is respawned fails, so its record is dropped on restore and absent from
+/// the next save. Placed voxels, found rather than respawned, keep a fully
+/// mined record.
+pub fn voxel_record_valid(policy: OwnerResolvePolicy, fully_mined: bool) -> bool {
+    !(fully_mined && policy == OwnerResolvePolicy::RespawnOnly)
+}
+
 /// The engine's float-to-int truncation: out-of-range and NaN inputs give
 /// `i32::MIN`, as the x86 truncating conversion does.
 fn truncate(value: f32) -> i32 {

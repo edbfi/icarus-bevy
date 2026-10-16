@@ -17,8 +17,7 @@
 //!   per-property net serializers are not decoded here;
 //! - NetGUID export bunches and must-be-mapped GUID prefixes are not read, so
 //!   [`parse_actor_bunch`] rejects bunches that carry them, and partial bunches;
-//! - export flags with reserved bits 3-7, or a checksum bit without the path
-//!   bit (whether the checksum read is nested in the path branch is unread);
+//! - export flags with reserved bits 3-7;
 //! - non-canonical packed integers (the original reader is more lenient), so
 //!   every accepted structure re-encodes bit-identically.
 //!
@@ -49,7 +48,8 @@ pub const DEFAULT_GUID: u32 = 1;
 pub const EXPORT_HAS_PATH: u8 = 1;
 /// Export flag bit 1: no-load.
 pub const EXPORT_NO_LOAD: u8 = 2;
-/// Export flag bit 2: a 4-byte network checksum follows.
+/// Export flag bit 2: a 4-byte network checksum follows the path; without
+/// the path bit nothing follows (wire-observed, F-692).
 pub const EXPORT_HAS_CHECKSUM: u8 = 4;
 const EXPORT_KNOWN: u8 = EXPORT_HAS_PATH | EXPORT_NO_LOAD | EXPORT_HAS_CHECKSUM;
 /// First engine net version whose spawn vectors read a quantized bit (F-571).
@@ -127,8 +127,10 @@ pub struct GuidExport {
     pub no_load: bool,
     /// Flag bit 0.
     pub path: Option<ExportPath>,
-    /// Flag bit 2; requires `path` in this codec.
+    /// Flag bit 2 with a path: the checksum read after the path.
     pub checksum: Option<u32>,
+    /// Flag bit 2 without a path, which carries no checksum (F-692).
+    pub bare_checksum_flag: bool,
 }
 
 #[derive(Clone, PartialEq, Eq)]
@@ -161,7 +163,8 @@ impl NetGuidRef {
             kind: self.kind(),
             export: export.is_some(),
             no_load: export.is_some_and(|export| export.no_load),
-            checksum: export.is_some_and(|export| export.checksum.is_some()),
+            checksum: export
+                .is_some_and(|export| export.checksum.is_some() || export.bare_checksum_flag),
             path_units: path.map(|path| path.path.units().len()),
             outer: path.map(|path| Box::new(path.outer.summary())),
         }
@@ -185,6 +188,7 @@ impl std::fmt::Debug for GuidExport {
             .field("no_load", &self.no_load)
             .field("path", &self.path)
             .field("checksum", &self.checksum.is_some())
+            .field("bare_checksum_flag", &self.bare_checksum_flag)
             .finish()
     }
 }
@@ -650,10 +654,6 @@ fn read_guid_at(
         flags & !EXPORT_KNOWN == 0,
         "reserved NetGUID export flag bits unsupported"
     );
-    ensure!(
-        flags & EXPORT_HAS_CHECKSUM == 0 || flags & EXPORT_HAS_PATH != 0,
-        "NetGUID checksum without a path unsupported"
-    );
     let path = if flags & EXPORT_HAS_PATH != 0 {
         let outer = read_guid_at(reader, codec, depth + 1).context("NetGUID outer")?;
         let path = read_path(reader, codec)?;
@@ -664,7 +664,8 @@ fn read_guid_at(
     } else {
         None
     };
-    let checksum = if flags & EXPORT_HAS_CHECKSUM != 0 {
+    // The checksum is read inside the path branch only (F-692).
+    let checksum = if flags & EXPORT_HAS_CHECKSUM != 0 && path.is_some() {
         Some(read_u32(reader, codec.order, "NetGUID checksum")?)
     } else {
         None
@@ -673,6 +674,7 @@ fn read_guid_at(
         guid,
         export: Some(GuidExport {
             no_load: flags & EXPORT_NO_LOAD != 0,
+            bare_checksum_flag: flags & EXPORT_HAS_CHECKSUM != 0 && path.is_none(),
             path,
             checksum,
         }),
@@ -707,13 +709,20 @@ fn write_guid_at(
     };
     ensure!(
         export.checksum.is_none() || export.path.is_some(),
-        "NetGUID checksum without a path unsupported"
+        "a NetGUID checksum value needs a path; use bare_checksum_flag"
+    );
+    ensure!(
+        !(export.bare_checksum_flag && export.path.is_some()),
+        "bare_checksum_flag is for exports without a path"
     );
     let mut flags = 0u8;
     for (set, bit) in [
         (export.path.is_some(), EXPORT_HAS_PATH),
         (export.no_load, EXPORT_NO_LOAD),
-        (export.checksum.is_some(), EXPORT_HAS_CHECKSUM),
+        (
+            export.checksum.is_some() || export.bare_checksum_flag,
+            EXPORT_HAS_CHECKSUM,
+        ),
     ] {
         if set {
             flags |= bit;

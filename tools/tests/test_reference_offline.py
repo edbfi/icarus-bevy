@@ -155,6 +155,7 @@ class SessionTests(unittest.TestCase):
                 {"scope": "native-io-faults"}, {"authorization_source": " "},
                 {"case_root": str(fixture.root)}, {"image": "different-image"},
                 {"reference_root": str(fixture.case)}, {"reference_executable": str(fixture.probe)},
+                {"reference_root": str(fixture.root / "icarus-server-x")},
                 {"reference_sha256": "0" * 64}, {"scope_sha256": "0" * 64},
                 {"start_utc": (fixture.now + datetime.timedelta(seconds=1)).isoformat()},
                 {"end_utc": fixture.now.isoformat()}, {"start_utc": "2026-10-12T00:00:00"},
@@ -178,6 +179,16 @@ class SessionTests(unittest.TestCase):
             _ = fixture.reference.write_bytes(b"changed")
             with self.assertRaisesRegex(ValueError, "reference_sha256"):
                 revalidate(fixture.root, fixture.args, approved)
+
+    def test_a_fetched_server_install_may_be_the_reference(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            fixture = Fixture(directory)
+            fetched = fixture.root / "icarus-server-25793607" / REFERENCE_EXE
+            fetched.parent.mkdir(parents=True)
+            _ = fetched.write_bytes(b"authored fetched fixture")
+            fixture.write({"reference_root": str(fixture.root / "icarus-server-25793607"),
+                           "reference_executable": str(fetched), "reference_sha256": digest(fetched)})
+            self.assertEqual(fixture.approve().reference, fixture.root / "icarus-server-25793607")
 
     def test_probe_modes_redirects_and_scope_mutation(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -431,6 +442,107 @@ class InvocationTests(unittest.TestCase):
             record = json_object(parse_json((run / "invocation.json").read_text()))
             self.assertEqual(record["session_sha256"], approved.session_sha256)
             self.assertEqual(record["reference_binding"], "executable_only_not_full_tree")
+
+    def test_hello_mode_binds_one_u32_version_behind_handshake(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            fixture = Fixture(directory)
+            fixture.args.handshake_probe = True
+            fixture.args.hello_probe = True
+            fixture.session.update(allowed_modes=["startup", "handshake", "hello"], hello_version=2406501229,
+                                   probe=str(fixture.probe), probe_sha256=digest(fixture.probe))
+            fixture.write()
+            self.assertEqual(fixture.approve().hello_version, 2406501229)
+            updates: list[JsonObject] = [
+                {"hello_version": -1}, {"hello_version": 2**32}, {"hello_version": True},
+                {"hello_version": "2406501229"}, {"allowed_modes": ["startup", "hello"]},
+                {"allowed_modes": ["startup", "handshake"]},
+                {"probe_delay_seconds": 106},  # 106 + 15 exceeds the 120-second observation
+            ]
+            for update in updates:
+                with self.subTest(update=update):
+                    fixture.write(update)
+                    with self.assertRaises(ValueError):
+                        _ = fixture.approve()
+            fixture.write({"probe_delay_seconds": 105})
+            self.assertEqual(fixture.approve().probe_delay_seconds, 105)
+            fixture.args.hello_probe = False
+            fixture.write({"allowed_modes": ["startup", "handshake"]})
+            with self.assertRaisesRegex(ValueError, "requires hello authorization"):
+                _ = fixture.approve()
+            fixture.args.hello_probe = True
+            fixture.write()
+            fixture.args.complete_stateless = True
+            with self.assertRaisesRegex(ValueError, "--hello-probe"):
+                _ = fixture.approve()
+            fixture.args.complete_stateless = False
+            fixture.args.handshake_probe = False
+            with self.assertRaisesRegex(ValueError, "--hello-probe"):
+                _ = fixture.approve()
+
+    def test_hello_probe_receives_only_the_bound_version(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            fixture = Fixture(directory)
+            fixture.args.handshake_probe = True
+            fixture.args.hello_probe = True
+            fixture.session.update(allowed_modes=["startup", "handshake", "hello"], hello_version=1379612455,
+                                   probe=str(fixture.probe), probe_sha256=digest(fixture.probe))
+            fixture.write()
+            approved = fixture.approve()
+            run = fixture.case / "run"
+            run.mkdir()
+            docker = DockerFixture(handshake=True)
+            clock = Clock()
+            with patch("tools.run_reference_offline.command", new=docker), \
+                 patch("tools.run_reference_offline.time.monotonic", new=clock), \
+                 patch("tools.run_reference_offline.time.sleep", new=clock.sleep), \
+                 patch("tools.run_reference_offline.available_memory", return_value=4 * 1024**3), \
+                 patch("tools.run_reference_offline.shutil.disk_usage", new=disk_space):
+                result = observe(fixture.args, approved, run, NAME, TOKEN, ["docker", "run"])
+            self.assertIs(result["removed"], True)
+            probe = next(call for call in docker.calls if call[1] == "exec")
+            self.assertEqual(probe[4:], [CONTAINER, "/probes/handshake_probe", "--hello", "1379612455"])
+
+    def test_join_mode_binds_a_bounded_hold_after_the_probe_delay(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            fixture = Fixture(directory)
+            fixture.args.handshake_probe = True
+            fixture.args.hello_probe = True
+            fixture.args.join_probe = True
+            fixture.args.seconds = 600
+            fixture.session.update(allowed_modes=["startup", "handshake", "hello", "join"], hello_version=7,
+                                   join_seconds=300, probe_delay_seconds=150, observation_seconds=600,
+                                   run_timeout_seconds=720, probe=str(fixture.probe),
+                                   probe_sha256=digest(fixture.probe))
+            fixture.write()
+            approved = fixture.approve()
+            self.assertEqual((approved.join_seconds, approved.probe_delay_seconds), (300, 150))
+            updates: list[JsonObject] = [
+                {"join_seconds": 29}, {"join_seconds": 601}, {"probe_delay_seconds": 39},
+                {"allowed_modes": ["startup", "handshake", "join"]},
+                {"join_seconds": 400},  # 150 + 400 + 60 exceeds the 600-second observation
+            ]
+            for update in updates:
+                with self.subTest(update=update):
+                    fixture.write(update)
+                    with self.assertRaises(ValueError):
+                        _ = fixture.approve()
+            fixture.write()
+            run = fixture.case / "run"
+            run.mkdir()
+            docker = DockerFixture(handshake=True)
+            clock = Clock()
+            with patch("tools.run_reference_offline.command", new=docker), \
+                 patch("tools.run_reference_offline.time.monotonic", new=clock), \
+                 patch("tools.run_reference_offline.time.sleep", new=clock.sleep), \
+                 patch("tools.run_reference_offline.available_memory", return_value=4 * 1024**3), \
+                 patch("tools.run_reference_offline.shutil.disk_usage", new=disk_space):
+                _ = observe(fixture.args, approved, run, NAME, TOKEN, ["docker", "run"])
+            probe_index = next(i for i, call in enumerate(docker.calls) if call[1] == "exec")
+            self.assertEqual(docker.calls[probe_index][6:], ["--hello", "7", "--join", "300"])
+            self.assertEqual(docker.timeouts[probe_index], 360)
+            fixture.args.hello_probe = False
+            with self.assertRaisesRegex(ValueError, "--join-probe"):
+                _ = fixture.approve()
 
     def test_save_load_binds_one_case_local_prospect_copy(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

@@ -113,7 +113,9 @@ cargo run --locked --example handshake_lab -- --seconds 30
 - `examples/handshake_probe.rs` is the bounded research client used inside the
   reference container: loopback `127.0.0.1:17777` only, at most three 29-byte
   requests, two-second waits, no identity material; `--complete-stateless`
-  echoes the issued cookie. Run it only under an authorized case
+  echoes the issued cookie; `--hello <u32>` then sends one reliable Hello with
+  an empty token through `experimental::probe_client` and records every reply
+  raw and decoded, an Upgrade's version included. Run it only under an authorized case
   ([launcher runbook](../../runbooks/original-server-launcher.md)).
 - The lab processes at most 32 datagrams per `Update` with a 30-byte stack
   buffer, binds IPv4 loopback on an ephemeral port, exits after 30 seconds

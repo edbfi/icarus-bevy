@@ -4,7 +4,7 @@ Rows retired from [the active ledger](../save-format.md): superseded by a summar
 execution receipts, or historical session state. Full text is kept and IDs stay
 permanent; cite the superseding row where one exists.
 
-Last reconciled: 2026-10-14
+Last reconciled: 2026-10-15
 
 | ID | Claim | Kind | Evidence | Scope and limits | Unknowns | Status |
 | --- | --- | --- | --- | --- | --- | --- |
@@ -14,3 +14,4 @@ Last reconciled: 2026-10-14
 | F-263 | Save producing build is user-reported as 25793767 (3.0.31.158478-rel-DangerousHorizons); preserved server executable is older 25621760 (3.0.30.158174). | inferred | review; M-118 | low; user report; Not an embedded build marker or matched reference load | U-040 | superseded-by F-277 |
 | F-324 | Historical native helper binaries still carry the earlier nine-kind reader and remain preserved | observed | tool-receipt; M-112 | high; helper binaries; Not current library |  | retired: receipt |
 | F-498 | All 38 supplied-save class identifiers are registered as U-prefixed UTF-16 literals (8 also bare) in read-only data of both server 25621760 and client 25793767; class identity cannot discriminate the producing build | observed | static-bytes; M-278..M-280 | high; whole-string presence only; names private | U-040 | superseded-by F-635 |
+| F-277 | User reports the supplied save's producing release as build 25793767, version 3.0.31.158478-rel-DangerousHorizons; preserved server is build 25621760. | inferred | review | low; user statement; unverified pairing with any reference | U-040 | superseded-by F-685 |

@@ -1,9 +1,9 @@
 //! EXPERIMENTAL codec for the statically observed client packet receive format.
 //!
 //! Static client-build observations only (F-521..F-525): the current-version
-//! path with every version gate on and the internal-ack flag clear. Not
-//! wire-validated against any original packet. The sender side was not
-//! observed; writers mirror the readers (and the observed `WriteIntWrapped`
+//! path with every version gate on and the internal-ack flag clear. The
+//! original server's packets decode with it (F-688, F-693). The sender side
+//! was not observed; writers mirror the readers (and the observed `WriteIntWrapped`
 //! loop) for round-trip research only. Negotiated version values, the
 //! connection's channel limit and maximum packet size are unknown and supplied
 //! by the caller. No connection state, ack tracking, relative reliable-sequence
@@ -68,6 +68,25 @@ impl<'a> BitReader<'a> {
 
     pub fn at_end(&self) -> bool {
         self.remaining() == 0
+    }
+
+    /// Drop the connection-level termination bit: the last unread bit must be
+    /// set, and it ends the readable bits. The packet handler strips its own
+    /// termination bit first ([`split_termination`]); the connection's, written
+    /// after the last bunch, is the one the original server checks next and
+    /// reports as a malformed packet when absent (F-688).
+    pub fn split_connection_termination(&mut self) -> Result<()> {
+        ensure!(
+            !self.error && self.remaining() > 0,
+            "data packet lacks a connection termination bit"
+        );
+        let last = self.bit_len - 1;
+        ensure!(
+            self.bytes[last / 8] >> (last % 8) & 1 == 1,
+            "data packet lacks a connection termination bit"
+        );
+        self.bit_len = last;
+        Ok(())
     }
 
     fn fits(&mut self, bits: usize) -> bool {
@@ -277,6 +296,13 @@ pub fn finish_with_termination(mut writer: BitWriter) -> Vec<u8> {
     writer.into_bytes()
 }
 
+/// End a data packet: the connection's termination bit after the last bunch,
+/// then the packet handler's, then zero padding (F-688).
+pub fn finish_data_packet(mut writer: BitWriter) -> Vec<u8> {
+    writer.write_bit(true);
+    finish_with_termination(writer)
+}
+
 /// A stateless-handshake packet reached the data-packet reader; not parsed here.
 #[derive(Debug)]
 pub struct HandshakePacket;
@@ -290,7 +316,8 @@ impl std::fmt::Display for HandshakePacket {
 impl std::error::Error for HandshakePacket {}
 
 /// Read `magic_bits` (0..=32) magic-header bits, then the handshake bit, which
-/// must be 0 for data. A 1 returns a downcastable [`HandshakePacket`] error.
+/// must be 0 for data (a 1 returns a downcastable [`HandshakePacket`] error),
+/// then the Steam-auth component's bit, which must also be 0 for data.
 /// The magic value is returned unchecked; its expected value is unknown.
 pub fn read_data_prefix(reader: &mut BitReader<'_>, magic_bits: u32) -> Result<u32> {
     ensure!(magic_bits <= 32, "magic header exceeds 32 bits");
@@ -300,6 +327,10 @@ pub fn read_data_prefix(reader: &mut BitReader<'_>, magic_bits: u32) -> Result<u
     if handshake {
         return Err(HandshakePacket.into());
     }
+    // The Steam-auth handler component's own handshake bit (F-688).
+    let auth = reader.read_bit();
+    ensure!(!reader.is_error(), "truncated data packet prefix");
+    ensure!(!auth, "Steam-auth handler packet, not a data packet");
     Ok(magic)
 }
 
@@ -310,6 +341,8 @@ pub fn write_data_prefix(writer: &mut BitWriter, magic_bits: u32, magic: u32) ->
         "magic value exceeds its bit width"
     );
     writer.write_bits(magic, magic_bits);
+    // Stateless-connect and Steam-auth handshake bits, both clear on data.
+    writer.write_bit(false);
     writer.write_bit(false);
     Ok(())
 }
@@ -759,6 +792,7 @@ pub fn read_packet(datagram: &[u8], config: &PacketConfig) -> Result<Packet> {
     let (bytes, bit_len) = split_termination(datagram)?;
     let mut reader = BitReader::new(bytes, bit_len)?;
     let magic = read_data_prefix(&mut reader, config.magic_bits)?;
+    reader.split_connection_termination()?;
     let (header, info) = read_packet_header(&mut reader, config.receiver)?;
     let bunches = read_bunches(&mut reader, &config.limits)?;
     Ok(Packet {
@@ -781,5 +815,5 @@ pub fn write_packet(packet: &Packet, config: &PacketConfig) -> Result<Vec<u8>> {
     for bunch in &packet.bunches {
         write_bunch(&mut writer, bunch, &config.limits)?;
     }
-    Ok(finish_with_termination(writer))
+    Ok(finish_data_packet(writer))
 }

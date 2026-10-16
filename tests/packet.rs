@@ -300,7 +300,7 @@ fn data_prefix_reads_magic_then_rejects_handshake_packets() {
     for (magic_bits, magic) in [(0, 0), (7, 0x55), (32, 0xdead_beef)] {
         let mut writer = BitWriter::new();
         write_data_prefix(&mut writer, magic_bits, magic).unwrap();
-        assert_eq!(writer.bit_len(), magic_bits as usize + 1);
+        assert_eq!(writer.bit_len(), magic_bits as usize + 2);
         assert_eq!(
             read_data_prefix(&mut reader(&writer), magic_bits).unwrap(),
             magic
@@ -311,6 +311,14 @@ fn data_prefix_reads_magic_then_rejects_handshake_packets() {
         handshake.write_bit(true);
         let error = read_data_prefix(&mut reader(&handshake), magic_bits).unwrap_err();
         assert!(error.is::<HandshakePacket>());
+
+        // A set Steam-auth bit marks that component's own packet (F-688).
+        let mut auth = BitWriter::new();
+        auth.write_bits(magic, magic_bits);
+        auth.write_bit(false);
+        auth.write_bit(true);
+        let error = read_data_prefix(&mut reader(&auth), magic_bits).unwrap_err();
+        assert!(!error.is::<HandshakePacket>() && error.to_string().contains("Steam-auth"));
     }
     let mut writer = BitWriter::new();
     assert!(write_data_prefix(&mut writer, 7, 0x80).is_err());
@@ -685,4 +693,47 @@ fn truncation_at_every_bit_errors_except_at_bunch_boundaries() {
     for length in 0..datagram.len() {
         let _ = read_packet(&datagram[..length], &config);
     }
+}
+
+#[test]
+fn data_packets_carry_the_connection_and_handler_termination_bits() {
+    // The original server strips the handler's bit, then rejects a packet whose
+    // remaining last byte is zero (F-688); the connection's bit prevents that.
+    let config = PacketConfig {
+        magic_bits: 0,
+        receiver: Receiver::Server,
+        limits: BunchLimits {
+            max_channels: 32,
+            max_packet_bytes: 1024,
+            max_string_units: 64,
+        },
+    };
+    let packet = Packet {
+        magic: 0,
+        header: PacketHeader {
+            sequence: 5,
+            acked_sequence: 4,
+            history: vec![0],
+        },
+        info: None,
+        bunches: Vec::new(),
+    };
+    let datagram = write_packet(&packet, &config).unwrap();
+    let (bytes, bit_len) = split_termination(&datagram).unwrap();
+    let last = bit_len - 1;
+    assert_eq!(
+        bytes[last / 8] >> (last % 8) & 1,
+        1,
+        "connection termination bit"
+    );
+    assert_eq!(read_packet(&datagram, &config).unwrap(), packet);
+
+    // The same bits under a single termination bit are malformed.
+    let mut reader = BitReader::new(bytes, last).unwrap();
+    let mut single = BitWriter::new();
+    for _ in 0..last {
+        single.write_bit(reader.read_bit());
+    }
+    let single = finish_with_termination(single);
+    assert!(read_packet(&single, &config).is_err());
 }

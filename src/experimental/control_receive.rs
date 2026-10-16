@@ -211,6 +211,7 @@ pub fn read_control_datagram(
     let (bytes, bit_len) = split_termination(datagram)?;
     let mut reader = BitReader::new(bytes, bit_len)?;
     read_data_prefix(&mut reader, config.magic_bits)?;
+    reader.split_connection_termination()?;
     let (header, _info) = read_packet_header(&mut reader, Receiver::Server)?;
     let bunches = read_bunches(&mut reader, &config.limits)?;
     let mut summaries = Vec::with_capacity(bunches.len());

@@ -5,7 +5,7 @@
 //! remain unsupported. See `docs/specs/network/stateless-handshake.md`.
 use anyhow::{Result, ensure};
 
-#[derive(Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub struct LegacyHandshake {
     pub restart: bool,
     pub secret_id: bool,

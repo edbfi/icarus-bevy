@@ -31,7 +31,8 @@ fixed-width engine math types of three or four ordered 4-byte components
 names over placed pieces that share the grid's frame (F-643).
 
 No saved class identifier, field or type name, or recorder version tells the
-older server from the newer client (F-635). Client recorder code gives every
+older server from the newer client, and the prospect carries no version string
+(F-635, F-682). Client recorder code gives every
 class's fields their meanings (F-645, F-646, F-648, F-650 to F-654, F-656 to
 F-661, F-665, F-666, F-676, F-677); item stats, alterations and slots are row references
 (F-660). The validate, stitch and restore rules are in the
@@ -51,7 +52,7 @@ No decoded value, text or number was emitted or interpreted.
 - Map item meanings and binary Struct component values (U-055, U-020); meanings of the classes outside the audited selections (U-022); C001's nested values and runtime dispatch (U-023).
 - Individual C028 native top spans and the historical library snapshot (U-024).
 - Restoration and import, client and newer-build compatibility (U-025); original normalization, EOF and error equivalence (U-026); original performance (U-028).
-- Heavy-world save work order: the preserved server's offline load/save/reload baseline on a disposable copy passes (F-678, F-679), build pairing still open (U-040); then authenticated negotiation, replication and the gameplay slice, validating a small supported import before the heavy dataset (U-038, U-045). Generic framing agreement is not an importable world; no partial importer.
+- Heavy-world save work order: the preserved server's offline load/save/reload baseline on a disposable copy passes, its three dropped records explained by restore validation and felled-tree handling (F-678 to F-681), build pairing still open (U-040); then authenticated negotiation, replication and the gameplay slice, validating a small supported import before the heavy dataset (U-038, U-045). Generic framing agreement is not an importable world; no partial importer.
 
 ## Artifacts
 

@@ -4,7 +4,7 @@
 
 Experimental: envelope schema observed statically in build 25621760 (M-168) and
 confirmed against all twelve supplied prospect documents; the inner world is
-not interpreted. Last reconciled: 2026-10-13.
+not interpreted. Last reconciled: 2026-10-15.
 Full text: d5b0ae6:docs/specs/save-format/prospect-envelope.md.
 
 ## Scope
@@ -49,13 +49,13 @@ unavailable.
   `PlayerTaskListTrackers`. The release inspector reports 18,513,234 and
   18,492,675 decoded bytes for the current prospect and one backup with
   `world_imported: false` (F-242).
-- No explicit outer build or save-version marker exists; the producing build is
-  user-reported (F-277).
+- No explicit outer build or save-version marker exists, and neither the
+  payload nor the original server's re-save holds a version string (F-682).
 - Provenance: the user supplied the archive from a heavy ICARUS world; it is
   preserved privately with an inventory (M-166). Intake: 24 members (2 JSON, 22
-  backups), 26,511,334 bytes, all member CRCs pass (F-276). The user-reported
-  producing build 25793767 is unverified against the preserved older server
-  build 25621760 and the local client identity (F-277, F-486). A stock Windows
+  backups), 26,511,334 bytes, all member CRCs pass (F-276). The writes
+  date from the 3.0.29 release window, a week before the user-reported 3.0.31,
+  which is the installed client's version (F-683, F-685, F-486). A stock Windows
   client exists on the user's separate machine, outside the offline lab.
   Possession of the archive completes no compatibility, bug-reproduction or
   performance gate.

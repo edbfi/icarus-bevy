@@ -72,9 +72,15 @@ an unsuccessful cleanup receipt requires investigation before another run.
 
 Networking remains disabled, with no published ports, downloads, identity overrides
 or reference writes. The pinned image is local-only; CPU/memory/PID limits and
-3 GiB available-memory / 30 GiB disk floors remain enforced. Connected
-Windows-client tests need their own approved scenario and a networked mode the
-launcher does not have yet.
+3 GiB available-memory / 30 GiB disk floors remain enforced. Connected runs use
+`tools/run_reference_connected.py` ([connected scenarios](connected-scenarios.md)).
+
+`--hello-probe` (with `--handshake-probe`, without `--complete-stateless`)
+runs the probe with `--hello <hello_version>`; the session allows `hello`
+beside `handshake` and binds `hello_version`, an unsigned 32-bit value.
+`--join-probe` adds `--join <join_seconds>` (30 to 600): synthetic ids log
+in, join and hold the connection from `probe_delay_seconds` after start
+(F-690); allow `join` too.
 
 ## Save-load mode
 

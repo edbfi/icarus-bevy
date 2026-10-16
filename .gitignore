@@ -45,3 +45,6 @@ __pycache__/
 
 # uv writes a lockfile when running uvx against pyproject.toml; not a project lockfile.
 uv.lock
+
+# Matched official dedicated-server installs fetched for connected scenarios
+/icarus-server-*/

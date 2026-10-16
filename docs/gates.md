@@ -113,11 +113,16 @@ Last reconciled: 2026-10-15
   session; historical authorization windows remain expired (F-218, F-252). The
   user authorized (2026-10-15) bounded offline save-load runs on disposable
   save copies, and Steam egress and connected Windows-client tests only for
-  scenarios the user approves one by one. Each run observes 15 to 780 seconds
-  plus 120 seconds of cleanup, at most 900 seconds.
+  scenarios the user approves one by one. Offline runs observe 15 to 780 s,
+  connected runs 60 to 2700 s, each plus 120 s of cleanup inside its session.
 - Connected scenarios need the user at the client, its build bound in the
-  scope, approved ingress and egress and bounded capture; the launcher has no
-  networked mode yet.
+  scope, approved ingress and egress and bounded capture. The user directed (2026-10-16)
+  that this host fetch and run the matched official server for them to join
+  (route B of the [connected-scenarios runbook](runbooks/connected-scenarios.md));
+  each scenario still needs their approval, a case and a bounded run.
+- Protocol probes against the offline original (launcher `hello` mode and
+  later Login/Join steps) run under the user's 2026-10-16 directive, each in
+  its own bounded case; synthetic net ids only, never real account data.
 - Preserve the client installation until dependencies and provenance are
   understood; the restriction against reusing packaged content remains in force.
 

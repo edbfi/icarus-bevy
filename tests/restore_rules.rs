@@ -1,7 +1,8 @@
 use icarus_bevy::experimental::restore_rules::{
-    ActorLink, PlayerList, RocketRestore, VOXEL_LOCATION_TOLERANCE, container_entries, names_match,
-    player_record_valid, recorded_level, remaining_cooldown, restored_elapsed_seconds,
-    rocket_record_valid, rocket_restore, stitch, upright_rotation, voxel_location_matches,
+    ActorLink, OwnerResolvePolicy, PlayerList, RocketRestore, VOXEL_LOCATION_TOLERANCE,
+    container_entries, names_match, player_record_valid, recorded_level, remaining_cooldown,
+    restored_elapsed_seconds, rocket_record_valid, rocket_restore, stitch, upright_rotation,
+    voxel_location_matches, voxel_record_valid,
 };
 
 fn units(text: &str) -> Vec<u16> {
@@ -239,4 +240,41 @@ fn cave_spawn_times_replace_the_first_matching_class() {
         &[class("BP_Wolf", &[])]
     ));
     assert!(!restore_cave_spawn_times(&mut configured, &[]));
+}
+
+#[test]
+fn saved_owner_policies_map_to_their_enumerators() {
+    assert_eq!(
+        OwnerResolvePolicy::from_saved(0),
+        Some(OwnerResolvePolicy::FindOnly)
+    );
+    assert_eq!(
+        OwnerResolvePolicy::from_saved(1),
+        Some(OwnerResolvePolicy::RespawnOnly)
+    );
+    assert_eq!(
+        OwnerResolvePolicy::from_saved(2),
+        Some(OwnerResolvePolicy::FindOrRespawn)
+    );
+    assert_eq!(
+        OwnerResolvePolicy::from_saved(3),
+        Some(OwnerResolvePolicy::ManuallyResolved)
+    );
+    assert_eq!(OwnerResolvePolicy::from_saved(4), None);
+}
+
+#[test]
+fn only_fully_mined_respawned_voxels_fail_validation() {
+    // The observed restore dropped the one fully mined respawn-only record
+    // and kept partially mined and unmined ones.
+    assert!(!voxel_record_valid(OwnerResolvePolicy::RespawnOnly, true));
+    assert!(voxel_record_valid(OwnerResolvePolicy::RespawnOnly, false));
+    for policy in [
+        OwnerResolvePolicy::FindOnly,
+        OwnerResolvePolicy::FindOrRespawn,
+        OwnerResolvePolicy::ManuallyResolved,
+    ] {
+        assert!(voxel_record_valid(policy, true));
+        assert!(voxel_record_valid(policy, false));
+    }
 }

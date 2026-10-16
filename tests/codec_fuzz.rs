@@ -167,6 +167,7 @@ fn guid(value: u32, exports: bool) -> NetGuidRef {
             no_load: value.is_multiple_of(2),
             path: None,
             checksum: None,
+            bare_checksum_flag: false,
         }),
     }
 }

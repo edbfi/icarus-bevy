@@ -43,6 +43,23 @@ implemented commands and experimental inspection):
 Precedence: explicit CLI overrides native configuration, which overrides defaults.
 Provide official-settings import/mapping and report unsupported settings.
 
+## Release tracking
+
+ICARUS ships weekly, and each release moves both what the stock client sends
+and what the server runs: the Hello network version hashes the project version
+string, compared for exact equality (F-541, F-563), and the server code itself
+changes between weekly builds (F-686). The target is therefore a moving pin:
+
+- `config/release.toml` names one official build (Steam build, project version
+  and the derived network checksum, checked by `experimental::release`).
+- `tools/release_watch.py check` compares the pin with Steam's public branch
+  (anonymous app info); the daily `Release watch` workflow opens an issue when
+  the pin falls behind. `pin --install DIR` rewrites it from a fetched install.
+- A bump is version-only until the weekly diff shows otherwise: compare the
+  two builds' sections, public symbols and replicated layouts, and re-run the
+  compatibility scenarios. Compatibility claims name the build they were made
+  against; the native server answers only the pinned version by default.
+
 ## Persistence
 
 Persistence uses versioned domain snapshots: coherent simulation boundary,
