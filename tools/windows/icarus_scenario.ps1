@@ -11,7 +11,10 @@ client's PlayerData, and records versions and hashes. Collect packages the
 server's Saved tree, the client log and the notes into one zip with a SHA-256
 manifest. Restore puts the client's PlayerData backup back. Nothing is sent
 anywhere; the script never edits the server or client installation.
+Run it with PowerShell 7 (pwsh): Windows PowerShell 5.1's Compress-Archive
+writes backslash entry names that Linux tools keep literally.
 #>
+#Requires -Version 7
 [CmdletBinding()]
 param(
     [Parameter(Mandatory = $true)][ValidateSet('Setup', 'Collect', 'Restore')][string]$Action,
@@ -58,12 +61,13 @@ if ($Action -eq 'Setup') {
     if ($serverVersion -ne $clientVersion) { throw "Server $serverVersion and client $clientVersion differ; update both through Steam first." }
 
     $prospects = Join-Path $Saved 'PlayerData\DedicatedServer\Prospects'
-    New-Item -ItemType Directory -Force -Path $prospects, (Join-Path $Root 'input') | Out-Null
     Add-Type -AssemblyName System.IO.Compression.FileSystem
     $zip = [IO.Compression.ZipFile]::OpenRead($Archive)
     try {
+        # Check the entry before creating -Root, so a mistyped -Prospect can be retried.
         $entry = $zip.Entries | Where-Object { $_.FullName -eq "DedicatedServer/Prospects/$Prospect.json" }
         if (-not $entry) { throw "The archive has no DedicatedServer/Prospects/$Prospect.json." }
+        New-Item -ItemType Directory -Force -Path $prospects, (Join-Path $Root 'input') | Out-Null
         [IO.Compression.ZipFileExtensions]::ExtractToFile($entry, (Join-Path $Root "input\$Prospect.json"))
     } finally { $zip.Dispose() }
     Copy-Item -LiteralPath (Join-Path $Root "input\$Prospect.json") -Destination (Join-Path $prospects "$Prospect.json")
@@ -80,7 +84,7 @@ if ($Action -eq 'Setup') {
     if (Test-Path -LiteralPath $clientPlayerData) { Copy-Item -Recurse -LiteralPath $clientPlayerData -Destination $Backup }
     Write-Ascii (Join-Path $Root 'notes.txt') (
         "Write one line per step with your local clock time, e.g. 20:41 joined.`r`n" +
-        "joined:`r`nphase A start (standing still):`r`nphase A end:`r`nmap opened / marker placed:`r`n" +
+        "joined:`r`nmap opened / marker placed:`r`n" +
         "crop plot harvested (where, what):`r`nseed planted (where, what):`r`nleft the server:`r`n" +
         "server back in lobby:`r`nanything unexpected:`r`n")
     [ordered]@{
@@ -99,11 +103,13 @@ elseif ($Action -eq 'Collect') {
     if (Test-Path -LiteralPath $out) { throw "$out already exists." }
     New-Item -ItemType Directory -Force -Path $out | Out-Null
     Copy-Item -Recurse -LiteralPath $Saved -Destination (Join-Path $out 'server-Saved')
+    # The settings hold the join password; setup.json keeps their hash instead.
+    Remove-Item -LiteralPath (Join-Path $out 'server-Saved\Config\WindowsServer\ServerSettings.ini')
     Copy-Item -Recurse -LiteralPath (Join-Path $ClientSaved 'Logs') -Destination (Join-Path $out 'client-Logs')
     foreach ($f in 'setup.json', 'notes.txt', 'start-server.cmd') { Copy-Item -LiteralPath (Join-Path $Root $f) -Destination $out }
     Copy-Item -Recurse -LiteralPath (Join-Path $Root 'input') -Destination (Join-Path $out 'input')
     $manifest = Get-ChildItem -Recurse -File -LiteralPath $out | ForEach-Object {
-        [ordered]@{ path = $_.FullName.Substring($out.Length + 1); bytes = $_.Length; sha256 = Get-Sha256 $_.FullName }
+        [ordered]@{ path = $_.FullName.Substring($out.Length + 1).Replace('\', '/'); bytes = $_.Length; sha256 = Get-Sha256 $_.FullName }
     }
     $manifest | ConvertTo-Json | Set-Content -Encoding ASCII -LiteralPath (Join-Path $out 'manifest.json')
     $zipPath = Join-Path $Root ('icarus-s1-' + (Get-Date).ToUniversalTime().ToString('yyyyMMddTHHmmssZ') + '.zip')

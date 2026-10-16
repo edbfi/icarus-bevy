@@ -34,7 +34,7 @@ time-driven state. Map, harvest and build actions need a real player.
 ## Route A: both on the user's PC
 
 When this host cannot serve, the user runs the official server beside the
-client: `tools/windows/icarus_scenario.ps1 -Action Setup` (isolated `-UserDir`,
+client: `pwsh tools/windows/icarus_scenario.ps1 -Action Setup` (isolated `-UserDir`,
 version match enforced, client `PlayerData` backed up), `start-server.cmd`,
 join as above, then `-Action Collect` and `-Action Restore`, and send the zip
 with its printed hash.
