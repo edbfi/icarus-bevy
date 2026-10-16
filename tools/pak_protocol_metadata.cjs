@@ -145,7 +145,8 @@ function decodeGameplayTagsIni(bytes) {
   const text = decoder.decode(bytes).replace(/^\uFEFF/, ''), settings = {}, tags = [];
   const booleans = new Set(['ImportTagsFromConfig', 'FastReplication']);
   const widths = new Set(['NumBitsForContainerSize', 'NetIndexFirstBitSegment']);
-  const seen = new Set(); let selected = false, foundSection = false;
+  const seen = new Set(), foldedNames = new Set(); let selected = false, foundSection = false;
+  let asciiCaseVariants = 0;
   let externalSourceDeclarations = 0, unresolvedSources = 0, redirects = 0, unrecognizedSettings = 0;
   for (const original of text.split(/\r?\n/)) {
     const line = original.trim(); check(line.length <= 16384);
@@ -158,12 +159,19 @@ function decodeGameplayTagsIni(bytes) {
     const split = line.indexOf('='); check(split > 0);
     const key = line.slice(0, split).trim(), value = line.slice(split + 1).trim();
     if (booleans.has(key)) { check(/^(true|false)$/i.test(value)); settings[key] = value.toLowerCase() === 'true'; }
+    // Preserve bounded declarations even outside the native codec's narrower
+    // first-segment (0..16) and container (1..8) input profile. This is not a
+    // runtime dictionary constructor or an effective-settings validator.
     else if (widths.has(key)) { check(/^\d{1,2}$/.test(value)); settings[key] = integer(Number(value), 32); check(key === 'NetIndexFirstBitSegment' || settings[key] > 0); }
     else if (key === '+GameplayTagList') {
       const match = /^\(\s*Tag\s*=\s*"([^"\\\r\n]+)"\s*(?:,\s*DevComment\s*=\s*"(?:[^"\\\r\n]|\\[^\r\n])*"\s*)?\)$/.exec(value);
       check(match && match[1].length <= 1024 && /^[\x20-\x7e]+$/.test(match[1]) &&
         match[1].split('.').every(segment => segment.length > 0));
-      if (!seen.has(match[1])) { seen.add(match[1]); tags.push(match[1]); check(tags.length <= LIMITS.entries); }
+      if (!seen.has(match[1])) {
+        const folded = match[1].toLowerCase();
+        if (foldedNames.has(folded)) asciiCaseVariants++;
+        foldedNames.add(folded); seen.add(match[1]); tags.push(match[1]); check(tags.length <= LIMITS.entries);
+      }
     } else if (key === '+GameplayTagTableList') {
       // Only count references; never follow or export original asset paths.
       externalSourceDeclarations++; if (value !== '' && value !== 'None') unresolvedSources++;
@@ -177,7 +185,8 @@ function decodeGameplayTagsIni(bytes) {
     }
   }
   check(foundSection);
-  return {settings, tag_names: tags, external_source_declaration_count: externalSourceDeclarations,
+  return {settings, tag_names: tags, ascii_case_variant_count: asciiCaseVariants,
+    external_source_declaration_count: externalSourceDeclarations,
     unresolved_source_count: unresolvedSources, redirects_count: redirects,
     unrecognized_setting_count: unrecognizedSettings, net_index_mapping_complete: false};
 }

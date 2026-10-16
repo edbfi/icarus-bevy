@@ -66,7 +66,7 @@ test('authored Zlib package emits declared protocol fields and no other config',
   assert.equal(result.hashes_verified, true);
   assert.deepEqual(result.declared_configuration, {settings: {ImportTagsFromConfig: true,
     FastReplication: false, NumBitsForContainerSize: 6, NetIndexFirstBitSegment: 16},
-  tag_names: ['Fixture.One', 'Fixture.Two'], external_source_declaration_count: 0,
+  tag_names: ['Fixture.One', 'Fixture.Two'], ascii_case_variant_count: 0, external_source_declaration_count: 0,
   unresolved_source_count: 0, redirects_count: 0, unrecognized_setting_count: 0,
   net_index_mapping_complete: false});
   const output = JSON.stringify(result); assert(!output.includes('private')); assert(!output.includes(input.file));
@@ -208,6 +208,28 @@ test('zero first-segment declaration preserves the codec unsplit setting', () =>
   const profile = decodeGameplayTagsIni(Buffer.from(ini.replace('NetIndexFirstBitSegment=16', 'NetIndexFirstBitSegment=0')));
   assert.equal(profile.settings.NetIndexFirstBitSegment, 0);
   assert.throws(() => decodeGameplayTagsIni(Buffer.from(ini.replace('NumBitsForContainerSize=6', 'NumBitsForContainerSize=0'))));
+});
+
+test('declaration widths remain observable outside the native codec input profile', () => {
+  const profile = decodeGameplayTagsIni(Buffer.from(ini
+    .replace('NetIndexFirstBitSegment=16', 'NetIndexFirstBitSegment=32')
+    .replace('NumBitsForContainerSize=6', 'NumBitsForContainerSize=32')));
+  assert.equal(profile.settings.NetIndexFirstBitSegment, 32);
+  assert.equal(profile.settings.NumBitsForContainerSize, 32);
+  assert.equal(profile.net_index_mapping_complete, false);
+  for (const key of ['NetIndexFirstBitSegment', 'NumBitsForContainerSize']) {
+    assert.throws(() => decodeGameplayTagsIni(Buffer.from(ini + key + '=33\n')));
+  }
+});
+
+test('case variants are counted without silently changing declared spellings or order', () => {
+  const profile = decodeGameplayTagsIni(Buffer.from(ini +
+    '+GameplayTagList=(Tag="fixture.ONE")\n' +
+    '+GameplayTagList=(Tag="FIXTURE.One")\n' +
+    '+GameplayTagList=(Tag="fixture.ONE")\n'));
+  assert.deepEqual(profile.tag_names, ['Fixture.One', 'Fixture.Two', 'fixture.ONE', 'FIXTURE.One']);
+  assert.equal(profile.ascii_case_variant_count, 2);
+  assert.equal(profile.net_index_mapping_complete, false);
 });
 
 test('whole-file pins, primary/directory/path-hash and payload corruption fail generically', t => {
