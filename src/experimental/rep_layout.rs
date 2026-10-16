@@ -2206,8 +2206,8 @@ pub fn encode_rep_properties(
 pub const NET_ROLE_MAX_VALUE: i64 = 4;
 /// Maximum registered enumerator value of `EReplicatedLeftProspectState` (3, F-703).
 pub const REPLICATED_LEFT_PROSPECT_STATE_MAX_VALUE: i64 = 3;
-/// `FGameplayTagContainer::NetSerialize` count width (`MaxBitsForContainerSize = 7`, F-592).
-pub const GAMEPLAY_TAG_CONTAINER_COUNT_BITS: u8 = 7;
+/// `FGameplayTagContainer::NetSerialize` count width (`NumBitsForContainerSize = 6`, F-592, F-702).
+pub const GAMEPLAY_TAG_CONTAINER_COUNT_BITS: u8 = 6;
 
 /// Flattened child commands of `FRepAttachment` (`HasNetSerializer == false`,
 /// F-703): `AttachParent`, `LocationOffset`, `RelativeScale3D`,

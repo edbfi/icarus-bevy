@@ -7,16 +7,16 @@ use icarus_bevy::experimental::control_messages::{
 };
 use icarus_bevy::experimental::packet::{BitReader, BitWriter, Payload};
 use icarus_bevy::experimental::rep_layout::{
-    MovementLevel, NET_ROLE_MAX_VALUE, NetworkName, PropertyStream, QuantizedNormal,
-    QuantizedVector, REPLICATED_LEFT_PROSPECT_STATE_MAX_VALUE, RepArray, RepCommand, RepEntry,
-    RepLayoutCodec, RepLayoutLimits, RepValue, RotationLevel, TagEncoding, UnsupportedItem,
-    actor_component_rep_layout, actor_rep_layout, controller_rep_layout, encode_property_stream,
-    encode_rep_properties, enum_bits, enum_byte_bits, enum_max_value,
-    icarus_player_controller_rep_layout, icarus_player_controller_survival_rep_layout,
-    parse_property_stream, parse_rep_properties, player_controller_rep_layout,
-    player_state_rep_layout, read_network_name, read_property_stream, read_rep_properties,
-    rep_attachment_commands, validate_layout, write_network_name, write_property_stream,
-    write_rep_properties,
+    GAMEPLAY_TAG_CONTAINER_COUNT_BITS, GameplayTag, MovementLevel, NET_ROLE_MAX_VALUE, NetworkName,
+    PropertyStream, QuantizedNormal, QuantizedVector, REPLICATED_LEFT_PROSPECT_STATE_MAX_VALUE,
+    RepArray, RepCommand, RepEntry, RepLayoutCodec, RepLayoutLimits, RepValue, RotationLevel,
+    TagEncoding, UnsupportedItem, actor_component_rep_layout, actor_rep_layout,
+    controller_rep_layout, encode_property_stream, encode_rep_properties, enum_bits,
+    enum_byte_bits, enum_max_value, icarus_player_controller_rep_layout,
+    icarus_player_controller_survival_rep_layout, parse_property_stream, parse_rep_properties,
+    player_controller_rep_layout, player_state_rep_layout, read_network_name, read_property_stream,
+    read_rep_properties, rep_attachment_commands, validate_layout, write_network_name,
+    write_property_stream, write_rep_properties,
 };
 
 // Independently authored bit fixtures from the actor-channel spec (F-571 to
@@ -1358,6 +1358,29 @@ fn native_engine_and_icarus_class_layouts_round_trip() {
         tag_encoding,
     );
     assert_eq!(ipc_layout.len(), 25);
+    assert_eq!(GAMEPLAY_TAG_CONTAINER_COUNT_BITS, 6);
+    assert_eq!(
+        ipc_layout[24],
+        RepCommand::GameplayTagContainer {
+            encoding: tag_encoding,
+            count_bits: 6,
+        }
+    );
+    // Handle 25 (`GameplayTags`): packed handle 25 (8 bits) + empty=0 (1 bit)
+    // + 6-bit count (2) + two 12-bit net indices + packed terminator 0 (8 bits) = 47 bits.
+    let ipc_tags = stream(vec![entry(
+        25,
+        RepValue::GameplayTagContainer(Some(vec![
+            GameplayTag::NetIndex(7),
+            GameplayTag::NetIndex(42),
+        ])),
+    )]);
+    let ipc_payload = encode_property_stream(&ipc_tags, &ipc_layout, &plain()).unwrap();
+    assert_eq!(ipc_payload.bit_len(), 8 + 1 + 6 + 12 + 12 + 8);
+    assert_eq!(
+        parse_property_stream(&ipc_payload, &ipc_layout, &plain()).unwrap(),
+        ipc_tags
+    );
 
     let ipcs_layout = icarus_player_controller_survival_rep_layout(
         MovementLevel::Whole,
