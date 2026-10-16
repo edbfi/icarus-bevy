@@ -19,11 +19,17 @@ rows by ID (`grep -w F-487 -r docs/ledgers`,
 | --- | --- |
 | Save-format research | `.agents/rules/project.md`, `docs/gates.md`, `docs/research/save-format/save-class-audits.md`, the relevant `docs/specs/save-format/` file, `.agents/skills/reverse-engineer-anything/SKILL.md` with the `rea` MCP server |
 | C001 research | as save-format, with `docs/research/save-format/c001-constructor.md` |
-| Network research | `.agents/rules/project.md`, `docs/gates.md`, `docs/research/network/control-stores.md`, the relevant `docs/specs/network/` file, the reverse-engineering skill |
+| Network research | `.agents/rules/project.md`, `docs/gates.md`, `docs/research/network/control-stores.md`, the relevant `docs/specs/network/` file, `.agents/skills/reverse-engineer-anything/SKILL.md` with the `rea` MCP server |
 | Native server (Rust/Bevy) | `.agents/rules/project.md`, `docs/architecture.md`, `docs/research/foundation/foundation.md`, `docs/runbooks/native-server.md`, `.agents/skills/bevy/SKILL.md` |
 | Documentation | `.agents/rules/docs.md`, `docs/README.md` |
 
-REA fallbacks follow `project.md`. Project-authored Python uses
+For any reverse-engineering work (binary/package inspection, decompilation,
+protocol recovery, runtime observation or version comparison), load the
+`reverse-engineer-anything` skill (`.agents/skills/reverse-engineer-anything/SKILL.md`)
+and use the `rea` MCP server as the primary interface (`docs/runbooks/rea-tooling.md`).
+Use `.agents/rea/rea.sh` or direct tools only for capabilities REA lacks or a
+diagnosed provider/resource limitation, record the reason, and export
+`work/<case>/rea-bundle.json` at session close. Project-authored Python uses
 `basedpyright-python-gate`.
 
 ## Research and preservation
