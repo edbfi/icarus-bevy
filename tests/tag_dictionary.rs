@@ -264,6 +264,30 @@ fn declarations_expand_parents_sort_case_insensitively_and_hash() {
     );
     assert_eq!(table.container_bits(), 6);
     let ordered = TagDictionary::from_ordered_names(expected, 3, 3, 6).unwrap();
-    assert_eq!(table.net_index_hash(), ordered.net_index_hash());
-    assert_ne!(table.net_index_hash(), 0);
+    assert_eq!(table.net_index_hash(), 0xaa1c_5e52);
+    assert_eq!(ordered.net_index_hash(), 0xaa1c_5e52);
+}
+
+#[test]
+fn tag_declarations_reject_bad_widths_names_and_overflow() {
+    assert_eq!(
+        TagDictionary::from_tag_declarations(["A.B"], 17, 6).unwrap_err(),
+        TagDictionaryError::InvalidFirstSegment
+    );
+    for bad in [0, 9] {
+        assert_eq!(
+            TagDictionary::from_tag_declarations(["A.B"], 12, bad).unwrap_err(),
+            TagDictionaryError::InvalidContainerBits
+        );
+    }
+    assert_eq!(
+        TagDictionary::from_tag_declarations([""], 12, 6).unwrap_err(),
+        TagDictionaryError::InvalidName
+    );
+    // Parent expansion can exceed MAX_TAGS even when fewer leaf declarations are supplied.
+    let overflow = (0..=MAX_TAGS / 2).map(|i| format!("Root{i}.Leaf{i}"));
+    assert_eq!(
+        TagDictionary::from_tag_declarations(overflow, 16, 6).unwrap_err(),
+        TagDictionaryError::TooManyTags
+    );
 }
