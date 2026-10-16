@@ -30,9 +30,16 @@ node tools/pak_protocol_metadata.cjs --path "$PAK_PATH" --sha256 "$PAK_SHA256" >
 The output contains derived tag declarations and settings; retain it privately.
 It discards comments and external asset paths, counts unresolved sources and
 redirects, and always marks runtime settings and the final mapping unverified.
+`ascii_case_variant_count` counts extra distinct spellings under ASCII case
+folding; exact spellings are preserved without implicit conversion.
+The declaration reader accepts source-config widths through 32 bits for
+observation. The native dictionary separately requires first-segment widths
+0–16 and container widths 1–8; config output is not directly accepted as a
+runtime dictionary.
 It never follows references or extracts other member bodies. REA's current
 artifact route rejects this format (M-709); the bounded fallback's qualification
-is M-717. Passing config inspection does not qualify a complete schema.
+is M-722 (earlier reviewed source: M-719). Passing config inspection does not
+qualify a complete schema.
 
 The experimental [archive-string subset](../specs/save-format/archive-string.md) offers a
 borrowed strict frame validator and an owning decoder. Initial-control validation

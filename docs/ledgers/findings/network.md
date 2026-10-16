@@ -7,7 +7,7 @@ full text under `retired/`. Admission and columns follow `.agents/rules/docs.md`
 
 Before restructure: 96ddb0b:docs/ledgers/findings.md
 
-Last reconciled: 2026-10-15
+Last reconciled: 2026-10-16
 
 | ID | Claim | Kind | Evidence | Scope and limits | Unknowns | Status |
 | --- | --- | --- | --- | --- | --- | --- |
@@ -98,6 +98,6 @@ Last reconciled: 2026-10-15
 | F-694 | Exports travel in export-only partial initial bunches: a rep-layout bit, an i32 count, then that many F-572 references with flags on every nonzero GUID. All 317 parse with no bits left, and every later class, archetype and level GUID resolves to an earlier export | derived | runtime-capture; M-707 | medium; layout from engine source, consistent on the wire | U-064 | active |
 | F-695 | The 3.0.31 server closes a silent client after 360 s (ConnectionTimeout), then logs the server empty and arms its 120 s lobby return | observed | runtime-capture; M-707 | medium; one run | U-047 | active |
 | F-696 | The first actor open to a joined client (channel 2) carries 8 bits after its spawn record, value 0, before content blocks that then read exactly to the bunch end; this fits the stock engine's player-controller hook writing the net player index, so F-610's actor hook is nonempty there | observed | runtime-capture; M-708 | medium; one open; hook identity inferred | U-064 | active |
-| F-697 | Client tag config declares fast replication, container width 6, first segment 16, 1,886 tags, one external source and two redirects | observed | static-bytes; M-710, M-717; build 25793767 | high; index/member hashes verified; declarations, not effective settings or full mapping | U-065 | active |
+| F-697 | Client tag config declares fast replication, container width 6, first segment 16, 1,886 names, one external source and two redirects | observed | static-bytes; M-710, M-717, M-719, M-722; build 25793767 | high; index/member hashes verified; declarations, not effective settings or full mapping | U-065 | active |
 | F-698 | Client ConstructNetIndex pseudocode assigns zero-based indices and an invalid sentinel of count plus one; the supplied-order native dictionary models this contract | inferred | static-decompile; M-711, M-712; build 25793767 | medium; Program bodies remain loader stubs; no instruction or runtime validation | U-065 | candidate |
 | F-699 | Native candidates join ten Actor, eleven PlayerState and two PlayerController property names; AActor's property-pointer array, class params and bool descriptor are located | inferred | static-decompile, static-bytes, static-symbols; M-711 to M-713, M-720; build 25793767 | medium; types, offsets, arrays and full schemas unqualified; loader-stub bodies | U-066 | candidate |
