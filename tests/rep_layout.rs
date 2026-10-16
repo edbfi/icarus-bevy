@@ -5,10 +5,12 @@ use icarus_bevy::experimental::archive::ByteOrder;
 use icarus_bevy::experimental::control_messages::ArchiveText;
 use icarus_bevy::experimental::packet::{BitReader, BitWriter, Payload};
 use icarus_bevy::experimental::rep_layout::{
-    NetworkName, PropertyStream, QuantizedNormal, QuantizedVector, RepArray, RepCommand, RepEntry,
-    RepLayoutCodec, RepLayoutLimits, RepValue, UnsupportedItem, encode_property_stream, enum_bits,
-    enum_byte_bits, enum_max_value, parse_property_stream, read_network_name, read_property_stream,
-    validate_layout, write_network_name, write_property_stream,
+    MovementLevel, NET_ROLE_MAX_VALUE, NetworkName, PropertyStream, QuantizedNormal,
+    QuantizedVector, RepArray, RepCommand, RepEntry, RepLayoutCodec, RepLayoutLimits, RepValue,
+    RotationLevel, UnsupportedItem, actor_component_rep_layout, actor_rep_layout,
+    controller_rep_layout, encode_property_stream, enum_bits, enum_byte_bits, enum_max_value,
+    parse_property_stream, player_state_rep_layout, read_network_name, read_property_stream,
+    rep_attachment_commands, validate_layout, write_network_name, write_property_stream,
 };
 
 // Independently authored bit fixtures from the actor-channel spec (F-571 to
@@ -1193,4 +1195,74 @@ fn debug_and_summaries_carry_no_secrets() {
     assert!(summary.terminator_checksum);
     assert_eq!(summary.entries[4].vector_bits, Some(15));
     assert_eq!(summary.entries[8].opaque_bits, Some(32));
+}
+
+#[test]
+fn native_engine_class_layouts_round_trip_and_fail_closed() {
+    assert_eq!(enum_byte_bits(NET_ROLE_MAX_VALUE), 3);
+    assert_eq!(rep_attachment_commands().len(), 6);
+
+    let comp_layout = actor_component_rep_layout();
+    assert_eq!(comp_layout.len(), 2);
+    let comp_stream = stream(vec![entry(2, RepValue::Bool(true))]);
+    let comp_payload = encode_property_stream(&comp_stream, &comp_layout, &plain()).unwrap();
+    assert_eq!(comp_payload.bit_len(), 17);
+    assert_eq!(
+        parse_property_stream(&comp_payload, &comp_layout, &plain()).unwrap(),
+        comp_stream
+    );
+
+    let ctrl_layout = controller_rep_layout(
+        MovementLevel::Whole,
+        MovementLevel::Whole,
+        RotationLevel::Bytes,
+    );
+    assert_eq!(ctrl_layout.len(), 17);
+    let ctrl_stream = stream(vec![
+        entry(5, RepValue::Byte(2)),
+        entry(14, RepValue::Byte(3)),
+        entry(16, RepValue::Object(NetGuidRef::plain(4))),
+        entry(17, RepValue::Object(NetGuidRef::plain(12))),
+    ]);
+    let ctrl_payload = encode_property_stream(&ctrl_stream, &ctrl_layout, &plain()).unwrap();
+    assert_eq!(
+        parse_property_stream(&ctrl_payload, &ctrl_layout, &plain()).unwrap(),
+        ctrl_stream
+    );
+
+    let ps_layout = player_state_rep_layout(
+        MovementLevel::Whole,
+        MovementLevel::Whole,
+        RotationLevel::Bytes,
+    );
+    assert_eq!(ps_layout.len(), 26);
+    assert_eq!(
+        &ps_layout[..15],
+        actor_rep_layout(
+            MovementLevel::Whole,
+            MovementLevel::Whole,
+            RotationLevel::Bytes
+        )
+        .as_slice()
+    );
+    let ps_stream = stream(vec![
+        entry(5, RepValue::Byte(1)),
+        entry(14, RepValue::Byte(3)),
+        entry(18, RepValue::Byte(42)),
+        entry(19, RepValue::Bool(false)),
+        entry(20, RepValue::Bool(true)),
+        entry(26, RepValue::Str(text("Pioneer"))),
+    ]);
+    let ps_payload = encode_property_stream(&ps_stream, &ps_layout, &plain()).unwrap();
+    assert_eq!(
+        parse_property_stream(&ps_payload, &ps_layout, &plain()).unwrap(),
+        ps_stream
+    );
+    for unsupported_handle in [16, 17, 24, 25] {
+        let bad = stream(vec![entry(unsupported_handle, RepValue::Bool(true))]);
+        assert!(
+            error_of(encode_property_stream(&bad, &ps_layout, &plain())).contains("unsupported"),
+            "handle {unsupported_handle}"
+        );
+    }
 }

@@ -1936,3 +1936,102 @@ pub fn encode_property_stream(
     write_stream(&mut writer, stream, layout, 1, codec, 0, &mut budget)?;
     Ok(Payload::from_writer(writer))
 }
+
+/// Maximum registered enumerator value of `ENetRole` (`ROLE_MAX = 4`, F-703).
+pub const NET_ROLE_MAX_VALUE: i64 = 4;
+
+/// Flattened child commands of `FRepAttachment` (`HasNetSerializer == false`,
+/// F-703): `AttachParent`, `LocationOffset`, `RelativeScale3D`,
+/// `RotationOffset`, `AttachSocket` and `AttachComponent`.
+pub fn rep_attachment_commands() -> [RepCommand; 6] {
+    [
+        RepCommand::Object,
+        RepCommand::VectorQuantize100,
+        RepCommand::VectorQuantize100,
+        RepCommand::Rotator,
+        RepCommand::NetworkName,
+        RepCommand::Object,
+    ]
+}
+
+/// Statically observed 15-handle rep layout of `AActor` (F-609, F-703):
+/// handles 1..4 bool flags (`bHidden`, `bReplicateMovement`, `bTearOff`,
+/// `bCanBeDamaged`), handle 5 `RemoteRole` (`ENetRole`), handle 6
+/// `ReplicatedMovement`, handles 7..12 flattened `AttachmentReplication`,
+/// handle 13 `Owner`, handle 14 `Role` (`ENetRole`) and handle 15 `Instigator`.
+pub fn actor_rep_layout(
+    location: MovementLevel,
+    velocity: MovementLevel,
+    rotation: RotationLevel,
+) -> Vec<RepCommand> {
+    let role_bits = Some(enum_byte_bits(NET_ROLE_MAX_VALUE));
+    let mut commands = Vec::with_capacity(15);
+    commands.extend([
+        RepCommand::Bool,
+        RepCommand::Bool,
+        RepCommand::Bool,
+        RepCommand::Bool,
+        RepCommand::Byte {
+            enum_bits: role_bits,
+        },
+        RepCommand::Movement {
+            location,
+            velocity,
+            rotation,
+        },
+    ]);
+    commands.extend(rep_attachment_commands());
+    commands.extend([
+        RepCommand::Object,
+        RepCommand::Byte {
+            enum_bits: role_bits,
+        },
+        RepCommand::Object,
+    ]);
+    commands
+}
+
+/// Statically observed 17-handle rep layout of `AController` (F-703):
+/// `AActor` handles 1..15, then handle 16 `PlayerState` and handle 17 `Pawn`.
+pub fn controller_rep_layout(
+    location: MovementLevel,
+    velocity: MovementLevel,
+    rotation: RotationLevel,
+) -> Vec<RepCommand> {
+    let mut commands = actor_rep_layout(location, velocity, rotation);
+    commands.extend([RepCommand::Object, RepCommand::Object]);
+    commands
+}
+
+/// Statically observed 26-handle rep layout of `APlayerState` (F-703):
+/// `AActor` handles 1..15 (`AInfo` adds none), then handles 16..26 (`Score`,
+/// `PlayerId`, `Ping`, five bitfield bools at `+0x22a` sorted by name,
+/// `StartTime`, `UniqueId` and `PlayerNamePrivate`). Unread item serializers
+/// stay [`RepCommand::Unsupported`] so selecting them fails closed.
+pub fn player_state_rep_layout(
+    location: MovementLevel,
+    velocity: MovementLevel,
+    rotation: RotationLevel,
+) -> Vec<RepCommand> {
+    let mut commands = actor_rep_layout(location, velocity, rotation);
+    commands.extend([
+        RepCommand::Unsupported(UnsupportedItem::Float),
+        RepCommand::Unsupported(UnsupportedItem::Int32),
+        RepCommand::Byte { enum_bits: None },
+        RepCommand::Bool,
+        RepCommand::Bool,
+        RepCommand::Bool,
+        RepCommand::Bool,
+        RepCommand::Bool,
+        RepCommand::Unsupported(UnsupportedItem::Int32),
+        RepCommand::Unsupported(UnsupportedItem::OtherNativeStruct),
+        RepCommand::Str,
+    ]);
+    commands
+}
+
+/// Statically observed 2-handle rep layout of `UActorComponent` (F-703):
+/// handle 1 `bReplicates` and handle 2 `bIsActive`.
+pub fn actor_component_rep_layout() -> Vec<RepCommand> {
+    vec![RepCommand::Bool, RepCommand::Bool]
+}

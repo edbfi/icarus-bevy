@@ -4,7 +4,7 @@ Rows retired from [the active ledger](../network.md): superseded by a summary ro
 execution receipts, or historical session state. Full text is kept and IDs stay
 permanent; cite the superseding row where one exists.
 
-Last reconciled: 2026-10-15
+Last reconciled: 2026-10-16
 
 | ID | Claim | Kind | Evidence | Scope and limits | Unknowns | Status |
 | --- | --- | --- | --- | --- | --- | --- |
@@ -92,3 +92,4 @@ Last reconciled: 2026-10-15
 | F-641 | Fast-array bodies: array and base replication keys, delete and change counts (4 bytes each; counts cap 2048 initially), an ID per delete, then per change an ID and the item's commands or, in delta mode, a set bit and its property stream | observed | static-decompile, static-bytes, authored-test; M-628 to M-635 | high; client; mode per array | U-064 | superseded-by F-644 |
 | F-697 | Client tag config declares fast replication, container width 6, first segment 16, 1,886 names, one external source and two redirects | observed | static-bytes; M-710, M-717, M-719, M-722; build 25793767 | high; index/member hashes verified; declarations, not effective settings or full mapping | U-065 | superseded-by F-702 |
 | F-698 | Client ConstructNetIndex pseudocode assigns zero-based indices and an invalid sentinel of count plus one; the supplied-order native dictionary models this contract | inferred | static-decompile; M-711, M-712; build 25793767 | medium; Program bodies remain loader stubs; no instruction or runtime validation | U-065 | superseded-by F-702 |
+| F-699 | Native candidates join ten Actor, eleven PlayerState and two PlayerController property names; AActor's property-pointer array, class params and bool descriptor are located | inferred | static-decompile, static-bytes, static-symbols; M-711 to M-713, M-720; build 25793767 | medium; types, offsets, arrays and full schemas unqualified; loader-stub bodies | U-066 | superseded-by F-703 |

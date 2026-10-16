@@ -43,14 +43,19 @@ clamped `first_segment` 12, `container_bits` 6), and their chained lowercase
 UTF-16 CRC-32 matches the logged `NetworkGameplayTagNodeIndexHash` (`dc780a27`
 and `6d0f676f`, F-702; U-065 resolved). `experimental::tag_dictionary` models
 both ordered lists and declaration expansion with `net_index_hash`. Native
-engine-class property names and candidate indices are located, but their full
-schemas are not recovered (F-699).
+`UE4CodeGen_Private` descriptors across all 4,000 `ConstructUClass` sites fix
+replicated property order, types, offsets and static array sizes for `AActor`
+(10 net properties -> 15 leaf handles: `FRepAttachment` flattened at 7..12,
+3-bit `ENetRole` at 5 and 14), `AController` (handles 16..17),
+`APlayerController` (handles 18..19), `APlayerState` (handles 16..26),
+`UActorComponent` (handles 1..2) and native Icarus subclasses (F-703), with
+layout constructors in `experimental::rep_layout`.
 
 ## Open
 
-- Other native structs (U-064); server send policy (U-044).
-- Property types, offsets, arrays and gameplay-class schemas, plus typed capture replay (F-699, F-702; U-066).
+- Other native structs and scalar items (U-064); server send policy (U-044).
+- Cooked Blueprint class property extensions and typed capture replay (F-702, F-703; U-066).
 
 ## Artifacts
 
-M-420..M-449, M-455..M-470, M-570..M-576, M-581..M-588, M-600..M-605, M-707, M-709..M-717, M-728..M-730.
+M-420..M-449, M-455..M-470, M-570..M-576, M-581..M-588, M-600..M-605, M-707, M-709..M-717, M-720, M-728..M-732.

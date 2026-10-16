@@ -8,14 +8,17 @@ if [[ ! -f "$rea_entry" ]]; then
   exit 1
 fi
 if command -v brew >/dev/null 2>&1; then
+  brew_prefix="$(cd -- "$(dirname -- "$(command -v brew)")/.." && pwd)"
   if [[ -z "${GHIDRA_INSTALL_DIR:-}" ]]; then
-    rea_ghidra="$(brew --prefix ghidra 2>/dev/null || true)"
+    rea_ghidra="$brew_prefix/opt/ghidra"
+    [[ -f "$rea_ghidra/libexec/support/analyzeHeadless" ]] || rea_ghidra="$(brew --prefix ghidra 2>/dev/null || true)"
     if [[ -f "$rea_ghidra/libexec/support/analyzeHeadless" ]]; then
       export GHIDRA_INSTALL_DIR="$rea_ghidra/libexec"
     fi
   fi
   if [[ -z "${JAVA_HOME:-}" ]]; then
-    rea_java="$(brew --prefix openjdk@21 2>/dev/null || true)"
+    rea_java="$brew_prefix/opt/openjdk@21"
+    [[ -x "$rea_java/libexec/bin/java" ]] || rea_java="$(brew --prefix openjdk@21 2>/dev/null || true)"
     if [[ -x "$rea_java/libexec/bin/java" ]]; then
       export JAVA_HOME="$rea_java/libexec"
     fi

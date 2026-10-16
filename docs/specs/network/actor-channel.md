@@ -79,6 +79,28 @@ dormancy, channel close reasons and every server-side writer.
   element, then a terminating return command and handle table. Handles strictly
   increase within a stream; an `N`-command array element layout numbers element
   commands consecutively (`(h - 1) / N`), and a nested array is one handle.
+- Native `UE4CodeGen_Private` descriptors (F-703): across all 4,000
+  `ConstructUClass` call sites in the client executable, none of the inspected
+  engine or Icarus classes sets class flag `0x80`, so each sorts its own net
+  properties by `(offset, name)`:
+  - `AActor` (10 net properties -> 15 leaf handles 1..15): handles 1..4 bool
+    flags (`bHidden`, `bReplicateMovement`, `bTearOff` at `+0x58`;
+    `bCanBeDamaged` at `+0x5a`), handle 5 `RemoteRole` (`ENetRole` at `+0x5f`,
+    `ROLE_MAX = 4` -> 3-bit enum byte), handle 6 `ReplicatedMovement`
+    (`FRepMovement` at `+0x60`, native `NetSerialize`), handles 7..12
+    `AttachmentReplication` (`FRepAttachment` at `+0xa0`, flattened into
+    `AttachParent` Object, `LocationOffset` and `RelativeScale3D`
+    `VectorQuantize100`, `RotationOffset` `Rotator`, `AttachSocket` Name and
+    `AttachComponent` Object), handle 13 `Owner` (`+0xe0`), handle 14 `Role`
+    (`+0xf0`, 3-bit enum byte) and handle 15 `Instigator` (`+0x118`).
+  - `AController` adds handle 16 `PlayerState` (`+0x228`) and handle 17 `Pawn`
+    (`+0x250`); `APlayerController` adds `TargetViewRotation` (`FRotator`,
+    `+0x2cc`) and `SpawnLocation` (`FVector`, `+0x558`); `APlayerState`
+    (`AInfo` adds none) adds handles 16..26 (`Score` Float `+0x220`, `PlayerId`
+    Int `+0x224`, `Ping` Byte `+0x228`, five bitfield bools at `+0x22a` sorted
+    by name, `StartTime` Int `+0x22c`, `UniqueId` `FUniqueNetIdRepl` `+0x250`
+    and `PlayerNamePrivate` Str `+0x300`). `UActorComponent` defines handle 1
+    `bReplicates` (`+0x88`) and handle 2 `bIsActive` (`+0x8a`).
 - Spawn vectors (F-571, F-573): after the presence bit, archives at engine net
   version 13+ read a quantized bit; unquantized is three 4-byte floats,
   quantized a component bit count (`<= 24`) and three integers bounded by
@@ -142,8 +164,6 @@ dormancy, channel close reasons and every server-side writer.
 
 ## Candidate
 
-- Native class name/index candidates (F-699) still lack property types, offsets
-  and arrays.
 - Server send order (F-610): the older server writes an actor bunch in the
   order the client reads it: the spawn record (when the initial and
   locally opened flags are set) and an actor hook that is empty in the base
@@ -158,9 +178,9 @@ dormancy, channel close reasons and every server-side writer.
 
 ## Open questions
 
-- Other native structs (U-064); which levels each movement property uses (a property default).
+- Other native structs and scalar items (U-064); which levels each movement property uses (a property default).
 - Server writers for these records and their byte order and bounds (U-044).
-- Each class's complete property schema, including gameplay classes, and typed capture replay (U-066).
+- Cooked Blueprint class property extensions and typed capture replay (U-066).
 
 ## Evidence
 
@@ -174,6 +194,6 @@ dormancy, channel close reasons and every server-side writer.
   net archive version M-571 to M-576;
   display strings M-581 to M-584; Text codec M-585, M-602 to M-605; Text callees M-586,
   M-587; custom versions M-588; enum widths M-614, M-615; fields and RPCs M-620 to M-624; fast arrays M-628 to M-635; codec tests M-475, M-476, M-492, M-496,
-  M-511, M-522, M-530, M-548; schema candidates M-710 to M-713, M-717;
+  M-511, M-522, M-530, M-548; native class/struct/enum descriptors M-710 to M-713, M-717, M-720, M-731, M-732;
   layout source M-552 to M-555; send order M-461, M-556 to
   M-560; wire capture M-707.
