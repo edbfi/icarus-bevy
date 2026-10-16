@@ -6,7 +6,7 @@ Operating guide for the headless foundation. Design constraints are in
 
 ## Run
 
-Requires native Linux and Rust 1.99.0 (pinned with Rustfmt and Clippy). Bevy 0.20.0
+Requires native Linux and Rust 1.99.1 (pinned with Rustfmt and Clippy). Bevy 0.20.0
 uses headless features; no GPU, display, original game files or Proton are required.
 
 ```bash

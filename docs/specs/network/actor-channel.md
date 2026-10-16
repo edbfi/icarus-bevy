@@ -21,6 +21,10 @@ dormancy, channel close reasons and every server-side writer.
   export-flags byte: bit 0 a recursive outer GUID and a path string, bit 2 a
   4-byte network checksum after the path (none without one, F-692), bit 1
   no-load. Nonzero even GUIDs are dynamic.
+- The pinned client's packaged gameplay-tag config declares fast replication,
+  container width 6 and first segment 16, with 1,886 explicit tags and an
+  external tag source (F-697). These declarations establish neither the
+  effective runtime settings nor the complete net-index mapping.
 - NetGUID exports (F-694, wire-consistent, not statically read) ride
   export-only partial bunches: a rep-layout bit, an i32 count, then that many
   exported references.
@@ -189,6 +193,11 @@ dormancy, channel close reasons and every server-side writer.
 
 ## Candidate
 
+- `experimental::tag_dictionary` consumes an explicit complete tag order and
+  codec widths. It preserves spelling and order, supports ASCII case lookup,
+  and distinguishes assigned indices from the two reserved slots (F-698).
+  It does not turn config declarations into a runtime dictionary. Native class
+  name/index candidates (F-699) still lack property types, offsets and arrays.
 - Server send order (F-610): the older server writes an actor bunch in the
   order the client reads it: the spawn record (when the initial and
   locally opened flags are set) and an actor hook that is empty in the base
@@ -204,8 +213,8 @@ dormancy, channel close reasons and every server-side writer.
 
 - Other native structs (U-064); which levels each movement property uses (a property default).
 - Server writers for these records and their byte order and bounds (U-044).
-- Gameplay-tag replication mode, widths and an independent tag table (U-065).
-- The source of each class's replicated-property list for a server (U-066).
+- Effective gameplay-tag settings, complete sources and runtime index order (U-065).
+- Each class's complete property schema, including gameplay classes (U-066).
 
 ## Evidence
 
@@ -219,5 +228,6 @@ dormancy, channel close reasons and every server-side writer.
   net archive version M-571 to M-576;
   display strings M-581 to M-584; Text codec M-585, M-602 to M-605; Text callees M-586,
   M-587; custom versions M-588; enum widths M-614, M-615; fields and RPCs M-620 to M-624; fast arrays M-628 to M-635; codec tests M-475, M-476, M-492, M-496,
-  M-511, M-522, M-530, M-548; layout source M-552 to M-555; send order M-461, M-556 to
+  M-511, M-522, M-530, M-548; schema candidates M-710 to M-713, M-717;
+  layout source M-552 to M-555; send order M-461, M-556 to
   M-560; wire capture M-707.

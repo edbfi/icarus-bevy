@@ -74,6 +74,12 @@ repos:
         language: system
         pass_filenames: false
         files: ^tools/(pdb_public_symbols\.cjs|tests/pdb_public_symbols.*\.cjs)$
+      - id: pak-protocol-metadata-tests
+        name: Test bounded packaged protocol metadata reader
+        entry: node --test tools/tests/pak_protocol_metadata.test.cjs
+        language: system
+        pass_filenames: false
+        files: ^tools/(pak_protocol_metadata\.cjs|tests/pak_protocol_metadata\.test\.cjs)$
       - id: python-typing-config
         name: Check Python typing policy
         entry: python3 tools/typing_gate.py

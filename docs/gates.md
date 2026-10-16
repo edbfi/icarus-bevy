@@ -6,7 +6,7 @@ here instead of restating them.
 
 Before restructure: 96ddb0b:docs/gates.md
 
-Last reconciled: 2026-10-15
+Last reconciled: 2026-10-16
 
 ## Before any C001 original-code case
 
@@ -101,11 +101,15 @@ Last reconciled: 2026-10-15
 
 ## Before deriving replication schema for the server
 
-- A server that replicates to stock clients needs the client's gameplay-tag
-  table (U-065) and each replicated class's property list (U-066). Deriving
-  either from the stock client, its configuration or packaged data, and
-  shipping the result, needs an explicit user decision first; static reads
-  of engine code stay research inputs only.
+- The user authorized (2026-10-16) offline derivation of gameplay-tag mappings
+  (U-065) and replicated-property schemas (U-066) from the local stock client,
+  configuration and packaged data, including use of derived protocol metadata
+  in the independent server. This clears the decision gate, not either
+  technical unknown or a compatibility claim.
+- Original assets, gameplay data tables, code and binaries remain research
+  inputs only and must not ship with the replacement. Each analysis still
+  needs a bounded case scope and session; runtime and connected experiments
+  retain their separate gates below.
 
 ## Before any original-server or client run
 
