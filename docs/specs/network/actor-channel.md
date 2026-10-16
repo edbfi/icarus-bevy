@@ -105,14 +105,33 @@ dormancy, channel close reasons and every server-side writer.
   version 13+ read a quantized bit; unquantized is three 4-byte floats,
   quantized a component bit count (`<= 24`) and three integers bounded by
   `1 << (bits + 2)`, decoded as `(v - (1 << (bits + 1))) * 0.1`.
-- Property net items (F-574, F-575, F-632): Bool is 1 bit; Byte is 8 bits or
+- Property net items and command expansion (F-574, F-575, F-632, F-704):
+  `FRepLayout::ReceiveCustomProperty` (`0x143b219b0`) calls `Property->NetSerializeItem`
+  (`vtable + 0x98`) for every non-array command. Bool is 1 bit; Byte is 8 bits or
   `min(8, CeilLogTwo64(max + 1))` with an enum (`max <= 0` sends 0 bits); Enum
   is that width capped at its underlying integer's bits (at net version 17+);
-  object references are a NetGUID; native net-serialize structs use their own
-  serializer while other structs and arrays flatten into the layout; soft
-  objects, Str, Name and Text use their archive/item operators below.
-- Native struct items (F-588, F-589, F-593, F-597, F-673, F-674):
-  `FVector_NetQuantize` is a bit count (`<= 20`) and three biased unscaled
+  `FNumericProperty::NetSerializeItem` (`0x1421206f0`) calls `SerializeItem`
+  (`0x142123c50`, `0x142123c90`, `0x142123ce0`, `0x142123d30`) to read 1, 2, 4
+  or 8 archive bytes for `Int8`, `Int16`/`UInt16`, `Int`/`UInt32`/`Float` and
+  `Int64`/`UInt64`/`Double`; object references are a NetGUID; structs with
+  `STRUCT_NetSerializeNative` (`StructFlags & 0x400`, set from `ICppStructOps`
+  slot `+0x68` in `PrepareCppStructOps` `0x141fe53e0`) emit one leaf command and
+  call `ICppStructOps::NetSerialize` (`+0x78`), whereas structs without `0x400`
+  recurse through `0x143af7340`; soft objects, Str, Name and Text use their
+  archive/item operators below. `read_rep_properties` and `write_rep_properties`
+  frame the 1-bit `bDoChecksum` preamble of `FRepLayout::ReceiveProperties`
+  (`0x143b20720`, M-426) before the handle stream and decode the captured M-707
+  channel 2 `AIcarusPlayerControllerSurvival` (199 bits) and `UActorComponent`
+  (18 bits) property blocks bit-identically (F-704).
+- Native struct items (F-588, F-589, F-593, F-597, F-673, F-674, F-704):
+  `FVector::NetSerialize` (`0x142100d00`) and `FVector2D::NetSerialize`
+  (`0x142100bf0`) serialize three and two 4-byte float words; `FRotator::NetSerialize`
+  (`0x142100890`) calls `SerializeCompressedShort` (`0x141ed7810`, the compressed
+  rotator below); `FUniqueNetIdRepl::NetSerialize` (`0x143ddced0` -> `0x1439a23f0`)
+  uses the control-channel unique-net-id framing (F-531, F-636); `FRowHandle::NetSerialize`
+  (`0x143f8a530`) sends a 2-byte table index (`0xffff` unmapped) and a 0/1/2/4-byte
+  row index sized by table row count; `FStatPairRepState::NetSerialize` (`0x141c10c50`)
+  sends two 4-byte fields. `FVector_NetQuantize` is a bit count (`<= 20`) and three biased unscaled
   integers; `FVector_NetQuantizeNormal` is three 16-bit values biased by 32768.
   `FRepMovement` sends two flag bits, location, rotation (byte rotator at level
   0: per-axis nonzero bit plus `round(angle * 256 / 360)` byte; compressed
@@ -194,6 +213,6 @@ dormancy, channel close reasons and every server-side writer.
   net archive version M-571 to M-576;
   display strings M-581 to M-584; Text codec M-585, M-602 to M-605; Text callees M-586,
   M-587; custom versions M-588; enum widths M-614, M-615; fields and RPCs M-620 to M-624; fast arrays M-628 to M-635; codec tests M-475, M-476, M-492, M-496,
-  M-511, M-522, M-530, M-548; native class/struct/enum descriptors M-710 to M-713, M-717, M-720, M-731, M-732;
+  M-511, M-522, M-530, M-548; native class/struct/enum descriptors and scalar/struct net serializers M-710 to M-713, M-717, M-720, M-731 to M-734;
   layout source M-552 to M-555; send order M-461, M-556 to
   M-560; wire capture M-707.

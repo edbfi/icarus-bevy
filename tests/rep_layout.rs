@@ -2,20 +2,27 @@ use icarus_bevy::experimental::actor_channel::{
     ActorChannelCodec, ActorChannelLimits, CompressedRotator, ExportPath, GuidExport, NetGuidRef,
 };
 use icarus_bevy::experimental::archive::ByteOrder;
-use icarus_bevy::experimental::control_messages::ArchiveText;
+use icarus_bevy::experimental::control_messages::{
+    ArchiveText, NetIdType, NetIdValue, UniqueNetId,
+};
 use icarus_bevy::experimental::packet::{BitReader, BitWriter, Payload};
 use icarus_bevy::experimental::rep_layout::{
     MovementLevel, NET_ROLE_MAX_VALUE, NetworkName, PropertyStream, QuantizedNormal,
-    QuantizedVector, RepArray, RepCommand, RepEntry, RepLayoutCodec, RepLayoutLimits, RepValue,
-    RotationLevel, UnsupportedItem, actor_component_rep_layout, actor_rep_layout,
-    controller_rep_layout, encode_property_stream, enum_bits, enum_byte_bits, enum_max_value,
-    parse_property_stream, player_state_rep_layout, read_network_name, read_property_stream,
+    QuantizedVector, REPLICATED_LEFT_PROSPECT_STATE_MAX_VALUE, RepArray, RepCommand, RepEntry,
+    RepLayoutCodec, RepLayoutLimits, RepValue, RotationLevel, TagEncoding, UnsupportedItem,
+    actor_component_rep_layout, actor_rep_layout, controller_rep_layout, encode_property_stream,
+    encode_rep_properties, enum_bits, enum_byte_bits, enum_max_value,
+    icarus_player_controller_rep_layout, icarus_player_controller_survival_rep_layout,
+    parse_property_stream, parse_rep_properties, player_controller_rep_layout,
+    player_state_rep_layout, read_network_name, read_property_stream, read_rep_properties,
     rep_attachment_commands, validate_layout, write_network_name, write_property_stream,
+    write_rep_properties,
 };
 
 // Independently authored bit fixtures from the actor-channel spec (F-571 to
-// F-575, F-593), built field by field with the packet bit writer and the
-// hand-written helpers below; no captured traffic.
+// F-575, F-593, F-704), built field by field with the packet bit writer and
+// the hand-written helpers below, plus offline capture replay tests against
+// M-707 / M-708.
 
 fn codec(version: u32, checksums: bool, order: ByteOrder) -> RepLayoutCodec {
     RepLayoutCodec {
@@ -1098,6 +1105,10 @@ fn debug_and_summaries_carry_no_secrets() {
             element: vec![RepCommand::NetworkName],
         },
         RepCommand::Opaque { bits: 32 },
+        RepCommand::Int,
+        RepCommand::Float,
+        RepCommand::Vector,
+        RepCommand::UniqueNetId,
     ];
     let checksum = Some(0xdead_beef);
     let secret = |handle, value| RepEntry {
@@ -1154,6 +1165,19 @@ fn debug_and_summaries_carry_no_secrets() {
                     writer
                 })),
             ),
+            secret(10, RepValue::Int(-77_777_777)),
+            secret(11, RepValue::Float(0x4378_0000)),
+            secret(
+                12,
+                RepValue::Vector([0x4378_0000, 0x4040_0000, 0x47ca_2580]),
+            ),
+            secret(
+                13,
+                RepValue::UniqueNetId(UniqueNetId {
+                    kind: NetIdType::Default,
+                    value: NetIdValue::from_hex("76561198000000001").unwrap(),
+                }),
+            ),
         ],
         terminator_checksum: checksum,
     };
@@ -1183,6 +1207,10 @@ fn debug_and_summaries_carry_no_secrets() {
             "4242424",
             "feedf00d",
             "4277006349",
+            "77777777",
+            "43780000",
+            "47ca2580",
+            "76561198",
         ] {
             assert!(!output.contains(leak), "{leak} leaked: {output}");
         }
@@ -1191,26 +1219,119 @@ fn debug_and_summaries_carry_no_secrets() {
         assert!(output.contains("32"), "opaque length missing: {output}");
     }
     let summary = full.summary();
-    assert_eq!(summary.entries.len(), 9);
+    assert_eq!(summary.entries.len(), 13);
     assert!(summary.terminator_checksum);
     assert_eq!(summary.entries[4].vector_bits, Some(15));
     assert_eq!(summary.entries[8].opaque_bits, Some(32));
+    assert!(summary.entries[12].unique_net_id.is_some());
 }
 
 #[test]
-fn native_engine_class_layouts_round_trip_and_fail_closed() {
+fn numeric_and_native_struct_items_round_trip_both_byte_orders() {
+    let layout = [
+        RepCommand::Int8,
+        RepCommand::Int16,
+        RepCommand::UInt16,
+        RepCommand::Int,
+        RepCommand::UInt32,
+        RepCommand::Int64,
+        RepCommand::UInt64,
+        RepCommand::Float,
+        RepCommand::Double,
+        RepCommand::Vector,
+        RepCommand::Vector2D,
+        RepCommand::UniqueNetId,
+    ];
+    let expected = stream(vec![
+        entry(1, RepValue::Int8(-42)),
+        entry(2, RepValue::Int16(-12_345)),
+        entry(3, RepValue::UInt16(54_321)),
+        entry(4, RepValue::Int(-1_234_567_890)),
+        entry(5, RepValue::UInt32(0x89ab_cdef)),
+        entry(6, RepValue::Int64(-0x1234_5678_9abc_def0)),
+        entry(7, RepValue::UInt64(0xfedc_ba98_7654_3210)),
+        entry(8, RepValue::Float(248.0f32.to_bits())),
+        entry(9, RepValue::Double(103_499.5f64.to_bits())),
+        entry(
+            10,
+            RepValue::Vector([248.0f32.to_bits(), 3.0f32.to_bits(), 103_499.0f32.to_bits()]),
+        ),
+        entry(
+            11,
+            RepValue::Vector2D([(-12.5f32).to_bits(), 64.25f32.to_bits()]),
+        ),
+        entry(
+            12,
+            RepValue::UniqueNetId(UniqueNetId {
+                kind: NetIdType::Indexed(9),
+                value: NetIdValue::from_hex("0110000100000001").unwrap(),
+            }),
+        ),
+    ]);
+    for order in [ByteOrder::Little, ByteOrder::Big] {
+        let c = codec(17, false, order);
+        let encoded = encode_property_stream(&expected, &layout, &c).unwrap();
+        assert_eq!(
+            parse_property_stream(&encoded, &layout, &c).unwrap(),
+            expected
+        );
+    }
+}
+
+#[test]
+fn receive_properties_preamble_governs_checksum_bit() {
+    let layout = [RepCommand::Int, RepCommand::Bool];
+    let unchecksummed = stream(vec![
+        entry(1, RepValue::Int(77)),
+        entry(2, RepValue::Bool(true)),
+    ]);
+    let c_plain = codec(17, false, ByteOrder::Little);
+    let payload_no_chk = encode_rep_properties(&unchecksummed, &layout, &c_plain).unwrap();
+    // Even if caller passes checksums=true in codec, read_rep_properties overrides it from bit 0.
+    let c_with_chk = codec(17, true, ByteOrder::Little);
+    assert_eq!(
+        parse_rep_properties(&payload_no_chk, &layout, &c_with_chk).unwrap(),
+        unchecksummed
+    );
+
+    let checksummed = PropertyStream {
+        entries: vec![
+            RepEntry {
+                handle: 1,
+                checksum: Some(0x1111_2222),
+                value: RepValue::Int(77),
+            },
+            RepEntry {
+                handle: 2,
+                checksum: Some(0x3333_4444),
+                value: RepValue::Bool(true),
+            },
+        ],
+        terminator_checksum: Some(0x5555_6666),
+    };
+    let payload_chk = encode_rep_properties(&checksummed, &layout, &c_with_chk).unwrap();
+    assert_eq!(
+        parse_rep_properties(&payload_chk, &layout, &c_plain).unwrap(),
+        checksummed
+    );
+    let mut writer = BitWriter::new();
+    write_rep_properties(&mut writer, &checksummed, &layout, &c_with_chk).unwrap();
+    let mut reader = BitReader::new(writer.as_bytes(), writer.bit_len()).unwrap();
+    assert_eq!(
+        read_rep_properties(&mut reader, &layout, &c_plain).unwrap(),
+        checksummed
+    );
+    assert!(reader.at_end());
+}
+
+#[test]
+fn native_engine_and_icarus_class_layouts_round_trip() {
     assert_eq!(enum_byte_bits(NET_ROLE_MAX_VALUE), 3);
+    assert_eq!(enum_bits(REPLICATED_LEFT_PROSPECT_STATE_MAX_VALUE, 1), 2);
     assert_eq!(rep_attachment_commands().len(), 6);
 
     let comp_layout = actor_component_rep_layout();
     assert_eq!(comp_layout.len(), 2);
-    let comp_stream = stream(vec![entry(2, RepValue::Bool(true))]);
-    let comp_payload = encode_property_stream(&comp_stream, &comp_layout, &plain()).unwrap();
-    assert_eq!(comp_payload.bit_len(), 17);
-    assert_eq!(
-        parse_property_stream(&comp_payload, &comp_layout, &plain()).unwrap(),
-        comp_stream
-    );
 
     let ctrl_layout = controller_rep_layout(
         MovementLevel::Whole,
@@ -1218,17 +1339,33 @@ fn native_engine_class_layouts_round_trip_and_fail_closed() {
         RotationLevel::Bytes,
     );
     assert_eq!(ctrl_layout.len(), 17);
-    let ctrl_stream = stream(vec![
-        entry(5, RepValue::Byte(2)),
-        entry(14, RepValue::Byte(3)),
-        entry(16, RepValue::Object(NetGuidRef::plain(4))),
-        entry(17, RepValue::Object(NetGuidRef::plain(12))),
-    ]);
-    let ctrl_payload = encode_property_stream(&ctrl_stream, &ctrl_layout, &plain()).unwrap();
-    assert_eq!(
-        parse_property_stream(&ctrl_payload, &ctrl_layout, &plain()).unwrap(),
-        ctrl_stream
+
+    let pc_layout = player_controller_rep_layout(
+        MovementLevel::Whole,
+        MovementLevel::Whole,
+        RotationLevel::Bytes,
     );
+    assert_eq!(pc_layout.len(), 19);
+
+    let tag_encoding = TagEncoding::NetIndex {
+        first_segment: 0,
+        total_bits: 12,
+    };
+    let ipc_layout = icarus_player_controller_rep_layout(
+        MovementLevel::Whole,
+        MovementLevel::Whole,
+        RotationLevel::Bytes,
+        tag_encoding,
+    );
+    assert_eq!(ipc_layout.len(), 25);
+
+    let ipcs_layout = icarus_player_controller_survival_rep_layout(
+        MovementLevel::Whole,
+        MovementLevel::Whole,
+        RotationLevel::Bytes,
+        tag_encoding,
+    );
+    assert_eq!(ipcs_layout.len(), 30);
 
     let ps_layout = player_state_rep_layout(
         MovementLevel::Whole,
@@ -1248,9 +1385,19 @@ fn native_engine_class_layouts_round_trip_and_fail_closed() {
     let ps_stream = stream(vec![
         entry(5, RepValue::Byte(1)),
         entry(14, RepValue::Byte(3)),
+        entry(16, RepValue::Float(100.0f32.to_bits())),
+        entry(17, RepValue::Int(256)),
         entry(18, RepValue::Byte(42)),
         entry(19, RepValue::Bool(false)),
         entry(20, RepValue::Bool(true)),
+        entry(24, RepValue::Int(12)),
+        entry(
+            25,
+            RepValue::UniqueNetId(UniqueNetId {
+                kind: NetIdType::Default,
+                value: NetIdValue::from_hex("0110000100000001").unwrap(),
+            }),
+        ),
         entry(26, RepValue::Str(text("Pioneer"))),
     ]);
     let ps_payload = encode_property_stream(&ps_stream, &ps_layout, &plain()).unwrap();
@@ -1258,11 +1405,78 @@ fn native_engine_class_layouts_round_trip_and_fail_closed() {
         parse_property_stream(&ps_payload, &ps_layout, &plain()).unwrap(),
         ps_stream
     );
-    for unsupported_handle in [16, 17, 24, 25] {
-        let bad = stream(vec![entry(unsupported_handle, RepValue::Bool(true))]);
-        assert!(
-            error_of(encode_property_stream(&bad, &ps_layout, &plain())).contains("unsupported"),
-            "handle {unsupported_handle}"
-        );
+}
+
+#[test]
+fn captured_channel_2_player_controller_and_component_blocks_round_trip() {
+    // Exact 472-bit Channel 2 open bunch from M-707 / M-708 (F-696, F-704).
+    let bunch_bytes = [
+        0x04, 0x12, 0x06, 0x4f, 0xd8, 0x04, 0xe8, 0x01, 0x00, 0xdd, 0x95, 0x3f, 0x00, 0x7e, 0x14,
+        0xa0, 0x20, 0x8e, 0x81, 0x20, 0x98, 0x00, 0x00, 0xe0, 0x0d, 0x01, 0x00, 0x00, 0x01, 0x01,
+        0x96, 0x28, 0x1f, 0xb1, 0x30, 0xb8, 0x40, 0xc0, 0x50, 0x00, 0xc4, 0x90, 0x04, 0x41, 0x00,
+        0x28, 0x02, 0x80, 0x11, 0x00, 0x8e, 0x00, 0x80, 0x04, 0x88, 0x24, 0x09, 0x82, 0x00,
+    ];
+    let mut reader = BitReader::new(&bunch_bytes, 472).unwrap();
+    // Skip 97-bit spawn record + 8-bit PlayerController net player index hook (F-696)
+    // + 2-bit content block header (bHasRepLayout=1, bIsActor=1) + 16-bit packed payload size (199).
+    for _ in 0..123 {
+        reader.read_bit();
     }
+    let block0_payload = {
+        let mut w = BitWriter::new();
+        for _ in 0..199 {
+            w.write_bit(reader.read_bit());
+        }
+        Payload::from_writer(w)
+    };
+    let tag_encoding = TagEncoding::NetIndex {
+        first_segment: 0,
+        total_bits: 12,
+    };
+    let layout = icarus_player_controller_survival_rep_layout(
+        MovementLevel::Whole,
+        MovementLevel::Whole,
+        RotationLevel::Bytes,
+        tag_encoding,
+    );
+    let c = codec(17, false, ByteOrder::Little);
+    let decoded = parse_rep_properties(&block0_payload, &layout, &c).unwrap();
+    let expected = stream(vec![
+        entry(5, RepValue::Byte(2)),
+        entry(14, RepValue::Byte(3)),
+        entry(16, RepValue::Object(NetGuidRef::plain(4))),
+        entry(
+            19,
+            RepValue::Vector([248.0f32.to_bits(), 3.0f32.to_bits(), 103_499.0f32.to_bits()]),
+        ),
+        entry(22, RepValue::Object(NetGuidRef::plain(6))),
+        entry(23, RepValue::Object(NetGuidRef::plain(8))),
+        entry(24, RepValue::Object(NetGuidRef::plain(10))),
+    ]);
+    assert_eq!(decoded, expected);
+    assert_eq!(
+        encode_rep_properties(&decoded, &layout, &c).unwrap(),
+        block0_payload
+    );
+
+    // Block 1: subobject NetGUID 6 (`UActorComponent`), 18-bit rep-layout payload.
+    // Header: bHasRepLayout=1, bIsActor=0, NetGUID=6 (8 bits), bStablyNamed=1 (1 bit), NumBits=18 (8 bits) = 19 bits.
+    for _ in 0..19 {
+        reader.read_bit();
+    }
+    let block1_payload = {
+        let mut w = BitWriter::new();
+        for _ in 0..18 {
+            w.write_bit(reader.read_bit());
+        }
+        Payload::from_writer(w)
+    };
+    let comp_layout = actor_component_rep_layout();
+    let comp_decoded = parse_rep_properties(&block1_payload, &comp_layout, &c).unwrap();
+    let comp_expected = stream(vec![entry(2, RepValue::Bool(true))]);
+    assert_eq!(comp_decoded, comp_expected);
+    assert_eq!(
+        encode_rep_properties(&comp_decoded, &comp_layout, &c).unwrap(),
+        block1_payload
+    );
 }

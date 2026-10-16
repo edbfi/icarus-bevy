@@ -5,19 +5,29 @@
 //! references (F-572), the compressed rotator (F-573), client property net items
 //! (F-574), client network names (F-575) and the older server's native struct
 //! items (F-593), the movement struct and its quantization levels (F-588,
-//! F-589) and gameplay tags (F-591, F-592). Nothing here is wire-validated, no original layout is known
-//! or shipped, and no property state, object resolution, admission or gameplay
+//! F-589), gameplay tags (F-591, F-592), and native property command expansion,
+//! numeric property items and native struct serializers (F-704). Nothing here is
+//! gameplay-integrated, and no property state, object resolution or admission
 //! occurs. Writers mirror the readers for round-trip research only.
 //!
-//! Observed grammar: packed handles select layout commands, handle 0 ends a
-//! stream, a 4-byte checksum word may follow each handle, and a dynamic array
-//! carries a 2-byte element count and a nested zero-terminated handle stream
-//! (F-571). Item encodings:
+//! Observed grammar: `FRepLayout::ReceiveProperties` reads a 1-bit `bDoChecksum`
+//! flag before the handle stream (M-426, F-704); packed handles select layout
+//! commands, handle 0 ends a stream, a 4-byte checksum word follows each handle
+//! when `bDoChecksum` is set, and a dynamic array carries a 2-byte element count
+//! and a nested zero-terminated handle stream (F-571). Item encodings:
 //! - [`RepCommand::Bool`]: one bit (F-574);
 //! - [`RepCommand::Byte`]: 8 bits, or for an enum byte the width
 //!   [`enum_byte_bits`] derives from the enum's maximum value (F-574, F-632);
 //! - [`RepCommand::Enum`]: the width [`enum_bits`] derives from the maximum and
 //!   the underlying integer's size (F-574, F-632); a zero width sends no bits;
+//! - [`RepCommand::Int8`], [`RepCommand::Int16`], [`RepCommand::UInt16`],
+//!   [`RepCommand::Int`], [`RepCommand::UInt32`], [`RepCommand::Int64`],
+//!   [`RepCommand::UInt64`], [`RepCommand::Float`] and [`RepCommand::Double`]:
+//!   `FNumericProperty::NetSerializeItem` (`0x1421206f0`) delegates to
+//!   `TProperty_Numeric::SerializeItem` (`0x142123c50`, `0x142123c90`,
+//!   `0x142123ce0`, `0x142123d30`), which reads 1, 2, 4 or 8 archive bytes in
+//!   the caller's byte order (F-704); float and double values are kept as raw
+//!   bit words (`u32` and `u64`);
 //! - [`RepCommand::Object`]: a NetGUID reference through
 //!   [`super::actor_channel::read_guid_ref`] (F-572, F-574);
 //! - [`RepCommand::NetworkName`]: a hardcoded bit, then a hardcoded index or an
@@ -30,6 +40,10 @@
 //! - [`RepCommand::Text`]: the shared FText serializer at the archive versions
 //!   client bunches carry (F-639), in
 //!   [`super::rep_text`]: every history;
+//! - [`RepCommand::Vector`]: `FVector::NetSerialize` (`0x142100d00`), three
+//!   4-byte IEEE-754 float words in the caller's byte order (F-704);
+//! - [`RepCommand::Vector2D`]: `FVector2D::NetSerialize` (`0x142100bf0`), two
+//!   4-byte IEEE-754 float words in the caller's byte order (F-704);
 //! - [`RepCommand::VectorQuantize`]: `FVector_NetQuantize`, a capped component
 //!   bit count and three biased integers, unscaled (F-593, server writer);
 //! - [`RepCommand::VectorQuantizeNormal`]: three 16-bit values biased by 32768;
@@ -49,8 +63,12 @@
 //! - [`RepCommand::HitResult`]: a flags byte, a 4-byte time, quantized and
 //!   normal vectors with flag-gated duplicates, flag-gated 4-byte and 1-byte
 //!   fields, three NetGUID references and a network name (F-597);
-//! - [`RepCommand::Rotator`]: the compressed rotator of
-//!   [`super::actor_channel::read_rotator`] (F-573);
+//! - [`RepCommand::Rotator`]: `FRotator::NetSerialize` (`0x142100890`), the
+//!   compressed rotator of [`super::actor_channel::read_rotator`] (F-573,
+//!   F-704);
+//! - [`RepCommand::UniqueNetId`]: the `FUniqueNetIdRepl::NetSerialize`
+//!   (`0x143ddced0` -> `0x1439a23f0`), the replicated unique net id of
+//!   [`super::control_messages::read_unique_net_id`] (F-531, F-636, F-704);
 //! - [`RepCommand::DynamicArray`]: count and nested stream (F-571);
 //! - [`RepCommand::Opaque`]: a caller-sized span of raw bits.
 //!
@@ -75,24 +93,19 @@
 //!   observed helper does, so the layout names only the three packings;
 //! - which property uses which movement level is a property default and stays
 //!   caller-supplied;
-//! - tag widths and the replication mode come from tag configuration, which
-//!   this codec neither reads nor ships (U-065): the caller supplies them, and
-//!   an index is never resolved to a tag; the per-connection table path is
-//!   not supported; a name-mode tag uses the network-name path, as the
-//!   archive's name operator does (F-595);
-//! - whether rotator properties reach the compressed-rotator helper is
-//!   inferred, so the caller selects [`RepCommand::Rotator`] explicitly;
-//! - byte-wide fields follow the bit order of the packet reader; 2-byte counts
-//!   and 4-byte fields (checksums, name numbers, string counts) follow the
-//!   caller's byte order, as the original byte order is unread; 16-bit item
+//! - tag widths and the replication mode come from tag configuration
+//!   ([`super::tag_dictionary`], F-702): the caller supplies them, and an index
+//!   is never resolved to a tag inside the low-level stream reader; the
+//!   per-connection table path is not supported; a name-mode tag uses the
+//!   network-name path, as the archive's name operator does (F-595);
+//! - byte-wide fields follow the bit order of the packet reader; 2-, 4- and
+//!   8-byte archive fields follow the caller's byte order; 16-bit bit-reader
 //!   values are raw 16-bit fields like the rotator's.
 //!
 //! Unsupported and failing closed: any item the spec does not encode, such as
-//! 32-bit integers, floats, text and other
-//! native structs ([`UnsupportedItem`]); the optional bit and the preamble
-//! before the handle loop (M-426); non-canonical packed integers and tag net
-//! indices (the original reader may be more lenient), so every accepted stream
-//! re-encodes bit-identically.
+//! unmodeled native net-serialize structs ([`UnsupportedItem`]); non-canonical
+//! packed integers and tag net indices (the original reader may be more
+//! lenient), so every accepted stream re-encodes bit-identically.
 //!
 //! `Debug` output and summaries carry handles, kinds, counts and lengths only,
 //! never values, GUIDs, names, checksums or raw bits.
@@ -105,7 +118,10 @@ use super::actor_channel::{
 };
 use super::archive::{ByteOrder, StringEncoding, read_string_frame};
 use super::control::TokenEncoding;
-use super::control_messages::ArchiveText;
+use super::control_messages::{
+    ArchiveText, ControlCodec, UniqueNetId, UniqueNetIdSummary, read_unique_net_id,
+    write_unique_net_id,
+};
 use super::packet::{BitReader, BitWriter, MAX_HARDCODED_NAME_INDEX, Payload};
 pub use super::rep_text::TextValue;
 use super::rep_text::{TextHistory, read_text, write_text};
@@ -224,6 +240,24 @@ pub enum RepCommand {
     Enum {
         bits: u8,
     },
+    /// `FInt8Property`: 1 signed archive byte (F-704).
+    Int8,
+    /// `FInt16Property`: 2 signed archive bytes (F-704).
+    Int16,
+    /// `FUInt16Property`: 2 unsigned archive bytes (F-704).
+    UInt16,
+    /// `FIntProperty`: 4 signed archive bytes (F-704).
+    Int,
+    /// `FUInt32Property`: 4 unsigned archive bytes (F-704).
+    UInt32,
+    /// `FInt64Property`: 8 signed archive bytes (F-704).
+    Int64,
+    /// `FUInt64Property`: 8 unsigned archive bytes (F-704).
+    UInt64,
+    /// `FFloatProperty`: 4-byte IEEE-754 float word (F-704).
+    Float,
+    /// `FDoubleProperty`: 8-byte IEEE-754 double word (F-704).
+    Double,
     Object,
     NetworkName,
     /// An archive string through the Str item serializer (F-595).
@@ -232,11 +266,17 @@ pub enum RepCommand {
     SoftObject,
     /// A Text item (F-639).
     Text,
+    /// `FVector` (`0x142100d00`): three 4-byte float words (F-704).
+    Vector,
+    /// `FVector2D` (`0x142100bf0`): two 4-byte float words (F-704).
+    Vector2D,
     VectorQuantize,
     VectorQuantize10,
     VectorQuantize100,
     VectorQuantizeNormal,
     Rotator,
+    /// `FUniqueNetIdRepl` (`0x143ddced0` -> `0x1439a23f0`, F-531, F-636, F-704).
+    UniqueNetId,
     /// One gameplay tag in the caller's encoding (F-591, F-592).
     GameplayTag(TagEncoding),
     /// A gameplay tag container (F-592); `count_bits` is 1 to 8.
@@ -650,16 +690,32 @@ pub enum RepValue {
     Byte(u8),
     /// Below `1 << bits`.
     Enum(u32),
+    Int8(i8),
+    Int16(i16),
+    UInt16(u16),
+    Int(i32),
+    UInt32(u32),
+    Int64(i64),
+    UInt64(u64),
+    /// Raw IEEE-754 `f32` bits.
+    Float(u32),
+    /// Raw IEEE-754 `f64` bits.
+    Double(u64),
     Object(NetGuidRef),
     NetworkName(NetworkName),
     Str(ArchiveText),
     SoftObject(ArchiveText),
     Text(TextValue),
+    /// Three raw IEEE-754 `f32` bit words (`[x, y, z]`).
+    Vector([u32; 3]),
+    /// Two raw IEEE-754 `f32` bit words (`[x, y]`).
+    Vector2D([u32; 2]),
     VectorQuantize(QuantizedVector),
     VectorQuantize10(QuantizedVector),
     VectorQuantize100(QuantizedVector),
     VectorQuantizeNormal(QuantizedNormal),
     Rotator(CompressedRotator),
+    UniqueNetId(UniqueNetId),
     GameplayTag(GameplayTag),
     HitResult(Box<HitResult>),
     /// `None` when the empty bit is set; otherwise the counted tags.
@@ -675,16 +731,28 @@ pub enum ItemKind {
     Bool,
     Byte,
     Enum,
+    Int8,
+    Int16,
+    UInt16,
+    Int,
+    UInt32,
+    Int64,
+    UInt64,
+    Float,
+    Double,
     Object,
     NetworkName,
     Str,
     SoftObject,
     Text,
+    Vector,
+    Vector2D,
     VectorQuantize,
     VectorQuantize10,
     VectorQuantize100,
     VectorQuantizeNormal,
     Rotator,
+    UniqueNetId,
     GameplayTag,
     GameplayTagContainer,
     HitResult,
@@ -699,16 +767,28 @@ impl RepValue {
             Self::Bool(_) => ItemKind::Bool,
             Self::Byte(_) => ItemKind::Byte,
             Self::Enum(_) => ItemKind::Enum,
+            Self::Int8(_) => ItemKind::Int8,
+            Self::Int16(_) => ItemKind::Int16,
+            Self::UInt16(_) => ItemKind::UInt16,
+            Self::Int(_) => ItemKind::Int,
+            Self::UInt32(_) => ItemKind::UInt32,
+            Self::Int64(_) => ItemKind::Int64,
+            Self::UInt64(_) => ItemKind::UInt64,
+            Self::Float(_) => ItemKind::Float,
+            Self::Double(_) => ItemKind::Double,
             Self::Object(_) => ItemKind::Object,
             Self::NetworkName(_) => ItemKind::NetworkName,
             Self::Str(_) => ItemKind::Str,
             Self::SoftObject(_) => ItemKind::SoftObject,
             Self::Text(_) => ItemKind::Text,
+            Self::Vector(_) => ItemKind::Vector,
+            Self::Vector2D(_) => ItemKind::Vector2D,
             Self::VectorQuantize(_) => ItemKind::VectorQuantize,
             Self::VectorQuantize10(_) => ItemKind::VectorQuantize10,
             Self::VectorQuantize100(_) => ItemKind::VectorQuantize100,
             Self::VectorQuantizeNormal(_) => ItemKind::VectorQuantizeNormal,
             Self::Rotator(_) => ItemKind::Rotator,
+            Self::UniqueNetId(_) => ItemKind::UniqueNetId,
             Self::GameplayTag(_) => ItemKind::GameplayTag,
             Self::GameplayTagContainer(_) => ItemKind::GameplayTagContainer,
             Self::HitResult(_) => ItemKind::HitResult,
@@ -725,6 +805,15 @@ impl std::fmt::Debug for RepValue {
             Self::Bool(_) => formatter.write_str("Bool"),
             Self::Byte(_) => formatter.write_str("Byte"),
             Self::Enum(_) => formatter.write_str("Enum"),
+            Self::Int8(_) => formatter.write_str("Int8"),
+            Self::Int16(_) => formatter.write_str("Int16"),
+            Self::UInt16(_) => formatter.write_str("UInt16"),
+            Self::Int(_) => formatter.write_str("Int"),
+            Self::UInt32(_) => formatter.write_str("UInt32"),
+            Self::Int64(_) => formatter.write_str("Int64"),
+            Self::UInt64(_) => formatter.write_str("UInt64"),
+            Self::Float(_) => formatter.write_str("Float"),
+            Self::Double(_) => formatter.write_str("Double"),
             Self::Object(guid) => formatter.debug_tuple("Object").field(guid).finish(),
             Self::NetworkName(name) => formatter.debug_tuple("NetworkName").field(name).finish(),
             Self::Str(text) => formatter
@@ -736,6 +825,8 @@ impl std::fmt::Debug for RepValue {
                 .field("units", &text.declared_units())
                 .finish(),
             Self::Text(text) => text.fmt(formatter),
+            Self::Vector(_) => formatter.write_str("Vector"),
+            Self::Vector2D(_) => formatter.write_str("Vector2D"),
             Self::VectorQuantize(vector) => formatter
                 .debug_tuple("VectorQuantize")
                 .field(vector)
@@ -753,6 +844,7 @@ impl std::fmt::Debug for RepValue {
                 .field(normal)
                 .finish(),
             Self::Rotator(rotator) => formatter.debug_tuple("Rotator").field(rotator).finish(),
+            Self::UniqueNetId(id) => formatter.debug_tuple("UniqueNetId").field(id).finish(),
             Self::GameplayTag(tag) => formatter.debug_tuple("GameplayTag").field(tag).finish(),
             Self::GameplayTagContainer(tags) => formatter
                 .debug_tuple("GameplayTagContainer")
@@ -833,6 +925,7 @@ pub struct EntrySummary {
     pub string_units: Option<usize>,
     pub vector_bits: Option<u32>,
     pub rotator: Option<RotatorSummary>,
+    pub unique_net_id: Option<UniqueNetIdSummary>,
     pub movement: Option<MovementSummary>,
     /// Container tag count; `None` for an empty-bit container or another kind.
     pub tag_count: Option<usize>,
@@ -864,6 +957,7 @@ impl RepEntry {
             string_units: None,
             vector_bits: None,
             rotator: None,
+            unique_net_id: None,
             movement: None,
             tag_count: None,
             opaque_bits: None,
@@ -893,6 +987,7 @@ impl RepEntry {
                 });
             }
             RepValue::Rotator(rotator) => summary.rotator = Some(rotator.summary()),
+            RepValue::UniqueNetId(id) => summary.unique_net_id = Some(id.summary()),
             RepValue::Opaque(payload) => summary.opaque_bits = Some(payload.bit_len()),
             RepValue::DynamicArray(array) => {
                 summary.array = Some(Box::new(ArraySummary {
@@ -907,6 +1002,17 @@ impl RepEntry {
             RepValue::Bool(_)
             | RepValue::Byte(_)
             | RepValue::Enum(_)
+            | RepValue::Int8(_)
+            | RepValue::Int16(_)
+            | RepValue::UInt16(_)
+            | RepValue::Int(_)
+            | RepValue::UInt32(_)
+            | RepValue::Int64(_)
+            | RepValue::UInt64(_)
+            | RepValue::Float(_)
+            | RepValue::Double(_)
+            | RepValue::Vector(_)
+            | RepValue::Vector2D(_)
             | RepValue::GameplayTag(GameplayTag::NetIndex(_))
             | RepValue::HitResult(_)
             | RepValue::Text(_)
@@ -988,16 +1094,28 @@ fn validate_layout_at(layout: &[RepCommand], limits: &RepLayoutLimits, depth: us
             }
             RepCommand::Bool
             | RepCommand::Byte { enum_bits: None }
+            | RepCommand::Int8
+            | RepCommand::Int16
+            | RepCommand::UInt16
+            | RepCommand::Int
+            | RepCommand::UInt32
+            | RepCommand::Int64
+            | RepCommand::UInt64
+            | RepCommand::Float
+            | RepCommand::Double
             | RepCommand::Object
             | RepCommand::NetworkName
             | RepCommand::Str
             | RepCommand::SoftObject
             | RepCommand::Text
+            | RepCommand::Vector
+            | RepCommand::Vector2D
             | RepCommand::VectorQuantize
             | RepCommand::VectorQuantize10
             | RepCommand::VectorQuantize100
             | RepCommand::VectorQuantizeNormal
             | RepCommand::Rotator
+            | RepCommand::UniqueNetId
             | RepCommand::Movement { .. }
             | RepCommand::HitResult
             | RepCommand::Unsupported(_) => {}
@@ -1086,6 +1204,25 @@ pub(super) fn write_u32(writer: &mut BitWriter, value: u32, order: ByteOrder) {
         ByteOrder::Little => value,
         ByteOrder::Big => value.swap_bytes(),
     });
+}
+
+pub(super) fn read_u64(reader: &mut BitReader<'_>, order: ByteOrder, what: &str) -> Result<u64> {
+    let low = u64::from(read_field(reader, 32, what)?);
+    let high = u64::from(read_field(reader, 32, what)?);
+    let raw = low | (high << 32);
+    Ok(match order {
+        ByteOrder::Little => raw,
+        ByteOrder::Big => raw.swap_bytes(),
+    })
+}
+
+pub(super) fn write_u64(writer: &mut BitWriter, value: u64, order: ByteOrder) {
+    let raw = match order {
+        ByteOrder::Little => value,
+        ByteOrder::Big => value.swap_bytes(),
+    };
+    writer.write_u32(raw as u32);
+    writer.write_u32((raw >> 32) as u32);
 }
 
 pub(super) fn copy_bits(reader: &mut BitReader<'_>, mut bits: usize) -> Payload {
@@ -1579,6 +1716,13 @@ fn write_tag(
     }
 }
 
+fn control_codec(codec: &RepLayoutCodec) -> ControlCodec {
+    ControlCodec {
+        order: codec.actor.order,
+        max_string_units: codec.limits.max_string_units,
+    }
+}
+
 pub(super) fn read_value(
     reader: &mut BitReader<'_>,
     command: &RepCommand,
@@ -1586,6 +1730,7 @@ pub(super) fn read_value(
     depth: usize,
     budget: &mut Budget,
 ) -> Result<RepValue> {
+    let order = codec.actor.order;
     Ok(match command {
         RepCommand::Bool => RepValue::Bool(read_flag(reader, "bool item")?),
         RepCommand::Byte { enum_bits } => {
@@ -1594,6 +1739,15 @@ pub(super) fn read_value(
         RepCommand::Enum { bits } => {
             RepValue::Enum(read_field(reader, u32::from(*bits), "enum item")?)
         }
+        RepCommand::Int8 => RepValue::Int8(read_field(reader, 8, "int8 item")? as u8 as i8),
+        RepCommand::Int16 => RepValue::Int16(read_u16(reader, order, "int16 item")? as i16),
+        RepCommand::UInt16 => RepValue::UInt16(read_u16(reader, order, "uint16 item")?),
+        RepCommand::Int => RepValue::Int(read_u32(reader, order, "int item")? as i32),
+        RepCommand::UInt32 => RepValue::UInt32(read_u32(reader, order, "uint32 item")?),
+        RepCommand::Int64 => RepValue::Int64(read_u64(reader, order, "int64 item")? as i64),
+        RepCommand::UInt64 => RepValue::UInt64(read_u64(reader, order, "uint64 item")?),
+        RepCommand::Float => RepValue::Float(read_u32(reader, order, "float item")?),
+        RepCommand::Double => RepValue::Double(read_u64(reader, order, "double item")?),
         RepCommand::Object => {
             RepValue::Object(read_guid_ref(reader, &codec.actor).context("object item")?)
         }
@@ -1611,6 +1765,15 @@ pub(super) fn read_value(
             codec.limits.max_string_units,
             "soft-object path",
         )?),
+        RepCommand::Vector => RepValue::Vector([
+            read_u32(reader, order, "vector X")?,
+            read_u32(reader, order, "vector Y")?,
+            read_u32(reader, order, "vector Z")?,
+        ]),
+        RepCommand::Vector2D => RepValue::Vector2D([
+            read_u32(reader, order, "vector2d X")?,
+            read_u32(reader, order, "vector2d Y")?,
+        ]),
         RepCommand::VectorQuantize => {
             RepValue::VectorQuantize(read_vector(reader, VectorPacking::NetQuantize)?)
         }
@@ -1656,6 +1819,9 @@ pub(super) fn read_value(
         ),
         RepCommand::VectorQuantizeNormal => RepValue::VectorQuantizeNormal(read_normal(reader)?),
         RepCommand::Rotator => RepValue::Rotator(read_rotator(reader).context("rotator item")?),
+        RepCommand::UniqueNetId => RepValue::UniqueNetId(
+            read_unique_net_id(reader, &control_codec(codec)).context("unique net id item")?,
+        ),
         RepCommand::DynamicArray { element } => {
             let count = read_u16(reader, codec.actor.order, "dynamic array count")?;
             ensure!(
@@ -1746,6 +1912,33 @@ pub fn parse_property_stream(
     Ok(stream)
 }
 
+/// Read `FRepLayout::ReceiveProperties` (`0x143b20720`, M-426, F-704): a 1-bit
+/// `bDoChecksum` flag, then a top-level handle stream with `codec.checksums`
+/// set to that bit.
+pub fn read_rep_properties(
+    reader: &mut BitReader<'_>,
+    layout: &[RepCommand],
+    codec: &RepLayoutCodec,
+) -> Result<PropertyStream> {
+    let do_checksum = read_flag(reader, "rep properties checksum bit")?;
+    let mut effective = *codec;
+    effective.checksums = do_checksum;
+    read_property_stream(reader, layout, &effective)
+}
+
+/// Parse a payload that must hold an exact `FRepLayout::ReceiveProperties`
+/// block (1-bit `bDoChecksum` preamble followed by one handle stream, F-704).
+pub fn parse_rep_properties(
+    payload: &Payload,
+    layout: &[RepCommand],
+    codec: &RepLayoutCodec,
+) -> Result<PropertyStream> {
+    let mut reader = payload.reader();
+    let stream = read_rep_properties(&mut reader, layout, codec)?;
+    ensure!(reader.at_end(), "trailing bits after the property stream");
+    Ok(stream)
+}
+
 pub(super) fn write_value(
     writer: &mut BitWriter,
     command: &RepCommand,
@@ -1754,6 +1947,7 @@ pub(super) fn write_value(
     depth: usize,
     budget: &mut Budget,
 ) -> Result<()> {
+    let order = codec.actor.order;
     match (command, value) {
         (RepCommand::Bool, RepValue::Bool(bit)) => writer.write_bit(*bit),
         (RepCommand::Byte { enum_bits }, RepValue::Byte(byte)) => {
@@ -1771,6 +1965,33 @@ pub(super) fn write_value(
                 "enum item exceeds its width"
             );
             writer.write_bits(*item, width);
+        }
+        (RepCommand::Int8, RepValue::Int8(val)) => {
+            writer.write_bits(u32::from(*val as u8), 8);
+        }
+        (RepCommand::Int16, RepValue::Int16(val)) => {
+            write_u16(writer, *val as u16, order);
+        }
+        (RepCommand::UInt16, RepValue::UInt16(val)) => {
+            write_u16(writer, *val, order);
+        }
+        (RepCommand::Int, RepValue::Int(val)) => {
+            write_u32(writer, *val as u32, order);
+        }
+        (RepCommand::UInt32, RepValue::UInt32(val)) => {
+            write_u32(writer, *val, order);
+        }
+        (RepCommand::Int64, RepValue::Int64(val)) => {
+            write_u64(writer, *val as u64, order);
+        }
+        (RepCommand::UInt64, RepValue::UInt64(val)) => {
+            write_u64(writer, *val, order);
+        }
+        (RepCommand::Float, RepValue::Float(bits)) => {
+            write_u32(writer, *bits, order);
+        }
+        (RepCommand::Double, RepValue::Double(bits)) => {
+            write_u64(writer, *bits, order);
         }
         (RepCommand::Object, RepValue::Object(guid)) => {
             write_guid_ref(writer, guid, &codec.actor).context("object item")?;
@@ -1796,6 +2017,16 @@ pub(super) fn write_value(
                 codec.limits.max_string_units,
                 "soft-object path",
             )?;
+        }
+        (RepCommand::Vector, RepValue::Vector(words)) => {
+            for word in *words {
+                write_u32(writer, word, order);
+            }
+        }
+        (RepCommand::Vector2D, RepValue::Vector2D(words)) => {
+            for word in *words {
+                write_u32(writer, word, order);
+            }
         }
         (RepCommand::VectorQuantize, RepValue::VectorQuantize(vector)) => {
             write_vector(writer, vector, VectorPacking::NetQuantize)?;
@@ -1851,6 +2082,9 @@ pub(super) fn write_value(
             write_hit_result(writer, hit, codec).context("hit result item")?;
         }
         (RepCommand::Rotator, RepValue::Rotator(rotator)) => write_rotator(writer, rotator),
+        (RepCommand::UniqueNetId, RepValue::UniqueNetId(id)) => {
+            write_unique_net_id(writer, id, &control_codec(codec)).context("unique net id item")?;
+        }
         (RepCommand::DynamicArray { element }, RepValue::DynamicArray(array)) => {
             ensure!(
                 array.count <= codec.limits.max_array_elements,
@@ -1937,8 +2171,43 @@ pub fn encode_property_stream(
     Ok(Payload::from_writer(writer))
 }
 
+/// Write `FRepLayout::SendProperties` / `ReceiveProperties` (`0x143b20720`,
+/// M-426, F-704): the 1-bit `bDoChecksum` flag (`codec.checksums`), then the
+/// top-level handle stream.
+pub fn write_rep_properties(
+    writer: &mut BitWriter,
+    stream: &PropertyStream,
+    layout: &[RepCommand],
+    codec: &RepLayoutCodec,
+) -> Result<()> {
+    let payload = encode_rep_properties(stream, layout, codec)?;
+    append_bits(writer, &payload);
+    Ok(())
+}
+
+/// Encode an `FRepLayout::ReceiveProperties` block (1-bit `bDoChecksum`
+/// preamble followed by one handle stream, F-704).
+pub fn encode_rep_properties(
+    stream: &PropertyStream,
+    layout: &[RepCommand],
+    codec: &RepLayoutCodec,
+) -> Result<Payload> {
+    validate_layout(layout, &codec.limits)?;
+    let mut budget = Budget {
+        remaining: codec.limits.max_entries,
+    };
+    let mut writer = BitWriter::new();
+    writer.write_bit(codec.checksums);
+    write_stream(&mut writer, stream, layout, 1, codec, 0, &mut budget)?;
+    Ok(Payload::from_writer(writer))
+}
+
 /// Maximum registered enumerator value of `ENetRole` (`ROLE_MAX = 4`, F-703).
 pub const NET_ROLE_MAX_VALUE: i64 = 4;
+/// Maximum registered enumerator value of `EReplicatedLeftProspectState` (3, F-703).
+pub const REPLICATED_LEFT_PROSPECT_STATE_MAX_VALUE: i64 = 3;
+/// `FGameplayTagContainer::NetSerialize` count width (`MaxBitsForContainerSize = 7`, F-592).
+pub const GAMEPLAY_TAG_CONTAINER_COUNT_BITS: u8 = 7;
 
 /// Flattened child commands of `FRepAttachment` (`HasNetSerializer == false`,
 /// F-703): `AttachParent`, `LocationOffset`, `RelativeScale3D`,
@@ -2003,11 +2272,75 @@ pub fn controller_rep_layout(
     commands
 }
 
-/// Statically observed 26-handle rep layout of `APlayerState` (F-703):
+/// Statically observed 19-handle rep layout of `APlayerController` (and
+/// `AIcarusController`, which adds no net properties, F-703, F-704):
+/// `AController` handles 1..17, then handle 18 `TargetViewRotation`
+/// (`FRotator`) and handle 19 `SpawnLocation` (`FVector`).
+pub fn player_controller_rep_layout(
+    location: MovementLevel,
+    velocity: MovementLevel,
+    rotation: RotationLevel,
+) -> Vec<RepCommand> {
+    let mut commands = controller_rep_layout(location, velocity, rotation);
+    commands.extend([RepCommand::Rotator, RepCommand::Vector]);
+    commands
+}
+
+/// Statically observed 25-handle rep layout of `AIcarusPlayerController`
+/// (F-703, F-704): `APlayerController` handles 1..19, then handle 20
+/// `IcarusPlayerCharacter`, handle 21 `bCaptureViewTraces`, handle 22
+/// `BackendProxyComponent`, handle 23 `PlayerDataComponent`, handle 24
+/// `BestiaryManagerComponent` and handle 25 `GameplayTags`.
+pub fn icarus_player_controller_rep_layout(
+    location: MovementLevel,
+    velocity: MovementLevel,
+    rotation: RotationLevel,
+    tag_encoding: TagEncoding,
+) -> Vec<RepCommand> {
+    let mut commands = player_controller_rep_layout(location, velocity, rotation);
+    commands.extend([
+        RepCommand::Object,
+        RepCommand::Bool,
+        RepCommand::Object,
+        RepCommand::Object,
+        RepCommand::Object,
+        RepCommand::GameplayTagContainer {
+            encoding: tag_encoding,
+            count_bits: GAMEPLAY_TAG_CONTAINER_COUNT_BITS,
+        },
+    ]);
+    commands
+}
+
+/// Statically observed 30-handle rep layout of `AIcarusPlayerControllerSurvival`
+/// (F-703, F-704): `AIcarusPlayerController` handles 1..25, then handle 26
+/// `ReplicatedLeftProspectSession` (`EReplicatedLeftProspectState`), handle 27
+/// `AssignedDropshipSpawn`, handle 28 `AssignedDropship`, handle 29
+/// `AssignedGravestone` and handle 30 `RemoteUserSettings`.
+pub fn icarus_player_controller_survival_rep_layout(
+    location: MovementLevel,
+    velocity: MovementLevel,
+    rotation: RotationLevel,
+    tag_encoding: TagEncoding,
+) -> Vec<RepCommand> {
+    let mut commands =
+        icarus_player_controller_rep_layout(location, velocity, rotation, tag_encoding);
+    commands.extend([
+        RepCommand::Enum {
+            bits: enum_bits(REPLICATED_LEFT_PROSPECT_STATE_MAX_VALUE, 1),
+        },
+        RepCommand::Object,
+        RepCommand::Object,
+        RepCommand::Object,
+        RepCommand::Object,
+    ]);
+    commands
+}
+
+/// Statically observed 26-handle rep layout of `APlayerState` (F-703, F-704):
 /// `AActor` handles 1..15 (`AInfo` adds none), then handles 16..26 (`Score`,
 /// `PlayerId`, `Ping`, five bitfield bools at `+0x22a` sorted by name,
-/// `StartTime`, `UniqueId` and `PlayerNamePrivate`). Unread item serializers
-/// stay [`RepCommand::Unsupported`] so selecting them fails closed.
+/// `StartTime`, `UniqueId` and `PlayerNamePrivate`).
 pub fn player_state_rep_layout(
     location: MovementLevel,
     velocity: MovementLevel,
@@ -2015,16 +2348,16 @@ pub fn player_state_rep_layout(
 ) -> Vec<RepCommand> {
     let mut commands = actor_rep_layout(location, velocity, rotation);
     commands.extend([
-        RepCommand::Unsupported(UnsupportedItem::Float),
-        RepCommand::Unsupported(UnsupportedItem::Int32),
+        RepCommand::Float,
+        RepCommand::Int,
         RepCommand::Byte { enum_bits: None },
         RepCommand::Bool,
         RepCommand::Bool,
         RepCommand::Bool,
         RepCommand::Bool,
         RepCommand::Bool,
-        RepCommand::Unsupported(UnsupportedItem::Int32),
-        RepCommand::Unsupported(UnsupportedItem::OtherNativeStruct),
+        RepCommand::Int,
+        RepCommand::UniqueNetId,
         RepCommand::Str,
     ]);
     commands
