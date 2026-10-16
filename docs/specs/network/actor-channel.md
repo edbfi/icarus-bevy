@@ -3,14 +3,15 @@
 ## Status
 
 Experimental: static observations of client build 25793767, with server
-build 25621760 writers for content blocks and NetGUIDs; not wire-validated. Last reconciled: 2026-10-15.
+build 25621760 writers for content blocks and NetGUIDs; wire-checked against
+one capture of the 3.0.31 server (F-693). Last reconciled: 2026-10-16.
 
 ## Scope
 
 How the client reads actor-channel bunches after the control channel: the
 spawn record of a new actor and the per-object content blocks that carry
 replicated state. Not covered: the property stream inside a content block,
-remote procedure calls, NetGUID export bunches, quantization helpers,
+remote procedure calls, quantization helpers,
 dormancy, channel close reasons and every server-side writer.
 
 ## Confirmed
@@ -18,7 +19,11 @@ dormancy, channel close reasons and every server-side writer.
 - NetGUID references (F-572): a packed GUID value, 0 meaning none and
   recursion capped at 16 levels; GUID 1 or an export-enabled archive adds an
   export-flags byte: bit 0 a recursive outer GUID and a path string, bit 2 a
-  4-byte network checksum, bit 1 no-load. Nonzero even GUIDs are dynamic.
+  4-byte network checksum after the path (none without one, F-692), bit 1
+  no-load. Nonzero even GUIDs are dynamic.
+- NetGUID exports (F-694, wire-consistent, not statically read) ride
+  export-only partial bunches: a rep-layout bit, an i32 count, then that many
+  exported references.
 - Open bunch (F-569): `SerializeNewActor` reads the actor NetGUID through the
   package map. For a dynamic GUID (nonzero, even) it then reads the archetype
   NetGUID, a level reference gated on archive flags, and four optional blocks
@@ -215,4 +220,4 @@ dormancy, channel close reasons and every server-side writer.
   display strings M-581 to M-584; Text codec M-585, M-602 to M-605; Text callees M-586,
   M-587; custom versions M-588; enum widths M-614, M-615; fields and RPCs M-620 to M-624; fast arrays M-628 to M-635; codec tests M-475, M-476, M-492, M-496,
   M-511, M-522, M-530, M-548; layout source M-552 to M-555; send order M-461, M-556 to
-  M-560.
+  M-560; wire capture M-707.

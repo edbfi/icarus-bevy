@@ -235,7 +235,8 @@ fn identities() -> Result<Vec<(&'static str, UniqueNetId)>> {
 }
 
 /// Hello, Login with each synthetic id until a Welcome, then Netspeed and
-/// Join, then acknowledge everything and send keepalives for `seconds`.
+/// Join, then acknowledge everything, record every reply and send keepalives
+/// for `seconds`.
 fn join(version: u32, seconds: u64) -> Result<()> {
     for (label, unique_net_id) in identities()? {
         let socket = UdpSocket::bind("127.0.0.1:0")?;
@@ -314,6 +315,11 @@ fn hold(client: &mut ProbeClient, seconds: u64) -> Result<()> {
             last_datagram = Instant::now();
         }
         for reply in &collected.replies {
+            // Every reply, raw, for offline replication decoding; case-private.
+            println!(
+                "{}",
+                json!({"event":"reply", "ms":start.elapsed().as_millis() as u64, "hex":hex(&reply.bytes)})
+            );
             datagrams += 1;
             bytes += reply.bytes.len() as u64;
             match &reply.decode {

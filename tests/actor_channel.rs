@@ -116,6 +116,7 @@ fn default_guid_always_has_export_flags() {
             no_load,
             path: None,
             checksum: None,
+            bare_checksum_flag: false,
         }),
     };
     assert_guid(&(vec![0x02, 0x00], 16), &flags_only(false), &plain);
@@ -138,6 +139,7 @@ fn exports_with_and_without_path_and_checksum() {
             no_load: false,
             path: None,
             checksum: None,
+            bare_checksum_flag: false,
         }),
     };
     let with_path = NetGuidRef {
@@ -149,6 +151,7 @@ fn exports_with_and_without_path_and_checksum() {
                 path: text("/A"),
             }),
             checksum: None,
+            bare_checksum_flag: false,
         }),
     };
     assert_guid(&bits(&writer), &with_path, &exports);
@@ -169,6 +172,7 @@ fn exports_with_and_without_path_and_checksum() {
                 path: text("/Game/X"),
             }),
             checksum: Some(0xdead_beef),
+            bare_checksum_flag: false,
         }),
     };
     assert_guid(&bits(&writer), &full, &exports);
@@ -192,6 +196,7 @@ fn exports_with_and_without_path_and_checksum() {
                 path: ArchiveText::new(&[0x100]).unwrap(),
             }),
             checksum: Some(0x0102_0304),
+            bare_checksum_flag: false,
         }),
     };
     assert_guid(&bits(&writer), &wide, &big);
@@ -200,7 +205,7 @@ fn exports_with_and_without_path_and_checksum() {
 #[test]
 fn unsupported_export_flags_fail_closed() {
     let exports = codec(13, true, false);
-    for flags in [0x04u8, 0x06, 0x08, 0x80] {
+    for flags in [0x08u8, 0x80] {
         let fixture = (vec![0x02, flags], 16);
         assert!(read_guid_ref(&mut reader(&fixture), &exports).is_err());
     }
@@ -210,6 +215,7 @@ fn unsupported_export_flags_fail_closed() {
             no_load: false,
             path: None,
             checksum: Some(1),
+            bare_checksum_flag: false,
         }),
     };
     assert!(write_guid_ref(&mut BitWriter::new(), &checksum_only, &exports).is_err());
@@ -222,9 +228,42 @@ fn unsupported_export_flags_fail_closed() {
             no_load: false,
             path: None,
             checksum: None,
+            bare_checksum_flag: false,
         }),
     };
     assert!(write_guid_ref(&mut BitWriter::new(), &flagged, &codec(13, false, false)).is_err());
+}
+
+/// The original server sends export flag bit 2 without the path bit, and no
+/// checksum follows it (F-692).
+#[test]
+fn bare_checksum_flag_carries_no_checksum() {
+    let exports = codec(13, true, false);
+    for (flags, no_load) in [(0x04u8, false), (0x06, true)] {
+        let fixture = (vec![0x02, flags], 16);
+        let mut input = reader(&fixture);
+        let reference = read_guid_ref(&mut input, &exports).unwrap();
+        assert_eq!(input.remaining(), 0);
+        let export = reference.export.as_ref().unwrap();
+        assert!(export.bare_checksum_flag && export.checksum.is_none() && export.path.is_none());
+        assert_eq!(export.no_load, no_load);
+        let mut writer = BitWriter::new();
+        write_guid_ref(&mut writer, &reference, &exports).unwrap();
+        assert_eq!(bits(&writer), fixture);
+    }
+    let both = NetGuidRef {
+        guid: 1,
+        export: Some(GuidExport {
+            no_load: false,
+            path: Some(ExportPath {
+                outer: Box::new(NetGuidRef::null()),
+                path: text(""),
+            }),
+            checksum: Some(1),
+            bare_checksum_flag: true,
+        }),
+    };
+    assert!(write_guid_ref(&mut BitWriter::new(), &both, &exports).is_err());
 }
 
 #[test]
@@ -255,6 +294,7 @@ fn chain(outers: usize) -> ((Vec<u8>, usize), NetGuidRef) {
             no_load: false,
             path: None,
             checksum: None,
+            bare_checksum_flag: false,
         }),
     };
     for _ in 0..outers {
@@ -267,6 +307,7 @@ fn chain(outers: usize) -> ((Vec<u8>, usize), NetGuidRef) {
                     path: text(""),
                 }),
                 checksum: None,
+                bare_checksum_flag: false,
             }),
         };
     }
@@ -598,6 +639,7 @@ fn sub_object_blocks() {
                     no_load: false,
                     path: None,
                     checksum: None,
+                    bare_checksum_flag: false,
                 })
                 .filter(|_| guid != 0)
         };
@@ -887,6 +929,7 @@ fn debug_and_summaries_carry_no_secrets() {
                 path: text("SECRET-PATH-MARKER"),
             }),
             checksum: Some(checksum),
+            bare_checksum_flag: false,
         }),
     };
     let body = ActorBunchBody {

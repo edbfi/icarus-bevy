@@ -958,6 +958,7 @@ fn writer_validates_values_against_the_layout() {
                     no_load: false,
                     path: None,
                     checksum: None,
+                    bare_checksum_flag: false,
                 }),
             }),
             "export flags",
@@ -1074,6 +1075,7 @@ fn object_items_carry_export_flags_when_enabled() {
                     path: text("Pkg"),
                 }),
                 checksum: None,
+                bare_checksum_flag: false,
             }),
         }),
     )]);
