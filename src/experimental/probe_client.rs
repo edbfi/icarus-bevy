@@ -3,9 +3,11 @@
 //! own codec and client sequencing model (F-519, F-521 to F-527, F-530,
 //! F-536 to F-539, F-563).
 //!
-//! The data-packet model is not wire-validated against an original server, so
-//! a reply that fails to decode is kept as data rather than an error: against
-//! the original it is the observation. Every received datagram is kept raw.
+//! The original server accepts this framing and answers Hello (F-688, F-689),
+//! and a capture of its later traffic decodes (F-693), but other bunches stay
+//! unvalidated, so a reply that fails to decode is kept as data rather than an
+//! error: against the original it is the observation. Every received datagram
+//! is kept raw.
 //! Run against the original only through the approved offline launcher.
 
 use std::{

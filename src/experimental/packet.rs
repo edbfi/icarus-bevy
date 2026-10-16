@@ -1,9 +1,9 @@
 //! EXPERIMENTAL codec for the statically observed client packet receive format.
 //!
 //! Static client-build observations only (F-521..F-525): the current-version
-//! path with every version gate on and the internal-ack flag clear. Not
-//! wire-validated against any original packet. The sender side was not
-//! observed; writers mirror the readers (and the observed `WriteIntWrapped`
+//! path with every version gate on and the internal-ack flag clear. The
+//! original server's packets decode with it (F-688, F-693). The sender side
+//! was not observed; writers mirror the readers (and the observed `WriteIntWrapped`
 //! loop) for round-trip research only. Negotiated version values, the
 //! connection's channel limit and maximum packet size are unknown and supplied
 //! by the caller. No connection state, ack tracking, relative reliable-sequence

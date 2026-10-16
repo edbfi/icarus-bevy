@@ -113,8 +113,8 @@ Last reconciled: 2026-10-15
   session; historical authorization windows remain expired (F-218, F-252). The
   user authorized (2026-10-15) bounded offline save-load runs on disposable
   save copies, and Steam egress and connected Windows-client tests only for
-  scenarios the user approves one by one. Each run observes 15 to 780 seconds
-  plus 120 seconds of cleanup, at most 900 seconds.
+  scenarios the user approves one by one. Offline runs observe 15 to 780 s,
+  connected runs 60 to 2700 s, each plus 120 s of cleanup inside its session.
 - Connected scenarios need the user at the client, its build bound in the
   scope, approved ingress and egress and bounded capture. The user directed (2026-10-16)
   that this host fetch and run the matched official server for them to join

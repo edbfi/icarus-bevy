@@ -41,8 +41,9 @@ Recovered tag layout (older server):
   | Value | exactly the declared payload size |
 
 - Type metadata per kind: F-288; from version 509, Map (name 28), Set (29) and
-  Int64 (20): F-556, with identical client branching. `UInt32Property` is built-in
-  name ID 25 (F-290, F-247); Float/Text use only the common GUID flag (F-206, F-207).
+  Int64 (20): F-556, with identical client branching. `UInt32Property` is
+  built-in name ID 25 (F-290, F-247); Float/Text use only the common GUID flag
+  (F-206, F-207).
 - Version gates in `0x14215f530`: Struct GUID at 441, Array inner type at 282,
   property GUID at 503; all apply at 522; other profiles unsupported (F-289).
 - Size counts only the value bytes after the complete header; a C++ object
@@ -78,15 +79,16 @@ Reader policy (authored; research limits, not recovered format limits):
   duplicate or missing known fields and malformed values fail the whole scan.
   Empty class strings and raw UTF-16 are accepted as framing. Limits 32 MiB,
   16,384 recorders, 65,536 fields, 1,024 units per header or class string,
-  checked before count-driven allocation. Raw
-  containers have no `Serialize`/`Debug`; no partial result (F-300).
+  checked before count-driven allocation. Raw containers have no
+  `Serialize`/`Debug`; no partial result (F-300).
 - Base component (`experimental::component::read_base_component`): tagged
   properties, terminal `None`, 4-byte LE trailer flag 0, exact EOF; flag 1 fails
   as unsupported GUID trailer even with 16 more bytes; other nonzero flags,
   truncation, missing terminator and trailing bytes fail. Default 64 KiB and 256
   properties; `read_base_component_with_limit` accepts 1 byte up to a hard 1 MiB
-  ceiling with the same field cap; invalid limits fail even for small inputs. Summary adds `values_interpreted: false`. Not
-  enabled by `--recorders` (F-302, F-248, F-198).
+  ceiling with the same field cap; invalid limits fail even for small inputs.
+  Summary adds `values_interpreted: false`. Not enabled by `--recorders` (F-302,
+  F-248, F-198).
 - Int array (`experimental::int_array::read_int_array`): LE signed count, then
   exactly 4 opaque bytes per element; rejects negative counts, truncation,
   trailing bytes and more than 4,096 elements; early cap 64 KiB,
@@ -118,13 +120,13 @@ objects):
   (F-259, F-307). Nested streams S01 3/253/213/40, S02 7/343/318/25, S03-S05 each
   1/48/48/0, S06 3/168/164/4 (fields/total/header+terminator/opaque); 24
   sequences, 64 fields, 3,632 = 3,356 + 276 bytes (F-310, F-311).
-- Int arrays: 486 C009 S02 arrays, 980 bytes (F-314). Struct arrays: 28 C028 arrays,
-  2,624 bytes, all empty (F-249); C034 four arrays, 428 elements, 56,412 bytes,
-  Struct 12 / Float 4 bytes (F-191, F-664); all 1,658 C034 own arrays, 15,342
-  elements, 30,684 fields (F-316); 11,606
-  inherited C034 arrays, all empty (F-196); C009 3,402 arrays, 522 elements, CA01
-  66,257 bytes via `_with_limit` (F-174, F-203, F-317); C034 Float headers: 32
-  fields over 58,356 bytes (F-188).
+- Int arrays: 486 C009 S02 arrays, 980 bytes (F-314). Struct arrays: 28 C028
+  arrays, 2,624 bytes, all empty (F-249); C034 four arrays, 428 elements, 56,412
+  bytes, Struct 12 / Float 4 bytes (F-191, F-664); all 1,658 C034 own arrays,
+  15,342 elements, 30,684 fields (F-316); 11,606 inherited C034 arrays, all
+  empty (F-196); C009 3,402 arrays, 522 elements, CA01 66,257 bytes via
+  `_with_limit` (F-174, F-203, F-317); C034 Float headers: 32 fields over 58,356
+  bytes (F-188).
 
 ## Candidate
 

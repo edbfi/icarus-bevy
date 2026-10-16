@@ -19,9 +19,10 @@ data-table row meanings (F-660).
   matching name (F-650, F-676): equal lengths, ASCII case-insensitive, other
   units exact (F-663).
 - A voxel record owns the actor within 0.1 per axis, inclusive (F-645). A
-  fully mined voxel with a respawn-only owner policy fails validation, so its
-  record is dropped on restore; the original server's offline load did exactly
-  this, silently (F-680).
+  fully mined voxel with a respawn-only owner policy (saved 1 of 0 find,
+  1 respawn, 2 find or respawn, 3 manual; both builds, M-627) fails
+  validation, so its record is dropped on restore; the original server's
+  offline load did exactly this, silently (F-680).
 - A teleport saves the truncated time left to its cooldown end, 0 when unset or
   under one unit, restored as a new countdown (F-657).
 - Saved elapsed level seconds under 31 take the positive saved game time (F-653).
