@@ -88,8 +88,8 @@ preserve verified gameplay semantics.
 
 ## Toolchain
 
-Rust **1.99.0** and Bevy **0.20.0**, verified current stable on 2026-10-14 (F-483)
-([Rust](https://blog.rust-lang.org/2026/10/01/Rust-1.99.0/),
+Rust **1.99.1** and Bevy **0.20.0**, verified current stable on 2026-10-16 (F-483)
+([Rust](https://static.rust-lang.org/dist/channel-rust-stable.toml),
 [Bevy](https://crates.io/crates/bevy/0.20.0)). Pin Rust in `rust-toolchain.toml`
 with matching Rustfmt and Clippy; commit `Cargo.lock`; use one toolchain for
 development, CI, benchmarks and releases. Routine stable upgrades are authorized:

@@ -17,6 +17,23 @@ Its authored and independent fixtures run through prek/CI. Target use requires a
 separate authorized case with streaming input hashes and resource/deadline guards;
 symbol names alone establish neither instruction boundaries nor runtime behavior.
 
+`tools/pak_protocol_metadata.cjs` admits only the pinned package's exact
+gameplay-tag configuration member. The v11 profile verifies whole-file SHA-256,
+index and member SHA-1, sizes and EOF; it supports uncompressed or single-block
+Zlib input and rejects unsupported layouts, encryption and nonregular files.
+Authored fixtures run through prek/CI. Run it only inside a fresh scoped case:
+
+```bash
+node tools/pak_protocol_metadata.cjs --path "$PAK_PATH" --sha256 "$PAK_SHA256" > "$CASE_DIR/declared-profile-private.json"
+```
+
+The output contains derived tag declarations and settings; retain it privately.
+It discards comments and external asset paths, counts unresolved sources and
+redirects, and always marks runtime settings and the final mapping unverified.
+It never follows references or extracts other member bodies. REA's current
+artifact route rejects this format (M-709); the bounded fallback's qualification
+is M-717. Passing config inspection does not qualify a complete schema.
+
 The experimental [archive-string subset](../specs/save-format/archive-string.md) offers a
 borrowed strict frame validator and an owning decoder. Initial-control validation
 uses borrowed spans without temporary decoded-unit allocation. Archive byte order

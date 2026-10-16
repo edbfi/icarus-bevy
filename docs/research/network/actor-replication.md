@@ -1,6 +1,6 @@
 # Actor replication after login
 
-Static evidence for how the client receives actors and their replicated state
+Static and recorded-wire evidence for how the client receives replicated state
 once the control channel has admitted it; the spec is
 [actor channel bunches](../../specs/network/actor-channel.md).
 
@@ -30,15 +30,24 @@ and the movement struct, whose quantization levels are property defaults
 configured widths (F-591, F-592). Field headers then carry RPCs, custom-delta
 payloads and fast arrays (F-644). These are client-build observations; the
 older server's content-block and NetGUID writers mirror them (F-581) and
-compose actor bunches in client read order (F-610). Nothing is wire-validated.
+compose actor bunches in client read order (F-610). Generic framing and content
+blocks now parse the original's recorded traffic (F-693, F-694); typed class
+layouts and tag dictionaries remain unvalidated.
+
+Offline schema derivation is authorized ([gates](../../gates.md)). The packaged
+tag configuration supplies declarations, including an unresolved external source
+(F-697). It cannot establish the runtime index order. The native
+`experimental::tag_dictionary` consumes an explicitly supplied complete order;
+its sentinel contract remains a static candidate (F-698). Native engine-class
+property names and candidate indices are located, but their full schemas are
+not recovered (F-699).
 
 ## Open
 
 - Other native structs (U-064); server send policy (U-044).
-- Tag replication by net index would need an identical tag table (F-583, U-065).
-- Rep handles follow each class's replicated-property list (F-609), so a server
-  needs the same lists as the client; their source is a user decision (U-066).
+- Complete tag sources, index ordering and effective widths (F-697, F-698; U-065).
+- Property types, offsets, arrays and gameplay-class schemas (F-699; U-066).
 
 ## Artifacts
 
-M-420..M-449, M-455..M-470, M-570..M-576, M-581..M-588, M-600..M-605.
+M-420..M-449, M-455..M-470, M-570..M-576, M-581..M-588, M-600..M-605, M-707, M-709..M-717.

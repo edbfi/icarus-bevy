@@ -7,7 +7,7 @@ the [unknowns ledger](ledgers/unknowns.md); preconditions live only in
 
 Before restructure: 96ddb0b:docs/implementation-status.md
 
-Last reconciled: 2026-10-15
+Last reconciled: 2026-10-16
 
 ## Summary
 
@@ -37,7 +37,7 @@ What the foundation does is in the
 | M0: reference baseline | In progress | 435 files hashed; build 25621760; isolated entry-map startup observed; supplied save integrity/outer format characterized; client identity checked (F-486); exact build pairing pending |
 | M1: original bug reproduction | Pending | Offline startup did not reproduce reported crashes; no official bug is marked reproduced or fixed (F-217); controlled workloads still required |
 | M2: interoperability/data feasibility | In progress, partial observations | Stateless exchange observed; authenticated protocol, world-data and import feasibility gates remain open |
-| M3: Bevy gameplay slice | In progress, foundation only | Rust 1.99.0 / Bevy 0.20.0 foundation tested; stock-client slice pending M2 |
+| M3: Bevy gameplay slice | In progress, foundation only | Rust 1.99.1 / Bevy 0.20.0 foundation tested; stock-client slice pending M2 |
 | M4: complete behavior | Pending | All required compatibility matrix entries must pass |
 | M5: migration/hardening | Pending, native hardening underway | Real native filesystem faults pass; real saves preserve losslessly in native generations and run through autosaves (F-567, F-584); randomized inputs never panic the readers or the peer lab, and corrupted stores load a committed snapshot or fail closed (F-604 to F-607, F-611); value meanings and migration fidelity remain unvalidated |
 | M6: optimization/qualification | Pending | Matched reference workloads and full release gates required |
@@ -52,5 +52,5 @@ Offline work, in order; connected proof keeps its gates.
 4. Packet framing and transport: formats, reliability, control vocabulary, unique net ids and the engine's login checks are recorded, with experimental codecs, a loopback peer lab and a native login mirror ([control negotiation](specs/network/control-negotiation.md)); the offline original accepts the framing, answers Hello (F-688, F-689) and welcomes a synthetic Login and Join (F-690); handler configuration and PreLogin delegates remain (U-037, U-038).
 5. World data: both copies preserve losslessly and seeded worlds autosave (F-567, F-584); restore rules are authored in `experimental::restore_rules` (F-663); the preserved server loads, saves and reloads a supplied copy offline, dropping only two physics-dynamic tree records and one fully mined respawned voxel record, as client validation predicts (F-678 to F-681); an interpreted import stays gated (U-045).
 6. Reliability: 72-hour schedules pass in compressed time (F-615, F-616); paced wall-clock effects and physical power loss remain (U-035), and none of it is ICARUS performance (F-485).
-7. Replication: spawn records, content blocks, property streams, native structs, Text, enum widths, field headers, RPCs and fast arrays are read and re-encoded bit-identically ([actor channel](specs/network/actor-channel.md)), and the actor-channel codecs decode a 240 s capture of the original's traffic to its end (F-692 to F-694); layouts and tag tables need your call (U-064, U-065, U-066).
+7. Replication: actor-channel codecs decode a 240 s original capture (F-692 to F-694). Schema derivation is authorized; packaged tag declarations and native class candidates are located (F-697 to F-699), with a tested reader and supplied-order dictionary. Complete tag sources/order and class types/arrays remain (U-064, U-065, U-066; [actor channel](specs/network/actor-channel.md)).
 8. Connected scenarios: this host fetches and runs the matched official server, which registers with Steam (F-687), and the release pin tracks the weekly builds whose server code changes (F-686, [architecture](architecture.md#release-tracking)); a synthetic player joins offline and lifts the empty-world pause, so crops grow (F-690, F-691); S1's map and crop actions await the user (U-047).

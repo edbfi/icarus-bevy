@@ -3,7 +3,7 @@
 One row per open question. Tracked here; REA sessions mirror it. IDs are permanent.
 Status: open, investigating, blocked, contradicted, resolved.
 
-Last reconciled: 2026-10-15
+Last reconciled: 2026-10-16
 
 | ID | Question | Severity | Status | Next probe | Findings | REA id |
 | --- | --- | --- | --- | --- | --- | --- |
@@ -71,5 +71,5 @@ Last reconciled: 2026-10-15
 | U-062 | Are any statically optional C013/C028/C034/C009 descriptors mandatory, and is their serialized order fixed? | medium | open | none stated | F-352, F-655, F-664 |  |
 | U-063 | For missing, empty/truncated, malformed/unsupported-version, name-mismatch, changed-during-load and interrupted-save inputs, how do both entry paths behave and is state preserved? | high | open | controlled reproduction matrix with authorized disposable fixtures | F-325, F-326 |  |
 | U-064 | How are replicated properties encoded inside an actor content block, and how are spawn transforms quantized? | high | investigating | Handle walk, vectors, rotators, names, items (Str, soft object, tag, hit result, Text), movement, enum widths, fields, RPCs, fast arrays read; next U-066 | F-569 to F-575, F-586, F-588, F-589, F-591 to F-593, F-595, F-597, F-599, F-632, F-639, F-644 |  |
-| U-065 | Does ICARUS replicate gameplay tags by net index, and if so can an independent server hold the identical tag table without reusing packaged configuration or assets? | high | open | Wire forms are read (F-591, F-592); the mode, widths and table remain configuration: observe them at runtime or in shipped configuration under a scoped case (F-583) | F-583, F-591, F-592 |  |
-| U-066 | Where may an independent server obtain each replicated class's property list (order, types, array sizes), which fixes rep handles (F-586, F-609): compiled engine reflection, and game classes defined outside the executable? | high | blocked | Needs a user decision on deriving this protocol schema from the stock client or its packaged data, as for U-065 | F-586, F-609 |  |
+| U-065 | What gameplay-tag replication mode, widths and net-index mapping does the pinned client require? | high | investigating | Config declarations recovered; qualify remaining protocol-only sources, runtime ordering and effective settings before capture replay | F-583, F-591, F-592, F-697, F-698 |  |
+| U-066 | What property order, types and array sizes fix each replicated class's handles, including classes outside the executable? | high | investigating | Native name/index candidates located; recover descriptor types, offsets and arrays, then gameplay-class metadata and typed capture replay | F-586, F-609, F-699 |  |
