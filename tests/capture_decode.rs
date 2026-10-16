@@ -184,7 +184,7 @@ fn reassembles_partials_and_separates_the_export_hypothesis() -> Result<()> {
     fs::create_dir(&work)?;
     let input = work.join("probe.jsonl");
     fs::write(&input, synthetic_capture()?)?;
-    let report = capture_decode::run(&input, &work.join("detail.jsonl"))?;
+    let report = capture_decode::run_in(&input, &work.join("detail.jsonl"), &work)?;
 
     assert_eq!(at(&report, "/input/replies"), 4);
     assert_eq!(at(&report, "/wire/packets_decoded"), 4);
@@ -233,5 +233,14 @@ fn refuses_detail_output_outside_work() -> Result<()> {
     let input = root.path().join("probe.jsonl");
     fs::write(&input, "")?;
     assert!(capture_decode::run(&input, &root.path().join("detail.jsonl")).is_err());
+    // A `work` ancestor elsewhere does not count: only the given work root does.
+    let repo = root.path().join("work/repo");
+    fs::create_dir_all(repo.join("docs"))?;
+    fs::create_dir_all(repo.join("work"))?;
+    let outside = repo.join("docs/detail.jsonl");
+    assert!(capture_decode::run_in(&input, &outside, &repo.join("work")).is_err());
+    assert!(
+        capture_decode::run_in(&input, &repo.join("work/detail.jsonl"), &repo.join("work")).is_ok()
+    );
     Ok(())
 }

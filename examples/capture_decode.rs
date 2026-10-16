@@ -18,13 +18,13 @@
 //!
 //! Stdout carries aggregate counts only; channel names appear as hard-coded
 //! indices or the word `string`. Per-item detail, including any path or class
-//! strings, goes to the second argument, which must lie under a `work/`
-//! directory.
+//! strings, goes to the second argument, which must lie under this
+//! checkout's `work/` directory.
 use std::{
     collections::{BTreeMap, BTreeSet},
     fs::File,
     io::{BufRead, BufReader, BufWriter, Write},
-    path::{Component, Path, PathBuf},
+    path::{Path, PathBuf},
 };
 
 use anyhow::{Context, Result, bail, ensure};
@@ -55,7 +55,7 @@ use serde_json::{Value, json};
 struct Options {
     /// Local probe JSONL capture (reply events with hex datagrams).
     input: PathBuf,
-    /// Per-item detail JSONL; must lie under a `work/` directory.
+    /// Per-item detail JSONL; must lie under this checkout's `work/`.
     detail: PathBuf,
 }
 
@@ -1219,7 +1219,7 @@ fn decode_hex(text: &str) -> Result<Vec<u8>> {
 }
 
 /// The detail file must stay under a `work/` directory.
-fn check_detail_path(path: &Path) -> Result<()> {
+fn check_detail_path(path: &Path, work_root: &Path) -> Result<()> {
     let parent = path
         .parent()
         .filter(|parent| !parent.as_os_str().is_empty())
@@ -1227,13 +1227,20 @@ fn check_detail_path(path: &Path) -> Result<()> {
     let canonical = parent
         .canonicalize()
         .context("detail directory must exist")?;
+    let work_root = work_root
+        .canonicalize()
+        .context("work directory must exist")?;
     ensure!(
-        canonical
-            .components()
-            .any(|component| component == Component::Normal("work".as_ref())),
-        "detail output must lie under a work/ directory"
+        canonical.starts_with(&work_root),
+        "detail output must lie under {}",
+        work_root.display()
     );
     Ok(())
+}
+
+/// This checkout's ignored `work/` directory.
+fn repository_work() -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR")).join("work")
 }
 
 struct Reply {
@@ -1278,9 +1285,14 @@ fn read_replies(path: &Path) -> Result<(Vec<Reply>, Value)> {
 }
 
 /// Decode every reply in `input`, write per-item detail to `detail` (which
-/// must lie under a `work/` directory) and return the aggregate report.
+/// must lie under this checkout's `work/`) and return the aggregate report.
 pub fn run(input: &Path, detail: &Path) -> Result<Value> {
-    check_detail_path(detail)?;
+    run_in(input, detail, &repository_work())
+}
+
+/// [`run`] with the detail confined to `work_root` instead.
+pub fn run_in(input: &Path, detail: &Path, work_root: &Path) -> Result<Value> {
+    check_detail_path(detail, work_root)?;
     let (replies, input) = read_replies(input)?;
     let mut detail = BufWriter::new(File::create(detail).context("create detail")?);
     let mut passes = serde_json::Map::new();
