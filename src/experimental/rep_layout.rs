@@ -71,7 +71,7 @@
 //! - [`RepCommand::UniqueNetId`] — `FUniqueNetIdRepl::NetSerialize`
 //!   (`0x143ddced0` -> `0x1439a23f0`), the replicated unique net id of
 //!   [`super::control_messages::read_unique_net_id`] (F-531, F-636, F-704);
-//! - [`RepCommand::RowHandle`]: `FRowHandle::NetSerialize` (`0x143f7dbb0`,
+//! - [`RepCommand::RowHandle`]: `FRowHandle::NetSerialize` (`0x143f8a530`,
 //!   F-705), a 2-byte data-table index followed by 0, 1, 2 or 4 row-index bytes
 //!   determined by [`icarus_row_handle_width_bytes`]; typed derived
 //!   `F*RowHandle` structs (`FModifierStatesRowHandle`, `FBiomesRowHandle`,
@@ -292,7 +292,7 @@ pub enum RepCommand {
     Rotator,
     /// `FUniqueNetIdRepl` (`0x143ddced0` -> `0x1439a23f0`, F-531, F-636, F-704).
     UniqueNetId,
-    /// `FRowHandle` (`0x143f7dbb0`, F-705), for properties typed directly as
+    /// `FRowHandle` (`0x143f8a530`, F-705), for properties typed directly as
     /// `FRowHandle` (`HasNetSerializer == true`).
     RowHandle,
     /// `FStatPairRepState` (`0x141c10c50` -> `0x1417df1a0`, F-705), the element
@@ -344,7 +344,10 @@ pub const ICARUS_TWO_BYTE_ROW_TABLES: [u16; 28] = [
 ];
 
 /// Row-index byte width (`0`, `1`, `2` or `4`) selected by
-/// `FRowHandle::NetSerialize` (`0x143f7dbb0`) for `table_index` (F-705).
+/// `FRowHandle::NetSerialize` (`0x143f8a530`) for `table_index` (F-705).
+/// No packaged 3.0.31/32 table exceeds 65,534 rows, so `4` is currently
+/// unreachable and kept only in [`read_row_handle`]/[`write_row_handle`] to
+/// mirror the original branch (`iVar6 >= 0xffff`).
 pub fn icarus_row_handle_width_bytes(table_index: u16) -> Result<u8> {
     if table_index == ICARUS_ROW_HANDLE_NONE {
         return Ok(0);
@@ -365,7 +368,7 @@ pub fn icarus_row_handle_width_bytes(table_index: u16) -> Result<u8> {
     }
 }
 
-/// Replicated `FRowHandle` (`0x143f7dbb0`, F-705): a 2-byte data-table index and,
+/// Replicated `FRowHandle` (`0x143f8a530`, F-705): a 2-byte data-table index and,
 /// when the table has at least 1 row, the row index.
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub struct RowHandle {
@@ -395,8 +398,8 @@ impl std::fmt::Debug for StatPairRepState {
 }
 
 /// Canonical byte length (`1..=4`) written by `Detail::WriteInteger`
-/// (`0x141807bd0`, F-705) for a 32-bit word: `< 0xff -> 1`, `< 0xffff -> 2`,
-/// `< 0xffffff -> 3`, else `4`.
+/// (`0x141807bd0`, F-705) for a 32-bit word: strict `< 0xff -> 1`,
+/// `< 0xffff -> 2`, `< 0xffffff -> 3` (`0xfffffe < param_2`), else `4`.
 pub fn stat_int_len_bytes(value: u32) -> u8 {
     if value < 0xff {
         1
@@ -1342,7 +1345,7 @@ pub(super) fn write_u64(writer: &mut BitWriter, value: u64, order: ByteOrder) {
     writer.write_u32((raw >> 32) as u32);
 }
 
-/// Read `FRowHandle::NetSerialize` (`0x143f7dbb0`, F-705): a 2-byte data-table
+/// Read `FRowHandle::NetSerialize` (`0x143f8a530`, F-705): a 2-byte data-table
 /// index in `order`, followed by 0, 1, 2 or 4 row-index bytes according to
 /// [`icarus_row_handle_width_bytes`].
 pub fn read_row_handle(reader: &mut BitReader<'_>, order: ByteOrder) -> Result<RowHandle> {
@@ -2836,13 +2839,13 @@ pub const FLAMMABLE_STATE_MAX_VALUE: i64 = 6;
 pub const ACCUMULATION_TYPE_MAX_VALUE: i64 = 4;
 /// Maximum registered enumerator value (`_MAX`) of `ShelteredEnum` (`UserDefinedEnum`, 5 -> 3 bits).
 pub const SHELTERED_ENUM_MAX_VALUE: i64 = 5;
-/// Maximum registered enumerator value (`_MAX`) of `ERocketState` (3 -> 3 bits).
+/// Maximum registered enumerator value (`_MAX`) of `ERocketState` (4 -> 3 bits).
 pub const ROCKET_STATE_MAX_VALUE: i64 = 4;
 /// Maximum registered enumerator value (`_MAX`) of `EDropshipDescentStateFMODParam` (6 -> 3 bits).
 pub const DROPSHIP_DESCENT_STATE_FMOD_PARAM_MAX_VALUE: i64 = 6;
 /// Maximum registered enumerator value (`_MAX`) of `EMapTileRadarFlag` (4 -> 3 bits).
 pub const MAP_TILE_RADAR_FLAG_MAX_VALUE: i64 = 4;
-/// Maximum registered enumerator value (`_MAX`) of `EDynamicQuestDifficulty` (3 -> 3 bits).
+/// Maximum registered enumerator value (`_MAX`) of `EDynamicQuestDifficulty` (4 -> 3 bits).
 pub const DYNAMIC_QUEST_DIFFICULTY_MAX_VALUE: i64 = 4;
 
 /// Statically observed 80-handle rep layout of `AIcarusPlayerState`:

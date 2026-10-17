@@ -1648,8 +1648,56 @@ fn row_handle_and_stat_pair_rep_state_round_trip_and_reject_invalid() {
         )
         .is_err()
     );
-    let _ = read_row_handle;
-    let _ = write_stat_pair_rep_state;
+    for &(table_index, expected_width, row_index) in &[
+        (ICARUS_ROW_HANDLE_NONE, 0u8, None),
+        (62u16, 0u8, None),
+        (164u16, 0u8, None),
+        (1u16, 1u8, Some(254u32)),
+        (2u16, 1u8, Some(7u32)),
+        (0u16, 2u8, Some(512u32)),
+        (29u16, 2u8, Some(1024u32)),
+    ] {
+        assert_eq!(
+            icarus_row_handle_width_bytes(table_index).unwrap(),
+            expected_width
+        );
+        for order in [ByteOrder::Little, ByteOrder::Big] {
+            let handle = RowHandle {
+                table_index,
+                row_index,
+            };
+            let mut writer = BitWriter::new();
+            write_row_handle(&mut writer, &handle, order).unwrap();
+            assert_eq!(writer.bit_len(), (2 + usize::from(expected_width)) * 8);
+            let mut reader = BitReader::new(writer.as_bytes(), writer.bit_len()).unwrap();
+            assert_eq!(read_row_handle(&mut reader, order).unwrap(), handle);
+            assert!(reader.at_end());
+        }
+    }
+
+    for pair in [
+        StatPairRepState { stat: 0, value: 0 },
+        StatPairRepState {
+            stat: 0xfe,
+            value: 0xff,
+        },
+        StatPairRepState {
+            stat: 0xffff,
+            value: -10,
+        },
+    ] {
+        let mut writer = BitWriter::new();
+        write_stat_pair_rep_state(&mut writer, &pair);
+        let expected_bits = (1
+            + usize::from(stat_int_len_bytes(pair.stat))
+            + 1
+            + usize::from(stat_int_len_bytes(pair.value as u32)))
+            * 8;
+        assert_eq!(writer.bit_len(), expected_bits);
+        let mut reader = BitReader::new(writer.as_bytes(), writer.bit_len()).unwrap();
+        assert_eq!(read_stat_pair_rep_state(&mut reader).unwrap(), pair);
+        assert!(reader.at_end());
+    }
 }
 
 #[test]
