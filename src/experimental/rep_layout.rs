@@ -5,10 +5,12 @@
 //! references (F-572), the compressed rotator (F-573), client property net items
 //! (F-574), client network names (F-575) and the older server's native struct
 //! items (F-593), the movement struct and its quantization levels (F-588,
-//! F-589), gameplay tags (F-591, F-592), and native property command expansion,
-//! numeric property items and native struct serializers (F-704). Nothing here is
-//! gameplay-integrated, and no property state, object resolution or admission
-//! occurs. Writers mirror the readers for round-trip research only.
+//! F-589), gameplay tags (F-591, F-592), native property command expansion,
+//! numeric property items and native struct serializers (F-704), and ICARUS
+//! `FRowHandle`, typed `F*RowHandle` and `FStatPairRepState` net serializers
+//! (F-705). Nothing here is gameplay-integrated, and no property state, object
+//! resolution or admission occurs. Writers mirror the readers for round-trip
+//! research only.
 //!
 //! Observed grammar: `FRepLayout::ReceiveProperties` reads a 1-bit `bDoChecksum`
 //! flag before the handle stream (M-426, F-704); packed handles select layout
@@ -66,9 +68,21 @@
 //! - [`RepCommand::Rotator`]: `FRotator::NetSerialize` (`0x142100890`), the
 //!   compressed rotator of [`super::actor_channel::read_rotator`] (F-573,
 //!   F-704);
-//! - [`RepCommand::UniqueNetId`]: the `FUniqueNetIdRepl::NetSerialize`
+//! - [`RepCommand::UniqueNetId`] — `FUniqueNetIdRepl::NetSerialize`
 //!   (`0x143ddced0` -> `0x1439a23f0`), the replicated unique net id of
 //!   [`super::control_messages::read_unique_net_id`] (F-531, F-636, F-704);
+//! - [`RepCommand::RowHandle`]: `FRowHandle::NetSerialize` (`0x143f7dbb0`,
+//!   F-705), a 2-byte data-table index followed by 0, 1, 2 or 4 row-index bytes
+//!   determined by [`icarus_row_handle_width_bytes`]; typed derived
+//!   `F*RowHandle` structs (`FModifierStatesRowHandle`, `FBiomesRowHandle`,
+//!   etc.) have table-specific `NetSerialize` implementations that omit the
+//!   2-byte table index and serialize only their 1-byte (`Byte`) or 2-byte
+//!   (`UInt16`) row index (F-705);
+//! - [`RepCommand::StatPairRepState`] — `FStatPairRepState::NetSerialize`
+//!   (`0x141c10c50` -> `0x1417df1a0`, F-705), two length-prefixed big-endian
+//!   32-bit integers (`Stat` and `Value`) serialized through
+//!   `Detail::ReadInteger` (`0x1417e1b50`) / `Detail::WriteInteger`
+//!   (`0x141807bd0`);
 //! - [`RepCommand::DynamicArray`]: count and nested stream (F-571);
 //! - [`RepCommand::Opaque`]: a caller-sized span of raw bits.
 //!
@@ -104,8 +118,9 @@
 //!
 //! Unsupported and failing closed: any item the spec does not encode, such as
 //! unmodeled native net-serialize structs ([`UnsupportedItem`]); non-canonical
-//! packed integers and tag net indices (the original reader may be more
-//! lenient), so every accepted stream re-encodes bit-identically.
+//! packed integers, tag net indices and stat variable-length integers (the
+//! original reader may be more lenient), so every accepted stream re-encodes
+//! bit-identically.
 //!
 //! `Debug` output and summaries carry handles, kinds, counts and lengths only,
 //! never values, GUIDs, names, checksums or raw bits.
@@ -277,6 +292,12 @@ pub enum RepCommand {
     Rotator,
     /// `FUniqueNetIdRepl` (`0x143ddced0` -> `0x1439a23f0`, F-531, F-636, F-704).
     UniqueNetId,
+    /// `FRowHandle` (`0x143f7dbb0`, F-705), for properties typed directly as
+    /// `FRowHandle` (`HasNetSerializer == true`).
+    RowHandle,
+    /// `FStatPairRepState` (`0x141c10c50` -> `0x1417df1a0`, F-705), the element
+    /// struct of `FStatsRepArray` (`UIcarusStatContainer::ReplicatedStatArray`).
+    StatPairRepState,
     /// One gameplay tag in the caller's encoding (F-591, F-592).
     GameplayTag(TagEncoding),
     /// A gameplay tag container (F-592); `count_bits` is 1 to 8.
@@ -302,6 +323,90 @@ pub enum RepCommand {
     },
     /// Any handle selecting this fails closed.
     Unsupported(UnsupportedItem),
+}
+
+/// Number of static data-table names in the `FRowHandle` global registry
+/// (`0x1408a76d0` -> `0x1464e26e0`, `0x125 = 293` entries, F-705).
+pub const ICARUS_ROW_HANDLE_TABLE_COUNT: u16 = 293;
+/// Unmapped `FRowHandle` data-table index (`0xffff`, F-705).
+pub const ICARUS_ROW_HANDLE_NONE: u16 = u16::MAX;
+
+/// Registered `FRowHandle` table indices whose packaged `DataTable` has 0 rows
+/// (`D_BlueprintUnlocks = 62`, `D_CharacterPerks = 164`,
+/// `D_QuestVocalisationModifiers = 181`, F-705).
+pub const ICARUS_ZERO_ROW_TABLES: [u16; 3] = [62, 164, 181];
+
+/// Registered `FRowHandle` table indices whose packaged `DataTable` has 255 to
+/// 65534 rows and therefore serializes a 2-byte row index (F-705).
+pub const ICARUS_TWO_BYTE_ROW_TABLES: [u16; 28] = [
+    0, 29, 54, 64, 65, 73, 80, 84, 92, 112, 134, 135, 136, 148, 152, 177, 178, 201, 207, 209, 215,
+    230, 234, 237, 248, 252, 254, 278,
+];
+
+/// Row-index byte width (`0`, `1`, `2` or `4`) selected by
+/// `FRowHandle::NetSerialize` (`0x143f7dbb0`) for `table_index` (F-705).
+pub fn icarus_row_handle_width_bytes(table_index: u16) -> Result<u8> {
+    if table_index == ICARUS_ROW_HANDLE_NONE {
+        return Ok(0);
+    }
+    ensure!(
+        table_index < ICARUS_ROW_HANDLE_TABLE_COUNT,
+        "unknown row handle data table index {table_index}"
+    );
+    if ICARUS_ZERO_ROW_TABLES.binary_search(&table_index).is_ok() {
+        Ok(0)
+    } else if ICARUS_TWO_BYTE_ROW_TABLES
+        .binary_search(&table_index)
+        .is_ok()
+    {
+        Ok(2)
+    } else {
+        Ok(1)
+    }
+}
+
+/// Replicated `FRowHandle` (`0x143f7dbb0`, F-705): a 2-byte data-table index and,
+/// when the table has at least 1 row, the row index.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub struct RowHandle {
+    pub table_index: u16,
+    pub row_index: Option<u32>,
+}
+
+impl std::fmt::Debug for RowHandle {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("RowHandle")
+    }
+}
+
+/// Replicated `FStatPairRepState` (`0x141c10c50` -> `0x1417df1a0`, F-705):
+/// `Stat` (`+0x0c`) and `Value` (`+0x10`), each serialized as a 1-byte length
+/// (`1..=4`) followed by that many big-endian bytes.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub struct StatPairRepState {
+    pub stat: u32,
+    pub value: i32,
+}
+
+impl std::fmt::Debug for StatPairRepState {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("StatPairRepState")
+    }
+}
+
+/// Canonical byte length (`1..=4`) written by `Detail::WriteInteger`
+/// (`0x141807bd0`, F-705) for a 32-bit word: `< 0xff -> 1`, `< 0xffff -> 2`,
+/// `< 0xffffff -> 3`, else `4`.
+pub fn stat_int_len_bytes(value: u32) -> u8 {
+    if value < 0xff {
+        1
+    } else if value < 0xffff {
+        2
+    } else if value < 0xff_ffff {
+        3
+    } else {
+        4
+    }
 }
 
 /// A capped-bit-count vector packing (F-593, F-589): the bit-count maximum and
@@ -716,6 +821,8 @@ pub enum RepValue {
     VectorQuantizeNormal(QuantizedNormal),
     Rotator(CompressedRotator),
     UniqueNetId(UniqueNetId),
+    RowHandle(RowHandle),
+    StatPairRepState(StatPairRepState),
     GameplayTag(GameplayTag),
     HitResult(Box<HitResult>),
     /// `None` when the empty bit is set; otherwise the counted tags.
@@ -753,6 +860,8 @@ pub enum ItemKind {
     VectorQuantizeNormal,
     Rotator,
     UniqueNetId,
+    RowHandle,
+    StatPairRepState,
     GameplayTag,
     GameplayTagContainer,
     HitResult,
@@ -789,6 +898,8 @@ impl RepValue {
             Self::VectorQuantizeNormal(_) => ItemKind::VectorQuantizeNormal,
             Self::Rotator(_) => ItemKind::Rotator,
             Self::UniqueNetId(_) => ItemKind::UniqueNetId,
+            Self::RowHandle(_) => ItemKind::RowHandle,
+            Self::StatPairRepState(_) => ItemKind::StatPairRepState,
             Self::GameplayTag(_) => ItemKind::GameplayTag,
             Self::GameplayTagContainer(_) => ItemKind::GameplayTagContainer,
             Self::HitResult(_) => ItemKind::HitResult,
@@ -845,6 +956,8 @@ impl std::fmt::Debug for RepValue {
                 .finish(),
             Self::Rotator(rotator) => formatter.debug_tuple("Rotator").field(rotator).finish(),
             Self::UniqueNetId(id) => formatter.debug_tuple("UniqueNetId").field(id).finish(),
+            Self::RowHandle(row) => row.fmt(formatter),
+            Self::StatPairRepState(stat) => stat.fmt(formatter),
             Self::GameplayTag(tag) => formatter.debug_tuple("GameplayTag").field(tag).finish(),
             Self::GameplayTagContainer(tags) => formatter
                 .debug_tuple("GameplayTagContainer")
@@ -1013,6 +1126,8 @@ impl RepEntry {
             | RepValue::Double(_)
             | RepValue::Vector(_)
             | RepValue::Vector2D(_)
+            | RepValue::RowHandle(_)
+            | RepValue::StatPairRepState(_)
             | RepValue::GameplayTag(GameplayTag::NetIndex(_))
             | RepValue::HitResult(_)
             | RepValue::Text(_)
@@ -1116,6 +1231,8 @@ fn validate_layout_at(layout: &[RepCommand], limits: &RepLayoutLimits, depth: us
             | RepCommand::VectorQuantizeNormal
             | RepCommand::Rotator
             | RepCommand::UniqueNetId
+            | RepCommand::RowHandle
+            | RepCommand::StatPairRepState
             | RepCommand::Movement { .. }
             | RepCommand::HitResult
             | RepCommand::Unsupported(_) => {}
@@ -1223,6 +1340,109 @@ pub(super) fn write_u64(writer: &mut BitWriter, value: u64, order: ByteOrder) {
     };
     writer.write_u32(raw as u32);
     writer.write_u32((raw >> 32) as u32);
+}
+
+/// Read `FRowHandle::NetSerialize` (`0x143f7dbb0`, F-705): a 2-byte data-table
+/// index in `order`, followed by 0, 1, 2 or 4 row-index bytes according to
+/// [`icarus_row_handle_width_bytes`].
+pub fn read_row_handle(reader: &mut BitReader<'_>, order: ByteOrder) -> Result<RowHandle> {
+    let table_index = read_u16(reader, order, "row handle table index")?;
+    let width = icarus_row_handle_width_bytes(table_index)?;
+    let row_index = match width {
+        0 => None,
+        1 => Some(read_field(reader, 8, "row handle 1-byte row index")?),
+        2 => Some(u32::from(read_u16(
+            reader,
+            order,
+            "row handle 2-byte row index",
+        )?)),
+        4 => Some(read_u32(reader, order, "row handle 4-byte row index")?),
+        _ => unreachable!(),
+    };
+    Ok(RowHandle {
+        table_index,
+        row_index,
+    })
+}
+
+/// Mirror of [`read_row_handle`]; validates that `row_index` presence and range
+/// match [`icarus_row_handle_width_bytes`].
+pub fn write_row_handle(
+    writer: &mut BitWriter,
+    handle: &RowHandle,
+    order: ByteOrder,
+) -> Result<()> {
+    let width = icarus_row_handle_width_bytes(handle.table_index)?;
+    match (width, handle.row_index) {
+        (0, None) => write_u16(writer, handle.table_index, order),
+        (0, Some(_)) => bail!("zero-width row handle cannot carry a row index"),
+        (_, None) => bail!("non-empty row handle table requires a row index"),
+        (1, Some(row)) => {
+            ensure!(
+                row <= u32::from(u8::MAX),
+                "row handle index exceeds 1-byte table width"
+            );
+            write_u16(writer, handle.table_index, order);
+            writer.write_bits(row, 8);
+        }
+        (2, Some(row)) => {
+            ensure!(
+                row <= u32::from(u16::MAX),
+                "row handle index exceeds 2-byte table width"
+            );
+            write_u16(writer, handle.table_index, order);
+            write_u16(writer, row as u16, order);
+        }
+        (4, Some(row)) => {
+            write_u16(writer, handle.table_index, order);
+            write_u32(writer, row, order);
+        }
+        _ => unreachable!(),
+    }
+    Ok(())
+}
+
+fn read_stat_var_u32(reader: &mut BitReader<'_>, what: &str) -> Result<u32> {
+    let len = read_field(reader, 8, what)? as u8;
+    ensure!(
+        (1..=4).contains(&len),
+        "{what} length must be 1 to 4 bytes, got {len}"
+    );
+    let mut value = 0u32;
+    for _ in 0..len {
+        let byte = read_field(reader, 8, what)?;
+        value = (value << 8) | byte;
+    }
+    ensure!(
+        stat_int_len_bytes(value) == len,
+        "non-canonical {what} length {len}"
+    );
+    Ok(value)
+}
+
+fn write_stat_var_u32(writer: &mut BitWriter, value: u32) {
+    let len = stat_int_len_bytes(value);
+    writer.write_bits(u32::from(len), 8);
+    for shift in (0..len).rev() {
+        let byte = (value >> (u32::from(shift) * 8)) & 0xff;
+        writer.write_bits(byte, 8);
+    }
+}
+
+/// Read `FStatPairRepState::NetSerialize` (`0x141c10c50` -> `0x1417df1a0`,
+/// F-705): `Stat` (`u32`) and `Value` (`i32`) via `Detail::ReadInteger`
+/// (`0x1417e1b50`).
+pub fn read_stat_pair_rep_state(reader: &mut BitReader<'_>) -> Result<StatPairRepState> {
+    let stat = read_stat_var_u32(reader, "stat pair stat")?;
+    let value = read_stat_var_u32(reader, "stat pair value")? as i32;
+    Ok(StatPairRepState { stat, value })
+}
+
+/// Write `FStatPairRepState::NetSerialize` (`0x141c10c50` -> `0x1417df1a0`,
+/// F-705) via `Detail::WriteInteger` (`0x141807bd0`).
+pub fn write_stat_pair_rep_state(writer: &mut BitWriter, pair: &StatPairRepState) {
+    write_stat_var_u32(writer, pair.stat);
+    write_stat_var_u32(writer, pair.value as u32);
 }
 
 pub(super) fn copy_bits(reader: &mut BitReader<'_>, mut bits: usize) -> Payload {
@@ -1822,6 +2042,12 @@ pub(super) fn read_value(
         RepCommand::UniqueNetId => RepValue::UniqueNetId(
             read_unique_net_id(reader, &control_codec(codec)).context("unique net id item")?,
         ),
+        RepCommand::RowHandle => {
+            RepValue::RowHandle(read_row_handle(reader, order).context("row handle item")?)
+        }
+        RepCommand::StatPairRepState => RepValue::StatPairRepState(
+            read_stat_pair_rep_state(reader).context("stat pair rep state item")?,
+        ),
         RepCommand::DynamicArray { element } => {
             let count = read_u16(reader, codec.actor.order, "dynamic array count")?;
             ensure!(
@@ -2085,6 +2311,12 @@ pub(super) fn write_value(
         (RepCommand::UniqueNetId, RepValue::UniqueNetId(id)) => {
             write_unique_net_id(writer, id, &control_codec(codec)).context("unique net id item")?;
         }
+        (RepCommand::RowHandle, RepValue::RowHandle(row)) => {
+            write_row_handle(writer, row, order).context("row handle item")?;
+        }
+        (RepCommand::StatPairRepState, RepValue::StatPairRepState(stat)) => {
+            write_stat_pair_rep_state(writer, stat);
+        }
         (RepCommand::DynamicArray { element }, RepValue::DynamicArray(array)) => {
             ensure!(
                 array.count <= codec.limits.max_array_elements,
@@ -2206,6 +2438,10 @@ pub fn encode_rep_properties(
 pub const NET_ROLE_MAX_VALUE: i64 = 4;
 /// Maximum registered enumerator value of `EReplicatedLeftProspectState` (3, F-703).
 pub const REPLICATED_LEFT_PROSPECT_STATE_MAX_VALUE: i64 = 3;
+/// Maximum registered enumerator value of `EAudioShelterState` (2, F-705).
+pub const AUDIO_SHELTER_STATE_MAX_VALUE: i64 = 2;
+/// Maximum registered enumerator value of `EAliveState` (1, F-705).
+pub const ALIVE_STATE_MAX_VALUE: i64 = 1;
 /// `FGameplayTagContainer::NetSerialize` count width (`NumBitsForContainerSize = 6`, F-592, F-702).
 pub const GAMEPLAY_TAG_CONTAINER_COUNT_BITS: u8 = 6;
 
@@ -2363,8 +2599,203 @@ pub fn player_state_rep_layout(
     commands
 }
 
-/// Statically observed 2-handle rep layout of `UActorComponent` (F-703):
+/// Statically observed 2-handle rep layout of `UActorComponent` (and
+/// `UPlayerDataComponent`, which adds no net properties, F-703, F-705):
 /// handle 1 `bReplicates` and handle 2 `bIsActive`.
 pub fn actor_component_rep_layout() -> Vec<RepCommand> {
     vec![RepCommand::Bool, RepCommand::Bool]
+}
+
+/// Statically observed 3-handle rep layout of `UFLODActorComponent` (F-705):
+/// `UActorComponent` handles 1..2, then handle 3 `bSpawnedFromPool`.
+pub fn flod_actor_component_rep_layout() -> Vec<RepCommand> {
+    let mut commands = actor_component_rep_layout();
+    commands.push(RepCommand::Bool);
+    commands
+}
+
+/// Statically observed 3-handle rep layout of `UAudioContextComponent` (F-705):
+/// `UActorComponent` handles 1..2, then handle 3 `ShelterState`
+/// (`EAudioShelterState`, max 2 -> 2 bits).
+pub fn audio_context_component_rep_layout() -> Vec<RepCommand> {
+    let mut commands = actor_component_rep_layout();
+    commands.push(RepCommand::Enum {
+        bits: enum_bits(AUDIO_SHELTER_STATE_MAX_VALUE, 1),
+    });
+    commands
+}
+
+/// Statically observed 3-handle rep layout of `UTraitBehaviour` (`0x144f8a150`,
+/// F-705): `UActorComponent` handles 1..2, then handle 3 `OwningComponent`
+/// (`FObjectProperty`).
+pub fn trait_behaviour_rep_layout() -> Vec<RepCommand> {
+    let mut commands = actor_component_rep_layout();
+    commands.push(RepCommand::Object);
+    commands
+}
+
+/// Statically observed 4-handle rep layout of `UResourceNetworkComponent`
+/// (F-705): `UActorComponent` handles 1..2, then handle 3 `Network` and
+/// handle 4 `Spline` (`FObjectProperty`).
+pub fn resource_network_component_rep_layout() -> Vec<RepCommand> {
+    let mut commands = actor_component_rep_layout();
+    commands.extend([RepCommand::Object, RepCommand::Object]);
+    commands
+}
+
+/// Statically observed 3-handle rep layout of `UTraitComponent` (and subclasses
+/// such as `UMeshableComponent`, `UInteractableComponent`,
+/// `UHighlightableComponent`, `UUsableComponent`, `UDeployableComponent`,
+/// `UTraitBehaviours` and `UInventoryComponent` that add no net properties,
+/// F-705): `UActorComponent` handles 1..2, then handle 3 `DataRowHandle`
+/// (`FRowHandle`).
+pub fn trait_component_rep_layout() -> Vec<RepCommand> {
+    let mut commands = actor_component_rep_layout();
+    commands.push(RepCommand::RowHandle);
+    commands
+}
+
+/// Statically observed 4-handle rep layout of `UDurableComponent` (F-705):
+/// `UTraitComponent` handles 1..3, then handle 4 `Durability` (`FIntProperty`).
+pub fn durable_component_rep_layout() -> Vec<RepCommand> {
+    let mut commands = trait_component_rep_layout();
+    commands.push(RepCommand::Int);
+    commands
+}
+
+/// Statically observed 4-handle rep layout of `UItemableComponent` (F-705):
+/// `UTraitComponent` handles 1..3, then handle 4 `Stack` (`FIntProperty`).
+pub fn itemable_component_rep_layout() -> Vec<RepCommand> {
+    let mut commands = trait_component_rep_layout();
+    commands.push(RepCommand::Int);
+    commands
+}
+
+/// Statically observed 5-handle rep layout of `UDecayableComponent` (F-705):
+/// `UTraitComponent` handles 1..3, then handle 4 `DecayTime` and handle 5
+/// `SpoilTime` (`FIntProperty`).
+pub fn decayable_component_rep_layout() -> Vec<RepCommand> {
+    let mut commands = trait_component_rep_layout();
+    commands.extend([RepCommand::Int, RepCommand::Int]);
+    commands
+}
+
+/// Statically observed 5-handle rep layout of `UFillableComponent` (F-705):
+/// `UTraitComponent` handles 1..3, then handle 4 `FillableType` and handle 5
+/// `StoredUnits` (`FIntProperty`).
+pub fn fillable_component_rep_layout() -> Vec<RepCommand> {
+    let mut commands = trait_component_rep_layout();
+    commands.extend([RepCommand::Int, RepCommand::Int]);
+    commands
+}
+
+/// Statically observed 4-handle rep layout of `UTransmutableComponent` (F-705):
+/// `UTraitComponent` handles 1..3, then handle 4 `TransmutableUnits`
+/// (`FIntProperty`).
+pub fn transmutable_component_rep_layout() -> Vec<RepCommand> {
+    let mut commands = trait_component_rep_layout();
+    commands.push(RepCommand::Int);
+    commands
+}
+
+/// Statically observed 4-handle rep layout of `UFocusableComponent` (F-705):
+/// `UTraitComponent` handles 1..3, then handle 4 `IsFocused` (`FBoolProperty`).
+pub fn focusable_component_rep_layout() -> Vec<RepCommand> {
+    let mut commands = trait_component_rep_layout();
+    commands.push(RepCommand::Bool);
+    commands
+}
+
+/// Statically observed 8-handle rep layout of `UActionableComponent` (F-705):
+/// `UTraitComponent` handles 1..3, then 5 `FIntProperty` handles 4..8.
+pub fn actionable_component_rep_layout() -> Vec<RepCommand> {
+    let mut commands = trait_component_rep_layout();
+    commands.extend(std::iter::repeat_n(RepCommand::Int, 5));
+    commands
+}
+
+/// Statically observed 8-handle rep layout of `UModifierStateComponent` (F-705):
+/// `UActorComponent` handles 1..2, then handle 3 `DataRowHandleNew`
+/// (`FModifierStatesRowHandle::NetSerialize` `0x141c93350` -> `0x141619d80`,
+/// 2-byte row index `UInt16`), handle 4 `ReplicatedOwner` (`FObjectProperty`),
+/// handle 5 `ModifierUID` (`FIntProperty`), handle 6 `ModifierLifeTime`
+/// (`FFloatProperty`), handle 7 `CachedFinalEffectiveness` (`FIntProperty`) and
+/// handle 8 `ReplicatedRemainingTime` (`FUInt16Property`).
+pub fn modifier_state_component_rep_layout() -> Vec<RepCommand> {
+    let mut commands = actor_component_rep_layout();
+    commands.extend([
+        RepCommand::UInt16,
+        RepCommand::Object,
+        RepCommand::Int,
+        RepCommand::Float,
+        RepCommand::Int,
+        RepCommand::UInt16,
+    ]);
+    commands
+}
+
+/// Statically observed 12-handle rep layout of `UActorState` (F-705):
+/// `UActorComponent` handles 1..2, then handles 3..6 `Health`, `MaxHealth`,
+/// `Armor` and `MaxArmor` (`FIntProperty`), handle 7 `Shelter`
+/// (`FFloatProperty`), handles 8..10 `ExternalTemperature`,
+/// `ModifiedExternalTemperature` and `ModifiedInternalTemperature`
+/// (`FIntProperty`), handle 11 `CurrentBiome`
+/// (`FBiomesRowHandle::NetSerialize` `0x141a63b90` -> `0x141535390`, 1-byte row
+/// index `Byte`) and handle 12 `CurrentAliveState` (`EAliveState`, max 1 -> 1 bit).
+pub fn actor_state_rep_layout() -> Vec<RepCommand> {
+    let mut commands = actor_component_rep_layout();
+    commands.extend([
+        RepCommand::Int,
+        RepCommand::Int,
+        RepCommand::Int,
+        RepCommand::Int,
+        RepCommand::Float,
+        RepCommand::Int,
+        RepCommand::Int,
+        RepCommand::Int,
+        RepCommand::Byte { enum_bits: None },
+        RepCommand::Enum {
+            bits: enum_bits(ALIVE_STATE_MAX_VALUE, 1),
+        },
+    ]);
+    commands
+}
+
+/// Statically observed 17-handle rep layout of `UCharacterState` (F-705):
+/// `UActorState` handles 1..12, then handles 13..15 `Stamina`, `MaxStamina` and
+/// `TotalExperience` (`FIntProperty`), handle 16 `GrowthRowHandle`
+/// (`FCharacterGrowthRowHandle::NetSerialize` `0x141a855e0` -> `0x1415537b0`,
+/// 1-byte row index `Byte`) and handle 17 `Level` (`FIntProperty`).
+pub fn character_state_rep_layout() -> Vec<RepCommand> {
+    let mut commands = actor_state_rep_layout();
+    commands.extend([
+        RepCommand::Int,
+        RepCommand::Int,
+        RepCommand::Int,
+        RepCommand::Byte { enum_bits: None },
+        RepCommand::Int,
+    ]);
+    commands
+}
+
+/// Statically observed 30-handle rep layout of `USurvivalCharacterState` (F-705):
+/// `UCharacterState` handles 1..17, then 13 `FIntProperty` handles 18..30
+/// (`OxygenLevel`, `WaterLevel`, `FoodLevel`, `MinOxygen`, `MaxOxygen`,
+/// `MinWater`, `MaxWater`, `MinFood`, `MaxFood`, `InternalTemperature`,
+/// `RadiationLevel`, `MinRadiation` and `MaxRadiation`).
+pub fn survival_character_state_rep_layout() -> Vec<RepCommand> {
+    let mut commands = character_state_rep_layout();
+    commands.extend(std::iter::repeat_n(RepCommand::Int, 13));
+    commands
+}
+
+/// Statically observed 32-handle rep layout of `UPlayerCharacterState` (F-705):
+/// `USurvivalCharacterState` handles 1..30, then handle 31 `LocalWeatherEvent`
+/// (`FWeatherEventsRowHandle::NetSerialize` `0x141dec180` -> `0x1416c39b0`,
+/// 1-byte row index `Byte`) and handle 32 `AIDetectionPercentage`
+/// (`FIntProperty`).
+pub fn player_character_state_rep_layout() -> Vec<RepCommand> {
+    let mut commands = survival_character_state_rep_layout();
+    commands.extend([RepCommand::Byte { enum_bits: None }, RepCommand::Int]);
+    commands
 }

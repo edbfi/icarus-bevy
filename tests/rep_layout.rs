@@ -7,16 +7,26 @@ use icarus_bevy::experimental::control_messages::{
 };
 use icarus_bevy::experimental::packet::{BitReader, BitWriter, Payload};
 use icarus_bevy::experimental::rep_layout::{
-    GAMEPLAY_TAG_CONTAINER_COUNT_BITS, GameplayTag, MovementLevel, NET_ROLE_MAX_VALUE, NetworkName,
-    PropertyStream, QuantizedNormal, QuantizedVector, REPLICATED_LEFT_PROSPECT_STATE_MAX_VALUE,
-    RepArray, RepCommand, RepEntry, RepLayoutCodec, RepLayoutLimits, RepValue, RotationLevel,
-    TagEncoding, UnsupportedItem, actor_component_rep_layout, actor_rep_layout,
-    controller_rep_layout, encode_property_stream, encode_rep_properties, enum_bits,
-    enum_byte_bits, enum_max_value, icarus_player_controller_rep_layout,
-    icarus_player_controller_survival_rep_layout, parse_property_stream, parse_rep_properties,
-    player_controller_rep_layout, player_state_rep_layout, read_network_name, read_property_stream,
-    read_rep_properties, rep_attachment_commands, validate_layout, write_network_name,
-    write_property_stream, write_rep_properties,
+    ALIVE_STATE_MAX_VALUE, AUDIO_SHELTER_STATE_MAX_VALUE, GAMEPLAY_TAG_CONTAINER_COUNT_BITS,
+    GameplayTag, ICARUS_ROW_HANDLE_NONE, ICARUS_ROW_HANDLE_TABLE_COUNT, MovementLevel,
+    NET_ROLE_MAX_VALUE, NetworkName, PropertyStream, QuantizedNormal, QuantizedVector,
+    REPLICATED_LEFT_PROSPECT_STATE_MAX_VALUE, RepArray, RepCommand, RepEntry, RepLayoutCodec,
+    RepLayoutLimits, RepValue, RotationLevel, RowHandle, StatPairRepState, TagEncoding,
+    UnsupportedItem, actionable_component_rep_layout, actor_component_rep_layout, actor_rep_layout,
+    actor_state_rep_layout, audio_context_component_rep_layout, character_state_rep_layout,
+    controller_rep_layout, decayable_component_rep_layout, durable_component_rep_layout,
+    encode_property_stream, encode_rep_properties, enum_bits, enum_byte_bits, enum_max_value,
+    fillable_component_rep_layout, flod_actor_component_rep_layout, focusable_component_rep_layout,
+    icarus_player_controller_rep_layout, icarus_player_controller_survival_rep_layout,
+    icarus_row_handle_width_bytes, itemable_component_rep_layout,
+    modifier_state_component_rep_layout, parse_property_stream, parse_rep_properties,
+    player_character_state_rep_layout, player_controller_rep_layout, player_state_rep_layout,
+    read_network_name, read_property_stream, read_rep_properties, read_row_handle,
+    read_stat_pair_rep_state, rep_attachment_commands, resource_network_component_rep_layout,
+    stat_int_len_bytes, survival_character_state_rep_layout, trait_behaviour_rep_layout,
+    trait_component_rep_layout, transmutable_component_rep_layout, validate_layout,
+    write_network_name, write_property_stream, write_rep_properties, write_row_handle,
+    write_stat_pair_rep_state,
 };
 
 // Independently authored bit fixtures from the actor-channel spec (F-571 to
@@ -1501,5 +1511,165 @@ fn captured_channel_2_player_controller_and_component_blocks_round_trip() {
     assert_eq!(
         encode_rep_properties(&comp_decoded, &comp_layout, &c).unwrap(),
         block1_payload
+    );
+}
+
+#[test]
+fn row_handle_and_stat_pair_rep_state_round_trip_and_reject_invalid() {
+    assert_eq!(
+        icarus_row_handle_width_bytes(ICARUS_ROW_HANDLE_NONE).unwrap(),
+        0
+    );
+    assert_eq!(icarus_row_handle_width_bytes(62).unwrap(), 0);
+    assert_eq!(icarus_row_handle_width_bytes(0).unwrap(), 2);
+    assert_eq!(icarus_row_handle_width_bytes(1).unwrap(), 1);
+    assert!(icarus_row_handle_width_bytes(ICARUS_ROW_HANDLE_TABLE_COUNT).is_err());
+
+    let layout = [
+        RepCommand::RowHandle,
+        RepCommand::RowHandle,
+        RepCommand::RowHandle,
+        RepCommand::StatPairRepState,
+        RepCommand::StatPairRepState,
+    ];
+    let expected = stream(vec![
+        entry(
+            1,
+            RepValue::RowHandle(RowHandle {
+                table_index: ICARUS_ROW_HANDLE_NONE,
+                row_index: None,
+            }),
+        ),
+        entry(
+            2,
+            RepValue::RowHandle(RowHandle {
+                table_index: 1,
+                row_index: Some(42),
+            }),
+        ),
+        entry(
+            3,
+            RepValue::RowHandle(RowHandle {
+                table_index: 0,
+                row_index: Some(512),
+            }),
+        ),
+        entry(
+            4,
+            RepValue::StatPairRepState(StatPairRepState {
+                stat: 0,
+                value: 500,
+            }),
+        ),
+        entry(
+            5,
+            RepValue::StatPairRepState(StatPairRepState {
+                stat: 0x0102_0304,
+                value: -10,
+            }),
+        ),
+    ]);
+    for order in [ByteOrder::Little, ByteOrder::Big] {
+        let c = codec(17, false, order);
+        let encoded = encode_property_stream(&expected, &layout, &c).unwrap();
+        assert_eq!(
+            parse_property_stream(&encoded, &layout, &c).unwrap(),
+            expected
+        );
+    }
+
+    assert_eq!(stat_int_len_bytes(0), 1);
+    assert_eq!(stat_int_len_bytes(0xfe), 1);
+    assert_eq!(stat_int_len_bytes(0xff), 2);
+    assert_eq!(stat_int_len_bytes(0xfffe), 2);
+    assert_eq!(stat_int_len_bytes(0xffff), 3);
+    assert_eq!(stat_int_len_bytes(0xff_fffe), 3);
+    assert_eq!(stat_int_len_bytes(0xff_ffff), 4);
+    assert_eq!(stat_int_len_bytes(-10i32 as u32), 4);
+
+    // Non-canonical stat integer length (2 bytes for value 1) fails closed.
+    let mut bad_stat = BitWriter::new();
+    bad_stat.write_bits(2, 8);
+    bad_stat.write_bits(0, 8);
+    bad_stat.write_bits(1, 8);
+    bad_stat.write_bits(1, 8);
+    bad_stat.write_bits(1, 8);
+    let mut reader = BitReader::new(bad_stat.as_bytes(), bad_stat.bit_len()).unwrap();
+    assert!(read_stat_pair_rep_state(&mut reader).is_err());
+
+    // Zero-row table carrying a row index fails closed on write.
+    let mut w = BitWriter::new();
+    assert!(
+        write_row_handle(
+            &mut w,
+            &RowHandle {
+                table_index: 62,
+                row_index: Some(0),
+            },
+            ByteOrder::Little,
+        )
+        .is_err()
+    );
+    let _ = read_row_handle;
+    let _ = write_stat_pair_rep_state;
+}
+
+#[test]
+fn native_component_and_state_layouts_round_trip() {
+    assert_eq!(enum_bits(AUDIO_SHELTER_STATE_MAX_VALUE, 1), 2);
+    assert_eq!(enum_bits(ALIVE_STATE_MAX_VALUE, 1), 1);
+    assert_eq!(flod_actor_component_rep_layout().len(), 3);
+    assert_eq!(audio_context_component_rep_layout().len(), 3);
+    assert_eq!(trait_behaviour_rep_layout().len(), 3);
+    assert_eq!(resource_network_component_rep_layout().len(), 4);
+    assert_eq!(trait_component_rep_layout().len(), 3);
+    assert_eq!(durable_component_rep_layout().len(), 4);
+    assert_eq!(itemable_component_rep_layout().len(), 4);
+    assert_eq!(decayable_component_rep_layout().len(), 5);
+    assert_eq!(fillable_component_rep_layout().len(), 5);
+    assert_eq!(transmutable_component_rep_layout().len(), 4);
+    assert_eq!(focusable_component_rep_layout().len(), 4);
+    assert_eq!(actionable_component_rep_layout().len(), 8);
+    assert_eq!(modifier_state_component_rep_layout().len(), 8);
+    assert_eq!(actor_state_rep_layout().len(), 12);
+    assert_eq!(character_state_rep_layout().len(), 17);
+    assert_eq!(survival_character_state_rep_layout().len(), 30);
+    assert_eq!(player_character_state_rep_layout().len(), 32);
+
+    let c = codec(17, false, ByteOrder::Little);
+    let durable = durable_component_rep_layout();
+    let d_stream = stream(vec![
+        entry(2, RepValue::Bool(true)),
+        entry(
+            3,
+            RepValue::RowHandle(RowHandle {
+                table_index: 65,
+                row_index: Some(300),
+            }),
+        ),
+        entry(4, RepValue::Int(2500)),
+    ]);
+    let d_payload = encode_rep_properties(&d_stream, &durable, &c).unwrap();
+    assert_eq!(
+        parse_rep_properties(&d_payload, &durable, &c).unwrap(),
+        d_stream
+    );
+
+    let pcs = player_character_state_rep_layout();
+    let pcs_stream = stream(vec![
+        entry(3, RepValue::Int(100)),
+        entry(4, RepValue::Int(100)),
+        entry(7, RepValue::Float(1.0f32.to_bits())),
+        entry(11, RepValue::Byte(2)),
+        entry(12, RepValue::Enum(0)),
+        entry(16, RepValue::Byte(0)),
+        entry(17, RepValue::Int(60)),
+        entry(31, RepValue::Byte(1)),
+        entry(32, RepValue::Int(0)),
+    ]);
+    let pcs_payload = encode_rep_properties(&pcs_stream, &pcs, &c).unwrap();
+    assert_eq!(
+        parse_rep_properties(&pcs_payload, &pcs, &c).unwrap(),
+        pcs_stream
     );
 }

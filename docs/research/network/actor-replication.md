@@ -32,7 +32,8 @@ payloads and fast arrays (F-644). These are client-build observations; the
 older server's content-block and NetGUID writers mirror them (F-581) and
 compose actor bunches in client read order (F-610). Generic framing and content
 blocks now parse the original's recorded traffic (F-693, F-694); typed class
-layouts and tag dictionaries remain unvalidated.
+layouts and tag dictionaries are verified on native actor and component blocks
+(F-702 to F-705).
 
 Offline schema derivation is authorized ([gates](../../gates.md)). The runtime
 gameplay-tag net-index table is derived solely from `Data/Tags/D_Tags` (130
@@ -48,21 +49,25 @@ replicated property order, types, offsets and static array sizes for `AActor`
 (10 net properties -> 15 leaf handles: `FRepAttachment` flattened at 7..12,
 3-bit `ENetRole` at 5 and 14), `AController` (handles 16..17),
 `APlayerController` (handles 18..19), `APlayerState` (handles 16..26),
-`UActorComponent` (handles 1..2) and native Icarus subclasses (F-703), with
-layout constructors in `experimental::rep_layout`. `FNumericProperty::NetSerializeItem`
-(1/2/4/8 archive bytes for `Int8`..`UInt64`, `Float`, `Double`), `FVector`,
-`FVector2D`, `FRotator` (`SerializeCompressedShort`), `FUniqueNetIdRepl` and
-the 1-bit `bDoChecksum` preamble of `FRepLayout::ReceiveProperties` are
-qualified and modeled in `experimental::rep_layout`, while `FRowHandle` and
-`FStatPairRepState` are statically qualified, decoding the captured M-707
-channel 2 `AIcarusPlayerControllerSurvival` (199 bits) and `UActorComponent`
-(18 bits) property blocks bit-identically (F-704).
+`UActorComponent` (handles 1..2) and 17 native Icarus component and actor-state
+subclasses (F-703, F-705), with layout constructors in `experimental::rep_layout`.
+`FNumericProperty::NetSerializeItem` (1/2/4/8 archive bytes for `Int8`..`UInt64`,
+`Float`, `Double`), `FVector`, `FVector2D`, `FRotator` (`SerializeCompressedShort`),
+`FUniqueNetIdRepl`, `FRowHandle::NetSerialize` (`UDatatableFunctionLibrary::SetupTables`
+293-table row-count oracle, 0/1/2/4-byte row index), `FStatPairRepState::NetSerialize`
+(`Detail::WriteInteger`/`Detail::ReadInteger` 1..4-byte length prefix + big-endian
+bytes), `FStatsRepArray::NetDeltaSerialize` (`FClassNetCache` max index 4, field
+index 2, `FastArrayItemLayout::Delta`) and the 1-bit `bDoChecksum` preamble of
+`FRepLayout::ReceiveProperties` are qualified and modeled in
+`experimental::rep_layout` and `examples/capture_decode`, replaying all 1,031
+typed actor and subobject blocks (1,781 property entries and 2,361 stat-pair
+items) in M-707 bit-identically with 0 failures (F-704, F-705).
 
 ## Open
 
-- Remaining native structs (e.g., `FRowHandle` table row-count oracle, `FDateTime`/`FTimespan`, `FPlane`) and movement level defaults (U-064); server send policy (U-044).
-- Cooked Blueprint class property extensions and full capture replay (F-702 to F-704; U-066).
+- Remaining native structs (e.g., `FDateTime`/`FTimespan`, `FPlane`) and movement level defaults (U-064); server send policy (U-044).
+- Cooked Blueprint class property extensions and full capture replay (F-702 to F-705; U-066).
 
 ## Artifacts
 
-M-420..M-449, M-455..M-470, M-570..M-576, M-581..M-588, M-600..M-605, M-707, M-708, M-709..M-717, M-720, M-728..M-734.
+M-420..M-449, M-455..M-470, M-570..M-576, M-581..M-588, M-600..M-605, M-707, M-708, M-709..M-717, M-720, M-728..M-736.

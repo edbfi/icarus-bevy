@@ -4,7 +4,7 @@
 
 Experimental: static observations of client build 25793767, with server
 build 25621760 writers for content blocks and NetGUIDs; wire-checked against
-one capture of the 3.0.31 server (F-693). Last reconciled: 2026-10-16.
+one capture of the 3.0.31 server (F-693, F-704, F-705). Last reconciled: 2026-10-16.
 
 ## Scope
 
@@ -100,12 +100,19 @@ dormancy, channel close reasons and every server-side writer.
     Int `+0x224`, `Ping` Byte `+0x228`, five bitfield bools at `+0x22a` sorted
     by name, `StartTime` Int `+0x22c`, `UniqueId` `FUniqueNetIdRepl` `+0x250`
     and `PlayerNamePrivate` Str `+0x300`). `UActorComponent` defines handle 1
-    `bReplicates` (`+0x88`) and handle 2 `bIsActive` (`+0x8a`).
+    `bReplicates` (`+0x88`) and handle 2 `bIsActive` (`+0x8a`), and
+    `experimental::rep_layout` models 17 native Icarus component and actor-state
+    layouts (`UTraitComponent`, `UTraitBehaviour`, `UIcarusStatContainer`,
+    `UDurableComponent`, `UItemableComponent`, `UFocusableComponent`,
+    `UActionableComponent`, `UHighlightableComponent`, `UInteractableComponent`,
+    `UInventoryComponent`, `UInventory`, `UProcessingComponent`,
+    `UModifierStateComponent`, `UFLODActorComponent`, `UActorState`,
+    `UPlayerTrackerComponent`, `UIcarusMapIconComponent`) (F-703, F-705).
 - Spawn vectors (F-571, F-573): after the presence bit, archives at engine net
   version 13+ read a quantized bit; unquantized is three 4-byte floats,
   quantized a component bit count (`<= 24`) and three integers bounded by
   `1 << (bits + 2)`, decoded as `(v - (1 << (bits + 1))) * 0.1`.
-- Property net items and command expansion (F-574, F-575, F-632, F-704):
+- Property net items and command expansion (F-574, F-575, F-632, F-704, F-705):
   `FRepLayout::ReceiveCustomProperty` (`0x143b219b0`) calls `Property->NetSerializeItem`
   (`vtable + 0x98`) for every non-array command. Bool is 1 bit; Byte is 8 bits or
   `min(8, CeilLogTwo64(max + 1))` with an enum (`max <= 0` sends 0 bits); Enum
@@ -120,18 +127,24 @@ dormancy, channel close reasons and every server-side writer.
   recurse through `0x143af7340`; soft objects, Str, Name and Text use their
   archive/item operators below. `read_rep_properties` and `write_rep_properties`
   frame the 1-bit `bDoChecksum` preamble of `FRepLayout::ReceiveProperties`
-  (`0x143b20720`, M-426) before the handle stream and decode the captured M-707
-  channel 2 `AIcarusPlayerControllerSurvival` (199 bits) and `UActorComponent`
-  (18 bits) property blocks bit-identically (F-704).
-- Native struct items (F-588, F-589, F-593, F-597, F-673, F-674, F-704):
+  (`0x143b20720`, M-426) before the handle stream and, together with
+  `FStatsRepArray::NetDeltaSerialize` (`0x14178f430`, `FClassNetCache` max index
+  4, field index 2, `FastArrayItemLayout::Delta`), decode and re-encode all
+  1,031 typed actor and subobject blocks in M-707 bit-identically (F-704, F-705).
+- Native struct items (F-588, F-589, F-593, F-597, F-673, F-674, F-704, F-705):
   `FVector::NetSerialize` (`0x142100d00`) and `FVector2D::NetSerialize`
   (`0x142100bf0`) serialize three and two 4-byte float words; `FRotator::NetSerialize`
   (`0x142100890`) calls `SerializeCompressedShort` (`0x141ed7810`, the compressed
   rotator below); `FUniqueNetIdRepl::NetSerialize` (`0x143ddced0` -> `0x1439a23f0`)
   uses the control-channel unique-net-id framing (F-531, F-636); `FRowHandle::NetSerialize`
-  (`0x143f8a530`) sends a 2-byte table index (`0xffff` unmapped) and a 0/1/2/4-byte
-  row index sized by table row count; `FStatPairRepState::NetSerialize` (`0x141c10c50`)
-  sends two 4-byte fields. `FVector_NetQuantize` is a bit count (`<= 20`) and three biased unscaled
+  (`0x143f8a530`) sends a 2-byte table index (`0xffff` unmapped, or `< 293` in the
+  `UDatatableFunctionLibrary::SetupTables` table list at `0x1418193d0`, invariant
+  across 3.0.31 and 3.0.32) and a 0/1/2/4-byte row index sized by that table's row
+  count (`0` -> 0B, `<= 0xff` -> 1B, `<= 0xffff` -> 2B, else 4B); `FStatPairRepState::NetSerialize`
+  (`0x141c10c50`) calls `Detail::WriteInteger` / `Detail::ReadInteger` (`0x141807bd0` /
+  `0x1417e1b50`) for both `Stat` (`FIcarusStatEnum`) and `Value` (`i32`), writing a
+  1-byte length `1..=4` (`< 0xff` -> 1, `< 0xffff` -> 2, `< 0xffffff` -> 3, else 4)
+  followed by `len` big-endian bytes. `FVector_NetQuantize` is a bit count (`<= 20`) and three biased unscaled
   integers; `FVector_NetQuantizeNormal` is three 16-bit values biased by 32768
   and multiplied by an unread constant. `FRepMovement` and the `10`/`100`
   vector quantizers live in `TCppStructOps` with no class-method symbols;
@@ -218,6 +231,6 @@ dormancy, channel close reasons and every server-side writer.
   net archive version M-571 to M-576;
   display strings M-581 to M-584; Text codec M-585, M-602 to M-605; Text callees M-586,
   M-587; custom versions M-588; enum widths M-614, M-615; fields and RPCs M-620 to M-624; fast arrays M-628 to M-635; codec tests M-475, M-476, M-492, M-496,
-  M-511, M-522, M-530, M-548; native class/struct/enum descriptors and scalar/struct net serializers M-710 to M-713, M-717, M-720, M-731 to M-734;
+  M-511, M-522, M-530, M-548; native class/struct/enum descriptors and scalar/struct net serializers M-710 to M-713, M-717, M-720, M-731 to M-736;
   layout source M-552 to M-555; send order M-461, M-556 to
-  M-560; wire capture M-707.
+  M-560; wire capture M-707, M-708.

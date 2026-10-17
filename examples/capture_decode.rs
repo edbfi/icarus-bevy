@@ -31,10 +31,10 @@ use anyhow::{Context, Result, bail, ensure};
 use clap::Parser;
 use icarus_bevy::experimental::{
     actor_channel::{
-        ActorBunchBody, ActorChannelCodec, ActorChannelLimits, BlockTarget, EXPORT_HAS_CHECKSUM,
-        EXPORT_HAS_PATH, EXPORT_NO_LOAD, MAX_GUID_DEPTH, NetGuidRef, SpawnRecord, SpawnVector,
-        SubObjectClass, guid_kind, parse_actor_bunch, read_content_block, read_guid_ref,
-        read_spawn,
+        ActorBunchBody, ActorChannelCodec, ActorChannelLimits, BlockTarget, ContentBlock,
+        EXPORT_HAS_CHECKSUM, EXPORT_HAS_PATH, EXPORT_NO_LOAD, MAX_GUID_DEPTH, NetGuidRef,
+        SpawnRecord, SpawnVector, SubObjectClass, guid_kind, parse_actor_bunch, read_content_block,
+        read_guid_ref, read_spawn,
     },
     archive::{ByteOrder, read_string_frame},
     control_messages::{ControlCodec, Decoded, read_control_messages},
@@ -43,6 +43,24 @@ use icarus_bevy::experimental::{
         RELIABLE_SEQUENCE_LIMIT, Receiver, read_packet,
     },
     peer_lab::PeerLabConfig,
+    rep_layout::{
+        MovementLevel, RepCommand, RepLayoutCodec, RepLayoutLimits, RotationLevel, TagEncoding,
+        actionable_component_rep_layout, actor_component_rep_layout, actor_state_rep_layout,
+        audio_context_component_rep_layout, character_state_rep_layout,
+        decayable_component_rep_layout, durable_component_rep_layout, encode_rep_properties,
+        fillable_component_rep_layout, flod_actor_component_rep_layout,
+        focusable_component_rep_layout, icarus_player_controller_survival_rep_layout,
+        itemable_component_rep_layout, modifier_state_component_rep_layout, parse_rep_properties,
+        player_character_state_rep_layout, player_state_rep_layout, read_rep_properties,
+        resource_network_component_rep_layout, survival_character_state_rep_layout,
+        trait_behaviour_rep_layout, trait_component_rep_layout, transmutable_component_rep_layout,
+        write_rep_properties,
+    },
+    rep_rpc::{
+        FAST_ARRAY_COUNT_CAP, FastArrayItemLayout, FieldHeader, read_custom_delta_header,
+        read_fast_array_delta, read_field_header, write_custom_delta_header,
+        write_fast_array_delta, write_field_header,
+    },
     sequencing::{
         ReliableChannel, ReliableReceive, is_newer, reconstruct_reliable_sequence,
         sequence_difference,
@@ -75,6 +93,12 @@ const EXPORT_KNOWN_FLAGS: u8 = EXPORT_HAS_PATH | EXPORT_NO_LOAD | EXPORT_HAS_CHE
 const MAX_PATH_UNITS: usize = 4096;
 /// Bound for "sane" spawn vector components.
 const SANE_EXTENT: f32 = 1.0e6;
+/// `UClass::ClassNetCache` field-index bound (`FClassNetCache::GetMaxIndex() + 1`
+/// = `FieldsBase + Fields.Num()`, `0x1437c27aa`) for `UIcarusStatContainer`:
+/// 2 inherited `UActorComponent` net properties (`bReplicates`, `bIsActive`) +
+/// 1 own net property (`ReplicatedStatArray`) + 1 own net function
+/// (`OnServer_SerialiseStats`) = 4 (F-705).
+const STAT_CONTAINER_FIELD_INDEX_BOUND: u32 = 4;
 
 type Tally = BTreeMap<String, u64>;
 
@@ -276,6 +300,206 @@ fn actor_codec(has_level: bool) -> ActorChannelCodec {
     }
 }
 
+fn rep_codec() -> RepLayoutCodec {
+    RepLayoutCodec {
+        actor: actor_codec(true),
+        checksums: false,
+        limits: RepLayoutLimits {
+            max_opaque_bits: 1 << 20,
+            ..RepLayoutLimits::default()
+        },
+    }
+}
+
+#[derive(Clone, Copy)]
+enum TargetSchema {
+    RepLayout(&'static str),
+    StatContainer,
+}
+
+fn classify_actor_schema(archetype_path: &str) -> Option<TargetSchema> {
+    match archetype_path {
+        "Default__IcarusPlayerState_C" => Some(TargetSchema::RepLayout("APlayerState")),
+        "Default__BP_IcarusPlayerControllerSurvival_C" => {
+            Some(TargetSchema::RepLayout("AIcarusPlayerControllerSurvival"))
+        }
+        _ => None,
+    }
+}
+
+fn classify_subobject_schema(
+    target_name: &str,
+    channel_archetype: Option<&str>,
+) -> Option<TargetSchema> {
+    match target_name {
+        "Stat Container" | "IcarusStatContainer" => Some(TargetSchema::StatContainer),
+        "ModifierStateComponent" => Some(TargetSchema::RepLayout("UModifierStateComponent")),
+        "TraitDurable" | "DurableComponent" => Some(TargetSchema::RepLayout("UDurableComponent")),
+        "TraitItemable" | "ItemableComponent" => {
+            Some(TargetSchema::RepLayout("UItemableComponent"))
+        }
+        "TraitDecayable" | "DecayableComponent" => {
+            Some(TargetSchema::RepLayout("UDecayableComponent"))
+        }
+        "TraitFillable" | "FillableComponent" => {
+            Some(TargetSchema::RepLayout("UFillableComponent"))
+        }
+        "TraitTransmutable" | "TransmutableComponent" => {
+            Some(TargetSchema::RepLayout("UTransmutableComponent"))
+        }
+        "TraitFocusable" | "FocusableComponent" => {
+            Some(TargetSchema::RepLayout("UFocusableComponent"))
+        }
+        "TraitActionable" | "ActionableComponent" => {
+            Some(TargetSchema::RepLayout("UActionableComponent"))
+        }
+        "ResourceNetwork" | "WaterNetwork" | "EnergyNetwork" | "TraitFuel" => {
+            Some(TargetSchema::RepLayout("UResourceNetworkComponent"))
+        }
+        "FLODActor" | "FLODActorComponent" => Some(TargetSchema::RepLayout("UFLODActorComponent")),
+        "AudioContextComponent" => Some(TargetSchema::RepLayout("UAudioContextComponent")),
+        "ActorState" => match channel_archetype {
+            Some(arch)
+                if arch.contains("Tamed_")
+                    || arch.contains("Tame_")
+                    || arch.contains("Mount_")
+                    || arch.contains("PlayerCharacter")
+                    || arch.contains("Character") =>
+            {
+                None
+            }
+            _ => Some(TargetSchema::RepLayout("UActorState")),
+        },
+        "CharacterState" => Some(TargetSchema::RepLayout("UCharacterState")),
+        "SurvivalCharacterState" => Some(TargetSchema::RepLayout("USurvivalCharacterState")),
+        "PlayerCharacterState" => Some(TargetSchema::RepLayout("UPlayerCharacterState")),
+        "PlayerData" | "PlayerDataComponent" => Some(TargetSchema::RepLayout("UActorComponent")),
+        "InventoryComponent"
+        | "Meshable"
+        | "MeshableComponent"
+        | "Interactable"
+        | "InteractableComponent"
+        | "Highlightable"
+        | "HighlightableComponent"
+        | "Usable"
+        | "UsableComponent"
+        | "Deployable"
+        | "DeployableComponent"
+        | "Experience"
+        | "TraitConsumable"
+        | "TraitBattery"
+        | "TraitThermal"
+        | "TraitTargetable"
+        | "TraitWeight"
+        | "TraitShelter"
+        | "TraitSeat" => Some(TargetSchema::RepLayout("UTraitComponent")),
+        "TraitBehaviour" => Some(TargetSchema::RepLayout("UTraitBehaviour")),
+        _ => None,
+    }
+}
+
+fn schema_commands(schema_key: &str) -> Vec<RepCommand> {
+    let tag_encoding = TagEncoding::NetIndex {
+        first_segment: 0,
+        total_bits: 12,
+    };
+    match schema_key {
+        "APlayerState" => player_state_rep_layout(
+            MovementLevel::Whole,
+            MovementLevel::Whole,
+            RotationLevel::Bytes,
+        ),
+        "AIcarusPlayerControllerSurvival" => icarus_player_controller_survival_rep_layout(
+            MovementLevel::Whole,
+            MovementLevel::Whole,
+            RotationLevel::Bytes,
+            tag_encoding,
+        ),
+        "UActorComponent" => actor_component_rep_layout(),
+        "UFLODActorComponent" => flod_actor_component_rep_layout(),
+        "UAudioContextComponent" => audio_context_component_rep_layout(),
+        "UTraitBehaviour" => trait_behaviour_rep_layout(),
+        "UResourceNetworkComponent" => resource_network_component_rep_layout(),
+        "UTraitComponent" => trait_component_rep_layout(),
+        "UDurableComponent" => durable_component_rep_layout(),
+        "UItemableComponent" => itemable_component_rep_layout(),
+        "UDecayableComponent" => decayable_component_rep_layout(),
+        "UFillableComponent" => fillable_component_rep_layout(),
+        "UTransmutableComponent" => transmutable_component_rep_layout(),
+        "UFocusableComponent" => focusable_component_rep_layout(),
+        "UActionableComponent" => actionable_component_rep_layout(),
+        "UModifierStateComponent" => modifier_state_component_rep_layout(),
+        "UActorState" => actor_state_rep_layout(),
+        "UCharacterState" => character_state_rep_layout(),
+        "USurvivalCharacterState" => survival_character_state_rep_layout(),
+        "UPlayerCharacterState" => player_character_state_rep_layout(),
+        _ => unreachable!(),
+    }
+}
+
+/// Decode and re-encode a `UIcarusStatContainer` (`Stat Container`) block:
+/// optional `UActorComponent` rep-layout properties (when `has_rep_layout` is
+/// set) followed by zero or more `ReplicatedStatArray` custom-delta field
+/// headers (`index_bound = STAT_CONTAINER_FIELD_INDEX_BOUND`, F-705).
+fn replay_stat_container_block(
+    payload: &Payload,
+    has_rep_layout: bool,
+    codec: &RepLayoutCodec,
+) -> Result<(usize, usize, bool)> {
+    let layout = actor_component_rep_layout();
+    let item_layout = FastArrayItemLayout::Delta(vec![RepCommand::StatPairRepState]);
+    let mut reader = payload.reader();
+    let mut writer = BitWriter::new();
+    let prop_entries = if has_rep_layout {
+        let props = read_rep_properties(&mut reader, &layout, codec)?;
+        let mut effective = *codec;
+        effective.checksums = props.terminator_checksum.is_some();
+        write_rep_properties(&mut writer, &props, &layout, &effective)?;
+        props.entries.len()
+    } else {
+        0
+    };
+
+    let mut stat_items = 0usize;
+    while !reader.at_end() {
+        let header = read_field_header(
+            &mut reader,
+            STAT_CONTAINER_FIELD_INDEX_BOUND,
+            codec.limits.max_opaque_bits,
+        )?;
+        let mut field_reader = header.payload.reader();
+        let delta_hdr = read_custom_delta_header(&mut field_reader, ENGINE_NET_VERSION, 1)?;
+        let delta =
+            read_fast_array_delta(&mut field_reader, &item_layout, codec, FAST_ARRAY_COUNT_CAP)?;
+        ensure!(
+            field_reader.at_end(),
+            "trailing bits in Stat Container fast-array delta"
+        );
+        stat_items += delta.changed.len();
+
+        let mut field_writer = BitWriter::new();
+        write_custom_delta_header(&mut field_writer, &delta_hdr, ENGINE_NET_VERSION, 1)?;
+        write_fast_array_delta(
+            &mut field_writer,
+            &delta,
+            &item_layout,
+            codec,
+            FAST_ARRAY_COUNT_CAP,
+        )?;
+        let rebuilt_header = FieldHeader {
+            index: header.index,
+            payload: Payload::from_writer(field_writer),
+        };
+        write_field_header(
+            &mut writer,
+            &rebuilt_header,
+            STAT_CONTAINER_FIELD_INDEX_BOUND,
+        )?;
+    }
+    let reencoded = Payload::from_writer(writer);
+    Ok((prop_entries, stat_items, reencoded == *payload))
+}
+
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Mode {
     Strict,
@@ -318,6 +542,7 @@ struct ChannelState {
     name: Option<Name>,
     open: bool,
     partial: Option<Partial>,
+    archetype_path: Option<String>,
 }
 
 /// A complete bunch handed to the channel: unpartitioned, or reassembled.
@@ -423,6 +648,29 @@ struct BlockStats {
 }
 
 #[derive(Default, Serialize)]
+struct RepReplayStats {
+    /// Content blocks matched to a known native actor or component schema.
+    typed_blocks_attempted: u64,
+    typed_blocks_decoded: u64,
+    typed_blocks_reencoded_exact: u64,
+    typed_blocks_failed: Tally,
+    /// Decoded and bit-identically re-encoded block counts by schema name.
+    by_schema_decoded: Tally,
+    by_schema_reencoded_exact: Tally,
+    /// Total rep-layout property entries and `FStatPairRepState` fast-array
+    /// items decoded across typed blocks.
+    rep_entries_decoded: u64,
+    stat_pair_items_decoded: u64,
+    /// Channel 2 (`APlayerController`) open bunch decoded after the 8-bit
+    /// `NetPlayerIndex` hook (`F-696`).
+    player_controller_open_hook_blocks_decoded: u64,
+    player_controller_open_hook_blocks_reencoded_exact: u64,
+    /// Unclassified content blocks by resolved archetype / subobject target.
+    unclassified_actor_targets: Tally,
+    unclassified_subobject_targets: Tally,
+}
+
+#[derive(Default, Serialize)]
 struct ExportStats {
     bunches: u64,
     /// The codec's F-572 reader on the same prefix, for comparison.
@@ -481,6 +729,7 @@ struct PassStats {
     actor: BTreeMap<String, ActorStats>,
     spawn: SpawnStats,
     blocks: BlockStats,
+    rep_replay: RepReplayStats,
     exports: ExportStats,
     must_be_mapped: MustBeMappedStats,
     /// Open bunches parsed with the level reference present / absent.
@@ -534,6 +783,7 @@ struct Decoder<'a> {
     channels: BTreeMap<u32, ChannelState>,
     first_raw: BTreeSet<u32>,
     exported: BTreeMap<u32, String>,
+    subobject_classes: BTreeMap<u32, String>,
     wire: WireStats,
     stats: PassStats,
     detail: &'a mut dyn Write,
@@ -561,6 +811,7 @@ impl<'a> Decoder<'a> {
             channels: BTreeMap::new(),
             first_raw: BTreeSet::new(),
             exported: BTreeMap::new(),
+            subobject_classes: BTreeMap::new(),
             wire: WireStats::default(),
             stats: PassStats::default(),
             detail,
@@ -600,7 +851,7 @@ impl<'a> Decoder<'a> {
         self.wire.packets_decoded += 1;
         let sequence = packet.header.sequence;
         match self.last_sequence {
-            None => self.packet_sequence = i64::from(sequence),
+            None => {}
             Some(last) if is_newer(sequence, last) => {
                 let delta = sequence_difference(sequence, last);
                 if delta > 1 {
@@ -1060,6 +1311,8 @@ impl<'a> Decoder<'a> {
 
     /// Where a failed open bunch stops: the spawn record's extent and each
     /// content block header read after it, for the work-only detail file.
+    /// Also checks the `APlayerController` 8-bit `NetPlayerIndex` open-bunch
+    /// hook (`F-696`) for `rep_replay`.
     fn open_failure(
         &mut self,
         arrival: &Arrival,
@@ -1069,6 +1322,53 @@ impl<'a> Decoder<'a> {
         let mut reader = bunch.payload.reader();
         let spawn = read_spawn(&mut reader, codec);
         let spawn_end = reader.position();
+        if let Ok(spawn_rec) = &spawn
+            && let Some(dynamic) = &spawn_rec.dynamic
+            && let Some(arch) = self.resolve(&dynamic.archetype).cloned()
+        {
+            self.channels
+                .entry(bunch.header.channel_index)
+                .or_default()
+                .archetype_path = Some(arch.clone());
+            // Check the 8-bit `NetPlayerIndex` hook on PlayerController open bunches (F-696).
+            if arch.contains("PlayerController") {
+                let mut hook_reader = bunch.payload.reader();
+                if read_spawn(&mut hook_reader, codec).is_ok() && hook_reader.remaining() >= 8 {
+                    let _net_player_index = hook_reader.read_bits(8);
+                    let mut hook_blocks = Vec::new();
+                    let mut ok = true;
+                    while !hook_reader.at_end() {
+                        match read_content_block(&mut hook_reader, codec) {
+                            Ok(block) => hook_blocks.push(block),
+                            Err(_) => {
+                                ok = false;
+                                break;
+                            }
+                        }
+                    }
+                    if ok {
+                        for block in &hook_blocks {
+                            let (object_path, class_path) = self.resolve_block_paths(block);
+                            if let Some((_schema_name, exact)) = self.replay_block(
+                                bunch.header.channel_index,
+                                block,
+                                object_path.as_deref(),
+                                class_path.as_deref(),
+                            ) {
+                                self.stats
+                                    .rep_replay
+                                    .player_controller_open_hook_blocks_decoded += 1;
+                                if exact {
+                                    self.stats
+                                        .rep_replay
+                                        .player_controller_open_hook_blocks_reencoded_exact += 1;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
         let mut blocks = Vec::new();
         if spawn.is_ok() {
             while !reader.at_end() && blocks.len() < 64 {
@@ -1094,6 +1394,137 @@ impl<'a> Decoder<'a> {
         self.exported.get(&reference.guid)
     }
 
+    fn resolve_block_paths(&mut self, block: &ContentBlock) -> (Option<String>, Option<String>) {
+        let BlockTarget::SubObject { object, class } = &block.target else {
+            return (None, None);
+        };
+        let object_path = self.exported.get(&object.guid).cloned();
+        let class_path = match class {
+            SubObjectClass::Class(class_ref) => {
+                let resolved = self.exported.get(&class_ref.guid).cloned();
+                if let Some(path) = &resolved {
+                    self.subobject_classes.insert(object.guid, path.clone());
+                }
+                resolved
+            }
+            SubObjectClass::StablyNamed | SubObjectClass::Delete => {
+                self.subobject_classes.get(&object.guid).cloned()
+            }
+        };
+        (object_path, class_path)
+    }
+
+    fn replay_block(
+        &mut self,
+        channel_index: u32,
+        block: &ContentBlock,
+        object_path: Option<&str>,
+        class_path: Option<&str>,
+    ) -> Option<(&'static str, bool)> {
+        let channel_arch = self
+            .channels
+            .get(&channel_index)
+            .and_then(|state| state.archetype_path.as_deref());
+        let target_schema = match &block.target {
+            BlockTarget::Actor => {
+                if !block.has_rep_layout {
+                    return None;
+                }
+                let Some(arch) = channel_arch else {
+                    bump(
+                        &mut self.stats.rep_replay.unclassified_actor_targets,
+                        "<unknown_channel_archetype>",
+                    );
+                    return None;
+                };
+                let Some(schema) = classify_actor_schema(arch) else {
+                    bump(&mut self.stats.rep_replay.unclassified_actor_targets, arch);
+                    return None;
+                };
+                schema
+            }
+            BlockTarget::SubObject { .. } => {
+                let Some(target_name) = class_path.or(object_path) else {
+                    if block.has_rep_layout {
+                        bump(
+                            &mut self.stats.rep_replay.unclassified_subobject_targets,
+                            "<unresolved_subobject>",
+                        );
+                    }
+                    return None;
+                };
+                let Some(schema) = classify_subobject_schema(target_name, channel_arch) else {
+                    if block.has_rep_layout {
+                        bump(
+                            &mut self.stats.rep_replay.unclassified_subobject_targets,
+                            target_name,
+                        );
+                    }
+                    return None;
+                };
+                if matches!(schema, TargetSchema::RepLayout(_)) && !block.has_rep_layout {
+                    return None;
+                }
+                schema
+            }
+        };
+
+        let codec = rep_codec();
+        let replay = &mut self.stats.rep_replay;
+        replay.typed_blocks_attempted += 1;
+        match target_schema {
+            TargetSchema::StatContainer => {
+                let schema_name = "UIcarusStatContainer";
+                match replay_stat_container_block(&block.payload, block.has_rep_layout, &codec) {
+                    Ok((prop_entries, stat_items, exact)) => {
+                        replay.typed_blocks_decoded += 1;
+                        bump(&mut replay.by_schema_decoded, schema_name);
+                        replay.rep_entries_decoded += prop_entries as u64;
+                        replay.stat_pair_items_decoded += stat_items as u64;
+                        if exact {
+                            replay.typed_blocks_reencoded_exact += 1;
+                            bump(&mut replay.by_schema_reencoded_exact, schema_name);
+                        }
+                        Some((schema_name, exact))
+                    }
+                    Err(error) => {
+                        bump(
+                            &mut replay.typed_blocks_failed,
+                            format!("{schema_name}: {}", class(&error)),
+                        );
+                        None
+                    }
+                }
+            }
+            TargetSchema::RepLayout(schema_name) => {
+                let commands = schema_commands(schema_name);
+                match parse_rep_properties(&block.payload, &commands, &codec) {
+                    Ok(stream) => {
+                        replay.typed_blocks_decoded += 1;
+                        bump(&mut replay.by_schema_decoded, schema_name);
+                        replay.rep_entries_decoded += stream.total_entries() as u64;
+                        let mut effective = codec;
+                        effective.checksums = stream.terminator_checksum.is_some();
+                        let exact = encode_rep_properties(&stream, &commands, &effective)
+                            .is_ok_and(|reencoded| reencoded == block.payload);
+                        if exact {
+                            replay.typed_blocks_reencoded_exact += 1;
+                            bump(&mut replay.by_schema_reencoded_exact, schema_name);
+                        }
+                        Some((schema_name, exact))
+                    }
+                    Err(error) => {
+                        bump(
+                            &mut replay.typed_blocks_failed,
+                            format!("{schema_name}: {}", class(&error)),
+                        );
+                        None
+                    }
+                }
+            }
+        }
+    }
+
     fn record_body(
         &mut self,
         arrival: &Arrival,
@@ -1101,20 +1532,23 @@ impl<'a> Decoder<'a> {
         body: &ActorBunchBody,
         name: Option<&Name>,
     ) -> Result<()> {
+        let spawn = body
+            .spawn
+            .as_ref()
+            .map(|spawn| self.record_spawn(complete.header.channel_index, spawn))
+            .transpose()?;
         let mut blocks = Vec::new();
         for block in &body.blocks {
+            let (object_path, class_path) = self.resolve_block_paths(block);
             let stats = &mut self.stats.blocks;
             stats.total += 1;
             stats.with_rep_layout += u64::from(block.has_rep_layout);
             stats.payload_bits_total += block.payload.bit_len() as u64;
             let summary = block.summary();
             bump(&mut stats.by_kind, format!("{:?}", summary.kind));
-            let mut class_path = None;
             if let BlockTarget::SubObject { object, class } = &block.target {
                 bump(&mut stats.sub_object_guid, format!("{:?}", object.kind()));
-                if let SubObjectClass::Class(class) = class {
-                    class_path = self.exported.get(&class.guid).cloned();
-                    let stats = &mut self.stats.blocks;
+                if matches!(class, SubObjectClass::Class(_)) {
                     if class_path.is_some() {
                         stats.class_resolved_by_earlier_export += 1;
                     } else {
@@ -1122,13 +1556,20 @@ impl<'a> Decoder<'a> {
                     }
                 }
             }
-            blocks.push(json!({"summary": summary, "class_path": class_path}));
+            let replayed = self.replay_block(
+                complete.header.channel_index,
+                block,
+                object_path.as_deref(),
+                class_path.as_deref(),
+            );
+            blocks.push(json!({
+                "summary": summary,
+                "object_path": object_path,
+                "class_path": class_path,
+                "schema": replayed.map(|(s, _)| s),
+                "reencoded_exact": replayed.map(|(_, exact)| exact),
+            }));
         }
-        let spawn = body
-            .spawn
-            .as_ref()
-            .map(|spawn| self.record_spawn(spawn))
-            .transpose()?;
         self.write_detail(json!({"kind":"actor_bunch", "datagram":arrival.datagram,
             "ms":arrival.ms, "channel":complete.header.channel_index,
             "channel_name":name.map(name_text), "open":complete.header.open,
@@ -1136,11 +1577,18 @@ impl<'a> Decoder<'a> {
             "parts":complete.parts, "spawn":spawn, "blocks":blocks}))
     }
 
-    fn record_spawn(&mut self, spawn: &SpawnRecord) -> Result<Value> {
+    fn record_spawn(&mut self, channel_index: u32, spawn: &SpawnRecord) -> Result<Value> {
         let archetype_path = spawn
             .dynamic
             .as_ref()
-            .and_then(|dynamic| self.resolve(&dynamic.archetype).cloned());
+            .and_then(|dynamic| self.resolve(&dynamic.archetype).cloned())
+            .or_else(|| self.resolve(&spawn.actor).cloned());
+        if let Some(arch) = &archetype_path {
+            self.channels
+                .entry(channel_index)
+                .or_default()
+                .archetype_path = Some(arch.clone());
+        }
         let level_path = spawn
             .dynamic
             .as_ref()
