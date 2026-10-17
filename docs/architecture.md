@@ -45,13 +45,13 @@ Provide official-settings import/mapping and report unsupported settings.
 
 ## Release tracking
 
-ICARUS ships every Thursday without exception, and each release moves both what
-the stock client sends and what the server runs: the Hello network version
-hashes the project version string, compared for exact equality (F-541, F-563),
-and server code, gameplay-tag tables and paks change between weekly builds
-(F-700, F-702). Weekly churn is a permanent operating constraint, so the
-architecture must treat release-specific protocol facts as data rather than
-scattered code constants:
+ICARUS ships weekly, and each release moves both what the stock client sends
+and what the server runs: the Hello network version hashes the project version
+string, compared for exact equality (F-541, F-563), and server code,
+gameplay-tag tables and paks change between weekly builds (F-700, F-702).
+Weekly churn is a permanent operating constraint, so the architecture must
+treat release-specific protocol facts as data rather than scattered code
+constants:
 
 - `config/release.toml` names one official build (Steam build, project version
   and the derived network checksum, checked by `experimental::release`).
@@ -66,7 +66,7 @@ scattered code constants:
   explicit, data-driven release profile separate from codec and simulation
   logic. Pair that profile with a single automated local intake/diff pipeline
   (fetch install, PE section/symbol diff, tag-table extraction, schema diff and
-  capture/test replay) so a routine Thursday update is a mechanical profile
+  capture/test replay) so a routine weekly update is a mechanical profile
   refresh and verification pass unless wire semantics or structural code paths
   changed.
 - A bump is version- and profile-only until the weekly diff shows otherwise:

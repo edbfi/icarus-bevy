@@ -56,7 +56,7 @@ jobs:
               build = int(m[1])
               if not behind and build == pinned:
                   reason = f"Closed automatically: config/release.toml is now pinned to build {pinned}."
-              elif build <= pinned:
+              elif build <= pinned and build != live:
                   reason = f"Closed automatically: config/release.toml has moved to build {pinned}."
               elif behind and build != live:
                   reason = f"Closed automatically: superseded by live Steam public build {live}."
