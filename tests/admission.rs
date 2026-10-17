@@ -1,9 +1,16 @@
 use icarus_bevy::experimental::admission::{
-    AdmissionPolicy, Occupancy, SERVER_FULL, SPLITSCREEN_EXCEEDED, int_option, login_option,
+    AdmissionPolicy, ClientLoginState, ConnectionLoginAdmission, FIND_PLAYER_START_ERROR,
+    GAMESESSION_NULL_ERROR, INCOMPATIBLE_UNIQUE_NET_ID, InitNewPlayerOutcome, JoinSpawnContext,
+    MAX_PLAYER_NAME_UNITS, Occupancy, PLAYER_STATE_NULL_ERROR, SERVER_FULL,
+    SPAWN_PLAYER_CONTROLLER_ERROR, SPLITSCREEN_EXCEEDED, check_unique_net_id_compatible,
+    has_login_option, int_option, login_option, resolve_player_name, unique_net_id_is_valid,
+};
+use icarus_bevy::experimental::control_messages::{
+    ArchiveText, NetIdType, NetIdValue, UniqueNetId,
 };
 
-// Independently authored option strings for the engine's login checks
-// (F-622); no captured traffic.
+// Independently authored option strings for the engine's login and join checks
+// (F-712, F-713); no captured traffic.
 
 fn units(text: &str) -> Vec<u16> {
     text.encode_utf16().collect()
@@ -48,8 +55,8 @@ fn keys_compare_ascii_case_insensitively_and_other_units_exactly() {
         value("?SPLITSCREENCOUNT=2", "SplitscreenCount").as_deref(),
         Some("2")
     );
-    assert_eq!(value("?Ü=1", "ü"), None);
-    assert_eq!(value("?Ü=1", "Ü").as_deref(), Some("1"));
+    assert_eq!(value("?\u{00dc}=1", "\u{00fc}"), None);
+    assert_eq!(value("?\u{00dc}=1", "\u{00dc}").as_deref(), Some("1"));
     assert_eq!(value("?Name1=x", "Name"), None);
 }
 
@@ -138,5 +145,185 @@ fn splitscreen_above_the_connection_limit_is_rejected_after_capacity() {
     assert_eq!(
         POLICY.approve_login(&units("?SplitscreenCount=2"), full),
         Err(SERVER_FULL)
+    );
+}
+
+#[test]
+fn pre_login_checks_unique_net_id_compatibility_before_approve_login() {
+    let empty_id = UniqueNetId {
+        kind: NetIdType::Named(ArchiveText::text("UNKNOWN").unwrap()),
+        value: NetIdValue::EncodedEmpty,
+    };
+    assert!(!unique_net_id_is_valid(&empty_id));
+    // An invalid/empty unique net id skips IsCompatibleUniqueNetId and runs ApproveLogin.
+    assert_eq!(
+        POLICY.pre_login(
+            &units("?SplitscreenCount=1"),
+            &empty_id,
+            Occupancy::default(),
+            Some("STEAM"),
+            &["EOS"],
+            &[],
+        ),
+        Ok(())
+    );
+    let steam_id = UniqueNetId {
+        kind: NetIdType::Named(ArchiveText::text("steam").unwrap()),
+        value: NetIdValue::from_hex("0123456789ABCDEF").unwrap(),
+    };
+    assert!(unique_net_id_is_valid(&steam_id));
+    assert_eq!(
+        check_unique_net_id_compatible(&steam_id, Some("STEAM"), &["EOS"], &[]),
+        Ok(())
+    );
+    let incompatible_id = UniqueNetId {
+        kind: NetIdType::Named(ArchiveText::text("PSN").unwrap()),
+        value: NetIdValue::from_hex("0123456789ABCDEF").unwrap(),
+    };
+    // Incompatible net id fails with INCOMPATIBLE_UNIQUE_NET_ID even when server is full.
+    let full = Occupancy {
+        players: 8,
+        spectators: 0,
+    };
+    assert_eq!(
+        POLICY.pre_login(
+            &units("?SplitscreenCount=2"),
+            &incompatible_id,
+            full,
+            Some("STEAM"),
+            &["EOS"],
+            &[],
+        ),
+        Err(INCOMPATIBLE_UNIQUE_NET_ID)
+    );
+}
+
+#[test]
+fn connection_login_admission_gates_control_messages_by_state() {
+    let mut conn = ConnectionLoginAdmission::new();
+    assert_eq!(conn.state, ClientLoginState::LoggingIn);
+    assert_eq!(conn.expected_login_msg_type, 0);
+    // Initially only NMT_Hello (0) is accepted.
+    assert!(conn.is_client_msg_type_valid(0));
+    assert!(!conn.is_client_msg_type_valid(4));
+    assert!(!conn.is_client_msg_type_valid(5));
+    assert!(!conn.is_client_msg_type_valid(9));
+
+    // After SendChallengeControlMessage (0x143998730), only NMT_Login (5) is accepted.
+    conn.on_challenge_sent();
+    assert_eq!(conn.expected_login_msg_type, 5);
+    assert!(!conn.is_client_msg_type_valid(0));
+    assert!(!conn.is_client_msg_type_valid(4));
+    assert!(conn.is_client_msg_type_valid(5));
+    assert!(!conn.is_client_msg_type_valid(9));
+
+    // After WelcomePlayer (0x143cc9170), Hello (0) and Login (5) are rejected,
+    // while Netspeed (4), Join (9), JoinSplit (10), PCSwap (15), DebugText (17) pass.
+    conn.on_welcome_sent();
+    assert_eq!(conn.state, ClientLoginState::Welcomed);
+    assert!(!conn.is_client_msg_type_valid(0));
+    assert!(!conn.is_client_msg_type_valid(5));
+    for id in [4, 9, 10, 15, 17] {
+        assert!(conn.is_client_msg_type_valid(id));
+    }
+
+    // First NMT_Join spawns the PlayerController and advances to Joined (3);
+    // duplicate NMT_Join is ignored when PlayerController is already set.
+    assert!(conn.on_join_spawned());
+    assert_eq!(conn.state, ClientLoginState::Joined);
+    assert!(!conn.on_join_spawned());
+    assert!(!conn.is_client_msg_type_valid(0));
+    assert!(!conn.is_client_msg_type_valid(5));
+    assert!(conn.is_client_msg_type_valid(4));
+    assert!(conn.is_client_msg_type_valid(15));
+}
+
+#[test]
+fn login_and_init_new_player_orders_errors_and_truncates_player_names() {
+    let base_ctx = JoinSpawnContext {
+        has_game_session: true,
+        can_spawn_controller: true,
+        has_player_state: true,
+        has_player_start: true,
+        must_spectate: false,
+        default_player_name: "Player",
+        player_id: 256,
+        net_player_index: 0,
+    };
+
+    assert_eq!(
+        POLICY.login_and_init_new_player(
+            &units("?Name=Ada"),
+            Occupancy::default(),
+            JoinSpawnContext {
+                has_game_session: false,
+                ..base_ctx
+            },
+        ),
+        Err(GAMESESSION_NULL_ERROR)
+    );
+    assert_eq!(
+        POLICY.login_and_init_new_player(
+            &units("?SplitscreenCount=2"),
+            Occupancy::default(),
+            base_ctx,
+        ),
+        Err(SPLITSCREEN_EXCEEDED)
+    );
+    assert_eq!(
+        POLICY.login_and_init_new_player(
+            &units("?Name=Ada"),
+            Occupancy::default(),
+            JoinSpawnContext {
+                can_spawn_controller: false,
+                ..base_ctx
+            },
+        ),
+        Err(SPAWN_PLAYER_CONTROLLER_ERROR)
+    );
+    assert_eq!(
+        POLICY.login_and_init_new_player(
+            &units("?Name=Ada"),
+            Occupancy::default(),
+            JoinSpawnContext {
+                has_player_state: false,
+                ..base_ctx
+            },
+        ),
+        Err(PLAYER_STATE_NULL_ERROR)
+    );
+    assert_eq!(
+        POLICY.login_and_init_new_player(
+            &units("?Name=Ada"),
+            Occupancy::default(),
+            JoinSpawnContext {
+                has_player_start: false,
+                ..base_ctx
+            },
+        ),
+        Err(FIND_PLAYER_START_ERROR)
+    );
+
+    // Long ?Name= is truncated to 20 UTF-16 units (0x14), and ?bIsFromInvite is detected.
+    let opts = units("?Name=0123456789abcdefghijEXTRA?bIsFromInvite?SpectatorOnly=1");
+    assert!(has_login_option(&opts, "bisfrominvite"));
+    let outcome = POLICY
+        .login_and_init_new_player(&opts, Occupancy::default(), base_ctx)
+        .unwrap();
+    assert_eq!(
+        outcome,
+        InitNewPlayerOutcome {
+            is_from_invite: true,
+            spectator_only: true,
+            player_name_units: units("0123456789abcdefghij"),
+            net_player_index: 0,
+        }
+    );
+    assert_eq!(outcome.player_name_units.len(), MAX_PLAYER_NAME_UNITS);
+
+    // Empty or absent ?Name= falls back to "{DefaultPlayerName}{PlayerId}".
+    assert_eq!(
+        resolve_player_name(&units("?Name="), "Player", 256),
+        units("Player256")
     );
 }

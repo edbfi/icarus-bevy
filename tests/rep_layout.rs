@@ -1288,6 +1288,7 @@ fn numeric_and_native_struct_items_round_trip_both_byte_orders() {
         RepCommand::Double,
         RepCommand::Vector,
         RepCommand::Vector2D,
+        RepCommand::Plane,
         RepCommand::UniqueNetId,
     ];
     let expected = stream(vec![
@@ -1308,8 +1309,9 @@ fn numeric_and_native_struct_items_round_trip_both_byte_orders() {
             11,
             RepValue::Vector2D([(-12.5f32).to_bits(), 64.25f32.to_bits()]),
         ),
+        entry(12, RepValue::Plane([-1024, 0, 1024, 32_767])),
         entry(
-            12,
+            13,
             RepValue::UniqueNetId(UniqueNetId {
                 kind: NetIdType::Indexed(9),
                 value: NetIdValue::from_hex("0110000100000001").unwrap(),

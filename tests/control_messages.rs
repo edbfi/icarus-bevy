@@ -1,9 +1,11 @@
 use icarus_bevy::experimental::archive::ByteOrder;
 use icarus_bevy::experimental::control::TokenEncoding;
 use icarus_bevy::experimental::control_messages::{
-    ArchiveText, ControlCodec, ControlMessage, Decoded, NetIdForm, NetIdType, NetIdValue,
-    UniqueNetId, encode_control_message, read_control_message, read_control_messages,
-    read_unique_net_id, write_control_message, write_unique_net_id,
+    ArchiveText, ControlChannelSendQueue, ControlCodec, ControlFallback, ControlMessage,
+    ControlSendDisposition, Decoded, MAX_CONTROL_OUT_REC, MAX_QUEUED_CONTROL_MESSAGES, NetIdForm,
+    NetIdType, NetIdValue, UniqueNetId, encode_control_message, read_control_fallback,
+    read_control_message, read_control_messages, read_unique_net_id, write_control_fallback,
+    write_control_message, write_unique_net_id,
 };
 use icarus_bevy::experimental::packet::{BitReader, BitWriter};
 
@@ -378,6 +380,46 @@ fn unknown_ids_stop_decoding_without_reading_fields() {
 }
 
 #[test]
+fn control_channel_fallback_layouts_round_trip_in_both_orders() {
+    let fallbacks = [
+        ControlFallback::Skip { guid: [1, 2, 3, 4] },
+        ControlFallback::Abort { guid: [5, 6, 7, 8] },
+        ControlFallback::ActorChannelFailure { channel_index: 42 },
+        ControlFallback::GameSpecific {
+            message: text("custom"),
+        },
+        ControlFallback::SecurityViolation {
+            kind: 3,
+            message: text("violation"),
+        },
+        ControlFallback::BeaconJoin,
+        ControlFallback::BeaconLogin {
+            text: text("beacon"),
+            unique_net_id: hex_id(NetIdType::Default, "AB"),
+        },
+        ControlFallback::BeaconAck { net_guid: 512 },
+        ControlFallback::BeaconWelcome {
+            text: text("welcome"),
+        },
+    ];
+    for order in [ByteOrder::Little, ByteOrder::Big] {
+        let codec = codec(order);
+        for fallback in &fallbacks {
+            let mut writer = BitWriter::new();
+            write_control_fallback(&mut writer, fallback, &codec).unwrap();
+            let mut reader = BitReader::new(writer.as_bytes(), writer.bit_len()).unwrap();
+            let id = reader.read_bits(8) as u8;
+            assert_eq!(id, fallback.id());
+            let decoded = read_control_fallback(id, &mut reader, &codec)
+                .unwrap()
+                .unwrap();
+            assert_eq!(&decoded, fallback);
+            assert!(reader.at_end());
+        }
+    }
+}
+
+#[test]
 fn string_caps_and_count_limits_are_strict() {
     let capped = ControlCodec {
         order: ByteOrder::Little,
@@ -459,4 +501,53 @@ fn summaries_and_debug_output_carry_kinds_and_lengths_only() {
     .summary();
     let rendered = serde_json::to_string(&hello).unwrap();
     assert!(!rendered.contains("4207849484"));
+}
+
+#[test]
+fn control_channel_send_queue_enforces_out_rec_and_queued_message_caps() {
+    let mut queue = ControlChannelSendQueue::new();
+    assert!(queue.is_empty());
+
+    // Below MAX_CONTROL_OUT_REC (255) with empty queue sends immediately.
+    assert_eq!(
+        queue.send_or_queue(1u32, MAX_CONTROL_OUT_REC - 1, false),
+        (ControlSendDisposition::SendImmediate, Some(1))
+    );
+    // At 255, a non-close bunch queues, whereas a close bunch (`255 + bClose`) still sends immediately.
+    assert_eq!(
+        queue.send_or_queue(2u32, MAX_CONTROL_OUT_REC, true),
+        (ControlSendDisposition::SendImmediate, Some(2))
+    );
+    assert_eq!(
+        queue.send_or_queue(3u32, MAX_CONTROL_OUT_REC, false),
+        (ControlSendDisposition::Queued { queued_len: 1 }, None)
+    );
+    // Once non-empty, subsequent bunches queue even if NumOutRec drops.
+    assert_eq!(
+        queue.send_or_queue(4u32, 0, false),
+        (ControlSendDisposition::Queued { queued_len: 2 }, None)
+    );
+
+    // Tick does not drain before bOpenAcked or while closing.
+    assert!(queue.drain_ready(false, false, 0).is_empty());
+    assert!(queue.drain_ready(true, true, 0).is_empty());
+    assert_eq!(
+        queue.drain_ready(true, false, MAX_CONTROL_OUT_REC - 1),
+        vec![3]
+    );
+    assert_eq!(queue.len(), 1);
+    assert_eq!(queue.drain_ready(true, false, 0), vec![4]);
+    assert!(queue.is_empty());
+
+    // Queue up to MAX_QUEUED_CONTROL_MESSAGES (0x7fff); the 0x8000-th message triggers OverflowClose.
+    for i in 1..=MAX_QUEUED_CONTROL_MESSAGES {
+        assert_eq!(
+            queue.send_or_queue(i as u32, MAX_CONTROL_OUT_REC, false),
+            (ControlSendDisposition::Queued { queued_len: i }, None)
+        );
+    }
+    assert_eq!(
+        queue.send_or_queue(0xffff, MAX_CONTROL_OUT_REC, false),
+        (ControlSendDisposition::OverflowClose, None)
+    );
 }

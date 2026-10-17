@@ -1,10 +1,13 @@
 use icarus_bevy::experimental::actor_channel::{
     ActorBunchBody, ActorChannelCodec, ActorChannelLimits, BlockTarget, CompressedRotator,
-    ContentBlock, DynamicSpawn, ExportPath, GuidExport, GuidKind, NetGuidRef, SpawnRecord,
-    SpawnVector, SubObjectClass, dequantize_angle, encode_actor_bunch_body, guid_kind,
-    parse_actor_bunch, quantize_angle, read_actor_bunch_body, read_content_block, read_guid_ref,
-    read_rotator, read_spawn, write_actor_bunch_body, write_content_block, write_guid_ref,
-    write_rotator, write_spawn,
+    ContentBlock, DynamicSpawn, ExportPath, GuidExport, GuidKind, MAX_EXPORT_GUIDS, NetGuidRef,
+    PackageMapState, SpawnRecord, SpawnVector, SubObjectClass, dequantize_angle,
+    encode_actor_bunch_body, encode_player_controller_open_bunch_body, guid_kind,
+    parse_actor_bunch, parse_player_controller_open_bunch, quantize_angle, read_actor_bunch_body,
+    read_content_block, read_export_prefix, read_guid_ref, read_must_be_mapped_guids,
+    read_player_controller_open_bunch_body, read_rotator, read_spawn, write_actor_bunch_body,
+    write_content_block, write_export_prefix, write_guid_ref, write_must_be_mapped_guids,
+    write_player_controller_open_bunch_body, write_rotator, write_spawn,
 };
 use icarus_bevy::experimental::archive::ByteOrder;
 use icarus_bevy::experimental::control_messages::ArchiveText;
@@ -993,5 +996,213 @@ fn debug_and_summaries_carry_no_secrets() {
             assert!(!output.contains(secret), "{secret} leaked: {output}");
         }
         assert!(output.contains("18"), "path length missing: {output}");
+    }
+}
+
+#[test]
+fn export_prefix_round_trips_and_validates_bounds() {
+    for order in [ByteOrder::Little, ByteOrder::Big] {
+        let mut c = codec(17, false, true);
+        c.order = order;
+        let refs = vec![
+            NetGuidRef {
+                guid: 5,
+                export: Some(GuidExport {
+                    no_load: false,
+                    path: Some(ExportPath {
+                        outer: Box::new(NetGuidRef::null()),
+                        path: text("/Script/Icarus"),
+                    }),
+                    checksum: Some(0x1234_5678),
+                    bare_checksum_flag: false,
+                }),
+            },
+            NetGuidRef {
+                guid: 3,
+                export: Some(GuidExport {
+                    no_load: false,
+                    path: None,
+                    checksum: None,
+                    bare_checksum_flag: true,
+                }),
+            },
+        ];
+        let mut writer = BitWriter::new();
+        write_export_prefix(&mut writer, &refs, &c).unwrap();
+        let fixture = bits(&writer);
+        let mut input = reader(&fixture);
+        assert_eq!(read_export_prefix(&mut input, &c).unwrap(), refs);
+        assert!(input.at_end());
+        for len in 0..fixture.1 {
+            assert!(
+                read_export_prefix(&mut prefix(&fixture, len), &c).is_err(),
+                "prefix {len} accepted"
+            );
+        }
+    }
+
+    let c = codec(17, false, true);
+    // bHasRepLayoutExport == 1 is rejected.
+    let mut rep_export = BitWriter::new();
+    rep_export.write_bit(true);
+    rep_export.write_u32(0);
+    assert!(read_export_prefix(&mut reader(&bits(&rep_export)), &c).is_err());
+
+    // Negative and > MAX_EXPORT_GUIDS counts are rejected.
+    for bad_count in [-1i32 as u32, MAX_EXPORT_GUIDS + 1] {
+        let mut bad = BitWriter::new();
+        bad.write_bit(false);
+        bad.write_u32(bad_count);
+        assert!(read_export_prefix(&mut reader(&bits(&bad)), &c).is_err());
+    }
+    let too_many = vec![NetGuidRef::null(); MAX_EXPORT_GUIDS as usize + 1];
+    assert!(write_export_prefix(&mut BitWriter::new(), &too_many, &c).is_err());
+}
+
+#[test]
+fn must_be_mapped_guids_round_trip_and_reject_non_canonical() {
+    let guids = vec![2u32, 14, 300, 65_535];
+    for order in [ByteOrder::Little, ByteOrder::Big] {
+        let mut c = codec(17, false, true);
+        c.order = order;
+        let mut writer = BitWriter::new();
+        write_must_be_mapped_guids(&mut writer, &guids, &c).unwrap();
+        let fixture = bits(&writer);
+        let mut input = reader(&fixture);
+        assert_eq!(read_must_be_mapped_guids(&mut input, &c).unwrap(), guids);
+        assert!(input.at_end());
+        for len in 0..fixture.1 {
+            assert!(
+                read_must_be_mapped_guids(&mut prefix(&fixture, len), &c).is_err(),
+                "prefix {len} accepted"
+            );
+        }
+    }
+    // Non-canonical packed GUID rejected.
+    let c = codec(17, false, true);
+    let mut bad = BitWriter::new();
+    bad.write_bytes(&1u16.to_le_bytes());
+    bad.write_bits(0x0b, 8);
+    bad.write_bits(0x00, 8);
+    assert!(read_must_be_mapped_guids(&mut reader(&bits(&bad)), &c).is_err());
+}
+
+#[test]
+fn package_map_state_ingests_exports_and_resolves_must_be_mapped() {
+    let c = codec(17, false, true);
+    let pkg = NetGuidRef {
+        guid: 3,
+        export: Some(GuidExport {
+            no_load: false,
+            path: Some(ExportPath {
+                outer: Box::new(NetGuidRef::null()),
+                path: text("/Script/Icarus"),
+            }),
+            checksum: None,
+            bare_checksum_flag: false,
+        }),
+    };
+    let cls = NetGuidRef {
+        guid: 5,
+        export: Some(GuidExport {
+            no_load: true,
+            path: Some(ExportPath {
+                outer: Box::new(pkg),
+                path: text("Default__AIcarusPlayerControllerSurvival"),
+            }),
+            checksum: Some(0x9876_5432),
+            bare_checksum_flag: false,
+        }),
+    };
+    let mut sender_state = PackageMapState::new();
+    let export_payload = sender_state
+        .encode_export_bunch_payload(std::slice::from_ref(&cls), &c)
+        .unwrap();
+    assert_eq!(sender_state.len(), 2);
+    let export_fixture = (export_payload.bytes().to_vec(), export_payload.bit_len());
+
+    let mut state = PackageMapState::new();
+    assert!(state.is_empty());
+    let parsed = state
+        .consume_export_prefix(&mut reader(&export_fixture), &c)
+        .unwrap();
+    assert_eq!(parsed.len(), 1);
+    assert_eq!(state.len(), 2);
+    assert!(state.contains(3) && state.contains(5) && !state.contains(99));
+    assert_eq!(state.resolve_path(3), Some("/Script/Icarus"));
+    assert_eq!(
+        state.resolve_path(5),
+        Some("Default__AIcarusPlayerControllerSurvival")
+    );
+    assert_eq!(state.resolve_outer_guid(5), Some(3));
+    assert_eq!(
+        state.resolve_full_path(5).as_deref(),
+        Some("/Script/Icarus.Default__AIcarusPlayerControllerSurvival")
+    );
+
+    let body = payload(19, 7);
+    let prepended = sender_state
+        .prepend_must_be_mapped_guids(&[3, 5, 99], &body, &c)
+        .unwrap();
+    let mut mapped_reader = prepended.reader();
+    let (guids, resolved) = state
+        .consume_must_be_mapped(&mut mapped_reader, &c)
+        .unwrap();
+    assert_eq!(guids, vec![3, 5, 99]);
+    assert_eq!(resolved, 2);
+    assert_eq!(mapped_reader.remaining(), body.bit_len());
+
+    // Debug output does not leak paths or GUIDs.
+    let debug = format!("{state:?} {:?}", state.get(5).unwrap());
+    assert!(!debug.contains("Icarus") && !debug.contains("98765432"));
+}
+
+#[test]
+fn player_controller_open_bunch_round_trips_and_validates() {
+    // Exact 472-bit Channel 2 open bunch from M-707 / M-708 (F-696, F-709).
+    let bunch_bytes = [
+        0x04, 0x12, 0x06, 0x4f, 0xd8, 0x04, 0xe8, 0x01, 0x00, 0xdd, 0x95, 0x3f, 0x00, 0x7e, 0x14,
+        0xa0, 0x20, 0x8e, 0x81, 0x20, 0x98, 0x00, 0x00, 0xe0, 0x0d, 0x01, 0x00, 0x00, 0x01, 0x01,
+        0x96, 0x28, 0x1f, 0xb1, 0x30, 0xb8, 0x40, 0xc0, 0x50, 0x00, 0xc4, 0x90, 0x04, 0x41, 0x00,
+        0x28, 0x02, 0x80, 0x11, 0x00, 0x8e, 0x00, 0x80, 0x04, 0x88, 0x24, 0x09, 0x82, 0x00,
+    ];
+    let fixture = (bunch_bytes.to_vec(), 472usize);
+    let c = codec(17, false, true);
+    let mut input = reader(&fixture);
+    let body = read_player_controller_open_bunch_body(&mut input, &c).unwrap();
+    assert!(input.at_end());
+    assert_eq!(body.net_player_index, 0);
+    assert_eq!(body.blocks.len(), 7);
+    assert_eq!(
+        body.blocks
+            .iter()
+            .map(|b| b.payload.bit_len())
+            .collect::<Vec<_>>(),
+        vec![199, 18, 0, 0, 0, 0, 18]
+    );
+    let encoded = encode_player_controller_open_bunch_body(&body, &c).unwrap();
+    assert_eq!((encoded.bytes().to_vec(), encoded.bit_len()), fixture);
+    assert_eq!(
+        parse_player_controller_open_bunch(&bunch(true, encoded.clone()), &c).unwrap(),
+        body
+    );
+    assert!(parse_player_controller_open_bunch(&bunch(false, encoded), &c).is_err());
+
+    // Debug and summary do not leak net_player_index.
+    let mut secret_body = body.clone();
+    secret_body.net_player_index = 251;
+    let mut out = BitWriter::new();
+    write_player_controller_open_bunch_body(&mut out, &secret_body, &c).unwrap();
+    assert_eq!(
+        read_player_controller_open_bunch_body(&mut reader(&bits(&out)), &c).unwrap(),
+        secret_body
+    );
+    let debug = format!("{secret_body:?}");
+    let summary = serde_json::to_string(&secret_body.summary()).unwrap();
+    for text_out in [debug, summary] {
+        assert!(
+            !text_out.contains("251"),
+            "net_player_index leaked: {text_out}"
+        );
     }
 }

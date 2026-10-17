@@ -9,6 +9,9 @@ use bevy::app::App;
 use icarus_bevy::{
     config::ServerConfig,
     experimental::{
+        admission::{
+            AdmissionPolicy, FIND_PLAYER_START_ERROR, INCOMPATIBLE_UNIQUE_NET_ID, SERVER_FULL,
+        },
         control_messages::{
             ArchiveText, ControlCodec, ControlMessage, Decoded, HELLO, JOIN, LOGIN, NETSPEED,
             NetIdType, NetIdValue, UniqueNetId, encode_control_message, read_control_messages,
@@ -21,7 +24,8 @@ use icarus_bevy::{
         },
         packet_lab::client_cookie_seeds,
         peer_lab::{
-            ADMISSION_DISABLED_MESSAGE, PeerLab, PeerLabConfig, PeerLabPlugin, PeerLabStats,
+            ADMISSION_DISABLED_MESSAGE, PeerLab, PeerLabAdmission, PeerLabConfig, PeerLabPlugin,
+            PeerLabStats,
         },
         sequencing::{
             Notification, PacketSequencer, ReliableChannel, ReliableReceive, wire_reliable_sequence,
@@ -807,5 +811,198 @@ fn duplicate_handshake_echo_keeps_live_peer_state() {
         messages.as_slice(),
         [ControlMessage::Failure { .. }]
     ));
+    assert_eq!(stats(&app).failures_sent, 1);
+}
+
+#[test]
+fn admission_enforces_login_state_and_completes_welcome_and_join() {
+    let admission = PeerLabAdmission {
+        policy: AdmissionPolicy {
+            max_players: 1,
+            max_spectators: 1,
+            max_splitscreens_per_connection: 1,
+        },
+        ..PeerLabAdmission::default()
+    };
+    let config = PeerLabConfig {
+        local_network_version: Some(LOCAL_VERSION),
+        admission: Some(admission),
+        ..PeerLabConfig::default()
+    };
+    let (mut app, address) = lab_app(config);
+    let mut client = Client::connect(&mut app, address);
+
+    // Join before Hello/Welcome is rejected by IsClientMsgTypeValid (only acked).
+    let early_join_id = client.exchange(&mut app, ControlMessage::Join, true);
+    assert_eq!(
+        client.receive_ack(&recv(&client.socket)),
+        [Notification {
+            packet_id: early_join_id,
+            delivered: true
+        }]
+    );
+    assert_eq!(stats(&app).invalid_state_messages, 1);
+    assert_eq!(stats(&app).joins_succeeded, 0);
+
+    // Valid Hello gets Challenge and advances ExpectedClientLoginMsgType to 5 (Login).
+    client.exchange(&mut app, short_hello("", LOCAL_VERSION), false);
+    let (_, messages) = client.receive_reply(&recv(&client.socket));
+    assert!(matches!(
+        messages.as_slice(),
+        [ControlMessage::Challenge { .. }]
+    ));
+    assert_eq!(stats(&app).control_challenges_sent, 1);
+
+    // A second Hello while expecting Login is rejected by IsClientMsgTypeValid.
+    let dup_hello_id = client.exchange(&mut app, short_hello("", LOCAL_VERSION), false);
+    assert_eq!(
+        client.receive_ack(&recv(&client.socket)),
+        [Notification {
+            packet_id: dup_hello_id,
+            delivered: true
+        }]
+    );
+    assert_eq!(stats(&app).invalid_state_messages, 2);
+    assert_eq!(stats(&app).control_challenges_sent, 1);
+
+    // Compatible Login gets Welcome (ID 1) and advances ClientLoginState to Welcomed.
+    let valid_login = ControlMessage::Login {
+        response: ArchiveText::text("0").unwrap(),
+        url: ArchiveText::text("?Name=Alice?bIsFromInvite").unwrap(),
+        unique_net_id: UniqueNetId {
+            kind: NetIdType::Named(ArchiveText::text("STEAM").unwrap()),
+            value: NetIdValue::from_hex(NET_ID_HEX).unwrap(),
+        },
+        platform: ArchiveText::text(PLATFORM_SENTINEL).unwrap(),
+    };
+    client.exchange(&mut app, valid_login, false);
+    let (_, messages) = client.receive_reply(&recv(&client.socket));
+    assert_eq!(
+        messages,
+        [ControlMessage::Welcome {
+            map_url: ArchiveText::text(admission.map_url).unwrap(),
+            game_name: ArchiveText::text(admission.game_name).unwrap(),
+            redirect_url: ArchiveText::text(admission.redirect_url).unwrap(),
+        }]
+    );
+    assert_eq!(stats(&app).welcomes_sent, 1);
+
+    // Netspeed and Join after Welcome succeed; a duplicate Join is ignored.
+    let netspeed_id = client.exchange(&mut app, ControlMessage::Netspeed { rate: 100_000 }, false);
+    assert_eq!(
+        client.receive_ack(&recv(&client.socket)),
+        [Notification {
+            packet_id: netspeed_id,
+            delivered: true
+        }]
+    );
+    let join_id = client.exchange(&mut app, ControlMessage::Join, false);
+    assert_eq!(
+        client.receive_ack(&recv(&client.socket)),
+        [Notification {
+            packet_id: join_id,
+            delivered: true
+        }]
+    );
+    assert_eq!(stats(&app).joins_succeeded, 1);
+
+    let dup_join_id = client.exchange(&mut app, ControlMessage::Join, false);
+    assert_eq!(
+        client.receive_ack(&recv(&client.socket)),
+        [Notification {
+            packet_id: dup_join_id,
+            delivered: true
+        }]
+    );
+    assert_eq!(stats(&app).duplicate_joins_ignored, 1);
+    assert_eq!(stats(&app).joins_succeeded, 1);
+
+    // A second player connection is rejected at Login with SERVER_FULL because max_players == 1.
+    let mut second = Client::connect(&mut app, address);
+    second.exchange(&mut app, short_hello("", LOCAL_VERSION), true);
+    let _ = second.receive_reply(&recv(&second.socket));
+    let second_login = ControlMessage::Login {
+        response: ArchiveText::text("0").unwrap(),
+        url: ArchiveText::text("?Name=Bob").unwrap(),
+        unique_net_id: UniqueNetId {
+            kind: NetIdType::Default,
+            value: NetIdValue::from_hex(NET_ID_HEX).unwrap(),
+        },
+        platform: ArchiveText::text(PLATFORM_SENTINEL).unwrap(),
+    };
+    second.exchange(&mut app, second_login, false);
+    let (_, messages) = second.receive_reply(&recv(&second.socket));
+    assert_eq!(
+        messages,
+        [ControlMessage::Failure {
+            message: ArchiveText::text(SERVER_FULL).unwrap()
+        }]
+    );
+    assert!(!lab(&app).has_peer(second.address()));
+
+    // A third connection with an incompatible UniqueNetId subsystem is rejected at PreLogin.
+    let mut third = Client::connect(&mut app, address);
+    third.exchange(&mut app, short_hello("", LOCAL_VERSION), true);
+    let _ = third.receive_reply(&recv(&third.socket));
+    let bad_sub_login = ControlMessage::Login {
+        response: ArchiveText::text("0").unwrap(),
+        url: ArchiveText::text("?SpectatorOnly=1").unwrap(),
+        unique_net_id: UniqueNetId {
+            kind: NetIdType::Named(ArchiveText::text("EOS").unwrap()),
+            value: NetIdValue::from_hex(NET_ID_HEX).unwrap(),
+        },
+        platform: ArchiveText::text(PLATFORM_SENTINEL).unwrap(),
+    };
+    third.exchange(&mut app, bad_sub_login, false);
+    let (_, messages) = third.receive_reply(&recv(&third.socket));
+    assert_eq!(
+        messages,
+        [ControlMessage::Failure {
+            message: ArchiveText::text(INCOMPATIBLE_UNIQUE_NET_ID).unwrap()
+        }]
+    );
+    assert!(!lab(&app).has_peer(third.address()));
+    assert_no_secrets(
+        &app,
+        &[
+            "Alice",
+            "Bob",
+            PLATFORM_SENTINEL,
+            NET_ID_HEX,
+            &NET_ID_HEX.to_lowercase(),
+        ],
+    );
+}
+
+#[test]
+fn admission_join_failure_sends_failure_and_closes_peer() {
+    let admission = PeerLabAdmission {
+        has_player_start: false,
+        ..PeerLabAdmission::default()
+    };
+    let config = PeerLabConfig {
+        admission: Some(admission),
+        ..PeerLabConfig::default()
+    };
+    let (mut app, address) = lab_app(config);
+    let mut client = Client::connect(&mut app, address);
+    client.exchange(&mut app, short_hello("", 0x0102_0304), true);
+    let _ = client.receive_reply(&recv(&client.socket));
+    client.exchange(&mut app, login(), false);
+    let (_, messages) = client.receive_reply(&recv(&client.socket));
+    assert!(matches!(
+        messages.as_slice(),
+        [ControlMessage::Welcome { .. }]
+    ));
+    client.exchange(&mut app, ControlMessage::Join, false);
+    let (_, messages) = client.receive_reply(&recv(&client.socket));
+    assert_eq!(
+        messages,
+        [ControlMessage::Failure {
+            message: ArchiveText::text(FIND_PLAYER_START_ERROR).unwrap()
+        }]
+    );
+    assert!(!lab(&app).has_peer(client.address()));
+    assert_eq!(stats(&app).joins_succeeded, 0);
     assert_eq!(stats(&app).failures_sent, 1);
 }

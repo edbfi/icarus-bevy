@@ -2,7 +2,7 @@
 //!
 //! Each function is a pure rule over authored domain values, read from the
 //! client recorders' record, validate, stitch and restore code (F-645 to F-665,
-//! F-677).
+//! F-677, F-715, F-716, F-717).
 //! Nothing here decodes a save, looks up a class, constructs an object or
 //! imports state: the rules pin the behavior a native world must reproduce when
 //! it restores recorded actors. The normal server does not call them yet, and
@@ -10,6 +10,14 @@
 
 /// Per-axis tolerance for matching a voxel record to its owner (F-645, M-644).
 pub const VOXEL_LOCATION_TOLERANCE: f32 = 0.1;
+
+/// Per-component tolerance against `FTransform::Identity` before
+/// `UActorStateRecorderComponent::RestoreState` invokes `ApplyRecorderTransform`
+/// (F-716).
+pub const ACTOR_RECORDER_TRANSFORM_TOLERANCE: f32 = 1e-4;
+
+/// Current `FProspectSaveState` schema version (F-715).
+pub const PROSPECT_SAVE_STATE_CURRENT_VERSION: i32 = 2;
 
 /// Saved elapsed level seconds below this take the saved game time (F-653).
 pub const ELAPSED_SECONDS_FALLBACK_BELOW: i32 = 31;
@@ -272,4 +280,162 @@ pub fn restore_cave_spawn_times(
         }
     }
     restored
+}
+
+/// Saved `ELobbyPrivacy` enumerators on `FProspectSaveStateHeader` (F-715).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum LobbyPrivacy {
+    #[default]
+    Unknown = 0,
+    FriendsOnly = 1,
+    Private = 2,
+}
+
+impl LobbyPrivacy {
+    /// Maps a saved byte to its `ELobbyPrivacy` enumerator, or `None` for any
+    /// other value.
+    pub const fn from_saved(value: u8) -> Option<Self> {
+        match value {
+            0 => Some(Self::Unknown),
+            1 => Some(Self::FriendsOnly),
+            2 => Some(Self::Private),
+            _ => None,
+        }
+    }
+}
+
+/// Applies `FProspectSaveState::PostLoadSerialize` schema migrations (F-715).
+///
+/// - When `loaded_version < 2`, legacy top-level `ProspectID` and
+///   `ProspectDTKey` copy into `ProspectInfo.ProspectID` and
+///   `ProspectInfo.ProspectDTKey`.
+/// - When `loaded_version == 0` (`NoVersion`), `ProspectInfo` resets to its
+///   default empty strings, `LobbyPrivacy` becomes [`LobbyPrivacy::FriendsOnly`]
+///   (`1`), and `StateRecorderBlobs` is emptied.
+pub fn migrate_prospect_save_state<B>(
+    loaded_version: i32,
+    lobby_privacy: &mut LobbyPrivacy,
+    prospect_id: &mut String,
+    prospect_dt_key: &mut String,
+    legacy_prospect_id: &str,
+    legacy_prospect_dt_key: &str,
+    state_recorder_blobs: &mut Vec<B>,
+) {
+    if loaded_version < PROSPECT_SAVE_STATE_CURRENT_VERSION {
+        prospect_id.clear();
+        prospect_id.push_str(legacy_prospect_id);
+        prospect_dt_key.clear();
+        prospect_dt_key.push_str(legacy_prospect_dt_key);
+    }
+    if loaded_version == 0 {
+        prospect_id.clear();
+        prospect_dt_key.clear();
+        *lobby_privacy = LobbyPrivacy::FriendsOnly;
+        state_recorder_blobs.clear();
+    }
+}
+
+const TREE_PRIMITIVE_UTF16: [u16; 13] = [
+    b'T' as u16,
+    b'r' as u16,
+    b'e' as u16,
+    b'e' as u16,
+    b'P' as u16,
+    b'r' as u16,
+    b'i' as u16,
+    b'm' as u16,
+    b'i' as u16,
+    b't' as u16,
+    b'i' as u16,
+    b'v' as u16,
+    b'e' as u16,
+];
+const WOOD_UTF16: [u16; 4] = [b'W' as u16, b'o' as u16, b'o' as u16, b'd' as u16];
+
+/// Applies `UActorStateRecorderComponent::PerformVersionUpgrades` (F-716).
+///
+/// When `actor_state_recorder_version < 1`, every recorded component entry
+/// whose `FName` matches `"TreePrimitive"` (ASCII case-insensitively) is
+/// replaced with `"Wood"`. Versions `>= 1` (all supplied saves use `3`) leave
+/// component names untouched. Returns the number of upgraded entries.
+pub fn upgrade_actor_recorder_component_names(
+    actor_state_recorder_version: i32,
+    component_names: &mut [Vec<u16>],
+) -> usize {
+    if actor_state_recorder_version >= 1 {
+        return 0;
+    }
+    let mut upgraded = 0;
+    for name in component_names {
+        if names_match(name, &TREE_PRIMITIVE_UTF16) {
+            name.clear();
+            name.extend_from_slice(&WOOD_UTF16);
+            upgraded += 1;
+        }
+    }
+    upgraded
+}
+
+/// Whether the restore context `FTransform` passed into
+/// `UActorStateRecorderComponent::RestoreState` is non-identity and therefore
+/// invokes virtual slot `+0x4b0` (`ApplyRecorderTransform`) (F-716).
+///
+/// Rotation compares against both `+Identity` (`[0, 0, 0, 1]`) and `-Identity`
+/// (`[0, 0, 0, -1]`) with per-component tolerance
+/// [`ACTOR_RECORDER_TRANSFORM_TOLERANCE`] (`1e-4`), translation against
+/// `[0, 0, 0]`, and scale against `[1, 1, 1]`. World prospect restore passes
+/// `FTransform::Identity` (`false`); instanced-level restore passes the
+/// instanced level's transform.
+pub fn recorder_transform_is_non_identity(
+    rotation: [f32; 4],
+    translation: [f32; 3],
+    scale: [f32; 3],
+) -> bool {
+    let [rx, ry, rz, rw] = rotation;
+    let rot_xyz_zero = rx.abs() <= ACTOR_RECORDER_TRANSFORM_TOLERANCE
+        && ry.abs() <= ACTOR_RECORDER_TRANSFORM_TOLERANCE
+        && rz.abs() <= ACTOR_RECORDER_TRANSFORM_TOLERANCE;
+    let rot_identity = rot_xyz_zero
+        && ((rw - 1.0).abs() <= ACTOR_RECORDER_TRANSFORM_TOLERANCE
+            || (rw + 1.0).abs() <= ACTOR_RECORDER_TRANSFORM_TOLERANCE);
+    let trans_identity = translation
+        .iter()
+        .all(|c| c.abs() <= ACTOR_RECORDER_TRANSFORM_TOLERANCE);
+    let scale_identity = scale
+        .iter()
+        .all(|c| (c - 1.0).abs() <= ACTOR_RECORDER_TRANSFORM_TOLERANCE);
+    !(rot_identity && trans_identity && scale_identity)
+}
+
+/// Normalizes a requested prospect name as
+/// `ADedicatedServerEntryGameMode::LoadProspectByName` (`0x14146e6c0`) does
+/// (F-717): rejects empty inputs and strips a trailing `".json"` suffix
+/// ASCII case-insensitively (`ESearchCase::IgnoreCase`).
+pub fn normalize_prospect_name(input: &str) -> Option<&str> {
+    if input.is_empty() {
+        return None;
+    }
+    let bytes = input.as_bytes();
+    let stripped = if bytes.len() >= 5 && bytes[bytes.len() - 5..].eq_ignore_ascii_case(b".json") {
+        &input[..input.len() - 5]
+    } else {
+        input
+    };
+    (!stripped.is_empty()).then_some(stripped)
+}
+
+/// Whether two `ProspectID` strings match under
+/// `FOfflineProspectManagementIcarus::GetProspectInfo` (`0x14181e530`) and
+/// `UProspectSubsystem::SetActiveProspectSaveState` (`0x1418371c0`) (F-717):
+/// equal UTF-16 unit lengths and ASCII case-insensitive equality.
+pub fn prospect_ids_match(expected: &[u16], actual: &[u16]) -> bool {
+    names_match(expected, actual)
+}
+
+/// Whether `UProspectSubsystem::SetActiveProspectInfo` (`0x141837100`) accepts
+/// `new_prospect_id` given `current_active_prospect_id` (F-717): requires a
+/// non-empty new `ProspectID` and an empty active `ProspectID` (after
+/// `ResetActiveProspect`).
+pub fn can_activate_prospect_info(new_prospect_id: &str, current_active_prospect_id: &str) -> bool {
+    !new_prospect_id.is_empty() && current_active_prospect_id.is_empty()
 }

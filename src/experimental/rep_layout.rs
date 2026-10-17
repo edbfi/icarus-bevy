@@ -29,7 +29,11 @@
 //!   `TProperty_Numeric::SerializeItem` (`0x142123c50`, `0x142123c90`,
 //!   `0x142123ce0`, `0x142123d30`), which reads 1, 2, 4 or 8 archive bytes in
 //!   the caller's byte order (F-704); float and double values are kept as raw
-//!   bit words (`u32` and `u64`);
+//!   bit words (`u32` and `u64`); `FDateTime::NetSerialize` and
+//!   `FTimespan::NetSerialize` share `0x142100050`, which serializes one 8-byte
+//!   `int64` `Ticks` (`RepCommand::Int64`, F-709);
+//! - [`RepCommand::Plane`]: `FPlane::NetSerialize` (`0x142100980`), four 2-byte
+//!   `int16` words in the caller's byte order (F-709);
 //! - [`RepCommand::Object`]: a NetGUID reference through
 //!   [`super::actor_channel::read_guid_ref`] (F-572, F-574);
 //! - [`RepCommand::NetworkName`]: a hardcoded bit, then a hardcoded index or an
@@ -285,6 +289,8 @@ pub enum RepCommand {
     Vector,
     /// `FVector2D` (`0x142100bf0`): two 4-byte float words (F-704).
     Vector2D,
+    /// `FPlane` (`0x142100980`): four 2-byte `i16` words (F-709).
+    Plane,
     VectorQuantize,
     VectorQuantize10,
     VectorQuantize100,
@@ -818,6 +824,8 @@ pub enum RepValue {
     Vector([u32; 3]),
     /// Two raw IEEE-754 `f32` bit words (`[x, y]`).
     Vector2D([u32; 2]),
+    /// Four 2-byte `i16` words (`[x, y, z, w]`, F-709).
+    Plane([i16; 4]),
     VectorQuantize(QuantizedVector),
     VectorQuantize10(QuantizedVector),
     VectorQuantize100(QuantizedVector),
@@ -857,6 +865,7 @@ pub enum ItemKind {
     Text,
     Vector,
     Vector2D,
+    Plane,
     VectorQuantize,
     VectorQuantize10,
     VectorQuantize100,
@@ -895,6 +904,7 @@ impl RepValue {
             Self::Text(_) => ItemKind::Text,
             Self::Vector(_) => ItemKind::Vector,
             Self::Vector2D(_) => ItemKind::Vector2D,
+            Self::Plane(_) => ItemKind::Plane,
             Self::VectorQuantize(_) => ItemKind::VectorQuantize,
             Self::VectorQuantize10(_) => ItemKind::VectorQuantize10,
             Self::VectorQuantize100(_) => ItemKind::VectorQuantize100,
@@ -941,6 +951,7 @@ impl std::fmt::Debug for RepValue {
             Self::Text(text) => text.fmt(formatter),
             Self::Vector(_) => formatter.write_str("Vector"),
             Self::Vector2D(_) => formatter.write_str("Vector2D"),
+            Self::Plane(_) => formatter.write_str("Plane"),
             Self::VectorQuantize(vector) => formatter
                 .debug_tuple("VectorQuantize")
                 .field(vector)
@@ -1129,6 +1140,7 @@ impl RepEntry {
             | RepValue::Double(_)
             | RepValue::Vector(_)
             | RepValue::Vector2D(_)
+            | RepValue::Plane(_)
             | RepValue::RowHandle(_)
             | RepValue::StatPairRepState(_)
             | RepValue::GameplayTag(GameplayTag::NetIndex(_))
@@ -1228,6 +1240,7 @@ fn validate_layout_at(layout: &[RepCommand], limits: &RepLayoutLimits, depth: us
             | RepCommand::Text
             | RepCommand::Vector
             | RepCommand::Vector2D
+            | RepCommand::Plane
             | RepCommand::VectorQuantize
             | RepCommand::VectorQuantize10
             | RepCommand::VectorQuantize100
@@ -1997,6 +2010,12 @@ pub(super) fn read_value(
             read_u32(reader, order, "vector2d X")?,
             read_u32(reader, order, "vector2d Y")?,
         ]),
+        RepCommand::Plane => RepValue::Plane([
+            read_u16(reader, order, "plane X")? as i16,
+            read_u16(reader, order, "plane Y")? as i16,
+            read_u16(reader, order, "plane Z")? as i16,
+            read_u16(reader, order, "plane W")? as i16,
+        ]),
         RepCommand::VectorQuantize => {
             RepValue::VectorQuantize(read_vector(reader, VectorPacking::NetQuantize)?)
         }
@@ -2255,6 +2274,11 @@ pub(super) fn write_value(
         (RepCommand::Vector2D, RepValue::Vector2D(words)) => {
             for word in *words {
                 write_u32(writer, word, order);
+            }
+        }
+        (RepCommand::Plane, RepValue::Plane(words)) => {
+            for word in *words {
+                write_u16(writer, word as u16, order);
             }
         }
         (RepCommand::VectorQuantize, RepValue::VectorQuantize(vector)) => {

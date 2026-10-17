@@ -3,18 +3,20 @@
 //! (JSONL lines with `"event":"reply"` and `"hex"`) and runs them through this
 //! repository's experimental codecs as the probe's client does: packet framing
 //! (F-521..F-525, F-688), per-channel reliable ordering (F-537), partial-bunch
-//! reassembly, control messages, and the actor-channel spawn record and content
-//! blocks (F-569..F-576).
+//! reassembly (`F-710`), control messages, and the actor-channel spawn record
+//! and content blocks (F-569..F-576, F-709, F-710).
 //!
 //! Two passes over the same datagrams:
-//! - `strict` uses only the documented codecs, so NetGUID export bunches and
-//!   must-be-mapped GUID prefixes stay unparsed and are counted as such;
-//! - `export_hypothesis` adds two readers that no static observation backs:
-//!   the UE 4.27 export prefix (a rep-layout export bit, an i32 GUID count,
-//!   then that many F-572 references with export flags on every nonzero GUID;
-//!   wire-consistent in F-694) and the must-be-mapped prefix (a u16 count of
-//!   packed GUIDs, never exercised so far). Its results are a consistency check
-//!   of that hypothesis, not observations of the original's reader.
+//! - `strict` uses only the original F-569..F-576 actor codec surface, so
+//!   NetGUID export bunches and must-be-mapped GUID prefixes stay unparsed and
+//!   are counted as such;
+//! - `export_hypothesis` adds the statically verified F-709/F-710 readers:
+//!   `UPackageMapClient::ReceiveNetGUIDBunch` (`0x1439b8bb0`,
+//!   `PackageMapState::consume_export_prefix`), `UActorChannel::ReceivedBunch`
+//!   must-be-mapped prefixes (`0x1437c43f0`,
+//!   `PackageMapState::consume_must_be_mapped`), and
+//!   `UChannel::ReceivedNextBunch` partial-bunch reassembly (`0x1437c5500`,
+//!   `PartialBunchReassembler`).
 //!
 //! Stdout carries aggregate counts only; channel names appear as hard-coded
 //! indices or the word `string`. Per-item detail, including any path or class
@@ -33,14 +35,15 @@ use icarus_bevy::experimental::{
     actor_channel::{
         ActorBunchBody, ActorChannelCodec, ActorChannelLimits, BlockTarget, ContentBlock,
         EXPORT_HAS_CHECKSUM, EXPORT_HAS_PATH, EXPORT_NO_LOAD, MAX_GUID_DEPTH, NetGuidRef,
-        SpawnRecord, SpawnVector, SubObjectClass, guid_kind, parse_actor_bunch, read_content_block,
-        read_guid_ref, read_spawn,
+        PackageMapState, SpawnRecord, SpawnVector, SubObjectClass,
+        encode_player_controller_open_bunch_body, guid_kind, parse_actor_bunch,
+        parse_player_controller_open_bunch, read_content_block, read_spawn, write_content_block,
     },
     archive::{ByteOrder, read_string_frame},
     control_messages::{ControlCodec, Decoded, read_control_messages},
     packet::{
-        BitReader, BitWriter, Bunch, BunchHeader, BunchLimits, Name, PacketConfig, Payload,
-        RELIABLE_SEQUENCE_LIMIT, Receiver, read_packet,
+        BitReader, BitWriter, Bunch, BunchHeader, BunchLimits, ChannelCloseReason, Name,
+        PacketConfig, Payload, RELIABLE_SEQUENCE_LIMIT, Receiver, read_packet,
     },
     peer_lab::PeerLabConfig,
     rep_layout::{
@@ -60,14 +63,14 @@ use icarus_bevy::experimental::{
         bp_ui_projection_component_player_rep_layout, bp_world_boss_spawner_rep_layout,
         bp_world_object_rep_layout, bpc_environmental_buildup_rep_layout,
         character_state_rep_layout, child_actor_component_rep_layout,
-        decayable_component_rep_layout, durable_component_rep_layout, encode_rep_properties,
+        decayable_component_rep_layout, durable_component_rep_layout,
         fillable_component_rep_layout, flammable_actor_rep_layout, flod_actor_component_rep_layout,
         flod_rep_layout, focusable_component_rep_layout, genetics_component_rep_layout,
         icarus_game_state_survival_rep_layout, icarus_player_controller_survival_rep_layout,
         icarus_weather_action_rep_layout, interactable_behaviour_rep_layout,
         inventory_container_manager_rep_layout, inventory_rep_layout, inventory_slot_commands,
         itemable_component_rep_layout, modifier_state_component_rep_layout,
-        mount_character_state_rep_layout, parse_rep_properties, player_character_state_rep_layout,
+        mount_character_state_rep_layout, player_character_state_rep_layout,
         player_history_tracker_rep_layout, player_state_rep_layout, quest_manager_rep_layout,
         quest_rep_layout, radiation_manager_rep_layout, read_rep_properties,
         resource_network_component_rep_layout, scene_component_rep_layout,
@@ -79,13 +82,20 @@ use icarus_bevy::experimental::{
         world_talent_manager_rep_layout, write_rep_properties,
     },
     rep_rpc::{
-        FAST_ARRAY_COUNT_CAP, FastArrayItemLayout, FieldHeader, read_custom_delta_header,
+        BP_ICARUS_PLAYER_CONTROLLER_SURVIVAL_FIELD_INDEX_BOUND,
+        BP_ICARUS_PLAYER_STATE_FIELD_INDEX_BOUND, BP_MOUNT_BASE_FIELD_INDEX_BOUND,
+        BP_MOUNT_HORSE_FIELD_INDEX_BOUND, BP_TAME_BASE_FIELD_INDEX_BOUND, FAST_ARRAY_COUNT_CAP,
+        FastArrayItemLayout, FieldHeader, INVENTORY_FIELD_INDEX_BOUND, RpcParameter,
+        STAT_CONTAINER_FIELD_INDEX_BOUND, UI_PROJECTION_MOUNT_STATUS_FIELD_INDEX_BOUND,
+        bp_icarus_player_state_rpc_parameters, encode_rpc_payload, icarus_character_rpc_parameters,
+        parse_rpc_payload, player_controller_rpc_parameters, read_custom_delta_header,
         read_fast_array_delta, read_field_header, write_custom_delta_header,
         write_fast_array_delta, write_field_header,
     },
     sequencing::{
-        ReliableChannel, ReliableReceive, is_newer, reconstruct_reliable_sequence,
-        sequence_difference,
+        MAX_CONSTRUCTED_PARTIAL_BUNCH_BYTES, PartialBunchReassembler, PartialReceive,
+        ReliableChannel, ReliableReceive, is_newer, max_single_bunch_size_bits,
+        reconstruct_reliable_sequence, sequence_difference, split_outgoing_bunch,
     },
 };
 use serde::Serialize;
@@ -115,24 +125,6 @@ const EXPORT_KNOWN_FLAGS: u8 = EXPORT_HAS_PATH | EXPORT_NO_LOAD | EXPORT_HAS_CHE
 const MAX_PATH_UNITS: usize = 4096;
 /// Bound for "sane" spawn vector components.
 const SANE_EXTENT: f32 = 1.0e6;
-/// `UClass::ClassNetCache` field-index bound (`FClassNetCache::GetMaxIndex() + 1`
-/// = `FieldsBase + Fields.Num()`, `0x1437c27aa`) for `UIcarusStatContainer`:
-/// 2 inherited `UActorComponent` net properties (`bReplicates`, `bIsActive`) +
-/// 1 own net property (`ReplicatedStatArray`) + 1 own net function
-/// (`OnServer_SerialiseStats`) = 4 (F-705).
-const STAT_CONTAINER_FIELD_INDEX_BOUND: u32 = 4;
-/// `UClass::ClassNetCache` field-index bound (`FieldsBase + Fields.Num()`) for
-/// `UInventory`: 2 (`UActorComponent`) + 1 (`UTraitBehaviour::OwningComponent`) +
-/// 6 own net properties (`CurrentWeight`, `Slots`,
-/// `ReplicatedModifierStackMultipliers`, `InventoryInfoRowHandle`,
-/// `SpoilTickRate`, `ParentInventory`) + 1 own net function
-/// (`Multi_PlayInventorySound`) = 10.
-const INVENTORY_FIELD_INDEX_BOUND: u32 = 10;
-/// `UClass::ClassNetCache` field-index bound (`FieldsBase + Fields.Num()`) for
-/// `BP_UIProjectionComponent_MountStatus_C`: 2 (`UActorComponent`) + 2
-/// (`BP_UIProjectionComponent_C`) + 1 own net property (`CurrentMountState`) +
-/// 1 own net function (`ForceProjectionUpdate`) = 6.
-const UI_PROJECTION_MOUNT_STATUS_FIELD_INDEX_BOUND: u32 = 6;
 
 type Tally = BTreeMap<String, u64>;
 
@@ -223,20 +215,6 @@ fn read_export_count(reader: &mut BitReader<'_>) -> Result<i32> {
     Ok(count)
 }
 
-/// HYPOTHESIS (UE 4.27 `ReceiveNetGUIDBunch`, not a finding) read with the
-/// codec's own F-572 reader, export flags on every nonzero GUID. Used only to
-/// report where the codec stops on real export bunches.
-fn read_export_prefix_codec(reader: &mut BitReader<'_>) -> Result<Vec<NetGuidRef>> {
-    let count = read_export_count(reader)?;
-    let codec = ActorChannelCodec {
-        exports_enabled: true,
-        ..actor_codec(true)
-    };
-    (0..count)
-        .map(|index| read_guid_ref(reader, &codec).with_context(|| format!("export GUID {index}")))
-        .collect()
-}
-
 /// HYPOTHESIS (UE 4.27 `ReceiveNetGUIDBunch` and `InternalLoadObject`, not a
 /// finding): the same layout, but the checksum bit only adds a u32 inside the
 /// path branch, so a checksum flag without the path flag reads nothing more.
@@ -306,19 +284,15 @@ fn read_path_string(reader: &mut BitReader<'_>) -> Result<String> {
     ))
 }
 
-/// HYPOTHESIS (UE 4.27 `UActorChannel::ReceivedBunch`, not a finding): a u16
-/// count, then that many packed GUIDs, before the actor bunch body.
-fn strip_must_be_mapped(payload: &Payload) -> Result<(Vec<u32>, Payload)> {
+/// Read the `UActorChannel::ReceivedBunch` (`0x1437c43f0`) must-be-mapped
+/// prefix via [`PackageMapState::consume_must_be_mapped`] (`F-709`, `F-710`).
+fn strip_must_be_mapped(
+    package_map: &PackageMapState,
+    payload: &Payload,
+) -> Result<(Vec<u32>, usize, Payload)> {
     let mut reader = payload.reader();
-    let count = reader.read_bits(16);
-    ensure!(!reader.is_error(), "truncated must-be-mapped count");
-    let mut guids = Vec::with_capacity(count as usize);
-    for _ in 0..count {
-        let guid = reader.read_int_packed();
-        ensure!(!reader.is_error(), "truncated must-be-mapped GUID");
-        guids.push(guid);
-    }
-    Ok((guids, rest(&mut reader)))
+    let (guids, resolved) = package_map.consume_must_be_mapped(&mut reader, &actor_codec(true))?;
+    Ok((guids, resolved, rest(&mut reader)))
 }
 
 fn actor_codec(has_level: bool) -> ActorChannelCodec {
@@ -353,16 +327,19 @@ enum TargetSchema {
     RepLayout(&'static str),
     /// `UIcarusStatContainer`: optional `UActorComponent` rep-layout properties
     /// followed by zero or more `ReplicatedStatArray` custom-delta field headers
-    /// (`index_bound = STAT_CONTAINER_FIELD_INDEX_BOUND`, F-705).
+    /// (`index_bound = STAT_CONTAINER_FIELD_INDEX_BOUND`, F-705, F-708).
     StatContainer,
     /// `UInventory`: optional `UInventory` rep-layout properties followed by
     /// zero or more `Slots` (`FInventorySlotsFastArray`) custom-delta field
-    /// headers (`index_bound = INVENTORY_FIELD_INDEX_BOUND`).
+    /// headers (`index_bound = INVENTORY_FIELD_INDEX_BOUND`, F-708).
     Inventory,
     /// `BP_UIProjectionComponent_MountStatus_C`: optional rep-layout properties
     /// followed by zero or more `ForceProjectionUpdate` 0-parameter net-RPC
-    /// field headers (`index_bound = UI_PROJECTION_MOUNT_STATUS_FIELD_INDEX_BOUND`).
+    /// field headers (`index_bound = UI_PROJECTION_MOUNT_STATUS_FIELD_INDEX_BOUND`, F-708).
     UiProjectionMountStatus,
+    /// Zero-bit subobject creation or deletion header (`has_rep_layout == false`
+    /// and `payload.bit_len() == 0`).
+    SubObjectLifecycle(&'static str),
 }
 
 /// Resolve an actor channel's archetype name to a known native or cooked
@@ -610,7 +587,15 @@ fn classify_subobject_schema(
         | "ConnectedPlayers"
         | "DialogueSystem"
         | "BP_NetworkProxyComponent"
-        | "BackendProxyComponent" => "UActorComponent",
+        | "BackendProxyComponent"
+        | "BestiaryManagerComponent"
+        | "ResourceNetworkDataRequesterComponent"
+        | "BP_CriticalHitComponent"
+        | "BP_HuntingManager"
+        | "BPC_AccumulationComponent"
+        | "BP_UIProjectionComponent_MountTooltip"
+        | "BP_JumpLerpComponent"
+        | "GameplayTasksComponent" => "UActorComponent",
         "TraitBehaviour" => "UTraitBehaviour",
         "WeatherForecastBarComponent" => "UWeatherForecastBarComponent",
         _ => return None,
@@ -713,6 +698,87 @@ fn schema_commands(schema: &str) -> Vec<RepCommand> {
         "BP_ShelteredComponent_C" => bp_sheltered_component_rep_layout(),
         _ => unreachable!(),
     }
+}
+
+type RpcParameterLookup = fn(u32) -> Option<Vec<RpcParameter>>;
+
+/// Resolve an actor schema name to its `FClassNetCache` `SerializeInt` bound
+/// (`FieldsBase + Fields.Num() + 1`, F-708) and RPC parameter lookup when the
+/// class sends actor net RPCs.
+fn actor_rpc_schema(schema: &str) -> Option<(u32, RpcParameterLookup)> {
+    match schema {
+        "BP_IcarusPlayerState_C" => Some((
+            BP_ICARUS_PLAYER_STATE_FIELD_INDEX_BOUND,
+            bp_icarus_player_state_rpc_parameters,
+        )),
+        "BP_Mount_Base_C" => Some((
+            BP_MOUNT_BASE_FIELD_INDEX_BOUND,
+            icarus_character_rpc_parameters,
+        )),
+        "BP_Mount_Horse_C" => Some((
+            BP_MOUNT_HORSE_FIELD_INDEX_BOUND,
+            icarus_character_rpc_parameters,
+        )),
+        "BP_Tame_Base_C" => Some((
+            BP_TAME_BASE_FIELD_INDEX_BOUND,
+            icarus_character_rpc_parameters,
+        )),
+        "AIcarusPlayerControllerSurvival" => Some((
+            BP_ICARUS_PLAYER_CONTROLLER_SURVIVAL_FIELD_INDEX_BOUND,
+            player_controller_rpc_parameters,
+        )),
+        _ => None,
+    }
+}
+
+/// Decode and re-encode a standard actor or subobject block: optional
+/// `FRepLayout::ReceiveProperties` handle stream (when `has_rep_layout` is set)
+/// followed by zero or more `FClassNetCache` RPC field headers (`F-708`).
+fn replay_rep_layout_and_rpc_block(
+    schema_name: &str,
+    payload: &Payload,
+    has_rep_layout: bool,
+    codec: &RepLayoutCodec,
+) -> Result<(usize, usize, bool)> {
+    let commands = schema_commands(schema_name);
+    let mut reader = payload.reader();
+    let mut writer = BitWriter::new();
+    let prop_entries = if has_rep_layout {
+        let stream = read_rep_properties(&mut reader, &commands, codec)?;
+        let mut effective = *codec;
+        effective.checksums = stream.terminator_checksum.is_some();
+        write_rep_properties(&mut writer, &stream, &commands, &effective)?;
+        stream.total_entries()
+    } else {
+        0
+    };
+
+    let mut rpc_calls = 0usize;
+    if !reader.at_end() {
+        let (index_bound, lookup) = actor_rpc_schema(schema_name)
+            .with_context(|| format!("unexpected trailing field headers on {schema_name}"))?;
+        while !reader.at_end() {
+            let header = read_field_header(&mut reader, index_bound, codec.limits.max_opaque_bits)?;
+            let params = lookup(header.index).with_context(|| {
+                format!(
+                    "unknown {schema_name} RPC field index {} ({} bits)",
+                    header.index,
+                    header.payload.bit_len()
+                )
+            })?;
+            let args = parse_rpc_payload(&header.payload, &params, codec)
+                .with_context(|| format!("{schema_name} RPC field index {}", header.index))?;
+            let reencoded_rpc = encode_rpc_payload(&params, &args, codec)?;
+            let rebuilt_header = FieldHeader {
+                index: header.index,
+                payload: reencoded_rpc,
+            };
+            write_field_header(&mut writer, &rebuilt_header, index_bound)?;
+            rpc_calls += 1;
+        }
+    }
+    let reencoded = Payload::from_writer(writer);
+    Ok((prop_entries, rpc_calls, reencoded == *payload))
 }
 
 /// Decode and re-encode a `UIcarusStatContainer` (`Stat Container`) block:
@@ -927,6 +993,9 @@ struct ChannelState {
     name: Option<Name>,
     open: bool,
     partial: Option<Partial>,
+    partial_reassembler: PartialBunchReassembler,
+    partial_wire_parts: Vec<Bunch>,
+    partial_export_payloads: Vec<Payload>,
     archetype_path: Option<String>,
 }
 
@@ -1044,14 +1113,28 @@ struct RepReplayStats {
     rep_layout_blocks_attempted: u64,
     rep_layout_blocks_decoded: u64,
     rep_layout_blocks_reencoded_exact: u64,
-    /// Extra `has_rep_layout == false` custom-delta/RPC blocks (`StatContainer`,
-    /// `Inventory`, `MountStatus`) matched, decoded and bit-identically re-encoded.
+    /// `has_rep_layout == false` non-empty blocks (custom-delta fast arrays and
+    /// actor/component net RPCs) matched, decoded and bit-identically re-encoded.
     custom_delta_blocks_attempted: u64,
     custom_delta_blocks_decoded: u64,
     custom_delta_blocks_reencoded_exact: u64,
+    /// Actor net-RPC `has_rep_layout == false` blocks decoded and re-encoded.
+    actor_rpc_blocks_decoded: u64,
+    actor_rpc_blocks_reencoded_exact: u64,
+    /// Total net-RPC calls decoded across actor and component blocks.
+    rpc_calls_decoded: u64,
+    /// Zero-bit subobject creation/deletion blocks (`has_rep_layout == false`
+    /// and `payload.bit_len() == 0`) matched, decoded and bit-identically
+    /// re-encoded via `write_content_block` / `read_content_block`.
+    subobject_lifecycle_blocks_attempted: u64,
+    subobject_lifecycle_blocks_decoded: u64,
+    subobject_lifecycle_blocks_reencoded_exact: u64,
     /// True when every `BlockStats::with_rep_layout` block was re-encoded
     /// bit-identically with zero unclassified targets and zero failures.
     rep_layout_coverage_complete: bool,
+    /// True when every content block in `BlockStats::total` (`with_rep_layout`
+    /// and `has_rep_layout == false`) was decoded and re-encoded bit-identically.
+    all_blocks_coverage_complete: bool,
     /// Decoded and bit-identically re-encoded block counts by schema name.
     by_schema_decoded: Tally,
     by_schema_reencoded_exact: Tally,
@@ -1071,9 +1154,12 @@ struct RepReplayStats {
 #[derive(Default, Serialize)]
 struct ExportStats {
     bunches: u64,
-    /// The codec's F-572 reader on the same prefix, for comparison.
+    /// The codec's F-572/F-709 reader (`PackageMapState::consume_export_prefix`)
+    /// on the same prefix.
     codec_reader_parsed: u64,
+    codec_reencoded_exact: u64,
     codec_reader_failed: Tally,
+    package_map_entries: u64,
     parsed: u64,
     failed: Tally,
     guids: u64,
@@ -1094,6 +1180,7 @@ struct ExportStats {
 struct MustBeMappedStats {
     prefixes: u64,
     parsed: u64,
+    codec_reencoded_exact: u64,
     failed: Tally,
     guids: u64,
     guids_exported_earlier: u64,
@@ -1104,6 +1191,8 @@ struct PartialStats {
     initial: u64,
     continuation: u64,
     completed: u64,
+    codec_reassembler_completed: u64,
+    codec_resplit_exact: u64,
     completed_parts: Tally,
     completed_opaque: Tally,
     failures: Tally,
@@ -1165,6 +1254,7 @@ struct WireStats {
     max_channel_index: u32,
     channels_opened: u64,
     channels_closed: u64,
+    channels_closed_dormant: u64,
     reopened_while_open: u64,
     close_reasons: Tally,
     opened_names: Tally,
@@ -1180,6 +1270,7 @@ struct Decoder<'a> {
     packet_sequence: i64,
     channels: BTreeMap<u32, ChannelState>,
     first_raw: BTreeSet<u32>,
+    package_map: PackageMapState,
     exported: BTreeMap<u32, String>,
     subobject_classes: BTreeMap<u32, String>,
     wire: WireStats,
@@ -1208,6 +1299,7 @@ impl<'a> Decoder<'a> {
             packet_sequence: 0,
             channels: BTreeMap::new(),
             first_raw: BTreeSet::new(),
+            package_map: PackageMapState::new(),
             exported: BTreeMap::new(),
             subobject_classes: BTreeMap::new(),
             wire: WireStats::default(),
@@ -1354,6 +1446,9 @@ impl<'a> Decoder<'a> {
             }
             state.open = true;
             state.partial = None;
+            state.partial_reassembler.clear();
+            state.partial_wire_parts.clear();
+            state.partial_export_payloads.clear();
             self.wire.channels_opened += 1;
             bump(
                 &mut self.wire.opened_names,
@@ -1376,8 +1471,20 @@ impl<'a> Decoder<'a> {
             match self.mode {
                 Mode::Strict => opaque = Some("export prefix unparsed (layout undocumented)"),
                 Mode::ExportHypothesis => {
-                    match read_export_prefix_codec(&mut arrival.bunch.payload.reader()) {
-                        Ok(_) => self.stats.exports.codec_reader_parsed += 1,
+                    match self.package_map.consume_export_prefix(
+                        &mut arrival.bunch.payload.reader(),
+                        &actor_codec(true),
+                    ) {
+                        Ok(refs) => {
+                            self.stats.exports.codec_reader_parsed += 1;
+                            if self
+                                .package_map
+                                .encode_export_bunch_payload(&refs, &actor_codec(true))
+                                .is_ok_and(|reencoded| reencoded == arrival.bunch.payload)
+                            {
+                                self.stats.exports.codec_reencoded_exact += 1;
+                            }
+                        }
                         Err(error) => {
                             bump(&mut self.stats.exports.codec_reader_failed, class(&error))
                         }
@@ -1433,7 +1540,18 @@ impl<'a> Decoder<'a> {
             let state = self.channels.entry(index).or_default();
             state.open = false;
             state.partial = None;
+            state.partial_reassembler.clear();
+            state.partial_wire_parts.clear();
+            state.partial_export_payloads.clear();
             self.wire.channels_closed += 1;
+            if header
+                .parsed_close_reason()
+                .ok()
+                .flatten()
+                .is_some_and(ChannelCloseReason::is_dormant)
+            {
+                self.wire.channels_closed_dormant += 1;
+            }
             bump(
                 &mut self.wire.close_reasons,
                 header
@@ -1477,10 +1595,10 @@ impl<'a> Decoder<'a> {
         self.record_export(outer, datagram)
     }
 
-    /// The engine's partial merge (UE 4.27 `ReceivedNextBunch`, inferred):
-    /// one assembly per channel; reliable parts must be consecutive, unreliable
-    /// parts share or follow the packet sequence; an export-only part adds no
-    /// data. Returns the complete bunch on the final part.
+    /// The engine's partial merge (`UChannel::ReceivedNextBunch` `0x1437c5500`,
+    /// F-710): one assembly per channel; reliable parts must be consecutive,
+    /// unreliable parts share or follow the packet sequence; an export-only
+    /// part adds no data. Returns the complete bunch on the final part.
     fn merge_partial(
         &mut self,
         arrival: &Arrival,
@@ -1490,6 +1608,43 @@ impl<'a> Decoder<'a> {
         let header = &arrival.bunch.header;
         let partial_stats = &mut self.stats.partial;
         let state = self.channels.entry(header.channel_index).or_default();
+        if header.partial_initial {
+            state.partial_wire_parts.clear();
+            state.partial_export_payloads.clear();
+        }
+        state.partial_wire_parts.push(arrival.bunch.clone());
+        if header.has_package_map_exports {
+            state
+                .partial_export_payloads
+                .push(arrival.bunch.payload.clone());
+        }
+        if let Some(payload_after_exports) = &data
+            && let Ok(PartialReceive::Complete { mut bunch, .. }) =
+                state.partial_reassembler.receive_part(
+                    arrival.sequence,
+                    header,
+                    payload_after_exports,
+                    Some(MAX_CONSTRUCTED_PARTIAL_BUNCH_BYTES),
+                )
+        {
+            partial_stats.codec_reassembler_completed += 1;
+            if let Some(first) = state.partial_wire_parts.first() {
+                bunch.header.reliable_sequence_raw = first.header.reliable_sequence_raw;
+            }
+            if let Ok(max_single_bits) = max_single_bunch_size_bits(1024, 2)
+                && let Ok(resplit) = split_outgoing_bunch(
+                    &bunch,
+                    &state.partial_export_payloads,
+                    max_single_bits,
+                    Some(MAX_CONSTRUCTED_PARTIAL_BUNCH_BYTES),
+                )
+                && resplit == state.partial_wire_parts
+            {
+                partial_stats.codec_resplit_exact += 1;
+            }
+            state.partial_wire_parts.clear();
+            state.partial_export_payloads.clear();
+        }
         let aligned = data
             .as_ref()
             .is_none_or(|payload| payload.bit_len().is_multiple_of(8));
@@ -1664,20 +1819,25 @@ impl<'a> Decoder<'a> {
         };
         if self.mode == Mode::ExportHypothesis && bunch.header.has_must_be_mapped_guids {
             self.stats.must_be_mapped.prefixes += 1;
-            let (guids, remainder) = match strip_must_be_mapped(&bunch.payload) {
-                Ok(stripped) => stripped,
-                Err(error) => {
-                    bump(&mut self.stats.must_be_mapped.failed, class(&error));
-                    return Err(error.context("must-be-mapped prefix"));
-                }
-            };
+            let (guids, resolved, remainder) =
+                match strip_must_be_mapped(&self.package_map, &bunch.payload) {
+                    Ok(stripped) => stripped,
+                    Err(error) => {
+                        bump(&mut self.stats.must_be_mapped.failed, class(&error));
+                        return Err(error.context("must-be-mapped prefix"));
+                    }
+                };
+            let reencoded_exact = self
+                .package_map
+                .prepend_must_be_mapped_guids(&guids, &remainder, &actor_codec(true))
+                .is_ok_and(|reencoded| reencoded == bunch.payload);
             let must_be_mapped = &mut self.stats.must_be_mapped;
             must_be_mapped.parsed += 1;
+            if reencoded_exact {
+                must_be_mapped.codec_reencoded_exact += 1;
+            }
             must_be_mapped.guids += guids.len() as u64;
-            must_be_mapped.guids_exported_earlier += guids
-                .iter()
-                .filter(|guid| self.exported.contains_key(guid))
-                .count() as u64;
+            must_be_mapped.guids_exported_earlier += resolved as u64;
             bunch.header.has_must_be_mapped_guids = false;
             bunch.payload = remainder;
         }
@@ -1728,41 +1888,29 @@ impl<'a> Decoder<'a> {
                 .entry(bunch.header.channel_index)
                 .or_default()
                 .archetype_path = Some(arch.clone());
-            // Check the 8-bit `NetPlayerIndex` hook on PlayerController open bunches (F-696).
-            if arch.contains("PlayerController") {
-                let mut hook_reader = bunch.payload.reader();
-                if read_spawn(&mut hook_reader, codec).is_ok() && hook_reader.remaining() >= 8 {
-                    let _net_player_index = hook_reader.read_bits(8);
-                    let mut hook_blocks = Vec::new();
-                    let mut ok = true;
-                    while !hook_reader.at_end() {
-                        match read_content_block(&mut hook_reader, codec) {
-                            Ok(block) => hook_blocks.push(block),
-                            Err(_) => {
-                                ok = false;
-                                break;
-                            }
-                        }
-                    }
-                    if ok {
-                        for block in &hook_blocks {
-                            let (object_path, class_path) = self.resolve_block_paths(block);
-                            if let Some((_schema_name, exact)) = self.replay_block(
-                                bunch.header.channel_index,
-                                block,
-                                object_path.as_deref(),
-                                class_path.as_deref(),
-                                false,
-                            ) {
-                                self.stats
-                                    .rep_replay
-                                    .player_controller_open_hook_blocks_decoded += 1;
-                                if exact {
-                                    self.stats
-                                        .rep_replay
-                                        .player_controller_open_hook_blocks_reencoded_exact += 1;
-                                }
-                            }
+            // Check the 8-bit `NetPlayerIndex` hook on PlayerController open bunches (F-696, F-709).
+            if arch.contains("PlayerController")
+                && let Ok(pc_body) = parse_player_controller_open_bunch(bunch, codec)
+            {
+                let body_reencoded_exact =
+                    encode_player_controller_open_bunch_body(&pc_body, codec)
+                        .is_ok_and(|reencoded| reencoded == bunch.payload);
+                for block in &pc_body.blocks {
+                    let (object_path, class_path) = self.resolve_block_paths(block);
+                    if let Some((_schema_name, exact)) = self.replay_block(
+                        bunch.header.channel_index,
+                        block,
+                        object_path.as_deref(),
+                        class_path.as_deref(),
+                        false,
+                    ) {
+                        self.stats
+                            .rep_replay
+                            .player_controller_open_hook_blocks_decoded += 1;
+                        if exact && body_reencoded_exact {
+                            self.stats
+                                .rep_replay
+                                .player_controller_open_hook_blocks_reencoded_exact += 1;
                         }
                     }
                 }
@@ -1830,9 +1978,6 @@ impl<'a> Decoder<'a> {
             .and_then(|state| state.archetype_path.as_deref());
         let target_schema = match &block.target {
             BlockTarget::Actor => {
-                if !block.has_rep_layout {
-                    return None;
-                }
                 let Some(arch) = channel_arch else {
                     bump(
                         &mut self.stats.rep_replay.unclassified_actor_targets,
@@ -1846,29 +1991,39 @@ impl<'a> Decoder<'a> {
                 };
                 schema
             }
-            BlockTarget::SubObject { .. } => {
+            BlockTarget::SubObject { class, .. } => {
                 let Some(target_name) = class_path.or(object_path) else {
-                    if block.has_rep_layout {
-                        bump(
-                            &mut self.stats.rep_replay.unclassified_subobject_targets,
-                            "<unresolved_subobject>",
-                        );
-                    }
+                    bump(
+                        &mut self.stats.rep_replay.unclassified_subobject_targets,
+                        "<unresolved_subobject>",
+                    );
                     return None;
                 };
                 let Some(schema) = classify_subobject_schema(target_name, channel_arch) else {
-                    if block.has_rep_layout {
-                        bump(
-                            &mut self.stats.rep_replay.unclassified_subobject_targets,
-                            target_name,
-                        );
-                    }
+                    bump(
+                        &mut self.stats.rep_replay.unclassified_subobject_targets,
+                        target_name,
+                    );
                     return None;
                 };
-                if matches!(schema, TargetSchema::RepLayout(_)) && !block.has_rep_layout {
-                    return None;
+                if !block.has_rep_layout && block.payload.bit_len() == 0 {
+                    let lifecycle_schema = if matches!(class, SubObjectClass::Delete) {
+                        "SubObjectDelete"
+                    } else {
+                        match schema {
+                            TargetSchema::RepLayout(name) => name,
+                            TargetSchema::StatContainer => "UIcarusStatContainer",
+                            TargetSchema::Inventory => "UInventory",
+                            TargetSchema::UiProjectionMountStatus => {
+                                "BP_UIProjectionComponent_MountStatus_C"
+                            }
+                            TargetSchema::SubObjectLifecycle(name) => name,
+                        }
+                    };
+                    TargetSchema::SubObjectLifecycle(lifecycle_schema)
+                } else {
+                    schema
                 }
-                schema
             }
         };
 
@@ -1876,9 +2031,48 @@ impl<'a> Decoder<'a> {
         let replay = &mut self.stats.rep_replay;
         replay.typed_blocks_attempted += 1;
         if in_record_body && !block.has_rep_layout {
-            replay.custom_delta_blocks_attempted += 1;
+            if matches!(target_schema, TargetSchema::SubObjectLifecycle(_)) {
+                replay.subobject_lifecycle_blocks_attempted += 1;
+            } else {
+                replay.custom_delta_blocks_attempted += 1;
+            }
         }
         match target_schema {
+            TargetSchema::SubObjectLifecycle(schema_name) => {
+                let block_codec = actor_codec(true);
+                let mut writer = BitWriter::new();
+                match write_content_block(&mut writer, block, &block_codec).and_then(|()| {
+                    let payload = Payload::from_writer(writer);
+                    let mut reader = payload.reader();
+                    let decoded = read_content_block(&mut reader, &block_codec)?;
+                    ensure!(
+                        reader.at_end(),
+                        "trailing bits after re-encoded subobject lifecycle block"
+                    );
+                    Ok(decoded == *block)
+                }) {
+                    Ok(exact) => {
+                        replay.typed_blocks_decoded += 1;
+                        bump(&mut replay.by_schema_decoded, schema_name);
+                        if in_record_body {
+                            replay.subobject_lifecycle_blocks_decoded += 1;
+                            replay.subobject_lifecycle_blocks_reencoded_exact += u64::from(exact);
+                        }
+                        if exact {
+                            replay.typed_blocks_reencoded_exact += 1;
+                            bump(&mut replay.by_schema_reencoded_exact, schema_name);
+                        }
+                        Some((schema_name, exact))
+                    }
+                    Err(error) => {
+                        bump(
+                            &mut replay.typed_blocks_failed,
+                            format!("{schema_name}: {}", class(&error)),
+                        );
+                        None
+                    }
+                }
+            }
             TargetSchema::StatContainer => {
                 let schema_name = "UIcarusStatContainer";
                 match replay_stat_container_block(&block.payload, block.has_rep_layout, &codec) {
@@ -1935,6 +2129,9 @@ impl<'a> Decoder<'a> {
                         replay.typed_blocks_decoded += 1;
                         bump(&mut replay.by_schema_decoded, schema_name);
                         replay.rep_entries_decoded += prop_entries as u64;
+                        if !block.has_rep_layout {
+                            replay.rpc_calls_decoded += 1;
+                        }
                         if exact {
                             replay.typed_blocks_reencoded_exact += 1;
                             bump(&mut replay.by_schema_reencoded_exact, schema_name);
@@ -1951,16 +2148,24 @@ impl<'a> Decoder<'a> {
                 }
             }
             TargetSchema::RepLayout(schema_name) => {
-                let commands = schema_commands(schema_name);
-                match parse_rep_properties(&block.payload, &commands, &codec) {
-                    Ok(stream) => {
+                match replay_rep_layout_and_rpc_block(
+                    schema_name,
+                    &block.payload,
+                    block.has_rep_layout,
+                    &codec,
+                ) {
+                    Ok((prop_entries, rpc_calls, exact)) => {
                         replay.typed_blocks_decoded += 1;
                         bump(&mut replay.by_schema_decoded, schema_name);
-                        replay.rep_entries_decoded += stream.total_entries() as u64;
-                        let mut effective = codec;
-                        effective.checksums = stream.terminator_checksum.is_some();
-                        let exact = encode_rep_properties(&stream, &commands, &effective)
-                            .is_ok_and(|reencoded| reencoded == block.payload);
+                        replay.rep_entries_decoded += prop_entries as u64;
+                        replay.rpc_calls_decoded += rpc_calls as u64;
+                        if in_record_body
+                            && matches!(block.target, BlockTarget::Actor)
+                            && !block.has_rep_layout
+                        {
+                            replay.actor_rpc_blocks_decoded += 1;
+                            replay.actor_rpc_blocks_reencoded_exact += u64::from(exact);
+                        }
                         if exact {
                             replay.typed_blocks_reencoded_exact += 1;
                             bump(&mut replay.by_schema_reencoded_exact, schema_name);
@@ -2022,7 +2227,7 @@ impl<'a> Decoder<'a> {
                 if block.has_rep_layout {
                     replay.rep_layout_blocks_decoded += 1;
                     replay.rep_layout_blocks_reencoded_exact += u64::from(exact);
-                } else {
+                } else if block.payload.bit_len() > 0 {
                     replay.custom_delta_blocks_decoded += 1;
                     replay.custom_delta_blocks_reencoded_exact += u64::from(exact);
                 }
@@ -2116,9 +2321,18 @@ impl<'a> Decoder<'a> {
             }
         }
         self.wire.first_reliable_raw_distinct = self.first_raw.len() as u64;
+        self.stats.exports.package_map_entries = self.package_map.len() as u64;
         let replay = &mut self.stats.rep_replay;
         replay.rep_layout_coverage_complete = self.stats.blocks.with_rep_layout > 0
             && replay.rep_layout_blocks_reencoded_exact == self.stats.blocks.with_rep_layout
+            && replay.typed_blocks_failed.is_empty()
+            && replay.unclassified_actor_targets.is_empty()
+            && replay.unclassified_subobject_targets.is_empty();
+        replay.all_blocks_coverage_complete = self.stats.blocks.total > 0
+            && replay.rep_layout_blocks_reencoded_exact
+                + replay.custom_delta_blocks_reencoded_exact
+                + replay.subobject_lifecycle_blocks_reencoded_exact
+                == self.stats.blocks.total
             && replay.typed_blocks_failed.is_empty()
             && replay.unclassified_actor_targets.is_empty()
             && replay.unclassified_subobject_targets.is_empty();

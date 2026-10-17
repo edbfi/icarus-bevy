@@ -1,19 +1,22 @@
 //! EXPERIMENTAL disconnected model of the client's packet sequencing and ack layer.
 //!
-//! Static client-build observations only (F-535..F-539): sequence seeding, the
-//! outgoing header's history words, the receive-side ack/nak notification and
-//! the per-channel reliable bunch queue. Not wire-validated against any original
-//! packet or exchange. Pure state machines: no I/O, timers, channel routing,
-//! bunch assembly, resend scheduling or admission. Headers are the codec's
-//! [`PacketHeader`]; serialization stays in `packet`. Where the client's
-//! behaviour was not observed (the sent-record push site, the ring capacity,
-//! history words beyond those received, packet-id advance, the reliable
-//! comparison window) the choice is marked inferred or assumed.
+//! Static client-build observations only (F-535..F-539, F-710): sequence
+//! seeding, the outgoing header's history words, the receive-side ack/nak
+//! notification, the per-channel reliable bunch queue and per-channel partial
+//! bunch reassembly (`UChannel::ReceivedNextBunch` `0x1437c5500`). Pure state
+//! machines: no I/O, timers, channel routing, resend scheduling or admission.
+//! Headers are the codec's [`PacketHeader`]; serialization stays in `packet`.
+//! Where the client's behaviour was not observed (the sent-record push site,
+//! the ring capacity, history words beyond those received, packet-id advance,
+//! the reliable comparison window) the choice is marked inferred or assumed.
 use std::collections::{BTreeMap, VecDeque};
 
 use anyhow::{Context, Result, bail, ensure};
 
-use super::packet::{MAX_HISTORY_WORDS, PacketHeader, RELIABLE_SEQUENCE_LIMIT};
+use super::packet::{
+    BitWriter, Bunch, BunchHeader, MAX_HISTORY_WORDS, PacketHeader, Payload,
+    RELIABLE_SEQUENCE_LIMIT,
+};
 
 /// Packet sequences are 14 bits.
 pub const SEQUENCE_MASK: u16 = 0x3fff;
@@ -27,6 +30,15 @@ pub const RELIABLE_MASK: u32 = RELIABLE_SEQUENCE_LIMIT - 1;
 pub const RELIABLE_HALF_RANGE: u32 = RELIABLE_SEQUENCE_LIMIT / 2;
 /// Out-of-order reliable bunches a channel may queue; one more fails (F-537).
 pub const MAX_QUEUED_RELIABLE: usize = 255;
+/// Maximum constructed partial bunch size enforced on a non-client receiver
+/// (`NetMaxConstructedPartialBunchSizeBytes` at `0x146056454`,
+/// `UChannel::ReceivedNextBunch` `0x1437c5500`, F-710).
+pub const MAX_CONSTRUCTED_PARTIAL_BUNCH_BYTES: usize = 65_536;
+/// Fixed packet + bunch header/trailer bit overhead subtracted from
+/// `Connection->MaxPacket * 8 - Connection->MaxPacketHandlerBits` in
+/// `UChannel::SendBunch` (`0x1437c9690` line 82) and
+/// `UPackageMapClient::ExportNetGUID` (`0x1439aabb0` line 75): `0x235` (`565` bits).
+pub const MAX_SINGLE_BUNCH_OVERHEAD_BITS: usize = 0x235;
 const WORD_BITS: u16 = 32;
 
 /// `(a - b)` modulo 2^14.
@@ -603,4 +615,392 @@ impl<T> ReliableChannel<T> {
         }
         Ok(ReliableReceive::Delivered(delivered))
     }
+}
+
+/// Result of feeding one partial bunch part into [`PartialBunchReassembler`]
+/// (`UChannel::ReceivedNextBunch` `0x1437c5500`, F-710).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum PartialReceive {
+    /// An unreliable `bPartialInitial` arrived while a reliable partial bunch
+    /// was in progress; the unreliable initial is dropped and the reliable
+    /// assembly stays intact (`*bOutSkipAck = 1` at `0x1437c5500` line 139).
+    IgnoredUnreliableInitial,
+    /// Part accepted; waiting for subsequent continuation/final parts.
+    Incomplete {
+        parts: usize,
+        replaced_unreliable: bool,
+    },
+    /// Final part accepted; returns the reassembled [`Bunch`] and total part count.
+    Complete {
+        bunch: Bunch,
+        parts: usize,
+        replaced_unreliable: bool,
+    },
+}
+
+#[derive(Clone, Debug)]
+struct InProgressPartial {
+    reliable: bool,
+    sequence: i64,
+    header: BunchHeader,
+    data: BitWriter,
+    parts: usize,
+    must_be_mapped: bool,
+}
+
+/// Per-channel partial bunch reassembler (`UChannel::ReceivedNextBunch`
+/// `0x1437c5500`, F-710).
+///
+/// Key static client-build rules (`0x1437c5500`):
+/// - `UPackageMapClient::ReceiveNetGUIDBunch` (`0x1439b8bb0`) runs in
+///   `UChannel::ReceivedRawBunch` (`0x1437c5cc0`) before `ReceivedNextBunch`.
+///   When `header.has_package_map_exports` is set on an initial or continuation
+///   partial bunch, `ReceivedNextBunch` does not copy payload bits from that
+///   part into `InPartialBunch` and does not require 8-bit payload alignment on
+///   that part.
+/// - Non-final parts without `has_package_map_exports` must be byte-aligned
+///   (`(rem_bits & 7) == 0`), and initial parts without exports must also be
+///   non-empty (`rem_bits > 0`).
+/// - A reliable `bPartialInitial` arriving while an incomplete reliable
+///   `InPartialBunch` is already in progress is rejected (`Bunch.SetError()`).
+///   An unreliable `bPartialInitial` arriving while a reliable `InPartialBunch`
+///   is in progress is dropped (`IgnoredUnreliableInitial`). An incomplete
+///   unreliable `InPartialBunch` is replaced by a new `bPartialInitial`.
+/// - Continuation parts (`!bPartialInitial`) require `InPartialBunch` to exist
+///   with matching `reliable` and consecutive `sequence` (`sequence == prev + 1`
+///   when reliable, or `prev..=prev + 1` when unreliable).
+/// - Final parts (`bPartialFinal`) reject `has_package_map_exports`, copy
+///   `close`, `close_reason` and `has_must_be_mapped_guids` onto the
+///   reassembled header, and complete the bunch.
+#[derive(Clone, Debug, Default)]
+pub struct PartialBunchReassembler {
+    in_progress: Option<InProgressPartial>,
+}
+
+impl PartialBunchReassembler {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// True when an incomplete partial bunch is currently held.
+    pub fn in_progress(&self) -> bool {
+        self.in_progress.is_some()
+    }
+
+    /// Number of parts accumulated in the current incomplete assembly, if any.
+    pub fn parts_in_progress(&self) -> Option<usize> {
+        self.in_progress.as_ref().map(|partial| partial.parts)
+    }
+
+    /// Clear any in-progress assembly (for example when a channel opens or closes).
+    pub fn clear(&mut self) {
+        self.in_progress = None;
+    }
+
+    /// Feed one partial bunch part (`header.partial == true`) after any
+    /// `has_package_map_exports` prefix has been stripped into
+    /// `payload_after_exports`.
+    ///
+    /// When `max_constructed_bytes` is `Some(limit)` (on a server,
+    /// `Some(MAX_CONSTRUCTED_PARTIAL_BUNCH_BYTES)`), rejects assemblies whose
+    /// constructed byte size `(bit_len + 7) / 8` exceeds `limit`.
+    pub fn receive_part(
+        &mut self,
+        sequence: i64,
+        header: &BunchHeader,
+        payload_after_exports: &Payload,
+        max_constructed_bytes: Option<usize>,
+    ) -> Result<PartialReceive> {
+        ensure!(
+            header.partial,
+            "non-partial bunch passed to PartialBunchReassembler"
+        );
+        let mut replaced_unreliable = false;
+        if header.partial_initial {
+            if let Some(existing) = &self.in_progress {
+                if existing.reliable && header.reliable {
+                    bail!(
+                        "reliable partial initial bunch cannot overwrite an incomplete reliable partial bunch"
+                    );
+                }
+                if existing.reliable && !header.reliable {
+                    return Ok(PartialReceive::IgnoredUnreliableInitial);
+                }
+                replaced_unreliable = true;
+                self.in_progress = None;
+            }
+            if header.has_package_map_exports {
+                ensure!(
+                    !header.partial_final,
+                    "final partial bunch cannot carry package-map exports"
+                );
+                ensure!(
+                    payload_after_exports.bit_len() == 0,
+                    "partial initial export bunch has {} leftover bits after exports",
+                    payload_after_exports.bit_len()
+                );
+            } else if !header.partial_final {
+                ensure!(
+                    payload_after_exports.bit_len() > 0
+                        && payload_after_exports.bit_len().is_multiple_of(8),
+                    "non-final partial initial bunch payload ({} bits) must be non-empty and byte-aligned",
+                    payload_after_exports.bit_len()
+                );
+            }
+            let mut writer = BitWriter::new();
+            if !header.has_package_map_exports {
+                append_payload(&mut writer, payload_after_exports);
+            }
+            if let Some(limit) = max_constructed_bytes {
+                ensure!(
+                    writer.bit_len().div_ceil(8) <= limit,
+                    "constructed partial bunch exceeds {limit} bytes"
+                );
+            }
+            self.in_progress = Some(InProgressPartial {
+                reliable: header.reliable,
+                sequence,
+                header: header.clone(),
+                data: writer,
+                parts: 1,
+                must_be_mapped: header.has_must_be_mapped_guids,
+            });
+        } else {
+            let Some(partial) = self.in_progress.as_mut() else {
+                bail!("partial continuation bunch without an initial partial bunch");
+            };
+            let next = sequence == partial.sequence + 1;
+            let sequence_matches = if partial.reliable {
+                next
+            } else {
+                next || sequence == partial.sequence
+            };
+            if !sequence_matches || partial.reliable != header.reliable {
+                self.in_progress = None;
+                bail!("partial continuation sequence or reliability mismatch");
+            }
+            if header.partial_final && header.has_package_map_exports {
+                self.in_progress = None;
+                bail!("final partial bunch cannot carry package-map exports");
+            }
+            if header.has_package_map_exports {
+                if payload_after_exports.bit_len() != 0 {
+                    self.in_progress = None;
+                    bail!(
+                        "partial continuation export bunch has {} leftover bits after exports",
+                        payload_after_exports.bit_len()
+                    );
+                }
+            } else {
+                if !header.partial_final && !payload_after_exports.bit_len().is_multiple_of(8) {
+                    let bits = payload_after_exports.bit_len();
+                    self.in_progress = None;
+                    bail!(
+                        "non-final partial continuation payload ({bits} bits) must be byte-aligned"
+                    );
+                }
+                append_payload(&mut partial.data, payload_after_exports);
+                if let Some(limit) = max_constructed_bytes
+                    && partial.data.bit_len().div_ceil(8) > limit
+                {
+                    self.in_progress = None;
+                    bail!("constructed partial bunch exceeds {limit} bytes");
+                }
+            }
+            partial.sequence = sequence;
+            partial.parts += 1;
+            partial.must_be_mapped |= header.has_must_be_mapped_guids;
+        }
+
+        if !header.partial_final {
+            let parts = self.in_progress.as_ref().map_or(0, |p| p.parts);
+            return Ok(PartialReceive::Incomplete {
+                parts,
+                replaced_unreliable,
+            });
+        }
+
+        let partial = self.in_progress.take().expect("partial in progress");
+        let mut merged = partial.header;
+        merged.partial = false;
+        merged.partial_initial = false;
+        merged.partial_final = false;
+        merged.has_package_map_exports = false;
+        merged.has_must_be_mapped_guids = partial.must_be_mapped;
+        merged.close = header.close;
+        merged.close_reason = header.close_reason;
+        merged.control = merged.open || merged.close;
+        Ok(PartialReceive::Complete {
+            bunch: Bunch {
+                header: merged,
+                payload: Payload::from_writer(partial.data),
+            },
+            parts: partial.parts,
+            replaced_unreliable,
+        })
+    }
+}
+
+fn append_payload(writer: &mut BitWriter, payload: &Payload) {
+    let mut reader = payload.reader();
+    let mut bits = reader.remaining();
+    while bits > 0 {
+        let chunk = bits.min(32) as u32;
+        writer.write_bits(reader.read_bits(chunk), chunk);
+        bits -= chunk as usize;
+    }
+}
+
+/// Maximum payload bits a single non-partial bunch may carry before
+/// `UChannel::SendBunch` (`0x1437c9690` line 82) splits it into partial
+/// bunches: `(max_packet_bytes * 8) - max_packet_handler_bits - 0x235`.
+pub fn max_single_bunch_size_bits(
+    max_packet_bytes: u32,
+    max_packet_handler_bits: u32,
+) -> Result<usize> {
+    let total = usize::try_from(max_packet_bytes)
+        .context("max_packet_bytes overflow")?
+        .checked_mul(8)
+        .context("max_packet_bytes * 8 overflow")?;
+    let overhead = usize::try_from(max_packet_handler_bits)
+        .context("max_packet_handler_bits overflow")?
+        .checked_add(MAX_SINGLE_BUNCH_OVERHEAD_BITS)
+        .context("bunch overhead overflow")?;
+    ensure!(
+        total > overhead,
+        "max_packet_bytes ({max_packet_bytes}) too small for bunch overhead ({overhead} bits)"
+    );
+    Ok(total - overhead)
+}
+
+/// Byte-aligned slice size (`max_single_bunch_size_bits & !7`) used by
+/// `UChannel::SendBunch` (`0x1437c9690` line 84) when splitting an outgoing
+/// bunch larger than [`max_single_bunch_size_bits`].
+pub fn max_partial_bunch_size_bits(
+    max_packet_bytes: u32,
+    max_packet_handler_bits: u32,
+) -> Result<usize> {
+    let single = max_single_bunch_size_bits(max_packet_bytes, max_packet_handler_bits)?;
+    let partial = single & !7;
+    ensure!(
+        partial >= 8,
+        "max_partial_bunch_size_bits ({partial}) must be at least 8 bits"
+    );
+    Ok(partial)
+}
+
+/// Segment an outgoing [`Bunch`] and any preceding export-only bunch payloads
+/// (`UChannel::AppendExportBunches` `0x1437b03b0` /
+/// `UPackageMapClient::AppendExportBunches` `0x1439a5290`) into wire
+/// `OutgoingBunches` following `UChannel::SendBunch` (`0x1437c9690`).
+///
+/// Key static rules (`0x1437c9690`):
+/// - When `max_constructed_bytes` is `Some(limit)` (`!IsUnlimitedBunchSizeAllowed`),
+///   rejects `bunch.payload` when `(bit_len + 7) / 8 > limit` (`65,536` bytes).
+/// - Each payload in `export_payloads` becomes a leading entry in
+///   `OutgoingBunches` with `has_package_map_exports = true` and
+///   `has_must_be_mapped_guids = false`.
+/// - When `bunch.payload.bit_len() > max_single_bits`, `bunch.payload` is
+///   sliced into chunks of `max_partial_bits = max_single_bits & !7` bits
+///   (whole bytes), with the final chunk carrying the remaining bits;
+///   otherwise `bunch.payload` is appended as a single entry.
+/// - When `OutgoingBunches.len() > 1`, every entry sets `partial = true`,
+///   only index `0` sets `partial_initial = true` and preserves `open`, and
+///   only index `OutgoingBunches.len() - 1` sets `partial_final = true` and
+///   preserves `close` and `close_reason`.
+/// - When `bunch.header.reliable` is set and `reliable_sequence_raw` is
+///   `Some(first_raw)`, each entry in `OutgoingBunches` receives the next
+///   10-bit wire reliable sequence `(first_raw + i) & 0x3ff`.
+pub fn split_outgoing_bunch(
+    bunch: &Bunch,
+    export_payloads: &[Payload],
+    max_single_bits: usize,
+    max_constructed_bytes: Option<usize>,
+) -> Result<Vec<Bunch>> {
+    if let Some(limit) = max_constructed_bytes {
+        ensure!(
+            bunch.payload.bit_len().div_ceil(8) <= limit,
+            "outgoing bunch payload ({} bytes) exceeds limit ({limit} bytes)",
+            bunch.payload.bit_len().div_ceil(8)
+        );
+    }
+    let max_partial_bits = max_single_bits & !7;
+    ensure!(
+        max_partial_bits >= 8,
+        "max_single_bits ({max_single_bits}) must be at least 8 bits"
+    );
+
+    let mut slices: Vec<(Payload, bool)> = Vec::new();
+    for export in export_payloads {
+        slices.push((export.clone(), true));
+    }
+    if bunch.payload.bit_len() > max_single_bits {
+        let mut reader = bunch.payload.reader();
+        while reader.remaining() > 0 {
+            let take = reader.remaining().min(max_partial_bits);
+            let mut writer = BitWriter::new();
+            let mut rem = take;
+            while rem > 0 {
+                let chunk = rem.min(32) as u32;
+                writer.write_bits(reader.read_bits(chunk), chunk);
+                rem -= chunk as usize;
+            }
+            slices.push((Payload::from_writer(writer), false));
+        }
+    } else {
+        slices.push((bunch.payload.clone(), bunch.header.has_package_map_exports));
+    }
+
+    let total = slices.len();
+    let mut out = Vec::with_capacity(total);
+    let mut next_raw = bunch.header.reliable_sequence_raw;
+    for (index, (payload, is_export)) in slices.into_iter().enumerate() {
+        let partial = total > 1;
+        let partial_initial = partial && index == 0;
+        let partial_final = partial && index + 1 == total;
+        let open = bunch.header.open && (!partial || index == 0);
+        let close = bunch.header.close && (!partial || index + 1 == total);
+        let control = if partial {
+            open || close
+        } else {
+            bunch.header.control || open || close
+        };
+        let close_reason = if close {
+            bunch.header.close_reason
+        } else {
+            None
+        };
+        let reliable_sequence_raw = if bunch.header.reliable {
+            let current = next_raw.map(wire_reliable_sequence);
+            next_raw = next_raw.map(|raw| wire_reliable_sequence(raw.wrapping_add(1)));
+            current
+        } else {
+            None
+        };
+        let channel_name = if open || bunch.header.reliable {
+            bunch.header.channel_name.clone()
+        } else {
+            None
+        };
+        out.push(Bunch {
+            header: BunchHeader {
+                control,
+                open,
+                close,
+                close_reason,
+                paused: bunch.header.paused,
+                reliable: bunch.header.reliable,
+                channel_index: bunch.header.channel_index,
+                has_package_map_exports: is_export,
+                has_must_be_mapped_guids: !is_export && bunch.header.has_must_be_mapped_guids,
+                partial,
+                reliable_sequence_raw,
+                partial_initial,
+                partial_final,
+                channel_name,
+            },
+            payload,
+        });
+    }
+    Ok(out)
 }

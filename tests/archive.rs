@@ -1,5 +1,6 @@
 use icarus_bevy::experimental::archive::{
-    ByteOrder, MAX_STRING_UNITS, decode_string, encode_string,
+    ByteOrder, MAX_FNAME_EXTERNAL_NUMBER, MAX_STRING_UNITS, NAME_SIZE, decode_string,
+    encode_string, is_valid_tag_aggregate_span, normalize_original_narrow_byte, split_fname_number,
 };
 
 #[test]
@@ -73,4 +74,46 @@ fn resource_and_normalization_boundaries_fail_without_partial_acceptance() {
         decode_string(&encoded, ByteOrder::Little).unwrap().units,
         maximum
     );
+}
+
+#[test]
+fn fname_number_splitting_and_original_narrow_normalization_match_engine_rules() {
+    let units = |text: &str| text.encode_utf16().collect::<Vec<u16>>();
+    assert_eq!(NAME_SIZE, 1_024);
+    assert_eq!(MAX_FNAME_EXTERNAL_NUMBER, 2_147_483_646);
+
+    assert_eq!(
+        split_fname_number(&units("Actor_0")),
+        (units("Actor").as_slice(), 1)
+    );
+    assert_eq!(
+        split_fname_number(&units("Actor_42")),
+        (units("Actor").as_slice(), 43)
+    );
+    assert_eq!(
+        split_fname_number(&units("Actor_2147483646")),
+        (units("Actor").as_slice(), 2_147_483_647)
+    );
+
+    // Leading zeros, missing base character, > MAX_FNAME_EXTERNAL_NUMBER, or > 10 digits keep Number = 0.
+    for unsplit in [
+        "Actor",
+        "_0",
+        "Actor_01",
+        "Actor_00",
+        "Actor_2147483647",
+        "Actor_10000000000",
+    ] {
+        let encoded = units(unsplit);
+        assert_eq!(split_fname_number(&encoded), (encoded.as_slice(), 0));
+    }
+
+    assert_eq!(normalize_original_narrow_byte(b'A'), u16::from(b'A'));
+    assert_eq!(normalize_original_narrow_byte(0x7f), 0x7f);
+    assert_eq!(normalize_original_narrow_byte(0x80), u16::from(b'?'));
+    assert_eq!(normalize_original_narrow_byte(0xff), u16::from(b'?'));
+
+    assert!(is_valid_tag_aggregate_span(0));
+    assert!(is_valid_tag_aggregate_span(i32::MAX as u64));
+    assert!(!is_valid_tag_aggregate_span((i32::MAX as u64) + 1));
 }

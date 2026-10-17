@@ -1,22 +1,33 @@
 //! EXPERIMENTAL disconnected codec for statically observed actor-channel bunches.
 //!
-//! Client-build static observations only (F-569..F-573): NetGUID references,
-//! the open-bunch spawn record, the compressed rotator and the content-block
-//! headers that frame replicated state. Server writers were not read, nothing
-//! here is wire-validated, and no connection state, package map, object
-//! resolution, admission or gameplay occurs. Writers mirror the readers for
-//! round-trip research only.
+//! Client-build static observations (F-569..F-573, F-692, F-694, F-696, F-709,
+//! F-710): NetGUID references, NetGUID export prefixes (`ReceiveNetGUIDBunch`
+//! `0x1439b8bb0`, `ExportNetGUIDHeader` `0x1439ab670`), must-be-mapped GUID
+//! prefixes (`UActorChannel::ReceivedBunch` `0x1437c43f0`), disconnected
+//! package-map export state (`PackageMapState`), the open-bunch spawn record,
+//! the `APlayerController` 1-byte `NetPlayerIndex` open-bunch hook
+//! (`UActorChannel::ProcessBunch` `0x1437c0c30`,
+//! `APlayerController::OnActorChannelOpen` `0x143ae73a0`,
+//! `APlayerController::OnSerializeNewActor` `0x143ae79d0`), the compressed
+//! rotator and the content-block headers that frame replicated state. Nothing
+//! here is gameplay-integrated, and no connection state, UObject resolution,
+//! admission or gameplay occurs. Writers mirror the readers for round-trip
+//! research only.
 //!
 //! Caller-selected, because their original sources are unread or outside this
 //! codec: the engine net version, whether the archive has exports enabled,
 //! whether the level reference is present (its archive-flag gate is unread),
-//! the byte order of 4-byte fields and string counts, and every limit.
+//! the byte order of 2- and 4-byte fields and string counts, and every limit.
 //!
 //! Unsupported and opaque on purpose:
 //! - content-block payload bits stay opaque: the property stream and the
 //!   per-property net serializers are not decoded here;
-//! - NetGUID export bunches and must-be-mapped GUID prefixes are not read, so
-//!   [`parse_actor_bunch`] rejects bunches that carry them, and partial bunches;
+//! - [`parse_actor_bunch`] and [`parse_player_controller_open_bunch`] expect
+//!   export and must-be-mapped prefixes to be stripped first via
+//!   [`read_export_prefix`] and [`read_must_be_mapped_guids`], and reject
+//!   partial bunches;
+//! - rep-layout export bunches (`bHasRepLayoutExport == 1` in
+//!   `ReceiveNetGUIDBunch` `0x1439b8bb0`);
 //! - export flags with reserved bits 3-7;
 //! - non-canonical packed integers (the original reader is more lenient), so
 //!   every accepted structure re-encodes bit-identically.
@@ -28,10 +39,13 @@
 //! as a sub-object whose stably-named bit is clear; recursion depth counts
 //! outer references, so a top-level reference plus 16 outers is the deepest
 //! accepted chain. Angle rounding (half up) is inferred (F-573). Deletion
-//! blocks (zero class reference) carry no payload count (F-576).
+//! blocks (zero class reference) carry no payload count (F-576, F-709).
 //!
 //! `Debug` output and summaries carry kinds, counts and lengths only, never
-//! GUID values, paths, checksums, vector or angle values, or payload bits.
+//! GUID values, paths, checksums, vector or angle values, player indices, or
+//! payload bits.
+use std::collections::BTreeMap;
+
 use anyhow::{Context, Result, ensure};
 use serde::Serialize;
 
@@ -42,6 +56,9 @@ use super::packet::{BitReader, BitWriter, Bunch, Payload};
 
 /// Deepest outer-reference recursion accepted below a top-level reference.
 pub const MAX_GUID_DEPTH: usize = 16;
+/// Maximum `NumGUIDsInBunch` accepted by `UPackageMapClient::ReceiveNetGUIDBunch`
+/// (`0x1439b8bb0`, `(uint)NumGUIDsInBunch < 0x801`, F-694, F-709).
+pub const MAX_EXPORT_GUIDS: u32 = 2048;
 /// The default GUID, which always carries an export-flags byte (F-572).
 pub const DEFAULT_GUID: u32 = 1;
 /// Export flag bit 0: a recursive outer reference and a path string follow.
@@ -49,7 +66,7 @@ pub const EXPORT_HAS_PATH: u8 = 1;
 /// Export flag bit 1: no-load.
 pub const EXPORT_NO_LOAD: u8 = 2;
 /// Export flag bit 2: a 4-byte network checksum follows the path; without
-/// the path bit nothing follows (wire-observed, F-692).
+/// the path bit nothing follows (F-692).
 pub const EXPORT_HAS_CHECKSUM: u8 = 4;
 const EXPORT_KNOWN: u8 = EXPORT_HAS_PATH | EXPORT_NO_LOAD | EXPORT_HAS_CHECKSUM;
 /// First engine net version whose spawn vectors read a quantized bit (F-571).
@@ -200,6 +217,203 @@ impl std::fmt::Debug for ExportPath {
             .field("outer", &self.outer)
             .field("path", &self.path)
             .finish()
+    }
+}
+
+/// One registered NetGUID export entry in [`PackageMapState`]
+/// (`UPackageMapClient::ReceiveNetGUIDBunch` `0x1439b8bb0`,
+/// `UPackageMapClient::InternalLoadObject` `0x1439acc90`, F-709, F-710).
+/// `Debug` shows lengths and flags only.
+#[derive(Clone, PartialEq, Eq)]
+pub struct NetGuidExportEntry {
+    pub outer_guid: u32,
+    pub path: String,
+    pub no_load: bool,
+    pub checksum: Option<u32>,
+}
+
+impl std::fmt::Debug for NetGuidExportEntry {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("NetGuidExportEntry")
+            .field("has_outer", &(self.outer_guid != 0))
+            .field("path_len", &self.path.len())
+            .field("no_load", &self.no_load)
+            .field("has_checksum", &self.checksum.is_some())
+            .finish()
+    }
+}
+
+/// Disconnected package-map export table (`FNetGUIDCache` / `UPackageMapClient`,
+/// `0x1439b8bb0`, `0x1439acc90`, `0x1437c43f0`, F-709, F-710).
+///
+/// Tracks `(NetGUID -> outer_guid, path, no_load, checksum)` mappings from
+/// `ReceiveNetGUIDBunch` export prefixes and inline `NetGuidRef` exports, and
+/// checks `bHasMustBeMappedGUIDs` prefixes against registered GUIDs. `Debug`
+/// shows the entry count only.
+#[derive(Clone, Default, PartialEq, Eq)]
+pub struct PackageMapState {
+    entries: BTreeMap<u32, NetGuidExportEntry>,
+}
+
+impl std::fmt::Debug for PackageMapState {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("PackageMapState")
+            .field("entries", &self.entries.len())
+            .finish()
+    }
+}
+
+impl PackageMapState {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn len(&self) -> usize {
+        self.entries.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.entries.is_empty()
+    }
+
+    pub fn contains(&self, guid: u32) -> bool {
+        self.entries.contains_key(&guid)
+    }
+
+    pub fn get(&self, guid: u32) -> Option<&NetGuidExportEntry> {
+        self.entries.get(&guid)
+    }
+
+    /// Resolve the direct exported path segment for `guid`.
+    pub fn resolve_path(&self, guid: u32) -> Option<&str> {
+        self.entries.get(&guid).map(|entry| entry.path.as_str())
+    }
+
+    /// Resolve the outer GUID registered for `guid`.
+    pub fn resolve_outer_guid(&self, guid: u32) -> Option<u32> {
+        self.entries.get(&guid).map(|entry| entry.outer_guid)
+    }
+
+    /// Walk outer GUIDs up to [`MAX_GUID_DEPTH`] and reconstruct the full
+    /// `outer/leaf` or `outer.leaf` path string for `guid`.
+    pub fn resolve_full_path(&self, guid: u32) -> Option<String> {
+        let mut segments = Vec::new();
+        let mut current = guid;
+        for _ in 0..=MAX_GUID_DEPTH {
+            let entry = self.entries.get(&current)?;
+            segments.push(entry.path.as_str());
+            if entry.outer_guid == 0 {
+                break;
+            }
+            if !self.entries.contains_key(&entry.outer_guid) {
+                break;
+            }
+            current = entry.outer_guid;
+        }
+        segments.reverse();
+        let mut full = String::new();
+        for segment in segments {
+            if full.is_empty() || segment.starts_with('/') {
+                full.push_str(segment);
+            } else {
+                full.push('.');
+                full.push_str(segment);
+            }
+        }
+        Some(full)
+    }
+
+    /// Recursively record any path-carrying export in `reference` (outer first,
+    /// then `reference.guid`). Returns the number of path exports recorded.
+    pub fn ingest_guid_ref(&mut self, reference: &NetGuidRef) -> usize {
+        if reference.guid == 0 {
+            return 0;
+        }
+        let Some(export) = &reference.export else {
+            return 0;
+        };
+        let Some(export_path) = &export.path else {
+            return 0;
+        };
+        let mut count = self.ingest_guid_ref(&export_path.outer);
+        let path = String::from_utf16_lossy(export_path.path.units());
+        self.entries.insert(
+            reference.guid,
+            NetGuidExportEntry {
+                outer_guid: export_path.outer.guid,
+                path,
+                no_load: export.no_load,
+                checksum: export.checksum,
+            },
+        );
+        count += 1;
+        count
+    }
+
+    /// Read a `ReceiveNetGUIDBunch` (`0x1439b8bb0`) export prefix via
+    /// [`read_export_prefix`] and ingest every exported path into `self`.
+    pub fn consume_export_prefix(
+        &mut self,
+        reader: &mut BitReader<'_>,
+        codec: &ActorChannelCodec,
+    ) -> Result<Vec<NetGuidRef>> {
+        let references = read_export_prefix(reader, codec)?;
+        for reference in &references {
+            self.ingest_guid_ref(reference);
+        }
+        Ok(references)
+    }
+
+    /// Read a `UActorChannel::ReceivedBunch` (`0x1437c43f0`) must-be-mapped
+    /// GUID prefix via [`read_must_be_mapped_guids`] and return `(guids,
+    /// resolved_count)` where `resolved_count` is how many of those GUIDs are
+    /// registered in `self`.
+    pub fn consume_must_be_mapped(
+        &self,
+        reader: &mut BitReader<'_>,
+        codec: &ActorChannelCodec,
+    ) -> Result<(Vec<u32>, usize)> {
+        let guids = read_must_be_mapped_guids(reader, codec)?;
+        let resolved = guids.iter().filter(|&&guid| self.contains(guid)).count();
+        Ok((guids, resolved))
+    }
+
+    /// Encode an export-only bunch payload (`UPackageMapClient::ExportNetGUIDHeader`
+    /// `0x1439ab670` and `ExportNetGUID` `0x1439aabb0`) and record every
+    /// exported path into `self`.
+    pub fn encode_export_bunch_payload(
+        &mut self,
+        references: &[NetGuidRef],
+        codec: &ActorChannelCodec,
+    ) -> Result<Payload> {
+        let mut writer = BitWriter::new();
+        write_export_prefix(&mut writer, references, codec)?;
+        for reference in references {
+            self.ingest_guid_ref(reference);
+        }
+        Ok(Payload::from_writer(writer))
+    }
+
+    /// Prepend a `bHasMustBeMappedGUIDs` prefix (`u16` count + packed GUIDs) in
+    /// front of `body` (`UActorChannel::AppendMustBeMappedGuids` `0x1437b0490`).
+    pub fn prepend_must_be_mapped_guids(
+        &self,
+        guids: &[u32],
+        body: &Payload,
+        codec: &ActorChannelCodec,
+    ) -> Result<Payload> {
+        let mut writer = BitWriter::new();
+        write_must_be_mapped_guids(&mut writer, guids, codec)?;
+        let mut reader = body.reader();
+        let mut rem = reader.remaining();
+        while rem > 0 {
+            let chunk = rem.min(32) as u32;
+            writer.write_bits(reader.read_bits(chunk), chunk);
+            rem -= chunk as usize;
+        }
+        Ok(Payload::from_writer(writer))
     }
 }
 
@@ -374,6 +588,27 @@ pub struct ActorBunchBody {
     pub blocks: Vec<ContentBlock>,
 }
 
+/// Open-bunch body for `APlayerController` and its subclasses (`0x1437c0c30`,
+/// `0x143ae73a0`, `0x143ae79d0`, F-696, F-709): the spawn record, the 1-byte
+/// `NetPlayerIndex` serialized by `OnSerializeNewActor` / `OnActorChannelOpen`,
+/// and the trailing content blocks.
+#[derive(Clone, PartialEq, Eq)]
+pub struct PlayerControllerOpenBunchBody {
+    pub spawn: SpawnRecord,
+    pub net_player_index: u8,
+    pub blocks: Vec<ContentBlock>,
+}
+
+impl std::fmt::Debug for PlayerControllerOpenBunchBody {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("PlayerControllerOpenBunchBody")
+            .field("spawn", &self.spawn)
+            .field("blocks", &self.blocks)
+            .finish_non_exhaustive()
+    }
+}
+
 #[derive(Clone, Debug, Serialize)]
 pub struct GuidSummary {
     pub kind: GuidKind,
@@ -495,6 +730,15 @@ impl ActorBunchBody {
     }
 }
 
+impl PlayerControllerOpenBunchBody {
+    pub fn summary(&self) -> ActorBunchSummary {
+        ActorBunchSummary {
+            spawn: Some(self.spawn.summary()),
+            blocks: self.blocks.iter().map(ContentBlock::summary).collect(),
+        }
+    }
+}
+
 fn read_flag(reader: &mut BitReader<'_>, what: &str) -> Result<bool> {
     let bit = reader.read_bit();
     ensure!(!reader.is_error(), "truncated {what}");
@@ -529,6 +773,23 @@ pub(crate) fn read_packed(reader: &mut BitReader<'_>, what: &str) -> Result<u32>
         "non-canonical packed {what} unsupported"
     );
     Ok(value)
+}
+
+fn read_u16(reader: &mut BitReader<'_>, order: ByteOrder, what: &str) -> Result<u16> {
+    let value = reader.read_bits(16) as u16;
+    ensure!(!reader.is_error(), "truncated {what}");
+    Ok(match order {
+        ByteOrder::Little => value,
+        ByteOrder::Big => value.swap_bytes(),
+    })
+}
+
+fn write_u16(writer: &mut BitWriter, value: u16, order: ByteOrder) {
+    let value = match order {
+        ByteOrder::Little => value,
+        ByteOrder::Big => value.swap_bytes(),
+    };
+    writer.write_bits(u32::from(value), 16);
 }
 
 fn read_u32(reader: &mut BitReader<'_>, order: ByteOrder, what: &str) -> Result<u32> {
@@ -735,6 +996,91 @@ fn write_guid_at(
     }
     if let Some(checksum) = export.checksum {
         write_u32(writer, checksum, codec.order);
+    }
+    Ok(())
+}
+
+/// Read the `UPackageMapClient::ReceiveNetGUIDBunch` (`0x1439b8bb0`) export
+/// prefix (`header.has_package_map_exports`, F-694, F-709): 1-bit
+/// `bHasRepLayoutExport` (must be `0`), a 4-byte `int32` `NumGUIDsInBunch`
+/// (`0..=MAX_EXPORT_GUIDS`), then that many [`read_guid_ref`] calls with
+/// `exports_enabled = true`.
+pub fn read_export_prefix(
+    reader: &mut BitReader<'_>,
+    codec: &ActorChannelCodec,
+) -> Result<Vec<NetGuidRef>> {
+    let has_rep_layout_export = read_flag(reader, "export prefix rep-layout bit")?;
+    ensure!(
+        !has_rep_layout_export,
+        "rep-layout export prefix unsupported"
+    );
+    let count = read_u32(reader, codec.order, "export GUID count")? as i32;
+    ensure!(
+        (0..=MAX_EXPORT_GUIDS as i32).contains(&count),
+        "export GUID count out of range"
+    );
+    let export_codec = ActorChannelCodec {
+        exports_enabled: true,
+        ..*codec
+    };
+    (0..count)
+        .map(|index| {
+            read_guid_ref(reader, &export_codec).with_context(|| format!("export GUID {index}"))
+        })
+        .collect()
+}
+
+/// Write the `UPackageMapClient::ExportNetGUIDHeader` (`0x1439ab670`) +
+/// `ExportNetGUID` (`0x1439aa980`) prefix (F-694, F-709).
+pub fn write_export_prefix(
+    writer: &mut BitWriter,
+    references: &[NetGuidRef],
+    codec: &ActorChannelCodec,
+) -> Result<()> {
+    ensure!(
+        references.len() <= MAX_EXPORT_GUIDS as usize,
+        "export GUID count out of range"
+    );
+    writer.write_bit(false);
+    write_u32(writer, references.len() as u32, codec.order);
+    let export_codec = ActorChannelCodec {
+        exports_enabled: true,
+        ..*codec
+    };
+    for (index, reference) in references.iter().enumerate() {
+        write_guid_ref(writer, reference, &export_codec)
+            .with_context(|| format!("export GUID {index}"))?;
+    }
+    Ok(())
+}
+
+/// Read the `UActorChannel::ReceivedBunch` (`0x1437c43f0`) must-be-mapped GUID
+/// prefix (`header.has_must_be_mapped_guids`, F-709): a 2-byte `uint16`
+/// `NumMustBeMappedGUIDs` in `codec.order`, then that many packed NetGUIDs.
+pub fn read_must_be_mapped_guids(
+    reader: &mut BitReader<'_>,
+    codec: &ActorChannelCodec,
+) -> Result<Vec<u32>> {
+    let count = read_u16(reader, codec.order, "must-be-mapped GUID count")?;
+    let mut guids = Vec::with_capacity(usize::from(count));
+    for index in 0..count {
+        let guid = read_packed(reader, "must-be-mapped NetGUID")
+            .with_context(|| format!("must-be-mapped GUID {index}"))?;
+        guids.push(guid);
+    }
+    Ok(guids)
+}
+
+/// Mirror of [`read_must_be_mapped_guids`] (F-709).
+pub fn write_must_be_mapped_guids(
+    writer: &mut BitWriter,
+    guids: &[u32],
+    codec: &ActorChannelCodec,
+) -> Result<()> {
+    let count = u16::try_from(guids.len()).context("must-be-mapped GUID count exceeds u16::MAX")?;
+    write_u16(writer, count, codec.order);
+    for &guid in guids {
+        writer.write_int_packed(guid);
     }
     Ok(())
 }
@@ -1062,7 +1408,7 @@ pub fn encode_actor_bunch_body(
 }
 
 /// Parse a complete, unpartitioned bunch's payload as an actor bunch body.
-/// Export and must-be-mapped prefixes are unread, so such bunches are rejected.
+/// Export and must-be-mapped prefixes must be stripped beforehand.
 pub fn parse_actor_bunch(bunch: &Bunch, codec: &ActorChannelCodec) -> Result<ActorBunchBody> {
     let header = &bunch.header;
     ensure!(!header.partial, "partial actor bunches unsupported");
@@ -1076,4 +1422,91 @@ pub fn parse_actor_bunch(bunch: &Bunch, codec: &ActorChannelCodec) -> Result<Act
     );
     let mut reader = bunch.payload.reader();
     read_actor_bunch_body(&mut reader, header.open, codec)
+}
+
+/// Read an `APlayerController` open-bunch body (`0x1437c0c30`, `0x143ae73a0`,
+/// F-696, F-709): the spawn record, the 1-byte `NetPlayerIndex` read by
+/// `APlayerController::OnActorChannelOpen`, then content blocks until the
+/// reader is at its end.
+pub fn read_player_controller_open_bunch_body(
+    reader: &mut BitReader<'_>,
+    codec: &ActorChannelCodec,
+) -> Result<PlayerControllerOpenBunchBody> {
+    let spawn = read_spawn(reader, codec).context("spawn record")?;
+    let net_player_index = reader.read_bits(8) as u8;
+    ensure!(
+        !reader.is_error(),
+        "truncated PlayerController NetPlayerIndex"
+    );
+    let mut blocks = Vec::new();
+    while !reader.at_end() {
+        let index = blocks.len();
+        ensure!(
+            index < codec.limits.max_blocks,
+            "actor bunch exceeds the content block limit"
+        );
+        blocks.push(
+            read_content_block(reader, codec).with_context(|| format!("content block {index}"))?,
+        );
+    }
+    Ok(PlayerControllerOpenBunchBody {
+        spawn,
+        net_player_index,
+        blocks,
+    })
+}
+
+/// Write an `APlayerController` open-bunch body (`0x1437c7f00`, `0x143ae79d0`,
+/// F-696, F-709).
+pub fn write_player_controller_open_bunch_body(
+    writer: &mut BitWriter,
+    body: &PlayerControllerOpenBunchBody,
+    codec: &ActorChannelCodec,
+) -> Result<()> {
+    ensure!(
+        body.blocks.len() <= codec.limits.max_blocks,
+        "actor bunch exceeds the content block limit"
+    );
+    write_spawn(writer, &body.spawn, codec).context("spawn record")?;
+    writer.write_bits(u32::from(body.net_player_index), 8);
+    for (index, block) in body.blocks.iter().enumerate() {
+        write_content_block(writer, block, codec)
+            .with_context(|| format!("content block {index}"))?;
+    }
+    Ok(())
+}
+
+/// Encode an `APlayerController` open-bunch body starting at bit 0 (F-696, F-709).
+pub fn encode_player_controller_open_bunch_body(
+    body: &PlayerControllerOpenBunchBody,
+    codec: &ActorChannelCodec,
+) -> Result<Payload> {
+    let mut writer = BitWriter::new();
+    write_player_controller_open_bunch_body(&mut writer, body, codec)?;
+    Ok(Payload::from_writer(writer))
+}
+
+/// Parse a complete, unpartitioned open bunch's payload as an
+/// `APlayerController` open-bunch body (`0x1437c0c30`, `0x143ae73a0`, F-696,
+/// F-709). Export and must-be-mapped prefixes must be stripped beforehand.
+pub fn parse_player_controller_open_bunch(
+    bunch: &Bunch,
+    codec: &ActorChannelCodec,
+) -> Result<PlayerControllerOpenBunchBody> {
+    let header = &bunch.header;
+    ensure!(
+        header.open,
+        "PlayerController open bunch requires header.open"
+    );
+    ensure!(!header.partial, "partial actor bunches unsupported");
+    ensure!(
+        !header.has_package_map_exports,
+        "NetGUID export bunches unsupported"
+    );
+    ensure!(
+        !header.has_must_be_mapped_guids,
+        "must-be-mapped GUID prefixes unsupported"
+    );
+    let mut reader = bunch.payload.reader();
+    read_player_controller_open_bunch_body(&mut reader, codec)
 }
