@@ -7,7 +7,7 @@ full text under `retired/`. Admission and columns follow `.agents/rules/docs.md`
 
 Before restructure: 96ddb0b:docs/ledgers/findings.md
 
-Last reconciled: 2026-10-16
+Last reconciled: 2026-10-17
 
 | ID | Claim | Kind | Evidence | Scope and limits | Unknowns | Status |
 | --- | --- | --- | --- | --- | --- | --- |
@@ -103,3 +103,4 @@ Last reconciled: 2026-10-16
 | F-704 | Numeric NetSerializeItem reads 1/2/4/8 archive bytes; FVector/FVector2D send 3/2 f32s, FRotator calls SerializeCompressedShort, and FUniqueNetIdRepl calls 0x1439a23f0; ReceiveProperties bit 0 + AIcarusPlayerControllerSurvival decode M-707 ch 2 | observed | static-decompile, authored-test; M-707, M-708, M-733/ev_99ee6b59ff25, M-734 | high; 25793767 | U-064, U-066 | active |
 | F-705 | FRowHandle::NetSerialize uses 293 SetupTables row counts (0/1/2/4B row index); FStatPairRepState writes 1..4B length + BE bytes per field in FStatsRepArray::NetDeltaSerialize (max index 4, Delta item), replaying 1,031/1,031 typed blocks in M-707 | observed | static-decompile, authored-test; M-707, M-708, M-735/ev_037228af3af4, M-736 | high; 3.0.31/32 | U-064, U-066 | active |
 | F-706 | Cooked Blueprint FProperty/UserDefinedEnum pak exports, typed F*RowHandle 1B/2B serializers, FInventorySlotsFastArray (bound 10), MountStatus RPCs (bound 6) and ACharacter MovementLevel::Hundredths replay 22,892/22,892 M-707 blocks across 36 schemas | observed | static-decompile, static-bytes, authored-test; M-707, M-737/ev_269428f32cc8, M-738 | high; 3.0.31/32 | U-064, U-066 | active |
+| F-707 | FQuat::NetSerialize writes 3 f32s (X,Y,Z; W>=0 reconstructed); 29 world/quest/deployable/rocket/forecast schemas and 7 F*RowHandle serializers replay 23,031/23,031 M-707 typed blocks (100% of 20,407 rep_layout blocks) | observed | static-decompile, static-bytes, authored-test; M-707, M-739/ev_9b6d13bcd2af, M-740 | high; 3.0.31/32 | U-064, U-066 | active |

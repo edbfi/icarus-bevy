@@ -45,28 +45,38 @@ use icarus_bevy::experimental::{
     peer_lab::PeerLabConfig,
     rep_layout::{
         MovementLevel, RepCommand, RepLayoutCodec, RepLayoutLimits, RotationLevel, TagEncoding,
-        actionable_component_rep_layout, actor_component_rep_layout, actor_state_rep_layout,
-        audio_context_component_rep_layout, bp_building_base_rep_layout,
-        bp_flammable_actor_rep_layout, bp_icarus_player_character_survival_rep_layout,
-        bp_icarus_player_state_rep_layout, bp_interactable_butcher_animal_rep_layout,
-        bp_mount_base_rep_layout, bp_mount_horse_rep_layout, bp_sheltered_component_rep_layout,
-        bp_swimming_component_rep_layout, bp_tame_base_rep_layout,
-        bp_ui_projection_component_mount_status_rep_layout,
-        bp_ui_projection_component_player_rep_layout, bpc_environmental_buildup_rep_layout,
+        actionable_component_rep_layout, actor_component_rep_layout, actor_rep_layout,
+        actor_state_rep_layout, audio_context_component_rep_layout,
+        bp_atmosphere_controller_rep_layout, bp_bed_base_rep_layout, bp_building_base_rep_layout,
+        bp_dropship_rep_layout, bp_dropship_seat_rep_layout, bp_flammable_actor_rep_layout,
+        bp_icarus_player_character_survival_rep_layout, bp_icarus_player_state_rep_layout,
+        bp_interactable_butcher_animal_rep_layout, bp_main_level_teleport_rep_layout,
+        bp_map_manager_rep_layout, bp_meta_deposit_rep_layout, bp_mount_base_rep_layout,
+        bp_mount_horse_rep_layout, bp_oil_geyser_rep_layout, bp_part_base_rep_layout,
+        bp_part_btm_mk1_rep_layout, bp_part_mid_mk1_rep_layout, bp_portable_beacon_rep_layout,
+        bp_prebuilt_base_rep_layout, bp_seat_base_rep_layout, bp_seat_mount_rep_layout,
+        bp_sheltered_component_rep_layout, bp_swimming_component_rep_layout,
+        bp_tame_base_rep_layout, bp_ui_projection_component_mount_status_rep_layout,
+        bp_ui_projection_component_player_rep_layout, bp_world_boss_spawner_rep_layout,
+        bp_world_object_rep_layout, bpc_environmental_buildup_rep_layout,
         character_state_rep_layout, child_actor_component_rep_layout,
         decayable_component_rep_layout, durable_component_rep_layout, encode_rep_properties,
         fillable_component_rep_layout, flammable_actor_rep_layout, flod_actor_component_rep_layout,
-        focusable_component_rep_layout, genetics_component_rep_layout,
+        flod_rep_layout, focusable_component_rep_layout, genetics_component_rep_layout,
         icarus_game_state_survival_rep_layout, icarus_player_controller_survival_rep_layout,
-        icarus_weather_action_rep_layout, interactable_behaviour_rep_layout, inventory_rep_layout,
-        inventory_slot_commands, itemable_component_rep_layout,
-        modifier_state_component_rep_layout, mount_character_state_rep_layout,
-        parse_rep_properties, player_character_state_rep_layout, player_state_rep_layout,
-        read_rep_properties, resource_network_component_rep_layout, scene_component_rep_layout,
+        icarus_weather_action_rep_layout, interactable_behaviour_rep_layout,
+        inventory_container_manager_rep_layout, inventory_rep_layout, inventory_slot_commands,
+        itemable_component_rep_layout, modifier_state_component_rep_layout,
+        mount_character_state_rep_layout, parse_rep_properties, player_character_state_rep_layout,
+        player_history_tracker_rep_layout, player_state_rep_layout, quest_manager_rep_layout,
+        quest_rep_layout, radiation_manager_rep_layout, read_rep_properties,
+        resource_network_component_rep_layout, scene_component_rep_layout,
         static_mesh_component_rep_layout, stomach_component_rep_layout,
         survival_character_state_rep_layout, trait_behaviour_rep_layout,
-        trait_component_rep_layout, transmutable_component_rep_layout,
-        weather_manager_component_rep_layout, write_rep_properties,
+        trait_component_rep_layout, transmutable_component_rep_layout, voxel_resource_rep_layout,
+        weather_controller_rep_layout, weather_forecast_bar_component_rep_layout,
+        weather_manager_component_rep_layout, world_settings_rep_layout,
+        world_talent_manager_rep_layout, write_rep_properties,
     },
     rep_rpc::{
         FAST_ARRAY_COUNT_CAP, FastArrayItemLayout, FieldHeader, read_custom_delta_header,
@@ -329,6 +339,7 @@ fn rep_codec() -> RepLayoutCodec {
         actor: actor_codec(true),
         checksums: false,
         limits: RepLayoutLimits {
+            max_entries: 32_768,
             max_opaque_bits: 1 << 20,
             ..RepLayoutLimits::default()
         },
@@ -366,7 +377,65 @@ fn classify_actor_schema(archetype: &str) -> Option<TargetSchema> {
     } else if archetype == "Default__PlayerState" || archetype.ends_with(".Default__PlayerState") {
         Some(TargetSchema::RepLayout("APlayerState"))
     } else if archetype.contains("BP_IcarusFLOD_Default") {
-        None
+        Some(TargetSchema::RepLayout("AFLOD"))
+    } else if archetype.contains("WorldSettings") {
+        Some(TargetSchema::RepLayout("AWorldSettings"))
+    } else if archetype.contains("BP_DisasterController")
+        || archetype.contains("WeatherForecastManager")
+    {
+        Some(TargetSchema::RepLayout("AActor"))
+    } else if archetype.contains("BP_WeatherController") {
+        Some(TargetSchema::RepLayout("AWeatherController"))
+    } else if archetype.contains("MapManager_C") {
+        Some(TargetSchema::RepLayout("MapManager_C"))
+    } else if archetype.contains("Default__BPQ_") {
+        Some(TargetSchema::RepLayout("AQuest"))
+    } else if archetype.contains("QuestManager") {
+        Some(TargetSchema::RepLayout("AQuestManager"))
+    } else if archetype.contains("InventoryContainerManager") {
+        Some(TargetSchema::RepLayout("AInventoryContainerManager"))
+    } else if archetype.contains("PlayerHistoryTracker") {
+        Some(TargetSchema::RepLayout("APlayerHistoryTracker"))
+    } else if archetype.contains("RadiationManager") {
+        Some(TargetSchema::RepLayout("ARadiationManager"))
+    } else if archetype.contains("WorldTalentManager") {
+        Some(TargetSchema::RepLayout("AWorldTalentManager"))
+    } else if archetype.contains("BP_AtmosphereController") {
+        Some(TargetSchema::RepLayout("BP_AtmosphereController_C"))
+    } else if archetype.contains("BP_OilGeyser") {
+        Some(TargetSchema::RepLayout("BP_OilGeyser_C"))
+    } else if archetype.contains("BP_Mission_Blocker_")
+        || archetype.contains("BP_Mission_Platform_")
+    {
+        Some(TargetSchema::RepLayout("BP_WorldObject_C"))
+    } else if archetype.contains("BP_Prebuilt_Base") {
+        Some(TargetSchema::RepLayout("BP_Prebuilt_Base_C"))
+    } else if archetype.contains("BP_WorldBossSpawner_") {
+        Some(TargetSchema::RepLayout("BP_WorldBossSpawner_C"))
+    } else if archetype.contains("BP_MetaDeposit_") {
+        Some(TargetSchema::RepLayout("BP_MetaDeposit_C"))
+    } else if archetype.contains("BP_Mission_Meta_Voxel") || archetype.contains("BP_VR_ROCK_") {
+        Some(TargetSchema::RepLayout("AVoxelResource"))
+    } else if archetype.contains("BP_GH_DenEntrance_") {
+        Some(TargetSchema::RepLayout("BP_MainLevelTeleport_C"))
+    } else if archetype.contains("BP_DropShip_C") {
+        Some(TargetSchema::RepLayout("BP_DropShip_C"))
+    } else if archetype.contains("BP_DropshipSeat_C") {
+        Some(TargetSchema::RepLayout("BP_DropshipSeat_C"))
+    } else if archetype.contains("BP_Seat_Bed_C") || archetype.contains("BP_Seat_Chair_C") {
+        Some(TargetSchema::RepLayout("BP_SeatBase_C"))
+    } else if archetype.contains("BP_Seat_Mount_C") {
+        Some(TargetSchema::RepLayout("BP_Seat_Mount_C"))
+    } else if archetype.contains("BP_Part_TOP_MK1_C") {
+        Some(TargetSchema::RepLayout("BP_PartBase_C"))
+    } else if archetype.contains("BP_Part_BTM_MK1_C") {
+        Some(TargetSchema::RepLayout("BP_Part_BTM_MK1_C"))
+    } else if archetype.contains("BP_Part_MID_MK1_C") {
+        Some(TargetSchema::RepLayout("BP_Part_MID_MK1_C"))
+    } else if archetype.contains("BP_Bed_Bedroll_C") {
+        Some(TargetSchema::RepLayout("BP_BedBase_C"))
+    } else if archetype.contains("BP_Portable_Beacon_C") {
+        Some(TargetSchema::RepLayout("BP_Portable_Beacon_C"))
     } else if archetype.contains("BP_IcarusGameState") {
         Some(TargetSchema::RepLayout("AIcarusGameStateSurvival"))
     } else if archetype.contains("BP_Mount_Horse") {
@@ -543,6 +612,7 @@ fn classify_subobject_schema(
         | "BP_NetworkProxyComponent"
         | "BackendProxyComponent" => "UActorComponent",
         "TraitBehaviour" => "UTraitBehaviour",
+        "WeatherForecastBarComponent" => "UWeatherForecastBarComponent",
         _ => return None,
     };
     Some(TargetSchema::RepLayout(schema))
@@ -570,7 +640,40 @@ fn schema_commands(schema: &str) -> Vec<RepCommand> {
         "BP_IcarusPlayerCharacterSurvival_C" => {
             bp_icarus_player_character_survival_rep_layout(char_loc, vel, rot, tag_encoding)
         }
+        "AActor" => actor_rep_layout(loc, vel, rot),
+        "AWorldSettings" => world_settings_rep_layout(loc, vel, rot),
+        "AFLOD" => flod_rep_layout(loc, vel, rot),
+        "AWeatherController" => weather_controller_rep_layout(loc, vel, rot),
+        "MapManager_C" => bp_map_manager_rep_layout(loc, vel, rot),
+        "AQuest" => quest_rep_layout(loc, vel, rot, tag_encoding),
+        "AQuestManager" => quest_manager_rep_layout(loc, vel, rot, tag_encoding),
+        "AInventoryContainerManager" => {
+            inventory_container_manager_rep_layout(loc, vel, rot, tag_encoding)
+        }
+        "APlayerHistoryTracker" => player_history_tracker_rep_layout(loc, vel, rot, tag_encoding),
+        "ARadiationManager" => radiation_manager_rep_layout(loc, vel, rot, tag_encoding),
+        "AWorldTalentManager" => world_talent_manager_rep_layout(loc, vel, rot, tag_encoding),
+        "BP_AtmosphereController_C" => {
+            bp_atmosphere_controller_rep_layout(loc, vel, rot, tag_encoding)
+        }
+        "BP_WorldObject_C" => bp_world_object_rep_layout(loc, vel, rot, tag_encoding),
+        "BP_OilGeyser_C" => bp_oil_geyser_rep_layout(loc, vel, rot, tag_encoding),
+        "BP_Prebuilt_Base_C" => bp_prebuilt_base_rep_layout(loc, vel, rot, tag_encoding),
+        "BP_WorldBossSpawner_C" => bp_world_boss_spawner_rep_layout(loc, vel, rot, tag_encoding),
+        "BP_MetaDeposit_C" => bp_meta_deposit_rep_layout(loc, vel, rot, tag_encoding),
+        "AVoxelResource" => voxel_resource_rep_layout(loc, vel, rot, tag_encoding),
+        "BP_MainLevelTeleport_C" => bp_main_level_teleport_rep_layout(loc, vel, rot, tag_encoding),
+        "BP_DropShip_C" => bp_dropship_rep_layout(loc, vel, rot, tag_encoding),
+        "BP_SeatBase_C" => bp_seat_base_rep_layout(loc, vel, rot, tag_encoding),
+        "BP_DropshipSeat_C" => bp_dropship_seat_rep_layout(loc, vel, rot, tag_encoding),
+        "BP_Seat_Mount_C" => bp_seat_mount_rep_layout(loc, vel, rot, tag_encoding),
+        "BP_PartBase_C" => bp_part_base_rep_layout(loc, vel, rot, tag_encoding),
+        "BP_Part_BTM_MK1_C" => bp_part_btm_mk1_rep_layout(loc, vel, rot, tag_encoding),
+        "BP_Part_MID_MK1_C" => bp_part_mid_mk1_rep_layout(loc, vel, rot, tag_encoding),
+        "BP_BedBase_C" => bp_bed_base_rep_layout(loc, vel, rot, tag_encoding),
+        "BP_Portable_Beacon_C" => bp_portable_beacon_rep_layout(loc, vel, rot, tag_encoding),
         "BP_Building_Base_C" => bp_building_base_rep_layout(loc, vel, rot, tag_encoding),
+        "UWeatherForecastBarComponent" => weather_forecast_bar_component_rep_layout(),
         "UActorComponent" => actor_component_rep_layout(),
         "UFLODActorComponent" => flod_actor_component_rep_layout(),
         "UAudioContextComponent" => audio_context_component_rep_layout(),

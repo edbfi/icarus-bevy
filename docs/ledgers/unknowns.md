@@ -3,7 +3,7 @@
 One row per open question. Tracked here; REA sessions mirror it. IDs are permanent.
 Status: open, investigating, blocked, contradicted, resolved.
 
-Last reconciled: 2026-10-16
+Last reconciled: 2026-10-17
 
 | ID | Question | Severity | Status | Next probe | Findings | REA id |
 | --- | --- | --- | --- | --- | --- | --- |
@@ -70,6 +70,6 @@ Last reconciled: 2026-10-16
 | U-061 | What do C028 load-context slot +0x4b0 and post-load 0x14189d380 require for migration and context restoration? | medium | open | none stated | F-360, F-361 |  |
 | U-062 | Are any statically optional C013/C028/C034/C009 descriptors mandatory, and is their serialized order fixed? | medium | open | none stated | F-352, F-655, F-664 |  |
 | U-063 | For missing, empty/truncated, malformed/unsupported-version, name-mismatch, changed-during-load and interrupted-save inputs, how do both entry paths behave and is state preserved? | high | open | controlled reproduction matrix with authorized disposable fixtures | F-325, F-326 |  |
-| U-064 | How are replicated properties encoded inside an actor content block, and how are spawn transforms quantized? | high | investigating | Handle walk, scalars, Vector/Rotator/NetId, FRowHandle, typed F*RowHandle, FStatPairRepState, Str/Text, movement, enum widths, RPCs, fast arrays read; next U-066 | F-569 to F-575, F-586 to F-599, F-632, F-639, F-644, F-704 to F-706 |  |
+| U-064 | How are replicated properties encoded inside an actor content block, and how are spawn transforms quantized? | high | investigating | Handle walk, scalars, Vector/Rotator/Quat/NetId, FRowHandle, typed F*RowHandle, FStatPairRepState, Str/Text, movement, enum widths, RPCs, fast arrays read; next U-066 | F-569 to F-575, F-586 to F-599, F-632, F-639, F-644, F-704 to F-707 |  |
 | U-065 | What gameplay-tag replication mode, widths and net-index mapping does the pinned client require? | high | resolved | Fast replication, 12-bit indices (segment 12), 6-bit container count and exact node table from D_Tags + DefaultGameplayTags.ini match logged hashes dc780a27 and 6d0f676f (F-702); stream replay stays with U-066 | F-583, F-591, F-592, F-702 |  |
-| U-066 | What property order, types and array sizes fix each replicated class's handles, including classes outside the executable? | high | investigating | Native + cooked BP layouts replay 22,892/22,892 M-707 blocks (36 schemas, F-703 to F-706); 132 world/quest blocks open | F-586, F-609, F-703 to F-706 | M-731/unk_99073d28973b, M-735/unk_90efbd97098b, M-737/unk_90efbd97098b |
+| U-066 | What property order, types and array sizes fix each replicated class's handles, including classes outside the executable? | high | investigating | 64 schemas replay 100% of rep_layout blocks (20,407/20,407; 23,031/23,031 typed, F-703 to F-707); 220 actor RPC blocks open | F-586, F-609, F-703 to F-707 | M-731/unk_99073d28973b, M-737/unk_90efbd97098b, M-739/unk_5a3d3b126d49 |
