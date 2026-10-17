@@ -976,3 +976,95 @@ pub fn encode_control_message(message: &ControlMessage, codec: &ControlCodec) ->
     );
     Ok(writer.into_bytes())
 }
+
+/// Outcome of [`ControlChannelSendQueue::send_or_queue`] matching
+/// `UControlChannel::SendBunch` (`0x1437ca030` / server `0x14353cf30`) and
+/// `UControlChannel::QueueMessage` (`0x1437c3440`, F-712, F-714).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ControlSendDisposition {
+    /// `QueuedMessages` was empty and `NumOutRec < 0xff + bClose`, so the bunch
+    /// is sent immediately through `UChannel::SendBunch`.
+    SendImmediate,
+    /// Appended to `QueuedMessages` (`+0x70`) within the `0x7fff` limit.
+    Queued { queued_len: usize },
+    /// Appending exceeded [`MAX_QUEUED_CONTROL_MESSAGES`] (`> 0x7fff`), which
+    /// closes the connection in `UControlChannel::SendBunch`.
+    OverflowClose,
+}
+
+/// Outgoing `QueuedMessages` (`+0x70`) state machine for `UControlChannel`
+/// (`SendBunch` `0x1437ca030`, `QueueMessage` `0x1437c3440`, `Tick`
+/// `0x1437cacb0`; F-712, F-714).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ControlChannelSendQueue<T> {
+    queued: std::collections::VecDeque<T>,
+}
+
+impl<T> Default for ControlChannelSendQueue<T> {
+    fn default() -> Self {
+        Self {
+            queued: std::collections::VecDeque::new(),
+        }
+    }
+}
+
+impl<T> ControlChannelSendQueue<T> {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn len(&self) -> usize {
+        self.queued.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.queued.is_empty()
+    }
+
+    /// Evaluate `UControlChannel::SendBunch` (`0x1437ca030` / `0x14353cf30`):
+    /// sends immediately when `QueuedMessages` is empty and
+    /// `num_out_rec < MAX_CONTROL_OUT_REC + usize::from(is_close)`, otherwise
+    /// appends to `QueuedMessages` and triggers [`ControlSendDisposition::OverflowClose`]
+    /// if the queue length exceeds [`MAX_QUEUED_CONTROL_MESSAGES`] (`0x7fff`).
+    pub fn send_or_queue(
+        &mut self,
+        bunch: T,
+        num_out_rec: usize,
+        is_close: bool,
+    ) -> (ControlSendDisposition, Option<T>) {
+        let out_rec_limit = MAX_CONTROL_OUT_REC + usize::from(is_close);
+        if self.queued.is_empty() && num_out_rec < out_rec_limit {
+            return (ControlSendDisposition::SendImmediate, Some(bunch));
+        }
+        self.queued.push_back(bunch);
+        let queued_len = self.queued.len();
+        if queued_len > MAX_QUEUED_CONTROL_MESSAGES {
+            (ControlSendDisposition::OverflowClose, None)
+        } else {
+            (ControlSendDisposition::Queued { queued_len }, None)
+        }
+    }
+
+    /// Drain queued control messages as `UControlChannel::Tick` (`0x1437cacb0`)
+    /// does: when `!closing && open_acked`, pops from index 0 while
+    /// `num_out_rec < MAX_CONTROL_OUT_REC` (`0xff`).
+    pub fn drain_ready(
+        &mut self,
+        open_acked: bool,
+        closing: bool,
+        mut num_out_rec: usize,
+    ) -> Vec<T> {
+        if closing || !open_acked {
+            return Vec::new();
+        }
+        let mut ready = Vec::new();
+        while num_out_rec < MAX_CONTROL_OUT_REC {
+            let Some(item) = self.queued.pop_front() else {
+                break;
+            };
+            ready.push(item);
+            num_out_rec += 1;
+        }
+        ready
+    }
+}
