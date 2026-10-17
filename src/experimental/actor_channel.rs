@@ -1,17 +1,18 @@
 //! EXPERIMENTAL disconnected codec for statically observed actor-channel bunches.
 //!
-//! Client-build static observations (F-569..F-573, F-692, F-694, F-696, F-709):
-//! NetGUID references, NetGUID export prefixes (`ReceiveNetGUIDBunch`
+//! Client-build static observations (F-569..F-573, F-692, F-694, F-696, F-709,
+//! F-710): NetGUID references, NetGUID export prefixes (`ReceiveNetGUIDBunch`
 //! `0x1439b8bb0`, `ExportNetGUIDHeader` `0x1439ab670`), must-be-mapped GUID
-//! prefixes (`UActorChannel::ReceivedBunch` `0x1437c43f0`), the open-bunch spawn
-//! record, the `APlayerController` 1-byte `NetPlayerIndex` open-bunch hook
+//! prefixes (`UActorChannel::ReceivedBunch` `0x1437c43f0`), disconnected
+//! package-map export state (`PackageMapState`), the open-bunch spawn record,
+//! the `APlayerController` 1-byte `NetPlayerIndex` open-bunch hook
 //! (`UActorChannel::ProcessBunch` `0x1437c0c30`,
 //! `APlayerController::OnActorChannelOpen` `0x143ae73a0`,
 //! `APlayerController::OnSerializeNewActor` `0x143ae79d0`), the compressed
 //! rotator and the content-block headers that frame replicated state. Nothing
-//! here is gameplay-integrated, and no connection state, package map, object
-//! resolution, admission or gameplay occurs. Writers mirror the readers for
-//! round-trip research only.
+//! here is gameplay-integrated, and no connection state, UObject resolution,
+//! admission or gameplay occurs. Writers mirror the readers for round-trip
+//! research only.
 //!
 //! Caller-selected, because their original sources are unread or outside this
 //! codec: the engine net version, whether the archive has exports enabled,
@@ -43,6 +44,8 @@
 //! `Debug` output and summaries carry kinds, counts and lengths only, never
 //! GUID values, paths, checksums, vector or angle values, player indices, or
 //! payload bits.
+use std::collections::BTreeMap;
+
 use anyhow::{Context, Result, ensure};
 use serde::Serialize;
 
@@ -214,6 +217,167 @@ impl std::fmt::Debug for ExportPath {
             .field("outer", &self.outer)
             .field("path", &self.path)
             .finish()
+    }
+}
+
+/// One registered NetGUID export entry in [`PackageMapState`]
+/// (`UPackageMapClient::ReceiveNetGUIDBunch` `0x1439b8bb0`,
+/// `UPackageMapClient::InternalLoadObject` `0x1439acc90`, F-709, F-710).
+/// `Debug` shows lengths and flags only.
+#[derive(Clone, PartialEq, Eq)]
+pub struct NetGuidExportEntry {
+    pub outer_guid: u32,
+    pub path: String,
+    pub no_load: bool,
+    pub checksum: Option<u32>,
+}
+
+impl std::fmt::Debug for NetGuidExportEntry {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("NetGuidExportEntry")
+            .field("has_outer", &(self.outer_guid != 0))
+            .field("path_len", &self.path.len())
+            .field("no_load", &self.no_load)
+            .field("has_checksum", &self.checksum.is_some())
+            .finish()
+    }
+}
+
+/// Disconnected package-map export table (`FNetGUIDCache` / `UPackageMapClient`,
+/// `0x1439b8bb0`, `0x1439acc90`, `0x1437c43f0`, F-709, F-710).
+///
+/// Tracks `(NetGUID -> outer_guid, path, no_load, checksum)` mappings from
+/// `ReceiveNetGUIDBunch` export prefixes and inline `NetGuidRef` exports, and
+/// checks `bHasMustBeMappedGUIDs` prefixes against registered GUIDs. `Debug`
+/// shows the entry count only.
+#[derive(Clone, Default, PartialEq, Eq)]
+pub struct PackageMapState {
+    entries: BTreeMap<u32, NetGuidExportEntry>,
+}
+
+impl std::fmt::Debug for PackageMapState {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("PackageMapState")
+            .field("entries", &self.entries.len())
+            .finish()
+    }
+}
+
+impl PackageMapState {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn len(&self) -> usize {
+        self.entries.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.entries.is_empty()
+    }
+
+    pub fn contains(&self, guid: u32) -> bool {
+        self.entries.contains_key(&guid)
+    }
+
+    pub fn get(&self, guid: u32) -> Option<&NetGuidExportEntry> {
+        self.entries.get(&guid)
+    }
+
+    /// Resolve the direct exported path segment for `guid`.
+    pub fn resolve_path(&self, guid: u32) -> Option<&str> {
+        self.entries.get(&guid).map(|entry| entry.path.as_str())
+    }
+
+    /// Resolve the outer GUID registered for `guid`.
+    pub fn resolve_outer_guid(&self, guid: u32) -> Option<u32> {
+        self.entries.get(&guid).map(|entry| entry.outer_guid)
+    }
+
+    /// Walk outer GUIDs up to [`MAX_GUID_DEPTH`] and reconstruct the full
+    /// `outer/leaf` or `outer.leaf` path string for `guid`.
+    pub fn resolve_full_path(&self, guid: u32) -> Option<String> {
+        let mut segments = Vec::new();
+        let mut current = guid;
+        for _ in 0..=MAX_GUID_DEPTH {
+            let entry = self.entries.get(&current)?;
+            segments.push(entry.path.as_str());
+            if entry.outer_guid == 0 {
+                break;
+            }
+            if !self.entries.contains_key(&entry.outer_guid) {
+                break;
+            }
+            current = entry.outer_guid;
+        }
+        segments.reverse();
+        let mut full = String::new();
+        for segment in segments {
+            if full.is_empty() || segment.starts_with('/') {
+                full.push_str(segment);
+            } else {
+                full.push('.');
+                full.push_str(segment);
+            }
+        }
+        Some(full)
+    }
+
+    /// Recursively record any path-carrying export in `reference` (outer first,
+    /// then `reference.guid`). Returns the number of path exports recorded.
+    pub fn ingest_guid_ref(&mut self, reference: &NetGuidRef) -> usize {
+        if reference.guid == 0 {
+            return 0;
+        }
+        let Some(export) = &reference.export else {
+            return 0;
+        };
+        let Some(export_path) = &export.path else {
+            return 0;
+        };
+        let mut count = self.ingest_guid_ref(&export_path.outer);
+        let path = String::from_utf16_lossy(export_path.path.units());
+        self.entries.insert(
+            reference.guid,
+            NetGuidExportEntry {
+                outer_guid: export_path.outer.guid,
+                path,
+                no_load: export.no_load,
+                checksum: export.checksum,
+            },
+        );
+        count += 1;
+        count
+    }
+
+    /// Read a `ReceiveNetGUIDBunch` (`0x1439b8bb0`) export prefix via
+    /// [`read_export_prefix`] and ingest every exported path into `self`.
+    pub fn consume_export_prefix(
+        &mut self,
+        reader: &mut BitReader<'_>,
+        codec: &ActorChannelCodec,
+    ) -> Result<Vec<NetGuidRef>> {
+        let references = read_export_prefix(reader, codec)?;
+        for reference in &references {
+            self.ingest_guid_ref(reference);
+        }
+        Ok(references)
+    }
+
+    /// Read a `UActorChannel::ReceivedBunch` (`0x1437c43f0`) must-be-mapped
+    /// GUID prefix via [`read_must_be_mapped_guids`] and return `(guids,
+    /// resolved_count)` where `resolved_count` is how many of those GUIDs are
+    /// registered in `self`.
+    pub fn consume_must_be_mapped(
+        &self,
+        reader: &mut BitReader<'_>,
+        codec: &ActorChannelCodec,
+    ) -> Result<(Vec<u32>, usize)> {
+        let guids = read_must_be_mapped_guids(reader, codec)?;
+        let resolved = guids.iter().filter(|&&guid| self.contains(guid)).count();
+        Ok((guids, resolved))
     }
 }
 

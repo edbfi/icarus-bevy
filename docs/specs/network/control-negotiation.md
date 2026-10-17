@@ -101,7 +101,7 @@ game listener.
   use the same bit loop without clamping the value (F-526). The client's engine
   network protocol version starts at 17 in its image, so every version gate
   above takes its current path (F-527).
-- Current client reliability (F-535 to F-537): the sender packs its outgoing
+- Current client reliability (F-535, F-536, F-710): the sender packs its outgoing
   sequence (bits 18-31), the last acknowledged incoming sequence (4-17) and the
   history word count minus one (0-3), then that many 32-bit history words
   covering the unacknowledged incoming span (1 to 8 words). After the

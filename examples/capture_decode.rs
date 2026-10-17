@@ -3,18 +3,20 @@
 //! (JSONL lines with `"event":"reply"` and `"hex"`) and runs them through this
 //! repository's experimental codecs as the probe's client does: packet framing
 //! (F-521..F-525, F-688), per-channel reliable ordering (F-537), partial-bunch
-//! reassembly, control messages, and the actor-channel spawn record and content
-//! blocks (F-569..F-576).
+//! reassembly (`F-710`), control messages, and the actor-channel spawn record
+//! and content blocks (F-569..F-576, F-709, F-710).
 //!
 //! Two passes over the same datagrams:
-//! - `strict` uses only the documented codecs, so NetGUID export bunches and
-//!   must-be-mapped GUID prefixes stay unparsed and are counted as such;
-//! - `export_hypothesis` adds two readers that no static observation backs:
-//!   the UE 4.27 export prefix (a rep-layout export bit, an i32 GUID count,
-//!   then that many F-572 references with export flags on every nonzero GUID;
-//!   wire-consistent in F-694) and the must-be-mapped prefix (a u16 count of
-//!   packed GUIDs, never exercised so far). Its results are a consistency check
-//!   of that hypothesis, not observations of the original's reader.
+//! - `strict` uses only the original F-569..F-576 actor codec surface, so
+//!   NetGUID export bunches and must-be-mapped GUID prefixes stay unparsed and
+//!   are counted as such;
+//! - `export_hypothesis` adds the statically verified F-709/F-710 readers:
+//!   `UPackageMapClient::ReceiveNetGUIDBunch` (`0x1439b8bb0`,
+//!   `PackageMapState::consume_export_prefix`), `UActorChannel::ReceivedBunch`
+//!   must-be-mapped prefixes (`0x1437c43f0`,
+//!   `PackageMapState::consume_must_be_mapped`), and
+//!   `UChannel::ReceivedNextBunch` partial-bunch reassembly (`0x1437c5500`,
+//!   `PartialBunchReassembler`).
 //!
 //! Stdout carries aggregate counts only; channel names appear as hard-coded
 //! indices or the word `string`. Per-item detail, including any path or class
@@ -33,15 +35,15 @@ use icarus_bevy::experimental::{
     actor_channel::{
         ActorBunchBody, ActorChannelCodec, ActorChannelLimits, BlockTarget, ContentBlock,
         EXPORT_HAS_CHECKSUM, EXPORT_HAS_PATH, EXPORT_NO_LOAD, MAX_GUID_DEPTH, NetGuidRef,
-        SpawnRecord, SpawnVector, SubObjectClass, encode_player_controller_open_bunch_body,
-        guid_kind, parse_actor_bunch, parse_player_controller_open_bunch, read_content_block,
-        read_export_prefix as read_actor_export_prefix, read_must_be_mapped_guids, read_spawn,
+        PackageMapState, SpawnRecord, SpawnVector, SubObjectClass,
+        encode_player_controller_open_bunch_body, guid_kind, parse_actor_bunch,
+        parse_player_controller_open_bunch, read_content_block, read_spawn,
     },
     archive::{ByteOrder, read_string_frame},
     control_messages::{ControlCodec, Decoded, read_control_messages},
     packet::{
-        BitReader, BitWriter, Bunch, BunchHeader, BunchLimits, Name, PacketConfig, Payload,
-        RELIABLE_SEQUENCE_LIMIT, Receiver, read_packet,
+        BitReader, BitWriter, Bunch, BunchHeader, BunchLimits, ChannelCloseReason, Name,
+        PacketConfig, Payload, RELIABLE_SEQUENCE_LIMIT, Receiver, read_packet,
     },
     peer_lab::PeerLabConfig,
     rep_layout::{
@@ -91,8 +93,8 @@ use icarus_bevy::experimental::{
         write_fast_array_delta, write_field_header,
     },
     sequencing::{
-        ReliableChannel, ReliableReceive, is_newer, reconstruct_reliable_sequence,
-        sequence_difference,
+        PartialBunchReassembler, PartialReceive, ReliableChannel, ReliableReceive, is_newer,
+        reconstruct_reliable_sequence, sequence_difference,
     },
 };
 use serde::Serialize;
@@ -212,13 +214,6 @@ fn read_export_count(reader: &mut BitReader<'_>) -> Result<i32> {
     Ok(count)
 }
 
-/// HYPOTHESIS (UE 4.27 `ReceiveNetGUIDBunch`, not a finding) read with the
-/// codec's own F-572 reader, export flags on every nonzero GUID. Used only to
-/// report where the codec stops on real export bunches.
-fn read_export_prefix_codec(reader: &mut BitReader<'_>) -> Result<Vec<NetGuidRef>> {
-    read_actor_export_prefix(reader, &actor_codec(true))
-}
-
 /// HYPOTHESIS (UE 4.27 `ReceiveNetGUIDBunch` and `InternalLoadObject`, not a
 /// finding): the same layout, but the checksum bit only adds a u32 inside the
 /// path branch, so a checksum flag without the path flag reads nothing more.
@@ -288,12 +283,15 @@ fn read_path_string(reader: &mut BitReader<'_>) -> Result<String> {
     ))
 }
 
-/// HYPOTHESIS (UE 4.27 `UActorChannel::ReceivedBunch`, not a finding): a u16
-/// count, then that many packed GUIDs, before the actor bunch body.
-fn strip_must_be_mapped(payload: &Payload) -> Result<(Vec<u32>, Payload)> {
+/// Read the `UActorChannel::ReceivedBunch` (`0x1437c43f0`) must-be-mapped
+/// prefix via [`PackageMapState::consume_must_be_mapped`] (`F-709`, `F-710`).
+fn strip_must_be_mapped(
+    package_map: &PackageMapState,
+    payload: &Payload,
+) -> Result<(Vec<u32>, usize, Payload)> {
     let mut reader = payload.reader();
-    let guids = read_must_be_mapped_guids(&mut reader, &actor_codec(true))?;
-    Ok((guids, rest(&mut reader)))
+    let (guids, resolved) = package_map.consume_must_be_mapped(&mut reader, &actor_codec(true))?;
+    Ok((guids, resolved, rest(&mut reader)))
 }
 
 fn actor_codec(has_level: bool) -> ActorChannelCodec {
@@ -990,6 +988,7 @@ struct ChannelState {
     name: Option<Name>,
     open: bool,
     partial: Option<Partial>,
+    partial_reassembler: PartialBunchReassembler,
     archetype_path: Option<String>,
 }
 
@@ -1146,9 +1145,11 @@ struct RepReplayStats {
 #[derive(Default, Serialize)]
 struct ExportStats {
     bunches: u64,
-    /// The codec's F-572 reader on the same prefix, for comparison.
+    /// The codec's F-572/F-709 reader (`PackageMapState::consume_export_prefix`)
+    /// on the same prefix.
     codec_reader_parsed: u64,
     codec_reader_failed: Tally,
+    package_map_entries: u64,
     parsed: u64,
     failed: Tally,
     guids: u64,
@@ -1179,6 +1180,7 @@ struct PartialStats {
     initial: u64,
     continuation: u64,
     completed: u64,
+    codec_reassembler_completed: u64,
     completed_parts: Tally,
     completed_opaque: Tally,
     failures: Tally,
@@ -1240,6 +1242,7 @@ struct WireStats {
     max_channel_index: u32,
     channels_opened: u64,
     channels_closed: u64,
+    channels_closed_dormant: u64,
     reopened_while_open: u64,
     close_reasons: Tally,
     opened_names: Tally,
@@ -1255,6 +1258,7 @@ struct Decoder<'a> {
     packet_sequence: i64,
     channels: BTreeMap<u32, ChannelState>,
     first_raw: BTreeSet<u32>,
+    package_map: PackageMapState,
     exported: BTreeMap<u32, String>,
     subobject_classes: BTreeMap<u32, String>,
     wire: WireStats,
@@ -1283,6 +1287,7 @@ impl<'a> Decoder<'a> {
             packet_sequence: 0,
             channels: BTreeMap::new(),
             first_raw: BTreeSet::new(),
+            package_map: PackageMapState::new(),
             exported: BTreeMap::new(),
             subobject_classes: BTreeMap::new(),
             wire: WireStats::default(),
@@ -1429,6 +1434,7 @@ impl<'a> Decoder<'a> {
             }
             state.open = true;
             state.partial = None;
+            state.partial_reassembler.clear();
             self.wire.channels_opened += 1;
             bump(
                 &mut self.wire.opened_names,
@@ -1451,7 +1457,10 @@ impl<'a> Decoder<'a> {
             match self.mode {
                 Mode::Strict => opaque = Some("export prefix unparsed (layout undocumented)"),
                 Mode::ExportHypothesis => {
-                    match read_export_prefix_codec(&mut arrival.bunch.payload.reader()) {
+                    match self.package_map.consume_export_prefix(
+                        &mut arrival.bunch.payload.reader(),
+                        &actor_codec(true),
+                    ) {
                         Ok(_) => self.stats.exports.codec_reader_parsed += 1,
                         Err(error) => {
                             bump(&mut self.stats.exports.codec_reader_failed, class(&error))
@@ -1508,7 +1517,16 @@ impl<'a> Decoder<'a> {
             let state = self.channels.entry(index).or_default();
             state.open = false;
             state.partial = None;
+            state.partial_reassembler.clear();
             self.wire.channels_closed += 1;
+            if header
+                .parsed_close_reason()
+                .ok()
+                .flatten()
+                .is_some_and(ChannelCloseReason::is_dormant)
+            {
+                self.wire.channels_closed_dormant += 1;
+            }
             bump(
                 &mut self.wire.close_reasons,
                 header
@@ -1552,10 +1570,10 @@ impl<'a> Decoder<'a> {
         self.record_export(outer, datagram)
     }
 
-    /// The engine's partial merge (UE 4.27 `ReceivedNextBunch`, inferred):
-    /// one assembly per channel; reliable parts must be consecutive, unreliable
-    /// parts share or follow the packet sequence; an export-only part adds no
-    /// data. Returns the complete bunch on the final part.
+    /// The engine's partial merge (`UChannel::ReceivedNextBunch` `0x1437c5500`,
+    /// F-710): one assembly per channel; reliable parts must be consecutive,
+    /// unreliable parts share or follow the packet sequence; an export-only
+    /// part adds no data. Returns the complete bunch on the final part.
     fn merge_partial(
         &mut self,
         arrival: &Arrival,
@@ -1565,6 +1583,16 @@ impl<'a> Decoder<'a> {
         let header = &arrival.bunch.header;
         let partial_stats = &mut self.stats.partial;
         let state = self.channels.entry(header.channel_index).or_default();
+        if let Some(payload_after_exports) = &data
+            && let Ok(PartialReceive::Complete { .. }) = state.partial_reassembler.receive_part(
+                arrival.sequence,
+                header,
+                payload_after_exports,
+                None,
+            )
+        {
+            partial_stats.codec_reassembler_completed += 1;
+        }
         let aligned = data
             .as_ref()
             .is_none_or(|payload| payload.bit_len().is_multiple_of(8));
@@ -1739,20 +1767,18 @@ impl<'a> Decoder<'a> {
         };
         if self.mode == Mode::ExportHypothesis && bunch.header.has_must_be_mapped_guids {
             self.stats.must_be_mapped.prefixes += 1;
-            let (guids, remainder) = match strip_must_be_mapped(&bunch.payload) {
-                Ok(stripped) => stripped,
-                Err(error) => {
-                    bump(&mut self.stats.must_be_mapped.failed, class(&error));
-                    return Err(error.context("must-be-mapped prefix"));
-                }
-            };
+            let (guids, resolved, remainder) =
+                match strip_must_be_mapped(&self.package_map, &bunch.payload) {
+                    Ok(stripped) => stripped,
+                    Err(error) => {
+                        bump(&mut self.stats.must_be_mapped.failed, class(&error));
+                        return Err(error.context("must-be-mapped prefix"));
+                    }
+                };
             let must_be_mapped = &mut self.stats.must_be_mapped;
             must_be_mapped.parsed += 1;
             must_be_mapped.guids += guids.len() as u64;
-            must_be_mapped.guids_exported_earlier += guids
-                .iter()
-                .filter(|guid| self.exported.contains_key(guid))
-                .count() as u64;
+            must_be_mapped.guids_exported_earlier += resolved as u64;
             bunch.header.has_must_be_mapped_guids = false;
             bunch.payload = remainder;
         }
@@ -2210,6 +2236,7 @@ impl<'a> Decoder<'a> {
             }
         }
         self.wire.first_reliable_raw_distinct = self.first_raw.len() as u64;
+        self.stats.exports.package_map_entries = self.package_map.len() as u64;
         let replay = &mut self.stats.rep_replay;
         replay.rep_layout_coverage_complete = self.stats.blocks.with_rep_layout > 0
             && replay.rep_layout_blocks_reencoded_exact == self.stats.blocks.with_rep_layout

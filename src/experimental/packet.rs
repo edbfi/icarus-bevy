@@ -1,12 +1,14 @@
 //! EXPERIMENTAL codec for the statically observed client packet receive format.
 //!
-//! Static client-build observations only (F-521..F-525): the current-version
-//! path with every version gate on and the internal-ack flag clear. The
-//! original server's packets decode with it (F-688, F-693). The sender side
-//! was not observed; writers mirror the readers (and the observed `WriteIntWrapped`
-//! loop) for round-trip research only. Negotiated version values, the
-//! connection's channel limit and maximum packet size are unknown and supplied
-//! by the caller. No connection state, ack tracking, relative reliable-sequence
+//! Static client-build observations only (F-521..F-525, F-710): the
+//! current-version path with every version gate on and the internal-ack flag
+//! clear. The original server's packets decode with it (F-688, F-693). The
+//! sender side was not observed except for channel close bunches
+//! (`UActorChannel::Close` `0x1437b3240`, `UChannel::Close` `0x1437b34d0`,
+//! F-710); writers mirror the readers (and the observed `WriteIntWrapped` loop)
+//! for round-trip research only. Negotiated version values, the connection's
+//! channel limit and maximum packet size are unknown and supplied by the
+//! caller. No connection state, ack tracking, relative reliable-sequence
 //! reconstruction, partial-bunch assembly, channel routing or admission occurs.
 //! Field roles beyond their encodings are inferred.
 use anyhow::{Context, Result, ensure};
@@ -21,9 +23,67 @@ pub const MAX_HISTORY_WORDS: usize = 8;
 pub const JITTER_CLOCK_LIMIT: u32 = 1024;
 /// Reliable sequences are serialized below this bound, before reconstruction.
 pub const RELIABLE_SEQUENCE_LIMIT: u32 = 1024;
-/// Close reasons are serialized below this bound.
+/// Close reasons are serialized below this bound (`EChannelCloseReason::MAX`, F-522, F-710).
 pub const CLOSE_REASON_LIMIT: u32 = 15;
 const SEQUENCE_MASK: u32 = 0x3fff;
+
+/// Channel close reason serialized below [`CLOSE_REASON_LIMIT`] (`0..15`,
+/// `EChannelCloseReason`, `0x143995060`, `0x1437c5500`, `0x1437b27e0`, F-710).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ChannelCloseReason {
+    /// `0`: `EChannelCloseReason::Destroyed`.
+    Destroyed,
+    /// `1`: `EChannelCloseReason::Dormancy` (`bDormant == 1` in
+    /// `UChannel::ReceivedNextBunch` `0x1437c5500`; on a client,
+    /// `UActorChannel::CleanUp` `0x1437b27e0` sets `Actor->NetDormancy = 2`
+    /// (`DORM_DormantAll` at `+0xf1`) instead of destroying the actor).
+    Dormancy,
+    /// `2`: `EChannelCloseReason::LevelUnloaded`.
+    LevelUnloaded,
+    /// `3`: `EChannelCloseReason::Saving`.
+    Saving,
+    /// `4`: `EChannelCloseReason::TearOff`.
+    TearOff,
+    /// `5..=14`: custom close reason below [`CLOSE_REASON_LIMIT`].
+    Custom(u8),
+}
+
+impl ChannelCloseReason {
+    /// Classify a raw wire close reason (`0..15`, F-710).
+    pub fn from_raw(raw: u32) -> Result<Self> {
+        ensure!(
+            raw < CLOSE_REASON_LIMIT,
+            "close reason {raw} must be below {CLOSE_REASON_LIMIT}"
+        );
+        Ok(match raw {
+            0 => Self::Destroyed,
+            1 => Self::Dormancy,
+            2 => Self::LevelUnloaded,
+            3 => Self::Saving,
+            4 => Self::TearOff,
+            custom => Self::Custom(custom as u8),
+        })
+    }
+
+    /// Raw wire value (`0..15`).
+    pub fn as_raw(self) -> u32 {
+        match self {
+            Self::Destroyed => 0,
+            Self::Dormancy => 1,
+            Self::LevelUnloaded => 2,
+            Self::Saving => 3,
+            Self::TearOff => 4,
+            Self::Custom(raw) => u32::from(raw),
+        }
+    }
+
+    /// True when the close transitions the actor into network dormancy
+    /// (`CloseReason == 1`, `0x1437c5500`, `0x1437b27e0`, F-710) rather than
+    /// destroying or tearing it off.
+    pub fn is_dormant(self) -> bool {
+        matches!(self, Self::Dormancy)
+    }
+}
 
 /// LSB-first bit reader with a sticky overflow state.
 ///
@@ -513,6 +573,15 @@ pub struct BunchHeader {
     pub partial_final: bool,
     /// Present exactly when `open || reliable`.
     pub channel_name: Option<Name>,
+}
+
+impl BunchHeader {
+    /// Classify [`close_reason`](Self::close_reason) when `close` is set (F-710).
+    pub fn parsed_close_reason(&self) -> Result<Option<ChannelCloseReason>> {
+        self.close_reason
+            .map(ChannelCloseReason::from_raw)
+            .transpose()
+    }
 }
 
 /// Owned payload bits starting at bit 0; Debug shows only the length.

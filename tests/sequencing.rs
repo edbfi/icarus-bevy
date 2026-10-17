@@ -1,11 +1,12 @@
 use icarus_bevy::experimental::packet::{
-    BitReader, BitWriter, Bunch, BunchHeader, BunchLimits, Name, PacketHeader, Payload, Receiver,
-    read_bunch, read_packet_header, write_bunch, write_packet_header,
+    BitReader, BitWriter, Bunch, BunchHeader, BunchLimits, ChannelCloseReason, Name, PacketHeader,
+    Payload, Receiver, read_bunch, read_packet_header, write_bunch, write_packet_header,
 };
 use icarus_bevy::experimental::sequencing::{
-    MAX_QUEUED_RELIABLE, Notification, PacketNotify, PacketSequencer, ReliableChannel,
-    ReliableReceive, is_newer, next_notification, reconstruct_reliable_sequence,
-    sequence_difference, signed_sequence_delta, wire_reliable_sequence,
+    MAX_CONSTRUCTED_PARTIAL_BUNCH_BYTES, MAX_QUEUED_RELIABLE, Notification, PacketNotify,
+    PacketSequencer, PartialBunchReassembler, PartialReceive, ReliableChannel, ReliableReceive,
+    is_newer, next_notification, reconstruct_reliable_sequence, sequence_difference,
+    signed_sequence_delta, wire_reliable_sequence,
 };
 
 // Independently authored state sequences; no captured client or server traffic.
@@ -452,4 +453,161 @@ fn naks_select_unacked_bunches_and_acks_release_from_the_head() {
         [(first, "first"), (second, "second"), (third, "third")]
     );
     assert!(channel.out_bunches().is_empty());
+}
+
+fn partial_header(reliable: bool, initial: bool, final_part: bool) -> BunchHeader {
+    BunchHeader {
+        control: false,
+        open: false,
+        close: false,
+        close_reason: None,
+        paused: false,
+        reliable,
+        channel_index: 3,
+        has_package_map_exports: false,
+        has_must_be_mapped_guids: false,
+        partial: true,
+        reliable_sequence_raw: reliable.then_some(1),
+        partial_initial: initial,
+        partial_final: final_part,
+        channel_name: reliable.then_some(Name::Hardcoded(102)),
+    }
+}
+
+fn byte_payload(bytes: &[u8], extra_bits: Option<(u32, u32)>) -> Payload {
+    let mut writer = BitWriter::new();
+    writer.write_bytes(bytes);
+    if let Some((value, bits)) = extra_bits {
+        writer.write_bits(value, bits);
+    }
+    Payload::from_writer(writer)
+}
+
+#[test]
+fn channel_close_reasons_classify_and_detect_dormancy() {
+    for (raw, expected, dormant) in [
+        (0, ChannelCloseReason::Destroyed, false),
+        (1, ChannelCloseReason::Dormancy, true),
+        (2, ChannelCloseReason::LevelUnloaded, false),
+        (3, ChannelCloseReason::Saving, false),
+        (4, ChannelCloseReason::TearOff, false),
+        (5, ChannelCloseReason::Custom(5), false),
+        (14, ChannelCloseReason::Custom(14), false),
+    ] {
+        let parsed = ChannelCloseReason::from_raw(raw).unwrap();
+        assert_eq!(parsed, expected);
+        assert_eq!(parsed.as_raw(), raw);
+        assert_eq!(parsed.is_dormant(), dormant);
+    }
+    assert!(ChannelCloseReason::from_raw(15).is_err());
+
+    let mut header = partial_header(true, false, true);
+    assert_eq!(header.parsed_close_reason().unwrap(), None);
+    header.close = true;
+    header.close_reason = Some(1);
+    assert_eq!(
+        header.parsed_close_reason().unwrap(),
+        Some(ChannelCloseReason::Dormancy)
+    );
+}
+
+#[test]
+fn partial_bunch_reassembler_handles_exports_alignment_and_final_flags() {
+    let mut reassembler = PartialBunchReassembler::new();
+    let empty = byte_payload(&[], None);
+    let part1 = byte_payload(&[0xaa, 0xbb], None);
+    let part2 = byte_payload(&[0xcc], Some((0b101, 3)));
+
+    // Initial export-only part: 0 leftover bits after exports, not byte-aligned in raw bunch.
+    let mut init_export = partial_header(true, true, false);
+    init_export.open = true;
+    init_export.control = true;
+    init_export.has_package_map_exports = true;
+    assert_eq!(
+        reassembler
+            .receive_part(100, &init_export, &empty, None)
+            .unwrap(),
+        PartialReceive::Incomplete {
+            parts: 1,
+            replaced_unreliable: false,
+        }
+    );
+    assert!(reassembler.in_progress());
+    assert_eq!(reassembler.parts_in_progress(), Some(1));
+
+    // Unreliable initial arriving during a reliable assembly is ignored.
+    let unrel_init = partial_header(false, true, false);
+    assert_eq!(
+        reassembler
+            .receive_part(50, &unrel_init, &part1, None)
+            .unwrap(),
+        PartialReceive::IgnoredUnreliableInitial
+    );
+    assert_eq!(reassembler.parts_in_progress(), Some(1));
+
+    // Reliable initial arriving during a reliable assembly is an error.
+    let rel_init = partial_header(true, true, false);
+    assert!(
+        reassembler
+            .receive_part(101, &rel_init, &part1, None)
+            .is_err()
+    );
+
+    // Non-final continuation with byte-aligned payload.
+    let mid = partial_header(true, false, false);
+    assert_eq!(
+        reassembler.receive_part(101, &mid, &part1, None).unwrap(),
+        PartialReceive::Incomplete {
+            parts: 2,
+            replaced_unreliable: false,
+        }
+    );
+
+    // Final part carries unaligned trailing bits, close=true (Dormancy), and must_be_mapped.
+    let mut fin = partial_header(true, false, true);
+    fin.close = true;
+    fin.close_reason = Some(1);
+    fin.has_must_be_mapped_guids = true;
+    let PartialReceive::Complete {
+        bunch,
+        parts,
+        replaced_unreliable,
+    } = reassembler.receive_part(102, &fin, &part2, None).unwrap()
+    else {
+        panic!("expected complete bunch");
+    };
+    assert_eq!(parts, 3);
+    assert!(!replaced_unreliable);
+    assert!(!reassembler.in_progress());
+    assert!(bunch.header.open);
+    assert!(bunch.header.close);
+    assert!(bunch.header.control);
+    assert_eq!(
+        bunch.header.parsed_close_reason().unwrap(),
+        Some(ChannelCloseReason::Dormancy)
+    );
+    assert!(bunch.header.has_must_be_mapped_guids);
+    assert!(!bunch.header.partial);
+    assert!(!bunch.header.has_package_map_exports);
+    assert_eq!(bunch.payload.bit_len(), 27);
+    assert_eq!(bunch.payload.bytes(), &[0xaa, 0xbb, 0xcc, 0b101]);
+
+    // Server cap (MAX_CONSTRUCTED_PARTIAL_BUNCH_BYTES = 65_536) is enforced when supplied.
+    let mut capped = PartialBunchReassembler::new();
+    let init = partial_header(true, true, false);
+    assert!(
+        capped
+            .receive_part(
+                1,
+                &init,
+                &byte_payload(&[0u8; 32], None),
+                Some(MAX_CONSTRUCTED_PARTIAL_BUNCH_BYTES)
+            )
+            .is_ok()
+    );
+    assert!(
+        capped
+            .receive_part(2, &fin, &byte_payload(&[0u8; 32], None), Some(48))
+            .is_err()
+    );
 }

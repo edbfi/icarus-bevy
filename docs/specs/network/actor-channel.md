@@ -4,14 +4,14 @@
 
 Experimental: static observations of client build 25793767, with server
 build 25621760 writers for content blocks and NetGUIDs; wire-checked against
-one capture of the 3.0.31 server (F-693, F-704 to F-709). Last reconciled: 2026-10-17.
+one capture of the 3.0.31 server (F-704 to F-710). Last reconciled: 2026-10-17.
 
 ## Scope
 
-How the client reads actor-channel bunches after the control channel: the
-spawn record of a new actor and the per-object content blocks that carry
-replicated state. Not covered: dormancy, channel close reasons and every
-server-side writer.
+How the client reads actor-channel bunches after the control channel: export
+prefixes, partial-bunch reassembly, the spawn record of a new actor, the
+per-object content blocks that carry replicated state, and channel close /
+dormancy cleanup. Not covered: every server-side send-policy heuristic.
 
 ## Confirmed
 
@@ -31,35 +31,53 @@ server-side writer.
   UTF-16 CRC-32 `NetworkGameplayTagNodeIndexHash` (`dc780a27` in 3.0.31,
   `6d0f676f` in 3.0.32). `experimental::tag_dictionary` models both supplied
   ordered lists and declaration expansion with `net_index_hash`.
-- NetGUID exports and must-be-mapped prefixes (F-709): `ReceiveNetGUIDBunch`
-  (`0x1439b8bb0`) and `ExportNetGUIDHeader` (`0x1439ab670`) frame export-only
-  partial bunches as a 1-bit `bHasRepLayoutExport` flag (0 for GUID exports),
-  a 4-byte `int32` count (`<= 2048`), and that many `InternalLoadObject`
-  (`0x1439af1c0`) references with `bIsExportingNetGUIDBunch` set. When a regular
-  actor bunch sets `bHasMustBeMappedGUIDs`, `UActorChannel::ReceivedBunch`
-  (`0x1437c43f0`) reads a 2-byte `uint16` count and that many `SerializeIntPacked`
-  GUID values before `ProcessBunch` (`0x1437c0c30`).
-- Open bunch and actor hook (F-569, F-610, F-709): `SerializeNewActor` reads the
-  actor NetGUID through the package map; for a dynamic GUID (nonzero, even) it
-  reads the archetype NetGUID, a level reference gated on archive flags, and
-  four optional presence-bit-gated blocks: location (quantized vector), rotation
-  (compressed rotator), scale (quantized vector) and velocity (quantized vector).
-  `UActorChannel::ProcessBunch` (`0x1437c0c30`) and `ReplicateActor`
-  (`0x1437c7f00`) then invoke `OnActorChannelOpen` / `OnSerializeNewActor`:
-  empty on `AActor` (`0x1408c9710`), and 1 byte (`uint8 NetPlayerIndex` at
-  `+0x3d4`) on `APlayerController` (`0x143ae73a0` / `0x143ae79d0`), followed by
-  content blocks (`PlayerControllerOpenBunchBody` in `experimental::actor_channel`).
+- NetGUID exports, partial-bunch reassembly and must-be-mapped prefixes (F-709, F-710): `UChannel::ReceivedRawBunch` (`0x1437c5cc0`) invokes
+  `ReceiveNetGUIDBunch` (`0x1439b8bb0`) when `bHasPackageMapExports` is set
+  before reliable ordering (`InRec`, max 255). Export-only partial bunches frame
+  a 1-bit `bHasRepLayoutExport` flag (0 for GUID exports), a 4-byte `int32`
+  count (`<= 2048`), and that many `InternalLoadObject` (`0x1439af1c0`)
+  references (`PackageMapState` in `experimental::actor_channel`).
+  `UChannel::ReceivedNextBunch` (`0x1437c5500`) reassembles `bPartial` bunches
+  in `InPartialBunch`: `bPartialInitial` skips payload append when
+  `bHasPackageMapExports` is set, non-final parts without exports must be
+  non-empty and 8-bit aligned, continuation `ChSequence` steps by 1 (capped at
+  `NetMaxConstructedPartialBunchSizeBytes = 65,536` on a server), and
+  `bPartialFinal` rejects exports and copies `bClose`, `CloseReason`, `bDormant`
+  and `bHasMustBeMappedGUIDs` (`PartialBunchReassembler` in
+  `experimental::sequencing`). When `bHasMustBeMappedGUIDs` is set,
+  `UActorChannel::ReceivedBunch` (`0x1437c43f0`) reads a 2-byte `uint16` count
+  and that many `SerializeIntPacked` GUIDs before `ProcessBunch` (`0x1437c0c30`).
+- Open bunch, actor hook and dormancy close (F-569, F-610, F-709, F-710):
+  `SerializeNewActor` reads the actor NetGUID through the package map; for a
+  dynamic GUID (nonzero, even) it reads the archetype NetGUID, a level reference
+  gated on archive flags, and four optional presence-bit-gated blocks: location
+  (quantized vector), rotation (compressed rotator), scale (quantized vector) and
+  velocity (quantized vector). `UActorChannel::ProcessBunch` (`0x1437c0c30`) and
+  `ReplicateActor` (`0x1437c7f00`) then invoke `OnActorChannelOpen` /
+  `OnSerializeNewActor`: empty on `AActor` (`0x1408c9710`), and 1 byte
+  (`uint8 NetPlayerIndex` at `+0x3d4`) on `APlayerController` (`0x143ae73a0` /
+  `0x143ae79d0`), followed by content blocks (`PlayerControllerOpenBunchBody` in
+  `experimental::actor_channel`). When a reassembled bunch sets `bClose`,
+  `ReceivedNextBunch` sets `bDormant = (CloseReason == 1)` and calls
+  `ConditionalCleanUp(false, CloseReason)` (`0x1437b37f0`); on `CloseReason == 1`
+  (`EChannelCloseReason::Dormancy`, `ChannelCloseReason::Dormancy` in
+  `experimental::packet`, `136 / 136` closes in M-707), `UActorChannel::CleanUp`
+  (`0x1437b27e0`) sets `Actor->NetDormancy = DORM_DormantAll` (`2`) and removes
+  the network actor without destroying the world actor, freeing the channel slot
+  for reuse.
 - Content blocks (F-576, F-581, F-709): after the open, until the bunch ends,
   each block is a rep-layout bit and an is-actor bit; a non-actor block adds the
   sub-object NetGUID and a stably-named bit, and a dynamic sub-object a class
   NetGUID whose zero value deletes it and ends the block (`ReplicateActor`
   `0x1437c7f00`). Otherwise a packed payload-bit count follows, and those bits
   go to the object's replicator.
-- `experimental::actor_channel` reads and re-encodes export prefixes,
-  must-be-mapped GUID lists, open bunches (including the `APlayerController`
-  open hook) and content blocks bit-identically (F-577, F-709), and
-  `experimental::rep_layout` reads and re-encodes property streams (F-673).
-  Randomized and mutated inputs never panic either reader (F-604).
+- `experimental::actor_channel` and `experimental::sequencing` read and
+  re-encode export prefixes, `PackageMapState` mappings, `PartialBunchReassembler`
+  sequences, must-be-mapped GUID lists, open bunches (including the
+  `APlayerController` open hook), content blocks and `ChannelCloseReason` codes
+  bit-identically (F-577, F-709, F-710), and `experimental::rep_layout` reads and
+  re-encodes property streams (F-673). Randomized and mutated inputs never panic
+  either reader (F-604).
 - The replicator hands rep-layout properties to `FRepLayout::ReceiveProperties`
   (an optional bit, a packed handle, an optional checksum word, then a handle
   loop) before its field-header loop (M-426, M-427; F-644). Each field until the
@@ -118,10 +136,11 @@ server-side writer.
   `FBox2D`) and `323` define custom `NetSerialize` (`293` typed `F*RowHandle`
   structs, `FRowHandle`, and `29` engine/game structs, F-709). Framing the 1-bit
   `bDoChecksum` preamble of `ReceiveProperties` (`0x143b20720`, M-426) with
-  custom-delta fast arrays, subobject/actor RPCs, zero-bit subobject headers and
-  the `APlayerController` open hook replays all `23,486 / 23,486` (`100%`) typed
-  blocks and all `317 / 317` export bunches in M-707 bit-identically with 0
-  failures (F-704 to F-709; U-066 resolved).
+  custom-delta fast arrays, subobject/actor RPCs, zero-bit subobject headers,
+  partial-bunch reassembly, dormancy closes and the `APlayerController` open
+  hook replays all `23,486 / 23,486` (`100%`) typed blocks, `317 / 317` export
+  bunches, `300 / 300` partial sequences and `136 / 136` dormancy closes in
+  M-707 bit-identically with 0 failures (F-704 to F-710; U-064, U-066 resolved).
 - Native struct items (F-588, F-589, F-593, F-597, F-673, F-674, F-704 to F-709):
   `FVector` (`0x142100d00`), `FVector2D` (`0x142100bf0`) and `FQuat` (`0x1421003f0`
   -> `0x141ed3a00`, `X, Y, Z` with `W >= 0` reconstructed) serialize three, two
@@ -182,7 +201,7 @@ server-side writer.
 
 ## Open questions
 
-- Server send policy and dormancy/close lifecycle on actor channels (U-044, U-064).
+- Server send-policy heuristics and control-bunch framing past Hello (U-044).
 
 ## Evidence
 
@@ -196,6 +215,6 @@ server-side writer.
   net archive version M-571 to M-576;
   display strings M-581 to M-584; Text codec M-585, M-602 to M-605; Text callees M-586,
   M-587; custom versions M-588; enum widths M-614, M-615; fields and RPCs M-620 to M-624; fast arrays M-628 to M-635; codec tests M-475, M-476, M-492, M-496,
-  M-511, M-522, M-530, M-548; native class/struct/enum descriptors, cooked Blueprint exports, RPC caches, export/open hooks and scalar/struct net serializers M-710 to M-713, M-717, M-720, M-731 to M-744;
+  M-511, M-522, M-530, M-548; native class/struct/enum descriptors, cooked Blueprint exports, RPC caches, export/open hooks, partial/close lifecycle and scalar/struct net serializers M-710 to M-713, M-717, M-720, M-731 to M-746;
   layout source M-552 to M-555; send order M-461, M-556 to
   M-560; wire capture M-707, M-708.
