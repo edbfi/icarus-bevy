@@ -7,6 +7,12 @@ use anyhow::{Result, ensure};
 /// Research resource policy, including the terminating unit when present.
 pub const MAX_STRING_UNITS: usize = 65_536;
 
+/// Maximum UE4 `FName` base-string length (`NAME_SIZE`, `base_units.len() < 1024`).
+pub const NAME_SIZE: usize = 1_024;
+
+/// Maximum external numeric suffix parsed by `FNameHelper::ParseNumber` (`0x7fff_fffe`).
+pub const MAX_FNAME_EXTERNAL_NUMBER: u32 = 0x7fff_fffe;
+
 #[derive(Clone, Copy, Debug)]
 pub enum ByteOrder {
     Little,
@@ -215,6 +221,57 @@ pub fn encode_string(units: &[u16], order: ByteOrder) -> Result<Vec<u8>> {
         }
     }
     Ok(output)
+}
+
+/// Normalize a single narrow byte using the original engine `FString` narrow-to-wide rule:
+/// ASCII (`0x00..=0x7f`) zero-extends to `u16`; negative (`>= 0x80`) bytes map to `'?'` (`0x3f`).
+pub const fn normalize_original_narrow_byte(byte: u8) -> u16 {
+    if byte < 0x80 {
+        byte as u16
+    } else {
+        b'?' as u16
+    }
+}
+
+/// Split a trailing `FName` numeric suffix (`_<digits>`) into `(base_units, internal_number)`
+/// matching `FNameHelper::ParseNumber`:
+/// - `1..=10` trailing ASCII decimal digits (`'0'..='9'`)
+/// - preceded by `'_'` (`0x5f`) after at least one base unit (`units.len() > digits + 1`)
+/// - no leading zero when `digits > 1`
+/// - parsed value `<= MAX_FNAME_EXTERNAL_NUMBER` (`0x7fff_fffe`), returning `internal_number = external + 1`
+///
+/// Otherwise returns `(units, 0)` (`NAME_NO_NUMBER_INTERNAL`).
+pub fn split_fname_number(units: &[u16]) -> (&[u16], u32) {
+    let digits = units
+        .iter()
+        .rev()
+        .take_while(|unit| (u16::from(b'0')..=u16::from(b'9')).contains(unit))
+        .count();
+    if !(1..=10).contains(&digits) || units.len() <= digits + 1 {
+        return (units, 0);
+    }
+    let underscore_index = units.len() - digits - 1;
+    if units[underscore_index] != u16::from(b'_') {
+        return (units, 0);
+    }
+    let suffix = &units[underscore_index + 1..];
+    if digits > 1 && suffix[0] == u16::from(b'0') {
+        return (units, 0);
+    }
+    let mut external = 0_u64;
+    for unit in suffix {
+        external = external * 10 + u64::from(*unit - u16::from(b'0'));
+    }
+    if external > u64::from(MAX_FNAME_EXTERNAL_NUMBER) {
+        return (units, 0);
+    }
+    (&units[..underscore_index], (external as u32) + 1)
+}
+
+/// Check whether a serialized `FPropertyTag` value span fits without overflow in the
+/// signed 32-bit `int32(end) - int32(start)` `FPropertyTag::Size` subtraction (`<= i32::MAX`).
+pub const fn is_valid_tag_aggregate_span(span_bytes: u64) -> bool {
+    span_bytes <= i32::MAX as u64
 }
 
 fn validate_units(units: &[u16]) -> Result<()> {
