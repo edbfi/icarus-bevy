@@ -47,18 +47,33 @@ Provide official-settings import/mapping and report unsupported settings.
 
 ICARUS ships weekly, and each release moves both what the stock client sends
 and what the server runs: the Hello network version hashes the project version
-string, compared for exact equality (F-541, F-563), and the server code itself
-changes between weekly builds (F-700). The target is therefore a moving pin:
+string, compared for exact equality (F-541, F-563), and server code,
+gameplay-tag tables and paks change between weekly builds (F-700, F-702).
+Weekly churn is a permanent operating constraint, so the architecture must
+treat release-specific protocol facts as data rather than scattered code
+constants:
 
 - `config/release.toml` names one official build (Steam build, project version
   and the derived network checksum, checked by `experimental::release`).
 - `tools/release_watch.py check` compares the pin with Steam's public branch
   (anonymous app info); the daily `Release watch` workflow opens an issue when
-  the pin falls behind. `pin --install DIR` rewrites it from a fetched install.
-- A bump is version-only until the weekly diff shows otherwise: compare the
-  two builds' sections, public symbols and replicated layouts, and re-run the
-  compatibility scenarios. Compatibility claims name the build they were made
-  against; the native server answers only the pinned version by default.
+  the pin falls behind and closes resolved or superseded release issues.
+  `pin --install DIR` rewrites it from a fetched install.
+- **Design for weekly updates (TODO):** isolate per-release protocol metadata
+  (project version, network checksum, gameplay-tag dictionary /
+  `NetworkGameplayTagNodeIndexHash`, `FClassNetCache` bounds, and derived
+  `UE4CodeGen_Private` / Blueprint replication and RPC schemas) behind an
+  explicit, data-driven release profile separate from codec and simulation
+  logic. Pair that profile with a single automated local intake/diff pipeline
+  (fetch install, PE section/symbol diff, tag-table extraction, schema diff and
+  capture/test replay) so a routine weekly update is a mechanical profile
+  refresh and verification pass unless wire semantics or structural code paths
+  changed.
+- A bump is version- and profile-only until the weekly diff shows otherwise:
+  compare the two builds' sections, public symbols and replicated layouts, and
+  re-run the compatibility scenarios. Compatibility claims name the build they
+  were made against; the native server answers only the pinned version by
+  default.
 
 ## Persistence
 
