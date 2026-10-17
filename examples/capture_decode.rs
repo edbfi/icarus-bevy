@@ -1752,6 +1752,7 @@ impl<'a> Decoder<'a> {
                                 block,
                                 object_path.as_deref(),
                                 class_path.as_deref(),
+                                false,
                             ) {
                                 self.stats
                                     .rep_replay
@@ -1818,7 +1819,11 @@ impl<'a> Decoder<'a> {
         block: &ContentBlock,
         object_path: Option<&str>,
         class_path: Option<&str>,
+        in_record_body: bool,
     ) -> Option<(&'static str, bool)> {
+        if in_record_body && block.has_rep_layout {
+            self.stats.rep_replay.rep_layout_blocks_attempted += 1;
+        }
         let channel_arch = self
             .channels
             .get(&channel_index)
@@ -1870,6 +1875,9 @@ impl<'a> Decoder<'a> {
         let codec = rep_codec();
         let replay = &mut self.stats.rep_replay;
         replay.typed_blocks_attempted += 1;
+        if in_record_body && !block.has_rep_layout {
+            replay.custom_delta_blocks_attempted += 1;
+        }
         match target_schema {
             TargetSchema::StatContainer => {
                 let schema_name = "UIcarusStatContainer";
@@ -2007,20 +2015,17 @@ impl<'a> Decoder<'a> {
                 block,
                 object_path.as_deref(),
                 class_path.as_deref(),
+                true,
             );
             let replay = &mut self.stats.rep_replay;
-            if block.has_rep_layout {
-                if let Some((_, exact)) = replayed {
-                    replay.rep_layout_blocks_attempted += 1;
+            if let Some((_, exact)) = replayed {
+                if block.has_rep_layout {
                     replay.rep_layout_blocks_decoded += 1;
                     replay.rep_layout_blocks_reencoded_exact += u64::from(exact);
-                } else if !replay.typed_blocks_failed.is_empty() {
-                    replay.rep_layout_blocks_attempted += 1;
+                } else {
+                    replay.custom_delta_blocks_decoded += 1;
+                    replay.custom_delta_blocks_reencoded_exact += u64::from(exact);
                 }
-            } else if let Some((_, exact)) = replayed {
-                replay.custom_delta_blocks_attempted += 1;
-                replay.custom_delta_blocks_decoded += 1;
-                replay.custom_delta_blocks_reencoded_exact += u64::from(exact);
             }
             blocks.push(json!({
                 "summary": summary,
