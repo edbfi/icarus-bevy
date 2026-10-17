@@ -7,16 +7,64 @@ use icarus_bevy::experimental::control_messages::{
 };
 use icarus_bevy::experimental::packet::{BitReader, BitWriter, Payload};
 use icarus_bevy::experimental::rep_layout::{
-    GAMEPLAY_TAG_CONTAINER_COUNT_BITS, GameplayTag, MovementLevel, NET_ROLE_MAX_VALUE, NetworkName,
-    PropertyStream, QuantizedNormal, QuantizedVector, REPLICATED_LEFT_PROSPECT_STATE_MAX_VALUE,
-    RepArray, RepCommand, RepEntry, RepLayoutCodec, RepLayoutLimits, RepValue, RotationLevel,
-    TagEncoding, UnsupportedItem, actor_component_rep_layout, actor_rep_layout,
-    controller_rep_layout, encode_property_stream, encode_rep_properties, enum_bits,
-    enum_byte_bits, enum_max_value, icarus_player_controller_rep_layout,
-    icarus_player_controller_survival_rep_layout, parse_property_stream, parse_rep_properties,
-    player_controller_rep_layout, player_state_rep_layout, read_network_name, read_property_stream,
-    read_rep_properties, rep_attachment_commands, validate_layout, write_network_name,
-    write_property_stream, write_rep_properties,
+    ACCUMULATION_TYPE_MAX_VALUE, AI_AUDIO_STATE_MAX_VALUE, ALIVE_STATE_MAX_VALUE,
+    AUDIO_SHELTER_STATE_MAX_VALUE, COMPONENT_MOBILITY_MAX_VALUE, CREATURE_SEX_MAX_VALUE,
+    DROPSHIP_DESCENT_STATE_FMOD_PARAM_MAX_VALUE, DYNAMIC_ITEM_PROPERTIES_MAX_VALUE,
+    DYNAMIC_QUEST_DIFFICULTY_MAX_VALUE, FLAMMABLE_STATE_MAX_VALUE,
+    GAMEPLAY_TAG_CONTAINER_COUNT_BITS, GameplayTag, ICARUS_ITEM_CONTEXT_MAX_VALUE,
+    ICARUS_ROW_HANDLE_NONE, ICARUS_ROW_HANDLE_TABLE_COUNT, INTERACT_TYPE_MAX_VALUE,
+    MAP_TILE_RADAR_FLAG_MAX_VALUE, MISSION_DIFFICULTY_MAX_VALUE, MOUNT_ACTION_MAX_VALUE,
+    MOUNT_COMBAT_BEHAVIOUR_STATE_MAX_VALUE, MOUNT_CONSUMPTION_BEHAVIOUR_STATE_MAX_VALUE,
+    MOUNT_GRAZING_BEHAVIOUR_STATE_MAX_VALUE, MOUNT_MOVEMENT_BEHAVIOUR_STATE_MAX_VALUE,
+    MOVEMENT_STATE_MAX_VALUE, MovementLevel, NET_ROLE_MAX_VALUE, NetworkName,
+    PROSPECT_LOCATION_MAX_VALUE, PROSPECT_STATE_MAX_VALUE, PropertyStream, QuantizedNormal,
+    QuantizedVector, REPLICATED_LEFT_PROSPECT_STATE_MAX_VALUE, ROCKET_STATE_MAX_VALUE, RepArray,
+    RepCommand, RepEntry, RepLayoutCodec, RepLayoutLimits, RepValue, RotationLevel, RowHandle,
+    SHELTERED_ENUM_MAX_VALUE, StatPairRepState, TagEncoding, UnsupportedItem,
+    actionable_component_rep_layout, actor_component_rep_layout, actor_rep_layout,
+    actor_state_rep_layout, audio_context_component_rep_layout,
+    bp_atmosphere_controller_rep_layout, bp_bed_base_rep_layout, bp_building_base_rep_layout,
+    bp_deployable_base_rep_layout, bp_dropship_rep_layout, bp_dropship_seat_rep_layout,
+    bp_flammable_actor_rep_layout, bp_icarus_player_character_survival_rep_layout,
+    bp_icarus_player_state_rep_layout, bp_interactable_butcher_animal_rep_layout,
+    bp_main_level_teleport_rep_layout, bp_map_manager_rep_layout, bp_meta_deposit_rep_layout,
+    bp_mount_base_rep_layout, bp_mount_horse_rep_layout, bp_oil_geyser_rep_layout,
+    bp_part_base_rep_layout, bp_part_btm_mk1_rep_layout, bp_part_mid_mk1_rep_layout,
+    bp_portable_beacon_rep_layout, bp_prebuilt_base_rep_layout, bp_seat_base_rep_layout,
+    bp_seat_mount_rep_layout, bp_sheltered_component_rep_layout, bp_swimming_component_rep_layout,
+    bp_tame_base_rep_layout, bp_ui_projection_component_mount_status_rep_layout,
+    bp_ui_projection_component_player_rep_layout, bp_ui_projection_component_rep_layout,
+    bp_world_boss_spawner_rep_layout, bp_world_object_rep_layout,
+    bpc_environmental_buildup_rep_layout, character_rep_layout, character_state_rep_layout,
+    child_actor_component_rep_layout, controller_rep_layout, decayable_component_rep_layout,
+    durable_component_rep_layout, encode_property_stream, encode_rep_properties, enum_bits,
+    enum_byte_bits, enum_max_value, fillable_component_rep_layout, flammable_actor_rep_layout,
+    flod_actor_component_rep_layout, flod_rep_layout, focusable_component_rep_layout,
+    game_state_base_rep_layout, game_state_rep_layout, genetics_component_rep_layout,
+    icarus_actor_rep_layout, icarus_character_rep_layout, icarus_game_state_base_rep_layout,
+    icarus_game_state_survival_rep_layout, icarus_item_rep_layout,
+    icarus_mount_character_rep_layout, icarus_npc_character_rep_layout,
+    icarus_npc_goap_character_rep_layout, icarus_player_character_rep_layout,
+    icarus_player_character_survival_rep_layout, icarus_player_controller_rep_layout,
+    icarus_player_controller_survival_rep_layout, icarus_player_state_rep_layout,
+    icarus_row_handle_width_bytes, icarus_stat_replicated_commands,
+    icarus_weather_action_rep_layout, interactable_behaviour_rep_layout,
+    inventory_container_manager_rep_layout, inventory_rep_layout, inventory_slot_commands,
+    item_data_commands, itemable_component_rep_layout, modifier_state_component_rep_layout,
+    mount_character_state_rep_layout, networking_status_commands, parse_property_stream,
+    parse_rep_properties, pawn_rep_layout, player_character_state_rep_layout,
+    player_controller_rep_layout, player_history_tracker_rep_layout, player_state_rep_layout,
+    prospect_info_commands, quest_manager_rep_layout, quest_rep_layout,
+    radiation_manager_rep_layout, read_network_name, read_property_stream, read_rep_properties,
+    read_row_handle, read_stat_pair_rep_state, rep_attachment_commands,
+    resource_network_component_rep_layout, scene_component_rep_layout, stat_int_len_bytes,
+    static_mesh_component_rep_layout, stomach_component_rep_layout,
+    survival_character_state_rep_layout, trait_behaviour_rep_layout, trait_component_rep_layout,
+    transform_commands, transmutable_component_rep_layout, validate_layout,
+    voxel_resource_rep_layout, weather_controller_rep_layout,
+    weather_forecast_bar_component_rep_layout, weather_manager_component_rep_layout,
+    world_settings_rep_layout, world_talent_manager_rep_layout, write_network_name,
+    write_property_stream, write_rep_properties, write_row_handle, write_stat_pair_rep_state,
 };
 
 // Independently authored bit fixtures from the actor-channel spec (F-571 to
@@ -1501,5 +1549,491 @@ fn captured_channel_2_player_controller_and_component_blocks_round_trip() {
     assert_eq!(
         encode_rep_properties(&comp_decoded, &comp_layout, &c).unwrap(),
         block1_payload
+    );
+}
+
+#[test]
+fn row_handle_and_stat_pair_rep_state_round_trip_and_reject_invalid() {
+    assert_eq!(
+        icarus_row_handle_width_bytes(ICARUS_ROW_HANDLE_NONE).unwrap(),
+        0
+    );
+    assert_eq!(icarus_row_handle_width_bytes(62).unwrap(), 0);
+    assert_eq!(icarus_row_handle_width_bytes(0).unwrap(), 2);
+    assert_eq!(icarus_row_handle_width_bytes(1).unwrap(), 1);
+    assert!(icarus_row_handle_width_bytes(ICARUS_ROW_HANDLE_TABLE_COUNT).is_err());
+
+    let layout = [
+        RepCommand::RowHandle,
+        RepCommand::RowHandle,
+        RepCommand::RowHandle,
+        RepCommand::StatPairRepState,
+        RepCommand::StatPairRepState,
+    ];
+    let expected = stream(vec![
+        entry(
+            1,
+            RepValue::RowHandle(RowHandle {
+                table_index: ICARUS_ROW_HANDLE_NONE,
+                row_index: None,
+            }),
+        ),
+        entry(
+            2,
+            RepValue::RowHandle(RowHandle {
+                table_index: 1,
+                row_index: Some(42),
+            }),
+        ),
+        entry(
+            3,
+            RepValue::RowHandle(RowHandle {
+                table_index: 0,
+                row_index: Some(512),
+            }),
+        ),
+        entry(
+            4,
+            RepValue::StatPairRepState(StatPairRepState {
+                stat: 0,
+                value: 500,
+            }),
+        ),
+        entry(
+            5,
+            RepValue::StatPairRepState(StatPairRepState {
+                stat: 0x0102_0304,
+                value: -10,
+            }),
+        ),
+    ]);
+    for order in [ByteOrder::Little, ByteOrder::Big] {
+        let c = codec(17, false, order);
+        let encoded = encode_property_stream(&expected, &layout, &c).unwrap();
+        assert_eq!(
+            parse_property_stream(&encoded, &layout, &c).unwrap(),
+            expected
+        );
+    }
+
+    assert_eq!(stat_int_len_bytes(0), 1);
+    assert_eq!(stat_int_len_bytes(0xfe), 1);
+    assert_eq!(stat_int_len_bytes(0xff), 2);
+    assert_eq!(stat_int_len_bytes(0xfffe), 2);
+    assert_eq!(stat_int_len_bytes(0xffff), 3);
+    assert_eq!(stat_int_len_bytes(0xff_fffe), 3);
+    assert_eq!(stat_int_len_bytes(0xff_ffff), 4);
+    assert_eq!(stat_int_len_bytes(-10i32 as u32), 4);
+
+    // Non-canonical stat integer length (2 bytes for value 1) fails closed.
+    let mut bad_stat = BitWriter::new();
+    bad_stat.write_bits(2, 8);
+    bad_stat.write_bits(0, 8);
+    bad_stat.write_bits(1, 8);
+    bad_stat.write_bits(1, 8);
+    bad_stat.write_bits(1, 8);
+    let mut reader = BitReader::new(bad_stat.as_bytes(), bad_stat.bit_len()).unwrap();
+    assert!(read_stat_pair_rep_state(&mut reader).is_err());
+
+    // Zero-row table carrying a row index fails closed on write.
+    let mut w = BitWriter::new();
+    assert!(
+        write_row_handle(
+            &mut w,
+            &RowHandle {
+                table_index: 62,
+                row_index: Some(0),
+            },
+            ByteOrder::Little,
+        )
+        .is_err()
+    );
+    for &(table_index, expected_width, row_index) in &[
+        (ICARUS_ROW_HANDLE_NONE, 0u8, None),
+        (62u16, 0u8, None),
+        (164u16, 0u8, None),
+        (1u16, 1u8, Some(254u32)),
+        (2u16, 1u8, Some(7u32)),
+        (0u16, 2u8, Some(512u32)),
+        (29u16, 2u8, Some(1024u32)),
+    ] {
+        assert_eq!(
+            icarus_row_handle_width_bytes(table_index).unwrap(),
+            expected_width
+        );
+        for order in [ByteOrder::Little, ByteOrder::Big] {
+            let handle = RowHandle {
+                table_index,
+                row_index,
+            };
+            let mut writer = BitWriter::new();
+            write_row_handle(&mut writer, &handle, order).unwrap();
+            assert_eq!(writer.bit_len(), (2 + usize::from(expected_width)) * 8);
+            let mut reader = BitReader::new(writer.as_bytes(), writer.bit_len()).unwrap();
+            assert_eq!(read_row_handle(&mut reader, order).unwrap(), handle);
+            assert!(reader.at_end());
+        }
+    }
+
+    for pair in [
+        StatPairRepState { stat: 0, value: 0 },
+        StatPairRepState {
+            stat: 0xfe,
+            value: 0xff,
+        },
+        StatPairRepState {
+            stat: 0xffff,
+            value: -10,
+        },
+    ] {
+        let mut writer = BitWriter::new();
+        write_stat_pair_rep_state(&mut writer, &pair);
+        let expected_bits = (1
+            + usize::from(stat_int_len_bytes(pair.stat))
+            + 1
+            + usize::from(stat_int_len_bytes(pair.value as u32)))
+            * 8;
+        assert_eq!(writer.bit_len(), expected_bits);
+        let mut reader = BitReader::new(writer.as_bytes(), writer.bit_len()).unwrap();
+        assert_eq!(read_stat_pair_rep_state(&mut reader).unwrap(), pair);
+        assert!(reader.at_end());
+    }
+}
+
+#[test]
+fn native_component_and_state_layouts_round_trip() {
+    assert_eq!(enum_bits(AUDIO_SHELTER_STATE_MAX_VALUE, 1), 2);
+    assert_eq!(enum_bits(ALIVE_STATE_MAX_VALUE, 1), 1);
+    assert_eq!(flod_actor_component_rep_layout().len(), 3);
+    assert_eq!(audio_context_component_rep_layout().len(), 3);
+    assert_eq!(trait_behaviour_rep_layout().len(), 3);
+    assert_eq!(resource_network_component_rep_layout().len(), 4);
+    assert_eq!(trait_component_rep_layout().len(), 3);
+    assert_eq!(durable_component_rep_layout().len(), 4);
+    assert_eq!(itemable_component_rep_layout().len(), 4);
+    assert_eq!(decayable_component_rep_layout().len(), 5);
+    assert_eq!(fillable_component_rep_layout().len(), 5);
+    assert_eq!(transmutable_component_rep_layout().len(), 4);
+    assert_eq!(focusable_component_rep_layout().len(), 4);
+    assert_eq!(actionable_component_rep_layout().len(), 8);
+    assert_eq!(modifier_state_component_rep_layout().len(), 8);
+    assert_eq!(actor_state_rep_layout().len(), 12);
+    assert_eq!(character_state_rep_layout().len(), 17);
+    assert_eq!(survival_character_state_rep_layout().len(), 30);
+    assert_eq!(player_character_state_rep_layout().len(), 32);
+
+    let c = codec(17, false, ByteOrder::Little);
+    let durable = durable_component_rep_layout();
+    let d_stream = stream(vec![
+        entry(2, RepValue::Bool(true)),
+        entry(
+            3,
+            RepValue::RowHandle(RowHandle {
+                table_index: 65,
+                row_index: Some(300),
+            }),
+        ),
+        entry(4, RepValue::Int(2500)),
+    ]);
+    let d_payload = encode_rep_properties(&d_stream, &durable, &c).unwrap();
+    assert_eq!(
+        parse_rep_properties(&d_payload, &durable, &c).unwrap(),
+        d_stream
+    );
+
+    let pcs = player_character_state_rep_layout();
+    let pcs_stream = stream(vec![
+        entry(3, RepValue::Int(100)),
+        entry(4, RepValue::Int(100)),
+        entry(7, RepValue::Float(1.0f32.to_bits())),
+        entry(11, RepValue::Byte(2)),
+        entry(12, RepValue::Enum(0)),
+        entry(16, RepValue::Byte(0)),
+        entry(17, RepValue::Int(60)),
+        entry(31, RepValue::Byte(1)),
+        entry(32, RepValue::Int(0)),
+    ]);
+    let pcs_payload = encode_rep_properties(&pcs_stream, &pcs, &c).unwrap();
+    assert_eq!(
+        parse_rep_properties(&pcs_payload, &pcs, &c).unwrap(),
+        pcs_stream
+    );
+}
+
+#[test]
+fn native_and_cooked_blueprint_actor_and_component_layouts_round_trip() {
+    assert_eq!(enum_byte_bits(COMPONENT_MOBILITY_MAX_VALUE), 2);
+    assert_eq!(enum_bits(ICARUS_ITEM_CONTEXT_MAX_VALUE, 1), 4);
+    assert_eq!(enum_bits(DYNAMIC_ITEM_PROPERTIES_MAX_VALUE, 1), 4);
+    assert_eq!(enum_bits(PROSPECT_STATE_MAX_VALUE, 1), 3);
+    assert_eq!(enum_bits(PROSPECT_LOCATION_MAX_VALUE, 1), 4);
+    assert_eq!(enum_bits(MISSION_DIFFICULTY_MAX_VALUE, 1), 3);
+    assert_eq!(enum_bits(MOVEMENT_STATE_MAX_VALUE, 1), 4);
+    assert_eq!(enum_bits(MOUNT_COMBAT_BEHAVIOUR_STATE_MAX_VALUE, 1), 3);
+    assert_eq!(enum_bits(MOUNT_MOVEMENT_BEHAVIOUR_STATE_MAX_VALUE, 1), 3);
+    assert_eq!(enum_bits(MOUNT_CONSUMPTION_BEHAVIOUR_STATE_MAX_VALUE, 1), 3);
+    assert_eq!(enum_bits(MOUNT_GRAZING_BEHAVIOUR_STATE_MAX_VALUE, 1), 3);
+    assert_eq!(enum_bits(AI_AUDIO_STATE_MAX_VALUE, 1), 4);
+    assert_eq!(enum_bits(MOUNT_ACTION_MAX_VALUE, 1), 3);
+    assert_eq!(enum_bits(INTERACT_TYPE_MAX_VALUE, 1), 3);
+    assert_eq!(enum_bits(CREATURE_SEX_MAX_VALUE, 1), 2);
+    assert_eq!(enum_bits(FLAMMABLE_STATE_MAX_VALUE, 1), 3);
+    assert_eq!(enum_byte_bits(ACCUMULATION_TYPE_MAX_VALUE), 3);
+    assert_eq!(enum_byte_bits(SHELTERED_ENUM_MAX_VALUE), 3);
+    assert_eq!(enum_bits(ROCKET_STATE_MAX_VALUE, 1), 3);
+    assert_eq!(enum_bits(DROPSHIP_DESCENT_STATE_FMOD_PARAM_MAX_VALUE, 1), 3);
+    assert_eq!(enum_bits(MAP_TILE_RADAR_FLAG_MAX_VALUE, 1), 3);
+    assert_eq!(enum_bits(DYNAMIC_QUEST_DIFFICULTY_MAX_VALUE, 1), 3);
+
+    let loc = MovementLevel::Whole;
+    let char_loc = MovementLevel::Hundredths;
+    let vel = MovementLevel::Whole;
+    let rot = RotationLevel::Bytes;
+    let tag_encoding = TagEncoding::NetIndex {
+        first_segment: 0,
+        total_bits: 12,
+    };
+
+    assert_eq!(
+        transform_commands(),
+        [RepCommand::Vector, RepCommand::Vector, RepCommand::Vector]
+    );
+    assert_eq!(icarus_stat_replicated_commands().len(), 2);
+    assert_eq!(item_data_commands(tag_encoding).len(), 13);
+    assert_eq!(inventory_slot_commands(tag_encoding).len(), 18);
+    assert_eq!(inventory_rep_layout().len(), 9);
+    assert_eq!(prospect_info_commands().len(), 17);
+    assert_eq!(networking_status_commands().len(), 12);
+
+    assert_eq!(icarus_player_state_rep_layout(loc, vel, rot).len(), 80);
+    assert_eq!(bp_icarus_player_state_rep_layout(loc, vel, rot).len(), 84);
+    assert_eq!(game_state_base_rep_layout(loc, vel, rot).len(), 19);
+    assert_eq!(game_state_rep_layout(loc, vel, rot).len(), 21);
+    assert_eq!(icarus_game_state_base_rep_layout(loc, vel, rot).len(), 24);
+    assert_eq!(
+        icarus_game_state_survival_rep_layout(loc, vel, rot).len(),
+        82
+    );
+    assert_eq!(pawn_rep_layout(char_loc, vel, rot).len(), 18);
+    assert_eq!(character_rep_layout(char_loc, vel, rot).len(), 45);
+    assert_eq!(
+        icarus_character_rep_layout(char_loc, vel, rot, tag_encoding).len(),
+        55
+    );
+    assert_eq!(
+        icarus_npc_character_rep_layout(char_loc, vel, rot, tag_encoding).len(),
+        67
+    );
+    assert_eq!(
+        icarus_npc_goap_character_rep_layout(char_loc, vel, rot, tag_encoding).len(),
+        71
+    );
+    assert_eq!(
+        icarus_mount_character_rep_layout(char_loc, vel, rot, tag_encoding).len(),
+        81
+    );
+    assert_eq!(
+        bp_mount_base_rep_layout(char_loc, vel, rot, tag_encoding).len(),
+        85
+    );
+    assert_eq!(
+        bp_tame_base_rep_layout(char_loc, vel, rot, tag_encoding).len(),
+        86
+    );
+    assert_eq!(
+        bp_mount_horse_rep_layout(char_loc, vel, rot, tag_encoding).len(),
+        86
+    );
+    assert_eq!(
+        icarus_player_character_rep_layout(char_loc, vel, rot, tag_encoding).len(),
+        66
+    );
+    assert_eq!(
+        icarus_player_character_survival_rep_layout(char_loc, vel, rot, tag_encoding).len(),
+        73
+    );
+    assert_eq!(
+        bp_icarus_player_character_survival_rep_layout(char_loc, vel, rot, tag_encoding).len(),
+        89
+    );
+    assert_eq!(
+        icarus_actor_rep_layout(loc, vel, rot, tag_encoding).len(),
+        18
+    );
+    assert_eq!(
+        icarus_item_rep_layout(loc, vel, rot, tag_encoding).len(),
+        40
+    );
+    assert_eq!(
+        bp_building_base_rep_layout(loc, vel, rot, tag_encoding).len(),
+        53
+    );
+
+    assert_eq!(mount_character_state_rep_layout().len(), 31);
+    assert_eq!(weather_manager_component_rep_layout().len(), 3);
+    assert_eq!(icarus_weather_action_rep_layout().len(), 7);
+    assert_eq!(bp_ui_projection_component_rep_layout().len(), 4);
+    assert_eq!(
+        bp_ui_projection_component_mount_status_rep_layout().len(),
+        5
+    );
+    assert_eq!(bp_ui_projection_component_player_rep_layout().len(), 5);
+    assert_eq!(interactable_behaviour_rep_layout().len(), 7);
+    assert_eq!(bp_interactable_butcher_animal_rep_layout().len(), 9);
+    assert_eq!(scene_component_rep_layout().len(), 15);
+    assert_eq!(child_actor_component_rep_layout().len(), 16);
+    assert_eq!(static_mesh_component_rep_layout().len(), 16);
+    assert_eq!(bpc_environmental_buildup_rep_layout().len(), 18);
+    assert_eq!(flammable_actor_rep_layout().len(), 6);
+    assert_eq!(bp_flammable_actor_rep_layout().len(), 7);
+    assert_eq!(stomach_component_rep_layout().len(), 3);
+    assert_eq!(bp_swimming_component_rep_layout().len(), 4);
+    assert_eq!(genetics_component_rep_layout().len(), 10);
+    assert_eq!(bp_sheltered_component_rep_layout().len(), 5);
+    assert_eq!(world_settings_rep_layout(loc, vel, rot).len(), 20);
+    assert_eq!(flod_rep_layout(loc, vel, rot).len(), 16);
+    assert_eq!(weather_controller_rep_layout(loc, vel, rot).len(), 16);
+    assert_eq!(bp_map_manager_rep_layout(loc, vel, rot).len(), 30);
+    assert_eq!(quest_rep_layout(loc, vel, rot, tag_encoding).len(), 26);
+    assert_eq!(
+        quest_manager_rep_layout(loc, vel, rot, tag_encoding).len(),
+        27
+    );
+    assert_eq!(
+        inventory_container_manager_rep_layout(loc, vel, rot, tag_encoding).len(),
+        19
+    );
+    assert_eq!(
+        player_history_tracker_rep_layout(loc, vel, rot, tag_encoding).len(),
+        19
+    );
+    assert_eq!(
+        radiation_manager_rep_layout(loc, vel, rot, tag_encoding).len(),
+        19
+    );
+    assert_eq!(
+        world_talent_manager_rep_layout(loc, vel, rot, tag_encoding).len(),
+        19
+    );
+    assert_eq!(
+        bp_atmosphere_controller_rep_layout(loc, vel, rot, tag_encoding).len(),
+        19
+    );
+    assert_eq!(
+        bp_world_object_rep_layout(loc, vel, rot, tag_encoding).len(),
+        19
+    );
+    assert_eq!(
+        bp_oil_geyser_rep_layout(loc, vel, rot, tag_encoding).len(),
+        20
+    );
+    assert_eq!(
+        bp_prebuilt_base_rep_layout(loc, vel, rot, tag_encoding).len(),
+        19
+    );
+    assert_eq!(
+        bp_world_boss_spawner_rep_layout(loc, vel, rot, tag_encoding).len(),
+        20
+    );
+    assert_eq!(
+        bp_meta_deposit_rep_layout(loc, vel, rot, tag_encoding).len(),
+        23
+    );
+    assert_eq!(
+        voxel_resource_rep_layout(loc, vel, rot, tag_encoding).len(),
+        22
+    );
+    assert_eq!(
+        bp_main_level_teleport_rep_layout(loc, vel, rot, tag_encoding).len(),
+        33
+    );
+    assert_eq!(
+        bp_dropship_rep_layout(loc, vel, rot, tag_encoding).len(),
+        34
+    );
+    assert_eq!(
+        bp_seat_base_rep_layout(loc, vel, rot, tag_encoding).len(),
+        20
+    );
+    assert_eq!(
+        bp_dropship_seat_rep_layout(loc, vel, rot, tag_encoding).len(),
+        25
+    );
+    assert_eq!(
+        bp_seat_mount_rep_layout(loc, vel, rot, tag_encoding).len(),
+        35
+    );
+    assert_eq!(
+        bp_part_base_rep_layout(loc, vel, rot, tag_encoding).len(),
+        45
+    );
+    assert_eq!(
+        bp_part_btm_mk1_rep_layout(loc, vel, rot, tag_encoding).len(),
+        50
+    );
+    assert_eq!(
+        bp_part_mid_mk1_rep_layout(loc, vel, rot, tag_encoding).len(),
+        59
+    );
+    assert_eq!(
+        bp_deployable_base_rep_layout(loc, vel, rot, tag_encoding).len(),
+        50
+    );
+    assert_eq!(
+        bp_bed_base_rep_layout(loc, vel, rot, tag_encoding).len(),
+        52
+    );
+    assert_eq!(
+        bp_portable_beacon_rep_layout(loc, vel, rot, tag_encoding).len(),
+        59
+    );
+    assert_eq!(weather_forecast_bar_component_rep_layout().len(), 3);
+
+    let c = codec(17, false, ByteOrder::Little);
+    let tame_layout = bp_tame_base_rep_layout(char_loc, vel, rot, tag_encoding);
+    let tame_stream = stream(vec![
+        entry(5, RepValue::Byte(1)),
+        entry(14, RepValue::Byte(3)),
+        entry(46, RepValue::Int(877_331)),
+        entry(56, RepValue::Enum(3)),
+        entry(65, RepValue::UInt16(104)),
+        entry(68, RepValue::UInt16(104)),
+        entry(70, RepValue::Int(25)),
+        entry(73, RepValue::Str(text("WolfenSteinert"))),
+        entry(77, RepValue::Enum(3)),
+        entry(78, RepValue::Enum(2)),
+        entry(79, RepValue::Enum(1)),
+        entry(82, RepValue::Enum(1)),
+        entry(86, RepValue::Object(NetGuidRef::plain(0))),
+    ]);
+    let tame_payload = encode_rep_properties(&tame_stream, &tame_layout, &c).unwrap();
+    assert_eq!(
+        parse_rep_properties(&tame_payload, &tame_layout, &c).unwrap(),
+        tame_stream
+    );
+
+    let beacon_layout = bp_portable_beacon_rep_layout(loc, vel, rot, tag_encoding);
+    let beacon_stream = stream(vec![
+        entry(5, RepValue::Byte(1)),
+        entry(14, RepValue::Byte(3)),
+        entry(20, RepValue::UInt16(321)),
+        entry(43, RepValue::Vector([0, 0, 0x3f00_0000])),
+        entry(
+            44,
+            RepValue::Vector([10.0f32.to_bits(), 20.0f32.to_bits(), 30.0f32.to_bits()]),
+        ),
+        entry(
+            45,
+            RepValue::Vector([1.0f32.to_bits(), 1.0f32.to_bits(), 1.0f32.to_bits()]),
+        ),
+        entry(51, RepValue::Float(0.25f32.to_bits())),
+        entry(55, RepValue::Int(2)),
+        entry(57, RepValue::NetworkName(NetworkName::Hardcoded(0))),
+        entry(59, RepValue::Bool(true)),
+    ]);
+    let beacon_payload = encode_rep_properties(&beacon_stream, &beacon_layout, &c).unwrap();
+    assert_eq!(
+        parse_rep_properties(&beacon_payload, &beacon_layout, &c).unwrap(),
+        beacon_stream
     );
 }

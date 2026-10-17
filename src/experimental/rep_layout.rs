@@ -5,10 +5,12 @@
 //! references (F-572), the compressed rotator (F-573), client property net items
 //! (F-574), client network names (F-575) and the older server's native struct
 //! items (F-593), the movement struct and its quantization levels (F-588,
-//! F-589), gameplay tags (F-591, F-592), and native property command expansion,
-//! numeric property items and native struct serializers (F-704). Nothing here is
-//! gameplay-integrated, and no property state, object resolution or admission
-//! occurs. Writers mirror the readers for round-trip research only.
+//! F-589), gameplay tags (F-591, F-592), native property command expansion,
+//! numeric property items and native struct serializers (F-704), and ICARUS
+//! `FRowHandle`, typed `F*RowHandle` and `FStatPairRepState` net serializers
+//! (F-705). Nothing here is gameplay-integrated, and no property state, object
+//! resolution or admission occurs. Writers mirror the readers for round-trip
+//! research only.
 //!
 //! Observed grammar: `FRepLayout::ReceiveProperties` reads a 1-bit `bDoChecksum`
 //! flag before the handle stream (M-426, F-704); packed handles select layout
@@ -66,9 +68,21 @@
 //! - [`RepCommand::Rotator`]: `FRotator::NetSerialize` (`0x142100890`), the
 //!   compressed rotator of [`super::actor_channel::read_rotator`] (F-573,
 //!   F-704);
-//! - [`RepCommand::UniqueNetId`]: the `FUniqueNetIdRepl::NetSerialize`
+//! - [`RepCommand::UniqueNetId`] — `FUniqueNetIdRepl::NetSerialize`
 //!   (`0x143ddced0` -> `0x1439a23f0`), the replicated unique net id of
 //!   [`super::control_messages::read_unique_net_id`] (F-531, F-636, F-704);
+//! - [`RepCommand::RowHandle`]: `FRowHandle::NetSerialize` (`0x143f8a530`,
+//!   F-705), a 2-byte data-table index followed by 0, 1, 2 or 4 row-index bytes
+//!   determined by [`icarus_row_handle_width_bytes`]; typed derived
+//!   `F*RowHandle` structs (`FModifierStatesRowHandle`, `FBiomesRowHandle`,
+//!   etc.) have table-specific `NetSerialize` implementations that omit the
+//!   2-byte table index and serialize only their 1-byte (`Byte`) or 2-byte
+//!   (`UInt16`) row index (F-705);
+//! - [`RepCommand::StatPairRepState`] — `FStatPairRepState::NetSerialize`
+//!   (`0x141c10c50` -> `0x1417df1a0`, F-705), two length-prefixed big-endian
+//!   32-bit integers (`Stat` and `Value`) serialized through
+//!   `Detail::ReadInteger` (`0x1417e1b50`) / `Detail::WriteInteger`
+//!   (`0x141807bd0`);
 //! - [`RepCommand::DynamicArray`]: count and nested stream (F-571);
 //! - [`RepCommand::Opaque`]: a caller-sized span of raw bits.
 //!
@@ -104,8 +118,9 @@
 //!
 //! Unsupported and failing closed: any item the spec does not encode, such as
 //! unmodeled native net-serialize structs ([`UnsupportedItem`]); non-canonical
-//! packed integers and tag net indices (the original reader may be more
-//! lenient), so every accepted stream re-encodes bit-identically.
+//! packed integers, tag net indices and stat variable-length integers (the
+//! original reader may be more lenient), so every accepted stream re-encodes
+//! bit-identically.
 //!
 //! `Debug` output and summaries carry handles, kinds, counts and lengths only,
 //! never values, GUIDs, names, checksums or raw bits.
@@ -277,6 +292,12 @@ pub enum RepCommand {
     Rotator,
     /// `FUniqueNetIdRepl` (`0x143ddced0` -> `0x1439a23f0`, F-531, F-636, F-704).
     UniqueNetId,
+    /// `FRowHandle` (`0x143f8a530`, F-705), for properties typed directly as
+    /// `FRowHandle` (`HasNetSerializer == true`).
+    RowHandle,
+    /// `FStatPairRepState` (`0x141c10c50` -> `0x1417df1a0`, F-705), the element
+    /// struct of `FStatsRepArray` (`UIcarusStatContainer::ReplicatedStatArray`).
+    StatPairRepState,
     /// One gameplay tag in the caller's encoding (F-591, F-592).
     GameplayTag(TagEncoding),
     /// A gameplay tag container (F-592); `count_bits` is 1 to 8.
@@ -302,6 +323,93 @@ pub enum RepCommand {
     },
     /// Any handle selecting this fails closed.
     Unsupported(UnsupportedItem),
+}
+
+/// Number of static data-table names in the `FRowHandle` global registry
+/// (`0x1408a76d0` -> `0x1464e26e0`, `0x125 = 293` entries, F-705).
+pub const ICARUS_ROW_HANDLE_TABLE_COUNT: u16 = 293;
+/// Unmapped `FRowHandle` data-table index (`0xffff`, F-705).
+pub const ICARUS_ROW_HANDLE_NONE: u16 = u16::MAX;
+
+/// Registered `FRowHandle` table indices whose packaged `DataTable` has 0 rows
+/// (`D_BlueprintUnlocks = 62`, `D_CharacterPerks = 164`,
+/// `D_QuestVocalisationModifiers = 181`, F-705).
+pub const ICARUS_ZERO_ROW_TABLES: [u16; 3] = [62, 164, 181];
+
+/// Registered `FRowHandle` table indices whose packaged `DataTable` has 255 to
+/// 65534 rows and therefore serializes a 2-byte row index (F-705).
+pub const ICARUS_TWO_BYTE_ROW_TABLES: [u16; 28] = [
+    0, 29, 54, 64, 65, 73, 80, 84, 92, 112, 134, 135, 136, 148, 152, 177, 178, 201, 207, 209, 215,
+    230, 234, 237, 248, 252, 254, 278,
+];
+
+/// Row-index byte width (`0`, `1`, `2` or `4`) selected by
+/// `FRowHandle::NetSerialize` (`0x143f8a530`) for `table_index` (F-705).
+/// No packaged 3.0.31/32 table exceeds 65,534 rows, so `4` is currently
+/// unreachable and kept only in [`read_row_handle`]/[`write_row_handle`] to
+/// mirror the original branch (`iVar6 >= 0xffff`).
+pub fn icarus_row_handle_width_bytes(table_index: u16) -> Result<u8> {
+    if table_index == ICARUS_ROW_HANDLE_NONE {
+        return Ok(0);
+    }
+    ensure!(
+        table_index < ICARUS_ROW_HANDLE_TABLE_COUNT,
+        "unknown row handle data table index {table_index}"
+    );
+    if ICARUS_ZERO_ROW_TABLES.binary_search(&table_index).is_ok() {
+        Ok(0)
+    } else if ICARUS_TWO_BYTE_ROW_TABLES
+        .binary_search(&table_index)
+        .is_ok()
+    {
+        Ok(2)
+    } else {
+        Ok(1)
+    }
+}
+
+/// Replicated `FRowHandle` (`0x143f8a530`, F-705): a 2-byte data-table index and,
+/// when the table has at least 1 row, the row index.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub struct RowHandle {
+    pub table_index: u16,
+    pub row_index: Option<u32>,
+}
+
+impl std::fmt::Debug for RowHandle {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("RowHandle")
+    }
+}
+
+/// Replicated `FStatPairRepState` (`0x141c10c50` -> `0x1417df1a0`, F-705):
+/// `Stat` (`+0x0c`) and `Value` (`+0x10`), each serialized as a 1-byte length
+/// (`1..=4`) followed by that many big-endian bytes.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub struct StatPairRepState {
+    pub stat: u32,
+    pub value: i32,
+}
+
+impl std::fmt::Debug for StatPairRepState {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("StatPairRepState")
+    }
+}
+
+/// Canonical byte length (`1..=4`) written by `Detail::WriteInteger`
+/// (`0x141807bd0`, F-705) for a 32-bit word: strict `< 0xff -> 1`,
+/// `< 0xffff -> 2`, `< 0xffffff -> 3` (`0xfffffe < param_2`), else `4`.
+pub fn stat_int_len_bytes(value: u32) -> u8 {
+    if value < 0xff {
+        1
+    } else if value < 0xffff {
+        2
+    } else if value < 0xff_ffff {
+        3
+    } else {
+        4
+    }
 }
 
 /// A capped-bit-count vector packing (F-593, F-589): the bit-count maximum and
@@ -716,6 +824,8 @@ pub enum RepValue {
     VectorQuantizeNormal(QuantizedNormal),
     Rotator(CompressedRotator),
     UniqueNetId(UniqueNetId),
+    RowHandle(RowHandle),
+    StatPairRepState(StatPairRepState),
     GameplayTag(GameplayTag),
     HitResult(Box<HitResult>),
     /// `None` when the empty bit is set; otherwise the counted tags.
@@ -753,6 +863,8 @@ pub enum ItemKind {
     VectorQuantizeNormal,
     Rotator,
     UniqueNetId,
+    RowHandle,
+    StatPairRepState,
     GameplayTag,
     GameplayTagContainer,
     HitResult,
@@ -789,6 +901,8 @@ impl RepValue {
             Self::VectorQuantizeNormal(_) => ItemKind::VectorQuantizeNormal,
             Self::Rotator(_) => ItemKind::Rotator,
             Self::UniqueNetId(_) => ItemKind::UniqueNetId,
+            Self::RowHandle(_) => ItemKind::RowHandle,
+            Self::StatPairRepState(_) => ItemKind::StatPairRepState,
             Self::GameplayTag(_) => ItemKind::GameplayTag,
             Self::GameplayTagContainer(_) => ItemKind::GameplayTagContainer,
             Self::HitResult(_) => ItemKind::HitResult,
@@ -845,6 +959,8 @@ impl std::fmt::Debug for RepValue {
                 .finish(),
             Self::Rotator(rotator) => formatter.debug_tuple("Rotator").field(rotator).finish(),
             Self::UniqueNetId(id) => formatter.debug_tuple("UniqueNetId").field(id).finish(),
+            Self::RowHandle(row) => row.fmt(formatter),
+            Self::StatPairRepState(stat) => stat.fmt(formatter),
             Self::GameplayTag(tag) => formatter.debug_tuple("GameplayTag").field(tag).finish(),
             Self::GameplayTagContainer(tags) => formatter
                 .debug_tuple("GameplayTagContainer")
@@ -1013,6 +1129,8 @@ impl RepEntry {
             | RepValue::Double(_)
             | RepValue::Vector(_)
             | RepValue::Vector2D(_)
+            | RepValue::RowHandle(_)
+            | RepValue::StatPairRepState(_)
             | RepValue::GameplayTag(GameplayTag::NetIndex(_))
             | RepValue::HitResult(_)
             | RepValue::Text(_)
@@ -1116,6 +1234,8 @@ fn validate_layout_at(layout: &[RepCommand], limits: &RepLayoutLimits, depth: us
             | RepCommand::VectorQuantizeNormal
             | RepCommand::Rotator
             | RepCommand::UniqueNetId
+            | RepCommand::RowHandle
+            | RepCommand::StatPairRepState
             | RepCommand::Movement { .. }
             | RepCommand::HitResult
             | RepCommand::Unsupported(_) => {}
@@ -1223,6 +1343,109 @@ pub(super) fn write_u64(writer: &mut BitWriter, value: u64, order: ByteOrder) {
     };
     writer.write_u32(raw as u32);
     writer.write_u32((raw >> 32) as u32);
+}
+
+/// Read `FRowHandle::NetSerialize` (`0x143f8a530`, F-705): a 2-byte data-table
+/// index in `order`, followed by 0, 1, 2 or 4 row-index bytes according to
+/// [`icarus_row_handle_width_bytes`].
+pub fn read_row_handle(reader: &mut BitReader<'_>, order: ByteOrder) -> Result<RowHandle> {
+    let table_index = read_u16(reader, order, "row handle table index")?;
+    let width = icarus_row_handle_width_bytes(table_index)?;
+    let row_index = match width {
+        0 => None,
+        1 => Some(read_field(reader, 8, "row handle 1-byte row index")?),
+        2 => Some(u32::from(read_u16(
+            reader,
+            order,
+            "row handle 2-byte row index",
+        )?)),
+        4 => Some(read_u32(reader, order, "row handle 4-byte row index")?),
+        _ => unreachable!(),
+    };
+    Ok(RowHandle {
+        table_index,
+        row_index,
+    })
+}
+
+/// Mirror of [`read_row_handle`]; validates that `row_index` presence and range
+/// match [`icarus_row_handle_width_bytes`].
+pub fn write_row_handle(
+    writer: &mut BitWriter,
+    handle: &RowHandle,
+    order: ByteOrder,
+) -> Result<()> {
+    let width = icarus_row_handle_width_bytes(handle.table_index)?;
+    match (width, handle.row_index) {
+        (0, None) => write_u16(writer, handle.table_index, order),
+        (0, Some(_)) => bail!("zero-width row handle cannot carry a row index"),
+        (_, None) => bail!("non-empty row handle table requires a row index"),
+        (1, Some(row)) => {
+            ensure!(
+                row <= u32::from(u8::MAX),
+                "row handle index exceeds 1-byte table width"
+            );
+            write_u16(writer, handle.table_index, order);
+            writer.write_bits(row, 8);
+        }
+        (2, Some(row)) => {
+            ensure!(
+                row <= u32::from(u16::MAX),
+                "row handle index exceeds 2-byte table width"
+            );
+            write_u16(writer, handle.table_index, order);
+            write_u16(writer, row as u16, order);
+        }
+        (4, Some(row)) => {
+            write_u16(writer, handle.table_index, order);
+            write_u32(writer, row, order);
+        }
+        _ => unreachable!(),
+    }
+    Ok(())
+}
+
+fn read_stat_var_u32(reader: &mut BitReader<'_>, what: &str) -> Result<u32> {
+    let len = read_field(reader, 8, what)? as u8;
+    ensure!(
+        (1..=4).contains(&len),
+        "{what} length must be 1 to 4 bytes, got {len}"
+    );
+    let mut value = 0u32;
+    for _ in 0..len {
+        let byte = read_field(reader, 8, what)?;
+        value = (value << 8) | byte;
+    }
+    ensure!(
+        stat_int_len_bytes(value) == len,
+        "non-canonical {what} length {len}"
+    );
+    Ok(value)
+}
+
+fn write_stat_var_u32(writer: &mut BitWriter, value: u32) {
+    let len = stat_int_len_bytes(value);
+    writer.write_bits(u32::from(len), 8);
+    for shift in (0..len).rev() {
+        let byte = (value >> (u32::from(shift) * 8)) & 0xff;
+        writer.write_bits(byte, 8);
+    }
+}
+
+/// Read `FStatPairRepState::NetSerialize` (`0x141c10c50` -> `0x1417df1a0`,
+/// F-705): `Stat` (`u32`) and `Value` (`i32`) via `Detail::ReadInteger`
+/// (`0x1417e1b50`).
+pub fn read_stat_pair_rep_state(reader: &mut BitReader<'_>) -> Result<StatPairRepState> {
+    let stat = read_stat_var_u32(reader, "stat pair stat")?;
+    let value = read_stat_var_u32(reader, "stat pair value")? as i32;
+    Ok(StatPairRepState { stat, value })
+}
+
+/// Write `FStatPairRepState::NetSerialize` (`0x141c10c50` -> `0x1417df1a0`,
+/// F-705) via `Detail::WriteInteger` (`0x141807bd0`).
+pub fn write_stat_pair_rep_state(writer: &mut BitWriter, pair: &StatPairRepState) {
+    write_stat_var_u32(writer, pair.stat);
+    write_stat_var_u32(writer, pair.value as u32);
 }
 
 pub(super) fn copy_bits(reader: &mut BitReader<'_>, mut bits: usize) -> Payload {
@@ -1822,6 +2045,12 @@ pub(super) fn read_value(
         RepCommand::UniqueNetId => RepValue::UniqueNetId(
             read_unique_net_id(reader, &control_codec(codec)).context("unique net id item")?,
         ),
+        RepCommand::RowHandle => {
+            RepValue::RowHandle(read_row_handle(reader, order).context("row handle item")?)
+        }
+        RepCommand::StatPairRepState => RepValue::StatPairRepState(
+            read_stat_pair_rep_state(reader).context("stat pair rep state item")?,
+        ),
         RepCommand::DynamicArray { element } => {
             let count = read_u16(reader, codec.actor.order, "dynamic array count")?;
             ensure!(
@@ -2085,6 +2314,12 @@ pub(super) fn write_value(
         (RepCommand::UniqueNetId, RepValue::UniqueNetId(id)) => {
             write_unique_net_id(writer, id, &control_codec(codec)).context("unique net id item")?;
         }
+        (RepCommand::RowHandle, RepValue::RowHandle(row)) => {
+            write_row_handle(writer, row, order).context("row handle item")?;
+        }
+        (RepCommand::StatPairRepState, RepValue::StatPairRepState(stat)) => {
+            write_stat_pair_rep_state(writer, stat);
+        }
         (RepCommand::DynamicArray { element }, RepValue::DynamicArray(array)) => {
             ensure!(
                 array.count <= codec.limits.max_array_elements,
@@ -2206,6 +2441,10 @@ pub fn encode_rep_properties(
 pub const NET_ROLE_MAX_VALUE: i64 = 4;
 /// Maximum registered enumerator value of `EReplicatedLeftProspectState` (3, F-703).
 pub const REPLICATED_LEFT_PROSPECT_STATE_MAX_VALUE: i64 = 3;
+/// Maximum registered enumerator value of `EAudioShelterState` (2, F-705).
+pub const AUDIO_SHELTER_STATE_MAX_VALUE: i64 = 2;
+/// Maximum registered enumerator value of `EAliveState` (1, F-705).
+pub const ALIVE_STATE_MAX_VALUE: i64 = 1;
 /// `FGameplayTagContainer::NetSerialize` count width (`NumBitsForContainerSize = 6`, F-592, F-702).
 pub const GAMEPLAY_TAG_CONTAINER_COUNT_BITS: u8 = 6;
 
@@ -2363,8 +2602,1880 @@ pub fn player_state_rep_layout(
     commands
 }
 
-/// Statically observed 2-handle rep layout of `UActorComponent` (F-703):
+/// Statically observed 2-handle rep layout of `UActorComponent` (and
+/// `UPlayerDataComponent`, which adds no net properties, F-703, F-705):
 /// handle 1 `bReplicates` and handle 2 `bIsActive`.
 pub fn actor_component_rep_layout() -> Vec<RepCommand> {
     vec![RepCommand::Bool, RepCommand::Bool]
+}
+
+/// Statically observed 3-handle rep layout of `UFLODActorComponent` (F-705):
+/// `UActorComponent` handles 1..2, then handle 3 `bSpawnedFromPool`.
+pub fn flod_actor_component_rep_layout() -> Vec<RepCommand> {
+    let mut commands = actor_component_rep_layout();
+    commands.push(RepCommand::Bool);
+    commands
+}
+
+/// Statically observed 3-handle rep layout of `UAudioContextComponent` (F-705):
+/// `UActorComponent` handles 1..2, then handle 3 `ShelterState`
+/// (`EAudioShelterState`, max 2 -> 2 bits).
+pub fn audio_context_component_rep_layout() -> Vec<RepCommand> {
+    let mut commands = actor_component_rep_layout();
+    commands.push(RepCommand::Enum {
+        bits: enum_bits(AUDIO_SHELTER_STATE_MAX_VALUE, 1),
+    });
+    commands
+}
+
+/// Statically observed 3-handle rep layout of `UTraitBehaviour` (`0x144f8a150`,
+/// F-705): `UActorComponent` handles 1..2, then handle 3 `OwningComponent`
+/// (`FObjectProperty`).
+pub fn trait_behaviour_rep_layout() -> Vec<RepCommand> {
+    let mut commands = actor_component_rep_layout();
+    commands.push(RepCommand::Object);
+    commands
+}
+
+/// Statically observed 4-handle rep layout of `UResourceNetworkComponent`
+/// (F-705): `UActorComponent` handles 1..2, then handle 3 `Network` and
+/// handle 4 `Spline` (`FObjectProperty`).
+pub fn resource_network_component_rep_layout() -> Vec<RepCommand> {
+    let mut commands = actor_component_rep_layout();
+    commands.extend([RepCommand::Object, RepCommand::Object]);
+    commands
+}
+
+/// Statically observed 3-handle rep layout of `UTraitComponent` (and subclasses
+/// such as `UMeshableComponent`, `UInteractableComponent`,
+/// `UHighlightableComponent`, `UUsableComponent`, `UDeployableComponent`,
+/// `UTraitBehaviours` and `UInventoryComponent` that add no net properties,
+/// F-705): `UActorComponent` handles 1..2, then handle 3 `DataRowHandle`
+/// (`FRowHandle`).
+pub fn trait_component_rep_layout() -> Vec<RepCommand> {
+    let mut commands = actor_component_rep_layout();
+    commands.push(RepCommand::RowHandle);
+    commands
+}
+
+/// Statically observed 4-handle rep layout of `UDurableComponent` (F-705):
+/// `UTraitComponent` handles 1..3, then handle 4 `Durability` (`FIntProperty`).
+pub fn durable_component_rep_layout() -> Vec<RepCommand> {
+    let mut commands = trait_component_rep_layout();
+    commands.push(RepCommand::Int);
+    commands
+}
+
+/// Statically observed 4-handle rep layout of `UItemableComponent` (F-705):
+/// `UTraitComponent` handles 1..3, then handle 4 `Stack` (`FIntProperty`).
+pub fn itemable_component_rep_layout() -> Vec<RepCommand> {
+    let mut commands = trait_component_rep_layout();
+    commands.push(RepCommand::Int);
+    commands
+}
+
+/// Statically observed 5-handle rep layout of `UDecayableComponent` (F-705):
+/// `UTraitComponent` handles 1..3, then handle 4 `DecayTime` and handle 5
+/// `SpoilTime` (`FIntProperty`).
+pub fn decayable_component_rep_layout() -> Vec<RepCommand> {
+    let mut commands = trait_component_rep_layout();
+    commands.extend([RepCommand::Int, RepCommand::Int]);
+    commands
+}
+
+/// Statically observed 5-handle rep layout of `UFillableComponent` (F-705):
+/// `UTraitComponent` handles 1..3, then handle 4 `FillableType` and handle 5
+/// `StoredUnits` (`FIntProperty`).
+pub fn fillable_component_rep_layout() -> Vec<RepCommand> {
+    let mut commands = trait_component_rep_layout();
+    commands.extend([RepCommand::Int, RepCommand::Int]);
+    commands
+}
+
+/// Statically observed 4-handle rep layout of `UTransmutableComponent` (F-705):
+/// `UTraitComponent` handles 1..3, then handle 4 `TransmutableUnits`
+/// (`FIntProperty`).
+pub fn transmutable_component_rep_layout() -> Vec<RepCommand> {
+    let mut commands = trait_component_rep_layout();
+    commands.push(RepCommand::Int);
+    commands
+}
+
+/// Statically observed 4-handle rep layout of `UFocusableComponent` (F-705):
+/// `UTraitComponent` handles 1..3, then handle 4 `IsFocused` (`FBoolProperty`).
+pub fn focusable_component_rep_layout() -> Vec<RepCommand> {
+    let mut commands = trait_component_rep_layout();
+    commands.push(RepCommand::Bool);
+    commands
+}
+
+/// Statically observed 8-handle rep layout of `UActionableComponent` (F-705):
+/// `UTraitComponent` handles 1..3, then 5 `FIntProperty` handles 4..8.
+pub fn actionable_component_rep_layout() -> Vec<RepCommand> {
+    let mut commands = trait_component_rep_layout();
+    commands.extend(std::iter::repeat_n(RepCommand::Int, 5));
+    commands
+}
+
+/// Statically observed 8-handle rep layout of `UModifierStateComponent` (F-705):
+/// `UActorComponent` handles 1..2, then handle 3 `DataRowHandleNew`
+/// (`FModifierStatesRowHandle::NetSerialize` `0x141c93350` -> `0x141619d80`,
+/// 2-byte row index `UInt16`), handle 4 `ReplicatedOwner` (`FObjectProperty`),
+/// handle 5 `ModifierUID` (`FIntProperty`), handle 6 `ModifierLifeTime`
+/// (`FFloatProperty`), handle 7 `CachedFinalEffectiveness` (`FIntProperty`) and
+/// handle 8 `ReplicatedRemainingTime` (`FUInt16Property`).
+pub fn modifier_state_component_rep_layout() -> Vec<RepCommand> {
+    let mut commands = actor_component_rep_layout();
+    commands.extend([
+        RepCommand::UInt16,
+        RepCommand::Object,
+        RepCommand::Int,
+        RepCommand::Float,
+        RepCommand::Int,
+        RepCommand::UInt16,
+    ]);
+    commands
+}
+
+/// Statically observed 12-handle rep layout of `UActorState` (F-705):
+/// `UActorComponent` handles 1..2, then handles 3..6 `Health`, `MaxHealth`,
+/// `Armor` and `MaxArmor` (`FIntProperty`), handle 7 `Shelter`
+/// (`FFloatProperty`), handles 8..10 `ExternalTemperature`,
+/// `ModifiedExternalTemperature` and `ModifiedInternalTemperature`
+/// (`FIntProperty`), handle 11 `CurrentBiome`
+/// (`FBiomesRowHandle::NetSerialize` `0x141a63b90` -> `0x141535390`, 1-byte row
+/// index `Byte`) and handle 12 `CurrentAliveState` (`EAliveState`, max 1 -> 1 bit).
+pub fn actor_state_rep_layout() -> Vec<RepCommand> {
+    let mut commands = actor_component_rep_layout();
+    commands.extend([
+        RepCommand::Int,
+        RepCommand::Int,
+        RepCommand::Int,
+        RepCommand::Int,
+        RepCommand::Float,
+        RepCommand::Int,
+        RepCommand::Int,
+        RepCommand::Int,
+        RepCommand::Byte { enum_bits: None },
+        RepCommand::Enum {
+            bits: enum_bits(ALIVE_STATE_MAX_VALUE, 1),
+        },
+    ]);
+    commands
+}
+
+/// Statically observed 17-handle rep layout of `UCharacterState` (F-705):
+/// `UActorState` handles 1..12, then handles 13..15 `Stamina`, `MaxStamina` and
+/// `TotalExperience` (`FIntProperty`), handle 16 `GrowthRowHandle`
+/// (`FCharacterGrowthRowHandle::NetSerialize` `0x141a855e0` -> `0x1415537b0`,
+/// 1-byte row index `Byte`) and handle 17 `Level` (`FIntProperty`).
+pub fn character_state_rep_layout() -> Vec<RepCommand> {
+    let mut commands = actor_state_rep_layout();
+    commands.extend([
+        RepCommand::Int,
+        RepCommand::Int,
+        RepCommand::Int,
+        RepCommand::Byte { enum_bits: None },
+        RepCommand::Int,
+    ]);
+    commands
+}
+
+/// Statically observed 30-handle rep layout of `USurvivalCharacterState` (F-705):
+/// `UCharacterState` handles 1..17, then 13 `FIntProperty` handles 18..30
+/// (`OxygenLevel`, `WaterLevel`, `FoodLevel`, `MinOxygen`, `MaxOxygen`,
+/// `MinWater`, `MaxWater`, `MinFood`, `MaxFood`, `InternalTemperature`,
+/// `RadiationLevel`, `MinRadiation` and `MaxRadiation`).
+pub fn survival_character_state_rep_layout() -> Vec<RepCommand> {
+    let mut commands = character_state_rep_layout();
+    commands.extend(std::iter::repeat_n(RepCommand::Int, 13));
+    commands
+}
+
+/// Statically observed 32-handle rep layout of `UPlayerCharacterState` (F-705):
+/// `USurvivalCharacterState` handles 1..30, then handle 31 `LocalWeatherEvent`
+/// (`FWeatherEventsRowHandle::NetSerialize` `0x141dec180` -> `0x1416c39b0`,
+/// 1-byte row index `Byte`) and handle 32 `AIDetectionPercentage`
+/// (`FIntProperty`).
+pub fn player_character_state_rep_layout() -> Vec<RepCommand> {
+    let mut commands = survival_character_state_rep_layout();
+    commands.extend([RepCommand::Byte { enum_bits: None }, RepCommand::Int]);
+    commands
+}
+
+/// Maximum registered enumerator value (`_MAX`) of `EComponentMobility` (3).
+pub const COMPONENT_MOBILITY_MAX_VALUE: i64 = 3;
+/// Maximum registered enumerator value (`_MAX`) of `EIcarusItemContext` (11).
+pub const ICARUS_ITEM_CONTEXT_MAX_VALUE: i64 = 11;
+/// Maximum registered enumerator value (`_MAX`) of `EDynamicItemProperties` (15).
+pub const DYNAMIC_ITEM_PROPERTIES_MAX_VALUE: i64 = 15;
+/// Maximum registered enumerator value (`_MAX`) of `EProspectState` (5).
+pub const PROSPECT_STATE_MAX_VALUE: i64 = 5;
+/// Maximum registered enumerator value (`_MAX`) of `EProspectLocation` (13).
+pub const PROSPECT_LOCATION_MAX_VALUE: i64 = 13;
+/// Maximum registered enumerator value (`_MAX`) of `EMissionDifficulty` (5).
+pub const MISSION_DIFFICULTY_MAX_VALUE: i64 = 5;
+/// Maximum registered enumerator value (`_MAX`) of `EMovementState` (9).
+pub const MOVEMENT_STATE_MAX_VALUE: i64 = 9;
+/// Maximum registered enumerator value (`_MAX`) of `EMountCombatBehaviourState` (4 -> 3 bits).
+pub const MOUNT_COMBAT_BEHAVIOUR_STATE_MAX_VALUE: i64 = 4;
+/// Maximum registered enumerator value (`_MAX`) of `EMountMovementBehaviourState` (5 -> 3 bits).
+pub const MOUNT_MOVEMENT_BEHAVIOUR_STATE_MAX_VALUE: i64 = 5;
+/// Maximum registered enumerator value (`_MAX`) of `EMountConsumptionBehaviourState` (4 -> 3 bits).
+pub const MOUNT_CONSUMPTION_BEHAVIOUR_STATE_MAX_VALUE: i64 = 4;
+/// Maximum registered enumerator value (`_MAX`) of `EMountGrazingBehaviourState` (5 -> 3 bits).
+pub const MOUNT_GRAZING_BEHAVIOUR_STATE_MAX_VALUE: i64 = 5;
+/// Maximum registered enumerator value (`_MAX`) of `EAIAudioState` (8 -> 4 bits).
+pub const AI_AUDIO_STATE_MAX_VALUE: i64 = 8;
+/// Maximum registered enumerator value (`_MAX`) of `EMountAction` (6 -> 3 bits).
+pub const MOUNT_ACTION_MAX_VALUE: i64 = 6;
+/// Maximum registered enumerator value (`_MAX`) of `EInteractType` (5 -> 3 bits).
+pub const INTERACT_TYPE_MAX_VALUE: i64 = 5;
+/// Maximum registered enumerator value (`_MAX`) of `ECreatureSex` (3 -> 2 bits).
+pub const CREATURE_SEX_MAX_VALUE: i64 = 3;
+/// Maximum registered enumerator value (`_MAX`) of `EFlammableState` (6 -> 3 bits).
+pub const FLAMMABLE_STATE_MAX_VALUE: i64 = 6;
+/// Maximum registered enumerator value (`_MAX`) of `EAccumulationType` (`UserDefinedEnum`, 4 -> 3 bits).
+pub const ACCUMULATION_TYPE_MAX_VALUE: i64 = 4;
+/// Maximum registered enumerator value (`_MAX`) of `ShelteredEnum` (`UserDefinedEnum`, 5 -> 3 bits).
+pub const SHELTERED_ENUM_MAX_VALUE: i64 = 5;
+/// Maximum registered enumerator value (`_MAX`) of `ERocketState` (4 -> 3 bits).
+pub const ROCKET_STATE_MAX_VALUE: i64 = 4;
+/// Maximum registered enumerator value (`_MAX`) of `EDropshipDescentStateFMODParam` (6 -> 3 bits).
+pub const DROPSHIP_DESCENT_STATE_FMOD_PARAM_MAX_VALUE: i64 = 6;
+/// Maximum registered enumerator value (`_MAX`) of `EMapTileRadarFlag` (4 -> 3 bits).
+pub const MAP_TILE_RADAR_FLAG_MAX_VALUE: i64 = 4;
+/// Maximum registered enumerator value (`_MAX`) of `EDynamicQuestDifficulty` (4 -> 3 bits).
+pub const DYNAMIC_QUEST_DIFFICULTY_MAX_VALUE: i64 = 4;
+
+/// Statically observed 80-handle rep layout of `AIcarusPlayerState`:
+/// `APlayerState` handles 1..26, handles 27..32 flattened `ActiveUserProfile`
+/// (`FOnlineProfileUser`), handles 33..76 flattened `ActiveCharacter`
+/// (`FOnlineProfileCharacter` with nested `FCharacterCosmetics`), handles 77..78
+/// flattened `PlayerCharacterID` (`[PlayerID: Str, ChrSlot: Int]`), handle 79
+/// `bIsHost` (`FBoolProperty`) and handle 80 `CheatController`
+/// (`FObjectProperty`).
+pub fn icarus_player_state_rep_layout(
+    location: MovementLevel,
+    velocity: MovementLevel,
+    rotation: RotationLevel,
+) -> Vec<RepCommand> {
+    let mut commands = player_state_rep_layout(location, velocity, rotation);
+    let str_int_pair = || vec![RepCommand::Str, RepCommand::Int];
+    commands.extend([
+        RepCommand::Str,
+        RepCommand::DynamicArray {
+            element: str_int_pair(),
+        },
+        RepCommand::DynamicArray {
+            element: vec![RepCommand::Int],
+        },
+        RepCommand::DynamicArray {
+            element: str_int_pair(),
+        },
+        RepCommand::Int,
+        RepCommand::Int,
+        RepCommand::Str,
+        RepCommand::Int,
+        RepCommand::Int,
+        RepCommand::Int,
+        RepCommand::Bool,
+        RepCommand::Bool,
+        RepCommand::Str,
+        RepCommand::Enum {
+            bits: enum_bits(PROSPECT_LOCATION_MAX_VALUE, 1),
+        },
+        RepCommand::DynamicArray {
+            element: vec![RepCommand::Int],
+        },
+        RepCommand::DynamicArray {
+            element: str_int_pair(),
+        },
+    ]);
+    commands.extend(std::iter::repeat_n(RepCommand::Int, 10));
+    commands.push(RepCommand::Bool);
+    commands.extend(std::iter::repeat_n(RepCommand::Int, 5));
+    commands.extend([
+        RepCommand::Bool,
+        RepCommand::Int,
+        RepCommand::Float,
+        RepCommand::Float,
+        RepCommand::Float,
+    ]);
+    commands.extend(std::iter::repeat_n(RepCommand::Int, 7));
+    commands.extend(std::iter::repeat_n(RepCommand::Float, 4));
+    commands.extend([
+        RepCommand::DynamicArray {
+            element: str_int_pair(),
+        },
+        RepCommand::Int64,
+        RepCommand::Str,
+        RepCommand::Int,
+        RepCommand::Bool,
+        RepCommand::Object,
+    ]);
+    commands
+}
+
+/// Cooked Blueprint 84-handle rep layout of `BP_IcarusPlayerState_C`:
+/// `AIcarusPlayerState` handles 1..80, then handle 81 `PlayerIdentityVisual`
+/// (`FIntProperty`), handle 82 `PlayerMapColorIndex` (`FIntProperty`), handle 83
+/// `PersonalWaypoint` (`FObjectProperty`) and handle 84
+/// `DebugDeployableCollisionDisabled` (`FBoolProperty`).
+pub fn bp_icarus_player_state_rep_layout(
+    location: MovementLevel,
+    velocity: MovementLevel,
+    rotation: RotationLevel,
+) -> Vec<RepCommand> {
+    let mut commands = icarus_player_state_rep_layout(location, velocity, rotation);
+    commands.extend([
+        RepCommand::Int,
+        RepCommand::Int,
+        RepCommand::Object,
+        RepCommand::Bool,
+    ]);
+    commands
+}
+
+/// Flattened child commands of `FTransform` (`HasNetSerializer == false`):
+/// `Rotation` (`FQuat::NetSerialize` `0x1421003f0` -> `0x141ed3a00`, three
+/// 4-byte float components `X, Y, Z` with `W >= 0` reconstructed on load),
+/// `Translation` (`FVector`) and `Scale3D` (`FVector`).
+pub fn transform_commands() -> [RepCommand; 3] {
+    [RepCommand::Vector, RepCommand::Vector, RepCommand::Vector]
+}
+
+/// Flattened child commands of `FIcarusStatReplicated` (`HasNetSerializer == false`):
+/// `Stat.Value` (`FName`) and `Value` (`FIntProperty`).
+pub fn icarus_stat_replicated_commands() -> [RepCommand; 2] {
+    [RepCommand::NetworkName, RepCommand::Int]
+}
+
+/// Flattened child commands of `FItemData` (13 commands; `CachedStats` has
+/// `CPF_RepSkip` and is skipped by `FRepLayout::InitFromStruct` `0x143af7340`).
+pub fn item_data_commands(tag_encoding: TagEncoding) -> Vec<RepCommand> {
+    let stat_elem = || icarus_stat_replicated_commands().to_vec();
+    vec![
+        RepCommand::DynamicArray {
+            element: vec![RepCommand::Object],
+        },
+        RepCommand::UInt16,
+        RepCommand::DynamicArray {
+            element: vec![
+                RepCommand::Enum {
+                    bits: enum_bits(DYNAMIC_ITEM_PROPERTIES_MAX_VALUE, 1),
+                },
+                RepCommand::Int,
+            ],
+        },
+        RepCommand::DynamicArray {
+            element: stat_elem(),
+        },
+        RepCommand::DynamicArray {
+            element: stat_elem(),
+        },
+        RepCommand::DynamicArray {
+            element: stat_elem(),
+        },
+        RepCommand::DynamicArray {
+            element: stat_elem(),
+        },
+        RepCommand::DynamicArray {
+            element: vec![RepCommand::NetworkName],
+        },
+        RepCommand::DynamicArray {
+            element: vec![RepCommand::NetworkName, RepCommand::Int],
+        },
+        RepCommand::Bool,
+        RepCommand::Str,
+        RepCommand::Int,
+        RepCommand::GameplayTagContainer {
+            encoding: tag_encoding,
+            count_bits: GAMEPLAY_TAG_CONTAINER_COUNT_BITS,
+        },
+    ]
+}
+
+/// Flattened 18-handle rep layout of `FInventorySlot` (`FFastArraySerializerItem`
+/// base properties have `CPF_RepSkip`): `ItemData` (handles 1..13), handle 14
+/// `Query` (`FTagQueriesRowHandle`, 2-byte `UInt16`), handle 15 `Locked`
+/// (`FBoolProperty`), handle 16 `LastItem` (`FItemsStaticRowHandle`, 2-byte
+/// `UInt16`), handle 17 `Slotable` (`FBoolProperty`) and handle 18 `Index`
+/// (`FIntProperty`).
+pub fn inventory_slot_commands(tag_encoding: TagEncoding) -> Vec<RepCommand> {
+    let mut commands = item_data_commands(tag_encoding);
+    commands.extend([
+        RepCommand::UInt16,
+        RepCommand::Bool,
+        RepCommand::UInt16,
+        RepCommand::Bool,
+        RepCommand::Int,
+    ]);
+    commands
+}
+
+/// Statically observed 9-handle rep layout of `UInventory`:
+/// `UTraitBehaviour` handles 1..3, handle 4 `CurrentWeight` (`FIntProperty`),
+/// handle 5 `Slots.Slots` (`TArray<FInventorySlot>`, present in the parent table
+/// when `FInventorySlotsFastArray` is flattened, though replicated via custom
+/// delta), handle 6 `ReplicatedModifierStackMultipliers` (`TArray<float>`),
+/// handle 7 `InventoryInfoRowHandle` (`FInventoryInfoRowHandle`, 1-byte `Byte`),
+/// handle 8 `SpoilTickRate` (`FFloatProperty`) and handle 9 `ParentInventory`
+/// (`FWeakObjectProperty`).
+pub fn inventory_rep_layout() -> Vec<RepCommand> {
+    let mut commands = trait_behaviour_rep_layout();
+    commands.extend([
+        RepCommand::Int,
+        RepCommand::Unsupported(UnsupportedItem::OtherNativeStruct),
+        RepCommand::DynamicArray {
+            element: vec![RepCommand::Float],
+        },
+        RepCommand::Byte { enum_bits: None },
+        RepCommand::Float,
+        RepCommand::Object,
+    ]);
+    commands
+}
+
+/// Statically observed 19-handle rep layout of `AGameStateBase`:
+/// `AActor` handles 1..15, then handles 16..17 `GameModeClass` and
+/// `SpectatorClass` (`FClassProperty`), handle 18 `bReplicatedHasBegunPlay`
+/// (`FBoolProperty`) and handle 19 `ReplicatedWorldTimeSeconds`
+/// (`FFloatProperty`).
+pub fn game_state_base_rep_layout(
+    location: MovementLevel,
+    velocity: MovementLevel,
+    rotation: RotationLevel,
+) -> Vec<RepCommand> {
+    let mut commands = actor_rep_layout(location, velocity, rotation);
+    commands.extend([
+        RepCommand::Object,
+        RepCommand::Object,
+        RepCommand::Bool,
+        RepCommand::Float,
+    ]);
+    commands
+}
+
+/// Statically observed 21-handle rep layout of `AGameState`:
+/// `AGameStateBase` handles 1..19, then handle 20 `MatchState`
+/// (`FNameProperty`) and handle 21 `ElapsedTime` (`FIntProperty`).
+pub fn game_state_rep_layout(
+    location: MovementLevel,
+    velocity: MovementLevel,
+    rotation: RotationLevel,
+) -> Vec<RepCommand> {
+    let mut commands = game_state_base_rep_layout(location, velocity, rotation);
+    commands.extend([RepCommand::NetworkName, RepCommand::Int]);
+    commands
+}
+
+/// Statically observed 24-handle rep layout of `AIcarusGameStateBase`:
+/// `AGameState` handles 1..21, then handles 22..23 `ConnectedPlayers` and
+/// `DialogueSystem` (`FObjectProperty`) and handle 24 `RichPresenceGUID`
+/// (`FStrProperty`).
+pub fn icarus_game_state_base_rep_layout(
+    location: MovementLevel,
+    velocity: MovementLevel,
+    rotation: RotationLevel,
+) -> Vec<RepCommand> {
+    let mut commands = game_state_rep_layout(location, velocity, rotation);
+    commands.extend([RepCommand::Object, RepCommand::Object, RepCommand::Str]);
+    commands
+}
+
+/// Flattened child commands of `FProspectInfo` (17 commands).
+pub fn prospect_info_commands() -> Vec<RepCommand> {
+    vec![
+        RepCommand::Str,
+        RepCommand::Str,
+        RepCommand::Int,
+        RepCommand::Str,
+        RepCommand::Str,
+        RepCommand::Str,
+        RepCommand::Int64,
+        RepCommand::Enum {
+            bits: enum_bits(PROSPECT_STATE_MAX_VALUE, 1),
+        },
+        RepCommand::DynamicArray {
+            element: vec![
+                RepCommand::Str,
+                RepCommand::Str,
+                RepCommand::Str,
+                RepCommand::Int,
+                RepCommand::Int,
+                RepCommand::Enum {
+                    bits: enum_bits(PROSPECT_LOCATION_MAX_VALUE, 1),
+                },
+                RepCommand::Bool,
+                RepCommand::Bool,
+            ],
+        },
+        RepCommand::Int,
+        RepCommand::Int,
+        RepCommand::Enum {
+            bits: enum_bits(MISSION_DIFFICULTY_MAX_VALUE, 1),
+        },
+        RepCommand::Bool,
+        RepCommand::Bool,
+        RepCommand::Int,
+        RepCommand::Int,
+        RepCommand::DynamicArray {
+            element: vec![RepCommand::Str, RepCommand::Int],
+        },
+    ]
+}
+
+/// Flattened child commands of `FNetworkingStatus` (12 commands).
+pub fn networking_status_commands() -> Vec<RepCommand> {
+    vec![
+        RepCommand::Str,
+        RepCommand::Str,
+        RepCommand::DynamicArray {
+            element: vec![RepCommand::Str],
+        },
+        RepCommand::DynamicArray {
+            element: vec![RepCommand::Int],
+        },
+        RepCommand::Bool,
+        RepCommand::Float,
+        RepCommand::Float,
+        RepCommand::Float,
+        RepCommand::Float,
+        RepCommand::Float,
+        RepCommand::Int,
+        RepCommand::Int,
+    ]
+}
+
+/// Statically observed 82-handle rep layout of `AIcarusGameStateSurvival` (and
+/// `BP_IcarusGameState_C`, which adds no net properties):
+/// `AIcarusGameStateBase` handles 1..24, then handles 25..82 (`MeteorDirection`
+/// at handle 81 is a single `RepCommand::Vector2D` via `CoreUObject`
+/// `DeferCppStructOps`, placing `ServerFps` at handle 82).
+pub fn icarus_game_state_survival_rep_layout(
+    location: MovementLevel,
+    velocity: MovementLevel,
+    rotation: RotationLevel,
+) -> Vec<RepCommand> {
+    let mut commands = icarus_game_state_base_rep_layout(location, velocity, rotation);
+    commands.extend([
+        RepCommand::Object,
+        RepCommand::Object,
+        RepCommand::Object,
+        RepCommand::Object,
+        RepCommand::Object,
+        RepCommand::Object,
+        RepCommand::Bool,
+        RepCommand::Bool,
+        RepCommand::Int,
+        RepCommand::Int,
+        RepCommand::Bool,
+        RepCommand::Object,
+        RepCommand::Object,
+        RepCommand::Float,
+        RepCommand::Int,
+        RepCommand::Int,
+        RepCommand::Int,
+        RepCommand::Float,
+        RepCommand::Bool,
+        RepCommand::Bool,
+        RepCommand::Bool,
+        RepCommand::Int,
+        RepCommand::DynamicArray {
+            element: vec![RepCommand::Byte { enum_bits: None }],
+        },
+        RepCommand::Bool,
+        RepCommand::Bool,
+        RepCommand::DynamicArray {
+            element: vec![RepCommand::Byte { enum_bits: None }, RepCommand::Int],
+        },
+    ]);
+    commands.extend(prospect_info_commands());
+    commands.extend(networking_status_commands());
+    commands.extend([RepCommand::Float, RepCommand::Vector2D, RepCommand::Int]);
+    commands
+}
+
+/// Statically observed 18-handle rep layout of `APawn`:
+/// `AActor` handles 1..15, then handle 16 `RemoteViewPitch` (`FByteProperty`),
+/// handle 17 `PlayerState` (`FObjectProperty`) and handle 18 `Controller`
+/// (`FObjectProperty`).
+pub fn pawn_rep_layout(
+    location: MovementLevel,
+    velocity: MovementLevel,
+    rotation: RotationLevel,
+) -> Vec<RepCommand> {
+    let mut commands = actor_rep_layout(location, velocity, rotation);
+    commands.extend([
+        RepCommand::Byte { enum_bits: None },
+        RepCommand::Object,
+        RepCommand::Object,
+    ]);
+    commands
+}
+
+/// Statically observed 45-handle rep layout of `ACharacter`:
+/// `APawn` handles 1..18, handles 19..25 flattened `ReplicatedBasedMovement`
+/// (`FBasedMovementInfo`), handles 26..33 scalar movement fields, and handles
+/// 34..45 flattened `RepRootMotion` (`FRepRootMotionMontage`).
+pub fn character_rep_layout(
+    location: MovementLevel,
+    velocity: MovementLevel,
+    rotation: RotationLevel,
+) -> Vec<RepCommand> {
+    let mut commands = pawn_rep_layout(location, velocity, rotation);
+    commands.extend([
+        RepCommand::Object,
+        RepCommand::NetworkName,
+        RepCommand::VectorQuantize100,
+        RepCommand::Rotator,
+        RepCommand::Bool,
+        RepCommand::Bool,
+        RepCommand::Bool,
+        RepCommand::Float,
+        RepCommand::Float,
+        RepCommand::Float,
+        RepCommand::Byte { enum_bits: None },
+        RepCommand::Bool,
+        RepCommand::Bool,
+        RepCommand::Float,
+        RepCommand::Int,
+        RepCommand::Bool,
+        RepCommand::Object,
+        RepCommand::Float,
+        RepCommand::VectorQuantize100,
+        RepCommand::Rotator,
+        RepCommand::Object,
+        RepCommand::NetworkName,
+        RepCommand::Bool,
+        RepCommand::Bool,
+        RepCommand::Unsupported(UnsupportedItem::OtherNativeStruct),
+        RepCommand::VectorQuantize10,
+        RepCommand::VectorQuantize10,
+    ]);
+    commands
+}
+
+/// Statically observed 55-handle rep layout of `AIcarusCharacter`:
+/// `ACharacter` handles 1..45, then handles 46..55 (`IcarusUID`,
+/// `StatContainer`, `ActorState`, `PlayerNoise`, `GameplayTags`,
+/// `bIsSprinting`, `bIsAiming`, `bIsReloading`, `LadderReference` and
+/// `ParentCharacter`).
+pub fn icarus_character_rep_layout(
+    location: MovementLevel,
+    velocity: MovementLevel,
+    rotation: RotationLevel,
+    tag_encoding: TagEncoding,
+) -> Vec<RepCommand> {
+    let mut commands = character_rep_layout(location, velocity, rotation);
+    commands.extend([
+        RepCommand::Int,
+        RepCommand::Object,
+        RepCommand::Object,
+        RepCommand::Float,
+        RepCommand::GameplayTagContainer {
+            encoding: tag_encoding,
+            count_bits: GAMEPLAY_TAG_CONTAINER_COUNT_BITS,
+        },
+        RepCommand::Bool,
+        RepCommand::Bool,
+        RepCommand::Bool,
+        RepCommand::Object,
+        RepCommand::Object,
+    ]);
+    commands
+}
+
+/// Statically observed 67-handle rep layout of `AIcarusNPCCharacter`:
+/// `AIcarusCharacter` handles 1..55, handle 56 `MovementStateSet`
+/// (`EMovementState`, 4 bits), handles 57..61 flattened `DeathRagdollPose`
+/// (`FPoseSnapshot`), handles 62..64 flattened `DeathRagdollTransform`
+/// (`FTransform`), handle 65 `AISetupRow` (`FAISetupRowHandle`, 2-byte
+/// `UInt16`), handle 66 `FollowTargetActor` (`FObjectProperty`) and handle 67
+/// `DistanceToFollowTarget` (`FByteProperty`).
+pub fn icarus_npc_character_rep_layout(
+    location: MovementLevel,
+    velocity: MovementLevel,
+    rotation: RotationLevel,
+    tag_encoding: TagEncoding,
+) -> Vec<RepCommand> {
+    let mut commands = icarus_character_rep_layout(location, velocity, rotation, tag_encoding);
+    commands.extend([
+        RepCommand::Enum {
+            bits: enum_bits(MOVEMENT_STATE_MAX_VALUE, 1),
+        },
+        RepCommand::DynamicArray {
+            element: transform_commands().to_vec(),
+        },
+        RepCommand::DynamicArray {
+            element: vec![RepCommand::NetworkName],
+        },
+        RepCommand::NetworkName,
+        RepCommand::NetworkName,
+        RepCommand::Bool,
+    ]);
+    commands.extend(transform_commands());
+    commands.extend([
+        RepCommand::UInt16,
+        RepCommand::Object,
+        RepCommand::Byte { enum_bits: None },
+    ]);
+    commands
+}
+
+/// Statically observed 71-handle rep layout of `AIcarusNPCGOAPCharacter`:
+/// `AIcarusNPCCharacter` handles 1..67, then handle 68 `AISetup`
+/// (`FAISetupRowHandle`, 2-byte `UInt16`), handle 69 `EpicCreature`
+/// (`FEpicCreaturesRowHandle`, 1-byte `Byte`), handle 70 `CurrentLevel`
+/// (`FIntProperty`) and handle 71 `CurrentTarget` (`FObjectProperty`).
+pub fn icarus_npc_goap_character_rep_layout(
+    location: MovementLevel,
+    velocity: MovementLevel,
+    rotation: RotationLevel,
+    tag_encoding: TagEncoding,
+) -> Vec<RepCommand> {
+    let mut commands = icarus_npc_character_rep_layout(location, velocity, rotation, tag_encoding);
+    commands.extend([
+        RepCommand::UInt16,
+        RepCommand::Byte { enum_bits: None },
+        RepCommand::Int,
+        RepCommand::Object,
+    ]);
+    commands
+}
+
+/// Statically observed 81-handle rep layout of `AIcarusMountCharacter`:
+/// `AIcarusNPCGOAPCharacter` handles 1..71, then handles 72..81 (`CachedWeightValue`,
+/// `MountName`, flattened `OwnerCharacterID` `[PlayerID, ChrSlot]`, `OwnerName`,
+/// four behaviour-state enums and `bIsWildTame`).
+pub fn icarus_mount_character_rep_layout(
+    location: MovementLevel,
+    velocity: MovementLevel,
+    rotation: RotationLevel,
+    tag_encoding: TagEncoding,
+) -> Vec<RepCommand> {
+    let mut commands =
+        icarus_npc_goap_character_rep_layout(location, velocity, rotation, tag_encoding);
+    commands.extend([
+        RepCommand::Int,
+        RepCommand::Str,
+        RepCommand::Str,
+        RepCommand::Int,
+        RepCommand::Str,
+        RepCommand::Enum {
+            bits: enum_bits(MOUNT_COMBAT_BEHAVIOUR_STATE_MAX_VALUE, 1),
+        },
+        RepCommand::Enum {
+            bits: enum_bits(MOUNT_MOVEMENT_BEHAVIOUR_STATE_MAX_VALUE, 1),
+        },
+        RepCommand::Enum {
+            bits: enum_bits(MOUNT_CONSUMPTION_BEHAVIOUR_STATE_MAX_VALUE, 1),
+        },
+        RepCommand::Enum {
+            bits: enum_bits(MOUNT_GRAZING_BEHAVIOUR_STATE_MAX_VALUE, 1),
+        },
+        RepCommand::Bool,
+    ]);
+    commands
+}
+
+/// Cooked Blueprint 85-handle rep layout of `BP_Mount_Base_C` (and mount
+/// subclasses such as `BP_Mount_WoollyMammoth_C`, `BP_Mount_Buffalo_C` and
+/// `BP_Mount_Moa_C` that add no net properties):
+/// `AIcarusMountCharacter` handles 1..81, then handle 82 `CurrentAudioState`
+/// (`EAIAudioState`, 4 bits), handle 83 `SaddleData` (`FSaddlesRowHandle`,
+/// 1-byte `Byte`), handle 84 `CosmeticSkinIndex` (`FIntProperty`) and handle 85
+/// `IsInCave` (`FBoolProperty`).
+pub fn bp_mount_base_rep_layout(
+    location: MovementLevel,
+    velocity: MovementLevel,
+    rotation: RotationLevel,
+    tag_encoding: TagEncoding,
+) -> Vec<RepCommand> {
+    let mut commands =
+        icarus_mount_character_rep_layout(location, velocity, rotation, tag_encoding);
+    commands.extend([
+        RepCommand::Enum {
+            bits: enum_bits(AI_AUDIO_STATE_MAX_VALUE, 1),
+        },
+        RepCommand::Byte { enum_bits: None },
+        RepCommand::Int,
+        RepCommand::Bool,
+    ]);
+    commands
+}
+
+/// Cooked Blueprint 86-handle rep layout of `BP_Tame_Base_C` (and tame
+/// subclasses such as `BP_Tamed_Wolf_C` and `BP_Tame_Boar_C` that add no net
+/// properties): `BP_Mount_Base_C` handles 1..85, then handle 86 `HeldItem`
+/// (`FObjectProperty`).
+pub fn bp_tame_base_rep_layout(
+    location: MovementLevel,
+    velocity: MovementLevel,
+    rotation: RotationLevel,
+    tag_encoding: TagEncoding,
+) -> Vec<RepCommand> {
+    let mut commands = bp_mount_base_rep_layout(location, velocity, rotation, tag_encoding);
+    commands.push(RepCommand::Object);
+    commands
+}
+
+/// Cooked Blueprint 86-handle rep layout of `BP_Mount_Horse_C`:
+/// `BP_Mount_Base_C` handles 1..85, then handle 86 `CosmeticSkinIndex_0`
+/// (`FIntProperty`).
+pub fn bp_mount_horse_rep_layout(
+    location: MovementLevel,
+    velocity: MovementLevel,
+    rotation: RotationLevel,
+    tag_encoding: TagEncoding,
+) -> Vec<RepCommand> {
+    let mut commands = bp_mount_base_rep_layout(location, velocity, rotation, tag_encoding);
+    commands.push(RepCommand::Int);
+    commands
+}
+
+/// Statically observed 66-handle rep layout of `AIcarusPlayerCharacter`:
+/// `AIcarusCharacter` handles 1..55, then handles 56..66 (`InventoryComponent`,
+/// `BlockInputActions`, `ReplicatedControlRotation`, `IsMale`, flattened
+/// `FocusedItemData` `[FocusedItemInventory, FocusedItemSlot]`, `Voice`,
+/// `RespawnCount`, `HasGrantedLoadout`, `CurrentlyInteractingWithDeployable`
+/// and `CosmeticArmourOverrides`).
+pub fn icarus_player_character_rep_layout(
+    location: MovementLevel,
+    velocity: MovementLevel,
+    rotation: RotationLevel,
+    tag_encoding: TagEncoding,
+) -> Vec<RepCommand> {
+    let mut commands = icarus_character_rep_layout(location, velocity, rotation, tag_encoding);
+    commands.extend([
+        RepCommand::Object,
+        RepCommand::Bool,
+        RepCommand::Rotator,
+        RepCommand::Bool,
+        RepCommand::Object,
+        RepCommand::Int,
+        RepCommand::Byte { enum_bits: None },
+        RepCommand::Int,
+        RepCommand::Bool,
+        RepCommand::Object,
+        RepCommand::DynamicArray {
+            element: vec![RepCommand::UInt16],
+        },
+    ]);
+    commands
+}
+
+/// Statically observed 73-handle rep layout of `AIcarusPlayerCharacterSurvival`:
+/// `AIcarusPlayerCharacter` handles 1..66, then handles 67..70
+/// (`bServerFrozenMovement`, `PlayerPitch`, `PlayerYaw`, `FocusedQuickbarSlot`)
+/// and handles 71..73 flattened `LastInstancedLevelEntry` (`FTransform`).
+pub fn icarus_player_character_survival_rep_layout(
+    location: MovementLevel,
+    velocity: MovementLevel,
+    rotation: RotationLevel,
+    tag_encoding: TagEncoding,
+) -> Vec<RepCommand> {
+    let mut commands =
+        icarus_player_character_rep_layout(location, velocity, rotation, tag_encoding);
+    commands.extend([
+        RepCommand::Bool,
+        RepCommand::Float,
+        RepCommand::Float,
+        RepCommand::Int,
+    ]);
+    commands.extend(transform_commands());
+    commands
+}
+
+/// Cooked Blueprint 89-handle rep layout of `BP_IcarusPlayerCharacterSurvival_C`:
+/// `AIcarusPlayerCharacterSurvival` handles 1..73, then 16 cooked Blueprint net
+/// properties at handles 74..89.
+pub fn bp_icarus_player_character_survival_rep_layout(
+    location: MovementLevel,
+    velocity: MovementLevel,
+    rotation: RotationLevel,
+    tag_encoding: TagEncoding,
+) -> Vec<RepCommand> {
+    let mut commands =
+        icarus_player_character_survival_rep_layout(location, velocity, rotation, tag_encoding);
+    commands.extend([
+        RepCommand::Object,
+        RepCommand::Object,
+        RepCommand::Object,
+        RepCommand::Bool,
+        RepCommand::Object,
+        RepCommand::Int,
+        RepCommand::Int,
+        RepCommand::Bool,
+        RepCommand::Bool,
+        RepCommand::Bool,
+        RepCommand::Bool,
+        RepCommand::Object,
+        RepCommand::Object,
+        RepCommand::Int,
+        RepCommand::Bool,
+        RepCommand::Object,
+    ]);
+    commands
+}
+
+/// Statically observed 18-handle rep layout of `AIcarusActor`:
+/// `AActor` handles 1..15, then handles 16..17 `StatContainer` and `ActorState`
+/// (`FObjectProperty`) and handle 18 `GameplayTags` (`FGameplayTagContainer`).
+pub fn icarus_actor_rep_layout(
+    location: MovementLevel,
+    velocity: MovementLevel,
+    rotation: RotationLevel,
+    tag_encoding: TagEncoding,
+) -> Vec<RepCommand> {
+    let mut commands = actor_rep_layout(location, velocity, rotation);
+    commands.extend([
+        RepCommand::Object,
+        RepCommand::Object,
+        RepCommand::GameplayTagContainer {
+            encoding: tag_encoding,
+            count_bits: GAMEPLAY_TAG_CONTAINER_COUNT_BITS,
+        },
+    ]);
+    commands
+}
+
+/// Statically observed 40-handle rep layout of `AIcarusItem` (and
+/// `ABuildingBase`, which adds no net properties):
+/// `AIcarusActor` handles 1..18, handles 19..31 flattened `ItemData`
+/// (`FItemData`), handles 32..39 flattened `ConstructionParameters`
+/// (`FIcarusItemConstructionParameters`), and handle 40 `SpawnedContext`
+/// (`EIcarusItemContext`, 4 bits).
+pub fn icarus_item_rep_layout(
+    location: MovementLevel,
+    velocity: MovementLevel,
+    rotation: RotationLevel,
+    tag_encoding: TagEncoding,
+) -> Vec<RepCommand> {
+    let mut commands = icarus_actor_rep_layout(location, velocity, rotation, tag_encoding);
+    commands.extend(item_data_commands(tag_encoding));
+    commands.extend([
+        RepCommand::Bool,
+        RepCommand::Str,
+        RepCommand::NetworkName,
+        RepCommand::Byte {
+            enum_bits: Some(enum_byte_bits(COMPONENT_MOBILITY_MAX_VALUE)),
+        },
+        RepCommand::Bool,
+        RepCommand::Bool,
+        RepCommand::Bool,
+        RepCommand::Bool,
+        RepCommand::Enum {
+            bits: enum_bits(ICARUS_ITEM_CONTEXT_MAX_VALUE, 1),
+        },
+    ]);
+    commands
+}
+
+/// Cooked Blueprint 53-handle rep layout of `BP_Building_Base_C` (and building
+/// piece subclasses such as `BP_Building_Wall_*_C`, `BP_Building_Floor_*_C`,
+/// `BP_Building_Roof_*_C` and `BP_Building_Beam_*_C` that add no net
+/// properties): `AIcarusItem` handles 1..40, then 13 cooked Blueprint net
+/// properties at handles 41..53.
+pub fn bp_building_base_rep_layout(
+    location: MovementLevel,
+    velocity: MovementLevel,
+    rotation: RotationLevel,
+    tag_encoding: TagEncoding,
+) -> Vec<RepCommand> {
+    let mut commands = icarus_item_rep_layout(location, velocity, rotation, tag_encoding);
+    commands.extend([
+        RepCommand::Object,
+        RepCommand::Float,
+        RepCommand::Float,
+        RepCommand::Rotator,
+        RepCommand::Bool,
+        RepCommand::Bool,
+        RepCommand::Bool,
+        RepCommand::DynamicArray {
+            element: vec![
+                RepCommand::Vector,
+                RepCommand::Float,
+                RepCommand::Float,
+                RepCommand::Float,
+            ],
+        },
+        RepCommand::Bool,
+        RepCommand::Bool,
+        RepCommand::Bool,
+        RepCommand::Int,
+        RepCommand::Bool,
+    ]);
+    commands
+}
+
+/// Statically observed 31-handle rep layout of `UMountCharacterState`:
+/// `USurvivalCharacterState` handles 1..30, then handle 31 `Talents`
+/// (`TArray<FBackendTalent>` -> `[RowName: FString, Rank: int32]`).
+pub fn mount_character_state_rep_layout() -> Vec<RepCommand> {
+    let mut commands = survival_character_state_rep_layout();
+    commands.push(RepCommand::DynamicArray {
+        element: vec![RepCommand::Str, RepCommand::Int],
+    });
+    commands
+}
+
+/// Statically observed 3-handle rep layout of `UWeatherManagerComponent`:
+/// `UActorComponent` handles 1..2, then handle 3 `GameplayWeatherArray`
+/// (`TArray<FWeatherGameplayData>`).
+pub fn weather_manager_component_rep_layout() -> Vec<RepCommand> {
+    let mut commands = actor_component_rep_layout();
+    commands.push(RepCommand::DynamicArray {
+        element: vec![
+            RepCommand::NetworkName,
+            RepCommand::Vector,
+            RepCommand::Float,
+            RepCommand::Int,
+            RepCommand::Text,
+        ],
+    });
+    commands
+}
+
+/// Statically observed 7-handle rep layout of `UIcarusWeatherAction` (and
+/// `BP_WeatherAction_Base_C`, which adds no net properties):
+/// `UActorComponent` handles 1..2, then handle 3 `ParentWeatherEvent`
+/// (`FWeatherEventsRowHandle`, 1-byte `Byte`), handle 4 `WeatherActionData`
+/// (`FWeatherActionsRowHandle`, 2-byte `UInt16`), handle 5 `TotalLifeTime`
+/// (`FFloatProperty`), handle 6 `Replicated_CurrentLifeTime` (`FUInt16Property`)
+/// and handle 7 `BiomeAssigned` (`FBiomesRowHandle`, 1-byte `Byte`).
+pub fn icarus_weather_action_rep_layout() -> Vec<RepCommand> {
+    let mut commands = actor_component_rep_layout();
+    commands.extend([
+        RepCommand::Byte { enum_bits: None },
+        RepCommand::UInt16,
+        RepCommand::Float,
+        RepCommand::UInt16,
+        RepCommand::Byte { enum_bits: None },
+    ]);
+    commands
+}
+
+/// Cooked Blueprint 4-handle rep layout of `BP_UIProjectionComponent_C`:
+/// `UActorComponent` handles 1..2, then handle 3 `NearbyDistanceStart` and
+/// handle 4 `NearbyDistanceEnd` (`FFloatProperty`).
+pub fn bp_ui_projection_component_rep_layout() -> Vec<RepCommand> {
+    let mut commands = actor_component_rep_layout();
+    commands.extend([RepCommand::Float, RepCommand::Float]);
+    commands
+}
+
+/// Cooked Blueprint 5-handle rep layout of `BP_UIProjectionComponent_MountStatus_C`:
+/// `BP_UIProjectionComponent_C` handles 1..4, then handle 5 `CurrentMountState`
+/// (`EMountAction`, 3 bits).
+pub fn bp_ui_projection_component_mount_status_rep_layout() -> Vec<RepCommand> {
+    let mut commands = bp_ui_projection_component_rep_layout();
+    commands.push(RepCommand::Enum {
+        bits: enum_bits(MOUNT_ACTION_MAX_VALUE, 1),
+    });
+    commands
+}
+
+/// Cooked Blueprint 5-handle rep layout of `BP_UIProjectionComponent_Player_C`:
+/// `BP_UIProjectionComponent_C` handles 1..4, then handle 5 `IsAlive`
+/// (`FBoolProperty`).
+pub fn bp_ui_projection_component_player_rep_layout() -> Vec<RepCommand> {
+    let mut commands = bp_ui_projection_component_rep_layout();
+    commands.push(RepCommand::Bool);
+    commands
+}
+
+/// Statically observed 7-handle rep layout of `UInteractableBehaviour` (and
+/// `BP_Interactable_*_C` subclasses that add no net properties):
+/// `UTraitBehaviour` handles 1..3, then handle 4 `InteractType`
+/// (`EInteractType`, 3 bits), handle 5 `InteractIndex` (`FIntProperty`),
+/// handle 6 `RequiredInteractTag` (`FNameProperty`) and handle 7
+/// `InteractionsRowHandle` (`FInteractionsRowHandle`, 1-byte `Byte`).
+pub fn interactable_behaviour_rep_layout() -> Vec<RepCommand> {
+    let mut commands = trait_behaviour_rep_layout();
+    commands.extend([
+        RepCommand::Enum {
+            bits: enum_bits(INTERACT_TYPE_MAX_VALUE, 1),
+        },
+        RepCommand::Int,
+        RepCommand::NetworkName,
+        RepCommand::Byte { enum_bits: None },
+    ]);
+    commands
+}
+
+/// Cooked Blueprint 9-handle rep layout of `BP_Interactable_Butcher_Animal_C`:
+/// `UInteractableBehaviour` handles 1..7, then handle 8 `HarvestingPlayer` and
+/// handle 9 `OwningCorpse` (`FObjectProperty`).
+pub fn bp_interactable_butcher_animal_rep_layout() -> Vec<RepCommand> {
+    let mut commands = interactable_behaviour_rep_layout();
+    commands.extend([RepCommand::Object, RepCommand::Object]);
+    commands
+}
+
+/// Statically observed 15-handle rep layout of `USceneComponent` (and
+/// `USkeletalMeshComponent` / `UFMODAudioComponent`, which add no net
+/// properties): `UActorComponent` handles 1..2, then handles 3..15.
+pub fn scene_component_rep_layout() -> Vec<RepCommand> {
+    let mut commands = actor_component_rep_layout();
+    commands.extend([
+        RepCommand::Object,
+        RepCommand::NetworkName,
+        RepCommand::DynamicArray {
+            element: vec![RepCommand::Object],
+        },
+        RepCommand::Vector,
+        RepCommand::Rotator,
+        RepCommand::Vector,
+        RepCommand::Bool,
+        RepCommand::Bool,
+        RepCommand::Bool,
+        RepCommand::Bool,
+        RepCommand::Bool,
+        RepCommand::Bool,
+        RepCommand::Bool,
+    ]);
+    commands
+}
+
+/// Statically observed 16-handle rep layout of `UChildActorComponent`:
+/// `USceneComponent` handles 1..15, then handle 16 `ChildActor`
+/// (`FObjectProperty`).
+pub fn child_actor_component_rep_layout() -> Vec<RepCommand> {
+    let mut commands = scene_component_rep_layout();
+    commands.push(RepCommand::Object);
+    commands
+}
+
+/// Statically observed 16-handle rep layout of `UStaticMeshComponent`:
+/// `USceneComponent` handles 1..15, then handle 16 `StaticMesh`
+/// (`FObjectProperty`).
+pub fn static_mesh_component_rep_layout() -> Vec<RepCommand> {
+    let mut commands = scene_component_rep_layout();
+    commands.push(RepCommand::Object);
+    commands
+}
+
+/// Cooked Blueprint 18-handle rep layout of `BPC_EnvironmentalBuildup_C`:
+/// `UStaticMeshComponent` handles 1..16, then handle 17 `Amount`
+/// (`FFloatProperty`) and handle 18 `AccumulationType`
+/// (`EAccumulationType`, 3 bits).
+pub fn bpc_environmental_buildup_rep_layout() -> Vec<RepCommand> {
+    let mut commands = static_mesh_component_rep_layout();
+    commands.extend([
+        RepCommand::Float,
+        RepCommand::Byte {
+            enum_bits: Some(enum_byte_bits(ACCUMULATION_TYPE_MAX_VALUE)),
+        },
+    ]);
+    commands
+}
+
+/// Statically observed 6-handle rep layout of `UFlammableActor`:
+/// `UTraitComponent` handles 1..3 (`UFlammableComponent` adds no net
+/// properties), then handles 4..6 flattened `ReplicatedState`
+/// (`FFlammableRepState`: `FlammableState` `EFlammableState`,
+/// `DesiredTemperature` `FFloatProperty` and `InstanceIndex` `FIntProperty`).
+pub fn flammable_actor_rep_layout() -> Vec<RepCommand> {
+    let mut commands = trait_component_rep_layout();
+    commands.extend([
+        RepCommand::Enum {
+            bits: enum_bits(FLAMMABLE_STATE_MAX_VALUE, 1),
+        },
+        RepCommand::Float,
+        RepCommand::Int,
+    ]);
+    commands
+}
+
+/// Cooked Blueprint 7-handle rep layout of `BP_Flammable_Actor_C` (and
+/// subclasses `BP_Flammable_Building_C` and `BP_Flammable_Player_C` that add no
+/// net properties): `UFlammableActor` handles 1..6, then handle 7 `ModifierUID`
+/// (`FIntProperty`).
+pub fn bp_flammable_actor_rep_layout() -> Vec<RepCommand> {
+    let mut commands = flammable_actor_rep_layout();
+    commands.push(RepCommand::Int);
+    commands
+}
+
+/// Statically observed 3-handle rep layout of `UStomachComponent`:
+/// `UActorComponent` handles 1..2, then handle 3 `StomachContents`
+/// (`TArray<FStomachContent>`: `[Food: FItemsStaticRowHandle (UInt16), ModifierID: Int, CachedModifierName: Name]`).
+pub fn stomach_component_rep_layout() -> Vec<RepCommand> {
+    let mut commands = actor_component_rep_layout();
+    commands.push(RepCommand::DynamicArray {
+        element: vec![RepCommand::UInt16, RepCommand::Int, RepCommand::NetworkName],
+    });
+    commands
+}
+
+/// Cooked Blueprint 4-handle rep layout of `BP_SwimmingComponent_C`:
+/// `UTraitComponent` handles 1..3 (`UFloatableComponent` adds no net
+/// properties), then handle 4 `IsOverlappingWater` (`FBoolProperty`).
+pub fn bp_swimming_component_rep_layout() -> Vec<RepCommand> {
+    let mut commands = trait_component_rep_layout();
+    commands.push(RepCommand::Bool);
+    commands
+}
+
+/// Statically observed 10-handle rep layout of `UGeneticsComponent`:
+/// `UActorComponent` handles 1..2, then handle 3 `CreatureGenetics`
+/// (`TArray<FCreatureGenetics>`: `[GeneticValue: Byte, Value: Int]`), handle 4
+/// `CreatureLineage` (`FGeneticLineagesRowHandle`, 1-byte `Byte`), handle 5
+/// `CreatureSex` (`ECreatureSex`, 2 bits), handles 6..7
+/// `CreatureUniqueVariation` and `GestationProgress` (`FIntProperty`), handle 8
+/// `bHasGeneratedGenetics` (`FBoolProperty`), and handles 9..10 `Mother` and
+/// `Father` (`FStrProperty`).
+pub fn genetics_component_rep_layout() -> Vec<RepCommand> {
+    let mut commands = actor_component_rep_layout();
+    commands.extend([
+        RepCommand::DynamicArray {
+            element: vec![RepCommand::Byte { enum_bits: None }, RepCommand::Int],
+        },
+        RepCommand::Byte { enum_bits: None },
+        RepCommand::Enum {
+            bits: enum_bits(CREATURE_SEX_MAX_VALUE, 1),
+        },
+        RepCommand::Int,
+        RepCommand::Int,
+        RepCommand::Bool,
+        RepCommand::Str,
+        RepCommand::Str,
+    ]);
+    commands
+}
+
+/// Cooked Blueprint 5-handle rep layout of `BP_ShelteredComponent_C`:
+/// `UTraitComponent` handles 1..3 (`UShelteredComponent` adds no net
+/// properties), then handle 4 `ShelteredEnum` (`ShelteredEnum`, 3 bits) and
+/// handle 5 `Exposure` (`FFloatProperty`).
+pub fn bp_sheltered_component_rep_layout() -> Vec<RepCommand> {
+    let mut commands = trait_component_rep_layout();
+    commands.extend([
+        RepCommand::Byte {
+            enum_bits: Some(enum_byte_bits(SHELTERED_ENUM_MAX_VALUE)),
+        },
+        RepCommand::Float,
+    ]);
+    commands
+}
+
+/// Statically observed 20-handle rep layout of `AWorldSettings` (and
+/// `AIcarusWorldSettings` / `BP_IcarusWorldSettings_C`, which add no net
+/// properties): `AActor` handles 1..15, then handle 16 `bHighPriorityLoading`
+/// (`FBoolProperty`), handles 17..19 `WorldGravityZ`, `TimeDilation` and
+/// `MatineeTimeDilation` (`FFloatProperty`) and handle 20 `PauserPlayerState`
+/// (`FObjectProperty`).
+pub fn world_settings_rep_layout(
+    location: MovementLevel,
+    velocity: MovementLevel,
+    rotation: RotationLevel,
+) -> Vec<RepCommand> {
+    let mut commands = actor_rep_layout(location, velocity, rotation);
+    commands.extend([
+        RepCommand::Bool,
+        RepCommand::Float,
+        RepCommand::Float,
+        RepCommand::Float,
+        RepCommand::Object,
+    ]);
+    commands
+}
+
+/// Statically observed 16-handle rep layout of `AFLOD` (and
+/// `BP_IcarusFLOD_Default_C`, which adds no net properties):
+/// `AActor` handles 1..15, then handle 16 `Tiles` (`TArray<UObject*>`).
+pub fn flod_rep_layout(
+    location: MovementLevel,
+    velocity: MovementLevel,
+    rotation: RotationLevel,
+) -> Vec<RepCommand> {
+    let mut commands = actor_rep_layout(location, velocity, rotation);
+    commands.push(RepCommand::DynamicArray {
+        element: vec![RepCommand::Object],
+    });
+    commands
+}
+
+/// Statically observed 16-handle rep layout of `AWeatherController` (and
+/// `BP_WeatherController_C`, which adds no net properties):
+/// `AActor` handles 1..15, then handle 16 `CurrentWeather`
+/// (`TArray<FActiveWeatherInfo>`: `[WeatherEvent: Byte, Biome: Byte, Actions: Array<Object>, StartTime: Int]`).
+pub fn weather_controller_rep_layout(
+    location: MovementLevel,
+    velocity: MovementLevel,
+    rotation: RotationLevel,
+) -> Vec<RepCommand> {
+    let mut commands = actor_rep_layout(location, velocity, rotation);
+    commands.push(RepCommand::DynamicArray {
+        element: vec![
+            RepCommand::Byte { enum_bits: None },
+            RepCommand::Byte { enum_bits: None },
+            RepCommand::DynamicArray {
+                element: vec![RepCommand::Object],
+            },
+            RepCommand::Int,
+        ],
+    });
+    commands
+}
+
+/// Cooked Blueprint 30-handle rep layout of `MapManager_C` (`AMapManagerBase`
+/// handles 1..20, then 10 cooked Blueprint net properties at handles 21..30).
+pub fn bp_map_manager_rep_layout(
+    location: MovementLevel,
+    velocity: MovementLevel,
+    rotation: RotationLevel,
+) -> Vec<RepCommand> {
+    let mut commands = actor_rep_layout(location, velocity, rotation);
+    commands.extend(transform_commands());
+    commands.extend([
+        RepCommand::Int,
+        RepCommand::DynamicArray {
+            element: vec![
+                RepCommand::Vector,
+                RepCommand::Float,
+                RepCommand::Float,
+                RepCommand::Float,
+                RepCommand::Float,
+                RepCommand::Float,
+                RepCommand::Float,
+                RepCommand::Int,
+            ],
+        },
+        RepCommand::Object,
+        RepCommand::Int,
+        RepCommand::Int,
+        RepCommand::DynamicArray {
+            element: vec![RepCommand::DynamicArray {
+                element: vec![RepCommand::Enum {
+                    bits: enum_bits(MAP_TILE_RADAR_FLAG_MAX_VALUE, 1),
+                }],
+            }],
+        },
+        RepCommand::DynamicArray {
+            element: vec![RepCommand::Object],
+        },
+        RepCommand::DynamicArray {
+            element: vec![RepCommand::Int, RepCommand::Int, RepCommand::Int],
+        },
+        RepCommand::DynamicArray {
+            element: vec![RepCommand::Int],
+        },
+        RepCommand::DynamicArray {
+            element: vec![
+                RepCommand::Vector,
+                RepCommand::Float,
+                RepCommand::Float,
+                RepCommand::Int,
+            ],
+        },
+        RepCommand::Int,
+        RepCommand::Int,
+    ]);
+    commands
+}
+
+/// Statically observed 26-handle rep layout of `AQuest` (and `BPQ_*_C` quest
+/// Blueprint subclasses that add no net properties):
+/// `AIcarusActor` handles 1..18, then handle 19 `QuestData`
+/// (`FQuestsRowHandle` `0x141d02330` -> `0x14165b3d0`, 2-byte `UInt16`),
+/// handles 20..24 `RelevantActors`, `RelevantCharacters`, `ActiveQuests`,
+/// `QuestVariables` and `SubQuests`, handle 25 `QuestParent` and handle 26
+/// `bArtificiallyComplete`.
+pub fn quest_rep_layout(
+    location: MovementLevel,
+    velocity: MovementLevel,
+    rotation: RotationLevel,
+    tag_encoding: TagEncoding,
+) -> Vec<RepCommand> {
+    let mut commands = icarus_actor_rep_layout(location, velocity, rotation, tag_encoding);
+    commands.extend([
+        RepCommand::UInt16,
+        RepCommand::DynamicArray {
+            element: vec![RepCommand::Str, RepCommand::Object],
+        },
+        RepCommand::DynamicArray {
+            element: vec![RepCommand::Str, RepCommand::Object],
+        },
+        RepCommand::DynamicArray {
+            element: vec![RepCommand::Object],
+        },
+        RepCommand::DynamicArray {
+            element: vec![
+                RepCommand::Str,
+                RepCommand::Bool,
+                RepCommand::Float,
+                RepCommand::Int,
+            ],
+        },
+        RepCommand::DynamicArray {
+            element: vec![RepCommand::NetworkName, RepCommand::Object],
+        },
+        RepCommand::Object,
+        RepCommand::Bool,
+    ]);
+    commands
+}
+
+/// Statically observed 27-handle rep layout of `AQuestManager`:
+/// `AIcarusActor` handles 1..18, then handles 19..27 (`FactionMission`
+/// `FFactionMissionsRowHandle` 1-byte `Byte`, `DynamicQuestDifficulty`
+/// `EDynamicQuestDifficulty` 3 bits, `InitialQuest`, `bMissionComplete`,
+/// `DynamicQuestDelay`, `bRunQuests`, `RelevantPersistentActors`,
+/// `RelevantPersistentCharacters` and `RegisteredInfo`).
+pub fn quest_manager_rep_layout(
+    location: MovementLevel,
+    velocity: MovementLevel,
+    rotation: RotationLevel,
+    tag_encoding: TagEncoding,
+) -> Vec<RepCommand> {
+    let mut commands = icarus_actor_rep_layout(location, velocity, rotation, tag_encoding);
+    commands.extend([
+        RepCommand::Byte { enum_bits: None },
+        RepCommand::Enum {
+            bits: enum_bits(DYNAMIC_QUEST_DIFFICULTY_MAX_VALUE, 1),
+        },
+        RepCommand::Object,
+        RepCommand::Bool,
+        RepCommand::Float,
+        RepCommand::Bool,
+        RepCommand::DynamicArray {
+            element: vec![RepCommand::Str, RepCommand::Object],
+        },
+        RepCommand::DynamicArray {
+            element: vec![RepCommand::Str, RepCommand::Object],
+        },
+        RepCommand::DynamicArray {
+            element: vec![RepCommand::Object],
+        },
+    ]);
+    commands
+}
+
+/// Statically observed 19-handle rep layout of `AInventoryContainerManager`:
+/// `AIcarusActor` handles 1..18, then handle 19 `Inventories`
+/// (`TArray<UInventory*>`).
+pub fn inventory_container_manager_rep_layout(
+    location: MovementLevel,
+    velocity: MovementLevel,
+    rotation: RotationLevel,
+    tag_encoding: TagEncoding,
+) -> Vec<RepCommand> {
+    let mut commands = icarus_actor_rep_layout(location, velocity, rotation, tag_encoding);
+    commands.push(RepCommand::DynamicArray {
+        element: vec![RepCommand::Object],
+    });
+    commands
+}
+
+/// Statically observed 19-handle rep layout of `APlayerHistoryTracker`:
+/// `AIcarusActor` handles 1..18, then handle 19 `History`
+/// (`TArray<FPlayerHistoryEntry>`: `[UserId: Str, ChrSlot: Int, CachedCharacterName: Str]`).
+pub fn player_history_tracker_rep_layout(
+    location: MovementLevel,
+    velocity: MovementLevel,
+    rotation: RotationLevel,
+    tag_encoding: TagEncoding,
+) -> Vec<RepCommand> {
+    let mut commands = icarus_actor_rep_layout(location, velocity, rotation, tag_encoding);
+    commands.push(RepCommand::DynamicArray {
+        element: vec![RepCommand::Str, RepCommand::Int, RepCommand::Str],
+    });
+    commands
+}
+
+/// Statically observed 19-handle rep layout of `ARadiationManager`:
+/// `AIcarusActor` handles 1..18, then handle 19 `RadioactiveInstances`
+/// (`TArray<FRadioactiveInstance>`: `[Emitter: Object, Distance: Float]`).
+pub fn radiation_manager_rep_layout(
+    location: MovementLevel,
+    velocity: MovementLevel,
+    rotation: RotationLevel,
+    tag_encoding: TagEncoding,
+) -> Vec<RepCommand> {
+    let mut commands = icarus_actor_rep_layout(location, velocity, rotation, tag_encoding);
+    commands.push(RepCommand::DynamicArray {
+        element: vec![RepCommand::Object, RepCommand::Float],
+    });
+    commands
+}
+
+/// Statically observed 19-handle rep layout of `AWorldTalentManager`:
+/// `AIcarusActor` handles 1..18, then handle 19 `WorldTalents`
+/// (`TArray<FBackendTalent>`: `[RowName: Str, Rank: Int]`).
+pub fn world_talent_manager_rep_layout(
+    location: MovementLevel,
+    velocity: MovementLevel,
+    rotation: RotationLevel,
+    tag_encoding: TagEncoding,
+) -> Vec<RepCommand> {
+    let mut commands = icarus_actor_rep_layout(location, velocity, rotation, tag_encoding);
+    commands.push(RepCommand::DynamicArray {
+        element: vec![RepCommand::Str, RepCommand::Int],
+    });
+    commands
+}
+
+/// Cooked Blueprint 19-handle rep layout of `BP_AtmosphereController_C`:
+/// `AIcarusActor` handles 1..18 (`AAtmosphereController` adds no net
+/// properties), then handle 19 `StartHour` (`FIntProperty`).
+pub fn bp_atmosphere_controller_rep_layout(
+    location: MovementLevel,
+    velocity: MovementLevel,
+    rotation: RotationLevel,
+    tag_encoding: TagEncoding,
+) -> Vec<RepCommand> {
+    let mut commands = icarus_actor_rep_layout(location, velocity, rotation, tag_encoding);
+    commands.push(RepCommand::Int);
+    commands
+}
+
+/// Cooked Blueprint 19-handle rep layout of `BP_WorldObject_C` (and subclasses
+/// such as `BP_Mission_Blocker_Arctic_C` and `BP_Mission_Platform_C` that add
+/// no net properties): `AIcarusActor` handles 1..18, then handle 19
+/// `WasInteracted` (`FBoolProperty`).
+pub fn bp_world_object_rep_layout(
+    location: MovementLevel,
+    velocity: MovementLevel,
+    rotation: RotationLevel,
+    tag_encoding: TagEncoding,
+) -> Vec<RepCommand> {
+    let mut commands = icarus_actor_rep_layout(location, velocity, rotation, tag_encoding);
+    commands.push(RepCommand::Bool);
+    commands
+}
+
+/// Cooked Blueprint 20-handle rep layout of `BP_OilGeyser_C`:
+/// `BP_WorldObject_C` handles 1..19, then handle 20 `bHasPumpJack`
+/// (`FBoolProperty`).
+pub fn bp_oil_geyser_rep_layout(
+    location: MovementLevel,
+    velocity: MovementLevel,
+    rotation: RotationLevel,
+    tag_encoding: TagEncoding,
+) -> Vec<RepCommand> {
+    let mut commands = bp_world_object_rep_layout(location, velocity, rotation, tag_encoding);
+    commands.push(RepCommand::Bool);
+    commands
+}
+
+/// Cooked Blueprint 19-handle rep layout of `BP_Prebuilt_Base_C`:
+/// `AIcarusActor` handles 1..18 (`APrebuiltStructure` adds no net properties),
+/// then handle 19 `ShowMapIcon` (`FBoolProperty`).
+pub fn bp_prebuilt_base_rep_layout(
+    location: MovementLevel,
+    velocity: MovementLevel,
+    rotation: RotationLevel,
+    tag_encoding: TagEncoding,
+) -> Vec<RepCommand> {
+    let mut commands = icarus_actor_rep_layout(location, velocity, rotation, tag_encoding);
+    commands.push(RepCommand::Bool);
+    commands
+}
+
+/// Cooked Blueprint 20-handle rep layout of `BP_WorldBossSpawner_C` (and
+/// `BP_WorldBossSpawner_Alpha_Wolf_C` / `BP_WorldBossSpawner_SandWorm_C`, which
+/// add no net properties): `AIcarusActor` handles 1..18, handle 19 `WorldBoss`
+/// (`FWorldBossesRowHandle` `0x141dfd5a0` -> `0x1416fd930`, 1-byte `Byte`) and
+/// handle 20 `IsWorldBossActive` (`FBoolProperty`).
+pub fn bp_world_boss_spawner_rep_layout(
+    location: MovementLevel,
+    velocity: MovementLevel,
+    rotation: RotationLevel,
+    tag_encoding: TagEncoding,
+) -> Vec<RepCommand> {
+    let mut commands = icarus_actor_rep_layout(location, velocity, rotation, tag_encoding);
+    commands.extend([RepCommand::Byte { enum_bits: None }, RepCommand::Bool]);
+    commands
+}
+
+/// Cooked Blueprint 23-handle rep layout of `BP_MetaDeposit_C` (and
+/// `BP_MetaDeposit_Conifer_C` / `BP_MetaDeposit_Desert_C`, which add no net
+/// properties): `AIcarusActor` handles 1..18, `AResourceDeposit` handles 19..20
+/// (`ResourceRemaining` `Int` and `Type` `FOreDepositRowHandle` 1-byte `Byte`),
+/// `BP_OreDeposit_C` handles 21..22 (`IsMapIconShown` `Bool` and
+/// `AttachedDrill` `Object`), and `BP_MetaDeposit_C` handle 23 `IsEmptied`
+/// (`Bool`).
+pub fn bp_meta_deposit_rep_layout(
+    location: MovementLevel,
+    velocity: MovementLevel,
+    rotation: RotationLevel,
+    tag_encoding: TagEncoding,
+) -> Vec<RepCommand> {
+    let mut commands = icarus_actor_rep_layout(location, velocity, rotation, tag_encoding);
+    commands.extend([
+        RepCommand::Int,
+        RepCommand::Byte { enum_bits: None },
+        RepCommand::Bool,
+        RepCommand::Object,
+        RepCommand::Bool,
+    ]);
+    commands
+}
+
+/// Statically observed 22-handle rep layout of `AVoxelResource` (and
+/// `BP_VoxelResource_Base_C`, `BP_VoxelRock_C`, `BP_Mission_Meta_Voxel_C` and
+/// `BP_VR_ROCK_CF_LRG_04_C`, which add no net properties):
+/// `AIcarusActor` handles 1..18, handle 19 `NonDeterministicVoxelSetup`
+/// (`FVoxelSetupDataRowHandle` `0x141ddfbd0` -> `0x1416c3250`, 1-byte `Byte`),
+/// and handles 20..22 flattened `VoxelState` (`FVoxelState`).
+pub fn voxel_resource_rep_layout(
+    location: MovementLevel,
+    velocity: MovementLevel,
+    rotation: RotationLevel,
+    tag_encoding: TagEncoding,
+) -> Vec<RepCommand> {
+    let mut commands = icarus_actor_rep_layout(location, velocity, rotation, tag_encoding);
+    commands.extend([
+        RepCommand::Byte { enum_bits: None },
+        RepCommand::DynamicArray {
+            element: vec![RepCommand::Vector, RepCommand::Float],
+        },
+        RepCommand::Bool,
+        RepCommand::Byte { enum_bits: None },
+    ]);
+    commands
+}
+
+/// Cooked Blueprint 33-handle rep layout of `BP_MainLevelTeleport_C` (and
+/// `BP_GH_DenEntrance_C` / `BP_GH_DenEntrance_RockGolem_C`, which add no net
+/// properties): `AIcarusActor` handles 1..18, `ABaseLevelTeleport` handles
+/// 19..32, and handle 33 `EntranceVisibility` (`FBoolProperty`).
+pub fn bp_main_level_teleport_rep_layout(
+    location: MovementLevel,
+    velocity: MovementLevel,
+    rotation: RotationLevel,
+    tag_encoding: TagEncoding,
+) -> Vec<RepCommand> {
+    let mut commands = icarus_actor_rep_layout(location, velocity, rotation, tag_encoding);
+    commands.extend([RepCommand::Object, RepCommand::Object, RepCommand::Bool]);
+    commands.extend(transform_commands());
+    commands.extend(transform_commands());
+    commands.extend([
+        RepCommand::Object,
+        RepCommand::DynamicArray {
+            element: vec![RepCommand::Object],
+        },
+        RepCommand::Float,
+        RepCommand::Int,
+        RepCommand::Bool,
+        RepCommand::Bool,
+    ]);
+    commands
+}
+
+/// Cooked Blueprint 34-handle rep layout of `BP_DropShip_C`:
+/// `AIcarusActor` handles 1..18, `AIcarusRocket` handles 19..22, and 12 cooked
+/// Blueprint net properties at handles 23..34.
+pub fn bp_dropship_rep_layout(
+    location: MovementLevel,
+    velocity: MovementLevel,
+    rotation: RotationLevel,
+    tag_encoding: TagEncoding,
+) -> Vec<RepCommand> {
+    let mut commands = icarus_actor_rep_layout(location, velocity, rotation, tag_encoding);
+    commands.extend([
+        RepCommand::Str,
+        RepCommand::Int,
+        RepCommand::Enum {
+            bits: enum_bits(ROCKET_STATE_MAX_VALUE, 1),
+        },
+        RepCommand::DynamicArray {
+            element: vec![RepCommand::Object],
+        },
+        RepCommand::Bool,
+        RepCommand::Text,
+        RepCommand::Object,
+        RepCommand::Bool,
+        RepCommand::Bool,
+        RepCommand::Object,
+        RepCommand::Object,
+        RepCommand::Object,
+        RepCommand::Vector,
+        RepCommand::Bool,
+        RepCommand::Enum {
+            bits: enum_bits(DROPSHIP_DESCENT_STATE_FMOD_PARAM_MAX_VALUE, 1),
+        },
+        RepCommand::Bool,
+    ]);
+    commands
+}
+
+/// Cooked Blueprint 20-handle rep layout of `BP_SeatBase_C` (and
+/// `BP_Seat_Bed_C` / `BP_Seat_Chair_C`, which add no net properties):
+/// `AIcarusActor` handles 1..18, `ASeatBase` handle 19 `AttachedPlayer`
+/// (`FWeakObjectProperty`), and handle 20 `CameraOffsetLength` (`FFloatProperty`).
+pub fn bp_seat_base_rep_layout(
+    location: MovementLevel,
+    velocity: MovementLevel,
+    rotation: RotationLevel,
+    tag_encoding: TagEncoding,
+) -> Vec<RepCommand> {
+    let mut commands = icarus_actor_rep_layout(location, velocity, rotation, tag_encoding);
+    commands.extend([RepCommand::Object, RepCommand::Float]);
+    commands
+}
+
+/// Cooked Blueprint 25-handle rep layout of `BP_DropshipSeat_C`:
+/// `BP_SeatBase_C` handles 1..20, handle 21 `SeatLocked` (`FBoolProperty`),
+/// handles 22..24 flattened `SyncedTransform` (`FTransform`) and handle 25
+/// `Shake` (`FBoolProperty`).
+pub fn bp_dropship_seat_rep_layout(
+    location: MovementLevel,
+    velocity: MovementLevel,
+    rotation: RotationLevel,
+    tag_encoding: TagEncoding,
+) -> Vec<RepCommand> {
+    let mut commands = bp_seat_base_rep_layout(location, velocity, rotation, tag_encoding);
+    commands.push(RepCommand::Bool);
+    commands.extend(transform_commands());
+    commands.push(RepCommand::Bool);
+    commands
+}
+
+/// Cooked Blueprint 35-handle rep layout of `BP_Seat_Mount_C`:
+/// `BP_SeatBase_C` handles 1..20, handles 21..33 flattened `SaddleItemData`
+/// (`FItemData`), handle 34 `SaddleDataRow` (`FSaddlesRowHandle`, 1-byte `Byte`)
+/// and handle 35 `CartActive` (`FBoolProperty`).
+pub fn bp_seat_mount_rep_layout(
+    location: MovementLevel,
+    velocity: MovementLevel,
+    rotation: RotationLevel,
+    tag_encoding: TagEncoding,
+) -> Vec<RepCommand> {
+    let mut commands = bp_seat_base_rep_layout(location, velocity, rotation, tag_encoding);
+    commands.extend(item_data_commands(tag_encoding));
+    commands.extend([RepCommand::Byte { enum_bits: None }, RepCommand::Bool]);
+    commands
+}
+
+/// Cooked Blueprint 45-handle rep layout of `BP_PartBase_C` (and
+/// `BP_Part_TOP_MK1_C`, which adds no net properties):
+/// `AIcarusItem` handles 1..40 (`AIcarusRocketPart` adds no net properties),
+/// handle 41 `AssociatedDropShip` (`FObjectProperty`), handles 42..44 flattened
+/// `SyncedTransform` (`FTransform`) and handle 45 `Collision` (`FBoolProperty`).
+pub fn bp_part_base_rep_layout(
+    location: MovementLevel,
+    velocity: MovementLevel,
+    rotation: RotationLevel,
+    tag_encoding: TagEncoding,
+) -> Vec<RepCommand> {
+    let mut commands = icarus_item_rep_layout(location, velocity, rotation, tag_encoding);
+    commands.push(RepCommand::Object);
+    commands.extend(transform_commands());
+    commands.push(RepCommand::Bool);
+    commands
+}
+
+/// Cooked Blueprint 50-handle rep layout of `BP_Part_BTM_MK1_C`:
+/// `BP_PartBase_C` handles 1..45, then 5 `FBoolProperty` handles 46..50.
+pub fn bp_part_btm_mk1_rep_layout(
+    location: MovementLevel,
+    velocity: MovementLevel,
+    rotation: RotationLevel,
+    tag_encoding: TagEncoding,
+) -> Vec<RepCommand> {
+    let mut commands = bp_part_base_rep_layout(location, velocity, rotation, tag_encoding);
+    commands.extend(std::iter::repeat_n(RepCommand::Bool, 5));
+    commands
+}
+
+/// Cooked Blueprint 59-handle rep layout of `BP_Part_MID_MK1_C`:
+/// `BP_PartBase_C` handles 1..45, then 14 cooked Blueprint net properties at
+/// handles 46..59.
+pub fn bp_part_mid_mk1_rep_layout(
+    location: MovementLevel,
+    velocity: MovementLevel,
+    rotation: RotationLevel,
+    tag_encoding: TagEncoding,
+) -> Vec<RepCommand> {
+    let mut commands = bp_part_base_rep_layout(location, velocity, rotation, tag_encoding);
+    commands.extend(std::iter::repeat_n(RepCommand::Bool, 5));
+    commands.push(RepCommand::Int);
+    commands.extend(std::iter::repeat_n(RepCommand::Bool, 8));
+    commands
+}
+
+/// Cooked Blueprint 50-handle rep layout of `BP_DeployableBase_C`:
+/// `AIcarusItem` handles 1..40, `ADeployable` handles 41..42 (`FoundationActor`
+/// `Object` and `AttachedDeployableActors` `TArray<UObject*>`), handles 43..45
+/// flattened `RelativeTransform` (`FTransform`), and 5 `FBoolProperty` handles
+/// 46..50.
+pub fn bp_deployable_base_rep_layout(
+    location: MovementLevel,
+    velocity: MovementLevel,
+    rotation: RotationLevel,
+    tag_encoding: TagEncoding,
+) -> Vec<RepCommand> {
+    let mut commands = icarus_item_rep_layout(location, velocity, rotation, tag_encoding);
+    commands.extend([
+        RepCommand::Object,
+        RepCommand::DynamicArray {
+            element: vec![RepCommand::Object],
+        },
+    ]);
+    commands.extend(transform_commands());
+    commands.extend(std::iter::repeat_n(RepCommand::Bool, 5));
+    commands
+}
+
+/// Cooked Blueprint 52-handle rep layout of `BP_BedBase_C` (and
+/// `BP_Bed_Bedroll_C`, which adds no net properties):
+/// `BP_DeployableBase_C` handles 1..50, handle 51 `AssignedPlayerUIDs`
+/// (`TArray<FString>`) and handle 52 `SeatRef` (`FObjectProperty`).
+pub fn bp_bed_base_rep_layout(
+    location: MovementLevel,
+    velocity: MovementLevel,
+    rotation: RotationLevel,
+    tag_encoding: TagEncoding,
+) -> Vec<RepCommand> {
+    let mut commands = bp_deployable_base_rep_layout(location, velocity, rotation, tag_encoding);
+    commands.extend([
+        RepCommand::DynamicArray {
+            element: vec![RepCommand::Str],
+        },
+        RepCommand::Object,
+    ]);
+    commands
+}
+
+/// Cooked Blueprint 59-handle rep layout of `BP_Portable_Beacon_C`:
+/// `BP_DeployableBase_C` handles 1..50, handles 51..54 flattened `BeaconColour`
+/// (`FLinearColor`), handles 55..56 `SelectedIconIndex` and `VisibleDistance`
+/// (`FIntProperty`), handles 57..58 `BeaconName` and `BeaconOwner`
+/// (`FNameProperty`), and handle 59 `BeaconOwnerOnlySee` (`FBoolProperty`).
+pub fn bp_portable_beacon_rep_layout(
+    location: MovementLevel,
+    velocity: MovementLevel,
+    rotation: RotationLevel,
+    tag_encoding: TagEncoding,
+) -> Vec<RepCommand> {
+    let mut commands = bp_deployable_base_rep_layout(location, velocity, rotation, tag_encoding);
+    commands.extend(std::iter::repeat_n(RepCommand::Float, 4));
+    commands.extend([
+        RepCommand::Int,
+        RepCommand::Int,
+        RepCommand::NetworkName,
+        RepCommand::NetworkName,
+        RepCommand::Bool,
+    ]);
+    commands
+}
+
+/// Statically observed 3-handle rep layout of `UWeatherForecastBarComponent`:
+/// `UActorComponent` handles 1..2, then handle 3 `ForecastItems`
+/// (`TArray<FWeatherForecastItem>`: `[StartTime: Int, EndTime: Int, Tier: Int, PatternIndex: Int]`).
+pub fn weather_forecast_bar_component_rep_layout() -> Vec<RepCommand> {
+    let mut commands = actor_component_rep_layout();
+    commands.push(RepCommand::DynamicArray {
+        element: vec![
+            RepCommand::Int,
+            RepCommand::Int,
+            RepCommand::Int,
+            RepCommand::Int,
+        ],
+    });
+    commands
 }
