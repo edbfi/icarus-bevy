@@ -2,7 +2,7 @@
 
 ## Status
 
-experimental; older-server build 25621760 profile `MemoryArchive522`, with bounded static comparison to client build 25793767. Last reconciled: 2026-10-15
+experimental; older-server build 25621760 profile `MemoryArchive522`, with bounded static comparison to client build 25793767. Last reconciled: 2026-10-18
 Full text: d5b0ae6:docs/specs/save-format/tagged-properties.md
 
 ## Scope
@@ -26,8 +26,8 @@ Recovered tag layout (older server):
 - Names use the archive string: little-endian signed 32-bit count; positive =
   narrow bytes, negative = UTF-16 code units; nonzero counts include a
   terminating zero. The native strict subset rejects malformed terminators and
-  unsupported normalizations instead of reproducing the original's corrections
-  (F-287, U-026).
+  unsupported normalizations instead of reproducing the original's lossy `?` /
+  zeroing corrections (F-287, F-719; U-026, U-033 resolved).
 - Tag record, in order (F-287):
 
   | Component | Encoding |
@@ -51,7 +51,8 @@ Recovered tag layout (older server):
 - Struct-array body: count, one shared inner tag, then elements; the root scanner
   leaves it opaque (F-292). Recorder array layout: F-298.
 - Root `Version` is an index-zero `IntProperty`, 4 payload bytes, signed value 2
-  in both copies: a serialization scalar, not the Steam build ID (F-260).
+  in both copies: a serialization scalar, not the Steam build ID (F-260, F-715;
+  U-060 resolved).
 - Name values remain opaque; in-memory width is not serialized width (F-293).
 
 Reader policy (authored; research limits, not recovered format limits):
@@ -141,33 +142,31 @@ objects):
   opaque. All supplied Maps frame (F-562; unchanged under the budget, M-411, M-412).
 - Applying the older-build framing to the newer saves is supported by prefix
   agreement and the scans above, not by a matched official load (F-297, U-025).
-- Base-component layout is a caller-selected hypothesis per class; static
-  evidence confirms singleton base-method inheritance and unchanged C028 delegation
-  to the base reader (F-306, F-258); superclass selection bits: F-305.
+- Base-component layout is verified across builds for C001, C013, C028 and C034;
+  `ConstructFProperty` (`0x14216e730`) sets `PropertyFlags` (`+0x40`) from static
+  `Descriptor->PropertyFlags` and `LinkInternal` (`0x1408ad190`) never mutates
+  `+0x40` (`CPF_SaveGame` `0x01000000`, F-258, F-305, F-716, F-720; U-039, U-054,
+  U-061 resolved).
 - C028 six direct structs are tagged with 16 optional fields; three child struct
   fields use binary/native serialization, so tagged framing is not recursive
   (F-655). D01 leaves and D02 transfers: F-309, F-655. Conditional static grammars only.
 - Every opaque Struct leaf is one of four fixed-width engine math types
-  (F-565): three or four ordered 4-byte components, no count or tail (F-602).
-- Client build 25793767: tag operator `0x14212b0e0`, Array serializer
-  `0x142123da0`; same 441/282/503 gates; Map/Set gate 509; Array branch conditions
-  and count/shared-header layout match, shared size a 32-bit end-minus-start
-  difference (F-193, F-318, U-030).
-- Client C034: restore reaches conditional tagged dispatch with version 522 and
-  loading on (F-659); N02 native branch demands three 4-byte transfers (F-667).
-  Float: generation 10, vtable `0x145026a20` selects `0x142123ce0` at virtual
-  `0x90`, 4 bytes on every transfer path (F-659).
+  (F-565): three or four ordered 4-byte components, no count or tail (F-602;
+  U-027 resolved).
+- Client build 25793767 and server build 25621760 match on tag operator
+  (`0x14212b0e0` / `0x14215f530`), Array serializer (`0x142123da0` /
+  `0x1421580d0`, 32-bit `end - start` difference exact for spans `<= INT32_MAX`),
+  `FFloatProperty::SerializeItem` (`0x142123ce0` / `0x142158010`), `FVector`
+  (`0x142128a70`), and `DeferCppStructOps` / `PrepareCppStructOps` (F-193,
+  F-318, F-659, F-667, F-720; U-029 to U-031 resolved).
 
 ## Open questions
 
-- Original normalization, EOF and error behavior versus the strict readers (U-026).
-- Official restore/import and newer-build migration of these saves (U-025).
+- Official restore/import and newer-build migration of these saves (U-025, U-045).
 - Value meanings and Name identities (U-020); empty-family
-  population (U-021); deeper C028 children (U-048).
-- Client large-span safety (U-030) and dedicated-server correspondence (U-031).
-- Singleton saved integer's restoration role (U-039); remaining classes (U-050).
-- Supplied Text-bearing body (U-053); runtime save-bit mutation (U-054); Map/Set
-  payload layout and other kinds (U-055).
+  population (U-021); deeper C028 children (U-048); remaining classes (U-050).
+- Supplied Text-bearing body (U-053); Map/Set item meanings and binary Struct
+  items (U-055).
 
 ## Evidence
 
@@ -176,7 +175,8 @@ objects):
   component, M-148 C028 overrides, M-150 C028 arrays, M-112 and M-120 Float/Text,
   M-096 and M-098 Int array, M-070, M-077, M-089, M-090, M-122; client M-083 to
   M-086; Map/Set/Int64 headers M-387, M-388; all-class framing M-389, M-390;
-  container items M-392 to M-396, M-401 to M-404.
+  container items M-392 to M-396, M-401 to M-404; server migration, entry and
+  correspondence M-755 to M-760.
 - Tests: `tests/tagged.rs`, `tests/recorders.rs`, `tests/component.rs`,
   `tests/int_array.rs`, `tests/struct_array.rs`, `tests/prospect.rs`; authored
   byte fixtures only. Private saves stay outside tests, source control and CI.

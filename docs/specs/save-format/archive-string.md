@@ -4,7 +4,7 @@
 
 Experimental: bounded independent codec with authored tests; original wire
 round trip pending. Scope: build 25621760 (M-168) for the original reader, with
-supplied-save comparisons on both copies. Last reconciled: 2026-10-13.
+supplied-save comparisons on both copies. Last reconciled: 2026-10-18.
 Full text: d5b0ae6:docs/specs/save-format/archive-string.md.
 
 ## Scope
@@ -20,15 +20,23 @@ and the meaning of any decoded value.
   a positive count measures narrow bytes, a negative count measures UTF-16
   units, and nonzero counts include one terminating unit. `i32::MIN` is rejected
   before negation; a configured archive maximum bounds the absolute count; wide
-  units may be byte-swapped by archive flags (F-282).
+  units may be byte-swapped by archive flags (F-282, F-719; U-026 resolved).
 - The reader overwrites the final unit with zero instead of requiring a
   terminator, so a count of one yields an empty string. Narrow conversion at
-  `0x1408a91f0` handles ASCII directly and replaces negative signed bytes with
-  the caller's `?` fallback; it is not UTF-8 decoding. The wide reader inserts a
-  zero for `U+FFFF` and may shorten the result; surrogate validation was not
-  observed. The default writer selects narrow for ASCII and wide otherwise, a
-  flag can force wide, and the narrow helper at `0x1409d1a30` has a replacement
-  path (F-282).
+  `0x1408a91f0` handles ASCII directly and replaces negative signed bytes
+  (`>= 0x80`) with the caller's `?` fallback; it is not UTF-8 decoding. The wide
+  reader inserts a zero for `U+FFFF` and may shorten the result; `FMemoryReader`
+  (`0x140b68ee0`) checks overrun only (`Offset + Num <= Limit`) and sets
+  `ArIsError` without requiring exact enclosing-property EOF. The default writer
+  selects narrow for ASCII and wide otherwise, a flag can force wide, and the
+  narrow helper at `0x1409d1a30` has a replacement path (F-282, F-719).
+- `FArchive::operator<<(FName&)` (`0x140962300`) deserializes a temporary
+  `FString` and calls `FName(WIDECHAR*, FNAME_Add = 1)` (`0x141f66440`):
+  `FNameHelper::MakeDetectNumber` (`0x141f65a60`) and `ParseNumber`
+  (`0x141f65d70`) split a trailing `_<1..10 digits>` suffix (`0` or non-`0`-prefixed,
+  `<= 2,147,483,646`, stored as `Number = value + 1`) and enforce `NAME_SIZE = 1024`,
+  hashed via case-preserving/case-insensitive CityHash64 (`0x141f70090`; F-719;
+  U-033 resolved; `parse_fname_number_suffix` in `experimental::archive`).
 - Successful demand is four count bytes plus the declared narrow byte count or
   twice the declared wide-unit magnitude; zero and magnitude-one cases keep
   their distinct consumption (F-285).
@@ -55,34 +63,35 @@ and the meaning of any decoded value.
   without allocating on success, exposing prefix/payload/content/terminator
   spans, counts, encoding and consumed bytes with allocation-free UTF-16 unit
   iteration; `decode_string` materializes units into a `Vec<u16>` when ownership
-  is needed. Neither converts invalid surrogates to a Rust `String`; following
-  fields are untouched; empty output uses count zero; ASCII is preferred for
-  writing; forced-wide output is not implemented (F-142).
+  is needed, and `parse_fname_number_suffix` mirrors `FName` `_<digits>`
+  splitting and `NAME_SIZE = 1024` bounds (F-142, F-719). Neither converts
+  invalid surrogates to a Rust `String`; following fields are untouched; empty
+  output uses count zero; ASCII is preferred for writing; forced-wide output is
+  not implemented (F-142).
 - Research cap: 65,536 units including the terminator, checked before
   allocation or multiplication. The decoder checks the full declared range
   before output and rejects non-ASCII narrow bytes, missing terminators,
   embedded NUL and `U+FFFF`. Error precedence: count/limit/payload, narrow
   ASCII, final terminator, embedded NUL, then `U+FFFF`. These are documented
-  compatibility differences, not original-server fixes.
-- Neither the Name wrapper nor FString requires enclosing property EOF, and a
-  normal return can follow an archive error; enum lookup, fallback, enumerator
-  values, range policy and name interning remain unqualified.
+  strict-reader differences from the original's lossy `?`/zeroing normalization
+  (F-719; U-026 resolved).
 
 ## Open questions
 
-- Original normalization, EOF and error equivalence (U-026); name construction
-  and identity semantics (U-033); archive flags and byte order from controlled
-  stock-client traffic before promotion into negotiation.
+- Data-table row meanings of interned `FName` values (U-020) and authenticated
+  stock-client sessions (U-038).
 
 ## Evidence
 
-- Original reader observations: M-169 (overnight E-021, E-085 to E-087).
-  Adapter traces: M-091, M-107, M-104, M-105. Borrowed-frame migration
-  snapshot and corpus oracle (10,752 cases agree with the prior decoder): M-056.
+- Original reader and `FName` observations: M-169/E-021, M-169/E-085 to
+  M-169/E-087, M-759, M-760. Adapter traces: M-091, M-107, M-104, M-105. Borrowed-frame
+  migration snapshot and corpus oracle (10,752 cases agree with the prior
+  decoder): M-056.
 - Authored tests pack ASCII and supplementary-character fixtures in both byte
   orders, check every truncation boundary, preserve raw surrogates, leave a
-  following field untouched, and exercise minimum/maximum counts and the
-  allocation boundary. No original serialized string is copied into tests.
+  following field untouched, and exercise minimum/maximum counts, `FName`
+  suffix splitting and the allocation boundary. No original serialized string is
+  copied into tests.
 
 ```bash
 cargo test --locked --test archive --test archive_frame

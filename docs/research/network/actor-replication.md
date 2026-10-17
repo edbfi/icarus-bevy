@@ -85,7 +85,7 @@ entries, `2,361` stat-pair items) in M-707 bit-identically with 0 failures
 
 ## Open
 
-- Server relevancy/priority heuristics and control-bunch framing past Hello (U-044).
+- Server relevancy and priority heuristics in an authenticated session (U-038).
 
 ## Artifacts
 

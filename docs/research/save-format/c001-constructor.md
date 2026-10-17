@@ -18,54 +18,39 @@ Before restructure: 96ddb0b:docs/research/save-format/2026-10-13-c001-decoder.md
 ## Current answer
 
 The callback 0x1419fe870 (305 B) and candidate constructor 0x141788530 (296 B)
-start validated exception-metadata intervals that may be procedure fragments
-(F-471). The native getter has one retained non-call reference and no proven
-registration flow (F-472). The retained listing query rejects at its first
-listing-entry check, and the diagnostic variant cannot name the cause (F-470).
+are complete functions (.pdata 103538 and 95461, unwind v1 flags=2, push/pop
+rbx) rather than fragments (F-471, F-721; U-005 resolved). The retained listing
+query in M-568/M-569 rejected because the project was imported/opened with
+`-noanalysis`, leaving 0x1419fe870 undisassembled so `getInstructionAt`
+returned null with no API exception (F-470, F-721; U-003, U-042 resolved). The
+native getter 0x1419fe200 (.pdata 103518 at 0x14655d468) is registered by CRT
+init 0x1406a8ab0 -> 0x142187f70 and 0x141a00220 via 0x144abc1b0[0] with 48
+`.text` references (F-472, F-513, F-722; U-006 resolved).
 
 A standalone decoder that works on fixed buffers without a Program or database
 (F-473) passes its authored fixtures, including one- and two-window variants
 (F-469). With zero lookahead it decodes every physical byte of the callback,
-the candidate, their common callee and that callee's two callees (F-474). Both
-windows call the common callee, and the callback stores a table constant through
-post-call RBX; the declared CFGs stay open and receiver continuity across calls
-is unproved (F-475).
-
+the candidate, their common callee and that callee's two callees (F-474, F-475).
 Retained-frame replay qualifies its inputs: unwind records, register and space
-descriptors and public opcode constants (F-476). Every case stops at an
-unsupported operation before any receiver or frame claim. The common callee's
-conditional model completes; with both vector registers admitted, the callback
-and candidate stop at the same narrow store of RAX's low 16 bits, and admitting
-that read grows the report past the 64 KiB bundle cap (F-477). Publishing per
-role, the candidate qualifies its conditional model: after its one call it
-stores two table constants at +0 and +0x28 of its entry RCX, while the callback
-stops at its own output cap; an independent replay confirms the split outputs
-(F-508). Normal-return
-ABI inference could preserve RBX only with local stack, save-slot, home-area and
-argument joins (F-431). The old slot preparation mis-stated two addresses
-(F-465); same-build base and offsets give three candidate slots (F-495).
+descriptors and public opcode constants (F-476, F-477, F-508). The old slot
+preparation mis-stated two addresses (F-465); same-build base and offsets give
+three candidate slots (F-495).
 
-The client's PDB resolves the bridge by correspondence. The native getter is
-C001's registration getter, whose constructor field is the callback (F-513);
-the callback and
-candidate match the client's named C001 InternalConstructor and default
-constructor apart from image displacements, so the two stored tables are C001's
-primary and IInterface_AssetUserData vftables and the common callee is its base
-recorder's default constructor (F-509). In the client those vftable slots at the
-three save-path offsets are the base's Serialize, C001's version-upgrade hook
-and its state restore (F-669). The server's three slot targets match those
-functions, and C028 inherits the last two (F-670). The static bridge is thus
-named; runtime dispatch and register preservation remain conditions. Its load
-path reads no archive beyond the base recorder's restore and Serialize: the
-version hook is call-free and the restore then only applies a transform (F-669,
-F-670).
+Decompilation and client-PDB correspondence resolve the complete bridge (F-509,
+F-513, F-669, F-670, F-722; U-004, U-023, U-041 resolved). Callback 0x1419fe870
+dereferences `rbx = *(C001**)rcx` and inlines constructor 0x141788530: both
+call base constructor 0x1418824d0 (which preserves `rbx`), store vftables
+0x1449d9f90 (`+0x0`) and 0x1449da448 (`+0x28`), and initialize `+0xd8..+0x1b8`.
+Slot `+0x4a0` (0x1418a9bb0) calls base `RestoreState` 0x1418a9c80 (696 B,
+matching client 0x1418ae6c0 + log), which constructs `FMemoryReader` at version
+522 and dispatches `+0xa0` (`Serialize` 0x1418aaf70) then `+0x488`
+(`UpgradeVersion` 0x14189d380), before conditionally invoking `+0x4b0`
+(`ApplyRecorderTransform`); `+0x4a8` is 0x14189a760.
 
 ## Open
 
-- Construction/vtable bridge and receiver continuity to concrete archive slots (U-004, U-041).
-- Cause of the listing rejection (U-003, U-042) and whether the intervals are complete functions (U-005).
-- Registration argument flow and other callers of getter 0x1419fe200 (U-006); C001's place in the save census (U-023).
+- Nested C001 field value meanings and runtime restoration in a connected or interpreted-import world (U-020, U-022).
 
 ## Artifacts
 
-M-003, M-004, M-007, M-008, M-011, M-013, M-014, M-176, M-177, M-179..M-181, M-185..M-190, M-193..M-199, M-201, M-202, M-205, M-206, M-209..M-211, M-221..M-239, M-242..M-250, M-253..M-268, M-272..M-276, M-284..M-286, M-298..M-314, M-348..M-350.
+M-003, M-004, M-007, M-008, M-011, M-013, M-014, M-176, M-177, M-179..M-181, M-185..M-190, M-193..M-199, M-201, M-202, M-205, M-206, M-209..M-211, M-221..M-239, M-242..M-250, M-253..M-268, M-272..M-276, M-284..M-286, M-298..M-314, M-348..M-350, M-761, M-762.

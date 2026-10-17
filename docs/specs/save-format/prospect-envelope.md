@@ -4,7 +4,7 @@
 
 Experimental: envelope schema observed statically in build 25621760 (M-168) and
 confirmed against all twelve supplied prospect documents; the inner world is
-not interpreted. Last reconciled: 2026-10-15.
+not interpreted. Last reconciled: 2026-10-18.
 Full text: d5b0ae6:docs/specs/save-format/prospect-envelope.md.
 
 ## Scope
@@ -76,15 +76,16 @@ unavailable.
   (F-241). Success is labeled `experimental_envelope_only`; `--inner-tags`
   adds `experimental_root_tags_only` aggregate counts under the fixed research
   profile (F-244).
-- The original may accept other encodings or inconsistent inputs; the strict
-  inspector does not reproduce those tolerances (U-026). Schema agreement does
-  not establish cross-build compatibility (U-025, U-040).
+- The original reader checks overrun only and normalizes narrow/wide strings
+  lossily (`F-719`; U-026 resolved), whereas the strict inspector fails closed.
+  Schema agreement does not establish cross-build compatibility (U-025, U-040).
 
 ## Open questions
 
 - Inner archive semantics, ownership fidelity and character profile linkage
-  (U-040); official restoration and newer-build compatibility (U-025); original
-  tolerance of malformed envelopes (U-026).
+  (U-040); official restoration and newer-build compatibility (U-025);
+  controlled reproduction matrix for malformed/truncated envelope and load
+  inputs (U-063).
 
 ## Evidence
 

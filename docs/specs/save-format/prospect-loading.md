@@ -2,7 +2,7 @@
 
 ## Status
 
-Experimental; scope dedicated-server build 25621760 (supplied saves are user-reported from 25793767). Last reconciled: 2026-10-15.
+Experimental; scope dedicated-server build 25621760 (supplied saves are user-reported from 25793767). Last reconciled: 2026-10-18.
 Full text: d5b0ae6:docs/specs/save-format/prospect-loading.md
 
 ## Scope
@@ -13,18 +13,25 @@ the static contracts and framing populations of C013, C028, C034 and C009 (with
 nested D01) in the two supplied copies. Envelope: [envelope inspection](prospect-envelope.md);
 tag grammar, gates and readers: [tagged properties](tagged-properties.md); strings:
 [archive strings](archive-string.md). Not covered: values, enum lookup, text or
-numeric meaning, references, newer-build equivalence, EOF/normalization parity,
-runtime restoration and world import. Offsets are build-25621760 object offsets or
-code addresses unless stated as serialized bytes.
+numeric meaning, references, runtime restoration and world import. Offsets are
+build-25621760 object offsets or code addresses unless stated as serialized bytes.
 
 ## Confirmed
 
 Entry paths and failure reporting
 
-- By-name candidate `0x14146e6c0` checks the name, looks up the file, loads,
-  compares the loaded name and continues to map loading; it appends `.json`
-  (F-325). From-file candidate `0x1414baf60` needs two readers sharing one path
-  object; either failure enters reporting (F-326).
+- By-name entry `LoadProspect` (`0x14146e590`) -> `LoadProspectByName`
+  (`0x14146e6c0`) rejects empty names, strips a trailing `.json` suffix
+  (`RemoveFromEnd`, `IgnoreCase`), loads `.json` via `LoadProspectSaveHeader`
+  (`0x141824760`), verifies `Stricmp(ProspectID, Name) == 0`, and transitions
+  into `0x1414831f0` -> `ReadFromProspectBlob` (`0x1418e6240`). From-file entry
+  `SetupLoadedProspect` (`0x1414baf60`, called from `AIcarusGameMode::InitGame`
+  `0x1414b4600`) requires both `LoadProspectSaveHeader` (`0x141824760`) and
+  `LoadLocalProspectState` (`0x141823fb0`, where `ReadFromArchive` `0x1418e6140`
+  preserves its `bool` return in `ebx`) to succeed before setting `bHasLoaded`;
+  either failure enters reporting (F-325, F-326, F-717; U-056, U-057 resolved;
+  `normalize_prospect_name`, `evaluate_load_prospect_by_name` and
+  `evaluate_setup_loaded_prospect` in `experimental::restore_rules`).
 - Reporting is not log-only: it can force termination or raise (F-327). By-name
   missing and truncated inputs were rejected without an observed crash (F-256).
 
@@ -45,15 +52,24 @@ Inner state, version and archive mode
 | `StateRecorderBlobs` | `0xe8` | Array, derived state type |
 
 - `StateRecorderBlob` is `0x20` bytes in memory: `ComponentClassName` at 0,
-  `BinaryData` at `0x10`; descriptor order is not serialized order (F-330, F-331, F-332).
-- Call chains to blob reader `0x1418e6240` (by-name) and `0x1418e6140` (from-file):
-  F-333, F-334.
+  `BinaryData` at `0x10`; descriptor order is not serialized order (F-330, F-332).
 - Dispatcher `0x1418ee4a0` picks the tagged serializer unless archive byte `+0x28`
   bit `0x20` is set; reset clears `0x20` and loading sets `0x01`, so this reader
   uses tagged traversal through tag reader `0x14215f530` (F-335, F-336, F-257).
-- Loading runs fixups that branch on `Version < 2` and migrate legacy strings;
-  state version 0 also clears the recorders (F-337, F-338). Both supplied root
-  `Version` integers are 2 (F-260). Version-table key and lookup: F-339.
+  `UStruct::SerializeVersionedTaggedProperties` (`0x14200f5b0`) reads
+  `FPropertyTag` headers until `None`, wrapping `PropertyLinkNext` (`+0x58`) back
+  to head `PropertyLink` (`plVar2[0xe]`) on out-of-order tags and keeping
+  constructor defaults when omitted (F-718; U-062 resolved).
+- `ReadFromProspectBlob` (`0x1418e6240`) starts `FMemoryReader` at byte 0, and
+  `UsingCustomVersion` reads no table on load, so `Version = 2` is the
+  `FProspectSaveState` schema version, unrelated to game build (F-260, F-715;
+  U-060 resolved). `PostLoadSerialize` (`0x1418e4250` / `0x1418e44f0`) copies
+  legacy `ProspectID` (`+0xc8`) and `ProspectDTKey` (`+0xd8`) into `ProspectInfo`
+  via `0x14089a1c0` when `Version < 2`, and at `Version == 0` resets
+  `ProspectInfo` (`0x14170a4c0`), sets `LobbyPrivacy` (`+0x0c`) = `1`
+  (`ELobbyPrivacy::FriendsOnly`) and clears `StateRecorderBlobs` (`+0xe8`), then
+  stamps `Version = 2` (F-715; U-059 resolved; `migrate_prospect_save_state` in
+  `experimental::restore_rules`).
 
 Recorders and base component
 
@@ -75,21 +91,29 @@ Recorders and base component
 
 C013 (singleton)
 
-- Inherits base load, serialize and empty post-load slots (F-348). NameProperty is
+- Inherits base load, serialize and empty post-load slots (F-716). NameProperty is
   built-in name ID 6, no type-specific metadata, then the property-GUID field
   (F-350, F-246).
 - Both 548-byte bodies: five properties, 312 header/terminator bytes, 232 opaque
   value bytes, zero four-byte trailer, exact EOF (F-351, F-248). Selection-bit
   descriptors: one struct with one integer child plus enum, name, string, bool;
   five of 31 ancestry entries (F-352, F-353).
-- A callback copies four bytes from the owner into the recorder; capture is
-  conditional and nothing reads the copied field back (F-354, F-356, F-357, F-358).
+- `UFLODRecorderComponent` saves `AFLOD::FLODTiles.Num()` (`+0x250`) to `+0xd8`
+  on record (`0x1418a1850`), compacts `FLODTiles` (`+0x248`) on stitch
+  (`0x1418ad0c0`), and never reads `+0xd8` on restore (F-646, F-716; U-039
+  resolved).
 
 C028 (repeated)
 
-- Constructor `0x1418c22f0`, vtable `0x144a70e90` (F-359). `+0x4a0` = `0x1418a9bb0`
-  (base, then conditional `+0x4b0`); `+0xa0` base; `+0x488` = `0x14189d380`, which
-  ignores the archive argument (F-360, F-361).
+- Registration `0x1406ff5d0`, getter `0x141d2d770`, callback `0x141d2e710`,
+  constructor `0x1418c22f0`, vtable `0x144a70e90`: `+0x4a0` = `0x1418a9bb0`
+  (`UActorStateRecorderComponent::RestoreState`) calls base `0x1418a9c80` then
+  invokes `+0x4b0` (`ApplyRecorderTransform`) only when the context `FTransform`
+  differs from `Identity` (`> 1e-4`, skipped in world prospect restore); `+0xa0`
+  is base; `+0x488` = `0x14189d380` (`UpgradeVersion`) renames legacy
+  `TreePrimitive` to `Wood` when `recorder_version < 1` without reading the
+  archive (F-645, F-716; U-061 resolved; `should_apply_recorder_transform` and
+  `upgrade_actor_recorder_version` in `experimental::restore_rules`).
 - 60 ancestry entries (3/27/11/19/0); 23 selection-bit fields: 3 Int, 3 Name,
   2 Bool, 6 Struct, 7 Array, 1 Enum, 1 Str (F-655). All 1,294 records frame:
   29,762 fields, 4,326,044 bytes; per copy 647 components (F-259, F-363, F-364, F-365).
@@ -100,10 +124,10 @@ C028 (repeated)
   tail (F-369, F-124).
 - Array serializer `0x1421580d0`: signed 32-bit count, one shared struct tag even
   at count 0, then `None`-terminated elements without object trailers; the shared
-  size spans all elements (F-370). Shared tag: index 0, inner name = field name,
-  element struct name, equality not enforced (F-371). Children: 7 Name, 3 Int,
-  3 Float, 1 Bool, 1 Text, 1 Array, 1 Struct (F-655); D01 eight optional fields,
-  D02 four four-byte transfers (F-655, F-373).
+  size spans all elements (F-370, F-720; U-030 resolved). Shared tag: index 0,
+  inner name = field name, element struct name, equality not enforced (F-371).
+  Children: 7 Name, 3 Int, 3 Float, 1 Bool, 1 Text, 1 Array, 1 Struct (F-655);
+  D01 eight optional fields, D02 four four-byte transfers (F-655, F-373).
 - All 9,058 arrays are empty: 848,864 bytes = 36,232 count + 812,632 shared-header
   (F-374, F-116). Top and child receipts: F-123..F-141.
 
@@ -114,7 +138,10 @@ C034
   17,409 fields (F-376, F-378, F-195); own structs 572–28,606 bytes (F-377, F-379, F-188).
 - Own array child `0x145ee1220`: tagged optional Struct (N02, 12 bytes) and Float
   (four bytes), signed count and shared Struct header even at zero; its 16-byte
-  memory size is not a stride (F-664); max count 214 (F-381, F-382).
+  memory size is not a stride, and server 25621760 matches client 25793767 on
+  `FFloatProperty::SerializeItem` (`0x142158010`), `FVector` (`0x142128a70`) and
+  CRT struct-ops registration (F-659, F-664, F-720; U-029, U-031 resolved); max
+  count 214 (F-381, F-382).
 - Inherited arrays all empty; inherited Struct widths 16/12/12/12/4 bytes
   (F-383, F-384, F-385, F-196). Scalars: F-146..F-153.
 
@@ -148,42 +175,42 @@ Acceptance conditions for any importer
 
 ## Candidate
 
-- Base-component framing is a candidate layout for C013 and C028 in build 25621760,
-  not established for the newer build (F-348, F-360, U-025).
-- The C013 struct field captures the world FLOD manager's tile count (F-646).
-- C028/C034/C009 struct and array contracts are conditional older-build framing
-  contracts, not fixed disk widths; the 16/12-byte transfers assume successful
-  archive reads (F-655, F-369, F-664, F-172).
-- C001 (four records): getter `0x1419fe200`, construction callback `0x1419fe870` and
-  candidate constructor `0x141788530` start validated exception-metadata intervals
-  (F-471, F-472); client correspondence names both tables as C001's vftables
-  (F-509, F-670). Decoding and frame replay: [C001 digest](../../research/save-format/c001-constructor.md)
-  (F-469 to F-477); receiver continuity and archive-slot ownership stay unproved
-  (U-041). No C001 payload is parsed.
+- Base-component framing is verified across builds for C001, C013, C028 and C034
+  (F-669, F-670, F-716, F-720, F-722); native interpreted import stays gated
+  (U-025, U-045).
+- C001 (four records): getter `0x1419fe200` (`.pdata` 103518), construction
+  callback `0x1419fe870` (305 B, `.pdata` 103538) and constructor `0x141788530`
+  (296 B, `.pdata` 95461) are complete functions that call base constructor
+  `0x1418824d0` (`rbx` kept) and install vftables `0x1449d9f90` / `0x1449da448`,
+  whose `+0x4a0` (`0x1418a9bb0`) -> `0x1418a9c80` -> `+0xa0` (`0x1418aaf70`) ->
+  `+0x488` (`0x14189d380`) bridge is verified in
+  [C001 digest](../../research/save-format/c001-constructor.md) (F-469 to F-477,
+  F-509, F-534, F-669, F-670, F-721, F-722; U-003 to U-006, U-023, U-041, U-042
+  resolved).
 
 ## Open questions
 
-- From-file contracts, by-name entry and the runtime failure outcome (U-056, U-057, U-058).
-- Version fixup semantics and Version/build relation (U-059, U-060).
-- C028 context restoration and migration (U-061); mandatory fields and order (U-062).
-- Controlled reproduction matrix for both paths, retaining command/path, input
-  digest, truncation point, logs, exit status and before/after state against an
-  unchanged valid fixture, with Proton/platform effects separated (U-063, U-047).
-- Values, empty families, other classes, C001 bridge (U-020, U-021, U-022, U-041).
-- Import, newer builds, EOF/normalization parity (U-025, U-026, U-027, U-029, U-032, U-039).
+- Runtime failure-reporting reachability and process termination vs return on
+  disposable fixtures (U-058).
+- Controlled reproduction matrix for both entry paths, retaining command/path,
+  input digest, truncation point, logs, exit status and before/after state
+  against an unchanged valid fixture, with Proton/platform effects separated
+  (U-063, U-047).
+- Values, empty families and other classes (U-020, U-021, U-022, U-032, U-046, U-048, U-050);
+  native interpreted import and newer-build compatibility (U-025, U-045).
 
 ## Evidence
 
 - Static: M-147, M-148, M-143, M-149, M-150, M-119, M-122, M-123, M-079, M-094,
-  M-096, M-100, M-170; runtime and reports: M-154, M-155, M-160.
+  M-096, M-100, M-170, M-755..M-762; runtime and reports: M-154, M-155, M-160.
 - Framing receipts: M-118, M-172, M-087..M-093, M-095, M-097..M-103, M-106,
-  M-058..M-070, M-049..M-055; C001: M-007, M-008, M-011, M-013, M-173, M-179, M-180, M-181.
+  M-058..M-070, M-049..M-055; C001: M-007, M-008, M-011, M-013, M-173, M-179, M-180, M-181, M-761, M-762.
 - Tests: `tests/tagged.rs`, `tests/recorders.rs`, `tests/component.rs`,
   `tests/struct_array.rs`, `tests/int_array.rs`, `tests/archive_frame.rs`,
-  `tests/prospect.rs`, `tests/cli.rs`.
+  `tests/restore_rules.rs`, `tests/prospect.rs`, `tests/cli.rs`.
 
 ```bash
 cargo test --locked --test tagged --test recorders --test component \
-  --test struct_array --test int_array --test archive_frame --test prospect
+  --test struct_array --test int_array --test archive_frame --test restore_rules --test prospect
 cargo run --locked -- inspect-save --source /path/to/copied-prospect.json --recorders
 ```

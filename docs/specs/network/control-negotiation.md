@@ -6,7 +6,7 @@ Experimental: static observations; the framing and Hello exchange are
 wire-validated offline, and a synthetic Login and Join are welcomed (F-688
 to F-690, F-712 to F-714). Scope: dedicated-server
 build 25621760 (M-168) unless a current-client (build 25793767) comparison is
-named. Last reconciled: 2026-10-17.
+named. Last reconciled: 2026-10-18.
 Full text: d5b0ae6:docs/specs/network/control-negotiation.md.
 
 ## Scope
@@ -53,17 +53,27 @@ command has no game listener.
   negation, a configured archive maximum limits the absolute count, and the
   wide branch byte-swaps conditionally and writes a trailing zero
   ([archive-string spec](../save-format/archive-string.md)).
-- Current client: in each UWorld and UPendingNetGame FNetworkNotify secondary
-  table the `+0x18` slot equals the respective NotifyControlMessage public
-  symbol (F-088). World stores its primary table constant at `+0` and the
-  FNetworkNotify constant at `+0x28` of one unknown base (F-063); Pending does
-  the same after its constructor call (F-076, F-274). Two seven-byte LEA sites
-  materialize `0x145468180` and two eight-byte stores place it at base `+0x28`
-  (F-109 region); one prefix keeps its base through stores at `+0` and `+0x28`.
-- One absolute pointer to the dispatcher exists at `0x145468198`; no E8/E9
-  rel32 callers match; a 128-byte pointer window ends at the dispatcher (F-106).
-  The retained database shows one non-call reference with no containing
-  function; partial coverage does not prove caller absence.
+- Current client and server `UWorld` / `UPendingNetGame` ownership, constructors,
+  vftable layouts and notify dispatch (F-063, F-076, F-088, F-106, F-505, F-506,
+  F-520, F-544, F-546, F-723, F-724; U-007 to U-009, U-011, U-013, U-015 to
+  U-018, U-043 resolved): `UWorld::GetPrivateStaticClass` (`0x143b86aa0`, size
+  `0x798`, `InternalConstructor` `0x143b856c0`) and
+  `UPendingNetGame::GetPrivateStaticClass` (`0x143b21d20`, size `0xc0`,
+  `InternalConstructor` `0x143b21830`) tail-jump with `rcx = *(UObject**)rcx`.
+  `UWorld::UWorld` (`0x1439da2e0..0x1439da814`, 1,332 B, `.pdata` `255917..255921`,
+  `TARGET01` = `255918`) and `UPendingNetGame::UPendingNetGame`
+  (`0x1437a9640..0x1437a9687`, 71 B, `245246`) preserve `this` in `rdi`/`rbx`
+  across `UObject::UObject` (`0x142169690`) and `FURL::FURL` (`0x1439ae930`),
+  installing primary and `FNetworkNotify` vftables at `+0` and `+0x28`
+  (`0x145467ef0` / `0x145468180` on `UWorld`; `0x14540a038` / `0x14537cb18` on
+  `UPendingNetGame`). `TARGET02` (`0x1439dae50..0x1439db145`, 757 B, `.pdata`
+  `255950`) is complete `UWorld::~UWorld` (client `0x143ca6730`). Because `/GR-`
+  omits RTTI at `[vtable-8]`, `UWorld`'s 82-slot primary and 4-slot
+  `FNetworkNotify` vftables abut directly (`0x145468198` = slot `+0x18` =
+  `0x1439ee7f0`, `.pdata` `256371` at `0x14671d164`). `UWorld::Listen`
+  (`0x1439ecd8b`) and `UPendingNetGame::InitNetDriver` (`0x1437b7f6f`) pass
+  `this + 0x28` to `UNetDriver::InitBase` (`Driver + 0x208`), and
+  `NotifyControlMessage` adjusts `this` by `r13 - 0x28`.
 - Client and server receive and send path (F-514, F-515, F-518, F-712, F-714;
   U-014, U-044 resolved):
   `FInBunch` inherits `FBitReader::Serialize` at vftable `+0x150`, tail-calling
@@ -154,12 +164,6 @@ command has no game listener.
   | 18 NetGUID | to client | packed int, string |
   | 21 Encryption ack | to client | none |
 
-- Older server: `0x145468198` is slot `+0x18` of the UWorld FNetworkNotify table
-  `0x145468180`, which the older UWorld constructor installs at `+0x28` (F-505).
-  The dispatcher is therefore `UWorld::NotifyControlMessage`, reached through the
-  FNetworkNotify virtual slot (F-506). The older UPendingNetGame tables are
-  `0x14540a038` (primary) and `0x14537cb18` (FNetworkNotify).
-
 ## Candidate
 
 - Experimental modules, wire-validated through Hello and offline Login/Join
@@ -217,31 +221,23 @@ command has no game listener.
   4 PS4, 6 GOOGLE, 7 GOOGLEPLAY, 8 FACEBOOK, 9 IOS, 10 APPLE, 11 TENCENT,
   12 SWITCH, 13 AMAZON, 14 GAMECIRCLE, 15 THUNDERHEAD, 18 Oculus, 19 Quail,
   20 PS4SERVER; 5, 16, 17 and 21 are runtime FName globals; 31 carries a name.
-- Epic's FNetworkNotify interface (four virtual callbacks) is a testable
-  hypothesis for the slots other than `+0x18` (identified by F-506). Image
-  deltas are not object offsets; provenance does not cross calls unchecked.
 
 ## Open questions
 
-- Executed runtime dispatch of the qualified stores and slots (U-010); older
-  server owner (U-011); indirect callers (U-015); RTTI, table identity and
-  owner (U-016, U-017, U-018); receiver and type-registration join (U-043);
-  authenticated stock-client session (U-038).
+- Executed runtime dispatch in an authenticated stock-client session (U-010, U-038).
 
 ## Evidence
 
 - Static cases: M-170 (`icarus-server-baseline`, E-011/E-013/E-021/E-022/E-024),
   M-146, [research/archive](../../research/archive/2026-10-12-control-caller-limit.md),
   M-023 to M-045 in the [control-store digest](../../research/network/control-stores.md),
-  and M-589 to M-596, M-749 to M-754 (`PreLogin`, `SpawnPlayActor`, delegate
-  scans, server packet/bunch framing and `UControlChannel` framing).
-- Requirements before promotion: recover archive conversion and outer framing
-  with bounds and errors; obtain a paired trace of a matching stock client and
-  reference server; create sanitized fixtures for accepted negotiation and each
-  rejection class (truncation at each field, zero/negative/minimum/oversized
-  lengths, incompatible versions, invalid transitions, token failures); pass
-  those fixtures and the stock-client experiment before marking negotiation
-  implemented.
+  and M-589 to M-596, M-749 to M-754, M-763 to M-765 (`PreLogin`, `SpawnPlayActor`,
+  delegate scans, server packet/bunch framing, `UControlChannel` framing and
+  `UWorld`/`UPendingNetGame` constructor and vftable provenance).
+- Requirements before promotion: obtain a paired trace of a matching stock client
+  and reference server; create sanitized fixtures for accepted negotiation and
+  each rejection class; pass those fixtures and the stock-client experiment
+  before marking negotiation implemented.
 - Authored suites:
   - `cargo test --test control_negotiation --locked` (unit and integration tests
     for `experimental::control`, `experimental::control_messages` and
