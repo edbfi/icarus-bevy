@@ -1,10 +1,9 @@
 //! EXPERIMENTAL replicator field headers, RPC parameters and fast-array delta
 //! bodies, against caller-supplied layouts.
 //!
-//! Static client observations only (F-644); nothing is
-//! wire-validated, no
-//! original function or field list is known or shipped, and no RPC is
-//! dispatched. Writers mirror the readers for round-trip research only.
+//! Static client observations (F-644) and wire-validated `FClassNetCache`
+//! RPC parameter layouts (F-708); no RPC is dispatched. Writers mirror the
+//! readers for round-trip research only.
 //!
 //! After a content block's rep-layout properties, the client replicator reads
 //! field headers until its payload ends: a field index bounded like the
@@ -37,8 +36,8 @@ use super::actor_channel::read_packed;
 use super::packet::{BitReader, BitWriter, Payload};
 use super::rep_layout::{
     Budget, PropertyStream, RepCommand, RepLayoutCodec, RepValue, append_bits, copy_bits,
-    read_stream, read_u16, read_u32, read_value, validate_layout, write_stream, write_u16,
-    write_u32, write_value,
+    enum_byte_bits, read_stream, read_u16, read_u32, read_value, validate_layout, write_stream,
+    write_u16, write_u32, write_value,
 };
 
 /// Largest dynamic-array count the client accepts in RPC parameters.
@@ -343,6 +342,130 @@ pub fn encode_rpc_payload(
     let mut writer = BitWriter::new();
     write_rpc_arguments(&mut writer, parameters, arguments, codec)?;
     Ok(Payload::from_writer(writer))
+}
+
+/// `UActorChannel::ReadFieldHeaderAndPayload` (`0x1437c2650`) `SerializeInt`
+/// bound (`FClassNetCache::GetMaxIndex() + 1` = `FieldsBase + Fields.Num() + 1`,
+/// F-644, F-705, F-708) for `UIcarusStatContainer` (`2 + 1 + 1 + 1 = 5`).
+pub const STAT_CONTAINER_FIELD_INDEX_BOUND: u32 = 5;
+/// `SerializeInt` field-index bound (`FieldsBase + Fields.Num() + 1`, F-708)
+/// for `UInventory` (`2 + 1 + 6 + 1 + 1 = 11`).
+pub const INVENTORY_FIELD_INDEX_BOUND: u32 = 11;
+/// `SerializeInt` field-index bound (`FieldsBase + Fields.Num() + 1`, F-708)
+/// for `BP_UIProjectionComponent_MountStatus_C` (`2 + 2 + 1 + 1 + 1 = 7`).
+pub const UI_PROJECTION_MOUNT_STATUS_FIELD_INDEX_BOUND: u32 = 7;
+/// `SerializeInt` field-index bound (`FieldsBase + Fields.Num() + 1`, F-708)
+/// for `BP_IcarusPlayerState_C` (`10 + 0 + 11 + 6 + 10 + 1 = 38`).
+pub const BP_ICARUS_PLAYER_STATE_FIELD_INDEX_BOUND: u32 = 38;
+/// `SerializeInt` field-index bound (`FieldsBase + Fields.Num() + 1`, F-708)
+/// for `BP_Mount_Base_C` (`10 + 3 + 17 + 25 + 6 + 6 + 10 + 6 + 1 = 84`).
+pub const BP_MOUNT_BASE_FIELD_INDEX_BOUND: u32 = 84;
+/// `SerializeInt` field-index bound (`FieldsBase + Fields.Num() + 1`, F-708)
+/// for `BP_Mount_Horse_C` (`83 + 1 + 1 = 85`).
+pub const BP_MOUNT_HORSE_FIELD_INDEX_BOUND: u32 = 85;
+/// `SerializeInt` field-index bound (`FieldsBase + Fields.Num() + 1`, F-708)
+/// for `BP_Tame_Base_C` (`83 + 2 + 1 = 86`).
+pub const BP_TAME_BASE_FIELD_INDEX_BOUND: u32 = 86;
+/// `SerializeInt` field-index bound (`FieldsBase + Fields.Num() + 1`, F-708)
+/// for `BP_IcarusPlayerControllerSurvival_C`
+/// (`10 + 4 + 74 + 13 + 29 + 25 + 27 + 1 = 183`).
+pub const BP_ICARUS_PLAYER_CONTROLLER_SURVIVAL_FIELD_INDEX_BOUND: u32 = 183;
+
+/// Maximum registered enumerator value (`EViewTargetBlendFunction::VTBlend_MAX = 5`,
+/// `0x143df5290`, F-708).
+pub const VIEW_TARGET_BLEND_FUNCTION_MAX_VALUE: i64 = 5;
+
+/// Flattened child commands of `FViewTargetTransitionParams` (`0x143df52c0`,
+/// F-708): `BlendTime` (`Float`), `BlendFunction` (`Byte { enum_bits: Some(3) }`),
+/// `BlendExp` (`Float`), and `bLockOutgoing` (`Bool`).
+pub fn view_target_transition_params_commands() -> [RepCommand; 4] {
+    [
+        RepCommand::Float,
+        RepCommand::Byte {
+            enum_bits: Some(enum_byte_bits(VIEW_TARGET_BLEND_FUNCTION_MAX_VALUE)),
+        },
+        RepCommand::Float,
+        RepCommand::Bool,
+    ]
+}
+
+/// Flattened child commands of `FUpdateLevelStreamingLevelStatus`
+/// (`0x143df4350`, F-708): `PackageName` (`NetworkName`), `LODIndex` (`Int`),
+/// `bNewShouldBeLoaded` (`Bool`), `bNewShouldBeVisible` (`Bool`), and
+/// `bNewShouldBlockOnLoad` (`Bool`).
+pub fn update_level_streaming_level_status_commands() -> [RepCommand; 5] {
+    [
+        RepCommand::NetworkName,
+        RepCommand::Int,
+        RepCommand::Bool,
+        RepCommand::Bool,
+        RepCommand::Bool,
+    ]
+}
+
+/// Resolve an observed `BP_IcarusPlayerState_C` net-RPC `FClassNetCache` field
+/// index (`index_bound = BP_ICARUS_PLAYER_STATE_FIELD_INDEX_BOUND`, F-708) to
+/// its RPC parameter layout:
+/// - `34`: `BP_IcarusPlayerState_C::Server_UpdateHealthValue(NewHealth: float)`.
+pub fn bp_icarus_player_state_rpc_parameters(field_index: u32) -> Option<Vec<RpcParameter>> {
+    match field_index {
+        34 => Some(vec![RpcParameter::Value(vec![RepCommand::Float])]),
+        _ => None,
+    }
+}
+
+/// Resolve an observed `AIcarusCharacter` / `BP_Mount_Base_C` /
+/// `BP_Mount_Horse_C` / `BP_Tame_Base_C` net-RPC `FClassNetCache` field index
+/// (F-708) to its RPC parameter layout:
+/// - `51`: `AIcarusCharacter::Multicast_PlayReplicatedMontage(Montage: UAnimMontage*, StartingSection: FName, PlayRate: float, bSkipServer: bool)`;
+/// - `53`: `AIcarusCharacter::Multicast_StopReplicatedMontage(Montage: UAnimMontage*)`.
+pub fn icarus_character_rpc_parameters(field_index: u32) -> Option<Vec<RpcParameter>> {
+    match field_index {
+        51 => Some(vec![
+            RpcParameter::Value(vec![RepCommand::Object]),
+            RpcParameter::Value(vec![RepCommand::NetworkName]),
+            RpcParameter::Value(vec![RepCommand::Float]),
+            RpcParameter::Bool,
+        ]),
+        53 => Some(vec![RpcParameter::Value(vec![RepCommand::Object])]),
+        _ => None,
+    }
+}
+
+/// Resolve an observed `BP_IcarusPlayerControllerSurvival_C` net-RPC
+/// `FClassNetCache` field index (`index_bound = BP_ICARUS_PLAYER_CONTROLLER_SURVIVAL_FIELD_INDEX_BOUND`,
+/// F-708) to its RPC parameter layout:
+/// - `13`: `AController::ClientSetRotation(NewRotation: FRotator, bResetCamera: bool)`;
+/// - `18`: `APlayerController::ClientCapBandwidth(Cap: int32)`;
+/// - `21`: `APlayerController::ClientEnableNetworkVoice(bEnable: bool)`;
+/// - `23`: `APlayerController::ClientFlushLevelStreaming()`;
+/// - `40`: `APlayerController::ClientRestart(NewPawn: APawn*)`;
+/// - `46`: `APlayerController::ClientSetCameraMode(NewCamMode: FName)`;
+/// - `49`: `APlayerController::ClientSetHUD(NewHUDClass: TSubclassOf<AHUD>)`;
+/// - `51`: `APlayerController::ClientSetViewTarget(A: AActor*, TransitionParams: FViewTargetTransitionParams)`;
+/// - `54`: `APlayerController::ClientStartOnlineSession()`;
+/// - `62`: `APlayerController::ClientUpdateMultipleLevelsStreamingStatus(LevelStatuses: TArray<FUpdateLevelStreamingLevelStatus>)`;
+/// - `63`: `APlayerController::ClientVoiceHandshakeComplete()`.
+pub fn player_controller_rpc_parameters(field_index: u32) -> Option<Vec<RpcParameter>> {
+    match field_index {
+        13 => Some(vec![
+            RpcParameter::Value(vec![RepCommand::Rotator]),
+            RpcParameter::Bool,
+        ]),
+        18 => Some(vec![RpcParameter::Value(vec![RepCommand::Int])]),
+        21 => Some(vec![RpcParameter::Bool]),
+        23 | 54 | 63 => Some(vec![]),
+        40 | 49 => Some(vec![RpcParameter::Value(vec![RepCommand::Object])]),
+        46 => Some(vec![RpcParameter::Value(vec![RepCommand::NetworkName])]),
+        51 => Some(vec![
+            RpcParameter::Value(vec![RepCommand::Object]),
+            RpcParameter::Value(view_target_transition_params_commands().to_vec()),
+        ]),
+        62 => Some(vec![RpcParameter::Value(vec![RepCommand::DynamicArray {
+            element: update_level_streaming_level_status_commands().to_vec(),
+        }])]),
+        _ => None,
+    }
 }
 
 /// The client's initial fast-array delete and change caps; both are runtime

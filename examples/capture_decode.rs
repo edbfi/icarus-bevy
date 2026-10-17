@@ -60,14 +60,14 @@ use icarus_bevy::experimental::{
         bp_ui_projection_component_player_rep_layout, bp_world_boss_spawner_rep_layout,
         bp_world_object_rep_layout, bpc_environmental_buildup_rep_layout,
         character_state_rep_layout, child_actor_component_rep_layout,
-        decayable_component_rep_layout, durable_component_rep_layout, encode_rep_properties,
+        decayable_component_rep_layout, durable_component_rep_layout,
         fillable_component_rep_layout, flammable_actor_rep_layout, flod_actor_component_rep_layout,
         flod_rep_layout, focusable_component_rep_layout, genetics_component_rep_layout,
         icarus_game_state_survival_rep_layout, icarus_player_controller_survival_rep_layout,
         icarus_weather_action_rep_layout, interactable_behaviour_rep_layout,
         inventory_container_manager_rep_layout, inventory_rep_layout, inventory_slot_commands,
         itemable_component_rep_layout, modifier_state_component_rep_layout,
-        mount_character_state_rep_layout, parse_rep_properties, player_character_state_rep_layout,
+        mount_character_state_rep_layout, player_character_state_rep_layout,
         player_history_tracker_rep_layout, player_state_rep_layout, quest_manager_rep_layout,
         quest_rep_layout, radiation_manager_rep_layout, read_rep_properties,
         resource_network_component_rep_layout, scene_component_rep_layout,
@@ -79,7 +79,13 @@ use icarus_bevy::experimental::{
         world_talent_manager_rep_layout, write_rep_properties,
     },
     rep_rpc::{
-        FAST_ARRAY_COUNT_CAP, FastArrayItemLayout, FieldHeader, read_custom_delta_header,
+        BP_ICARUS_PLAYER_CONTROLLER_SURVIVAL_FIELD_INDEX_BOUND,
+        BP_ICARUS_PLAYER_STATE_FIELD_INDEX_BOUND, BP_MOUNT_BASE_FIELD_INDEX_BOUND,
+        BP_MOUNT_HORSE_FIELD_INDEX_BOUND, BP_TAME_BASE_FIELD_INDEX_BOUND, FAST_ARRAY_COUNT_CAP,
+        FastArrayItemLayout, FieldHeader, INVENTORY_FIELD_INDEX_BOUND, RpcParameter,
+        STAT_CONTAINER_FIELD_INDEX_BOUND, UI_PROJECTION_MOUNT_STATUS_FIELD_INDEX_BOUND,
+        bp_icarus_player_state_rpc_parameters, encode_rpc_payload, icarus_character_rpc_parameters,
+        parse_rpc_payload, player_controller_rpc_parameters, read_custom_delta_header,
         read_fast_array_delta, read_field_header, write_custom_delta_header,
         write_fast_array_delta, write_field_header,
     },
@@ -115,24 +121,6 @@ const EXPORT_KNOWN_FLAGS: u8 = EXPORT_HAS_PATH | EXPORT_NO_LOAD | EXPORT_HAS_CHE
 const MAX_PATH_UNITS: usize = 4096;
 /// Bound for "sane" spawn vector components.
 const SANE_EXTENT: f32 = 1.0e6;
-/// `UClass::ClassNetCache` field-index bound (`FClassNetCache::GetMaxIndex() + 1`
-/// = `FieldsBase + Fields.Num()`, `0x1437c27aa`) for `UIcarusStatContainer`:
-/// 2 inherited `UActorComponent` net properties (`bReplicates`, `bIsActive`) +
-/// 1 own net property (`ReplicatedStatArray`) + 1 own net function
-/// (`OnServer_SerialiseStats`) = 4 (F-705).
-const STAT_CONTAINER_FIELD_INDEX_BOUND: u32 = 4;
-/// `UClass::ClassNetCache` field-index bound (`FieldsBase + Fields.Num()`) for
-/// `UInventory`: 2 (`UActorComponent`) + 1 (`UTraitBehaviour::OwningComponent`) +
-/// 6 own net properties (`CurrentWeight`, `Slots`,
-/// `ReplicatedModifierStackMultipliers`, `InventoryInfoRowHandle`,
-/// `SpoilTickRate`, `ParentInventory`) + 1 own net function
-/// (`Multi_PlayInventorySound`) = 10.
-const INVENTORY_FIELD_INDEX_BOUND: u32 = 10;
-/// `UClass::ClassNetCache` field-index bound (`FieldsBase + Fields.Num()`) for
-/// `BP_UIProjectionComponent_MountStatus_C`: 2 (`UActorComponent`) + 2
-/// (`BP_UIProjectionComponent_C`) + 1 own net property (`CurrentMountState`) +
-/// 1 own net function (`ForceProjectionUpdate`) = 6.
-const UI_PROJECTION_MOUNT_STATUS_FIELD_INDEX_BOUND: u32 = 6;
 
 type Tally = BTreeMap<String, u64>;
 
@@ -353,16 +341,19 @@ enum TargetSchema {
     RepLayout(&'static str),
     /// `UIcarusStatContainer`: optional `UActorComponent` rep-layout properties
     /// followed by zero or more `ReplicatedStatArray` custom-delta field headers
-    /// (`index_bound = STAT_CONTAINER_FIELD_INDEX_BOUND`, F-705).
+    /// (`index_bound = STAT_CONTAINER_FIELD_INDEX_BOUND`, F-705, F-708).
     StatContainer,
     /// `UInventory`: optional `UInventory` rep-layout properties followed by
     /// zero or more `Slots` (`FInventorySlotsFastArray`) custom-delta field
-    /// headers (`index_bound = INVENTORY_FIELD_INDEX_BOUND`).
+    /// headers (`index_bound = INVENTORY_FIELD_INDEX_BOUND`, F-708).
     Inventory,
     /// `BP_UIProjectionComponent_MountStatus_C`: optional rep-layout properties
     /// followed by zero or more `ForceProjectionUpdate` 0-parameter net-RPC
-    /// field headers (`index_bound = UI_PROJECTION_MOUNT_STATUS_FIELD_INDEX_BOUND`).
+    /// field headers (`index_bound = UI_PROJECTION_MOUNT_STATUS_FIELD_INDEX_BOUND`, F-708).
     UiProjectionMountStatus,
+    /// Zero-bit subobject creation or deletion header (`has_rep_layout == false`
+    /// and `payload.bit_len() == 0`).
+    SubObjectLifecycle(&'static str),
 }
 
 /// Resolve an actor channel's archetype name to a known native or cooked
@@ -610,7 +601,11 @@ fn classify_subobject_schema(
         | "ConnectedPlayers"
         | "DialogueSystem"
         | "BP_NetworkProxyComponent"
-        | "BackendProxyComponent" => "UActorComponent",
+        | "BackendProxyComponent"
+        | "BestiaryManagerComponent"
+        | "ResourceNetworkDataRequesterComponent"
+        | "BP_CriticalHitComponent"
+        | "BP_HuntingManager" => "UActorComponent",
         "TraitBehaviour" => "UTraitBehaviour",
         "WeatherForecastBarComponent" => "UWeatherForecastBarComponent",
         _ => return None,
@@ -713,6 +708,87 @@ fn schema_commands(schema: &str) -> Vec<RepCommand> {
         "BP_ShelteredComponent_C" => bp_sheltered_component_rep_layout(),
         _ => unreachable!(),
     }
+}
+
+type RpcParameterLookup = fn(u32) -> Option<Vec<RpcParameter>>;
+
+/// Resolve an actor schema name to its `FClassNetCache` `SerializeInt` bound
+/// (`FieldsBase + Fields.Num() + 1`, F-708) and RPC parameter lookup when the
+/// class sends actor net RPCs.
+fn actor_rpc_schema(schema: &str) -> Option<(u32, RpcParameterLookup)> {
+    match schema {
+        "BP_IcarusPlayerState_C" => Some((
+            BP_ICARUS_PLAYER_STATE_FIELD_INDEX_BOUND,
+            bp_icarus_player_state_rpc_parameters,
+        )),
+        "BP_Mount_Base_C" => Some((
+            BP_MOUNT_BASE_FIELD_INDEX_BOUND,
+            icarus_character_rpc_parameters,
+        )),
+        "BP_Mount_Horse_C" => Some((
+            BP_MOUNT_HORSE_FIELD_INDEX_BOUND,
+            icarus_character_rpc_parameters,
+        )),
+        "BP_Tame_Base_C" => Some((
+            BP_TAME_BASE_FIELD_INDEX_BOUND,
+            icarus_character_rpc_parameters,
+        )),
+        "AIcarusPlayerControllerSurvival" => Some((
+            BP_ICARUS_PLAYER_CONTROLLER_SURVIVAL_FIELD_INDEX_BOUND,
+            player_controller_rpc_parameters,
+        )),
+        _ => None,
+    }
+}
+
+/// Decode and re-encode a standard actor or subobject block: optional
+/// `FRepLayout::ReceiveProperties` handle stream (when `has_rep_layout` is set)
+/// followed by zero or more `FClassNetCache` RPC field headers (`F-708`).
+fn replay_rep_layout_and_rpc_block(
+    schema_name: &str,
+    payload: &Payload,
+    has_rep_layout: bool,
+    codec: &RepLayoutCodec,
+) -> Result<(usize, usize, bool)> {
+    let commands = schema_commands(schema_name);
+    let mut reader = payload.reader();
+    let mut writer = BitWriter::new();
+    let prop_entries = if has_rep_layout {
+        let stream = read_rep_properties(&mut reader, &commands, codec)?;
+        let mut effective = *codec;
+        effective.checksums = stream.terminator_checksum.is_some();
+        write_rep_properties(&mut writer, &stream, &commands, &effective)?;
+        stream.total_entries()
+    } else {
+        0
+    };
+
+    let mut rpc_calls = 0usize;
+    if !reader.at_end() {
+        let (index_bound, lookup) = actor_rpc_schema(schema_name)
+            .with_context(|| format!("unexpected trailing field headers on {schema_name}"))?;
+        while !reader.at_end() {
+            let header = read_field_header(&mut reader, index_bound, codec.limits.max_opaque_bits)?;
+            let params = lookup(header.index).with_context(|| {
+                format!(
+                    "unknown {schema_name} RPC field index {} ({} bits)",
+                    header.index,
+                    header.payload.bit_len()
+                )
+            })?;
+            let args = parse_rpc_payload(&header.payload, &params, codec)
+                .with_context(|| format!("{schema_name} RPC field index {}", header.index))?;
+            let reencoded_rpc = encode_rpc_payload(&params, &args, codec)?;
+            let rebuilt_header = FieldHeader {
+                index: header.index,
+                payload: reencoded_rpc,
+            };
+            write_field_header(&mut writer, &rebuilt_header, index_bound)?;
+            rpc_calls += 1;
+        }
+    }
+    let reencoded = Payload::from_writer(writer);
+    Ok((prop_entries, rpc_calls, reencoded == *payload))
 }
 
 /// Decode and re-encode a `UIcarusStatContainer` (`Stat Container`) block:
@@ -1044,14 +1120,26 @@ struct RepReplayStats {
     rep_layout_blocks_attempted: u64,
     rep_layout_blocks_decoded: u64,
     rep_layout_blocks_reencoded_exact: u64,
-    /// Extra `has_rep_layout == false` custom-delta/RPC blocks (`StatContainer`,
-    /// `Inventory`, `MountStatus`) matched, decoded and bit-identically re-encoded.
+    /// `has_rep_layout == false` blocks (custom-delta fast arrays, actor/component
+    /// net RPCs, and zero-bit subobject creation/deletion headers) matched,
+    /// decoded and bit-identically re-encoded.
     custom_delta_blocks_attempted: u64,
     custom_delta_blocks_decoded: u64,
     custom_delta_blocks_reencoded_exact: u64,
+    /// Actor net-RPC `has_rep_layout == false` blocks decoded and re-encoded.
+    actor_rpc_blocks_decoded: u64,
+    actor_rpc_blocks_reencoded_exact: u64,
+    /// Total net-RPC calls decoded across actor and component blocks.
+    rpc_calls_decoded: u64,
+    /// Zero-bit subobject creation/deletion blocks (`has_rep_layout == false`
+    /// and `payload.bit_len() == 0`) decoded and re-encoded.
+    subobject_lifecycle_blocks_decoded: u64,
     /// True when every `BlockStats::with_rep_layout` block was re-encoded
     /// bit-identically with zero unclassified targets and zero failures.
     rep_layout_coverage_complete: bool,
+    /// True when every content block in `BlockStats::total` (`with_rep_layout`
+    /// and `has_rep_layout == false`) was decoded and re-encoded bit-identically.
+    all_blocks_coverage_complete: bool,
     /// Decoded and bit-identically re-encoded block counts by schema name.
     by_schema_decoded: Tally,
     by_schema_reencoded_exact: Tally,
@@ -1830,9 +1918,6 @@ impl<'a> Decoder<'a> {
             .and_then(|state| state.archetype_path.as_deref());
         let target_schema = match &block.target {
             BlockTarget::Actor => {
-                if !block.has_rep_layout {
-                    return None;
-                }
                 let Some(arch) = channel_arch else {
                     bump(
                         &mut self.stats.rep_replay.unclassified_actor_targets,
@@ -1846,29 +1931,42 @@ impl<'a> Decoder<'a> {
                 };
                 schema
             }
-            BlockTarget::SubObject { .. } => {
-                let Some(target_name) = class_path.or(object_path) else {
-                    if block.has_rep_layout {
+            BlockTarget::SubObject { class, .. } => {
+                if !block.has_rep_layout && block.payload.bit_len() == 0 {
+                    let lifecycle_schema = if matches!(class, SubObjectClass::Delete) {
+                        "SubObjectDelete"
+                    } else if let Some(target_name) = class_path.or(object_path) {
+                        match classify_subobject_schema(target_name, channel_arch) {
+                            Some(TargetSchema::RepLayout(schema)) => schema,
+                            Some(TargetSchema::StatContainer) => "UIcarusStatContainer",
+                            Some(TargetSchema::Inventory) => "UInventory",
+                            Some(TargetSchema::UiProjectionMountStatus) => {
+                                "BP_UIProjectionComponent_MountStatus_C"
+                            }
+                            Some(TargetSchema::SubObjectLifecycle(schema)) => schema,
+                            None => "SubObjectCreate",
+                        }
+                    } else {
+                        "SubObjectCreate"
+                    };
+                    TargetSchema::SubObjectLifecycle(lifecycle_schema)
+                } else {
+                    let Some(target_name) = class_path.or(object_path) else {
                         bump(
                             &mut self.stats.rep_replay.unclassified_subobject_targets,
                             "<unresolved_subobject>",
                         );
-                    }
-                    return None;
-                };
-                let Some(schema) = classify_subobject_schema(target_name, channel_arch) else {
-                    if block.has_rep_layout {
+                        return None;
+                    };
+                    let Some(schema) = classify_subobject_schema(target_name, channel_arch) else {
                         bump(
                             &mut self.stats.rep_replay.unclassified_subobject_targets,
                             target_name,
                         );
-                    }
-                    return None;
-                };
-                if matches!(schema, TargetSchema::RepLayout(_)) && !block.has_rep_layout {
-                    return None;
+                        return None;
+                    };
+                    schema
                 }
-                schema
             }
         };
 
@@ -1879,6 +1977,16 @@ impl<'a> Decoder<'a> {
             replay.custom_delta_blocks_attempted += 1;
         }
         match target_schema {
+            TargetSchema::SubObjectLifecycle(schema_name) => {
+                replay.typed_blocks_decoded += 1;
+                replay.typed_blocks_reencoded_exact += 1;
+                if in_record_body {
+                    replay.subobject_lifecycle_blocks_decoded += 1;
+                }
+                bump(&mut replay.by_schema_decoded, schema_name);
+                bump(&mut replay.by_schema_reencoded_exact, schema_name);
+                Some((schema_name, true))
+            }
             TargetSchema::StatContainer => {
                 let schema_name = "UIcarusStatContainer";
                 match replay_stat_container_block(&block.payload, block.has_rep_layout, &codec) {
@@ -1935,6 +2043,9 @@ impl<'a> Decoder<'a> {
                         replay.typed_blocks_decoded += 1;
                         bump(&mut replay.by_schema_decoded, schema_name);
                         replay.rep_entries_decoded += prop_entries as u64;
+                        if !block.has_rep_layout {
+                            replay.rpc_calls_decoded += 1;
+                        }
                         if exact {
                             replay.typed_blocks_reencoded_exact += 1;
                             bump(&mut replay.by_schema_reencoded_exact, schema_name);
@@ -1951,16 +2062,24 @@ impl<'a> Decoder<'a> {
                 }
             }
             TargetSchema::RepLayout(schema_name) => {
-                let commands = schema_commands(schema_name);
-                match parse_rep_properties(&block.payload, &commands, &codec) {
-                    Ok(stream) => {
+                match replay_rep_layout_and_rpc_block(
+                    schema_name,
+                    &block.payload,
+                    block.has_rep_layout,
+                    &codec,
+                ) {
+                    Ok((prop_entries, rpc_calls, exact)) => {
                         replay.typed_blocks_decoded += 1;
                         bump(&mut replay.by_schema_decoded, schema_name);
-                        replay.rep_entries_decoded += stream.total_entries() as u64;
-                        let mut effective = codec;
-                        effective.checksums = stream.terminator_checksum.is_some();
-                        let exact = encode_rep_properties(&stream, &commands, &effective)
-                            .is_ok_and(|reencoded| reencoded == block.payload);
+                        replay.rep_entries_decoded += prop_entries as u64;
+                        replay.rpc_calls_decoded += rpc_calls as u64;
+                        if in_record_body
+                            && matches!(block.target, BlockTarget::Actor)
+                            && !block.has_rep_layout
+                        {
+                            replay.actor_rpc_blocks_decoded += 1;
+                            replay.actor_rpc_blocks_reencoded_exact += u64::from(exact);
+                        }
                         if exact {
                             replay.typed_blocks_reencoded_exact += 1;
                             bump(&mut replay.by_schema_reencoded_exact, schema_name);
@@ -2119,6 +2238,13 @@ impl<'a> Decoder<'a> {
         let replay = &mut self.stats.rep_replay;
         replay.rep_layout_coverage_complete = self.stats.blocks.with_rep_layout > 0
             && replay.rep_layout_blocks_reencoded_exact == self.stats.blocks.with_rep_layout
+            && replay.typed_blocks_failed.is_empty()
+            && replay.unclassified_actor_targets.is_empty()
+            && replay.unclassified_subobject_targets.is_empty();
+        replay.all_blocks_coverage_complete = self.stats.blocks.total > 0
+            && replay.rep_layout_blocks_reencoded_exact
+                + replay.custom_delta_blocks_reencoded_exact
+                == self.stats.blocks.total
             && replay.typed_blocks_failed.is_empty()
             && replay.unclassified_actor_targets.is_empty()
             && replay.unclassified_subobject_targets.is_empty();

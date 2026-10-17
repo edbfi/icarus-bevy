@@ -1,14 +1,23 @@
-use icarus_bevy::experimental::actor_channel::{ActorChannelCodec, ActorChannelLimits};
+use icarus_bevy::experimental::actor_channel::{
+    ActorChannelCodec, ActorChannelLimits, CompressedRotator, NetGuidRef,
+};
 use icarus_bevy::experimental::archive::ByteOrder;
+use icarus_bevy::experimental::control_messages::ArchiveText;
 use icarus_bevy::experimental::packet::{BitWriter, Payload};
 use icarus_bevy::experimental::rep_layout::{
-    PropertyStream, RepCommand, RepEntry, RepLayoutCodec, RepLayoutLimits, RepValue,
+    NetworkName, PropertyStream, RepCommand, RepEntry, RepLayoutCodec, RepLayoutLimits, RepValue,
 };
 use icarus_bevy::experimental::rep_rpc::{
-    CustomDeltaHeader, FAST_ARRAY_COUNT_CAP, FastArrayDelta, FastArrayItem, FastArrayItemLayout,
-    FieldHeader, RPC_ARRAY_COUNT_MAX, RpcArgument, RpcItem, RpcParameter, encode_rpc_payload,
-    parse_rpc_payload, read_custom_delta_header, read_fast_array_delta, read_field_header,
-    write_custom_delta_header, write_fast_array_delta, write_field_header,
+    BP_ICARUS_PLAYER_CONTROLLER_SURVIVAL_FIELD_INDEX_BOUND,
+    BP_ICARUS_PLAYER_STATE_FIELD_INDEX_BOUND, BP_MOUNT_BASE_FIELD_INDEX_BOUND,
+    BP_MOUNT_HORSE_FIELD_INDEX_BOUND, BP_TAME_BASE_FIELD_INDEX_BOUND, CustomDeltaHeader,
+    FAST_ARRAY_COUNT_CAP, FastArrayDelta, FastArrayItem, FastArrayItemLayout, FieldHeader,
+    INVENTORY_FIELD_INDEX_BOUND, RPC_ARRAY_COUNT_MAX, RpcArgument, RpcItem, RpcParameter,
+    STAT_CONTAINER_FIELD_INDEX_BOUND, UI_PROJECTION_MOUNT_STATUS_FIELD_INDEX_BOUND,
+    bp_icarus_player_state_rpc_parameters, encode_rpc_payload, icarus_character_rpc_parameters,
+    parse_rpc_payload, player_controller_rpc_parameters, read_custom_delta_header,
+    read_fast_array_delta, read_field_header, write_custom_delta_header, write_fast_array_delta,
+    write_field_header,
 };
 
 // Independently authored bit fixtures for the client replicator's field
@@ -574,5 +583,137 @@ fn fast_array_delta_items_share_one_entry_budget() {
     assert_eq!(
         read_fast_array_delta(&mut bytes.reader(), &layout, &roomy, FAST_ARRAY_COUNT_CAP).unwrap(),
         two
+    );
+}
+
+#[test]
+fn actor_rpc_layouts_round_trip_with_class_net_cache_bounds() {
+    assert_eq!(STAT_CONTAINER_FIELD_INDEX_BOUND, 5);
+    assert_eq!(INVENTORY_FIELD_INDEX_BOUND, 11);
+    assert_eq!(UI_PROJECTION_MOUNT_STATUS_FIELD_INDEX_BOUND, 7);
+    assert_eq!(BP_ICARUS_PLAYER_STATE_FIELD_INDEX_BOUND, 38);
+    assert_eq!(BP_MOUNT_BASE_FIELD_INDEX_BOUND, 84);
+    assert_eq!(BP_MOUNT_HORSE_FIELD_INDEX_BOUND, 85);
+    assert_eq!(BP_TAME_BASE_FIELD_INDEX_BOUND, 86);
+    assert_eq!(BP_ICARUS_PLAYER_CONTROLLER_SURVIVAL_FIELD_INDEX_BOUND, 183);
+
+    let codec = codec(ByteOrder::Little);
+
+    // BP_IcarusPlayerState_C::Server_UpdateHealthValue (field_index = 34)
+    let ps_params = bp_icarus_player_state_rpc_parameters(34).unwrap();
+    let ps_args = vec![RpcArgument::Sent(vec![RpcItem::Value(RepValue::Float(
+        100.0_f32.to_bits(),
+    ))])];
+    let ps_payload = encode_rpc_payload(&ps_params, &ps_args, &codec).unwrap();
+    assert_eq!(ps_payload.bit_len(), 33);
+    assert_eq!(
+        parse_rpc_payload(&ps_payload, &ps_params, &codec).unwrap(),
+        ps_args
+    );
+
+    // AIcarusCharacter::Multicast_PlayReplicatedMontage (field_index = 51) and
+    // Multicast_StopReplicatedMontage (field_index = 53)
+    let play_params = icarus_character_rpc_parameters(51).unwrap();
+    let play_args = vec![
+        RpcArgument::Sent(vec![RpcItem::Value(RepValue::Object(NetGuidRef::plain(
+            123,
+        )))]),
+        RpcArgument::Sent(vec![RpcItem::Value(RepValue::NetworkName(
+            NetworkName::Hardcoded(0),
+        ))]),
+        RpcArgument::Sent(vec![RpcItem::Value(RepValue::Float(1.0_f32.to_bits()))]),
+        RpcArgument::Bool(true),
+    ];
+    let play_payload = encode_rpc_payload(&play_params, &play_args, &codec).unwrap();
+    assert_eq!(
+        parse_rpc_payload(&play_payload, &play_params, &codec).unwrap(),
+        play_args
+    );
+    let stop_params = icarus_character_rpc_parameters(53).unwrap();
+    let stop_args = vec![RpcArgument::Sent(vec![RpcItem::Value(RepValue::Object(
+        NetGuidRef::plain(123),
+    ))])];
+    let stop_payload = encode_rpc_payload(&stop_params, &stop_args, &codec).unwrap();
+    assert_eq!(
+        parse_rpc_payload(&stop_payload, &stop_params, &codec).unwrap(),
+        stop_args
+    );
+
+    // BP_IcarusPlayerControllerSurvival_C ClientSetViewTarget (51),
+    // ClientStartOnlineSession (54, 8-bit field_idx below 183), and
+    // ClientUpdateMultipleLevelsStreamingStatus (62)
+    let mut start_writer = BitWriter::new();
+    let start_hdr = FieldHeader {
+        index: 54,
+        payload: Payload::from_writer(BitWriter::new()),
+    };
+    write_field_header(
+        &mut start_writer,
+        &start_hdr,
+        BP_ICARUS_PLAYER_CONTROLLER_SURVIVAL_FIELD_INDEX_BOUND,
+    )
+    .unwrap();
+    let start_block = Payload::from_writer(start_writer);
+    // 54 + 128 = 182 < 183, so index 54 takes 8 bits + 8-bit packed 0 length = 16 bits.
+    assert_eq!(start_block.bit_len(), 16);
+    let mut start_reader = start_block.reader();
+    assert_eq!(
+        read_field_header(
+            &mut start_reader,
+            BP_ICARUS_PLAYER_CONTROLLER_SURVIVAL_FIELD_INDEX_BOUND,
+            64
+        )
+        .unwrap(),
+        start_hdr
+    );
+    assert!(start_reader.at_end());
+
+    let rot_params = player_controller_rpc_parameters(13).unwrap();
+    let rot_args = vec![
+        RpcArgument::Sent(vec![RpcItem::Value(RepValue::Rotator(
+            CompressedRotator::from_degrees(0.0, 90.0, 0.0).unwrap(),
+        ))]),
+        RpcArgument::Bool(true),
+    ];
+    let rot_payload = encode_rpc_payload(&rot_params, &rot_args, &codec).unwrap();
+    assert_eq!(
+        parse_rpc_payload(&rot_payload, &rot_params, &codec).unwrap(),
+        rot_args
+    );
+
+    let vt_params = player_controller_rpc_parameters(51).unwrap();
+    let vt_args = vec![
+        RpcArgument::Sent(vec![RpcItem::Value(RepValue::Object(NetGuidRef::plain(
+            10,
+        )))]),
+        RpcArgument::Sent(vec![
+            RpcItem::Value(RepValue::Float(0.0_f32.to_bits())),
+            RpcItem::Value(RepValue::Byte(2)),
+            RpcItem::Value(RepValue::Float(2.0_f32.to_bits())),
+            RpcItem::Value(RepValue::Bool(false)),
+        ]),
+    ];
+    let vt_payload = encode_rpc_payload(&vt_params, &vt_args, &codec).unwrap();
+    assert_eq!(vt_payload.bit_len(), 78);
+    assert_eq!(
+        parse_rpc_payload(&vt_payload, &vt_params, &codec).unwrap(),
+        vt_args
+    );
+
+    let lvl_params = player_controller_rpc_parameters(62).unwrap();
+    let lvl_args = vec![RpcArgument::Sent(vec![RpcItem::Array(vec![vec![
+        RpcItem::Value(RepValue::NetworkName(NetworkName::String {
+            text: ArchiveText::text("/Game/Maps/Conifer").unwrap(),
+            number: 0,
+        })),
+        RpcItem::Value(RepValue::Int(-1)),
+        RpcItem::Value(RepValue::Bool(true)),
+        RpcItem::Value(RepValue::Bool(true)),
+        RpcItem::Value(RepValue::Bool(false)),
+    ]])])];
+    let lvl_payload = encode_rpc_payload(&lvl_params, &lvl_args, &codec).unwrap();
+    assert_eq!(
+        parse_rpc_payload(&lvl_payload, &lvl_params, &codec).unwrap(),
+        lvl_args
     );
 }

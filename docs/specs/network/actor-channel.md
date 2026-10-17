@@ -4,7 +4,7 @@
 
 Experimental: static observations of client build 25793767, with server
 build 25621760 writers for content blocks and NetGUIDs; wire-checked against
-one capture of the 3.0.31 server (F-693, F-704 to F-707). Last reconciled: 2026-10-17.
+one capture of the 3.0.31 server (F-693, F-704 to F-708). Last reconciled: 2026-10-17.
 
 ## Scope
 
@@ -56,18 +56,26 @@ server-side writer.
 - The replicator hands rep-layout properties to `FRepLayout::ReceiveProperties`
   (an optional bit, a packed handle, an optional checksum word, then a handle
   loop) before its field-header loop (M-426, M-427; F-644). Each field until the
-  payload ends is a `SerializeInt` index below `max_index + 1`, a packed bit
-  count and that payload (unknown indices skipped). Custom-delta property
-  payloads start with a bit (net version 11+) and, for a static array, a packed
-  index below its dimension, then the struct's delta serializer. Fast-array
-  bodies carry four 4-byte fields (array and base keys, delete and change counts
-  capped at 2048 initially), a 4-byte ID per delete, and per change a 4-byte ID
-  plus either item commands in order, a set bit and rep-layout property stream
-  in struct-delta mode, or a native item serializer. Function fields are RPCs
-  (requiring the net flag and, on a server, the server flag): bool parameters
-  are a bare bit, others a presence bit plus handle-free item encodings, and
-  arrays a 2-byte count (`<= 0xFFFE`) plus elements, consuming the payload
-  exactly (`experimental::rep_rpc` re-encodes all, F-644).
+  payload ends is a `SerializeInt` index below `max_index + 1` (`FClassNetCache::GetMaxIndex() + 1`,
+  `0x1437c2650`), a packed bit count and that payload (unknown indices skipped).
+  `UClass::SetUpRuntimeReplicationData` (`0x141fec960`) populates `ClassReps`
+  with `CPF_Net` properties and `NetFields` with own `FUNC_Net` functions
+  (`SuperStruct == NULL`) sorted by `FName`, and `FClassNetCacheMgr::GetClassNetCache`
+  (`0x141fff0e0`) numbers own `ClassReps` then own `NetFields` from
+  `SuperNetCache->FieldsBase + SuperNetCache->Fields.Num()` (`SerializeInt` bounds:
+  `UIcarusStatContainer` 5, `UInventory` 11, `BP_UIProjectionComponent_MountStatus_C` 7,
+  `BP_IcarusPlayerState_C` 38, `BP_Mount_Base_C` 84, `BP_Mount_Horse_C` 85,
+  `BP_Tame_Base_C` 86, `BP_IcarusPlayerControllerSurvival_C` 183; F-708).
+  Custom-delta payloads start with a bit (net version 11+) and, for a static
+  array, a packed index below its dimension, then the struct's delta serializer.
+  Fast-array bodies carry four 4-byte fields (array and base keys, delete and
+  change counts capped at 2048 initially), a 4-byte ID per delete, and per
+  change a 4-byte ID plus either item commands in order, a set bit and
+  rep-layout property stream in struct-delta mode, or a native item serializer.
+  Function fields are RPCs: bool parameters are a bare bit, others a presence
+  bit plus handle-free item encodings, and arrays a 2-byte count (`<= 0xFFFE`)
+  plus elements, consuming the payload exactly (`experimental::rep_rpc`
+  re-encodes all, F-644, F-708).
 - Rep-layout stream (F-571): packed handles select layout commands and handle
   0 ends a stream; a dynamic array carries a 2-byte element count and a nested
   zero-terminated handle stream; each value goes through its property's net
@@ -95,21 +103,18 @@ server-side writer.
     `APlayerState` adds 16..26 (`Score`, `PlayerId`, `Ping`, five bools,
     `StartTime`, `UniqueId`, `PlayerNamePrivate`), and `UActorComponent`
     defines handles 1..2 (`bReplicates`, `bIsActive`). `experimental::rep_layout`
-    models 64 native and cooked Blueprint actor and component schemas covering
-    all `20,407 / 20,407` `with_rep_layout` blocks (`100%`) in M-707 across
-    player controllers, states and characters, mounts (`BP_Mount_Base_C`,
-    `BP_Tame_Base_C`, `BP_Mount_Horse_C`), buildings (`BP_Building_Base_C`),
-    world managers (`AWorldSettings`, `AFLOD`, `AWeatherController`,
-    `BP_MapManager_C`, `AQuest`, `AQuestManager`, `AInventoryContainerManager`,
-    `APlayerHistoryTracker`, `ARadiationManager`, `AWorldTalentManager`,
-    `BP_AtmosphereController_C`), world actors, dropships/rocket parts,
-    deployables, `UWeatherForecastBarComponent` and 28 inventory/trait/state
-    components (F-703, F-705 to F-707).
+    models 64 native and cooked Blueprint actor/component schemas covering all
+    `20,407 / 20,407` `with_rep_layout` blocks (`100%`) in M-707 across player
+    controllers/states/characters, mounts (`BP_Mount_Base_C`, `BP_Tame_Base_C`,
+    `BP_Mount_Horse_C`), buildings (`BP_Building_Base_C`), world managers,
+    world actors, dropships/rocket parts, deployables,
+    `UWeatherForecastBarComponent` and 28 inventory/trait/state components
+    (F-703, F-705 to F-707).
 - Spawn vectors (F-571, F-573): after the presence bit, archives at engine net
   version 13+ read a quantized bit; unquantized is three 4-byte floats,
   quantized a component bit count (`<= 24`) and three integers bounded by
   `1 << (bits + 2)`, decoded as `(v - (1 << (bits + 1))) * 0.1`.
-- Property net items and command expansion (F-574, F-575, F-632, F-704 to F-707):
+- Property net items and command expansion (F-574, F-575, F-632, F-704 to F-708):
   `FRepLayout::ReceiveCustomProperty` (`0x143b219b0`) calls `Property->NetSerializeItem`
   (`vtable + 0x98`) for every non-array command. Bool is 1 bit; Byte is 8 bits or
   `min(8, CeilLogTwo64(max + 1))` with an enum (`max <= 0` sends 0 bits; native
@@ -118,38 +123,36 @@ server-side writer.
   its underlying integer's bits (net version 17+); `FNumericProperty::NetSerializeItem`
   (`0x1421206f0`) reads 1, 2, 4 or 8 archive bytes via `SerializeItem`
   (`0x142123c50`..`0x142123d30`); object references are a NetGUID; structs with
-  `STRUCT_NetSerializeNative` (`StructFlags & 0x400`, from `ICppStructOps` `+0x68`)
-  emit one command and call `ICppStructOps::NetSerialize` (`+0x78`), whereas
-  structs without `0x400` recurse through `0x143af7340` (skipping inner
-  `CPF_RepSkip` `0x0800000000` fields such as `FItemData::CachedStats` and
-  `FFastArraySerializerItem` base fields). Framing the 1-bit `bDoChecksum`
-  preamble of `ReceiveProperties` (`0x143b20720`, M-426) together with
-  `FStatsRepArray::NetDeltaSerialize` (bound 4), `FInventorySlotsFastArray::NetDeltaSerialize`
-  (`0x1416c36a0`, bound 10) and `BP_UIProjectionComponent_MountStatus_C::ForceProjectionUpdate`
-  RPC headers (bound 6, index 5) decodes and re-encodes all `20,407 / 20,407`
-  `with_rep_layout` blocks (`100%`), `2,621` `has_rep_layout == false`
-  custom-delta/RPC subobject blocks and `3` `APlayerController` open-hook
-  blocks (`23,031 / 23,031` typed blocks, `66,859` property entries, `2,361`
-  stat-pair items, 0 unclassified targets, 0 failures; F-704 to F-707).
-- Native struct items (F-588, F-589, F-593, F-597, F-673, F-674, F-704 to F-707):
-  `FVector::NetSerialize` (`0x142100d00`), `FVector2D::NetSerialize`
-  (`0x142100bf0`) and `FQuat::NetSerialize` (`0x1421003f0` -> `0x141ed3a00`,
-  normalizing `W >= 0` on save and reconstructing `W = sqrt(1 - (X^2+Y^2+Z^2))`
-  on load, so `FTransform` flattens into three 12-byte `Vector` commands)
-  serialize three, two and three 4-byte float words; `FRotator::NetSerialize`
-  (`0x142100890`) calls `SerializeCompressedShort` (`0x141ed7810`);
+  `STRUCT_NetSerializeNative` (`StructFlags & 0x400`) emit one command and call
+  `ICppStructOps::NetSerialize` (`+0x78`), whereas structs without `0x400`
+  recurse through `0x143af7340` (skipping inner `CPF_RepSkip` fields such as
+  `FItemData::CachedStats` and `FFastArraySerializerItem` base fields). Framing
+  the 1-bit `bDoChecksum` preamble of `ReceiveProperties` (`0x143b20720`, M-426)
+  with `FStatsRepArray` (bound 5, index 3), `FInventorySlotsFastArray` (bound 11,
+  index 3), `ForceProjectionUpdate` (bound 7, index 5),
+  `Server_UpdateHealthValue` (bound 38, index 34), `AIcarusCharacter` montage
+  RPCs (bounds 84..86, indices 51/53), 11 `APlayerController` RPCs (bound 183,
+  indices 13, 18, 21, 23, 40, 46, 49, 51, 54, 62, 63) and zero-bit subobject
+  headers replays all `20,407 / 20,407` `with_rep_layout` blocks, all
+  `3,072 / 3,072` `has_rep_layout == false` blocks and all `7 / 7` channel-2
+  open-hook blocks (`23,486 / 23,486` total typed blocks, `2,607` RPC calls,
+  `66,859` property entries, `2,361` stat-pair items, 0 failures; F-704 to F-708;
+  U-066 resolved).
+- Native struct items (F-588, F-589, F-593, F-597, F-673, F-674, F-704 to F-708):
+  `FVector` (`0x142100d00`), `FVector2D` (`0x142100bf0`) and `FQuat::NetSerialize`
+  (`0x1421003f0` -> `0x141ed3a00`, normalizing `W >= 0` on save and reconstructing
+  `W = sqrt(1 - (X^2+Y^2+Z^2))` on load, so `FTransform` flattens into three
+  `Vector` commands) serialize three, two and three 4-byte float words;
+  `FRotator::NetSerialize` (`0x142100890`) calls `SerializeCompressedShort`;
   `FUniqueNetIdRepl::NetSerialize` (`0x143ddced0` -> `0x1439a23f0`) uses the
   control-channel unique-net-id framing (F-531, F-636); `FRowHandle::NetSerialize`
   (`0x143f8a530`) sends a 2-byte table index (`0xffff` unmapped, or `< 293` in
-  `UDatatableFunctionLibrary::SetupTables` `0x1418193d0`, invariant in 3.0.31/32)
-  and a 0/1/2/4-byte row index sized by table row count, whereas typed
-  `F*RowHandle` subclasses omit the 2-byte table index and serialize only their
-  1-byte (`Byte`) or 2-byte (`UInt16`, `FQuestsRowHandle` `0x14165b3d0`) row
-  index (`FIcarusStatReplicated` has no native `NetSerialize` and flattens into
-  `[NetworkName, Int]`, F-706, F-707); `FStatPairRepState::NetSerialize`
-  (`0x141c10c50`) writes a 1-byte length `1..=4` (`< 0xff -> 1`, `< 0xffff -> 2`,
-  `< 0xffffff -> 3`, else `4`, `0x141807bd0`) followed by `len` big-endian
-  bytes for `Stat` and `Value` (`0x1417e1b50`).
+  `SetupTables` `0x1418193d0`) and a 0/1/2/4-byte row index sized by table row
+  count, whereas typed `F*RowHandle` subclasses serialize only their 1-byte or
+  2-byte (`FQuestsRowHandle` `0x14165b3d0`) row index (`FIcarusStatReplicated`
+  flattens into `[NetworkName, Int]`, F-706, F-707); `FStatPairRepState::NetSerialize`
+  (`0x141c10c50`) writes a 1-byte length `1..=4` (`0x141807bd0`) followed by
+  `len` big-endian bytes for `Stat` and `Value` (`0x1417e1b50`).
   `FVector_NetQuantize` is a bit count (`<= 20`) and three biased unscaled
   integers; `FVector_NetQuantizeNormal` is three 16-bit values biased by 32768.
   `FRepMovement` sends two flag bits, location, rotation (byte rotator at
@@ -206,7 +209,8 @@ server-side writer.
   order the client reads it: the spawn record (when the initial and
   locally opened flags are set) and an actor hook that is empty in the base
   class (nonempty 8-bit net player index on channel 2's player controller open,
-  F-696), the actor's property block, then subobject blocks.
+  followed by 7 content blocks that all decode and re-encode bit-identically,
+  F-696, F-708), the actor's property block, then subobject blocks.
 - The older server's `SerializeNewActor` (M-460) makes the same three object
   references and single rotation bit as the client's; its quantizers are
   inlined and unread.
@@ -216,9 +220,7 @@ server-side writer.
 
 ## Open questions
 
-- Other native structs and scalar items (U-064); which levels each movement property uses (a property default).
-- Server writers for these records and their byte order and bounds (U-044).
-- Remaining 220 `has_rep_layout == false` actor RPC blocks in M-707 (U-066).
+- Other native structs not exercised in M-707 (e.g., `FDateTime`/`FTimespan`, `FPlane`) and server writers for these records (U-044, U-064).
 
 ## Evidence
 
@@ -232,6 +234,6 @@ server-side writer.
   net archive version M-571 to M-576;
   display strings M-581 to M-584; Text codec M-585, M-602 to M-605; Text callees M-586,
   M-587; custom versions M-588; enum widths M-614, M-615; fields and RPCs M-620 to M-624; fast arrays M-628 to M-635; codec tests M-475, M-476, M-492, M-496,
-  M-511, M-522, M-530, M-548; native class/struct/enum descriptors, cooked Blueprint exports and scalar/struct net serializers M-710 to M-713, M-717, M-720, M-731 to M-740;
+  M-511, M-522, M-530, M-548; native class/struct/enum descriptors, cooked Blueprint exports, RPC caches and scalar/struct net serializers M-710 to M-713, M-717, M-720, M-731 to M-742;
   layout source M-552 to M-555; send order M-461, M-556 to
   M-560; wire capture M-707, M-708.
