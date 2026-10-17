@@ -409,6 +409,9 @@ fn by_name_prospect_normalization_and_id_matching() {
         normalize_prospect_name("Olympus_Run.JSON"),
         Some("Olympus_Run")
     );
+    // Multi-byte UTF-8 characters crossing `len() - 5` must not panic.
+    assert_eq!(normalize_prospect_name("aa€€"), Some("aa€€"));
+    assert_eq!(normalize_prospect_name("aa€€.JSON"), Some("aa€€"));
 
     assert!(prospect_ids_match(
         &units("Olympus_Run"),

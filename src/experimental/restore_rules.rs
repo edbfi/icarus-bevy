@@ -415,7 +415,8 @@ pub fn normalize_prospect_name(input: &str) -> Option<&str> {
     if input.is_empty() {
         return None;
     }
-    let stripped = if input.len() >= 5 && input[input.len() - 5..].eq_ignore_ascii_case(".json") {
+    let bytes = input.as_bytes();
+    let stripped = if bytes.len() >= 5 && bytes[bytes.len() - 5..].eq_ignore_ascii_case(b".json") {
         &input[..input.len() - 5]
     } else {
         input
