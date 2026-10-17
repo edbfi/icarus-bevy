@@ -37,7 +37,7 @@ use icarus_bevy::experimental::{
         EXPORT_HAS_CHECKSUM, EXPORT_HAS_PATH, EXPORT_NO_LOAD, MAX_GUID_DEPTH, NetGuidRef,
         PackageMapState, SpawnRecord, SpawnVector, SubObjectClass,
         encode_player_controller_open_bunch_body, guid_kind, parse_actor_bunch,
-        parse_player_controller_open_bunch, read_content_block, read_spawn,
+        parse_player_controller_open_bunch, read_content_block, read_spawn, write_content_block,
     },
     archive::{ByteOrder, read_string_frame},
     control_messages::{ControlCodec, Decoded, read_control_messages},
@@ -591,7 +591,11 @@ fn classify_subobject_schema(
         | "BestiaryManagerComponent"
         | "ResourceNetworkDataRequesterComponent"
         | "BP_CriticalHitComponent"
-        | "BP_HuntingManager" => "UActorComponent",
+        | "BP_HuntingManager"
+        | "BPC_AccumulationComponent"
+        | "BP_UIProjectionComponent_MountTooltip"
+        | "BP_JumpLerpComponent"
+        | "GameplayTasksComponent" => "UActorComponent",
         "TraitBehaviour" => "UTraitBehaviour",
         "WeatherForecastBarComponent" => "UWeatherForecastBarComponent",
         _ => return None,
@@ -1121,8 +1125,11 @@ struct RepReplayStats {
     /// Total net-RPC calls decoded across actor and component blocks.
     rpc_calls_decoded: u64,
     /// Zero-bit subobject creation/deletion blocks (`has_rep_layout == false`
-    /// and `payload.bit_len() == 0`) decoded and re-encoded.
+    /// and `payload.bit_len() == 0`) matched, decoded and bit-identically
+    /// re-encoded via `write_content_block` / `read_content_block`.
+    subobject_lifecycle_blocks_attempted: u64,
     subobject_lifecycle_blocks_decoded: u64,
+    subobject_lifecycle_blocks_reencoded_exact: u64,
     /// True when every `BlockStats::with_rep_layout` block was re-encoded
     /// bit-identically with zero unclassified targets and zero failures.
     rep_layout_coverage_complete: bool,
@@ -1986,39 +1993,36 @@ impl<'a> Decoder<'a> {
                 schema
             }
             BlockTarget::SubObject { class, .. } => {
+                let Some(target_name) = class_path.or(object_path) else {
+                    bump(
+                        &mut self.stats.rep_replay.unclassified_subobject_targets,
+                        "<unresolved_subobject>",
+                    );
+                    return None;
+                };
+                let Some(schema) = classify_subobject_schema(target_name, channel_arch) else {
+                    bump(
+                        &mut self.stats.rep_replay.unclassified_subobject_targets,
+                        target_name,
+                    );
+                    return None;
+                };
                 if !block.has_rep_layout && block.payload.bit_len() == 0 {
                     let lifecycle_schema = if matches!(class, SubObjectClass::Delete) {
                         "SubObjectDelete"
-                    } else if let Some(target_name) = class_path.or(object_path) {
-                        match classify_subobject_schema(target_name, channel_arch) {
-                            Some(TargetSchema::RepLayout(schema)) => schema,
-                            Some(TargetSchema::StatContainer) => "UIcarusStatContainer",
-                            Some(TargetSchema::Inventory) => "UInventory",
-                            Some(TargetSchema::UiProjectionMountStatus) => {
+                    } else {
+                        match schema {
+                            TargetSchema::RepLayout(name) => name,
+                            TargetSchema::StatContainer => "UIcarusStatContainer",
+                            TargetSchema::Inventory => "UInventory",
+                            TargetSchema::UiProjectionMountStatus => {
                                 "BP_UIProjectionComponent_MountStatus_C"
                             }
-                            Some(TargetSchema::SubObjectLifecycle(schema)) => schema,
-                            None => "SubObjectCreate",
+                            TargetSchema::SubObjectLifecycle(name) => name,
                         }
-                    } else {
-                        "SubObjectCreate"
                     };
                     TargetSchema::SubObjectLifecycle(lifecycle_schema)
                 } else {
-                    let Some(target_name) = class_path.or(object_path) else {
-                        bump(
-                            &mut self.stats.rep_replay.unclassified_subobject_targets,
-                            "<unresolved_subobject>",
-                        );
-                        return None;
-                    };
-                    let Some(schema) = classify_subobject_schema(target_name, channel_arch) else {
-                        bump(
-                            &mut self.stats.rep_replay.unclassified_subobject_targets,
-                            target_name,
-                        );
-                        return None;
-                    };
                     schema
                 }
             }
@@ -2028,18 +2032,47 @@ impl<'a> Decoder<'a> {
         let replay = &mut self.stats.rep_replay;
         replay.typed_blocks_attempted += 1;
         if in_record_body && !block.has_rep_layout {
-            replay.custom_delta_blocks_attempted += 1;
+            if matches!(target_schema, TargetSchema::SubObjectLifecycle(_)) {
+                replay.subobject_lifecycle_blocks_attempted += 1;
+            } else {
+                replay.custom_delta_blocks_attempted += 1;
+            }
         }
         match target_schema {
             TargetSchema::SubObjectLifecycle(schema_name) => {
-                replay.typed_blocks_decoded += 1;
-                replay.typed_blocks_reencoded_exact += 1;
-                if in_record_body {
-                    replay.subobject_lifecycle_blocks_decoded += 1;
+                let block_codec = actor_codec(true);
+                let mut writer = BitWriter::new();
+                match write_content_block(&mut writer, block, &block_codec).and_then(|()| {
+                    let payload = Payload::from_writer(writer);
+                    let mut reader = payload.reader();
+                    let decoded = read_content_block(&mut reader, &block_codec)?;
+                    ensure!(
+                        reader.at_end(),
+                        "trailing bits after re-encoded subobject lifecycle block"
+                    );
+                    Ok(decoded == *block)
+                }) {
+                    Ok(exact) => {
+                        replay.typed_blocks_decoded += 1;
+                        bump(&mut replay.by_schema_decoded, schema_name);
+                        if in_record_body {
+                            replay.subobject_lifecycle_blocks_decoded += 1;
+                            replay.subobject_lifecycle_blocks_reencoded_exact += u64::from(exact);
+                        }
+                        if exact {
+                            replay.typed_blocks_reencoded_exact += 1;
+                            bump(&mut replay.by_schema_reencoded_exact, schema_name);
+                        }
+                        Some((schema_name, exact))
+                    }
+                    Err(error) => {
+                        bump(
+                            &mut replay.typed_blocks_failed,
+                            format!("{schema_name}: {}", class(&error)),
+                        );
+                        None
+                    }
                 }
-                bump(&mut replay.by_schema_decoded, schema_name);
-                bump(&mut replay.by_schema_reencoded_exact, schema_name);
-                Some((schema_name, true))
             }
             TargetSchema::StatContainer => {
                 let schema_name = "UIcarusStatContainer";
@@ -2195,7 +2228,7 @@ impl<'a> Decoder<'a> {
                 if block.has_rep_layout {
                     replay.rep_layout_blocks_decoded += 1;
                     replay.rep_layout_blocks_reencoded_exact += u64::from(exact);
-                } else {
+                } else if block.payload.bit_len() > 0 {
                     replay.custom_delta_blocks_decoded += 1;
                     replay.custom_delta_blocks_reencoded_exact += u64::from(exact);
                 }
@@ -2299,6 +2332,7 @@ impl<'a> Decoder<'a> {
         replay.all_blocks_coverage_complete = self.stats.blocks.total > 0
             && replay.rep_layout_blocks_reencoded_exact
                 + replay.custom_delta_blocks_reencoded_exact
+                + replay.subobject_lifecycle_blocks_reencoded_exact
                 == self.stats.blocks.total
             && replay.typed_blocks_failed.is_empty()
             && replay.unclassified_actor_targets.is_empty()

@@ -10,7 +10,8 @@ use anyhow::Result;
 use icarus_bevy::experimental::{
     actor_channel::{
         ActorBunchBody, ActorChannelCodec, ActorChannelLimits, BlockTarget, CompressedRotator,
-        ContentBlock, DynamicSpawn, NetGuidRef, SpawnRecord, SpawnVector, encode_actor_bunch_body,
+        ContentBlock, DynamicSpawn, NetGuidRef, SpawnRecord, SpawnVector, SubObjectClass,
+        encode_actor_bunch_body,
     },
     archive::ByteOrder,
     packet::{
@@ -226,6 +227,97 @@ fn reassembles_partials_and_separates_the_export_hypothesis() -> Result<()> {
     assert_eq!(at(hypothesis, "/spawn/location/z/min"), -100.0);
     assert_eq!(at(hypothesis, "/spawn/yaw_degrees/max"), 90.0);
     assert_eq!(at(hypothesis, "/blocks/total"), 2);
+    Ok(())
+}
+
+#[test]
+fn zero_bit_subobject_blocks_require_classification_and_separate_lifecycle_counts() -> Result<()> {
+    let mut exp = BitWriter::new();
+    exp.write_bit(false);
+    exp.write_u32(2);
+    exp.write_int_packed(10);
+    exp.write_bits(0x01, 8);
+    exp.write_int_packed(0);
+    let known_path = b"BPC_AccumulationComponent\0";
+    exp.write_u32(known_path.len() as u32);
+    exp.write_bytes(known_path);
+    exp.write_int_packed(12);
+    exp.write_bits(0x01, 8);
+    exp.write_int_packed(0);
+    let unknown_path = b"UnknownSyntheticSubObject\0";
+    exp.write_u32(unknown_path.len() as u32);
+    exp.write_bytes(unknown_path);
+
+    let initial = Bunch {
+        header: BunchHeader {
+            control: true,
+            open: true,
+            has_package_map_exports: true,
+            partial: true,
+            partial_initial: true,
+            ..header(Some(100))
+        },
+        payload: Payload::from_writer(exp),
+    };
+    let body = ActorBunchBody {
+        spawn: Some(SpawnRecord {
+            actor: NetGuidRef::plain(3),
+            dynamic: None,
+        }),
+        blocks: vec![
+            ContentBlock {
+                has_rep_layout: false,
+                target: BlockTarget::SubObject {
+                    object: NetGuidRef::plain(10),
+                    class: SubObjectClass::StablyNamed,
+                },
+                payload: Payload::from_writer(BitWriter::new()),
+            },
+            ContentBlock {
+                has_rep_layout: false,
+                target: BlockTarget::SubObject {
+                    object: NetGuidRef::plain(12),
+                    class: SubObjectClass::StablyNamed,
+                },
+                payload: Payload::from_writer(BitWriter::new()),
+            },
+        ],
+    };
+    let last = Bunch {
+        header: BunchHeader {
+            partial: true,
+            partial_final: true,
+            ..header(Some(101))
+        },
+        payload: encode_actor_bunch_body(&body, &codec())?,
+    };
+    let lines = [
+        json!({"event":"reply", "ms":1, "hex":datagram(10, vec![initial])?}),
+        json!({"event":"reply", "ms":2, "hex":datagram(11, vec![last])?}),
+    ];
+    let capture: String = lines.iter().map(|line| format!("{line}\n")).collect();
+
+    let root = tempfile::tempdir()?;
+    let work = root.path().join("work");
+    fs::create_dir(&work)?;
+    let input = work.join("probe.jsonl");
+    fs::write(&input, capture)?;
+    let report = capture_decode::run_in(&input, &work.join("detail.jsonl"), &work)?;
+
+    let rep = at(&report, "/passes/export_hypothesis/rep_replay");
+    assert_eq!(at(rep, "/subobject_lifecycle_blocks_attempted"), 1);
+    assert_eq!(at(rep, "/subobject_lifecycle_blocks_decoded"), 1);
+    assert_eq!(at(rep, "/subobject_lifecycle_blocks_reencoded_exact"), 1);
+    assert_eq!(at(rep, "/custom_delta_blocks_attempted"), 0);
+    assert_eq!(at(rep, "/custom_delta_blocks_reencoded_exact"), 0);
+    assert_eq!(
+        at(
+            rep,
+            "/unclassified_subobject_targets/UnknownSyntheticSubObject"
+        ),
+        1
+    );
+    assert_eq!(at(rep, "/all_blocks_coverage_complete"), false);
     Ok(())
 }
 
