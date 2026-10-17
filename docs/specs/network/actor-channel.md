@@ -96,20 +96,15 @@ server-side writer.
     `StartTime`, `UniqueId`, `PlayerNamePrivate`), and `UActorComponent`
     defines handles 1..2 (`bReplicates`, `bIsActive`). `experimental::rep_layout`
     models 64 native and cooked Blueprint actor and component schemas covering
-    100% (`20,407 / 20,407`) of `with_rep_layout` blocks in M-707: player
-    controllers, states and characters, mounts (`BP_Mount_Base_C`,
+    all `20,407 / 20,407` `with_rep_layout` blocks (`100%`) in M-707 across
+    player controllers, states and characters, mounts (`BP_Mount_Base_C`,
     `BP_Tame_Base_C`, `BP_Mount_Horse_C`), buildings (`BP_Building_Base_C`),
     world managers (`AWorldSettings`, `AFLOD`, `AWeatherController`,
     `BP_MapManager_C`, `AQuest`, `AQuestManager`, `AInventoryContainerManager`,
     `APlayerHistoryTracker`, `ARadiationManager`, `AWorldTalentManager`,
-    `BP_AtmosphereController_C`), world actors (`BP_WorldObject_C`,
-    `BP_OilGeyser_C`, `BP_PrebuiltBase_C`, `BP_WorldBossSpawner_C`,
-    `BP_MetaDeposit_C`, `AVoxelResource`, `BP_MainLevelTeleport_C`), dropships
-    and rocket parts (`BP_Dropship_C`, `BP_SeatBase_C`, `BP_DropshipSeat_C`,
-    `BP_Seat_Mount_C`, `BP_Part_Base_C`, `BP_Part_BTM_MK1_C`,
-    `BP_Part_MID_MK1_C`), deployables (`BP_DeployableBase_C`, `BP_BedBase_C`,
-    `BP_Portable_Beacon_C`), `UWeatherForecastBarComponent` and 28
-    inventory/trait/state component schemas (F-703, F-705 to F-707).
+    `BP_AtmosphereController_C`), world actors, dropships/rocket parts,
+    deployables, `UWeatherForecastBarComponent` and 28 inventory/trait/state
+    components (F-703, F-705 to F-707).
 - Spawn vectors (F-571, F-573): after the presence bit, archives at engine net
   version 13+ read a quantized bit; unquantized is three 4-byte floats,
   quantized a component bit count (`<= 24`) and three integers bounded by
@@ -131,10 +126,11 @@ server-side writer.
   preamble of `ReceiveProperties` (`0x143b20720`, M-426) together with
   `FStatsRepArray::NetDeltaSerialize` (bound 4), `FInventorySlotsFastArray::NetDeltaSerialize`
   (`0x1416c36a0`, bound 10) and `BP_UIProjectionComponent_MountStatus_C::ForceProjectionUpdate`
-  RPC headers (bound 6, index 5) decodes and re-encodes all 23,031 typed blocks
-  in M-707 bit-identically across 64 schemas (`59,860` property entries, `2,361`
-  stat-pair items, `100%` of `20,407` `with_rep_layout` blocks, 0 failures;
-  F-704 to F-707).
+  RPC headers (bound 6, index 5) decodes and re-encodes all `20,407 / 20,407`
+  `with_rep_layout` blocks (`100%`), `2,621` `has_rep_layout == false`
+  custom-delta/RPC subobject blocks and `3` `APlayerController` open-hook
+  blocks (`23,031 / 23,031` typed blocks, `66,859` property entries, `2,361`
+  stat-pair items, 0 unclassified targets, 0 failures; F-704 to F-707).
 - Native struct items (F-588, F-589, F-593, F-597, F-673, F-674, F-704 to F-707):
   `FVector::NetSerialize` (`0x142100d00`), `FVector2D::NetSerialize`
   (`0x142100bf0`) and `FQuat::NetSerialize` (`0x1421003f0` -> `0x141ed3a00`,
@@ -151,8 +147,9 @@ server-side writer.
   1-byte (`Byte`) or 2-byte (`UInt16`, `FQuestsRowHandle` `0x14165b3d0`) row
   index (`FIcarusStatReplicated` has no native `NetSerialize` and flattens into
   `[NetworkName, Int]`, F-706, F-707); `FStatPairRepState::NetSerialize`
-  (`0x141c10c50`) writes a 1-byte length `1..=4` followed by `len` big-endian
-  bytes for `Stat` and `Value` (`0x141807bd0` / `0x1417e1b50`).
+  (`0x141c10c50`) writes a 1-byte length `1..=4` (`< 0xff -> 1`, `< 0xffff -> 2`,
+  `< 0xffffff -> 3`, else `4`, `0x141807bd0`) followed by `len` big-endian
+  bytes for `Stat` and `Value` (`0x1417e1b50`).
   `FVector_NetQuantize` is a bit count (`<= 20`) and three biased unscaled
   integers; `FVector_NetQuantizeNormal` is three 16-bit values biased by 32768.
   `FRepMovement` sends two flag bits, location, rotation (byte rotator at

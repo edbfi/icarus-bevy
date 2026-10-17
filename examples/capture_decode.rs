@@ -1039,6 +1039,19 @@ struct RepReplayStats {
     typed_blocks_decoded: u64,
     typed_blocks_reencoded_exact: u64,
     typed_blocks_failed: Tally,
+    /// `BlockStats::with_rep_layout` blocks (`has_rep_layout == true` in parsed
+    /// actor bunches) matched, decoded and bit-identically re-encoded.
+    rep_layout_blocks_attempted: u64,
+    rep_layout_blocks_decoded: u64,
+    rep_layout_blocks_reencoded_exact: u64,
+    /// Extra `has_rep_layout == false` custom-delta/RPC blocks (`StatContainer`,
+    /// `Inventory`, `MountStatus`) matched, decoded and bit-identically re-encoded.
+    custom_delta_blocks_attempted: u64,
+    custom_delta_blocks_decoded: u64,
+    custom_delta_blocks_reencoded_exact: u64,
+    /// True when every `BlockStats::with_rep_layout` block was re-encoded
+    /// bit-identically with zero unclassified targets and zero failures.
+    rep_layout_coverage_complete: bool,
     /// Decoded and bit-identically re-encoded block counts by schema name.
     by_schema_decoded: Tally,
     by_schema_reencoded_exact: Tally,
@@ -1236,7 +1249,7 @@ impl<'a> Decoder<'a> {
         self.wire.packets_decoded += 1;
         let sequence = packet.header.sequence;
         match self.last_sequence {
-            None => {}
+            None => self.packet_sequence = i64::from(sequence),
             Some(last) if is_newer(sequence, last) => {
                 let delta = sequence_difference(sequence, last);
                 if delta > 1 {
@@ -1995,6 +2008,20 @@ impl<'a> Decoder<'a> {
                 object_path.as_deref(),
                 class_path.as_deref(),
             );
+            let replay = &mut self.stats.rep_replay;
+            if block.has_rep_layout {
+                if let Some((_, exact)) = replayed {
+                    replay.rep_layout_blocks_attempted += 1;
+                    replay.rep_layout_blocks_decoded += 1;
+                    replay.rep_layout_blocks_reencoded_exact += u64::from(exact);
+                } else if !replay.typed_blocks_failed.is_empty() {
+                    replay.rep_layout_blocks_attempted += 1;
+                }
+            } else if let Some((_, exact)) = replayed {
+                replay.custom_delta_blocks_attempted += 1;
+                replay.custom_delta_blocks_decoded += 1;
+                replay.custom_delta_blocks_reencoded_exact += u64::from(exact);
+            }
             blocks.push(json!({
                 "summary": summary,
                 "object_path": object_path,
@@ -2084,6 +2111,12 @@ impl<'a> Decoder<'a> {
             }
         }
         self.wire.first_reliable_raw_distinct = self.first_raw.len() as u64;
+        let replay = &mut self.stats.rep_replay;
+        replay.rep_layout_coverage_complete = self.stats.blocks.with_rep_layout > 0
+            && replay.rep_layout_blocks_reencoded_exact == self.stats.blocks.with_rep_layout
+            && replay.typed_blocks_failed.is_empty()
+            && replay.unclassified_actor_targets.is_empty()
+            && replay.unclassified_subobject_targets.is_empty();
         Ok(serde_json::to_value(&self.stats)?)
     }
 }

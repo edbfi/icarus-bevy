@@ -65,9 +65,11 @@ big-endian bytes), `FStatsRepArray::NetDeltaSerialize` (bound 4),
 (bound 6), `ACharacter` `MovementLevel::Hundredths` location quantization and
 the 1-bit `bDoChecksum` preamble of `FRepLayout::ReceiveProperties` are
 qualified and modeled in `experimental::rep_layout` and `examples/capture_decode`,
-replaying all 23,031 typed actor and subobject blocks (`59,860` property
-entries and `2,361` stat-pair items; `20,407` of `20,407` `with_rep_layout`
-blocks, `100.00%`) in M-707 bit-identically with 0 failures (F-704 to F-707).
+replaying all `20,407` of `20,407` `with_rep_layout` blocks (`100.00%`), `2,621`
+`has_rep_layout == false` custom-delta/RPC subobject blocks and `3`
+`APlayerController` open-hook blocks (`23,031` of `23,031` typed blocks,
+`66,859` property entries and `2,361` stat-pair items) in M-707 bit-identically
+with 0 unclassified targets and 0 failures (F-704 to F-707).
 
 ## Open
 
