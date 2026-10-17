@@ -94,12 +94,12 @@ Last reconciled: 2026-10-17
   unproved provenance across other calls (U-043). The static dispatcher
   caller is the ReceivedBunch virtual call (F-520); runtime dispatch stays
   unobserved.
-- Client archive/outer framing, `UControlChannel` byte-order persistence
-  (`Connection + 0x158`), 19 fallback skip layouts, 32,767 queued-bunch
-  bounds, `IsClientMsgTypeValid` state gating, `PreLogin`/`InitNewPlayer`
-  checks and 0 registered version/PreLogin callbacks are bound in
-  `experimental` (F-688, F-710 to F-713; U-037, U-044 resolved); older-server
-  archive input and connected sessions keep their own gates (U-014, U-038).
+- Client and server archive/outer framing, `UControlChannel` byte-order
+  persistence (`Connection + 0x158`), 19 fallback skip layouts, 32,767
+  queued-bunch bounds, `IsClientMsgTypeValid` state gating,
+  `PreLogin`/`InitNewPlayer` checks and 0 registered version/PreLogin callbacks
+  are bound in `experimental` (F-688, F-710 to F-714; U-014, U-037, U-044
+  resolved); connected sessions keep their own gate (U-038).
 - Older server build 25621760 and client build 25793767 remain distinct;
   addresses and assumptions do not transfer automatically.
 

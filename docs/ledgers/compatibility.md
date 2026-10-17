@@ -41,7 +41,7 @@ client connected and no prospect loaded (F-268).
 
 | Subsurface | Status | Evidence | Remaining gate |
 | --- | --- | --- | --- |
-| Control dispatch and version comparison | Observed | F-284, F-712, F-713; [spec](../specs/network/control-negotiation.md) | Older-server archive path and stock-client session (U-014, U-038) |
+| Control dispatch and version comparison | Observed | F-284, F-712, F-713, F-714; [spec](../specs/network/control-negotiation.md) | Stock-client session (U-038) |
 | Initial control archive fields | Experimental reader | F-096, F-097 | Stock-client session (U-038) |
 | Control-dispatch pointer stores | Local stores qualified | F-091, F-095, F-110, F-113 | Class, table identity, receiver, runtime reachability (U-016, U-018) |
 | Current-client notify tables | Two slot/name equalities | F-088 | No dereference, object offset, older owner or runtime proof (U-010, U-011) |

@@ -32,15 +32,16 @@ no direct call or archive provenance (F-481).
 
 The dispatcher validates message IDs and reads the ID 0 body (F-284) from the
 FInBunch through FBitReader::Serialize after the ID byte, byte order set by the
-first field, in client and server alike (F-514 to F-516, F-518, F-519);
+first field and persisted at `Connection + 0x158`, in client and server alike
+(F-514, F-515, F-518, F-519, F-712, F-714; U-014, U-044 resolved);
 ReceivedBunch reaches it through the driver's notify object, slot +0x18
 (F-520). ReceivedPacket parses a packet word and ack history, then bunch
-headers inside a handler prefix and termination-bit frame (F-521 to F-524);
-the client's parsers map the control vocabulary both ways (F-529, F-530), and
-its reliability layer is seeded from the handshake cookie (F-535 to F-539). A
-disconnected experimental reader composes the observed initial body within a
-derived 131,081-byte ceiling; negotiation, identity and game-connection flags
-stay false (F-096, F-097).
+headers inside a handler prefix and termination-bit frame in both builds (F-521
+to F-524, F-714); the client's parsers map the control vocabulary both ways
+(F-529, F-530), and its reliability layer is seeded from the handshake cookie
+(F-535 to F-539). A disconnected experimental reader composes the observed
+initial body within a derived 131,081-byte ceiling; negotiation, identity and
+game-connection flags stay false (F-096, F-097).
 
 All results are static: no original executable, runtime instruction or live
 control message ran, and metadata intervals are fragment bounds rather than
@@ -51,9 +52,9 @@ complete functions.
 - Receiver origin, ABI and layout of the store base (U-007); cross-call provenance (U-009); class, registration and caller of the prefixes (U-013).
 - Complete constructors (U-008).
 - Executed runtime dispatch (U-010) and older-server ownership (U-011).
-- Archive, bit-position and byte-order input path (U-014); indirect callers, RTTI, table identity and owner provenance (U-015 to U-018).
+- Indirect callers, RTTI, table identity and owner provenance (U-015 to U-018).
 - Exact-window decoding through live REA and lazy Ghidra startup (U-019).
 
 ## Artifacts
 
-M-005, M-012, M-023..M-046, M-281..M-283, M-288..M-297, M-301, M-302, M-315..M-346, M-353..M-357, M-370, M-371.
+M-005, M-012, M-023..M-046, M-281..M-283, M-288..M-297, M-301, M-302, M-315..M-346, M-353..M-357, M-370, M-371, M-749..M-754.
