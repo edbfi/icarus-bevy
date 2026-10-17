@@ -46,15 +46,27 @@ use icarus_bevy::experimental::{
     rep_layout::{
         MovementLevel, RepCommand, RepLayoutCodec, RepLayoutLimits, RotationLevel, TagEncoding,
         actionable_component_rep_layout, actor_component_rep_layout, actor_state_rep_layout,
-        audio_context_component_rep_layout, character_state_rep_layout,
+        audio_context_component_rep_layout, bp_building_base_rep_layout,
+        bp_flammable_actor_rep_layout, bp_icarus_player_character_survival_rep_layout,
+        bp_icarus_player_state_rep_layout, bp_interactable_butcher_animal_rep_layout,
+        bp_mount_base_rep_layout, bp_mount_horse_rep_layout, bp_sheltered_component_rep_layout,
+        bp_swimming_component_rep_layout, bp_tame_base_rep_layout,
+        bp_ui_projection_component_mount_status_rep_layout,
+        bp_ui_projection_component_player_rep_layout, bpc_environmental_buildup_rep_layout,
+        character_state_rep_layout, child_actor_component_rep_layout,
         decayable_component_rep_layout, durable_component_rep_layout, encode_rep_properties,
-        fillable_component_rep_layout, flod_actor_component_rep_layout,
-        focusable_component_rep_layout, icarus_player_controller_survival_rep_layout,
-        itemable_component_rep_layout, modifier_state_component_rep_layout, parse_rep_properties,
-        player_character_state_rep_layout, player_state_rep_layout, read_rep_properties,
-        resource_network_component_rep_layout, survival_character_state_rep_layout,
-        trait_behaviour_rep_layout, trait_component_rep_layout, transmutable_component_rep_layout,
-        write_rep_properties,
+        fillable_component_rep_layout, flammable_actor_rep_layout, flod_actor_component_rep_layout,
+        focusable_component_rep_layout, genetics_component_rep_layout,
+        icarus_game_state_survival_rep_layout, icarus_player_controller_survival_rep_layout,
+        icarus_weather_action_rep_layout, interactable_behaviour_rep_layout, inventory_rep_layout,
+        inventory_slot_commands, itemable_component_rep_layout,
+        modifier_state_component_rep_layout, mount_character_state_rep_layout,
+        parse_rep_properties, player_character_state_rep_layout, player_state_rep_layout,
+        read_rep_properties, resource_network_component_rep_layout, scene_component_rep_layout,
+        static_mesh_component_rep_layout, stomach_component_rep_layout,
+        survival_character_state_rep_layout, trait_behaviour_rep_layout,
+        trait_component_rep_layout, transmutable_component_rep_layout,
+        weather_manager_component_rep_layout, write_rep_properties,
     },
     rep_rpc::{
         FAST_ARRAY_COUNT_CAP, FastArrayItemLayout, FieldHeader, read_custom_delta_header,
@@ -99,6 +111,18 @@ const SANE_EXTENT: f32 = 1.0e6;
 /// 1 own net property (`ReplicatedStatArray`) + 1 own net function
 /// (`OnServer_SerialiseStats`) = 4 (F-705).
 const STAT_CONTAINER_FIELD_INDEX_BOUND: u32 = 4;
+/// `UClass::ClassNetCache` field-index bound (`FieldsBase + Fields.Num()`) for
+/// `UInventory`: 2 (`UActorComponent`) + 1 (`UTraitBehaviour::OwningComponent`) +
+/// 6 own net properties (`CurrentWeight`, `Slots`,
+/// `ReplicatedModifierStackMultipliers`, `InventoryInfoRowHandle`,
+/// `SpoilTickRate`, `ParentInventory`) + 1 own net function
+/// (`Multi_PlayInventorySound`) = 10.
+const INVENTORY_FIELD_INDEX_BOUND: u32 = 10;
+/// `UClass::ClassNetCache` field-index bound (`FieldsBase + Fields.Num()`) for
+/// `BP_UIProjectionComponent_MountStatus_C`: 2 (`UActorComponent`) + 2
+/// (`BP_UIProjectionComponent_C`) + 1 own net property (`CurrentMountState`) +
+/// 1 own net function (`ForceProjectionUpdate`) = 6.
+const UI_PROJECTION_MOUNT_STATUS_FIELD_INDEX_BOUND: u32 = 6;
 
 type Tally = BTreeMap<String, u64>;
 
@@ -311,75 +335,108 @@ fn rep_codec() -> RepLayoutCodec {
     }
 }
 
+/// Which typed schema a content block targets.
 #[derive(Clone, Copy)]
 enum TargetSchema {
+    /// Standard `FRepLayout::ReceiveProperties` block (`has_rep_layout == true`).
     RepLayout(&'static str),
+    /// `UIcarusStatContainer`: optional `UActorComponent` rep-layout properties
+    /// followed by zero or more `ReplicatedStatArray` custom-delta field headers
+    /// (`index_bound = STAT_CONTAINER_FIELD_INDEX_BOUND`, F-705).
     StatContainer,
+    /// `UInventory`: optional `UInventory` rep-layout properties followed by
+    /// zero or more `Slots` (`FInventorySlotsFastArray`) custom-delta field
+    /// headers (`index_bound = INVENTORY_FIELD_INDEX_BOUND`).
+    Inventory,
+    /// `BP_UIProjectionComponent_MountStatus_C`: optional rep-layout properties
+    /// followed by zero or more `ForceProjectionUpdate` 0-parameter net-RPC
+    /// field headers (`index_bound = UI_PROJECTION_MOUNT_STATUS_FIELD_INDEX_BOUND`).
+    UiProjectionMountStatus,
 }
 
-fn classify_actor_schema(archetype_path: &str) -> Option<TargetSchema> {
-    match archetype_path {
-        "Default__IcarusPlayerState_C" => Some(TargetSchema::RepLayout("APlayerState")),
-        "Default__BP_IcarusPlayerControllerSurvival_C" => {
-            Some(TargetSchema::RepLayout("AIcarusPlayerControllerSurvival"))
-        }
-        _ => None,
+/// Resolve an actor channel's archetype name to a known native or cooked
+/// Blueprint rep-layout schema when every property in the hierarchy is known.
+fn classify_actor_schema(archetype: &str) -> Option<TargetSchema> {
+    if archetype.contains("BP_IcarusPlayerControllerSurvival") {
+        Some(TargetSchema::RepLayout("AIcarusPlayerControllerSurvival"))
+    } else if archetype.contains("BP_IcarusPlayerState")
+        || archetype.contains("IcarusPlayerState_C")
+    {
+        Some(TargetSchema::RepLayout("BP_IcarusPlayerState_C"))
+    } else if archetype == "Default__PlayerState" || archetype.ends_with(".Default__PlayerState") {
+        Some(TargetSchema::RepLayout("APlayerState"))
+    } else if archetype.contains("BP_IcarusFLOD_Default") {
+        None
+    } else if archetype.contains("BP_IcarusGameState") {
+        Some(TargetSchema::RepLayout("AIcarusGameStateSurvival"))
+    } else if archetype.contains("BP_Mount_Horse") {
+        Some(TargetSchema::RepLayout("BP_Mount_Horse_C"))
+    } else if archetype.contains("BP_Mount_WoollyMammoth")
+        || archetype.contains("BP_Mount_Buffalo")
+        || archetype.contains("BP_Mount_Moa")
+    {
+        Some(TargetSchema::RepLayout("BP_Mount_Base_C"))
+    } else if archetype.contains("BP_Tamed_") || archetype.contains("BP_Tame_") {
+        Some(TargetSchema::RepLayout("BP_Tame_Base_C"))
+    } else if archetype.contains("BP_IcarusPlayerCharacterSurvival") {
+        Some(TargetSchema::RepLayout(
+            "BP_IcarusPlayerCharacterSurvival_C",
+        ))
+    } else if archetype.contains("BP_Building_")
+        || archetype.contains("BP_Floor_")
+        || archetype.contains("BP_Wall_")
+        || archetype.contains("BP_Roof_")
+        || archetype.contains("BP_Beam_")
+        || archetype.contains("BP_Ramp_")
+        || archetype.contains("BP_Stairs_")
+    {
+        Some(TargetSchema::RepLayout("BP_Building_Base_C"))
+    } else {
+        None
     }
 }
 
+/// Resolve a subobject's class or stably-named object path to a known native
+/// or cooked Blueprint component schema.
 fn classify_subobject_schema(
     target_name: &str,
     channel_archetype: Option<&str>,
 ) -> Option<TargetSchema> {
-    match target_name {
-        "Stat Container" | "IcarusStatContainer" => Some(TargetSchema::StatContainer),
-        "ModifierStateComponent" => Some(TargetSchema::RepLayout("UModifierStateComponent")),
-        "TraitDurable" | "DurableComponent" => Some(TargetSchema::RepLayout("UDurableComponent")),
-        "TraitItemable" | "ItemableComponent" => {
-            Some(TargetSchema::RepLayout("UItemableComponent"))
-        }
-        "TraitDecayable" | "DecayableComponent" => {
-            Some(TargetSchema::RepLayout("UDecayableComponent"))
-        }
-        "TraitFillable" | "FillableComponent" => {
-            Some(TargetSchema::RepLayout("UFillableComponent"))
-        }
-        "TraitTransmutable" | "TransmutableComponent" => {
-            Some(TargetSchema::RepLayout("UTransmutableComponent"))
-        }
-        "TraitFocusable" | "FocusableComponent" => {
-            Some(TargetSchema::RepLayout("UFocusableComponent"))
-        }
-        "TraitActionable" | "ActionableComponent" => {
-            Some(TargetSchema::RepLayout("UActionableComponent"))
-        }
-        "ResourceNetwork" | "WaterNetwork" | "EnergyNetwork" | "TraitFuel" => {
-            Some(TargetSchema::RepLayout("UResourceNetworkComponent"))
-        }
-        "FLODActor" | "FLODActorComponent" => Some(TargetSchema::RepLayout("UFLODActorComponent")),
-        "AudioContextComponent" => Some(TargetSchema::RepLayout("UAudioContextComponent")),
-        "ActorState" => match channel_archetype {
-            Some(arch)
-                if arch.contains("Tamed_")
-                    || arch.contains("Tame_")
-                    || arch.contains("Mount_")
-                    || arch.contains("PlayerCharacter")
-                    || arch.contains("Character") =>
-            {
-                None
-            }
-            _ => Some(TargetSchema::RepLayout("UActorState")),
-        },
-        "CharacterState" => Some(TargetSchema::RepLayout("UCharacterState")),
-        "SurvivalCharacterState" => Some(TargetSchema::RepLayout("USurvivalCharacterState")),
-        "PlayerCharacterState" => Some(TargetSchema::RepLayout("UPlayerCharacterState")),
-        "PlayerData" | "PlayerDataComponent" => Some(TargetSchema::RepLayout("UActorComponent")),
-        "InventoryComponent"
+    if target_name == "StatContainer"
+        || target_name == "Stat Container"
+        || target_name == "IcarusStatContainer"
+    {
+        return Some(TargetSchema::StatContainer);
+    }
+    if target_name == "Inventory" {
+        return Some(TargetSchema::Inventory);
+    }
+    if target_name == "BP_UIProjectionComponent_MountStatus"
+        || target_name == "BP_UIProjectionComponent_MountStatus_C"
+    {
+        return Some(TargetSchema::UiProjectionMountStatus);
+    }
+    let schema = match target_name {
+        "FLODActor" | "FLODActorComponent" => "UFLODActorComponent",
+        "AudioContext"
+        | "AudioContextComponent"
+        | "FeedbackAudioComponent"
+        | "BP_PlayerMovementAudioComponent"
+        | "BP_PlayerMusicComponent" => "UAudioContextComponent",
+        "ResourceNetwork"
+        | "ResourceNetworkComponent"
+        | "WaterNetwork"
+        | "Water Network"
+        | "EnergyNetwork"
+        | "Energy Network"
+        | "Fuel Network"
+        | "TraitFuel" => "UResourceNetworkComponent",
+        "TraitComponent"
+        | "InventoryComponent"
         | "Meshable"
         | "MeshableComponent"
         | "Interactable"
         | "InteractableComponent"
-        | "Highlightable"
         | "HighlightableComponent"
         | "Usable"
         | "UsableComponent"
@@ -392,35 +449,134 @@ fn classify_subobject_schema(
         | "TraitTargetable"
         | "TraitWeight"
         | "TraitShelter"
-        | "TraitSeat" => Some(TargetSchema::RepLayout("UTraitComponent")),
-        "TraitBehaviour" => Some(TargetSchema::RepLayout("UTraitBehaviour")),
-        _ => None,
-    }
+        | "TraitSeat"
+        | "BP_Weight"
+        | "BP_Weight_C"
+        | "BP_HitableBehaviour_Building_C"
+        | "BP_HitableBehaviour_VoxelResource" => "UTraitComponent",
+        "Durable" | "TraitDurable" | "DurableComponent" => "UDurableComponent",
+        "Itemable" | "TraitItemable" | "ItemableComponent" => "UItemableComponent",
+        "Decayable" | "TraitDecayable" | "DecayableComponent" => "UDecayableComponent",
+        "Fillable" | "TraitFillable" | "FillableComponent" => "UFillableComponent",
+        "Transmutable" | "TraitTransmutable" | "TransmutableComponent" | "Processing" => {
+            "UTransmutableComponent"
+        }
+        "Focusable" | "TraitFocusable" | "FocusableComponent" => "UFocusableComponent",
+        "Actionable" | "TraitActionable" | "ActionableComponent" => "UActionableComponent",
+        "ModifierState"
+        | "ModifierStateComponent"
+        | "BP_Modifier_Tamed_C"
+        | "BP_Modifier_Base_C"
+        | "BP_Modifier_Aura_Base_C"
+        | "BP_ModifierStateBehaviour_AfflictionCold_C" => "UModifierStateComponent",
+        "ActorState" | "CharacterStateComponent" => match channel_archetype {
+            Some(arch)
+                if arch.contains("Tamed_") || arch.contains("Tame_") || arch.contains("Mount_") =>
+            {
+                "UMountCharacterState"
+            }
+            Some(arch) if arch.contains("PlayerCharacter") => "UPlayerCharacterState",
+            Some(arch) if arch.contains("Character") => return None,
+            _ if target_name == "ActorState" => "UActorState",
+            _ => return None,
+        },
+        "CharacterState" => "UCharacterState",
+        "SurvivalCharacterState" => "USurvivalCharacterState",
+        "PlayerCharacterState" => "UPlayerCharacterState",
+        "MountCharacterState" => "UMountCharacterState",
+        "WeatherManager" | "WeatherManagerComponent" | "WeatherComp" => "UWeatherManagerComponent",
+        "IcarusWeatherAction"
+        | "BP_WeatherAction_Base_C"
+        | "Tier1_Calm_C"
+        | "Tier1_Light_C"
+        | "Tier2_Heavy_C"
+        | "Tier3_Medium_C"
+        | "Tier4_Extreme_C" => "UIcarusWeatherAction",
+        "BP_UIProjectionComponent_Player" | "BP_UIProjectionComponent_Player_C" => {
+            "BP_UIProjectionComponent_Player_C"
+        }
+        "InteractableBehaviour"
+        | "BP_Interactable_Pickup_Item_C"
+        | "BP_Interactable_AttachToPost_C"
+        | "BP_Interactable_Cart_Interaction_C"
+        | "BP_Interactable_Cart_Toggle_C"
+        | "BP_Interactable_Claim_Tameable_C"
+        | "BP_Interactable_DropShip_C"
+        | "BP_Interactable_Enter_Seat_Mount_C"
+        | "BP_Interactable_HitchingPostRelease_C"
+        | "BP_Interactable_Interact_BedSetSpawn_C"
+        | "BP_Interactable_Interact_BedSleep_C"
+        | "BP_Interactable_Interact_Deployable_C"
+        | "BP_Interactable_Interact_RocketPart_C"
+        | "BP_Interactable_Interact_Toggle_Device_On_C"
+        | "BP_Interactable_NoInteraction_C"
+        | "BP_Interactable_OpenMountInventory_C"
+        | "BP_Interactable_Pet_Tame_C"
+        | "BP_Interactable_Pickup_Deployable_C"
+        | "BP_Interactable_Teleport_C"
+        | "BP_Interactable_Teleport_RetrieveLoot_C" => "UInteractableBehaviour",
+        "BP_Interactable_Butcher_Animal_C" => "BP_Interactable_Butcher_Animal_C",
+        "RootComponent" | "DefaultSceneRoot" | "SceneComponent" | "SeatExitPoints" | "Audio"
+        | "LightAnchor" | "DropshipSpawnPoint" | "CapsuleComponent" | "CollisionCylinder"
+        | "SkeletalMesh" | "SeatMesh" | "FMOD_MetaLoop" => "USceneComponent",
+        "ChildActorComponent" | "LightSlot1" | "LightSlot2" | "ChildActor_Seat" => {
+            "UChildActorComponent"
+        }
+        "EntranceMeshes" => "UStaticMeshComponent",
+        "BPC_EnvironmentalBuildup" | "BPC_EnvironmentalBuildup_C" => "BPC_EnvironmentalBuildup_C",
+        "FlammableActor" => "UFlammableActor",
+        "BP_Flammable_Actor"
+        | "BP_Flammable_Actor_C"
+        | "BP_Flammable_Building_C"
+        | "BP_Flammable_Player" => "BP_Flammable_Actor_C",
+        "Stomach" | "StomachComponent" => "UStomachComponent",
+        "BP_SwimmingComponent" | "BP_SwimmingComponent_C" => "BP_SwimmingComponent_C",
+        "Genetics" | "GeneticsComponent" => "UGeneticsComponent",
+        "BP_ShelteredComponent" | "BP_ShelteredComponent_C" => "BP_ShelteredComponent_C",
+        "PlayerData"
+        | "PlayerDataComponent"
+        | "Highlightable"
+        | "ThermalComponent"
+        | "BP_PlayerBuildingPlacement"
+        | "ConnectedPlayers"
+        | "DialogueSystem"
+        | "BP_NetworkProxyComponent"
+        | "BackendProxyComponent" => "UActorComponent",
+        "TraitBehaviour" => "UTraitBehaviour",
+        _ => return None,
+    };
+    Some(TargetSchema::RepLayout(schema))
 }
 
-fn schema_commands(schema_key: &str) -> Vec<RepCommand> {
+fn schema_commands(schema: &str) -> Vec<RepCommand> {
+    let loc = MovementLevel::Whole;
+    let char_loc = MovementLevel::Hundredths;
+    let vel = MovementLevel::Whole;
+    let rot = RotationLevel::Bytes;
     let tag_encoding = TagEncoding::NetIndex {
         first_segment: 0,
         total_bits: 12,
     };
-    match schema_key {
-        "APlayerState" => player_state_rep_layout(
-            MovementLevel::Whole,
-            MovementLevel::Whole,
-            RotationLevel::Bytes,
-        ),
-        "AIcarusPlayerControllerSurvival" => icarus_player_controller_survival_rep_layout(
-            MovementLevel::Whole,
-            MovementLevel::Whole,
-            RotationLevel::Bytes,
-            tag_encoding,
-        ),
+    match schema {
+        "AIcarusPlayerControllerSurvival" => {
+            icarus_player_controller_survival_rep_layout(loc, vel, rot, tag_encoding)
+        }
+        "APlayerState" => player_state_rep_layout(loc, vel, rot),
+        "BP_IcarusPlayerState_C" => bp_icarus_player_state_rep_layout(loc, vel, rot),
+        "AIcarusGameStateSurvival" => icarus_game_state_survival_rep_layout(loc, vel, rot),
+        "BP_Mount_Base_C" => bp_mount_base_rep_layout(char_loc, vel, rot, tag_encoding),
+        "BP_Tame_Base_C" => bp_tame_base_rep_layout(char_loc, vel, rot, tag_encoding),
+        "BP_Mount_Horse_C" => bp_mount_horse_rep_layout(char_loc, vel, rot, tag_encoding),
+        "BP_IcarusPlayerCharacterSurvival_C" => {
+            bp_icarus_player_character_survival_rep_layout(char_loc, vel, rot, tag_encoding)
+        }
+        "BP_Building_Base_C" => bp_building_base_rep_layout(loc, vel, rot, tag_encoding),
         "UActorComponent" => actor_component_rep_layout(),
         "UFLODActorComponent" => flod_actor_component_rep_layout(),
         "UAudioContextComponent" => audio_context_component_rep_layout(),
-        "UTraitBehaviour" => trait_behaviour_rep_layout(),
-        "UResourceNetworkComponent" => resource_network_component_rep_layout(),
         "UTraitComponent" => trait_component_rep_layout(),
+        "UResourceNetworkComponent" => resource_network_component_rep_layout(),
+        "UTraitBehaviour" => trait_behaviour_rep_layout(),
         "UDurableComponent" => durable_component_rep_layout(),
         "UItemableComponent" => itemable_component_rep_layout(),
         "UDecayableComponent" => decayable_component_rep_layout(),
@@ -433,6 +589,25 @@ fn schema_commands(schema_key: &str) -> Vec<RepCommand> {
         "UCharacterState" => character_state_rep_layout(),
         "USurvivalCharacterState" => survival_character_state_rep_layout(),
         "UPlayerCharacterState" => player_character_state_rep_layout(),
+        "UMountCharacterState" => mount_character_state_rep_layout(),
+        "UWeatherManagerComponent" => weather_manager_component_rep_layout(),
+        "UIcarusWeatherAction" => icarus_weather_action_rep_layout(),
+        "BP_UIProjectionComponent_MountStatus_C" => {
+            bp_ui_projection_component_mount_status_rep_layout()
+        }
+        "BP_UIProjectionComponent_Player_C" => bp_ui_projection_component_player_rep_layout(),
+        "UInteractableBehaviour" => interactable_behaviour_rep_layout(),
+        "BP_Interactable_Butcher_Animal_C" => bp_interactable_butcher_animal_rep_layout(),
+        "USceneComponent" => scene_component_rep_layout(),
+        "UChildActorComponent" => child_actor_component_rep_layout(),
+        "UStaticMeshComponent" => static_mesh_component_rep_layout(),
+        "BPC_EnvironmentalBuildup_C" => bpc_environmental_buildup_rep_layout(),
+        "UFlammableActor" => flammable_actor_rep_layout(),
+        "BP_Flammable_Actor_C" => bp_flammable_actor_rep_layout(),
+        "UStomachComponent" => stomach_component_rep_layout(),
+        "BP_SwimmingComponent_C" => bp_swimming_component_rep_layout(),
+        "UGeneticsComponent" => genetics_component_rep_layout(),
+        "BP_ShelteredComponent_C" => bp_sheltered_component_rep_layout(),
         _ => unreachable!(),
     }
 }
@@ -498,6 +673,113 @@ fn replay_stat_container_block(
     }
     let reencoded = Payload::from_writer(writer);
     Ok((prop_entries, stat_items, reencoded == *payload))
+}
+
+/// Decode and re-encode a `UInventory` (`Inventory`) block: optional
+/// `UInventory` rep-layout properties (when `has_rep_layout` is set) followed by
+/// zero or more `Slots` (`FInventorySlotsFastArray`) custom-delta field headers
+/// (`index_bound = INVENTORY_FIELD_INDEX_BOUND`).
+fn replay_inventory_block(
+    payload: &Payload,
+    has_rep_layout: bool,
+    codec: &RepLayoutCodec,
+) -> Result<(usize, usize, bool)> {
+    let layout = inventory_rep_layout();
+    let tag_encoding = TagEncoding::NetIndex {
+        first_segment: 0,
+        total_bits: 12,
+    };
+    let item_layout = FastArrayItemLayout::Delta(inventory_slot_commands(tag_encoding));
+    let mut reader = payload.reader();
+    let mut writer = BitWriter::new();
+    let prop_entries = if has_rep_layout {
+        let props = read_rep_properties(&mut reader, &layout, codec)?;
+        let mut effective = *codec;
+        effective.checksums = props.terminator_checksum.is_some();
+        write_rep_properties(&mut writer, &props, &layout, &effective)?;
+        props.entries.len()
+    } else {
+        0
+    };
+
+    let mut slot_items = 0usize;
+    while !reader.at_end() {
+        let header = read_field_header(
+            &mut reader,
+            INVENTORY_FIELD_INDEX_BOUND,
+            codec.limits.max_opaque_bits,
+        )?;
+        let mut field_reader = header.payload.reader();
+        let delta_hdr = read_custom_delta_header(&mut field_reader, ENGINE_NET_VERSION, 1)?;
+        let delta =
+            read_fast_array_delta(&mut field_reader, &item_layout, codec, FAST_ARRAY_COUNT_CAP)?;
+        ensure!(
+            field_reader.at_end(),
+            "trailing bits in Inventory fast-array delta"
+        );
+        slot_items += delta.changed.len();
+
+        let mut field_writer = BitWriter::new();
+        write_custom_delta_header(&mut field_writer, &delta_hdr, ENGINE_NET_VERSION, 1)?;
+        write_fast_array_delta(
+            &mut field_writer,
+            &delta,
+            &item_layout,
+            codec,
+            FAST_ARRAY_COUNT_CAP,
+        )?;
+        let rebuilt_header = FieldHeader {
+            index: header.index,
+            payload: Payload::from_writer(field_writer),
+        };
+        write_field_header(&mut writer, &rebuilt_header, INVENTORY_FIELD_INDEX_BOUND)?;
+    }
+    let reencoded = Payload::from_writer(writer);
+    Ok((prop_entries, slot_items, reencoded == *payload))
+}
+
+/// Decode and re-encode a `BP_UIProjectionComponent_MountStatus_C` block:
+/// optional rep-layout properties (when `has_rep_layout` is set) followed by
+/// zero or more `ForceProjectionUpdate` 0-parameter net-RPC field headers
+/// (`index = 5`, `index_bound = UI_PROJECTION_MOUNT_STATUS_FIELD_INDEX_BOUND`).
+fn replay_ui_projection_mount_status_block(
+    payload: &Payload,
+    has_rep_layout: bool,
+    codec: &RepLayoutCodec,
+) -> Result<(usize, bool)> {
+    let layout = bp_ui_projection_component_mount_status_rep_layout();
+    let mut reader = payload.reader();
+    let mut writer = BitWriter::new();
+    let prop_entries = if has_rep_layout {
+        let props = read_rep_properties(&mut reader, &layout, codec)?;
+        let mut effective = *codec;
+        effective.checksums = props.terminator_checksum.is_some();
+        write_rep_properties(&mut writer, &props, &layout, &effective)?;
+        props.entries.len()
+    } else {
+        0
+    };
+
+    while !reader.at_end() {
+        let header = read_field_header(
+            &mut reader,
+            UI_PROJECTION_MOUNT_STATUS_FIELD_INDEX_BOUND,
+            codec.limits.max_opaque_bits,
+        )?;
+        ensure!(
+            header.index == 5 && header.payload.bit_len() == 0,
+            "unexpected BP_UIProjectionComponent_MountStatus_C field index {} ({} bits)",
+            header.index,
+            header.payload.bit_len()
+        );
+        write_field_header(
+            &mut writer,
+            &header,
+            UI_PROJECTION_MOUNT_STATUS_FIELD_INDEX_BOUND,
+        )?;
+    }
+    let reencoded = Payload::from_writer(writer);
+    Ok((prop_entries, reencoded == *payload))
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -1481,6 +1763,54 @@ impl<'a> Decoder<'a> {
                         bump(&mut replay.by_schema_decoded, schema_name);
                         replay.rep_entries_decoded += prop_entries as u64;
                         replay.stat_pair_items_decoded += stat_items as u64;
+                        if exact {
+                            replay.typed_blocks_reencoded_exact += 1;
+                            bump(&mut replay.by_schema_reencoded_exact, schema_name);
+                        }
+                        Some((schema_name, exact))
+                    }
+                    Err(error) => {
+                        bump(
+                            &mut replay.typed_blocks_failed,
+                            format!("{schema_name}: {}", class(&error)),
+                        );
+                        None
+                    }
+                }
+            }
+            TargetSchema::Inventory => {
+                let schema_name = "UInventory";
+                match replay_inventory_block(&block.payload, block.has_rep_layout, &codec) {
+                    Ok((prop_entries, _slot_items, exact)) => {
+                        replay.typed_blocks_decoded += 1;
+                        bump(&mut replay.by_schema_decoded, schema_name);
+                        replay.rep_entries_decoded += prop_entries as u64;
+                        if exact {
+                            replay.typed_blocks_reencoded_exact += 1;
+                            bump(&mut replay.by_schema_reencoded_exact, schema_name);
+                        }
+                        Some((schema_name, exact))
+                    }
+                    Err(error) => {
+                        bump(
+                            &mut replay.typed_blocks_failed,
+                            format!("{schema_name}: {}", class(&error)),
+                        );
+                        None
+                    }
+                }
+            }
+            TargetSchema::UiProjectionMountStatus => {
+                let schema_name = "BP_UIProjectionComponent_MountStatus_C";
+                match replay_ui_projection_mount_status_block(
+                    &block.payload,
+                    block.has_rep_layout,
+                    &codec,
+                ) {
+                    Ok((prop_entries, exact)) => {
+                        replay.typed_blocks_decoded += 1;
+                        bump(&mut replay.by_schema_decoded, schema_name);
+                        replay.rep_entries_decoded += prop_entries as u64;
                         if exact {
                             replay.typed_blocks_reencoded_exact += 1;
                             bump(&mut replay.by_schema_reencoded_exact, schema_name);
