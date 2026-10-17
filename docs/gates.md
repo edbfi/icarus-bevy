@@ -95,10 +95,11 @@ Last reconciled: 2026-10-17
   caller is the ReceivedBunch virtual call (F-520); runtime dispatch stays
   unobserved.
 - Client archive/outer framing, `UControlChannel` byte-order persistence
-  (`Connection + 0x158`), 19 fallback skip layouts and 32,767 queued-bunch
-  bounds are bound in `experimental` (F-688, F-710 to F-712; U-044 resolved);
-  older-server archive input and connected sessions keep their own gates (U-014,
-  U-037, U-038).
+  (`Connection + 0x158`), 19 fallback skip layouts, 32,767 queued-bunch
+  bounds, `IsClientMsgTypeValid` state gating, `PreLogin`/`InitNewPlayer`
+  checks and 0 registered version/PreLogin callbacks are bound in
+  `experimental` (F-688, F-710 to F-713; U-037, U-044 resolved); older-server
+  archive input and connected sessions keep their own gates (U-014, U-038).
 - Older server build 25621760 and client build 25793767 remain distinct;
   addresses and assumptions do not transfer automatically.
 
@@ -118,24 +119,10 @@ Last reconciled: 2026-10-17
 
 - Each runtime experiment requires its own case scope and current launcher
   session; historical authorization windows remain expired (F-218, F-252). The
-  user authorized (2026-10-15) bounded offline save-load runs on disposable
-  save copies, and Steam egress and connected Windows-client tests only for
-  scenarios the user approves one by one. Offline runs observe 15 to 780 s,
-  connected runs 60 to 2700 s, each plus 120 s of cleanup inside its session.
-- Connected scenarios need the user at the client, its build bound in the
-  scope, approved ingress and egress and bounded capture. The user directed (2026-10-16)
-  that this host fetch and run the matched official server for them to join
-  (route B of the [connected-scenarios runbook](runbooks/connected-scenarios.md));
-  each scenario still needs their approval, a case and a bounded run.
-- Protocol probes against the offline original (launcher `hello` mode and
-  later Login/Join steps) run under the user's 2026-10-16 directive, each in
-  its own bounded case; synthetic net ids only, never real account data.
-- Preserve the client installation until dependencies and provenance are
-  understood; the restriction against reusing packaged content remains in force.
-
-## Before PR integration
-
-- Every non-merge commit carries its author's exact sign-off and a PR stays
-  at or below 250 commits; the repository merges by squash only (F-555). Keep
-  tag `archive/native-server-foundation-pre-signoff`: pre-rewrite SHAs cited in
-  documents and evidence resolve only through it.
+  user authorized (2026-10-15) offline original-server save-load runs with the
+  supplied save and local server binaries, and (2026-10-16) fetching and
+  running the matched official dedicated server on this host with connected
+  stock-client testing per approved scenario (S1 completed, F-701; later
+  scenarios require explicit scenario approval).
+- Connected stock-client experiments against the native server and reference
+  captures remain deferred by the user (F-421; U-038, U-052).

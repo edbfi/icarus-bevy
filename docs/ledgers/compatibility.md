@@ -10,7 +10,7 @@ comparisons apply to build 25793767 (M-167) and do not establish a matched
 dedicated-server baseline. Full text before condensation:
 16d1a9d:docs/ledgers/compatibility.md.
 
-Last reconciled: 2026-10-13
+Last reconciled: 2026-10-17
 
 ## Surfaces
 
@@ -41,8 +41,8 @@ client connected and no prospect loaded (F-268).
 
 | Subsurface | Status | Evidence | Remaining gate |
 | --- | --- | --- | --- |
-| Control dispatch and version comparison | Observed | F-284; [spec](../specs/network/control-negotiation.md) | Outer framing, callback policy, runtime fixtures (U-014, U-037) |
-| Initial control archive fields | Experimental reader | F-096, F-097 | Message boundaries, byte order, token handling, admission (U-044) |
+| Control dispatch and version comparison | Observed | F-284, F-712, F-713; [spec](../specs/network/control-negotiation.md) | Older-server archive path and stock-client session (U-014, U-038) |
+| Initial control archive fields | Experimental reader | F-096, F-097 | Stock-client session (U-038) |
 | Control-dispatch pointer stores | Local stores qualified | F-091, F-095, F-110, F-113 | Class, table identity, receiver, runtime reachability (U-016, U-018) |
 | Current-client notify tables | Two slot/name equalities | F-088 | No dereference, object offset, older owner or runtime proof (U-010, U-011) |
 | Current-client constructor intervals and prefixes | Bounded metadata and instructions | F-082, F-083, F-093 | Fragments only; no cross-call provenance or ABI (U-008, U-009) |
@@ -57,6 +57,6 @@ client connected and no prospect loaded (F-268).
 | C009 top, children and D01 arrays | Headers, string structure and widths qualified | F-182, F-183, F-174, F-158, F-162 | Meanings and restoration; DA04 and CA06 empty (U-020, U-021) |
 | C001 construction seeds | Two metadata bounds | F-270, F-034 | Instruction, construction/vtable bridge, save body (U-023) |
 | Short stateless handshake | Observed; loopback lab | F-253, F-280; [spec](../specs/network/stateless-handshake.md) | Stock-client admission (U-051, U-052) |
-| Default network checksum | Experimental primitive; early value observed | F-254, F-255, F-281; [spec](../specs/network/network-checksum.md) | Active inputs and callback policy (U-037) |
+| Default network checksum | Experimental primitive; wire-verified | F-254, F-255, F-281, F-689, F-713; [spec](../specs/network/network-checksum.md) | Stock-client session (U-038) |
 | Archive strings | Experimental strict subset | F-142, F-282, F-285; [spec](../specs/save-format/archive-string.md) | Network flags and original round trips (U-026) |
 | Prospect envelope | Observed on supplied saves; read-only inspector | F-261, F-283, F-241; [spec](../specs/save-format/prospect-envelope.md) | Build pairing, binary schema, import (U-025, U-040) |

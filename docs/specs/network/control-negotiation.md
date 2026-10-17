@@ -4,7 +4,7 @@
 
 Experimental: static observations; the framing and Hello exchange are
 wire-validated offline, and a synthetic Login and Join are welcomed (F-688
-to F-690, F-712). Scope: dedicated-server
+to F-690, F-712, F-713). Scope: dedicated-server
 build 25621760 (M-168) unless a current-client (build 25793767) comparison is
 named. Last reconciled: 2026-10-17.
 Full text: d5b0ae6:docs/specs/network/control-negotiation.md.
@@ -15,10 +15,11 @@ The server-side control-message dispatcher and its initial (ID 0) branch, the
 string reader it uses, the static evidence linking UWorld / UPendingNetGame
 notify tables to it, and the current client's packet and bunch header parse
 order, `UControlChannel` byte-order persistence, queued send bounds, fallback
-skip table and `PreLogin` checks. Not covered: other packet handler components,
-compression, integrity protection, connection-state admission, runtime version
-overrides, and `GameModePreLoginEvent` subscribers. The native run command has no
-game listener.
+skip table, connection-state message admission (`IsClientMsgTypeValid`),
+`PreLogin` checks, `SpawnPlayActor` / `InitNewPlayer` join flow, and delegate
+cross-reference scans across both binaries. Not covered: Steam packet handler
+runtime initialization, compression, or integrity protection. The native run
+command has no game listener.
 
 ## Confirmed
 
@@ -165,7 +166,7 @@ game listener.
 ## Candidate
 
 - Experimental modules, wire-validated through Hello and offline Login/Join
-  (F-689, F-690, F-712): `control` reads the ID 0 body under a 131,081-byte ceiling
+  (F-689, F-690, F-712, F-713): `control` reads the ID 0 body under a 131,081-byte ceiling
   with the first-field byte-order rule (F-096, F-097, F-518, F-519),
   retaining no token units and omitting `Debug`/`Serialize` on raw containers;
   `packet` codes the receive format above (F-521 to F-527); `control_receive`
@@ -178,27 +179,41 @@ game listener.
   bunches and answering Hello and Login without sending Welcome (F-558, F-564,
   F-712). Exact EOF and normalization rejection are research policy. Summaries
   carry kinds and lengths only.
-- Server `UWorld::NotifyControlMessage` (`0x1439ee7f0`, F-563) and
-  `UWorld::WelcomePlayer` (`0x1439fdeb0`, F-580): Hello sends Upgrade with the
-  local version and closes on mismatch; an empty token (count < 2) sends
-  Challenge, and a nonempty token fails unless an encryption delegate is
-  registered. Netspeed clamps to >= 1,800. Login validates the URL, runs
-  `PreLogin`, and welcomes the player (type 1: level/travel name, game-mode
-  class, redirect string, flush, queued-bits reset, login state 2) on an empty
-  error or sends Failure and closes.
-- Current client `PreLogin` (`AGameModeBase::PreLogin` `0x14386a160`,
-  `UOnlineEngineInterfaceImpl::IsCompatibleUniqueNetId` `0x1409cbee0`, F-712;
-  native mirror `experimental::admission`): the ICARUS game mode and session add
-  no checks beyond the engine's. When `UniqueId` wraps a valid `FUniqueNetId`,
-  `IsCompatibleUniqueNetId` accepts it if `GetType()` matches
-  `GetDefaultOnlineSubsystemName()` or any entry in `CompatibleUniqueNetIdTypes`
-  (`+0x78`), else sets `incompatible_unique_net_id` and skips `ApproveLogin`;
-  otherwise `ApproveLogin` (`0x14385ac60`) checks `Server full.` against
-  override or `MaxPlayers` or `SpectatorOnly` and `Maximum splitscreen players`
-  on `SplitscreenCount` (with C-runtime integer reads saturating at `i32`
-  bounds), followed by `FGameModeEvents::GameModePreLoginEvent` (`0x146056cf8`;
-  literals M-591). `?`-delimited options split at the first `=` and match ASCII
-  case-insensitively, first wins.
+- Server `UWorld::NotifyControlMessage` (`0x1439ee7f0`, F-563, F-713) and
+  `UWorld::WelcomePlayer` (`0x1439fdeb0`, F-580): `UNetConnection::IsClientMsgTypeValid`
+  (`0x143991c70`) gates incoming control messages by `ClientLoginState`
+  (`+0x1c8`, `LoggingIn = 1`, `Welcomed = 2`, `Joined = 3`) and
+  `ExpectedClientLoginMsgType` (`+0x1cc`, `0` = `Hello` initially, set to
+  `5` = `Login` by `SendChallengeControlMessage` `0x143998730` and advanced to
+  state `2` by `WelcomePlayer`, which rejects `Hello` and `Login`). Hello sends
+  Upgrade with the local version and closes on mismatch; an empty token
+  (count < 2) sends Challenge, and a nonempty token fails unless an encryption
+  delegate is registered. Netspeed clamps to >= 1,800. Login validates the URL,
+  runs `PreLogin`, and welcomes the player on an empty error or sends Failure
+  and closes. On `Join` (`9`), if `PlayerController` (`+0x30`) is null,
+  `UWorld::SpawnPlayActor` (`0x14392dbb0`) calls `AGameModeBase::Login`
+  (`0x143866c80`) -> `ApproveLogin` -> `SpawnPlayerController` (`0x143872120`)
+  -> `InitNewPlayer` (`0x1438633f0`), which checks `GameSession`, `PlayerState`
+  and `FindPlayerStart`, parses `?bIsFromInvite`, `?SpectatorOnly=1` and
+  `?Name=` (truncated to `20` units or formatted as `%s%i` from
+  `DefaultPlayerName` and `PlayerId`), sets `NetPlayerIndex` (`+0x3d4`), binds
+  the player via `SetPlayer` -> `HandleClientPlayer` (`0x14398ffe0`), calls
+  `PostLogin` (`0x1414eb340` -> `0x143869990`), and sets `ClientLoginState = 3`.
+- Current client and server `PreLogin` (`AGameModeBase::PreLogin` `0x14386a160`,
+  `UOnlineEngineInterfaceImpl::IsCompatibleUniqueNetId` `0x1409cbee0`, F-712,
+  F-713; U-037 resolved; native mirror `experimental::admission`): the ICARUS
+  game mode and session add no checks beyond the engine's, and exhaustive `.text`
+  and `.rdata`/`.data` scans prove that neither binary binds any callback to
+  `FGameModeEvents::GameModePreLoginEvent` (`0x146056cf8` / `0x145f404b8`) or
+  `FNetworkVersion` overrides (`0x1463251b0..c0` / `0x1462116a0..b0`). When
+  `UniqueId` wraps a valid `FUniqueNetId`, `IsCompatibleUniqueNetId` accepts it
+  if `GetType()` matches `GetDefaultOnlineSubsystemName()` or any entry in
+  `CompatibleUniqueNetIdTypes` (`+0x78`), else sets `incompatible_unique_net_id`
+  and skips `ApproveLogin`; otherwise `ApproveLogin` (`0x14385ac60`) checks
+  `Server full.` against override or `MaxPlayers` or `SpectatorOnly` and
+  `Maximum splitscreen players` on `SplitscreenCount` (with C-runtime integer
+  reads saturating at `i32` bounds). `?`-delimited options split at the first
+  `=` and match ASCII case-insensitively, first wins.
 - Current client unique-net-id type hashes (F-543): 1 NULL, 2 MCP, 3 STEAM,
   4 PS4, 6 GOOGLE, 7 GOOGLEPLAY, 8 FACEBOOK, 9 IOS, 10 APPLE, 11 TENCENT,
   12 SWITCH, 13 AMAZON, 14 GAMECIRCLE, 15 THUNDERHEAD, 18 Oculus, 19 Quail,
@@ -213,7 +228,6 @@ game listener.
   server owner (U-011); archive/bit-position/byte-order path into the older
   dispatcher (U-014); indirect callers (U-015); RTTI, table identity and
   owner (U-016, U-017, U-018); receiver and type-registration join (U-043);
-  active admission policy and `GameModePreLoginEvent` subscribers (U-037);
   authenticated stock-client session (U-038).
 
 ## Evidence
@@ -221,15 +235,15 @@ game listener.
 - Static cases: M-170 (`icarus-server-baseline`, E-011/E-013/E-021/E-022/E-024),
   M-146, [research/archive](../../research/archive/2026-10-12-control-caller-limit.md),
   M-023 to M-045 in the [control-store digest](../../research/network/control-stores.md),
-  and M-589 to M-596, M-749, M-750 (`PreLogin` and `UControlChannel` framing).
-- Requirements before promotion: identify version generation and callback
-  registration and record the legitimate decision rule; recover archive
-  conversion and outer framing with bounds and errors; obtain a paired trace of
-  a matching stock client and reference server; create sanitized fixtures for
-  accepted negotiation and each rejection class (truncation at each field,
-  zero/negative/minimum/oversized lengths, incompatible versions, invalid
-  transitions, token failures); pass those fixtures and the stock-client
-  experiment before marking negotiation implemented.
+  and M-589 to M-596, M-749 to M-752 (`PreLogin`, `SpawnPlayActor`, delegate
+  scans and `UControlChannel` framing).
+- Requirements before promotion: recover archive conversion and outer framing
+  with bounds and errors; obtain a paired trace of a matching stock client and
+  reference server; create sanitized fixtures for accepted negotiation and each
+  rejection class (truncation at each field, zero/negative/minimum/oversized
+  lengths, incompatible versions, invalid transitions, token failures); pass
+  those fixtures and the stock-client experiment before marking negotiation
+  implemented.
 - Authored suites:
 
 ```bash

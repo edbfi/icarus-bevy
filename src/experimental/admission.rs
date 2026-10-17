@@ -1,9 +1,29 @@
-//! EXPERIMENTAL login approval mirroring the client build's engine checks.
+//! EXPERIMENTAL login, connection-state admission, and `SpawnPlayActor` checks
+//! mirroring the client and server builds' engine logic.
 //!
-//! The ICARUS game mode and session add no PreLogin or ApproveLogin checks of
-//! their own; the engine's run instead (F-712). This module reproduces
-//! the parts a dedicated server decides from its own state and the Login
-//! fields:
+//! The ICARUS game mode and session add no `PreLogin`, `ApproveLogin`, `Login`,
+//! or `InitNewPlayer` checks of their own; the engine's run instead (`F-712`,
+//! `F-713`). Exhaustive `.text` and `.rdata`/`.data` cross-reference scans
+//! across both `Icarus-Win64-Shipping.exe` (`25793767`) and
+//! `IcarusServer-Win64-Shipping.exe` (`25621760`) confirm that neither the
+//! engine nor ICARUS game code binds any subscriber or callback to
+//! `FGameModeEvents::GameModePreLoginEvent` (`0x146056cf8` / `0x145f404b8`),
+//! `FNetworkVersion::GetLocalNetworkVersionOverride` (`0x1463251b0` /
+//! `0x1462116a0`), or `FNetworkVersion::IsNetworkCompatibleOverride`
+//! (`0x1463251c0` / `0x1462116b0`; `U-037` resolved).
+//!
+//! This module reproduces the parts a dedicated server decides from its own
+//! state and the control-channel `Hello` / `Login` / `Join` fields:
+//! - `UNetConnection::IsClientMsgTypeValid` (`0x143991c70`),
+//!   `SendChallengeControlMessage` (`0x143998730`), `WelcomePlayer`
+//!   (`0x143cc9170`), and `SetClientLoginState` (`0x14399add0`) gate control
+//!   message IDs by `ClientLoginState` (`Connection + 0x1c8`) and
+//!   `ExpectedClientLoginMsgType` (`Connection + 0x1cc`): while `LoggingIn`
+//!   (`1`), only `ExpectedClientLoginMsgType` (`0` = `Hello` initially, then
+//!   `5` = `Login` after `Challenge`) is accepted; once `Welcomed` (`2`) or
+//!   `Joined` (`3`), `Hello` (`0`) and `Login` (`5`) are rejected and post-login
+//!   messages (`Netspeed = 4`, `Join = 9`, `JoinSplit = 10`, `PCSwap = 15`,
+//!   `DebugText = 17`) are accepted.
 //! - In `AGameModeBase::PreLogin` (`0x14386a160`), if the `Login` message's
 //!   `FUniqueNetIdRepl` wraps a valid `FUniqueNetId`, the engine first queries
 //!   `UOnlineEngineInterfaceImpl::IsCompatibleUniqueNetId` (`0x1409cbee0`),
@@ -22,12 +42,15 @@
 //! - `SpectatorOnly=1` asks for a spectator slot; a full server answers
 //!   [`SERVER_FULL`]. Otherwise a `SplitscreenCount` above the
 //!   per-connection limit answers [`SPLITSCREEN_EXCEEDED`].
-//!
-//! Capacity follows the engine's dedicated-server branch: players are capped
-//! only by a positive maximum, spectators always by theirs. The engine's
-//! global player-cap override and runtime `GameModePreLoginEvent` delegates
-//! (`0x146056cf8`) are outside this module. Approval sends no Welcome;
-//! admission stays gated.
+//! - On `NMT_Join` (`case 9` in `UWorld::NotifyControlMessage` `0x143cba590`),
+//!   `UWorld::SpawnPlayActor` (`0x14392dbb0`) invokes `AGameModeBase::Login`
+//!   (`0x143866c80`) -> `ApproveLogin` (`0x14384f9c0`) ->
+//!   `SpawnPlayerController` (`0x143872120`) -> `InitNewPlayer` (`0x1438633f0`),
+//!   checking `GameSession`, `PlayerState`, and `FindPlayerStart`, parsing
+//!   `?bIsFromInvite`, `?SpectatorOnly=1`, and `?Name=` (truncated to 20 UTF-16
+//!   units or formatted as `%s%i` from `DefaultPlayerName` and `PlayerId`),
+//!   setting `PlayerController->NetPlayerIndex` (`+0x3d4`), and advancing
+//!   `ClientLoginState` to `Joined` (`3`).
 
 use super::control_messages::{NetIdType, NetIdValue, UniqueNetId};
 
@@ -37,9 +60,93 @@ pub const INCOMPATIBLE_UNIQUE_NET_ID: &str = "incompatible_unique_net_id";
 pub const SERVER_FULL: &str = "Server full.";
 /// ApproveLogin's splitscreen rejection.
 pub const SPLITSCREEN_EXCEEDED: &str = "Maximum splitscreen players";
+/// `AGameModeBase::Login` (`0x143866c80`) rejection when `GameSession` is null (`0x1454b7760`).
+pub const GAMESESSION_NULL_ERROR: &str = "Failed to spawn player controller, GameSession is null";
+/// `AGameModeBase::Login` (`0x143866c80`) rejection when `SpawnPlayerController` returns null (`0x1454b77d0`).
+pub const SPAWN_PLAYER_CONTROLLER_ERROR: &str = "Failed to spawn player controller";
+/// `AGameModeBase::InitNewPlayer` (`0x1438633f0`) rejection when `PlayerState` is null (`0x1454b7838`).
+pub const PLAYER_STATE_NULL_ERROR: &str = "PlayerState is null";
+/// `AGameModeBase::InitNewPlayer` (`0x1438633f0`) rejection when `FindPlayerStart` returns null (`0x1454b7880`).
+pub const FIND_PLAYER_START_ERROR: &str = "Failed to find PlayerStart";
+/// Maximum UTF-16 units retained from `?Name=` in `AGameModeBase::InitNewPlayer` (`0x1438633f0`, `0x14`).
+pub const MAX_PLAYER_NAME_UNITS: usize = 20;
 
 const OPTION_DELIMITER: u16 = b'?' as u16;
 const KEY_SEPARATOR: u16 = b'=' as u16;
+
+/// `EClientLoginState::Type` stored at `UNetConnection + 0x1c8` (`SetClientLoginState` `0x14399add0`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[repr(u8)]
+pub enum ClientLoginState {
+    Invalid = 0,
+    LoggingIn = 1,
+    Welcomed = 2,
+    Joined = 3,
+    CleanedUp = 4,
+}
+
+/// Per-connection control-message admission state mirroring `UNetConnection::IsClientMsgTypeValid`
+/// (`0x143991c70`), `SendChallengeControlMessage` (`0x143998730`), `WelcomePlayer` (`0x143cc9170`),
+/// and `UWorld::NotifyControlMessage` (`case 9` `NMT_Join`, `0x143cba590`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ConnectionLoginAdmission {
+    pub state: ClientLoginState,
+    pub expected_login_msg_type: u8,
+    pub has_player_controller: bool,
+}
+
+impl Default for ConnectionLoginAdmission {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl ConnectionLoginAdmission {
+    /// Initial `UNetConnection` state (`LoggingIn = 1`, expecting `NMT_Hello = 0`).
+    pub const fn new() -> Self {
+        Self {
+            state: ClientLoginState::LoggingIn,
+            expected_login_msg_type: 0,
+            has_player_controller: false,
+        }
+    }
+
+    /// `UNetConnection::IsClientMsgTypeValid` (`0x143991c70`): while `LoggingIn`,
+    /// only `expected_login_msg_type` is valid; in all other states, `NMT_Hello` (`0`)
+    /// and `NMT_Login` (`5`) are rejected and all other control message IDs pass.
+    pub const fn is_client_msg_type_valid(&self, msg_type: u8) -> bool {
+        if matches!(self.state, ClientLoginState::LoggingIn) {
+            msg_type == self.expected_login_msg_type
+        } else {
+            msg_type != 0 && msg_type != 5
+        }
+    }
+
+    /// `UNetConnection::SendChallengeControlMessage` (`0x143998730`): advances
+    /// `ExpectedClientLoginMsgType` (`+0x1cc`) from `0` (`Hello`) to `5` (`Login`).
+    pub fn on_challenge_sent(&mut self) {
+        self.expected_login_msg_type = 5;
+    }
+
+    /// `UWorld::WelcomePlayer` (`0x143cc9170`): sets `ClientLoginState` (`+0x1c8`)
+    /// to `Welcomed` (`2`).
+    pub fn on_welcome_sent(&mut self) {
+        self.state = ClientLoginState::Welcomed;
+    }
+
+    /// `UWorld::NotifyControlMessage` `case 9` (`NMT_Join`, `0x143cba590`):
+    /// ignores duplicate `Join` when `Connection->PlayerController` (`+0x30`) is
+    /// already non-null (returning `false`), else records the spawned controller
+    /// and sets `ClientLoginState` to `Joined` (`3`).
+    pub fn on_join_spawned(&mut self) -> bool {
+        if self.has_player_controller {
+            return false;
+        }
+        self.has_player_controller = true;
+        self.state = ClientLoginState::Joined;
+        true
+    }
+}
 
 /// The value of the first option named `key`, or `None` when absent.
 pub fn login_option<'a>(options: &'a [u16], key: &str) -> Option<&'a [u16]> {
@@ -53,6 +160,28 @@ pub fn login_option<'a>(options: &'a [u16], key: &str) -> Option<&'a [u16]> {
             };
             key_matches(name, key).then_some(value)
         })
+}
+
+/// Whether `options` contains `key` (with or without `=value`), matching
+/// `UGameplayStatics::HasOption` (`0x14385dd70`).
+pub fn has_login_option(options: &[u16], key: &str) -> bool {
+    login_option(options, key).is_some()
+}
+
+/// Resolve the player's initial name as in `AGameModeBase::InitNewPlayer`
+/// (`0x1438633f0`): reads `?Name=`, truncating to at most [`MAX_PLAYER_NAME_UNITS`]
+/// (`20`) UTF-16 code units, or when empty formats `"{default_player_name}{player_id}"`
+/// (`"%s%i"` at `0x14544af60`).
+pub fn resolve_player_name(options: &[u16], default_player_name: &str, player_id: i32) -> Vec<u16> {
+    if let Some(raw) = login_option(options, "Name") {
+        let end = raw.len().min(MAX_PLAYER_NAME_UNITS);
+        if end > 0 {
+            return raw[..end].to_vec();
+        }
+    }
+    format!("{default_player_name}{player_id}")
+        .encode_utf16()
+        .collect()
 }
 
 fn key_matches(name: &[u16], key: &str) -> bool {
@@ -180,6 +309,30 @@ pub struct Occupancy {
     pub spectators: i32,
 }
 
+/// Inputs to `UWorld::SpawnPlayActor` (`0x14392dbb0`) -> `AGameModeBase::Login`
+/// (`0x143866c80`) -> `AGameModeBase::InitNewPlayer` (`0x1438633f0`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct JoinSpawnContext<'a> {
+    pub has_game_session: bool,
+    pub can_spawn_controller: bool,
+    pub has_player_state: bool,
+    pub has_player_start: bool,
+    pub must_spectate: bool,
+    pub default_player_name: &'a str,
+    pub player_id: i32,
+    pub net_player_index: u8,
+}
+
+/// Resolved player controller state produced by `UWorld::SpawnPlayActor`
+/// (`0x14392dbb0`) and `AGameModeBase::InitNewPlayer` (`0x1438633f0`).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct InitNewPlayerOutcome {
+    pub is_from_invite: bool,
+    pub spectator_only: bool,
+    pub player_name_units: Vec<u16>,
+    pub net_player_index: u8,
+}
+
 impl AdmissionPolicy {
     /// The engine's ApproveLogin decision: `Err` carries its message.
     pub fn approve_login(&self, options: &[u16], occupancy: Occupancy) -> Result<(), &'static str> {
@@ -194,9 +347,8 @@ impl AdmissionPolicy {
         Ok(())
     }
 
-    /// Full `AGameModeBase::PreLogin` (`0x14386a160`) check sequence before
-    /// `GameModePreLoginEvent`: `IsCompatibleUniqueNetId` (when valid), then
-    /// `AGameSession::ApproveLogin`.
+    /// Full `AGameModeBase::PreLogin` (`0x14386a160`) check sequence:
+    /// `IsCompatibleUniqueNetId` (when valid), then `AGameSession::ApproveLogin`.
     pub fn pre_login(
         &self,
         options: &[u16],
@@ -213,6 +365,41 @@ impl AdmissionPolicy {
             indexed_subsystems,
         )?;
         self.approve_login(options, occupancy)
+    }
+
+    /// Full `UWorld::SpawnPlayActor` (`0x14392dbb0`) -> `AGameModeBase::Login`
+    /// (`0x143866c80`) -> `AGameModeBase::InitNewPlayer` (`0x1438633f0`) check
+    /// and option-resolution sequence on `NMT_Join` / `NMT_JoinSplit`.
+    pub fn login_and_init_new_player(
+        &self,
+        options: &[u16],
+        occupancy: Occupancy,
+        ctx: JoinSpawnContext<'_>,
+    ) -> Result<InitNewPlayerOutcome, &'static str> {
+        if !ctx.has_game_session {
+            return Err(GAMESESSION_NULL_ERROR);
+        }
+        self.approve_login(options, occupancy)?;
+        if !ctx.can_spawn_controller {
+            return Err(SPAWN_PLAYER_CONTROLLER_ERROR);
+        }
+        if !ctx.has_player_state {
+            return Err(PLAYER_STATE_NULL_ERROR);
+        }
+        let is_from_invite = has_login_option(options, "bIsFromInvite");
+        let spectator_only =
+            login_option(options, "SpectatorOnly") == Some(&[u16::from(b'1')]) || ctx.must_spectate;
+        let player_name_units =
+            resolve_player_name(options, ctx.default_player_name, ctx.player_id);
+        if !ctx.has_player_start {
+            return Err(FIND_PLAYER_START_ERROR);
+        }
+        Ok(InitNewPlayerOutcome {
+            is_from_invite,
+            spectator_only,
+            player_name_units,
+            net_player_index: ctx.net_player_index,
+        })
     }
 
     fn at_capacity(&self, spectator: bool, occupancy: Occupancy) -> bool {

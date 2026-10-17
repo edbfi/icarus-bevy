@@ -3,16 +3,17 @@
 ## Status
 
 Experimental: static interpretation with independent arithmetic tests, one
-matching early-startup value and both builds' wire values (F-689). Scope: build 25621760 (M-168); addresses
-are preferred virtual addresses in that file. Last reconciled: 2026-10-16.
+matching early-startup value, both builds' wire values and exhaustive delegate
+cross-reference scans across both binaries (F-689, F-713; U-037 resolved). Scope: build 25621760 (M-168); addresses
+are preferred virtual addresses in that file. Last reconciled: 2026-10-17.
 Full text: d5b0ae6:docs/specs/network/network-checksum.md.
 
 ## Scope
 
 The default construction path of the network version checksum and its cache,
 setter and delegate structure. Not covered: datagram framing, identity
-validation, the active admission decision, or any stock-client negotiation. The
-native server does not use this module for admission.
+validation, or any stock-client negotiation. The native server does not use
+this module for admission.
 
 ## Confirmed
 
@@ -53,27 +54,29 @@ native server does not use this module for admission.
   `networkversionoverride` console variable, else 0. Hello sends this value
   with the override delegate allowed; its project version is runtime state, so
   a matching value needs the client's active version (F-541, F-542).
-- The two initializer candidates found by a broader direct-reference scan
-  register delegate teardown through CRT on-exit imports; they do not install
-  compatibility callbacks (F-255).
+- Exhaustive `.text` RIP-relative and `.rdata`/`.data` pointer scans across both
+  binaries prove that `GetLocalNetworkVersionOverride` (`0x1463251b0` /
+  `0x1462116a0`) and `IsNetworkCompatibleOverride` (`0x1463251c0` /
+  `0x1462116b0`) are referenced only by their reader functions (`0x141f13b30` /
+  `0x141f2b220`, `0x141f16ef0` / `0x141f2e6e0`) and CRT `atexit` destructors
+  (`0x144800cb0..d10` / `0x14461eb50..b0`), with 0 callbacks bound in either
+  binary (F-255, F-713; U-037 resolved).
 
 ## Candidate
 
-- The getter's `1.0.0` fallback and the bounded delegate searches (which
-  cannot prove registration absent) no longer decide the active version: the
-  wire shows each build's own value compared exactly (F-689).
+- The getter's `1.0.0` fallback is superseded by `GeneralProjectSettings` at
+  startup, and with 0 override callbacks bound in either binary, both builds
+  compare their computed CRC-32 values by exact equality (F-689, F-713).
 
 ## Open questions
 
-- Active checksum/admission policy and indirect runtime callback registration;
-  progress requires observing generation, comparison and delegate state in a
-  matched reference session, not repeating the negative search (U-037).
+- Authenticated stock-client session against the native server (U-038).
 
 ## Evidence
 
 - Private cases: M-146 (`work/control-version-20261012/`, E-001 to E-003, strict
   review with zero issues), M-169 (`decompile-01/`, selected disassemblies and
-  `checksum-table-verification.json`).
+  `checksum-table-verification.json`), M-751 and M-752 (`join-spawn-and-admission-20261017/`).
 - Authored tests cover ASCII case conversion, embedded NUL, nonzero seeds and
   incremental processing against the independent oracle:
 
