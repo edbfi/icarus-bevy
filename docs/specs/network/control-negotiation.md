@@ -176,9 +176,11 @@ command has no game listener.
   reliable and partial-bunch state (F-535 to F-539, F-710, F-711); and
   `packet_lab` and `peer_lab` run them as disconnected per-peer state in the
   Bevy loopback lab, persisting the Hello byte order across subsequent control
-  bunches and answering Hello and Login without sending Welcome (F-558, F-564,
-  F-712). Exact EOF and normalization rejection are research policy. Summaries
-  carry kinds and lengths only.
+  bunches and answering Hello and Login (`ADMISSION_DISABLED_MESSAGE` by default,
+  or full `IsClientMsgTypeValid` login-state gating, `PreLogin`, `Welcome` and
+  `Join` / `SplitJoin` when `PeerLabConfig::admission` is configured; F-558,
+  F-564, F-712, F-713). Exact EOF and normalization rejection are research
+  policy. Summaries carry kinds and lengths only.
 - Server `UWorld::NotifyControlMessage` (`0x1439ee7f0`, F-563, F-713) and
   `UWorld::WelcomePlayer` (`0x1439fdeb0`, F-580): `UNetConnection::IsClientMsgTypeValid`
   (`0x143991c70`) gates incoming control messages by `ClientLoginState`

@@ -4,37 +4,54 @@
 //! not the original algorithm) with one [`LabPeer`] per IPv4 loopback address:
 //! a peer is created (or replaced) when the lab sends it a handshake
 //! acknowledgement, its later data datagrams pass through [`LabPeer::receive`]
-//! and every accepted packet is answered with [`LabPeer::ack_packet`]. No
-//! admission, identity check, Welcome, channel other than control, or
-//! gameplay. Delivered control messages are counted by kind and then
-//! discarded, except that Hello and Login get the mapped control replies below.
+//! and every accepted packet is answered with [`LabPeer::ack_packet`]. When
+//! [`PeerLabConfig::admission`] is `None` (default), no admission, identity
+//! check, Welcome, channel other than control, or gameplay runs; delivered
+//! control messages are counted by kind and then discarded, except that Hello
+//! and Login get the mapped control replies below. When [`PeerLabConfig::admission`]
+//! is `Some`, each peer also enforces [`ConnectionLoginAdmission`]
+//! (`IsClientMsgTypeValid`), `PreLogin`, `Welcome`, and `Join` / `SplitJoin`
+//! (`SpawnPlayActor` / `InitNewPlayer`) checks from `experimental::admission`
+//! (`F-712`, `F-713`).
 //!
 //! The server side is an INFERRED mirror of client-build observations (cookie
 //! seeding F-536, sequencing F-535..F-539, framing F-521..F-527); the original
 //! server's peer table, timeouts, ack cadence and limits were not observed.
 //! Nothing here demonstrates compatibility with any client.
 //!
-//! Control replies are an INFERRED proxy: they follow the client build's own
-//! listen-server parser (F-530, F-531), not an observed original dedicated
-//! server, and are sent as reliable control bunches through
-//! [`LabPeer::reliable_control_packet`] (each also carries the ack state):
+//! Control replies follow the client and server builds' `NotifyControlMessage`
+//! (`F-530`, `F-531`, `F-579`, `F-712`, `F-713`) and are sent as reliable
+//! control bunches through [`LabPeer::reliable_control_packet`] (each also
+//! carries the ack state):
+//! - When [`PeerLabConfig::admission`] is `Some`, any delivered control message
+//!   rejected by [`ConnectionLoginAdmission::is_client_msg_type_valid`] is
+//!   counted in [`PeerLabStats::invalid_state_messages`] and ignored without
+//!   advancing state (`F-713`).
 //! - Hello, when [`PeerLabConfig::local_network_version`] is set and differs
 //!   from the Hello version: Upgrade (ID 2) carrying the configured version,
 //!   then the peer is removed (`peers_closed`). The comparison is plain
-//!   equality; the original compatibility check and the real runtime version
-//!   are unknown (U-037). `None` skips the comparison.
+//!   equality (`F-527`, `F-713`; `U-037` resolved). `None` skips the comparison.
 //! - Otherwise a Hello whose token is empty (declared count, terminator
 //!   included, below two, as the server and client compare it, F-563): Challenge
-//!   (ID 3) carrying 32 lowercase hex digits of fresh OS randomness. The
-//!   original challenge is counter-derived (F-531); this string is a lab
-//!   choice, is not retained and is never claimed to match. Every such Hello is
-//!   answered, including repeats.
+//!   (ID 3) carrying 32 lowercase hex digits of fresh OS randomness, advancing
+//!   [`ConnectionLoginAdmission::on_challenge_sent`]. The original challenge is
+//!   counter-derived (F-531); this string is a lab choice, is not retained and
+//!   is never claimed to match.
 //! - A Hello with a nonempty token (the encryption path) is counted in
 //!   `hello_unanswered` and not answered: unsupported.
-//! - Login (ID 5): counted by unique-net-id form only, then Failure (ID 6)
-//!   carrying [`ADMISSION_DISABLED_MESSAGE`] and the peer is removed. The
-//!   response and challenge are not checked (the client's response is the
-//!   literal "0", F-548). Welcome is never sent.
+//! - Login (ID 5): counted by unique-net-id form only. When
+//!   [`PeerLabConfig::admission`] is `None`, Failure (ID 6) carrying
+//!   [`ADMISSION_DISABLED_MESSAGE`] is sent and the peer is removed. When
+//!   [`PeerLabConfig::admission`] is `Some`, [`AdmissionPolicy::pre_login`] runs
+//!   against the current welcomed/joined occupancy: on `Ok(())`, Welcome (ID 1)
+//!   carrying the configured map/game/redirect URLs is sent and the peer
+//!   advances to `Welcomed` (`welcomes_sent`); on `Err(reason)`, Failure (ID 6)
+//!   carrying `reason` is sent and the peer is removed.
+//! - Join (ID 9) and SplitJoin (ID 10), when [`PeerLabConfig::admission`] is
+//!   `Some`: `Join` checks [`ConnectionLoginAdmission::on_join_spawned`]
+//!   (ignoring duplicate `Join` in `duplicate_joins_ignored`) and runs
+//!   [`AdmissionPolicy::login_and_init_new_player`], counting `joins_succeeded`
+//!   or sending Failure (ID 6) and closing the peer.
 //! - Messages after a closing reply in the same delivery are not processed.
 //!
 //! Removing a peer is the lab's close: no close bunch is written, so a lost
@@ -74,6 +91,10 @@ use anyhow::{Context, Result, ensure};
 use bevy::prelude::{App, Plugin, ResMut, Resource, Update};
 use serde::Serialize;
 
+use super::admission::{
+    AdmissionPolicy, ClientLoginState, ConnectionLoginAdmission, JoinSpawnContext, Occupancy,
+    int_option,
+};
 use super::control_messages::{ArchiveText, ControlMessage, Decoded, NetIdValue};
 use super::handshake::decode;
 use super::handshake_lab::{
@@ -106,6 +127,69 @@ pub const DEFAULT_MAX_CHANNELS: u32 = 32;
 /// Lab choice: default archive-string unit cap for channel names.
 pub const DEFAULT_MAX_STRING_UNITS: usize = 256;
 
+/// Opt-in login-state gating (`IsClientMsgTypeValid`), `PreLogin`, `Welcome`,
+/// and `Join` / `SplitJoin` (`SpawnPlayActor`) policy for [`PeerLab`].
+#[derive(Clone, Copy)]
+pub struct PeerLabAdmission {
+    pub policy: AdmissionPolicy,
+    pub default_subsystem: Option<&'static str>,
+    pub compatible_subsystems: &'static [&'static str],
+    pub indexed_subsystems: &'static [(u8, &'static str)],
+    pub map_url: &'static str,
+    pub game_name: &'static str,
+    pub redirect_url: &'static str,
+    pub default_player_name: &'static str,
+    pub has_game_session: bool,
+    pub can_spawn_controller: bool,
+    pub has_player_state: bool,
+    pub has_player_start: bool,
+    pub must_spectate: bool,
+}
+
+impl fmt::Debug for PeerLabAdmission {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("PeerLabAdmission")
+            .field("policy", &self.policy)
+            .field("default_subsystem_set", &self.default_subsystem.is_some())
+            .field(
+                "compatible_subsystems_len",
+                &self.compatible_subsystems.len(),
+            )
+            .field("indexed_subsystems_len", &self.indexed_subsystems.len())
+            .field("has_game_session", &self.has_game_session)
+            .field("can_spawn_controller", &self.can_spawn_controller)
+            .field("has_player_state", &self.has_player_state)
+            .field("has_player_start", &self.has_player_start)
+            .field("must_spectate", &self.must_spectate)
+            .finish()
+    }
+}
+
+impl Default for PeerLabAdmission {
+    fn default() -> Self {
+        Self {
+            policy: AdmissionPolicy {
+                max_players: 8,
+                max_spectators: 2,
+                max_splitscreens_per_connection: 4,
+            },
+            default_subsystem: Some("NULL"),
+            compatible_subsystems: &["STEAM"],
+            indexed_subsystems: &[(1, "NULL"), (3, "STEAM")],
+            map_url: "/Game/Maps/Conifer_Terrain_004",
+            game_name: "/Game/BP/Framework/BP_IcarusGameModeSurvival.BP_IcarusGameModeSurvival_C",
+            redirect_url: "",
+            default_player_name: "Player",
+            has_game_session: true,
+            can_spawn_controller: true,
+            has_player_state: true,
+            has_player_start: true,
+            must_spectate: false,
+        }
+    }
+}
+
 /// Caller-supplied lab parameters.
 #[derive(Clone, Copy)]
 pub struct PeerLabConfig {
@@ -118,9 +202,12 @@ pub struct PeerLabConfig {
     pub idle_timeout: Duration,
     /// Caller-supplied local network version compared with each Hello version
     /// (plain equality); a mismatch is answered with Upgrade. `None` skips the
-    /// comparison. The original runtime value is unknown (U-037). `Debug`
-    /// shows only whether it is set.
+    /// comparison. `Debug` shows only whether it is set.
     pub local_network_version: Option<u32>,
+    /// Optional login-state gating (`IsClientMsgTypeValid`), `PreLogin`,
+    /// `Welcome`, and `Join` / `SplitJoin` admission policy (`F-712`, `F-713`).
+    /// `None` disables game admission and answers `Login` with [`ADMISSION_DISABLED_MESSAGE`].
+    pub admission: Option<PeerLabAdmission>,
 }
 
 impl fmt::Debug for PeerLabConfig {
@@ -134,6 +221,7 @@ impl fmt::Debug for PeerLabConfig {
                 "local_network_version_set",
                 &self.local_network_version.is_some(),
             )
+            .field("admission_enabled", &self.admission.is_some())
             .finish()
     }
 }
@@ -149,6 +237,7 @@ impl Default for PeerLabConfig {
             max_peers: DEFAULT_MAX_PEERS,
             idle_timeout: DEFAULT_IDLE_TIMEOUT,
             local_network_version: None,
+            admission: None,
         }
     }
 }
@@ -170,6 +259,11 @@ impl PeerLabConfig {
             (HANDSHAKE_BYTES as u32..=MAX_UDP_PAYLOAD_BYTES).contains(&max),
             "maximum datagram size must be {HANDSHAKE_BYTES}..={MAX_UDP_PAYLOAD_BYTES} bytes"
         );
+        if let Some(admission) = &self.admission {
+            ArchiveText::text(admission.map_url).context("invalid admission map_url")?;
+            ArchiveText::text(admission.game_name).context("invalid admission game_name")?;
+            ArchiveText::text(admission.redirect_url).context("invalid admission redirect_url")?;
+        }
         self.packet
             .validate()
             .context("invalid packet-lab configuration")
@@ -222,6 +316,8 @@ pub struct PeerLabStats {
     pub control_by_id: BTreeMap<u8, u64>,
     /// Control bunches carrying the close flag; the lab does not act on them.
     pub control_close_seen: u64,
+    /// Delivered control messages rejected by `IsClientMsgTypeValid` (`F-713`).
+    pub invalid_state_messages: u64,
     /// Challenge (ID 3) replies sent to Hello.
     pub control_challenges_sent: u64,
     /// Upgrade (ID 2) replies sent to a mismatched Hello version.
@@ -234,10 +330,14 @@ pub struct PeerLabStats {
     /// Delivered Login messages per unique-net-id form (`encoded_empty`,
     /// `encoded`, `text` or `absent`); kinds only.
     pub login_net_id_forms: BTreeMap<&'static str, u64>,
-    /// Failure (ID 6) replies sent to Login.
+    /// Failure (ID 6) replies sent to Login or Join.
     pub failures_sent: u64,
-    /// Welcome replies sent; always zero, admission is disabled.
+    /// Welcome (ID 1) replies sent to accepted Logins.
     pub welcomes_sent: u64,
+    /// Join / SplitJoin requests that passed `SpawnPlayActor` / `InitNewPlayer`.
+    pub joins_succeeded: u64,
+    /// Duplicate Join requests ignored because a PlayerController already exists (`F-713`).
+    pub duplicate_joins_ignored: u64,
     /// Peers removed after an Upgrade or Failure reply.
     pub peers_closed: u64,
     /// Replies that could not be built (the peer is kept unless it failed).
@@ -265,13 +365,14 @@ fn bump(counter: &mut u64) {
 enum Reply {
     Challenge,
     Upgrade(u32),
-    Failure,
+    Welcome { spectator: bool },
+    Failure(&'static str),
 }
 
 impl Reply {
     /// Upgrade and Failure end the peer (the client closes after them, F-530).
     fn closes(&self) -> bool {
-        matches!(self, Self::Upgrade(_) | Self::Failure)
+        matches!(self, Self::Upgrade(_) | Self::Failure(_))
     }
 }
 
@@ -300,6 +401,10 @@ struct PeerEntry {
     cookie: [u8; 20],
     last_seen: Instant,
     ack_pending: bool,
+    admission: ConnectionLoginAdmission,
+    login_url_units: Vec<u16>,
+    spectator: bool,
+    splitscreen_count: u8,
 }
 
 /// The loopback peer lab. `Debug` reports only the peer count and counters.
@@ -362,6 +467,28 @@ impl PeerLab {
 
     pub fn has_peer(&self, address: SocketAddrV4) -> bool {
         self.peers.contains_key(&address)
+    }
+
+    fn occupancy(&self, excluding: Option<SocketAddrV4>) -> Occupancy {
+        let mut occupancy = Occupancy::default();
+        for (address, entry) in &self.peers {
+            if excluding == Some(*address) {
+                continue;
+            }
+            if matches!(
+                entry.admission.state,
+                ClientLoginState::Welcomed | ClientLoginState::Joined
+            ) {
+                if entry.spectator {
+                    occupancy.spectators = occupancy.spectators.saturating_add(1);
+                } else {
+                    occupancy.players = occupancy
+                        .players
+                        .saturating_add(1 + i32::from(entry.splitscreen_count));
+                }
+            }
+        }
+        occupancy
     }
 
     fn expire_idle(&mut self, now: Instant) {
@@ -429,6 +556,10 @@ impl PeerLab {
                         cookie,
                         last_seen: now,
                         ack_pending: false,
+                        admission: ConnectionLoginAdmission::new(),
+                        login_url_units: Vec::new(),
+                        spectator: false,
+                        splitscreen_count: 0,
                     },
                 );
             }
@@ -478,7 +609,16 @@ impl PeerLab {
             let Decoded::Message(message) = decoded else {
                 continue;
             };
-            let Some(reply) = self.reply_for(message) else {
+            if self.config.admission.is_some() {
+                let Some(entry) = self.peers.get(&address) else {
+                    return;
+                };
+                if !entry.admission.is_client_msg_type_valid(message.id()) {
+                    bump(&mut self.stats.invalid_state_messages);
+                    continue;
+                }
+            }
+            let Some(reply) = self.reply_for(address, message) else {
                 continue;
             };
             if !self.send_reply(address, &reply) || reply.closes() {
@@ -487,7 +627,7 @@ impl PeerLab {
         }
     }
 
-    fn reply_for(&mut self, message: &ControlMessage) -> Option<Reply> {
+    fn reply_for(&mut self, address: SocketAddrV4, message: &ControlMessage) -> Option<Reply> {
         match message {
             ControlMessage::Hello { version, token, .. } => {
                 match self.config.local_network_version {
@@ -501,7 +641,9 @@ impl PeerLab {
                     }
                 }
             }
-            ControlMessage::Login { unique_net_id, .. } => {
+            ControlMessage::Login {
+                url, unique_net_id, ..
+            } => {
                 bump(&mut self.stats.logins_received);
                 let count = self
                     .stats
@@ -509,7 +651,87 @@ impl PeerLab {
                     .entry(net_id_form(&unique_net_id.value))
                     .or_default();
                 *count = count.saturating_add(1);
-                Some(Reply::Failure)
+                let Some(admission) = &self.config.admission else {
+                    return Some(Reply::Failure(ADMISSION_DISABLED_MESSAGE));
+                };
+                let occupancy = self.occupancy(Some(address));
+                let options = url.units();
+                match admission.policy.pre_login(
+                    options,
+                    unique_net_id,
+                    occupancy,
+                    admission.default_subsystem,
+                    admission.compatible_subsystems,
+                    admission.indexed_subsystems,
+                ) {
+                    Ok(()) => {
+                        let spectator = int_option(options, "SpectatorOnly") == 1;
+                        if let Some(entry) = self.peers.get_mut(&address) {
+                            entry.login_url_units = options.to_vec();
+                        }
+                        Some(Reply::Welcome { spectator })
+                    }
+                    Err(reason) => Some(Reply::Failure(reason)),
+                }
+            }
+            ControlMessage::Join => {
+                let admission = self.config.admission?;
+                let occupancy = self.occupancy(Some(address));
+                let entry = self.peers.get_mut(&address)?;
+                if !entry.admission.on_join_spawned() {
+                    bump(&mut self.stats.duplicate_joins_ignored);
+                    return None;
+                }
+                let options = entry.login_url_units.clone();
+                let ctx = JoinSpawnContext {
+                    has_game_session: admission.has_game_session,
+                    can_spawn_controller: admission.can_spawn_controller,
+                    has_player_state: admission.has_player_state,
+                    has_player_start: admission.has_player_start,
+                    must_spectate: admission.must_spectate,
+                    default_player_name: admission.default_player_name,
+                    player_id: 1,
+                    net_player_index: 0,
+                };
+                match admission
+                    .policy
+                    .login_and_init_new_player(&options, occupancy, ctx)
+                {
+                    Ok(_) => {
+                        bump(&mut self.stats.joins_succeeded);
+                        None
+                    }
+                    Err(reason) => Some(Reply::Failure(reason)),
+                }
+            }
+            ControlMessage::SplitJoin { url, .. } => {
+                let admission = self.config.admission?;
+                let occupancy = self.occupancy(None);
+                let entry = self.peers.get(&address)?;
+                let next_split = entry.splitscreen_count.saturating_add(1);
+                let ctx = JoinSpawnContext {
+                    has_game_session: admission.has_game_session,
+                    can_spawn_controller: admission.can_spawn_controller,
+                    has_player_state: admission.has_player_state,
+                    has_player_start: admission.has_player_start,
+                    must_spectate: admission.must_spectate,
+                    default_player_name: admission.default_player_name,
+                    player_id: 1 + i32::from(next_split),
+                    net_player_index: next_split,
+                };
+                match admission
+                    .policy
+                    .login_and_init_new_player(url.units(), occupancy, ctx)
+                {
+                    Ok(_) => {
+                        if let Some(entry) = self.peers.get_mut(&address) {
+                            entry.splitscreen_count = next_split;
+                        }
+                        bump(&mut self.stats.joins_succeeded);
+                        None
+                    }
+                    Err(reason) => Some(Reply::Failure(reason)),
+                }
             }
             _ => None,
         }
@@ -521,8 +743,25 @@ impl PeerLab {
         let message = match reply {
             Reply::Challenge => lab_challenge().map(|token| ControlMessage::Challenge { token }),
             Reply::Upgrade(version) => Ok(ControlMessage::Upgrade { version: *version }),
-            Reply::Failure => ArchiveText::text(ADMISSION_DISABLED_MESSAGE)
-                .map(|message| ControlMessage::Failure { message }),
+            Reply::Welcome { .. } => {
+                let Some(admission) = &self.config.admission else {
+                    return false;
+                };
+                ArchiveText::text(admission.map_url).and_then(|map_url| {
+                    ArchiveText::text(admission.game_name).and_then(|game_name| {
+                        ArchiveText::text(admission.redirect_url).map(|redirect_url| {
+                            ControlMessage::Welcome {
+                                map_url,
+                                game_name,
+                                redirect_url,
+                            }
+                        })
+                    })
+                })
+            }
+            Reply::Failure(reason) => {
+                ArchiveText::text(reason).map(|message| ControlMessage::Failure { message })
+            }
         };
         let Some(entry) = self.peers.get_mut(&address) else {
             return false;
@@ -541,15 +780,23 @@ impl PeerLab {
         };
         // The reply datagram carries the ack state.
         entry.ack_pending = false;
-        if reply.closes() {
-            self.peers.remove(&address);
-            bump(&mut self.stats.peers_closed);
+        match reply {
+            Reply::Challenge => entry.admission.on_challenge_sent(),
+            Reply::Welcome { spectator } => {
+                entry.spectator = *spectator;
+                entry.admission.on_welcome_sent();
+            }
+            Reply::Upgrade(_) | Reply::Failure(_) => {
+                self.peers.remove(&address);
+                bump(&mut self.stats.peers_closed);
+            }
         }
         if self.send(&datagram, address) {
             bump(match reply {
                 Reply::Challenge => &mut self.stats.control_challenges_sent,
                 Reply::Upgrade(_) => &mut self.stats.upgrades_sent,
-                Reply::Failure => &mut self.stats.failures_sent,
+                Reply::Welcome { .. } => &mut self.stats.welcomes_sent,
+                Reply::Failure(_) => &mut self.stats.failures_sent,
             });
         }
         true
@@ -647,6 +894,11 @@ mod tests {
     #[test]
     fn config_is_validated() {
         assert!(PeerLabConfig::default().validate().is_ok());
+        let with_admission = PeerLabConfig {
+            admission: Some(PeerLabAdmission::default()),
+            ..PeerLabConfig::default()
+        };
+        assert!(with_admission.validate().is_ok());
         for max_peers in [0, MAX_PEERS_LIMIT + 1] {
             let config = PeerLabConfig {
                 max_peers,
