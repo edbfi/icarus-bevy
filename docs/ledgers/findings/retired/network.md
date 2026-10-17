@@ -4,7 +4,7 @@ Rows retired from [the active ledger](../network.md): superseded by a summary ro
 execution receipts, or historical session state. Full text is kept and IDs stay
 permanent; cite the superseding row where one exists.
 
-Last reconciled: 2026-10-16
+Last reconciled: 2026-10-17
 
 | ID | Claim | Kind | Evidence | Scope and limits | Unknowns | Status |
 | --- | --- | --- | --- | --- | --- | --- |
@@ -90,6 +90,8 @@ Last reconciled: 2026-10-16
 | F-637 | Client replicator fields follow the properties to the payload end: an index below the class cache's maximum + 1, a packed bit count, that payload; unknown indices are skipped. Custom-delta payloads start with a bit (v11+) and a static array's packed index | observed | static-decompile, authored-test; M-427, M-620, M-624 | high; client; index order unread | U-064 | superseded-by F-644 |
 | F-638 | Client RPCs need the net flag, and on a server the server flag; each parameter is a bare bit if a bool, else a presence bit then its item encodings without handles, arrays a 2-byte count up to 0xFFFE then elements; exact consumption | observed | static-decompile, authored-test; M-620 to M-624 | high; client; sender choices unread | U-064 | superseded-by F-644 |
 | F-641 | Fast-array bodies: array and base replication keys, delete and change counts (4 bytes each; counts cap 2048 initially), an ID per delete, then per change an ID and the item's commands or, in delta mode, a set bit and its property stream | observed | static-decompile, static-bytes, authored-test; M-628 to M-635 | high; client; mode per array | U-064 | superseded-by F-644 |
+| F-694 | Exports travel in export-only partial initial bunches: a rep-layout bit, an i32 count, then that many F-572 references with flags on every nonzero GUID. All 317 parse with no bits left, and every later class, archetype and level GUID resolves to an earlier export | derived | runtime-capture; M-707 | medium; layout from engine source, consistent on the wire | U-064 | superseded-by F-709 |
+| F-696 | The first actor open to a joined client (channel 2) carries 8 bits after its spawn record, value 0, before content blocks that read to the bunch end; this fits the stock engine player-controller hook writing the net player index, so F-610 actor hook is nonempty there | observed | runtime-capture; M-708 | medium; one open; hook identity inferred | U-064 | superseded-by F-709 |
 | F-697 | Client tag config declares fast replication, container width 6, first segment 16, 1,886 names, one external source and two redirects | observed | static-bytes; M-710, M-717, M-719, M-722; build 25793767 | high; index/member hashes verified; declarations, not effective settings or full mapping | U-065 | superseded-by F-702 |
 | F-698 | Client ConstructNetIndex pseudocode assigns zero-based indices and an invalid sentinel of count plus one; the supplied-order native dictionary models this contract | inferred | static-decompile; M-711, M-712; build 25793767 | medium; Program bodies remain loader stubs; no instruction or runtime validation | U-065 | superseded-by F-702 |
 | F-699 | Native candidates join ten Actor, eleven PlayerState and two PlayerController property names; AActor's property-pointer array, class params and bool descriptor are located | inferred | static-decompile, static-bytes, static-symbols; M-711 to M-713, M-720; build 25793767 | medium; types, offsets, arrays and full schemas unqualified; loader-stub bodies | U-066 | superseded-by F-703 |

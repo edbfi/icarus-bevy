@@ -33,8 +33,9 @@ use icarus_bevy::experimental::{
     actor_channel::{
         ActorBunchBody, ActorChannelCodec, ActorChannelLimits, BlockTarget, ContentBlock,
         EXPORT_HAS_CHECKSUM, EXPORT_HAS_PATH, EXPORT_NO_LOAD, MAX_GUID_DEPTH, NetGuidRef,
-        SpawnRecord, SpawnVector, SubObjectClass, guid_kind, parse_actor_bunch, read_content_block,
-        read_guid_ref, read_spawn,
+        SpawnRecord, SpawnVector, SubObjectClass, encode_player_controller_open_bunch_body,
+        guid_kind, parse_actor_bunch, parse_player_controller_open_bunch, read_content_block,
+        read_export_prefix as read_actor_export_prefix, read_must_be_mapped_guids, read_spawn,
     },
     archive::{ByteOrder, read_string_frame},
     control_messages::{ControlCodec, Decoded, read_control_messages},
@@ -215,14 +216,7 @@ fn read_export_count(reader: &mut BitReader<'_>) -> Result<i32> {
 /// codec's own F-572 reader, export flags on every nonzero GUID. Used only to
 /// report where the codec stops on real export bunches.
 fn read_export_prefix_codec(reader: &mut BitReader<'_>) -> Result<Vec<NetGuidRef>> {
-    let count = read_export_count(reader)?;
-    let codec = ActorChannelCodec {
-        exports_enabled: true,
-        ..actor_codec(true)
-    };
-    (0..count)
-        .map(|index| read_guid_ref(reader, &codec).with_context(|| format!("export GUID {index}")))
-        .collect()
+    read_actor_export_prefix(reader, &actor_codec(true))
 }
 
 /// HYPOTHESIS (UE 4.27 `ReceiveNetGUIDBunch` and `InternalLoadObject`, not a
@@ -298,14 +292,7 @@ fn read_path_string(reader: &mut BitReader<'_>) -> Result<String> {
 /// count, then that many packed GUIDs, before the actor bunch body.
 fn strip_must_be_mapped(payload: &Payload) -> Result<(Vec<u32>, Payload)> {
     let mut reader = payload.reader();
-    let count = reader.read_bits(16);
-    ensure!(!reader.is_error(), "truncated must-be-mapped count");
-    let mut guids = Vec::with_capacity(count as usize);
-    for _ in 0..count {
-        let guid = reader.read_int_packed();
-        ensure!(!reader.is_error(), "truncated must-be-mapped GUID");
-        guids.push(guid);
-    }
+    let guids = read_must_be_mapped_guids(&mut reader, &actor_codec(true))?;
     Ok((guids, rest(&mut reader)))
 }
 
@@ -1816,41 +1803,29 @@ impl<'a> Decoder<'a> {
                 .entry(bunch.header.channel_index)
                 .or_default()
                 .archetype_path = Some(arch.clone());
-            // Check the 8-bit `NetPlayerIndex` hook on PlayerController open bunches (F-696).
-            if arch.contains("PlayerController") {
-                let mut hook_reader = bunch.payload.reader();
-                if read_spawn(&mut hook_reader, codec).is_ok() && hook_reader.remaining() >= 8 {
-                    let _net_player_index = hook_reader.read_bits(8);
-                    let mut hook_blocks = Vec::new();
-                    let mut ok = true;
-                    while !hook_reader.at_end() {
-                        match read_content_block(&mut hook_reader, codec) {
-                            Ok(block) => hook_blocks.push(block),
-                            Err(_) => {
-                                ok = false;
-                                break;
-                            }
-                        }
-                    }
-                    if ok {
-                        for block in &hook_blocks {
-                            let (object_path, class_path) = self.resolve_block_paths(block);
-                            if let Some((_schema_name, exact)) = self.replay_block(
-                                bunch.header.channel_index,
-                                block,
-                                object_path.as_deref(),
-                                class_path.as_deref(),
-                                false,
-                            ) {
-                                self.stats
-                                    .rep_replay
-                                    .player_controller_open_hook_blocks_decoded += 1;
-                                if exact {
-                                    self.stats
-                                        .rep_replay
-                                        .player_controller_open_hook_blocks_reencoded_exact += 1;
-                                }
-                            }
+            // Check the 8-bit `NetPlayerIndex` hook on PlayerController open bunches (F-696, F-709).
+            if arch.contains("PlayerController")
+                && let Ok(pc_body) = parse_player_controller_open_bunch(bunch, codec)
+            {
+                let body_reencoded_exact =
+                    encode_player_controller_open_bunch_body(&pc_body, codec)
+                        .is_ok_and(|reencoded| reencoded == bunch.payload);
+                for block in &pc_body.blocks {
+                    let (object_path, class_path) = self.resolve_block_paths(block);
+                    if let Some((_schema_name, exact)) = self.replay_block(
+                        bunch.header.channel_index,
+                        block,
+                        object_path.as_deref(),
+                        class_path.as_deref(),
+                        false,
+                    ) {
+                        self.stats
+                            .rep_replay
+                            .player_controller_open_hook_blocks_decoded += 1;
+                        if exact && body_reencoded_exact {
+                            self.stats
+                                .rep_replay
+                                .player_controller_open_hook_blocks_reencoded_exact += 1;
                         }
                     }
                 }
