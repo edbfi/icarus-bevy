@@ -2,7 +2,7 @@
 //!
 //! Each function is a pure rule over authored domain values, read from the
 //! client recorders' record, validate, stitch and restore code (F-645 to F-665,
-//! F-677, F-715, F-716).
+//! F-677, F-715, F-716, F-717).
 //! Nothing here decodes a save, looks up a class, constructs an object or
 //! imports state: the rules pin the behavior a native world must reproduce when
 //! it restores recorded actors. The normal server does not call them yet, and
@@ -405,4 +405,36 @@ pub fn recorder_transform_is_non_identity(
         .iter()
         .all(|c| (c - 1.0).abs() <= ACTOR_RECORDER_TRANSFORM_TOLERANCE);
     !(rot_identity && trans_identity && scale_identity)
+}
+
+/// Normalizes a requested prospect name as
+/// `ADedicatedServerEntryGameMode::LoadProspectByName` (`0x14146e6c0`) does
+/// (F-717): rejects empty inputs and strips a trailing `".json"` suffix
+/// ASCII case-insensitively (`ESearchCase::IgnoreCase`).
+pub fn normalize_prospect_name(input: &str) -> Option<&str> {
+    if input.is_empty() {
+        return None;
+    }
+    let stripped = if input.len() >= 5 && input[input.len() - 5..].eq_ignore_ascii_case(".json") {
+        &input[..input.len() - 5]
+    } else {
+        input
+    };
+    (!stripped.is_empty()).then_some(stripped)
+}
+
+/// Whether two `ProspectID` strings match under
+/// `FOfflineProspectManagementIcarus::GetProspectInfo` (`0x14181e530`) and
+/// `UProspectSubsystem::SetActiveProspectSaveState` (`0x1418371c0`) (F-717):
+/// equal UTF-16 unit lengths and ASCII case-insensitive equality.
+pub fn prospect_ids_match(expected: &[u16], actual: &[u16]) -> bool {
+    names_match(expected, actual)
+}
+
+/// Whether `UProspectSubsystem::SetActiveProspectInfo` (`0x141837100`) accepts
+/// `new_prospect_id` given `current_active_prospect_id` (F-717): requires a
+/// non-empty new `ProspectID` and an empty active `ProspectID` (after
+/// `ResetActiveProspect`).
+pub fn can_activate_prospect_info(new_prospect_id: &str, current_active_prospect_id: &str) -> bool {
+    !new_prospect_id.is_empty() && current_active_prospect_id.is_empty()
 }

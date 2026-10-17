@@ -1,11 +1,11 @@
 use icarus_bevy::experimental::restore_rules::{
     ACTOR_RECORDER_TRANSFORM_TOLERANCE, ActorLink, LobbyPrivacy, OwnerResolvePolicy,
     PROSPECT_SAVE_STATE_CURRENT_VERSION, PlayerList, RocketRestore, VOXEL_LOCATION_TOLERANCE,
-    container_entries, migrate_prospect_save_state, names_match, player_record_valid,
-    recorded_level, recorder_transform_is_non_identity, remaining_cooldown,
-    restored_elapsed_seconds, rocket_record_valid, rocket_restore, stitch,
-    upgrade_actor_recorder_component_names, upright_rotation, voxel_location_matches,
-    voxel_record_valid,
+    can_activate_prospect_info, container_entries, migrate_prospect_save_state, names_match,
+    normalize_prospect_name, player_record_valid, prospect_ids_match, recorded_level,
+    recorder_transform_is_non_identity, remaining_cooldown, restored_elapsed_seconds,
+    rocket_record_valid, rocket_restore, stitch, upgrade_actor_recorder_component_names,
+    upright_rotation, voxel_location_matches, voxel_record_valid,
 };
 
 fn units(text: &str) -> Vec<u16> {
@@ -393,4 +393,33 @@ fn actor_recorder_transform_gate_matches_identity_and_antipodal_quaternion() {
         [0.0, 0.0, 0.0],
         [1.0, 1.0, 2.0]
     ));
+}
+
+#[test]
+fn by_name_prospect_normalization_and_id_matching() {
+    assert_eq!(normalize_prospect_name(""), None);
+    assert_eq!(normalize_prospect_name(".json"), None);
+    assert_eq!(normalize_prospect_name(".JSON"), None);
+    assert_eq!(normalize_prospect_name("Olympus_Run"), Some("Olympus_Run"));
+    assert_eq!(
+        normalize_prospect_name("Olympus_Run.json"),
+        Some("Olympus_Run")
+    );
+    assert_eq!(
+        normalize_prospect_name("Olympus_Run.JSON"),
+        Some("Olympus_Run")
+    );
+
+    assert!(prospect_ids_match(
+        &units("Olympus_Run"),
+        &units("olympus_run")
+    ));
+    assert!(!prospect_ids_match(
+        &units("Olympus_Run"),
+        &units("Styx_Run")
+    ));
+
+    assert!(can_activate_prospect_info("Olympus_Run", ""));
+    assert!(!can_activate_prospect_info("", ""));
+    assert!(!can_activate_prospect_info("Olympus_Run", "Prior_Run"));
 }
