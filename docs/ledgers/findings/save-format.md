@@ -7,7 +7,7 @@ full text under `retired/`. Admission and columns follow `.agents/rules/docs.md`
 
 Before restructure: 96ddb0b:docs/ledgers/findings.md
 
-Last reconciled: 2026-10-15
+Last reconciled: 2026-10-17
 
 | ID | Claim | Kind | Evidence | Scope and limits | Unknowns | Status |
 | --- | --- | --- | --- | --- | --- | --- |
@@ -59,15 +59,11 @@ Last reconciled: 2026-10-15
 | F-328 | State vtable 0x1449e5c88 +0x10 0x1418d7b60 to 0x141cfd400 registers ProspectSaveState; header vtable 0x1449e5c70 via 0x1418d7b70/0x141cfd460 | observed | static-decompile; M-147 | high; build 25621760; supplied save reported from 25793767 | U-025 | active |
 | F-329 | State metadata 0x145e9cb50 bases on header ctor 0x141cfbc60; header descriptor 0x145e9cbf0; in-memory sizes 0xf8 (state) and 0xe8 (header) | observed | static-decompile; M-147 | high; build 25621760; in-memory sizes only |  | active |
 | F-330 | Reflected fields (object offsets): Version 0x08, LobbyPrivacy 0x0c, ProspectInfo 0x10, ProspectMapName 0xb0, LastSavedDateTime 0xc0, ProspectID 0xc8 | observed | static-decompile; M-147 | high; build 25621760; object offsets, not file offsets; order not serialized order |  | active |
-| F-331 | ProspectDTKey 0xd8 and ProspectID are legacy strings read by pre-version-2 fixups; StateRecorderBlobs array at 0xe8 added by derived state type | observed | static-decompile; M-147 | high; build 25621760; object offsets only | U-059 | active |
 | F-332 | StateRecorderBlob is 0x20 in memory: ComponentClassName string at 0, BinaryData byte array at 0x10 | observed | static-decompile; M-147 | high; build 25621760; no actor counts or payload schema implied | U-020 | active |
 | F-333 | By-name call site 0x14146ef42 enters 0x1414831f0, which builds the state vtable and calls blob reader 0x1418e6240 at 0x141483466 | observed | static-decompile; M-147 | high; build 25621760; shared type does not make failure behavior equal | U-056 | active |
 | F-334 | From-file chain is observed separately through 0x141823fb0 and 0x1418e6140 | observed | static-decompile; M-147 | medium; build 25621760; caller unknown | U-056 | active |
 | F-335 | Dispatcher 0x1418ee4a0 calls type serializer slot +0x2a0 (schema vtable 0x144ec5e20 to 0x14200ea70): 0x14200ea90 if byte +0x28 bit 0x20, else 0x14200f5b0 | observed | static-decompile; M-147 | high; build 25621760; direct virtual-call path only |  | active |
 | F-336 | Blob reader reset 0x141f58f60 to 0x141f5f450 clears bit 0x20, sets loading 0x01, clears 0x80; reader selects tagged path 0x14200f5b0 via tag reader 0x14215f530 | observed | static-decompile; M-147 | high; this reader; not universal for all archives or recorder bodies |  | active |
-| F-337 | Loading bit 0x01 invokes slot +8: state 0x1418e4250 and header 0x1418e44f0 branch on Version<2, pass legacy strings to +0x10/+0x38 incl. 0x14089a1c0 | observed | static-decompile; M-147 | high; build 25621760; 0x14089a1c0 semantics unresolved | U-059 | active |
-| F-338 | State version-zero path calls 0x14170a4c0, sets byte +0x0c to 1, releases recorder allocations and clears the recorder count | observed | static-decompile; M-147 | high; build 25621760; migration and enum meaning unresolved | U-059 | active |
-| F-339 | 16-byte key 0x145dc12c8: lookup 0x141f5b5c0 returns -1 if absent and is stored at +8 after fixup; version-use slot +0x1d8 reads no table when loading | observed | static-decompile; M-147 | high; build 25621760; not a wire layout; Version vs build number unproved | U-060 | active |
 | F-340 | Nested recorder selector 0x14200e610; ops factory 0x141cfbd60 supplies no native serializer or post callback; each recorder is a None-terminated tagged sequence | observed | static-decompile; M-147 | high; recorder struct; not arbitrary nested structs or component data |  | active |
 | F-341 | BinaryData has no enum binding; reader 0x142158d40 reads one byte per element: signed 32-bit count then raw bytes | observed | static-decompile; M-147 | high; recorder array; bytes not interpreted | U-020 | active |
 | F-342 | Restore 0x1414b83c0 resolves class string, constructs component, calls slot +0x4a0 with recorder and context; resolve/construct failures return null | observed | static-decompile; M-147 | high; build 25621760; array handoff is not the byte serializer |  | active |
@@ -90,3 +86,4 @@ Last reconciled: 2026-10-15
 | F-685 | All 12 supplied prospect writes (09-30 13:23 to 10-01 17:31 UTC, archive Unix times) precede the public 3.0.30 post (10-01 18:43 UTC) and the 3.0.31 post a week later, in the 3.0.29 window (post 09-24): the save most likely came from 3.0.29, older than both installs; F-277 names the client | inferred | static-bytes, external; M-696 | medium; posts stand for deploys | U-040 | active |
 | F-691 | A joined synthetic player lifts the empty-world pause (logs OnServerLeaveEmpty): saved elapsed time rose 488 s against 14 s in a no-player control, the 32 growing crop plots' growth times by the same (478-488 s against 10-11 s), deployable values changed, and it saved 475 s after the join | observed | runtime-capture; M-706 | medium; one run each | U-047 | active |
 | F-701 | Connected scenario S1 on server 25956137 (3.0.32, +666 s): a joining character (slot 0) adds an 8th AssociatedMembers entry and player/state/rocket/spawn records while keeping 7 prior player records, harvests 5 plots, replants 1 (-1 seed) and saves 2,743 records that preserve byte-identically | observed | runtime-capture; M-727 | high; S1 | U-025, U-045, U-047 | active |
+| F-715 | ReadFromProspectBlob (0x1418e6240) starts FMemoryReader at byte 0; UsingCustomVersion reads no table on load, so Version=2 is schema version. PostLoadSerialize (0x1418e4250) copies legacy ProspectID/ProspectDTKey if Version<2 and at 0 resets ProspectInfo, sets LobbyPrivacy=1 and clears blobs | observed | static-decompile; M-755, M-756 | high; server | U-059, U-060 | active |

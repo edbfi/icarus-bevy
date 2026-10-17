@@ -7,7 +7,7 @@ full text under `retired/`. Admission and columns follow `.agents/rules/docs.md`
 
 Before restructure: 96ddb0b:docs/ledgers/findings.md
 
-Last reconciled: 2026-10-15
+Last reconciled: 2026-10-17
 
 | ID | Claim | Kind | Evidence | Scope and limits | Unknowns | Status |
 | --- | --- | --- | --- | --- | --- | --- |
@@ -18,19 +18,10 @@ Last reconciled: 2026-10-15
 | F-213 | Original 8 MiB component transport cannot hold both complete C034 copies, so those comparisons use separate per-copy batches. | observed | tool-receipt | high; component transport cap |  | active |
 | F-272 | All five top string descriptors pass ten measured native batches after both-copy range preflight; first child session rejected, separate retry passed. | observed | tool-receipt | high; five descriptors; Old native top batch qualifies aggregate totals, not retained individual spans |  | active |
 | F-305 | Superclass descriptor chain has 31 entries; exactly 5 carry save-selection bit, all in class and immediate base | observed | static-decompile; M-147; build 25621760 | medium; static E-019; Later runtime mutation not excluded | U-054 | active |
-| F-306 | C028 load override delegates unchanged to base reader; post-load changes memory without reading archive | observed | static-decompile; M-148; build 25621760 | medium; C028 class; Restoration equivalence unproved | U-048 | active |
 | F-309 | D01 array children: tagged streams, 8 optional leaves (5 Int, 3 Str); Int demands 4 bytes; Str links to FString contract | observed | static-decompile; M-122; build 25621760 | medium; conditional grammar; Not populated-save agreement | U-048 | active |
 | F-312 | Int-array path requires archive +0x28 bit 0x20 and +0x2b bit 0x10 clear; no shared Struct header; bulk/property-list modes unsupported | observed | static-decompile; M-096; build 25621760 | medium; C009 child trace; Profile selection does not establish path |  | active |
-| F-348 | C013 registration/construction/vtable inherit base load, serialize and empty post-load slots | observed | static-decompile; M-147 | medium; C013, build 25621760; newer-build methods unverified | U-025 | active |
 | F-350 | NameProperty maps to built-in name ID 6 with no type-specific header metadata, then property-GUID field; value reader 0x1421580b0 calls archive +0x140 | observed | static-decompile; M-147 | high; tag reader; values not decoded | U-020 | active |
 | F-352 | C013 save-selection descriptors: one struct (one integer child, nested tagged despite 4-byte memory) plus base enum, name, string, bool | observed | static-decompile; M-147 | high; C013 metadata; not a required-field list; enum loads an archive name |  | active |
-| F-354 | C013 callback 0x1418a1850 copies 4 bytes from owner +0x250 to recorder +0xd8; 0x1418ad0c0 iterates owner +0x248 array, count +0x250, 8-byte elements | observed | static-decompile; M-147 | high; C013; gameplay identity unknown | U-039 | active |
-| F-356 | Caller 0x14189aa00 calls 0x1418a3d90 (capture slot +0x448) only if owner validates and caller byte nonzero, then serializes via 0x1418aafb0 | observed | static-decompile; M-147 | high; C013; capture not mandatory per save |  | active |
-| F-357 | Caller 0x1414bf530 runs related callback only for live recorder, byte +0xb2==3, virtual +0x470 true; set intersection 0x141899760 result discarded | observed | static-decompile; M-147 | high; C013; contents and count unused | U-039 | active |
-| F-358 | Helper 0x14148a160 compacts owner pointer array by memmove, drops null/non-live entries, updates count, returns removed; nothing reads +0xd8 | observed | static-decompile; M-147 | high; C013; relationship reconstruction unresolved | U-039 | active |
-| F-359 | C028 chain: registration 0x1406ff5d0, getter 0x141d2d770, ctor callback 0x141d2e710, instance ctor 0x1418c22f0, vtable 0x144a70e90 | observed | static-decompile; M-148 | high; C028, build 25621760 |  | active |
-| F-360 | C028 +0x4a0 is 0x1418a9bb0: base 0x1418a9c80 then conditional +0x4b0 with context; +0xa0 base; +0x488 is 0x14189d380 | observed | static-decompile; M-148 | high; C028; context restoration unimplemented | U-061 | active |
-| F-361 | C028 post-load 0x14189d380: if a component integer <1, walks nested arrays and conditionally replaces names; never reads the archive argument | observed | static-decompile; M-148 | high; C028; migration semantics unresolved | U-061 | active |
 | F-368 | UInt32Property: 0x14216eba6 installs vtable 0x144eebf50; +0x100 is 0x14214a630; ctor 0x142017040 strips UTF-16 F; built-in name ID 25 | observed | static-decompile; M-143 | high; tag reader; earlier float hypothesis superseded |  | active |
 | F-369 | Binary children N01 = four ordered 4-byte transfers (16 B), N02 = three (12 B); raw little-endian; no count, terminator or tail | observed | static-decompile; M-149 | high; older build; read error may stop advance; no exact EOF | U-027 | active |
 | F-370 | Array serializer 0x1421580d0: signed 32-bit count, one shared struct tag (also at count 0), then None-terminated elements; tag size spans all elements | observed | static-decompile; M-150 | high; 7 C028 arrays; not memory stride |  | active |
@@ -76,3 +67,4 @@ Last reconciled: 2026-10-15
 | F-666 | C035 saves, per biome group, each weather event whose row duration has ended by one clock, with its row name and TimeElapsed: a game-mode clock value minus the event's start; the two clocks' identities are unread | observed | static-decompile; M-669 | medium; client; clock sources unread | U-020, U-022 | active |
 | F-648 | Client recorders give C024 to C026 meanings: player id and slot match owners; C025 keeps assigned dropship, dropship-spawn and gravestone Icarus ids; C026 keeps pose, life, health, four survival levels (-1 unrecorded), respawns, loadout; C024 copies character history | observed | static-decompile, static-bytes; M-652 to M-654 | high; client; same server offsets | U-020, U-040 | active |
 | F-680 | Client voxel validation fails only a record with a respawn-only owner policy (0xb2, both builds) and its fully-mined flag set; the offline load (F-678) silently dropped exactly that one of 127, the rest changing only rotation and name | observed | static-decompile, static-bytes, runtime-capture; M-642, M-695, M-691, M-692 | high; client code; one save | U-020, U-040 | active |
+| F-716 | C013 saves FLODTiles.Num() (+0x250) to +0xd8 on record (0x1418a1850), compacts FLODTiles (+0x248) on stitch (0x1418ad0c0) and never reads +0xd8 on restore. C028 RestoreState (0x1418a9bb0) calls +0x4b0 only if FTransform!=Identity (>1e-4); +0x488 (0x14189d380) renames TreePrimitive to Wood if version<1 | observed | static-decompile; M-755, M-756 | high; server | U-039, U-061 | active |

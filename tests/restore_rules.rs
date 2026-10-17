@@ -1,8 +1,11 @@
 use icarus_bevy::experimental::restore_rules::{
-    ActorLink, OwnerResolvePolicy, PlayerList, RocketRestore, VOXEL_LOCATION_TOLERANCE,
-    container_entries, names_match, player_record_valid, recorded_level, remaining_cooldown,
-    restored_elapsed_seconds, rocket_record_valid, rocket_restore, stitch, upright_rotation,
-    voxel_location_matches, voxel_record_valid,
+    ACTOR_RECORDER_TRANSFORM_TOLERANCE, ActorLink, LobbyPrivacy, OwnerResolvePolicy,
+    PROSPECT_SAVE_STATE_CURRENT_VERSION, PlayerList, RocketRestore, VOXEL_LOCATION_TOLERANCE,
+    container_entries, migrate_prospect_save_state, names_match, player_record_valid,
+    recorded_level, recorder_transform_is_non_identity, remaining_cooldown,
+    restored_elapsed_seconds, rocket_record_valid, rocket_restore, stitch,
+    upgrade_actor_recorder_component_names, upright_rotation, voxel_location_matches,
+    voxel_record_valid,
 };
 
 fn units(text: &str) -> Vec<u16> {
@@ -16,8 +19,11 @@ fn link_names_fold_ascii_case_only() {
     assert!(!names_match(&units("Foundation"), &units("Foundations")));
     assert!(!names_match(&units("Base"), &units("Bass")));
     // Non-ASCII units compare exactly: no Unicode case folding.
-    assert!(names_match(&units("Größe"), &units("GRößE")));
-    assert!(!names_match(&units("é"), &units("É")));
+    assert!(names_match(
+        &units("Gr\u{00f6}\u{00df}e"),
+        &units("GR\u{00f6}\u{00df}E")
+    ));
+    assert!(!names_match(&units("\u{00e9}"), &units("\u{00c9}")));
 }
 
 #[test]
@@ -277,4 +283,114 @@ fn only_fully_mined_respawned_voxels_fail_validation() {
         assert!(voxel_record_valid(policy, true));
         assert!(voxel_record_valid(policy, false));
     }
+}
+
+#[test]
+fn prospect_save_state_migrations_handle_v0_v1_and_v2() {
+    assert_eq!(LobbyPrivacy::from_saved(0), Some(LobbyPrivacy::Unknown));
+    assert_eq!(LobbyPrivacy::from_saved(1), Some(LobbyPrivacy::FriendsOnly));
+    assert_eq!(LobbyPrivacy::from_saved(2), Some(LobbyPrivacy::Private));
+    assert_eq!(LobbyPrivacy::from_saved(3), None);
+
+    // Version 2 (all supplied saves): no migration or deprecation runs.
+    let mut privacy = LobbyPrivacy::Private;
+    let mut id = String::from("active-id");
+    let mut dt_key = String::from("Olympus_Main");
+    let mut blobs = vec![10_u8, 20_u8];
+    migrate_prospect_save_state(
+        PROSPECT_SAVE_STATE_CURRENT_VERSION,
+        &mut privacy,
+        &mut id,
+        &mut dt_key,
+        "legacy-id",
+        "legacy-dt",
+        &mut blobs,
+    );
+    assert_eq!(privacy, LobbyPrivacy::Private);
+    assert_eq!(id, "active-id");
+    assert_eq!(dt_key, "Olympus_Main");
+    assert_eq!(blobs, vec![10, 20]);
+
+    // Version 1: copies legacy ProspectID and ProspectDTKey into ProspectInfo, keeps blobs.
+    migrate_prospect_save_state(
+        1,
+        &mut privacy,
+        &mut id,
+        &mut dt_key,
+        "legacy-id",
+        "legacy-dt",
+        &mut blobs,
+    );
+    assert_eq!(privacy, LobbyPrivacy::Private);
+    assert_eq!(id, "legacy-id");
+    assert_eq!(dt_key, "legacy-dt");
+    assert_eq!(blobs, vec![10, 20]);
+
+    // Version 0 (NoVersion): deprecates save state, resets ProspectInfo, sets FriendsOnly (1), empties blobs.
+    migrate_prospect_save_state(
+        0,
+        &mut privacy,
+        &mut id,
+        &mut dt_key,
+        "legacy-id",
+        "legacy-dt",
+        &mut blobs,
+    );
+    assert_eq!(privacy, LobbyPrivacy::FriendsOnly);
+    assert!(id.is_empty());
+    assert!(dt_key.is_empty());
+    assert!(blobs.is_empty());
+}
+
+#[test]
+fn actor_recorder_upgrades_tree_primitive_to_wood_only_below_v1() {
+    let mut names = vec![
+        units("TreePrimitive"),
+        units("treeprimitive"),
+        units("Stone"),
+    ];
+    assert_eq!(upgrade_actor_recorder_component_names(3, &mut names), 0);
+    assert_eq!(names[0], units("TreePrimitive"));
+
+    assert_eq!(upgrade_actor_recorder_component_names(0, &mut names), 2);
+    assert_eq!(
+        names,
+        vec![units("Wood"), units("Wood"), units("Stone")],
+        "version 0 renames TreePrimitive case-insensitively to Wood"
+    );
+}
+
+#[test]
+fn actor_recorder_transform_gate_matches_identity_and_antipodal_quaternion() {
+    // Exact identity (passed by ReadFromProspectSaveState) and -Identity quaternion skip ApplyRecorderTransform.
+    assert!(!recorder_transform_is_non_identity(
+        [0.0, 0.0, 0.0, 1.0],
+        [0.0, 0.0, 0.0],
+        [1.0, 1.0, 1.0]
+    ));
+    assert!(!recorder_transform_is_non_identity(
+        [0.0, 0.0, 0.0, -1.0],
+        [
+            ACTOR_RECORDER_TRANSFORM_TOLERANCE,
+            -ACTOR_RECORDER_TRANSFORM_TOLERANCE,
+            0.0
+        ],
+        [1.0 + 0.5 * ACTOR_RECORDER_TRANSFORM_TOLERANCE, 1.0, 1.0]
+    ));
+    // Non-identity translation, rotation, or scale (as in ReadFromInstancedLevelSaveState) triggers slot +0x4b0.
+    assert!(recorder_transform_is_non_identity(
+        [0.0, 0.0, 0.0, 1.0],
+        [1.0, 0.0, 0.0],
+        [1.0, 1.0, 1.0]
+    ));
+    assert!(recorder_transform_is_non_identity(
+        [0.0, 0.0, 0.70710677, 0.70710677],
+        [0.0, 0.0, 0.0],
+        [1.0, 1.0, 1.0]
+    ));
+    assert!(recorder_transform_is_non_identity(
+        [0.0, 0.0, 0.0, 1.0],
+        [0.0, 0.0, 0.0],
+        [1.0, 1.0, 2.0]
+    ));
 }
