@@ -7,7 +7,7 @@ full text under `retired/`. Admission and columns follow `.agents/rules/docs.md`
 
 Before restructure: 96ddb0b:docs/ledgers/findings.md
 
-Last reconciled: 2026-10-15
+Last reconciled: 2026-10-17
 
 | ID | Claim | Kind | Evidence | Scope and limits | Unknowns | Status |
 | --- | --- | --- | --- | --- | --- | --- |
@@ -28,3 +28,5 @@ Last reconciled: 2026-10-15
 | F-669 | Client C001 load path, no extra archive branch: vftable +0xa0 (base recorder Serialize(FArchive&)) calls UActorComponent::Serialize then +0x488, a 24-B call-free version hook; +0x4a0 restore (blob, FTransform) calls the base restore then +0x4b0 apply-transform; super call: base default ctor | observed | static-bytes; M-310, M-348 | high; client only; server by F-670 | U-041 | active |
 | F-670 | Server C001 vftable +0xa0/+0x488/+0x4a0/+0x4b0 (0x1418aaf70/0x14189d380/0x1418a9bb0/0x141887d20) match client ones (59/24/195/121 B) but for RIP constants and the F-344 call; C028 inherits +0x488/+0x4a0 (F-360); base restores 0x1418a9c80/client 0x1418ae6c0 (696/507 B) uncompared | inferred | static-bytes; M-312, M-313, M-349, M-350 | high; positional; not runtime vptrs | U-041 | active |
 | F-513 | Server getter 0x1419fe200 matches the client's PDB-named C001 GetPrivateStaticClass (178 B) but for 13 rel32 fields: class literal+2, GetPrivateStaticClassBody, StaticRegisterNatives, vtable-helper caller and constructor field 0x1419fe870 = InternalConstructor<C001> | inferred | static-bytes; M-308, M-314 | high; positional; registration call unexecuted | U-006, U-023, U-041 | active |
+| F-721 | M-568/M-569 ran with -noanalysis so getInstructionAt(0x1419fe870) returned null (no API exception) and tripped line 68; .pdata 103538 (0x1419fe870..0x1419fe9a1, 305 B) and 95461 (0x141788530..0x141788658, 296 B) are complete functions (unwind v1 flags=2, push/pop rbx) | observed | static-decompile; M-761/ev_73f0199d703e, M-762 | high; server 25621760 | U-003, U-005, U-042 | active |
+| F-722 | 0x14655d468 is .pdata 103518 for 0x1419fe200 (48 refs; CRT 0x1406a8ab0 -> 0x142187f70, 0x141a00220 via 0x144abc1b0); 0x1418824d0 keeps rbx; 0x1418a9c80 (696 B) matches client 0x1418ae6c0 (507 B) + log and calls +0xa0 (0x1418aaf70) -> +0x488; +0x4a8=0x14189a760 | observed | static-decompile; M-761/ev_73f0199d703e, M-762 | high; server 25621760 | U-004, U-006, U-023, U-041 | active |
