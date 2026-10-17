@@ -1113,9 +1113,8 @@ struct RepReplayStats {
     rep_layout_blocks_attempted: u64,
     rep_layout_blocks_decoded: u64,
     rep_layout_blocks_reencoded_exact: u64,
-    /// `has_rep_layout == false` blocks (custom-delta fast arrays, actor/component
-    /// net RPCs, and zero-bit subobject creation/deletion headers) matched,
-    /// decoded and bit-identically re-encoded.
+    /// `has_rep_layout == false` non-empty blocks (custom-delta fast arrays and
+    /// actor/component net RPCs) matched, decoded and bit-identically re-encoded.
     custom_delta_blocks_attempted: u64,
     custom_delta_blocks_decoded: u64,
     custom_delta_blocks_reencoded_exact: u64,
