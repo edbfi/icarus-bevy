@@ -1,12 +1,13 @@
 //! EXPERIMENTAL typed codec for the statically observed control vocabulary.
 //!
-//! Static client-build observations only (F-529..F-531): message layouts from
-//! the client's pending-game and listen-server parsers, not wire-validated and
-//! not observed from the original server. Each message is one ID byte followed
-//! by consecutive archive fields read from a bit reader (bunch payloads start
-//! at bit 0). Strings use the strict archive rules of `archive`; `u32` values
-//! and string counts follow a caller-selected byte order (the bunch swap rule:
-//! little-endian unless the sender's Hello first field is not 1), except Hello,
+//! Static client-build observations only (F-529..F-531, F-712): message layouts
+//! from the pending-game, listen-server and `UControlChannel::ReceivedBunch`
+//! (`0x1437c4940`) parsers. Each message is one ID byte followed by consecutive
+//! archive fields read from a bit reader (bunch payloads start at bit 0).
+//! Strings use the strict archive rules of `archive`; `u32` values and string
+//! counts follow a caller-selected byte order (the bunch swap rule:
+//! little-endian unless the sender's Hello first field is not 1, stored on
+//! `Connection + 0x158` by `UControlChannel::ReceivedBunch`), except Hello,
 //! whose own first field selects the order of its version and token. Unknown
 //! IDs stop decoding because their fields are unknown.
 //!
@@ -35,10 +36,27 @@ pub const LOGIN: u8 = 5;
 pub const FAILURE: u8 = 6;
 pub const JOIN: u8 = 9;
 pub const SPLIT_JOIN: u8 = 10;
+pub const SKIP: u8 = 12;
+pub const ABORT: u8 = 13;
 pub const SWAP: u8 = 15;
+pub const ACTOR_CHANNEL_FAILURE: u8 = 16;
 pub const DEBUG: u8 = 17;
 pub const NET_GUID_ASSIGN: u8 = 18;
+pub const GAME_SPECIFIC: u8 = 19;
+pub const SECURITY_VIOLATION: u8 = 20;
 pub const ENCRYPTION_ACK: u8 = 21;
+pub const BEACON_JOIN: u8 = 25;
+pub const BEACON_LOGIN: u8 = 26;
+pub const BEACON_ACK: u8 = 27;
+pub const BEACON_WELCOME: u8 = 28;
+
+/// Maximum queued outgoing control messages before `UControlChannel::SendBunch`
+/// (`0x1437ca030`) closes the connection (`> 0x7fff`).
+pub const MAX_QUEUED_CONTROL_MESSAGES: usize = 0x7fff;
+/// Maximum unacknowledged `OutRec` entries on `UControlChannel` (`0xff`, plus
+/// 1 when `bClose` is set) before `SendBunch` (`0x1437ca030`) queues into
+/// `QueuedMessages`.
+pub const MAX_CONTROL_OUT_REC: usize = 0xff;
 
 /// Type index announcing a following type-name string (F-531).
 pub const NAMED_NET_ID_TYPE: u8 = 31;
@@ -307,6 +325,49 @@ pub enum ControlMessage {
         path: ArchiveText,
     },
     EncryptionAck,
+}
+
+/// Additional wire layouts handled or skipped directly by
+/// `UControlChannel::ReceivedBunch` (`0x1437c4940`, F-712).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ControlFallback {
+    /// ID 12 (`NMT_Skip`): four 32-bit `FGuid` words (`0x140cd6590`).
+    Skip { guid: [u32; 4] },
+    /// ID 13 (`NMT_Abort`): four 32-bit `FGuid` words (`0x140cd6590`).
+    Abort { guid: [u32; 4] },
+    /// ID 16 (`NMT_ActorChannelFailure`): 32-bit channel index (`i32`).
+    ActorChannelFailure { channel_index: i32 },
+    /// ID 19 (`NMT_GameSpecific`): one archive string.
+    GameSpecific { message: ArchiveText },
+    /// ID 20 (`NMT_SecurityViolation`): one byte + one archive string.
+    SecurityViolation { kind: u8, message: ArchiveText },
+    /// ID 25 (`NMT_BeaconJoin`): empty body.
+    BeaconJoin,
+    /// ID 26 (`NMT_BeaconLogin`): archive string + `FUniqueNetIdRepl`.
+    BeaconLogin {
+        text: ArchiveText,
+        unique_net_id: UniqueNetId,
+    },
+    /// ID 27 (`NMT_BeaconAck`): packed `FNetworkGUID` (`SerializeIntPacked`).
+    BeaconAck { net_guid: u32 },
+    /// ID 28 (`NMT_BeaconWelcome`): one archive string.
+    BeaconWelcome { text: ArchiveText },
+}
+
+impl ControlFallback {
+    pub fn id(&self) -> u8 {
+        match self {
+            Self::Skip { .. } => SKIP,
+            Self::Abort { .. } => ABORT,
+            Self::ActorChannelFailure { .. } => ACTOR_CHANNEL_FAILURE,
+            Self::GameSpecific { .. } => GAME_SPECIFIC,
+            Self::SecurityViolation { .. } => SECURITY_VIOLATION,
+            Self::BeaconJoin => BEACON_JOIN,
+            Self::BeaconLogin { .. } => BEACON_LOGIN,
+            Self::BeaconAck { .. } => BEACON_ACK,
+            Self::BeaconWelcome { .. } => BEACON_WELCOME,
+        }
+    }
 }
 
 /// One decoded message, or the first ID without a known layout.
@@ -731,6 +792,101 @@ pub fn read_control_message(reader: &mut BitReader<'_>, codec: &ControlCodec) ->
         id => return Ok(Decoded::Unknown { id }),
     };
     Ok(Decoded::Message(message))
+}
+
+/// Read the body of an additional `UControlChannel::ReceivedBunch`
+/// (`0x1437c4940`) fallback or direct-dispatch ID after its ID byte (`id`)
+/// has been read; returns `Ok(None)` when `id` is not in the fallback table.
+pub fn read_control_fallback(
+    id: u8,
+    reader: &mut BitReader<'_>,
+    codec: &ControlCodec,
+) -> Result<Option<ControlFallback>> {
+    let (order, cap) = (codec.order, codec.max_string_units);
+    let text = |reader: &mut BitReader<'_>, what: &str| read_text(reader, order, cap, what);
+    let fallback = match id {
+        SKIP => ControlFallback::Skip {
+            guid: [
+                read_u32(reader, order, "skip guid A")?,
+                read_u32(reader, order, "skip guid B")?,
+                read_u32(reader, order, "skip guid C")?,
+                read_u32(reader, order, "skip guid D")?,
+            ],
+        },
+        ABORT => ControlFallback::Abort {
+            guid: [
+                read_u32(reader, order, "abort guid A")?,
+                read_u32(reader, order, "abort guid B")?,
+                read_u32(reader, order, "abort guid C")?,
+                read_u32(reader, order, "abort guid D")?,
+            ],
+        },
+        ACTOR_CHANNEL_FAILURE => ControlFallback::ActorChannelFailure {
+            channel_index: read_u32(reader, order, "actor channel failure index")? as i32,
+        },
+        GAME_SPECIFIC => ControlFallback::GameSpecific {
+            message: text(reader, "game-specific message")?,
+        },
+        SECURITY_VIOLATION => ControlFallback::SecurityViolation {
+            kind: read_byte(reader, "security violation kind")?,
+            message: text(reader, "security violation message")?,
+        },
+        BEACON_JOIN => ControlFallback::BeaconJoin,
+        BEACON_LOGIN => ControlFallback::BeaconLogin {
+            text: text(reader, "beacon login text")?,
+            unique_net_id: read_unique_net_id(reader, codec)
+                .context("beacon login unique net id")?,
+        },
+        BEACON_ACK => {
+            let net_guid = reader.read_int_packed();
+            ensure!(!reader.is_error(), "truncated beacon ack net GUID");
+            ControlFallback::BeaconAck { net_guid }
+        }
+        BEACON_WELCOME => ControlFallback::BeaconWelcome {
+            text: text(reader, "beacon welcome text")?,
+        },
+        _ => return Ok(None),
+    };
+    Ok(Some(fallback))
+}
+
+pub fn write_control_fallback(
+    writer: &mut BitWriter,
+    fallback: &ControlFallback,
+    codec: &ControlCodec,
+) -> Result<()> {
+    let (order, cap) = (codec.order, codec.max_string_units);
+    writer.write_bits(u32::from(fallback.id()), 8);
+    match fallback {
+        ControlFallback::Skip { guid } | ControlFallback::Abort { guid } => {
+            for word in guid {
+                write_u32(writer, *word, order);
+            }
+        }
+        ControlFallback::ActorChannelFailure { channel_index } => {
+            write_u32(writer, *channel_index as u32, order);
+        }
+        ControlFallback::GameSpecific { message: value }
+        | ControlFallback::BeaconWelcome { text: value } => {
+            write_text(writer, value, order, cap)?;
+        }
+        ControlFallback::SecurityViolation { kind, message } => {
+            writer.write_bits(u32::from(*kind), 8);
+            write_text(writer, message, order, cap)?;
+        }
+        ControlFallback::BeaconJoin => {}
+        ControlFallback::BeaconLogin {
+            text,
+            unique_net_id,
+        } => {
+            write_text(writer, text, order, cap)?;
+            write_unique_net_id(writer, unique_net_id, codec)?;
+        }
+        ControlFallback::BeaconAck { net_guid } => {
+            writer.write_int_packed(*net_guid);
+        }
+    }
+    Ok(())
 }
 
 /// Read messages until the reader ends or an unknown ID stops decoding.

@@ -1,9 +1,13 @@
 use icarus_bevy::experimental::admission::{
-    AdmissionPolicy, Occupancy, SERVER_FULL, SPLITSCREEN_EXCEEDED, int_option, login_option,
+    AdmissionPolicy, INCOMPATIBLE_UNIQUE_NET_ID, Occupancy, SERVER_FULL, SPLITSCREEN_EXCEEDED,
+    check_unique_net_id_compatible, int_option, login_option, unique_net_id_is_valid,
+};
+use icarus_bevy::experimental::control_messages::{
+    ArchiveText, NetIdType, NetIdValue, UniqueNetId,
 };
 
 // Independently authored option strings for the engine's login checks
-// (F-622); no captured traffic.
+// (F-712); no captured traffic.
 
 fn units(text: &str) -> Vec<u16> {
     text.encode_utf16().collect()
@@ -48,8 +52,8 @@ fn keys_compare_ascii_case_insensitively_and_other_units_exactly() {
         value("?SPLITSCREENCOUNT=2", "SplitscreenCount").as_deref(),
         Some("2")
     );
-    assert_eq!(value("?Ü=1", "ü"), None);
-    assert_eq!(value("?Ü=1", "Ü").as_deref(), Some("1"));
+    assert_eq!(value("?\u{00dc}=1", "\u{00fc}"), None);
+    assert_eq!(value("?\u{00dc}=1", "\u{00dc}").as_deref(), Some("1"));
     assert_eq!(value("?Name1=x", "Name"), None);
 }
 
@@ -138,5 +142,55 @@ fn splitscreen_above_the_connection_limit_is_rejected_after_capacity() {
     assert_eq!(
         POLICY.approve_login(&units("?SplitscreenCount=2"), full),
         Err(SERVER_FULL)
+    );
+}
+
+#[test]
+fn pre_login_checks_unique_net_id_compatibility_before_approve_login() {
+    let empty_id = UniqueNetId {
+        kind: NetIdType::Named(ArchiveText::text("UNKNOWN").unwrap()),
+        value: NetIdValue::EncodedEmpty,
+    };
+    assert!(!unique_net_id_is_valid(&empty_id));
+    // An invalid/empty unique net id skips IsCompatibleUniqueNetId and runs ApproveLogin.
+    assert_eq!(
+        POLICY.pre_login(
+            &units("?SplitscreenCount=1"),
+            &empty_id,
+            Occupancy::default(),
+            Some("STEAM"),
+            &["EOS"],
+            &[],
+        ),
+        Ok(())
+    );
+    let steam_id = UniqueNetId {
+        kind: NetIdType::Named(ArchiveText::text("steam").unwrap()),
+        value: NetIdValue::from_hex("0123456789ABCDEF").unwrap(),
+    };
+    assert!(unique_net_id_is_valid(&steam_id));
+    assert_eq!(
+        check_unique_net_id_compatible(&steam_id, Some("STEAM"), &["EOS"], &[]),
+        Ok(())
+    );
+    let incompatible_id = UniqueNetId {
+        kind: NetIdType::Named(ArchiveText::text("PSN").unwrap()),
+        value: NetIdValue::from_hex("0123456789ABCDEF").unwrap(),
+    };
+    // Incompatible net id fails with INCOMPATIBLE_UNIQUE_NET_ID even when server is full.
+    let full = Occupancy {
+        players: 8,
+        spectators: 0,
+    };
+    assert_eq!(
+        POLICY.pre_login(
+            &units("?SplitscreenCount=2"),
+            &incompatible_id,
+            full,
+            Some("STEAM"),
+            &["EOS"],
+            &[],
+        ),
+        Err(INCOMPATIBLE_UNIQUE_NET_ID)
     );
 }

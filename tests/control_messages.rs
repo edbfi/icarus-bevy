@@ -1,9 +1,10 @@
 use icarus_bevy::experimental::archive::ByteOrder;
 use icarus_bevy::experimental::control::TokenEncoding;
 use icarus_bevy::experimental::control_messages::{
-    ArchiveText, ControlCodec, ControlMessage, Decoded, NetIdForm, NetIdType, NetIdValue,
-    UniqueNetId, encode_control_message, read_control_message, read_control_messages,
-    read_unique_net_id, write_control_message, write_unique_net_id,
+    ArchiveText, ControlCodec, ControlFallback, ControlMessage, Decoded, NetIdForm, NetIdType,
+    NetIdValue, UniqueNetId, encode_control_message, read_control_fallback, read_control_message,
+    read_control_messages, read_unique_net_id, write_control_fallback, write_control_message,
+    write_unique_net_id,
 };
 use icarus_bevy::experimental::packet::{BitReader, BitWriter};
 
@@ -375,6 +376,46 @@ fn unknown_ids_stop_decoding_without_reading_fields() {
     // A partial ID byte is a truncation.
     let mut reader = BitReader::new(&bytes, bytes.len() * 8 - 3).unwrap();
     assert!(read_control_messages(&mut reader, &codec).is_err());
+}
+
+#[test]
+fn control_channel_fallback_layouts_round_trip_in_both_orders() {
+    let fallbacks = [
+        ControlFallback::Skip { guid: [1, 2, 3, 4] },
+        ControlFallback::Abort { guid: [5, 6, 7, 8] },
+        ControlFallback::ActorChannelFailure { channel_index: 42 },
+        ControlFallback::GameSpecific {
+            message: text("custom"),
+        },
+        ControlFallback::SecurityViolation {
+            kind: 3,
+            message: text("violation"),
+        },
+        ControlFallback::BeaconJoin,
+        ControlFallback::BeaconLogin {
+            text: text("beacon"),
+            unique_net_id: hex_id(NetIdType::Default, "AB"),
+        },
+        ControlFallback::BeaconAck { net_guid: 512 },
+        ControlFallback::BeaconWelcome {
+            text: text("welcome"),
+        },
+    ];
+    for order in [ByteOrder::Little, ByteOrder::Big] {
+        let codec = codec(order);
+        for fallback in &fallbacks {
+            let mut writer = BitWriter::new();
+            write_control_fallback(&mut writer, fallback, &codec).unwrap();
+            let mut reader = BitReader::new(writer.as_bytes(), writer.bit_len()).unwrap();
+            let id = reader.read_bits(8) as u8;
+            assert_eq!(id, fallback.id());
+            let decoded = read_control_fallback(id, &mut reader, &codec)
+                .unwrap()
+                .unwrap();
+            assert_eq!(&decoded, fallback);
+            assert!(reader.at_end());
+        }
+    }
 }
 
 #[test]

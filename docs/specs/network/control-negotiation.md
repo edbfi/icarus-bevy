@@ -4,20 +4,20 @@
 
 Experimental: static observations; the framing and Hello exchange are
 wire-validated offline, and a synthetic Login and Join are welcomed (F-688
-to F-690). Scope: dedicated-server
+to F-690, F-712). Scope: dedicated-server
 build 25621760 (M-168) unless a current-client (build 25793767) comparison is
-named. Last reconciled: 2026-10-15.
+named. Last reconciled: 2026-10-17.
 Full text: d5b0ae6:docs/specs/network/control-negotiation.md.
 
 ## Scope
 
 The server-side control-message dispatcher and its initial (ID 0) branch, the
-string reader it uses, and the static evidence linking UWorld / UPendingNetGame
+string reader it uses, the static evidence linking UWorld / UPendingNetGame
 notify tables to it, and the current client's packet and bunch header parse
-order with its outer frame and integer encodings. Not covered: other packet
-handler components, reassembly of partial bunches, compression, integrity
-protection, connection-state admission, the packet-header sender, runtime
-version overrides, and the vocabulary beyond this table. The native run command has no
+order, `UControlChannel` byte-order persistence, queued send bounds, fallback
+skip table and `PreLogin` checks. Not covered: other packet handler components,
+compression, integrity protection, connection-state admission, runtime version
+overrides, and `GameModePreLoginEvent` subscribers. The native run command has no
 game listener.
 
 ## Confirmed
@@ -63,13 +63,29 @@ game listener.
   rel32 callers match; a 128-byte pointer window ends at the dispatcher (F-106).
   The retained database shows one non-call reference with no containing
   function; partial coverage does not prove caller absence.
-- Current client receive path (F-514, F-515): FInBunch inherits
-  FBitReader::Serialize at vftable `+0x150`, a leaf that tail-calls SerializeBits
-  (`+0x158`) with the length times eight. UControlChannel::ReceivedBunch, while
-  its inspection flag (`+0x68`) is set, hands the connection to `0x143984190`
-  unless the bunch holds at least 16 bits and byte 0 is 0; byte 1 equal to 1
-  clears archive byte-swap bit `0x20` at `+0x29`, other values set it. It then
-  reads one ID byte per message until the bunch ends.
+- Current client receive and send path (F-514, F-515, F-712; U-044 resolved):
+  `FInBunch` inherits `FBitReader::Serialize` at vftable `+0x150`, a leaf that
+  tail-calls `SerializeBits` (`+0x158`) with `Length * 8`.
+  `UControlChannel::ReceivedBunch` (`0x1437c4940`), while `bNeedsHeaderInspection`
+  (`+0x68`) is set, hands the connection to `Close` (`0x143984190`) unless the
+  bunch holds at least 16 bits and byte 0 is 0 (`Hello`); byte 1 equal to 1
+  clears archive byte-swap bit `0x20` at `+0x29` (other values set it), persists
+  `Connection->bNeedsByteSwapping` at `Connection + 0x158` (`Data[1] != 1`), and
+  clears `+0x68`. All subsequent `FInBunch` (`0x1437a8720`) and
+  `FControlChannelOutBunch` (`0x1437a83c0` -> `FOutBunch` `0x1437a8b60`)
+  instances initialize `+0x29` bit `0x20` from `Connection + 0x158`. It then
+  loops while `!Bunch.AtEnd() && Connection->State != USOCK_Closed`, reading one
+  ID byte per message: ID `0x16` (`22`, `NetGUIDAck`) dispatches locally on the
+  connection (`PackageMap->ReceivedNak`), other IDs call
+  `Driver->Notify->NotifyControlMessage(Connection, MessageType, Bunch)`, and if
+  `Pos == PosBefore` after that call, `ReceivedBunch` skips the unhandled
+  message across 19 registered layouts (`0..18`, `21`, failing closed on other
+  unhandled IDs; `read_control_fallback` / `write_control_fallback` in
+  `experimental::control_messages`). `UControlChannel::SendBunch` (`0x1437ca030`)
+  sends immediately when `QueuedMessages` (`+0x70`) is empty and
+  `NumOutRec < 255 + bClose`, else queues up to `32,767` (`0x7fff`) messages and
+  drains them in `UControlChannel::Tick` (`0x1437cf4e0`) once `bOpenAcked`
+  (`+0x30 & 1`) is set.
 - Current client packet and bunch headers (F-521, F-522), read LSB-first from
   the packet reader when its internal-ack flag is clear; the integer readers
   are FBitReader vtable `+0x160` (value with a maximum) and `+0x168` (packed):
@@ -149,18 +165,19 @@ game listener.
 ## Candidate
 
 - Experimental modules, wire-validated through Hello and offline Login/Join
-  (F-689, F-690): `control` reads the ID 0 body under a 131,081-byte ceiling
-  with the inferred first-field byte-order rule (F-096, F-097, F-518, F-519),
+  (F-689, F-690, F-712): `control` reads the ID 0 body under a 131,081-byte ceiling
+  with the first-field byte-order rule (F-096, F-097, F-518, F-519),
   retaining no token units and omitting `Debug`/`Serialize` on raw containers;
   `packet` codes the receive format above (F-521 to F-527); `control_receive`
   decodes one terminated datagram's control messages up to ID 0;
-  `control_messages` types the whole vocabulary and unique-net-id forms (F-531,
-  F-636); `sequencing` models notify and reliable state (F-535 to F-539); and
+  `control_messages` types the whole vocabulary, fallback skip table and
+  unique-net-id forms (F-531, F-636, F-712); `sequencing` models notify,
+  reliable and partial-bunch state (F-535 to F-539, F-710, F-711); and
   `packet_lab` and `peer_lab` run them as disconnected per-peer state in the
-  Bevy loopback lab, answering Hello and Login without sending Welcome (F-558,
-  F-564). The dispatcher's input is an FInBunch (F-507); packet-to-bunch
-  framing is unbound, and exact EOF and normalization rejection are research
-  policy. Summaries carry kinds and lengths only.
+  Bevy loopback lab, persisting the Hello byte order across subsequent control
+  bunches and answering Hello and Login without sending Welcome (F-558, F-564,
+  F-712). Exact EOF and normalization rejection are research policy. Summaries
+  carry kinds and lengths only.
 - Server `UWorld::NotifyControlMessage` (`0x1439ee7f0`, F-563) and
   `UWorld::WelcomePlayer` (`0x1439fdeb0`, F-580): Hello sends Upgrade with the
   local version and closes on mismatch; an empty token (count < 2) sends
@@ -169,12 +186,19 @@ game listener.
   `PreLogin`, and welcomes the player (type 1: level/travel name, game-mode
   class, redirect string, flush, queued-bits reset, login state 2) on an empty
   error or sends Failure and closes.
-- Current client `PreLogin` (F-622; native mirror `experimental::admission`,
-  F-623): the ICARUS game mode and session add no checks beyond the engine's
-  (`incompatible_unique_net_id`, `Server full.` against override or
-  `MaxPlayers` or `SpectatorOnly`, `Maximum splitscreen players` on
-  `SplitscreenCount`, then registered delegates; literals M-591). `?`-delimited
-  options split at the first `=` and match ASCII case-insensitively, first wins.
+- Current client `PreLogin` (`AGameModeBase::PreLogin` `0x14386a160`,
+  `UOnlineEngineInterfaceImpl::IsCompatibleUniqueNetId` `0x1409cbee0`, F-712;
+  native mirror `experimental::admission`): the ICARUS game mode and session add
+  no checks beyond the engine's. When `UniqueId` wraps a valid `FUniqueNetId`,
+  `IsCompatibleUniqueNetId` accepts it if `GetType()` matches
+  `GetDefaultOnlineSubsystemName()` or any entry in `CompatibleUniqueNetIdTypes`
+  (`+0x78`), else sets `incompatible_unique_net_id` and skips `ApproveLogin`;
+  otherwise `ApproveLogin` (`0x14385ac60`) checks `Server full.` against
+  override or `MaxPlayers` or `SpectatorOnly` and `Maximum splitscreen players`
+  on `SplitscreenCount` (with C-runtime integer reads saturating at `i32`
+  bounds), followed by `FGameModeEvents::GameModePreLoginEvent` (`0x146056cf8`;
+  literals M-591). `?`-delimited options split at the first `=` and match ASCII
+  case-insensitively, first wins.
 - Current client unique-net-id type hashes (F-543): 1 NULL, 2 MCP, 3 STEAM,
   4 PS4, 6 GOOGLE, 7 GOOGLEPLAY, 8 FACEBOOK, 9 IOS, 10 APPLE, 11 TENCENT,
   12 SWITCH, 13 AMAZON, 14 GAMECIRCLE, 15 THUNDERHEAD, 18 Oculus, 19 Quail,
@@ -186,16 +210,18 @@ game listener.
 ## Open questions
 
 - Executed runtime dispatch of the qualified stores and slots (U-010); older
-  server owner (U-011); archive/bit-position/byte-order path into the
-  dispatcher (U-014, U-044); indirect callers (U-015); RTTI, table identity and
+  server owner (U-011); archive/bit-position/byte-order path into the older
+  dispatcher (U-014); indirect callers (U-015); RTTI, table identity and
   owner (U-016, U-017, U-018); receiver and type-registration join (U-043);
-  active admission policy (U-037); authenticated stock-client session (U-038).
+  active admission policy and `GameModePreLoginEvent` subscribers (U-037);
+  authenticated stock-client session (U-038).
 
 ## Evidence
 
 - Static cases: M-170 (`icarus-server-baseline`, E-011/E-013/E-021/E-022/E-024),
   M-146, [research/archive](../../research/archive/2026-10-12-control-caller-limit.md),
-  and M-023 to M-045 in the [control-store digest](../../research/network/control-stores.md).
+  M-023 to M-045 in the [control-store digest](../../research/network/control-stores.md),
+  and M-589 to M-596, M-749, M-750 (`PreLogin` and `UControlChannel` framing).
 - Requirements before promotion: identify version generation and callback
   registration and record the legitimate decision rule; recover archive
   conversion and outer framing with bounds and errors; obtain a paired trace of
@@ -207,5 +233,5 @@ game listener.
 - Authored suites:
 
 ```bash
-cargo test --locked --test control --test packet --test control_receive --test control_messages --test sequencing --test packet_lab --test peer_lab --test archive --test handshake
+cargo test --locked --test control --test packet --test control_receive --test control_messages --test sequencing --test packet_lab --test peer_lab --test archive --test handshake --test admission
 ```

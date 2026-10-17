@@ -4,7 +4,7 @@
 //! and ordered control-channel delivery, composed from the packet codec
 //! (`packet`, F-521..F-527), the client-side sequencing model (`sequencing`,
 //! F-535..F-539) and the control vocabulary (`control_messages`, F-529,
-//! F-530). Pure state: no sockets, Bevy, timers, reply policy, version
+//! F-530, F-712). Pure state: no sockets, Bevy, timers, reply policy, version
 //! selection, identity check, admission or gameplay.
 //!
 //! Outgoing: [`LabPeer::reliable_control_packet`] writes one caller-chosen
@@ -14,12 +14,15 @@
 //! mirrored (F-539, INFERRED for this side): an acked packet releases its
 //! out-bunches in order and a naked one queues its unacked bunches for resend
 //! in the next written packet. Resend is driven only by naks; there is no
-//! timer. The bunch is assembled from codec fields (F-522): not open,
-//! reliable, the configured control channel index, the hard-coded control name
-//! 255 (inferred, as for incoming identification) and the 10-bit wire reliable
-//! sequence; its payload is the message encoded with the configured codec,
-//! whose byte order is not negotiated from the client's Hello. The original
-//! server's outgoing bunches, packet info and send cadence were not observed.
+//! timer. The bunch is assembled from codec fields (F-522, F-712): not open,
+//! reliable (`FControlChannelOutBunch` sets `bReliable = 1`, `0x1437a83c0`),
+//! the configured control channel index, the hard-coded control name 255 and
+//! the 10-bit wire reliable sequence; its payload is the message encoded with
+//! the connection's active codec byte order (`Connection->bNeedsByteSwapping`
+//! at `+0x158`, seeded from `config.codec.order` and updated when the first
+//! `Hello` bunch is inspected on `UControlChannel`, `0x1437c4940`,
+//! `0x1437a8b60`). The original server's packet info and send cadence were not
+//! observed.
 //!
 //! Every observation behind it is of the client build. The server side here
 //! is an INFERRED mirror of the client: the client seeds its incoming and
@@ -40,8 +43,10 @@ use std::collections::VecDeque;
 use anyhow::{Context, Result, bail, ensure};
 use serde::Serialize;
 
+use super::archive::ByteOrder;
+use super::control::sender_byte_order;
 use super::control_messages::{
-    ControlCodec, ControlMessage, Decoded, MessageSummary, read_control_messages,
+    ControlCodec, ControlMessage, Decoded, MessageSummary, read_control_message,
     write_control_message,
 };
 use super::control_receive::{INFERRED_CONTROL_CHANNEL_INDEX, INFERRED_CONTROL_NAME_INDEX};
@@ -63,8 +68,9 @@ pub const DEFAULT_SENT_CAPACITY: usize = 256;
 /// Outgoing datagrams carry at most this many bunches as well.
 pub const DEFAULT_MAX_BUNCHES_PER_PACKET: usize = 32;
 /// Lab choice: unacknowledged outgoing reliable control bunches one peer may
-/// hold; sending another fails without a state change. It reuses the incoming
-/// queue bound (F-537); the client's outgoing reliable limit is not modelled.
+/// hold; sending another fails without a state change. Matches
+/// `UControlChannel::SendBunch` (`0x1437ca030`) `NumOutRec < 255` (`0xff`)
+/// and the incoming queue bound (F-537, F-712).
 pub const MAX_PENDING_RELIABLE: usize = MAX_QUEUED_RELIABLE;
 
 /// The single place that fixes the cookie word order (F-536): the client's
@@ -99,8 +105,9 @@ pub struct PacketLabConfig {
     /// [`Receiver::Server`]. Outgoing packets use the same framing written for
     /// [`Receiver::Client`].
     pub packet: PacketConfig,
-    /// Byte order and string cap for control messages other than Hello. The
-    /// bunch swap rule selected by the sender's Hello is not tracked.
+    /// Initial byte order and string cap for control messages other than Hello.
+    /// When the first control bunch starts with `Hello`, its first field
+    /// updates the connection's byte order (`Connection + 0x158`, F-712).
     pub codec: ControlCodec,
     /// Bunches on this channel index are control bunches (inferred).
     pub control_channel_index: u32,
@@ -285,6 +292,10 @@ pub struct LabPeer {
     control: ReliableChannel<Vec<Decoded>>,
     /// Unwrapped reliable sequences of naked out-bunches, oldest first.
     resend: VecDeque<u32>,
+    /// Mirrors `UControlChannel::bNeedsHeaderInspection` (`+0x68`, F-712):
+    /// cleared when the first delivered control bunch starting with `Hello`
+    /// sets `Connection->bNeedsByteSwapping` (`+0x158`).
+    header_inspection_pending: bool,
     failed: bool,
 }
 
@@ -321,12 +332,23 @@ impl LabPeer {
             sequencer,
             control,
             resend: VecDeque::new(),
+            header_inspection_pending: true,
             failed: false,
         })
     }
 
     pub fn config(&self) -> &PacketLabConfig {
         &self.config
+    }
+
+    /// Active connection byte order (`Connection->bNeedsByteSwapping` at `+0x158`).
+    pub fn connection_byte_order(&self) -> ByteOrder {
+        self.config.codec.order
+    }
+
+    /// Whether `UControlChannel::bNeedsHeaderInspection` (`+0x68`) is still set.
+    pub fn header_inspection_pending(&self) -> bool {
+        self.header_inspection_pending
     }
 
     pub fn sequencer(&self) -> &PacketSequencer {
@@ -415,6 +437,8 @@ impl LabPeer {
     /// map exports or must-be-mapped GUIDs (their payload prefix is not read).
     fn stage(&self, bunches: &[Bunch]) -> Result<Vec<StagedControl>> {
         let mut staged = Vec::new();
+        let mut codec = self.config.codec;
+        let mut inspect_pending = self.header_inspection_pending;
         for (index, bunch) in bunches.iter().enumerate() {
             if !self.is_control(bunch) {
                 continue;
@@ -429,8 +453,25 @@ impl LabPeer {
                 "control bunch {index} carries exports or must-be-mapped GUIDs; unsupported"
             );
             let mut reader = bunch.payload.reader();
-            let messages = read_control_messages(&mut reader, &self.config.codec)
-                .with_context(|| format!("control bunch {index}"))?;
+            let mut messages = Vec::new();
+            while !reader.at_end() {
+                let msg_index = messages.len();
+                let next = read_control_message(&mut reader, &codec).with_context(|| {
+                    format!("control bunch {index}: control message {msg_index}")
+                })?;
+                if inspect_pending
+                    && msg_index == 0
+                    && let Decoded::Message(ControlMessage::Hello { first_field, .. }) = &next
+                {
+                    codec.order = sender_byte_order(*first_field);
+                    inspect_pending = false;
+                }
+                let stop = matches!(next, Decoded::Unknown { .. });
+                messages.push(next);
+                if stop {
+                    break;
+                }
+            }
             staged.push(StagedControl {
                 reliable_raw: header.reliable_sequence_raw,
                 close: header.close,
@@ -514,18 +555,31 @@ impl LabPeer {
             summary.control_close_seen |= bunch.close;
             let Some(raw) = bunch.reliable_raw else {
                 // Unreliable control bunches are processed on arrival (F-537).
+                self.inspect_delivered_batch(&bunch.messages);
                 messages.extend(bunch.messages);
                 continue;
             };
             match self.control.receive_reliable(raw, bunch.messages)? {
                 ReliableReceive::Delivered(batches) => {
-                    messages.extend(batches.into_iter().flatten())
+                    for batch in batches {
+                        self.inspect_delivered_batch(&batch);
+                        messages.extend(batch);
+                    }
                 }
                 ReliableReceive::Queued => {}
                 ReliableReceive::Duplicate => summary.duplicate_reliable += 1,
             }
         }
         Ok(messages)
+    }
+
+    fn inspect_delivered_batch(&mut self, batch: &[Decoded]) {
+        if self.header_inspection_pending
+            && let Some(Decoded::Message(ControlMessage::Hello { first_field, .. })) = batch.first()
+        {
+            self.config.codec.order = sender_byte_order(*first_field);
+            self.header_inspection_pending = false;
+        }
     }
 
     /// A datagram for the client carrying the ack state: the sequencer's

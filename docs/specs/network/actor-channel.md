@@ -216,7 +216,7 @@ transitions. Not covered: server relevancy and priority heuristics.
 
 ## Open questions
 
-- Server relevancy/priority heuristics and control-bunch framing past Hello (U-044).
+- Server relevancy and priority heuristics (authenticated session U-038).
 
 ## Evidence
 

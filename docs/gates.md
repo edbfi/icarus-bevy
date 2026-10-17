@@ -6,7 +6,7 @@ here instead of restating them.
 
 Before restructure: 96ddb0b:docs/gates.md
 
-Last reconciled: 2026-10-16
+Last reconciled: 2026-10-17
 
 ## Before any C001 original-code case
 
@@ -94,8 +94,11 @@ Last reconciled: 2026-10-16
   unproved provenance across other calls (U-043). The static dispatcher
   caller is the ReceivedBunch virtual call (F-520); runtime dispatch stays
   unobserved.
-- Bind the concrete archive/outer framing path before promoting the experimental
-  control-body fields (U-044).
+- Client archive/outer framing, `UControlChannel` byte-order persistence
+  (`Connection + 0x158`), 19 fallback skip layouts and 32,767 queued-bunch
+  bounds are bound in `experimental` (F-688, F-710 to F-712; U-044 resolved);
+  older-server archive input and connected sessions keep their own gates (U-014,
+  U-037, U-038).
 - Older server build 25621760 and client build 25793767 remain distinct;
   addresses and assumptions do not transfer automatically.
 

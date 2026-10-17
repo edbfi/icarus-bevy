@@ -1,3 +1,4 @@
+use icarus_bevy::experimental::archive::ByteOrder;
 use icarus_bevy::experimental::control_messages::{
     ArchiveText, ControlCodec, ControlMessage, Decoded, HELLO, JOIN, NETSPEED,
     encode_control_message, read_control_messages,
@@ -196,6 +197,69 @@ fn reliable_hello_is_decoded_and_acked() {
     assert_eq!(peer.control_in_reliable(), 0x006);
     assert_eq!(peer.sequencer().notify().in_ack_seq(), 0x0405);
     assert_eq!(peer.sequencer().notify().history()[0], 1);
+}
+
+#[test]
+fn hello_first_field_persists_connection_byte_order_across_bunches() {
+    let mut peer = peer();
+    assert!(peer.header_inspection_pending());
+    assert!(matches!(peer.connection_byte_order(), ByteOrder::Little));
+    let mut client = Client::new();
+    let big_hello = ControlMessage::Hello {
+        first_field: 0,
+        version: 0x0102_0304,
+        token: ArchiveText::text("").unwrap(),
+    };
+    let (first_datagram, _) = client.send_reliable(big_hello, true);
+    peer.receive(&first_datagram).unwrap();
+    assert!(!peer.header_inspection_pending());
+    assert!(matches!(peer.connection_byte_order(), ByteOrder::Big));
+
+    let big_codec = ControlCodec {
+        order: ByteOrder::Big,
+        ..ControlCodec::default()
+    };
+    let packet_id = client.sequencer.out_packet_id();
+    let netspeed = ControlMessage::Netspeed { rate: 100_000 };
+    let seq = client
+        .control
+        .send_reliable(packet_id, netspeed.clone())
+        .unwrap();
+    let mut writer = BitWriter::new();
+    writer.write_bytes(&encode_control_message(&netspeed, &big_codec).unwrap());
+    let bunch = Bunch {
+        header: BunchHeader {
+            control: false,
+            open: false,
+            close: false,
+            close_reason: None,
+            paused: false,
+            reliable: true,
+            channel_index: 0,
+            has_package_map_exports: false,
+            has_must_be_mapped_guids: false,
+            partial: false,
+            reliable_sequence_raw: Some(wire_reliable_sequence(seq)),
+            partial_initial: false,
+            partial_final: false,
+            channel_name: Some(Name::Hardcoded(255)),
+        },
+        payload: Payload::from_writer(writer),
+    };
+    let (second_datagram, _) = client.send(vec![bunch]);
+    let received = peer.receive(&second_datagram).unwrap();
+    assert_eq!(received.messages(), &[Decoded::Message(netspeed)]);
+
+    let outgoing = peer
+        .reliable_control_packet(ControlMessage::Upgrade { version: 7 })
+        .unwrap();
+    let packet = read_packet(&outgoing, &to_client()).unwrap();
+    let decoded =
+        read_control_messages(&mut packet.bunches[0].payload.reader(), &big_codec).unwrap();
+    assert_eq!(
+        decoded,
+        [Decoded::Message(ControlMessage::Upgrade { version: 7 })]
+    );
 }
 
 #[test]
