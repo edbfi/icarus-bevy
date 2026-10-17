@@ -93,8 +93,9 @@ use icarus_bevy::experimental::{
         write_fast_array_delta, write_field_header,
     },
     sequencing::{
-        PartialBunchReassembler, PartialReceive, ReliableChannel, ReliableReceive, is_newer,
-        reconstruct_reliable_sequence, sequence_difference,
+        MAX_CONSTRUCTED_PARTIAL_BUNCH_BYTES, PartialBunchReassembler, PartialReceive,
+        ReliableChannel, ReliableReceive, is_newer, max_single_bunch_size_bits,
+        reconstruct_reliable_sequence, sequence_difference, split_outgoing_bunch,
     },
 };
 use serde::Serialize;
@@ -989,6 +990,8 @@ struct ChannelState {
     open: bool,
     partial: Option<Partial>,
     partial_reassembler: PartialBunchReassembler,
+    partial_wire_parts: Vec<Bunch>,
+    partial_export_payloads: Vec<Payload>,
     archetype_path: Option<String>,
 }
 
@@ -1148,6 +1151,7 @@ struct ExportStats {
     /// The codec's F-572/F-709 reader (`PackageMapState::consume_export_prefix`)
     /// on the same prefix.
     codec_reader_parsed: u64,
+    codec_reencoded_exact: u64,
     codec_reader_failed: Tally,
     package_map_entries: u64,
     parsed: u64,
@@ -1170,6 +1174,7 @@ struct ExportStats {
 struct MustBeMappedStats {
     prefixes: u64,
     parsed: u64,
+    codec_reencoded_exact: u64,
     failed: Tally,
     guids: u64,
     guids_exported_earlier: u64,
@@ -1181,6 +1186,7 @@ struct PartialStats {
     continuation: u64,
     completed: u64,
     codec_reassembler_completed: u64,
+    codec_resplit_exact: u64,
     completed_parts: Tally,
     completed_opaque: Tally,
     failures: Tally,
@@ -1435,6 +1441,8 @@ impl<'a> Decoder<'a> {
             state.open = true;
             state.partial = None;
             state.partial_reassembler.clear();
+            state.partial_wire_parts.clear();
+            state.partial_export_payloads.clear();
             self.wire.channels_opened += 1;
             bump(
                 &mut self.wire.opened_names,
@@ -1461,7 +1469,16 @@ impl<'a> Decoder<'a> {
                         &mut arrival.bunch.payload.reader(),
                         &actor_codec(true),
                     ) {
-                        Ok(_) => self.stats.exports.codec_reader_parsed += 1,
+                        Ok(refs) => {
+                            self.stats.exports.codec_reader_parsed += 1;
+                            if self
+                                .package_map
+                                .encode_export_bunch_payload(&refs, &actor_codec(true))
+                                .is_ok_and(|reencoded| reencoded == arrival.bunch.payload)
+                            {
+                                self.stats.exports.codec_reencoded_exact += 1;
+                            }
+                        }
                         Err(error) => {
                             bump(&mut self.stats.exports.codec_reader_failed, class(&error))
                         }
@@ -1518,6 +1535,8 @@ impl<'a> Decoder<'a> {
             state.open = false;
             state.partial = None;
             state.partial_reassembler.clear();
+            state.partial_wire_parts.clear();
+            state.partial_export_payloads.clear();
             self.wire.channels_closed += 1;
             if header
                 .parsed_close_reason()
@@ -1583,15 +1602,42 @@ impl<'a> Decoder<'a> {
         let header = &arrival.bunch.header;
         let partial_stats = &mut self.stats.partial;
         let state = self.channels.entry(header.channel_index).or_default();
+        if header.partial_initial {
+            state.partial_wire_parts.clear();
+            state.partial_export_payloads.clear();
+        }
+        state.partial_wire_parts.push(arrival.bunch.clone());
+        if header.has_package_map_exports {
+            state
+                .partial_export_payloads
+                .push(arrival.bunch.payload.clone());
+        }
         if let Some(payload_after_exports) = &data
-            && let Ok(PartialReceive::Complete { .. }) = state.partial_reassembler.receive_part(
-                arrival.sequence,
-                header,
-                payload_after_exports,
-                None,
-            )
+            && let Ok(PartialReceive::Complete { mut bunch, .. }) =
+                state.partial_reassembler.receive_part(
+                    arrival.sequence,
+                    header,
+                    payload_after_exports,
+                    Some(MAX_CONSTRUCTED_PARTIAL_BUNCH_BYTES),
+                )
         {
             partial_stats.codec_reassembler_completed += 1;
+            if let Some(first) = state.partial_wire_parts.first() {
+                bunch.header.reliable_sequence_raw = first.header.reliable_sequence_raw;
+            }
+            if let Ok(max_single_bits) = max_single_bunch_size_bits(1024, 2)
+                && let Ok(resplit) = split_outgoing_bunch(
+                    &bunch,
+                    &state.partial_export_payloads,
+                    max_single_bits,
+                    Some(MAX_CONSTRUCTED_PARTIAL_BUNCH_BYTES),
+                )
+                && resplit == state.partial_wire_parts
+            {
+                partial_stats.codec_resplit_exact += 1;
+            }
+            state.partial_wire_parts.clear();
+            state.partial_export_payloads.clear();
         }
         let aligned = data
             .as_ref()
@@ -1775,8 +1821,15 @@ impl<'a> Decoder<'a> {
                         return Err(error.context("must-be-mapped prefix"));
                     }
                 };
+            let reencoded_exact = self
+                .package_map
+                .prepend_must_be_mapped_guids(&guids, &remainder, &actor_codec(true))
+                .is_ok_and(|reencoded| reencoded == bunch.payload);
             let must_be_mapped = &mut self.stats.must_be_mapped;
             must_be_mapped.parsed += 1;
+            if reencoded_exact {
+                must_be_mapped.codec_reencoded_exact += 1;
+            }
             must_be_mapped.guids += guids.len() as u64;
             must_be_mapped.guids_exported_earlier += resolved as u64;
             bunch.header.has_must_be_mapped_guids = false;

@@ -379,6 +379,42 @@ impl PackageMapState {
         let resolved = guids.iter().filter(|&&guid| self.contains(guid)).count();
         Ok((guids, resolved))
     }
+
+    /// Encode an export-only bunch payload (`UPackageMapClient::ExportNetGUIDHeader`
+    /// `0x1439ab670` and `ExportNetGUID` `0x1439aabb0`) and record every
+    /// exported path into `self`.
+    pub fn encode_export_bunch_payload(
+        &mut self,
+        references: &[NetGuidRef],
+        codec: &ActorChannelCodec,
+    ) -> Result<Payload> {
+        let mut writer = BitWriter::new();
+        write_export_prefix(&mut writer, references, codec)?;
+        for reference in references {
+            self.ingest_guid_ref(reference);
+        }
+        Ok(Payload::from_writer(writer))
+    }
+
+    /// Prepend a `bHasMustBeMappedGUIDs` prefix (`u16` count + packed GUIDs) in
+    /// front of `body` (`UActorChannel::AppendMustBeMappedGuids` `0x1437b0490`).
+    pub fn prepend_must_be_mapped_guids(
+        &self,
+        guids: &[u32],
+        body: &Payload,
+        codec: &ActorChannelCodec,
+    ) -> Result<Payload> {
+        let mut writer = BitWriter::new();
+        write_must_be_mapped_guids(&mut writer, guids, codec)?;
+        let mut reader = body.reader();
+        let mut rem = reader.remaining();
+        while rem > 0 {
+            let chunk = rem.min(32) as u32;
+            writer.write_bits(reader.read_bits(chunk), chunk);
+            rem -= chunk as usize;
+        }
+        Ok(Payload::from_writer(writer))
+    }
 }
 
 /// Spawn vector (F-571). Quantized integers are canonical; no float is applied

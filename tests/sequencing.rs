@@ -3,10 +3,11 @@ use icarus_bevy::experimental::packet::{
     Payload, Receiver, read_bunch, read_packet_header, write_bunch, write_packet_header,
 };
 use icarus_bevy::experimental::sequencing::{
-    MAX_CONSTRUCTED_PARTIAL_BUNCH_BYTES, MAX_QUEUED_RELIABLE, Notification, PacketNotify,
-    PacketSequencer, PartialBunchReassembler, PartialReceive, ReliableChannel, ReliableReceive,
-    is_newer, next_notification, reconstruct_reliable_sequence, sequence_difference,
-    signed_sequence_delta, wire_reliable_sequence,
+    MAX_CONSTRUCTED_PARTIAL_BUNCH_BYTES, MAX_QUEUED_RELIABLE, MAX_SINGLE_BUNCH_OVERHEAD_BITS,
+    Notification, PacketNotify, PacketSequencer, PartialBunchReassembler, PartialReceive,
+    ReliableChannel, ReliableReceive, is_newer, max_partial_bunch_size_bits,
+    max_single_bunch_size_bits, next_notification, reconstruct_reliable_sequence,
+    sequence_difference, signed_sequence_delta, split_outgoing_bunch, wire_reliable_sequence,
 };
 
 // Independently authored state sequences; no captured client or server traffic.
@@ -610,4 +611,107 @@ fn partial_bunch_reassembler_handles_exports_alignment_and_final_flags() {
             .receive_part(2, &fin, &byte_payload(&[0u8; 32], None), Some(48))
             .is_err()
     );
+}
+
+#[test]
+fn send_bunch_sizing_and_outgoing_splitter_round_trip() {
+    assert_eq!(MAX_SINGLE_BUNCH_OVERHEAD_BITS, 565);
+    assert_eq!(max_single_bunch_size_bits(1024, 2).unwrap(), 7_625);
+    assert_eq!(max_partial_bunch_size_bits(1024, 2).unwrap(), 7_624);
+    assert_eq!(max_partial_bunch_size_bits(1024, 2).unwrap() / 8, 953);
+    assert!(max_single_bunch_size_bits(70, 0).is_err());
+
+    let max_single = max_single_bunch_size_bits(1024, 2).unwrap();
+    let base_header = BunchHeader {
+        control: true,
+        open: true,
+        close: true,
+        close_reason: Some(1),
+        paused: false,
+        reliable: true,
+        channel_index: 3,
+        has_package_map_exports: false,
+        has_must_be_mapped_guids: true,
+        partial: false,
+        reliable_sequence_raw: Some(50),
+        partial_initial: false,
+        partial_final: false,
+        channel_name: Some(Name::Hardcoded(102)),
+    };
+
+    // Single bunch without exports stays un-partial.
+    let small = Bunch {
+        header: base_header.clone(),
+        payload: byte_payload(&[0x11, 0x22], Some((0b101, 3))),
+    };
+    let single_out = split_outgoing_bunch(&small, &[], max_single, Some(65_536)).unwrap();
+    assert_eq!(single_out.len(), 1);
+    assert!(!single_out[0].header.partial);
+    assert!(single_out[0].header.open);
+    assert!(single_out[0].header.close);
+
+    // Export bunch + oversized payload splits into export initial + 953-byte chunks + final tail,
+    // and round-trips through PartialBunchReassembler.
+    let export_payload = byte_payload(&[0xde, 0xad], Some((0b11, 2)));
+    let body_bytes: Vec<u8> = (0..1_910).map(|i| (i % 251) as u8).collect();
+    let large = Bunch {
+        header: base_header,
+        payload: byte_payload(&body_bytes, Some((0b11011, 5))),
+    };
+    let parts = split_outgoing_bunch(
+        &large,
+        std::slice::from_ref(&export_payload),
+        max_single,
+        Some(MAX_CONSTRUCTED_PARTIAL_BUNCH_BYTES),
+    )
+    .unwrap();
+    assert_eq!(parts.len(), 4);
+    assert!(parts[0].header.partial && parts[0].header.partial_initial);
+    assert!(parts[0].header.open && !parts[0].header.close);
+    assert!(parts[0].header.has_package_map_exports && !parts[0].header.has_must_be_mapped_guids);
+    assert!(
+        parts[1].header.partial
+            && !parts[1].header.partial_initial
+            && !parts[1].header.partial_final
+    );
+    assert!(
+        !parts[1].header.open && !parts[1].header.close && parts[1].header.has_must_be_mapped_guids
+    );
+    assert_eq!(parts[1].payload.bit_len(), 7_624);
+    assert_eq!(parts[2].payload.bit_len(), 7_624);
+    assert!(parts[3].header.partial && parts[3].header.partial_final);
+    assert!(!parts[3].header.open && parts[3].header.close);
+    assert_eq!(parts[3].header.close_reason, Some(1));
+
+    let mut reassembler = PartialBunchReassembler::new();
+    for (idx, part) in parts.iter().enumerate() {
+        let stripped = if part.header.has_package_map_exports {
+            byte_payload(&[], None)
+        } else {
+            part.payload.clone()
+        };
+        let res = reassembler
+            .receive_part(50 + idx as i64, &part.header, &stripped, None)
+            .unwrap();
+        if idx + 1 < parts.len() {
+            assert!(matches!(res, PartialReceive::Incomplete { .. }));
+        } else {
+            let PartialReceive::Complete {
+                bunch,
+                parts: count,
+                ..
+            } = res
+            else {
+                panic!("expected completion");
+            };
+            assert_eq!(count, 4);
+            assert!(bunch.header.open && bunch.header.close);
+            assert_eq!(bunch.header.close_reason, Some(1));
+            assert!(bunch.header.has_must_be_mapped_guids);
+            assert_eq!(bunch.payload, large.payload);
+        }
+    }
+
+    // Exceeding max_constructed_bytes fails closed.
+    assert!(split_outgoing_bunch(&large, &[], max_single, Some(1024)).is_err());
 }

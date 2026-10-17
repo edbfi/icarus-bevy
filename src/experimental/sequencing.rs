@@ -34,6 +34,11 @@ pub const MAX_QUEUED_RELIABLE: usize = 255;
 /// (`NetMaxConstructedPartialBunchSizeBytes` at `0x146056454`,
 /// `UChannel::ReceivedNextBunch` `0x1437c5500`, F-710).
 pub const MAX_CONSTRUCTED_PARTIAL_BUNCH_BYTES: usize = 65_536;
+/// Fixed packet + bunch header/trailer bit overhead subtracted from
+/// `Connection->MaxPacket * 8 - Connection->MaxPacketHandlerBits` in
+/// `UChannel::SendBunch` (`0x1437c9690` line 82) and
+/// `UPackageMapClient::ExportNetGUID` (`0x1439aabb0` line 75): `0x235` (`565` bits).
+pub const MAX_SINGLE_BUNCH_OVERHEAD_BITS: usize = 0x235;
 const WORD_BITS: u16 = 32;
 
 /// `(a - b)` modulo 2^14.
@@ -844,4 +849,158 @@ fn append_payload(writer: &mut BitWriter, payload: &Payload) {
         writer.write_bits(reader.read_bits(chunk), chunk);
         bits -= chunk as usize;
     }
+}
+
+/// Maximum payload bits a single non-partial bunch may carry before
+/// `UChannel::SendBunch` (`0x1437c9690` line 82) splits it into partial
+/// bunches: `(max_packet_bytes * 8) - max_packet_handler_bits - 0x235`.
+pub fn max_single_bunch_size_bits(
+    max_packet_bytes: u32,
+    max_packet_handler_bits: u32,
+) -> Result<usize> {
+    let total = usize::try_from(max_packet_bytes)
+        .context("max_packet_bytes overflow")?
+        .checked_mul(8)
+        .context("max_packet_bytes * 8 overflow")?;
+    let overhead = usize::try_from(max_packet_handler_bits)
+        .context("max_packet_handler_bits overflow")?
+        .checked_add(MAX_SINGLE_BUNCH_OVERHEAD_BITS)
+        .context("bunch overhead overflow")?;
+    ensure!(
+        total > overhead,
+        "max_packet_bytes ({max_packet_bytes}) too small for bunch overhead ({overhead} bits)"
+    );
+    Ok(total - overhead)
+}
+
+/// Byte-aligned slice size (`max_single_bunch_size_bits & !7`) used by
+/// `UChannel::SendBunch` (`0x1437c9690` line 84) when splitting an outgoing
+/// bunch larger than [`max_single_bunch_size_bits`].
+pub fn max_partial_bunch_size_bits(
+    max_packet_bytes: u32,
+    max_packet_handler_bits: u32,
+) -> Result<usize> {
+    let single = max_single_bunch_size_bits(max_packet_bytes, max_packet_handler_bits)?;
+    let partial = single & !7;
+    ensure!(
+        partial >= 8,
+        "max_partial_bunch_size_bits ({partial}) must be at least 8 bits"
+    );
+    Ok(partial)
+}
+
+/// Segment an outgoing [`Bunch`] and any preceding export-only bunch payloads
+/// (`UChannel::AppendExportBunches` `0x1437b03b0` /
+/// `UPackageMapClient::AppendExportBunches` `0x1439a5290`) into wire
+/// `OutgoingBunches` following `UChannel::SendBunch` (`0x1437c9690`).
+///
+/// Key static rules (`0x1437c9690`):
+/// - When `max_constructed_bytes` is `Some(limit)` (`!IsUnlimitedBunchSizeAllowed`),
+///   rejects `bunch.payload` when `(bit_len + 7) / 8 > limit` (`65,536` bytes).
+/// - Each payload in `export_payloads` becomes a leading entry in
+///   `OutgoingBunches` with `has_package_map_exports = true` and
+///   `has_must_be_mapped_guids = false`.
+/// - When `bunch.payload.bit_len() > max_single_bits`, `bunch.payload` is
+///   sliced into chunks of `max_partial_bits = max_single_bits & !7` bits
+///   (whole bytes), with the final chunk carrying the remaining bits;
+///   otherwise `bunch.payload` is appended as a single entry.
+/// - When `OutgoingBunches.len() > 1`, every entry sets `partial = true`,
+///   only index `0` sets `partial_initial = true` and preserves `open`, and
+///   only index `OutgoingBunches.len() - 1` sets `partial_final = true` and
+///   preserves `close` and `close_reason`.
+/// - When `bunch.header.reliable` is set and `reliable_sequence_raw` is
+///   `Some(first_raw)`, each entry in `OutgoingBunches` receives the next
+///   10-bit wire reliable sequence `(first_raw + i) & 0x3ff`.
+pub fn split_outgoing_bunch(
+    bunch: &Bunch,
+    export_payloads: &[Payload],
+    max_single_bits: usize,
+    max_constructed_bytes: Option<usize>,
+) -> Result<Vec<Bunch>> {
+    if let Some(limit) = max_constructed_bytes {
+        ensure!(
+            bunch.payload.bit_len().div_ceil(8) <= limit,
+            "outgoing bunch payload ({} bytes) exceeds limit ({limit} bytes)",
+            bunch.payload.bit_len().div_ceil(8)
+        );
+    }
+    let max_partial_bits = max_single_bits & !7;
+    ensure!(
+        max_partial_bits >= 8,
+        "max_single_bits ({max_single_bits}) must be at least 8 bits"
+    );
+
+    let mut slices: Vec<(Payload, bool)> = Vec::new();
+    for export in export_payloads {
+        slices.push((export.clone(), true));
+    }
+    if bunch.payload.bit_len() > max_single_bits {
+        let mut reader = bunch.payload.reader();
+        while reader.remaining() > 0 {
+            let take = reader.remaining().min(max_partial_bits);
+            let mut writer = BitWriter::new();
+            let mut rem = take;
+            while rem > 0 {
+                let chunk = rem.min(32) as u32;
+                writer.write_bits(reader.read_bits(chunk), chunk);
+                rem -= chunk as usize;
+            }
+            slices.push((Payload::from_writer(writer), false));
+        }
+    } else {
+        slices.push((bunch.payload.clone(), bunch.header.has_package_map_exports));
+    }
+
+    let total = slices.len();
+    let mut out = Vec::with_capacity(total);
+    let mut next_raw = bunch.header.reliable_sequence_raw;
+    for (index, (payload, is_export)) in slices.into_iter().enumerate() {
+        let partial = total > 1;
+        let partial_initial = partial && index == 0;
+        let partial_final = partial && index + 1 == total;
+        let open = bunch.header.open && (!partial || index == 0);
+        let close = bunch.header.close && (!partial || index + 1 == total);
+        let control = if partial {
+            open || close
+        } else {
+            bunch.header.control || open || close
+        };
+        let close_reason = if close {
+            bunch.header.close_reason
+        } else {
+            None
+        };
+        let reliable_sequence_raw = if bunch.header.reliable {
+            let current = next_raw.map(wire_reliable_sequence);
+            next_raw = next_raw.map(|raw| wire_reliable_sequence(raw.wrapping_add(1)));
+            current
+        } else {
+            None
+        };
+        let channel_name = if open || bunch.header.reliable {
+            bunch.header.channel_name.clone()
+        } else {
+            None
+        };
+        out.push(Bunch {
+            header: BunchHeader {
+                control,
+                open,
+                close,
+                close_reason,
+                paused: bunch.header.paused,
+                reliable: bunch.header.reliable,
+                channel_index: bunch.header.channel_index,
+                has_package_map_exports: is_export,
+                has_must_be_mapped_guids: !is_export && bunch.header.has_must_be_mapped_guids,
+                partial,
+                reliable_sequence_raw,
+                partial_initial,
+                partial_final,
+                channel_name,
+            },
+            payload,
+        });
+    }
+    Ok(out)
 }

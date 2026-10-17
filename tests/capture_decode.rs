@@ -209,10 +209,12 @@ fn reassembles_partials_and_separates_the_export_hypothesis() -> Result<()> {
     let hypothesis = at(&report, "/passes/export_hypothesis");
     assert_eq!(at(hypothesis, "/exports/parsed"), 1);
     assert_eq!(at(hypothesis, "/exports/codec_reader_parsed"), 1);
+    assert_eq!(at(hypothesis, "/exports/codec_reencoded_exact"), 1);
     assert_eq!(at(hypothesis, "/exports/with_path"), 1);
     assert_eq!(at(hypothesis, "/exports/without_path"), 1);
     assert_eq!(at(hypothesis, "/exports/leftover_bits_after_exports"), 0);
     assert_eq!(at(hypothesis, "/partial/completed_parts/2"), 1);
+    assert_eq!(at(hypothesis, "/partial/codec_resplit_exact"), 1);
     assert_eq!(at(hypothesis, "/actor/hardcoded:102/open_parsed"), 1);
     assert_eq!(at(hypothesis, "/actor/hardcoded:102/update_parsed"), 1);
     assert_eq!(at(hypothesis, "/level_gate/with_level_only"), 1);

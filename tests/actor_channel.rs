@@ -1114,9 +1114,12 @@ fn package_map_state_ingests_exports_and_resolves_must_be_mapped() {
             bare_checksum_flag: false,
         }),
     };
-    let mut writer = BitWriter::new();
-    write_export_prefix(&mut writer, &[cls], &c).unwrap();
-    let export_fixture = bits(&writer);
+    let mut sender_state = PackageMapState::new();
+    let export_payload = sender_state
+        .encode_export_bunch_payload(std::slice::from_ref(&cls), &c)
+        .unwrap();
+    assert_eq!(sender_state.len(), 2);
+    let export_fixture = (export_payload.bytes().to_vec(), export_payload.bit_len());
 
     let mut state = PackageMapState::new();
     assert!(state.is_empty());
@@ -1137,14 +1140,17 @@ fn package_map_state_ingests_exports_and_resolves_must_be_mapped() {
         Some("/Script/Icarus.Default__AIcarusPlayerControllerSurvival")
     );
 
-    let mut mapped_writer = BitWriter::new();
-    write_must_be_mapped_guids(&mut mapped_writer, &[3, 5, 99], &c).unwrap();
-    let mapped_fixture = bits(&mapped_writer);
+    let body = payload(19, 7);
+    let prepended = sender_state
+        .prepend_must_be_mapped_guids(&[3, 5, 99], &body, &c)
+        .unwrap();
+    let mut mapped_reader = prepended.reader();
     let (guids, resolved) = state
-        .consume_must_be_mapped(&mut reader(&mapped_fixture), &c)
+        .consume_must_be_mapped(&mut mapped_reader, &c)
         .unwrap();
     assert_eq!(guids, vec![3, 5, 99]);
     assert_eq!(resolved, 2);
+    assert_eq!(mapped_reader.remaining(), body.bit_len());
 
     // Debug output does not leak paths or GUIDs.
     let debug = format!("{state:?} {:?}", state.get(5).unwrap());
