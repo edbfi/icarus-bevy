@@ -2,7 +2,7 @@
 //!
 //! Each function is a pure rule over authored domain values, read from the
 //! client recorders' record, validate, stitch and restore code (F-645 to F-665,
-//! F-677, F-715, F-716, F-717).
+//! F-677, F-715, F-716, F-717, F-727, F-728).
 //! Nothing here decodes a save, looks up a class, constructs an object or
 //! imports state: the rules pin the behavior a native world must reproduce when
 //! it restores recorded actors. The normal server does not call them yet, and
@@ -438,4 +438,107 @@ pub fn prospect_ids_match(expected: &[u16], actual: &[u16]) -> bool {
 /// `ResetActiveProspect`).
 pub fn can_activate_prospect_info(new_prospect_id: &str, current_active_prospect_id: &str) -> bool {
     !new_prospect_id.is_empty() && current_active_prospect_id.is_empty()
+}
+
+/// Which `PerformVersionUpgrades` (`+0x488`) override a `StateRecorderBlobs`
+/// class (`C001`..`C038`) dispatches during `RestoreState` (F-716, F-727).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum VersionUpgradeKind {
+    /// Base `UIcarusStateRecorderComponent` no-op (`0x140898810`).
+    NoOp,
+    /// `UActorStateRecorderComponent::PerformVersionUpgrades` (`0x14189d380`),
+    /// which renames `"TreePrimitive"` to `"Wood"` when `RecordedVersion < 1`.
+    ActorTreePrimitiveToWood,
+}
+
+/// Which `RestoreState` (`+0x4a0`) override a `StateRecorderBlobs` class
+/// (`C001`..`C038`) dispatches (F-716, F-727).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RestoreStateKind {
+    /// Base `UIcarusStateRecorderComponent::RestoreState` (`0x1418a9c80`):
+    /// constructs `FMemoryReader` (`v522`), calls `+0xa0` (`Serialize`) and
+    /// `+0x488` (`PerformVersionUpgrades`).
+    BaseSerializeOnly,
+    /// `UActorStateRecorderComponent::RestoreState` (`0x1418a9bb0`): runs
+    /// `BaseSerializeOnly` and then invokes `+0x4b0` (`ApplyRecorderTransform`)
+    /// when [`recorder_transform_is_non_identity`] is true.
+    ActorWithContextTransform,
+    /// `UIcarusMountCharacterRecorderComponent::RestoreState` (`0x141400150`):
+    /// runs `ActorWithContextTransform` and then [`upright_rotation`] on the
+    /// saved actor rotation (`+0xe0`).
+    MountActorUprightYaw,
+}
+
+/// Which `ApplyRecorderTransform` (`+0x4b0`) override a `StateRecorderBlobs`
+/// class (`C001`..`C038`) dispatches when context `FTransform` is non-identity
+/// (F-716, F-727).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ApplyTransformKind {
+    /// Base `UIcarusStateRecorderComponent` stub (`0x1408b2280`, returns `true`).
+    NoOpTrue,
+    /// `UActorStateRecorderComponent::ApplyRecorderTransform` (`0x141887d20`):
+    /// transforms `ActorTransform` (`+0x100`).
+    ActorTransformOnly,
+    /// `UBuildingGridRecorderComponent::ApplyRecorderTransform` (`0x141888270`):
+    /// transforms `ActorTransform` (`+0x100`) and `BuildingGridRecord` (`+0x1c0`).
+    ActorAndBuildingGrid,
+    /// `USplineRecorderComponent::ApplyRecorderTransform` (`0x1418c5cd0`):
+    /// transforms `ActorTransform` (`+0x100`) and each `FRecordedSplinePoint`
+    /// in `SplineNetworkSaveData.Points` (`+0x238`, stride `0x50`).
+    ActorAndSplinePoints,
+}
+
+/// Static restore dispatch profile for one `StateRecorderBlobs` class ordinal
+/// `1..=38` (`C001`..`C038`), identical in server `25621760` and client
+/// `25793767` (F-727). Every class inherits `UObject::Serialize(FArchive&)`
+/// (`+0xa0`, `0x1418aaf70` / `0x1418b0450`) unchanged.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct RecorderRestoreDispatch {
+    pub class_ordinal: u8,
+    pub selected_property_count: u8,
+    pub version_upgrade: VersionUpgradeKind,
+    pub restore_state: RestoreStateKind,
+    pub apply_transform: ApplyTransformKind,
+}
+
+const SELECTED_PROPERTY_COUNTS_C001_TO_C038: [u8; 38] = [
+    20, 22, 32, 21, 21, 21, 33, 32, 31, 32, 22, 22, 5, 5, 30, 22, 46, 29, 25, 23, 29, 5, 20, 21, 9,
+    34, 22, 23, 28, 34, 21, 21, 24, 21, 5, 5, 7, 21,
+];
+
+/// Returns the static restore dispatch profile for `class_ordinal` in `1..=38`
+/// (`C001`..`C038`), or `None` if `class_ordinal` is outside `1..=38` (F-727).
+pub const fn recorder_restore_dispatch(class_ordinal: u8) -> Option<RecorderRestoreDispatch> {
+    if class_ordinal < 1 || class_ordinal > 38 {
+        return None;
+    }
+    let selected_property_count =
+        SELECTED_PROPERTY_COUNTS_C001_TO_C038[(class_ordinal - 1) as usize];
+    let is_direct_base_subclass = matches!(class_ordinal, 13 | 14 | 22 | 25 | 35 | 36 | 37);
+    if is_direct_base_subclass {
+        return Some(RecorderRestoreDispatch {
+            class_ordinal,
+            selected_property_count,
+            version_upgrade: VersionUpgradeKind::NoOp,
+            restore_state: RestoreStateKind::BaseSerializeOnly,
+            apply_transform: ApplyTransformKind::NoOpTrue,
+        });
+    }
+    let restore_state = if class_ordinal == 17 {
+        RestoreStateKind::MountActorUprightYaw
+    } else {
+        RestoreStateKind::ActorWithContextTransform
+    };
+    let apply_transform = match class_ordinal {
+        4 => ApplyTransformKind::ActorAndBuildingGrid,
+        32 => ApplyTransformKind::ActorAndSplinePoints,
+        _ => ApplyTransformKind::ActorTransformOnly,
+    };
+    Some(RecorderRestoreDispatch {
+        class_ordinal,
+        selected_property_count,
+        version_upgrade: VersionUpgradeKind::ActorTreePrimitiveToWood,
+        restore_state,
+        apply_transform,
+    })
 }

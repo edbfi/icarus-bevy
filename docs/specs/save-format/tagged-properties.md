@@ -144,14 +144,15 @@ objects):
   `C022`, `C032`, F-562, F-725, F-726; U-053, U-055 resolved) frame to exact EOF.
 - Applying the older-build framing to the newer saves is supported by prefix
   agreement and the scans above, not by a matched official load (F-297, U-025).
-- Base-component layout is verified across builds for C001, C013, C028 and C034;
-  `ConstructFProperty` (`0x14216e730`) sets `PropertyFlags` (`+0x40`) from static
-  `Descriptor->PropertyFlags` and `LinkInternal` (`0x1408ad190`) never mutates
-  `+0x40` (`CPF_SaveGame` `0x01000000`, F-258, F-305, F-716, F-720; U-039, U-054,
-  U-061 resolved).
+- Base-component layout and all 65 `RecorderComponent` `FClassParams` (including all
+  38 `StateRecorderBlobs` classes' `+0xa0`/`+0x488`/`+0x4a0`/`+0x4b0` overrides) match
+  across builds; `ConstructFProperty` (`0x14216e730`) sets `PropertyFlags` (`+0x40`)
+  from static `Descriptor->PropertyFlags` and `LinkInternal` (`0x1408ad190`) never
+  mutates `+0x40` (`CPF_SaveGame` `0x01000000`, F-258, F-305, F-716, F-720, F-727,
+  F-728; U-021, U-024, U-032, U-039, U-046, U-048, U-050, U-054, U-061 resolved).
 - C028 six direct structs are tagged with 16 optional fields; three child struct
   fields use binary/native serialization, so tagged framing is not recursive
-  (F-655). D01 leaves and D02 transfers: F-309, F-655. Conditional static grammars only.
+  (F-655). D01 leaves and D02 transfers: F-373, F-655, F-728. Conditional static grammars only.
 - Every opaque Struct leaf is one of four fixed-width engine math types
   (F-565): three or four ordered 4-byte components, no count or tail (F-602;
   U-027 resolved).
@@ -165,8 +166,7 @@ objects):
 ## Open questions
 
 - Official restore/import and newer-build migration of these saves (U-025, U-045).
-- Value meanings and Name identities (U-020); empty-family
-  population (U-021); deeper C028 children (U-048); remaining classes (U-050).
+- Value meanings and Name identities in packaged tables (U-020, U-022).
 
 ## Evidence
 
@@ -176,7 +176,8 @@ objects):
   M-096 and M-098 Int array, M-070, M-077, M-089, M-090, M-122; client M-083 to
   M-086; Map/Set/Int64 headers M-387, M-388; all-class framing M-389, M-390;
   container items M-392 to M-396, M-401 to M-404; server migration, entry and
-  correspondence M-755 to M-760; Text/Map/Set/Int64/Struct items M-766, M-767.
+  correspondence M-755 to M-760; Text/Map/Set/Int64/Struct items and 65-class
+  audit M-766 to M-769.
 - Tests: `tests/tagged.rs`, `tests/recorders.rs`, `tests/component.rs`,
   `tests/int_array.rs`, `tests/struct_array.rs`, `tests/prospect.rs`; authored
   byte fixtures only. Private saves stay outside tests, source control and CI.
@@ -184,5 +185,5 @@ objects):
 ```bash
 cargo run --locked -- inspect-save --source /path/to/copied-prospect.json --inner-tags
 cargo run --locked -- inspect-save --source /path/to/copied-prospect.json --recorders
-cargo test --locked --test tagged --test recorders --test component --test int_array --test struct_array --test property_tree --test prospect
+cargo test --locked --test tagged --test recorders --test component --test int_array --test struct_array --test prospect
 ```

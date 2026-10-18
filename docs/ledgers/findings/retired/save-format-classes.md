@@ -4,7 +4,7 @@ Rows retired from [the active ledger](../save-format-classes.md): superseded by 
 execution receipts, or historical session state. Full text is kept and IDs stay
 permanent; cite the superseding row where one exists.
 
-Last reconciled: 2026-10-17
+Last reconciled: 2026-10-18
 
 | ID | Claim | Kind | Evidence | Scope and limits | Unknowns | Status |
 | --- | --- | --- | --- | --- | --- | --- |
@@ -165,3 +165,5 @@ Last reconciled: 2026-10-17
 | F-359 | C028 chain: registration 0x1406ff5d0, getter 0x141d2d770, ctor callback 0x141d2e710, instance ctor 0x1418c22f0, vtable 0x144a70e90 | observed | static-decompile; M-148 | high; C028, build 25621760 |  | superseded-by F-716 |
 | F-360 | C028 +0x4a0 is 0x1418a9bb0: base 0x1418a9c80 then conditional +0x4b0 with context; +0xa0 base; +0x488 is 0x14189d380 | observed | static-decompile; M-148 | high; C028; context restoration unimplemented | U-061 | superseded-by F-716 |
 | F-361 | C028 post-load 0x14189d380: if a component integer <1, walks nested arrays and conditionally replaces names; never reads the archive argument | observed | static-decompile; M-148 | high; C028; migration semantics unresolved | U-061 | superseded-by F-716 |
+| F-272 | All five top string descriptors pass ten measured native batches after both-copy range preflight; first child session rejected, separate retry passed. | observed | tool-receipt | high; five descriptors; Old native top batch qualifies aggregate totals, not retained individual spans |  | superseded-by F-728 |
+| F-309 | D01 array children: tagged streams, 8 optional leaves (5 Int, 3 Str); Int demands 4 bytes; Str links to FString contract | observed | static-decompile; M-122; build 25621760 | medium; conditional grammar; Not populated-save agreement | U-048 | superseded-by F-728 |

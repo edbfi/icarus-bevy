@@ -1,8 +1,9 @@
 use icarus_bevy::experimental::restore_rules::{
-    ACTOR_RECORDER_TRANSFORM_TOLERANCE, ActorLink, LobbyPrivacy, OwnerResolvePolicy,
-    PROSPECT_SAVE_STATE_CURRENT_VERSION, PlayerList, RocketRestore, VOXEL_LOCATION_TOLERANCE,
-    can_activate_prospect_info, container_entries, migrate_prospect_save_state, names_match,
-    normalize_prospect_name, player_record_valid, prospect_ids_match, recorded_level,
+    ACTOR_RECORDER_TRANSFORM_TOLERANCE, ActorLink, ApplyTransformKind, LobbyPrivacy,
+    OwnerResolvePolicy, PROSPECT_SAVE_STATE_CURRENT_VERSION, PlayerList, RestoreStateKind,
+    RocketRestore, VOXEL_LOCATION_TOLERANCE, VersionUpgradeKind, can_activate_prospect_info,
+    container_entries, migrate_prospect_save_state, names_match, normalize_prospect_name,
+    player_record_valid, prospect_ids_match, recorded_level, recorder_restore_dispatch,
     recorder_transform_is_non_identity, remaining_cooldown, restored_elapsed_seconds,
     rocket_record_valid, rocket_restore, stitch, upgrade_actor_recorder_component_names,
     upright_rotation, voxel_location_matches, voxel_record_valid,
@@ -410,8 +411,14 @@ fn by_name_prospect_normalization_and_id_matching() {
         Some("Olympus_Run")
     );
     // Multi-byte UTF-8 characters crossing `len() - 5` must not panic.
-    assert_eq!(normalize_prospect_name("aa€€"), Some("aa€€"));
-    assert_eq!(normalize_prospect_name("aa€€.JSON"), Some("aa€€"));
+    assert_eq!(
+        normalize_prospect_name("aa\u{20ac}\u{20ac}"),
+        Some("aa\u{20ac}\u{20ac}")
+    );
+    assert_eq!(
+        normalize_prospect_name("aa\u{20ac}\u{20ac}.JSON"),
+        Some("aa\u{20ac}\u{20ac}")
+    );
 
     assert!(prospect_ids_match(
         &units("Olympus_Run"),
@@ -425,4 +432,81 @@ fn by_name_prospect_normalization_and_id_matching() {
     assert!(can_activate_prospect_info("Olympus_Run", ""));
     assert!(!can_activate_prospect_info("", ""));
     assert!(!can_activate_prospect_info("Olympus_Run", "Prior_Run"));
+}
+
+#[test]
+fn recorder_restore_dispatch_covers_all_38_classes_and_overrides() {
+    assert_eq!(recorder_restore_dispatch(0), None);
+    assert_eq!(recorder_restore_dispatch(39), None);
+
+    let mut base_subclasses = Vec::new();
+    let mut mount_restore_classes = Vec::new();
+    let mut grid_transform_classes = Vec::new();
+    let mut spline_transform_classes = Vec::new();
+
+    for ordinal in 1..=38 {
+        let dispatch = recorder_restore_dispatch(ordinal).expect("valid C001..C038 ordinal");
+        assert_eq!(dispatch.class_ordinal, ordinal);
+        assert!(dispatch.selected_property_count >= 5);
+        if dispatch.version_upgrade == VersionUpgradeKind::NoOp {
+            base_subclasses.push(ordinal);
+            assert_eq!(dispatch.restore_state, RestoreStateKind::BaseSerializeOnly);
+            assert_eq!(dispatch.apply_transform, ApplyTransformKind::NoOpTrue);
+        } else {
+            assert_eq!(
+                dispatch.version_upgrade,
+                VersionUpgradeKind::ActorTreePrimitiveToWood
+            );
+            if dispatch.restore_state == RestoreStateKind::MountActorUprightYaw {
+                mount_restore_classes.push(ordinal);
+            } else {
+                assert_eq!(
+                    dispatch.restore_state,
+                    RestoreStateKind::ActorWithContextTransform
+                );
+            }
+            match dispatch.apply_transform {
+                ApplyTransformKind::ActorAndBuildingGrid => grid_transform_classes.push(ordinal),
+                ApplyTransformKind::ActorAndSplinePoints => spline_transform_classes.push(ordinal),
+                other => assert_eq!(other, ApplyTransformKind::ActorTransformOnly),
+            }
+        }
+    }
+
+    assert_eq!(base_subclasses, vec![13, 14, 22, 25, 35, 36, 37]);
+    assert_eq!(mount_restore_classes, vec![17]);
+    assert_eq!(grid_transform_classes, vec![4]);
+    assert_eq!(spline_transform_classes, vec![32]);
+
+    // Spot-check selected property counts for C001, C009, C013, C028, C034.
+    assert_eq!(
+        recorder_restore_dispatch(1)
+            .unwrap()
+            .selected_property_count,
+        20
+    );
+    assert_eq!(
+        recorder_restore_dispatch(9)
+            .unwrap()
+            .selected_property_count,
+        31
+    );
+    assert_eq!(
+        recorder_restore_dispatch(13)
+            .unwrap()
+            .selected_property_count,
+        5
+    );
+    assert_eq!(
+        recorder_restore_dispatch(28)
+            .unwrap()
+            .selected_property_count,
+        23
+    );
+    assert_eq!(
+        recorder_restore_dispatch(34)
+            .unwrap()
+            .selected_property_count,
+        21
+    );
 }

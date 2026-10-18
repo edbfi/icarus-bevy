@@ -4,8 +4,9 @@
 
 Experimental: pure rules in `experimental::restore_rules`, tested in
 `tests/restore_rules.rs`; the server does not call them and an interpreted
-import stays gated (U-045). Scope: client 25793767 recorder code, offsets equal
-in server 25621760. Last reconciled: 2026-10-15.
+import stays gated (U-045). Scope: client 25793767 recorder code, offsets and
+all 65 `RecorderComponent` `FClassParams` equal in server 25621760 (F-727, F-728;
+U-021, U-032, U-046, U-048, U-050 resolved). Last reconciled: 2026-10-18.
 
 ## Scope
 
@@ -15,6 +16,15 @@ data-table row meanings (F-660).
 
 ## Confirmed
 
+- Across all 38 `StateRecorderBlobs` classes (`C001`..`C038`), `recorder_restore_dispatch`
+  encodes the verified vtable table (`F-727`): all 38 inherit `UObject::Serialize`
+  (`+0xa0`, `0x1418aaf70`); all 31 `UActorStateRecorderComponent` classes (`C001`
+  subclasses) inherit `+0x488 = 0x14189d380` (`TreePrimitive` -> `Wood` when
+  `RecordedVersion < 1`), while the 7 direct `UIcarusStateRecorderComponent`
+  classes (`C013`, `C014`, `C022`, `C025`, `C035..C037`) inherit no-op `+0x488`;
+  only `C017` overrides `+0x4a0` (`0x141400150`, zeroing pitch/roll on
+  `ActorTransform.Rotation`), and only `C004` (`0x141888270`) and `C032`
+  (`0x1418c5cd0`) override `+0x4b0` (`ApplyRecorderTransform`).
 - Stitching takes the first spawned actor with the saved Icarus id and a
   matching name (F-650, F-676): equal lengths, ASCII case-insensitive, other
   units exact (F-663).
@@ -55,5 +65,6 @@ data-table row meanings (F-660).
 
 ## Evidence
 
-F-645, F-648, F-650 to F-653, F-657, F-660, F-663, F-676, F-677, F-680, F-681;
-M-642, M-666, M-682, M-683, M-687 to M-692, M-694, M-695, M-698.
+F-645, F-648, F-650 to F-653, F-657, F-660, F-663, F-676, F-677, F-680, F-681,
+F-716, F-727, F-728; M-642, M-666, M-682, M-683, M-687 to M-692, M-694, M-695,
+M-698, M-755, M-756, M-768, M-769.

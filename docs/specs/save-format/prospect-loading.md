@@ -175,9 +175,11 @@ Acceptance conditions for any importer
 
 ## Candidate
 
-- Base-component framing is verified across builds for C001, C013, C028 and C034
-  (F-669, F-670, F-716, F-720, F-722); native interpreted import stays gated
-  (U-025, U-045).
+- Base-component framing and all 65 `RecorderComponent` `FClassParams` (including
+  all 38 `StateRecorderBlobs` classes' `+0xa0`/`+0x488`/`+0x4a0`/`+0x4b0` overrides)
+  are verified across builds (`recorder_restore_dispatch`, F-669, F-670, F-716, F-720,
+  F-722, F-727, F-728; U-021, U-024, U-032, U-046, U-048, U-050 resolved); native
+  interpreted import stays gated (U-025, U-045).
 - C001 (four records): getter `0x1419fe200` (`.pdata` 103518), construction
   callback `0x1419fe870` (305 B, `.pdata` 103538) and constructor `0x141788530`
   (296 B, `.pdata` 95461) are complete functions that call base constructor
@@ -196,13 +198,13 @@ Acceptance conditions for any importer
   input digest, truncation point, logs, exit status and before/after state
   against an unchanged valid fixture, with Proton/platform effects separated
   (U-063, U-047).
-- Values, empty families and other classes (U-020, U-021, U-022, U-032, U-046, U-048, U-050);
-  native interpreted import and newer-build compatibility (U-025, U-045).
+- Packaged row meanings and Name identities (U-020, U-022); native interpreted
+  import and newer-build compatibility (U-025, U-045).
 
 ## Evidence
 
 - Static: M-147, M-148, M-143, M-149, M-150, M-119, M-122, M-123, M-079, M-094,
-  M-096, M-100, M-170, M-755..M-762; runtime and reports: M-154, M-155, M-160.
+  M-096, M-100, M-170, M-755..M-762, M-768, M-769; runtime and reports: M-154, M-155, M-160.
 - Framing receipts: M-118, M-172, M-087..M-093, M-095, M-097..M-103, M-106,
   M-058..M-070, M-049..M-055; C001: M-007, M-008, M-011, M-013, M-173, M-179, M-180, M-181, M-761, M-762.
 - Tests: `tests/tagged.rs`, `tests/recorders.rs`, `tests/component.rs`,
