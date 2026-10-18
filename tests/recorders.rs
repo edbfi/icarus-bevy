@@ -937,14 +937,8 @@ fn staged_prospect_save_state_runs_recorder_validate_and_tracks_tree_dynamics() 
         .concat(),
     );
 
-    // 4. C026 PlayerStateRecorderComponent with version 0 -> retained even if player missing.
-    let rec_c026_legacy = recorder_element(
-        "/Script/Icarus.PlayerStateRecorderComponent",
-        &player_char_id_struct("PlayerCharacterID", "user-missing", 9),
-    );
-
-    // 5. C026 PlayerStateRecorderComponent with version 1 and missing player -> invalid.
-    let rec_c026_invalid = recorder_element(
+    // 4. C026 PlayerStateRecorderComponent with version 1 and matching ("user-beta", 0) -> retained.
+    let rec_c026_valid = recorder_element(
         "/Script/Icarus.PlayerStateRecorderComponent",
         &[
             tag(
@@ -954,15 +948,30 @@ fn staged_prospect_save_state_runs_recorder_validate_and_tracks_tree_dynamics() 
                 &[0],
                 &1_i32.to_le_bytes(),
             ),
-            player_char_id_struct("PlayerCharacterID", "user-missing", 9),
+            player_char_id_struct("PlayerCharacterID", "user-beta", 0),
         ]
         .concat(),
     );
 
-    // 6. C028 ResourceDepositRecorderComponent with default ResourceDTKey = None -> invalid.
-    let rec_c028_invalid = recorder_element("/Script/Icarus.ResourceDepositRecorderComponent", &[]);
+    // 5. C026 PlayerStateRecorderComponent with version 0 -> invalid (UPlayerStateRecorderComponent::Validate 0x1418f9e80 requires Version >= 1).
+    let rec_c026_legacy_invalid = recorder_element(
+        "/Script/Icarus.PlayerStateRecorderComponent",
+        &player_char_id_struct("PlayerCharacterID", "user-beta", 0),
+    );
 
-    // 7. C028 ResourceDepositRecorderComponent with non-None ResourceDTKey -> retained.
+    // 6. C028 ResourceDepositRecorderComponent with ResourceDTKey = "Super_Cooled_Ice" -> invalid (0x1418f9f20).
+    let rec_c028_invalid = recorder_element(
+        "/Script/Icarus.ResourceDepositRecorderComponent",
+        &tag(
+            "ResourceDTKey",
+            "NameProperty",
+            0,
+            &[0],
+            &string("Super_Cooled_Ice"),
+        ),
+    );
+
+    // 7. C028 ResourceDepositRecorderComponent with non-ice ResourceDTKey -> retained.
     let rec_c028_valid = recorder_element(
         "/Script/Icarus.ResourceDepositRecorderComponent",
         &tag(
@@ -1040,8 +1049,8 @@ fn staged_prospect_save_state_runs_recorder_validate_and_tracks_tree_dynamics() 
         rec_c011_reset,
         rec_c025_valid,
         rec_c025_invalid,
-        rec_c026_legacy,
-        rec_c026_invalid,
+        rec_c026_valid,
+        rec_c026_legacy_invalid,
         rec_c028_invalid,
         rec_c028_valid,
         rec_c029_invalid,
@@ -1064,7 +1073,7 @@ fn staged_prospect_save_state_runs_recorder_validate_and_tracks_tree_dynamics() 
     );
     let stream = [
         tag("Version", "IntProperty", 0, &[0], &2_i32.to_le_bytes()),
-        info,
+        info.clone(),
         blobs,
         END.to_vec(),
     ]
@@ -1077,4 +1086,34 @@ fn staged_prospect_save_state_runs_recorder_validate_and_tracks_tree_dynamics() 
     assert_eq!(staged.retained_recorder_count, 7);
     assert_eq!(staged.reset_rocket_spawn_recorder_count, 1);
     assert_eq!(staged.physics_dynamic_tree_recorder_count, 1);
+
+    // Malformed RocketRecorderVersion (wrong tag kind) on C029 fails closed.
+    let bad_c029 = recorder_element(
+        "/Script/Icarus.RocketRecorderComponent",
+        &tag(
+            "RocketRecorderVersion",
+            "StrProperty",
+            0,
+            &[0],
+            &string("bad"),
+        ),
+    );
+    let bad_blobs = tag(
+        "StateRecorderBlobs",
+        "ArrayProperty",
+        0,
+        &[string("StructProperty"), vec![0]].concat(),
+        &[&1_i32.to_le_bytes(), shared(&bad_c029).as_slice()].concat(),
+    );
+    let bad_stream = [
+        tag("Version", "IntProperty", 0, &[0], &2_i32.to_le_bytes()),
+        info,
+        bad_blobs,
+        END.to_vec(),
+    ]
+    .concat();
+    let parsed_bad = read_root(&bad_stream, PROFILE).unwrap();
+    assert!(
+        stage_prospect_save_state(&parsed_bad.tags, PROFILE, MAX_COMPONENT_BYTES, None).is_err()
+    );
 }

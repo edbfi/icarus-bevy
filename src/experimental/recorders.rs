@@ -953,6 +953,11 @@ fn evaluate_staged_recorder_component(
                 );
                 (player_id, chr_slot) =
                     parse_player_character_id_struct(prop.tag.payload, profile)?;
+            } else if is_name(&prop.name, "RocketRecorderVersion") {
+                ensure!(
+                    prop.tag.kind == TagKind::Int && prop.index == 0 && prop.tag.payload.len() == 4,
+                    "RocketRecorderVersion must be 4-byte IntProperty"
+                );
             }
         }
         let list = resolve_prospect_player_list(

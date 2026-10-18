@@ -2,23 +2,27 @@ use icarus_bevy::experimental::restore_rules::{
     ACTOR_RECORDER_TRANSFORM_TOLERANCE, ActorLink, ApplyTransformKind, AttachRecorderOutcome,
     ByNameLoadOutcome, DynamicItemPropertyKind, InventorySlotOverflowDisposition, LobbyPrivacy,
     OwnerResolvePolicy, OwnerResolveStep, PROSPECT_SAVE_STATE_CURRENT_VERSION, PlayerList,
-    ProspectAssociatedMember, ProspectBlobDecodeOutcome, RESTORED_INDEFINITE_MODIFIER_LIFETIME,
-    RestoreStateKind, RocketRestore, SetupLoadedProspectOutcome, VOXEL_LOCATION_TOLERANCE,
-    VersionUpgradeKind, can_activate_prospect_info, container_entries,
+    PlayerStateLifeRestore, ProspectAssociatedMember, ProspectBlobDecodeOutcome,
+    RESTORED_INDEFINITE_MODIFIER_LIFETIME, RestoreStateKind, RocketRestore,
+    SetupLoadedProspectOutcome, StitchedPlayerRecorderLinks, VOXEL_LOCATION_TOLERANCE,
+    VersionUpgradeKind, VoxelDatabaseRestorePlan, can_activate_prospect_info, container_entries,
     does_actor_recorder_match_actor, does_player_recorder_match_actor,
     does_player_state_recorder_match_actor, does_state_recorder_match_actor,
     does_voxel_recorder_match_actor, evaluate_attach_recorder_to_actor,
-    evaluate_by_name_load_attempt, evaluate_owner_resolve_step, evaluate_prospect_blob_decode,
-    evaluate_setup_loaded_prospect_attempt, migrate_prospect_save_state, names_match,
-    normalize_prospect_name, normalize_restored_modifier_lifetime, player_record_valid,
-    prospect_ids_match, record_weather_event_elapsed, recorded_level, recorder_restore_dispatch,
+    evaluate_by_name_load_attempt, evaluate_owner_resolve_step, evaluate_player_state_life_restore,
+    evaluate_prospect_blob_decode, evaluate_setup_loaded_prospect_attempt,
+    evaluate_voxel_database_restore, filter_restored_cosmetic_armour_overrides,
+    migrate_prospect_save_state, names_match, normalize_prospect_name,
+    normalize_restored_modifier_lifetime, player_record_valid, prospect_ids_match,
+    record_weather_event_elapsed, recorded_level, recorder_restore_dispatch,
     recorder_transform_is_non_identity, remaining_cooldown, replicated_prospect_game_time,
     resolve_cave_ai_class_name, resolve_inventory_slot_restore,
     resolve_item_recorder_database_guid, resolve_prospect_player_list,
     resource_deposit_record_valid, restored_elapsed_seconds, restored_weather_event_start_time,
     rocket_record_valid, rocket_restore, should_auto_activate_respawned_drill,
-    should_record_weather_event, should_restore_actor_transform,
-    should_try_fast_path_prebuilt_grid_restore, stitch, stitch_trapped_character_guids,
+    should_grant_deposit_map_icon_stat, should_record_weather_event,
+    should_restore_actor_transform, should_try_fast_path_prebuilt_grid_restore, stitch,
+    stitch_player_recorder_assigned_uids, stitch_trapped_character_guids,
     upgrade_actor_recorder_component_names, upright_rotation, upsert_recorded_variable,
     validate_rocket_spawn_record, voxel_location_matches, voxel_record_valid,
 };
@@ -82,6 +86,25 @@ fn stitching_needs_both_id_and_name() {
     assert_eq!(
         stitch_trapped_character_guids(-1, &[], &[10, 20, 30]),
         Vec::<i32>::new()
+    );
+
+    // C025 UPlayerRecorderComponent::Stitching (0x1418f5160 / 0x1418f58a0):
+    // skips 0 UIDs and resolves each non-zero UID to the first matching GUID in its class bucket.
+    assert_eq!(
+        stitch_player_recorder_assigned_uids(0, 202, 303, &[0, 101], &[201, 202, 202], &[301, 302],),
+        StitchedPlayerRecorderLinks {
+            dropship_spawn_index: None,
+            dropship_index: Some(1),
+            gravestone_index: None,
+        }
+    );
+    assert_eq!(
+        stitch_player_recorder_assigned_uids(101, 0, 303, &[100, 101], &[202], &[303, 304]),
+        StitchedPlayerRecorderLinks {
+            dropship_spawn_index: Some(1),
+            dropship_index: None,
+            gravestone_index: Some(0),
+        }
     );
 }
 
@@ -297,6 +320,48 @@ fn unrecorded_levels_are_skipped() {
     assert_eq!(recorded_level(-1), None);
     assert_eq!(recorded_level(0), Some(0));
     assert_eq!(recorded_level(-2), Some(-2));
+
+    // C026 UPlayerStateRecorderComponent::UpdateOwnerToDatabaseState (0x1418f7320 / 0x1418f79f0)
+    // and Stitching (0x1418f5540 / 0x1418f5c80).
+    assert_eq!(
+        evaluate_player_state_life_restore(true, 450, true),
+        PlayerStateLifeRestore::Alive {
+            set_health: Some(450)
+        }
+    );
+    assert_eq!(
+        evaluate_player_state_life_restore(true, -1, false),
+        PlayerStateLifeRestore::Alive { set_health: None }
+    );
+    assert_eq!(
+        evaluate_player_state_life_restore(false, 450, true),
+        PlayerStateLifeRestore::Dead {
+            mark_stat_component_dead: true,
+            kill_character_on_stitch: true,
+        }
+    );
+    assert_eq!(
+        evaluate_player_state_life_restore(false, 0, false),
+        PlayerStateLifeRestore::Dead {
+            mark_stat_component_dead: true,
+            kill_character_on_stitch: false,
+        }
+    );
+
+    // C026 CosmeticArmourOverrides restore filters invalid row handles and deduplicates in order.
+    let (deduped, should_apply) = filter_restored_cosmetic_armour_overrides(&[
+        ("Armour_Head_A", true),
+        ("Armour_Chest_Invalid", false),
+        ("Armour_Head_A", true),
+        ("Armour_Arms_B", true),
+    ]);
+    assert!(should_apply);
+    assert_eq!(deduped, vec!["Armour_Head_A", "Armour_Arms_B"]);
+
+    let (empty_deduped, empty_apply) =
+        filter_restored_cosmetic_armour_overrides(&[("Armour_Invalid", false)]);
+    assert!(!empty_apply);
+    assert!(empty_deduped.is_empty());
 }
 
 #[test]
@@ -431,6 +496,12 @@ fn prospect_player_list_resolution_rocket_spawn_reset_and_deposit_filter() {
     assert!(!resource_deposit_record_valid(&units("super_cooled_ice")));
     assert!(resource_deposit_record_valid(&units("Iron_Deep_Ore")));
     assert!(resource_deposit_record_valid(&units("Exotic_Red")));
+
+    // C028 UResourceDepositRecorderComponent::UpdateOwnerToDatabaseState (0x1418f76c0 / 0x1418f7d90)
+    // grants +1 to stat 0xbe (190) iff bShowMapIcon is true and GetStat(0xbe) == 0.
+    assert!(should_grant_deposit_map_icon_stat(true, 0));
+    assert!(!should_grant_deposit_map_icon_stat(true, 1));
+    assert!(!should_grant_deposit_map_icon_stat(false, 0));
 }
 
 #[test]
@@ -563,6 +634,59 @@ fn only_fully_mined_respawned_voxels_fail_validation() {
         assert!(voxel_record_valid(policy, true));
         assert!(voxel_record_valid(policy, false));
     }
+
+    // UVoxelRecorderComponent::UpdateOwnerToDatabaseState (0x1418f7bb0 / 0x1418f8280):
+    // 1. Respawned partially mined voxel with explicit spheres and positive TotalResourceCount.
+    assert_eq!(
+        evaluate_voxel_database_restore(OwnerResolvePolicy::RespawnOnly, false, 3, false, 180.0),
+        VoxelDatabaseRestorePlan {
+            apply_respawned_world_scale: true,
+            synthesize_full_bounds_sphere: false,
+            restore_mined_voxels_and_counters: true,
+            override_total_resource_count: Some(180.0),
+        }
+    );
+    // 2. ManuallyResolved fully mined voxel with empty MinedSpheres synthesizes 1 full-bounds sphere.
+    assert_eq!(
+        evaluate_voxel_database_restore(OwnerResolvePolicy::ManuallyResolved, true, 0, false, 0.0),
+        VoxelDatabaseRestorePlan {
+            apply_respawned_world_scale: false,
+            synthesize_full_bounds_sphere: true,
+            restore_mined_voxels_and_counters: true,
+            override_total_resource_count: None,
+        }
+    );
+    // 3. Disabled actor bit ([AVoxelResource + 0x548] & 0x1000 != 0) or 0 effective spheres skips voxel/counter restore.
+    assert_eq!(
+        evaluate_voxel_database_restore(
+            OwnerResolvePolicy::ManuallyResolved,
+            false,
+            2,
+            true,
+            180.0
+        ),
+        VoxelDatabaseRestorePlan {
+            apply_respawned_world_scale: false,
+            synthesize_full_bounds_sphere: false,
+            restore_mined_voxels_and_counters: false,
+            override_total_resource_count: None,
+        }
+    );
+    assert_eq!(
+        evaluate_voxel_database_restore(
+            OwnerResolvePolicy::ManuallyResolved,
+            false,
+            0,
+            false,
+            180.0
+        ),
+        VoxelDatabaseRestorePlan {
+            apply_respawned_world_scale: false,
+            synthesize_full_bounds_sphere: false,
+            restore_mined_voxels_and_counters: false,
+            override_total_resource_count: None,
+        }
+    );
 }
 
 #[test]

@@ -92,6 +92,48 @@ pub fn stitch_trapped_character_guids(
         .collect()
 }
 
+/// Resolved actor-array indices for `UPlayerRecorderComponent::Stitching`
+/// (`C025`, `vftable + 0x468`: `0x1418f5160` server / `0x1418f58a0` client)
+/// (F-648, F-650).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct StitchedPlayerRecorderLinks {
+    pub dropship_spawn_index: Option<usize>,
+    pub dropship_index: Option<usize>,
+    pub gravestone_index: Option<usize>,
+}
+
+/// Evaluates `UPlayerRecorderComponent::Stitching` (`C025`, `vftable + 0x468`:
+/// `0x1418f5160` server / `0x1418f58a0` client) across `SpawnedActors` buckets
+/// for `ADropshipSpawnPoint`, `ARocket`, and `AGravestone` (F-648, F-650).
+///
+/// For each of `AssignedDropshipSpawnUID` (`+0xf0`), `AssignedDropshipUID`
+/// (`+0xf4`), and `AssignedGravestoneUID` (`+0xf8`), a saved UID of `0`
+/// (`cmp ..., 0; je ...`) skips scanning (`None`); any non-zero UID resolves to
+/// the index of the first non-pending-kill actor in the corresponding class
+/// slice whose `IcarusActorGUID` (`+0x230` -> `vtable + 0x10`) equals the saved
+/// UID.
+pub fn stitch_player_recorder_assigned_uids(
+    assigned_dropship_spawn_uid: i32,
+    assigned_dropship_uid: i32,
+    assigned_gravestone_uid: i32,
+    spawned_dropship_spawn_guids: &[i32],
+    spawned_dropship_guids: &[i32],
+    spawned_gravestone_guids: &[i32],
+) -> StitchedPlayerRecorderLinks {
+    let find_uid = |target_uid: i32, candidates: &[i32]| -> Option<usize> {
+        if target_uid == 0 {
+            None
+        } else {
+            candidates.iter().position(|guid| *guid == target_uid)
+        }
+    };
+    StitchedPlayerRecorderLinks {
+        dropship_spawn_index: find_uid(assigned_dropship_spawn_uid, spawned_dropship_spawn_guids),
+        dropship_index: find_uid(assigned_dropship_uid, spawned_dropship_guids),
+        gravestone_index: find_uid(assigned_gravestone_uid, spawned_gravestone_guids),
+    }
+}
+
 /// Whether a voxel record belongs to an owner at `actual` (F-645): every axis
 /// within [`VOXEL_LOCATION_TOLERANCE`] inclusive. A NaN on either side never
 /// matches. An owner without a root component is at the origin.
@@ -255,6 +297,64 @@ impl OwnerResolvePolicy {
 /// mined record.
 pub fn voxel_record_valid(policy: OwnerResolvePolicy, fully_mined: bool) -> bool {
     !(fully_mined && policy == OwnerResolvePolicy::RespawnOnly)
+}
+
+/// Actions selected by `UVoxelRecorderComponent::UpdateOwnerToDatabaseState`
+/// (`0x1418f7bb0` server / `0x1418f8280` client, shared by `C031`
+/// `USpawnedVoxelRecorderComponent` and `C034` `UVoxelRecorderComponent`)
+/// (F-645, F-680).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct VoxelDatabaseRestorePlan {
+    /// When `OwnerResolvePolicy == RespawnOnly (1)` (`[this + 0xb2] == 1`),
+    /// calls `USceneComponent::SetWorldScale3D` (`0x143348660` server /
+    /// `0x1435deac0` client) on `AVoxelResource->RootComponent` (`+0x130`) with
+    /// the saved scale from `ActorTransform` (`+0x100`).
+    pub apply_respawned_world_scale: bool,
+    /// When `bIsVoxelFullyMined` (`+0x1d0`) is `true` and `MinedSpheres.Num()`
+    /// (`+0x1c8`) is `0`, synthesizes one full-bounds sphere centered at the
+    /// mesh component bounds with radius `SphereRadius * 1.1` (`0x1452ac3cc`).
+    pub synthesize_full_bounds_sphere: bool,
+    /// When `[AVoxelResource + 0x548]` bit `0x1000` (`actor_disabled_bit_set`)
+    /// is clear and the effective sphere list (`MinedSpheres` after optional
+    /// synthesis) is non-empty, applies the mined spheres to octree voxels and
+    /// copies `CurrentUnminedVoxels` (`+0x1d8 -> +0x590`) and
+    /// `NumResourcesGranted` (`+0x1dc -> +0x594`).
+    pub restore_mined_voxels_and_counters: bool,
+    /// When `restore_mined_voxels_and_counters` is `true` and saved
+    /// `TotalResourceCount` (`+0x1ec`) is `> 0.0`, overwrites
+    /// `AVoxelResource->TotalResourceCount` (`+0x45c`).
+    pub override_total_resource_count: Option<f32>,
+}
+
+/// Evaluates `UVoxelRecorderComponent::UpdateOwnerToDatabaseState`
+/// (`0x1418f7bb0` server / `0x1418f8280` client) (F-645, F-680).
+pub fn evaluate_voxel_database_restore(
+    policy: OwnerResolvePolicy,
+    b_is_voxel_fully_mined: bool,
+    saved_mined_sphere_count: usize,
+    actor_disabled_bit_set: bool,
+    saved_total_resource_count: f32,
+) -> VoxelDatabaseRestorePlan {
+    let apply_respawned_world_scale = policy == OwnerResolvePolicy::RespawnOnly;
+    let synthesize_full_bounds_sphere = b_is_voxel_fully_mined && saved_mined_sphere_count == 0;
+    let effective_sphere_count = if synthesize_full_bounds_sphere {
+        1
+    } else {
+        saved_mined_sphere_count
+    };
+    let restore_mined_voxels_and_counters = !actor_disabled_bit_set && effective_sphere_count > 0;
+    let override_total_resource_count =
+        if restore_mined_voxels_and_counters && saved_total_resource_count > 0.0 {
+            Some(saved_total_resource_count)
+        } else {
+            None
+        };
+    VoxelDatabaseRestorePlan {
+        apply_respawned_world_scale,
+        synthesize_full_bounds_sphere,
+        restore_mined_voxels_and_counters,
+        override_total_resource_count,
+    }
 }
 
 /// Outcome of the owner-resolution step in `StitchAndResolveRecorders`
@@ -442,6 +542,20 @@ pub const fn should_restore_actor_transform(b_record_actor_transform: bool) -> b
     b_record_actor_transform
 }
 
+/// Whether `UResourceDepositRecorderComponent::UpdateOwnerToDatabaseState`
+/// (`C028`, `0x1418f76c0` server / `0x1418f7d90` client) grants `+1` to stat
+/// `0xbe` (`190`) via `UStatComponent::AddStat` (`0x14178be60` server /
+/// `0x141798d10` client) after restoring `ResourceNode` (`+0x1c0 -> +0x2d0`)
+/// and `bShowMapIcon` (`+0x1cc -> +0x2dc`): requires `b_show_map_icon` to be
+/// `true` and `UStatComponent::GetStat(StatComponent, 0xbe)` (`0x1417a7a80`
+/// server / `0x1417b4140` client) to equal `0` (F-645).
+pub const fn should_grant_deposit_map_icon_stat(
+    b_show_map_icon: bool,
+    current_map_icon_stat: i32,
+) -> bool {
+    b_show_map_icon && current_map_icon_stat == 0
+}
+
 /// The engine's float-to-int truncation: out-of-range and NaN inputs give
 /// `i32::MIN`, as the x86 truncating conversion does.
 fn truncate(value: f32) -> i32 {
@@ -525,6 +639,73 @@ pub fn restored_elapsed_seconds(saved_elapsed: i32, game_time: f32) -> i32 {
 /// A saved survival level, or `None` when it was not recorded (F-648).
 pub fn recorded_level(saved: i32) -> Option<i32> {
     (saved != UNRECORDED_LEVEL).then_some(saved)
+}
+
+/// How `UPlayerStateRecorderComponent::UpdateOwnerToDatabaseState` (`C026`,
+/// `vftable + 0x460`: `0x1418f7320` server / `0x1418f79f0` client) and
+/// `UPlayerStateRecorderComponent::Stitching` (`vftable + 0x468`: `0x1418f5540`
+/// server / `0x1418f5c80` client) restore life/health state on
+/// `AIcarusPlayerCharacter` (F-648).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PlayerStateLifeRestore {
+    /// `bIsAlive` (`+0x1f0`) is `true`: `UpdateOwnerToDatabaseState` calls
+    /// `UIcarusStatComponent::SetHealth` (`0x141444cd0` server / `0x141482ce0`
+    /// client) on `Character->StatComponent` (`+0x5a8`) iff `saved_health`
+    /// (`+0x1f4`) is not `-1` ([`UNRECORDED_LEVEL`]); `Stitching` is a no-op.
+    Alive { set_health: Option<i32> },
+    /// `bIsAlive` (`+0x1f0`) is `false`: `UpdateOwnerToDatabaseState` sets
+    /// `StatComponent + 0x494 = 1` without calling `SetHealth`, and `Stitching`
+    /// invokes the death transition (`0x141c09e10` server / `0x141bfe650`
+    /// client) iff `AIcarusPlayerCharacter::GetIcarusPlayerController`
+    /// (`0x141428bb0` server / `0x141465f50` client) returns a valid controller.
+    Dead {
+        mark_stat_component_dead: bool,
+        kill_character_on_stitch: bool,
+    },
+}
+
+/// Evaluates `C026` (`UPlayerStateRecorderComponent`) life/health restoration
+/// across `UpdateOwnerToDatabaseState` (`+0x460`) and `Stitching` (`+0x468`)
+/// (F-648).
+pub fn evaluate_player_state_life_restore(
+    b_is_alive: bool,
+    saved_health: i32,
+    has_valid_player_controller: bool,
+) -> PlayerStateLifeRestore {
+    if b_is_alive {
+        PlayerStateLifeRestore::Alive {
+            set_health: recorded_level(saved_health),
+        }
+    } else {
+        PlayerStateLifeRestore::Dead {
+            mark_stat_component_dead: true,
+            kill_character_on_stitch: has_valid_player_controller,
+        }
+    }
+}
+
+/// Filters and deduplicates `CosmeticArmourOverrides` (`+0x228`) as
+/// `UPlayerStateRecorderComponent::UpdateOwnerToDatabaseState` (`C026`,
+/// `0x1418f754f..0x1418f7685` server / `0x1418f79f0` client) does (F-648).
+///
+/// Each saved `(row, is_row_handle_valid)` entry is retained only when
+/// `FRowHandle::IsValid` (`0x143da9940` server / `0x143f855d0` client) is `true`
+/// and `TArray<FItemsStaticRowHandle>::AddUnique` (`0x1414c9dc0` server /
+/// `0x1414fe510` client) has not already accepted an equal row handle. Returns
+/// `(deduped_valid_rows, should_apply_and_rep)`: `Character + 0xa80` is
+/// overwritten and `AIcarusPlayerCharacter::OnRep_CosmeticArmourOverrides`
+/// (`0x141476bf0` server) is called iff `deduped_valid_rows` is non-empty.
+pub fn filter_restored_cosmetic_armour_overrides<T: PartialEq + Clone>(
+    entries: &[(T, bool)],
+) -> (Vec<T>, bool) {
+    let mut deduped = Vec::new();
+    for (row, is_valid) in entries {
+        if *is_valid && !deduped.contains(row) {
+            deduped.push(row.clone());
+        }
+    }
+    let should_apply_and_rep = !deduped.is_empty();
+    (deduped, should_apply_and_rep)
 }
 
 /// A restored mount's rotation (F-651): the saved quaternion `[x, y, z, w]`

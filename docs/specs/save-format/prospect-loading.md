@@ -9,11 +9,11 @@ Full text: d5b0ae6:docs/specs/save-format/prospect-loading.md
 
 The two original prospect-load entry paths, inner `ProspectSaveState` type and
 version fixups, archive-mode dispatch, recorder and base-component framing, and
-the static contracts and framing populations of C013, C028, C034 and C009 (with
-nested D01) in the two supplied copies. Envelope: [envelope inspection](prospect-envelope.md);
-tag grammar, gates and readers: [tagged properties](tagged-properties.md); strings:
-[archive strings](archive-string.md); restoration rules: [restore rules](restore-rules.md).
-Not covered: gameplay data-table row meanings, reference resolution and world import.
+C013, C028, C034 and C009 (with nested D01) framing across the two supplied
+copies. Envelope: [envelope inspection](prospect-envelope.md); tags:
+[tagged properties](tagged-properties.md); strings: [archive strings](archive-string.md);
+restoration: [restore rules](restore-rules.md). Not covered: gameplay data-table
+row meanings, reference resolution and world import.
 
 ## Confirmed
 
@@ -40,7 +40,7 @@ Inner state, version and archive mode
 
 - State vtable `0x1449e5c88` registers `ProspectSaveState`; header vtable
   `0x1449e5c70` registers `ProspectSaveStateHeader`; sizes `0xf8`/`0xe8` (F-328, F-329).
-  Reflected `FProspectInfo` (`0x145fae2d0`, size `0xa0`, 17 properties) carries
+  Reflected `FProspectInfo` (`0x145fae2d0`, `0xa0` B, 17 fields) carries
   `ProspectID` (`+0x00`), `ClaimedAccountID` (`+0x10`), `ClaimedAccountCharacter`
   (`+0x20`), `ProspectDTKey` (`+0x28`), `FactionMissionDTKey` (`+0x38`),
   `LobbyName` (`+0x48`), `ExpireTime` (`+0x58`, `Int64Property`), `ProspectState`
@@ -88,31 +88,31 @@ Recorders and base component
 - Restore `0x1414b83c0` resolves the class string, constructs the component and
   calls `+0x4a0` (`0x1418a9c80` -> `+0xa0` = `0x1418aaf70` -> `0x14200ea70`
   tagged with `CPF_SaveGame` `0x01000000`, then a 4-byte GUID-trailer boolean
-  and `+0x488` version-upgrade hook; F-342 to F-347, F-669).
+  and `+0x488` version-upgrade hook; F-342..F-347, F-669).
 
 C013, C028, C034, C009 and D01
 
 - `C013` (`UFLODRecorderComponent`): base load/serialize/post-load; two 548-byte
   bodies (5 properties, zero trailer, exact EOF); saves `FLODTiles.Num()` to
   `+0xd8` on record (`0x1418a1850`), compacts `FLODTiles` on stitch
-  (`0x1418ad0c0`), and ignores `+0xd8` on restore (F-248, F-350 to F-353, F-646,
+  (`0x1418ad0c0`), and ignores `+0xd8` on restore (F-248, F-350..F-353, F-646,
   F-716; U-039 resolved).
 - `C028` (`UActorStateRecorderComponent` subclass): `+0x4a0` = `0x1418a9bb0`
-  calls `+0x4b0` (`ApplyRecorderTransform`) only when context `FTransform`
-  differs from `Identity` (`> 1e-4`), and `+0x488` = `0x14189d380` upgrades
-  `TreePrimitive` -> `Wood` when `recorder_version < 1` (F-645, F-716; U-061
-  resolved). All 1,294 bodies frame (23 fields; 6 tagged direct structs; binary
-  `N01` 16 B / `N02` 12 B; 9,058 empty struct arrays via `0x1421580d0`; F-116,
-  F-123 to F-141, F-259, F-363 to F-374, F-655, F-720; U-030 resolved).
+  calls `+0x4b0` (`ApplyRecorderTransform`) when context `FTransform` !=
+  `Identity` (`> 1e-4`), and `+0x488` = `0x14189d380` upgrades `TreePrimitive`
+  -> `Wood` if `recorder_version < 1` (F-645, F-716; U-061 resolved). All 1,294
+  bodies frame (23 fields; 6 tagged direct structs; binary `N01` 16 B / `N02`
+  12 B; 9,058 empty struct arrays via `0x1421580d0`; F-116, F-123..F-141, F-259,
+  F-363..F-374, F-655, F-720; U-030 resolved).
 - `C034`: base load/serialize, `C028` post-load; 21 optional fields; 829 records
-  per copy; own struct-array child `0x145ee1220` carries tagged optional `N02`
-  (12 B) + `Float` (4 B), matching across both builds (F-146 to F-153, F-188,
-  F-195, F-196, F-211, F-376 to F-385, F-659, F-664, F-720; U-029, U-031 resolved).
+  per copy; struct-array child `0x145ee1220` carries tagged optional `N02` (12 B)
+  + `Float` (4 B) across both builds (F-146..F-153, F-188, F-195, F-196, F-211,
+  F-376..F-385, F-659, F-664, F-720; U-029, U-031 resolved).
 - `C009` and `D01` (`FInventorySlotSaveData`): 31 optional top fields (486 bodies,
   max 71,956 B; `S02` `ArrayProperty<IntProperty>` + `Bool`, `S01` `Str` + `Int`;
   parents `PA01..PA04`/`PS01`; common `CA01` up to 66,257 B and `ND01` up to
   66,056 B; `D01` 8 optional fields and 14 `EDynamicItemProperties` `0..=13` on
-  restore; F-155 to F-203, F-386 to F-400, F-728, F-735; U-020 resolved).
+  restore; F-155..F-203, F-386..F-400, F-728, F-735; U-020 resolved).
 
 Acceptance conditions for any importer
 
@@ -126,32 +126,32 @@ Acceptance conditions for any importer
 ## Candidate
 
 - `stage_prospect_save_state` (`experimental::recorders`), `stage_prospect`
-  (`prospect`), and `icarus-server inspect-save --stage-check` validate the full
+  (`prospect`), and `icarus-server inspect-save --stage-check` validate the
   `FProspectSaveState` root schema, out-of-order tag wrap-around,
-  `PostLoadSerialize` migration, all 17 `FProspectInfo` inner tags, optional
-  `ProspectID` matching, base-component framing, per-recorder `Validate`
-  (`+0x408`), and `C033` `bIsPhysicsDynamic` counts across all 15 saves (`15 / 15`;
-  `dddd.json`: `2,744` -> `1` invalid `C031`, `2,743` retained, `2` dynamic
-  `C033` -> `2,741` on `M-691`; `world_imported: false`, F-680, F-736, F-738).
-- All 65 `RecorderComponent` `FClassParams`, all 38 `StateRecorderBlobs` classes'
-  vtable overrides ([restore rules](restore-rules.md)), and `C001` provenance
+  `PostLoadSerialize` migration, 17 `FProspectInfo` tags, optional `ProspectID`
+  matching, base-component framing, per-recorder `Validate` (`+0x408`), and
+  `C033` `bIsPhysicsDynamic` counts across all 15 saves (`15 / 15`; `dddd.json`:
+  `2,744` -> `1` invalid `C031`, `2,743` retained, `2` dynamic `C033` -> `2,741`
+  on `M-691`; `world_imported: false`, F-680, F-736, F-738).
+- All 65 `RecorderComponent` `FClassParams`, 38 `StateRecorderBlobs` vtable
+  overrides ([restore rules](restore-rules.md)), and `C001` provenance
   ([C001 digest](../../research/save-format/c001-constructor.md)) match across
-  builds (F-469 to F-477, F-509, F-534, F-669, F-670, F-716, F-720 to F-722,
-  F-727, F-728, F-733 to F-738; U-003 to U-006, U-020 to U-024, U-032, U-041,
-  U-042, U-046, U-048, U-050 resolved).
+  builds (F-469..F-477, F-509, F-534, F-669, F-670, F-716, F-720..F-722, F-727,
+  F-728, F-733..F-738; U-003..U-006, U-020..U-024, U-032, U-041, U-042, U-046,
+  U-048, U-050 resolved).
 
 ## Open questions
 
-- Controlled original-server crash reproduction under reference workloads (U-047),
-  producing-build log confirmation for the supplied save (U-040), and native
-  interpreted import / newer-build compatibility (U-025, U-045).
+- Original-server crash reproduction (U-047), supplied-save producing-build log
+  confirmation (U-040), and native interpreted import / newer-build compatibility
+  (U-025, U-045).
 
 ## Evidence
 
 - Static: M-147, M-148, M-143, M-149, M-150, M-119, M-122, M-123, M-079, M-094,
-  M-096, M-100, M-170, M-755..M-762, M-768, M-769, M-772 to M-777, M-779..M-784; runtime: M-154, M-155, M-160.
-- Framing receipts: M-118, M-172, M-087..M-093, M-095, M-097..M-103, M-106,
-  M-058..M-070, M-049..M-055; C001: M-007, M-008, M-011, M-013, M-173, M-179, M-180, M-181, M-761, M-762.
+  M-096, M-100, M-170, M-755..M-762, M-768, M-769, M-772..M-777, M-779..M-784; runtime: M-154, M-155, M-160.
+- Framing: M-118, M-172, M-087..M-093, M-095, M-097..M-103, M-106, M-058..M-070,
+  M-049..M-055; C001: M-007, M-008, M-011, M-013, M-173, M-179..M-181, M-761, M-762.
 - Tests: `tests/tagged.rs`, `tests/recorders.rs`, `tests/component.rs`,
   `tests/struct_array.rs`, `tests/int_array.rs`, `tests/archive_frame.rs`,
   `tests/restore_rules.rs`, `tests/prospect.rs`, `tests/cli.rs`.
