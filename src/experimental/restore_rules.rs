@@ -642,7 +642,7 @@ pub fn evaluate_by_name_load_attempt(
     if !prospect_ids_match(&requested_utf16, second_read_prospect_id) {
         return ByNameLoadOutcome::RejectedStatePreserved;
     }
-    if second_read_prospect_id.is_empty() || !inner_blob_valid {
+    if !inner_blob_valid {
         return ByNameLoadOutcome::AbortedAfterActiveInfoOverwrite;
     }
     if !prospect_ids_match(second_read_prospect_id, blob_prospect_id) {
