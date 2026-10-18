@@ -43,10 +43,10 @@ client connected and no prospect loaded (F-268).
 | --- | --- | --- | --- |
 | Control dispatch and version comparison | Observed | F-284, F-712, F-713, F-714; [spec](../specs/network/control-negotiation.md) | Stock-client session (U-038) |
 | Initial control archive fields | Experimental reader | F-096, F-097 | Stock-client session (U-038) |
-| Control-dispatch pointer stores | Static vftables and destructor qualified | F-091, F-095, F-110, F-113, F-724 | Executed runtime dispatch (U-010, U-038) |
-| Current-client notify tables | Slot/name equalities and `/GR-` layout qualified | F-088, F-724 | Executed runtime dispatch (U-010, U-038) |
-| Current-client constructor intervals and prefixes | Complete constructors and ABI qualified | F-082, F-083, F-093, F-723 | Executed runtime dispatch (U-010, U-038) |
-| Current-client World/Pending table stores | Receiver origin, layout and `InitBase` qualified | F-062, F-063, F-071, F-076, F-274, F-723, F-724 | Executed runtime dispatch (U-010, U-038) |
+| Control-dispatch pointer stores | Static vftables, destructor and S1 dispatch qualified | F-091, F-095, F-110, F-113, F-724, F-729 | Native stock-client session (U-038) |
+| Current-client notify tables | Slot/name equalities, `/GR-` layout and S1 dispatch qualified | F-088, F-724, F-729 | Native stock-client session (U-038) |
+| Current-client constructor intervals and prefixes | Complete constructors and ABI qualified | F-082, F-083, F-093, F-723 | Native stock-client session (U-038) |
+| Current-client World/Pending table stores | Receiver origin, layout and `InitBase` qualified | F-062, F-063, F-071, F-076, F-274, F-723, F-724 | Native stock-client session (U-038) |
 | Prospect-loading control flow | Observed; entry rules mirrored | [spec](../specs/save-format/prospect-loading.md); F-256, F-717 | Runtime failure reachability and complete schema (U-040, U-058) |
 | Inner prospect state and dispatch | Observed; version migration mirrored | F-257, F-715 | Recorder payloads and newer-build fidelity (U-025) |
 | Root property tags and recorder framing | Observed on two copies; experimental readers | F-244, F-245, F-727; [spec](../specs/save-format/tagged-properties.md) | Packaged row meanings and native import (U-020, U-045) |
@@ -56,7 +56,7 @@ client connected and no prospect loaded (F-268).
 | C034 top, own and inherited scalars | Exact structures, widths and `FName` parsing qualified | F-146, F-147, F-150, F-152, F-196, F-719, F-720 | Value meanings and native import (U-020, U-045) |
 | C009 top, children and D01 arrays | Headers, string structure, widths and restore hooks qualified | F-182, F-183, F-174, F-158, F-162, F-728 | Packaged row meanings and native import (U-020, U-045) |
 | C001 construction seeds | Complete functions, registration and bridge qualified | F-270, F-034, F-534, F-721, F-722 | Value meanings and native import (U-020, U-045) |
-| Short stateless handshake | Observed; loopback lab | F-253, F-280; [spec](../specs/network/stateless-handshake.md) | Stock-client admission (U-051, U-052) |
+| Stateless handshake | Observed; prefix, restart and tolerance rules verified | F-253, F-280, F-729; [spec](../specs/network/stateless-handshake.md) | Stock-client admission (U-052) |
 | Default network checksum | Experimental primitive; wire-verified | F-254, F-255, F-281, F-689, F-713; [spec](../specs/network/network-checksum.md) | Stock-client session (U-038) |
-| Archive strings | Experimental strict subset; original normalization verified | F-142, F-282, F-285, F-719; [spec](../specs/save-format/archive-string.md) | Stock-client session and import (U-025, U-038) |
+| Archive strings | Experimental strict subset; original normalization and timings verified | F-142, F-282, F-285, F-719, F-731; [spec](../specs/save-format/archive-string.md) | Stock-client session and import (U-025, U-038) |
 | Prospect envelope | Observed on supplied saves; read-only inspector | F-261, F-283, F-241; [spec](../specs/save-format/prospect-envelope.md) | Build pairing, binary schema, import (U-025, U-040) |

@@ -38,11 +38,13 @@ Object Locator pointers at `[vtable-8]`, `UWorld`'s 82-slot primary vftable
 (`0x145467ef0`) and 4-slot `FNetworkNotify` secondary vftable (`0x145468180`,
 with slot `+0x18 = 0x1439ee7f0` before UTF-16 literals) abut directly, and
 `0x14671d164` is `.pdata` `256371` for `CONTROL01` (`0x1439ee7f0`,
-`UWorld::NotifyControlMessage`; F-480, F-506, F-546, F-724; U-015, U-016
-resolved). `UWorld::Listen` (`0x1439ecd8b`) and `UPendingNetGame::InitNetDriver`
-(`0x1437b7f6f`) pass `this + 0x28` (`FNetworkNotify*`) to `UNetDriver::InitBase`
-(`Driver + 0x208`), and `NotifyControlMessage` adjusts `this` by `r13 - 0x28`
-(F-520, F-723, F-724; U-043 resolved).
+`UWorld::NotifyControlMessage`), exercised across Hello, Challenge, Login,
+Welcome and Join in connected run S1 (F-480, F-506, F-546, F-701, F-724, F-729;
+U-010, U-015, U-016, U-019 resolved). `UWorld::Listen` (`0x1439ecd8b`) and
+`UPendingNetGame::InitNetDriver` (`0x1437b7f6f`) pass `this + 0x28`
+(`FNetworkNotify*`) to `UNetDriver::InitBase` (`Driver + 0x208`), and
+`NotifyControlMessage` adjusts `this` by `r13 - 0x28` (F-520, F-723, F-724;
+U-043 resolved).
 
 The dispatcher validates message IDs and reads the ID 0 body (F-284) from the
 FInBunch through FBitReader::Serialize after the ID byte, byte order set by the
@@ -59,9 +61,8 @@ game-connection flags stay false (F-096, F-097).
 
 ## Open
 
-- Executed runtime dispatch in an authenticated session (U-010, U-038).
-- Exact-window decoding through live REA and lazy Ghidra startup (U-019).
+- Stock-client authenticated session against the native server (U-038).
 
 ## Artifacts
 
-M-005, M-012, M-023..M-046, M-281..M-283, M-288..M-297, M-301, M-302, M-315..M-346, M-353..M-357, M-370, M-371, M-749..M-754, M-763..M-765.
+M-005, M-012, M-023..M-046, M-281..M-283, M-288..M-297, M-301, M-302, M-315..M-346, M-353..M-357, M-370, M-371, M-749..M-754, M-763..M-765, M-770, M-771.
