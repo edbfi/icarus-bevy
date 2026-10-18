@@ -68,6 +68,11 @@ constants:
   table widths) behind a data-driven profile consumed by `PeerLabConfig` and
   `examples/capture_decode`, paired with `release_watch.py diff` and capture
   replay so weekly updates are mechanical unless wire semantics change.
+- Because `render_pin` writes `[release]` only and `ReleaseProfile::parse`
+  fails closed on unknown `build_id` values without an explicit `[tags]`
+  section, bumping the pin to a new weekly build requires either adding a
+  built-in `ReleaseProfile` for that build ID or supplying `[tags]` in
+  `config/release.toml` after qualifying its tag table.
 - A bump is version- and profile-only until the weekly diff shows otherwise:
   compare the two builds' sections, public symbols and replicated layouts, and
   re-run the compatibility scenarios. Compatibility claims name the build they
