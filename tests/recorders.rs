@@ -1,6 +1,8 @@
+use icarus_bevy::experimental::component::MAX_COMPONENT_BYTES;
 use icarus_bevy::experimental::recorders::{
-    MAX_RECORDER_FIELDS, MAX_RECORDERS, RecorderArray, read_recorders,
+    MAX_RECORDER_FIELDS, MAX_RECORDERS, RecorderArray, read_recorders, stage_prospect_save_state,
 };
+use icarus_bevy::experimental::restore_rules::LobbyPrivacy;
 use icarus_bevy::experimental::tagged::{MAX_INPUT_BYTES, RootTag, TagKind, TagProfile, read_root};
 
 const END: &[u8] = b"\x05\0\0\0None\0";
@@ -367,4 +369,281 @@ fn recorder_field_string_and_input_limits_are_enforced() {
     let long = [1024_i32.to_le_bytes().to_vec(), vec![b'X'; 1023], vec![0]].concat();
     let body = [class(&long), binary(&[0; 4]), END.to_vec()].concat();
     assert!(read(&fixture(1, &body)).is_ok());
+}
+
+fn valid_component_binary() -> Vec<u8> {
+    let prop = tag(
+        "RecordedVersion",
+        "IntProperty",
+        0,
+        &[0],
+        &3_i32.to_le_bytes(),
+    );
+    let component_bytes = [prop.as_slice(), END, &[0, 0, 0, 0]].concat();
+    let payload = [
+        i32::try_from(component_bytes.len())
+            .unwrap()
+            .to_le_bytes()
+            .as_slice(),
+        component_bytes.as_slice(),
+    ]
+    .concat();
+    binary(&payload)
+}
+
+fn valid_recorder_element() -> Vec<u8> {
+    [
+        class(CLASS).as_slice(),
+        valid_component_binary().as_slice(),
+        END,
+    ]
+    .concat()
+}
+
+fn associated_members_tag(member_count: i32) -> Vec<u8> {
+    let member_body = [
+        tag(
+            "AccountName",
+            "StrProperty",
+            0,
+            &[0],
+            &string("private-member"),
+        ),
+        tag(
+            "CharacterSlot",
+            "IntProperty",
+            0,
+            &[0],
+            &1_i32.to_le_bytes(),
+        ),
+        tag("IsCurrentlyPlaying", "BoolProperty", 0, &[1, 0], &[]),
+        END.to_vec(),
+    ]
+    .concat();
+    let repeated = member_body.repeat(usize::try_from(member_count).unwrap());
+    let shared_member = tag(
+        "AssociatedMembers",
+        "StructProperty",
+        0,
+        &[string("AssociatedMemberInfo"), vec![0; 17]].concat(),
+        &repeated,
+    );
+    let payload = [&member_count.to_le_bytes(), shared_member.as_slice()].concat();
+    tag(
+        "AssociatedMembers",
+        "ArrayProperty",
+        0,
+        &[string("StructProperty"), vec![0]].concat(),
+        &payload,
+    )
+}
+
+fn prospect_info_tag(prospect_id: &str, dt_key: &str, member_count: i32) -> Vec<u8> {
+    let inner = [
+        tag("ProspectID", "StrProperty", 0, &[0], &string(prospect_id)),
+        tag("ProspectDTKey", "StrProperty", 0, &[0], &string(dt_key)),
+        tag(
+            "ElapsedTime",
+            "IntProperty",
+            0,
+            &[0],
+            &420_i32.to_le_bytes(),
+        ),
+        tag(
+            "ExpireTime",
+            "Int64Property",
+            0,
+            &[0],
+            &(-1_i64).to_le_bytes(),
+        ),
+        tag("InGame", "BoolProperty", 0, &[1, 0], &[]),
+        associated_members_tag(member_count),
+        END.to_vec(),
+    ]
+    .concat();
+    tag(
+        "ProspectInfo",
+        "StructProperty",
+        0,
+        &[string("IcarusProspect"), vec![0; 17]].concat(),
+        &inner,
+    )
+}
+
+#[test]
+fn staged_prospect_save_state_validates_schema_migrations_and_fails_closed() {
+    let version_v2 = tag("Version", "IntProperty", 0, &[0], &2_i32.to_le_bytes());
+    let privacy = tag(
+        "LobbyPrivacy",
+        "EnumProperty",
+        0,
+        &[string("ELobbyPrivacy"), vec![0]].concat(),
+        &string("ELobbyPrivacy::Private"),
+    );
+    let info = prospect_info_tag("private-prospect-alpha", "Olympus_Terrain", 2);
+    let map_name = tag(
+        "ProspectMapName",
+        "StrProperty",
+        0,
+        &[0],
+        &string("Terrain_016"),
+    );
+    let saved_dt = tag(
+        "LastSavedDateTime",
+        "StructProperty",
+        0,
+        &[string("DateTime"), vec![0; 17]].concat(),
+        &638_000_000_000_000_000_i64.to_le_bytes(),
+    );
+    let elem = valid_recorder_element();
+    let blobs = tag(
+        "StateRecorderBlobs",
+        "ArrayProperty",
+        0,
+        &[string("StructProperty"), vec![0]].concat(),
+        &[&2_i32.to_le_bytes(), shared(&elem.repeat(2)).as_slice()].concat(),
+    );
+
+    // Out-of-order root tags are accepted via PropertyLink wrap-around (F-718).
+    let stream_v2 = [
+        blobs.clone(),
+        saved_dt.clone(),
+        map_name.clone(),
+        info,
+        privacy,
+        version_v2.clone(),
+        END.to_vec(),
+    ]
+    .concat();
+    let parsed_v2 = read_root(&stream_v2, PROFILE).unwrap();
+    let expected_id: Vec<u16> = "PRIVATE-PROSPECT-ALPHA".encode_utf16().collect();
+    let staged_v2 = stage_prospect_save_state(
+        &parsed_v2.tags,
+        PROFILE,
+        MAX_COMPONENT_BYTES,
+        Some(&expected_id),
+    )
+    .unwrap();
+    assert_eq!(staged_v2.loaded_version, 2);
+    assert_eq!(staged_v2.migrated_version, 2);
+    assert_eq!(staged_v2.lobby_privacy, LobbyPrivacy::Private);
+    assert_eq!(staged_v2.root_tag_count, 6);
+    assert_eq!(staged_v2.prospect_info_tag_count, 6);
+    assert_eq!(staged_v2.associated_member_count, 2);
+    assert!(staged_v2.has_prospect_id);
+    assert!(staged_v2.has_prospect_dt_key);
+    assert!(staged_v2.has_map_name);
+    assert!(staged_v2.has_last_saved_date_time);
+    assert!(staged_v2.has_expire_time);
+    assert_eq!(staged_v2.parsed_recorder_count, 2);
+    assert_eq!(staged_v2.retained_recorder_count, 2);
+    assert_eq!(staged_v2.total_component_field_tags, 2);
+    assert!(!staged_v2.world_imported);
+    let json = serde_json::to_string(&staged_v2).unwrap();
+    assert!(!json.contains("private"));
+    assert!(!format!("{staged_v2:?}").contains("private"));
+
+    // Mismatched expected ProspectID fails closed before publication (F-717, F-733).
+    let wrong_id: Vec<u16> = "other-prospect".encode_utf16().collect();
+    assert!(
+        stage_prospect_save_state(
+            &parsed_v2.tags,
+            PROFILE,
+            MAX_COMPONENT_BYTES,
+            Some(&wrong_id),
+        )
+        .is_err()
+    );
+
+    // Version 1 copies legacy root ProspectID and ProspectDTKey into ProspectInfo (F-715).
+    let stream_v1 = [
+        tag("Version", "IntProperty", 0, &[0], &1_i32.to_le_bytes()),
+        tag(
+            "ProspectID",
+            "StrProperty",
+            0,
+            &[0],
+            &string("private-legacy-id"),
+        ),
+        tag(
+            "ProspectDTKey",
+            "StrProperty",
+            0,
+            &[0],
+            &string("private-legacy-dt"),
+        ),
+        blobs.clone(),
+        END.to_vec(),
+    ]
+    .concat();
+    let parsed_v1 = read_root(&stream_v1, PROFILE).unwrap();
+    let legacy_expected: Vec<u16> = "PRIVATE-LEGACY-ID".encode_utf16().collect();
+    let staged_v1 = stage_prospect_save_state(
+        &parsed_v1.tags,
+        PROFILE,
+        MAX_COMPONENT_BYTES,
+        Some(&legacy_expected),
+    )
+    .unwrap();
+    assert_eq!(staged_v1.loaded_version, 1);
+    assert_eq!(staged_v1.migrated_version, 2);
+    assert!(staged_v1.has_prospect_id);
+    assert!(staged_v1.has_prospect_dt_key);
+    assert_eq!(staged_v1.retained_recorder_count, 2);
+
+    // Version 0 (or omitted Version) resets ProspectInfo, sets FriendsOnly, and clears blobs (F-715).
+    let stream_v0 = [
+        prospect_info_tag("private-v0-id", "Olympus", 1),
+        blobs.clone(),
+        END.to_vec(),
+    ]
+    .concat();
+    let parsed_v0 = read_root(&stream_v0, PROFILE).unwrap();
+    let staged_v0 =
+        stage_prospect_save_state(&parsed_v0.tags, PROFILE, MAX_COMPONENT_BYTES, None).unwrap();
+    assert_eq!(staged_v0.loaded_version, 0);
+    assert_eq!(staged_v0.migrated_version, 2);
+    assert_eq!(staged_v0.lobby_privacy, LobbyPrivacy::FriendsOnly);
+    assert!(!staged_v0.has_prospect_id);
+    assert!(!staged_v0.has_prospect_dt_key);
+    assert_eq!(staged_v0.parsed_recorder_count, 2);
+    assert_eq!(staged_v0.retained_recorder_count, 0);
+
+    // Reject unmapped root tags, unsupported versions, and malformed recorder bodies (F-403).
+    let unmapped_stream = [
+        version_v2.clone(),
+        tag(
+            "UnmappedRootField",
+            "IntProperty",
+            0,
+            &[0],
+            &1_i32.to_le_bytes(),
+        ),
+        END.to_vec(),
+    ]
+    .concat();
+    let parsed_unmapped = read_root(&unmapped_stream, PROFILE).unwrap();
+    assert!(
+        stage_prospect_save_state(&parsed_unmapped.tags, PROFILE, MAX_COMPONENT_BYTES, None,)
+            .is_err()
+    );
+
+    let future_version_stream = [
+        tag("Version", "IntProperty", 0, &[0], &3_i32.to_le_bytes()),
+        END.to_vec(),
+    ]
+    .concat();
+    let parsed_future = read_root(&future_version_stream, PROFILE).unwrap();
+    assert!(
+        stage_prospect_save_state(&parsed_future.tags, PROFILE, MAX_COMPONENT_BYTES, None,)
+            .is_err()
+    );
+
+    // Recorder with non-framing BinaryData fails closed during staging.
+    let bad_rec = fixture(1, &element());
+    let parsed_bad_rec = read_root(&bad_rec, PROFILE).unwrap();
+    assert!(
+        stage_prospect_save_state(&parsed_bad_rec.tags, PROFILE, MAX_COMPONENT_BYTES, None,)
+            .is_err()
+    );
 }

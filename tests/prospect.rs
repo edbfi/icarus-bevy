@@ -7,7 +7,8 @@ use std::{
 use base64::{Engine, engine::general_purpose::STANDARD};
 use flate2::{Compression, write::ZlibEncoder};
 use icarus_bevy::prospect::{
-    MAX_ENVELOPE_BYTES, MAX_PAYLOAD_BYTES, inspect, inspect_with_inner_tags, inspect_with_recorders,
+    MAX_ENVELOPE_BYTES, MAX_PAYLOAD_BYTES, inspect, inspect_with_inner_tags,
+    inspect_with_recorders, stage_prospect,
 };
 use serde_json::{Value, json};
 use sha1::{Digest, Sha1};
@@ -529,4 +530,95 @@ fn opt_in_tag_cli_reports_only_counts_and_never_writes_or_exports_values() {
     assert!(!String::from_utf8(result.stderr).unwrap().contains("secret"));
     assert_eq!(fs::read(&source).unwrap(), invalid);
     assert_eq!(fs::read_dir(root.path()).unwrap().count(), 1);
+}
+
+#[test]
+fn stage_prospect_validates_envelope_migration_and_normalized_name() {
+    use icarus_bevy::experimental::component::MAX_COMPONENT_BYTES;
+    use icarus_bevy::experimental::restore_rules::LobbyPrivacy;
+
+    let fstring = |s: &str| -> Vec<u8> {
+        [
+            i32::try_from(s.len() + 1).unwrap().to_le_bytes().as_slice(),
+            s.as_bytes(),
+            &[0],
+        ]
+        .concat()
+    };
+    let tag = |name: &str, kind: &str, extras: &[u8], payload: &[u8]| -> Vec<u8> {
+        [
+            fstring(name).as_slice(),
+            fstring(kind).as_slice(),
+            &i32::try_from(payload.len()).unwrap().to_le_bytes(),
+            &0_i32.to_le_bytes(),
+            extras,
+            payload,
+        ]
+        .concat()
+    };
+    let end = b"\x05\0\0\0None\0";
+    let inner_info = [
+        tag(
+            "ProspectID",
+            "StrProperty",
+            &[0],
+            &fstring("secret-prospect-name"),
+        ),
+        tag(
+            "ProspectDTKey",
+            "StrProperty",
+            &[0],
+            &fstring("Olympus_Terrain"),
+        ),
+        tag("ExpireTime", "Int64Property", &[0], &(-1_i64).to_le_bytes()),
+        end.to_vec(),
+    ]
+    .concat();
+    let payload = [
+        tag("Version", "IntProperty", &[0], &2_i32.to_le_bytes()),
+        tag(
+            "LobbyPrivacy",
+            "ByteProperty",
+            &[fstring("None"), vec![0]].concat(),
+            &[1],
+        ),
+        tag(
+            "ProspectInfo",
+            "StructProperty",
+            &[fstring("IcarusProspect"), vec![0; 17]].concat(),
+            &inner_info,
+        ),
+        end.to_vec(),
+    ]
+    .concat();
+    let envelope = serde_json::to_vec(&authored_envelope(&payload)).unwrap();
+    let staged = stage_prospect(
+        envelope.as_slice(),
+        MAX_COMPONENT_BYTES,
+        Some("SECRET-PROSPECT-NAME.JSON"),
+    )
+    .unwrap();
+    assert_eq!(
+        staged.validation,
+        "experimental_staged_prospect_save_state_only"
+    );
+    assert_eq!(staged.staged.loaded_version, 2);
+    assert_eq!(staged.staged.migrated_version, 2);
+    assert_eq!(staged.staged.lobby_privacy, LobbyPrivacy::FriendsOnly);
+    assert!(staged.staged.has_prospect_id);
+    assert!(staged.staged.has_prospect_dt_key);
+    assert!(staged.staged.has_expire_time);
+    assert!(!staged.world_imported);
+    let serialized = serde_json::to_string(&staged).unwrap();
+    assert!(!serialized.contains("secret"));
+
+    assert!(
+        stage_prospect(
+            envelope.as_slice(),
+            MAX_COMPONENT_BYTES,
+            Some("wrong-name.json"),
+        )
+        .is_err()
+    );
+    assert!(stage_prospect(envelope.as_slice(), MAX_COMPONENT_BYTES, Some(".json")).is_err());
 }

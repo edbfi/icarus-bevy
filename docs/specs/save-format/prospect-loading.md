@@ -117,6 +117,12 @@ Acceptance conditions for any importer
 
 ## Candidate
 
+- `stage_prospect_save_state` (`experimental::recorders`) and `stage_prospect`
+  (`prospect`) validate the full `FProspectSaveState` root schema, out-of-order
+  tag wrap-around, `PostLoadSerialize` version migration, `ProspectInfo` inner
+  tags (`ExpireTime`, `AssociatedMembers`), optional `ProspectID` matching, and
+  base-component framing of every `StateRecorderBlob` before returning a
+  privacy-preserving summary (`world_imported: false`).
 - Base-component framing, all 65 `RecorderComponent` `FClassParams`, all 38
   `StateRecorderBlobs` classes' `+0xa0`/`+0x488`/`+0x4a0`/`+0x4b0` overrides,
   weather/teleport clocks (`C035`/`C002`), `D01` inventory slot restoration, and

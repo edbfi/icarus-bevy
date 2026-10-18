@@ -10,6 +10,8 @@
 //! an interpreted import stays gated (U-045).
 
 /// Per-axis tolerance for matching a voxel record to its owner (F-645, M-644).
+use serde::Serialize;
+
 pub const VOXEL_LOCATION_TOLERANCE: f32 = 0.1;
 
 /// Per-component tolerance against `FTransform::Identity` before
@@ -336,7 +338,7 @@ pub fn restore_cave_spawn_times(
 }
 
 /// Saved `ELobbyPrivacy` enumerators on `FProspectSaveStateHeader` (F-715).
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize)]
 pub enum LobbyPrivacy {
     #[default]
     Unknown = 0,
