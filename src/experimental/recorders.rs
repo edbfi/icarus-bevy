@@ -333,6 +333,156 @@ fn parse_lobby_privacy(property: &PropertyRecord<'_>) -> Result<LobbyPrivacy> {
     }
 }
 
+/// Validates `ProspectInfo.AssociatedMembers` against the reflected
+/// `FAssociatedMemberInfo` descriptor (`0x145fad8e0` / `0x143dbc380`):
+/// shared `StructProperty` header `"AssociatedMemberInfo"` and up to the 8
+/// reflected fields (`AccountName`, `CharacterName`, `UserID`, `ChrSlot`,
+/// `Experience`, `Status`, `Settled`, `IsCurrentlyPlaying`).
+fn validate_associated_members(
+    payload: &[u8],
+    profile: TagProfile,
+    component_byte_limit: usize,
+) -> Result<usize> {
+    let members = read_tagged_struct_array_with_limit(payload, profile, component_byte_limit)
+        .context("invalid AssociatedMembers struct array")?;
+    let ParsedRecord::Property(shared_prop) = read_record(members.shared().record, profile)? else {
+        bail!("invalid AssociatedMembers shared struct header");
+    };
+    ensure!(
+        shared_prop.index == 0
+            && is_name(&shared_prop.name, "AssociatedMembers")
+            && extra_is(&shared_prop, "AssociatedMemberInfo"),
+        "AssociatedMembers shared header must be StructProperty(AssociatedMemberInfo)"
+    );
+    for element in members.elements() {
+        let mut seen: Vec<Vec<u16>> = Vec::with_capacity(element.fields().len());
+        for field_tag in element.fields() {
+            let ParsedRecord::Property(field_prop) = read_record(field_tag.record, profile)? else {
+                bail!("unexpected AssociatedMemberInfo terminator");
+            };
+            ensure!(
+                field_prop.tag.record.len() == field_tag.record.len() && field_prop.index == 0,
+                "invalid AssociatedMemberInfo field header"
+            );
+            ensure!(
+                !seen.iter().any(|prior| prior == &field_prop.name),
+                "duplicate AssociatedMemberInfo property"
+            );
+            seen.push(field_prop.name.clone());
+            if is_name(&field_prop.name, "AccountName")
+                || is_name(&field_prop.name, "CharacterName")
+                || is_name(&field_prop.name, "UserID")
+            {
+                ensure!(
+                    field_prop.tag.kind == TagKind::String,
+                    "AssociatedMemberInfo string field must be StrProperty"
+                );
+                decode_exact_string_units(
+                    field_prop.tag.payload,
+                    "invalid AssociatedMemberInfo string",
+                )?;
+            } else if is_name(&field_prop.name, "ChrSlot")
+                || is_name(&field_prop.name, "Experience")
+            {
+                ensure!(
+                    field_prop.tag.kind == TagKind::Int && field_prop.tag.payload.len() == 4,
+                    "AssociatedMemberInfo int field must be 4-byte IntProperty"
+                );
+            } else if is_name(&field_prop.name, "Status") {
+                match field_prop.tag.kind {
+                    TagKind::Enum => {
+                        ensure!(
+                            extra_is(&field_prop, "EProspectLocation"),
+                            "AssociatedMemberInfo.Status must use EProspectLocation"
+                        );
+                        decode_exact_string_units(
+                            field_prop.tag.payload,
+                            "invalid AssociatedMemberInfo.Status enum string",
+                        )?;
+                    }
+                    TagKind::Byte => {
+                        if field_prop.tag.payload.len() != 1 {
+                            decode_exact_string_units(
+                                field_prop.tag.payload,
+                                "invalid AssociatedMemberInfo.Status byte enum",
+                            )?;
+                        }
+                    }
+                    _ => bail!("AssociatedMemberInfo.Status must be EnumProperty or ByteProperty"),
+                }
+            } else if is_name(&field_prop.name, "Settled")
+                || is_name(&field_prop.name, "IsCurrentlyPlaying")
+            {
+                ensure!(
+                    field_prop.tag.kind == TagKind::Bool && field_prop.tag.payload.is_empty(),
+                    "AssociatedMemberInfo bool field must be BoolProperty"
+                );
+            } else {
+                bail!("unmapped AssociatedMemberInfo property");
+            }
+        }
+    }
+    Ok(members.elements().len())
+}
+
+/// Validates `ProspectInfo.CustomSettings` against the reflected
+/// `FCustomGameSetting` descriptor (`0x145fadbf0` / `0x143dbcf70`):
+/// shared `StructProperty` header `"CustomGameSetting"` and the 2 reflected
+/// fields (`SettingRowName`, `SettingValue`).
+fn validate_custom_settings(
+    payload: &[u8],
+    profile: TagProfile,
+    component_byte_limit: usize,
+) -> Result<()> {
+    let settings = read_tagged_struct_array_with_limit(payload, profile, component_byte_limit)
+        .context("invalid CustomSettings struct array")?;
+    let ParsedRecord::Property(shared_prop) = read_record(settings.shared().record, profile)?
+    else {
+        bail!("invalid CustomSettings shared struct header");
+    };
+    ensure!(
+        shared_prop.index == 0
+            && is_name(&shared_prop.name, "CustomSettings")
+            && extra_is(&shared_prop, "CustomGameSetting"),
+        "CustomSettings shared header must be StructProperty(CustomGameSetting)"
+    );
+    for element in settings.elements() {
+        let mut seen: Vec<Vec<u16>> = Vec::with_capacity(element.fields().len());
+        for field_tag in element.fields() {
+            let ParsedRecord::Property(field_prop) = read_record(field_tag.record, profile)? else {
+                bail!("unexpected CustomGameSetting terminator");
+            };
+            ensure!(
+                field_prop.tag.record.len() == field_tag.record.len() && field_prop.index == 0,
+                "invalid CustomGameSetting field header"
+            );
+            ensure!(
+                !seen.iter().any(|prior| prior == &field_prop.name),
+                "duplicate CustomGameSetting property"
+            );
+            seen.push(field_prop.name.clone());
+            if is_name(&field_prop.name, "SettingRowName") {
+                ensure!(
+                    field_prop.tag.kind == TagKind::String,
+                    "CustomGameSetting.SettingRowName must be StrProperty"
+                );
+                decode_exact_string_units(
+                    field_prop.tag.payload,
+                    "invalid CustomGameSetting.SettingRowName",
+                )?;
+            } else if is_name(&field_prop.name, "SettingValue") {
+                ensure!(
+                    field_prop.tag.kind == TagKind::Int && field_prop.tag.payload.len() == 4,
+                    "CustomGameSetting.SettingValue must be 4-byte IntProperty"
+                );
+            } else {
+                bail!("unmapped CustomGameSetting property");
+            }
+        }
+    }
+    Ok(())
+}
+
 struct ParsedProspectInfo {
     tag_count: usize,
     associated_member_count: usize,
@@ -379,65 +529,89 @@ fn validate_prospect_info(
                 "ProspectInfo.ProspectDTKey must be StrProperty"
             );
             prospect_dt_key = decode_exact_string_units(prop.tag.payload, "invalid ProspectDTKey")?;
+        } else if is_name(&prop.name, "ClaimedAccountID")
+            || is_name(&prop.name, "FactionMissionDTKey")
+            || is_name(&prop.name, "LobbyName")
+        {
+            ensure!(
+                prop.tag.kind == TagKind::String,
+                "ProspectInfo string field must be StrProperty"
+            );
+            decode_exact_string_units(prop.tag.payload, "invalid ProspectInfo string")?;
+        } else if is_name(&prop.name, "ClaimedAccountCharacter")
+            || is_name(&prop.name, "Cost")
+            || is_name(&prop.name, "Reward")
+            || is_name(&prop.name, "ElapsedTime")
+            || is_name(&prop.name, "SelectedDropPoint")
+        {
+            ensure!(
+                prop.tag.kind == TagKind::Int && prop.tag.payload.len() == 4,
+                "ProspectInfo int field must be 4-byte IntProperty"
+            );
         } else if is_name(&prop.name, "ExpireTime") {
             ensure!(
                 prop.tag.kind == TagKind::Int64 && prop.tag.payload.len() == 8,
                 "ProspectInfo.ExpireTime must be 8-byte Int64Property"
             );
             has_expire_time = true;
-        } else if is_name(&prop.name, "AssociatedMembers") {
-            ensure!(
-                prop.tag.kind == TagKind::Array && extra_is(&prop, "StructProperty"),
-                "ProspectInfo.AssociatedMembers must be ArrayProperty<StructProperty>"
-            );
-            let members = read_tagged_struct_array_with_limit(
-                prop.tag.payload,
-                profile,
-                component_byte_limit,
-            )
-            .context("invalid AssociatedMembers struct array")?;
-            associated_member_count = members.elements().len();
-        } else {
+        } else if is_name(&prop.name, "ProspectState") {
             match prop.tag.kind {
-                TagKind::String | TagKind::Name | TagKind::Enum => {
-                    decode_exact_string_units(prop.tag.payload, "invalid ProspectInfo string")?;
-                }
-                TagKind::Int | TagKind::UInt32 | TagKind::Float => {
+                TagKind::Enum => {
                     ensure!(
-                        prop.tag.payload.len() == 4,
-                        "ProspectInfo 32-bit scalar size mismatch"
+                        extra_is(&prop, "EProspectState"),
+                        "ProspectInfo.ProspectState must use EProspectState"
                     );
-                }
-                TagKind::Int64 => {
-                    ensure!(
-                        prop.tag.payload.len() == 8,
-                        "ProspectInfo 64-bit scalar size mismatch"
-                    );
-                }
-                TagKind::Bool => {
-                    ensure!(
-                        prop.tag.payload.is_empty(),
-                        "ProspectInfo BoolProperty payload must be empty"
-                    );
+                    decode_exact_string_units(prop.tag.payload, "invalid ProspectState enum")?;
                 }
                 TagKind::Byte => {
                     if prop.tag.payload.len() != 1 {
                         decode_exact_string_units(
                             prop.tag.payload,
-                            "invalid ProspectInfo byte enum",
+                            "invalid ProspectState byte enum",
                         )?;
                     }
                 }
-                TagKind::Array if extra_is(&prop, "StructProperty") => {
-                    read_tagged_struct_array_with_limit(
-                        prop.tag.payload,
-                        profile,
-                        component_byte_limit,
-                    )
-                    .context("invalid ProspectInfo struct array")?;
-                }
-                _ => bail!("unsupported ProspectInfo property kind"),
+                _ => bail!("ProspectInfo.ProspectState must be EnumProperty or ByteProperty"),
             }
+        } else if is_name(&prop.name, "Difficulty") {
+            match prop.tag.kind {
+                TagKind::Enum => {
+                    ensure!(
+                        extra_is(&prop, "EMissionDifficulty"),
+                        "ProspectInfo.Difficulty must use EMissionDifficulty"
+                    );
+                    decode_exact_string_units(prop.tag.payload, "invalid Difficulty enum")?;
+                }
+                TagKind::Byte => {
+                    if prop.tag.payload.len() != 1 {
+                        decode_exact_string_units(
+                            prop.tag.payload,
+                            "invalid Difficulty byte enum",
+                        )?;
+                    }
+                }
+                _ => bail!("ProspectInfo.Difficulty must be EnumProperty or ByteProperty"),
+            }
+        } else if is_name(&prop.name, "Insurance") || is_name(&prop.name, "NoRespawns") {
+            ensure!(
+                prop.tag.kind == TagKind::Bool && prop.tag.payload.is_empty(),
+                "ProspectInfo bool field must be BoolProperty"
+            );
+        } else if is_name(&prop.name, "AssociatedMembers") {
+            ensure!(
+                prop.tag.kind == TagKind::Array && extra_is(&prop, "StructProperty"),
+                "ProspectInfo.AssociatedMembers must be ArrayProperty<StructProperty>"
+            );
+            associated_member_count =
+                validate_associated_members(prop.tag.payload, profile, component_byte_limit)?;
+        } else if is_name(&prop.name, "CustomSettings") {
+            ensure!(
+                prop.tag.kind == TagKind::Array && extra_is(&prop, "StructProperty"),
+                "ProspectInfo.CustomSettings must be ArrayProperty<StructProperty>"
+            );
+            validate_custom_settings(prop.tag.payload, profile, component_byte_limit)?;
+        } else {
+            bail!("unmapped ProspectInfo property");
         }
     }
 

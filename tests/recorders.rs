@@ -409,12 +409,13 @@ fn associated_members_tag(member_count: i32) -> Vec<u8> {
             &[0],
             &string("private-member"),
         ),
+        tag("ChrSlot", "IntProperty", 0, &[0], &1_i32.to_le_bytes()),
         tag(
-            "CharacterSlot",
-            "IntProperty",
+            "Status",
+            "EnumProperty",
             0,
-            &[0],
-            &1_i32.to_le_bytes(),
+            &[string("EProspectLocation"), vec![0]].concat(),
+            &string("EProspectLocation::Prospect_Inhabit"),
         ),
         tag("IsCurrentlyPlaying", "BoolProperty", 0, &[1, 0], &[]),
         END.to_vec(),
@@ -441,13 +442,19 @@ fn associated_members_tag(member_count: i32) -> Vec<u8> {
 fn custom_settings_tag(setting_count: i32) -> Vec<u8> {
     let setting_body = [
         tag(
-            "SettingName",
+            "SettingRowName",
             "StrProperty",
             0,
             &[0],
             &string("private-setting"),
         ),
-        tag("Value", "IntProperty", 0, &[0], &100_i32.to_le_bytes()),
+        tag(
+            "SettingValue",
+            "IntProperty",
+            0,
+            &[0],
+            &100_i32.to_le_bytes(),
+        ),
         END.to_vec(),
     ]
     .concat();
@@ -487,7 +494,7 @@ fn prospect_info_tag(prospect_id: &str, dt_key: &str, member_count: i32) -> Vec<
             &[0],
             &(-1_i64).to_le_bytes(),
         ),
-        tag("InGame", "BoolProperty", 0, &[1, 0], &[]),
+        tag("Insurance", "BoolProperty", 0, &[1, 0], &[]),
         associated_members_tag(member_count),
         custom_settings_tag(2),
         END.to_vec(),
@@ -676,6 +683,116 @@ fn staged_prospect_save_state_validates_schema_migrations_and_fails_closed() {
     let parsed_bad_rec = read_root(&bad_rec, PROFILE).unwrap();
     assert!(
         stage_prospect_save_state(&parsed_bad_rec.tags, PROFILE, MAX_COMPONENT_BYTES, None,)
+            .is_err()
+    );
+
+    // Reject unmapped fields inside ProspectInfo, AssociatedMemberInfo, and CustomGameSetting (F-741).
+    let unmapped_info = tag(
+        "ProspectInfo",
+        "StructProperty",
+        0,
+        &[string("ProspectInfo"), vec![0; 17]].concat(),
+        &[
+            tag("InGame", "BoolProperty", 0, &[1, 0], &[]).as_slice(),
+            END,
+        ]
+        .concat(),
+    );
+    let unmapped_info_stream = [version_v2.clone(), unmapped_info, END.to_vec()].concat();
+    let parsed_unmapped_info = read_root(&unmapped_info_stream, PROFILE).unwrap();
+    assert!(
+        stage_prospect_save_state(
+            &parsed_unmapped_info.tags,
+            PROFILE,
+            MAX_COMPONENT_BYTES,
+            None,
+        )
+        .is_err()
+    );
+
+    let bad_member_shared = tag(
+        "AssociatedMembers",
+        "StructProperty",
+        0,
+        &[string("AssociatedMemberInfo"), vec![0; 17]].concat(),
+        &[
+            tag(
+                "CharacterSlot",
+                "IntProperty",
+                0,
+                &[0],
+                &1_i32.to_le_bytes(),
+            )
+            .as_slice(),
+            END,
+        ]
+        .concat(),
+    );
+    let bad_members_info = tag(
+        "ProspectInfo",
+        "StructProperty",
+        0,
+        &[string("ProspectInfo"), vec![0; 17]].concat(),
+        &[
+            tag(
+                "AssociatedMembers",
+                "ArrayProperty",
+                0,
+                &[string("StructProperty"), vec![0]].concat(),
+                &[&1_i32.to_le_bytes(), bad_member_shared.as_slice()].concat(),
+            )
+            .as_slice(),
+            END,
+        ]
+        .concat(),
+    );
+    let bad_member_stream = [version_v2.clone(), bad_members_info, END.to_vec()].concat();
+    let parsed_bad_member = read_root(&bad_member_stream, PROFILE).unwrap();
+    assert!(
+        stage_prospect_save_state(&parsed_bad_member.tags, PROFILE, MAX_COMPONENT_BYTES, None)
+            .is_err()
+    );
+
+    let bad_setting_shared = tag(
+        "CustomSettings",
+        "StructProperty",
+        0,
+        &[string("CustomGameSetting"), vec![0; 17]].concat(),
+        &[
+            tag(
+                "SettingName",
+                "StrProperty",
+                0,
+                &[0],
+                &string("private-setting"),
+            )
+            .as_slice(),
+            END,
+        ]
+        .concat(),
+    );
+    let bad_settings_info = tag(
+        "ProspectInfo",
+        "StructProperty",
+        0,
+        &[string("ProspectInfo"), vec![0; 17]].concat(),
+        &[
+            tag(
+                "CustomSettings",
+                "ArrayProperty",
+                0,
+                &[string("StructProperty"), vec![0]].concat(),
+                &[&1_i32.to_le_bytes(), bad_setting_shared.as_slice()].concat(),
+            )
+            .as_slice(),
+            END,
+        ]
+        .concat(),
+    );
+    let bad_setting_stream = [version_v2, bad_settings_info, END.to_vec()].concat();
+    let parsed_bad_setting = read_root(&bad_setting_stream, PROFILE).unwrap();
+    assert!(
+        stage_prospect_save_state(&parsed_bad_setting.tags, PROFILE, MAX_COMPONENT_BYTES, None)
             .is_err()
     );
 }

@@ -50,7 +50,7 @@ runtime initialization, compression, or integrity protection.
   `NotifyControlMessage` (`0x1439ee7f0`) adjusts `this` by `-0x28` (F-063, F-076,
   F-088, F-106, F-505, F-506, F-520, F-544, F-546, F-723, F-724; U-007 to U-013,
   U-015 to U-018, U-043 resolved).
-- Receive and send path (F-514, F-515, F-518, F-712, F-714; U-014, U-044
+- Receive and send path (F-514, F-515, F-518, F-712, F-714, F-740; U-014, U-044
   resolved): `UControlChannel::ReceivedBunch` (client `0x1437c4940`, server
   `0x143536420`), while `bNeedsHeaderInspection` (`+0x68`) is set, closes unless
   the bunch holds >= 16 bits and byte 0 is `0` (`Hello`); byte 1 == 1 clears
@@ -58,9 +58,14 @@ runtime initialization, compression, or integrity protection.
   `Connection + 0x158` (`Data[1] != 1`), and clears `+0x68`. Subsequent
   `FInBunch` and `FControlChannelOutBunch` instances copy `+0x29` bit `0x20` from
   `Connection + 0x158`. It then loops while `!Bunch.AtEnd() && State != USOCK_Closed`:
-  ID `0x16` (`NetGUIDAck`) dispatches locally (`PackageMap->ReceivedNak`), other
-  IDs call `Notify->NotifyControlMessage`, and unhandled messages (`Pos == PosBefore`)
-  skip across 19 layouts (`0..18`, `21`, failing closed on others;
+  ID `0x16` (`22`, `NMT_DestructionInfo`) dispatches locally to
+  `UControlChannel::ReceiveDestructionInfo` (`0x1435354d0` / `0x1437c3d50`,
+  reading `u8 Reason` + `FNetworkGUID`), other IDs call
+  `Notify->NotifyControlMessage`, and unhandled messages (`Pos == PosBefore`)
+  dispatch across 20 layouts (`0..18`, `21`, `22`, failing closed on others;
+  ID `16` `NMT_ActorChannelFailure` closes on `PlayerController` channel failure,
+  ID `19` `NMT_GameSpecific` logs `FString` and breaks, and ID `20`
+  `NMT_SecurityViolation` forwards `u8 + FString` to `NetDriver`/`World`/`GEngine`;
   `read_control_fallback` / `write_control_fallback` in
   `experimental::control_messages`). `UControlChannel::SendBunch` sends
   immediately when `QueuedMessages` (`+0x70`) is empty and
@@ -90,8 +95,8 @@ runtime initialization, compression, or integrity protection.
   (initial reliable sequences take the low 10 bits). Out-of-order reliable
   bunches queue per channel (max 255); acks 1 to 8191 ahead resolve outgoing
   packets via the 256-bit history window and resend lost reliable bunches.
-- Control vocabulary (F-529 to F-531, F-548, F-740); strings are archive strings
-  and `u32` values follow the Hello byte-swap flag:
+- Control vocabulary (F-529 to F-531, F-548, F-740); strings are archive
+  strings and `u32` values follow the Hello byte-swap flag:
 
   | ID | Direction | Fields |
   | --- | --- | --- |
@@ -105,20 +110,23 @@ runtime initialization, compression, or integrity protection.
   | 9 Join | to server | none |
   | 10 Split join | to server | string URL, unique-net-id |
   | 15 Swap | to server | i32 child index (`-1` parent, `>= 0` splitscreen child, F-740) |
+  | 16 ActorChannelFailure | to server | i32 channel index (closes if `Ch->Actor == PlayerController`, F-740) |
   | 17 Debug | to server | string |
   | 18 NetGUID | to client | packed int, string |
   | 21 Encryption ack | to client | none |
+  | 22 DestructionInfo | to client | u8 reason, packed NetGUID (`!= 1`, F-740) |
 
 ## Candidate
 
 - Experimental modules (`control`, `packet`, `control_receive`,
   `control_messages`, `sequencing`, `admission`, `packet_lab`, `peer_lab`) model
-  packet/bunch headers, the 19-entry control fallback table, unique-net-id forms
+  packet/bunch headers, the 20-entry control fallback table, unique-net-id forms
   (F-543, F-636), `clamp_client_netspeed` (`MIN_CLIENT_NETSPEED = 1,800`,
-  `DEFAULT_MAX_CLIENT_RATE = 15,000`, F-740) and disconnected loopback
+  `DEFAULT_MAX_CLIENT_RATE = 15,000`), `evaluate_pc_swap_target`,
+  `evaluate_actor_channel_failure` (F-740), and disconnected loopback
   negotiation through `Hello`, `Challenge`, `Login`, `PreLogin`, `Welcome`,
-  `Netspeed`, and `Join` / `SplitJoin` (F-558, F-564, F-689, F-690, F-712 to
-  F-714, F-740).
+  `Netspeed`, `Swap`, `Debug`, and `Join` / `SplitJoin` (F-558, F-564, F-689,
+  F-690, F-712 to F-714, F-740).
 - Server `UWorld::NotifyControlMessage` (`0x1439ee7f0`, F-563, F-713, F-740) and
   `WelcomePlayer` (`0x1439fdeb0`, F-580): `IsClientMsgTypeValid` (`0x143991c70`)
   gates messages by `ClientLoginState` (`LoggingIn = 1`, `Welcomed = 2`,
@@ -146,6 +154,6 @@ runtime initialization, compression, or integrity protection.
   M-170/E-021, M-170/E-022, M-170/E-024),
   M-146, [research/archive](../../research/archive/2026-10-12-control-caller-limit.md),
   M-023 to M-045 in the [control-store digest](../../research/network/control-stores.md),
-  and M-589 to M-596, M-749 to M-754, M-763 to M-765, M-770, M-771, M-776, M-777.
+  and M-589 to M-596, M-749 to M-754, M-763 to M-765, M-770, M-771, M-776, M-777, M-779, M-780.
 - Authored suites: `cargo test --test control_negotiation --locked` and
   `cargo test --test peer_lab --locked`.

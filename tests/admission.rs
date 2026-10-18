@@ -1,17 +1,18 @@
 use icarus_bevy::experimental::admission::{
-    AdmissionPolicy, ClientLoginState, ConnectionLoginAdmission, DEFAULT_MAX_CLIENT_RATE,
-    FIND_PLAYER_START_ERROR, GAMESESSION_NULL_ERROR, INCOMPATIBLE_UNIQUE_NET_ID,
-    InitNewPlayerOutcome, JoinSpawnContext, MAX_PLAYER_NAME_UNITS, MIN_CLIENT_NETSPEED, Occupancy,
-    PLAYER_STATE_NULL_ERROR, SERVER_FULL, SPAWN_PLAYER_CONTROLLER_ERROR, SPLITSCREEN_EXCEEDED,
-    check_unique_net_id_compatible, clamp_client_netspeed, has_login_option, int_option,
-    login_option, resolve_player_name, unique_net_id_is_valid,
+    ActorChannelFailureAction, AdmissionPolicy, ClientLoginState, ConnectionLoginAdmission,
+    DEFAULT_MAX_CLIENT_RATE, FIND_PLAYER_START_ERROR, GAMESESSION_NULL_ERROR,
+    INCOMPATIBLE_UNIQUE_NET_ID, InitNewPlayerOutcome, JoinSpawnContext, MAX_PLAYER_NAME_UNITS,
+    MIN_CLIENT_NETSPEED, Occupancy, PLAYER_STATE_NULL_ERROR, PcSwapTarget, SERVER_FULL,
+    SPAWN_PLAYER_CONTROLLER_ERROR, SPLITSCREEN_EXCEEDED, check_unique_net_id_compatible,
+    clamp_client_netspeed, evaluate_actor_channel_failure, evaluate_pc_swap_target,
+    has_login_option, int_option, login_option, resolve_player_name, unique_net_id_is_valid,
 };
 use icarus_bevy::experimental::control_messages::{
     ArchiveText, NetIdType, NetIdValue, UniqueNetId,
 };
 
 // Independently authored option strings for the engine's login and join checks
-// (F-712, F-713, F-740); no captured traffic.
+// (F-712, F-713, F-740, F-742); no captured traffic.
 
 fn units(text: &str) -> Vec<u16> {
     text.encode_utf16().collect()
@@ -292,6 +293,66 @@ fn clamp_client_netspeed_matches_notify_control_message_case_4() {
     assert_eq!(clamp_client_netspeed(1_799, 1_000), 1_800);
     assert_eq!(clamp_client_netspeed(1_800, 1_000), 1_000);
     assert_eq!(clamp_client_netspeed(5_000, 1_000), 1_000);
+}
+
+#[test]
+fn pc_swap_and_actor_channel_failure_match_control_channel_and_world_branches() {
+    // NMT_PCSwap (case 15): negative child index selects parent connection;
+    // 0..children_len selects child connection; >= children_len is ignored.
+    assert_eq!(
+        evaluate_pc_swap_target(-1, 0),
+        Some(PcSwapTarget::ParentConnection)
+    );
+    assert_eq!(
+        evaluate_pc_swap_target(i32::MIN, 2),
+        Some(PcSwapTarget::ParentConnection)
+    );
+    assert_eq!(evaluate_pc_swap_target(0, 0), None);
+    assert_eq!(
+        evaluate_pc_swap_target(0, 2),
+        Some(PcSwapTarget::ChildConnection { index: 0 })
+    );
+    assert_eq!(
+        evaluate_pc_swap_target(1, 2),
+        Some(PcSwapTarget::ChildConnection { index: 1 })
+    );
+    assert_eq!(evaluate_pc_swap_target(2, 2), None);
+
+    // NMT_ActorChannelFailure (0x10): server closes connection when Ch->Actor == PlayerController,
+    // notifies PlayerController when Ch->Actor != PlayerController and PlayerController != null,
+    // and ignores client-side, out-of-range, non-actor-channel, or null-actor inputs.
+    assert_eq!(
+        evaluate_actor_channel_failure(true, 2, 4, true, true, true, true),
+        ActorChannelFailureAction::CloseConnection
+    );
+    assert_eq!(
+        evaluate_actor_channel_failure(true, 2, 4, true, true, false, true),
+        ActorChannelFailureAction::NotifyPlayerController
+    );
+    assert_eq!(
+        evaluate_actor_channel_failure(true, 2, 4, true, true, false, false),
+        ActorChannelFailureAction::Ignore
+    );
+    assert_eq!(
+        evaluate_actor_channel_failure(false, 2, 4, true, true, true, true),
+        ActorChannelFailureAction::Ignore
+    );
+    assert_eq!(
+        evaluate_actor_channel_failure(true, -1, 4, true, true, true, true),
+        ActorChannelFailureAction::Ignore
+    );
+    assert_eq!(
+        evaluate_actor_channel_failure(true, 4, 4, true, true, true, true),
+        ActorChannelFailureAction::Ignore
+    );
+    assert_eq!(
+        evaluate_actor_channel_failure(true, 2, 4, false, true, true, true),
+        ActorChannelFailureAction::Ignore
+    );
+    assert_eq!(
+        evaluate_actor_channel_failure(true, 2, 4, true, false, true, true),
+        ActorChannelFailureAction::Ignore
+    );
 }
 
 #[test]

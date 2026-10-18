@@ -959,6 +959,52 @@ fn admission_enforces_login_state_and_completes_welcome_and_join() {
     assert_eq!(stats(&app).duplicate_joins_ignored, 1);
     assert_eq!(stats(&app).joins_succeeded, 1);
 
+    // PCSwap with ChildIndex -1 (parent connection) succeeds; ChildIndex 0 with no children is ignored;
+    // DebugText in Joined state is counted without retaining text.
+    let parent_swap_id = client.exchange(
+        &mut app,
+        ControlMessage::Swap {
+            value: -1_i32 as u32,
+        },
+        false,
+    );
+    assert_eq!(
+        client.receive_ack(&recv(&client.socket)),
+        [Notification {
+            packet_id: parent_swap_id,
+            delivered: true
+        }]
+    );
+    assert_eq!(stats(&app).swaps_received, 1);
+    assert_eq!(stats(&app).invalid_swaps_ignored, 0);
+
+    let bad_swap_id = client.exchange(&mut app, ControlMessage::Swap { value: 0 }, false);
+    assert_eq!(
+        client.receive_ack(&recv(&client.socket)),
+        [Notification {
+            packet_id: bad_swap_id,
+            delivered: true
+        }]
+    );
+    assert_eq!(stats(&app).swaps_received, 1);
+    assert_eq!(stats(&app).invalid_swaps_ignored, 1);
+
+    let debug_id = client.exchange(
+        &mut app,
+        ControlMessage::Debug {
+            text: ArchiveText::text("SENTINEL-DEBUG-99b1").unwrap(),
+        },
+        false,
+    );
+    assert_eq!(
+        client.receive_ack(&recv(&client.socket)),
+        [Notification {
+            packet_id: debug_id,
+            delivered: true
+        }]
+    );
+    assert_eq!(stats(&app).debug_texts_received, 1);
+
     // A second player connection is rejected at Login with SERVER_FULL because max_players == 1.
     let mut second = Client::connect(&mut app, address);
     second.exchange(&mut app, short_hello("", LOCAL_VERSION), true);
@@ -1009,6 +1055,7 @@ fn admission_enforces_login_state_and_completes_welcome_and_join() {
         &[
             "Alice",
             "Bob",
+            "SENTINEL-DEBUG-99b1",
             "15000",
             "100000",
             "10000",

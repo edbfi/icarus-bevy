@@ -51,9 +51,13 @@ FInBunch through FBitReader::Serialize after the ID byte, byte order set by the
 first field and persisted at `Connection + 0x158`, in client and server alike
 (F-514, F-515, F-518, F-519, F-712, F-714; U-014, U-044 resolved);
 ReceivedBunch reaches it through the driver's notify object, slot +0x18
-(F-520, F-724), and active branches `case 4` (`NMT_Netspeed`, clamping `int32
-Rate` to `[1800, NetDriver->MaxClientRate (+0x64)]`), `case 15` (`NMT_PCSwap`,
-destroying unowned `Actor` when `Actor->NetConnection (+0x410) == TargetConn`),
+(F-520, F-724), handles channel-local ID `0x16` (`22`, `NMT_DestructionInfo`,
+`UControlChannel::ReceiveDestructionInfo` `0x1435354d0` / `0x1437c3d50`, reading
+`u8 Reason` + `FNetworkGUID`) and fallback IDs `16` (`NMT_ActorChannelFailure`,
+closing on `PlayerController` channel failure), `19` (`NMT_GameSpecific`), and
+`20` (`NMT_SecurityViolation`), and active branches `case 4`
+(`NMT_Netspeed`, clamping `int32 Rate` to `[1800, NetDriver->MaxClientRate (+0x64)]`),
+`case 15` (`NMT_PCSwap`, destroying unowned `Actor` when `Actor->NetConnection (+0x410) == TargetConn`),
 and `case 17` (`NMT_DebugText`) match across both builds (F-579, F-740).
 ReceivedPacket parses a packet word and ack history, then bunch
 headers inside a handler prefix and termination-bit frame in both builds (F-521
@@ -69,4 +73,4 @@ game-connection flags stay false (F-096, F-097).
 
 ## Artifacts
 
-M-005, M-012, M-023..M-046, M-281..M-283, M-288..M-297, M-301, M-302, M-315..M-346, M-353..M-357, M-370, M-371, M-749..M-754, M-763..M-765, M-770, M-771, M-776, M-777.
+M-005, M-012, M-023..M-046, M-281..M-283, M-288..M-297, M-301, M-302, M-315..M-346, M-353..M-357, M-370, M-371, M-749..M-754, M-763..M-765, M-770, M-771, M-776, M-777, M-779, M-780.

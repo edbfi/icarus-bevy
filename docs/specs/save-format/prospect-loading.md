@@ -48,11 +48,17 @@ Inner state, version and archive mode
   `0x08`, struct tag `"ProspectInfo"`, 17 properties) carries `ProspectID` (`+0x00`),
   `ClaimedAccountID` (`+0x10`), `ClaimedAccountCharacter` (`+0x20`),
   `ProspectDTKey` (`+0x28`), `FactionMissionDTKey` (`+0x38`), `LobbyName` (`+0x48`),
-  `ExpireTime` (`+0x58`, `Int64Property`), `ProspectState` (`+0x60`),
-  `AssociatedMembers` (`+0x68`, `FAssociatedMemberInfo` `0x143dbc380`), `Cost`
-  (`+0x78`), `Reward` (`+0x7c`), `Difficulty` (`+0x80`), `Insurance` (`+0x84`),
-  `NoRespawns` (`+0x85`), `ElapsedTime` (`+0x88`), `SelectedDropPoint` (`+0x8c`),
-  and `CustomSettings` (`+0x90`, `TArray<FCustomGameSetting>` `0x143dbcf70`; F-738).
+  `ExpireTime` (`+0x58`, `Int64Property`), `ProspectState` (`+0x60`,
+  `EProspectState` `0x145fae360` `0..=5`), `AssociatedMembers` (`+0x68`,
+  `FAssociatedMemberInfo` `0x145fad8e0` / `0x143dbc380`, `0x40` B, 8 fields:
+  `AccountName` `+0x00`, `CharacterName` `+0x10`, `UserID` `+0x20`, `ChrSlot`
+  `+0x30`, `Experience` `+0x34`, `Status` `+0x38` `EProspectLocation` `0..=4`,
+  `Settled` `+0x39`, `IsCurrentlyPlaying` `+0x3a`), `Cost` (`+0x78`), `Reward`
+  (`+0x7c`), `Difficulty` (`+0x80`, `EMissionDifficulty` `0x145fae070` `0..=4`),
+  `Insurance` (`+0x84`), `NoRespawns` (`+0x85`), `ElapsedTime` (`+0x88`),
+  `SelectedDropPoint` (`+0x8c`), and `CustomSettings` (`+0x90`,
+  `TArray<FCustomGameSetting>` `0x145fadbf0` / `0x143dbcf70`, `0x18` B,
+  `SettingRowName` `+0x00` + `SettingValue` `+0x10`; F-738).
 
 | Field | Object offset | Role |
 | --- | --- | --- |
@@ -132,18 +138,19 @@ Acceptance conditions for any importer
   [--expect-prospect-name NAME]` validate the full `FProspectSaveState` root
   schema, out-of-order tag wrap-around, `PostLoadSerialize` version migration,
   all 17 `FProspectInfo` inner tags (including `ExpireTime`,
-  `AssociatedMembers`, and `CustomSettings`), optional `ProspectID` matching, and
-  base-component framing of every `StateRecorderBlob` across all 12 supplied
-  prospect saves and 3 reference-server re-saves (`15 / 15`, `2,664..2,850`
-  recorders, `59,894..65,658` component field tags, `world_imported: false`,
-  F-738).
+  `AssociatedMembers` `FAssociatedMemberInfo`, and `CustomSettings`
+  `FCustomGameSetting`), optional `ProspectID` matching, and base-component
+  framing of every `StateRecorderBlob` across all 12 supplied prospect saves and
+  3 reference-server re-saves (`15 / 15`, `2,664..2,850` recorders,
+  `59,894..65,658` component field tags, `106` members, `61` custom settings,
+  `world_imported: false`, F-738).
 - Base-component framing, all 65 `RecorderComponent` `FClassParams`, all 38
   `StateRecorderBlobs` classes' `+0xa0`/`+0x488`/`+0x4a0`/`+0x4b0` overrides,
   weather/teleport clocks (`C035`/`C002`), `D01` inventory slot restoration, and
   `C001` constructor/vftable provenance ([C001 digest](../../research/save-format/c001-constructor.md))
   are verified across builds (`recorder_restore_dispatch`, F-469 to F-477, F-509,
-  F-534, F-669, F-670, F-716, F-720 to F-722, F-727, F-728, F-733 to F-738; U-003
-  to U-006, U-020 to U-024, U-032, U-041, U-042, U-046, U-048, U-050 resolved).
+  F-534, F-669, F-670, F-716, F-720 to F-722, F-727, F-728, F-733 to F-738;
+  U-003 to U-006, U-020 to U-024, U-032, U-041, U-042, U-046, U-048, U-050 resolved).
 
 ## Open questions
 
@@ -154,7 +161,7 @@ Acceptance conditions for any importer
 ## Evidence
 
 - Static: M-147, M-148, M-143, M-149, M-150, M-119, M-122, M-123, M-079, M-094,
-  M-096, M-100, M-170, M-755..M-762, M-768, M-769, M-772 to M-777; runtime: M-154, M-155, M-160.
+  M-096, M-100, M-170, M-755..M-762, M-768, M-769, M-772 to M-777, M-779, M-780; runtime: M-154, M-155, M-160.
 - Framing receipts: M-118, M-172, M-087..M-093, M-095, M-097..M-103, M-106,
   M-058..M-070, M-049..M-055; C001: M-007, M-008, M-011, M-013, M-173, M-179, M-180, M-181, M-761, M-762.
 - Tests: `tests/tagged.rs`, `tests/recorders.rs`, `tests/component.rs`,

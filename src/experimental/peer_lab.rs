@@ -10,9 +10,9 @@
 //! control messages are counted by kind and then discarded, except that Hello
 //! and Login get the mapped control replies below. When [`PeerLabConfig::admission`]
 //! is `Some`, each peer also enforces [`ConnectionLoginAdmission`]
-//! (`IsClientMsgTypeValid`), `PreLogin`, `Welcome`, `Netspeed`, and `Join` /
-//! `SplitJoin` (`SpawnPlayActor` / `InitNewPlayer`) checks from
-//! `experimental::admission` (`F-712`, `F-713`, `F-740`).
+//! (`IsClientMsgTypeValid`), `PreLogin`, `Welcome`, `Netspeed`, `Join` /
+//! `SplitJoin` (`SpawnPlayActor` / `InitNewPlayer`), `PCSwap`, and `DebugText`
+//! checks from `experimental::admission` (`F-712`, `F-713`, `F-740`, `F-742`).
 //!
 //! The server side is an INFERRED mirror of client-build observations (cookie
 //! seeding F-536, sequencing F-535..F-539, framing F-521..F-527); the original
@@ -20,7 +20,7 @@
 //! Nothing here demonstrates compatibility with any client.
 //!
 //! Control replies follow the client and server builds' `NotifyControlMessage`
-//! (`F-530`, `F-531`, `F-579`, `F-712`, `F-713`, `F-740`) and are sent as
+//! (`F-530`, `F-531`, `F-579`, `F-712`, `F-713`, `F-740`, `F-742`) and are sent as
 //! reliable control bunches through [`LabPeer::reliable_control_packet`] (each
 //! also carries the ack state):
 //! - When [`PeerLabConfig::admission`] is `Some`, any delivered control message
@@ -56,6 +56,11 @@
 //!   (ignoring duplicate `Join` in `duplicate_joins_ignored`) and runs
 //!   [`AdmissionPolicy::login_and_init_new_player`], counting `joins_succeeded`
 //!   or sending Failure (ID 6) and closing the peer.
+//! - Swap (ID 15, `NMT_PCSwap`) and Debug (ID 17, `NMT_DebugText`), when
+//!   [`PeerLabConfig::admission`] is `Some`: `Swap` evaluates
+//!   [`evaluate_pc_swap_target`] against the peer's splitscreen child count
+//!   (`swaps_received` vs `invalid_swaps_ignored`), and `Debug` counts
+//!   [`PeerLabStats::debug_texts_received`] without retaining text (`F-713`, `F-742`).
 //! - Messages after a closing reply in the same delivery are not processed.
 //!
 //! Removing a peer is the lab's close: no close bunch is written, so a lost
@@ -97,7 +102,7 @@ use serde::Serialize;
 
 use super::admission::{
     AdmissionPolicy, ClientLoginState, ConnectionLoginAdmission, DEFAULT_MAX_CLIENT_RATE,
-    JoinSpawnContext, Occupancy, clamp_client_netspeed, int_option,
+    JoinSpawnContext, Occupancy, clamp_client_netspeed, evaluate_pc_swap_target, int_option,
 };
 use super::control_messages::{ArchiveText, ControlMessage, Decoded, NetIdValue};
 use super::handshake::decode;
@@ -353,6 +358,12 @@ pub struct PeerLabStats {
     pub joins_succeeded: u64,
     /// Duplicate Join requests ignored because a PlayerController already exists (`F-713`).
     pub duplicate_joins_ignored: u64,
+    /// PCSwap (ID 15) requests whose child index resolved to parent or a live child (`F-713`, `F-742`).
+    pub swaps_received: u64,
+    /// PCSwap (ID 15) requests ignored because `ChildIndex >= Children.Num()` (`F-713`, `F-742`).
+    pub invalid_swaps_ignored: u64,
+    /// DebugText (ID 17) messages received in valid login state (`F-713`, `F-742`).
+    pub debug_texts_received: u64,
     /// Peers removed after an Upgrade or Failure reply.
     pub peers_closed: u64,
     /// Replies that could not be built (the peer is kept unless it failed).
@@ -768,6 +779,23 @@ impl PeerLab {
                     }
                     Err(reason) => Some(Reply::Failure(reason)),
                 }
+            }
+            ControlMessage::Swap { value } => {
+                self.config.admission?;
+                let entry = self.peers.get(&address)?;
+                if evaluate_pc_swap_target(*value as i32, usize::from(entry.splitscreen_count))
+                    .is_some()
+                {
+                    bump(&mut self.stats.swaps_received);
+                } else {
+                    bump(&mut self.stats.invalid_swaps_ignored);
+                }
+                None
+            }
+            ControlMessage::Debug { .. } => {
+                self.config.admission?;
+                bump(&mut self.stats.debug_texts_received);
+                None
             }
             _ => None,
         }
