@@ -3,7 +3,7 @@
 //! Each function is a pure rule over authored domain values, read from the
 //! client recorders' record, validate, stitch and restore code (F-645 to F-665,
 //! F-677, F-715, F-716, F-717, F-727, F-728, F-732, F-733, F-734, F-735,
-//! F-736, F-737, F-741, F-742).
+//! F-736, F-737, F-741, F-742, F-743).
 //! Nothing here decodes a save, looks up a class, constructs an object or
 //! imports state: the rules pin the behavior a native world must reproduce when
 //! it restores recorded actors. The normal server does not call them yet, and
@@ -70,6 +70,28 @@ pub fn stitch<'a>(
         .position(|actor| actor.icarus_id == saved.icarus_id && names_match(saved.name, actor.name))
 }
 
+/// Returns the indices of spawned `ACharacter` actors re-trapped by
+/// `UCharacterTrapRecorderComponent::Stitching` (`C007`, `vftable + 0x468`:
+/// `0x1418ac670` server / `0x1418b0a50` client) (F-650, F-743).
+///
+/// After `UDeployableRecorderComponent::Stitching` (`0x1418ac8a0` server /
+/// `0x1418b0c80` client), `C007` scans `SpawnedActors` in order and calls
+/// `ACharacterTrap::TrapCharacter` (`0x141a9c0e0` server / `0x141a90730`
+/// client) for every non-pending-kill `ACharacter` whose `IcarusActorGUID`
+/// (`+0x230` -> `vtable + 0x10`) equals `legacy_trapped_guid` (`+0x290`) or is
+/// present in `trapped_character_guids` (`+0x298`).
+pub fn stitch_trapped_character_guids(
+    legacy_trapped_guid: i32,
+    trapped_character_guids: &[i32],
+    spawned_character_guids: &[i32],
+) -> Vec<i32> {
+    spawned_character_guids
+        .iter()
+        .copied()
+        .filter(|guid| *guid == legacy_trapped_guid || trapped_character_guids.contains(guid))
+        .collect()
+}
+
 /// Whether a voxel record belongs to an owner at `actual` (F-645): every axis
 /// within [`VOXEL_LOCATION_TOLERANCE`] inclusive. A NaN on either side never
 /// matches. An owner without a root component is at the origin.
@@ -78,6 +100,19 @@ pub fn voxel_location_matches(saved: [f32; 3], actual: [f32; 3]) -> bool {
         .iter()
         .zip(actual)
         .all(|(saved, actual)| (actual - saved).abs() <= VOXEL_LOCATION_TOLERANCE)
+}
+
+/// Evaluates base `UIcarusStateRecorderComponent::DoesRecorderMatchActor`
+/// (`vftable + 0x478`: `0x14188ba30` server / `0x141894350` client, shared by
+/// non-actor `StateRecorderBlobs` classes `C013`, `C014`, `C022`, `C035`,
+/// `C036`, `C037`, and `C018`) (F-743).
+///
+/// Compares `actor->GetName()` (`0x142176780` server / `0x142140920` client)
+/// against `OwnerRecordName` (`+0xc0`) via `FGenericPlatformStricmp::Stricmp`
+/// (`0x141e48e20` server / `0x141e39a00` client) without checking
+/// `HasValidOwner` or `GetGuid()`.
+pub fn does_state_recorder_match_actor(owner_record_name: &[u16], actor_name: &[u16]) -> bool {
+    names_match(owner_record_name, actor_name)
 }
 
 /// Evaluates `UActorStateRecorderComponent::DoesRecorderMatchActor`
@@ -141,6 +176,54 @@ pub fn does_voxel_recorder_match_actor(
     }
     let actual_location = actor_root_location.unwrap_or([0.0, 0.0, 0.0]);
     voxel_location_matches(saved_location, actual_location)
+}
+
+/// Evaluates `UPlayerRecorderComponent::DoesRecorderMatchActor` (`C025`,
+/// `vftable + 0x478`: `0x1418c9390` server / `0x1418cb270` client) (F-743).
+///
+/// Requires `save_data_version >= 1` (`+0xfc`) and a non-null, non-pending-kill
+/// `AIcarusPlayerController` (`0x141c09e10` server / `0x141bfb490` client),
+/// then compares `AIcarusPlayerController::GetPlayerCharacterID` (`0x141469c40`
+/// server / `0x1414a69a0` client) against `this->PlayerID` (`+0xd8`, `ChrSlot`
+/// at `+0xe8`) via `FPlayerCharacterID::operator==` (`0x14170a750` server /
+/// `0x14171ae50` client: [`names_match`] on `UserID` and equal `ChrSlot`).
+pub fn does_player_recorder_match_actor(
+    save_data_version: i32,
+    recorder_user_id: &[u16],
+    recorder_chr_slot: i32,
+    actor_is_valid_player_controller: bool,
+    actor_user_id: &[u16],
+    actor_chr_slot: i32,
+) -> bool {
+    save_data_version >= 1
+        && actor_is_valid_player_controller
+        && recorder_chr_slot == actor_chr_slot
+        && names_match(actor_user_id, recorder_user_id)
+}
+
+/// Evaluates `UPlayerStateRecorderComponent::DoesRecorderMatchActor` (`C026`,
+/// `vftable + 0x478`: `0x1418c9450` server / `0x1418cb330` client) (F-743).
+///
+/// Requires a non-null, non-pending-kill `AIcarusPlayerCharacter` (`0x141bf9710`
+/// server / `0x141bec9a0` client) whose `vtable + 0x6c8` predicate returns
+/// `true` and whose `AIcarusPlayerState` (`0x141428d30` server / `0x1414660d0`
+/// client) is non-null and not pending kill, then compares
+/// `player_state->PlayerCharacterID` (`+0x478` server / `+0x498` client)
+/// against `this->PlayerID` (`+0x1c0`, `ChrSlot` at `+0x1d0`) via
+/// `FPlayerCharacterID::operator==` (`0x14170a750` server / `0x14171ae50`
+/// client).
+pub fn does_player_state_recorder_match_actor(
+    recorder_user_id: &[u16],
+    recorder_chr_slot: i32,
+    actor_is_valid_alive_player_character: bool,
+    player_state_present_and_valid: bool,
+    actor_user_id: &[u16],
+    actor_chr_slot: i32,
+) -> bool {
+    actor_is_valid_alive_player_character
+        && player_state_present_and_valid
+        && recorder_chr_slot == actor_chr_slot
+        && names_match(actor_user_id, recorder_user_id)
 }
 
 /// How a state recorder finds its owner on restore: the four values of the
@@ -538,13 +621,14 @@ const SUPER_COOLED_ICE_UTF16: [u16; 16] = [
 
 /// Whether a resource-deposit record (`C028`,
 /// `UResourceDepositRecorderComponent::Validate` at `0x1418f9f20` server /
-/// `0x1418fa250` client) validates (F-645, F-652, F-742): rejects
+/// `0x1418fa250` client) validates (F-645, F-652, F-742, F-743): rejects
 /// `"Super_Cooled_Ice"` (`0x144a71800` server / `0x144bcddc0` client) ASCII
-/// case-insensitively and accepts every other deposit type. Its subclass `C027`
-/// (`UResourceDepositIceRecorderComponent`, derived vtable `0x144a71348` server /
-/// `0x144bcd908` client) overrides `Validate` (`+0x408`) back to `true`
-/// (`0x140899f70` / `0x1408c9810`) so `"Super_Cooled_Ice"` deposits validate
-/// under `C027`.
+/// case-insensitively and accepts every other deposit type. Its package
+/// subclass `UResourceDepositIceRecorderComponent` (derived vtable
+/// `0x144a71348` server / `0x144bcd908` client; `C027` is
+/// `UPrebuiltStructureRecorderComponent`) overrides `Validate` (`+0x408`) back
+/// to `true` (`0x140899f70` / `0x1408c9810`) so `"Super_Cooled_Ice"` deposits
+/// validate under `UResourceDepositIceRecorderComponent`.
 pub fn resource_deposit_record_valid(deposit_type_name: &[u16]) -> bool {
     !names_match(deposit_type_name, &SUPER_COOLED_ICE_UTF16)
 }
@@ -607,7 +691,7 @@ pub fn forecast_position(blocks: &[ForecastBlock], now: i32) -> ForecastPosition
     }
     match blocks
         .iter()
-        .find(|block| block.start <= now && now < block.end)
+        .find(|block| block.start <= now && block.end > now)
     {
         Some(block) => ForecastPosition {
             start_time_delta: now.wrapping_sub(block.start),

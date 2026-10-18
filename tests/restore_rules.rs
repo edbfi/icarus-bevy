@@ -5,19 +5,20 @@ use icarus_bevy::experimental::restore_rules::{
     ProspectAssociatedMember, ProspectBlobDecodeOutcome, RESTORED_INDEFINITE_MODIFIER_LIFETIME,
     RestoreStateKind, RocketRestore, SetupLoadedProspectOutcome, VOXEL_LOCATION_TOLERANCE,
     VersionUpgradeKind, can_activate_prospect_info, container_entries,
-    does_actor_recorder_match_actor, does_voxel_recorder_match_actor,
-    evaluate_attach_recorder_to_actor, evaluate_by_name_load_attempt, evaluate_owner_resolve_step,
-    evaluate_prospect_blob_decode, evaluate_setup_loaded_prospect_attempt,
-    migrate_prospect_save_state, names_match, normalize_prospect_name,
-    normalize_restored_modifier_lifetime, player_record_valid, prospect_ids_match,
-    record_weather_event_elapsed, recorded_level, recorder_restore_dispatch,
+    does_actor_recorder_match_actor, does_player_recorder_match_actor,
+    does_player_state_recorder_match_actor, does_state_recorder_match_actor,
+    does_voxel_recorder_match_actor, evaluate_attach_recorder_to_actor,
+    evaluate_by_name_load_attempt, evaluate_owner_resolve_step, evaluate_prospect_blob_decode,
+    evaluate_setup_loaded_prospect_attempt, migrate_prospect_save_state, names_match,
+    normalize_prospect_name, normalize_restored_modifier_lifetime, player_record_valid,
+    prospect_ids_match, record_weather_event_elapsed, recorded_level, recorder_restore_dispatch,
     recorder_transform_is_non_identity, remaining_cooldown, replicated_prospect_game_time,
     resolve_cave_ai_class_name, resolve_inventory_slot_restore, resolve_prospect_player_list,
     resource_deposit_record_valid, restored_elapsed_seconds, restored_weather_event_start_time,
     rocket_record_valid, rocket_restore, should_auto_activate_respawned_drill,
-    should_record_weather_event, stitch, upgrade_actor_recorder_component_names, upright_rotation,
-    upsert_recorded_variable, validate_rocket_spawn_record, voxel_location_matches,
-    voxel_record_valid,
+    should_record_weather_event, stitch, stitch_trapped_character_guids,
+    upgrade_actor_recorder_component_names, upright_rotation, upsert_recorded_variable,
+    validate_rocket_spawn_record, voxel_location_matches, voxel_record_valid,
 };
 
 fn units(text: &str) -> Vec<u16> {
@@ -68,6 +69,18 @@ fn stitching_needs_both_id_and_name() {
     assert_eq!(stitch(saved, spawned), Some(2));
     assert_eq!(stitch(saved, spawned[..2].iter().copied()), None);
     assert_eq!(stitch(saved, []), None);
+
+    // C007 UCharacterTrapRecorderComponent::Stitching (0x1418ac670 / 0x1418b0a50):
+    // matches either legacy TrappedCharacterGUID (+0x290) or TrappedCharacterGUIDs (+0x298)
+    // in SpawnedActors order.
+    assert_eq!(
+        stitch_trapped_character_guids(42, &[100, 200], &[10, 200, 42, 300, 100]),
+        vec![200, 42, 100]
+    );
+    assert_eq!(
+        stitch_trapped_character_guids(-1, &[], &[10, 20, 30]),
+        Vec::<i32>::new()
+    );
 }
 
 #[test]
@@ -85,6 +98,14 @@ fn voxel_owner_tolerance_is_inclusive_per_axis() {
     let owner_name = units("BP_VoxelResource_Iron_42");
     let owner_name_lower = units("bp_voxelresource_iron_42");
     let other_name = units("BP_VoxelResource_Iron_99");
+
+    // UIcarusStateRecorderComponent::DoesRecorderMatchActor (0x14188ba30 / 0x141894350):
+    // compares OwnerRecordName (+0xc0) directly against actor->GetName() via Stricmp.
+    assert!(does_state_recorder_match_actor(
+        &owner_name,
+        &owner_name_lower
+    ));
+    assert!(!does_state_recorder_match_actor(&owner_name, &other_name));
 
     // UActorStateRecorderComponent::DoesRecorderMatchActor (0x14188b960 / 0x141894280):
     // when recorder_has_valid_owner is true, matches by IcarusActorGUID; when false, matches by OwnerRecordName.
@@ -156,6 +177,80 @@ fn voxel_owner_tolerance_is_inclusive_per_axis() {
         &other_name,
         true,
         None,
+    ));
+
+    // C025 UPlayerRecorderComponent::DoesRecorderMatchActor (0x1418c9390 / 0x1418cb270) and
+    // C026 UPlayerStateRecorderComponent::DoesRecorderMatchActor (0x1418c9450 / 0x1418cb330).
+    let uid = units("76561198000000001");
+    let uid_alt = units("AbCdEf01");
+    let uid_alt_upper = units("ABCDEF01");
+    assert!(does_player_recorder_match_actor(
+        1,
+        &uid_alt,
+        2,
+        true,
+        &uid_alt_upper,
+        2
+    ));
+    assert!(!does_player_recorder_match_actor(
+        0,
+        &uid_alt,
+        2,
+        true,
+        &uid_alt_upper,
+        2
+    ));
+    assert!(!does_player_recorder_match_actor(
+        1,
+        &uid_alt,
+        2,
+        false,
+        &uid_alt_upper,
+        2
+    ));
+    assert!(!does_player_recorder_match_actor(
+        1,
+        &uid_alt,
+        2,
+        true,
+        &uid_alt_upper,
+        3
+    ));
+    assert!(!does_player_recorder_match_actor(
+        1, &uid_alt, 2, true, &uid, 2
+    ));
+
+    assert!(does_player_state_recorder_match_actor(
+        &uid_alt,
+        2,
+        true,
+        true,
+        &uid_alt_upper,
+        2
+    ));
+    assert!(!does_player_state_recorder_match_actor(
+        &uid_alt,
+        2,
+        false,
+        true,
+        &uid_alt_upper,
+        2
+    ));
+    assert!(!does_player_state_recorder_match_actor(
+        &uid_alt,
+        2,
+        true,
+        false,
+        &uid_alt_upper,
+        2
+    ));
+    assert!(!does_player_state_recorder_match_actor(
+        &uid_alt,
+        2,
+        true,
+        true,
+        &uid_alt_upper,
+        1
     ));
 }
 
