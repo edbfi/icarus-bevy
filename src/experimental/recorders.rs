@@ -8,8 +8,15 @@ use anyhow::{Context, Result, bail, ensure};
 use serde::Serialize;
 
 use super::archive::{ByteOrder, decode_string};
-use super::component::{MAX_BOUNDED_COMPONENT_BYTES, read_base_component_with_limit};
-use super::restore_rules::{LobbyPrivacy, PROSPECT_SAVE_STATE_CURRENT_VERSION, prospect_ids_match};
+use super::component::{
+    BaseComponent, MAX_BOUNDED_COMPONENT_BYTES, read_base_component_with_limit,
+};
+use super::restore_rules::{
+    LobbyPrivacy, OwnerResolvePolicy, PROSPECT_SAVE_STATE_CURRENT_VERSION,
+    ProspectAssociatedMember, player_record_valid, prospect_ids_match,
+    resolve_prospect_player_list, resource_deposit_record_valid, rocket_record_valid,
+    validate_rocket_spawn_record, voxel_record_valid,
+};
 use super::struct_array::read_tagged_struct_array_with_limit;
 use super::tagged::{
     MAX_HEADER_STRING_UNITS, MAX_INPUT_BYTES, MAX_ROOT_TAGS, ParsedRecord, PropertyRecord, RootTag,
@@ -55,7 +62,9 @@ pub struct RecorderSummary {
 
 /// Privacy-preserving summary of a staged, schema-validated `FProspectSaveState`
 /// root and recorder payload after `PostLoadSerialize` migration (`F-328`,
-/// `F-330`, `F-403`, `F-715`, `F-718`, `F-726`, `F-733`).
+/// `F-330`, `F-403`, `F-715`, `F-718`, `F-726`, `F-733`) and per-recorder
+/// `Validate` (`+0x408`) / `C033` `bIsPhysicsDynamic` evaluation (`F-652`,
+/// `F-663`, `F-680`, `F-681`).
 ///
 /// Never exposes `ProspectID`, `ProspectDTKey`, `ProspectMapName`, account IDs
 /// or recorder class names.
@@ -74,7 +83,10 @@ pub struct StagedProspectSaveState {
     pub has_last_saved_date_time: bool,
     pub has_expire_time: bool,
     pub parsed_recorder_count: usize,
+    pub invalid_recorder_count: usize,
     pub retained_recorder_count: usize,
+    pub reset_rocket_spawn_recorder_count: usize,
+    pub physics_dynamic_tree_recorder_count: usize,
     pub total_component_field_tags: usize,
     pub world_imported: bool,
 }
@@ -299,6 +311,20 @@ fn units_eq_ascii(units: &[u16], ascii: &str) -> bool {
             .all(|(unit, byte)| unit == u16::from(byte))
 }
 
+fn bool_tag_value(tag: &RootTag<'_>) -> Result<bool> {
+    ensure!(
+        tag.kind == TagKind::Bool && tag.payload.is_empty() && tag.header.len() >= 2,
+        "invalid BoolProperty tag"
+    );
+    let bool_idx = if tag.header[tag.header.len() - 1] == 0 {
+        tag.header.len() - 2
+    } else {
+        ensure!(tag.header.len() >= 18, "truncated BoolProperty GUID header");
+        tag.header.len() - 18
+    };
+    Ok(tag.header[bool_idx] != 0)
+}
+
 fn parse_lobby_privacy(property: &PropertyRecord<'_>) -> Result<LobbyPrivacy> {
     ensure!(property.index == 0, "nonzero LobbyPrivacy array index");
     match property.tag.kind {
@@ -333,16 +359,61 @@ fn parse_lobby_privacy(property: &PropertyRecord<'_>) -> Result<LobbyPrivacy> {
     }
 }
 
+fn parse_owner_resolve_policy(property: &PropertyRecord<'_>) -> Result<OwnerResolvePolicy> {
+    ensure!(
+        property.index == 0,
+        "nonzero OwnerResolvePolicy array index"
+    );
+    match property.tag.kind {
+        TagKind::Byte if property.tag.payload.len() == 1 => {
+            OwnerResolvePolicy::from_saved(property.tag.payload[0])
+                .context("unknown OwnerResolvePolicy byte")
+        }
+        TagKind::Enum | TagKind::Byte => {
+            ensure!(
+                extra_is(property, "EStateRecorderOwnerResolvePolicy"),
+                "unexpected OwnerResolvePolicy enum type"
+            );
+            let units = decode_exact_string_units(
+                property.tag.payload,
+                "invalid OwnerResolvePolicy enum string",
+            )?;
+            if units_eq_ascii(&units, "EStateRecorderOwnerResolvePolicy::FindOnly")
+                || units_eq_ascii(&units, "FindOnly")
+            {
+                Ok(OwnerResolvePolicy::FindOnly)
+            } else if units_eq_ascii(&units, "EStateRecorderOwnerResolvePolicy::RespawnOnly")
+                || units_eq_ascii(&units, "RespawnOnly")
+            {
+                Ok(OwnerResolvePolicy::RespawnOnly)
+            } else if units_eq_ascii(&units, "EStateRecorderOwnerResolvePolicy::FindOrRespawn")
+                || units_eq_ascii(&units, "FindOrRespawn")
+            {
+                Ok(OwnerResolvePolicy::FindOrRespawn)
+            } else if units_eq_ascii(&units, "EStateRecorderOwnerResolvePolicy::ManuallyResolved")
+                || units_eq_ascii(&units, "ManuallyResolved")
+            {
+                Ok(OwnerResolvePolicy::ManuallyResolved)
+            } else {
+                bail!("unknown OwnerResolvePolicy enumerator");
+            }
+        }
+        _ => bail!("unsupported OwnerResolvePolicy tag kind"),
+    }
+}
+
 /// Validates `ProspectInfo.AssociatedMembers` against the reflected
 /// `FAssociatedMemberInfo` descriptor (`0x145fad8e0` / `0x143dbc380`):
 /// shared `StructProperty` header `"AssociatedMemberInfo"` and up to the 8
 /// reflected fields (`AccountName`, `CharacterName`, `UserID`, `ChrSlot`,
-/// `Experience`, `Status`, `Settled`, `IsCurrentlyPlaying`).
+/// `Experience`, `Status`, `Settled`, `IsCurrentlyPlaying`), returning the
+/// post-default `(UserID, ChrSlot)` pairs (`FAssociatedMemberInfo::Construct`
+/// `0x143dbc230` zero-initializes `UserID = ""` and `ChrSlot = 0`).
 fn validate_associated_members(
     payload: &[u8],
     profile: TagProfile,
     component_byte_limit: usize,
-) -> Result<usize> {
+) -> Result<Vec<(Vec<u16>, i32)>> {
     let members = read_tagged_struct_array_with_limit(payload, profile, component_byte_limit)
         .context("invalid AssociatedMembers struct array")?;
     let ParsedRecord::Property(shared_prop) = read_record(members.shared().record, profile)? else {
@@ -354,8 +425,11 @@ fn validate_associated_members(
             && extra_is(&shared_prop, "AssociatedMemberInfo"),
         "AssociatedMembers shared header must be StructProperty(AssociatedMemberInfo)"
     );
+    let mut parsed_members = Vec::with_capacity(members.elements().len());
     for element in members.elements() {
         let mut seen: Vec<Vec<u16>> = Vec::with_capacity(element.fields().len());
+        let mut user_id = Vec::new();
+        let mut chr_slot = 0_i32;
         for field_tag in element.fields() {
             let ParsedRecord::Property(field_prop) = read_record(field_tag.record, profile)? else {
                 bail!("unexpected AssociatedMemberInfo terminator");
@@ -369,9 +443,17 @@ fn validate_associated_members(
                 "duplicate AssociatedMemberInfo property"
             );
             seen.push(field_prop.name.clone());
-            if is_name(&field_prop.name, "AccountName")
+            if is_name(&field_prop.name, "UserID") {
+                ensure!(
+                    field_prop.tag.kind == TagKind::String,
+                    "AssociatedMemberInfo.UserID must be StrProperty"
+                );
+                user_id = decode_exact_string_units(
+                    field_prop.tag.payload,
+                    "invalid AssociatedMemberInfo.UserID",
+                )?;
+            } else if is_name(&field_prop.name, "AccountName")
                 || is_name(&field_prop.name, "CharacterName")
-                || is_name(&field_prop.name, "UserID")
             {
                 ensure!(
                     field_prop.tag.kind == TagKind::String,
@@ -381,9 +463,13 @@ fn validate_associated_members(
                     field_prop.tag.payload,
                     "invalid AssociatedMemberInfo string",
                 )?;
-            } else if is_name(&field_prop.name, "ChrSlot")
-                || is_name(&field_prop.name, "Experience")
-            {
+            } else if is_name(&field_prop.name, "ChrSlot") {
+                ensure!(
+                    field_prop.tag.kind == TagKind::Int && field_prop.tag.payload.len() == 4,
+                    "AssociatedMemberInfo.ChrSlot must be 4-byte IntProperty"
+                );
+                chr_slot = i32::from_le_bytes(field_prop.tag.payload.try_into()?);
+            } else if is_name(&field_prop.name, "Experience") {
                 ensure!(
                     field_prop.tag.kind == TagKind::Int && field_prop.tag.payload.len() == 4,
                     "AssociatedMemberInfo int field must be 4-byte IntProperty"
@@ -421,8 +507,9 @@ fn validate_associated_members(
                 bail!("unmapped AssociatedMemberInfo property");
             }
         }
+        parsed_members.push((user_id, chr_slot));
     }
-    Ok(members.elements().len())
+    Ok(parsed_members)
 }
 
 /// Validates `ProspectInfo.CustomSettings` against the reflected
@@ -485,7 +572,7 @@ fn validate_custom_settings(
 
 struct ParsedProspectInfo {
     tag_count: usize,
-    associated_member_count: usize,
+    associated_members: Vec<(Vec<u16>, i32)>,
     prospect_id: Vec<u16>,
     prospect_dt_key: Vec<u16>,
     has_expire_time: bool,
@@ -498,7 +585,7 @@ fn validate_prospect_info(
 ) -> Result<ParsedProspectInfo> {
     let nested = read_root(payload, profile).context("invalid ProspectInfo tagged sequence")?;
     let mut seen_names: Vec<Vec<u16>> = Vec::with_capacity(nested.tags.len());
-    let mut associated_member_count = 0usize;
+    let mut associated_members = Vec::new();
     let mut prospect_id = Vec::new();
     let mut prospect_dt_key = Vec::new();
     let mut has_expire_time = false;
@@ -602,7 +689,7 @@ fn validate_prospect_info(
                 prop.tag.kind == TagKind::Array && extra_is(&prop, "StructProperty"),
                 "ProspectInfo.AssociatedMembers must be ArrayProperty<StructProperty>"
             );
-            associated_member_count =
+            associated_members =
                 validate_associated_members(prop.tag.payload, profile, component_byte_limit)?;
         } else if is_name(&prop.name, "CustomSettings") {
             ensure!(
@@ -617,10 +704,345 @@ fn validate_prospect_info(
 
     Ok(ParsedProspectInfo {
         tag_count: nested.tags.len(),
-        associated_member_count,
+        associated_members,
         prospect_id,
         prospect_dt_key,
         has_expire_time,
+    })
+}
+
+struct StagedRecorderEval {
+    is_valid: bool,
+    was_reset_rocket_spawn: bool,
+    is_physics_dynamic_tree: bool,
+}
+
+fn parse_player_character_id_struct(
+    payload: &[u8],
+    profile: TagProfile,
+) -> Result<(Vec<u16>, i32)> {
+    let nested = read_root(payload, profile).context("invalid PlayerCharacterID struct")?;
+    let mut player_id = Vec::new();
+    let mut chr_slot = -1_i32;
+    for tag in &nested.tags {
+        let ParsedRecord::Property(prop) = read_record(tag.record, profile)? else {
+            bail!("unexpected PlayerCharacterID terminator");
+        };
+        ensure!(
+            prop.tag.record.len() == tag.record.len() && prop.index == 0,
+            "invalid PlayerCharacterID field header"
+        );
+        if is_name(&prop.name, "PlayerID") {
+            ensure!(
+                prop.tag.kind == TagKind::String,
+                "PlayerCharacterID.PlayerID must be StrProperty"
+            );
+            player_id =
+                decode_exact_string_units(prop.tag.payload, "invalid PlayerCharacterID.PlayerID")?;
+        } else if is_name(&prop.name, "ChrSlot") {
+            ensure!(
+                prop.tag.kind == TagKind::Int && prop.tag.payload.len() == 4,
+                "PlayerCharacterID.ChrSlot must be 4-byte IntProperty"
+            );
+            chr_slot = i32::from_le_bytes(prop.tag.payload.try_into()?);
+        }
+    }
+    Ok((player_id, chr_slot))
+}
+
+fn evaluate_staged_recorder_component(
+    class_units: &[u16],
+    component: &BaseComponent<'_>,
+    profile: TagProfile,
+    active_prospect_id: &[u16],
+    associated_members: &[ProspectAssociatedMember<'_>],
+) -> Result<StagedRecorderEval> {
+    if units_eq_ascii(
+        class_units,
+        "/Script/Icarus.DynamicRocketSpawnRecorderComponent",
+    ) || units_eq_ascii(class_units, "/Script/Icarus.RocketSpawnRecorderComponent")
+    {
+        let mut assigned_player_id = Vec::new();
+        let mut chr_slot = 0_i32;
+        let mut version = 0_i32;
+        for field_tag in component.fields() {
+            let ParsedRecord::Property(prop) = read_record(field_tag.record, profile)? else {
+                bail!("unexpected RocketSpawnRecorderComponent terminator");
+            };
+            if is_name(&prop.name, "SpawnRecord") {
+                ensure!(
+                    prop.tag.kind == TagKind::Struct
+                        && prop.index == 0
+                        && extra_is(&prop, "RocketSpawnStateRecord"),
+                    "SpawnRecord must be StructProperty(RocketSpawnStateRecord)"
+                );
+                let nested = read_root(prop.tag.payload, profile)
+                    .context("invalid RocketSpawnStateRecord struct")?;
+                for inner_tag in &nested.tags {
+                    let ParsedRecord::Property(inner_prop) =
+                        read_record(inner_tag.record, profile)?
+                    else {
+                        bail!("unexpected RocketSpawnStateRecord terminator");
+                    };
+                    if is_name(&inner_prop.name, "AssignedPlayerID") {
+                        ensure!(
+                            inner_prop.tag.kind == TagKind::String && inner_prop.index == 0,
+                            "RocketSpawnStateRecord.AssignedPlayerID must be StrProperty"
+                        );
+                        assigned_player_id = decode_exact_string_units(
+                            inner_prop.tag.payload,
+                            "invalid RocketSpawnStateRecord.AssignedPlayerID",
+                        )?;
+                    } else if is_name(&inner_prop.name, "ChrSlot") {
+                        ensure!(
+                            inner_prop.tag.kind == TagKind::Int
+                                && inner_prop.index == 0
+                                && inner_prop.tag.payload.len() == 4,
+                            "RocketSpawnStateRecord.ChrSlot must be 4-byte IntProperty"
+                        );
+                        chr_slot = i32::from_le_bytes(inner_prop.tag.payload.try_into()?);
+                    }
+                }
+            } else if is_name(&prop.name, "RocketSpawnRecorderVersion") {
+                ensure!(
+                    prop.tag.kind == TagKind::Int && prop.index == 0 && prop.tag.payload.len() == 4,
+                    "RocketSpawnRecorderVersion must be 4-byte IntProperty"
+                );
+                version = i32::from_le_bytes(prop.tag.payload.try_into()?);
+            }
+        }
+        let list = resolve_prospect_player_list(
+            true,
+            active_prospect_id,
+            associated_members,
+            &assigned_player_id,
+            chr_slot,
+        );
+        let orig_player_id = assigned_player_id.clone();
+        let orig_chr_slot = chr_slot;
+        let is_valid =
+            validate_rocket_spawn_record(version, list, &mut assigned_player_id, &mut chr_slot);
+        let was_reset = assigned_player_id.is_empty()
+            && chr_slot == -1
+            && (version < 1 || (!orig_player_id.is_empty() || orig_chr_slot != -1));
+        return Ok(StagedRecorderEval {
+            is_valid,
+            was_reset_rocket_spawn: was_reset,
+            is_physics_dynamic_tree: false,
+        });
+    }
+
+    if units_eq_ascii(class_units, "/Script/Icarus.PlayerRecorderComponent") {
+        let mut player_id = Vec::new();
+        let mut chr_slot = -1_i32;
+        let mut version = 0_i32;
+        for field_tag in component.fields() {
+            let ParsedRecord::Property(prop) = read_record(field_tag.record, profile)? else {
+                bail!("unexpected PlayerRecorderComponent terminator");
+            };
+            if is_name(&prop.name, "PlayerCharacterID") {
+                ensure!(
+                    prop.tag.kind == TagKind::Struct
+                        && prop.index == 0
+                        && extra_is(&prop, "PlayerCharacterID"),
+                    "PlayerRecorderComponent.PlayerCharacterID must be StructProperty(PlayerCharacterID)"
+                );
+                (player_id, chr_slot) =
+                    parse_player_character_id_struct(prop.tag.payload, profile)?;
+            } else if is_name(&prop.name, "PlayerRecorderVersion") {
+                ensure!(
+                    prop.tag.kind == TagKind::Int && prop.index == 0 && prop.tag.payload.len() == 4,
+                    "PlayerRecorderVersion must be 4-byte IntProperty"
+                );
+                version = i32::from_le_bytes(prop.tag.payload.try_into()?);
+            }
+        }
+        let list = resolve_prospect_player_list(
+            true,
+            active_prospect_id,
+            associated_members,
+            &player_id,
+            chr_slot,
+        );
+        return Ok(StagedRecorderEval {
+            is_valid: player_record_valid(version, list),
+            was_reset_rocket_spawn: false,
+            is_physics_dynamic_tree: false,
+        });
+    }
+
+    if units_eq_ascii(class_units, "/Script/Icarus.PlayerStateRecorderComponent") {
+        let mut player_id = Vec::new();
+        let mut chr_slot = -1_i32;
+        let mut version = 0_i32;
+        for field_tag in component.fields() {
+            let ParsedRecord::Property(prop) = read_record(field_tag.record, profile)? else {
+                bail!("unexpected PlayerStateRecorderComponent terminator");
+            };
+            if is_name(&prop.name, "PlayerCharacterID") {
+                ensure!(
+                    prop.tag.kind == TagKind::Struct
+                        && prop.index == 0
+                        && extra_is(&prop, "PlayerCharacterID"),
+                    "PlayerStateRecorderComponent.PlayerCharacterID must be StructProperty(PlayerCharacterID)"
+                );
+                (player_id, chr_slot) =
+                    parse_player_character_id_struct(prop.tag.payload, profile)?;
+            } else if is_name(&prop.name, "PlayerStateRecorderVersion") {
+                ensure!(
+                    prop.tag.kind == TagKind::Int && prop.index == 0 && prop.tag.payload.len() == 4,
+                    "PlayerStateRecorderVersion must be 4-byte IntProperty"
+                );
+                version = i32::from_le_bytes(prop.tag.payload.try_into()?);
+            }
+        }
+        let list = resolve_prospect_player_list(
+            true,
+            active_prospect_id,
+            associated_members,
+            &player_id,
+            chr_slot,
+        );
+        return Ok(StagedRecorderEval {
+            is_valid: player_record_valid(version, list),
+            was_reset_rocket_spawn: false,
+            is_physics_dynamic_tree: false,
+        });
+    }
+
+    if units_eq_ascii(
+        class_units,
+        "/Script/Icarus.ResourceDepositRecorderComponent",
+    ) {
+        let mut resource_dt_key = Vec::new();
+        for field_tag in component.fields() {
+            let ParsedRecord::Property(prop) = read_record(field_tag.record, profile)? else {
+                bail!("unexpected ResourceDepositRecorderComponent terminator");
+            };
+            if is_name(&prop.name, "ResourceDTKey") {
+                ensure!(
+                    prop.tag.kind == TagKind::Name && prop.index == 0,
+                    "ResourceDepositRecorderComponent.ResourceDTKey must be NameProperty"
+                );
+                resource_dt_key = decode_exact_string_units(
+                    prop.tag.payload,
+                    "invalid ResourceDepositRecorderComponent.ResourceDTKey",
+                )?;
+            }
+        }
+        return Ok(StagedRecorderEval {
+            is_valid: resource_deposit_record_valid(&resource_dt_key),
+            was_reset_rocket_spawn: false,
+            is_physics_dynamic_tree: false,
+        });
+    }
+
+    if units_eq_ascii(class_units, "/Script/Icarus.RocketRecorderComponent") {
+        let mut player_id = Vec::new();
+        let mut chr_slot = -1_i32;
+        for field_tag in component.fields() {
+            let ParsedRecord::Property(prop) = read_record(field_tag.record, profile)? else {
+                bail!("unexpected RocketRecorderComponent terminator");
+            };
+            if is_name(&prop.name, "AssignedPlayerCharacterID") {
+                ensure!(
+                    prop.tag.kind == TagKind::Struct
+                        && prop.index == 0
+                        && extra_is(&prop, "PlayerCharacterID"),
+                    "RocketRecorderComponent.AssignedPlayerCharacterID must be StructProperty(PlayerCharacterID)"
+                );
+                (player_id, chr_slot) =
+                    parse_player_character_id_struct(prop.tag.payload, profile)?;
+            }
+        }
+        let list = resolve_prospect_player_list(
+            true,
+            active_prospect_id,
+            associated_members,
+            &player_id,
+            chr_slot,
+        );
+        return Ok(StagedRecorderEval {
+            is_valid: rocket_record_valid(list),
+            was_reset_rocket_spawn: false,
+            is_physics_dynamic_tree: false,
+        });
+    }
+
+    let is_spawned_voxel =
+        units_eq_ascii(class_units, "/Script/Icarus.SpawnedVoxelRecorderComponent");
+    if is_spawned_voxel || units_eq_ascii(class_units, "/Script/Icarus.VoxelRecorderComponent") {
+        // USpawnedVoxelRecorderComponent ctor (0x1418c24c0) defaults OwnerResolvePolicy (+0xb2) to
+        // RespawnOnly (1); UVoxelRecorderComponent ctor (0x1418c2650) defaults to ManuallyResolved (3).
+        let mut owner_resolve_policy = if is_spawned_voxel {
+            OwnerResolvePolicy::RespawnOnly
+        } else {
+            OwnerResolvePolicy::ManuallyResolved
+        };
+        let mut fully_mined = false;
+        for field_tag in component.fields() {
+            let ParsedRecord::Property(prop) = read_record(field_tag.record, profile)? else {
+                bail!("unexpected VoxelRecorderComponent terminator");
+            };
+            if is_name(&prop.name, "OwnerResolvePolicy") {
+                owner_resolve_policy = parse_owner_resolve_policy(&prop)?;
+            } else if is_name(&prop.name, "VoxelSaveData") {
+                ensure!(
+                    prop.tag.kind == TagKind::Struct
+                        && prop.index == 0
+                        && extra_is(&prop, "VoxelSaveData"),
+                    "VoxelSaveData must be StructProperty(VoxelSaveData)"
+                );
+                let nested =
+                    read_root(prop.tag.payload, profile).context("invalid VoxelSaveData struct")?;
+                for inner_tag in &nested.tags {
+                    let ParsedRecord::Property(inner_prop) =
+                        read_record(inner_tag.record, profile)?
+                    else {
+                        bail!("unexpected VoxelSaveData terminator");
+                    };
+                    if is_name(&inner_prop.name, "bIsVoxelFullyMined") {
+                        ensure!(
+                            inner_prop.index == 0,
+                            "VoxelSaveData.bIsVoxelFullyMined must have index 0"
+                        );
+                        fully_mined = bool_tag_value(&inner_prop.tag)?;
+                    }
+                }
+            }
+        }
+        return Ok(StagedRecorderEval {
+            is_valid: voxel_record_valid(owner_resolve_policy, fully_mined),
+            was_reset_rocket_spawn: false,
+            is_physics_dynamic_tree: false,
+        });
+    }
+
+    if units_eq_ascii(class_units, "/Script/Icarus.TreeRecorderComponent") {
+        let mut is_physics_dynamic = false;
+        for field_tag in component.fields() {
+            let ParsedRecord::Property(prop) = read_record(field_tag.record, profile)? else {
+                bail!("unexpected TreeRecorderComponent terminator");
+            };
+            if is_name(&prop.name, "bIsPhysicsDynamic") {
+                ensure!(
+                    prop.index == 0,
+                    "TreeRecorderComponent.bIsPhysicsDynamic must have index 0"
+                );
+                is_physics_dynamic = bool_tag_value(&prop.tag)?;
+            }
+        }
+        return Ok(StagedRecorderEval {
+            is_valid: true,
+            was_reset_rocket_spawn: false,
+            is_physics_dynamic_tree: is_physics_dynamic,
+        });
+    }
+
+    Ok(StagedRecorderEval {
+        is_valid: true,
+        was_reset_rocket_spawn: false,
+        is_physics_dynamic_tree: false,
     })
 }
 
@@ -636,6 +1058,10 @@ fn validate_prospect_info(
 ///   `StateRecorderBlobs` when `Version == 0`.
 /// - Frames every recorder's `BinaryData` via [`read_base_component_with_limit`]
 ///   and rejects any recorder with unknown outer fields (`F-403`).
+/// - Evaluates the 7 non-trivial `UIcarusStateRecorderComponent::Validate`
+///   (`+0x408`) overrides (`C011`, `C025`, `C026`, `C028`, `C029`, `C031`, `C034`)
+///   and `C033` `bIsPhysicsDynamic` against the post-migration `ProspectInfo`
+///   (`F-652`, `F-663`, `F-680`, `F-681`).
 /// - When `expected_prospect_id` is `Some`, verifies that the post-migration
 ///   `ProspectInfo.ProspectID` is non-empty and matches ASCII case-insensitively
 ///   (`UProspectSubsystem::SetActiveProspectSaveState` `0x1418371c0`, `F-717`,
@@ -755,30 +1181,11 @@ pub fn stage_prospect_save_state(
         }
     }
 
-    let mut parsed_recorder_count = 0usize;
-    let mut total_component_field_tags = 0usize;
-    if has_recorders_root {
-        let recorders = read_recorders(roots, profile)?;
-        parsed_recorder_count = recorders.records().len();
-        for recorder in recorders.records() {
-            ensure!(
-                recorder.fields().len() == 2,
-                "unmapped StateRecorderBlob field"
-            );
-            let component =
-                read_base_component_with_limit(recorder.binary_data, profile, component_byte_limit)
-                    .context("invalid staged recorder base component")?;
-            total_component_field_tags = total_component_field_tags
-                .checked_add(component.fields().len())
-                .context("component field count overflow")?;
-        }
-    }
-
     let version = loaded_version.unwrap_or(0);
     let mut privacy = lobby_privacy.unwrap_or(LobbyPrivacy::Unknown);
     let mut info = prospect_info.unwrap_or(ParsedProspectInfo {
         tag_count: 0,
-        associated_member_count: 0,
+        associated_members: Vec::new(),
         prospect_id: Vec::new(),
         prospect_dt_key: Vec::new(),
         has_expire_time: false,
@@ -792,16 +1199,72 @@ pub fn stage_prospect_save_state(
             info.prospect_dt_key = legacy_dt_key;
         }
     }
-    let retained_recorder_count = if version == 0 {
+    if version == 0 {
         info.tag_count = 0;
-        info.associated_member_count = 0;
+        info.associated_members.clear();
         info.prospect_id.clear();
         info.prospect_dt_key.clear();
         info.has_expire_time = false;
         privacy = LobbyPrivacy::FriendsOnly;
+    }
+
+    let member_refs: Vec<ProspectAssociatedMember<'_>> = info
+        .associated_members
+        .iter()
+        .map(|(user_id, chr_slot)| ProspectAssociatedMember {
+            user_id: user_id.as_slice(),
+            chr_slot: *chr_slot,
+        })
+        .collect();
+
+    let mut parsed_recorder_count = 0usize;
+    let mut invalid_recorder_count = 0usize;
+    let mut reset_rocket_spawn_recorder_count = 0usize;
+    let mut physics_dynamic_tree_recorder_count = 0usize;
+    let mut total_component_field_tags = 0usize;
+    if has_recorders_root {
+        let recorders = read_recorders(roots, profile)?;
+        parsed_recorder_count = recorders.records().len();
+        for recorder in recorders.records() {
+            ensure!(
+                recorder.fields().len() == 2,
+                "unmapped StateRecorderBlob field"
+            );
+            let class_units = decode_exact_string_units(
+                recorder.class_value,
+                "invalid staged recorder class string",
+            )?;
+            let component =
+                read_base_component_with_limit(recorder.binary_data, profile, component_byte_limit)
+                    .context("invalid staged recorder base component")?;
+            total_component_field_tags = total_component_field_tags
+                .checked_add(component.fields().len())
+                .context("component field count overflow")?;
+            if version != 0 {
+                let eval = evaluate_staged_recorder_component(
+                    &class_units,
+                    &component,
+                    profile,
+                    &info.prospect_id,
+                    &member_refs,
+                )?;
+                if !eval.is_valid {
+                    invalid_recorder_count += 1;
+                }
+                if eval.was_reset_rocket_spawn {
+                    reset_rocket_spawn_recorder_count += 1;
+                }
+                if eval.is_physics_dynamic_tree {
+                    physics_dynamic_tree_recorder_count += 1;
+                }
+            }
+        }
+    }
+
+    let retained_recorder_count = if version == 0 {
         0
     } else {
-        parsed_recorder_count
+        parsed_recorder_count - invalid_recorder_count
     };
 
     if let Some(expected) = expected_prospect_id {
@@ -820,14 +1283,17 @@ pub fn stage_prospect_save_state(
         lobby_privacy: privacy,
         root_tag_count: roots.len(),
         prospect_info_tag_count: info.tag_count,
-        associated_member_count: info.associated_member_count,
+        associated_member_count: info.associated_members.len(),
         has_prospect_id: !info.prospect_id.is_empty(),
         has_prospect_dt_key: !info.prospect_dt_key.is_empty(),
         has_map_name,
         has_last_saved_date_time,
         has_expire_time: info.has_expire_time,
         parsed_recorder_count,
+        invalid_recorder_count,
         retained_recorder_count,
+        reset_rocket_spawn_recorder_count,
+        physics_dynamic_tree_recorder_count,
         total_component_field_tags,
         world_imported: false,
     })

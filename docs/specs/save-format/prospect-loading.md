@@ -128,17 +128,17 @@ Acceptance conditions for any importer
 - `stage_prospect_save_state` (`experimental::recorders`), `stage_prospect`
   (`prospect`), and `icarus-server inspect-save --stage-check` validate the full
   `FProspectSaveState` root schema, out-of-order tag wrap-around,
-  `PostLoadSerialize` migration, all 17 `FProspectInfo` inner tags (including
-  `FAssociatedMemberInfo` and `FCustomGameSetting`), optional `ProspectID`
-  matching, and base-component framing across all 15 supplied and re-saved
-  prospects (`15 / 15`, `106` members, `61` custom settings, `world_imported:
-  false`, F-738).
-- Base-component framing, all 65 `RecorderComponent` `FClassParams`, all 38
-  `StateRecorderBlobs` classes' vtable overrides ([restore rules](restore-rules.md)),
-  and `C001` constructor/vftable provenance ([C001 digest](../../research/save-format/c001-constructor.md))
-  are verified across builds (F-469 to F-477, F-509, F-534, F-669, F-670, F-716,
-  F-720 to F-722, F-727, F-728, F-733 to F-738; U-003 to U-006, U-020 to U-024,
-  U-032, U-041, U-042, U-046, U-048, U-050 resolved).
+  `PostLoadSerialize` migration, all 17 `FProspectInfo` inner tags, optional
+  `ProspectID` matching, base-component framing, per-recorder `Validate`
+  (`+0x408`), and `C033` `bIsPhysicsDynamic` counts across all 15 saves (`15 / 15`;
+  `dddd.json`: `2,744` -> `1` invalid `C031`, `2,743` retained, `2` dynamic
+  `C033` -> `2,741` on `M-691`; `world_imported: false`, F-680, F-736, F-738).
+- All 65 `RecorderComponent` `FClassParams`, all 38 `StateRecorderBlobs` classes'
+  vtable overrides ([restore rules](restore-rules.md)), and `C001` provenance
+  ([C001 digest](../../research/save-format/c001-constructor.md)) match across
+  builds (F-469 to F-477, F-509, F-534, F-669, F-670, F-716, F-720 to F-722,
+  F-727, F-728, F-733 to F-738; U-003 to U-006, U-020 to U-024, U-032, U-041,
+  U-042, U-046, U-048, U-050 resolved).
 
 ## Open questions
 
@@ -149,7 +149,7 @@ Acceptance conditions for any importer
 ## Evidence
 
 - Static: M-147, M-148, M-143, M-149, M-150, M-119, M-122, M-123, M-079, M-094,
-  M-096, M-100, M-170, M-755..M-762, M-768, M-769, M-772 to M-777, M-779..M-782; runtime: M-154, M-155, M-160.
+  M-096, M-100, M-170, M-755..M-762, M-768, M-769, M-772 to M-777, M-779..M-784; runtime: M-154, M-155, M-160.
 - Framing receipts: M-118, M-172, M-087..M-093, M-095, M-097..M-103, M-106,
   M-058..M-070, M-049..M-055; C001: M-007, M-008, M-011, M-013, M-173, M-179, M-180, M-181, M-761, M-762.
 - Tests: `tests/tagged.rs`, `tests/recorders.rs`, `tests/component.rs`,
