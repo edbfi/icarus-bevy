@@ -1,38 +1,41 @@
 use icarus_bevy::experimental::restore_rules::{
-    ACTOR_RECORDER_TRANSFORM_TOLERANCE, ActorGuidRestoreStep, ActorLink, ApplyTransformKind,
-    AttachRecorderOutcome, ByNameLoadOutcome, DeployableStitchPlan, DrillStitchCandidate,
-    DrillStitchResolution, DynamicItemPropertyKind, EnzymeGeyserRestorePlan, FlodTileRestorePlan,
+    ACTOR_RECORDER_TRANSFORM_TOLERANCE, ActorGuidRestoreStep, ActorLink,
+    ActorSubcomponentRestorePlan, ApplyTransformKind, AttachRecorderOutcome, ByNameLoadOutcome,
+    DeployableStitchPlan, DrillStitchCandidate, DrillStitchResolution, DynamicItemPropertyKind,
+    EnzymeGeyserRestorePlan, FlodTileRestorePlan, InstancedLevelManagerRestorePlan,
     InventorySlotOverflowDisposition, LegacyGunAmmoUpgrade, LobbyPrivacy, OwnerResolvePolicy,
     OwnerResolveStep, PROSPECT_SAVE_STATE_CURRENT_VERSION, PlayerList, PlayerStateLifeRestore,
     ProspectAssociatedMember, ProspectBlobDecodeOutcome, RESTORED_INDEFINITE_MODIFIER_LIFETIME,
-    RestoreStateKind, RestoredMissionHistoryEntry, RocketRestore, SetupLoadedProspectOutcome,
-    SplineRespawnDisposition, StitchedPlayerRecorderLinks, VOXEL_LOCATION_TOLERANCE,
-    VersionUpgradeKind, VoxelDatabaseRestorePlan, WorldTalentStitchPlan,
+    RestoreStateKind, RestoredMissionHistoryEntry, RestoredProcessingState, RocketRestore,
+    SetupLoadedProspectOutcome, SplineRespawnDisposition, StitchedPlayerRecorderLinks,
+    VOXEL_LOCATION_TOLERANCE, VersionUpgradeKind, VoxelDatabaseRestorePlan, WorldTalentStitchPlan,
     can_activate_prospect_info, compact_and_diff_flod_tiles, container_entries,
     does_actor_recorder_match_actor, does_player_recorder_match_actor,
     does_player_state_recorder_match_actor, does_state_recorder_match_actor,
     does_voxel_recorder_match_actor, evaluate_actor_guid_restore,
-    evaluate_attach_recorder_to_actor, evaluate_by_name_load_attempt, evaluate_deployable_stitch,
-    evaluate_drill_stitch, evaluate_enzyme_geyser_restore, evaluate_flod_tile_restore,
-    evaluate_legacy_gun_ammo_upgrade, evaluate_modifier_state_restore, evaluate_owner_resolve_step,
+    evaluate_actor_subcomponent_restore, evaluate_attach_recorder_to_actor,
+    evaluate_by_name_load_attempt, evaluate_deployable_stitch, evaluate_drill_stitch,
+    evaluate_enzyme_geyser_restore, evaluate_flod_tile_restore,
+    evaluate_instanced_level_manager_restore, evaluate_legacy_gun_ammo_upgrade,
+    evaluate_modifier_state_restore, evaluate_owner_resolve_step,
     evaluate_player_state_life_restore, evaluate_prospect_blob_decode,
     evaluate_setup_loaded_prospect_attempt, evaluate_spline_recorder_respawn,
     evaluate_voxel_database_restore, evaluate_world_talent_stitch,
     filter_restored_cosmetic_armour_overrides, migrate_prospect_save_state, names_match,
     normalize_prospect_name, normalize_restored_modifier_lifetime, player_record_valid,
-    prospect_ids_match, record_weather_event_elapsed, recorded_level, recorder_restore_dispatch,
-    recorder_transform_is_non_identity, remaining_cooldown, replicated_prospect_game_time,
-    resolve_cave_ai_class_name, resolve_deployable_setup_variant_index,
-    resolve_inventory_slot_restore, resolve_item_recorder_database_guid,
-    resolve_prospect_player_list, resource_deposit_record_valid,
-    restore_game_mode_exported_currencies, restore_game_mode_mission_history,
-    restore_world_boss_row_handles, restored_elapsed_seconds, restored_next_meteor_shower_time,
-    restored_weather_event_start_time, rocket_record_valid, rocket_restore,
-    should_auto_activate_respawned_drill, should_drop_respawned_tree_recorder_on_resave,
-    should_grant_deposit_map_icon_stat, should_record_weather_event,
-    should_restore_actor_transform, should_try_fast_path_prebuilt_grid_restore, stitch,
-    stitch_player_recorder_assigned_uids, stitch_prebuilt_structure_actors,
-    stitch_quest_actor_records, stitch_trapped_character_guids,
+    prospect_ids_match, record_trapped_character_guids, record_weather_event_elapsed,
+    recorded_level, recorder_restore_dispatch, recorder_transform_is_non_identity,
+    remaining_cooldown, replicated_prospect_game_time, resolve_cave_ai_class_name,
+    resolve_deployable_setup_variant_index, resolve_inventory_slot_restore,
+    resolve_item_recorder_database_guid, resolve_prospect_player_list,
+    resource_deposit_record_valid, restore_game_mode_exported_currencies,
+    restore_game_mode_mission_history, restore_world_boss_row_handles, restored_elapsed_seconds,
+    restored_next_meteor_shower_time, restored_weather_event_start_time, rocket_record_valid,
+    rocket_restore, should_auto_activate_respawned_drill,
+    should_drop_respawned_tree_recorder_on_resave, should_grant_deposit_map_icon_stat,
+    should_record_weather_event, should_restore_actor_transform,
+    should_try_fast_path_prebuilt_grid_restore, stitch, stitch_player_recorder_assigned_uids,
+    stitch_prebuilt_structure_actors, stitch_quest_actor_records, stitch_trapped_character_guids,
     upgrade_actor_recorder_component_names, upright_rotation, upsert_recorded_variable,
     validate_rocket_spawn_record, voxel_location_matches, voxel_record_valid,
 };
@@ -240,6 +243,29 @@ fn stitching_needs_both_id_and_name() {
         stitch_trapped_character_guids(-1, &[], &[10, 20, 30]),
         Vec::<i32>::new()
     );
+
+    // C007 UCharacterTrapRecorderComponent::RecordOwnerState (0x1418a13c0 / 0x1418a6b40):
+    // populates TrappedCharacterGUIDs when GetTrappedCharacters returns >= 1 GUID; falls back
+    // to GetTrappedCharacter when the list is empty; sets legacy_trapped_guid = -1 otherwise.
+    let mut legacy_guid = 77;
+    let mut guid_list = vec![1, 2];
+    record_trapped_character_guids(
+        true,
+        &[Some(100), None, Some(200)],
+        Some(999),
+        &mut legacy_guid,
+        &mut guid_list,
+    );
+    assert_eq!(legacy_guid, 77);
+    assert_eq!(guid_list, vec![100, 200]);
+
+    record_trapped_character_guids(true, &[], Some(555), &mut legacy_guid, &mut guid_list);
+    assert_eq!(legacy_guid, 555);
+    assert!(guid_list.is_empty());
+
+    record_trapped_character_guids(true, &[None], Some(555), &mut legacy_guid, &mut guid_list);
+    assert_eq!(legacy_guid, -1);
+    assert!(guid_list.is_empty());
 
     // C013 UFLODRecorderComponent::Stitching (0x1418ac8f0 / 0x1418b12a0):
     // compacts None entries from FLODTiles in place and returns FLODTiles \ SpawnedActors.
@@ -1143,6 +1169,34 @@ fn owner_resolve_step_attach_and_drill_auto_activate() {
             new_guid: 50,
         })
     );
+    assert_eq!(
+        evaluate_actor_subcomponent_restore(
+            true, false, true, true, true, false, 250, true, false, true,
+        ),
+        ActorSubcomponentRestorePlan {
+            restore_durability_component: true,
+            generator_active: None,
+            processing_state: Some(RestoredProcessingState {
+                b_processing_active: true,
+                b_is_crafting: false,
+                crafting_progress: 250,
+                b_resource_1_active: true,
+                b_resource_2_active: false,
+            }),
+            notify_icarus_actor_database_state_updated: true,
+        }
+    );
+    assert_eq!(
+        evaluate_actor_subcomponent_restore(
+            false, true, false, false, true, true, 100, false, true, false,
+        ),
+        ActorSubcomponentRestorePlan {
+            restore_durability_component: false,
+            generator_active: Some(false),
+            processing_state: None,
+            notify_icarus_actor_database_state_updated: false,
+        }
+    );
 
     // C012 UEnzymeGeyserRecorderComponent::UpdateOwnerToDatabaseState (0x1418b7c10 / 0x1418baae0):
     // copies Completions (+0x1c0 -> +0x2c0) unconditionally and CurrentRow (+0x1c4 -> +0x2c4) iff IsValid.
@@ -1211,6 +1265,22 @@ fn owner_resolve_step_attach_and_drill_auto_activate() {
             restored_talents: vec!["Talent_A"],
             mark_net_component_dirty: true,
             notify_authority_talents_updated: true,
+        })
+    );
+
+    // C020 UInstancedLevelManagerRecorderComponent::UpdateOwnerToDatabaseState (0x1419e28e0 / 0x1419d9b90):
+    // gates base UActorStateRecorderComponent::UpdateOwnerToDatabaseState on a valid AInstancedLevelManager.
+    assert_eq!(
+        evaluate_instanced_level_manager_restore(false, "Levels_A", &[1, 2], &[3]),
+        None
+    );
+    assert_eq!(
+        evaluate_instanced_level_manager_restore(true, "Levels_A", &[1, 2], &[3]),
+        Some(InstancedLevelManagerRestorePlan {
+            run_base_actor_state_restore: true,
+            instanced_levels: "Levels_A",
+            spawned_recorder_ids: vec![1, 2],
+            destroyed_recorder_ids: vec![3],
         })
     );
 

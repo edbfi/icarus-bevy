@@ -246,6 +246,44 @@ pub fn stitch_trapped_character_guids(
         .collect()
 }
 
+/// Records `TrappedCharacterGUIDs` (`+0x298`) and legacy `TrappedCharacterGUID`
+/// (`+0x290`) as `UCharacterTrapRecorderComponent::RecordOwnerState` (`C007`,
+/// `0x1418a13c0` server / `0x1418a6b40` client) does (F-650, F-657).
+///
+/// - Clears `trapped_character_guids` on entry.
+/// - When `owner_implements_trap_interface` (`UCharacterTrapInterface`
+///   `0x141a8f2c0` client) is `true` and `trapped_characters_list`
+///   (`Execute_GetTrappedCharacters` `0x141a904f0` client) has at least one
+///   element, appends every `Some(guid)` (`IIcarusActorGuidInterface`) into
+///   `trapped_character_guids`; if `trapped_character_guids` is non-empty,
+///   returns without overwriting `legacy_trapped_guid` (`+0x290`).
+/// - When `owner_implements_trap_interface` is `true`,
+///   `trapped_characters_list` is empty, and `single_trapped_character_guid`
+///   (`Execute_GetTrappedCharacter` `0x141a90480` client) is `Some(guid)`,
+///   writes `guid` to `*legacy_trapped_guid` and returns.
+/// - Otherwise sets `*legacy_trapped_guid = -1` (`0xffffffff`).
+pub fn record_trapped_character_guids(
+    owner_implements_trap_interface: bool,
+    trapped_characters_list: &[Option<i32>],
+    single_trapped_character_guid: Option<i32>,
+    legacy_trapped_guid: &mut i32,
+    trapped_character_guids: &mut Vec<i32>,
+) {
+    trapped_character_guids.clear();
+    if owner_implements_trap_interface {
+        if !trapped_characters_list.is_empty() {
+            trapped_character_guids.extend(trapped_characters_list.iter().copied().flatten());
+            if !trapped_character_guids.is_empty() {
+                return;
+            }
+        } else if let Some(guid) = single_trapped_character_guid {
+            *legacy_trapped_guid = guid;
+            return;
+        }
+    }
+    *legacy_trapped_guid = -1;
+}
+
 /// Compacts `AFLODManager::FLODTiles` (`+0x248`) in place and returns the stale
 /// tile IDs to destroy (`FLODTiles \ SpawnedActors`) as
 /// `UFLODRecorderComponent::Stitching` (`C013`, `0x1418ac8f0` server /
@@ -866,6 +904,123 @@ pub fn evaluate_world_talent_stitch<T: Clone>(
         mark_net_component_dirty,
         notify_authority_talents_updated,
     })
+}
+
+/// Values restored onto `AInstancedLevelManager` by
+/// `UInstancedLevelManagerRecorderComponent::UpdateOwnerToDatabaseState`
+/// (`C020`, `0x1419e28e0` server / `0x1419d9b90` client) (F-658).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct InstancedLevelManagerRestorePlan<L, I> {
+    /// Unlike most `C001` subclasses, `C020` checks that the owner is a
+    /// non-pending-kill `AInstancedLevelManager` (`0x141a4a740` client) before
+    /// invoking `UActorStateRecorderComponent::UpdateOwnerToDatabaseState`
+    /// (`0x1418ba040` client).
+    pub run_base_actor_state_restore: bool,
+    /// Saved `InstancedLevels` (`+0x1c0`) passed to `RestoreInstancedLevels`
+    /// (`0x1419d4370` client).
+    pub instanced_levels: L,
+    /// Saved `SpawnedRecorderIDs` (`+0x230`) copied to `owner + 0x340`.
+    pub spawned_recorder_ids: Vec<I>,
+    /// Saved `DestroyedRecorderIDs` (`+0x240`) copied to `owner + 0x350`.
+    pub destroyed_recorder_ids: Vec<I>,
+}
+
+/// Evaluates `UInstancedLevelManagerRecorderComponent::UpdateOwnerToDatabaseState`
+/// (`C020`, `0x1419e28e0` server / `0x1419d9b90` client) (F-658).
+pub fn evaluate_instanced_level_manager_restore<L, I: Clone>(
+    owner_is_valid_instanced_level_manager: bool,
+    saved_instanced_levels: L,
+    saved_spawned_recorder_ids: &[I],
+    saved_destroyed_recorder_ids: &[I],
+) -> Option<InstancedLevelManagerRestorePlan<L, I>> {
+    if !owner_is_valid_instanced_level_manager {
+        return None;
+    }
+    Some(InstancedLevelManagerRestorePlan {
+        run_base_actor_state_restore: true,
+        instanced_levels: saved_instanced_levels,
+        spawned_recorder_ids: saved_spawned_recorder_ids.to_vec(),
+        destroyed_recorder_ids: saved_destroyed_recorder_ids.to_vec(),
+    })
+}
+
+/// Saved `UProcessingComponent` state restored by
+/// `UActorStateRecorderComponent::UpdateOwnerToDatabaseState` (`C001`,
+/// `0x1418b6ed0` server / `0x1418ba040` client) when the owner has a
+/// `UProcessingComponent` (`0x141d1ddd0` client) (F-735).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct RestoredProcessingState {
+    /// Saved byte at `+0x164` passed to `0x1418de170`.
+    pub b_processing_active: bool,
+    /// Saved byte at `+0x165` passed to `0x1418de170`.
+    pub b_is_crafting: bool,
+    /// Saved `i32` at `+0x168` written to `UProcessingComponent + 0x208`.
+    pub crafting_progress: i32,
+    /// Saved byte at `+0x160` passed to `0x1418f03b0(component, Row(1), flag)`.
+    pub b_resource_1_active: bool,
+    /// Saved byte at `+0x161` passed to `0x1418f03b0(component, Row(2), flag)`.
+    pub b_resource_2_active: bool,
+}
+
+/// Optional subcomponent and `AIcarusActor` post-restore actions evaluated by
+/// `UActorStateRecorderComponent::UpdateOwnerToDatabaseState` (`C001`,
+/// `0x1418b6ed0` server / `0x1418ba040` client) (F-735).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ActorSubcomponentRestorePlan {
+    /// Whether `FRecordedDurabilityData` (`+0x120..0x139`) is copied into the
+    /// owner's `UDurabilityComponent` (`0x141b43370` client, `+0xb0..0xd0`).
+    pub restore_durability_component: bool,
+    /// Generator active flag (`+0x162`) applied via `0x14196e810` when the
+    /// owner has a `UGeneratorComponent` (`0x141b6eec0` client).
+    pub generator_active: Option<bool>,
+    /// Processing state (`+0x160..0x168`) applied when the owner has a
+    /// `UProcessingComponent` (`0x141d1ddd0` client).
+    pub processing_state: Option<RestoredProcessingState>,
+    /// Whether `AIcarusActor::UpdateStateFromDatabase` (`0x141b9e310` client)
+    /// runs after restoring variables (`owner` is a non-pending-kill
+    /// `AIcarusActor` `0x141b9e1b0` client).
+    pub notify_icarus_actor_database_state_updated: bool,
+}
+
+/// Evaluates the subcomponent (`UDurabilityComponent`, `UGeneratorComponent`,
+/// `UProcessingComponent`) and `AIcarusActor` post-restore steps in
+/// `UActorStateRecorderComponent::UpdateOwnerToDatabaseState` (`C001`,
+/// `0x1418b6ed0` server / `0x1418ba040` client) (F-735).
+#[allow(clippy::too_many_arguments)]
+pub const fn evaluate_actor_subcomponent_restore(
+    has_durability_component: bool,
+    has_generator_component: bool,
+    b_generator_active: bool,
+    has_processing_component: bool,
+    b_processing_active: bool,
+    b_is_crafting: bool,
+    crafting_progress: i32,
+    b_resource_1_active: bool,
+    b_resource_2_active: bool,
+    owner_is_valid_icarus_actor: bool,
+) -> ActorSubcomponentRestorePlan {
+    let generator_active = if has_generator_component {
+        Some(b_generator_active)
+    } else {
+        None
+    };
+    let processing_state = if has_processing_component {
+        Some(RestoredProcessingState {
+            b_processing_active,
+            b_is_crafting,
+            crafting_progress,
+            b_resource_1_active,
+            b_resource_2_active,
+        })
+    } else {
+        None
+    };
+    ActorSubcomponentRestorePlan {
+        restore_durability_component: has_durability_component,
+        generator_active,
+        processing_state,
+        notify_icarus_actor_database_state_updated: owner_is_valid_icarus_actor,
+    }
 }
 
 /// How `UActorStateRecorderComponent::UpdateOwnerToDatabaseState` (`C001`,
