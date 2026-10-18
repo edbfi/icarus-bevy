@@ -5,6 +5,7 @@ use icarus_bevy::experimental::restore_rules::{
     ProspectAssociatedMember, ProspectBlobDecodeOutcome, RESTORED_INDEFINITE_MODIFIER_LIFETIME,
     RestoreStateKind, RocketRestore, SetupLoadedProspectOutcome, VOXEL_LOCATION_TOLERANCE,
     VersionUpgradeKind, can_activate_prospect_info, container_entries,
+    does_actor_recorder_match_actor, does_voxel_recorder_match_actor,
     evaluate_attach_recorder_to_actor, evaluate_by_name_load_attempt, evaluate_owner_resolve_step,
     evaluate_prospect_blob_decode, evaluate_setup_loaded_prospect_attempt,
     migrate_prospect_save_state, names_match, normalize_prospect_name,
@@ -80,6 +81,82 @@ fn voxel_owner_tolerance_is_inclusive_per_axis() {
     assert!(!voxel_location_matches(saved, [100.0, -50.2, 3.0]));
     assert!(!voxel_location_matches(saved, [100.0, -50.0, f32::NAN]));
     assert!(voxel_location_matches([0.0; 3], [0.05, -0.05, 0.0]));
+
+    let owner_name = units("BP_VoxelResource_Iron_42");
+    let owner_name_lower = units("bp_voxelresource_iron_42");
+    let other_name = units("BP_VoxelResource_Iron_99");
+
+    // UActorStateRecorderComponent::DoesRecorderMatchActor (0x14188b960 / 0x141894280):
+    // when recorder_has_valid_owner is true, matches by IcarusActorGUID; when false, matches by OwnerRecordName.
+    assert!(does_actor_recorder_match_actor(
+        true,
+        1234,
+        &owner_name,
+        Some(1234),
+        &other_name,
+    ));
+    assert!(!does_actor_recorder_match_actor(
+        true,
+        1234,
+        &owner_name,
+        Some(9999),
+        &owner_name,
+    ));
+    assert!(!does_actor_recorder_match_actor(
+        true,
+        1234,
+        &owner_name,
+        None,
+        &owner_name,
+    ));
+    assert!(does_actor_recorder_match_actor(
+        false,
+        1234,
+        &owner_name,
+        None,
+        &owner_name_lower,
+    ));
+    assert!(!does_actor_recorder_match_actor(
+        false,
+        1234,
+        &owner_name,
+        Some(1234),
+        &other_name,
+    ));
+
+    // UVoxelRecorderComponent::DoesRecorderMatchActor (0x1418c9580 / 0x1418cb460):
+    // falls back to AVoxelResource root location within 0.1 per axis when base match returns false.
+    assert!(does_voxel_recorder_match_actor(
+        false,
+        1234,
+        &owner_name,
+        saved,
+        None,
+        &other_name,
+        true,
+        Some([100.05, -50.05, 3.0]),
+    ));
+    assert!(!does_voxel_recorder_match_actor(
+        false,
+        1234,
+        &owner_name,
+        saved,
+        None,
+        &other_name,
+        false,
+        Some(saved),
+    ));
+    // Null RootComponent defaults to [0.0, 0.0, 0.0].
+    assert!(does_voxel_recorder_match_actor(
+        false,
+        1234,
+        &owner_name,
+        [0.05, -0.05, 0.0],
+        None,
+        &other_name,
+        true,
+        None,
+    ));
 }
 
 #[test]

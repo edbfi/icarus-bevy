@@ -3,7 +3,7 @@
 //! Each function is a pure rule over authored domain values, read from the
 //! client recorders' record, validate, stitch and restore code (F-645 to F-665,
 //! F-677, F-715, F-716, F-717, F-727, F-728, F-732, F-733, F-734, F-735,
-//! F-736, F-737).
+//! F-736, F-737, F-741, F-742).
 //! Nothing here decodes a save, looks up a class, constructs an object or
 //! imports state: the rules pin the behavior a native world must reproduce when
 //! it restores recorded actors. The normal server does not call them yet, and
@@ -78,6 +78,69 @@ pub fn voxel_location_matches(saved: [f32; 3], actual: [f32; 3]) -> bool {
         .iter()
         .zip(actual)
         .all(|(saved, actual)| (actual - saved).abs() <= VOXEL_LOCATION_TOLERANCE)
+}
+
+/// Evaluates `UActorStateRecorderComponent::DoesRecorderMatchActor`
+/// (`vftable + 0x478`: `0x14188b960` server / `0x141894280` client) (F-741,
+/// F-742).
+///
+/// - When `recorder_has_valid_owner` is `true` (`HasValidOwner` `0x141898750`
+///   server / `0x14189fb60` client), matches iff the candidate actor has a
+///   `UIcarusStateRecorderComponent` whose `GetGuid()` (`vtable + 0x10`) equals
+///   `recorder_guid`.
+/// - When `recorder_has_valid_owner` is `false` (detached decoded recorder),
+///   matches iff `actor_name` (`UObjectBaseUtility::GetName`) matches
+///   `owner_record_name` (`+0xc8`) under [`names_match`].
+pub fn does_actor_recorder_match_actor(
+    recorder_has_valid_owner: bool,
+    recorder_guid: i32,
+    owner_record_name: &[u16],
+    actor_recorder_guid: Option<i32>,
+    actor_name: &[u16],
+) -> bool {
+    if recorder_has_valid_owner {
+        actor_recorder_guid == Some(recorder_guid)
+    } else {
+        names_match(actor_name, owner_record_name)
+    }
+}
+
+/// Evaluates `UVoxelRecorderComponent::DoesRecorderMatchActor`
+/// (`vftable + 0x478`: `0x1418c9580` server / `0x1418cb460` client, shared by
+/// `C031` `USpawnedVoxelRecorderComponent` and `C034`
+/// `UVoxelRecorderComponent`) (F-645, F-742).
+///
+/// First runs [`does_actor_recorder_match_actor`]; if that returns `false`,
+/// falls back to checking whether the candidate actor is an `AVoxelResource`
+/// (`0x141de65c0` server / `0x141dd8d80` client) whose root component location
+/// (or `[0.0, 0.0, 0.0]` when `RootComponent` at `+0x130` is `nullptr`) matches
+/// `saved_location` (`+0x1e0`) within [`VOXEL_LOCATION_TOLERANCE`] (`0.1`) per
+/// axis.
+#[allow(clippy::too_many_arguments)]
+pub fn does_voxel_recorder_match_actor(
+    recorder_has_valid_owner: bool,
+    recorder_guid: i32,
+    owner_record_name: &[u16],
+    saved_location: [f32; 3],
+    actor_recorder_guid: Option<i32>,
+    actor_name: &[u16],
+    actor_is_voxel_resource: bool,
+    actor_root_location: Option<[f32; 3]>,
+) -> bool {
+    if does_actor_recorder_match_actor(
+        recorder_has_valid_owner,
+        recorder_guid,
+        owner_record_name,
+        actor_recorder_guid,
+        actor_name,
+    ) {
+        return true;
+    }
+    if !actor_is_voxel_resource {
+        return false;
+    }
+    let actual_location = actor_root_location.unwrap_or([0.0, 0.0, 0.0]);
+    voxel_location_matches(saved_location, actual_location)
 }
 
 /// How a state recorder finds its owner on restore: the four values of the
@@ -475,9 +538,13 @@ const SUPER_COOLED_ICE_UTF16: [u16; 16] = [
 
 /// Whether a resource-deposit record (`C028`,
 /// `UResourceDepositRecorderComponent::Validate` at `0x1418f9f20` server /
-/// `0x1418fa250` client) validates (F-652): rejects `"Super_Cooled_Ice"`
-/// (`0x144a71800` server / `0x144bcddc0` client) ASCII case-insensitively and
-/// accepts every other deposit type.
+/// `0x1418fa250` client) validates (F-645, F-652, F-742): rejects
+/// `"Super_Cooled_Ice"` (`0x144a71800` server / `0x144bcddc0` client) ASCII
+/// case-insensitively and accepts every other deposit type. Its subclass `C027`
+/// (`UResourceDepositIceRecorderComponent`, derived vtable `0x144a71348` server /
+/// `0x144bcd908` client) overrides `Validate` (`+0x408`) back to `true`
+/// (`0x140899f70` / `0x1408c9810`) so `"Super_Cooled_Ice"` deposits validate
+/// under `C027`.
 pub fn resource_deposit_record_valid(deposit_type_name: &[u16]) -> bool {
     !names_match(deposit_type_name, &SUPER_COOLED_ICE_UTF16)
 }
