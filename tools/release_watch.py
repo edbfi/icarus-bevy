@@ -6,7 +6,7 @@ dedicated server's public build and compares it with the pin; exit status 3
 means the pin is behind. `pin --install DIR` rewrites the pin from a fetched
 install's app manifest and Icarus/Config/version.json. `diff --older DIR
 --newer DIR` compares two fetched server installs (manifest build ID,
-project_version, network_checksum, PE section sizes andDefaultGameplayTags.ini
+project_version, network_checksum, PE section sizes and DefaultGameplayTags.ini
 tag counts) so weekly updates start with a mechanical intake and diff report.
 The project version is composed as both observed server builds log it (F-683):
 `<major>.<minor>.<patch>.<changelist>-rel-<feature level>`.
@@ -134,14 +134,14 @@ def inspect_install(install: Path) -> InstallProfile:
     build = manifest_build((install / f"steamapps/appmanifest_{APP_ID}.acf").read_text())
     version = project_version((install / "Icarus/Config/version.json").read_text())
     exe_path = install / SHIPPING_EXE_REL
-    sections: dict[str, int] = {}
-    if exe_path.is_file():
-        with exe_path.open("rb") as handle:
-            sections = pe_section_raw_sizes(handle.read(4096))
+    if not exe_path.is_file():
+        raise FileNotFoundError(f"missing shipping executable: {exe_path}")
+    with exe_path.open("rb") as handle:
+        sections = pe_section_raw_sizes(handle.read(4096))
     ini_path = install / DEFAULT_TAGS_INI_REL
-    ini_tags, ini_nodes = (0, 0)
-    if ini_path.is_file():
-        ini_tags, ini_nodes = parse_ini_tags(ini_path.read_text(encoding="utf-8", errors="replace"))
+    if not ini_path.is_file():
+        raise FileNotFoundError(f"missing gameplay tags ini: {ini_path}")
+    ini_tags, ini_nodes = parse_ini_tags(ini_path.read_text(encoding="utf-8", errors="replace"))
     return InstallProfile(
         build_id=build,
         project_version=version,

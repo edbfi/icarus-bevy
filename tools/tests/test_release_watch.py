@@ -145,6 +145,14 @@ class ReleaseWatchTests(unittest.TestCase):
             self.assertEqual(report["ini_expanded_node_delta"], 2)
             self.assertEqual(report["pe_section_raw_size_deltas"], {".pdata": -1920, ".text": -48128})
 
+            (older / "Icarus/Config/DefaultGameplayTags.ini").unlink()
+            with self.assertRaises(FileNotFoundError):
+                _ = diff_installs(older, newer)
+
+            (older / "Icarus/Binaries/Win64/IcarusServer-Win64-Shipping.exe").unlink()
+            with self.assertRaises(FileNotFoundError):
+                _ = diff_installs(older, newer)
+
     def test_tracked_pin_matches_the_renderer(self) -> None:
         tracked = Path(__file__).resolve().parents[2] / "config/release.toml"
         self.assertEqual(tracked.read_text(), render_pin(pinned_build(tracked), "3.0.32.158743-rel-DangerousHorizons"))
