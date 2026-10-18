@@ -36,8 +36,9 @@ descriptors and public opcode constants (F-476, F-477, F-508). The old slot
 preparation mis-stated two addresses (F-465); same-build base and offsets give
 three candidate slots (F-495).
 
-Decompilation and client-PDB correspondence resolve the complete bridge (F-509,
-F-513, F-669, F-670, F-722; U-004, U-023, U-041 resolved). Callback 0x1419fe870
+Decompilation and client-PDB correspondence resolve the complete bridge and
+runtime restoration (F-509, F-513, F-669, F-670, F-722, F-727, F-728, F-733,
+F-735; U-004, U-020 to U-023, U-041 resolved). Callback 0x1419fe870
 dereferences `rbx = *(C001**)rcx` and inlines constructor 0x141788530: both
 call base constructor 0x1418824d0 (which preserves `rbx`), store vftables
 0x1449d9f90 (`+0x0`) and 0x1449da448 (`+0x28`), and initialize `+0xd8..+0x1b8`.
@@ -45,12 +46,14 @@ Slot `+0x4a0` (0x1418a9bb0) calls base `RestoreState` 0x1418a9c80 (696 B,
 matching client 0x1418ae6c0 + log), which constructs `FMemoryReader` at version
 522 and dispatches `+0xa0` (`Serialize` 0x1418aaf70) then `+0x488`
 (`UpgradeVersion` 0x14189d380), before conditionally invoking `+0x4b0`
-(`ApplyRecorderTransform`); `+0x4a8` is 0x14189a760.
+(`ApplyRecorderTransform`); `+0x4a8` is 0x14189a760, and
+`UpdateOwnerToDatabaseState` (0x1418ba040) restores modifiers, `D01` inventory
+slots (`0x1418b8f20`) and `CPF_SaveGame` variables (`0x1418bcff0`, F-735).
 
 ## Open
 
-- Nested C001 field value meanings and runtime restoration in a connected or interpreted-import world (U-020, U-022).
+- Native interpreted import and newer-build compatibility (U-025, U-045).
 
 ## Artifacts
 
-M-003, M-004, M-007, M-008, M-011, M-013, M-014, M-176, M-177, M-179..M-181, M-185..M-190, M-193..M-199, M-201, M-202, M-205, M-206, M-209..M-211, M-221..M-239, M-242..M-250, M-253..M-268, M-272..M-276, M-284..M-286, M-298..M-314, M-348..M-350, M-761, M-762.
+M-003, M-004, M-007, M-008, M-011, M-013, M-014, M-176, M-177, M-179..M-181, M-185..M-190, M-193..M-199, M-201, M-202, M-205, M-206, M-209..M-211, M-221..M-239, M-242..M-250, M-253..M-268, M-272..M-276, M-284..M-286, M-298..M-314, M-348..M-350, M-761, M-762, M-768, M-769, M-772 to M-775.

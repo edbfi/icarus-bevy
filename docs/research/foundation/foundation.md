@@ -59,7 +59,9 @@ Bounded header, component, struct-array and Int-array readers are tested
 The toolchain is pinned and current (F-483), authored Python passes
 basedpyright recommended (F-484), and the release links no render, window or
 audio backend (F-250); the CI definition passes on hosted runners for a feature commit (F-497). The
-client's debug identity matches (F-486). Earlier original-server cases hashed
+client's debug identity and Steam AppID `1149460` / depot `1149461` manifests
+and PE headers/symbols are verified across `3.0.31` and `3.0.32` (`F-486`,
+`F-731`; `U-034` resolved). Earlier original-server cases hashed
 the baseline (F-265), exported no functions in one bounded Ghidra pass (F-266),
 reached the entry map offline without reproducing crashes (F-268) and observed
 one stateless exchange (F-253). The offline launcher revision has not run the
@@ -70,8 +72,7 @@ original server (F-252), and historical runtime windows have expired (F-218).
 - Authenticated protocol and stock-client session (U-038); world-data import feasibility (U-045).
 - Original bug reproduction under controlled workloads (U-047); ICARUS performance and stability comparison (U-049).
 - Paced multi-day effects and physical power loss (U-035).
-- Client publisher authenticity and symbol validity (U-034).
 
 ## Artifacts
 
-M-001, M-002, M-006, M-009, M-010, M-015..M-022, M-076, M-078, M-109..M-117, M-131..M-165, M-174, M-175, M-178, M-182..M-184, M-191, M-192, M-200, M-203, M-204, M-207, M-208, M-212..M-220, M-225, M-240, M-241, M-251, M-252, M-269, M-270, M-271, M-277, M-311, M-391, M-397..M-399, M-411..M-419, M-452..M-454, M-471..M-475, M-577, M-578.
+M-001, M-002, M-006, M-009, M-010, M-015..M-022, M-076, M-078, M-109..M-117, M-131..M-165, M-174, M-175, M-178, M-182..M-184, M-191, M-192, M-200, M-203, M-204, M-207, M-208, M-212..M-220, M-225, M-240, M-241, M-251, M-252, M-269, M-270, M-271, M-277, M-311, M-391, M-397..M-399, M-411..M-419, M-452..M-454, M-471..M-475, M-577, M-578, M-770, M-771.

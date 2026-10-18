@@ -78,7 +78,7 @@ and the meaning of any decoded value.
 
 ## Open questions
 
-- Data-table row meanings of interned `FName` values (U-020) and authenticated
+- Native interpreted import of `FName`/string values (U-045) and authenticated
   stock-client sessions (U-038).
 
 ## Evidence
