@@ -1,9 +1,11 @@
 use icarus_bevy::experimental::restore_rules::{
-    ACTOR_RECORDER_TRANSFORM_TOLERANCE, ActorLink, ApplyTransformKind, LobbyPrivacy,
-    OwnerResolvePolicy, PROSPECT_SAVE_STATE_CURRENT_VERSION, PlayerList, RestoreStateKind,
-    RocketRestore, VOXEL_LOCATION_TOLERANCE, VersionUpgradeKind, can_activate_prospect_info,
-    container_entries, migrate_prospect_save_state, names_match, normalize_prospect_name,
-    player_record_valid, prospect_ids_match, recorded_level, recorder_restore_dispatch,
+    ACTOR_RECORDER_TRANSFORM_TOLERANCE, ActorLink, ApplyTransformKind, ByNameLoadOutcome,
+    LobbyPrivacy, OwnerResolvePolicy, PROSPECT_SAVE_STATE_CURRENT_VERSION, PlayerList,
+    RestoreStateKind, RocketRestore, SetupLoadedProspectOutcome, VOXEL_LOCATION_TOLERANCE,
+    VersionUpgradeKind, can_activate_prospect_info, container_entries,
+    evaluate_by_name_load_attempt, evaluate_setup_loaded_prospect_attempt,
+    migrate_prospect_save_state, names_match, normalize_prospect_name, player_record_valid,
+    prospect_ids_match, recorded_level, recorder_restore_dispatch,
     recorder_transform_is_non_identity, remaining_cooldown, restored_elapsed_seconds,
     rocket_record_valid, rocket_restore, stitch, upgrade_actor_recorder_component_names,
     upright_rotation, voxel_location_matches, voxel_record_valid,
@@ -508,5 +510,91 @@ fn recorder_restore_dispatch_covers_all_38_classes_and_overrides() {
             .unwrap()
             .selected_property_count,
         21
+    );
+}
+
+#[test]
+fn entry_path_failure_matrix_evaluates_by_name_and_from_file_outcomes() {
+    let id = units("Olympus_Run");
+    let other_id = units("Styx_Run");
+
+    // Missing file, empty name, malformed JSON, and name mismatch preserve prior state.
+    assert_eq!(
+        evaluate_by_name_load_attempt("", true, true, true, &id, false, true, &id),
+        ByNameLoadOutcome::RejectedStatePreserved
+    );
+    assert_eq!(
+        evaluate_by_name_load_attempt("Olympus_Run", false, true, true, &id, false, true, &id),
+        ByNameLoadOutcome::RejectedStatePreserved
+    );
+    assert_eq!(
+        evaluate_by_name_load_attempt("Olympus_Run", true, false, true, &id, false, true, &id),
+        ByNameLoadOutcome::RejectedStatePreserved
+    );
+    assert_eq!(
+        evaluate_by_name_load_attempt("Olympus_Run", true, true, false, &id, false, true, &id),
+        ByNameLoadOutcome::RejectedStatePreserved
+    );
+    assert_eq!(
+        evaluate_by_name_load_attempt(
+            "Olympus_Run",
+            true,
+            true,
+            true,
+            &other_id,
+            false,
+            true,
+            &other_id
+        ),
+        ByNameLoadOutcome::RejectedStatePreserved
+    );
+
+    // Corrupt inner BinaryBlob or inner/outer ID mismatch in TransitionToProspect
+    // happens AFTER ResetActiveProspect + SetActiveProspectInfo.
+    assert_eq!(
+        evaluate_by_name_load_attempt("Olympus_Run.json", true, true, true, &id, false, false, &id),
+        ByNameLoadOutcome::AbortedAfterActiveInfoOverwrite
+    );
+    assert_eq!(
+        evaluate_by_name_load_attempt(
+            "Olympus_Run.json",
+            true,
+            true,
+            true,
+            &id,
+            true,
+            true,
+            &other_id
+        ),
+        ByNameLoadOutcome::AbortedAfterActiveInfoOverwrite
+    );
+
+    // Clean load and changed-during-load with matching IDs.
+    assert_eq!(
+        evaluate_by_name_load_attempt("Olympus_Run.json", true, true, true, &id, false, true, &id),
+        ByNameLoadOutcome::TransitionedToMap { mixed_reads: false }
+    );
+    assert_eq!(
+        evaluate_by_name_load_attempt("Olympus_Run.json", true, true, true, &id, true, true, &id),
+        ByNameLoadOutcome::TransitionedToMap { mixed_reads: true }
+    );
+
+    // SetupLoadedProspect (0x1414baf60): empty LocalSavePath is a no-op; non-empty
+    // LocalSavePath with any reader failure triggers Fatal 0x141ee8930.
+    assert_eq!(
+        evaluate_setup_loaded_prospect_attempt("", false, false),
+        SetupLoadedProspectOutcome::SkippedEmptyLocalSavePath
+    );
+    assert_eq!(
+        evaluate_setup_loaded_prospect_attempt("/tmp/prospect.bin", false, true),
+        SetupLoadedProspectOutcome::FatalProcessExit
+    );
+    assert_eq!(
+        evaluate_setup_loaded_prospect_attempt("/tmp/prospect.bin", true, false),
+        SetupLoadedProspectOutcome::FatalProcessExit
+    );
+    assert_eq!(
+        evaluate_setup_loaded_prospect_attempt("/tmp/prospect.bin", true, true),
+        SetupLoadedProspectOutcome::ActivatedFromBinaryFile
     );
 }

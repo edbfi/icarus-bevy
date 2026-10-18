@@ -2,7 +2,7 @@
 //!
 //! Each function is a pure rule over authored domain values, read from the
 //! client recorders' record, validate, stitch and restore code (F-645 to F-665,
-//! F-677, F-715, F-716, F-717, F-727, F-728).
+//! F-677, F-715, F-716, F-717, F-727, F-728, F-732, F-733).
 //! Nothing here decodes a save, looks up a class, constructs an object or
 //! imports state: the rules pin the behavior a native world must reproduce when
 //! it restores recorded actors. The normal server does not call them yet, and
@@ -541,4 +541,95 @@ pub const fn recorder_restore_dispatch(class_ordinal: u8) -> Option<RecorderRest
         restore_state,
         apply_transform,
     })
+}
+
+/// Outcome of the original dedicated server's by-name JSON load path
+/// (`ADedicatedServerEntryGameMode::LoadProspectByName` `0x14146e6c0` ->
+/// `TransitionToProspect` `0x1414831f0`) across missing, malformed, mismatched,
+/// changed-during-load, and corrupt-blob inputs (F-733).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ByNameLoadOutcome {
+    /// Rejected before `TransitionToProspect`; `ULocalSessionSubsystem` state
+    /// is preserved unchanged.
+    RejectedStatePreserved,
+    /// `TransitionToProspect` called `ResetActiveProspect` (`0x1418333b0`) and
+    /// `SetActiveProspectInfo` (`0x141837100`), then `ReadFromProspectBlob`
+    /// (`0x1418e6240`) failed and aborted map travel, leaving
+    /// `ULocalSessionSubsystem` with the new `ProspectInfo` and an empty
+    /// `ProspectSaveState`.
+    AbortedAfterActiveInfoOverwrite,
+    /// Both JSON reads, `ReadFromProspectBlob`, and `SetActiveProspectSaveState`
+    /// succeeded and `ServerTravel` runs (`mixed_reads: true` when the file
+    /// changed between `GetProspectBlob` `0x141817bd0` and `GetProspectInfo`
+    /// `0x14181e530`).
+    TransitionedToMap { mixed_reads: bool },
+}
+
+/// Evaluates the original server's by-name JSON load failure matrix (F-733).
+#[allow(clippy::too_many_arguments)]
+pub fn evaluate_by_name_load_attempt(
+    requested_name: &str,
+    file_exists: bool,
+    first_json_read_valid: bool,
+    second_json_read_valid: bool,
+    second_read_prospect_id: &[u16],
+    file_changed_between_reads: bool,
+    inner_blob_valid: bool,
+    blob_prospect_id: &[u16],
+) -> ByNameLoadOutcome {
+    let Some(normalized) = normalize_prospect_name(requested_name) else {
+        return ByNameLoadOutcome::RejectedStatePreserved;
+    };
+    if !file_exists || !first_json_read_valid || !second_json_read_valid {
+        return ByNameLoadOutcome::RejectedStatePreserved;
+    }
+    let requested_utf16: Vec<u16> = normalized.encode_utf16().collect();
+    if !prospect_ids_match(&requested_utf16, second_read_prospect_id) {
+        return ByNameLoadOutcome::RejectedStatePreserved;
+    }
+    if second_read_prospect_id.is_empty() || !inner_blob_valid {
+        return ByNameLoadOutcome::AbortedAfterActiveInfoOverwrite;
+    }
+    if !prospect_ids_match(second_read_prospect_id, blob_prospect_id) {
+        return ByNameLoadOutcome::AbortedAfterActiveInfoOverwrite;
+    }
+    ByNameLoadOutcome::TransitionedToMap {
+        mixed_reads: file_changed_between_reads,
+    }
+}
+
+/// Outcome of `AIcarusGameModeSurvival::SetupLoadedProspect` (`0x1414baf60`),
+/// called from `AIcarusGameModeSurvival::InitGame` (`0x1414acc40`) with the
+/// `?LocalSavePath=` URL option (F-732, F-733).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SetupLoadedProspectOutcome {
+    /// `LocalSavePath.Num() <= 1` (empty in all standard dedicated-server
+    /// transitions): returns `false` immediately without touching state or
+    /// reaching `0x141ee8930`.
+    SkippedEmptyLocalSavePath,
+    /// `LocalSavePath` was non-empty and either `LoadProspectSaveHeader`
+    /// (`0x141824760`) or `LoadLocalProspectState` (`0x141823fb0`) returned
+    /// `false`: logs Fatal `"Failed to load prospect from file: '%s'"`
+    /// (`0x1449f6660`) and calls `0x141ee8930` (`GIsCriticalError = 1` ->
+    /// `GError->Serialize` -> `RequestExit(true)` / `RaiseException`).
+    FatalProcessExit,
+    /// Both binary archive reads succeeded and activated the prospect in
+    /// `ULocalSessionSubsystem`.
+    ActivatedFromBinaryFile,
+}
+
+/// Evaluates `AIcarusGameModeSurvival::SetupLoadedProspect` (`0x1414baf60`)
+/// (F-732, F-733).
+pub fn evaluate_setup_loaded_prospect_attempt(
+    local_save_path: &str,
+    header_read_ok: bool,
+    full_state_read_ok: bool,
+) -> SetupLoadedProspectOutcome {
+    if local_save_path.is_empty() {
+        return SetupLoadedProspectOutcome::SkippedEmptyLocalSavePath;
+    }
+    if !header_read_ok || !full_state_read_ok {
+        return SetupLoadedProspectOutcome::FatalProcessExit;
+    }
+    SetupLoadedProspectOutcome::ActivatedFromBinaryFile
 }

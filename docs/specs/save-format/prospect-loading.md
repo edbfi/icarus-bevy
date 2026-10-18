@@ -22,18 +22,25 @@ Entry paths and failure reporting
 
 - By-name entry `LoadProspect` (`0x14146e590`) -> `LoadProspectByName`
   (`0x14146e6c0`) rejects empty names, strips a trailing `.json` suffix
-  (`RemoveFromEnd`, `IgnoreCase`), loads `.json` via `LoadProspectSaveHeader`
-  (`0x141824760`), verifies `Stricmp(ProspectID, Name) == 0`, and transitions
-  into `0x1414831f0` -> `ReadFromProspectBlob` (`0x1418e6240`). From-file entry
-  `SetupLoadedProspect` (`0x1414baf60`, called from `AIcarusGameMode::InitGame`
-  `0x1414b4600`) requires both `LoadProspectSaveHeader` (`0x141824760`) and
-  `LoadLocalProspectState` (`0x141823fb0`, where `ReadFromArchive` `0x1418e6140`
-  preserves its `bool` return in `ebx`) to succeed before setting `bHasLoaded`;
-  either failure enters reporting (F-325, F-326, F-717; U-056, U-057 resolved;
-  `normalize_prospect_name`, `evaluate_load_prospect_by_name` and
-  `evaluate_setup_loaded_prospect` in `experimental::restore_rules`).
-- Reporting is not log-only: it can force termination or raise (F-327). By-name
-  missing and truncated inputs were rejected without an observed crash (F-256).
+  (`RemoveFromEnd`, `IgnoreCase`), reads `.json` twice (`GetProspectBlob`
+  `0x141817bd0`, `GetProspectInfo` `0x14181e530`), verifies
+  `Stricmp(ProspectID, Name) == 0`, and transitions via `TransitionToProspect`
+  (`0x1414831f0`): missing, empty/truncated, malformed-JSON, and ID-mismatch
+  inputs return `false` with entry state preserved, whereas a corrupt inner
+  `BinaryBlob` fails inside `ReadFromProspectBlob` (`0x1418e6240`) *after*
+  `ResetActiveProspect` (`0x1418333b0`) and `SetActiveProspectInfo` (`0x141837100`)
+  overwrite active `ProspectInfo` (F-717, F-733; U-057, U-063 resolved;
+  `normalize_prospect_name` and `evaluate_by_name_load_attempt` in
+  `experimental::restore_rules`).
+- From-file entry `SetupLoadedProspect` (`0x1414baf60`, called from
+  `AIcarusGameModeSurvival::InitGame` `0x1414acc40` with `?LocalSavePath=`) skips
+  and returns `false` when `LocalSavePath.Num() <= 1` (all normal dedicated-server
+  loads); when `> 1` and either `LoadProspectSaveHeader` (`0x141824760`) or
+  `LoadLocalProspectState` (`0x141823fb0`) fails, `0x1414bb15f` logs Fatal
+  `0x1449f6660` and calls `0x141ee8930` (`GIsCriticalError = 1` ->
+  `GError->Serialize` `0x141f72ad0` -> `RequestExit` / `RaiseException`) before
+  `ResetActiveProspect` (F-717, F-732, F-733; U-056, U-058, U-063 resolved;
+  `evaluate_setup_loaded_prospect_attempt` in `experimental::restore_rules`).
 
 Inner state, version and archive mode
 
@@ -178,8 +185,8 @@ Acceptance conditions for any importer
 - Base-component framing and all 65 `RecorderComponent` `FClassParams` (including
   all 38 `StateRecorderBlobs` classes' `+0xa0`/`+0x488`/`+0x4a0`/`+0x4b0` overrides)
   are verified across builds (`recorder_restore_dispatch`, F-669, F-670, F-716, F-720,
-  F-722, F-727, F-728; U-021, U-024, U-032, U-046, U-048, U-050 resolved); native
-  interpreted import stays gated (U-025, U-045).
+  F-722, F-727, F-728, F-733; U-021, U-022, U-024, U-032, U-046, U-048, U-050
+  resolved); native interpreted import stays gated (U-025, U-045).
 - C001 (four records): getter `0x1419fe200` (`.pdata` 103518), construction
   callback `0x1419fe870` (305 B, `.pdata` 103538) and constructor `0x141788530`
   (296 B, `.pdata` 95461) are complete functions that call base constructor
@@ -192,19 +199,14 @@ Acceptance conditions for any importer
 
 ## Open questions
 
-- Runtime failure-reporting reachability and process termination vs return on
-  disposable fixtures (U-058).
-- Controlled reproduction matrix for both entry paths, retaining command/path,
-  input digest, truncation point, logs, exit status and before/after state
-  against an unchanged valid fixture, with Proton/platform effects separated
-  (U-063, U-047).
-- Packaged row meanings and Name identities (U-020, U-022); native interpreted
-  import and newer-build compatibility (U-025, U-045).
+- Controlled original-server crash reproduction under reference workloads (U-047).
+- Packaged row meanings and Name identities (U-020); native interpreted import and
+  newer-build compatibility (U-025, U-045).
 
 ## Evidence
 
 - Static: M-147, M-148, M-143, M-149, M-150, M-119, M-122, M-123, M-079, M-094,
-  M-096, M-100, M-170, M-755..M-762, M-768, M-769; runtime and reports: M-154, M-155, M-160.
+  M-096, M-100, M-170, M-755..M-762, M-768, M-769, M-772, M-773; runtime: M-154, M-155, M-160.
 - Framing receipts: M-118, M-172, M-087..M-093, M-095, M-097..M-103, M-106,
   M-058..M-070, M-049..M-055; C001: M-007, M-008, M-011, M-013, M-173, M-179, M-180, M-181, M-761, M-762.
 - Tests: `tests/tagged.rs`, `tests/recorders.rs`, `tests/component.rs`,
