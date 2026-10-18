@@ -92,6 +92,60 @@ pub fn stitch_quest_actor_records<'a, T: Clone>(
         .collect()
 }
 
+/// Stitches `RelevantActorRecords` (`+0x1c8`, count `+0x1d0`, stride `0x18` B)
+/// in `UPrebuiltStructureRecorderComponent::StitchingOperation` (`C027`,
+/// `0x14177ec20` server / `0x14178c680` client) against `SpawnedActors` before
+/// `APrebuiltStructure::RestorePrebuiltStructure` (`0x14173ff50` client)
+/// (F-650, F-676, F-742).
+///
+/// Resolves each saved [`ActorLink`] against `spawned` via [`stitch`],
+/// returning the matched actor indices in record order and omitting unresolved
+/// records.
+pub fn stitch_prebuilt_structure_actors<'a>(
+    records: &[ActorLink<'_>],
+    spawned: &[ActorLink<'a>],
+) -> Vec<usize> {
+    records
+        .iter()
+        .filter_map(|link| stitch(*link, spawned.iter().copied()))
+        .collect()
+}
+
+/// Actions evaluated by `UDeployableRecorderComponent::Stitching` (`C009`,
+/// `0x1418ac8a0` server / `0x1418b0c80` client) (F-646, F-650).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct DeployableStitchPlan {
+    /// Matched `ABuildingBase` index in `SpawnedActors` passed to
+    /// `ADeployable::SetFoundationActor` (`0x141acb730` client) when the owner
+    /// is a non-pending-kill `ADeployable`.
+    pub foundation_actor_index: Option<usize>,
+    /// Whether `WhitelistedTames` (`+0x220` server / `+0x278` client) and
+    /// `bAllowAllTames` (`+0x250` server / `+0x288` client -> `+0xb4`) are
+    /// copied onto the owner's `UTameWhitelistComponent`.
+    pub restore_tame_whitelist: bool,
+}
+
+/// Evaluates `UDeployableRecorderComponent::Stitching` (`C009`, `0x1418ac8a0`
+/// server / `0x1418b0c80` client) (F-646, F-650).
+pub fn evaluate_deployable_stitch<'a>(
+    owner_is_valid_deployable: bool,
+    has_tame_whitelist_component: bool,
+    foundation_record: ActorLink<'_>,
+    spawned_foundation_candidates: &[ActorLink<'a>],
+) -> DeployableStitchPlan {
+    let matched = stitch(
+        foundation_record,
+        spawned_foundation_candidates.iter().copied(),
+    );
+    if !owner_is_valid_deployable {
+        return DeployableStitchPlan::default();
+    }
+    DeployableStitchPlan {
+        foundation_actor_index: matched,
+        restore_tame_whitelist: has_tame_whitelist_component,
+    }
+}
+
 /// Returns the indices of spawned `ACharacter` actors re-trapped by
 /// `UCharacterTrapRecorderComponent::Stitching` (`C007`, `vftable + 0x468`:
 /// `0x1418ac670` server / `0x1418b0a50` client) (F-650, F-743).
@@ -614,6 +668,52 @@ pub const fn resolve_item_recorder_database_guid(icarus_actor_guid: i32, bound_g
 /// `bRecordActorTransform` (`[this+0xd9]`) to be non-zero (F-741, F-744).
 pub const fn should_restore_actor_transform(b_record_actor_transform: bool) -> bool {
     b_record_actor_transform
+}
+
+/// How `UActorStateRecorderComponent::UpdateOwnerToDatabaseState` (`C001`,
+/// `0x1418b6ed0` server / `0x1418ba040` client) rebinds an owner's
+/// `IcarusActorGUID` in `UIcarusWorldRecorderSubsystem` (F-735).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ActorGuidRestoreStep {
+    /// Positive `current_actor_guid` unbound via
+    /// `UIcarusWorldRecorderSubsystem::UnbindActorGuid` (`0x1413f2c10` client)
+    /// before `BindActorGuid`, or `None` when `current_actor_guid <= 0`.
+    pub unbind_previous_guid: Option<i32>,
+    /// GUID written via `IIcarusActorGuidInterface::SetIcarusActorGuid`
+    /// (`vtable + 0x18`) after `UIcarusWorldRecorderSubsystem::BindActorGuid`
+    /// (`0x1413dec50` server / `0x14141c790` client).
+    pub new_guid: i32,
+}
+
+/// Evaluates `IcarusActorGUID` rebinding in
+/// `UActorStateRecorderComponent::UpdateOwnerToDatabaseState` (`C001`,
+/// `0x1418b6ed0` server / `0x1418ba040` client) (F-735).
+///
+/// Runs iff `!b_skip_actor_guid_binding` (`[this + 0x144] == 0`),
+/// `owner_implements_guid_interface` (`IIcarusActorGuidInterface`), and
+/// `saved_icarus_actor_guid != current_actor_guid`.
+pub const fn evaluate_actor_guid_restore(
+    b_skip_actor_guid_binding: bool,
+    owner_implements_guid_interface: bool,
+    saved_icarus_actor_guid: i32,
+    current_actor_guid: i32,
+    bound_guid: i32,
+) -> Option<ActorGuidRestoreStep> {
+    if b_skip_actor_guid_binding
+        || !owner_implements_guid_interface
+        || saved_icarus_actor_guid == current_actor_guid
+    {
+        return None;
+    }
+    let unbind_previous_guid = if current_actor_guid > 0 {
+        Some(current_actor_guid)
+    } else {
+        None
+    };
+    Some(ActorGuidRestoreStep {
+        unbind_previous_guid,
+        new_guid: bound_guid,
+    })
 }
 
 /// How `USplineRecorderComponent::RespawnOwner` (`C032`, `0x1418ed690` server /
@@ -1740,6 +1840,29 @@ pub const fn normalize_restored_modifier_lifetime(saved_lifetime: i32) -> i32 {
     } else {
         saved_lifetime
     }
+}
+
+/// Evaluates whether `UActorStateRecorderComponent::UpdateOwnerToDatabaseState`
+/// (`C001`, `0x1418b6ed0` server / `0x1418ba040` client) restores one saved
+/// `FModifierStateSaveData` (`+0x150`, stride `0x18` B) and returns the
+/// normalized lifetime passed to `AddModifierState` (`0x1414ce560` client)
+/// (F-735).
+///
+/// Requires `b_record_modifier_states` (`+0xd8`), `modifier_effectiveness >= 0.0`,
+/// `is_row_handle_valid` (`0x143f855d0`), and `row_saves_modifier_state`
+/// (`[Row + 0x263] != 0`).
+pub fn evaluate_modifier_state_restore(
+    b_record_modifier_states: bool,
+    modifier_effectiveness: f32,
+    is_row_handle_valid: bool,
+    row_saves_modifier_state: bool,
+    saved_lifetime: i32,
+) -> Option<i32> {
+    (b_record_modifier_states
+        && modifier_effectiveness >= 0.0
+        && is_row_handle_valid
+        && row_saves_modifier_state)
+        .then(|| normalize_restored_modifier_lifetime(saved_lifetime))
 }
 
 /// Upserts a `(name, value)` entry into a recorded variable table as

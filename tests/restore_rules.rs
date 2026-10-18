@@ -1,17 +1,17 @@
 use icarus_bevy::experimental::restore_rules::{
-    ACTOR_RECORDER_TRANSFORM_TOLERANCE, ActorLink, ApplyTransformKind, AttachRecorderOutcome,
-    ByNameLoadOutcome, DynamicItemPropertyKind, InventorySlotOverflowDisposition,
-    LegacyGunAmmoUpgrade, LobbyPrivacy, OwnerResolvePolicy, OwnerResolveStep,
-    PROSPECT_SAVE_STATE_CURRENT_VERSION, PlayerList, PlayerStateLifeRestore,
+    ACTOR_RECORDER_TRANSFORM_TOLERANCE, ActorGuidRestoreStep, ActorLink, ApplyTransformKind,
+    AttachRecorderOutcome, ByNameLoadOutcome, DeployableStitchPlan, DynamicItemPropertyKind,
+    InventorySlotOverflowDisposition, LegacyGunAmmoUpgrade, LobbyPrivacy, OwnerResolvePolicy,
+    OwnerResolveStep, PROSPECT_SAVE_STATE_CURRENT_VERSION, PlayerList, PlayerStateLifeRestore,
     ProspectAssociatedMember, ProspectBlobDecodeOutcome, RESTORED_INDEFINITE_MODIFIER_LIFETIME,
     RestoreStateKind, RestoredMissionHistoryEntry, RocketRestore, SetupLoadedProspectOutcome,
     SplineRespawnDisposition, StitchedPlayerRecorderLinks, VOXEL_LOCATION_TOLERANCE,
     VersionUpgradeKind, VoxelDatabaseRestorePlan, can_activate_prospect_info,
     compact_and_diff_flod_tiles, container_entries, does_actor_recorder_match_actor,
     does_player_recorder_match_actor, does_player_state_recorder_match_actor,
-    does_state_recorder_match_actor, does_voxel_recorder_match_actor,
-    evaluate_attach_recorder_to_actor, evaluate_by_name_load_attempt,
-    evaluate_legacy_gun_ammo_upgrade, evaluate_owner_resolve_step,
+    does_state_recorder_match_actor, does_voxel_recorder_match_actor, evaluate_actor_guid_restore,
+    evaluate_attach_recorder_to_actor, evaluate_by_name_load_attempt, evaluate_deployable_stitch,
+    evaluate_legacy_gun_ammo_upgrade, evaluate_modifier_state_restore, evaluate_owner_resolve_step,
     evaluate_player_state_life_restore, evaluate_prospect_blob_decode,
     evaluate_setup_loaded_prospect_attempt, evaluate_spline_recorder_respawn,
     evaluate_voxel_database_restore, filter_restored_cosmetic_armour_overrides,
@@ -28,10 +28,10 @@ use icarus_bevy::experimental::restore_rules::{
     should_auto_activate_respawned_drill, should_drop_respawned_tree_recorder_on_resave,
     should_grant_deposit_map_icon_stat, should_record_weather_event,
     should_restore_actor_transform, should_try_fast_path_prebuilt_grid_restore, stitch,
-    stitch_player_recorder_assigned_uids, stitch_quest_actor_records,
-    stitch_trapped_character_guids, upgrade_actor_recorder_component_names, upright_rotation,
-    upsert_recorded_variable, validate_rocket_spawn_record, voxel_location_matches,
-    voxel_record_valid,
+    stitch_player_recorder_assigned_uids, stitch_prebuilt_structure_actors,
+    stitch_quest_actor_records, stitch_trapped_character_guids,
+    upgrade_actor_recorder_component_names, upright_rotation, upsert_recorded_variable,
+    validate_rocket_spawn_record, voxel_location_matches, voxel_record_valid,
 };
 
 fn units(text: &str) -> Vec<u16> {
@@ -112,6 +112,56 @@ fn stitching_needs_both_id_and_name() {
     assert_eq!(
         stitch_quest_actor_records(&quest_records, &spawned),
         vec![("RadarTag", 2), ("WallTag", 0)]
+    );
+
+    // C027 UPrebuiltStructureRecorderComponent::StitchingOperation (0x14177ec20 / 0x14178c680):
+    // resolves RelevantActorRecords (+0x1c8) against SpawnedActors in order and omits unresolved links.
+    let prebuilt_records = [
+        ActorLink {
+            name: &name,
+            icarus_id: 7,
+        },
+        ActorLink {
+            name: &other,
+            icarus_id: 99,
+        },
+        ActorLink {
+            name: &other,
+            icarus_id: 7,
+        },
+    ];
+    assert_eq!(
+        stitch_prebuilt_structure_actors(&prebuilt_records, &spawned),
+        vec![2, 0]
+    );
+
+    // C009 UDeployableRecorderComponent::Stitching (0x1418ac8a0 / 0x1418b0c80):
+    // stitches FoundationActorRecord against ABuildingBase candidates and copies UTameWhitelistComponent when present.
+    assert_eq!(
+        evaluate_deployable_stitch(false, true, saved, &spawned),
+        DeployableStitchPlan::default()
+    );
+    assert_eq!(
+        evaluate_deployable_stitch(true, true, saved, &spawned),
+        DeployableStitchPlan {
+            foundation_actor_index: Some(2),
+            restore_tame_whitelist: true,
+        }
+    );
+    assert_eq!(
+        evaluate_deployable_stitch(
+            true,
+            false,
+            ActorLink {
+                name: &other,
+                icarus_id: 99,
+            },
+            &spawned
+        ),
+        DeployableStitchPlan {
+            foundation_actor_index: None,
+            restore_tame_whitelist: false,
+        }
     );
 
     // C007 UCharacterTrapRecorderComponent::Stitching (0x1418ac670 / 0x1418b0a50):
@@ -1011,6 +1061,23 @@ fn owner_resolve_step_attach_and_drill_auto_activate() {
     // C001/C023 UActorStateRecorderComponent::UpdateOwnerToDatabaseState (0x1418b6ed0 / 0x1418ba040).
     assert!(should_restore_actor_transform(true));
     assert!(!should_restore_actor_transform(false));
+    assert_eq!(evaluate_actor_guid_restore(true, true, 50, 10, 50), None);
+    assert_eq!(evaluate_actor_guid_restore(false, false, 50, 10, 50), None);
+    assert_eq!(evaluate_actor_guid_restore(false, true, 50, 50, 50), None);
+    assert_eq!(
+        evaluate_actor_guid_restore(false, true, 50, 0, 50),
+        Some(ActorGuidRestoreStep {
+            unbind_previous_guid: None,
+            new_guid: 50,
+        })
+    );
+    assert_eq!(
+        evaluate_actor_guid_restore(false, true, 50, 12, 50),
+        Some(ActorGuidRestoreStep {
+            unbind_previous_guid: Some(12),
+            new_guid: 50,
+        })
+    );
 
     // C032 USplineRecorderComponent::RespawnOwner (0x1418ed690 / 0x1418ee060).
     assert_eq!(
@@ -1455,6 +1522,34 @@ fn d01_dynamic_item_properties_overflow_modifiers_and_variables() {
         RESTORED_INDEFINITE_MODIFIER_LIFETIME
     );
     assert_eq!(normalize_restored_modifier_lifetime(45), 45);
+    assert_eq!(
+        evaluate_modifier_state_restore(false, 1.0, true, true, -1),
+        None
+    );
+    assert_eq!(
+        evaluate_modifier_state_restore(true, -0.1, true, true, -1),
+        None
+    );
+    assert_eq!(
+        evaluate_modifier_state_restore(true, f32::NAN, true, true, -1),
+        None
+    );
+    assert_eq!(
+        evaluate_modifier_state_restore(true, 0.0, false, true, -1),
+        None
+    );
+    assert_eq!(
+        evaluate_modifier_state_restore(true, 0.0, true, false, -1),
+        None
+    );
+    assert_eq!(
+        evaluate_modifier_state_restore(true, 0.0, true, true, -1),
+        Some(RESTORED_INDEFINITE_MODIFIER_LIFETIME)
+    );
+    assert_eq!(
+        evaluate_modifier_state_restore(true, 1.5, true, true, 60),
+        Some(60)
+    );
 
     let mut vars = Vec::new();
     assert!(upsert_recorded_variable(&mut vars, "bIsActive", 1_i32));
