@@ -2,7 +2,8 @@
 //!
 //! Each function is a pure rule over authored domain values, read from the
 //! client recorders' record, validate, stitch and restore code (F-645 to F-665,
-//! F-677, F-715, F-716, F-717, F-727, F-728, F-732, F-733).
+//! F-677, F-715, F-716, F-717, F-727, F-728, F-732, F-733, F-734, F-735,
+//! F-736).
 //! Nothing here decodes a save, looks up a class, constructs an object or
 //! imports state: the rules pin the behavior a native world must reproduce when
 //! it restores recorded actors. The normal server does not call them yet, and
@@ -24,6 +25,10 @@ pub const ELAPSED_SECONDS_FALLBACK_BELOW: i32 = 31;
 
 /// The survival-level value meaning "not recorded" (F-648).
 pub const UNRECORDED_LEVEL: i32 = -1;
+
+/// Default lifetime assigned by `UActorStateRecorderComponent::UpdateOwnerToDatabaseState`
+/// (`0x1418ba040`) when a saved `FModifierStateSaveData::ModifierLifetime` is `-1` (F-735).
+pub const RESTORED_INDEFINITE_MODIFIER_LIFETIME: i32 = 100;
 
 /// One saved or spawned actor link: a class or actor name and an Icarus id.
 #[derive(Clone, Copy, Debug)]
@@ -111,8 +116,8 @@ fn truncate(value: f32) -> i32 {
 }
 
 /// The saved RemainingCooldown of a teleport whose cooldown ends at `end` on
-/// the clock that reads `now` (F-657): the truncated time left, or 0 when no
-/// end is set or less than one unit remains.
+/// the clock that reads `now` (F-657, F-734): the truncated time left, or 0
+/// when no end is set or less than one unit remains.
 pub fn remaining_cooldown(end: f32, now: f32) -> i32 {
     if end > 0.0 {
         let left = truncate(end - now);
@@ -121,6 +126,54 @@ pub fn remaining_cooldown(end: f32, now: f32) -> i32 {
         }
     }
     0
+}
+
+/// Computes `AIcarusGameStateSurvival::GetReplicatedProspectGameTime`
+/// (`0x1418d9390`) from `UGameplayStatics::GetTimeSeconds(World)` (`0x14385dad0`)
+/// and the replicated prospect time offset at `GameState + 0x398` (F-734).
+pub fn replicated_prospect_game_time(
+    world_time_seconds: f32,
+    replicated_prospect_time_offset: f32,
+) -> f32 {
+    world_time_seconds + replicated_prospect_time_offset
+}
+
+/// Whether `UWeatherControllerRecorderComponent::RecordOwnerState` (`0x1418ea8d0`)
+/// records an active weather event given its data-table `row_duration`,
+/// `event_start_time`, and `AWeatherForecastManager::CurrentBlockEndTime()`
+/// (`0x14190a5a0`) (F-665, F-734).
+pub const fn should_record_weather_event(
+    row_duration: i32,
+    event_start_time: i32,
+    current_block_end_time: i32,
+) -> bool {
+    row_duration >= 0 && row_duration.wrapping_add(event_start_time) <= current_block_end_time
+}
+
+/// Computes the saved `TimeElapsed` field of a recorded weather event in
+/// `UWeatherControllerRecorderComponent::RecordOwnerState` (`0x1418ea8d0`) from
+/// `UIcarusFunctionLibrary::GetLevelTimeElapsedSec(GameMode)` (`0x1414e1390`)
+/// and `event_start_time` (F-665, F-734).
+pub const fn record_weather_event_elapsed(
+    level_time_elapsed_sec: i32,
+    event_start_time: i32,
+) -> i32 {
+    level_time_elapsed_sec.wrapping_sub(event_start_time)
+}
+
+/// Reconstructs an active weather event's `StartTime` in
+/// `UWeatherControllerRecorderComponent::UpdateOwnerToDatabaseState`
+/// (`0x1418f87f0`) from `UIcarusFunctionLibrary::GetLevelTimeElapsedSec(GameMode)`
+/// (`0x1414e1390`) and saved `time_elapsed` (F-665, F-734).
+pub const fn restored_weather_event_start_time(
+    level_time_elapsed_sec: i32,
+    time_elapsed: i32,
+) -> i32 {
+    if level_time_elapsed_sec > 0 {
+        level_time_elapsed_sec.wrapping_sub(time_elapsed)
+    } else {
+        0
+    }
 }
 
 /// The elapsed level seconds a restored game mode starts from (F-653).
@@ -632,4 +685,116 @@ pub fn evaluate_setup_loaded_prospect_attempt(
         return SetupLoadedProspectOutcome::FatalProcessExit;
     }
     SetupLoadedProspectOutcome::ActivatedFromBinaryFile
+}
+
+/// `EDynamicItemProperties` enumerators (`0..=13`, with `14` reserved for
+/// `MaxDynamicItemProperties` at `0x145e0c090` server / `0x145f214e0` client)
+/// restored from `FInventorySlotSaveData::DynamicData` (`D01`) by
+/// `UActorStateRecorderComponent::UpdateOwnerInventories` (`0x1418b8f20`)
+/// (F-735).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[repr(u8)]
+pub enum DynamicItemPropertyKind {
+    AssociatedItemInventoryId = 0,
+    AssociatedItemInventorySlot = 1,
+    DynamicState = 2,
+    GunCurrentMagSize = 3,
+    CurrentAmmoType = 4,
+    BuildingVariation = 5,
+    Durability = 6,
+    ItemableStack = 7,
+    MillijoulesRemaining = 8,
+    TransmutableUnits = 9,
+    FillableStoredUnits = 10,
+    FillableType = 11,
+    DecayableCurrentSpoilTime = 12,
+    InventoryContainerLinkedInventoryId = 13,
+}
+
+impl DynamicItemPropertyKind {
+    /// Maps a saved `FDynamicDataSaveData::Index` (`int32`, truncated to `u8`
+    /// in `UActorStateRecorderComponent::UpdateOwnerInventories` `0x1418b8f20`)
+    /// to its `EDynamicItemProperties` variant, or `None` if `(index as u8)` is
+    /// `>= 14` (`MaxDynamicItemProperties`) (F-735).
+    pub const fn from_saved_index(index: i32) -> Option<Self> {
+        match index as u8 {
+            0 => Some(Self::AssociatedItemInventoryId),
+            1 => Some(Self::AssociatedItemInventorySlot),
+            2 => Some(Self::DynamicState),
+            3 => Some(Self::GunCurrentMagSize),
+            4 => Some(Self::CurrentAmmoType),
+            5 => Some(Self::BuildingVariation),
+            6 => Some(Self::Durability),
+            7 => Some(Self::ItemableStack),
+            8 => Some(Self::MillijoulesRemaining),
+            9 => Some(Self::TransmutableUnits),
+            10 => Some(Self::FillableStoredUnits),
+            11 => Some(Self::FillableType),
+            12 => Some(Self::DecayableCurrentSpoilTime),
+            13 => Some(Self::InventoryContainerLinkedInventoryId),
+            _ => None,
+        }
+    }
+}
+
+/// How `UActorStateRecorderComponent::UpdateOwnerInventories` (`0x1418b8f20`)
+/// routes a restored `D01` (`FInventorySlotSaveData`) item after
+/// `UInventory::SetItem` (`0x14197a3a0`) (F-735).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum InventorySlotOverflowDisposition {
+    /// `UInventory::SetItem(Inventory, Location, ItemData)` returned `true`.
+    PlacedInSlot,
+    /// `SetItem` returned `false` and `Inventory->Slots.Num() == 0`: routed to
+    /// `UInventory::ForceAddItems` (`0x14195bfc0`).
+    ForceAddItemsWhenEmpty,
+    /// `SetItem` returned `false` and `Inventory->Slots.Num() > 0`: appended to
+    /// `Inventory + 0x288` (`0x1414c24e0`).
+    AppendToDeferredOverflow,
+}
+
+/// Evaluates how `UActorStateRecorderComponent::UpdateOwnerInventories`
+/// (`0x1418b8f20`) routes a restored `D01` slot after `UInventory::SetItem`
+/// (F-735).
+pub const fn resolve_inventory_slot_restore(
+    set_item_accepted: bool,
+    current_slot_count: usize,
+) -> InventorySlotOverflowDisposition {
+    if set_item_accepted {
+        InventorySlotOverflowDisposition::PlacedInSlot
+    } else if current_slot_count == 0 {
+        InventorySlotOverflowDisposition::ForceAddItemsWhenEmpty
+    } else {
+        InventorySlotOverflowDisposition::AppendToDeferredOverflow
+    }
+}
+
+/// Normalizes a saved `FModifierStateSaveData::ModifierLifetime` as
+/// `UActorStateRecorderComponent::UpdateOwnerToDatabaseState` (`0x1418ba040`)
+/// does before `AddModifierState`: a saved `-1` becomes `100`
+/// ([`RESTORED_INDEFINITE_MODIFIER_LIFETIME`]) (F-735).
+pub const fn normalize_restored_modifier_lifetime(saved_lifetime: i32) -> i32 {
+    if saved_lifetime == -1 {
+        RESTORED_INDEFINITE_MODIFIER_LIFETIME
+    } else {
+        saved_lifetime
+    }
+}
+
+/// Upserts a `(name, value)` entry into a recorded variable table as
+/// `UActorStateRecorderComponent::RecordOwnerVariables` (`0x1418a90f0`) does
+/// for `CPF_SaveGame` properties: updates the first entry whose key equals
+/// `name` in place (returning `false`), or appends `(name, value)` when no
+/// existing entry matches (returning `true`) (F-735).
+pub fn upsert_recorded_variable<K: PartialEq, V>(
+    entries: &mut Vec<(K, V)>,
+    name: K,
+    value: V,
+) -> bool {
+    if let Some((_, existing_value)) = entries.iter_mut().find(|(k, _)| *k == name) {
+        *existing_value = value;
+        false
+    } else {
+        entries.push((name, value));
+        true
+    }
 }

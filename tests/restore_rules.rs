@@ -1,14 +1,18 @@
 use icarus_bevy::experimental::restore_rules::{
     ACTOR_RECORDER_TRANSFORM_TOLERANCE, ActorLink, ApplyTransformKind, ByNameLoadOutcome,
-    LobbyPrivacy, OwnerResolvePolicy, PROSPECT_SAVE_STATE_CURRENT_VERSION, PlayerList,
+    DynamicItemPropertyKind, InventorySlotOverflowDisposition, LobbyPrivacy, OwnerResolvePolicy,
+    PROSPECT_SAVE_STATE_CURRENT_VERSION, PlayerList, RESTORED_INDEFINITE_MODIFIER_LIFETIME,
     RestoreStateKind, RocketRestore, SetupLoadedProspectOutcome, VOXEL_LOCATION_TOLERANCE,
     VersionUpgradeKind, can_activate_prospect_info, container_entries,
     evaluate_by_name_load_attempt, evaluate_setup_loaded_prospect_attempt,
-    migrate_prospect_save_state, names_match, normalize_prospect_name, player_record_valid,
-    prospect_ids_match, recorded_level, recorder_restore_dispatch,
-    recorder_transform_is_non_identity, remaining_cooldown, restored_elapsed_seconds,
-    rocket_record_valid, rocket_restore, stitch, upgrade_actor_recorder_component_names,
-    upright_rotation, voxel_location_matches, voxel_record_valid,
+    migrate_prospect_save_state, names_match, normalize_prospect_name,
+    normalize_restored_modifier_lifetime, player_record_valid, prospect_ids_match,
+    record_weather_event_elapsed, recorded_level, recorder_restore_dispatch,
+    recorder_transform_is_non_identity, remaining_cooldown, replicated_prospect_game_time,
+    resolve_inventory_slot_restore, restored_elapsed_seconds, restored_weather_event_start_time,
+    rocket_record_valid, rocket_restore, should_record_weather_event, stitch,
+    upgrade_actor_recorder_component_names, upright_rotation, upsert_recorded_variable,
+    voxel_location_matches, voxel_record_valid,
 };
 
 fn units(text: &str) -> Vec<u16> {
@@ -597,4 +601,79 @@ fn entry_path_failure_matrix_evaluates_by_name_and_from_file_outcomes() {
         evaluate_setup_loaded_prospect_attempt("/tmp/prospect.bin", true, true),
         SetupLoadedProspectOutcome::ActivatedFromBinaryFile
     );
+}
+
+#[test]
+fn weather_and_teleport_clocks_record_and_restore() {
+    // WeatherControllerRecorderComponent (C035) filters active events against CurrentBlockEndTime
+    // and records/restores elapsed seconds against UIcarusFunctionLibrary::GetLevelTimeElapsedSec.
+    assert!(!should_record_weather_event(-1, 100, 500));
+    assert!(should_record_weather_event(120, 100, 220));
+    assert!(!should_record_weather_event(121, 100, 220));
+
+    let elapsed = record_weather_event_elapsed(450, 300);
+    assert_eq!(elapsed, 150);
+    assert_eq!(restored_weather_event_start_time(450, elapsed), 300);
+    assert_eq!(restored_weather_event_start_time(0, elapsed), 0);
+    assert_eq!(restored_weather_event_start_time(-5, elapsed), 0);
+
+    // BaseLevelTeleportRecorderComponent (C002) uses GetReplicatedProspectGameTime = GetTimeSeconds + *(float*)(GameState + 0x398).
+    let now = replicated_prospect_game_time(42.5, 1000.0);
+    assert_eq!(now, 1042.5);
+    assert_eq!(remaining_cooldown(1060.9, now), 18);
+}
+
+#[test]
+fn d01_dynamic_item_properties_overflow_modifiers_and_variables() {
+    assert_eq!(
+        DynamicItemPropertyKind::from_saved_index(0),
+        Some(DynamicItemPropertyKind::AssociatedItemInventoryId)
+    );
+    assert_eq!(
+        DynamicItemPropertyKind::from_saved_index(3),
+        Some(DynamicItemPropertyKind::GunCurrentMagSize)
+    );
+    assert_eq!(
+        DynamicItemPropertyKind::from_saved_index(4),
+        Some(DynamicItemPropertyKind::CurrentAmmoType)
+    );
+    assert_eq!(
+        DynamicItemPropertyKind::from_saved_index(7),
+        Some(DynamicItemPropertyKind::ItemableStack)
+    );
+    assert_eq!(
+        DynamicItemPropertyKind::from_saved_index(13),
+        Some(DynamicItemPropertyKind::InventoryContainerLinkedInventoryId)
+    );
+    assert_eq!(DynamicItemPropertyKind::from_saved_index(14), None);
+    // Low-byte truncation in UpdateOwnerInventories (0x1418b8f20): 256 -> u8 0.
+    assert_eq!(
+        DynamicItemPropertyKind::from_saved_index(256),
+        Some(DynamicItemPropertyKind::AssociatedItemInventoryId)
+    );
+
+    assert_eq!(
+        resolve_inventory_slot_restore(true, 0),
+        InventorySlotOverflowDisposition::PlacedInSlot
+    );
+    assert_eq!(
+        resolve_inventory_slot_restore(false, 0),
+        InventorySlotOverflowDisposition::ForceAddItemsWhenEmpty
+    );
+    assert_eq!(
+        resolve_inventory_slot_restore(false, 8),
+        InventorySlotOverflowDisposition::AppendToDeferredOverflow
+    );
+
+    assert_eq!(
+        normalize_restored_modifier_lifetime(-1),
+        RESTORED_INDEFINITE_MODIFIER_LIFETIME
+    );
+    assert_eq!(normalize_restored_modifier_lifetime(45), 45);
+
+    let mut vars = Vec::new();
+    assert!(upsert_recorded_variable(&mut vars, "bIsActive", 1_i32));
+    assert!(upsert_recorded_variable(&mut vars, "FuelCount", 10_i32));
+    assert!(!upsert_recorded_variable(&mut vars, "bIsActive", 0_i32));
+    assert_eq!(vars, vec![("bIsActive", 0), ("FuelCount", 10)]);
 }
