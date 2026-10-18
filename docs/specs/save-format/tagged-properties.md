@@ -136,10 +136,12 @@ objects):
   stay opaque and writing checks each declared size; every body in both copies
   frames under 1 MiB and re-serializes byte-identically; names, types and values
   are not interpreted (F-557).
-- Map and Set item layout (client build): F-559. The tree frames them when every
-  item is a 1/4/8-byte scalar, an archive string or a tagged struct stream and the
-  payload is consumed exactly, within the node budget; otherwise the payload stays
-  opaque. All supplied Maps frame (F-562; unchanged under the budget, M-411, M-412).
+- Map and Set item layout (F-559, F-725): server (`0x142159080`/`0x14215a4b0`) and
+  client (`0x142124c50`/`0x142126080`) match across all 14 `TagKind`s, and
+  `UScriptStruct::SerializeItem` (`0x14200e610`) branches on `StructFlags & 0x800`
+  (`FIntPoint` 8 B vs tagged). All 28 C030 `SignTextRecord` `TextProperty` bodies
+  (`0x142182820` -> `0x141eb4390`, history `-1`) and all 163 Maps per copy (`C015`,
+  `C022`, `C032`, F-562, F-725, F-726; U-053, U-055 resolved) frame to exact EOF.
 - Applying the older-build framing to the newer saves is supported by prefix
   agreement and the scans above, not by a matched official load (F-297, U-025).
 - Base-component layout is verified across builds for C001, C013, C028 and C034;
@@ -165,8 +167,6 @@ objects):
 - Official restore/import and newer-build migration of these saves (U-025, U-045).
 - Value meanings and Name identities (U-020); empty-family
   population (U-021); deeper C028 children (U-048); remaining classes (U-050).
-- Supplied Text-bearing body (U-053); Map/Set item meanings and binary Struct
-  items (U-055).
 
 ## Evidence
 
@@ -176,7 +176,7 @@ objects):
   M-096 and M-098 Int array, M-070, M-077, M-089, M-090, M-122; client M-083 to
   M-086; Map/Set/Int64 headers M-387, M-388; all-class framing M-389, M-390;
   container items M-392 to M-396, M-401 to M-404; server migration, entry and
-  correspondence M-755 to M-760.
+  correspondence M-755 to M-760; Text/Map/Set/Int64/Struct items M-766, M-767.
 - Tests: `tests/tagged.rs`, `tests/recorders.rs`, `tests/component.rs`,
   `tests/int_array.rs`, `tests/struct_array.rs`, `tests/prospect.rs`; authored
   byte fixtures only. Private saves stay outside tests, source control and CI.

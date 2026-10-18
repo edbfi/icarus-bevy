@@ -7,7 +7,7 @@ full text under `retired/`. Admission and columns follow `.agents/rules/docs.md`
 
 Before restructure: 96ddb0b:docs/ledgers/findings.md
 
-Last reconciled: 2026-10-17
+Last reconciled: 2026-10-18
 
 | ID | Claim | Kind | Evidence | Scope and limits | Unknowns | Status |
 | --- | --- | --- | --- | --- | --- | --- |
@@ -70,3 +70,4 @@ Last reconciled: 2026-10-17
 | F-716 | C013 saves FLODTiles.Num() (+0x250) to +0xd8 on record (0x1418a1850), compacts FLODTiles (+0x248) on stitch (0x1418ad0c0) and never reads +0xd8 on restore. C028 RestoreState (0x1418a9bb0) calls +0x4b0 only if FTransform!=Identity (>1e-4); +0x488 (0x14189d380) renames TreePrimitive to Wood if version<1 | observed | static-decompile; M-755, M-756 | high; server | U-039, U-061 | active |
 | F-718 | UStruct::SerializeVersionedTaggedProperties (0x14200f5b0) reads FPropertyTag headers until None, wrapping from PropertyLinkNext (+0x58) to head PropertyLink (plVar2[0xe]) on out-of-order tags and keeping defaults when omitted; C013/C028/C034/C009 enforce no mandatory tags or fixed order | observed | static-decompile; M-757, M-758 | high; server | U-062 | active |
 | F-720 | Server 25621760 matches client 25793767 on ConstructFProperty (0x14216e730), FFloatProperty (0x142158010), DeferCppStructOps (0x141fff3b0), PrepareCppStructOps (0x142008220) and N02 FVector (0x142128a70); FPropertyTag::Size is exact <=INT32_MAX and +0x40 stays immutable | observed | static-decompile, authored-test; M-759, M-760 | high; server | U-029..U-031, U-054 | active |
+| F-726 | Sole Int64 is ProspectInfo.ExpireTime (-1). C015 maps 8 player IDs to colors; C022 TileFlags (0x144d1b6f8) is TMap<FIntPoint,int32> (8-B key 0x1421288e0, 0 entries); C032 ConnectionMap (0x144dfb690) is TMap<int32,FRecordedSplineIndexStructArray> (221 entries, 1,238 links) | observed | static-decompile, authored-test; M-766/ev_73f0199d703e, M-767 | high; 2 copies | U-055 | active |

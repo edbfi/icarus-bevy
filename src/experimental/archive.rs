@@ -2,7 +2,7 @@
 //!
 //! Archive byte order must be supplied by the caller. Unsupported normalizations
 //! are rejected rather than silently changing a name or identity-bearing value.
-use anyhow::{Result, ensure};
+use anyhow::{Result, bail, ensure};
 
 /// Research resource policy, including the terminating unit when present.
 pub const MAX_STRING_UNITS: usize = 65_536;
@@ -272,6 +272,114 @@ pub fn split_fname_number(units: &[u16]) -> (&[u16], u32) {
 /// signed 32-bit `int32(end) - int32(start)` `FPropertyTag::Size` subtraction (`<= i32::MAX`).
 pub const fn is_valid_tag_aggregate_span(span_bytes: u64) -> bool {
     span_bytes <= i32::MAX as u64
+}
+
+/// History payload of a borrowed `FText` archive frame (`FText::SerializeText`).
+/// Deliberately neither `Debug` nor `Serialize` to prevent leaking private text.
+pub enum ArchiveTextHistory<'a> {
+    /// `ETextHistoryType::None` (`-1`): 4-byte `bHasCultureInvariantString` flag
+    /// followed by `CultureInvariantString` when `has_culture_invariant != 0`.
+    None {
+        has_culture_invariant_raw: u32,
+        culture_invariant_string: Option<ArchiveStringFrame<'a>>,
+    },
+    /// `ETextHistoryType::Base` (`0`): `Namespace`, `Key`, and `SourceString`.
+    Base {
+        namespace: ArchiveStringFrame<'a>,
+        key: ArchiveStringFrame<'a>,
+        source_string: ArchiveStringFrame<'a>,
+    },
+}
+
+/// Borrowed archive `FText` frame (`FTextProperty::SerializeItem` -> `FText::SerializeText`).
+/// Deliberately neither `Debug` nor `Serialize`.
+pub struct ArchiveTextFrame<'a> {
+    frame: &'a [u8],
+    flags: u32,
+    history_type: i8,
+    history: ArchiveTextHistory<'a>,
+}
+
+impl<'a> ArchiveTextFrame<'a> {
+    pub fn frame(&self) -> &'a [u8] {
+        self.frame
+    }
+
+    pub fn flags(&self) -> u32 {
+        self.flags
+    }
+
+    pub fn history_type(&self) -> i8 {
+        self.history_type
+    }
+
+    pub fn history(&self) -> &ArchiveTextHistory<'a> {
+        &self.history
+    }
+
+    pub fn consumed(&self) -> usize {
+        self.frame.len()
+    }
+}
+
+/// Borrow a validated archive `FText` frame (`flags: u32`, `history_type: i8`, and
+/// `ETextHistoryType::None = -1` or `ETextHistoryType::Base = 0` payload).
+pub fn read_text_frame(input: &[u8], order: ByteOrder) -> Result<ArchiveTextFrame<'_>> {
+    let header: [u8; 5] = input
+        .get(..5)
+        .ok_or_else(|| anyhow::anyhow!("truncated archive FText header"))?
+        .try_into()?;
+    let flags_bytes = [header[0], header[1], header[2], header[3]];
+    let flags = match order {
+        ByteOrder::Little => u32::from_le_bytes(flags_bytes),
+        ByteOrder::Big => u32::from_be_bytes(flags_bytes),
+    };
+    let history_type = header[4] as i8;
+    let mut consumed = 5;
+    let history = match history_type {
+        -1 => {
+            let flag_bytes: [u8; 4] = input
+                .get(consumed..consumed + 4)
+                .ok_or_else(|| anyhow::anyhow!("truncated archive FText None history flag"))?
+                .try_into()?;
+            consumed += 4;
+            let has_culture_invariant_raw = match order {
+                ByteOrder::Little => u32::from_le_bytes(flag_bytes),
+                ByteOrder::Big => u32::from_be_bytes(flag_bytes),
+            };
+            let culture_invariant_string = if has_culture_invariant_raw != 0 {
+                let text = read_string_frame(&input[consumed..], order)?;
+                consumed += text.consumed();
+                Some(text)
+            } else {
+                None
+            };
+            ArchiveTextHistory::None {
+                has_culture_invariant_raw,
+                culture_invariant_string,
+            }
+        }
+        0 => {
+            let namespace = read_string_frame(&input[consumed..], order)?;
+            consumed += namespace.consumed();
+            let key = read_string_frame(&input[consumed..], order)?;
+            consumed += key.consumed();
+            let source_string = read_string_frame(&input[consumed..], order)?;
+            consumed += source_string.consumed();
+            ArchiveTextHistory::Base {
+                namespace,
+                key,
+                source_string,
+            }
+        }
+        _ => bail!("unsupported archive FText history type"),
+    };
+    Ok(ArchiveTextFrame {
+        frame: &input[..consumed],
+        flags,
+        history_type,
+        history,
+    })
 }
 
 fn validate_units(units: &[u16]) -> Result<()> {

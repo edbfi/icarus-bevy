@@ -26,6 +26,8 @@ pub const DEFAULT_MAX_TREE_NODES: usize = 65_536;
 pub const MAX_TREE_NODES: usize = 1 << 20;
 /// Default struct-array bound; callers may select up to the reader's ceiling.
 pub const DEFAULT_TREE_STRUCT_ARRAY_BYTES: usize = 128 * 1024;
+/// Maximum fixed width for caller-selected binary Struct container items.
+pub const MAX_CONTAINER_STRUCT_BYTES: usize = 64;
 
 /// Research policy bounds. Root properties are at depth 1; a payload is framed
 /// as a nested stream only when its properties would not exceed `max_depth`.
@@ -39,6 +41,10 @@ pub struct TreeLimits {
     /// Passed to the struct-array reader, up to its 1 MiB ceiling; larger
     /// Array payloads stay opaque.
     pub struct_array_bytes: usize,
+    /// Optional fixed byte width for `STRUCT_SerializeNative` container items
+    /// (such as `8` for `FIntPoint` keys in `C022` `TileFlags`); `None` frames
+    /// `StructProperty` container items as `None`-terminated tagged streams.
+    pub container_struct_bytes: Option<usize>,
 }
 
 impl Default for TreeLimits {
@@ -47,11 +53,17 @@ impl Default for TreeLimits {
             max_depth: DEFAULT_MAX_TREE_DEPTH,
             max_nodes: DEFAULT_MAX_TREE_NODES,
             struct_array_bytes: DEFAULT_TREE_STRUCT_ARRAY_BYTES,
+            container_struct_bytes: None,
         }
     }
 }
 
 impl TreeLimits {
+    pub const fn with_container_struct_bytes(mut self, bytes: usize) -> Self {
+        self.container_struct_bytes = Some(bytes);
+        self
+    }
+
     fn validate(&self) -> Result<()> {
         ensure!(
             (1..=MAX_TREE_DEPTH).contains(&self.max_depth),
@@ -65,6 +77,12 @@ impl TreeLimits {
             (1..=MAX_BOUNDED_STRUCT_ARRAY_BYTES).contains(&self.struct_array_bytes),
             "struct array byte limit must be between 1 byte and 1 MiB"
         );
+        if let Some(width) = self.container_struct_bytes {
+            ensure!(
+                (1..=MAX_CONTAINER_STRUCT_BYTES).contains(&width),
+                "container struct item byte width must be between 1 and 64"
+            );
+        }
         Ok(())
     }
 }
@@ -345,7 +363,16 @@ impl Builder {
                 *position += consumed;
                 Ok(ContainerItem::Bytes(input[..consumed].to_vec()))
             }
-            TagKind::Struct if depth < self.limits.max_depth => {
+            TagKind::Struct => {
+                if let Some(width) = self.limits.container_struct_bytes {
+                    let bytes = input.get(..width).context("truncated container item")?;
+                    *position += width;
+                    return Ok(ContainerItem::Bytes(bytes.to_vec()));
+                }
+                ensure!(
+                    depth < self.limits.max_depth,
+                    "unsupported container item kind"
+                );
                 let mut offset = 0;
                 let mut tags = Vec::new();
                 let terminator = loop {

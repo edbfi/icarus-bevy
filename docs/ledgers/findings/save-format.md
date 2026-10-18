@@ -7,7 +7,7 @@ full text under `retired/`. Admission and columns follow `.agents/rules/docs.md`
 
 Before restructure: 96ddb0b:docs/ledgers/findings.md
 
-Last reconciled: 2026-10-17
+Last reconciled: 2026-10-18
 
 | ID | Claim | Kind | Evidence | Scope and limits | Unknowns | Status |
 | --- | --- | --- | --- | --- | --- | --- |
@@ -85,3 +85,4 @@ Last reconciled: 2026-10-17
 | F-715 | ReadFromProspectBlob (0x1418e6240) starts FMemoryReader at byte 0; UsingCustomVersion reads no table on load, so Version=2 is schema version. PostLoadSerialize (0x1418e4250) copies legacy ProspectID/ProspectDTKey if Version<2 and at 0 resets ProspectInfo, sets LobbyPrivacy=1 and clears blobs | observed | static-decompile; M-755, M-756 | high; server | U-059, U-060 | active |
 | F-717 | SetupLoadedProspect (0x1414baf60, from InitGame) requires LoadProspectSaveHeader (0x141824760) and LoadLocalProspectState (0x141823fb0; ReadFromArchive 0x1418e6140 keeps bool in ebx); LoadProspectByName (0x14146e6c0) strips .json, checks Stricmp(ProspectID,Name)==0 and transitions (0x1414831f0) | observed | static-decompile; M-757, M-758 | high; server | U-056, U-057 | active |
 | F-719 | FString operator<< (0x141e15db0) rejects INT32_MIN, zeroes the last unit, maps narrow >=0x80 to '?' (0x1408a91f0) and truncates wide U+FFFF; FMemoryReader (0x140b68ee0) sets ArIsError on overrun; ParseNumber (0x141f65d70) splits _<1..10 digits> (<=2147483646) | observed | static-decompile, authored-test; M-759, M-760 | high; server | U-026, U-033 | active |
+| F-725 | FTextProperty (0x142182820/0x14214b4d0) calls SerializeText (0x141eb4390); all 28 C030 SignTextRecord bodies per copy frame to EOF (history -1). Both builds match on all 14 TagKind SerializeItem slots; UScriptStruct::SerializeItem (0x14200e610) tests StructFlags&0x800 | observed | static-decompile, authored-test; M-766/ev_73f0199d703e, M-767 | high; both builds | U-053, U-055 | active |

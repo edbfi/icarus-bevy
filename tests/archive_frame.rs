@@ -1,6 +1,7 @@
 use anyhow::{Result, ensure};
 use icarus_bevy::experimental::archive::{
-    ArchiveString, ByteOrder, MAX_STRING_UNITS, StringEncoding, decode_string, read_string_frame,
+    ArchiveString, ArchiveTextHistory, ByteOrder, MAX_STRING_UNITS, StringEncoding, decode_string,
+    read_string_frame, read_text_frame,
 };
 
 // Independently retained pre-change decoder; intentionally does not invoke the
@@ -325,4 +326,84 @@ fn errors_report_only_structure_and_never_original_contents() {
         assert!(!message.contains("private-frame-marker"));
         compare_previous(&bytes, order);
     }
+}
+
+#[test]
+fn archive_text_frames_validate_none_and_base_histories() {
+    // ETextHistoryType::None (-1) without culture-invariant string (9 bytes).
+    let empty_none = [0x00, 0x00, 0x00, 0x00, 0xff, 0x00, 0x00, 0x00, 0x00];
+    let frame = read_text_frame(&empty_none, ByteOrder::Little).unwrap();
+    assert_eq!(frame.flags(), 0);
+    assert_eq!(frame.history_type(), -1);
+    assert_eq!(frame.consumed(), 9);
+    assert!(matches!(
+        frame.history(),
+        ArchiveTextHistory::None {
+            has_culture_invariant_raw: 0,
+            culture_invariant_string: None
+        }
+    ));
+
+    // ETextHistoryType::None (-1) with culture-invariant string (flags = 0x12).
+    let invariant_none = [
+        &0x12_u32.to_le_bytes()[..],
+        &[0xff],
+        &1_u32.to_le_bytes()[..],
+        b"\x05\0\0\0Sign\0",
+        &[0xaa],
+    ]
+    .concat();
+    let frame = read_text_frame(&invariant_none, ByteOrder::Little).unwrap();
+    assert_eq!(frame.flags(), 0x12);
+    assert_eq!(frame.history_type(), -1);
+    assert_eq!(frame.consumed(), 18);
+    match frame.history() {
+        ArchiveTextHistory::None {
+            has_culture_invariant_raw,
+            culture_invariant_string: Some(text),
+        } => {
+            assert_eq!(*has_culture_invariant_raw, 1);
+            assert_eq!(text.content(), b"Sign");
+        }
+        _ => panic!("expected None history with culture-invariant string"),
+    }
+
+    // ETextHistoryType::Base (0) with Namespace, Key, and SourceString.
+    let base = [
+        &0x02_u32.to_le_bytes()[..],
+        &[0x00],
+        b"\x03\0\0\0NS\0",
+        b"\x04\0\0\0Key\0",
+        b"\x04\0\0\0Src\0",
+    ]
+    .concat();
+    let frame = read_text_frame(&base, ByteOrder::Little).unwrap();
+    assert_eq!(frame.flags(), 0x02);
+    assert_eq!(frame.history_type(), 0);
+    assert_eq!(frame.consumed(), base.len());
+    match frame.history() {
+        ArchiveTextHistory::Base {
+            namespace,
+            key,
+            source_string,
+        } => {
+            assert_eq!(namespace.content(), b"NS");
+            assert_eq!(key.content(), b"Key");
+            assert_eq!(source_string.content(), b"Src");
+        }
+        _ => panic!("expected Base history"),
+    }
+
+    // Truncations and unsupported history types fail closed.
+    for end in 0..empty_none.len() {
+        assert!(read_text_frame(&empty_none[..end], ByteOrder::Little).is_err());
+    }
+    let unsupported = [0, 0, 0, 0, 1];
+    assert_eq!(
+        read_text_frame(&unsupported, ByteOrder::Little)
+            .err()
+            .unwrap()
+            .to_string(),
+        "unsupported archive FText history type"
+    );
 }
