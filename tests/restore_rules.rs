@@ -1,23 +1,26 @@
 use icarus_bevy::experimental::restore_rules::{
     ACTOR_RECORDER_TRANSFORM_TOLERANCE, ActorGuidRestoreStep, ActorLink, ApplyTransformKind,
-    AttachRecorderOutcome, ByNameLoadOutcome, DeployableStitchPlan, DynamicItemPropertyKind,
+    AttachRecorderOutcome, ByNameLoadOutcome, DeployableStitchPlan, DrillStitchCandidate,
+    DrillStitchResolution, DynamicItemPropertyKind, EnzymeGeyserRestorePlan, FlodTileRestorePlan,
     InventorySlotOverflowDisposition, LegacyGunAmmoUpgrade, LobbyPrivacy, OwnerResolvePolicy,
     OwnerResolveStep, PROSPECT_SAVE_STATE_CURRENT_VERSION, PlayerList, PlayerStateLifeRestore,
     ProspectAssociatedMember, ProspectBlobDecodeOutcome, RESTORED_INDEFINITE_MODIFIER_LIFETIME,
     RestoreStateKind, RestoredMissionHistoryEntry, RocketRestore, SetupLoadedProspectOutcome,
     SplineRespawnDisposition, StitchedPlayerRecorderLinks, VOXEL_LOCATION_TOLERANCE,
-    VersionUpgradeKind, VoxelDatabaseRestorePlan, can_activate_prospect_info,
-    compact_and_diff_flod_tiles, container_entries, does_actor_recorder_match_actor,
-    does_player_recorder_match_actor, does_player_state_recorder_match_actor,
-    does_state_recorder_match_actor, does_voxel_recorder_match_actor, evaluate_actor_guid_restore,
+    VersionUpgradeKind, VoxelDatabaseRestorePlan, WorldTalentStitchPlan,
+    can_activate_prospect_info, compact_and_diff_flod_tiles, container_entries,
+    does_actor_recorder_match_actor, does_player_recorder_match_actor,
+    does_player_state_recorder_match_actor, does_state_recorder_match_actor,
+    does_voxel_recorder_match_actor, evaluate_actor_guid_restore,
     evaluate_attach_recorder_to_actor, evaluate_by_name_load_attempt, evaluate_deployable_stitch,
+    evaluate_drill_stitch, evaluate_enzyme_geyser_restore, evaluate_flod_tile_restore,
     evaluate_legacy_gun_ammo_upgrade, evaluate_modifier_state_restore, evaluate_owner_resolve_step,
     evaluate_player_state_life_restore, evaluate_prospect_blob_decode,
     evaluate_setup_loaded_prospect_attempt, evaluate_spline_recorder_respawn,
-    evaluate_voxel_database_restore, filter_restored_cosmetic_armour_overrides,
-    migrate_prospect_save_state, names_match, normalize_prospect_name,
-    normalize_restored_modifier_lifetime, player_record_valid, prospect_ids_match,
-    record_weather_event_elapsed, recorded_level, recorder_restore_dispatch,
+    evaluate_voxel_database_restore, evaluate_world_talent_stitch,
+    filter_restored_cosmetic_armour_overrides, migrate_prospect_save_state, names_match,
+    normalize_prospect_name, normalize_restored_modifier_lifetime, player_record_valid,
+    prospect_ids_match, record_weather_event_elapsed, recorded_level, recorder_restore_dispatch,
     recorder_transform_is_non_identity, remaining_cooldown, replicated_prospect_game_time,
     resolve_cave_ai_class_name, resolve_deployable_setup_variant_index,
     resolve_inventory_slot_restore, resolve_item_recorder_database_guid,
@@ -162,6 +165,68 @@ fn stitching_needs_both_id_and_name() {
             foundation_actor_index: None,
             restore_tame_whitelist: false,
         }
+    );
+
+    // C010 UDrillRecorderComponent::StitchingOperation (0x1418acbf0 / 0x1418b0ef0):
+    // stitches FoundationActorRecord in pass 1, or falls back in pass 2 to the first
+    // AResourceDeposit within strict < 0.1 per axis of the drill owner's root location.
+    let deposit_name = units("BP_DeepMining_OreDeposit_Iron_C");
+    let drill_candidates = [
+        DrillStitchCandidate {
+            icarus_actor_link: Some(ActorLink {
+                name: &other,
+                icarus_id: 7,
+            }),
+            is_valid_resource_deposit: true,
+            // Boundary delta == 0.1 fails strict `< 0.1`.
+            root_location: Some([10.0 + VOXEL_LOCATION_TOLERANCE, 20.0, 30.0]),
+        },
+        DrillStitchCandidate {
+            icarus_actor_link: Some(ActorLink {
+                name: &deposit_name,
+                icarus_id: 50,
+            }),
+            is_valid_resource_deposit: true,
+            root_location: Some([10.05, 19.95, 30.0]),
+        },
+        DrillStitchCandidate {
+            icarus_actor_link: Some(ActorLink {
+                name: &upper,
+                icarus_id: 7,
+            }),
+            is_valid_resource_deposit: false,
+            root_location: None,
+        },
+    ];
+    assert_eq!(
+        evaluate_drill_stitch(false, Some([10.0, 20.0, 30.0]), saved, &drill_candidates),
+        None
+    );
+    assert_eq!(
+        evaluate_drill_stitch(true, Some([10.0, 20.0, 30.0]), saved, &drill_candidates),
+        Some(DrillStitchResolution::StitchedFoundationRecord(2))
+    );
+    let unresolved_foundation = ActorLink {
+        name: &name,
+        icarus_id: -1,
+    };
+    assert_eq!(
+        evaluate_drill_stitch(
+            true,
+            Some([10.0, 20.0, 30.0]),
+            unresolved_foundation,
+            &drill_candidates
+        ),
+        Some(DrillStitchResolution::FallbackResourceDeposit(1))
+    );
+    assert_eq!(
+        evaluate_drill_stitch(
+            true,
+            Some([999.0, 20.0, 30.0]),
+            unresolved_foundation,
+            &drill_candidates
+        ),
+        None
     );
 
     // C007 UCharacterTrapRecorderComponent::Stitching (0x1418ac670 / 0x1418b0a50):
@@ -1076,6 +1141,76 @@ fn owner_resolve_step_attach_and_drill_auto_activate() {
         Some(ActorGuidRestoreStep {
             unbind_previous_guid: Some(12),
             new_guid: 50,
+        })
+    );
+
+    // C012 UEnzymeGeyserRecorderComponent::UpdateOwnerToDatabaseState (0x1418b7c10 / 0x1418baae0):
+    // copies Completions (+0x1c0 -> +0x2c0) unconditionally and CurrentRow (+0x1c4 -> +0x2c4) iff IsValid.
+    assert_eq!(
+        evaluate_enzyme_geyser_restore(false, 4, "Geyser_Reward_A", true),
+        None
+    );
+    assert_eq!(
+        evaluate_enzyme_geyser_restore(true, 4, "Geyser_Reward_A", true),
+        Some(EnzymeGeyserRestorePlan {
+            completions: 4,
+            current_row_override: Some("Geyser_Reward_A"),
+        })
+    );
+    assert_eq!(
+        evaluate_enzyme_geyser_restore(true, 4, "None", false),
+        Some(EnzymeGeyserRestorePlan {
+            completions: 4,
+            current_row_override: None,
+        })
+    );
+
+    // C014 UFLODTileRecorderComponent::UpdateOwnerToDatabaseState (0x1418b7cf0 / 0x1418babc0):
+    // copies TileName (+0xe0 -> +0x220), Radius (+0x120 -> +0x228), and restores records whose
+    // leading component key resolves via 0x1418970d0(tile, key, 1).
+    let flod_records = [(10, "Instance_A"), (20, "Instance_B"), (30, "Instance_C")];
+    assert_eq!(
+        evaluate_flod_tile_restore(false, "Tile_X0_Y0", 5000.0, &flod_records, &[10, 30]),
+        None
+    );
+    assert_eq!(
+        evaluate_flod_tile_restore(true, "Tile_X0_Y0", 5000.0, &flod_records, &[10, 30]),
+        Some(FlodTileRestorePlan {
+            tile_name: "Tile_X0_Y0",
+            radius: 5000.0,
+            restored_component_records: vec![(10, "Instance_A"), (30, "Instance_C")],
+        })
+    );
+
+    // C038 UWorldTalentManagerRecorderComponent::StitchingOperation (0x14193aaa0 / 0x141936a10):
+    // copies Talents (+0x1c0 -> +0x2c8), marks NetComponent (+0x2e8) dirty when active, and
+    // notifies authority (0x14193cda0) iff net_role == 3 (ROLE_Authority).
+    assert_eq!(
+        evaluate_world_talent_stitch(false, &["Talent_A"], true, 3),
+        None
+    );
+    assert_eq!(
+        evaluate_world_talent_stitch(true, &["Talent_A", "Talent_B"], false, 3),
+        Some(WorldTalentStitchPlan {
+            restored_talents: vec!["Talent_A", "Talent_B"],
+            mark_net_component_dirty: false,
+            notify_authority_talents_updated: false,
+        })
+    );
+    assert_eq!(
+        evaluate_world_talent_stitch(true, &["Talent_A"], true, 1),
+        Some(WorldTalentStitchPlan {
+            restored_talents: vec!["Talent_A"],
+            mark_net_component_dirty: true,
+            notify_authority_talents_updated: false,
+        })
+    );
+    assert_eq!(
+        evaluate_world_talent_stitch(true, &["Talent_A"], true, 3),
+        Some(WorldTalentStitchPlan {
+            restored_talents: vec!["Talent_A"],
+            mark_net_component_dirty: true,
+            notify_authority_talents_updated: true,
         })
     );
 

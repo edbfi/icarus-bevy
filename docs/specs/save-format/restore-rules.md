@@ -60,9 +60,10 @@ data-table row meanings (F-660).
     and restores voxels, `+0x590`/`+0x594` and `+0x45c` (`+0x1ec > 0.0`) unless
     `+0x548 & 0x1000` (F-645).
 - Stitching matches GUID + ASCII `Stricmp` (`0x141e48e20`; `C009` `0x1418ac8a0`,
-  `evaluate_deployable_stitch`; `C018` `0x1418f3d30`/`C019` `0x1418f44e0`,
+  `evaluate_deployable_stitch`; `C010` `0x1418acbf0`, `evaluate_drill_stitch`,
+  `< 0.1` fallback; `C018` `0x1418f3d30`/`C019` `0x1418f44e0`,
   `stitch_quest_actor_records`; `C027` `0x14177ec20`,
-  `stitch_prebuilt_structure_actors`, F-646, F-650, F-663, F-676); `C007`
+  `stitch_prebuilt_structure_actors`, F-645, F-646, F-650, F-663, F-676); `C007`
   (`0x1418ac670`, `stitch_trapped_character_guids`) and `C025` (`0x1418f5160`,
   `+0xf0..0xf8`, `stitch_player_recorder_assigned_uids`) match GUID; `C013`
   (`0x1418ac8f0`, `compact_and_diff_flod_tiles`) destroys `FLODTiles \ SpawnedActors`
@@ -79,13 +80,12 @@ data-table row meanings (F-660).
   `PlayerState` (`+0x478`/`+0x498`) == `+0x1c0/+0x1d0`; `C031`/`C034` (`0x1418c9580`,
   `does_voxel_recorder_match_actor`) also check `AVoxelResource` (`<= 0.1`/axis
   at `+0x1e0`).
-- `C009` (`0x14189d2a0`/`0x1418a72a0`) picks `D_DeployableSetup` variant (`5`,
-  `resolve_deployable_setup_variant_index`, F-646); `C010` (`0x1418a74f0`) checks
-  `+0x153` (`0x1416f8240`, `should_auto_activate_respawned_drill`); `C022` copies
-  `+0xd8` and `+0x258 <-> +0x128`; `C038` (`0x14192f140`/`0x14193aaa0`) copies
-  `+0x2c8 <-> +0x1c0` (F-661, F-676); `C002` reads `0x1418d9390` (F-657, F-734);
-  `C035` keeps events with `row_duration + start <= CurrentBlockEndTime()`
-  (`0x14190a5a0`, F-734).
+- `C009` (`0x14189d2a0`/`0x1418a72a0`, `resolve_deployable_setup_variant_index`,
+  F-646); `C010` (`0x1418a74f0`, `+0x153`, `should_auto_activate_respawned_drill`);
+  `C012` (`0x1418b7c10`, `evaluate_enzyme_geyser_restore`); `C014` (`0x1418b7cf0`,
+  `evaluate_flod_tile_restore`); `C022` (`+0xd8`, `+0x258 <-> +0x128`); `C038`
+  (`0x14193aaa0`, `evaluate_world_talent_stitch`, F-657, F-661, F-676); `C002`
+  reads `0x1418d9390`; `C035` checks `0x14190a5a0` (F-734).
 - `C003` (`0x1418b7710`) copies `+0x290`; `C004` (`0x1418b7770`) tries
   `0x1413a9690` (`should_try_fast_path_prebuilt_grid_restore`) if `+0x128` else
   `0x141a7ac10`; `C006` (`0x1418b7b40`) copies `+0x1c0`; `C021` (`0x1418a7660`)

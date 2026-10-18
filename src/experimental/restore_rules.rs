@@ -2,7 +2,7 @@
 //!
 //! Each function is a pure rule over authored domain values, read from the
 //! client recorders' record, validate, stitch and restore code (F-645 to F-665,
-//! F-677, F-715, F-716, F-717, F-727, F-728, F-732, F-733, F-734, F-735,
+//! F-676, F-677, F-715, F-716, F-717, F-727, F-728, F-732, F-733, F-734, F-735,
 //! F-736, F-737, F-741, F-742, F-743, F-744).
 //! Nothing here decodes a save, looks up a class, constructs an object or
 //! imports state: the rules pin the behavior a native world must reproduce when
@@ -144,6 +144,84 @@ pub fn evaluate_deployable_stitch<'a>(
         foundation_actor_index: matched,
         restore_tame_whitelist: has_tame_whitelist_component,
     }
+}
+
+/// Candidate actor in `SpawnedActors` evaluated by
+/// `UDrillRecorderComponent::StitchingOperation` (`C010`, `0x1418acbf0` server /
+/// `0x1418b0ef0` client) (F-645, F-650, F-661).
+#[derive(Clone, Copy, Debug)]
+pub struct DrillStitchCandidate<'a> {
+    /// Class name and `IcarusActorGUID` when the candidate is a valid
+    /// `AIcarusActor` (`0x141b9e1b0` client).
+    pub icarus_actor_link: Option<ActorLink<'a>>,
+    /// Whether the candidate is a non-pending-kill `AResourceDeposit`
+    /// (`0x141d22960` client).
+    pub is_valid_resource_deposit: bool,
+    /// Candidate's `RootComponent->RelativeLocation` (`+0x130 -> +0x1d0`), or
+    /// `None` when `RootComponent` is `nullptr` (treated as `[0.0, 0.0, 0.0]`).
+    pub root_location: Option<[f32; 3]>,
+}
+
+/// How `UDrillRecorderComponent::StitchingOperation` (`C010`, `0x1418acbf0`
+/// server / `0x1418b0ef0` client) resolves and binds a drill's foundation actor
+/// (F-645, F-650, F-661).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DrillStitchResolution {
+    /// Matched `FoundationActorRecord` (`+0x230` server / `+0x258` client) by
+    /// `IcarusActorGUID` and class name in the first pass over `SpawnedActors`.
+    StitchedFoundationRecord(usize),
+    /// `FoundationActorRecord` did not match any `AIcarusActor`; matched the
+    /// first non-pending-kill `AResourceDeposit` whose root location is within
+    /// strict `< 0.1` ([`VOXEL_LOCATION_TOLERANCE`]) per axis of the drill
+    /// owner's root location.
+    FallbackResourceDeposit(usize),
+}
+
+/// Evaluates `UDrillRecorderComponent::StitchingOperation` (`C010`,
+/// `0x1418acbf0` server / `0x1418b0ef0` client) (F-645, F-650, F-661).
+///
+/// Returns `Some(DrillStitchResolution)` when `owner_is_valid_deployable` is
+/// `true` and either the `FoundationActorRecord` pass or the fallback
+/// `AResourceDeposit` location pass (`abs(delta) < 0.1` on all three axes, with
+/// missing `RootComponent` treated as `[0.0, 0.0, 0.0]`) resolves an
+/// `AIcarusActor` target for `ADeployable::SetFoundationActor` (`0x141acb730`
+/// client); otherwise returns `None`.
+pub fn evaluate_drill_stitch<'a>(
+    owner_is_valid_deployable: bool,
+    owner_root_location: Option<[f32; 3]>,
+    foundation_record: ActorLink<'_>,
+    spawned_candidates: &[DrillStitchCandidate<'a>],
+) -> Option<DrillStitchResolution> {
+    let explicit_match = spawned_candidates.iter().position(|candidate| {
+        candidate.icarus_actor_link.is_some_and(|link| {
+            link.icarus_id == foundation_record.icarus_id
+                && names_match(foundation_record.name, link.name)
+        })
+    });
+    let resolved = if let Some(index) = explicit_match {
+        Some(DrillStitchResolution::StitchedFoundationRecord(index))
+    } else {
+        let owner_loc = owner_root_location.unwrap_or([0.0, 0.0, 0.0]);
+        spawned_candidates
+            .iter()
+            .position(|candidate| {
+                if !candidate.is_valid_resource_deposit {
+                    return false;
+                }
+                let deposit_loc = candidate.root_location.unwrap_or([0.0, 0.0, 0.0]);
+                owner_loc
+                    .iter()
+                    .zip(deposit_loc)
+                    .all(|(owner_axis, deposit_axis)| {
+                        (deposit_axis - owner_axis).abs() < VOXEL_LOCATION_TOLERANCE
+                    })
+            })
+            .map(DrillStitchResolution::FallbackResourceDeposit)
+    };
+    if !owner_is_valid_deployable {
+        return None;
+    }
+    resolved
 }
 
 /// Returns the indices of spawned `ACharacter` actors re-trapped by
@@ -668,6 +746,126 @@ pub const fn resolve_item_recorder_database_guid(icarus_actor_guid: i32, bound_g
 /// `bRecordActorTransform` (`[this+0xd9]`) to be non-zero (F-741, F-744).
 pub const fn should_restore_actor_transform(b_record_actor_transform: bool) -> bool {
     b_record_actor_transform
+}
+
+/// Values restored onto `AEnzymeGeyser` by
+/// `UEnzymeGeyserRecorderComponent::UpdateOwnerToDatabaseState` (`C012`,
+/// `0x1418b7c10` server / `0x1418baae0` client) (F-657).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct EnzymeGeyserRestorePlan<R> {
+    /// Saved `Completions` (`+0x1c0`) written unconditionally to
+    /// `AEnzymeGeyser + 0x2c0`.
+    pub completions: i32,
+    /// Saved `CurrentRow` (`+0x1c4`) written to `AEnzymeGeyser + 0x2c4` iff
+    /// `FRowHandle::IsValid` (`0x143da9940` server / `0x143f855d0` client)
+    /// returns `true`.
+    pub current_row_override: Option<R>,
+}
+
+/// Evaluates `UEnzymeGeyserRecorderComponent::UpdateOwnerToDatabaseState`
+/// (`C012`, `0x1418b7c10` server / `0x1418baae0` client) (F-657).
+///
+/// Returns `None` when the owner is null, not an `AEnzymeGeyser`
+/// (`0x141af5260` client), or pending kill.
+pub fn evaluate_enzyme_geyser_restore<R>(
+    owner_is_valid_enzyme_geyser: bool,
+    saved_completions: i32,
+    saved_current_row: R,
+    current_row_is_valid: bool,
+) -> Option<EnzymeGeyserRestorePlan<R>> {
+    if !owner_is_valid_enzyme_geyser {
+        return None;
+    }
+    Some(EnzymeGeyserRestorePlan {
+        completions: saved_completions,
+        current_row_override: current_row_is_valid.then_some(saved_current_row),
+    })
+}
+
+/// Values and per-component records restored onto `AFLODTile` by
+/// `UFLODTileRecorderComponent::UpdateOwnerToDatabaseState` (`C014`,
+/// `0x1418b7cf0` server / `0x1418babc0` client) (F-676).
+#[derive(Clone, Debug, PartialEq)]
+pub struct FlodTileRestorePlan<N, R> {
+    /// Saved `TileName` (`+0xe0`) written to `AFLODTile + 0x220`.
+    pub tile_name: N,
+    /// Saved `Radius` (`+0x120`) written to `AFLODTile + 0x228` after
+    /// `AActor::SetActorTransform` (`+0xf0`, `ETeleportType::None`).
+    pub radius: f32,
+    /// Saved `FFLODRecord` entries (`+0x128`, stride `0x40` B) whose leading
+    /// component key (`*puVar7`) resolved via `0x1418970d0(tile, key, 1)` to a
+    /// non-null, non-pending-kill component for `0x1418ae2b0`
+    /// (`RestoreToComponent`).
+    pub restored_component_records: Vec<(i32, R)>,
+}
+
+/// Evaluates `UFLODTileRecorderComponent::UpdateOwnerToDatabaseState` (`C014`,
+/// `0x1418b7cf0` server / `0x1418babc0` client) (F-676).
+///
+/// Returns `None` when the owner is null, not an `AFLODTile` (`0x141b519a0`
+/// client), or pending kill.
+pub fn evaluate_flod_tile_restore<N, R: Clone>(
+    owner_is_valid_flod_tile: bool,
+    saved_tile_name: N,
+    saved_radius: f32,
+    saved_records: &[(i32, R)],
+    valid_tile_component_keys: &[i32],
+) -> Option<FlodTileRestorePlan<N, R>> {
+    if !owner_is_valid_flod_tile {
+        return None;
+    }
+    let restored_component_records = saved_records
+        .iter()
+        .filter(|(key, _)| valid_tile_component_keys.contains(key))
+        .cloned()
+        .collect();
+    Some(FlodTileRestorePlan {
+        tile_name: saved_tile_name,
+        radius: saved_radius,
+        restored_component_records,
+    })
+}
+
+/// Actions evaluated by
+/// `UWorldTalentManagerRecorderComponent::StitchingOperation` (`C038`,
+/// `0x14193aaa0` server / `0x141936a10` client) (F-676).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct WorldTalentStitchPlan<T> {
+    /// Cloned `Talents` entries (`+0x1c0`, stride `0x18` B) copied onto
+    /// `AWorldTalentManager + 0x2c8`.
+    pub restored_talents: Vec<T>,
+    /// Whether `AWorldTalentManager + 0x2e8` (`NetComponent`) is marked dirty
+    /// (`vtable + 0x420` and `0x1408dd310(owner + 0x2d8, 0)`), which requires
+    /// a non-null `NetComponent` with an active network state (`[+0xb0] ->
+    /// vtable + 0x88 != 0`).
+    pub mark_net_component_dirty: bool,
+    /// Whether the authority broadcast helper (`0x14193cda0` client) runs after
+    /// marking `NetComponent` dirty (`mark_net_component_dirty && net_role == 3`,
+    /// `ENetRole::ROLE_Authority` at `owner + 0xf0`).
+    pub notify_authority_talents_updated: bool,
+}
+
+/// Evaluates `UWorldTalentManagerRecorderComponent::StitchingOperation` (`C038`,
+/// `0x14193aaa0` server / `0x141936a10` client) (F-676).
+///
+/// Returns `None` when the owner is null or not an `AWorldTalentManager`
+/// (`0x141e066d0` client).
+pub fn evaluate_world_talent_stitch<T: Clone>(
+    owner_is_world_talent_manager: bool,
+    saved_talents: &[T],
+    net_component_has_active_state: bool,
+    owner_net_role: u8,
+) -> Option<WorldTalentStitchPlan<T>> {
+    if !owner_is_world_talent_manager {
+        return None;
+    }
+    let mark_net_component_dirty = net_component_has_active_state;
+    let notify_authority_talents_updated = mark_net_component_dirty && owner_net_role == 3;
+    Some(WorldTalentStitchPlan {
+        restored_talents: saved_talents.to_vec(),
+        mark_net_component_dirty,
+        notify_authority_talents_updated,
+    })
 }
 
 /// How `UActorStateRecorderComponent::UpdateOwnerToDatabaseState` (`C001`,
