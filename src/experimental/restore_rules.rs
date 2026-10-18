@@ -70,6 +70,28 @@ pub fn stitch<'a>(
         .position(|actor| actor.icarus_id == saved.icarus_id && names_match(saved.name, actor.name))
 }
 
+/// Stitches `RelevantPersistentActorRecords` (`C018`
+/// `UIcarusQuestManagerRecorderComponent::Stitching` at `0x1418f3d30` server /
+/// `0x1418f4540` client) or `RelevantActorRecords` (`C019`
+/// `UIcarusQuestRecorderComponent::Stitching` at `0x1418f44e0` server /
+/// `0x1418f4cf0` client) against `SpawnedActors` (F-650).
+///
+/// For each saved `(tag, link)` record (`0x28` B), resolves `link` against
+/// `spawned` via [`stitch`] (equal `IcarusActorGUID` and [`names_match`] on
+/// `actor->GetClass()->GetName()`), returning `(tag, matched_actor_index)` in
+/// record order and omitting unresolved records.
+pub fn stitch_quest_actor_records<'a, T: Clone>(
+    records: &[(T, ActorLink<'_>)],
+    spawned: &[ActorLink<'a>],
+) -> Vec<(T, usize)> {
+    records
+        .iter()
+        .filter_map(|(tag, link)| {
+            stitch(*link, spawned.iter().copied()).map(|index| (tag.clone(), index))
+        })
+        .collect()
+}
+
 /// Returns the indices of spawned `ACharacter` actors re-trapped by
 /// `UCharacterTrapRecorderComponent::Stitching` (`C007`, `vftable + 0x468`:
 /// `0x1418ac670` server / `0x1418b0a50` client) (F-650, F-743).
@@ -490,6 +512,36 @@ pub const fn evaluate_attach_recorder_to_actor(
     }
 }
 
+/// Resolves the `D_DeployableSetup` variant index selected by
+/// `UDeployableRecorderComponent::ModifyOwnerSpawnParams` (`C009`,
+/// `0x14189d2a0` server / `0x1418a1fb0` client) and
+/// `UDeployableRecorderComponent::RespawnOwner` (`0x1418a72a0` server /
+/// `0x1418abfd0` client) from `FItemData::ItemDynamicData` (`+0x30`, stride
+/// `8` B: `(property_type, value)`) (F-646).
+///
+/// Scans `dynamic_properties` in order for the first entry with
+/// `property_type == 5` ([`DynamicItemPropertyKind::BuildingVariation`]).
+/// When `variant_count == 0`, returns `None`; when a `BuildingVariation`
+/// entry is found with `0 <= value < variant_count`, returns
+/// `Some(value as usize)`; otherwise falls back to `Some(0)`.
+pub fn resolve_deployable_setup_variant_index(
+    dynamic_properties: &[(u8, i32)],
+    variant_count: usize,
+) -> Option<usize> {
+    if variant_count == 0 {
+        return None;
+    }
+    if let Some((_, value)) = dynamic_properties
+        .iter()
+        .find(|(prop_type, _)| *prop_type == DynamicItemPropertyKind::BuildingVariation as u8)
+        && *value >= 0
+        && (*value as usize) < variant_count
+    {
+        return Some(*value as usize);
+    }
+    Some(0)
+}
+
 /// Whether `UDrillRecorderComponent::RespawnOwner` (`C010`, `0x1418a74f0`
 /// server / `0x1418abfd0` client) calls `ADrill::ActivateDrill` (`0x1416f8240`
 /// server / `0x141709290` client) after `UIcarusActorRecorderComponent::RespawnOwner`:
@@ -634,6 +686,121 @@ pub fn restored_elapsed_seconds(saved_elapsed: i32, game_time: f32) -> i32 {
     } else {
         saved_elapsed
     }
+}
+
+/// Restores `AIcarusGameModeSurvival::ExportedCurrencies` (`+0x670`) in
+/// `UIcarusGameModeStateRecorderComponent::UpdateOwnerToDatabaseState` (`C015`,
+/// `0x1418b7f30` server / `0x1418bae00` client) (F-653).
+///
+/// Clears `ExportedCurrencies`, seeds `(exotics_row, total_exotics_exported)`
+/// (`+0x1f4`, row `1` `"Exotics"`) and
+/// `(red_exotics_row, total_red_exotics_exported)` (`+0x1f8`, row `3`
+/// `"Exotics_Red"`) when `recorded_version < 2` (`[this + 0x2a4] < 2`), and
+/// then inserts or overwrites each `(row, amount)` entry from
+/// `saved_currencies` (`+0x200`, stride `0x0c` B) in order.
+pub fn restore_game_mode_exported_currencies<R: PartialEq + Clone>(
+    recorded_version: i32,
+    exotics_row: R,
+    total_exotics_exported: i32,
+    red_exotics_row: R,
+    total_red_exotics_exported: i32,
+    saved_currencies: &[(R, i32)],
+) -> Vec<(R, i32)> {
+    let mut restored = Vec::new();
+    if recorded_version < 2 {
+        upsert_recorded_variable(&mut restored, exotics_row, total_exotics_exported);
+        upsert_recorded_variable(&mut restored, red_exotics_row, total_red_exotics_exported);
+    }
+    for (row, amount) in saved_currencies {
+        upsert_recorded_variable(&mut restored, row.clone(), *amount);
+    }
+    restored
+}
+
+/// One `FMissionHistoryEntry` (`0x18` B) restored into
+/// `AIcarusGameModeSurvival::MissionHistory` (`+0x6c0`) by `C015`
+/// `UIcarusGameModeStateRecorderComponent::UpdateOwnerToDatabaseState`
+/// (`0x1418b7f30` server / `0x1418bae00` client) (F-653).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct RestoredMissionHistoryEntry<K> {
+    pub quest_key: K,
+    pub completed: bool,
+    pub end_time: i32,
+}
+
+/// Restores `AIcarusGameModeSurvival::MissionHistory` (`+0x6c0`) in
+/// `UIcarusGameModeStateRecorderComponent::UpdateOwnerToDatabaseState` (`C015`,
+/// `0x1418b7f30` server / `0x1418bae00` client) (F-653).
+///
+/// - When `recorded_version < 1` (`[this + 0x2a4] < 1`), restores only the
+///   last entry of `saved_history` (`+0x280`, if non-empty); when
+///   `recorded_version >= 1`, restores all entries of `saved_history` in order.
+/// - If the resulting `MissionHistory` is still empty and an active
+///   `AIcarusQuest` actor exists in the world with a valid `QuestDTKey`
+///   (`+0x1c0`), appends a synthetic entry with `completed = [quest + 0x1e0] != 0`
+///   and `end_time = -1`.
+pub fn restore_game_mode_mission_history<K: Clone>(
+    recorded_version: i32,
+    saved_history: &[RestoredMissionHistoryEntry<K>],
+    active_world_quest: Option<(K, bool)>,
+) -> Vec<RestoredMissionHistoryEntry<K>> {
+    let mut restored = if recorded_version < 1 {
+        saved_history.last().cloned().into_iter().collect()
+    } else {
+        saved_history.to_vec()
+    };
+    if restored.is_empty()
+        && let Some((quest_key, completed)) = active_world_quest
+    {
+        restored.push(RestoredMissionHistoryEntry {
+            quest_key,
+            completed,
+            end_time: -1,
+        });
+    }
+    restored
+}
+
+/// Restores `AIcarusGameModeSurvival::NextMeteorShowerTime` (`+0x6ec`) in
+/// `UIcarusGameModeStateRecorderComponent::UpdateOwnerToDatabaseState` (`C015`,
+/// `0x1418b7f30` server / `0x1418bae00` client) from saved
+/// `NextMeteorShowerTime` (`+0x2a0`), `GetLevelTimeElapsedSec(GameMode)`
+/// (`0x1414e1390`), and `MeteorShowerInterval` (`GameMode + 0x6f0`) (F-653):
+/// keeps `saved_next_meteor_shower_time` when non-zero, or computes
+/// `level_time_elapsed_sec.wrapping_add(meteor_shower_interval)` when `0`.
+pub const fn restored_next_meteor_shower_time(
+    saved_next_meteor_shower_time: i32,
+    level_time_elapsed_sec: i32,
+    meteor_shower_interval: i32,
+) -> i32 {
+    if saved_next_meteor_shower_time != 0 {
+        saved_next_meteor_shower_time
+    } else {
+        level_time_elapsed_sec.wrapping_add(meteor_shower_interval)
+    }
+}
+
+/// Overwrites `BossStatuses[i].BossRowHandle` (`+0x00`, stride `0x60` B) from
+/// legacy `ActiveWorldBosses` (`+0xf0`, count `+0xf8`, stride `0x18` B) in
+/// `UWorldBossRecorderComponent::UpdateOwnerToDatabaseState` (`C037`,
+/// `0x1418f8610` server / `0x1418f8ce0` client) (F-654).
+///
+/// For each index `i` in `0..active_world_bosses.len()`, updates
+/// `boss_status_row_handles[i]` in place when `i < boss_status_row_handles.len()`
+/// and ignores trailing `active_world_bosses` entries beyond
+/// `boss_status_row_handles.len()`. Returns the number of overwritten slots.
+pub fn restore_world_boss_row_handles<R: Clone>(
+    boss_status_row_handles: &mut [R],
+    active_world_bosses: &[R],
+) -> usize {
+    let count = boss_status_row_handles.len().min(active_world_bosses.len());
+    for (slot, active) in boss_status_row_handles[..count]
+        .iter_mut()
+        .zip(&active_world_bosses[..count])
+    {
+        *slot = active.clone();
+    }
+    count
 }
 
 /// A saved survival level, or `None` when it was not recorded (F-648).

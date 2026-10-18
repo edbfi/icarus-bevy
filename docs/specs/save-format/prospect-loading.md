@@ -40,19 +40,17 @@ Inner state, version and archive mode
 
 - State vtable `0x1449e5c88` registers `ProspectSaveState`; header vtable
   `0x1449e5c70` registers `ProspectSaveStateHeader`; sizes `0xf8`/`0xe8` (F-328, F-329).
-  Reflected `FProspectInfo` (`0x145fae2d0`, `0xa0` B, 17 fields) carries
+  Reflected `FProspectInfo` (`0x145fae2d0`, `0xa0` B, 17 fields, F-738) carries
   `ProspectID` (`+0x00`), `ClaimedAccountID` (`+0x10`), `ClaimedAccountCharacter`
   (`+0x20`), `ProspectDTKey` (`+0x28`), `FactionMissionDTKey` (`+0x38`),
-  `LobbyName` (`+0x48`), `ExpireTime` (`+0x58`, `Int64Property`), `ProspectState`
-  (`+0x60`, `EProspectState` `0..=5`), `AssociatedMembers` (`+0x68`,
-  `FAssociatedMemberInfo` `0x145fad8e0`, `0x40` B, 8 fields: `AccountName` `+0x00`,
-  `CharacterName` `+0x10`, `UserID` `+0x20`, `ChrSlot` `+0x30`, `Experience`
-  `+0x34`, `Status` `+0x38` `EProspectLocation` `0..=4`, `Settled` `+0x39`,
+  `LobbyName` (`+0x48`), `ExpireTime` (`+0x58`), `ProspectState` (`+0x60`),
+  `AssociatedMembers` (`+0x68`, `FAssociatedMemberInfo` `0x145fad8e0`, `0x40` B:
+  `AccountName` `+0x00`, `CharacterName` `+0x10`, `UserID` `+0x20`, `ChrSlot`
+  `+0x30`, `Experience` `+0x34`, `Status` `+0x38`, `Settled` `+0x39`,
   `IsCurrentlyPlaying` `+0x3a`), `Cost` (`+0x78`), `Reward` (`+0x7c`),
-  `Difficulty` (`+0x80`, `EMissionDifficulty` `0..=4`), `Insurance` (`+0x84`),
-  `NoRespawns` (`+0x85`), `ElapsedTime` (`+0x88`), `SelectedDropPoint` (`+0x8c`),
-  and `CustomSettings` (`+0x90`, `TArray<FCustomGameSetting>` `0x145fadbf0`,
-  `0x18` B, `SettingRowName` + `SettingValue`; F-738).
+  `Difficulty` (`+0x80`), `Insurance` (`+0x84`), `NoRespawns` (`+0x85`),
+  `ElapsedTime` (`+0x88`), `SelectedDropPoint` (`+0x8c`), and `CustomSettings`
+  (`+0x90`, `0x145fadbf0`, `0x18` B).
 
 | Field | Object offset | Role |
 | --- | --- | --- |
@@ -120,24 +118,23 @@ Acceptance conditions for any importer
   distinct errors, preserved source and native state, never an empty world, and
   unmapped content-dependent fields reported as incompatibility (F-229, F-269,
   F-403). Strict readers enforce binary transfer lengths and 0/1 trailer booleans
-  under explicit byte/element caps up to 1 MiB (F-134, F-161, F-178, F-198,
-  F-200, F-249, F-346, F-369, F-371, F-382, F-634).
+  under explicit byte/element caps up to 1 MiB (F-134..F-200, F-249, F-346..F-382,
+  F-634).
 
 ## Candidate
 
 - `stage_prospect_save_state` (`experimental::recorders`), `stage_prospect`
   (`prospect`), and `icarus-server inspect-save --stage-check` validate the
-  `FProspectSaveState` root schema, out-of-order tag wrap-around,
-  `PostLoadSerialize` migration, 17 `FProspectInfo` tags, optional `ProspectID`
-  matching, base-component framing, per-recorder `Validate` (`+0x408`), and
-  `C033` `bIsPhysicsDynamic` counts across all 15 saves (`15 / 15`; `dddd.json`:
-  `2,744` -> `1` invalid `C031`, `2,743` retained, `2` dynamic `C033` -> `2,741`
-  on `M-691`; `world_imported: false`, F-680, F-736, F-738).
+  `FProspectSaveState` root schema, out-of-order tags, `PostLoadSerialize`
+  migration, 17 `FProspectInfo` tags, optional `ProspectID` matching, base
+  framing, per-recorder `Validate` (`+0x408`), and `C033` `bIsPhysicsDynamic`
+  counts across all 15 saves (`15 / 15`; `dddd.json`: `2,744` -> `1` invalid
+  `C031`, `2,743` retained, `2` dynamic `C033` -> `2,741` on `M-691`;
+  `world_imported: false`, F-680, F-736, F-738).
 - All 65 `RecorderComponent` `FClassParams`, 38 `StateRecorderBlobs` vtable
   overrides ([restore rules](restore-rules.md)), and `C001` provenance
   ([C001 digest](../../research/save-format/c001-constructor.md)) match across
-  builds (F-469..F-477, F-509, F-534, F-669, F-670, F-716, F-720..F-722, F-727,
-  F-728, F-733..F-738; U-003..U-006, U-020..U-024, U-032, U-041, U-042, U-046,
+  builds (F-469..F-738; U-003..U-006, U-020..U-024, U-032, U-041, U-042, U-046,
   U-048, U-050 resolved).
 
 ## Open questions
@@ -148,10 +145,8 @@ Acceptance conditions for any importer
 
 ## Evidence
 
-- Static: M-147, M-148, M-143, M-149, M-150, M-119, M-122, M-123, M-079, M-094,
-  M-096, M-100, M-170, M-755..M-762, M-768, M-769, M-772..M-777, M-779..M-784; runtime: M-154, M-155, M-160.
-- Framing: M-118, M-172, M-087..M-093, M-095, M-097..M-103, M-106, M-058..M-070,
-  M-049..M-055; C001: M-007, M-008, M-011, M-013, M-173, M-179..M-181, M-761, M-762.
+- Static: M-079..M-170, M-755..M-784; runtime: M-154, M-155, M-160; framing:
+  M-049..M-118, M-172; C001: M-007..M-013, M-173, M-179..M-181, M-761, M-762.
 - Tests: `tests/tagged.rs`, `tests/recorders.rs`, `tests/component.rs`,
   `tests/struct_array.rs`, `tests/int_array.rs`, `tests/archive_frame.rs`,
   `tests/restore_rules.rs`, `tests/prospect.rs`, `tests/cli.rs`.

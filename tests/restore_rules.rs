@@ -3,26 +3,29 @@ use icarus_bevy::experimental::restore_rules::{
     ByNameLoadOutcome, DynamicItemPropertyKind, InventorySlotOverflowDisposition, LobbyPrivacy,
     OwnerResolvePolicy, OwnerResolveStep, PROSPECT_SAVE_STATE_CURRENT_VERSION, PlayerList,
     PlayerStateLifeRestore, ProspectAssociatedMember, ProspectBlobDecodeOutcome,
-    RESTORED_INDEFINITE_MODIFIER_LIFETIME, RestoreStateKind, RocketRestore,
-    SetupLoadedProspectOutcome, StitchedPlayerRecorderLinks, VOXEL_LOCATION_TOLERANCE,
-    VersionUpgradeKind, VoxelDatabaseRestorePlan, can_activate_prospect_info, container_entries,
-    does_actor_recorder_match_actor, does_player_recorder_match_actor,
-    does_player_state_recorder_match_actor, does_state_recorder_match_actor,
-    does_voxel_recorder_match_actor, evaluate_attach_recorder_to_actor,
-    evaluate_by_name_load_attempt, evaluate_owner_resolve_step, evaluate_player_state_life_restore,
-    evaluate_prospect_blob_decode, evaluate_setup_loaded_prospect_attempt,
-    evaluate_voxel_database_restore, filter_restored_cosmetic_armour_overrides,
-    migrate_prospect_save_state, names_match, normalize_prospect_name,
-    normalize_restored_modifier_lifetime, player_record_valid, prospect_ids_match,
-    record_weather_event_elapsed, recorded_level, recorder_restore_dispatch,
+    RESTORED_INDEFINITE_MODIFIER_LIFETIME, RestoreStateKind, RestoredMissionHistoryEntry,
+    RocketRestore, SetupLoadedProspectOutcome, StitchedPlayerRecorderLinks,
+    VOXEL_LOCATION_TOLERANCE, VersionUpgradeKind, VoxelDatabaseRestorePlan,
+    can_activate_prospect_info, container_entries, does_actor_recorder_match_actor,
+    does_player_recorder_match_actor, does_player_state_recorder_match_actor,
+    does_state_recorder_match_actor, does_voxel_recorder_match_actor,
+    evaluate_attach_recorder_to_actor, evaluate_by_name_load_attempt, evaluate_owner_resolve_step,
+    evaluate_player_state_life_restore, evaluate_prospect_blob_decode,
+    evaluate_setup_loaded_prospect_attempt, evaluate_voxel_database_restore,
+    filter_restored_cosmetic_armour_overrides, migrate_prospect_save_state, names_match,
+    normalize_prospect_name, normalize_restored_modifier_lifetime, player_record_valid,
+    prospect_ids_match, record_weather_event_elapsed, recorded_level, recorder_restore_dispatch,
     recorder_transform_is_non_identity, remaining_cooldown, replicated_prospect_game_time,
-    resolve_cave_ai_class_name, resolve_inventory_slot_restore,
-    resolve_item_recorder_database_guid, resolve_prospect_player_list,
-    resource_deposit_record_valid, restored_elapsed_seconds, restored_weather_event_start_time,
-    rocket_record_valid, rocket_restore, should_auto_activate_respawned_drill,
-    should_grant_deposit_map_icon_stat, should_record_weather_event,
-    should_restore_actor_transform, should_try_fast_path_prebuilt_grid_restore, stitch,
-    stitch_player_recorder_assigned_uids, stitch_trapped_character_guids,
+    resolve_cave_ai_class_name, resolve_deployable_setup_variant_index,
+    resolve_inventory_slot_restore, resolve_item_recorder_database_guid,
+    resolve_prospect_player_list, resource_deposit_record_valid,
+    restore_game_mode_exported_currencies, restore_game_mode_mission_history,
+    restore_world_boss_row_handles, restored_elapsed_seconds, restored_next_meteor_shower_time,
+    restored_weather_event_start_time, rocket_record_valid, rocket_restore,
+    should_auto_activate_respawned_drill, should_grant_deposit_map_icon_stat,
+    should_record_weather_event, should_restore_actor_transform,
+    should_try_fast_path_prebuilt_grid_restore, stitch, stitch_player_recorder_assigned_uids,
+    stitch_quest_actor_records, stitch_trapped_character_guids,
     upgrade_actor_recorder_component_names, upright_rotation, upsert_recorded_variable,
     validate_rocket_spawn_record, voxel_location_matches, voxel_record_valid,
 };
@@ -75,6 +78,37 @@ fn stitching_needs_both_id_and_name() {
     assert_eq!(stitch(saved, spawned), Some(2));
     assert_eq!(stitch(saved, spawned[..2].iter().copied()), None);
     assert_eq!(stitch(saved, []), None);
+
+    // C018 UIcarusQuestManagerRecorderComponent::Stitching (0x1418f3d30 / 0x1418f4540) and
+    // C019 UIcarusQuestRecorderComponent::Stitching (0x1418f44e0 / 0x1418f4cf0):
+    // resolves each saved (tag, ActorLink) record against SpawnedActors and drops unmatched records.
+    let quest_records = [
+        (
+            "RadarTag",
+            ActorLink {
+                name: &name,
+                icarus_id: 7,
+            },
+        ),
+        (
+            "MissingTag",
+            ActorLink {
+                name: &other,
+                icarus_id: 99,
+            },
+        ),
+        (
+            "WallTag",
+            ActorLink {
+                name: &other,
+                icarus_id: 7,
+            },
+        ),
+    ];
+    assert_eq!(
+        stitch_quest_actor_records(&quest_records, &spawned),
+        vec![("RadarTag", 2), ("WallTag", 0)]
+    );
 
     // C007 UCharacterTrapRecorderComponent::Stitching (0x1418ac670 / 0x1418b0a50):
     // matches either legacy TrappedCharacterGUID (+0x290) or TrappedCharacterGUIDs (+0x298)
@@ -313,6 +347,77 @@ fn elapsed_seconds_fall_back_to_game_time() {
         "the engine truncation overflows"
     );
     assert_eq!(restored_elapsed_seconds(5000, 20.0), 5000);
+
+    // C015 UIcarusGameModeStateRecorderComponent::UpdateOwnerToDatabaseState (0x1418b7f30 / 0x1418bae00):
+    // 1. ExportedCurrencies seeds legacy Exotics/Exotics_Red when recorded_version < 2, then upserts saved_currencies.
+    assert_eq!(
+        restore_game_mode_exported_currencies(
+            1,
+            "Exotics",
+            120,
+            "Exotics_Red",
+            35,
+            &[("Exotics", 150), ("Biomass", 10)],
+        ),
+        vec![("Exotics", 150), ("Exotics_Red", 35), ("Biomass", 10)]
+    );
+    assert_eq!(
+        restore_game_mode_exported_currencies(
+            2,
+            "Exotics",
+            120,
+            "Exotics_Red",
+            35,
+            &[("Exotics", 150), ("Biomass", 10)],
+        ),
+        vec![("Exotics", 150), ("Biomass", 10)]
+    );
+
+    // 2. MissionHistory keeps only the last entry when recorded_version < 1, all entries when >= 1,
+    // and synthesizes an active world quest entry (end_time = -1) when still empty.
+    let m1 = RestoredMissionHistoryEntry {
+        quest_key: "Quest_A",
+        completed: true,
+        end_time: 500,
+    };
+    let m2 = RestoredMissionHistoryEntry {
+        quest_key: "Quest_B",
+        completed: false,
+        end_time: 900,
+    };
+    assert_eq!(
+        restore_game_mode_mission_history(0, &[m1, m2], Some(("Quest_World", false))),
+        vec![m2]
+    );
+    assert_eq!(
+        restore_game_mode_mission_history(1, &[m1, m2], Some(("Quest_World", false))),
+        vec![m1, m2]
+    );
+    assert_eq!(
+        restore_game_mode_mission_history(1, &[], Some(("Quest_World", true))),
+        vec![RestoredMissionHistoryEntry {
+            quest_key: "Quest_World",
+            completed: true,
+            end_time: -1,
+        }]
+    );
+    assert!(restore_game_mode_mission_history::<&str>(1, &[], None).is_empty());
+
+    // 3. NextMeteorShowerTime uses saved value when non-zero, else LevelTimeElapsedSec + MeteorShowerInterval.
+    assert_eq!(restored_next_meteor_shower_time(3600, 1000, 900), 3600);
+    assert_eq!(restored_next_meteor_shower_time(0, 1000, 900), 1900);
+
+    // C037 UWorldBossRecorderComponent::UpdateOwnerToDatabaseState (0x1418f8610 / 0x1418f8ce0):
+    // overwrites BossStatuses[i].BossRowHandle from ActiveWorldBosses[i] up to BossStatuses.len().
+    let mut boss_rows = vec!["Boss_Alpha", "Boss_Beta"];
+    assert_eq!(
+        restore_world_boss_row_handles(
+            &mut boss_rows,
+            &["Boss_Override_1", "Boss_Override_2", "Boss_Ignored_3"],
+        ),
+        2
+    );
+    assert_eq!(boss_rows, vec!["Boss_Override_1", "Boss_Override_2"]);
 }
 
 #[test]
@@ -854,6 +959,26 @@ fn owner_resolve_step_attach_and_drill_auto_activate() {
             created_component: true,
             destroyed_temporary_source: false,
         }
+    );
+
+    // C009 UDeployableRecorderComponent::ModifyOwnerSpawnParams (0x14189d2a0 / 0x1418a1fb0)
+    // and RespawnOwner (0x1418a72a0 / 0x1418abfd0): selects BuildingVariation (5) when in bounds, else 0.
+    assert_eq!(resolve_deployable_setup_variant_index(&[(5, 2)], 0), None);
+    assert_eq!(
+        resolve_deployable_setup_variant_index(&[(6, 100), (5, 2), (5, 1)], 4),
+        Some(2)
+    );
+    assert_eq!(
+        resolve_deployable_setup_variant_index(&[(5, 4)], 4),
+        Some(0)
+    );
+    assert_eq!(
+        resolve_deployable_setup_variant_index(&[(5, -1)], 4),
+        Some(0)
+    );
+    assert_eq!(
+        resolve_deployable_setup_variant_index(&[(6, 100)], 3),
+        Some(0)
     );
 
     // C010 UDrillRecorderComponent::RespawnOwner (0x1418a74f0 / 0x1418abfd0).
