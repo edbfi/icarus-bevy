@@ -14,8 +14,12 @@ once the control channel has admitted it; the spec is
 
 An open actor bunch carries the actor NetGUID and, for dynamic actors, the
 archetype, a gated level and optional location, rotation, scale and velocity
-blocks (F-569), followed by `OnActorChannelOpen` / `OnSerializeNewActor` (empty
-on `AActor`, 1-byte `NetPlayerIndex` at `+0x3d4` on `APlayerController`, F-610,
+blocks (`UPackageMapClient::SerializeNewActor` `0x1437201a0` server /
+`0x1439be280` client, `SerializeOptionalValue<FVector>` `0x1436feda0` /
+`0x14399cac0` -> `Write/ReadPackedVector<10, 24>` `0x143471e90` / `0x1436fee6c`,
+and `FRotator::NetSerialize` `0x141ee74a0` / `0x141ed36b0`, F-569, F-739),
+followed by `OnActorChannelOpen` / `OnSerializeNewActor` (empty on `AActor`,
+1-byte `NetPlayerIndex` at `+0x3d4` on `APlayerController`, F-610,
 F-709). Outgoing `UChannel::SendBunch` (`0x1437c9690`) enforces the 64 KiB
 `NetMaxConstructedPartialBunchSizeBytes` cap, prepends export-only bunches
 (`AppendExportBunches` `0x1439a5290` -> `ExportNetGUIDHeader` `0x1439ab670` and
@@ -39,7 +43,7 @@ Later content blocks name the actor or a sub-object and carry a packed
 payload-bit count for its replicator (F-576). Inside a block, packed rep handles
 walk the layout in strictly increasing order, numbering array elements
 consecutively, with nested streams for dynamic arrays (F-586); spawn vectors are
-raw floats or bias-packed tenths, with 16-bit rotators (F-571, F-573). Bool,
+raw floats or bias-packed tenths, with 16-bit rotators (F-571, F-573, F-739). Bool,
 Byte, Enum, object and soft-object items are read (F-574), enum widths deriving
 from the enum's maximum (F-632). Name items take the network-name form, Str
 items and net soft-object paths are archive strings (F-595, F-599), and Text
@@ -81,7 +85,7 @@ replay all `288 / 288` actor opens (including the 472-bit channel-2
 blocks (`100%`, including `220` actor RPCs and `295` zero-bit subobject headers;
 `23,486 / 23,486` total typed blocks, `2,607` RPC calls, `66,859` property
 entries, `2,361` stat-pair items) in M-707 bit-identically with 0 failures
-(F-704 to F-711; U-064 resolved).
+(F-704 to F-711, F-739; U-064 resolved).
 
 ## Open
 
@@ -89,4 +93,4 @@ entries, `2,361` stat-pair items) in M-707 bit-identically with 0 failures
 
 ## Artifacts
 
-M-420..M-449, M-455..M-470, M-570..M-576, M-581..M-588, M-600..M-605, M-707, M-708, M-709..M-717, M-720, M-728..M-748.
+M-420..M-449, M-455..M-470, M-570..M-576, M-581..M-588, M-600..M-605, M-707, M-708, M-709..M-717, M-720, M-728..M-748, M-776, M-777.

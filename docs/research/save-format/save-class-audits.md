@@ -35,13 +35,17 @@ serializers, all 65 `RecorderComponent` `FClassParams` (including all 38
 `StateRecorderBlobs` classes' `+0xa0`/`+0x488`/`+0x4a0`/`+0x4b0` overrides), 6 of
 7 populated C001 inherited arrays, `CA06`/`DA04` schemas, all 29,762 C028 top
 spans, historical pin `b40c97e3...`, `C035`/`C002` clocks, `C033` dynamic tree
-drop, `D01` inventory/variable restoration (`14` `EDynamicItemProperties`), and
-entry-path failure matrices (F-715 to F-720, F-725 to F-728, F-731 to F-736;
-U-020 to U-024, U-026, U-028 to U-033, U-039, U-046, U-048, U-050, U-053 to U-063
-resolved). Every opaque Struct payload is one of four fixed-width engine math
-types of three or four ordered 4-byte components (F-565, F-602). Construction
-candidates frame too, grids nesting per-type row names over placed pieces that
-share the grid's frame (F-643).
+drop, `D01` inventory/variable restoration (`14` `EDynamicItemProperties`),
+entry-path failure matrices, `WriteToProspectBlob`/`ReadFromProspectBlob`
+`DataLength` (`+0x24`) and `SL-004` decode contracts, `FAccoladeSaveData`
+(`0x145dc1790`), `FProspectInfo` (`0x145fae2d0`, 17 properties including
+`CustomSettings`), and `15 / 15` `inspect-save --stage-check` qualification
+across all 12 supplied and 3 re-saved prospects (F-715 to F-720, F-725 to F-728,
+F-731 to F-738; U-020 to U-024, U-026, U-028 to U-033, U-039, U-046, U-048,
+U-050, U-053 to U-063 resolved). Every opaque Struct payload is one of four
+fixed-width engine math types of three or four ordered 4-byte components (F-565,
+F-602). Construction candidates frame too, grids nesting per-type row names over
+placed pieces that share the grid's frame (F-643).
 
 No saved class identifier, field or type name, or recorder version tells the
 older server from the newer client, and the prospect carries no version string
@@ -63,4 +67,4 @@ No decoded value, text or number was emitted or interpreted.
 
 ## Artifacts
 
-M-047..M-077, M-079..M-108, M-118..M-130, M-278..M-280, M-351, M-352, M-376..M-384, M-389, M-390, M-401..M-404, M-407..M-410, M-606..M-613, M-616..M-618, M-626, M-627, M-636..M-638, M-727, M-755..M-760, M-766..M-769, M-772..M-775.
+M-047..M-077, M-079..M-108, M-118..M-130, M-278..M-280, M-351, M-352, M-376..M-384, M-389, M-390, M-401..M-404, M-407..M-410, M-606..M-613, M-616..M-618, M-626, M-627, M-636..M-638, M-727, M-755..M-760, M-766..M-769, M-772..M-777.

@@ -49,7 +49,9 @@ pub struct EnvelopeInspection {
     pub validation: &'static str,
     pub compressed_bytes: usize,
     pub payload_bytes: usize,
-    /// Retained as an observation; its semantics are not established.
+    /// `FProspectBlob::DataLength` (`+0x24`): `WriteToProspectBlob` (`0x1418fa200`)
+    /// writes `CompressedSize` to both `TotalLength` and `DataLength`, while
+    /// `ReadFromProspectBlob` (`0x1418e6240`) leaves `DataLength` unread (`F-283`, `F-737`).
     pub declared_data_length: i32,
     pub legacy_sha1_matches: bool,
     pub world_imported: bool,

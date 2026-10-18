@@ -245,7 +245,7 @@ fn oversized_stream_stops_after_limit_plus_one() {
 #[test]
 fn bom_tagged_utf16le_handles_surrogate_pairs_without_changing_payload_validation() {
     let mut document: Value = serde_json::from_slice(FIXTURE).unwrap();
-    document["AuthoredUnicode"] = json!("snowman ☃ and rocket 🚀");
+    document["AuthoredUnicode"] = json!("snowman \u{2603} and rocket \u{1f680}");
     let encoded = utf16le(&serde_json::to_string(&document).unwrap());
     let result = inspect(encoded.as_slice()).unwrap();
     assert_eq!(result.payload_bytes, 42);
@@ -286,7 +286,7 @@ fn utf8_rejects_invalid_bytes_in_ignored_fields() {
 #[test]
 fn utf8_accepts_non_ascii_unknown_keys_and_nested_values() {
     let mut document: Value = serde_json::from_slice(FIXTURE).unwrap();
-    document["☃"] = json!({"🚀": ["authored café"]});
+    document["\u{2603}"] = json!({"\u{1f680}": ["authored caf\u{00e9}"]});
     let bytes = serde_json::to_vec(&document).unwrap();
     let result = inspect(bytes.as_slice()).unwrap();
     assert_eq!(result.payload_bytes, 42);
@@ -434,7 +434,12 @@ fn malformed_envelope_diagnostics_keep_values_private_in_every_cli_mode() {
         assert!(!format!("{error:#}").contains(MARKER));
         let source = root.path().join("authored.json");
         fs::write(&source, &bytes).unwrap();
-        for flag in [None, Some("--inner-tags"), Some("--recorders")] {
+        for flag in [
+            None,
+            Some("--inner-tags"),
+            Some("--recorders"),
+            Some("--stage-check"),
+        ] {
             let mut command = Command::new(env!("CARGO_BIN_EXE_icarus-server"));
             command
                 .current_dir(root.path())
@@ -621,4 +626,52 @@ fn stage_prospect_validates_envelope_migration_and_normalized_name() {
         .is_err()
     );
     assert!(stage_prospect(envelope.as_slice(), MAX_COMPONENT_BYTES, Some(".json")).is_err());
+
+    let root = TempDir::new().unwrap();
+    let source = root.path().join("authored.json");
+    fs::write(&source, &envelope).unwrap();
+    let cli_ok = Command::new(env!("CARGO_BIN_EXE_icarus-server"))
+        .current_dir(root.path())
+        .args([
+            "inspect-save",
+            "--stage-check",
+            "--expect-prospect-name",
+            "SECRET-PROSPECT-NAME.JSON",
+            "--source",
+        ])
+        .arg(&source)
+        .output()
+        .unwrap();
+    assert!(cli_ok.status.success(), "{:?}", cli_ok.stderr);
+    assert!(cli_ok.stderr.is_empty());
+    let report: Value = serde_json::from_slice(&cli_ok.stdout).unwrap();
+    assert_eq!(
+        report["validation"],
+        "experimental_staged_prospect_save_state_only"
+    );
+    assert_eq!(report["world_imported"], false);
+    assert_eq!(report["staged"]["migrated_version"], 2);
+    assert_eq!(report["staged"]["lobby_privacy"], "FriendsOnly");
+    assert!(!String::from_utf8_lossy(&cli_ok.stdout).contains("secret"));
+    assert_eq!(fs::read(&source).unwrap(), envelope);
+    assert_eq!(fs::read_dir(root.path()).unwrap().count(), 1);
+
+    let cli_mismatch = Command::new(env!("CARGO_BIN_EXE_icarus-server"))
+        .current_dir(root.path())
+        .args([
+            "inspect-save",
+            "--stage-check",
+            "--expect-prospect-name",
+            "wrong-name.json",
+            "--source",
+        ])
+        .arg(&source)
+        .output()
+        .unwrap();
+    assert!(!cli_mismatch.status.success());
+    assert!(cli_mismatch.stdout.is_empty());
+    assert!(!String::from_utf8_lossy(&cli_mismatch.stderr).contains("secret"));
+    assert!(String::from_utf8_lossy(&cli_mismatch.stderr).contains("staged ProspectID mismatch"));
+    assert_eq!(fs::read(&source).unwrap(), envelope);
+    assert_eq!(fs::read_dir(root.path()).unwrap().count(), 1);
 }

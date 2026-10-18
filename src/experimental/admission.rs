@@ -13,7 +13,7 @@
 //! (`0x1463251c0` / `0x1462116b0`; `U-037` resolved).
 //!
 //! This module reproduces the parts a dedicated server decides from its own
-//! state and the control-channel `Hello` / `Login` / `Join` fields:
+//! state and the control-channel `Hello` / `Login` / `Netspeed` / `Join` fields:
 //! - `UNetConnection::IsClientMsgTypeValid` (`0x143991c70`),
 //!   `SendChallengeControlMessage` (`0x143998730`), `WelcomePlayer`
 //!   (`0x143cc9170`), and `SetClientLoginState` (`0x14399add0`) gate control
@@ -42,6 +42,12 @@
 //! - `SpectatorOnly=1` asks for a spectator slot; a full server answers
 //!   [`SERVER_FULL`]. Otherwise a `SplitscreenCount` above the
 //!   per-connection limit answers [`SPLITSCREEN_EXCEEDED`].
+//! - On `NMT_Netspeed` (`case 4` in `UWorld::NotifyControlMessage` at
+//!   `0x1439ef03b` server / `0x143cbab55` client, `F-740`), the engine reads
+//!   `int32 Rate`, clamps as signed `i32` via
+//!   `(Rate < 1800) ? 1800 : min(Rate, NetDriver->MaxClientRate)` (`0x708 = 1800`,
+//!   `MaxClientRate` at `NetDriver + 0x64`), and writes
+//!   `Connection->CurrentNetSpeed` (`+0x38`).
 //! - On `NMT_Join` (`case 9` in `UWorld::NotifyControlMessage` `0x143cba590`),
 //!   `UWorld::SpawnPlayActor` (`0x14392dbb0`) invokes `AGameModeBase::Login`
 //!   (`0x143866c80`) -> `ApproveLogin` (`0x14384f9c0`) ->
@@ -70,9 +76,27 @@ pub const PLAYER_STATE_NULL_ERROR: &str = "PlayerState is null";
 pub const FIND_PLAYER_START_ERROR: &str = "Failed to find PlayerStart";
 /// Maximum UTF-16 units retained from `?Name=` in `AGameModeBase::InitNewPlayer` (`0x1438633f0`, `0x14`).
 pub const MAX_PLAYER_NAME_UNITS: usize = 20;
+/// Minimum client netspeed floor (`0x708 = 1800`) enforced on `NMT_Netspeed` (`F-740`).
+pub const MIN_CLIENT_NETSPEED: i32 = 1_800;
+/// Default `UNetDriver::MaxClientRate` (`0x3a98 = 15000`) (`F-740`).
+pub const DEFAULT_MAX_CLIENT_RATE: i32 = 15_000;
 
 const OPTION_DELIMITER: u16 = b'?' as u16;
 const KEY_SEPARATOR: u16 = b'=' as u16;
+
+/// Clamps a client-requested `NMT_Netspeed` rate (`case 4` in
+/// `UWorld::NotifyControlMessage`, `0x1439ef03b` server / `0x143cbab55` client,
+/// `F-740`): signed `i32` values below [`MIN_CLIENT_NETSPEED`] (`1800`) return
+/// `1800`; values `>= 1800` return `requested_rate.min(max_client_rate)`.
+pub const fn clamp_client_netspeed(requested_rate: i32, max_client_rate: i32) -> i32 {
+    if requested_rate < MIN_CLIENT_NETSPEED {
+        MIN_CLIENT_NETSPEED
+    } else if requested_rate < max_client_rate {
+        requested_rate
+    } else {
+        max_client_rate
+    }
+}
 
 /// `EClientLoginState::Type` stored at `UNetConnection + 0x1c8` (`SetClientLoginState` `0x14399add0`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

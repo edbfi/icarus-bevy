@@ -1,16 +1,17 @@
 use icarus_bevy::experimental::admission::{
-    AdmissionPolicy, ClientLoginState, ConnectionLoginAdmission, FIND_PLAYER_START_ERROR,
-    GAMESESSION_NULL_ERROR, INCOMPATIBLE_UNIQUE_NET_ID, InitNewPlayerOutcome, JoinSpawnContext,
-    MAX_PLAYER_NAME_UNITS, Occupancy, PLAYER_STATE_NULL_ERROR, SERVER_FULL,
-    SPAWN_PLAYER_CONTROLLER_ERROR, SPLITSCREEN_EXCEEDED, check_unique_net_id_compatible,
-    has_login_option, int_option, login_option, resolve_player_name, unique_net_id_is_valid,
+    AdmissionPolicy, ClientLoginState, ConnectionLoginAdmission, DEFAULT_MAX_CLIENT_RATE,
+    FIND_PLAYER_START_ERROR, GAMESESSION_NULL_ERROR, INCOMPATIBLE_UNIQUE_NET_ID,
+    InitNewPlayerOutcome, JoinSpawnContext, MAX_PLAYER_NAME_UNITS, MIN_CLIENT_NETSPEED, Occupancy,
+    PLAYER_STATE_NULL_ERROR, SERVER_FULL, SPAWN_PLAYER_CONTROLLER_ERROR, SPLITSCREEN_EXCEEDED,
+    check_unique_net_id_compatible, clamp_client_netspeed, has_login_option, int_option,
+    login_option, resolve_player_name, unique_net_id_is_valid,
 };
 use icarus_bevy::experimental::control_messages::{
     ArchiveText, NetIdType, NetIdValue, UniqueNetId,
 };
 
 // Independently authored option strings for the engine's login and join checks
-// (F-712, F-713); no captured traffic.
+// (F-712, F-713, F-740); no captured traffic.
 
 fn units(text: &str) -> Vec<u16> {
     text.encode_utf16().collect()
@@ -236,6 +237,61 @@ fn connection_login_admission_gates_control_messages_by_state() {
     assert!(!conn.is_client_msg_type_valid(5));
     assert!(conn.is_client_msg_type_valid(4));
     assert!(conn.is_client_msg_type_valid(15));
+}
+
+#[test]
+fn clamp_client_netspeed_matches_notify_control_message_case_4() {
+    assert_eq!(MIN_CLIENT_NETSPEED, 1_800);
+    assert_eq!(DEFAULT_MAX_CLIENT_RATE, 15_000);
+
+    // Below 1800 (including 0, negative values, and u32 > i32::MAX cast to i32) returns 1800.
+    assert_eq!(clamp_client_netspeed(0, DEFAULT_MAX_CLIENT_RATE), 1_800);
+    assert_eq!(clamp_client_netspeed(1_799, DEFAULT_MAX_CLIENT_RATE), 1_800);
+    assert_eq!(clamp_client_netspeed(-1, DEFAULT_MAX_CLIENT_RATE), 1_800);
+    assert_eq!(
+        clamp_client_netspeed(i32::MIN, DEFAULT_MAX_CLIENT_RATE),
+        1_800
+    );
+    assert_eq!(
+        clamp_client_netspeed(0x8000_0000_u32 as i32, DEFAULT_MAX_CLIENT_RATE),
+        1_800
+    );
+    assert_eq!(
+        clamp_client_netspeed(u32::MAX as i32, DEFAULT_MAX_CLIENT_RATE),
+        1_800
+    );
+
+    // Within [1800, max_client_rate] returns requested_rate.
+    assert_eq!(clamp_client_netspeed(1_800, DEFAULT_MAX_CLIENT_RATE), 1_800);
+    assert_eq!(
+        clamp_client_netspeed(10_000, DEFAULT_MAX_CLIENT_RATE),
+        10_000
+    );
+    assert_eq!(
+        clamp_client_netspeed(15_000, DEFAULT_MAX_CLIENT_RATE),
+        15_000
+    );
+
+    // Above max_client_rate returns max_client_rate.
+    assert_eq!(
+        clamp_client_netspeed(15_001, DEFAULT_MAX_CLIENT_RATE),
+        15_000
+    );
+    assert_eq!(
+        clamp_client_netspeed(100_000, DEFAULT_MAX_CLIENT_RATE),
+        15_000
+    );
+    assert_eq!(
+        clamp_client_netspeed(i32::MAX, DEFAULT_MAX_CLIENT_RATE),
+        15_000
+    );
+
+    // Exact assembly branch order (`cmp ecx, 1800; jl -> 1800; else min(ecx, MaxClientRate)`):
+    // when max_client_rate < 1800, requested_rate < 1800 still returns 1800, while
+    // requested_rate >= 1800 returns max_client_rate.
+    assert_eq!(clamp_client_netspeed(1_799, 1_000), 1_800);
+    assert_eq!(clamp_client_netspeed(1_800, 1_000), 1_000);
+    assert_eq!(clamp_client_netspeed(5_000, 1_000), 1_000);
 }
 
 #[test]

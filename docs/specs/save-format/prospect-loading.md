@@ -28,8 +28,9 @@ Entry paths and failure reporting
   entry state preserved, whereas a corrupt inner `BinaryBlob` fails inside
   `ReadFromProspectBlob` (`0x1418e6240`) *after* `ResetActiveProspect`
   (`0x1418333b0`) and `SetActiveProspectInfo` (`0x141837100`) overwrite active
-  `ProspectInfo` (F-717, F-733; U-057, U-063 resolved; `normalize_prospect_name`
-  and `evaluate_by_name_load_attempt` in `experimental::restore_rules`).
+  `ProspectInfo` (F-717, F-733, F-737; U-057, U-063 resolved;
+  `normalize_prospect_name`, `evaluate_by_name_load_attempt`, and
+  `evaluate_prospect_blob_decode` in `experimental::restore_rules`).
 - From-file entry `SetupLoadedProspect` (`0x1414baf60`, from
   `AIcarusGameModeSurvival::InitGame` `0x1414acc40` with `?LocalSavePath=`) skips
   and returns `false` when `LocalSavePath.Num() <= 1` (all normal dedicated-server
@@ -43,12 +44,21 @@ Inner state, version and archive mode
 
 - State vtable `0x1449e5c88` registers `ProspectSaveState`; header vtable
   `0x1449e5c70` registers `ProspectSaveStateHeader`; sizes `0xf8`/`0xe8` (F-328, F-329).
+  Reflected `FProspectInfo` (`0x145fae2d0` / `0x143dbfdd0`, size `0xa0`, align
+  `0x08`, struct tag `"ProspectInfo"`, 17 properties) carries `ProspectID` (`+0x00`),
+  `ClaimedAccountID` (`+0x10`), `ClaimedAccountCharacter` (`+0x20`),
+  `ProspectDTKey` (`+0x28`), `FactionMissionDTKey` (`+0x38`), `LobbyName` (`+0x48`),
+  `ExpireTime` (`+0x58`, `Int64Property`), `ProspectState` (`+0x60`),
+  `AssociatedMembers` (`+0x68`, `FAssociatedMemberInfo` `0x143dbc380`), `Cost`
+  (`+0x78`), `Reward` (`+0x7c`), `Difficulty` (`+0x80`), `Insurance` (`+0x84`),
+  `NoRespawns` (`+0x85`), `ElapsedTime` (`+0x88`), `SelectedDropPoint` (`+0x8c`),
+  and `CustomSettings` (`+0x90`, `TArray<FCustomGameSetting>` `0x143dbcf70`; F-738).
 
 | Field | Object offset | Role |
 | --- | --- | --- |
 | `Version` | `0x08` | Integer tested by load fixups |
 | `LobbyPrivacy` | `0x0c` | Enum, byte underlying descriptor |
-| `ProspectInfo` | `0x10` | Nested prospect metadata |
+| `ProspectInfo` | `0x10` | Nested prospect metadata (`FProspectInfo`, `0xa0` B, F-738) |
 | `ProspectMapName` | `0xb0` | String |
 | `LastSavedDateTime` | `0xc0` | Date/time |
 | `ProspectID` | `0xc8` | Legacy string, pre-version-2 fixups |
@@ -117,18 +127,22 @@ Acceptance conditions for any importer
 
 ## Candidate
 
-- `stage_prospect_save_state` (`experimental::recorders`) and `stage_prospect`
-  (`prospect`) validate the full `FProspectSaveState` root schema, out-of-order
-  tag wrap-around, `PostLoadSerialize` version migration, `ProspectInfo` inner
-  tags (`ExpireTime`, `AssociatedMembers`), optional `ProspectID` matching, and
-  base-component framing of every `StateRecorderBlob` before returning a
-  privacy-preserving summary (`world_imported: false`).
+- `stage_prospect_save_state` (`experimental::recorders`), `stage_prospect`
+  (`prospect`), and `icarus-server inspect-save --stage-check
+  [--expect-prospect-name NAME]` validate the full `FProspectSaveState` root
+  schema, out-of-order tag wrap-around, `PostLoadSerialize` version migration,
+  all 17 `FProspectInfo` inner tags (including `ExpireTime`,
+  `AssociatedMembers`, and `CustomSettings`), optional `ProspectID` matching, and
+  base-component framing of every `StateRecorderBlob` across all 12 supplied
+  prospect saves and 3 reference-server re-saves (`15 / 15`, `2,664..2,850`
+  recorders, `59,894..65,658` component field tags, `world_imported: false`,
+  F-738).
 - Base-component framing, all 65 `RecorderComponent` `FClassParams`, all 38
   `StateRecorderBlobs` classes' `+0xa0`/`+0x488`/`+0x4a0`/`+0x4b0` overrides,
   weather/teleport clocks (`C035`/`C002`), `D01` inventory slot restoration, and
   `C001` constructor/vftable provenance ([C001 digest](../../research/save-format/c001-constructor.md))
   are verified across builds (`recorder_restore_dispatch`, F-469 to F-477, F-509,
-  F-534, F-669, F-670, F-716, F-720 to F-722, F-727, F-728, F-733 to F-736; U-003
+  F-534, F-669, F-670, F-716, F-720 to F-722, F-727, F-728, F-733 to F-738; U-003
   to U-006, U-020 to U-024, U-032, U-041, U-042, U-046, U-048, U-050 resolved).
 
 ## Open questions
@@ -140,7 +154,7 @@ Acceptance conditions for any importer
 ## Evidence
 
 - Static: M-147, M-148, M-143, M-149, M-150, M-119, M-122, M-123, M-079, M-094,
-  M-096, M-100, M-170, M-755..M-762, M-768, M-769, M-772 to M-775; runtime: M-154, M-155, M-160.
+  M-096, M-100, M-170, M-755..M-762, M-768, M-769, M-772 to M-777; runtime: M-154, M-155, M-160.
 - Framing receipts: M-118, M-172, M-087..M-093, M-095, M-097..M-103, M-106,
   M-058..M-070, M-049..M-055; C001: M-007, M-008, M-011, M-013, M-173, M-179, M-180, M-181, M-761, M-762.
 - Tests: `tests/tagged.rs`, `tests/recorders.rs`, `tests/component.rs`,
