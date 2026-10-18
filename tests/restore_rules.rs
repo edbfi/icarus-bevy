@@ -1,10 +1,11 @@
 use icarus_bevy::experimental::restore_rules::{
     ACTOR_RECORDER_TRANSFORM_TOLERANCE, ActorLink, ApplyTransformKind, ByNameLoadOutcome,
     DynamicItemPropertyKind, InventorySlotOverflowDisposition, LobbyPrivacy, OwnerResolvePolicy,
-    PROSPECT_SAVE_STATE_CURRENT_VERSION, PlayerList, RESTORED_INDEFINITE_MODIFIER_LIFETIME,
-    RestoreStateKind, RocketRestore, SetupLoadedProspectOutcome, VOXEL_LOCATION_TOLERANCE,
-    VersionUpgradeKind, can_activate_prospect_info, container_entries,
-    evaluate_by_name_load_attempt, evaluate_setup_loaded_prospect_attempt,
+    PROSPECT_SAVE_STATE_CURRENT_VERSION, PlayerList, ProspectBlobDecodeOutcome,
+    RESTORED_INDEFINITE_MODIFIER_LIFETIME, RestoreStateKind, RocketRestore,
+    SetupLoadedProspectOutcome, VOXEL_LOCATION_TOLERANCE, VersionUpgradeKind,
+    can_activate_prospect_info, container_entries, evaluate_by_name_load_attempt,
+    evaluate_prospect_blob_decode, evaluate_setup_loaded_prospect_attempt,
     migrate_prospect_save_state, names_match, normalize_prospect_name,
     normalize_restored_modifier_lifetime, player_record_valid, prospect_ids_match,
     record_weather_event_elapsed, recorded_level, recorder_restore_dispatch,
@@ -676,4 +677,74 @@ fn d01_dynamic_item_properties_overflow_modifiers_and_variables() {
     assert!(upsert_recorded_variable(&mut vars, "FuelCount", 10_i32));
     assert!(!upsert_recorded_variable(&mut vars, "bIsActive", 0_i32));
     assert_eq!(vars, vec![("bIsActive", 0), ("FuelCount", 10)]);
+}
+
+#[test]
+fn prospect_blob_decode_models_allocation_lengths_and_ignored_base64_return() {
+    // 1. TotalLength < 0 invokes TArray::ResizeShrink on an empty array before FBase64::Decode (SL-003).
+    assert_eq!(
+        evaluate_prospect_blob_decode(-1, 512, 1024, 512, true, true, true),
+        ProspectBlobDecodeOutcome::NegativeTotalLengthResizeError
+    );
+
+    // 2. UncompressedLength < 0 skips ResizeGrow and calls memset(nullptr, 0, ...) even when
+    // FBase64::Decode returned false (SL-001, SL-003).
+    assert_eq!(
+        evaluate_prospect_blob_decode(512, 512, -1, 0, false, false, false),
+        ProspectBlobDecodeOutcome::NegativeUncompressedLengthNullMemsetCrash
+    );
+
+    // 3. FBase64::Decode resizes CompressedData to GetDecodedDataSize(BinaryBlob); when smaller than
+    // TotalLength (including 0 when BinaryBlob is empty or length <= 3), UncompressMemory reads
+    // TotalLength bytes from the shrunk/null buffer regardless of base64_decode_ok (SL-001, SL-004).
+    assert_eq!(
+        evaluate_prospect_blob_decode(512, 512, 1024, 0, false, false, false),
+        ProspectBlobDecodeOutcome::CompressedBufferUnderflowOutOfBoundsRead {
+            allocated_bytes: 0,
+            uncompress_read_bytes: 512,
+        }
+    );
+    assert_eq!(
+        evaluate_prospect_blob_decode(512, 512, 1024, 256, true, true, true),
+        ProspectBlobDecodeOutcome::CompressedBufferUnderflowOutOfBoundsRead {
+            allocated_bytes: 256,
+            uncompress_read_bytes: 512,
+        }
+    );
+
+    // 4. When decoded_base64_bytes >= TotalLength, corrupt base64 or corrupt zlib fails cleanly in
+    // FCompression::UncompressMemory(NAME_Zlib) (SL-001, SL-002).
+    assert_eq!(
+        evaluate_prospect_blob_decode(512, 512, 1024, 512, false, false, true),
+        ProspectBlobDecodeOutcome::ZlibUncompressRejected {
+            base64_decode_ok: false,
+        }
+    );
+    assert_eq!(
+        evaluate_prospect_blob_decode(512, 512, 1024, 512, true, false, true),
+        ProspectBlobDecodeOutcome::ZlibUncompressRejected {
+            base64_decode_ok: true,
+        }
+    );
+
+    // 5. Zlib uncompress succeeds, but FSHA1::HashBuffer does not match Blob.Hash (+0x10).
+    assert_eq!(
+        evaluate_prospect_blob_decode(512, 512, 1024, 512, true, true, false),
+        ProspectBlobDecodeOutcome::Sha1Mismatch
+    );
+
+    // 6. Clean decode and deserialize: DataLength (+0x24) is never read by ReadFromProspectBlob
+    // and does not affect the outcome even when it differs from TotalLength.
+    assert_eq!(
+        evaluate_prospect_blob_decode(512, 512, 1024, 512, true, true, true),
+        ProspectBlobDecodeOutcome::DecodedSaveState {
+            ignored_data_length: 512,
+        }
+    );
+    assert_eq!(
+        evaluate_prospect_blob_decode(512, -999, 1024, 600, true, true, true),
+        ProspectBlobDecodeOutcome::DecodedSaveState {
+            ignored_data_length: -999,
+        }
+    );
 }

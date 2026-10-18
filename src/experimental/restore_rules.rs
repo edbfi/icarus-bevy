@@ -3,7 +3,7 @@
 //! Each function is a pure rule over authored domain values, read from the
 //! client recorders' record, validate, stitch and restore code (F-645 to F-665,
 //! F-677, F-715, F-716, F-717, F-727, F-728, F-732, F-733, F-734, F-735,
-//! F-736).
+//! F-736, F-737).
 //! Nothing here decodes a save, looks up a class, constructs an object or
 //! imports state: the rules pin the behavior a native world must reproduce when
 //! it restores recorded actors. The normal server does not call them yet, and
@@ -798,5 +798,80 @@ pub fn upsert_recorded_variable<K: PartialEq, V>(
     } else {
         entries.push((name, value));
         true
+    }
+}
+
+/// Outcome of `FProspectSaveStateHeader::ReadFromProspectBlob` (`0x1418e6240`
+/// server / `0x1418e7680` client) given the `FProspectBlob` header fields and
+/// inner stream states (F-283, F-737).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ProspectBlobDecodeOutcome {
+    /// `TotalLength < 0` invokes `TArray::ResizeShrink` (`0x1408e7980`) on an
+    /// empty array with a negative count before `FBase64::Decode` (`SL-003`).
+    NegativeTotalLengthResizeError,
+    /// `UncompressedLength < 0` skips `TArray::ResizeGrow` (`rcx = nullptr`)
+    /// and calls `memset(nullptr, 0, UncompressedLength as usize)`, crashing
+    /// immediately (`SL-003`).
+    NegativeUncompressedLengthNullMemsetCrash,
+    /// `FBase64::Decode` resizes `CompressedData` to
+    /// `GetDecodedDataSize(BinaryBlob)` (`decoded_base64_bytes`), shrinking or
+    /// freeing the pre-allocated `TotalLength` buffer when
+    /// `decoded_base64_bytes < total_length`, and `ReadFromProspectBlob` then
+    /// passes `CompressedData.GetData()` with `CompressedSize = TotalLength`
+    /// to `FCompression::UncompressMemory`, reading out of bounds or
+    /// dereferencing `nullptr` when `decoded_base64_bytes == 0` (`SL-004`).
+    CompressedBufferUnderflowOutOfBoundsRead {
+        allocated_bytes: usize,
+        uncompress_read_bytes: usize,
+    },
+    /// `FBase64::Decode` returned `false` (`SL-001` ignored return value), or
+    /// the compressed payload is corrupt or truncated, causing
+    /// `FCompression::UncompressMemory(NAME_Zlib)` (`0x141f140f0`) to return
+    /// `false` and `ReadFromProspectBlob` to return `false` (`SL-002`).
+    ZlibUncompressRejected { base64_decode_ok: bool },
+    /// `UncompressMemory` succeeded, but `FSHA1::HashBuffer` on the
+    /// `UncompressedLength` buffer did not match `Blob.Hash` (`+0x10`), so
+    /// `ReadFromProspectBlob` returns `false`.
+    Sha1Mismatch,
+    /// `UncompressMemory` and the `FSHA1` check succeeded, and
+    /// `FProspectSaveState` archive deserialization (`0x1418ee4a0`) completed.
+    /// `DataLength` (`+0x24`) is never read by `ReadFromProspectBlob`.
+    DecodedSaveState { ignored_data_length: i32 },
+}
+
+/// Evaluates `FProspectSaveStateHeader::ReadFromProspectBlob` (`0x1418e6240`
+/// server / `0x1418e7680` client) and `FBase64::Decode` (`0x141efc520` server /
+/// `0x141ee8640` client) allocation, length, and error-handling behavior
+/// (F-283, F-737).
+pub const fn evaluate_prospect_blob_decode(
+    total_length: i32,
+    data_length: i32,
+    uncompressed_length: i32,
+    decoded_base64_bytes: usize,
+    base64_decode_ok: bool,
+    zlib_uncompress_ok: bool,
+    sha1_matches: bool,
+) -> ProspectBlobDecodeOutcome {
+    if total_length < 0 {
+        return ProspectBlobDecodeOutcome::NegativeTotalLengthResizeError;
+    }
+    if uncompressed_length < 0 {
+        return ProspectBlobDecodeOutcome::NegativeUncompressedLengthNullMemsetCrash;
+    }
+    let uncompress_read_bytes = total_length as usize;
+    if decoded_base64_bytes < uncompress_read_bytes {
+        return ProspectBlobDecodeOutcome::CompressedBufferUnderflowOutOfBoundsRead {
+            allocated_bytes: decoded_base64_bytes,
+            uncompress_read_bytes,
+        };
+    }
+    if !zlib_uncompress_ok {
+        return ProspectBlobDecodeOutcome::ZlibUncompressRejected { base64_decode_ok };
+    }
+    if !sha1_matches {
+        return ProspectBlobDecodeOutcome::Sha1Mismatch;
+    }
+    ProspectBlobDecodeOutcome::DecodedSaveState {
+        ignored_data_length: data_length,
     }
 }

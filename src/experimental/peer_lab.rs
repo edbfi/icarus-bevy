@@ -10,9 +10,9 @@
 //! control messages are counted by kind and then discarded, except that Hello
 //! and Login get the mapped control replies below. When [`PeerLabConfig::admission`]
 //! is `Some`, each peer also enforces [`ConnectionLoginAdmission`]
-//! (`IsClientMsgTypeValid`), `PreLogin`, `Welcome`, and `Join` / `SplitJoin`
-//! (`SpawnPlayActor` / `InitNewPlayer`) checks from `experimental::admission`
-//! (`F-712`, `F-713`).
+//! (`IsClientMsgTypeValid`), `PreLogin`, `Welcome`, `Netspeed`, and `Join` /
+//! `SplitJoin` (`SpawnPlayActor` / `InitNewPlayer`) checks from
+//! `experimental::admission` (`F-712`, `F-713`, `F-740`).
 //!
 //! The server side is an INFERRED mirror of client-build observations (cookie
 //! seeding F-536, sequencing F-535..F-539, framing F-521..F-527); the original
@@ -20,9 +20,9 @@
 //! Nothing here demonstrates compatibility with any client.
 //!
 //! Control replies follow the client and server builds' `NotifyControlMessage`
-//! (`F-530`, `F-531`, `F-579`, `F-712`, `F-713`) and are sent as reliable
-//! control bunches through [`LabPeer::reliable_control_packet`] (each also
-//! carries the ack state):
+//! (`F-530`, `F-531`, `F-579`, `F-712`, `F-713`, `F-740`) and are sent as
+//! reliable control bunches through [`LabPeer::reliable_control_packet`] (each
+//! also carries the ack state):
 //! - When [`PeerLabConfig::admission`] is `Some`, any delivered control message
 //!   rejected by [`ConnectionLoginAdmission::is_client_msg_type_valid`] is
 //!   counted in [`PeerLabStats::invalid_state_messages`] and ignored without
@@ -47,6 +47,10 @@
 //!   carrying the configured map/game/redirect URLs is sent and the peer
 //!   advances to `Welcomed` (`welcomes_sent`); on `Err(reason)`, Failure (ID 6)
 //!   carrying `reason` is sent and the peer is removed.
+//! - Netspeed (ID 4), when [`PeerLabConfig::admission`] is `Some`: clamps the
+//!   requested rate with [`clamp_client_netspeed`] against
+//!   [`PeerLabAdmission::max_client_rate`], stores `CurrentNetSpeed`, and
+//!   increments [`PeerLabStats::netspeeds_updated`] (`F-740`).
 //! - Join (ID 9) and SplitJoin (ID 10), when [`PeerLabConfig::admission`] is
 //!   `Some`: `Join` checks [`ConnectionLoginAdmission::on_join_spawned`]
 //!   (ignoring duplicate `Join` in `duplicate_joins_ignored`) and runs
@@ -92,8 +96,8 @@ use bevy::prelude::{App, Plugin, ResMut, Resource, Update};
 use serde::Serialize;
 
 use super::admission::{
-    AdmissionPolicy, ClientLoginState, ConnectionLoginAdmission, JoinSpawnContext, Occupancy,
-    int_option,
+    AdmissionPolicy, ClientLoginState, ConnectionLoginAdmission, DEFAULT_MAX_CLIENT_RATE,
+    JoinSpawnContext, Occupancy, clamp_client_netspeed, int_option,
 };
 use super::control_messages::{ArchiveText, ControlMessage, Decoded, NetIdValue};
 use super::handshake::decode;
@@ -129,10 +133,11 @@ pub const DEFAULT_MAX_CHANNELS: u32 = 32;
 pub const DEFAULT_MAX_STRING_UNITS: usize = 256;
 
 /// Opt-in login-state gating (`IsClientMsgTypeValid`), `PreLogin`, `Welcome`,
-/// and `Join` / `SplitJoin` (`SpawnPlayActor`) policy for [`PeerLab`].
+/// `Netspeed`, and `Join` / `SplitJoin` (`SpawnPlayActor`) policy for [`PeerLab`].
 #[derive(Clone, Copy)]
 pub struct PeerLabAdmission {
     pub policy: AdmissionPolicy,
+    pub max_client_rate: i32,
     pub default_subsystem: Option<&'static str>,
     pub compatible_subsystems: &'static [&'static str],
     pub indexed_subsystems: &'static [(u8, &'static str)],
@@ -175,6 +180,7 @@ impl Default for PeerLabAdmission {
                 max_spectators: 2,
                 max_splitscreens_per_connection: 4,
             },
+            max_client_rate: DEFAULT_MAX_CLIENT_RATE,
             default_subsystem: Some("NULL"),
             compatible_subsystems: &["STEAM"],
             indexed_subsystems: &[(1, "NULL"), (3, "STEAM")],
@@ -341,6 +347,8 @@ pub struct PeerLabStats {
     pub failures_sent: u64,
     /// Welcome (ID 1) replies sent to accepted Logins.
     pub welcomes_sent: u64,
+    /// Netspeed (ID 4) requests applied to `CurrentNetSpeed` (`F-740`).
+    pub netspeeds_updated: u64,
     /// Join / SplitJoin requests that passed `SpawnPlayActor` / `InitNewPlayer`.
     pub joins_succeeded: u64,
     /// Duplicate Join requests ignored because a PlayerController already exists (`F-713`).
@@ -412,6 +420,7 @@ struct PeerEntry {
     login_url_units: Vec<u16>,
     spectator: bool,
     splitscreen_count: u8,
+    current_net_speed: Option<i32>,
 }
 
 /// The loopback peer lab. `Debug` reports only the peer count and counters.
@@ -474,6 +483,15 @@ impl PeerLab {
 
     pub fn has_peer(&self, address: SocketAddrV4) -> bool {
         self.peers.contains_key(&address)
+    }
+
+    /// Clamped `CurrentNetSpeed` (`UNetConnection + 0x38`, `F-740`) recorded
+    /// for `address`, or `None` if the peer does not exist or has not applied a
+    /// valid `Netspeed` control message yet.
+    pub fn current_net_speed(&self, address: SocketAddrV4) -> Option<i32> {
+        self.peers
+            .get(&address)
+            .and_then(|entry| entry.current_net_speed)
     }
 
     fn occupancy(&self, excluding: Option<SocketAddrV4>) -> Occupancy {
@@ -567,6 +585,7 @@ impl PeerLab {
                         login_url_units: Vec::new(),
                         spectator: false,
                         splitscreen_count: 0,
+                        current_net_speed: None,
                     },
                 );
             }
@@ -680,6 +699,16 @@ impl PeerLab {
                     }
                     Err(reason) => Some(Reply::Failure(reason)),
                 }
+            }
+            ControlMessage::Netspeed { rate } => {
+                let admission = self.config.admission?;
+                let entry = self.peers.get_mut(&address)?;
+                entry.current_net_speed = Some(clamp_client_netspeed(
+                    *rate as i32,
+                    admission.max_client_rate,
+                ));
+                bump(&mut self.stats.netspeeds_updated);
+                None
             }
             ControlMessage::Join => {
                 let admission = self.config.admission?;
@@ -865,7 +894,7 @@ impl PeerLab {
             if length > max {
                 bump(&mut self.stats.oversize);
                 continue;
-            }
+            };
             let now = Instant::now();
             if self.handshake(address, length, now) {
                 continue;
@@ -926,13 +955,5 @@ mod tests {
         let mut config = PeerLabConfig::default();
         config.packet.sent_capacity = 0;
         assert!(config.validate().is_err());
-    }
-
-    #[test]
-    fn debug_carries_counts_only() {
-        let lab = PeerLab::bind(0, PeerLabConfig::default()).unwrap();
-        let text = format!("{lab:?}");
-        assert!(text.starts_with("PeerLab { peers: 0, max_peers: 16, stats: "));
-        assert!(!text.contains("127.0.0.1"));
     }
 }

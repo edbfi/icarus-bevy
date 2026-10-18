@@ -51,7 +51,11 @@ FInBunch through FBitReader::Serialize after the ID byte, byte order set by the
 first field and persisted at `Connection + 0x158`, in client and server alike
 (F-514, F-515, F-518, F-519, F-712, F-714; U-014, U-044 resolved);
 ReceivedBunch reaches it through the driver's notify object, slot +0x18
-(F-520, F-724). ReceivedPacket parses a packet word and ack history, then bunch
+(F-520, F-724), and active branches `case 4` (`NMT_Netspeed`, clamping `int32
+Rate` to `[1800, NetDriver->MaxClientRate (+0x64)]`), `case 15` (`NMT_PCSwap`,
+destroying unowned `Actor` when `Actor->NetConnection (+0x410) == TargetConn`),
+and `case 17` (`NMT_DebugText`) match across both builds (F-579, F-740).
+ReceivedPacket parses a packet word and ack history, then bunch
 headers inside a handler prefix and termination-bit frame in both builds (F-521
 to F-524, F-714); the client's parsers map the control vocabulary both ways
 (F-529, F-530), and its reliability layer is seeded from the handshake cookie
@@ -65,4 +69,4 @@ game-connection flags stay false (F-096, F-097).
 
 ## Artifacts
 
-M-005, M-012, M-023..M-046, M-281..M-283, M-288..M-297, M-301, M-302, M-315..M-346, M-353..M-357, M-370, M-371, M-749..M-754, M-763..M-765, M-770, M-771.
+M-005, M-012, M-023..M-046, M-281..M-283, M-288..M-297, M-301, M-302, M-315..M-346, M-353..M-357, M-370, M-371, M-749..M-754, M-763..M-765, M-770, M-771, M-776, M-777.

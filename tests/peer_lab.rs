@@ -832,7 +832,7 @@ fn admission_enforces_login_state_and_completes_welcome_and_join() {
     let (mut app, address) = lab_app(config);
     let mut client = Client::connect(&mut app, address);
 
-    // Join before Hello/Welcome is rejected by IsClientMsgTypeValid (only acked).
+    // Join and Netspeed before Hello/Welcome are rejected by IsClientMsgTypeValid (only acked).
     let early_join_id = client.exchange(&mut app, ControlMessage::Join, true);
     assert_eq!(
         client.receive_ack(&recv(&client.socket)),
@@ -844,6 +844,19 @@ fn admission_enforces_login_state_and_completes_welcome_and_join() {
     assert_eq!(stats(&app).invalid_state_messages, 1);
     assert_eq!(stats(&app).joins_succeeded, 0);
 
+    let early_netspeed_id =
+        client.exchange(&mut app, ControlMessage::Netspeed { rate: 10_000 }, false);
+    assert_eq!(
+        client.receive_ack(&recv(&client.socket)),
+        [Notification {
+            packet_id: early_netspeed_id,
+            delivered: true
+        }]
+    );
+    assert_eq!(stats(&app).invalid_state_messages, 2);
+    assert_eq!(stats(&app).netspeeds_updated, 0);
+    assert_eq!(lab(&app).current_net_speed(client.address()), None);
+
     // Valid Hello gets Challenge and advances ExpectedClientLoginMsgType to 5 (Login).
     client.exchange(&mut app, short_hello("", LOCAL_VERSION), false);
     let (_, messages) = client.receive_reply(&recv(&client.socket));
@@ -853,7 +866,7 @@ fn admission_enforces_login_state_and_completes_welcome_and_join() {
     ));
     assert_eq!(stats(&app).control_challenges_sent, 1);
 
-    // A second Hello while expecting Login is rejected by IsClientMsgTypeValid.
+    // A second Hello and a Netspeed while expecting Login are rejected by IsClientMsgTypeValid.
     let dup_hello_id = client.exchange(&mut app, short_hello("", LOCAL_VERSION), false);
     assert_eq!(
         client.receive_ack(&recv(&client.socket)),
@@ -862,8 +875,21 @@ fn admission_enforces_login_state_and_completes_welcome_and_join() {
             delivered: true
         }]
     );
-    assert_eq!(stats(&app).invalid_state_messages, 2);
+    assert_eq!(stats(&app).invalid_state_messages, 3);
     assert_eq!(stats(&app).control_challenges_sent, 1);
+
+    let logging_in_netspeed_id =
+        client.exchange(&mut app, ControlMessage::Netspeed { rate: 10_000 }, false);
+    assert_eq!(
+        client.receive_ack(&recv(&client.socket)),
+        [Notification {
+            packet_id: logging_in_netspeed_id,
+            delivered: true
+        }]
+    );
+    assert_eq!(stats(&app).invalid_state_messages, 4);
+    assert_eq!(stats(&app).netspeeds_updated, 0);
+    assert_eq!(lab(&app).current_net_speed(client.address()), None);
 
     // Compatible Login gets Welcome (ID 1) and advances ClientLoginState to Welcomed.
     let valid_login = ControlMessage::Login {
@@ -887,7 +913,8 @@ fn admission_enforces_login_state_and_completes_welcome_and_join() {
     );
     assert_eq!(stats(&app).welcomes_sent, 1);
 
-    // Netspeed and Join after Welcome succeed; a duplicate Join is ignored.
+    // Netspeed and Join after Welcome succeed; a duplicate Join is ignored;
+    // Netspeed in Joined state also succeeds.
     let netspeed_id = client.exchange(&mut app, ControlMessage::Netspeed { rate: 100_000 }, false);
     assert_eq!(
         client.receive_ack(&recv(&client.socket)),
@@ -896,6 +923,9 @@ fn admission_enforces_login_state_and_completes_welcome_and_join() {
             delivered: true
         }]
     );
+    assert_eq!(stats(&app).netspeeds_updated, 1);
+    assert_eq!(lab(&app).current_net_speed(client.address()), Some(15_000));
+
     let join_id = client.exchange(&mut app, ControlMessage::Join, false);
     assert_eq!(
         client.receive_ack(&recv(&client.socket)),
@@ -905,6 +935,18 @@ fn admission_enforces_login_state_and_completes_welcome_and_join() {
         }]
     );
     assert_eq!(stats(&app).joins_succeeded, 1);
+
+    let joined_netspeed_id =
+        client.exchange(&mut app, ControlMessage::Netspeed { rate: 1_200 }, false);
+    assert_eq!(
+        client.receive_ack(&recv(&client.socket)),
+        [Notification {
+            packet_id: joined_netspeed_id,
+            delivered: true
+        }]
+    );
+    assert_eq!(stats(&app).netspeeds_updated, 2);
+    assert_eq!(lab(&app).current_net_speed(client.address()), Some(1_800));
 
     let dup_join_id = client.exchange(&mut app, ControlMessage::Join, false);
     assert_eq!(
@@ -967,6 +1009,11 @@ fn admission_enforces_login_state_and_completes_welcome_and_join() {
         &[
             "Alice",
             "Bob",
+            "15000",
+            "100000",
+            "10000",
+            "1800",
+            "1200",
             PLATFORM_SENTINEL,
             NET_ID_HEX,
             &NET_ID_HEX.to_lowercase(),

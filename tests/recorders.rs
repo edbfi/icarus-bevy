@@ -438,6 +438,37 @@ fn associated_members_tag(member_count: i32) -> Vec<u8> {
     )
 }
 
+fn custom_settings_tag(setting_count: i32) -> Vec<u8> {
+    let setting_body = [
+        tag(
+            "SettingName",
+            "StrProperty",
+            0,
+            &[0],
+            &string("private-setting"),
+        ),
+        tag("Value", "IntProperty", 0, &[0], &100_i32.to_le_bytes()),
+        END.to_vec(),
+    ]
+    .concat();
+    let repeated = setting_body.repeat(usize::try_from(setting_count).unwrap());
+    let shared_setting = tag(
+        "CustomSettings",
+        "StructProperty",
+        0,
+        &[string("CustomGameSetting"), vec![0; 17]].concat(),
+        &repeated,
+    );
+    let payload = [&setting_count.to_le_bytes(), shared_setting.as_slice()].concat();
+    tag(
+        "CustomSettings",
+        "ArrayProperty",
+        0,
+        &[string("StructProperty"), vec![0]].concat(),
+        &payload,
+    )
+}
+
 fn prospect_info_tag(prospect_id: &str, dt_key: &str, member_count: i32) -> Vec<u8> {
     let inner = [
         tag("ProspectID", "StrProperty", 0, &[0], &string(prospect_id)),
@@ -458,6 +489,7 @@ fn prospect_info_tag(prospect_id: &str, dt_key: &str, member_count: i32) -> Vec<
         ),
         tag("InGame", "BoolProperty", 0, &[1, 0], &[]),
         associated_members_tag(member_count),
+        custom_settings_tag(2),
         END.to_vec(),
     ]
     .concat();
@@ -465,7 +497,7 @@ fn prospect_info_tag(prospect_id: &str, dt_key: &str, member_count: i32) -> Vec<
         "ProspectInfo",
         "StructProperty",
         0,
-        &[string("IcarusProspect"), vec![0; 17]].concat(),
+        &[string("ProspectInfo"), vec![0; 17]].concat(),
         &inner,
     )
 }
@@ -528,7 +560,7 @@ fn staged_prospect_save_state_validates_schema_migrations_and_fails_closed() {
     assert_eq!(staged_v2.migrated_version, 2);
     assert_eq!(staged_v2.lobby_privacy, LobbyPrivacy::Private);
     assert_eq!(staged_v2.root_tag_count, 6);
-    assert_eq!(staged_v2.prospect_info_tag_count, 6);
+    assert_eq!(staged_v2.prospect_info_tag_count, 7);
     assert_eq!(staged_v2.associated_member_count, 2);
     assert!(staged_v2.has_prospect_id);
     assert!(staged_v2.has_prospect_dt_key);

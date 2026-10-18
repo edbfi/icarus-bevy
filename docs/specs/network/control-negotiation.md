@@ -24,17 +24,17 @@ runtime initialization, compression, or integrity protection.
 - The dispatcher receives a connection, a message ID and an archive-like input
   after lower layers; a message-validity check precedes table dispatch, and a
   separate branch serves another operating mode (F-284).
-- Dispatch table (M-170/E-011, M-170/E-013):
+- Dispatch table (M-170/E-011, M-170/E-013, F-740):
 
-  | Inner ID | Branch entry | Inferred meaning |
+  | Inner ID | Branch entry | Meaning |
   | --- | --- | --- |
   | 0 | `0x1439eebec` | Initial version/token negotiation |
-  | 4 | `0x1439ef03b` | Client netspeed handling |
-  | 5 | `0x1439ef0e0` | Login handling |
-  | 9 | `0x1439ef7f1` | Join handling |
-  | 10 | `0x1439efb8a` | Split-player join handling |
-  | 15 | `0x1439f031c` | Connection swap handling |
-  | 17 | `0x1439f0416` | Debug text handling |
+  | 4 | `0x1439ef03b` | Client netspeed (`NMT_Netspeed`): clamps `int32 Rate` to `[1800, NetDriver->MaxClientRate (+0x64)]` and stores `Connection->CurrentNetSpeed (+0x38)` (F-740) |
+  | 5 | `0x1439ef0e0` | Login (`NMT_Login`) |
+  | 9 | `0x1439ef7f1` | Join (`NMT_Join`) |
+  | 10 | `0x1439efb8a` | Split-player join (`NMT_JoinSplit`) |
+  | 15 | `0x1439f031c` | Connection swap (`NMT_PCSwap`): reads `int32 ChildIndex`, resolves parent or `Children[ChildIndex]`, and destroys unowned `Actor` when `Actor->NetConnection (+0x410) == TargetConn` (F-740) |
+  | 17 | `0x1439f0416` | Debug text (`NMT_DebugText`): reads `FString` and logs without mutating state (F-740) |
 
   IDs 1-3, 6-8, 11-14 and 16, and out-of-range IDs, reach the common exit.
 - ID 0 reads one endianness byte, a 32-bit remote version, and a token string
@@ -90,8 +90,8 @@ runtime initialization, compression, or integrity protection.
   (initial reliable sequences take the low 10 bits). Out-of-order reliable
   bunches queue per channel (max 255); acks 1 to 8191 ahead resolve outgoing
   packets via the 256-bit history window and resend lost reliable bunches.
-- Control vocabulary (F-529 to F-531, F-548); strings are archive strings and
-  `u32` values follow the Hello byte-swap flag:
+- Control vocabulary (F-529 to F-531, F-548, F-740); strings are archive strings
+  and `u32` values follow the Hello byte-swap flag:
 
   | ID | Direction | Fields |
   | --- | --- | --- |
@@ -99,12 +99,12 @@ runtime initialization, compression, or integrity protection.
   | 1 Welcome | to client | three strings: map URL, game name, redirect URL |
   | 2 Upgrade | to client | u32 local version (sent on incompatible Hello, then close) |
   | 3 Challenge | to client | string (counter-derived token, F-531) |
-  | 4 Netspeed | to server | u32 (clamped to `>= 1,800`) |
+  | 4 Netspeed | to server | i32 rate (clamped to `[1,800, MaxClientRate]`, F-740) |
   | 5 Login | to server | string response (`"0"`, F-548), string URL, unique-net-id (F-531), string platform |
   | 6 Failure | to client | string, then the client closes |
   | 9 Join | to server | none |
   | 10 Split join | to server | string URL, unique-net-id |
-  | 15 Swap | to server | u32 |
+  | 15 Swap | to server | i32 child index (`-1` parent, `>= 0` splitscreen child, F-740) |
   | 17 Debug | to server | string |
   | 18 NetGUID | to client | packed int, string |
   | 21 Encryption ack | to client | none |
@@ -114,18 +114,22 @@ runtime initialization, compression, or integrity protection.
 - Experimental modules (`control`, `packet`, `control_receive`,
   `control_messages`, `sequencing`, `admission`, `packet_lab`, `peer_lab`) model
   packet/bunch headers, the 19-entry control fallback table, unique-net-id forms
-  (F-543, F-636) and disconnected loopback negotiation through `Hello`,
-  `Challenge`, `Login`, `PreLogin`, `Welcome` and `Join` / `SplitJoin` (F-558,
-  F-564, F-689, F-690, F-712 to F-714).
-- Server `UWorld::NotifyControlMessage` (`0x1439ee7f0`, F-563, F-713) and
+  (F-543, F-636), `clamp_client_netspeed` (`MIN_CLIENT_NETSPEED = 1,800`,
+  `DEFAULT_MAX_CLIENT_RATE = 15,000`, F-740) and disconnected loopback
+  negotiation through `Hello`, `Challenge`, `Login`, `PreLogin`, `Welcome`,
+  `Netspeed`, and `Join` / `SplitJoin` (F-558, F-564, F-689, F-690, F-712 to
+  F-714, F-740).
+- Server `UWorld::NotifyControlMessage` (`0x1439ee7f0`, F-563, F-713, F-740) and
   `WelcomePlayer` (`0x1439fdeb0`, F-580): `IsClientMsgTypeValid` (`0x143991c70`)
   gates messages by `ClientLoginState` (`LoggingIn = 1`, `Welcomed = 2`,
-  `Joined = 3`) and `ExpectedClientLoginMsgType` (`0` = `Hello`, `5` = `Login`).
-  On `Join` (`9`), if `PlayerController` (`+0x30`) is null, `SpawnPlayActor`
-  (`0x14392dbb0`) runs `AGameModeBase::Login` -> `ApproveLogin` ->
-  `SpawnPlayerController` -> `InitNewPlayer`, sets `NetPlayerIndex` (`+0x3d4`),
-  binds `HandleClientPlayer`, calls `PostLogin`, and sets `ClientLoginState = 3`
-  (F-713; U-010 resolved).
+  `Joined = 3`), admitting only `ExpectedClientLoginMsgType` (`0` = `Hello`,
+  `5` = `Login`) during `LoggingIn` (`1`) and admitting every non-login ID
+  (`!= 0 && != 5`, including `Netspeed` `4`, `PCSwap` `15`, and `DebugText` `17`)
+  in `Welcomed` (`2`) and `Joined` (`3`). On `Join` (`9`), if `PlayerController` (`+0x30`) is
+  null, `SpawnPlayActor` (`0x14392dbb0`) runs `AGameModeBase::Login` ->
+  `ApproveLogin` -> `SpawnPlayerController` -> `InitNewPlayer`, sets
+  `NetPlayerIndex` (`+0x3d4`), binds `HandleClientPlayer`, calls `PostLogin`, and
+  sets `ClientLoginState = 3` (F-713; U-010 resolved).
 - `PreLogin` (`AGameModeBase::PreLogin` `0x14386a160`, F-712, F-713; U-037
   resolved; `experimental::admission`): neither binary binds any callback to
   `GameModePreLoginEvent` or `FNetworkVersion` overrides. `IsCompatibleUniqueNetId`
@@ -142,6 +146,6 @@ runtime initialization, compression, or integrity protection.
   M-170/E-021, M-170/E-022, M-170/E-024),
   M-146, [research/archive](../../research/archive/2026-10-12-control-caller-limit.md),
   M-023 to M-045 in the [control-store digest](../../research/network/control-stores.md),
-  and M-589 to M-596, M-749 to M-754, M-763 to M-765, M-770, M-771.
+  and M-589 to M-596, M-749 to M-754, M-763 to M-765, M-770, M-771, M-776, M-777.
 - Authored suites: `cargo test --test control_negotiation --locked` and
   `cargo test --test peer_lab --locked`.

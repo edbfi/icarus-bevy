@@ -59,10 +59,27 @@ enum Command {
         /// Also frame recorder fields, leaving component bytes opaque; implies root framing.
         #[arg(long)]
         recorders: bool,
+        /// Stage and validate the `FProspectSaveState` root schema, version
+        /// migration (`F-715`), `ProspectInfo` inner tags (`F-726`), and bounded
+        /// base-component framing of every `StateRecorderBlob` (`F-403`, `F-733`)
+        /// without importing or writing state.
+        #[arg(
+            long,
+            conflicts_with_all = ["inner_tags", "recorders", "preserve_check"]
+        )]
+        stage_check: bool,
+        /// Optional expected prospect name (normalizes an ASCII case-insensitive
+        /// `.json` suffix via `F-715`) to compare against `ProspectInfo.ProspectID`
+        /// (`F-717`) during `--stage-check`.
+        #[arg(long, requires = "stage_check")]
+        expect_prospect_name: Option<String>,
         /// Preserve the payload losslessly, then save and reload it through a
         /// temporary native schema-3 store; reports counts, sizes, timings and
         /// the resident set with and without the decoded tree (Linux only).
-        #[arg(long, conflicts_with_all = ["inner_tags", "recorders"])]
+        #[arg(
+            long,
+            conflicts_with_all = ["inner_tags", "recorders", "stage_check"]
+        )]
         preserve_check: bool,
     },
     /// Seed a NEW native world whose only content is the lossless, value-opaque
@@ -116,6 +133,8 @@ fn execute(cli: Cli) -> Result<()> {
             source,
             inner_tags,
             recorders,
+            stage_check,
+            expect_prospect_name,
             preserve_check,
         } => {
             // Check the opened handle: a path can change to a FIFO after a
@@ -123,6 +142,12 @@ fn execute(cli: Cli) -> Result<()> {
             let file = open_regular_source(&source)?;
             let output = if preserve_check {
                 serde_json::to_string(&preserve_check_report(file)?)?
+            } else if stage_check {
+                serde_json::to_string(&icarus_bevy::prospect::stage_prospect(
+                    file,
+                    icarus_bevy::experimental::component::MAX_BOUNDED_COMPONENT_BYTES,
+                    expect_prospect_name.as_deref(),
+                )?)?
             } else if recorders {
                 serde_json::to_string(&icarus_bevy::prospect::inspect_with_recorders(file)?)?
             } else if inner_tags {

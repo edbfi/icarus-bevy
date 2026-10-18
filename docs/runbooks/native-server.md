@@ -101,6 +101,12 @@ The optional `--inner-tags` also checks [root property framing](../specs/save-fo
 under an explicit experimental profile and reports counts; record values remain opaque.
 Use `--recorders` to additionally check recorder field and byte-array boundaries;
 it implies root framing and reports aggregates without class names or component data.
+Use `--stage-check` (optionally with `--expect-prospect-name NAME`) to validate
+the full `FProspectSaveState` root schema, `PostLoadSerialize` migration,
+`FProspectInfo` nested metadata (including `AssociatedMembers` and
+`CustomSettings`), optional `ProspectID` matching, and base-component framing of
+every `StateRecorderBlob` (`experimental_stage_only`, `world_imported: false`,
+F-738).
 `--preserve-check` preserves the payload losslessly, saves and reloads it through
 a temporary schema-3 store that it removes, saving twice to show the sidecar is
 not rewritten, and reports counts, sizes, timings and resident memory with

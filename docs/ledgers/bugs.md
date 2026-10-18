@@ -5,7 +5,7 @@ foundation defects. No original defect is reproduced or fixed. Native
 persistence tests are preventative engineering, not fixes of the original.
 Full text before condensation: 16d1a9d:docs/ledgers/bugs.md.
 
-Last reconciled: 2026-10-15
+Last reconciled: 2026-10-18
 
 ## Reported campaigns
 
@@ -32,14 +32,15 @@ defect. SL-001 to SL-003 belong to M-170, SL-004 to M-169.
 
 | Lead | Static evidence | What would establish or refute a problem |
 | --- | --- | --- |
-| SL-001: Different error checks in staged file readers | E-010/E-014/E-015 | Recover the shared helper contract, then test missing and truncated inputs |
-| SL-002: From-file load failure enters a fatal-output facility | E-010/E-016/E-020; [output target](../research/archive/2026-10-04-save-failure-output.md) | Demonstrate from-file entry, runtime guard state and process outcome |
-| SL-003: Requested prospect name compared against loaded data | E-009/E-018 | Test controlled name mismatches; a rejection alone is not a bug |
-| SL-004: Blob result and declared compressed length may diverge | E-009/E-022: no visible branch on the Base64 result before `TotalLength` reaches decompression | Establish the reachable loader and decoder allocation contract, then compare small authored inputs |
+| SL-001: Different error checks in staged file readers | M-170/E-010, M-170/E-014, M-170/E-015; F-717, F-733, F-737 (M-757, M-772, M-776) | By-name load reads `.json` twice and overwrites active `ProspectInfo` before `ReadFromProspectBlob` (`0x1418e6240`), which ignores `FBase64::Decode`; runtime corrupt-blob test open |
+| SL-002: From-file load failure enters a fatal-output facility | M-170/E-010, M-170/E-016, M-170/E-020; F-732 (M-772); [output target](../research/archive/2026-10-04-save-failure-output.md) | `SetupLoadedProspect` (`0x1414baf60`) returns `false` if `LocalSavePath.Num()<=1`; if `>1` and load fails, `0x1414bb15f` calls `Fatal` (`0x141ee8930` -> `RequestExit`) |
+| SL-003: Requested prospect name compared against loaded data | M-170/E-009, M-170/E-018; F-717, F-733, F-737 (M-757, M-772, M-776) | `LoadProspectByName` (`0x14146e6c0`) checks `Stricmp(ProspectID,Name)==0` and keeps state on mismatch; `ReadFromProspectBlob` sign-extends `UncompressedLength<0` into `memset(nullptr)` |
+| SL-004: Blob result and declared compressed length may diverge | M-169/E-009, M-169/E-022; F-737 (M-776, M-777): `WriteToProspectBlob` (`0x1418fa200`) sets `DataLength=TotalLength`; `0x1418e6240` ignores `DataLength` | `FBase64::Decode` resizes `CompressedData` to `GetDecodedDataSize` while `UncompressMemory` reads `TotalLength` bytes (OOB if `decoded<TotalLength`); runtime test open |
 
 By-name startup rejection runs found graceful rejection for one missing file
 and two truncated JSON inputs, with stateless handshake liveness retained
-(F-256); they narrow SL-001 but do not test the from-file branch.
+(F-256); static decompilation resolved the helper and allocation contracts
+(F-717, F-732, F-733, F-737; `experimental::restore_rules`).
 
 ## Native foundation defects
 

@@ -428,6 +428,14 @@ fn validate_prospect_info(
                         )?;
                     }
                 }
+                TagKind::Array if extra_is(&prop, "StructProperty") => {
+                    read_tagged_struct_array_with_limit(
+                        prop.tag.payload,
+                        profile,
+                        component_byte_limit,
+                    )
+                    .context("invalid ProspectInfo struct array")?;
+                }
                 _ => bail!("unsupported ProspectInfo property kind"),
             }
         }
@@ -524,7 +532,7 @@ pub fn stage_prospect_save_state(
             ensure!(
                 property.tag.kind == TagKind::Struct
                     && property.index == 0
-                    && extra_is(&property, "IcarusProspect"),
+                    && extra_is(&property, "ProspectInfo"),
                 "invalid ProspectInfo root header"
             );
             prospect_info = Some(validate_prospect_info(
