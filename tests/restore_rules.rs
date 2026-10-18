@@ -13,10 +13,12 @@ use icarus_bevy::experimental::restore_rules::{
     normalize_prospect_name, normalize_restored_modifier_lifetime, player_record_valid,
     prospect_ids_match, record_weather_event_elapsed, recorded_level, recorder_restore_dispatch,
     recorder_transform_is_non_identity, remaining_cooldown, replicated_prospect_game_time,
-    resolve_cave_ai_class_name, resolve_inventory_slot_restore, resolve_prospect_player_list,
+    resolve_cave_ai_class_name, resolve_inventory_slot_restore,
+    resolve_item_recorder_database_guid, resolve_prospect_player_list,
     resource_deposit_record_valid, restored_elapsed_seconds, restored_weather_event_start_time,
     rocket_record_valid, rocket_restore, should_auto_activate_respawned_drill,
-    should_record_weather_event, stitch, stitch_trapped_character_guids,
+    should_record_weather_event, should_restore_actor_transform,
+    should_try_fast_path_prebuilt_grid_restore, stitch, stitch_trapped_character_guids,
     upgrade_actor_recorder_component_names, upright_rotation, upsert_recorded_variable,
     validate_rocket_spawn_record, voxel_location_matches, voxel_record_valid,
 };
@@ -735,6 +737,20 @@ fn owner_resolve_step_attach_and_drill_auto_activate() {
     assert!(!should_auto_activate_respawned_drill(true, true, false));
     assert!(!should_auto_activate_respawned_drill(true, false, true));
     assert!(!should_auto_activate_respawned_drill(false, true, true));
+
+    // C004 UBuildingGridRecorderComponent::UpdateOwnerToDatabaseState (0x1418b7770 / 0x1418ba640).
+    assert!(should_try_fast_path_prebuilt_grid_restore(true, true));
+    assert!(!should_try_fast_path_prebuilt_grid_restore(true, false));
+    assert!(!should_try_fast_path_prebuilt_grid_restore(false, true));
+
+    // C021 UItemStateRecorderComponent::RespawnOwner (0x1418a7660 / 0x1418ac140).
+    assert_eq!(resolve_item_recorder_database_guid(55, 77), 77);
+    assert_eq!(resolve_item_recorder_database_guid(0, 77), -1);
+    assert_eq!(resolve_item_recorder_database_guid(-5, 77), -1);
+
+    // C001/C023 UActorStateRecorderComponent::UpdateOwnerToDatabaseState (0x1418b6ed0 / 0x1418ba040).
+    assert!(should_restore_actor_transform(true));
+    assert!(!should_restore_actor_transform(false));
 }
 
 #[test]

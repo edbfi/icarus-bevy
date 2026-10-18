@@ -3,7 +3,7 @@
 //! Each function is a pure rule over authored domain values, read from the
 //! client recorders' record, validate, stitch and restore code (F-645 to F-665,
 //! F-677, F-715, F-716, F-717, F-727, F-728, F-732, F-733, F-734, F-735,
-//! F-736, F-737, F-741, F-742, F-743).
+//! F-736, F-737, F-741, F-742, F-743, F-744).
 //! Nothing here decodes a save, looks up a class, constructs an object or
 //! imports state: the rules pin the behavior a native world must reproduce when
 //! it restores recorded actors. The normal server does not call them yet, and
@@ -402,6 +402,44 @@ pub const fn should_auto_activate_respawned_drill(
     auto_activate_drill_flag: bool,
 ) -> bool {
     actor_is_drill && static_row_found && auto_activate_drill_flag
+}
+
+/// Whether `UBuildingGridRecorderComponent::UpdateOwnerToDatabaseState` (`C004`,
+/// `0x1418b7770` server / `0x1418ba640` client) attempts
+/// `ABuildingGrid::TryFastPathRestorePrebuiltGrid` (`0x1413a9690` server /
+/// `0x1413e9220` client) before falling back to `ABuildingGrid::RestoreBuildingGrid`
+/// (`0x141a7ac10` server / `0x141a6f1b0` client): requires a non-null
+/// `GetInstancedLevel()` (`0x14139a9b0` / `0x1413d97b0`) with `bIsPrebuilt`
+/// (`+0x128`) set (F-744).
+pub const fn should_try_fast_path_prebuilt_grid_restore(
+    instanced_level_present: bool,
+    instanced_level_is_prebuilt: bool,
+) -> bool {
+    instanced_level_present && instanced_level_is_prebuilt
+}
+
+/// Resolves `FItemData::DatabaseGUID` in `UItemStateRecorderComponent::RespawnOwner`
+/// (`C021`, `0x1418a7660` server / `0x1418ac140` client) before
+/// `AIcarusItem::SpawnItem` (`0x1413a67b0` server / `0x1413e5db0` client):
+/// when `icarus_actor_guid > 0` (`+0x140`), uses `bound_guid` returned by
+/// `UIcarusWorldRecorderSubsystem::BindActorGuid` (`0x1413dec50` server /
+/// `0x14141c790` client); otherwise assigns `-1` (`0xffffffff`) (F-744).
+pub const fn resolve_item_recorder_database_guid(icarus_actor_guid: i32, bound_guid: i32) -> i32 {
+    if icarus_actor_guid > 0 {
+        bound_guid
+    } else {
+        -1
+    }
+}
+
+/// Whether `UActorStateRecorderComponent::UpdateOwnerToDatabaseState`
+/// (`0x1418b6ed0` server / `0x1418ba040` client, inherited by `C023`
+/// `UOilGeyserRecorderComponent`) calls `AActor::SetActorTransform`
+/// (`0x143348c70` server / `0x1435df0d0` client) with `&this->ActorTransform`
+/// (`+0xe0`) and `ETeleportType::ResetPhysics` (`2`): requires
+/// `bRecordActorTransform` (`[this+0xd9]`) to be non-zero (F-741, F-744).
+pub const fn should_restore_actor_transform(b_record_actor_transform: bool) -> bool {
+    b_record_actor_transform
 }
 
 /// The engine's float-to-int truncation: out-of-range and NaN inputs give
