@@ -532,8 +532,7 @@ pub fn stage_prospect_save_state(
             ensure!(
                 property.tag.kind == TagKind::Struct
                     && property.index == 0
-                    && (extra_is(&property, "ProspectInfo")
-                        || extra_is(&property, "IcarusProspect")),
+                    && extra_is(&property, "ProspectInfo"),
                 "invalid ProspectInfo root header"
             );
             prospect_info = Some(validate_prospect_info(

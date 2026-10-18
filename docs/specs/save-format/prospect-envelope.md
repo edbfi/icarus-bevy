@@ -87,8 +87,9 @@ unavailable.
   (F-412); reject negative lengths, malformed
   SHA-1 or Base64; require canonical padded Base64, exact compressed count, one
   complete zlib stream, no trailing bytes and exact output length; verify the
-  legacy hash without retaining the world; report `DataLength` uninterpreted
-  (F-241). Success is labeled `experimental_envelope_only`; `--inner-tags`
+  legacy hash without retaining the world; report `DataLength` without enforcing
+  `DataLength == TotalLength` (F-241, F-737). Success is labeled
+  `experimental_envelope_only`; `--inner-tags`
   adds `experimental_root_tags_only` aggregate counts under the fixed research
   profile (F-244), and `--stage-check` adds `experimental_stage_only` root,
   `ProspectInfo`, migration and recorder base-component staging (`F-738`).

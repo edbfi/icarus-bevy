@@ -590,7 +590,7 @@ fn stage_prospect_validates_envelope_migration_and_normalized_name() {
         tag(
             "ProspectInfo",
             "StructProperty",
-            &[fstring("IcarusProspect"), vec![0; 17]].concat(),
+            &[fstring("ProspectInfo"), vec![0; 17]].concat(),
             &inner_info,
         ),
         end.to_vec(),

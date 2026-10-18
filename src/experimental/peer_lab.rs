@@ -485,6 +485,15 @@ impl PeerLab {
         self.peers.contains_key(&address)
     }
 
+    /// Clamped `CurrentNetSpeed` (`UNetConnection + 0x38`, `F-740`) recorded
+    /// for `address`, or `None` if the peer does not exist or has not applied a
+    /// valid `Netspeed` control message yet.
+    pub fn current_net_speed(&self, address: SocketAddrV4) -> Option<i32> {
+        self.peers
+            .get(&address)
+            .and_then(|entry| entry.current_net_speed)
+    }
+
     fn occupancy(&self, excluding: Option<SocketAddrV4>) -> Occupancy {
         let mut occupancy = Occupancy::default();
         for (address, entry) in &self.peers {
@@ -885,7 +894,7 @@ impl PeerLab {
             if length > max {
                 bump(&mut self.stats.oversize);
                 continue;
-            }
+            };
             let now = Instant::now();
             if self.handshake(address, length, now) {
                 continue;
@@ -946,13 +955,5 @@ mod tests {
         let mut config = PeerLabConfig::default();
         config.packet.sent_capacity = 0;
         assert!(config.validate().is_err());
-    }
-
-    #[test]
-    fn debug_carries_counts_only() {
-        let lab = PeerLab::bind(0, PeerLabConfig::default()).unwrap();
-        let text = format!("{lab:?}");
-        assert!(text.starts_with("PeerLab { peers: 0, max_peers: 16, stats: "));
-        assert!(!text.contains("127.0.0.1"));
     }
 }

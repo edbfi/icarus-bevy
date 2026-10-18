@@ -122,9 +122,10 @@ runtime initialization, compression, or integrity protection.
 - Server `UWorld::NotifyControlMessage` (`0x1439ee7f0`, F-563, F-713, F-740) and
   `WelcomePlayer` (`0x1439fdeb0`, F-580): `IsClientMsgTypeValid` (`0x143991c70`)
   gates messages by `ClientLoginState` (`LoggingIn = 1`, `Welcomed = 2`,
-  `Joined = 3`) and `ExpectedClientLoginMsgType` (`0` = `Hello`, `5` = `Login`),
-  while admitting `Netspeed` (`4`), `PCSwap` (`15`), and `DebugText` (`17`) in
-  every non-Invalid state. On `Join` (`9`), if `PlayerController` (`+0x30`) is
+  `Joined = 3`), admitting only `ExpectedClientLoginMsgType` (`0` = `Hello`,
+  `5` = `Login`) during `LoggingIn` (`1`) and admitting every non-login ID
+  (`!= 0 && != 5`, including `Netspeed` `4`, `PCSwap` `15`, and `DebugText` `17`)
+  in `Welcomed` (`2`) and `Joined` (`3`). On `Join` (`9`), if `PlayerController` (`+0x30`) is
   null, `SpawnPlayActor` (`0x14392dbb0`) runs `AGameModeBase::Login` ->
   `ApproveLogin` -> `SpawnPlayerController` -> `InitNewPlayer`, sets
   `NetPlayerIndex` (`+0x3d4`), binds `HandleClientPlayer`, calls `PostLogin`, and

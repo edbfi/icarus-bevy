@@ -855,6 +855,7 @@ fn admission_enforces_login_state_and_completes_welcome_and_join() {
     );
     assert_eq!(stats(&app).invalid_state_messages, 2);
     assert_eq!(stats(&app).netspeeds_updated, 0);
+    assert_eq!(lab(&app).current_net_speed(client.address()), None);
 
     // Valid Hello gets Challenge and advances ExpectedClientLoginMsgType to 5 (Login).
     client.exchange(&mut app, short_hello("", LOCAL_VERSION), false);
@@ -888,6 +889,7 @@ fn admission_enforces_login_state_and_completes_welcome_and_join() {
     );
     assert_eq!(stats(&app).invalid_state_messages, 4);
     assert_eq!(stats(&app).netspeeds_updated, 0);
+    assert_eq!(lab(&app).current_net_speed(client.address()), None);
 
     // Compatible Login gets Welcome (ID 1) and advances ClientLoginState to Welcomed.
     let valid_login = ControlMessage::Login {
@@ -922,6 +924,7 @@ fn admission_enforces_login_state_and_completes_welcome_and_join() {
         }]
     );
     assert_eq!(stats(&app).netspeeds_updated, 1);
+    assert_eq!(lab(&app).current_net_speed(client.address()), Some(15_000));
 
     let join_id = client.exchange(&mut app, ControlMessage::Join, false);
     assert_eq!(
@@ -943,6 +946,7 @@ fn admission_enforces_login_state_and_completes_welcome_and_join() {
         }]
     );
     assert_eq!(stats(&app).netspeeds_updated, 2);
+    assert_eq!(lab(&app).current_net_speed(client.address()), Some(1_800));
 
     let dup_join_id = client.exchange(&mut app, ControlMessage::Join, false);
     assert_eq!(
