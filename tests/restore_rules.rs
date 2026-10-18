@@ -1,20 +1,23 @@
 use icarus_bevy::experimental::restore_rules::{
     ACTOR_RECORDER_TRANSFORM_TOLERANCE, ActorLink, ApplyTransformKind, AttachRecorderOutcome,
-    ByNameLoadOutcome, DynamicItemPropertyKind, InventorySlotOverflowDisposition, LobbyPrivacy,
-    OwnerResolvePolicy, OwnerResolveStep, PROSPECT_SAVE_STATE_CURRENT_VERSION, PlayerList,
-    PlayerStateLifeRestore, ProspectAssociatedMember, ProspectBlobDecodeOutcome,
-    RESTORED_INDEFINITE_MODIFIER_LIFETIME, RestoreStateKind, RestoredMissionHistoryEntry,
-    RocketRestore, SetupLoadedProspectOutcome, StitchedPlayerRecorderLinks,
-    VOXEL_LOCATION_TOLERANCE, VersionUpgradeKind, VoxelDatabaseRestorePlan,
-    can_activate_prospect_info, container_entries, does_actor_recorder_match_actor,
+    ByNameLoadOutcome, DynamicItemPropertyKind, InventorySlotOverflowDisposition,
+    LegacyGunAmmoUpgrade, LobbyPrivacy, OwnerResolvePolicy, OwnerResolveStep,
+    PROSPECT_SAVE_STATE_CURRENT_VERSION, PlayerList, PlayerStateLifeRestore,
+    ProspectAssociatedMember, ProspectBlobDecodeOutcome, RESTORED_INDEFINITE_MODIFIER_LIFETIME,
+    RestoreStateKind, RestoredMissionHistoryEntry, RocketRestore, SetupLoadedProspectOutcome,
+    SplineRespawnDisposition, StitchedPlayerRecorderLinks, VOXEL_LOCATION_TOLERANCE,
+    VersionUpgradeKind, VoxelDatabaseRestorePlan, can_activate_prospect_info,
+    compact_and_diff_flod_tiles, container_entries, does_actor_recorder_match_actor,
     does_player_recorder_match_actor, does_player_state_recorder_match_actor,
     does_state_recorder_match_actor, does_voxel_recorder_match_actor,
-    evaluate_attach_recorder_to_actor, evaluate_by_name_load_attempt, evaluate_owner_resolve_step,
+    evaluate_attach_recorder_to_actor, evaluate_by_name_load_attempt,
+    evaluate_legacy_gun_ammo_upgrade, evaluate_owner_resolve_step,
     evaluate_player_state_life_restore, evaluate_prospect_blob_decode,
-    evaluate_setup_loaded_prospect_attempt, evaluate_voxel_database_restore,
-    filter_restored_cosmetic_armour_overrides, migrate_prospect_save_state, names_match,
-    normalize_prospect_name, normalize_restored_modifier_lifetime, player_record_valid,
-    prospect_ids_match, record_weather_event_elapsed, recorded_level, recorder_restore_dispatch,
+    evaluate_setup_loaded_prospect_attempt, evaluate_spline_recorder_respawn,
+    evaluate_voxel_database_restore, filter_restored_cosmetic_armour_overrides,
+    migrate_prospect_save_state, names_match, normalize_prospect_name,
+    normalize_restored_modifier_lifetime, player_record_valid, prospect_ids_match,
+    record_weather_event_elapsed, recorded_level, recorder_restore_dispatch,
     recorder_transform_is_non_identity, remaining_cooldown, replicated_prospect_game_time,
     resolve_cave_ai_class_name, resolve_deployable_setup_variant_index,
     resolve_inventory_slot_restore, resolve_item_recorder_database_guid,
@@ -22,12 +25,13 @@ use icarus_bevy::experimental::restore_rules::{
     restore_game_mode_exported_currencies, restore_game_mode_mission_history,
     restore_world_boss_row_handles, restored_elapsed_seconds, restored_next_meteor_shower_time,
     restored_weather_event_start_time, rocket_record_valid, rocket_restore,
-    should_auto_activate_respawned_drill, should_grant_deposit_map_icon_stat,
-    should_record_weather_event, should_restore_actor_transform,
-    should_try_fast_path_prebuilt_grid_restore, stitch, stitch_player_recorder_assigned_uids,
-    stitch_quest_actor_records, stitch_trapped_character_guids,
-    upgrade_actor_recorder_component_names, upright_rotation, upsert_recorded_variable,
-    validate_rocket_spawn_record, voxel_location_matches, voxel_record_valid,
+    should_auto_activate_respawned_drill, should_drop_respawned_tree_recorder_on_resave,
+    should_grant_deposit_map_icon_stat, should_record_weather_event,
+    should_restore_actor_transform, should_try_fast_path_prebuilt_grid_restore, stitch,
+    stitch_player_recorder_assigned_uids, stitch_quest_actor_records,
+    stitch_trapped_character_guids, upgrade_actor_recorder_component_names, upright_rotation,
+    upsert_recorded_variable, validate_rocket_spawn_record, voxel_location_matches,
+    voxel_record_valid,
 };
 
 fn units(text: &str) -> Vec<u16> {
@@ -121,6 +125,13 @@ fn stitching_needs_both_id_and_name() {
         stitch_trapped_character_guids(-1, &[], &[10, 20, 30]),
         Vec::<i32>::new()
     );
+
+    // C013 UFLODRecorderComponent::Stitching (0x1418ac8f0 / 0x1418b12a0):
+    // compacts None entries from FLODTiles in place and returns FLODTiles \ SpawnedActors.
+    let mut flod_tiles = vec![Some(10), None, Some(20), Some(30), None, Some(40)];
+    let stale_tiles = compact_and_diff_flod_tiles(&mut flod_tiles, &[20, 40, 99]);
+    assert_eq!(flod_tiles, vec![Some(10), Some(20), Some(30), Some(40)]);
+    assert_eq!(stale_tiles, vec![10, 30]);
 
     // C025 UPlayerRecorderComponent::Stitching (0x1418f5160 / 0x1418f58a0):
     // skips 0 UIDs and resolves each non-zero UID to the first matching GUID in its class bucket.
@@ -1000,6 +1011,31 @@ fn owner_resolve_step_attach_and_drill_auto_activate() {
     // C001/C023 UActorStateRecorderComponent::UpdateOwnerToDatabaseState (0x1418b6ed0 / 0x1418ba040).
     assert!(should_restore_actor_transform(true));
     assert!(!should_restore_actor_transform(false));
+
+    // C032 USplineRecorderComponent::RespawnOwner (0x1418ed690 / 0x1418ee060).
+    assert_eq!(
+        evaluate_spline_recorder_respawn(false, false, true),
+        SplineRespawnDisposition::FailedNoActor
+    );
+    assert_eq!(
+        evaluate_spline_recorder_respawn(true, false, true),
+        SplineRespawnDisposition::Resolved {
+            reused_existing_spline_actor: true,
+            apply_spline_network_state: true,
+        }
+    );
+    assert_eq!(
+        evaluate_spline_recorder_respawn(false, true, false),
+        SplineRespawnDisposition::Resolved {
+            reused_existing_spline_actor: false,
+            apply_spline_network_state: false,
+        }
+    );
+
+    // C033 UTreeRecorderComponent::RespawnOwner (0x1418ed770 / 0x1418ee140):
+    // physics-dynamic trees unregister their recorder during FinishSpawningActor.
+    assert!(should_drop_respawned_tree_recorder_on_resave(true));
+    assert!(!should_drop_respawned_tree_recorder_on_resave(false));
 }
 
 #[test]
@@ -1360,6 +1396,45 @@ fn d01_dynamic_item_properties_overflow_modifiers_and_variables() {
     assert_eq!(
         DynamicItemPropertyKind::from_saved_index(256),
         Some(DynamicItemPropertyKind::AssociatedItemInventoryId)
+    );
+
+    // C001 UActorStateRecorderComponent::PerformItemVersionUpgrades (0x14189a250 / 0x1418a3530):
+    // upgrades gun ammo into linked inventory slot 0 when ActorStateRecorderVersion < 2.
+    assert_eq!(
+        evaluate_legacy_gun_ammo_upgrade(2, true, true, &[(4, 2), (3, 8), (13, 42)]),
+        None
+    );
+    assert_eq!(
+        evaluate_legacy_gun_ammo_upgrade(1, false, true, &[(4, 2), (3, 8), (13, 42)]),
+        None
+    );
+    assert_eq!(
+        evaluate_legacy_gun_ammo_upgrade(1, true, false, &[(4, 2), (3, 8), (13, 42)]),
+        None
+    );
+    assert_eq!(
+        evaluate_legacy_gun_ammo_upgrade(1, true, true, &[(4, 0), (3, 8)]),
+        None
+    );
+    assert_eq!(
+        evaluate_legacy_gun_ammo_upgrade(1, true, true, &[(4, 2), (3, 0)]),
+        None
+    );
+    assert_eq!(
+        evaluate_legacy_gun_ammo_upgrade(1, true, true, &[(4, 2), (3, 8)]),
+        Some(LegacyGunAmmoUpgrade {
+            ammo_type_index: 1,
+            ammo_stack_count: 8,
+            existing_linked_inventory_id: None,
+        })
+    );
+    assert_eq!(
+        evaluate_legacy_gun_ammo_upgrade(1, true, true, &[(4, 1), (3, 30), (13, 77)]),
+        Some(LegacyGunAmmoUpgrade {
+            ammo_type_index: 0,
+            ammo_stack_count: 30,
+            existing_linked_inventory_id: Some(77),
+        })
     );
 
     assert_eq!(

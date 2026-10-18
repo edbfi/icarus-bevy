@@ -114,6 +114,28 @@ pub fn stitch_trapped_character_guids(
         .collect()
 }
 
+/// Compacts `AFLODManager::FLODTiles` (`+0x248`) in place and returns the stale
+/// tile IDs to destroy (`FLODTiles \ SpawnedActors`) as
+/// `UFLODRecorderComponent::Stitching` (`C013`, `0x1418ac8f0` server /
+/// `0x1418b12a0` client) does (F-646, F-716).
+///
+/// Removes `None` (`nullptr`) entries from `flod_tiles` in place, then returns
+/// every tile ID in the compacted `flod_tiles` that does not appear in
+/// `spawned_actors` (`0x1418a0d60` set-difference helper before
+/// `AFLODTile::DestroyTile` at `0x1413e1040`).
+pub fn compact_and_diff_flod_tiles<T: PartialEq + Clone>(
+    flod_tiles: &mut Vec<Option<T>>,
+    spawned_actors: &[T],
+) -> Vec<T> {
+    flod_tiles.retain(Option::is_some);
+    flod_tiles
+        .iter()
+        .filter_map(|tile| tile.as_ref())
+        .filter(|tile| !spawned_actors.contains(tile))
+        .cloned()
+        .collect()
+}
+
 /// Resolved actor-array indices for `UPlayerRecorderComponent::Stitching`
 /// (`C025`, `vftable + 0x468`: `0x1418f5160` server / `0x1418f58a0` client)
 /// (F-648, F-650).
@@ -592,6 +614,54 @@ pub const fn resolve_item_recorder_database_guid(icarus_actor_guid: i32, bound_g
 /// `bRecordActorTransform` (`[this+0xd9]`) to be non-zero (F-741, F-744).
 pub const fn should_restore_actor_transform(b_record_actor_transform: bool) -> bool {
     b_record_actor_transform
+}
+
+/// How `USplineRecorderComponent::RespawnOwner` (`C032`, `0x1418ed690` server /
+/// `0x1418ee060` client) resolves or spawns its spline owner and applies saved
+/// spline state (F-658).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SplineRespawnDisposition {
+    /// Neither `USplineSubsystem` lookup (`0x141bc1a90` client) nor
+    /// `UActorStateRecorderComponent::RespawnOwner` (`0x1418a7210` server /
+    /// `0x1418abc90` client) returned an actor.
+    FailedNoActor,
+    /// Actor resolved (reusing an existing `USplineSubsystem` actor when
+    /// `reused_existing_spline_actor` is `true`, else spawning via
+    /// `UActorStateRecorderComponent::RespawnOwner`); when
+    /// `apply_spline_network_state` is `true` (`ASplineNetworkActor`), copies
+    /// `UniqueSplineID` (`+0x234 -> +0x220`) and `SplineFlags` (`+0x248 -> +0x224`)
+    /// and calls `RestoreSplineNetwork` (`+0x1c0`).
+    Resolved {
+        reused_existing_spline_actor: bool,
+        apply_spline_network_state: bool,
+    },
+}
+
+/// Evaluates `USplineRecorderComponent::RespawnOwner` (`C032`, `0x1418ed690`
+/// server / `0x1418ee060` client) (F-658).
+pub const fn evaluate_spline_recorder_respawn(
+    existing_spline_found: bool,
+    fallback_spawn_ok: bool,
+    actor_is_spline_network: bool,
+) -> SplineRespawnDisposition {
+    if !existing_spline_found && !fallback_spawn_ok {
+        return SplineRespawnDisposition::FailedNoActor;
+    }
+    SplineRespawnDisposition::Resolved {
+        reused_existing_spline_actor: existing_spline_found,
+        apply_spline_network_state: actor_is_spline_network,
+    }
+}
+
+/// Whether a respawned `C033` (`UTreeRecorderComponent::RespawnOwner` at
+/// `0x1418ed770` server / `0x1418ee140` client -> `ATreePrefab::CreateTreeRuntime`
+/// `0x141717f90` server / `0x141727e20` client) unregisters its recorder via
+/// `BP_TreeBase_C`'s double `EndRecording` (`0x141892460` server / `0x14189a250`
+/// client) during `FinishSpawningActor` and is therefore omitted on the next
+/// save: occurs iff `b_is_physics_dynamic` (`+0x1e0`) is `true` (F-656, F-681,
+/// F-736).
+pub const fn should_drop_respawned_tree_recorder_on_resave(b_is_physics_dynamic: bool) -> bool {
+    b_is_physics_dynamic
 }
 
 /// Whether `UResourceDepositRecorderComponent::UpdateOwnerToDatabaseState`
@@ -1568,6 +1638,65 @@ impl DynamicItemPropertyKind {
             _ => None,
         }
     }
+}
+
+/// Legacy (`actor_state_recorder_version < 2`) gun-ammo upgrade plan evaluated
+/// by `UActorStateRecorderComponent::PerformItemVersionUpgrades` (`0x14189a250`
+/// server / `0x1418a3530` client) during `UpdateOwnerInventories` (`0x1418b8f20`)
+/// (F-735).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct LegacyGunAmmoUpgrade {
+    /// Zero-based index (`current_ammo_type - 1`) into the ranged weapon's
+    /// `AmmoTypes` array (`+0x30`, stride `0x18` B).
+    pub ammo_type_index: usize,
+    /// Stack count (`GunCurrentMagSize`) written to
+    /// [`DynamicItemPropertyKind::ItemableStack`] (`7`) on the synthesized
+    /// ammo `FItemData` placed at slot `0` of the gun's linked ammo inventory.
+    pub ammo_stack_count: i32,
+    /// Existing `InventoryContainerLinkedInventoryId` (`13`) when `!= -1`, or
+    /// `None` when a new container inventory ID must be allocated and written
+    /// back into the gun's `InventoryContainerLinkedInventoryId` (`13`)
+    /// dynamic property.
+    pub existing_linked_inventory_id: Option<i32>,
+}
+
+/// Evaluates `UActorStateRecorderComponent::PerformItemVersionUpgrades`
+/// (`0x14189a250` server / `0x1418a3530` client) on a restored `FItemData`'s
+/// `ItemDynamicData` (`+0x30`, stride `8` B: `(property_type, value)`) (F-735).
+///
+/// Runs only when `actor_state_recorder_version < 2` (`[this + 0xdc] < 2`),
+/// `has_valid_inventory_container` (`+0x2e8`), and
+/// `has_valid_ranged_weapon_data` (`+0x390`) are all true, and both
+/// `CurrentAmmoType` (`4`) and `GunCurrentMagSize` (`3`) are `> 0`.
+pub fn evaluate_legacy_gun_ammo_upgrade(
+    actor_state_recorder_version: i32,
+    has_valid_inventory_container: bool,
+    has_valid_ranged_weapon_data: bool,
+    dynamic_properties: &[(u8, i32)],
+) -> Option<LegacyGunAmmoUpgrade> {
+    if actor_state_recorder_version >= 2
+        || !has_valid_inventory_container
+        || !has_valid_ranged_weapon_data
+    {
+        return None;
+    }
+    let find_prop = |kind: DynamicItemPropertyKind| -> i32 {
+        dynamic_properties
+            .iter()
+            .find(|(prop_type, _)| *prop_type == kind as u8)
+            .map_or(-1, |(_, value)| *value)
+    };
+    let current_ammo_type = find_prop(DynamicItemPropertyKind::CurrentAmmoType);
+    let gun_current_mag_size = find_prop(DynamicItemPropertyKind::GunCurrentMagSize);
+    if current_ammo_type <= 0 || gun_current_mag_size <= 0 {
+        return None;
+    }
+    let linked_inv_id = find_prop(DynamicItemPropertyKind::InventoryContainerLinkedInventoryId);
+    Some(LegacyGunAmmoUpgrade {
+        ammo_type_index: (current_ammo_type - 1) as usize,
+        ammo_stack_count: gun_current_mag_size,
+        existing_linked_inventory_id: (linked_inv_id != -1).then_some(linked_inv_id),
+    })
 }
 
 /// How `UActorStateRecorderComponent::UpdateOwnerInventories` (`0x1418b8f20`)

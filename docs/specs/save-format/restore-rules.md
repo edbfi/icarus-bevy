@@ -63,8 +63,10 @@ data-table row meanings (F-660).
   `0x1418f3d30` / `C019` `0x1418f44e0`, `stitch_quest_actor_records`, F-650,
   F-663, F-676); `C007` (`0x1418ac670`, `stitch_trapped_character_guids`) and
   `C025` (`0x1418f5160`, `+0xf0..0xf8`, `stitch_player_recorder_assigned_uids`)
-  match GUID only; `C026` (`0x1418f7320`/`0x1418f5540`) restores life/health
-  (`evaluate_player_state_life_restore`) and valid unique `CosmeticArmourOverrides`
+  match GUID only; `C013` (`0x1418ac8f0`, `compact_and_diff_flod_tiles`) destroys
+  `FLODTiles \ SpawnedActors` (`+0x248`, F-646, F-716); `C026`
+  (`0x1418f7320`/`0x1418f5540`) restores life/health
+  (`evaluate_player_state_life_restore`) and `CosmeticArmourOverrides`
   (`+0x228 -> +0xa80`, `filter_restored_cosmetic_armour_overrides`, F-648, F-657).
 - `DoesRecorderMatchActor` (`+0x478`, F-645, F-742, F-743): base (`0x14188ba30`,
   `does_state_recorder_match_actor`) checks `GetName() == +0xc0`; `C001`
@@ -74,40 +76,39 @@ data-table row meanings (F-660).
   (`0x141469c40`) == `+0xd8/+0xe8` (`0x14170a750`); `C026` (`0x1418c9450`,
   `does_player_state_recorder_match_actor`) checks Character (`+0x6c8`) and
   `PlayerState` (`+0x478`/`+0x498`) == `+0x1c0/+0x1d0`; `C031`/`C034` (`0x1418c9580`,
-  `does_voxel_recorder_match_actor`) also check `AVoxelResource` location (`<= 0.1`/axis
+  `does_voxel_recorder_match_actor`) also check `AVoxelResource` (`<= 0.1`/axis
   at `+0x1e0`).
-- `C009` (`0x14189d2a0`/`0x1418a72a0`) selects `D_DeployableSetup` variant index
-  from `BuildingVariation` (`5`, `resolve_deployable_setup_variant_index`, F-646);
-  `C010` (`0x1418a74f0`) checks `D_ItemsStatic` (`+0x153`) for `ActivateDrill`
-  (`0x1416f8240`, `should_auto_activate_respawned_drill`); `C022` saves/loads
-  `TileFlags` (`+0xd8`) and `RadarScans` (`+0x258 <-> +0x128`); `C038`
-  (`0x14192f140`/`0x14193aaa0`) copies `Talents` (`+0x2c8 <-> +0x1c0`, F-661,
-  F-676); `C002` reads `GetReplicatedProspectGameTime` (`0x1418d9390`, F-657,
-  F-734); `C035` keeps events with `row_duration + start <= CurrentBlockEndTime()`
-  (`0x14190a5a0`, F-734).
-- `C003` (`0x1418b7710`) copies `SpawnPointPlayers` (`+0x290`); `C004` (`0x1418b7770`)
-  tries `0x1413a9690` (`should_try_fast_path_prebuilt_grid_restore`) if `bIsPrebuilt`
-  (`+0x128`) else `0x141a7ac10`; `C006` (`0x1418b7b40`) copies `CaveEntranceMask`
-  (`+0x1c0`); `C021` (`0x1418a7660`) binds `DatabaseGUID` (`+0x140 > 0` else `-1`,
-  `resolve_item_recorder_database_guid`); `C023` (`0x141843be0`) uses `C001`
-  vtable (`+0xd9 = 1`, `should_restore_actor_transform`, F-744).
+- `C009` (`0x14189d2a0`/`0x1418a72a0`) picks `D_DeployableSetup` variant (`5`,
+  `resolve_deployable_setup_variant_index`, F-646); `C010` (`0x1418a74f0`) checks
+  `+0x153` for `ActivateDrill` (`0x1416f8240`, `should_auto_activate_respawned_drill`);
+  `C022` copies `TileFlags` (`+0xd8`) and `RadarScans` (`+0x258 <-> +0x128`);
+  `C038` (`0x14192f140`/`0x14193aaa0`) copies `Talents` (`+0x2c8 <-> +0x1c0`,
+  F-661, F-676); `C002` reads `0x1418d9390` (F-657, F-734); `C035` keeps events
+  with `row_duration + start <= CurrentBlockEndTime()` (`0x14190a5a0`, F-734).
+- `C003` (`0x1418b7710`) copies `+0x290`; `C004` (`0x1418b7770`) tries
+  `0x1413a9690` (`should_try_fast_path_prebuilt_grid_restore`) if `+0x128` else
+  `0x141a7ac10`; `C006` (`0x1418b7b40`) copies `+0x1c0`; `C021` (`0x1418a7660`)
+  binds `DatabaseGUID` (`+0x140 > 0` else `-1`, `resolve_item_recorder_database_guid`);
+  `C023` (`0x141843be0`) uses `C001` (`+0xd9 = 1`, `should_restore_actor_transform`,
+  F-744); `C032` (`0x1418ed690`, `evaluate_spline_recorder_respawn`) reuses or
+  spawns `ASplineNetworkActor` (`+0x220..0x224`, F-658).
 - `C001` (`0x1418b6ed0`/`0x1418ba040`) maps `ModifierLifetime == -1` to `100`,
   restores `D01` (`0x1418b8f20`) via 14 `EDynamicItemProperties` (`0x145e0c090`),
-  upgrades `v < 2` ammo (`0x1418a3530`), routes overflow to `ForceAddItems`/`+0x288`,
-  and restores `CPF_SaveGame` vars (`0x1418bcff0`, F-735).
+  upgrades `v < 2` ammo (`0x14189a250`, `evaluate_legacy_gun_ammo_upgrade`),
+  routes overflow to `ForceAddItems`/`+0x288`, and restores `CPF_SaveGame` vars
+  (`0x1418bcff0`, F-735).
 - `C033` (`0x1418ed770` -> `0x141717f90`) maps `TreePrimitiveMask` (`+0x1c8`) via
-  `TreePrimitiveNames` (`+0x340`, `0x141726f50`) to skip destroyed subtrees
-  (`0x1417012e0`); `BP_TreeBase_C` runs `execEndRecording` twice if
-  `bIsPhysicsDynamic` (`+0x1e0`, F-656, F-681, F-736).
-- `C015` (`0x1418b7f30`) falls back to game time if elapsed `< 31`
-  (`restored_elapsed_seconds`), seeds `v < 2` `ExportedCurrencies` (`+0x670`,
-  `restore_game_mode_exported_currencies`), and restores `MissionHistory` (`+0x6c0`,
-  `restore_game_mode_mission_history`) and `NextMeteorShowerTime` (`+0x6ec`,
-  `restored_next_meteor_shower_time`, F-653); `C037` (`0x1418f8610`) overrides
-  `BossRowHandle` from `ActiveWorldBosses` (`restore_world_boss_row_handles`,
-  F-654); survival `-1` is unrecorded (F-648); mounts keep yaw; containers keep
-  list order (F-651); `C036` (`0x1418e9ff0`/`0x1418f86c0`) saves `NowBlock` (`+0xd8`)
-  and restores `+0x2c0..0x2e8` (F-654, F-665); `C005` (`0x14141e320`) unwraps
+  `TreePrimitiveNames` (`+0x340`, `0x141726f50`) to skip subtrees (`0x1417012e0`);
+  `BP_TreeBase_C` runs `execEndRecording` twice if `bIsPhysicsDynamic` (`+0x1e0`,
+  `should_drop_respawned_tree_recorder_on_resave`, F-656, F-681, F-736).
+- `C015` (`0x1418b7f30`) falls back to game time if `< 31` (`restored_elapsed_seconds`),
+  seeds `v < 2` `ExportedCurrencies` (`+0x670`, `restore_game_mode_exported_currencies`),
+  and restores `MissionHistory` (`+0x6c0`, `restore_game_mode_mission_history`) and
+  `NextMeteorShowerTime` (`+0x6ec`, `restored_next_meteor_shower_time`, F-653);
+  `C037` (`0x1418f8610`) overrides `BossRowHandle` (`restore_world_boss_row_handles`,
+  F-654); `-1` is unrecorded (F-648); mounts keep yaw; containers keep order
+  (F-651); `C036` (`0x1418e9ff0`/`0x1418f86c0`) saves `NowBlock` (`+0xd8`) and
+  restores `+0x2c0..0x2e8` (F-654, F-665); `C005` (`0x14141e320`) unwraps
   `"BlueprintGeneratedClass"` (`+0x208`, `resolve_cave_ai_class_name`, F-677).
 
 ## Candidate
