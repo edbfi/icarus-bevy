@@ -1,19 +1,20 @@
 use icarus_bevy::experimental::restore_rules::{
     ACTOR_RECORDER_TRANSFORM_TOLERANCE, ActorLink, ApplyTransformKind, ByNameLoadOutcome,
     DynamicItemPropertyKind, InventorySlotOverflowDisposition, LobbyPrivacy, OwnerResolvePolicy,
-    PROSPECT_SAVE_STATE_CURRENT_VERSION, PlayerList, ProspectBlobDecodeOutcome,
-    RESTORED_INDEFINITE_MODIFIER_LIFETIME, RestoreStateKind, RocketRestore,
-    SetupLoadedProspectOutcome, VOXEL_LOCATION_TOLERANCE, VersionUpgradeKind,
+    PROSPECT_SAVE_STATE_CURRENT_VERSION, PlayerList, ProspectAssociatedMember,
+    ProspectBlobDecodeOutcome, RESTORED_INDEFINITE_MODIFIER_LIFETIME, RestoreStateKind,
+    RocketRestore, SetupLoadedProspectOutcome, VOXEL_LOCATION_TOLERANCE, VersionUpgradeKind,
     can_activate_prospect_info, container_entries, evaluate_by_name_load_attempt,
     evaluate_prospect_blob_decode, evaluate_setup_loaded_prospect_attempt,
     migrate_prospect_save_state, names_match, normalize_prospect_name,
     normalize_restored_modifier_lifetime, player_record_valid, prospect_ids_match,
     record_weather_event_elapsed, recorded_level, recorder_restore_dispatch,
     recorder_transform_is_non_identity, remaining_cooldown, replicated_prospect_game_time,
-    resolve_inventory_slot_restore, restored_elapsed_seconds, restored_weather_event_start_time,
+    resolve_cave_ai_class_name, resolve_inventory_slot_restore, resolve_prospect_player_list,
+    resource_deposit_record_valid, restored_elapsed_seconds, restored_weather_event_start_time,
     rocket_record_valid, rocket_restore, should_record_weather_event, stitch,
     upgrade_actor_recorder_component_names, upright_rotation, upsert_recorded_variable,
-    voxel_location_matches, voxel_record_valid,
+    validate_rocket_spawn_record, voxel_location_matches, voxel_record_valid,
 };
 
 fn units(text: &str) -> Vec<u16> {
@@ -173,6 +174,90 @@ fn player_list_validation() {
 }
 
 #[test]
+fn prospect_player_list_resolution_rocket_spawn_reset_and_deposit_filter() {
+    let prospect_id = units("Olympus_Run");
+    let steam_id = units("76561198000000001");
+    let steam_id_lower = units("76561198000000001");
+    let hex_id = units("AbCdEf01");
+    let hex_id_upper = units("ABCDEF01");
+    let members = [
+        ProspectAssociatedMember {
+            user_id: &steam_id,
+            chr_slot: 0,
+        },
+        ProspectAssociatedMember {
+            user_id: &hex_id,
+            chr_slot: 2,
+        },
+    ];
+
+    assert_eq!(
+        resolve_prospect_player_list(false, &prospect_id, &members, &steam_id, 0),
+        PlayerList::Absent
+    );
+    assert_eq!(
+        resolve_prospect_player_list(true, &[], &members, &steam_id, 0),
+        PlayerList::Inactive
+    );
+    assert_eq!(
+        resolve_prospect_player_list(true, &prospect_id, &members, &steam_id_lower, 0),
+        PlayerList::Active { has_player: true }
+    );
+    assert_eq!(
+        resolve_prospect_player_list(true, &prospect_id, &members, &hex_id_upper, 2),
+        PlayerList::Active { has_player: true }
+    );
+    // Wrong character slot or unknown user ID yields Active { has_player: false }.
+    assert_eq!(
+        resolve_prospect_player_list(true, &prospect_id, &members, &steam_id, 1),
+        PlayerList::Active { has_player: false }
+    );
+    assert_eq!(
+        resolve_prospect_player_list(true, &prospect_id, &members, &units("76561198000000099"), 0),
+        PlayerList::Active { has_player: false }
+    );
+
+    // C011 URocketSpawnRecorderComponent::Validate resets PlayerID and ChrSlot on version < 1
+    // or Active { has_player: false }, while keeping the spawn record valid (returns true).
+    let mut spawn_player = steam_id.clone();
+    let mut spawn_slot = 0;
+    assert!(validate_rocket_spawn_record(
+        1,
+        PlayerList::Active { has_player: true },
+        &mut spawn_player,
+        &mut spawn_slot,
+    ));
+    assert_eq!(spawn_player, steam_id);
+    assert_eq!(spawn_slot, 0);
+
+    assert!(validate_rocket_spawn_record(
+        1,
+        PlayerList::Active { has_player: false },
+        &mut spawn_player,
+        &mut spawn_slot,
+    ));
+    assert!(spawn_player.is_empty());
+    assert_eq!(spawn_slot, -1);
+
+    let mut legacy_player = steam_id.clone();
+    let mut legacy_slot = 3;
+    assert!(validate_rocket_spawn_record(
+        0,
+        PlayerList::Active { has_player: true },
+        &mut legacy_player,
+        &mut legacy_slot,
+    ));
+    assert!(legacy_player.is_empty());
+    assert_eq!(legacy_slot, -1);
+
+    // C028 UResourceDepositRecorderComponent::Validate rejects "Super_Cooled_Ice" case-insensitively.
+    assert!(!resource_deposit_record_valid(&units("Super_Cooled_Ice")));
+    assert!(!resource_deposit_record_valid(&units("super_cooled_ice")));
+    assert!(resource_deposit_record_valid(&units("Iron_Deep_Ore")));
+    assert!(resource_deposit_record_valid(&units("Exotic_Red")));
+}
+
+#[test]
 fn container_positions_keep_gaps() {
     let list = [Some('a'), None, Some('c'), None];
     let entries: Vec<_> = container_entries(&list).collect();
@@ -221,6 +306,17 @@ fn forecast_position_follows_the_containing_block() {
 #[test]
 fn cave_spawn_times_replace_the_first_matching_class() {
     use icarus_bevy::experimental::restore_rules::{CaveSpawnTimes, restore_cave_spawn_times};
+    let bp_gen = units("BlueprintGeneratedClass");
+    let generated_by = units("BP_CaveWorm_C");
+    assert_eq!(
+        resolve_cave_ai_class_name(&bp_gen, Some(&generated_by)),
+        generated_by.as_slice()
+    );
+    assert_eq!(resolve_cave_ai_class_name(&bp_gen, None), bp_gen.as_slice());
+    assert_eq!(
+        resolve_cave_ai_class_name(&generated_by, Some(&bp_gen)),
+        generated_by.as_slice()
+    );
     let class = |name: &str, times: &[f32]| CaveSpawnTimes {
         class_name: units(name),
         times: times.to_vec(),

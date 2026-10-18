@@ -20,45 +20,39 @@ Not covered: gameplay data-table row meanings, reference resolution and world im
 Entry paths and failure reporting
 
 - By-name entry `LoadProspect` (`0x14146e590`) -> `LoadProspectByName`
-  (`0x14146e6c0`) rejects empty names, strips a trailing `.json` suffix
-  (`IgnoreCase`), reads `.json` twice (`GetProspectBlob` `0x141817bd0`,
-  `GetProspectInfo` `0x14181e530`), verifies `Stricmp(ProspectID, Name) == 0`,
-  and transitions via `TransitionToProspect` (`0x1414831f0`): missing,
-  empty/truncated, malformed-JSON, and ID-mismatch inputs return `false` with
-  entry state preserved, whereas a corrupt inner `BinaryBlob` fails inside
+  (`0x14146e6c0`) rejects empty names, strips `.json` (`IgnoreCase`), reads
+  `.json` twice (`GetProspectBlob` `0x141817bd0`, `GetProspectInfo` `0x14181e530`),
+  checks `Stricmp(ProspectID, Name) == 0`, and calls `TransitionToProspect`
+  (`0x1414831f0`): missing, malformed-JSON, and ID-mismatch inputs return `false`
+  with entry state preserved, whereas a corrupt inner `BinaryBlob` fails inside
   `ReadFromProspectBlob` (`0x1418e6240`) *after* `ResetActiveProspect`
   (`0x1418333b0`) and `SetActiveProspectInfo` (`0x141837100`) overwrite active
-  `ProspectInfo` (F-717, F-733, F-737; U-057, U-063 resolved;
-  `normalize_prospect_name`, `evaluate_by_name_load_attempt`, and
-  `evaluate_prospect_blob_decode` in `experimental::restore_rules`).
-- From-file entry `SetupLoadedProspect` (`0x1414baf60`, from
-  `AIcarusGameModeSurvival::InitGame` `0x1414acc40` with `?LocalSavePath=`) skips
-  and returns `false` when `LocalSavePath.Num() <= 1` (all normal dedicated-server
-  loads); when `> 1` and either `LoadProspectSaveHeader` (`0x141824760`) or
+  `ProspectInfo` (F-717, F-733, F-737; U-057, U-063 resolved).
+- From-file entry `SetupLoadedProspect` (`0x1414baf60`, from `InitGame`
+  `0x1414acc40` with `?LocalSavePath=`) skips when `LocalSavePath.Num() <= 1`;
+  when `> 1` and either `LoadProspectSaveHeader` (`0x141824760`) or
   `LoadLocalProspectState` (`0x141823fb0`) fails, `0x1414bb15f` logs Fatal
   `0x1449f6660` and calls `0x141ee8930` (`GIsCriticalError = 1` ->
   `RequestExit` / `RaiseException`) before `ResetActiveProspect` (F-717, F-732,
-  F-733; U-056, U-058, U-063 resolved; `evaluate_setup_loaded_prospect_attempt`).
+  F-733; U-056, U-058, U-063 resolved).
 
 Inner state, version and archive mode
 
 - State vtable `0x1449e5c88` registers `ProspectSaveState`; header vtable
   `0x1449e5c70` registers `ProspectSaveStateHeader`; sizes `0xf8`/`0xe8` (F-328, F-329).
-  Reflected `FProspectInfo` (`0x145fae2d0` / `0x143dbfdd0`, size `0xa0`, align
-  `0x08`, struct tag `"ProspectInfo"`, 17 properties) carries `ProspectID` (`+0x00`),
-  `ClaimedAccountID` (`+0x10`), `ClaimedAccountCharacter` (`+0x20`),
-  `ProspectDTKey` (`+0x28`), `FactionMissionDTKey` (`+0x38`), `LobbyName` (`+0x48`),
-  `ExpireTime` (`+0x58`, `Int64Property`), `ProspectState` (`+0x60`,
-  `EProspectState` `0x145fae360` `0..=5`), `AssociatedMembers` (`+0x68`,
-  `FAssociatedMemberInfo` `0x145fad8e0` / `0x143dbc380`, `0x40` B, 8 fields:
-  `AccountName` `+0x00`, `CharacterName` `+0x10`, `UserID` `+0x20`, `ChrSlot`
-  `+0x30`, `Experience` `+0x34`, `Status` `+0x38` `EProspectLocation` `0..=4`,
-  `Settled` `+0x39`, `IsCurrentlyPlaying` `+0x3a`), `Cost` (`+0x78`), `Reward`
-  (`+0x7c`), `Difficulty` (`+0x80`, `EMissionDifficulty` `0x145fae070` `0..=4`),
-  `Insurance` (`+0x84`), `NoRespawns` (`+0x85`), `ElapsedTime` (`+0x88`),
-  `SelectedDropPoint` (`+0x8c`), and `CustomSettings` (`+0x90`,
-  `TArray<FCustomGameSetting>` `0x145fadbf0` / `0x143dbcf70`, `0x18` B,
-  `SettingRowName` `+0x00` + `SettingValue` `+0x10`; F-738).
+  Reflected `FProspectInfo` (`0x145fae2d0`, size `0xa0`, 17 properties) carries
+  `ProspectID` (`+0x00`), `ClaimedAccountID` (`+0x10`), `ClaimedAccountCharacter`
+  (`+0x20`), `ProspectDTKey` (`+0x28`), `FactionMissionDTKey` (`+0x38`),
+  `LobbyName` (`+0x48`), `ExpireTime` (`+0x58`, `Int64Property`), `ProspectState`
+  (`+0x60`, `EProspectState` `0..=5`), `AssociatedMembers` (`+0x68`,
+  `FAssociatedMemberInfo` `0x145fad8e0`, `0x40` B, 8 fields: `AccountName` `+0x00`,
+  `CharacterName` `+0x10`, `UserID` `+0x20`, `ChrSlot` `+0x30`, `Experience`
+  `+0x34`, `Status` `+0x38` `EProspectLocation` `0..=4`, `Settled` `+0x39`,
+  `IsCurrentlyPlaying` `+0x3a`), `Cost` (`+0x78`), `Reward` (`+0x7c`),
+  `Difficulty` (`+0x80`, `EMissionDifficulty` `0..=4`), `Insurance` (`+0x84`),
+  `NoRespawns` (`+0x85`), `ElapsedTime` (`+0x88`), `SelectedDropPoint` (`+0x8c`),
+  and `CustomSettings` (`+0x90`, `TArray<FCustomGameSetting>` `0x145fadbf0`,
+  `0x18` B, `SettingRowName` + `SettingValue`; F-738).
 
 | Field | Object offset | Role |
 | --- | --- | --- |
@@ -71,20 +65,20 @@ Inner state, version and archive mode
 | `ProspectDTKey` | `0xd8` | Legacy string, pre-version-2 fixups |
 | `StateRecorderBlobs` | `0xe8` | Array, derived state type |
 
-- `StateRecorderBlob` is `0x20` bytes in memory: `ComponentClassName` at 0,
-  `BinaryData` at `0x10`; descriptor order is not serialized order (F-330, F-332).
-- Dispatcher `0x1418ee4a0` uses tagged traversal through tag reader `0x14215f530`
-  (F-335, F-336, F-257). `UStruct::SerializeVersionedTaggedProperties`
-  (`0x14200f5b0`) reads `FPropertyTag` headers until `None`, wrapping
-  `PropertyLinkNext` (`+0x58`) back to head `PropertyLink` on out-of-order tags
-  and keeping constructor defaults when omitted (F-718; U-062 resolved).
+- `StateRecorderBlob` is `0x20` B (`ComponentClassName` at 0, `BinaryData` at
+  `0x10`); descriptor order is not serialized order (F-330, F-332).
+- Dispatcher `0x1418ee4a0` uses tagged traversal via `0x14215f530` (F-257,
+  F-335, F-336). `UStruct::SerializeVersionedTaggedProperties` (`0x14200f5b0`)
+  reads `FPropertyTag` headers until `None`, wrapping `PropertyLinkNext` (`+0x58`)
+  to head `PropertyLink` on out-of-order tags and keeping defaults when omitted
+  (F-718; U-062 resolved).
 - `ReadFromProspectBlob` (`0x1418e6240`) starts `FMemoryReader` at byte 0;
-  `Version = 2` is the `FProspectSaveState` schema version, unrelated to game
-  build (F-260, F-715; U-060 resolved). `PostLoadSerialize` (`0x1418e4250` /
-  `0x1418e44f0`) copies legacy `ProspectID` and `ProspectDTKey` into `ProspectInfo`
-  when `Version < 2`, and at `Version == 0` resets `ProspectInfo`, sets
-  `LobbyPrivacy = 1` (`FriendsOnly`) and clears `StateRecorderBlobs`, then stamps
-  `Version = 2` (F-715; U-059 resolved; `migrate_prospect_save_state`).
+  `Version = 2` is the schema version, unrelated to game build (F-260, F-715;
+  U-060 resolved). `PostLoadSerialize` (`0x1418e4250` / `0x1418e44f0`) copies
+  legacy `ProspectID` and `ProspectDTKey` into `ProspectInfo` when `Version < 2`,
+  and at `Version == 0` resets `ProspectInfo`, sets `LobbyPrivacy = 1`
+  (`FriendsOnly`), clears `StateRecorderBlobs`, and stamps `Version = 2` (F-715;
+  U-059 resolved; `migrate_prospect_save_state`).
 
 Recorders and base component
 
@@ -92,30 +86,28 @@ Recorders and base component
   inner tag; `BinaryData` is a signed 32-bit count and raw bytes (2,744 / 2,741
   recorders across the two copies; F-245, F-257, F-340, F-341).
 - Restore `0x1414b83c0` resolves the class string, constructs the component and
-  calls `+0x4a0` (`0x1418a9c80` -> `+0xa0` = `0x1418aaf70` -> `UClass + 0x2a0` =
-  `0x14200ea70` tagged with `CPF_SaveGame` `0x01000000` filter, then a 4-byte
-  GUID-trailer boolean and `+0x488` version-upgrade hook; F-342 to F-347, F-669).
+  calls `+0x4a0` (`0x1418a9c80` -> `+0xa0` = `0x1418aaf70` -> `0x14200ea70`
+  tagged with `CPF_SaveGame` `0x01000000`, then a 4-byte GUID-trailer boolean
+  and `+0x488` version-upgrade hook; F-342 to F-347, F-669).
 
 C013, C028, C034, C009 and D01
 
 - `C013` (`UFLODRecorderComponent`): base load/serialize/post-load; two 548-byte
-  bodies (5 properties, zero 4-byte trailer, exact EOF); saves `FLODTiles.Num()`
-  to `+0xd8` on record (`0x1418a1850`), compacts `FLODTiles` on stitch
-  (`0x1418ad0c0`), and never reads `+0xd8` on restore (F-248, F-350 to F-353,
-  F-646, F-716; U-039 resolved).
+  bodies (5 properties, zero trailer, exact EOF); saves `FLODTiles.Num()` to
+  `+0xd8` on record (`0x1418a1850`), compacts `FLODTiles` on stitch
+  (`0x1418ad0c0`), and ignores `+0xd8` on restore (F-248, F-350 to F-353, F-646,
+  F-716; U-039 resolved).
 - `C028` (`UActorStateRecorderComponent` subclass): `+0x4a0` = `0x1418a9bb0`
-  calls base `0x1418a9c80` then `+0x4b0` (`ApplyRecorderTransform`) only when
-  context `FTransform` differs from `Identity` (`> 1e-4`), and `+0x488` =
-  `0x14189d380` upgrades `TreePrimitive` -> `Wood` when `recorder_version < 1`
-  (F-645, F-716; U-061 resolved). All 1,294 bodies frame (23 fields; 6 tagged
-  direct structs; binary `N01` 16 B / `N02` 12 B; 9,058 empty struct arrays via
-  `0x1421580d0`; F-116, F-123 to F-141, F-259, F-363 to F-374, F-655, F-720;
-  U-030 resolved).
+  calls `+0x4b0` (`ApplyRecorderTransform`) only when context `FTransform`
+  differs from `Identity` (`> 1e-4`), and `+0x488` = `0x14189d380` upgrades
+  `TreePrimitive` -> `Wood` when `recorder_version < 1` (F-645, F-716; U-061
+  resolved). All 1,294 bodies frame (23 fields; 6 tagged direct structs; binary
+  `N01` 16 B / `N02` 12 B; 9,058 empty struct arrays via `0x1421580d0`; F-116,
+  F-123 to F-141, F-259, F-363 to F-374, F-655, F-720; U-030 resolved).
 - `C034`: base load/serialize, `C028` post-load; 21 optional fields; 829 records
   per copy; own struct-array child `0x145ee1220` carries tagged optional `N02`
-  (12 B) + `Float` (4 B), matching across server 25621760 and client 25793767
-  (F-146 to F-153, F-188, F-195, F-196, F-211, F-376 to F-385, F-659, F-664,
-  F-720; U-029, U-031 resolved).
+  (12 B) + `Float` (4 B), matching across both builds (F-146 to F-153, F-188,
+  F-195, F-196, F-211, F-376 to F-385, F-659, F-664, F-720; U-029, U-031 resolved).
 - `C009` and `D01` (`FInventorySlotSaveData`): 31 optional top fields (486 bodies,
   max 71,956 B; `S02` `ArrayProperty<IntProperty>` + `Bool`, `S01` `Str` + `Int`;
   parents `PA01..PA04`/`PS01`; common `CA01` up to 66,257 B and `ND01` up to
@@ -134,23 +126,19 @@ Acceptance conditions for any importer
 ## Candidate
 
 - `stage_prospect_save_state` (`experimental::recorders`), `stage_prospect`
-  (`prospect`), and `icarus-server inspect-save --stage-check
-  [--expect-prospect-name NAME]` validate the full `FProspectSaveState` root
-  schema, out-of-order tag wrap-around, `PostLoadSerialize` version migration,
-  all 17 `FProspectInfo` inner tags (including `ExpireTime`,
-  `AssociatedMembers` `FAssociatedMemberInfo`, and `CustomSettings`
-  `FCustomGameSetting`), optional `ProspectID` matching, and base-component
-  framing of every `StateRecorderBlob` across all 12 supplied prospect saves and
-  3 reference-server re-saves (`15 / 15`, `2,664..2,850` recorders,
-  `59,894..65,658` component field tags, `106` members, `61` custom settings,
-  `world_imported: false`, F-738).
+  (`prospect`), and `icarus-server inspect-save --stage-check` validate the full
+  `FProspectSaveState` root schema, out-of-order tag wrap-around,
+  `PostLoadSerialize` migration, all 17 `FProspectInfo` inner tags (including
+  `FAssociatedMemberInfo` and `FCustomGameSetting`), optional `ProspectID`
+  matching, and base-component framing across all 15 supplied and re-saved
+  prospects (`15 / 15`, `106` members, `61` custom settings, `world_imported:
+  false`, F-738).
 - Base-component framing, all 65 `RecorderComponent` `FClassParams`, all 38
-  `StateRecorderBlobs` classes' `+0xa0`/`+0x488`/`+0x4a0`/`+0x4b0` overrides,
-  weather/teleport clocks (`C035`/`C002`), `D01` inventory slot restoration, and
-  `C001` constructor/vftable provenance ([C001 digest](../../research/save-format/c001-constructor.md))
-  are verified across builds (`recorder_restore_dispatch`, F-469 to F-477, F-509,
-  F-534, F-669, F-670, F-716, F-720 to F-722, F-727, F-728, F-733 to F-738;
-  U-003 to U-006, U-020 to U-024, U-032, U-041, U-042, U-046, U-048, U-050 resolved).
+  `StateRecorderBlobs` classes' vtable overrides ([restore rules](restore-rules.md)),
+  and `C001` constructor/vftable provenance ([C001 digest](../../research/save-format/c001-constructor.md))
+  are verified across builds (F-469 to F-477, F-509, F-534, F-669, F-670, F-716,
+  F-720 to F-722, F-727, F-728, F-733 to F-738; U-003 to U-006, U-020 to U-024,
+  U-032, U-041, U-042, U-046, U-048, U-050 resolved).
 
 ## Open questions
 
@@ -161,7 +149,7 @@ Acceptance conditions for any importer
 ## Evidence
 
 - Static: M-147, M-148, M-143, M-149, M-150, M-119, M-122, M-123, M-079, M-094,
-  M-096, M-100, M-170, M-755..M-762, M-768, M-769, M-772 to M-777, M-779, M-780; runtime: M-154, M-155, M-160.
+  M-096, M-100, M-170, M-755..M-762, M-768, M-769, M-772 to M-777, M-779..M-782; runtime: M-154, M-155, M-160.
 - Framing receipts: M-118, M-172, M-087..M-093, M-095, M-097..M-103, M-106,
   M-058..M-070, M-049..M-055; C001: M-007, M-008, M-011, M-013, M-173, M-179, M-180, M-181, M-761, M-762.
 - Tests: `tests/tagged.rs`, `tests/recorders.rs`, `tests/component.rs`,

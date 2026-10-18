@@ -32,8 +32,10 @@ on `FString`/`FName` normalization (`ParseNumber` `_<1..10 digits>`),
 restore hooks, all 28 C030 `TextProperty` bodies (`history = -1`),
 `ProspectInfo.ExpireTime` (`Int64Property`), `C015`/`C022`/`C032` Map item
 serializers, all 65 `RecorderComponent` `FClassParams` (including all 38
-`StateRecorderBlobs` classes' `+0xa0`/`+0x488`/`+0x4a0`/`+0x4b0` overrides), 6 of
-7 populated C001 inherited arrays, `CA06`/`DA04` schemas, all 29,762 C028 top
+`StateRecorderBlobs` classes' `+0xa0`/`+0x408`/`+0x488`/`+0x4a0`/`+0x4b0`
+overrides, with `UProspectSubsystem` `AssociatedMembers` `FindByKey` player-list
+resolution, `C011` `ResetSpawnRecord`, and `C028` `"Super_Cooled_Ice"` rejection),
+6 of 7 populated C001 inherited arrays, `CA06`/`DA04` schemas, all 29,762 C028 top
 spans, historical pin `b40c97e3...`, `C035`/`C002` clocks, `C033` dynamic tree
 drop, `D01` inventory/variable restoration (`14` `EDynamicItemProperties`),
 entry-path failure matrices, `WriteToProspectBlob`/`ReadFromProspectBlob`
@@ -69,4 +71,4 @@ No decoded value, text or number was emitted or interpreted.
 
 ## Artifacts
 
-M-047..M-077, M-079..M-108, M-118..M-130, M-278..M-280, M-351, M-352, M-376..M-384, M-389, M-390, M-401..M-404, M-407..M-410, M-606..M-613, M-616..M-618, M-626, M-627, M-636..M-638, M-727, M-755..M-760, M-766..M-769, M-772..M-777, M-779, M-780.
+M-047..M-077, M-079..M-108, M-118..M-130, M-278..M-280, M-351, M-352, M-376..M-384, M-389, M-390, M-401..M-404, M-407..M-410, M-606..M-613, M-616..M-618, M-626, M-627, M-636..M-638, M-727, M-755..M-760, M-766..M-769, M-772..M-777, M-779..M-782.

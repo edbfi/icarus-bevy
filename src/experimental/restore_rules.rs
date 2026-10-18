@@ -41,9 +41,13 @@ pub struct ActorLink<'a> {
 
 /// Whether two link names match (F-663).
 ///
-/// Lengths must be equal. ASCII units compare case-insensitively and every
-/// other unit exactly, so `"Foundation"` matches `"FOUNDATION"` but not a
-/// differently accented spelling.
+/// Lengths must be equal. Both `FString::Equals(..., ESearchCase::IgnoreCase)`
+/// (`0x141e48d20` server / `0x141e39920` client) and
+/// `FGenericPlatformStricmp::Stricmp` (`0x141e48e20` server / `0x141e39a00`
+/// client) test `(c1 | c2) & 0xffffff80 == 0` (`BothAscii`), fold ASCII units
+/// `< 0x80` through `LowerAscii`, and compare non-ASCII units (`>= 0x80`)
+/// without case folding, so `"Foundation"` matches `"FOUNDATION"` but not a
+/// differently cased non-ASCII spelling.
 pub fn names_match(saved: &[u16], actual: &[u16]) -> bool {
     saved.len() == actual.len()
         && saved.iter().zip(actual).all(|(left, right)| {
@@ -221,6 +225,55 @@ impl PlayerList {
     }
 }
 
+/// One `FAssociatedMemberInfo` entry in `UProspectSubsystem`'s
+/// `ActiveProspectInfo.AssociatedMembers` (`UProspectSubsystem + 0x98`, stride
+/// `0x40` B), inspected by
+/// `UProspectSubsystem::IsPlayerStillAssociatedWithActiveProspect`
+/// (`0x1418231d0` server / `0x14182ec60` client) (F-652, F-740).
+///
+/// `AccountName`, `CharacterName`, `Status`, `Settled`, and
+/// `IsCurrentlyPlaying` are ignored by the association check.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ProspectAssociatedMember<'a> {
+    pub user_id: &'a [u16],
+    pub chr_slot: i32,
+}
+
+/// Resolves [`PlayerList`] from `UProspectSubsystem` (`0x141704d70` server /
+/// `0x141715480` client), `UProspectSubsystem::HasActiveProspect`
+/// (`0x141820ba0` server / `0x14182c4c0` client), and
+/// `UProspectSubsystem::IsPlayerStillAssociatedWithActiveProspect`
+/// (`0x1418231d0` server / `0x14182ec60` client ->
+/// `TArray<FAssociatedMemberInfo>::FindByKey` at `0x1417fd560` server /
+/// `0x141809720` client) (F-652).
+///
+/// - When `UProspectSubsystem` is unreachable (`!subsystem_present`), returns
+///   [`PlayerList::Absent`].
+/// - When `ActiveProspectInfo.ProspectID` (`+0x30`) is empty, returns
+///   [`PlayerList::Inactive`].
+/// - Otherwise returns [`PlayerList::Active`] with `has_player: true` iff any
+///   entry in `ActiveProspectInfo.AssociatedMembers` (`+0x98`) matches both
+///   `user_id` (ASCII case-insensitively via `FGenericPlatformStricmp::Stricmp`)
+///   and `chr_slot` (`+0x30`).
+pub fn resolve_prospect_player_list(
+    subsystem_present: bool,
+    active_prospect_id: &[u16],
+    associated_members: &[ProspectAssociatedMember<'_>],
+    player_id: &[u16],
+    chr_slot: i32,
+) -> PlayerList {
+    if !subsystem_present {
+        return PlayerList::Absent;
+    }
+    if active_prospect_id.is_empty() {
+        return PlayerList::Inactive;
+    }
+    let has_player = associated_members
+        .iter()
+        .any(|member| member.chr_slot == chr_slot && names_match(member.user_id, player_id));
+    PlayerList::Active { has_player }
+}
+
 /// Whether a player or player-state record validates: its recorder version is
 /// at least 1 and an active list does not lack its player.
 pub fn player_record_valid(version: i32, list: PlayerList) -> bool {
@@ -230,6 +283,56 @@ pub fn player_record_valid(version: i32, list: PlayerList) -> bool {
 /// Whether a rocket record validates: an active list does not lack its player.
 pub fn rocket_record_valid(list: PlayerList) -> bool {
     !list.rejects()
+}
+
+/// Validates a rocket-spawn record (`C011`,
+/// `URocketSpawnRecorderComponent::Validate` at `0x1418fa010` server /
+/// `0x1418fa340` client) (F-652).
+///
+/// When `version < 1` or `list` is `PlayerList::Active { has_player: false }`,
+/// invokes `URocketSpawnRecorderComponent::ResetSpawnRecord` (`0x1418ed540`
+/// server / `0x1418edf10` client) to clear `player_id` (`+0x1c8`) and set
+/// `chr_slot` (`+0x1d8`) to `-1`. Always returns `true` (`1`), so the spawn
+/// point record stays valid for future players instead of being dropped.
+pub fn validate_rocket_spawn_record(
+    version: i32,
+    list: PlayerList,
+    player_id: &mut Vec<u16>,
+    chr_slot: &mut i32,
+) -> bool {
+    if version < 1 || list.rejects() {
+        player_id.clear();
+        *chr_slot = -1;
+    }
+    true
+}
+
+const SUPER_COOLED_ICE_UTF16: [u16; 16] = [
+    b'S' as u16,
+    b'u' as u16,
+    b'p' as u16,
+    b'e' as u16,
+    b'r' as u16,
+    b'_' as u16,
+    b'C' as u16,
+    b'o' as u16,
+    b'o' as u16,
+    b'l' as u16,
+    b'e' as u16,
+    b'd' as u16,
+    b'_' as u16,
+    b'I' as u16,
+    b'c' as u16,
+    b'e' as u16,
+];
+
+/// Whether a resource-deposit record (`C028`,
+/// `UResourceDepositRecorderComponent::Validate` at `0x1418f9f20` server /
+/// `0x1418fa250` client) validates (F-652): rejects `"Super_Cooled_Ice"`
+/// (`0x144a71800` server / `0x144bcddc0` client) ASCII case-insensitively and
+/// accepts every other deposit type.
+pub fn resource_deposit_record_valid(deposit_type_name: &[u16]) -> bool {
+    !names_match(deposit_type_name, &SUPER_COOLED_ICE_UTF16)
 }
 
 /// What restoring a rocket does.
@@ -312,14 +415,58 @@ pub struct CaveSpawnTimes {
     pub times: Vec<f32>,
 }
 
+const BLUEPRINT_GENERATED_CLASS_UTF16: [u16; 23] = [
+    b'B' as u16,
+    b'l' as u16,
+    b'u' as u16,
+    b'e' as u16,
+    b'p' as u16,
+    b'r' as u16,
+    b'i' as u16,
+    b'n' as u16,
+    b't' as u16,
+    b'G' as u16,
+    b'e' as u16,
+    b'n' as u16,
+    b'e' as u16,
+    b'r' as u16,
+    b'a' as u16,
+    b't' as u16,
+    b'e' as u16,
+    b'd' as u16,
+    b'C' as u16,
+    b'l' as u16,
+    b'a' as u16,
+    b's' as u16,
+    b's' as u16,
+];
+
+/// Resolves a configured cave-AI class's comparison name as
+/// `AIcarusCaveAISpawner::UpdateStateFromDatabase` (`0x14141e320` client) does
+/// (F-677): when `class_name` equals `"BlueprintGeneratedClass"` and
+/// `ClassGeneratedBy` (`UClass + 0x208`) is present, unwraps
+/// `ClassGeneratedBy->GetName()`; otherwise uses `class_name` directly.
+pub fn resolve_cave_ai_class_name<'a>(
+    class_name: &'a [u16],
+    class_generated_by_name: Option<&'a [u16]>,
+) -> &'a [u16] {
+    if class_name == BLUEPRINT_GENERATED_CLASS_UTF16
+        && let Some(generated_by) = class_generated_by_name
+    {
+        return generated_by;
+    }
+    class_name
+}
+
 /// Restores a cave-AI spawner's per-class spawn times from its record
 /// (F-677). Each saved class with at least one time replaces the times of
 /// the first configured class whose name matches it; saved classes without
-/// times or without a match change nothing. The client compares with a
-/// case-insensitive `Stricmp`; this rule folds ASCII only, as [`names_match`]
-/// does, since its non-ASCII folding is unverified. Returns whether any saved
-/// class had times: then the spawner's restored event runs, otherwise its
-/// tick is re-enabled.
+/// times or without a match change nothing. Both client and server compare
+/// with `FGenericPlatformStricmp::Stricmp` (`0x141e48e20` server /
+/// `0x141e39a00` client), which folds ASCII only and compares non-ASCII units
+/// directly, matching [`names_match`]. Returns whether any saved class had
+/// times: then the spawner's restored event runs, otherwise its tick is
+/// re-enabled.
 pub fn restore_cave_spawn_times(
     configured: &mut [CaveSpawnTimes],
     saved: &[CaveSpawnTimes],

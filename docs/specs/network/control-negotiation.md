@@ -4,9 +4,9 @@
 
 Experimental: static observations; the framing and Hello exchange are
 wire-validated offline, and a synthetic Login and Join are welcomed (F-688
-to F-690, F-712 to F-714). Scope: dedicated-server
-build 25621760 (M-168) unless a current-client (build 25793767) comparison is
-named. Last reconciled: 2026-10-18.
+to F-690, F-712 to F-714). Scope: dedicated-server build 25621760 (M-168)
+unless a current-client (build 25793767) comparison is named.
+Last reconciled: 2026-10-18.
 Full text: d5b0ae6:docs/specs/network/control-negotiation.md.
 
 ## Scope
@@ -57,20 +57,17 @@ runtime initialization, compression, or integrity protection.
   archive byte-swap bit `0x20` at `+0x29` (else sets it), persists
   `Connection + 0x158` (`Data[1] != 1`), and clears `+0x68`. Subsequent
   `FInBunch` and `FControlChannelOutBunch` instances copy `+0x29` bit `0x20` from
-  `Connection + 0x158`. It then loops while `!Bunch.AtEnd() && State != USOCK_Closed`:
-  ID `0x16` (`22`, `NMT_DestructionInfo`) dispatches locally to
-  `UControlChannel::ReceiveDestructionInfo` (`0x1435354d0` / `0x1437c3d50`,
-  reading `u8 Reason` + `FNetworkGUID`), other IDs call
-  `Notify->NotifyControlMessage`, and unhandled messages (`Pos == PosBefore`)
-  dispatch across 20 layouts (`0..18`, `21`, `22`, failing closed on others;
-  ID `16` `NMT_ActorChannelFailure` closes on `PlayerController` channel failure,
-  ID `19` `NMT_GameSpecific` logs `FString` and breaks, and ID `20`
-  `NMT_SecurityViolation` forwards `u8 + FString` to `NetDriver`/`World`/`GEngine`;
-  `read_control_fallback` / `write_control_fallback` in
-  `experimental::control_messages`). `UControlChannel::SendBunch` sends
-  immediately when `QueuedMessages` (`+0x70`) is empty and
-  `NumOutRec < 255 + bClose`, else queues up to `32,767` (`0x7fff`) messages and
-  drains them in `Tick` once `bOpenAcked` (`+0x30 & 1`) is set.
+  `Connection + 0x158`. While `!Bunch.AtEnd() && State != USOCK_Closed`, ID
+  `0x16` (`22`, `NMT_DestructionInfo`) dispatches locally to
+  `ReceiveDestructionInfo` (`0x1435354d0` / `0x1437c3d50`, `u8 Reason` +
+  `FNetworkGUID`), other IDs call `Notify->NotifyControlMessage`, and unhandled
+  messages (`Pos == PosBefore`) dispatch across 20 layouts (`0..18`, `21`, `22`,
+  failing closed on others; ID `16` closes on `PlayerController` channel failure,
+  ID `19` logs `FString` and breaks, ID `20` forwards `u8 + FString` to
+  `NetDriver`/`World`/`GEngine`; `experimental::control_messages`).
+  `UControlChannel::SendBunch` sends immediately when `QueuedMessages` (`+0x70`)
+  is empty and `NumOutRec < 255 + bClose`, else queues up to `32,767` (`0x7fff`)
+  messages and drains them in `Tick` once `bOpenAcked` (`+0x30 & 1`) is set.
 - Packet and bunch headers (F-521 to F-527, F-688, F-710, F-711, F-714), read
   LSB-first after optional magic-header bits, the stateless-connect bit (`0`) and
   Steam-auth bit (`0`), and before the connection and handler termination bits:
@@ -121,8 +118,7 @@ runtime initialization, compression, or integrity protection.
 - Experimental modules (`control`, `packet`, `control_receive`,
   `control_messages`, `sequencing`, `admission`, `packet_lab`, `peer_lab`) model
   packet/bunch headers, the 20-entry control fallback table, unique-net-id forms
-  (F-543, F-636), `clamp_client_netspeed` (`MIN_CLIENT_NETSPEED = 1,800`,
-  `DEFAULT_MAX_CLIENT_RATE = 15,000`), `evaluate_pc_swap_target`,
+  (F-543, F-636), `clamp_client_netspeed`, `evaluate_pc_swap_target`,
   `evaluate_actor_channel_failure` (F-740), and disconnected loopback
   negotiation through `Hello`, `Challenge`, `Login`, `PreLogin`, `Welcome`,
   `Netspeed`, `Swap`, `Debug`, and `Join` / `SplitJoin` (F-558, F-564, F-689,
@@ -131,13 +127,12 @@ runtime initialization, compression, or integrity protection.
   `WelcomePlayer` (`0x1439fdeb0`, F-580): `IsClientMsgTypeValid` (`0x143991c70`)
   gates messages by `ClientLoginState` (`LoggingIn = 1`, `Welcomed = 2`,
   `Joined = 3`), admitting only `ExpectedClientLoginMsgType` (`0` = `Hello`,
-  `5` = `Login`) during `LoggingIn` (`1`) and admitting every non-login ID
-  (`!= 0 && != 5`, including `Netspeed` `4`, `PCSwap` `15`, and `DebugText` `17`)
-  in `Welcomed` (`2`) and `Joined` (`3`). On `Join` (`9`), if `PlayerController` (`+0x30`) is
-  null, `SpawnPlayActor` (`0x14392dbb0`) runs `AGameModeBase::Login` ->
-  `ApproveLogin` -> `SpawnPlayerController` -> `InitNewPlayer`, sets
-  `NetPlayerIndex` (`+0x3d4`), binds `HandleClientPlayer`, calls `PostLogin`, and
-  sets `ClientLoginState = 3` (F-713; U-010 resolved).
+  `5` = `Login`) in `1` and every non-login ID (`!= 0 && != 5`) in `2` and `3`.
+  On `Join` (`9`), if `PlayerController` (`+0x30`) is null, `SpawnPlayActor`
+  (`0x14392dbb0`) runs `AGameModeBase::Login` -> `ApproveLogin` ->
+  `SpawnPlayerController` -> `InitNewPlayer`, sets `NetPlayerIndex` (`+0x3d4`),
+  binds `HandleClientPlayer`, calls `PostLogin`, and sets `ClientLoginState = 3`
+  (F-713; U-010 resolved).
 - `PreLogin` (`AGameModeBase::PreLogin` `0x14386a160`, F-712, F-713; U-037
   resolved; `experimental::admission`): neither binary binds any callback to
   `GameModePreLoginEvent` or `FNetworkVersion` overrides. `IsCompatibleUniqueNetId`

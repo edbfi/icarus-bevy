@@ -26,12 +26,44 @@ data-table row meanings (F-660).
   only `C017` overrides `+0x4a0` (`0x141400150`, zeroing pitch/roll on
   `ActorTransform.Rotation`), and only `C004` (`0x141888270`) and `C032`
   (`0x1418c5cd0`) override `+0x4b0` (`ApplyRecorderTransform`).
+- Only 7 of the 38 `StateRecorderBlobs` classes override `Validate` (`vftable +
+  0x408`, base `0x140899f70` server / `0x1408c9810` client returning `true`;
+  F-652, F-663, F-680):
+  - `UProspectSubsystem` (`0x141704d70` / `0x141715480`) embeds
+    `ActiveProspectInfo` (`FProspectInfo`, `0xa0` B) at `+0x30`, with
+    `HasActiveProspect` (`0x141820ba0` / `0x14182c4c0`) testing
+    `!ActiveProspectInfo.ProspectID.IsEmpty()` (`+0x38 > 1`) and
+    `IsPlayerStillAssociatedWithActiveProspect(PlayerID, ChrSlot)`
+    (`0x1418231d0` / `0x14182ec60` -> `FindByKey` `0x1417fd560` / `0x141809720`)
+    scanning `ActiveProspectInfo.AssociatedMembers` (`+0x98`, `0x40` B stride)
+    for a matching `UserID` (`+0x20`, ASCII case-insensitive via `Stricmp`) and
+    `ChrSlot` (`+0x30`) (`resolve_prospect_player_list`).
+  - `C011` (`URocketSpawnRecorderComponent::Validate`, `0x1418fa010` /
+    `0x1418fa340`) calls `ResetSpawnRecord` (`0x1418ed540` / `0x1418edf10`,
+    clearing `PlayerID = ""` at `+0x1c8` and setting `ChrSlot = -1` at `+0x1d8`)
+    when `RocketSpawnRecorderVersion < 1` or an active prospect lacks
+    `(PlayerID, ChrSlot)`, then returns `true` (`validate_rocket_spawn_record`).
+  - `C025` (`UPlayerRecorderComponent`, `0x1418f9de0` / `0x1418fa110`) and
+    `C026` (`UPlayerStateRecorderComponent`, `0x1418f9e80` / `0x1418fa1b0`)
+    require `Version >= 1` and `!list.rejects()`; `C029`
+    (`URocketRecorderComponent`, `0x1418f9f70` / `0x1418fa2a0`) requires
+    `!list.rejects()`, and `C029` restore applies only when an active prospect
+    holds the player and `version > 0`, destroying the rocket otherwise (F-663).
+  - `C028` (`UResourceDepositRecorderComponent::Validate`, `0x1418f9f20` /
+    `0x1418fa250`) rejects `Type == "Super_Cooled_Ice"` (`0x144a71800` /
+    `0x144bcddc0`, `resource_deposit_record_valid`).
+  - `C031` (`USpawnedVoxelRecorderComponent`) and `C034`
+    (`UVoxelRecorderComponent`, `0x1418fa0e0` / `0x1418fa410`) reject
+    `OwnerResolvePolicy == RespawnOnly (1) && bFullyMined` (F-680).
 - Stitching takes the first spawned actor with the saved Icarus id and a
   matching name (F-650, F-676): equal lengths, ASCII case-insensitive, other
-  units exact (F-663).
-- A voxel record owns the actor within 0.1 per axis, inclusive (F-645). A
-  fully mined voxel with a respawn-only owner policy (0..3; both builds, M-627)
-  fails validation and is dropped on restore (F-680).
+  units exact (F-663). Both `FString::Equals(..., ESearchCase::IgnoreCase)`
+  (`0x141e48d20` / `0x141e39920`) and `FGenericPlatformStricmp::Stricmp`
+  (`0x141e48e20` / `0x141e39a00`) test `(c1 | c2) & 0xffffff80 == 0`
+  (`BothAscii`), fold ASCII code units `< 0x80` through `LowerAscii`
+  (`0x144e8e1a0` / `0x144fdbb80`), and compare code units `>= 0x80` directly
+  without non-ASCII case folding.
+- A voxel record owns the actor within 0.1 per axis, inclusive (F-645).
 - `C002` teleport cooldowns read `GetReplicatedProspectGameTime` (`0x1418d9390` =
   `GetTimeSeconds` + `GameState + 0x398`), saving the truncated time left or 0
   (F-657, F-734). `C035` weather controller keeps events with
@@ -48,21 +80,20 @@ data-table row meanings (F-660).
   `execEndRecording` twice when `bIsPhysicsDynamic` (F-681, F-736).
 - Saved elapsed level seconds under 31 take the positive saved game time (F-653).
 - Survival level -1 is unrecorded (F-648); a mount keeps only its yaw (F-651).
-- Player records need version 1; an active player list lacking the player fails
-  player, player-state and rocket records; rocket restore applies only with an
-  active list holding the player and a positive version, else destroys (F-663).
 - Container entries keep their list positions, empty ones skipped (F-651).
 - A forecast saves `now`'s offset into its first containing block and that
   block's pattern; else `now` and the first pattern; zeros if none (F-665).
-- Each saved cave-AI class with times replaces the times of the spawner's
-  first configured class equal by `Stricmp`, firing the script event (F-677).
+- Each saved cave-AI class with times (`C005`, `0x14141e320`) unwraps
+  `"BlueprintGeneratedClass"` via `ClassGeneratedBy->GetName()` (`+0x208`,
+  `resolve_cave_ai_class_name`), replaces the times of the spawner's first
+  configured class equal by `Stricmp` (`0x141e48e20` / `0x141e39a00`), and fires
+  the script event (F-677).
 - A sign saves/restores text, color and icon via its sign interface (F-677).
 
 ## Candidate
 
 - Float-to-int steps follow x86 truncation (`i32::MIN` when out of range); the
   engine's trigonometric approximations are not reproduced bit for bit.
-- Cave-AI names fold ASCII case only; `Stricmp`'s non-ASCII folding is unread.
 
 ## Open questions
 
@@ -72,4 +103,4 @@ data-table row meanings (F-660).
 
 F-645, F-648, F-650 to F-653, F-657, F-660, F-663, F-676, F-677, F-680, F-681,
 F-716, F-727, F-728, F-734 to F-736; M-642, M-666, M-682, M-683, M-687 to M-692,
-M-694, M-695, M-698, M-755, M-756, M-768, M-769, M-774, M-775.
+M-694, M-695, M-698, M-755, M-756, M-768, M-769, M-774, M-775, M-781, M-782.
