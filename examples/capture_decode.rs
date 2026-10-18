@@ -46,8 +46,9 @@ use icarus_bevy::experimental::{
         PacketConfig, Payload, RELIABLE_SEQUENCE_LIMIT, Receiver, read_packet,
     },
     peer_lab::PeerLabConfig,
+    release::ReleaseProfile,
     rep_layout::{
-        MovementLevel, RepCommand, RepLayoutCodec, RepLayoutLimits, RotationLevel, TagEncoding,
+        MovementLevel, RepCommand, RepLayoutCodec, RepLayoutLimits, RotationLevel,
         actionable_component_rep_layout, actor_component_rep_layout, actor_rep_layout,
         actor_state_rep_layout, audio_context_component_rep_layout,
         bp_atmosphere_controller_rep_layout, bp_bed_base_rep_layout, bp_building_base_rep_layout,
@@ -82,11 +83,7 @@ use icarus_bevy::experimental::{
         world_talent_manager_rep_layout, write_rep_properties,
     },
     rep_rpc::{
-        BP_ICARUS_PLAYER_CONTROLLER_SURVIVAL_FIELD_INDEX_BOUND,
-        BP_ICARUS_PLAYER_STATE_FIELD_INDEX_BOUND, BP_MOUNT_BASE_FIELD_INDEX_BOUND,
-        BP_MOUNT_HORSE_FIELD_INDEX_BOUND, BP_TAME_BASE_FIELD_INDEX_BOUND, FAST_ARRAY_COUNT_CAP,
-        FastArrayItemLayout, FieldHeader, INVENTORY_FIELD_INDEX_BOUND, RpcParameter,
-        STAT_CONTAINER_FIELD_INDEX_BOUND, UI_PROJECTION_MOUNT_STATUS_FIELD_INDEX_BOUND,
+        FAST_ARRAY_COUNT_CAP, FastArrayItemLayout, FieldHeader, RpcParameter,
         bp_icarus_player_state_rpc_parameters, encode_rpc_payload, icarus_character_rpc_parameters,
         parse_rpc_payload, player_controller_rpc_parameters, read_custom_delta_header,
         read_fast_array_delta, read_field_header, write_custom_delta_header,
@@ -603,15 +600,12 @@ fn classify_subobject_schema(
     Some(TargetSchema::RepLayout(schema))
 }
 
-fn schema_commands(schema: &str) -> Vec<RepCommand> {
+fn schema_commands(schema: &str, profile: &ReleaseProfile) -> Vec<RepCommand> {
     let loc = MovementLevel::Whole;
     let char_loc = MovementLevel::Hundredths;
     let vel = MovementLevel::Whole;
     let rot = RotationLevel::Bytes;
-    let tag_encoding = TagEncoding::NetIndex {
-        first_segment: 0,
-        total_bits: 12,
-    };
+    let tag_encoding = profile.tags.tag_encoding();
     match schema {
         "AIcarusPlayerControllerSurvival" => {
             icarus_player_controller_survival_rep_layout(loc, vel, rot, tag_encoding)
@@ -705,30 +699,17 @@ type RpcParameterLookup = fn(u32) -> Option<Vec<RpcParameter>>;
 /// Resolve an actor schema name to its `FClassNetCache` `SerializeInt` bound
 /// (`FieldsBase + Fields.Num() + 1`, F-708) and RPC parameter lookup when the
 /// class sends actor net RPCs.
-fn actor_rpc_schema(schema: &str) -> Option<(u32, RpcParameterLookup)> {
-    match schema {
-        "BP_IcarusPlayerState_C" => Some((
-            BP_ICARUS_PLAYER_STATE_FIELD_INDEX_BOUND,
-            bp_icarus_player_state_rpc_parameters,
-        )),
-        "BP_Mount_Base_C" => Some((
-            BP_MOUNT_BASE_FIELD_INDEX_BOUND,
-            icarus_character_rpc_parameters,
-        )),
-        "BP_Mount_Horse_C" => Some((
-            BP_MOUNT_HORSE_FIELD_INDEX_BOUND,
-            icarus_character_rpc_parameters,
-        )),
-        "BP_Tame_Base_C" => Some((
-            BP_TAME_BASE_FIELD_INDEX_BOUND,
-            icarus_character_rpc_parameters,
-        )),
-        "AIcarusPlayerControllerSurvival" => Some((
-            BP_ICARUS_PLAYER_CONTROLLER_SURVIVAL_FIELD_INDEX_BOUND,
-            player_controller_rpc_parameters,
-        )),
-        _ => None,
-    }
+fn actor_rpc_schema(schema: &str, profile: &ReleaseProfile) -> Option<(u32, RpcParameterLookup)> {
+    let bound = profile.class_net_cache.actor_bound(schema)?;
+    let lookup: RpcParameterLookup = match schema {
+        "BP_IcarusPlayerState_C" => bp_icarus_player_state_rpc_parameters,
+        "BP_Mount_Base_C" | "BP_Mount_Horse_C" | "BP_Tame_Base_C" => {
+            icarus_character_rpc_parameters
+        }
+        "AIcarusPlayerControllerSurvival" => player_controller_rpc_parameters,
+        _ => return None,
+    };
+    Some((bound, lookup))
 }
 
 /// Decode and re-encode a standard actor or subobject block: optional
@@ -739,8 +720,9 @@ fn replay_rep_layout_and_rpc_block(
     payload: &Payload,
     has_rep_layout: bool,
     codec: &RepLayoutCodec,
+    profile: &ReleaseProfile,
 ) -> Result<(usize, usize, bool)> {
-    let commands = schema_commands(schema_name);
+    let commands = schema_commands(schema_name, profile);
     let mut reader = payload.reader();
     let mut writer = BitWriter::new();
     let prop_entries = if has_rep_layout {
@@ -755,7 +737,7 @@ fn replay_rep_layout_and_rpc_block(
 
     let mut rpc_calls = 0usize;
     if !reader.at_end() {
-        let (index_bound, lookup) = actor_rpc_schema(schema_name)
+        let (index_bound, lookup) = actor_rpc_schema(schema_name, profile)
             .with_context(|| format!("unexpected trailing field headers on {schema_name}"))?;
         while !reader.at_end() {
             let header = read_field_header(&mut reader, index_bound, codec.limits.max_opaque_bits)?;
@@ -784,11 +766,12 @@ fn replay_rep_layout_and_rpc_block(
 /// Decode and re-encode a `UIcarusStatContainer` (`Stat Container`) block:
 /// optional `UActorComponent` rep-layout properties (when `has_rep_layout` is
 /// set) followed by zero or more `ReplicatedStatArray` custom-delta field
-/// headers (`index_bound = STAT_CONTAINER_FIELD_INDEX_BOUND`, F-705).
+/// headers (`index_bound = profile.class_net_cache.stat_container`, F-705).
 fn replay_stat_container_block(
     payload: &Payload,
     has_rep_layout: bool,
     codec: &RepLayoutCodec,
+    profile: &ReleaseProfile,
 ) -> Result<(usize, usize, bool)> {
     let layout = actor_component_rep_layout();
     let item_layout = FastArrayItemLayout::Delta(vec![RepCommand::StatPairRepState]);
@@ -804,15 +787,13 @@ fn replay_stat_container_block(
         0
     };
 
+    let bound = profile.class_net_cache.stat_container;
+    let engine_ver = profile.engine_network_version;
     let mut stat_items = 0usize;
     while !reader.at_end() {
-        let header = read_field_header(
-            &mut reader,
-            STAT_CONTAINER_FIELD_INDEX_BOUND,
-            codec.limits.max_opaque_bits,
-        )?;
+        let header = read_field_header(&mut reader, bound, codec.limits.max_opaque_bits)?;
         let mut field_reader = header.payload.reader();
-        let delta_hdr = read_custom_delta_header(&mut field_reader, ENGINE_NET_VERSION, 1)?;
+        let delta_hdr = read_custom_delta_header(&mut field_reader, engine_ver, 1)?;
         let delta =
             read_fast_array_delta(&mut field_reader, &item_layout, codec, FAST_ARRAY_COUNT_CAP)?;
         ensure!(
@@ -822,7 +803,7 @@ fn replay_stat_container_block(
         stat_items += delta.changed.len();
 
         let mut field_writer = BitWriter::new();
-        write_custom_delta_header(&mut field_writer, &delta_hdr, ENGINE_NET_VERSION, 1)?;
+        write_custom_delta_header(&mut field_writer, &delta_hdr, engine_ver, 1)?;
         write_fast_array_delta(
             &mut field_writer,
             &delta,
@@ -834,11 +815,7 @@ fn replay_stat_container_block(
             index: header.index,
             payload: Payload::from_writer(field_writer),
         };
-        write_field_header(
-            &mut writer,
-            &rebuilt_header,
-            STAT_CONTAINER_FIELD_INDEX_BOUND,
-        )?;
+        write_field_header(&mut writer, &rebuilt_header, bound)?;
     }
     let reencoded = Payload::from_writer(writer);
     Ok((prop_entries, stat_items, reencoded == *payload))
@@ -847,17 +824,15 @@ fn replay_stat_container_block(
 /// Decode and re-encode a `UInventory` (`Inventory`) block: optional
 /// `UInventory` rep-layout properties (when `has_rep_layout` is set) followed by
 /// zero or more `Slots` (`FInventorySlotsFastArray`) custom-delta field headers
-/// (`index_bound = INVENTORY_FIELD_INDEX_BOUND`).
+/// (`index_bound = profile.class_net_cache.inventory`).
 fn replay_inventory_block(
     payload: &Payload,
     has_rep_layout: bool,
     codec: &RepLayoutCodec,
+    profile: &ReleaseProfile,
 ) -> Result<(usize, usize, bool)> {
     let layout = inventory_rep_layout();
-    let tag_encoding = TagEncoding::NetIndex {
-        first_segment: 0,
-        total_bits: 12,
-    };
+    let tag_encoding = profile.tags.tag_encoding();
     let item_layout = FastArrayItemLayout::Delta(inventory_slot_commands(tag_encoding));
     let mut reader = payload.reader();
     let mut writer = BitWriter::new();
@@ -871,15 +846,13 @@ fn replay_inventory_block(
         0
     };
 
+    let bound = profile.class_net_cache.inventory;
+    let engine_ver = profile.engine_network_version;
     let mut slot_items = 0usize;
     while !reader.at_end() {
-        let header = read_field_header(
-            &mut reader,
-            INVENTORY_FIELD_INDEX_BOUND,
-            codec.limits.max_opaque_bits,
-        )?;
+        let header = read_field_header(&mut reader, bound, codec.limits.max_opaque_bits)?;
         let mut field_reader = header.payload.reader();
-        let delta_hdr = read_custom_delta_header(&mut field_reader, ENGINE_NET_VERSION, 1)?;
+        let delta_hdr = read_custom_delta_header(&mut field_reader, engine_ver, 1)?;
         let delta =
             read_fast_array_delta(&mut field_reader, &item_layout, codec, FAST_ARRAY_COUNT_CAP)?;
         ensure!(
@@ -889,7 +862,7 @@ fn replay_inventory_block(
         slot_items += delta.changed.len();
 
         let mut field_writer = BitWriter::new();
-        write_custom_delta_header(&mut field_writer, &delta_hdr, ENGINE_NET_VERSION, 1)?;
+        write_custom_delta_header(&mut field_writer, &delta_hdr, engine_ver, 1)?;
         write_fast_array_delta(
             &mut field_writer,
             &delta,
@@ -901,7 +874,7 @@ fn replay_inventory_block(
             index: header.index,
             payload: Payload::from_writer(field_writer),
         };
-        write_field_header(&mut writer, &rebuilt_header, INVENTORY_FIELD_INDEX_BOUND)?;
+        write_field_header(&mut writer, &rebuilt_header, bound)?;
     }
     let reencoded = Payload::from_writer(writer);
     Ok((prop_entries, slot_items, reencoded == *payload))
@@ -910,11 +883,12 @@ fn replay_inventory_block(
 /// Decode and re-encode a `BP_UIProjectionComponent_MountStatus_C` block:
 /// optional rep-layout properties (when `has_rep_layout` is set) followed by
 /// zero or more `ForceProjectionUpdate` 0-parameter net-RPC field headers
-/// (`index = 5`, `index_bound = UI_PROJECTION_MOUNT_STATUS_FIELD_INDEX_BOUND`).
+/// (`index = 5`, `index_bound = profile.class_net_cache.ui_projection_mount_status`).
 fn replay_ui_projection_mount_status_block(
     payload: &Payload,
     has_rep_layout: bool,
     codec: &RepLayoutCodec,
+    profile: &ReleaseProfile,
 ) -> Result<(usize, bool)> {
     let layout = bp_ui_projection_component_mount_status_rep_layout();
     let mut reader = payload.reader();
@@ -929,23 +903,16 @@ fn replay_ui_projection_mount_status_block(
         0
     };
 
+    let bound = profile.class_net_cache.ui_projection_mount_status;
     while !reader.at_end() {
-        let header = read_field_header(
-            &mut reader,
-            UI_PROJECTION_MOUNT_STATUS_FIELD_INDEX_BOUND,
-            codec.limits.max_opaque_bits,
-        )?;
+        let header = read_field_header(&mut reader, bound, codec.limits.max_opaque_bits)?;
         ensure!(
             header.index == 5 && header.payload.bit_len() == 0,
             "unexpected BP_UIProjectionComponent_MountStatus_C field index {} ({} bits)",
             header.index,
             header.payload.bit_len()
         );
-        write_field_header(
-            &mut writer,
-            &header,
-            UI_PROJECTION_MOUNT_STATUS_FIELD_INDEX_BOUND,
-        )?;
+        write_field_header(&mut writer, &header, bound)?;
     }
     let reencoded = Payload::from_writer(writer);
     Ok((prop_entries, reencoded == *payload))
@@ -1265,6 +1232,7 @@ struct WireStats {
 
 struct Decoder<'a> {
     mode: Mode,
+    profile: ReleaseProfile,
     config: PacketConfig,
     last_sequence: Option<u16>,
     packet_sequence: i64,
@@ -1291,9 +1259,10 @@ fn packet_config() -> PacketConfig {
 }
 
 impl<'a> Decoder<'a> {
-    fn new(mode: Mode, detail: &'a mut dyn Write) -> Self {
+    fn new(mode: Mode, profile: ReleaseProfile, detail: &'a mut dyn Write) -> Self {
         Self {
             mode,
+            profile,
             config: packet_config(),
             last_sequence: None,
             packet_sequence: 0,
@@ -2075,7 +2044,12 @@ impl<'a> Decoder<'a> {
             }
             TargetSchema::StatContainer => {
                 let schema_name = "UIcarusStatContainer";
-                match replay_stat_container_block(&block.payload, block.has_rep_layout, &codec) {
+                match replay_stat_container_block(
+                    &block.payload,
+                    block.has_rep_layout,
+                    &codec,
+                    &self.profile,
+                ) {
                     Ok((prop_entries, stat_items, exact)) => {
                         replay.typed_blocks_decoded += 1;
                         bump(&mut replay.by_schema_decoded, schema_name);
@@ -2098,7 +2072,12 @@ impl<'a> Decoder<'a> {
             }
             TargetSchema::Inventory => {
                 let schema_name = "UInventory";
-                match replay_inventory_block(&block.payload, block.has_rep_layout, &codec) {
+                match replay_inventory_block(
+                    &block.payload,
+                    block.has_rep_layout,
+                    &codec,
+                    &self.profile,
+                ) {
                     Ok((prop_entries, _slot_items, exact)) => {
                         replay.typed_blocks_decoded += 1;
                         bump(&mut replay.by_schema_decoded, schema_name);
@@ -2124,6 +2103,7 @@ impl<'a> Decoder<'a> {
                     &block.payload,
                     block.has_rep_layout,
                     &codec,
+                    &self.profile,
                 ) {
                     Ok((prop_entries, exact)) => {
                         replay.typed_blocks_decoded += 1;
@@ -2153,6 +2133,7 @@ impl<'a> Decoder<'a> {
                     &block.payload,
                     block.has_rep_layout,
                     &codec,
+                    &self.profile,
                 ) {
                     Ok((prop_entries, rpc_calls, exact)) => {
                         replay.typed_blocks_decoded += 1;
@@ -2425,13 +2406,24 @@ pub fn run(input: &Path, detail: &Path) -> Result<Value> {
 
 /// [`run`] with the detail confined to `work_root` instead.
 pub fn run_in(input: &Path, detail: &Path, work_root: &Path) -> Result<Value> {
+    run_in_with_profile(input, detail, work_root, &ReleaseProfile::release_3_0_32())
+}
+
+/// [`run_in`] against an explicit [`ReleaseProfile`].
+pub fn run_in_with_profile(
+    input: &Path,
+    detail: &Path,
+    work_root: &Path,
+    profile: &ReleaseProfile,
+) -> Result<Value> {
+    profile.validate()?;
     check_detail_path(detail, work_root)?;
     let (replies, input) = read_replies(input)?;
     let mut detail = BufWriter::new(File::create(detail).context("create detail")?);
     let mut passes = serde_json::Map::new();
     let mut wire = Value::Null;
     for mode in [Mode::Strict, Mode::ExportHypothesis] {
-        let mut decoder = Decoder::new(mode, &mut detail);
+        let mut decoder = Decoder::new(mode, profile.clone(), &mut detail);
         for (index, reply) in replies.iter().enumerate() {
             decoder.feed(index, reply.ms, &reply.bytes)?;
         }

@@ -7,7 +7,7 @@ full text under `retired/`. Admission and columns follow `.agents/rules/docs.md`
 
 Before restructure: 96ddb0b:docs/ledgers/findings.md
 
-Last reconciled: 2026-10-15
+Last reconciled: 2026-10-18
 
 | ID | Claim | Kind | Evidence | Scope and limits | Unknowns | Status |
 | --- | --- | --- | --- | --- | --- | --- |
@@ -65,3 +65,4 @@ Last reconciled: 2026-10-15
 | F-615 | Compressed time runs the 72-hour synthetic schedule, 7,776,000 ticks and 25,921 saves at 100,000 entities, in 3,028 s: final state verified, RSS slope after warm-up -38.5 KiB/h, save p99 88 ms, 157 awaited saves, one 236 ms tick over deadline | observed | runtime-capture; M-577 | high; synthetic; build 591d40f; shared host; no wall-clock effects | U-035 | active |
 | F-616 | A world seeded from the supplied save runs 72 compressed hours of 10-second autosaves in 17.5 min: 25,920 commits, no failure or deadline miss, save p99 59 ms, RSS 27.75 to 27.79 MB; it reloads at tick 7,776,000 without recovery | observed | runtime-capture; M-578 | high; preserved section, no interpretation; build ecb005a; no wall-clock effects | U-035, U-045 | active |
 | F-700 | Weekly builds change server code and content (25621760 -> 25793607 -> 25956137): 3.0.32 shrinks .text 48,128 B and .pdata 1,920 B, changes 15 of 435 files (EXEs, PDB, version.json, D_Data.pak, 7 content paks, 3 string tables) and moves the checksum to 243431684 | observed | static-bytes; M-700, M-724 to M-726, M-728/ev_32fcdeca74fe, M-730 | high; 2 weeks | U-025 | active |
+| F-730 | Server 25621760 and client 25793767 PEs have Security Dir 0 (unsigned Steam depots); client 1.18 GB MSF 7.00 PDB (287,513 blocks, 2,513 streams: TPI 385.3 MB, DBI 28.5 MB, IPI 45.0 MB, SymRec 193.4 MB) matches PE GUID+age; REA caps direct PE reads at 64 MiB | observed | static-bytes; M-113..M-117, M-770/ev_578c6f6d337e, M-771 | high; 2 builds | U-019, U-034 | active |

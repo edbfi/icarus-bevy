@@ -1,11 +1,18 @@
 use icarus_bevy::experimental::restore_rules::{
-    ACTOR_RECORDER_TRANSFORM_TOLERANCE, ActorLink, LobbyPrivacy, OwnerResolvePolicy,
-    PROSPECT_SAVE_STATE_CURRENT_VERSION, PlayerList, RocketRestore, VOXEL_LOCATION_TOLERANCE,
-    can_activate_prospect_info, container_entries, migrate_prospect_save_state, names_match,
-    normalize_prospect_name, player_record_valid, prospect_ids_match, recorded_level,
-    recorder_transform_is_non_identity, remaining_cooldown, restored_elapsed_seconds,
-    rocket_record_valid, rocket_restore, stitch, upgrade_actor_recorder_component_names,
-    upright_rotation, voxel_location_matches, voxel_record_valid,
+    ACTOR_RECORDER_TRANSFORM_TOLERANCE, ActorLink, ApplyTransformKind, ByNameLoadOutcome,
+    DynamicItemPropertyKind, InventorySlotOverflowDisposition, LobbyPrivacy, OwnerResolvePolicy,
+    PROSPECT_SAVE_STATE_CURRENT_VERSION, PlayerList, RESTORED_INDEFINITE_MODIFIER_LIFETIME,
+    RestoreStateKind, RocketRestore, SetupLoadedProspectOutcome, VOXEL_LOCATION_TOLERANCE,
+    VersionUpgradeKind, can_activate_prospect_info, container_entries,
+    evaluate_by_name_load_attempt, evaluate_setup_loaded_prospect_attempt,
+    migrate_prospect_save_state, names_match, normalize_prospect_name,
+    normalize_restored_modifier_lifetime, player_record_valid, prospect_ids_match,
+    record_weather_event_elapsed, recorded_level, recorder_restore_dispatch,
+    recorder_transform_is_non_identity, remaining_cooldown, replicated_prospect_game_time,
+    resolve_inventory_slot_restore, restored_elapsed_seconds, restored_weather_event_start_time,
+    rocket_record_valid, rocket_restore, should_record_weather_event, stitch,
+    upgrade_actor_recorder_component_names, upright_rotation, upsert_recorded_variable,
+    voxel_location_matches, voxel_record_valid,
 };
 
 fn units(text: &str) -> Vec<u16> {
@@ -410,8 +417,14 @@ fn by_name_prospect_normalization_and_id_matching() {
         Some("Olympus_Run")
     );
     // Multi-byte UTF-8 characters crossing `len() - 5` must not panic.
-    assert_eq!(normalize_prospect_name("aa€€"), Some("aa€€"));
-    assert_eq!(normalize_prospect_name("aa€€.JSON"), Some("aa€€"));
+    assert_eq!(
+        normalize_prospect_name("aa\u{20ac}\u{20ac}"),
+        Some("aa\u{20ac}\u{20ac}")
+    );
+    assert_eq!(
+        normalize_prospect_name("aa\u{20ac}\u{20ac}.JSON"),
+        Some("aa\u{20ac}\u{20ac}")
+    );
 
     assert!(prospect_ids_match(
         &units("Olympus_Run"),
@@ -425,4 +438,242 @@ fn by_name_prospect_normalization_and_id_matching() {
     assert!(can_activate_prospect_info("Olympus_Run", ""));
     assert!(!can_activate_prospect_info("", ""));
     assert!(!can_activate_prospect_info("Olympus_Run", "Prior_Run"));
+}
+
+#[test]
+fn recorder_restore_dispatch_covers_all_38_classes_and_overrides() {
+    assert_eq!(recorder_restore_dispatch(0), None);
+    assert_eq!(recorder_restore_dispatch(39), None);
+
+    let mut base_subclasses = Vec::new();
+    let mut mount_restore_classes = Vec::new();
+    let mut grid_transform_classes = Vec::new();
+    let mut spline_transform_classes = Vec::new();
+
+    for ordinal in 1..=38 {
+        let dispatch = recorder_restore_dispatch(ordinal).expect("valid C001..C038 ordinal");
+        assert_eq!(dispatch.class_ordinal, ordinal);
+        assert!(dispatch.selected_property_count >= 5);
+        if dispatch.version_upgrade == VersionUpgradeKind::NoOp {
+            base_subclasses.push(ordinal);
+            assert_eq!(dispatch.restore_state, RestoreStateKind::BaseSerializeOnly);
+            assert_eq!(dispatch.apply_transform, ApplyTransformKind::NoOpTrue);
+        } else {
+            assert_eq!(
+                dispatch.version_upgrade,
+                VersionUpgradeKind::ActorTreePrimitiveToWood
+            );
+            if dispatch.restore_state == RestoreStateKind::MountActorUprightYaw {
+                mount_restore_classes.push(ordinal);
+            } else {
+                assert_eq!(
+                    dispatch.restore_state,
+                    RestoreStateKind::ActorWithContextTransform
+                );
+            }
+            match dispatch.apply_transform {
+                ApplyTransformKind::ActorAndBuildingGrid => grid_transform_classes.push(ordinal),
+                ApplyTransformKind::ActorAndSplinePoints => spline_transform_classes.push(ordinal),
+                other => assert_eq!(other, ApplyTransformKind::ActorTransformOnly),
+            }
+        }
+    }
+
+    assert_eq!(base_subclasses, vec![13, 14, 22, 25, 35, 36, 37]);
+    assert_eq!(mount_restore_classes, vec![17]);
+    assert_eq!(grid_transform_classes, vec![4]);
+    assert_eq!(spline_transform_classes, vec![32]);
+
+    // Spot-check selected property counts for C001, C009, C013, C028, C034.
+    assert_eq!(
+        recorder_restore_dispatch(1)
+            .unwrap()
+            .selected_property_count,
+        20
+    );
+    assert_eq!(
+        recorder_restore_dispatch(9)
+            .unwrap()
+            .selected_property_count,
+        31
+    );
+    assert_eq!(
+        recorder_restore_dispatch(13)
+            .unwrap()
+            .selected_property_count,
+        5
+    );
+    assert_eq!(
+        recorder_restore_dispatch(28)
+            .unwrap()
+            .selected_property_count,
+        23
+    );
+    assert_eq!(
+        recorder_restore_dispatch(34)
+            .unwrap()
+            .selected_property_count,
+        21
+    );
+}
+
+#[test]
+fn entry_path_failure_matrix_evaluates_by_name_and_from_file_outcomes() {
+    let id = units("Olympus_Run");
+    let other_id = units("Styx_Run");
+
+    // Missing file, empty name, malformed JSON, and name mismatch preserve prior state.
+    assert_eq!(
+        evaluate_by_name_load_attempt("", true, true, true, &id, false, true, &id),
+        ByNameLoadOutcome::RejectedStatePreserved
+    );
+    assert_eq!(
+        evaluate_by_name_load_attempt("Olympus_Run", false, true, true, &id, false, true, &id),
+        ByNameLoadOutcome::RejectedStatePreserved
+    );
+    assert_eq!(
+        evaluate_by_name_load_attempt("Olympus_Run", true, false, true, &id, false, true, &id),
+        ByNameLoadOutcome::RejectedStatePreserved
+    );
+    assert_eq!(
+        evaluate_by_name_load_attempt("Olympus_Run", true, true, false, &id, false, true, &id),
+        ByNameLoadOutcome::RejectedStatePreserved
+    );
+    assert_eq!(
+        evaluate_by_name_load_attempt(
+            "Olympus_Run",
+            true,
+            true,
+            true,
+            &other_id,
+            false,
+            true,
+            &other_id
+        ),
+        ByNameLoadOutcome::RejectedStatePreserved
+    );
+
+    // Corrupt inner BinaryBlob or inner/outer ID mismatch in TransitionToProspect
+    // happens AFTER ResetActiveProspect + SetActiveProspectInfo.
+    assert_eq!(
+        evaluate_by_name_load_attempt("Olympus_Run.json", true, true, true, &id, false, false, &id),
+        ByNameLoadOutcome::AbortedAfterActiveInfoOverwrite
+    );
+    assert_eq!(
+        evaluate_by_name_load_attempt(
+            "Olympus_Run.json",
+            true,
+            true,
+            true,
+            &id,
+            true,
+            true,
+            &other_id
+        ),
+        ByNameLoadOutcome::AbortedAfterActiveInfoOverwrite
+    );
+
+    // Clean load and changed-during-load with matching IDs.
+    assert_eq!(
+        evaluate_by_name_load_attempt("Olympus_Run.json", true, true, true, &id, false, true, &id),
+        ByNameLoadOutcome::TransitionedToMap { mixed_reads: false }
+    );
+    assert_eq!(
+        evaluate_by_name_load_attempt("Olympus_Run.json", true, true, true, &id, true, true, &id),
+        ByNameLoadOutcome::TransitionedToMap { mixed_reads: true }
+    );
+
+    // SetupLoadedProspect (0x1414baf60): empty LocalSavePath is a no-op; non-empty
+    // LocalSavePath with any reader failure triggers Fatal 0x141ee8930.
+    assert_eq!(
+        evaluate_setup_loaded_prospect_attempt("", false, false),
+        SetupLoadedProspectOutcome::SkippedEmptyLocalSavePath
+    );
+    assert_eq!(
+        evaluate_setup_loaded_prospect_attempt("/tmp/prospect.bin", false, true),
+        SetupLoadedProspectOutcome::FatalProcessExit
+    );
+    assert_eq!(
+        evaluate_setup_loaded_prospect_attempt("/tmp/prospect.bin", true, false),
+        SetupLoadedProspectOutcome::FatalProcessExit
+    );
+    assert_eq!(
+        evaluate_setup_loaded_prospect_attempt("/tmp/prospect.bin", true, true),
+        SetupLoadedProspectOutcome::ActivatedFromBinaryFile
+    );
+}
+
+#[test]
+fn weather_and_teleport_clocks_record_and_restore() {
+    // WeatherControllerRecorderComponent (C035) filters active events against CurrentBlockEndTime
+    // and records/restores elapsed seconds against UIcarusFunctionLibrary::GetLevelTimeElapsedSec.
+    assert!(!should_record_weather_event(-1, 100, 500));
+    assert!(should_record_weather_event(120, 100, 220));
+    assert!(!should_record_weather_event(121, 100, 220));
+
+    let elapsed = record_weather_event_elapsed(450, 300);
+    assert_eq!(elapsed, 150);
+    assert_eq!(restored_weather_event_start_time(450, elapsed), 300);
+    assert_eq!(restored_weather_event_start_time(0, elapsed), 0);
+    assert_eq!(restored_weather_event_start_time(-5, elapsed), 0);
+
+    // BaseLevelTeleportRecorderComponent (C002) uses GetReplicatedProspectGameTime = GetTimeSeconds + *(float*)(GameState + 0x398).
+    let now = replicated_prospect_game_time(42.5, 1000.0);
+    assert_eq!(now, 1042.5);
+    assert_eq!(remaining_cooldown(1060.9, now), 18);
+}
+
+#[test]
+fn d01_dynamic_item_properties_overflow_modifiers_and_variables() {
+    assert_eq!(
+        DynamicItemPropertyKind::from_saved_index(0),
+        Some(DynamicItemPropertyKind::AssociatedItemInventoryId)
+    );
+    assert_eq!(
+        DynamicItemPropertyKind::from_saved_index(3),
+        Some(DynamicItemPropertyKind::GunCurrentMagSize)
+    );
+    assert_eq!(
+        DynamicItemPropertyKind::from_saved_index(4),
+        Some(DynamicItemPropertyKind::CurrentAmmoType)
+    );
+    assert_eq!(
+        DynamicItemPropertyKind::from_saved_index(7),
+        Some(DynamicItemPropertyKind::ItemableStack)
+    );
+    assert_eq!(
+        DynamicItemPropertyKind::from_saved_index(13),
+        Some(DynamicItemPropertyKind::InventoryContainerLinkedInventoryId)
+    );
+    assert_eq!(DynamicItemPropertyKind::from_saved_index(14), None);
+    // Low-byte truncation in UpdateOwnerInventories (0x1418b8f20): 256 -> u8 0.
+    assert_eq!(
+        DynamicItemPropertyKind::from_saved_index(256),
+        Some(DynamicItemPropertyKind::AssociatedItemInventoryId)
+    );
+
+    assert_eq!(
+        resolve_inventory_slot_restore(true, 0),
+        InventorySlotOverflowDisposition::PlacedInSlot
+    );
+    assert_eq!(
+        resolve_inventory_slot_restore(false, 0),
+        InventorySlotOverflowDisposition::ForceAddItemsWhenEmpty
+    );
+    assert_eq!(
+        resolve_inventory_slot_restore(false, 8),
+        InventorySlotOverflowDisposition::AppendToDeferredOverflow
+    );
+
+    assert_eq!(
+        normalize_restored_modifier_lifetime(-1),
+        RESTORED_INDEFINITE_MODIFIER_LIFETIME
+    );
+    assert_eq!(normalize_restored_modifier_lifetime(45), 45);
+
+    let mut vars = Vec::new();
+    assert!(upsert_recorded_variable(&mut vars, "bIsActive", 1_i32));
+    assert!(upsert_recorded_variable(&mut vars, "FuelCount", 10_i32));
+    assert!(!upsert_recorded_variable(&mut vars, "bIsActive", 0_i32));
+    assert_eq!(vars, vec![("bIsActive", 0), ("FuelCount", 10)]);
 }

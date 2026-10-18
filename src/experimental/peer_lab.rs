@@ -103,6 +103,7 @@ use super::handshake_lab::{
 };
 use super::packet::BunchLimits;
 use super::packet_lab::{DeliveredSummary, LabPeer, PacketDisposition, PacketLabConfig};
+use super::release::ReleaseProfile;
 
 /// Lab text of the Failure reply to Login; not an original message.
 pub const ADMISSION_DISABLED_MESSAGE: &str = "icarus-bevy peer lab: game admission is disabled";
@@ -243,6 +244,12 @@ impl Default for PeerLabConfig {
 }
 
 impl PeerLabConfig {
+    /// Bind the peer lab's Hello network-version comparison to `profile`.
+    pub fn with_release_profile(mut self, profile: &ReleaseProfile) -> Self {
+        self.local_network_version = Some(profile.pin.network_checksum);
+        self
+    }
+
     /// Maximum accepted datagram size in bytes.
     pub fn max_datagram_bytes(&self) -> usize {
         self.packet.packet.limits.max_packet_bytes as usize

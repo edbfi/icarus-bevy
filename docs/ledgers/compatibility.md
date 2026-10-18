@@ -10,7 +10,7 @@ comparisons apply to build 25793767 (M-167) and do not establish a matched
 dedicated-server baseline. Full text before condensation:
 16d1a9d:docs/ledgers/compatibility.md.
 
-Last reconciled: 2026-10-17
+Last reconciled: 2026-10-18
 
 ## Surfaces
 
@@ -43,20 +43,20 @@ client connected and no prospect loaded (F-268).
 | --- | --- | --- | --- |
 | Control dispatch and version comparison | Observed | F-284, F-712, F-713, F-714; [spec](../specs/network/control-negotiation.md) | Stock-client session (U-038) |
 | Initial control archive fields | Experimental reader | F-096, F-097 | Stock-client session (U-038) |
-| Control-dispatch pointer stores | Local stores qualified | F-091, F-095, F-110, F-113 | Class, table identity, receiver, runtime reachability (U-016, U-018) |
-| Current-client notify tables | Two slot/name equalities | F-088 | No dereference, object offset, older owner or runtime proof (U-010, U-011) |
-| Current-client constructor intervals and prefixes | Bounded metadata and instructions | F-082, F-083, F-093 | Fragments only; no cross-call provenance or ABI (U-008, U-009) |
-| Current-client World/Pending table stores | Named local pair at +0/+0x28 | F-062, F-063, F-071, F-076, F-274 | Receiver origin, layout, executed dispatch, older owner (U-007, U-043) |
-| Prospect-loading control flow | Observed | [spec](../specs/save-format/prospect-loading.md); F-256 | From-file reachability and complete schema (U-040) |
-| Inner prospect state and dispatch | Observed on older build | F-257 | Recorder payloads and newer-build fidelity (U-025) |
-| Root property tags and recorder framing | Observed on two copies; experimental readers | F-244, F-245; [spec](../specs/save-format/tagged-properties.md) | Nested values, class resolution, import (U-046) |
-| Selected base-component framing | Observed on 1,296 records; library subset | F-259, F-260 | Class recognition, value semantics, GUID trailers (U-046) |
-| Selected tagged struct arrays | Library reader; C034 own arrays qualified | F-316, F-196 | Schema recognition and value semantics (U-046) |
-| C028 top, child headers and leaves | Complete supplied population qualified | F-115, F-128, F-135, F-137, F-123, F-124, F-125 | Meanings, grandchildren, restoration (U-020, U-027) |
-| C034 top, own and inherited scalars | Exact structures and widths qualified | F-146, F-147, F-150, F-152, F-196 | Meanings, enum lookup, restoration (U-020, U-033) |
-| C009 top, children and D01 arrays | Headers, string structure and widths qualified | F-182, F-183, F-174, F-158, F-162 | Meanings and restoration; DA04 and CA06 empty (U-020, U-021) |
-| C001 construction seeds | Two metadata bounds | F-270, F-034 | Instruction, construction/vtable bridge, save body (U-023) |
-| Short stateless handshake | Observed; loopback lab | F-253, F-280; [spec](../specs/network/stateless-handshake.md) | Stock-client admission (U-051, U-052) |
+| Control-dispatch pointer stores | Static vftables, destructor and S1 dispatch qualified | F-091, F-095, F-110, F-113, F-724, F-729 | Native stock-client session (U-038) |
+| Current-client notify tables | Slot/name equalities, `/GR-` layout and S1 dispatch qualified | F-088, F-724, F-729 | Native stock-client session (U-038) |
+| Current-client constructor intervals and prefixes | Complete constructors and ABI qualified | F-082, F-083, F-093, F-723 | Native stock-client session (U-038) |
+| Current-client World/Pending table stores | Receiver origin, layout and `InitBase` qualified | F-062, F-063, F-071, F-076, F-274, F-723, F-724 | Native stock-client session (U-038) |
+| Prospect-loading control flow | Observed; entry rules mirrored | [spec](../specs/save-format/prospect-loading.md); F-256, F-717 | Runtime failure reachability and complete schema (U-040, U-058) |
+| Inner prospect state and dispatch | Observed; version migration mirrored | F-257, F-715 | Recorder payloads and newer-build fidelity (U-025) |
+| Root property tags and recorder framing | Observed on two copies; experimental readers | F-244, F-245, F-727; [spec](../specs/save-format/tagged-properties.md) | Packaged row meanings and native import (U-020, U-045) |
+| Selected base-component framing | Observed on 1,296 records; 38-class overrides verified | F-259, F-260, F-727 | Packaged row meanings and native import (U-020, U-045) |
+| Selected tagged struct arrays | Library reader; C034 and C001 arrays qualified | F-316, F-196, F-728 | Packaged row meanings and native import (U-020, U-045) |
+| C028 top, child headers and leaves | Complete supplied population and restore hooks qualified | F-115, F-128, F-135, F-137, F-123, F-124, F-125, F-716, F-728 | Value meanings and native import (U-020, U-045) |
+| C034 top, own and inherited scalars | Exact structures, widths and `FName` parsing qualified | F-146, F-147, F-150, F-152, F-196, F-719, F-720 | Value meanings and native import (U-020, U-045) |
+| C009 top, children and D01 arrays | Headers, string structure, widths and restore hooks qualified | F-182, F-183, F-174, F-158, F-162, F-728 | Packaged row meanings and native import (U-020, U-045) |
+| C001 construction seeds | Complete functions, registration and bridge qualified | F-270, F-034, F-534, F-721, F-722 | Value meanings and native import (U-020, U-045) |
+| Stateless handshake | Observed; prefix, restart and tolerance rules verified | F-253, F-280, F-729; [spec](../specs/network/stateless-handshake.md) | Stock-client admission (U-052) |
 | Default network checksum | Experimental primitive; wire-verified | F-254, F-255, F-281, F-689, F-713; [spec](../specs/network/network-checksum.md) | Stock-client session (U-038) |
-| Archive strings | Experimental strict subset | F-142, F-282, F-285; [spec](../specs/save-format/archive-string.md) | Network flags and original round trips (U-026) |
+| Archive strings | Experimental strict subset; original normalization and timings verified | F-142, F-282, F-285, F-719, F-731; [spec](../specs/save-format/archive-string.md) | Stock-client session and import (U-025, U-038) |
 | Prospect envelope | Observed on supplied saves; read-only inspector | F-261, F-283, F-241; [spec](../specs/save-format/prospect-envelope.md) | Build pairing, binary schema, import (U-025, U-040) |

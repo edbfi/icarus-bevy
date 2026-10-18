@@ -14,7 +14,10 @@ use crate::experimental::archive::{ByteOrder, decode_string};
 use crate::experimental::component::{
     BaseComponent, MAX_BOUNDED_COMPONENT_BYTES, read_base_component_with_limit,
 };
-use crate::experimental::recorders::{RecorderSummary, read_recorders};
+use crate::experimental::recorders::{
+    RecorderSummary, StagedProspectSaveState, read_recorders, stage_prospect_save_state,
+};
+use crate::experimental::restore_rules::normalize_prospect_name;
 use crate::experimental::tagged::{RootTagSummary, TagProfile, read_root};
 use crate::json::JsonObject;
 use crate::preservation::{PreserveLimits, PreservedSection};
@@ -74,6 +77,15 @@ pub struct RecorderInspection {
     pub world_imported: bool,
 }
 
+#[derive(Debug, Serialize)]
+pub struct StagedProspectInspection {
+    pub validation: &'static str,
+    pub envelope: EnvelopeInspection,
+    pub inner_tags: RootTagSummary,
+    pub staged: StagedProspectSaveState,
+    pub world_imported: bool,
+}
+
 /// Inspect one bounded JSON envelope without extracting payload or mutating state.
 ///
 /// Unknown JSON fields are skipped. Known fields must occur once and use the
@@ -112,6 +124,48 @@ pub fn inspect_with_recorders(reader: impl Read) -> Result<RecorderInspection> {
         envelope: validated.inspection,
         inner_tags: tags.summary(),
         recorders: recorders.summary(),
+        world_imported: false,
+    })
+}
+
+/// Stages and validates the full `FProspectSaveState` root schema, version
+/// migration (`F-715`), `ProspectInfo` inner tags (`F-726`), and base-component
+/// framing of every `StateRecorderBlob` (`F-403`, `F-733`) before returning any
+/// summary. When `expected_prospect_name` is `Some`, normalizes it via
+/// [`normalize_prospect_name`] and verifies that the post-migration
+/// `ProspectInfo.ProspectID` matches ASCII case-insensitively (`F-717`).
+pub fn stage_prospect(
+    reader: impl Read,
+    component_byte_limit: usize,
+    expected_prospect_name: Option<&str>,
+) -> Result<StagedProspectInspection> {
+    ensure!(
+        (1..=MAX_BOUNDED_COMPONENT_BYTES).contains(&component_byte_limit),
+        "component byte limit must be between 1 byte and 1 MiB"
+    );
+    let expected_utf16 = match expected_prospect_name {
+        Some(raw) => {
+            let normalized =
+                normalize_prospect_name(raw).context("empty expected prospect name")?;
+            Some(normalized.encode_utf16().collect::<Vec<u16>>())
+        }
+        None => None,
+    };
+    let validated = decode_envelope(reader)?;
+    let profile = TagProfile::MemoryArchive522;
+    let tags = read_root(&validated.payload, profile).context("invalid experimental root tags")?;
+    let staged = stage_prospect_save_state(
+        &tags.tags,
+        profile,
+        component_byte_limit,
+        expected_utf16.as_deref(),
+    )
+    .context("invalid staged FProspectSaveState")?;
+    Ok(StagedProspectInspection {
+        validation: "experimental_staged_prospect_save_state_only",
+        envelope: validated.inspection,
+        inner_tags: tags.summary(),
+        staged,
         world_imported: false,
     })
 }

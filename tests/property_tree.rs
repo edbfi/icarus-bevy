@@ -684,3 +684,52 @@ fn a_discarded_container_attempt_does_not_consume_the_node_budget() {
     assert_eq!(tree.properties.len(), 2);
     assert_eq!(tree.to_bytes().unwrap(), bytes);
 }
+
+#[test]
+fn binary_struct_container_items_frame_when_width_is_configured() {
+    // C022 TileFlags shape: Map<StructProperty (FIntPoint = 8 bytes), IntProperty (4 bytes)>.
+    let map = map_prop(
+        STRUCT,
+        INT,
+        &[
+            count(0),
+            count(2),
+            vec![1, 0, 0, 0, 2, 0, 0, 0],
+            vec![10, 0, 0, 0],
+            vec![3, 0, 0, 0, 4, 0, 0, 0],
+            vec![20, 0, 0, 0],
+        ]
+        .concat(),
+    );
+    let bytes = stream(std::slice::from_ref(&map));
+    // Default limits treat Struct items as None-terminated tagged streams, keeping binary items opaque.
+    let default_tree = round_trip(&bytes);
+    assert!(matches!(
+        default_tree.properties[0].value,
+        NodeValue::Opaque(_)
+    ));
+
+    // Configuring 8-byte binary Struct container items frames both entries as ContainerItem::Bytes.
+    let limits = TreeLimits::default().with_container_struct_bytes(8);
+    let framed = PropertyTree::parse(&bytes, TagProfile::MemoryArchive522, limits).unwrap();
+    match &framed.properties[0].value {
+        NodeValue::Map { removed, entries } => {
+            assert!(removed.is_empty());
+            assert_eq!(entries.len(), 2);
+            assert!(matches!(&entries[0].0, ContainerItem::Bytes(b) if b.len() == 8));
+            assert!(matches!(&entries[0].1, ContainerItem::Bytes(b) if b.len() == 4));
+        }
+        _ => panic!("expected framed Map with binary struct keys"),
+    }
+    assert_eq!(framed.to_bytes().unwrap(), bytes);
+    for invalid_width in [0, 65] {
+        assert!(
+            PropertyTree::parse(
+                END,
+                TagProfile::MemoryArchive522,
+                TreeLimits::default().with_container_struct_bytes(invalid_width),
+            )
+            .is_err()
+        );
+    }
+}

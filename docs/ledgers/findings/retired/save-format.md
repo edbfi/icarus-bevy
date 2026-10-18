@@ -4,7 +4,7 @@ Rows retired from [the active ledger](../save-format.md): superseded by a summar
 execution receipts, or historical session state. Full text is kept and IDs stay
 permanent; cite the superseding row where one exists.
 
-Last reconciled: 2026-10-17
+Last reconciled: 2026-10-18
 
 | ID | Claim | Kind | Evidence | Scope and limits | Unknowns | Status |
 | --- | --- | --- | --- | --- | --- | --- |
@@ -23,3 +23,5 @@ Last reconciled: 2026-10-17
 | F-326 | From-file candidate 0x1414baf60: two readers share one path object and initial helper; both results gate state application, either failure enters reporting | observed | static-decompile; M-160, M-170 | medium; build 25621760; one reader checks the helper return, other converts; no proof of lost error | U-056 | superseded-by F-717 |
 | F-333 | By-name call site 0x14146ef42 enters 0x1414831f0, which builds the state vtable and calls blob reader 0x1418e6240 at 0x141483466 | observed | static-decompile; M-147 | high; build 25621760; shared type does not make failure behavior equal | U-056 | superseded-by F-717 |
 | F-334 | From-file chain is observed separately through 0x141823fb0 and 0x1418e6140 | observed | static-decompile; M-147 | medium; build 25621760; caller unknown | U-056 | superseded-by F-717 |
+| F-256 | Missing/truncated by-name prospect inputs were rejected without an observed crash; the from-file failure path is a static lead only. | observed | runtime-capture; M-154, M-155; build 25621760 | medium; offline rejection tests; Not a reproduced original defect | U-047 | superseded-by F-733 |
+| F-327 | Failure reporting sets a global flag, then output formatting and a virtual call whose static target can force termination or raise per guard state | observed | static-decompile; M-155 | medium; build 25621760; not log-only; runtime reach and final outcome untested | U-058 | superseded-by F-732 |

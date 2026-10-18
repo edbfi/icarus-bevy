@@ -1,8 +1,9 @@
 # Current-client control stores and initial control archive
 
-Current-client (build 25793767) static evidence for the UWorld and
-UPendingNetGame local table stores, their constructor bounds, public symbols
-and notify slots, the control-dispatcher caller scans, and the experimental
+Current-client (build 25793767) and older-server (build 25621760) static
+evidence for the UWorld and UPendingNetGame local table stores, their complete
+constructor and destructor bounds, public symbols and notify slots, the
+control-dispatcher caller and vftable layout scans, and the experimental
 initial control-body reader. Promotion of these results is gated in
 [gates](../../gates.md#before-promoting-control-store-or-negotiation-findings).
 
@@ -19,23 +20,38 @@ Before restructure: 96ddb0b:docs/research/network/2026-10-13-control-stores.md
 
 In both builds the UWorld and UPendingNetGame constructors store their primary
 and FNetworkNotify table constants at +0 and +0x28 of the object under
-construction, held in a nonvolatile register across the super call (F-478,
-F-504, F-544). Client PDB names identify the older server's registration
-getters and InternalConstructor callbacks (UWorld at 0x143b856c0,
-UPendingNetGame at 0x143b21830), whose constructors match the client's apart
-from displacements (F-501 to F-503, F-505). Each FNetworkNotify table's +0x18
-slot is NotifyControlMessage (F-480); the dispatcher's only pointer is that
-slot of the older UWorld table, so it is UWorld::NotifyControlMessage (F-506),
-and both builds' four-slot notify tables match by position (F-546). Constructor
-symbols start 8- and 71-byte metadata fragments (F-479), and caller scans find
-no direct call or archive provenance (F-481).
+construction, held in `rdi`/`rbx` across `UObject::UObject` (`0x142169690`) and
+`FURL::FURL` (`0x1439ae930`) (F-478, F-504, F-544, F-723; U-007, U-009, U-013
+resolved). Client PDB names identify the older server's registration getters
+(`UWorld::GetPrivateStaticClass` `0x143b86aa0`, size `0x798`;
+`UPendingNetGame::GetPrivateStaticClass` `0x143b21d20`, size `0xc0`) and
+`InternalConstructor` callbacks (`0x143b856c0` and `0x143b21830`), which
+tail-jump with `rcx = *(UObject**)rcx`. In server 25621760, `UWorld::UWorld` is
+1,332 B across 5 chained `.pdata` records (`255917..255921`,
+`0x1439da2e0..0x1439da814`, with `TARGET01` at `0x1439da2e8` in record `255918`),
+`UPendingNetGame::UPendingNetGame` is 71 B in `.pdata` `245246`
+(`0x1437a9640..0x1437a9687`), and `TARGET02` (`0x1439dae50..0x1439db145`, 757 B,
+`.pdata` `255950`) is complete `UWorld::~UWorld` (client `0x143ca6730`), resetting
+`[rcx]` and `[rcx+0x28]` and tail-jumping to `UObject::~UObject` (F-501 to F-505,
+F-723, F-724; U-008, U-017, U-018 resolved). Because `/GR-` omits RTTI Complete
+Object Locator pointers at `[vtable-8]`, `UWorld`'s 82-slot primary vftable
+(`0x145467ef0`) and 4-slot `FNetworkNotify` secondary vftable (`0x145468180`,
+with slot `+0x18 = 0x1439ee7f0` before UTF-16 literals) abut directly, and
+`0x14671d164` is `.pdata` `256371` for `CONTROL01` (`0x1439ee7f0`,
+`UWorld::NotifyControlMessage`), exercised across Hello, Challenge, Login,
+Welcome and Join in connected run S1 (F-480, F-506, F-546, F-701, F-724, F-729;
+U-010, U-015, U-016, U-019 resolved). `UWorld::Listen` (`0x1439ecd8b`) and
+`UPendingNetGame::InitNetDriver` (`0x1437b7f6f`) pass `this + 0x28`
+(`FNetworkNotify*`) to `UNetDriver::InitBase` (`Driver + 0x208`), and
+`NotifyControlMessage` adjusts `this` by `r13 - 0x28` (F-520, F-723, F-724;
+U-043 resolved).
 
 The dispatcher validates message IDs and reads the ID 0 body (F-284) from the
 FInBunch through FBitReader::Serialize after the ID byte, byte order set by the
 first field and persisted at `Connection + 0x158`, in client and server alike
 (F-514, F-515, F-518, F-519, F-712, F-714; U-014, U-044 resolved);
 ReceivedBunch reaches it through the driver's notify object, slot +0x18
-(F-520). ReceivedPacket parses a packet word and ack history, then bunch
+(F-520, F-724). ReceivedPacket parses a packet word and ack history, then bunch
 headers inside a handler prefix and termination-bit frame in both builds (F-521
 to F-524, F-714); the client's parsers map the control vocabulary both ways
 (F-529, F-530), and its reliability layer is seeded from the handshake cookie
@@ -43,18 +59,10 @@ to F-524, F-714); the client's parsers map the control vocabulary both ways
 initial body within a derived 131,081-byte ceiling; negotiation, identity and
 game-connection flags stay false (F-096, F-097).
 
-All results are static: no original executable, runtime instruction or live
-control message ran, and metadata intervals are fragment bounds rather than
-complete functions.
-
 ## Open
 
-- Receiver origin, ABI and layout of the store base (U-007); cross-call provenance (U-009); class, registration and caller of the prefixes (U-013).
-- Complete constructors (U-008).
-- Executed runtime dispatch (U-010) and older-server ownership (U-011).
-- Indirect callers, RTTI, table identity and owner provenance (U-015 to U-018).
-- Exact-window decoding through live REA and lazy Ghidra startup (U-019).
+- Stock-client authenticated session against the native server (U-038).
 
 ## Artifacts
 
-M-005, M-012, M-023..M-046, M-281..M-283, M-288..M-297, M-301, M-302, M-315..M-346, M-353..M-357, M-370, M-371, M-749..M-754.
+M-005, M-012, M-023..M-046, M-281..M-283, M-288..M-297, M-301, M-302, M-315..M-346, M-353..M-357, M-370, M-371, M-749..M-754, M-763..M-765, M-770, M-771.

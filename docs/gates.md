@@ -6,81 +6,47 @@ here instead of restating them.
 
 Before restructure: 96ddb0b:docs/gates.md
 
-Last reconciled: 2026-10-17
+Last reconciled: 2026-10-18
 
 ## Before any C001 original-code case
 
-- Authored decoder fixtures are qualified (F-469; U-001 resolved). Preserve their
-  exact bindings; any change requires renewed authored qualification. Fixture
-  success supplies no construction, constructor-behavior or network proof.
-- Every target case needs its own separately reviewed exact-byte case and fresh
-  scope, bindings, session and original-byte joins.
-- Preserve the failed nine-mode receipt and the separate strict replay; neither is
-  a passing original suite.
-- The exact 305/296-byte, 106-byte and 196/217-byte cases are qualified (F-474;
-  U-002 resolved); do not retry them. Keep zero lookahead and no Program, database
-  or flow following in their claims; linear coverage proves no complete function
-  or construction bridge.
-- Qualify post-call receiver continuity before promoting the observed table
-  stores to concrete archive-slot ownership (F-475, U-041). Expanded paths and
-  changed decoder geometry need separately reviewed bounds and source, fresh
-  authored qualification, scope and session. Declared CFGs qualify while graphs
-  stay open and calls and returns stay opaque.
-- Conditional normal-return ABI inference needs local stack, save-slot/home-area
-  and call-argument joins; unwind intent alone clears neither receiver nor archive
-  ownership (F-431, U-041).
-- Reuse the exact metadata of the three qualified unwind records (F-476). Local
-  instruction joins still need reviewed source, bounds and a fresh session; no
-  handler-data or chain expansion follows from their qualification.
-- Register storage shapes and byte address units qualify; global and subbyte
-  aliases and live values do not. Register and unique storage addresses have
-  32 bits; register values can be 64-bit. Handler-aware analysis preserves flags
-  and RVAs and excludes exceptional paths; ordinary-entry and ABI applicability
-  remain explicit conditions (F-476).
-- Frame cases stop at controlled unsupported operations with null failure sites;
-  preserve their partial results (F-477). Linear copy shapes do not prove
-  reachability. Two-vector (XMM0/XMM1) mappings are qualified and their case
-  replayed; both constructors then stop at a narrow RAX (AX) read. The reviewed
-  AX/AL case overflows the 64 KiB bundle cap; the reviewed per-role split case
-  qualifies the candidate's conditional model and stops the callback at its
-  role cap (F-508); its split outputs are independently replayed (M-307).
-  Never raise a cap; original data stays unread. Do not repeat
-  unchanged helpers or promote partial receiver claims. Stack-derived unknown
-  carriers do not prove no escape; ordinary-entry, default ABI, protected-frame
-  integrity and nonalias conditions remain explicit and unproved.
-- Old slot preparation mis-stated two addresses (F-465); base and offsets have
-  independent same-build provenance, so the candidate slots are 0x1449da030,
-  0x1449da418 and 0x1449da430 (F-495). Client-PDB correspondence names the
-  construction path, the final vptr and the client slot contracts (F-509,
-  F-669); the reviewed server slot read matches them (F-670). Ownership and
-  runtime claims keep register preservation across the super call as an
-  explicit condition; do not repeat these reads.
-- Retained exports already identify the exact native class getter and
-  construction callback (F-472); reuse them before new bounded queries. Read the
-  retained instruction listing within these exact intervals before expanding
-  analysis; gaps and outgoing paths require separate evidence.
-- A separately reviewed diagnostic variant must expose only enumerated checks and
-  bounded numeric locations before retrying the same exact intervals; no unchanged
-  retry or broader analysis is justified (F-470, U-003).
+- Authored decoder fixtures, exact-window decodes (305/296, 106 and 196/217 B),
+  complete `.pdata` bounds (103538, 95461 and 103518), CRT registration
+  (`0x1406a8ab0` -> `0x142187f70` and `0x141a00220`), base constructor receiver
+  preservation (`0x1418824d0` keeps `rbx`), vftable targets (`0x1449d9f90` /
+  `0x1449da448`, `+0x4a0` `0x1418a9bb0` -> `0x1418a9c80` -> `+0xa0` `0x1418aaf70` ->
+  `+0x488` `0x14189d380`), and the `-noanalysis` cause of the M-568/M-569
+  rejection are qualified (F-469 to F-477, F-495, F-508, F-509, F-513, F-669,
+  F-670, F-721, F-722; U-001 to U-006, U-023, U-041, U-042 resolved).
+- Do not retry these completed reads or unchanged helpers; preserve the failed
+  nine-mode receipt, strict replay and split outputs (M-307). Any new C001
+  original-code case requires its own fresh scope, bindings and session.
 
 ## Before new save-class work
 
-- Completed C028/C034 finite audits and historical C013 coverage determine the
-  corrected census; do not repeat their completed populated value structures.
-  The D01 populated Int/Str work is complete, and DA04's population is empty.
-- Audit the selected coverage before choosing another save boundary; do not
-  repeat completed header/string comparisons.
-- Complete prior range/result replay and all both-copy budgets precede any new
-  unit decoding or native call. Fresh helpers must bind the current source/library
+- Completed C028/C034 finite audits and C013 coverage determine the census; do
+  not repeat their completed populated value structures or D01/DA04 checks.
+- Server 25621760 and client 25793767 static correspondences for `FString`/`FName`
+  normalization, `FFloatProperty`, `FVector`, `FArrayProperty`, immutable
+  `CPF_SaveGame`, tagged wrap-around, C013/C028 migration/restore, `C030`
+  `TextProperty`, `C015`/`C022`/`C032` Map/Set/Int64/Struct items, all 65
+  `RecorderComponent` `FClassParams` (`C001`..`C038` vtable overrides),
+  `C035`/`C002` clocks, `C033` dynamic tree drop, `D01` inventory/variable
+  restore (`14` `EDynamicItemProperties`), and entry-path failure matrices are
+  qualified (F-715 to F-720, F-725 to F-728, F-731 to F-736; U-020 to U-024,
+  U-026, U-028 to U-033, U-039, U-046, U-048, U-050, U-053 to U-063 resolved);
+  do not repeat those static reads.
+- Audit selected coverage before choosing another save boundary; do not repeat
+  completed header/string comparisons.
+- Complete prior range/result replay and both-copy budgets precede any new unit
+  decoding or native call. Fresh helpers must bind the current source/library
   transition explicitly and replay frozen parent/selection results first.
-- Before changing live hashes, preserve complete fixity receipts for affected
-  prior cases; later helpers must record exact source/library transitions.
+- Preserve complete fixity receipts before changing live hashes.
 - Distinct native child widths require exact descriptor identity; field order or
   an equal-width multiset cannot replace that binding.
 - Preserve unknown fields and private inputs; no partial importer. Exact
   class/property names and supplied values must stay private under `work/`.
-- The original 8 MiB component transport cannot hold both complete C034 copies
-  together, so those comparisons use separate per-copy batches.
+- Separate per-copy batches are required for complete C034 comparisons (8 MiB cap).
 
 ## Before promoting control-store or negotiation findings
 
@@ -89,17 +55,21 @@ Last reconciled: 2026-10-17
 - Any expanded output needs new source/classes/scope/session and byte
   qualification; old lookahead is not silently promoted to decoded evidence.
   Later decoding must honor measured spans without automatic expansion.
-- Base origin is the constructed object held across the super call (F-544);
-  keep the same-build receiver/type-registration join without carrying
-  unproved provenance across other calls (U-043). The static dispatcher
-  caller is the ReceivedBunch virtual call (F-520); runtime dispatch stays
-  unobserved.
+- Complete `UWorld::UWorld` (1,332 B, `.pdata` 255917..255921) and
+  `UPendingNetGame::UPendingNetGame` (71 B, 245246) constructors,
+  `UWorld::~UWorld` (`TARGET02`, 757 B, 255950), `UObject`/`FURL` receiver
+  preservation, `/GR-` abutting vftables (`0x145467ef0`/`0x145468180`),
+  `UNetDriver::InitBase` (`Driver + 0x208`), static `ReceivedBunch` ->
+  `NotifyControlMessage` (`CONTROL01` `0x1439ee7f0`, `.pdata` 256371) dispatch,
+  and S1 runtime exercise are qualified (F-520, F-544, F-701, F-723, F-724,
+  F-729; U-007 to U-010, U-013, U-015 to U-018, U-043 resolved); native
+  connected sessions remain gated (U-038).
 - Client and server archive/outer framing, `UControlChannel` byte-order
   persistence (`Connection + 0x158`), 19 fallback skip layouts, 32,767
   queued-bunch bounds, `IsClientMsgTypeValid` state gating,
   `PreLogin`/`InitNewPlayer` checks and 0 registered version/PreLogin callbacks
-  are bound in `experimental` (F-688, F-710 to F-714; U-014, U-037, U-044
-  resolved); connected sessions keep their own gate (U-038).
+  are bound in `experimental` (F-688, F-710 to F-714, F-729; U-014, U-037, U-044,
+  U-051 resolved); connected sessions keep their own gate (U-038, U-052).
 - Older server build 25621760 and client build 25793767 remain distinct;
   addresses and assumptions do not transfer automatically.
 

@@ -6,28 +6,25 @@ Experimental: static observations; the framing and Hello exchange are
 wire-validated offline, and a synthetic Login and Join are welcomed (F-688
 to F-690, F-712 to F-714). Scope: dedicated-server
 build 25621760 (M-168) unless a current-client (build 25793767) comparison is
-named. Last reconciled: 2026-10-17.
+named. Last reconciled: 2026-10-18.
 Full text: d5b0ae6:docs/specs/network/control-negotiation.md.
 
 ## Scope
 
 The server-side control-message dispatcher and its initial (ID 0) branch, the
-string reader it uses, the static evidence linking UWorld / UPendingNetGame
-notify tables to it, and both builds' packet and bunch header parse
-order, `UControlChannel` byte-order persistence, queued send bounds, fallback
-skip table, connection-state message admission (`IsClientMsgTypeValid`),
+string reader it uses, `UWorld` / `UPendingNetGame` notify tables, packet and
+bunch header parse order, `UControlChannel` byte-order persistence, queued send
+bounds, fallback skip table, connection-state admission (`IsClientMsgTypeValid`),
 `PreLogin` checks, `SpawnPlayActor` / `InitNewPlayer` join flow, and delegate
 cross-reference scans across both binaries. Not covered: Steam packet handler
-runtime initialization, compression, or integrity protection. The native run
-command has no game listener.
+runtime initialization, compression, or integrity protection.
 
 ## Confirmed
 
 - The dispatcher receives a connection, a message ID and an archive-like input
   after lower layers; a message-validity check precedes table dispatch, and a
   separate branch serves another operating mode (F-284).
-- Dispatch table, descriptions inferred from control flow and nearby strings
-  (E-011/E-013 under M-170):
+- Dispatch table (M-170/E-011, M-170/E-013):
 
   | Inner ID | Branch entry | Inferred meaning |
   | --- | --- | --- |
@@ -40,112 +37,70 @@ command has no game listener.
   | 17 | `0x1439f0416` | Debug text handling |
 
   IDs 1-3, 6-8, 11-14 and 16, and out-of-range IDs, reach the common exit.
-- ID 0 reads one byte into a local value, four bytes into a 32-bit remote
-  version, then a token-like string through the shared string serializer; it
-  obtains the local version through `0x141f2b220`, checks input error state, and
-  calls `0x141f2e6e0` with both versions. That comparison defaults to equality
-  with an optional callback route ([checksum spec](network-checksum.md)). A
-  failed comparison reaches an incompatible-version diagnostic and close
-  accounting; a successful one takes a direct continuation for an empty token
-  and callback or encryption-failure paths for a nonempty token (F-284).
-- The string reader (E-021) reads a signed 32-bit length; the negative branch
-  reads twice the absolute length in bytes, `i32::MIN` is rejected before
-  negation, a configured archive maximum limits the absolute count, and the
-  wide branch byte-swaps conditionally and writes a trailing zero
-  ([archive-string spec](../save-format/archive-string.md)).
-- Current client: in each UWorld and UPendingNetGame FNetworkNotify secondary
-  table the `+0x18` slot equals the respective NotifyControlMessage public
-  symbol (F-088). World stores its primary table constant at `+0` and the
-  FNetworkNotify constant at `+0x28` of one unknown base (F-063); Pending does
-  the same after its constructor call (F-076, F-274). Two seven-byte LEA sites
-  materialize `0x145468180` and two eight-byte stores place it at base `+0x28`
-  (F-109 region); one prefix keeps its base through stores at `+0` and `+0x28`.
-- One absolute pointer to the dispatcher exists at `0x145468198`; no E8/E9
-  rel32 callers match; a 128-byte pointer window ends at the dispatcher (F-106).
-  The retained database shows one non-call reference with no containing
-  function; partial coverage does not prove caller absence.
-- Client and server receive and send path (F-514, F-515, F-518, F-712, F-714;
-  U-014, U-044 resolved):
-  `FInBunch` inherits `FBitReader::Serialize` at vftable `+0x150`, tail-calling
-  `SerializeBits` (`+0x158`) with `Length * 8`. `UControlChannel::ReceivedBunch`
-  (client `0x1437c4940`, server `0x143536420`), while `bNeedsHeaderInspection`
-  (`+0x68`) is set, calls `Close` (client `0x143984190`, server `0x1436dc260`)
-  unless the bunch holds >= 16 bits and byte 0 is 0 (`Hello`); byte 1 == 1
-  clears archive byte-swap bit `0x20` at `+0x29` (else sets it), persists
+- ID 0 reads one endianness byte, a 32-bit remote version, and a token string
+  ([archive-string spec](../save-format/archive-string.md)), compares versions
+  via `0x141f2e6e0` ([checksum spec](network-checksum.md)), sends `Upgrade` and
+  closes on mismatch, sends `Challenge` on an empty token, and requires an
+  encryption delegate on a nonempty token (F-284, F-713).
+- `UWorld` (`0x1439da2e0`) and `UPendingNetGame` (`0x1437a9640`) install primary
+  and `FNetworkNotify` vftables at `+0` and `+0x28` (`0x145467ef0` / `0x145468180`
+  on `UWorld`, `0x14540a038` / `0x14537cb18` on `UPendingNetGame`; `TARGET02`
+  `0x1439dae50` is `UWorld::~UWorld`). `UWorld::Listen` and
+  `UPendingNetGame::InitNetDriver` store `this + 0x28` at `Driver + 0x208`, and
+  `NotifyControlMessage` (`0x1439ee7f0`) adjusts `this` by `-0x28` (F-063, F-076,
+  F-088, F-106, F-505, F-506, F-520, F-544, F-546, F-723, F-724; U-007 to U-013,
+  U-015 to U-018, U-043 resolved).
+- Receive and send path (F-514, F-515, F-518, F-712, F-714; U-014, U-044
+  resolved): `UControlChannel::ReceivedBunch` (client `0x1437c4940`, server
+  `0x143536420`), while `bNeedsHeaderInspection` (`+0x68`) is set, closes unless
+  the bunch holds >= 16 bits and byte 0 is `0` (`Hello`); byte 1 == 1 clears
+  archive byte-swap bit `0x20` at `+0x29` (else sets it), persists
   `Connection + 0x158` (`Data[1] != 1`), and clears `+0x68`. Subsequent
-  `FInBunch` (`0x1437a8720` / `0x1435186d0`) and `FControlChannelOutBunch`
-  (`0x1437a83c0`) instances copy `+0x29` bit `0x20` from `Connection + 0x158`.
-  It then loops while `!Bunch.AtEnd() && Connection->State != USOCK_Closed`,
-  reading one ID byte per message: ID `0x16` (`22`, `NetGUIDAck`) dispatches
-  locally (`PackageMap->ReceivedNak`), other IDs call
-  `Driver->Notify->NotifyControlMessage(Connection, MessageType, Bunch)`, and if
-  `Pos == PosBefore` afterwards, `ReceivedBunch` skips unhandled messages across
-  19 layouts (`0..18`, `21`, failing closed on others; `read_control_fallback` /
-  `write_control_fallback` in `experimental::control_messages`).
-  `UControlChannel::SendBunch` (`0x1437ca030` / `0x14353cf30`) sends immediately
-  when `QueuedMessages` (`+0x70`) is empty and `NumOutRec < 255 + bClose`, else
-  queues up to `32,767` (`0x7fff`) messages and drains them in `Tick` once
-  `bOpenAcked` (`+0x30 & 1`) is set.
-- Client and server packet and bunch headers (`ReceivedRawPacket` `0x1436f2450`,
-  `StatelessConnect::Incoming` `0x14373ec60`, `ReceivedPacket` `0x1436ef030`,
-  `ReadPacketInfo` `0x1436eed30`, `ReceivedRawBunch` `0x143538460`,
-  `ReceivedNextBunch` `0x143537690`, `SendBunch` `0x14353c300`, `SendRawBunch`
-  `0x1436f42c0`; F-521, F-522, F-710, F-711, F-714), read LSB-first from the
-  packet reader when its internal-ack flag is clear; integer readers are
-  `FBitReader` vtable `+0x160` (`SerializeInt`, `0x141f61500`) and `+0x168`
-  (`SerializeIntPacked`, `0x141f618d0`):
+  `FInBunch` and `FControlChannelOutBunch` instances copy `+0x29` bit `0x20` from
+  `Connection + 0x158`. It then loops while `!Bunch.AtEnd() && State != USOCK_Closed`:
+  ID `0x16` (`NetGUIDAck`) dispatches locally (`PackageMap->ReceivedNak`), other
+  IDs call `Notify->NotifyControlMessage`, and unhandled messages (`Pos == PosBefore`)
+  skip across 19 layouts (`0..18`, `21`, failing closed on others;
+  `read_control_fallback` / `write_control_fallback` in
+  `experimental::control_messages`). `UControlChannel::SendBunch` sends
+  immediately when `QueuedMessages` (`+0x70`) is empty and
+  `NumOutRec < 255 + bClose`, else queues up to `32,767` (`0x7fff`) messages and
+  drains them in `Tick` once `bOpenAcked` (`+0x30 & 1`) is set.
+- Packet and bunch headers (F-521 to F-527, F-688, F-710, F-711, F-714), read
+  LSB-first after optional magic-header bits, the stateless-connect bit (`0`) and
+  Steam-auth bit (`0`), and before the connection and handler termination bits:
 
   | Order | Field | Encoding |
   | --- | --- | --- |
   | 1 | Packet word | 32 bits: history words minus one (bits 0-3, at most 8 words), acked sequence (4-17), sequence (18-31) |
   | 2 | Ack history | that many 32-bit words |
-  | 3 | Packet info | above reader version 13: one bit; if set, a value below 1024, a frame-time bit and, to a client, one frame-time byte (F-525) |
+  | 3 | Packet info | one bit; if set, jitter below 1024, frame-time bit and, to a client, one frame-time byte (F-525) |
   | 4 | Control | one bit; if set, open and close bits |
-  | 5 | Close reason | if closing: value below 15 (below version 7: one bit) |
+  | 5 | Close reason | if closing: value below 15 |
   | 6 | Paused, reliable | one bit each |
-  | 7 | Channel index | packed, below the connection's channel limit (version above 2) |
+  | 7 | Channel index | packed, below the connection's channel limit |
   | 8 | Exports, mapped GUIDs, partial | one bit each |
   | 9 | Reliable sequence | if reliable: value below 1024, relative to the channel's last |
   | 10 | Partial initial, final | if partial: one bit each |
-  | 11 | Channel name | if open or reliable: one bit; if set a packed hard-coded index (at most 702, 0 none), else an archive string and a 32-bit number (F-525) |
-  | 12 | Payload | a bit count below eight times the maximum packet size, then those bits copied to the bunch from bit 0 |
+  | 11 | Channel name | if open or reliable: one bit; if set a packed index (`<= 702`), else an archive string and 32-bit number (F-525) |
+  | 12 | Payload | bit count below `8 * MaxPacket`, then those bits copied to the bunch |
 
-  Bunches repeat until the packet reader ends. Before this, the handlers
-  consume optional magic-header bits, the stateless-connect bit and the
-  Steam-auth bit (both 0 for data); the packet ends with the connection's
-  termination bit, then the handler's in the highest set bit of the nonzero
-  last byte (F-524, F-688). A value with maximum M is
-  LSB-first bits with masks 1, 2, 4, ... while value plus mask is below M; a
-  packed value is up to five bytes, each bit 0 a continuation flag and bits 1-7
-  the next 7-bit group, low group first (F-523). `SendRawBunch` writes the same
-  bunch header order; its reliable sequence and payload count use the same bit
-  loop without clamping the value (F-526). The engine network protocol version
-  starts at 17 in both images, so every version gate takes its current path
-  (F-527, F-714).
-- Reliability (F-535, F-536, F-710): the sender packs its outgoing
-  sequence (bits 18-31), the last acknowledged incoming sequence (4-17) and the
-  history word count minus one (0-3), then that many 32-bit history words
-  covering the unacknowledged incoming span (1 to 8 words). After the
-  handshake ack the connection seeds its incoming and outgoing sequences from
-  the cookie's first two little-endian 16-bit words masked to 14 bits; initial
-  reliable sequences are the low 10 bits. Reliable bunches out of order are
-  queued per channel (at most 255) and delivered in sequence. A received
-  acknowledged sequence 1 to 8191 ahead resolves each newly acknowledged
-  outgoing packet in order: beyond the newest 256 lost, otherwise history bit
-  (acknowledged minus packet) set means delivered, bit 0 being the
-  acknowledged packet; lost packets resend their unacknowledged reliable
-  bunches (F-538, F-539).
-- Control vocabulary (F-529, F-530); strings are archive strings, `u32` values
-  follow the swap rule above:
+- Reliability (F-535 to F-539, F-710): handshake ack seeds incoming/outgoing
+  packet sequences from the cookie's first two LE `u16` words masked to 14 bits
+  (initial reliable sequences take the low 10 bits). Out-of-order reliable
+  bunches queue per channel (max 255); acks 1 to 8191 ahead resolve outgoing
+  packets via the 256-bit history window and resend lost reliable bunches.
+- Control vocabulary (F-529 to F-531, F-548); strings are archive strings and
+  `u32` values follow the Hello byte-swap flag:
 
   | ID | Direction | Fields |
   | --- | --- | --- |
   | 0 Hello | to server | byte, u32 version, string token |
   | 1 Welcome | to client | three strings: map URL, game name, redirect URL |
   | 2 Upgrade | to client | u32 local version (sent on incompatible Hello, then close) |
-  | 3 Challenge | to client | string (a counter-derived token, F-531) |
-  | 4 Netspeed | to server | u32 (client sends it after Welcome) |
-  | 5 Login | to server | string response (literal "0", F-548), string URL, unique-net-id (F-531), string platform |
+  | 3 Challenge | to client | string (counter-derived token, F-531) |
+  | 4 Netspeed | to server | u32 (clamped to `>= 1,800`) |
+  | 5 Login | to server | string response (`"0"`, F-548), string URL, unique-net-id (F-531), string platform |
   | 6 Failure | to client | string, then the client closes |
   | 9 Join | to server | none |
   | 10 Split join | to server | string URL, unique-net-id |
@@ -154,97 +109,39 @@ command has no game listener.
   | 18 NetGUID | to client | packed int, string |
   | 21 Encryption ack | to client | none |
 
-- Older server: `0x145468198` is slot `+0x18` of the UWorld FNetworkNotify table
-  `0x145468180`, which the older UWorld constructor installs at `+0x28` (F-505).
-  The dispatcher is therefore `UWorld::NotifyControlMessage`, reached through the
-  FNetworkNotify virtual slot (F-506). The older UPendingNetGame tables are
-  `0x14540a038` (primary) and `0x14537cb18` (FNetworkNotify).
-
 ## Candidate
 
-- Experimental modules, wire-validated through Hello and offline Login/Join
-  (F-689, F-690, F-712 to F-714): `control` reads the ID 0 body under a 131,081-byte ceiling
-  with the first-field byte-order rule (F-096, F-097, F-518, F-519, F-714),
-  retaining no token units and omitting `Debug`/`Serialize` on raw containers;
-  `packet` codes the receive format above (F-521 to F-527); `control_receive`
-  decodes one terminated datagram's control messages up to ID 0;
-  `control_messages` types the whole vocabulary, fallback skip table and
-  unique-net-id forms (F-531, F-636, F-712); `sequencing` models notify,
-  reliable and partial-bunch state (F-535 to F-539, F-710, F-711); and
-  `packet_lab` and `peer_lab` run them as disconnected per-peer state in the
-  Bevy loopback lab, persisting the Hello byte order across subsequent control
-  bunches and answering Hello and Login (`ADMISSION_DISABLED_MESSAGE` by default,
-  or full `IsClientMsgTypeValid` login-state gating, `PreLogin`, `Welcome` and
-  `Join` / `SplitJoin` when `PeerLabConfig::admission` is configured; F-558,
-  F-564, F-712, F-713). Exact EOF and normalization rejection are research
-  policy. Summaries carry kinds and lengths only.
+- Experimental modules (`control`, `packet`, `control_receive`,
+  `control_messages`, `sequencing`, `admission`, `packet_lab`, `peer_lab`) model
+  packet/bunch headers, the 19-entry control fallback table, unique-net-id forms
+  (F-543, F-636) and disconnected loopback negotiation through `Hello`,
+  `Challenge`, `Login`, `PreLogin`, `Welcome` and `Join` / `SplitJoin` (F-558,
+  F-564, F-689, F-690, F-712 to F-714).
 - Server `UWorld::NotifyControlMessage` (`0x1439ee7f0`, F-563, F-713) and
-  `UWorld::WelcomePlayer` (`0x1439fdeb0`, F-580): `UNetConnection::IsClientMsgTypeValid`
-  (`0x143991c70`) gates incoming control messages by `ClientLoginState`
-  (`+0x1c8`, `LoggingIn = 1`, `Welcomed = 2`, `Joined = 3`) and
-  `ExpectedClientLoginMsgType` (`+0x1cc`, `0` = `Hello` initially, set to
-  `5` = `Login` by `SendChallengeControlMessage` `0x143998730` and advanced to
-  state `2` by `WelcomePlayer`, which rejects `Hello` and `Login`). Hello sends
-  Upgrade with the local version and closes on mismatch; an empty token
-  (count < 2) sends Challenge, and a nonempty token fails unless an encryption
-  delegate is registered. Netspeed clamps to >= 1,800. Login validates the URL,
-  runs `PreLogin`, and welcomes the player on an empty error or sends Failure
-  and closes. On `Join` (`9`), if `PlayerController` (`+0x30`) is null,
-  `UWorld::SpawnPlayActor` (`0x14392dbb0`) calls `AGameModeBase::Login`
-  (`0x143866c80`) -> `ApproveLogin` -> `SpawnPlayerController` (`0x143872120`)
-  -> `InitNewPlayer` (`0x1438633f0`), which checks `GameSession`, `PlayerState`
-  and `FindPlayerStart`, parses `?bIsFromInvite`, `?SpectatorOnly=1` and
-  `?Name=` (truncated to `20` units or formatted as `%s%i` from
-  `DefaultPlayerName` and `PlayerId`), sets `NetPlayerIndex` (`+0x3d4`), binds
-  the player via `SetPlayer` -> `HandleClientPlayer` (`0x14398ffe0`), calls
-  `PostLogin` (`0x1414eb340` -> `0x143869990`), and sets `ClientLoginState = 3`.
-- Current client and server `PreLogin` (`AGameModeBase::PreLogin` `0x14386a160`,
-  `UOnlineEngineInterfaceImpl::IsCompatibleUniqueNetId` `0x1409cbee0`, F-712,
-  F-713; U-037 resolved; native mirror `experimental::admission`): the ICARUS
-  game mode and session add no checks beyond the engine's, and exhaustive `.text`
-  and `.rdata`/`.data` scans prove that neither binary binds any callback to
-  `FGameModeEvents::GameModePreLoginEvent` (`0x146056cf8` / `0x145f404b8`) or
-  `FNetworkVersion` overrides (`0x1463251b0..c0` / `0x1462116a0..b0`). When
-  `UniqueId` wraps a valid `FUniqueNetId`, `IsCompatibleUniqueNetId` accepts it
-  if `GetType()` matches `GetDefaultOnlineSubsystemName()` or any entry in
-  `CompatibleUniqueNetIdTypes` (`+0x78`), else sets `incompatible_unique_net_id`
-  and skips `ApproveLogin`; otherwise `ApproveLogin` (`0x14385ac60`) checks
-  `Server full.` against override or `MaxPlayers` or `SpectatorOnly` and
-  `Maximum splitscreen players` on `SplitscreenCount` (with C-runtime integer
-  reads saturating at `i32` bounds). `?`-delimited options split at the first
-  `=` and match ASCII case-insensitively, first wins.
-- Current client unique-net-id type hashes (F-543): 1 NULL, 2 MCP, 3 STEAM,
-  4 PS4, 6 GOOGLE, 7 GOOGLEPLAY, 8 FACEBOOK, 9 IOS, 10 APPLE, 11 TENCENT,
-  12 SWITCH, 13 AMAZON, 14 GAMECIRCLE, 15 THUNDERHEAD, 18 Oculus, 19 Quail,
-  20 PS4SERVER; 5, 16, 17 and 21 are runtime FName globals; 31 carries a name.
-- Epic's FNetworkNotify interface (four virtual callbacks) is a testable
-  hypothesis for the slots other than `+0x18` (identified by F-506). Image
-  deltas are not object offsets; provenance does not cross calls unchecked.
+  `WelcomePlayer` (`0x1439fdeb0`, F-580): `IsClientMsgTypeValid` (`0x143991c70`)
+  gates messages by `ClientLoginState` (`LoggingIn = 1`, `Welcomed = 2`,
+  `Joined = 3`) and `ExpectedClientLoginMsgType` (`0` = `Hello`, `5` = `Login`).
+  On `Join` (`9`), if `PlayerController` (`+0x30`) is null, `SpawnPlayActor`
+  (`0x14392dbb0`) runs `AGameModeBase::Login` -> `ApproveLogin` ->
+  `SpawnPlayerController` -> `InitNewPlayer`, sets `NetPlayerIndex` (`+0x3d4`),
+  binds `HandleClientPlayer`, calls `PostLogin`, and sets `ClientLoginState = 3`
+  (F-713; U-010 resolved).
+- `PreLogin` (`AGameModeBase::PreLogin` `0x14386a160`, F-712, F-713; U-037
+  resolved; `experimental::admission`): neither binary binds any callback to
+  `GameModePreLoginEvent` or `FNetworkVersion` overrides. `IsCompatibleUniqueNetId`
+  checks `GetDefaultOnlineSubsystemName()` / `CompatibleUniqueNetIdTypes`, and
+  `ApproveLogin` (`0x14385ac60`) checks `Server full.` and `Maximum splitscreen players`.
 
 ## Open questions
 
-- Executed runtime dispatch of the qualified stores and slots (U-010); older
-  server owner (U-011); indirect callers (U-015); RTTI, table identity and
-  owner (U-016, U-017, U-018); receiver and type-registration join (U-043);
-  authenticated stock-client session (U-038).
+- Executed runtime dispatch in an authenticated stock-client session (U-038).
 
 ## Evidence
 
-- Static cases: M-170 (`icarus-server-baseline`, E-011/E-013/E-021/E-022/E-024),
+- Static cases: M-170 (`icarus-server-baseline`, M-170/E-011, M-170/E-013,
+  M-170/E-021, M-170/E-022, M-170/E-024),
   M-146, [research/archive](../../research/archive/2026-10-12-control-caller-limit.md),
   M-023 to M-045 in the [control-store digest](../../research/network/control-stores.md),
-  and M-589 to M-596, M-749 to M-754 (`PreLogin`, `SpawnPlayActor`, delegate
-  scans, server packet/bunch framing and `UControlChannel` framing).
-- Requirements before promotion: recover archive conversion and outer framing
-  with bounds and errors; obtain a paired trace of a matching stock client and
-  reference server; create sanitized fixtures for accepted negotiation and each
-  rejection class (truncation at each field, zero/negative/minimum/oversized
-  lengths, incompatible versions, invalid transitions, token failures); pass
-  those fixtures and the stock-client experiment before marking negotiation
-  implemented.
-- Authored suites:
-  - `cargo test --test control_negotiation --locked` (unit and integration tests
-    for `experimental::control`, `experimental::control_messages` and
-    `experimental::admission`)
-  - `cargo test --test peer_lab --locked` (loopback peer lab Hello, Challenge,
-    Login, PreLogin, Welcome and Join/SplitJoin state-machine regressions)
+  and M-589 to M-596, M-749 to M-754, M-763 to M-765, M-770, M-771.
+- Authored suites: `cargo test --test control_negotiation --locked` and
+  `cargo test --test peer_lab --locked`.

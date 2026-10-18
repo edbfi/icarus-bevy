@@ -4,7 +4,7 @@
 
 Experimental: envelope schema observed statically in build 25621760 (M-168) and
 confirmed against all twelve supplied prospect documents; the inner world is
-not interpreted. Last reconciled: 2026-10-15.
+not interpreted. Last reconciled: 2026-10-18.
 Full text: d5b0ae6:docs/specs/save-format/prospect-envelope.md.
 
 ## Scope
@@ -76,19 +76,23 @@ unavailable.
   (F-241). Success is labeled `experimental_envelope_only`; `--inner-tags`
   adds `experimental_root_tags_only` aggregate counts under the fixed research
   profile (F-244).
-- The original may accept other encodings or inconsistent inputs; the strict
-  inspector does not reproduce those tolerances (U-026). Schema agreement does
-  not establish cross-build compatibility (U-025, U-040).
+- The original reader checks overrun only and normalizes narrow/wide strings
+  lossily (`F-719`; U-026 resolved), whereas the strict inspector fails closed;
+  the entry-path failure matrix (`LoadProspectByName` vs `SetupLoadedProspect`)
+  is verified across missing, empty, malformed-JSON, ID-mismatch and
+  corrupt-`BinaryBlob` inputs (`F-717`, `F-733`; `U-056` to `U-058`, `U-063`
+  resolved). Schema agreement does not establish cross-build compatibility
+  (U-025, U-040).
 
 ## Open questions
 
-- Inner archive semantics, ownership fidelity and character profile linkage
-  (U-040); official restoration and newer-build compatibility (U-025); original
-  tolerance of malformed envelopes (U-026).
+- Producing-build log confirmation for the supplied save (U-040); official
+  restoration and newer-build compatibility (U-025).
 
 ## Evidence
 
-- Static: M-169 (overnight E-004, E-008/E-009, E-018 to E-025, E-028 to E-030).
+- Static: M-169 (`M-169/E-004`, `M-169/E-008`, `M-169/E-009`, `M-169/E-018` to
+  `M-169/E-025`, `M-169/E-028` to `M-169/E-030`), M-757, M-758, M-772, M-773.
   Supplied-save triage with hashes, CRCs and bounded member checks: M-118.
 - Dependencies in `Cargo.lock`: `base64` 0.23.1, `flate2` 1.1.10 (Rust backend,
   `miniz_oxide` 0.9.1, `crc32fast` 1.5.2, `adler2` 2.0.1, `simd-adler32`
