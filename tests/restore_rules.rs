@@ -1,10 +1,11 @@
 use icarus_bevy::experimental::restore_rules::{
-    ACTOR_RECORDER_TRANSFORM_TOLERANCE, ActorLink, ApplyTransformKind, ByNameLoadOutcome,
-    DynamicItemPropertyKind, InventorySlotOverflowDisposition, LobbyPrivacy, OwnerResolvePolicy,
-    PROSPECT_SAVE_STATE_CURRENT_VERSION, PlayerList, ProspectAssociatedMember,
-    ProspectBlobDecodeOutcome, RESTORED_INDEFINITE_MODIFIER_LIFETIME, RestoreStateKind,
-    RocketRestore, SetupLoadedProspectOutcome, VOXEL_LOCATION_TOLERANCE, VersionUpgradeKind,
-    can_activate_prospect_info, container_entries, evaluate_by_name_load_attempt,
+    ACTOR_RECORDER_TRANSFORM_TOLERANCE, ActorLink, ApplyTransformKind, AttachRecorderOutcome,
+    ByNameLoadOutcome, DynamicItemPropertyKind, InventorySlotOverflowDisposition, LobbyPrivacy,
+    OwnerResolvePolicy, OwnerResolveStep, PROSPECT_SAVE_STATE_CURRENT_VERSION, PlayerList,
+    ProspectAssociatedMember, ProspectBlobDecodeOutcome, RESTORED_INDEFINITE_MODIFIER_LIFETIME,
+    RestoreStateKind, RocketRestore, SetupLoadedProspectOutcome, VOXEL_LOCATION_TOLERANCE,
+    VersionUpgradeKind, can_activate_prospect_info, container_entries,
+    evaluate_attach_recorder_to_actor, evaluate_by_name_load_attempt, evaluate_owner_resolve_step,
     evaluate_prospect_blob_decode, evaluate_setup_loaded_prospect_attempt,
     migrate_prospect_save_state, names_match, normalize_prospect_name,
     normalize_restored_modifier_lifetime, player_record_valid, prospect_ids_match,
@@ -12,9 +13,10 @@ use icarus_bevy::experimental::restore_rules::{
     recorder_transform_is_non_identity, remaining_cooldown, replicated_prospect_game_time,
     resolve_cave_ai_class_name, resolve_inventory_slot_restore, resolve_prospect_player_list,
     resource_deposit_record_valid, restored_elapsed_seconds, restored_weather_event_start_time,
-    rocket_record_valid, rocket_restore, should_record_weather_event, stitch,
-    upgrade_actor_recorder_component_names, upright_rotation, upsert_recorded_variable,
-    validate_rocket_spawn_record, voxel_location_matches, voxel_record_valid,
+    rocket_record_valid, rocket_restore, should_auto_activate_respawned_drill,
+    should_record_weather_event, stitch, upgrade_actor_recorder_component_names, upright_rotation,
+    upsert_recorded_variable, validate_rocket_spawn_record, voxel_location_matches,
+    voxel_record_valid,
 };
 
 fn units(text: &str) -> Vec<u16> {
@@ -387,6 +389,180 @@ fn only_fully_mined_respawned_voxels_fail_validation() {
         assert!(voxel_record_valid(policy, true));
         assert!(voxel_record_valid(policy, false));
     }
+}
+
+#[test]
+fn owner_resolve_step_attach_and_drill_auto_activate() {
+    // Already bound owner skips policy dispatch.
+    assert_eq!(
+        evaluate_owner_resolve_step(
+            true,
+            OwnerResolvePolicy::FindOnly,
+            false,
+            false,
+            false,
+            false
+        ),
+        OwnerResolveStep::KeptAlreadyBoundOwner
+    );
+
+    // FindOnly (0): requires FindOwner + AttachRecorderToActor.
+    assert_eq!(
+        evaluate_owner_resolve_step(
+            false,
+            OwnerResolvePolicy::FindOnly,
+            false,
+            false,
+            true,
+            true
+        ),
+        OwnerResolveStep::DroppedFindOnlyOwnerMissing
+    );
+    assert_eq!(
+        evaluate_owner_resolve_step(
+            false,
+            OwnerResolvePolicy::FindOnly,
+            false,
+            true,
+            false,
+            true
+        ),
+        OwnerResolveStep::DroppedAttachFailed
+    );
+    assert_eq!(
+        evaluate_owner_resolve_step(
+            false,
+            OwnerResolvePolicy::FindOnly,
+            false,
+            true,
+            true,
+            false
+        ),
+        OwnerResolveStep::AttachedToFoundOwner
+    );
+
+    // RespawnOnly (1): destroys pre-existing level owner when !skip_find_and_stitch, then respawns.
+    assert_eq!(
+        evaluate_owner_resolve_step(
+            false,
+            OwnerResolvePolicy::RespawnOnly,
+            false,
+            true,
+            false,
+            true
+        ),
+        OwnerResolveStep::RespawnedAndAttached {
+            destroyed_preexisting_owner: true
+        }
+    );
+    assert_eq!(
+        evaluate_owner_resolve_step(
+            false,
+            OwnerResolvePolicy::RespawnOnly,
+            true,
+            true,
+            false,
+            true
+        ),
+        OwnerResolveStep::RespawnedAndAttached {
+            destroyed_preexisting_owner: false
+        }
+    );
+    assert_eq!(
+        evaluate_owner_resolve_step(
+            false,
+            OwnerResolvePolicy::RespawnOnly,
+            false,
+            true,
+            false,
+            false
+        ),
+        OwnerResolveStep::DroppedRespawnOrAttachFailed {
+            destroyed_preexisting_owner: true
+        }
+    );
+
+    // FindOrRespawn (2): attaches to found owner when !skip_find_and_stitch, else respawns.
+    assert_eq!(
+        evaluate_owner_resolve_step(
+            false,
+            OwnerResolvePolicy::FindOrRespawn,
+            false,
+            true,
+            true,
+            false
+        ),
+        OwnerResolveStep::AttachedToFoundOwner
+    );
+    assert_eq!(
+        evaluate_owner_resolve_step(
+            false,
+            OwnerResolvePolicy::FindOrRespawn,
+            false,
+            false,
+            false,
+            true
+        ),
+        OwnerResolveStep::RespawnedAndAttached {
+            destroyed_preexisting_owner: false
+        }
+    );
+    assert_eq!(
+        evaluate_owner_resolve_step(
+            false,
+            OwnerResolvePolicy::FindOrRespawn,
+            true,
+            true,
+            true,
+            true
+        ),
+        OwnerResolveStep::RespawnedAndAttached {
+            destroyed_preexisting_owner: false
+        }
+    );
+
+    // ManuallyResolved (3): keeps directly.
+    assert_eq!(
+        evaluate_owner_resolve_step(
+            false,
+            OwnerResolvePolicy::ManuallyResolved,
+            false,
+            false,
+            false,
+            false
+        ),
+        OwnerResolveStep::KeptManuallyResolved
+    );
+
+    // AttachRecorderToActor (0x1414b6fc0).
+    assert_eq!(
+        evaluate_attach_recorder_to_actor(false, false, true, false, false),
+        AttachRecorderOutcome::FailedMissingTargetComponent
+    );
+    assert_eq!(
+        evaluate_attach_recorder_to_actor(true, false, false, false, false),
+        AttachRecorderOutcome::FailedClassMismatch
+    );
+    assert_eq!(
+        evaluate_attach_recorder_to_actor(true, false, true, false, false),
+        AttachRecorderOutcome::RestoredAndUpdatedOwner {
+            created_component: false,
+            destroyed_temporary_source: true,
+        }
+    );
+    assert_eq!(
+        evaluate_attach_recorder_to_actor(false, true, false, false, true),
+        AttachRecorderOutcome::RestoredAndUpdatedOwner {
+            created_component: true,
+            destroyed_temporary_source: false,
+        }
+    );
+
+    // C010 UDrillRecorderComponent::RespawnOwner (0x1418a74f0 / 0x1418abfd0).
+    assert!(should_auto_activate_respawned_drill(true, true, true));
+    assert!(!should_auto_activate_respawned_drill(true, true, false));
+    assert!(!should_auto_activate_respawned_drill(true, false, true));
+    assert!(!should_auto_activate_respawned_drill(false, true, true));
 }
 
 #[test]

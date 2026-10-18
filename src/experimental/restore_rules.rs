@@ -111,6 +111,153 @@ pub fn voxel_record_valid(policy: OwnerResolvePolicy, fully_mined: bool) -> bool
     !(fully_mined && policy == OwnerResolvePolicy::RespawnOnly)
 }
 
+/// Outcome of the owner-resolution step in `StitchAndResolveRecorders`
+/// (`0x1414bee00` server) for one validated recorder (F-680, F-741).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum OwnerResolveStep {
+    /// `HasValidOwner` (`0x141898750`) was already true on entry.
+    KeptAlreadyBoundOwner,
+    /// `OwnerResolvePolicy::ManuallyResolved` (`3`, e.g. `C034`
+    /// `UVoxelRecorderComponent`): kept directly in `OutResolvedRecorders`
+    /// without calling `FindOwner` (`+0x450`) or `RespawnOwner` (`+0x458`).
+    KeptManuallyResolved,
+    /// `FindOwner` (`+0x450`) found a level actor and `AttachRecorderToActor`
+    /// (`0x14148ea30`, `bKeepRecorder = true`) succeeded.
+    AttachedToFoundOwner,
+    /// `RespawnAndAttachRecorder` (`0x14148d910` -> `RespawnOwner` `+0x458` ->
+    /// `AttachRecorderToActor` `0x14148ea30`, `bKeepRecorder = false`)
+    /// succeeded. When `destroyed_preexisting_owner` is true (`RespawnOnly`
+    /// with `!skip_find_and_stitch` and a pre-existing level actor from
+    /// `FindOwner`), `UWorld::DestroyActor(actor, false, true)` (`0x143331760`)
+    /// ran before `RespawnOwner`.
+    RespawnedAndAttached { destroyed_preexisting_owner: bool },
+    /// `OwnerResolvePolicy::FindOnly` (`0`): `FindOwner` (`+0x450`) returned
+    /// `nullptr` (logs Warning `0x1449f7ac0`).
+    DroppedFindOnlyOwnerMissing,
+    /// `OwnerResolvePolicy::FindOnly` (`0`): `FindOwner` returned an actor,
+    /// but `AttachRecorderToActor` (`0x14148ea30`) returned `nullptr`.
+    DroppedAttachFailed,
+    /// `RespawnOnly` (`1`) or fallback `FindOrRespawn` (`2`):
+    /// `RespawnAndAttachRecorder` (`0x14148d910`) returned `nullptr`.
+    DroppedRespawnOrAttachFailed { destroyed_preexisting_owner: bool },
+}
+
+/// Evaluates `StitchAndResolveRecorders` (`0x1414bee00` server) for one
+/// validated recorder (F-680, F-741).
+///
+/// - `RestoreProspectSaveState` (`0x1414b77e0`) passes
+///   `skip_find_and_stitch = false`, then runs `Stitching` (`+0x468`) across all
+///   resolved recorders (`0x1414bf4b6..0x1414bf4f6`).
+/// - Instanced-level restore (`0x1414b7ae0`) passes
+///   `skip_find_and_stitch = true`.
+pub const fn evaluate_owner_resolve_step(
+    has_valid_owner: bool,
+    policy: OwnerResolvePolicy,
+    skip_find_and_stitch: bool,
+    found_level_owner: bool,
+    attach_found_ok: bool,
+    respawn_and_attach_ok: bool,
+) -> OwnerResolveStep {
+    if has_valid_owner {
+        return OwnerResolveStep::KeptAlreadyBoundOwner;
+    }
+    match policy {
+        OwnerResolvePolicy::FindOnly => {
+            if !found_level_owner {
+                OwnerResolveStep::DroppedFindOnlyOwnerMissing
+            } else if attach_found_ok {
+                OwnerResolveStep::AttachedToFoundOwner
+            } else {
+                OwnerResolveStep::DroppedAttachFailed
+            }
+        }
+        OwnerResolvePolicy::RespawnOnly => {
+            let destroyed_preexisting_owner = !skip_find_and_stitch && found_level_owner;
+            if respawn_and_attach_ok {
+                OwnerResolveStep::RespawnedAndAttached {
+                    destroyed_preexisting_owner,
+                }
+            } else {
+                OwnerResolveStep::DroppedRespawnOrAttachFailed {
+                    destroyed_preexisting_owner,
+                }
+            }
+        }
+        OwnerResolvePolicy::FindOrRespawn => {
+            if !skip_find_and_stitch && found_level_owner && attach_found_ok {
+                OwnerResolveStep::AttachedToFoundOwner
+            } else if respawn_and_attach_ok {
+                OwnerResolveStep::RespawnedAndAttached {
+                    destroyed_preexisting_owner: false,
+                }
+            } else {
+                OwnerResolveStep::DroppedRespawnOrAttachFailed {
+                    destroyed_preexisting_owner: false,
+                }
+            }
+        }
+        OwnerResolvePolicy::ManuallyResolved => OwnerResolveStep::KeptManuallyResolved,
+    }
+}
+
+/// Outcome of `AttachRecorderToActor` (`0x14148ea30` -> `0x1414b6fc0` server)
+/// when binding decoded recorder `source` to target `AActor` (F-741).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AttachRecorderOutcome {
+    /// Target actor had no `UIcarusStateRecorderComponent` and
+    /// `source.bCreateIfMissing` (`+0xb4`) was `false`.
+    FailedMissingTargetComponent,
+    /// Target actor had an existing `UIcarusStateRecorderComponent` whose
+    /// `UClass` differed from `source->GetClass()` (logs Warning `0x1449f7780`).
+    FailedClassMismatch,
+    /// Serialized `source` (`0x1418aafb0`), called
+    /// `target->RestoreState(&bytes, &FTransform::Identity)` (`+0x4a0`),
+    /// rebound the `URecorderSubsystem` map entry to `target`, optionally
+    /// called `source->ConditionalBeginDestroy()` when `!keep_source_recorder`,
+    /// and called `target->UpdateOwnerToDatabaseState(true)` (`+0x460`).
+    RestoredAndUpdatedOwner {
+        created_component: bool,
+        destroyed_temporary_source: bool,
+    },
+}
+
+/// Evaluates `AttachRecorderToActor` (`0x14148ea30` -> `0x1414b6fc0` server)
+/// (F-741).
+pub const fn evaluate_attach_recorder_to_actor(
+    actor_has_recorder_component: bool,
+    create_if_missing: bool,
+    classes_match: bool,
+    source_is_target: bool,
+    keep_source_recorder: bool,
+) -> AttachRecorderOutcome {
+    if !actor_has_recorder_component && !create_if_missing {
+        return AttachRecorderOutcome::FailedMissingTargetComponent;
+    }
+    let created_component = !actor_has_recorder_component;
+    if !created_component && !classes_match {
+        return AttachRecorderOutcome::FailedClassMismatch;
+    }
+    let destroyed_temporary_source = !source_is_target && !keep_source_recorder;
+    AttachRecorderOutcome::RestoredAndUpdatedOwner {
+        created_component,
+        destroyed_temporary_source,
+    }
+}
+
+/// Whether `UDrillRecorderComponent::RespawnOwner` (`C010`, `0x1418a74f0`
+/// server / `0x1418abfd0` client) calls `ADrill::ActivateDrill` (`0x1416f8240`
+/// server / `0x141709290` client) after `UIcarusActorRecorderComponent::RespawnOwner`:
+/// requires the spawned actor to be an `ADrill` whose `D_ItemsStatic` row
+/// (`EItemDataIndex = 5`) resolves and has `bAutoActivateDrill` (`[Row+0x153]`)
+/// set (F-661, F-741).
+pub const fn should_auto_activate_respawned_drill(
+    actor_is_drill: bool,
+    static_row_found: bool,
+    auto_activate_drill_flag: bool,
+) -> bool {
+    actor_is_drill && static_row_found && auto_activate_drill_flag
+}
+
 /// The engine's float-to-int truncation: out-of-range and NaN inputs give
 /// `i32::MIN`, as the x86 truncating conversion does.
 fn truncate(value: f32) -> i32 {
