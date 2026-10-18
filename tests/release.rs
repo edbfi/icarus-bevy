@@ -181,6 +181,12 @@ fn invalid_profile_bounds_and_tables_fail_closed() {
 fn a_stale_checksum_or_unknown_field_is_rejected() {
     let good = "[release]\napp_id = 2089300\nbuild_id = 1\nproject_version = \"1.0.0\"\nnetwork_checksum = 1447163286\n";
     assert!(ReleasePin::parse(good).is_ok());
+    assert!(
+        ReleaseProfile::parse(good)
+            .unwrap_err()
+            .to_string()
+            .contains("no built-in tag profile for build_id 1")
+    );
     let stale = good.replace("1447163286", "1447163287");
     assert!(
         ReleasePin::parse(&stale)
