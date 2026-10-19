@@ -61,7 +61,7 @@ hit results, movement, `FVector`, `FVector2D`, `FQuat`, `FPlane` (`4 x i16`),
 to F-709). Field headers then carry RPCs, custom-delta payloads and fast arrays
 (F-644). Server `IsNetRelevantFor`, `IsWithinNetRelevancyDistance`,
 `GetNetPriority`, `ServerReplicateActors`, and `GetMaxTickRate` (`30` Hz default,
-`200` Hz cap in `DefaultEngine.ini`) match across both builds (F-745). Generic
+`[1, 1000]` clamp, `750,000` B/s max client rate in `DefaultEngine.ini`) match across both builds (F-745). Generic
 framing, export bunches, partial split/reassembly, dormancy closes, open hooks
 and typed class layouts, RPC caches and tag dictionaries replay 100% of M-707
 traffic (F-702 to F-711, F-739, F-745).

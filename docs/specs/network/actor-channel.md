@@ -111,19 +111,24 @@ policies.
     522 `FText` history framing (`0..12`, `0xFF`; `experimental::rep_text`),
     replaying all `23,486 / 23,486` (`100%`) typed blocks in M-707 bit-identically.
 - Server relevancy, priority, and tick rate (F-745): `AActor::IsNetRelevantFor`
-  (`0x143330010` / `0x1435c6570`), `APawn::IsNetRelevantFor` (`0x143801a90` /
-  `0x143aaddd0`), `APlayerController::IsNetRelevantFor` (`0x14382ef20` /
-  `0x143ae1cc0`), `IsWithinNetRelevancyDistance` (`0x143330880` / `0x1435c6de0`),
-  `AActor::GetNetPriority` (`0x14332a170` / `0x1435c0490`),
-  `APlayerController::GetNetPriority` (`0x14382d690` / `0x143ae0260`),
-  `UNetDriver::ServerReplicateActors` (`0x143723b70` / `0x1439c1ef0`), and
-  `UGameEngine::GetMaxTickRate` (`0x1435cbbf0` / `0x143850c50`) match across
-  server 25621760 and client 25793767; `DefaultEngine.ini` (`0xb68d0a35`) sets
-  `NetServerMaxTickRate=30`, `LanServerMaxTickRate=30`, `MaxNetTickRate=200`,
-  `MaxInternetClientRate=120000`, `MaxClientRate=100000`, and
-  `ConnectionTimeout=360.0` (`evaluate_actor_net_relevancy`,
-  `evaluate_pawn_net_relevancy`, `evaluate_player_controller_net_relevancy`,
-  `evaluate_actor_net_priority`, `evaluate_player_controller_net_priority`, and
+  (`0x14333fae0` / `0x1435d5be0`), `APawn::IsNetRelevantFor` (`0x1437b95a0` /
+  `0x143a681d0`), `APlayerController::IsNetRelevantFor` (`0x1432510a0` /
+  `0x1434e9040`), `IsWithinNetRelevancyDistance` (`0x143340200` / `0x1435d6240`),
+  `AActor::GetNetPriority` (`0x14333b2e0` / `0x1435d14e0`, where the `4.0`
+  `ViewTarget`/`Instigator` boost returns before the `!bHidden && RootComponent`
+  spatial block), `APlayerController::GetNetPriority` (`0x143830f20` /
+  `0x143adfc40`), `UNetDriver::ServerReplicateActors` (`0x1437221b0` /
+  `0x1439bf100`), and `UGameEngine::GetMaxTickRate` (`0x1435a90e0` /
+  `0x143836250`, clamping `NetServerMaxTickRate` to `[1, 1000]` before
+  `UEngine::GetMaxTickRate` `0x143993060` / `0x143c5d520`) match across server
+  25621760 and client 25793767; `DefaultEngine.ini` (`0xb68d0a35`) sets
+  `NetServerMaxTickRate=30`, `MaxClientRate=750000`,
+  `MaxInternetClientRate=750000`, `ConfiguredInternetSpeed=640000`,
+  `ConfiguredLanSpeed=912000`, `ConnectionTimeout=360.0`,
+  `InitialConnectTimeout=360.0`, and `ResolutionConnectionTimeout=120.0`
+  (`evaluate_actor_net_relevancy`, `evaluate_pawn_net_relevancy`,
+  `evaluate_player_controller_net_relevancy`, `evaluate_actor_net_priority`,
+  `evaluate_player_controller_net_priority`, and
   `evaluate_game_engine_max_tick_rate` in `experimental::actor_channel`).
 
 ## Candidate

@@ -1553,7 +1553,8 @@ pub fn parse_player_controller_open_bunch(
     read_player_controller_open_bunch_body(&mut reader, codec)
 }
 
-/// Engine network mode (`ENetMode`, `UWorld::InternalGetNetMode` `0x143be5e10`
+/// Engine network mode (`ENetMode`, `UNetDriver::GetNetMode` `0x14370ac50`
+/// server / `0x1439ad400` client -> `UWorld::InternalGetNetMode` `0x143be5e10`
 /// server / `0x143eb25e0` client, F-745).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum EngineNetMode {
@@ -1778,9 +1779,12 @@ pub fn evaluate_pawn_net_relevancy(inputs: &PawnRelevancyInputs) -> PawnRelevanc
 }
 
 /// Evaluate `APlayerController::IsNetRelevantFor` (`0x1432510a0` server /
-/// `0x1434e9040` client, F-745): returns `this == RealViewer`.
-pub fn evaluate_player_controller_net_relevancy(is_real_viewer: bool) -> bool {
-    is_real_viewer
+/// `0x1434e9040` client, F-745): `cmp rcx, rdx; sete al; ret` (`this == RealViewer`).
+pub fn evaluate_player_controller_net_relevancy<T: PartialEq>(
+    controller: T,
+    real_viewer: T,
+) -> bool {
+    controller == real_viewer
 }
 
 /// Outcome of `AActor::GetNetPriority` (`0x14333b2e0` server / `0x1435d14e0`
@@ -1818,8 +1822,7 @@ pub fn evaluate_actor_net_priority(inputs: &ActorPriorityInputs) -> ActorPriorit
     let mut time = inputs.time;
     if inputs.is_view_target_or_instigator {
         time *= 4.0;
-    }
-    if !inputs.b_hidden
+    } else if !inputs.b_hidden
         && let Some(actor_location) = inputs.root_location
     {
         let dir = [

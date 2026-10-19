@@ -1462,8 +1462,8 @@ fn actor_net_relevancy_branch_order() {
 
 #[test]
 fn pawn_and_player_controller_net_relevancy_branch_order() {
-    assert!(evaluate_player_controller_net_relevancy(true));
-    assert!(!evaluate_player_controller_net_relevancy(false));
+    assert!(evaluate_player_controller_net_relevancy(10_u64, 10_u64));
+    assert!(!evaluate_player_controller_net_relevancy(10_u64, 11_u64));
 
     let base = PawnRelevancyInputs {
         b_always_relevant: false,
@@ -1689,14 +1689,14 @@ fn actor_and_player_controller_net_priority_branches() {
         },
         12.0, // 2.0 * 6.0
     );
-    // - Combined ViewTarget/Instigator (4.0) * narrow-cone front boost (2.0) = 8.0x
+    // - ViewTarget/Instigator (4.0x at 0x14333b320..0x14333b336: c3 ret) is exclusive with the !b_hidden && RootComponent spatial block:
     assert_priority(
         ActorPriorityInputs {
             is_view_target_or_instigator: true,
             root_location: Some([1000.0, 0.0, 0.0]),
             ..base
         },
-        48.0, // 8.0 * 6.0
+        24.0, // 4.0 * 6.0 (does not stack the 2.0x front cone boost)
     );
     // - Outside narrow cone (dot^2 <= 0.5 * dist_sq) and dist_sq <= 9_998_244.0 (<= 3162 units): multiplier 1.0
     assert_priority(
