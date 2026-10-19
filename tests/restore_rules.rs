@@ -3,31 +3,38 @@ use icarus_bevy::experimental::restore_rules::{
     ActorSubcomponentRestorePlan, ApplyTransformKind, AttachRecorderOutcome,
     BaseLevelTeleportRecordPlan, BaseLevelTeleportRestorePlan, ByNameLoadOutcome,
     CaveSpawnerMapEntry, DeployableRecordPlan, DeployableStitchPlan, DrillStitchCandidate,
-    DrillStitchResolution, DynamicItemPropertyKind, EnzymeGeyserRestorePlan, FlodTileRestorePlan,
-    InstancedLevelManagerRestorePlan, InventorySlotOverflowDisposition, LegacyGunAmmoUpgrade,
-    LobbyPrivacy, OrbitalExchangeTransferPlan, OwnerResolvePolicy, OwnerResolveStep,
+    DrillStitchResolution, DynamicItemPropertyKind, EnzymeGeyserRecordPlan,
+    EnzymeGeyserRestorePlan, FlodTileRestorePlan, InstancedLevelManagerRestorePlan,
+    InventorySlotOverflowDisposition, LegacyGunAmmoUpgrade, LobbyPrivacy,
+    OrbitalExchangeTransferPlan, OwnerResolvePolicy, OwnerResolveStep,
     PROSPECT_SAVE_STATE_CURRENT_VERSION, PlayerList, PlayerRecorderOwnerState,
-    PlayerRecorderRecordPlan, PlayerStateLifeRestore, PrebuiltStructureRecordPlan,
-    ProspectAssociatedMember, ProspectBlobDecodeOutcome, RESTORED_INDEFINITE_MODIFIER_LIFETIME,
-    RestoreStateKind, RestoredMissionHistoryEntry, RestoredProcessingState, RocketRecordPlan,
-    RocketRestore, SetupLoadedProspectOutcome, SpawnBlockerState, SplineRespawnDisposition,
+    PlayerRecorderRecordPlan, PlayerStateLifeRestore, PlayerStateRecordPlan,
+    PrebuiltStructureRecordPlan, ProspectAssociatedMember, ProspectBlobDecodeOutcome,
+    RESTORED_INDEFINITE_MODIFIER_LIFETIME, ResourceDepositRecordPlan, RestoreStateKind,
+    RestoredMissionHistoryEntry, RestoredProcessingState, RocketRecordPlan, RocketRestore,
+    SetupLoadedProspectOutcome, SpawnBlockerState, SplineRecordPlan, SplineRespawnDisposition,
     StitchedPlayerRecorderLinks, TreeRecordPlan, VOXEL_LOCATION_TOLERANCE, VersionUpgradeKind,
-    VoxelDatabaseRestorePlan, WorldTalentStitchPlan, can_activate_prospect_info,
-    compact_and_diff_flod_tiles, container_entries, does_actor_recorder_match_actor,
-    does_player_recorder_match_actor, does_player_state_recorder_match_actor,
-    does_state_recorder_match_actor, does_voxel_recorder_match_actor, evaluate_actor_guid_restore,
+    VoxelDatabaseRestorePlan, WorldBossRecordPlan, WorldTalentStitchPlan,
+    can_activate_prospect_info, compact_and_diff_flod_tiles, container_entries,
+    does_actor_recorder_match_actor, does_player_recorder_match_actor,
+    does_player_state_recorder_match_actor, does_state_recorder_match_actor,
+    does_voxel_recorder_match_actor, evaluate_actor_guid_restore,
     evaluate_actor_subcomponent_restore, evaluate_attach_recorder_to_actor,
     evaluate_base_level_teleport_record, evaluate_base_level_teleport_restore,
     evaluate_building_base_decay_transfer, evaluate_by_name_load_attempt,
     evaluate_cave_air_nav_record, evaluate_cave_air_nav_restore, evaluate_crop_plot_record,
     evaluate_crop_plot_restore, evaluate_deployable_record, evaluate_deployable_stitch,
-    evaluate_drill_stitch, evaluate_enzyme_geyser_restore, evaluate_flod_tile_restore,
+    evaluate_drill_stitch, evaluate_enzyme_geyser_record, evaluate_enzyme_geyser_restore,
+    evaluate_flod_record, evaluate_flod_tile_restore, evaluate_instanced_level_manager_record,
     evaluate_instanced_level_manager_restore, evaluate_legacy_gun_ammo_upgrade,
     evaluate_modifier_state_restore, evaluate_orbital_exchange_transfer,
-    evaluate_owner_resolve_step, evaluate_player_recorder_record,
-    evaluate_player_state_life_restore, evaluate_prospect_blob_decode, evaluate_rocket_record,
+    evaluate_owner_resolve_step, evaluate_player_group_subsystem_record,
+    evaluate_player_group_subsystem_restore, evaluate_player_recorder_record,
+    evaluate_player_state_life_restore, evaluate_player_state_record,
+    evaluate_prospect_blob_decode, evaluate_resource_deposit_record, evaluate_rocket_record,
     evaluate_setup_loaded_prospect_attempt, evaluate_spawn_blocker_transfer,
-    evaluate_spline_recorder_respawn, evaluate_tree_record, evaluate_voxel_database_restore,
+    evaluate_spline_record, evaluate_spline_recorder_respawn, evaluate_tree_record,
+    evaluate_voxel_database_restore, evaluate_world_boss_record, evaluate_world_talent_record,
     evaluate_world_talent_stitch, filter_restored_cosmetic_armour_overrides,
     migrate_prospect_save_state, names_match, normalize_prospect_name,
     normalize_restored_modifier_lifetime, player_record_valid, prospect_ids_match,
@@ -315,12 +322,16 @@ fn stitching_needs_both_id_and_name() {
     assert_eq!(legacy_guid, -1);
     assert!(guid_list.is_empty());
 
-    // C013 UFLODRecorderComponent::Stitching (0x1418ac8f0 / 0x1418b12a0):
-    // compacts None entries from FLODTiles in place and returns FLODTiles \ SpawnedActors.
+    // C013 UFLODRecorderComponent::Stitching (0x1418ac8f0 / 0x1418b12a0) and
+    // RecordOwnerState (0x1418a1850 / 0x1418a6fd0):
+    // compacts None entries from FLODTiles in place and returns FLODTiles \ SpawnedActors;
+    // RecordOwnerState copies NextInstanceFISMID (+0x250 -> +0xd8) iff AFLODManager is valid.
     let mut flod_tiles = vec![Some(10), None, Some(20), Some(30), None, Some(40)];
     let stale_tiles = compact_and_diff_flod_tiles(&mut flod_tiles, &[20, 40, 99]);
     assert_eq!(flod_tiles, vec![Some(10), Some(20), Some(30), Some(40)]);
     assert_eq!(stale_tiles, vec![10, 30]);
+    assert_eq!(evaluate_flod_record(false, 4096), None);
+    assert_eq!(evaluate_flod_record(true, 4096), Some(4096));
 
     // C025 UPlayerRecorderComponent::Stitching (0x1418f5160 / 0x1418f58a0):
     // skips 0 UIDs and resolves each non-zero UID to the first matching GUID in its class bucket.
@@ -607,8 +618,26 @@ fn elapsed_seconds_fall_back_to_game_time() {
     assert_eq!(restored_next_meteor_shower_time(3600, 1000, 900), 3600);
     assert_eq!(restored_next_meteor_shower_time(0, 1000, 900), 1900);
 
-    // C037 UWorldBossRecorderComponent::UpdateOwnerToDatabaseState (0x1418f8610 / 0x1418f8ce0):
-    // overwrites BossStatuses[i].BossRowHandle from ActiveWorldBosses[i] up to BossStatuses.len().
+    // C037 UWorldBossRecorderComponent::RecordOwnerState (0x1418ea790 / 0x1418eae50) and
+    // UpdateOwnerToDatabaseState (0x1418f8610 / 0x1418f8ce0):
+    // RecordOwnerState copies BossSpawnerRow.RowName and BossStatuses, and derives ActiveWorldBosses;
+    // UpdateOwnerToDatabaseState overwrites BossStatuses[i].BossRowHandle from ActiveWorldBosses[i].
+    assert_eq!(
+        evaluate_world_boss_record(false, "Spawner_Row_A", &[("Boss_Alpha", 100)]),
+        None
+    );
+    assert_eq!(
+        evaluate_world_boss_record(
+            true,
+            "Spawner_Row_A",
+            &[("Boss_Alpha", 100), ("Boss_Beta", 250)],
+        ),
+        Some(WorldBossRecordPlan {
+            boss_spawner_row_name: "Spawner_Row_A",
+            boss_statuses: vec![("Boss_Alpha", 100), ("Boss_Beta", 250)],
+            active_world_bosses: vec!["Boss_Alpha", "Boss_Beta"],
+        })
+    );
     let mut boss_rows = vec!["Boss_Alpha", "Boss_Beta"];
     assert_eq!(
         restore_world_boss_row_handles(
@@ -667,6 +696,102 @@ fn unrecorded_levels_are_skipped() {
         filter_restored_cosmetic_armour_overrides(&[("Armour_Invalid", false)]);
     assert!(!empty_apply);
     assert!(empty_deduped.is_empty());
+
+    // C026 UPlayerStateRecorderComponent::RecordOwnerState (0x1418e8b10 / 0x1418e8e50):
+    // sets Version = 1, defaults null RootComponent to [0,0,0], and applies survival transform
+    // override (overwriting Location/Rotation iff non-identity).
+    assert_eq!(
+        evaluate_player_state_record::<&str, &str, &str>(
+            false,
+            Some(("76561", 0)),
+            None,
+            true,
+            500,
+            -1,
+            false,
+            None,
+            None,
+            &[],
+            None,
+        ),
+        None
+    );
+    assert_eq!(
+        evaluate_player_state_record::<&str, &str, &str>(
+            true,
+            None,
+            None,
+            true,
+            500,
+            -1,
+            false,
+            None,
+            None,
+            &["Armour_Head_A"],
+            Some((
+                [0.0, 0.0, 0.0, 1.0],
+                [0.0, 0.0, 0.0],
+                [1.0, 1.0, 1.0],
+                [90.0, 90.0, 90.0],
+            )),
+        ),
+        Some(PlayerStateRecordPlan {
+            version: 1,
+            player_id: None,
+            location: [0.0, 0.0, 0.0],
+            rotation: [0.0, 0.0, 0.0],
+            b_is_alive: true,
+            health: 500,
+            last_seat_index: -1,
+            b_is_last_input_gamepad: false,
+            survival_stats: None,
+            stomach_contents: None,
+            cosmetic_armour_overrides: vec!["Armour_Head_A"],
+            override_actor_transform: Some((
+                [0.0, 0.0, 0.0, 1.0],
+                [0.0, 0.0, 0.0],
+                [1.0, 1.0, 1.0],
+            )),
+        })
+    );
+    assert_eq!(
+        evaluate_player_state_record(
+            true,
+            Some(("76561198000000001", 1)),
+            Some(([10.0, 20.0, 30.0], [1.0, 2.0, 3.0])),
+            true,
+            480,
+            2,
+            true,
+            Some((900, 800, 700, 3700)),
+            Some(&["Meat_Cooked"]),
+            &["Armour_Head_A"],
+            Some((
+                [0.0, 0.0, 0.70710677, 0.70710677],
+                [100.0, 200.0, 300.0],
+                [1.0, 1.0, 1.0],
+                [0.0, 90.0, 0.0],
+            )),
+        ),
+        Some(PlayerStateRecordPlan {
+            version: 1,
+            player_id: Some(("76561198000000001", 1)),
+            location: [100.0, 200.0, 300.0],
+            rotation: [0.0, 90.0, 0.0],
+            b_is_alive: true,
+            health: 480,
+            last_seat_index: 2,
+            b_is_last_input_gamepad: true,
+            survival_stats: Some((900, 800, 700, 3700)),
+            stomach_contents: Some(vec!["Meat_Cooked"]),
+            cosmetic_armour_overrides: vec!["Armour_Head_A"],
+            override_actor_transform: Some((
+                [0.0, 0.0, 0.70710677, 0.70710677],
+                [100.0, 200.0, 300.0],
+                [1.0, 1.0, 1.0],
+            )),
+        })
+    );
 }
 
 #[test]
@@ -891,8 +1016,30 @@ fn prospect_player_list_resolution_rocket_spawn_reset_and_deposit_filter() {
     assert!(resource_deposit_record_valid(&units("Iron_Deep_Ore")));
     assert!(resource_deposit_record_valid(&units("Exotic_Red")));
 
-    // C028 UResourceDepositRecorderComponent::UpdateOwnerToDatabaseState (0x1418f76c0 / 0x1418f7d90)
-    // grants +1 to stat 0xbe (190) iff bShowMapIcon is true and GetStat(0xbe) == 0.
+    // C028 UResourceDepositRecorderComponent::RecordOwnerState (0x1418e90b0 / 0x1418e93e0) and
+    // UpdateOwnerToDatabaseState (0x1418f76c0 / 0x1418f7d90):
+    // RecordOwnerState sets bShowMapIcon = (GetStat(0xbe) != 0);
+    // UpdateOwnerToDatabaseState grants +1 to stat 0xbe (190) iff bShowMapIcon is true and GetStat(0xbe) == 0.
+    assert_eq!(
+        evaluate_resource_deposit_record(false, 1200, "Iron_Deep_Ore", 1),
+        None
+    );
+    assert_eq!(
+        evaluate_resource_deposit_record(true, 1200, "Iron_Deep_Ore", 0),
+        Some(ResourceDepositRecordPlan {
+            resource_quantity: 1200,
+            deposit_type_row_name: "Iron_Deep_Ore",
+            b_show_map_icon: false,
+        })
+    );
+    assert_eq!(
+        evaluate_resource_deposit_record(true, 1200, "Iron_Deep_Ore", 2),
+        Some(ResourceDepositRecordPlan {
+            resource_quantity: 1200,
+            deposit_type_row_name: "Iron_Deep_Ore",
+            b_show_map_icon: true,
+        })
+    );
     assert!(should_grant_deposit_map_icon_stat(true, 0));
     assert!(!should_grant_deposit_map_icon_stat(true, 1));
     assert!(!should_grant_deposit_map_icon_stat(false, 0));
@@ -1412,8 +1559,18 @@ fn owner_resolve_step_attach_and_drill_auto_activate() {
         }
     );
 
-    // C012 UEnzymeGeyserRecorderComponent::UpdateOwnerToDatabaseState (0x1418b7c10 / 0x1418baae0):
-    // copies Completions (+0x1c0 -> +0x2c0) unconditionally and CurrentRow (+0x1c4 -> +0x2c4) iff IsValid.
+    // C012 UEnzymeGeyserRecorderComponent::RecordOwnerState (0x1418a1790 / 0x1418a6f10) and
+    // UpdateOwnerToDatabaseState (0x1418b7c10 / 0x1418baae0):
+    // RecordOwnerState copies Completions and CurrentRow.RowName unconditionally;
+    // UpdateOwnerToDatabaseState copies Completions unconditionally and CurrentRow iff IsValid.
+    assert_eq!(evaluate_enzyme_geyser_record(false, 4, "None"), None);
+    assert_eq!(
+        evaluate_enzyme_geyser_record(true, 4, "None"),
+        Some(EnzymeGeyserRecordPlan {
+            completions: 4,
+            current_row_name: "None",
+        })
+    );
     assert_eq!(
         evaluate_enzyme_geyser_restore(false, 4, "Geyser_Reward_A", true),
         None
@@ -1450,9 +1607,24 @@ fn owner_resolve_step_attach_and_drill_auto_activate() {
         })
     );
 
-    // C038 UWorldTalentManagerRecorderComponent::StitchingOperation (0x14193aaa0 / 0x141936a10):
-    // copies Talents (+0x1c0 -> +0x2c8), marks NetComponent (+0x2e8) dirty when active, and
-    // notifies authority (0x14193cda0) iff net_role == 3 (ROLE_Authority).
+    // C038 UWorldTalentManagerRecorderComponent::RecordOwnerState (0x141930060 / 0x14192bfd0) and
+    // StitchingOperation (0x14193aaa0 / 0x141936a10):
+    // RecordOwnerState clears and copies Talents (+0x2c8 -> +0x1c0) iff owner is AWorldTalentManager;
+    // StitchingOperation copies Talents (+0x1c0 -> +0x2c8), marks NetComponent (+0x2e8) dirty when active,
+    // and notifies authority (0x14193cda0) iff net_role == 3 (ROLE_Authority).
+    let mut recorded_talents = vec!["Prior_Talent"];
+    assert!(!evaluate_world_talent_record(
+        false,
+        &["Talent_A", "Talent_B"],
+        &mut recorded_talents
+    ));
+    assert_eq!(recorded_talents, vec!["Prior_Talent"]);
+    assert!(evaluate_world_talent_record(
+        true,
+        &["Talent_A", "Talent_B"],
+        &mut recorded_talents
+    ));
+    assert_eq!(recorded_talents, vec!["Talent_A", "Talent_B"]);
     assert_eq!(
         evaluate_world_talent_stitch(false, &["Talent_A"], true, 3),
         None
@@ -1482,8 +1654,22 @@ fn owner_resolve_step_attach_and_drill_auto_activate() {
         })
     );
 
-    // C020 UInstancedLevelManagerRecorderComponent::UpdateOwnerToDatabaseState (0x1419e28e0 / 0x1419d9b90):
-    // gates base UActorStateRecorderComponent::UpdateOwnerToDatabaseState on a valid AInstancedLevelManager.
+    // C020 UInstancedLevelManagerRecorderComponent::RecordOwnerState (0x1419d5ba0 / 0x1419ccef0) and
+    // UpdateOwnerToDatabaseState (0x1419e28e0 / 0x1419d9b90):
+    // gates base UActorStateRecorderComponent::RecordOwnerState and UpdateOwnerToDatabaseState on a valid AInstancedLevelManager.
+    assert_eq!(
+        evaluate_instanced_level_manager_record(false, "Levels_A", &[1, 2], &[3]),
+        None
+    );
+    assert_eq!(
+        evaluate_instanced_level_manager_record(true, "Levels_A", &[1, 2], &[3]),
+        Some(InstancedLevelManagerRestorePlan {
+            run_base_actor_state_restore: true,
+            instanced_levels: "Levels_A",
+            spawned_recorder_ids: vec![1, 2],
+            destroyed_recorder_ids: vec![3],
+        })
+    );
     assert_eq!(
         evaluate_instanced_level_manager_restore(false, "Levels_A", &[1, 2], &[3]),
         None
@@ -1496,6 +1682,31 @@ fn owner_resolve_step_attach_and_drill_auto_activate() {
             spawned_recorder_ids: vec![1, 2],
             destroyed_recorder_ids: vec![3],
         })
+    );
+
+    // C024 UPlayerGroupSubsystemRecorderComponent::RecordOwnerState (0x1418e85b0 / 0x1418e88e0)
+    // and UpdateOwnerToDatabaseState (0x1418f7070 / 0x1418f7740):
+    // RecordOwnerState unconditionally clears recorder->PlayerGroupData (+0x1c0) before checking owner.
+    let mut group_data = vec!["Group_Prior"];
+    assert!(!evaluate_player_group_subsystem_record(
+        false,
+        &["Group_A", "Group_B"],
+        &mut group_data
+    ));
+    assert!(group_data.is_empty());
+    assert!(evaluate_player_group_subsystem_record(
+        true,
+        &["Group_A", "Group_B"],
+        &mut group_data
+    ));
+    assert_eq!(group_data, vec!["Group_A", "Group_B"]);
+    assert_eq!(
+        evaluate_player_group_subsystem_restore(false, &group_data),
+        None
+    );
+    assert_eq!(
+        evaluate_player_group_subsystem_restore(true, &group_data),
+        Some(vec!["Group_A", "Group_B"])
     );
 
     // C008 UCropPlotStateRecorderComponent::RecordOwnerState (0x1418a1300 / 0x1418a6a80)
@@ -1554,7 +1765,16 @@ fn owner_resolve_step_attach_and_drill_auto_activate() {
         })
     );
 
-    // C032 USplineRecorderComponent::RespawnOwner (0x1418ed690 / 0x1418ee060).
+    // C032 USplineRecorderComponent::RecordOwnerState (0x1418e95f0 / 0x1418e9930) and
+    // RespawnOwner (0x1418ed690 / 0x1418ee060).
+    assert_eq!(evaluate_spline_record(false, "Spline_Net_A", 77), None);
+    assert_eq!(
+        evaluate_spline_record(true, "Spline_Net_A", 77),
+        Some(SplineRecordPlan {
+            spline_network_state: "Spline_Net_A",
+            unique_spline_id: 77,
+        })
+    );
     assert_eq!(
         evaluate_spline_recorder_respawn(false, false, true),
         SplineRespawnDisposition::FailedNoActor

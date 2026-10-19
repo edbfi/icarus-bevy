@@ -14,13 +14,12 @@ construction, script owners and data-table rows are out of scope (F-660).
 
 ## Confirmed
 
-- `ReadFromProspectSaveState` (`0x1414b77e0`/`0x1414ec3f0`) runs `Validate`
-  (`+0x408`) then `StitchAndResolveRecorders` (`0x1414bee00`), dispatching
-  `+0xb2` (`evaluate_owner_resolve_step`): `FindOnly` (`0`) runs `+0x450` +
-  `0x1414b6fc0` (`evaluate_attach_recorder_to_actor`); `RespawnOnly` (`1`)
-  destroys `+0x450` actors (`0x143331760`) before `+0x458`; `FindOrRespawn` (`2`)
-  tries `+0x450` then `+0x458`; `ManuallyResolved` (`3`) keeps the recorder; then
-  `+0x468` (`Stitching`) runs (F-741).
+- `ReadFromProspectSaveState` (`0x1414b77e0`/`0x1414ec3f0`) runs `+0x408` then
+  `0x1414bee00` (`evaluate_owner_resolve_step` on `+0xb2`): `FindOnly` (`0`) runs
+  `+0x450` + `0x1414b6fc0` (`evaluate_attach_recorder_to_actor`); `RespawnOnly`
+  (`1`) destroys `+0x450` actors (`0x143331760`) before `+0x458`; `FindOrRespawn`
+  (`2`) tries `+0x450` then `+0x458`; `ManuallyResolved` (`3`) keeps the recorder;
+  then `+0x468` (`Stitching`) runs (F-741).
 - `recorder_restore_dispatch` (`C001..C038`, F-727, F-742): all 38 inherit
   `+0xa0 = 0x1418aaf70` (`Serialize`); 31 `C001` classes inherit
   `+0x488 = 0x14189d380` (`TreePrimitive -> Wood` if `v < 1`) and 7 base classes
@@ -36,20 +35,22 @@ construction, script owners and data-table rows are out of scope (F-660).
     (`+0x1c8 = ""`, `+0x1d8 = -1`) if `+0x1e0 < 1` or `list.rejects()`, returning
     `true`.
   - `C025` (`0x1418e8850`/`0x1418f9de0`, `evaluate_player_recorder_record`) and
-    `C026` (`0x1418f9e80`, `+0x1c0/+0x220`) require `v >= 1 && !list.rejects()`
-    (`player_record_valid`); `C029` (`0x1418e9280`/`0x1418f9f70`,
-    `evaluate_rocket_record`, `rocket_restore`) requires `!list.rejects()` and
-    restores iff active prospect holds player and `v > 0` (F-663).
-  - `C028` (`0x1418f9f20`, `resource_deposit_record_valid`) rejects
-    `+0x1c4 == "Super_Cooled_Ice"` (`0x144a71800`; ice `0x144a71348` keeps base
-    `+0x408`), and `+0x460` (`0x1418f76c0`, `should_grant_deposit_map_icon_stat`)
-    adds `+1` to stat `0xbe` iff `+0x1cc && GetStat(0xbe) == 0` (F-645, F-742).
+    `C026` (`0x1418e8b10`/`0x1418f9e80`, `evaluate_player_state_record`) require
+    `v >= 1 && !list.rejects()` (`player_record_valid`); `C029`
+    (`0x1418e9280`/`0x1418f9f70`, `evaluate_rocket_record`, `rocket_restore`)
+    requires `!list.rejects()` and restores iff active list has player and `v > 0`
+    (F-663).
+  - `C028` (`0x1418e90b0`/`0x1418f9f20`, `evaluate_resource_deposit_record`,
+    `resource_deposit_record_valid`) rejects `+0x1c4 == "Super_Cooled_Ice"`
+    (`0x144a71800`; ice `0x144a71348` keeps base `+0x408`), and `+0x460`
+    (`0x1418f76c0`, `should_grant_deposit_map_icon_stat`) adds `+1` to stat `0xbe`
+    iff `+0x1cc && GetStat(0xbe) == 0` (F-645, F-742).
   - `C031` (`0x1418c24c0`, `+0xb2 = 1`) and `C034` (`0x1418c2650`, `+0xb2 = 3`,
-    `0x1418fa0e0`) reject `RespawnOnly && bIsVoxelFullyMined` (`+0x1d0`,
-    F-680); `+0x460` (`0x1418f7bb0`, `evaluate_voxel_database_restore`) sets
-    scale if `+0xb2 == 1`, builds a `1.1x` sphere if `+0x1d0 && +0x1c8 == 0`,
-    and restores voxels, `+0x590`/`+0x594` and `+0x45c` (`+0x1ec > 0.0`) unless
-    `+0x548 & 0x1000` (F-645).
+    `0x1418fa0e0`) reject `RespawnOnly && bIsVoxelFullyMined` (`+0x1d0`, F-680);
+    `+0x460` (`0x1418f7bb0`, `evaluate_voxel_database_restore`) sets scale if
+    `+0xb2 == 1`, builds a `1.1x` sphere if `+0x1d0 && +0x1c8 == 0`, and restores
+    voxels, `+0x590`/`+0x594` and `+0x45c` (`+0x1ec > 0.0`) unless `+0x548 & 0x1000`
+    (F-645).
 - Stitching matches GUID + ASCII `Stricmp` (`0x141e48e20`; `C009`
   `0x1418a15a0`/`0x1418ac8a0`, `evaluate_deployable_record`,
   `evaluate_deployable_stitch`; `C010` `0x1418acbf0`, `evaluate_drill_stitch`,
@@ -59,56 +60,59 @@ construction, script owners and data-table rows are out of scope (F-660).
   F-646, F-650, F-658, F-663, F-676); `C007` (`0x1418a13c0`/`0x1418ac670`,
   `record_trapped_character_guids`, `stitch_trapped_character_guids`) and `C025`
   (`0x1418f5160`, `+0xf0..0xf8`, `stitch_player_recorder_assigned_uids`) match
-  GUID; `C013` (`0x1418ac8f0`, `compact_and_diff_flod_tiles`) destroys
-  `FLODTiles \ SpawnedActors` (`+0x248`, F-716); `C026`
-  (`0x1418f7320`/`0x1418f5540`) restores life/health
+  GUID; `C013` (`0x1418a1850`/`0x1418ac8f0`, `evaluate_flod_record`,
+  `compact_and_diff_flod_tiles`) destroys `FLODTiles \ SpawnedActors` (`+0x248`,
+  F-716); `C026` (`0x1418f7320`/`0x1418f5540`) restores life/health
   (`evaluate_player_state_life_restore`) and `+0x228 -> +0xa80`
   (`filter_restored_cosmetic_armour_overrides`, F-648, F-657).
 - `DoesRecorderMatchActor` (`+0x478`, F-645, F-742, F-743): base (`0x14188ba30`,
   `does_state_recorder_match_actor`) checks `GetName() == +0xc0`; `C001`
-  (`0x14188b960`, `does_actor_recorder_match_actor`) checks GUID if
-  `HasValidOwner` (`0x141898750`) else `+0xc8`; `C025` (`0x1418c9390`,
+  (`0x14188b960`, `does_actor_recorder_match_actor`) checks GUID if `HasValidOwner`
+  (`0x141898750`) else `+0xc8`; `C025` (`0x1418c9390`,
   `does_player_recorder_match_actor`) checks `+0xfc >= 1` and Controller ID
   (`0x141469c40`) == `+0xd8/+0xe8` (`0x14170a750`); `C026` (`0x1418c9450`,
   `does_player_state_recorder_match_actor`) checks Character (`+0x6c8`) and
   `PlayerState` (`+0x478`/`+0x498`) == `+0x1c0/+0x1d0`; `C031`/`C034` (`0x1418c9580`,
-  `does_voxel_recorder_match_actor`) also check `AVoxelResource` (`<= 0.1`/axis
-  at `+0x1e0`).
+  `does_voxel_recorder_match_actor`) also check `AVoxelResource` (`<= 0.1`/axis at
+  `+0x1e0`).
 - `C002` (`0x1419d5a20`/`0x1419e27c0`, `evaluate_base_level_teleport_record`,
   `evaluate_base_level_teleport_restore`); `C008` (`0x1418a1300`/`0x1418b7a50`,
   `evaluate_crop_plot_record`, `evaluate_crop_plot_restore`); `C009`
   (`0x14189d2a0`/`0x1418a72a0`, `resolve_deployable_setup_variant_index`, F-646);
   `C010` (`0x1418a74f0`, `+0x153`, `should_auto_activate_respawned_drill`); `C012`
-  (`0x1418b7c10`, `evaluate_enzyme_geyser_restore`); `C014` (`0x1418b7cf0`,
-  `evaluate_flod_tile_restore`); `C020` (`0x1419e28e0`,
+  (`0x1418a1790`/`0x1418b7c10`, `evaluate_enzyme_geyser_record`,
+  `evaluate_enzyme_geyser_restore`); `C014` (`0x1418b7cf0`,
+  `evaluate_flod_tile_restore`); `C020` (`0x1419d5ba0`/`0x1419e28e0`,
+  `evaluate_instanced_level_manager_record`,
   `evaluate_instanced_level_manager_restore`, F-658); `C022`
-  (`0x1418e83a0`/`0x1418f6f90`, `evaluate_orbital_exchange_transfer`); `C030`
-  (`0x1418e9500`/`0x1418f7930`, `evaluate_spawn_blocker_transfer`); `C035`
-  (`0x14190a5a0`, F-734); `C038` (`0x14193aaa0`, `evaluate_world_talent_stitch`,
-  F-650, F-657, F-661, F-676).
+  (`0x1418e83a0`/`0x1418f6f90`, `evaluate_orbital_exchange_transfer`); `C024`
+  (`0x1418e85b0`/`0x1418f7070`, `evaluate_player_group_subsystem_record`,
+  `evaluate_player_group_subsystem_restore`); `C030` (`0x1418e9500`/`0x1418f7930`,
+  `evaluate_spawn_blocker_transfer`); `C035` (`0x14190a5a0`, F-734); `C038`
+  (`0x141930060`/`0x14193aaa0`, `evaluate_world_talent_record`,
+  `evaluate_world_talent_stitch`, F-650, F-657, F-661, F-676).
 - `C003` (`0x1418a1540`/`0x1418b7710`, `evaluate_building_base_decay_transfer`);
   `C004` (`0x1418b7770`, `should_try_fast_path_prebuilt_grid_restore`); `C006`
   (`0x1418b7b40`, `+0x1c0`); `C021` (`0x1418a7660`,
   `resolve_item_recorder_database_guid`); `C023` (`0x141843be0`,
-  `should_restore_actor_transform`, F-744); `C032` (`0x1418ed690`,
-  `evaluate_spline_recorder_respawn`, F-658); `C033`
+  `should_restore_actor_transform`, F-744); `C032` (`0x1418e95f0`/`0x1418ed690`,
+  `evaluate_spline_record`, `evaluate_spline_recorder_respawn`, F-658); `C033`
   (`0x1418e9820`/`0x1418ed770`, `evaluate_tree_record`,
   `should_drop_respawned_tree_recorder_on_resave`, F-656, F-681, F-736).
 - `C001` (`0x1418b6ed0`/`0x1418ba040`) rebinds GUID (`evaluate_actor_guid_restore`),
   restores modifiers (`evaluate_modifier_state_restore`, `-1 -> 100`), subcomponents
-  (`evaluate_actor_subcomponent_restore`) and `D01` (`0x1418b8f20`, 14
-  `EDynamicItemProperties`), upgrades `v < 2` ammo (`0x14189a250`,
-  `evaluate_legacy_gun_ammo_upgrade`), routes overflow (`ForceAddItems`/`+0x288`),
-  and restores `CPF_SaveGame` vars (`0x1418bcff0`, F-735).
+  (`evaluate_actor_subcomponent_restore`), `D01` (`0x1418b8f20`, 14 props), `v < 2`
+  ammo (`0x14189a250`, `evaluate_legacy_gun_ammo_upgrade`), overflow
+  (`ForceAddItems`/`+0x288`), and `CPF_SaveGame` vars (`0x1418bcff0`, F-735).
 - `C015` (`0x1418b7f30`) falls back to game time if `< 31` (`restored_elapsed_seconds`),
   seeds `v < 2` `+0x670` (`restore_game_mode_exported_currencies`), and restores
   `+0x6c0` (`restore_game_mode_mission_history`) and `+0x6ec`
-  (`restored_next_meteor_shower_time`, F-653); `C037` (`0x1418f8610`) overrides
-  `BossRowHandle` (`restore_world_boss_row_handles`, F-654); `-1` is unrecorded
-  (F-648); mounts keep yaw; containers keep order (F-651); `C036`
-  (`0x1418e9ff0`/`0x1418f86c0`) saves `NowBlock` (`+0xd8`) and restores
-  `+0x2c0..0x2e8` (F-654, F-665); `C005` (`0x1418a0d20`/`0x1418b7790`,
-  `evaluate_cave_air_nav_record`, `evaluate_cave_air_nav_restore`, F-677).
+  (`restored_next_meteor_shower_time`, F-653); `C037` (`0x1418ea790`/`0x1418f8610`,
+  `evaluate_world_boss_record`, `restore_world_boss_row_handles`, F-654); `-1` is
+  unrecorded (F-648); mounts keep yaw; containers keep order (F-651); `C036`
+  (`0x1418e9ff0`/`0x1418f86c0`, `+0xd8`/`+0x2c0..0x2e8`, F-654, F-665); `C005`
+  (`0x1418a0d20`/`0x1418b7790`, `evaluate_cave_air_nav_record`,
+  `evaluate_cave_air_nav_restore`, F-677).
 
 ## Candidate
 

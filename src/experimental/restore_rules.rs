@@ -345,6 +345,22 @@ pub fn compact_and_diff_flod_tiles<T: PartialEq + Clone>(
         .collect()
 }
 
+/// Evaluates `UFLODRecorderComponent::RecordOwnerState` (`C013`,
+/// `0x1418a1850` server / `0x1418a6fd0` client) (F-650, F-657).
+///
+/// Copies `NextInstanceFISMID` (`AFLODManager + 0x250 -> recorder + 0xd8`) iff
+/// the owner is a non-null, non-pending-kill `AFLODManager` (`0x141b431c0`
+/// client).
+pub const fn evaluate_flod_record(
+    owner_is_valid_flod_manager: bool,
+    next_instance_fism_id: i32,
+) -> Option<i32> {
+    if !owner_is_valid_flod_manager {
+        return None;
+    }
+    Some(next_instance_fism_id)
+}
+
 /// Resolved actor-array indices for `UPlayerRecorderComponent::Stitching`
 /// (`C025`, `vftable + 0x468`: `0x1418f5160` server / `0x1418f58a0` client)
 /// (F-648, F-650).
@@ -825,6 +841,38 @@ pub const fn should_restore_actor_transform(b_record_actor_transform: bool) -> b
     b_record_actor_transform
 }
 
+/// Values recorded by `UEnzymeGeyserRecorderComponent::RecordOwnerState`
+/// (`C012`, `0x1418a1790` server / `0x1418a6f10` client) after
+/// `UActorStateRecorderComponent::RecordOwnerState` (`0x1418a5b60` client)
+/// (F-650, F-657).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct EnzymeGeyserRecordPlan<R> {
+    /// `Completions` (`AEnzymeGeyser + 0x2c0 -> recorder + 0x1c0`).
+    pub completions: i32,
+    /// `CurrentRow.RowName` (`AEnzymeGeyser + 0x2c4 -> recorder + 0x1c4`,
+    /// copied unconditionally without checking `FRowHandle::IsValid`).
+    pub current_row_name: R,
+}
+
+/// Evaluates `UEnzymeGeyserRecorderComponent::RecordOwnerState` (`C012`,
+/// `0x1418a1790` server / `0x1418a6f10` client) (F-650, F-657).
+///
+/// Returns `None` when the owner is null, not an `AEnzymeGeyser`
+/// (`0x141af5260` client), or pending kill.
+pub const fn evaluate_enzyme_geyser_record<R: Copy>(
+    owner_is_valid_enzyme_geyser: bool,
+    completions: i32,
+    current_row_name: R,
+) -> Option<EnzymeGeyserRecordPlan<R>> {
+    if !owner_is_valid_enzyme_geyser {
+        return None;
+    }
+    Some(EnzymeGeyserRecordPlan {
+        completions,
+        current_row_name,
+    })
+}
+
 /// Values restored onto `AEnzymeGeyser` by
 /// `UEnzymeGeyserRecorderComponent::UpdateOwnerToDatabaseState` (`C012`,
 /// `0x1418b7c10` server / `0x1418baae0` client) (F-657).
@@ -922,6 +970,29 @@ pub struct WorldTalentStitchPlan<T> {
     pub notify_authority_talents_updated: bool,
 }
 
+/// Evaluates `UWorldTalentManagerRecorderComponent::RecordOwnerState` (`C038`,
+/// `0x141930060` server / `0x14192bfd0` client) after
+/// `UActorStateRecorderComponent::RecordOwnerState` (`0x1418a5b60` client)
+/// (F-650, F-676).
+///
+/// Clears `recorded_talents` (`recorder + 0x1c0`) and copies `owner_talents`
+/// (`AWorldTalentManager + 0x2c8`, count `+0x2d0`, stride `0x18` B) iff the
+/// owner is a non-null `AWorldTalentManager` (`0x141e066d0` client; no
+/// `PendingKill` check is performed). Returns `true` when updated, or `false`
+/// when `recorded_talents` was preserved unchanged.
+pub fn evaluate_world_talent_record<T: Clone>(
+    owner_is_world_talent_manager: bool,
+    owner_talents: &[T],
+    recorded_talents: &mut Vec<T>,
+) -> bool {
+    if !owner_is_world_talent_manager {
+        return false;
+    }
+    recorded_talents.clear();
+    recorded_talents.extend_from_slice(owner_talents);
+    true
+}
+
 /// Evaluates `UWorldTalentManagerRecorderComponent::StitchingOperation` (`C038`,
 /// `0x14193aaa0` server / `0x141936a10` client) (F-676).
 ///
@@ -945,23 +1016,41 @@ pub fn evaluate_world_talent_stitch<T: Clone>(
     })
 }
 
-/// Values restored onto `AInstancedLevelManager` by
-/// `UInstancedLevelManagerRecorderComponent::UpdateOwnerToDatabaseState`
-/// (`C020`, `0x1419e28e0` server / `0x1419d9b90` client) (F-658).
+/// Values recorded or restored by `UInstancedLevelManagerRecorderComponent`
+/// (`C020`, `RecordOwnerState` at `0x1419d5ba0` server / `0x1419ccef0` client;
+/// `UpdateOwnerToDatabaseState` at `0x1419e28e0` server / `0x1419d9b90` client)
+/// (F-650, F-658).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct InstancedLevelManagerRestorePlan<L, I> {
     /// Unlike most `C001` subclasses, `C020` checks that the owner is a
     /// non-pending-kill `AInstancedLevelManager` (`0x141a4a740` client) before
-    /// invoking `UActorStateRecorderComponent::UpdateOwnerToDatabaseState`
-    /// (`0x1418ba040` client).
+    /// invoking `UActorStateRecorderComponent::RecordOwnerState` (`0x1418a5b60`
+    /// client) or `UpdateOwnerToDatabaseState` (`0x1418ba040` client).
     pub run_base_actor_state_restore: bool,
-    /// Saved `InstancedLevels` (`+0x1c0`) passed to `RestoreInstancedLevels`
-    /// (`0x1419d4370` client).
+    /// `InstancedLevels` (`recorder + 0x1c0..0x230` <-> `owner + 0x2d0..0x340`)
+    /// recorded via `RecordInstancedLevels` (`0x1419d3e90` client) or restored
+    /// via `RestoreInstancedLevels` (`0x1419d4370` client).
     pub instanced_levels: L,
-    /// Saved `SpawnedRecorderIDs` (`+0x230`) copied to `owner + 0x340`.
+    /// `SpawnedRecorderIDs` (`recorder + 0x230` <-> `owner + 0x340`).
     pub spawned_recorder_ids: Vec<I>,
-    /// Saved `DestroyedRecorderIDs` (`+0x240`) copied to `owner + 0x350`.
+    /// `DestroyedRecorderIDs` (`recorder + 0x240` <-> `owner + 0x350`).
     pub destroyed_recorder_ids: Vec<I>,
+}
+
+/// Evaluates `UInstancedLevelManagerRecorderComponent::RecordOwnerState`
+/// (`C020`, `0x1419d5ba0` server / `0x1419ccef0` client) (F-650, F-658).
+pub fn evaluate_instanced_level_manager_record<L, I: Clone>(
+    owner_is_valid_instanced_level_manager: bool,
+    owner_instanced_levels: L,
+    owner_spawned_recorder_ids: &[I],
+    owner_destroyed_recorder_ids: &[I],
+) -> Option<InstancedLevelManagerRestorePlan<L, I>> {
+    evaluate_instanced_level_manager_restore(
+        owner_is_valid_instanced_level_manager,
+        owner_instanced_levels,
+        owner_spawned_recorder_ids,
+        owner_destroyed_recorder_ids,
+    )
 }
 
 /// Evaluates `UInstancedLevelManagerRecorderComponent::UpdateOwnerToDatabaseState`
@@ -1320,6 +1409,45 @@ pub fn evaluate_orbital_exchange_transfer<E, D: Clone>(
     })
 }
 
+/// Evaluates `UPlayerGroupSubsystemRecorderComponent::RecordOwnerState`
+/// (`C024`, `0x1418e85b0` server / `0x1418e88e0` client) after
+/// `UActorStateRecorderComponent::RecordOwnerState` (`0x1418a5b60` client)
+/// (F-650, F-657).
+///
+/// Unconditionally clears `recorded_player_group_data` (`recorder + 0x1c0`,
+/// count `+0x1c8`, stride `0x28` B) on entry before checking the owner, then
+/// copies `owner_player_group_data` (`APlayerGroupSubsystem + 0x2c0`, count
+/// `+0x2c8`) iff the owner is a non-null `APlayerGroupSubsystem` (`0x141cc4380`
+/// client; no `PendingKill` check is performed). Returns `true` when copied, or
+/// `false` when `recorded_player_group_data` was only cleared.
+pub fn evaluate_player_group_subsystem_record<G: Clone>(
+    owner_is_player_group_subsystem: bool,
+    owner_player_group_data: &[G],
+    recorded_player_group_data: &mut Vec<G>,
+) -> bool {
+    recorded_player_group_data.clear();
+    if !owner_is_player_group_subsystem {
+        return false;
+    }
+    recorded_player_group_data.extend_from_slice(owner_player_group_data);
+    true
+}
+
+/// Evaluates `UPlayerGroupSubsystemRecorderComponent::UpdateOwnerToDatabaseState`
+/// (`C024`, `0x1418f7070` server / `0x1418f7740` client) after
+/// `UActorStateRecorderComponent::UpdateOwnerToDatabaseState` (`0x1418ba040`
+/// client) (F-650, F-657).
+///
+/// Clears `APlayerGroupSubsystem + 0x2c0` and copies `saved_player_group_data`
+/// (`recorder + 0x1c0`, stride `0x28` B) iff the owner is a non-null
+/// `APlayerGroupSubsystem` (`0x141cc4380` client).
+pub fn evaluate_player_group_subsystem_restore<G: Clone>(
+    owner_is_player_group_subsystem: bool,
+    saved_player_group_data: &[G],
+) -> Option<Vec<G>> {
+    owner_is_player_group_subsystem.then(|| saved_player_group_data.to_vec())
+}
+
 /// Owner-derived fields updated by `UPlayerRecorderComponent::RecordOwnerState`
 /// (`C025`, `0x1418e8850` server / `0x1418e8b80` client) when the owner is a
 /// non-pending-kill `AIcarusPlayerController` (`0x141bfb490` client) (F-648,
@@ -1383,6 +1511,108 @@ pub fn evaluate_player_recorder_record<U>(
         save_data_version: 1,
         owner_state,
     }
+}
+
+/// Values recorded by `UPlayerStateRecorderComponent::RecordOwnerState` (`C026`,
+/// `0x1418e8b10` server / `0x1418e8e50` client) after
+/// `UActorStateRecorderComponent::RecordOwnerState` (`0x1418a5b60` client)
+/// (F-648, F-650).
+#[derive(Clone, Debug, PartialEq)]
+pub struct PlayerStateRecordPlan<U, S, C> {
+    /// `Version` (`recorder + 0x220` = `544`) set to `1`.
+    pub version: i32,
+    /// `PlayerID` (`recorder + 0x1c0`, `ChrSlot` at `+0x1d0`): copied from
+    /// `AIcarusPlayerState + 0x478..0x48c` server / `+0x498..0x4ac` client when
+    /// `AIcarusPlayerCharacter::GetIcarusPlayerState` (`0x1414660d0` client)
+    /// returns a non-null, non-pending-kill `AIcarusPlayerState`, or `None`
+    /// (resetting `UserID` to `""` and `ChrSlot` to `-1` via `0x14171aeb0`
+    /// client).
+    pub player_id: Option<(U, i32)>,
+    /// `Location` (`recorder + 0x1d8..0x1e4`).
+    pub location: [f32; 3],
+    /// `Rotation` (`recorder + 0x1e4..0x1f0`).
+    pub rotation: [f32; 3],
+    /// `bIsAlive` (`recorder + 0x1f0`, from `StatComponent->IsAlive()` at
+    /// `vtable + 0x428`).
+    pub b_is_alive: bool,
+    /// `Health` (`recorder + 0x1f4` = `500`, from `StatComponent + 0x1d8`).
+    pub health: i32,
+    /// `LastSeatIndex` (`recorder + 0x218` = `536`, from
+    /// `AIcarusPlayerCharacter + 0xa50`).
+    pub last_seat_index: i32,
+    /// `bIsLastInputGamepad` (`recorder + 0x21c` = `540`, from
+    /// `AIcarusPlayerCharacter + 0xa54`).
+    pub b_is_last_input_gamepad: bool,
+    /// `(Water, Food, Oxygen, Temperature)` (`recorder + 0x1f8..0x208`) written
+    /// iff `StatComponent` is a `UIcarusStatComponent` (`0x141cbcbb0` client);
+    /// `None` preserves existing `+0x1f8..0x208`.
+    pub survival_stats: Option<(i32, i32, i32, i32)>,
+    /// `StomachContents` (`recorder + 0x208`, count `+0x210`, stride `0x10` B)
+    /// copied from `UPlayerStomachComponent + 0xb0` (stride `0x24` B) iff the
+    /// owner has a `UPlayerStomachComponent` (`0x141d82ad0` client); `None`
+    /// preserves existing `+0x208`.
+    pub stomach_contents: Option<Vec<S>>,
+    /// `CosmeticArmourOverrides` (`recorder + 0x228`, count `+0x230`, stride
+    /// `0x18` B) unconditionally replaced from `AIcarusPlayerCharacter + 0xa80`.
+    pub cosmetic_armour_overrides: Vec<C>,
+    /// Override `ActorTransform` (`recorder + 0xe0..0x10c`) written when the
+    /// owner is a `ABP_IcarusPlayerCharacterSurvival_C` (`0x141bf37b0` client)
+    /// and `ShouldOverrideRecordedTransform` (`0x1419b6410` client) returns
+    /// `true`.
+    pub override_actor_transform: Option<([f32; 4], [f32; 3], [f32; 3])>,
+}
+
+/// Evaluates `UPlayerStateRecorderComponent::RecordOwnerState` (`C026`,
+/// `0x1418e8b10` server / `0x1418e8e50` client) (F-648, F-650).
+///
+/// Returns `None` when the owner is null, not an `AIcarusPlayerCharacter`
+/// (`0x141bec9a0` client), or pending kill. When `survival_override_transform`
+/// is `Some((quat, translation, scale, rotator))`, writes `(quat, translation,
+/// scale)` to `override_actor_transform` (`recorder + 0xe0..0x10c`) and, iff
+/// [`recorder_transform_is_non_identity`] holds for `(quat, translation, scale)`,
+/// also overwrites `location` (`+0x1d8`) and `rotation` (`+0x1e4`) with
+/// `(translation, rotator)`.
+#[allow(clippy::too_many_arguments, clippy::type_complexity)]
+pub fn evaluate_player_state_record<U, S: Clone, C: Clone>(
+    owner_is_valid_player_character: bool,
+    valid_player_state_character_id: Option<(U, i32)>,
+    root_component_location_rotation: Option<([f32; 3], [f32; 3])>,
+    b_is_alive: bool,
+    health: i32,
+    last_seat_index: i32,
+    b_is_last_input_gamepad: bool,
+    icarus_stat_component_values: Option<(i32, i32, i32, i32)>,
+    stomach_component_contents: Option<&[S]>,
+    cosmetic_armour_overrides: &[C],
+    survival_override_transform: Option<([f32; 4], [f32; 3], [f32; 3], [f32; 3])>,
+) -> Option<PlayerStateRecordPlan<U, S, C>> {
+    if !owner_is_valid_player_character {
+        return None;
+    }
+    let (mut location, mut rotation) =
+        root_component_location_rotation.unwrap_or(([0.0, 0.0, 0.0], [0.0, 0.0, 0.0]));
+    let override_actor_transform =
+        survival_override_transform.map(|(quat, translation, scale, rotator)| {
+            if recorder_transform_is_non_identity(quat, translation, scale) {
+                location = translation;
+                rotation = rotator;
+            }
+            (quat, translation, scale)
+        });
+    Some(PlayerStateRecordPlan {
+        version: 1,
+        player_id: valid_player_state_character_id,
+        location,
+        rotation,
+        b_is_alive,
+        health,
+        last_seat_index,
+        b_is_last_input_gamepad,
+        survival_stats: icarus_stat_component_values,
+        stomach_contents: stomach_component_contents.map(<[S]>::to_vec),
+        cosmetic_armour_overrides: cosmetic_armour_overrides.to_vec(),
+        override_actor_transform,
+    })
 }
 
 /// Values recorded by `URocketRecorderComponent::RecordOwnerState` (`C029`,
@@ -1617,6 +1847,39 @@ pub const fn evaluate_actor_guid_restore(
     })
 }
 
+/// Values recorded by `USplineRecorderComponent::RecordOwnerState` (`C032`,
+/// `0x1418e95f0` server / `0x1418e9930` client) after
+/// `UActorStateRecorderComponent::RecordOwnerState` (`0x1418a5b60` client)
+/// (F-650, F-658).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SplineRecordPlan<S> {
+    /// `SplineNetworkSaveData` (`recorder + 0x1c0..0x248`) written by
+    /// `ASplineNetworkActor::RecordSplineNetwork` (`0x141d6e650` client).
+    pub spline_network_state: S,
+    /// `UniqueSplineID` (`recorder + 0x234`) overwritten with
+    /// `ASplineNetworkActor + 0x220` after `RecordSplineNetwork`.
+    pub unique_spline_id: i32,
+}
+
+/// Evaluates `USplineRecorderComponent::RecordOwnerState` (`C032`,
+/// `0x1418e95f0` server / `0x1418e9930` client) (F-650, F-658).
+///
+/// Returns `None` when the owner is null or not an `ASplineNetworkActor`
+/// (`0x141d6e150` client; no `PendingKill` check is performed).
+pub const fn evaluate_spline_record<S: Copy>(
+    owner_is_spline_network_actor: bool,
+    spline_network_state: S,
+    owner_unique_spline_id: i32,
+) -> Option<SplineRecordPlan<S>> {
+    if !owner_is_spline_network_actor {
+        return None;
+    }
+    Some(SplineRecordPlan {
+        spline_network_state,
+        unique_spline_id: owner_unique_spline_id,
+    })
+}
+
 /// How `USplineRecorderComponent::RespawnOwner` (`C032`, `0x1418ed690` server /
 /// `0x1418ee060` client) resolves or spawns its spline owner and applies saved
 /// spline state (F-658).
@@ -1663,6 +1926,43 @@ pub const fn evaluate_spline_recorder_respawn(
 /// F-736).
 pub const fn should_drop_respawned_tree_recorder_on_resave(b_is_physics_dynamic: bool) -> bool {
     b_is_physics_dynamic
+}
+
+/// Values recorded by `UResourceDepositRecorderComponent::RecordOwnerState`
+/// (`C028`, `0x1418e90b0` server / `0x1418e93e0` client) after
+/// `UActorStateRecorderComponent::RecordOwnerState` (`0x1418a5b60` client)
+/// (F-645, F-650).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ResourceDepositRecordPlan<N> {
+    /// `ResourceQuantity` (`AResourceDeposit + 0x2c0 -> recorder + 0x1c0`).
+    pub resource_quantity: i32,
+    /// `DepositType.RowName` (`AResourceDeposit + 0x2c4 -> recorder + 0x1c4`).
+    pub deposit_type_row_name: N,
+    /// `bShowMapIcon` (`recorder + 0x1cc`), set to
+    /// `UStatComponent::GetStat(StatComponent, 0xbe) != 0` (`0x1417a7a80`
+    /// server / `0x1417b4140` client).
+    pub b_show_map_icon: bool,
+}
+
+/// Evaluates `UResourceDepositRecorderComponent::RecordOwnerState` (`C028`,
+/// `0x1418e90b0` server / `0x1418e93e0` client) (F-645, F-650).
+///
+/// Returns `None` when the owner is null, not an `AResourceDeposit`
+/// (`0x141d22960` client), or pending kill.
+pub const fn evaluate_resource_deposit_record<N: Copy>(
+    owner_is_valid_resource_deposit: bool,
+    resource_quantity: i32,
+    deposit_type_row_name: N,
+    current_map_icon_stat: i32,
+) -> Option<ResourceDepositRecordPlan<N>> {
+    if !owner_is_valid_resource_deposit {
+        return None;
+    }
+    Some(ResourceDepositRecordPlan {
+        resource_quantity,
+        deposit_type_row_name,
+        b_show_map_icon: current_map_icon_stat != 0,
+    })
 }
 
 /// Whether `UResourceDepositRecorderComponent::UpdateOwnerToDatabaseState`
@@ -1849,6 +2149,47 @@ pub const fn restored_next_meteor_shower_time(
     } else {
         level_time_elapsed_sec.wrapping_add(meteor_shower_interval)
     }
+}
+
+/// Values recorded by `UWorldBossRecorderComponent::RecordOwnerState` (`C037`,
+/// `0x1418ea790` server / `0x1418eae50` client) (F-654).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct WorldBossRecordPlan<R, S> {
+    /// `BossSpawnerRow.RowName` (`AWorldBossSpawner + 0x300 -> recorder + 0xe8`).
+    pub boss_spawner_row_name: R,
+    /// `BossStatuses` (`AWorldBossSpawner + 0x2c0 -> recorder + 0xd8`, count
+    /// `+0xe0`, stride `0x60` B), each starting with `BossRowHandle.RowName` at
+    /// `+0x00`.
+    pub boss_statuses: Vec<(R, S)>,
+    /// `ActiveWorldBosses` (`recorder + 0xf0`, count `+0xf8`, stride `0x18` B),
+    /// cleared and derived by extracting `BossRowHandle.RowName` (`+0x00`) from
+    /// each recorded `BossStatuses` entry in order.
+    pub active_world_bosses: Vec<R>,
+}
+
+/// Evaluates `UWorldBossRecorderComponent::RecordOwnerState` (`C037`,
+/// `0x1418ea790` server / `0x1418eae50` client) (F-654).
+///
+/// Returns `None` when the owner is null, not an `AWorldBossSpawner`
+/// (`0x141e03490` client), or pending kill.
+pub fn evaluate_world_boss_record<R: Clone, S: Clone>(
+    owner_is_valid_world_boss_spawner: bool,
+    boss_spawner_row_name: R,
+    owner_boss_statuses: &[(R, S)],
+) -> Option<WorldBossRecordPlan<R, S>> {
+    if !owner_is_valid_world_boss_spawner {
+        return None;
+    }
+    let boss_statuses = owner_boss_statuses.to_vec();
+    let active_world_bosses = boss_statuses
+        .iter()
+        .map(|(row_name, _)| row_name.clone())
+        .collect();
+    Some(WorldBossRecordPlan {
+        boss_spawner_row_name,
+        boss_statuses,
+        active_world_bosses,
+    })
 }
 
 /// Overwrites `BossStatuses[i].BossRowHandle` (`+0x00`, stride `0x60` B) from
