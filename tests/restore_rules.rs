@@ -2,39 +2,47 @@ use icarus_bevy::experimental::restore_rules::{
     ACTOR_RECORDER_TRANSFORM_TOLERANCE, ActorGuidRestoreStep, ActorLink,
     ActorSubcomponentRestorePlan, ApplyTransformKind, AttachRecorderOutcome,
     BaseLevelTeleportRecordPlan, BaseLevelTeleportRestorePlan, ByNameLoadOutcome,
-    CaveSpawnerMapEntry, DeployableRecordPlan, DeployableStitchPlan, DrillStitchCandidate,
-    DrillStitchResolution, DynamicItemPropertyKind, EnzymeGeyserRecordPlan,
-    EnzymeGeyserRestorePlan, FlodTileRestorePlan, InstancedLevelManagerRestorePlan,
-    InventorySlotOverflowDisposition, LegacyGunAmmoUpgrade, LobbyPrivacy,
-    OrbitalExchangeTransferPlan, OwnerResolvePolicy, OwnerResolveStep,
-    PROSPECT_SAVE_STATE_CURRENT_VERSION, PlayerList, PlayerRecorderOwnerState,
+    CaveSpawnerMapEntry, ContainerManagerRecordPlan, ContainerManagerStitchPlan,
+    DeployableRecordPlan, DeployableStitchPlan, DrillStitchCandidate, DrillStitchResolution,
+    DynamicItemPropertyKind, EnzymeGeyserRecordPlan, EnzymeGeyserRestorePlan, FlodTileRecordPlan,
+    FlodTileRestorePlan, InstancedLevelManagerRestorePlan, InventorySlotOverflowDisposition,
+    LegacyGunAmmoUpgrade, LobbyPrivacy, OrbitalExchangeTransferPlan, OwnerResolvePolicy,
+    OwnerResolveStep, PROSPECT_SAVE_STATE_CURRENT_VERSION, PlayerList, PlayerRecorderOwnerState,
     PlayerRecorderRecordPlan, PlayerStateLifeRestore, PlayerStateRecordPlan,
     PrebuiltStructureRecordPlan, ProspectAssociatedMember, ProspectBlobDecodeOutcome,
-    RESTORED_INDEFINITE_MODIFIER_LIFETIME, ResourceDepositRecordPlan, RestoreStateKind,
-    RestoredMissionHistoryEntry, RestoredProcessingState, RocketRecordPlan, RocketRestore,
-    SetupLoadedProspectOutcome, SpawnBlockerState, SplineRecordPlan, SplineRespawnDisposition,
-    StitchedPlayerRecorderLinks, TreeRecordPlan, VOXEL_LOCATION_TOLERANCE, VersionUpgradeKind,
-    VoxelDatabaseRestorePlan, WorldBossRecordPlan, WorldTalentStitchPlan,
-    can_activate_prospect_info, compact_and_diff_flod_tiles, container_entries,
-    does_actor_recorder_match_actor, does_player_recorder_match_actor,
+    QuestManagerRecordPlan, QuestRecordPlan, RESTORED_INDEFINITE_MODIFIER_LIFETIME,
+    RecordedWeatherEvent, ResourceDepositRecordPlan, RestoreStateKind, RestoredMissionHistoryEntry,
+    RestoredProcessingState, RocketRecordPlan, RocketRestore, RocketSpawnRecordPlan,
+    SavedWeatherEventEntry, SetupLoadedProspectOutcome, SpawnBlockerState, SplineRecordPlan,
+    SplineRespawnDisposition, StitchedPlayerRecorderLinks, TreeRecordPlan,
+    VOXEL_LOCATION_TOLERANCE, VersionUpgradeKind, VoxelDatabaseRestorePlan, VoxelRecordPlan,
+    WeatherControllerEventCandidate, WeatherForecastRecordPlan, WorldBossRecordPlan,
+    WorldTalentStitchPlan, can_activate_prospect_info, compact_and_diff_flod_tiles,
+    container_entries, does_actor_recorder_match_actor, does_player_recorder_match_actor,
     does_player_state_recorder_match_actor, does_state_recorder_match_actor,
     does_voxel_recorder_match_actor, evaluate_actor_guid_restore,
     evaluate_actor_subcomponent_restore, evaluate_attach_recorder_to_actor,
     evaluate_base_level_teleport_record, evaluate_base_level_teleport_restore,
-    evaluate_building_base_decay_transfer, evaluate_by_name_load_attempt,
-    evaluate_cave_air_nav_record, evaluate_cave_air_nav_restore, evaluate_crop_plot_record,
-    evaluate_crop_plot_restore, evaluate_deployable_record, evaluate_deployable_stitch,
-    evaluate_drill_stitch, evaluate_enzyme_geyser_record, evaluate_enzyme_geyser_restore,
-    evaluate_flod_record, evaluate_flod_tile_restore, evaluate_instanced_level_manager_record,
+    evaluate_bed_spawn_point_players_transfer, evaluate_building_base_decay_transfer,
+    evaluate_building_grid_record, evaluate_by_name_load_attempt, evaluate_cave_air_nav_record,
+    evaluate_cave_air_nav_restore, evaluate_cave_entrance_record, evaluate_cave_entrance_restore,
+    evaluate_container_manager_record, evaluate_container_manager_stitch,
+    evaluate_crop_plot_record, evaluate_crop_plot_restore, evaluate_crop_plot_state_transfer,
+    evaluate_deployable_record, evaluate_deployable_stitch, evaluate_drill_stitch,
+    evaluate_enzyme_geyser_record, evaluate_enzyme_geyser_restore, evaluate_flod_record,
+    evaluate_flod_tile_record, evaluate_flod_tile_restore, evaluate_instanced_level_manager_record,
     evaluate_instanced_level_manager_restore, evaluate_legacy_gun_ammo_upgrade,
     evaluate_modifier_state_restore, evaluate_orbital_exchange_transfer,
     evaluate_owner_resolve_step, evaluate_player_group_subsystem_record,
     evaluate_player_group_subsystem_restore, evaluate_player_recorder_record,
     evaluate_player_state_life_restore, evaluate_player_state_record,
-    evaluate_prospect_blob_decode, evaluate_resource_deposit_record, evaluate_rocket_record,
+    evaluate_prospect_blob_decode, evaluate_quest_manager_record, evaluate_quest_record,
+    evaluate_resource_deposit_record, evaluate_rocket_record, evaluate_rocket_spawn_record,
     evaluate_setup_loaded_prospect_attempt, evaluate_spawn_blocker_transfer,
     evaluate_spline_record, evaluate_spline_recorder_respawn, evaluate_tree_record,
-    evaluate_voxel_database_restore, evaluate_world_boss_record, evaluate_world_talent_record,
+    evaluate_voxel_database_restore, evaluate_voxel_record, evaluate_weather_controller_record,
+    evaluate_weather_controller_restore, evaluate_weather_forecast_record,
+    evaluate_weather_forecast_restore, evaluate_world_boss_record, evaluate_world_talent_record,
     evaluate_world_talent_stitch, filter_restored_cosmetic_armour_overrides,
     migrate_prospect_save_state, names_match, normalize_prospect_name,
     normalize_restored_modifier_lifetime, player_record_valid, prospect_ids_match,
@@ -133,6 +141,82 @@ fn stitching_needs_both_id_and_name() {
     assert_eq!(
         stitch_quest_actor_records(&quest_records, &spawned),
         vec![("RadarTag", 2), ("WallTag", 0)]
+    );
+
+    // C018 UIcarusQuestManagerRecorderComponent::RecordOwnerState (0x1418e67b0 / 0x1418e7b40) and
+    // C019 UIcarusQuestRecorderComponent::RecordOwnerState (0x1418e6c40 / 0x1418e7fd0):
+    // filters actor lists to non-null actors that have a UActorStateRecorderComponent.
+    assert_eq!(
+        evaluate_quest_manager_record::<&str, &str, &str>(
+            false,
+            Some(("AIcarusQuest", 10)),
+            &[("TagA", Some(("Floor_C", 7)))],
+            &[],
+            "Mission_Alpha",
+            true,
+            2,
+            1800,
+            true,
+            "Seed_1",
+        ),
+        None
+    );
+    assert_eq!(
+        evaluate_quest_manager_record(
+            true,
+            Some(("AIcarusQuest", 10)),
+            &[
+                ("TagA", Some(("Floor_C", 7))),
+                ("TagUnrecorded", None),
+                ("TagB", Some(("Wall_C", 8))),
+            ],
+            &[("PersistTag", Some(("Radar_C", 99))), ("PersistNone", None)],
+            "Mission_Alpha",
+            true,
+            2,
+            1800,
+            true,
+            "Seed_1",
+        ),
+        Some(QuestManagerRecordPlan {
+            current_mission_record: Some(("AIcarusQuest", 10)),
+            relevant_actor_records: vec![("Floor_C", "TagA", 7), ("Wall_C", "TagB", 8)],
+            relevant_persistent_actor_records: vec![("Radar_C", "PersistTag", 99)],
+            faction_mission_row_name: "Mission_Alpha",
+            b_mission_active: true,
+            mission_difficulty: 2,
+            mission_timer: 1800,
+            b_timer_active: true,
+            selected_seed_row_name: "Seed_1",
+        })
+    );
+    assert_eq!(
+        evaluate_quest_record::<&str, &str, &str, &str>(
+            false,
+            "Quest_DT_Alpha",
+            &[("StepA", Some(("Floor_C", 7)))],
+            &[],
+            &[],
+            &["Progress_1"],
+        ),
+        None
+    );
+    assert_eq!(
+        evaluate_quest_record(
+            true,
+            "Quest_DT_Alpha",
+            &[("StepA", Some(("Floor_C", 7))), ("StepSkip", None)],
+            &[("SecSkip", None), ("SecB", Some(("Wall_C", 8)))],
+            &[("FName_Pod", Some(("Pod_C", 55))), ("FName_Skip", None)],
+            &["Progress_1", "Progress_2"],
+        ),
+        Some(QuestRecordPlan {
+            quest_dt_key: "Quest_DT_Alpha",
+            relevant_actor_records: vec![("Floor_C", "StepA", 7)],
+            secondary_actor_records: vec![("Wall_C", "SecB", 8)],
+            named_actor_records: vec![("Pod_C", "FName_Pod", 55)],
+            quest_progress_records: vec!["Progress_1", "Progress_2"],
+        })
     );
 
     // C027 UPrebuiltStructureRecorderComponent::StitchingOperation (0x14177ec20 / 0x14178c680):
@@ -977,8 +1061,24 @@ fn prospect_player_list_resolution_rocket_spawn_reset_and_deposit_filter() {
         PlayerList::Active { has_player: false }
     );
 
-    // C011 URocketSpawnRecorderComponent::Validate resets PlayerID and ChrSlot on version < 1
-    // or Active { has_player: false }, while keeping the spawn record valid (returns true).
+    // C011 URocketSpawnRecorderComponent::RecordOwnerState (0x1418e8790 / 0x1418e97b0) and
+    // Validate (0x1418fa010 / 0x1418fa340):
+    // RecordOwnerState sets Version = 1 unconditionally and copies AssignedPlayerID iff owner is ADropshipSpawnPoint;
+    // Validate resets PlayerID and ChrSlot on version < 1 or Active { has_player: false }, while returning true.
+    assert_eq!(
+        evaluate_rocket_spawn_record(false, ("76561198000000001", 0)),
+        RocketSpawnRecordPlan {
+            version: 1,
+            assigned_player_id: None,
+        }
+    );
+    assert_eq!(
+        evaluate_rocket_spawn_record(true, ("76561198000000001", 2)),
+        RocketSpawnRecordPlan {
+            version: 1,
+            assigned_player_id: Some(("76561198000000001", 2)),
+        }
+    );
     let mut spawn_player = steam_id.clone();
     let mut spawn_slot = 0;
     assert!(validate_rocket_spawn_record(
@@ -1051,6 +1151,46 @@ fn container_positions_keep_gaps() {
     let entries: Vec<_> = container_entries(&list).collect();
     assert_eq!(entries, [(0, &'a'), (2, &'c')]);
     assert_eq!(container_entries::<u8>(&[]).count(), 0);
+
+    // C016 UIcarusContainerManagerRecorderComponent::RecordOwnerState (0x1416f1be0 / 0x141702570)
+    // and Stitching (0x1416f8980 / 0x1417099d0).
+    assert_eq!(
+        evaluate_container_manager_record(false, &list),
+        ContainerManagerRecordPlan {
+            saved_containers: Vec::new(),
+            container_count: 0,
+        }
+    );
+    let recorded_containers = evaluate_container_manager_record(true, &list);
+    assert_eq!(
+        recorded_containers,
+        ContainerManagerRecordPlan {
+            saved_containers: vec![(0, 'a'), (2, 'c')],
+            container_count: 4,
+        }
+    );
+    assert_eq!(
+        evaluate_container_manager_stitch(
+            false,
+            &recorded_containers.saved_containers,
+            recorded_containers.container_count,
+            &[Some("ActorInv_1"), None, Some("ActorInv_2")],
+        ),
+        None
+    );
+    assert_eq!(
+        evaluate_container_manager_stitch(
+            true,
+            &recorded_containers.saved_containers,
+            recorded_containers.container_count,
+            &[Some("ActorInv_1"), None, Some("ActorInv_2")],
+        ),
+        Some(ContainerManagerStitchPlan {
+            restored_containers: vec![(0, 'a'), (2, 'c')],
+            container_count: 4,
+            rebound_actor_containers: vec!["ActorInv_1", "ActorInv_2"],
+        })
+    );
 }
 
 #[test]
@@ -1089,6 +1229,49 @@ fn forecast_position_follows_the_containing_block() {
     );
     assert_eq!(forecast_position(&blocks, -1), ForecastPosition::default());
     assert_eq!(forecast_position(&[], 5), ForecastPosition::default());
+
+    // C036 UWeatherForecastRecorderComponent::RecordOwnerState (0x1418e9ff0 / 0x1418eadf0 ->
+    // GetCurrentForecastInfo 0x141917fc0 / 0x141916980) and UpdateOwnerToDatabaseState
+    // (0x1418f86c0 / 0x1418f8c80 -> RestoreForecastInfo 0x14192eff0 / 0x14192be80).
+    assert_eq!(
+        evaluate_weather_forecast_record(false, "Forecast_A", "Pool_B", &blocks, 10, &[11, 22],),
+        None
+    );
+    assert_eq!(
+        evaluate_weather_forecast_record(true, "Forecast_A", "Pool_B", &[], 10, &[11, 22]),
+        Some(WeatherForecastRecordPlan {
+            row_names: None,
+            position: ForecastPosition::default(),
+            seeds: Vec::new(),
+        })
+    );
+    assert_eq!(
+        evaluate_weather_forecast_record(true, "Forecast_A", "Pool_B", &blocks, -1, &[11, 22]),
+        Some(WeatherForecastRecordPlan {
+            row_names: None,
+            position: ForecastPosition::default(),
+            seeds: Vec::new(),
+        })
+    );
+    let recorded_forecast =
+        evaluate_weather_forecast_record(true, "Forecast_A", "Pool_B", &blocks, 24, &[11, 22])
+            .expect("valid weather forecast record");
+    assert_eq!(
+        recorded_forecast,
+        WeatherForecastRecordPlan {
+            row_names: Some(("Forecast_A", "Pool_B")),
+            position: at(14, 7, 24),
+            seeds: vec![11, 22],
+        }
+    );
+    assert_eq!(
+        evaluate_weather_forecast_restore(false, &recorded_forecast),
+        None
+    );
+    assert_eq!(
+        evaluate_weather_forecast_restore(true, &recorded_forecast),
+        Some(recorded_forecast)
+    );
 }
 
 #[test]
@@ -1139,7 +1322,7 @@ fn cave_spawn_times_replace_the_first_matching_class() {
     ));
     assert!(!restore_cave_spawn_times(&mut configured, &[]));
 
-    // C005 UCaveAirNavRecorderComponent::UpdateOwnerToDatabaseState (0x1418b7790 / 0x1418ba730):
+    // C005 UCaveAirNavRecorderComponent::UpdateOwnerToDatabaseState (0x1418b7860 / 0x1418ba730):
     // skips clearing owner+0x310 and skips UpdateStateFromDatabase when saved_spawn_data is empty.
     let mut spawner_classes = vec![class("BP_Wolf", &[1.0])];
     assert_eq!(
@@ -1252,6 +1435,75 @@ fn only_fully_mined_respawned_voxels_fail_validation() {
         assert!(voxel_record_valid(policy, true));
         assert!(voxel_record_valid(policy, false));
     }
+
+    // UVoxelRecorderComponent::RecordOwnerState (0x1418e96c0 / 0x1418ea6e0):
+    // records mined spheres, location (or [0,0,0] when RootComponent is null), voxel counters,
+    // ResourceType.RowName iff valid, and overrides OwnerResolvePolicy to RespawnOnly (1) when bCanBreak is set.
+    assert_eq!(
+        evaluate_voxel_record::<i32, &str>(
+            false,
+            &[1, 2],
+            Some([10.0, 20.0, 30.0]),
+            false,
+            100,
+            60,
+            40,
+            180.0,
+            Some("Iron_Node"),
+            true,
+        ),
+        None
+    );
+    assert_eq!(
+        evaluate_voxel_record(
+            true,
+            &[1, 2],
+            None,
+            true,
+            100,
+            0,
+            100,
+            180.0,
+            None::<&str>,
+            false,
+        ),
+        Some(VoxelRecordPlan {
+            mined_spheres: vec![1, 2],
+            location: [0.0, 0.0, 0.0],
+            b_is_voxel_fully_mined: true,
+            max_unmined_voxels: 100,
+            current_unmined_voxels: 0,
+            num_resources_granted: 100,
+            total_resource_count: 180.0,
+            resource_type_row_override: None,
+            owner_resolve_policy_override: None,
+        })
+    );
+    assert_eq!(
+        evaluate_voxel_record(
+            true,
+            &[1],
+            Some([10.0, 20.0, 30.0]),
+            false,
+            100,
+            60,
+            40,
+            180.0,
+            Some("Iron_Node"),
+            true,
+        ),
+        Some(VoxelRecordPlan {
+            mined_spheres: vec![1],
+            location: [10.0, 20.0, 30.0],
+            b_is_voxel_fully_mined: false,
+            max_unmined_voxels: 100,
+            current_unmined_voxels: 60,
+            num_resources_granted: 40,
+            total_resource_count: 180.0,
+            resource_type_row_override: Some("Iron_Node"),
+            owner_resolve_policy_override: Some(OwnerResolvePolicy::RespawnOnly),
+        })
+    );
 
     // UVoxelRecorderComponent::UpdateOwnerToDatabaseState (0x1418f7bb0 / 0x1418f8280):
     // 1. Respawned partially mined voxel with explicit spheres and positive TotalResourceCount.
@@ -1500,7 +1752,21 @@ fn owner_resolve_step_attach_and_drill_auto_activate() {
     assert!(!should_auto_activate_respawned_drill(true, false, true));
     assert!(!should_auto_activate_respawned_drill(false, true, true));
 
-    // C004 UBuildingGridRecorderComponent::UpdateOwnerToDatabaseState (0x1418b7770 / 0x1418ba640).
+    // C004 UBuildingGridRecorderComponent::RecordOwnerState (0x1418a0aa0 / 0x1418a6340) and
+    // UpdateOwnerToDatabaseState (0x1418b7770 / 0x1418ba640).
+    let mut grid_entries = vec!["Grid_Prior"];
+    assert!(!evaluate_building_grid_record(
+        false,
+        &["Grid_A", "Grid_B"],
+        &mut grid_entries
+    ));
+    assert_eq!(grid_entries, vec!["Grid_Prior"]);
+    assert!(evaluate_building_grid_record(
+        true,
+        &["Grid_A", "Grid_B"],
+        &mut grid_entries
+    ));
+    assert_eq!(grid_entries, vec!["Grid_A", "Grid_B"]);
     assert!(should_try_fast_path_prebuilt_grid_restore(true, true));
     assert!(!should_try_fast_path_prebuilt_grid_restore(true, false));
     assert!(!should_try_fast_path_prebuilt_grid_restore(false, true));
@@ -1590,10 +1856,25 @@ fn owner_resolve_step_attach_and_drill_auto_activate() {
         })
     );
 
-    // C014 UFLODTileRecorderComponent::UpdateOwnerToDatabaseState (0x1418b7cf0 / 0x1418babc0):
-    // copies TileName (+0xe0 -> +0x220), Radius (+0x120 -> +0x228), and restores records whose
-    // leading component key resolves via 0x1418970d0(tile, key, 1).
+    // C014 UFLODTileRecorderComponent::RecordOwnerState (0x1418a18f0 / 0x1418a7070) and
+    // UpdateOwnerToDatabaseState (0x1418b7cf0 / 0x1418babc0):
+    // RecordOwnerState copies TileName, TileTransform (or FTransform::Identity when RootComponent is null),
+    // Radius, and active component records; UpdateOwnerToDatabaseState restores records whose leading
+    // component key resolves via 0x1418970d0(tile, key, 1).
     let flod_records = [(10, "Instance_A"), (20, "Instance_B"), (30, "Instance_C")];
+    assert_eq!(
+        evaluate_flod_tile_record(false, "Tile_X0_Y0", None, 5000.0, &flod_records),
+        None
+    );
+    assert_eq!(
+        evaluate_flod_tile_record(true, "Tile_X0_Y0", None, 5000.0, &flod_records[..2]),
+        Some(FlodTileRecordPlan {
+            tile_name: "Tile_X0_Y0",
+            tile_transform: ([0.0, 0.0, 0.0, 1.0], [0.0, 0.0, 0.0], [1.0, 1.0, 1.0]),
+            radius: 5000.0,
+            component_records: vec![(10, "Instance_A"), (20, "Instance_B")],
+        })
+    );
     assert_eq!(
         evaluate_flod_tile_restore(false, "Tile_X0_Y0", 5000.0, &flod_records, &[10, 30]),
         None
@@ -1709,30 +1990,59 @@ fn owner_resolve_step_attach_and_drill_auto_activate() {
         Some(vec!["Group_A", "Group_B"])
     );
 
-    // C008 UCropPlotStateRecorderComponent::RecordOwnerState (0x1418a1300 / 0x1418a6a80)
-    // and UpdateOwnerToDatabaseState (0x1418b7a50 / 0x1418baa10).
-    let mut plot_states = vec!["Seed_A"];
-    assert!(!evaluate_crop_plot_record(
+    // C006 UCaveEntranceRecorderComponent::RecordOwnerState (0x1418a1300 / 0x1418a6a80)
+    // and UpdateOwnerToDatabaseState (0x1418b7b40 / 0x1418baa10) (plus legacy aliases).
+    let mut cave_spheres = vec!["Sphere_A"];
+    assert!(!evaluate_cave_entrance_record(
         false,
-        Some(&["Seed_B"]),
-        &mut plot_states
+        Some(&["Sphere_B"]),
+        &mut cave_spheres
     ));
-    assert!(!evaluate_crop_plot_record(true, None, &mut plot_states));
-    assert_eq!(plot_states, vec!["Seed_A"]);
+    assert!(!evaluate_cave_entrance_record(
+        true,
+        None,
+        &mut cave_spheres
+    ));
+    assert_eq!(cave_spheres, vec!["Sphere_A"]);
+    assert!(evaluate_cave_entrance_record(
+        true,
+        Some(&["Sphere_B", "Sphere_C"]),
+        &mut cave_spheres
+    ));
+    assert_eq!(cave_spheres, vec!["Sphere_B", "Sphere_C"]);
+    assert_eq!(evaluate_cave_entrance_restore(false, &cave_spheres), None);
+    assert_eq!(
+        evaluate_cave_entrance_restore(true, &cave_spheres),
+        Some(vec!["Sphere_B", "Sphere_C"])
+    );
     assert!(evaluate_crop_plot_record(
         true,
-        Some(&["Seed_B", "Seed_C"]),
-        &mut plot_states
+        Some(&["Sphere_D"]),
+        &mut cave_spheres
     ));
-    assert_eq!(plot_states, vec!["Seed_B", "Seed_C"]);
-    assert_eq!(evaluate_crop_plot_restore(false, &plot_states), None);
     assert_eq!(
-        evaluate_crop_plot_restore(true, &plot_states),
-        Some(vec!["Seed_B", "Seed_C"])
+        evaluate_crop_plot_restore(true, &cave_spheres),
+        Some(vec!["Sphere_D"])
     );
 
-    // C003 UBuildingBaseRecorderComponent::RecordOwnerState (0x1418a1540 / 0x1418a6cc0)
-    // and UpdateOwnerToDatabaseState (0x1418b7710 / 0x1418baa80).
+    // C003 UBedRecorderComponent::RecordOwnerState (0x1418a09f0 / 0x1418a6290)
+    // and UpdateOwnerToDatabaseState (0x1418b7710 / 0x1418ba5e0).
+    assert_eq!(
+        evaluate_bed_spawn_point_players_transfer(false, &["76561198000000001"]),
+        None
+    );
+    assert_eq!(
+        evaluate_bed_spawn_point_players_transfer(
+            true,
+            &["76561198000000001", "76561198000000002"]
+        ),
+        Some(vec!["76561198000000001", "76561198000000002"])
+    );
+
+    // C008 UCropPlotRecorderComponent::RecordOwnerState (0x1418a1540 / 0x1418a6cc0)
+    // and UpdateOwnerToDatabaseState (0x1418b7bb0 / 0x1418baa80) (plus legacy alias).
+    assert_eq!(evaluate_crop_plot_state_transfer(false, 420), None);
+    assert_eq!(evaluate_crop_plot_state_transfer(true, 420), Some(420));
     assert_eq!(evaluate_building_base_decay_transfer(false, 420), None);
     assert_eq!(evaluate_building_base_decay_transfer(true, 420), Some(420));
 
@@ -2139,6 +2449,106 @@ fn weather_and_teleport_clocks_record_and_restore() {
     assert_eq!(restored_weather_event_start_time(450, elapsed), 300);
     assert_eq!(restored_weather_event_start_time(0, elapsed), 0);
     assert_eq!(restored_weather_event_start_time(-5, elapsed), 0);
+
+    // C035 UWeatherControllerRecorderComponent::RecordOwnerState (0x1418e98b0 / 0x1418ea8d0)
+    // and UpdateOwnerToDatabaseState (0x1418f8120 / 0x1418f87f0).
+    let pool_a_events = [
+        WeatherControllerEventCandidate {
+            event_start_time: 100,
+            weather_event_row: "Storm_Light",
+            is_row_valid: true,
+            row_duration: Some(120),
+        },
+        WeatherControllerEventCandidate {
+            event_start_time: 100,
+            weather_event_row: "Storm_Overrun",
+            is_row_valid: true,
+            row_duration: Some(121),
+        },
+        WeatherControllerEventCandidate {
+            event_start_time: 110,
+            weather_event_row: "Storm_Invalid",
+            is_row_valid: false,
+            row_duration: Some(50),
+        },
+    ];
+    let pool_b_events = [WeatherControllerEventCandidate {
+        event_start_time: 150,
+        weather_event_row: "Storm_Heavy",
+        is_row_valid: true,
+        row_duration: Some(60),
+    }];
+    let pools = [
+        ("Pool_Forest", true, pool_a_events.as_slice()),
+        ("Pool_Desert_Inactive", false, pool_b_events.as_slice()),
+        ("Pool_Arctic", true, pool_b_events.as_slice()),
+    ];
+    assert_eq!(
+        evaluate_weather_controller_record(false, 450, 220, &pools),
+        None
+    );
+    assert_eq!(
+        evaluate_weather_controller_record(true, 0, 220, &pools),
+        Some(Vec::new())
+    );
+    assert_eq!(
+        evaluate_weather_controller_record(true, 450, -1, &pools),
+        Some(Vec::new())
+    );
+    assert_eq!(
+        evaluate_weather_controller_record(true, 450, 220, &pools),
+        Some(vec![
+            RecordedWeatherEvent {
+                weather_event_row: "Storm_Light",
+                pool_row: "Pool_Forest",
+                time_elapsed: 350,
+            },
+            RecordedWeatherEvent {
+                weather_event_row: "Storm_Heavy",
+                pool_row: "Pool_Arctic",
+                time_elapsed: 300,
+            },
+        ])
+    );
+
+    let saved_weather_events = [
+        SavedWeatherEventEntry {
+            weather_event_row: "Storm_Light",
+            weather_event_row_valid: true,
+            pool_row: "Pool_Forest",
+            pool_row_valid: true,
+            time_elapsed: 350,
+        },
+        SavedWeatherEventEntry {
+            weather_event_row: "Storm_Skip_Pool",
+            weather_event_row_valid: true,
+            pool_row: "Pool_Invalid",
+            pool_row_valid: false,
+            time_elapsed: 100,
+        },
+        SavedWeatherEventEntry {
+            weather_event_row: "Storm_Heavy",
+            weather_event_row_valid: true,
+            pool_row: "Pool_Arctic",
+            pool_row_valid: true,
+            time_elapsed: 300,
+        },
+    ];
+    assert_eq!(
+        evaluate_weather_controller_restore(false, 450, &saved_weather_events),
+        None
+    );
+    assert_eq!(
+        evaluate_weather_controller_restore(true, 0, &saved_weather_events),
+        None
+    );
+    assert_eq!(
+        evaluate_weather_controller_restore(true, 450, &saved_weather_events),
+        Some(vec![
+            ("Pool_Forest", "Storm_Light", 100),
+            ("Pool_Arctic", "Storm_Heavy", 150),
+        ])
+    );
 
     // BaseLevelTeleportRecorderComponent (C002) uses GetReplicatedProspectGameTime = GetTimeSeconds + *(float*)(GameState + 0x398).
     let now = replicated_prospect_game_time(42.5, 1000.0);

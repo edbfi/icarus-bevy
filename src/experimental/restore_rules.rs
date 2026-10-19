@@ -92,6 +92,158 @@ pub fn stitch_quest_actor_records<'a, T: Clone>(
         .collect()
 }
 
+/// Values recorded by `UIcarusQuestManagerRecorderComponent::RecordOwnerState`
+/// (`C018`, `0x1418e67b0` server / `0x1418e7b40` client) after
+/// `UActorStateRecorderComponent::RecordOwnerState` (`0x1418a5b60` client)
+/// (F-650, F-653, F-663).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct QuestManagerRecordPlan<C, T, R> {
+    /// Updated `CurrentMissionRecord` (`recorder + 0x1c8..0x1e0`:
+    /// `(class_name, icarus_actor_guid)`) when `owner->CurrentMission`
+    /// (`owner + 0x2e0`) is non-null and has a `UActorStateRecorderComponent`
+    /// (`0x141b9cbb0` client); `None` preserves existing `+0x1c8..0x1e0`.
+    pub current_mission_record: Option<(C, i32)>,
+    /// `RelevantActorRecords` (`recorder + 0x1f8`, count `+0x200`, stride
+    /// `0x28` B: `(class_name, tag, guid)`) filtered from `owner + 0x368`
+    /// (count `+0x370`, stride `0x18` B) to entries whose actor is non-null
+    /// and has a `UActorStateRecorderComponent`.
+    pub relevant_actor_records: Vec<(C, T, i32)>,
+    /// `RelevantPersistentActorRecords` (`recorder + 0x208`, count `+0x210`,
+    /// stride `0x28` B: `(class_name, tag, guid)`) filtered from `owner + 0x378`
+    /// (count `+0x380`, stride `0x18` B) to entries whose actor is non-null
+    /// and has a `UActorStateRecorderComponent`.
+    pub relevant_persistent_actor_records: Vec<(C, T, i32)>,
+    /// `FactionMissionRowName` (`owner + 0x2c0 -> recorder + 0x1c0`).
+    pub faction_mission_row_name: R,
+    /// `bMissionActive` (`owner + 0x2ea -> recorder + 0x1e0`).
+    pub b_mission_active: bool,
+    /// `MissionDifficulty` (`(uint)*(byte *)(owner + 0x2d8) -> recorder + 0x1e4`).
+    pub mission_difficulty: u8,
+    /// `MissionTimer` (`owner + 0x330 -> recorder + 0x1e8`).
+    pub mission_timer: i32,
+    /// `bTimerActive` (`owner + 0x334 -> recorder + 0x1e1`).
+    pub b_timer_active: bool,
+    /// `SelectedSeedRowName` (`owner + 0x338 -> recorder + 0x1ec`).
+    pub selected_seed_row_name: R,
+}
+
+/// Evaluates `UIcarusQuestManagerRecorderComponent::RecordOwnerState` (`C018`,
+/// `0x1418e67b0` server / `0x1418e7b40` client) (F-650, F-653, F-663).
+///
+/// Returns `None` when the owner is null or not an `AIcarusQuestManager`
+/// (`0x141cfaa20` client; no `PendingKill` check is performed).
+#[allow(clippy::too_many_arguments, clippy::type_complexity)]
+pub fn evaluate_quest_manager_record<C: Clone, T: Clone, R>(
+    owner_is_quest_manager: bool,
+    current_mission_with_recorder: Option<(C, i32)>,
+    relevant_actors: &[(T, Option<(C, i32)>)],
+    relevant_persistent_actors: &[(T, Option<(C, i32)>)],
+    faction_mission_row_name: R,
+    b_mission_active: bool,
+    mission_difficulty: u8,
+    mission_timer: i32,
+    b_timer_active: bool,
+    selected_seed_row_name: R,
+) -> Option<QuestManagerRecordPlan<C, T, R>> {
+    if !owner_is_quest_manager {
+        return None;
+    }
+    let filter_records = |entries: &[(T, Option<(C, i32)>)]| -> Vec<(C, T, i32)> {
+        entries
+            .iter()
+            .filter_map(|(tag, actor)| {
+                actor
+                    .as_ref()
+                    .map(|(class_name, guid)| (class_name.clone(), tag.clone(), *guid))
+            })
+            .collect()
+    };
+    Some(QuestManagerRecordPlan {
+        current_mission_record: current_mission_with_recorder,
+        relevant_actor_records: filter_records(relevant_actors),
+        relevant_persistent_actor_records: filter_records(relevant_persistent_actors),
+        faction_mission_row_name,
+        b_mission_active,
+        mission_difficulty,
+        mission_timer,
+        b_timer_active,
+        selected_seed_row_name,
+    })
+}
+
+/// Values recorded by `UIcarusQuestRecorderComponent::RecordOwnerState`
+/// (`C019`, `0x1418e6c40` server / `0x1418e7fd0` client) after
+/// `UActorStateRecorderComponent::RecordOwnerState` (`0x1418a5b60` client)
+/// (F-650, F-663).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct QuestRecordPlan<C, T, N, P> {
+    /// `QuestDTKey.RowName` (`owner + 0x2c4 -> recorder + 0x1c0`).
+    pub quest_dt_key: N,
+    /// `RelevantActorRecords` (`recorder + 0x1c8`, count `+0x1d0`, stride
+    /// `0x28` B: `(class_name, tag, guid)`) filtered from `owner + 0x2e0`
+    /// (count `+0x2e8`, stride `0x18` B) to entries whose actor is non-null
+    /// and has a `UActorStateRecorderComponent` (`0x141b9cbb0` client).
+    pub relevant_actor_records: Vec<(C, T, i32)>,
+    /// Secondary `RelevantActorRecords` (`recorder + 0x1d8`, count `+0x1e0`,
+    /// stride `0x28` B: `(class_name, tag, guid)`) filtered from `owner + 0x2f0`
+    /// (count `+0x2f8`, stride `0x18` B) to entries whose actor is non-null
+    /// and has a `UActorStateRecorderComponent`.
+    pub secondary_actor_records: Vec<(C, T, i32)>,
+    /// Named actor records (`recorder + 0x1e8`, count `+0x1f0`, stride `0x20` B:
+    /// `(class_name, fname_tag, guid)`) filtered from `owner + 0x320` (`800`,
+    /// count `+0x328`, stride `0x18` B) to entries whose actor (`+0x10`) is
+    /// non-null and has a `UActorStateRecorderComponent`.
+    pub named_actor_records: Vec<(C, N, i32)>,
+    /// Quest progress/variable records (`recorder + 0x1f8`, count `+0x200`,
+    /// stride `0x20` B) copied unconditionally from `owner + 0x310` (count
+    /// `+0x318`).
+    pub quest_progress_records: Vec<P>,
+}
+
+/// Evaluates `UIcarusQuestRecorderComponent::RecordOwnerState` (`C019`,
+/// `0x1418e6c40` server / `0x1418e7fd0` client) (F-650, F-663).
+///
+/// Returns `None` when the owner is null or not an `AIcarusQuest`
+/// (`0x141cf3950` client; no `PendingKill` check is performed).
+#[allow(clippy::type_complexity)]
+pub fn evaluate_quest_record<C: Clone, T: Clone, N: Clone, P: Clone>(
+    owner_is_quest: bool,
+    quest_dt_key: N,
+    relevant_actors: &[(T, Option<(C, i32)>)],
+    secondary_actors: &[(T, Option<(C, i32)>)],
+    named_actors: &[(N, Option<(C, i32)>)],
+    quest_progress_records: &[P],
+) -> Option<QuestRecordPlan<C, T, N, P>> {
+    if !owner_is_quest {
+        return None;
+    }
+    let filter_records = |entries: &[(T, Option<(C, i32)>)]| -> Vec<(C, T, i32)> {
+        entries
+            .iter()
+            .filter_map(|(tag, actor)| {
+                actor
+                    .as_ref()
+                    .map(|(class_name, guid)| (class_name.clone(), tag.clone(), *guid))
+            })
+            .collect()
+    };
+    let named_actor_records = named_actors
+        .iter()
+        .filter_map(|(name_tag, actor)| {
+            actor
+                .as_ref()
+                .map(|(class_name, guid)| (class_name.clone(), name_tag.clone(), *guid))
+        })
+        .collect();
+    Some(QuestRecordPlan {
+        quest_dt_key,
+        relevant_actor_records: filter_records(relevant_actors),
+        secondary_actor_records: filter_records(secondary_actors),
+        named_actor_records,
+        quest_progress_records: quest_progress_records.to_vec(),
+    })
+}
+
 /// Stitches `RelevantActorRecords` (`+0x1c8`, count `+0x1d0`, stride `0x18` B)
 /// in `UPrebuiltStructureRecorderComponent::StitchingOperation` (`C027`,
 /// `0x14177ec20` server / `0x14178c680` client) against `SpawnedActors` before
@@ -568,6 +720,77 @@ pub fn voxel_record_valid(policy: OwnerResolvePolicy, fully_mined: bool) -> bool
     !(fully_mined && policy == OwnerResolvePolicy::RespawnOnly)
 }
 
+/// Values recorded by `UVoxelRecorderComponent::RecordOwnerState`
+/// (`0x1418e96c0` server / `0x1418ea6e0` client, shared by `C031`
+/// `USpawnedVoxelRecorderComponent` and `C034` `UVoxelRecorderComponent`) after
+/// `UActorStateRecorderComponent::RecordOwnerState` (`0x1418a5b60` client)
+/// (F-645, F-650, F-680).
+#[derive(Clone, Debug, PartialEq)]
+pub struct VoxelRecordPlan<S, R> {
+    /// `MinedSpheres` (`recorder + 0x1c0`, count `+0x1c8`, stride `0x10` B)
+    /// moved from `AVoxelResource::GetMinedSpheres` (`0x1417364f0` client).
+    pub mined_spheres: Vec<S>,
+    /// `Location` (`recorder + 0x1e0..0x1ec`): `RootComponent + 0x1d0` when
+    /// `RootComponent` (`+0x130`) is non-null, or `[0.0, 0.0, 0.0]` when null.
+    pub location: [f32; 3],
+    /// `bIsVoxelFullyMined` (`(AVoxelResource + 0x4b0) & 1 -> recorder + 0x1d0`).
+    pub b_is_voxel_fully_mined: bool,
+    /// `MaxUnminedVoxels` (`AVoxelResource + 0x588 -> recorder + 0x1d4`).
+    pub max_unmined_voxels: i32,
+    /// `CurrentUnminedVoxels` (`AVoxelResource + 0x58c -> recorder + 0x1d8`).
+    pub current_unmined_voxels: i32,
+    /// `NumResourcesGranted` (`AVoxelResource + 0x594 -> recorder + 0x1dc`).
+    pub num_resources_granted: i32,
+    /// `TotalResourceCount` (`AVoxelResource + 0x45c -> recorder + 0x1ec`).
+    pub total_resource_count: f32,
+    /// `ResourceType.RowName` (`AVoxelResource + 0x40c -> recorder + 0x1f0`)
+    /// copied iff `FRowHandle::IsValid(owner + 0x40c)` (`0x143f855d0` client)
+    /// returns `true`; `None` preserves existing `recorder + 0x1f0`.
+    pub resource_type_row_override: Option<R>,
+    /// Override for `OwnerResolvePolicy` (`recorder + 0xb2`): set to
+    /// [`OwnerResolvePolicy::RespawnOnly`] (`1`) when
+    /// `recorder->DurabilityData.bCanBreak` (`*(char *)(recorder + 0x134) != 0`)
+    /// is `true`, or `None` when `+0xb2` is preserved unchanged.
+    pub owner_resolve_policy_override: Option<OwnerResolvePolicy>,
+}
+
+/// Evaluates `UVoxelRecorderComponent::RecordOwnerState` (`0x1418e96c0`
+/// server / `0x1418ea6e0` client, shared by `C031`
+/// `USpawnedVoxelRecorderComponent` and `C034` `UVoxelRecorderComponent`)
+/// (F-645, F-650, F-680).
+///
+/// Returns `None` when the owner is null, not an `AVoxelResource` (`0x141dd8d80`
+/// client), or pending kill.
+#[allow(clippy::too_many_arguments)]
+pub fn evaluate_voxel_record<S: Clone, R>(
+    owner_is_valid_voxel_resource: bool,
+    mined_spheres: &[S],
+    root_component_location: Option<[f32; 3]>,
+    b_is_voxel_fully_mined: bool,
+    max_unmined_voxels: i32,
+    current_unmined_voxels: i32,
+    num_resources_granted: i32,
+    total_resource_count: f32,
+    valid_resource_type_row_name: Option<R>,
+    durability_can_break: bool,
+) -> Option<VoxelRecordPlan<S, R>> {
+    if !owner_is_valid_voxel_resource {
+        return None;
+    }
+    Some(VoxelRecordPlan {
+        mined_spheres: mined_spheres.to_vec(),
+        location: root_component_location.unwrap_or([0.0, 0.0, 0.0]),
+        b_is_voxel_fully_mined,
+        max_unmined_voxels,
+        current_unmined_voxels,
+        num_resources_granted,
+        total_resource_count,
+        resource_type_row_override: valid_resource_type_row_name,
+        owner_resolve_policy_override: durability_can_break
+            .then_some(OwnerResolvePolicy::RespawnOnly),
+    })
+}
+
 /// Actions selected by `UVoxelRecorderComponent::UpdateOwnerToDatabaseState`
 /// (`0x1418f7bb0` server / `0x1418f8280` client, shared by `C031`
 /// `USpawnedVoxelRecorderComponent` and `C034` `UVoxelRecorderComponent`)
@@ -762,7 +985,7 @@ pub const fn evaluate_attach_recorder_to_actor(
 /// Resolves the `D_DeployableSetup` variant index selected by
 /// `UDeployableRecorderComponent::ModifyOwnerSpawnParams` (`C009`,
 /// `0x14189d2a0` server / `0x1418a1fb0` client) and
-/// `UDeployableRecorderComponent::RespawnOwner` (`0x1418a72a0` server /
+/// `UDeployableRecorderComponent::RespawnOwner` (`C009`, `0x1418a72a0` server /
 /// `0x1418abfd0` client) from `FItemData::ItemDynamicData` (`+0x30`, stride
 /// `8` B: `(property_type, value)`) (F-646).
 ///
@@ -803,13 +1026,36 @@ pub const fn should_auto_activate_respawned_drill(
     actor_is_drill && static_row_found && auto_activate_drill_flag
 }
 
+/// Evaluates `UBuildingGridRecorderComponent::RecordOwnerState` (`C004`,
+/// `0x1418a0aa0` server / `0x1418a6340` client) after
+/// `UActorStateRecorderComponent::RecordOwnerState` (`0x1418a5b60` client)
+/// (F-650, F-744).
+///
+/// Clears `recorded_grid_entries` (`recorder + 0x200`, count `+0x208`, stride
+/// `0x20` B) and runs `ABuildingGrid::RecordBuildingGrid` (`0x141a6ee50` client)
+/// iff the owner is a non-null `ABuildingGrid` (`0x141a6c980` client; no
+/// `PendingKill` check is performed). Returns `true` when updated, or `false`
+/// when `recorded_grid_entries` was preserved unchanged.
+pub fn evaluate_building_grid_record<G: Clone>(
+    owner_is_building_grid: bool,
+    owner_grid_entries: &[G],
+    recorded_grid_entries: &mut Vec<G>,
+) -> bool {
+    if !owner_is_building_grid {
+        return false;
+    }
+    recorded_grid_entries.clear();
+    recorded_grid_entries.extend_from_slice(owner_grid_entries);
+    true
+}
+
 /// Whether `UBuildingGridRecorderComponent::UpdateOwnerToDatabaseState` (`C004`,
 /// `0x1418b7770` server / `0x1418ba640` client) attempts
 /// `ABuildingGrid::TryFastPathRestorePrebuiltGrid` (`0x1413a9690` server /
 /// `0x1413e9220` client) before falling back to `ABuildingGrid::RestoreBuildingGrid`
 /// (`0x141a7ac10` server / `0x141a6f1b0` client): requires a non-null
-/// `GetInstancedLevel()` (`0x14139a9b0` / `0x1413d97b0`) with `bIsPrebuilt`
-/// (`+0x128`) set (F-744).
+/// `GetInstancedLevel()` (`0x141896610` server / `0x14189de30` client) with
+/// `bIsPrebuilt` (`+0x128`) set (F-744).
 pub const fn should_try_fast_path_prebuilt_grid_restore(
     instanced_level_present: bool,
     instanced_level_is_prebuilt: bool,
@@ -904,6 +1150,54 @@ pub fn evaluate_enzyme_geyser_restore<R>(
     Some(EnzymeGeyserRestorePlan {
         completions: saved_completions,
         current_row_override: current_row_is_valid.then_some(saved_current_row),
+    })
+}
+
+/// Values and per-component records captured by
+/// `UFLODTileRecorderComponent::RecordOwnerState` (`C014`, `0x1418a18f0`
+/// server / `0x1418a7070` client) (F-650, F-676).
+#[derive(Clone, Debug, PartialEq)]
+pub struct FlodTileRecordPlan<N, R> {
+    /// `TileName` (`AFLODTile + 0x220 -> recorder + 0xe0`).
+    pub tile_name: N,
+    /// `TileTransform` (`recorder + 0xf0..0x120`): copied from
+    /// `RootComponent + 0x1c0` when `RootComponent` (`+0x130`) is non-null, or
+    /// `FTransform::Identity` (`([0.0, 0.0, 0.0, 1.0], [0.0, 0.0, 0.0],
+    /// [1.0, 1.0, 1.0])` at `0x1462f8cc0` client) when null.
+    pub tile_transform: ([f32; 4], [f32; 3], [f32; 3]),
+    /// `Radius` (`AFLODTile + 0x228 -> recorder + 0x120`).
+    pub radius: f32,
+    /// `Records` (`recorder + 0x128`, count `+0x130`, stride `0x40` B)
+    /// populated by `RecordFromComponent` (`0x1418a3940` client) for each
+    /// active component in `AFLODTile + 0x238`.
+    pub component_records: Vec<(i32, R)>,
+}
+
+/// Evaluates `UFLODTileRecorderComponent::RecordOwnerState` (`C014`,
+/// `0x1418a18f0` server / `0x1418a7070` client) (F-650, F-676).
+///
+/// Returns `None` when the owner is null, not an `AFLODTile` (`0x141b519a0`
+/// client), or pending kill.
+pub fn evaluate_flod_tile_record<N, R: Clone>(
+    owner_is_valid_flod_tile: bool,
+    tile_name: N,
+    root_component_transform: Option<([f32; 4], [f32; 3], [f32; 3])>,
+    radius: f32,
+    active_component_records: &[(i32, R)],
+) -> Option<FlodTileRecordPlan<N, R>> {
+    if !owner_is_valid_flod_tile {
+        return None;
+    }
+    let tile_transform = root_component_transform.unwrap_or((
+        [0.0, 0.0, 0.0, 1.0],
+        [0.0, 0.0, 0.0],
+        [1.0, 1.0, 1.0],
+    ));
+    Some(FlodTileRecordPlan {
+        tile_name,
+        tile_transform,
+        radius,
+        component_records: active_component_records.to_vec(),
     })
 }
 
@@ -1157,7 +1451,7 @@ pub const fn evaluate_base_level_teleport_restore(
 }
 
 /// Evaluates `UCaveAirNavRecorderComponent::UpdateOwnerToDatabaseState` (`C005`,
-/// `0x1418b7790` server / `0x1418ba730` client) after
+/// `0x1418b7860` server / `0x1418ba730` client) after
 /// `UActorStateRecorderComponent::UpdateOwnerToDatabaseState` (`0x1418ba040`
 /// client) (F-657, F-677).
 ///
@@ -1183,44 +1477,113 @@ pub fn evaluate_cave_air_nav_restore(
     ))
 }
 
-/// Evaluates `UCropPlotStateRecorderComponent::RecordOwnerState` (`C008`,
+/// Evaluates `UCaveEntranceRecorderComponent::RecordOwnerState` (`C006`,
 /// `0x1418a1300` server / `0x1418a6a80` client) after
-/// `UActorStateRecorderComponent::RecordOwnerState` (`0x1418a5b60` client)
-/// (F-650, F-657).
+/// `UActorStateRecorderComponent::RecordOwnerState` (`0x1418a0170` server /
+/// `0x1418a5b60` client) (F-650, F-657, F-744).
 ///
-/// Overwrites `recorded_plot_states` (`recorder + 0x1c0`) with `component_states`
-/// iff `owner_implements_crop_plot_interface` (`UCropPlotInterface`,
-/// `0x141a7e240` client) is `true` and
-/// `ICropPlotInterface::Execute_GetCropPlotComponent` (`0x141a7fea0` client)
-/// returned a non-null `UCropPlotComponent` (`Some(component_states)`). Returns
-/// `true` when `recorded_plot_states` was updated, or `false` when preserved.
-pub fn evaluate_crop_plot_record<S: Clone>(
-    owner_implements_crop_plot_interface: bool,
-    crop_plot_component_states: Option<&[S]>,
-    recorded_plot_states: &mut Vec<S>,
+/// Overwrites `recorded_mined_spheres` (`recorder + 0x1c0`) with
+/// `voxel_component_spheres` (`UVoxelComponent::GetMinedSpheres`,
+/// `0x141726e90` server / `0x1417364f0` client) iff
+/// `owner_implements_cave_entrance_interface` (`UCaveEntranceInterface`,
+/// `0x141a898e0` server / `0x141a7e240` client) is `true` and
+/// `ICaveEntranceInterface::Execute_GetCaveEntranceVoxelComponent`
+/// (`0x141a8b850` server / `0x141a7fea0` client) returned a non-null
+/// `UVoxelComponent` (`Some(voxel_component_spheres)`). Returns `true` when
+/// `recorded_mined_spheres` was updated, or `false` when preserved.
+pub fn evaluate_cave_entrance_record<S: Clone>(
+    owner_implements_cave_entrance_interface: bool,
+    voxel_component_spheres: Option<&[S]>,
+    recorded_mined_spheres: &mut Vec<S>,
 ) -> bool {
-    if owner_implements_crop_plot_interface && let Some(states) = crop_plot_component_states {
-        recorded_plot_states.clear();
-        recorded_plot_states.extend_from_slice(states);
+    if owner_implements_cave_entrance_interface && let Some(spheres) = voxel_component_spheres {
+        recorded_mined_spheres.clear();
+        recorded_mined_spheres.extend_from_slice(spheres);
         return true;
     }
     false
 }
 
-/// Evaluates `UCropPlotStateRecorderComponent::UpdateOwnerToDatabaseState`
-/// (`C008`, `0x1418b7a50` server / `0x1418baa10` client) after
-/// `UActorStateRecorderComponent::UpdateOwnerToDatabaseState` (`0x1418ba040`
-/// client) (F-657).
+/// Evaluates `UCaveEntranceRecorderComponent::UpdateOwnerToDatabaseState`
+/// (`C006`, `0x1418b7b40` server / `0x1418baa10` client) after
+/// `UActorStateRecorderComponent::UpdateOwnerToDatabaseState` (`0x1418b6ed0`
+/// server / `0x1418ba040` client) (F-657, F-744).
 ///
-/// Calls `ICropPlotInterface::Execute_RestoreSavedPlotStates(owner, +0x1c0)`
-/// (`0x141a7ff80` client) iff the owner is non-null and its `UClass` (`+0x10`)
-/// implements `UCropPlotInterface` (`0x141a7e240` client; unlike `C012`, no
-/// `PendingKill` check is performed).
-pub fn evaluate_crop_plot_restore<S: Clone>(
-    owner_implements_crop_plot_interface: bool,
-    saved_plot_states: &[S],
+/// Calls `ICaveEntranceInterface::Execute_RestoreCaveEntranceMinedSpheres(owner, +0x1c0)`
+/// (`0x141a8b930` server / `0x141a7ff80` client) iff the owner is non-null and
+/// its `UClass` (`+0x10`) implements `UCaveEntranceInterface` (`0x141a898e0`
+/// server / `0x141a7e240` client; no `PendingKill` check is performed).
+pub fn evaluate_cave_entrance_restore<S: Clone>(
+    owner_implements_cave_entrance_interface: bool,
+    saved_mined_spheres: &[S],
 ) -> Option<Vec<S>> {
-    owner_implements_crop_plot_interface.then(|| saved_plot_states.to_vec())
+    owner_implements_cave_entrance_interface.then(|| saved_mined_spheres.to_vec())
+}
+
+/// Alias for [`evaluate_cave_entrance_record`] (`C006`, `0x1418a1300` server /
+/// `0x1418a6a80` client; see [`evaluate_crop_plot_state_transfer`] for `C008`
+/// `UCropPlotRecorderComponent`) (F-650, F-657, F-744).
+pub fn evaluate_crop_plot_record<S: Clone>(
+    owner_implements_interface: bool,
+    component_states: Option<&[S]>,
+    recorded_states: &mut Vec<S>,
+) -> bool {
+    evaluate_cave_entrance_record(
+        owner_implements_interface,
+        component_states,
+        recorded_states,
+    )
+}
+
+/// Alias for [`evaluate_cave_entrance_restore`] (`C006`, `0x1418b7b40` server /
+/// `0x1418baa10` client; see [`evaluate_crop_plot_state_transfer`] for `C008`
+/// `UCropPlotRecorderComponent`) (F-657, F-744).
+pub fn evaluate_crop_plot_restore<S: Clone>(
+    owner_implements_interface: bool,
+    saved_states: &[S],
+) -> Option<Vec<S>> {
+    evaluate_cave_entrance_restore(owner_implements_interface, saved_states)
+}
+
+/// Evaluates `UBedRecorderComponent::RecordOwnerState` (`C003`, `0x1418a09f0`
+/// server / `0x1418a6290` client) and
+/// `UBedRecorderComponent::UpdateOwnerToDatabaseState` (`0x1418b7710` server /
+/// `0x1418ba5e0` client) after the base deployable/actor recorder step (F-650,
+/// F-744).
+///
+/// Transfers `SpawnPointPlayers` (`TArray<FString>`, `recorder + 0x290`, stride
+/// `0x10` B) via `IBedInterface::Execute_GetSpawnPointPlayers` (`0x141a5d9c0`
+/// server / `0x141a52040` client) / `Execute_SetSpawnPointPlayers`
+/// (`0x141a5dc00` server / `0x141a52280` client) iff the owner is non-null and
+/// its `UClass` (`+0x10`) implements `UBedInterface` (`0x141a531c0` server /
+/// `0x141a4a500` client).
+pub fn evaluate_bed_spawn_point_players_transfer<P: Clone>(
+    owner_implements_bed_interface: bool,
+    spawn_point_players: &[P],
+) -> Option<Vec<P>> {
+    owner_implements_bed_interface.then(|| spawn_point_players.to_vec())
+}
+
+/// Evaluates `UCropPlotRecorderComponent::RecordOwnerState` (`C008`,
+/// `0x1418a1540` server / `0x1418a6cc0` client) and
+/// `UCropPlotRecorderComponent::UpdateOwnerToDatabaseState` (`0x1418b7bb0`
+/// server / `0x1418baa80` client) after the base deployable/actor recorder step
+/// (F-650, F-657, F-744).
+///
+/// Transfers `CropPlotSaveData` (`recorder + 0x290`) via
+/// `ICropPlotInterface::Execute_RecordPlotState` (`0x141ac7360` server /
+/// `0x141ab39c0` client) / `Execute_RestorePlotState` (`0x141ac7530` server /
+/// `0x141ab3b90` client) iff the owner is non-null and its `UClass` (`+0x10`)
+/// implements `UCropPlotInterface` (`0x141abe3b0` server / `0x141ab2d40`
+/// client).
+pub const fn evaluate_crop_plot_state_transfer<D: Copy>(
+    owner_implements_crop_plot_interface: bool,
+    plot_state: D,
+) -> Option<D> {
+    if !owner_implements_crop_plot_interface {
+        return None;
+    }
+    Some(plot_state)
 }
 
 /// Values recorded or restored by `USpawnBlockerRecorderComponent` (`C030`,
@@ -1351,25 +1714,15 @@ pub fn evaluate_deployable_record<C, T: Clone>(
     }
 }
 
-/// Evaluates `UBuildingBaseRecorderComponent::RecordOwnerState` (`C003`,
-/// `0x1418a1540` server / `0x1418a6cc0` client) and
-/// `UBuildingBaseRecorderComponent::UpdateOwnerToDatabaseState` (`0x1418b7710`
-/// server / `0x1418baa80` client) after the base deployable/actor recorder step
-/// (F-650, F-657).
-///
-/// Transfers `DecayableSaveData` (`recorder + 0x290`) via
-/// `IDecayableInterface::Execute_RecordDecayState` (`0x141ab39c0` client) /
-/// `Execute_RestoreDecayState` (`0x141ab3b90` client) iff the owner is non-null
-/// and its `UClass` (`+0x10`) implements `UDecayableInterface` (`0x141ab2d40`
-/// client).
+/// Alias for [`evaluate_crop_plot_state_transfer`] (`C008`, `0x1418a1540`
+/// server / `0x1418a6cc0` client and `0x1418b7bb0` server / `0x1418baa80`
+/// client; see [`evaluate_bed_spawn_point_players_transfer`] for `C003`
+/// `UBedRecorderComponent`) (F-650, F-657, F-744).
 pub const fn evaluate_building_base_decay_transfer<D: Copy>(
     owner_implements_decayable_interface: bool,
     decay_state: D,
 ) -> Option<D> {
-    if !owner_implements_decayable_interface {
-        return None;
-    }
-    Some(decay_state)
+    evaluate_crop_plot_state_transfer(owner_implements_decayable_interface, decay_state)
 }
 
 /// Values transferred by `UOrbitalExchangeInterfaceRecorderComponent` (`C022`,
@@ -1446,6 +1799,35 @@ pub fn evaluate_player_group_subsystem_restore<G: Clone>(
     saved_player_group_data: &[G],
 ) -> Option<Vec<G>> {
     owner_is_player_group_subsystem.then(|| saved_player_group_data.to_vec())
+}
+
+/// Outcome of `URocketSpawnRecorderComponent::RecordOwnerState` (`C011`,
+/// `0x1418e8790` server / `0x1418e97b0` client) after
+/// `UActorStateRecorderComponent::RecordOwnerState` (`0x1418a5b60` client)
+/// (F-648, F-650, F-652).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RocketSpawnRecordPlan<U> {
+    /// `Version` (`recorder + 0x1e0`) is set to `1` unconditionally on entry
+    /// before checking `owner`.
+    pub version: i32,
+    /// `AssignedPlayerID` (`recorder + 0x1c8`, `ChrSlot` at `+0x1d8`) copied
+    /// from `ADropshipSpawnPoint + 0x2e8..0x2fc` (`ChrSlot` at `+0x2f8`) iff
+    /// the owner is a non-null `ADropshipSpawnPoint` (`0x141d2df30` client; no
+    /// `PendingKill` check is performed); `None` preserves existing
+    /// `recorder + 0x1c8..0x1dc`.
+    pub assigned_player_id: Option<(U, i32)>,
+}
+
+/// Evaluates `URocketSpawnRecorderComponent::RecordOwnerState` (`C011`,
+/// `0x1418e8790` server / `0x1418e97b0` client) (F-648, F-650, F-652).
+pub fn evaluate_rocket_spawn_record<U>(
+    owner_is_dropship_spawn_point: bool,
+    owner_assigned_player_id: (U, i32),
+) -> RocketSpawnRecordPlan<U> {
+    RocketSpawnRecordPlan {
+        version: 1,
+        assigned_player_id: owner_is_dropship_spawn_point.then_some(owner_assigned_player_id),
+    }
 }
 
 /// Owner-derived fields updated by `UPlayerRecorderComponent::RecordOwnerState`
@@ -2050,6 +2432,134 @@ pub const fn restored_weather_event_start_time(
     }
 }
 
+/// One `FRecordedWeatherEvent` (`0x14` B = `20` B) stored in
+/// `UWeatherControllerRecorderComponent::WeatherEvents` (`recorder + 0xd8`,
+/// count `+0xe0`) by `C035` (`RecordOwnerState` at `0x1418e98b0` server /
+/// `0x1418ea8d0` client) (F-654, F-665, F-734).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct RecordedWeatherEvent<E, P> {
+    /// `WeatherEventRow` (`+0x00`, `8` B).
+    pub weather_event_row: E,
+    /// `PoolRow` (`+0x08`, `8` B).
+    pub pool_row: P,
+    /// `TimeElapsed` (`+0x10`, `i32`), computed via
+    /// [`record_weather_event_elapsed`].
+    pub time_elapsed: i32,
+}
+
+/// Candidate active event inside an `AWeatherController` pool (`pool + 0x10`,
+/// stride `0x24` B) inspected by
+/// `UWeatherControllerRecorderComponent::RecordOwnerState` (`C035`,
+/// `0x1418e98b0` server / `0x1418ea8d0` client) (F-654, F-665, F-734).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct WeatherControllerEventCandidate<E> {
+    /// Event `StartTime` (`+0x00`, `i32`).
+    pub event_start_time: i32,
+    /// `WeatherEventRow` (`+0x04..0x1c`).
+    pub weather_event_row: E,
+    /// Whether `FRowHandle::IsValid` (`0x143f855d0` client) returned `true`.
+    pub is_row_valid: bool,
+    /// `Row.Duration` (`[Row + 0x20]`) when the `WeatherEvents` data-table row
+    /// lookup (`0x1416b8cd0` client) succeeded.
+    pub row_duration: Option<i32>,
+}
+
+/// Evaluates `UWeatherControllerRecorderComponent::RecordOwnerState` (`C035`,
+/// `0x1418e98b0` server / `0x1418ea8d0` client) (F-654, F-665, F-734).
+///
+/// - Returns `None` when the owner is null or not an `AWeatherController`
+///   (`0x141deb0f0` client; no `PendingKill` check is performed), leaving
+///   `recorder + 0xd8` untouched.
+/// - Otherwise unconditionally clears `recorder + 0xd8` (`WeatherEvents`,
+///   stride `0x14` B) and, iff `level_time_elapsed_sec > 0` and
+///   `current_block_end_time >= 0`, iterates active pools (`pool->IsActive()`
+///   at `vtable + 0x28`) in `AWeatherController + 0x2a0` and appends each
+///   candidate event whose row is valid, resolves a `row_duration`, and
+///   satisfies [`should_record_weather_event`].
+pub fn evaluate_weather_controller_record<E: Clone, P: Clone>(
+    owner_is_weather_controller: bool,
+    level_time_elapsed_sec: i32,
+    current_block_end_time: i32,
+    pools: &[(P, bool, &[WeatherControllerEventCandidate<E>])],
+) -> Option<Vec<RecordedWeatherEvent<E, P>>> {
+    if !owner_is_weather_controller {
+        return None;
+    }
+    let mut recorded = Vec::new();
+    if level_time_elapsed_sec > 0 && current_block_end_time >= 0 {
+        for (pool_row, pool_is_active, candidates) in pools {
+            if !*pool_is_active {
+                continue;
+            }
+            for candidate in *candidates {
+                if candidate.is_row_valid
+                    && let Some(duration) = candidate.row_duration
+                    && should_record_weather_event(
+                        duration,
+                        candidate.event_start_time,
+                        current_block_end_time,
+                    )
+                {
+                    recorded.push(RecordedWeatherEvent {
+                        weather_event_row: candidate.weather_event_row.clone(),
+                        pool_row: pool_row.clone(),
+                        time_elapsed: record_weather_event_elapsed(
+                            level_time_elapsed_sec,
+                            candidate.event_start_time,
+                        ),
+                    });
+                }
+            }
+        }
+    }
+    Some(recorded)
+}
+
+/// Saved `FRecordedWeatherEvent` entry (`0x14` B) inspected by
+/// `UWeatherControllerRecorderComponent::UpdateOwnerToDatabaseState` (`C035`,
+/// `0x1418f8120` server / `0x1418f87f0` client) (F-654, F-665, F-734).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SavedWeatherEventEntry<E, P> {
+    pub weather_event_row: E,
+    pub weather_event_row_valid: bool,
+    pub pool_row: P,
+    pub pool_row_valid: bool,
+    pub time_elapsed: i32,
+}
+
+/// Evaluates `UWeatherControllerRecorderComponent::UpdateOwnerToDatabaseState`
+/// (`C035`, `0x1418f8120` server / `0x1418f87f0` client) (F-654, F-665, F-734).
+///
+/// Requires a non-null `AWeatherController` (`0x141deb0f0` client) and
+/// `level_time_elapsed_sec > 0` (`UIcarusFunctionLibrary::GetLevelTimeElapsedSec`
+/// `0x1414e1390` client); otherwise returns `None`. For each saved event in
+/// `recorder + 0xd8` where both `pool_row_valid` (`+0x08`) and
+/// `weather_event_row_valid` (`+0x00`) are `true`, ensures the pool for
+/// `pool_row` exists in `AWeatherController + 0x2a0` and inserts
+/// `(weather_event_row, start_time = restored_weather_event_start_time(level_time_elapsed_sec, time_elapsed))`
+/// (`0x1414c2c50` client) into that pool's `ActiveEvents` (`pool + 0x10`).
+pub fn evaluate_weather_controller_restore<E: Clone, P: Clone>(
+    owner_is_weather_controller: bool,
+    level_time_elapsed_sec: i32,
+    saved_events: &[SavedWeatherEventEntry<E, P>],
+) -> Option<Vec<(P, E, i32)>> {
+    if !owner_is_weather_controller || level_time_elapsed_sec <= 0 {
+        return None;
+    }
+    let restored = saved_events
+        .iter()
+        .filter(|entry| entry.pool_row_valid && entry.weather_event_row_valid)
+        .map(|entry| {
+            (
+                entry.pool_row.clone(),
+                entry.weather_event_row.clone(),
+                restored_weather_event_start_time(level_time_elapsed_sec, entry.time_elapsed),
+            )
+        })
+        .collect();
+    Some(restored)
+}
+
 /// The elapsed level seconds a restored game mode starts from (F-653).
 pub fn restored_elapsed_seconds(saved_elapsed: i32, game_time: f32) -> i32 {
     if saved_elapsed < ELAPSED_SECONDS_FALLBACK_BELOW && game_time > 0.0 {
@@ -2459,6 +2969,87 @@ pub fn container_entries<T>(list: &[Option<T>]) -> impl Iterator<Item = (usize, 
         .filter_map(|(index, entry)| entry.as_ref().map(|entry| (index, entry)))
 }
 
+/// Outcome of `UIcarusContainerManagerRecorderComponent::RecordOwnerState`
+/// (`C016`, `0x1416f1be0` server / `0x141702570` client) after
+/// `UActorStateRecorderComponent::RecordOwnerState` (`0x1418a0170` server /
+/// `0x1418a5b60` client) (F-650, F-651).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ContainerManagerRecordPlan<C> {
+    /// `SavedContainers` (`recorder + 0x1c0`, count `+0x1c8`, stride `0x20` B:
+    /// `(index, container_save_data)`), unconditionally cleared on entry and
+    /// populated via [`container_entries`] when `owner` is a non-null,
+    /// non-pending-kill `AContainerManager` (`0x141b35320` client).
+    pub saved_containers: Vec<(usize, C)>,
+    /// `ContainerCount` (`recorder + 0x1d0`), unconditionally reset to `0` on
+    /// entry and overwritten with `owner->Containers.Num()` (`owner + 0x2c8`)
+    /// when `owner` is a valid `AContainerManager`.
+    pub container_count: usize,
+}
+
+/// Evaluates `UIcarusContainerManagerRecorderComponent::RecordOwnerState`
+/// (`C016`, `0x1416f1be0` server / `0x141702570` client) (F-650, F-651).
+pub fn evaluate_container_manager_record<C: Clone>(
+    owner_is_valid_container_manager: bool,
+    owner_containers: &[Option<C>],
+) -> ContainerManagerRecordPlan<C> {
+    if !owner_is_valid_container_manager {
+        return ContainerManagerRecordPlan {
+            saved_containers: Vec::new(),
+            container_count: 0,
+        };
+    }
+    let saved_containers = container_entries(owner_containers)
+        .map(|(index, entry)| (index, entry.clone()))
+        .collect();
+    ContainerManagerRecordPlan {
+        saved_containers,
+        container_count: owner_containers.len(),
+    }
+}
+
+/// Actions evaluated by `UIcarusContainerManagerRecorderComponent::Stitching`
+/// (`C016`, `0x1416f8980` server / `0x1417099d0` client) (F-651).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ContainerManagerStitchPlan<C, A> {
+    /// Saved `(index, container_save_data)` array (`recorder + 0x1c0`) passed
+    /// to `AContainerManager::RestoreContainers` (`0x141702be0` client).
+    pub restored_containers: Vec<(usize, C)>,
+    /// Saved `ContainerCount` (`recorder + 0x1d0`) passed to
+    /// `AContainerManager::RestoreContainers` (`0x141702be0` client).
+    pub container_count: usize,
+    /// Non-pending-kill actors in `SpawnedActors` that have a non-null
+    /// `UInventoryContainer` component (`0x141cf1390` client) and are passed in
+    /// order to `AContainerManager::RebindActorInventoryContainer`
+    /// (`0x141700fe0` client).
+    pub rebound_actor_containers: Vec<A>,
+}
+
+/// Evaluates `UIcarusContainerManagerRecorderComponent::Stitching` (`C016`,
+/// `0x1416f8980` server / `0x1417099d0` client) (F-651).
+///
+/// Returns `None` when the owner is null, not an `AContainerManager`
+/// (`0x141b35320` client), or pending kill.
+pub fn evaluate_container_manager_stitch<C: Clone, A: Clone>(
+    owner_is_valid_container_manager: bool,
+    saved_containers: &[(usize, C)],
+    saved_container_count: usize,
+    spawned_actor_inventory_containers: &[Option<A>],
+) -> Option<ContainerManagerStitchPlan<C, A>> {
+    if !owner_is_valid_container_manager {
+        return None;
+    }
+    let rebound_actor_containers = spawned_actor_inventory_containers
+        .iter()
+        .flatten()
+        .cloned()
+        .collect();
+    Some(ContainerManagerStitchPlan {
+        restored_containers: saved_containers.to_vec(),
+        container_count: saved_container_count,
+        rebound_actor_containers,
+    })
+}
+
 /// One weather-forecast block: the time values `[start, end)` it covers and
 /// its pattern index.
 #[derive(Clone, Copy, Debug)]
@@ -2502,6 +3093,76 @@ pub fn forecast_position(blocks: &[ForecastBlock], now: i32) -> ForecastPosition
             recorded_now: now,
         },
     }
+}
+
+/// `NowBlock` (`recorder + 0xd8..0x108` <-> `AWeatherForecastManager + 0x2c0..0x2f0`)
+/// recorded by `UWeatherForecastRecorderComponent::RecordOwnerState` (`C036`,
+/// `0x1418e9ff0` server / `0x1418eadf0` client -> `GetCurrentForecastInfo`
+/// `0x141917fc0` server / `0x141916980` client) and restored by
+/// `UpdateOwnerToDatabaseState` (`0x1418f86c0` server / `0x1418f8c80` client ->
+/// `RestoreForecastInfo` `0x14192eff0` server / `0x14192be80` client) (F-654,
+/// F-665).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct WeatherForecastRecordPlan<R> {
+    /// `(WeatherForecastRowName, WeatherPoolRowName)` (`recorder + 0xd8`/`+0xe0`
+    /// from `owner + 0x270`/`+0x258` = `600`, restored to `owner + 0x2c0`/`+0x2c8`);
+    /// `None` when `blocks` is empty or `now < 0` (resetting both row names to
+    /// `0`).
+    pub row_names: Option<(R, R)>,
+    /// `StartTimeDelta`, `PatternIndex`, and `RecordedNow` (`recorder + 0xe8..0xf4`,
+    /// restored to `owner + 0x2d0..0x2dc`), computed via [`forecast_position`].
+    pub position: ForecastPosition,
+    /// `Seeds` (`recorder + 0xf8`, count `+0x100`, restored to `owner + 0x2e0`,
+    /// count `+0x2e8`): copied from `owner + 0x248` when `!blocks.is_empty() &&
+    /// now >= 0`, or cleared to empty when `blocks.is_empty() || now < 0`.
+    pub seeds: Vec<i32>,
+}
+
+/// Evaluates `UWeatherForecastRecorderComponent::RecordOwnerState` (`C036`,
+/// `0x1418e9ff0` server / `0x1418eadf0` client -> `GetCurrentForecastInfo`
+/// `0x141917fc0` server / `0x141916980` client) (F-654, F-665).
+///
+/// Returns `None` when the owner is null or not an `AWeatherForecastManager`
+/// (`0x141deab90` client; no `PendingKill` check is performed).
+pub fn evaluate_weather_forecast_record<R>(
+    owner_is_weather_forecast_manager: bool,
+    forecast_row_name: R,
+    pool_row_name: R,
+    blocks: &[ForecastBlock],
+    now: i32,
+    active_seeds: &[i32],
+) -> Option<WeatherForecastRecordPlan<R>> {
+    if !owner_is_weather_forecast_manager {
+        return None;
+    }
+    if blocks.is_empty() || now < 0 {
+        return Some(WeatherForecastRecordPlan {
+            row_names: None,
+            position: ForecastPosition::default(),
+            seeds: Vec::new(),
+        });
+    }
+    Some(WeatherForecastRecordPlan {
+        row_names: Some((forecast_row_name, pool_row_name)),
+        position: forecast_position(blocks, now),
+        seeds: active_seeds.to_vec(),
+    })
+}
+
+/// Evaluates `UWeatherForecastRecorderComponent::UpdateOwnerToDatabaseState`
+/// (`C036`, `0x1418f86c0` server / `0x1418f8c80` client ->
+/// `RestoreForecastInfo` `0x14192eff0` server / `0x14192be80` client) (F-654,
+/// F-665).
+///
+/// Copies `saved_now_block` (`recorder + 0xd8..0x108`) into
+/// `AWeatherForecastManager + 0x2c0..0x2f0` iff the owner is a non-null
+/// `AWeatherForecastManager` (`0x141deab90` client; no `PendingKill` check is
+/// performed).
+pub fn evaluate_weather_forecast_restore<R: Clone>(
+    owner_is_weather_forecast_manager: bool,
+    saved_now_block: &WeatherForecastRecordPlan<R>,
+) -> Option<WeatherForecastRecordPlan<R>> {
+    owner_is_weather_forecast_manager.then(|| saved_now_block.clone())
 }
 
 /// One cave-AI class's spawn times, on a spawner or in its record.
