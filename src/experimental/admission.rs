@@ -59,12 +59,12 @@
 //!   setting `PlayerController->NetPlayerIndex` (`+0x3d4`), and advancing
 //!   `ClientLoginState` to `Joined` (`3`).
 //! - On `NMT_PCSwap` (`case 15` in `UWorld::NotifyControlMessage` at
-//!   `0x1439f031c` server / `0x143cbb7f3` client, `F-713`, `F-742`), a signed
+//!   `0x1439f031c` server / `0x143cbb7f3` client, `F-713`, `F-740`), a signed
 //!   `ChildIndex < 0` selects the parent connection, `0 <= ChildIndex < Children.Num()`
 //!   selects `Connection->Children[ChildIndex]` (`+0x1460`), and
 //!   `ChildIndex >= Children.Num()` is ignored.
 //! - On `NMT_ActorChannelFailure` (`0x10` in `UControlChannel::ReceivedBunch` at
-//!   `0x143536420` server / `0x1437c4940` client, `F-742`), the server resolves
+//!   `0x143536420` server / `0x1437c4940` client, `F-740`), the server resolves
 //!   `OpenChannels[ChannelIndex]` (`+0x1310`); when it is a non-null
 //!   `UActorChannel` whose `Actor` (`+0x68`) equals `Connection->PlayerController`
 //!   (`+0x30`), `UNetConnection::Close` (`0x1436de420` / `0x143984190`) is called.
@@ -110,7 +110,7 @@ pub const fn clamp_client_netspeed(requested_rate: i32, max_client_rate: i32) ->
 }
 
 /// Target selected by `UWorld::NotifyControlMessage` `case 15` (`NMT_PCSwap`,
-/// `0x1439f031c` server / `0x143cbb7f3` client, `F-713`, `F-742`).
+/// `0x1439f031c` server / `0x143cbb7f3` client, `F-713`, `F-740`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PcSwapTarget {
     /// `ChildIndex < 0`: calls `Connection->HandleClientPlayer(PreviousPlayerController, Connection)`.
@@ -122,7 +122,7 @@ pub enum PcSwapTarget {
 
 /// Resolves the `NMT_PCSwap` (`case 15`) target from signed `child_index` and
 /// `Connection->Children.Num()` (`+0x1468`), returning `None` when
-/// `child_index >= child_connection_count` (`F-713`, `F-742`).
+/// `child_index >= child_connection_count` (`F-713`, `F-740`).
 pub fn evaluate_pc_swap_target(
     child_index: i32,
     child_connection_count: usize,
@@ -136,7 +136,10 @@ pub fn evaluate_pc_swap_target(
 
 /// Server-side disposition of `NMT_ActorChannelFailure` (`0x10`) in
 /// `UControlChannel::ReceivedBunch` (`0x143536420` server / `0x1437c4940`
-/// client, `F-742`).
+/// client, `F-740`).
+///
+/// Standalone model of the control-channel branch (`peer_lab` maintains only
+/// channel 0 and no `UActorChannel` table).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ActorChannelFailureAction {
     /// Ignored (client side, out-of-range channel index, non-`UActorChannel`,
@@ -153,7 +156,10 @@ pub enum ActorChannelFailureAction {
 }
 
 /// Evaluates `UControlChannel::ReceivedBunch` (`0x143536420` / `0x1437c4940`)
-/// on `NMT_ActorChannelFailure` (`0x10`, `F-742`).
+/// on `NMT_ActorChannelFailure` (`0x10`, `F-740`).
+///
+/// Standalone model of the server-side `OpenChannels` lookup (`peer_lab`
+/// operates on control channel 0 only and does not open actor channels).
 pub fn evaluate_actor_channel_failure(
     is_server: bool,
     channel_index: i32,

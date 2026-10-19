@@ -3024,7 +3024,7 @@ impl PlayerList {
 /// `ActiveProspectInfo.AssociatedMembers` (`UProspectSubsystem + 0x98`, stride
 /// `0x40` B), inspected by
 /// `UProspectSubsystem::IsPlayerStillAssociatedWithActiveProspect`
-/// (`0x1418231d0` server / `0x14182ec60` client) (F-652, F-740).
+/// (`0x1418231d0` server / `0x14182ec60` client) (F-652, F-663).
 ///
 /// `AccountName`, `CharacterName`, `Status`, `Settled`, and
 /// `IsCurrentlyPlaying` are ignored by the association check.

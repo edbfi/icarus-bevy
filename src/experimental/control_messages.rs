@@ -1,6 +1,6 @@
 //! EXPERIMENTAL typed codec for the statically observed control vocabulary.
 //!
-//! Static client-build observations only (F-529..F-531, F-712, F-742): message layouts
+//! Static client-build observations only (F-529..F-531, F-712, F-740): message layouts
 //! from the pending-game, listen-server and `UControlChannel::ReceivedBunch`
 //! (`0x1437c4940` / server `0x143536420`) parsers. Each message is one ID byte followed by consecutive
 //! archive fields read from a bit reader (bunch payloads start at bit 0).
@@ -329,7 +329,7 @@ pub enum ControlMessage {
 }
 
 /// Additional wire layouts handled or skipped directly by
-/// `UControlChannel::ReceivedBunch` (`0x1437c4940` / server `0x143536420`, F-712, F-742).
+/// `UControlChannel::ReceivedBunch` (`0x1437c4940` / server `0x143536420`, F-712, F-740).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ControlFallback {
     /// ID 12 (`NMT_Skip`): four 32-bit `FGuid` words (`0x140cd6590`).
@@ -344,7 +344,7 @@ pub enum ControlFallback {
     SecurityViolation { kind: u8, message: ArchiveText },
     /// ID 22 (`NMT_DestructionInfo`): `EChannelCloseReason` byte + packed
     /// `FNetworkGUID` (`UControlChannel::SendDestructionInfo` `0x1437ca160` /
-    /// `ReceiveDestructionInfo` `0x1435354d0` server / `0x1437c3d50` client, F-742).
+    /// `ReceiveDestructionInfo` `0x1435354d0` server / `0x1437c3d50` client, F-740).
     DestructionInfo { reason: u8, net_guid: u32 },
     /// ID 25 (`NMT_BeaconJoin`): empty body.
     BeaconJoin,

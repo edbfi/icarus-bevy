@@ -12,7 +12,7 @@ use icarus_bevy::experimental::control_messages::{
 };
 
 // Independently authored option strings for the engine's login and join checks
-// (F-712, F-713, F-740, F-742); no captured traffic.
+// (F-712, F-713, F-740); no captured traffic.
 
 fn units(text: &str) -> Vec<u16> {
     text.encode_utf16().collect()

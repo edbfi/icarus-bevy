@@ -12,7 +12,7 @@
 //! is `Some`, each peer also enforces [`ConnectionLoginAdmission`]
 //! (`IsClientMsgTypeValid`), `PreLogin`, `Welcome`, `Netspeed`, `Join` /
 //! `SplitJoin` (`SpawnPlayActor` / `InitNewPlayer`), `PCSwap`, and `DebugText`
-//! checks from `experimental::admission` (`F-712`, `F-713`, `F-740`, `F-742`).
+//! checks from `experimental::admission` (`F-712`, `F-713`, `F-740`).
 //!
 //! The server side is an INFERRED mirror of client-build observations (cookie
 //! seeding F-536, sequencing F-535..F-539, framing F-521..F-527); the original
@@ -20,7 +20,7 @@
 //! Nothing here demonstrates compatibility with any client.
 //!
 //! Control replies follow the client and server builds' `NotifyControlMessage`
-//! (`F-530`, `F-531`, `F-579`, `F-712`, `F-713`, `F-740`, `F-742`) and are sent as
+//! (`F-530`, `F-531`, `F-579`, `F-712`, `F-713`, `F-740`) and are sent as
 //! reliable control bunches through [`LabPeer::reliable_control_packet`] (each
 //! also carries the ack state):
 //! - When [`PeerLabConfig::admission`] is `Some`, any delivered control message
@@ -60,7 +60,7 @@
 //!   [`PeerLabConfig::admission`] is `Some`: `Swap` evaluates
 //!   [`evaluate_pc_swap_target`] against the peer's splitscreen child count
 //!   (`swaps_received` vs `invalid_swaps_ignored`), and `Debug` counts
-//!   [`PeerLabStats::debug_texts_received`] without retaining text (`F-713`, `F-742`).
+//!   [`PeerLabStats::debug_texts_received`] without retaining text (`F-713`, `F-740`).
 //! - Messages after a closing reply in the same delivery are not processed.
 //!
 //! Removing a peer is the lab's close: no close bunch is written, so a lost
@@ -358,11 +358,11 @@ pub struct PeerLabStats {
     pub joins_succeeded: u64,
     /// Duplicate Join requests ignored because a PlayerController already exists (`F-713`).
     pub duplicate_joins_ignored: u64,
-    /// PCSwap (ID 15) requests whose child index resolved to parent or a live child (`F-713`, `F-742`).
+    /// PCSwap (ID 15) requests whose child index resolved to parent or a live child (`F-713`, `F-740`).
     pub swaps_received: u64,
-    /// PCSwap (ID 15) requests ignored because `ChildIndex >= Children.Num()` (`F-713`, `F-742`).
+    /// PCSwap (ID 15) requests ignored because `ChildIndex >= Children.Num()` (`F-713`, `F-740`).
     pub invalid_swaps_ignored: u64,
-    /// DebugText (ID 17) messages received in valid login state (`F-713`, `F-742`).
+    /// DebugText (ID 17) messages received in valid login state (`F-713`, `F-740`).
     pub debug_texts_received: u64,
     /// Peers removed after an Upgrade or Failure reply.
     pub peers_closed: u64,

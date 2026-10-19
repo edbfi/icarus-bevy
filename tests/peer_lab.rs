@@ -989,6 +989,51 @@ fn admission_enforces_login_state_and_completes_welcome_and_join() {
     assert_eq!(stats(&app).swaps_received, 1);
     assert_eq!(stats(&app).invalid_swaps_ignored, 1);
 
+    // SplitJoin adds one child connection (splitscreen_count == 1), after which
+    // ChildIndex 0 resolves to ChildConnection { index: 0 } and ChildIndex 1 is ignored.
+    let split_join_id = client.exchange(
+        &mut app,
+        ControlMessage::SplitJoin {
+            url: ArchiveText::text("?SpectatorOnly=1").unwrap(),
+            unique_net_id: UniqueNetId {
+                kind: NetIdType::Named(ArchiveText::text("STEAM").unwrap()),
+                value: NetIdValue::from_hex(NET_ID_HEX).unwrap(),
+            },
+        },
+        false,
+    );
+    assert_eq!(
+        client.receive_ack(&recv(&client.socket)),
+        [Notification {
+            packet_id: split_join_id,
+            delivered: true
+        }]
+    );
+    assert_eq!(stats(&app).joins_succeeded, 2);
+
+    let child_swap_id = client.exchange(&mut app, ControlMessage::Swap { value: 0 }, false);
+    assert_eq!(
+        client.receive_ack(&recv(&client.socket)),
+        [Notification {
+            packet_id: child_swap_id,
+            delivered: true
+        }]
+    );
+    assert_eq!(stats(&app).swaps_received, 2);
+    assert_eq!(stats(&app).invalid_swaps_ignored, 1);
+
+    let out_of_range_child_swap_id =
+        client.exchange(&mut app, ControlMessage::Swap { value: 1 }, false);
+    assert_eq!(
+        client.receive_ack(&recv(&client.socket)),
+        [Notification {
+            packet_id: out_of_range_child_swap_id,
+            delivered: true
+        }]
+    );
+    assert_eq!(stats(&app).swaps_received, 2);
+    assert_eq!(stats(&app).invalid_swaps_ignored, 2);
+
     let debug_id = client.exchange(
         &mut app,
         ControlMessage::Debug {
