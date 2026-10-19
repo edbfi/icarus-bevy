@@ -4151,7 +4151,7 @@ pub fn evaluate_actor_recorder_base_record<V: Clone, I: Clone, M: Clone>(
 
 /// Values restored onto `AIcarusQuestManager` by
 /// `UIcarusQuestManagerRecorderComponent::UpdateOwnerToDatabaseState` (`C018`,
-/// `0x1418f6a60` server / `0x1418f7130` client) after
+/// `0x1418f3d30` server / `0x1418f4540` client) after
 /// `UActorStateRecorderComponent::UpdateOwnerToDatabaseState` (`0x1418b6ed0`
 /// server / `0x1418ba040` client) (F-650, F-653, F-663).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -4173,7 +4173,7 @@ pub struct QuestManagerRestorePlan<R> {
 }
 
 /// Evaluates `UIcarusQuestManagerRecorderComponent::UpdateOwnerToDatabaseState`
-/// (`C018`, `0x1418f6a60` server / `0x1418f7130` client) (F-650, F-653, F-663).
+/// (`C018`, `0x1418f3d30` server / `0x1418f4540` client) (F-650, F-653, F-663).
 ///
 /// Returns `None` when the owner is null or not an `AIcarusQuestManager`
 /// (`0x141cfaa20` client; no `PendingKill` check is performed).
@@ -4201,7 +4201,7 @@ pub const fn evaluate_quest_manager_restore<R: Copy>(
 
 /// Values restored onto `AIcarusQuest` by
 /// `UIcarusQuestRecorderComponent::UpdateOwnerToDatabaseState` (`C019`,
-/// `0x1418f6c50` server / `0x1418f7320` client) after
+/// `0x1418f44e0` server / `0x1418f4cf0` client) after
 /// `UActorStateRecorderComponent::UpdateOwnerToDatabaseState` (`0x1418b6ed0`
 /// server / `0x1418ba040` client) (F-650, F-663).
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -4215,7 +4215,7 @@ pub struct QuestRestorePlan<N, P> {
 }
 
 /// Evaluates `UIcarusQuestRecorderComponent::UpdateOwnerToDatabaseState`
-/// (`C019`, `0x1418f6c50` server / `0x1418f7320` client) (F-650, F-663).
+/// (`C019`, `0x1418f44e0` server / `0x1418f4cf0` client) (F-650, F-663).
 ///
 /// Returns `None` when the owner is null or not an `AIcarusQuest`
 /// (`0x141cf3950` client; no `PendingKill` check is performed).
@@ -4235,7 +4235,7 @@ pub fn evaluate_quest_restore<N, P: Clone>(
 
 /// `AIcarusGameStateSurvival` fields recorded by
 /// `UIcarusGameModeStateRecorderComponent::RecordOwnerState` (`C015`,
-/// `0x1418a1a60` server / `0x1418a71e0` client) when `owner->GameState`
+/// `0x1418a1e10` server / `0x1418a7590` client) when `owner->GameState`
 /// (`+0x280`) is a valid non-pending-kill `AIcarusGameStateSurvival`
 /// (`0x141bc9a50` client) (F-650, F-653).
 #[derive(Clone, Debug, PartialEq)]
@@ -4253,7 +4253,7 @@ pub struct GameModeGameStateRecord<L> {
 }
 
 /// Values recorded by `UIcarusGameModeStateRecorderComponent::RecordOwnerState`
-/// (`C015`, `0x1418a1a60` server / `0x1418a71e0` client) after
+/// (`C015`, `0x1418a1e10` server / `0x1418a7590` client) after
 /// `UActorStateRecorderComponent::RecordOwnerState` (`0x1418a0170` server /
 /// `0x1418a5b60` client) (F-650, F-653).
 #[derive(Clone, Debug, PartialEq)]
@@ -4289,7 +4289,7 @@ pub struct GameModeRecordPlan<L, C, S, A, B, M, D, F> {
 }
 
 /// Evaluates `UIcarusGameModeStateRecorderComponent::RecordOwnerState` (`C015`,
-/// `0x1418a1a60` server / `0x1418a71e0` client) (F-650, F-653).
+/// `0x1418a1e10` server / `0x1418a7590` client) (F-650, F-653).
 ///
 /// Returns `None` when the owner is null, not an `AIcarusGameModeSurvival`
 /// (`0x141bc8d40` client), or pending kill.
@@ -4345,10 +4345,10 @@ pub fn evaluate_game_mode_record<L: Clone, C: Clone, S, A, B, M: Clone, D: Clone
 }
 
 /// Values recorded by `UIcarusMountCharacterRecorderComponent::RecordOwnerState`
-/// (`C017`, `0x1413f8900` server / `0x141436a60` client) and its base classes
-/// `UIcarusNPCRecorderComponent::RecordOwnerState` (`0x1413cc1f0` server /
-/// `0x14140ade0` client) and `UIcarusCharacterRecorderComponent::RecordOwnerState`
-/// (`0x141443a60` server / `0x141481bd0` client) after
+/// (`C017`, `0x1413fd880` server / `0x14143b680` client) and its base classes
+/// `UIcarusNPCRecorderComponent::RecordOwnerState` (`0x1413cc9b0` server /
+/// `0x14140b700` client) and `UIcarusCharacterRecorderComponent::RecordOwnerState`
+/// (`0x14143d900` server / `0x14147bc20` client) after
 /// `UActorStateRecorderComponent::RecordOwnerState` (`0x1418a0170` server /
 /// `0x1418a5b60` client) (F-650, F-651).
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -4399,7 +4399,7 @@ pub struct MountCharacterRecordPlan<R, T, N, U> {
 }
 
 /// Evaluates `UIcarusMountCharacterRecorderComponent::RecordOwnerState` (`C017`,
-/// `0x1413f8900` server / `0x141436a60` client) and its NPC/Character base
+/// `0x1413fd880` server / `0x14143b680` client) and its NPC/Character base
 /// layers (F-650, F-651).
 ///
 /// Returns `None` when the owner is null, not an `AIcarusMountCharacter`
@@ -4454,11 +4454,11 @@ pub fn evaluate_mount_character_record<R: Clone, T, N, U>(
 
 /// Values and actions restored onto `AIcarusMountCharacter` by
 /// `UIcarusMountCharacterRecorderComponent::UpdateOwnerToDatabaseState` (`C017`,
-/// `0x141404230` server / `0x141442480` client) and its base classes
-/// `UIcarusNPCRecorderComponent::UpdateOwnerToDatabaseState` (`0x1413d3ac0`
-/// server / `0x1414127b0` client) and
-/// `UIcarusCharacterRecorderComponent::UpdateOwnerToDatabaseState` (`0x141447bc0`
-/// server / `0x141485aa0` client) after
+/// `0x14140c8f0` server / `0x141449c30` client) and its base classes
+/// `UIcarusNPCRecorderComponent::UpdateOwnerToDatabaseState` (`0x1413e0710`
+/// server / `0x14141e250` client) and
+/// `UIcarusCharacterRecorderComponent::UpdateOwnerToDatabaseState` (`0x14144c1b0`
+/// server / `0x14148a880` client) after
 /// `UActorStateRecorderComponent::UpdateOwnerToDatabaseState` (`0x1418b6ed0`
 /// server / `0x1418ba040` client) (F-651).
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -4506,7 +4506,7 @@ pub struct MountCharacterRestorePlan<R, T, N, U> {
 }
 
 /// Evaluates `UIcarusMountCharacterRecorderComponent::UpdateOwnerToDatabaseState`
-/// (`C017`, `0x141404230` server / `0x141442480` client) and its NPC/Character
+/// (`C017`, `0x14140c8f0` server / `0x141449c30` client) and its NPC/Character
 /// base layers (F-651).
 ///
 /// Returns `None` when the owner is null, not an `AIcarusMountCharacter`
@@ -4569,18 +4569,19 @@ pub fn evaluate_mount_character_restore<R: Clone, T, N, U>(
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum RequiresStitchingKind {
     /// Base `UIcarusStateRecorderComponent` / `UActorStateRecorderComponent`
-    /// `0x14089a160` server / `0x1408c9a00` client (`xor al, al; ret`).
+    /// `0x14089a160` server / `0x1408cb520` client (`xor al, al; ret`).
     AlwaysFalse,
     /// `0x140899f70` server / `0x1408c9810` client (`mov al, 1; ret`).
     AlwaysTrue,
     /// `UIcarusCharacterRecorderComponent::RequiresStitching` (`0x1413e1110`
-    /// server / `0x14141fc50` client, inherited by `C017`
+    /// server / `0x14141ec50` client, inherited by `C017`
     /// `UIcarusMountCharacterRecorderComponent`): returns
     /// `ParentCharacterUID != -1` (`[this + 0x1c4] != -1`).
     CharacterParentUidPresent,
 }
 
-/// Which `MakeRecorderTransformRelative` (`vftable + 0x4a8`) implementation a
+/// Which `MakeRecorderTransformRelative` (`vftable + 0x4a8`) and
+/// `TransformFromRelative` (`vftable + 0x4b0`) implementation pair a
 /// `StateRecorderBlobs` class (`C001`..`C038`) dispatches (F-746).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum MakeRelativeTransformKind {
@@ -4590,38 +4591,69 @@ pub enum MakeRelativeTransformKind {
     /// callable method.
     NotApplicable,
     /// `UActorStateRecorderComponent::MakeRecorderTransformRelative`
-    /// (`0x14189a760` server / `0x1418a0610` client): converts
-    /// `ActorTransform` (`+0xe0`) to relative space.
+    /// (`0x14189a760` server / `0x1418a1b90` client; `TransformFromRelative`
+    /// `0x141887d20` server / `0x141890ec0` client): converts
+    /// `ActorTransform` (`+0xe0`) to/from relative space.
     ActorTransformOnly,
     /// `UBuildingGridRecorderComponent::MakeRecorderTransformRelative` (`C004`,
-    /// `0x14189a7d0` server / `0x1418a0680` client): converts `ActorTransform`
-    /// (`+0xe0`) and `BuildingGridRecord` (`+0x1c0`) to relative space.
+    /// `0x14189a7d0` server / `0x1418a1c00` client; `TransformFromRelative`
+    /// `0x141888270` server / `0x141891410` client): converts `ActorTransform`
+    /// (`+0xe0`) and `BuildingGridRecord` (`+0x1c0`) to/from relative space.
     ActorAndBuildingGrid,
     /// `USplineRecorderComponent::MakeRecorderTransformRelative` (`C032`,
-    /// `0x1418ddbf0` server / `0x1418de5c0` client): converts `ActorTransform`
+    /// `0x1418ddbf0` server / `0x1418df8c0` client; `TransformFromRelative`
+    /// `0x1418c5cd0` server / `0x1418c7970` client): converts `ActorTransform`
     /// (`+0xe0`) and each `FRecordedSplinePoint` in
-    /// `SplineNetworkSaveData.Points` (`+0x238`, stride `0x50`) to relative
-    /// space.
+    /// `SplineNetworkSaveData.Points` (`+0x238`, stride `0x50`) to/from
+    /// relative space.
     ActorAndSplinePoints,
 }
 
 /// Constructor defaults (`+0xb0`, `+0xb1`, `+0xb2`, `+0xd8`, `+0xd9`) and
 /// virtual-slot `+0x470` (`RequiresStitching`), `+0x498`
-/// (`PurgeActorsMovedToSubLevel`), and `+0x4a8`
-/// (`MakeRecorderTransformRelative`) dispatch for one `StateRecorderBlobs`
-/// class ordinal `1..=38` (`C001`..`C038`), identical in server `25621760` and
-/// client `25793767` (F-746).
+/// (`PurgeActorsMovedToSubLevel`: `0x14189ea40` server / `0x1418a4500` client
+/// on `C004` vs base no-op `0x14189eae0` / `0x1418a45a0`), and `+0x4a8`/`+0x4b0`
+/// (`MakeRecorderTransformRelative` / `TransformFromRelative`) dispatch for one
+/// `StateRecorderBlobs` class ordinal `1..=38` (`C001`..`C038`), identical in
+/// server `25621760` and client `25793767` (F-746).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct RecorderCtorDefaults {
     pub class_ordinal: u8,
+    /// `true` for the 31 `UActorStateRecorderComponent` classes (`C001` and its
+    /// subclasses); `false` for the 7 direct `UIcarusStateRecorderComponent`
+    /// classes (`C013`, `C014`, `C022`, `C025`, `C035`, `C036`, `C037`).
     pub is_actor_recorder: bool,
+    /// `UIcarusStateRecorderComponent::bSaveModifiers` (`+0xb0`): default `1`
+    /// in base ctor (`0x1418824d0` server / `0x14188bea0` client), overridden
+    /// to `0` on 13 classes (`C003, C007..C010, C020, C021, C025, C026, C029,
+    /// C030, C033, C034`).
     pub b_save_modifiers: bool,
+    /// `UIcarusStateRecorderComponent::bSkipDefaultOwnerResolution` (`+0xb1`):
+    /// default `0` in base ctor, overridden to `1` on 6 classes (`C015, C020,
+    /// C025, C026, C031, C034`).
     pub b_skip_default_owner_resolution: bool,
+    /// `UIcarusStateRecorderComponent::OwnerResolvePolicy` (`+0xb2`): default
+    /// `FindOrRespawn` (`2`) in base ctor (`13` `FindOnly`, `15` `RespawnOnly`,
+    /// `4` `FindOrRespawn`, `6` `ManuallyResolved`).
     pub owner_resolve_policy: OwnerResolvePolicy,
+    /// `UActorStateRecorderComponent::bRecordModifierStates` (`+0xd8`): default
+    /// `0` in `UActorStateRecorderComponent` ctor (`0x1419fe870` server /
+    /// `0x1419f5880` client), overridden to `1` only on `C026`; `None` on the 7
+    /// direct `UIcarusStateRecorderComponent` classes.
     pub b_record_modifier_states: Option<bool>,
+    /// `UActorStateRecorderComponent::bRecordActorTransform` (`+0xd9`): default
+    /// `1` in `UActorStateRecorderComponent` ctor, overridden to `0` on 5
+    /// classes (`C006, C020, C028, C031, C034`); `None` on the 7 direct
+    /// `UIcarusStateRecorderComponent` classes.
     pub b_record_actor_transform: Option<bool>,
+    /// `RequiresStitching` (`vftable + 0x470`).
     pub requires_stitching: RequiresStitchingKind,
+    /// `PurgeActorsMovedToSubLevel` (`vftable + 0x498`): `true` only on `C004`
+    /// (`0x14189ea40` server / `0x1418a4500` client vs base no-op `0x14189eae0`
+    /// / `0x1418a45a0` on the other 30 `C001` classes).
     pub purge_sublevel_actors: bool,
+    /// `MakeRecorderTransformRelative` / `TransformFromRelative`
+    /// (`vftable + 0x4a8` / `+0x4b0`).
     pub make_relative_transform: MakeRelativeTransformKind,
 }
 

@@ -20,16 +20,19 @@ construction, script owners and data-table rows are out of scope (F-660).
   tries `+0x450` then `+0x458`; `ManuallyResolved` (`3`) keeps recorder; then `+0x468`
   runs (F-741).
 - `recorder_restore_dispatch` and `recorder_ctor_defaults` (`C001..C038`, F-727, F-742,
-  F-746): all 38 inherit `+0xa0 = 0x1418aaf70`, match ctor flags (`+0xb0` `1`, `+0xb1`
-  `0`, `+0xb2`: 13 `FindOnly`, 15 `RespawnOnly`, 4 `FindOrRespawn`, 6 `ManuallyResolved`;
-  `+0xd8`: `1` only on `C026`; `+0xd9`: `0` on `C006, C020, C028, C031, C034`) and
-  `+0x470` (`evaluate_requires_stitching`: 17 `AlwaysTrue`, `C017` `ParentCharacterUID != -1`,
-  20 `AlwaysFalse`); 31 `C001` classes inherit `+0x488 = 0x14189d380`
-  (`TreePrimitive -> Wood` if `v < 1`) and 7 base (`C013`, `C014`, `C022`, `C025`,
-  `C035..C037`) keep no-op `+0x488`; only `C017` overrides `+0x4a0` (`0x141400150`,
-  `upright_rotation`), only `C004` overrides `+0x498` (`0x141888940`), and only `C004`
-  (`0x141888160`/`0x141888270`) and `C032` (`0x1418c5bf0`/`0x1418c5cd0`,
-  `transform_spline_point_positions`) override `+0x4a8`/`+0x4b0`.
+  F-746): all 38 inherit `+0xa0 = 0x1418aaf70`, match ctor flags (`+0xb0` base `1`, `0` on
+  `C003, C007..C010, C020, C021, C025, C026, C029, C030, C033, C034`; `+0xb1` base `0`, `1`
+  on `C015, C020, C025, C026, C031, C034`; `+0xb2`: 13 `FindOnly`, 15 `RespawnOnly`, 4
+  `FindOrRespawn`, 6 `ManuallyResolved`; `+0xd8` base `0`, `1` on `C026`; `+0xd9` base `1`,
+  `0` on `C006, C020, C028, C031, C034`) and `+0x470` (`evaluate_requires_stitching`: 17
+  `AlwaysTrue`, `C017` `ParentCharacterUID != -1`, 20 `AlwaysFalse`); 31 `C001` classes
+  inherit `+0x488 = 0x14189d380` (`TreePrimitive -> Wood` if `v < 1`) and 7 base (`C013`,
+  `C014`, `C022`, `C025`, `C035..C037`) keep no-op `+0x488`; only `C017` overrides `+0x4a0`
+  (`0x141400150`, `upright_rotation`), only `C004` overrides `+0x498`
+  (`0x14189ea40`/`0x1418a4500` vs `0x14189eae0`), and only `C004`
+  (`0x14189a7d0`/`0x141888270` vs `0x14189a760`/`0x141887d20`) and `C032`
+  (`0x1418ddbf0`/`0x1418c5cd0`, `transform_spline_point_positions`) override
+  `+0x4a8`/`+0x4b0`.
 - Only 7 of 38 override `Validate` (`+0x408`, base `0x140899f70` = `true`; F-652,
   F-663, F-680):
   - `UProspectSubsystem` (`0x141704d70`, `+0x30`): `0x141820ba0` and
@@ -65,7 +68,7 @@ construction, script owners and data-table rows are out of scope (F-660).
   `stitch_prebuilt_structure_actors`, F-645..F-676); `C007`
   (`0x1418a13c0`/`0x1418ac670`, `record_trapped_character_guids`,
   `stitch_trapped_character_guids`), `C017`
-  (`0x1414284e0`/`0x141439490`/`0x141446df0`/`0x1413cfe80`,
+  (`0x1413fd880`/`0x14140c8f0`/`0x141446df0`/`0x1413cfe80`,
   `evaluate_mount_character_record`, `evaluate_mount_character_restore`,
   `stitch_character_parent_uid`, `evaluate_npc_recorder_respawn`) and `C025`
   (`0x1418f5160`, `stitch_player_recorder_assigned_uids`) match GUID; `C013`
@@ -112,11 +115,11 @@ construction, script owners and data-table rows are out of scope (F-660).
   `evaluate_weather_forecast_restore`, F-654, F-665); `C038`
   (`0x141930060`/`0x14193aaa0`, `evaluate_world_talent_record`,
   `evaluate_world_talent_stitch`, F-650..F-676).
-- `C001` (`0x14189fff0`/`0x1418b6ed0`, `evaluate_actor_recorder_base_record`) runs
+- `C001` (`0x1418a0170`/`0x1418b6ed0`, `evaluate_actor_recorder_base_record`) runs
   `evaluate_actor_guid_restore`, `evaluate_modifier_state_restore`,
   `evaluate_actor_subcomponent_restore`, `D01` (`0x1418b8f20`),
   `evaluate_legacy_gun_ammo_upgrade` (`0x14189a250`), overflow and `CPF_SaveGame`
-  vars (`0x1418bcff0`, F-735); `C015` (`0x1418a1be0`/`0x1418b7f30`,
+  vars (`0x1418bcff0`, F-735); `C015` (`0x1418a1e10`/`0x1418b7f30`,
   `evaluate_game_mode_record`) runs `restored_elapsed_seconds`,
   `restore_game_mode_exported_currencies`, `restore_game_mode_mission_history` and
   `restored_next_meteor_shower_time` (F-653); `C037` (`0x1418ea790`/`0x1418f8610`,
@@ -134,4 +137,4 @@ construction, script owners and data-table rows are out of scope (F-660).
 ## Evidence
 
 F-645..F-681, F-716, F-727, F-728, F-734..F-736, F-741..F-744, F-746; M-642..M-698,
-M-755..M-794.
+M-755..M-792, M-794..M-797.
