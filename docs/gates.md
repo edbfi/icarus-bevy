@@ -6,7 +6,7 @@ here instead of restating them.
 
 Before restructure: 96ddb0b:docs/gates.md
 
-Last reconciled: 2026-10-18
+Last reconciled: 2026-10-19
 
 ## Before any C001 original-code case
 
@@ -30,12 +30,12 @@ Last reconciled: 2026-10-18
   normalization, `FFloatProperty`, `FVector`, `FArrayProperty`, immutable
   `CPF_SaveGame`, tagged wrap-around, C013/C028 migration/restore, `C030`
   `TextProperty`, `C015`/`C022`/`C032` Map/Set/Int64/Struct items, all 65
-  `RecorderComponent` `FClassParams` (`C001`..`C038` vtable overrides),
-  `C035`/`C002` clocks, `C033` dynamic tree drop, `D01` inventory/variable
+  `RecorderComponent` `FClassParams`, all 38 `StateRecorderBlobs` (`C001..C038`)
+  record/restore/stitch/match/validate methods, `D01` inventory/variable
   restore (`14` `EDynamicItemProperties`), and entry-path failure matrices are
-  qualified (F-715 to F-720, F-725 to F-728, F-731 to F-736; U-020 to U-024,
-  U-026, U-028 to U-033, U-039, U-046, U-048, U-050, U-053 to U-063 resolved);
-  do not repeat those static reads.
+  qualified (F-715 to F-720, F-725 to F-728, F-731 to F-738, F-741 to F-744;
+  U-020 to U-024, U-026, U-028 to U-033, U-039, U-046, U-048, U-050, U-053 to
+  U-063 resolved); do not repeat those static reads.
 - Audit selected coverage before choosing another save boundary; do not repeat
   completed header/string comparisons.
 - Complete prior range/result replay and both-copy budgets precede any new unit
@@ -65,11 +65,11 @@ Last reconciled: 2026-10-18
   F-729; U-007 to U-010, U-013, U-015 to U-018, U-043 resolved); native
   connected sessions remain gated (U-038).
 - Client and server archive/outer framing, `UControlChannel` byte-order
-  persistence (`Connection + 0x158`), 19 fallback skip layouts, 32,767
-  queued-bunch bounds, `IsClientMsgTypeValid` state gating,
+  persistence (`Connection + 0x158`), 20 fallback layouts (`0..18`, `21`, `22`),
+  32,767 queued-bunch bounds, `IsClientMsgTypeValid` state gating,
   `PreLogin`/`InitNewPlayer` checks and 0 registered version/PreLogin callbacks
-  are bound in `experimental` (F-688, F-710 to F-714, F-729; U-014, U-037, U-044,
-  U-051 resolved); connected sessions keep their own gate (U-038, U-052).
+  are bound in `experimental` (F-688, F-710 to F-714, F-729, F-740; U-014, U-037,
+  U-044, U-051 resolved); connected sessions keep their own gate (U-038, U-052).
 - Older server build 25621760 and client build 25793767 remain distinct;
   addresses and assumptions do not transfer automatically.
 
