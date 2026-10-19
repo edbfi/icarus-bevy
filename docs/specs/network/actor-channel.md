@@ -126,7 +126,7 @@ transitions. Not covered: server relevancy and priority heuristics.
 ## Evidence
 
 - Symbols and pseudocode M-420 to M-437; net items and writers M-438 to M-449,
-  M-455 to M-470, M-776, M-777, M-781, M-782; movement, tags, Name/Str, hit
+  M-455 to M-470, M-776, M-777, M-782, M-791; movement, tags, Name/Str, hit
   results, soft objects and Text M-475 to M-548, M-570 to M-588, M-602 to M-605;
   enum widths, RPCs and fast arrays M-614, M-615, M-620 to M-624, M-628 to M-635;
   native descriptors, cooked Blueprint exports, export/open hooks, partial/close

@@ -149,6 +149,6 @@ runtime initialization, compression, or integrity protection.
   M-170/E-021, M-170/E-022, M-170/E-024),
   M-146, [research/archive](../../research/archive/2026-10-12-control-caller-limit.md),
   M-023 to M-045 in the [control-store digest](../../research/network/control-stores.md),
-  and M-589 to M-596, M-749 to M-754, M-763 to M-765, M-770, M-771, M-776, M-777, M-779, M-780.
+  and M-589 to M-596, M-749 to M-754, M-763 to M-765, M-770, M-771, M-776, M-777, M-780, M-791.
 - Authored suites: `cargo test --test control_negotiation --locked` and
   `cargo test --test peer_lab --locked`.
