@@ -2,22 +2,21 @@ use icarus_bevy::experimental::actor_channel::{
     ActorBunchBody, ActorChannelCodec, ActorChannelLimits, ActorPriorityInputs,
     ActorPriorityOutcome, ActorRelevancyInputs, ActorRelevancyOutcome, BlockTarget,
     CompressedRotator, ContentBlock, DEFAULT_CONFIGURED_INTERNET_SPEED,
-    DEFAULT_CONFIGURED_LAN_SPEED, DEFAULT_CONNECTION_TIMEOUT_SECONDS,
-    DEFAULT_INITIAL_CONNECT_TIMEOUT_SECONDS, DEFAULT_MAX_CLIENT_RATE,
-    DEFAULT_MAX_INTERNET_CLIENT_RATE, DEFAULT_NET_SERVER_MAX_TICK_RATE,
-    DEFAULT_RESOLUTION_CONNECTION_TIMEOUT_SECONDS, DynamicSpawn, EngineNetMode, ExportPath,
-    GuidExport, GuidKind, MAX_EXPORT_GUIDS, MAX_NET_SERVER_MAX_TICK_RATE,
-    MIN_NET_SERVER_MAX_TICK_RATE, NetGuidRef, PackageMapState, PawnRelevancyInputs,
-    PawnRelevancyOutcome, SpawnRecord, SpawnVector, SubObjectClass, dequantize_angle,
-    encode_actor_bunch_body, encode_player_controller_open_bunch_body, evaluate_actor_net_priority,
-    evaluate_actor_net_relevancy, evaluate_game_engine_max_tick_rate, evaluate_pawn_net_relevancy,
-    evaluate_player_controller_net_priority, evaluate_player_controller_net_relevancy, guid_kind,
-    is_within_net_relevancy_distance, parse_actor_bunch, parse_player_controller_open_bunch,
-    quantize_angle, read_actor_bunch_body, read_content_block, read_export_prefix, read_guid_ref,
-    read_must_be_mapped_guids, read_player_controller_open_bunch_body, read_rotator, read_spawn,
-    write_actor_bunch_body, write_content_block, write_export_prefix, write_guid_ref,
-    write_must_be_mapped_guids, write_player_controller_open_bunch_body, write_rotator,
-    write_spawn,
+    DEFAULT_CONFIGURED_LAN_SPEED, DEFAULT_CONNECTION_TIMEOUT_SECONDS, DEFAULT_INI_MAX_CLIENT_RATE,
+    DEFAULT_INI_MAX_INTERNET_CLIENT_RATE, DEFAULT_INITIAL_CONNECT_TIMEOUT_SECONDS,
+    DEFAULT_NET_SERVER_MAX_TICK_RATE, DEFAULT_RESOLUTION_CONNECTION_TIMEOUT_SECONDS, DynamicSpawn,
+    EngineNetMode, ExportPath, GuidExport, GuidKind, MAX_EXPORT_GUIDS,
+    MAX_NET_SERVER_MAX_TICK_RATE, MIN_NET_SERVER_MAX_TICK_RATE, NetGuidRef, PackageMapState,
+    PawnRelevancyInputs, PawnRelevancyOutcome, SpawnRecord, SpawnVector, SubObjectClass,
+    dequantize_angle, encode_actor_bunch_body, encode_player_controller_open_bunch_body,
+    evaluate_actor_net_priority, evaluate_actor_net_relevancy, evaluate_game_engine_max_tick_rate,
+    evaluate_pawn_net_relevancy, evaluate_player_controller_net_priority,
+    evaluate_player_controller_net_relevancy, guid_kind, is_within_net_relevancy_distance,
+    parse_actor_bunch, parse_player_controller_open_bunch, quantize_angle, read_actor_bunch_body,
+    read_content_block, read_export_prefix, read_guid_ref, read_must_be_mapped_guids,
+    read_player_controller_open_bunch_body, read_rotator, read_spawn, write_actor_bunch_body,
+    write_content_block, write_export_prefix, write_guid_ref, write_must_be_mapped_guids,
+    write_player_controller_open_bunch_body, write_rotator, write_spawn,
 };
 use icarus_bevy::experimental::archive::ByteOrder;
 use icarus_bevy::experimental::control_messages::ArchiveText;
@@ -1222,8 +1221,8 @@ fn game_engine_max_tick_rate_and_net_driver_constants() {
     assert_eq!(DEFAULT_NET_SERVER_MAX_TICK_RATE, 30);
     assert_eq!(MIN_NET_SERVER_MAX_TICK_RATE, 1);
     assert_eq!(MAX_NET_SERVER_MAX_TICK_RATE, 1000);
-    assert_eq!(DEFAULT_MAX_CLIENT_RATE, 750_000);
-    assert_eq!(DEFAULT_MAX_INTERNET_CLIENT_RATE, 750_000);
+    assert_eq!(DEFAULT_INI_MAX_CLIENT_RATE, 750_000);
+    assert_eq!(DEFAULT_INI_MAX_INTERNET_CLIENT_RATE, 750_000);
     assert_eq!(DEFAULT_CONFIGURED_INTERNET_SPEED, 640_000);
     assert_eq!(DEFAULT_CONFIGURED_LAN_SPEED, 912_000);
     assert_eq!(DEFAULT_CONNECTION_TIMEOUT_SECONDS, 360.0);

@@ -3026,8 +3026,8 @@ fn actor_base_quest_game_mode_and_mount_record_and_restore() {
         })
     );
 
-    // C018 UIcarusQuestManagerRecorderComponent::UpdateOwnerToDatabaseState (0x1418f6a60 / 0x1418f7130)
-    // and C019 UIcarusQuestRecorderComponent::UpdateOwnerToDatabaseState (0x1418f6c50 / 0x1418f7320).
+    // C018 UIcarusQuestManagerRecorderComponent::UpdateOwnerToDatabaseState (0x1418f3d30 / 0x1418f4540)
+    // and C019 UIcarusQuestRecorderComponent::UpdateOwnerToDatabaseState (0x1418f44e0 / 0x1418f4cf0).
     assert_eq!(
         evaluate_quest_manager_restore(false, "Mission_Alpha", true, 2, 1800, true, "Seed_01"),
         None
@@ -3055,7 +3055,7 @@ fn actor_base_quest_game_mode_and_mount_record_and_restore() {
         })
     );
 
-    // C015 UIcarusGameModeStateRecorderComponent::RecordOwnerState (0x1418a1a60 / 0x1418a71e0):
+    // C015 UIcarusGameModeStateRecorderComponent::RecordOwnerState (0x1418a1e10 / 0x1418a7590):
     // sets RecordedVersion = 2, copies GameMode fields, and copies GameState fields iff GameState is a valid AIcarusGameStateSurvival.
     assert_eq!(
         evaluate_game_mode_record::<[f32; 3], &str, &str, &str, &str, &str, &str, &str>(
@@ -3114,8 +3114,8 @@ fn actor_base_quest_game_mode_and_mount_record_and_restore() {
         })
     );
 
-    // C017 UIcarusMountCharacterRecorderComponent::RecordOwnerState (0x1413f8900 / 0x141436a60)
-    // and UpdateOwnerToDatabaseState (0x141404230 / 0x141442480) + NPC & Character base layers.
+    // C017 UIcarusMountCharacterRecorderComponent::RecordOwnerState (0x1413fd880 / 0x14143b680)
+    // and UpdateOwnerToDatabaseState (0x14140c8f0 / 0x141449c30) + NPC & Character base layers.
     assert_eq!(
         evaluate_mount_character_record(
             false,

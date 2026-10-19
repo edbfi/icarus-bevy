@@ -98,10 +98,10 @@ pub const MIN_NET_SERVER_MAX_TICK_RATE: i32 = 1;
 pub const MAX_NET_SERVER_MAX_TICK_RATE: i32 = 1000;
 /// Default `MaxClientRate` from `DefaultEngine.ini`
 /// (`[/Script/OnlineSubsystemUtils.IpNetDriver]`, F-745).
-pub const DEFAULT_MAX_CLIENT_RATE: i32 = 750_000;
+pub const DEFAULT_INI_MAX_CLIENT_RATE: i32 = 750_000;
 /// Default `MaxInternetClientRate` from `DefaultEngine.ini`
 /// (`[/Script/OnlineSubsystemUtils.IpNetDriver]`, F-745).
-pub const DEFAULT_MAX_INTERNET_CLIENT_RATE: i32 = 750_000;
+pub const DEFAULT_INI_MAX_INTERNET_CLIENT_RATE: i32 = 750_000;
 /// Default `ConfiguredInternetSpeed` from `DefaultEngine.ini`
 /// (`[/Script/Engine.Player]`, F-745).
 pub const DEFAULT_CONFIGURED_INTERNET_SPEED: i32 = 640_000;
