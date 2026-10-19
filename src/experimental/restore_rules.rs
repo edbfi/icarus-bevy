@@ -111,6 +111,45 @@ pub fn stitch_prebuilt_structure_actors<'a>(
         .collect()
 }
 
+/// Values recorded by `UPrebuiltStructureRecorderComponent::RecordOwnerState`
+/// (`C027`, `0x14177ac40` server / `0x14177fe10` client) (F-650, F-658,
+/// F-676).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PrebuiltStructureRecordPlan<N, C> {
+    /// `APrebuiltStructure->StructureRow.RowName` (`owner + 0x2f8`) copied to
+    /// `recorder + 0x1c0`.
+    pub structure_row_name: N,
+    /// `RelevantActorRecords` (`recorder + 0x1c8`, stride `0x18` B:
+    /// `(class_name, icarus_actor_guid)`) recorded for each non-null actor in
+    /// `APrebuiltStructure + 0x2d8` that has a `UActorStateRecorderComponent`
+    /// (`0x141b9cbb0` client).
+    pub relevant_actor_records: Vec<(C, i32)>,
+}
+
+/// Evaluates `UPrebuiltStructureRecorderComponent::RecordOwnerState` (`C027`,
+/// `0x14177ac40` server / `0x14177fe10` client) after
+/// `UActorStateRecorderComponent::RecordOwnerState` (`0x1418a5b60` client)
+/// (F-650, F-658, F-676).
+///
+/// Returns `None` when the owner is null or not an `APrebuiltStructure`
+/// (`0x141cd5470` client). Otherwise filters `structure_actors` (`owner + 0x2d8`)
+/// to actors that have a `UActorStateRecorderComponent` (`Some((class_name,
+/// guid))`) and records `structure_row_name` (`owner + 0x2f8 -> +0x1c0`).
+pub fn record_prebuilt_structure_actors<N, C: Clone>(
+    owner_is_prebuilt_structure: bool,
+    structure_row_name: N,
+    structure_actors: &[Option<(C, i32)>],
+) -> Option<PrebuiltStructureRecordPlan<N, C>> {
+    if !owner_is_prebuilt_structure {
+        return None;
+    }
+    let relevant_actor_records = structure_actors.iter().flatten().cloned().collect();
+    Some(PrebuiltStructureRecordPlan {
+        structure_row_name,
+        relevant_actor_records,
+    })
+}
+
 /// Actions evaluated by `UDeployableRecorderComponent::Stitching` (`C009`,
 /// `0x1418ac8a0` server / `0x1418b0c80` client) (F-646, F-650).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -285,7 +324,7 @@ pub fn record_trapped_character_guids(
 }
 
 /// Compacts `AFLODManager::FLODTiles` (`+0x248`) in place and returns the stale
-/// tile IDs to destroy (`FLODTiles \ SpawnedActors`) as
+/// tile IDs to destroy (`FLODTiles \\ SpawnedActors`) as
 /// `UFLODRecorderComponent::Stitching` (`C013`, `0x1418ac8f0` server /
 /// `0x1418b12a0` client) does (F-646, F-716).
 ///
@@ -941,6 +980,203 @@ pub fn evaluate_instanced_level_manager_restore<L, I: Clone>(
         instanced_levels: saved_instanced_levels,
         spawned_recorder_ids: saved_spawned_recorder_ids.to_vec(),
         destroyed_recorder_ids: saved_destroyed_recorder_ids.to_vec(),
+    })
+}
+
+/// Values recorded by `UBaseLevelTeleportRecorderComponent::RecordOwnerState`
+/// (`C002`, `0x1419d5a20` server / `0x1419ccd70` client) (F-650, F-657, F-734).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct BaseLevelTeleportRecordPlan {
+    /// `ABaseLevelTeleport + 0x398` (`bIsActivated`) written to
+    /// `recorder + 0x1c0`.
+    pub b_is_activated: bool,
+    /// `RemainingCooldown` written to `recorder + 0x1c4`: computed via
+    /// [`remaining_cooldown`] against [`replicated_prospect_game_time`] when
+    /// `cooldown_end_time > 0.0` and `GameState` (`+0x120`) is a non-pending-kill
+    /// `AIcarusGameStateSurvival` (`0x141bc9a50` client); otherwise `0`.
+    pub remaining_cooldown: i32,
+}
+
+/// Evaluates `UBaseLevelTeleportRecorderComponent::RecordOwnerState` (`C002`,
+/// `0x1419d5a20` server / `0x1419ccd70` client) after
+/// `UActorStateRecorderComponent::RecordOwnerState` (`0x1418a5b60` client)
+/// (F-650, F-657, F-734).
+///
+/// Returns `None` when the owner is null, not an `ABaseLevelTeleport`
+/// (`0x141a49150` client), or pending kill.
+pub fn evaluate_base_level_teleport_record(
+    owner_is_valid_teleport: bool,
+    owner_is_activated: bool,
+    cooldown_end_time: f32,
+    game_state_is_valid_survival: bool,
+    world_time_seconds: f32,
+    replicated_prospect_time_offset: f32,
+) -> Option<BaseLevelTeleportRecordPlan> {
+    if !owner_is_valid_teleport {
+        return None;
+    }
+    let remaining_cooldown = if cooldown_end_time > 0.0 && game_state_is_valid_survival {
+        let now =
+            replicated_prospect_game_time(world_time_seconds, replicated_prospect_time_offset);
+        remaining_cooldown(cooldown_end_time, now)
+    } else {
+        0
+    };
+    Some(BaseLevelTeleportRecordPlan {
+        b_is_activated: owner_is_activated,
+        remaining_cooldown,
+    })
+}
+
+/// Actions evaluated by
+/// `UBaseLevelTeleportRecorderComponent::UpdateOwnerToDatabaseState` (`C002`,
+/// `0x1419e27c0` server / `0x1419d9a70` client) (F-657, F-734).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct BaseLevelTeleportRestorePlan {
+    /// Saved `bIsActivated` (`recorder + 0x1c0`) written to
+    /// `ABaseLevelTeleport + 0x398` before `OnRep_IsActivated` (`0x141a524f0`
+    /// client).
+    pub b_is_activated: bool,
+    /// Whether `OnRep_IsActivated` (`0x141a524f0` client) and timer-handle
+    /// cleanup (`owner + 0x399`, `0x1419b08f0` client) run.
+    pub notify_activated_and_clear_timer: bool,
+    /// Saved `RemainingCooldown` (`recorder + 0x1c4`) passed to
+    /// `ABaseLevelTeleport::StartCooldownTimer` (`0x1419d37d0` client).
+    pub start_cooldown_seconds: i32,
+}
+
+/// Evaluates `UBaseLevelTeleportRecorderComponent::UpdateOwnerToDatabaseState`
+/// (`C002`, `0x1419e27c0` server / `0x1419d9a70` client) after
+/// `UActorStateRecorderComponent::UpdateOwnerToDatabaseState` (`0x1418ba040`
+/// client) (F-657, F-734).
+///
+/// Returns `None` when the owner is null, not an `ABaseLevelTeleport`
+/// (`0x141a49150` client), or pending kill.
+pub const fn evaluate_base_level_teleport_restore(
+    owner_is_valid_teleport: bool,
+    saved_is_activated: bool,
+    saved_remaining_cooldown: i32,
+) -> Option<BaseLevelTeleportRestorePlan> {
+    if !owner_is_valid_teleport {
+        return None;
+    }
+    Some(BaseLevelTeleportRestorePlan {
+        b_is_activated: saved_is_activated,
+        notify_activated_and_clear_timer: true,
+        start_cooldown_seconds: saved_remaining_cooldown,
+    })
+}
+
+/// Evaluates `UCaveAirNavRecorderComponent::UpdateOwnerToDatabaseState` (`C005`,
+/// `0x1418b7790` server / `0x1418ba730` client) after
+/// `UActorStateRecorderComponent::UpdateOwnerToDatabaseState` (`0x1418ba040`
+/// client) (F-657, F-677).
+///
+/// Only when `owner_is_cave_ai_spawner` (`AIcarusCaveAISpawner`, `0x141ba6890`
+/// client) is `true` and `saved_spawn_data` (`recorder + 0x1c0`, count at
+/// `+0x1c8`) is non-empty does `C005` clear `owner + 0x310`, copy
+/// `saved_spawn_data` into `owner + 0x310`, and call
+/// `AIcarusCaveAISpawner::UpdateStateFromDatabase` (`0x141409d70` client,
+/// modeled by [`restore_cave_spawn_times`]). When `saved_spawn_data` is empty,
+/// `owner + 0x310` and `configured_spawner_classes` are left untouched and
+/// `None` is returned.
+pub fn evaluate_cave_air_nav_restore(
+    owner_is_cave_ai_spawner: bool,
+    configured_spawner_classes: &mut [CaveSpawnTimes],
+    saved_spawn_data: &[CaveSpawnTimes],
+) -> Option<bool> {
+    if !owner_is_cave_ai_spawner || saved_spawn_data.is_empty() {
+        return None;
+    }
+    Some(restore_cave_spawn_times(
+        configured_spawner_classes,
+        saved_spawn_data,
+    ))
+}
+
+/// Evaluates `UCropPlotStateRecorderComponent::RecordOwnerState` (`C008`,
+/// `0x1418a1300` server / `0x1418a6a80` client) after
+/// `UActorStateRecorderComponent::RecordOwnerState` (`0x1418a5b60` client)
+/// (F-650, F-657).
+///
+/// Overwrites `recorded_plot_states` (`recorder + 0x1c0`) with `component_states`
+/// iff `owner_implements_crop_plot_interface` (`UCropPlotInterface`,
+/// `0x141a7e240` client) is `true` and
+/// `ICropPlotInterface::Execute_GetCropPlotComponent` (`0x141a7fea0` client)
+/// returned a non-null `UCropPlotComponent` (`Some(component_states)`). Returns
+/// `true` when `recorded_plot_states` was updated, or `false` when preserved.
+pub fn evaluate_crop_plot_record<S: Clone>(
+    owner_implements_crop_plot_interface: bool,
+    crop_plot_component_states: Option<&[S]>,
+    recorded_plot_states: &mut Vec<S>,
+) -> bool {
+    if owner_implements_crop_plot_interface && let Some(states) = crop_plot_component_states {
+        recorded_plot_states.clear();
+        recorded_plot_states.extend_from_slice(states);
+        return true;
+    }
+    false
+}
+
+/// Evaluates `UCropPlotStateRecorderComponent::UpdateOwnerToDatabaseState`
+/// (`C008`, `0x1418b7a50` server / `0x1418baa10` client) after
+/// `UActorStateRecorderComponent::UpdateOwnerToDatabaseState` (`0x1418ba040`
+/// client) (F-657).
+///
+/// Calls `ICropPlotInterface::Execute_RestoreSavedPlotStates(owner, +0x1c0)`
+/// (`0x141a7ff80` client) iff the owner is non-null and its `UClass` (`+0x10`)
+/// implements `UCropPlotInterface` (`0x141a7e240` client; unlike `C012`, no
+/// `PendingKill` check is performed).
+pub fn evaluate_crop_plot_restore<S: Clone>(
+    owner_implements_crop_plot_interface: bool,
+    saved_plot_states: &[S],
+) -> Option<Vec<S>> {
+    owner_implements_crop_plot_interface.then(|| saved_plot_states.to_vec())
+}
+
+/// Values recorded or restored by `USpawnBlockerRecorderComponent` (`C030`,
+/// `RecordOwnerState` at `0x1418e9500` server / `0x1418e9830` client;
+/// `UpdateOwnerToDatabaseState` at `0x1418f7930` server / `0x1418f81f0` client)
+/// (F-650, F-657).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct SpawnBlockerState<R, N> {
+    /// `EffectiveRadius` (`recorder + 0x290`) from
+    /// `ISpawnBlockerInterface::Execute_GetSpawnBlockerEffectiveRadius`
+    /// (`0x141d698e0` client) / passed to `Execute_UpdateSpawnBlocker`
+    /// (`0x141d69ad0` client).
+    pub effective_radius: R,
+    /// `Transform` (`recorder + 0x2a8..0x2b8`, `16` B) from
+    /// `ISpawnBlockerInterface::Execute_GetSpawnBlockerTransform`
+    /// (`0x141d69790` client) / passed to `Execute_UpdateSpawnBlocker`
+    /// (`0x141d69ad0` client).
+    pub blocker_transform: [f32; 4],
+    /// `SpawnBlockerRow.RowName` (`recorder + 0x2b8`, `8` B) from
+    /// `ISpawnBlockerInterface::Execute_GetSpawnBlockerRow` (`0x141d69830`
+    /// client) / passed to `Execute_SetSpawnBlockerRow` (`0x141d69a10` client).
+    pub spawn_blocker_row_name: N,
+}
+
+/// Evaluates `USpawnBlockerRecorderComponent::RecordOwnerState` (`C030`,
+/// `0x1418e9500` server / `0x1418e9830` client) and
+/// `USpawnBlockerRecorderComponent::UpdateOwnerToDatabaseState` (`0x1418f7930`
+/// server / `0x1418f81f0` client) after the base deployable/actor recorder step
+/// (F-650, F-657).
+///
+/// Returns `Some(SpawnBlockerState)` iff the owner is non-null and its `UClass`
+/// (`+0x10`) implements `USpawnBlockerInterface` (`0x141d67140` client).
+pub const fn evaluate_spawn_blocker_transfer<R: Copy, N: Copy>(
+    owner_implements_spawn_blocker_interface: bool,
+    effective_radius: R,
+    blocker_transform: [f32; 4],
+    spawn_blocker_row_name: N,
+) -> Option<SpawnBlockerState<R, N>> {
+    if !owner_implements_spawn_blocker_interface {
+        return None;
+    }
+    Some(SpawnBlockerState {
+        effective_radius,
+        blocker_transform,
+        spawn_blocker_row_name,
     })
 }
 

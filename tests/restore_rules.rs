@@ -1,29 +1,34 @@
 use icarus_bevy::experimental::restore_rules::{
     ACTOR_RECORDER_TRANSFORM_TOLERANCE, ActorGuidRestoreStep, ActorLink,
-    ActorSubcomponentRestorePlan, ApplyTransformKind, AttachRecorderOutcome, ByNameLoadOutcome,
+    ActorSubcomponentRestorePlan, ApplyTransformKind, AttachRecorderOutcome,
+    BaseLevelTeleportRecordPlan, BaseLevelTeleportRestorePlan, ByNameLoadOutcome,
     DeployableStitchPlan, DrillStitchCandidate, DrillStitchResolution, DynamicItemPropertyKind,
     EnzymeGeyserRestorePlan, FlodTileRestorePlan, InstancedLevelManagerRestorePlan,
     InventorySlotOverflowDisposition, LegacyGunAmmoUpgrade, LobbyPrivacy, OwnerResolvePolicy,
     OwnerResolveStep, PROSPECT_SAVE_STATE_CURRENT_VERSION, PlayerList, PlayerStateLifeRestore,
-    ProspectAssociatedMember, ProspectBlobDecodeOutcome, RESTORED_INDEFINITE_MODIFIER_LIFETIME,
-    RestoreStateKind, RestoredMissionHistoryEntry, RestoredProcessingState, RocketRestore,
-    SetupLoadedProspectOutcome, SplineRespawnDisposition, StitchedPlayerRecorderLinks,
-    VOXEL_LOCATION_TOLERANCE, VersionUpgradeKind, VoxelDatabaseRestorePlan, WorldTalentStitchPlan,
+    PrebuiltStructureRecordPlan, ProspectAssociatedMember, ProspectBlobDecodeOutcome,
+    RESTORED_INDEFINITE_MODIFIER_LIFETIME, RestoreStateKind, RestoredMissionHistoryEntry,
+    RestoredProcessingState, RocketRestore, SetupLoadedProspectOutcome, SpawnBlockerState,
+    SplineRespawnDisposition, StitchedPlayerRecorderLinks, VOXEL_LOCATION_TOLERANCE,
+    VersionUpgradeKind, VoxelDatabaseRestorePlan, WorldTalentStitchPlan,
     can_activate_prospect_info, compact_and_diff_flod_tiles, container_entries,
     does_actor_recorder_match_actor, does_player_recorder_match_actor,
     does_player_state_recorder_match_actor, does_state_recorder_match_actor,
     does_voxel_recorder_match_actor, evaluate_actor_guid_restore,
     evaluate_actor_subcomponent_restore, evaluate_attach_recorder_to_actor,
-    evaluate_by_name_load_attempt, evaluate_deployable_stitch, evaluate_drill_stitch,
+    evaluate_base_level_teleport_record, evaluate_base_level_teleport_restore,
+    evaluate_by_name_load_attempt, evaluate_cave_air_nav_restore, evaluate_crop_plot_record,
+    evaluate_crop_plot_restore, evaluate_deployable_stitch, evaluate_drill_stitch,
     evaluate_enzyme_geyser_restore, evaluate_flod_tile_restore,
     evaluate_instanced_level_manager_restore, evaluate_legacy_gun_ammo_upgrade,
     evaluate_modifier_state_restore, evaluate_owner_resolve_step,
     evaluate_player_state_life_restore, evaluate_prospect_blob_decode,
-    evaluate_setup_loaded_prospect_attempt, evaluate_spline_recorder_respawn,
-    evaluate_voxel_database_restore, evaluate_world_talent_stitch,
-    filter_restored_cosmetic_armour_overrides, migrate_prospect_save_state, names_match,
-    normalize_prospect_name, normalize_restored_modifier_lifetime, player_record_valid,
-    prospect_ids_match, record_trapped_character_guids, record_weather_event_elapsed,
+    evaluate_setup_loaded_prospect_attempt, evaluate_spawn_blocker_transfer,
+    evaluate_spline_recorder_respawn, evaluate_voxel_database_restore,
+    evaluate_world_talent_stitch, filter_restored_cosmetic_armour_overrides,
+    migrate_prospect_save_state, names_match, normalize_prospect_name,
+    normalize_restored_modifier_lifetime, player_record_valid, prospect_ids_match,
+    record_prebuilt_structure_actors, record_trapped_character_guids, record_weather_event_elapsed,
     recorded_level, recorder_restore_dispatch, recorder_transform_is_non_identity,
     remaining_cooldown, replicated_prospect_game_time, resolve_cave_ai_class_name,
     resolve_deployable_setup_variant_index, resolve_inventory_slot_restore,
@@ -139,6 +144,28 @@ fn stitching_needs_both_id_and_name() {
     assert_eq!(
         stitch_prebuilt_structure_actors(&prebuilt_records, &spawned),
         vec![2, 0]
+    );
+
+    // C027 UPrebuiltStructureRecorderComponent::RecordOwnerState (0x14177ac40 / 0x14177fe10):
+    // records only structure actors that have a UActorStateRecorderComponent and copies StructureRow.RowName.
+    assert_eq!(
+        record_prebuilt_structure_actors(
+            false,
+            "Outpost_Alpha",
+            &[Some(("Floor_C", 7)), None, Some(("Wall_C", 8))],
+        ),
+        None
+    );
+    assert_eq!(
+        record_prebuilt_structure_actors(
+            true,
+            "Outpost_Alpha",
+            &[Some(("Floor_C", 7)), None, Some(("Wall_C", 8))],
+        ),
+        Some(PrebuiltStructureRecordPlan {
+            structure_row_name: "Outpost_Alpha",
+            relevant_actor_records: vec![("Floor_C", 7), ("Wall_C", 8)],
+        })
     );
 
     // C009 UDeployableRecorderComponent::Stitching (0x1418ac8a0 / 0x1418b0c80):
@@ -854,6 +881,24 @@ fn cave_spawn_times_replace_the_first_matching_class() {
         &[class("BP_Wolf", &[])]
     ));
     assert!(!restore_cave_spawn_times(&mut configured, &[]));
+
+    // C005 UCaveAirNavRecorderComponent::UpdateOwnerToDatabaseState (0x1418b7790 / 0x1418ba730):
+    // skips clearing owner+0x310 and skips UpdateStateFromDatabase when saved_spawn_data is empty.
+    let mut spawner_classes = vec![class("BP_Wolf", &[1.0])];
+    assert_eq!(
+        evaluate_cave_air_nav_restore(false, &mut spawner_classes, &[class("BP_Wolf", &[9.0])]),
+        None
+    );
+    assert_eq!(
+        evaluate_cave_air_nav_restore(true, &mut spawner_classes, &[]),
+        None
+    );
+    assert_eq!(spawner_classes, vec![class("BP_Wolf", &[1.0])]);
+    assert_eq!(
+        evaluate_cave_air_nav_restore(true, &mut spawner_classes, &[class("BP_Wolf", &[9.0])]),
+        Some(true)
+    );
+    assert_eq!(spawner_classes, vec![class("BP_Wolf", &[9.0])]);
 }
 
 #[test]
@@ -1284,6 +1329,43 @@ fn owner_resolve_step_attach_and_drill_auto_activate() {
         })
     );
 
+    // C008 UCropPlotStateRecorderComponent::RecordOwnerState (0x1418a1300 / 0x1418a6a80)
+    // and UpdateOwnerToDatabaseState (0x1418b7a50 / 0x1418baa10).
+    let mut plot_states = vec!["Seed_A"];
+    assert!(!evaluate_crop_plot_record(
+        false,
+        Some(&["Seed_B"]),
+        &mut plot_states
+    ));
+    assert!(!evaluate_crop_plot_record(true, None, &mut plot_states));
+    assert_eq!(plot_states, vec!["Seed_A"]);
+    assert!(evaluate_crop_plot_record(
+        true,
+        Some(&["Seed_B", "Seed_C"]),
+        &mut plot_states
+    ));
+    assert_eq!(plot_states, vec!["Seed_B", "Seed_C"]);
+    assert_eq!(evaluate_crop_plot_restore(false, &plot_states), None);
+    assert_eq!(
+        evaluate_crop_plot_restore(true, &plot_states),
+        Some(vec!["Seed_B", "Seed_C"])
+    );
+
+    // C030 USpawnBlockerRecorderComponent::RecordOwnerState (0x1418e9500 / 0x1418e9830)
+    // and UpdateOwnerToDatabaseState (0x1418f7930 / 0x1418f81f0).
+    assert_eq!(
+        evaluate_spawn_blocker_transfer(false, 1500, [1.0, 2.0, 3.0, 4.0], "Blocker_Row_A"),
+        None
+    );
+    assert_eq!(
+        evaluate_spawn_blocker_transfer(true, 1500, [1.0, 2.0, 3.0, 4.0], "Blocker_Row_A"),
+        Some(SpawnBlockerState {
+            effective_radius: 1500,
+            blocker_transform: [1.0, 2.0, 3.0, 4.0],
+            spawn_blocker_row_name: "Blocker_Row_A",
+        })
+    );
+
     // C032 USplineRecorderComponent::RespawnOwner (0x1418ed690 / 0x1418ee060).
     assert_eq!(
         evaluate_spline_recorder_respawn(false, false, true),
@@ -1639,6 +1721,36 @@ fn weather_and_teleport_clocks_record_and_restore() {
     let now = replicated_prospect_game_time(42.5, 1000.0);
     assert_eq!(now, 1042.5);
     assert_eq!(remaining_cooldown(1060.9, now), 18);
+
+    // C002 UBaseLevelTeleportRecorderComponent::RecordOwnerState (0x1419d5a20 / 0x1419ccd70)
+    // and UpdateOwnerToDatabaseState (0x1419e27c0 / 0x1419d9a70).
+    assert_eq!(
+        evaluate_base_level_teleport_record(false, true, 1060.9, true, 42.5, 1000.0),
+        None
+    );
+    assert_eq!(
+        evaluate_base_level_teleport_record(true, true, 1060.9, true, 42.5, 1000.0),
+        Some(BaseLevelTeleportRecordPlan {
+            b_is_activated: true,
+            remaining_cooldown: 18,
+        })
+    );
+    assert_eq!(
+        evaluate_base_level_teleport_record(true, false, 1060.9, false, 42.5, 1000.0),
+        Some(BaseLevelTeleportRecordPlan {
+            b_is_activated: false,
+            remaining_cooldown: 0,
+        })
+    );
+    assert_eq!(evaluate_base_level_teleport_restore(false, true, 18), None);
+    assert_eq!(
+        evaluate_base_level_teleport_restore(true, true, 18),
+        Some(BaseLevelTeleportRestorePlan {
+            b_is_activated: true,
+            notify_activated_and_clear_timer: true,
+            start_cooldown_seconds: 18,
+        })
+    );
 }
 
 #[test]
