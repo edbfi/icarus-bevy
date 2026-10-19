@@ -4059,3 +4059,676 @@ pub const fn evaluate_prospect_blob_decode(
         ignored_data_length: data_length,
     }
 }
+
+/// Base actor fields recorded by `UActorStateRecorderComponent::RecordOwnerState`
+/// (`C001`, `0x1418a0170` server / `0x1418a5b60` client, inherited by `C023`
+/// `UOilGeyserRecorderComponent` and all `UActorStateRecorderComponent`
+/// subclasses) after `UIcarusStateRecorderComponent::RecordOwnerState`
+/// (`0x1418a0270` server / `0x1418a5c60` client) (F-650, F-735, F-744).
+#[derive(Clone, Debug, PartialEq)]
+pub struct ActorRecorderBaseRecordPlan<V, I, M> {
+    /// `RecordedVersion` (`recorder + 0xdc`) set to `3`.
+    pub recorded_version: i32,
+    /// `ActorTransform` (`recorder + 0xe0..0x10c`): copied from
+    /// `owner->RootComponent + 0x1c0` when `b_record_actor_transform`
+    /// (`recorder + 0xd9`) is `true` and `RootComponent` (`+0x130`) is
+    /// non-null, or `FTransform::Identity` when `b_record_actor_transform` is
+    /// `true` and `RootComponent` is `nullptr`; `None` preserves existing
+    /// `recorder + 0xe0..0x10c` when `b_record_actor_transform` is `false`.
+    pub actor_transform_override: Option<([f32; 4], [f32; 3], [f32; 3])>,
+    /// `RecordedVariables` (`recorder + 0x110`) updated via
+    /// `RecordOwnerVariables` (`0x1418a3970` server / `0x1418a90f0` client).
+    pub recorded_variables: Vec<V>,
+    /// `DurabilityData` (`recorder + 0x120..0x139`:
+    /// `(current_durability, max_durability, b_can_break)`) copied from the
+    /// owner's `UDurabilityComponent` (`0x141b4e130` server / `0x141b43370`
+    /// client) when present; `None` preserves existing `+0x120..0x139`.
+    pub durability_data: Option<(i32, i32, bool)>,
+    /// `IcarusActorGUID` (`recorder + 0x140`) written when the owner implements
+    /// `IIcarusActorGuidInterface` (`0x141bae1c0` server / `0x141b9e950`
+    /// client); `None` preserves existing `+0x140`.
+    pub icarus_actor_guid_override: Option<i32>,
+    /// `SavedInventories` (`recorder + 0x170`) populated by
+    /// `RecordOwnerInventories` (`0x1418a21b0` server / `0x1418a7930` client).
+    pub saved_inventories: Vec<I>,
+    /// `ModifierStates` (`recorder + 0x150`, stride `0x18` B) cleared and
+    /// populated from `owner`'s `UModifierStateComponent` (`0x141c6b7c0`
+    /// server / `0x141c5d6a0` client) iff `b_record_modifier_states` (`+0xd8`)
+    /// is `true` and the component is present; `None` preserves existing
+    /// `+0x150`.
+    pub modifier_states_override: Option<Vec<M>>,
+    /// `bGeneratorActive` (`recorder + 0x162`) updated from
+    /// `UGeneratorComponent + 0xd0` (`0x141b7a780` server / `0x141b6eec0`
+    /// client) when present; `None` preserves existing `+0x162`.
+    pub generator_active_override: Option<bool>,
+    /// `UProcessingComponent` state (`recorder + 0x160..0x168`) updated from
+    /// `UProcessingComponent` (`0x141d2a790` server / `0x141d1ddd0` client)
+    /// when present; `None` preserves existing `+0x160..0x168`.
+    pub processing_state_override: Option<RestoredProcessingState>,
+}
+
+/// Evaluates `UActorStateRecorderComponent::RecordOwnerState` (`C001`,
+/// `0x1418a0170` server / `0x1418a5b60` client) (F-650, F-735, F-744).
+///
+/// Returns `None` when the owner is null or pending kill.
+#[allow(clippy::too_many_arguments, clippy::type_complexity)]
+pub fn evaluate_actor_recorder_base_record<V: Clone, I: Clone, M: Clone>(
+    owner_is_valid_actor: bool,
+    b_record_actor_transform: bool,
+    root_component_transform: Option<([f32; 4], [f32; 3], [f32; 3])>,
+    recorded_variables: &[V],
+    durability_component: Option<(i32, i32, bool)>,
+    owner_icarus_actor_guid: Option<i32>,
+    saved_inventories: &[I],
+    b_record_modifier_states: bool,
+    modifier_state_component_entries: Option<&[M]>,
+    generator_component_active: Option<bool>,
+    processing_component_state: Option<RestoredProcessingState>,
+) -> Option<ActorRecorderBaseRecordPlan<V, I, M>> {
+    if !owner_is_valid_actor {
+        return None;
+    }
+    let actor_transform_override = b_record_actor_transform.then(|| {
+        root_component_transform.unwrap_or(([0.0, 0.0, 0.0, 1.0], [0.0, 0.0, 0.0], [1.0, 1.0, 1.0]))
+    });
+    let modifier_states_override = if b_record_modifier_states {
+        modifier_state_component_entries.map(<[M]>::to_vec)
+    } else {
+        None
+    };
+    Some(ActorRecorderBaseRecordPlan {
+        recorded_version: 3,
+        actor_transform_override,
+        recorded_variables: recorded_variables.to_vec(),
+        durability_data: durability_component,
+        icarus_actor_guid_override: owner_icarus_actor_guid,
+        saved_inventories: saved_inventories.to_vec(),
+        modifier_states_override,
+        generator_active_override: generator_component_active,
+        processing_state_override: processing_component_state,
+    })
+}
+
+/// Values restored onto `AIcarusQuestManager` by
+/// `UIcarusQuestManagerRecorderComponent::UpdateOwnerToDatabaseState` (`C018`,
+/// `0x1418f3d30` server / `0x1418f4540` client) after
+/// `UActorStateRecorderComponent::UpdateOwnerToDatabaseState` (`0x1418b6ed0`
+/// server / `0x1418ba040` client) (F-650, F-653, F-663).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct QuestManagerRestorePlan<R> {
+    /// `FactionMission.RowName` (`recorder + 0x1c0 -> owner + 0x2c0`).
+    pub faction_mission_row_name: R,
+    /// `bMissionActive` (`recorder + 0x1e0 -> owner + 0x2ea` before
+    /// `OnRep_MissionActive` `0x141cf53b0` client).
+    pub b_mission_active: bool,
+    /// `MissionDifficulty` (`(u8)(recorder + 0x1e4) -> owner + 0x2d8` before
+    /// `OnRep_MissionDifficulty` `0x141cf53f0` client).
+    pub mission_difficulty: u8,
+    /// `MissionTimer` (`recorder + 0x1e8 -> owner + 0x330`).
+    pub mission_timer: i32,
+    /// `bTimerActive` (`recorder + 0x1e1 -> owner + 0x334`).
+    pub b_timer_active: bool,
+    /// `SelectedSeed.RowName` (`recorder + 0x1ec -> owner + 0x338`).
+    pub selected_seed_row_name: R,
+}
+
+/// Evaluates `UIcarusQuestManagerRecorderComponent::UpdateOwnerToDatabaseState`
+/// (`C018`, `0x1418f3d30` server / `0x1418f4540` client) (F-650, F-653, F-663).
+///
+/// Returns `None` when the owner is null or not an `AIcarusQuestManager`
+/// (`0x141cfaa20` client; no `PendingKill` check is performed).
+pub const fn evaluate_quest_manager_restore<R: Copy>(
+    owner_is_quest_manager: bool,
+    saved_faction_mission_row_name: R,
+    saved_b_mission_active: bool,
+    saved_mission_difficulty: u8,
+    saved_mission_timer: i32,
+    saved_b_timer_active: bool,
+    saved_selected_seed_row_name: R,
+) -> Option<QuestManagerRestorePlan<R>> {
+    if !owner_is_quest_manager {
+        return None;
+    }
+    Some(QuestManagerRestorePlan {
+        faction_mission_row_name: saved_faction_mission_row_name,
+        b_mission_active: saved_b_mission_active,
+        mission_difficulty: saved_mission_difficulty,
+        mission_timer: saved_mission_timer,
+        b_timer_active: saved_b_timer_active,
+        selected_seed_row_name: saved_selected_seed_row_name,
+    })
+}
+
+/// Values restored onto `AIcarusQuest` by
+/// `UIcarusQuestRecorderComponent::UpdateOwnerToDatabaseState` (`C019`,
+/// `0x1418f44e0` server / `0x1418f4cf0` client) after
+/// `UActorStateRecorderComponent::UpdateOwnerToDatabaseState` (`0x1418b6ed0`
+/// server / `0x1418ba040` client) (F-650, F-663).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct QuestRestorePlan<N, P> {
+    /// `QuestDTKey.RowName` (`recorder + 0x1c0 -> owner + 0x2c4`).
+    pub quest_dt_key: N,
+    /// `QuestProgressRecords` (`recorder + 0x1f8`, stride `0x20` B ->
+    /// `owner + 0x310` before `AIcarusQuest::OnQuestStateLoaded` `0x141ce9fb0`
+    /// client).
+    pub quest_progress_records: Vec<P>,
+}
+
+/// Evaluates `UIcarusQuestRecorderComponent::UpdateOwnerToDatabaseState`
+/// (`C019`, `0x1418f44e0` server / `0x1418f4cf0` client) (F-650, F-663).
+///
+/// Returns `None` when the owner is null or not an `AIcarusQuest`
+/// (`0x141cf3950` client; no `PendingKill` check is performed).
+pub fn evaluate_quest_restore<N, P: Clone>(
+    owner_is_quest: bool,
+    saved_quest_dt_key: N,
+    saved_quest_progress_records: &[P],
+) -> Option<QuestRestorePlan<N, P>> {
+    if !owner_is_quest {
+        return None;
+    }
+    Some(QuestRestorePlan {
+        quest_dt_key: saved_quest_dt_key,
+        quest_progress_records: saved_quest_progress_records.to_vec(),
+    })
+}
+
+/// `AIcarusGameStateSurvival` fields recorded by
+/// `UIcarusGameModeStateRecorderComponent::RecordOwnerState` (`C015`,
+/// `0x1418a1e10` server / `0x1418a7590` client) when `owner->GameState`
+/// (`+0x280`) is a valid non-pending-kill `AIcarusGameStateSurvival`
+/// (`0x141bc9a50` client) (F-650, F-653).
+#[derive(Clone, Debug, PartialEq)]
+pub struct GameModeGameStateRecord<L> {
+    /// `TimeOfDay` (`GameState + 0x50c -> recorder + 0x1c4`).
+    pub time_of_day: f32,
+    /// `LastValidTimeOfDay` (`GameState + 0x518 -> recorder + 0x1cc`).
+    pub last_valid_time_of_day: f32,
+    /// `SpawnedDropshipsCount` (`GameState + 0x3a8 -> recorder + 0x1d0`).
+    pub spawned_dropships_count: i32,
+    /// `CurrentDropshipIndex` (`GameState + 0x3ac -> recorder + 0x1d4`).
+    pub current_dropship_index: i32,
+    /// `DropshipLocations` (`GameState + 0x3b8 -> recorder + 0x1e0`).
+    pub dropship_locations: Vec<L>,
+}
+
+/// Values recorded by `UIcarusGameModeStateRecorderComponent::RecordOwnerState`
+/// (`C015`, `0x1418a1e10` server / `0x1418a7590` client) after
+/// `UActorStateRecorderComponent::RecordOwnerState` (`0x1418a0170` server /
+/// `0x1418a5b60` client) (F-650, F-653).
+#[derive(Clone, Debug, PartialEq)]
+pub struct GameModeRecordPlan<L, C, S, A, B, M, D, F> {
+    /// `RecordedVersion` (`recorder + 0x2a4`) set to `2`.
+    pub recorded_version: i32,
+    /// `LevelTimeElapsedSec` (`owner + 0x628 -> recorder + 0x1c0`).
+    pub level_time_elapsed_sec: i32,
+    /// `ProspectTimeElapsed` (`owner + 0x610 -> recorder + 0x1c8`).
+    pub prospect_time_elapsed: f32,
+    /// `bHaveDropshipsSpawned` (`owner + 0x62c -> recorder + 0x1f0`).
+    pub b_have_dropships_spawned: bool,
+    /// `GameState` fields (`recorder + 0x1c4`, `+0x1cc`, `+0x1d0`, `+0x1d4`,
+    /// `+0x1e0`) written iff `owner->GameState` (`+0x280`) is a valid
+    /// `AIcarusGameStateSurvival`; `None` preserves existing recorder fields.
+    pub game_state_record: Option<GameModeGameStateRecord<L>>,
+    /// `ExportedCurrencies` (`owner + 0x670 -> recorder + 0x200`, stride `0x0c` B).
+    pub exported_currencies: Vec<(C, i32)>,
+    /// `ProspectStats` (`owner + 0x450 -> recorder + 0x210`).
+    pub prospect_stats: S,
+    /// `AccoladeState` (`owner + 0x4c0 -> recorder + 0x260`).
+    pub accolade_state: A,
+    /// `BestiaryTracking` (`owner + 0x658 -> recorder + 0x270`).
+    pub bestiary_tracking: B,
+    /// `MissionHistory` (`owner + 0x6c0 -> recorder + 0x280`).
+    pub mission_history: Vec<M>,
+    /// `DialogueHistory` (`owner + 0x6d0 -> recorder + 0x290`).
+    pub dialogue_history: Vec<D>,
+    /// `NextMeteorShowerTime` (`owner + 0x6ec -> recorder + 0x2a0`).
+    pub next_meteor_shower_time: i32,
+    /// `FactionMissionBossesSpawned` (`owner + 0x698 -> recorder + 0x2a8`).
+    pub faction_mission_bosses_spawned: Vec<F>,
+}
+
+/// Evaluates `UIcarusGameModeStateRecorderComponent::RecordOwnerState` (`C015`,
+/// `0x1418a1e10` server / `0x1418a7590` client) (F-650, F-653).
+///
+/// Returns `None` when the owner is null, not an `AIcarusGameModeSurvival`
+/// (`0x141bc8d40` client), or pending kill.
+#[allow(clippy::too_many_arguments, clippy::type_complexity)]
+pub fn evaluate_game_mode_record<L: Clone, C: Clone, S, A, B, M: Clone, D: Clone, F: Clone>(
+    owner_is_valid_game_mode_survival: bool,
+    level_time_elapsed_sec: i32,
+    prospect_time_elapsed: f32,
+    b_have_dropships_spawned: bool,
+    valid_game_state_fields: Option<(f32, f32, i32, i32, &[L])>,
+    exported_currencies: &[(C, i32)],
+    prospect_stats: S,
+    accolade_state: A,
+    bestiary_tracking: B,
+    mission_history: &[M],
+    dialogue_history: &[D],
+    next_meteor_shower_time: i32,
+    faction_mission_bosses_spawned: &[F],
+) -> Option<GameModeRecordPlan<L, C, S, A, B, M, D, F>> {
+    if !owner_is_valid_game_mode_survival {
+        return None;
+    }
+    let game_state_record = valid_game_state_fields.map(
+        |(
+            time_of_day,
+            last_valid_time_of_day,
+            spawned_dropships_count,
+            current_dropship_index,
+            dropship_locations,
+        )| GameModeGameStateRecord {
+            time_of_day,
+            last_valid_time_of_day,
+            spawned_dropships_count,
+            current_dropship_index,
+            dropship_locations: dropship_locations.to_vec(),
+        },
+    );
+    Some(GameModeRecordPlan {
+        recorded_version: 2,
+        level_time_elapsed_sec,
+        prospect_time_elapsed,
+        b_have_dropships_spawned,
+        game_state_record,
+        exported_currencies: exported_currencies.to_vec(),
+        prospect_stats,
+        accolade_state,
+        bestiary_tracking,
+        mission_history: mission_history.to_vec(),
+        dialogue_history: dialogue_history.to_vec(),
+        next_meteor_shower_time,
+        faction_mission_bosses_spawned: faction_mission_bosses_spawned.to_vec(),
+    })
+}
+
+/// Values recorded by `UIcarusMountCharacterRecorderComponent::RecordOwnerState`
+/// (`C017`, `0x1413fd880` server / `0x14143b680` client) and its base classes
+/// `UIcarusNPCRecorderComponent::RecordOwnerState` (`0x1413cc9b0` server /
+/// `0x14140b700` client) and `UIcarusCharacterRecorderComponent::RecordOwnerState`
+/// (`0x14143d900` server / `0x14147bc20` client) after
+/// `UActorStateRecorderComponent::RecordOwnerState` (`0x1418a0170` server /
+/// `0x1418a5b60` client) (F-650, F-651).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct MountCharacterRecordPlan<R, T, N, U> {
+    /// `Health` (`recorder + 0x1c0`) written from `StatComponent->GetHealth()`
+    /// iff `owner->StatComponent` (`+0x5a8`) is valid; `None` preserves
+    /// existing `+0x1c0`.
+    pub health_override: Option<i32>,
+    /// `ParentCharacterUID` (`recorder + 0x1c4`): `ParentCharacter->IcarusActorGUID`
+    /// (`+0x564`) when `owner->ParentCharacter` (`+0x738`) is valid, else `-1`.
+    pub parent_character_uid: i32,
+    /// `BehaviourType` (`AIcarusCharacter + 0x730 -> recorder + 0x1c8`).
+    pub behaviour_type: u8,
+    /// `TamedMountAction` (`AIcarusCharacter + 0x731 -> recorder + 0x1c9`).
+    pub tamed_mount_action: u8,
+    /// `SavedVersion` (`recorder + 0x260`) set to `2`.
+    pub saved_version: i32,
+    /// `GrowthStage` (`AIcarusNPCCharacter + 0x840 -> recorder + 0x1cc`).
+    pub growth_stage: u8,
+    /// `Experience` (`AIcarusNPCCharacter + 0x838 -> recorder + 0x1d0`).
+    pub experience: i32,
+    /// `CharacterLevel` (`AIcarusNPCCharacter + 0x83c -> recorder + 0x1d4`).
+    pub character_level: i32,
+    /// `AISetupRowName` (`AIcarusNPCCharacter + 0x81c -> recorder + 0x1d8`).
+    pub ai_setup_row_name: R,
+    /// `CurrentFood` (`AIcarusNPCCharacter + 0x928 -> recorder + 0x1e4`).
+    pub current_food: i32,
+    /// `CurrentWater` (`AIcarusNPCCharacter + 0x92c -> recorder + 0x1e8`).
+    pub current_water: i32,
+    /// `TamedData` (`AIcarusNPCCharacter + 0x848 -> recorder + 0x1f0..0x220`)
+    /// copied when `TamedData` is active; `None` preserves existing
+    /// `+0x1f0..0x220`.
+    pub tamed_data_override: Option<T>,
+    /// `SelectedTalentRowNames` (`AIcarusNPCCharacter + 0x988 -> recorder + 0x228`).
+    pub selected_talent_row_names: Vec<R>,
+    /// `SoloTalentRowNames` (`AIcarusNPCCharacter + 0x998 -> recorder + 0x238`).
+    pub solo_talent_row_names: Vec<R>,
+    /// `UnlockedCosmeticRowNames` (`AIcarusNPCCharacter + 0x9a8 -> recorder + 0x248`).
+    pub unlocked_cosmetic_row_names: Vec<R>,
+    /// `MountName` (`AIcarusMountCharacter + 0x9f0 -> recorder + 0x268`).
+    pub mount_name: N,
+    /// `MountTypeRowName` (`AIcarusMountCharacter + 0xa00 -> recorder + 0x278`).
+    pub mount_type_row_name: R,
+    /// `MountIconRowName` (`AIcarusMountCharacter + 0xa18 -> recorder + 0x280`).
+    pub mount_icon_row_name: R,
+    /// `OwnerUserID` (`AIcarusMountCharacter + 0xa30 -> recorder + 0x288`).
+    pub owner_user_id: U,
+}
+
+/// Evaluates `UIcarusMountCharacterRecorderComponent::RecordOwnerState` (`C017`,
+/// `0x1413fd880` server / `0x14143b680` client) and its NPC/Character base
+/// layers (F-650, F-651).
+///
+/// Returns `None` when the owner is null, not an `AIcarusMountCharacter`
+/// (`0x141be4450` server / `0x141bd7910` client), or pending kill.
+#[allow(clippy::too_many_arguments)]
+pub fn evaluate_mount_character_record<R: Clone, T, N, U>(
+    owner_is_valid_mount_character: bool,
+    stat_component_health: Option<i32>,
+    valid_parent_character_guid: Option<i32>,
+    behaviour_type: u8,
+    tamed_mount_action: u8,
+    growth_stage: u8,
+    experience: i32,
+    character_level: i32,
+    ai_setup_row_name: R,
+    current_food: i32,
+    current_water: i32,
+    tamed_data_override: Option<T>,
+    selected_talent_row_names: &[R],
+    solo_talent_row_names: &[R],
+    unlocked_cosmetic_row_names: &[R],
+    mount_name: N,
+    mount_type_row_name: R,
+    mount_icon_row_name: R,
+    owner_user_id: U,
+) -> Option<MountCharacterRecordPlan<R, T, N, U>> {
+    if !owner_is_valid_mount_character {
+        return None;
+    }
+    Some(MountCharacterRecordPlan {
+        health_override: stat_component_health,
+        parent_character_uid: valid_parent_character_guid.unwrap_or(-1),
+        behaviour_type,
+        tamed_mount_action,
+        saved_version: 2,
+        growth_stage,
+        experience,
+        character_level,
+        ai_setup_row_name,
+        current_food,
+        current_water,
+        tamed_data_override,
+        selected_talent_row_names: selected_talent_row_names.to_vec(),
+        solo_talent_row_names: solo_talent_row_names.to_vec(),
+        unlocked_cosmetic_row_names: unlocked_cosmetic_row_names.to_vec(),
+        mount_name,
+        mount_type_row_name,
+        mount_icon_row_name,
+        owner_user_id,
+    })
+}
+
+/// Values and actions restored onto `AIcarusMountCharacter` by
+/// `UIcarusMountCharacterRecorderComponent::UpdateOwnerToDatabaseState` (`C017`,
+/// `0x14140c8f0` server / `0x141449c30` client) and its base classes
+/// `UIcarusNPCRecorderComponent::UpdateOwnerToDatabaseState` (`0x1413e0710`
+/// server / `0x14141e250` client) and
+/// `UIcarusCharacterRecorderComponent::UpdateOwnerToDatabaseState` (`0x14144c1b0`
+/// server / `0x14148a880` client) after
+/// `UActorStateRecorderComponent::UpdateOwnerToDatabaseState` (`0x1418b6ed0`
+/// server / `0x1418ba040` client) (F-651).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct MountCharacterRestorePlan<R, T, N, U> {
+    /// Health applied via `StatComponent->SetHealth(saved_health)` (`0x141444cd0`
+    /// server) iff `has_valid_stat_component` is `true` and `saved_health`
+    /// (`recorder + 0x1c0`) is not `-1` ([`UNRECORDED_LEVEL`]).
+    pub set_health: Option<i32>,
+    /// `BehaviourType` (`recorder + 0x1c8 -> AIcarusCharacter + 0x730`).
+    pub behaviour_type: u8,
+    /// `TamedMountAction` (`recorder + 0x1c9 -> AIcarusCharacter + 0x731`).
+    pub tamed_mount_action: u8,
+    /// `GrowthStage` (`recorder + 0x1cc -> AIcarusNPCCharacter + 0x840`).
+    pub growth_stage: u8,
+    /// `Experience` (`recorder + 0x1d0 -> AIcarusNPCCharacter + 0x838`).
+    pub experience: i32,
+    /// `CharacterLevel` (`recorder + 0x1d4 -> AIcarusNPCCharacter + 0x83c`).
+    pub character_level: i32,
+    /// `AISetupRowName` (`recorder + 0x1d8 -> AIcarusNPCCharacter + 0x81c`).
+    pub ai_setup_row_name: R,
+    /// `CurrentFood` (`recorder + 0x1e4 -> AIcarusNPCCharacter + 0x928`).
+    pub current_food: i32,
+    /// `CurrentWater` (`recorder + 0x1e8 -> AIcarusNPCCharacter + 0x92c`).
+    pub current_water: i32,
+    /// `TamedData` (`recorder + 0x1f0..0x220 -> AIcarusNPCCharacter + 0x848`).
+    pub tamed_data: T,
+    /// `SelectedTalentRowNames` (`recorder + 0x228 -> AIcarusNPCCharacter + 0x988`).
+    pub selected_talent_row_names: Vec<R>,
+    /// `SoloTalentRowNames` (`recorder + 0x238 -> AIcarusNPCCharacter + 0x998`).
+    pub solo_talent_row_names: Vec<R>,
+    /// `UnlockedCosmeticRowNames` (`recorder + 0x248 -> AIcarusNPCCharacter + 0x9a8`).
+    pub unlocked_cosmetic_row_names: Vec<R>,
+    /// Whether `UIcarusNPCRecorderComponent::MigrateLegacyTalents` (`0x1413cc7f0`
+    /// server / `0x14140b3e0` client) runs (`saved_version < 2` at
+    /// `recorder + 0x260`).
+    pub run_legacy_talent_migration: bool,
+    /// `MountName` (`recorder + 0x268 -> AIcarusMountCharacter + 0x9f0`).
+    pub mount_name: N,
+    /// `MountTypeRowName` (`recorder + 0x278 -> AIcarusMountCharacter + 0xa00`).
+    pub mount_type_row_name: R,
+    /// `MountIconRowName` (`recorder + 0x280 -> AIcarusMountCharacter + 0xa18`).
+    pub mount_icon_row_name: R,
+    /// `OwnerUserID` (`recorder + 0x288 -> AIcarusMountCharacter + 0xa30`).
+    pub owner_user_id: U,
+}
+
+/// Evaluates `UIcarusMountCharacterRecorderComponent::UpdateOwnerToDatabaseState`
+/// (`C017`, `0x14140c8f0` server / `0x141449c30` client) and its NPC/Character
+/// base layers (F-651).
+///
+/// Returns `None` when the owner is null, not an `AIcarusMountCharacter`
+/// (`0x141be4450` server / `0x141bd7910` client), or pending kill.
+#[allow(clippy::too_many_arguments)]
+pub fn evaluate_mount_character_restore<R: Clone, T, N, U>(
+    owner_is_valid_mount_character: bool,
+    has_valid_stat_component: bool,
+    saved_health: i32,
+    saved_behaviour_type: u8,
+    saved_tamed_mount_action: u8,
+    saved_version: i32,
+    saved_growth_stage: u8,
+    saved_experience: i32,
+    saved_character_level: i32,
+    saved_ai_setup_row_name: R,
+    saved_current_food: i32,
+    saved_current_water: i32,
+    saved_tamed_data: T,
+    saved_selected_talent_row_names: &[R],
+    saved_solo_talent_row_names: &[R],
+    saved_unlocked_cosmetic_row_names: &[R],
+    saved_mount_name: N,
+    saved_mount_type_row_name: R,
+    saved_mount_icon_row_name: R,
+    saved_owner_user_id: U,
+) -> Option<MountCharacterRestorePlan<R, T, N, U>> {
+    if !owner_is_valid_mount_character {
+        return None;
+    }
+    let set_health = if has_valid_stat_component {
+        recorded_level(saved_health)
+    } else {
+        None
+    };
+    Some(MountCharacterRestorePlan {
+        set_health,
+        behaviour_type: saved_behaviour_type,
+        tamed_mount_action: saved_tamed_mount_action,
+        growth_stage: saved_growth_stage,
+        experience: saved_experience,
+        character_level: saved_character_level,
+        ai_setup_row_name: saved_ai_setup_row_name,
+        current_food: saved_current_food,
+        current_water: saved_current_water,
+        tamed_data: saved_tamed_data,
+        selected_talent_row_names: saved_selected_talent_row_names.to_vec(),
+        solo_talent_row_names: saved_solo_talent_row_names.to_vec(),
+        unlocked_cosmetic_row_names: saved_unlocked_cosmetic_row_names.to_vec(),
+        run_legacy_talent_migration: saved_version < 2,
+        mount_name: saved_mount_name,
+        mount_type_row_name: saved_mount_type_row_name,
+        mount_icon_row_name: saved_mount_icon_row_name,
+        owner_user_id: saved_owner_user_id,
+    })
+}
+
+/// Which `RequiresStitching` (`vftable + 0x470`) implementation a
+/// `StateRecorderBlobs` class (`C001`..`C038`) dispatches (F-746).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RequiresStitchingKind {
+    /// Base `UIcarusStateRecorderComponent` / `UActorStateRecorderComponent`
+    /// `0x14089a160` server / `0x1408cb520` client (`xor al, al; ret`).
+    AlwaysFalse,
+    /// `0x140899f70` server / `0x1408c9810` client (`mov al, 1; ret`).
+    AlwaysTrue,
+    /// `UIcarusCharacterRecorderComponent::RequiresStitching` (`0x1413e1110`
+    /// server / `0x14141ec50` client, inherited by `C017`
+    /// `UIcarusMountCharacterRecorderComponent`): returns
+    /// `ParentCharacterUID != -1` (`[this + 0x1c4] != -1`).
+    CharacterParentUidPresent,
+}
+
+/// Which `MakeRecorderTransformRelative` (`vftable + 0x4a8`) and
+/// `TransformFromRelative` (`vftable + 0x4b0`) implementation pair a
+/// `StateRecorderBlobs` class (`C001`..`C038`) dispatches (F-746).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum MakeRelativeTransformKind {
+    /// Direct `UIcarusStateRecorderComponent` subclass (`C013`, `C014`, `C022`,
+    /// `C025`, `C035`, `C036`, `C037`), where primary `vftable + 0x4a8` is the
+    /// secondary `IIcarusPooledComponentInterface` vtable header rather than a
+    /// callable method.
+    NotApplicable,
+    /// `UActorStateRecorderComponent::MakeRecorderTransformRelative`
+    /// (`0x14189a760` server / `0x1418a1b90` client; `TransformFromRelative`
+    /// `0x141887d20` server / `0x141890ec0` client): converts
+    /// `ActorTransform` (`+0xe0`) to/from relative space.
+    ActorTransformOnly,
+    /// `UBuildingGridRecorderComponent::MakeRecorderTransformRelative` (`C004`,
+    /// `0x14189a7d0` server / `0x1418a1c00` client; `TransformFromRelative`
+    /// `0x141888270` server / `0x141891410` client): converts `ActorTransform`
+    /// (`+0xe0`) and `BuildingGridRecord` (`+0x1c0`) to/from relative space.
+    ActorAndBuildingGrid,
+    /// `USplineRecorderComponent::MakeRecorderTransformRelative` (`C032`,
+    /// `0x1418ddbf0` server / `0x1418df8c0` client; `TransformFromRelative`
+    /// `0x1418c5cd0` server / `0x1418c7970` client): converts `ActorTransform`
+    /// (`+0xe0`) and each `FRecordedSplinePoint` in
+    /// `SplineNetworkSaveData.Points` (`+0x238`, stride `0x50`) to/from
+    /// relative space.
+    ActorAndSplinePoints,
+}
+
+/// Constructor defaults (`+0xb0`, `+0xb1`, `+0xb2`, `+0xd8`, `+0xd9`) and
+/// virtual-slot `+0x470` (`RequiresStitching`), `+0x498`
+/// (`PurgeActorsMovedToSubLevel`: `0x14189ea40` server / `0x1418a4500` client
+/// on `C004` vs base no-op `0x14189eae0` / `0x1418a45a0`), and `+0x4a8`/`+0x4b0`
+/// (`MakeRecorderTransformRelative` / `TransformFromRelative`) dispatch for one
+/// `StateRecorderBlobs` class ordinal `1..=38` (`C001`..`C038`), identical in
+/// server `25621760` and client `25793767` (F-746).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct RecorderCtorDefaults {
+    pub class_ordinal: u8,
+    /// `true` for the 31 `UActorStateRecorderComponent` classes (`C001` and its
+    /// subclasses); `false` for the 7 direct `UIcarusStateRecorderComponent`
+    /// classes (`C013`, `C014`, `C022`, `C025`, `C035`, `C036`, `C037`).
+    pub is_actor_recorder: bool,
+    /// `UIcarusStateRecorderComponent::bSaveModifiers` (`+0xb0`): default `1`
+    /// in base ctor (`0x1418824d0` server / `0x14188bea0` client), overridden
+    /// to `0` on 13 classes (`C003, C007..C010, C020, C021, C025, C026, C029,
+    /// C030, C033, C034`).
+    pub b_save_modifiers: bool,
+    /// `UIcarusStateRecorderComponent::bSkipDefaultOwnerResolution` (`+0xb1`):
+    /// default `0` in base ctor, overridden to `1` on 6 classes (`C015, C020,
+    /// C025, C026, C031, C034`).
+    pub b_skip_default_owner_resolution: bool,
+    /// `UIcarusStateRecorderComponent::OwnerResolvePolicy` (`+0xb2`): default
+    /// `FindOrRespawn` (`2`) in base ctor (`13` `FindOnly`, `15` `RespawnOnly`,
+    /// `4` `FindOrRespawn`, `6` `ManuallyResolved`).
+    pub owner_resolve_policy: OwnerResolvePolicy,
+    /// `UActorStateRecorderComponent::bRecordModifierStates` (`+0xd8`): default
+    /// `0` in `UActorStateRecorderComponent` ctor (`0x1419fe870` server /
+    /// `0x1419f5880` client), overridden to `1` only on `C026`; `None` on the 7
+    /// direct `UIcarusStateRecorderComponent` classes.
+    pub b_record_modifier_states: Option<bool>,
+    /// `UActorStateRecorderComponent::bRecordActorTransform` (`+0xd9`): default
+    /// `1` in `UActorStateRecorderComponent` ctor, overridden to `0` on 5
+    /// classes (`C006, C020, C028, C031, C034`); `None` on the 7 direct
+    /// `UIcarusStateRecorderComponent` classes.
+    pub b_record_actor_transform: Option<bool>,
+    /// `RequiresStitching` (`vftable + 0x470`).
+    pub requires_stitching: RequiresStitchingKind,
+    /// `PurgeActorsMovedToSubLevel` (`vftable + 0x498`): `true` only on `C004`
+    /// (`0x14189ea40` server / `0x1418a4500` client vs base no-op `0x14189eae0`
+    /// / `0x1418a45a0` on the other 30 `C001` classes).
+    pub purge_sublevel_actors: bool,
+    /// `MakeRecorderTransformRelative` / `TransformFromRelative`
+    /// (`vftable + 0x4a8` / `+0x4b0`).
+    pub make_relative_transform: MakeRelativeTransformKind,
+}
+
+/// Returns the constructor defaults and virtual-slot `+0x470` / `+0x498` /
+/// `+0x4a8` profile for `class_ordinal` in `1..=38` (`C001`..`C038`), or
+/// `None` if `class_ordinal` is outside `1..=38` (F-746).
+pub const fn recorder_ctor_defaults(class_ordinal: u8) -> Option<RecorderCtorDefaults> {
+    if class_ordinal < 1 || class_ordinal > 38 {
+        return None;
+    }
+    let is_actor_recorder = !matches!(class_ordinal, 13 | 14 | 22 | 25 | 35 | 36 | 37);
+    let b_save_modifiers = !matches!(
+        class_ordinal,
+        3 | 7 | 8 | 9 | 10 | 20 | 21 | 25 | 26 | 29 | 30 | 33 | 34
+    );
+    let b_skip_default_owner_resolution = matches!(class_ordinal, 15 | 20 | 25 | 26 | 31 | 34);
+    let owner_resolve_policy = match class_ordinal {
+        2 | 12 | 13 | 15 | 16 | 18 | 22 | 23 | 24 | 35 | 36 | 37 | 38 => {
+            OwnerResolvePolicy::FindOnly
+        }
+        3 | 4 | 7 | 8 | 9 | 10 | 11 | 14 | 17 | 21 | 29 | 30 | 31 | 32 | 33 => {
+            OwnerResolvePolicy::RespawnOnly
+        }
+        1 | 19 | 27 | 28 => OwnerResolvePolicy::FindOrRespawn,
+        _ => OwnerResolvePolicy::ManuallyResolved,
+    };
+    let (b_record_modifier_states, b_record_actor_transform, make_relative_transform) =
+        if is_actor_recorder {
+            let record_modifiers = class_ordinal == 26;
+            let record_transform = !matches!(class_ordinal, 6 | 20 | 28 | 31 | 34);
+            let make_relative = match class_ordinal {
+                4 => MakeRelativeTransformKind::ActorAndBuildingGrid,
+                32 => MakeRelativeTransformKind::ActorAndSplinePoints,
+                _ => MakeRelativeTransformKind::ActorTransformOnly,
+            };
+            (
+                Some(record_modifiers),
+                Some(record_transform),
+                make_relative,
+            )
+        } else {
+            (None, None, MakeRelativeTransformKind::NotApplicable)
+        };
+    let requires_stitching = match class_ordinal {
+        17 => RequiresStitchingKind::CharacterParentUidPresent,
+        3 | 6 | 7 | 8 | 9 | 10 | 13 | 14 | 16 | 18 | 19 | 25 | 26 | 27 | 30 | 32 | 38 => {
+            RequiresStitchingKind::AlwaysTrue
+        }
+        _ => RequiresStitchingKind::AlwaysFalse,
+    };
+    let purge_sublevel_actors = class_ordinal == 4;
+    Some(RecorderCtorDefaults {
+        class_ordinal,
+        is_actor_recorder,
+        b_save_modifiers,
+        b_skip_default_owner_resolution,
+        owner_resolve_policy,
+        b_record_modifier_states,
+        b_record_actor_transform,
+        requires_stitching,
+        purge_sublevel_actors,
+        make_relative_transform,
+    })
+}
+
+/// Evaluates `RequiresStitching` (`vftable + 0x470`) given a class's
+/// [`RequiresStitchingKind`] and saved `ParentCharacterUID` (`[this + 0x1c4]`)
+/// (F-746).
+pub const fn evaluate_requires_stitching(
+    kind: RequiresStitchingKind,
+    parent_character_uid: i32,
+) -> bool {
+    match kind {
+        RequiresStitchingKind::AlwaysFalse => false,
+        RequiresStitchingKind::AlwaysTrue => true,
+        RequiresStitchingKind::CharacterParentUidPresent => parent_character_uid != -1,
+    }
+}

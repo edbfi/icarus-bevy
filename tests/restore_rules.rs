@@ -2926,3 +2926,915 @@ fn prospect_blob_decode_models_allocation_lengths_and_ignored_base64_return() {
         }
     );
 }
+
+#[test]
+fn actor_base_quest_game_mode_and_mount_record_and_restore() {
+    use icarus_bevy::experimental::restore_rules::{
+        ActorRecorderBaseRecordPlan, GameModeGameStateRecord, GameModeRecordPlan,
+        MountCharacterRecordPlan, MountCharacterRestorePlan, QuestManagerRestorePlan,
+        QuestRestorePlan, evaluate_actor_recorder_base_record, evaluate_game_mode_record,
+        evaluate_mount_character_record, evaluate_mount_character_restore,
+        evaluate_quest_manager_restore, evaluate_quest_restore,
+    };
+
+    // C001 / C023 UActorStateRecorderComponent::RecordOwnerState (0x1418a0170 / 0x1418a5b60):
+    // sets RecordedVersion = 3, records ActorTransform (or FTransform::Identity when RootComponent is null)
+    // iff b_record_actor_transform is true, and records variables, durability, GUID, inventories,
+    // modifier states (iff b_record_modifier_states is true), generator, and processing state.
+    assert_eq!(
+        evaluate_actor_recorder_base_record::<&str, &str, &str>(
+            false,
+            true,
+            None,
+            &["Var_A"],
+            Some((100, 200, true)),
+            Some(42),
+            &["Inv_0"],
+            true,
+            Some(&["Mod_A"]),
+            Some(true),
+            None,
+        ),
+        None
+    );
+    assert_eq!(
+        evaluate_actor_recorder_base_record(
+            true,
+            true,
+            None,
+            &["Var_A"],
+            Some((100, 200, true)),
+            Some(42),
+            &["Inv_0"],
+            false,
+            Some(&["Mod_A"]),
+            Some(true),
+            Some(RestoredProcessingState {
+                b_processing_active: true,
+                b_is_crafting: true,
+                crafting_progress: 50,
+                b_resource_1_active: true,
+                b_resource_2_active: false,
+            }),
+        ),
+        Some(ActorRecorderBaseRecordPlan {
+            recorded_version: 3,
+            actor_transform_override: Some((
+                [0.0, 0.0, 0.0, 1.0],
+                [0.0, 0.0, 0.0],
+                [1.0, 1.0, 1.0],
+            )),
+            recorded_variables: vec!["Var_A"],
+            durability_data: Some((100, 200, true)),
+            icarus_actor_guid_override: Some(42),
+            saved_inventories: vec!["Inv_0"],
+            modifier_states_override: None,
+            generator_active_override: Some(true),
+            processing_state_override: Some(RestoredProcessingState {
+                b_processing_active: true,
+                b_is_crafting: true,
+                crafting_progress: 50,
+                b_resource_1_active: true,
+                b_resource_2_active: false,
+            }),
+        })
+    );
+    assert_eq!(
+        evaluate_actor_recorder_base_record::<&str, &str, &str>(
+            true,
+            false,
+            Some(([0.0, 0.0, 0.0, 1.0], [10.0, 20.0, 30.0], [1.0, 1.0, 1.0])),
+            &[],
+            None,
+            None,
+            &[],
+            true,
+            Some(&["Mod_A", "Mod_B"]),
+            None,
+            None,
+        ),
+        Some(ActorRecorderBaseRecordPlan {
+            recorded_version: 3,
+            actor_transform_override: None,
+            recorded_variables: Vec::new(),
+            durability_data: None,
+            icarus_actor_guid_override: None,
+            saved_inventories: Vec::new(),
+            modifier_states_override: Some(vec!["Mod_A", "Mod_B"]),
+            generator_active_override: None,
+            processing_state_override: None,
+        })
+    );
+
+    // C018 UIcarusQuestManagerRecorderComponent::UpdateOwnerToDatabaseState (0x1418f3d30 / 0x1418f4540)
+    // and C019 UIcarusQuestRecorderComponent::UpdateOwnerToDatabaseState (0x1418f44e0 / 0x1418f4cf0).
+    assert_eq!(
+        evaluate_quest_manager_restore(false, "Mission_Alpha", true, 2, 1800, true, "Seed_01"),
+        None
+    );
+    assert_eq!(
+        evaluate_quest_manager_restore(true, "Mission_Alpha", true, 2, 1800, true, "Seed_01"),
+        Some(QuestManagerRestorePlan {
+            faction_mission_row_name: "Mission_Alpha",
+            b_mission_active: true,
+            mission_difficulty: 2,
+            mission_timer: 1800,
+            b_timer_active: true,
+            selected_seed_row_name: "Seed_01",
+        })
+    );
+    assert_eq!(
+        evaluate_quest_restore(false, "Quest_Step_A", &["Prog_1", "Prog_2"]),
+        None
+    );
+    assert_eq!(
+        evaluate_quest_restore(true, "Quest_Step_A", &["Prog_1", "Prog_2"]),
+        Some(QuestRestorePlan {
+            quest_dt_key: "Quest_Step_A",
+            quest_progress_records: vec!["Prog_1", "Prog_2"],
+        })
+    );
+
+    // C015 UIcarusGameModeStateRecorderComponent::RecordOwnerState (0x1418a1e10 / 0x1418a7590):
+    // sets RecordedVersion = 2, copies GameMode fields, and copies GameState fields iff GameState is a valid AIcarusGameStateSurvival.
+    assert_eq!(
+        evaluate_game_mode_record::<[f32; 3], &str, &str, &str, &str, &str, &str, &str>(
+            false,
+            3600,
+            3605.5,
+            true,
+            None,
+            &[("Exotics", 50)],
+            "Stats_A",
+            "Accolades_A",
+            "Bestiary_A",
+            &["Mission_1"],
+            &["Dialogue_1"],
+            7200,
+            &["Boss_Alpha"],
+        ),
+        None
+    );
+    assert_eq!(
+        evaluate_game_mode_record(
+            true,
+            3600,
+            3605.5,
+            true,
+            Some((12.5, 12.25, 2, 1, &[[100.0_f32, 200.0, 300.0]])),
+            &[("Exotics", 50), ("Exotics_Red", 10)],
+            "Stats_A",
+            "Accolades_A",
+            "Bestiary_A",
+            &["Mission_1"],
+            &["Dialogue_1"],
+            7200,
+            &["Boss_Alpha"],
+        ),
+        Some(GameModeRecordPlan {
+            recorded_version: 2,
+            level_time_elapsed_sec: 3600,
+            prospect_time_elapsed: 3605.5,
+            b_have_dropships_spawned: true,
+            game_state_record: Some(GameModeGameStateRecord {
+                time_of_day: 12.5,
+                last_valid_time_of_day: 12.25,
+                spawned_dropships_count: 2,
+                current_dropship_index: 1,
+                dropship_locations: vec![[100.0, 200.0, 300.0]],
+            }),
+            exported_currencies: vec![("Exotics", 50), ("Exotics_Red", 10)],
+            prospect_stats: "Stats_A",
+            accolade_state: "Accolades_A",
+            bestiary_tracking: "Bestiary_A",
+            mission_history: vec!["Mission_1"],
+            dialogue_history: vec!["Dialogue_1"],
+            next_meteor_shower_time: 7200,
+            faction_mission_bosses_spawned: vec!["Boss_Alpha"],
+        })
+    );
+
+    // C017 UIcarusMountCharacterRecorderComponent::RecordOwnerState (0x1413fd880 / 0x14143b680)
+    // and UpdateOwnerToDatabaseState (0x14140c8f0 / 0x141449c30) + NPC & Character base layers.
+    assert_eq!(
+        evaluate_mount_character_record(
+            false,
+            Some(450),
+            Some(99),
+            1,
+            2,
+            3,
+            1200,
+            15,
+            "Mount_Moa",
+            80,
+            90,
+            Some("Tamed_Data_A"),
+            &["Talent_1"],
+            &["Solo_1"],
+            &["Cosmetic_1"],
+            "Swiftfoot",
+            "Moa_Type",
+            "Icon_Moa",
+            "76561198000000001",
+        ),
+        None
+    );
+    assert_eq!(
+        evaluate_mount_character_record(
+            true,
+            Some(450),
+            None,
+            1,
+            2,
+            3,
+            1200,
+            15,
+            "Mount_Moa",
+            80,
+            90,
+            Some("Tamed_Data_A"),
+            &["Talent_1"],
+            &["Solo_1"],
+            &["Cosmetic_1"],
+            "Swiftfoot",
+            "Moa_Type",
+            "Icon_Moa",
+            "76561198000000001",
+        ),
+        Some(MountCharacterRecordPlan {
+            health_override: Some(450),
+            parent_character_uid: -1,
+            behaviour_type: 1,
+            tamed_mount_action: 2,
+            saved_version: 2,
+            growth_stage: 3,
+            experience: 1200,
+            character_level: 15,
+            ai_setup_row_name: "Mount_Moa",
+            current_food: 80,
+            current_water: 90,
+            tamed_data_override: Some("Tamed_Data_A"),
+            selected_talent_row_names: vec!["Talent_1"],
+            solo_talent_row_names: vec!["Solo_1"],
+            unlocked_cosmetic_row_names: vec!["Cosmetic_1"],
+            mount_name: "Swiftfoot",
+            mount_type_row_name: "Moa_Type",
+            mount_icon_row_name: "Icon_Moa",
+            owner_user_id: "76561198000000001",
+        })
+    );
+
+    assert_eq!(
+        evaluate_mount_character_restore(
+            false,
+            true,
+            450,
+            1,
+            2,
+            2,
+            3,
+            1200,
+            15,
+            "Mount_Moa",
+            80,
+            90,
+            "Tamed_Data_A",
+            &["Talent_1"],
+            &["Solo_1"],
+            &["Cosmetic_1"],
+            "Swiftfoot",
+            "Moa_Type",
+            "Icon_Moa",
+            "76561198000000001",
+        ),
+        None
+    );
+    // Version 1 (< 2) runs legacy talent migration; saved_health == -1 skips SetHealth.
+    assert_eq!(
+        evaluate_mount_character_restore(
+            true,
+            true,
+            -1,
+            1,
+            2,
+            1,
+            3,
+            1200,
+            15,
+            "Mount_Moa",
+            80,
+            90,
+            "Tamed_Data_A",
+            &["Talent_1"],
+            &["Solo_1"],
+            &["Cosmetic_1"],
+            "Swiftfoot",
+            "Moa_Type",
+            "Icon_Moa",
+            "76561198000000001",
+        ),
+        Some(MountCharacterRestorePlan {
+            set_health: None,
+            behaviour_type: 1,
+            tamed_mount_action: 2,
+            growth_stage: 3,
+            experience: 1200,
+            character_level: 15,
+            ai_setup_row_name: "Mount_Moa",
+            current_food: 80,
+            current_water: 90,
+            tamed_data: "Tamed_Data_A",
+            selected_talent_row_names: vec!["Talent_1"],
+            solo_talent_row_names: vec!["Solo_1"],
+            unlocked_cosmetic_row_names: vec!["Cosmetic_1"],
+            run_legacy_talent_migration: true,
+            mount_name: "Swiftfoot",
+            mount_type_row_name: "Moa_Type",
+            mount_icon_row_name: "Icon_Moa",
+            owner_user_id: "76561198000000001",
+        })
+    );
+    // Version 2 skips legacy talent migration and applies positive saved_health when StatComponent is valid.
+    assert_eq!(
+        evaluate_mount_character_restore(
+            true,
+            true,
+            450,
+            1,
+            2,
+            2,
+            3,
+            1200,
+            15,
+            "Mount_Moa",
+            80,
+            90,
+            "Tamed_Data_A",
+            &["Talent_1"],
+            &["Solo_1"],
+            &["Cosmetic_1"],
+            "Swiftfoot",
+            "Moa_Type",
+            "Icon_Moa",
+            "76561198000000001",
+        ),
+        Some(MountCharacterRestorePlan {
+            set_health: Some(450),
+            behaviour_type: 1,
+            tamed_mount_action: 2,
+            growth_stage: 3,
+            experience: 1200,
+            character_level: 15,
+            ai_setup_row_name: "Mount_Moa",
+            current_food: 80,
+            current_water: 90,
+            tamed_data: "Tamed_Data_A",
+            selected_talent_row_names: vec!["Talent_1"],
+            solo_talent_row_names: vec!["Solo_1"],
+            unlocked_cosmetic_row_names: vec!["Cosmetic_1"],
+            run_legacy_talent_migration: false,
+            mount_name: "Swiftfoot",
+            mount_type_row_name: "Moa_Type",
+            mount_icon_row_name: "Icon_Moa",
+            owner_user_id: "76561198000000001",
+        })
+    );
+}
+
+#[test]
+fn recorder_ctor_defaults_cover_all_38_classes_and_vtable_slots() {
+    use icarus_bevy::experimental::restore_rules::{
+        MakeRelativeTransformKind, RecorderCtorDefaults, RequiresStitchingKind,
+        evaluate_requires_stitching, recorder_ctor_defaults,
+    };
+
+    assert_eq!(recorder_ctor_defaults(0), None);
+    assert_eq!(recorder_ctor_defaults(39), None);
+
+    // Ground-truth per-class expected rows from M-796 / M-797 (`results.json`
+    // constructor simulations and vtable slots +0x470 / +0x498 / +0x4a8 across
+    // server 25621760 and client 25793767).
+    let expected: [RecorderCtorDefaults; 38] = [
+        // C001: UActorStateRecorderComponent
+        RecorderCtorDefaults {
+            class_ordinal: 1,
+            is_actor_recorder: true,
+            b_save_modifiers: true,
+            b_skip_default_owner_resolution: false,
+            owner_resolve_policy: OwnerResolvePolicy::FindOrRespawn,
+            b_record_modifier_states: Some(false),
+            b_record_actor_transform: Some(true),
+            requires_stitching: RequiresStitchingKind::AlwaysFalse,
+            purge_sublevel_actors: false,
+            make_relative_transform: MakeRelativeTransformKind::ActorTransformOnly,
+        },
+        // C002: UBaseLevelTeleportRecorderComponent
+        RecorderCtorDefaults {
+            class_ordinal: 2,
+            is_actor_recorder: true,
+            b_save_modifiers: true,
+            b_skip_default_owner_resolution: false,
+            owner_resolve_policy: OwnerResolvePolicy::FindOnly,
+            b_record_modifier_states: Some(false),
+            b_record_actor_transform: Some(true),
+            requires_stitching: RequiresStitchingKind::AlwaysFalse,
+            purge_sublevel_actors: false,
+            make_relative_transform: MakeRelativeTransformKind::ActorTransformOnly,
+        },
+        // C003: UBedRecorderComponent
+        RecorderCtorDefaults {
+            class_ordinal: 3,
+            is_actor_recorder: true,
+            b_save_modifiers: false,
+            b_skip_default_owner_resolution: false,
+            owner_resolve_policy: OwnerResolvePolicy::RespawnOnly,
+            b_record_modifier_states: Some(false),
+            b_record_actor_transform: Some(true),
+            requires_stitching: RequiresStitchingKind::AlwaysTrue,
+            purge_sublevel_actors: false,
+            make_relative_transform: MakeRelativeTransformKind::ActorTransformOnly,
+        },
+        // C004: UBuildingGridRecorderComponent
+        RecorderCtorDefaults {
+            class_ordinal: 4,
+            is_actor_recorder: true,
+            b_save_modifiers: true,
+            b_skip_default_owner_resolution: false,
+            owner_resolve_policy: OwnerResolvePolicy::RespawnOnly,
+            b_record_modifier_states: Some(false),
+            b_record_actor_transform: Some(true),
+            requires_stitching: RequiresStitchingKind::AlwaysFalse,
+            purge_sublevel_actors: true,
+            make_relative_transform: MakeRelativeTransformKind::ActorAndBuildingGrid,
+        },
+        // C005: UCaveAIRecorderComponent
+        RecorderCtorDefaults {
+            class_ordinal: 5,
+            is_actor_recorder: true,
+            b_save_modifiers: true,
+            b_skip_default_owner_resolution: false,
+            owner_resolve_policy: OwnerResolvePolicy::ManuallyResolved,
+            b_record_modifier_states: Some(false),
+            b_record_actor_transform: Some(true),
+            requires_stitching: RequiresStitchingKind::AlwaysFalse,
+            purge_sublevel_actors: false,
+            make_relative_transform: MakeRelativeTransformKind::ActorTransformOnly,
+        },
+        // C006: UCaveEntranceRecorderComponent
+        RecorderCtorDefaults {
+            class_ordinal: 6,
+            is_actor_recorder: true,
+            b_save_modifiers: true,
+            b_skip_default_owner_resolution: false,
+            owner_resolve_policy: OwnerResolvePolicy::ManuallyResolved,
+            b_record_modifier_states: Some(false),
+            b_record_actor_transform: Some(false),
+            requires_stitching: RequiresStitchingKind::AlwaysTrue,
+            purge_sublevel_actors: false,
+            make_relative_transform: MakeRelativeTransformKind::ActorTransformOnly,
+        },
+        // C007: UCharacterTrapRecorderComponent
+        RecorderCtorDefaults {
+            class_ordinal: 7,
+            is_actor_recorder: true,
+            b_save_modifiers: false,
+            b_skip_default_owner_resolution: false,
+            owner_resolve_policy: OwnerResolvePolicy::RespawnOnly,
+            b_record_modifier_states: Some(false),
+            b_record_actor_transform: Some(true),
+            requires_stitching: RequiresStitchingKind::AlwaysTrue,
+            purge_sublevel_actors: false,
+            make_relative_transform: MakeRelativeTransformKind::ActorTransformOnly,
+        },
+        // C008: UCropPlotRecorderComponent
+        RecorderCtorDefaults {
+            class_ordinal: 8,
+            is_actor_recorder: true,
+            b_save_modifiers: false,
+            b_skip_default_owner_resolution: false,
+            owner_resolve_policy: OwnerResolvePolicy::RespawnOnly,
+            b_record_modifier_states: Some(false),
+            b_record_actor_transform: Some(true),
+            requires_stitching: RequiresStitchingKind::AlwaysTrue,
+            purge_sublevel_actors: false,
+            make_relative_transform: MakeRelativeTransformKind::ActorTransformOnly,
+        },
+        // C009: UDeployableRecorderComponent
+        RecorderCtorDefaults {
+            class_ordinal: 9,
+            is_actor_recorder: true,
+            b_save_modifiers: false,
+            b_skip_default_owner_resolution: false,
+            owner_resolve_policy: OwnerResolvePolicy::RespawnOnly,
+            b_record_modifier_states: Some(false),
+            b_record_actor_transform: Some(true),
+            requires_stitching: RequiresStitchingKind::AlwaysTrue,
+            purge_sublevel_actors: false,
+            make_relative_transform: MakeRelativeTransformKind::ActorTransformOnly,
+        },
+        // C010: UDrillRecorderComponent
+        RecorderCtorDefaults {
+            class_ordinal: 10,
+            is_actor_recorder: true,
+            b_save_modifiers: false,
+            b_skip_default_owner_resolution: false,
+            owner_resolve_policy: OwnerResolvePolicy::RespawnOnly,
+            b_record_modifier_states: Some(false),
+            b_record_actor_transform: Some(true),
+            requires_stitching: RequiresStitchingKind::AlwaysTrue,
+            purge_sublevel_actors: false,
+            make_relative_transform: MakeRelativeTransformKind::ActorTransformOnly,
+        },
+        // C011: UDynamicRocketSpawnRecorderComponent
+        RecorderCtorDefaults {
+            class_ordinal: 11,
+            is_actor_recorder: true,
+            b_save_modifiers: true,
+            b_skip_default_owner_resolution: false,
+            owner_resolve_policy: OwnerResolvePolicy::RespawnOnly,
+            b_record_modifier_states: Some(false),
+            b_record_actor_transform: Some(true),
+            requires_stitching: RequiresStitchingKind::AlwaysFalse,
+            purge_sublevel_actors: false,
+            make_relative_transform: MakeRelativeTransformKind::ActorTransformOnly,
+        },
+        // C012: UEnzymeGeyserRecorderComponent
+        RecorderCtorDefaults {
+            class_ordinal: 12,
+            is_actor_recorder: true,
+            b_save_modifiers: true,
+            b_skip_default_owner_resolution: false,
+            owner_resolve_policy: OwnerResolvePolicy::FindOnly,
+            b_record_modifier_states: Some(false),
+            b_record_actor_transform: Some(true),
+            requires_stitching: RequiresStitchingKind::AlwaysFalse,
+            purge_sublevel_actors: false,
+            make_relative_transform: MakeRelativeTransformKind::ActorTransformOnly,
+        },
+        // C013: UFLODRecorderComponent
+        RecorderCtorDefaults {
+            class_ordinal: 13,
+            is_actor_recorder: false,
+            b_save_modifiers: true,
+            b_skip_default_owner_resolution: false,
+            owner_resolve_policy: OwnerResolvePolicy::FindOnly,
+            b_record_modifier_states: None,
+            b_record_actor_transform: None,
+            requires_stitching: RequiresStitchingKind::AlwaysTrue,
+            purge_sublevel_actors: false,
+            make_relative_transform: MakeRelativeTransformKind::NotApplicable,
+        },
+        // C014: UFLODTileRecorderComponent
+        RecorderCtorDefaults {
+            class_ordinal: 14,
+            is_actor_recorder: false,
+            b_save_modifiers: true,
+            b_skip_default_owner_resolution: false,
+            owner_resolve_policy: OwnerResolvePolicy::RespawnOnly,
+            b_record_modifier_states: None,
+            b_record_actor_transform: None,
+            requires_stitching: RequiresStitchingKind::AlwaysTrue,
+            purge_sublevel_actors: false,
+            make_relative_transform: MakeRelativeTransformKind::NotApplicable,
+        },
+        // C015: UGameModeStateRecorderComponent
+        RecorderCtorDefaults {
+            class_ordinal: 15,
+            is_actor_recorder: true,
+            b_save_modifiers: true,
+            b_skip_default_owner_resolution: true,
+            owner_resolve_policy: OwnerResolvePolicy::FindOnly,
+            b_record_modifier_states: Some(false),
+            b_record_actor_transform: Some(true),
+            requires_stitching: RequiresStitchingKind::AlwaysFalse,
+            purge_sublevel_actors: false,
+            make_relative_transform: MakeRelativeTransformKind::ActorTransformOnly,
+        },
+        // C016: UIcarusContainerManagerRecorderComponent
+        RecorderCtorDefaults {
+            class_ordinal: 16,
+            is_actor_recorder: true,
+            b_save_modifiers: true,
+            b_skip_default_owner_resolution: false,
+            owner_resolve_policy: OwnerResolvePolicy::FindOnly,
+            b_record_modifier_states: Some(false),
+            b_record_actor_transform: Some(true),
+            requires_stitching: RequiresStitchingKind::AlwaysTrue,
+            purge_sublevel_actors: false,
+            make_relative_transform: MakeRelativeTransformKind::ActorTransformOnly,
+        },
+        // C017: UIcarusMountCharacterRecorderComponent
+        RecorderCtorDefaults {
+            class_ordinal: 17,
+            is_actor_recorder: true,
+            b_save_modifiers: true,
+            b_skip_default_owner_resolution: false,
+            owner_resolve_policy: OwnerResolvePolicy::RespawnOnly,
+            b_record_modifier_states: Some(false),
+            b_record_actor_transform: Some(true),
+            requires_stitching: RequiresStitchingKind::CharacterParentUidPresent,
+            purge_sublevel_actors: false,
+            make_relative_transform: MakeRelativeTransformKind::ActorTransformOnly,
+        },
+        // C018: UIcarusQuestManagerRecorderComponent
+        RecorderCtorDefaults {
+            class_ordinal: 18,
+            is_actor_recorder: true,
+            b_save_modifiers: true,
+            b_skip_default_owner_resolution: false,
+            owner_resolve_policy: OwnerResolvePolicy::FindOnly,
+            b_record_modifier_states: Some(false),
+            b_record_actor_transform: Some(true),
+            requires_stitching: RequiresStitchingKind::AlwaysTrue,
+            purge_sublevel_actors: false,
+            make_relative_transform: MakeRelativeTransformKind::ActorTransformOnly,
+        },
+        // C019: UIcarusQuestRecorderComponent
+        RecorderCtorDefaults {
+            class_ordinal: 19,
+            is_actor_recorder: true,
+            b_save_modifiers: true,
+            b_skip_default_owner_resolution: false,
+            owner_resolve_policy: OwnerResolvePolicy::FindOrRespawn,
+            b_record_modifier_states: Some(false),
+            b_record_actor_transform: Some(true),
+            requires_stitching: RequiresStitchingKind::AlwaysTrue,
+            purge_sublevel_actors: false,
+            make_relative_transform: MakeRelativeTransformKind::ActorTransformOnly,
+        },
+        // C020: UInstancedLevelRecorderComponent
+        RecorderCtorDefaults {
+            class_ordinal: 20,
+            is_actor_recorder: true,
+            b_save_modifiers: false,
+            b_skip_default_owner_resolution: true,
+            owner_resolve_policy: OwnerResolvePolicy::ManuallyResolved,
+            b_record_modifier_states: Some(false),
+            b_record_actor_transform: Some(false),
+            requires_stitching: RequiresStitchingKind::AlwaysFalse,
+            purge_sublevel_actors: false,
+            make_relative_transform: MakeRelativeTransformKind::ActorTransformOnly,
+        },
+        // C021: UItemStateRecorderComponent
+        RecorderCtorDefaults {
+            class_ordinal: 21,
+            is_actor_recorder: true,
+            b_save_modifiers: false,
+            b_skip_default_owner_resolution: false,
+            owner_resolve_policy: OwnerResolvePolicy::RespawnOnly,
+            b_record_modifier_states: Some(false),
+            b_record_actor_transform: Some(true),
+            requires_stitching: RequiresStitchingKind::AlwaysFalse,
+            purge_sublevel_actors: false,
+            make_relative_transform: MakeRelativeTransformKind::ActorTransformOnly,
+        },
+        // C022: UMapManagerRecorderComponent
+        RecorderCtorDefaults {
+            class_ordinal: 22,
+            is_actor_recorder: false,
+            b_save_modifiers: true,
+            b_skip_default_owner_resolution: false,
+            owner_resolve_policy: OwnerResolvePolicy::FindOnly,
+            b_record_modifier_states: None,
+            b_record_actor_transform: None,
+            requires_stitching: RequiresStitchingKind::AlwaysFalse,
+            purge_sublevel_actors: false,
+            make_relative_transform: MakeRelativeTransformKind::NotApplicable,
+        },
+        // C023: UOilGeyserRecorderComponent
+        RecorderCtorDefaults {
+            class_ordinal: 23,
+            is_actor_recorder: true,
+            b_save_modifiers: true,
+            b_skip_default_owner_resolution: false,
+            owner_resolve_policy: OwnerResolvePolicy::FindOnly,
+            b_record_modifier_states: Some(false),
+            b_record_actor_transform: Some(true),
+            requires_stitching: RequiresStitchingKind::AlwaysFalse,
+            purge_sublevel_actors: false,
+            make_relative_transform: MakeRelativeTransformKind::ActorTransformOnly,
+        },
+        // C024: UPlayerHistoryRecorderComponent
+        RecorderCtorDefaults {
+            class_ordinal: 24,
+            is_actor_recorder: true,
+            b_save_modifiers: true,
+            b_skip_default_owner_resolution: false,
+            owner_resolve_policy: OwnerResolvePolicy::FindOnly,
+            b_record_modifier_states: Some(false),
+            b_record_actor_transform: Some(true),
+            requires_stitching: RequiresStitchingKind::AlwaysFalse,
+            purge_sublevel_actors: false,
+            make_relative_transform: MakeRelativeTransformKind::ActorTransformOnly,
+        },
+        // C025: UPlayerRecorderComponent
+        RecorderCtorDefaults {
+            class_ordinal: 25,
+            is_actor_recorder: false,
+            b_save_modifiers: false,
+            b_skip_default_owner_resolution: true,
+            owner_resolve_policy: OwnerResolvePolicy::ManuallyResolved,
+            b_record_modifier_states: None,
+            b_record_actor_transform: None,
+            requires_stitching: RequiresStitchingKind::AlwaysTrue,
+            purge_sublevel_actors: false,
+            make_relative_transform: MakeRelativeTransformKind::NotApplicable,
+        },
+        // C026: UPlayerStateRecorderComponent
+        RecorderCtorDefaults {
+            class_ordinal: 26,
+            is_actor_recorder: true,
+            b_save_modifiers: false,
+            b_skip_default_owner_resolution: true,
+            owner_resolve_policy: OwnerResolvePolicy::ManuallyResolved,
+            b_record_modifier_states: Some(true),
+            b_record_actor_transform: Some(true),
+            requires_stitching: RequiresStitchingKind::AlwaysTrue,
+            purge_sublevel_actors: false,
+            make_relative_transform: MakeRelativeTransformKind::ActorTransformOnly,
+        },
+        // C027: UPrebuiltStructureRecorderComponent
+        RecorderCtorDefaults {
+            class_ordinal: 27,
+            is_actor_recorder: true,
+            b_save_modifiers: true,
+            b_skip_default_owner_resolution: false,
+            owner_resolve_policy: OwnerResolvePolicy::FindOrRespawn,
+            b_record_modifier_states: Some(false),
+            b_record_actor_transform: Some(true),
+            requires_stitching: RequiresStitchingKind::AlwaysTrue,
+            purge_sublevel_actors: false,
+            make_relative_transform: MakeRelativeTransformKind::ActorTransformOnly,
+        },
+        // C028: UResourceDepositRecorderComponent
+        RecorderCtorDefaults {
+            class_ordinal: 28,
+            is_actor_recorder: true,
+            b_save_modifiers: true,
+            b_skip_default_owner_resolution: false,
+            owner_resolve_policy: OwnerResolvePolicy::FindOrRespawn,
+            b_record_modifier_states: Some(false),
+            b_record_actor_transform: Some(false),
+            requires_stitching: RequiresStitchingKind::AlwaysFalse,
+            purge_sublevel_actors: false,
+            make_relative_transform: MakeRelativeTransformKind::ActorTransformOnly,
+        },
+        // C029: URocketRecorderComponent
+        RecorderCtorDefaults {
+            class_ordinal: 29,
+            is_actor_recorder: true,
+            b_save_modifiers: false,
+            b_skip_default_owner_resolution: false,
+            owner_resolve_policy: OwnerResolvePolicy::RespawnOnly,
+            b_record_modifier_states: Some(false),
+            b_record_actor_transform: Some(true),
+            requires_stitching: RequiresStitchingKind::AlwaysFalse,
+            purge_sublevel_actors: false,
+            make_relative_transform: MakeRelativeTransformKind::ActorTransformOnly,
+        },
+        // C030: USignRecorderComponent
+        RecorderCtorDefaults {
+            class_ordinal: 30,
+            is_actor_recorder: true,
+            b_save_modifiers: false,
+            b_skip_default_owner_resolution: false,
+            owner_resolve_policy: OwnerResolvePolicy::RespawnOnly,
+            b_record_modifier_states: Some(false),
+            b_record_actor_transform: Some(true),
+            requires_stitching: RequiresStitchingKind::AlwaysTrue,
+            purge_sublevel_actors: false,
+            make_relative_transform: MakeRelativeTransformKind::ActorTransformOnly,
+        },
+        // C031: USpawnedVoxelRecorderComponent
+        RecorderCtorDefaults {
+            class_ordinal: 31,
+            is_actor_recorder: true,
+            b_save_modifiers: true,
+            b_skip_default_owner_resolution: true,
+            owner_resolve_policy: OwnerResolvePolicy::RespawnOnly,
+            b_record_modifier_states: Some(false),
+            b_record_actor_transform: Some(false),
+            requires_stitching: RequiresStitchingKind::AlwaysFalse,
+            purge_sublevel_actors: false,
+            make_relative_transform: MakeRelativeTransformKind::ActorTransformOnly,
+        },
+        // C032: USplineRecorderComponent
+        RecorderCtorDefaults {
+            class_ordinal: 32,
+            is_actor_recorder: true,
+            b_save_modifiers: true,
+            b_skip_default_owner_resolution: false,
+            owner_resolve_policy: OwnerResolvePolicy::RespawnOnly,
+            b_record_modifier_states: Some(false),
+            b_record_actor_transform: Some(true),
+            requires_stitching: RequiresStitchingKind::AlwaysTrue,
+            purge_sublevel_actors: false,
+            make_relative_transform: MakeRelativeTransformKind::ActorAndSplinePoints,
+        },
+        // C033: UTreeRecorderComponent
+        RecorderCtorDefaults {
+            class_ordinal: 33,
+            is_actor_recorder: true,
+            b_save_modifiers: false,
+            b_skip_default_owner_resolution: false,
+            owner_resolve_policy: OwnerResolvePolicy::RespawnOnly,
+            b_record_modifier_states: Some(false),
+            b_record_actor_transform: Some(true),
+            requires_stitching: RequiresStitchingKind::AlwaysFalse,
+            purge_sublevel_actors: false,
+            make_relative_transform: MakeRelativeTransformKind::ActorTransformOnly,
+        },
+        // C034: UVoxelRecorderComponent
+        RecorderCtorDefaults {
+            class_ordinal: 34,
+            is_actor_recorder: true,
+            b_save_modifiers: false,
+            b_skip_default_owner_resolution: true,
+            owner_resolve_policy: OwnerResolvePolicy::ManuallyResolved,
+            b_record_modifier_states: Some(false),
+            b_record_actor_transform: Some(false),
+            requires_stitching: RequiresStitchingKind::AlwaysFalse,
+            purge_sublevel_actors: false,
+            make_relative_transform: MakeRelativeTransformKind::ActorTransformOnly,
+        },
+        // C035: UWeatherControllerRecorderComponent
+        RecorderCtorDefaults {
+            class_ordinal: 35,
+            is_actor_recorder: false,
+            b_save_modifiers: true,
+            b_skip_default_owner_resolution: false,
+            owner_resolve_policy: OwnerResolvePolicy::FindOnly,
+            b_record_modifier_states: None,
+            b_record_actor_transform: None,
+            requires_stitching: RequiresStitchingKind::AlwaysFalse,
+            purge_sublevel_actors: false,
+            make_relative_transform: MakeRelativeTransformKind::NotApplicable,
+        },
+        // C036: UWeatherForecastRecorderComponent
+        RecorderCtorDefaults {
+            class_ordinal: 36,
+            is_actor_recorder: false,
+            b_save_modifiers: true,
+            b_skip_default_owner_resolution: false,
+            owner_resolve_policy: OwnerResolvePolicy::FindOnly,
+            b_record_modifier_states: None,
+            b_record_actor_transform: None,
+            requires_stitching: RequiresStitchingKind::AlwaysFalse,
+            purge_sublevel_actors: false,
+            make_relative_transform: MakeRelativeTransformKind::NotApplicable,
+        },
+        // C037: UWorldBossManagerRecorderComponent
+        RecorderCtorDefaults {
+            class_ordinal: 37,
+            is_actor_recorder: false,
+            b_save_modifiers: true,
+            b_skip_default_owner_resolution: false,
+            owner_resolve_policy: OwnerResolvePolicy::FindOnly,
+            b_record_modifier_states: None,
+            b_record_actor_transform: None,
+            requires_stitching: RequiresStitchingKind::AlwaysFalse,
+            purge_sublevel_actors: false,
+            make_relative_transform: MakeRelativeTransformKind::NotApplicable,
+        },
+        // C038: UWorldTalentManagerRecorderComponent
+        RecorderCtorDefaults {
+            class_ordinal: 38,
+            is_actor_recorder: true,
+            b_save_modifiers: true,
+            b_skip_default_owner_resolution: false,
+            owner_resolve_policy: OwnerResolvePolicy::FindOnly,
+            b_record_modifier_states: Some(false),
+            b_record_actor_transform: Some(true),
+            requires_stitching: RequiresStitchingKind::AlwaysTrue,
+            purge_sublevel_actors: false,
+            make_relative_transform: MakeRelativeTransformKind::ActorTransformOnly,
+        },
+    ];
+
+    for (idx, expected_row) in expected.iter().enumerate() {
+        let ordinal = (idx + 1) as u8;
+        assert_eq!(recorder_ctor_defaults(ordinal), Some(*expected_row));
+    }
+
+    assert!(!evaluate_requires_stitching(
+        RequiresStitchingKind::AlwaysFalse,
+        42
+    ));
+    assert!(evaluate_requires_stitching(
+        RequiresStitchingKind::AlwaysTrue,
+        -1
+    ));
+    assert!(!evaluate_requires_stitching(
+        RequiresStitchingKind::CharacterParentUidPresent,
+        -1
+    ));
+    assert!(evaluate_requires_stitching(
+        RequiresStitchingKind::CharacterParentUidPresent,
+        0
+    ));
+    assert!(evaluate_requires_stitching(
+        RequiresStitchingKind::CharacterParentUidPresent,
+        42
+    ));
+}

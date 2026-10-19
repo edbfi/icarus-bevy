@@ -7,7 +7,7 @@ full text under `retired/`. Admission and columns follow `.agents/rules/docs.md`
 
 Before restructure: 96ddb0b:docs/ledgers/findings.md
 
-Last reconciled: 2026-10-18
+Last reconciled: 2026-10-19
 
 | ID | Claim | Kind | Evidence | Scope and limits | Unknowns | Status |
 | --- | --- | --- | --- | --- | --- | --- |
@@ -89,3 +89,4 @@ Last reconciled: 2026-10-18
 | F-736 | C033 RespawnOwner (0x1418ee140) -> CreateTreeRuntime (0x141727e20) runs OnConstruction (0x14173bbc0, +0x2c1=1) and BeginPlay (0x14171e700) -> ConstructTreePrimitives (0x141726b40) -> OnConstructedTreePrimitives (0x141dc0680), where BP_TreeBase_C calls execEndRecording twice if dynamic | observed | static-decompile; M-774/ev_bc3fdcdf918c, M-775 | high; both builds | U-040 | active |
 | F-737 | WriteToProspectBlob (0x1418fa200) stores CompressedSize to both TotalLength (+0x20) and DataLength (+0x24); ReadFromProspectBlob (0x1418e6240) leaves DataLength unread, ignores FBase64::Decode's bool and passes TotalLength to UncompressMemory (SL-004) | observed | static-decompile, authored-test; M-776/ev_2e9c09126f64, M-777 | high; both builds | U-040 | active |
 | F-738 | FAccoladeSaveData (0x145dc1790), FProspectInfo (0x145fae2d0, 17 props), FAssociatedMemberInfo (0x145fad8e0, 8 props) and FCustomGameSetting (0x145fadbf0) pass stage-check in 15/15 saves | observed | static-decompile, authored-test, tool-receipt; M-776/ev_2e9c09126f64, M-777, M-791/ev_298296be07a0, M-780 | high; 15 saves | U-025 | active |
+| F-746 | C001..C038 ctor defaults (+0xb0..0xb2, +0xd8..0xd9: bSaveModifiers=0 on 13, skipOwner=1 on 6, policies 13/15/4/6, bRecordModifierStates=1 on C026, bRecordTransform=0 on 5) and +0x470 (17 true, C017 uid!=-1), +0x498 (C004), +0x4a8/+0x4b0 (C004/C032) match | observed | static-decompile, authored-test; M-794, M-796, M-797 | high; 2 builds | U-025 | active |
