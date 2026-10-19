@@ -1152,32 +1152,52 @@ fn prospect_player_list_resolution_rocket_spawn_reset_and_deposit_filter() {
     );
     let mut spawn_player = steam_id.clone();
     let mut spawn_slot = 0;
-    assert!(validate_rocket_spawn_record(
-        1,
-        PlayerList::Active { has_player: true },
-        &mut spawn_player,
-        &mut spawn_slot,
-    ));
+    assert_eq!(
+        validate_rocket_spawn_record(
+            1,
+            PlayerList::Active { has_player: true },
+            &mut spawn_player,
+            &mut spawn_slot,
+        ),
+        (true, false)
+    );
     assert_eq!(spawn_player, steam_id);
     assert_eq!(spawn_slot, 0);
 
-    assert!(validate_rocket_spawn_record(
-        1,
-        PlayerList::Active { has_player: false },
-        &mut spawn_player,
-        &mut spawn_slot,
-    ));
+    assert_eq!(
+        validate_rocket_spawn_record(
+            1,
+            PlayerList::Active { has_player: false },
+            &mut spawn_player,
+            &mut spawn_slot,
+        ),
+        (true, true)
+    );
     assert!(spawn_player.is_empty());
     assert_eq!(spawn_slot, -1);
 
+    // Re-running on an already unassigned record (empty id, slot -1) reports was_reset = false.
+    assert_eq!(
+        validate_rocket_spawn_record(
+            0,
+            PlayerList::Active { has_player: false },
+            &mut spawn_player,
+            &mut spawn_slot,
+        ),
+        (true, false)
+    );
+
     let mut legacy_player = steam_id.clone();
     let mut legacy_slot = 3;
-    assert!(validate_rocket_spawn_record(
-        0,
-        PlayerList::Active { has_player: true },
-        &mut legacy_player,
-        &mut legacy_slot,
-    ));
+    assert_eq!(
+        validate_rocket_spawn_record(
+            0,
+            PlayerList::Active { has_player: true },
+            &mut legacy_player,
+            &mut legacy_slot,
+        ),
+        (true, true)
+    );
     assert!(legacy_player.is_empty());
     assert_eq!(legacy_slot, -1);
 

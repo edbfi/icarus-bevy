@@ -3087,19 +3087,23 @@ pub fn rocket_record_valid(list: PlayerList) -> bool {
 /// When `version < 1` or `list` is `PlayerList::Active { has_player: false }`,
 /// invokes `URocketSpawnRecorderComponent::ResetSpawnRecord` (`0x1418ed540`
 /// server / `0x1418edf10` client) to clear `player_id` (`+0x1c8`) and set
-/// `chr_slot` (`+0x1d8`) to `-1`. Always returns `true` (`1`), so the spawn
-/// point record stays valid for future players instead of being dropped.
+/// `chr_slot` (`+0x1d8`) to `-1`. Returns `(is_valid, was_reset)`: `is_valid`
+/// is always `true` (`1`) so the spawn point record stays valid for future
+/// players instead of being dropped, and `was_reset` is `true` iff
+/// `ResetSpawnRecord` cleared a non-empty `player_id` or a `chr_slot != -1`.
 pub fn validate_rocket_spawn_record(
     version: i32,
     list: PlayerList,
     player_id: &mut Vec<u16>,
     chr_slot: &mut i32,
-) -> bool {
+) -> (bool, bool) {
     if version < 1 || list.rejects() {
+        let was_reset = !player_id.is_empty() || *chr_slot != -1;
         player_id.clear();
         *chr_slot = -1;
+        return (true, was_reset);
     }
-    true
+    (true, false)
 }
 
 const SUPER_COOLED_ICE_UTF16: [u16; 16] = [

@@ -182,6 +182,7 @@ pub(crate) struct PropertyRecord<'a> {
     pub tag: RootTag<'a>,
     pub name: Vec<u16>,
     pub extra: Option<Vec<u16>>,
+    pub bool_value: Option<bool>,
     pub index: i32,
 }
 
@@ -211,6 +212,7 @@ pub(crate) fn read_record(input: &[u8], profile: TagProfile) -> Result<ParsedRec
     ensure!(size >= 0, "negative tag payload size");
     ensure!(index >= 0, "negative tag array index");
     let mut extra = None;
+    let mut bool_value = None;
     match profile {
         TagProfile::MemoryArchive522 => {
             match kind {
@@ -227,7 +229,7 @@ pub(crate) fn read_record(input: &[u8], profile: TagProfile) -> Result<ParsedRec
                     cursor.name()?;
                 }
                 TagKind::Bool => {
-                    cursor.flag()?;
+                    bool_value = Some(cursor.flag()?);
                 }
                 TagKind::String
                 | TagKind::Name
@@ -253,6 +255,7 @@ pub(crate) fn read_record(input: &[u8], profile: TagProfile) -> Result<ParsedRec
         },
         name,
         extra,
+        bool_value,
         index,
     }))
 }

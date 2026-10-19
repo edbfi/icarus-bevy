@@ -1033,16 +1033,37 @@ fn staged_prospect_save_state_runs_recorder_validate_and_tracks_tree_dynamics() 
         .concat(),
     );
 
-    // 12. C033 TreeRecorderComponent with bIsPhysicsDynamic = true -> retained + dynamic tree count.
+    // 12. C033 TreeRecorderComponent with bIsPhysicsDynamic = true (carrying a property GUID whose last bytes are 0x00) -> retained + dynamic tree count.
+    let mut bool_true_with_guid_ending_zero = vec![1_u8, 1_u8];
+    bool_true_with_guid_ending_zero.extend_from_slice(&[0xaa; 14]);
+    bool_true_with_guid_ending_zero.extend_from_slice(&[0x00, 0x00]);
     let rec_c033_dynamic = recorder_element(
         "/Script/Icarus.TreeRecorderComponent",
-        &tag("bIsPhysicsDynamic", "BoolProperty", 0, &[1, 0], &[]),
+        &tag(
+            "bIsPhysicsDynamic",
+            "BoolProperty",
+            0,
+            &bool_true_with_guid_ending_zero,
+            &[],
+        ),
     );
 
     // 13. C033 TreeRecorderComponent with bIsPhysicsDynamic = false -> retained, not dynamic.
     let rec_c033_static = recorder_element(
         "/Script/Icarus.TreeRecorderComponent",
         &tag("bIsPhysicsDynamic", "BoolProperty", 0, &[0, 0], &[]),
+    );
+
+    // 14. C011 DynamicRocketSpawnRecorderComponent with omitted ChrSlot (defaults to -1) and empty AssignedPlayerID -> retained, not counted as reset.
+    let rec_c011_unassigned = recorder_element(
+        "/Script/Icarus.DynamicRocketSpawnRecorderComponent",
+        &tag(
+            "SpawnRecord",
+            "StructProperty",
+            0,
+            &[string("RocketSpawnStateRecord"), vec![0; 17]].concat(),
+            END,
+        ),
     );
 
     let all_records = [
@@ -1059,6 +1080,7 @@ fn staged_prospect_save_state_runs_recorder_validate_and_tracks_tree_dynamics() 
         rec_c034_invalid,
         rec_c033_dynamic,
         rec_c033_static,
+        rec_c011_unassigned,
     ];
     let blobs = tag(
         "StateRecorderBlobs",
@@ -1081,9 +1103,9 @@ fn staged_prospect_save_state_runs_recorder_validate_and_tracks_tree_dynamics() 
     let parsed = read_root(&stream, PROFILE).unwrap();
     let staged =
         stage_prospect_save_state(&parsed.tags, PROFILE, MAX_COMPONENT_BYTES, None).unwrap();
-    assert_eq!(staged.parsed_recorder_count, 13);
+    assert_eq!(staged.parsed_recorder_count, 14);
     assert_eq!(staged.invalid_recorder_count, 6);
-    assert_eq!(staged.retained_recorder_count, 7);
+    assert_eq!(staged.retained_recorder_count, 8);
     assert_eq!(staged.reset_rocket_spawn_recorder_count, 1);
     assert_eq!(staged.physics_dynamic_tree_recorder_count, 1);
 

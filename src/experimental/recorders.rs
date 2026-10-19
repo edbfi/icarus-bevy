@@ -311,18 +311,14 @@ fn units_eq_ascii(units: &[u16], ascii: &str) -> bool {
             .all(|(unit, byte)| unit == u16::from(byte))
 }
 
-fn bool_tag_value(tag: &RootTag<'_>) -> Result<bool> {
+fn bool_tag_value(property: &PropertyRecord<'_>) -> Result<bool> {
     ensure!(
-        tag.kind == TagKind::Bool && tag.payload.is_empty() && tag.header.len() >= 2,
+        property.tag.kind == TagKind::Bool && property.tag.payload.is_empty(),
         "invalid BoolProperty tag"
     );
-    let bool_idx = if tag.header[tag.header.len() - 1] == 0 {
-        tag.header.len() - 2
-    } else {
-        ensure!(tag.header.len() >= 18, "truncated BoolProperty GUID header");
-        tag.header.len() - 18
-    };
-    Ok(tag.header[bool_idx] != 0)
+    property
+        .bool_value
+        .context("missing BoolProperty header value")
 }
 
 fn parse_lobby_privacy(property: &PropertyRecord<'_>) -> Result<LobbyPrivacy> {
@@ -796,7 +792,7 @@ fn evaluate_staged_recorder_component(
     ) || units_eq_ascii(class_units, "/Script/Icarus.RocketSpawnRecorderComponent")
     {
         let mut assigned_player_id = Vec::new();
-        let mut chr_slot = 0_i32;
+        let mut chr_slot = -1_i32;
         let mut version = 0_i32;
         for field_tag in component.fields() {
             let ParsedRecord::Property(prop) = read_record(field_tag.record, profile)? else {
@@ -861,13 +857,8 @@ fn evaluate_staged_recorder_component(
             &assigned_player_id,
             chr_slot,
         );
-        let orig_player_id = assigned_player_id.clone();
-        let orig_chr_slot = chr_slot;
-        let is_valid =
+        let (is_valid, was_reset) =
             validate_rocket_spawn_record(version, list, &mut assigned_player_id, &mut chr_slot);
-        let was_reset = assigned_player_id.is_empty()
-            && chr_slot == -1
-            && (version < 1 || (!orig_player_id.is_empty() || orig_chr_slot != -1));
         return Ok(StagedRecorderEval {
             is_valid,
             was_reset_rocket_spawn: was_reset,
@@ -1061,7 +1052,7 @@ fn evaluate_staged_recorder_component(
                     );
                     seen_inner.push(inner_prop.name.clone());
                     if is_name(&inner_prop.name, "bIsVoxelFullyMined") {
-                        fully_mined = bool_tag_value(&inner_prop.tag)?;
+                        fully_mined = bool_tag_value(&inner_prop)?;
                     }
                 }
             }
@@ -1084,7 +1075,7 @@ fn evaluate_staged_recorder_component(
                     prop.index == 0,
                     "TreeRecorderComponent.bIsPhysicsDynamic must have index 0"
                 );
-                is_physics_dynamic = bool_tag_value(&prop.tag)?;
+                is_physics_dynamic = bool_tag_value(&prop)?;
             }
         }
         return Ok(StagedRecorderEval {
