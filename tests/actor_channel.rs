@@ -1,13 +1,23 @@
 use icarus_bevy::experimental::actor_channel::{
-    ActorBunchBody, ActorChannelCodec, ActorChannelLimits, BlockTarget, CompressedRotator,
-    ContentBlock, DynamicSpawn, ExportPath, GuidExport, GuidKind, MAX_EXPORT_GUIDS, NetGuidRef,
-    PackageMapState, SpawnRecord, SpawnVector, SubObjectClass, dequantize_angle,
-    encode_actor_bunch_body, encode_player_controller_open_bunch_body, guid_kind,
-    parse_actor_bunch, parse_player_controller_open_bunch, quantize_angle, read_actor_bunch_body,
-    read_content_block, read_export_prefix, read_guid_ref, read_must_be_mapped_guids,
-    read_player_controller_open_bunch_body, read_rotator, read_spawn, write_actor_bunch_body,
-    write_content_block, write_export_prefix, write_guid_ref, write_must_be_mapped_guids,
-    write_player_controller_open_bunch_body, write_rotator, write_spawn,
+    ActorBunchBody, ActorChannelCodec, ActorChannelLimits, ActorPriorityInputs,
+    ActorPriorityOutcome, ActorRelevancyInputs, ActorRelevancyOutcome, BlockTarget,
+    CompressedRotator, ContentBlock, DEFAULT_CONFIGURED_INTERNET_SPEED,
+    DEFAULT_CONFIGURED_LAN_SPEED, DEFAULT_CONNECTION_TIMEOUT_SECONDS,
+    DEFAULT_INITIAL_CONNECT_TIMEOUT_SECONDS, DEFAULT_MAX_CLIENT_RATE,
+    DEFAULT_MAX_INTERNET_CLIENT_RATE, DEFAULT_NET_SERVER_MAX_TICK_RATE,
+    DEFAULT_RESOLUTION_CONNECTION_TIMEOUT_SECONDS, DynamicSpawn, EngineNetMode, ExportPath,
+    GuidExport, GuidKind, MAX_EXPORT_GUIDS, MAX_NET_SERVER_MAX_TICK_RATE,
+    MIN_NET_SERVER_MAX_TICK_RATE, NetGuidRef, PackageMapState, PawnRelevancyInputs,
+    PawnRelevancyOutcome, SpawnRecord, SpawnVector, SubObjectClass, dequantize_angle,
+    encode_actor_bunch_body, encode_player_controller_open_bunch_body, evaluate_actor_net_priority,
+    evaluate_actor_net_relevancy, evaluate_game_engine_max_tick_rate, evaluate_pawn_net_relevancy,
+    evaluate_player_controller_net_priority, evaluate_player_controller_net_relevancy, guid_kind,
+    is_within_net_relevancy_distance, parse_actor_bunch, parse_player_controller_open_bunch,
+    quantize_angle, read_actor_bunch_body, read_content_block, read_export_prefix, read_guid_ref,
+    read_must_be_mapped_guids, read_player_controller_open_bunch_body, read_rotator, read_spawn,
+    write_actor_bunch_body, write_content_block, write_export_prefix, write_guid_ref,
+    write_must_be_mapped_guids, write_player_controller_open_bunch_body, write_rotator,
+    write_spawn,
 };
 use icarus_bevy::experimental::archive::ByteOrder;
 use icarus_bevy::experimental::control_messages::ArchiveText;
@@ -1205,4 +1215,517 @@ fn player_controller_open_bunch_round_trips_and_validates() {
             "net_player_index leaked: {text_out}"
         );
     }
+}
+
+#[test]
+fn game_engine_max_tick_rate_and_net_driver_constants() {
+    assert_eq!(DEFAULT_NET_SERVER_MAX_TICK_RATE, 30);
+    assert_eq!(MIN_NET_SERVER_MAX_TICK_RATE, 1);
+    assert_eq!(MAX_NET_SERVER_MAX_TICK_RATE, 1000);
+    assert_eq!(DEFAULT_MAX_CLIENT_RATE, 750_000);
+    assert_eq!(DEFAULT_MAX_INTERNET_CLIENT_RATE, 750_000);
+    assert_eq!(DEFAULT_CONFIGURED_INTERNET_SPEED, 640_000);
+    assert_eq!(DEFAULT_CONFIGURED_LAN_SPEED, 912_000);
+    assert_eq!(DEFAULT_CONNECTION_TIMEOUT_SECONDS, 360.0);
+    assert_eq!(DEFAULT_INITIAL_CONNECT_TIMEOUT_SECONDS, 360.0);
+    assert_eq!(DEFAULT_RESOLUTION_CONNECTION_TIMEOUT_SECONDS, 120.0);
+
+    let standalone = EngineNetMode::Standalone;
+    let dedicated = EngineNetMode::DedicatedServer;
+    let listen = EngineNetMode::ListenServer;
+    let client = EngineNetMode::Client;
+    assert_eq!(standalone as u8, 0);
+    assert_eq!(dedicated as u8, 1);
+    assert_eq!(listen as u8, 2);
+    assert_eq!(client as u8, 3);
+
+    let eval = evaluate_game_engine_max_tick_rate;
+
+    // Nonzero base_engine_max_tick_rate short-circuits in every net mode.
+    for mode in [standalone, dedicated, listen, client] {
+        assert_eq!(eval(mode, false, 30, 60.0), 60.0);
+    }
+
+    // DedicatedServer clamps NetServerMaxTickRate to 1..=1000 regardless of listen-server flag.
+    assert_eq!(eval(dedicated, false, 30, 0.0), 30.0);
+    assert_eq!(eval(dedicated, false, 0, 0.0), 1.0);
+    assert_eq!(eval(dedicated, false, -50, 0.0), 1.0);
+    assert_eq!(eval(dedicated, true, 5000, 0.0), 1000.0);
+
+    // ListenServer requires b_use_client_max_tick_rate_when_listen_server.
+    assert_eq!(eval(listen, false, 30, 0.0), 0.0);
+    assert_eq!(eval(listen, true, 30, 0.0), 30.0);
+    assert_eq!(eval(listen, true, 0, 0.0), 1.0);
+    assert_eq!(eval(listen, true, 2000, 0.0), 1000.0);
+
+    // Standalone and Client return 0.0 when base_engine_max_tick_rate == 0.0.
+    for flag in [false, true] {
+        assert_eq!(eval(standalone, flag, 30, 0.0), 0.0);
+        assert_eq!(eval(client, flag, 30, 0.0), 0.0);
+    }
+}
+
+#[test]
+fn net_relevancy_distance_strict_less_than_and_nan() {
+    // 3^2 + 4^2 + 0^2 == 25.0.
+    assert!(is_within_net_relevancy_distance(
+        [3.0, 4.0, 0.0],
+        [0.0, 0.0, 0.0],
+        25.001
+    ));
+    // Strict `<` (`comiss xmm2, xmm1; setb al`): exact equality is not relevant.
+    assert!(!is_within_net_relevancy_distance(
+        [3.0, 4.0, 0.0],
+        [0.0, 0.0, 0.0],
+        25.0
+    ));
+    assert!(!is_within_net_relevancy_distance(
+        [3.0, 4.0, 0.0],
+        [0.0, 0.0, 0.0],
+        24.0
+    ));
+    // NaN returns false.
+    assert!(!is_within_net_relevancy_distance(
+        [f32::NAN, 0.0, 0.0],
+        [0.0, 0.0, 0.0],
+        100.0
+    ));
+    assert!(!is_within_net_relevancy_distance(
+        [0.0, 0.0, 0.0],
+        [0.0, 0.0, 0.0],
+        f32::NAN
+    ));
+}
+
+#[test]
+fn actor_net_relevancy_branch_order() {
+    let base = ActorRelevancyInputs {
+        b_always_relevant: false,
+        b_only_relevant_to_owner: false,
+        b_hidden: false,
+        b_use_owner_relevancy: false,
+        is_owned_by_view_target_or_real_viewer: false,
+        view_target_is_instigator: false,
+        has_owner: false,
+        has_root_component: true,
+        root_collision_enabled: true,
+        attach_parent_delegates_to_owner: false,
+        b_use_distance_based_relevancy: true,
+        actor_location: [100.0, 0.0, 0.0],
+        src_location: [0.0, 0.0, 0.0],
+        net_cull_distance_squared: 1_000.0, // dist_sq == 10_000.0 (out of range by default)
+    };
+    let check = |inputs: ActorRelevancyInputs, expected: ActorRelevancyOutcome| {
+        assert_eq!(evaluate_actor_net_relevancy(&inputs), expected);
+    };
+
+    // 1. Always relevant / owned by ViewTarget or RealViewer / ViewTarget is Instigator.
+    for mut inputs in [
+        ActorRelevancyInputs {
+            b_always_relevant: true,
+            b_use_owner_relevancy: true,
+            has_owner: true,
+            b_only_relevant_to_owner: true,
+            ..base
+        },
+        ActorRelevancyInputs {
+            is_owned_by_view_target_or_real_viewer: true,
+            b_use_owner_relevancy: true,
+            has_owner: true,
+            b_only_relevant_to_owner: true,
+            ..base
+        },
+        ActorRelevancyInputs {
+            view_target_is_instigator: true,
+            b_use_owner_relevancy: true,
+            has_owner: true,
+            b_only_relevant_to_owner: true,
+            ..base
+        },
+    ] {
+        inputs.has_root_component = false;
+        check(inputs, ActorRelevancyOutcome::Relevant);
+    }
+
+    // 2. bUseOwnerRelevancy && Owner != null -> DelegateToOwner (precedes bOnlyRelevantToOwner).
+    check(
+        ActorRelevancyInputs {
+            b_use_owner_relevancy: true,
+            has_owner: true,
+            b_only_relevant_to_owner: true,
+            ..base
+        },
+        ActorRelevancyOutcome::DelegateToOwner,
+    );
+
+    // 3. bOnlyRelevantToOwner -> NotRelevant without missing-root warning.
+    check(
+        ActorRelevancyInputs {
+            b_use_owner_relevancy: true,
+            has_owner: false,
+            b_only_relevant_to_owner: true,
+            has_root_component: false,
+            ..base
+        },
+        ActorRelevancyOutcome::NotRelevant {
+            missing_root_component_warning: false,
+        },
+    );
+
+    // 4. RootComponent && AttachParent delegation -> DelegateToAttachParentOwner.
+    check(
+        ActorRelevancyInputs {
+            has_root_component: true,
+            attach_parent_delegates_to_owner: true,
+            b_hidden: true,
+            root_collision_enabled: false,
+            ..base
+        },
+        ActorRelevancyOutcome::DelegateToAttachParentOwner,
+    );
+
+    // 5. bHidden && (!RootComponent || !RootComponent->IsCollisionEnabled()) -> NotRelevant (no warning).
+    check(
+        ActorRelevancyInputs {
+            b_hidden: true,
+            has_root_component: false,
+            root_collision_enabled: true,
+            ..base
+        },
+        ActorRelevancyOutcome::NotRelevant {
+            missing_root_component_warning: false,
+        },
+    );
+    check(
+        ActorRelevancyInputs {
+            b_hidden: true,
+            has_root_component: true,
+            root_collision_enabled: false,
+            ..base
+        },
+        ActorRelevancyOutcome::NotRelevant {
+            missing_root_component_warning: false,
+        },
+    );
+    // bHidden with RootComponent and collision enabled continues to distance check.
+    check(
+        ActorRelevancyInputs {
+            b_hidden: true,
+            has_root_component: true,
+            root_collision_enabled: true,
+            net_cull_distance_squared: 20_000.0,
+            ..base
+        },
+        ActorRelevancyOutcome::Relevant,
+    );
+
+    // 6. !RootComponent (when !bHidden) -> NotRelevant with LogNet missing-root warning.
+    check(
+        ActorRelevancyInputs {
+            b_hidden: false,
+            has_root_component: false,
+            ..base
+        },
+        ActorRelevancyOutcome::NotRelevant {
+            missing_root_component_warning: true,
+        },
+    );
+
+    // 7. !bUseDistanceBasedRelevancy -> Relevant regardless of distance.
+    check(
+        ActorRelevancyInputs {
+            b_use_distance_based_relevancy: false,
+            net_cull_distance_squared: 10.0,
+            ..base
+        },
+        ActorRelevancyOutcome::Relevant,
+    );
+
+    // 8. Distance-based relevancy check.
+    check(
+        ActorRelevancyInputs {
+            net_cull_distance_squared: 10_001.0,
+            ..base
+        },
+        ActorRelevancyOutcome::Relevant,
+    );
+    check(
+        ActorRelevancyInputs {
+            net_cull_distance_squared: 10_000.0,
+            ..base
+        },
+        ActorRelevancyOutcome::NotRelevant {
+            missing_root_component_warning: false,
+        },
+    );
+}
+
+#[test]
+fn pawn_and_player_controller_net_relevancy_branch_order() {
+    assert!(evaluate_player_controller_net_relevancy(true));
+    assert!(!evaluate_player_controller_net_relevancy(false));
+
+    let base = PawnRelevancyInputs {
+        b_always_relevant: false,
+        real_viewer_is_controller: false,
+        is_owned_by_view_target_or_real_viewer: false,
+        view_target_is_instigator: false,
+        based_on_view_target_or_vice_versa: false,
+        b_hidden: false,
+        b_only_relevant_to_owner: false,
+        has_root_component: true,
+        root_collision_enabled: true,
+        movement_base_delegates_to_owner: false,
+        b_use_distance_based_relevancy: true,
+        actor_location: [100.0, 0.0, 0.0],
+        src_location: [0.0, 0.0, 0.0],
+        net_cull_distance_squared: 1_000.0, // dist_sq == 10_000.0
+    };
+    let check = |inputs: PawnRelevancyInputs, expected: PawnRelevancyOutcome| {
+        assert_eq!(evaluate_pawn_net_relevancy(&inputs), expected);
+    };
+
+    // 1. Any of the 5 fast-path flags returns Relevant.
+    for fast_path in [
+        PawnRelevancyInputs {
+            b_always_relevant: true,
+            b_hidden: true,
+            has_root_component: false,
+            ..base
+        },
+        PawnRelevancyInputs {
+            real_viewer_is_controller: true,
+            b_hidden: true,
+            has_root_component: false,
+            ..base
+        },
+        PawnRelevancyInputs {
+            is_owned_by_view_target_or_real_viewer: true,
+            b_only_relevant_to_owner: true,
+            has_root_component: false,
+            ..base
+        },
+        PawnRelevancyInputs {
+            view_target_is_instigator: true,
+            b_hidden: true,
+            has_root_component: false,
+            ..base
+        },
+        PawnRelevancyInputs {
+            based_on_view_target_or_vice_versa: true,
+            b_hidden: true,
+            has_root_component: false,
+            ..base
+        },
+    ] {
+        check(fast_path, PawnRelevancyOutcome::Relevant);
+    }
+
+    // 2. (bHidden || bOnlyRelevantToOwner) && (!RootComponent || !RootCollisionEnabled) -> NotRelevant.
+    check(
+        PawnRelevancyInputs {
+            b_hidden: true,
+            has_root_component: true,
+            root_collision_enabled: false,
+            movement_base_delegates_to_owner: true,
+            ..base
+        },
+        PawnRelevancyOutcome::NotRelevant,
+    );
+    check(
+        PawnRelevancyInputs {
+            b_only_relevant_to_owner: true,
+            has_root_component: false,
+            root_collision_enabled: true,
+            movement_base_delegates_to_owner: true,
+            ..base
+        },
+        PawnRelevancyOutcome::NotRelevant,
+    );
+
+    // 3. MovementBase delegation -> DelegateToMovementBaseOwner.
+    check(
+        PawnRelevancyInputs {
+            b_hidden: true,
+            has_root_component: true,
+            root_collision_enabled: true,
+            movement_base_delegates_to_owner: true,
+            ..base
+        },
+        PawnRelevancyOutcome::DelegateToMovementBaseOwner,
+    );
+
+    // 4. !bUseDistanceBasedRelevancy -> Relevant.
+    check(
+        PawnRelevancyInputs {
+            b_use_distance_based_relevancy: false,
+            has_root_component: false,
+            ..base
+        },
+        PawnRelevancyOutcome::Relevant,
+    );
+
+    // 5. Distance check requires RootComponent && dist_sq < NetCullDistanceSquared.
+    check(
+        PawnRelevancyInputs {
+            has_root_component: false,
+            net_cull_distance_squared: 20_000.0,
+            ..base
+        },
+        PawnRelevancyOutcome::NotRelevant,
+    );
+    check(
+        PawnRelevancyInputs {
+            has_root_component: true,
+            net_cull_distance_squared: 10_001.0,
+            ..base
+        },
+        PawnRelevancyOutcome::Relevant,
+    );
+    check(
+        PawnRelevancyInputs {
+            has_root_component: true,
+            net_cull_distance_squared: 10_000.0,
+            ..base
+        },
+        PawnRelevancyOutcome::NotRelevant,
+    );
+}
+
+#[test]
+fn actor_and_player_controller_net_priority_branches() {
+    let base = ActorPriorityInputs {
+        b_use_owner_relevancy: false,
+        has_owner: false,
+        is_view_target_or_instigator: false,
+        b_hidden: false,
+        root_location: Some([0.0, 0.0, 0.0]),
+        viewer_location: [0.0, 0.0, 0.0],
+        viewer_dir: [1.0, 0.0, 0.0],
+        time: 2.0,
+        net_priority: 3.0,
+    };
+
+    let assert_priority =
+        |inputs: ActorPriorityInputs, expected: f32| match evaluate_actor_net_priority(&inputs) {
+            ActorPriorityOutcome::Computed(actual) => {
+                assert!(
+                    (actual - expected).abs() < 1e-5,
+                    "expected {expected}, got {actual}"
+                );
+            }
+            other => panic!("expected Computed({expected}), got {other:?}"),
+        };
+
+    // Owner delegation when b_use_owner_relevancy && has_owner.
+    let delegated = evaluate_actor_net_priority(&ActorPriorityInputs {
+        b_use_owner_relevancy: true,
+        has_owner: true,
+        ..base
+    });
+    assert_eq!(delegated, ActorPriorityOutcome::DelegateToOwner);
+
+    // Without owner, b_use_owner_relevancy does not delegate.
+    assert_priority(
+        ActorPriorityInputs {
+            b_use_owner_relevancy: true,
+            has_owner: false,
+            root_location: None,
+            ..base
+        },
+        6.0,
+    );
+
+    // Hidden or null RootComponent skips spatial multiplier (1.0x or 4.0x when ViewTarget/Instigator).
+    assert_priority(
+        ActorPriorityInputs {
+            b_hidden: true,
+            root_location: Some([1000.0, 0.0, 0.0]),
+            ..base
+        },
+        6.0,
+    );
+    assert_priority(
+        ActorPriorityInputs {
+            root_location: None,
+            is_view_target_or_instigator: true,
+            ..base
+        },
+        24.0, // 4.0 * 2.0 * 3.0
+    );
+
+    // Behind viewer (dot < 0.0):
+    // - dist_sq <= 250_000.0 (<= 500 units): multiplier 1.0
+    assert_priority(
+        ActorPriorityInputs {
+            root_location: Some([-400.0, 0.0, 0.0]),
+            ..base
+        },
+        6.0,
+    );
+    // - 250_000.0 < dist_sq <= 4_000_000.0 (500..=2000 units): multiplier 0.4
+    assert_priority(
+        ActorPriorityInputs {
+            root_location: Some([-1000.0, 0.0, 0.0]),
+            ..base
+        },
+        2.4, // 0.4 * 6.0
+    );
+    // - dist_sq > 4_000_000.0 (> 2000 units): multiplier 0.2
+    assert_priority(
+        ActorPriorityInputs {
+            root_location: Some([-2500.0, 0.0, 0.0]),
+            ..base
+        },
+        1.2, // 0.2 * 6.0
+    );
+
+    // In front of viewer (dot >= 0.0):
+    // - dist_sq < 64_000_000.0 (< 8000 units) && dot^2 > 0.5 * dist_sq: multiplier 2.0
+    assert_priority(
+        ActorPriorityInputs {
+            root_location: Some([1000.0, 0.0, 0.0]),
+            ..base
+        },
+        12.0, // 2.0 * 6.0
+    );
+    // - Combined ViewTarget/Instigator (4.0) * narrow-cone front boost (2.0) = 8.0x
+    assert_priority(
+        ActorPriorityInputs {
+            is_view_target_or_instigator: true,
+            root_location: Some([1000.0, 0.0, 0.0]),
+            ..base
+        },
+        48.0, // 8.0 * 6.0
+    );
+    // - Outside narrow cone (dot^2 <= 0.5 * dist_sq) and dist_sq <= 9_998_244.0 (<= 3162 units): multiplier 1.0
+    assert_priority(
+        ActorPriorityInputs {
+            root_location: Some([1000.0, 2000.0, 0.0]),
+            ..base
+        },
+        6.0, // 1.0 * 6.0
+    );
+    // - Outside narrow cone and dist_sq > 9_998_244.0 (> 3162 units): multiplier 0.4
+    assert_priority(
+        ActorPriorityInputs {
+            root_location: Some([1000.0, 4000.0, 0.0]),
+            ..base
+        },
+        2.4, // 0.4 * 6.0
+    );
+    // - Straight ahead but dist_sq >= 64_000_000.0 (>= 8000 units, > 3162 units): multiplier 0.4
+    assert_priority(
+        ActorPriorityInputs {
+            root_location: Some([9000.0, 0.0, 0.0]),
+            ..base
+        },
+        2.4, // 0.4 * 6.0
+    );
+
+    // APlayerController::GetNetPriority: 4.0x when this == InViewer, 1.0x otherwise.
+    let pc_low = evaluate_player_controller_net_priority(2.0, 3.0, false);
+    let pc_high = evaluate_player_controller_net_priority(2.0, 3.0, true);
+    assert_eq!(pc_low, 6.0);
+    assert_eq!(pc_high, 24.0);
 }

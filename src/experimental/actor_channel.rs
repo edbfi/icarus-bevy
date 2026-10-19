@@ -1,18 +1,28 @@
-//! EXPERIMENTAL disconnected codec for statically observed actor-channel bunches.
+//! EXPERIMENTAL disconnected codec for statically observed actor-channel bunches
+//! and pure server-side replication relevancy, priority, and tick-rate
+//! evaluation (`F-745`).
 //!
-//! Client-build static observations (F-569..F-573, F-692, F-694, F-696, F-709,
-//! F-710): NetGUID references, NetGUID export prefixes (`ReceiveNetGUIDBunch`
-//! `0x1439b8bb0`, `ExportNetGUIDHeader` `0x1439ab670`), must-be-mapped GUID
-//! prefixes (`UActorChannel::ReceivedBunch` `0x1437c43f0`), disconnected
-//! package-map export state (`PackageMapState`), the open-bunch spawn record,
-//! the `APlayerController` 1-byte `NetPlayerIndex` open-bunch hook
-//! (`UActorChannel::ProcessBunch` `0x1437c0c30`,
+//! Client-build and server-build static observations (F-569..F-573, F-692,
+//! F-694, F-696, F-709, F-710, F-745): NetGUID references, NetGUID export
+//! prefixes (`ReceiveNetGUIDBunch` `0x1439b8bb0`, `ExportNetGUIDHeader`
+//! `0x1439ab670`), must-be-mapped GUID prefixes (`UActorChannel::ReceivedBunch`
+//! `0x1437c43f0`), disconnected package-map export state (`PackageMapState`),
+//! the open-bunch spawn record, the `APlayerController` 1-byte `NetPlayerIndex`
+//! open-bunch hook (`UActorChannel::ProcessBunch` `0x1437c0c30`,
 //! `APlayerController::OnActorChannelOpen` `0x143ae73a0`,
 //! `APlayerController::OnSerializeNewActor` `0x143ae79d0`), the compressed
-//! rotator and the content-block headers that frame replicated state. Nothing
-//! here is gameplay-integrated, and no connection state, UObject resolution,
-//! admission or gameplay occurs. Writers mirror the readers for round-trip
-//! research only.
+//! rotator, the content-block headers that frame replicated state, and pure
+//! server-side replication relevancy, priority, and tick-rate evaluation
+//! (`UGameEngine::GetMaxTickRate` `0x1435a90e0` server / `0x143836250` client,
+//! `AActor::IsWithinNetRelevancyDistance` `0x143340200` server / `0x1435d6240`
+//! client, `AActor::IsNetRelevantFor` `0x14333fae0` server / `0x1435d5be0`
+//! client, `APawn::IsNetRelevantFor` `0x1437b95a0` server / `0x143a681d0`
+//! client, `APlayerController::IsNetRelevantFor` `0x1432510a0` server /
+//! `0x1434e9040` client, `AActor::GetNetPriority` `0x14333b2e0` server /
+//! `0x1435d14e0` client, `APlayerController::GetNetPriority` `0x143830f20`
+//! server / `0x143adfc40` client). Nothing here is gameplay-integrated, and no
+//! connection state, UObject resolution, admission or gameplay occurs. Writers
+//! mirror the readers for round-trip research only.
 //!
 //! Caller-selected, because their original sources are unread or outside this
 //! codec: the engine net version, whether the archive has exports enabled,
@@ -75,6 +85,38 @@ pub const QUANTIZED_BIT_NET_VERSION: u32 = 13;
 pub const VECTOR_BITS_MAX: u32 = 24;
 /// Quantized spawn-vector scale (F-573).
 pub const VECTOR_SCALE: f32 = 0.1;
+
+/// Default `NetServerMaxTickRate` from `DefaultEngine.ini`
+/// (`[/Script/OnlineSubsystemUtils.IpNetDriver]`, F-745).
+pub const DEFAULT_NET_SERVER_MAX_TICK_RATE: i32 = 30;
+/// Minimum clamped `NetServerMaxTickRate` in `UGameEngine::GetMaxTickRate`
+/// (`0x1435a90e0` server / `0x143836250` client, F-745).
+pub const MIN_NET_SERVER_MAX_TICK_RATE: i32 = 1;
+/// Maximum clamped `NetServerMaxTickRate` (`0x3e8`) in
+/// `UGameEngine::GetMaxTickRate` (`0x1435a90e0` server / `0x143836250` client,
+/// F-745).
+pub const MAX_NET_SERVER_MAX_TICK_RATE: i32 = 1000;
+/// Default `MaxClientRate` from `DefaultEngine.ini`
+/// (`[/Script/OnlineSubsystemUtils.IpNetDriver]`, F-745).
+pub const DEFAULT_MAX_CLIENT_RATE: i32 = 750_000;
+/// Default `MaxInternetClientRate` from `DefaultEngine.ini`
+/// (`[/Script/OnlineSubsystemUtils.IpNetDriver]`, F-745).
+pub const DEFAULT_MAX_INTERNET_CLIENT_RATE: i32 = 750_000;
+/// Default `ConfiguredInternetSpeed` from `DefaultEngine.ini`
+/// (`[/Script/Engine.Player]`, F-745).
+pub const DEFAULT_CONFIGURED_INTERNET_SPEED: i32 = 640_000;
+/// Default `ConfiguredLanSpeed` from `DefaultEngine.ini`
+/// (`[/Script/Engine.Player]`, F-745).
+pub const DEFAULT_CONFIGURED_LAN_SPEED: i32 = 912_000;
+/// Default `ConnectionTimeout` in seconds from `DefaultEngine.ini`
+/// (`[/Script/OnlineSubsystemUtils.IpNetDriver]`, F-745).
+pub const DEFAULT_CONNECTION_TIMEOUT_SECONDS: f32 = 360.0;
+/// Default `InitialConnectTimeout` in seconds from `DefaultEngine.ini`
+/// (`[/Script/OnlineSubsystemUtils.IpNetDriver]`, F-745).
+pub const DEFAULT_INITIAL_CONNECT_TIMEOUT_SECONDS: f32 = 360.0;
+/// Default `ResolutionConnectionTimeout` in seconds from `DefaultEngine.ini`
+/// (`[/Script/OnlineSubsystemUtils.IpNetDriver]`, F-745).
+pub const DEFAULT_RESOLUTION_CONNECTION_TIMEOUT_SECONDS: f32 = 120.0;
 
 /// Research resource policy; the original bounds are unknown.
 #[derive(Clone, Copy, Debug)]
@@ -1509,4 +1551,308 @@ pub fn parse_player_controller_open_bunch(
     );
     let mut reader = bunch.payload.reader();
     read_player_controller_open_bunch_body(&mut reader, codec)
+}
+
+/// Engine network mode (`ENetMode`, `UWorld::InternalGetNetMode` `0x143be5e10`
+/// server / `0x143eb25e0` client, F-745).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum EngineNetMode {
+    /// `NM_Standalone` (`0`).
+    Standalone = 0,
+    /// `NM_DedicatedServer` (`1`).
+    DedicatedServer = 1,
+    /// `NM_ListenServer` (`2`).
+    ListenServer = 2,
+    /// `NM_Client` (`3`).
+    Client = 3,
+}
+
+/// Evaluate `UGameEngine::GetMaxTickRate` (`0x1435a90e0` server / `0x143836250`
+/// client, F-745).
+///
+/// - If `base_engine_max_tick_rate != 0.0` (`ucomiss xmm0, xmm7` where
+///   `xmm7 = 0.0`), returns `base_engine_max_tick_rate`.
+/// - Otherwise, when `net_mode == EngineNetMode::DedicatedServer` (`1`) or
+///   (`net_mode == EngineNetMode::ListenServer` (`2`) and
+///   `b_use_client_max_tick_rate_when_listen_server` (`[NetDriver+0x54] & 1 != 0`)),
+///   returns `net_server_max_tick_rate.clamp(1, 1000) as f32` (`[NetDriver+0x58]`
+///   clamped to `1..=0x3e8`).
+/// - Otherwise returns `0.0`.
+pub fn evaluate_game_engine_max_tick_rate(
+    net_mode: EngineNetMode,
+    b_use_client_max_tick_rate_when_listen_server: bool,
+    net_server_max_tick_rate: i32,
+    base_engine_max_tick_rate: f32,
+) -> f32 {
+    if base_engine_max_tick_rate != 0.0 {
+        return base_engine_max_tick_rate;
+    }
+    let is_dedicated = net_mode == EngineNetMode::DedicatedServer;
+    let is_listen_with_tick_rate =
+        net_mode == EngineNetMode::ListenServer && b_use_client_max_tick_rate_when_listen_server;
+    if is_dedicated || is_listen_with_tick_rate {
+        let clamped = net_server_max_tick_rate
+            .clamp(MIN_NET_SERVER_MAX_TICK_RATE, MAX_NET_SERVER_MAX_TICK_RATE);
+        return clamped as f32;
+    }
+    0.0
+}
+
+/// Evaluate `AActor::IsWithinNetRelevancyDistance` (`0x143340200` server /
+/// `0x1435d6240` client) and the distance check in `AActor::IsNetRelevantFor`
+/// (`0x14333fc63` server, F-745).
+///
+/// Uses `comiss xmm2, xmm1; setb al` where `xmm1 = [rdi+0x100]`
+/// (`NetCullDistanceSquared`) and `xmm2 = dist_sq`, which is strict `<`
+/// (`dist_sq < net_cull_distance_squared`, returning `false` on `NaN`).
+pub fn is_within_net_relevancy_distance(
+    actor_location: [f32; 3],
+    src_location: [f32; 3],
+    net_cull_distance_squared: f32,
+) -> bool {
+    let dx = actor_location[0] - src_location[0];
+    let dy = actor_location[1] - src_location[1];
+    let dz = actor_location[2] - src_location[2];
+    let dist_sq = dx * dx + dy * dy + dz * dz;
+    dist_sq < net_cull_distance_squared
+}
+
+/// Outcome of `AActor::IsNetRelevantFor` (`0x14333fae0` server / `0x1435d5be0`
+/// client, F-745).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ActorRelevancyOutcome {
+    Relevant,
+    NotRelevant {
+        missing_root_component_warning: bool,
+    },
+    DelegateToOwner,
+    DelegateToAttachParentOwner,
+}
+
+/// Inputs to `AActor::IsNetRelevantFor` (`0x14333fae0` server / `0x1435d5be0`
+/// client, F-745).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ActorRelevancyInputs {
+    /// `[this+0x58] & 0x8 != 0`.
+    pub b_always_relevant: bool,
+    /// `[this+0x58] & 0x4 != 0`.
+    pub b_only_relevant_to_owner: bool,
+    /// `[this+0x58] & 0x20 != 0`.
+    pub b_hidden: bool,
+    /// `[this+0x59] & 0x4 != 0`.
+    pub b_use_owner_relevancy: bool,
+    /// `this` or any `Owner` in `[actor+0xe0]` equals `ViewTarget` or `RealViewer`.
+    pub is_owned_by_view_target_or_real_viewer: bool,
+    /// `ViewTarget != null && ViewTarget == this->Instigator` at `[this+0x118]`.
+    pub view_target_is_instigator: bool,
+    /// `[this+0xe0] != null`.
+    pub has_owner: bool,
+    /// `[this+0x130] != null`.
+    pub has_root_component: bool,
+    /// `RootComponent->IsCollisionEnabled()` at `vtable + 0x4e8`.
+    pub root_collision_enabled: bool,
+    /// `RootComponent` && `AttachParent` (`+0xc0`) && `AttachParent->Owner`
+    /// (`+0xa0`) && (`AttachParent->IsA(USkeletalMeshComponent)` ||
+    /// `AttachParent->Owner == this->Owner`).
+    pub attach_parent_delegates_to_owner: bool,
+    /// `GetDefault<AGameNetworkManager>()->bUseDistanceBasedRelevancy` at `+0x2c1`.
+    pub b_use_distance_based_relevancy: bool,
+    /// `RootComponent->ComponentToWorld.Translation` at `+0x1d0`.
+    pub actor_location: [f32; 3],
+    /// Viewer `SrcLocation`.
+    pub src_location: [f32; 3],
+    /// `[this+0x100]` (`NetCullDistanceSquared`).
+    pub net_cull_distance_squared: f32,
+}
+
+/// Evaluate `AActor::IsNetRelevantFor` (`0x14333fae0` server / `0x1435d5be0`
+/// client, F-745) in exact branch order.
+pub fn evaluate_actor_net_relevancy(inputs: &ActorRelevancyInputs) -> ActorRelevancyOutcome {
+    if inputs.b_always_relevant
+        || inputs.is_owned_by_view_target_or_real_viewer
+        || inputs.view_target_is_instigator
+    {
+        return ActorRelevancyOutcome::Relevant;
+    }
+    if inputs.b_use_owner_relevancy && inputs.has_owner {
+        return ActorRelevancyOutcome::DelegateToOwner;
+    }
+    if inputs.b_only_relevant_to_owner {
+        return ActorRelevancyOutcome::NotRelevant {
+            missing_root_component_warning: false,
+        };
+    }
+    if inputs.has_root_component && inputs.attach_parent_delegates_to_owner {
+        return ActorRelevancyOutcome::DelegateToAttachParentOwner;
+    }
+    if inputs.b_hidden && (!inputs.has_root_component || !inputs.root_collision_enabled) {
+        return ActorRelevancyOutcome::NotRelevant {
+            missing_root_component_warning: false,
+        };
+    }
+    if !inputs.has_root_component {
+        return ActorRelevancyOutcome::NotRelevant {
+            missing_root_component_warning: true,
+        };
+    }
+    if !inputs.b_use_distance_based_relevancy {
+        return ActorRelevancyOutcome::Relevant;
+    }
+    if is_within_net_relevancy_distance(
+        inputs.actor_location,
+        inputs.src_location,
+        inputs.net_cull_distance_squared,
+    ) {
+        ActorRelevancyOutcome::Relevant
+    } else {
+        ActorRelevancyOutcome::NotRelevant {
+            missing_root_component_warning: false,
+        }
+    }
+}
+
+/// Outcome of `APawn::IsNetRelevantFor` (`0x1437b95a0` server / `0x143a681d0`
+/// client, F-745).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PawnRelevancyOutcome {
+    Relevant,
+    NotRelevant,
+    DelegateToMovementBaseOwner,
+}
+
+/// Inputs to `APawn::IsNetRelevantFor` (`0x1437b95a0` server / `0x143a681d0`
+/// client, F-745).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct PawnRelevancyInputs {
+    pub b_always_relevant: bool,
+    pub real_viewer_is_controller: bool,
+    pub is_owned_by_view_target_or_real_viewer: bool,
+    pub view_target_is_instigator: bool,
+    pub based_on_view_target_or_vice_versa: bool,
+    pub b_hidden: bool,
+    pub b_only_relevant_to_owner: bool,
+    pub has_root_component: bool,
+    pub root_collision_enabled: bool,
+    /// `MovementBase` && `MovementBase->Owner` && `MovementComponent` &&
+    /// (`MovementBase->IsA(USkeletalMeshComponent)` ||
+    /// `MovementBase->Owner == this->Owner`).
+    pub movement_base_delegates_to_owner: bool,
+    pub b_use_distance_based_relevancy: bool,
+    pub actor_location: [f32; 3],
+    pub src_location: [f32; 3],
+    pub net_cull_distance_squared: f32,
+}
+
+/// Evaluate `APawn::IsNetRelevantFor` (`0x1437b95a0` server / `0x143a681d0`
+/// client, F-745) in exact branch order.
+pub fn evaluate_pawn_net_relevancy(inputs: &PawnRelevancyInputs) -> PawnRelevancyOutcome {
+    if inputs.b_always_relevant
+        || inputs.real_viewer_is_controller
+        || inputs.is_owned_by_view_target_or_real_viewer
+        || inputs.view_target_is_instigator
+        || inputs.based_on_view_target_or_vice_versa
+    {
+        return PawnRelevancyOutcome::Relevant;
+    }
+    if (inputs.b_hidden || inputs.b_only_relevant_to_owner)
+        && (!inputs.has_root_component || !inputs.root_collision_enabled)
+    {
+        return PawnRelevancyOutcome::NotRelevant;
+    }
+    if inputs.movement_base_delegates_to_owner {
+        return PawnRelevancyOutcome::DelegateToMovementBaseOwner;
+    }
+    if !inputs.b_use_distance_based_relevancy {
+        return PawnRelevancyOutcome::Relevant;
+    }
+    let within_distance = is_within_net_relevancy_distance(
+        inputs.actor_location,
+        inputs.src_location,
+        inputs.net_cull_distance_squared,
+    );
+    if inputs.has_root_component && within_distance {
+        PawnRelevancyOutcome::Relevant
+    } else {
+        PawnRelevancyOutcome::NotRelevant
+    }
+}
+
+/// Evaluate `APlayerController::IsNetRelevantFor` (`0x1432510a0` server /
+/// `0x1434e9040` client, F-745): returns `this == RealViewer`.
+pub fn evaluate_player_controller_net_relevancy(is_real_viewer: bool) -> bool {
+    is_real_viewer
+}
+
+/// Outcome of `AActor::GetNetPriority` (`0x14333b2e0` server / `0x1435d14e0`
+/// client, F-745).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum ActorPriorityOutcome {
+    DelegateToOwner,
+    Computed(f32),
+}
+
+/// Inputs to `AActor::GetNetPriority` (`0x14333b2e0` server / `0x1435d14e0`
+/// client, F-745).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ActorPriorityInputs {
+    pub b_use_owner_relevancy: bool,
+    pub has_owner: bool,
+    /// `ViewTarget != null && (this == ViewTarget || this->Instigator == ViewTarget)`.
+    pub is_view_target_or_instigator: bool,
+    pub b_hidden: bool,
+    /// `RootComponent->ComponentToWorld.Translation` at `+0x1d0`, or `None`
+    /// when `RootComponent` is null.
+    pub root_location: Option<[f32; 3]>,
+    pub viewer_location: [f32; 3],
+    pub viewer_dir: [f32; 3],
+    pub time: f32,
+    pub net_priority: f32,
+}
+
+/// Evaluate `AActor::GetNetPriority` (`0x14333b2e0` server / `0x1435d14e0`
+/// client, F-745).
+pub fn evaluate_actor_net_priority(inputs: &ActorPriorityInputs) -> ActorPriorityOutcome {
+    if inputs.b_use_owner_relevancy && inputs.has_owner {
+        return ActorPriorityOutcome::DelegateToOwner;
+    }
+    let mut time = inputs.time;
+    if inputs.is_view_target_or_instigator {
+        time *= 4.0;
+    }
+    if !inputs.b_hidden
+        && let Some(actor_location) = inputs.root_location
+    {
+        let dir = [
+            actor_location[0] - inputs.viewer_location[0],
+            actor_location[1] - inputs.viewer_location[1],
+            actor_location[2] - inputs.viewer_location[2],
+        ];
+        let dist_sq = dir[0] * dir[0] + dir[1] * dir[1] + dir[2] * dir[2];
+        let dot = inputs.viewer_dir[0] * dir[0]
+            + inputs.viewer_dir[1] * dir[1]
+            + inputs.viewer_dir[2] * dir[2];
+        if dot < 0.0 {
+            if dist_sq > 4_000_000.0 {
+                time *= 0.2;
+            } else if dist_sq > 250_000.0 {
+                time *= 0.4;
+            }
+        } else if dist_sq < 64_000_000.0 && dot * dot > 0.5 * dist_sq {
+            time += time;
+        } else if dist_sq > 9_998_244.0 {
+            time *= 0.4;
+        }
+    }
+    ActorPriorityOutcome::Computed(time * inputs.net_priority)
+}
+
+/// Evaluate `APlayerController::GetNetPriority` (`0x143830f20` server /
+/// `0x143adfc40` client, F-745): `time * (if is_in_viewer { 4.0 } else { 1.0 }) * net_priority`.
+pub fn evaluate_player_controller_net_priority(
+    time: f32,
+    net_priority: f32,
+    is_in_viewer: bool,
+) -> f32 {
+    let viewer_multiplier = if is_in_viewer { 4.0 } else { 1.0 };
+    time * viewer_multiplier * net_priority
 }

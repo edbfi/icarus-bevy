@@ -2926,3 +2926,504 @@ fn prospect_blob_decode_models_allocation_lengths_and_ignored_base64_return() {
         }
     );
 }
+
+#[test]
+fn actor_base_quest_game_mode_and_mount_record_and_restore() {
+    use icarus_bevy::experimental::restore_rules::{
+        ActorRecorderBaseRecordPlan, GameModeGameStateRecord, GameModeRecordPlan,
+        MountCharacterRecordPlan, MountCharacterRestorePlan, QuestManagerRestorePlan,
+        QuestRestorePlan, evaluate_actor_recorder_base_record, evaluate_game_mode_record,
+        evaluate_mount_character_record, evaluate_mount_character_restore,
+        evaluate_quest_manager_restore, evaluate_quest_restore,
+    };
+
+    // C001 / C023 UActorStateRecorderComponent::RecordOwnerState (0x1418a0170 / 0x1418a5b60):
+    // sets RecordedVersion = 3, records ActorTransform (or FTransform::Identity when RootComponent is null)
+    // iff b_record_actor_transform is true, and records variables, durability, GUID, inventories,
+    // modifier states (iff b_record_modifier_states is true), generator, and processing state.
+    assert_eq!(
+        evaluate_actor_recorder_base_record::<&str, &str, &str>(
+            false,
+            true,
+            None,
+            &["Var_A"],
+            Some((100, 200, true)),
+            Some(42),
+            &["Inv_0"],
+            true,
+            Some(&["Mod_A"]),
+            Some(true),
+            None,
+        ),
+        None
+    );
+    assert_eq!(
+        evaluate_actor_recorder_base_record(
+            true,
+            true,
+            None,
+            &["Var_A"],
+            Some((100, 200, true)),
+            Some(42),
+            &["Inv_0"],
+            false,
+            Some(&["Mod_A"]),
+            Some(true),
+            Some(RestoredProcessingState {
+                b_processing_active: true,
+                b_is_crafting: true,
+                crafting_progress: 50,
+                b_resource_1_active: true,
+                b_resource_2_active: false,
+            }),
+        ),
+        Some(ActorRecorderBaseRecordPlan {
+            recorded_version: 3,
+            actor_transform_override: Some((
+                [0.0, 0.0, 0.0, 1.0],
+                [0.0, 0.0, 0.0],
+                [1.0, 1.0, 1.0],
+            )),
+            recorded_variables: vec!["Var_A"],
+            durability_data: Some((100, 200, true)),
+            icarus_actor_guid_override: Some(42),
+            saved_inventories: vec!["Inv_0"],
+            modifier_states_override: None,
+            generator_active_override: Some(true),
+            processing_state_override: Some(RestoredProcessingState {
+                b_processing_active: true,
+                b_is_crafting: true,
+                crafting_progress: 50,
+                b_resource_1_active: true,
+                b_resource_2_active: false,
+            }),
+        })
+    );
+    assert_eq!(
+        evaluate_actor_recorder_base_record::<&str, &str, &str>(
+            true,
+            false,
+            Some(([0.0, 0.0, 0.0, 1.0], [10.0, 20.0, 30.0], [1.0, 1.0, 1.0])),
+            &[],
+            None,
+            None,
+            &[],
+            true,
+            Some(&["Mod_A", "Mod_B"]),
+            None,
+            None,
+        ),
+        Some(ActorRecorderBaseRecordPlan {
+            recorded_version: 3,
+            actor_transform_override: None,
+            recorded_variables: Vec::new(),
+            durability_data: None,
+            icarus_actor_guid_override: None,
+            saved_inventories: Vec::new(),
+            modifier_states_override: Some(vec!["Mod_A", "Mod_B"]),
+            generator_active_override: None,
+            processing_state_override: None,
+        })
+    );
+
+    // C018 UIcarusQuestManagerRecorderComponent::UpdateOwnerToDatabaseState (0x1418f6a60 / 0x1418f7130)
+    // and C019 UIcarusQuestRecorderComponent::UpdateOwnerToDatabaseState (0x1418f6c50 / 0x1418f7320).
+    assert_eq!(
+        evaluate_quest_manager_restore(false, "Mission_Alpha", true, 2, 1800, true, "Seed_01"),
+        None
+    );
+    assert_eq!(
+        evaluate_quest_manager_restore(true, "Mission_Alpha", true, 2, 1800, true, "Seed_01"),
+        Some(QuestManagerRestorePlan {
+            faction_mission_row_name: "Mission_Alpha",
+            b_mission_active: true,
+            mission_difficulty: 2,
+            mission_timer: 1800,
+            b_timer_active: true,
+            selected_seed_row_name: "Seed_01",
+        })
+    );
+    assert_eq!(
+        evaluate_quest_restore(false, "Quest_Step_A", &["Prog_1", "Prog_2"]),
+        None
+    );
+    assert_eq!(
+        evaluate_quest_restore(true, "Quest_Step_A", &["Prog_1", "Prog_2"]),
+        Some(QuestRestorePlan {
+            quest_dt_key: "Quest_Step_A",
+            quest_progress_records: vec!["Prog_1", "Prog_2"],
+        })
+    );
+
+    // C015 UIcarusGameModeStateRecorderComponent::RecordOwnerState (0x1418a1a60 / 0x1418a71e0):
+    // sets RecordedVersion = 2, copies GameMode fields, and copies GameState fields iff GameState is a valid AIcarusGameStateSurvival.
+    assert_eq!(
+        evaluate_game_mode_record::<[f32; 3], &str, &str, &str, &str, &str, &str, &str>(
+            false,
+            3600,
+            3605.5,
+            true,
+            None,
+            &[("Exotics", 50)],
+            "Stats_A",
+            "Accolades_A",
+            "Bestiary_A",
+            &["Mission_1"],
+            &["Dialogue_1"],
+            7200,
+            &["Boss_Alpha"],
+        ),
+        None
+    );
+    assert_eq!(
+        evaluate_game_mode_record(
+            true,
+            3600,
+            3605.5,
+            true,
+            Some((12.5, 12.25, 2, 1, &[[100.0_f32, 200.0, 300.0]])),
+            &[("Exotics", 50), ("Exotics_Red", 10)],
+            "Stats_A",
+            "Accolades_A",
+            "Bestiary_A",
+            &["Mission_1"],
+            &["Dialogue_1"],
+            7200,
+            &["Boss_Alpha"],
+        ),
+        Some(GameModeRecordPlan {
+            recorded_version: 2,
+            level_time_elapsed_sec: 3600,
+            prospect_time_elapsed: 3605.5,
+            b_have_dropships_spawned: true,
+            game_state_record: Some(GameModeGameStateRecord {
+                time_of_day: 12.5,
+                last_valid_time_of_day: 12.25,
+                spawned_dropships_count: 2,
+                current_dropship_index: 1,
+                dropship_locations: vec![[100.0, 200.0, 300.0]],
+            }),
+            exported_currencies: vec![("Exotics", 50), ("Exotics_Red", 10)],
+            prospect_stats: "Stats_A",
+            accolade_state: "Accolades_A",
+            bestiary_tracking: "Bestiary_A",
+            mission_history: vec!["Mission_1"],
+            dialogue_history: vec!["Dialogue_1"],
+            next_meteor_shower_time: 7200,
+            faction_mission_bosses_spawned: vec!["Boss_Alpha"],
+        })
+    );
+
+    // C017 UIcarusMountCharacterRecorderComponent::RecordOwnerState (0x1413f8900 / 0x141436a60)
+    // and UpdateOwnerToDatabaseState (0x141404230 / 0x141442480) + NPC & Character base layers.
+    assert_eq!(
+        evaluate_mount_character_record(
+            false,
+            Some(450),
+            Some(99),
+            1,
+            2,
+            3,
+            1200,
+            15,
+            "Mount_Moa",
+            80,
+            90,
+            Some("Tamed_Data_A"),
+            &["Talent_1"],
+            &["Solo_1"],
+            &["Cosmetic_1"],
+            "Swiftfoot",
+            "Moa_Type",
+            "Icon_Moa",
+            "76561198000000001",
+        ),
+        None
+    );
+    assert_eq!(
+        evaluate_mount_character_record(
+            true,
+            Some(450),
+            None,
+            1,
+            2,
+            3,
+            1200,
+            15,
+            "Mount_Moa",
+            80,
+            90,
+            Some("Tamed_Data_A"),
+            &["Talent_1"],
+            &["Solo_1"],
+            &["Cosmetic_1"],
+            "Swiftfoot",
+            "Moa_Type",
+            "Icon_Moa",
+            "76561198000000001",
+        ),
+        Some(MountCharacterRecordPlan {
+            health_override: Some(450),
+            parent_character_uid: -1,
+            behaviour_type: 1,
+            tamed_mount_action: 2,
+            saved_version: 2,
+            growth_stage: 3,
+            experience: 1200,
+            character_level: 15,
+            ai_setup_row_name: "Mount_Moa",
+            current_food: 80,
+            current_water: 90,
+            tamed_data_override: Some("Tamed_Data_A"),
+            selected_talent_row_names: vec!["Talent_1"],
+            solo_talent_row_names: vec!["Solo_1"],
+            unlocked_cosmetic_row_names: vec!["Cosmetic_1"],
+            mount_name: "Swiftfoot",
+            mount_type_row_name: "Moa_Type",
+            mount_icon_row_name: "Icon_Moa",
+            owner_user_id: "76561198000000001",
+        })
+    );
+
+    assert_eq!(
+        evaluate_mount_character_restore(
+            false,
+            true,
+            450,
+            1,
+            2,
+            2,
+            3,
+            1200,
+            15,
+            "Mount_Moa",
+            80,
+            90,
+            "Tamed_Data_A",
+            &["Talent_1"],
+            &["Solo_1"],
+            &["Cosmetic_1"],
+            "Swiftfoot",
+            "Moa_Type",
+            "Icon_Moa",
+            "76561198000000001",
+        ),
+        None
+    );
+    // Version 1 (< 2) runs legacy talent migration; saved_health == -1 skips SetHealth.
+    assert_eq!(
+        evaluate_mount_character_restore(
+            true,
+            true,
+            -1,
+            1,
+            2,
+            1,
+            3,
+            1200,
+            15,
+            "Mount_Moa",
+            80,
+            90,
+            "Tamed_Data_A",
+            &["Talent_1"],
+            &["Solo_1"],
+            &["Cosmetic_1"],
+            "Swiftfoot",
+            "Moa_Type",
+            "Icon_Moa",
+            "76561198000000001",
+        ),
+        Some(MountCharacterRestorePlan {
+            set_health: None,
+            behaviour_type: 1,
+            tamed_mount_action: 2,
+            growth_stage: 3,
+            experience: 1200,
+            character_level: 15,
+            ai_setup_row_name: "Mount_Moa",
+            current_food: 80,
+            current_water: 90,
+            tamed_data: "Tamed_Data_A",
+            selected_talent_row_names: vec!["Talent_1"],
+            solo_talent_row_names: vec!["Solo_1"],
+            unlocked_cosmetic_row_names: vec!["Cosmetic_1"],
+            run_legacy_talent_migration: true,
+            mount_name: "Swiftfoot",
+            mount_type_row_name: "Moa_Type",
+            mount_icon_row_name: "Icon_Moa",
+            owner_user_id: "76561198000000001",
+        })
+    );
+    // Version 2 skips legacy talent migration and applies positive saved_health when StatComponent is valid.
+    assert_eq!(
+        evaluate_mount_character_restore(
+            true,
+            true,
+            450,
+            1,
+            2,
+            2,
+            3,
+            1200,
+            15,
+            "Mount_Moa",
+            80,
+            90,
+            "Tamed_Data_A",
+            &["Talent_1"],
+            &["Solo_1"],
+            &["Cosmetic_1"],
+            "Swiftfoot",
+            "Moa_Type",
+            "Icon_Moa",
+            "76561198000000001",
+        ),
+        Some(MountCharacterRestorePlan {
+            set_health: Some(450),
+            behaviour_type: 1,
+            tamed_mount_action: 2,
+            growth_stage: 3,
+            experience: 1200,
+            character_level: 15,
+            ai_setup_row_name: "Mount_Moa",
+            current_food: 80,
+            current_water: 90,
+            tamed_data: "Tamed_Data_A",
+            selected_talent_row_names: vec!["Talent_1"],
+            solo_talent_row_names: vec!["Solo_1"],
+            unlocked_cosmetic_row_names: vec!["Cosmetic_1"],
+            run_legacy_talent_migration: false,
+            mount_name: "Swiftfoot",
+            mount_type_row_name: "Moa_Type",
+            mount_icon_row_name: "Icon_Moa",
+            owner_user_id: "76561198000000001",
+        })
+    );
+}
+
+#[test]
+fn recorder_ctor_defaults_cover_all_38_classes_and_vtable_slots() {
+    use icarus_bevy::experimental::restore_rules::{
+        MakeRelativeTransformKind, RequiresStitchingKind, evaluate_requires_stitching,
+        recorder_ctor_defaults,
+    };
+
+    assert_eq!(recorder_ctor_defaults(0), None);
+    assert_eq!(recorder_ctor_defaults(39), None);
+
+    let mut direct_base_ordinals = Vec::new();
+    let mut save_modifiers_false = Vec::new();
+    let mut skip_default_owner_true = Vec::new();
+    let mut find_only = Vec::new();
+    let mut respawn_only = Vec::new();
+    let mut find_or_respawn = Vec::new();
+    let mut manually_resolved = Vec::new();
+    let mut record_modifiers_true = Vec::new();
+    let mut record_transform_false = Vec::new();
+    let mut stitch_always_true = Vec::new();
+    let mut stitch_parent_uid = Vec::new();
+    let mut purge_sublevel_true = Vec::new();
+    let mut make_rel_grid = Vec::new();
+    let mut make_rel_spline = Vec::new();
+
+    for ordinal in 1..=38 {
+        let defaults = recorder_ctor_defaults(ordinal).expect("valid C001..C038 ordinal");
+        assert_eq!(defaults.class_ordinal, ordinal);
+        if !defaults.is_actor_recorder {
+            direct_base_ordinals.push(ordinal);
+            assert_eq!(defaults.b_record_modifier_states, None);
+            assert_eq!(defaults.b_record_actor_transform, None);
+            assert_eq!(
+                defaults.make_relative_transform,
+                MakeRelativeTransformKind::NotApplicable
+            );
+        } else {
+            if defaults.b_record_modifier_states == Some(true) {
+                record_modifiers_true.push(ordinal);
+            } else {
+                assert_eq!(defaults.b_record_modifier_states, Some(false));
+            }
+            if defaults.b_record_actor_transform == Some(false) {
+                record_transform_false.push(ordinal);
+            } else {
+                assert_eq!(defaults.b_record_actor_transform, Some(true));
+            }
+            match defaults.make_relative_transform {
+                MakeRelativeTransformKind::ActorAndBuildingGrid => make_rel_grid.push(ordinal),
+                MakeRelativeTransformKind::ActorAndSplinePoints => make_rel_spline.push(ordinal),
+                other => assert_eq!(other, MakeRelativeTransformKind::ActorTransformOnly),
+            }
+        }
+        if !defaults.b_save_modifiers {
+            save_modifiers_false.push(ordinal);
+        }
+        if defaults.b_skip_default_owner_resolution {
+            skip_default_owner_true.push(ordinal);
+        }
+        match defaults.owner_resolve_policy {
+            OwnerResolvePolicy::FindOnly => find_only.push(ordinal),
+            OwnerResolvePolicy::RespawnOnly => respawn_only.push(ordinal),
+            OwnerResolvePolicy::FindOrRespawn => find_or_respawn.push(ordinal),
+            OwnerResolvePolicy::ManuallyResolved => manually_resolved.push(ordinal),
+        }
+        match defaults.requires_stitching {
+            RequiresStitchingKind::AlwaysTrue => stitch_always_true.push(ordinal),
+            RequiresStitchingKind::CharacterParentUidPresent => stitch_parent_uid.push(ordinal),
+            RequiresStitchingKind::AlwaysFalse => {}
+        }
+        if defaults.purge_sublevel_actors {
+            purge_sublevel_true.push(ordinal);
+        }
+    }
+
+    assert_eq!(direct_base_ordinals, vec![13, 14, 22, 25, 35, 36, 37]);
+    assert_eq!(
+        save_modifiers_false,
+        vec![3, 7, 8, 9, 10, 20, 21, 25, 26, 29, 30, 33, 34]
+    );
+    assert_eq!(skip_default_owner_true, vec![15, 20, 25, 26, 31, 34]);
+    assert_eq!(
+        find_only,
+        vec![2, 12, 13, 15, 16, 18, 22, 23, 24, 35, 36, 37, 38]
+    );
+    assert_eq!(
+        respawn_only,
+        vec![3, 4, 7, 8, 9, 10, 11, 14, 17, 21, 29, 30, 31, 32, 33]
+    );
+    assert_eq!(find_or_respawn, vec![1, 19, 27, 28]);
+    assert_eq!(manually_resolved, vec![5, 6, 20, 25, 26, 34]);
+    assert_eq!(record_modifiers_true, vec![26]);
+    assert_eq!(record_transform_false, vec![6, 20, 28, 31, 34]);
+    assert_eq!(
+        stitch_always_true,
+        vec![
+            3, 6, 7, 8, 9, 10, 13, 14, 16, 18, 19, 25, 26, 27, 30, 32, 38
+        ]
+    );
+    assert_eq!(stitch_parent_uid, vec![17]);
+    assert_eq!(purge_sublevel_true, vec![4]);
+    assert_eq!(make_rel_grid, vec![4]);
+    assert_eq!(make_rel_spline, vec![32]);
+
+    assert!(!evaluate_requires_stitching(
+        RequiresStitchingKind::AlwaysFalse,
+        42
+    ));
+    assert!(evaluate_requires_stitching(
+        RequiresStitchingKind::AlwaysTrue,
+        -1
+    ));
+    assert!(!evaluate_requires_stitching(
+        RequiresStitchingKind::CharacterParentUidPresent,
+        -1
+    ));
+    assert!(evaluate_requires_stitching(
+        RequiresStitchingKind::CharacterParentUidPresent,
+        0
+    ));
+    assert!(evaluate_requires_stitching(
+        RequiresStitchingKind::CharacterParentUidPresent,
+        42
+    ));
+}

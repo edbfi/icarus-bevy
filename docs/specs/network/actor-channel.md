@@ -3,14 +3,16 @@
 ## Status
 
 Experimental: static observations of client build 25793767 and server build
-25621760, wire-checked against the 3.0.31 capture (F-704 to F-711, F-739). Last reconciled: 2026-10-18.
+25621760, wire-checked against the 3.0.31 capture (F-704 to F-711, F-739,
+F-745). Last reconciled: 2026-10-19.
 
 ## Scope
 
-How client and server frame actor-channel bunches after the control channel:
-export prefixes, outgoing partial-bunch segmentation and incoming reassembly,
-actor spawn records, per-object content blocks, and channel close / dormancy
-transitions. Not covered: server relevancy and priority heuristics.
+How client and server frame and schedule actor-channel bunches after the control
+channel: export prefixes, outgoing partial-bunch segmentation and incoming
+reassembly, actor spawn records, per-object content blocks, channel close /
+dormancy transitions, and static server relevancy, priority, and tick-rate
+policies.
 
 ## Confirmed
 
@@ -108,6 +110,21 @@ transitions. Not covered: server relevancy and priority heuristics.
     soft-object paths use archive strings, and Text items use the UE4 version
     522 `FText` history framing (`0..12`, `0xFF`; `experimental::rep_text`),
     replaying all `23,486 / 23,486` (`100%`) typed blocks in M-707 bit-identically.
+- Server relevancy, priority, and tick rate (F-745): `AActor::IsNetRelevantFor`
+  (`0x143330010` / `0x1435c6570`), `APawn::IsNetRelevantFor` (`0x143801a90` /
+  `0x143aaddd0`), `APlayerController::IsNetRelevantFor` (`0x14382ef20` /
+  `0x143ae1cc0`), `IsWithinNetRelevancyDistance` (`0x143330880` / `0x1435c6de0`),
+  `AActor::GetNetPriority` (`0x14332a170` / `0x1435c0490`),
+  `APlayerController::GetNetPriority` (`0x14382d690` / `0x143ae0260`),
+  `UNetDriver::ServerReplicateActors` (`0x143723b70` / `0x1439c1ef0`), and
+  `UGameEngine::GetMaxTickRate` (`0x1435cbbf0` / `0x143850c50`) match across
+  server 25621760 and client 25793767; `DefaultEngine.ini` (`0xb68d0a35`) sets
+  `NetServerMaxTickRate=30`, `LanServerMaxTickRate=30`, `MaxNetTickRate=200`,
+  `MaxInternetClientRate=120000`, `MaxClientRate=100000`, and
+  `ConnectionTimeout=360.0` (`evaluate_actor_net_relevancy`,
+  `evaluate_pawn_net_relevancy`, `evaluate_player_controller_net_relevancy`,
+  `evaluate_actor_net_priority`, `evaluate_player_controller_net_priority`, and
+  `evaluate_game_engine_max_tick_rate` in `experimental::actor_channel`).
 
 ## Candidate
 
@@ -115,18 +132,18 @@ transitions. Not covered: server relevancy and priority heuristics.
   `experimental::rep_layout` read, re-encode, reassemble and re-split export
   prefixes (`317 / 317`), `PackageMapState` mappings, partial-bunch sequences
   (`300 / 300`), must-be-mapped GUID lists, open bunches, content blocks,
-  property streams and `ChannelCloseReason` codes (`136 / 136`) bit-identically
-  without panicking on randomized inputs (F-577, F-604, F-673, F-709 to F-711,
-  F-739).
+  property streams, `ChannelCloseReason` codes (`136 / 136`), and static
+  relevancy/priority/tick-rate policies bit-identically without panicking on
+  randomized inputs (F-577, F-604, F-673, F-709 to F-711, F-739, F-745).
 
 ## Open questions
 
-- Server relevancy and priority heuristics (authenticated session U-038).
+- Authenticated runtime relevancy and priority exercise (U-038).
 
 ## Evidence
 
 - Symbols and pseudocode M-420 to M-437; net items and writers M-438 to M-449,
-  M-455 to M-470, M-776, M-777, M-782, M-791; movement, tags, Name/Str, hit
+  M-455 to M-470, M-776, M-777, M-782, M-791, M-793, M-794; movement, tags, Name/Str, hit
   results, soft objects and Text M-475 to M-548, M-570 to M-588, M-602 to M-605;
   enum widths, RPCs and fast arrays M-614, M-615, M-620 to M-624, M-628 to M-635;
   native descriptors, cooked Blueprint exports, export/open hooks, partial/close

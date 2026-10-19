@@ -7,7 +7,7 @@ full text under `retired/`. Admission and columns follow `.agents/rules/docs.md`
 
 Before restructure: 96ddb0b:docs/ledgers/findings.md
 
-Last reconciled: 2026-10-18
+Last reconciled: 2026-10-19
 
 | ID | Claim | Kind | Evidence | Scope and limits | Unknowns | Status |
 | --- | --- | --- | --- | --- | --- | --- |
@@ -109,3 +109,4 @@ Last reconciled: 2026-10-18
 | F-729 | StatelessConnect MagicHeader (0x14372d5d0) takes <=32 '0'/'1' bits (0 in ICARUS); ParseHandshakePacket (0x1437419a0/0x1439dec65) accepts 1 (0x07 restart, 0x143745ee0), 226 (29-B) or 386 (49-B OrigCookie, 0x143745810) bits; S1 exercises UWorld FNetworkNotify (0x145468180) | observed | static-decompile; M-169, M-770/ev_536250c23427, M-771 | high; 2 builds | U-010, U-051 | active |
 | F-739 | Server UPackageMapClient::SerializeNewActor (0x1437201a0) matches client 0x1439be280: SerializeOptionalValue<FVector> (0x1436feda0) uses EngineNetVer>=13 bQuantized, Write/ReadPackedVector<10,24> (0x143471e90/0x1436fee6c), and FRotator::NetSerialize (0x141ee74a0) | observed | static-decompile; M-460, M-776/ev_2e9c09126f64, M-777 | high; 2 builds | U-064 | active |
 | F-740 | NotifyControlMessage (0x1439ee7f0) clamps Netspeed (4) to [1800,MaxClientRate], swaps PCSwap (15), logs Debug (17); ReceivedBunch (0x143536420) handles ch fail (16), GameSpecific (19), Security (20), DestructionInfo (22) | observed | static-decompile, authored-test; M-776/ev_2e9c09126f64, M-777, M-791/ev_298296be07a0, M-780 | high; 2 builds | U-043, U-044 | active |
+| F-745 | IsNetRelevantFor (0x143330010/0x143801a90/0x14382ef20), IsWithinNetRelevancyDistance (0x143330880), GetNetPriority (0x14332a170/0x14382d690), ServerReplicateActors (0x143723b70) and GetMaxTickRate (0x1435cbbf0; DefaultEngine.ini 30/200/120000/100000) match | observed | static-decompile, authored-test; M-793/ev_298296be07a0, M-793/ev_da4a99f8f20f, M-794 | high; 2 builds | U-064 | active |

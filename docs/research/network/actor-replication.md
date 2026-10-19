@@ -59,9 +59,12 @@ hit results, movement, `FVector`, `FVector2D`, `FQuat`, `FPlane` (`4 x i16`),
 `FDateTime`/`FTimespan` (`i64`), `FRotator`, `FUniqueNetIdRepl`, `FRowHandle`,
 `293` typed `F*RowHandle` structs and `FStatPairRepState` (F-588 to F-597, F-704
 to F-709). Field headers then carry RPCs, custom-delta payloads and fast arrays
-(F-644). Generic framing, export bunches, partial split/reassembly, dormancy
-closes, open hooks and typed class layouts, RPC caches and tag dictionaries
-replay 100% of M-707 traffic (F-702 to F-711).
+(F-644). Server `IsNetRelevantFor`, `IsWithinNetRelevancyDistance`,
+`GetNetPriority`, `ServerReplicateActors`, and `GetMaxTickRate` (`30` Hz default,
+`200` Hz cap in `DefaultEngine.ini`) match across both builds (F-745). Generic
+framing, export bunches, partial split/reassembly, dormancy closes, open hooks
+and typed class layouts, RPC caches and tag dictionaries replay 100% of M-707
+traffic (F-702 to F-711, F-739, F-745).
 
 Offline schema derivation is authorized ([gates](../../gates.md)). The runtime
 gameplay-tag net-index table is derived solely from `Data/Tags/D_Tags` (130
@@ -89,12 +92,12 @@ replay all `288 / 288` actor opens (including the 472-bit channel-2
 blocks (`100%`, including `220` actor RPCs and `295` zero-bit subobject headers;
 `23,486 / 23,486` total typed blocks, `2,607` RPC calls, `66,859` property
 entries, `2,361` stat-pair items) in M-707 bit-identically with 0 failures
-(F-704 to F-711, F-739; U-064 resolved).
+(F-704 to F-711, F-739, F-745; U-064 resolved).
 
 ## Open
 
-- Server relevancy and priority heuristics in an authenticated session (U-038).
+- Authenticated runtime relevancy and priority exercise (U-038).
 
 ## Artifacts
 
-M-420..M-449, M-455..M-470, M-570..M-576, M-581..M-588, M-600..M-605, M-707, M-708, M-709..M-717, M-720, M-728..M-748, M-776, M-777, M-782, M-791.
+M-420..M-449, M-455..M-470, M-570..M-576, M-581..M-588, M-600..M-605, M-707, M-708, M-709..M-717, M-720, M-728..M-748, M-776, M-777, M-782, M-791, M-793, M-794.
