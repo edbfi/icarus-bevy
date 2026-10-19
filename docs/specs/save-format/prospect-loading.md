@@ -2,7 +2,7 @@
 
 ## Status
 
-Experimental; scope dedicated-server build 25621760 (supplied saves are user-reported from 25793767). Last reconciled: 2026-10-18.
+Experimental; scope dedicated-server build 25621760 (supplied saves are user-reported from 25793767). Last reconciled: 2026-10-19.
 Full text: d5b0ae6:docs/specs/save-format/prospect-loading.md
 
 ## Scope
@@ -127,14 +127,18 @@ Acceptance conditions for any importer
   (`prospect`), and `icarus-server inspect-save --stage-check` validate the
   `FProspectSaveState` root schema, out-of-order tags, `PostLoadSerialize`
   migration, 17 `FProspectInfo` tags, optional `ProspectID` matching, base
-  framing, per-recorder `Validate` (`+0x408`), and `C033` `bIsPhysicsDynamic`
-  counts across all 15 saves (`15 / 15`; `dddd.json`: `2,744` -> `1` invalid
-  `C031`, `2,743` retained, `2` dynamic `C033` -> `2,741` on `M-691`;
-  `world_imported: false`, F-680, F-736, F-738).
-- All 65 `RecorderComponent` `FClassParams`, 38 `StateRecorderBlobs` vtable
-  overrides ([restore rules](restore-rules.md)), and `C001` provenance
+  framing, 65-class ctor defaults + tag overlays (`bSkipDefaultOwnerResolution`,
+  `OwnerResolvePolicy`, `ParentCharacterUID` -> `RequiresStitching`), per-recorder
+  `Validate` (`+0x408`, incl. `N018` `false` and `N022` rocket-spawn), and `C033`
+  `bIsPhysicsDynamic` counts across all 15 saves (`15 / 15`; `dddd.json`: `2,744` ->
+  `1` invalid `C031`, `2,743` retained (`971` skip-owner, `52` `FindOnly`, `798`
+  `RespawnOnly`, `658` `FindOrRespawn`, `264` `ManuallyResolved`, `821` stitching),
+  `2` dynamic `C033` -> `2,741` on `M-691`; `world_imported: false`, F-680, F-736,
+  F-738, F-746, F-747).
+- All 65 `RecorderComponent` `FClassParams`, ctor defaults and vtable overrides
+  ([restore rules](restore-rules.md)), and `C001` provenance
   ([C001 digest](../../research/save-format/c001-constructor.md)) match across
-  builds (F-469..F-738; U-003..U-006, U-020..U-024, U-032, U-041, U-042, U-046,
+  builds (F-469..F-747; U-003..U-006, U-020..U-024, U-032, U-041, U-042, U-046,
   U-048, U-050 resolved).
 
 ## Open questions
@@ -145,7 +149,7 @@ Acceptance conditions for any importer
 
 ## Evidence
 
-- Static: M-079..M-170, M-755..M-784; runtime: M-154, M-155, M-160; framing:
+- Static: M-079..M-170, M-755..M-800; runtime: M-154, M-155, M-160; framing:
   M-049..M-118, M-172; C001: M-007..M-013, M-173, M-179..M-181, M-761, M-762.
 - Tests: `tests/tagged.rs`, `tests/recorders.rs`, `tests/component.rs`,
   `tests/struct_array.rs`, `tests/int_array.rs`, `tests/archive_frame.rs`,

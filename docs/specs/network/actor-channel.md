@@ -4,15 +4,15 @@
 
 Experimental: static observations of client build 25793767 and server build
 25621760, wire-checked against the 3.0.31 capture (F-704 to F-711, F-739,
-F-745). Last reconciled: 2026-10-19.
+F-745, F-748). Last reconciled: 2026-10-19.
 
 ## Scope
 
 How client and server frame and schedule actor-channel bunches after the control
 channel: export prefixes, outgoing partial-bunch segmentation and incoming
 reassembly, actor spawn records, per-object content blocks, channel close /
-dormancy transitions, and static server relevancy, priority, and tick-rate
-policies.
+dormancy transitions, and static server relevancy, priority, tick-rate,
+connection-readiness, and consider-list policies.
 
 ## Confirmed
 
@@ -53,14 +53,13 @@ policies.
   `bHasMustBeMappedGUIDs` prefix before `ProcessBunch` (`0x143530b30` /
   `0x1437c0c30`).
 - Open bunch, actor hook and dormancy transitions (F-569, F-610, F-709 to F-711,
-  F-739): `UPackageMapClient::SerializeNewActor` (`0x1437201a0` server /
-  `0x1439be280` client) frames the actor NetGUID and, for dynamic GUIDs (nonzero,
-  even), the archetype NetGUID, a flag-gated level reference, and four optional
-  presence-bit-gated blocks: location, rotation, scale and velocity
-  (`SerializeOptionalValue<FVector>` `0x1436feda0` / `0x14399cac0` with
-  `bQuantized = 1` for Location/Velocity and `0` for Scale3D,
-  `Write/ReadPackedVector<10, 24>` `0x143471e90` / `0x1436fee6c`, and
-  `FRotator::NetSerialize` `0x141ee74a0` / `0x141ed36b0` ->
+  F-739): `UPackageMapClient::SerializeNewActor` (`0x1437201a0` / `0x1439be280`)
+  frames the actor NetGUID and, for dynamic GUIDs (nonzero, even), the archetype
+  NetGUID, a flag-gated level reference, and four optional presence-bit-gated
+  blocks: location, rotation, scale and velocity (`SerializeOptionalValue<FVector>`
+  `0x1436feda0` / `0x14399cac0` with `bQuantized = 1` for Location/Velocity and
+  `0` for Scale3D, `Write/ReadPackedVector<10, 24>` `0x143471e90` / `0x1436fee6c`,
+  and `FRotator::NetSerialize` `0x141ee74a0` / `0x141ed36b0` ->
   `SerializeCompressedShort` `0x141eeb7d0` / `0x141ed7810`, F-739). `ProcessBunch`
   and `ReplicateActor` (`0x14353a820` / `0x1437c7f00`) then invoke
   `OnActorChannelOpen` / `OnSerializeNewActor`: empty on `AActor` (`0x1408c9710`),
@@ -71,65 +70,73 @@ policies.
   (`ChannelCloseReason::Dormancy`, `136 / 136` closes in M-707),
   `UActorChannel::CleanUp` (`0x1435222c0` / `0x1437b27e0`) sets
   `Actor->NetDormancy = DORM_DormantAll` (`2`) without destroying the actor.
-- Content blocks (F-576, F-581, F-709): after the open, until the bunch ends,
-  each block is a rep-layout bit and an is-actor bit; a non-actor block adds the
-  sub-object NetGUID and a stably-named bit, and a dynamic sub-object a class
-  NetGUID whose zero value deletes it and ends the block. Otherwise a packed
-  payload-bit count follows and those bits go to `FObjectReplicator::ReplicateProperties`
-  (`0x1437f6b80`).
-- Replicator property and field loops (F-571, F-586, F-609, F-644, F-703 to F-709):
-  `FRepLayout::ReceiveProperties` (`0x143b20720`) reads a 1-bit `bDoChecksum`
-  flag and a zero-terminated packed-handle stream (dynamic arrays carry a 2-byte
-  element count and nested handle stream) before the field-header loop. Each
-  field is a `SerializeInt` index below `FClassNetCache::GetMaxIndex() + 1`
-  (`0x1437c2650`), a packed bit count and payload (`experimental::rep_rpc`).
-  Native `ConstructUClass` descriptors sort own `CPF_Net` properties by
-  `(offset, name)`, whereas cooked `UBlueprintGeneratedClass` exports
-  (`ClassFlags & 0x80`) keep `ChildProperties` order (`experimental::rep_layout`
-  models 64 schemas covering all `20,407 / 20,407` `with_rep_layout` blocks in
-  M-707). Custom-delta fast arrays carry a 1-bit header, packed static-array
-  index, four 4-byte header words, 4-byte delete IDs, and changed elements.
-- Spawn vectors, property net items and struct/scalar serializers (F-571, F-573
-  to F-575, F-583, F-588, F-589, F-591 to F-593, F-595, F-597, F-599, F-632,
-  F-639, F-673 to F-675, F-704 to F-709, F-739; U-064, U-066 resolved):
+- Content blocks and replicator loops (F-571, F-576, F-581, F-586, F-609, F-644,
+  F-703 to F-709): after the open, each block has a rep-layout bit and an
+  is-actor bit; a non-actor block adds the sub-object NetGUID and a stably-named
+  bit, and a dynamic sub-object a class NetGUID whose zero value deletes it.
+  Otherwise a packed payload-bit count feeds `FObjectReplicator::ReplicateProperties`
+  (`0x1437f6b80`). `FRepLayout::ReceiveProperties` (`0x143b20720`) reads a 1-bit
+  `bDoChecksum` flag and a zero-terminated packed-handle stream before the
+  field-header loop (`SerializeInt` index below `FClassNetCache::GetMaxIndex() + 1`
+  `0x1437c2650`, packed bit count, and payload; `experimental::rep_rpc`). Native
+  `ConstructUClass` descriptors sort own `CPF_Net` properties by `(offset, name)`,
+  whereas cooked `UBlueprintGeneratedClass` exports (`ClassFlags & 0x80`) keep
+  `ChildProperties` order (`experimental::rep_layout`: 64 schemas covering all
+  `20,407 / 20,407` `with_rep_layout` blocks in M-707). Custom-delta fast arrays
+  carry a 1-bit header, packed static-array index, four 4-byte header words,
+  4-byte delete IDs, and changed elements.
+- Spawn vectors and property/struct serializers (F-571, F-573 to F-575, F-583,
+  F-588, F-589, F-591 to F-593, F-595, F-597, F-599, F-632, F-639, F-673 to
+  F-675, F-704 to F-709, F-739; U-064, U-066 resolved):
   - Spawn vectors read/write a quantized bit at `EngineNetVer >= 13`
-    (unquantized: three floats; quantized: bit count `<= 24` and three integers
-    scaled by `0.1`), and compressed rotators send per-axis nonzero bits and
-    16-bit angles (`182.04445f` = `65536 / 360`) identically in both builds (F-739).
+    (unquantized: 3 floats; quantized: bit count `<= 24` and 3 integers scaled
+    by `0.1`), and compressed rotators send per-axis nonzero bits and 16-bit
+    angles (`182.04445f` = `65536 / 360`, F-739).
   - `FRepLayout::ReceiveCustomProperty` (`0x143b219b0`) dispatches Bool (1 bit),
     Byte/Enum (`min(8, CeilLogTwo64(max + 1))` bits with `_MAX = max_explicit + 1`),
-    `FNumericProperty` (1/2/4/8 B), object NetGUIDs, and structs (`StructFlags & 0x400`
-    calls `ICppStructOps::NetSerialize`: `3,637` of `3,960` `TCppStructOps` use
-    the `return 0` stub `0x1408cb520` and recurse through `0x143af7340`, while
-    `323` define custom `NetSerialize`, including `293` typed `F*RowHandle`
-    structs, `FRowHandle`, `FVector`, `FVector2D`, `FQuat`, `FPlane`,
+    `FNumericProperty` (1/2/4/8 B), object NetGUIDs, structs (`StructFlags & 0x400`:
+    `3,637` of `3,960` `TCppStructOps` return `0` at `0x1408cb520` and recurse
+    via `0x143af7340`; `323` define custom `NetSerialize`, incl. `293` typed
+    `F*RowHandle` structs, `FRowHandle`, `FVector`, `FVector2D`, `FQuat`, `FPlane`,
     `FDateTime`, `FTimespan`, `FRotator`, `FUniqueNetIdRepl`, `FStatPairRepState`,
-    `FVector_NetQuantize*`, `FRepMovement`, and `FHitResult`).
-  - Gameplay tags use 12-bit net indices (`container_bits = 6`), Name items use
-    hardcoded (`<= 702`) or archive-string + number network names, Str and
-    soft-object paths use archive strings, and Text items use the UE4 version
-    522 `FText` history framing (`0..12`, `0xFF`; `experimental::rep_text`),
-    replaying all `23,486 / 23,486` (`100%`) typed blocks in M-707 bit-identically.
-- Server relevancy, priority, and tick rate (F-745): `AActor::IsNetRelevantFor`
-  (`0x14333fae0` / `0x1435d5be0`), `APawn::IsNetRelevantFor` (`0x1437b95a0` /
-  `0x143a681d0`), `APlayerController::IsNetRelevantFor` (`0x1432510a0` /
-  `0x1434e9040`), `IsWithinNetRelevancyDistance` (`0x143340200` / `0x1435d6240`),
-  `AActor::GetNetPriority` (`0x14333b2e0` / `0x1435d14e0`, where the `4.0`
-  `ViewTarget`/`Instigator` boost returns before the `!bHidden && RootComponent`
-  spatial block), `APlayerController::GetNetPriority` (`0x143830f20` /
-  `0x143adfc40`), `UNetDriver::ServerReplicateActors` (`0x1437221b0` /
-  `0x1439bf100`), and `UGameEngine::GetMaxTickRate` (`0x1435a90e0` /
-  `0x143836250`, clamping `NetServerMaxTickRate` to `[1, 1000]` before
-  `UEngine::GetMaxTickRate` `0x143993060` / `0x143c5d520`) match across server
-  25621760 and client 25793767; `DefaultEngine.ini` (`0xb68d0a35`) sets
-  `NetServerMaxTickRate=30`, `MaxClientRate=750000`,
-  `MaxInternetClientRate=750000`, `ConfiguredInternetSpeed=640000`,
-  `ConfiguredLanSpeed=912000`, `ConnectionTimeout=360.0`,
-  `InitialConnectTimeout=360.0`, and `ResolutionConnectionTimeout=120.0`
-  (`evaluate_actor_net_relevancy`, `evaluate_pawn_net_relevancy`,
-  `evaluate_player_controller_net_relevancy`, `evaluate_actor_net_priority`,
-  `evaluate_player_controller_net_priority`, and
-  `evaluate_game_engine_max_tick_rate` in `experimental::actor_channel`).
+    `FVector_NetQuantize*`, `FRepMovement`, `FHitResult`), 12-bit gameplay tags,
+    network Names, archive Strings/soft-object paths, and v522 `FText` histories
+    (`experimental::rep_text`), replaying `23,486 / 23,486` (`100%`) typed blocks
+    in M-707.
+- Server relevancy, priority, tick rate, connection prep, and consider list
+  (F-745, F-748):
+  - `AActor::IsNetRelevantFor` (`0x14333fae0` / `0x1435d5be0`),
+    `APawn::IsNetRelevantFor` (`0x1437b95a0` / `0x143a681d0`),
+    `APlayerController::IsNetRelevantFor` (`0x1432510a0` / `0x1434e9040`),
+    `AOnlineBeacon::IsNetRelevantFor` (`0x1409a5780` / `0x1409cc210`:
+    `GetNetConnection` equality when `bOnlyRelevantToOwner`, else `Class == RealViewer->Class`),
+    and `IsWithinNetRelevancyDistance` (`0x143340200` / `0x1435d6240`) match across
+    both builds (`evaluate_*_net_relevancy`).
+  - `AActor::GetNetPriority` (`0x14333b2e0` / `0x1435d14e0`, returning the `4.0`
+    `ViewTarget`/`Instigator` boost before the `!bHidden && RootComponent`
+    spatial block), `APlayerController::GetNetPriority` (`0x143830f20` /
+    `0x143adfc40`), and `AMatineeActor::GetNetPriority` (`0x143894660` /
+    `0x143b3f6c0`, adding `1.0 - CreationTime / WorldTime` when `InChannel == nullptr`)
+    match across both builds (`evaluate_*_net_priority`).
+  - `UGameEngine::GetMaxTickRate` (`0x1435a90e0` / `0x143836250`, clamping
+    `NetServerMaxTickRate` to `[1, 1000]` before `0x143993060` / `0x143c5d520`),
+    `DefaultEngine.ini` (`NetServerMaxTickRate=30`, `MaxClientRate=750000`,
+    `ConfiguredInternetSpeed=640000`, `ConfiguredLanSpeed=912000`,
+    `ConnectionTimeout=360.0`, `ResolutionConnectionTimeout=120.0`), and
+    `UNetDriver::ServerReplicateActors` (`0x1437221b0` / `0x1439bf100`) match:
+    `PrepConnections` (`0x143723dc0` / `0x1439c0b20`,
+    `evaluate_prep_connections_tick_budget`, `is_connection_ready_for_replication`)
+    throttles `NumClientsToTick` and marks a connection ready iff
+    `ViewTarget != nullptr && State == USOCK_Open (3) && ElapsedTime - LastReceiveTime < 1.5`;
+    `BuildConsiderList` (`0x1437235a0` / `0x1439c0530`,
+    `evaluate_consider_list_actor`) removes `PendingKill`, `ROLE_None`, and
+    initialized `bNetStartup && DORM_Initial (4)` actors, skips mismatched
+    `NetDriverName` or unready `NextUpdateTime`, lerps `OptimalNetUpdateDelta`
+    between `1 / NetUpdateFrequency` and `max(1 / MinNetUpdateFrequency, 1 / NetUpdateFrequency)`
+    (`MinNetUpdateFrequency = 2.0` when `0.0`) by `clamp((LastNetUpdateDelta - 2.0) * 0.2, 0.0, 1.0)`
+    when `LastNetUpdateDelta > 2.0`, updates `NextUpdateTime`/`LastNetUpdateTime`
+    when `!bPendingNetUpdate`, clears `bPendingNetUpdate`, and calls
+    `CallPreReplication` (`0x14332f4f0`).
 
 ## Candidate
 
@@ -138,8 +145,9 @@ policies.
   prefixes (`317 / 317`), `PackageMapState` mappings, partial-bunch sequences
   (`300 / 300`), must-be-mapped GUID lists, open bunches, content blocks,
   property streams, `ChannelCloseReason` codes (`136 / 136`), and static
-  relevancy/priority/tick-rate policies bit-identically without panicking on
-  randomized inputs (F-577, F-604, F-673, F-709 to F-711, F-739, F-745).
+  relevancy/priority/tick-rate/connection-prep/consider-list policies without
+  panicking on randomized inputs (F-577, F-604, F-673, F-709 to F-711, F-739,
+  F-745, F-748).
 
 ## Open questions
 
@@ -148,9 +156,9 @@ policies.
 ## Evidence
 
 - Symbols and pseudocode M-420 to M-437; net items and writers M-438 to M-449,
-  M-455 to M-470, M-776, M-777, M-782, M-794, M-795, M-797; movement, tags, Name/Str, hit
-  results, soft objects and Text M-475 to M-548, M-570 to M-588, M-602 to M-605;
-  enum widths, RPCs and fast arrays M-614, M-615, M-620 to M-624, M-628 to M-635;
-  native descriptors, cooked Blueprint exports, export/open hooks, partial/close
-  lifecycle and wire replay M-552 to M-560, M-707, M-708, M-710 to M-713, M-717,
-  M-720, M-731 to M-748.
+  M-455 to M-470, M-776, M-777, M-782, M-794, M-795, M-797 to M-799; movement,
+  tags, Name/Str, hit results, soft objects and Text M-475 to M-548, M-570 to
+  M-588, M-602 to M-605; enum widths, RPCs and fast arrays M-614, M-615, M-620
+  to M-624, M-628 to M-635; native descriptors, cooked Blueprint exports,
+  export/open hooks, partial/close lifecycle and wire replay M-552 to M-560,
+  M-707, M-708, M-710 to M-713, M-717, M-720, M-731 to M-748.

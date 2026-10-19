@@ -8,7 +8,8 @@ Last reconciled: 2026-10-19.
 
 ## Scope
 
-Recorder validate, stitch and restore rules; save decoding, class lookup, object
+Recorder validate, stitch and restore rules across all 65 `/Script/Icarus.*RecorderComponent`
+classes (`C001..C038` and `N001..N027`); save decoding, class lookup, object
 construction, script owners and data-table rows are out of scope (F-660).
 
 ## Confirmed
@@ -19,38 +20,54 @@ construction, script owners and data-table rows are out of scope (F-660).
   destroys `+0x450` actors (`0x143331760`) before `+0x458`; `FindOrRespawn` (`2`)
   tries `+0x450` then `+0x458`; `ManuallyResolved` (`3`) keeps recorder; then `+0x468`
   runs (F-741).
-- `recorder_restore_dispatch` and `recorder_ctor_defaults` (`C001..C038`, F-727, F-742,
-  F-746): all 38 inherit `+0xa0 = 0x1418aaf70`, match ctor flags (`+0xb0` base `1`, `0` on
-  `C003, C007..C010, C020, C021, C025, C026, C029, C030, C033, C034`; `+0xb1` base `0`, `1`
-  on `C015, C020, C025, C026, C031, C034`; `+0xb2`: 13 `FindOnly`, 15 `RespawnOnly`, 4
-  `FindOrRespawn`, 6 `ManuallyResolved`; `+0xd8` base `0`, `1` on `C026`; `+0xd9` base `1`,
-  `0` on `C006, C020, C028, C031, C034`) and `+0x470` (`evaluate_requires_stitching`: 17
-  `AlwaysTrue`, `C017` `ParentCharacterUID != -1`, 20 `AlwaysFalse`); 31 `C001` classes
-  inherit `+0x488 = 0x14189d380` (`TreePrimitive -> Wood` if `v < 1`) and 7 base (`C013`,
-  `C014`, `C022`, `C025`, `C035..C037`) keep no-op `+0x488`; only `C017` overrides `+0x4a0`
-  (`0x141400150`, `upright_rotation`), only `C004` overrides `+0x498`
-  (`0x14189ea40`/`0x1418a4500` vs `0x14189eae0`), and only `C004`
-  (`0x14189a7d0`/`0x141888270` vs `0x14189a760`/`0x141887d20`) and `C032`
-  (`0x1418ddbf0`/`0x1418c5cd0`, `transform_spline_point_positions`) override
-  `+0x4a8`/`+0x4b0`.
-- Only 7 of 38 override `Validate` (`+0x408`, base `0x140899f70` = `true`; F-652,
-  F-663, F-680):
+- `recorder_restore_dispatch`, `recorder_ctor_defaults` (`C001..C038`),
+  `non_blob_recorder_restore_dispatch`, and `non_blob_recorder_ctor_defaults`
+  (`N001..N027`, F-727, F-742, F-746, F-747): all 65 classes inherit
+  `+0xa0 = 0x1418aaf70` and match ctor flags and vtable slots (`+0xa0..+0x4c0`)
+  across server 25621760 and client 25793767:
+  - On `C001..C038`: `+0xb0` (`bSaveModifiers`) base `1`, `0` on
+    `C003, C007..C010, C020, C021, C025, C026, C029, C030, C033, C034`; `+0xb1`
+    (`bSkipDefaultOwnerResolution`) base `0`, `1` on `C015, C020, C025, C026, C031, C034`;
+    `+0xb2`: 13 `FindOnly`, 15 `RespawnOnly`, 4 `FindOrRespawn`, 6 `ManuallyResolved`;
+    `+0xd8` (`bRecordModifierStates`) base `0`, `1` on `C026`; `+0xd9`
+    (`bRecordActorTransform`) base `1`, `0` on `C006, C020, C028, C031, C034`;
+    `+0x470` (`evaluate_requires_stitching`): 17 `AlwaysTrue`, `C017`
+    `ParentCharacterUID != -1`, 20 `AlwaysFalse`; 31 `C001` classes inherit
+    `+0x488 = 0x14189d380` (`TreePrimitive -> Wood` if `v < 1`) and 7 base (`C013`,
+    `C014`, `C022`, `C025`, `C035..C037`) keep no-op `+0x488`; only `C017` overrides
+    `+0x4a0` (`0x141400150`, `upright_rotation`), only `C004` overrides `+0x498`
+    (`0x14189ea40`/`0x1418a4500` vs `0x14189eae0`), and only `C004`
+    (`0x14189a7d0`/`0x141888270` vs `0x14189a760`/`0x141887d20`) and `C032`
+    (`0x1418ddbf0`/`0x1418c5cd0`, `transform_spline_point_positions`) override
+    `+0x4a8`/`+0x4b0`.
+  - On `N001..N027` (`3` non-actor classes `N002`, `N015`, `N018` and `24` `C001`
+    subclasses; `N012` `UIcarusJuvenileRecorderComponent` appears in backup saves):
+    `+0xb0 = 0` on 14 classes (`N004..N008, N010..N014, N019, N022, N025, N027`);
+    `+0xb1 = 1` only on `N021`; `+0xb2`: 5 `FindOnly`, 13 `RespawnOnly`, 8
+    `FindOrRespawn`, 1 `ManuallyResolved` (`N018`); `+0xd8 = 0` on all 24 actor
+    classes; `+0xd9 = 0` only on `N020`; `+0x470`: 10 `AlwaysFalse`, 12 `AlwaysTrue`,
+    5 `CharacterParentUidPresent` (`N010..N014`); only `N011` (`UIcarusMountActorRecorderComponent`)
+    overrides `+0x4a0` to `0x141400150`.
+- `Validate` (`+0x408`, base `0x140899f70` = `true`; F-652, F-663, F-680, F-742, F-747):
   - `UProspectSubsystem` (`0x141704d70`, `+0x30`): `0x141820ba0` and
     `0x1418231d0 -> 0x1417fd560` scan `+0x98` (`0x40` B) for `UserID` (`+0x20`,
     `Stricmp`) and `ChrSlot` (`+0x30`, `resolve_prospect_player_list`).
-  - `C011` (`0x1418e8790`/`0x1418fa010`, `evaluate_rocket_spawn_record`,
-    `validate_rocket_spawn_record`) resets `+0x1c8`/`+0x1d8` (`0x1418ed540`) if
+  - `C011` and `N022` (`0x1418e8790`/`0x1418fa010`, `evaluate_rocket_spawn_record`,
+    `validate_rocket_spawn_record`) reset `+0x1c8`/`+0x1d8` (`0x1418ed540`) if
     `+0x1e0 < 1` or `list.rejects()`.
+  - `N018` (`UNoRecorderComponent`, `0x14089a160`/`0x1408cb520`, `no_recorder_record_valid`)
+    returns `false` unconditionally.
   - `C025` (`0x1418e8850`/`0x1418f9de0`, `evaluate_player_recorder_record`) and `C026`
     (`0x1418e8b10`/`0x1418f9e80`, `evaluate_player_state_record`) require
     `v >= 1 && !list.rejects()` (`player_record_valid`); `C029`
     (`0x1418e9280`/`0x1418f9f70`, `evaluate_rocket_record`, `rocket_restore`) requires
     `!list.rejects()` and restores iff listed and `v > 0` (F-663).
   - `C028` (`0x1418e90b0`/`0x1418f9f20`, `evaluate_resource_deposit_record`,
-    `resource_deposit_record_valid`) rejects `"Super_Cooled_Ice"` (`0x144a71800`; ice
-    `0x144a71348` keeps base `+0x408`); `+0x460` (`0x1418f76c0`,
+    `resource_deposit_record_valid`) rejects `"Super_Cooled_Ice"` (`0x144a71800`),
+    whereas subclass `N020` (`UResourceDepositIceRecorderComponent`, `0x144a71348`)
+    overrides `+0x408` back to `0x140899f70` (`true`); `+0x460` (`0x1418f76c0`,
     `should_grant_deposit_map_icon_stat`) grants stat `0xbe` iff
-    `+0x1cc && !GetStat(0xbe)` (F-645, F-742).
+    `+0x1cc && !GetStat(0xbe)` (F-645, F-742, F-747).
   - `C031` (`0x1418c24c0`, `+0xb2 = 1`) and `C034` (`0x1418c2650`, `+0xb2 = 3`,
     `0x1418e96c0`/`0x1418fa0e0`, `evaluate_voxel_record`, `voxel_record_valid`) reject
     `RespawnOnly && bIsVoxelFullyMined` (`+0x1d0`, F-680); `+0x460` (`0x1418f7bb0`,
@@ -136,5 +153,5 @@ construction, script owners and data-table rows are out of scope (F-660).
 
 ## Evidence
 
-F-645..F-681, F-716, F-727, F-728, F-734..F-736, F-741..F-744, F-746; M-642..M-698,
-M-755..M-792, M-794..M-797.
+F-645..F-681, F-716, F-727, F-728, F-734..F-736, F-741..F-744, F-746, F-747;
+M-642..M-698, M-755..M-792, M-794..M-800.

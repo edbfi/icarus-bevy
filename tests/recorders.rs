@@ -592,6 +592,12 @@ fn staged_prospect_save_state_validates_schema_migrations_and_fails_closed() {
     assert_eq!(staged_v2.retained_recorder_count, 2);
     assert_eq!(staged_v2.reset_rocket_spawn_recorder_count, 0);
     assert_eq!(staged_v2.physics_dynamic_tree_recorder_count, 0);
+    assert_eq!(staged_v2.skip_default_owner_resolution_count, 0);
+    assert_eq!(staged_v2.find_only_owner_count, 0);
+    assert_eq!(staged_v2.respawn_only_owner_count, 0);
+    assert_eq!(staged_v2.find_or_respawn_owner_count, 2);
+    assert_eq!(staged_v2.manually_resolved_owner_count, 0);
+    assert_eq!(staged_v2.requires_stitching_count, 0);
     assert_eq!(staged_v2.total_component_field_tags, 2);
     assert!(!staged_v2.world_imported);
     let json = serde_json::to_string(&staged_v2).unwrap();
@@ -1108,6 +1114,12 @@ fn staged_prospect_save_state_runs_recorder_validate_and_tracks_tree_dynamics() 
     assert_eq!(staged.retained_recorder_count, 8);
     assert_eq!(staged.reset_rocket_spawn_recorder_count, 1);
     assert_eq!(staged.physics_dynamic_tree_recorder_count, 1);
+    assert_eq!(staged.skip_default_owner_resolution_count, 3);
+    assert_eq!(staged.find_only_owner_count, 0);
+    assert_eq!(staged.respawn_only_owner_count, 4);
+    assert_eq!(staged.find_or_respawn_owner_count, 1);
+    assert_eq!(staged.manually_resolved_owner_count, 0);
+    assert_eq!(staged.requires_stitching_count, 2);
 
     // Malformed RocketRecorderVersion (wrong tag kind), duplicate component properties,
     // nonzero-indexed component properties, or duplicate/unmapped nested struct fields fail closed.
@@ -1230,4 +1242,112 @@ fn staged_prospect_save_state_runs_recorder_validate_and_tracks_tree_dynamics() 
                 .is_err()
         );
     }
+}
+
+#[test]
+fn staged_prospect_save_state_evaluates_non_blob_recorders_and_owner_resolution_overrides() {
+    let info = prospect_info_tag("prospect-gamma", "Olympus_Terrain", 1);
+
+    // 1. N018 UNoRecorderComponent unconditionally fails Validate (+0x408 = false).
+    let rec_no_recorder = recorder_element("/Script/Icarus.NoRecorderComponent", &[]);
+
+    // 2. N012 UIcarusJuvenileRecorderComponent (found in backup saves): default RespawnOnly,
+    // CharacterParentUidPresent RequiresStitching -> true when ParentCharacterUID != -1.
+    let rec_juvenile_stitched = recorder_element(
+        "/Script/Icarus.IcarusJuvenileRecorderComponent",
+        &tag(
+            "ParentCharacterUID",
+            "IntProperty",
+            0,
+            &[0],
+            &42_i32.to_le_bytes(),
+        ),
+    );
+
+    // 3. N012 UIcarusJuvenileRecorderComponent with default ParentCharacterUID (-1) -> RequiresStitching false,
+    // and explicit OwnerResolvePolicy = FindOnly override.
+    let rec_juvenile_unstitched_find_only = recorder_element(
+        "/Script/Icarus.IcarusJuvenileRecorderComponent",
+        &tag(
+            "OwnerResolvePolicy",
+            "ByteProperty",
+            0,
+            &[string("None"), vec![0]].concat(),
+            &[0_u8],
+        ),
+    );
+
+    // 4. N020 UResourceDepositIceRecorderComponent overrides Validate (+0x408) back to true,
+    // so "Super_Cooled_Ice" validates on N020 (FindOrRespawn, RequiresStitching = false).
+    let rec_ice_deposit = recorder_element(
+        "/Script/Icarus.ResourceDepositIceRecorderComponent",
+        &tag(
+            "ResourceDTKey",
+            "NameProperty",
+            0,
+            &[0],
+            &string("Super_Cooled_Ice"),
+        ),
+    );
+
+    // 5. N021 URockBaseRecorderComponent defaults bSkipDefaultOwnerResolution = true,
+    // overridden here to false with ManuallyResolved policy.
+    let rec_rock_base_overridden = recorder_element(
+        "/Script/Icarus.RockBaseRecorderComponent",
+        &[
+            tag(
+                "bSkipDefaultOwnerResolution",
+                "BoolProperty",
+                0,
+                &[0, 0],
+                &[],
+            ),
+            tag(
+                "OwnerResolvePolicy",
+                "ByteProperty",
+                0,
+                &[string("None"), vec![0]].concat(),
+                &[3_u8],
+            ),
+        ]
+        .concat(),
+    );
+
+    let records = [
+        rec_no_recorder,
+        rec_juvenile_stitched,
+        rec_juvenile_unstitched_find_only,
+        rec_ice_deposit,
+        rec_rock_base_overridden,
+    ];
+    let blobs = tag(
+        "StateRecorderBlobs",
+        "ArrayProperty",
+        0,
+        &[string("StructProperty"), vec![0]].concat(),
+        &[
+            &i32::try_from(records.len()).unwrap().to_le_bytes(),
+            shared(&records.concat()).as_slice(),
+        ]
+        .concat(),
+    );
+    let stream = [
+        tag("Version", "IntProperty", 0, &[0], &2_i32.to_le_bytes()),
+        info,
+        blobs,
+        END.to_vec(),
+    ]
+    .concat();
+    let parsed = read_root(&stream, PROFILE).unwrap();
+    let staged =
+        stage_prospect_save_state(&parsed.tags, PROFILE, MAX_COMPONENT_BYTES, None).unwrap();
+    assert_eq!(staged.parsed_recorder_count, 5);
+    assert_eq!(staged.invalid_recorder_count, 1);
+    assert_eq!(staged.retained_recorder_count, 4);
+    assert_eq!(staged.skip_default_owner_resolution_count, 0);
+    assert_eq!(staged.find_only_owner_count, 1);
+    assert_eq!(staged.respawn_only_owner_count, 1);
+    assert_eq!(staged.find_or_respawn_owner_count, 1);
+    assert_eq!(staged.manually_resolved_owner_count, 1);
+    assert_eq!(staged.requires_stitching_count, 1);
 }

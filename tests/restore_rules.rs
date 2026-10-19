@@ -3838,3 +3838,118 @@ fn recorder_ctor_defaults_cover_all_38_classes_and_vtable_slots() {
         42
     ));
 }
+
+#[test]
+fn non_blob_recorder_ctor_defaults_and_restore_dispatch_cover_all_27_classes() {
+    use icarus_bevy::experimental::restore_rules::{
+        MakeRelativeTransformKind, RequiresStitchingKind, no_recorder_record_valid,
+        non_blob_recorder_ctor_defaults, non_blob_recorder_restore_dispatch,
+    };
+    assert_eq!(non_blob_recorder_ctor_defaults(0), None);
+    assert_eq!(non_blob_recorder_ctor_defaults(28), None);
+    assert_eq!(non_blob_recorder_restore_dispatch(0), None);
+    assert_eq!(non_blob_recorder_restore_dispatch(28), None);
+    assert!(!no_recorder_record_valid());
+
+    let expected_prop_counts: [u8; 27] = [
+        31, 1, 21, 32, 21, 21, 33, 21, 29, 23, 46, 36, 40, 36, 4, 37, 32, 0, 32, 23, 22, 22, 21,
+        20, 23, 22, 21,
+    ];
+    let mut actor_count = 0usize;
+    let mut save_modifiers_false_count = 0usize;
+    let mut skip_default_owner_count = 0usize;
+    let mut find_only_count = 0usize;
+    let mut respawn_only_count = 0usize;
+    let mut find_or_respawn_count = 0usize;
+    let mut manually_resolved_count = 0usize;
+    let mut stitching_false_count = 0usize;
+    let mut stitching_true_count = 0usize;
+    let mut stitching_char_parent_count = 0usize;
+
+    for ordinal in 1..=27u8 {
+        let defaults = non_blob_recorder_ctor_defaults(ordinal).expect("valid N001..N027 ordinal");
+        let dispatch =
+            non_blob_recorder_restore_dispatch(ordinal).expect("valid N001..N027 dispatch");
+        assert_eq!(defaults.class_ordinal, ordinal);
+        assert_eq!(dispatch.class_ordinal, ordinal);
+        assert_eq!(
+            dispatch.selected_property_count,
+            expected_prop_counts[(ordinal - 1) as usize]
+        );
+        assert!(!defaults.purge_sublevel_actors);
+
+        if matches!(ordinal, 2 | 15 | 18) {
+            assert!(!defaults.is_actor_recorder);
+            assert_eq!(defaults.b_record_modifier_states, None);
+            assert_eq!(defaults.b_record_actor_transform, None);
+            assert_eq!(
+                defaults.make_relative_transform,
+                MakeRelativeTransformKind::NotApplicable
+            );
+            assert_eq!(dispatch.version_upgrade, VersionUpgradeKind::NoOp);
+            assert_eq!(dispatch.restore_state, RestoreStateKind::BaseSerializeOnly);
+            assert_eq!(dispatch.apply_transform, ApplyTransformKind::NoOpTrue);
+        } else {
+            actor_count += 1;
+            assert!(defaults.is_actor_recorder);
+            assert_eq!(defaults.b_record_modifier_states, Some(false));
+            assert_eq!(defaults.b_record_actor_transform, Some(ordinal != 20));
+            assert_eq!(
+                defaults.make_relative_transform,
+                MakeRelativeTransformKind::ActorTransformOnly
+            );
+            assert_eq!(
+                dispatch.version_upgrade,
+                VersionUpgradeKind::ActorTreePrimitiveToWood
+            );
+            assert_eq!(
+                dispatch.restore_state,
+                if ordinal == 11 {
+                    RestoreStateKind::MountActorUprightYaw
+                } else {
+                    RestoreStateKind::ActorWithContextTransform
+                }
+            );
+            assert_eq!(
+                dispatch.apply_transform,
+                ApplyTransformKind::ActorTransformOnly
+            );
+        }
+
+        if !defaults.b_save_modifiers {
+            save_modifiers_false_count += 1;
+        }
+        if defaults.b_skip_default_owner_resolution {
+            skip_default_owner_count += 1;
+            assert_eq!(ordinal, 21);
+        }
+        match defaults.owner_resolve_policy {
+            OwnerResolvePolicy::FindOnly => find_only_count += 1,
+            OwnerResolvePolicy::RespawnOnly => respawn_only_count += 1,
+            OwnerResolvePolicy::FindOrRespawn => find_or_respawn_count += 1,
+            OwnerResolvePolicy::ManuallyResolved => {
+                manually_resolved_count += 1;
+                assert_eq!(ordinal, 18);
+            }
+        }
+        match defaults.requires_stitching {
+            RequiresStitchingKind::AlwaysFalse => stitching_false_count += 1,
+            RequiresStitchingKind::AlwaysTrue => stitching_true_count += 1,
+            RequiresStitchingKind::CharacterParentUidPresent => {
+                stitching_char_parent_count += 1;
+                assert!(matches!(ordinal, 10..=14));
+            }
+        }
+    }
+
+    assert_eq!(actor_count, 24);
+    assert_eq!(save_modifiers_false_count, 14);
+    assert_eq!(skip_default_owner_count, 1);
+    assert_eq!(find_only_count, 5);
+    assert_eq!(respawn_only_count, 13);
+    assert_eq!(find_or_respawn_count, 8);
+    assert_eq!(manually_resolved_count, 1);
+    assert_eq!(stitching_false_count, 10);
+    assert_eq!(stitching_true_count, 12);
+    assert_eq!(stitching_char_parent_count, 5);
+}
