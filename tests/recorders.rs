@@ -371,15 +371,8 @@ fn recorder_field_string_and_input_limits_are_enforced() {
     assert!(read(&fixture(1, &body)).is_ok());
 }
 
-fn valid_component_binary() -> Vec<u8> {
-    let prop = tag(
-        "RecordedVersion",
-        "IntProperty",
-        0,
-        &[0],
-        &3_i32.to_le_bytes(),
-    );
-    let component_bytes = [prop.as_slice(), END, &[0, 0, 0, 0]].concat();
+fn component_binary_from_tags(tags: &[u8]) -> Vec<u8> {
+    let component_bytes = [tags, END, &[0, 0, 0, 0]].concat();
     let payload = [
         i32::try_from(component_bytes.len())
             .unwrap()
@@ -391,10 +384,30 @@ fn valid_component_binary() -> Vec<u8> {
     binary(&payload)
 }
 
+fn valid_component_binary() -> Vec<u8> {
+    let prop = tag(
+        "RecordedVersion",
+        "IntProperty",
+        0,
+        &[0],
+        &3_i32.to_le_bytes(),
+    );
+    component_binary_from_tags(&prop)
+}
+
 fn valid_recorder_element() -> Vec<u8> {
     [
         class(CLASS).as_slice(),
         valid_component_binary().as_slice(),
+        END,
+    ]
+    .concat()
+}
+
+fn recorder_element(class_name: &str, component_tags: &[u8]) -> Vec<u8> {
+    [
+        class(&string(class_name)).as_slice(),
+        component_binary_from_tags(component_tags).as_slice(),
         END,
     ]
     .concat()
@@ -409,12 +422,13 @@ fn associated_members_tag(member_count: i32) -> Vec<u8> {
             &[0],
             &string("private-member"),
         ),
+        tag("ChrSlot", "IntProperty", 0, &[0], &1_i32.to_le_bytes()),
         tag(
-            "CharacterSlot",
-            "IntProperty",
+            "Status",
+            "EnumProperty",
             0,
-            &[0],
-            &1_i32.to_le_bytes(),
+            &[string("EProspectLocation"), vec![0]].concat(),
+            &string("EProspectLocation::Prospect_Inhabit"),
         ),
         tag("IsCurrentlyPlaying", "BoolProperty", 0, &[1, 0], &[]),
         END.to_vec(),
@@ -441,13 +455,19 @@ fn associated_members_tag(member_count: i32) -> Vec<u8> {
 fn custom_settings_tag(setting_count: i32) -> Vec<u8> {
     let setting_body = [
         tag(
-            "SettingName",
+            "SettingRowName",
             "StrProperty",
             0,
             &[0],
             &string("private-setting"),
         ),
-        tag("Value", "IntProperty", 0, &[0], &100_i32.to_le_bytes()),
+        tag(
+            "SettingValue",
+            "IntProperty",
+            0,
+            &[0],
+            &100_i32.to_le_bytes(),
+        ),
         END.to_vec(),
     ]
     .concat();
@@ -487,7 +507,7 @@ fn prospect_info_tag(prospect_id: &str, dt_key: &str, member_count: i32) -> Vec<
             &[0],
             &(-1_i64).to_le_bytes(),
         ),
-        tag("InGame", "BoolProperty", 0, &[1, 0], &[]),
+        tag("Insurance", "BoolProperty", 0, &[1, 0], &[]),
         associated_members_tag(member_count),
         custom_settings_tag(2),
         END.to_vec(),
@@ -568,7 +588,10 @@ fn staged_prospect_save_state_validates_schema_migrations_and_fails_closed() {
     assert!(staged_v2.has_last_saved_date_time);
     assert!(staged_v2.has_expire_time);
     assert_eq!(staged_v2.parsed_recorder_count, 2);
+    assert_eq!(staged_v2.invalid_recorder_count, 0);
     assert_eq!(staged_v2.retained_recorder_count, 2);
+    assert_eq!(staged_v2.reset_rocket_spawn_recorder_count, 0);
+    assert_eq!(staged_v2.physics_dynamic_tree_recorder_count, 0);
     assert_eq!(staged_v2.total_component_field_tags, 2);
     assert!(!staged_v2.world_imported);
     let json = serde_json::to_string(&staged_v2).unwrap();
@@ -639,6 +662,7 @@ fn staged_prospect_save_state_validates_schema_migrations_and_fails_closed() {
     assert!(!staged_v0.has_prospect_id);
     assert!(!staged_v0.has_prospect_dt_key);
     assert_eq!(staged_v0.parsed_recorder_count, 2);
+    assert_eq!(staged_v0.invalid_recorder_count, 0);
     assert_eq!(staged_v0.retained_recorder_count, 0);
 
     // Reject unmapped root tags, unsupported versions, and malformed recorder bodies (F-403).
@@ -678,4 +702,532 @@ fn staged_prospect_save_state_validates_schema_migrations_and_fails_closed() {
         stage_prospect_save_state(&parsed_bad_rec.tags, PROFILE, MAX_COMPONENT_BYTES, None,)
             .is_err()
     );
+
+    // Reject unmapped fields inside ProspectInfo, AssociatedMemberInfo, and CustomGameSetting (F-741).
+    let unmapped_info = tag(
+        "ProspectInfo",
+        "StructProperty",
+        0,
+        &[string("ProspectInfo"), vec![0; 17]].concat(),
+        &[
+            tag("InGame", "BoolProperty", 0, &[1, 0], &[]).as_slice(),
+            END,
+        ]
+        .concat(),
+    );
+    let unmapped_info_stream = [version_v2.clone(), unmapped_info, END.to_vec()].concat();
+    let parsed_unmapped_info = read_root(&unmapped_info_stream, PROFILE).unwrap();
+    assert!(
+        stage_prospect_save_state(
+            &parsed_unmapped_info.tags,
+            PROFILE,
+            MAX_COMPONENT_BYTES,
+            None,
+        )
+        .is_err()
+    );
+
+    let bad_member_shared = tag(
+        "AssociatedMembers",
+        "StructProperty",
+        0,
+        &[string("AssociatedMemberInfo"), vec![0; 17]].concat(),
+        &[
+            tag(
+                "CharacterSlot",
+                "IntProperty",
+                0,
+                &[0],
+                &1_i32.to_le_bytes(),
+            )
+            .as_slice(),
+            END,
+        ]
+        .concat(),
+    );
+    let bad_members_info = tag(
+        "ProspectInfo",
+        "StructProperty",
+        0,
+        &[string("ProspectInfo"), vec![0; 17]].concat(),
+        &[
+            tag(
+                "AssociatedMembers",
+                "ArrayProperty",
+                0,
+                &[string("StructProperty"), vec![0]].concat(),
+                &[&1_i32.to_le_bytes(), bad_member_shared.as_slice()].concat(),
+            )
+            .as_slice(),
+            END,
+        ]
+        .concat(),
+    );
+    let bad_member_stream = [version_v2.clone(), bad_members_info, END.to_vec()].concat();
+    let parsed_bad_member = read_root(&bad_member_stream, PROFILE).unwrap();
+    assert!(
+        stage_prospect_save_state(&parsed_bad_member.tags, PROFILE, MAX_COMPONENT_BYTES, None)
+            .is_err()
+    );
+
+    let bad_setting_shared = tag(
+        "CustomSettings",
+        "StructProperty",
+        0,
+        &[string("CustomGameSetting"), vec![0; 17]].concat(),
+        &[
+            tag(
+                "SettingName",
+                "StrProperty",
+                0,
+                &[0],
+                &string("private-setting"),
+            )
+            .as_slice(),
+            END,
+        ]
+        .concat(),
+    );
+    let bad_settings_info = tag(
+        "ProspectInfo",
+        "StructProperty",
+        0,
+        &[string("ProspectInfo"), vec![0; 17]].concat(),
+        &[
+            tag(
+                "CustomSettings",
+                "ArrayProperty",
+                0,
+                &[string("StructProperty"), vec![0]].concat(),
+                &[&1_i32.to_le_bytes(), bad_setting_shared.as_slice()].concat(),
+            )
+            .as_slice(),
+            END,
+        ]
+        .concat(),
+    );
+    let bad_setting_stream = [version_v2, bad_settings_info, END.to_vec()].concat();
+    let parsed_bad_setting = read_root(&bad_setting_stream, PROFILE).unwrap();
+    assert!(
+        stage_prospect_save_state(&parsed_bad_setting.tags, PROFILE, MAX_COMPONENT_BYTES, None)
+            .is_err()
+    );
+}
+
+fn player_char_id_struct(field_name: &str, player_id: &str, chr_slot: i32) -> Vec<u8> {
+    let body = [
+        tag("PlayerID", "StrProperty", 0, &[0], &string(player_id)),
+        tag("ChrSlot", "IntProperty", 0, &[0], &chr_slot.to_le_bytes()),
+        END.to_vec(),
+    ]
+    .concat();
+    tag(
+        field_name,
+        "StructProperty",
+        0,
+        &[string("PlayerCharacterID"), vec![0; 17]].concat(),
+        &body,
+    )
+}
+
+#[test]
+fn staged_prospect_save_state_runs_recorder_validate_and_tracks_tree_dynamics() {
+    // AssociatedMembers with ("user-alpha", 1) and ("user-beta", 0 default).
+    let member_1 = [
+        tag("UserID", "StrProperty", 0, &[0], &string("user-alpha")),
+        tag("ChrSlot", "IntProperty", 0, &[0], &1_i32.to_le_bytes()),
+        END.to_vec(),
+    ]
+    .concat();
+    let member_2 = [
+        tag("UserID", "StrProperty", 0, &[0], &string("user-beta")),
+        END.to_vec(),
+    ]
+    .concat();
+    let members_shared = tag(
+        "AssociatedMembers",
+        "StructProperty",
+        0,
+        &[string("AssociatedMemberInfo"), vec![0; 17]].concat(),
+        &[member_1, member_2].concat(),
+    );
+    let members_array = tag(
+        "AssociatedMembers",
+        "ArrayProperty",
+        0,
+        &[string("StructProperty"), vec![0]].concat(),
+        &[&2_i32.to_le_bytes(), members_shared.as_slice()].concat(),
+    );
+    let info = tag(
+        "ProspectInfo",
+        "StructProperty",
+        0,
+        &[string("ProspectInfo"), vec![0; 17]].concat(),
+        &[
+            tag("ProspectID", "StrProperty", 0, &[0], &string("p-val")),
+            members_array,
+            END.to_vec(),
+        ]
+        .concat(),
+    );
+
+    // 1. C011 DynamicRocketSpawnRecorderComponent with missing player -> retained + reset_spawn_record.
+    let spawn_record = tag(
+        "SpawnRecord",
+        "StructProperty",
+        0,
+        &[string("RocketSpawnStateRecord"), vec![0; 17]].concat(),
+        &[
+            tag(
+                "AssignedPlayerID",
+                "StrProperty",
+                0,
+                &[0],
+                &string("user-missing"),
+            ),
+            tag("ChrSlot", "IntProperty", 0, &[0], &9_i32.to_le_bytes()),
+            END.to_vec(),
+        ]
+        .concat(),
+    );
+    let rec_c011_reset = recorder_element(
+        "/Script/Icarus.DynamicRocketSpawnRecorderComponent",
+        &[
+            tag(
+                "RocketSpawnRecorderVersion",
+                "IntProperty",
+                0,
+                &[0],
+                &2_i32.to_le_bytes(),
+            ),
+            spawn_record,
+        ]
+        .concat(),
+    );
+
+    // 2. C025 PlayerRecorderComponent matching ("user-alpha", 1) -> retained.
+    let rec_c025_valid = recorder_element(
+        "/Script/Icarus.PlayerRecorderComponent",
+        &[
+            tag(
+                "PlayerRecorderVersion",
+                "IntProperty",
+                0,
+                &[0],
+                &1_i32.to_le_bytes(),
+            ),
+            player_char_id_struct("PlayerCharacterID", "user-alpha", 1),
+        ]
+        .concat(),
+    );
+
+    // 3. C025 PlayerRecorderComponent missing player -> invalid.
+    let rec_c025_invalid = recorder_element(
+        "/Script/Icarus.PlayerRecorderComponent",
+        &[
+            tag(
+                "PlayerRecorderVersion",
+                "IntProperty",
+                0,
+                &[0],
+                &1_i32.to_le_bytes(),
+            ),
+            player_char_id_struct("PlayerCharacterID", "user-alpha", 2),
+        ]
+        .concat(),
+    );
+
+    // 4. C026 PlayerStateRecorderComponent with version 1 and matching ("user-beta", 0) -> retained.
+    let rec_c026_valid = recorder_element(
+        "/Script/Icarus.PlayerStateRecorderComponent",
+        &[
+            tag(
+                "PlayerStateRecorderVersion",
+                "IntProperty",
+                0,
+                &[0],
+                &1_i32.to_le_bytes(),
+            ),
+            player_char_id_struct("PlayerCharacterID", "user-beta", 0),
+        ]
+        .concat(),
+    );
+
+    // 5. C026 PlayerStateRecorderComponent with version 0 -> invalid (UPlayerStateRecorderComponent::Validate 0x1418f9e80 requires Version >= 1).
+    let rec_c026_legacy_invalid = recorder_element(
+        "/Script/Icarus.PlayerStateRecorderComponent",
+        &player_char_id_struct("PlayerCharacterID", "user-beta", 0),
+    );
+
+    // 6. C028 ResourceDepositRecorderComponent with ResourceDTKey = "Super_Cooled_Ice" -> invalid (0x1418f9f20).
+    let rec_c028_invalid = recorder_element(
+        "/Script/Icarus.ResourceDepositRecorderComponent",
+        &tag(
+            "ResourceDTKey",
+            "NameProperty",
+            0,
+            &[0],
+            &string("Super_Cooled_Ice"),
+        ),
+    );
+
+    // 7. C028 ResourceDepositRecorderComponent with non-ice ResourceDTKey -> retained.
+    let rec_c028_valid = recorder_element(
+        "/Script/Icarus.ResourceDepositRecorderComponent",
+        &tag(
+            "ResourceDTKey",
+            "NameProperty",
+            0,
+            &[0],
+            &string("Iron_DeepVein"),
+        ),
+    );
+
+    // 8. C029 RocketRecorderComponent with version 2 and missing player -> invalid.
+    let rec_c029_invalid = recorder_element(
+        "/Script/Icarus.RocketRecorderComponent",
+        &[
+            tag(
+                "RocketRecorderVersion",
+                "IntProperty",
+                0,
+                &[0],
+                &2_i32.to_le_bytes(),
+            ),
+            player_char_id_struct("AssignedPlayerCharacterID", "user-missing", 0),
+        ]
+        .concat(),
+    );
+
+    // 9. C031 SpawnedVoxelRecorderComponent (default OwnerResolvePolicy = RespawnOnly) + bIsVoxelFullyMined = true -> invalid.
+    let voxel_mined = tag(
+        "VoxelSaveData",
+        "StructProperty",
+        0,
+        &[string("VoxelSaveData"), vec![0; 17]].concat(),
+        &[
+            tag("bIsVoxelFullyMined", "BoolProperty", 0, &[1, 0], &[]).as_slice(),
+            END,
+        ]
+        .concat(),
+    );
+    let rec_c031_invalid =
+        recorder_element("/Script/Icarus.SpawnedVoxelRecorderComponent", &voxel_mined);
+
+    // 10. C034 VoxelRecorderComponent (default OwnerResolvePolicy = ManuallyResolved) + bIsVoxelFullyMined = true -> retained.
+    let rec_c034_valid = recorder_element("/Script/Icarus.VoxelRecorderComponent", &voxel_mined);
+
+    // 11. C034 VoxelRecorderComponent with explicit OwnerResolvePolicy = RespawnOnly + bIsVoxelFullyMined = true -> invalid.
+    let rec_c034_invalid = recorder_element(
+        "/Script/Icarus.VoxelRecorderComponent",
+        &[
+            tag(
+                "OwnerResolvePolicy",
+                "EnumProperty",
+                0,
+                &[string("EStateRecorderOwnerResolvePolicy"), vec![0]].concat(),
+                &string("EStateRecorderOwnerResolvePolicy::RespawnOnly"),
+            ),
+            voxel_mined,
+        ]
+        .concat(),
+    );
+
+    // 12. C033 TreeRecorderComponent with bIsPhysicsDynamic = true (carrying a property GUID whose last bytes are 0x00) -> retained + dynamic tree count.
+    let mut bool_true_with_guid_ending_zero = vec![1_u8, 1_u8];
+    bool_true_with_guid_ending_zero.extend_from_slice(&[0xaa; 14]);
+    bool_true_with_guid_ending_zero.extend_from_slice(&[0x00, 0x00]);
+    let rec_c033_dynamic = recorder_element(
+        "/Script/Icarus.TreeRecorderComponent",
+        &tag(
+            "bIsPhysicsDynamic",
+            "BoolProperty",
+            0,
+            &bool_true_with_guid_ending_zero,
+            &[],
+        ),
+    );
+
+    // 13. C033 TreeRecorderComponent with bIsPhysicsDynamic = false -> retained, not dynamic.
+    let rec_c033_static = recorder_element(
+        "/Script/Icarus.TreeRecorderComponent",
+        &tag("bIsPhysicsDynamic", "BoolProperty", 0, &[0, 0], &[]),
+    );
+
+    // 14. C011 DynamicRocketSpawnRecorderComponent with omitted ChrSlot (defaults to -1) and empty AssignedPlayerID -> retained, not counted as reset.
+    let rec_c011_unassigned = recorder_element(
+        "/Script/Icarus.DynamicRocketSpawnRecorderComponent",
+        &tag(
+            "SpawnRecord",
+            "StructProperty",
+            0,
+            &[string("RocketSpawnStateRecord"), vec![0; 17]].concat(),
+            END,
+        ),
+    );
+
+    let all_records = [
+        rec_c011_reset,
+        rec_c025_valid,
+        rec_c025_invalid,
+        rec_c026_valid,
+        rec_c026_legacy_invalid,
+        rec_c028_invalid,
+        rec_c028_valid,
+        rec_c029_invalid,
+        rec_c031_invalid,
+        rec_c034_valid,
+        rec_c034_invalid,
+        rec_c033_dynamic,
+        rec_c033_static,
+        rec_c011_unassigned,
+    ];
+    let blobs = tag(
+        "StateRecorderBlobs",
+        "ArrayProperty",
+        0,
+        &[string("StructProperty"), vec![0]].concat(),
+        &[
+            &i32::try_from(all_records.len()).unwrap().to_le_bytes(),
+            shared(&all_records.concat()).as_slice(),
+        ]
+        .concat(),
+    );
+    let stream = [
+        tag("Version", "IntProperty", 0, &[0], &2_i32.to_le_bytes()),
+        info.clone(),
+        blobs,
+        END.to_vec(),
+    ]
+    .concat();
+    let parsed = read_root(&stream, PROFILE).unwrap();
+    let staged =
+        stage_prospect_save_state(&parsed.tags, PROFILE, MAX_COMPONENT_BYTES, None).unwrap();
+    assert_eq!(staged.parsed_recorder_count, 14);
+    assert_eq!(staged.invalid_recorder_count, 6);
+    assert_eq!(staged.retained_recorder_count, 8);
+    assert_eq!(staged.reset_rocket_spawn_recorder_count, 1);
+    assert_eq!(staged.physics_dynamic_tree_recorder_count, 1);
+
+    // Malformed RocketRecorderVersion (wrong tag kind), duplicate component properties,
+    // nonzero-indexed component properties, or duplicate/unmapped nested struct fields fail closed.
+    let dup_prop = tag(
+        "RecordedVersion",
+        "IntProperty",
+        0,
+        &[0],
+        &3_i32.to_le_bytes(),
+    );
+    let bad_recorders = [
+        recorder_element(
+            "/Script/Icarus.RocketRecorderComponent",
+            &tag(
+                "RocketRecorderVersion",
+                "StrProperty",
+                0,
+                &[0],
+                &string("bad"),
+            ),
+        ),
+        recorder_element(
+            "/Script/Icarus.ActorStateRecorderComponent",
+            &[dup_prop.clone(), dup_prop].concat(),
+        ),
+        recorder_element(
+            "/Script/Icarus.ActorStateRecorderComponent",
+            &tag(
+                "RecordedVersion",
+                "IntProperty",
+                1,
+                &[0],
+                &3_i32.to_le_bytes(),
+            ),
+        ),
+        recorder_element(
+            "/Script/Icarus.PlayerRecorderComponent",
+            &tag(
+                "PlayerCharacterID",
+                "StructProperty",
+                0,
+                &[string("PlayerCharacterID"), vec![0; 17]].concat(),
+                &[
+                    tag("PlayerID", "StrProperty", 0, &[0], &string("user-alpha")),
+                    tag("PlayerID", "StrProperty", 0, &[0], &string("user-alpha")),
+                    END.to_vec(),
+                ]
+                .concat(),
+            ),
+        ),
+        recorder_element(
+            "/Script/Icarus.PlayerRecorderComponent",
+            &tag(
+                "PlayerCharacterID",
+                "StructProperty",
+                0,
+                &[string("PlayerCharacterID"), vec![0; 17]].concat(),
+                &[
+                    tag(
+                        "UnmappedField",
+                        "IntProperty",
+                        0,
+                        &[0],
+                        &1_i32.to_le_bytes(),
+                    ),
+                    END.to_vec(),
+                ]
+                .concat(),
+            ),
+        ),
+        recorder_element(
+            "/Script/Icarus.DynamicRocketSpawnRecorderComponent",
+            &tag(
+                "SpawnRecord",
+                "StructProperty",
+                0,
+                &[string("RocketSpawnStateRecord"), vec![0; 17]].concat(),
+                &[
+                    tag("ChrSlot", "IntProperty", 0, &[0], &1_i32.to_le_bytes()),
+                    tag("ChrSlot", "IntProperty", 0, &[0], &2_i32.to_le_bytes()),
+                    END.to_vec(),
+                ]
+                .concat(),
+            ),
+        ),
+        recorder_element(
+            "/Script/Icarus.VoxelRecorderComponent",
+            &tag(
+                "VoxelSaveData",
+                "StructProperty",
+                0,
+                &[string("VoxelSaveData"), vec![0; 17]].concat(),
+                &[
+                    tag("bIsVoxelFullyMined", "BoolProperty", 0, &[1, 0], &[]),
+                    tag("bIsVoxelFullyMined", "BoolProperty", 0, &[0, 0], &[]),
+                    END.to_vec(),
+                ]
+                .concat(),
+            ),
+        ),
+    ];
+    for bad_rec in bad_recorders {
+        let bad_blobs = tag(
+            "StateRecorderBlobs",
+            "ArrayProperty",
+            0,
+            &[string("StructProperty"), vec![0]].concat(),
+            &[&1_i32.to_le_bytes(), shared(&bad_rec).as_slice()].concat(),
+        );
+        let bad_stream = [
+            tag("Version", "IntProperty", 0, &[0], &2_i32.to_le_bytes()),
+            info.clone(),
+            bad_blobs,
+            END.to_vec(),
+        ]
+        .concat();
+        let parsed_bad = read_root(&bad_stream, PROFILE).unwrap();
+        assert!(
+            stage_prospect_save_state(&parsed_bad.tags, PROFILE, MAX_COMPONENT_BYTES, None)
+                .is_err()
+        );
+    }
 }

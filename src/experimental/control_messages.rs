@@ -1,8 +1,8 @@
 //! EXPERIMENTAL typed codec for the statically observed control vocabulary.
 //!
-//! Static client-build observations only (F-529..F-531, F-712): message layouts
+//! Static client-build observations only (F-529..F-531, F-712, F-740): message layouts
 //! from the pending-game, listen-server and `UControlChannel::ReceivedBunch`
-//! (`0x1437c4940`) parsers. Each message is one ID byte followed by consecutive
+//! (`0x1437c4940` / server `0x143536420`) parsers. Each message is one ID byte followed by consecutive
 //! archive fields read from a bit reader (bunch payloads start at bit 0).
 //! Strings use the strict archive rules of `archive`; `u32` values and string
 //! counts follow a caller-selected byte order (the bunch swap rule:
@@ -45,6 +45,7 @@ pub const NET_GUID_ASSIGN: u8 = 18;
 pub const GAME_SPECIFIC: u8 = 19;
 pub const SECURITY_VIOLATION: u8 = 20;
 pub const ENCRYPTION_ACK: u8 = 21;
+pub const DESTRUCTION_INFO: u8 = 22;
 pub const BEACON_JOIN: u8 = 25;
 pub const BEACON_LOGIN: u8 = 26;
 pub const BEACON_ACK: u8 = 27;
@@ -328,7 +329,7 @@ pub enum ControlMessage {
 }
 
 /// Additional wire layouts handled or skipped directly by
-/// `UControlChannel::ReceivedBunch` (`0x1437c4940`, F-712).
+/// `UControlChannel::ReceivedBunch` (`0x1437c4940` / server `0x143536420`, F-712, F-740).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ControlFallback {
     /// ID 12 (`NMT_Skip`): four 32-bit `FGuid` words (`0x140cd6590`).
@@ -341,6 +342,10 @@ pub enum ControlFallback {
     GameSpecific { message: ArchiveText },
     /// ID 20 (`NMT_SecurityViolation`): one byte + one archive string.
     SecurityViolation { kind: u8, message: ArchiveText },
+    /// ID 22 (`NMT_DestructionInfo`): `EChannelCloseReason` byte + packed
+    /// `FNetworkGUID` (`UControlChannel::SendDestructionInfo` `0x1437ca160` /
+    /// `ReceiveDestructionInfo` `0x1435354d0` server / `0x1437c3d50` client, F-740).
+    DestructionInfo { reason: u8, net_guid: u32 },
     /// ID 25 (`NMT_BeaconJoin`): empty body.
     BeaconJoin,
     /// ID 26 (`NMT_BeaconLogin`): archive string + `FUniqueNetIdRepl`.
@@ -362,6 +367,7 @@ impl ControlFallback {
             Self::ActorChannelFailure { .. } => ACTOR_CHANNEL_FAILURE,
             Self::GameSpecific { .. } => GAME_SPECIFIC,
             Self::SecurityViolation { .. } => SECURITY_VIOLATION,
+            Self::DestructionInfo { .. } => DESTRUCTION_INFO,
             Self::BeaconJoin => BEACON_JOIN,
             Self::BeaconLogin { .. } => BEACON_LOGIN,
             Self::BeaconAck { .. } => BEACON_ACK,
@@ -795,8 +801,9 @@ pub fn read_control_message(reader: &mut BitReader<'_>, codec: &ControlCodec) ->
 }
 
 /// Read the body of an additional `UControlChannel::ReceivedBunch`
-/// (`0x1437c4940`) fallback or direct-dispatch ID after its ID byte (`id`)
-/// has been read; returns `Ok(None)` when `id` is not in the fallback table.
+/// (`0x1437c4940` / server `0x143536420`) fallback or direct-dispatch ID after
+/// its ID byte (`id`) has been read; returns `Ok(None)` when `id` is not in the
+/// fallback table.
 pub fn read_control_fallback(
     id: u8,
     reader: &mut BitReader<'_>,
@@ -831,6 +838,16 @@ pub fn read_control_fallback(
             kind: read_byte(reader, "security violation kind")?,
             message: text(reader, "security violation message")?,
         },
+        DESTRUCTION_INFO => {
+            let reason = read_byte(reader, "destruction info reason")?;
+            let net_guid = reader.read_int_packed();
+            ensure!(!reader.is_error(), "truncated destruction info net GUID");
+            ensure!(
+                net_guid != 1,
+                "destruction info INTERNAL_LOAD_OBJECT_GUID (1) unsupported"
+            );
+            ControlFallback::DestructionInfo { reason, net_guid }
+        }
         BEACON_JOIN => ControlFallback::BeaconJoin,
         BEACON_LOGIN => ControlFallback::BeaconLogin {
             text: text(reader, "beacon login text")?,
@@ -873,6 +890,14 @@ pub fn write_control_fallback(
         ControlFallback::SecurityViolation { kind, message } => {
             writer.write_bits(u32::from(*kind), 8);
             write_text(writer, message, order, cap)?;
+        }
+        ControlFallback::DestructionInfo { reason, net_guid } => {
+            ensure!(
+                *net_guid != 1,
+                "destruction info INTERNAL_LOAD_OBJECT_GUID (1) unsupported"
+            );
+            writer.write_bits(u32::from(*reason), 8);
+            writer.write_int_packed(*net_guid);
         }
         ControlFallback::BeaconJoin => {}
         ControlFallback::BeaconLogin {

@@ -2,10 +2,10 @@ use icarus_bevy::experimental::archive::ByteOrder;
 use icarus_bevy::experimental::control::TokenEncoding;
 use icarus_bevy::experimental::control_messages::{
     ArchiveText, ControlChannelSendQueue, ControlCodec, ControlFallback, ControlMessage,
-    ControlSendDisposition, Decoded, MAX_CONTROL_OUT_REC, MAX_QUEUED_CONTROL_MESSAGES, NetIdForm,
-    NetIdType, NetIdValue, UniqueNetId, encode_control_message, read_control_fallback,
-    read_control_message, read_control_messages, read_unique_net_id, write_control_fallback,
-    write_control_message, write_unique_net_id,
+    ControlSendDisposition, DESTRUCTION_INFO, Decoded, MAX_CONTROL_OUT_REC,
+    MAX_QUEUED_CONTROL_MESSAGES, NetIdForm, NetIdType, NetIdValue, UniqueNetId,
+    encode_control_message, read_control_fallback, read_control_message, read_control_messages,
+    read_unique_net_id, write_control_fallback, write_control_message, write_unique_net_id,
 };
 use icarus_bevy::experimental::packet::{BitReader, BitWriter};
 
@@ -392,6 +392,10 @@ fn control_channel_fallback_layouts_round_trip_in_both_orders() {
             kind: 3,
             message: text("violation"),
         },
+        ControlFallback::DestructionInfo {
+            reason: 1,
+            net_guid: 512,
+        },
         ControlFallback::BeaconJoin,
         ControlFallback::BeaconLogin {
             text: text("beacon"),
@@ -417,6 +421,19 @@ fn control_channel_fallback_layouts_round_trip_in_both_orders() {
             assert!(reader.at_end());
         }
     }
+
+    // INTERNAL_LOAD_OBJECT_GUID (1) in DestructionInfo is rejected by both writer and reader.
+    let little = codec(ByteOrder::Little);
+    let bad_destruction = ControlFallback::DestructionInfo {
+        reason: 0,
+        net_guid: 1,
+    };
+    assert!(write_control_fallback(&mut BitWriter::new(), &bad_destruction, &little).is_err());
+    let mut raw = BitWriter::new();
+    raw.write_bits(1, 8);
+    raw.write_int_packed(1);
+    let mut reader = BitReader::new(raw.as_bytes(), raw.bit_len()).unwrap();
+    assert!(read_control_fallback(DESTRUCTION_INFO, &mut reader, &little).is_err());
 }
 
 #[test]

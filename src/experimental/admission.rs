@@ -13,7 +13,8 @@
 //! (`0x1463251c0` / `0x1462116b0`; `U-037` resolved).
 //!
 //! This module reproduces the parts a dedicated server decides from its own
-//! state and the control-channel `Hello` / `Login` / `Netspeed` / `Join` fields:
+//! state and the control-channel `Hello` / `Login` / `Netspeed` / `Join` /
+//! `PCSwap` / `ActorChannelFailure` fields:
 //! - `UNetConnection::IsClientMsgTypeValid` (`0x143991c70`),
 //!   `SendChallengeControlMessage` (`0x143998730`), `WelcomePlayer`
 //!   (`0x143cc9170`), and `SetClientLoginState` (`0x14399add0`) gate control
@@ -57,6 +58,16 @@
 //!   units or formatted as `%s%i` from `DefaultPlayerName` and `PlayerId`),
 //!   setting `PlayerController->NetPlayerIndex` (`+0x3d4`), and advancing
 //!   `ClientLoginState` to `Joined` (`3`).
+//! - On `NMT_PCSwap` (`case 15` in `UWorld::NotifyControlMessage` at
+//!   `0x1439f031c` server / `0x143cbb7f3` client, `F-713`, `F-740`), a signed
+//!   `ChildIndex < 0` selects the parent connection, `0 <= ChildIndex < Children.Num()`
+//!   selects `Connection->Children[ChildIndex]` (`+0x1460`), and
+//!   `ChildIndex >= Children.Num()` is ignored.
+//! - On `NMT_ActorChannelFailure` (`0x10` in `UControlChannel::ReceivedBunch` at
+//!   `0x143536420` server / `0x1437c4940` client, `F-740`), the server resolves
+//!   `OpenChannels[ChannelIndex]` (`+0x1310`); when it is a non-null
+//!   `UActorChannel` whose `Actor` (`+0x68`) equals `Connection->PlayerController`
+//!   (`+0x30`), `UNetConnection::Close` (`0x1436de420` / `0x143984190`) is called.
 
 use super::control_messages::{NetIdType, NetIdValue, UniqueNetId};
 
@@ -95,6 +106,84 @@ pub const fn clamp_client_netspeed(requested_rate: i32, max_client_rate: i32) ->
         requested_rate
     } else {
         max_client_rate
+    }
+}
+
+/// Target selected by `UWorld::NotifyControlMessage` `case 15` (`NMT_PCSwap`,
+/// `0x1439f031c` server / `0x143cbb7f3` client, `F-713`, `F-740`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PcSwapTarget {
+    /// `ChildIndex < 0`: calls `Connection->HandleClientPlayer(PreviousPlayerController, Connection)`.
+    ParentConnection,
+    /// `0 <= ChildIndex < Children.Num()`: calls
+    /// `Children[index]->HandleClientPlayer(Children[index]->PreviousPlayerController, Connection)`.
+    ChildConnection { index: usize },
+}
+
+/// Resolves the `NMT_PCSwap` (`case 15`) target from signed `child_index` and
+/// `Connection->Children.Num()` (`+0x1468`), returning `None` when
+/// `child_index >= child_connection_count` (`F-713`, `F-740`).
+pub fn evaluate_pc_swap_target(
+    child_index: i32,
+    child_connection_count: usize,
+) -> Option<PcSwapTarget> {
+    if child_index < 0 {
+        return Some(PcSwapTarget::ParentConnection);
+    }
+    let index = usize::try_from(child_index).ok()?;
+    (index < child_connection_count).then_some(PcSwapTarget::ChildConnection { index })
+}
+
+/// Server-side disposition of `NMT_ActorChannelFailure` (`0x10`) in
+/// `UControlChannel::ReceivedBunch` (`0x143536420` server / `0x1437c4940`
+/// client, `F-740`).
+///
+/// Standalone model of the control-channel branch (`peer_lab` maintains only
+/// channel 0 and no `UActorChannel` table).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ActorChannelFailureAction {
+    /// Ignored (client side, out-of-range channel index, non-`UActorChannel`,
+    /// null `Actor`, or null `Connection->PlayerController`).
+    Ignore,
+    /// `Ch->Actor == Connection->PlayerController`: calls `UNetConnection::Close`
+    /// (`0x1436de420` server / `0x143984190` client).
+    CloseConnection,
+    /// `Ch->Actor != Connection->PlayerController` with non-null
+    /// `Connection->PlayerController`: calls
+    /// `PlayerController->NotifyActorChannelFailure(Ch)` (`vtable +0xc50`;
+    /// base `APlayerController::NotifyActorChannelFailure` at `0x1408c9710` is a no-op).
+    NotifyPlayerController,
+}
+
+/// Evaluates `UControlChannel::ReceivedBunch` (`0x143536420` / `0x1437c4940`)
+/// on `NMT_ActorChannelFailure` (`0x10`, `F-740`).
+///
+/// Standalone model of the server-side `OpenChannels` lookup (`peer_lab`
+/// operates on control channel 0 only and does not open actor channels).
+pub fn evaluate_actor_channel_failure(
+    is_server: bool,
+    channel_index: i32,
+    open_channels_len: usize,
+    channel_is_actor_channel: bool,
+    channel_has_actor: bool,
+    actor_is_player_controller: bool,
+    has_player_controller: bool,
+) -> ActorChannelFailureAction {
+    if !is_server || channel_index < 0 {
+        return ActorChannelFailureAction::Ignore;
+    }
+    let Ok(index) = usize::try_from(channel_index) else {
+        return ActorChannelFailureAction::Ignore;
+    };
+    if index >= open_channels_len || !channel_is_actor_channel || !channel_has_actor {
+        return ActorChannelFailureAction::Ignore;
+    }
+    if actor_is_player_controller {
+        ActorChannelFailureAction::CloseConnection
+    } else if has_player_controller {
+        ActorChannelFailureAction::NotifyPlayerController
+    } else {
+        ActorChannelFailureAction::Ignore
     }
 }
 
