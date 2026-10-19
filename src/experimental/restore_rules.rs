@@ -1180,6 +1180,318 @@ pub const fn evaluate_spawn_blocker_transfer<R: Copy, N: Copy>(
     })
 }
 
+/// Entry in `AIcarusCaveAISpawner::SpawnedMap` (`owner + 0x2c0`, stride `0x48` B)
+/// inspected by `UCaveAirNavRecorderComponent::RecordOwnerState` (`C005`,
+/// `0x1418a0d20` server / `0x1418a6480` client) (F-650, F-677).
+#[derive(Clone, Debug, PartialEq)]
+pub struct CaveSpawnerMapEntry<'a> {
+    /// Whether the map key (`+0x00`) is a non-null `UClass*` (`0x143cd2090`
+    /// client) with a non-null `GetClass()` (`+0x10`).
+    pub has_valid_uclass: bool,
+    /// `key->GetClass()->GetName()` (`*(key + 0x10) + 0x18`).
+    pub uclass_type_name: &'a [u16],
+    /// `key->ClassGeneratedBy->GetName()` (`*(key + 0xe0) + 0x18`) when
+    /// `ClassGeneratedBy` (`+0xe0`) is non-null.
+    pub class_generated_by_name: Option<&'a [u16]>,
+    /// Spawn times array (`+0x30`, count at `+0x38`).
+    pub times: &'a [f32],
+}
+
+/// Evaluates `UCaveAirNavRecorderComponent::RecordOwnerState` (`C005`,
+/// `0x1418a0d20` server / `0x1418a6480` client) after
+/// `UActorStateRecorderComponent::RecordOwnerState` (`0x1418a5b60` client)
+/// (F-650, F-677).
+///
+/// Only when `owner_is_cave_ai_spawner` (`AIcarusCaveAISpawner`, `0x141ba6890`
+/// client) is `true` and `spawner_map_entries` (`owner + 0x2c0`, count
+/// `+0x2c8 - +0x2f4`) is non-empty does `C005` clear `recorded_spawn_data`
+/// (`recorder + 0x1c0`) and append each entry with `has_valid_uclass &&
+/// !entry.times.is_empty()`, unwrapping `"BlueprintGeneratedClass"` via
+/// [`resolve_cave_ai_class_name`]. When `spawner_map_entries` is empty or
+/// `!owner_is_cave_ai_spawner`, `recorded_spawn_data` is preserved unchanged
+/// and `false` is returned.
+pub fn evaluate_cave_air_nav_record(
+    owner_is_cave_ai_spawner: bool,
+    spawner_map_entries: &[CaveSpawnerMapEntry<'_>],
+    recorded_spawn_data: &mut Vec<CaveSpawnTimes>,
+) -> bool {
+    if !owner_is_cave_ai_spawner || spawner_map_entries.is_empty() {
+        return false;
+    }
+    recorded_spawn_data.clear();
+    for entry in spawner_map_entries {
+        if entry.has_valid_uclass && !entry.times.is_empty() {
+            let resolved_name =
+                resolve_cave_ai_class_name(entry.uclass_type_name, entry.class_generated_by_name);
+            recorded_spawn_data.push(CaveSpawnTimes {
+                class_name: resolved_name.to_vec(),
+                times: entry.times.to_vec(),
+            });
+        }
+    }
+    true
+}
+
+/// Optional fields updated by `UDeployableRecorderComponent::RecordOwnerState`
+/// (`C009`, `0x1418a15a0` server / `0x1418a6d20` client) after
+/// `UIcarusActorRecorderComponent::RecordOwnerState` (`0x1418a8cc0` client)
+/// (F-646, F-650).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DeployableRecordPlan<C, T> {
+    /// Updated `FoundationActorRecord` (`+0x230..0x248` server / `+0x258..0x270`
+    /// client: `(class_name, icarus_actor_guid)`) when `owner->FoundationActor`
+    /// (`owner + 0x580`) is non-null and has a `UActorStateRecorderComponent`
+    /// (`0x141b9cbb0` client); `None` leaves the existing record untouched.
+    pub foundation_actor_record: Option<(C, i32)>,
+    /// Updated `(WhitelistedTames, bAllowAllTames)` (`+0x220`/`+0x250` server,
+    /// `+0x278`/`+0x288` client) when the owner has a `UTameWhitelistComponent`
+    /// (`0x141da0d70` client); `None` leaves the existing fields untouched.
+    pub tame_whitelist: Option<(Vec<T>, bool)>,
+}
+
+/// Evaluates `UDeployableRecorderComponent::RecordOwnerState` (`C009`,
+/// `0x1418a15a0` server / `0x1418a6d20` client) (F-646, F-650).
+pub fn evaluate_deployable_record<C, T: Clone>(
+    foundation_actor_with_recorder: Option<(C, i32)>,
+    tame_whitelist_component: Option<(&[T], bool)>,
+) -> DeployableRecordPlan<C, T> {
+    DeployableRecordPlan {
+        foundation_actor_record: foundation_actor_with_recorder,
+        tame_whitelist: tame_whitelist_component
+            .map(|(tames, allow_all)| (tames.to_vec(), allow_all)),
+    }
+}
+
+/// Evaluates `UBuildingBaseRecorderComponent::RecordOwnerState` (`C003`,
+/// `0x1418a1540` server / `0x1418a6cc0` client) and
+/// `UBuildingBaseRecorderComponent::UpdateOwnerToDatabaseState` (`0x1418b7710`
+/// server / `0x1418baa80` client) after the base deployable/actor recorder step
+/// (F-650, F-657).
+///
+/// Transfers `DecayableSaveData` (`recorder + 0x290`) via
+/// `IDecayableInterface::Execute_RecordDecayState` (`0x141ab39c0` client) /
+/// `Execute_RestoreDecayState` (`0x141ab3b90` client) iff the owner is non-null
+/// and its `UClass` (`+0x10`) implements `UDecayableInterface` (`0x141ab2d40`
+/// client).
+pub const fn evaluate_building_base_decay_transfer<D: Copy>(
+    owner_implements_decayable_interface: bool,
+    decay_state: D,
+) -> Option<D> {
+    if !owner_implements_decayable_interface {
+        return None;
+    }
+    Some(decay_state)
+}
+
+/// Values transferred by `UOrbitalExchangeInterfaceRecorderComponent` (`C022`,
+/// `RecordOwnerState` at `0x1418e83a0` server / `0x1418e86d0` client;
+/// `UpdateOwnerToDatabaseState` at `0x1418f6f90` server / `0x1418f7660` client)
+/// (F-650, F-657).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct OrbitalExchangeTransferPlan<E, D> {
+    /// `ExchangeInventories` (`recorder + 0xd8..0x128`) recorded via
+    /// `AOrbitalExchangeInterface::RecordExchangeInventories` (`0x141c7d8d0`
+    /// client) / passed to `RestoreExchangeInventories` (`0x141c7d760` client).
+    pub exchange_inventories: E,
+    /// `DeliveredItems` (`recorder + 0x128`, count `+0x130`, stride `0x28` B)
+    /// copied from `AOrbitalExchangeInterface + 0x258` (`600`, count `+0x260`)
+    /// / passed to `RestoreExchangeInventories` (`0x141c7d760` client).
+    pub delivered_items: Vec<D>,
+}
+
+/// Evaluates `UOrbitalExchangeInterfaceRecorderComponent::RecordOwnerState`
+/// (`C022`, `0x1418e83a0` server / `0x1418e86d0` client) and
+/// `UpdateOwnerToDatabaseState` (`0x1418f6f90` server / `0x1418f7660` client)
+/// (F-650, F-657).
+///
+/// Returns `None` when the owner is null or not an `AOrbitalExchangeInterface`
+/// (`0x141c7b940` client).
+pub fn evaluate_orbital_exchange_transfer<E, D: Clone>(
+    owner_is_orbital_exchange_interface: bool,
+    exchange_inventories: E,
+    delivered_items: &[D],
+) -> Option<OrbitalExchangeTransferPlan<E, D>> {
+    if !owner_is_orbital_exchange_interface {
+        return None;
+    }
+    Some(OrbitalExchangeTransferPlan {
+        exchange_inventories,
+        delivered_items: delivered_items.to_vec(),
+    })
+}
+
+/// Owner-derived fields updated by `UPlayerRecorderComponent::RecordOwnerState`
+/// (`C025`, `0x1418e8850` server / `0x1418e8b80` client) when the owner is a
+/// non-pending-kill `AIcarusPlayerController` (`0x141bfb490` client) (F-648,
+/// F-650, F-652).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PlayerRecorderOwnerState<U> {
+    /// `PlayerID` (`recorder + 0xd8`, `ChrSlot` at `+0xe8`): set from
+    /// `AIcarusPlayerController::GetPlayerCharacterID` (`0x1414a69a0` client)
+    /// when `controller->PlayerState` (`+0x228`) is non-null and not pending
+    /// kill, or `None` (resetting `UserID` to `""` and `ChrSlot` to `-1` via
+    /// `0x14171aeb0` client) when `PlayerState` is missing or pending kill.
+    pub player_id: Option<(U, i32)>,
+    /// `AssignedDropshipSpawnUID` (`recorder + 0xf0`): overwritten with
+    /// `AssignedDropshipSpawn->GetIcarusActorGuid()` when `controller + 0x970`
+    /// is non-null and not pending kill, or preserved (`previous_dropship_spawn_uid`)
+    /// when null or pending kill.
+    pub assigned_dropship_spawn_uid: i32,
+    /// `AssignedDropshipUID` (`recorder + 0xf4`): overwritten with
+    /// `AssignedDropship->GetIcarusActorGuid()` when `controller + 0x978` is
+    /// non-null and not pending kill, or preserved (`previous_dropship_uid`)
+    /// when null or pending kill.
+    pub assigned_dropship_uid: i32,
+    /// `AssignedGravestoneUID` (`recorder + 0xf8`): overwritten with
+    /// `AssignedGravestone->GetIcarusActorGuid()` when `controller + 0x980` is
+    /// non-null and not pending kill, or cleared to `0` when null or pending
+    /// kill.
+    pub assigned_gravestone_uid: i32,
+}
+
+/// Outcome of `UPlayerRecorderComponent::RecordOwnerState` (`C025`,
+/// `0x1418e8850` server / `0x1418e8b80` client) (F-648, F-650, F-652).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PlayerRecorderRecordPlan<U> {
+    /// `SaveDataVersion` (`recorder + 0xfc`) is set to `1` unconditionally on
+    /// entry before checking `owner`.
+    pub save_data_version: i32,
+    /// Owner fields updated iff `owner` is a non-null, non-pending-kill
+    /// `AIcarusPlayerController` (`0x141bfb490` client).
+    pub owner_state: Option<PlayerRecorderOwnerState<U>>,
+}
+
+/// Evaluates `UPlayerRecorderComponent::RecordOwnerState` (`C025`,
+/// `0x1418e8850` server / `0x1418e8b80` client) (F-648, F-650, F-652).
+pub fn evaluate_player_recorder_record<U>(
+    owner_is_valid_player_controller: bool,
+    valid_player_state_character_id: Option<(U, i32)>,
+    previous_dropship_spawn_uid: i32,
+    valid_dropship_spawn_guid: Option<i32>,
+    previous_dropship_uid: i32,
+    valid_dropship_guid: Option<i32>,
+    valid_gravestone_guid: Option<i32>,
+) -> PlayerRecorderRecordPlan<U> {
+    let owner_state = owner_is_valid_player_controller.then(|| PlayerRecorderOwnerState {
+        player_id: valid_player_state_character_id,
+        assigned_dropship_spawn_uid: valid_dropship_spawn_guid
+            .unwrap_or(previous_dropship_spawn_uid),
+        assigned_dropship_uid: valid_dropship_guid.unwrap_or(previous_dropship_uid),
+        assigned_gravestone_uid: valid_gravestone_guid.unwrap_or(0),
+    });
+    PlayerRecorderRecordPlan {
+        save_data_version: 1,
+        owner_state,
+    }
+}
+
+/// Values recorded by `URocketRecorderComponent::RecordOwnerState` (`C029`,
+/// `0x1418e9280` server / `0x1418e95c0` client) after
+/// `UActorStateRecorderComponent::RecordOwnerState` (`0x1418a5b60` client)
+/// (F-648, F-650, F-652, F-663).
+#[derive(Clone, Debug, PartialEq)]
+pub struct RocketRecordPlan<U> {
+    /// `Version` (`recorder + 0x1f4` = `500`) set to `1`.
+    pub version: i32,
+    /// `RocketState` (`ARocket + 0x2e0 -> recorder + 0x1f0`).
+    pub rocket_state: u8,
+    /// `SpawnPointLocation` (`ARocket + 0x2c4 -> recorder + 0x1d8`).
+    pub spawn_point_location: [f32; 3],
+    /// `DescentPointLocation` (`ARocket + 0x2d0 -> recorder + 0x1e4`).
+    pub descent_point_location: [f32; 3],
+    /// `bHasLanded` (`ARocket + 0x2e1 -> recorder + 0x1f1`).
+    pub b_has_landed: bool,
+    /// `bHasDeparted` (`ARocket + 0x2e2 -> recorder + 0x1f2`).
+    pub b_has_departed: bool,
+    /// `bPodVisible` (`ARocket + 0x300 -> recorder + 0x1f3` = `499`).
+    pub b_pod_visible: bool,
+    /// Updated `PlayerID` (`recorder + 0x1c0`, `ChrSlot` at `+0x1d0`) written
+    /// iff both `ARocket::GetAssignedPlayerCharacter` (`0x1417afcc0` client)
+    /// and `AIcarusPlayerCharacter::GetIcarusPlayerState` (`0x1414a51d0` client)
+    /// return non-null, non-pending-kill objects; `None` preserves the existing
+    /// `recorder + 0x1c0..0x1d4` fields unchanged.
+    pub updated_player_id: Option<(U, i32)>,
+}
+
+/// Evaluates `URocketRecorderComponent::RecordOwnerState` (`C029`,
+/// `0x1418e9280` server / `0x1418e95c0` client) (F-648, F-650, F-652, F-663).
+///
+/// Returns `None` when the owner is null, not an `ARocket` (`0x141c08690`
+/// client), or pending kill.
+#[allow(clippy::too_many_arguments)]
+pub fn evaluate_rocket_record<U>(
+    owner_is_valid_rocket: bool,
+    rocket_state: u8,
+    spawn_point_location: [f32; 3],
+    descent_point_location: [f32; 3],
+    b_has_landed: bool,
+    b_has_departed: bool,
+    b_pod_visible: bool,
+    valid_assigned_character_player_id: Option<(U, i32)>,
+) -> Option<RocketRecordPlan<U>> {
+    if !owner_is_valid_rocket {
+        return None;
+    }
+    Some(RocketRecordPlan {
+        version: 1,
+        rocket_state,
+        spawn_point_location,
+        descent_point_location,
+        b_has_landed,
+        b_has_departed,
+        b_pod_visible,
+        updated_player_id: valid_assigned_character_player_id,
+    })
+}
+
+/// Values recorded by `UTreeRecorderComponent::RecordOwnerState` (`C033`,
+/// `0x1418e9820` server / `0x1418e9b60` client) after
+/// `UActorStateRecorderComponent::RecordOwnerState` (`0x1418a5b60` client)
+/// (F-656, F-658, F-736).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TreeRecordPlan<N> {
+    /// `TreeType` (`UTreePrimitive + 0x18 -> recorder + 0x1c0`).
+    pub tree_type: N,
+    /// `TreePrimitiveMask` (`recorder + 0x1c8`, count `+0x1d0`): deduplicated
+    /// `TSet<int32>` union of `ATreeBase + 0x330` (count `+0x338`) followed by
+    /// `ATreeBase + 0x308` (count `+0x310`) in first-seen insertion order.
+    pub tree_primitive_mask: Vec<i32>,
+    /// `RandomStream` (`ATreeBase + 0x300 -> recorder + 0x1d8`, `8` B).
+    pub random_stream: u64,
+    /// `bIsPhysicsDynamic` (`ATreeBase + 0x318 -> recorder + 0x1e0`).
+    pub b_is_physics_dynamic: bool,
+}
+
+/// Evaluates `UTreeRecorderComponent::RecordOwnerState` (`C033`,
+/// `0x1418e9820` server / `0x1418e9b60` client) (F-656, F-658, F-736).
+///
+/// Returns `None` when the owner is null, not an `ATreeBase` (`0x141dbef10`
+/// client), or pending kill.
+pub fn evaluate_tree_record<N>(
+    owner_is_valid_tree: bool,
+    tree_type: N,
+    destroyed_nodes_330: &[i32],
+    cut_nodes_308: &[i32],
+    random_stream: u64,
+    b_is_physics_dynamic: bool,
+) -> Option<TreeRecordPlan<N>> {
+    if !owner_is_valid_tree {
+        return None;
+    }
+    let mut tree_primitive_mask = Vec::new();
+    for &node in destroyed_nodes_330.iter().chain(cut_nodes_308.iter()) {
+        if !tree_primitive_mask.contains(&node) {
+            tree_primitive_mask.push(node);
+        }
+    }
+    Some(TreeRecordPlan {
+        tree_type,
+        tree_primitive_mask,
+        random_stream,
+        b_is_physics_dynamic,
+    })
+}
+
 /// Saved `UProcessingComponent` state restored by
 /// `UActorStateRecorderComponent::UpdateOwnerToDatabaseState` (`C001`,
 /// `0x1418b6ed0` server / `0x1418ba040` client) when the owner has a

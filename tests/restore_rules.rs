@@ -2,29 +2,32 @@ use icarus_bevy::experimental::restore_rules::{
     ACTOR_RECORDER_TRANSFORM_TOLERANCE, ActorGuidRestoreStep, ActorLink,
     ActorSubcomponentRestorePlan, ApplyTransformKind, AttachRecorderOutcome,
     BaseLevelTeleportRecordPlan, BaseLevelTeleportRestorePlan, ByNameLoadOutcome,
-    DeployableStitchPlan, DrillStitchCandidate, DrillStitchResolution, DynamicItemPropertyKind,
-    EnzymeGeyserRestorePlan, FlodTileRestorePlan, InstancedLevelManagerRestorePlan,
-    InventorySlotOverflowDisposition, LegacyGunAmmoUpgrade, LobbyPrivacy, OwnerResolvePolicy,
-    OwnerResolveStep, PROSPECT_SAVE_STATE_CURRENT_VERSION, PlayerList, PlayerStateLifeRestore,
-    PrebuiltStructureRecordPlan, ProspectAssociatedMember, ProspectBlobDecodeOutcome,
-    RESTORED_INDEFINITE_MODIFIER_LIFETIME, RestoreStateKind, RestoredMissionHistoryEntry,
-    RestoredProcessingState, RocketRestore, SetupLoadedProspectOutcome, SpawnBlockerState,
-    SplineRespawnDisposition, StitchedPlayerRecorderLinks, VOXEL_LOCATION_TOLERANCE,
-    VersionUpgradeKind, VoxelDatabaseRestorePlan, WorldTalentStitchPlan,
-    can_activate_prospect_info, compact_and_diff_flod_tiles, container_entries,
-    does_actor_recorder_match_actor, does_player_recorder_match_actor,
-    does_player_state_recorder_match_actor, does_state_recorder_match_actor,
-    does_voxel_recorder_match_actor, evaluate_actor_guid_restore,
+    CaveSpawnerMapEntry, DeployableRecordPlan, DeployableStitchPlan, DrillStitchCandidate,
+    DrillStitchResolution, DynamicItemPropertyKind, EnzymeGeyserRestorePlan, FlodTileRestorePlan,
+    InstancedLevelManagerRestorePlan, InventorySlotOverflowDisposition, LegacyGunAmmoUpgrade,
+    LobbyPrivacy, OrbitalExchangeTransferPlan, OwnerResolvePolicy, OwnerResolveStep,
+    PROSPECT_SAVE_STATE_CURRENT_VERSION, PlayerList, PlayerRecorderOwnerState,
+    PlayerRecorderRecordPlan, PlayerStateLifeRestore, PrebuiltStructureRecordPlan,
+    ProspectAssociatedMember, ProspectBlobDecodeOutcome, RESTORED_INDEFINITE_MODIFIER_LIFETIME,
+    RestoreStateKind, RestoredMissionHistoryEntry, RestoredProcessingState, RocketRecordPlan,
+    RocketRestore, SetupLoadedProspectOutcome, SpawnBlockerState, SplineRespawnDisposition,
+    StitchedPlayerRecorderLinks, TreeRecordPlan, VOXEL_LOCATION_TOLERANCE, VersionUpgradeKind,
+    VoxelDatabaseRestorePlan, WorldTalentStitchPlan, can_activate_prospect_info,
+    compact_and_diff_flod_tiles, container_entries, does_actor_recorder_match_actor,
+    does_player_recorder_match_actor, does_player_state_recorder_match_actor,
+    does_state_recorder_match_actor, does_voxel_recorder_match_actor, evaluate_actor_guid_restore,
     evaluate_actor_subcomponent_restore, evaluate_attach_recorder_to_actor,
     evaluate_base_level_teleport_record, evaluate_base_level_teleport_restore,
-    evaluate_by_name_load_attempt, evaluate_cave_air_nav_restore, evaluate_crop_plot_record,
-    evaluate_crop_plot_restore, evaluate_deployable_stitch, evaluate_drill_stitch,
-    evaluate_enzyme_geyser_restore, evaluate_flod_tile_restore,
+    evaluate_building_base_decay_transfer, evaluate_by_name_load_attempt,
+    evaluate_cave_air_nav_record, evaluate_cave_air_nav_restore, evaluate_crop_plot_record,
+    evaluate_crop_plot_restore, evaluate_deployable_record, evaluate_deployable_stitch,
+    evaluate_drill_stitch, evaluate_enzyme_geyser_restore, evaluate_flod_tile_restore,
     evaluate_instanced_level_manager_restore, evaluate_legacy_gun_ammo_upgrade,
-    evaluate_modifier_state_restore, evaluate_owner_resolve_step,
-    evaluate_player_state_life_restore, evaluate_prospect_blob_decode,
+    evaluate_modifier_state_restore, evaluate_orbital_exchange_transfer,
+    evaluate_owner_resolve_step, evaluate_player_recorder_record,
+    evaluate_player_state_life_restore, evaluate_prospect_blob_decode, evaluate_rocket_record,
     evaluate_setup_loaded_prospect_attempt, evaluate_spawn_blocker_transfer,
-    evaluate_spline_recorder_respawn, evaluate_voxel_database_restore,
+    evaluate_spline_recorder_respawn, evaluate_tree_record, evaluate_voxel_database_restore,
     evaluate_world_talent_stitch, filter_restored_cosmetic_armour_overrides,
     migrate_prospect_save_state, names_match, normalize_prospect_name,
     normalize_restored_modifier_lifetime, player_record_valid, prospect_ids_match,
@@ -194,6 +197,24 @@ fn stitching_needs_both_id_and_name() {
         DeployableStitchPlan {
             foundation_actor_index: None,
             restore_tame_whitelist: false,
+        }
+    );
+
+    // C009 UDeployableRecorderComponent::RecordOwnerState (0x1418a15a0 / 0x1418a6d20):
+    // records FoundationActorRecord iff FoundationActor has a UActorStateRecorderComponent, and
+    // records WhitelistedTames + bAllowAllTames iff UTameWhitelistComponent is present.
+    assert_eq!(
+        evaluate_deployable_record::<&str, i32>(None, None),
+        DeployableRecordPlan {
+            foundation_actor_record: None,
+            tame_whitelist: None,
+        }
+    );
+    assert_eq!(
+        evaluate_deployable_record(Some(("Floor_C", 7)), Some((&[101, 102], true))),
+        DeployableRecordPlan {
+            foundation_actor_record: Some(("Floor_C", 7)),
+            tame_whitelist: Some((vec![101, 102], true)),
         }
     );
 
@@ -696,6 +717,95 @@ fn player_list_validation() {
             "{version} {list:?}"
         );
     }
+
+    // C025 UPlayerRecorderComponent::RecordOwnerState (0x1418e8850 / 0x1418e8b80):
+    // sets SaveDataVersion = 1 unconditionally, preserves DropshipSpawn/Dropship UIDs when null/pending-kill,
+    // and clears Gravestone UID to 0 when null/pending-kill.
+    assert_eq!(
+        evaluate_player_recorder_record::<&str>(
+            false,
+            Some(("76561", 0)),
+            10,
+            None,
+            20,
+            None,
+            None
+        ),
+        PlayerRecorderRecordPlan {
+            save_data_version: 1,
+            owner_state: None,
+        }
+    );
+    assert_eq!(
+        evaluate_player_recorder_record::<&str>(true, None, 10, None, 20, None, None),
+        PlayerRecorderRecordPlan {
+            save_data_version: 1,
+            owner_state: Some(PlayerRecorderOwnerState {
+                player_id: None,
+                assigned_dropship_spawn_uid: 10,
+                assigned_dropship_uid: 20,
+                assigned_gravestone_uid: 0,
+            }),
+        }
+    );
+    assert_eq!(
+        evaluate_player_recorder_record(
+            true,
+            Some(("76561198000000001", 2)),
+            10,
+            Some(111),
+            20,
+            Some(222),
+            Some(333),
+        ),
+        PlayerRecorderRecordPlan {
+            save_data_version: 1,
+            owner_state: Some(PlayerRecorderOwnerState {
+                player_id: Some(("76561198000000001", 2)),
+                assigned_dropship_spawn_uid: 111,
+                assigned_dropship_uid: 222,
+                assigned_gravestone_uid: 333,
+            }),
+        }
+    );
+
+    // C029 URocketRecorderComponent::RecordOwnerState (0x1418e9280 / 0x1418e95c0):
+    // sets Version = 1, copies rocket state fields, and updates PlayerID only when AssignedCharacter + PlayerState are valid.
+    assert_eq!(
+        evaluate_rocket_record::<&str>(
+            false,
+            2,
+            [1.0, 2.0, 3.0],
+            [4.0, 5.0, 6.0],
+            true,
+            false,
+            true,
+            Some(("76561", 0)),
+        ),
+        None
+    );
+    assert_eq!(
+        evaluate_rocket_record::<&str>(
+            true,
+            2,
+            [1.0, 2.0, 3.0],
+            [4.0, 5.0, 6.0],
+            true,
+            false,
+            true,
+            None,
+        ),
+        Some(RocketRecordPlan {
+            version: 1,
+            rocket_state: 2,
+            spawn_point_location: [1.0, 2.0, 3.0],
+            descent_point_location: [4.0, 5.0, 6.0],
+            b_has_landed: true,
+            b_has_departed: false,
+            b_pod_visible: true,
+            updated_player_id: None,
+        })
+    );
 }
 
 #[test]
@@ -899,6 +1009,65 @@ fn cave_spawn_times_replace_the_first_matching_class() {
         Some(true)
     );
     assert_eq!(spawner_classes, vec![class("BP_Wolf", &[9.0])]);
+
+    // C005 UCaveAirNavRecorderComponent::RecordOwnerState (0x1418a0d20 / 0x1418a6480):
+    // preserves recorded_spawn_data when owner_is_cave_ai_spawner is false or spawner_map_entries is empty;
+    // otherwise clears recorded_spawn_data and appends only valid UClass entries with non-empty times.
+    let wolf_uclass = units("Class");
+    let mut recorded_spawn_data = vec![class("Prior_Class", &[42.0])];
+    assert!(!evaluate_cave_air_nav_record(
+        false,
+        &[CaveSpawnerMapEntry {
+            has_valid_uclass: true,
+            uclass_type_name: &bp_gen,
+            class_generated_by_name: Some(&generated_by),
+            times: &[5.0],
+        }],
+        &mut recorded_spawn_data,
+    ));
+    assert!(!evaluate_cave_air_nav_record(
+        true,
+        &[],
+        &mut recorded_spawn_data
+    ));
+    assert_eq!(recorded_spawn_data, vec![class("Prior_Class", &[42.0])]);
+    assert!(evaluate_cave_air_nav_record(
+        true,
+        &[
+            CaveSpawnerMapEntry {
+                has_valid_uclass: false,
+                uclass_type_name: &bp_gen,
+                class_generated_by_name: Some(&generated_by),
+                times: &[1.0],
+            },
+            CaveSpawnerMapEntry {
+                has_valid_uclass: true,
+                uclass_type_name: &bp_gen,
+                class_generated_by_name: Some(&generated_by),
+                times: &[],
+            },
+            CaveSpawnerMapEntry {
+                has_valid_uclass: true,
+                uclass_type_name: &bp_gen,
+                class_generated_by_name: Some(&generated_by),
+                times: &[12.5, 25.0],
+            },
+            CaveSpawnerMapEntry {
+                has_valid_uclass: true,
+                uclass_type_name: &wolf_uclass,
+                class_generated_by_name: None,
+                times: &[30.0],
+            },
+        ],
+        &mut recorded_spawn_data,
+    ));
+    assert_eq!(
+        recorded_spawn_data,
+        vec![
+            class("BP_CaveWorm_C", &[12.5, 25.0]),
+            class("Class", &[30.0]),
+        ]
+    );
 }
 
 #[test]
@@ -1351,6 +1520,25 @@ fn owner_resolve_step_attach_and_drill_auto_activate() {
         Some(vec!["Seed_B", "Seed_C"])
     );
 
+    // C003 UBuildingBaseRecorderComponent::RecordOwnerState (0x1418a1540 / 0x1418a6cc0)
+    // and UpdateOwnerToDatabaseState (0x1418b7710 / 0x1418baa80).
+    assert_eq!(evaluate_building_base_decay_transfer(false, 420), None);
+    assert_eq!(evaluate_building_base_decay_transfer(true, 420), Some(420));
+
+    // C022 UOrbitalExchangeInterfaceRecorderComponent::RecordOwnerState (0x1418e83a0 / 0x1418e86d0)
+    // and UpdateOwnerToDatabaseState (0x1418f6f90 / 0x1418f7660).
+    assert_eq!(
+        evaluate_orbital_exchange_transfer(false, "Exchange_Inv", &["Pod_Item_1"]),
+        None
+    );
+    assert_eq!(
+        evaluate_orbital_exchange_transfer(true, "Exchange_Inv", &["Pod_Item_1", "Pod_Item_2"]),
+        Some(OrbitalExchangeTransferPlan {
+            exchange_inventories: "Exchange_Inv",
+            delivered_items: vec!["Pod_Item_1", "Pod_Item_2"],
+        })
+    );
+
     // C030 USpawnBlockerRecorderComponent::RecordOwnerState (0x1418e9500 / 0x1418e9830)
     // and UpdateOwnerToDatabaseState (0x1418f7930 / 0x1418f81f0).
     assert_eq!(
@@ -1386,10 +1574,25 @@ fn owner_resolve_step_attach_and_drill_auto_activate() {
         }
     );
 
-    // C033 UTreeRecorderComponent::RespawnOwner (0x1418ed770 / 0x1418ee140):
-    // physics-dynamic trees unregister their recorder during FinishSpawningActor.
+    // C033 UTreeRecorderComponent::RespawnOwner (0x1418ed770 / 0x1418ee140) and
+    // RecordOwnerState (0x1418e9820 / 0x1418e9b60):
+    // physics-dynamic trees unregister their recorder during FinishSpawningActor;
+    // RecordOwnerState unions +0x330 and +0x308 into a deduplicated TreePrimitiveMask.
     assert!(should_drop_respawned_tree_recorder_on_resave(true));
     assert!(!should_drop_respawned_tree_recorder_on_resave(false));
+    assert_eq!(
+        evaluate_tree_record(false, "Pine_A", &[1, 2], &[2, 3], 0xdead_beef, true),
+        None
+    );
+    assert_eq!(
+        evaluate_tree_record(true, "Pine_A", &[4, 2, 4], &[2, 1, 5], 0xdead_beef, true),
+        Some(TreeRecordPlan {
+            tree_type: "Pine_A",
+            tree_primitive_mask: vec![4, 2, 1, 5],
+            random_stream: 0xdead_beef,
+            b_is_physics_dynamic: true,
+        })
+    );
 }
 
 #[test]
