@@ -717,11 +717,37 @@ struct StagedRecorderEval {
     is_physics_dynamic_tree: bool,
 }
 
+/// Validates that every top-level property in a staged recorder's `BaseComponent`
+/// has `index == 0` (`array_dim == 1` across all 65 `/Script/Icarus.*RecorderComponent`
+/// classes) and a unique property name (`UStruct::SerializeVersionedTaggedProperties`).
+fn validate_staged_component_properties(
+    component: &BaseComponent<'_>,
+    profile: TagProfile,
+) -> Result<()> {
+    let mut seen_names: Vec<Vec<u16>> = Vec::with_capacity(component.fields().len());
+    for field_tag in component.fields() {
+        let ParsedRecord::Property(prop) = read_record(field_tag.record, profile)? else {
+            bail!("unexpected staged recorder component terminator");
+        };
+        ensure!(
+            prop.tag.record.len() == field_tag.record.len() && prop.index == 0,
+            "invalid staged recorder component field header"
+        );
+        ensure!(
+            !seen_names.iter().any(|prior| prior == &prop.name),
+            "duplicate staged recorder component property"
+        );
+        seen_names.push(prop.name);
+    }
+    Ok(())
+}
+
 fn parse_player_character_id_struct(
     payload: &[u8],
     profile: TagProfile,
 ) -> Result<(Vec<u16>, i32)> {
     let nested = read_root(payload, profile).context("invalid PlayerCharacterID struct")?;
+    let mut seen_names: Vec<Vec<u16>> = Vec::with_capacity(nested.tags.len());
     let mut player_id = Vec::new();
     let mut chr_slot = -1_i32;
     for tag in &nested.tags {
@@ -732,6 +758,11 @@ fn parse_player_character_id_struct(
             prop.tag.record.len() == tag.record.len() && prop.index == 0,
             "invalid PlayerCharacterID field header"
         );
+        ensure!(
+            !seen_names.iter().any(|prior| prior == &prop.name),
+            "duplicate PlayerCharacterID property"
+        );
+        seen_names.push(prop.name.clone());
         if is_name(&prop.name, "PlayerID") {
             ensure!(
                 prop.tag.kind == TagKind::String,
@@ -745,6 +776,8 @@ fn parse_player_character_id_struct(
                 "PlayerCharacterID.ChrSlot must be 4-byte IntProperty"
             );
             chr_slot = i32::from_le_bytes(prop.tag.payload.try_into()?);
+        } else {
+            bail!("unmapped PlayerCharacterID property");
         }
     }
     Ok((player_id, chr_slot))
@@ -778,15 +811,26 @@ fn evaluate_staged_recorder_component(
                 );
                 let nested = read_root(prop.tag.payload, profile)
                     .context("invalid RocketSpawnStateRecord struct")?;
+                let mut seen_inner: Vec<Vec<u16>> = Vec::with_capacity(nested.tags.len());
                 for inner_tag in &nested.tags {
                     let ParsedRecord::Property(inner_prop) =
                         read_record(inner_tag.record, profile)?
                     else {
                         bail!("unexpected RocketSpawnStateRecord terminator");
                     };
+                    ensure!(
+                        inner_prop.tag.record.len() == inner_tag.record.len()
+                            && inner_prop.index == 0,
+                        "invalid RocketSpawnStateRecord field header"
+                    );
+                    ensure!(
+                        !seen_inner.iter().any(|prior| prior == &inner_prop.name),
+                        "duplicate RocketSpawnStateRecord property"
+                    );
+                    seen_inner.push(inner_prop.name.clone());
                     if is_name(&inner_prop.name, "AssignedPlayerID") {
                         ensure!(
-                            inner_prop.tag.kind == TagKind::String && inner_prop.index == 0,
+                            inner_prop.tag.kind == TagKind::String,
                             "RocketSpawnStateRecord.AssignedPlayerID must be StrProperty"
                         );
                         assigned_player_id = decode_exact_string_units(
@@ -796,7 +840,6 @@ fn evaluate_staged_recorder_component(
                     } else if is_name(&inner_prop.name, "ChrSlot") {
                         ensure!(
                             inner_prop.tag.kind == TagKind::Int
-                                && inner_prop.index == 0
                                 && inner_prop.tag.payload.len() == 4,
                             "RocketSpawnStateRecord.ChrSlot must be 4-byte IntProperty"
                         );
@@ -1000,17 +1043,24 @@ fn evaluate_staged_recorder_component(
                 );
                 let nested =
                     read_root(prop.tag.payload, profile).context("invalid VoxelSaveData struct")?;
+                let mut seen_inner: Vec<Vec<u16>> = Vec::with_capacity(nested.tags.len());
                 for inner_tag in &nested.tags {
                     let ParsedRecord::Property(inner_prop) =
                         read_record(inner_tag.record, profile)?
                     else {
                         bail!("unexpected VoxelSaveData terminator");
                     };
+                    ensure!(
+                        inner_prop.tag.record.len() == inner_tag.record.len()
+                            && inner_prop.index == 0,
+                        "invalid VoxelSaveData field header"
+                    );
+                    ensure!(
+                        !seen_inner.iter().any(|prior| prior == &inner_prop.name),
+                        "duplicate VoxelSaveData property"
+                    );
+                    seen_inner.push(inner_prop.name.clone());
                     if is_name(&inner_prop.name, "bIsVoxelFullyMined") {
-                        ensure!(
-                            inner_prop.index == 0,
-                            "VoxelSaveData.bIsVoxelFullyMined must have index 0"
-                        );
                         fully_mined = bool_tag_value(&inner_prop.tag)?;
                     }
                 }
@@ -1061,8 +1111,9 @@ fn evaluate_staged_recorder_component(
 ///   copies legacy root `ProspectID`/`ProspectDTKey` when `Version < 2`, and
 ///   resets `ProspectInfo`, sets `LobbyPrivacy = FriendsOnly`, and clears
 ///   `StateRecorderBlobs` when `Version == 0`.
-/// - Frames every recorder's `BinaryData` via [`read_base_component_with_limit`]
-///   and rejects any recorder with unknown outer fields (`F-403`).
+/// - Frames every recorder's `BinaryData` via [`read_base_component_with_limit`],
+///   rejects any recorder with unknown outer fields or duplicate/nonzero-indexed
+///   component properties (`F-403`, `F-741`).
 /// - Evaluates the 7 non-trivial `UIcarusStateRecorderComponent::Validate`
 ///   (`+0x408`) overrides (`C011`, `C025`, `C026`, `C028`, `C029`, `C031`, `C034`)
 ///   and `C033` `bIsPhysicsDynamic` against the post-migration `ProspectInfo`
@@ -1242,6 +1293,7 @@ pub fn stage_prospect_save_state(
             let component =
                 read_base_component_with_limit(recorder.binary_data, profile, component_byte_limit)
                     .context("invalid staged recorder base component")?;
+            validate_staged_component_properties(&component, profile)?;
             total_component_field_tags = total_component_field_tags
                 .checked_add(component.fields().len())
                 .context("component field count overflow")?;

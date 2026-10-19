@@ -1087,33 +1087,125 @@ fn staged_prospect_save_state_runs_recorder_validate_and_tracks_tree_dynamics() 
     assert_eq!(staged.reset_rocket_spawn_recorder_count, 1);
     assert_eq!(staged.physics_dynamic_tree_recorder_count, 1);
 
-    // Malformed RocketRecorderVersion (wrong tag kind) on C029 fails closed.
-    let bad_c029 = recorder_element(
-        "/Script/Icarus.RocketRecorderComponent",
-        &tag(
-            "RocketRecorderVersion",
-            "StrProperty",
-            0,
-            &[0],
-            &string("bad"),
-        ),
-    );
-    let bad_blobs = tag(
-        "StateRecorderBlobs",
-        "ArrayProperty",
+    // Malformed RocketRecorderVersion (wrong tag kind), duplicate component properties,
+    // nonzero-indexed component properties, or duplicate/unmapped nested struct fields fail closed.
+    let dup_prop = tag(
+        "RecordedVersion",
+        "IntProperty",
         0,
-        &[string("StructProperty"), vec![0]].concat(),
-        &[&1_i32.to_le_bytes(), shared(&bad_c029).as_slice()].concat(),
+        &[0],
+        &3_i32.to_le_bytes(),
     );
-    let bad_stream = [
-        tag("Version", "IntProperty", 0, &[0], &2_i32.to_le_bytes()),
-        info,
-        bad_blobs,
-        END.to_vec(),
-    ]
-    .concat();
-    let parsed_bad = read_root(&bad_stream, PROFILE).unwrap();
-    assert!(
-        stage_prospect_save_state(&parsed_bad.tags, PROFILE, MAX_COMPONENT_BYTES, None).is_err()
-    );
+    let bad_recorders = [
+        recorder_element(
+            "/Script/Icarus.RocketRecorderComponent",
+            &tag(
+                "RocketRecorderVersion",
+                "StrProperty",
+                0,
+                &[0],
+                &string("bad"),
+            ),
+        ),
+        recorder_element(
+            "/Script/Icarus.ActorStateRecorderComponent",
+            &[dup_prop.clone(), dup_prop].concat(),
+        ),
+        recorder_element(
+            "/Script/Icarus.ActorStateRecorderComponent",
+            &tag(
+                "RecordedVersion",
+                "IntProperty",
+                1,
+                &[0],
+                &3_i32.to_le_bytes(),
+            ),
+        ),
+        recorder_element(
+            "/Script/Icarus.PlayerRecorderComponent",
+            &tag(
+                "PlayerCharacterID",
+                "StructProperty",
+                0,
+                &[string("PlayerCharacterID"), vec![0; 17]].concat(),
+                &[
+                    tag("PlayerID", "StrProperty", 0, &[0], &string("user-alpha")),
+                    tag("PlayerID", "StrProperty", 0, &[0], &string("user-alpha")),
+                    END.to_vec(),
+                ]
+                .concat(),
+            ),
+        ),
+        recorder_element(
+            "/Script/Icarus.PlayerRecorderComponent",
+            &tag(
+                "PlayerCharacterID",
+                "StructProperty",
+                0,
+                &[string("PlayerCharacterID"), vec![0; 17]].concat(),
+                &[
+                    tag(
+                        "UnmappedField",
+                        "IntProperty",
+                        0,
+                        &[0],
+                        &1_i32.to_le_bytes(),
+                    ),
+                    END.to_vec(),
+                ]
+                .concat(),
+            ),
+        ),
+        recorder_element(
+            "/Script/Icarus.DynamicRocketSpawnRecorderComponent",
+            &tag(
+                "SpawnRecord",
+                "StructProperty",
+                0,
+                &[string("RocketSpawnStateRecord"), vec![0; 17]].concat(),
+                &[
+                    tag("ChrSlot", "IntProperty", 0, &[0], &1_i32.to_le_bytes()),
+                    tag("ChrSlot", "IntProperty", 0, &[0], &2_i32.to_le_bytes()),
+                    END.to_vec(),
+                ]
+                .concat(),
+            ),
+        ),
+        recorder_element(
+            "/Script/Icarus.VoxelRecorderComponent",
+            &tag(
+                "VoxelSaveData",
+                "StructProperty",
+                0,
+                &[string("VoxelSaveData"), vec![0; 17]].concat(),
+                &[
+                    tag("bIsVoxelFullyMined", "BoolProperty", 0, &[1, 0], &[]),
+                    tag("bIsVoxelFullyMined", "BoolProperty", 0, &[0, 0], &[]),
+                    END.to_vec(),
+                ]
+                .concat(),
+            ),
+        ),
+    ];
+    for bad_rec in bad_recorders {
+        let bad_blobs = tag(
+            "StateRecorderBlobs",
+            "ArrayProperty",
+            0,
+            &[string("StructProperty"), vec![0]].concat(),
+            &[&1_i32.to_le_bytes(), shared(&bad_rec).as_slice()].concat(),
+        );
+        let bad_stream = [
+            tag("Version", "IntProperty", 0, &[0], &2_i32.to_le_bytes()),
+            info.clone(),
+            bad_blobs,
+            END.to_vec(),
+        ]
+        .concat();
+        let parsed_bad = read_root(&bad_stream, PROFILE).unwrap();
+        assert!(
+            stage_prospect_save_state(&parsed_bad.tags, PROFILE, MAX_COMPONENT_BYTES, None)
+                .is_err()
+        );
+    }
 }

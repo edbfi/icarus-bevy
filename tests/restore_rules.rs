@@ -6,8 +6,9 @@ use icarus_bevy::experimental::restore_rules::{
     DeployableRecordPlan, DeployableStitchPlan, DrillStitchCandidate, DrillStitchResolution,
     DynamicItemPropertyKind, EnzymeGeyserRecordPlan, EnzymeGeyserRestorePlan, FlodTileRecordPlan,
     FlodTileRestorePlan, InstancedLevelManagerRestorePlan, InventorySlotOverflowDisposition,
-    LegacyGunAmmoUpgrade, LobbyPrivacy, OrbitalExchangeTransferPlan, OwnerResolvePolicy,
-    OwnerResolveStep, PROSPECT_SAVE_STATE_CURRENT_VERSION, PlayerList, PlayerRecorderOwnerState,
+    ItemStateRecordPlan, LegacyGunAmmoUpgrade, LobbyPrivacy, NpcRecorderRespawnPlan,
+    OrbitalExchangeTransferPlan, OwnerResolvePolicy, OwnerResolveStep,
+    PROSPECT_SAVE_STATE_CURRENT_VERSION, PlayerList, PlayerRecorderOwnerState,
     PlayerRecorderRecordPlan, PlayerStateLifeRestore, PlayerStateRecordPlan,
     PrebuiltStructureRecordPlan, ProspectAssociatedMember, ProspectBlobDecodeOutcome,
     QuestManagerRecordPlan, QuestRecordPlan, RESTORED_INDEFINITE_MODIFIER_LIFETIME,
@@ -31,36 +32,38 @@ use icarus_bevy::experimental::restore_rules::{
     evaluate_deployable_record, evaluate_deployable_stitch, evaluate_drill_stitch,
     evaluate_enzyme_geyser_record, evaluate_enzyme_geyser_restore, evaluate_flod_record,
     evaluate_flod_tile_record, evaluate_flod_tile_restore, evaluate_instanced_level_manager_record,
-    evaluate_instanced_level_manager_restore, evaluate_legacy_gun_ammo_upgrade,
-    evaluate_modifier_state_restore, evaluate_orbital_exchange_transfer,
-    evaluate_owner_resolve_step, evaluate_player_group_subsystem_record,
-    evaluate_player_group_subsystem_restore, evaluate_player_recorder_record,
-    evaluate_player_state_life_restore, evaluate_player_state_record,
-    evaluate_prospect_blob_decode, evaluate_quest_manager_record, evaluate_quest_record,
-    evaluate_resource_deposit_record, evaluate_rocket_record, evaluate_rocket_spawn_record,
-    evaluate_setup_loaded_prospect_attempt, evaluate_spawn_blocker_transfer,
-    evaluate_spline_record, evaluate_spline_recorder_respawn, evaluate_tree_record,
-    evaluate_voxel_database_restore, evaluate_voxel_record, evaluate_weather_controller_record,
-    evaluate_weather_controller_restore, evaluate_weather_forecast_record,
-    evaluate_weather_forecast_restore, evaluate_world_boss_record, evaluate_world_talent_record,
-    evaluate_world_talent_stitch, filter_restored_cosmetic_armour_overrides,
-    migrate_prospect_save_state, names_match, normalize_prospect_name,
-    normalize_restored_modifier_lifetime, player_record_valid, prospect_ids_match,
-    record_prebuilt_structure_actors, record_trapped_character_guids, record_weather_event_elapsed,
-    recorded_level, recorder_restore_dispatch, recorder_transform_is_non_identity,
-    remaining_cooldown, replicated_prospect_game_time, resolve_cave_ai_class_name,
-    resolve_deployable_setup_variant_index, resolve_inventory_slot_restore,
-    resolve_item_recorder_database_guid, resolve_prospect_player_list,
-    resource_deposit_record_valid, restore_game_mode_exported_currencies,
-    restore_game_mode_mission_history, restore_world_boss_row_handles, restored_elapsed_seconds,
-    restored_next_meteor_shower_time, restored_weather_event_start_time, rocket_record_valid,
-    rocket_restore, should_auto_activate_respawned_drill,
-    should_drop_respawned_tree_recorder_on_resave, should_grant_deposit_map_icon_stat,
-    should_record_weather_event, should_restore_actor_transform,
-    should_try_fast_path_prebuilt_grid_restore, stitch, stitch_player_recorder_assigned_uids,
+    evaluate_instanced_level_manager_restore, evaluate_item_state_record,
+    evaluate_legacy_gun_ammo_upgrade, evaluate_modifier_state_restore,
+    evaluate_npc_recorder_respawn, evaluate_orbital_exchange_transfer, evaluate_owner_resolve_step,
+    evaluate_player_group_subsystem_record, evaluate_player_group_subsystem_restore,
+    evaluate_player_recorder_record, evaluate_player_state_life_restore,
+    evaluate_player_state_record, evaluate_prospect_blob_decode, evaluate_quest_manager_record,
+    evaluate_quest_record, evaluate_resource_deposit_record, evaluate_rocket_record,
+    evaluate_rocket_spawn_record, evaluate_setup_loaded_prospect_attempt,
+    evaluate_spawn_blocker_transfer, evaluate_spline_record, evaluate_spline_recorder_respawn,
+    evaluate_tree_record, evaluate_voxel_database_restore, evaluate_voxel_record,
+    evaluate_weather_controller_record, evaluate_weather_controller_restore,
+    evaluate_weather_forecast_record, evaluate_weather_forecast_restore,
+    evaluate_world_boss_record, evaluate_world_talent_record, evaluate_world_talent_stitch,
+    filter_restored_cosmetic_armour_overrides, migrate_prospect_save_state, names_match,
+    normalize_prospect_name, normalize_restored_modifier_lifetime, player_record_valid,
+    prospect_ids_match, record_prebuilt_structure_actors, record_trapped_character_guids,
+    record_weather_event_elapsed, recorded_level, recorder_restore_dispatch,
+    recorder_transform_is_non_identity, remaining_cooldown, replicated_prospect_game_time,
+    resolve_cave_ai_class_name, resolve_deployable_setup_variant_index,
+    resolve_inventory_slot_restore, resolve_item_recorder_database_guid,
+    resolve_prospect_player_list, resource_deposit_record_valid,
+    restore_game_mode_exported_currencies, restore_game_mode_mission_history,
+    restore_world_boss_row_handles, restored_elapsed_seconds, restored_next_meteor_shower_time,
+    restored_weather_event_start_time, rocket_record_valid, rocket_restore,
+    should_auto_activate_respawned_drill, should_drop_respawned_tree_recorder_on_resave,
+    should_grant_deposit_map_icon_stat, should_record_weather_event,
+    should_restore_actor_transform, should_try_fast_path_prebuilt_grid_restore, stitch,
+    stitch_character_parent_uid, stitch_player_recorder_assigned_uids,
     stitch_prebuilt_structure_actors, stitch_quest_actor_records, stitch_trapped_character_guids,
-    upgrade_actor_recorder_component_names, upright_rotation, upsert_recorded_variable,
-    validate_rocket_spawn_record, voxel_location_matches, voxel_record_valid,
+    transform_spline_point_positions, upgrade_actor_recorder_component_names, upright_rotation,
+    upsert_recorded_variable, validate_rocket_spawn_record, voxel_location_matches,
+    voxel_record_valid,
 };
 
 fn units(text: &str) -> Vec<u16> {
@@ -897,6 +900,74 @@ fn mounts_restore_upright() {
     let [x, y, z, w] = upright_rotation([0.3, -0.2, 0.5, 0.78]);
     assert_eq!((x, y), (0.0, 0.0));
     assert!((z * z + w * w - 1.0).abs() < 1e-6);
+
+    // C017 UIcarusCharacterRecorderComponent::Stitching (0x141446df0 / 0x141484cd0):
+    // scans SpawnedActors in order for the first AIcarusCharacter whose IcarusActorGUID (+0x564)
+    // equals ParentCharacterUID (+0x1c4) when ParentCharacterUID != -1.
+    let spawned_char_guids = [None, Some(10), Some(42), Some(42)];
+    assert_eq!(
+        stitch_character_parent_uid(false, true, 42, &spawned_char_guids),
+        None
+    );
+    assert_eq!(
+        stitch_character_parent_uid(true, false, 42, &spawned_char_guids),
+        None
+    );
+    assert_eq!(
+        stitch_character_parent_uid(true, true, -1, &spawned_char_guids),
+        None
+    );
+    assert_eq!(
+        stitch_character_parent_uid(true, true, 99, &spawned_char_guids),
+        None
+    );
+    assert_eq!(
+        stitch_character_parent_uid(true, true, 42, &spawned_char_guids),
+        Some(2)
+    );
+
+    // C017 UIcarusNPCRecorderComponent::RespawnOwner (0x1413cfe80 / 0x14140eab0):
+    // requires valid World and AISetupRowName, registers positive IcarusActorGUID (+0x140) on
+    // UAIStateRecorderSubsystem::BindActorGuid when present, and spawns with bNoFail = true
+    // and SpawnCollisionHandlingOverride = 1 (AlwaysSpawn).
+    assert_eq!(
+        evaluate_npc_recorder_respawn(false, true, "Mount_Moa", 50, Some(50)),
+        None
+    );
+    assert_eq!(
+        evaluate_npc_recorder_respawn(true, false, "None", 50, Some(50)),
+        None
+    );
+    assert_eq!(
+        evaluate_npc_recorder_respawn(true, true, "Mount_Moa", 0, Some(50)),
+        Some(NpcRecorderRespawnPlan {
+            ai_setup_row_name: "Mount_Moa",
+            registered_guid_in_subsystem: false,
+            spawn_icarus_actor_guid: -1,
+            b_no_fail: true,
+            collision_handling_override: 1,
+        })
+    );
+    assert_eq!(
+        evaluate_npc_recorder_respawn(true, true, "Mount_Moa", 50, None),
+        Some(NpcRecorderRespawnPlan {
+            ai_setup_row_name: "Mount_Moa",
+            registered_guid_in_subsystem: false,
+            spawn_icarus_actor_guid: 50,
+            b_no_fail: true,
+            collision_handling_override: 1,
+        })
+    );
+    assert_eq!(
+        evaluate_npc_recorder_respawn(true, true, "Mount_Moa", 50, Some(77)),
+        Some(NpcRecorderRespawnPlan {
+            ai_setup_row_name: "Mount_Moa",
+            registered_guid_in_subsystem: true,
+            spawn_icarus_actor_guid: 77,
+            b_no_fail: true,
+            collision_handling_override: 1,
+        })
+    );
 }
 
 #[test]
@@ -1771,10 +1842,51 @@ fn owner_resolve_step_attach_and_drill_auto_activate() {
     assert!(!should_try_fast_path_prebuilt_grid_restore(true, false));
     assert!(!should_try_fast_path_prebuilt_grid_restore(false, true));
 
-    // C021 UItemStateRecorderComponent::RespawnOwner (0x1418a7660 / 0x1418ac140).
+    // C021 UItemStateRecorderComponent::RespawnOwner (0x1418a7660 / 0x1418ac140) and
+    // RecordOwnerState (0x1418a3540 / 0x1418a8cc0).
     assert_eq!(resolve_item_recorder_database_guid(55, 77), 77);
     assert_eq!(resolve_item_recorder_database_guid(0, 77), -1);
     assert_eq!(resolve_item_recorder_database_guid(-5, 77), -1);
+    assert_eq!(
+        evaluate_item_state_record(
+            false,
+            1,
+            "Construct_Params_A",
+            "Item_Bench_Anvil",
+            &[(5, 2), (6, 1500)],
+            &[("Stat_Durability", 100)],
+            &["Alteration_A"],
+            &[("Living_Slot_1", 450)],
+            [1_u32, 2, 3, 4],
+            99,
+        ),
+        None
+    );
+    assert_eq!(
+        evaluate_item_state_record(
+            true,
+            1,
+            "Construct_Params_A",
+            "Item_Bench_Anvil",
+            &[(5, 2), (6, 1500)],
+            &[("Stat_Durability", 100)],
+            &["Alteration_A"],
+            &[("Living_Slot_1", 450)],
+            [1_u32, 2, 3, 4],
+            99,
+        ),
+        Some(ItemStateRecordPlan {
+            spawned_context: 1,
+            construction_parameters: "Construct_Params_A",
+            static_item_data_row_name: "Item_Bench_Anvil",
+            dynamic_data: vec![(5, 2), (6, 1500)],
+            stats: vec![("Stat_Durability", 100)],
+            alterations: vec!["Alteration_A"],
+            living_item_slots: vec![(450, "Living_Slot_1")],
+            database_guid: [1_u32, 2, 3, 4],
+            item_owner_lookup_id: 99,
+        })
+    );
 
     // C001/C023 UActorStateRecorderComponent::UpdateOwnerToDatabaseState (0x1418b6ed0 / 0x1418ba040).
     assert!(should_restore_actor_transform(true));
@@ -2075,8 +2187,8 @@ fn owner_resolve_step_attach_and_drill_auto_activate() {
         })
     );
 
-    // C032 USplineRecorderComponent::RecordOwnerState (0x1418e95f0 / 0x1418e9930) and
-    // RespawnOwner (0x1418ed690 / 0x1418ee060).
+    // C032 USplineRecorderComponent::RecordOwnerState (0x1418e95f0 / 0x1418e9930),
+    // RespawnOwner (0x1418ed690 / 0x1418ee060), and ApplyRecorderTransform (0x1418c5cd0 / 0x1418c7970).
     assert_eq!(evaluate_spline_record(false, "Spline_Net_A", 77), None);
     assert_eq!(
         evaluate_spline_record(true, "Spline_Net_A", 77),
@@ -2103,6 +2215,23 @@ fn owner_resolve_step_attach_and_drill_auto_activate() {
             apply_spline_network_state: false,
         }
     );
+    let mut spline_pts = [[1.0_f32, 0.0, 0.0], [0.0, 2.0, 3.0]];
+    // 90 deg yaw around +Z (`[0, 0, sin(pi/4), cos(pi/4)]`), scale `[2, 3, 4]`, translation `[10, 20, 30]`.
+    let q_z90 = [
+        0.0_f32,
+        0.0,
+        std::f32::consts::FRAC_1_SQRT_2,
+        std::f32::consts::FRAC_1_SQRT_2,
+    ];
+    transform_spline_point_positions(q_z90, [10.0, 20.0, 30.0], [2.0, 3.0, 4.0], &mut spline_pts);
+    // Point 0: scale(1,0,0) = (2,0,0) -> rot_z90 = (0,2,0) -> + (10,20,30) = (10,22,30).
+    assert!((spline_pts[0][0] - 10.0).abs() < 1e-5);
+    assert!((spline_pts[0][1] - 22.0).abs() < 1e-5);
+    assert!((spline_pts[0][2] - 30.0).abs() < 1e-5);
+    // Point 1: scale(0,2,3) = (0,6,12) -> rot_z90 = (-6,0,12) -> + (10,20,30) = (4,20,42).
+    assert!((spline_pts[1][0] - 4.0).abs() < 1e-5);
+    assert!((spline_pts[1][1] - 20.0).abs() < 1e-5);
+    assert!((spline_pts[1][2] - 42.0).abs() < 1e-5);
 
     // C033 UTreeRecorderComponent::RespawnOwner (0x1418ed770 / 0x1418ee140) and
     // RecordOwnerState (0x1418e9820 / 0x1418e9b60):

@@ -1077,6 +1077,85 @@ pub const fn resolve_item_recorder_database_guid(icarus_actor_guid: i32, bound_g
     }
 }
 
+/// Values recorded by `UItemStateRecorderComponent::RecordOwnerState` (`C021`,
+/// `0x1418a3540` server / `0x1418a8cc0` client, inherited by `C009`
+/// `UDeployableRecorderComponent` and its subclasses) after
+/// `UActorStateRecorderComponent::RecordOwnerState` (`0x1418a0170` server /
+/// `0x1418a5b60` client) (F-646, F-650, F-744).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ItemStateRecordPlan<R, G, C> {
+    /// `SpawnedContext` (`AIcarusItem + 0x4f8 -> recorder + 0x220`).
+    pub spawned_context: u8,
+    /// `ConstructionParameters` (`AIcarusItem + 0x4d0..0x4f5 -> recorder + 0x228..0x24d`).
+    pub construction_parameters: C,
+    /// `StaticItemDataRowName` (`FItemData::ItemStaticData.GetRowName() -> recorder + 0x1c0`).
+    pub static_item_data_row_name: R,
+    /// `DynamicData` (`recorder + 0x1e0`, stride `8` B: `(index, value)`),
+    /// converted from `FItemData::ItemDynamicData` (`+0x60`, stride `8` B:
+    /// `(property_type: u8, value: i32)`) by zero-extending `property_type`
+    /// to `i32`.
+    pub dynamic_data: Vec<(i32, i32)>,
+    /// `Stats` (`recorder + 0x1f0`, stride `0x0c` B: `(stat_row_name, value)`),
+    /// converted from `FItemData::CustomProperties.Stats` (`+0x70`, stride
+    /// `0x1c` B).
+    pub stats: Vec<(R, i32)>,
+    /// `Alterations` (`recorder + 0x200`, stride `8` B: `alteration_row_name`),
+    /// converted from `FItemData::CustomProperties.Alterations` (`+0x80`,
+    /// stride `0x18` B).
+    pub alterations: Vec<R>,
+    /// `LivingItemSlots` (`recorder + 0x210`, `DA04`, stride `0x0c` B:
+    /// `(exp, slot_row_name)`), converted from
+    /// `FItemData::CustomProperties.LivingItemSlots` (`+0x90`, stride `0x18` B:
+    /// `(slot_row_name, exp)`).
+    pub living_item_slots: Vec<(i32, R)>,
+    /// `DatabaseGUID` (`FItemData + 0x1b8 -> recorder + 0x1c8`, `16` B `FGuid`).
+    pub database_guid: G,
+    /// `ItemOwnerLookupId` (`FItemData + 0x1c8 -> recorder + 0x1d8`).
+    pub item_owner_lookup_id: i32,
+}
+
+/// Evaluates `UItemStateRecorderComponent::RecordOwnerState` (`C021`,
+/// `0x1418a3540` server / `0x1418a8cc0` client) (F-646, F-650, F-744).
+///
+/// Returns `None` when the owner is null, not an `AIcarusItem` (`0x141be62c0`
+/// server), or pending kill.
+#[allow(clippy::too_many_arguments)]
+pub fn evaluate_item_state_record<R: Clone, G, C>(
+    owner_is_valid_icarus_item: bool,
+    spawned_context: u8,
+    construction_parameters: C,
+    static_item_data_row_name: R,
+    item_dynamic_data: &[(u8, i32)],
+    custom_stats: &[(R, i32)],
+    custom_alterations: &[R],
+    custom_living_item_slots: &[(R, i32)],
+    database_guid: G,
+    item_owner_lookup_id: i32,
+) -> Option<ItemStateRecordPlan<R, G, C>> {
+    if !owner_is_valid_icarus_item {
+        return None;
+    }
+    let dynamic_data = item_dynamic_data
+        .iter()
+        .map(|&(prop_type, value)| (i32::from(prop_type), value))
+        .collect();
+    let living_item_slots = custom_living_item_slots
+        .iter()
+        .map(|(slot_row, exp)| (*exp, slot_row.clone()))
+        .collect();
+    Some(ItemStateRecordPlan {
+        spawned_context,
+        construction_parameters,
+        static_item_data_row_name,
+        dynamic_data,
+        stats: custom_stats.to_vec(),
+        alterations: custom_alterations.to_vec(),
+        living_item_slots,
+        database_guid,
+        item_owner_lookup_id,
+    })
+}
+
 /// Whether `UActorStateRecorderComponent::UpdateOwnerToDatabaseState`
 /// (`0x1418b6ed0` server / `0x1418ba040` client, inherited by `C023`
 /// `UOilGeyserRecorderComponent`) calls `AActor::SetActorTransform`
@@ -2299,6 +2378,38 @@ pub const fn evaluate_spline_recorder_respawn(
     }
 }
 
+/// Transforms each `FRecordedSplinePoint::Position` (`+0x00..0x0c`, stride
+/// `0x50` B in `SplineNetworkSaveData.Points` at `recorder + 0x238`, count
+/// `+0x240`) in place by the context `FTransform` (`v' = q * (scale * v) +
+/// translation`) as `USplineRecorderComponent::ApplyRecorderTransform` (`C032`,
+/// `vftable + 0x4b0`: `0x1418c5cd0` server / `0x1418c7970` client) does after
+/// `UActorStateRecorderComponent::ApplyRecorderTransform` (`0x141887d20`
+/// server / `0x141890ec0` client) (F-716, F-727).
+pub fn transform_spline_point_positions(
+    rotation: [f32; 4],
+    translation: [f32; 3],
+    scale: [f32; 3],
+    positions: &mut [[f32; 3]],
+) {
+    let [qx, qy, qz, qw] = rotation;
+    for pos in positions {
+        let sx = scale[0] * pos[0];
+        let sy = scale[1] * pos[1];
+        let sz = scale[2] * pos[2];
+        let tx = 2.0 * (qy * sz - qz * sy);
+        let ty = 2.0 * (qz * sx - qx * sz);
+        let tz = 2.0 * (qx * sy - qy * sx);
+        let rx = sx + qw * tx + (qy * tz - qz * ty);
+        let ry = sy + qw * ty + (qz * tx - qx * tz);
+        let rz = sz + qw * tz + (qx * ty - qy * tx);
+        *pos = [
+            rx + translation[0],
+            ry + translation[1],
+            rz + translation[2],
+        ];
+    }
+}
+
 /// Whether a respawned `C033` (`UTreeRecorderComponent::RespawnOwner` at
 /// `0x1418ed770` server / `0x1418ee140` client -> `ATreePrefab::CreateTreeRuntime`
 /// `0x141717f90` server / `0x141727e20` client) unregisters its recorder via
@@ -2806,6 +2917,89 @@ pub fn upright_rotation([x, y, z, w]: [f32; 4]) -> [f32; 4] {
     let yaw = (2.0 * (w * z + x * y)).atan2(1.0 - 2.0 * (y * y + z * z));
     let (sin, cos) = (yaw / 2.0).sin_cos();
     [0.0, 0.0, sin, cos]
+}
+
+/// Evaluates `UIcarusCharacterRecorderComponent::Stitching` (`vftable + 0x468`:
+/// `0x141446df0` server / `0x141484cd0` client, inherited by `C017`
+/// `UIcarusMountCharacterRecorderComponent`) (F-651, F-741).
+///
+/// When `parent_character_uid != -1` (`[this + 0x1c4] != -1`), `world_present`
+/// (`GetWorld()` non-null), and `owner_is_valid_character` (`GetOwner()` is a
+/// non-null `AIcarusCharacter` `0x141bb51c0` server), scans `SpawnedActors` in
+/// order and returns the index of the first `AIcarusCharacter` whose
+/// `IcarusActorGUID` (`[actor + 0x564]`) equals `parent_character_uid` so it
+/// can be assigned to `owner->ParentCharacter` (`[owner + 0x738]`).
+pub fn stitch_character_parent_uid(
+    owner_is_valid_character: bool,
+    world_present: bool,
+    parent_character_uid: i32,
+    spawned_character_guids: &[Option<i32>],
+) -> Option<usize> {
+    if !owner_is_valid_character || !world_present || parent_character_uid == -1 {
+        return None;
+    }
+    spawned_character_guids
+        .iter()
+        .position(|guid| *guid == Some(parent_character_uid))
+}
+
+/// Spawn parameters evaluated by `UIcarusNPCRecorderComponent::RespawnOwner`
+/// (`vftable + 0x458`: `0x1413cfe80` server / `0x14140eab0` client, inherited
+/// by `C017` `UIcarusMountCharacterRecorderComponent`) (F-651, F-741).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct NpcRecorderRespawnPlan<R> {
+    /// Validated `AISetupRowName` (`recorder + 0x1d8`) passed to
+    /// `UAIStateRecorderSubsystem::SpawnAICharacter` (`0x1413db500` server).
+    pub ai_setup_row_name: R,
+    /// Whether `(icarus_actor_guid, recorder)` was registered on
+    /// `UAIStateRecorderSubsystem::BindActorGuid` (`0x1413dec50` server)
+    /// (`icarus_actor_guid > 0 && subsystem_bound_guid.is_some()`).
+    pub registered_guid_in_subsystem: bool,
+    /// Resolved `IcarusActorGUID` passed into `SpawnAICharacter`: `-1`
+    /// (`0xffffffff`) when `icarus_actor_guid <= 0`, `bound_guid` when
+    /// `icarus_actor_guid > 0` and `subsystem_bound_guid == Some(bound_guid)`,
+    /// or `icarus_actor_guid` when `icarus_actor_guid > 0` and the subsystem is
+    /// absent (`None`).
+    pub spawn_icarus_actor_guid: i32,
+    /// `bNoFail` (`[rsp + 0x28] = 1`) passed to `SpawnAICharacter`.
+    pub b_no_fail: bool,
+    /// `ESpawnActorCollisionHandlingMethod` (`[rsp + 0x20] = 1`, `AlwaysSpawn`)
+    /// passed to `SpawnAICharacter`.
+    pub collision_handling_override: u8,
+}
+
+/// Evaluates `UIcarusNPCRecorderComponent::RespawnOwner` (`vftable + 0x458`:
+/// `0x1413cfe80` server / `0x14140eab0` client, inherited by `C017`
+/// `UIcarusMountCharacterRecorderComponent`) (F-651, F-741).
+///
+/// Returns `None` when `GetWorld()` is null (`!world_present`) or the
+/// `FAISetupRowHandle` built from `AISetupRowName` (`+0x1d8`, `0x1414d3260`)
+/// fails `FRowHandle::IsValid` (`0x143da9940` server).
+pub const fn evaluate_npc_recorder_respawn<R: Copy>(
+    world_present: bool,
+    ai_setup_row_is_valid: bool,
+    ai_setup_row_name: R,
+    icarus_actor_guid: i32,
+    subsystem_bound_guid: Option<i32>,
+) -> Option<NpcRecorderRespawnPlan<R>> {
+    if !world_present || !ai_setup_row_is_valid {
+        return None;
+    }
+    let (registered_guid_in_subsystem, spawn_icarus_actor_guid) = if icarus_actor_guid > 0 {
+        match subsystem_bound_guid {
+            Some(bound) => (true, bound),
+            None => (false, icarus_actor_guid),
+        }
+    } else {
+        (false, -1)
+    };
+    Some(NpcRecorderRespawnPlan {
+        ai_setup_row_name,
+        registered_guid_in_subsystem,
+        spawn_icarus_actor_guid,
+        b_no_fail: true,
+        collision_handling_override: 1,
+    })
 }
 
 /// The world player list that validates player, player-state and rocket
