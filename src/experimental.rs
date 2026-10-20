@@ -29,6 +29,7 @@ pub mod sequencing;
 pub mod struct_array;
 pub mod tag_dictionary;
 pub mod tagged;
+pub mod typed_value;
 
 /// Reflected CRC-32 of zero-extended UTF-16 units in little-endian order.
 ///

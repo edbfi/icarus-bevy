@@ -81,6 +81,14 @@ enum Command {
             conflicts_with_all = ["inner_tags", "recorders", "stage_check"]
         )]
         preserve_check: bool,
+        /// Stage the prospect, then type every recorder body's values and
+        /// require each to re-encode exactly; reports typed and uninterpreted
+        /// leaf counts per class pseudonym without importing or writing state.
+        #[arg(
+            long,
+            conflicts_with_all = ["inner_tags", "recorders", "stage_check", "preserve_check"]
+        )]
+        typed_check: bool,
     },
     /// Seed a NEW native world whose only content is the lossless, value-opaque
     /// preservation of a supplied prospect. Nothing is interpreted or imported;
@@ -136,11 +144,14 @@ fn execute(cli: Cli) -> Result<()> {
             stage_check,
             expect_prospect_name,
             preserve_check,
+            typed_check,
         } => {
             // Check the opened handle: a path can change to a FIFO after a
             // regular-file precheck. Normal regular-file symlinks still work.
             let file = open_regular_source(&source)?;
-            let output = if preserve_check {
+            let output = if typed_check {
+                serde_json::to_string(&icarus_bevy::prospect::typed_check(file)?)?
+            } else if preserve_check {
                 serde_json::to_string(&preserve_check_report(file)?)?
             } else if stage_check {
                 serde_json::to_string(&icarus_bevy::prospect::stage_prospect(

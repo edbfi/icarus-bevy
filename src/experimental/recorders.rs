@@ -750,6 +750,21 @@ pub fn lookup_recorder_ctor_defaults(class_units: &[u16]) -> Option<RecorderCtor
     None
 }
 
+/// The project pseudonym (`C001..C038` blob classes, `N001..N027` others) of a
+/// `/Script/Icarus.*RecorderComponent` UTF-16 class path, or `None` if the path
+/// is not one of the 65 registered classes. Pseudonyms keep reports free of
+/// supplied class strings.
+pub fn recorder_class_label(class_units: &[u16]) -> Option<String> {
+    let crc = checksum_utf16(class_units, 0);
+    if let Some(index) = BLOB_CLASS_UTF16_CRCS.iter().position(|&entry| entry == crc) {
+        return Some(format!("C{:03}", index + 1));
+    }
+    NON_BLOB_CLASS_UTF16_CRCS
+        .iter()
+        .position(|&entry| entry == crc)
+        .map(|index| format!("N{:03}", index + 1))
+}
+
 struct StagedRecorderEval {
     is_valid: bool,
     was_reset_rocket_spawn: bool,
