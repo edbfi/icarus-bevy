@@ -76,12 +76,15 @@ F-745, F-748, F-749, F-751); force relevance compares with the connection's
 unprocessed entry regardless of relevance (F-774). A native scheduling stage
 drives these evaluators over 2,626 supplied actor positions; with UE default
 parameters it saturates its budget in 0.6 to 5.4 ms per frame for 1 to 8
-viewers (F-775).
+viewers (F-775). Export checksums are class network checksums computed natively
+(F-776), reproducing 77 of 79 captured values (F-777; U-067), and the
+original's first post-Join bunch opens the PlayerController channel (F-778).
 
 ## Open
 
+- Two Blueprint class checksums with user-struct arrays (U-067).
 - Authenticated runtime relevancy and priority exercise (U-038).
 
 ## Artifacts
 
-M-420..M-449, M-455..M-470, M-570..M-576, M-581..M-588, M-600..M-605, M-707..M-717, M-720, M-728..M-748, M-776, M-777, M-782, M-794, M-795, M-797..M-799, M-801, M-802, M-804, M-805, M-807, M-813..M-816.
+M-420..M-449, M-455..M-470, M-570..M-576, M-581..M-588, M-600..M-605, M-707..M-717, M-720, M-728..M-748, M-776, M-777, M-782, M-794, M-795, M-797..M-799, M-801, M-802, M-804, M-805, M-807, M-813..M-818.

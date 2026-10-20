@@ -16,7 +16,9 @@ Address pairs are server / client.
 ## Confirmed
 
 - NetGUID references and export flags: F-572; checksum placement on the wire:
-  F-692.
+  F-692. Object exports carry the class network checksum of F-776
+  (`experimental::class_checksum`); package and level exports carry `0`
+  (F-777, F-778).
 - Gameplay-tag net index (F-702; U-065 resolved): `ConstructGameplayTagTree`
   builds the tree; `ConstructNetIndex` sorts nodes
   by `GetAllNodes` + `FName::LexicalLess`, sets `InvalidTagNetIndex = N + 1`,
