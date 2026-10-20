@@ -1446,6 +1446,16 @@ impl<'a> Decoder<'a> {
                     ) {
                         Ok(refs) => {
                             self.stats.exports.codec_reader_parsed += 1;
+                            // Private detail: the exact export bunch, for native
+                            // composition tests (paths stay in the detail file).
+                            self.write_detail(json!({"kind":"export_bunch",
+                                "datagram":arrival.datagram, "channel":header.channel_index,
+                                "partial":header.partial, "reliable":header.reliable,
+                                "open":header.open, "payload_bits":arrival.bunch.payload.bit_len(),
+                                "guids":refs.iter().map(|reference| reference.guid).collect::<Vec<_>>(),
+                                "refs":refs.iter().map(|reference| reference.summary()).collect::<Vec<_>>(),
+                                "payload_hex":arrival.bunch.payload.bytes().iter()
+                                    .map(|byte| format!("{byte:02x}")).collect::<String>()}))?;
                             if self
                                 .package_map
                                 .encode_export_bunch_payload(&refs, &actor_codec(true))
@@ -1901,6 +1911,52 @@ impl<'a> Decoder<'a> {
                             "payload_bits": block.payload.bit_len(), "handles": handles})
                     })
                     .collect();
+                // Private detail: values the native composer must reproduce.
+                let value_json = |value: &icarus_bevy::experimental::rep_layout::RepValue| {
+                    use icarus_bevy::experimental::rep_layout::RepValue;
+                    match value {
+                        RepValue::Byte(byte) => json!({"byte": byte}),
+                        RepValue::Bool(flag) => json!({"bool": flag}),
+                        RepValue::Object(reference) => json!({"object": reference.guid}),
+                        RepValue::Vector(words) => json!({"vector_bits": words}),
+                        other => json!({"kind": format!("{other:?}")}),
+                    }
+                };
+                let values: Vec<_> = pc_body
+                    .blocks
+                    .iter()
+                    .map(|block| {
+                        let target = match &block.target {
+                            BlockTarget::Actor => json!("actor"),
+                            BlockTarget::SubObject { object, class } => json!({
+                                "object": object.guid,
+                                "class": format!("{class:?}").chars().take(40).collect::<String>()}),
+                        };
+                        let commands = match block.target {
+                            BlockTarget::Actor => {
+                                schema_commands("AIcarusPlayerControllerSurvival", &self.profile)
+                            }
+                            BlockTarget::SubObject { .. } => {
+                                icarus_bevy::experimental::rep_layout::actor_component_rep_layout()
+                            }
+                        };
+                        let entries = block.has_rep_layout.then(|| {
+                            read_rep_properties(&mut block.payload.reader(), &commands, &rep_codec())
+                                .map(|stream| {
+                                    stream
+                                        .entries
+                                        .iter()
+                                        .map(|entry| json!([entry.handle, value_json(&entry.value)]))
+                                        .collect::<Vec<_>>()
+                                })
+                                .map_err(|error| format!("{error:#}"))
+                        });
+                        json!({"target": target, "has_rep_layout": block.has_rep_layout,
+                            "payload_bits": block.payload.bit_len(), "entries": entries})
+                    })
+                    .collect();
+                self.write_detail(json!({"kind":"pc_open_values", "datagram":arrival.datagram,
+                    "spawn": format!("{:?}", pc_body.spawn), "blocks": values}))?;
                 self.write_detail(json!({"kind":"pc_open", "datagram":arrival.datagram,
                     "channel":bunch.header.channel_index, "archetype": arch,
                     "net_player_index": pc_body.net_player_index,

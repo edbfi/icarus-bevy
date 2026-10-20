@@ -1,0 +1,402 @@
+//! Native composition of the server's first post-Join NetGUID exports.
+//!
+//! The original's first bunch after Join opens the PlayerController channel;
+//! its first partial part carries an export prefix (`F-778`):
+//!
+//! - the archetype (`Default__<Class>_C`, its class network checksum) with its
+//!   package as outer (checksum `0`) and the null GUID above that;
+//! - the level (`PersistentLevel`, world, map package), each `no_load`, `0`;
+//! - every replicated component in serialization order: a dynamic GUID with
+//!   its name, `no_load` and its class checksum, whose outer is the actor's
+//!   dynamic GUID written without a path but with `no_load` and the bare
+//!   checksum flag (`F-692`).
+//!
+//! GUIDs follow a deterministic policy that reproduces the capture's numbering:
+//! static GUIDs are odd and assigned leaf-first along an outer chain, dynamic
+//! GUIDs are even and assigned in serialization order, and each connection
+//! exports a given static path once. Identifiers and checksums are caller
+//! data (per release); nothing here reads original files. Checksums come from
+//! [`super::class_checksum`].
+use std::collections::{BTreeMap, BTreeSet};
+
+use anyhow::{Context, Result};
+
+use super::actor_channel::{
+    ActorChannelCodec, BlockTarget, ContentBlock, DynamicSpawn, ExportPath, GuidExport, NetGuidRef,
+    PlayerControllerOpenBunchBody, SpawnRecord, SpawnVector, SubObjectClass, write_export_prefix,
+};
+use super::control_messages::ArchiveText;
+use super::packet::{BitWriter, Payload};
+use super::rep_layout::{
+    PropertyStream, RepCommand, RepEntry, RepLayoutCodec, RepValue, encode_rep_properties,
+};
+
+/// One segment of a static object's outer chain, leaf first.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PathSegment {
+    pub path: String,
+    /// The class network checksum for objects; `0` for packages and levels.
+    pub checksum: u32,
+    pub no_load: bool,
+}
+
+impl PathSegment {
+    pub fn new(path: &str, checksum: u32, no_load: bool) -> Self {
+        Self {
+            path: path.to_owned(),
+            checksum,
+            no_load,
+        }
+    }
+}
+
+/// What a component contributes to the open body (release data, F-778).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub enum ComponentBlock {
+    /// No content block (referenced by property only).
+    #[default]
+    None,
+    /// A stably named subobject block without properties.
+    CreateOnly,
+    /// A stably named subobject block with these `UActorComponent` bool handles.
+    RepBools(Vec<(u32, bool)>),
+}
+
+/// A replicated component of the PlayerController, in serialization order.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ComponentExport {
+    pub name: String,
+    pub checksum: u32,
+    pub block: ComponentBlock,
+}
+
+/// Release-specific identifiers for the PlayerController open.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PlayerControllerProfile {
+    /// `Default__<Class>_C`, then its package.
+    pub archetype: Vec<PathSegment>,
+    /// `PersistentLevel`, the world, then the map package.
+    pub level: Vec<PathSegment>,
+    pub components: Vec<ComponentExport>,
+}
+
+/// Driver-wide NetGUID assignment, shared by every connection.
+#[derive(Clone, Debug, Default)]
+pub struct NetGuidCache {
+    static_index: u32,
+    dynamic_index: u32,
+    statics: BTreeMap<Vec<String>, u32>,
+}
+
+/// Which GUIDs one connection has already received with their paths.
+#[derive(Clone, Debug, Default)]
+pub struct ConnectionExports {
+    exported: BTreeSet<u32>,
+}
+
+impl ConnectionExports {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn contains(&self, guid: u32) -> bool {
+        self.exported.contains(&guid)
+    }
+}
+
+/// GUIDs assigned while composing a PlayerController open.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PlayerControllerGuids {
+    pub actor: u32,
+    pub archetype: u32,
+    pub level: u32,
+    pub player_state: u32,
+    pub components: Vec<u32>,
+}
+
+impl NetGuidCache {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Next dynamic GUID (even, from 2).
+    pub fn assign_dynamic(&mut self) -> u32 {
+        self.dynamic_index += 1;
+        self.dynamic_index << 1
+    }
+
+    /// The static GUID of the leaf of `chain` (leaf first), assigning
+    /// unassigned segments leaf-first (odd, from 3).
+    pub fn assign_static(&mut self, chain: &[PathSegment]) -> u32 {
+        let mut leaf = 0;
+        for depth in 0..chain.len() {
+            let key: Vec<String> = chain[depth..].iter().map(|s| s.path.clone()).collect();
+            let guid = match self.statics.get(&key) {
+                Some(guid) => *guid,
+                None => {
+                    self.static_index += 1;
+                    let guid = (self.static_index << 1) | 1;
+                    self.statics.insert(key, guid);
+                    guid
+                }
+            };
+            if depth == 0 {
+                leaf = guid;
+            }
+        }
+        leaf
+    }
+
+    /// The reference for a static chain: a full export (with outers) the first
+    /// time `exports`' connection sees the leaf, a plain reference afterwards.
+    pub fn export_static(
+        &mut self,
+        exports: &mut ConnectionExports,
+        chain: &[PathSegment],
+    ) -> Result<NetGuidRef> {
+        let guid = self.assign_static(chain);
+        if !exports.exported.insert(guid) {
+            return Ok(NetGuidRef::plain(guid));
+        }
+        let segment = chain.first().context("empty static chain")?;
+        let outer = if chain.len() > 1 {
+            self.export_static(exports, &chain[1..])?
+        } else {
+            NetGuidRef::null()
+        };
+        Ok(NetGuidRef {
+            guid,
+            export: Some(GuidExport {
+                no_load: segment.no_load,
+                path: Some(ExportPath {
+                    outer: Box::new(outer),
+                    path: ArchiveText::text(&segment.path)?,
+                }),
+                checksum: Some(segment.checksum),
+                bare_checksum_flag: false,
+            }),
+        })
+    }
+
+    /// A component (subobject) export under a dynamic actor GUID.
+    pub fn export_subobject(
+        &mut self,
+        exports: &mut ConnectionExports,
+        actor: u32,
+        component: &ComponentExport,
+    ) -> Result<(u32, NetGuidRef)> {
+        let guid = self.assign_dynamic();
+        exports.exported.insert(guid);
+        let outer = NetGuidRef {
+            guid: actor,
+            export: Some(GuidExport {
+                no_load: true,
+                path: None,
+                checksum: None,
+                bare_checksum_flag: true,
+            }),
+        };
+        let reference = NetGuidRef {
+            guid,
+            export: Some(GuidExport {
+                no_load: true,
+                path: Some(ExportPath {
+                    outer: Box::new(outer),
+                    path: ArchiveText::text(&component.name)?,
+                }),
+                checksum: Some(component.checksum),
+                bare_checksum_flag: false,
+            }),
+        };
+        Ok((guid, reference))
+    }
+
+    /// Register the level chain at world start, as the original does before
+    /// any player joins.
+    pub fn register_level(&mut self, level: &[PathSegment]) -> u32 {
+        self.assign_static(level)
+    }
+
+    /// Compose the export references of the PlayerController open in the
+    /// original's serialization order: actor, archetype, level, the player
+    /// state (dynamic, not exported), then the components.
+    pub fn player_controller_exports(
+        &mut self,
+        exports: &mut ConnectionExports,
+        profile: &PlayerControllerProfile,
+    ) -> Result<(PlayerControllerGuids, Vec<NetGuidRef>)> {
+        let actor = self.assign_dynamic();
+        let archetype_ref = self.export_static(exports, &profile.archetype)?;
+        let level_ref = self.export_static(exports, &profile.level)?;
+        let player_state = self.assign_dynamic();
+        let mut references = vec![archetype_ref.clone(), level_ref.clone()];
+        let mut components = Vec::with_capacity(profile.components.len());
+        for component in &profile.components {
+            let (guid, reference) = self.export_subobject(exports, actor, component)?;
+            components.push(guid);
+            references.push(reference);
+        }
+        Ok((
+            PlayerControllerGuids {
+                actor,
+                archetype: archetype_ref.guid,
+                level: level_ref.guid,
+                player_state,
+                components,
+            },
+            references,
+        ))
+    }
+}
+
+/// Encode an export-only prefix (`ExportNetGUIDHeader` + `ExportNetGUID`).
+pub fn encode_exports(references: &[NetGuidRef], codec: &ActorChannelCodec) -> Result<Payload> {
+    let mut writer = BitWriter::new();
+    write_export_prefix(&mut writer, references, codec)?;
+    Ok(Payload::from_writer(writer))
+}
+
+/// `WritePackedVector<10, 24>`: each component rounded at a scale of 10; the
+/// bit count is `CeilLogTwo(1 + max |v|) - 1` (capped at 24), biased by
+/// `1 << (bits + 1)` (F-571, F-573).
+pub fn quantize_spawn_vector(value: [f32; 3]) -> anyhow::Result<SpawnVector> {
+    anyhow::ensure!(
+        value.iter().all(|v| v.is_finite()),
+        "spawn vector must be finite"
+    );
+    let scaled = value.map(|v| (v * 10.0 + 0.5).floor() as i64);
+    let max = scaled.iter().map(|v| v.unsigned_abs()).max().unwrap_or(0);
+    // Bits needed for max |v|, i.e. CeilLogTwo(1 + max); checked before any cast.
+    let ceil_log2 = 64 - max.leading_zeros();
+    anyhow::ensure!(
+        ceil_log2 <= 24,
+        "spawn vector exceeds the 24-bit packed range"
+    );
+    let bits = ceil_log2.max(1) - 1;
+    let bias = 1i64 << (bits + 1);
+    let components = scaled.map(|v| (v + bias) as u32);
+    Ok(SpawnVector::Quantized { bits, components })
+}
+
+/// Server-chosen values of a PlayerController open (F-778).
+#[derive(Clone, Debug, PartialEq)]
+pub struct PlayerControllerOpenState {
+    pub spawn_location: [f32; 3],
+    pub net_player_index: u8,
+    /// `ENetRole` as seen by the owning client (`ROLE_AutonomousProxy` = 2).
+    pub remote_role: u8,
+    /// `ROLE_Authority` = 3.
+    pub role: u8,
+}
+
+/// Handles of the PlayerController layout this composer writes (F-778).
+const HANDLE_REMOTE_ROLE: u32 = 5;
+const HANDLE_ROLE: u32 = 14;
+const HANDLE_PLAYER_STATE: u32 = 16;
+const HANDLE_SPAWN_LOCATION: u32 = 19;
+/// The first `COMPONENT_HANDLES` components (`BackendProxyComponent`,
+/// `PlayerDataComponent`, `BestiaryManagerComponent` in 3.0.31) are also
+/// referenced by actor properties; later components only get their own
+/// export and block (F-778).
+const HANDLE_FIRST_COMPONENT: u32 = 22;
+const COMPONENT_HANDLES: usize = 3;
+
+fn entry(handle: u32, value: RepValue) -> RepEntry {
+    RepEntry {
+        handle,
+        checksum: None,
+        value,
+    }
+}
+
+/// Compose the PlayerController open body: spawn record, `NetPlayerIndex`,
+/// the actor's initial properties and the component blocks, using `profile`
+/// for component block kinds and the caller's rep layouts.
+pub fn compose_player_controller_open_body(
+    guids: &PlayerControllerGuids,
+    profile: &PlayerControllerProfile,
+    state: &PlayerControllerOpenState,
+    actor_layout: &[RepCommand],
+    component_layout: &[RepCommand],
+    codec: &RepLayoutCodec,
+) -> Result<PlayerControllerOpenBunchBody> {
+    anyhow::ensure!(
+        guids.components.len() == profile.components.len(),
+        "component GUIDs and profile components differ in count"
+    );
+    anyhow::ensure!(
+        profile.components.len() >= COMPONENT_HANDLES,
+        "the PlayerController references {COMPONENT_HANDLES} components by property"
+    );
+    let spawn = SpawnRecord {
+        actor: NetGuidRef::plain(guids.actor),
+        dynamic: Some(DynamicSpawn {
+            archetype: NetGuidRef::plain(guids.archetype),
+            level: Some(NetGuidRef::plain(guids.level)),
+            location: Some(quantize_spawn_vector(state.spawn_location)?),
+            rotation: None,
+            scale: None,
+            velocity: None,
+        }),
+    };
+    let mut entries = vec![
+        entry(HANDLE_REMOTE_ROLE, RepValue::Byte(state.remote_role)),
+        entry(HANDLE_ROLE, RepValue::Byte(state.role)),
+        entry(
+            HANDLE_PLAYER_STATE,
+            RepValue::Object(NetGuidRef::plain(guids.player_state)),
+        ),
+        entry(
+            HANDLE_SPAWN_LOCATION,
+            RepValue::Vector(state.spawn_location.map(f32::to_bits)),
+        ),
+    ];
+    for (offset, guid) in guids.components[..COMPONENT_HANDLES].iter().enumerate() {
+        entries.push(entry(
+            HANDLE_FIRST_COMPONENT + offset as u32,
+            RepValue::Object(NetGuidRef::plain(*guid)),
+        ));
+    }
+    let actor_stream = PropertyStream {
+        entries,
+        terminator_checksum: None,
+    };
+    let mut blocks = vec![ContentBlock {
+        has_rep_layout: true,
+        target: BlockTarget::Actor,
+        payload: encode_rep_properties(&actor_stream, actor_layout, codec)?,
+    }];
+    for (component, guid) in profile.components.iter().zip(&guids.components) {
+        let target = BlockTarget::SubObject {
+            object: NetGuidRef::plain(*guid),
+            class: SubObjectClass::StablyNamed,
+        };
+        match &component.block {
+            ComponentBlock::None => {}
+            ComponentBlock::CreateOnly => blocks.push(ContentBlock {
+                has_rep_layout: false,
+                target,
+                payload: Payload::from_writer(BitWriter::new()),
+            }),
+            ComponentBlock::RepBools(values) => {
+                let stream = PropertyStream {
+                    entries: values
+                        .iter()
+                        .map(|(handle, flag)| entry(*handle, RepValue::Bool(*flag)))
+                        .collect(),
+                    terminator_checksum: None,
+                };
+                blocks.push(ContentBlock {
+                    has_rep_layout: true,
+                    target,
+                    payload: encode_rep_properties(&stream, component_layout, codec)?,
+                });
+            }
+        }
+    }
+    Ok(PlayerControllerOpenBunchBody {
+        spawn,
+        net_player_index: state.net_player_index,
+        blocks,
+    })
+}
