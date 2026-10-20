@@ -41,8 +41,11 @@ exports, 64 actor/component schemas, `FClassNetCache` bounds (`5, 11, 7, 38,
 `FStatPairRepState`) in `experimental::rep_layout`, `experimental::rep_rpc`,
 `experimental::sequencing`, and `experimental::actor_channel` replay and
 re-encode `317 / 317` export bunches, `300 / 300` partial sequences, `136 / 136`
-dormancy closes, `288 / 288` actor opens, and `23,486 / 23,486` (`100%`) typed
-content blocks in M-707 with 0 failures (F-571 to F-644, F-703 to F-711, F-739;
+dormancy closes, `288 / 288` actor opens, `20,407 / 20,407` `with_rep_layout`
+blocks, and `3,072 / 3,072` `has_rep_layout == false` blocks (`220` actor RPCs,
+`295` zero-bit subobject headers; `23,486 / 23,486` total typed blocks, `2,607`
+RPC calls, `66,859` property entries, `2,361` stat-pair items) in M-707 with 0
+failures (F-571 to F-644, F-703 to F-711, F-739;
 U-064, U-066 resolved).
 
 Server and client builds also match across `AActor`/`APawn`/`APlayerController`/

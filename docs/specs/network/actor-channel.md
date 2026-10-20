@@ -121,8 +121,9 @@ connection-readiness, and consider-list policies.
   - `UGameEngine::GetMaxTickRate` (`0x1435a90e0` / `0x143836250`, clamping
     `NetServerMaxTickRate` to `[1, 1000]` before `0x143993060` / `0x143c5d520`),
     `DefaultEngine.ini` (`NetServerMaxTickRate=30`, `MaxClientRate=750000`,
-    `ConfiguredInternetSpeed=640000`, `ConfiguredLanSpeed=912000`,
-    `ConnectionTimeout=360.0`, `ResolutionConnectionTimeout=120.0`), and
+    `MaxInternetClientRate=750000`, `ConfiguredInternetSpeed=640000`,
+    `ConfiguredLanSpeed=912000`, `ConnectionTimeout=360.0`,
+    `InitialConnectTimeout=360.0`, `ResolutionConnectionTimeout=120.0`), and
     `UNetDriver::ServerReplicateActors` (`0x1437221b0` / `0x1439bf100`) match:
     `PrepConnections` (`0x143723dc0` / `0x1439c0b20`,
     `evaluate_prep_connections_tick_budget`, `is_connection_ready_for_replication`)
