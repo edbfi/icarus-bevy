@@ -2204,7 +2204,8 @@ pub fn round_net_priority_to_int(priority: f32) -> i32 {
 }
 
 /// Evaluate the `DestroyedStartupOrDormantActors` priority calculation
-/// (`0x143724852..0x143724ab5` server / `0x1439c14ce..0x1439c168f` client,
+/// (`0x14372492f..0x143724f16` server, `cvttss2si` at `0x143724c2a` /
+/// `0x1439c153f..0x1439c1b19` client, `cvttss2si` at `0x1439c17ca`,
 /// F-749) in `UNetDriver::ServerReplicateActors_PrioritizeActors`.
 pub fn evaluate_destruction_info_priority(
     last_send_time_delta: f32,
@@ -2252,7 +2253,6 @@ pub struct PrioritizeActorInputs {
     pub channel_dormant: bool,
     pub get_net_dormancy_returns_dormant_partial: bool,
     pub level_initialized_for_actor: bool,
-    pub actor_last_net_update_time: f64,
     pub channel_last_update_time: f64,
     pub channel_open_elapsed_time: f64,
     pub max_net_priority_across_viewers: f32,
@@ -2317,11 +2317,12 @@ pub fn evaluate_prioritize_actor(inputs: &PrioritizeActorInputs) -> PrioritizeAc
         return PrioritizeActorOutcome::SkipLevelNotInitialized;
     }
     // `0x1437246a6..0x1437247c1` server / `0x1439c12b2..0x1439c13c6` client:
-    // branches strictly on `test r14, r14` (`Channel != nullptr`).
+    // branches strictly on `test r14, r14` (`Channel != nullptr`) and subtracts
+    // `Channel->LastUpdateTime` (`[r14+0x80]`) from `Driver->ElapsedTime` (`[rax+0x218]`).
     let time_since_last_update = if !inputs.has_channel {
         inputs.channel_open_elapsed_time as f32
     } else {
-        (inputs.actor_last_net_update_time - inputs.channel_last_update_time) as f32
+        (inputs.driver_elapsed_time - inputs.channel_last_update_time) as f32
     };
     let priority = round_net_priority_to_int(inputs.max_net_priority_across_viewers);
     PrioritizeActorOutcome::Prioritized {

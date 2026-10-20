@@ -2129,7 +2129,6 @@ fn relevancy_priority_tick_rate_and_consider_list_never_panic_on_randomized_inpu
             channel_dormant: flag(48),
             get_net_dormancy_returns_dormant_partial: flag(49),
             level_initialized_for_actor: flag(50),
-            actor_last_net_update_time: sample_f64(next_u64()),
             channel_last_update_time: sample_f64(next_u64()),
             channel_open_elapsed_time: sample_f64(next_u64()),
             max_net_priority_across_viewers: sample_f32(next_u64()),
@@ -2244,7 +2243,6 @@ fn server_replicate_actors_prioritize_process_and_mark_relevant() {
         channel_dormant: false,
         get_net_dormancy_returns_dormant_partial: false,
         level_initialized_for_actor: true,
-        actor_last_net_update_time: 19.5,
         channel_last_update_time: 19.0,
         channel_open_elapsed_time: 4.0,
         max_net_priority_across_viewers: 3.0,
@@ -2336,7 +2334,7 @@ fn server_replicate_actors_prioritize_process_and_mark_relevant() {
         evaluate_prioritize_actor(&base_prio),
         PrioritizeActorOutcome::Prioritized {
             new_actor_net_tag: 11,
-            time_since_last_update: 0.5,
+            time_since_last_update: 1.0,
             priority: 196_608,
         }
     );
@@ -2347,7 +2345,7 @@ fn server_replicate_actors_prioritize_process_and_mark_relevant() {
         }),
         PrioritizeActorOutcome::Prioritized {
             new_actor_net_tag: 11,
-            time_since_last_update: 19.5,
+            time_since_last_update: 20.0,
             priority: 196_608,
         }
     );
