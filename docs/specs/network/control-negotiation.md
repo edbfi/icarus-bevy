@@ -6,7 +6,7 @@ Experimental: static observations; the framing and Hello exchange are
 wire-validated offline, and a synthetic Login and Join are welcomed (F-688
 to F-690, F-712 to F-714). Scope: dedicated-server build 25621760 (M-168)
 unless a current-client (build 25793767) comparison is named.
-Last reconciled: 2026-10-20.
+Last reconciled: 2026-10-18.
 Full text: d5b0ae6:docs/specs/network/control-negotiation.md.
 
 ## Scope
@@ -29,12 +29,12 @@ runtime initialization, compression, or integrity protection.
   | Inner ID | Branch entry | Meaning |
   | --- | --- | --- |
   | 0 | `0x1439eebec` | Initial version/token negotiation |
-  | 4 | `0x1439ef03b` | `NMT_Netspeed`: clamps `int32 Rate` to `[1800, MaxClientRate (+0x64)]` and stores `CurrentNetSpeed (+0x38)` (F-740) |
-  | 5 | `0x1439ef0e0` | `NMT_Login` |
-  | 9 | `0x1439ef7f1` | `NMT_Join` |
-  | 10 | `0x1439efb8a` | `NMT_JoinSplit` |
-  | 15 | `0x1439f031c` | `NMT_PCSwap`: reads `int32 ChildIndex`, resolves parent/`Children[ChildIndex]`, destroys unowned `Actor` when `NetConnection (+0x410) == TargetConn` (F-740) |
-  | 17 | `0x1439f0416` | `NMT_DebugText`: reads `FString` and logs (F-740) |
+  | 4 | `0x1439ef03b` | Client netspeed (`NMT_Netspeed`): clamps `int32 Rate` to `[1800, NetDriver->MaxClientRate (+0x64)]` and stores `Connection->CurrentNetSpeed (+0x38)` (F-740) |
+  | 5 | `0x1439ef0e0` | Login (`NMT_Login`) |
+  | 9 | `0x1439ef7f1` | Join (`NMT_Join`) |
+  | 10 | `0x1439efb8a` | Split-player join (`NMT_JoinSplit`) |
+  | 15 | `0x1439f031c` | Connection swap (`NMT_PCSwap`): reads `int32 ChildIndex`, resolves parent or `Children[ChildIndex]`, and destroys unowned `Actor` when `Actor->NetConnection (+0x410) == TargetConn` (F-740) |
+  | 17 | `0x1439f0416` | Debug text (`NMT_DebugText`): reads `FString` and logs without mutating state (F-740) |
 
   IDs 1-3, 6-8, 11-14 and 16, and out-of-range IDs, reach the common exit.
 - ID 0 reads one endianness byte, a 32-bit remote version, and a token string
@@ -57,34 +57,35 @@ runtime initialization, compression, or integrity protection.
   archive byte-swap bit `0x20` at `+0x29` (else sets it), persists
   `Connection + 0x158` (`Data[1] != 1`), and clears `+0x68`. Subsequent
   `FInBunch` and `FControlChannelOutBunch` instances copy `+0x29` bit `0x20` from
-  `Connection + 0x158`. While `!Bunch.AtEnd() && State != USOCK_Closed`, ID `22`
-  (`NMT_DestructionInfo`) dispatches to `ReceiveDestructionInfo` (`0x1435354d0`,
-  `u8 Reason` + `FNetworkGUID`), other IDs call `Notify->NotifyControlMessage`,
-  and unhandled messages (`Pos == PosBefore`) dispatch across 20 layouts (`0..18`,
-  `21`, `22`, failing closed on others; ID `16` closes on `PlayerController`
-  channel failure, ID `19` logs `FString`, ID `20` forwards `u8 + FString`;
-  `experimental::control_messages`). `UControlChannel::SendBunch` sends
-  immediately when `QueuedMessages` (`+0x70`) is empty and `NumOutRec < 255 + bClose`,
-  else queues up to `32,767` (`0x7fff`) messages and drains them in `Tick` once
-  `bOpenAcked` (`+0x30 & 1`) is set.
+  `Connection + 0x158`. While `!Bunch.AtEnd() && State != USOCK_Closed`, ID
+  `0x16` (`22`, `NMT_DestructionInfo`) dispatches locally to
+  `ReceiveDestructionInfo` (`0x1435354d0` / `0x1437c3d50`, `u8 Reason` +
+  `FNetworkGUID`), other IDs call `Notify->NotifyControlMessage`, and unhandled
+  messages (`Pos == PosBefore`) dispatch across 20 layouts (`0..18`, `21`, `22`,
+  failing closed on others; ID `16` closes on `PlayerController` channel failure,
+  ID `19` logs `FString` and breaks, ID `20` forwards `u8 + FString` to
+  `NetDriver`/`World`/`GEngine`; `experimental::control_messages`).
+  `UControlChannel::SendBunch` sends immediately when `QueuedMessages` (`+0x70`)
+  is empty and `NumOutRec < 255 + bClose`, else queues up to `32,767` (`0x7fff`)
+  messages and drains them in `Tick` once `bOpenAcked` (`+0x30 & 1`) is set.
 - Packet and bunch headers (F-521 to F-527, F-688, F-710, F-711, F-714), read
   LSB-first after optional magic-header bits, the stateless-connect bit (`0`) and
   Steam-auth bit (`0`), and before the connection and handler termination bits:
 
   | Order | Field | Encoding |
   | --- | --- | --- |
-  | 1 | Packet word | 32 bits: history words minus one (bits 0-3, <= 8), acked sequence (4-17), sequence (18-31) |
+  | 1 | Packet word | 32 bits: history words minus one (bits 0-3, at most 8 words), acked sequence (4-17), sequence (18-31) |
   | 2 | Ack history | that many 32-bit words |
-  | 3 | Packet info | 1 bit; if set, jitter < 1024, frame-time bit and, to a client, 1 frame-time byte (F-525) |
-  | 4 | Control | 1 bit; if set, open and close bits |
-  | 5 | Close reason | if closing: value < 15 |
-  | 6 | Paused, reliable | 1 bit each |
-  | 7 | Channel index | packed, below channel limit |
-  | 8 | Exports, mapped GUIDs, partial | 1 bit each |
-  | 9 | Reliable sequence | if reliable: value < 1024, relative to channel's last |
-  | 10 | Partial initial, final | if partial: 1 bit each |
-  | 11 | Channel name | if open/reliable: 1 bit; if set packed index (`<= 702`), else archive string + u32 (F-525) |
-  | 12 | Payload | bit count < `8 * MaxPacket`, then payload bits |
+  | 3 | Packet info | one bit; if set, jitter below 1024, frame-time bit and, to a client, one frame-time byte (F-525) |
+  | 4 | Control | one bit; if set, open and close bits |
+  | 5 | Close reason | if closing: value below 15 |
+  | 6 | Paused, reliable | one bit each |
+  | 7 | Channel index | packed, below the connection's channel limit |
+  | 8 | Exports, mapped GUIDs, partial | one bit each |
+  | 9 | Reliable sequence | if reliable: value below 1024, relative to the channel's last |
+  | 10 | Partial initial, final | if partial: one bit each |
+  | 11 | Channel name | if open or reliable: one bit; if set a packed index (`<= 702`), else an archive string and 32-bit number (F-525) |
+  | 12 | Payload | bit count below `8 * MaxPacket`, then those bits copied to the bunch |
 
 - Reliability (F-535 to F-539, F-710): handshake ack seeds incoming/outgoing
   packet sequences from the cookie's first two LE `u16` words masked to 14 bits
@@ -105,7 +106,7 @@ runtime initialization, compression, or integrity protection.
   | 6 Failure | to client | string, then the client closes |
   | 9 Join | to server | none |
   | 10 Split join | to server | string URL, unique-net-id |
-  | 15 Swap | to server | i32 child index (`-1` parent, `>= 0` child, F-740) |
+  | 15 Swap | to server | i32 child index (`-1` parent, `>= 0` splitscreen child, F-740) |
   | 16 ActorChannelFailure | to server | i32 channel index (closes if `Ch->Actor == PlayerController`, F-740) |
   | 17 Debug | to server | string |
   | 18 NetGUID | to client | packed int, string |

@@ -54,10 +54,10 @@ Server and client builds also match across `AActor`/`APawn`/`APlayerController`/
 max client rate in `DefaultEngine.ini`), and all `UNetDriver::ServerReplicateActors`
 stages (`PrepConnections` `< 1.5` s `LastReceiveTime` gate; `BuildConsiderList`
 `> 2.0` s `* 0.2` adaptive `OptimalNetUpdateDelta` lerp with `MinNetUpdateFrequency = 2.0`;
-`PrioritizeActors` `appRoundToInt(65536 * p)` and `DestroyedStartupOrDormantActors`
-`250k`/`4M`/`9.998M` `* 0.4`/`0.2` scaling; `ProcessPrioritizedActors` `<= 1.0` s
+`PrioritizeActors` `cvtss2si` `round_ties_even(65536 * p)` and `DestroyedStartupOrDormantActors`
+`cvttss2si` `250k`/`4M`/`9.998M` `* 0.4`/`0.2` scaling; `ProcessPrioritizedActors` `<= 1.0` s
 relevancy fast-path, `+ 0.5 * SRand` jitter, `< 1.0` Hz `+ 0.2 * srands` delay,
-and `CloseReason` `4`/`3`; and `MarkRelevantActors` `TickCount + 1`, F-745,
+and `CloseReason` `4`/`3` when `!bLevelInitializedForActor || !bNetStartup`; and `MarkRelevantActors` `TickCount + 1`, F-745,
 F-748, F-749).
 
 ## Open

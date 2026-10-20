@@ -2,7 +2,7 @@
 
 ## Status
 
-Experimental; scope dedicated-server build 25621760 (supplied saves are user-reported from 25793767). Last reconciled: 2026-10-20.
+Experimental; scope dedicated-server build 25621760 (supplied saves are user-reported from 25793767). Last reconciled: 2026-10-19.
 Full text: d5b0ae6:docs/specs/save-format/prospect-loading.md
 
 ## Scope
@@ -56,11 +56,11 @@ Inner state, version and archive mode
 | --- | --- | --- |
 | `Version` | `0x08` | Integer tested by load fixups |
 | `LobbyPrivacy` | `0x0c` | Enum, byte underlying descriptor |
-| `ProspectInfo` | `0x10` | Nested metadata (`FProspectInfo`, `0xa0` B, F-738) |
+| `ProspectInfo` | `0x10` | Nested prospect metadata (`FProspectInfo`, `0xa0` B, F-738) |
 | `ProspectMapName` | `0xb0` | String |
 | `LastSavedDateTime` | `0xc0` | Date/time |
-| `ProspectID` | `0xc8` | Legacy string, pre-v2 fixups |
-| `ProspectDTKey` | `0xd8` | Legacy string, pre-v2 fixups |
+| `ProspectID` | `0xc8` | Legacy string, pre-version-2 fixups |
+| `ProspectDTKey` | `0xd8` | Legacy string, pre-version-2 fixups |
 | `StateRecorderBlobs` | `0xe8` | Array, derived state type |
 
 - `StateRecorderBlob` is `0x20` B (`ComponentClassName` at 0, `BinaryData` at
@@ -68,7 +68,7 @@ Inner state, version and archive mode
 - Dispatcher `0x1418ee4a0` uses tagged traversal via `0x14215f530` (F-257,
   F-335, F-336). `UStruct::SerializeVersionedTaggedProperties` (`0x14200f5b0`)
   reads `FPropertyTag` headers until `None`, wrapping `PropertyLinkNext` (`+0x58`)
-  to `PropertyLink` on out-of-order tags and keeping defaults when omitted
+  to head `PropertyLink` on out-of-order tags and keeping defaults when omitted
   (F-718; U-062 resolved).
 - `ReadFromProspectBlob` (`0x1418e6240`) starts `FMemoryReader` at byte 0;
   `Version = 2` is the schema version, unrelated to game build (F-260, F-715;
@@ -90,17 +90,18 @@ Recorders and base component
 
 C013, C028, C034, C009 and D01
 
-- `C013` (`UFLODRecorderComponent`): two 548-byte bodies (5 properties, zero
-  trailer, exact EOF); saves `FLODTiles.Num()` to `+0xd8` on record (`0x1418a1850`),
-  compacts `FLODTiles` on stitch (`0x1418ad0c0`), and ignores `+0xd8` on restore
-  (F-248, F-350..F-353, F-646, F-716; U-039 resolved).
+- `C013` (`UFLODRecorderComponent`): base load/serialize/post-load; two 548-byte
+  bodies (5 properties, zero trailer, exact EOF); saves `FLODTiles.Num()` to
+  `+0xd8` on record (`0x1418a1850`), compacts `FLODTiles` on stitch
+  (`0x1418ad0c0`), and ignores `+0xd8` on restore (F-248, F-350..F-353, F-646,
+  F-716; U-039 resolved).
 - `C028` (`UActorStateRecorderComponent` subclass): `+0x4a0` = `0x1418a9bb0`
   calls `+0x4b0` (`ApplyRecorderTransform`) when context `FTransform` !=
   `Identity` (`> 1e-4`), and `+0x488` = `0x14189d380` upgrades `TreePrimitive`
-  -> `Wood` if `v < 1` (F-645, F-716; U-061 resolved). All 1,294 bodies frame
-  (23 fields; 6 tagged direct structs; binary `N01` 16 B / `N02` 12 B; 9,058
-  empty struct arrays via `0x1421580d0`; F-116, F-123..F-141, F-259, F-363..F-374,
-  F-655, F-720; U-030 resolved).
+  -> `Wood` if `recorder_version < 1` (F-645, F-716; U-061 resolved). All 1,294
+  bodies frame (23 fields; 6 tagged direct structs; binary `N01` 16 B / `N02`
+  12 B; 9,058 empty struct arrays via `0x1421580d0`; F-116, F-123..F-141, F-259,
+  F-363..F-374, F-655, F-720; U-030 resolved).
 - `C034`: base load/serialize, `C028` post-load; 21 optional fields; 829 records
   per copy; struct-array child `0x145ee1220` carries tagged optional `N02` (12 B)
   + `Float` (4 B) across both builds (F-146..F-153, F-188, F-195, F-196, F-211,
@@ -127,7 +128,7 @@ Acceptance conditions for any importer
   `FProspectSaveState` root schema, out-of-order tags, `PostLoadSerialize`
   migration, 17 `FProspectInfo` tags, optional `ProspectID` matching, base
   framing, 65-class ctor defaults + tag overlays (`bSkipDefaultOwnerResolution`,
-  `OwnerResolvePolicy`, `ParentCharacterUID` -> `RequiresStitching`),
+  `OwnerResolvePolicy`, `ParentCharacterUID` -> `RequiresStitching`), per-recorder
   `Validate` (`+0x408`, incl. `N018` `false` and `N022` rocket-spawn), and `C033`
   `bIsPhysicsDynamic` counts across all 15 saves (`15 / 15`; `dddd.json`: `2,744` ->
   `1` invalid `C031`, `2,743` retained (`971` skip-owner, `52` `FindOnly`, `798`
@@ -137,7 +138,7 @@ Acceptance conditions for any importer
 - All 65 `RecorderComponent` `FClassParams`, ctor defaults and vtable overrides
   ([restore rules](restore-rules.md)), and `C001` provenance
   ([C001 digest](../../research/save-format/c001-constructor.md)) match across
-  builds (F-469..F-750; U-003..U-006, U-020..U-024, U-032, U-041, U-042, U-046,
+  builds (F-469..F-747; U-003..U-006, U-020..U-024, U-032, U-041, U-042, U-046,
   U-048, U-050 resolved).
 
 ## Open questions
@@ -148,7 +149,7 @@ Acceptance conditions for any importer
 
 ## Evidence
 
-- Static: M-079..M-170, M-755..M-803; runtime: M-154, M-155, M-160; framing:
+- Static: M-079..M-170, M-755..M-800; runtime: M-154, M-155, M-160; framing:
   M-049..M-118, M-172; C001: M-007..M-013, M-173, M-179..M-181, M-761, M-762.
 - Tests: `tests/tagged.rs`, `tests/recorders.rs`, `tests/component.rs`,
   `tests/struct_array.rs`, `tests/int_array.rs`, `tests/archive_frame.rs`,
