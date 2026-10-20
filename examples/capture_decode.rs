@@ -1446,6 +1446,16 @@ impl<'a> Decoder<'a> {
                     ) {
                         Ok(refs) => {
                             self.stats.exports.codec_reader_parsed += 1;
+                            // Private detail: the exact export bunch, for native
+                            // composition tests (paths stay in the detail file).
+                            self.write_detail(json!({"kind":"export_bunch",
+                                "datagram":arrival.datagram, "channel":header.channel_index,
+                                "partial":header.partial, "reliable":header.reliable,
+                                "open":header.open, "payload_bits":arrival.bunch.payload.bit_len(),
+                                "guids":refs.iter().map(|reference| reference.guid).collect::<Vec<_>>(),
+                                "refs":refs.iter().map(|reference| reference.summary()).collect::<Vec<_>>(),
+                                "payload_hex":arrival.bunch.payload.bytes().iter()
+                                    .map(|byte| format!("{byte:02x}")).collect::<String>()}))?;
                             if self
                                 .package_map
                                 .encode_export_bunch_payload(&refs, &actor_codec(true))
