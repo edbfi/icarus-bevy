@@ -78,7 +78,8 @@ drives these evaluators over 2,626 supplied actor positions; with UE default
 parameters it saturates its budget in 0.6 to 5.4 ms per frame for 1 to 8
 viewers (F-775). Export checksums are class network checksums computed natively
 (F-776), reproducing 77 of 79 captured values (F-777; U-067), and the
-original's first post-Join bunch opens the PlayerController channel (F-778).
+original's first post-Join bunch opens the PlayerController channel (F-778),
+which the native composer reproduces bit for bit (F-779).
 
 ## Open
 
@@ -87,4 +88,4 @@ original's first post-Join bunch opens the PlayerController channel (F-778).
 
 ## Artifacts
 
-M-420..M-449, M-455..M-470, M-570..M-576, M-581..M-588, M-600..M-605, M-707..M-717, M-720, M-728..M-748, M-776, M-777, M-782, M-794, M-795, M-797..M-799, M-801, M-802, M-804, M-805, M-807, M-813..M-818.
+M-420..M-449, M-455..M-470, M-570..M-576, M-581..M-588, M-600..M-605, M-707..M-717, M-720, M-728..M-748, M-776, M-777, M-782, M-794, M-795, M-797..M-799, M-801, M-802, M-804, M-805, M-807, M-813..M-819.
