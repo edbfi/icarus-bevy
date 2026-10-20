@@ -2346,8 +2346,12 @@ pub struct ProcessPrioritizedActorInputs {
     pub relevant_timeout: f64,
     pub is_relevant_to_connection: bool,
     pub actor_b_tear_off: bool,
+    /// `ActorInfo->ForceRelevantFrame` (`FNetworkObjectInfo + 0xd4`).
     pub force_relevant_frame: i32,
-    pub driver_replication_frame: i32,
+    /// `Connection->LastProcessedFrame` (`UNetConnection + 0x200`, the second
+    /// argument): the recency test is `cmp [info+0xd4], [conn+0x200]; jb`
+    /// (unsigned) in both builds, not the driver `ReplicationFrame` (F-772).
+    pub connection_last_processed_frame: i32,
     pub channel_b_is_replicating_actor: bool,
     pub actor_b_always_relevant: bool,
     pub actor_b_net_temporary: bool,
@@ -2419,7 +2423,7 @@ pub fn evaluate_process_prioritized_actor(
     let is_recently_relevant = is_relevant
         || (inputs.has_channel
             && inputs.driver_elapsed_time - inputs.channel_relevant_time < inputs.relevant_timeout)
-        || (inputs.force_relevant_frame >= inputs.driver_replication_frame);
+        || (inputs.force_relevant_frame as u32 >= inputs.connection_last_processed_frame as u32);
 
     if is_recently_relevant {
         let jittered_relevant_time = inputs.driver_elapsed_time

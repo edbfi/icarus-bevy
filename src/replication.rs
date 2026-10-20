@@ -1005,7 +1005,7 @@ impl ReplicationState {
                 is_relevant_to_connection: self.marks[item.entry] == stamp,
                 actor_b_tear_off: false,
                 force_relevant_frame: row.schedule.force_relevant_frame,
-                driver_replication_frame: frame_number,
+                connection_last_processed_frame: connection.last_processed_frame,
                 channel_b_is_replicating_actor: false,
                 actor_b_always_relevant: false,
                 actor_b_net_temporary: false,
