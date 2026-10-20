@@ -1392,12 +1392,17 @@ pub fn stage_prospect_save_state_with_decisions(
                 .checked_add(component.fields().len())
                 .context("component field count overflow")?;
             if version == 0 {
-                let defaults = lookup_recorder_ctor_defaults(&class_units)
-                    .ok_or_else(|| anyhow::anyhow!("unrecognized recorder ComponentClassName"))?;
+                // Version 0 drops every recorder without evaluating its class,
+                // so an unregistered class still stages; it takes the base
+                // constructor defaults (FindOrRespawn, no skip).
+                let defaults = lookup_recorder_ctor_defaults(&class_units);
                 decisions.push(StagedRecorderDecision {
                     retained: false,
-                    owner_resolve_policy: defaults.owner_resolve_policy,
-                    skip_default_owner_resolution: defaults.b_skip_default_owner_resolution,
+                    owner_resolve_policy: defaults.map_or(OwnerResolvePolicy::FindOrRespawn, |d| {
+                        d.owner_resolve_policy
+                    }),
+                    skip_default_owner_resolution: defaults
+                        .is_some_and(|d| d.b_skip_default_owner_resolution),
                     requires_stitching: false,
                     physics_dynamic_tree: false,
                     reset_rocket_spawn: false,

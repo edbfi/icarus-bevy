@@ -103,6 +103,8 @@ pub enum ImportBlocker {
     /// A prospect without any recorder that survives `Validate` would import
     /// as an empty world, which the acceptance conditions forbid.
     NoRetainedRecorders,
+    /// Retained recorder bodies that did not frame, type or re-encode exactly.
+    UntypedRecorders { recorders: usize },
     /// Leaves without a typed, exactly re-encoding value.
     UninterpretedValues { leaves: usize },
     /// Content references the native catalog does not define.
@@ -123,6 +125,8 @@ pub struct RecorderPlan {
     /// Retained `C033` physics-dynamic trees the original drops on its next save.
     pub physics_dynamic_trees: usize,
     pub typed: usize,
+    /// Retained bodies that did not frame, type or re-encode exactly.
+    pub untyped: usize,
     pub properties: usize,
     pub uninterpreted_leaves: usize,
 }
@@ -213,6 +217,7 @@ pub struct ContentPlan {
 pub struct ClassPlan {
     pub retained: usize,
     pub dropped: usize,
+    pub untyped: usize,
     pub uninterpreted_leaves: usize,
     pub unmapped_references: usize,
 }
@@ -276,16 +281,17 @@ pub fn plan_import(reader: impl Read, catalog: &ContentCatalog) -> Result<Import
         // read_recorders and staging validated this exact FString; it is never reported.
         let class = decode_string(recorder.class_value, ByteOrder::Little)
             .context("invalid experimental recorder class string")?;
-        let label = recorder_class_label(&class.units)
-            .context("staged recorder class is not registered")?;
-        let defaults = lookup_recorder_ctor_defaults(&class.units)
-            .context("staged recorder class has no constructor defaults")?;
+        // A version-0 save drops every recorder unevaluated, so a dropped
+        // class may be unregistered; retained ones always resolve.
+        let label = recorder_class_label(&class.units).unwrap_or_else(|| "unregistered".to_owned());
         let class_plan = plan.classes.entry(label).or_default();
         if !decision.retained {
             plan.recorders.dropped_by_validate += 1;
             class_plan.dropped += 1;
             continue;
         }
+        let defaults = lookup_recorder_ctor_defaults(&class.units)
+            .context("retained recorder class has no constructor defaults")?;
         plan.recorders.retained += 1;
         class_plan.retained += 1;
         *plan
@@ -296,18 +302,26 @@ pub fn plan_import(reader: impl Read, catalog: &ContentCatalog) -> Result<Import
         if decision.physics_dynamic_tree {
             plan.recorders.physics_dynamic_trees += 1;
         }
-        let tree = BaseComponentTree::parse(
+        // A body that does not frame, type or re-encode exactly is a blocker,
+        // so the plan stays total.
+        let typed = BaseComponentTree::parse(
             recorder.binary_data,
             PROFILE,
             MAX_BOUNDED_COMPONENT_BYTES,
             PLAN_TREE_LIMITS,
         )
-        .context("retained recorder body does not frame under the plan's tree limits")?;
-        let (typed, summary) = TypedComponent::from_component(&tree)?;
-        ensure!(
-            typed.to_bytes()? == recorder.binary_data,
-            "typed recorder body does not re-encode to its original bytes"
-        );
+        .and_then(|tree| TypedComponent::from_component(&tree))
+        .ok()
+        .filter(|(typed, _)| {
+            typed
+                .to_bytes()
+                .is_ok_and(|bytes| bytes == recorder.binary_data)
+        });
+        let Some((typed, summary)) = typed else {
+            plan.recorders.untyped += 1;
+            class_plan.untyped += 1;
+            continue;
+        };
         plan.recorders.typed += 1;
         plan.recorders.properties += summary.properties;
         plan.recorders.uninterpreted_leaves += summary.uninterpreted;
@@ -357,6 +371,11 @@ pub fn plan_import(reader: impl Read, catalog: &ContentCatalog) -> Result<Import
 
     if plan.recorders.retained == 0 {
         plan.blockers.push(ImportBlocker::NoRetainedRecorders);
+    }
+    if plan.recorders.untyped > 0 {
+        plan.blockers.push(ImportBlocker::UntypedRecorders {
+            recorders: plan.recorders.untyped,
+        });
     }
     if plan.recorders.uninterpreted_leaves > 0 {
         plan.blockers.push(ImportBlocker::UninterpretedValues {

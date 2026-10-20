@@ -456,6 +456,8 @@ impl Typer {
 
     fn property(&mut self, node: &PropertyNode) -> Result<TypedProperty> {
         self.summary.properties += 1;
+        // Restored if the value is demoted, so per-kind counts hold typed leaves only.
+        let before = self.summary.clone();
         let payload = original_payload(&node.value)?;
         let info = header_info(&node.header, payload.len())?;
         let value = match &node.value {
@@ -499,7 +501,7 @@ impl Typer {
                 }
             }
         };
-        let value = self.verify(node.kind, value, &payload)?;
+        let value = self.verify(node.kind, value, &payload, before)?;
         Ok(TypedProperty {
             kind: node.kind,
             name: info.name,
@@ -543,7 +545,13 @@ impl Typer {
     }
 
     /// Re-encode a typed value; a mismatch demotes it to an exact gap leaf.
-    fn verify(&mut self, kind: TagKind, value: Value, original: &[u8]) -> Result<Value> {
+    fn verify(
+        &mut self,
+        kind: TagKind,
+        value: Value,
+        original: &[u8],
+        before: TypedSummary,
+    ) -> Result<Value> {
         if matches!(value, Value::Uninterpreted { .. }) {
             return Ok(value);
         }
@@ -552,6 +560,7 @@ impl Typer {
         if encoded == original {
             return Ok(value);
         }
+        self.summary = before;
         self.summary.gap(Gap::NonCanonical, original.len());
         Ok(Value::Uninterpreted {
             gap: Gap::NonCanonical,

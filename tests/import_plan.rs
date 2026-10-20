@@ -445,3 +445,20 @@ fn catalog_debug_prints_only_its_size() {
     assert!(!printed.contains("Secret") && !printed.contains("83"));
     assert!(printed.contains("references: 2"));
 }
+
+#[test]
+fn version_zero_saves_with_unregistered_classes_still_plan() {
+    let source = envelope(
+        0,
+        &[
+            recorder("/Script/Icarus.Unregistered", &CLEAN),
+            recorder(ACTOR, &CLEAN),
+        ],
+    );
+    let plan = plan_import(source.as_slice(), &ContentCatalog::empty()).unwrap();
+    assert_eq!(plan.recorders.parsed, 2);
+    assert_eq!(plan.recorders.dropped_by_validate, 2);
+    assert_eq!(plan.classes["unregistered"].dropped, 1);
+    assert_eq!(plan.blockers, vec![ImportBlocker::NoRetainedRecorders]);
+    assert!(planned_actors(source.as_slice()).unwrap().is_empty());
+}

@@ -338,6 +338,12 @@ fn noncanonical_strings_and_bools_are_demoted_not_rewritten() {
         }
     ));
     assert_eq!(summary.uninterpreted, 3);
+    // A demoted leaf is a gap only, not also a typed string.
+    assert_eq!(
+        (summary.strings, summary.integers, summary.bools),
+        (0, 0, 0)
+    );
+    assert_eq!(summary.properties, 3);
 }
 
 #[test]
