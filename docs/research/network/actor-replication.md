@@ -18,9 +18,9 @@ Open actor bunches frame the actor NetGUID and, for dynamic actors, the
 archetype, level, and optional location, rotation, scale, and velocity blocks
 (`UPackageMapClient::SerializeNewActor` `0x1437201a0` / `0x1439be280`, F-569,
 F-739), followed by `OnActorChannelOpen` / `OnSerializeNewActor` (`AActor`
-empty; `APlayerController` 1-byte `NetPlayerIndex` at `+0x3d4`, F-610, F-709).
-Outgoing `UChannel::SendBunch` (`0x14353c300` / `0x1437c9690`) enforces the
-64 KiB partial cap, prepends export-only bunches (`ExportNetGUIDHeader` /
+empty; `APlayerController` 1-byte `NetPlayerIndex` at `+0x3d4`, F-610, F-709,
+F-751). Outgoing `UChannel::SendBunch` (`0x14353c300` / `0x1437c9690`) enforces
+the 64 KiB partial cap, prepends export-only bunches (`ExportNetGUIDHeader` /
 `ExportNetGUID`, `<= 2048` entries) and `bHasMustBeMappedGUIDs` prefixes, and
 splits bunches `> 7,625` bits into `7,624`-bit (`953` B) slices (F-709 to F-711).
 Incoming `ReceiveNetGUIDBunch`, `ReceivedNextBunch`, `StartBecomingDormant`, and
@@ -51,14 +51,19 @@ Server and client builds also match across `AActor`/`APawn`/`APlayerController`/
 `AOnlineBeacon::IsNetRelevantFor`, `IsWithinNetRelevancyDistance`,
 `AActor`/`APlayerController`/`AMatineeActor::GetNetPriority`,
 `UGameEngine::GetMaxTickRate` (`30` Hz default, `[1, 1000]` clamp, `750,000` B/s
-max client rate in `DefaultEngine.ini`), and all `UNetDriver::ServerReplicateActors`
-stages (`PrepConnections` `< 1.5` s `LastReceiveTime` gate; `BuildConsiderList`
-`> 2.0` s `* 0.2` adaptive `OptimalNetUpdateDelta` lerp with `MinNetUpdateFrequency = 2.0`;
-`PrioritizeActors` `cvtss2si` `round_ties_even(65536 * p)` and `DestroyedStartupOrDormantActors`
-`cvttss2si` `250k`/`4M`/`9.998M` `* 0.4`/`0.2` scaling; `ProcessPrioritizedActors` `<= 1.0` s
+max client rate in `DefaultEngine.ini`), `UNetConnection::IsNetReady`
+(`QueuedBits + Overhead <= 0`), `UChannel::IsNetReady` (`NumOutRec < 255`),
+`UActorChannel::ReplicateActor` (`bOpen`, `bFirstTickReplication <= 0.2` s,
+`bExchangedRoles`, `ReplicateSubobjects`, `ReplicatedComponents`), and all
+`UNetDriver::ServerReplicateActors` (`1.2x` CPU saturation, `DormantConnections`
+flush) stages (`PrepConnections` `< 1.5` s `LastReceiveTime` gate;
+`BuildConsiderList` `> 2.0` s `* 0.2` adaptive `OptimalNetUpdateDelta` lerp with
+`MinNetUpdateFrequency = 2.0`; `PrioritizeActors` `cvtss2si`
+`round_ties_even(65536 * p)` and `DestroyedStartupOrDormantActors` `cvttss2si`
+`250k`/`4M`/`9.998M` `* 0.4`/`0.2` scaling; `ProcessPrioritizedActors` `<= 1.0` s
 relevancy fast-path, `+ 0.5 * SRand` jitter, `< 1.0` Hz `+ 0.2 * srands` delay,
-and `CloseReason` `4`/`3` when `!bLevelInitializedForActor || !bNetStartup`; and `MarkRelevantActors` `TickCount + 1`, F-745,
-F-748, F-749).
+and `CloseReason` `4`/`3` when `!bLevelInitializedForActor || !bNetStartup`; and
+inlined `MarkRelevantActors` `TickCount + 1`, F-745, F-748, F-749, F-751).
 
 ## Open
 
@@ -66,4 +71,4 @@ F-748, F-749).
 
 ## Artifacts
 
-M-420..M-449, M-455..M-470, M-570..M-576, M-581..M-588, M-600..M-605, M-707..M-717, M-720, M-728..M-748, M-776, M-777, M-782, M-794, M-795, M-797..M-799, M-801, M-802.
+M-420..M-449, M-455..M-470, M-570..M-576, M-581..M-588, M-600..M-605, M-707..M-717, M-720, M-728..M-748, M-776, M-777, M-782, M-794, M-795, M-797..M-799, M-801, M-802, M-804, M-805, M-807.

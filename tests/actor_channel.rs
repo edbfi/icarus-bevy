@@ -2553,3 +2553,211 @@ fn server_replicate_actors_prioritize_process_and_mark_relevant() {
         (10, false)
     );
 }
+
+#[test]
+fn server_replicate_actors_frame_is_net_ready_mark_relevant_and_replicate_actor() {
+    use icarus_bevy::experimental::actor_channel::{
+        CHANNEL_RELIABLE_BUFFER_NET_READY_LIMIT, ConnectionNetReadyInputs,
+        MarkRelevantActorStepInputs, MarkRelevantActorStepOutcome, ReplicateActorInputs,
+        ReplicateActorOutcome, ReplicateActorRepFlags,
+        SERVER_REPLICATE_ACTORS_CPU_SATURATION_FACTOR, ServerReplicateActorsFrameInputs,
+        ServerReplicateActorsFrameOutcome, evaluate_actor_channel_replicate_actor,
+        evaluate_channel_is_net_ready, evaluate_connection_is_net_ready,
+        evaluate_mark_relevant_actor_step, evaluate_server_replicate_actors_frame,
+    };
+
+    assert_eq!(SERVER_REPLICATE_ACTORS_CPU_SATURATION_FACTOR, 1.2);
+    assert_eq!(CHANNEL_RELIABLE_BUFFER_NET_READY_LIMIT, 255);
+
+    let base_conn = ConnectionNetReadyInputs {
+        saturate: false,
+        queued_bits: -100,
+        send_buffer_num_bits: 100,
+        b_use_adaptive_net_frequency: false,
+        adaptive_queued_bytes: 500,
+        adaptive_max_bytes_per_sec: 10_000.0,
+        adaptive_delta_time: 0.1,
+        adaptive_out_packet_id: 20,
+        adaptive_out_ack_packet_id: 15,
+        adaptive_max_in_flight_packets: 10,
+    };
+    assert_eq!(evaluate_connection_is_net_ready(&base_conn), (true, -100));
+    assert_eq!(
+        evaluate_connection_is_net_ready(&ConnectionNetReadyInputs {
+            queued_bits: -99,
+            ..base_conn
+        }),
+        (false, -99)
+    );
+    assert_eq!(
+        evaluate_connection_is_net_ready(&ConnectionNetReadyInputs {
+            saturate: true,
+            queued_bits: 500,
+            ..base_conn
+        }),
+        (true, -100)
+    );
+    assert_eq!(
+        evaluate_connection_is_net_ready(&ConnectionNetReadyInputs {
+            b_use_adaptive_net_frequency: true,
+            ..base_conn
+        }),
+        (true, -100)
+    );
+    assert_eq!(
+        evaluate_connection_is_net_ready(&ConnectionNetReadyInputs {
+            b_use_adaptive_net_frequency: true,
+            adaptive_queued_bytes: 1_000,
+            ..base_conn
+        }),
+        (false, -100)
+    );
+    assert_eq!(evaluate_channel_is_net_ready(254, &base_conn), (true, -100));
+    assert_eq!(
+        evaluate_channel_is_net_ready(255, &base_conn),
+        (false, -100)
+    );
+
+    let base_mark = MarkRelevantActorStepInputs {
+        actor_info_present: true,
+        has_channel: true,
+        driver_elapsed_time: 10.0,
+        channel_relevant_time: 9.5,
+        is_relevant_to_any_viewer: false,
+        random_unit_float: 0.5,
+        current_b_pending_net_update: false,
+        current_force_relevant_frame: 10,
+        connection_last_processed_frame: 10,
+        driver_replication_frame: 14,
+    };
+    assert_eq!(
+        evaluate_mark_relevant_actor_step(&base_mark),
+        MarkRelevantActorStepOutcome {
+            b_pending_net_update: true,
+            updated_channel_relevant_time: None,
+            force_relevant_frame: 15,
+        }
+    );
+    assert_eq!(
+        evaluate_mark_relevant_actor_step(&MarkRelevantActorStepInputs {
+            channel_relevant_time: 8.5,
+            is_relevant_to_any_viewer: true,
+            current_force_relevant_frame: 9,
+            ..base_mark
+        }),
+        MarkRelevantActorStepOutcome {
+            b_pending_net_update: true,
+            updated_channel_relevant_time: Some(10.75),
+            force_relevant_frame: 9,
+        }
+    );
+
+    let base_frame = ServerReplicateActorsFrameInputs {
+        num_client_connections: 4,
+        has_replication_driver: false,
+        replication_driver_updated_count: 9,
+        current_replication_frame: 100,
+        has_world: true,
+        num_clients_to_tick: 2,
+        delta_seconds: 0.05,
+        max_tick_rate: 30.0,
+    };
+    assert_eq!(
+        evaluate_server_replicate_actors_frame(&ServerReplicateActorsFrameInputs {
+            num_client_connections: 0,
+            ..base_frame
+        }),
+        ServerReplicateActorsFrameOutcome::NoClientConnections
+    );
+    assert_eq!(
+        evaluate_server_replicate_actors_frame(&ServerReplicateActorsFrameInputs {
+            has_replication_driver: true,
+            ..base_frame
+        }),
+        ServerReplicateActorsFrameOutcome::DelegatedToReplicationDriver { updated: 9 }
+    );
+    assert_eq!(
+        evaluate_server_replicate_actors_frame(&ServerReplicateActorsFrameInputs {
+            num_clients_to_tick: 0,
+            ..base_frame
+        }),
+        ServerReplicateActorsFrameOutcome::AbortedAfterFrameIncrement {
+            next_replication_frame: 101,
+        }
+    );
+    assert_eq!(
+        evaluate_server_replicate_actors_frame(&base_frame),
+        ServerReplicateActorsFrameOutcome::RunConnectionReplication {
+            next_replication_frame: 101,
+            server_tick_time: 1.0 / 30.0,
+            clamped_delta_seconds: 1.0 / 30.0,
+            b_cpu_saturated: true,
+            rotate_connections_left_by: 2,
+        }
+    );
+
+    let base_rep = ReplicateActorInputs {
+        channel_closing: false,
+        connection_resend_all_data_state: 0,
+        channel_b_is_replicating_actor: false,
+        channel_b_actor_is_pending_kill: false,
+        actor_uobject_pending_kill_or_unreachable: false,
+        open_packet_id_first_is_none: true,
+        all_level_components_ready: true,
+        channel_clean_up_or_has_bunch_check: false,
+        out_bunch_is_error: false,
+        channel_b_spawned_for_replay: false,
+        channel_spawn_acked: true,
+        actor_owned_by_connection: false,
+        actor_remote_role: 2,
+        actor_b_rep_physics: true,
+        connection_is_replay: false,
+        actor_properties_wrote: true,
+        subobjects_wrote: false,
+        deleted_subobjects_wrote: false,
+        bunch_bits_written: 128,
+        bunch_is_partial_initial: false,
+        driver_elapsed_time: 42.5,
+    };
+    assert_eq!(
+        evaluate_actor_channel_replicate_actor(&ReplicateActorInputs {
+            channel_closing: true,
+            ..base_rep
+        }),
+        ReplicateActorOutcome::EarlyExitChannelClosing
+    );
+    assert_eq!(
+        evaluate_actor_channel_replicate_actor(&ReplicateActorInputs {
+            channel_b_is_replicating_actor: true,
+            ..base_rep
+        }),
+        ReplicateActorOutcome::EarlyExitRecursiveReplication
+    );
+    assert_eq!(
+        evaluate_actor_channel_replicate_actor(&ReplicateActorInputs {
+            actor_uobject_pending_kill_or_unreachable: true,
+            ..base_rep
+        }),
+        ReplicateActorOutcome::EarlyExitMarkActorPendingKillAndReleaseReplicator
+    );
+    assert_eq!(
+        evaluate_actor_channel_replicate_actor(&base_rep),
+        ReplicateActorOutcome::Completed {
+            rep_flags: ReplicateActorRepFlags {
+                b_net_owner: false,
+                b_net_initial: true,
+                b_net_simulated: true,
+                b_rep_physics: true,
+                b_replay: false,
+                raw_bits: 0b01110,
+                serialize_new_actor: true,
+                downgraded_autonomous_proxy_for_non_owner: true,
+            },
+            sent_bunch: true,
+            bits_written: 128,
+            updated_last_update_time: 42.5,
+            clear_b_force_compare_properties: true,
+            queue_partial_initial_retry: false,
+        }
+    );
+}

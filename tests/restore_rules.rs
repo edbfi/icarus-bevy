@@ -4434,3 +4434,362 @@ fn randomized_game_state_recorder_and_n010_to_n016_invariants() {
         );
     }
 }
+
+#[test]
+fn game_state_recorder_recording_and_restore_pipeline_evaluators() {
+    use icarus_bevy::experimental::restore_rules::{
+        BeginRecordingInputs, BeginRecordingOutcome, EndRecordingInputs, EndRecordingOutcome,
+        ResolveOwnerRecorderStateInputs, ResolveOwnerRecorderStateOutcome,
+        TryResolveRecorderStepInputs, TryResolveRecorderStepOutcome, TryRestoreActorRecorderInputs,
+        TryRestoreActorRecorderOutcome, evaluate_begin_recording, evaluate_end_recording,
+        evaluate_flush_deferred_recorder, evaluate_resolve_owner_recorder_state,
+        evaluate_try_resolve_recorder_step, evaluate_try_restore_actor_recorder,
+    };
+
+    let base_begin = BeginRecordingInputs {
+        recorder_present: true,
+        recorder_pending_kill: false,
+        owner_has_exclude_from_persistence_tag: false,
+        b_is_recording: false,
+        game_state_b_is_restoring: false,
+        add_unique_index: Some(4),
+        has_valid_owner: true,
+        b_owner_callbacks_bound: false,
+        has_saved_spawn_location: true,
+        spawn_location_non_zero: true,
+    };
+    assert_eq!(
+        evaluate_begin_recording(&BeginRecordingInputs {
+            recorder_present: false,
+            ..base_begin
+        }),
+        BeginRecordingOutcome::RejectedInvalidRecorder
+    );
+    assert_eq!(
+        evaluate_begin_recording(&BeginRecordingInputs {
+            owner_has_exclude_from_persistence_tag: true,
+            ..base_begin
+        }),
+        BeginRecordingOutcome::RejectedExcludedOwner
+    );
+    assert_eq!(
+        evaluate_begin_recording(&BeginRecordingInputs {
+            b_is_recording: true,
+            ..base_begin
+        }),
+        BeginRecordingOutcome::AlreadyRecording
+    );
+    assert_eq!(
+        evaluate_begin_recording(&BeginRecordingInputs {
+            game_state_b_is_restoring: true,
+            ..base_begin
+        }),
+        BeginRecordingOutcome::DeferredWhileRestoring
+    );
+    assert_eq!(
+        evaluate_begin_recording(&BeginRecordingInputs {
+            add_unique_index: None,
+            ..base_begin
+        }),
+        BeginRecordingOutcome::RejectedAddFailed
+    );
+    assert_eq!(
+        evaluate_begin_recording(&base_begin),
+        BeginRecordingOutcome::StartedRecording {
+            recorder_index: 4,
+            bind_owner_callbacks: true,
+            register_spawn_location_index: true,
+        }
+    );
+    assert_eq!(evaluate_flush_deferred_recorder(false, &base_begin), None);
+    assert_eq!(
+        evaluate_flush_deferred_recorder(true, &base_begin),
+        Some(BeginRecordingOutcome::StartedRecording {
+            recorder_index: 4,
+            bind_owner_callbacks: true,
+            register_spawn_location_index: true,
+        })
+    );
+
+    assert_eq!(
+        evaluate_end_recording(&EndRecordingInputs {
+            recorder_present: true,
+            owner_has_exclude_from_persistence_tag: true,
+            b_is_recording: true,
+            removed_index: Some(1),
+            new_recorder_count: 3,
+            swapped_component_has_saved_spawn_location: true,
+        }),
+        EndRecordingOutcome::Rejected
+    );
+    assert_eq!(
+        evaluate_end_recording(&EndRecordingInputs {
+            recorder_present: true,
+            owner_has_exclude_from_persistence_tag: false,
+            b_is_recording: false,
+            removed_index: None,
+            new_recorder_count: 3,
+            swapped_component_has_saved_spawn_location: false,
+        }),
+        EndRecordingOutcome::RemovedDeferredOnly
+    );
+    assert_eq!(
+        evaluate_end_recording(&EndRecordingInputs {
+            recorder_present: true,
+            owner_has_exclude_from_persistence_tag: false,
+            b_is_recording: true,
+            removed_index: Some(1),
+            new_recorder_count: 3,
+            swapped_component_has_saved_spawn_location: true,
+        }),
+        EndRecordingOutcome::RemovedActiveRecorder {
+            swapped_spawn_map_new_index: Some(1),
+            clear_recording_and_callback_flags: true,
+            remove_own_spawn_location_from_map: true,
+        }
+    );
+    // Removing the tail element (removed_index == new_recorder_count) does not swap a replacement in.
+    assert_eq!(
+        evaluate_end_recording(&EndRecordingInputs {
+            recorder_present: true,
+            owner_has_exclude_from_persistence_tag: false,
+            b_is_recording: true,
+            removed_index: Some(3),
+            new_recorder_count: 3,
+            swapped_component_has_saved_spawn_location: true,
+        }),
+        EndRecordingOutcome::RemovedActiveRecorder {
+            swapped_spawn_map_new_index: None,
+            clear_recording_and_callback_flags: true,
+            remove_own_spawn_location_from_map: true,
+        }
+    );
+
+    let base_resolve = TryResolveRecorderStepInputs {
+        recorder_present: true,
+        recorder_pending_kill: false,
+        already_has_valid_owner: false,
+        owner_resolve_policy: OwnerResolvePolicy::FindOrRespawn,
+        b_force_respawn: false,
+        found_existing_owner: true,
+        attach_to_found_owner_succeeded: true,
+        respawn_owner_succeeded: true,
+        attach_to_respawned_owner_succeeded: true,
+    };
+    assert_eq!(
+        evaluate_try_resolve_recorder_step(&base_resolve),
+        TryResolveRecorderStepOutcome::ResolvedViaExistingOwner {
+            run_post_resolve_stitching: true,
+        }
+    );
+    assert_eq!(
+        evaluate_try_resolve_recorder_step(&TryResolveRecorderStepInputs {
+            b_force_respawn: true,
+            ..base_resolve
+        }),
+        TryResolveRecorderStepOutcome::ResolvedViaRespawnedOwner {
+            destroyed_existing_owner_first: false,
+            run_post_resolve_stitching: false,
+        }
+    );
+    assert_eq!(
+        evaluate_try_resolve_recorder_step(&TryResolveRecorderStepInputs {
+            owner_resolve_policy: OwnerResolvePolicy::RespawnOnly,
+            ..base_resolve
+        }),
+        TryResolveRecorderStepOutcome::ResolvedViaRespawnedOwner {
+            destroyed_existing_owner_first: true,
+            run_post_resolve_stitching: true,
+        }
+    );
+    assert_eq!(
+        evaluate_try_resolve_recorder_step(&TryResolveRecorderStepInputs {
+            owner_resolve_policy: OwnerResolvePolicy::ManuallyResolved,
+            ..base_resolve
+        }),
+        TryResolveRecorderStepOutcome::RetainedUnresolved {
+            destroyed_existing_owner_first: false,
+            destroyed_failed_candidate_actor: false,
+        }
+    );
+
+    assert_eq!(
+        evaluate_resolve_owner_recorder_state(&ResolveOwnerRecorderStateInputs {
+            deserialized_recorder_present: true,
+            deserialized_recorder_pending_kill: false,
+            owner_actor_present: true,
+            owner_actor_pending_kill: false,
+            owner_has_matching_component: false,
+            b_can_dynamically_attach_to_owner: false,
+            dynamic_component_created: false,
+            registered_subsystem_uid: None,
+        }),
+        ResolveOwnerRecorderStateOutcome::RejectedMissingComponent
+    );
+    assert_eq!(
+        evaluate_resolve_owner_recorder_state(&ResolveOwnerRecorderStateInputs {
+            deserialized_recorder_present: true,
+            deserialized_recorder_pending_kill: false,
+            owner_actor_present: true,
+            owner_actor_pending_kill: false,
+            owner_has_matching_component: false,
+            b_can_dynamically_attach_to_owner: true,
+            dynamic_component_created: true,
+            registered_subsystem_uid: Some(77),
+        }),
+        ResolveOwnerRecorderStateOutcome::AttachedAndUpdated {
+            created_dynamic_component: true,
+            transferred_subsystem_uid: Some(77),
+        }
+    );
+
+    let base_try_restore = TryRestoreActorRecorderInputs {
+        actor_present: true,
+        actor_pending_kill: false,
+        b_require_manually_resolved: true,
+        b_only_by_spawn_location: false,
+        has_root_component: true,
+        root_translation_non_zero: true,
+        root_mobility: 0,
+        spawn_map_match_policy: Some(OwnerResolvePolicy::ManuallyResolved),
+        linear_scan_match_policy: Some(OwnerResolvePolicy::FindOrRespawn),
+        resolve_owner_succeeded: true,
+        resolved_requires_stitching: true,
+    };
+    assert_eq!(
+        evaluate_try_restore_actor_recorder(&base_try_restore),
+        TryRestoreActorRecorderOutcome::Restored {
+            matched_via_spawn_location_map: true,
+            ran_stitching_operation: true,
+        }
+    );
+    // Movable root component (mobility == 2) skips SpawnLocationToRecorderIndexMap fast-path.
+    assert_eq!(
+        evaluate_try_restore_actor_recorder(&TryRestoreActorRecorderInputs {
+            root_mobility: 2,
+            b_require_manually_resolved: false,
+            ..base_try_restore
+        }),
+        TryRestoreActorRecorderOutcome::Restored {
+            matched_via_spawn_location_map: false,
+            ran_stitching_operation: false,
+        }
+    );
+}
+
+#[test]
+fn remaining_n_slot_override_evaluators_cover_n002_n003_n004_n007_n012_n020_n026_n027() {
+    use icarus_bevy::experimental::restore_rules::{
+        N007InterfaceState, N012SubcompBState, N026StitchState, N027StitchState,
+        evaluate_n002_interface_int_transfer, evaluate_n003_stitch_linked_actor,
+        evaluate_n004_subcomponent_pair_transfer, evaluate_n007_interface_transfer,
+        evaluate_n012_record, evaluate_n012_restore, evaluate_n020_validate_override,
+        evaluate_n026_stitch_transfer, evaluate_n027_stitch_transfer,
+    };
+
+    assert!(evaluate_n020_validate_override());
+    assert_eq!(
+        evaluate_n002_interface_int_transfer(true, true, 42),
+        Some(42)
+    );
+    assert_eq!(evaluate_n002_interface_int_transfer(true, false, 42), None);
+
+    let candidates = [
+        (false, "BP_Target_C"),
+        (true, "BP_Other_C"),
+        (true, "bp_target_c"),
+    ];
+    assert_eq!(
+        evaluate_n003_stitch_linked_actor(true, 1, "BP_Target_C", &candidates),
+        Some((1, Some(2)))
+    );
+    assert_eq!(
+        evaluate_n003_stitch_linked_actor(false, 1, "BP_Target_C", &candidates),
+        None
+    );
+
+    assert_eq!(
+        evaluate_n004_subcomponent_pair_transfer(true, true, (10, 20)),
+        Some((10, 20))
+    );
+    assert_eq!(
+        evaluate_n004_subcomponent_pair_transfer(true, false, (10, 20)),
+        None
+    );
+
+    let n007_state = N007InterfaceState {
+        byte_290: 1,
+        byte_291: 2,
+        int_294: 100,
+        float_298: 0.5,
+        row_name_29c: "Row_A".to_owned(),
+        float_2a4: 1.5,
+        float_2a8: 2.5,
+    };
+    assert_eq!(
+        evaluate_n007_interface_transfer(true, true, &n007_state),
+        Some(n007_state.clone())
+    );
+    assert_eq!(
+        evaluate_n007_interface_transfer(true, false, &n007_state),
+        None
+    );
+
+    let sub_b = N012SubcompBState {
+        compact_entries_210: vec![("Entry_A".to_owned(), 3)],
+        flag_220: 1,
+        value_224: 9,
+        byte_228: 1,
+        row_name_22c: "Setup_B".to_owned(),
+        text_238: "Alpha".to_owned(),
+        text_248: "Beta".to_owned(),
+    };
+    let n012_rec = evaluate_n012_record(
+        true,
+        true,
+        true,
+        Some(77),
+        88,
+        Some([1, 2, 3, 4]),
+        [0, 0, 0, 0],
+        "Npc_Row",
+        Some((2, 10, "SubA_Row", vec![5, 6], 11)),
+        Some(false),
+        Some(sub_b),
+    )
+    .expect("N012 record should succeed");
+    assert_eq!(n012_rec.subcomp_a.byte_1e0, 2);
+    assert!(!n012_rec.subcomp_a.flag_1f0);
+    let n012_rest = evaluate_n012_restore(true, true, true, true, true, true, true, 2, &n012_rec)
+        .expect("N012 restore should succeed");
+    assert_eq!(
+        n012_rest,
+        (
+            (true, Some(77), 88, [Some(1), Some(2), Some(3), Some(4)]),
+            true,
+            true,
+            true,
+            true,
+        )
+    );
+
+    let n026 = N026StitchState {
+        array_1c0: vec![1, 2],
+        int_1d0: 3,
+        array_1d8: vec![4],
+        int_1e8: 5,
+    };
+    assert_eq!(
+        evaluate_n026_stitch_transfer(true, &n026),
+        Some(n026.clone())
+    );
+    assert_eq!(evaluate_n026_stitch_transfer(false, &n026), None);
+
+    let n027 = N027StitchState {
+        byte_1c0: 1,
+        int_1c4: 10,
+        int_1c8: 20,
+    };
+    assert_eq!(evaluate_n027_stitch_transfer(true, n027), Some(n027));
+    assert_eq!(evaluate_n027_stitch_transfer(false, n027), None);
+}
