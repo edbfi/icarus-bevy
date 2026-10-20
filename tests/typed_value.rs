@@ -429,3 +429,42 @@ fn debug_output_never_contains_names_or_values() {
         }
     }
 }
+
+#[test]
+fn a_container_with_an_undecodable_item_stays_one_exact_gap() {
+    let set_ext = [BOOL, &[0]].concat();
+    let set_payload = [&0_i32.to_le_bytes()[..], &2_i32.to_le_bytes(), &[1, 2]].concat();
+    let set_kind: &[u8] = b"\x0c\0\0\0SetProperty\0";
+    let bytes = stream(&[
+        named("Flags", set_kind, &set_ext, &set_payload),
+        named("After", INT, &[0], &7_i32.to_le_bytes()),
+    ]);
+    let (tree, summary) = typed_with_summary(&bytes);
+    assert!(matches!(
+        tree.get("Flags").unwrap().value,
+        Value::Uninterpreted {
+            gap: Gap::ContainerItem,
+            ..
+        }
+    ));
+    assert!(matches!(
+        tree.get("After").unwrap().value,
+        Value::Scalar(Scalar::Int(7))
+    ));
+    // Counts made while trying the container are rolled back.
+    assert_eq!(
+        (summary.sets, summary.container_items, summary.bools),
+        (0, 0, 0)
+    );
+    assert_eq!(summary.uninterpreted, 1);
+}
+
+#[test]
+fn fixed_struct_debug_prints_layout_not_values() {
+    let printed = format!(
+        "{:?} {:?}",
+        FixedStruct::F32(vec![1234.5, 6789.25, 42.0]),
+        FixedStruct::I64(0x5151_5151_5151)
+    );
+    assert_eq!(printed, "F32x3 I64");
+}

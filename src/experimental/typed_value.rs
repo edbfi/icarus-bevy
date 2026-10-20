@@ -95,6 +95,9 @@ pub enum Gap {
     ArrayFraming,
     /// A Map or Set the lossless tree left opaque.
     ContainerUnframed,
+    /// A framed Map or Set with an item that does not decode under its kind;
+    /// the whole container stays exact bytes.
+    ContainerItem,
     /// A binary Struct container item, whose struct name the header omits.
     UnnamedContainerStruct,
     /// A Text payload outside the strict text-frame subset.
@@ -106,7 +109,7 @@ pub enum Gap {
 }
 
 /// Fixed-width native struct parts, in serialized order.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, PartialEq)]
 pub enum FixedStruct {
     F32(Vec<f32>),
     I32(Vec<i32>),
@@ -404,6 +407,18 @@ impl Scalar {
     }
 }
 
+impl fmt::Debug for FixedStruct {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        // Parts may be private player data; print only the layout.
+        match self {
+            Self::F32(parts) => write!(f, "F32x{}", parts.len()),
+            Self::I32(parts) => write!(f, "I32x{}", parts.len()),
+            Self::U32(parts) => write!(f, "U32x{}", parts.len()),
+            Self::I64(_) => f.write_str("I64"),
+        }
+    }
+}
+
 impl fmt::Debug for Scalar {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         // Values may be private player data; print only the variant.
@@ -471,32 +486,16 @@ impl Typer {
                         .collect::<Result<_>>()?,
                 }
             }
-            NodeValue::Map { removed, entries } => {
-                self.summary.maps += 1;
-                let (key, value) = container_kinds(&node.header, PROFILE)?;
-                Value::Map {
-                    removed: removed
-                        .iter()
-                        .map(|item| self.item(key, item))
-                        .collect::<Result<_>>()?,
-                    entries: entries
-                        .iter()
-                        .map(|(k, v)| Ok((self.item(key, k)?, self.item(value, v)?)))
-                        .collect::<Result<_>>()?,
-                }
-            }
-            NodeValue::Set { removed, elements } => {
-                self.summary.sets += 1;
-                let (element, _) = container_kinds(&node.header, PROFILE)?;
-                Value::Set {
-                    removed: removed
-                        .iter()
-                        .map(|item| self.item(element, item))
-                        .collect::<Result<_>>()?,
-                    elements: elements
-                        .iter()
-                        .map(|item| self.item(element, item))
-                        .collect::<Result<_>>()?,
+            NodeValue::Map { .. } | NodeValue::Set { .. } => {
+                // A failed item demotes the whole container; counts made
+                // while trying are rolled back.
+                let saved = self.summary.clone();
+                match self.container(node) {
+                    Ok(value) => value,
+                    Err(_) => {
+                        self.summary = saved;
+                        self.uninterpreted(Gap::ContainerItem, &payload)
+                    }
                 }
             }
         };
@@ -507,6 +506,40 @@ impl Typer {
             header: node.header.clone(),
             value,
         })
+    }
+
+    fn container(&mut self, node: &PropertyNode) -> Result<Value> {
+        match &node.value {
+            NodeValue::Map { removed, entries } => {
+                self.summary.maps += 1;
+                let (key, value) = container_kinds(&node.header, PROFILE)?;
+                Ok(Value::Map {
+                    removed: removed
+                        .iter()
+                        .map(|item| self.item(key, item))
+                        .collect::<Result<_>>()?,
+                    entries: entries
+                        .iter()
+                        .map(|(k, v)| Ok((self.item(key, k)?, self.item(value, v)?)))
+                        .collect::<Result<_>>()?,
+                })
+            }
+            NodeValue::Set { removed, elements } => {
+                self.summary.sets += 1;
+                let (element, _) = container_kinds(&node.header, PROFILE)?;
+                Ok(Value::Set {
+                    removed: removed
+                        .iter()
+                        .map(|item| self.item(element, item))
+                        .collect::<Result<_>>()?,
+                    elements: elements
+                        .iter()
+                        .map(|item| self.item(element, item))
+                        .collect::<Result<_>>()?,
+                })
+            }
+            _ => anyhow::bail!("not a framed container"),
+        }
     }
 
     /// Re-encode a typed value; a mismatch demotes it to an exact gap leaf.

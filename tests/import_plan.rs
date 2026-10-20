@@ -60,6 +60,10 @@ fn floats(values: &[f32]) -> Vec<u8> {
 struct Body {
     translation: [f32; 3],
     gap: bool,
+    /// `OwnerResolvePolicy` as a raw ByteProperty value instead of an enum name.
+    owner_byte: bool,
+    /// `ActorClassName` under an unexpected wire type (IntProperty).
+    class_as_int: bool,
 }
 
 fn component(body: &Body) -> Vec<u8> {
@@ -70,14 +74,29 @@ fn component(body: &Body) -> Vec<u8> {
         end(),
     ]
     .concat();
-    let mut fields = vec![
+    let owner = if body.owner_byte {
+        tag(
+            "OwnerResolvePolicy",
+            "ByteProperty",
+            &[fstring("None"), vec![0]].concat(),
+            &[2],
+        )
+    } else {
         tag(
             "OwnerResolvePolicy",
             "EnumProperty",
             &[fstring("EStateRecorderOwnerResolvePolicy"), vec![0]].concat(),
             &fstring("EStateRecorderOwnerResolvePolicy::FindOrRespawn"),
-        ),
-        tag("ActorClassName", "NameProperty", &[0], &fstring(ROW)),
+        )
+    };
+    let class = if body.class_as_int {
+        tag("ActorClassName", "IntProperty", &[0], &5_i32.to_le_bytes())
+    } else {
+        tag("ActorClassName", "NameProperty", &[0], &fstring(ROW))
+    };
+    let mut fields = vec![
+        owner,
+        class,
         tag("ActorPathName", "StrProperty", &[0], &fstring(PATH)),
         tag("bWasMovedToSubLevel", "BoolProperty", &[0, 0], &[]),
         struct_tag("ActorTransform", "Transform", &transform),
@@ -160,6 +179,8 @@ fn units(text: &str) -> Vec<u16> {
 const CLEAN: Body = Body {
     translation: [10.0, -20.0, 30.0],
     gap: false,
+    owner_byte: false,
+    class_as_int: false,
 };
 
 #[test]
@@ -288,6 +309,7 @@ fn non_finite_transforms_block_import() {
             &Body {
                 translation: [f32::NAN, 0.0, f32::INFINITY],
                 gap: false,
+                ..CLEAN
             },
         )],
     );
@@ -353,6 +375,7 @@ fn planned_actors_keep_retained_finite_transforms_in_order() {
                 &Body {
                     translation: [f32::NAN, 0.0, 0.0],
                     gap: false,
+                    ..CLEAN
                 },
             ),
             recorder(
@@ -360,6 +383,7 @@ fn planned_actors_keep_retained_finite_transforms_in_order() {
                 &Body {
                     translation: [1.5, 2.5, -3.5],
                     gap: true,
+                    ..CLEAN
                 },
             ),
         ],
@@ -375,4 +399,49 @@ fn planned_actors_keep_retained_finite_transforms_in_order() {
         actors[0].class_label,
         recorder_class_label(&units(ACTOR)).unwrap()
     );
+}
+
+#[test]
+fn byte_owner_policies_count_and_unexpected_base_types_block() {
+    let catalog = ContentCatalog::from_references([ROW, PATH, "SecretTile"]);
+    let bytes = envelope(
+        2,
+        &[recorder(
+            ACTOR,
+            &Body {
+                owner_byte: true,
+                ..CLEAN
+            },
+        )],
+    );
+    let plan = plan_import(bytes.as_slice(), &catalog).unwrap();
+    assert_eq!(plan.base_fields.with_owner_policy, 1);
+    assert_eq!(plan.base_fields.unexpected_types, 0);
+    assert_eq!(plan.actors.owner_resolution["find_or_respawn"], 1);
+    assert!(plan.importable);
+
+    let odd = envelope(
+        2,
+        &[recorder(
+            ACTOR,
+            &Body {
+                class_as_int: true,
+                ..CLEAN
+            },
+        )],
+    );
+    let plan = plan_import(odd.as_slice(), &catalog).unwrap();
+    assert_eq!(plan.base_fields.unexpected_types, 1);
+    assert_eq!(
+        plan.blockers,
+        vec![ImportBlocker::UnexpectedBaseFieldTypes { fields: 1 }]
+    );
+    assert!(!plan.importable);
+}
+
+#[test]
+fn catalog_debug_prints_only_its_size() {
+    let printed = format!("{:?}", ContentCatalog::from_references([ROW, PATH]));
+    assert!(!printed.contains("Secret") && !printed.contains("83"));
+    assert!(printed.contains("references: 2"));
 }

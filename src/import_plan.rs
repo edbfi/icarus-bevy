@@ -55,9 +55,18 @@ const ACTOR_TRANSFORM: &str = "ActorTransform";
 /// Independently authored native content the importer can resolve references
 /// against. Empty until native world data exists; every reference it lacks
 /// blocks import.
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Default)]
 pub struct ContentCatalog {
     references: BTreeSet<Vec<u16>>,
+}
+
+impl std::fmt::Debug for ContentCatalog {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        // References come from supplied saves; print only the count.
+        f.debug_struct("ContentCatalog")
+            .field("references", &self.references.len())
+            .finish()
+    }
 }
 
 impl ContentCatalog {
@@ -100,6 +109,9 @@ pub enum ImportBlocker {
     UnmappedContent { distinct: usize, references: usize },
     /// Actor transforms with a non-finite component.
     NonFiniteTransforms { recorders: usize },
+    /// Base recorder fields under an unexpected wire type, whose references
+    /// and policies the plan could not read.
+    UnexpectedBaseFieldTypes { fields: usize },
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize)]
@@ -357,6 +369,11 @@ pub fn plan_import(reader: impl Read, catalog: &ContentCatalog) -> Result<Import
             references: plan.content.unmapped_references,
         });
     }
+    if plan.base_fields.unexpected_types > 0 {
+        plan.blockers.push(ImportBlocker::UnexpectedBaseFieldTypes {
+            fields: plan.base_fields.unexpected_types,
+        });
+    }
     if plan.actors.non_finite_transforms > 0 {
         plan.blockers.push(ImportBlocker::NonFiniteTransforms {
             recorders: plan.actors.non_finite_transforms,
@@ -394,7 +411,13 @@ fn base_fields(tree: &TypedTree, plan: &mut BaseFieldPlan) {
     let mut sublevel = 0;
     check(
         OWNER_POLICY,
-        |p| matches!(p.value, Value::Scalar(Scalar::Enum(_))),
+        // Staging accepts the enum name or, as a ByteProperty, the raw value.
+        |p| {
+            matches!(
+                p.value,
+                Value::Scalar(Scalar::Enum(_)) | Value::Scalar(Scalar::Byte(_))
+            )
+        },
         &mut owner,
     );
     check(
