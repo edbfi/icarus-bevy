@@ -9,8 +9,13 @@ use clap::Parser;
 use icarus_bevy::experimental::{
     actor_channel::{ActorChannelCodec, ActorChannelLimits},
     archive::ByteOrder,
+    rep_layout::{
+        MovementLevel, RepLayoutCodec, RepLayoutLimits, RotationLevel, TagEncoding,
+        actor_component_rep_layout, icarus_player_controller_survival_rep_layout,
+    },
     session_open::{
-        ComponentExport, NetGuidCache, PathSegment, PlayerControllerProfile, encode_exports,
+        ComponentBlock, ComponentExport, NetGuidCache, PathSegment, PlayerControllerOpenState,
+        PlayerControllerProfile, compose_player_controller_open_body, encode_exports,
     },
 };
 use serde::Deserialize;
@@ -27,7 +32,9 @@ struct Options {
 struct ProfileFile {
     archetype: Vec<(String, u32, bool)>,
     level: Vec<(String, u32, bool)>,
-    components: Vec<(String, u32)>,
+    /// `[name, checksum, block]`: block `null`, `"create"` or `[[handle, bool]...]`.
+    components: Vec<(String, u32, serde_json::Value)>,
+    spawn_location: [f32; 3],
 }
 
 fn segments(items: &[(String, u32, bool)]) -> Vec<PathSegment> {
@@ -47,7 +54,17 @@ fn main() -> Result<()> {
         components: file
             .components
             .into_iter()
-            .map(|(name, checksum)| ComponentExport { name, checksum })
+            .map(|(name, checksum, block)| ComponentExport {
+                name,
+                checksum,
+                block: match block {
+                    serde_json::Value::Null => ComponentBlock::None,
+                    serde_json::Value::String(_) => ComponentBlock::CreateOnly,
+                    other => {
+                        ComponentBlock::RepBools(serde_json::from_value(other).unwrap_or_default())
+                    }
+                },
+            })
             .collect(),
     };
     let codec = ActorChannelCodec {
@@ -61,6 +78,46 @@ fn main() -> Result<()> {
     cache.register_level(&profile.level);
     let (guids, references) = cache.player_controller_exports(&profile)?;
     let payload = encode_exports(&references, &codec)?;
+    let actor_layout = icarus_player_controller_survival_rep_layout(
+        MovementLevel::Whole,
+        MovementLevel::Whole,
+        RotationLevel::Bytes,
+        TagEncoding::NetIndex {
+            first_segment: 12,
+            total_bits: 12,
+        },
+    );
+    let rep_codec = RepLayoutCodec {
+        actor: ActorChannelCodec {
+            has_level: true,
+            ..codec
+        },
+        checksums: false,
+        limits: RepLayoutLimits::default(),
+    };
+    let state = PlayerControllerOpenState {
+        spawn_location: file.spawn_location,
+        net_player_index: 0,
+        remote_role: 2,
+        role: 3,
+    };
+    let body = compose_player_controller_open_body(
+        &guids,
+        &profile,
+        &state,
+        &actor_layout,
+        &actor_component_rep_layout(),
+        &rep_codec,
+    )?;
+    let body_payload =
+        icarus_bevy::experimental::actor_channel::encode_player_controller_open_bunch_body(
+            &body, &codec,
+        )?;
+    let body_hex: String = body_payload
+        .bytes()
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect();
     let hex: String = payload
         .bytes()
         .iter()
@@ -69,7 +126,8 @@ fn main() -> Result<()> {
     println!(
         "{}",
         json!({"bits": payload.bit_len(), "guids": references.iter().map(|r| r.guid).collect::<Vec<_>>(),
-        "actor": guids.actor, "player_state": guids.player_state, "payload_hex": hex})
+        "actor": guids.actor, "player_state": guids.player_state, "payload_hex": hex,
+        "body_bits": body_payload.bit_len(), "body_hex": body_hex})
     );
     Ok(())
 }

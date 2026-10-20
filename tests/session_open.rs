@@ -3,7 +3,8 @@ use icarus_bevy::experimental::actor_channel::{
 };
 use icarus_bevy::experimental::archive::ByteOrder;
 use icarus_bevy::experimental::session_open::{
-    ComponentExport, NetGuidCache, PathSegment, PlayerControllerProfile, encode_exports,
+    ComponentBlock, ComponentExport, NetGuidCache, PathSegment, PlayerControllerProfile,
+    encode_exports,
 };
 
 fn codec() -> ActorChannelCodec {
@@ -34,6 +35,7 @@ fn profile() -> PlayerControllerProfile {
             .map(|(i, name)| ComponentExport {
                 name: (*name).to_owned(),
                 checksum: 100 + i as u32,
+                block: ComponentBlock::None,
             })
             .collect(),
     }
@@ -102,4 +104,117 @@ fn a_connection_exports_each_static_path_once() {
     assert!(first.export.is_some());
     assert_eq!(again.guid, first.guid);
     assert!(again.export.is_none());
+}
+
+#[test]
+fn spawn_vectors_quantize_like_write_packed_vector() {
+    use icarus_bevy::experimental::actor_channel::SpawnVector;
+    use icarus_bevy::experimental::session_open::quantize_spawn_vector;
+    // max |v * 10| = 1034990 -> CeilLogTwo(1034991) = 20 -> 19 bits, bias 1 << 20.
+    let SpawnVector::Quantized { bits, components } =
+        quantize_spawn_vector([248.0, 3.0, 103_499.0]).unwrap()
+    else {
+        panic!("not quantized");
+    };
+    assert_eq!(bits, 19);
+    assert_eq!(
+        components,
+        [2480 + (1 << 20), 30 + (1 << 20), 1_034_990 + (1 << 20)]
+    );
+    let SpawnVector::Quantized { bits, components } = quantize_spawn_vector([0.0; 3]).unwrap()
+    else {
+        panic!("not quantized");
+    };
+    assert_eq!((bits, components), (0, [2, 2, 2]));
+    assert!(quantize_spawn_vector([f32::NAN, 0.0, 0.0]).is_err());
+}
+
+#[test]
+fn open_body_carries_roles_references_and_component_blocks() {
+    use icarus_bevy::experimental::actor_channel::{
+        BlockTarget, encode_player_controller_open_bunch_body, parse_player_controller_open_bunch,
+    };
+    use icarus_bevy::experimental::packet::{Bunch, BunchHeader};
+    use icarus_bevy::experimental::rep_layout::{
+        MovementLevel, RepLayoutCodec, RepLayoutLimits, RepValue, RotationLevel, TagEncoding,
+        actor_component_rep_layout, icarus_player_controller_survival_rep_layout,
+        read_rep_properties,
+    };
+    use icarus_bevy::experimental::session_open::{
+        PlayerControllerOpenState, compose_player_controller_open_body,
+    };
+    let mut profile = profile();
+    profile.components[0].block = ComponentBlock::RepBools(vec![(2, true)]);
+    profile.components[2].block = ComponentBlock::CreateOnly;
+    let mut cache = NetGuidCache::new();
+    cache.register_level(&profile.level);
+    let (guids, _) = cache.player_controller_exports(&profile).unwrap();
+    let layout = icarus_player_controller_survival_rep_layout(
+        MovementLevel::Whole,
+        MovementLevel::Whole,
+        RotationLevel::Bytes,
+        TagEncoding::NetIndex {
+            first_segment: 12,
+            total_bits: 12,
+        },
+    );
+    let rep_codec = RepLayoutCodec {
+        actor: codec(),
+        checksums: false,
+        limits: RepLayoutLimits::default(),
+    };
+    let state = PlayerControllerOpenState {
+        spawn_location: [100.0, -50.0, 2_000.0],
+        net_player_index: 0,
+        remote_role: 2,
+        role: 3,
+    };
+    let body = compose_player_controller_open_body(
+        &guids,
+        &profile,
+        &state,
+        &layout,
+        &actor_component_rep_layout(),
+        &rep_codec,
+    )
+    .unwrap();
+    // Actor block plus two component blocks (Beta has none).
+    assert_eq!(body.blocks.len(), 3);
+    let actor =
+        read_rep_properties(&mut body.blocks[0].payload.reader(), &layout, &rep_codec).unwrap();
+    let handles: Vec<u32> = actor.entries.iter().map(|e| e.handle).collect();
+    assert_eq!(handles, vec![5, 14, 16, 19, 22, 23, 24]);
+    assert!(matches!(actor.entries[0].value, RepValue::Byte(2)));
+    assert!(matches!(actor.entries[1].value, RepValue::Byte(3)));
+    assert!(matches!(&actor.entries[2].value, RepValue::Object(r) if r.guid == 4));
+    let BlockTarget::SubObject { object, .. } = &body.blocks[1].target else {
+        panic!("component block expected");
+    };
+    assert_eq!(object.guid, 6);
+    assert!(!body.blocks[2].has_rep_layout && body.blocks[2].payload.bit_len() == 0);
+    // The body survives the open-bunch encoder and parser unchanged.
+    let payload = encode_player_controller_open_bunch_body(&body, &codec()).unwrap();
+    let bunch = Bunch {
+        header: BunchHeader {
+            control: true,
+            open: true,
+            close: false,
+            close_reason: None,
+            paused: false,
+            reliable: false,
+            channel_index: 2,
+            has_package_map_exports: false,
+            has_must_be_mapped_guids: false,
+            partial: false,
+            reliable_sequence_raw: None,
+            partial_initial: false,
+            partial_final: false,
+            channel_name: None,
+        },
+        payload,
+    };
+    assert_eq!(
+        parse_player_controller_open_bunch(&bunch, &codec()).unwrap(),
+        body
+    );
 }

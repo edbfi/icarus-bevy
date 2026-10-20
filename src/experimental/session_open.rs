@@ -22,10 +22,14 @@ use std::collections::{BTreeMap, BTreeSet};
 use anyhow::{Context, Result};
 
 use super::actor_channel::{
-    ActorChannelCodec, ExportPath, GuidExport, NetGuidRef, write_export_prefix,
+    ActorChannelCodec, BlockTarget, ContentBlock, DynamicSpawn, ExportPath, GuidExport, NetGuidRef,
+    PlayerControllerOpenBunchBody, SpawnRecord, SpawnVector, SubObjectClass, write_export_prefix,
 };
 use super::control_messages::ArchiveText;
 use super::packet::{BitWriter, Payload};
+use super::rep_layout::{
+    PropertyStream, RepCommand, RepEntry, RepLayoutCodec, RepValue, encode_rep_properties,
+};
 
 /// One segment of a static object's outer chain, leaf first.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -46,11 +50,24 @@ impl PathSegment {
     }
 }
 
+/// What a component contributes to the open body (release data, F-778).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub enum ComponentBlock {
+    /// No content block (referenced by property only).
+    #[default]
+    None,
+    /// A stably named subobject block without properties.
+    CreateOnly,
+    /// A stably named subobject block with these `UActorComponent` bool handles.
+    RepBools(Vec<(u32, bool)>),
+}
+
 /// A replicated component of the PlayerController, in serialization order.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ComponentExport {
     pub name: String,
     pub checksum: u32,
+    pub block: ComponentBlock,
 }
 
 /// Release-specific identifiers for the PlayerController open.
@@ -216,4 +233,139 @@ pub fn encode_exports(references: &[NetGuidRef], codec: &ActorChannelCodec) -> R
     let mut writer = BitWriter::new();
     write_export_prefix(&mut writer, references, codec)?;
     Ok(Payload::from_writer(writer))
+}
+
+/// `WritePackedVector<10, 24>`: each component rounded at a scale of 10; the
+/// bit count is `CeilLogTwo(1 + max |v|) - 1` (capped at 24), biased by
+/// `1 << (bits + 1)` (F-571, F-573).
+pub fn quantize_spawn_vector(value: [f32; 3]) -> anyhow::Result<SpawnVector> {
+    anyhow::ensure!(
+        value.iter().all(|v| v.is_finite()),
+        "spawn vector must be finite"
+    );
+    let scaled = value.map(|v| (v * 10.0 + 0.5).floor() as i64);
+    let max = scaled.iter().map(|v| v.unsigned_abs()).max().unwrap_or(0);
+    let ceil_log2 = 64 - max.leading_zeros();
+    let bits = ceil_log2.clamp(1, 24) - 1;
+    let bias = 1i64 << (bits + 1);
+    let components = scaled.map(|v| (v + bias) as u32);
+    anyhow::ensure!(
+        components
+            .iter()
+            .all(|c| u64::from(*c) < (1u64 << (bits + 2))),
+        "spawn vector exceeds the 24-bit packed range"
+    );
+    Ok(SpawnVector::Quantized { bits, components })
+}
+
+/// Server-chosen values of a PlayerController open (F-778).
+#[derive(Clone, Debug, PartialEq)]
+pub struct PlayerControllerOpenState {
+    pub spawn_location: [f32; 3],
+    pub net_player_index: u8,
+    /// `ENetRole` as seen by the owning client (`ROLE_AutonomousProxy` = 2).
+    pub remote_role: u8,
+    /// `ROLE_Authority` = 3.
+    pub role: u8,
+}
+
+/// Handles of the PlayerController layout this composer writes (F-778).
+const HANDLE_REMOTE_ROLE: u32 = 5;
+const HANDLE_ROLE: u32 = 14;
+const HANDLE_PLAYER_STATE: u32 = 16;
+const HANDLE_SPAWN_LOCATION: u32 = 19;
+/// `BackendProxyComponent`, `PlayerDataComponent`, `BestiaryManagerComponent`.
+const HANDLE_FIRST_COMPONENT: u32 = 22;
+const COMPONENT_HANDLES: usize = 3;
+
+fn entry(handle: u32, value: RepValue) -> RepEntry {
+    RepEntry {
+        handle,
+        checksum: None,
+        value,
+    }
+}
+
+/// Compose the PlayerController open body: spawn record, `NetPlayerIndex`,
+/// the actor's initial properties and the component blocks, using `profile`
+/// for component block kinds and the caller's rep layouts.
+pub fn compose_player_controller_open_body(
+    guids: &PlayerControllerGuids,
+    profile: &PlayerControllerProfile,
+    state: &PlayerControllerOpenState,
+    actor_layout: &[RepCommand],
+    component_layout: &[RepCommand],
+    codec: &RepLayoutCodec,
+) -> Result<PlayerControllerOpenBunchBody> {
+    let spawn = SpawnRecord {
+        actor: NetGuidRef::plain(guids.actor),
+        dynamic: Some(DynamicSpawn {
+            archetype: NetGuidRef::plain(guids.archetype),
+            level: Some(NetGuidRef::plain(guids.level)),
+            location: Some(quantize_spawn_vector(state.spawn_location)?),
+            rotation: None,
+            scale: None,
+            velocity: None,
+        }),
+    };
+    let mut entries = vec![
+        entry(HANDLE_REMOTE_ROLE, RepValue::Byte(state.remote_role)),
+        entry(HANDLE_ROLE, RepValue::Byte(state.role)),
+        entry(
+            HANDLE_PLAYER_STATE,
+            RepValue::Object(NetGuidRef::plain(guids.player_state)),
+        ),
+        entry(
+            HANDLE_SPAWN_LOCATION,
+            RepValue::Vector(state.spawn_location.map(f32::to_bits)),
+        ),
+    ];
+    for (offset, guid) in guids.components.iter().take(COMPONENT_HANDLES).enumerate() {
+        entries.push(entry(
+            HANDLE_FIRST_COMPONENT + offset as u32,
+            RepValue::Object(NetGuidRef::plain(*guid)),
+        ));
+    }
+    let actor_stream = PropertyStream {
+        entries,
+        terminator_checksum: None,
+    };
+    let mut blocks = vec![ContentBlock {
+        has_rep_layout: true,
+        target: BlockTarget::Actor,
+        payload: encode_rep_properties(&actor_stream, actor_layout, codec)?,
+    }];
+    for (component, guid) in profile.components.iter().zip(&guids.components) {
+        let target = BlockTarget::SubObject {
+            object: NetGuidRef::plain(*guid),
+            class: SubObjectClass::StablyNamed,
+        };
+        match &component.block {
+            ComponentBlock::None => {}
+            ComponentBlock::CreateOnly => blocks.push(ContentBlock {
+                has_rep_layout: false,
+                target,
+                payload: Payload::from_writer(BitWriter::new()),
+            }),
+            ComponentBlock::RepBools(values) => {
+                let stream = PropertyStream {
+                    entries: values
+                        .iter()
+                        .map(|(handle, flag)| entry(*handle, RepValue::Bool(*flag)))
+                        .collect(),
+                    terminator_checksum: None,
+                };
+                blocks.push(ContentBlock {
+                    has_rep_layout: true,
+                    target,
+                    payload: encode_rep_properties(&stream, component_layout, codec)?,
+                });
+            }
+        }
+    }
+    Ok(PlayerControllerOpenBunchBody {
+        spawn,
+        net_player_index: state.net_player_index,
+        blocks,
+    })
 }
