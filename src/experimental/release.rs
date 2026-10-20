@@ -375,7 +375,7 @@ pub struct ReleasePlayerControllerProfile {
     pub components: Vec<ReleaseComponent>,
 }
 
-/// `UActorComponent`'s two bool handles (F-705).
+/// `UActorComponent`'s two bool handles (F-703).
 const ACTOR_COMPONENT_BOOL_HANDLES: std::ops::RangeInclusive<u32> = 1..=2;
 
 impl ReleasePlayerControllerProfile {
@@ -664,8 +664,9 @@ impl ReleaseProfile {
         build_id: u64,
     ) -> Option<ReleasePlayerControllerProfile> {
         match build_id {
-            25_793_607 | 25_793_767 => Self::release_3_0_31().player_controller,
-            25_956_137 => Self::release_3_0_32().player_controller,
+            25_793_607 | 25_793_767 | 25_956_137 => {
+                Some(ReleasePlayerControllerProfile::icarus_survival())
+            }
             _ => None,
         }
     }

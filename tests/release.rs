@@ -205,6 +205,7 @@ fn builtin_player_controller_profiles_compose_the_captured_export_prefix() {
         archive::ByteOrder,
         session_open::{ConnectionExports, NetGuidCache, PathSegment, encode_exports},
     };
+    use sha2::{Digest, Sha256};
     let p31 = ReleaseProfile::release_3_0_31().player_controller.unwrap();
     assert_eq!(
         ReleaseProfile::release_3_0_32().player_controller.as_ref(),
@@ -231,10 +232,18 @@ fn builtin_player_controller_profiles_compose_the_captured_export_prefix() {
         order: ByteOrder::Little,
         limits: ActorChannelLimits::default(),
     };
-    // F-778: the captured first part's export prefix is 3,793 bits.
+    // F-778/F-779: the captured first part's export prefix is these 3,793
+    // bits (SHA-256 of its 475 bytes in the M-707 capture, pinned by M-819),
+    // so any wrong path, flag or checksum in the built-in identifiers fails.
+    let payload = encode_exports(&references, &codec).unwrap();
+    assert_eq!(payload.bit_len(), 3_793);
+    let digest: String = Sha256::digest(payload.bytes())
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect();
     assert_eq!(
-        encode_exports(&references, &codec).unwrap().bit_len(),
-        3_793
+        digest,
+        "927793245d9f2a5801c56ba40acb482570729030d5f53643760c4a12a7c02399"
     );
 }
 
