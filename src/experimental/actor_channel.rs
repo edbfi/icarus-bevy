@@ -1859,3 +1859,264 @@ pub fn evaluate_player_controller_net_priority(
     let viewer_multiplier = if is_in_viewer { 4.0 } else { 1.0 };
     time * viewer_multiplier * net_priority
 }
+
+/// Maximum receive idle time (`Driver->ElapsedTime - Conn->LastReceiveTime < 1.5`
+/// at `0x1453e4ba0` server / `0x14553fa98` client) for a `UNetConnection` to be
+/// treated as ready in `UNetDriver::ServerReplicateActors_PrepConnections`
+/// (`0x143723dc0` server / `0x1439c0b20` client, F-748).
+pub const PREP_CONNECTIONS_RECEIVE_TIMEOUT_SECONDS: f64 = 1.5;
+
+/// Delay threshold (`World->TimeSeconds - LastNetReplicateTime > 2.0` at
+/// `0x14474a53c` server / `0x14489ef7c` client) before adaptive net-update
+/// frequency scaling activates in
+/// `UNetDriver::ServerReplicateActors_BuildConsiderList` (`0x1437235a0` server
+/// / `0x1439c0530` client, F-748).
+pub const ADAPTIVE_NET_UPDATE_DELAY_THRESHOLD_SECONDS: f32 = 2.0;
+
+/// Scale factor (`0.2` at `0x14476f360` server / `0x1448ca8fc` client) applied
+/// to `LastNetUpdateDelta - 2.0` when computing the adaptive interpolation
+/// alpha in `UNetDriver::ServerReplicateActors_BuildConsiderList` (F-748).
+pub const ADAPTIVE_NET_UPDATE_LERP_SCALE: f32 = 0.2;
+
+/// Default `AActor::MinNetUpdateFrequency` (`[actor + 0x10c] = 0x40000000` =
+/// `2.0f`) written when `MinNetUpdateFrequency == 0.0` in
+/// `UNetDriver::ServerReplicateActors_BuildConsiderList` (F-748).
+pub const DEFAULT_MIN_NET_UPDATE_FREQUENCY: f32 = 2.0;
+
+/// Evaluate `AOnlineBeacon::IsNetRelevantFor` (`0x1409a5780` server /
+/// `0x1409cc210` client, `97` B, F-748).
+///
+/// Calls `SrcActor->GetNetConnection()` (`vtable + 0x4b0`) and
+/// `this->GetNetConnection()` (`vtable + 0x4b0`), and compares `this->Class`
+/// (`[this + 0x10]`) with `RealViewer->Class` (`[RealViewer + 0x10]`). When
+/// `b_only_relevant_to_owner` (`([this + 0x58] & 0x04) != 0`) is set, returns
+/// `beacon_net_connection == src_actor_net_connection`; otherwise returns
+/// `beacon_class == real_viewer_class`.
+pub fn evaluate_online_beacon_net_relevancy<C: PartialEq, N: PartialEq>(
+    b_only_relevant_to_owner: bool,
+    beacon_class: C,
+    real_viewer_class: C,
+    beacon_net_connection: N,
+    src_actor_net_connection: N,
+) -> bool {
+    let same_net_connection = beacon_net_connection == src_actor_net_connection;
+    let same_class = beacon_class == real_viewer_class;
+    if b_only_relevant_to_owner {
+        same_net_connection
+    } else {
+        same_class
+    }
+}
+
+/// Evaluate `AMatineeActor::GetNetPriority` (`0x143894660` server /
+/// `0x143b3f6c0` client, `147` B, F-748).
+///
+/// Calls `AActor::GetNetPriority` (`0x14333b2e0` server / `0x1435d14e0`
+/// client); when `has_open_channel` (`InChannel != nullptr` at `[rsp + 0x88]`)
+/// is `false`, adds `1.0 - (creation_time / world_time_seconds)` (`0x1446d24e8`
+/// = `1.0f`, `CreationTime` at `[this + 0x9c]`, `World->TimeSeconds` at
+/// `[world + 0x5a0]`) to the base priority.
+pub fn evaluate_matinee_actor_net_priority(
+    actor_inputs: &ActorPriorityInputs,
+    has_open_channel: bool,
+    creation_time: f32,
+    world_time_seconds: f32,
+) -> ActorPriorityOutcome {
+    match evaluate_actor_net_priority(actor_inputs) {
+        ActorPriorityOutcome::DelegateToOwner => ActorPriorityOutcome::DelegateToOwner,
+        ActorPriorityOutcome::Computed(base_priority) => {
+            if has_open_channel {
+                ActorPriorityOutcome::Computed(base_priority)
+            } else {
+                let age_bonus = 1.0 - (creation_time / world_time_seconds);
+                ActorPriorityOutcome::Computed(base_priority + age_bonus)
+            }
+        }
+    }
+}
+
+/// Evaluate the per-frame client-connection tick budget and carryover delta in
+/// `UNetDriver::ServerReplicateActors_PrepConnections` (`0x143723dc0` server /
+/// `0x1439c0b20` client, F-748).
+///
+/// Returns `(num_clients_to_tick, updated_carryover_delta_seconds)`.
+pub fn evaluate_prep_connections_tick_budget(
+    client_connection_count: usize,
+    throttle_enabled: bool,
+    delta_seconds: f32,
+    carryover_delta_seconds: f32,
+    max_net_tick_rate: f32,
+    lan_multiplier_two: bool,
+    max_connections_to_tick_per_server_frame: i32,
+) -> (usize, f32) {
+    let mut num_clients_to_tick = client_connection_count;
+    let mut updated_carryover = carryover_delta_seconds;
+    if throttle_enabled {
+        let combined_delta = delta_seconds + carryover_delta_seconds;
+        let lan_multiplier = if lan_multiplier_two { 2.0_f32 } else { 1.0_f32 };
+        let raw_budget = (combined_delta * max_net_tick_rate * lan_multiplier) as i32;
+        let clamped_budget =
+            raw_budget.min(i32::try_from(client_connection_count).unwrap_or(i32::MAX));
+        if clamped_budget <= 0 {
+            return (0, combined_delta);
+        }
+        updated_carryover = 0.0;
+        num_clients_to_tick = clamped_budget as usize;
+    }
+    if max_connections_to_tick_per_server_frame > 0 {
+        num_clients_to_tick =
+            num_clients_to_tick.min(max_connections_to_tick_per_server_frame as usize);
+    }
+    (num_clients_to_tick, updated_carryover)
+}
+
+/// Evaluate whether a `UNetConnection` is ready for actor replication in
+/// `UNetDriver::ServerReplicateActors_PrepConnections` (`0x143723dc0` server /
+/// `0x1439c0b20` client, F-748).
+///
+/// Requires `Conn->ViewTarget != nullptr` (`[conn + 0x98]`),
+/// `Conn->State == USOCK_Open (3)` (`DWORD [conn + 0x134] == 3`), and
+/// `Driver->ElapsedTime - Conn->LastReceiveTime < 1.5` (`[driver + 0x218] -
+/// [conn + 0x1d0] < 1.5`).
+pub fn is_connection_ready_for_replication(
+    has_view_target: bool,
+    connection_state: u32,
+    driver_elapsed_time: f64,
+    last_receive_time: f64,
+) -> bool {
+    has_view_target
+        && connection_state == 3
+        && (driver_elapsed_time - last_receive_time) < PREP_CONNECTIONS_RECEIVE_TIMEOUT_SECONDS
+}
+
+/// Inputs for one `FNetworkObjectInfo` entry in
+/// `UNetDriver::ServerReplicateActors_BuildConsiderList` (`0x1437235a0` server
+/// / `0x1439c0530` client, F-748).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ConsiderListActorInputs {
+    /// `FNetworkObjectInfo::bPendingNetUpdate` (`([info + 0xd0] & 1) != 0`).
+    pub b_pending_net_update: bool,
+    /// `FNetworkObjectInfo::NextUpdateTime` (`[info + 0x10]`, `f64`).
+    pub next_update_time: f64,
+    /// `FNetworkObjectInfo::LastNetReplicateTime` (`[info + 0x18]`, `f64`).
+    pub last_net_replicate_time: f64,
+    /// `FNetworkObjectInfo::OptimalNetUpdateDelta` (`[info + 0x20]`, `f32`).
+    pub optimal_net_update_delta: f32,
+    /// `World->TimeSeconds` (`[world + 0x5a0]`, `f32`).
+    pub world_time_seconds: f32,
+    /// `Driver->ElapsedTime` (`[driver + 0x218]`, `f64`).
+    pub driver_elapsed_time: f64,
+    /// `Actor->bPendingKillPending` (`([actor + 0x5c] & 0x10) != 0`) or
+    /// `GUObjectArray` `PendingKill` bit (`bit 29`).
+    pub is_pending_kill: bool,
+    /// `Actor->RemoteRole` (`BYTE [actor + 0x5f]`, `ROLE_None == 0`).
+    pub remote_role: u8,
+    /// `Actor->NetDriverName == Driver->NetDriverName` (`[actor + 0xe8] ==
+    /// [driver + 0x190]`).
+    pub net_driver_name_matches: bool,
+    /// `Actor->bNetStartup` (`([actor + 0x5b] & 0x40) != 0`).
+    pub b_net_startup: bool,
+    /// `Actor->NetDormancy` (`BYTE [actor + 0xf1]`, `DORM_Initial == 4`).
+    pub net_dormancy: u8,
+    /// Whether the actor's `ULevel` is initialized (`0x14333fe20` server /
+    /// `0x1435d5f20` client).
+    pub level_initialized: bool,
+    /// `Actor->NetUpdateFrequency` (`[actor + 0x108]`, `f32`).
+    pub net_update_frequency: f32,
+    /// `Actor->MinNetUpdateFrequency` (`[actor + 0x10c]`, `f32`, defaulted to
+    /// `2.0` if `0.0`).
+    pub min_net_update_frequency: f32,
+    /// `bUseAdaptiveNetUpdateFrequency` (`net.UseAdaptiveNetUpdateFrequency > 0`
+    /// at `[rbp + 0xc0]`).
+    pub b_use_adaptive_net_update_frequency: bool,
+    /// Random float in `[0.0, 1.0]` (`srands` at `0x141ef10e0` server) when
+    /// scheduling `NextUpdateTime`.
+    pub random_unit_float: f32,
+    /// `ServerTickTime` (`CallPreReplicationDelta` at `[rsp + 0xd8]`).
+    pub server_tick_time: f32,
+}
+
+/// Disposition and updated `FNetworkObjectInfo` fields for one active network
+/// object in `UNetDriver::ServerReplicateActors_BuildConsiderList` (`0x1437235a0`
+/// server / `0x1439c0530` client, F-748).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum ConsiderListActorOutcome {
+    /// `!bPendingNetUpdate && (world_time_seconds as f64) <= next_update_time`.
+    SkipNotReadyForUpdate,
+    /// `is_pending_kill || remote_role == 0 || (b_net_startup && net_dormancy == 4 && level_initialized)`:
+    /// appended to `ActorsToRemove` (`RemoveNetworkActor`).
+    RemoveFromNetworkObjectList,
+    /// `Actor->NetDriverName != Driver->NetDriverName`.
+    SkipMismatchedNetDriverName,
+    /// Appended to `OutConsiderList` with `bPendingNetUpdate` cleared to `false`
+    /// (`[info + 0xd0] &= ~1`) and `Actor->CallPreReplication(Driver)` invoked.
+    AddToConsiderListAndPreReplicate {
+        next_update_time: f64,
+        last_net_replicate_time: f64,
+        optimal_net_update_delta: f32,
+        updated_min_net_update_frequency: f32,
+        updated_last_net_update_time: Option<f64>,
+    },
+}
+
+/// Evaluate `UNetDriver::ServerReplicateActors_BuildConsiderList` (`0x1437235a0`
+/// server / `0x1439c0530` client, F-748) for one `FNetworkObjectInfo` entry in
+/// exact branch order.
+pub fn evaluate_consider_list_actor(inputs: &ConsiderListActorInputs) -> ConsiderListActorOutcome {
+    let world_time_f64 = f64::from(inputs.world_time_seconds);
+    if !inputs.b_pending_net_update && world_time_f64 <= inputs.next_update_time {
+        return ConsiderListActorOutcome::SkipNotReadyForUpdate;
+    }
+    if inputs.is_pending_kill || inputs.remote_role == 0 {
+        return ConsiderListActorOutcome::RemoveFromNetworkObjectList;
+    }
+    if !inputs.net_driver_name_matches {
+        return ConsiderListActorOutcome::SkipMismatchedNetDriverName;
+    }
+    if inputs.b_net_startup && inputs.net_dormancy == 4 && inputs.level_initialized {
+        return ConsiderListActorOutcome::RemoveFromNetworkObjectList;
+    }
+
+    let mut last_net_replicate_time = inputs.last_net_replicate_time;
+    let mut optimal_net_update_delta = inputs.optimal_net_update_delta;
+    if last_net_replicate_time == 0.0 {
+        last_net_replicate_time = world_time_f64;
+        optimal_net_update_delta = 1.0 / inputs.net_update_frequency;
+    }
+
+    let mut min_net_update_frequency = inputs.min_net_update_frequency;
+    let last_net_update_delta = (world_time_f64 - last_net_replicate_time) as f32;
+    if last_net_update_delta > ADAPTIVE_NET_UPDATE_DELAY_THRESHOLD_SECONDS {
+        if min_net_update_frequency == 0.0 {
+            min_net_update_frequency = DEFAULT_MIN_NET_UPDATE_FREQUENCY;
+        }
+        let min_optimal_delta = 1.0 / inputs.net_update_frequency;
+        let max_optimal_delta = (1.0 / min_net_update_frequency).max(min_optimal_delta);
+        let alpha = ((last_net_update_delta - ADAPTIVE_NET_UPDATE_DELAY_THRESHOLD_SECONDS)
+            * ADAPTIVE_NET_UPDATE_LERP_SCALE)
+            .clamp(0.0, 1.0);
+        optimal_net_update_delta =
+            min_optimal_delta + (max_optimal_delta - min_optimal_delta) * alpha;
+    }
+
+    let mut next_update_time = inputs.next_update_time;
+    let mut updated_last_net_update_time = None;
+    if !inputs.b_pending_net_update {
+        let next_update_delta = if inputs.b_use_adaptive_net_update_frequency {
+            optimal_net_update_delta
+        } else {
+            1.0 / inputs.net_update_frequency
+        };
+        let jitter = inputs.random_unit_float * inputs.server_tick_time;
+        next_update_time = f64::from(inputs.world_time_seconds + jitter + next_update_delta);
+        updated_last_net_update_time = Some(inputs.driver_elapsed_time);
+    }
+
+    ConsiderListActorOutcome::AddToConsiderListAndPreReplicate {
+        next_update_time,
+        last_net_replicate_time,
+        optimal_net_update_delta,
+        updated_min_net_update_frequency: min_net_update_frequency,
+        updated_last_net_update_time,
+    }
+}

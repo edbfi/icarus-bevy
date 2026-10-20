@@ -4,7 +4,9 @@ Current-client (build 25793767) and older-server (build 25621760) static
 evidence for the UWorld and UPendingNetGame local table stores, their complete
 constructor and destructor bounds, public symbols and notify slots, the
 control-dispatcher caller and vftable layout scans, and the experimental
-initial control-body reader. Promotion of these results is gated in
+initial control-body reader; the normative control wire rules live in
+[control negotiation](../../specs/network/control-negotiation.md). Promotion of
+these results is gated in
 [gates](../../gates.md#before-promoting-control-store-or-negotiation-findings).
 
 Before restructure: 96ddb0b:docs/research/network/2026-10-13-control-stores.md
@@ -46,26 +48,14 @@ U-010, U-015, U-016, U-019 resolved). `UWorld::Listen` (`0x1439ecd8b`) and
 `NotifyControlMessage` adjusts `this` by `r13 - 0x28` (F-520, F-723, F-724;
 U-043 resolved).
 
-The dispatcher validates message IDs and reads the ID 0 body (F-284) from the
-FInBunch through FBitReader::Serialize after the ID byte, byte order set by the
-first field and persisted at `Connection + 0x158`, in client and server alike
-(F-514, F-515, F-518, F-519, F-712, F-714; U-014, U-044 resolved);
-ReceivedBunch reaches it through the driver's notify object, slot +0x18
-(F-520, F-724), handles channel-local ID `0x16` (`22`, `NMT_DestructionInfo`,
-`UControlChannel::ReceiveDestructionInfo` `0x1435354d0` / `0x1437c3d50`, reading
-`u8 Reason` + `FNetworkGUID`) and fallback IDs `16` (`NMT_ActorChannelFailure`,
-closing on `PlayerController` channel failure), `19` (`NMT_GameSpecific`), and
-`20` (`NMT_SecurityViolation`), and active branches `case 4`
-(`NMT_Netspeed`, clamping `int32 Rate` to `[1800, NetDriver->MaxClientRate (+0x64)]`),
-`case 15` (`NMT_PCSwap`, destroying unowned `Actor` when `Actor->NetConnection (+0x410) == TargetConn`),
-and `case 17` (`NMT_DebugText`) match across both builds (F-579, F-740).
-ReceivedPacket parses a packet word and ack history, then bunch
-headers inside a handler prefix and termination-bit frame in both builds (F-521
-to F-524, F-714); the client's parsers map the control vocabulary both ways
-(F-529, F-530), and its reliability layer is seeded from the handshake cookie
-(F-535 to F-539). A disconnected experimental reader composes the observed
-initial body within a derived 131,081-byte ceiling; negotiation, identity and
-game-connection flags stay false (F-096, F-097).
+`UControlChannel::ReceivedBunch` validates and persists the Hello byte-swap flag
+at `Connection + 0x158`, dispatches channel-local ID `22` (`NMT_DestructionInfo`),
+reaches `NotifyControlMessage` through `Driver + 0x208` slot `+0x18` (including
+active branches `0`, `4`, `5`, `9`, `10`, `15`, `17`), and falls back across the
+20-entry skip table (`0..18`, `21`, `22`, plus special handlers `16`, `19`, `20`)
+inside `ReceivedPacket`'s packet-word, ack-history, and bunch-header framing
+(F-096, F-097, F-284, F-514 to F-539, F-579, F-712 to F-714, F-740; U-014, U-044
+resolved; [control negotiation](../../specs/network/control-negotiation.md)).
 
 ## Open
 

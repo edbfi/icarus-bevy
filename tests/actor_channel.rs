@@ -1,19 +1,25 @@
 use icarus_bevy::experimental::actor_channel::{
-    ActorBunchBody, ActorChannelCodec, ActorChannelLimits, ActorPriorityInputs,
-    ActorPriorityOutcome, ActorRelevancyInputs, ActorRelevancyOutcome, BlockTarget,
-    CompressedRotator, ContentBlock, DEFAULT_CONFIGURED_INTERNET_SPEED,
-    DEFAULT_CONFIGURED_LAN_SPEED, DEFAULT_CONNECTION_TIMEOUT_SECONDS, DEFAULT_INI_MAX_CLIENT_RATE,
+    ADAPTIVE_NET_UPDATE_DELAY_THRESHOLD_SECONDS, ADAPTIVE_NET_UPDATE_LERP_SCALE, ActorBunchBody,
+    ActorChannelCodec, ActorChannelLimits, ActorPriorityInputs, ActorPriorityOutcome,
+    ActorRelevancyInputs, ActorRelevancyOutcome, BlockTarget, CompressedRotator,
+    ConsiderListActorInputs, ConsiderListActorOutcome, ContentBlock,
+    DEFAULT_CONFIGURED_INTERNET_SPEED, DEFAULT_CONFIGURED_LAN_SPEED,
+    DEFAULT_CONNECTION_TIMEOUT_SECONDS, DEFAULT_INI_MAX_CLIENT_RATE,
     DEFAULT_INI_MAX_INTERNET_CLIENT_RATE, DEFAULT_INITIAL_CONNECT_TIMEOUT_SECONDS,
-    DEFAULT_NET_SERVER_MAX_TICK_RATE, DEFAULT_RESOLUTION_CONNECTION_TIMEOUT_SECONDS, DynamicSpawn,
-    EngineNetMode, ExportPath, GuidExport, GuidKind, MAX_EXPORT_GUIDS,
-    MAX_NET_SERVER_MAX_TICK_RATE, MIN_NET_SERVER_MAX_TICK_RATE, NetGuidRef, PackageMapState,
-    PawnRelevancyInputs, PawnRelevancyOutcome, SpawnRecord, SpawnVector, SubObjectClass,
-    dequantize_angle, encode_actor_bunch_body, encode_player_controller_open_bunch_body,
-    evaluate_actor_net_priority, evaluate_actor_net_relevancy, evaluate_game_engine_max_tick_rate,
+    DEFAULT_MIN_NET_UPDATE_FREQUENCY, DEFAULT_NET_SERVER_MAX_TICK_RATE,
+    DEFAULT_RESOLUTION_CONNECTION_TIMEOUT_SECONDS, DynamicSpawn, EngineNetMode, ExportPath,
+    GuidExport, GuidKind, MAX_EXPORT_GUIDS, MAX_NET_SERVER_MAX_TICK_RATE,
+    MIN_NET_SERVER_MAX_TICK_RATE, NetGuidRef, PREP_CONNECTIONS_RECEIVE_TIMEOUT_SECONDS,
+    PackageMapState, PawnRelevancyInputs, PawnRelevancyOutcome, SpawnRecord, SpawnVector,
+    SubObjectClass, dequantize_angle, encode_actor_bunch_body,
+    encode_player_controller_open_bunch_body, evaluate_actor_net_priority,
+    evaluate_actor_net_relevancy, evaluate_consider_list_actor, evaluate_game_engine_max_tick_rate,
+    evaluate_matinee_actor_net_priority, evaluate_online_beacon_net_relevancy,
     evaluate_pawn_net_relevancy, evaluate_player_controller_net_priority,
-    evaluate_player_controller_net_relevancy, guid_kind, is_within_net_relevancy_distance,
-    parse_actor_bunch, parse_player_controller_open_bunch, quantize_angle, read_actor_bunch_body,
-    read_content_block, read_export_prefix, read_guid_ref, read_must_be_mapped_guids,
+    evaluate_player_controller_net_relevancy, evaluate_prep_connections_tick_budget, guid_kind,
+    is_connection_ready_for_replication, is_within_net_relevancy_distance, parse_actor_bunch,
+    parse_player_controller_open_bunch, quantize_angle, read_actor_bunch_body, read_content_block,
+    read_export_prefix, read_guid_ref, read_must_be_mapped_guids,
     read_player_controller_open_bunch_body, read_rotator, read_spawn, write_actor_bunch_body,
     write_content_block, write_export_prefix, write_guid_ref, write_must_be_mapped_guids,
     write_player_controller_open_bunch_body, write_rotator, write_spawn,
@@ -1727,4 +1733,375 @@ fn actor_and_player_controller_net_priority_branches() {
     let pc_high = evaluate_player_controller_net_priority(2.0, 3.0, true);
     assert_eq!(pc_low, 6.0);
     assert_eq!(pc_high, 24.0);
+}
+
+#[test]
+fn online_beacon_relevancy_and_matinee_actor_priority() {
+    // AOnlineBeacon::IsNetRelevantFor (0x1409a5780 server / 0x1409cc210 client):
+    // - When bOnlyRelevantToOwner is true, checks beacon_net_connection == src_actor_net_connection.
+    assert!(evaluate_online_beacon_net_relevancy(
+        true, "BeaconA", "ViewerB", 7u32, 7u32
+    ));
+    assert!(!evaluate_online_beacon_net_relevancy(
+        true, "BeaconA", "BeaconA", 7u32, 8u32
+    ));
+    // - When bOnlyRelevantToOwner is false, checks beacon_class == real_viewer_class.
+    assert!(evaluate_online_beacon_net_relevancy(
+        false, "BeaconA", "BeaconA", 7u32, 8u32
+    ));
+    assert!(!evaluate_online_beacon_net_relevancy(
+        false, "BeaconA", "ViewerB", 7u32, 7u32
+    ));
+
+    // AMatineeActor::GetNetPriority (0x143894660 server / 0x143b3f6c0 client):
+    let base_inputs = ActorPriorityInputs {
+        b_use_owner_relevancy: false,
+        has_owner: false,
+        is_view_target_or_instigator: false,
+        b_hidden: true,
+        root_location: None,
+        viewer_location: [0.0, 0.0, 0.0],
+        viewer_dir: [1.0, 0.0, 0.0],
+        time: 2.0,
+        net_priority: 3.0, // base priority = 6.0
+    };
+    // With an open channel (InChannel != nullptr), returns base priority unchanged.
+    assert_eq!(
+        evaluate_matinee_actor_net_priority(&base_inputs, true, 25.0, 100.0),
+        ActorPriorityOutcome::Computed(6.0)
+    );
+    // Without an open channel (InChannel == nullptr), adds 1.0 - (CreationTime / WorldTimeSeconds).
+    assert_eq!(
+        evaluate_matinee_actor_net_priority(&base_inputs, false, 25.0, 100.0),
+        ActorPriorityOutcome::Computed(6.75)
+    );
+    // Owner delegation propagates unchanged.
+    let delegated = ActorPriorityInputs {
+        b_use_owner_relevancy: true,
+        has_owner: true,
+        ..base_inputs
+    };
+    assert_eq!(
+        evaluate_matinee_actor_net_priority(&delegated, false, 25.0, 100.0),
+        ActorPriorityOutcome::DelegateToOwner
+    );
+}
+
+#[test]
+fn server_replicate_actors_prep_connections_and_build_consider_list() {
+    assert_eq!(PREP_CONNECTIONS_RECEIVE_TIMEOUT_SECONDS, 1.5);
+    assert_eq!(ADAPTIVE_NET_UPDATE_DELAY_THRESHOLD_SECONDS, 2.0);
+    assert_eq!(ADAPTIVE_NET_UPDATE_LERP_SCALE, 0.2);
+    assert_eq!(DEFAULT_MIN_NET_UPDATE_FREQUENCY, 2.0);
+
+    // PrepConnections tick budget:
+    // - Throttling disabled, no per-frame cap -> all clients ticked, carryover preserved.
+    assert_eq!(
+        evaluate_prep_connections_tick_budget(8, false, 0.01, 0.02, 30.0, false, 0),
+        (8, 0.02)
+    );
+    // - Throttling enabled, budget truncates to 0 -> returns 0 and accumulates carryover.
+    let (tick_zero, carry) =
+        evaluate_prep_connections_tick_budget(8, true, 0.01, 0.01, 30.0, false, 0);
+    assert_eq!(tick_zero, 0);
+    assert!((carry - 0.02).abs() < 1e-6);
+    // - Throttling enabled with LAN multiplier 2.0: (0.02 + 0.02) * 30.0 * 2.0 = 2.4 -> 2 clients, carryover cleared.
+    assert_eq!(
+        evaluate_prep_connections_tick_budget(8, true, 0.02, 0.02, 30.0, true, 0),
+        (2, 0.0)
+    );
+    // - Clamped by net.MaxConnectionsToTickPerServerFrame > 0.
+    assert_eq!(
+        evaluate_prep_connections_tick_budget(8, false, 0.1, 0.0, 30.0, false, 3),
+        (3, 0.0)
+    );
+
+    // Connection readiness: ViewTarget != null, State == USOCK_Open (3), Elapsed - LastReceive < 1.5.
+    assert!(is_connection_ready_for_replication(true, 3, 10.0, 8.6));
+    assert!(!is_connection_ready_for_replication(false, 3, 10.0, 9.0));
+    assert!(!is_connection_ready_for_replication(true, 2, 10.0, 9.0));
+    assert!(!is_connection_ready_for_replication(true, 3, 10.0, 8.5)); // strict `< 1.5`
+
+    // BuildConsiderList actor evaluation:
+    let base_actor = ConsiderListActorInputs {
+        b_pending_net_update: false,
+        next_update_time: 10.0,
+        last_net_replicate_time: 9.0,
+        optimal_net_update_delta: 0.1,
+        world_time_seconds: 12.0,
+        driver_elapsed_time: 50.0,
+        is_pending_kill: false,
+        remote_role: 1,
+        net_driver_name_matches: true,
+        b_net_startup: false,
+        net_dormancy: 0,
+        level_initialized: true,
+        net_update_frequency: 10.0,
+        min_net_update_frequency: 0.0,
+        b_use_adaptive_net_update_frequency: true,
+        random_unit_float: 0.5,
+        server_tick_time: 0.04,
+    };
+
+    // 1. Not pending update and world_time <= next_update_time -> skip.
+    assert_eq!(
+        evaluate_consider_list_actor(&ConsiderListActorInputs {
+            world_time_seconds: 10.0,
+            ..base_actor
+        }),
+        ConsiderListActorOutcome::SkipNotReadyForUpdate
+    );
+
+    // 2. PendingKill or RemoteRole == ROLE_None (0) -> remove from network object list.
+    assert_eq!(
+        evaluate_consider_list_actor(&ConsiderListActorInputs {
+            is_pending_kill: true,
+            ..base_actor
+        }),
+        ConsiderListActorOutcome::RemoveFromNetworkObjectList
+    );
+    assert_eq!(
+        evaluate_consider_list_actor(&ConsiderListActorInputs {
+            remote_role: 0,
+            ..base_actor
+        }),
+        ConsiderListActorOutcome::RemoveFromNetworkObjectList
+    );
+
+    // 3. Mismatched NetDriverName -> skip.
+    assert_eq!(
+        evaluate_consider_list_actor(&ConsiderListActorInputs {
+            net_driver_name_matches: false,
+            ..base_actor
+        }),
+        ConsiderListActorOutcome::SkipMismatchedNetDriverName
+    );
+
+    // 4. bNetStartup && NetDormancy == DORM_Initial (4) && level_initialized -> remove.
+    assert_eq!(
+        evaluate_consider_list_actor(&ConsiderListActorInputs {
+            b_net_startup: true,
+            net_dormancy: 4,
+            level_initialized: true,
+            ..base_actor
+        }),
+        ConsiderListActorOutcome::RemoveFromNetworkObjectList
+    );
+
+    // 5. Adaptive frequency scaling (world_time = 12.0, last_rep = 9.0 -> delta = 3.0 > 2.0):
+    // min_net_update_frequency defaults from 0.0 to 2.0 (max_optimal_delta = 0.5, min_optimal_delta = 0.1).
+    // alpha = clamp((3.0 - 2.0) * 0.2, 0.0, 1.0) = 0.2 -> optimal = 0.1 + 0.4 * 0.2 = 0.18.
+    // next_update_time = 12.0 + 0.5 * 0.04 + 0.18 = 12.20.
+    match evaluate_consider_list_actor(&base_actor) {
+        ConsiderListActorOutcome::AddToConsiderListAndPreReplicate {
+            next_update_time,
+            last_net_replicate_time,
+            optimal_net_update_delta,
+            updated_min_net_update_frequency,
+            updated_last_net_update_time,
+        } => {
+            assert!((next_update_time - 12.20).abs() < 1e-5);
+            assert_eq!(last_net_replicate_time, 9.0);
+            assert!((optimal_net_update_delta - 0.18).abs() < 1e-6);
+            assert_eq!(updated_min_net_update_frequency, 2.0);
+            assert_eq!(updated_last_net_update_time, Some(50.0));
+        }
+        other => panic!("unexpected outcome: {other:?}"),
+    }
+
+    // 6. First-time initialization (last_net_replicate_time == 0.0) with bPendingNetUpdate == true:
+    // initializes last_net_replicate_time = world_time and optimal = 1 / 10 = 0.1,
+    // and skips rescheduling next_update_time / last_net_update_time because bPendingNetUpdate is true.
+    match evaluate_consider_list_actor(&ConsiderListActorInputs {
+        b_pending_net_update: true,
+        last_net_replicate_time: 0.0,
+        optimal_net_update_delta: 0.0,
+        ..base_actor
+    }) {
+        ConsiderListActorOutcome::AddToConsiderListAndPreReplicate {
+            next_update_time,
+            last_net_replicate_time,
+            optimal_net_update_delta,
+            updated_min_net_update_frequency,
+            updated_last_net_update_time,
+        } => {
+            assert_eq!(next_update_time, 10.0);
+            assert_eq!(last_net_replicate_time, 12.0);
+            assert!((optimal_net_update_delta - 0.1).abs() < 1e-6);
+            assert_eq!(updated_min_net_update_frequency, 0.0);
+            assert_eq!(updated_last_net_update_time, None);
+        }
+        other => panic!("unexpected outcome: {other:?}"),
+    }
+}
+
+#[test]
+fn relevancy_priority_tick_rate_and_consider_list_never_panic_on_randomized_inputs() {
+    let mut state = 0x9e37_79b9_7f4a_7c15_u64;
+    let mut next_u64 = || {
+        state ^= state << 13;
+        state ^= state >> 7;
+        state ^= state << 17;
+        state
+    };
+    let sample_f32 = |raw: u64| -> f32 {
+        match raw & 0xf {
+            0 => 0.0,
+            1 => -0.0,
+            2 => f32::NAN,
+            3 => f32::INFINITY,
+            4 => f32::NEG_INFINITY,
+            5 => f32::MIN,
+            6 => f32::MAX,
+            7 => f32::MIN_POSITIVE,
+            _ => f32::from_bits(raw as u32),
+        }
+    };
+    let sample_f64 = |raw: u64| -> f64 {
+        match raw & 0xf {
+            0 => 0.0,
+            1 => -0.0,
+            2 => f64::NAN,
+            3 => f64::INFINITY,
+            4 => f64::NEG_INFINITY,
+            5 => f64::MIN,
+            6 => f64::MAX,
+            7 => f64::MIN_POSITIVE,
+            _ => f64::from_bits(raw),
+        }
+    };
+
+    for _ in 0..1024 {
+        let bits = next_u64();
+        let flag = |shift: u32| ((bits >> shift) & 1) != 0;
+        let loc_a = [
+            sample_f32(next_u64()),
+            sample_f32(next_u64()),
+            sample_f32(next_u64()),
+        ];
+        let loc_b = [
+            sample_f32(next_u64()),
+            sample_f32(next_u64()),
+            sample_f32(next_u64()),
+        ];
+        let dir = [
+            sample_f32(next_u64()),
+            sample_f32(next_u64()),
+            sample_f32(next_u64()),
+        ];
+        let cull_sq = sample_f32(next_u64());
+
+        let _ = is_within_net_relevancy_distance(loc_a, loc_b, cull_sq);
+        let _ = evaluate_actor_net_relevancy(&ActorRelevancyInputs {
+            b_always_relevant: flag(0),
+            b_only_relevant_to_owner: flag(1),
+            b_hidden: flag(2),
+            b_use_owner_relevancy: flag(3),
+            is_owned_by_view_target_or_real_viewer: flag(4),
+            view_target_is_instigator: flag(5),
+            has_owner: flag(6),
+            has_root_component: flag(7),
+            root_collision_enabled: flag(8),
+            attach_parent_delegates_to_owner: flag(9),
+            b_use_distance_based_relevancy: flag(10),
+            actor_location: loc_a,
+            src_location: loc_b,
+            net_cull_distance_squared: cull_sq,
+        });
+        let _ = evaluate_pawn_net_relevancy(&PawnRelevancyInputs {
+            b_always_relevant: flag(11),
+            real_viewer_is_controller: flag(12),
+            is_owned_by_view_target_or_real_viewer: flag(13),
+            view_target_is_instigator: flag(14),
+            based_on_view_target_or_vice_versa: flag(15),
+            b_hidden: flag(16),
+            b_only_relevant_to_owner: flag(17),
+            has_root_component: flag(18),
+            root_collision_enabled: flag(19),
+            movement_base_delegates_to_owner: flag(20),
+            b_use_distance_based_relevancy: flag(21),
+            actor_location: loc_a,
+            src_location: loc_b,
+            net_cull_distance_squared: cull_sq,
+        });
+        let _ = evaluate_player_controller_net_relevancy(next_u64(), next_u64());
+        let _ = evaluate_online_beacon_net_relevancy(
+            flag(22),
+            next_u64() & 3,
+            next_u64() & 3,
+            next_u64() & 3,
+            next_u64() & 3,
+        );
+
+        let prio_inputs = ActorPriorityInputs {
+            b_use_owner_relevancy: flag(23),
+            has_owner: flag(24),
+            is_view_target_or_instigator: flag(25),
+            b_hidden: flag(26),
+            root_location: if flag(27) { Some(loc_a) } else { None },
+            viewer_location: loc_b,
+            viewer_dir: dir,
+            time: sample_f32(next_u64()),
+            net_priority: sample_f32(next_u64()),
+        };
+        let _ = evaluate_actor_net_priority(&prio_inputs);
+        let _ = evaluate_player_controller_net_priority(
+            sample_f32(next_u64()),
+            sample_f32(next_u64()),
+            flag(28),
+        );
+        let _ = evaluate_matinee_actor_net_priority(
+            &prio_inputs,
+            flag(29),
+            sample_f32(next_u64()),
+            sample_f32(next_u64()),
+        );
+
+        let net_mode = match bits & 3 {
+            0 => EngineNetMode::Standalone,
+            1 => EngineNetMode::DedicatedServer,
+            2 => EngineNetMode::ListenServer,
+            _ => EngineNetMode::Client,
+        };
+        let _ = evaluate_game_engine_max_tick_rate(
+            net_mode,
+            flag(33),
+            next_u64() as i32,
+            sample_f32(next_u64()),
+        );
+        let _ = evaluate_prep_connections_tick_budget(
+            next_u64() as usize,
+            flag(34),
+            sample_f32(next_u64()),
+            sample_f32(next_u64()),
+            sample_f32(next_u64()),
+            flag(35),
+            next_u64() as i32,
+        );
+        let _ = is_connection_ready_for_replication(
+            flag(36),
+            next_u64() as u32,
+            sample_f64(next_u64()),
+            sample_f64(next_u64()),
+        );
+        let _ = evaluate_consider_list_actor(&ConsiderListActorInputs {
+            b_pending_net_update: flag(37),
+            next_update_time: sample_f64(next_u64()),
+            last_net_replicate_time: sample_f64(next_u64()),
+            optimal_net_update_delta: sample_f32(next_u64()),
+            world_time_seconds: sample_f32(next_u64()),
+            driver_elapsed_time: sample_f64(next_u64()),
+            is_pending_kill: flag(38),
+            remote_role: (next_u64() & 0xff) as u8,
+            net_driver_name_matches: flag(39),
+            b_net_startup: flag(40),
+            net_dormancy: (next_u64() & 0xff) as u8,
+            level_initialized: flag(41),
+            net_update_frequency: sample_f32(next_u64()),
+            min_net_update_frequency: sample_f32(next_u64()),
+            b_use_adaptive_net_update_frequency: flag(42),
+            random_unit_float: sample_f32(next_u64()),
+            server_tick_time: sample_f32(next_u64()),
+        });
+    }
 }

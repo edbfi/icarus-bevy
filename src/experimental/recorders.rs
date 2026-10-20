@@ -8,14 +8,17 @@ use anyhow::{Context, Result, bail, ensure};
 use serde::Serialize;
 
 use super::archive::{ByteOrder, decode_string};
+use super::checksum_utf16;
 use super::component::{
     BaseComponent, MAX_BOUNDED_COMPONENT_BYTES, read_base_component_with_limit,
 };
 use super::restore_rules::{
     LobbyPrivacy, OwnerResolvePolicy, PROSPECT_SAVE_STATE_CURRENT_VERSION,
-    ProspectAssociatedMember, player_record_valid, prospect_ids_match,
-    resolve_prospect_player_list, resource_deposit_record_valid, rocket_record_valid,
-    validate_rocket_spawn_record, voxel_record_valid,
+    ProspectAssociatedMember, RecorderCtorDefaults, evaluate_requires_stitching,
+    no_recorder_record_valid, non_blob_recorder_ctor_defaults, player_record_valid,
+    prospect_ids_match, recorder_ctor_defaults, resolve_prospect_player_list,
+    resource_deposit_record_valid, rocket_record_valid, validate_rocket_spawn_record,
+    voxel_record_valid,
 };
 use super::struct_array::read_tagged_struct_array_with_limit;
 use super::tagged::{
@@ -87,6 +90,12 @@ pub struct StagedProspectSaveState {
     pub retained_recorder_count: usize,
     pub reset_rocket_spawn_recorder_count: usize,
     pub physics_dynamic_tree_recorder_count: usize,
+    pub skip_default_owner_resolution_count: usize,
+    pub find_only_owner_count: usize,
+    pub respawn_only_owner_count: usize,
+    pub find_or_respawn_owner_count: usize,
+    pub manually_resolved_owner_count: usize,
+    pub requires_stitching_count: usize,
     pub total_component_field_tags: usize,
     pub world_imported: bool,
 }
@@ -707,10 +716,47 @@ fn validate_prospect_info(
     })
 }
 
+const BLOB_CLASS_UTF16_CRCS: [u32; 38] = [
+    0x95ebf1cb, 0x001c9e29, 0x4873a81f, 0x324de345, 0x9c43c322, 0x30638715, 0xc95eeade, 0x15a8bf7b,
+    0xa3827c97, 0x1e074606, 0x524eff9e, 0x47fe1e70, 0x765c03dc, 0x469d0a2c, 0xc2f3dd4b, 0x67c586aa,
+    0xe62af98d, 0x00ec1192, 0x9d1516f6, 0xd54e9abd, 0xbbf0cd55, 0x5a062917, 0x58b4ab5c, 0x191d6d2e,
+    0x3ce30648, 0x343449f1, 0xd8007aeb, 0x13e2d008, 0x23018b5e, 0xeda63d84, 0x97fe0e5d, 0x96a5d2af,
+    0xf214af89, 0x1b4f4011, 0x179955df, 0xa98583bb, 0x516fb5b4, 0x7926eefe,
+];
+
+const NON_BLOB_CLASS_UTF16_CRCS: [u32; 27] = [
+    0x9e5ca79a, 0x8ea53657, 0xf4037559, 0xab6785f9, 0x317a7c00, 0x3aaecdc1, 0x2f9dd47f, 0xb278323f,
+    0xf616acbc, 0x4ca7220a, 0x0c42acca, 0x776c69d6, 0x410ad4f7, 0x21c98fa4, 0x4b3d103d, 0xf087575f,
+    0x3ab7a6a0, 0x9389d141, 0x7f184a56, 0xedb652f7, 0xa67dfe44, 0xc3e4f570, 0x85dc5a0e, 0xb5929f89,
+    0x59cc7a1d, 0x93f08633, 0x1d51a6d6,
+];
+
+/// Resolves the constructor defaults (`+0xb0..+0xb2`, `+0xd8..+0xd9`) and
+/// virtual-slot `+0x470` / `+0x498` / `+0x4a8` profile for a
+/// `/Script/Icarus.*RecorderComponent` UTF-16 class path across all 65
+/// registered classes (`C001..C038` and `N001..N027`), or `None` if the class
+/// path is unrecognized (F-746, F-747).
+pub fn lookup_recorder_ctor_defaults(class_units: &[u16]) -> Option<RecorderCtorDefaults> {
+    let crc = checksum_utf16(class_units, 0);
+    if let Some(index) = BLOB_CLASS_UTF16_CRCS.iter().position(|&entry| entry == crc) {
+        return recorder_ctor_defaults((index + 1) as u8);
+    }
+    if let Some(index) = NON_BLOB_CLASS_UTF16_CRCS
+        .iter()
+        .position(|&entry| entry == crc)
+    {
+        return non_blob_recorder_ctor_defaults((index + 1) as u8);
+    }
+    None
+}
+
 struct StagedRecorderEval {
     is_valid: bool,
     was_reset_rocket_spawn: bool,
     is_physics_dynamic_tree: bool,
+    skip_default_owner_resolution: bool,
+    owner_resolve_policy: OwnerResolvePolicy,
+    requires_stitching: bool,
 }
 
 /// Validates that every top-level property in a staged recorder's `BaseComponent`
@@ -786,6 +832,44 @@ fn evaluate_staged_recorder_component(
     active_prospect_id: &[u16],
     associated_members: &[ProspectAssociatedMember<'_>],
 ) -> Result<StagedRecorderEval> {
+    let defaults = lookup_recorder_ctor_defaults(class_units)
+        .ok_or_else(|| anyhow::anyhow!("unrecognized recorder ComponentClassName"))?;
+    let mut skip_default_owner_resolution = defaults.b_skip_default_owner_resolution;
+    let mut owner_resolve_policy = defaults.owner_resolve_policy;
+    let mut parent_character_uid = -1_i32;
+    for field_tag in component.fields() {
+        let ParsedRecord::Property(prop) = read_record(field_tag.record, profile)? else {
+            bail!("unexpected staged recorder component terminator");
+        };
+        if is_name(&prop.name, "bSkipDefaultOwnerResolution") {
+            skip_default_owner_resolution = bool_tag_value(&prop)?;
+        } else if is_name(&prop.name, "OwnerResolvePolicy") {
+            owner_resolve_policy = parse_owner_resolve_policy(&prop)?;
+        } else if is_name(&prop.name, "ParentCharacterUID") {
+            ensure!(
+                prop.tag.kind == TagKind::Int && prop.index == 0 && prop.tag.payload.len() == 4,
+                "ParentCharacterUID must be 4-byte IntProperty"
+            );
+            parent_character_uid = i32::from_le_bytes(prop.tag.payload.try_into()?);
+        }
+    }
+    let requires_stitching =
+        evaluate_requires_stitching(defaults.requires_stitching, parent_character_uid);
+    let build_eval =
+        |is_valid: bool, was_reset_rocket_spawn: bool, is_physics_dynamic_tree: bool| {
+            StagedRecorderEval {
+                is_valid,
+                was_reset_rocket_spawn,
+                is_physics_dynamic_tree,
+                skip_default_owner_resolution,
+                owner_resolve_policy,
+                requires_stitching,
+            }
+        };
+
+    if units_eq_ascii(class_units, "/Script/Icarus.NoRecorderComponent") {
+        return Ok(build_eval(no_recorder_record_valid(), false, false));
+    }
     if units_eq_ascii(
         class_units,
         "/Script/Icarus.DynamicRocketSpawnRecorderComponent",
@@ -859,11 +943,7 @@ fn evaluate_staged_recorder_component(
         );
         let (is_valid, was_reset) =
             validate_rocket_spawn_record(version, list, &mut assigned_player_id, &mut chr_slot);
-        return Ok(StagedRecorderEval {
-            is_valid,
-            was_reset_rocket_spawn: was_reset,
-            is_physics_dynamic_tree: false,
-        });
+        return Ok(build_eval(is_valid, was_reset, false));
     }
 
     if units_eq_ascii(class_units, "/Script/Icarus.PlayerRecorderComponent") {
@@ -898,11 +978,7 @@ fn evaluate_staged_recorder_component(
             &player_id,
             chr_slot,
         );
-        return Ok(StagedRecorderEval {
-            is_valid: player_record_valid(version, list),
-            was_reset_rocket_spawn: false,
-            is_physics_dynamic_tree: false,
-        });
+        return Ok(build_eval(player_record_valid(version, list), false, false));
     }
 
     if units_eq_ascii(class_units, "/Script/Icarus.PlayerStateRecorderComponent") {
@@ -937,11 +1013,7 @@ fn evaluate_staged_recorder_component(
             &player_id,
             chr_slot,
         );
-        return Ok(StagedRecorderEval {
-            is_valid: player_record_valid(version, list),
-            was_reset_rocket_spawn: false,
-            is_physics_dynamic_tree: false,
-        });
+        return Ok(build_eval(player_record_valid(version, list), false, false));
     }
 
     if units_eq_ascii(
@@ -964,11 +1036,11 @@ fn evaluate_staged_recorder_component(
                 )?;
             }
         }
-        return Ok(StagedRecorderEval {
-            is_valid: resource_deposit_record_valid(&resource_dt_key),
-            was_reset_rocket_spawn: false,
-            is_physics_dynamic_tree: false,
-        });
+        return Ok(build_eval(
+            resource_deposit_record_valid(&resource_dt_key),
+            false,
+            false,
+        ));
     }
 
     if units_eq_ascii(class_units, "/Script/Icarus.RocketRecorderComponent") {
@@ -1001,31 +1073,18 @@ fn evaluate_staged_recorder_component(
             &player_id,
             chr_slot,
         );
-        return Ok(StagedRecorderEval {
-            is_valid: rocket_record_valid(list),
-            was_reset_rocket_spawn: false,
-            is_physics_dynamic_tree: false,
-        });
+        return Ok(build_eval(rocket_record_valid(list), false, false));
     }
 
-    let is_spawned_voxel =
-        units_eq_ascii(class_units, "/Script/Icarus.SpawnedVoxelRecorderComponent");
-    if is_spawned_voxel || units_eq_ascii(class_units, "/Script/Icarus.VoxelRecorderComponent") {
-        // USpawnedVoxelRecorderComponent ctor (0x1418c24c0) defaults OwnerResolvePolicy (+0xb2) to
-        // RespawnOnly (1); UVoxelRecorderComponent ctor (0x1418c2650) defaults to ManuallyResolved (3).
-        let mut owner_resolve_policy = if is_spawned_voxel {
-            OwnerResolvePolicy::RespawnOnly
-        } else {
-            OwnerResolvePolicy::ManuallyResolved
-        };
+    if units_eq_ascii(class_units, "/Script/Icarus.SpawnedVoxelRecorderComponent")
+        || units_eq_ascii(class_units, "/Script/Icarus.VoxelRecorderComponent")
+    {
         let mut fully_mined = false;
         for field_tag in component.fields() {
             let ParsedRecord::Property(prop) = read_record(field_tag.record, profile)? else {
                 bail!("unexpected VoxelRecorderComponent terminator");
             };
-            if is_name(&prop.name, "OwnerResolvePolicy") {
-                owner_resolve_policy = parse_owner_resolve_policy(&prop)?;
-            } else if is_name(&prop.name, "VoxelSaveData") {
+            if is_name(&prop.name, "VoxelSaveData") {
                 ensure!(
                     prop.tag.kind == TagKind::Struct
                         && prop.index == 0
@@ -1057,11 +1116,11 @@ fn evaluate_staged_recorder_component(
                 }
             }
         }
-        return Ok(StagedRecorderEval {
-            is_valid: voxel_record_valid(owner_resolve_policy, fully_mined),
-            was_reset_rocket_spawn: false,
-            is_physics_dynamic_tree: false,
-        });
+        return Ok(build_eval(
+            voxel_record_valid(owner_resolve_policy, fully_mined),
+            false,
+            false,
+        ));
     }
 
     if units_eq_ascii(class_units, "/Script/Icarus.TreeRecorderComponent") {
@@ -1078,18 +1137,10 @@ fn evaluate_staged_recorder_component(
                 is_physics_dynamic = bool_tag_value(&prop)?;
             }
         }
-        return Ok(StagedRecorderEval {
-            is_valid: true,
-            was_reset_rocket_spawn: false,
-            is_physics_dynamic_tree: is_physics_dynamic,
-        });
+        return Ok(build_eval(true, false, is_physics_dynamic));
     }
 
-    Ok(StagedRecorderEval {
-        is_valid: true,
-        was_reset_rocket_spawn: false,
-        is_physics_dynamic_tree: false,
-    })
+    Ok(build_eval(true, false, false))
 }
 
 /// Stages and validates a complete `FProspectSaveState` root tag slice and all
@@ -1268,6 +1319,12 @@ pub fn stage_prospect_save_state(
     let mut invalid_recorder_count = 0usize;
     let mut reset_rocket_spawn_recorder_count = 0usize;
     let mut physics_dynamic_tree_recorder_count = 0usize;
+    let mut skip_default_owner_resolution_count = 0usize;
+    let mut find_only_owner_count = 0usize;
+    let mut respawn_only_owner_count = 0usize;
+    let mut find_or_respawn_owner_count = 0usize;
+    let mut manually_resolved_owner_count = 0usize;
+    let mut requires_stitching_count = 0usize;
     let mut total_component_field_tags = 0usize;
     if has_recorders_root {
         let recorders = read_recorders(roots, profile)?;
@@ -1298,6 +1355,22 @@ pub fn stage_prospect_save_state(
                 )?;
                 if !eval.is_valid {
                     invalid_recorder_count += 1;
+                } else {
+                    if eval.skip_default_owner_resolution {
+                        skip_default_owner_resolution_count += 1;
+                    } else {
+                        match eval.owner_resolve_policy {
+                            OwnerResolvePolicy::FindOnly => find_only_owner_count += 1,
+                            OwnerResolvePolicy::RespawnOnly => respawn_only_owner_count += 1,
+                            OwnerResolvePolicy::FindOrRespawn => find_or_respawn_owner_count += 1,
+                            OwnerResolvePolicy::ManuallyResolved => {
+                                manually_resolved_owner_count += 1;
+                            }
+                        }
+                    }
+                    if eval.requires_stitching {
+                        requires_stitching_count += 1;
+                    }
                 }
                 if eval.was_reset_rocket_spawn {
                     reset_rocket_spawn_recorder_count += 1;
@@ -1342,6 +1415,12 @@ pub fn stage_prospect_save_state(
         retained_recorder_count,
         reset_rocket_spawn_recorder_count,
         physics_dynamic_tree_recorder_count,
+        skip_default_owner_resolution_count,
+        find_only_owner_count,
+        respawn_only_owner_count,
+        find_or_respawn_owner_count,
+        manually_resolved_owner_count,
+        requires_stitching_count,
         total_component_field_tags,
         world_imported: false,
     })

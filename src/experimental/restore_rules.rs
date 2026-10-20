@@ -4732,3 +4732,102 @@ pub const fn evaluate_requires_stitching(
         RequiresStitchingKind::CharacterParentUidPresent => parent_character_uid != -1,
     }
 }
+
+const SELECTED_PROPERTY_COUNTS_N001_TO_N027: [u8; 27] = [
+    31, 1, 21, 32, 21, 21, 33, 21, 29, 23, 46, 36, 40, 36, 4, 37, 32, 0, 32, 23, 22, 22, 21, 20,
+    23, 22, 21,
+];
+
+/// Returns the static restore dispatch profile for one of the 27 non-blob
+/// `/Script/Icarus.*RecorderComponent` classes (`N001`..`N027`, ordinal
+/// `1..=27`), or `None` if `non_blob_ordinal` is outside `1..=27` (F-747).
+pub const fn non_blob_recorder_restore_dispatch(
+    non_blob_ordinal: u8,
+) -> Option<RecorderRestoreDispatch> {
+    if non_blob_ordinal < 1 || non_blob_ordinal > 27 {
+        return None;
+    }
+    let selected_property_count =
+        SELECTED_PROPERTY_COUNTS_N001_TO_N027[(non_blob_ordinal - 1) as usize];
+    let is_direct_base_or_base = matches!(non_blob_ordinal, 2 | 15 | 18);
+    if is_direct_base_or_base {
+        return Some(RecorderRestoreDispatch {
+            class_ordinal: non_blob_ordinal,
+            selected_property_count,
+            version_upgrade: VersionUpgradeKind::NoOp,
+            restore_state: RestoreStateKind::BaseSerializeOnly,
+            apply_transform: ApplyTransformKind::NoOpTrue,
+        });
+    }
+    let restore_state = if non_blob_ordinal == 11 {
+        RestoreStateKind::MountActorUprightYaw
+    } else {
+        RestoreStateKind::ActorWithContextTransform
+    };
+    Some(RecorderRestoreDispatch {
+        class_ordinal: non_blob_ordinal,
+        selected_property_count,
+        version_upgrade: VersionUpgradeKind::ActorTreePrimitiveToWood,
+        restore_state,
+        apply_transform: ApplyTransformKind::ActorTransformOnly,
+    })
+}
+
+/// Returns the constructor defaults (`+0xb0`, `+0xb1`, `+0xb2`, `+0xd8`,
+/// `+0xd9`) and virtual-slot `+0x470` / `+0x498` / `+0x4a8` profile for one of
+/// the 27 non-blob `/Script/Icarus.*RecorderComponent` classes (`N001`..`N027`,
+/// ordinal `1..=27`), identical in server `25621760` and client `25793767`, or
+/// `None` if `non_blob_ordinal` is outside `1..=27` (F-747).
+pub const fn non_blob_recorder_ctor_defaults(non_blob_ordinal: u8) -> Option<RecorderCtorDefaults> {
+    if non_blob_ordinal < 1 || non_blob_ordinal > 27 {
+        return None;
+    }
+    let is_actor_recorder = !matches!(non_blob_ordinal, 2 | 15 | 18);
+    let b_save_modifiers = !matches!(
+        non_blob_ordinal,
+        1 | 4 | 7 | 9 | 12 | 17 | 18 | 19 | 21 | 22
+    );
+    let b_skip_default_owner_resolution = non_blob_ordinal == 21;
+    let owner_resolve_policy = match non_blob_ordinal {
+        2 | 3 | 6 | 22 | 23 => OwnerResolvePolicy::FindOnly,
+        1 | 4 | 7 | 9 | 10..=14 | 16 | 17 | 19 | 24 => OwnerResolvePolicy::RespawnOnly,
+        18 => OwnerResolvePolicy::ManuallyResolved,
+        _ => OwnerResolvePolicy::FindOrRespawn,
+    };
+    let (b_record_modifier_states, b_record_actor_transform, make_relative_transform) =
+        if is_actor_recorder {
+            (
+                Some(false),
+                Some(non_blob_ordinal != 20),
+                MakeRelativeTransformKind::ActorTransformOnly,
+            )
+        } else {
+            (None, None, MakeRelativeTransformKind::NotApplicable)
+        };
+    let requires_stitching = match non_blob_ordinal {
+        10..=14 => RequiresStitchingKind::CharacterParentUidPresent,
+        1 | 3 | 4 | 7 | 8 | 16 | 17 | 19 | 24 | 25 | 26 | 27 => RequiresStitchingKind::AlwaysTrue,
+        _ => RequiresStitchingKind::AlwaysFalse,
+    };
+    Some(RecorderCtorDefaults {
+        class_ordinal: non_blob_ordinal,
+        is_actor_recorder,
+        b_save_modifiers,
+        b_skip_default_owner_resolution,
+        owner_resolve_policy,
+        b_record_modifier_states,
+        b_record_actor_transform,
+        requires_stitching,
+        purge_sublevel_actors: false,
+        make_relative_transform,
+    })
+}
+
+/// Evaluates `UNoRecorderComponent::Validate` (`N018`, `vftable + 0x408`:
+/// `0x14089a160` server / `0x1408cb520` client, `xor al, al; ret`), which
+/// unconditionally returns `false` so any `UNoRecorderComponent` entry in
+/// `StateRecorderBlobs` is rejected and dropped during `ReadFromProspectBlob`
+/// (F-747).
+pub const fn no_recorder_record_valid() -> bool {
+    false
+}
