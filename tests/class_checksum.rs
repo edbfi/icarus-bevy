@@ -105,8 +105,11 @@ fn player_state() -> Vec<P> {
 fn str_crc32_hashes_each_unit_as_four_bytes() {
     // Zero-extended units: "a" is the four bytes 61 00 00 00, not one byte.
     assert_eq!(str_crc32("", 0), 0);
+    // Independent values: standard reflected CRC-32 (0xedb88320, zlib) over
+    // `61 00 00 00` and over `4e 00 00 00 6f 00 00 00 6e 00 00 00 65 00 00 00`.
+    assert_eq!(str_crc32("a", 0), 2_732_478_330);
+    assert_eq!(str_crc32("None", 0), 1_897_401_797);
     assert_ne!(str_crc32("a", 0), 0xe8b7_be43); // plain CRC-32 of the single byte "a"
-    assert_eq!(str_crc32("a", 0), str_crc32("a", 0));
     assert_ne!(str_crc32("ab", 0), str_crc32("ba", 0));
 }
 

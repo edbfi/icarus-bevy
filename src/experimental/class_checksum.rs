@@ -163,7 +163,8 @@ pub mod cpp {
         format!("F{stem}")
     }
 
-    /// Object pointers: `A` for actor classes, `U` otherwise, then `*`.
+    /// Object pointers: `prefixed_class` already carries its `A` (actor) or
+    /// `U` prefix; this only appends `*`.
     pub fn object(prefixed_class: &str) -> String {
         format!("{prefixed_class}*")
     }
