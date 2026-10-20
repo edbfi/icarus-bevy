@@ -22,9 +22,10 @@ use crate::experimental::property_tree::{
     BaseComponentTree, MAX_TREE_DEPTH, MAX_TREE_NODES, TreeLimits,
 };
 use crate::experimental::recorders::{
-    StagedProspectSaveState, lookup_recorder_ctor_defaults, read_recorders, recorder_class_label,
-    stage_prospect_save_state_with_decisions,
+    StagedProspectSaveState, StagedRecorderDecision, lookup_recorder_ctor_defaults, read_recorders,
+    recorder_class_label, stage_prospect_save_state_with_decisions,
 };
+use crate::experimental::restore_rules::OwnerResolvePolicy;
 use crate::experimental::struct_array::MAX_BOUNDED_STRUCT_ARRAY_BYTES;
 use crate::experimental::tagged::{TagKind, TagProfile, read_root};
 use crate::experimental::typed_value::{
@@ -134,6 +135,53 @@ pub struct ActorPlan {
     pub recorded_transforms: usize,
     pub missing_transforms: usize,
     pub non_finite_transforms: usize,
+    /// Retained recorders by how restore finds their owner (`F-741`, `F-752`):
+    /// `find_only` owners must already exist in the level.
+    pub owner_resolution: BTreeMap<&'static str, usize>,
+}
+
+/// What a content reference names, judged only by the property it sits under.
+/// The rules are authored and deliberately narrow; anything else is
+/// `Unclassified` rather than guessed.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ContentRole {
+    /// An actor or Blueprint class to spawn (`*ActorClassName`).
+    ActorClass,
+    /// A level placement path of an existing actor (`ActorPathName`).
+    ActorPath,
+    /// A data-table row (`*RowName`, `*Row`, `*StaticData`, `*DTKey`).
+    DataRow,
+    /// A packaged asset path (`*AssetPath`).
+    AssetPath,
+    Unclassified,
+}
+
+impl ContentRole {
+    fn of(property: &[u16]) -> Self {
+        let name = String::from_utf16_lossy(property);
+        if name.ends_with("ActorClassName") {
+            Self::ActorClass
+        } else if name == ACTOR_PATH {
+            Self::ActorPath
+        } else if ["RowName", "Row", "StaticData", "DTKey"]
+            .iter()
+            .any(|suffix| name.ends_with(suffix))
+        {
+            Self::DataRow
+        } else if name.ends_with("AssetPath") {
+            Self::AssetPath
+        } else {
+            Self::Unclassified
+        }
+    }
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize)]
+pub struct RoleCount {
+    pub references: usize,
+    pub distinct: usize,
+    pub unmapped_distinct: usize,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize)]
@@ -146,6 +194,7 @@ pub struct ContentPlan {
     pub mapped_distinct: usize,
     pub unmapped_distinct: usize,
     pub unmapped_references: usize,
+    pub roles: BTreeMap<ContentRole, RoleCount>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize)]
@@ -210,6 +259,7 @@ pub fn plan_import(reader: impl Read, catalog: &ContentCatalog) -> Result<Import
         world_imported: false,
     };
     let mut distinct: BTreeMap<Vec<u16>, bool> = BTreeMap::new();
+    let mut role_distinct: BTreeSet<(ContentRole, Vec<u16>)> = BTreeSet::new();
     for (recorder, decision) in recorders.records().iter().zip(&decisions) {
         // read_recorders and staging validated this exact FString; it is never reported.
         let class = decode_string(recorder.class_value, ByteOrder::Little)
@@ -226,6 +276,11 @@ pub fn plan_import(reader: impl Read, catalog: &ContentCatalog) -> Result<Import
         }
         plan.recorders.retained += 1;
         class_plan.retained += 1;
+        *plan
+            .actors
+            .owner_resolution
+            .entry(owner_resolution(decision))
+            .or_default() += 1;
         if decision.physics_dynamic_tree {
             plan.recorders.physics_dynamic_trees += 1;
         }
@@ -265,7 +320,9 @@ pub fn plan_import(reader: impl Read, catalog: &ContentCatalog) -> Result<Import
         references.tree(&typed.tree);
         plan.content.name_references += references.names;
         plan.content.path_references += references.paths;
-        for reference in references.values {
+        for (role, reference) in references.values {
+            plan.content.roles.entry(role).or_default().references += 1;
+            role_distinct.insert((role, reference.clone()));
             let mapped = *distinct
                 .entry(reference)
                 .or_insert_with_key(|key| catalog.contains(key));
@@ -273,6 +330,13 @@ pub fn plan_import(reader: impl Read, catalog: &ContentCatalog) -> Result<Import
                 plan.content.unmapped_references += 1;
                 class_plan.unmapped_references += 1;
             }
+        }
+    }
+    for (role, reference) in &role_distinct {
+        let count = plan.content.roles.entry(*role).or_default();
+        count.distinct += 1;
+        if !distinct.get(reference).copied().unwrap_or(false) {
+            count.unmapped_distinct += 1;
         }
     }
     plan.content.distinct = distinct.len();
@@ -300,6 +364,18 @@ pub fn plan_import(reader: impl Read, catalog: &ContentCatalog) -> Result<Import
     }
     plan.importable = plan.blockers.is_empty();
     Ok(plan)
+}
+
+fn owner_resolution(decision: &StagedRecorderDecision) -> &'static str {
+    if decision.skip_default_owner_resolution {
+        return "skip_default";
+    }
+    match decision.owner_resolve_policy {
+        OwnerResolvePolicy::FindOnly => "find_only",
+        OwnerResolvePolicy::RespawnOnly => "respawn_only",
+        OwnerResolvePolicy::FindOrRespawn => "find_or_respawn",
+        OwnerResolvePolicy::ManuallyResolved => "manually_resolved",
+    }
 }
 
 fn base_fields(tree: &TypedTree, plan: &mut BaseFieldPlan) {
@@ -362,42 +438,43 @@ pub fn actor_transform(tree: &TypedTree) -> Option<[f32; 10]> {
     Some(out)
 }
 
+/// References with the role of the nearest enclosing property.
 #[derive(Default)]
 struct References {
     names: usize,
     paths: usize,
-    values: Vec<Vec<u16>>,
+    values: Vec<(ContentRole, Vec<u16>)>,
 }
 
 impl References {
     fn tree(&mut self, tree: &TypedTree) {
         for property in &tree.properties {
-            self.value(&property.value);
+            self.value(ContentRole::of(&property.name), &property.value);
         }
     }
 
-    fn value(&mut self, value: &Value) {
+    fn value(&mut self, role: ContentRole, value: &Value) {
         match value {
-            Value::Scalar(scalar) => self.scalar(scalar),
+            Value::Scalar(scalar) => self.scalar(role, scalar),
             Value::ScalarArray { inner, items } => {
                 if matches!(inner, TagKind::Name | TagKind::String) {
-                    items.iter().for_each(|item| self.scalar(item));
+                    items.iter().for_each(|item| self.scalar(role, item));
                 }
             }
             Value::TaggedStruct { tree, .. } => self.tree(tree),
             Value::StructArray { elements, .. } => elements.iter().for_each(|e| self.tree(e)),
             Value::Map { removed, entries } => {
-                removed.iter().for_each(|item| self.item(item));
+                removed.iter().for_each(|item| self.item(role, item));
                 for (key, value) in entries {
-                    self.item(key);
-                    self.item(value);
+                    self.item(role, key);
+                    self.item(role, value);
                 }
             }
             Value::Set { removed, elements } => {
                 removed
                     .iter()
                     .chain(elements)
-                    .for_each(|item| self.item(item));
+                    .for_each(|item| self.item(role, item));
             }
             Value::Text(_)
             | Value::FixedStruct { .. }
@@ -406,23 +483,23 @@ impl References {
         }
     }
 
-    fn item(&mut self, item: &Item) {
+    fn item(&mut self, role: ContentRole, item: &Item) {
         match item {
-            Item::Scalar(scalar) => self.scalar(scalar),
+            Item::Scalar(scalar) => self.scalar(role, scalar),
             Item::Struct(tree) => self.tree(tree),
             Item::UnnamedStruct(_) => {}
         }
     }
 
-    fn scalar(&mut self, scalar: &Scalar) {
+    fn scalar(&mut self, role: ContentRole, scalar: &Scalar) {
         match scalar {
             Scalar::Name(units) if !units.is_empty() && !is_none(units) => {
                 self.names += 1;
-                self.values.push(units.clone());
+                self.values.push((role, units.clone()));
             }
             Scalar::Str(units) if is_package_path(units) => {
                 self.paths += 1;
-                self.values.push(units.clone());
+                self.values.push((role, units.clone()));
             }
             _ => {}
         }

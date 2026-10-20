@@ -3,7 +3,9 @@ use std::{fs, io::Write, process::Command};
 use base64::{Engine, engine::general_purpose::STANDARD};
 use flate2::{Compression, write::ZlibEncoder};
 use icarus_bevy::experimental::recorders::{lookup_recorder_ctor_defaults, recorder_class_label};
-use icarus_bevy::import_plan::{ContentCatalog, ImportBlocker, plan_import};
+use icarus_bevy::import_plan::{
+    ContentCatalog, ContentRole, ImportBlocker, RoleCount, plan_import,
+};
 use serde_json::{Value, json};
 use sha1::{Digest, Sha1};
 use tempfile::TempDir;
@@ -81,6 +83,8 @@ fn component(body: &Body) -> Vec<u8> {
         struct_tag("ActorTransform", "Transform", &transform),
         tag("Label", "StrProperty", &[0], &fstring("secret plain text")),
         tag("Nothing", "NameProperty", &[0], &fstring("None")),
+        tag("ItemStaticData", "NameProperty", &[0], &fstring(ROW)),
+        tag("TileName", "NameProperty", &[0], &fstring("SecretTile")),
     ];
     if body.gap {
         fields.push(struct_tag("Mystery", "SecretBlobType", &[1, 2, 3]));
@@ -191,19 +195,32 @@ fn empty_catalog_blocks_on_unmapped_content_and_reports_counts_only() {
     assert_eq!(plan.actors.actor_recorders, 2);
     assert_eq!(plan.actors.transform_restoring, 2);
     assert_eq!(plan.actors.recorded_transforms, 2);
-    // Row name and package path per retained recorder; "None" and plain text are not references.
-    assert_eq!(plan.content.name_references, 2);
+    // Per retained recorder: class, row and tile names and one package path;
+    // "None" and plain text are not references.
+    assert_eq!(plan.content.name_references, 6);
     assert_eq!(plan.content.path_references, 2);
-    assert_eq!(plan.content.distinct, 2);
-    assert_eq!(plan.content.unmapped_distinct, 2);
-    assert_eq!(plan.content.unmapped_references, 4);
+    assert_eq!(plan.content.distinct, 3);
+    assert_eq!(plan.content.unmapped_distinct, 3);
+    assert_eq!(plan.content.unmapped_references, 8);
+    let role = |references, distinct| RoleCount {
+        references,
+        distinct,
+        unmapped_distinct: distinct,
+    };
+    assert_eq!(plan.content.roles[&ContentRole::ActorClass], role(2, 1));
+    assert_eq!(plan.content.roles[&ContentRole::ActorPath], role(2, 1));
+    assert_eq!(plan.content.roles[&ContentRole::DataRow], role(2, 1));
+    assert_eq!(plan.content.roles[&ContentRole::Unclassified], role(2, 1));
+    assert!(!plan.content.roles.contains_key(&ContentRole::AssetPath));
+    assert_eq!(plan.actors.owner_resolution["find_or_respawn"], 2);
+    assert_eq!(plan.actors.owner_resolution.len(), 1);
     assert_eq!(
         plan.blockers,
         vec![
             ImportBlocker::UninterpretedValues { leaves: 1 },
             ImportBlocker::UnmappedContent {
-                distinct: 2,
-                references: 4
+                distinct: 3,
+                references: 8
             },
         ]
     );
@@ -211,7 +228,7 @@ fn empty_catalog_blocks_on_unmapped_content_and_reports_counts_only() {
     assert!(!plan.world_imported);
     let label = recorder_class_label(&units(ACTOR)).unwrap();
     assert_eq!(plan.classes[&label].retained, 2);
-    assert_eq!(plan.classes[&label].unmapped_references, 4);
+    assert_eq!(plan.classes[&label].unmapped_references, 8);
     let text = serde_json::to_string(&plan).unwrap();
     for private in ["Secret", "secret", "/Game", "ActorState", "NoRecorder"] {
         assert!(!text.contains(private), "{private} leaked");
@@ -221,10 +238,16 @@ fn empty_catalog_blocks_on_unmapped_content_and_reports_counts_only() {
 #[test]
 fn a_catalog_covering_every_reference_makes_a_clean_save_importable() {
     let source = envelope(2, &[recorder(ACTOR, &CLEAN), recorder(ACTOR, &CLEAN)]);
-    let catalog = ContentCatalog::from_references([ROW, PATH]);
+    let catalog = ContentCatalog::from_references([ROW, PATH, "SecretTile"]);
     let plan = plan_import(source.as_slice(), &catalog).unwrap();
-    assert_eq!(plan.catalog_references, 2);
-    assert_eq!(plan.content.mapped_distinct, 2);
+    assert_eq!(plan.catalog_references, 3);
+    assert_eq!(plan.content.mapped_distinct, 3);
+    assert!(
+        plan.content
+            .roles
+            .values()
+            .all(|count| count.unmapped_distinct == 0)
+    );
     assert_eq!(plan.content.unmapped_references, 0);
     assert!(plan.blockers.is_empty());
     assert!(plan.importable);
@@ -235,15 +258,15 @@ fn a_catalog_covering_every_reference_makes_a_clean_save_importable() {
     assert_eq!(
         plan.blockers,
         vec![ImportBlocker::UnmappedContent {
-            distinct: 1,
-            references: 2
+            distinct: 2,
+            references: 4
         }]
     );
 }
 
 #[test]
 fn version_zero_and_all_invalid_saves_would_import_as_empty_worlds() {
-    let catalog = ContentCatalog::from_references([ROW, PATH]);
+    let catalog = ContentCatalog::from_references([ROW, PATH, "SecretTile"]);
     for source in [
         envelope(0, &[recorder(ACTOR, &CLEAN)]),
         envelope(2, &[recorder(NO_RECORDER, &CLEAN)]),
@@ -257,7 +280,7 @@ fn version_zero_and_all_invalid_saves_would_import_as_empty_worlds() {
 
 #[test]
 fn non_finite_transforms_block_import() {
-    let catalog = ContentCatalog::from_references([ROW, PATH]);
+    let catalog = ContentCatalog::from_references([ROW, PATH, "SecretTile"]);
     let source = envelope(
         2,
         &[recorder(
