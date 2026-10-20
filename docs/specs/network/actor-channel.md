@@ -155,7 +155,9 @@ Address pairs are server / client.
     `0.4` (`dot < 0 && dist_sq > 250k`, or `dot >= 0 && dist_sq > 9,998,244`).
   - `ProcessPrioritizedActors` (`0x1439c1bf0`, `evaluate_process_prioritized_actor`)
     checks `IsNetReady(0)`, sends `SendDestructionInfo`, takes a `<= 1.0` s
-    fast path before `IsActorRelevantToConnection`, sets
+    fast path before `IsActorRelevantToConnection`, counts an actor recently
+    relevant when `ForceRelevantFrame >= Connection->LastProcessedFrame`
+    (unsigned, `+0xd4` vs `+0x200`; F-772), sets
     `RelevantTime = ElapsedTime + 0.5 * SRand()`, delays unopenable `< 1.0` Hz
     actors by `0.2 * srands()`, replicates until saturation, and closes
     irrelevant or torn-off channels when
