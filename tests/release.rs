@@ -197,3 +197,117 @@ fn a_stale_checksum_or_unknown_field_is_rejected() {
     assert!(ReleasePin::parse(&format!("{good}extra = 1\n")).is_err());
     assert!(ReleasePin::parse(&good.replace("\"1.0.0\"", "\"\"")).is_err());
 }
+
+#[test]
+fn builtin_player_controller_profiles_compose_the_captured_export_prefix() {
+    use icarus_bevy::experimental::{
+        actor_channel::{ActorChannelCodec, ActorChannelLimits},
+        archive::ByteOrder,
+        session_open::{ConnectionExports, NetGuidCache, PathSegment, encode_exports},
+    };
+    use sha2::{Digest, Sha256};
+    let p31 = ReleaseProfile::release_3_0_31().player_controller.unwrap();
+    assert_eq!(
+        ReleaseProfile::release_3_0_32().player_controller.as_ref(),
+        Some(&p31)
+    );
+    assert!(p31.validate().is_ok());
+    // The capture's map chain (F-778); the level is the caller's, not release data.
+    let level = vec![
+        PathSegment::new("PersistentLevel", 0, true),
+        PathSegment::new("Terrain_016", 0, true),
+        PathSegment::new("/Game/Maps/Terrain_016_OLY/Terrain_016", 0, true),
+    ];
+    let profile = p31.session_profile(level);
+    let mut cache = NetGuidCache::new();
+    cache.register_level(&profile.level);
+    let (guids, references) = cache
+        .player_controller_exports(&mut ConnectionExports::new(), &profile)
+        .unwrap();
+    assert_eq!(guids.components, vec![6, 8, 10, 12, 14, 16, 18]);
+    let codec = ActorChannelCodec {
+        engine_net_version: 17,
+        exports_enabled: false,
+        has_level: true,
+        order: ByteOrder::Little,
+        limits: ActorChannelLimits::default(),
+    };
+    // F-778/F-779: the captured first part's export prefix is these 3,793
+    // bits (SHA-256 of its 475 bytes in the M-707 capture, pinned by M-819),
+    // so any wrong path, flag or checksum in the built-in identifiers fails.
+    let payload = encode_exports(&references, &codec).unwrap();
+    assert_eq!(payload.bit_len(), 3_793);
+    let digest: String = Sha256::digest(payload.bytes())
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect();
+    assert_eq!(
+        digest,
+        "927793245d9f2a5801c56ba40acb482570729030d5f53643760c4a12a7c02399"
+    );
+}
+
+#[test]
+fn player_controller_sections_parse_and_fail_closed() {
+    let release = "[release]\napp_id = 2089300\nbuild_id = 25956137\nproject_version = \"3.0.32.158743-rel-DangerousHorizons\"\nnetwork_checksum = 243431684\n";
+    let section = r#"
+[player_controller]
+archetype = [
+    { path = "Default__Test_C", checksum = 7 },
+    { path = "/Game/Test", checksum = 0 },
+]
+components = [
+    { name = "A", checksum = 1, block = "rep_bools", rep_bools = [[2, true]] },
+    { name = "B", checksum = 2 },
+    { name = "C", checksum = 3, block = "create" },
+]
+"#;
+    let parsed = ReleaseProfile::parse(&format!("{release}{section}")).unwrap();
+    let player_controller = parsed.player_controller.unwrap();
+    assert_eq!(player_controller.components[0].rep_bools, vec![(2, true)]);
+    assert_ne!(
+        Some(player_controller),
+        ReleaseProfile::release_3_0_32().player_controller
+    );
+    // A known build without the section gets its built-in identifiers; an
+    // unknown build gets none rather than an older build's.
+    assert_eq!(
+        ReleaseProfile::parse(release).unwrap().player_controller,
+        ReleaseProfile::release_3_0_32().player_controller
+    );
+    let unknown = release
+        .replace("25956137", "1")
+        .replace("3.0.32.158743-rel-DangerousHorizons", "1.0.0")
+        .replace("243431684", "1447163286");
+    let tags = "[tags]\ndata_table_tag_count = 130\nini_tag_count = 1889\nunique_node_count = 2302\ntotal_bits = 12\nconfigured_first_segment = 16\neffective_first_segment = 0\ncontainer_bits = 6\nnet_index_hash = 1829726063\n";
+    assert_eq!(
+        ReleaseProfile::parse(&format!("{unknown}{tags}"))
+            .unwrap()
+            .player_controller,
+        None
+    );
+    for bad in [
+        section.replace(
+            "block = \"create\"",
+            "block = \"create\", rep_bools = [[1, true]]",
+        ),
+        section.replace("[[2, true]]", "[[3, true]]"),
+        section.replace("[[2, true]]", "[[2, true], [1, false]]"),
+        section.replace("[[2, true]]", "[]"),
+        section.replace("name = \"B\"", "name = \"a\""),
+        section.replace("checksum = 7", "checksum = 0"),
+        section.replace("checksum = 0 }", "checksum = 5 }"),
+        section.replace(
+            "    { name = \"C\", checksum = 3, block = \"create\" },\n",
+            "",
+        ),
+        section.replace("block = \"create\"", "block = \"spawn\""),
+        section.replace("checksum = 2 }", "checksum = 2, extra = 1 }"),
+    ] {
+        assert_ne!(bad, section);
+        assert!(
+            ReleaseProfile::parse(&format!("{release}{bad}")).is_err(),
+            "{bad}"
+        );
+    }
+}

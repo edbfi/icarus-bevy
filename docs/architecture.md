@@ -54,8 +54,8 @@ treat release-specific protocol facts as data rather than scattered code
 constants:
 
 - `config/release.toml` pins one official build (`[release]` plus optional
-  `[tags]`, `[class_net_cache]` and `[row_handles]` overrides, validated by
-  `experimental::release::ReleaseProfile`).
+  `[tags]`, `[class_net_cache]`, `[row_handles]` and `[player_controller]`
+  overrides, validated by `experimental::release::ReleaseProfile`).
 - `tools/release_watch.py check` compares the pin with Steam's public branch
   (anonymous app info); the daily `Release watch` workflow opens an issue when
   the pin falls behind and closes resolved or superseded release issues.

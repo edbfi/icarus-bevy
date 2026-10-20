@@ -299,7 +299,7 @@ const HANDLE_SPAWN_LOCATION: u32 = 19;
 /// referenced by actor properties; later components only get their own
 /// export and block (F-778).
 const HANDLE_FIRST_COMPONENT: u32 = 22;
-const COMPONENT_HANDLES: usize = 3;
+pub const COMPONENT_HANDLES: usize = 3;
 
 fn entry(handle: u32, value: RepValue) -> RepEntry {
     RepEntry {
