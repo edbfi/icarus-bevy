@@ -155,7 +155,7 @@ impl Default for ReplicationConfig {
     fn default() -> Self {
         Self {
             // The grid decides identically but did not pay off over 2,626
-            // supplied actor positions at 1 to 8 viewers (F-773).
+            // supplied actor positions at 1 to 8 viewers (F-775).
             spatial: SpatialMode::Naive,
             connection_budget: DEFAULT_CONNECTION_BUDGET,
             max_consider_list: DEFAULT_MAX_CONSIDER_LIST,

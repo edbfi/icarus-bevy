@@ -168,7 +168,8 @@ Address pairs are server / client.
     Channel->RelevantTime <= 1.0` or `IsActorRelevantToConnection` (then
     `Channel->RelevantTime = ElapsedTime + 0.5 * SRand()` if a channel exists),
     and `ForceRelevantFrame = ReplicationFrame + 1` when
-    `ForceRelevantFrame >= Connection->LastProcessedFrame`.
+    `ForceRelevantFrame >= Connection->LastProcessedFrame` for every
+    unprocessed entry, relevant or not, then sets `LastProcessedFrame` (F-774).
 
 ## Candidate
 
