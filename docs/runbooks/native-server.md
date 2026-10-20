@@ -122,9 +122,14 @@ content is the lossless preservation of a supplied prospect (schema 3, tick 0,
 `world_imported: false`); it refuses a directory that already holds a world.
 The world then runs and autosaves like any other; nothing in it is interpreted.
 
-`import-save --source … --destination … --dry-run` is a reserved interface: it
-returns an explicit unsupported error without reading/writing the supplied paths.
-Do not use it to migrate a real world yet.
+`import-save --source … --destination … --dry-run` plans a native import and
+prints the plan (`native_import_plan_only`, counts only): full staging with each
+recorder's `Validate` decision, lossless typing of every retained recorder, base
+recorder fields, actor transforms and every name or `/Game/`/`/Script/` path
+reference checked against the native content catalog (empty today). Blockers
+list unmapped content, uninterpreted values, non-finite transforms or an empty
+world. Without `--dry-run` the import is refused; nothing is ever written and
+the destination is not touched.
 
 `inspect-save --source PATH` opens nonblocking and admits only an opened regular
 file; regular symlinks remain supported in every mode. Path-swap/FIFO regression
@@ -142,6 +147,10 @@ the full `FProspectSaveState` root schema, `PostLoadSerialize` migration,
 `CustomSettings`), optional `ProspectID` matching, and base-component framing of
 every `StateRecorderBlob` (`experimental_stage_only`, `world_imported: false`,
 F-738).
+`--typed-check` stages the prospect, then types every recorder value (scalars,
+strings, text, tagged and fixed-width engine structs, arrays, Map/Set items)
+under the hard tree ceilings; each body must re-encode to its original bytes,
+and leaves that cannot be typed are counted by reason per class pseudonym.
 `--preserve-check` preserves the payload losslessly, saves and reloads it through
 a temporary schema-3 store that it removes, saving twice to show the sidecar is
 not rewritten, and reports counts, sizes, timings and resident memory with

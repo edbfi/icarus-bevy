@@ -46,6 +46,11 @@ opaque Struct payload is one of four fixed-width engine math types (F-565,
 F-602), and construction grids nest per-type row names over placed pieces
 sharing the grid's frame (F-643).
 
+Under the hard tree limits every recorder value of all 15 prospects types
+losslessly with no uninterpreted leaf (F-766), and a dry-run native import plan
+then blocks only on 6,041 to 6,513 distinct name and path references that no
+native content catalog yet defines (F-767).
+
 No saved class identifier, field or type name, or recorder version tells the
 older server from the newer client, and the prospect carries no version string
 (F-635, F-682). Recorder code gives every class's fields their meanings (F-645 to
@@ -57,9 +62,9 @@ stay at 128 KiB (F-198).
 ## Open
 
 - Packaged data-table row meanings remain out of scope by policy (F-660).
-- Native interpreted import and connected client compatibility (U-025, U-038, U-045).
+- Native content catalog and import writer: classify the F-767 references by role and author native world data for them; connected client compatibility (U-025, U-038, U-045).
 - Heavy-world save work order: the preserved server's offline load/save/reload baseline (F-678 to F-681, F-736) and connected scenario S1 on server 25956137 (3.0.32, F-701) both frame and preserve byte-identically; build pairing of the original save remains open (U-040), and native interpreted import stays gated (U-038, U-045).
 
 ## Artifacts
 
-M-047..M-077, M-079..M-108, M-118..M-130, M-278..M-280, M-351, M-352, M-376..M-384, M-389, M-390, M-401..M-404, M-407..M-410, M-606..M-613, M-616..M-618, M-626, M-627, M-636..M-638, M-727, M-755..M-760, M-766..M-769, M-772..M-777, M-780, M-782, M-784, M-786, M-788, M-790..M-792, M-794..M-807.
+M-047..M-077, M-079..M-108, M-118..M-130, M-278..M-280, M-351, M-352, M-376..M-384, M-389, M-390, M-401..M-404, M-407..M-410, M-606..M-613, M-616..M-618, M-626, M-627, M-636..M-638, M-727, M-755..M-760, M-766..M-769, M-772..M-777, M-780, M-782, M-784, M-786, M-788, M-790..M-792, M-794..M-808.
