@@ -2120,3 +2120,381 @@ pub fn evaluate_consider_list_actor(inputs: &ConsiderListActorInputs) -> Conside
         updated_last_net_update_time,
     }
 }
+
+/// Priority fixed-point scale multiplier (`65536.0f` at `0x144905214` server)
+/// applied in `UNetDriver::ServerReplicateActors_PrioritizeActors`
+/// (`0x1437241e0` server / `0x1439c0e70` client, F-749).
+pub const PRIORITY_SCALE_MULTIPLIER: f32 = 65536.0;
+
+/// Near squared-distance threshold (`250_000.0f` = `500.0^2` at `0x1449ca03c`
+/// server) behind the viewer (`dot < 0.0`) for `DestroyedStartupOrDormantActors`
+/// priority scaling in `UNetDriver::ServerReplicateActors_PrioritizeActors`
+/// (F-749).
+pub const DESTRUCTION_INFO_BEHIND_NEAR_DIST_SQ: f32 = 250_000.0;
+
+/// Far squared-distance threshold (`4_000_000.0f` = `2000.0^2` at `0x14530fb94`
+/// server) behind the viewer (`dot < 0.0`) for `DestroyedStartupOrDormantActors`
+/// priority scaling in `UNetDriver::ServerReplicateActors_PrioritizeActors`
+/// (F-749).
+pub const DESTRUCTION_INFO_BEHIND_FAR_DIST_SQ: f32 = 4_000_000.0;
+
+/// Far squared-distance threshold (`9_998_244.0f` = `3162.0^2` at `0x14530fb98`
+/// server) in front of the viewer (`!(dot < 0.0)`) for
+/// `DestroyedStartupOrDormantActors` priority scaling in
+/// `UNetDriver::ServerReplicateActors_PrioritizeActors` (F-749).
+pub const DESTRUCTION_INFO_FRONT_FAR_DIST_SQ: f32 = 9_998_244.0;
+
+/// Near distance priority factor (`0.4f` at `0x1449075f0` server) applied to
+/// `DestroyedStartupOrDormantActors` in
+/// `UNetDriver::ServerReplicateActors_PrioritizeActors` (F-749).
+pub const DESTRUCTION_INFO_NEAR_FACTOR: f32 = 0.4;
+
+/// Far distance priority factor (`0.2f` at `0x14476f360` server) applied to
+/// `DestroyedStartupOrDormantActors` in
+/// `UNetDriver::ServerReplicateActors_PrioritizeActors` (F-749).
+pub const DESTRUCTION_INFO_FAR_FACTOR: f32 = 0.2;
+
+/// Fast-path relevancy grace window (`1.0` second at `0x14479ef90` server)
+/// checked via `Driver->ElapsedTime - Channel->RelevantTime <= 1.0` in
+/// `UNetDriver::ServerReplicateActors_ProcessPrioritizedActors`
+/// (`0x143725030` server / `0x1439c1bf0` client, F-749).
+pub const PROCESS_PRIORITIZED_RELEVANCY_FAST_PATH_SECONDS: f64 = 1.0;
+
+/// Jitter scale (`0.5` seconds at `0x1446dc8b8` server) multiplied by `srands()`
+/// and added to `Driver->ElapsedTime` when updating `Channel->RelevantTime` in
+/// `UNetDriver::ServerReplicateActors_ProcessPrioritizedActors` (F-749).
+pub const PROCESS_PRIORITIZED_RELEVANT_TIME_JITTER_SCALE: f64 = 0.5;
+
+/// Low-frequency `NetUpdateFrequency` threshold (`1.0f` at `0x1446cdf18` server)
+/// below which deferred actors without an open channel receive a short random
+/// `NextUpdateTime` delay in
+/// `UNetDriver::ServerReplicateActors_ProcessPrioritizedActors` (F-749).
+pub const PROCESS_PRIORITIZED_LOW_FREQ_THRESHOLD: f32 = 1.0;
+
+/// Random delay scale (`0.2f` at `0x14476f360` server) multiplied by `srands()`
+/// and added to `World->TimeSeconds` when deferring a low-frequency actor in
+/// `UNetDriver::ServerReplicateActors_ProcessPrioritizedActors` (F-749).
+pub const PROCESS_PRIORITIZED_LOW_FREQ_DELAY_SCALE: f32 = 0.2;
+
+fn cvttss2si_i32(value: f32) -> i32 {
+    if !value.is_finite() || value < (i32::MIN as f32) || value >= 2_147_483_648.0 {
+        i32::MIN
+    } else {
+        value as i32
+    }
+}
+
+/// Evaluate `appRoundToInt(65536.0f * priority)` (`0x1437247cd..0x1437247dd`
+/// server / `0x1439c144a..0x1439c145a` client, F-749) in
+/// `UNetDriver::ServerReplicateActors_PrioritizeActors`.
+pub fn round_net_priority_to_int(priority: f32) -> i32 {
+    let scaled = priority * PRIORITY_SCALE_MULTIPLIER;
+    let doubled_plus_half = scaled + scaled + 0.5_f32;
+    let raw = cvttss2si_i32(doubled_plus_half);
+    raw >> 1
+}
+
+/// Evaluate the `DestroyedStartupOrDormantActors` priority calculation
+/// (`0x143724852..0x143724ab5` server / `0x1439c14ce..0x1439c168f` client,
+/// F-749) in `UNetDriver::ServerReplicateActors_PrioritizeActors`.
+pub fn evaluate_destruction_info_priority(
+    last_send_time_delta: f32,
+    destroyed_position: [f32; 3],
+    viewer_location: [f32; 3],
+    viewer_dir: [f32; 3],
+) -> i32 {
+    let dx = destroyed_position[0] - viewer_location[0];
+    let dy = destroyed_position[1] - viewer_location[1];
+    let dz = destroyed_position[2] - viewer_location[2];
+    let dist_sq = dx * dx + dy * dy + dz * dz;
+    let dot = viewer_dir[0] * dx + viewer_dir[1] * dy + viewer_dir[2] * dz;
+
+    let mut time = last_send_time_delta;
+    if dot < 0.0 {
+        if dist_sq > DESTRUCTION_INFO_BEHIND_FAR_DIST_SQ {
+            time *= DESTRUCTION_INFO_FAR_FACTOR;
+        } else if dist_sq > DESTRUCTION_INFO_BEHIND_NEAR_DIST_SQ {
+            time *= DESTRUCTION_INFO_NEAR_FACTOR;
+        }
+    } else if dist_sq > DESTRUCTION_INFO_FRONT_FAR_DIST_SQ {
+        time *= DESTRUCTION_INFO_NEAR_FACTOR;
+    }
+
+    let scaled = time * PRIORITY_SCALE_MULTIPLIER;
+    cvttss2si_i32(scaled)
+}
+
+/// Per-actor inputs for the consider-list loop in
+/// `UNetDriver::ServerReplicateActors_PrioritizeActors` (`0x1437241e0..0x143724830`
+/// server / `0x1439c0e70..0x1439c14b5` client, F-749).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct PrioritizeActorInputs {
+    pub has_channel: bool,
+    pub b_only_relevant_to_owner: bool,
+    pub is_relevant_to_at_least_one_viewer: bool,
+    pub driver_elapsed_time: f64,
+    pub channel_relevant_time: f64,
+    pub relevant_timeout: f64,
+    pub actor_net_tag: i32,
+    pub driver_net_tag: i32,
+    pub is_actor_dormant_on_connection: bool,
+    pub actor_net_dormancy: u8,
+    pub channel_b_pending_dormancy: bool,
+    pub channel_dormant: bool,
+    pub get_net_dormancy_returns_dormant_partial: bool,
+    pub level_initialized_for_actor: bool,
+    pub actor_last_net_update_time: f64,
+    pub channel_last_update_time: f64,
+    pub channel_open_elapsed_time: f64,
+    pub max_net_priority_across_viewers: f32,
+}
+
+/// Per-actor disposition in `UNetDriver::ServerReplicateActors_PrioritizeActors`
+/// (`0x1437241e0..0x143724830` server / `0x1439c0e70..0x1439c14b5` client,
+/// F-749).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum PrioritizeActorOutcome {
+    SkipNotRelevantToOwner,
+    SkipAlreadyTagged,
+    CloseChannelOwnerIrrelevantTimeout {
+        close_reason: u8,
+    },
+    SkipOwnerIrrelevantWithinTimeout,
+    SkipDormant,
+    StartBecomingDormantAndSkip,
+    SkipLevelNotInitialized,
+    Prioritized {
+        new_actor_net_tag: i32,
+        time_since_last_update: f32,
+        priority: i32,
+    },
+}
+
+/// Evaluate `UNetDriver::ServerReplicateActors_PrioritizeActors`
+/// (`0x1437241e0..0x143724830` server / `0x1439c0e70..0x1439c14b5` client,
+/// F-749) for one `FNetworkObjectInfo` entry in exact branch order.
+pub fn evaluate_prioritize_actor(inputs: &PrioritizeActorInputs) -> PrioritizeActorOutcome {
+    if !inputs.has_channel
+        && inputs.b_only_relevant_to_owner
+        && !inputs.is_relevant_to_at_least_one_viewer
+    {
+        return PrioritizeActorOutcome::SkipNotRelevantToOwner;
+    }
+    if inputs.actor_net_tag == inputs.driver_net_tag {
+        return PrioritizeActorOutcome::SkipAlreadyTagged;
+    }
+    if inputs.has_channel
+        && inputs.b_only_relevant_to_owner
+        && !inputs.is_relevant_to_at_least_one_viewer
+    {
+        if inputs.driver_elapsed_time - inputs.channel_relevant_time > inputs.relevant_timeout {
+            return PrioritizeActorOutcome::CloseChannelOwnerIrrelevantTimeout { close_reason: 3 };
+        }
+        return PrioritizeActorOutcome::SkipOwnerIrrelevantWithinTimeout;
+    }
+    if inputs.is_actor_dormant_on_connection {
+        return PrioritizeActorOutcome::SkipDormant;
+    }
+    if inputs.actor_net_dormancy > 1
+        && inputs.has_channel
+        && !inputs.channel_b_pending_dormancy
+        && !inputs.channel_dormant
+        && (inputs.actor_net_dormancy == 2
+            || (inputs.actor_net_dormancy == 3 && inputs.get_net_dormancy_returns_dormant_partial))
+    {
+        return PrioritizeActorOutcome::StartBecomingDormantAndSkip;
+    }
+    if !inputs.level_initialized_for_actor {
+        return PrioritizeActorOutcome::SkipLevelNotInitialized;
+    }
+    let time_since_last_update = if !inputs.has_channel || inputs.channel_last_update_time <= 1e-40
+    {
+        inputs.channel_open_elapsed_time as f32
+    } else {
+        (inputs.actor_last_net_update_time - inputs.channel_last_update_time) as f32
+    };
+    let priority = round_net_priority_to_int(inputs.max_net_priority_across_viewers);
+    PrioritizeActorOutcome::Prioritized {
+        new_actor_net_tag: inputs.driver_net_tag,
+        time_since_last_update,
+        priority,
+    }
+}
+
+/// Per-entry inputs for `UNetDriver::ServerReplicateActors_ProcessPrioritizedActors`
+/// (`0x143725030..0x143725cf0` server / `0x1439c1bf0..0x1439c24a6` client,
+/// F-749).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ProcessPrioritizedActorInputs {
+    pub connection_is_net_ready: bool,
+    pub is_destruction_info: bool,
+    pub destruction_level_initialized: bool,
+    pub has_channel: bool,
+    pub driver_elapsed_time: f64,
+    pub channel_relevant_time: f64,
+    pub relevant_timeout: f64,
+    pub is_relevant_to_connection: bool,
+    pub actor_b_tear_off: bool,
+    pub force_relevant_frame: i32,
+    pub driver_replication_frame: i32,
+    pub channel_b_is_replicating_actor: bool,
+    pub actor_b_always_relevant: bool,
+    pub actor_b_net_temporary: bool,
+    pub channel_open_acked: bool,
+    pub actor_level_initialized: bool,
+    pub package_map_supports_object: bool,
+    pub actor_net_update_frequency: f32,
+    pub world_time_seconds: f32,
+    pub random_unit_float: f32,
+    pub can_create_actor_channel: bool,
+    pub replicate_actor_wrote_anything: bool,
+    pub connection_is_net_ready_after_replicate: bool,
+    pub actor_is_net_startup: bool,
+}
+
+/// Per-entry disposition in
+/// `UNetDriver::ServerReplicateActors_ProcessPrioritizedActors`
+/// (`0x143725030..0x143725cf0` server / `0x1439c1bf0..0x1439c24a6` client,
+/// F-749).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum ProcessPrioritizedActorOutcome {
+    StopConnectionSaturated,
+    SendDestructionInfo,
+    SkipDestructionInfoLevelUnloaded,
+    SkipAlreadyReplicatingOrAckedNetTemporary {
+        updated_relevant_time: Option<f64>,
+    },
+    DeferCannotOpenChannel {
+        updated_next_update_time: Option<f32>,
+    },
+    DeferChannelCreationFailed,
+    ReplicateActorAndStopSaturated {
+        opened_new_channel: bool,
+        wrote_anything: bool,
+        updated_relevant_time: Option<f64>,
+    },
+    ReplicateActorContinue {
+        opened_new_channel: bool,
+        wrote_anything: bool,
+        updated_relevant_time: Option<f64>,
+    },
+    CloseChannel {
+        close_reason: u8,
+    },
+    SkipNotRelevantNoClose,
+}
+
+/// Evaluate `UNetDriver::ServerReplicateActors_ProcessPrioritizedActors`
+/// (`0x143725030..0x143725cf0` server / `0x1439c1bf0..0x1439c24a6` client,
+/// F-749) for one `FActorPriority` entry in exact branch order.
+pub fn evaluate_process_prioritized_actor(
+    inputs: &ProcessPrioritizedActorInputs,
+) -> ProcessPrioritizedActorOutcome {
+    if !inputs.connection_is_net_ready {
+        return ProcessPrioritizedActorOutcome::StopConnectionSaturated;
+    }
+    if inputs.is_destruction_info {
+        if inputs.destruction_level_initialized {
+            return ProcessPrioritizedActorOutcome::SendDestructionInfo;
+        }
+        return ProcessPrioritizedActorOutcome::SkipDestructionInfoLevelUnloaded;
+    }
+
+    let relevancy_fast_path = inputs.has_channel
+        && (inputs.driver_elapsed_time - inputs.channel_relevant_time
+            <= PROCESS_PRIORITIZED_RELEVANCY_FAST_PATH_SECONDS);
+    let is_relevant =
+        !inputs.actor_b_tear_off && (relevancy_fast_path || inputs.is_relevant_to_connection);
+    let is_recently_relevant = is_relevant
+        || (inputs.has_channel
+            && inputs.driver_elapsed_time - inputs.channel_relevant_time < inputs.relevant_timeout)
+        || (inputs.force_relevant_frame >= inputs.driver_replication_frame);
+
+    if is_recently_relevant {
+        let jittered_relevant_time = inputs.driver_elapsed_time
+            + PROCESS_PRIORITIZED_RELEVANT_TIME_JITTER_SCALE * f64::from(inputs.random_unit_float);
+        let updated_relevant_time = if inputs.has_channel && is_relevant {
+            Some(jittered_relevant_time)
+        } else {
+            None
+        };
+
+        if (inputs.has_channel && inputs.channel_b_is_replicating_actor)
+            || (inputs.actor_b_always_relevant
+                && inputs.actor_b_net_temporary
+                && inputs.has_channel
+                && inputs.channel_open_acked)
+        {
+            return ProcessPrioritizedActorOutcome::SkipAlreadyReplicatingOrAckedNetTemporary {
+                updated_relevant_time,
+            };
+        }
+
+        if !inputs.has_channel {
+            if !inputs.actor_level_initialized || !inputs.package_map_supports_object {
+                let updated_next_update_time = if inputs.actor_net_update_frequency
+                    < PROCESS_PRIORITIZED_LOW_FREQ_THRESHOLD
+                {
+                    Some(
+                        inputs.world_time_seconds
+                            + PROCESS_PRIORITIZED_LOW_FREQ_DELAY_SCALE * inputs.random_unit_float,
+                    )
+                } else {
+                    None
+                };
+                return ProcessPrioritizedActorOutcome::DeferCannotOpenChannel {
+                    updated_next_update_time,
+                };
+            }
+            if !inputs.can_create_actor_channel {
+                return ProcessPrioritizedActorOutcome::DeferChannelCreationFailed;
+            }
+        }
+
+        let final_relevant_time = if !inputs.has_channel || is_relevant {
+            Some(jittered_relevant_time)
+        } else {
+            None
+        };
+
+        if !inputs.connection_is_net_ready_after_replicate {
+            ProcessPrioritizedActorOutcome::ReplicateActorAndStopSaturated {
+                opened_new_channel: !inputs.has_channel,
+                wrote_anything: inputs.replicate_actor_wrote_anything,
+                updated_relevant_time: final_relevant_time,
+            }
+        } else {
+            ProcessPrioritizedActorOutcome::ReplicateActorContinue {
+                opened_new_channel: !inputs.has_channel,
+                wrote_anything: inputs.replicate_actor_wrote_anything,
+                updated_relevant_time: final_relevant_time,
+            }
+        }
+    } else if inputs.has_channel
+        && (!inputs.actor_level_initialized || !inputs.actor_is_net_startup)
+    {
+        ProcessPrioritizedActorOutcome::CloseChannel {
+            close_reason: if inputs.actor_b_tear_off { 4 } else { 3 },
+        }
+    } else {
+        ProcessPrioritizedActorOutcome::SkipNotRelevantNoClose
+    }
+}
+
+/// Evaluate `UNetDriver::ServerReplicateActors_MarkRelevantActors`
+/// (`0x143723ce0` server / `0x1439c0a30` client, F-749).
+///
+/// Returns `(updated_force_relevant_frame, updated_b_pending_net_update)`.
+pub fn evaluate_mark_relevant_actor(
+    has_actor_owner: bool,
+    has_open_channel: bool,
+    connection_tick_count: i32,
+    current_force_relevant_frame: i32,
+    current_b_pending_net_update: bool,
+) -> (i32, bool) {
+    if has_actor_owner && !has_open_channel {
+        (connection_tick_count.wrapping_add(1), true)
+    } else {
+        (current_force_relevant_frame, current_b_pending_net_update)
+    }
+}

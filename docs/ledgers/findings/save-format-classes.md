@@ -7,7 +7,7 @@ full text under `retired/`. Admission and columns follow `.agents/rules/docs.md`
 
 Before restructure: 96ddb0b:docs/ledgers/findings.md
 
-Last reconciled: 2026-10-18
+Last reconciled: 2026-10-20
 
 | ID | Claim | Kind | Evidence | Scope and limits | Unknowns | Status |
 | --- | --- | --- | --- | --- | --- | --- |
@@ -61,3 +61,4 @@ Last reconciled: 2026-10-18
 | F-743 | +0x478: StateRecorder (0x14188ba30) matches GetName() to +0xc0 via Stricmp; C025 (0x1418c9390) checks +0xfc>=1 and Controller ID (0x141469c40) == +0xd8/+0xe8 (0x14170a750); C026 (0x1418c9450) checks Character (+0x6c8) and PlayerState ID (+0x478/+0x498) == +0x1c0/+0x1d0 | observed | static-decompile, authored-test; M-791/ev_298296be07a0, M-790 | high; both builds | U-020, U-045 | active |
 | F-744 | C003 (0x1418b7710) copies SpawnPointPlayers (+0x290); C004 (0x1418b7770) tries 0x1413a9690 if +0x128!=0 else 0x141a7ac10; C006 (0x1418b7b40) saves CaveEntranceMask (+0x1c0); C021 (0x1418a7660) binds GUID (+0x140>0 else -1); C023 (0x141843be0) uses C001 vtable (+0xd9=1) | observed | static-decompile, authored-test; M-791/ev_298296be07a0, M-792 | high; both builds | U-020, U-045 | active |
 | F-747 | All 65 RecorderComponent classes (C001..C038, N001..N027) match across builds on ctor defaults and +0xa0..+0x4c0; N018 Validate (0x14089a160) is false, N020 (0x140899f70) true, N022 = C011 0x1418fa010; dddd.json stages 971/52/798/658/264 and 821 stitch | observed | static-decompile, authored-test; M-798, M-799, M-800 | high; both builds | U-020, U-025, U-045 | active |
+| F-750 | HasValidOwner (0x141898750), RecordToProspectSaveState (0x1414b4680; FLOD flush, (!HasValidOwner&&!bIsRetained)\|\|ShouldDrop, RecordState if valid), RetainRecorder (0x1414b86b0), PerformStitchingPass (0x1414b1d70) and N010..N016 slots (+0x458..+0x468) match | observed | static-decompile, authored-test; M-801, M-802, M-803 | high; both builds | U-020, U-025, U-045 | active |
