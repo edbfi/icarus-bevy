@@ -31,6 +31,11 @@ toml = "1.1.8"
 [lints.rust]
 unsafe_code = "forbid"
 
+[profile.dev]
+# Line tables keep backtrace locations; full debug info made each of the ~40
+# test binaries about 130 MiB.
+debug = "line-tables-only"
+
 [profile.release]
 lto = "thin"
 codegen-units = 1

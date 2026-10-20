@@ -101,7 +101,9 @@ enum Command {
         #[arg(long)]
         data_dir: PathBuf,
     },
-    /// Reserved interface: official format is unknown; fails without writing.
+    /// Plan a native import of a supplied prospect. `--dry-run` prints the
+    /// plan (counts only); without it the import is refused while the plan has
+    /// blockers. Nothing is ever written; the destination is not touched.
     ImportSave {
         #[arg(long)]
         source: PathBuf,
@@ -136,9 +138,25 @@ fn execute(cli: Cli) -> Result<()> {
             println!("{}", preserve_save(file, &data_dir)?);
             Ok(())
         }
-        Command::ImportSave { .. } => bail!(
-            "ICARUS save import is unavailable until the format and migration fidelity are validated; no files were written"
-        ),
+        Command::ImportSave {
+            source, dry_run, ..
+        } => {
+            let file = open_regular_source(&source)?;
+            let plan = icarus_bevy::import_plan::plan_import(
+                file,
+                &icarus_bevy::import_plan::ContentCatalog::empty(),
+            )?;
+            if dry_run {
+                println!("{}", serde_json::to_string(&plan)?);
+                return Ok(());
+            }
+            ensure!(
+                plan.importable,
+                "import blocked by {}; run with --dry-run for the plan; no files were written",
+                serde_json::to_string(&plan.blockers)?
+            );
+            bail!("native world import writing is not implemented; no files were written")
+        }
         Command::InspectSave {
             source,
             inner_tags,

@@ -64,9 +64,9 @@ pub struct EnvelopeInspection {
     pub world_imported: bool,
 }
 
-struct ValidatedEnvelope {
-    inspection: EnvelopeInspection,
-    payload: Vec<u8>,
+pub(crate) struct ValidatedEnvelope {
+    pub(crate) inspection: EnvelopeInspection,
+    pub(crate) payload: Vec<u8>,
 }
 
 #[derive(Debug, Serialize)]
@@ -374,7 +374,7 @@ pub fn visit_class_components(
     Ok(report)
 }
 
-fn decode_envelope(reader: impl Read) -> Result<ValidatedEnvelope> {
+pub(crate) fn decode_envelope(reader: impl Read) -> Result<ValidatedEnvelope> {
     let mut bytes = Vec::new();
     reader
         .take(MAX_ENVELOPE_BYTES as u64 + 1)

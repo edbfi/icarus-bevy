@@ -1185,6 +1185,35 @@ pub fn stage_prospect_save_state(
     component_byte_limit: usize,
     expected_prospect_id: Option<&[u16]>,
 ) -> Result<StagedProspectSaveState> {
+    stage_prospect_save_state_with_decisions(
+        roots,
+        profile,
+        component_byte_limit,
+        expected_prospect_id,
+    )
+    .map(|(staged, _)| staged)
+}
+
+/// One recorder's staging outcome, in recorder-array order.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct StagedRecorderDecision {
+    /// Kept after `Validate` (`+0x408`); always `false` for a version-0 save.
+    pub retained: bool,
+    pub owner_resolve_policy: OwnerResolvePolicy,
+    pub skip_default_owner_resolution: bool,
+    pub requires_stitching: bool,
+    /// A `C033` `bIsPhysicsDynamic` tree the original drops on its next save.
+    pub physics_dynamic_tree: bool,
+    pub reset_rocket_spawn: bool,
+}
+
+/// [`stage_prospect_save_state`], also returning every recorder's decision.
+pub fn stage_prospect_save_state_with_decisions(
+    roots: &[RootTag<'_>],
+    profile: TagProfile,
+    component_byte_limit: usize,
+    expected_prospect_id: Option<&[u16]>,
+) -> Result<(StagedProspectSaveState, Vec<StagedRecorderDecision>)> {
     ensure!(
         (1..=MAX_BOUNDED_COMPONENT_BYTES).contains(&component_byte_limit),
         "component byte limit must be between 1 byte and 1 MiB"
@@ -1341,9 +1370,11 @@ pub fn stage_prospect_save_state(
     let mut manually_resolved_owner_count = 0usize;
     let mut requires_stitching_count = 0usize;
     let mut total_component_field_tags = 0usize;
+    let mut decisions = Vec::new();
     if has_recorders_root {
         let recorders = read_recorders(roots, profile)?;
         parsed_recorder_count = recorders.records().len();
+        decisions.reserve_exact(parsed_recorder_count);
         for recorder in recorders.records() {
             ensure!(
                 recorder.fields().len() == 2,
@@ -1360,7 +1391,18 @@ pub fn stage_prospect_save_state(
             total_component_field_tags = total_component_field_tags
                 .checked_add(component.fields().len())
                 .context("component field count overflow")?;
-            if version != 0 {
+            if version == 0 {
+                let defaults = lookup_recorder_ctor_defaults(&class_units)
+                    .ok_or_else(|| anyhow::anyhow!("unrecognized recorder ComponentClassName"))?;
+                decisions.push(StagedRecorderDecision {
+                    retained: false,
+                    owner_resolve_policy: defaults.owner_resolve_policy,
+                    skip_default_owner_resolution: defaults.b_skip_default_owner_resolution,
+                    requires_stitching: false,
+                    physics_dynamic_tree: false,
+                    reset_rocket_spawn: false,
+                });
+            } else {
                 let eval = evaluate_staged_recorder_component(
                     &class_units,
                     &component,
@@ -1393,6 +1435,14 @@ pub fn stage_prospect_save_state(
                 if eval.is_physics_dynamic_tree {
                     physics_dynamic_tree_recorder_count += 1;
                 }
+                decisions.push(StagedRecorderDecision {
+                    retained: eval.is_valid,
+                    owner_resolve_policy: eval.owner_resolve_policy,
+                    skip_default_owner_resolution: eval.skip_default_owner_resolution,
+                    requires_stitching: eval.requires_stitching,
+                    physics_dynamic_tree: eval.is_physics_dynamic_tree,
+                    reset_rocket_spawn: eval.was_reset_rocket_spawn,
+                });
             }
         }
     }
@@ -1410,7 +1460,7 @@ pub fn stage_prospect_save_state(
         );
     }
 
-    Ok(StagedProspectSaveState {
+    let staged = StagedProspectSaveState {
         profile: match profile {
             TagProfile::MemoryArchive522 => "experimental_memory_archive_522",
         },
@@ -1438,5 +1488,6 @@ pub fn stage_prospect_save_state(
         requires_stitching_count,
         total_component_field_tags,
         world_imported: false,
-    })
+    };
+    Ok((staged, decisions))
 }
