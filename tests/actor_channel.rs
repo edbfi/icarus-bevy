@@ -2185,8 +2185,9 @@ fn server_replicate_actors_prioritize_process_and_mark_relevant() {
     assert_eq!(PROCESS_PRIORITIZED_LOW_FREQ_THRESHOLD, 1.0);
     assert_eq!(PROCESS_PRIORITIZED_LOW_FREQ_DELAY_SCALE, 0.2);
 
-    // 1. round_net_priority_to_int (`appRoundToInt(65536.0f * priority)`):
+    // 1. round_net_priority_to_int (`appRoundToInt(65536.0f * priority)` via `cvtss2si`):
     assert_eq!(round_net_priority_to_int(0.0), 0);
+    assert_eq!(round_net_priority_to_int(0.1), 6_554);
     assert_eq!(round_net_priority_to_int(1.0), 65_536);
     assert_eq!(round_net_priority_to_int(1.5), 98_304);
     assert_eq!(round_net_priority_to_int(-1.0), -65_536);
@@ -2330,7 +2331,7 @@ fn server_replicate_actors_prioritize_process_and_mark_relevant() {
         PrioritizeActorOutcome::SkipLevelNotInitialized
     );
 
-    // Branch 7a: Prioritized with existing channel and channel_last_update_time > 1e-40
+    // Branch 7a: Prioritized with existing channel (including channel_last_update_time == 0.0)
     assert_eq!(
         evaluate_prioritize_actor(&base_prio),
         PrioritizeActorOutcome::Prioritized {
@@ -2339,8 +2340,19 @@ fn server_replicate_actors_prioritize_process_and_mark_relevant() {
             priority: 196_608,
         }
     );
+    assert_eq!(
+        evaluate_prioritize_actor(&PrioritizeActorInputs {
+            channel_last_update_time: 0.0,
+            ..base_prio
+        }),
+        PrioritizeActorOutcome::Prioritized {
+            new_actor_net_tag: 11,
+            time_since_last_update: 19.5,
+            priority: 196_608,
+        }
+    );
 
-    // Branch 7b: Prioritized without channel (or channel_last_update_time <= 1e-40) uses channel_open_elapsed_time
+    // Branch 7b: Prioritized without channel (`!has_channel`) uses channel_open_elapsed_time (`SpawnPrioritySeconds`)
     assert_eq!(
         evaluate_prioritize_actor(&PrioritizeActorInputs {
             has_channel: false,

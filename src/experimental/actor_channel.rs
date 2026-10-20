@@ -2184,13 +2184,22 @@ fn cvttss2si_i32(value: f32) -> i32 {
     }
 }
 
-/// Evaluate `appRoundToInt(65536.0f * priority)` (`0x1437247cd..0x1437247dd`
-/// server / `0x1439c144a..0x1439c145a` client, F-749) in
-/// `UNetDriver::ServerReplicateActors_PrioritizeActors`.
+fn cvtss2si_i32(value: f32) -> i32 {
+    let rounded = value.round_ties_even();
+    if !rounded.is_finite() || rounded < (i32::MIN as f32) || rounded >= 2_147_483_648.0 {
+        i32::MIN
+    } else {
+        rounded as i32
+    }
+}
+
+/// Evaluate `appRoundToInt(65536.0f * priority)` (`0x14372482a..0x14372483b`
+/// server / `0x1439c144a..0x1439c145a` client, `cvtss2si` at `0x143724837`,
+/// F-749) in `UNetDriver::ServerReplicateActors_PrioritizeActors`.
 pub fn round_net_priority_to_int(priority: f32) -> i32 {
     let scaled = priority * PRIORITY_SCALE_MULTIPLIER;
     let doubled_plus_half = scaled + scaled + 0.5_f32;
-    let raw = cvttss2si_i32(doubled_plus_half);
+    let raw = cvtss2si_i32(doubled_plus_half);
     raw >> 1
 }
 
@@ -2307,8 +2316,9 @@ pub fn evaluate_prioritize_actor(inputs: &PrioritizeActorInputs) -> PrioritizeAc
     if !inputs.level_initialized_for_actor {
         return PrioritizeActorOutcome::SkipLevelNotInitialized;
     }
-    let time_since_last_update = if !inputs.has_channel || inputs.channel_last_update_time <= 1e-40
-    {
+    // `0x1437246a6..0x1437247c1` server / `0x1439c12b2..0x1439c13c6` client:
+    // branches strictly on `test r14, r14` (`Channel != nullptr`).
+    let time_since_last_update = if !inputs.has_channel {
         inputs.channel_open_elapsed_time as f32
     } else {
         (inputs.actor_last_net_update_time - inputs.channel_last_update_time) as f32
