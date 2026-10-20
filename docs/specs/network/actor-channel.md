@@ -4,7 +4,7 @@
 
 Experimental: static observations of client build 25793767 and server build
 25621760, wire-checked against the 3.0.31 capture (F-704 to F-711, F-739,
-F-745, F-748). Last reconciled: 2026-10-20.
+F-745, F-748, F-749, F-751). Last reconciled: 2026-10-20.
 
 ## Scope
 
@@ -53,7 +53,7 @@ connection-readiness, and consider-list policies.
   `bHasMustBeMappedGUIDs` prefix before `ProcessBunch` (`0x143530b30` /
   `0x1437c0c30`).
 - Open bunch, actor hook and dormancy transitions (F-569, F-610, F-709 to F-711,
-  F-739): `UPackageMapClient::SerializeNewActor` (`0x1437201a0` / `0x1439be280`)
+  F-739, F-751): `UPackageMapClient::SerializeNewActor` (`0x1437201a0` / `0x1439be280`)
   frames the actor NetGUID and, for dynamic GUIDs (nonzero, even), the archetype
   NetGUID, a flag-gated level reference, and four optional presence-bit-gated
   blocks: location, rotation, scale and velocity (`SerializeOptionalValue<FVector>`
@@ -61,13 +61,28 @@ connection-readiness, and consider-list policies.
   `0` for Scale3D, `Write/ReadPackedVector<10, 24>` `0x143471e90` / `0x1436fee6c`,
   and `FRotator::NetSerialize` `0x141ee74a0` / `0x141ed36b0` ->
   `SerializeCompressedShort` `0x141eeb7d0` / `0x141ed7810`, F-739). `ProcessBunch`
-  and `ReplicateActor` (`0x14353a820` / `0x1437c7f00`) then invoke
+  and `UActorChannel::ReplicateActor` (`0x14353a820` / `0x1437c7f00`,
+  `evaluate_actor_channel_replicate_actor`) then invoke
   `OnActorChannelOpen` / `OnSerializeNewActor`: empty on `AActor` (`0x1408c9710`),
   and 1 byte (`uint8 NetPlayerIndex` at `+0x3d4`) on `APlayerController`
   (`0x1438384d0` / `0x143ae73a0` and `0x143838b70` / `0x143ae79d0`).
-  `StartBecomingDormant` (`0x1435419d0` / `0x1437ce5b0`) sets `bPendingDormancy = 1`
-  across `ReplicationMap` (`+0xa0`), and on `bClose` with `CloseReason == 1`
-  (`ChannelCloseReason::Dormancy`, `136 / 136` closes in M-707),
+  `ReplicateActor` checks 6 early-exit guards (`Closing && ResendAllDataState == 0`,
+  `bIsReplicatingActor` `+0x88 & 0x4`, `bActorIsPendingKill` `+0x88 & 0x20`,
+  `GUObjectArray` `RF_PendingKill | RF_Unreachable` marking `+0x88 |= 0x20` and
+  releasing `ActorReplicator` `+0x90`, opened `OpenPacketId.First != -1` with ready
+  levels and `vtable[+0x300]()`, and `FOutBunch::IsError()`), computes
+  `FReplicationFlags` (`bNetOwner`, `bNetInitial` when `OpenPacketId.First == -1 ||
+  ResendAllDataState != 0` unless `ResendAllDataState == 2 && bSpawnedForReplay`
+  `+0x30 & 0x2000`, `bNetSimulated`, `bRepPhysics`, `bReplay`), temporarily downgrades
+  `RemoteRole == ROLE_AutonomousProxy (2)` to `ROLE_SimulatedProxy (1)` when
+  `!bNetOwner`, calls `SerializeNewActor`/`OnSerializeNewActor` when `bNetInitial &&
+  SpawnAcked` (`+0x30 & 0x1000`), runs `ReplicateProperties`, `ReplicateSubobjects`,
+  and stale-subobject deletion headers (`ResendAllDataState == 0`), sends via
+  `SendBunch` iff bits were written, and unconditionally updates
+  `LastUpdateTime = Driver->ElapsedTime` (`+0x80`) and clears `bForceCompareProperties`
+  (`+0x88 &= ~2`, F-751). `StartBecomingDormant` (`0x1435419d0` / `0x1437ce5b0`) sets
+  `bPendingDormancy = 1` across `ReplicationMap` (`+0xa0`), and on `bClose` with
+  `CloseReason == 1` (`ChannelCloseReason::Dormancy`, `136 / 136` closes in M-707),
   `UActorChannel::CleanUp` (`0x1435222c0` / `0x1437b27e0`) sets
   `Actor->NetDormancy = DORM_DormantAll` (`2`) without destroying the actor.
 - Content blocks and replicator loops (F-571, F-576, F-581, F-586, F-609, F-644,
@@ -104,7 +119,7 @@ connection-readiness, and consider-list policies.
     (`experimental::rep_text`), replaying `23,486 / 23,486` (`100%`) typed blocks
     in M-707.
 - Server relevancy, priority, tick rate, and `ServerReplicateActors` stages
-  (F-745, F-748, F-749):
+  (F-745, F-748, F-749, F-751):
   - `AActor::IsNetRelevantFor` (`0x14333fae0` / `0x1435d5be0`),
     `APawn::IsNetRelevantFor` (`0x1437b95a0` / `0x143a681d0`),
     `APlayerController::IsNetRelevantFor` (`0x1432510a0` / `0x1434e9040`),
@@ -123,8 +138,19 @@ connection-readiness, and consider-list policies.
     `DefaultEngine.ini` (`NetServerMaxTickRate=30`, `MaxClientRate=750000`,
     `MaxInternetClientRate=750000`, `ConfiguredInternetSpeed=640000`,
     `ConfiguredLanSpeed=912000`, `ConnectionTimeout=360.0`,
-    `InitialConnectTimeout=360.0`, `ResolutionConnectionTimeout=120.0`), and
-    `UNetDriver::ServerReplicateActors` (`0x1437221b0` / `0x1439bf100`) match:
+    `InitialConnectTimeout=360.0`, `ResolutionConnectionTimeout=120.0`),
+    `UNetConnection::IsNetReady` (`0x1436eb380` / `0x143991d80`,
+    `evaluate_connection_is_net_ready`: `Saturate` sets `QueuedBits = -SendBuffer.GetNumBits()`,
+    then checks `QueuedBits + SendBuffer.GetNumBits() <= 0` or adaptive `+0x1ba0` byte/packet
+    budget), `UChannel::IsNetReady` (`0x1435327b0` / `0x1437bd690`,
+    `evaluate_channel_is_net_ready`: `NumOutRec < 255` then `Connection->IsNetReady`),
+    and `UNetDriver::ServerReplicateActors` (`0x1437221b0` / `0x1439bf100`,
+    `evaluate_server_replicate_actors_frame`: increments `ReplicationFrame` `+0x420`, calls
+    `PrepConnections`, sets `ServerTickTime = (MaxTickRate <= 0.0) ? DeltaSeconds : 1.0 / MaxTickRate`
+    and `bCPUSaturated = (MaxTickRate > 0.0 && DeltaSeconds > 1.2 * ServerTickTime)`, runs
+    `BuildConsiderList` and per-connection `PrioritizeActors` + `ProcessPrioritizedActors` +
+    inlined `MarkRelevantActors`, and rotates `ClientConnections` left by `NumClientsToTick`
+    when `NumClientsToTick < ClientConnections.Num()`) match:
     `PrepConnections` (`0x143723dc0` / `0x1439c0b20`,
     `evaluate_prep_connections_tick_budget`, `is_connection_ready_for_replication`)
     throttles `NumClientsToTick` and marks a connection ready iff
@@ -156,10 +182,12 @@ connection-readiness, and consider-list policies.
     delays `< 1.0` Hz unopenable actors by `+ 0.2 * srands()`, replicates until
     saturation, and closes irrelevant/tear-off channels when
     `has_channel && (!actor_level_initialized || !actor_is_net_startup)`
-    (`CloseReason` `4` when `bTearOff`, else `3`); `MarkRelevantActors`
-    (`0x143723ce0` / `0x1439c0a00`, `evaluate_mark_relevant_actor`) sets
-    `ForceRelevantFrame = TickCount + 1` and `bPendingNetUpdate = true` when
-    `Owner != nullptr && Channel == nullptr`.
+    (`CloseReason` `4` when `bTearOff`, else `3`); inlined `MarkRelevantActors` (`0x143722a74` / `0x1439bfa04`,
+    `evaluate_mark_relevant_actor_step`) sets
+    `bPendingNetUpdate = true` when `(Channel != nullptr && ElapsedTime - Channel->RelevantTime <= 1.0)`
+    or `IsActorRelevantToConnection` (updating `Channel->RelevantTime = ElapsedTime + 0.5 * SRand()`
+    when `Channel != nullptr`), and sets `ForceRelevantFrame = ReplicationFrame + 1` when
+    `ForceRelevantFrame >= Connection->LastProcessedFrame`.
 
 ## Candidate
 
@@ -170,7 +198,7 @@ connection-readiness, and consider-list policies.
   property streams, `ChannelCloseReason` codes (`136 / 136`), and static
   relevancy/priority/tick-rate/ServerReplicateActors policies without
   panicking on randomized inputs (F-577, F-604, F-673, F-709 to F-711, F-739,
-  F-745, F-748, F-749).
+  F-745, F-748, F-749, F-751).
 
 ## Open questions
 
@@ -180,7 +208,7 @@ connection-readiness, and consider-list policies.
 
 - Symbols and pseudocode M-420 to M-437; net items and writers M-438 to M-449,
   M-455 to M-470, M-776, M-777, M-782, M-794, M-795, M-797 to M-799, M-801,
-  M-802; movement,
+  M-802, M-804, M-805, M-807; movement,
   tags, Name/Str, hit results, soft objects and Text M-475 to M-548, M-570 to
   M-588, M-602 to M-605; enum widths, RPCs and fast arrays M-614, M-615, M-620
   to M-624, M-628 to M-635; native descriptors, cooked Blueprint exports,

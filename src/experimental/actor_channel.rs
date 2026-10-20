@@ -2492,8 +2492,10 @@ pub fn evaluate_process_prioritized_actor(
     }
 }
 
-/// Evaluate `UNetDriver::ServerReplicateActors_MarkRelevantActors`
-/// (`0x143723ce0` server / `0x1439c0a30` client, F-749).
+/// Legacy `F-749` owner/no-channel approximation (`Owner != nullptr && Channel == nullptr`
+/// -> `TickCount + 1`); superseded by [`evaluate_mark_relevant_actor_step`], which
+/// models the exact inlined `ServerReplicateActors_MarkRelevantActors` loop
+/// (`0x143722a74..0x143722c40` server / `0x1439bfa04..0x1439bfbd0` client).
 ///
 /// Returns `(updated_force_relevant_frame, updated_b_pending_net_update)`.
 pub fn evaluate_mark_relevant_actor(
@@ -2507,5 +2509,419 @@ pub fn evaluate_mark_relevant_actor(
         (connection_tick_count.wrapping_add(1), true)
     } else {
         (current_force_relevant_frame, current_b_pending_net_update)
+    }
+}
+
+/// CPU-saturation multiplier (`1.2f32`, `0x3f99999a` at `0x1446d2508` server) in
+/// `UNetDriver::ServerReplicateActors` (`0x1437221b0` server / `0x1439bf100` client).
+pub const SERVER_REPLICATE_ACTORS_CPU_SATURATION_FACTOR: f32 = 1.2;
+
+/// Maximum reliable output record count (`RELIABLE_BUFFER - 1 = 255`, `0xff`)
+/// before `UChannel::IsNetReady` (`0x1435327b0` server / `0x1437bd690` client)
+/// reports the channel saturated.
+pub const CHANNEL_RELIABLE_BUFFER_NET_READY_LIMIT: i32 = 255;
+
+/// Inputs for `UNetConnection::IsNetReady` (`0x1436eb380` server / `0x143991d80`
+/// client).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ConnectionNetReadyInputs {
+    /// `Saturate` (`dl != 0`): when `true`, resets `QueuedBits = -SendBuffer.GetNumBits()`.
+    pub saturate: bool,
+    /// `QueuedBits` (`[Connection + 0x1f8]`).
+    pub queued_bits: i32,
+    /// `SendBuffer.GetNumBits()` (`[Connection + 0x5e0]`).
+    pub send_buffer_num_bits: i64,
+    /// `bUseAdaptiveNetFrequency` / packet-budget mode (`BYTE [Connection + 0x1ba0] != 0`).
+    pub b_use_adaptive_net_frequency: bool,
+    /// `[Connection + 0x1b7c]`.
+    pub adaptive_queued_bytes: i32,
+    /// `[Connection + 0x1b88]`.
+    pub adaptive_max_bytes_per_sec: f64,
+    /// `[Connection + 0x1b90]`.
+    pub adaptive_delta_time: f64,
+    /// `[Connection + 0x1b48]`.
+    pub adaptive_out_packet_id: u32,
+    /// `[Connection + 0x1b4c]`.
+    pub adaptive_out_ack_packet_id: u32,
+    /// `[Connection + 0x1b98]`.
+    pub adaptive_max_in_flight_packets: u32,
+}
+
+/// Evaluates `UNetConnection::IsNetReady` (`0x1436eb380` server / `0x143991d80`
+/// client), returning `(is_net_ready, updated_queued_bits)`.
+pub fn evaluate_connection_is_net_ready(inputs: &ConnectionNetReadyInputs) -> (bool, i32) {
+    let updated_queued_bits = if inputs.saturate {
+        let clamped = inputs
+            .send_buffer_num_bits
+            .clamp(i64::from(i32::MIN) + 1, i64::from(i32::MAX)) as i32;
+        -clamped
+    } else {
+        inputs.queued_bits
+    };
+    if inputs.b_use_adaptive_net_frequency {
+        let byte_budget = inputs.adaptive_max_bytes_per_sec * inputs.adaptive_delta_time;
+        let in_flight = inputs
+            .adaptive_out_packet_id
+            .wrapping_sub(inputs.adaptive_out_ack_packet_id);
+        let ready = f64::from(inputs.adaptive_queued_bytes) < byte_budget
+            && in_flight < inputs.adaptive_max_in_flight_packets;
+        (ready, updated_queued_bits)
+    } else {
+        let total_bits = i64::from(updated_queued_bits).saturating_add(inputs.send_buffer_num_bits);
+        (total_bits <= 0, updated_queued_bits)
+    }
+}
+
+/// Evaluates `UChannel::IsNetReady` (`0x1435327b0` server / `0x1437bd690`
+/// client), which rejects `NumOutRec >= 255` (`0xff`) and otherwise tail-calls
+/// `Connection->IsNetReady(Saturate)`.
+pub fn evaluate_channel_is_net_ready(
+    num_out_rec: i32,
+    connection_inputs: &ConnectionNetReadyInputs,
+) -> (bool, i32) {
+    if num_out_rec >= CHANNEL_RELIABLE_BUFFER_NET_READY_LIMIT {
+        return (false, connection_inputs.queued_bits);
+    }
+    evaluate_connection_is_net_ready(connection_inputs)
+}
+
+/// Inputs for the inlined `ServerReplicateActors_MarkRelevantActors` loop inside
+/// `UNetDriver::ServerReplicateActors` (`0x143722a74..0x143722c40` server /
+/// `0x1439bfa04..0x1439bfbd0` client) over unprocessed prioritized actors
+/// `PriorityActors[LastProcessedActor..FinalSortedCount]`.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct MarkRelevantActorStepInputs {
+    pub actor_info_present: bool,
+    pub has_channel: bool,
+    pub driver_elapsed_time: f64,
+    pub channel_relevant_time: f64,
+    pub is_relevant_to_any_viewer: bool,
+    /// Uniform random float in `[0.0, 1.0)` from `FRand()`.
+    pub random_unit_float: f32,
+    pub current_b_pending_net_update: bool,
+    pub current_force_relevant_frame: i32,
+    pub connection_last_processed_frame: i32,
+    pub driver_replication_frame: i32,
+}
+
+/// Outcome of one iteration in the inlined `ServerReplicateActors_MarkRelevantActors`
+/// loop (`0x143722a74..0x143722c40` server / `0x1439bfa04..0x1439bfbd0` client).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct MarkRelevantActorStepOutcome {
+    pub b_pending_net_update: bool,
+    pub updated_channel_relevant_time: Option<f64>,
+    pub force_relevant_frame: i32,
+}
+
+/// Evaluates one unprocessed `FActorPriority` entry (`k in LastProcessedActor..FinalSortedCount`)
+/// in `UNetDriver::ServerReplicateActors`'s inlined `MarkRelevantActors` loop
+/// (`0x143722a74..0x143722c40` server / `0x1439bfa04..0x1439bfbd0` client).
+pub fn evaluate_mark_relevant_actor_step(
+    inputs: &MarkRelevantActorStepInputs,
+) -> MarkRelevantActorStepOutcome {
+    if !inputs.actor_info_present {
+        return MarkRelevantActorStepOutcome {
+            b_pending_net_update: inputs.current_b_pending_net_update,
+            updated_channel_relevant_time: None,
+            force_relevant_frame: inputs.current_force_relevant_frame,
+        };
+    }
+    let recent_channel_fast_path = inputs.has_channel
+        && (inputs.driver_elapsed_time - inputs.channel_relevant_time
+            <= PROCESS_PRIORITIZED_RELEVANCY_FAST_PATH_SECONDS);
+    let (b_pending_net_update, updated_channel_relevant_time) = if recent_channel_fast_path {
+        (true, None)
+    } else if inputs.is_relevant_to_any_viewer {
+        let new_rel_time = if inputs.has_channel {
+            Some(inputs.driver_elapsed_time + 0.5 * f64::from(inputs.random_unit_float))
+        } else {
+            None
+        };
+        (true, new_rel_time)
+    } else {
+        (inputs.current_b_pending_net_update, None)
+    };
+    let force_relevant_frame =
+        if inputs.current_force_relevant_frame >= inputs.connection_last_processed_frame {
+            inputs.driver_replication_frame.wrapping_add(1)
+        } else {
+            inputs.current_force_relevant_frame
+        };
+    MarkRelevantActorStepOutcome {
+        b_pending_net_update,
+        updated_channel_relevant_time,
+        force_relevant_frame,
+    }
+}
+
+/// Frame-level inputs for `UNetDriver::ServerReplicateActors`
+/// (`0x1437221b0` server / `0x1439bf100` client).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ServerReplicateActorsFrameInputs {
+    pub num_client_connections: i32,
+    pub has_replication_driver: bool,
+    pub replication_driver_updated_count: i32,
+    pub current_replication_frame: i32,
+    pub has_world: bool,
+    pub num_clients_to_tick: i32,
+    pub delta_seconds: f32,
+    /// `Engine->GetMaxTickRate(DeltaSeconds, true)`: `ServerTickTime = (MaxTickRate <= 0.0) ? DeltaSeconds : 1.0 / MaxTickRate` (`0x1437223ca..0x1437223ef`).
+    pub max_tick_rate: f32,
+}
+
+/// Frame-level disposition of `UNetDriver::ServerReplicateActors`
+/// (`0x1437221b0` server / `0x1439bf100` client).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum ServerReplicateActorsFrameOutcome {
+    /// `ClientConnections.Num() == 0` (`[NetDriver + 0x98] == 0`): returns `0`
+    /// before incrementing `ReplicationFrame`.
+    NoClientConnections,
+    /// `ReplicationDriver` (`[NetDriver + 0x700]`) is non-null: delegates to
+    /// `ReplicationDriver->ServerReplicateActors(DeltaSeconds)`.
+    DelegatedToReplicationDriver { updated: i32 },
+    /// Incremented `ReplicationFrame` (`+0x420`), then returned `0` because
+    /// `World == nullptr` (`+0x140`) or `PrepConnections` (`0x143723dc0` /
+    /// `0x1439c0b20`) returned `0`.
+    AbortedAfterFrameIncrement { next_replication_frame: i32 },
+    /// Runs `BuildConsiderList` (`0x1437235a0` / `0x1439c0530`) and the
+    /// per-connection `PrioritizeActors` -> `ProcessPrioritizedActors` ->
+    /// `MarkRelevantActors` loop, then rotates `ClientConnections` left by
+    /// `rotate_connections_left_by` when `0 < num_clients_to_tick < num_client_connections`.
+    RunConnectionReplication {
+        next_replication_frame: i32,
+        server_tick_time: f32,
+        b_cpu_saturated: bool,
+        rotate_connections_left_by: i32,
+    },
+}
+
+/// Evaluates the top-level frame setup and post-loop connection rotation of
+/// `UNetDriver::ServerReplicateActors` (`0x1437221b0` server / `0x1439bf100`
+/// client).
+pub fn evaluate_server_replicate_actors_frame(
+    inputs: &ServerReplicateActorsFrameInputs,
+) -> ServerReplicateActorsFrameOutcome {
+    if inputs.num_client_connections <= 0 {
+        return ServerReplicateActorsFrameOutcome::NoClientConnections;
+    }
+    if inputs.has_replication_driver {
+        return ServerReplicateActorsFrameOutcome::DelegatedToReplicationDriver {
+            updated: inputs.replication_driver_updated_count,
+        };
+    }
+    let next_replication_frame = inputs.current_replication_frame.wrapping_add(1);
+    if !inputs.has_world || inputs.num_clients_to_tick <= 0 {
+        return ServerReplicateActorsFrameOutcome::AbortedAfterFrameIncrement {
+            next_replication_frame,
+        };
+    }
+    let (server_tick_time, b_cpu_saturated) = if inputs.max_tick_rate <= 0.0 {
+        (inputs.delta_seconds, false)
+    } else {
+        let tick_time = 1.0 / inputs.max_tick_rate;
+        (
+            tick_time,
+            inputs.delta_seconds > SERVER_REPLICATE_ACTORS_CPU_SATURATION_FACTOR * tick_time,
+        )
+    };
+    let rotate_connections_left_by = if inputs.num_clients_to_tick < inputs.num_client_connections {
+        inputs.num_clients_to_tick
+    } else {
+        0
+    };
+    ServerReplicateActorsFrameOutcome::RunConnectionReplication {
+        next_replication_frame,
+        server_tick_time,
+        b_cpu_saturated,
+        rotate_connections_left_by,
+    }
+}
+
+/// Computed `FReplicationFlags` and role-handling plan inside
+/// `UActorChannel::ReplicateActor` (`0x14353a820` server / `0x1437c7f00` client).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ReplicateActorRepFlags {
+    /// Bit 0 (`0x1`): `NetOwner == Connection` or `NetOwner->NetConnection == Connection`.
+    pub b_net_owner: bool,
+    /// Bit 1 (`0x2`): initial bunch (`OpenPacketId.First == -1` or `ResendAllDataState != 0`
+    /// unless `ResendAllDataState == 2 && bSpawnedForReplay`).
+    pub b_net_initial: bool,
+    /// Bit 2 (`0x4`): `Actor->RemoteRole == ROLE_SimulatedProxy (1)` after any non-owner
+    /// autonomous-proxy downgrade.
+    pub b_net_simulated: bool,
+    /// Bit 3 (`0x8`): `Actor->ReplicatedMovement.bRepPhysics` (`([Actor + 0x90] & 2) != 0`).
+    pub b_rep_physics: bool,
+    /// Bit 4 (`0x10`): `Connection` is a replay connection (`([Connection + 0xa4] >> 2) & 1 != 0`).
+    pub b_replay: bool,
+    /// Packed `u32` value matching `[rsp + 0x58]` in `UActorChannel::ReplicateActor`.
+    pub raw_bits: u32,
+    /// Whether `PackageMap->SerializeNewActor` (`vtable[+0x290]`) and
+    /// `Actor->OnSerializeNewActor` (`vtable[+0x3f8]`) are invoked (`b_net_initial && channel_spawn_acked`).
+    pub serialize_new_actor: bool,
+    /// Whether `Actor->RemoteRole == ROLE_AutonomousProxy (2)` is temporarily downgraded
+    /// to `ROLE_SimulatedProxy (1)` during property replication because `!b_net_owner`,
+    /// then restored at exit (`0x14353b0b1..0x14353b0cd` and `0x14353bbbb..0x14353bbed`).
+    pub downgraded_autonomous_proxy_for_non_owner: bool,
+}
+
+/// Inputs for `UActorChannel::ReplicateActor` (`0x14353a820` server /
+/// `0x1437c7f00` client).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ReplicateActorInputs {
+    /// Bit 8 of `[Channel + 0x30]` (`Closing`).
+    pub channel_closing: bool,
+    /// `BYTE [Connection + 0x1508]` (`ResendAllDataState`: `0 = None`, `1 = Resending`, `2 = ReplayCheckpoint`).
+    pub connection_resend_all_data_state: u8,
+    /// Bit 2 (`0x4`) of `[Channel + 0x88]` (`bIsReplicatingActor`).
+    pub channel_b_is_replicating_actor: bool,
+    /// Bit 5 (`0x20`) of `[Channel + 0x88]` (`bActorIsPendingKill`).
+    pub channel_b_actor_is_pending_kill: bool,
+    /// `GUObjectArray` item flags `& 0x30000000 != 0` (`PendingKill | Unreachable`).
+    pub actor_uobject_pending_kill_or_unreachable: bool,
+    /// `OpenPacketId.First == -1` (`[Channel + 0x38] == -1`).
+    pub open_packet_id_first_is_none: bool,
+    /// Whether all required level/component prerequisites (`[World + 0x350..0x358]`) are ready.
+    pub all_level_components_ready: bool,
+    /// Return of `this->vtable[+0x300]()` when `!open_packet_id_first_is_none`.
+    pub channel_clean_up_or_has_bunch_check: bool,
+    /// `FOutBunch::IsError()` (`BYTE [Bunch + 0x29] & 1 != 0`).
+    pub out_bunch_is_error: bool,
+    /// Bit 13 (`0x2000`) of `[Channel + 0x30]` (`bSpawnedForReplay`, `(Flags30 >> 12) & 2 != 0`).
+    pub channel_b_spawned_for_replay: bool,
+    /// Bit 12 (`0x1000`) of `[Channel + 0x30]` (`SpawnAcked`).
+    pub channel_spawn_acked: bool,
+    /// Whether `Actor->GetNetOwner()` (`vtable[+0x4b0]`) resolves to `Connection`.
+    pub actor_owned_by_connection: bool,
+    /// `BYTE [Actor + 0x5f]` (`Actor->RemoteRole`: `1 = SimulatedProxy`, `2 = AutonomousProxy`).
+    pub actor_remote_role: u8,
+    /// `([Actor + 0x90] & 2) != 0` (`ReplicatedMovement.bRepPhysics`).
+    pub actor_b_rep_physics: bool,
+    /// `([Connection + 0xa4] >> 2) & 1 != 0`.
+    pub connection_is_replay: bool,
+    /// Whether `ActorReplicator->ReplicateProperties` (`0x14356c9a0` / `0x1437f6b80`) wrote bits.
+    pub actor_properties_wrote: bool,
+    /// Whether `Actor->ReplicateSubobjects` (`vtable[+0x2b8]`) wrote bits.
+    pub subobjects_wrote: bool,
+    /// Whether stale subobject deletion headers wrote bits (`ResendAllDataState == 0`).
+    pub deleted_subobjects_wrote: bool,
+    /// Total bits in `Bunch` sent via `SendBunch` (`vtable[+0x2c8]`).
+    pub bunch_bits_written: i64,
+    /// Whether `Bunch.bPartial` (`BYTE [Bunch + 0xf4] & 1` or `[Actor + 0x58] & 1` partial retry) is set.
+    pub bunch_is_partial_initial: bool,
+    /// `NetDriver->ElapsedTime` (`[NetDriver + 0x218]`).
+    pub driver_elapsed_time: f64,
+}
+
+/// Outcome of `UActorChannel::ReplicateActor` (`0x14353a820` server /
+/// `0x1437c7f00` client).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum ReplicateActorOutcome {
+    /// `Closing != 0 && ResendAllDataState == 0` (`returns 0`).
+    EarlyExitChannelClosing,
+    /// `bIsReplicatingActor != 0` (`Flags88 & 0x4`, logs recursion warning, `returns 0`).
+    EarlyExitRecursiveReplication,
+    /// `bActorIsPendingKill != 0` (`Flags88 & 0x20`, `returns 0`).
+    EarlyExitAlreadyPendingKill,
+    /// `GUObjectArray` item has `RF_PendingKill | RF_Unreachable` (`0x30000000`): sets
+    /// `bActorIsPendingKill = 1` (`Flags88 |= 0x20`), releases `ActorReplicator`
+    /// (`[this + 0x90]`), and `returns 0`.
+    EarlyExitMarkActorPendingKillAndReleaseReplicator,
+    /// Channel already opened (`OpenPacketId.First != -1`), level/component check passed,
+    /// and `vtable[+0x300]()` returned `true` (`returns 0`).
+    EarlyExitNothingToReplicatePreBunch,
+    /// `FOutBunch(this, 0)` constructed in error state (`returns 0`).
+    EarlyExitOutBunchError,
+    /// Completed replication pass: sends bunch iff `sent_bunch` is `true`, updates
+    /// `LastUpdateTime = NetDriver->ElapsedTime` (`[this + 0x80]`), clears
+    /// `bForceCompareProperties` (`Flags88 &= ~2`), restores `RemoteRole` if downgraded,
+    /// and returns `bits_written`.
+    Completed {
+        rep_flags: ReplicateActorRepFlags,
+        sent_bunch: bool,
+        bits_written: i64,
+        updated_last_update_time: f64,
+        clear_b_force_compare_properties: bool,
+        queue_partial_initial_retry: bool,
+    },
+}
+
+/// Evaluates `UActorChannel::ReplicateActor` (`0x14353a820` server /
+/// `0x1437c7f00` client) in exact branch order.
+pub fn evaluate_actor_channel_replicate_actor(
+    inputs: &ReplicateActorInputs,
+) -> ReplicateActorOutcome {
+    if inputs.channel_closing && inputs.connection_resend_all_data_state == 0 {
+        return ReplicateActorOutcome::EarlyExitChannelClosing;
+    }
+    if inputs.channel_b_is_replicating_actor {
+        return ReplicateActorOutcome::EarlyExitRecursiveReplication;
+    }
+    if inputs.channel_b_actor_is_pending_kill {
+        return ReplicateActorOutcome::EarlyExitAlreadyPendingKill;
+    }
+    if inputs.actor_uobject_pending_kill_or_unreachable {
+        return ReplicateActorOutcome::EarlyExitMarkActorPendingKillAndReleaseReplicator;
+    }
+    if !inputs.open_packet_id_first_is_none
+        && inputs.all_level_components_ready
+        && inputs.channel_clean_up_or_has_bunch_check
+    {
+        return ReplicateActorOutcome::EarlyExitNothingToReplicatePreBunch;
+    }
+    if inputs.out_bunch_is_error {
+        return ReplicateActorOutcome::EarlyExitOutBunchError;
+    }
+
+    let b_net_initial =
+        if inputs.open_packet_id_first_is_none || inputs.connection_resend_all_data_state != 0 {
+            !(inputs.connection_resend_all_data_state == 2 && inputs.channel_b_spawned_for_replay)
+        } else {
+            false
+        };
+    let b_net_owner = inputs.actor_owned_by_connection;
+    let serialize_new_actor = b_net_initial && inputs.channel_spawn_acked;
+    let downgraded_autonomous_proxy_for_non_owner = inputs.actor_remote_role == 2 && !b_net_owner;
+    let effective_remote_role = if downgraded_autonomous_proxy_for_non_owner {
+        1
+    } else {
+        inputs.actor_remote_role
+    };
+    let b_net_simulated = effective_remote_role == 1;
+    let b_rep_physics = inputs.actor_b_rep_physics;
+    let b_replay = inputs.connection_is_replay;
+    let raw_bits = u32::from(b_net_owner)
+        | (u32::from(b_net_initial) << 1)
+        | (u32::from(b_net_simulated) << 2)
+        | (u32::from(b_rep_physics) << 3)
+        | (u32::from(b_replay) << 4);
+
+    let rep_flags = ReplicateActorRepFlags {
+        b_net_owner,
+        b_net_initial,
+        b_net_simulated,
+        b_rep_physics,
+        b_replay,
+        raw_bits,
+        serialize_new_actor,
+        downgraded_autonomous_proxy_for_non_owner,
+    };
+
+    let wrote_anything = serialize_new_actor
+        || inputs.actor_properties_wrote
+        || inputs.subobjects_wrote
+        || (inputs.connection_resend_all_data_state == 0 && inputs.deleted_subobjects_wrote);
+    let bits_written = if wrote_anything {
+        inputs.bunch_bits_written
+    } else {
+        0
+    };
+
+    ReplicateActorOutcome::Completed {
+        rep_flags,
+        sent_bunch: wrote_anything,
+        bits_written,
+        updated_last_update_time: inputs.driver_elapsed_time,
+        clear_b_force_compare_properties: true,
+        queue_partial_initial_retry: inputs.bunch_is_partial_initial,
     }
 }

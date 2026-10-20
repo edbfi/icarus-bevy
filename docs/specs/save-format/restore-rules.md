@@ -15,11 +15,12 @@ construction, script owners and data-table rows are out of scope (F-660).
 ## Confirmed
 
 - `ReadFromProspectSaveState` (`0x1414b77e0`/`0x1414ec3f0`) runs `+0x408` then
-  `0x1414bee00` (`evaluate_owner_resolve_step` on `+0xb2`): `FindOnly` (`0`) runs
-  `+0x450` + `0x1414b6fc0` (`evaluate_attach_recorder_to_actor`); `RespawnOnly` (`1`)
-  destroys `+0x450` actors (`0x143331760`) before `+0x458`; `FindOrRespawn` (`2`)
-  tries `+0x450` then `+0x458`; `ManuallyResolved` (`3`) keeps recorder; then `+0x468`
-  runs (F-741).
+  `0x1414bee00` (`evaluate_owner_resolve_step` / `evaluate_try_resolve_recorder_step`
+  on `+0xb2`): `FindOnly` (`0`) runs `+0x450` + `0x1414b6fc0`
+  (`evaluate_attach_recorder_to_actor` / `evaluate_resolve_owner_recorder_state`);
+  `RespawnOnly` (`1`) destroys `+0x450` actors (`0x143331760`) before `+0x458`;
+  `FindOrRespawn` (`2`) tries `+0x450` then `+0x458`; `ManuallyResolved` (`3`)
+  keeps recorder; then `+0x468` runs (F-741, F-752).
 - `recorder_restore_dispatch`, `recorder_ctor_defaults` (`C001..C038`),
   `non_blob_recorder_restore_dispatch`, and `non_blob_recorder_ctor_defaults`
   (`N001..N027`, F-727, F-742, F-746, F-747): all 65 classes inherit
@@ -66,10 +67,10 @@ construction, script owners and data-table rows are out of scope (F-660).
     `!list.rejects()` and restores iff listed and `v > 0` (F-663).
   - `C028` (`0x1418e90b0`/`0x1418f9f20`, `evaluate_resource_deposit_record`,
     `resource_deposit_record_valid`) rejects `"Super_Cooled_Ice"` (`0x144a71800`),
-    whereas subclass `N020` (`UResourceDepositIceRecorderComponent`, `0x144a71348`)
-    overrides `+0x408` back to `0x140899f70` (`true`); `+0x460` (`0x1418f76c0`,
-    `should_grant_deposit_map_icon_stat`) grants stat `0xbe` iff
-    `+0x1cc && !GetStat(0xbe)` (F-645, F-742, F-747).
+    whereas subclass `N020` (`UResourceDepositIceRecorderComponent`, `0x144a71348`,
+    `evaluate_n020_validate_override`) overrides `+0x408` back to `0x140899f70`
+    (`true`); `+0x460` (`0x1418f76c0`, `should_grant_deposit_map_icon_stat`) grants
+    stat `0xbe` iff `+0x1cc && !GetStat(0xbe)` (F-645, F-742, F-747, F-752).
   - `C031` (`0x1418c24c0`, `+0xb2 = 1`) and `C034` (`0x1418c2650`, `+0xb2 = 3`,
     `0x1418e96c0`/`0x1418fa0e0`, `evaluate_voxel_record`, `voxel_record_valid`) reject
     `RespawnOnly && bIsVoxelFullyMined` (`+0x1d0`, F-680); `+0x460` (`0x1418f7bb0`,
@@ -144,28 +145,38 @@ construction, script owners and data-table rows are out of scope (F-660).
   `restored_next_meteor_shower_time` (F-653); `C037` (`0x1418ea790`/`0x1418f8610`,
   `evaluate_world_boss_record`, `restore_world_boss_row_handles`, F-654); `-1` is
   unrecorded (`recorded_level`, F-648).
-- `UIcarusGameStateRecorder` pipeline and `N010..N016` non-blob slots (F-750):
-  `HasValidOwner` (`0x141898750`, `has_valid_recorder_owner`) requires
-  `Owner != nullptr && !Owner->IsPendingKillPending() && Owner != DefaultOwner`;
-  `RecordToProspectSaveState` (`0x1414b4680`/`0x1414ecdd0`,
-  `evaluate_record_to_prospect_save_step`) removes null/pending-kill entries,
-  runs `RecordOwnerState` (`+0x448`) when `HasValidOwner`, drops `bDropRecordOnNextSave`
-  (`+0xd8`) or invalid (`!Validate()`) components, and appends `FStateRecorderBlob`
-  only when `bShouldSaveToProspect` (`+0xd9`) is set; `ReadFromProspectSaveState`
-  (`0x1414b77e0`/`0x1414ec3f0`, `evaluate_unresolved_initial_recorder`) calls
-  `RetainRecorder` (`0x1414b86b0`/`0x1414f0300`) when `!bSkipDefaultOwnerResolution`
-  (`+0xb0 == 0`) or `OwnerResolvePolicy == FindOrRespawn (2)`, else `DestroyComponent`;
+- `UIcarusGameStateRecorder` pipeline and `N001..N027` non-blob slots (F-750, F-752):
+  `BeginRecording` (`0x1414961b0`/`0x1414d0900`, `evaluate_begin_recording`) rejects
+  null/pending-kill components or GameplayTag `0x65`-excluded owners, returns `true` when
+  `bIsRecording` (`+0xd1`) is set, defers via `AddUnique` to `DeferredBeginRecordingComponents`
+  (`+0x130`) when `bIsRestoring` (`+0x128`), and else adds to `RecorderComponents` (`+0x28`),
+  sets `bIsRecording = true`, binds owner callbacks (`0x1418a3d90` when `HasValidOwner &&
+  !bOwnerCallbacksBound` `+0xd2`), and maps `(SpawnLocation -> index)` in
+  `SpawnLocationToRecorderIndexMap` (`+0xd8`) when `HasSavedSpawnLocation` (`+0x420`) and
+  `SpawnLocation != 0`; `FlushDeferredRecorder` (`0x1414db370`,
+  `evaluate_flush_deferred_recorder`) removes valid deferred entries from `+0x130` and
+  re-runs `BeginRecording`; `EndRecording` (`0x14149fcf0`/`0x1414da140` + `0x1414e6140`,
+  `evaluate_end_recording`) removes from `+0x130` and (when `bIsRecording`) `RemoveAtSwap`s
+  from `+0x28`, updates any swapped-in tail component's index in `+0xd8`, zeroes
+  `WORD [+0xd1]` (`bIsRecording`, `bOwnerCallbacksBound`), and removes its spawn location
+  from `+0xd8`; `TryRestoreActorRecorder` (`0x1414bf530`/`0x1414f6650`,
+  `evaluate_try_restore_actor_recorder`) checks `+0xd8` when `RootComponent` has non-zero
+  translation and `Mobility != 2` before scanning `+0x28` (`DoesRecorderMatchActor` `+0x478`),
+  calls `ResolveOwnerRecorderState` (`0x1414b6fc0`/`0x1414ef1e0`), and runs
+  `StitchingOperation` (`+0x468`) iff `ManuallyResolved && RequiresStitching()` (`+0x470`);
+  `HasValidOwner` (`0x141898750`,
+  `has_valid_recorder_owner`), `RecordToProspectSaveState` (`0x1414b4680`/`0x1414ecdd0`,
+  `evaluate_record_to_prospect_save_step`), `ReadFromProspectSaveState` (`0x1414b77e0`/`0x1414ec3f0`,
+  `evaluate_unresolved_initial_recorder`), `RetainRecorder` (`0x1414b86b0`/`0x1414f0300`),
   `PerformStitchingPass` (`0x1414b1d70`/`0x1414eaae0`, `evaluate_stitching_pass_slice`,
-  `should_stitch_with_grid_building_actors`) iterates `[StartIndex, min(StartIndex + MaxCount, Num))`
-  (all when `MaxCount <= 0`) and calls `Stitching` (`+0x468`) with `GridBuildingActors`
-  when `bIncludeGridActors && !bSkipGridBuildingStitching` (`+0xb1 == 0`) else
-  `WorldActors`; `N010` (`0x14144c1b0`/`0x14148a880`, `evaluate_n010_character_record`,
-  `evaluate_n010_character_restore`), `N011` (`0x1413fd560`/`0x14140c580`,
-  `evaluate_n011_subcomponent_int_transfer`), `N013` (`0x1413e05d0`/`0x14141e110`,
-  `evaluate_n013_mission_npc_restore` returning `Some((name, number))` iff `!FName::IsNone()`),
-  `N014` (`0x1413fd680`/`0x14140c6f0`, `evaluate_n014_npc_record`,
-  `evaluate_n014_npc_restore`), and `N016` (`0x141405160`/`0x141442d00`,
-  `evaluate_n016_stitch_blackboard_ints`) match across both builds.
+  `should_stitch_with_grid_building_actors`), and all `N001..N027` virtual slot overrides
+  (`N002` `evaluate_n002_interface_int_transfer`, `N003` `evaluate_n003_stitch_linked_actor`,
+  `N004` `evaluate_n004_subcomponent_pair_transfer`, `N007` `evaluate_n007_interface_transfer`,
+  `N010` `evaluate_n010_character_record`/`restore`, `N011` `evaluate_n011_subcomponent_int_transfer`,
+  `N012` `evaluate_n012_record`/`restore`, `N013` `evaluate_n013_mission_npc_restore`,
+  `N014` `evaluate_n014_npc_record`/`restore`, `N016` `evaluate_n016_stitch_blackboard_ints`,
+  `N020` `evaluate_n020_validate_override`, `N026` `evaluate_n026_stitch_transfer`,
+  `N027` `evaluate_n027_stitch_transfer`) match across both builds.
 
 ## Candidate
 
@@ -178,4 +189,4 @@ construction, script owners and data-table rows are out of scope (F-660).
 ## Evidence
 
 F-645..F-681, F-716, F-727, F-728, F-734..F-736, F-741..F-744, F-746, F-747,
-F-750; M-642..M-698, M-755..M-792, M-794..M-803.
+F-750, F-752; M-642..M-698, M-755..M-792, M-794..M-807.

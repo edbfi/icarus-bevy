@@ -5146,3 +5146,696 @@ pub const fn evaluate_n016_stitch_blackboard_ints(
         None
     }
 }
+
+/// Inputs for `UIcarusGameStateRecorder::BeginRecording` (`0x1414961b0` server /
+/// `0x1414d0900` client).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct BeginRecordingInputs {
+    pub recorder_present: bool,
+    pub recorder_pending_kill: bool,
+    /// `Owner` (`+0xa0`) has the persistence-exclusion GameplayTag (`0x65`).
+    pub owner_has_exclude_from_persistence_tag: bool,
+    /// `Recorder->bIsRecording` (`+0xd1 != 0`).
+    pub b_is_recording: bool,
+    /// `GameStateRecorder->bIsRestoring` (`+0x128 != 0`).
+    pub game_state_b_is_restoring: bool,
+    /// Whether `RecorderComponents.AddUnique(Recorder)` (`+0x28`) succeeded (`Index != -1`).
+    pub add_unique_index: Option<i32>,
+    /// `Recorder->HasValidOwner()` (`0x141898750` server / `0x14189ff30` client).
+    pub has_valid_owner: bool,
+    /// `Recorder->bOwnerCallbacksBound` (`+0xd2 != 0`).
+    pub b_owner_callbacks_bound: bool,
+    /// `Recorder->vtable[+0x420]()` (`HasSavedSpawnLocation()`).
+    pub has_saved_spawn_location: bool,
+    /// `Recorder->vtable[+0x428]()` (`GetSavedSpawnLocation()`) is non-zero (`!= (0, 0, 0)`).
+    pub spawn_location_non_zero: bool,
+}
+
+/// Outcome of `UIcarusGameStateRecorder::BeginRecording` (`0x1414961b0` server /
+/// `0x1414d0900` client).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum BeginRecordingOutcome {
+    /// Null or `RF_PendingKill` recorder (`returns false`).
+    RejectedInvalidRecorder,
+    /// `Owner` has the persistence-exclusion GameplayTag (`0x65`, `returns false`).
+    RejectedExcludedOwner,
+    /// `Recorder->bIsRecording` (`+0xd1`) is already non-zero (`returns true`).
+    AlreadyRecording,
+    /// `this->bIsRestoring` (`+0x128`) is non-zero: appends `TWeakObjectPtr(Recorder)`
+    /// via `AddUnique` to `DeferredBeginRecordingComponents` (`+0x130`) and `returns false`.
+    DeferredWhileRestoring,
+    /// `RecorderComponents.AddUnique` returned `-1` (`returns false`).
+    RejectedAddFailed,
+    /// Added at `recorder_index`: sets `bIsRecording = true` (`+0xd1`), optionally binds
+    /// owner callbacks (`0x1418a3d90` when `has_valid_owner && !b_owner_callbacks_bound`),
+    /// and optionally inserts `(SpawnLocation -> recorder_index)` into
+    /// `SpawnLocationToRecorderIndexMap` (`+0xd8`, `returns true`).
+    StartedRecording {
+        recorder_index: i32,
+        bind_owner_callbacks: bool,
+        register_spawn_location_index: bool,
+    },
+}
+
+/// Evaluates `UIcarusGameStateRecorder::BeginRecording` (`0x1414961b0` server /
+/// `0x1414d0900` client).
+pub const fn evaluate_begin_recording(inputs: &BeginRecordingInputs) -> BeginRecordingOutcome {
+    if !inputs.recorder_present || inputs.recorder_pending_kill {
+        return BeginRecordingOutcome::RejectedInvalidRecorder;
+    }
+    if inputs.owner_has_exclude_from_persistence_tag {
+        return BeginRecordingOutcome::RejectedExcludedOwner;
+    }
+    if inputs.b_is_recording {
+        return BeginRecordingOutcome::AlreadyRecording;
+    }
+    if inputs.game_state_b_is_restoring {
+        return BeginRecordingOutcome::DeferredWhileRestoring;
+    }
+    let Some(recorder_index) = inputs.add_unique_index else {
+        return BeginRecordingOutcome::RejectedAddFailed;
+    };
+    if recorder_index < 0 {
+        return BeginRecordingOutcome::RejectedAddFailed;
+    }
+    BeginRecordingOutcome::StartedRecording {
+        recorder_index,
+        bind_owner_callbacks: inputs.has_valid_owner && !inputs.b_owner_callbacks_bound,
+        register_spawn_location_index: inputs.has_saved_spawn_location
+            && inputs.spawn_location_non_zero,
+    }
+}
+
+/// Inputs for `UIcarusGameStateRecorder::EndRecording` (`0x14149fcf0` server /
+/// `0x1414da140` client) and `HandleRecorderRemoved` (`0x1414e6140` client).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct EndRecordingInputs {
+    pub recorder_present: bool,
+    pub owner_has_exclude_from_persistence_tag: bool,
+    pub b_is_recording: bool,
+    /// Index of `Recorder` in `RecorderComponents` (`+0x28`), if found (`!= -1`).
+    pub removed_index: Option<i32>,
+    /// Length of `RecorderComponents` after `RemoveAtSwap(removed_index, 1)`.
+    pub new_recorder_count: i32,
+    /// Whether the swapped-in tail component at `removed_index` has `vtable[+0x420]() == true`.
+    pub swapped_component_has_saved_spawn_location: bool,
+}
+
+/// Outcome of `UIcarusGameStateRecorder::EndRecording` (`0x14149fcf0` server /
+/// `0x1414da140` client) and `HandleRecorderRemoved` (`0x1414e6140` client).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum EndRecordingOutcome {
+    /// Null recorder or GameplayTag-excluded owner (`returns false`).
+    Rejected,
+    /// Removed from `DeferredBeginRecordingComponents` (`+0x130`) only because
+    /// `bIsRecording` (`+0xd1`) was `0` (`returns true`).
+    RemovedDeferredOnly,
+    /// Removed from `DeferredBeginRecordingComponents` (`+0x130`) and `RecorderComponents`
+    /// (`+0x28`) via `RemoveAtSwap`, optionally updating the swapped-in component's index in
+    /// `SpawnLocationToRecorderIndexMap` (`+0xd8`), zeroing `WORD [Recorder + 0xd1]`
+    /// (`bIsRecording = 0`, `bOwnerCallbacksBound = 0`), and removing `Recorder`'s spawn
+    /// location from `SpawnLocationToRecorderIndexMap` (`returns true`).
+    RemovedActiveRecorder {
+        swapped_spawn_map_new_index: Option<i32>,
+        clear_recording_and_callback_flags: bool,
+        remove_own_spawn_location_from_map: bool,
+    },
+}
+
+/// Evaluates `UIcarusGameStateRecorder::EndRecording` (`0x14149fcf0` server /
+/// `0x1414da140` client) and `HandleRecorderRemoved` (`0x1414e6140` client).
+pub const fn evaluate_end_recording(inputs: &EndRecordingInputs) -> EndRecordingOutcome {
+    if !inputs.recorder_present || inputs.owner_has_exclude_from_persistence_tag {
+        return EndRecordingOutcome::Rejected;
+    }
+    if !inputs.b_is_recording {
+        return EndRecordingOutcome::RemovedDeferredOnly;
+    }
+    let swapped_spawn_map_new_index = match inputs.removed_index {
+        Some(idx)
+            if idx >= 0
+                && idx < inputs.new_recorder_count
+                && inputs.swapped_component_has_saved_spawn_location =>
+        {
+            Some(idx)
+        }
+        _ => None,
+    };
+    EndRecordingOutcome::RemovedActiveRecorder {
+        swapped_spawn_map_new_index,
+        clear_recording_and_callback_flags: true,
+        remove_own_spawn_location_from_map: true,
+    }
+}
+
+/// Evaluates `UIcarusGameStateRecorder::FlushDeferredRecorder` (`0x1414db370` client).
+pub const fn evaluate_flush_deferred_recorder(
+    was_in_deferred_list: bool,
+    begin_inputs: &BeginRecordingInputs,
+) -> Option<BeginRecordingOutcome> {
+    if !was_in_deferred_list || !begin_inputs.recorder_present || begin_inputs.recorder_pending_kill
+    {
+        return None;
+    }
+    Some(evaluate_begin_recording(begin_inputs))
+}
+
+/// Per-recorder inputs for `UIcarusGameStateRecorder::TryResolveRecorders`
+/// (`0x1414bee00` server / `0x1414f6150` client).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct TryResolveRecorderStepInputs {
+    pub recorder_present: bool,
+    pub recorder_pending_kill: bool,
+    pub already_has_valid_owner: bool,
+    pub owner_resolve_policy: OwnerResolvePolicy,
+    pub b_force_respawn: bool,
+    pub found_existing_owner: bool,
+    pub attach_to_found_owner_succeeded: bool,
+    pub respawn_owner_succeeded: bool,
+    pub attach_to_respawned_owner_succeeded: bool,
+}
+
+/// Per-recorder disposition in `UIcarusGameStateRecorder::TryResolveRecorders`
+/// (`0x1414bee00` server / `0x1414f6150` client).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TryResolveRecorderStepOutcome {
+    /// Null, `RF_PendingKill`, or already has a valid owner (`HasValidOwner() == true`).
+    SkipAlreadyValidOrInvalid,
+    /// Attached to an existing world actor via `FindExistingOwner` (`+0x450`) and
+    /// `ResolveOwnerRecorderState` (`bDestroyActorOnFailure = true`); runs
+    /// `StitchingOperation` (`+0x468`) post-loop iff `run_post_resolve_stitching` is `true`.
+    ResolvedViaExistingOwner { run_post_resolve_stitching: bool },
+    /// Respawned owner via `RespawnOwner` (`+0x458`) and attached via
+    /// `ResolveOwnerRecorderState` (`bDestroyActorOnFailure = false`), optionally
+    /// destroying a pre-existing duplicate found by `FindExistingOwner` first; runs
+    /// `StitchingOperation` (`+0x468`) post-loop iff `run_post_resolve_stitching` is `true`.
+    ResolvedViaRespawnedOwner {
+        destroyed_existing_owner_first: bool,
+        run_post_resolve_stitching: bool,
+    },
+    /// Resolution did not attach a valid owner (including `ManuallyResolved` policy `3`
+    /// or failed find/respawn): invokes `RetainRecorder` (`0x1414b8650` / `0x1414f0300`).
+    RetainedUnresolved {
+        destroyed_existing_owner_first: bool,
+        destroyed_failed_candidate_actor: bool,
+    },
+}
+
+/// Evaluates one recorder entry in `UIcarusGameStateRecorder::TryResolveRecorders`
+/// (`0x1414bee00` server / `0x1414f6150` client).
+pub const fn evaluate_try_resolve_recorder_step(
+    inputs: &TryResolveRecorderStepInputs,
+) -> TryResolveRecorderStepOutcome {
+    if !inputs.recorder_present || inputs.recorder_pending_kill || inputs.already_has_valid_owner {
+        return TryResolveRecorderStepOutcome::SkipAlreadyValidOrInvalid;
+    }
+    let run_post_resolve_stitching = !inputs.b_force_respawn;
+    match inputs.owner_resolve_policy {
+        OwnerResolvePolicy::FindOnly => {
+            if inputs.found_existing_owner && inputs.attach_to_found_owner_succeeded {
+                TryResolveRecorderStepOutcome::ResolvedViaExistingOwner {
+                    run_post_resolve_stitching,
+                }
+            } else {
+                TryResolveRecorderStepOutcome::RetainedUnresolved {
+                    destroyed_existing_owner_first: false,
+                    destroyed_failed_candidate_actor: inputs.found_existing_owner,
+                }
+            }
+        }
+        OwnerResolvePolicy::RespawnOnly => {
+            let destroyed_existing = !inputs.b_force_respawn && inputs.found_existing_owner;
+            if inputs.respawn_owner_succeeded && inputs.attach_to_respawned_owner_succeeded {
+                TryResolveRecorderStepOutcome::ResolvedViaRespawnedOwner {
+                    destroyed_existing_owner_first: destroyed_existing,
+                    run_post_resolve_stitching,
+                }
+            } else {
+                TryResolveRecorderStepOutcome::RetainedUnresolved {
+                    destroyed_existing_owner_first: destroyed_existing,
+                    destroyed_failed_candidate_actor: false,
+                }
+            }
+        }
+        OwnerResolvePolicy::FindOrRespawn => {
+            if !inputs.b_force_respawn
+                && inputs.found_existing_owner
+                && inputs.attach_to_found_owner_succeeded
+            {
+                return TryResolveRecorderStepOutcome::ResolvedViaExistingOwner {
+                    run_post_resolve_stitching,
+                };
+            }
+            if inputs.respawn_owner_succeeded && inputs.attach_to_respawned_owner_succeeded {
+                TryResolveRecorderStepOutcome::ResolvedViaRespawnedOwner {
+                    destroyed_existing_owner_first: false,
+                    run_post_resolve_stitching,
+                }
+            } else {
+                TryResolveRecorderStepOutcome::RetainedUnresolved {
+                    destroyed_existing_owner_first: false,
+                    destroyed_failed_candidate_actor: !inputs.b_force_respawn
+                        && inputs.found_existing_owner
+                        && !inputs.attach_to_found_owner_succeeded,
+                }
+            }
+        }
+        OwnerResolvePolicy::ManuallyResolved => TryResolveRecorderStepOutcome::RetainedUnresolved {
+            destroyed_existing_owner_first: false,
+            destroyed_failed_candidate_actor: false,
+        },
+    }
+}
+
+/// Inputs for `UIcarusGameStateRecorder::ResolveOwnerRecorderState`
+/// (`0x1414b6fc0` server / `0x1414ef1e0` client).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ResolveOwnerRecorderStateInputs {
+    pub deserialized_recorder_present: bool,
+    pub deserialized_recorder_pending_kill: bool,
+    pub owner_actor_present: bool,
+    pub owner_actor_pending_kill: bool,
+    pub owner_has_matching_component: bool,
+    /// `DeserializedRecorder->bCanDynamicallyAttachToOwner` (`+0xb4 != 0`).
+    pub b_can_dynamically_attach_to_owner: bool,
+    pub dynamic_component_created: bool,
+    /// Optional `UIcarusRecorderManagerSubsystem` registration UID (`[Subsystem + 0x38]`).
+    pub registered_subsystem_uid: Option<i32>,
+}
+
+/// Outcome of `UIcarusGameStateRecorder::ResolveOwnerRecorderState`
+/// (`0x1414b6fc0` server / `0x1414ef1e0` client).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ResolveOwnerRecorderStateOutcome {
+    /// Null or `RF_PendingKill` deserialized recorder or owner actor (`returns nullptr`).
+    RejectedInvalidInputs,
+    /// Owner lacked a matching component and `bCanDynamicallyAttachToOwner` (`+0xb4`) was
+    /// `false`, or dynamic `NewObject` creation failed (`returns nullptr`).
+    RejectedMissingComponent,
+    /// Attached to `OwnerRecorder`, round-tripped `WriteToStateRecorderBlob` ->
+    /// `ReadFromStateRecorderBlob` with identity `FTransform`, transferred any
+    /// `UIcarusRecorderManagerSubsystem` UID registration, called
+    /// `EndRecording(DeserializedRecorder)` and `BeginRecording(OwnerRecorder)`, and
+    /// invoked `UpdateOwnerToDatabaseState(true)` (`vtable[+0x460]`).
+    AttachedAndUpdated {
+        created_dynamic_component: bool,
+        transferred_subsystem_uid: Option<i32>,
+    },
+}
+
+/// Evaluates `UIcarusGameStateRecorder::ResolveOwnerRecorderState`
+/// (`0x1414b6fc0` server / `0x1414ef1e0` client).
+pub const fn evaluate_resolve_owner_recorder_state(
+    inputs: &ResolveOwnerRecorderStateInputs,
+) -> ResolveOwnerRecorderStateOutcome {
+    if !inputs.deserialized_recorder_present
+        || inputs.deserialized_recorder_pending_kill
+        || !inputs.owner_actor_present
+        || inputs.owner_actor_pending_kill
+    {
+        return ResolveOwnerRecorderStateOutcome::RejectedInvalidInputs;
+    }
+    let created_dynamic_component = if inputs.owner_has_matching_component {
+        false
+    } else if inputs.b_can_dynamically_attach_to_owner && inputs.dynamic_component_created {
+        true
+    } else {
+        return ResolveOwnerRecorderStateOutcome::RejectedMissingComponent;
+    };
+    ResolveOwnerRecorderStateOutcome::AttachedAndUpdated {
+        created_dynamic_component,
+        transferred_subsystem_uid: inputs.registered_subsystem_uid,
+    }
+}
+
+/// Inputs for `UIcarusGameStateRecorder::TryRestoreActorRecorder`
+/// (`0x1414bf530` server / `0x1414f6650` client).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct TryRestoreActorRecorderInputs {
+    pub actor_present: bool,
+    pub actor_pending_kill: bool,
+    pub b_require_manually_resolved: bool,
+    pub b_only_by_spawn_location: bool,
+    pub has_root_component: bool,
+    pub root_translation_non_zero: bool,
+    /// `USceneComponent::Mobility` (`+0x14f`); `2` is `EComponentMobility::Movable`.
+    pub root_mobility: u8,
+    /// Candidate found via `SpawnLocationToRecorderIndexMap` (`+0xd8`) fast-path.
+    pub spawn_map_match_policy: Option<OwnerResolvePolicy>,
+    /// Candidate found via linear scan of `RecorderComponents` (`+0x28`).
+    pub linear_scan_match_policy: Option<OwnerResolvePolicy>,
+    pub resolve_owner_succeeded: bool,
+    pub resolved_requires_stitching: bool,
+}
+
+/// Outcome of `UIcarusGameStateRecorder::TryRestoreActorRecorder`
+/// (`0x1414bf530` server / `0x1414f6650` client).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TryRestoreActorRecorderOutcome {
+    /// Null or `RF_PendingKill` actor, or no matching unattached recorder found.
+    NotRestored,
+    /// Matched a recorder (either via `SpawnLocationToRecorderIndexMap` fast-path or
+    /// linear scan), resolved owner state via `ResolveOwnerRecorderState`, and ran
+    /// `StitchingOperation` (`+0x468`) iff `OwnerResolvePolicy == ManuallyResolved` and
+    /// `RequiresStitching()` (`+0x470`) returned `true`.
+    Restored {
+        matched_via_spawn_location_map: bool,
+        ran_stitching_operation: bool,
+    },
+}
+
+/// Evaluates `UIcarusGameStateRecorder::TryRestoreActorRecorder`
+/// (`0x1414bf530` server / `0x1414f6650` client).
+pub const fn evaluate_try_restore_actor_recorder(
+    inputs: &TryRestoreActorRecorderInputs,
+) -> TryRestoreActorRecorderOutcome {
+    if !inputs.actor_present || inputs.actor_pending_kill {
+        return TryRestoreActorRecorderOutcome::NotRestored;
+    }
+    let can_use_spawn_map =
+        inputs.has_root_component && inputs.root_translation_non_zero && inputs.root_mobility != 2;
+    let spawn_map_candidate = if can_use_spawn_map {
+        inputs.spawn_map_match_policy
+    } else {
+        None
+    };
+    let (matched_policy, matched_via_spawn_location_map) = match spawn_map_candidate {
+        Some(policy)
+            if !inputs.b_require_manually_resolved
+                || matches!(policy, OwnerResolvePolicy::ManuallyResolved) =>
+        {
+            (policy, true)
+        }
+        _ => {
+            if inputs.b_only_by_spawn_location {
+                return TryRestoreActorRecorderOutcome::NotRestored;
+            }
+            let Some(policy) = inputs.linear_scan_match_policy else {
+                return TryRestoreActorRecorderOutcome::NotRestored;
+            };
+            if inputs.b_require_manually_resolved
+                && !matches!(policy, OwnerResolvePolicy::ManuallyResolved)
+            {
+                return TryRestoreActorRecorderOutcome::NotRestored;
+            }
+            (policy, false)
+        }
+    };
+    if !inputs.resolve_owner_succeeded {
+        return TryRestoreActorRecorderOutcome::NotRestored;
+    }
+    let ran_stitching_operation = matches!(matched_policy, OwnerResolvePolicy::ManuallyResolved)
+        && inputs.resolved_requires_stitching;
+    TryRestoreActorRecorderOutcome::Restored {
+        matched_via_spawn_location_map,
+        ran_stitching_operation,
+    }
+}
+
+/// Evaluates `N020` `Validate` (`vftable + 0x408`: `0x140899f70` server /
+/// `0x1408c9810` client, `mov al, 1; ret`), which overrides its parent `C028`'s
+/// `Super_Cooled_Ice` row exclusion check to unconditionally return `true`.
+pub const fn evaluate_n020_validate_override() -> bool {
+    true
+}
+
+/// Subcomponent A fields (`+0x1e0..+0x20b`) recorded by `N012`
+/// (`0x1413fd5e0`/`0x14143b3e0` `+0x448` and `0x14140c600`/`0x141449940` `+0x460`).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct N012SubcompAState {
+    pub byte_1e0: u8,
+    pub value_1e4: i32,
+    pub row_name_1e8: String,
+    pub flag_1f0: bool,
+    pub entries_1f8: Vec<i32>,
+    pub value_208: i32,
+}
+
+/// Subcomponent B fields (`+0x210..+0x257`) recorded by `N012`
+/// (`0x1413fd5e0`/`0x14143b3e0` `+0x448` and `0x14140c600`/`0x141449940` `+0x460`).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct N012SubcompBState {
+    pub compact_entries_210: Vec<(String, i32)>,
+    pub flag_220: u8,
+    pub value_224: i32,
+    pub byte_228: u8,
+    pub row_name_22c: String,
+    pub text_238: String,
+    pub text_248: String,
+}
+
+/// Combined state for `N012` (`super = N014`).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct N012RecorderState {
+    pub npc_base: NpcBaseRecorderState,
+    pub subcomp_a: N012SubcompAState,
+    pub subcomp_b: Option<N012SubcompBState>,
+}
+
+/// Inputs for `N012` `RecordOwnerState` (`0x1413fd5e0` server / `0x14143b3e0` client, `+0x448`).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct N012RecordInputs<'a> {
+    pub owner_is_character: bool,
+    pub owner_is_npc: bool,
+    pub owner_is_n012_target: bool,
+    pub player_state_uid: Option<i32>,
+    pub owner_parent_uid: i32,
+    pub player_state_attributes: Option<[i32; 4]>,
+    pub existing_attributes: [i32; 4],
+    pub npc_row_name: &'a str,
+    pub subcomp_a_input: Option<(u8, i32, &'a str, Vec<i32>, i32)>,
+    pub mesh_socket_flag: Option<bool>,
+    pub subcomp_b_input: Option<N012SubcompBState>,
+}
+
+/// Evaluates `N012` `RecordOwnerState` (`0x1413fd5e0` server / `0x14143b3e0`
+/// client, `+0x448`).
+pub fn evaluate_n012_record(inputs: N012RecordInputs<'_>) -> Option<N012RecorderState> {
+    let npc_base = evaluate_n014_npc_record(
+        inputs.owner_is_character,
+        inputs.owner_is_npc,
+        inputs.player_state_uid,
+        inputs.owner_parent_uid,
+        inputs.player_state_attributes,
+        inputs.existing_attributes,
+        inputs.npc_row_name,
+    )?;
+    if !inputs.owner_is_n012_target {
+        return None;
+    }
+    let subcomp_a = match inputs.subcomp_a_input {
+        Some((byte_b0, val_b4, row_b8, arr_d8, val_e8)) => N012SubcompAState {
+            byte_1e0: byte_b0,
+            value_1e4: val_b4,
+            row_name_1e8: row_b8.to_owned(),
+            flag_1f0: inputs.mesh_socket_flag.unwrap_or(true),
+            entries_1f8: arr_d8,
+            value_208: val_e8,
+        },
+        None => N012SubcompAState {
+            byte_1e0: 0,
+            value_1e4: 0,
+            row_name_1e8: String::new(),
+            flag_1f0: true,
+            entries_1f8: Vec::new(),
+            value_208: 0,
+        },
+    };
+    Some(N012RecorderState {
+        npc_base,
+        subcomp_a,
+        subcomp_b: inputs.subcomp_b_input,
+    })
+}
+
+/// Inputs for `N012` `UpdateOwnerToDatabaseState` (`0x14140c600` server /
+/// `0x141449940` client, `+0x460`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct N012RestoreInputs {
+    pub owner_is_character: bool,
+    pub owner_is_npc: bool,
+    pub owner_is_n012_target: bool,
+    pub has_player_state: bool,
+    pub has_icarus_player_state: bool,
+    pub has_subcomp_a: bool,
+    pub has_subcomp_b: bool,
+    pub subcomp_b_existing_len: usize,
+}
+
+/// Outcome of `N012` `UpdateOwnerToDatabaseState` (`0x14140c600` server /
+/// `0x141449940` client, `+0x460`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct N012RestoreOutcome {
+    pub npc_base_outcome: (bool, Option<i32>, i32, [Option<i32>; 4]),
+    pub applied_subcomp_a: bool,
+    pub cleared_subcomp_b: bool,
+    pub applied_subcomp_b: bool,
+    pub triggered_owner_hook_228: bool,
+}
+
+/// Evaluates `N012` `UpdateOwnerToDatabaseState` (`0x14140c600` server /
+/// `0x141449940` client, `+0x460`), which applies `SubcompA` and `SubcompB`
+/// state before tail-calling `N014::UpdateOwnerToDatabaseState` (`0x1413e0710`).
+pub fn evaluate_n012_restore(
+    inputs: &N012RestoreInputs,
+    state: &N012RecorderState,
+) -> Option<N012RestoreOutcome> {
+    let npc_base_outcome = evaluate_n014_npc_restore(
+        inputs.owner_is_character,
+        inputs.owner_is_npc,
+        inputs.has_player_state,
+        inputs.has_icarus_player_state,
+        &state.npc_base,
+    )?;
+    if !inputs.owner_is_n012_target {
+        return Some(N012RestoreOutcome {
+            npc_base_outcome,
+            applied_subcomp_a: false,
+            cleared_subcomp_b: false,
+            applied_subcomp_b: false,
+            triggered_owner_hook_228: false,
+        });
+    }
+    let has_row_1e8 = !state.subcomp_a.row_name_1e8.is_empty()
+        && !state.subcomp_a.row_name_1e8.eq_ignore_ascii_case("None");
+    let applied_subcomp_a = has_row_1e8 && inputs.has_subcomp_a;
+    let (cleared_subcomp_b, applied_subcomp_b, triggered_owner_hook_228) =
+        if let (true, Some(b_ref)) = (inputs.has_subcomp_b, state.subcomp_b.as_ref()) {
+            (inputs.subcomp_b_existing_len > 0, true, b_ref.byte_228 != 0)
+        } else {
+            (false, false, false)
+        };
+    Some(N012RestoreOutcome {
+        npc_base_outcome,
+        applied_subcomp_a,
+        cleared_subcomp_b,
+        applied_subcomp_b,
+        triggered_owner_hook_228,
+    })
+}
+
+/// Evaluates `N002` interface integer transfer (`+0xd8`) in `RecordOwnerState`
+/// (`0x1418a0990` server / `0x1418a6230` client, `+0x448`) and
+/// `UpdateOwnerToDatabaseState` (`0x1418b76b0` server / `0x1418ba580` client,
+/// `+0x460`).
+pub const fn evaluate_n002_interface_int_transfer(
+    owner_present: bool,
+    owner_implements_interface: bool,
+    value_d8: i32,
+) -> Option<i32> {
+    if owner_present && owner_implements_interface {
+        Some(value_d8)
+    } else {
+        None
+    }
+}
+
+/// Evaluates `N003` linked-actor stitching (`0x141876e90` server / `0x141880c30`
+/// client, `+0x468`), which copies `byte_1c0` to `Owner + 0x2f8` and matches the
+/// first candidate in `AllActors` of the target class whose `GetClass()->GetName()`
+/// equals `saved_class_name_1d0` (case-insensitive `FCString::Stricmp`).
+pub fn evaluate_n003_stitch_linked_actor<'a>(
+    owner_matches_n003_class: bool,
+    byte_1c0: u8,
+    saved_class_name_1d0: &str,
+    candidates: &'a [(bool, &'a str)],
+) -> Option<(u8, Option<usize>)> {
+    if !owner_matches_n003_class {
+        return None;
+    }
+    let matched_idx = candidates.iter().position(|(is_target_class, name)| {
+        *is_target_class && name.eq_ignore_ascii_case(saved_class_name_1d0)
+    });
+    Some((byte_1c0, matched_idx))
+}
+
+/// Evaluates `N004` subcomponent integer pair transfer (`+0x290 <-> +0xb0`,
+/// `+0x294 <-> +0xb4`) in `RecordOwnerState` (`0x1418a0c80` server /
+/// `0x1418a6400` client, `+0x448`) and `RespawnOwner` (`0x1418a7460` server /
+/// `0x1418abf40` client, `+0x458`).
+pub const fn evaluate_n004_subcomponent_pair_transfer(
+    owner_present: bool,
+    has_valid_subcomponent: bool,
+    pair_290_294: (i32, i32),
+) -> Option<(i32, i32)> {
+    if owner_present && has_valid_subcomponent {
+        Some(pair_290_294)
+    } else {
+        None
+    }
+}
+
+/// State fields (`+0x290..+0x2ab`) transferred via interface by `N007` in
+/// `RecordOwnerState` (`0x1418a1ca0` server / `0x1418a7420` client, `+0x448`)
+/// and `UpdateOwnerToDatabaseState` (`0x1418b7e50` server / `0x1418bad20`
+/// client, `+0x460`).
+#[derive(Clone, Debug, PartialEq)]
+pub struct N007InterfaceState {
+    pub byte_290: u8,
+    pub byte_291: u8,
+    pub int_294: i32,
+    pub float_298: f32,
+    pub row_name_29c: String,
+    pub float_2a4: f32,
+    pub float_2a8: f32,
+}
+
+/// Evaluates `N007` interface state transfer (`0x1418a1ca0` / `0x1418b7e50`).
+pub fn evaluate_n007_interface_transfer(
+    owner_present: bool,
+    owner_implements_interface: bool,
+    state: &N007InterfaceState,
+) -> Option<N007InterfaceState> {
+    if owner_present && owner_implements_interface {
+        Some(state.clone())
+    } else {
+        None
+    }
+}
+
+/// State fields (`+0x1c0..+0x1eb`) transferred between `Owner` (`+0x2c4..+0x2ff`)
+/// and `N026` in `RecordOwnerState` (`0x14192f030` server / `0x14192bec0` client,
+/// `+0x448`) and `StitchingOperation` (`0x14193a990` server / `0x141936900`
+/// client, `+0x468`).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct N026StitchState {
+    pub array_1c0: Vec<i32>,
+    pub int_1d0: i32,
+    pub array_1d8: Vec<i32>,
+    pub int_1e8: i32,
+}
+
+/// Evaluates `N026` record/stitch state transfer (`0x14192f030` / `0x14193a990`).
+pub fn evaluate_n026_stitch_transfer(
+    owner_matches_n026_class: bool,
+    state: &N026StitchState,
+) -> Option<N026StitchState> {
+    if owner_matches_n026_class {
+        Some(state.clone())
+    } else {
+        None
+    }
+}
+
+/// State fields (`+0x1c0..+0x1cb`) transferred between `Owner` (`+0x2c0..+0x2cb`)
+/// and `N027` in `RecordOwnerState` (`0x14192f0c0` server / `0x14192bf50` client,
+/// `+0x448`) and `StitchingOperation` (`0x14193aa20` server / `0x141936990`
+/// client, `+0x468`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct N027StitchState {
+    pub byte_1c0: u8,
+    pub int_1c4: i32,
+    pub int_1c8: i32,
+}
+
+/// Evaluates `N027` record/stitch state transfer (`0x14192f0c0` / `0x14193aa20`).
+pub const fn evaluate_n027_stitch_transfer(
+    owner_matches_n027_class: bool,
+    state: N027StitchState,
+) -> Option<N027StitchState> {
+    if owner_matches_n027_class {
+        Some(state)
+    } else {
+        None
+    }
+}
