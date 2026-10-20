@@ -66,13 +66,21 @@ connection-readiness, and consider-list policies.
   `OnActorChannelOpen` / `OnSerializeNewActor`: empty on `AActor` (`0x1408c9710`),
   and 1 byte (`uint8 NetPlayerIndex` at `+0x3d4`) on `APlayerController`
   (`0x1438384d0` / `0x143ae73a0` and `0x143838b70` / `0x143ae79d0`).
-  `ReplicateActor` sets `bOpen = 1` and `bFirstTickReplication = (WorldTime - CreationTime <= 0.2)`
-  on initial channels (`+0x68 & 0x10`, `SpawnAcked == 0`), Temporarily swaps
-  `Role`/`RemoteRole` when `(bSwapRolesOnReplicate && RemoteRole == ROLE_AutonomousProxy) || bExchangedRoles`,
-  calls `FObjectReplicator::ReplicateProperties` + `Actor->ReplicateSubobjects` +
-  each `ReplicatedComponents` entry (`IsPendingKill()` skipped) + `CleanupDeletedSubObjects`,
-  and on change calls `SendBunch(&OutBunch, 1)` and updates `LastUpdateTime = Driver->ElapsedTime`
-  (`+0x230`, F-751). `StartBecomingDormant` (`0x1435419d0` / `0x1437ce5b0`) sets
+  `ReplicateActor` checks 6 early-exit guards (`Closing && ResendAllDataState == 0`,
+  `bIsReplicatingActor` `+0x88 & 0x4`, `bActorIsPendingKill` `+0x88 & 0x20`,
+  `GUObjectArray` `RF_PendingKill | RF_Unreachable` marking `+0x88 |= 0x20` and
+  releasing `ActorReplicator` `+0x90`, opened `OpenPacketId.First != -1` with ready
+  levels and `vtable[+0x300]()`, and `FOutBunch::IsError()`), computes
+  `FReplicationFlags` (`bNetOwner`, `bNetInitial` when `OpenPacketId.First == -1 ||
+  ResendAllDataState != 0` unless `ResendAllDataState == 2 && bSpawnedForReplay`
+  `+0x30 & 0x2000`, `bNetSimulated`, `bRepPhysics`, `bReplay`), temporarily downgrades
+  `RemoteRole == ROLE_AutonomousProxy (2)` to `ROLE_SimulatedProxy (1)` when
+  `!bNetOwner`, calls `SerializeNewActor`/`OnSerializeNewActor` when `bNetInitial &&
+  SpawnAcked` (`+0x30 & 0x1000`), runs `ReplicateProperties`, `ReplicateSubobjects`,
+  and stale-subobject deletion headers (`ResendAllDataState == 0`), sends via
+  `SendBunch` iff bits were written, and unconditionally updates
+  `LastUpdateTime = Driver->ElapsedTime` (`+0x80`) and clears `bForceCompareProperties`
+  (`+0x88 &= ~2`, F-751). `StartBecomingDormant` (`0x1435419d0` / `0x1437ce5b0`) sets
   `bPendingDormancy = 1` across `ReplicationMap` (`+0xa0`), and on `bClose` with
   `CloseReason == 1` (`ChannelCloseReason::Dormancy`, `136 / 136` closes in M-707),
   `UActorChannel::CleanUp` (`0x1435222c0` / `0x1437b27e0`) sets
@@ -132,15 +140,17 @@ connection-readiness, and consider-list policies.
     `ConfiguredLanSpeed=912000`, `ConnectionTimeout=360.0`,
     `InitialConnectTimeout=360.0`, `ResolutionConnectionTimeout=120.0`),
     `UNetConnection::IsNetReady` (`0x1436eb380` / `0x143991d80`,
-    `evaluate_connection_is_net_ready`: `QueuedBits + (bSaturate ? NetPacketOverhead : 0) <= 0`),
-    `UChannel::IsNetReady` (`0x1435327b0` / `0x1437bd690`,
+    `evaluate_connection_is_net_ready`: `Saturate` sets `QueuedBits = -SendBuffer.GetNumBits()`,
+    then checks `QueuedBits + SendBuffer.GetNumBits() <= 0` or adaptive `+0x1ba0` byte/packet
+    budget), `UChannel::IsNetReady` (`0x1435327b0` / `0x1437bd690`,
     `evaluate_channel_is_net_ready`: `NumOutRec < 255` then `Connection->IsNetReady`),
     and `UNetDriver::ServerReplicateActors` (`0x1437221b0` / `0x1439bf100`,
-    `evaluate_server_replicate_actors_frame`: increments `ReplicationFrame`, calls
-    `PrepConnections`, `BuildConsiderList`, and per connection `PrioritizeActors` +
-    `ProcessPrioritizedActors` or inlined `MarkRelevantActors`, scales budget by `1.2`
-    on CPU saturation `(WorldTickTime - DeltaSeconds) / DeltaSeconds > 0.0`, and
-    flushes `DormantConnections` on `num_Updated == 0`) match:
+    `evaluate_server_replicate_actors_frame`: increments `ReplicationFrame` `+0x420`, calls
+    `PrepConnections`, sets `ServerTickTime = (MaxTickRate <= 0.0) ? DeltaSeconds : 1.0 / MaxTickRate`
+    and `bCPUSaturated = (MaxTickRate > 0.0 && DeltaSeconds > 1.2 * ServerTickTime)`, runs
+    `BuildConsiderList` and per-connection `PrioritizeActors` + `ProcessPrioritizedActors` +
+    inlined `MarkRelevantActors`, and rotates `ClientConnections` left by `NumClientsToTick`
+    when `NumClientsToTick < ClientConnections.Num()`) match:
     `PrepConnections` (`0x143723dc0` / `0x1439c0b20`,
     `evaluate_prep_connections_tick_budget`, `is_connection_ready_for_replication`)
     throttles `NumClientsToTick` and marks a connection ready iff
@@ -172,11 +182,12 @@ connection-readiness, and consider-list policies.
     delays `< 1.0` Hz unopenable actors by `+ 0.2 * srands()`, replicates until
     saturation, and closes irrelevant/tear-off channels when
     `has_channel && (!actor_level_initialized || !actor_is_net_startup)`
-    (`CloseReason` `4` when `bTearOff`, else `3`); `MarkRelevantActors`
-    (`0x143722a74` / `0x1439bfa04`, `evaluate_mark_relevant_actor`,
-    `evaluate_mark_relevant_actor_step`) sets `ForceRelevantFrame = TickCount + 1`
-    and `bPendingNetUpdate = true` when `Owner != nullptr && Channel == nullptr`
-    and `IsActorRelevantToConnection` (or `RelevantTime >= ElapsedTime - 1.0`).
+    (`CloseReason` `4` when `bTearOff`, else `3`); inlined `MarkRelevantActors` (`0x143722a74` / `0x1439bfa04`,
+    `evaluate_mark_relevant_actor_step`, `evaluate_mark_relevant_actor`) sets
+    `bPendingNetUpdate = true` when `(Channel != nullptr && ElapsedTime - Channel->RelevantTime <= 1.0)`
+    or `IsActorRelevantToConnection` (updating `Channel->RelevantTime = ElapsedTime + 0.5 * SRand()`
+    when `Channel != nullptr`), and sets `ForceRelevantFrame = ReplicationFrame + 1` when
+    `ForceRelevantFrame >= Connection->LastProcessedFrame`.
 
 ## Candidate
 

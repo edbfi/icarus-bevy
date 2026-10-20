@@ -2492,8 +2492,10 @@ pub fn evaluate_process_prioritized_actor(
     }
 }
 
-/// Evaluate `UNetDriver::ServerReplicateActors_MarkRelevantActors`
-/// (`0x143723ce0` server / `0x1439c0a30` client, F-749).
+/// Simplified no-channel helper for `ServerReplicateActors_MarkRelevantActors`
+/// (inlined at `0x143722a74..0x143722c40` server / `0x1439bfa04..0x1439bfbd0` client,
+/// F-749; see [`evaluate_mark_relevant_actor_step`] for the full inlined loop with
+/// channel fast-path and `RelevantTime` update).
 ///
 /// Returns `(updated_force_relevant_frame, updated_b_pending_net_update)`.
 pub fn evaluate_mark_relevant_actor(
@@ -2549,7 +2551,10 @@ pub struct ConnectionNetReadyInputs {
 /// client), returning `(is_net_ready, updated_queued_bits)`.
 pub fn evaluate_connection_is_net_ready(inputs: &ConnectionNetReadyInputs) -> (bool, i32) {
     let updated_queued_bits = if inputs.saturate {
-        -(inputs.send_buffer_num_bits as i32)
+        let clamped = inputs
+            .send_buffer_num_bits
+            .clamp(i64::from(i32::MIN) + 1, i64::from(i32::MAX)) as i32;
+        -clamped
     } else {
         inputs.queued_bits
     };
@@ -2628,7 +2633,7 @@ pub fn evaluate_mark_relevant_actor_step(
         (true, None)
     } else if inputs.is_relevant_to_any_viewer {
         let new_rel_time = if inputs.has_channel {
-            Some(inputs.driver_elapsed_time + 0.5 * f64::from(1.0_f32 + inputs.random_unit_float))
+            Some(inputs.driver_elapsed_time + 0.5 * f64::from(inputs.random_unit_float))
         } else {
             None
         };
@@ -2660,7 +2665,7 @@ pub struct ServerReplicateActorsFrameInputs {
     pub has_world: bool,
     pub num_clients_to_tick: i32,
     pub delta_seconds: f32,
-    /// `Engine->GetMaxTickRate(DeltaSeconds, false)`: `ServerTickTime = (MaxTickRate <= 0.0) ? 0.0 : 1.0 / MaxTickRate`.
+    /// `Engine->GetMaxTickRate(DeltaSeconds, true)`: `ServerTickTime = (MaxTickRate <= 0.0) ? DeltaSeconds : 1.0 / MaxTickRate` (`0x1437223ca..0x1437223ef`).
     pub max_tick_rate: f32,
 }
 
@@ -2711,22 +2716,17 @@ pub fn evaluate_server_replicate_actors_frame(
             next_replication_frame,
         };
     }
-    let server_tick_time = if inputs.max_tick_rate <= 0.0 {
-        0.0
-    } else {
-        1.0 / inputs.max_tick_rate
-    };
-    let (clamped_delta_seconds, b_cpu_saturated) = if server_tick_time > 0.0 {
-        (
-            server_tick_time,
-            inputs.delta_seconds > SERVER_REPLICATE_ACTORS_CPU_SATURATION_FACTOR * server_tick_time,
-        )
-    } else {
+    let (server_tick_time, b_cpu_saturated) = if inputs.max_tick_rate <= 0.0 {
         (inputs.delta_seconds, false)
+    } else {
+        let tick_time = 1.0 / inputs.max_tick_rate;
+        (
+            tick_time,
+            inputs.delta_seconds > SERVER_REPLICATE_ACTORS_CPU_SATURATION_FACTOR * tick_time,
+        )
     };
-    let rotate_connections_left_by = if inputs.num_clients_to_tick > 0
-        && inputs.num_clients_to_tick < inputs.num_client_connections
-    {
+    let clamped_delta_seconds = server_tick_time;
+    let rotate_connections_left_by = if inputs.num_clients_to_tick < inputs.num_client_connections {
         inputs.num_clients_to_tick
     } else {
         0

@@ -52,18 +52,26 @@ Server and client builds also match across `AActor`/`APawn`/`APlayerController`/
 `AActor`/`APlayerController`/`AMatineeActor::GetNetPriority`,
 `UGameEngine::GetMaxTickRate` (`30` Hz default, `[1, 1000]` clamp, `750,000` B/s
 max client rate in `DefaultEngine.ini`), `UNetConnection::IsNetReady`
-(`QueuedBits + Overhead <= 0`), `UChannel::IsNetReady` (`NumOutRec < 255`),
-`UActorChannel::ReplicateActor` (`bOpen`, `bFirstTickReplication <= 0.2` s,
-`bExchangedRoles`, `ReplicateSubobjects`, `ReplicatedComponents`), and all
-`UNetDriver::ServerReplicateActors` (`1.2x` CPU saturation, `DormantConnections`
-flush) stages (`PrepConnections` `< 1.5` s `LastReceiveTime` gate;
-`BuildConsiderList` `> 2.0` s `* 0.2` adaptive `OptimalNetUpdateDelta` lerp with
-`MinNetUpdateFrequency = 2.0`; `PrioritizeActors` `cvtss2si`
-`round_ties_even(65536 * p)` and `DestroyedStartupOrDormantActors` `cvttss2si`
-`250k`/`4M`/`9.998M` `* 0.4`/`0.2` scaling; `ProcessPrioritizedActors` `<= 1.0` s
-relevancy fast-path, `+ 0.5 * SRand` jitter, `< 1.0` Hz `+ 0.2 * srands` delay,
-and `CloseReason` `4`/`3` when `!bLevelInitializedForActor || !bNetStartup`; and
-inlined `MarkRelevantActors` `TickCount + 1`, F-745, F-748, F-749, F-751).
+(`Saturate` sets `QueuedBits = -SendBuffer.GetNumBits()`, then
+`QueuedBits + SendBuffer.GetNumBits() <= 0` or adaptive `+0x1ba0` byte/packet
+budget), `UChannel::IsNetReady` (`NumOutRec < 255`),
+`UActorChannel::ReplicateActor` (6 early-exit guards, `FReplicationFlags`,
+`!bNetOwner` `ROLE_AutonomousProxy -> ROLE_SimulatedProxy` downgrade,
+`SerializeNewActor` on `bNetInitial && SpawnAcked`, `SendBunch` iff bits
+written, and unconditional `LastUpdateTime = ElapsedTime` at `+0x80`), and all
+`UNetDriver::ServerReplicateActors` (`ServerTickTime = (MaxTickRate <= 0) ?
+DeltaSeconds : 1 / MaxTickRate`, `bCPUSaturated = DeltaSeconds > 1.2 *
+ServerTickTime`, `ClientConnections` rotation) stages (`PrepConnections`
+`< 1.5` s `LastReceiveTime` gate; `BuildConsiderList` `> 2.0` s `* 0.2`
+adaptive `OptimalNetUpdateDelta` lerp with `MinNetUpdateFrequency = 2.0`;
+`PrioritizeActors` `cvtss2si` `round_ties_even(65536 * p)` and
+`DestroyedStartupOrDormantActors` `cvttss2si` `250k`/`4M`/`9.998M` `* 0.4`/`0.2`
+scaling; `ProcessPrioritizedActors` `<= 1.0` s relevancy fast-path, `+ 0.5 *
+SRand` jitter, `< 1.0` Hz `+ 0.2 * srands` delay, and `CloseReason` `4`/`3` when
+`!bLevelInitializedForActor || !bNetStartup`; and inlined `MarkRelevantActors`
+`<= 1.0` s channel fast-path, `+ 0.5 * SRand` `RelevantTime`, and
+`ForceRelevantFrame = ReplicationFrame + 1` when `>= LastProcessedFrame`,
+F-745, F-748, F-749, F-751).
 
 ## Open
 

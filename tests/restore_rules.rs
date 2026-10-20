@@ -4680,11 +4680,12 @@ fn game_state_recorder_recording_and_restore_pipeline_evaluators() {
 #[test]
 fn remaining_n_slot_override_evaluators_cover_n002_n003_n004_n007_n012_n020_n026_n027() {
     use icarus_bevy::experimental::restore_rules::{
-        N007InterfaceState, N012SubcompBState, N026StitchState, N027StitchState,
-        evaluate_n002_interface_int_transfer, evaluate_n003_stitch_linked_actor,
-        evaluate_n004_subcomponent_pair_transfer, evaluate_n007_interface_transfer,
-        evaluate_n012_record, evaluate_n012_restore, evaluate_n020_validate_override,
-        evaluate_n026_stitch_transfer, evaluate_n027_stitch_transfer,
+        N007InterfaceState, N012RecordInputs, N012RestoreInputs, N012RestoreOutcome,
+        N012SubcompBState, N026StitchState, N027StitchState, evaluate_n002_interface_int_transfer,
+        evaluate_n003_stitch_linked_actor, evaluate_n004_subcomponent_pair_transfer,
+        evaluate_n007_interface_transfer, evaluate_n012_record, evaluate_n012_restore,
+        evaluate_n020_validate_override, evaluate_n026_stitch_transfer,
+        evaluate_n027_stitch_transfer,
     };
 
     assert!(evaluate_n020_validate_override());
@@ -4744,33 +4745,99 @@ fn remaining_n_slot_override_evaluators_cover_n002_n003_n004_n007_n012_n020_n026
         text_238: "Alpha".to_owned(),
         text_248: "Beta".to_owned(),
     };
-    let n012_rec = evaluate_n012_record(
-        true,
-        true,
-        true,
-        Some(77),
-        88,
-        Some([1, 2, 3, 4]),
-        [0, 0, 0, 0],
-        "Npc_Row",
-        Some((2, 10, "SubA_Row", vec![5, 6], 11)),
-        Some(false),
-        Some(sub_b),
-    )
+    assert_eq!(
+        evaluate_n012_record(N012RecordInputs {
+            owner_is_character: true,
+            owner_is_npc: true,
+            owner_is_n012_target: false,
+            player_state_uid: Some(77),
+            owner_parent_uid: 88,
+            player_state_attributes: Some([1, 2, 3, 4]),
+            existing_attributes: [0, 0, 0, 0],
+            npc_row_name: "Npc_Row",
+            subcomp_a_input: None,
+            mesh_socket_flag: None,
+            subcomp_b_input: None,
+        }),
+        None
+    );
+    let n012_rec = evaluate_n012_record(N012RecordInputs {
+        owner_is_character: true,
+        owner_is_npc: true,
+        owner_is_n012_target: true,
+        player_state_uid: Some(77),
+        owner_parent_uid: 88,
+        player_state_attributes: Some([1, 2, 3, 4]),
+        existing_attributes: [0, 0, 0, 0],
+        npc_row_name: "Npc_Row",
+        subcomp_a_input: Some((2, 10, "SubA_Row", vec![5, 6], 11)),
+        mesh_socket_flag: Some(false),
+        subcomp_b_input: Some(sub_b),
+    })
     .expect("N012 record should succeed");
     assert_eq!(n012_rec.subcomp_a.byte_1e0, 2);
     assert!(!n012_rec.subcomp_a.flag_1f0);
-    let n012_rest = evaluate_n012_restore(true, true, true, true, true, true, true, 2, &n012_rec)
-        .expect("N012 restore should succeed");
+    let base_n012_restore = N012RestoreInputs {
+        owner_is_character: true,
+        owner_is_npc: true,
+        owner_is_n012_target: true,
+        has_player_state: true,
+        has_icarus_player_state: true,
+        has_subcomp_a: true,
+        has_subcomp_b: true,
+        subcomp_b_existing_len: 2,
+    };
+    let n012_rest =
+        evaluate_n012_restore(&base_n012_restore, &n012_rec).expect("N012 restore should succeed");
     assert_eq!(
         n012_rest,
-        (
-            (true, Some(77), 88, [Some(1), Some(2), Some(3), Some(4)]),
-            true,
-            true,
-            true,
-            true,
-        )
+        N012RestoreOutcome {
+            npc_base_outcome: (true, Some(77), 88, [Some(1), Some(2), Some(3), Some(4)]),
+            applied_subcomp_a: true,
+            cleared_subcomp_b: true,
+            applied_subcomp_b: true,
+            triggered_owner_hook_228: true,
+        }
+    );
+    assert_eq!(
+        evaluate_n012_restore(
+            &N012RestoreInputs {
+                owner_is_n012_target: false,
+                ..base_n012_restore
+            },
+            &n012_rec,
+        ),
+        Some(N012RestoreOutcome {
+            npc_base_outcome: (true, Some(77), 88, [Some(1), Some(2), Some(3), Some(4)]),
+            applied_subcomp_a: false,
+            cleared_subcomp_b: false,
+            applied_subcomp_b: false,
+            triggered_owner_hook_228: false,
+        })
+    );
+    let n012_empty_sub = evaluate_n012_record(N012RecordInputs {
+        owner_is_character: true,
+        owner_is_npc: true,
+        owner_is_n012_target: true,
+        player_state_uid: Some(77),
+        owner_parent_uid: 88,
+        player_state_attributes: Some([1, 2, 3, 4]),
+        existing_attributes: [0, 0, 0, 0],
+        npc_row_name: "Npc_Row",
+        subcomp_a_input: Some((1, 5, "None", vec![], 0)),
+        mesh_socket_flag: None,
+        subcomp_b_input: None,
+    })
+    .expect("N012 empty subcomp record should succeed");
+    assert_eq!(
+        evaluate_n012_restore(&base_n012_restore, &n012_empty_sub),
+        Some(N012RestoreOutcome {
+            npc_base_outcome: (true, Some(77), 88, [Some(1), Some(2), Some(3), Some(4)]),
+            applied_subcomp_a: false,
+            cleared_subcomp_b: false,
+            applied_subcomp_b: false,
+            triggered_owner_hook_228: false,
+        })
     );
 
     let n026 = N026StitchState {

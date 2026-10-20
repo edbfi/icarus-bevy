@@ -5592,40 +5592,43 @@ pub struct N012RecorderState {
     pub subcomp_b: Option<N012SubcompBState>,
 }
 
+/// Inputs for `N012` `RecordOwnerState` (`0x1413fd5e0` server / `0x14143b3e0` client, `+0x448`).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct N012RecordInputs<'a> {
+    pub owner_is_character: bool,
+    pub owner_is_npc: bool,
+    pub owner_is_n012_target: bool,
+    pub player_state_uid: Option<i32>,
+    pub owner_parent_uid: i32,
+    pub player_state_attributes: Option<[i32; 4]>,
+    pub existing_attributes: [i32; 4],
+    pub npc_row_name: &'a str,
+    pub subcomp_a_input: Option<(u8, i32, &'a str, Vec<i32>, i32)>,
+    pub mesh_socket_flag: Option<bool>,
+    pub subcomp_b_input: Option<N012SubcompBState>,
+}
+
 /// Evaluates `N012` `RecordOwnerState` (`0x1413fd5e0` server / `0x14143b3e0`
 /// client, `+0x448`).
-#[allow(clippy::too_many_arguments)]
-pub fn evaluate_n012_record(
-    owner_is_character: bool,
-    owner_is_npc: bool,
-    owner_is_n012_target: bool,
-    player_state_uid: Option<i32>,
-    owner_parent_uid: i32,
-    player_state_attributes: Option<[i32; 4]>,
-    existing_attributes: [i32; 4],
-    npc_row_name: &str,
-    subcomp_a_input: Option<(u8, i32, &str, Vec<i32>, i32)>,
-    mesh_socket_flag: Option<bool>,
-    subcomp_b_input: Option<N012SubcompBState>,
-) -> Option<N012RecorderState> {
+pub fn evaluate_n012_record(inputs: N012RecordInputs<'_>) -> Option<N012RecorderState> {
     let npc_base = evaluate_n014_npc_record(
-        owner_is_character,
-        owner_is_npc,
-        player_state_uid,
-        owner_parent_uid,
-        player_state_attributes,
-        existing_attributes,
-        npc_row_name,
+        inputs.owner_is_character,
+        inputs.owner_is_npc,
+        inputs.player_state_uid,
+        inputs.owner_parent_uid,
+        inputs.player_state_attributes,
+        inputs.existing_attributes,
+        inputs.npc_row_name,
     )?;
-    if !owner_is_n012_target {
+    if !inputs.owner_is_n012_target {
         return None;
     }
-    let subcomp_a = match subcomp_a_input {
+    let subcomp_a = match inputs.subcomp_a_input {
         Some((byte_b0, val_b4, row_b8, arr_d8, val_e8)) => N012SubcompAState {
             byte_1e0: byte_b0,
             value_1e4: val_b4,
             row_name_1e8: row_b8.to_owned(),
-            flag_1f0: mesh_socket_flag.unwrap_or(true),
+            flag_1f0: inputs.mesh_socket_flag.unwrap_or(true),
             entries_1f8: arr_d8,
             value_208: val_e8,
         },
@@ -5641,58 +5644,74 @@ pub fn evaluate_n012_record(
     Some(N012RecorderState {
         npc_base,
         subcomp_a,
-        subcomp_b: subcomp_b_input,
+        subcomp_b: inputs.subcomp_b_input,
     })
+}
+
+/// Inputs for `N012` `UpdateOwnerToDatabaseState` (`0x14140c600` server /
+/// `0x141449940` client, `+0x460`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct N012RestoreInputs {
+    pub owner_is_character: bool,
+    pub owner_is_npc: bool,
+    pub owner_is_n012_target: bool,
+    pub has_player_state: bool,
+    pub has_icarus_player_state: bool,
+    pub has_subcomp_a: bool,
+    pub has_subcomp_b: bool,
+    pub subcomp_b_existing_len: usize,
+}
+
+/// Outcome of `N012` `UpdateOwnerToDatabaseState` (`0x14140c600` server /
+/// `0x141449940` client, `+0x460`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct N012RestoreOutcome {
+    pub npc_base_outcome: (bool, Option<i32>, i32, [Option<i32>; 4]),
+    pub applied_subcomp_a: bool,
+    pub cleared_subcomp_b: bool,
+    pub applied_subcomp_b: bool,
+    pub triggered_owner_hook_228: bool,
 }
 
 /// Evaluates `N012` `UpdateOwnerToDatabaseState` (`0x14140c600` server /
 /// `0x141449940` client, `+0x460`), which applies `SubcompA` and `SubcompB`
 /// state before tail-calling `N014::UpdateOwnerToDatabaseState` (`0x1413e0710`).
-#[allow(clippy::too_many_arguments, clippy::type_complexity)]
 pub fn evaluate_n012_restore(
-    owner_is_character: bool,
-    owner_is_npc: bool,
-    owner_is_n012_target: bool,
-    has_player_state: bool,
-    has_icarus_player_state: bool,
-    has_subcomp_a: bool,
-    has_subcomp_b: bool,
-    subcomp_b_existing_len: usize,
+    inputs: &N012RestoreInputs,
     state: &N012RecorderState,
-) -> Option<(
-    (bool, Option<i32>, i32, [Option<i32>; 4]),
-    bool,
-    bool,
-    bool,
-    bool,
-)> {
-    let base_out = evaluate_n014_npc_restore(
-        owner_is_character,
-        owner_is_npc,
-        has_player_state,
-        has_icarus_player_state,
+) -> Option<N012RestoreOutcome> {
+    let npc_base_outcome = evaluate_n014_npc_restore(
+        inputs.owner_is_character,
+        inputs.owner_is_npc,
+        inputs.has_player_state,
+        inputs.has_icarus_player_state,
         &state.npc_base,
     )?;
-    if !owner_is_n012_target {
-        return Some((base_out, false, false, false, false));
+    if !inputs.owner_is_n012_target {
+        return Some(N012RestoreOutcome {
+            npc_base_outcome,
+            applied_subcomp_a: false,
+            cleared_subcomp_b: false,
+            applied_subcomp_b: false,
+            triggered_owner_hook_228: false,
+        });
     }
     let has_row_1e8 = !state.subcomp_a.row_name_1e8.is_empty()
         && !state.subcomp_a.row_name_1e8.eq_ignore_ascii_case("None");
-    let applied_subcomp_a = has_row_1e8 && has_subcomp_a;
+    let applied_subcomp_a = has_row_1e8 && inputs.has_subcomp_a;
     let (cleared_subcomp_b, applied_subcomp_b, triggered_owner_hook_228) =
-        if has_subcomp_b && state.subcomp_b.is_some() {
-            let b_ref = state.subcomp_b.as_ref()?;
-            (subcomp_b_existing_len > 0, true, b_ref.byte_228 != 0)
+        if let (true, Some(b_ref)) = (inputs.has_subcomp_b, state.subcomp_b.as_ref()) {
+            (inputs.subcomp_b_existing_len > 0, true, b_ref.byte_228 != 0)
         } else {
             (false, false, false)
         };
-    Some((
-        base_out,
+    Some(N012RestoreOutcome {
+        npc_base_outcome,
         applied_subcomp_a,
         cleared_subcomp_b,
         applied_subcomp_b,
         triggered_owner_hook_228,
-    ))
+    })
 }
 
 /// Evaluates `N002` interface integer transfer (`+0xd8`) in `RecordOwnerState`

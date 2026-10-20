@@ -147,17 +147,24 @@ construction, script owners and data-table rows are out of scope (F-660).
   unrecorded (`recorded_level`, F-648).
 - `UIcarusGameStateRecorder` pipeline and `N001..N027` non-blob slots (F-750, F-752):
   `BeginRecording` (`0x1414961b0`/`0x1414d0900`, `evaluate_begin_recording`) rejects
-  non-server or invalid/already-recorded components, routes `bDeferBeginRecording`
-  (`+0x284`) to `DeferredRecorders` (`+0x270`), and else registers at `+0x220` (`+0x48`
-  actor map when `UActorStateRecorderComponent` has valid owner); `FlushDeferredRecorder`
-  (`0x1414db370`, `evaluate_flush_deferred_recorder`) promotes `HasValidOwner()` entries;
-  `EndRecording` (`0x14149fcf0`/`0x1414da140` + `0x1414e6140`, `evaluate_end_recording`)
-  removes from `+0x270`/`+0x220`/`+0x230` (setting `bDropRecordOnNextSave = true` on
-  retained) and destroys the component unless `bIsBeingDestroyed` (`+0xa0 & 4`);
-  `TryRestoreActorRecorder` (`0x1414bf530`/`0x1414f6650`, `evaluate_try_restore_actor_recorder`)
-  matches retained (`+0x230`) recorders via `DoesRecorderMatchActor` (`+0x478`), runs
-  `ResolveOwnerRecorderState` (`0x1414b6fc0`/`0x1414ef1e0`), moves to `+0x220`, and
-  triggers a full stitching pass; `HasValidOwner` (`0x141898750`,
+  null/pending-kill components or GameplayTag `0x65`-excluded owners, returns `true` when
+  `bIsRecording` (`+0xd1`) is set, defers via `AddUnique` to `DeferredBeginRecordingComponents`
+  (`+0x130`) when `bIsRestoring` (`+0x128`), and else adds to `RecorderComponents` (`+0x28`),
+  sets `bIsRecording = true`, binds owner callbacks (`0x1418a3d90` when `HasValidOwner &&
+  !bOwnerCallbacksBound` `+0xd2`), and maps `(SpawnLocation -> index)` in
+  `SpawnLocationToRecorderIndexMap` (`+0xd8`) when `HasSavedSpawnLocation` (`+0x420`) and
+  `SpawnLocation != 0`; `FlushDeferredRecorder` (`0x1414db370`,
+  `evaluate_flush_deferred_recorder`) removes valid deferred entries from `+0x130` and
+  re-runs `BeginRecording`; `EndRecording` (`0x14149fcf0`/`0x1414da140` + `0x1414e6140`,
+  `evaluate_end_recording`) removes from `+0x130` and (when `bIsRecording`) `RemoveAtSwap`s
+  from `+0x28`, updates any swapped-in tail component's index in `+0xd8`, zeroes
+  `WORD [+0xd1]` (`bIsRecording`, `bOwnerCallbacksBound`), and removes its spawn location
+  from `+0xd8`; `TryRestoreActorRecorder` (`0x1414bf530`/`0x1414f6650`,
+  `evaluate_try_restore_actor_recorder`) checks `+0xd8` when `RootComponent` has non-zero
+  translation and `Mobility != 2` before scanning `+0x28` (`DoesRecorderMatchActor` `+0x478`),
+  calls `ResolveOwnerRecorderState` (`0x1414b6fc0`/`0x1414ef1e0`), and runs
+  `StitchingOperation` (`+0x468`) iff `ManuallyResolved && RequiresStitching()` (`+0x470`);
+  `HasValidOwner` (`0x141898750`,
   `has_valid_recorder_owner`), `RecordToProspectSaveState` (`0x1414b4680`/`0x1414ecdd0`,
   `evaluate_record_to_prospect_save_step`), `ReadFromProspectSaveState` (`0x1414b77e0`/`0x1414ec3f0`,
   `evaluate_unresolved_initial_recorder`), `RetainRecorder` (`0x1414b86b0`/`0x1414f0300`),
