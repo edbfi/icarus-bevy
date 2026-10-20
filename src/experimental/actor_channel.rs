@@ -1955,7 +1955,8 @@ pub fn evaluate_prep_connections_tick_budget(
         let combined_delta = delta_seconds + carryover_delta_seconds;
         let lan_multiplier = if lan_multiplier_two { 2.0_f32 } else { 1.0_f32 };
         let raw_budget = (combined_delta * max_net_tick_rate * lan_multiplier) as i32;
-        let clamped_budget = raw_budget.min(client_connection_count as i32);
+        let clamped_budget =
+            raw_budget.min(i32::try_from(client_connection_count).unwrap_or(i32::MAX));
         if clamped_budget <= 0 {
             return (0, combined_delta);
         }

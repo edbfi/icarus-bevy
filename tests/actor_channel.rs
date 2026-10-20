@@ -1934,3 +1934,174 @@ fn server_replicate_actors_prep_connections_and_build_consider_list() {
         other => panic!("unexpected outcome: {other:?}"),
     }
 }
+
+#[test]
+fn relevancy_priority_tick_rate_and_consider_list_never_panic_on_randomized_inputs() {
+    let mut state = 0x9e37_79b9_7f4a_7c15_u64;
+    let mut next_u64 = || {
+        state ^= state << 13;
+        state ^= state >> 7;
+        state ^= state << 17;
+        state
+    };
+    let sample_f32 = |raw: u64| -> f32 {
+        match raw & 0xf {
+            0 => 0.0,
+            1 => -0.0,
+            2 => f32::NAN,
+            3 => f32::INFINITY,
+            4 => f32::NEG_INFINITY,
+            5 => f32::MIN,
+            6 => f32::MAX,
+            7 => f32::MIN_POSITIVE,
+            _ => f32::from_bits(raw as u32),
+        }
+    };
+    let sample_f64 = |raw: u64| -> f64 {
+        match raw & 0xf {
+            0 => 0.0,
+            1 => -0.0,
+            2 => f64::NAN,
+            3 => f64::INFINITY,
+            4 => f64::NEG_INFINITY,
+            5 => f64::MIN,
+            6 => f64::MAX,
+            7 => f64::MIN_POSITIVE,
+            _ => f64::from_bits(raw),
+        }
+    };
+
+    for _ in 0..1024 {
+        let bits = next_u64();
+        let flag = |shift: u32| ((bits >> shift) & 1) != 0;
+        let loc_a = [
+            sample_f32(next_u64()),
+            sample_f32(next_u64()),
+            sample_f32(next_u64()),
+        ];
+        let loc_b = [
+            sample_f32(next_u64()),
+            sample_f32(next_u64()),
+            sample_f32(next_u64()),
+        ];
+        let dir = [
+            sample_f32(next_u64()),
+            sample_f32(next_u64()),
+            sample_f32(next_u64()),
+        ];
+        let cull_sq = sample_f32(next_u64());
+
+        let _ = is_within_net_relevancy_distance(loc_a, loc_b, cull_sq);
+        let _ = evaluate_actor_net_relevancy(&ActorRelevancyInputs {
+            b_always_relevant: flag(0),
+            b_only_relevant_to_owner: flag(1),
+            b_hidden: flag(2),
+            b_use_owner_relevancy: flag(3),
+            is_owned_by_view_target_or_real_viewer: flag(4),
+            view_target_is_instigator: flag(5),
+            has_owner: flag(6),
+            has_root_component: flag(7),
+            root_collision_enabled: flag(8),
+            attach_parent_delegates_to_owner: flag(9),
+            b_use_distance_based_relevancy: flag(10),
+            actor_location: loc_a,
+            src_location: loc_b,
+            net_cull_distance_squared: cull_sq,
+        });
+        let _ = evaluate_pawn_net_relevancy(&PawnRelevancyInputs {
+            b_always_relevant: flag(11),
+            real_viewer_is_controller: flag(12),
+            is_owned_by_view_target_or_real_viewer: flag(13),
+            view_target_is_instigator: flag(14),
+            based_on_view_target_or_vice_versa: flag(15),
+            b_hidden: flag(16),
+            b_only_relevant_to_owner: flag(17),
+            has_root_component: flag(18),
+            root_collision_enabled: flag(19),
+            movement_base_delegates_to_owner: flag(20),
+            b_use_distance_based_relevancy: flag(21),
+            actor_location: loc_a,
+            src_location: loc_b,
+            net_cull_distance_squared: cull_sq,
+        });
+        let _ = evaluate_player_controller_net_relevancy(next_u64(), next_u64());
+        let _ = evaluate_online_beacon_net_relevancy(
+            flag(22),
+            next_u64() & 3,
+            next_u64() & 3,
+            next_u64() & 3,
+            next_u64() & 3,
+        );
+
+        let prio_inputs = ActorPriorityInputs {
+            b_use_owner_relevancy: flag(23),
+            has_owner: flag(24),
+            is_view_target_or_instigator: flag(25),
+            b_hidden: flag(26),
+            root_location: if flag(27) { Some(loc_a) } else { None },
+            viewer_location: loc_b,
+            viewer_dir: dir,
+            time: sample_f32(next_u64()),
+            net_priority: sample_f32(next_u64()),
+        };
+        let _ = evaluate_actor_net_priority(&prio_inputs);
+        let _ = evaluate_player_controller_net_priority(
+            sample_f32(next_u64()),
+            sample_f32(next_u64()),
+            flag(28),
+        );
+        let _ = evaluate_matinee_actor_net_priority(
+            &prio_inputs,
+            flag(29),
+            sample_f32(next_u64()),
+            sample_f32(next_u64()),
+        );
+
+        let net_mode = match bits & 3 {
+            0 => EngineNetMode::Standalone,
+            1 => EngineNetMode::DedicatedServer,
+            2 => EngineNetMode::ListenServer,
+            _ => EngineNetMode::Client,
+        };
+        let _ = evaluate_game_engine_max_tick_rate(
+            net_mode,
+            flag(33),
+            next_u64() as i32,
+            sample_f32(next_u64()),
+        );
+        let _ = evaluate_prep_connections_tick_budget(
+            next_u64() as usize,
+            flag(34),
+            sample_f32(next_u64()),
+            sample_f32(next_u64()),
+            sample_f32(next_u64()),
+            flag(35),
+            next_u64() as i32,
+        );
+        let _ = is_connection_ready_for_replication(
+            flag(36),
+            next_u64() as u32,
+            sample_f64(next_u64()),
+            sample_f64(next_u64()),
+        );
+        let _ = evaluate_consider_list_actor(&ConsiderListActorInputs {
+            b_pending_net_update: flag(37),
+            next_update_time: sample_f64(next_u64()),
+            last_net_replicate_time: sample_f64(next_u64()),
+            optimal_net_update_delta: sample_f32(next_u64()),
+            world_time_seconds: sample_f32(next_u64()),
+            driver_elapsed_time: sample_f64(next_u64()),
+            is_pending_kill: flag(38),
+            remote_role: (next_u64() & 0xff) as u8,
+            net_driver_name_matches: flag(39),
+            b_net_startup: flag(40),
+            net_dormancy: (next_u64() & 0xff) as u8,
+            level_initialized: flag(41),
+            net_update_frequency: sample_f32(next_u64()),
+            min_net_update_frequency: sample_f32(next_u64()),
+            b_use_adaptive_net_update_frequency: flag(42),
+            random_unit_float: sample_f32(next_u64()),
+            server_tick_time: sample_f32(next_u64()),
+        });
+    }
+}
