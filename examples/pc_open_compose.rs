@@ -14,8 +14,9 @@ use icarus_bevy::experimental::{
         actor_component_rep_layout, icarus_player_controller_survival_rep_layout,
     },
     session_open::{
-        ComponentBlock, ComponentExport, NetGuidCache, PathSegment, PlayerControllerOpenState,
-        PlayerControllerProfile, compose_player_controller_open_body, encode_exports,
+        ComponentBlock, ComponentExport, ConnectionExports, NetGuidCache, PathSegment,
+        PlayerControllerOpenState, PlayerControllerProfile, compose_player_controller_open_body,
+        encode_exports,
     },
 };
 use serde::Deserialize;
@@ -54,18 +55,24 @@ fn main() -> Result<()> {
         components: file
             .components
             .into_iter()
-            .map(|(name, checksum, block)| ComponentExport {
-                name,
-                checksum,
-                block: match block {
+            .map(|(name, checksum, block)| {
+                let block = match block {
                     serde_json::Value::Null => ComponentBlock::None,
-                    serde_json::Value::String(_) => ComponentBlock::CreateOnly,
-                    other => {
-                        ComponentBlock::RepBools(serde_json::from_value(other).unwrap_or_default())
+                    serde_json::Value::String(kind) if kind == "create" => {
+                        ComponentBlock::CreateOnly
                     }
-                },
+                    other => ComponentBlock::RepBools(
+                        serde_json::from_value(other)
+                            .with_context(|| format!("component block of {name}"))?,
+                    ),
+                };
+                Ok(ComponentExport {
+                    name,
+                    checksum,
+                    block,
+                })
             })
-            .collect(),
+            .collect::<Result<_>>()?,
     };
     let codec = ActorChannelCodec {
         engine_net_version: 17,
@@ -76,7 +83,8 @@ fn main() -> Result<()> {
     };
     let mut cache = NetGuidCache::new();
     cache.register_level(&profile.level);
-    let (guids, references) = cache.player_controller_exports(&profile)?;
+    let mut exports = ConnectionExports::new();
+    let (guids, references) = cache.player_controller_exports(&mut exports, &profile)?;
     let payload = encode_exports(&references, &codec)?;
     let actor_layout = icarus_player_controller_survival_rep_layout(
         MovementLevel::Whole,

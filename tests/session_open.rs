@@ -3,8 +3,8 @@ use icarus_bevy::experimental::actor_channel::{
 };
 use icarus_bevy::experimental::archive::ByteOrder;
 use icarus_bevy::experimental::session_open::{
-    ComponentBlock, ComponentExport, NetGuidCache, PathSegment, PlayerControllerProfile,
-    encode_exports,
+    ComponentBlock, ComponentExport, ConnectionExports, NetGuidCache, PathSegment,
+    PlayerControllerProfile, encode_exports,
 };
 
 fn codec() -> ActorChannelCodec {
@@ -46,7 +46,9 @@ fn guid_numbering_follows_the_captured_policy() {
     let profile = profile();
     let mut cache = NetGuidCache::new();
     assert_eq!(cache.register_level(&profile.level), 3);
-    let (guids, references) = cache.player_controller_exports(&profile).unwrap();
+    let (guids, references) = cache
+        .player_controller_exports(&mut ConnectionExports::new(), &profile)
+        .unwrap();
     assert_eq!(guids.actor, 2);
     assert_eq!(guids.level, 3);
     assert_eq!(guids.archetype, 9);
@@ -75,7 +77,9 @@ fn encoded_exports_decode_back_into_the_package_map() {
     let profile = profile();
     let mut cache = NetGuidCache::new();
     cache.register_level(&profile.level);
-    let (_, references) = cache.player_controller_exports(&profile).unwrap();
+    let (_, references) = cache
+        .player_controller_exports(&mut ConnectionExports::new(), &profile)
+        .unwrap();
     let payload = encode_exports(&references, &codec()).unwrap();
     let mut map = PackageMapState::new();
     let decoded = map
@@ -99,11 +103,23 @@ fn a_connection_exports_each_static_path_once() {
     let profile = profile();
     let mut cache = NetGuidCache::new();
     cache.register_level(&profile.level);
-    let first = cache.export_static(&profile.archetype).unwrap();
-    let again = cache.export_static(&profile.archetype).unwrap();
+    let mut first_connection = ConnectionExports::new();
+    let first = cache
+        .export_static(&mut first_connection, &profile.archetype)
+        .unwrap();
+    let again = cache
+        .export_static(&mut first_connection, &profile.archetype)
+        .unwrap();
     assert!(first.export.is_some());
     assert_eq!(again.guid, first.guid);
     assert!(again.export.is_none());
+    // A second connection shares the GUID but still receives the full export.
+    let mut second_connection = ConnectionExports::new();
+    let other = cache
+        .export_static(&mut second_connection, &profile.archetype)
+        .unwrap();
+    assert_eq!(other, first);
+    assert!(second_connection.contains(first.guid));
 }
 
 #[test]
@@ -127,6 +143,10 @@ fn spawn_vectors_quantize_like_write_packed_vector() {
     };
     assert_eq!((bits, components), (0, [2, 2, 2]));
     assert!(quantize_spawn_vector([f32::NAN, 0.0, 0.0]).is_err());
+    // |v * 10| must stay below 1 << 24; 4.3e8 must fail rather than wrap.
+    assert!(quantize_spawn_vector([1_600_000.0, 0.0, 0.0]).is_ok());
+    assert!(quantize_spawn_vector([1_700_000.0, 0.0, 0.0]).is_err());
+    assert!(quantize_spawn_vector([430_000_000.0, 0.0, 0.0]).is_err());
 }
 
 #[test]
@@ -148,7 +168,9 @@ fn open_body_carries_roles_references_and_component_blocks() {
     profile.components[2].block = ComponentBlock::CreateOnly;
     let mut cache = NetGuidCache::new();
     cache.register_level(&profile.level);
-    let (guids, _) = cache.player_controller_exports(&profile).unwrap();
+    let (guids, _) = cache
+        .player_controller_exports(&mut ConnectionExports::new(), &profile)
+        .unwrap();
     let layout = icarus_player_controller_survival_rep_layout(
         MovementLevel::Whole,
         MovementLevel::Whole,
@@ -192,6 +214,20 @@ fn open_body_carries_roles_references_and_component_blocks() {
     };
     assert_eq!(object.guid, 6);
     assert!(!body.blocks[2].has_rep_layout && body.blocks[2].payload.bit_len() == 0);
+    // Mismatched component counts fail loudly instead of truncating.
+    let mut short = guids.clone();
+    short.components.pop();
+    assert!(
+        compose_player_controller_open_body(
+            &short,
+            &profile,
+            &state,
+            &layout,
+            &actor_component_rep_layout(),
+            &rep_codec,
+        )
+        .is_err()
+    );
     // The body survives the open-bunch encoder and parser unchanged.
     let payload = encode_player_controller_open_bunch_body(&body, &codec()).unwrap();
     let bunch = Bunch {

@@ -80,13 +80,28 @@ pub struct PlayerControllerProfile {
     pub components: Vec<ComponentExport>,
 }
 
-/// NetGUID assignment shared by the driver, plus per-connection export state.
+/// Driver-wide NetGUID assignment, shared by every connection.
 #[derive(Clone, Debug, Default)]
 pub struct NetGuidCache {
     static_index: u32,
     dynamic_index: u32,
     statics: BTreeMap<Vec<String>, u32>,
+}
+
+/// Which GUIDs one connection has already received with their paths.
+#[derive(Clone, Debug, Default)]
+pub struct ConnectionExports {
     exported: BTreeSet<u32>,
+}
+
+impl ConnectionExports {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn contains(&self, guid: u32) -> bool {
+        self.exported.contains(&guid)
+    }
 }
 
 /// GUIDs assigned while composing a PlayerController open.
@@ -133,15 +148,19 @@ impl NetGuidCache {
     }
 
     /// The reference for a static chain: a full export (with outers) the first
-    /// time this connection sees the leaf, a plain reference afterwards.
-    pub fn export_static(&mut self, chain: &[PathSegment]) -> Result<NetGuidRef> {
+    /// time `exports`' connection sees the leaf, a plain reference afterwards.
+    pub fn export_static(
+        &mut self,
+        exports: &mut ConnectionExports,
+        chain: &[PathSegment],
+    ) -> Result<NetGuidRef> {
         let guid = self.assign_static(chain);
-        if !self.exported.insert(guid) {
+        if !exports.exported.insert(guid) {
             return Ok(NetGuidRef::plain(guid));
         }
         let segment = chain.first().context("empty static chain")?;
         let outer = if chain.len() > 1 {
-            self.export_static(&chain[1..])?
+            self.export_static(exports, &chain[1..])?
         } else {
             NetGuidRef::null()
         };
@@ -162,11 +181,12 @@ impl NetGuidCache {
     /// A component (subobject) export under a dynamic actor GUID.
     pub fn export_subobject(
         &mut self,
+        exports: &mut ConnectionExports,
         actor: u32,
         component: &ComponentExport,
     ) -> Result<(u32, NetGuidRef)> {
         let guid = self.assign_dynamic();
-        self.exported.insert(guid);
+        exports.exported.insert(guid);
         let outer = NetGuidRef {
             guid: actor,
             export: Some(GuidExport {
@@ -202,16 +222,17 @@ impl NetGuidCache {
     /// state (dynamic, not exported), then the components.
     pub fn player_controller_exports(
         &mut self,
+        exports: &mut ConnectionExports,
         profile: &PlayerControllerProfile,
     ) -> Result<(PlayerControllerGuids, Vec<NetGuidRef>)> {
         let actor = self.assign_dynamic();
-        let archetype_ref = self.export_static(&profile.archetype)?;
-        let level_ref = self.export_static(&profile.level)?;
+        let archetype_ref = self.export_static(exports, &profile.archetype)?;
+        let level_ref = self.export_static(exports, &profile.level)?;
         let player_state = self.assign_dynamic();
         let mut references = vec![archetype_ref.clone(), level_ref.clone()];
         let mut components = Vec::with_capacity(profile.components.len());
         for component in &profile.components {
-            let (guid, reference) = self.export_subobject(actor, component)?;
+            let (guid, reference) = self.export_subobject(exports, actor, component)?;
             components.push(guid);
             references.push(reference);
         }
@@ -245,16 +266,15 @@ pub fn quantize_spawn_vector(value: [f32; 3]) -> anyhow::Result<SpawnVector> {
     );
     let scaled = value.map(|v| (v * 10.0 + 0.5).floor() as i64);
     let max = scaled.iter().map(|v| v.unsigned_abs()).max().unwrap_or(0);
+    // Bits needed for max |v|, i.e. CeilLogTwo(1 + max); checked before any cast.
     let ceil_log2 = 64 - max.leading_zeros();
-    let bits = ceil_log2.clamp(1, 24) - 1;
-    let bias = 1i64 << (bits + 1);
-    let components = scaled.map(|v| (v + bias) as u32);
     anyhow::ensure!(
-        components
-            .iter()
-            .all(|c| u64::from(*c) < (1u64 << (bits + 2))),
+        ceil_log2 <= 24,
         "spawn vector exceeds the 24-bit packed range"
     );
+    let bits = ceil_log2.max(1) - 1;
+    let bias = 1i64 << (bits + 1);
+    let components = scaled.map(|v| (v + bias) as u32);
     Ok(SpawnVector::Quantized { bits, components })
 }
 
@@ -274,7 +294,10 @@ const HANDLE_REMOTE_ROLE: u32 = 5;
 const HANDLE_ROLE: u32 = 14;
 const HANDLE_PLAYER_STATE: u32 = 16;
 const HANDLE_SPAWN_LOCATION: u32 = 19;
-/// `BackendProxyComponent`, `PlayerDataComponent`, `BestiaryManagerComponent`.
+/// The first `COMPONENT_HANDLES` components (`BackendProxyComponent`,
+/// `PlayerDataComponent`, `BestiaryManagerComponent` in 3.0.31) are also
+/// referenced by actor properties; later components only get their own
+/// export and block (F-778).
 const HANDLE_FIRST_COMPONENT: u32 = 22;
 const COMPONENT_HANDLES: usize = 3;
 
@@ -297,6 +320,14 @@ pub fn compose_player_controller_open_body(
     component_layout: &[RepCommand],
     codec: &RepLayoutCodec,
 ) -> Result<PlayerControllerOpenBunchBody> {
+    anyhow::ensure!(
+        guids.components.len() == profile.components.len(),
+        "component GUIDs and profile components differ in count"
+    );
+    anyhow::ensure!(
+        profile.components.len() >= COMPONENT_HANDLES,
+        "the PlayerController references {COMPONENT_HANDLES} components by property"
+    );
     let spawn = SpawnRecord {
         actor: NetGuidRef::plain(guids.actor),
         dynamic: Some(DynamicSpawn {
@@ -320,7 +351,7 @@ pub fn compose_player_controller_open_body(
             RepValue::Vector(state.spawn_location.map(f32::to_bits)),
         ),
     ];
-    for (offset, guid) in guids.components.iter().take(COMPONENT_HANDLES).enumerate() {
+    for (offset, guid) in guids.components[..COMPONENT_HANDLES].iter().enumerate() {
         entries.push(entry(
             HANDLE_FIRST_COMPONENT + offset as u32,
             RepValue::Object(NetGuidRef::plain(*guid)),
