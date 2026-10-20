@@ -7,7 +7,7 @@ full text under `retired/`. Admission and columns follow `.agents/rules/docs.md`
 
 Before restructure: 96ddb0b:docs/ledgers/findings.md
 
-Last reconciled: 2026-10-19
+Last reconciled: 2026-10-20
 
 | ID | Claim | Kind | Evidence | Scope and limits | Unknowns | Status |
 | --- | --- | --- | --- | --- | --- | --- |
@@ -31,12 +31,7 @@ Last reconciled: 2026-10-19
 | F-282 | FString reader 0x141e15db0: signed i32 count; positive narrow B, negative UTF-16 units, terminator included; i32::MIN rejected; final unit zeroed | observed | static-decompile; M-169 | high; reader, narrow 0x1408a91f0, writer 0x1409d1a30 | U-026 | active |
 | F-283 | ProspectBlob: Key 0x00, Hash 0x10, TotalLength 0x20, DataLength 0x24, UncompressedLength 0x28, BinaryBlob 0x30; Base64 then zlib(15) then SHA-1 | observed | static-decompile; M-169 | high; reader 0x1418e6240; DataLength in F-737 | U-040 | active |
 | F-285 | StrProperty, C034 NameProperty, C009 enum-backed Byte and top EnumProperty adapters all reach FString reader; demand is 4 count B + payload | observed | static-decompile; M-091; M-107; M-104; M-105 | high; archive-string spec descriptors | U-033 | active |
-| F-286 | Older reader: traversal 0x14200f5b0, tag reader 0x14215f530, names via archive virtual +0x140 = 0x140962300, string reader 0x141e15db0; reset to 522, no swap | observed | static-decompile; M-147; build 25621760 | medium; E-009, E-010; Object offsets are not file offsets |  | active |
-| F-287 | Tag = name string, type string, i32 LE size, i32 LE array index, type metadata, 1-B GUID flag (+16 B), value of size B; None ends root | observed | static-decompile; M-147; build 25621760 | medium; memory522 profile; no type string after None |  | active |
-| F-288 | Type metadata: Struct name + 16-B GUID; Array inner type; Byte/Enum enum name; Bool 1-B header value; Int/UInt32/Str/Name/Float/Text none | observed | static-decompile; M-147, M-120; build 25621760 | medium; memory522 profile; values unvalidated |  | active |
-| F-289 | Older tag reader gates Struct GUID at version 441, Array inner type at 282, property GUID at 503; all apply at 522 | observed | static-decompile; M-147; build 25621760 | medium; tag reader 0x14215f530 |  | active |
-| F-290 | Built-in name table gives UInt32Property ID 25; it reaches common GUID flag without type-specific extensions | observed | static-decompile; M-147; build 25621760 | medium; 0x14215f530; payload undecoded |  | active |
-| F-291 | Size counts only value bytes after the full header; 0x142166850 compares property-reader position change to it | observed | static-decompile; M-147; build 25621760 | medium; E-010; C++ object offset is not file offset |  | active |
+| F-765 | Older tag reader 0x14215f530 (reset to 522, no swap): name, type, i32 LE value-byte size, i32 LE array index, metadata (Struct name+GUID at 441+, Array inner type at 282+, Byte/Enum enum name, Bool 1-B value, else none), GUID flag (+16 B at 503+), value; None ends root | observed | static-decompile; M-120, M-147; build 25621760 | medium; memory522 profile |  | active |
 | F-292 | Struct array body = count then one shared inner tag before elements; root scanner keeps whole body opaque | observed | static-decompile; M-147; build 25621760 | medium; memory522 profile |  | active |
 | F-293 | Name values stay opaque; in-memory width != serialized width; reference name-value reader uses archive string/name primitive | observed | static-decompile; M-147; build 25621760 | medium; name value reader; no Name identity | U-020 | active |
 | F-294 | Root reader: 32 MiB input, 4,096 records, 1,024 units/header string incl. terminator, checked before alloc; exact None+EOF; rejects neg/truncated/noncanonical | observed | authored-test; commit:d5b0ae6:src/experimental/tagged.rs | high; 11 kinds; research limits | U-026 | active |
