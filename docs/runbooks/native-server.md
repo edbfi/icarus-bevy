@@ -27,7 +27,8 @@ simulated seconds, and a due autosave awaits one still in flight, so a long
 schedule of saves runs in minutes ([synthetic workload](synthetic-workload.md)).
 
 The development default is 30 Hz with at most four catch-up ticks per update.
-This is provisional, not a discovered ICARUS tick rate. No game/query sockets open.
+This is provisional, not a discovered ICARUS tick rate. No game/query sockets
+open unless the experimental `[network]` section below is enabled.
 The process emits JSON lifecycle/status/save records to stderr and always reports
 `gameplay_ready: false`. Tick timing currently measures only foundation systems,
 not representative gameplay performance.
@@ -39,6 +40,40 @@ symlinks are supported. FIFO and oversized inputs fail before runtime state open
 (F-671).
 `check-config` prints effective configuration without creating the data directory.
 Use `--help` on each subcommand for supported overrides.
+
+## Network sessions (experimental)
+
+An opt-in `[network]` table (disabled by default) runs the loopback peer lab
+inside `run`, beside the fixed-step loop, autosave, signals and final save:
+
+```toml
+[network]
+enabled = true
+bind = "127.0.0.1"          # IPv4 loopback only
+port = 17777                # 0 selects an ephemeral port; CLI: --network-port
+max_players = 8             # admission occupancy limit, 1..=64
+session_timeout_seconds = 30  # idle eviction, 1..=600, monotonic real time
+```
+
+The socket binds before the data directory opens; a bind failure exits
+nonzero without touching world state. Each update polls at most 32 datagrams
+before the fixed simulation ticks. Sessions follow the inferred handshake,
+Hello/Challenge, Login/Welcome and Join admission model; capacity beyond
+`max_players` gets an admission Failure, and a client control close bunch or
+the idle timeout removes a session. SIGINT/SIGTERM first stops admission (new
+handshakes ignored, Login/Join refused), then closes every session and runs
+the normal drain and final save. A `network_listening` record gives the bound
+address; `status` and `stopped` records carry `sessions` counts only, never
+names, net ids or tokens.
+
+It does not demonstrate compatibility with any ICARUS client, verify identity,
+replicate actors or run gameplay; `gameplay_ready` stays false. It is tested
+only with the authored probe on loopback:
+
+```bash
+cargo test --locked --test network
+target/release/icarus-server run --config server.toml --data-dir work/net-smoke --max-ticks 600
+```
 
 ## Persistence and recovery
 

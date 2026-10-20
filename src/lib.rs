@@ -3,6 +3,7 @@ pub mod config;
 pub mod experimental;
 mod json;
 pub mod metrics;
+pub mod network;
 pub mod persistence;
 pub mod preservation;
 pub mod prospect;

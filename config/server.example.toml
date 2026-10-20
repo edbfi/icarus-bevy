@@ -6,3 +6,13 @@ max_catch_up_ticks = 4
 autosave_seconds = 60
 shutdown_timeout_seconds = 10
 status_interval_seconds = 10
+
+# EXPERIMENTAL loopback-only session layer built from the peer lab: handshake,
+# Hello/Login/Welcome/Join admission counts only. No ICARUS compatibility,
+# replication or gameplay. Keep disabled outside authored-probe testing.
+[network]
+enabled = false
+bind = "127.0.0.1"
+port = 17777
+max_players = 8
+session_timeout_seconds = 30

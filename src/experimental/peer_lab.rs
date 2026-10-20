@@ -63,8 +63,16 @@
 //!   [`PeerLabStats::debug_texts_received`] without retaining text (`F-713`, `F-740`).
 //! - Messages after a closing reply in the same delivery are not processed.
 //!
+//! - Login, Join and SplitJoin after [`PeerLab::stop_admission`]: Failure
+//!   (ID 6) carrying [`SHUTTING_DOWN_MESSAGE`], then the peer is removed
+//!   (`refused_draining`, `peers_closed`).
+//!
 //! Removing a peer is the lab's close: no close bunch is written, so a lost
-//! Upgrade or Failure is never resent. Naked reliable replies of live peers are
+//! Upgrade or Failure is never resent. An accepted data packet carrying a
+//! control bunch with the close flag removes its peer after that packet's
+//! delivered messages are answered (`peers_closed_by_client`); this is a lab
+//! choice, applied even when the close bunch itself waits in the reliable
+//! queue. Naked reliable replies of live peers are
 //! resent only inside later ack or reply datagrams (see `packet_lab`), which
 //! the lab writes only after accepting a client packet; there is no timer.
 //!
@@ -76,8 +84,13 @@
 //!   repeated echo of its current cookie is only re-acknowledged.
 //! - Peers idle longer than [`PeerLabConfig::idle_timeout`] (no accepted data
 //!   packet since creation or the last accepted one) are removed at the start of
-//!   an update. Failed peers ([`LabPeer::is_failed`]) and peers whose ack packet
-//!   cannot be built are removed at once.
+//!   an update; deadlines use monotonic real time ([`Instant`]), never
+//!   simulation time. Failed peers ([`LabPeer::is_failed`]) and peers whose
+//!   ack packet cannot be built are removed at once.
+//! - After [`PeerLab::stop_admission`] no exact handshake form is answered
+//!   (`refused_draining`), so no peer is created or replaced; live peers keep
+//!   their packet state until [`PeerLab::shutdown`] removes them all
+//!   (`peers_shutdown`). Both calls are idempotent.
 //! - At most [`PACKETS_PER_UPDATE`] datagrams per update. The receive buffer is
 //!   one byte longer than the configured maximum datagram size
 //!   (`limits.max_packet_bytes`), so a longer, kernel-truncated datagram is
@@ -97,7 +110,10 @@ use std::{
 };
 
 use anyhow::{Context, Result, ensure};
-use bevy::prelude::{App, Plugin, ResMut, Resource, Update};
+use bevy::{
+    app::{RunFixedMainLoop, RunFixedMainLoopSystems},
+    prelude::{App, IntoScheduleConfigs, Plugin, ResMut, Resource, resource_exists},
+};
 use serde::Serialize;
 
 use super::admission::{
@@ -116,6 +132,9 @@ use super::release::ReleaseProfile;
 
 /// Lab text of the Failure reply to Login; not an original message.
 pub const ADMISSION_DISABLED_MESSAGE: &str = "icarus-bevy peer lab: game admission is disabled";
+/// Lab text of the Failure reply to Login or Join after admission stopped;
+/// not an original message.
+pub const SHUTTING_DOWN_MESSAGE: &str = "icarus-bevy peer lab: server is shutting down";
 /// Hello tokens whose declared count, including the terminator, is below this
 /// get a Challenge: only an empty token does (server and client, F-563).
 pub const CHALLENGE_TOKEN_THRESHOLD: usize = 2;
@@ -332,7 +351,8 @@ pub struct PeerLabStats {
     pub control_unknown: u64,
     /// Delivered control messages per message ID (kind), known or not.
     pub control_by_id: BTreeMap<u8, u64>,
-    /// Control bunches carrying the close flag; the lab does not act on them.
+    /// Accepted data packets carrying a control bunch with the close flag;
+    /// each removes its peer (`peers_closed_by_client`).
     pub control_close_seen: u64,
     /// Delivered control messages rejected by `IsClientMsgTypeValid` (`F-713`).
     pub invalid_state_messages: u64,
@@ -366,6 +386,13 @@ pub struct PeerLabStats {
     pub debug_texts_received: u64,
     /// Peers removed after an Upgrade or Failure reply.
     pub peers_closed: u64,
+    /// Peers removed after an accepted packet carrying a control close bunch.
+    pub peers_closed_by_client: u64,
+    /// Peers removed by [`PeerLab::shutdown`].
+    pub peers_shutdown: u64,
+    /// Handshake forms ignored and Login / Join / SplitJoin refused after
+    /// [`PeerLab::stop_admission`].
+    pub refused_draining: u64,
     /// Replies that could not be built (the peer is kept unless it failed).
     pub reply_errors: u64,
 }
@@ -381,6 +408,45 @@ impl PeerLabStats {
             *count = count.saturating_add(1);
         }
     }
+}
+
+/// Session gauges and counters for status records; counts only, never
+/// addresses, identifiers or message fields.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize)]
+pub struct SessionCounts {
+    /// False after [`PeerLab::stop_admission`].
+    pub admitting: bool,
+    /// Peers currently in the table, in any login state.
+    pub active_peers: usize,
+    /// Largest peer-table size observed since bind.
+    pub peak_peers: usize,
+    /// Peers currently welcomed and not yet joined.
+    pub welcomed: usize,
+    /// Peers currently joined.
+    pub joined: usize,
+    /// Welcome replies sent since bind.
+    pub welcomes_sent: u64,
+    /// Join / SplitJoin requests that passed admission since bind.
+    pub joins_succeeded: u64,
+    /// Failure replies to Login or Join (capacity, identity, spawn or
+    /// shutdown refusals).
+    pub admissions_rejected: u64,
+    /// Valid handshakes refused because the peer table was full.
+    pub peers_rejected: u64,
+    /// Handshakes ignored and logins/joins refused after admission stopped.
+    pub refused_draining: u64,
+    /// Sessions removed by the idle timeout.
+    pub closed_by_timeout: u64,
+    /// Sessions closed by a client control close bunch.
+    pub closed_by_client: u64,
+    /// Sessions closed after an Upgrade or Failure reply.
+    pub closed_by_reply: u64,
+    /// Sessions removed after a receive, reply or ack failure.
+    pub closed_failed: u64,
+    /// Sessions removed by shutdown.
+    pub closed_by_shutdown: u64,
+    /// Control messages rejected by `IsClientMsgTypeValid` (`F-713`).
+    pub invalid_state_messages: u64,
 }
 
 fn bump(counter: &mut u64) {
@@ -444,6 +510,8 @@ pub struct PeerLab {
     peers: HashMap<SocketAddrV4, PeerEntry>,
     buffer: Vec<u8>,
     stats: PeerLabStats,
+    admitting: bool,
+    peak_peers: usize,
 }
 
 impl fmt::Debug for PeerLab {
@@ -451,7 +519,9 @@ impl fmt::Debug for PeerLab {
         formatter
             .debug_struct("PeerLab")
             .field("peers", &self.peers.len())
+            .field("peak_peers", &self.peak_peers)
             .field("max_peers", &self.config.max_peers)
+            .field("admitting", &self.admitting)
             .field("stats", &self.stats)
             .finish_non_exhaustive()
     }
@@ -464,7 +534,27 @@ impl PeerLab {
         config.validate()?;
         let authority = CookieAuthority::random().context("cookie secret")?;
         let socket = bind_loopback(port).context("bind IPv4 loopback")?;
-        Ok(Self {
+        Ok(Self::with_socket(socket, authority, config))
+    }
+
+    /// As [`bind`](Self::bind), on a caller-chosen IPv4 address that must be
+    /// loopback (`127.0.0.0/8`): the lab is not exposed beyond the host.
+    pub fn bind_address(address: SocketAddrV4, config: PeerLabConfig) -> Result<Self> {
+        ensure!(
+            address.ip().is_loopback(),
+            "the peer lab binds IPv4 loopback addresses only"
+        );
+        config.validate()?;
+        let authority = CookieAuthority::random().context("cookie secret")?;
+        let socket = UdpSocket::bind(address).context("bind IPv4 loopback")?;
+        socket
+            .set_nonblocking(true)
+            .context("set the socket nonblocking")?;
+        Ok(Self::with_socket(socket, authority, config))
+    }
+
+    fn with_socket(socket: UdpSocket, authority: CookieAuthority, config: PeerLabConfig) -> Self {
+        Self {
             socket,
             authority,
             started: Instant::now(),
@@ -473,7 +563,9 @@ impl PeerLab {
             buffer: vec![0; config.max_datagram_bytes() + 1],
             config,
             stats: PeerLabStats::default(),
-        })
+            admitting: true,
+            peak_peers: 0,
+        }
     }
 
     pub fn local_addr(&self) -> io::Result<SocketAddr> {
@@ -494,6 +586,60 @@ impl PeerLab {
 
     pub fn has_peer(&self, address: SocketAddrV4) -> bool {
         self.peers.contains_key(&address)
+    }
+
+    /// Largest peer-table size observed since bind.
+    pub fn peak_peer_count(&self) -> usize {
+        self.peak_peers
+    }
+
+    pub fn is_admitting(&self) -> bool {
+        self.admitting
+    }
+
+    /// Stop admitting new sessions: no handshake is answered and Login, Join
+    /// and SplitJoin get Failure. Live peers are kept. Idempotent.
+    pub fn stop_admission(&mut self) {
+        self.admitting = false;
+    }
+
+    /// Stop admission and remove every peer (no close bunch is written).
+    /// Returns the number removed; a repeated call removes none.
+    pub fn shutdown(&mut self) -> usize {
+        self.stop_admission();
+        let removed = self.peers.len();
+        self.peers.clear();
+        self.stats.peers_shutdown = self.stats.peers_shutdown.saturating_add(removed as u64);
+        removed
+    }
+
+    /// Current session gauges and counters (counts only).
+    pub fn session_counts(&self) -> SessionCounts {
+        let mut counts = SessionCounts {
+            admitting: self.admitting,
+            active_peers: self.peers.len(),
+            peak_peers: self.peak_peers,
+            welcomes_sent: self.stats.welcomes_sent,
+            joins_succeeded: self.stats.joins_succeeded,
+            admissions_rejected: self.stats.failures_sent,
+            peers_rejected: self.stats.peers_rejected,
+            refused_draining: self.stats.refused_draining,
+            closed_by_timeout: self.stats.peers_expired,
+            closed_by_client: self.stats.peers_closed_by_client,
+            closed_by_reply: self.stats.peers_closed,
+            closed_failed: self.stats.peers_failed,
+            closed_by_shutdown: self.stats.peers_shutdown,
+            invalid_state_messages: self.stats.invalid_state_messages,
+            ..SessionCounts::default()
+        };
+        for entry in self.peers.values() {
+            match entry.admission.state {
+                ClientLoginState::Welcomed => counts.welcomed += 1,
+                ClientLoginState::Joined => counts.joined += 1,
+                _ => {}
+            }
+        }
+        counts
     }
 
     /// Clamped `CurrentNetSpeed` (`UNetConnection + 0x38`, `F-740`) recorded
@@ -546,6 +692,10 @@ impl PeerLab {
         else {
             return false;
         };
+        if !self.admitting {
+            bump(&mut self.stats.refused_draining);
+            return true;
+        }
         match reply {
             HandshakeReply::Challenge(datagram) => {
                 if self.send(&datagram, address) {
@@ -599,6 +749,7 @@ impl PeerLab {
                         current_net_speed: None,
                     },
                 );
+                self.peak_peers = self.peak_peers.max(self.peers.len());
             }
         }
         true
@@ -609,6 +760,7 @@ impl PeerLab {
             bump(&mut self.stats.unknown_peer);
             return;
         };
+        let mut close = false;
         let messages = match entry.peer.receive(&self.buffer[..length]) {
             Ok(received) => {
                 let summary = received.summary();
@@ -619,6 +771,7 @@ impl PeerLab {
                         bump(&mut self.stats.data_accepted);
                         if summary.control_close_seen {
                             bump(&mut self.stats.control_close_seen);
+                            close = true;
                         }
                         self.stats.count_delivered(&summary.delivered);
                     }
@@ -637,6 +790,9 @@ impl PeerLab {
         };
         self.answer(address, &messages);
         // Decoded messages are dropped here; nothing of them is retained.
+        if close && self.peers.remove(&address).is_some() {
+            bump(&mut self.stats.peers_closed_by_client);
+        }
     }
 
     /// Apply the reply policy (module docs) to delivered messages in order,
@@ -688,6 +844,10 @@ impl PeerLab {
                     .entry(net_id_form(&unique_net_id.value))
                     .or_default();
                 *count = count.saturating_add(1);
+                if !self.admitting {
+                    bump(&mut self.stats.refused_draining);
+                    return Some(Reply::Failure(SHUTTING_DOWN_MESSAGE));
+                }
                 let Some(admission) = &self.config.admission else {
                     return Some(Reply::Failure(ADMISSION_DISABLED_MESSAGE));
                 };
@@ -720,6 +880,12 @@ impl PeerLab {
                 ));
                 bump(&mut self.stats.netspeeds_updated);
                 None
+            }
+            ControlMessage::Join | ControlMessage::SplitJoin { .. }
+                if self.config.admission.is_some() && !self.admitting =>
+            {
+                bump(&mut self.stats.refused_draining);
+                Some(Reply::Failure(SHUTTING_DOWN_MESSAGE))
             }
             ControlMessage::Join => {
                 let admission = self.config.admission?;
@@ -901,8 +1067,9 @@ impl PeerLab {
     }
 
     /// One bounded update: expire idle peers, process at most
-    /// [`PACKETS_PER_UPDATE`] datagrams, then send pending acks.
-    fn poll(&mut self) {
+    /// [`PACKETS_PER_UPDATE`] datagrams, then send pending acks. The
+    /// [`PeerLabPlugin`] runs this once per app update.
+    pub fn poll(&mut self) {
         self.expire_idle(Instant::now());
         let max = self.config.max_datagram_bytes();
         for _ in 0..PACKETS_PER_UPDATE {
@@ -939,11 +1106,21 @@ impl PeerLab {
 }
 
 /// Insert a bound [`PeerLab`] before adding this optional research plugin.
+///
+/// The lab polls once per app update in [`RunFixedMainLoop`] before the fixed
+/// main loop, so every datagram taken in an update is processed before that
+/// update's `FixedUpdate` simulation ticks. Removing the [`PeerLab`] resource
+/// (teardown) stops polling.
 pub struct PeerLabPlugin;
 
 impl Plugin for PeerLabPlugin {
     fn build(&self, app: &mut App) {
-        app.add_systems(Update, poll_peer_lab);
+        app.add_systems(
+            RunFixedMainLoop,
+            poll_peer_lab
+                .run_if(resource_exists::<PeerLab>)
+                .in_set(RunFixedMainLoopSystems::BeforeFixedMainLoop),
+        );
     }
 }
 

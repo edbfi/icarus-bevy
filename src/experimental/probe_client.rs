@@ -233,6 +233,38 @@ impl ProbeClient {
         Ok(self.send_packet(Vec::new())?.1)
     }
 
+    /// Send one empty reliable control bunch with the close flag (reason
+    /// `Destroyed`) and consume the probe. The bunch takes the next reliable
+    /// sequence but is not retained for resend: nothing is sent afterwards.
+    /// The original close cadence was not observed; this is the probe's model.
+    pub fn close(mut self) -> Result<u32> {
+        let sequence = self
+            .control
+            .out_reliable()
+            .checked_add(1)
+            .context("reliable sequence counter exhausted")?;
+        let bunch = Bunch {
+            header: BunchHeader {
+                control: true,
+                open: false,
+                close: true,
+                close_reason: Some(0),
+                paused: false,
+                reliable: true,
+                channel_index: 0,
+                has_package_map_exports: false,
+                has_must_be_mapped_guids: false,
+                partial: false,
+                reliable_sequence_raw: Some(wire_reliable_sequence(sequence)),
+                partial_initial: false,
+                partial_final: false,
+                channel_name: Some(Name::Hardcoded(CONTROL_CHANNEL_NAME)),
+            },
+            payload: Payload::from_writer(BitWriter::new()),
+        };
+        Ok(self.send_packet(vec![bunch])?.1)
+    }
+
     fn send_packet(&mut self, bunches: Vec<Bunch>) -> Result<(Vec<u8>, u32)> {
         let packet_id = self.sequencer.out_packet_id();
         let packet = Packet {

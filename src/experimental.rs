@@ -2,7 +2,9 @@
 //!
 //! The separate loopback labs exercise short handshake framing and, in
 //! `peer_lab`, inferred per-peer packet state. The normal server enables
-//! neither. `admission` mirrors only the engine's login approval decisions.
+//! `peer_lab` only through the opt-in, loopback-only `[network]` section
+//! (`crate::network`). `admission` mirrors only the engine's login approval
+//! decisions.
 
 pub mod actor_channel;
 pub mod admission;

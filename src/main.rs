@@ -14,6 +14,7 @@ use bevy::time::TimeUpdateStrategy;
 use clap::{Parser, Subcommand};
 use icarus_bevy::{
     config::ConfigOptions,
+    network,
     persistence::{SaveReceipt, SaveWorker, SaveWorkerDisconnected, SnapshotStore},
     simulation::{RunClock, SimulationClock, TickMetrics, build_app, capture},
 };
@@ -31,7 +32,8 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
-    /// Run the headless foundation. Opens no gameplay or query sockets.
+    /// Run the headless foundation. Opens no socket unless the experimental,
+    /// loopback-only `[network]` session layer is enabled; no gameplay runs.
     Run {
         #[command(flatten)]
         options: ConfigOptions,
@@ -400,6 +402,9 @@ fn run(options: ConfigOptions, max_ticks: Option<u64>, compressed: bool) -> Resu
         !compressed || max_ticks.is_some(),
         "a compressed run needs max_ticks"
     );
+    // Bind before any world state opens: a bind failure exits without
+    // creating, locking or loading the data directory.
+    let lab = network::bind(&config.network)?;
     let store = SnapshotStore::open(&config.data_dir)?;
     let loaded = store.load()?;
     if loaded
@@ -424,6 +429,7 @@ fn run(options: ConfigOptions, max_ticks: Option<u64>, compressed: bool) -> Resu
     if compressed {
         app.insert_resource(TimeUpdateStrategy::FixedTimesteps(1));
     }
+    let network_address = lab.map(|lab| network::install(&mut app, lab)).transpose()?;
     app.finish();
     app.cleanup();
     let mut writer = SaveWorker::spawn(store)?;
@@ -452,8 +458,20 @@ fn run(options: ConfigOptions, max_ticks: Option<u64>, compressed: bool) -> Resu
         "{}",
         json!({"event": "started", "tick": snapshot.tick, "tick_hz": config.tick_hz,
         "icarus_compatible": false, "gameplay_ready": false,
-        "native_schema": snapshot.schema_version, "compressed": compressed})
+        "native_schema": snapshot.schema_version, "compressed": compressed,
+        "network_enabled": network_address.is_some()})
     );
+    if let Some(address) = network_address {
+        // The server's own bound address and configured limits; never a
+        // client-supplied value.
+        eprintln!(
+            "{}",
+            json!({"event": "network_listening", "experimental": true,
+            "address": address.to_string(), "max_players": config.network.max_players,
+            "session_timeout_seconds": config.network.session_timeout_seconds,
+            "icarus_compatible": false, "gameplay_ready": false})
+        );
+    }
 
     loop {
         let frame = Instant::now();
@@ -469,6 +487,8 @@ fn run(options: ConfigOptions, max_ticks: Option<u64>, compressed: bool) -> Resu
         let now = clock.elapsed(tick);
         autosave.observe(writer.poll(), now)?;
         if stopping.load(Ordering::SeqCst) || target_tick.is_some_and(|target| tick >= target) {
+            // Admission stops before any drain or final-save work.
+            network::stop_admission(app.world_mut());
             break;
         }
         if now.saturating_sub(last_save_request) >= Duration::from_secs(config.autosave_seconds) {
@@ -481,6 +501,7 @@ fn run(options: ConfigOptions, max_ticks: Option<u64>, compressed: bool) -> Resu
                 thread::sleep(Duration::from_millis(1));
             }
             if stopping.load(Ordering::SeqCst) {
+                network::stop_admission(app.world_mut());
                 break;
             }
             if !writer.is_busy() {
@@ -503,7 +524,8 @@ fn run(options: ConfigOptions, max_ticks: Option<u64>, compressed: bool) -> Resu
                 "last_tick_micros": metrics.last_tick_micros,
                 "max_tick_micros": metrics.max_tick_micros,
                 "tick_p50_micros": metrics.tick_micros.quantile_micros(50),
-                "tick_p99_micros": metrics.tick_micros.quantile_micros(99)})
+                "tick_p99_micros": metrics.tick_micros.quantile_micros(99),
+                "sessions": network::session_counts(app.world())})
             );
             last_status = now;
         }
@@ -512,6 +534,10 @@ fn run(options: ConfigOptions, max_ticks: Option<u64>, compressed: bool) -> Resu
         }
     }
 
+    // Idempotent: admission is already stopped; close every session and drop
+    // the socket before the bounded drain and final save.
+    network::stop_admission(app.world_mut());
+    let sessions = network::teardown(app.world_mut());
     let deadline = Instant::now() + Duration::from_secs(config.shutdown_timeout_seconds);
     // A failed in-flight autosave is reported as in the loop; the final save still runs.
     match writer.settle_before(deadline)? {
@@ -533,7 +559,8 @@ fn run(options: ConfigOptions, max_ticks: Option<u64>, compressed: bool) -> Resu
     }
     eprintln!(
         "{}",
-        json!({"event": "stopped", "tick": app.world().resource::<SimulationClock>().tick})
+        json!({"event": "stopped", "tick": app.world().resource::<SimulationClock>().tick,
+        "gameplay_ready": false, "sessions": sessions})
     );
     Ok(())
 }
