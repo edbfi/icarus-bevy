@@ -29,6 +29,9 @@ use super::{
         INVENTORY_FIELD_INDEX_BOUND, STAT_CONTAINER_FIELD_INDEX_BOUND,
         UI_PROJECTION_MOUNT_STATUS_FIELD_INDEX_BOUND,
     },
+    session_open::{
+        COMPONENT_HANDLES, ComponentBlock, ComponentExport, PathSegment, PlayerControllerProfile,
+    },
 };
 
 /// Dedicated server Steam AppID.
@@ -322,12 +325,203 @@ impl ReleaseRowHandleProfile {
     }
 }
 
+/// One segment of the PlayerController archetype's outer chain, leaf first.
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct ReleasePathSegment {
+    pub path: String,
+    /// Class network checksum (`F-776`) for the archetype; `0` for its package.
+    pub checksum: u32,
+    #[serde(default)]
+    pub no_load: bool,
+}
+
+/// What a PlayerController component contributes to the open body (`F-778`).
+#[derive(Clone, Copy, Debug, Default, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ReleaseComponentBlockKind {
+    /// Exported and referenced only; no content block.
+    #[default]
+    None,
+    /// A stably named subobject block without properties.
+    Create,
+    /// A stably named subobject block carrying `rep_bools`.
+    RepBools,
+}
+
+/// One replicated PlayerController component, in serialization order.
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct ReleaseComponent {
+    pub name: String,
+    /// Class network checksum of the component's class (`F-776`).
+    pub checksum: u32,
+    #[serde(default)]
+    pub block: ReleaseComponentBlockKind,
+    /// `[handle, value]` pairs of `UActorComponent` bool handles (`1..=2`),
+    /// strictly ascending; required exactly when `block = "rep_bools"`.
+    #[serde(default)]
+    pub rep_bools: Vec<(u32, bool)>,
+}
+
+/// Per-release identifiers of the PlayerController open (`[player_controller]`,
+/// `F-778`, `F-779`): the archetype chain and the replicated components with
+/// their class network checksums. The level chain is map-dependent and is
+/// supplied by the caller.
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct ReleasePlayerControllerProfile {
+    pub archetype: Vec<ReleasePathSegment>,
+    pub components: Vec<ReleaseComponent>,
+}
+
+/// `UActorComponent`'s two bool handles (F-705).
+const ACTOR_COMPONENT_BOOL_HANDLES: std::ops::RangeInclusive<u32> = 1..=2;
+
+impl ReleasePlayerControllerProfile {
+    /// `BP_IcarusPlayerControllerSurvival_C` identifiers: reproduced bit-exactly
+    /// against the 3.0.31 capture (`F-779`) and derived unchanged for 3.0.32
+    /// from its own binary and paks (`F-780`).
+    pub fn icarus_survival() -> Self {
+        let segment = |path: &str, checksum| ReleasePathSegment {
+            path: path.to_owned(),
+            checksum,
+            no_load: false,
+        };
+        let component = |name: &str, checksum, block, rep_bools: &[(u32, bool)]| ReleaseComponent {
+            name: name.to_owned(),
+            checksum,
+            block,
+            rep_bools: rep_bools.to_vec(),
+        };
+        use ReleaseComponentBlockKind::{Create, None, RepBools};
+        Self {
+            archetype: vec![
+                segment(
+                    "Default__BP_IcarusPlayerControllerSurvival_C",
+                    3_911_321_073,
+                ),
+                segment("/Game/BP/Player/BP_IcarusPlayerControllerSurvival", 0),
+            ],
+            components: vec![
+                component(
+                    "BackendProxyComponent",
+                    4_100_406_609,
+                    RepBools,
+                    &[(2, true)],
+                ),
+                component("PlayerDataComponent", 3_400_199_742, None, &[]),
+                component("BestiaryManagerComponent", 2_451_266_650, Create, &[]),
+                component(
+                    "ResourceNetworkDataRequesterComponent",
+                    3_500_113_941,
+                    Create,
+                    &[],
+                ),
+                component("BP_CriticalHitComponent", 1_900_637_040, Create, &[]),
+                component("BP_HuntingManager", 2_334_391_351, Create, &[]),
+                component(
+                    "BP_NetworkProxyComponent",
+                    997_381_320,
+                    RepBools,
+                    &[(2, true)],
+                ),
+            ],
+        }
+    }
+
+    pub fn validate(&self) -> Result<()> {
+        ensure!(
+            self.archetype.len() >= 2,
+            "player_controller archetype needs the archetype and its package"
+        );
+        for segment in &self.archetype {
+            ensure!(
+                segment.path.is_ascii() && !segment.path.is_empty(),
+                "player_controller archetype paths must be nonempty ASCII"
+            );
+        }
+        ensure!(
+            self.archetype[0].checksum != 0,
+            "player_controller archetype needs its class network checksum"
+        );
+        ensure!(
+            self.archetype[self.archetype.len() - 1].checksum == 0,
+            "player_controller archetype package carries checksum 0"
+        );
+        ensure!(
+            self.components.len() >= COMPONENT_HANDLES,
+            "player_controller needs at least {COMPONENT_HANDLES} components"
+        );
+        let mut names = std::collections::BTreeSet::new();
+        for component in &self.components {
+            let name = &component.name;
+            ensure!(
+                name.is_ascii() && !name.is_empty(),
+                "player_controller component names must be nonempty ASCII"
+            );
+            ensure!(
+                names.insert(name.to_ascii_lowercase()),
+                "duplicate player_controller component {name}"
+            );
+            ensure!(component.checksum != 0, "component {name} needs a checksum");
+            ensure!(
+                (component.block == ReleaseComponentBlockKind::RepBools)
+                    != component.rep_bools.is_empty(),
+                "component {name}: rep_bools must be given exactly when block = \"rep_bools\""
+            );
+            for (handle, _) in &component.rep_bools {
+                ensure!(
+                    ACTOR_COMPONENT_BOOL_HANDLES.contains(handle),
+                    "component {name}: rep_bools handle {handle} is not a UActorComponent bool"
+                );
+            }
+            for window in component.rep_bools.windows(2) {
+                ensure!(
+                    window[0].0 < window[1].0,
+                    "component {name}: rep_bools handles must be strictly ascending"
+                );
+            }
+        }
+        Ok(())
+    }
+
+    /// The `session_open` profile for this release and the caller's level chain.
+    pub fn session_profile(&self, level: Vec<PathSegment>) -> PlayerControllerProfile {
+        PlayerControllerProfile {
+            archetype: self
+                .archetype
+                .iter()
+                .map(|segment| PathSegment::new(&segment.path, segment.checksum, segment.no_load))
+                .collect(),
+            level,
+            components: self
+                .components
+                .iter()
+                .map(|component| ComponentExport {
+                    name: component.name.clone(),
+                    checksum: component.checksum,
+                    block: match component.block {
+                        ReleaseComponentBlockKind::None => ComponentBlock::None,
+                        ReleaseComponentBlockKind::Create => ComponentBlock::CreateOnly,
+                        ReleaseComponentBlockKind::RepBools => {
+                            ComponentBlock::RepBools(component.rep_bools.clone())
+                        }
+                    },
+                })
+                .collect(),
+        }
+    }
+}
+
 /// Explicit, data-driven protocol profile for one ICARUS release (`docs/architecture.md#release-tracking`).
 ///
 /// `pin`, `engine_network_version`, `tags.tag_encoding()`, and `class_net_cache`
 /// drive [`super::peer_lab::PeerLabConfig::with_release_profile`] and
 /// `examples/capture_decode.rs`; `game_network_version`, `row_handles`, and the
 /// remaining `tags` fields record descriptive release-qualification metadata.
+/// `player_controller` feeds [`super::session_open`]; it is `None` for builds
+/// without a built-in or explicit `[player_controller]` section.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ReleaseProfile {
     pub pin: ReleasePin,
@@ -337,6 +531,7 @@ pub struct ReleaseProfile {
     pub tags: ReleaseTagProfile,
     pub class_net_cache: ReleaseClassNetCacheBounds,
     pub row_handles: ReleaseRowHandleProfile,
+    pub player_controller: Option<ReleasePlayerControllerProfile>,
 }
 
 #[derive(Deserialize)]
@@ -355,6 +550,8 @@ struct ReleaseFile {
     class_net_cache: Option<ReleaseClassNetCacheBounds>,
     #[serde(default)]
     row_handles: Option<ReleaseRowHandleProfile>,
+    #[serde(default)]
+    player_controller: Option<ReleasePlayerControllerProfile>,
 }
 
 impl ReleasePin {
@@ -413,6 +610,7 @@ impl ReleaseProfile {
             },
             class_net_cache: ReleaseClassNetCacheBounds::default(),
             row_handles: ReleaseRowHandleProfile::default(),
+            player_controller: Some(ReleasePlayerControllerProfile::icarus_survival()),
         }
     }
 
@@ -442,6 +640,7 @@ impl ReleaseProfile {
             },
             class_net_cache: ReleaseClassNetCacheBounds::default(),
             row_handles: ReleaseRowHandleProfile::default(),
+            player_controller: Some(ReleasePlayerControllerProfile::icarus_survival()),
         }
     }
 
@@ -459,6 +658,18 @@ impl ReleaseProfile {
         }
     }
 
+    /// Built-in PlayerController identifiers for a qualified build ID; `None`
+    /// elsewhere, so a pin bump never inherits an older build's checksums.
+    fn default_player_controller_for_build(
+        build_id: u64,
+    ) -> Option<ReleasePlayerControllerProfile> {
+        match build_id {
+            25_793_607 | 25_793_767 => Self::release_3_0_31().player_controller,
+            25_956_137 => Self::release_3_0_32().player_controller,
+            _ => None,
+        }
+    }
+
     /// Validate all release-profile invariants.
     pub fn validate(&self) -> Result<()> {
         self.pin.validate()?;
@@ -469,11 +680,15 @@ impl ReleaseProfile {
         self.tags.validate()?;
         self.class_net_cache.validate()?;
         self.row_handles.validate()?;
+        if let Some(player_controller) = &self.player_controller {
+            player_controller.validate()?;
+        }
         Ok(())
     }
 
     /// Parse a release TOML file (`[release]` plus optional `[tags]`,
-    /// `[class_net_cache]`, and `[row_handles]` sections) and validate it.
+    /// `[class_net_cache]`, `[row_handles]` and `[player_controller]`
+    /// sections) and validate it.
     pub fn parse(text: &str) -> Result<Self> {
         let parsed = toml::from_str::<ReleaseFile>(text).context("release profile")?;
         let tags = match parsed.tags {
@@ -482,6 +697,9 @@ impl ReleaseProfile {
         };
         let class_net_cache = parsed.class_net_cache.unwrap_or_default();
         let row_handles = parsed.row_handles.unwrap_or_default();
+        let player_controller = parsed
+            .player_controller
+            .or_else(|| Self::default_player_controller_for_build(parsed.release.build_id));
         let profile = Self {
             pin: parsed.release,
             engine_network_version: ENGINE_NETWORK_VERSION,
@@ -489,6 +707,7 @@ impl ReleaseProfile {
             tags,
             class_net_cache,
             row_handles,
+            player_controller,
         };
         profile.validate()?;
         Ok(profile)
