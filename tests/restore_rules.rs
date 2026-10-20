@@ -4255,7 +4255,7 @@ fn non_blob_n010_to_n016_character_and_npc_hierarchy_rules() {
             Some(42),
             7,
             [Some(10), None, Some(0), None],
-            Some(String::from("None"))
+            Some((String::from("None"), 2))
         ))
     );
     assert_eq!(
@@ -4265,7 +4265,7 @@ fn non_blob_n010_to_n016_character_and_npc_hierarchy_rules() {
             Some(42),
             7,
             [Some(10), None, Some(0), None],
-            Some(String::from("Quest_A"))
+            Some((String::from("Quest_A"), 0))
         ))
     );
 

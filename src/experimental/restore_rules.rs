@@ -5079,7 +5079,9 @@ pub fn evaluate_n014_npc_restore(
 }
 
 /// Evaluates `N013` `UpdateOwnerToDatabaseState` (`0x1413e05d0` server /
-/// `0x14141e110` client, `+0x460`).
+/// `0x14141e110` client, `+0x460`), returning the full `FName`
+/// `(mission_row_name, mission_row_number)` (`lea rdx, [rbx+0x1e0]` at
+/// `0x1413e06e1`) when `!FName::IsNone()`.
 #[allow(clippy::too_many_arguments, clippy::type_complexity)]
 pub fn evaluate_n013_mission_npc_restore(
     owner_is_character: bool,
@@ -5090,7 +5092,13 @@ pub fn evaluate_n013_mission_npc_restore(
     state: &NpcBaseRecorderState,
     mission_row_name: &str,
     mission_row_number: i32,
-) -> Option<(bool, Option<i32>, i32, [Option<i32>; 4], Option<String>)> {
+) -> Option<(
+    bool,
+    Option<i32>,
+    i32,
+    [Option<i32>; 4],
+    Option<(String, i32)>,
+)> {
     let (flag_571, restored_uid, parent_uid, attributes) = evaluate_n014_npc_restore(
         owner_is_character,
         owner_is_npc,
@@ -5102,7 +5110,7 @@ pub fn evaluate_n013_mission_npc_restore(
         && ((!mission_row_name.is_empty() && !mission_row_name.eq_ignore_ascii_case("None"))
             || mission_row_number != 0)
     {
-        Some(mission_row_name.to_owned())
+        Some((mission_row_name.to_owned(), mission_row_number))
     } else {
         None
     };
