@@ -4,7 +4,7 @@
 
 Experimental: pure rules in `experimental::restore_rules` (`tests/restore_rules.rs`,
 U-045; U-020..U-022, U-032, U-046, U-048, U-050 resolved).
-Last reconciled: 2026-10-19.
+Last reconciled: 2026-10-20.
 
 ## Scope
 
@@ -144,6 +144,28 @@ construction, script owners and data-table rows are out of scope (F-660).
   `restored_next_meteor_shower_time` (F-653); `C037` (`0x1418ea790`/`0x1418f8610`,
   `evaluate_world_boss_record`, `restore_world_boss_row_handles`, F-654); `-1` is
   unrecorded (`recorded_level`, F-648).
+- `UIcarusGameStateRecorder` pipeline and `N010..N016` non-blob slots (F-750):
+  `HasValidOwner` (`0x141898750`, `has_valid_recorder_owner`) requires
+  `Owner != nullptr && !Owner->IsPendingKillPending() && Owner != DefaultOwner`;
+  `RecordToProspectSaveState` (`0x1414b4680`/`0x1414ecdd0`,
+  `evaluate_record_to_prospect_save_step`) removes null/pending-kill entries,
+  runs `RecordOwnerState` (`+0x448`) when `HasValidOwner`, drops `bDropRecordOnNextSave`
+  (`+0xd8`) or invalid (`!Validate()`) components, and appends `FStateRecorderBlob`
+  only when `bShouldSaveToProspect` (`+0xd9`) is set; `ReadFromProspectSaveState`
+  (`0x1414b77e0`/`0x1414ec3f0`, `evaluate_unresolved_initial_recorder`) calls
+  `RetainRecorder` (`0x1414b86b0`/`0x1414f0300`) when `!bSkipDefaultOwnerResolution`
+  (`+0xb0 == 0`) or `OwnerResolvePolicy == FindOrRespawn (2)`, else `DestroyComponent`;
+  `PerformStitchingPass` (`0x1414b1d70`/`0x1414eaae0`, `evaluate_stitching_pass_slice`,
+  `should_stitch_with_grid_building_actors`) iterates `[StartIndex, min(StartIndex + MaxCount, Num))`
+  (all when `MaxCount <= 0`) and calls `Stitching` (`+0x468`) with `GridBuildingActors`
+  when `bIncludeGridActors && !bSkipGridBuildingStitching` (`+0xb1 == 0`) else
+  `WorldActors`; `N010` (`0x14144c1b0`/`0x14148a880`, `evaluate_n010_character_record`,
+  `evaluate_n010_character_restore`), `N011` (`0x1413fd560`/`0x14140c580`,
+  `evaluate_n011_subcomponent_int_transfer`), `N013` (`0x1413e05d0`/`0x14141e110`,
+  `evaluate_n013_mission_npc_restore` returning `Some((name, number))` iff `!FName::IsNone()`),
+  `N014` (`0x1413fd680`/`0x14140c6f0`, `evaluate_n014_npc_record`,
+  `evaluate_n014_npc_restore`), and `N016` (`0x141405160`/`0x141442d00`,
+  `evaluate_n016_stitch_blackboard_ints`) match across both builds.
 
 ## Candidate
 
@@ -155,5 +177,5 @@ construction, script owners and data-table rows are out of scope (F-660).
 
 ## Evidence
 
-F-645..F-681, F-716, F-727, F-728, F-734..F-736, F-741..F-744, F-746, F-747;
-M-642..M-698, M-755..M-792, M-794..M-800.
+F-645..F-681, F-716, F-727, F-728, F-734..F-736, F-741..F-744, F-746, F-747,
+F-750; M-642..M-698, M-755..M-792, M-794..M-803.

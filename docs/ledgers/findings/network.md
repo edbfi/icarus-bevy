@@ -7,7 +7,7 @@ full text under `retired/`. Admission and columns follow `.agents/rules/docs.md`
 
 Before restructure: 96ddb0b:docs/ledgers/findings.md
 
-Last reconciled: 2026-10-19
+Last reconciled: 2026-10-20
 
 | ID | Claim | Kind | Evidence | Scope and limits | Unknowns | Status |
 | --- | --- | --- | --- | --- | --- | --- |
@@ -111,3 +111,4 @@ Last reconciled: 2026-10-19
 | F-740 | NotifyControlMessage (0x1439ee7f0) clamps Netspeed (4) to [1800,MaxClientRate], swaps PCSwap (15), logs Debug (17); ReceivedBunch (0x143536420) handles ch fail (16), GameSpecific (19), Security (20), DestructionInfo (22) | observed | static-decompile, authored-test; M-776/ev_2e9c09126f64, M-777, M-791/ev_298296be07a0, M-780 | high; 2 builds | U-043, U-044 | active |
 | F-745 | IsNetRelevantFor (0x14333fae0/0x1437b95a0/0x1432510a0), IsWithinNetRelevancyDistance (0x143340200), GetNetPriority (0x14333b2e0/0x143830f20), ServerReplicateActors (0x1437221b0) and GetMaxTickRate (0x1435a90e0, 1..1000; ini 30, 750k, 640k/912k, 360/120s) match | observed | static-decompile, authored-test; M-794, M-795, M-797 | high; 2 builds | U-038 | active |
 | F-748 | AOnlineBeacon::IsNetRelevantFor (0x1409a5780), AMatineeActor::GetNetPriority (0x143894660), PrepConnections (0x143723dc0, <1.5s LastReceiveTime) and BuildConsiderList (0x1437235a0, lerp >2.0s*0.2, MinNetUpdateFrequency=2.0) match | observed | static-decompile, authored-test; M-798, M-799 | high; 2 builds | U-038 | active |
+| F-749 | PrioritizeActors (0x1437241e0; `cvtss2si` round(65536*p), DestroyedStartup `cvttss2si` 250k/4M/9.998M *0.4/0.2), ProcessPrioritizedActors (0x143725030; <=1.0s fast-path, +0.5*SRand, <1.0Hz +0.2*srands, Close 4/3) and MarkRelevantActors (0x143723ce0; TickCount+1) match | observed | static-decompile, authored-test; M-801, M-802 | high; 2 builds | U-038 | active |

@@ -10,7 +10,7 @@ normative wire and scheduling rules live in
 - How does the client spawn an actor from an open actor bunch?
 - How are per-object content blocks, exports, partials, and dormancy framed?
 - How are replicated properties encoded inside a content block?
-- How does the server evaluate relevancy, priority, connection readiness, and the consider list?
+- How does the server evaluate relevancy, priority, connection readiness, and the consider/prioritize/process stages?
 
 ## Current answer
 
@@ -45,19 +45,20 @@ dormancy closes, `288 / 288` actor opens, `20,407 / 20,407` `with_rep_layout`
 blocks, and `3,072 / 3,072` `has_rep_layout == false` blocks (`220` actor RPCs,
 `295` zero-bit subobject headers; `23,486 / 23,486` total typed blocks, `2,607`
 RPC calls, `66,859` property entries, `2,361` stat-pair items) in M-707 with 0
-failures (F-571 to F-644, F-703 to F-711, F-739;
-U-064, U-066 resolved).
+failures (F-571 to F-644, F-703 to F-711, F-739; U-064, U-066 resolved).
 
 Server and client builds also match across `AActor`/`APawn`/`APlayerController`/
 `AOnlineBeacon::IsNetRelevantFor`, `IsWithinNetRelevancyDistance`,
 `AActor`/`APlayerController`/`AMatineeActor::GetNetPriority`,
 `UGameEngine::GetMaxTickRate` (`30` Hz default, `[1, 1000]` clamp, `750,000` B/s
-max client rate in `DefaultEngine.ini`), and `UNetDriver::ServerReplicateActors`
-stages `PrepConnections` (`< 1.5` s `LastReceiveTime` gate and tick-budget lerp)
-and `BuildConsiderList` (`PendingKill`/`ROLE_None`/`DORM_Initial` pruning,
-`> 2.0` s `* 0.2` adaptive `OptimalNetUpdateDelta` lerp between `1 / NetUpdateFrequency`
-and `max(1 / MinNetUpdateFrequency, 1 / NetUpdateFrequency)` with default
-`MinNetUpdateFrequency = 2.0`, F-745, F-748).
+max client rate in `DefaultEngine.ini`), and all `UNetDriver::ServerReplicateActors`
+stages (`PrepConnections` `< 1.5` s `LastReceiveTime` gate; `BuildConsiderList`
+`> 2.0` s `* 0.2` adaptive `OptimalNetUpdateDelta` lerp with `MinNetUpdateFrequency = 2.0`;
+`PrioritizeActors` `cvtss2si` `round_ties_even(65536 * p)` and `DestroyedStartupOrDormantActors`
+`cvttss2si` `250k`/`4M`/`9.998M` `* 0.4`/`0.2` scaling; `ProcessPrioritizedActors` `<= 1.0` s
+relevancy fast-path, `+ 0.5 * SRand` jitter, `< 1.0` Hz `+ 0.2 * srands` delay,
+and `CloseReason` `4`/`3` when `!bLevelInitializedForActor || !bNetStartup`; and `MarkRelevantActors` `TickCount + 1`, F-745,
+F-748, F-749).
 
 ## Open
 
@@ -65,4 +66,4 @@ and `max(1 / MinNetUpdateFrequency, 1 / NetUpdateFrequency)` with default
 
 ## Artifacts
 
-M-420..M-449, M-455..M-470, M-570..M-576, M-581..M-588, M-600..M-605, M-707..M-717, M-720, M-728..M-748, M-776, M-777, M-782, M-794, M-795, M-797..M-799.
+M-420..M-449, M-455..M-470, M-570..M-576, M-581..M-588, M-600..M-605, M-707..M-717, M-720, M-728..M-748, M-776, M-777, M-782, M-794, M-795, M-797..M-799, M-801, M-802.

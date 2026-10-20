@@ -7,22 +7,31 @@ use icarus_bevy::experimental::actor_channel::{
     DEFAULT_CONNECTION_TIMEOUT_SECONDS, DEFAULT_INI_MAX_CLIENT_RATE,
     DEFAULT_INI_MAX_INTERNET_CLIENT_RATE, DEFAULT_INITIAL_CONNECT_TIMEOUT_SECONDS,
     DEFAULT_MIN_NET_UPDATE_FREQUENCY, DEFAULT_NET_SERVER_MAX_TICK_RATE,
-    DEFAULT_RESOLUTION_CONNECTION_TIMEOUT_SECONDS, DynamicSpawn, EngineNetMode, ExportPath,
-    GuidExport, GuidKind, MAX_EXPORT_GUIDS, MAX_NET_SERVER_MAX_TICK_RATE,
+    DEFAULT_RESOLUTION_CONNECTION_TIMEOUT_SECONDS, DESTRUCTION_INFO_BEHIND_FAR_DIST_SQ,
+    DESTRUCTION_INFO_BEHIND_NEAR_DIST_SQ, DESTRUCTION_INFO_FAR_FACTOR,
+    DESTRUCTION_INFO_FRONT_FAR_DIST_SQ, DESTRUCTION_INFO_NEAR_FACTOR, DynamicSpawn, EngineNetMode,
+    ExportPath, GuidExport, GuidKind, MAX_EXPORT_GUIDS, MAX_NET_SERVER_MAX_TICK_RATE,
     MIN_NET_SERVER_MAX_TICK_RATE, NetGuidRef, PREP_CONNECTIONS_RECEIVE_TIMEOUT_SECONDS,
-    PackageMapState, PawnRelevancyInputs, PawnRelevancyOutcome, SpawnRecord, SpawnVector,
+    PRIORITY_SCALE_MULTIPLIER, PROCESS_PRIORITIZED_LOW_FREQ_DELAY_SCALE,
+    PROCESS_PRIORITIZED_LOW_FREQ_THRESHOLD, PROCESS_PRIORITIZED_RELEVANCY_FAST_PATH_SECONDS,
+    PROCESS_PRIORITIZED_RELEVANT_TIME_JITTER_SCALE, PackageMapState, PawnRelevancyInputs,
+    PawnRelevancyOutcome, PrioritizeActorInputs, PrioritizeActorOutcome,
+    ProcessPrioritizedActorInputs, ProcessPrioritizedActorOutcome, SpawnRecord, SpawnVector,
     SubObjectClass, dequantize_angle, encode_actor_bunch_body,
     encode_player_controller_open_bunch_body, evaluate_actor_net_priority,
-    evaluate_actor_net_relevancy, evaluate_consider_list_actor, evaluate_game_engine_max_tick_rate,
+    evaluate_actor_net_relevancy, evaluate_consider_list_actor, evaluate_destruction_info_priority,
+    evaluate_game_engine_max_tick_rate, evaluate_mark_relevant_actor,
     evaluate_matinee_actor_net_priority, evaluate_online_beacon_net_relevancy,
     evaluate_pawn_net_relevancy, evaluate_player_controller_net_priority,
-    evaluate_player_controller_net_relevancy, evaluate_prep_connections_tick_budget, guid_kind,
+    evaluate_player_controller_net_relevancy, evaluate_prep_connections_tick_budget,
+    evaluate_prioritize_actor, evaluate_process_prioritized_actor, guid_kind,
     is_connection_ready_for_replication, is_within_net_relevancy_distance, parse_actor_bunch,
     parse_player_controller_open_bunch, quantize_angle, read_actor_bunch_body, read_content_block,
     read_export_prefix, read_guid_ref, read_must_be_mapped_guids,
-    read_player_controller_open_bunch_body, read_rotator, read_spawn, write_actor_bunch_body,
-    write_content_block, write_export_prefix, write_guid_ref, write_must_be_mapped_guids,
-    write_player_controller_open_bunch_body, write_rotator, write_spawn,
+    read_player_controller_open_bunch_body, read_rotator, read_spawn, round_net_priority_to_int,
+    write_actor_bunch_body, write_content_block, write_export_prefix, write_guid_ref,
+    write_must_be_mapped_guids, write_player_controller_open_bunch_body, write_rotator,
+    write_spawn,
 };
 use icarus_bevy::experimental::archive::ByteOrder;
 use icarus_bevy::experimental::control_messages::ArchiveText;
@@ -2103,5 +2112,444 @@ fn relevancy_priority_tick_rate_and_consider_list_never_panic_on_randomized_inpu
             random_unit_float: sample_f32(next_u64()),
             server_tick_time: sample_f32(next_u64()),
         });
+        let _ = round_net_priority_to_int(sample_f32(next_u64()));
+        let _ = evaluate_destruction_info_priority(sample_f32(next_u64()), loc_a, loc_b, dir);
+        let _ = evaluate_prioritize_actor(&PrioritizeActorInputs {
+            has_channel: flag(43),
+            b_only_relevant_to_owner: flag(44),
+            is_relevant_to_at_least_one_viewer: flag(45),
+            driver_elapsed_time: sample_f64(next_u64()),
+            channel_relevant_time: sample_f64(next_u64()),
+            relevant_timeout: sample_f64(next_u64()),
+            actor_net_tag: next_u64() as i32,
+            driver_net_tag: next_u64() as i32,
+            is_actor_dormant_on_connection: flag(46),
+            actor_net_dormancy: (next_u64() & 0x7) as u8,
+            channel_b_pending_dormancy: flag(47),
+            channel_dormant: flag(48),
+            get_net_dormancy_returns_dormant_partial: flag(49),
+            level_initialized_for_actor: flag(50),
+            channel_last_update_time: sample_f64(next_u64()),
+            channel_open_elapsed_time: sample_f64(next_u64()),
+            max_net_priority_across_viewers: sample_f32(next_u64()),
+        });
+        let bits2 = next_u64();
+        let flag2 = |shift: u32| ((bits2 >> shift) & 1) != 0;
+        let _ = evaluate_process_prioritized_actor(&ProcessPrioritizedActorInputs {
+            connection_is_net_ready: flag2(0),
+            is_destruction_info: flag2(1),
+            destruction_level_initialized: flag2(2),
+            has_channel: flag2(3),
+            driver_elapsed_time: sample_f64(next_u64()),
+            channel_relevant_time: sample_f64(next_u64()),
+            relevant_timeout: sample_f64(next_u64()),
+            is_relevant_to_connection: flag2(4),
+            actor_b_tear_off: flag2(5),
+            force_relevant_frame: next_u64() as i32,
+            driver_replication_frame: next_u64() as i32,
+            channel_b_is_replicating_actor: flag2(6),
+            actor_b_always_relevant: flag2(7),
+            actor_b_net_temporary: flag2(8),
+            channel_open_acked: flag2(9),
+            actor_level_initialized: flag2(10),
+            package_map_supports_object: flag2(11),
+            actor_net_update_frequency: sample_f32(next_u64()),
+            world_time_seconds: sample_f32(next_u64()),
+            random_unit_float: sample_f32(next_u64()),
+            can_create_actor_channel: flag2(12),
+            replicate_actor_wrote_anything: flag2(13),
+            connection_is_net_ready_after_replicate: flag2(14),
+            actor_is_net_startup: flag2(15),
+        });
+        let _ = evaluate_mark_relevant_actor(
+            flag2(16),
+            flag2(17),
+            next_u64() as i32,
+            next_u64() as i32,
+            flag2(18),
+        );
     }
+}
+
+#[test]
+fn server_replicate_actors_prioritize_process_and_mark_relevant() {
+    assert_eq!(PRIORITY_SCALE_MULTIPLIER, 65536.0);
+    assert_eq!(DESTRUCTION_INFO_BEHIND_NEAR_DIST_SQ, 250_000.0);
+    assert_eq!(DESTRUCTION_INFO_BEHIND_FAR_DIST_SQ, 4_000_000.0);
+    assert_eq!(DESTRUCTION_INFO_FRONT_FAR_DIST_SQ, 9_998_244.0);
+    assert_eq!(DESTRUCTION_INFO_NEAR_FACTOR, 0.4);
+    assert_eq!(DESTRUCTION_INFO_FAR_FACTOR, 0.2);
+    assert_eq!(PROCESS_PRIORITIZED_RELEVANCY_FAST_PATH_SECONDS, 1.0);
+    assert_eq!(PROCESS_PRIORITIZED_RELEVANT_TIME_JITTER_SCALE, 0.5);
+    assert_eq!(PROCESS_PRIORITIZED_LOW_FREQ_THRESHOLD, 1.0);
+    assert_eq!(PROCESS_PRIORITIZED_LOW_FREQ_DELAY_SCALE, 0.2);
+
+    // 1. round_net_priority_to_int (`appRoundToInt(65536.0f * priority)` via `cvtss2si`):
+    assert_eq!(round_net_priority_to_int(0.0), 0);
+    assert_eq!(round_net_priority_to_int(0.1), 6_554);
+    assert_eq!(round_net_priority_to_int(1.0), 65_536);
+    assert_eq!(round_net_priority_to_int(1.5), 98_304);
+    assert_eq!(round_net_priority_to_int(-1.0), -65_536);
+    assert_eq!(round_net_priority_to_int(f32::NAN), i32::MIN >> 1);
+    assert_eq!(round_net_priority_to_int(f32::INFINITY), i32::MIN >> 1);
+
+    // 2. evaluate_destruction_info_priority:
+    let viewer_loc = [0.0, 0.0, 0.0];
+    let viewer_dir = [1.0, 0.0, 0.0];
+    // - Behind viewer, dist_sq <= 250_000 (400^2 = 160_000): factor 1.0
+    assert_eq!(
+        evaluate_destruction_info_priority(2.0, [-400.0, 0.0, 0.0], viewer_loc, viewer_dir),
+        131_072
+    );
+    // - Behind viewer, 250_000 < dist_sq <= 4_000_000 (1000^2 = 1_000_000): factor 0.4
+    assert_eq!(
+        evaluate_destruction_info_priority(2.0, [-1000.0, 0.0, 0.0], viewer_loc, viewer_dir),
+        ((2.0_f32 * 0.4_f32) * 65536.0_f32) as i32
+    );
+    // - Behind viewer, dist_sq > 4_000_000 (2500^2 = 6_250_000): factor 0.2
+    assert_eq!(
+        evaluate_destruction_info_priority(2.0, [-2500.0, 0.0, 0.0], viewer_loc, viewer_dir),
+        ((2.0_f32 * 0.2_f32) * 65536.0_f32) as i32
+    );
+    // - In front of viewer, dist_sq <= 9_998_244 (3000^2 = 9_000_000): factor 1.0
+    assert_eq!(
+        evaluate_destruction_info_priority(2.0, [3000.0, 0.0, 0.0], viewer_loc, viewer_dir),
+        131_072
+    );
+    // - In front of viewer, dist_sq > 9_998_244 (4000^2 = 16_000_000): factor 0.4
+    assert_eq!(
+        evaluate_destruction_info_priority(2.0, [4000.0, 0.0, 0.0], viewer_loc, viewer_dir),
+        ((2.0_f32 * 0.4_f32) * 65536.0_f32) as i32
+    );
+    // - Non-finite saturates to i32::MIN via cvttss2si
+    assert_eq!(
+        evaluate_destruction_info_priority(f32::NAN, [0.0, 0.0, 0.0], viewer_loc, viewer_dir),
+        i32::MIN
+    );
+
+    // 3. evaluate_prioritize_actor:
+    let base_prio = PrioritizeActorInputs {
+        has_channel: true,
+        b_only_relevant_to_owner: false,
+        is_relevant_to_at_least_one_viewer: true,
+        driver_elapsed_time: 20.0,
+        channel_relevant_time: 18.0,
+        relevant_timeout: 5.0,
+        actor_net_tag: 10,
+        driver_net_tag: 11,
+        is_actor_dormant_on_connection: false,
+        actor_net_dormancy: 1,
+        channel_b_pending_dormancy: false,
+        channel_dormant: false,
+        get_net_dormancy_returns_dormant_partial: false,
+        level_initialized_for_actor: true,
+        channel_last_update_time: 19.0,
+        channel_open_elapsed_time: 4.0,
+        max_net_priority_across_viewers: 3.0,
+    };
+
+    // Branch 1: !has_channel && b_only_relevant_to_owner && !is_relevant_to_at_least_one_viewer
+    assert_eq!(
+        evaluate_prioritize_actor(&PrioritizeActorInputs {
+            has_channel: false,
+            b_only_relevant_to_owner: true,
+            is_relevant_to_at_least_one_viewer: false,
+            ..base_prio
+        }),
+        PrioritizeActorOutcome::SkipNotRelevantToOwner
+    );
+
+    // Branch 2: actor_net_tag == driver_net_tag
+    assert_eq!(
+        evaluate_prioritize_actor(&PrioritizeActorInputs {
+            actor_net_tag: 11,
+            ..base_prio
+        }),
+        PrioritizeActorOutcome::SkipAlreadyTagged
+    );
+
+    // Branch 3a: has_channel && b_only_relevant_to_owner && !is_relevant_to_at_least_one_viewer, timeout exceeded
+    assert_eq!(
+        evaluate_prioritize_actor(&PrioritizeActorInputs {
+            b_only_relevant_to_owner: true,
+            is_relevant_to_at_least_one_viewer: false,
+            driver_elapsed_time: 25.0,
+            channel_relevant_time: 18.0,
+            relevant_timeout: 5.0,
+            ..base_prio
+        }),
+        PrioritizeActorOutcome::CloseChannelOwnerIrrelevantTimeout { close_reason: 3 }
+    );
+
+    // Branch 3b: has_channel && b_only_relevant_to_owner && !is_relevant_to_at_least_one_viewer, within timeout
+    assert_eq!(
+        evaluate_prioritize_actor(&PrioritizeActorInputs {
+            b_only_relevant_to_owner: true,
+            is_relevant_to_at_least_one_viewer: false,
+            driver_elapsed_time: 23.0,
+            channel_relevant_time: 18.0,
+            relevant_timeout: 5.0,
+            ..base_prio
+        }),
+        PrioritizeActorOutcome::SkipOwnerIrrelevantWithinTimeout
+    );
+
+    // Branch 4: dormant on connection
+    assert_eq!(
+        evaluate_prioritize_actor(&PrioritizeActorInputs {
+            is_actor_dormant_on_connection: true,
+            ..base_prio
+        }),
+        PrioritizeActorOutcome::SkipDormant
+    );
+
+    // Branch 5: DORM_DormantAll (2) or DORM_DormantPartial (3) with GetNetDormancy == 3 -> StartBecomingDormantAndSkip
+    assert_eq!(
+        evaluate_prioritize_actor(&PrioritizeActorInputs {
+            actor_net_dormancy: 2,
+            ..base_prio
+        }),
+        PrioritizeActorOutcome::StartBecomingDormantAndSkip
+    );
+    assert_eq!(
+        evaluate_prioritize_actor(&PrioritizeActorInputs {
+            actor_net_dormancy: 3,
+            get_net_dormancy_returns_dormant_partial: true,
+            ..base_prio
+        }),
+        PrioritizeActorOutcome::StartBecomingDormantAndSkip
+    );
+
+    // Branch 6: level not initialized
+    assert_eq!(
+        evaluate_prioritize_actor(&PrioritizeActorInputs {
+            level_initialized_for_actor: false,
+            ..base_prio
+        }),
+        PrioritizeActorOutcome::SkipLevelNotInitialized
+    );
+
+    // Branch 7a: Prioritized with existing channel (including channel_last_update_time == 0.0)
+    assert_eq!(
+        evaluate_prioritize_actor(&base_prio),
+        PrioritizeActorOutcome::Prioritized {
+            new_actor_net_tag: 11,
+            time_since_last_update: 1.0,
+            priority: 196_608,
+        }
+    );
+    assert_eq!(
+        evaluate_prioritize_actor(&PrioritizeActorInputs {
+            channel_last_update_time: 0.0,
+            ..base_prio
+        }),
+        PrioritizeActorOutcome::Prioritized {
+            new_actor_net_tag: 11,
+            time_since_last_update: 20.0,
+            priority: 196_608,
+        }
+    );
+
+    // Branch 7b: Prioritized without channel (`!has_channel`) uses channel_open_elapsed_time (`SpawnPrioritySeconds`)
+    assert_eq!(
+        evaluate_prioritize_actor(&PrioritizeActorInputs {
+            has_channel: false,
+            ..base_prio
+        }),
+        PrioritizeActorOutcome::Prioritized {
+            new_actor_net_tag: 11,
+            time_since_last_update: 4.0,
+            priority: 196_608,
+        }
+    );
+
+    // 4. evaluate_process_prioritized_actor:
+    let base_proc = ProcessPrioritizedActorInputs {
+        connection_is_net_ready: true,
+        is_destruction_info: false,
+        destruction_level_initialized: true,
+        has_channel: true,
+        driver_elapsed_time: 10.0,
+        channel_relevant_time: 9.5,
+        relevant_timeout: 5.0,
+        is_relevant_to_connection: true,
+        actor_b_tear_off: false,
+        force_relevant_frame: 0,
+        driver_replication_frame: 100,
+        channel_b_is_replicating_actor: false,
+        actor_b_always_relevant: false,
+        actor_b_net_temporary: false,
+        channel_open_acked: false,
+        actor_level_initialized: true,
+        package_map_supports_object: true,
+        actor_net_update_frequency: 10.0,
+        world_time_seconds: 50.0,
+        random_unit_float: 0.5,
+        can_create_actor_channel: true,
+        replicate_actor_wrote_anything: true,
+        connection_is_net_ready_after_replicate: true,
+        actor_is_net_startup: false,
+    };
+
+    // Branch 1: connection saturated at entry
+    assert_eq!(
+        evaluate_process_prioritized_actor(&ProcessPrioritizedActorInputs {
+            connection_is_net_ready: false,
+            ..base_proc
+        }),
+        ProcessPrioritizedActorOutcome::StopConnectionSaturated
+    );
+
+    // Branch 2: destruction info (level initialized vs unloaded)
+    assert_eq!(
+        evaluate_process_prioritized_actor(&ProcessPrioritizedActorInputs {
+            is_destruction_info: true,
+            destruction_level_initialized: true,
+            ..base_proc
+        }),
+        ProcessPrioritizedActorOutcome::SendDestructionInfo
+    );
+    assert_eq!(
+        evaluate_process_prioritized_actor(&ProcessPrioritizedActorInputs {
+            is_destruction_info: true,
+            destruction_level_initialized: false,
+            ..base_proc
+        }),
+        ProcessPrioritizedActorOutcome::SkipDestructionInfoLevelUnloaded
+    );
+
+    // Branch 4a: SkipAlreadyReplicatingOrAckedNetTemporary (bIsReplicatingActor or acked net temporary)
+    assert_eq!(
+        evaluate_process_prioritized_actor(&ProcessPrioritizedActorInputs {
+            channel_b_is_replicating_actor: true,
+            ..base_proc
+        }),
+        ProcessPrioritizedActorOutcome::SkipAlreadyReplicatingOrAckedNetTemporary {
+            updated_relevant_time: Some(10.25),
+        }
+    );
+    assert_eq!(
+        evaluate_process_prioritized_actor(&ProcessPrioritizedActorInputs {
+            actor_b_always_relevant: true,
+            actor_b_net_temporary: true,
+            channel_open_acked: true,
+            actor_b_tear_off: true,
+            driver_elapsed_time: 10.0,
+            channel_relevant_time: 8.0,
+            relevant_timeout: 5.0,
+            ..base_proc
+        }),
+        ProcessPrioritizedActorOutcome::SkipAlreadyReplicatingOrAckedNetTemporary {
+            updated_relevant_time: None,
+        }
+    );
+
+    // Branch 4b: !has_channel and (!actor_level_initialized || !package_map_supports_object)
+    // - Low frequency (< 1.0) schedules WorldTime + 0.2 * random
+    assert_eq!(
+        evaluate_process_prioritized_actor(&ProcessPrioritizedActorInputs {
+            has_channel: false,
+            actor_level_initialized: false,
+            actor_net_update_frequency: 0.5,
+            world_time_seconds: 50.0,
+            random_unit_float: 0.5,
+            ..base_proc
+        }),
+        ProcessPrioritizedActorOutcome::DeferCannotOpenChannel {
+            updated_next_update_time: Some(50.1),
+        }
+    );
+    // - Normal frequency (>= 1.0) does not touch NextUpdateTime
+    assert_eq!(
+        evaluate_process_prioritized_actor(&ProcessPrioritizedActorInputs {
+            has_channel: false,
+            package_map_supports_object: false,
+            actor_net_update_frequency: 2.0,
+            ..base_proc
+        }),
+        ProcessPrioritizedActorOutcome::DeferCannotOpenChannel {
+            updated_next_update_time: None,
+        }
+    );
+
+    // Branch 4c: !has_channel and channel creation fails
+    assert_eq!(
+        evaluate_process_prioritized_actor(&ProcessPrioritizedActorInputs {
+            has_channel: false,
+            can_create_actor_channel: false,
+            ..base_proc
+        }),
+        ProcessPrioritizedActorOutcome::DeferChannelCreationFailed
+    );
+
+    // Branch 4d: ReplicateActorAndStopSaturated vs ReplicateActorContinue
+    assert_eq!(
+        evaluate_process_prioritized_actor(&ProcessPrioritizedActorInputs {
+            has_channel: false,
+            connection_is_net_ready_after_replicate: false,
+            ..base_proc
+        }),
+        ProcessPrioritizedActorOutcome::ReplicateActorAndStopSaturated {
+            opened_new_channel: true,
+            wrote_anything: true,
+            updated_relevant_time: Some(10.25),
+        }
+    );
+    assert_eq!(
+        evaluate_process_prioritized_actor(&base_proc),
+        ProcessPrioritizedActorOutcome::ReplicateActorContinue {
+            opened_new_channel: false,
+            wrote_anything: true,
+            updated_relevant_time: Some(10.25),
+        }
+    );
+
+    // Branch 5: !is_recently_relevant -> CloseChannel (4 if tear-off else 3) or SkipNotRelevantNoClose
+    let not_recent = ProcessPrioritizedActorInputs {
+        driver_elapsed_time: 20.0,
+        channel_relevant_time: 10.0,
+        relevant_timeout: 5.0,
+        is_relevant_to_connection: false,
+        force_relevant_frame: 50,
+        driver_replication_frame: 100,
+        ..base_proc
+    };
+    assert_eq!(
+        evaluate_process_prioritized_actor(&not_recent),
+        ProcessPrioritizedActorOutcome::CloseChannel { close_reason: 3 }
+    );
+    assert_eq!(
+        evaluate_process_prioritized_actor(&ProcessPrioritizedActorInputs {
+            actor_b_tear_off: true,
+            ..not_recent
+        }),
+        ProcessPrioritizedActorOutcome::CloseChannel { close_reason: 4 }
+    );
+    // NetStartup actor whose level is still initialized does not close its channel here:
+    assert_eq!(
+        evaluate_process_prioritized_actor(&ProcessPrioritizedActorInputs {
+            actor_is_net_startup: true,
+            actor_level_initialized: true,
+            ..not_recent
+        }),
+        ProcessPrioritizedActorOutcome::SkipNotRelevantNoClose
+    );
+
+    // 5. evaluate_mark_relevant_actor:
+    assert_eq!(
+        evaluate_mark_relevant_actor(true, false, 41, 10, false),
+        (42, true)
+    );
+    assert_eq!(
+        evaluate_mark_relevant_actor(true, false, i32::MAX, 10, false),
+        (i32::MIN, true)
+    );
+    assert_eq!(
+        evaluate_mark_relevant_actor(false, false, 41, 10, false),
+        (10, false)
+    );
+    assert_eq!(
+        evaluate_mark_relevant_actor(true, true, 41, 10, false),
+        (10, false)
+    );
 }

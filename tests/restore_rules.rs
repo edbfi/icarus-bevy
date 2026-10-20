@@ -3960,3 +3960,477 @@ fn non_blob_recorder_ctor_defaults_and_restore_dispatch_cover_all_27_classes() {
     );
     assert_eq!(stitching_char_parent_ordinals, vec![10, 11, 12, 13, 14]);
 }
+
+#[test]
+fn game_state_recorder_save_step_initial_retain_and_stitching_slice_rules() {
+    use icarus_bevy::experimental::restore_rules::{
+        RecordToProspectSaveStepInputs, RecordToProspectSaveStepOutcome,
+        UnresolvedInitialRecorderOutcome, evaluate_record_to_prospect_save_step,
+        evaluate_stitching_pass_slice, evaluate_unresolved_initial_recorder,
+        has_valid_recorder_owner, should_stitch_with_grid_building_actors,
+    };
+
+    // UIcarusStateRecorderComponent::HasValidOwner (0x141898750 / 0x14189ff30)
+    assert!(has_valid_recorder_owner(true, false, false));
+    assert!(!has_valid_recorder_owner(false, false, false));
+    assert!(!has_valid_recorder_owner(true, true, false));
+    assert!(!has_valid_recorder_owner(true, false, true));
+    assert!(!has_valid_recorder_owner(true, true, true));
+
+    // UIcarusGameStateRecorder::RecordToProspectSaveState (0x1414b4680 / 0x1414ecdd0)
+    // 1. Null or pending-kill recorder prunes without invoking vtable +0x418 drop hook.
+    assert_eq!(
+        evaluate_record_to_prospect_save_step(&RecordToProspectSaveStepInputs {
+            recorder_present: false,
+            recorder_pending_kill: false,
+            outer_present: true,
+            outer_pending_kill: false,
+            outer_is_game_state_recorder: false,
+            b_is_retained: true,
+            should_drop_recorder: false,
+        }),
+        RecordToProspectSaveStepOutcome::PruneAndRemove {
+            invoke_drop_hook: false,
+        }
+    );
+    assert_eq!(
+        evaluate_record_to_prospect_save_step(&RecordToProspectSaveStepInputs {
+            recorder_present: true,
+            recorder_pending_kill: true,
+            outer_present: true,
+            outer_pending_kill: false,
+            outer_is_game_state_recorder: false,
+            b_is_retained: true,
+            should_drop_recorder: false,
+        }),
+        RecordToProspectSaveStepOutcome::PruneAndRemove {
+            invoke_drop_hook: false,
+        }
+    );
+
+    // 2. Invalid owner and not retained -> prune with drop hook (+0x418).
+    assert_eq!(
+        evaluate_record_to_prospect_save_step(&RecordToProspectSaveStepInputs {
+            recorder_present: true,
+            recorder_pending_kill: false,
+            outer_present: true,
+            outer_pending_kill: false,
+            outer_is_game_state_recorder: true,
+            b_is_retained: false,
+            should_drop_recorder: false,
+        }),
+        RecordToProspectSaveStepOutcome::PruneAndRemove {
+            invoke_drop_hook: true,
+        }
+    );
+
+    // 3. Valid owner or retained, but should_drop_recorder (+0x410) is true -> prune with drop hook.
+    assert_eq!(
+        evaluate_record_to_prospect_save_step(&RecordToProspectSaveStepInputs {
+            recorder_present: true,
+            recorder_pending_kill: false,
+            outer_present: true,
+            outer_pending_kill: false,
+            outer_is_game_state_recorder: false,
+            b_is_retained: false,
+            should_drop_recorder: true,
+        }),
+        RecordToProspectSaveStepOutcome::PruneAndRemove {
+            invoke_drop_hook: true,
+        }
+    );
+    assert_eq!(
+        evaluate_record_to_prospect_save_step(&RecordToProspectSaveStepInputs {
+            recorder_present: true,
+            recorder_pending_kill: false,
+            outer_present: true,
+            outer_pending_kill: false,
+            outer_is_game_state_recorder: true,
+            b_is_retained: true,
+            should_drop_recorder: true,
+        }),
+        RecordToProspectSaveStepOutcome::PruneAndRemove {
+            invoke_drop_hook: true,
+        }
+    );
+
+    // 4. Valid owner and !should_drop_recorder -> RecordOwnerState (+0x448) and write blob.
+    assert_eq!(
+        evaluate_record_to_prospect_save_step(&RecordToProspectSaveStepInputs {
+            recorder_present: true,
+            recorder_pending_kill: false,
+            outer_present: true,
+            outer_pending_kill: false,
+            outer_is_game_state_recorder: false,
+            b_is_retained: false,
+            should_drop_recorder: false,
+        }),
+        RecordToProspectSaveStepOutcome::RecordOwnerStateAndWriteBlob
+    );
+
+    // 5. Invalid owner (e.g. Outer is UIcarusGameStateRecorder), b_is_retained = true, !should_drop_recorder
+    // -> write existing retained blob without calling RecordOwnerState.
+    assert_eq!(
+        evaluate_record_to_prospect_save_step(&RecordToProspectSaveStepInputs {
+            recorder_present: true,
+            recorder_pending_kill: false,
+            outer_present: true,
+            outer_pending_kill: false,
+            outer_is_game_state_recorder: true,
+            b_is_retained: true,
+            should_drop_recorder: false,
+        }),
+        RecordToProspectSaveStepOutcome::WriteExistingRetainedBlobWithoutRecording
+    );
+
+    // UIcarusGameStateRecorder::ReadFromProspectSaveState / RetainRecorder (0x1414b86b0 / 0x1414f0300)
+    assert_eq!(
+        evaluate_unresolved_initial_recorder(true, true, false),
+        UnresolvedInitialRecorderOutcome::BeginRecording
+    );
+    assert_eq!(
+        evaluate_unresolved_initial_recorder(false, true, false),
+        UnresolvedInitialRecorderOutcome::RetainRecorder {
+            unregister_component: true,
+            rename_outer_to_game_state_recorder: true,
+        }
+    );
+    assert_eq!(
+        evaluate_unresolved_initial_recorder(false, false, true),
+        UnresolvedInitialRecorderOutcome::RetainRecorder {
+            unregister_component: false,
+            rename_outer_to_game_state_recorder: false,
+        }
+    );
+
+    // UIcarusGameStateRecorder::PerformStitchingPass (0x1414b1d70 / 0x1414eaae0)
+    assert_eq!(evaluate_stitching_pass_slice(10, 0, -1), (0, 10));
+    assert_eq!(evaluate_stitching_pass_slice(10, 3, 4), (3, 7));
+    assert_eq!(evaluate_stitching_pass_slice(10, 8, 5), (8, 10));
+    assert_eq!(evaluate_stitching_pass_slice(10, 12, 5), (10, 10));
+    assert_eq!(evaluate_stitching_pass_slice(-5, -2, 4), (0, 0));
+    assert_eq!(evaluate_stitching_pass_slice(10, -3, 5), (0, 2));
+    assert_eq!(evaluate_stitching_pass_slice(10, 4, 0), (4, 4));
+    assert_eq!(evaluate_stitching_pass_slice(10, i32::MAX, 5), (10, 10));
+
+    assert!(should_stitch_with_grid_building_actors(true, true, false));
+    assert!(!should_stitch_with_grid_building_actors(false, true, false));
+    assert!(!should_stitch_with_grid_building_actors(true, false, false));
+    assert!(!should_stitch_with_grid_building_actors(true, true, true));
+}
+
+#[test]
+fn non_blob_n010_to_n016_character_and_npc_hierarchy_rules() {
+    use icarus_bevy::experimental::restore_rules::{
+        CharacterBaseRecorderState, NpcBaseRecorderState, evaluate_n010_character_record,
+        evaluate_n010_character_restore, evaluate_n011_subcomponent_int_transfer,
+        evaluate_n013_mission_npc_restore, evaluate_n014_npc_record, evaluate_n014_npc_restore,
+        evaluate_n016_stitch_blackboard_ints,
+    };
+
+    // N010 character base record & restore
+    assert_eq!(evaluate_n010_character_record(false, Some(42), 7), None);
+    assert_eq!(
+        evaluate_n010_character_record(true, None, -1),
+        Some(CharacterBaseRecorderState {
+            character_uid: 0,
+            parent_character_uid: -1,
+        })
+    );
+    let char_state = evaluate_n010_character_record(true, Some(42), 7).unwrap();
+    assert_eq!(
+        char_state,
+        CharacterBaseRecorderState {
+            character_uid: 42,
+            parent_character_uid: 7,
+        }
+    );
+    assert_eq!(
+        evaluate_n010_character_restore(false, true, char_state),
+        None
+    );
+    assert_eq!(
+        evaluate_n010_character_restore(true, false, char_state),
+        Some((true, None, 7))
+    );
+    assert_eq!(
+        evaluate_n010_character_restore(true, true, char_state),
+        Some((true, Some(42), 7))
+    );
+
+    // N014 NPC record & restore
+    assert_eq!(
+        evaluate_n014_npc_record(
+            false,
+            true,
+            Some(42),
+            7,
+            Some([10, 20, 30, 40]),
+            [-1; 4],
+            "Wolf_Row"
+        ),
+        None
+    );
+    assert_eq!(
+        evaluate_n014_npc_record(
+            true,
+            false,
+            Some(42),
+            7,
+            Some([10, 20, 30, 40]),
+            [-1, 5, -1, 0],
+            "Wolf_Row"
+        ),
+        Some(NpcBaseRecorderState {
+            base: char_state,
+            player_state_attributes: [-1, 5, -1, 0],
+            npc_row_name: String::new(),
+        })
+    );
+    assert_eq!(
+        evaluate_n014_npc_record(true, true, Some(42), 7, None, [-1, 5, -1, 0], "Wolf_Row"),
+        Some(NpcBaseRecorderState {
+            base: char_state,
+            player_state_attributes: [-1, 5, -1, 0],
+            npc_row_name: String::from("Wolf_Row"),
+        })
+    );
+    let npc_state = evaluate_n014_npc_record(
+        true,
+        true,
+        Some(42),
+        7,
+        Some([10, -1, 0, -5]),
+        [-1; 4],
+        "Wolf_Row",
+    )
+    .unwrap();
+    assert_eq!(
+        npc_state,
+        NpcBaseRecorderState {
+            base: char_state,
+            player_state_attributes: [10, -1, 0, -5],
+            npc_row_name: String::from("Wolf_Row"),
+        }
+    );
+
+    assert_eq!(
+        evaluate_n014_npc_restore(false, true, true, true, &npc_state),
+        None
+    );
+    assert_eq!(
+        evaluate_n014_npc_restore(true, false, true, true, &npc_state),
+        Some((true, Some(42), 7, [None; 4]))
+    );
+    assert_eq!(
+        evaluate_n014_npc_restore(true, true, false, false, &npc_state),
+        Some((true, None, 7, [None; 4]))
+    );
+    assert_eq!(
+        evaluate_n014_npc_restore(true, true, true, true, &npc_state),
+        Some((true, Some(42), 7, [Some(10), None, Some(0), None]))
+    );
+
+    // N013 mission NPC restore
+    assert_eq!(
+        evaluate_n013_mission_npc_restore(false, true, true, true, true, &npc_state, "Quest_A", 0),
+        None
+    );
+    assert_eq!(
+        evaluate_n013_mission_npc_restore(true, true, false, true, true, &npc_state, "Quest_A", 0),
+        Some((true, Some(42), 7, [Some(10), None, Some(0), None], None))
+    );
+    assert_eq!(
+        evaluate_n013_mission_npc_restore(true, true, true, true, true, &npc_state, "", 0),
+        Some((true, Some(42), 7, [Some(10), None, Some(0), None], None))
+    );
+    assert_eq!(
+        evaluate_n013_mission_npc_restore(true, true, true, true, true, &npc_state, "none", 0),
+        Some((true, Some(42), 7, [Some(10), None, Some(0), None], None))
+    );
+    assert_eq!(
+        evaluate_n013_mission_npc_restore(true, true, true, true, true, &npc_state, "None", 2),
+        Some((
+            true,
+            Some(42),
+            7,
+            [Some(10), None, Some(0), None],
+            Some((String::from("None"), 2))
+        ))
+    );
+    assert_eq!(
+        evaluate_n013_mission_npc_restore(true, true, true, true, true, &npc_state, "Quest_A", 0),
+        Some((
+            true,
+            Some(42),
+            7,
+            [Some(10), None, Some(0), None],
+            Some((String::from("Quest_A"), 0))
+        ))
+    );
+
+    // N011 subcomponent int transfer
+    assert_eq!(
+        evaluate_n011_subcomponent_int_transfer(false, true, 99),
+        None
+    );
+    assert_eq!(
+        evaluate_n011_subcomponent_int_transfer(true, false, 99),
+        None
+    );
+    assert_eq!(
+        evaluate_n011_subcomponent_int_transfer(true, true, 99),
+        Some(99)
+    );
+
+    // N016 stitch blackboard ints
+    assert_eq!(
+        evaluate_n016_stitch_blackboard_ints(false, true, [1, 2, 3]),
+        None
+    );
+    assert_eq!(
+        evaluate_n016_stitch_blackboard_ints(true, false, [1, 2, 3]),
+        None
+    );
+    assert_eq!(
+        evaluate_n016_stitch_blackboard_ints(true, true, [1, 2, 3]),
+        Some([1, 2, 3])
+    );
+}
+
+#[test]
+fn randomized_game_state_recorder_and_n010_to_n016_invariants() {
+    use icarus_bevy::experimental::restore_rules::{
+        RecordToProspectSaveStepInputs, RecordToProspectSaveStepOutcome,
+        UnresolvedInitialRecorderOutcome, evaluate_n010_character_record,
+        evaluate_n010_character_restore, evaluate_n011_subcomponent_int_transfer,
+        evaluate_n013_mission_npc_restore, evaluate_n014_npc_record, evaluate_n014_npc_restore,
+        evaluate_n016_stitch_blackboard_ints, evaluate_record_to_prospect_save_step,
+        evaluate_stitching_pass_slice, evaluate_unresolved_initial_recorder,
+        has_valid_recorder_owner, should_stitch_with_grid_building_actors,
+    };
+
+    let mut seed = 0x9e37_79b9_7f4a_7c15_u64;
+    let mut next_u64 = || {
+        seed ^= seed << 13;
+        seed ^= seed >> 7;
+        seed ^= seed << 17;
+        seed
+    };
+
+    for _ in 0..512 {
+        let bits = next_u64();
+        let b = |shift: u32| ((bits >> shift) & 1) != 0;
+        let i_a = (next_u64() as i32) % 200;
+        let i_b = (next_u64() as i32) % 200;
+        let i_c = (next_u64() as i32) % 200;
+
+        let valid_owner = has_valid_recorder_owner(b(0), b(1), b(2));
+        assert_eq!(valid_owner, b(0) && !b(1) && !b(2));
+
+        let step_inputs = RecordToProspectSaveStepInputs {
+            recorder_present: b(3),
+            recorder_pending_kill: b(4),
+            outer_present: b(0),
+            outer_pending_kill: b(1),
+            outer_is_game_state_recorder: b(2),
+            b_is_retained: b(5),
+            should_drop_recorder: b(6),
+        };
+        let step_out = evaluate_record_to_prospect_save_step(&step_inputs);
+        if !step_inputs.recorder_present || step_inputs.recorder_pending_kill {
+            assert_eq!(
+                step_out,
+                RecordToProspectSaveStepOutcome::PruneAndRemove {
+                    invoke_drop_hook: false,
+                }
+            );
+        } else if (!valid_owner && !step_inputs.b_is_retained) || step_inputs.should_drop_recorder {
+            assert_eq!(
+                step_out,
+                RecordToProspectSaveStepOutcome::PruneAndRemove {
+                    invoke_drop_hook: true,
+                }
+            );
+        } else if valid_owner {
+            assert_eq!(
+                step_out,
+                RecordToProspectSaveStepOutcome::RecordOwnerStateAndWriteBlob
+            );
+        } else {
+            assert_eq!(
+                step_out,
+                RecordToProspectSaveStepOutcome::WriteExistingRetainedBlobWithoutRecording
+            );
+        }
+
+        let unresolved = evaluate_unresolved_initial_recorder(valid_owner, b(7), b(2));
+        if valid_owner {
+            assert_eq!(unresolved, UnresolvedInitialRecorderOutcome::BeginRecording);
+        } else {
+            assert_eq!(
+                unresolved,
+                UnresolvedInitialRecorderOutcome::RetainRecorder {
+                    unregister_component: b(7),
+                    rename_outer_to_game_state_recorder: !b(2),
+                }
+            );
+        }
+
+        let (start, end) = evaluate_stitching_pass_slice(i_a, i_b, i_c);
+        assert!(start <= end);
+        assert!(end <= i_a.max(0) as usize);
+
+        assert_eq!(
+            should_stitch_with_grid_building_actors(b(8), b(9), b(10)),
+            b(8) && b(9) && !b(10)
+        );
+
+        let ps_uid = b(11).then_some(i_a);
+        let rec_n010 = evaluate_n010_character_record(b(12), ps_uid, i_b);
+        assert_eq!(rec_n010.is_some(), b(12));
+        if let Some(st) = rec_n010 {
+            let rest_n010 = evaluate_n010_character_restore(b(12), b(13), st).unwrap();
+            assert!(rest_n010.0);
+            assert_eq!(rest_n010.1, b(13).then_some(ps_uid.unwrap_or(0)));
+            assert_eq!(rest_n010.2, i_b);
+        }
+
+        let attrs = [i_a, i_b, i_c, -1];
+        let existing = [1, -2, 3, -4];
+        let rec_n014 = evaluate_n014_npc_record(
+            b(12),
+            b(14),
+            ps_uid,
+            i_b,
+            b(15).then_some(attrs),
+            existing,
+            "Row_X",
+        );
+        assert_eq!(rec_n014.is_some(), b(12));
+        if let Some(npc_st) = rec_n014 {
+            let rest_n014 = evaluate_n014_npc_restore(b(12), b(14), b(13), b(16), &npc_st).unwrap();
+            let rest_n013 = evaluate_n013_mission_npc_restore(
+                b(12),
+                b(14),
+                b(17),
+                b(13),
+                b(16),
+                &npc_st,
+                if b(18) { "None" } else { "Mission_Row" },
+                if b(19) { 0 } else { 1 },
+            )
+            .unwrap();
+            assert_eq!(rest_n014.3, rest_n013.3);
+        }
+
+        assert_eq!(
+            evaluate_n011_subcomponent_int_transfer(b(20), b(21), i_a),
+            (b(20) && b(21)).then_some(i_a)
+        );
+        assert_eq!(
+            evaluate_n016_stitch_blackboard_ints(b(22), b(23), [i_a, i_b, i_c]),
+            (b(22) && b(23)).then_some([i_a, i_b, i_c])
+        );
+    }
+}

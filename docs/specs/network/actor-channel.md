@@ -4,7 +4,7 @@
 
 Experimental: static observations of client build 25793767 and server build
 25621760, wire-checked against the 3.0.31 capture (F-704 to F-711, F-739,
-F-745, F-748). Last reconciled: 2026-10-19.
+F-745, F-748). Last reconciled: 2026-10-20.
 
 ## Scope
 
@@ -103,8 +103,8 @@ connection-readiness, and consider-list policies.
     network Names, archive Strings/soft-object paths, and v522 `FText` histories
     (`experimental::rep_text`), replaying `23,486 / 23,486` (`100%`) typed blocks
     in M-707.
-- Server relevancy, priority, tick rate, connection prep, and consider list
-  (F-745, F-748):
+- Server relevancy, priority, tick rate, and `ServerReplicateActors` stages
+  (F-745, F-748, F-749):
   - `AActor::IsNetRelevantFor` (`0x14333fae0` / `0x1435d5be0`),
     `APawn::IsNetRelevantFor` (`0x1437b95a0` / `0x143a681d0`),
     `APlayerController::IsNetRelevantFor` (`0x1432510a0` / `0x1434e9040`),
@@ -137,7 +137,29 @@ connection-readiness, and consider-list policies.
     (`MinNetUpdateFrequency = 2.0` when `0.0`) by `clamp((LastNetUpdateDelta - 2.0) * 0.2, 0.0, 1.0)`
     when `LastNetUpdateDelta > 2.0`, updates `NextUpdateTime`/`LastNetUpdateTime`
     when `!bPendingNetUpdate`, clears `bPendingNetUpdate`, and calls
-    `CallPreReplication` (`0x14332f4f0`).
+    `CallPreReplication` (`0x14332f4f0`); `PrioritizeActors` (`0x1437241e0` /
+    `0x1439c0e70`, `evaluate_prioritize_actor`, `round_net_priority_to_int`,
+    `evaluate_destruction_info_priority`) closes expired `bOnlyRelevantToOwner`
+    channels (`CloseReason = 3`), calls `StartBecomingDormant` on
+    `DORM_DormantAll (2)` / `DORM_DormantPartial (3)`, computes
+    `time_since_last_update` from `SpawnPrioritySeconds` when `!has_channel`
+    else `ElapsedTime - LastUpdateTime` (`0x1437246a6..0x1437247c1` /
+    `0x1439c12b2..0x1439c13c6`), rounds actor priority via `cvtss2si` on
+    `2 * (65536.0 * p) + 0.5` (`>> 1`, `0x14372482a..0x14372483b`), and
+    truncates `DestroyedStartupOrDormantActors` priority via `cvttss2si`
+    (`0x143724c2a`) after scaling by `0.2` (`dot < 0 && dist_sq > 4M`) or `0.4`
+    (`dot < 0 && dist_sq > 250k`, or `dot >= 0 && dist_sq > 9,998,244`);
+    `ProcessPrioritizedActors` (`0x143725030` / `0x1439c1bf0`,
+    `evaluate_process_prioritized_actor`) checks `IsNetReady(0)`, sends
+    `SendDestructionInfo`, uses a `<= 1.0` s fast-path before
+    `IsActorRelevantToConnection`, updates `RelevantTime = ElapsedTime + 0.5 * SRand()`,
+    delays `< 1.0` Hz unopenable actors by `+ 0.2 * srands()`, replicates until
+    saturation, and closes irrelevant/tear-off channels when
+    `has_channel && (!actor_level_initialized || !actor_is_net_startup)`
+    (`CloseReason` `4` when `bTearOff`, else `3`); `MarkRelevantActors`
+    (`0x143723ce0` / `0x1439c0a00`, `evaluate_mark_relevant_actor`) sets
+    `ForceRelevantFrame = TickCount + 1` and `bPendingNetUpdate = true` when
+    `Owner != nullptr && Channel == nullptr`.
 
 ## Candidate
 
@@ -146,9 +168,9 @@ connection-readiness, and consider-list policies.
   prefixes (`317 / 317`), `PackageMapState` mappings, partial-bunch sequences
   (`300 / 300`), must-be-mapped GUID lists, open bunches, content blocks,
   property streams, `ChannelCloseReason` codes (`136 / 136`), and static
-  relevancy/priority/tick-rate/connection-prep/consider-list policies without
+  relevancy/priority/tick-rate/ServerReplicateActors policies without
   panicking on randomized inputs (F-577, F-604, F-673, F-709 to F-711, F-739,
-  F-745, F-748).
+  F-745, F-748, F-749).
 
 ## Open questions
 
@@ -157,7 +179,8 @@ connection-readiness, and consider-list policies.
 ## Evidence
 
 - Symbols and pseudocode M-420 to M-437; net items and writers M-438 to M-449,
-  M-455 to M-470, M-776, M-777, M-782, M-794, M-795, M-797 to M-799; movement,
+  M-455 to M-470, M-776, M-777, M-782, M-794, M-795, M-797 to M-799, M-801,
+  M-802; movement,
   tags, Name/Str, hit results, soft objects and Text M-475 to M-548, M-570 to
   M-588, M-602 to M-605; enum widths, RPCs and fast arrays M-614, M-615, M-620
   to M-624, M-628 to M-635; native descriptors, cooked Blueprint exports,

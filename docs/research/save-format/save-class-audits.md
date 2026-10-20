@@ -26,28 +26,31 @@ player-state candidates and the remaining classes (F-668; F-213). Server
 `FVector`, `FArrayProperty`, tagged wrap-around, C013/C028 migration/restore,
 C030 `TextProperty`, `ProspectInfo.ExpireTime` (`Int64Property`),
 `C015`/`C022`/`C032` Map item serializers, all 65 `RecorderComponent`
-`FClassParams`, ctor defaults, and vtable/restore dispatch (`C001..C038` and
-`N001..N027`; [restore-rules spec](../../specs/save-format/restore-rules.md)),
-6 of 7 populated C001 arrays, `CA06`/`DA04`, all 29,762 C028 spans, pin
-`b40c97e3...`, entry-path failure matrices, `FProspectBlob` `SL-004` decode
-contracts, `FAccoladeSaveData`, `FProspectInfo` (`17` props), and `15 / 15`
+`FClassParams`, ctor defaults, vtable/restore dispatch (`C001..C038` and
+`N001..N027`), `UIcarusGameStateRecorder` (`ReadFromProspectSaveState`,
+`RecordToProspectSaveState`, `RetainRecorder`, `PerformStitchingPass`,
+`HasValidOwner`), and `N010..N016` character/NPC slots
+([restore-rules spec](../../specs/save-format/restore-rules.md)), 6 of 7
+populated C001 arrays, `CA06`/`DA04`, all 29,762 C028 spans, pin `b40c97e3...`,
+entry-path failure matrices, `FProspectBlob` `SL-004` decode contracts,
+`FAccoladeSaveData`, `FProspectInfo` (`17` props), and `15 / 15`
 `inspect-save --stage-check` qualification (`dddd.json`: `2,744` -> `1` invalid
 `C031`, `2,743` retained (`971` skip-owner, `52` `FindOnly`, `798` `RespawnOnly`,
 `658` `FindOrRespawn`, `264` `ManuallyResolved`, `821` stitching), `2` dynamic
 `C033` -> `2,741` on `M-691`; F-645 to F-680, F-715 to F-720, F-725 to F-728,
-F-731 to F-738, F-741 to F-744, F-746, F-747; U-020 to U-024, U-026, U-028 to
-U-033, U-039, U-046, U-048, U-050, U-053 to U-063 resolved). Every opaque Struct
-payload is one of four fixed-width engine math types (F-565, F-602), and
-construction grids nest per-type row names over placed pieces sharing the grid's
-frame (F-643).
+F-731 to F-738, F-741 to F-744, F-746, F-747, F-750; U-020 to U-024, U-026,
+U-028 to U-033, U-039, U-046, U-048, U-050, U-053 to U-063 resolved). Every
+opaque Struct payload is one of four fixed-width engine math types (F-565,
+F-602), and construction grids nest per-type row names over placed pieces
+sharing the grid's frame (F-643).
 
 No saved class identifier, field or type name, or recorder version tells the
 older server from the newer client, and the prospect carries no version string
 (F-635, F-682). Recorder code gives every class's fields their meanings (F-645 to
-F-666, F-676, F-677, F-734 to F-736, F-741 to F-744, F-746, F-747); item stats,
-alterations and slots are row references (F-660). Readers use borrowed strict
-string frames without success-path allocation (F-142); comparator limits stay at
-128 KiB (F-198).
+F-666, F-676, F-677, F-734 to F-736, F-741 to F-744, F-746, F-747, F-750); item
+stats, alterations and slots are row references (F-660). Readers use borrowed
+strict string frames without success-path allocation (F-142); comparator limits
+stay at 128 KiB (F-198).
 
 ## Open
 
@@ -57,4 +60,4 @@ string frames without success-path allocation (F-142); comparator limits stay at
 
 ## Artifacts
 
-M-047..M-077, M-079..M-108, M-118..M-130, M-278..M-280, M-351, M-352, M-376..M-384, M-389, M-390, M-401..M-404, M-407..M-410, M-606..M-613, M-616..M-618, M-626, M-627, M-636..M-638, M-727, M-755..M-760, M-766..M-769, M-772..M-777, M-780, M-782, M-784, M-786, M-788, M-790..M-792, M-794..M-800.
+M-047..M-077, M-079..M-108, M-118..M-130, M-278..M-280, M-351, M-352, M-376..M-384, M-389, M-390, M-401..M-404, M-407..M-410, M-606..M-613, M-616..M-618, M-626, M-627, M-636..M-638, M-727, M-755..M-760, M-766..M-769, M-772..M-777, M-780, M-782, M-784, M-786, M-788, M-790..M-792, M-794..M-803.

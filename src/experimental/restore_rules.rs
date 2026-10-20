@@ -4831,3 +4831,318 @@ pub const fn non_blob_recorder_ctor_defaults(non_blob_ordinal: u8) -> Option<Rec
 pub const fn no_recorder_record_valid() -> bool {
     false
 }
+
+/// Evaluates `UIcarusStateRecorderComponent::HasValidOwner` (`0x141898750`
+/// server / `0x14189ff30` client).
+///
+/// Returns `true` iff `Outer` (`+0x20`) is present, not pending kill, and not a
+/// `UIcarusGameStateRecorder` instance.
+pub const fn has_valid_recorder_owner(
+    outer_present: bool,
+    outer_pending_kill: bool,
+    outer_is_game_state_recorder: bool,
+) -> bool {
+    outer_present && !outer_pending_kill && !outer_is_game_state_recorder
+}
+
+/// Per-recorder inputs for `UIcarusGameStateRecorder::RecordToProspectSaveState`
+/// (`0x1414b4680` server / `0x1414ecdd0` client).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct RecordToProspectSaveStepInputs {
+    pub recorder_present: bool,
+    pub recorder_pending_kill: bool,
+    pub outer_present: bool,
+    pub outer_pending_kill: bool,
+    pub outer_is_game_state_recorder: bool,
+    /// `bIsRetained` (`+0xd2`).
+    pub b_is_retained: bool,
+    /// Virtual slot `+0x410` (`ShouldDropRecorder`).
+    pub should_drop_recorder: bool,
+}
+
+/// Per-recorder disposition in
+/// `UIcarusGameStateRecorder::RecordToProspectSaveState` (`0x1414b4680` server /
+/// `0x1414ecdd0` client).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RecordToProspectSaveStepOutcome {
+    /// Removes the recorder from `CurrentRecorderComponents`; invokes virtual
+    /// drop hook `+0x418` beforehand iff `invoke_drop_hook` is `true`.
+    PruneAndRemove { invoke_drop_hook: bool },
+    /// Calls `RecordOwnerState` (`+0x448`) and serializes a fresh
+    /// `FStateRecorderBlob` entry.
+    RecordOwnerStateAndWriteBlob,
+    /// Serializes the retained recorder's existing state into
+    /// `StateRecorderBlobs` without calling `RecordOwnerState` (`+0x448`).
+    WriteExistingRetainedBlobWithoutRecording,
+}
+
+/// Evaluates one step of `UIcarusGameStateRecorder::RecordToProspectSaveState`
+/// (`0x1414b4680` server / `0x1414ecdd0` client).
+pub const fn evaluate_record_to_prospect_save_step(
+    inputs: &RecordToProspectSaveStepInputs,
+) -> RecordToProspectSaveStepOutcome {
+    if !inputs.recorder_present || inputs.recorder_pending_kill {
+        return RecordToProspectSaveStepOutcome::PruneAndRemove {
+            invoke_drop_hook: false,
+        };
+    }
+    let has_valid_owner = has_valid_recorder_owner(
+        inputs.outer_present,
+        inputs.outer_pending_kill,
+        inputs.outer_is_game_state_recorder,
+    );
+    if (!has_valid_owner && !inputs.b_is_retained) || inputs.should_drop_recorder {
+        return RecordToProspectSaveStepOutcome::PruneAndRemove {
+            invoke_drop_hook: true,
+        };
+    }
+    if has_valid_owner {
+        RecordToProspectSaveStepOutcome::RecordOwnerStateAndWriteBlob
+    } else {
+        RecordToProspectSaveStepOutcome::WriteExistingRetainedBlobWithoutRecording
+    }
+}
+
+/// Outcome for an `InitialRecorders \\ CurrentRecorderComponents` entry during
+/// `UIcarusGameStateRecorder::ReadFromProspectSaveState` (`0x1414b82b0..0x1414b8311`
+/// server / `0x1414ec3f0` client) and `UIcarusGameStateRecorder::RetainRecorder`
+/// (`0x1414b86b0` server / `0x1414f0300` client).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum UnresolvedInitialRecorderOutcome {
+    /// `HasValidOwner` is `true`: invokes `BeginRecording` (`0x1414961b0`).
+    BeginRecording,
+    /// `HasValidOwner` is `false`: invokes `RetainRecorder` (`0x1414b86b0`),
+    /// setting `bIsRetained = true` (`+0xd2`), unregistering the component when
+    /// `b_registered` (`+0x88 & 1`) is set, and renaming `Outer` to
+    /// `UIcarusGameStateRecorder` with `REN_DontCreateRedirectors = 1` when
+    /// `!outer_is_game_state_recorder`.
+    RetainRecorder {
+        unregister_component: bool,
+        rename_outer_to_game_state_recorder: bool,
+    },
+}
+
+/// Evaluates the `InitialRecorders \\ CurrentRecorderComponents` cleanup in
+/// `UIcarusGameStateRecorder::ReadFromProspectSaveState` (`0x1414b82b0..0x1414b8311`
+/// server / `0x1414ec3f0` client) and `UIcarusGameStateRecorder::RetainRecorder`
+/// (`0x1414b86b0` server / `0x1414f0300` client).
+pub const fn evaluate_unresolved_initial_recorder(
+    has_valid_owner: bool,
+    b_registered: bool,
+    outer_is_game_state_recorder: bool,
+) -> UnresolvedInitialRecorderOutcome {
+    if has_valid_owner {
+        UnresolvedInitialRecorderOutcome::BeginRecording
+    } else {
+        UnresolvedInitialRecorderOutcome::RetainRecorder {
+            unregister_component: b_registered,
+            rename_outer_to_game_state_recorder: !outer_is_game_state_recorder,
+        }
+    }
+}
+
+/// Evaluates the actor slice `[start, end)` processed by
+/// `UIcarusGameStateRecorder::PerformStitchingPass` (`0x1414b1d70` server /
+/// `0x1414eaae0` client).
+pub fn evaluate_stitching_pass_slice(
+    total_actors: i32,
+    start_index: i32,
+    max_count: i32,
+) -> (usize, usize) {
+    let total = total_actors.max(0);
+    let end = if max_count >= 0 {
+        total.min(start_index.saturating_add(max_count)).max(0)
+    } else {
+        total
+    };
+    let start = start_index.max(0).min(end);
+    (start as usize, end as usize)
+}
+
+/// Evaluates whether `UIcarusGameStateRecorder::PerformStitchingPass`
+/// (`0x1414b1d70` server / `0x1414eaae0` client) runs the grid-building actor
+/// stitching pass for a recorder.
+pub const fn should_stitch_with_grid_building_actors(
+    b_include_grid_building_actors: bool,
+    is_deployable_recorder: bool,
+    recorder_pending_kill: bool,
+) -> bool {
+    b_include_grid_building_actors && is_deployable_recorder && !recorder_pending_kill
+}
+
+/// Base character recorder fields (`+0x1c0`, `+0x1c4`) for `N010`
+/// (`0x14143d900`/`0x14147bc20` `+0x448` and `0x14144c1b0`/`0x14148a880`
+/// `+0x460`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct CharacterBaseRecorderState {
+    pub character_uid: i32,
+    pub parent_character_uid: i32,
+}
+
+/// Evaluates `N010` `RecordOwnerState` (`0x14143d900` server / `0x14147bc20`
+/// client, `+0x448`).
+pub const fn evaluate_n010_character_record(
+    owner_is_character: bool,
+    player_state_uid: Option<i32>,
+    owner_parent_uid: i32,
+) -> Option<CharacterBaseRecorderState> {
+    if !owner_is_character {
+        return None;
+    }
+    let character_uid = match player_state_uid {
+        Some(uid) => uid,
+        None => 0,
+    };
+    Some(CharacterBaseRecorderState {
+        character_uid,
+        parent_character_uid: owner_parent_uid,
+    })
+}
+
+/// Evaluates `N010` `UpdateOwnerToDatabaseState` (`0x14144c1b0` server /
+/// `0x14148a880` client, `+0x460`).
+pub const fn evaluate_n010_character_restore(
+    owner_is_character: bool,
+    has_player_state: bool,
+    state: CharacterBaseRecorderState,
+) -> Option<(bool, Option<i32>, i32)> {
+    if !owner_is_character {
+        return None;
+    }
+    let restored_uid = if has_player_state {
+        Some(state.character_uid)
+    } else {
+        None
+    };
+    Some((true, restored_uid, state.parent_character_uid))
+}
+
+/// Base NPC recorder fields (`+0x1c0..+0x1df`) for `N014`
+/// (`0x1413cc9b0`/`0x14140b700` `+0x448` and `0x1413e0710`/`0x14141e250`
+/// `+0x460`).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct NpcBaseRecorderState {
+    pub base: CharacterBaseRecorderState,
+    pub player_state_attributes: [i32; 4],
+    pub npc_row_name: String,
+}
+
+/// Evaluates `N014` `RecordOwnerState` (`0x1413cc9b0` server / `0x14140b700`
+/// client, `+0x448`).
+#[allow(clippy::too_many_arguments)]
+pub fn evaluate_n014_npc_record(
+    owner_is_character: bool,
+    owner_is_npc: bool,
+    player_state_uid: Option<i32>,
+    owner_parent_uid: i32,
+    player_state_attributes: Option<[i32; 4]>,
+    existing_attributes: [i32; 4],
+    npc_row_name: &str,
+) -> Option<NpcBaseRecorderState> {
+    let base =
+        evaluate_n010_character_record(owner_is_character, player_state_uid, owner_parent_uid)?;
+    let (attributes, row_name) = if owner_is_npc {
+        (
+            player_state_attributes.unwrap_or(existing_attributes),
+            npc_row_name.to_owned(),
+        )
+    } else {
+        (existing_attributes, String::new())
+    };
+    Some(NpcBaseRecorderState {
+        base,
+        player_state_attributes: attributes,
+        npc_row_name: row_name,
+    })
+}
+
+/// Evaluates `N014` `UpdateOwnerToDatabaseState` (`0x1413e0710` server /
+/// `0x14141e250` client, `+0x460`).
+#[allow(clippy::type_complexity)]
+pub fn evaluate_n014_npc_restore(
+    owner_is_character: bool,
+    owner_is_npc: bool,
+    has_player_state: bool,
+    has_icarus_player_state: bool,
+    state: &NpcBaseRecorderState,
+) -> Option<(bool, Option<i32>, i32, [Option<i32>; 4])> {
+    let (flag_571, restored_uid, parent_uid) =
+        evaluate_n010_character_restore(owner_is_character, has_player_state, state.base)?;
+    let attributes = if owner_is_npc && has_icarus_player_state {
+        state
+            .player_state_attributes
+            .map(|v| if v >= 0 { Some(v) } else { None })
+    } else {
+        [None; 4]
+    };
+    Some((flag_571, restored_uid, parent_uid, attributes))
+}
+
+/// Evaluates `N013` `UpdateOwnerToDatabaseState` (`0x1413e05d0` server /
+/// `0x14141e110` client, `+0x460`), returning the full `FName`
+/// `(mission_row_name, mission_row_number)` (`lea rdx, [rbx+0x1e0]` at
+/// `0x1413e06e1`) when `!FName::IsNone()`.
+#[allow(clippy::too_many_arguments, clippy::type_complexity)]
+pub fn evaluate_n013_mission_npc_restore(
+    owner_is_character: bool,
+    owner_is_npc: bool,
+    owner_is_mission_npc: bool,
+    has_player_state: bool,
+    has_icarus_player_state: bool,
+    state: &NpcBaseRecorderState,
+    mission_row_name: &str,
+    mission_row_number: i32,
+) -> Option<(
+    bool,
+    Option<i32>,
+    i32,
+    [Option<i32>; 4],
+    Option<(String, i32)>,
+)> {
+    let (flag_571, restored_uid, parent_uid, attributes) = evaluate_n014_npc_restore(
+        owner_is_character,
+        owner_is_npc,
+        has_player_state,
+        has_icarus_player_state,
+        state,
+    )?;
+    let mission_row = if owner_is_mission_npc
+        && ((!mission_row_name.is_empty() && !mission_row_name.eq_ignore_ascii_case("None"))
+            || mission_row_number != 0)
+    {
+        Some((mission_row_name.to_owned(), mission_row_number))
+    } else {
+        None
+    };
+    Some((flag_571, restored_uid, parent_uid, attributes, mission_row))
+}
+
+/// Evaluates `N011` subcomponent integer transfer (`+0x2d8 <-> +0xf8`) in
+/// `RecordOwnerState` (`0x1413fd560` server / `0x14143b360` client, `+0x448`)
+/// and `UpdateOwnerToDatabaseState` (`0x14140c580` server / `0x1414498c0`
+/// client, `+0x460`).
+pub const fn evaluate_n011_subcomponent_int_transfer(
+    owner_matches_subclass: bool,
+    has_subcomponent: bool,
+    value_2d8: i32,
+) -> Option<i32> {
+    if owner_matches_subclass && has_subcomponent {
+        Some(value_2d8)
+    } else {
+        None
+    }
+}
+
+/// Evaluates `N016` blackboard integer transfer (`+0x1c8`, `+0x1cc`, `+0x1e0`)
+/// in `Stitching` (`0x141405160` server / `0x141442d00` client, `+0x468`).
+pub const fn evaluate_n016_stitch_blackboard_ints(
+    owner_is_mount: bool,
+    controller_is_npc_controller: bool,
+    ints_1c8_1cc_1e0: [i32; 3],
+) -> Option<[i32; 3]> {
+    if owner_is_mount && controller_is_npc_controller {
+        Some(ints_1c8_1cc_1e0)
+    } else {
+        None
+    }
+}
