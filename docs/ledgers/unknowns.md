@@ -3,7 +3,7 @@
 One row per open question. Tracked here; REA sessions mirror it. IDs are permanent.
 Status: open, investigating, blocked, contradicted, resolved.
 
-Last reconciled: 2026-10-20
+Last reconciled: 2026-10-21
 
 | ID | Question | Severity | Status | Next probe | Findings | REA id |
 | --- | --- | --- | --- | --- | --- | --- |
@@ -73,3 +73,4 @@ Last reconciled: 2026-10-20
 | U-064 | How are replicated properties encoded inside an actor content block, and how are spawn transforms quantized? | high | resolved | Exports, mapped GUIDs, open hooks, 3,960 struct ops, partials, dormancy and 100% M-707 replay (F-704..F-711, F-739) | F-569..F-575, F-586..F-599, F-632, F-639, F-644, F-704..F-711, F-739 | M-743/unk_b9dbaa9b2bca, M-745/unk_72fdbf16a7cc, M-747/unk_08ecc8cd85f4 |
 | U-065 | What gameplay-tag replication mode, widths and net-index mapping does the pinned client require? | high | resolved | Fast replication, 12-bit indices, 6-bit container count and exact node table match dc780a27 and 6d0f676f (F-702) | F-583, F-591, F-592, F-702 |  |
 | U-066 | What property order, types and array sizes fix each replicated class's handles, including classes outside the executable? | high | resolved | 64 layouts and FClassNetCache bounds replay 100% (23,486/23,486) of M-707 blocks (F-703 to F-708) | F-586, F-609, F-703 to F-708 | M-731/unk_99073d28973b, M-737/unk_90efbd97098b, M-739/unk_5a3d3b126d49, M-741/unk_9fde58cee68e |
+| U-067 | Why do the MapManager_C and BP_Building_Base_C class checksums, both with Blueprint arrays of user-defined structs, not reproduce under F-776? | medium | open | 77/79 export checksums reproduce (F-777); single-property inversion found no spelling fix; next: read UUserDefinedStruct field layout at runtime | F-776, F-777 |  |

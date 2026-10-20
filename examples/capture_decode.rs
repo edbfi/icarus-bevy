@@ -1559,7 +1559,7 @@ impl<'a> Decoder<'a> {
         self.write_detail(
             json!({"kind":"export", "datagram":datagram, "guid":reference.guid,
             "path":path, "outer_guid":outer.guid, "flags":reference.flags,
-            "checksum":reference.checksum.is_some()}),
+            "checksum":reference.checksum.is_some(), "checksum_value":reference.checksum}),
         )?;
         self.record_export(outer, datagram)
     }
@@ -1864,6 +1864,48 @@ impl<'a> Decoder<'a> {
                 let body_reencoded_exact =
                     encode_player_controller_open_bunch_body(&pc_body, codec)
                         .is_ok_and(|reencoded| reencoded == bunch.payload);
+                // Private detail: per block, the target, size and, for the
+                // actor's own rep layout, each handle with its value kind only.
+                let block_detail: Vec<_> = pc_body
+                    .blocks
+                    .iter()
+                    .map(|block| {
+                        let (object_path, class_path) = self.resolve_block_paths(block);
+                        let handles = (matches!(block.target, BlockTarget::Actor)
+                            && block.has_rep_layout)
+                            .then(|| {
+                                let commands = schema_commands(
+                                    "AIcarusPlayerControllerSurvival",
+                                    &self.profile,
+                                );
+                                let mut reader = block.payload.reader();
+                                read_rep_properties(&mut reader, &commands, &rep_codec()).map(
+                                    |stream| {
+                                        stream
+                                            .entries
+                                            .iter()
+                                            .map(|entry| {
+                                                format!("{}:{:?}", entry.handle, entry.value)
+                                            })
+                                            .collect::<Vec<_>>()
+                                    },
+                                )
+                            })
+                            .map(|handles| handles.map_err(|error| format!("{error:#}")));
+                        json!({"target": match &block.target {
+                                BlockTarget::Actor => "actor".to_owned(),
+                                BlockTarget::SubObject { .. } => "subobject".to_owned(),
+                            },
+                            "object_path": object_path, "class_path": class_path,
+                            "has_rep_layout": block.has_rep_layout,
+                            "payload_bits": block.payload.bit_len(), "handles": handles})
+                    })
+                    .collect();
+                self.write_detail(json!({"kind":"pc_open", "datagram":arrival.datagram,
+                    "channel":bunch.header.channel_index, "archetype": arch,
+                    "net_player_index": pc_body.net_player_index,
+                    "spawn": pc_body.spawn.summary(), "blocks": block_detail,
+                    "body_reencoded_exact": body_reencoded_exact}))?;
                 for block in &pc_body.blocks {
                     let (object_path, class_path) = self.resolve_block_paths(block);
                     if let Some((_schema_name, exact)) = self.replay_block(
