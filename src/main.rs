@@ -420,9 +420,13 @@ fn run(options: ConfigOptions, max_ticks: Option<u64>, compressed: bool) -> Resu
         !compressed || max_ticks.is_some(),
         "a compressed run needs max_ticks"
     );
-    // Bind before any world state opens: a bind failure exits without
-    // creating, locking or loading the data directory.
-    let lab = network::bind(&config.network)?;
+    // Load the release profile and bind before any world state opens: either
+    // failure exits without creating, locking or loading the data directory.
+    let bound = network::bind(&config.network)?;
+    let pinned_build = bound
+        .as_ref()
+        .and_then(|bound| bound.release.as_ref())
+        .map(|pin| pin.build_id);
     let store = SnapshotStore::open(&config.data_dir)?;
     let loaded = store.load()?;
     if loaded
@@ -447,7 +451,9 @@ fn run(options: ConfigOptions, max_ticks: Option<u64>, compressed: bool) -> Resu
     if compressed {
         app.insert_resource(TimeUpdateStrategy::FixedTimesteps(1));
     }
-    let network_address = lab.map(|lab| network::install(&mut app, lab)).transpose()?;
+    let network_address = bound
+        .map(|bound| network::install(&mut app, bound.lab))
+        .transpose()?;
     app.finish();
     app.cleanup();
     let mut writer = SaveWorker::spawn(store)?;
@@ -480,13 +486,14 @@ fn run(options: ConfigOptions, max_ticks: Option<u64>, compressed: bool) -> Resu
         "network_enabled": network_address.is_some()})
     );
     if let Some(address) = network_address {
-        // The server's own bound address and configured limits; never a
-        // client-supplied value.
+        // The server's own bound address, configured limits and pinned build;
+        // never a client-supplied value.
         eprintln!(
             "{}",
             json!({"event": "network_listening", "experimental": true,
             "address": address.to_string(), "max_players": config.network.max_players,
             "session_timeout_seconds": config.network.session_timeout_seconds,
+            "version_check": pinned_build.is_some(), "release_build_id": pinned_build,
             "icarus_compatible": false, "gameplay_ready": false})
         );
     }

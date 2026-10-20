@@ -441,6 +441,9 @@ pub struct SessionCounts {
     pub closed_by_client: u64,
     /// Sessions closed after an Upgrade or Failure reply.
     pub closed_by_reply: u64,
+    /// Upgrade replies to a Hello whose network version differed from the
+    /// configured one (each also counts in `closed_by_reply`).
+    pub upgrades_sent: u64,
     /// Sessions removed after a receive, reply or ack failure.
     pub closed_failed: u64,
     /// Sessions removed by shutdown.
@@ -627,6 +630,7 @@ impl PeerLab {
             closed_by_timeout: self.stats.peers_expired,
             closed_by_client: self.stats.peers_closed_by_client,
             closed_by_reply: self.stats.peers_closed,
+            upgrades_sent: self.stats.upgrades_sent,
             closed_failed: self.stats.peers_failed,
             closed_by_shutdown: self.stats.peers_shutdown,
             invalid_state_messages: self.stats.invalid_state_messages,

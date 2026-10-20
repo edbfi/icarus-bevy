@@ -8,6 +8,11 @@
 //! identity verification runs, and nothing here demonstrates compatibility
 //! with any ICARUS client. Status records carry counts only.
 //!
+//! With `[network] release_profile` set, the release TOML is loaded and
+//! validated before the socket binds and its network checksum becomes the
+//! lab's local Hello version: a differing Hello gets Upgrade and the peer is
+//! removed (`upgrades_sent`, `closed_by_reply`). Unset, any version is accepted.
+//!
 //! Ordering: the lab polls at most `PACKETS_PER_UPDATE` datagrams once per
 //! app update in `RunFixedMainLoopSystems::BeforeFixedMainLoop`, so network
 //! input is processed before every `SimulationSet` of that update's fixed
@@ -19,10 +24,11 @@ use anyhow::{Context, Result};
 use bevy::prelude::{App, Resource, World};
 
 use crate::{
-    config::NetworkConfig,
+    config::{NetworkConfig, read_configuration},
     experimental::{
         admission::AdmissionPolicy,
         peer_lab::{PeerLab, PeerLabAdmission, PeerLabConfig, PeerLabPlugin, SessionCounts},
+        release::{ReleasePin, ReleaseProfile},
     },
 };
 
@@ -57,16 +63,46 @@ pub fn peer_lab_config(network: &NetworkConfig) -> PeerLabConfig {
     }
 }
 
-/// Validate `network` and bind its socket, or return `None` when disabled.
-pub fn bind(network: &NetworkConfig) -> Result<Option<PeerLab>> {
+/// A bound session socket and the server's own release pin its Hello
+/// version check uses, if one is configured.
+pub struct BoundNetwork {
+    pub lab: PeerLab,
+    pub release: Option<ReleasePin>,
+}
+
+/// Load and validate the configured release profile (bounded regular-file
+/// read), or `None` when `release_profile` is unset.
+pub fn release_profile(network: &NetworkConfig) -> Result<Option<ReleaseProfile>> {
+    network
+        .release_profile
+        .as_deref()
+        .map(|path| {
+            read_configuration(path)
+                .and_then(|text| ReleaseProfile::parse(&text))
+                .with_context(|| format!("load network.release_profile {}", path.display()))
+        })
+        .transpose()
+}
+
+/// Validate `network`, load its release profile and only then bind its
+/// socket, or return `None` when disabled.
+pub fn bind(network: &NetworkConfig) -> Result<Option<BoundNetwork>> {
     if !network.enabled {
         return Ok(None);
     }
     network.validate()?;
+    let profile = release_profile(network)?;
+    let mut config = peer_lab_config(network);
+    if let Some(profile) = &profile {
+        config = config.with_release_profile(profile);
+    }
     let address = SocketAddrV4::new(network.bind, network.port);
-    PeerLab::bind_address(address, peer_lab_config(network))
-        .context("bind the experimental network session socket")
-        .map(Some)
+    let lab = PeerLab::bind_address(address, config)
+        .context("bind the experimental network session socket")?;
+    Ok(Some(BoundNetwork {
+        lab,
+        release: profile.map(|profile| profile.pin),
+    }))
 }
 
 /// Install a bound lab into the production app; returns its local address.

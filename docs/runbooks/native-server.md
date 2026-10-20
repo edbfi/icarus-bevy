@@ -53,7 +53,13 @@ bind = "127.0.0.1"          # IPv4 loopback only
 port = 17777                # 0 selects an ephemeral port; CLI: --network-port
 max_players = 8             # admission occupancy limit, 1..=64
 session_timeout_seconds = 30  # idle eviction, 1..=600, monotonic real time
+release_profile = "config/release.toml"  # optional Hello version pin
 ```
+
+With `release_profile` set, the release TOML loads and validates before the
+bind (failure exits nonzero); a Hello whose version differs from its checksum
+gets Upgrade and the session closes (`upgrades_sent`). `network_listening`
+reports `version_check` and the pinned `release_build_id`.
 
 The socket binds before the data directory opens; a bind failure exits
 nonzero without touching world state. Each update polls at most 32 datagrams
@@ -73,6 +79,9 @@ only with the authored probe on loopback:
 ```bash
 cargo test --locked --test network
 target/release/icarus-server run --config server.toml --data-dir work/net-smoke --max-ticks 600
+# authored-probe churn against that server; prints one JSON summary
+cargo run --locked --example session_churn -- --server 127.0.0.1:17777 \
+  --cycles 200 --concurrency 1 --release-profile config/release.toml
 ```
 
 ## Persistence and recovery

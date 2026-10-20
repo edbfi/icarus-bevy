@@ -28,6 +28,7 @@ pub mod rep_rpc;
 pub mod rep_text;
 pub mod restore_rules;
 pub mod sequencing;
+pub mod session_churn;
 pub mod struct_array;
 pub mod tag_dictionary;
 pub mod tagged;

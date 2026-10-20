@@ -61,6 +61,12 @@ pub struct NetworkConfig {
     pub max_players: u32,
     /// Sessions without an accepted packet for this long are removed.
     pub session_timeout_seconds: u64,
+    /// Optional release TOML (such as `config/release.toml`; relative paths use
+    /// the working directory). When set, it is loaded and validated before the
+    /// socket binds, and a Hello whose network version differs from its
+    /// checksum is answered with Upgrade. Unset accepts any Hello version.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub release_profile: Option<PathBuf>,
 }
 
 impl Default for NetworkConfig {
@@ -71,6 +77,7 @@ impl Default for NetworkConfig {
             port: 17_777,
             max_players: 8,
             session_timeout_seconds: 30,
+            release_profile: None,
         }
     }
 }
@@ -88,6 +95,12 @@ impl NetworkConfig {
         ensure!(
             (1..=MAX_SESSION_TIMEOUT_SECONDS).contains(&self.session_timeout_seconds),
             "network.session_timeout_seconds must be 1..={MAX_SESSION_TIMEOUT_SECONDS}"
+        );
+        ensure!(
+            self.release_profile
+                .as_ref()
+                .is_none_or(|path| !path.as_os_str().is_empty()),
+            "network.release_profile is empty"
         );
         Ok(())
     }
@@ -142,7 +155,9 @@ impl ConfigOptions {
     }
 }
 
-fn read_configuration(path: &Path) -> Result<String> {
+/// Read a bounded (64 KiB) regular-file text input such as a configuration
+/// or release profile.
+pub(crate) fn read_configuration(path: &Path) -> Result<String> {
     // Follow normal config symlinks, but check the opened handle so a FIFO
     // cannot block startup or replace a regular file between path checks.
     let file = OpenOptions::new()

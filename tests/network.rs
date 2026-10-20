@@ -28,6 +28,8 @@ use icarus_bevy::{
         packet::{PacketConfig, Receiver as PacketReceiver},
         peer_lab::{PeerLab, PeerLabConfig, SHUTTING_DOWN_MESSAGE, SessionCounts},
         probe_client::{ProbeClient, ProbeConfig},
+        release::ReleaseProfile,
+        session_churn::{ChurnConfig, run_churn, session_cycle},
     },
     network,
     simulation::{SimulationSet, WorldSnapshot, build_app},
@@ -132,7 +134,7 @@ fn server_app(network: &NetworkConfig) -> (App, SocketAddr) {
         ..ServerConfig::default()
     };
     let mut app = build_app(&config, &WorldSnapshot::default()).unwrap();
-    let lab = network::bind(&config.network).unwrap().unwrap();
+    let lab = network::bind(&config.network).unwrap().unwrap().lab;
     let address = network::install(&mut app, lab).unwrap();
     assert!(address.ip().is_loopback());
     (app, address)
@@ -521,6 +523,8 @@ fn production_run_admits_a_probe_session_and_saves_on_sigterm() {
     assert_eq!(listening["max_players"], 8);
     let address: SocketAddr = listening["address"].as_str().unwrap().parse().unwrap();
     assert!(address.ip().is_loopback() && address.port() != 0);
+    assert_eq!(listening["version_check"], false);
+    assert_eq!(listening["release_build_id"], Value::Null);
 
     let client = join(address);
     let status = server.wait_for("status with a joined session", |record| {
@@ -626,4 +630,217 @@ fn disabled_network_opens_no_socket_and_reports_no_sessions() {
     assert!(logs.contains("\"network_enabled\":false"));
     assert!(!logs.contains("network_listening"));
     assert!(logs.contains("\"sessions\":null"));
+}
+
+/// The repository's release pin, by absolute path.
+fn release_toml() -> std::path::PathBuf {
+    std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("config/release.toml")
+}
+
+fn pinned_server_config(
+    directory: &std::path::Path,
+    profile: &std::path::Path,
+) -> std::path::PathBuf {
+    let path = directory.join("server.toml");
+    let profile = toml::Value::String(profile.display().to_string());
+    fs::write(
+        &path,
+        format!(
+            "status_interval_seconds = 1\n[network]\nenabled = true\nport = 0\nrelease_profile = {profile}\n"
+        ),
+    )
+    .unwrap();
+    path
+}
+
+/// Start `run` at 240 Hz (the configured maximum) with `config`.
+fn spawn_run(config: &std::path::Path, state: &std::path::Path) -> RunningServer {
+    RunningServer::spawn(
+        Command::new(env!("CARGO_BIN_EXE_icarus-server"))
+            .arg("run")
+            .arg("--config")
+            .arg(config)
+            .args(["--tick-hz", "240", "--max-ticks", "1000000", "--data-dir"])
+            .arg(state),
+    )
+}
+
+fn sigterm(server: &RunningServer) {
+    assert!(
+        Command::new("kill")
+            .args(["-TERM", &server.child.id().to_string()])
+            .status()
+            .unwrap()
+            .success()
+    );
+}
+
+fn listening_address(server: &mut RunningServer) -> (SocketAddr, Value) {
+    let listening = server.event("network_listening");
+    let address = listening["address"].as_str().unwrap().parse().unwrap();
+    (address, listening)
+}
+
+#[test]
+fn release_profile_config_parses_and_binds_the_pinned_version() {
+    let parsed: ServerConfig =
+        toml::from_str("[network]\nrelease_profile = \"config/release.toml\"\n").unwrap();
+    assert_eq!(
+        parsed.network.release_profile.as_deref(),
+        Some(std::path::Path::new("config/release.toml"))
+    );
+    let empty: ServerConfig = toml::from_str("[network]\nrelease_profile = \"\"\n").unwrap();
+    assert!(empty.validate().is_err());
+    // Unset stays out of the printed effective configuration.
+    let printed = toml::to_string_pretty(&ServerConfig::default()).unwrap();
+    assert!(!printed.contains("release_profile"), "{printed}");
+
+    let profile = ReleaseProfile::load(&release_toml()).unwrap();
+    let bound = network::bind(&NetworkConfig {
+        release_profile: Some(release_toml()),
+        ..enabled(0)
+    })
+    .unwrap()
+    .unwrap();
+    assert_eq!(
+        bound.lab.config().local_network_version,
+        Some(profile.pin.network_checksum)
+    );
+    assert_eq!(bound.release, Some(profile.pin));
+    let unpinned = network::bind(&enabled(0)).unwrap().unwrap();
+    assert_eq!(unpinned.lab.config().local_network_version, None);
+    assert!(unpinned.release.is_none());
+}
+
+#[test]
+fn pinned_run_upgrades_a_mismatched_hello_and_admits_the_pinned_version() {
+    let profile = ReleaseProfile::load(&release_toml()).unwrap();
+    let pinned = profile.pin.network_checksum;
+    let directory = tempfile::tempdir().unwrap();
+    let config = pinned_server_config(directory.path(), &release_toml());
+    let mut server = spawn_run(&config, &directory.path().join("state"));
+    let (address, listening) = listening_address(&mut server);
+    assert_eq!(listening["version_check"], true);
+    assert_eq!(listening["release_build_id"], profile.pin.build_id);
+
+    let mut mismatched = connect(address);
+    let report = mismatched.hello(pinned.wrapping_add(1), "").unwrap();
+    assert!(matches!(
+        report.messages().collect::<Vec<_>>().as_slice(),
+        [ControlMessage::Upgrade { version }] if *version == pinned
+    ));
+    if let Err((stage, error)) = session_cycle(address, pinned, Duration::from_secs(3)) {
+        panic!("{stage:?}: {error:#}");
+    }
+    server.wait_for("status after both sessions closed", |record| {
+        record["event"] == "status"
+            && record["sessions"]["closed_by_client"] == 1
+            && record["sessions"]["closed_by_reply"] == 1
+    });
+    sigterm(&server);
+    assert!(server.wait_exit().success());
+    let stopped = server.event("stopped");
+    let sessions = &stopped["sessions"];
+    for (field, value) in [
+        ("upgrades_sent", 1),
+        ("closed_by_reply", 1),
+        ("admissions_rejected", 0),
+        ("welcomes_sent", 1),
+        ("joins_succeeded", 1),
+        ("closed_by_client", 1),
+        ("active_peers", 0),
+    ] {
+        assert_eq!(sessions[field], value, "{field}");
+    }
+    drop(mismatched);
+}
+
+#[test]
+fn bad_release_profile_fails_before_bind_and_world_state() {
+    // An occupied port proves the order: a bind attempted first would fail
+    // with a bind error instead of the profile error.
+    let occupied = UdpSocket::bind("127.0.0.1:0").unwrap();
+    let port = occupied.local_addr().unwrap().port().to_string();
+    let directory = tempfile::tempdir().unwrap();
+    let invalid = directory.path().join("invalid-release.toml");
+    let pin = fs::read_to_string(release_toml()).unwrap();
+    fs::write(
+        &invalid,
+        pin.replace("network_checksum = ", "network_checksum = 1"),
+    )
+    .unwrap();
+    for profile in [directory.path().join("missing-release.toml"), invalid] {
+        let config = pinned_server_config(directory.path(), &profile);
+        let state = directory.path().join("state");
+        let output = Command::new(env!("CARGO_BIN_EXE_icarus-server"))
+            .arg("run")
+            .arg("--config")
+            .arg(&config)
+            .args(["--network-port", &port, "--max-ticks", "1", "--data-dir"])
+            .arg(&state)
+            .output()
+            .unwrap();
+        assert!(!output.status.success());
+        let logs = String::from_utf8_lossy(&output.stderr);
+        assert!(logs.contains("\"event\":\"fatal\""), "{logs}");
+        assert!(logs.contains("network.release_profile"), "{logs}");
+        assert!(!logs.contains("bind the experimental"), "{logs}");
+        assert!(!logs.contains("\"event\":\"started\""), "{logs}");
+        assert!(!state.exists());
+    }
+}
+
+#[test]
+fn production_run_survives_two_hundred_sequential_churn_cycles() {
+    const CYCLES: u64 = 200;
+    let directory = tempfile::tempdir().unwrap();
+    let config = server_config(directory.path());
+    let state = directory.path().join("state");
+    let mut server = spawn_run(&config, &state);
+    let (address, _) = listening_address(&mut server);
+    let summary = run_churn(&ChurnConfig {
+        server: address,
+        cycles: CYCLES,
+        concurrency: 1,
+        network_version: 0,
+        step_timeout: Duration::from_secs(2),
+    })
+    .unwrap();
+    let summary = serde_json::to_value(&summary).unwrap();
+    eprintln!("{summary}");
+    assert_eq!(summary["cycles_succeeded"], CYCLES, "{summary}");
+    assert_eq!(summary["cycles_failed"], 0, "{summary}");
+    server.wait_for("status after every client close", |record| {
+        record["event"] == "status" && record["sessions"]["closed_by_client"] == CYCLES
+    });
+    sigterm(&server);
+    let signalled = server.seen.len();
+    assert!(server.wait_exit().success());
+    let stopped = server.event("stopped");
+    assert_eq!(stopped["gameplay_ready"], false);
+    let sessions = &stopped["sessions"];
+    assert_eq!(sessions["active_peers"], 0);
+    for field in ["welcomes_sent", "joins_succeeded", "closed_by_client"] {
+        assert_eq!(sessions[field], CYCLES, "{field}");
+    }
+    for field in [
+        "admissions_rejected",
+        "peers_rejected",
+        "closed_by_timeout",
+        "closed_by_reply",
+        "closed_failed",
+        "closed_by_shutdown",
+        "invalid_state_messages",
+        "upgrades_sent",
+    ] {
+        assert_eq!(sessions[field], 0, "{field}");
+    }
+    assert!(
+        server.seen[signalled..]
+            .iter()
+            .any(|line| line.contains("\"event\":\"save_committed\"")),
+        "final save after SIGTERM"
+    );
+    let store = icarus_bevy::persistence::SnapshotStore::open(&state).unwrap();
+    assert!(store.load().unwrap().is_some());
 }
