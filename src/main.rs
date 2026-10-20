@@ -14,6 +14,7 @@ use bevy::time::TimeUpdateStrategy;
 use clap::{Parser, Subcommand};
 use icarus_bevy::{
     config::ConfigOptions,
+    network,
     persistence::{SaveReceipt, SaveWorker, SaveWorkerDisconnected, SnapshotStore},
     simulation::{RunClock, SimulationClock, TickMetrics, build_app, capture},
 };
@@ -31,7 +32,8 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
-    /// Run the headless foundation. Opens no gameplay or query sockets.
+    /// Run the headless foundation. Opens no socket unless the experimental,
+    /// loopback-only `[network]` session layer is enabled; no gameplay runs.
     Run {
         #[command(flatten)]
         options: ConfigOptions,
@@ -81,6 +83,14 @@ enum Command {
             conflicts_with_all = ["inner_tags", "recorders", "stage_check"]
         )]
         preserve_check: bool,
+        /// Stage the prospect, then type every recorder body's values and
+        /// require each to re-encode exactly; reports typed and uninterpreted
+        /// leaf counts per class pseudonym without importing or writing state.
+        #[arg(
+            long,
+            conflicts_with_all = ["inner_tags", "recorders", "stage_check", "preserve_check"]
+        )]
+        typed_check: bool,
     },
     /// Seed a NEW native world whose only content is the lossless, value-opaque
     /// preservation of a supplied prospect. Nothing is interpreted or imported;
@@ -91,7 +101,9 @@ enum Command {
         #[arg(long)]
         data_dir: PathBuf,
     },
-    /// Reserved interface: official format is unknown; fails without writing.
+    /// Plan a native import of a supplied prospect. `--dry-run` prints the
+    /// plan (counts only); without it the import is refused while the plan has
+    /// blockers. Nothing is ever written; the destination is not touched.
     ImportSave {
         #[arg(long)]
         source: PathBuf,
@@ -126,9 +138,25 @@ fn execute(cli: Cli) -> Result<()> {
             println!("{}", preserve_save(file, &data_dir)?);
             Ok(())
         }
-        Command::ImportSave { .. } => bail!(
-            "ICARUS save import is unavailable until the format and migration fidelity are validated; no files were written"
-        ),
+        Command::ImportSave {
+            source, dry_run, ..
+        } => {
+            let file = open_regular_source(&source)?;
+            let plan = icarus_bevy::import_plan::plan_import(
+                file,
+                &icarus_bevy::import_plan::ContentCatalog::empty(),
+            )?;
+            if dry_run {
+                println!("{}", serde_json::to_string(&plan)?);
+                return Ok(());
+            }
+            ensure!(
+                plan.importable,
+                "import blocked by {}; run with --dry-run for the plan; no files were written",
+                serde_json::to_string(&plan.blockers)?
+            );
+            bail!("native world import writing is not implemented; no files were written")
+        }
         Command::InspectSave {
             source,
             inner_tags,
@@ -136,11 +164,14 @@ fn execute(cli: Cli) -> Result<()> {
             stage_check,
             expect_prospect_name,
             preserve_check,
+            typed_check,
         } => {
             // Check the opened handle: a path can change to a FIFO after a
             // regular-file precheck. Normal regular-file symlinks still work.
             let file = open_regular_source(&source)?;
-            let output = if preserve_check {
+            let output = if typed_check {
+                serde_json::to_string(&icarus_bevy::prospect::typed_check(file)?)?
+            } else if preserve_check {
                 serde_json::to_string(&preserve_check_report(file)?)?
             } else if stage_check {
                 serde_json::to_string(&icarus_bevy::prospect::stage_prospect(
@@ -389,6 +420,13 @@ fn run(options: ConfigOptions, max_ticks: Option<u64>, compressed: bool) -> Resu
         !compressed || max_ticks.is_some(),
         "a compressed run needs max_ticks"
     );
+    // Load the release profile and bind before any world state opens: either
+    // failure exits without creating, locking or loading the data directory.
+    let bound = network::bind(&config.network)?;
+    let pinned_build = bound
+        .as_ref()
+        .and_then(|bound| bound.release.as_ref())
+        .map(|pin| pin.build_id);
     let store = SnapshotStore::open(&config.data_dir)?;
     let loaded = store.load()?;
     if loaded
@@ -413,6 +451,9 @@ fn run(options: ConfigOptions, max_ticks: Option<u64>, compressed: bool) -> Resu
     if compressed {
         app.insert_resource(TimeUpdateStrategy::FixedTimesteps(1));
     }
+    let network_address = bound
+        .map(|bound| network::install(&mut app, bound.lab))
+        .transpose()?;
     app.finish();
     app.cleanup();
     let mut writer = SaveWorker::spawn(store)?;
@@ -441,8 +482,21 @@ fn run(options: ConfigOptions, max_ticks: Option<u64>, compressed: bool) -> Resu
         "{}",
         json!({"event": "started", "tick": snapshot.tick, "tick_hz": config.tick_hz,
         "icarus_compatible": false, "gameplay_ready": false,
-        "native_schema": snapshot.schema_version, "compressed": compressed})
+        "native_schema": snapshot.schema_version, "compressed": compressed,
+        "network_enabled": network_address.is_some()})
     );
+    if let Some(address) = network_address {
+        // The server's own bound address, configured limits and pinned build;
+        // never a client-supplied value.
+        eprintln!(
+            "{}",
+            json!({"event": "network_listening", "experimental": true,
+            "address": address.to_string(), "max_players": config.network.max_players,
+            "session_timeout_seconds": config.network.session_timeout_seconds,
+            "version_check": pinned_build.is_some(), "release_build_id": pinned_build,
+            "icarus_compatible": false, "gameplay_ready": false})
+        );
+    }
 
     loop {
         let frame = Instant::now();
@@ -458,6 +512,8 @@ fn run(options: ConfigOptions, max_ticks: Option<u64>, compressed: bool) -> Resu
         let now = clock.elapsed(tick);
         autosave.observe(writer.poll(), now)?;
         if stopping.load(Ordering::SeqCst) || target_tick.is_some_and(|target| tick >= target) {
+            // Admission stops before any drain or final-save work.
+            network::stop_admission(app.world_mut());
             break;
         }
         if now.saturating_sub(last_save_request) >= Duration::from_secs(config.autosave_seconds) {
@@ -470,6 +526,7 @@ fn run(options: ConfigOptions, max_ticks: Option<u64>, compressed: bool) -> Resu
                 thread::sleep(Duration::from_millis(1));
             }
             if stopping.load(Ordering::SeqCst) {
+                network::stop_admission(app.world_mut());
                 break;
             }
             if !writer.is_busy() {
@@ -492,7 +549,8 @@ fn run(options: ConfigOptions, max_ticks: Option<u64>, compressed: bool) -> Resu
                 "last_tick_micros": metrics.last_tick_micros,
                 "max_tick_micros": metrics.max_tick_micros,
                 "tick_p50_micros": metrics.tick_micros.quantile_micros(50),
-                "tick_p99_micros": metrics.tick_micros.quantile_micros(99)})
+                "tick_p99_micros": metrics.tick_micros.quantile_micros(99),
+                "sessions": network::session_counts(app.world())})
             );
             last_status = now;
         }
@@ -501,6 +559,10 @@ fn run(options: ConfigOptions, max_ticks: Option<u64>, compressed: bool) -> Resu
         }
     }
 
+    // Idempotent: admission is already stopped; close every session and drop
+    // the socket before the bounded drain and final save.
+    network::stop_admission(app.world_mut());
+    let sessions = network::teardown(app.world_mut());
     let deadline = Instant::now() + Duration::from_secs(config.shutdown_timeout_seconds);
     // A failed in-flight autosave is reported as in the loop; the final save still runs.
     match writer.settle_before(deadline)? {
@@ -522,7 +584,8 @@ fn run(options: ConfigOptions, max_ticks: Option<u64>, compressed: bool) -> Resu
     }
     eprintln!(
         "{}",
-        json!({"event": "stopped", "tick": app.world().resource::<SimulationClock>().tick})
+        json!({"event": "stopped", "tick": app.world().resource::<SimulationClock>().tick,
+        "gameplay_ready": false, "sessions": sessions})
     );
     Ok(())
 }

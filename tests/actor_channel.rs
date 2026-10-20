@@ -2146,7 +2146,7 @@ fn relevancy_priority_tick_rate_and_consider_list_never_panic_on_randomized_inpu
             is_relevant_to_connection: flag2(4),
             actor_b_tear_off: flag2(5),
             force_relevant_frame: next_u64() as i32,
-            driver_replication_frame: next_u64() as i32,
+            connection_last_processed_frame: next_u64() as i32,
             channel_b_is_replicating_actor: flag2(6),
             actor_b_always_relevant: flag2(7),
             actor_b_net_temporary: flag2(8),
@@ -2375,7 +2375,7 @@ fn server_replicate_actors_prioritize_process_and_mark_relevant() {
         is_relevant_to_connection: true,
         actor_b_tear_off: false,
         force_relevant_frame: 0,
-        driver_replication_frame: 100,
+        connection_last_processed_frame: 100,
         channel_b_is_replicating_actor: false,
         actor_b_always_relevant: false,
         actor_b_net_temporary: false,
@@ -2511,7 +2511,7 @@ fn server_replicate_actors_prioritize_process_and_mark_relevant() {
         relevant_timeout: 5.0,
         is_relevant_to_connection: false,
         force_relevant_frame: 50,
-        driver_replication_frame: 100,
+        connection_last_processed_frame: 100,
         ..base_proc
     };
     assert_eq!(
@@ -2525,6 +2525,20 @@ fn server_replicate_actors_prioritize_process_and_mark_relevant() {
         }),
         ProcessPrioritizedActorOutcome::CloseChannel { close_reason: 4 }
     );
+    // Force relevance compares ForceRelevantFrame (info + 0xd4) with the
+    // connection's LastProcessedFrame (conn + 0x200), unsigned (`jb`), F-772.
+    for (force, last, recent) in [(100, 100, true), (99, 100, false), (-1, 100, true)] {
+        let outcome = evaluate_process_prioritized_actor(&ProcessPrioritizedActorInputs {
+            force_relevant_frame: force,
+            connection_last_processed_frame: last,
+            ..not_recent
+        });
+        assert_eq!(
+            !matches!(outcome, ProcessPrioritizedActorOutcome::CloseChannel { .. }),
+            recent,
+            "force {force} last {last}"
+        );
+    }
     // NetStartup actor whose level is still initialized does not close its channel here:
     assert_eq!(
         evaluate_process_prioritized_actor(&ProcessPrioritizedActorInputs {

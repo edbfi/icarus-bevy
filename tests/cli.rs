@@ -37,23 +37,28 @@ fn config_validation_does_not_create_runtime_directory() {
 }
 
 #[test]
-fn unsupported_import_fails_without_reading_or_writing_paths() {
+fn import_with_a_missing_source_fails_without_writing_paths() {
     let directory = tempfile::tempdir().unwrap();
     let destination = directory.path().join("imported");
-    let output = cli()
-        .args([
-            "import-save",
-            "--source",
-            "missing-official-save",
-            "--destination",
-        ])
-        .arg(&destination)
-        .arg("--dry-run")
-        .output()
-        .unwrap();
-    assert!(!output.status.success());
-    assert!(String::from_utf8_lossy(&output.stderr).contains("unavailable"));
-    assert!(!destination.exists());
+    for dry_run in [true, false] {
+        let mut command = cli();
+        command
+            .args([
+                "import-save",
+                "--source",
+                "missing-official-save",
+                "--destination",
+            ])
+            .arg(&destination);
+        if dry_run {
+            command.arg("--dry-run");
+        }
+        let output = command.output().unwrap();
+        assert!(!output.status.success());
+        assert!(output.stdout.is_empty());
+        assert!(String::from_utf8_lossy(&output.stderr).contains("open prospect envelope"));
+        assert!(!destination.exists());
+    }
 }
 
 #[test]

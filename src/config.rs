@@ -1,6 +1,7 @@
 use std::{
     fs::OpenOptions,
     io::Read,
+    net::Ipv4Addr,
     os::unix::fs::OpenOptionsExt,
     path::{Path, PathBuf},
     time::Duration,
@@ -21,6 +22,8 @@ pub struct ServerConfig {
     pub autosave_seconds: u64,
     pub shutdown_timeout_seconds: u64,
     pub status_interval_seconds: u64,
+    /// Experimental session layer; last so TOML writes it as a `[network]` table.
+    pub network: NetworkConfig,
 }
 
 impl Default for ServerConfig {
@@ -32,7 +35,78 @@ impl Default for ServerConfig {
             autosave_seconds: 60,
             shutdown_timeout_seconds: 10,
             status_interval_seconds: 10,
+            network: NetworkConfig::default(),
         }
+    }
+}
+
+/// Largest accepted `network.max_players`.
+pub const MAX_NETWORK_PLAYERS: u32 = 64;
+/// Largest accepted `network.session_timeout_seconds`.
+pub const MAX_SESSION_TIMEOUT_SECONDS: u64 = 600;
+
+/// EXPERIMENTAL opt-in UDP session layer (`[network]`), built from the
+/// loopback peer lab. It demonstrates no ICARUS compatibility and runs no
+/// gameplay; disabled by default.
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(default, deny_unknown_fields)]
+pub struct NetworkConfig {
+    pub enabled: bool,
+    /// IPv4 address to bind; loopback only while the layer is experimental.
+    pub bind: Ipv4Addr,
+    /// UDP port; zero selects an ephemeral port. The default matches the game
+    /// port the offline reference probe targets; no compatibility is implied.
+    pub port: u16,
+    /// Admission occupancy limit; the official documented player limit is 8.
+    pub max_players: u32,
+    /// Sessions without an accepted packet for this long are removed.
+    pub session_timeout_seconds: u64,
+    /// Optional release TOML (such as `config/release.toml`; relative paths use
+    /// the working directory). When set, it is loaded and validated before the
+    /// socket binds, and a Hello whose network version differs from its
+    /// checksum is answered with Upgrade. Unset accepts any Hello version.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub release_profile: Option<PathBuf>,
+}
+
+impl Default for NetworkConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            bind: Ipv4Addr::LOCALHOST,
+            port: 17_777,
+            max_players: 8,
+            session_timeout_seconds: 30,
+            release_profile: None,
+        }
+    }
+}
+
+impl NetworkConfig {
+    pub fn validate(&self) -> Result<()> {
+        ensure!(
+            self.bind.is_loopback(),
+            "network.bind must be an IPv4 loopback address while the session layer is experimental"
+        );
+        ensure!(
+            (1..=MAX_NETWORK_PLAYERS).contains(&self.max_players),
+            "network.max_players must be 1..={MAX_NETWORK_PLAYERS}"
+        );
+        ensure!(
+            (1..=MAX_SESSION_TIMEOUT_SECONDS).contains(&self.session_timeout_seconds),
+            "network.session_timeout_seconds must be 1..={MAX_SESSION_TIMEOUT_SECONDS}"
+        );
+        ensure!(
+            self.release_profile
+                .as_ref()
+                .is_none_or(|path| !path.as_os_str().is_empty()),
+            "network.release_profile is empty"
+        );
+        Ok(())
+    }
+
+    pub fn session_timeout(&self) -> Duration {
+        Duration::from_secs(self.session_timeout_seconds)
     }
 }
 
@@ -48,6 +122,10 @@ pub struct ConfigOptions {
     pub tick_hz: Option<u32>,
     #[arg(long)]
     pub autosave_seconds: Option<u64>,
+    /// UDP port of the experimental `[network]` session layer (0: ephemeral);
+    /// does not enable it.
+    #[arg(long)]
+    pub network_port: Option<u16>,
 }
 
 impl ConfigOptions {
@@ -69,12 +147,17 @@ impl ConfigOptions {
         if let Some(seconds) = self.autosave_seconds {
             config.autosave_seconds = seconds;
         }
+        if let Some(port) = self.network_port {
+            config.network.port = port;
+        }
         config.validate()?;
         Ok(config)
     }
 }
 
-fn read_configuration(path: &Path) -> Result<String> {
+/// Read a bounded (64 KiB) regular-file text input such as a configuration
+/// or release profile.
+pub(crate) fn read_configuration(path: &Path) -> Result<String> {
     // Follow normal config symlinks, but check the opened handle so a FIFO
     // cannot block startup or replace a regular file between path checks.
     let file = OpenOptions::new()
@@ -120,7 +203,7 @@ impl ServerConfig {
             (1..=3600).contains(&self.status_interval_seconds),
             "status_interval_seconds must be 1..=3600"
         );
-        Ok(())
+        self.network.validate()
     }
 
     pub fn tick_interval(&self) -> Duration {

@@ -750,6 +750,21 @@ pub fn lookup_recorder_ctor_defaults(class_units: &[u16]) -> Option<RecorderCtor
     None
 }
 
+/// The project pseudonym (`C001..C038` blob classes, `N001..N027` others) of a
+/// `/Script/Icarus.*RecorderComponent` UTF-16 class path, or `None` if the path
+/// is not one of the 65 registered classes. Pseudonyms keep reports free of
+/// supplied class strings.
+pub fn recorder_class_label(class_units: &[u16]) -> Option<String> {
+    let crc = checksum_utf16(class_units, 0);
+    if let Some(index) = BLOB_CLASS_UTF16_CRCS.iter().position(|&entry| entry == crc) {
+        return Some(format!("C{:03}", index + 1));
+    }
+    NON_BLOB_CLASS_UTF16_CRCS
+        .iter()
+        .position(|&entry| entry == crc)
+        .map(|index| format!("N{:03}", index + 1))
+}
+
 struct StagedRecorderEval {
     is_valid: bool,
     was_reset_rocket_spawn: bool,
@@ -1170,6 +1185,35 @@ pub fn stage_prospect_save_state(
     component_byte_limit: usize,
     expected_prospect_id: Option<&[u16]>,
 ) -> Result<StagedProspectSaveState> {
+    stage_prospect_save_state_with_decisions(
+        roots,
+        profile,
+        component_byte_limit,
+        expected_prospect_id,
+    )
+    .map(|(staged, _)| staged)
+}
+
+/// One recorder's staging outcome, in recorder-array order.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct StagedRecorderDecision {
+    /// Kept after `Validate` (`+0x408`); always `false` for a version-0 save.
+    pub retained: bool,
+    pub owner_resolve_policy: OwnerResolvePolicy,
+    pub skip_default_owner_resolution: bool,
+    pub requires_stitching: bool,
+    /// A `C033` `bIsPhysicsDynamic` tree the original drops on its next save.
+    pub physics_dynamic_tree: bool,
+    pub reset_rocket_spawn: bool,
+}
+
+/// [`stage_prospect_save_state`], also returning every recorder's decision.
+pub fn stage_prospect_save_state_with_decisions(
+    roots: &[RootTag<'_>],
+    profile: TagProfile,
+    component_byte_limit: usize,
+    expected_prospect_id: Option<&[u16]>,
+) -> Result<(StagedProspectSaveState, Vec<StagedRecorderDecision>)> {
     ensure!(
         (1..=MAX_BOUNDED_COMPONENT_BYTES).contains(&component_byte_limit),
         "component byte limit must be between 1 byte and 1 MiB"
@@ -1326,9 +1370,11 @@ pub fn stage_prospect_save_state(
     let mut manually_resolved_owner_count = 0usize;
     let mut requires_stitching_count = 0usize;
     let mut total_component_field_tags = 0usize;
+    let mut decisions = Vec::new();
     if has_recorders_root {
         let recorders = read_recorders(roots, profile)?;
         parsed_recorder_count = recorders.records().len();
+        decisions.reserve_exact(parsed_recorder_count);
         for recorder in recorders.records() {
             ensure!(
                 recorder.fields().len() == 2,
@@ -1345,7 +1391,23 @@ pub fn stage_prospect_save_state(
             total_component_field_tags = total_component_field_tags
                 .checked_add(component.fields().len())
                 .context("component field count overflow")?;
-            if version != 0 {
+            if version == 0 {
+                // Version 0 drops every recorder without evaluating its class,
+                // so an unregistered class still stages; it takes the base
+                // constructor defaults (FindOrRespawn, no skip).
+                let defaults = lookup_recorder_ctor_defaults(&class_units);
+                decisions.push(StagedRecorderDecision {
+                    retained: false,
+                    owner_resolve_policy: defaults.map_or(OwnerResolvePolicy::FindOrRespawn, |d| {
+                        d.owner_resolve_policy
+                    }),
+                    skip_default_owner_resolution: defaults
+                        .is_some_and(|d| d.b_skip_default_owner_resolution),
+                    requires_stitching: false,
+                    physics_dynamic_tree: false,
+                    reset_rocket_spawn: false,
+                });
+            } else {
                 let eval = evaluate_staged_recorder_component(
                     &class_units,
                     &component,
@@ -1378,6 +1440,14 @@ pub fn stage_prospect_save_state(
                 if eval.is_physics_dynamic_tree {
                     physics_dynamic_tree_recorder_count += 1;
                 }
+                decisions.push(StagedRecorderDecision {
+                    retained: eval.is_valid,
+                    owner_resolve_policy: eval.owner_resolve_policy,
+                    skip_default_owner_resolution: eval.skip_default_owner_resolution,
+                    requires_stitching: eval.requires_stitching,
+                    physics_dynamic_tree: eval.is_physics_dynamic_tree,
+                    reset_rocket_spawn: eval.was_reset_rocket_spawn,
+                });
             }
         }
     }
@@ -1395,7 +1465,7 @@ pub fn stage_prospect_save_state(
         );
     }
 
-    Ok(StagedProspectSaveState {
+    let staged = StagedProspectSaveState {
         profile: match profile {
             TagProfile::MemoryArchive522 => "experimental_memory_archive_522",
         },
@@ -1423,5 +1493,6 @@ pub fn stage_prospect_save_state(
         requires_stitching_count,
         total_component_field_tags,
         world_imported: false,
-    })
+    };
+    Ok((staged, decisions))
 }

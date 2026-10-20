@@ -2,6 +2,7 @@
 //!
 //! Recovered field names and algorithm observations are documented in
 //! `docs/specs/save-format/prospect-envelope.md`. Payload serialization remains unknown.
+use std::collections::BTreeMap;
 use std::io::Read;
 
 use anyhow::{Context, Result, ensure};
@@ -14,11 +15,17 @@ use crate::experimental::archive::{ByteOrder, decode_string};
 use crate::experimental::component::{
     BaseComponent, MAX_BOUNDED_COMPONENT_BYTES, read_base_component_with_limit,
 };
+use crate::experimental::property_tree::{
+    BaseComponentTree, MAX_TREE_DEPTH, MAX_TREE_NODES, TreeLimits,
+};
 use crate::experimental::recorders::{
-    RecorderSummary, StagedProspectSaveState, read_recorders, stage_prospect_save_state,
+    RecorderSummary, StagedProspectSaveState, read_recorders, recorder_class_label,
+    stage_prospect_save_state,
 };
 use crate::experimental::restore_rules::normalize_prospect_name;
+use crate::experimental::struct_array::MAX_BOUNDED_STRUCT_ARRAY_BYTES;
 use crate::experimental::tagged::{RootTagSummary, TagProfile, read_root};
+use crate::experimental::typed_value::{Gap, TypedComponent, TypedSummary};
 use crate::json::JsonObject;
 use crate::preservation::{PreserveLimits, PreservedSection};
 
@@ -57,9 +64,9 @@ pub struct EnvelopeInspection {
     pub world_imported: bool,
 }
 
-struct ValidatedEnvelope {
-    inspection: EnvelopeInspection,
-    payload: Vec<u8>,
+pub(crate) struct ValidatedEnvelope {
+    pub(crate) inspection: EnvelopeInspection,
+    pub(crate) payload: Vec<u8>,
 }
 
 #[derive(Debug, Serialize)]
@@ -172,6 +179,103 @@ pub fn stage_prospect(
     })
 }
 
+/// Typed-value coverage of every recorder body, by class pseudonym; counts only.
+#[derive(Debug, Serialize)]
+pub struct TypedProspectInspection {
+    pub validation: &'static str,
+    pub envelope: EnvelopeInspection,
+    pub staged: StagedProspectSaveState,
+    pub recorder_count: usize,
+    pub typed_recorders: usize,
+    /// Bodies the base-component tree could not frame; kept opaque.
+    pub unframed_recorders: usize,
+    /// Recorders whose class string is not one of the 65 registered classes.
+    pub unregistered_classes: usize,
+    /// Every typed body re-encoded to its original bytes.
+    pub round_trip_exact: bool,
+    pub totals: TypedSummary,
+    /// Per class pseudonym: recorders and uninterpreted leaves.
+    pub classes: BTreeMap<String, ClassTypedCoverage>,
+    pub world_imported: bool,
+}
+
+#[derive(Debug, Default, Serialize)]
+pub struct ClassTypedCoverage {
+    pub recorders: usize,
+    pub properties: usize,
+    pub uninterpreted: usize,
+    pub gaps: BTreeMap<Gap, usize>,
+}
+
+/// Tree bounds for typing: the hard depth, node and struct-array ceilings, so a
+/// large construction body frames instead of staying opaque.
+const TYPED_TREE_LIMITS: TreeLimits = TreeLimits {
+    max_depth: MAX_TREE_DEPTH,
+    max_nodes: MAX_TREE_NODES,
+    struct_array_bytes: MAX_BOUNDED_STRUCT_ARRAY_BYTES,
+    container_struct_bytes: None,
+};
+
+/// Stage the prospect exactly as [`stage_prospect`] does, then frame every
+/// recorder body as a base-component tree and type its values
+/// ([`TypedComponent`]). Each typed body must re-encode to its original bytes or
+/// the check fails. Reports counts by class pseudonym, never names or values.
+pub fn typed_check(reader: impl Read) -> Result<TypedProspectInspection> {
+    let validated = decode_envelope(reader)?;
+    let profile = TagProfile::MemoryArchive522;
+    let tags = read_root(&validated.payload, profile).context("invalid experimental root tags")?;
+    let staged = stage_prospect_save_state(&tags.tags, profile, MAX_BOUNDED_COMPONENT_BYTES, None)
+        .context("invalid staged FProspectSaveState")?;
+    let recorders =
+        read_recorders(&tags.tags, profile).context("invalid experimental recorder framing")?;
+    let mut report = TypedProspectInspection {
+        validation: "experimental_typed_values_only",
+        envelope: validated.inspection,
+        staged,
+        recorder_count: recorders.records().len(),
+        typed_recorders: 0,
+        unframed_recorders: 0,
+        unregistered_classes: 0,
+        round_trip_exact: true,
+        totals: TypedSummary::default(),
+        classes: BTreeMap::new(),
+        world_imported: false,
+    };
+    for recorder in recorders.records() {
+        // read_recorders validated this exact FString; it is never reported.
+        let class = decode_string(recorder.class_value, ByteOrder::Little)
+            .context("invalid experimental recorder class string")?;
+        let label = recorder_class_label(&class.units).unwrap_or_else(|| {
+            report.unregistered_classes += 1;
+            "unregistered".to_owned()
+        });
+        let coverage = report.classes.entry(label).or_default();
+        coverage.recorders += 1;
+        let Ok(tree) = BaseComponentTree::parse(
+            recorder.binary_data,
+            profile,
+            MAX_BOUNDED_COMPONENT_BYTES,
+            TYPED_TREE_LIMITS,
+        ) else {
+            report.unframed_recorders += 1;
+            continue;
+        };
+        let (typed, summary) = TypedComponent::from_component(&tree)?;
+        ensure!(
+            typed.to_bytes()? == recorder.binary_data,
+            "typed recorder body does not re-encode to its original bytes"
+        );
+        report.typed_recorders += 1;
+        coverage.properties += summary.properties;
+        coverage.uninterpreted += summary.uninterpreted;
+        for (gap, count) in &summary.gaps {
+            *coverage.gaps.entry(*gap).or_default() += count;
+        }
+        report.totals.add(&summary);
+    }
+    Ok(report)
+}
+
 /// Envelope observations plus a verified lossless preservation of its payload.
 pub struct PreservedEnvelope {
     pub envelope: EnvelopeInspection,
@@ -270,7 +374,7 @@ pub fn visit_class_components(
     Ok(report)
 }
 
-fn decode_envelope(reader: impl Read) -> Result<ValidatedEnvelope> {
+pub(crate) fn decode_envelope(reader: impl Read) -> Result<ValidatedEnvelope> {
     let mut bytes = Vec::new();
     reader
         .take(MAX_ENVELOPE_BYTES as u64 + 1)

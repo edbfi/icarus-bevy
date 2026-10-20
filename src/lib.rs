@@ -1,11 +1,14 @@
 //! Native, headless Bevy foundation. ICARUS interoperability remains unverified.
 pub mod config;
 pub mod experimental;
+pub mod import_plan;
 mod json;
 pub mod metrics;
+pub mod network;
 pub mod persistence;
 pub mod preservation;
 pub mod prospect;
+pub mod replication;
 pub mod simulation;
 
 /// Open without blocking so a FIFO or device cannot stall a read; callers then

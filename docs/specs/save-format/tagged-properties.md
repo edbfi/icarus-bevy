@@ -2,7 +2,7 @@
 
 ## Status
 
-experimental; older-server build 25621760 profile `MemoryArchive522`, with bounded static comparison to client build 25793767. Last reconciled: 2026-10-18
+experimental; older-server build 25621760 profile `MemoryArchive522`, with bounded static comparison to client build 25793767. Last reconciled: 2026-10-20
 Full text: d5b0ae6:docs/specs/save-format/tagged-properties.md
 
 ## Scope
@@ -73,6 +73,11 @@ Reader policy (authored; research limits, not recovered format limits):
   up to 1 MiB `_with_limit` / 256 fields per component or struct element / 4,096
   elements; F-178, F-198, F-200, F-248, F-249, F-300, F-302, F-312, F-313,
   F-315, F-634).
+
+Typed values (authored `experimental::typed_value`): under the hard tree
+ceilings every leaf of 15 prospects is a scalar, archive string, text frame,
+tagged struct, one of the fixed engine structs, a scalar or struct array, or a
+Map item, and re-encodes exactly (F-766).
 
 Supplied-data measurements (two private copies):
 

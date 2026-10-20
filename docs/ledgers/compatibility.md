@@ -10,7 +10,7 @@ comparisons apply to build 25793767 (M-167) and do not establish a matched
 dedicated-server baseline. Full text before condensation:
 16d1a9d:docs/ledgers/compatibility.md.
 
-Last reconciled: 2026-10-18
+Last reconciled: 2026-10-20
 
 ## Surfaces
 
@@ -51,6 +51,7 @@ client connected and no prospect loaded (F-268).
 | Inner prospect state and dispatch | Observed; version migration mirrored | F-257, F-715 | Recorder payloads and newer-build fidelity (U-025) |
 | Root property tags and recorder framing | Observed on two copies; experimental readers | F-244, F-245, F-727; [spec](../specs/save-format/tagged-properties.md) | Packaged row meanings and native import (U-020, U-045) |
 | Selected base-component framing | Observed on 1,296 records; 38-class overrides verified | F-259, F-260, F-727 | Packaged row meanings and native import (U-020, U-045) |
+| Recorder value types and import plan | All 15 prospects type losslessly; dry-run plan blocks only on unmapped content | F-766, F-767 | Native content catalog, import writer and stock-client validation (U-045) |
 | Selected tagged struct arrays | Library reader; C034 and C001 arrays qualified | F-316, F-196, F-728 | Packaged row meanings and native import (U-020, U-045) |
 | C028 top, child headers and leaves | Complete supplied population and restore hooks qualified | F-115, F-128, F-135, F-137, F-123, F-124, F-125, F-716, F-728 | Value meanings and native import (U-020, U-045) |
 | C034 top, own and inherited scalars | Exact structures, widths and `FName` parsing qualified | F-146, F-147, F-150, F-152, F-196, F-719, F-720 | Value meanings and native import (U-020, U-045) |

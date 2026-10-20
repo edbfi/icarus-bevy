@@ -4,7 +4,7 @@ Rows retired from [the active ledger](../save-format.md): superseded by a summar
 execution receipts, or historical session state. Full text is kept and IDs stay
 permanent; cite the superseding row where one exists.
 
-Last reconciled: 2026-10-18
+Last reconciled: 2026-10-20
 
 | ID | Claim | Kind | Evidence | Scope and limits | Unknowns | Status |
 | --- | --- | --- | --- | --- | --- | --- |
@@ -25,3 +25,9 @@ Last reconciled: 2026-10-18
 | F-334 | From-file chain is observed separately through 0x141823fb0 and 0x1418e6140 | observed | static-decompile; M-147 | medium; build 25621760; caller unknown | U-056 | superseded-by F-717 |
 | F-256 | Missing/truncated by-name prospect inputs were rejected without an observed crash; the from-file failure path is a static lead only. | observed | runtime-capture; M-154, M-155; build 25621760 | medium; offline rejection tests; Not a reproduced original defect | U-047 | superseded-by F-733 |
 | F-327 | Failure reporting sets a global flag, then output formatting and a virtual call whose static target can force termination or raise per guard state | observed | static-decompile; M-155 | medium; build 25621760; not log-only; runtime reach and final outcome untested | U-058 | superseded-by F-732 |
+| F-286 | Older reader: traversal 0x14200f5b0, tag reader 0x14215f530, names via archive virtual +0x140 = 0x140962300, string reader 0x141e15db0; reset to 522, no swap | observed | static-decompile; M-147; build 25621760 | medium; M-147/E-009, M-147/E-010; Object offsets are not file offsets |  | superseded-by F-765 |
+| F-287 | Tag = name string, type string, i32 LE size, i32 LE array index, type metadata, 1-B GUID flag (+16 B), value of size B; None ends root | observed | static-decompile; M-147; build 25621760 | medium; memory522 profile; no type string after None |  | superseded-by F-765 |
+| F-288 | Type metadata: Struct name + 16-B GUID; Array inner type; Byte/Enum enum name; Bool 1-B header value; Int/UInt32/Str/Name/Float/Text none | observed | static-decompile; M-147, M-120; build 25621760 | medium; memory522 profile; values unvalidated |  | superseded-by F-765 |
+| F-289 | Older tag reader gates Struct GUID at version 441, Array inner type at 282, property GUID at 503; all apply at 522 | observed | static-decompile; M-147; build 25621760 | medium; tag reader 0x14215f530 |  | superseded-by F-765 |
+| F-290 | Built-in name table gives UInt32Property ID 25; it reaches common GUID flag without type-specific extensions | observed | static-decompile; M-147; build 25621760 | medium; 0x14215f530; payload undecoded |  | superseded-by F-765 |
+| F-291 | Size counts only value bytes after the full header; 0x142166850 compares property-reader position change to it | observed | static-decompile; M-147; build 25621760 | medium; M-147/E-010; C++ object offset is not file offset |  | superseded-by F-765 |

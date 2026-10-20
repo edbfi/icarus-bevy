@@ -27,94 +27,111 @@ simulated seconds, and a due autosave awaits one still in flight, so a long
 schedule of saves runs in minutes ([synthetic workload](synthetic-workload.md)).
 
 The development default is 30 Hz with at most four catch-up ticks per update.
-This is provisional, not a discovered ICARUS tick rate. No game/query sockets open.
+This is provisional, not a discovered ICARUS tick rate. No game/query sockets
+open unless the experimental `[network]` section below is enabled.
 The process emits JSON lifecycle/status/save records to stderr and always reports
 `gameplay_ready: false`. Tick timing currently measures only foundation systems,
 not representative gameplay performance.
 
 Configuration precedence is CLI → TOML → defaults. Unknown fields and invalid
 limits are rejected. Relative paths resolve from the working directory.
-Config inputs must resolve to an opened regular file of at most64KiB; regular
+Config inputs must resolve to an opened regular file of at most 64 KiB; regular
 symlinks are supported. FIFO and oversized inputs fail before runtime state opens
 (F-671).
 `check-config` prints effective configuration without creating the data directory.
 Use `--help` on each subcommand for supported overrides.
 
+## Network sessions (experimental)
+
+An opt-in `[network]` table (disabled by default) runs the loopback peer lab
+inside `run` (F-768, F-770):
+
+```toml
+[network]
+enabled = true
+bind = "127.0.0.1"          # IPv4 loopback only
+port = 17777                # 0 selects an ephemeral port; CLI: --network-port
+max_players = 8             # admission occupancy limit, 1..=64
+session_timeout_seconds = 30  # idle eviction, 1..=600, monotonic real time
+release_profile = "config/release.toml"  # optional Hello version pin
+```
+
+The release profile, then the socket, are set up before the data directory
+opens; either failure exits nonzero. A Hello with another version gets Upgrade.
+Each update polls at most 32 datagrams before the fixed ticks. SIGINT/SIGTERM
+stops admission, closes every session, then drains and saves. `network_listening`
+gives the bound address and `version_check`; `status` and `stopped` carry
+`sessions` counts only. No ICARUS client compatibility, identity check,
+replication or gameplay is implied; only the authored probe is tested:
+
+```bash
+cargo test --locked --test network
+target/release/icarus-server run --config server.toml --data-dir work/net-smoke --max-ticks 600
+cargo run --locked --example session_churn -- --server 127.0.0.1:17777 \
+  --cycles 200 --concurrency 1 --release-profile config/release.toml
+```
+
+## Replication scheduling (experimental)
+
+`replication::ReplicationPlugin` runs in `FixedUpdate` between gameplay and
+tick finish. Per connection (`NetViewer`) it builds the consider list, tests
+relevancy, ranks priority and keeps an authored per-connection budget by
+calling the `experimental::actor_channel` evaluators; `ReplicationFrame` holds
+domain-ID results and stage timings. Net parameters are UE engine defaults,
+not ICARUS values. An optional grid (`SpatialMode::Grid`, off by default)
+gives exactly the naive relevant set. It sends nothing and models no
+bandwidth, dormancy, ownership or destruction.
+
+```bash
+cargo run --release --locked --example replication_bench -- --viewers 1,4,8
+# --source <envelope>: planned-actor positions; prints aggregates only
+```
+
 ## Persistence and recovery
 
-Default state location: ignored `work/runtime/`. Each directory has one writer,
-enforced by an advisory lock. Autosave runs every 60 seconds through a bounded
-worker. Saves contain authored domain records and a simulation clock, not ICARUS
-gameplay or its save format.
-Snapshot capture requires every entity with a domain ID to have its required
-position; incomplete state fails before submission instead of silently dropping
-that entity from the durable generation. Entities without domain identity remain
-outside the current native snapshot schema.
-Native schema 1 holds only those records and the clock (64 MiB per generation).
-A world with a lossless, value-opaque preserved prospect section saves schema 3:
-the generation references a content-addressed `preserved-<sha256>.bin` sidecar,
-written and synchronized once before any generation that references it and
-verified by size and digest on load. A missing or damaged sidecar makes its
-generation corrupt, so the previous one recovers. After publication, sidecars
-no retained generation references are removed (exact name pattern, regular
-files only). Schema-2 worlds with an inline section still load and move to
-schema 3 at their next save; other schemas fail closed (F-567).
+Default state location: ignored `work/runtime/`, one writer per directory
+(advisory lock), autosave every 60 seconds through a bounded worker. Saves hold
+authored domain records and a simulation clock, not ICARUS gameplay. Capture
+fails before submission if an entity with a domain ID lacks its position
+(F-482). Schema 1 holds records and the clock (64 MiB per generation); a world
+with a preserved prospect saves schema 3, referencing a write-once,
+digest-verified `preserved-<sha256>.bin` sidecar; schema 2 still loads, other
+schemas fail closed (F-567).
 
-Each generation is checksummed and synchronized before the manifest is atomically
-published. The store retains two committed generations. Startup reports when a
-corrupt current generation requires recovery from the previous one. Corrupt/missing manifests with
-existing snapshots, noncanonical checksum fields and unsupported schemas fail closed, rather than silently
-creating a fresh world. Each manifest digest must contain exactly 64 lowercase
-ASCII hexadecimal digits (F-417). Preserve a copy before manual recovery.
-Storage roots, generation references and entity records require named JSON
-objects; position triples remain arrays. Malformed array headers can recover a
-valid previous generation, while proper future-schema objects refuse rollback
-(F-428).
-Current-generation I/O errors other than a missing file stop loading and saving
-before backup selection. Repair permissions or the storage fault, then retry;
-an unreadable file does not establish corrupt state. Missing or corrupt current
-generations can still recover the preceding valid generation (F-452).
+Each generation is checksummed and synchronized before the manifest is
+atomically published; two committed generations are kept, and a corrupt
+current one recovers from the previous (F-228, F-771). Corrupt or missing
+manifests beside snapshots, noncanonical digests and unsupported schemas fail
+closed instead of creating a fresh world (F-417, F-428). I/O errors other than
+a missing current file stop loading; repair the fault and retry (F-452).
+Preserve a copy before manual recovery.
 
-SIGINT/SIGTERM freezes simulation, drains outstanding work and saves a final snapshot.
-Deadline checks reject overdue completion and final submission; failure exits nonzero.
-Synchronous capture, OS writes and scheduler pauses cannot be preempted by these
-checks, so this is not a hard process-exit-time guarantee. Durability relies on
-the filesystem honoring synchronization and atomic rename; qualification so far is
-for local Linux storage, not network filesystems or physical power-loss testing.
+SIGINT/SIGTERM freezes simulation, drains outstanding work and saves a final
+snapshot within a deadline, exiting nonzero on failure; it is not a hard
+process-exit-time guarantee (F-230, F-672). Durability is qualified for local
+Linux storage, not network filesystems or physical power loss (U-035).
 
-`preserve-save --source … --data-dir …` seeds a new native world whose only
-content is the lossless preservation of a supplied prospect (schema 3, tick 0,
-`world_imported: false`); it refuses a directory that already holds a world.
-The world then runs and autosaves like any other; nothing in it is interpreted.
+## Supplied saves
 
-`import-save --source … --destination … --dry-run` is a reserved interface: it
-returns an explicit unsupported error without reading/writing the supplied paths.
-Do not use it to migrate a real world yet.
+All modes open the source nonblocking and admit only a regular file (regular
+symlinks allowed; F-671), read it, and write nothing unless stated:
 
-`inspect-save --source PATH` opens nonblocking and admits only an opened regular
-file; regular symlinks remain supported in every mode. Path-swap/FIFO regression
-controls qualify this boundary, without a deadline for arbitrary regular-file
-latency (F-671). It performs bounded, read-only
-[experimental envelope checks](../specs/save-format/prospect-envelope.md). It reports sizes
-and integrity results without extracting the payload or importing a world.
-The optional `--inner-tags` also checks [root property framing](../specs/save-format/tagged-properties.md)
-under an explicit experimental profile and reports counts; record values remain opaque.
-Use `--recorders` to additionally check recorder field and byte-array boundaries;
-it implies root framing and reports aggregates without class names or component data.
-Use `--stage-check` (optionally with `--expect-prospect-name NAME`) to validate
-the full `FProspectSaveState` root schema, `PostLoadSerialize` migration,
-`FProspectInfo` nested metadata (including `AssociatedMembers` and
-`CustomSettings`), optional `ProspectID` matching, and base-component framing of
-every `StateRecorderBlob` (`experimental_stage_only`, `world_imported: false`,
-F-738).
-`--preserve-check` preserves the payload losslessly, saves and reloads it through
-a temporary schema-3 store that it removes, saving twice to show the sidecar is
-not rewritten, and reports counts, sizes, timings and resident memory with
-`world_imported: false` (F-567). A running server holds the section as its
-verified encoding, not as a decoded tree, and verifies it on load in one
-streaming pass without building the tree (F-584).
-Validation covers authored fixtures, supplied-save envelope integrity and the
-lossless preservation; value meanings and original-server round trips remain
-unvalidated.
-The [synthetic workload](synthetic-workload.md) exercises native scheduling
-and durability; it is not an ICARUS performance benchmark.
+- `inspect-save --source PATH`: bounded [envelope checks](../specs/save-format/prospect-envelope.md);
+  `--inner-tags` adds [root framing](../specs/save-format/tagged-properties.md),
+  `--recorders` recorder framing, counts only.
+- `--stage-check [--expect-prospect-name NAME]`: full `FProspectSaveState`
+  staging, migration, `ProspectInfo` and every recorder's base component (F-738).
+- `--typed-check`: staging, then every recorder value typed and re-encoded
+  exactly; gaps counted by reason per class pseudonym (F-766).
+- `--preserve-check`: lossless preservation saved and reloaded through a
+  temporary schema-3 store it removes, with sizes, timings and memory (F-567, F-584).
+- `preserve-save --source … --data-dir …`: seeds a new world holding only the
+  preserved prospect (tick 0); refuses an existing world.
+- `import-save --source … --destination … --dry-run`: prints the import plan
+  (staging, `Validate`, typing, base fields, transforms, content references by
+  role against the native catalog, blockers; F-767, F-769). Without `--dry-run`
+  the import is refused; nothing is written.
+
+Value meanings and original-server round trips remain unvalidated. The
+[synthetic workload](synthetic-workload.md) exercises native scheduling and
+durability; it is not an ICARUS performance benchmark.
