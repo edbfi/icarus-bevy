@@ -183,7 +183,7 @@ connection-readiness, and consider-list policies.
     saturation, and closes irrelevant/tear-off channels when
     `has_channel && (!actor_level_initialized || !actor_is_net_startup)`
     (`CloseReason` `4` when `bTearOff`, else `3`); inlined `MarkRelevantActors` (`0x143722a74` / `0x1439bfa04`,
-    `evaluate_mark_relevant_actor_step`, `evaluate_mark_relevant_actor`) sets
+    `evaluate_mark_relevant_actor_step`) sets
     `bPendingNetUpdate = true` when `(Channel != nullptr && ElapsedTime - Channel->RelevantTime <= 1.0)`
     or `IsActorRelevantToConnection` (updating `Channel->RelevantTime = ElapsedTime + 0.5 * SRand()`
     when `Channel != nullptr`), and sets `ForceRelevantFrame = ReplicationFrame + 1` when

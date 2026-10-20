@@ -2599,6 +2599,22 @@ fn server_replicate_actors_frame_is_net_ready_mark_relevant_and_replicate_actor(
     );
     assert_eq!(
         evaluate_connection_is_net_ready(&ConnectionNetReadyInputs {
+            saturate: true,
+            send_buffer_num_bits: i64::from(i32::MAX) + 100,
+            ..base_conn
+        }),
+        (false, -i32::MAX)
+    );
+    assert_eq!(
+        evaluate_connection_is_net_ready(&ConnectionNetReadyInputs {
+            saturate: true,
+            send_buffer_num_bits: i64::from(i32::MIN),
+            ..base_conn
+        }),
+        (true, i32::MAX)
+    );
+    assert_eq!(
+        evaluate_connection_is_net_ready(&ConnectionNetReadyInputs {
             b_use_adaptive_net_frequency: true,
             ..base_conn
         }),
@@ -2726,7 +2742,6 @@ fn server_replicate_actors_frame_is_net_ready_mark_relevant_and_replicate_actor(
         ServerReplicateActorsFrameOutcome::RunConnectionReplication {
             next_replication_frame: 101,
             server_tick_time: 1.0 / 30.0,
-            clamped_delta_seconds: 1.0 / 30.0,
             b_cpu_saturated: true,
             rotate_connections_left_by: 2,
         }
@@ -2740,7 +2755,6 @@ fn server_replicate_actors_frame_is_net_ready_mark_relevant_and_replicate_actor(
         ServerReplicateActorsFrameOutcome::RunConnectionReplication {
             next_replication_frame: 101,
             server_tick_time: 0.05,
-            clamped_delta_seconds: 0.05,
             b_cpu_saturated: false,
             rotate_connections_left_by: 0,
         }

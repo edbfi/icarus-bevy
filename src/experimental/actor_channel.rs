@@ -2492,10 +2492,10 @@ pub fn evaluate_process_prioritized_actor(
     }
 }
 
-/// Simplified no-channel helper for `ServerReplicateActors_MarkRelevantActors`
-/// (inlined at `0x143722a74..0x143722c40` server / `0x1439bfa04..0x1439bfbd0` client,
-/// F-749; see [`evaluate_mark_relevant_actor_step`] for the full inlined loop with
-/// channel fast-path and `RelevantTime` update).
+/// Legacy `F-749` owner/no-channel approximation (`Owner != nullptr && Channel == nullptr`
+/// -> `TickCount + 1`); superseded by [`evaluate_mark_relevant_actor_step`], which
+/// models the exact inlined `ServerReplicateActors_MarkRelevantActors` loop
+/// (`0x143722a74..0x143722c40` server / `0x1439bfa04..0x1439bfbd0` client).
 ///
 /// Returns `(updated_force_relevant_frame, updated_b_pending_net_update)`.
 pub fn evaluate_mark_relevant_actor(
@@ -2690,7 +2690,6 @@ pub enum ServerReplicateActorsFrameOutcome {
     RunConnectionReplication {
         next_replication_frame: i32,
         server_tick_time: f32,
-        clamped_delta_seconds: f32,
         b_cpu_saturated: bool,
         rotate_connections_left_by: i32,
     },
@@ -2725,7 +2724,6 @@ pub fn evaluate_server_replicate_actors_frame(
             inputs.delta_seconds > SERVER_REPLICATE_ACTORS_CPU_SATURATION_FACTOR * tick_time,
         )
     };
-    let clamped_delta_seconds = server_tick_time;
     let rotate_connections_left_by = if inputs.num_clients_to_tick < inputs.num_client_connections {
         inputs.num_clients_to_tick
     } else {
@@ -2734,7 +2732,6 @@ pub fn evaluate_server_replicate_actors_frame(
     ServerReplicateActorsFrameOutcome::RunConnectionReplication {
         next_replication_frame,
         server_tick_time,
-        clamped_delta_seconds,
         b_cpu_saturated,
         rotate_connections_left_by,
     }
