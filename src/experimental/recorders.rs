@@ -731,21 +731,23 @@ const NON_BLOB_CLASS_UTF16_CRCS: [u32; 27] = [
     0x59cc7a1d, 0x93f08633, 0x1d51a6d6,
 ];
 
-fn lookup_recorder_ctor_defaults(class_units: &[u16]) -> RecorderCtorDefaults {
+/// Resolves the constructor defaults (`+0xb0..+0xb2`, `+0xd8..+0xd9`) and
+/// virtual-slot `+0x470` / `+0x498` / `+0x4a8` profile for a
+/// `/Script/Icarus.*RecorderComponent` UTF-16 class path across all 65
+/// registered classes (`C001..C038` and `N001..N027`), or `None` if the class
+/// path is unrecognized (F-746, F-747).
+pub fn lookup_recorder_ctor_defaults(class_units: &[u16]) -> Option<RecorderCtorDefaults> {
     let crc = checksum_utf16(class_units, 0);
-    if let Some(index) = BLOB_CLASS_UTF16_CRCS.iter().position(|&entry| entry == crc)
-        && let Some(defaults) = recorder_ctor_defaults((index + 1) as u8)
-    {
-        return defaults;
+    if let Some(index) = BLOB_CLASS_UTF16_CRCS.iter().position(|&entry| entry == crc) {
+        return recorder_ctor_defaults((index + 1) as u8);
     }
     if let Some(index) = NON_BLOB_CLASS_UTF16_CRCS
         .iter()
         .position(|&entry| entry == crc)
-        && let Some(defaults) = non_blob_recorder_ctor_defaults((index + 1) as u8)
     {
-        return defaults;
+        return non_blob_recorder_ctor_defaults((index + 1) as u8);
     }
-    non_blob_recorder_ctor_defaults(15).expect("base UIcarusStateRecorderComponent defaults")
+    None
 }
 
 struct StagedRecorderEval {
@@ -830,7 +832,8 @@ fn evaluate_staged_recorder_component(
     active_prospect_id: &[u16],
     associated_members: &[ProspectAssociatedMember<'_>],
 ) -> Result<StagedRecorderEval> {
-    let defaults = lookup_recorder_ctor_defaults(class_units);
+    let defaults = lookup_recorder_ctor_defaults(class_units)
+        .ok_or_else(|| anyhow::anyhow!("unrecognized recorder ComponentClassName"))?;
     let mut skip_default_owner_resolution = defaults.b_skip_default_owner_resolution;
     let mut owner_resolve_policy = defaults.owner_resolve_policy;
     let mut parent_character_uid = -1_i32;
@@ -1073,24 +1076,15 @@ fn evaluate_staged_recorder_component(
         return Ok(build_eval(rocket_record_valid(list), false, false));
     }
 
-    let is_spawned_voxel =
-        units_eq_ascii(class_units, "/Script/Icarus.SpawnedVoxelRecorderComponent");
-    if is_spawned_voxel || units_eq_ascii(class_units, "/Script/Icarus.VoxelRecorderComponent") {
-        // USpawnedVoxelRecorderComponent ctor (0x1418c24c0) defaults OwnerResolvePolicy (+0xb2) to
-        // RespawnOnly (1); UVoxelRecorderComponent ctor (0x1418c2650) defaults to ManuallyResolved (3).
-        let mut owner_resolve_policy = if is_spawned_voxel {
-            OwnerResolvePolicy::RespawnOnly
-        } else {
-            OwnerResolvePolicy::ManuallyResolved
-        };
+    if units_eq_ascii(class_units, "/Script/Icarus.SpawnedVoxelRecorderComponent")
+        || units_eq_ascii(class_units, "/Script/Icarus.VoxelRecorderComponent")
+    {
         let mut fully_mined = false;
         for field_tag in component.fields() {
             let ParsedRecord::Property(prop) = read_record(field_tag.record, profile)? else {
                 bail!("unexpected VoxelRecorderComponent terminator");
             };
-            if is_name(&prop.name, "OwnerResolvePolicy") {
-                owner_resolve_policy = parse_owner_resolve_policy(&prop)?;
-            } else if is_name(&prop.name, "VoxelSaveData") {
+            if is_name(&prop.name, "VoxelSaveData") {
                 ensure!(
                     prop.tag.kind == TagKind::Struct
                         && prop.index == 0

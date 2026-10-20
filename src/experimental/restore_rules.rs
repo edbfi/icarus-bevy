@@ -4785,7 +4785,7 @@ pub const fn non_blob_recorder_ctor_defaults(non_blob_ordinal: u8) -> Option<Rec
     let is_actor_recorder = !matches!(non_blob_ordinal, 2 | 15 | 18);
     let b_save_modifiers = !matches!(
         non_blob_ordinal,
-        1 | 4 | 7 | 9 | 10 | 11 | 12 | 14 | 16 | 17 | 18 | 19 | 21 | 22
+        1 | 4 | 7 | 9 | 12 | 17 | 18 | 19 | 21 | 22
     );
     let b_skip_default_owner_resolution = non_blob_ordinal == 21;
     let owner_resolve_policy = match non_blob_ordinal {

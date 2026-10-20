@@ -3856,15 +3856,15 @@ fn non_blob_recorder_ctor_defaults_and_restore_dispatch_cover_all_27_classes() {
         20, 23, 22, 21,
     ];
     let mut actor_count = 0usize;
-    let mut save_modifiers_false_count = 0usize;
-    let mut skip_default_owner_count = 0usize;
-    let mut find_only_count = 0usize;
-    let mut respawn_only_count = 0usize;
-    let mut find_or_respawn_count = 0usize;
-    let mut manually_resolved_count = 0usize;
-    let mut stitching_false_count = 0usize;
-    let mut stitching_true_count = 0usize;
-    let mut stitching_char_parent_count = 0usize;
+    let mut save_modifiers_false_ordinals = Vec::new();
+    let mut skip_default_owner_ordinals = Vec::new();
+    let mut find_only_ordinals = Vec::new();
+    let mut respawn_only_ordinals = Vec::new();
+    let mut find_or_respawn_ordinals = Vec::new();
+    let mut manually_resolved_ordinals = Vec::new();
+    let mut stitching_false_ordinals = Vec::new();
+    let mut stitching_true_ordinals = Vec::new();
+    let mut stitching_char_parent_ordinals = Vec::new();
 
     for ordinal in 1..=27u8 {
         let defaults = non_blob_recorder_ctor_defaults(ordinal).expect("valid N001..N027 ordinal");
@@ -3917,39 +3917,46 @@ fn non_blob_recorder_ctor_defaults_and_restore_dispatch_cover_all_27_classes() {
         }
 
         if !defaults.b_save_modifiers {
-            save_modifiers_false_count += 1;
+            save_modifiers_false_ordinals.push(ordinal);
         }
         if defaults.b_skip_default_owner_resolution {
-            skip_default_owner_count += 1;
-            assert_eq!(ordinal, 21);
+            skip_default_owner_ordinals.push(ordinal);
         }
         match defaults.owner_resolve_policy {
-            OwnerResolvePolicy::FindOnly => find_only_count += 1,
-            OwnerResolvePolicy::RespawnOnly => respawn_only_count += 1,
-            OwnerResolvePolicy::FindOrRespawn => find_or_respawn_count += 1,
-            OwnerResolvePolicy::ManuallyResolved => {
-                manually_resolved_count += 1;
-                assert_eq!(ordinal, 18);
-            }
+            OwnerResolvePolicy::FindOnly => find_only_ordinals.push(ordinal),
+            OwnerResolvePolicy::RespawnOnly => respawn_only_ordinals.push(ordinal),
+            OwnerResolvePolicy::FindOrRespawn => find_or_respawn_ordinals.push(ordinal),
+            OwnerResolvePolicy::ManuallyResolved => manually_resolved_ordinals.push(ordinal),
         }
         match defaults.requires_stitching {
-            RequiresStitchingKind::AlwaysFalse => stitching_false_count += 1,
-            RequiresStitchingKind::AlwaysTrue => stitching_true_count += 1,
+            RequiresStitchingKind::AlwaysFalse => stitching_false_ordinals.push(ordinal),
+            RequiresStitchingKind::AlwaysTrue => stitching_true_ordinals.push(ordinal),
             RequiresStitchingKind::CharacterParentUidPresent => {
-                stitching_char_parent_count += 1;
-                assert!(matches!(ordinal, 10..=14));
+                stitching_char_parent_ordinals.push(ordinal);
             }
         }
     }
 
     assert_eq!(actor_count, 24);
-    assert_eq!(save_modifiers_false_count, 14);
-    assert_eq!(skip_default_owner_count, 1);
-    assert_eq!(find_only_count, 5);
-    assert_eq!(respawn_only_count, 13);
-    assert_eq!(find_or_respawn_count, 8);
-    assert_eq!(manually_resolved_count, 1);
-    assert_eq!(stitching_false_count, 10);
-    assert_eq!(stitching_true_count, 12);
-    assert_eq!(stitching_char_parent_count, 5);
+    assert_eq!(
+        save_modifiers_false_ordinals,
+        vec![1, 4, 7, 9, 12, 17, 18, 19, 21, 22]
+    );
+    assert_eq!(skip_default_owner_ordinals, vec![21]);
+    assert_eq!(find_only_ordinals, vec![2, 3, 6, 22, 23]);
+    assert_eq!(
+        respawn_only_ordinals,
+        vec![1, 4, 7, 9, 10, 11, 12, 13, 14, 16, 17, 19, 24]
+    );
+    assert_eq!(find_or_respawn_ordinals, vec![5, 8, 15, 20, 21, 25, 26, 27]);
+    assert_eq!(manually_resolved_ordinals, vec![18]);
+    assert_eq!(
+        stitching_false_ordinals,
+        vec![2, 5, 6, 9, 15, 18, 20, 21, 22, 23]
+    );
+    assert_eq!(
+        stitching_true_ordinals,
+        vec![1, 3, 4, 7, 8, 16, 17, 19, 24, 25, 26, 27]
+    );
+    assert_eq!(stitching_char_parent_ordinals, vec![10, 11, 12, 13, 14]);
 }

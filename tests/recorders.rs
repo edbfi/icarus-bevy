@@ -1,8 +1,11 @@
 use icarus_bevy::experimental::component::MAX_COMPONENT_BYTES;
 use icarus_bevy::experimental::recorders::{
-    MAX_RECORDER_FIELDS, MAX_RECORDERS, RecorderArray, read_recorders, stage_prospect_save_state,
+    MAX_RECORDER_FIELDS, MAX_RECORDERS, RecorderArray, lookup_recorder_ctor_defaults,
+    read_recorders, stage_prospect_save_state,
 };
-use icarus_bevy::experimental::restore_rules::LobbyPrivacy;
+use icarus_bevy::experimental::restore_rules::{
+    LobbyPrivacy, non_blob_recorder_ctor_defaults, recorder_ctor_defaults,
+};
 use icarus_bevy::experimental::tagged::{MAX_INPUT_BYTES, RootTag, TagKind, TagProfile, read_root};
 
 const END: &[u8] = b"\x05\0\0\0None\0";
@@ -397,7 +400,7 @@ fn valid_component_binary() -> Vec<u8> {
 
 fn valid_recorder_element() -> Vec<u8> {
     [
-        class(CLASS).as_slice(),
+        class(&string("/Script/Icarus.ActorStateRecorderComponent")).as_slice(),
         valid_component_binary().as_slice(),
         END,
     ]
@@ -1131,6 +1134,7 @@ fn staged_prospect_save_state_runs_recorder_validate_and_tracks_tree_dynamics() 
         &3_i32.to_le_bytes(),
     );
     let bad_recorders = [
+        recorder_element("/Script/Icarus.UnknownRecorderComponent", &[]),
         recorder_element(
             "/Script/Icarus.RocketRecorderComponent",
             &tag(
@@ -1350,4 +1354,80 @@ fn staged_prospect_save_state_evaluates_non_blob_recorders_and_owner_resolution_
     assert_eq!(staged.find_or_respawn_owner_count, 1);
     assert_eq!(staged.manually_resolved_owner_count, 1);
     assert_eq!(staged.requires_stitching_count, 1);
+}
+
+#[test]
+fn lookup_recorder_ctor_defaults_pins_all_38_blob_and_documented_non_blob_ordinals() {
+    let blob_class_paths: [(u8, &str); 38] = [
+        (1, "/Script/Icarus.ActorStateRecorderComponent"),
+        (2, "/Script/Icarus.BaseLevelTeleportRecorderComponent"),
+        (3, "/Script/Icarus.BedRecorderComponent"),
+        (4, "/Script/Icarus.BuildingGridRecorderComponent"),
+        (5, "/Script/Icarus.CaveAIRecorderComponent"),
+        (6, "/Script/Icarus.CaveEntranceRecorderComponent"),
+        (7, "/Script/Icarus.CharacterTrapRecorderComponent"),
+        (8, "/Script/Icarus.CropPlotRecorderComponent"),
+        (9, "/Script/Icarus.DeployableRecorderComponent"),
+        (10, "/Script/Icarus.DrillRecorderComponent"),
+        (11, "/Script/Icarus.DynamicRocketSpawnRecorderComponent"),
+        (12, "/Script/Icarus.EnzymeGeyserRecorderComponent"),
+        (13, "/Script/Icarus.FLODRecorderComponent"),
+        (14, "/Script/Icarus.FLODTileRecorderComponent"),
+        (15, "/Script/Icarus.GameModeStateRecorderComponent"),
+        (16, "/Script/Icarus.IcarusContainerManagerRecorderComponent"),
+        (17, "/Script/Icarus.IcarusMountCharacterRecorderComponent"),
+        (18, "/Script/Icarus.IcarusQuestManagerRecorderComponent"),
+        (19, "/Script/Icarus.IcarusQuestRecorderComponent"),
+        (20, "/Script/Icarus.InstancedLevelRecorderComponent"),
+        (21, "/Script/Icarus.ItemStateRecorderComponent"),
+        (22, "/Script/Icarus.MapManagerRecorderComponent"),
+        (23, "/Script/Icarus.OilGeyserRecorderComponent"),
+        (24, "/Script/Icarus.PlayerHistoryRecorderComponent"),
+        (25, "/Script/Icarus.PlayerRecorderComponent"),
+        (26, "/Script/Icarus.PlayerStateRecorderComponent"),
+        (27, "/Script/Icarus.PrebuiltStructureRecorderComponent"),
+        (28, "/Script/Icarus.ResourceDepositRecorderComponent"),
+        (29, "/Script/Icarus.RocketRecorderComponent"),
+        (30, "/Script/Icarus.SignRecorderComponent"),
+        (31, "/Script/Icarus.SpawnedVoxelRecorderComponent"),
+        (32, "/Script/Icarus.SplineRecorderComponent"),
+        (33, "/Script/Icarus.TreeRecorderComponent"),
+        (34, "/Script/Icarus.VoxelRecorderComponent"),
+        (35, "/Script/Icarus.WeatherControllerRecorderComponent"),
+        (36, "/Script/Icarus.WeatherForecastRecorderComponent"),
+        (37, "/Script/Icarus.WorldBossManagerRecorderComponent"),
+        (38, "/Script/Icarus.WorldTalentManagerRecorderComponent"),
+    ];
+    for (ordinal, path) in blob_class_paths {
+        let units: Vec<u16> = path.encode_utf16().collect();
+        assert_eq!(
+            lookup_recorder_ctor_defaults(&units),
+            recorder_ctor_defaults(ordinal),
+            "blob class ordinal {ordinal} ({path})"
+        );
+    }
+
+    let non_blob_class_paths: [(u8, &str); 8] = [
+        (10, "/Script/Icarus.IcarusCharacterRecorderComponent"),
+        (12, "/Script/Icarus.IcarusJuvenileRecorderComponent"),
+        (14, "/Script/Icarus.IcarusNPCRecorderComponent"),
+        (15, "/Script/Icarus.IcarusStateRecorderComponent"),
+        (18, "/Script/Icarus.NoRecorderComponent"),
+        (20, "/Script/Icarus.ResourceDepositIceRecorderComponent"),
+        (21, "/Script/Icarus.RockBaseRecorderComponent"),
+        (22, "/Script/Icarus.RocketSpawnRecorderComponent"),
+    ];
+    for (ordinal, path) in non_blob_class_paths {
+        let units: Vec<u16> = path.encode_utf16().collect();
+        assert_eq!(
+            lookup_recorder_ctor_defaults(&units),
+            non_blob_recorder_ctor_defaults(ordinal),
+            "non-blob class ordinal {ordinal} ({path})"
+        );
+    }
+
+    let unknown: Vec<u16> = "/Script/Icarus.UnknownRecorderComponent"
+        .encode_utf16()
+        .collect();
+    assert_eq!(lookup_recorder_ctor_defaults(&unknown), None);
 }

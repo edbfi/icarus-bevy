@@ -42,12 +42,14 @@ construction, script owners and data-table rows are out of scope (F-660).
     `+0x4a8`/`+0x4b0`.
   - On `N001..N027` (`3` non-actor classes `N002`, `N015`, `N018` and `24` `C001`
     subclasses; `N012` `UIcarusJuvenileRecorderComponent` appears in backup saves):
-    `+0xb0 = 0` on 14 classes (`N004..N008, N010..N014, N019, N022, N025, N027`);
-    `+0xb1 = 1` only on `N021`; `+0xb2`: 5 `FindOnly`, 13 `RespawnOnly`, 8
+    `+0xb0 = 0` on 10 classes (`N001, N004, N007, N009, N012, N017..N019, N021, N022`);
+    `+0xb1 = 1` only on `N021`; `+0xb2`: 5 `FindOnly` (`N002, N003, N006, N022, N023`),
+    13 `RespawnOnly` (`N001, N004, N007, N009..N014, N016, N017, N019, N024`), 8
     `FindOrRespawn`, 1 `ManuallyResolved` (`N018`); `+0xd8 = 0` on all 24 actor
-    classes; `+0xd9 = 0` only on `N020`; `+0x470`: 10 `AlwaysFalse`, 12 `AlwaysTrue`,
-    5 `CharacterParentUidPresent` (`N010..N014`); only `N011` (`UIcarusMountActorRecorderComponent`)
-    overrides `+0x4a0` to `0x141400150`.
+    classes; `+0xd9 = 0` only on `N020`; `+0x470`: 10 `AlwaysFalse`, 12 `AlwaysTrue`
+    (`N001, N003, N004, N007, N008, N016, N017, N019, N024..N027`), 5
+    `CharacterParentUidPresent` (`N010..N014`); only `N011` overrides `+0x4a0` to
+    `0x141400150`.
 - `Validate` (`+0x408`, base `0x140899f70` = `true`; F-652, F-663, F-680, F-742, F-747):
   - `UProspectSubsystem` (`0x141704d70`, `+0x30`): `0x141820ba0` and
     `0x1418231d0 -> 0x1417fd560` scan `+0x98` (`0x40` B) for `UserID` (`+0x20`,
