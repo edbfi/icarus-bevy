@@ -516,3 +516,76 @@ fn is_package_path(units: &[u16]) -> bool {
         units.starts_with(&prefix)
     })
 }
+
+/// One retained actor recorder with a finite recorded transform. Holds private
+/// supplied-save values, so it deliberately implements neither `Debug` nor
+/// `Serialize`; callers report aggregates only.
+pub struct PlannedActor {
+    /// Class pseudonym (`C001..C038`, `N001..N027`).
+    pub class_label: String,
+    /// How restore finds the owner; see [`ActorPlan::owner_resolution`].
+    pub owner_resolution: &'static str,
+    pub translation: [f32; 3],
+    /// Quaternion `x, y, z, w` in serialized order.
+    pub rotation: [f32; 4],
+    pub scale: [f32; 3],
+}
+
+/// The retained actor recorders of a supplied prospect with finite recorded
+/// transforms, in recorder order, after the same staging, `Validate` and
+/// lossless typing as [`plan_import`]. Positions are recorded values only; no
+/// world frame or gameplay meaning is implied.
+pub fn planned_actors(reader: impl Read) -> Result<Vec<PlannedActor>> {
+    let validated = decode_envelope(reader)?;
+    let tags = read_root(&validated.payload, PROFILE).context("invalid experimental root tags")?;
+    let (_, decisions) = stage_prospect_save_state_with_decisions(
+        &tags.tags,
+        PROFILE,
+        MAX_BOUNDED_COMPONENT_BYTES,
+        None,
+    )
+    .context("invalid staged FProspectSaveState")?;
+    let recorders =
+        read_recorders(&tags.tags, PROFILE).context("invalid experimental recorder framing")?;
+    ensure!(
+        decisions.len() == recorders.records().len(),
+        "staging decisions do not match the recorder array"
+    );
+    let mut actors = Vec::new();
+    for (recorder, decision) in recorders.records().iter().zip(&decisions) {
+        if !decision.retained {
+            continue;
+        }
+        let class = decode_string(recorder.class_value, ByteOrder::Little)
+            .context("invalid experimental recorder class string")?;
+        let defaults = lookup_recorder_ctor_defaults(&class.units)
+            .context("staged recorder class has no constructor defaults")?;
+        if !defaults.is_actor_recorder {
+            continue;
+        }
+        let tree = BaseComponentTree::parse(
+            recorder.binary_data,
+            PROFILE,
+            MAX_BOUNDED_COMPONENT_BYTES,
+            PLAN_TREE_LIMITS,
+        )
+        .context("retained recorder body does not frame under the plan's tree limits")?;
+        let (typed, _) = TypedComponent::from_component(&tree)?;
+        let Some(parts) = actor_transform(&typed.tree) else {
+            continue;
+        };
+        if !parts.iter().all(|part| part.is_finite()) {
+            continue;
+        }
+        let label = recorder_class_label(&class.units)
+            .context("staged recorder class is not registered")?;
+        actors.push(PlannedActor {
+            class_label: label,
+            owner_resolution: owner_resolution(decision),
+            translation: [parts[0], parts[1], parts[2]],
+            rotation: [parts[3], parts[4], parts[5], parts[6]],
+            scale: [parts[7], parts[8], parts[9]],
+        });
+    }
+    Ok(actors)
+}

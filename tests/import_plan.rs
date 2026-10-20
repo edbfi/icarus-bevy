@@ -4,7 +4,7 @@ use base64::{Engine, engine::general_purpose::STANDARD};
 use flate2::{Compression, write::ZlibEncoder};
 use icarus_bevy::experimental::recorders::{lookup_recorder_ctor_defaults, recorder_class_label};
 use icarus_bevy::import_plan::{
-    ContentCatalog, ContentRole, ImportBlocker, RoleCount, plan_import,
+    ContentCatalog, ContentRole, ImportBlocker, RoleCount, plan_import, planned_actors,
 };
 use serde_json::{Value, json};
 use sha1::{Digest, Sha1};
@@ -339,4 +339,40 @@ fn import_cli_prints_the_plan_on_dry_run_and_refuses_otherwise_without_writing()
     assert!(!destination.exists());
     assert_eq!(fs::read(&path).unwrap(), source);
     assert_eq!(fs::read_dir(root.path()).unwrap().count(), 1);
+}
+
+#[test]
+fn planned_actors_keep_retained_finite_transforms_in_order() {
+    let source = envelope(
+        2,
+        &[
+            recorder(ACTOR, &CLEAN),
+            recorder(NO_RECORDER, &CLEAN),
+            recorder(
+                ACTOR,
+                &Body {
+                    translation: [f32::NAN, 0.0, 0.0],
+                    gap: false,
+                },
+            ),
+            recorder(
+                ACTOR,
+                &Body {
+                    translation: [1.5, 2.5, -3.5],
+                    gap: true,
+                },
+            ),
+        ],
+    );
+    let actors = planned_actors(source.as_slice()).unwrap();
+    assert_eq!(actors.len(), 2);
+    assert_eq!(actors[0].translation, [10.0, -20.0, 30.0]);
+    assert_eq!(actors[1].translation, [1.5, 2.5, -3.5]);
+    assert_eq!(actors[0].rotation, [0.0, 0.0, 0.0, 1.0]);
+    assert_eq!(actors[0].scale, [1.0, 1.0, 1.0]);
+    assert_eq!(actors[0].owner_resolution, "find_or_respawn");
+    assert_eq!(
+        actors[0].class_label,
+        recorder_class_label(&units(ACTOR)).unwrap()
+    );
 }
