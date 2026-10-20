@@ -319,16 +319,13 @@ fn hand_built_scene() -> Vec<(u64, [f32; 3], f32)> {
 }
 
 /// The first frame's order from direct evaluator calls: no channels yet, so
-/// the time scale is the spawn-priority default.
+/// the time scale is the spawn-priority default. On a connection's first
+/// processed frame every actor is force-relevant (`ForceRelevantFrame 0 >=
+/// LastProcessedFrame 0`, F-772), so the actor beyond the cull distance is
+/// selected too.
 fn expected_first_frame(config: &ReplicationConfig) -> Vec<(DomainId, i32)> {
     let mut expected: Vec<(DomainId, i32)> = hand_built_scene()
         .into_iter()
-        .filter(|(_, location, _)| {
-            let d: f32 = (0..3)
-                .map(|axis| (location[axis] - VIEWER[axis]).powi(2))
-                .sum();
-            d < DEFAULT_NET_CULL_DISTANCE_SQUARED
-        })
         .map(|(id, location, net_priority)| {
             let ActorPriorityOutcome::Computed(priority) =
                 evaluate_actor_net_priority(&ActorPriorityInputs {
@@ -379,7 +376,21 @@ fn priority_order_matches_direct_evaluator_calls() {
     let mut app = hand_built_app(config);
     let frame = step(&mut app);
     let expected = expected_first_frame(&config);
-    assert_eq!(expected.len(), 7, "one actor is beyond the cull distance");
+    assert_eq!(
+        expected.len(),
+        8,
+        "the out-of-range actor is force-relevant"
+    );
+    let beyond = hand_built_scene()
+        .into_iter()
+        .filter(|(_, location, _)| {
+            let d: f32 = (0..3)
+                .map(|axis| (location[axis] - VIEWER[axis]).powi(2))
+                .sum();
+            d >= DEFAULT_NET_CULL_DISTANCE_SQUARED
+        })
+        .count();
+    assert_eq!(beyond, 1, "one actor is beyond the cull distance");
     let distinct: BTreeSet<i32> = expected.iter().map(|(_, priority)| *priority).collect();
     assert!(
         distinct.len() >= 4,
@@ -388,7 +399,7 @@ fn priority_order_matches_direct_evaluator_calls() {
     assert_eq!(selected(&frame), expected);
     let connection = &frame.decisions.connections[0];
     assert_eq!(connection.connection, 7);
-    assert_eq!((connection.relevant, connection.prioritized), (7, 7));
+    assert_eq!((connection.relevant, connection.prioritized), (7, 8));
     assert!(!connection.saturated);
     assert_eq!(frame.decisions.considered, 8);
 }

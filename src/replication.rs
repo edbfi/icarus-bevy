@@ -3,8 +3,8 @@
 //! Each fixed tick, per viewer connection, this stage decides which network
 //! actors to consider, which are relevant and in what priority order, then
 //! applies an authored per-connection selection budget. Every decision is
-//! delegated to the `experimental::actor_channel` evaluators (F-745, F-748,
-//! F-749, F-751); this module only gathers their inputs and applies their
+//! delegated to the `experimental::actor_channel` evaluators (F-761, F-772);
+//! this module only gathers their inputs and applies their
 //! outcomes. It models no channel bunches, bandwidth, dormancy, ownership or
 //! destruction info, and demonstrates no ICARUS compatibility. Net parameters
 //! default to Unreal Engine `AActor`/`UNetDriver` defaults, never claimed to be
@@ -100,6 +100,9 @@ pub struct NetActor {
 }
 
 /// The `FNetworkObjectInfo` scheduling fields the evaluators read and update.
+/// They start at zero, as does a connection's `LastProcessedFrame`, following
+/// UE engine construction (unverified for ICARUS): on a connection's first
+/// processed frame every considered actor is force-relevant (F-772).
 #[derive(Component, Clone, Copy, Debug, Default, PartialEq)]
 pub struct NetSchedule {
     next_update_time: f64,
@@ -151,8 +154,8 @@ pub struct ReplicationConfig {
 impl Default for ReplicationConfig {
     fn default() -> Self {
         Self {
-            // The grid's per-frame build cost exceeded its savings at ~2,700
-            // actors and up to 8 viewers (`replication_bench`).
+            // The grid decides identically but did not pay off over 2,626
+            // supplied actor positions at 1 to 8 viewers (F-773).
             spatial: SpatialMode::Naive,
             connection_budget: DEFAULT_CONNECTION_BUDGET,
             max_consider_list: DEFAULT_MAX_CONSIDER_LIST,
@@ -827,14 +830,6 @@ impl ReplicationState {
             })
             .collect();
         let grid = (config.spatial == SpatialMode::Grid).then(|| RelevancyGrid::build(&candidates));
-        // Force-relevant entries; mark steps only raise the frame, so the
-        // list only grows within a frame.
-        let mut forced: Vec<usize> = entries
-            .iter()
-            .enumerate()
-            .filter(|(_, entry)| rows[entry.row].schedule.force_relevant_frame >= frame_number)
-            .map(|(index, _)| index)
-            .collect();
         result.timings.index_nanos = nanos_since(index_started);
 
         let ticked = num_clients_to_tick.min(connection_count);
@@ -873,14 +868,8 @@ impl ReplicationState {
                 viewers,
                 stamp,
             };
-            let connection_frame = self.replicate_connection(
-                &context,
-                &job,
-                rows,
-                &mut entries,
-                candidate_entries,
-                &mut forced,
-            );
+            let connection_frame =
+                self.replicate_connection(&context, &job, rows, &mut entries, candidate_entries);
             result.timings.prioritize_nanos += nanos_since(prioritize_started);
             decisions.connections.push(ConnectionFrame {
                 relevant: relevant_count,
@@ -894,7 +883,8 @@ impl ReplicationState {
 
     /// `PrioritizeActors`, `ProcessPrioritizedActors` and `MarkRelevantActors`
     /// for one connection, over the entries that can be selected: relevant to a
-    /// viewer, holding a channel, or force-relevant this frame. Every other
+    /// viewer, holding a channel, or force-relevant to this connection
+    /// (`ForceRelevantFrame >= LastProcessedFrame`, unsigned). Every other
     /// entry would evaluate to `SkipNotRelevantNoClose`.
     fn replicate_connection(
         &mut self,
@@ -903,7 +893,6 @@ impl ReplicationState {
         rows: &mut [ActorRow],
         entries: &mut [ConsiderEntry],
         mut candidate_entries: Vec<usize>,
-        forced: &mut Vec<usize>,
     ) -> ConnectionFrame {
         let FrameContext {
             config,
@@ -922,8 +911,19 @@ impl ReplicationState {
                 candidate_entries.push(index);
             }
         }
-        // Includes entries an earlier connection's mark step forced.
-        candidate_entries.extend_from_slice(forced);
+        // Entries force-relevant to this connection, by the same unsigned test
+        // ProcessPrioritizedActors applies (F-772), on the live schedule so an
+        // earlier connection's mark steps this frame are included.
+        let last_processed = connection.last_processed_frame as u32;
+        candidate_entries.extend(
+            entries
+                .iter()
+                .enumerate()
+                .filter(|(_, entry)| {
+                    rows[entry.row].schedule.force_relevant_frame as u32 >= last_processed
+                })
+                .map(|(index, _)| index),
+        );
         self.driver_net_tag = self.driver_net_tag.wrapping_add(1);
         let driver_net_tag = self.driver_net_tag;
 
@@ -1093,11 +1093,6 @@ impl ReplicationState {
                 driver_replication_frame: frame_number,
             });
             row.schedule.pending_net_update = outcome.b_pending_net_update;
-            if row.schedule.force_relevant_frame < frame_number
-                && outcome.force_relevant_frame >= frame_number
-            {
-                forced.push(item.entry);
-            }
             row.schedule.force_relevant_frame = outcome.force_relevant_frame;
             if let (Some(channel), Some(relevant_time)) =
                 (channel, outcome.updated_channel_relevant_time)
