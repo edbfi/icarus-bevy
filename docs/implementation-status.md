@@ -7,7 +7,7 @@ the [unknowns ledger](ledgers/unknowns.md); preconditions live only in
 
 Before restructure: 96ddb0b:docs/implementation-status.md
 
-Last reconciled: 2026-10-20
+Last reconciled: 2026-10-21
 
 ## Summary
 

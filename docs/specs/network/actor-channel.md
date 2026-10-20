@@ -4,7 +4,7 @@
 
 Experimental: static observations of client build 25793767 and server build
 25621760, wire-checked against the 3.0.31 capture (F-704 to F-711, F-739,
-F-761). Last reconciled: 2026-10-20.
+F-761). Last reconciled: 2026-10-21.
 
 ## Scope
 
