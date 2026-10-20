@@ -9,6 +9,7 @@
 pub mod actor_channel;
 pub mod admission;
 pub mod archive;
+pub mod class_checksum;
 pub mod component;
 pub mod control;
 pub mod control_messages;
