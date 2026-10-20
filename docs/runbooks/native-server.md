@@ -71,6 +71,22 @@ cargo run --locked --example session_churn -- --server 127.0.0.1:17777 \
   --cycles 200 --concurrency 1 --release-profile config/release.toml
 ```
 
+## Replication scheduling (experimental)
+
+`replication::ReplicationPlugin` runs in `FixedUpdate` between gameplay and
+tick finish. Per connection (`NetViewer`) it builds the consider list, tests
+relevancy, ranks priority and keeps an authored per-connection budget by
+calling the `experimental::actor_channel` evaluators; `ReplicationFrame` holds
+domain-ID results and stage timings. Net parameters are UE engine defaults,
+not ICARUS values. An optional grid (`SpatialMode::Grid`, off by default)
+gives exactly the naive relevant set. It sends nothing and models no
+bandwidth, dormancy, ownership or destruction.
+
+```bash
+cargo run --release --locked --example replication_bench -- --viewers 1,4,8
+# --source <envelope>: planned-actor positions; prints aggregates only
+```
+
 ## Persistence and recovery
 
 Default state location: ignored `work/runtime/`, one writer per directory
