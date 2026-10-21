@@ -8,13 +8,16 @@
 //! selection, identity check, admission or gameplay.
 //!
 //! Outgoing: [`LabPeer::reliable_control_packet`] writes one caller-chosen
-//! control message as a new reliable bunch on the control channel, and
-//! [`LabPeer::ack_packet`] writes the ack state alone; both also carry any
-//! reliable bunches awaiting resend. The client's ack and nak handling is
-//! mirrored (F-539, INFERRED for this side): an acked packet releases its
-//! out-bunches in order and a naked one queues its unacked bunches for resend
-//! in the next written packet. Resend is driven only by naks; there is no
-//! timer. The bunch is assembled from codec fields (F-522, F-712): not open,
+//! control message as a new reliable bunch on the control channel,
+//! [`LabPeer::reliable_actor_open`] opens an actor channel with a caller-built
+//! open bunch and its exports split as `UChannel::SendBunch` does (F-709), and
+//! [`LabPeer::ack_packet`] writes the ack state alone; all also carry any
+//! reliable bunches awaiting resend (actor-channel parts unchanged). The
+//! client's ack and nak handling is mirrored (F-539, INFERRED for this side):
+//! an acked packet releases its out-bunches in order and a naked one queues
+//! its unacked bunches for resend in the next written packet. Resend is
+//! driven only by naks; there is no timer. The bunch is assembled from codec
+//! fields (F-522, F-712): not open,
 //! reliable (`FControlChannelOutBunch` sets `bReliable = 1`, `0x1437a83c0`),
 //! the configured control channel index, the hard-coded control name 255 and
 //! the 10-bit wire reliable sequence; its payload is the message encoded with
@@ -38,7 +41,7 @@
 //! index (default 0); both identifications are inferred (F-522, F-525).
 //! Summaries and `Debug` output carry kinds, counts and lengths only: never
 //! payload bytes, token or string contents, numeric message fields or cookies.
-use std::collections::VecDeque;
+use std::collections::{BTreeMap, VecDeque};
 
 use anyhow::{Context, Result, bail, ensure};
 use serde::Serialize;
@@ -57,7 +60,7 @@ use super::packet::{
 };
 use super::sequencing::{
     MAX_QUEUED_RELIABLE, PacketSequencer, ReliableChannel, ReliableReceive, SEQUENCE_MASK,
-    wire_reliable_sequence,
+    max_single_bunch_size_bits, split_outgoing_bunch, wire_reliable_sequence,
 };
 
 /// Handshake cookie length of the short framing (`handshake`).
@@ -72,6 +75,22 @@ pub const DEFAULT_MAX_BUNCHES_PER_PACKET: usize = 32;
 /// `UControlChannel::SendBunch` (`0x1437ca030`) `NumOutRec < 255` (`0xff`)
 /// and the incoming queue bound (F-537, F-712).
 pub const MAX_PENDING_RELIABLE: usize = MAX_QUEUED_RELIABLE;
+/// `MaxPacketHandlerBits` behind `MAX_SINGLE_BUNCH_SIZE_BITS = 7,625` for
+/// `MaxPacket = 1024` (F-709); the lab writes no handler bits itself.
+pub const PACKET_HANDLER_BITS: u32 = 2;
+/// `NetMaxConstructedPartialBunchSizeBytes` default (`64` KiB, F-709).
+pub const MAX_CONSTRUCTED_BUNCH_BYTES: usize = 65_536;
+
+/// Resends carried by one assembled datagram, with their wire bunches.
+type Resends = Vec<(Resend, Bunch)>;
+
+/// A naked reliable bunch awaiting resend.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Resend {
+    Control(u32),
+    /// An actor channel's index and reliable sequence.
+    Actor(u32, u32),
+}
 
 /// The single place that fixes the cookie word order (F-536): the client's
 /// InitSequence takes word 0 as incoming and word 1 as outgoing.
@@ -290,8 +309,11 @@ pub struct LabPeer {
     /// Incoming payloads are delivered message batches; an outgoing payload is
     /// the one sent message, retained for resend until acked.
     control: ReliableChannel<Vec<Decoded>>,
-    /// Unwrapped reliable sequences of naked out-bunches, oldest first.
-    resend: VecDeque<u32>,
+    /// Actor channels this peer opened, by channel index: their reliable
+    /// wire bunches, retained unchanged for resend until acked.
+    actors: BTreeMap<u32, ReliableChannel<Bunch>>,
+    /// Naked out-bunches awaiting resend, oldest first.
+    resend: VecDeque<Resend>,
     /// Mirrors `UControlChannel::bNeedsHeaderInspection` (`+0x68`, F-712):
     /// cleared when the first delivered control bunch starting with `Hello`
     /// sets `Connection->bNeedsByteSwapping` (`+0x158`).
@@ -312,6 +334,7 @@ impl std::fmt::Debug for LabPeer {
             .field("queued_reliable", &self.control.queued_len())
             .field("control_out_reliable", &self.control.out_reliable())
             .field("pending_reliable", &self.control.out_bunches().len())
+            .field("actor_channels", &self.actors.len())
             .field("pending_resends", &self.resend.len())
             .field("failed", &self.failed)
             .finish_non_exhaustive()
@@ -331,6 +354,7 @@ impl LabPeer {
             config,
             sequencer,
             control,
+            actors: BTreeMap::new(),
             resend: VecDeque::new(),
             header_inspection_pending: true,
             failed: false,
@@ -378,6 +402,14 @@ impl LabPeer {
     /// Naked outgoing reliable bunches the next written datagram will resend.
     pub fn pending_resends(&self) -> usize {
         self.resend.len()
+    }
+
+    /// Unacknowledged reliable bunches of the actor channel `index`, or
+    /// `None` when this peer has not opened it.
+    pub fn pending_actor_reliable(&self, index: u32) -> Option<usize> {
+        self.actors
+            .get(&index)
+            .map(|channel| channel.out_bunches().len())
     }
 
     pub fn is_failed(&self) -> bool {
@@ -526,11 +558,26 @@ impl LabPeer {
             if notification.delivered {
                 summary.acked.push(packet_id);
                 summary.released_reliable += self.control.acked(packet_id).len();
+                for channel in self.actors.values_mut() {
+                    summary.released_reliable += channel.acked(packet_id).len();
+                }
             } else {
                 summary.naked.push(packet_id);
-                for sequence in self.control.lost(packet_id) {
-                    if !self.resend.contains(&sequence) {
-                        self.resend.push_back(sequence);
+                let lost = self
+                    .control
+                    .lost(packet_id)
+                    .into_iter()
+                    .map(Resend::Control)
+                    .chain(self.actors.iter().flat_map(|(index, channel)| {
+                        channel
+                            .lost(packet_id)
+                            .into_iter()
+                            .map(|sequence| Resend::Actor(*index, sequence))
+                    }))
+                    .collect::<Vec<_>>();
+                for entry in lost {
+                    if !self.resend.contains(&entry) {
+                        self.resend.push_back(entry);
                         summary.resend_queued += 1;
                     }
                 }
@@ -635,13 +682,134 @@ impl LabPeer {
         })
     }
 
-    /// Build the datagram completely, then commit: errors before the commit
-    /// leave the state unchanged. Resends that do not fit are dropped from the
-    /// tail of the candidates and stay queued for a later datagram.
-    fn write_data_packet(&mut self, message: Option<ControlMessage>) -> Result<Vec<u8>> {
+    /// Open actor channel `bunch.header.channel_index` with `bunch` (open and
+    /// reliable) preceded by `exports` (export-only payloads), split into
+    /// `OutgoingBunches` as `UChannel::SendBunch` does (F-709,
+    /// [`split_outgoing_bunch`]): parts take consecutive reliable sequences
+    /// from the channel's initial value and travel together in one datagram
+    /// that also carries the ack state and, as space permits, naked bunches
+    /// awaiting resend. The parts are retained unchanged until acked and are
+    /// resent on naks like control bunches. Fails without a state change when
+    /// the channel is the control channel or already open, the bunch is not an
+    /// open reliable bunch, or the parts do not fit one datagram.
+    pub fn reliable_actor_open(&mut self, bunch: &Bunch, exports: &[Payload]) -> Result<Vec<u8>> {
         self.ensure_usable()?;
+        let index = bunch.header.channel_index;
+        ensure!(
+            index != self.config.control_channel_index
+                && index < self.config.packet.limits.max_channels,
+            "actor channel index {index} is the control channel or out of range"
+        );
+        ensure!(
+            !self.actors.contains_key(&index),
+            "actor channel {index} is already open"
+        );
+        ensure!(
+            bunch.header.open && bunch.header.reliable && !bunch.header.partial,
+            "an actor open is one whole, open, reliable bunch"
+        );
+        let channel: ReliableChannel<Bunch> = self.sequencer.new_channel();
+        let first = channel
+            .out_reliable()
+            .checked_add(1)
+            .context("reliable sequence counter exhausted")?;
+        let mut template = bunch.clone();
+        template.header.reliable_sequence_raw = Some(wire_reliable_sequence(first));
+        let max_single = max_single_bunch_size_bits(
+            self.config.packet.limits.max_packet_bytes,
+            PACKET_HANDLER_BITS,
+        )?;
+        let parts = split_outgoing_bunch(
+            &template,
+            exports,
+            max_single,
+            Some(MAX_CONSTRUCTED_BUNCH_BYTES),
+        )?;
+        ensure!(
+            parts.len() <= self.config.max_bunches_per_packet.min(MAX_PENDING_RELIABLE),
+            "an actor open of {} parts does not fit one datagram",
+            parts.len()
+        );
+        let (datagram, packet_id, resends) = self.assemble(&parts)?;
+        let committed = self.sequencer.commit()?;
+        let recorded = self.record_actor_open(committed, packet_id, &resends, channel, parts);
+        self.fail_on_error(recorded)?;
+        Ok(datagram)
+    }
+
+    /// Candidate resends, oldest first, rebuilt (control) or cloned (actor).
+    fn resend_candidates(&self, room: usize) -> Result<Resends> {
+        let mut resends = Vec::new();
+        for entry in &self.resend {
+            if resends.len() == room {
+                break;
+            }
+            match *entry {
+                Resend::Control(sequence) => {
+                    let retained = self
+                        .control
+                        .out_bunches()
+                        .iter()
+                        .find(|bunch| bunch.reliable_sequence == sequence);
+                    if let Some(bunch) = retained {
+                        resends.push((*entry, self.reliable_bunch(sequence, &bunch.payload)?));
+                    }
+                }
+                Resend::Actor(index, sequence) => {
+                    let retained = self.actors.get(&index).and_then(|channel| {
+                        channel
+                            .out_bunches()
+                            .iter()
+                            .find(|bunch| bunch.reliable_sequence == sequence)
+                    });
+                    if let Some(bunch) = retained {
+                        resends.push((*entry, bunch.payload.clone()));
+                    }
+                }
+            }
+        }
+        Ok(resends)
+    }
+
+    /// Write the datagram with the ack state, resends that fit and `new`
+    /// (which must fit); nothing is committed. Resends that do not fit are
+    /// dropped from the tail of the candidates and stay queued.
+    fn assemble(&self, new: &[Bunch]) -> Result<(Vec<u8>, u32, Resends)> {
         let header = self.sequencer.header()?;
         let packet_id = self.sequencer.out_packet_id();
+        let room = self.config.max_bunches_per_packet.saturating_sub(new.len());
+        let mut resends = self.resend_candidates(room)?;
+        let max = self.config.packet.limits.max_packet_bytes as usize;
+        loop {
+            let packet = Packet {
+                magic: 0,
+                header: header.clone(),
+                info: Some(PacketInfo {
+                    jitter_clock: 0,
+                    has_frame_time: false,
+                    server_frame_time: None,
+                }),
+                bunches: resends
+                    .iter()
+                    .map(|(_, bunch)| bunch.clone())
+                    .chain(new.iter().cloned())
+                    .collect(),
+            };
+            let bytes = write_packet(&packet, &self.config.outgoing())?;
+            if bytes.len() <= max {
+                return Ok((bytes, packet_id, resends));
+            }
+            ensure!(
+                resends.pop().is_some(),
+                "outgoing datagram exceeds the maximum packet size"
+            );
+        }
+    }
+
+    /// Build the datagram completely, then commit: errors before the commit
+    /// leave the state unchanged.
+    fn write_data_packet(&mut self, message: Option<ControlMessage>) -> Result<Vec<u8>> {
+        self.ensure_usable()?;
         let new = match message {
             Some(message) => {
                 ensure!(
@@ -659,77 +827,94 @@ impl LabPeer {
             }
             None => None,
         };
-        let room = self.config.max_bunches_per_packet - usize::from(new.is_some());
-        let mut resends = Vec::new();
-        for sequence in &self.resend {
-            if resends.len() == room {
-                break;
-            }
-            let retained = self
-                .control
-                .out_bunches()
-                .iter()
-                .find(|bunch| bunch.reliable_sequence == *sequence);
-            if let Some(bunch) = retained {
-                resends.push((*sequence, self.reliable_bunch(*sequence, &bunch.payload)?));
-            }
-        }
-        let max = self.config.packet.limits.max_packet_bytes as usize;
-        let datagram = loop {
-            let packet = Packet {
-                magic: 0,
-                header: header.clone(),
-                info: Some(PacketInfo {
-                    jitter_clock: 0,
-                    has_frame_time: false,
-                    server_frame_time: None,
-                }),
-                bunches: resends
-                    .iter()
-                    .map(|(_, bunch)| bunch.clone())
-                    .chain(new.iter().map(|(_, bunch, _)| bunch.clone()))
-                    .collect(),
-            };
-            let bytes = write_packet(&packet, &self.config.outgoing())?;
-            if bytes.len() <= max {
-                break bytes;
-            }
-            ensure!(
-                resends.pop().is_some(),
-                "outgoing datagram exceeds the maximum packet size"
-            );
-        };
+        let new_bunches: Vec<Bunch> = new.iter().map(|(_, bunch, _)| bunch.clone()).collect();
+        let (datagram, packet_id, resends) = self.assemble(&new_bunches)?;
         let committed = self.sequencer.commit()?;
         let recorded = self.record_sent(committed, packet_id, &resends, new);
         self.fail_on_error(recorded)?;
         Ok(datagram)
     }
 
-    /// After the commit: move resent bunches to the new packet ID and retain
-    /// the new bunch. The checks above make this infallible in practice; an
-    /// error still fails the peer because the state is then partly updated.
+    /// After the commit: move resent bunches to the new packet ID and drop
+    /// resend entries that were sent or already released.
+    fn record_resends(&mut self, packet_id: u32, resends: &[(Resend, Bunch)]) -> Result<()> {
+        for (entry, _) in resends {
+            match *entry {
+                Resend::Control(sequence) => {
+                    self.control.reassign(sequence, packet_id)?;
+                }
+                Resend::Actor(index, sequence) => {
+                    self.actors
+                        .get_mut(&index)
+                        .context("resent actor channel vanished")?
+                        .reassign(sequence, packet_id)?;
+                }
+            }
+        }
+        let control = self.control.out_bunches();
+        let actors = &self.actors;
+        self.resend.retain(|entry| {
+            !resends.iter().any(|(resent, _)| resent == entry)
+                && match *entry {
+                    Resend::Control(sequence) => control
+                        .iter()
+                        .any(|bunch| bunch.reliable_sequence == sequence),
+                    Resend::Actor(index, sequence) => actors.get(&index).is_some_and(|channel| {
+                        channel
+                            .out_bunches()
+                            .iter()
+                            .any(|bunch| bunch.reliable_sequence == sequence)
+                    }),
+                }
+        });
+        Ok(())
+    }
+
+    /// After the commit: record resends and retain the new control bunch. The
+    /// checks above make this infallible in practice; an error still fails
+    /// the peer because the state is then partly updated.
     fn record_sent(
         &mut self,
         committed: u32,
         packet_id: u32,
-        resends: &[(u32, Bunch)],
+        resends: &[(Resend, Bunch)],
         new: Option<(u32, Bunch, Vec<Decoded>)>,
     ) -> Result<()> {
         ensure!(committed == packet_id, "committed packet ID mismatch");
-        for (sequence, _) in resends {
-            self.control.reassign(*sequence, packet_id)?;
-        }
-        let out_bunches = self.control.out_bunches();
-        self.resend.retain(|sequence| {
-            !resends.iter().any(|(resent, _)| resent == sequence)
-                && out_bunches
-                    .iter()
-                    .any(|bunch| bunch.reliable_sequence == *sequence)
-        });
+        self.record_resends(packet_id, resends)?;
         if let Some((sequence, _, payload)) = new {
             let assigned = self.control.send_reliable(packet_id, payload)?;
             ensure!(assigned == sequence, "outgoing reliable sequence mismatch");
         }
+        Ok(())
+    }
+
+    /// After the commit: record resends and retain the open's parts under
+    /// consecutive sequences of the new channel.
+    fn record_actor_open(
+        &mut self,
+        committed: u32,
+        packet_id: u32,
+        resends: &[(Resend, Bunch)],
+        mut channel: ReliableChannel<Bunch>,
+        parts: Vec<Bunch>,
+    ) -> Result<()> {
+        ensure!(committed == packet_id, "committed packet ID mismatch");
+        self.record_resends(packet_id, resends)?;
+        let index = parts
+            .first()
+            .context("an actor open has at least one part")?
+            .header
+            .channel_index;
+        for part in parts {
+            let raw = part.header.reliable_sequence_raw;
+            let sequence = channel.send_reliable(packet_id, part)?;
+            ensure!(
+                raw == Some(wire_reliable_sequence(sequence)),
+                "outgoing reliable sequence mismatch"
+            );
+        }
+        self.actors.insert(index, channel);
         Ok(())
     }
 }

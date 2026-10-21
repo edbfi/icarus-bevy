@@ -712,3 +712,112 @@ fn outgoing_limits_fail_without_state_change() {
     assert_eq!(format!("{peer:?}"), before);
     assert!(peer.ack_packet().is_ok());
 }
+
+fn actor_open_bunch(channel_index: u32, payload_bytes: &[u8]) -> Bunch {
+    let mut writer = BitWriter::new();
+    writer.write_bytes(payload_bytes);
+    Bunch {
+        header: BunchHeader {
+            control: true,
+            open: true,
+            close: false,
+            close_reason: None,
+            paused: false,
+            reliable: true,
+            channel_index,
+            has_package_map_exports: false,
+            has_must_be_mapped_guids: false,
+            partial: false,
+            reliable_sequence_raw: None,
+            partial_initial: false,
+            partial_final: false,
+            channel_name: Some(Name::Hardcoded(102)),
+        },
+        payload: Payload::from_writer(writer),
+    }
+}
+
+#[test]
+fn actor_open_splits_exports_and_body_and_resends_them_unchanged() {
+    let mut peer = peer();
+    let mut client = Client::new();
+    let (opening, _) = client.send(Vec::new());
+    peer.receive(&opening).unwrap();
+    let (_, initial_out) = peer.sequencer().initial_reliable();
+    let mut exports = BitWriter::new();
+    exports.write_bytes(&[0xa5; 40]);
+    let exports = Payload::from_writer(exports);
+    let body = actor_open_bunch(2, &[0x5a; 8]);
+
+    // Rejected without a state change: the control channel, a non-open bunch.
+    let before = format!("{peer:?}");
+    let out_id = peer.sequencer().out_packet_id();
+    for bad in [
+        actor_open_bunch(0, &[1]),
+        Bunch {
+            header: BunchHeader {
+                open: false,
+                ..body.header.clone()
+            },
+            ..body.clone()
+        },
+    ] {
+        assert!(peer.reliable_actor_open(&bad, &[]).is_err());
+        assert_eq!(format!("{peer:?}"), before);
+        assert_eq!(peer.sequencer().out_packet_id(), out_id);
+    }
+
+    let datagram = peer
+        .reliable_actor_open(&body, std::slice::from_ref(&exports))
+        .unwrap();
+    assert_eq!(peer.pending_actor_reliable(2), Some(2));
+    assert!(
+        peer.reliable_actor_open(&body, &[]).is_err(),
+        "already open"
+    );
+    let packet = read_packet(&datagram, &to_client()).unwrap();
+    let [first, second] = packet.bunches.as_slice() else {
+        panic!("exports and body travel as two partial parts");
+    };
+    let (h0, h1) = (&first.header, &second.header);
+    assert!(h0.open && h0.partial && h0.partial_initial && !h0.partial_final);
+    assert!(h0.has_package_map_exports && h0.reliable);
+    assert!(!h1.open && h1.partial && !h1.partial_initial && h1.partial_final);
+    assert!(!h1.has_package_map_exports && h1.reliable);
+    assert_eq!(
+        (h0.reliable_sequence_raw, h1.reliable_sequence_raw),
+        (
+            Some(wire_reliable_sequence(initial_out + 1)),
+            Some(wire_reliable_sequence(initial_out + 2))
+        )
+    );
+    assert_eq!(h0.channel_name, Some(Name::Hardcoded(102)));
+    assert_eq!(first.payload, exports);
+    assert_eq!(second.payload, body.payload);
+
+    // The client loses it and receives a later ack packet, so its next
+    // packet naks the open and both parts are queued for resend.
+    let ack = peer.ack_packet().unwrap();
+    assert!(read_packet(&ack, &to_client()).unwrap().bunches.is_empty());
+    client.receive(&ack);
+    let (next, _) = client.send(Vec::new());
+    let summary = peer.receive(&next).unwrap().summary().clone();
+    assert_eq!(summary.naked, [out_id]);
+    assert_eq!(summary.resend_queued, 2);
+    let resent = peer.ack_packet().unwrap();
+    let resent_bunches = read_packet(&resent, &to_client()).unwrap().bunches;
+    assert_eq!(resent_bunches, packet.bunches, "resent unchanged");
+    assert_eq!(peer.pending_resends(), 0);
+
+    // Acknowledging the resend releases both parts.
+    let received = client
+        .sequencer
+        .receive(&read_packet(&resent, &to_client()).unwrap().header)
+        .unwrap()
+        .unwrap();
+    client.sequencer.ack_seq(received.sequence, true).unwrap();
+    let (next, _) = client.send(Vec::new());
+    let summary = peer.receive(&next).unwrap().summary().clone();
+    assert_eq!(summary.released_reliable, 2);
+    assert_eq!(peer.pending_actor_reliable(2), Some(0));
+}
