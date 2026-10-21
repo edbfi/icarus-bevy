@@ -470,8 +470,9 @@ pub struct ReleaseGameStateProfile {
 
 impl ReleaseGameStateProfile {
     /// `BP_IcarusGameState_C`: reproduced bit-exactly against the 3.0.31
-    /// capture (F-794); the 3.0.32 derivation reproduces all six checksums
-    /// (F-780).
+    /// capture (F-794). For 3.0.32 the six checksums are among the 77 oracle
+    /// values the 25956137 derivation reproduces (M-820, behind F-780); the
+    /// component set and order are assumed unchanged.
     pub fn icarus_survival() -> Self {
         let segment = |path: &str, checksum| ReleasePathSegment {
             path: path.to_owned(),
