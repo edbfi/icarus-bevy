@@ -1691,3 +1691,35 @@ fn replicated_movement_opens_at_rest_and_updates_after_a_move() {
     assert!(!update.header.open && update.header.channel_name.is_none());
     assert_eq!(location_of(&update.payload, false), (6, [500, -20, 30]));
 }
+
+/// A joined probe session held for three seconds keeps receiving GameState
+/// updates: the world time every 0.1 s, never decreasing, every block
+/// decoding (real binary, authored probe on loopback).
+#[test]
+fn a_held_session_receives_steady_game_state_updates() {
+    use icarus_bevy::experimental::session_hold::{HoldConfig, run_hold};
+    let directory = tempfile::tempdir().unwrap();
+    let config = pinned_server_config(directory.path(), &release_toml());
+    let state = directory.path().join("state");
+    let mut server = spawn_run(&config, &state);
+    let (address, _) = listening_address(&mut server);
+    let profile = ReleaseProfile::load(&release_toml()).unwrap();
+    let summary = run_hold(&HoldConfig {
+        server: address,
+        network_version: profile.pin.network_checksum,
+        engine_net_version: profile.engine_network_version,
+        duration: Duration::from_secs(3),
+        step_timeout: Duration::from_secs(3),
+    })
+    .unwrap();
+    sigterm(&server);
+    assert!(server.wait_exit().success());
+    assert!(summary.joined);
+    assert_eq!(summary.decode_errors, 0);
+    assert!(summary.world_time_updates >= 10, "{summary:?}");
+    assert_eq!(summary.world_time_regressions, 0);
+    assert_eq!(summary.level_time_regressions, 0);
+    assert_eq!(summary.time_of_day_regressions, 0);
+    assert!(summary.max_update_gap_ms < 1_000, "{summary:?}");
+    assert!(summary.keepalives >= 10);
+}

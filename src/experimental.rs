@@ -35,6 +35,7 @@ pub mod restore_rules;
 pub mod sequencing;
 pub mod server_fps;
 pub mod session_churn;
+pub mod session_hold;
 pub mod session_open;
 pub mod struct_array;
 pub mod tag_dictionary;
