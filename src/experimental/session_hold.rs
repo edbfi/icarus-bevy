@@ -4,12 +4,18 @@
 //! receives (world time, `TimeOfDay`, `LevelTimeElapsedSec`, `ServerFPS`;
 //! F-807, F-809).
 //!
+//! [`run_holds`] holds several such sessions at once, each on its own socket
+//! with its own synthetic identity, and adds the most players each saw the
+//! GameState's `NetworkingStatus` list (F-810).
+//!
 //! The probe and the server share this repository's model, so a clean hold
 //! shows the native session layer staying consistent over time, not
 //! compatibility with any client. The summary carries counts, timings and
 //! the server's own clock and frame-rate ranges only.
 use std::{
+    collections::BTreeMap,
     net::{SocketAddr, UdpSocket},
+    thread,
     time::{Duration, Instant},
 };
 
@@ -27,18 +33,24 @@ use super::{
     peer_lab::PeerLabConfig,
     probe_client::{ProbeClient, ProbeConfig, ReplyDecode},
     rep_layout::{
-        MovementLevel, RepLayoutCodec, RepLayoutLimits, RepValue, RotationLevel,
+        MovementLevel, RepArray, RepLayoutCodec, RepLayoutLimits, RepValue, RotationLevel,
         icarus_game_state_survival_rep_layout, read_rep_properties,
     },
 };
 
 /// Longest accepted [`HoldConfig::duration`]: 72 hours.
 pub const MAX_HOLD: Duration = Duration::from_secs(72 * 3600);
-/// Synthetic Login identity; never logged by the server.
+/// Largest accepted [`MultiHoldConfig::sessions`].
+pub const MAX_HOLD_SESSIONS: usize = 64;
+/// Synthetic Login identity of session 0; never logged by the server.
+/// Session `i > 0` appends `i` to the name and sets the net ID's second
+/// byte from the end to `i`.
 const SYNTHETIC_NAME: &str = "HoldProbe";
-const SYNTHETIC_NET_ID_HEX: &str = "00000000000000000002";
+const SYNTHETIC_NET_ID: u128 = 0x02;
 /// How long each receive window lasts before the probe acknowledges.
 const WINDOW: Duration = Duration::from_millis(250);
+/// `NetworkingStatus.PlayerNames`, its third command (F-810).
+const PLAYER_NAMES: u32 = handle::NETWORKING_STATUS_FIRST + 2;
 /// A `TimeOfDay` drop larger than half a day counts as a new day.
 const DAY_WRAP_MINUTES: f32 = 720.0;
 
@@ -95,8 +107,121 @@ pub struct HoldSummary {
     pub server_fps_max: Option<i32>,
 }
 
-/// Join one probe session and hold it for `config.duration`.
+/// Concurrent hold parameters.
+#[derive(Clone, Debug)]
+pub struct MultiHoldConfig {
+    /// What every session holds.
+    pub hold: HoldConfig,
+    /// Concurrent sessions, `1..=MAX_HOLD_SESSIONS`.
+    pub sessions: usize,
+}
+
+/// One session of a concurrent hold.
+#[derive(Clone, Debug, Default, PartialEq, Serialize)]
+pub struct SessionHold {
+    /// The error that ended the session outside its hold loop (admission or
+    /// the final close; kind only); the hold fields are then empty.
+    pub setup_error: Option<String>,
+    #[serde(flatten)]
+    pub hold: HoldSummary,
+    /// Most players a `NetworkingStatus` update listed (count only; the
+    /// GameState open is not decoded).
+    pub max_listed_players: Option<u16>,
+}
+
+/// One JSON-serializable concurrent hold result; counts and timings only.
+#[derive(Clone, Debug, Default, PartialEq, Serialize)]
+pub struct MultiHoldSummary {
+    pub sessions_requested: usize,
+    pub joined: u64,
+    pub refused: u64,
+    /// Sessions that ended with a [`SessionHold::setup_error`].
+    pub failed: u64,
+    pub wall_ms: u64,
+    pub game_state_updates: u64,
+    pub decode_errors: u64,
+    /// World time, `TimeOfDay` and `LevelTimeElapsedSec` regressions.
+    pub regressions: u64,
+    /// The longest [`HoldSummary::max_update_gap_ms`] of a joined session.
+    pub max_update_gap_ms: Option<u64>,
+    /// The fewest GameState updates a joined session received.
+    pub min_game_state_updates: Option<u64>,
+    /// Setup errors and [`HoldSummary::ended_by_error`] by kind.
+    pub errors_by_kind: BTreeMap<String, u64>,
+    /// Per session, in session-index order.
+    pub sessions: Vec<SessionHold>,
+}
+
+/// Join one probe session and hold it for `config.duration`. A Login the
+/// server refuses ends the hold at once with [`HoldSummary::refused`].
 pub fn run_hold(config: &HoldConfig) -> Result<HoldSummary> {
+    validate(config)?;
+    hold_session(config, 0).map(|session| session.hold)
+}
+
+/// Hold `config.sessions` probe sessions concurrently, each for
+/// `config.hold.duration`.
+pub fn run_holds(config: &MultiHoldConfig) -> Result<MultiHoldSummary> {
+    validate(&config.hold)?;
+    ensure!(
+        (1..=MAX_HOLD_SESSIONS).contains(&config.sessions),
+        "sessions must be 1..={MAX_HOLD_SESSIONS}"
+    );
+    let started = Instant::now();
+    let results = thread::scope(|scope| {
+        let handles: Vec<_> = (0..config.sessions)
+            .map(|index| scope.spawn(move || hold_session(&config.hold, index)))
+            .collect();
+        handles
+            .into_iter()
+            .map(|handle| handle.join())
+            .collect::<Vec<_>>()
+    });
+    let mut summary = MultiHoldSummary {
+        sessions_requested: config.sessions,
+        wall_ms: u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX),
+        ..MultiHoldSummary::default()
+    };
+    for result in results {
+        let session = match result.map_err(|_| anyhow::anyhow!("hold session panicked"))? {
+            Ok(session) => session,
+            Err(error) => SessionHold {
+                setup_error: Some(error_kind(&error)),
+                ..SessionHold::default()
+            },
+        };
+        let hold = &session.hold;
+        summary.joined += u64::from(hold.joined);
+        summary.refused += u64::from(hold.refused);
+        summary.failed += u64::from(session.setup_error.is_some());
+        summary.game_state_updates += hold.game_state_updates;
+        summary.decode_errors += hold.decode_errors;
+        summary.regressions += hold.world_time_regressions
+            + hold.time_of_day_regressions
+            + hold.level_time_regressions;
+        if hold.joined {
+            summary.max_update_gap_ms = summary.max_update_gap_ms.max(Some(hold.max_update_gap_ms));
+            summary.min_game_state_updates = Some(
+                summary
+                    .min_game_state_updates
+                    .map_or(hold.game_state_updates, |min| {
+                        min.min(hold.game_state_updates)
+                    }),
+            );
+        }
+        for kind in [&session.setup_error, &hold.ended_by_error]
+            .into_iter()
+            .flatten()
+        {
+            *summary.errors_by_kind.entry(kind.clone()).or_default() += 1;
+        }
+        summary.sessions.push(session);
+    }
+    Ok(summary)
+}
+
+/// Out-of-range parameters fail before any socket is opened.
+fn validate(config: &HoldConfig) -> Result<()> {
     ensure!(
         config.server.ip().is_loopback(),
         "the hold probe targets loopback only"
@@ -110,6 +235,25 @@ pub fn run_hold(config: &HoldConfig) -> Result<HoldSummary> {
         !config.step_timeout.is_zero(),
         "admission receives need a positive bound"
     );
+    Ok(())
+}
+
+/// Session `index`'s synthetic Login name and net ID (hex).
+fn identity(index: usize) -> (String, String) {
+    let name = if index == 0 {
+        SYNTHETIC_NAME.to_owned()
+    } else {
+        format!("{SYNTHETIC_NAME}{index}")
+    };
+    (
+        name,
+        format!("{:020x}", SYNTHETIC_NET_ID | ((index as u128) << 8)),
+    )
+}
+
+/// Join session `index` and hold it for `config.duration`.
+fn hold_session(config: &HoldConfig, index: usize) -> Result<SessionHold> {
+    let (name, net_id) = identity(index);
     let socket = UdpSocket::bind("127.0.0.1:0").context("bind the hold probe socket")?;
     socket.connect(config.server)?;
     let to_client = PacketConfig {
@@ -136,16 +280,28 @@ pub fn run_hold(config: &HoldConfig) -> Result<HoldSummary> {
     client.send_control(
         &[ControlMessage::Login {
             response: ArchiveText::text("0")?,
-            url: ArchiveText::text(&format!("?Name={SYNTHETIC_NAME}"))?,
+            url: ArchiveText::text(&format!("?Name={name}"))?,
             unique_net_id: UniqueNetId {
                 kind: NetIdType::Named(ArchiveText::text("STEAM")?),
-                value: NetIdValue::from_hex(SYNTHETIC_NET_ID_HEX)?,
+                value: NetIdValue::from_hex(&net_id)?,
             },
             platform: ArchiveText::text("")?,
         }],
         false,
     )?;
     let welcome = client.collect(config.step_timeout, 1)?;
+    if welcome
+        .messages()
+        .any(|message| matches!(message, ControlMessage::Failure { .. }))
+    {
+        return Ok(SessionHold {
+            hold: HoldSummary {
+                refused: true,
+                ..HoldSummary::default()
+            },
+            ..SessionHold::default()
+        });
+    }
     ensure!(
         welcome
             .messages()
@@ -218,7 +374,11 @@ pub fn run_hold(config: &HoldConfig) -> Result<HoldSummary> {
     if summary.ended_by_error.is_none() && !summary.refused {
         client.close()?;
     }
-    Ok(summary)
+    Ok(SessionHold {
+        setup_error: None,
+        hold: summary,
+        max_listed_players: tracker.max_listed_players,
+    })
 }
 
 /// The I/O error kind behind `error`, or a fixed label; never addresses or
@@ -238,6 +398,7 @@ struct Tracker {
     world_time: Option<f32>,
     time_of_day: Option<f32>,
     level_time: Option<i32>,
+    max_listed_players: Option<u16>,
 }
 
 impl Tracker {
@@ -259,6 +420,7 @@ impl Tracker {
             world_time: None,
             time_of_day: None,
             level_time: None,
+            max_listed_players: None,
         }
     }
 
@@ -329,6 +491,9 @@ impl Tracker {
                         summary.level_time_regressions += 1;
                     }
                     self.level_time = Some(value);
+                }
+                (PLAYER_NAMES, RepValue::DynamicArray(RepArray { count, .. })) => {
+                    self.max_listed_players = self.max_listed_players.max(Some(count));
                 }
                 (handle::SERVER_FPS, RepValue::Int(value)) => {
                     summary.server_fps_updates += 1;
