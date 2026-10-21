@@ -14,6 +14,7 @@ pub mod component;
 pub mod control;
 pub mod control_messages;
 pub mod control_receive;
+pub mod game_state_open;
 pub mod handshake;
 pub mod handshake_lab;
 pub mod int_array;

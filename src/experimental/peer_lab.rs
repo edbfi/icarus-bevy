@@ -636,6 +636,7 @@ pub struct PeerLab {
     player_controller_open: Option<PlayerControllerOpenPlan>,
     /// Opt-in PlayerState open after the PlayerController open.
     player_state_open: Option<PlayerStateOpenPlan>,
+    /// Driver-wide NetGUIDs, replicated actors keyed by the caller's key.
     guid_cache: NetGuidCache,
     /// `AGameSession::GetNextPlayerID`'s counter (F-784): 256 first.
     next_player_id: i32,
@@ -644,8 +645,6 @@ pub struct PeerLab {
     host_assigned: bool,
     /// Next lab connection ID (from 1) for joined peers.
     next_connection_id: u32,
-    /// Driver-wide dynamic GUIDs of replicated actors, by caller key.
-    actor_guids: BTreeMap<u64, u32>,
 }
 
 impl fmt::Debug for PeerLab {
@@ -709,7 +708,6 @@ impl PeerLab {
             next_player_id: FIRST_PLAYER_ID,
             host_assigned: false,
             next_connection_id: 1,
-            actor_guids: BTreeMap::new(),
         }
     }
 
@@ -896,10 +894,7 @@ impl PeerLab {
             return None;
         }
         let mut cache = self.guid_cache.clone();
-        let guid = match self.actor_guids.get(&key) {
-            Some(guid) => *guid,
-            None => cache.assign_dynamic(),
-        };
+        let guid = cache.actor_guid(key);
         open.actor = guid;
         let mut exports = entry.exports.clone();
         let sent = entry
@@ -939,7 +934,6 @@ impl PeerLab {
             entry.actor_locations.insert(key, location);
         }
         self.guid_cache = cache;
-        self.actor_guids.insert(key, guid);
         if self.send(&datagram, address) {
             bump(&mut self.stats.actor_opens_sent);
         }

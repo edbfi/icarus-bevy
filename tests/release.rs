@@ -381,3 +381,119 @@ fn builtin_player_state_identifiers_compose_the_captured_export_prefix() {
         "531bb7b3e9a59fa4f7423e5718a48238ffb93219c32dafb96f4826459daebd09"
     );
 }
+
+#[test]
+fn builtin_game_state_identifiers_compose_the_captured_export_prefix() {
+    use icarus_bevy::experimental::{
+        archive::ByteOrder,
+        game_state_open::{GameStateManagers, GameStateOpenState, compose_game_state_open},
+        session_open::{ConnectionExports, NetGuidCache, PathSegment},
+    };
+    use sha2::{Digest, Sha256};
+    let p31 = ReleaseProfile::release_3_0_31();
+    assert_eq!(ReleaseProfile::release_3_0_32().game_state, p31.game_state);
+    let plan = p31
+        .game_state_open_plan("/Game/Maps/Terrain_016_OLY/Terrain_016")
+        .unwrap()
+        .unwrap();
+    // The capture had exported the level and 8 other static paths and
+    // assigned 33 dynamic GUIDs first, so the GameState took 68 and its
+    // archetype 25 (F-794).
+    let mut cache = NetGuidCache::new();
+    let mut exports = ConnectionExports::new();
+    cache.export_static(&mut exports, &plan.level).unwrap();
+    for index in 0..8 {
+        cache
+            .export_static(
+                &mut exports,
+                &[PathSegment::new(&format!("other{index}"), 0, false)],
+            )
+            .unwrap();
+    }
+    for _ in 0..33 {
+        cache.assign_dynamic();
+    }
+    // All seven managers are named, so the weather component takes 88.
+    let state = GameStateOpenState {
+        key: 0,
+        managers: GameStateManagers {
+            quest_manager: Some(1),
+            world_talent_manager: Some(2),
+            radiation_manager: Some(3),
+            inventory_container_manager: Some(4),
+            player_history_tracker: Some(5),
+            flod: Some(6),
+            disaster_controller: Some(7),
+        },
+        ..GameStateOpenState::default()
+    };
+    let open = compose_game_state_open(
+        &mut cache,
+        &mut exports,
+        &plan,
+        &state,
+        4,
+        ByteOrder::Little,
+    )
+    .unwrap();
+    assert_eq!(cache.actor_guid(0), 68);
+    assert_eq!(cache.actor_guid(6), 84);
+    // SHA-256 of the capture's 298-byte, 2,377-bit GameState export prefix.
+    let payload = open.exports.unwrap();
+    assert_eq!(payload.bit_len(), 2_377);
+    let digest: String = Sha256::digest(payload.bytes())
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect();
+    assert_eq!(
+        digest,
+        "7a403039925761dec0575e9e96c396321337399a17ac7c2f38c041da1e75f767"
+    );
+}
+
+#[test]
+fn game_state_sections_parse_and_fail_closed() {
+    let release = "[release]\napp_id = 2089300\nbuild_id = 1\nproject_version = \"1.0\"\n";
+    let release = release.replace(
+        "\"1.0\"\n",
+        &format!(
+            "\"1.0\"\nnetwork_checksum = {}\n",
+            icarus_bevy::experimental::release::network_checksum("1.0")
+        ),
+    );
+    let tags = "[tags]\ndata_table_tag_count = 130\nini_tag_count = 1889\nunique_node_count = 2302\ntotal_bits = 12\nconfigured_first_segment = 16\neffective_first_segment = 0\ncontainer_bits = 6\nnet_index_hash = 1829726063\n";
+    let section = "[game_state]\n\
+        archetype = [{ path = \"Default__G_C\", checksum = 1 }, { path = \"/Game/G\", checksum = 0 }]\n\
+        game_mode_class = [{ path = \"M_C\", checksum = 2 }, { path = \"/Game/M\", checksum = 0 }]\n\
+        spectator_class = [{ path = \"S\", checksum = 3 }, { path = \"/Script/E\", checksum = 0 }]\n\
+        connected_players = { name = \"A\", checksum = 4 }\n\
+        dialogue_system = { name = \"B\", checksum = 5 }\n\
+        weather = { name = \"C\", checksum = 6 }\n";
+    let base = format!("{release}{tags}");
+    // Unknown builds get no built-in identifiers.
+    assert!(ReleaseProfile::parse(&base).unwrap().game_state.is_none());
+    let parsed = ReleaseProfile::parse(&format!("{base}{section}")).unwrap();
+    let plan = parsed
+        .game_state_open_plan("/Game/Maps/Test/Test")
+        .unwrap()
+        .unwrap();
+    assert_eq!(plan.components.weather.name, "C");
+    assert_eq!(plan.spectator_class[1].path, "/Script/E");
+    for bad in [
+        section.replace("checksum = 4", "checksum = 0"),
+        section.replace("name = \"B\"", "name = \"a\""),
+        section.replace("name = \"C\"", "name = \"\""),
+        section.replace(
+            "{ path = \"M_C\", checksum = 2 }",
+            "{ path = \"M_C\", checksum = 0 }",
+        ),
+        section.replace(", { path = \"/Script/E\", checksum = 0 }", ""),
+        section.replace("checksum = 6 }", "checksum = 6, extra = 1 }"),
+    ] {
+        assert_ne!(bad, section);
+        assert!(
+            ReleaseProfile::parse(&format!("{base}{bad}")).is_err(),
+            "{bad}"
+        );
+    }
+}
