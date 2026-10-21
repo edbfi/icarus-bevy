@@ -155,7 +155,7 @@ impl Default for ReplicationConfig {
     fn default() -> Self {
         Self {
             // The grid decides identically but did not pay off over 2,626
-            // supplied actor positions at 1 to 8 viewers (F-775).
+            // supplied actor positions at 1 to 8 viewers (F-790).
             spatial: SpatialMode::Naive,
             connection_budget: DEFAULT_CONNECTION_BUDGET,
             max_consider_list: DEFAULT_MAX_CONSIDER_LIST,
@@ -202,7 +202,17 @@ pub struct ConnectionFrame {
     pub selected: Vec<SelectedActor>,
     pub saturated: bool,
     pub closed_channels: usize,
+    /// The actors whose channels closed this frame, with the evaluator's
+    /// `EChannelCloseReason` (`3` no longer relevant, `4` torn off; F-749).
+    pub closed: Vec<ClosedActor>,
     pub open_channels: usize,
+}
+
+/// One channel the stage closed for a connection.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+pub struct ClosedActor {
+    pub id: DomainId,
+    pub close_reason: u8,
 }
 
 /// Every scheduling decision of a frame; timing-free, so comparable.
@@ -989,6 +999,7 @@ impl ReplicationState {
 
         let mut selected = Vec::new();
         let mut closed_channels = 0;
+        let mut closed = Vec::new();
         let mut saturated = false;
         let mut processed = prioritized.len();
         for (position, item) in prioritized.iter().enumerate() {
@@ -1047,9 +1058,13 @@ impl ReplicationState {
                     }
                     None
                 }
-                ProcessPrioritizedActorOutcome::CloseChannel { .. } => {
+                ProcessPrioritizedActorOutcome::CloseChannel { close_reason } => {
                     connection.channels.remove(&row.id);
                     closed_channels += 1;
+                    closed.push(ClosedActor {
+                        id: row.id,
+                        close_reason,
+                    });
                     None
                 }
                 _ => None,
@@ -1109,6 +1124,7 @@ impl ReplicationState {
             selected,
             saturated,
             closed_channels,
+            closed,
             open_channels: connection.channels.len(),
         };
         self.connections.insert(connection_id, connection);

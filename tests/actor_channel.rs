@@ -2370,7 +2370,8 @@ fn server_replicate_actors_prioritize_process_and_mark_relevant() {
         destruction_level_initialized: true,
         has_channel: true,
         driver_elapsed_time: 10.0,
-        channel_relevant_time: 9.5,
+        // Outside the 1 s window, so the relevancy test runs (F-788).
+        channel_relevant_time: 8.5,
         relevant_timeout: 5.0,
         is_relevant_to_connection: true,
         actor_b_tear_off: false,
@@ -2445,11 +2446,14 @@ fn server_replicate_actors_prioritize_process_and_mark_relevant() {
     );
 
     // Branch 4b: !has_channel and (!actor_level_initialized || !package_map_supports_object)
-    // - Low frequency (< 1.0) schedules WorldTime + 0.2 * random
+    // - Low frequency (< 1.0) schedules WorldTime + 0.2 * random. An actor in
+    //   an uninitialized level never passes the relevancy test (F-788), so it
+    //   reaches this branch only while force-relevant.
     assert_eq!(
         evaluate_process_prioritized_actor(&ProcessPrioritizedActorInputs {
             has_channel: false,
             actor_level_initialized: false,
+            force_relevant_frame: 100,
             actor_net_update_frequency: 0.5,
             world_time_seconds: 50.0,
             random_unit_float: 0.5,
@@ -2501,6 +2505,38 @@ fn server_replicate_actors_prioritize_process_and_mark_relevant() {
             opened_new_channel: false,
             wrote_anything: true,
             updated_relevant_time: Some(10.25),
+        }
+    );
+    // Inside the 1 s window the relevancy test is skipped: the actor is only
+    // recently relevant and its RelevantTime is not refreshed (F-788), even
+    // when it would not be relevant now.
+    for relevant_now in [true, false] {
+        assert_eq!(
+            evaluate_process_prioritized_actor(&ProcessPrioritizedActorInputs {
+                channel_relevant_time: 9.5,
+                is_relevant_to_connection: relevant_now,
+                ..base_proc
+            }),
+            ProcessPrioritizedActorOutcome::ReplicateActorContinue {
+                opened_new_channel: false,
+                wrote_anything: true,
+                updated_relevant_time: None,
+            }
+        );
+    }
+    // A channel opened only because the actor is force-relevant keeps the
+    // RelevantTime its channel started with.
+    assert_eq!(
+        evaluate_process_prioritized_actor(&ProcessPrioritizedActorInputs {
+            has_channel: false,
+            is_relevant_to_connection: false,
+            force_relevant_frame: 100,
+            ..base_proc
+        }),
+        ProcessPrioritizedActorOutcome::ReplicateActorContinue {
+            opened_new_channel: true,
+            wrote_anything: true,
+            updated_relevant_time: None,
         }
     );
 

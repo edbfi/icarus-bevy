@@ -2154,10 +2154,12 @@ pub const DESTRUCTION_INFO_NEAR_FACTOR: f32 = 0.4;
 /// `UNetDriver::ServerReplicateActors_PrioritizeActors` (F-749).
 pub const DESTRUCTION_INFO_FAR_FACTOR: f32 = 0.2;
 
-/// Fast-path relevancy grace window (`1.0` second at `0x14479ef90` server)
-/// checked via `Driver->ElapsedTime - Channel->RelevantTime <= 1.0` in
+/// Relevancy re-check window (`1.0` second at `0x14479ef90` server): while
+/// `Driver->ElapsedTime - Channel->RelevantTime <= 1.0`,
 /// `UNetDriver::ServerReplicateActors_ProcessPrioritizedActors`
-/// (`0x143725030` server / `0x1439c1bf0` client, F-749).
+/// (`0x143725030` server / `0x1439c1bf0` client, F-749; `0x143729f60` in
+/// server 25956137, F-788) skips `IsNetRelevantFor` and `bIsRelevant` stays
+/// false.
 pub const PROCESS_PRIORITIZED_RELEVANCY_FAST_PATH_SECONDS: f64 = 1.0;
 
 /// Jitter scale (`0.5` seconds at `0x1446dc8b8` server) multiplied by `srands()`
@@ -2401,7 +2403,12 @@ pub enum ProcessPrioritizedActorOutcome {
 
 /// Evaluate `UNetDriver::ServerReplicateActors_ProcessPrioritizedActors`
 /// (`0x143725030..0x143725cf0` server / `0x1439c1bf0..0x1439c24a6` client,
-/// F-749) for one `FActorPriority` entry in exact branch order.
+/// F-749; server 25956137 `0x143729f60`, F-788) for one `FActorPriority`
+/// entry in exact branch order. `bIsRelevant` starts false and the viewers'
+/// `IsNetRelevantFor` runs only for a level-initialized, not torn-off actor
+/// without a channel or whose channel's `RelevantTime` is more than 1 s old;
+/// inside that window the actor stays only recently relevant. Only a relevant
+/// actor's channel gets `RelevantTime = Elapsed + 0.5 * SRand`.
 pub fn evaluate_process_prioritized_actor(
     inputs: &ProcessPrioritizedActorInputs,
 ) -> ProcessPrioritizedActorOutcome {
@@ -2415,11 +2422,13 @@ pub fn evaluate_process_prioritized_actor(
         return ProcessPrioritizedActorOutcome::SkipDestructionInfoLevelUnloaded;
     }
 
-    let relevancy_fast_path = inputs.has_channel
+    let within_relevancy_window = inputs.has_channel
         && (inputs.driver_elapsed_time - inputs.channel_relevant_time
             <= PROCESS_PRIORITIZED_RELEVANCY_FAST_PATH_SECONDS);
-    let is_relevant =
-        !inputs.actor_b_tear_off && (relevancy_fast_path || inputs.is_relevant_to_connection);
+    let is_relevant = inputs.actor_level_initialized
+        && !inputs.actor_b_tear_off
+        && !within_relevancy_window
+        && inputs.is_relevant_to_connection;
     let is_recently_relevant = is_relevant
         || (inputs.has_channel
             && inputs.driver_elapsed_time - inputs.channel_relevant_time < inputs.relevant_timeout)
@@ -2466,11 +2475,7 @@ pub fn evaluate_process_prioritized_actor(
             }
         }
 
-        let final_relevant_time = if !inputs.has_channel || is_relevant {
-            Some(jittered_relevant_time)
-        } else {
-            None
-        };
+        let final_relevant_time = is_relevant.then_some(jittered_relevant_time);
 
         if !inputs.connection_is_net_ready_after_replicate {
             ProcessPrioritizedActorOutcome::ReplicateActorAndStopSaturated {
