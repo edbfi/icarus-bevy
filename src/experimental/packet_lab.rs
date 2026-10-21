@@ -15,8 +15,9 @@
 //! reliable bunches awaiting resend (actor-channel parts unchanged). The
 //! client's ack and nak handling is mirrored (F-539, INFERRED for this side):
 //! an acked packet releases its out-bunches in order and a naked one queues
-//! its unacked bunches for resend in the next written packet. Resend is driven only by naks; there is no
-//! timer. The bunch is assembled from codec fields (F-522, F-712): not open,
+//! its unacked bunches for resend in the next written packet. Resend is
+//! driven only by naks; there is no timer. The bunch is assembled from codec
+//! fields (F-522, F-712): not open,
 //! reliable (`FControlChannelOutBunch` sets `bReliable = 1`, `0x1437a83c0`),
 //! the configured control channel index, the hard-coded control name 255 and
 //! the 10-bit wire reliable sequence; its payload is the message encoded with
