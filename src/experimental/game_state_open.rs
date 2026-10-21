@@ -21,13 +21,15 @@
 //! values come from the caller.
 use std::collections::BTreeMap;
 
-use anyhow::{Result, ensure};
+use anyhow::{Context, Result, ensure};
 
 use super::actor_open::{
     BlockContent, ComponentActorOpen, OpenComponent, Reference, compose_component_actor_open,
 };
+use super::control_messages::ArchiveText;
+use super::prospect_info::ProspectInfo;
 use super::rep_layout::{
-    PropertyStream, RepCommand, RepEntry, RepLayoutCodec, RepLayoutLimits, RepValue,
+    PropertyStream, RepArray, RepCommand, RepEntry, RepLayoutCodec, RepLayoutLimits, RepValue,
     encode_rep_properties,
 };
 use super::session_open::{
@@ -134,6 +136,94 @@ const COMPOSED_HANDLES: [u32; 13] = [
     handle::FLOD,
     handle::DISASTER_CONTROLLER,
 ];
+
+/// `ReplicatedActiveProspect` (handles 51..=67) for a save's `ProspectInfo`
+/// (`F-738`): each field in declaration order, sent when it differs from its
+/// default (empty, zero, false), arrays with every element field. Members
+/// carry 8 commands and custom settings 2 (`prospect_info_commands`).
+pub fn active_prospect_values(info: &ProspectInfo) -> Result<BTreeMap<u32, RepValue>> {
+    fn text(units: &[u16]) -> Result<Option<RepValue>> {
+        Ok((!units.is_empty())
+            .then(|| ArchiveText::new(units))
+            .transpose()?
+            .map(RepValue::Str))
+    }
+    fn array(elements: Vec<Vec<RepValue>>) -> Result<Option<RepValue>> {
+        if elements.is_empty() {
+            return Ok(None);
+        }
+        let count = u16::try_from(elements.len()).context("array exceeds its count width")?;
+        let entries = elements
+            .into_iter()
+            .flatten()
+            .zip(1..)
+            .map(|(value, handle)| RepEntry {
+                handle,
+                checksum: None,
+                value,
+            })
+            .collect();
+        Ok(Some(RepValue::DynamicArray(RepArray {
+            count,
+            stream: PropertyStream {
+                entries,
+                terminator_checksum: None,
+            },
+        })))
+    }
+    let int = |value: i32| (value != 0).then_some(RepValue::Int(value));
+    let flag = |value: bool| value.then_some(RepValue::Bool(true));
+    let members = info
+        .associated_members
+        .iter()
+        .map(|member| {
+            Ok(vec![
+                RepValue::Str(ArchiveText::new(&member.account_name)?),
+                RepValue::Str(ArchiveText::new(&member.character_name)?),
+                RepValue::Str(ArchiveText::new(&member.user_id)?),
+                RepValue::Int(member.chr_slot),
+                RepValue::Int(member.experience),
+                RepValue::Enum(u32::from(member.status)),
+                RepValue::Bool(member.settled),
+                RepValue::Bool(member.is_currently_playing),
+            ])
+        })
+        .collect::<Result<Vec<_>>>()?;
+    let settings = info
+        .custom_settings
+        .iter()
+        .map(|setting| {
+            Ok(vec![
+                RepValue::Str(ArchiveText::new(&setting.setting_row_name)?),
+                RepValue::Int(setting.setting_value),
+            ])
+        })
+        .collect::<Result<Vec<_>>>()?;
+    let fields = [
+        text(&info.prospect_id)?,
+        text(&info.claimed_account_id)?,
+        int(info.claimed_account_character),
+        text(&info.prospect_dt_key)?,
+        text(&info.faction_mission_dt_key)?,
+        text(&info.lobby_name)?,
+        (info.expire_time != 0).then_some(RepValue::Int64(info.expire_time)),
+        (info.prospect_state != 0).then_some(RepValue::Enum(u32::from(info.prospect_state))),
+        array(members)?,
+        int(info.cost),
+        int(info.reward),
+        (info.difficulty != 0).then_some(RepValue::Enum(u32::from(info.difficulty))),
+        flag(info.insurance),
+        flag(info.no_respawns),
+        int(info.elapsed_time),
+        int(info.selected_drop_point),
+        array(settings)?,
+    ];
+    Ok(fields
+        .into_iter()
+        .zip(handle::ACTIVE_PROSPECT_FIRST..)
+        .filter_map(|(value, handle)| value.map(|value| (handle, value)))
+        .collect())
+}
 
 /// The GameState's replicated components, in serialization order.
 #[derive(Clone, Debug, PartialEq, Eq)]

@@ -20,7 +20,8 @@
 //! and references, component bools, [`pawn_content`]; no stats or
 //! inventories);
 //! with `[game_state]` identifiers the world's GameState on channel 4 (F-794:
-//! [`game_state_values`]); with `[player_state]` identifiers the referenced
+//! [`game_state_values`], plus a preserved world's active prospect,
+//! [`saved_prospect_values`]); with `[player_state]` identifiers the referenced
 //! PlayerState on channel 5 (F-784: PlayerId from 256, the Login name and
 //! unique net id, `bIsHost` for the first player only). Each open takes as
 //! many datagrams as it needs. Nothing else replicates.
@@ -46,7 +47,7 @@ use crate::{
         control_messages::ArchiveText,
         game_state_open::{
             GAME_STATE_CHANNEL_INDEX, GameStateManagers, GameStateOpenState,
-            MATCH_STATE_IN_PROGRESS, handle,
+            MATCH_STATE_IN_PROGRESS, active_prospect_values, handle,
         },
         pawn_open::{CharacterVitals, PAWN_CHANNEL_INDEX, PawnContent},
         peer_lab::{PeerLab, PeerLabAdmission, PeerLabConfig, PeerLabPlugin, SessionCounts},
@@ -54,6 +55,7 @@ use crate::{
         rep_layout::{NetworkName, RepValue},
         session_open::ActorKey,
     },
+    preservation::PreservedSection,
 };
 
 /// Spectator slots granted beside `max_players` (the lab's default policy).
@@ -111,6 +113,20 @@ pub fn pawn_content() -> PawnContent {
         .values(),
         ..PawnContent::default()
     }
+}
+
+/// The GameState values a loaded world's preserved prospect supplies: its
+/// `ReplicatedActiveProspect` from the save's `ProspectInfo`, with
+/// `ElapsedTime` from the recorded level clock and no member playing (no
+/// connection is matched to a member), as the original showed for its
+/// loaded save (F-801).
+pub fn saved_prospect_values(section: &PreservedSection) -> Result<BTreeMap<u32, RepValue>> {
+    let payload = section.decode()?.to_inner_payload()?;
+    let saved = crate::prospect::saved_prospect_from_payload(&payload)?;
+    let level_time = saved
+        .level_time_elapsed_sec
+        .unwrap_or(saved.info.elapsed_time);
+    active_prospect_values(&saved.info.for_session(level_time, |_| false))
 }
 
 /// Session counts kept after [`teardown`] so a repeated call and the final

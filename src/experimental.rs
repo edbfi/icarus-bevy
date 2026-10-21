@@ -25,6 +25,7 @@ pub mod pawn_open;
 pub mod peer_lab;
 pub mod probe_client;
 pub mod property_tree;
+pub mod prospect_info;
 pub mod recorders;
 pub mod release;
 pub mod rep_layout;

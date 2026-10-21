@@ -1,9 +1,10 @@
-//! Describe a supplied pawn open body block by block (one JSON line per
-//! block): the actor block and each component block as rep-layout property
-//! entries, `Stat Container` and runtime `Inventory` blocks as their custom
-//! deltas. Reads the `pawn_open_compose` profile JSON and one schema name per
-//! component block, in block order. Never reads original files; values are
-//! printed in full and stay with the caller.
+//! Describe a supplied pawn or (with `--game-state`) GameState open body
+//! block by block (one JSON line per block): the actor block and each
+//! component block as rep-layout property entries, `Stat Container` and
+//! runtime `Inventory` blocks as their custom deltas. Reads the
+//! `pawn_open_compose` profile JSON and one schema name per component block,
+//! in block order. Never reads original files; values are printed in full and
+//! stay with the caller.
 use std::path::PathBuf;
 
 use anyhow::{Context, Result, bail, ensure};
@@ -20,10 +21,10 @@ use icarus_bevy::experimental::{
         RepValue, RotationLevel, actor_component_rep_layout, audio_context_component_rep_layout,
         bp_flammable_actor_rep_layout, bp_icarus_player_character_survival_rep_layout,
         bp_sheltered_component_rep_layout, bp_swimming_component_rep_layout,
-        bp_ui_projection_component_player_rep_layout, inventory_rep_layout,
-        inventory_slot_commands, player_character_state_rep_layout, read_rep_properties,
-        stomach_component_rep_layout, trait_component_rep_layout,
-        transmutable_component_rep_layout,
+        bp_ui_projection_component_player_rep_layout, icarus_game_state_survival_rep_layout,
+        inventory_rep_layout, inventory_slot_commands, player_character_state_rep_layout,
+        read_rep_properties, stomach_component_rep_layout, trait_component_rep_layout,
+        transmutable_component_rep_layout, weather_manager_component_rep_layout,
     },
     rep_rpc::{
         FAST_ARRAY_COUNT_CAP, FastArrayItem, FastArrayItemLayout, read_custom_delta_header,
@@ -40,6 +41,9 @@ struct Options {
     /// One schema name per component block, in block order.
     #[arg(long = "schema", required = true)]
     schemas: Vec<String>,
+    /// The body is the GameState's open (`BP_IcarusGameState_C`).
+    #[arg(long)]
+    game_state: bool,
 }
 
 #[derive(Deserialize)]
@@ -87,6 +91,7 @@ fn render(value: &RepValue) -> Value {
         RepValue::Int64(value) => json!(value),
         RepValue::UInt64(value) => json!(value),
         RepValue::Float(bits) => json!({ "float": f32::from_bits(*bits) }),
+        RepValue::Vector2D(bits) => json!({ "vector2d": bits.map(f32::from_bits) }),
         RepValue::Object(reference) => json!({ "guid": reference.guid }),
         RepValue::Str(text) => json!({ "str": String::from_utf16_lossy(text.units()) }),
         RepValue::RowHandle(handle) => {
@@ -124,6 +129,7 @@ fn component_layout(schema: &str) -> Result<Vec<RepCommand>> {
         "BP_ShelteredComponent_C" => bp_sheltered_component_rep_layout(),
         "BP_Flammable_Actor_C" => bp_flammable_actor_rep_layout(),
         "BP_UIProjectionComponent_Player_C" => bp_ui_projection_component_player_rep_layout(),
+        "UWeatherManagerComponent" => weather_manager_component_rep_layout(),
         other => bail!("no layout for {other}"),
     })
 }
@@ -192,14 +198,28 @@ fn main() -> Result<()> {
     for (index, block) in body.blocks.iter().enumerate() {
         let described = match &block.target {
             BlockTarget::Actor => {
-                let layout = bp_icarus_player_character_survival_rep_layout(
-                    MovementLevel::Hundredths,
-                    MovementLevel::Whole,
-                    RotationLevel::Bytes,
-                    tags,
-                );
+                let (schema, layout) = if options.game_state {
+                    (
+                        "BP_IcarusGameState_C",
+                        icarus_game_state_survival_rep_layout(
+                            MovementLevel::Whole,
+                            MovementLevel::Whole,
+                            RotationLevel::Bytes,
+                        ),
+                    )
+                } else {
+                    (
+                        "BP_IcarusPlayerCharacterSurvival_C",
+                        bp_icarus_player_character_survival_rep_layout(
+                            MovementLevel::Hundredths,
+                            MovementLevel::Whole,
+                            RotationLevel::Bytes,
+                            tags,
+                        ),
+                    )
+                };
                 json!({
-                    "schema": "BP_IcarusPlayerCharacterSurvival_C",
+                    "schema": schema,
                     "properties": stream(&read_rep_properties(
                         &mut block.payload.reader(),
                         &layout,
