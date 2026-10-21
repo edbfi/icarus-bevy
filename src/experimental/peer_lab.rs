@@ -74,13 +74,14 @@
 //!   (`refused_draining`, `peers_closed`).
 //!
 //! Removing a peer is the lab's close: outside [`PeerLab::shutdown`] no close
-//! bunch is written, so a lost Upgrade or Failure is never resent. An accepted data packet carrying a
-//! control bunch with the close flag removes its peer after that packet's
-//! delivered messages are answered (`peers_closed_by_client`); this is a lab
-//! choice, applied even when the close bunch itself waits in the reliable
-//! queue. Naked reliable replies of live peers are
-//! resent only inside later ack or reply datagrams (see `packet_lab`), which
-//! the lab writes only after accepting a client packet; there is no timer.
+//! bunch is written, so a lost Upgrade or Failure is never resent. An accepted
+//! data packet carrying a control bunch with the close flag removes its peer
+//! after that packet's delivered messages are answered
+//! (`peers_closed_by_client`); this is a lab choice, applied even when the
+//! close bunch itself waits in the reliable queue. Naked reliable replies of
+//! live peers are resent only inside later ack or reply datagrams (see
+//! `packet_lab`), which the lab writes only after accepting a client packet;
+//! there is no timer.
 //!
 //! Policy (lab choices):
 //! - At most [`PeerLabConfig::max_peers`] peers. When the table is full, a
