@@ -311,8 +311,8 @@ impl ProspectInfo {
 /// The game mode recorder's values the GameState restores from (`C015`,
 /// `F-650`): `GameModeRecord`'s seed, time of day, prospect game time, day
 /// length and level clock, and the top-level `DynamicQuestSeed`. Missing
-/// properties read as their defaults.
-#[derive(Clone, Copy, Debug, Default, PartialEq)]
+/// properties read as their defaults; `Debug` shows no values.
+#[derive(Clone, Copy, Default, PartialEq)]
 pub struct SavedGameMode {
     pub game_state_seed: i32,
     pub time_of_day: f32,
@@ -320,6 +320,12 @@ pub struct SavedGameMode {
     pub seconds_per_game_day: i32,
     pub level_time_elapsed_sec: i32,
     pub dynamic_quest_seed: i32,
+}
+
+impl std::fmt::Debug for SavedGameMode {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("SavedGameMode")
+    }
 }
 
 impl SavedGameMode {
