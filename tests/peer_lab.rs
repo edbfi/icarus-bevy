@@ -2137,9 +2137,23 @@ fn the_networking_status_lists_joined_players_in_join_order() {
         seen,
         Some(vec!["Player256".to_owned(), "Player257".to_owned()])
     );
-    let status = lab(&app).networking_status().unwrap();
-    // One measured ping per listed player (loopback round trips plus poll
-    // pauses; the values depend on the runner).
-    assert_eq!(status.player_ping.len(), 2);
+    // Acked round trips reach the listed pings: every ack here is processed
+    // at least one pause after the lab sent the packet it acknowledges, so
+    // once a ping bucket closes each byte is at least a quarter of that.
+    let floor = (GAME_STATE_UPDATE_SECONDS * 2.0 * 1000.0 / 4.0) as u8 - 1;
+    let mut pings = Vec::new();
+    for _ in 0..100 {
+        names(&mut first, &mut app);
+        names(&mut second, &mut app);
+        pings = lab(&app).networking_status().unwrap().player_ping.clone();
+        if pings.iter().all(|ping| *ping >= floor) {
+            break;
+        }
+    }
+    assert_eq!(pings.len(), 2);
+    assert!(
+        pings.iter().all(|ping| *ping >= floor),
+        "{pings:?} < {floor}"
+    );
     assert_eq!(stats(&app).game_state_update_errors, 0);
 }
