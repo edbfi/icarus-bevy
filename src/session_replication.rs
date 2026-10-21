@@ -97,6 +97,7 @@ fn open_selected_actors(
     frame: Res<ReplicationFrame>,
     actors: Query<(&NetActor, &Position, &NetArchetype)>,
 ) {
+    lab.retry_pending_closes();
     if frame
         .decisions
         .connections
