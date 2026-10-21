@@ -114,6 +114,7 @@ fn open_selected_actors(
                 continue;
             };
             let spec = ActorOpenSpec {
+                // Placeholder: `open_actor` assigns the driver-wide GUID.
                 actor: 0,
                 archetype: archetype.archetype.clone(),
                 level: session.level.clone(),

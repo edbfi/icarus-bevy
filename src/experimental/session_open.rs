@@ -667,6 +667,8 @@ fn actor_codec(engine_net_version: u32, order: super::archive::ByteOrder) -> Act
 /// an optional quantized location, and its initial content blocks.
 #[derive(Clone, Debug)]
 pub struct ActorOpenSpec {
+    /// The actor's dynamic GUID. [`super::peer_lab::PeerLab::open_actor`]
+    /// ignores the caller's value and assigns its driver-wide GUID.
     pub actor: u32,
     /// `Default__<Class>_C`, then its package.
     pub archetype: Vec<PathSegment>,
