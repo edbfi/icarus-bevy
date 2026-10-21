@@ -734,7 +734,9 @@ impl PeerLab {
     /// the location differs from the one last sent and the channel's open is
     /// acked (UE drops unreliable bunches for a channel the client has not
     /// opened yet). Returns whether an update was sent; failures count
-    /// `actor_update_errors` and change nothing.
+    /// `actor_update_errors` and change nothing. A lost update is not
+    /// repaired: unlike UE's changelist resend on a nak, the client keeps the
+    /// stale position until the actor moves again.
     pub fn update_actor_movement(
         &mut self,
         connection: u32,
@@ -788,11 +790,15 @@ impl PeerLab {
                 return false;
             }
         };
-        entry.actor_locations.insert(key, location);
         entry.ack_pending = false;
-        if self.send(&datagram, address) {
-            bump(&mut self.stats.actor_updates_sent);
+        if !self.send(&datagram, address) {
+            // Not recorded: the next selection builds the update again.
+            return false;
         }
+        if let Some(entry) = self.peers.get_mut(&address) {
+            entry.actor_locations.insert(key, location);
+        }
+        bump(&mut self.stats.actor_updates_sent);
         true
     }
 
