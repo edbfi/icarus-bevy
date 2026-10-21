@@ -145,6 +145,8 @@ pub struct MultiHoldSummary {
     pub wall_ms: u64,
     pub game_state_updates: u64,
     pub decode_errors: u64,
+    /// Unreliable partial parts of GameState updates, over all sessions.
+    pub partial_parts: u64,
     /// World time, `TimeOfDay` and `LevelTimeElapsedSec` regressions.
     pub regressions: u64,
     /// The longest [`HoldSummary::max_update_gap_ms`] of a joined session.
@@ -208,6 +210,7 @@ pub fn run_holds(config: &MultiHoldConfig) -> Result<MultiHoldSummary> {
         summary.failed += u64::from(session.setup_error.is_some());
         summary.game_state_updates += hold.game_state_updates;
         summary.decode_errors += hold.decode_errors;
+        summary.partial_parts += hold.partial_parts;
         summary.regressions += hold.world_time_regressions
             + hold.time_of_day_regressions
             + hold.level_time_regressions;

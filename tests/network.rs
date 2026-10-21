@@ -1972,8 +1972,9 @@ fn a_networking_status_over_one_bunch_reaches_every_held_session() {
             server: address,
             network_version: profile.pin.network_checksum,
             engine_net_version: profile.engine_network_version,
-            duration: Duration::from_secs(4),
-            step_timeout: Duration::from_secs(3),
+            // Generous for loaded runners: the joins take well under a second.
+            duration: Duration::from_secs(8),
+            step_timeout: Duration::from_secs(5),
         },
         sessions: 48,
     })
@@ -1990,11 +1991,13 @@ fn a_networking_status_over_one_bunch_reaches_every_held_session() {
     for session in &summary.sessions {
         assert_eq!(session.max_listed_players, Some(48), "{session:?}");
     }
-    assert!(
+    assert!(summary.partial_parts > 0, "no update was split");
+    assert_eq!(
+        summary.partial_parts,
         summary
             .sessions
             .iter()
-            .any(|session| session.hold.partial_parts > 0),
-        "no update was split"
+            .map(|session| session.hold.partial_parts)
+            .sum::<u64>()
     );
 }

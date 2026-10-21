@@ -919,9 +919,9 @@ impl LabPeer {
     /// `SendBunch` splits any bunch over `MAX_SINGLE_BUNCH_SIZE_BITS`
     /// ([`split_outgoing_bunch`]); `net.PartialBunchReliableThreshold` is
     /// zero in the client and the pinned server, so the parts stay unreliable
-    /// (lead's static read). The original's `ReceivedNextBunch` joins an
-    /// unreliable part only on the same or the next packet ID (lead's static
-    /// read), so the parts fill consecutive datagrams as
+    /// (F-825). The original's `ReceivedNextBunch` joins an unreliable part
+    /// only on the same or the next packet ID (F-825), so the parts fill
+    /// consecutive datagrams as
     /// [`reliable_actor_open_datagrams`](Self::reliable_actor_open_datagrams)
     /// lays them out: each carries the ack state, only the first also naked
     /// bunches awaiting resend, and nothing is retained. The caller must send
