@@ -17,7 +17,7 @@
 //! of keyed actors, components and subobjects are driver-wide, so every
 //! connection receives the same objects. The caller supplies identifiers and
 //! content (values and encoded blocks); nothing here reads original files.
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use anyhow::{Result, ensure};
 
@@ -128,7 +128,7 @@ pub fn compose_component_actor_open(
 ) -> Result<(ComposedActorOpen, ComponentActorGuids)> {
     // A name keys one component GUID: two components with one name would
     // be one object with two blocks.
-    let mut names = std::collections::BTreeSet::new();
+    let mut names = BTreeSet::new();
     for component in &open.components {
         ensure!(
             names.insert(component.name.as_str()),
