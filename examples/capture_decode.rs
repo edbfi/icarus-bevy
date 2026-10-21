@@ -104,6 +104,11 @@ struct Options {
     input: PathBuf,
     /// Per-item detail JSONL; must lie under this checkout's `work/`.
     detail: PathBuf,
+    /// Also record the decoded values of every later actor block on this
+    /// channel (`update_actor_values`), with its arrival time. Both decode
+    /// passes write their rows, so select one `pass` before counting.
+    #[arg(long)]
+    values_channel: Option<u32>,
 }
 
 /// The probe's channel-index ceiling for replies (handshake_probe).
@@ -1263,6 +1268,8 @@ struct Decoder<'a> {
     stats: PassStats,
     detail: &'a mut dyn Write,
     samples: Tally,
+    /// The channel whose later actor values are recorded too.
+    values_channel: Option<u32>,
 }
 
 fn packet_config() -> PacketConfig {
@@ -1293,6 +1300,7 @@ impl<'a> Decoder<'a> {
             stats: PassStats::default(),
             detail,
             samples: Tally::new(),
+            values_channel: None,
         }
     }
 
@@ -2327,7 +2335,9 @@ impl<'a> Decoder<'a> {
             }
             // Open actor blocks also record their decoded values (private
             // detail), the input for composing the same opens natively.
-            if complete.header.open
+            let update_values =
+                !complete.header.open && self.values_channel == Some(complete.header.channel_index);
+            if (complete.header.open || update_values)
                 && block.has_rep_layout
                 && matches!(block.target, BlockTarget::Actor)
                 && let Some((schema_name, _)) = replayed
@@ -2344,7 +2354,8 @@ impl<'a> Decoder<'a> {
                         })
                         .map_err(|error| format!("{error:#}"));
                 self.write_detail(
-                    json!({"kind":"open_actor_values", "datagram":arrival.datagram,
+                    json!({"kind":if update_values { "update_actor_values" } else { "open_actor_values" },
+                    "datagram":arrival.datagram, "ms":arrival.ms,
                     "channel":complete.header.channel_index, "schema":schema_name,
                     "payload_bits":block.payload.bit_len(), "entries":entries,
                     "spawn":format!("{:?}", body.spawn),
@@ -2556,6 +2567,18 @@ pub fn run_in_with_profile(
     work_root: &Path,
     profile: &ReleaseProfile,
 ) -> Result<Value> {
+    run_recording(input, detail, work_root, profile, None)
+}
+
+/// [`run_in_with_profile`], also recording `values_channel`'s later actor
+/// values.
+pub fn run_recording(
+    input: &Path,
+    detail: &Path,
+    work_root: &Path,
+    profile: &ReleaseProfile,
+    values_channel: Option<u32>,
+) -> Result<Value> {
     profile.validate()?;
     check_detail_path(detail, work_root)?;
     let (replies, input) = read_replies(input)?;
@@ -2564,6 +2587,7 @@ pub fn run_in_with_profile(
     let mut wire = Value::Null;
     for mode in [Mode::Strict, Mode::ExportHypothesis] {
         let mut decoder = Decoder::new(mode, profile.clone(), &mut detail);
+        decoder.values_channel = values_channel;
         for (index, reply) in replies.iter().enumerate() {
             decoder.feed(index, reply.ms, &reply.bytes)?;
         }
@@ -2579,7 +2603,13 @@ pub fn run_in_with_profile(
 
 fn main() -> Result<()> {
     let options = Options::parse();
-    let report = run(&options.input, &options.detail)?;
+    let report = run_recording(
+        &options.input,
+        &options.detail,
+        &repository_work(),
+        &ReleaseProfile::release_3_0_32(),
+        options.values_channel,
+    )?;
     println!("{}", serde_json::to_string_pretty(&report)?);
     Ok(())
 }
