@@ -104,6 +104,12 @@ fn component(body: &Body) -> Vec<u8> {
         tag("Nothing", "NameProperty", &[0], &fstring("None")),
         tag("ItemStaticData", "NameProperty", &[0], &fstring(ROW)),
         tag("TileName", "NameProperty", &[0], &fstring("SecretTile")),
+        tag(
+            "ObjectFName",
+            "NameProperty",
+            &[0],
+            &fstring("SecretObject_C_7"),
+        ),
     ];
     if body.gap {
         fields.push(struct_tag("Mystery", "SecretBlobType", &[1, 2, 3]));
@@ -216,9 +222,10 @@ fn empty_catalog_blocks_on_unmapped_content_and_reports_counts_only() {
     assert_eq!(plan.actors.actor_recorders, 2);
     assert_eq!(plan.actors.transform_restoring, 2);
     assert_eq!(plan.actors.recorded_transforms, 2);
-    // Per retained recorder: class, row and tile names and one package path;
-    // "None" and plain text are not references.
-    assert_eq!(plan.content.name_references, 6);
+    // Per retained recorder: class, row, tile and object names and one
+    // package path; "None" and plain text are not references, and the
+    // object name is an instance identity the catalog never resolves.
+    assert_eq!(plan.content.name_references, 8);
     assert_eq!(plan.content.path_references, 2);
     assert_eq!(plan.content.distinct, 3);
     assert_eq!(plan.content.unmapped_distinct, 3);
@@ -232,6 +239,14 @@ fn empty_catalog_blocks_on_unmapped_content_and_reports_counts_only() {
     assert_eq!(plan.content.roles[&ContentRole::ActorPath], role(2, 1));
     assert_eq!(plan.content.roles[&ContentRole::DataRow], role(2, 1));
     assert_eq!(plan.content.roles[&ContentRole::Unclassified], role(2, 1));
+    assert_eq!(
+        plan.content.roles[&ContentRole::InstanceName],
+        RoleCount {
+            references: 2,
+            distinct: 1,
+            unmapped_distinct: 0,
+        }
+    );
     assert!(!plan.content.roles.contains_key(&ContentRole::AssetPath));
     assert_eq!(plan.actors.owner_resolution["find_or_respawn"], 2);
     assert_eq!(plan.actors.owner_resolution.len(), 1);

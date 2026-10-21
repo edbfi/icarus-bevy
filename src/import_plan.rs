@@ -51,6 +51,9 @@ const ACTOR_CLASS: &str = "ActorClassName";
 const ACTOR_PATH: &str = "ActorPathName";
 const MOVED_TO_SUBLEVEL: &str = "bWasMovedToSubLevel";
 const ACTOR_TRANSFORM: &str = "ActorTransform";
+/// `UActorStateRecorderComponent::ObjectFName` (recorder `+0x148`): the
+/// owner's object name at record time (F-813).
+const OBJECT_NAME: &str = "ObjectFName";
 
 /// Independently authored native content the importer can resolve references
 /// against. Empty until native world data exists; every reference it lacks
@@ -170,16 +173,29 @@ pub enum ContentRole {
     DataRow,
     /// A packaged asset path (`*AssetPath`).
     AssetPath,
+    /// The owner's object name at record time (`ObjectFName`). Owner
+    /// resolution and restore never read it (F-813): it is a saved
+    /// instance's identity, not content, so it is never resolved against
+    /// the catalog and never blocks import.
+    InstanceName,
     Unclassified,
 }
 
 impl ContentRole {
+    /// Whether references in this role are resolved against the catalog
+    /// (and so can block import); instance names are not.
+    fn resolves_against_catalog(self) -> bool {
+        self != Self::InstanceName
+    }
+
     fn of(property: &[u16]) -> Self {
         let name = String::from_utf16_lossy(property);
         if name.ends_with("ActorClassName") {
             Self::ActorClass
         } else if name == ACTOR_PATH {
             Self::ActorPath
+        } else if name == OBJECT_NAME {
+            Self::InstanceName
         } else if ["RowName", "Row", "StaticData", "DTKey"]
             .iter()
             .any(|suffix| name.ends_with(suffix))
@@ -206,6 +222,8 @@ pub struct ContentPlan {
     pub name_references: usize,
     /// String values naming a `/Game/` or `/Script/` package path.
     pub path_references: usize,
+    /// Distinct references resolved against the catalog (every role but
+    /// [`ContentRole::InstanceName`]); the `mapped`/`unmapped` counts split them.
     pub distinct: usize,
     pub mapped_distinct: usize,
     pub unmapped_distinct: usize,
@@ -349,6 +367,9 @@ pub fn plan_import(reader: impl Read, catalog: &ContentCatalog) -> Result<Import
         for (role, reference) in references.values {
             plan.content.roles.entry(role).or_default().references += 1;
             role_distinct.insert((role, reference.clone()));
+            if !role.resolves_against_catalog() {
+                continue;
+            }
             let mapped = *distinct
                 .entry(reference)
                 .or_insert_with_key(|key| catalog.contains(key));
@@ -361,7 +382,7 @@ pub fn plan_import(reader: impl Read, catalog: &ContentCatalog) -> Result<Import
     for (role, reference) in &role_distinct {
         let count = plan.content.roles.entry(*role).or_default();
         count.distinct += 1;
-        if !distinct.get(reference).copied().unwrap_or(false) {
+        if role.resolves_against_catalog() && !distinct.get(reference).copied().unwrap_or(false) {
             count.unmapped_distinct += 1;
         }
     }
