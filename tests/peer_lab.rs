@@ -2014,3 +2014,130 @@ fn game_state_updates_advance_the_clocks_once_the_open_is_acked() {
     let advanced = lab(&app).time_of_day().unwrap().time_of_day();
     assert!(advanced >= *times.last().unwrap());
 }
+
+#[test]
+fn the_networking_status_lists_joined_players_in_join_order() {
+    use icarus_bevy::experimental::{
+        game_state_open::{GAME_STATE_CHANNEL_INDEX, GameStateOpenState, NetworkingStatus, handle},
+        peer_lab::GAME_STATE_UPDATE_SECONDS,
+        release::ReleaseProfile,
+        rep_layout::{RepArray, RepValue},
+        session_open::ActorKey,
+    };
+    let config = PeerLabConfig {
+        admission: Some(PeerLabAdmission::default()),
+        ..PeerLabConfig::default()
+    };
+    let mut app = build_app(&ServerConfig::default(), &WorldSnapshot::default()).unwrap();
+    let mut bound = PeerLab::bind(0, config).unwrap();
+    let profile = ReleaseProfile::release_3_0_32();
+    let map_url = PeerLabAdmission::default().map_url;
+    let plan = profile.game_state_open_plan(map_url).unwrap().unwrap();
+    let layout = plan.layout.clone();
+    assert!(
+        bound
+            .enable_networking_status(NetworkingStatus::local(600.0))
+            .is_err(),
+        "the status needs a GameState open"
+    );
+    bound
+        .enable_player_controller_open(
+            profile
+                .player_controller_open_plan(map_url, [0.0; 3])
+                .unwrap()
+                .unwrap(),
+        )
+        .unwrap();
+    bound
+        .enable_game_state_open(
+            plan,
+            GameStateOpenState {
+                key: ActorKey::Session(0),
+                managers: Default::default(),
+                values: Default::default(),
+                weather: Vec::new(),
+            },
+            GAME_STATE_CHANNEL_INDEX,
+        )
+        .unwrap();
+    let mut listed = NetworkingStatus::local(600.0);
+    listed.player_names.push(Vec::new());
+    listed.player_ping.push(0);
+    assert!(
+        bound.enable_networking_status(listed).is_err(),
+        "the lab lists players itself"
+    );
+    bound
+        .enable_networking_status(NetworkingStatus::local(600.0))
+        .unwrap();
+    let address = bound.local_addr().unwrap();
+    app.insert_resource(bound).add_plugins(PeerLabPlugin);
+    let pause = || std::thread::sleep(Duration::from_secs_f32(GAME_STATE_UPDATE_SECONDS * 2.0));
+    // Acknowledge everything queued for `client` and return its GameState
+    // updates' player names (handle 70), when any update carried them.
+    let names = |client: &mut Client, app: &mut App| -> Option<Vec<String>> {
+        let datagrams = drain(client);
+        for datagram in &datagrams {
+            let packet = read_packet(datagram, &to_client()).unwrap();
+            if let Some(received) = client.sequencer.receive(&packet.header).unwrap() {
+                client.sequencer.ack_seq(received.sequence, true).unwrap();
+            }
+        }
+        let (ack, _) = client.packet(Vec::new());
+        client.send(&ack);
+        pause();
+        app.update();
+        game_state_updates(&datagrams, &layout)
+            .into_iter()
+            .rev()
+            .find_map(
+                |update| match update.get(&(handle::NETWORKING_STATUS_FIRST + 2)) {
+                    Some(RepValue::DynamicArray(RepArray { stream, .. })) => Some(
+                        stream
+                            .entries
+                            .iter()
+                            .map(|entry| match &entry.value {
+                                RepValue::Str(text) => String::from_utf16_lossy(text.units()),
+                                other => panic!("{other:?}"),
+                            })
+                            .collect(),
+                    ),
+                    _ => None,
+                },
+            )
+    };
+    let mut first = Client::connect(&mut app, address);
+    first.exchange(&mut app, short_hello("", 0), false);
+    first.exchange(&mut app, login(), false);
+    first.exchange(&mut app, ControlMessage::Join, false);
+    let mut seen = None;
+    for _ in 0..50 {
+        if let Some(listed) = names(&mut first, &mut app) {
+            seen = Some(listed);
+            break;
+        }
+    }
+    assert_eq!(seen, Some(vec!["Player256".to_owned()]));
+
+    let mut second = Client::connect(&mut app, address);
+    second.exchange(&mut app, short_hello("", 0), false);
+    second.exchange(&mut app, login(), false);
+    second.exchange(&mut app, ControlMessage::Join, false);
+    let mut seen = None;
+    for _ in 0..50 {
+        names(&mut second, &mut app);
+        if let Some(listed) = names(&mut first, &mut app)
+            && listed.len() == 2
+        {
+            seen = Some(listed);
+            break;
+        }
+    }
+    assert_eq!(
+        seen,
+        Some(vec!["Player256".to_owned(), "Player257".to_owned()])
+    );
+    let status = lab(&app).networking_status().unwrap();
+    assert_eq!(status.player_ping, [0, 0]);
+    assert_eq!(stats(&app).game_state_update_errors, 0);
+}

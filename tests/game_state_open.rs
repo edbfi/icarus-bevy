@@ -413,3 +413,92 @@ fn empty_skipped_out_of_range_and_mistyped_updates_are_rejected() {
         .is_err()
     );
 }
+
+#[test]
+fn a_locally_saving_server_gathers_the_captured_networking_status() {
+    use icarus_bevy::experimental::game_state_open::{NetworkingStatus, class_default};
+    let first = handle::NETWORKING_STATUS_FIRST;
+    let values = NetworkingStatus::local(600.0).values().unwrap();
+    assert_eq!(values.len(), 12);
+    let float = |value: f32| RepValue::Float(value.to_bits());
+    let host: Vec<u16> = "Dedicated Server".encode_utf16().collect();
+    assert!(matches!(&values[&first], RepValue::Str(text) if text.units() == host));
+    for (offset, expected) in [
+        (4, RepValue::Bool(true)),
+        (5, float(600.0)),
+        (6, float(-1.0)),
+        (7, float(10.0)),
+        (8, float(-1.0)),
+        (9, float(720.0)),
+    ] {
+        assert_eq!(
+            values[&(first + offset)],
+            expected,
+            "handle {}",
+            first + offset
+        );
+    }
+    // The backup host, both player arrays and the counters stay default.
+    for offset in [1, 2, 3, 10, 11] {
+        assert_eq!(
+            Some(&values[&(first + offset)]),
+            class_default(first + offset).as_ref(),
+            "handle {}",
+            first + offset
+        );
+    }
+    // A short interval keeps the 180 s timeout floor.
+    assert_eq!(
+        NetworkingStatus::local(30.0).values().unwrap()[&(first + 9)],
+        float(180.0)
+    );
+}
+
+#[test]
+fn listed_players_replicate_as_two_arrays() {
+    use icarus_bevy::experimental::game_state_open::NetworkingStatus;
+    let plan = plan();
+    let first = handle::NETWORKING_STATUS_FIRST;
+    let mut status = NetworkingStatus::local(600.0);
+    status.player_names = vec![
+        "Ada".encode_utf16().collect(),
+        "Bo".encode_utf16().collect(),
+    ];
+    status.player_ping = vec![12, 0];
+    let values: BTreeMap<u32, RepValue> = status
+        .values()
+        .unwrap()
+        .into_iter()
+        .filter(|(handle, _)| *handle == first + 2 || *handle == first + 3)
+        .collect();
+    let payload = compose_game_state_update(&plan.layout, 17, &values, ByteOrder::Little).unwrap();
+    let body = read_actor_bunch_body(&mut payload.reader(), false, &codec()).unwrap();
+    let stream = read_rep_properties(
+        &mut body.blocks[0].payload.reader(),
+        &plan.layout,
+        &rep_codec(),
+    )
+    .unwrap();
+    let decoded: BTreeMap<u32, RepValue> = stream
+        .entries
+        .into_iter()
+        .map(|entry| (entry.handle, entry.value))
+        .collect();
+    assert_eq!(decoded, values);
+    // Unequal arrays are rejected.
+    status.player_ping.pop();
+    assert!(status.values().is_err());
+}
+
+#[test]
+fn networking_status_debug_omits_player_names() {
+    use icarus_bevy::experimental::game_state_open::NetworkingStatus;
+    let mut status = NetworkingStatus::local(600.0);
+    status.player_names = vec!["SecretName".encode_utf16().collect()];
+    status.player_ping = vec![1];
+    let shown = format!("{status:?}");
+    assert!(
+        !shown.contains("SecretName") && shown.contains("players: 1"),
+        "{shown}"
+    );
+}
