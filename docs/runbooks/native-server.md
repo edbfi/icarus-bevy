@@ -72,6 +72,9 @@ cargo test --locked --test network
 target/release/icarus-server run --config server.toml --data-dir work/net-smoke --max-ticks 600
 cargo run --locked --example session_churn -- --server 127.0.0.1:17777 \
   --cycles 200 --concurrency 1 --release-profile config/release.toml
+# Hold one joined session and check its GameState updates (F-812).
+cargo run --locked --release --example session_hold -- --server 127.0.0.1:17777 \
+  --release-profile config/release.toml --seconds 3600
 ```
 
 ## Replication scheduling (experimental)
