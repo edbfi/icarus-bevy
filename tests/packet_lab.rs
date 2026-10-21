@@ -1269,3 +1269,218 @@ fn committed_packets_keep_their_send_instant_for_the_last_256() {
     let last = peer.sequencer().out_packet_id().wrapping_sub(1);
     assert!(peer.sent_at(last).is_some());
 }
+
+/// A peer with actor channel 4 open and settled, and one naked control
+/// bunch awaiting resend; its sent-record ring is empty.
+fn update_peer(sent_capacity: usize) -> LabPeer {
+    let mut config = PacketLabConfig::new(LIMITS);
+    config.sent_capacity = sent_capacity;
+    let mut peer = LabPeer::from_cookie(&COOKIE, config).unwrap();
+    let mut client = Client::new();
+    let (opening, _) = client.send(Vec::new());
+    peer.receive(&opening).unwrap();
+    let open = peer
+        .reliable_actor_open(&actor_open_bunch(4, &[1]), &[])
+        .unwrap();
+    let lost_id = peer.sequencer().out_packet_id();
+    let _lost = peer.reliable_control_packet(challenge("lost")).unwrap();
+    let ack = peer.ack_packet().unwrap();
+    accept_header(&mut client, &open);
+    accept_header(&mut client, &ack);
+    let (next, _) = client.send(Vec::new());
+    assert_eq!(peer.receive(&next).unwrap().summary().naked, [lost_id]);
+    assert!(peer.actor_channel_settled(4));
+    assert_eq!(peer.pending_resends(), 1);
+    assert!(peer.sequencer().notify().sent_records().is_empty());
+    peer
+}
+
+/// The bunch an update of `payload` on channel 4 reassembles to.
+fn update_bunch(payload: Payload) -> Bunch {
+    Bunch {
+        header: BunchHeader {
+            control: false,
+            open: false,
+            close: false,
+            close_reason: None,
+            paused: false,
+            reliable: false,
+            channel_index: 4,
+            has_package_map_exports: false,
+            has_must_be_mapped_guids: false,
+            partial: false,
+            reliable_sequence_raw: None,
+            partial_initial: false,
+            partial_final: false,
+            channel_name: None,
+        },
+        payload,
+    }
+}
+
+/// A payload of `bits` bits.
+fn bits_payload(bits: usize) -> Payload {
+    let mut writer = BitWriter::new();
+    let bytes: Vec<u8> = (0..bits / 8).map(|index| index as u8).collect();
+    writer.write_bytes(&bytes);
+    for bit in 0..bits % 8 {
+        writer.write_bits((bit % 2) as u32, 1);
+    }
+    Payload::from_writer(writer)
+}
+
+/// Feed the channel-4 parts of `sent`, in order, through the client's
+/// partial reassembler with each datagram's packet ID as the unreliable
+/// sequence; returns the parts and the reassembled bunch, or why not.
+fn reassemble_update(sent: &[(Vec<u8>, u32)]) -> (Vec<Bunch>, Result<Bunch, String>) {
+    let mut reassembler = PartialBunchReassembler::new();
+    let mut parts = Vec::new();
+    for (datagram, packet_id) in sent {
+        let bunches = read_packet(datagram, &to_client()).unwrap().bunches;
+        for part in bunches.into_iter().filter(|b| b.header.channel_index == 4) {
+            let received = reassembler.receive_part(
+                i64::from(*packet_id),
+                &part.header,
+                &part.payload,
+                Some(MAX_CONSTRUCTED_PARTIAL_BUNCH_BYTES),
+            );
+            parts.push(part);
+            match received {
+                Ok(PartialReceive::Complete { bunch, .. }) => return (parts, Ok(bunch)),
+                Ok(_) => {}
+                Err(error) => return (parts, Err(error.to_string())),
+            }
+        }
+    }
+    (parts, Err("no final part".to_owned()))
+}
+
+#[test]
+fn an_update_within_one_bunch_is_the_single_update_datagram() {
+    // Up to MAX_SINGLE_BUNCH_SIZE_BITS (7,625 at MaxPacket 1024) the bunch
+    // is not split: the same datagram, packet ID and state as actor_update.
+    for bits in [8, 7_200, 7_625] {
+        let mut single = update_peer(16);
+        let mut split = update_peer(16);
+        let id = single.sequencer().out_packet_id();
+        let datagram = single.actor_update(4, bits_payload(bits)).unwrap();
+        let sent = split.actor_update_datagrams(4, bits_payload(bits)).unwrap();
+        assert_eq!(sent, [(datagram.clone(), id)], "{bits}");
+        assert_eq!(format!("{split:?}"), format!("{single:?}"), "{bits}");
+        assert_eq!(split.sequencer().out_packet_id(), id + 1);
+        let bunches = read_packet(&datagram, &to_client()).unwrap().bunches;
+        let update = bunches.last().unwrap();
+        assert_eq!(*update, update_bunch(bits_payload(bits)), "{bits}");
+        if bits < 7_625 {
+            // The naked control bunch rides along, as in actor_update.
+            assert_eq!(bunches.len(), 2, "{bits}");
+            assert!(bunches[0].header.reliable && bunches[0].header.channel_index == 0);
+            assert_eq!(split.pending_resends(), 0, "{bits}");
+        }
+    }
+}
+
+#[test]
+fn an_oversized_update_goes_out_as_unreliable_partials_on_consecutive_packets() {
+    let mut peer = update_peer(16);
+    let first_id = peer.sequencer().out_packet_id();
+    let first_seq = peer.sequencer().notify().out_seq();
+    let payload = bits_payload(16_000);
+    let sent = peer.actor_update_datagrams(4, payload.clone()).unwrap();
+    // 7,624 + 7,624 + 752 bits: no two parts fit one 1,024-byte packet.
+    let ids: Vec<u32> = sent.iter().map(|(_, id)| *id).collect();
+    assert_eq!(ids, [first_id, first_id + 1, first_id + 2]);
+    assert_eq!(peer.sequencer().out_packet_id(), first_id + 3);
+    assert_eq!(peer.pending_actor_reliable(4), Some(0), "nothing retained");
+    assert_eq!(peer.pending_resends(), 0);
+    for (offset, (datagram, _)) in sent.iter().enumerate() {
+        assert!(datagram.len() <= LIMITS.max_packet_bytes as usize);
+        let packet = read_packet(datagram, &to_client()).unwrap();
+        assert_eq!(packet.header.sequence, first_seq + offset as u16);
+    }
+    // Only the first datagram carries the naked control bunch, before its part.
+    let first = read_packet(&sent[0].0, &to_client()).unwrap().bunches;
+    assert_eq!(first.len(), 2);
+    assert!(first[0].header.reliable && first[0].header.channel_index == 0);
+
+    let (parts, bunch) = reassemble_update(&sent);
+    let flags: Vec<[bool; 4]> = parts
+        .iter()
+        .map(|part| {
+            let header = &part.header;
+            [
+                header.partial,
+                header.partial_initial,
+                header.partial_final,
+                header.reliable,
+            ]
+        })
+        .collect();
+    assert_eq!(
+        flags,
+        [
+            [true, true, false, false],
+            [true, false, false, false],
+            [true, false, true, false]
+        ]
+    );
+    for part in &parts {
+        let header = &part.header;
+        assert!(!header.open && !header.close && !header.control);
+        assert_eq!(header.reliable_sequence_raw, None);
+        assert_eq!(header.channel_name, None);
+        assert!(!header.has_package_map_exports && !header.has_must_be_mapped_guids);
+    }
+    let bits: Vec<usize> = parts.iter().map(|part| part.payload.bit_len()).collect();
+    assert_eq!(bits, [7_624, 7_624, 752]);
+    assert_eq!(bunch.unwrap(), update_bunch(payload));
+
+    // A lost middle datagram is a gap: the client drops the whole bunch.
+    let gap = [sent[0].clone(), sent[2].clone()];
+    assert!(reassemble_update(&gap).1.is_err());
+}
+
+#[test]
+fn update_datagram_failures_leave_the_state_unchanged() {
+    // A ring with room for three datagrams.
+    let mut peer = update_peer(3);
+    let before = format!("{peer:?}");
+    let out_id = peer.sequencer().out_packet_id();
+    let attempts = [
+        (4, bits_payload(24_000), "four datagrams, room for three"),
+        (
+            4,
+            bits_payload((MAX_CONSTRUCTED_PARTIAL_BUNCH_BYTES + 1) * 8),
+            "over 64 KiB",
+        ),
+        (5, bits_payload(8), "channel not open"),
+    ];
+    for (index, payload, why) in attempts {
+        assert!(
+            peer.actor_update_datagrams(index, payload).is_err(),
+            "{why}"
+        );
+        assert_eq!(format!("{peer:?}"), before, "{why}");
+        assert_eq!(peer.sequencer().out_packet_id(), out_id, "{why}");
+        assert!(!peer.is_failed(), "{why}");
+    }
+    // Three parts fill the ring exactly.
+    let sent = peer
+        .actor_update_datagrams(4, bits_payload(16_000))
+        .unwrap();
+    assert_eq!(sent.len(), 3);
+    assert_eq!(peer.pending_resends(), 0);
+
+    // The 64 KiB bound itself is sent: 69 consecutive datagrams.
+    let mut roomy = update_peer(256);
+    let first_id = roomy.sequencer().out_packet_id();
+    let payload = bits_payload(MAX_CONSTRUCTED_PARTIAL_BUNCH_BYTES * 8);
+    let sent = roomy.actor_update_datagrams(4, payload.clone()).unwrap();
+    assert_eq!(sent.len(), 69);
+    assert!(
+        sent.iter()
+            .enumerate()
+            .all(|(offset, (_, id))| *id == first_id + offset as u32)
+    );
+    assert_eq!(reassemble_update(&sent).1.unwrap(), update_bunch(payload));
+}

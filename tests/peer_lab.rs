@@ -1824,6 +1824,50 @@ fn a_naked_movement_update_is_sent_again() {
     assert_eq!(lab_ref.stats().actor_updates_lost, 1);
 }
 
+/// GameState update bunches (unreliable, not opens) on its channel among
+/// `datagrams` (one connection's, in arrival order), with unreliable partial
+/// bunches joined as the client's `PartialBunchReassembler` joins them: the
+/// packet ID (the 14-bit sequence, unwrapped here) is the part's sequence, so
+/// a gap drops the bunch.
+fn game_state_update_bunches(datagrams: &[Vec<u8>]) -> Vec<Bunch> {
+    use icarus_bevy::experimental::{
+        game_state_open::GAME_STATE_CHANNEL_INDEX,
+        sequencing::{
+            MAX_CONSTRUCTED_PARTIAL_BUNCH_BYTES, PartialBunchReassembler, PartialReceive,
+        },
+    };
+    let mut reassembler = PartialBunchReassembler::new();
+    let mut packet_id: Option<(u16, i64)> = None;
+    let mut bunches = Vec::new();
+    for datagram in datagrams {
+        let packet = read_packet(datagram, &to_client()).unwrap();
+        let sequence = packet.header.sequence;
+        let id = packet_id.map_or(i64::from(sequence), |(last, id)| {
+            id + i64::from(sequence.wrapping_sub(last) & 0x3fff)
+        });
+        packet_id = Some((sequence, id));
+        for bunch in packet.bunches {
+            let header = &bunch.header;
+            if header.channel_index != GAME_STATE_CHANNEL_INDEX || header.open || header.reliable {
+                continue;
+            }
+            if !header.partial {
+                bunches.push(bunch);
+                continue;
+            }
+            if let Ok(PartialReceive::Complete { bunch, .. }) = reassembler.receive_part(
+                id,
+                header,
+                &bunch.payload,
+                Some(MAX_CONSTRUCTED_PARTIAL_BUNCH_BYTES),
+            ) {
+                bunches.push(bunch);
+            }
+        }
+    }
+    bunches
+}
+
 /// Decoded GameState property updates (not opens) on its channel among
 /// `datagrams`, in arrival order.
 fn game_state_updates(
@@ -1833,7 +1877,6 @@ fn game_state_updates(
     use icarus_bevy::experimental::{
         actor_channel::{ActorChannelCodec, ActorChannelLimits, read_actor_bunch_body},
         archive::ByteOrder,
-        game_state_open::GAME_STATE_CHANNEL_INDEX,
         rep_layout::{RepLayoutCodec, RepLayoutLimits, read_rep_properties},
     };
     let codec = ActorChannelCodec {
@@ -1848,14 +1891,8 @@ fn game_state_updates(
         checksums: false,
         limits: RepLayoutLimits::default(),
     };
-    datagrams
-        .iter()
-        .flat_map(|datagram| read_packet(datagram, &to_client()).unwrap().bunches)
-        .filter(|bunch| {
-            bunch.header.channel_index == GAME_STATE_CHANNEL_INDEX
-                && !bunch.header.open
-                && !bunch.header.reliable
-        })
+    game_state_update_bunches(datagrams)
+        .into_iter()
         .map(|bunch| {
             let body = read_actor_bunch_body(&mut bunch.payload.reader(), false, &codec).unwrap();
             assert_eq!(body.blocks.len(), 1, "one actor block");
@@ -2158,15 +2195,16 @@ fn the_networking_status_lists_joined_players_in_join_order() {
     assert_eq!(stats(&app).game_state_update_errors, 0);
 }
 
-/// A NetworkingStatus too large for one datagram (48 players with 20-unit
-/// names) is counted as an update error and left due, while the clocks keep
-/// flowing to every connection.
+/// A NetworkingStatus too large for one bunch (48 players with 20-unit
+/// names) goes out as unreliable partial bunches in consecutive datagrams:
+/// every connection reassembles all 48 names, and the clocks keep flowing.
 #[test]
-fn an_oversized_networking_status_does_not_hold_back_the_clocks() {
+fn an_oversized_networking_status_reaches_every_connection_in_partial_bunches() {
     use icarus_bevy::experimental::{
         game_state_open::{GAME_STATE_CHANNEL_INDEX, GameStateOpenState, NetworkingStatus, handle},
         peer_lab::GAME_STATE_UPDATE_SECONDS,
         release::ReleaseProfile,
+        rep_layout::{RepArray, RepValue},
         session_open::ActorKey,
     };
     let mut admission = PeerLabAdmission::default();
@@ -2225,34 +2263,80 @@ fn an_oversized_networking_status_does_not_hold_back_the_clocks() {
         clients.push(client);
     }
     assert_eq!(lab(&app).joined_connections().len(), 48);
-    // Every client acknowledges its opens; then the first keeps receiving
-    // world-time updates although the 48-name status never fits.
+    let expected: Vec<String> = (0..48).map(|index| format!("P{index:019}")).collect();
+    // Every client acknowledges what it received; each pass's datagrams are
+    // drained per client in arrival order, so split updates reassemble.
+    let mut listed = vec![false; clients.len()];
+    let mut split_parts = 0;
     let mut world_times = 0;
-    for _ in 0..12 {
-        for client in &mut clients {
-            accept_all_headers(client);
+    for _ in 0..40 {
+        for (index, client) in clients.iter_mut().enumerate() {
+            let datagrams = drain(client);
+            for datagram in &datagrams {
+                let packet = read_packet(datagram, &to_client()).unwrap();
+                split_parts += packet
+                    .bunches
+                    .iter()
+                    .filter(|bunch| {
+                        let header = &bunch.header;
+                        header.channel_index == GAME_STATE_CHANNEL_INDEX
+                            && header.partial
+                            && !header.reliable
+                    })
+                    .count();
+                if let Some(received) = client.sequencer.receive(&packet.header).unwrap() {
+                    client.sequencer.ack_seq(received.sequence, true).unwrap();
+                }
+            }
+            for update in game_state_updates(&datagrams, &layout) {
+                if index == 0 && update.contains_key(&handle::WORLD_TIME_SECONDS) {
+                    world_times += 1;
+                }
+                let Some(RepValue::DynamicArray(RepArray { stream, .. })) =
+                    update.get(&(handle::NETWORKING_STATUS_FIRST + 2))
+                else {
+                    continue;
+                };
+                let names: Vec<String> = stream
+                    .entries
+                    .iter()
+                    .map(|entry| match &entry.value {
+                        RepValue::Str(text) => String::from_utf16_lossy(text.units()),
+                        other => panic!("{other:?}"),
+                    })
+                    .collect();
+                assert_eq!(names, expected);
+                listed[index] = true;
+            }
             let (ack, _) = client.packet(Vec::new());
             client.send(&ack);
         }
-        std::thread::sleep(Duration::from_secs_f32(GAME_STATE_UPDATE_SECONDS * 4.0));
-        app.update();
-        let datagrams = drain(&clients[0]);
-        for datagram in &datagrams {
-            let packet = read_packet(datagram, &to_client()).unwrap();
-            if let Some(received) = clients[0].sequencer.receive(&packet.header).unwrap() {
-                clients[0]
-                    .sequencer
-                    .ack_seq(received.sequence, true)
-                    .unwrap();
-            }
+        if listed.iter().all(|seen| *seen) && world_times >= 3 {
+            break;
         }
-        world_times += game_state_updates(&datagrams, &layout)
-            .iter()
-            .filter(|update| update.contains_key(&handle::WORLD_TIME_SECONDS))
-            .count();
+        std::thread::sleep(Duration::from_secs_f32(GAME_STATE_UPDATE_SECONDS * 2.0));
+        // Two polls take every client's ack (32 datagrams per poll).
+        app.update();
+        app.update();
     }
+    let missing: Vec<usize> = (0..listed.len()).filter(|index| !listed[*index]).collect();
+    assert!(
+        missing.is_empty(),
+        "no NetworkingStatus reached {missing:?}"
+    );
     assert!(world_times >= 3, "{world_times} world-time updates");
-    assert!(stats(&app).game_state_update_errors > 0);
+    assert!(
+        split_parts >= 2 * 48,
+        "{split_parts} partial update bunches"
+    );
+    let counted = stats(&app);
+    assert_eq!(counted.game_state_update_errors, 0);
+    assert!(
+        counted.game_state_update_datagrams > counted.game_state_updates_sent,
+        "{} datagrams for {} updates",
+        counted.game_state_update_datagrams,
+        counted.game_state_updates_sent
+    );
     assert_eq!(
         lab(&app).networking_status().unwrap().player_names.len(),
         48
