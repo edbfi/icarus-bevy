@@ -22,7 +22,7 @@ Address pairs are server / client.
   open (exports and body) from release identifiers and server state (F-779),
   and `experimental::game_state_open` the GameState open (F-794); `run` sends
   the PlayerController, pawn, GameState and PlayerState opens after Join
-  (F-784, F-798).
+  (F-784, F-800).
 - Dynamic GUIDs go to an actor or component when first serialized, by its own
   open or by another actor's reference: the GameState names managers 74..86
   that open later under those GUIDs; components keep one GUID across
@@ -35,8 +35,14 @@ Address pairs are server / client.
   `experimental::session_open::ConnectionExports` mirrors the state.
 - Actor opens with components (F-797): GUIDs and exports follow serialization
   order (actor and spawn, actor-block references by handle, component blocks,
-  runtime subobject blocks naming their exported class);
-  `experimental::actor_open` composes the pawn and GameState opens that way.
+  runtime subobject blocks naming their exported class); a block's own
+  references resolve after its header; `experimental::actor_open` composes
+  the pawn and GameState opens that way.
+- Pawn open contents (F-799): component blocks carry `bIsActive` alone or
+  nothing; `UIcarusStatContainer::ReplicatedStatArray` (field 2) and
+  `UInventory::Slots` (field 4) follow as custom-delta fast arrays with every
+  item new (struct-delta bit set, base key 0, no deletes, IDs from 1); an
+  empty slot sends handles 2 and 10..18 (`experimental::pawn_open`).
 - Gameplay-tag net index (F-702; U-065 resolved): `ConstructGameplayTagTree`
   builds the tree; `ConstructNetIndex` sorts nodes
   by `GetAllNodes` + `FName::LexicalLess`, sets `InvalidTagNetIndex = N + 1`,

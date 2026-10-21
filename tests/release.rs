@@ -511,7 +511,7 @@ fn builtin_pawn_identifiers_compose_the_archetype_and_components() {
     use icarus_bevy::experimental::{
         actor_channel::{ActorChannelCodec, ActorChannelLimits, PackageMapState},
         archive::ByteOrder,
-        pawn_open::{PawnOpenState, compose_pawn_open},
+        pawn_open::{PawnContent, PawnOpenState, compose_pawn_open},
         session_open::{ActorKey, ConnectionExports, NetGuidCache},
     };
     let p31 = ReleaseProfile::release_3_0_31();
@@ -544,6 +544,7 @@ fn builtin_pawn_identifiers_compose_the_archetype_and_components() {
         controller: 2,
         player_state: 4,
         location: [0.0, 0.0, 0.0],
+        content: PawnContent::default(),
     };
     let open = compose_pawn_open(
         &mut cache,
@@ -588,6 +589,289 @@ fn builtin_pawn_identifiers_compose_the_archetype_and_components() {
 }
 
 #[test]
+fn builtin_pawn_content_composes_every_block() {
+    use icarus_bevy::experimental::{
+        actor_channel::{
+            ActorChannelCodec, ActorChannelLimits, BlockTarget, PackageMapState, SubObjectClass,
+            read_actor_bunch_body,
+        },
+        archive::ByteOrder,
+        pawn_open::{
+            CharacterVitals, EmptySlot, FastArrayContent, INVENTORY_SLOTS_FIELD_INDEX, PawnContent,
+            PawnInventory, PawnOpenState, STAT_ARRAY_FIELD_INDEX, compose_pawn_open,
+        },
+        rep_layout::{
+            GameplayTag, RepLayoutCodec, RepLayoutLimits, RepValue, StatPairRepState,
+            actor_component_rep_layout, inventory_rep_layout, player_character_state_rep_layout,
+            read_rep_properties,
+        },
+        rep_rpc::{
+            FAST_ARRAY_COUNT_CAP, FastArrayItem, FastArrayItemLayout, read_custom_delta_header,
+            read_fast_array_delta, read_field_header,
+        },
+        session_open::{ActorKey, ConnectionExports, NetGuidCache},
+    };
+    let profile = ReleaseProfile::release_3_0_32();
+    let plan = profile
+        .pawn_open_plan("/Game/Maps/Terrain_016_OLY/Terrain_016")
+        .unwrap()
+        .unwrap();
+    // Authored values in the captured shapes (F-797), not release data.
+    let vitals = CharacterVitals {
+        health: 90,
+        max_health: 120,
+        stamina: 40,
+        max_stamina: 50,
+        oxygen: 7,
+        max_oxygen: 8,
+        water: 9,
+        max_water: 10,
+        food: 11,
+        max_food: 12,
+        biome_row: 3,
+        growth_row: 4,
+    };
+    let content = PawnContent {
+        icarus_uid: Some(4_242),
+        gameplay_tags: vec![5, 1_000],
+        frozen_movement: true,
+        character_state: vitals.values(),
+        stats: Some(FastArrayContent {
+            replication_key: 3,
+            items: vec![
+                StatPairRepState { stat: 1, value: 25 },
+                StatPairRepState {
+                    stat: 9,
+                    value: -400,
+                },
+            ],
+        }),
+        inventories: vec![
+            PawnInventory {
+                info_row: 6,
+                slots: FastArrayContent {
+                    replication_key: 2,
+                    items: (0..3)
+                        .map(|index| EmptySlot {
+                            query_row: 30 + index as u16,
+                            index,
+                        })
+                        .collect(),
+                },
+            },
+            PawnInventory {
+                info_row: 7,
+                slots: FastArrayContent::default(),
+            },
+        ],
+    };
+    let mut cache = NetGuidCache::new();
+    let mut exports = ConnectionExports::new();
+    let state = PawnOpenState {
+        key: ActorKey::Session(0),
+        controller: 2,
+        player_state: 4,
+        location: [1.0, 2.0, 3.0],
+        content: content.clone(),
+    };
+    let open = compose_pawn_open(
+        &mut cache,
+        &mut exports,
+        &plan,
+        &state,
+        3,
+        ByteOrder::Little,
+    )
+    .unwrap();
+    let codec = ActorChannelCodec {
+        engine_net_version: profile.engine_network_version,
+        exports_enabled: false,
+        has_level: true,
+        order: ByteOrder::Little,
+        limits: ActorChannelLimits::default(),
+    };
+    let rep_codec = RepLayoutCodec {
+        actor: codec,
+        checksums: false,
+        limits: RepLayoutLimits::default(),
+    };
+    // The inventory class is exported once, after the components.
+    let mut map = PackageMapState::new();
+    let decoded = map
+        .consume_export_prefix(&mut open.exports.unwrap().reader(), &codec)
+        .unwrap();
+    assert_eq!(
+        map.resolve_full_path(decoded.last().unwrap().guid)
+            .as_deref(),
+        Some("/Script/Icarus.Inventory")
+    );
+    let body = read_actor_bunch_body(&mut open.bunch.payload.reader(), true, &codec).unwrap();
+    assert_eq!(body.blocks.len(), 1 + 16 + 2);
+    let actor = read_rep_properties(
+        &mut body.blocks[0].payload.reader(),
+        &plan.layout,
+        &rep_codec,
+    )
+    .unwrap();
+    let value = |handle: u32| {
+        actor
+            .entries
+            .iter()
+            .find(|entry| entry.handle == handle)
+            .map(|entry| entry.value.clone())
+    };
+    assert_eq!(value(46), Some(RepValue::Int(4_242)));
+    assert_eq!(
+        value(50),
+        Some(RepValue::GameplayTagContainer(Some(vec![
+            GameplayTag::NetIndex(5),
+            GameplayTag::NetIndex(1_000)
+        ])))
+    );
+    assert_eq!(value(67), Some(RepValue::Bool(true)));
+    let Some(RepValue::Object(inventory_component)) = value(56) else {
+        panic!("InventoryComponent");
+    };
+    // Component blocks: the eight active ones carry only `bIsActive`, the
+    // state its values, the stat container its one field, the rest nothing.
+    let components = &body.blocks[1..17];
+    for (index, (component, block)) in plan.components.iter().zip(components).enumerate() {
+        if index == plan.stat_container {
+            assert!(!block.has_rep_layout);
+            let mut reader = block.payload.reader();
+            let field =
+                read_field_header(&mut reader, plan.content.stat_container_bound, 4096).unwrap();
+            assert!(reader.at_end());
+            assert_eq!(field.index, STAT_ARRAY_FIELD_INDEX);
+            let mut field_reader = field.payload.reader();
+            let header =
+                read_custom_delta_header(&mut field_reader, profile.engine_network_version, 1)
+                    .unwrap();
+            assert_eq!(header.struct_delta, Some(true));
+            let delta = read_fast_array_delta(
+                &mut field_reader,
+                &FastArrayItemLayout::Delta(vec![
+                    icarus_bevy::experimental::rep_layout::RepCommand::StatPairRepState,
+                ]),
+                &rep_codec,
+                FAST_ARRAY_COUNT_CAP,
+            )
+            .unwrap();
+            assert!(field_reader.at_end());
+            assert_eq!(
+                (delta.array_replication_key, delta.base_replication_key),
+                (3, 0)
+            );
+            let ids: Vec<i32> = delta.changed.iter().map(|(id, _)| *id).collect();
+            assert_eq!(ids, [1, 2]);
+            let FastArrayItem::Delta(second) = &delta.changed[1].1 else {
+                panic!("delta item");
+            };
+            assert_eq!(
+                second.entries[0].value,
+                RepValue::StatPairRepState(StatPairRepState {
+                    stat: 9,
+                    value: -400
+                })
+            );
+        } else if index == plan.actor_state {
+            assert!(block.has_rep_layout);
+            let state = read_rep_properties(
+                &mut block.payload.reader(),
+                &player_character_state_rep_layout(),
+                &rep_codec,
+            )
+            .unwrap();
+            let decoded: std::collections::BTreeMap<u32, RepValue> = state
+                .entries
+                .into_iter()
+                .map(|entry| (entry.handle, entry.value))
+                .collect();
+            assert_eq!(decoded, vitals.values());
+        } else if component.rep_bools.is_empty() {
+            assert!(!block.has_rep_layout && block.payload.bit_len() == 0);
+        } else {
+            let bools = read_rep_properties(
+                &mut block.payload.reader(),
+                &actor_component_rep_layout(),
+                &rep_codec,
+            )
+            .unwrap();
+            assert_eq!(bools.entries.len(), 1);
+            assert_eq!(bools.entries[0].value, RepValue::Bool(true));
+        }
+    }
+    assert_eq!(
+        plan.components
+            .iter()
+            .filter(|component| !component.rep_bools.is_empty())
+            .count(),
+        8
+    );
+    // Inventories: class-named, owned by the InventoryComponent, then slots.
+    for (block, inventory) in body.blocks[17..].iter().zip(&content.inventories) {
+        let BlockTarget::SubObject {
+            class: SubObjectClass::Class(_),
+            ..
+        } = &block.target
+        else {
+            panic!("a runtime subobject");
+        };
+        let mut reader = block.payload.reader();
+        let properties =
+            read_rep_properties(&mut reader, &inventory_rep_layout(), &rep_codec).unwrap();
+        let handles: Vec<(u32, RepValue)> = properties
+            .entries
+            .into_iter()
+            .map(|entry| (entry.handle, entry.value))
+            .collect();
+        assert_eq!(handles[0], (2, RepValue::Bool(true)));
+        assert_eq!(
+            handles[1],
+            (3, RepValue::Object(inventory_component.clone()))
+        );
+        assert_eq!(handles[2], (7, RepValue::Byte(inventory.info_row)));
+        let field = read_field_header(&mut reader, plan.content.inventory_bound, 1 << 16).unwrap();
+        assert!(reader.at_end());
+        assert_eq!(field.index, INVENTORY_SLOTS_FIELD_INDEX);
+        let mut field_reader = field.payload.reader();
+        read_custom_delta_header(&mut field_reader, profile.engine_network_version, 1).unwrap();
+        let delta = read_fast_array_delta(
+            &mut field_reader,
+            &FastArrayItemLayout::Delta(plan.content.slot_layout.clone()),
+            &rep_codec,
+            FAST_ARRAY_COUNT_CAP,
+        )
+        .unwrap();
+        assert!(field_reader.at_end());
+        assert_eq!(delta.changed.len(), inventory.slots.items.len());
+        for ((_, item), slot) in delta.changed.iter().zip(&inventory.slots.items) {
+            let FastArrayItem::Delta(stream) = item else {
+                panic!("delta item");
+            };
+            let slot_handles: Vec<u32> = stream.entries.iter().map(|entry| entry.handle).collect();
+            assert_eq!(slot_handles, [2, 10, 11, 12, 13, 14, 15, 16, 17, 18]);
+            assert_eq!(stream.entries[5].value, RepValue::UInt16(slot.query_row));
+            assert_eq!(stream.entries[9].value, RepValue::Int(slot.index));
+        }
+    }
+    // Character state handles outside 3..=32 fail closed.
+    let mut bad = state;
+    bad.content.character_state.insert(2, RepValue::Bool(true));
+    assert!(
+        compose_pawn_open(
+            &mut NetGuidCache::new(),
+            &mut ConnectionExports::new(),
+            &plan,
+            &bad,
+            3,
+            ByteOrder::Little,
+        )
+        .is_err()
+    );
+}
+
+#[test]
 fn pawn_sections_parse_and_fail_closed() {
     let release = "[release]\napp_id = 2089300\nbuild_id = 1\nproject_version = \"1.0\"\n";
     let release = release.replace(
@@ -598,14 +882,15 @@ fn pawn_sections_parse_and_fail_closed() {
         ),
     );
     let tags = "[tags]\ndata_table_tag_count = 130\nini_tag_count = 1889\nunique_node_count = 2302\ntotal_bits = 12\nconfigured_first_segment = 16\neffective_first_segment = 0\ncontainer_bits = 6\nnet_index_hash = 1829726063\n";
-    let components = "components = [{ name = \"S\", checksum = 2 }, { name = \"I\", checksum = 3 }, { name = \"A\", checksum = 4 }]\n";
+    let components = "components = [{ name = \"S\", checksum = 2 }, { name = \"I\", checksum = 3, rep_bools = [[2, true]] }, { name = \"A\", checksum = 4 }]\n";
     let section = format!(
         "[pawn]\n\
         archetype = [{{ path = \"Default__P_C\", checksum = 1 }}, {{ path = \"/Game/P\", checksum = 0 }}]\n\
         {components}\
         stat_container = \"S\"\n\
         actor_state = \"A\"\n\
-        inventory_component = \"I\"\n"
+        inventory_component = \"I\"\n\
+        inventory_class = [{{ path = \"Bag\", checksum = 9 }}, {{ path = \"/Script/P\", checksum = 0 }}]\n"
     );
     let base = format!("{release}{tags}");
     // Unknown builds get no built-in identifiers.
@@ -638,7 +923,25 @@ fn pawn_sections_parse_and_fail_closed() {
     assert_eq!(plan.components[2].name, "A");
     assert_eq!(plan.components[2].checksum, 4);
     assert_eq!(plan.archetype[1].path, "/Game/P");
+    assert_eq!(plan.components[1].rep_bools, [(2, true)]);
+    assert!(plan.components[0].rep_bools.is_empty());
+    assert_eq!(plan.content.inventory_class[0].path, "Bag");
     for bad in [
+        section.replace("rep_bools = [[2, true]]", "rep_bools = [[3, true]]"),
+        section.replace(
+            "rep_bools = [[2, true]]",
+            "rep_bools = [[2, true], [1, false]]",
+        ),
+        section.replace(
+            "{ path = \"Bag\", checksum = 9 }",
+            "{ path = \"Bag\", checksum = 0 }",
+        ),
+        section.replace(", { path = \"/Script/P\", checksum = 0 }", ""),
+        section
+            .lines()
+            .filter(|line| !line.starts_with("inventory_class"))
+            .map(|line| format!("{line}\n"))
+            .collect(),
         section.replace("checksum = 3", "checksum = 0"),
         section.replace(
             "checksum = 4 }]",

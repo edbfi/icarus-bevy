@@ -270,7 +270,7 @@ pub fn compose_game_state_open(
     let component = |export: &ComponentExport, block: BlockContent| OpenComponent {
         name: export.name.clone(),
         checksum: export.checksum,
-        block: Some(block),
+        block: Some(block.into()),
     };
     let components = &plan.components;
     let open = ComponentActorOpen {

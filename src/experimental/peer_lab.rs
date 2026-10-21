@@ -165,7 +165,7 @@ use super::packet::Payload;
 use super::packet_lab::{
     ActorOpenSent, DeliveredSummary, LabPeer, PacketDisposition, PacketLabConfig,
 };
-use super::pawn_open::{PawnOpenPlan, PawnOpenState, compose_pawn_open};
+use super::pawn_open::{PawnContent, PawnOpenPlan, PawnOpenState, compose_pawn_open};
 use super::release::ReleaseProfile;
 use super::rep_layout::RepValue;
 use super::session_open::{
@@ -678,8 +678,9 @@ pub struct PeerLab {
     peak_peers: usize,
     /// Opt-in PlayerController open after Join, and the driver-wide GUIDs.
     player_controller_open: Option<PlayerControllerOpenPlan>,
-    /// Opt-in pawn open after the PlayerController open, on its channel.
-    pawn_open: Option<(PawnOpenPlan, u32)>,
+    /// Opt-in pawn open after the PlayerController open: the plan, its
+    /// channel and every player's content.
+    pawn_open: Option<(PawnOpenPlan, u32, PawnContent)>,
     /// Opt-in GameState open after the PlayerController open.
     game_state_open: Option<GameStateSession>,
     /// Opt-in PlayerState open after the PlayerController open.
@@ -999,7 +1000,7 @@ impl PeerLab {
             self.player_controller_open
                 .as_ref()
                 .map(|plan| plan.channel_index),
-            self.pawn_open.as_ref().map(|(_, channel)| *channel),
+            self.pawn_open.as_ref().map(|(_, channel, _)| *channel),
             self.game_state_open
                 .as_ref()
                 .map(|session| session.channel_index),
@@ -1013,8 +1014,13 @@ impl PeerLab {
     /// After [`enable_player_controller_open`](Self::enable_player_controller_open),
     /// also open each joined player's pawn (F-797) on `channel_index`, right
     /// after its PlayerController, at the controller's spawn location, under
-    /// [`pawn_key`] (a session key per connection).
-    pub fn enable_pawn_open(&mut self, plan: PawnOpenPlan, channel_index: u32) -> Result<()> {
+    /// [`pawn_key`] (a session key per connection), with `content`.
+    pub fn enable_pawn_open(
+        &mut self,
+        plan: PawnOpenPlan,
+        channel_index: u32,
+        content: PawnContent,
+    ) -> Result<()> {
         let Some(controller) = &self.player_controller_open else {
             bail!("the pawn open follows the PlayerController open");
         };
@@ -1026,7 +1032,7 @@ impl PeerLab {
             self.free_session_channel(channel_index),
             "the pawn channel collides with another channel or is out of range"
         );
-        self.pawn_open = Some((plan, channel_index));
+        self.pawn_open = Some((plan, channel_index, content));
         Ok(())
     }
 
@@ -1817,7 +1823,7 @@ impl PeerLab {
     /// connection, committing GUID and export state only once every datagram
     /// is built; a failure counts `pawn_open_errors`.
     fn send_pawn_open(&mut self, address: SocketAddrV4, controller: u32, player_state: u32) {
-        let (Some((plan, channel)), Some(controller_plan)) =
+        let (Some((plan, channel, content)), Some(controller_plan)) =
             (&self.pawn_open, &self.player_controller_open)
         else {
             return;
@@ -1835,6 +1841,7 @@ impl PeerLab {
             controller,
             player_state,
             location: controller_plan.spawn_location,
+            content: content.clone(),
         };
         let sent = compose_pawn_open(
             &mut cache,

@@ -886,7 +886,7 @@ fn join_pinned_replies(server: SocketAddr, version: u32, max: usize) -> Vec<Vec<
 }
 
 /// Compose the pawn open the lab sends after connection `connection`'s
-/// PlayerController open (F-797).
+/// PlayerController open (F-797), with `run`'s pawn content.
 fn compose_lab_pawn(
     profile: &ReleaseProfile,
     cache: &mut icarus_bevy::experimental::session_open::NetGuidCache,
@@ -908,6 +908,7 @@ fn compose_lab_pawn(
         controller: guids.actor,
         player_state: guids.player_state,
         location: network::SPAWN_LOCATION,
+        content: network::pawn_content(),
     };
     compose_pawn_open(
         cache,
