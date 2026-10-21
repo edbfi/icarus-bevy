@@ -57,9 +57,9 @@ measured by the original's rule (F-810, F-811, F-815, F-816).
 - Two Blueprint class checksums with user-struct arrays (U-067).
 - Authenticated runtime relevancy and priority exercise (U-038).
 - Item, stat and character values of a played character at open (U-069).
-- When the active prospect is refreshed after open at runtime; statically only
-  on spawn completion, dropship leave and backend, setting or difficulty
-  updates (F-822; U-070).
+- When the active prospect is refreshed after open at runtime; its direct
+  callers are spawn completion, dropship leave and backend, setting or
+  difficulty updates (F-822; U-070).
 
 ## Artifacts
 
