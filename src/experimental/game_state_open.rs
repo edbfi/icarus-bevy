@@ -476,7 +476,8 @@ pub fn compose_game_state_update(
 /// `FNetworkingStatus`, the GameState's `NetworkingStatus` (handles
 /// `68..=79`; field names from the client PDB's property statics, sources
 /// from the 3.0.31 server's `GatherNetworkingStatus`, F-810).
-#[derive(Clone, Debug, PartialEq)]
+/// `Debug` shows the player count only, never names.
+#[derive(Clone, PartialEq)]
 pub struct NetworkingStatus {
     pub current_host_player_name: Vec<u16>,
     pub backup_host_player_name: Vec<u16>,
@@ -494,8 +495,18 @@ pub struct NetworkingStatus {
     pub update_unreal_session_failed_counter: i32,
 }
 
-/// `CurrentHostPlayerName` on a dedicated server (`0x1449f8de0`, F-810).
+/// `CurrentHostPlayerName` on a dedicated server (F-810).
 pub const DEDICATED_SERVER_HOST_NAME: &str = "Dedicated Server";
+
+impl std::fmt::Debug for NetworkingStatus {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("NetworkingStatus")
+            .field("players", &self.player_names.len())
+            .field("saved_locally", &self.saved_locally)
+            .finish_non_exhaustive()
+    }
+}
 
 impl NetworkingStatus {
     /// What a server saving locally gathers (F-810): the dedicated-server

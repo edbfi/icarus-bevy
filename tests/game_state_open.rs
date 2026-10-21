@@ -489,3 +489,16 @@ fn listed_players_replicate_as_two_arrays() {
     status.player_ping.pop();
     assert!(status.values().is_err());
 }
+
+#[test]
+fn networking_status_debug_omits_player_names() {
+    use icarus_bevy::experimental::game_state_open::NetworkingStatus;
+    let mut status = NetworkingStatus::local(600.0);
+    status.player_names = vec!["SecretName".encode_utf16().collect()];
+    status.player_ping = vec![1];
+    let shown = format!("{status:?}");
+    assert!(
+        !shown.contains("SecretName") && shown.contains("players: 1"),
+        "{shown}"
+    );
+}
