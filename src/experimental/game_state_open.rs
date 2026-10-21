@@ -13,6 +13,10 @@
 //! - one block per component: `ConnectedPlayers` and `DialogueSystem`
 //!   without properties, `WeatherComp` with its properties.
 //!
+//! After the open, [`compose_game_state_update`] frames a property update
+//! of the GameState actor (no spawn, one actor block), as the original sends
+//! its advancing clocks (F-805).
+//!
 //! GUIDs follow the [`NetGuidCache`] policy: the GameState and the managers
 //! are keyed world actors, so a manager the GameState names keeps that GUID
 //! when its own open follows (the capture names 74..86 here and opens them
@@ -23,10 +27,12 @@ use std::collections::BTreeMap;
 
 use anyhow::{Context, Result, ensure};
 
+use super::actor_channel::{ActorBunchBody, BlockTarget, ContentBlock, encode_actor_bunch_body};
 use super::actor_open::{
     BlockContent, ComponentActorOpen, OpenComponent, Reference, compose_component_actor_open,
 };
 use super::control_messages::ArchiveText;
+use super::packet::Payload;
 use super::prospect_info::{ProspectInfo, SavedGameMode};
 use super::rep_layout::{
     PropertyStream, RepArray, RepCommand, RepEntry, RepLayoutCodec, RepLayoutLimits, RepValue,
@@ -414,4 +420,54 @@ pub fn compose_game_state_open(
     };
     let (composed, _) = compose_component_actor_open(cache, exports, &open, channel_index, order)?;
     Ok(composed)
+}
+
+/// Frame a property update of the GameState actor (rep `layout`, the plan's)
+/// for its open channel: an actor bunch body without spawn holding one actor block with `values` in
+/// handle order (F-805: the original sends `TimeOfDay`, the world time and
+/// `LevelTimeElapsedSec` this way). Handles outside `18..=82`, the `RepSkip`
+/// handle 26 and empty updates are rejected.
+pub fn compose_game_state_update(
+    layout: &[RepCommand],
+    engine_net_version: u32,
+    values: &BTreeMap<u32, RepValue>,
+    order: super::archive::ByteOrder,
+) -> Result<Payload> {
+    ensure!(!values.is_empty(), "a GameState update carries a value");
+    for handle in values.keys() {
+        ensure!(
+            (handle::HAS_BEGUN_PLAY..=handle::LAST).contains(handle)
+                && *handle != handle::WORLD_TALENT_MANAGER_CLASS,
+            "GameState handle {handle} is RepSkip or out of range"
+        );
+    }
+    let codec = actor_codec(engine_net_version, order);
+    let rep_codec = RepLayoutCodec {
+        actor: codec,
+        checksums: false,
+        limits: RepLayoutLimits::default(),
+    };
+    let stream = PropertyStream {
+        entries: values
+            .iter()
+            .map(|(handle, value)| RepEntry {
+                handle: *handle,
+                checksum: None,
+                value: value.clone(),
+            })
+            .collect(),
+        terminator_checksum: None,
+    };
+    let block = ContentBlock {
+        has_rep_layout: true,
+        target: BlockTarget::Actor,
+        payload: encode_rep_properties(&stream, layout, &rep_codec)?,
+    };
+    encode_actor_bunch_body(
+        &ActorBunchBody {
+            spawn: None,
+            blocks: vec![block],
+        },
+        &codec,
+    )
 }

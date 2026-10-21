@@ -38,6 +38,7 @@ pub mod session_open;
 pub mod struct_array;
 pub mod tag_dictionary;
 pub mod tagged;
+pub mod time_of_day;
 pub mod typed_value;
 
 /// Reflected CRC-32 of zero-extended UTF-16 units in little-endian order.

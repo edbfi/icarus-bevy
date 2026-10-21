@@ -6,7 +6,7 @@ use icarus_bevy::experimental::actor_channel::{
 use icarus_bevy::experimental::archive::ByteOrder;
 use icarus_bevy::experimental::game_state_open::{
     GameStateComponents, GameStateManagers, GameStateOpenPlan, GameStateOpenState,
-    compose_game_state_open, handle,
+    compose_game_state_open, compose_game_state_update, handle,
 };
 use icarus_bevy::experimental::rep_layout::{
     MovementLevel, RepEntry, RepLayoutCodec, RepLayoutLimits, RepValue, RotationLevel,
@@ -353,6 +353,75 @@ fn composed_skipped_and_out_of_range_handles_are_rejected() {
             4,
             ByteOrder::Little
         )
+        .is_err()
+    );
+}
+
+#[test]
+fn updates_carry_one_actor_block_in_handle_order() {
+    let plan = plan();
+    let values = BTreeMap::from([
+        (handle::TIME_OF_DAY, RepValue::Float(635.25f32.to_bits())),
+        (
+            handle::WORLD_TIME_SECONDS,
+            RepValue::Float(14.5f32.to_bits()),
+        ),
+        (handle::LEVEL_TIME_ELAPSED_SEC, RepValue::Int(440_000)),
+    ]);
+    let payload = compose_game_state_update(&plan.layout, 17, &values, ByteOrder::Little).unwrap();
+    let body = read_actor_bunch_body(&mut payload.reader(), false, &codec()).unwrap();
+    assert!(body.spawn.is_none());
+    let [block] = body.blocks.as_slice() else {
+        panic!("one block");
+    };
+    assert!(block.has_rep_layout && matches!(block.target, BlockTarget::Actor));
+    let stream =
+        read_rep_properties(&mut block.payload.reader(), &plan.layout, &rep_codec()).unwrap();
+    let decoded: BTreeMap<u32, RepValue> = stream
+        .entries
+        .into_iter()
+        .map(|entry| (entry.handle, entry.value))
+        .collect();
+    assert_eq!(decoded, values);
+    assert!(
+        stream_handles_ascend(&plan, &values),
+        "entries are written in handle order"
+    );
+}
+
+fn stream_handles_ascend(plan: &GameStateOpenPlan, values: &BTreeMap<u32, RepValue>) -> bool {
+    let payload = compose_game_state_update(&plan.layout, 17, values, ByteOrder::Little).unwrap();
+    let body = read_actor_bunch_body(&mut payload.reader(), false, &codec()).unwrap();
+    let stream = read_rep_properties(
+        &mut body.blocks[0].payload.reader(),
+        &plan.layout,
+        &rep_codec(),
+    )
+    .unwrap();
+    stream
+        .entries
+        .windows(2)
+        .all(|pair| pair[0].handle < pair[1].handle)
+}
+
+#[test]
+fn empty_skipped_out_of_range_and_mistyped_updates_are_rejected() {
+    let plan = plan();
+    let update = |values: BTreeMap<u32, RepValue>| {
+        compose_game_state_update(&plan.layout, 17, &values, ByteOrder::Little)
+    };
+    assert!(update(BTreeMap::new()).is_err());
+    for handle in [handle::WORLD_TALENT_MANAGER_CLASS, handle::LAST + 1, 1] {
+        assert!(
+            update(BTreeMap::from([(handle, RepValue::Bool(true))])).is_err(),
+            "handle {handle} accepted"
+        );
+    }
+    assert!(
+        update(BTreeMap::from([(
+            handle::TIME_OF_DAY,
+            RepValue::Bool(true)
+        )]))
         .is_err()
     );
 }
