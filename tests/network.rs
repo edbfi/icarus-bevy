@@ -1806,3 +1806,143 @@ fn a_hold_without_actor_opens_reports_no_join_and_the_whole_gap() {
     assert_eq!(summary.game_state_updates, 0);
     assert!(summary.max_update_gap_ms >= 1_900, "{summary:?}");
 }
+
+/// Four probe sessions held at once each join on their own socket and
+/// identity, receive steady GameState updates without regressions and see
+/// the `NetworkingStatus` list all four players.
+#[test]
+fn concurrent_held_sessions_each_receive_updates_and_see_every_player() {
+    use icarus_bevy::experimental::session_hold::{HoldConfig, MultiHoldConfig, run_holds};
+    let directory = tempfile::tempdir().unwrap();
+    let config = pinned_server_config(directory.path(), &release_toml());
+    let state = directory.path().join("state");
+    let mut server = spawn_run(&config, &state);
+    let (address, _) = listening_address(&mut server);
+    let profile = ReleaseProfile::load(&release_toml()).unwrap();
+    let summary = run_holds(&MultiHoldConfig {
+        hold: HoldConfig {
+            server: address,
+            network_version: profile.pin.network_checksum,
+            engine_net_version: profile.engine_network_version,
+            duration: Duration::from_secs(3),
+            step_timeout: Duration::from_secs(3),
+        },
+        sessions: 4,
+    })
+    .unwrap();
+    sigterm(&server);
+    assert!(server.wait_exit().success());
+    assert_eq!(summary.sessions_requested, 4);
+    assert_eq!(summary.sessions.len(), 4);
+    assert_eq!(
+        (summary.joined, summary.refused, summary.failed),
+        (4, 0, 0),
+        "{summary:?}"
+    );
+    assert_eq!(summary.decode_errors, 0, "{summary:?}");
+    assert_eq!(summary.regressions, 0, "{summary:?}");
+    assert!(summary.errors_by_kind.is_empty(), "{summary:?}");
+    assert!(summary.min_game_state_updates.unwrap() >= 10, "{summary:?}");
+    // Generous for loaded runners: the world time alone is due every 0.1 s.
+    assert!(summary.max_update_gap_ms.unwrap() < 1_000, "{summary:?}");
+    for session in &summary.sessions {
+        assert!(session.hold.world_time_updates >= 10, "{session:?}");
+        assert_eq!(session.max_listed_players, Some(4), "{session:?}");
+    }
+    let total: u64 = summary
+        .sessions
+        .iter()
+        .map(|session| session.hold.game_state_updates)
+        .sum();
+    assert_eq!(summary.game_state_updates, total);
+    // Counts only: no synthetic name reaches the summary.
+    let printed = serde_json::to_string(&summary).unwrap();
+    assert!(!printed.contains("HoldProbe"), "{printed}");
+}
+
+/// Sessions beyond `max_players` are refused at Login and reported as
+/// refused; the admitted ones hold and see only themselves listed.
+#[test]
+fn concurrent_held_sessions_beyond_the_player_limit_are_refused() {
+    use icarus_bevy::experimental::session_hold::{HoldConfig, MultiHoldConfig, run_holds};
+    let directory = tempfile::tempdir().unwrap();
+    let config = directory.path().join("server.toml");
+    let profile_path = toml::Value::String(release_toml().display().to_string());
+    fs::write(
+        &config,
+        format!(
+            "status_interval_seconds = 1\n[network]\nenabled = true\nport = 0\nmax_players = 2\nrelease_profile = {profile_path}\n"
+        ),
+    )
+    .unwrap();
+    let state = directory.path().join("state");
+    let mut server = spawn_run(&config, &state);
+    let (address, listening) = listening_address(&mut server);
+    assert_eq!(listening["max_players"], 2);
+    let profile = ReleaseProfile::load(&release_toml()).unwrap();
+    let summary = run_holds(&MultiHoldConfig {
+        hold: HoldConfig {
+            server: address,
+            network_version: profile.pin.network_checksum,
+            engine_net_version: profile.engine_network_version,
+            duration: Duration::from_secs(2),
+            step_timeout: Duration::from_secs(3),
+        },
+        sessions: 4,
+    })
+    .unwrap();
+    sigterm(&server);
+    assert!(server.wait_exit().success());
+    assert_eq!(
+        (summary.joined, summary.refused, summary.failed),
+        (2, 2, 0),
+        "{summary:?}"
+    );
+    assert!(summary.errors_by_kind.is_empty(), "{summary:?}");
+    assert_eq!(summary.regressions, 0, "{summary:?}");
+    for session in &summary.sessions {
+        assert_eq!(session.setup_error, None, "{session:?}");
+        if session.hold.refused {
+            assert!(!session.hold.joined, "{session:?}");
+            assert_eq!(session.hold.game_state_updates, 0, "{session:?}");
+        } else {
+            assert!(session.hold.joined, "{session:?}");
+            assert!(session.hold.game_state_updates > 0, "{session:?}");
+            assert_eq!(session.max_listed_players, Some(2), "{session:?}");
+        }
+    }
+}
+
+/// A concurrent hold needs 1 to 64 sessions and the single hold's ranges;
+/// out-of-range parameters fail before any socket is opened.
+#[test]
+fn concurrent_hold_session_counts_are_bounded() {
+    use icarus_bevy::experimental::session_hold::{
+        HoldConfig, MAX_HOLD_SESSIONS, MultiHoldConfig, run_holds,
+    };
+    let hold = HoldConfig {
+        // Nothing listens here; validation must fail first.
+        server: "127.0.0.1:9".parse().unwrap(),
+        network_version: 0,
+        engine_net_version: 0,
+        duration: Duration::from_secs(1),
+        step_timeout: Duration::from_secs(1),
+    };
+    for sessions in [0, MAX_HOLD_SESSIONS + 1] {
+        let error = run_holds(&MultiHoldConfig {
+            hold: hold.clone(),
+            sessions,
+        })
+        .unwrap_err();
+        assert!(error.to_string().contains("sessions"), "{error}");
+    }
+    let error = run_holds(&MultiHoldConfig {
+        hold: HoldConfig {
+            duration: Duration::ZERO,
+            ..hold
+        },
+        sessions: 4,
+    })
+    .unwrap_err();
+    assert!(error.to_string().contains("hold lasts"), "{error}");
+}
