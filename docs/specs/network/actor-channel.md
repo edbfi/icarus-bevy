@@ -22,7 +22,7 @@ Address pairs are server / client.
   open (exports and body) from release identifiers and server state (F-779),
   and `experimental::game_state_open` the GameState open (F-794); `run` sends
   the PlayerController, pawn, GameState and PlayerState opens after Join
-  (F-784, F-800).
+  (F-784, F-802).
 - Dynamic GUIDs go to an actor or component when first serialized, by its own
   open or by another actor's reference: the GameState names managers 74..86
   that open later under those GUIDs; components keep one GUID across
@@ -43,6 +43,11 @@ Address pairs are server / client.
   `UInventory::Slots` (field 4) follow as custom-delta fast arrays with every
   item new (struct-delta bit set, base key 0, no deletes, IDs from 1); an
   empty slot sends handles 2 and 10..18 (`experimental::pawn_open`).
+- GameState active prospect (F-801): handles 51..67 carry the loaded save's
+  `ProspectInfo` fields that differ from their defaults, arrays with every
+  element field; `ElapsedTime` is the game mode's recorded
+  `LevelTimeElapsedSec` and `IsCurrentlyPlaying` marks connected members only
+  (`game_state_open::active_prospect_values`, `ProspectInfo::for_session`).
 - Gameplay-tag net index (F-702; U-065 resolved): `ConstructGameplayTagTree`
   builds the tree; `ConstructNetIndex` sorts nodes
   by `GetAllNodes` + `FName::LexicalLess`, sets `InvalidTagNetIndex = N + 1`,
