@@ -784,15 +784,15 @@ struct GameStateSession {
     /// The restored `LevelTimeElapsedSec`, advanced with the world time at
     /// each send.
     level_time: Option<i32>,
-    /// The world's time of day, advanced to `clock_at` world seconds.
+    /// The world's time of day, advanced to the instant `clock_at`.
     clock: Option<TimeOfDayClock>,
-    clock_at: f32,
+    clock_at: Instant,
     /// `ServerFPS` over the poll intervals, the last poll at `polled_at`
     /// (an instant, so intervals keep their resolution on long runs).
     fps: Option<ServerFpsMeter>,
     polled_at: Instant,
-    /// World seconds of the last GameState update pass.
-    updated_at: f32,
+    /// The last GameState update pass.
+    updated_at: Option<Instant>,
 }
 
 /// The loopback peer lab. `Debug` reports only the peer count and counters.
@@ -1207,10 +1207,10 @@ impl PeerLab {
             channel_index,
             level_time: None,
             clock: None,
-            clock_at: 0.0,
+            clock_at: Instant::now(),
             fps: None,
             polled_at: Instant::now(),
-            updated_at: 0.0,
+            updated_at: None,
         });
         Ok(())
     }
@@ -1250,12 +1250,11 @@ impl PeerLab {
     /// opens carry its current value and updates its changes. Fails without
     /// a GameState open.
     pub fn enable_time_of_day(&mut self, clock: TimeOfDayClock) -> Result<()> {
-        let world_seconds = self.world_seconds();
         let Some(session) = &mut self.game_state_open else {
             bail!("no GameState open is enabled");
         };
         session.clock = Some(clock);
-        session.clock_at = world_seconds;
+        session.clock_at = Instant::now();
         Ok(())
     }
 
@@ -1279,11 +1278,6 @@ impl PeerLab {
     /// The GameState's current `TimeOfDay` clock, if enabled.
     pub fn time_of_day(&self) -> Option<&TimeOfDayClock> {
         self.game_state_open.as_ref()?.clock.as_ref()
-    }
-
-    /// World seconds: real time since bind (the lab's world clock).
-    fn world_seconds(&self) -> f32 {
-        self.started.elapsed().as_secs_f32()
     }
 
     /// After [`enable_player_controller_open`](Self::enable_player_controller_open),
@@ -2361,17 +2355,19 @@ impl PeerLab {
             return;
         };
         if let Some(clock) = &mut session.clock {
-            clock.advance(world_seconds - session.clock_at);
-            session.clock_at = world_seconds;
+            clock.advance(now.duration_since(session.clock_at).as_secs_f32());
+            session.clock_at = now;
         }
         if let Some(meter) = &mut session.fps {
             meter.observe(now.duration_since(session.polled_at).as_secs_f32());
             session.polled_at = now;
         }
-        if world_seconds - session.updated_at < GAME_STATE_UPDATE_SECONDS {
+        if session.updated_at.is_some_and(|updated| {
+            now.duration_since(updated).as_secs_f32() < GAME_STATE_UPDATE_SECONDS
+        }) {
             return;
         }
-        session.updated_at = world_seconds;
+        session.updated_at = Some(now);
         let changing = [
             (
                 handle::TIME_OF_DAY,
