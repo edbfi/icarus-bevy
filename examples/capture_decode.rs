@@ -1789,6 +1789,12 @@ impl<'a> Decoder<'a> {
                         Decoded::Message(message) => {
                             bump(&mut self.stats.control.messages, message.name());
                         }
+                        Decoded::Fallback(fallback) => {
+                            bump(
+                                &mut self.stats.control.unknown_ids,
+                                fallback.id().to_string(),
+                            );
+                        }
                         Decoded::Unknown { id } => {
                             bump(&mut self.stats.control.unknown_ids, id.to_string());
                         }

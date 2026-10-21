@@ -138,8 +138,8 @@ pub fn evaluate_pc_swap_target(
 /// `UControlChannel::ReceivedBunch` (`0x143536420` server / `0x1437c4940`
 /// client, `F-740`).
 ///
-/// Standalone model of the control-channel branch (`peer_lab` maintains only
-/// channel 0 and no `UActorChannel` table).
+/// Model of the control-channel branch; `peer_lab` applies it to the actor
+/// channels it opened (the PlayerController and PlayerState).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ActorChannelFailureAction {
     /// Ignored (client side, out-of-range channel index, non-`UActorChannel`,
@@ -158,8 +158,8 @@ pub enum ActorChannelFailureAction {
 /// Evaluates `UControlChannel::ReceivedBunch` (`0x143536420` / `0x1437c4940`)
 /// on `NMT_ActorChannelFailure` (`0x10`, `F-740`).
 ///
-/// Standalone model of the server-side `OpenChannels` lookup (`peer_lab`
-/// operates on control channel 0 only and does not open actor channels).
+/// Model of the server-side `OpenChannels` lookup; `peer_lab` answers with
+/// it when a client reports a failed channel.
 pub fn evaluate_actor_channel_failure(
     is_server: bool,
     channel_index: i32,

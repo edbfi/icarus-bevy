@@ -1145,3 +1145,132 @@ fn admission_join_failure_sends_failure_and_closes_peer() {
     assert_eq!(stats(&app).joins_succeeded, 0);
     assert_eq!(stats(&app).failures_sent, 1);
 }
+
+/// Drain every datagram the lab has queued for `client`.
+fn drain(client: &Client) -> Vec<Vec<u8>> {
+    std::iter::from_fn(|| try_recv(&client.socket)).collect()
+}
+
+/// A reliable control bunch carrying one fallback entry; its sequence comes
+/// from the client's control channel (a placeholder holds the slot).
+fn fallback_bunch(
+    client: &mut Client,
+    fallback: &icarus_bevy::experimental::control_messages::ControlFallback,
+) -> Bunch {
+    let packet_id = client.sequencer.out_packet_id();
+    let sequence = client
+        .control
+        .send_reliable(packet_id, ControlMessage::Join)
+        .unwrap();
+    let mut writer = BitWriter::new();
+    icarus_bevy::experimental::control_messages::write_control_fallback(
+        &mut writer,
+        fallback,
+        &ControlCodec::default(),
+    )
+    .unwrap();
+    Bunch {
+        payload: Payload::from_writer(writer),
+        ..control_bunch(
+            Some(wire_reliable_sequence(sequence)),
+            false,
+            &ControlMessage::Join,
+        )
+    }
+}
+
+#[test]
+fn player_controller_channel_failure_closes_the_connection() {
+    use icarus_bevy::experimental::{control_messages::ControlFallback, release::ReleaseProfile};
+    let config = PeerLabConfig {
+        admission: Some(PeerLabAdmission::default()),
+        ..PeerLabConfig::default()
+    };
+    let mut app = build_app(&ServerConfig::default(), &WorldSnapshot::default()).unwrap();
+    let mut bound = PeerLab::bind(0, config).unwrap();
+    let profile = ReleaseProfile::release_3_0_32();
+    let map_url = PeerLabAdmission::default().map_url;
+    bound
+        .enable_player_controller_open(
+            profile
+                .player_controller_open_plan(map_url, [0.0; 3])
+                .unwrap()
+                .unwrap(),
+        )
+        .unwrap();
+    bound
+        .enable_player_state_open(profile.player_state_open_plan(map_url).unwrap().unwrap())
+        .unwrap();
+    let address = bound.local_addr().unwrap();
+    app.insert_resource(bound).add_plugins(PeerLabPlugin);
+    let mut client = Client::connect(&mut app, address);
+
+    // Before Login the failure is gated like any non-login message.
+    let early = fallback_bunch(
+        &mut client,
+        &ControlFallback::ActorChannelFailure { channel_index: 2 },
+    );
+    let (datagram, _) = client.packet(vec![early]);
+    client.send(&datagram);
+    app.update();
+    assert_eq!(stats(&app).invalid_state_messages, 1);
+    drain(&client);
+
+    client.exchange(&mut app, short_hello("", 0), false);
+    let login = ControlMessage::Login {
+        response: ArchiveText::text("0").unwrap(),
+        url: ArchiveText::text("?Name=Tester").unwrap(),
+        unique_net_id: UniqueNetId {
+            kind: NetIdType::Named(ArchiveText::text("STEAM").unwrap()),
+            value: NetIdValue::from_hex(NET_ID_HEX).unwrap(),
+        },
+        platform: ArchiveText::text(PLATFORM_SENTINEL).unwrap(),
+    };
+    client.exchange(&mut app, login, false);
+    client.exchange(&mut app, ControlMessage::Join, false);
+    assert_eq!(stats(&app).player_controller_opens_sent, 1);
+    assert_eq!(stats(&app).player_state_opens_sent, 1);
+    drain(&client);
+
+    // The PlayerState channel (3) failing only notifies the controller.
+    let other = fallback_bunch(
+        &mut client,
+        &ControlFallback::ActorChannelFailure { channel_index: 3 },
+    );
+    let (datagram, _) = client.packet(vec![other]);
+    client.send(&datagram);
+    app.update();
+    assert!(lab(&app).has_peer(client.address()));
+    assert_eq!(stats(&app).actor_channel_failures, 1);
+    drain(&client);
+
+    // The PlayerController channel (2) failing closes the connection.
+    let fatal = fallback_bunch(
+        &mut client,
+        &ControlFallback::ActorChannelFailure { channel_index: 2 },
+    );
+    let (datagram, _) = client.packet(vec![fatal]);
+    client.send(&datagram);
+    app.update();
+    assert!(!lab(&app).has_peer(client.address()));
+    let counted = stats(&app);
+    assert_eq!(
+        (
+            counted.actor_channel_failures,
+            counted.peers_closed_by_channel_failure
+        ),
+        (2, 1)
+    );
+    let closes: Vec<_> = drain(&client)
+        .iter()
+        .flat_map(|datagram| read_packet(datagram, &to_client()).unwrap().bunches)
+        .filter(|bunch| bunch.header.close)
+        .collect();
+    let [close] = closes.as_slice() else {
+        panic!("one control close bunch");
+    };
+    assert_eq!(
+        (close.header.channel_index, close.header.close_reason),
+        (0, Some(0))
+    );
+}

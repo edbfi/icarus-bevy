@@ -380,6 +380,8 @@ impl ControlFallback {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Decoded {
     Message(ControlMessage),
+    /// A fallback or direct-dispatch layout (only from [`read_control_entry`]).
+    Fallback(ControlFallback),
     /// Decoding stops here; nothing after the ID byte was read.
     Unknown {
         id: u8,
@@ -912,6 +914,19 @@ pub fn write_control_fallback(
         }
     }
     Ok(())
+}
+
+/// One control entry as `UControlChannel::ReceivedBunch` reads it: a
+/// `NotifyControlMessage` layout, else a fallback or direct-dispatch layout
+/// ([`read_control_fallback`]), else `Unknown`.
+pub fn read_control_entry(reader: &mut BitReader<'_>, codec: &ControlCodec) -> Result<Decoded> {
+    match read_control_message(reader, codec)? {
+        Decoded::Unknown { id } => Ok(match read_control_fallback(id, reader, codec)? {
+            Some(fallback) => Decoded::Fallback(fallback),
+            None => Decoded::Unknown { id },
+        }),
+        decoded => Ok(decoded),
+    }
 }
 
 /// Read messages until the reader ends or an unknown ID stops decoding.
