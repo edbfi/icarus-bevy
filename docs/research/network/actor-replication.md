@@ -66,8 +66,8 @@ ServerTickTime`, `ClientConnections` rotation) stages (`PrepConnections`
 adaptive `OptimalNetUpdateDelta` lerp with `MinNetUpdateFrequency = 2.0`;
 `PrioritizeActors` `cvtss2si` `round_ties_even(65536 * p)` and
 `DestroyedStartupOrDormantActors` `cvttss2si` `250k`/`4M`/`9.998M` `* 0.4`/`0.2`
-scaling; `ProcessPrioritizedActors` `<= 1.0` s relevancy fast-path, `+ 0.5 *
-SRand` jitter, `< 1.0` Hz `+ 0.2 * srands` delay, and `CloseReason` `4`/`3` when
+scaling; `ProcessPrioritizedActors` skipping relevancy `<= 1.0` s (F-788),
+`+ 0.5 * SRand` jitter, `< 1.0` Hz `+ 0.2 * srands` delay, and `CloseReason` `4`/`3` when
 `!bLevelInitializedForActor || !bNetStartup`; and inlined `MarkRelevantActors`
 `<= 1.0` s channel fast-path, `+ 0.5 * SRand` `RelevantTime`, and
 `ForceRelevantFrame = ReplicationFrame + 1` when `>= LastProcessedFrame`,
@@ -75,8 +75,7 @@ F-745, F-748, F-749, F-751); force relevance compares with the connection's
 `LastProcessedFrame`, unsigned (F-772), and the mark step re-forces every
 unprocessed entry regardless of relevance (F-774). A native scheduling stage
 drives these evaluators over 2,626 supplied actor positions; with UE default
-parameters and the corrected 1 s relevancy window (F-788) it takes 0.3 to 5.2 ms
-per frame for 1 to 8 viewers (F-790). Export checksums are class network checksums computed natively
+parameters it takes 0.3 to 5.2 ms per frame for 1 to 8 viewers (F-790). Export checksums are class network checksums computed natively
 (F-776), reproducing 77 of 79 captured values (F-777; U-067), and the
 original's first post-Join bunch opens the PlayerController channel (F-778),
 which the native composer reproduces bit for bit (F-779) and `run` sends after

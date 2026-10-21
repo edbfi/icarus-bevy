@@ -158,11 +158,11 @@ Address pairs are server / client.
     (`0x143724c2a`) after scaling by `0.2` (`dot < 0 && dist_sq > 4M`) or
     `0.4` (`dot < 0 && dist_sq > 250k`, or `dot >= 0 && dist_sq > 9,998,244`).
   - `ProcessPrioritizedActors` (`0x1439c1bf0`, `evaluate_process_prioritized_actor`)
-    checks `IsNetReady(0)`, sends `SendDestructionInfo`, takes a `<= 1.0` s
-    fast path before `IsActorRelevantToConnection`, counts an actor recently
-    relevant when `ForceRelevantFrame >= Connection->LastProcessedFrame`
-    (unsigned, `+0xd4` vs `+0x200`; F-772), sets
-    `RelevantTime = ElapsedTime + 0.5 * SRand()`, delays unopenable `< 1.0` Hz
+    checks `IsNetReady(0)`, sends `SendDestructionInfo`, skips
+    `IsActorRelevantToConnection` within `1.0` s of `RelevantTime` (F-788),
+    counts an actor recently relevant when `ForceRelevantFrame >=
+    Connection->LastProcessedFrame` (unsigned, `+0xd4` vs `+0x200`; F-772),
+    sets `RelevantTime = ElapsedTime + 0.5 * SRand()` only if relevant, delays unopenable `< 1.0` Hz
     actors by `0.2 * srands()`, replicates until saturation, and closes
     irrelevant or torn-off channels when
     `has_channel && (!actor_level_initialized || !actor_is_net_startup)`
