@@ -59,9 +59,10 @@ all before the final save and retains no session over 1,000 join/close cycles
 (F-768); it pins the Hello version to the release profile and survives 200
 real-binary cycles (F-770). One and eight probe sessions held for an hour
 receive steady GameState updates without regressions, and in 300 s sweeps of
-8 to 64 concurrent sessions tick p99 stays under 80 us; past 36 listed players the networking
-status outgrows one datagram and is withheld (F-812, F-823, F-824). No ICARUS
-client has used it.
+8 to 64 concurrent sessions tick p99 stays under 80 us; a networking status
+over one bunch, once withheld, now goes out as unreliable partial bunches that
+every session reassembles (F-812, F-823, F-824, F-826). No ICARUS client has
+used it.
 
 The toolchain is pinned and current (F-483), authored Python passes
 basedpyright recommended (F-484), and the release links no render, window or
@@ -82,4 +83,4 @@ original server (F-252), and historical runtime windows have expired (F-218).
 
 ## Artifacts
 
-M-001, M-002, M-006, M-009, M-010, M-015..M-022, M-076, M-078, M-109..M-117, M-131..M-165, M-174, M-175, M-178, M-182..M-184, M-191, M-192, M-200, M-203, M-204, M-207, M-208, M-212..M-220, M-225, M-240, M-241, M-251, M-252, M-269, M-270, M-271, M-277, M-311, M-391, M-397..M-399, M-411..M-419, M-452..M-454, M-471..M-475, M-577, M-578, M-770, M-771, M-809, M-810, M-812, M-861, M-862.
+M-001, M-002, M-006, M-009, M-010, M-015..M-022, M-076, M-078, M-109..M-117, M-131..M-165, M-174, M-175, M-178, M-182..M-184, M-191, M-192, M-200, M-203, M-204, M-207, M-208, M-212..M-220, M-225, M-240, M-241, M-251, M-252, M-269, M-270, M-271, M-277, M-311, M-391, M-397..M-399, M-411..M-419, M-452..M-454, M-471..M-475, M-577, M-578, M-770, M-771, M-809, M-810, M-812, M-861, M-862, M-864.
