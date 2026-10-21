@@ -5,15 +5,16 @@ use icarus_bevy::experimental::actor_channel::{
     read_actor_bunch_body,
 };
 use icarus_bevy::experimental::actor_open::{
-    BlockContent, ComponentActorOpen, OpenComponent, OpenSubobject, Reference,
-    compose_component_actor_open,
+    Block, BlockContent, BlockProperties, ComponentActorOpen, CustomField, OpenComponent,
+    OpenSubobject, Reference, compose_component_actor_open,
 };
 use icarus_bevy::experimental::archive::ByteOrder;
 use icarus_bevy::experimental::packet::{BitWriter, Payload};
 use icarus_bevy::experimental::rep_layout::{
-    MovementLevel, RepLayoutCodec, RepLayoutLimits, RepValue, RotationLevel, pawn_rep_layout,
-    read_rep_properties,
+    MovementLevel, RepCommand, RepLayoutCodec, RepLayoutLimits, RepValue, RotationLevel,
+    pawn_rep_layout, read_rep_properties,
 };
+use icarus_bevy::experimental::rep_rpc::read_field_header;
 use icarus_bevy::experimental::session_open::{
     ActorKey, ConnectionExports, NetGuidCache, PathSegment,
 };
@@ -48,7 +49,7 @@ fn component(name: &str, checksum: u32, block: Option<BlockContent>) -> OpenComp
     OpenComponent {
         name: name.to_owned(),
         checksum,
-        block,
+        block: block.map(Into::into),
     }
 }
 
@@ -98,7 +99,8 @@ fn open() -> ComponentActorOpen {
                 block: BlockContent {
                     has_rep_layout: true,
                     payload: bits(9),
-                },
+                }
+                .into(),
             },
             OpenSubobject {
                 class: vec![
@@ -108,7 +110,8 @@ fn open() -> ComponentActorOpen {
                 block: BlockContent {
                     has_rep_layout: true,
                     payload: bits(3),
-                },
+                }
+                .into(),
             },
         ],
         engine_net_version: 17,
@@ -228,4 +231,128 @@ fn invalid_references_and_duplicate_components_fail_before_any_assignment() {
         );
         assert_eq!(cache.assign_dynamic(), 2, "nothing was assigned");
     }
+}
+
+fn rep_codec() -> RepLayoutCodec {
+    RepLayoutCodec {
+        actor: codec(),
+        checksums: false,
+        limits: RepLayoutLimits::default(),
+    }
+}
+
+/// An authored composed block: a bool, an object reference and an int on a
+/// three-command layout, then `fields` under a field bound of 6.
+fn composed(references: BTreeMap<u32, Reference>, fields: Vec<CustomField>) -> Block {
+    Block::Composed(BlockProperties {
+        layout: vec![RepCommand::Bool, RepCommand::Object, RepCommand::Int],
+        references,
+        values: BTreeMap::from([(1, RepValue::Bool(true)), (3, RepValue::Int(-7))]),
+        fields,
+        field_bound: 6,
+    })
+}
+
+#[test]
+fn composed_blocks_resolve_their_references_where_they_are_serialized() {
+    let mut open = open();
+    // The first subobject references the unserialized `Silent` component and
+    // ends with one field; the `State` component carries only a field.
+    open.subobjects[0].block = composed(
+        BTreeMap::from([(2, Reference::Component(1))]),
+        vec![CustomField {
+            index: 4,
+            payload: bits(11),
+        }],
+    );
+    open.components[2].block = Some(Block::Composed(BlockProperties {
+        layout: vec![RepCommand::Bool],
+        references: BTreeMap::new(),
+        values: BTreeMap::new(),
+        fields: vec![CustomField {
+            index: 5,
+            payload: bits(2),
+        }],
+        field_bound: 6,
+    }));
+    let mut cache = NetGuidCache::new();
+    let mut exports = ConnectionExports::new();
+    let (composed, guids) =
+        compose_component_actor_open(&mut cache, &mut exports, &open, 3, ByteOrder::Little)
+            .unwrap();
+    // Silent is serialized at the subobject's reference, after the
+    // subobject's class and GUID (10), so it takes 12 and the second
+    // subobject 14.
+    assert_eq!(guids.components, [Some(8), Some(12), Some(4)]);
+    assert_eq!(guids.subobjects, [10, 14]);
+    let mut map = PackageMapState::new();
+    let decoded = map
+        .consume_export_prefix(&mut composed.exports.unwrap().reader(), &codec())
+        .unwrap();
+    let top: Vec<u32> = decoded.iter().map(|reference| reference.guid).collect();
+    assert_eq!(top.len(), 6);
+    assert_eq!(map.resolve_path(top[5]), Some("Silent"));
+    let body = read_actor_bunch_body(&mut composed.bunch.payload.reader(), true, &codec()).unwrap();
+    // State: no properties, so no rep layout, and its one field.
+    let state = &body.blocks[2];
+    assert!(!state.has_rep_layout);
+    let mut reader = state.payload.reader();
+    let field = read_field_header(&mut reader, 6, 64).unwrap();
+    assert!(reader.at_end());
+    assert_eq!((field.index, field.payload), (5, bits(2)));
+    // The subobject: its properties with the reference resolved, then the
+    // field.
+    let bag = &body.blocks[3];
+    assert!(bag.has_rep_layout);
+    let mut reader = bag.payload.reader();
+    let stream = read_rep_properties(
+        &mut reader,
+        &[RepCommand::Bool, RepCommand::Object, RepCommand::Int],
+        &rep_codec(),
+    )
+    .unwrap();
+    let values: Vec<(u32, RepValue)> = stream
+        .entries
+        .into_iter()
+        .map(|entry| (entry.handle, entry.value))
+        .collect();
+    assert_eq!(values[0], (1, RepValue::Bool(true)));
+    assert!(matches!(&values[1], (2, RepValue::Object(object)) if object.guid == 12));
+    assert_eq!(values[2], (3, RepValue::Int(-7)));
+    let field = read_field_header(&mut reader, 6, 64).unwrap();
+    assert!(reader.at_end());
+    assert_eq!((field.index, field.payload), (4, bits(11)));
+}
+
+#[test]
+fn invalid_block_contents_fail_before_any_assignment() {
+    for block in [
+        composed(BTreeMap::from([(2, Reference::Component(9))]), Vec::new()),
+        composed(BTreeMap::from([(1, Reference::Itself)]), Vec::new()),
+    ] {
+        let mut open = open();
+        open.subobjects[1].block = block;
+        let mut cache = NetGuidCache::new();
+        let mut exports = ConnectionExports::new();
+        assert!(
+            compose_component_actor_open(&mut cache, &mut exports, &open, 3, ByteOrder::Little)
+                .is_err()
+        );
+        assert_eq!(cache.assign_dynamic(), 2, "nothing was assigned");
+    }
+    // A field index at its bound fails at encoding.
+    let mut open = open();
+    open.subobjects[1].block = composed(
+        BTreeMap::new(),
+        vec![CustomField {
+            index: 6,
+            payload: bits(1),
+        }],
+    );
+    let mut cache = NetGuidCache::new();
+    let mut exports = ConnectionExports::new();
+    assert!(
+        compose_component_actor_open(&mut cache, &mut exports, &open, 3, ByteOrder::Little)
+            .is_err()
+    );
 }

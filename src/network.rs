@@ -17,7 +17,8 @@
 //! PlayerController open on actor channel 2 (F-778, F-779): exports, spawn at
 //! [`SPAWN_LOCATION`], roles, references and component blocks; with `[pawn]`
 //! identifiers the player's pawn follows on channel 3 (F-797: captured roles
-//! and references, every component without properties, no inventories);
+//! and references, component bools, [`pawn_content`]; no stats or
+//! inventories);
 //! with `[game_state]` identifiers the world's GameState on channel 4 (F-794:
 //! [`game_state_values`]); with `[player_state]` identifiers the referenced
 //! PlayerState on channel 5 (F-784: PlayerId from 256, the Login name and
@@ -47,7 +48,7 @@ use crate::{
             GAME_STATE_CHANNEL_INDEX, GameStateManagers, GameStateOpenState,
             MATCH_STATE_IN_PROGRESS, handle,
         },
-        pawn_open::PAWN_CHANNEL_INDEX,
+        pawn_open::{CharacterVitals, PAWN_CHANNEL_INDEX, PawnContent},
         peer_lab::{PeerLab, PeerLabAdmission, PeerLabConfig, PeerLabPlugin, SessionCounts},
         release::{ReleasePin, ReleaseProfile},
         rep_layout::{NetworkName, RepValue},
@@ -84,6 +85,32 @@ pub fn game_state_values() -> Result<GameStateOpenState> {
         ]),
         weather: Vec::new(),
     })
+}
+
+/// The pawn content `run` opens every player's pawn with: movement frozen
+/// at open (as captured, F-797) and authored lab vitals, which are not
+/// ICARUS balance values. No `IcarusUID`, tags, stats or inventories are
+/// sent: they need imported or catalogued content.
+pub fn pawn_content() -> PawnContent {
+    PawnContent {
+        frozen_movement: true,
+        character_state: CharacterVitals {
+            health: 100,
+            max_health: 100,
+            stamina: 100,
+            max_stamina: 100,
+            oxygen: 100,
+            max_oxygen: 100,
+            water: 100,
+            max_water: 100,
+            food: 100,
+            max_food: 100,
+            biome_row: 0,
+            growth_row: 0,
+        }
+        .values(),
+        ..PawnContent::default()
+    }
 }
 
 /// Session counts kept after [`teardown`] so a repeated call and the final
@@ -171,7 +198,7 @@ pub fn bind(network: &NetworkConfig) -> Result<Option<BoundNetwork>> {
             _ => None,
         };
         if let Some(pawn) = pawn {
-            lab.enable_pawn_open(pawn, PAWN_CHANNEL_INDEX)?;
+            lab.enable_pawn_open(pawn, PAWN_CHANNEL_INDEX, pawn_content())?;
         }
         let game_state = match (&profile, &config.admission) {
             (Some(profile), Some(admission)) => profile

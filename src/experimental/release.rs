@@ -19,13 +19,15 @@ use serde::Deserialize;
 use super::{
     default_version_string_checksum,
     game_state_open::{GameStateComponents, GameStateOpenPlan},
-    pawn_open::{PawnComponent, PawnOpenPlan},
+    pawn_open::{PawnComponent, PawnContentPlan, PawnOpenPlan},
     rep_layout::{
         ICARUS_ROW_HANDLE_NONE, ICARUS_ROW_HANDLE_TABLE_COUNT, ICARUS_TWO_BYTE_ROW_TABLES,
         ICARUS_ZERO_ROW_TABLES, MovementLevel, RotationLevel, TagEncoding,
         actor_component_rep_layout, bp_icarus_player_character_survival_rep_layout,
         bp_icarus_player_state_rep_layout, icarus_game_state_survival_rep_layout,
-        icarus_player_controller_survival_rep_layout, weather_manager_component_rep_layout,
+        icarus_player_controller_survival_rep_layout, inventory_rep_layout,
+        inventory_slot_commands, player_character_state_rep_layout,
+        weather_manager_component_rep_layout,
     },
     rep_rpc::{
         BP_ICARUS_PLAYER_CONTROLLER_SURVIVAL_FIELD_INDEX_BOUND,
@@ -536,38 +538,60 @@ impl ReleaseGameStateProfile {
     }
 }
 
+/// One replicated pawn component, in block order: its name, class network
+/// checksum (`F-776`) and the `UActorComponent` bools its block carries at
+/// open.
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct ReleasePawnComponent {
+    pub name: String,
+    pub checksum: u32,
+    /// `[handle, value]` pairs of handles `1..=2`, strictly ascending.
+    #[serde(default)]
+    pub rep_bools: Vec<(u32, bool)>,
+}
+
 /// Per-release identifiers of the player's pawn open (`[pawn]`, F-797): the
-/// archetype chain, the replicated components in block order, and the
-/// components `StatContainer`, `ActorState` and `InventoryComponent` name.
-/// Values come from the session.
+/// archetype chain, the replicated components in block order, the
+/// components `StatContainer`, `ActorState` and `InventoryComponent` name,
+/// and the runtime inventories' class chain. Values come from the session.
 #[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct ReleasePawnProfile {
     pub archetype: Vec<ReleasePathSegment>,
-    pub components: Vec<ReleaseSubobject>,
+    pub components: Vec<ReleasePawnComponent>,
     /// The component `StatContainer` (handle 47) names.
     pub stat_container: String,
     /// The component `ActorState` (handle 48) names.
     pub actor_state: String,
     /// The component `InventoryComponent` (handle 56) names.
     pub inventory_component: String,
+    /// `Inventory` with its class network checksum, then `/Script/Icarus`.
+    pub inventory_class: Vec<ReleasePathSegment>,
 }
 
 impl ReleasePawnProfile {
     /// `BP_IcarusPlayerCharacterSurvival_C`: reproduced bit-exactly against the
-    /// 3.0.31 capture (F-797). For 3.0.32 the archetype and component
+    /// 3.0.31 capture (F-797), with the component bools and the inventory
+    /// class it carries. For 3.0.32 the archetype, component and `Inventory`
     /// checksums are among the 77 oracle values the 25956137 derivation
-    /// reproduces (M-820, behind F-780); the component set and order are
-    /// assumed unchanged.
+    /// reproduces (M-820, behind F-780); the component set, order and bools
+    /// are assumed unchanged.
     pub fn icarus_survival() -> Self {
         let segment = |path: &str, checksum| ReleasePathSegment {
             path: path.to_owned(),
             checksum,
             no_load: false,
         };
-        let subobject = |name: &str, checksum| ReleaseSubobject {
+        let subobject = |name: &str, checksum| ReleasePawnComponent {
             name: name.to_owned(),
             checksum,
+            rep_bools: Vec::new(),
+        };
+        let active = |name: &str, checksum| ReleasePawnComponent {
+            name: name.to_owned(),
+            checksum,
+            rep_bools: vec![(2, true)],
         };
         Self {
             archetype: vec![
@@ -576,25 +600,29 @@ impl ReleasePawnProfile {
             ],
             components: vec![
                 subobject("Stat Container", 4_037_894_903),
-                subobject("InventoryComponent", 46_421_488),
+                active("InventoryComponent", 46_421_488),
                 subobject("AudioContext", 4_273_702_982),
                 subobject("FeedbackAudioComponent", 3_400_199_742),
                 subobject("ActorState", 692_782_745),
-                subobject("Stomach", 3_911_258_249),
-                subobject("Processing", 1_023_342_657),
-                subobject("BP_Weight", 46_421_488),
-                subobject("BP_SwimmingComponent", 165_351_633),
-                subobject("BP_ShelteredComponent", 2_435_860_737),
+                active("Stomach", 3_911_258_249),
+                active("Processing", 1_023_342_657),
+                active("BP_Weight", 46_421_488),
+                active("BP_SwimmingComponent", 165_351_633),
+                active("BP_ShelteredComponent", 2_435_860_737),
                 subobject("BP_PlayerBuildingPlacement", 1_301_726_856),
-                subobject("Experience", 46_421_488),
+                active("Experience", 46_421_488),
                 subobject("BP_PlayerMovementAudioComponent", 1_588_614_535),
                 subobject("BP_PlayerMusicComponent", 681_416_933),
-                subobject("BP_Flammable_Player", 3_465_019_412),
+                active("BP_Flammable_Player", 3_465_019_412),
                 subobject("BP_UIProjectionComponent_Player", 1_863_489_512),
             ],
             stat_container: "Stat Container".to_owned(),
             actor_state: "ActorState".to_owned(),
             inventory_component: "InventoryComponent".to_owned(),
+            inventory_class: vec![
+                segment("Inventory", 1_798_236_809),
+                segment("/Script/Icarus", 0),
+            ],
         }
     }
 
@@ -613,7 +641,9 @@ impl ReleasePawnProfile {
                 "duplicate pawn component {name}"
             );
             ensure!(component.checksum != 0, "component {name} needs a checksum");
+            validate_rep_bools(name, &component.rep_bools)?;
         }
+        validate_archetype("pawn inventory_class", &self.inventory_class)?;
         let [stat_container, actor_state, inventory_component] = self.referenced()?;
         ensure!(
             stat_container != actor_state
@@ -643,6 +673,23 @@ impl ReleasePawnProfile {
 
 /// `UActorComponent`'s two bool handles (F-703).
 const ACTOR_COMPONENT_BOOL_HANDLES: std::ops::RangeInclusive<u32> = 1..=2;
+
+/// `rep_bools` name `UActorComponent` bool handles, strictly ascending.
+fn validate_rep_bools(name: &str, rep_bools: &[(u32, bool)]) -> Result<()> {
+    for (handle, _) in rep_bools {
+        ensure!(
+            ACTOR_COMPONENT_BOOL_HANDLES.contains(handle),
+            "component {name}: rep_bools handle {handle} is not a UActorComponent bool"
+        );
+    }
+    for window in rep_bools.windows(2) {
+        ensure!(
+            window[0].0 < window[1].0,
+            "component {name}: rep_bools handles must be strictly ascending"
+        );
+    }
+    Ok(())
+}
 
 impl ReleasePlayerControllerProfile {
     /// `BP_IcarusPlayerControllerSurvival_C` identifiers: reproduced bit-exactly
@@ -719,18 +766,7 @@ impl ReleasePlayerControllerProfile {
                     != component.rep_bools.is_empty(),
                 "component {name}: rep_bools must be given exactly when block = \"rep_bools\""
             );
-            for (handle, _) in &component.rep_bools {
-                ensure!(
-                    ACTOR_COMPONENT_BOOL_HANDLES.contains(handle),
-                    "component {name}: rep_bools handle {handle} is not a UActorComponent bool"
-                );
-            }
-            for window in component.rep_bools.windows(2) {
-                ensure!(
-                    window[0].0 < window[1].0,
-                    "component {name}: rep_bools handles must be strictly ascending"
-                );
-            }
+            validate_rep_bools(name, &component.rep_bools)?;
         }
         Ok(())
     }
@@ -1110,9 +1146,11 @@ impl ReleaseProfile {
     }
 
     /// The pawn open plan for the map package of `map_url`, or `None` without
-    /// `[pawn]`. The layout is the statically observed
+    /// `[pawn]`. The layouts are the statically observed
     /// `BP_IcarusPlayerCharacterSurvival_C` layout with the movement levels
-    /// the capture decodes with and this release's tag encoding (F-797).
+    /// the capture decodes with, and the `UActorComponent`,
+    /// `UPlayerCharacterState`, `UInventory` and `FInventorySlot` layouts,
+    /// with this release's tag encoding and field bounds (F-797, F-708).
     pub fn pawn_open_plan(&self, map_url: &str) -> Result<Option<PawnOpenPlan>> {
         let Some(pawn) = &self.pawn else {
             return Ok(None);
@@ -1127,6 +1165,7 @@ impl ReleaseProfile {
                 .map(|component| PawnComponent {
                     name: component.name.clone(),
                     checksum: component.checksum,
+                    rep_bools: component.rep_bools.clone(),
                 })
                 .collect(),
             stat_container,
@@ -1138,6 +1177,15 @@ impl ReleaseProfile {
                 RotationLevel::Bytes,
                 self.tags.tag_encoding(),
             ),
+            content: PawnContentPlan {
+                component_layout: actor_component_rep_layout(),
+                character_state_layout: player_character_state_rep_layout(),
+                inventory_class: session_segments(&pawn.inventory_class),
+                inventory_layout: inventory_rep_layout(),
+                slot_layout: inventory_slot_commands(self.tags.tag_encoding()),
+                stat_container_bound: self.class_net_cache.stat_container,
+                inventory_bound: self.class_net_cache.inventory,
+            },
             engine_net_version: self.engine_network_version,
         }))
     }

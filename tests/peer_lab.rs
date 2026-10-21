@@ -1465,7 +1465,7 @@ fn the_pawn_opens_after_the_controller_with_its_roles_and_references() {
     use icarus_bevy::experimental::{
         actor_channel::{ActorChannelCodec, ActorChannelLimits, read_actor_bunch_body},
         archive::ByteOrder,
-        pawn_open::{PAWN_CHANNEL_INDEX, PawnComponent, PawnOpenPlan},
+        pawn_open::{PAWN_CHANNEL_INDEX, PawnComponent, PawnContent, PawnOpenPlan},
         peer_lab::pawn_key,
         release::ReleaseProfile,
         rep_layout::{
@@ -1509,17 +1509,24 @@ fn the_pawn_opens_after_the_controller_with_its_roles_and_references() {
             .map(|(name, checksum)| PawnComponent {
                 name: (*name).to_owned(),
                 checksum,
+                // The bag is active at open.
+                rep_bools: if *name == "Bag" {
+                    vec![(2, true)]
+                } else {
+                    Vec::new()
+                },
             })
             .collect(),
         stat_container: 0,
         actor_state: 2,
         inventory_component: 1,
         layout: layout.clone(),
+        content: profile.pawn_open_plan(map_url).unwrap().unwrap().content,
         engine_net_version: profile.engine_network_version,
     };
     assert!(
         bound
-            .enable_pawn_open(plan.clone(), PAWN_CHANNEL_INDEX)
+            .enable_pawn_open(plan.clone(), PAWN_CHANNEL_INDEX, PawnContent::default())
             .is_err(),
         "the pawn follows the PlayerController"
     );
@@ -1528,9 +1535,15 @@ fn the_pawn_opens_after_the_controller_with_its_roles_and_references() {
         .enable_player_state_open(profile.player_state_open_plan(map_url).unwrap().unwrap())
         .unwrap();
     for channel in [0, 2, PLAYER_STATE_CHANNEL_INDEX] {
-        assert!(bound.enable_pawn_open(plan.clone(), channel).is_err());
+        assert!(
+            bound
+                .enable_pawn_open(plan.clone(), channel, PawnContent::default())
+                .is_err()
+        );
     }
-    bound.enable_pawn_open(plan, PAWN_CHANNEL_INDEX).unwrap();
+    bound
+        .enable_pawn_open(plan, PAWN_CHANNEL_INDEX, PawnContent::default())
+        .unwrap();
     let address = bound.local_addr().unwrap();
     app.insert_resource(bound).add_plugins(PeerLabPlugin);
     let mut client = Client::connect(&mut app, address);
@@ -1606,6 +1619,23 @@ fn the_pawn_opens_after_the_controller_with_its_roles_and_references() {
     assert_eq!(object(13), object(18), "Owner and Controller");
     assert_eq!(object(15), spawn.actor.guid, "Instigator");
     assert_eq!(object(17), object(13) + 2, "the controller's PlayerState");
+    // Stats and State open empty; the bag carries `bIsActive`.
+    let bag = &open.blocks[2];
+    assert!(bag.has_rep_layout);
+    let bag = read_rep_properties(
+        &mut bag.payload.reader(),
+        &icarus_bevy::experimental::rep_layout::actor_component_rep_layout(),
+        &rep_codec,
+    )
+    .unwrap();
+    assert_eq!(bag.entries.len(), 1);
+    assert_eq!(
+        (bag.entries[0].handle, &bag.entries[0].value),
+        (2, &RepValue::Bool(true))
+    );
+    for block in [&open.blocks[1], &open.blocks[3]] {
+        assert!(!block.has_rep_layout && block.payload.bit_len() == 0);
+    }
 }
 
 /// Accept every queued lab datagram's header as the client (acks only).

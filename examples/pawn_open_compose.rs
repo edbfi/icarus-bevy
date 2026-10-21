@@ -4,12 +4,17 @@
 //! the open, the object references by handle and the supplied body. The
 //! actor block's other values and every component and subobject block's
 //! content are decoded from that body; GUIDs, references, exports and
-//! framing come from the composer. Never reads original files.
+//! framing come from the composer. With `--native`, the open is composed by
+//! `pawn_open::compose_pawn_open` from the built-in 3.0.31 pawn identifiers
+//! instead, and only the session's values (`IcarusUID`, tags, character
+//! state, stats, inventory rows and slots) are decoded from the body.
+//! Never reads original files.
 use std::{collections::BTreeMap, path::PathBuf};
 
 use anyhow::{Context, Result, bail, ensure};
 use clap::Parser;
 use icarus_bevy::experimental::{
+    actor_channel::ContentBlock,
     actor_channel::{
         ActorChannelCodec, ActorChannelLimits, BlockTarget, DynamicSpawn, NetGuidRef, SpawnVector,
         SubObjectClass, read_actor_bunch_body,
@@ -20,10 +25,21 @@ use icarus_bevy::experimental::{
     },
     archive::ByteOrder,
     packet::{BitWriter, Payload},
+    pawn_open::{
+        EmptySlot, FastArrayContent, PawnContent, PawnInventory, PawnOpenState, compose_pawn_open,
+    },
     release::ReleaseProfile,
+    rep_layout::{
+        GameplayTag, PropertyStream, RepCommand, inventory_rep_layout, inventory_slot_commands,
+        player_character_state_rep_layout,
+    },
     rep_layout::{
         MovementLevel, RepLayoutCodec, RepLayoutLimits, RepValue, RotationLevel,
         bp_icarus_player_character_survival_rep_layout, read_rep_properties,
+    },
+    rep_rpc::{
+        FAST_ARRAY_COUNT_CAP, FastArrayDelta, FastArrayItem, FastArrayItemLayout,
+        read_custom_delta_header, read_fast_array_delta, read_field_header,
     },
     session_open::{ActorKey, ConnectionExports, NetGuidCache, PathSegment},
 };
@@ -34,6 +50,9 @@ use serde_json::json;
 struct Options {
     /// Profile JSON (see `ProfileFile`).
     profile: PathBuf,
+    /// Compose with `compose_pawn_open` and the built-in identifiers.
+    #[arg(long)]
+    native: bool,
 }
 
 /// How a handle's object reference is composed.
@@ -161,10 +180,13 @@ fn main() -> Result<()> {
         components.push(OpenComponent {
             name: name.clone(),
             checksum: *checksum,
-            block: Some(BlockContent {
-                has_rep_layout: block.has_rep_layout,
-                payload: block.payload.clone(),
-            }),
+            block: Some(
+                BlockContent {
+                    has_rep_layout: block.has_rep_layout,
+                    payload: block.payload.clone(),
+                }
+                .into(),
+            ),
         });
     }
     for block in blocks {
@@ -183,7 +205,8 @@ fn main() -> Result<()> {
             block: BlockContent {
                 has_rep_layout: block.has_rep_layout,
                 payload: block.payload.clone(),
-            },
+            }
+            .into(),
         });
     }
     let references = file
@@ -207,26 +230,23 @@ fn main() -> Result<()> {
         location,
         layout,
         references,
-        values,
+        values: values.clone(),
         components,
         subobjects,
         engine_net_version: release.engine_network_version,
     };
-    let mut cache = NetGuidCache::new();
-    let mut exports = ConnectionExports::new();
-    cache.export_static(&mut exports, &open.level)?;
-    for index in 0..file.burn_static {
-        cache.export_static(
-            &mut exports,
-            &[PathSegment::new(&format!("burn{index}"), 0, false)],
-        )?;
-    }
-    for _ in 0..file.burn_dynamic {
-        cache.assign_dynamic();
-    }
-    exports.commit_bunch(1);
-    if file.earlier_acked {
-        exports.received_ack(1);
+    let (mut cache, mut exports) = prepared(&file, &open.level)?;
+    if options.native {
+        return native(
+            &file,
+            &release,
+            &supplied.blocks,
+            &values,
+            &supplied_references,
+            location,
+            &rep_codec,
+            (&supplied_body, &supplied_exports(&file)?),
+        );
     }
     let (composed, guids) = compose_component_actor_open(
         &mut cache,
@@ -236,7 +256,7 @@ fn main() -> Result<()> {
         ByteOrder::Little,
     )?;
     let composed_exports = composed.exports.context("exports")?;
-    let supplied_exports = payload(&file.exports_hex, file.exports_bits)?;
+    let supplied_exports = supplied_exports(&file)?;
     let composed_references: BTreeMap<u32, u32> = {
         let body = read_actor_bunch_body(&mut composed.bunch.payload.reader(), true, &codec)?;
         read_rep_properties(
@@ -281,4 +301,207 @@ fn spawn_location(dynamic: &DynamicSpawn) -> Result<[f32; 3]> {
         }
         other => bail!("unexpected spawn vector {other:?}"),
     }
+}
+
+fn supplied_exports(file: &ProfileFile) -> Result<Payload> {
+    payload(&file.exports_hex, file.exports_bits)
+}
+
+/// The GUID cache and exports as the capture had them before the open: the
+/// level exported, static and dynamic GUIDs burned, acked as recorded.
+fn prepared(
+    file: &ProfileFile,
+    level: &[PathSegment],
+) -> Result<(NetGuidCache, ConnectionExports)> {
+    let mut cache = NetGuidCache::new();
+    let mut exports = ConnectionExports::new();
+    cache.export_static(&mut exports, level)?;
+    for index in 0..file.burn_static {
+        cache.export_static(
+            &mut exports,
+            &[PathSegment::new(&format!("burn{index}"), 0, false)],
+        )?;
+    }
+    for _ in 0..file.burn_dynamic {
+        cache.assign_dynamic();
+    }
+    exports.commit_bunch(1);
+    if file.earlier_acked {
+        exports.received_ack(1);
+    }
+    Ok((cache, exports))
+}
+
+/// The one fast-array field a block ends with, after its optional properties.
+fn fast_array(
+    block: &ContentBlock,
+    layout: &[RepCommand],
+    element: Vec<RepCommand>,
+    bound: u32,
+    rep_codec: &RepLayoutCodec,
+    engine_net_version: u32,
+) -> Result<(Option<PropertyStream>, FastArrayDelta)> {
+    let mut reader = block.payload.reader();
+    let properties = block
+        .has_rep_layout
+        .then(|| read_rep_properties(&mut reader, layout, rep_codec))
+        .transpose()?;
+    let header = read_field_header(&mut reader, bound, rep_codec.limits.max_opaque_bits)?;
+    ensure!(reader.at_end(), "one field per block");
+    let mut field = header.payload.reader();
+    read_custom_delta_header(&mut field, engine_net_version, 1)?;
+    let delta = read_fast_array_delta(
+        &mut field,
+        &FastArrayItemLayout::Delta(element),
+        rep_codec,
+        FAST_ARRAY_COUNT_CAP,
+    )?;
+    ensure!(field.at_end(), "trailing bits in a fast-array delta");
+    Ok((properties, delta))
+}
+
+fn handle_value(stream: &PropertyStream, handle: u32) -> Option<&RepValue> {
+    stream
+        .entries
+        .iter()
+        .find(|entry| entry.handle == handle)
+        .map(|entry| &entry.value)
+}
+
+/// Compose with `compose_pawn_open` and the built-in 3.0.31 identifiers,
+/// decoding only the session's values from the supplied body.
+#[allow(clippy::too_many_arguments)]
+fn native(
+    file: &ProfileFile,
+    release: &ReleaseProfile,
+    supplied: &[ContentBlock],
+    actor_values: &BTreeMap<u32, RepValue>,
+    references: &BTreeMap<u32, u32>,
+    location: Option<[f32; 3]>,
+    rep_codec: &RepLayoutCodec,
+    (supplied_body, supplied_exports): (&Payload, &Payload),
+) -> Result<()> {
+    let mut plan = release
+        .pawn_open_plan("/Game/Maps/Unused/Unused")?
+        .context("built-in pawn identifiers")?;
+    plan.level = segments(&file.level);
+    let engine = release.engine_network_version;
+    let mut content = PawnContent::default();
+    for (handle, value) in actor_values {
+        match (handle, value) {
+            (5 | 14, _) => {}
+            (46, RepValue::Int(uid)) => content.icarus_uid = Some(*uid),
+            (50, RepValue::GameplayTagContainer(Some(tags))) => {
+                content.gameplay_tags = tags
+                    .iter()
+                    .map(|tag| match tag {
+                        GameplayTag::NetIndex(index) => Ok(*index),
+                        GameplayTag::Name(_) => bail!("named tag"),
+                    })
+                    .collect::<Result<_>>()?;
+            }
+            (67, RepValue::Bool(true)) => content.frozen_movement = true,
+            (handle, _) => bail!("actor handle {handle} has no content field"),
+        }
+    }
+    let blocks: Vec<&ContentBlock> = supplied.iter().skip(1).collect();
+    let stat_block = blocks[plan.stat_container];
+    let (_, stats) = fast_array(
+        stat_block,
+        &plan.content.component_layout,
+        vec![RepCommand::StatPairRepState],
+        plan.content.stat_container_bound,
+        rep_codec,
+        engine,
+    )?;
+    content.stats = Some(FastArrayContent {
+        replication_key: stats.array_replication_key,
+        items: stats
+            .changed
+            .iter()
+            .map(|(_, item)| match item {
+                FastArrayItem::Delta(stream) => match handle_value(stream, 1) {
+                    Some(RepValue::StatPairRepState(pair)) => Ok(*pair),
+                    _ => bail!("stat item without its pair"),
+                },
+                FastArrayItem::Whole(_) => bail!("whole stat item"),
+            })
+            .collect::<Result<_>>()?,
+    });
+    let state_block = blocks[plan.actor_state];
+    content.character_state = read_rep_properties(
+        &mut state_block.payload.reader(),
+        &player_character_state_rep_layout(),
+        rep_codec,
+    )?
+    .entries
+    .into_iter()
+    .map(|entry| (entry.handle, entry.value))
+    .collect();
+    for block in &blocks[plan.components.len()..] {
+        let (properties, slots) = fast_array(
+            block,
+            &inventory_rep_layout(),
+            inventory_slot_commands(release.tags.tag_encoding()),
+            plan.content.inventory_bound,
+            rep_codec,
+            engine,
+        )?;
+        let properties = properties.context("inventory properties")?;
+        let Some(RepValue::Byte(info_row)) = handle_value(&properties, 7) else {
+            bail!("inventory without its info row");
+        };
+        content.inventories.push(PawnInventory {
+            info_row: *info_row,
+            slots: FastArrayContent {
+                replication_key: slots.array_replication_key,
+                items: slots
+                    .changed
+                    .iter()
+                    .map(|(_, item)| {
+                        let FastArrayItem::Delta(stream) = item else {
+                            bail!("whole slot item");
+                        };
+                        match (handle_value(stream, 14), handle_value(stream, 18)) {
+                            (Some(RepValue::UInt16(query_row)), Some(RepValue::Int(index))) => {
+                                Ok(EmptySlot {
+                                    query_row: *query_row,
+                                    index: *index,
+                                })
+                            }
+                            _ => bail!("slot without its query row and index"),
+                        }
+                    })
+                    .collect::<Result<_>>()?,
+            },
+        });
+    }
+    let state = PawnOpenState {
+        key: ActorKey::Session(1),
+        controller: *references.get(&13).context("Owner")?,
+        player_state: *references.get(&17).context("PlayerState")?,
+        location: location.context("spawn location")?,
+        content,
+    };
+    let (mut cache, mut exports) = prepared(file, &plan.level)?;
+    let composed = compose_pawn_open(
+        &mut cache,
+        &mut exports,
+        &plan,
+        &state,
+        file.channel_index,
+        ByteOrder::Little,
+    )?;
+    let composed_exports = composed.exports.context("exports")?;
+    println!(
+        "{}",
+        json!({
+            "mode": "native",
+            "exports_bits": [composed_exports.bit_len(), supplied_exports.bit_len()],
+            "exports_identical": composed_exports == *supplied_exports,
+            "body_bits": [composed.bunch.payload.bit_len(), supplied_body.bit_len()],
+            "body_identical": composed.bunch.payload == *supplied_body,
+        })
+    );
+    Ok(())
 }
