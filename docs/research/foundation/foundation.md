@@ -58,8 +58,8 @@ admits authored probes, enforces the player limit, evicts idle sessions, closes
 all before the final save and retains no session over 1,000 join/close cycles
 (F-768); it pins the Hello version to the release profile and survives 200
 real-binary cycles (F-770). One and eight probe sessions held for an hour
-receive steady GameState updates without regressions, and 8 to 64 concurrent
-sessions keep tick p99 under 80 us; past 36 listed players the networking
+receive steady GameState updates without regressions, and in 300 s sweeps of
+8 to 64 concurrent sessions tick p99 stays under 80 us; past 36 listed players the networking
 status outgrows one datagram and is withheld (F-812, F-823, F-824). No ICARUS
 client has used it.
 
