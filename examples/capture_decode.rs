@@ -339,6 +339,24 @@ enum TargetSchema {
     SubObjectLifecycle(&'static str),
 }
 
+/// One decoded value for private detail records (values may be private).
+fn value_json(value: &icarus_bevy::experimental::rep_layout::RepValue) -> Value {
+    use icarus_bevy::experimental::rep_layout::RepValue;
+    match value {
+        RepValue::Byte(byte) => json!({"byte": byte}),
+        RepValue::Bool(flag) => json!({"bool": flag}),
+        RepValue::Object(reference) => json!({"object": reference.guid}),
+        RepValue::Vector(words) => json!({"vector_bits": words}),
+        RepValue::Int(number) => json!({"int": number}),
+        RepValue::Enum(number) => json!({"enum": number}),
+        RepValue::Float(bits) => json!({"float": f32::from_bits(*bits)}),
+        RepValue::Str(text) => json!({"str": String::from_utf16_lossy(text.units())}),
+        RepValue::UniqueNetId(id) => json!({"unique_net_id": format!("{:?}", id.kind),
+            "value": format!("{:?}", id.value)}),
+        other => json!({"kind": format!("{other:?}")}),
+    }
+}
+
 /// Resolve an actor channel's archetype name to a known native or cooked
 /// Blueprint rep-layout schema when every property in the hierarchy is known.
 fn classify_actor_schema(archetype: &str) -> Option<TargetSchema> {
@@ -1912,16 +1930,6 @@ impl<'a> Decoder<'a> {
                     })
                     .collect();
                 // Private detail: values the native composer must reproduce.
-                let value_json = |value: &icarus_bevy::experimental::rep_layout::RepValue| {
-                    use icarus_bevy::experimental::rep_layout::RepValue;
-                    match value {
-                        RepValue::Byte(byte) => json!({"byte": byte}),
-                        RepValue::Bool(flag) => json!({"bool": flag}),
-                        RepValue::Object(reference) => json!({"object": reference.guid}),
-                        RepValue::Vector(words) => json!({"vector_bits": words}),
-                        other => json!({"kind": format!("{other:?}")}),
-                    }
-                };
                 let values: Vec<_> = pc_body
                     .blocks
                     .iter()
@@ -2310,6 +2318,34 @@ impl<'a> Decoder<'a> {
                     replay.custom_delta_blocks_decoded += 1;
                     replay.custom_delta_blocks_reencoded_exact += u64::from(exact);
                 }
+            }
+            // Open actor blocks also record their decoded values (private
+            // detail), the input for composing the same opens natively.
+            if complete.header.open
+                && block.has_rep_layout
+                && matches!(block.target, BlockTarget::Actor)
+                && let Some((schema_name, _)) = replayed
+            {
+                let commands = schema_commands(schema_name, &self.profile);
+                let entries =
+                    read_rep_properties(&mut block.payload.reader(), &commands, &rep_codec())
+                        .map(|stream| {
+                            stream
+                                .entries
+                                .iter()
+                                .map(|entry| json!([entry.handle, value_json(&entry.value)]))
+                                .collect::<Vec<_>>()
+                        })
+                        .map_err(|error| format!("{error:#}"));
+                self.write_detail(
+                    json!({"kind":"open_actor_values", "datagram":arrival.datagram,
+                    "channel":complete.header.channel_index, "schema":schema_name,
+                    "payload_bits":block.payload.bit_len(), "entries":entries,
+                    "spawn":format!("{:?}", body.spawn),
+                    "body_hex":complete.payload.as_ref().map(|payload| payload.bytes().iter().map(|byte| format!("{byte:02x}")).collect::<String>()),
+                    "body_bits":complete.payload.as_ref().map(Payload::bit_len),
+                    "payload_hex":block.payload.bytes().iter().map(|byte| format!("{byte:02x}")).collect::<String>()}),
+                )?;
             }
             blocks.push(json!({
                 "summary": summary,

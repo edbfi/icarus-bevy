@@ -20,7 +20,7 @@ Address pairs are server / client.
   (`experimental::class_checksum`); package and level exports carry `0`
   (F-777, F-778); `experimental::session_open` composes the PlayerController
   open (exports and body) from release identifiers and server state (F-779);
-  `run` sends it after Join (F-781).
+  `run` sends it after Join (F-781), then the PlayerState open (F-784, F-785).
 - Gameplay-tag net index (F-702; U-065 resolved): `ConstructGameplayTagTree`
   builds the tree; `ConstructNetIndex` sorts nodes
   by `GetAllNodes` + `FName::LexicalLess`, sets `InvalidTagNetIndex = N + 1`,
