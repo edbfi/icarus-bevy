@@ -4,7 +4,7 @@ Rows retired from [the active ledger](../foundation.md): superseded by a summary
 execution receipts, or historical session state. Full text is kept and IDs stay
 permanent; cite the superseding row where one exists.
 
-Last reconciled: 2026-10-20
+Last reconciled: 2026-10-21
 
 | ID | Claim | Kind | Evidence | Scope and limits | Unknowns | Status |
 | --- | --- | --- | --- | --- | --- | --- |
@@ -93,3 +93,5 @@ Last reconciled: 2026-10-20
 | F-229 | Unsupported schemas and corrupt/missing manifests fail closed; official-save import explicitly fails without accessing supplied paths. | observed | authored-test | high; native persistence/CLI |  | superseded-by F-771 |
 | F-787 | session_replication gives each joined lab connection a NetViewer and opens every selected actor with a NetArchetype once per connection on the lowest free channel, framed like F-784 (exports once, driver-wide GUID, quantized spawn, no blocks yet) | measured | authored-test; M-825 | high; authored actors and probe; no properties, no ICARUS client | U-038 | superseded-by F-791 |
 | F-792 | Actors with NetArchetype::replicate_movement open with their resting ReplicatedMovement (handle 6, whole-number packing; 30 of M-707's 287 opens carry it) and, selected again after moving, get one unreliable movement update once the open is acked | measured | authored-test; M-829 | high; authored actors and probe; lost updates not resent; no ICARUS client | U-038 | superseded-by F-793 |
+| F-781 | With a release profile carrying [player_controller], run answers each Join with the F-779 open on channel 2 (exports and body as two reliable partial parts, per-connection exports, driver-wide GUIDs), resent unchanged on nak | measured | authored-test; M-821 | high; loopback, authored probe; spawn at origin; no ICARUS client | U-038, U-052 | superseded-by F-795 |
+| F-785 | session_open composes F-784's PlayerState open bit for bit (exports 761, body 462 bits); run sends it after each PlayerController open on channel 3 with PlayerIds from 256, Login name and id, bIsHost for the first player only (lab choice) | measured | authored-test; M-823 | high; one capture; loopback probe; no ICARUS client | U-038, U-068 | superseded-by F-795 |

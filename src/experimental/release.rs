@@ -18,11 +18,13 @@ use serde::Deserialize;
 
 use super::{
     default_version_string_checksum,
+    game_state_open::{GameStateComponents, GameStateOpenPlan},
     rep_layout::{
         ICARUS_ROW_HANDLE_NONE, ICARUS_ROW_HANDLE_TABLE_COUNT, ICARUS_TWO_BYTE_ROW_TABLES,
         ICARUS_ZERO_ROW_TABLES, MovementLevel, RotationLevel, TagEncoding,
         actor_component_rep_layout, bp_icarus_player_state_rep_layout,
-        icarus_player_controller_survival_rep_layout,
+        icarus_game_state_survival_rep_layout, icarus_player_controller_survival_rep_layout,
+        weather_manager_component_rep_layout,
     },
     rep_rpc::{
         BP_ICARUS_PLAYER_CONTROLLER_SURVIVAL_FIELD_INDEX_BOUND,
@@ -443,6 +445,96 @@ impl ReleasePlayerStateProfile {
     }
 }
 
+/// A replicated component of the GameState: its name and class network
+/// checksum (`F-776`).
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct ReleaseSubobject {
+    pub name: String,
+    pub checksum: u32,
+}
+
+/// Per-release identifiers of the GameState open (`[game_state]`, F-794):
+/// the archetype, game mode class and spectator class chains, and the three
+/// replicated components. Values come from the session.
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct ReleaseGameStateProfile {
+    pub archetype: Vec<ReleasePathSegment>,
+    pub game_mode_class: Vec<ReleasePathSegment>,
+    pub spectator_class: Vec<ReleasePathSegment>,
+    pub connected_players: ReleaseSubobject,
+    pub dialogue_system: ReleaseSubobject,
+    pub weather: ReleaseSubobject,
+}
+
+impl ReleaseGameStateProfile {
+    /// `BP_IcarusGameState_C`: reproduced bit-exactly against the 3.0.31
+    /// capture (F-794). For 3.0.32 the six checksums are among the 77 oracle
+    /// values the 25956137 derivation reproduces (M-820, behind F-780); the
+    /// component set and order are assumed unchanged.
+    pub fn icarus_survival() -> Self {
+        let segment = |path: &str, checksum| ReleasePathSegment {
+            path: path.to_owned(),
+            checksum,
+            no_load: false,
+        };
+        let subobject = |name: &str, checksum| ReleaseSubobject {
+            name: name.to_owned(),
+            checksum,
+        };
+        Self {
+            archetype: vec![
+                segment("Default__BP_IcarusGameState_C", 2_614_124_130),
+                segment("/Game/BP/Systems/BP_IcarusGameState", 0),
+            ],
+            game_mode_class: vec![
+                segment("BP_IcarusGameMode_C", 2_281_024_597),
+                segment("/Game/BP/Systems/BP_IcarusGameMode", 0),
+            ],
+            spectator_class: vec![
+                segment("SpectatorPawn", 3_712_879_475),
+                segment("/Script/Engine", 0),
+            ],
+            connected_players: subobject("ConnectedPlayers", 3_014_652_130),
+            dialogue_system: subobject("DialogueSystem", 3_400_199_742),
+            weather: subobject("WeatherComp", 3_554_357_950),
+        }
+    }
+
+    pub fn validate(&self) -> Result<()> {
+        validate_archetype("game_state", &self.archetype)?;
+        validate_archetype("game_state game_mode_class", &self.game_mode_class)?;
+        validate_archetype("game_state spectator_class", &self.spectator_class)?;
+        let mut names = std::collections::BTreeSet::new();
+        for component in [
+            &self.connected_players,
+            &self.dialogue_system,
+            &self.weather,
+        ] {
+            let name = &component.name;
+            ensure!(
+                name.is_ascii() && !name.is_empty(),
+                "game_state component names must be nonempty ASCII"
+            );
+            ensure!(
+                names.insert(name.to_ascii_lowercase()),
+                "duplicate game_state component {name}"
+            );
+            ensure!(component.checksum != 0, "component {name} needs a checksum");
+        }
+        Ok(())
+    }
+
+    fn component(subobject: &ReleaseSubobject) -> ComponentExport {
+        ComponentExport {
+            name: subobject.name.clone(),
+            checksum: subobject.checksum,
+            block: ComponentBlock::None,
+        }
+    }
+}
+
 /// `UActorComponent`'s two bool handles (F-703).
 const ACTOR_COMPONENT_BOOL_HANDLES: std::ops::RangeInclusive<u32> = 1..=2;
 
@@ -580,6 +672,7 @@ pub struct ReleaseProfile {
     pub row_handles: ReleaseRowHandleProfile,
     pub player_controller: Option<ReleasePlayerControllerProfile>,
     pub player_state: Option<ReleasePlayerStateProfile>,
+    pub game_state: Option<ReleaseGameStateProfile>,
 }
 
 #[derive(Deserialize)]
@@ -602,6 +695,8 @@ struct ReleaseFile {
     player_controller: Option<ReleasePlayerControllerProfile>,
     #[serde(default)]
     player_state: Option<ReleasePlayerStateProfile>,
+    #[serde(default)]
+    game_state: Option<ReleaseGameStateProfile>,
 }
 
 impl ReleasePin {
@@ -662,6 +757,7 @@ impl ReleaseProfile {
             row_handles: ReleaseRowHandleProfile::default(),
             player_controller: Some(ReleasePlayerControllerProfile::icarus_survival()),
             player_state: Some(ReleasePlayerStateProfile::icarus_survival()),
+            game_state: Some(ReleaseGameStateProfile::icarus_survival()),
         }
     }
 
@@ -693,6 +789,7 @@ impl ReleaseProfile {
             row_handles: ReleaseRowHandleProfile::default(),
             player_controller: Some(ReleasePlayerControllerProfile::icarus_survival()),
             player_state: Some(ReleasePlayerStateProfile::icarus_survival()),
+            game_state: Some(ReleaseGameStateProfile::icarus_survival()),
         }
     }
 
@@ -734,6 +831,17 @@ impl ReleaseProfile {
         }
     }
 
+    /// Built-in GameState identifiers for a qualified build ID; `None`
+    /// elsewhere, so a pin bump never inherits an older build's checksums.
+    fn default_game_state_for_build(build_id: u64) -> Option<ReleaseGameStateProfile> {
+        match build_id {
+            25_793_607 | 25_793_767 | 25_956_137 => {
+                Some(ReleaseGameStateProfile::icarus_survival())
+            }
+            _ => None,
+        }
+    }
+
     /// Validate all release-profile invariants.
     pub fn validate(&self) -> Result<()> {
         self.pin.validate()?;
@@ -749,6 +857,9 @@ impl ReleaseProfile {
         }
         if let Some(player_state) = &self.player_state {
             player_state.validate()?;
+        }
+        if let Some(game_state) = &self.game_state {
+            game_state.validate()?;
         }
         Ok(())
     }
@@ -770,6 +881,9 @@ impl ReleaseProfile {
         let player_state = parsed
             .player_state
             .or_else(|| Self::default_player_state_for_build(parsed.release.build_id));
+        let game_state = parsed
+            .game_state
+            .or_else(|| Self::default_game_state_for_build(parsed.release.build_id));
         let profile = Self {
             pin: parsed.release,
             engine_network_version: ENGINE_NETWORK_VERSION,
@@ -779,6 +893,7 @@ impl ReleaseProfile {
             row_handles,
             player_controller,
             player_state,
+            game_state,
         };
         profile.validate()?;
         Ok(profile)
@@ -830,6 +945,36 @@ impl ReleaseProfile {
             ),
             engine_net_version: self.engine_network_version,
             channel_index: PLAYER_STATE_CHANNEL_INDEX,
+        }))
+    }
+
+    /// The GameState open plan for the map package of `map_url`, or `None`
+    /// without `[game_state]`. The layouts are the statically observed
+    /// `AIcarusGameStateSurvival` and `UWeatherManagerComponent` layouts
+    /// (F-703) with the movement levels the capture decodes with.
+    pub fn game_state_open_plan(&self, map_url: &str) -> Result<Option<GameStateOpenPlan>> {
+        let Some(game_state) = &self.game_state else {
+            return Ok(None);
+        };
+        Ok(Some(GameStateOpenPlan {
+            archetype: session_segments(&game_state.archetype),
+            level: map_level_chain(map_url)?,
+            game_mode_class: session_segments(&game_state.game_mode_class),
+            spectator_class: session_segments(&game_state.spectator_class),
+            components: GameStateComponents {
+                connected_players: ReleaseGameStateProfile::component(
+                    &game_state.connected_players,
+                ),
+                dialogue_system: ReleaseGameStateProfile::component(&game_state.dialogue_system),
+                weather: ReleaseGameStateProfile::component(&game_state.weather),
+            },
+            layout: icarus_game_state_survival_rep_layout(
+                MovementLevel::Whole,
+                MovementLevel::Whole,
+                RotationLevel::Bytes,
+            ),
+            weather_layout: weather_manager_component_rep_layout(),
+            engine_net_version: self.engine_network_version,
         }))
     }
 

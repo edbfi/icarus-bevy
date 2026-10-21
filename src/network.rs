@@ -16,8 +16,10 @@
 //! the qualified builds, F-780), every successful Join is answered with the
 //! PlayerController open on actor channel 2 (F-778, F-779): exports, spawn at
 //! [`SPAWN_LOCATION`], roles, references and component blocks; with
+//! `[game_state]` identifiers the world's GameState follows on channel 3
+//! (F-794: [`game_state_values`], over as many datagrams as it needs); with
 //! `[player_state]` identifiers the referenced PlayerState follows on channel
-//! 3 (F-784: PlayerId from 256, the Login name and unique net id, `bIsHost`
+//! 4 (F-784: PlayerId from 256, the Login name and unique net id, `bIsHost`
 //! for the first player only). Nothing else replicates.
 //!
 //! Ordering: the lab polls at most `PACKETS_PER_UPDATE` datagrams once per
@@ -29,6 +31,8 @@
 //! drops the socket ([`teardown`]); both are idempotent.
 use std::net::{SocketAddr, SocketAddrV4};
 
+use std::collections::BTreeMap;
+
 use anyhow::{Context, Result};
 use bevy::prelude::{App, Resource, World};
 
@@ -36,8 +40,15 @@ use crate::{
     config::{NetworkConfig, read_configuration},
     experimental::{
         admission::AdmissionPolicy,
+        control_messages::ArchiveText,
+        game_state_open::{
+            GAME_STATE_CHANNEL_INDEX, GameStateManagers, GameStateOpenState,
+            MATCH_STATE_IN_PROGRESS, handle,
+        },
         peer_lab::{PeerLab, PeerLabAdmission, PeerLabConfig, PeerLabPlugin, SessionCounts},
         release::{ReleasePin, ReleaseProfile},
+        rep_layout::{NetworkName, RepValue},
+        session_open::ActorKey,
     },
 };
 
@@ -46,6 +57,31 @@ pub const SPECTATOR_SLOTS: u32 = 2;
 /// Lab choice: the PlayerController spawn location (no world geometry or
 /// PlayerStart is consulted).
 pub const SPAWN_LOCATION: [f32; 3] = [0.0, 0.0, 0.0];
+
+/// The session layer's key for the world's one GameState.
+pub const GAME_STATE_KEY: ActorKey = ActorKey::Session(0);
+
+/// The GameState values `run` opens every connection with: play has begun
+/// and the match is in progress (as captured, F-794); the lab adds the world
+/// time. No manager actors exist yet, so their references stay null, and no
+/// survival state (prospect, weather, time of day) is modelled or sent.
+pub fn game_state_values() -> Result<GameStateOpenState> {
+    Ok(GameStateOpenState {
+        key: GAME_STATE_KEY,
+        managers: GameStateManagers::default(),
+        values: BTreeMap::from([
+            (handle::HAS_BEGUN_PLAY, RepValue::Bool(true)),
+            (
+                handle::MATCH_STATE,
+                RepValue::NetworkName(NetworkName::String {
+                    text: ArchiveText::text(MATCH_STATE_IN_PROGRESS)?,
+                    number: 0,
+                }),
+            ),
+        ]),
+        weather: Vec::new(),
+    })
+}
 
 /// Session counts kept after [`teardown`] so a repeated call and the final
 /// record report the same values.
@@ -125,6 +161,15 @@ pub fn bind(network: &NetworkConfig) -> Result<Option<BoundNetwork>> {
                 .context("compose the PlayerState open plan")?,
             _ => None,
         };
+        let game_state = match (&profile, &config.admission) {
+            (Some(profile), Some(admission)) => profile
+                .game_state_open_plan(admission.map_url)
+                .context("compose the GameState open plan")?,
+            _ => None,
+        };
+        if let Some(game_state) = game_state {
+            lab.enable_game_state_open(game_state, game_state_values()?, GAME_STATE_CHANNEL_INDEX)?;
+        }
         if let Some(player_state) = player_state {
             lab.enable_player_state_open(player_state)?;
         }

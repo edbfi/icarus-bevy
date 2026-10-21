@@ -80,12 +80,24 @@ pub struct PlayerControllerProfile {
     pub components: Vec<ComponentExport>,
 }
 
+/// Identity of a keyed actor in the driver-wide GUID cache.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub enum ActorKey {
+    /// A world actor, by its stable domain id.
+    World(u64),
+    /// An actor the session layer owns, such as the GameState.
+    Session(u64),
+}
+
 /// Driver-wide NetGUID assignment, shared by every connection.
 #[derive(Clone, Debug, Default)]
 pub struct NetGuidCache {
     static_index: u32,
     dynamic_index: u32,
     statics: BTreeMap<Vec<String>, u32>,
+    /// Dynamic GUIDs of keyed world objects: an actor `(key, None)` or one
+    /// of its components `(key, Some(name))`.
+    keyed: BTreeMap<(ActorKey, Option<String>), u32>,
 }
 
 /// Which GUIDs one connection has already received with their paths.
@@ -123,6 +135,45 @@ impl NetGuidCache {
     pub fn assign_dynamic(&mut self) -> u32 {
         self.dynamic_index += 1;
         self.dynamic_index << 1
+    }
+
+    /// The driver-wide dynamic GUID of the world actor `key`, assigned on
+    /// first use: the original gives an actor its GUID when it is first
+    /// serialized, whether by its own open or by a reference from another
+    /// actor's properties (the GameState's references precede the opens of
+    /// the actors they name, F-794).
+    pub fn actor_guid(&mut self, key: ActorKey) -> u32 {
+        self.keyed_guid(key, None)
+    }
+
+    fn keyed_guid(&mut self, key: ActorKey, component: Option<&str>) -> u32 {
+        let entry = (key, component.map(str::to_owned));
+        if let Some(guid) = self.keyed.get(&entry) {
+            return *guid;
+        }
+        let guid = self.assign_dynamic();
+        self.keyed.insert(entry, guid);
+        guid
+    }
+
+    /// A component of the keyed world actor `key` (actor GUID `actor`): its
+    /// driver-wide GUID, assigned on first use, exported with its name under
+    /// the actor the first time `exports`' connection sees it and referenced
+    /// plainly afterwards (F-794).
+    pub fn export_keyed_subobject(
+        &mut self,
+        exports: &mut ConnectionExports,
+        key: ActorKey,
+        actor: u32,
+        component: &ComponentExport,
+    ) -> Result<NetGuidRef> {
+        let guid = self.keyed_guid(key, Some(&component.name));
+        if exports.contains(guid) {
+            return Ok(NetGuidRef::plain(guid));
+        }
+        let reference = subobject_export(guid, actor, component)?;
+        exports.exported.insert(guid);
+        Ok(reference)
     }
 
     /// The static GUID of the leaf of `chain` (leaf first), assigning
@@ -187,28 +238,7 @@ impl NetGuidCache {
     ) -> Result<(u32, NetGuidRef)> {
         let guid = self.assign_dynamic();
         exports.exported.insert(guid);
-        let outer = NetGuidRef {
-            guid: actor,
-            export: Some(GuidExport {
-                no_load: true,
-                path: None,
-                checksum: None,
-                bare_checksum_flag: true,
-            }),
-        };
-        let reference = NetGuidRef {
-            guid,
-            export: Some(GuidExport {
-                no_load: true,
-                path: Some(ExportPath {
-                    outer: Box::new(outer),
-                    path: ArchiveText::text(&component.name)?,
-                }),
-                checksum: Some(component.checksum),
-                bare_checksum_flag: false,
-            }),
-        };
-        Ok((guid, reference))
+        Ok((guid, subobject_export(guid, actor, component)?))
     }
 
     /// Register the level chain at world start, as the original does before
@@ -249,11 +279,55 @@ impl NetGuidCache {
     }
 }
 
+/// The export of component `guid` under the dynamic actor `actor`: its name,
+/// `no_load` and class checksum, with the actor as a pathless outer carrying
+/// `no_load` and the bare checksum flag (F-692, F-778).
+fn subobject_export(guid: u32, actor: u32, component: &ComponentExport) -> Result<NetGuidRef> {
+    let outer = NetGuidRef {
+        guid: actor,
+        export: Some(GuidExport {
+            no_load: true,
+            path: None,
+            checksum: None,
+            bare_checksum_flag: true,
+        }),
+    };
+    Ok(NetGuidRef {
+        guid,
+        export: Some(GuidExport {
+            no_load: true,
+            path: Some(ExportPath {
+                outer: Box::new(outer),
+                path: ArchiveText::text(&component.name)?,
+            }),
+            checksum: Some(component.checksum),
+            bare_checksum_flag: false,
+        }),
+    })
+}
+
 /// Encode an export-only prefix (`ExportNetGUIDHeader` + `ExportNetGUID`).
 pub fn encode_exports(references: &[NetGuidRef], codec: &ActorChannelCodec) -> Result<Payload> {
     let mut writer = BitWriter::new();
     write_export_prefix(&mut writer, references, codec)?;
     Ok(Payload::from_writer(writer))
+}
+
+/// The export-only payload of the references that carry an export, in
+/// order, or `None` when the connection already has every path.
+pub(super) fn exports_of(
+    references: &[NetGuidRef],
+    codec: &ActorChannelCodec,
+) -> Result<Option<Payload>> {
+    let exported: Vec<NetGuidRef> = references
+        .iter()
+        .filter(|reference| reference.export.is_some())
+        .cloned()
+        .collect();
+    if exported.is_empty() {
+        return Ok(None);
+    }
+    encode_exports(&exported, codec).map(Some)
 }
 
 /// `WritePackedVector<10, 24>`: each component rounded at a scale of 10; the
@@ -303,7 +377,7 @@ const HANDLE_SPAWN_LOCATION: u32 = 19;
 const HANDLE_FIRST_COMPONENT: u32 = 22;
 pub const COMPONENT_HANDLES: usize = 3;
 
-fn entry(handle: u32, value: RepValue) -> RepEntry {
+pub(super) fn entry(handle: u32, value: RepValue) -> RepEntry {
     RepEntry {
         handle,
         checksum: None,
@@ -408,9 +482,10 @@ pub const ACTOR_CHANNEL_NAME_INDEX: u32 = 102;
 /// The capture's PlayerController channel index (F-778): the first after the
 /// control (0) and voice (1) channels.
 pub const PLAYER_CONTROLLER_CHANNEL_INDEX: u32 = 2;
-/// The PlayerState's channel: the next free index (a lab choice; the capture
-/// opened three other actors first and used 6, F-784).
-pub const PLAYER_STATE_CHANNEL_INDEX: u32 = 3;
+/// The PlayerState's channel: the next index after the GameState's (a lab
+/// choice keeping the capture's order; it opened the pawn, the GameState and
+/// the FLOD first and used 6, F-784, F-794).
+pub const PLAYER_STATE_CHANNEL_INDEX: u32 = 4;
 
 /// The level chain of a map package (`/Game/Maps/.../Name`, URL options
 /// ignored): `PersistentLevel`, the world (the package's short name) and the
@@ -655,7 +730,10 @@ pub fn compose_player_state_open(
 
 /// The actor-channel codec the opens use: exports outside the body, levels
 /// present, the connection's byte order.
-fn actor_codec(engine_net_version: u32, order: super::archive::ByteOrder) -> ActorChannelCodec {
+pub(super) fn actor_codec(
+    engine_net_version: u32,
+    order: super::archive::ByteOrder,
+) -> ActorChannelCodec {
     ActorChannelCodec {
         engine_net_version,
         exports_enabled: false,
@@ -692,21 +770,10 @@ pub fn compose_actor_open(
     engine_net_version: u32,
     order: super::archive::ByteOrder,
 ) -> Result<ComposedActorOpen> {
-    use super::actor_channel::{ActorBunchBody, encode_actor_bunch_body};
-    use super::packet::{Bunch, BunchHeader, Name};
     let codec = actor_codec(engine_net_version, order);
     let archetype = cache.export_static(exports, &spec.archetype)?;
     let level = cache.export_static(exports, &spec.level)?;
-    let references: Vec<NetGuidRef> = [&archetype, &level]
-        .into_iter()
-        .filter(|reference| reference.export.is_some())
-        .cloned()
-        .collect();
-    let export_payload = if references.is_empty() {
-        None
-    } else {
-        Some(encode_exports(&references, &codec)?)
-    };
+    let export_payload = exports_of(&[archetype.clone(), level.clone()], &codec)?;
     let spawn = SpawnRecord {
         actor: NetGuidRef::plain(spec.actor),
         dynamic: Some(DynamicSpawn {
@@ -718,11 +785,29 @@ pub fn compose_actor_open(
             velocity: None,
         }),
     };
+    let bunch = actor_open_bunch(spawn, spec.blocks.clone(), channel_index, &codec)?;
+    Ok(ComposedActorOpen {
+        exports: export_payload,
+        bunch,
+    })
+}
+
+/// The open bunch of a dynamic actor: control, open and reliable on
+/// `channel_index` under `NAME_Actor`, its reliable sequence still unset,
+/// carrying `spawn` and `blocks` (F-778, F-784).
+pub(super) fn actor_open_bunch(
+    spawn: SpawnRecord,
+    blocks: Vec<ContentBlock>,
+    channel_index: u32,
+    codec: &ActorChannelCodec,
+) -> Result<super::packet::Bunch> {
+    use super::actor_channel::{ActorBunchBody, encode_actor_bunch_body};
+    use super::packet::{Bunch, BunchHeader, Name};
     let body = ActorBunchBody {
         spawn: Some(spawn),
-        blocks: spec.blocks.clone(),
+        blocks,
     };
-    let bunch = Bunch {
+    Ok(Bunch {
         header: BunchHeader {
             control: true,
             open: true,
@@ -739,11 +824,7 @@ pub fn compose_actor_open(
             partial_final: false,
             channel_name: Some(Name::Hardcoded(ACTOR_CHANNEL_NAME_INDEX)),
         },
-        payload: encode_actor_bunch_body(&body, &codec)?,
-    };
-    Ok(ComposedActorOpen {
-        exports: export_payload,
-        bunch,
+        payload: encode_actor_bunch_body(&body, codec)?,
     })
 }
 

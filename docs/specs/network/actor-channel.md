@@ -19,8 +19,13 @@ Address pairs are server / client.
   F-692. Object exports carry the class network checksum of F-776
   (`experimental::class_checksum`); package and level exports carry `0`
   (F-777, F-778); `experimental::session_open` composes the PlayerController
-  open (exports and body) from release identifiers and server state (F-779);
-  `run` sends it after Join (F-781), then the PlayerState open (F-784, F-785).
+  open (exports and body) from release identifiers and server state (F-779),
+  and `experimental::game_state_open` the GameState open (F-794); `run` sends
+  them after Join, then the PlayerState open (F-784, F-795).
+- Dynamic GUIDs go to an actor or component when first serialized, by its own
+  open or by another actor's reference: the GameState names managers 74..86
+  that open later under those GUIDs; components keep one GUID across
+  connections, each exporting it once (F-794).
 - Gameplay-tag net index (F-702; U-065 resolved): `ConstructGameplayTagTree`
   builds the tree; `ConstructNetIndex` sorts nodes
   by `GetAllNodes` + `FName::LexicalLess`, sets `InvalidTagNetIndex = N + 1`,
@@ -191,4 +196,5 @@ Address pairs are server / client.
 - M-420 to M-437, M-438 to M-449, M-455 to M-470, M-475 to M-548, M-552 to
   M-560, M-570 to M-588, M-602 to M-605, M-614, M-615, M-620 to M-624, M-628 to
   M-635, M-707, M-708, M-710 to M-713, M-717, M-720, M-731 to M-748, M-776,
-  M-777, M-782, M-794, M-795, M-797 to M-799, M-801, M-802, M-804, M-805, M-807.
+  M-777, M-782, M-794, M-795, M-797 to M-799, M-801, M-802, M-804, M-805, M-807,
+  M-832.
