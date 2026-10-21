@@ -885,6 +885,41 @@ fn join_pinned_replies(server: SocketAddr, version: u32, max: usize) -> Vec<Vec<
         .collect()
 }
 
+/// Compose the pawn open the lab sends after connection `connection`'s
+/// PlayerController open (F-797).
+fn compose_lab_pawn(
+    profile: &ReleaseProfile,
+    cache: &mut icarus_bevy::experimental::session_open::NetGuidCache,
+    exports: &mut icarus_bevy::experimental::session_open::ConnectionExports,
+    connection: u32,
+    guids: &icarus_bevy::experimental::session_open::PlayerControllerGuids,
+) -> icarus_bevy::experimental::session_open::ComposedActorOpen {
+    use icarus_bevy::experimental::{
+        archive::ByteOrder,
+        pawn_open::{PAWN_CHANNEL_INDEX, PawnOpenState, compose_pawn_open},
+        peer_lab::{PeerLabAdmission, pawn_key},
+    };
+    let plan = profile
+        .pawn_open_plan(PeerLabAdmission::default().map_url)
+        .unwrap()
+        .unwrap();
+    let state = PawnOpenState {
+        key: pawn_key(connection),
+        controller: guids.actor,
+        player_state: guids.player_state,
+        location: network::SPAWN_LOCATION,
+    };
+    compose_pawn_open(
+        cache,
+        exports,
+        &plan,
+        &state,
+        PAWN_CHANNEL_INDEX,
+        ByteOrder::Little,
+    )
+    .unwrap()
+}
+
 /// Compose the GameState open the lab sends after each PlayerController open
 /// (F-794), with `world_time` for the lab-written handle 19.
 fn compose_lab_game_state(
@@ -979,10 +1014,18 @@ fn pinned_join_is_answered_with_the_composed_player_controller_open() {
         let expected =
             compose_player_controller_open(&mut cache, &mut exports, &plan, 0, ByteOrder::Little)
                 .unwrap();
-        // The lab then opens the GameState, which takes 20..26 once.
+        // The lab then opens the pawn (17 GUIDs per connection) and the
+        // GameState (4 GUIDs, once).
+        compose_lab_pawn(
+            &profile,
+            &mut cache,
+            &mut exports,
+            index as u32 + 1,
+            &expected.guids,
+        );
         compose_lab_game_state(&profile, &mut cache, &mut exports, 0.0);
-        // Each connection gets its own dynamic GUIDs: actor 2, then 28.
-        assert_eq!(expected.guids.actor, 2 + 26 * index as u32);
+        // Each connection gets its own dynamic GUIDs: actor 2, then 62.
+        assert_eq!(expected.guids.actor, 2 + 60 * index as u32);
         let packet = read_packet(datagram, &to_client).unwrap();
         let [exports, body] = packet.bunches.as_slice() else {
             panic!("the open travels as exports plus body");
@@ -1115,6 +1158,7 @@ fn pinned_joins_open_the_game_state_then_each_player_state() {
         control_messages::{ArchiveText, NetIdType},
         game_state_open::GAME_STATE_CHANNEL_INDEX,
         packet::read_packet,
+        pawn_open::PAWN_CHANNEL_INDEX,
         peer_lab::{FIRST_PLAYER_ID, PeerLabAdmission},
         session_open::{
             ConnectionExports, NetGuidCache, PLAYER_STATE_CHANNEL_INDEX, PlayerStateOpenState,
@@ -1129,8 +1173,8 @@ fn pinned_joins_open_the_game_state_then_each_player_state() {
     });
     let (replies, _) = with_server(&mut app, move || {
         [
-            join_pinned_replies(address, pinned, 3),
-            join_pinned_replies(address, pinned, 3),
+            join_pinned_replies(address, pinned, 4),
+            join_pinned_replies(address, pinned, 4),
         ]
     });
     let stats = app.world().resource::<PeerLab>().stats().clone();
@@ -1170,7 +1214,11 @@ fn pinned_joins_open_the_game_state_then_each_player_state() {
         ..probe_config().packet
     };
     for (index, datagrams) in replies.iter().enumerate() {
-        assert_eq!(datagrams.len(), 3, "controller, game state, player state");
+        assert_eq!(
+            datagrams.len(),
+            4,
+            "controller, pawn, game state, player state"
+        );
         let mut exports = ConnectionExports::new();
         let controller_open = compose_player_controller_open(
             &mut cache,
@@ -1180,9 +1228,23 @@ fn pinned_joins_open_the_game_state_then_each_player_state() {
             ByteOrder::Little,
         )
         .unwrap();
+        let pawn = compose_lab_pawn(
+            &profile,
+            &mut cache,
+            &mut exports,
+            index as u32 + 1,
+            &controller_open.guids,
+        );
+        let packet = read_packet(&datagrams[1], &to_client).unwrap();
+        let [pawn_exports, pawn_body] = packet.bunches.as_slice() else {
+            panic!("the pawn open travels as exports plus body");
+        };
+        assert_eq!(pawn_body.header.channel_index, PAWN_CHANNEL_INDEX);
+        assert_eq!(Some(&pawn_exports.payload), pawn.exports.as_ref());
+        assert_eq!(pawn_body.payload, pawn.bunch.payload);
         // The GameState carries the lab's world time; compose with the sent
         // value and compare everything else bit for bit.
-        let packet = read_packet(&datagrams[1], &to_client).unwrap();
+        let packet = read_packet(&datagrams[2], &to_client).unwrap();
         let [game_exports, game_body] = packet.bunches.as_slice() else {
             panic!("the GameState open travels as exports plus body");
         };
@@ -1203,7 +1265,7 @@ fn pinned_joins_open_the_game_state_then_each_player_state() {
             .unwrap()
             .spawn
             .unwrap();
-        assert_eq!(spawn.actor.guid, 20);
+        assert_eq!(spawn.actor.guid, 54, "after the first pawn's 20..52");
         let state = PlayerStateOpenState {
             player_state: controller_open.guids.player_state,
             owner: controller_open.guids.actor,
@@ -1220,7 +1282,7 @@ fn pinned_joins_open_the_game_state_then_each_player_state() {
             ByteOrder::Little,
         )
         .unwrap();
-        let packet = read_packet(&datagrams[2], &to_client).unwrap();
+        let packet = read_packet(&datagrams[3], &to_client).unwrap();
         let [state_exports, body] = packet.bunches.as_slice() else {
             panic!("the PlayerState open travels as exports plus body");
         };
@@ -1297,35 +1359,36 @@ fn replication_selections_open_archetyped_actors_on_free_channels() {
     // Two sessions in turn: each gets both actors, under the same GUIDs.
     let ([replies, later], _) = with_server(&mut app, move || {
         [
-            join_pinned_replies(address, pinned, 5),
-            join_pinned_replies(address, pinned, 5),
+            join_pinned_replies(address, pinned, 6),
+            join_pinned_replies(address, pinned, 6),
         ]
     });
     let stats = app.world().resource::<PeerLab>().stats().clone();
     assert_eq!((stats.actor_opens_sent, stats.actor_open_errors), (4, 0));
     assert_eq!(
         replies.len(),
-        5,
-        "controller, game state, player state, then two actors"
+        6,
+        "controller, pawn, game state, player state, then two actors"
     );
-    assert_eq!(later.len(), 5);
+    assert_eq!(later.len(), 6);
 
     let to_client = PacketConfig {
         receiver: PacketReceiver::Client,
         ..probe_config().packet
     };
-    // Channels 2 to 4 hold the PlayerController, GameState and PlayerState;
+    // Channels 2 to 5 hold the PlayerController, pawn, GameState and
+    // PlayerState;
     // the actors take the next free ones. The second open exports the same
     // archetype again unless the client acked the first one's packet in
     // between (F-796).
-    let packet = read_packet(&replies[3], &to_client).unwrap();
+    let packet = read_packet(&replies[4], &to_client).unwrap();
     let [exports, body] = packet.bunches.as_slice() else {
         panic!("the actor open travels as exports plus body");
     };
-    assert_eq!(body.header.channel_index, 5);
-    let second = read_packet(&replies[4], &to_client).unwrap();
+    assert_eq!(body.header.channel_index, 6);
+    let second = read_packet(&replies[5], &to_client).unwrap();
     let second_body = second.bunches.last().unwrap();
-    assert_eq!(second_body.header.channel_index, 6);
+    assert_eq!(second_body.header.channel_index, 7);
     match second.bunches.as_slice() {
         [_] => {}
         [again, _] => assert!(again.header.has_package_map_exports),
@@ -1348,9 +1411,9 @@ fn replication_selections_open_archetyped_actors_on_free_channels() {
     );
     let open = read_actor_bunch_body(&mut body.payload.reader(), true, &codec).unwrap();
     let spawn = open.spawn.unwrap();
-    // The first connection's controller took dynamic GUIDs 2..18 and the
-    // GameState 20..26.
-    assert_eq!(spawn.actor.guid, 28);
+    // The first connection's controller took dynamic GUIDs 2..18, its pawn
+    // 20..52 and the GameState 54..60.
+    assert_eq!(spawn.actor.guid, 62);
     assert!(spawn.dynamic.unwrap().location.is_some());
     // One actor block with the captured world-actor roles (F-791).
     let [roles] = open.blocks.as_slice() else {
@@ -1374,7 +1437,7 @@ fn replication_selections_open_archetyped_actors_on_free_channels() {
     assert!(matches!(remote_role.value, RepValue::Byte(1)));
     assert!(matches!(role.value, RepValue::Byte(3)));
     let actor_guids = |datagrams: &[Vec<u8>]| -> Vec<u32> {
-        let mut guids: Vec<u32> = datagrams[3..]
+        let mut guids: Vec<u32> = datagrams[4..]
             .iter()
             .map(|datagram| {
                 let packet = read_packet(datagram, &to_client).unwrap();
@@ -1390,8 +1453,8 @@ fn replication_selections_open_archetyped_actors_on_free_channels() {
         guids.sort_unstable();
         guids
     };
-    assert_eq!(actor_guids(&replies), [28, 30]);
-    assert_eq!(actor_guids(&later), [28, 30], "driver-wide GUIDs");
+    assert_eq!(actor_guids(&replies), [62, 64]);
+    assert_eq!(actor_guids(&later), [62, 64], "driver-wide GUIDs");
 }
 
 #[test]
@@ -1595,7 +1658,7 @@ fn replicated_movement_opens_at_rest_and_updates_after_a_move() {
     let bunches: Vec<_> = replies
         .iter()
         .flat_map(|datagram| read_packet(datagram, &to_client).unwrap().bunches)
-        .filter(|bunch| bunch.header.channel_index == 5)
+        .filter(|bunch| bunch.header.channel_index == 6)
         .collect();
     let location_of = |payload: &icarus_bevy::experimental::packet::Payload, open: bool| {
         let body = read_actor_bunch_body(&mut payload.reader(), open, &codec).unwrap();

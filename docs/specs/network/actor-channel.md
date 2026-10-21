@@ -21,7 +21,8 @@ Address pairs are server / client.
   (F-777, F-778); `experimental::session_open` composes the PlayerController
   open (exports and body) from release identifiers and server state (F-779),
   and `experimental::game_state_open` the GameState open (F-794); `run` sends
-  them after Join, then the PlayerState open (F-784, F-795).
+  the PlayerController, pawn, GameState and PlayerState opens after Join
+  (F-784, F-798).
 - Dynamic GUIDs go to an actor or component when first serialized, by its own
   open or by another actor's reference: the GameState names managers 74..86
   that open later under those GUIDs; components keep one GUID across
@@ -207,4 +208,4 @@ Address pairs are server / client.
   M-560, M-570 to M-588, M-602 to M-605, M-614, M-615, M-620 to M-624, M-628 to
   M-635, M-707, M-708, M-710 to M-713, M-717, M-720, M-731 to M-748, M-776,
   M-777, M-782, M-794, M-795, M-797 to M-799, M-801, M-802, M-804, M-805, M-807,
-  M-832, M-834, M-835.
+  M-832, M-834 to M-836.

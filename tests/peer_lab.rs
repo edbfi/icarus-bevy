@@ -1374,13 +1374,15 @@ fn the_game_state_open_follows_the_controller_over_several_datagrams() {
         .filter(|channels: &Vec<u32>| !channels.is_empty())
         .collect();
     let order: Vec<u32> = channels.iter().flatten().copied().collect();
-    let first = order.iter().position(|&channel| channel == 3).unwrap();
-    let last = order.iter().rposition(|&channel| channel == 3).unwrap();
-    assert!(order[first..=last].iter().all(|&channel| channel == 3));
-    assert!(order[..first].contains(&2) && order[last + 1..].contains(&4));
+    let game = GAME_STATE_CHANNEL_INDEX;
+    let first = order.iter().position(|&channel| channel == game).unwrap();
+    let last = order.iter().rposition(|&channel| channel == game).unwrap();
+    assert!(order[first..=last].iter().all(|&channel| channel == game));
+    assert!(order[..first].contains(&2));
+    assert!(order[last + 1..].contains(&PLAYER_STATE_CHANNEL_INDEX));
     let carrying = channels
         .iter()
-        .filter(|channels| channels.contains(&3))
+        .filter(|channels| channels.contains(&game))
         .count();
     assert!(carrying >= 2, "the GameState spans datagrams");
 }
@@ -1456,6 +1458,154 @@ fn exports_repeat_until_their_packet_is_acked_and_again_after_a_nak() {
     accept_all_headers(&mut client);
     open(&mut app, 11, "LabBox");
     assert_eq!(exported(&mut client, true), [true]);
+}
+
+#[test]
+fn the_pawn_opens_after_the_controller_with_its_roles_and_references() {
+    use icarus_bevy::experimental::{
+        actor_channel::{ActorChannelCodec, ActorChannelLimits, read_actor_bunch_body},
+        archive::ByteOrder,
+        pawn_open::{PAWN_CHANNEL_INDEX, PawnComponent, PawnOpenPlan},
+        peer_lab::pawn_key,
+        release::ReleaseProfile,
+        rep_layout::{
+            MovementLevel, RepLayoutCodec, RepLayoutLimits, RepValue, RotationLevel,
+            pawn_rep_layout, read_rep_properties,
+        },
+        session_open::{PLAYER_STATE_CHANNEL_INDEX, PathSegment},
+    };
+    let config = PeerLabConfig {
+        admission: Some(PeerLabAdmission::default()),
+        ..PeerLabConfig::default()
+    };
+    let mut app = build_app(&ServerConfig::default(), &WorldSnapshot::default()).unwrap();
+    let mut bound = PeerLab::bind(0, config).unwrap();
+    let profile = ReleaseProfile::release_3_0_32();
+    let map_url = PeerLabAdmission::default().map_url;
+    let controller = profile
+        .player_controller_open_plan(map_url, [10.0, 20.0, 30.0])
+        .unwrap()
+        .unwrap();
+    // Authored identifiers on the `APawn` layout (handles 13..18), padded
+    // with object handles up to 56 so the component references (47, 48, 56)
+    // encode.
+    let mut layout = pawn_rep_layout(
+        MovementLevel::Hundredths,
+        MovementLevel::Whole,
+        RotationLevel::Bytes,
+    );
+    while layout.len() < 56 {
+        layout.push(icarus_bevy::experimental::rep_layout::RepCommand::Object);
+    }
+    let plan = PawnOpenPlan {
+        archetype: vec![
+            PathSegment::new("Default__TestPawn_C", 0x5151, false),
+            PathSegment::new("/Game/Test/TestPawn", 0, false),
+        ],
+        level: controller.profile.level.clone(),
+        components: ["Stats", "Bag", "State"]
+            .iter()
+            .zip(1..)
+            .map(|(name, checksum)| PawnComponent {
+                name: (*name).to_owned(),
+                checksum,
+            })
+            .collect(),
+        stat_container: 0,
+        actor_state: 2,
+        inventory_component: 1,
+        layout: layout.clone(),
+        engine_net_version: profile.engine_network_version,
+    };
+    assert!(
+        bound
+            .enable_pawn_open(plan.clone(), PAWN_CHANNEL_INDEX)
+            .is_err(),
+        "the pawn follows the PlayerController"
+    );
+    bound.enable_player_controller_open(controller).unwrap();
+    bound
+        .enable_player_state_open(profile.player_state_open_plan(map_url).unwrap().unwrap())
+        .unwrap();
+    for channel in [0, 2, PLAYER_STATE_CHANNEL_INDEX] {
+        assert!(bound.enable_pawn_open(plan.clone(), channel).is_err());
+    }
+    bound.enable_pawn_open(plan, PAWN_CHANNEL_INDEX).unwrap();
+    let address = bound.local_addr().unwrap();
+    app.insert_resource(bound).add_plugins(PeerLabPlugin);
+    let mut client = Client::connect(&mut app, address);
+    client.exchange(&mut app, short_hello("", 0), false);
+    client.exchange(&mut app, login(), false);
+    client.exchange(&mut app, ControlMessage::Join, false);
+    let counted = stats(&app);
+    assert_eq!(
+        (
+            counted.player_controller_opens_sent,
+            counted.pawn_opens_sent,
+            counted.pawn_open_errors,
+            counted.player_state_opens_sent
+        ),
+        (1, 1, 0, 1)
+    );
+    let bunches: Vec<_> = drain(&client)
+        .iter()
+        .flat_map(|datagram| read_packet(datagram, &to_client()).unwrap().bunches)
+        .filter(|bunch| bunch.header.channel_index >= 2)
+        .collect();
+    let order: Vec<u32> = bunches
+        .iter()
+        .map(|bunch| bunch.header.channel_index)
+        .collect();
+    let first_pawn = order.iter().position(|&channel| channel == 3).unwrap();
+    assert!(order[..first_pawn].iter().all(|&channel| channel == 2));
+    assert!(order[first_pawn..].contains(&PLAYER_STATE_CHANNEL_INDEX));
+    // The pawn body (its last part) decodes to the roles and references.
+    let body = bunches
+        .iter()
+        .rfind(|bunch| bunch.header.channel_index == 3 && !bunch.header.has_package_map_exports)
+        .unwrap();
+    let codec = ActorChannelCodec {
+        engine_net_version: profile.engine_network_version,
+        exports_enabled: false,
+        has_level: true,
+        order: ByteOrder::Little,
+        limits: ActorChannelLimits::default(),
+    };
+    let open = read_actor_bunch_body(&mut body.payload.reader(), true, &codec).unwrap();
+    let spawn = open.spawn.unwrap();
+    let connection = lab(&app).joined_connections()[0];
+    let mut cache_view = lab(&app).guid_cache().clone();
+    assert_eq!(
+        spawn.actor.guid,
+        cache_view.actor_guid(pawn_key(connection))
+    );
+    assert_eq!(open.blocks.len(), 4, "actor block and three components");
+    let rep_codec = RepLayoutCodec {
+        actor: codec,
+        checksums: false,
+        limits: RepLayoutLimits::default(),
+    };
+    let stream =
+        read_rep_properties(&mut open.blocks[0].payload.reader(), &layout, &rep_codec).unwrap();
+    let value = |handle: u32| {
+        stream
+            .entries
+            .iter()
+            .find(|entry| entry.handle == handle)
+            .map(|entry| entry.value.clone())
+    };
+    assert!(
+        matches!(value(5), Some(RepValue::Byte(2))),
+        "AutonomousProxy"
+    );
+    assert!(matches!(value(14), Some(RepValue::Byte(3))));
+    let object = |handle: u32| match value(handle) {
+        Some(RepValue::Object(reference)) => reference.guid,
+        other => panic!("handle {handle}: {other:?}"),
+    };
+    assert_eq!(object(13), object(18), "Owner and Controller");
+    assert_eq!(object(15), spawn.actor.guid, "Instigator");
+    assert_eq!(object(17), object(13) + 2, "the controller's PlayerState");
 }
 
 /// Accept every queued lab datagram's header as the client (acks only).

@@ -505,3 +505,157 @@ fn game_state_sections_parse_and_fail_closed() {
         );
     }
 }
+
+#[test]
+fn builtin_pawn_identifiers_compose_the_archetype_and_components() {
+    use icarus_bevy::experimental::{
+        actor_channel::{ActorChannelCodec, ActorChannelLimits, PackageMapState},
+        archive::ByteOrder,
+        pawn_open::{PawnOpenState, compose_pawn_open},
+        session_open::{ActorKey, ConnectionExports, NetGuidCache},
+    };
+    let p31 = ReleaseProfile::release_3_0_31();
+    assert!(p31.pawn.is_some());
+    assert_eq!(ReleaseProfile::release_3_0_32().pawn, p31.pawn);
+    let plan = p31
+        .pawn_open_plan("/Game/Maps/Terrain_016_OLY/Terrain_016")
+        .unwrap()
+        .unwrap();
+    assert_eq!(plan.components.len(), 16);
+    assert_eq!(
+        (
+            plan.stat_container,
+            plan.actor_state,
+            plan.inventory_component
+        ),
+        (0, 4, 1)
+    );
+    assert_eq!(plan.components[0].name, "Stat Container");
+    assert_eq!(plan.components[4].name, "ActorState");
+    assert_eq!(plan.components[1].name, "InventoryComponent");
+    // The level went out first and the client acked it (F-796).
+    let mut cache = NetGuidCache::new();
+    let mut exports = ConnectionExports::new();
+    cache.export_static(&mut exports, &plan.level).unwrap();
+    exports.commit_bunch(1);
+    exports.received_ack(1);
+    let state = PawnOpenState {
+        key: ActorKey::Session(0),
+        controller: 2,
+        player_state: 4,
+        location: [0.0, 0.0, 0.0],
+    };
+    let open = compose_pawn_open(
+        &mut cache,
+        &mut exports,
+        &plan,
+        &state,
+        5,
+        ByteOrder::Little,
+    )
+    .unwrap();
+    let codec = ActorChannelCodec {
+        engine_net_version: 17,
+        exports_enabled: false,
+        has_level: true,
+        order: ByteOrder::Little,
+        limits: ActorChannelLimits::default(),
+    };
+    // The prefix carries the archetype, then the 16 components.
+    let mut map = PackageMapState::new();
+    let decoded = map
+        .consume_export_prefix(&mut open.exports.unwrap().reader(), &codec)
+        .unwrap();
+    assert_eq!(decoded.len(), 17);
+    assert_eq!(
+        map.resolve_full_path(decoded[0].guid).as_deref(),
+        Some(
+            "/Game/BP/Player/BP_IcarusPlayerCharacterSurvival.Default__BP_IcarusPlayerCharacterSurvival_C"
+        )
+    );
+    let mut component_paths: Vec<&str> = decoded[1..]
+        .iter()
+        .map(|reference| map.resolve_path(reference.guid).unwrap())
+        .collect();
+    let mut names: Vec<&str> = plan
+        .components
+        .iter()
+        .map(|component| component.name.as_str())
+        .collect();
+    component_paths.sort_unstable();
+    names.sort_unstable();
+    assert_eq!(component_paths, names);
+}
+
+#[test]
+fn pawn_sections_parse_and_fail_closed() {
+    let release = "[release]\napp_id = 2089300\nbuild_id = 1\nproject_version = \"1.0\"\n";
+    let release = release.replace(
+        "\"1.0\"\n",
+        &format!(
+            "\"1.0\"\nnetwork_checksum = {}\n",
+            icarus_bevy::experimental::release::network_checksum("1.0")
+        ),
+    );
+    let tags = "[tags]\ndata_table_tag_count = 130\nini_tag_count = 1889\nunique_node_count = 2302\ntotal_bits = 12\nconfigured_first_segment = 16\neffective_first_segment = 0\ncontainer_bits = 6\nnet_index_hash = 1829726063\n";
+    let components = "components = [{ name = \"S\", checksum = 2 }, { name = \"I\", checksum = 3 }, { name = \"A\", checksum = 4 }]\n";
+    let section = format!(
+        "[pawn]\n\
+        archetype = [{{ path = \"Default__P_C\", checksum = 1 }}, {{ path = \"/Game/P\", checksum = 0 }}]\n\
+        {components}\
+        stat_container = \"S\"\n\
+        actor_state = \"A\"\n\
+        inventory_component = \"I\"\n"
+    );
+    let base = format!("{release}{tags}");
+    // Unknown builds get no built-in identifiers.
+    let without = ReleaseProfile::parse(&base).unwrap();
+    assert!(without.pawn.is_none());
+    assert!(
+        without
+            .pawn_open_plan("/Game/Maps/Test/Test")
+            .unwrap()
+            .is_none()
+    );
+    let parsed = ReleaseProfile::parse(&format!("{base}{section}")).unwrap();
+    assert_ne!(parsed.pawn, ReleaseProfile::release_3_0_32().pawn);
+    // The section round-trips through the plan.
+    let pawn = parsed.pawn.as_ref().unwrap();
+    assert_eq!(pawn.archetype[0].path, "Default__P_C");
+    assert_eq!(pawn.components.len(), 3);
+    let plan = parsed
+        .pawn_open_plan("/Game/Maps/Test/Test")
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        (
+            plan.stat_container,
+            plan.actor_state,
+            plan.inventory_component
+        ),
+        (0, 2, 1)
+    );
+    assert_eq!(plan.components[2].name, "A");
+    assert_eq!(plan.components[2].checksum, 4);
+    assert_eq!(plan.archetype[1].path, "/Game/P");
+    for bad in [
+        section.replace("checksum = 3", "checksum = 0"),
+        section.replace(
+            "checksum = 4 }]",
+            "checksum = 4 }, { name = \"a\", checksum = 5 }]",
+        ),
+        section.replace("name = \"A\"", "name = \"\""),
+        section.replace("actor_state = \"A\"", "actor_state = \"X\""),
+        section.replace("actor_state = \"A\"", "actor_state = \"S\""),
+        section.replace(", { path = \"/Game/P\", checksum = 0 }", ""),
+        section.replace("checksum = 4 }", "checksum = 4, extra = 1 }"),
+        format!("{section}extra = 1\n"),
+        section.replace(components, "components = []\n"),
+    ] {
+        assert_ne!(bad, section);
+        assert!(
+            ReleaseProfile::parse(&format!("{base}{bad}")).is_err(),
+            "{bad}"
+        );
+    }
+}

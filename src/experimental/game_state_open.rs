@@ -105,9 +105,9 @@ pub mod handle {
     pub const LAST: u32 = 82;
 }
 
-/// The GameState's channel: the next index after the PlayerController's (a
-/// lab choice; the capture opened the pawn first and used 4, F-794).
-pub const GAME_STATE_CHANNEL_INDEX: u32 = 3;
+/// The GameState's channel: after the PlayerController's and the pawn's, as
+/// captured (F-794).
+pub const GAME_STATE_CHANNEL_INDEX: u32 = 4;
 
 /// `AGameState::MatchState` once the match has started
 /// (`MatchState::InProgress`, as captured, F-794).

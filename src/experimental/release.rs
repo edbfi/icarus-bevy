@@ -19,12 +19,13 @@ use serde::Deserialize;
 use super::{
     default_version_string_checksum,
     game_state_open::{GameStateComponents, GameStateOpenPlan},
+    pawn_open::{PawnComponent, PawnOpenPlan},
     rep_layout::{
         ICARUS_ROW_HANDLE_NONE, ICARUS_ROW_HANDLE_TABLE_COUNT, ICARUS_TWO_BYTE_ROW_TABLES,
         ICARUS_ZERO_ROW_TABLES, MovementLevel, RotationLevel, TagEncoding,
-        actor_component_rep_layout, bp_icarus_player_state_rep_layout,
-        icarus_game_state_survival_rep_layout, icarus_player_controller_survival_rep_layout,
-        weather_manager_component_rep_layout,
+        actor_component_rep_layout, bp_icarus_player_character_survival_rep_layout,
+        bp_icarus_player_state_rep_layout, icarus_game_state_survival_rep_layout,
+        icarus_player_controller_survival_rep_layout, weather_manager_component_rep_layout,
     },
     rep_rpc::{
         BP_ICARUS_PLAYER_CONTROLLER_SURVIVAL_FIELD_INDEX_BOUND,
@@ -445,8 +446,8 @@ impl ReleasePlayerStateProfile {
     }
 }
 
-/// A replicated component of the GameState: its name and class network
-/// checksum (`F-776`).
+/// A replicated component of the GameState or the pawn: its name and class
+/// network checksum (`F-776`).
 #[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct ReleaseSubobject {
@@ -532,6 +533,111 @@ impl ReleaseGameStateProfile {
             checksum: subobject.checksum,
             block: ComponentBlock::None,
         }
+    }
+}
+
+/// Per-release identifiers of the player's pawn open (`[pawn]`, F-797): the
+/// archetype chain, the replicated components in block order, and the
+/// components `StatContainer`, `ActorState` and `InventoryComponent` name.
+/// Values come from the session.
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct ReleasePawnProfile {
+    pub archetype: Vec<ReleasePathSegment>,
+    pub components: Vec<ReleaseSubobject>,
+    /// The component `StatContainer` (handle 47) names.
+    pub stat_container: String,
+    /// The component `ActorState` (handle 48) names.
+    pub actor_state: String,
+    /// The component `InventoryComponent` (handle 56) names.
+    pub inventory_component: String,
+}
+
+impl ReleasePawnProfile {
+    /// `BP_IcarusPlayerCharacterSurvival_C`: reproduced bit-exactly against the
+    /// 3.0.31 capture (F-797). For 3.0.32 the archetype and component
+    /// checksums are among the 77 oracle values the 25956137 derivation
+    /// reproduces (M-820, behind F-780); the component set and order are
+    /// assumed unchanged.
+    pub fn icarus_survival() -> Self {
+        let segment = |path: &str, checksum| ReleasePathSegment {
+            path: path.to_owned(),
+            checksum,
+            no_load: false,
+        };
+        let subobject = |name: &str, checksum| ReleaseSubobject {
+            name: name.to_owned(),
+            checksum,
+        };
+        Self {
+            archetype: vec![
+                segment("Default__BP_IcarusPlayerCharacterSurvival_C", 430_507_263),
+                segment("/Game/BP/Player/BP_IcarusPlayerCharacterSurvival", 0),
+            ],
+            components: vec![
+                subobject("Stat Container", 4_037_894_903),
+                subobject("InventoryComponent", 46_421_488),
+                subobject("AudioContext", 4_273_702_982),
+                subobject("FeedbackAudioComponent", 3_400_199_742),
+                subobject("ActorState", 692_782_745),
+                subobject("Stomach", 3_911_258_249),
+                subobject("Processing", 1_023_342_657),
+                subobject("BP_Weight", 46_421_488),
+                subobject("BP_SwimmingComponent", 165_351_633),
+                subobject("BP_ShelteredComponent", 2_435_860_737),
+                subobject("BP_PlayerBuildingPlacement", 1_301_726_856),
+                subobject("Experience", 46_421_488),
+                subobject("BP_PlayerMovementAudioComponent", 1_588_614_535),
+                subobject("BP_PlayerMusicComponent", 681_416_933),
+                subobject("BP_Flammable_Player", 3_465_019_412),
+                subobject("BP_UIProjectionComponent_Player", 1_863_489_512),
+            ],
+            stat_container: "Stat Container".to_owned(),
+            actor_state: "ActorState".to_owned(),
+            inventory_component: "InventoryComponent".to_owned(),
+        }
+    }
+
+    pub fn validate(&self) -> Result<()> {
+        validate_archetype("pawn", &self.archetype)?;
+        ensure!(!self.components.is_empty(), "pawn needs its components");
+        let mut names = std::collections::BTreeSet::new();
+        for component in &self.components {
+            let name = &component.name;
+            ensure!(
+                name.is_ascii() && !name.is_empty(),
+                "pawn component names must be nonempty ASCII"
+            );
+            ensure!(
+                names.insert(name.to_ascii_lowercase()),
+                "duplicate pawn component {name}"
+            );
+            ensure!(component.checksum != 0, "component {name} needs a checksum");
+        }
+        let [stat_container, actor_state, inventory_component] = self.referenced()?;
+        ensure!(
+            stat_container != actor_state
+                && stat_container != inventory_component
+                && actor_state != inventory_component,
+            "pawn stat_container, actor_state and inventory_component must name distinct components"
+        );
+        Ok(())
+    }
+
+    /// Indices into `components` of `stat_container`, `actor_state` and
+    /// `inventory_component`.
+    fn referenced(&self) -> Result<[usize; 3]> {
+        let index = |field: &str, name: &str| {
+            self.components
+                .iter()
+                .position(|component| component.name == name)
+                .with_context(|| format!("pawn {field} {name:?} is not a pawn component"))
+        };
+        Ok([
+            index("stat_container", &self.stat_container)?,
+            index("actor_state", &self.actor_state)?,
+            index("inventory_component", &self.inventory_component)?,
+        ])
     }
 }
 
@@ -660,7 +766,10 @@ impl ReleasePlayerControllerProfile {
 /// `examples/capture_decode.rs`; `game_network_version`, `row_handles`, and the
 /// remaining `tags` fields record descriptive release-qualification metadata.
 /// `player_controller` feeds [`super::session_open`]; it is `None` for builds
-/// without a built-in or explicit `[player_controller]` section.
+/// without a built-in or explicit `[player_controller]` section. Likewise
+/// `player_state`, `game_state` and `pawn` feed the PlayerState, GameState
+/// and pawn open plans and are `None` without a built-in or explicit
+/// `[player_state]`, `[game_state]` or `[pawn]` section.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ReleaseProfile {
     pub pin: ReleasePin,
@@ -673,6 +782,7 @@ pub struct ReleaseProfile {
     pub player_controller: Option<ReleasePlayerControllerProfile>,
     pub player_state: Option<ReleasePlayerStateProfile>,
     pub game_state: Option<ReleaseGameStateProfile>,
+    pub pawn: Option<ReleasePawnProfile>,
 }
 
 #[derive(Deserialize)]
@@ -697,6 +807,8 @@ struct ReleaseFile {
     player_state: Option<ReleasePlayerStateProfile>,
     #[serde(default)]
     game_state: Option<ReleaseGameStateProfile>,
+    #[serde(default)]
+    pawn: Option<ReleasePawnProfile>,
 }
 
 impl ReleasePin {
@@ -758,6 +870,7 @@ impl ReleaseProfile {
             player_controller: Some(ReleasePlayerControllerProfile::icarus_survival()),
             player_state: Some(ReleasePlayerStateProfile::icarus_survival()),
             game_state: Some(ReleaseGameStateProfile::icarus_survival()),
+            pawn: Some(ReleasePawnProfile::icarus_survival()),
         }
     }
 
@@ -790,6 +903,7 @@ impl ReleaseProfile {
             player_controller: Some(ReleasePlayerControllerProfile::icarus_survival()),
             player_state: Some(ReleasePlayerStateProfile::icarus_survival()),
             game_state: Some(ReleaseGameStateProfile::icarus_survival()),
+            pawn: Some(ReleasePawnProfile::icarus_survival()),
         }
     }
 
@@ -842,6 +956,15 @@ impl ReleaseProfile {
         }
     }
 
+    /// Built-in pawn identifiers for a qualified build ID; `None` elsewhere,
+    /// so a pin bump never inherits an older build's checksums.
+    fn default_pawn_for_build(build_id: u64) -> Option<ReleasePawnProfile> {
+        match build_id {
+            25_793_607 | 25_793_767 | 25_956_137 => Some(ReleasePawnProfile::icarus_survival()),
+            _ => None,
+        }
+    }
+
     /// Validate all release-profile invariants.
     pub fn validate(&self) -> Result<()> {
         self.pin.validate()?;
@@ -861,12 +984,16 @@ impl ReleaseProfile {
         if let Some(game_state) = &self.game_state {
             game_state.validate()?;
         }
+        if let Some(pawn) = &self.pawn {
+            pawn.validate()?;
+        }
         Ok(())
     }
 
     /// Parse a release TOML file (`[release]` plus optional `[tags]`,
-    /// `[class_net_cache]`, `[row_handles]` and `[player_controller]`
-    /// sections) and validate it.
+    /// `[class_net_cache]`, `[row_handles]`, `[player_controller]`,
+    /// `[player_state]`, `[game_state]` and `[pawn]` sections) and validate
+    /// it.
     pub fn parse(text: &str) -> Result<Self> {
         let parsed = toml::from_str::<ReleaseFile>(text).context("release profile")?;
         let tags = match parsed.tags {
@@ -884,6 +1011,9 @@ impl ReleaseProfile {
         let game_state = parsed
             .game_state
             .or_else(|| Self::default_game_state_for_build(parsed.release.build_id));
+        let pawn = parsed
+            .pawn
+            .or_else(|| Self::default_pawn_for_build(parsed.release.build_id));
         let profile = Self {
             pin: parsed.release,
             engine_network_version: ENGINE_NETWORK_VERSION,
@@ -894,6 +1024,7 @@ impl ReleaseProfile {
             player_controller,
             player_state,
             game_state,
+            pawn,
         };
         profile.validate()?;
         Ok(profile)
@@ -974,6 +1105,39 @@ impl ReleaseProfile {
                 RotationLevel::Bytes,
             ),
             weather_layout: weather_manager_component_rep_layout(),
+            engine_net_version: self.engine_network_version,
+        }))
+    }
+
+    /// The pawn open plan for the map package of `map_url`, or `None` without
+    /// `[pawn]`. The layout is the statically observed
+    /// `BP_IcarusPlayerCharacterSurvival_C` layout with the movement levels
+    /// the capture decodes with and this release's tag encoding (F-797).
+    pub fn pawn_open_plan(&self, map_url: &str) -> Result<Option<PawnOpenPlan>> {
+        let Some(pawn) = &self.pawn else {
+            return Ok(None);
+        };
+        let [stat_container, actor_state, inventory_component] = pawn.referenced()?;
+        Ok(Some(PawnOpenPlan {
+            archetype: session_segments(&pawn.archetype),
+            level: map_level_chain(map_url)?,
+            components: pawn
+                .components
+                .iter()
+                .map(|component| PawnComponent {
+                    name: component.name.clone(),
+                    checksum: component.checksum,
+                })
+                .collect(),
+            stat_container,
+            actor_state,
+            inventory_component,
+            layout: bp_icarus_player_character_survival_rep_layout(
+                MovementLevel::Hundredths,
+                MovementLevel::Whole,
+                RotationLevel::Bytes,
+                self.tags.tag_encoding(),
+            ),
             engine_net_version: self.engine_network_version,
         }))
     }
