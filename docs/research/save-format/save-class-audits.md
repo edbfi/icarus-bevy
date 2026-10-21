@@ -51,9 +51,11 @@ losslessly with no uninterpreted leaf (F-766), and a dry-run native import plan
 then blocks only on name and path references that no native content catalog
 yet defines (F-767). Per-instance object names are identity, not content, and
 never block (F-813), and actor variable records name class properties
-(F-817). Fields whose recorder reads already gave them a meaning classify by
-property and enclosing struct, which leaves 149 to 164 of 3,528 to 3,782
-distinct references unclassified, with 52 find-only owners per save (F-819).
+(F-817). Fields whose recorder restores were read classify by property and
+enclosing struct: most name data rows through each table's row handle, and
+FLOD tile records name landscape tiles (F-820). That leaves 23 to 26 of 3,528
+to 3,782 distinct references unclassified, with 52 find-only owners per save
+(F-821).
 
 No saved class identifier, field or type name, or recorder version tells the
 older server from the newer client, and the prospect carries no version string
@@ -71,4 +73,4 @@ stay at 128 KiB (F-198).
 
 ## Artifacts
 
-M-047..M-077, M-079..M-108, M-118..M-130, M-278..M-280, M-351, M-352, M-376..M-384, M-389, M-390, M-401..M-404, M-407..M-410, M-606..M-613, M-616..M-618, M-626, M-627, M-636..M-638, M-727, M-755..M-760, M-766..M-769, M-772..M-777, M-780, M-782, M-784, M-786, M-788, M-790..M-792, M-794..M-808, M-811, M-850, M-851, M-854, M-855.
+M-047..M-077, M-079..M-108, M-118..M-130, M-278..M-280, M-351, M-352, M-376..M-384, M-389, M-390, M-401..M-404, M-407..M-410, M-606..M-613, M-616..M-618, M-626, M-627, M-636..M-638, M-727, M-755..M-760, M-766..M-769, M-772..M-777, M-780, M-782, M-784, M-786, M-788, M-790..M-792, M-794..M-808, M-811, M-850, M-851, M-854..M-859.
