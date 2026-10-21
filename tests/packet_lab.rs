@@ -1040,9 +1040,13 @@ fn actor_open_spreads_parts_over_datagrams_and_resends_each_unchanged() {
     assert_eq!(format!("{peer:?}"), before);
     assert_eq!(peer.sequencer().out_packet_id(), first_id);
 
-    let datagrams = peer
+    let sent = peer
         .reliable_actor_open_datagrams(&body, std::slice::from_ref(&exports))
         .unwrap();
+    // The exports went out in the first packet (F-796).
+    assert_eq!(sent.packet_ids, [first_id, first_id + 1, first_id + 2]);
+    assert_eq!(sent.exports_packet_id, Some(first_id));
+    let datagrams = sent.datagrams;
     // Exports, then the body's two slices: no two fit one 1,024-byte packet.
     assert_eq!(datagrams.len(), 3);
     assert_eq!(peer.sequencer().out_packet_id(), first_id + 3);
@@ -1145,7 +1149,8 @@ fn actor_open_datagrams_carry_pending_resends_in_the_first_only() {
     let (body, exports) = large_open();
     let datagrams = peer
         .reliable_actor_open_datagrams(&body, std::slice::from_ref(&exports))
-        .unwrap();
+        .unwrap()
+        .datagrams;
     assert_eq!(datagrams.len(), 3);
     assert_eq!(peer.pending_resends(), 0);
     let first = read_packet(&datagrams[0], &to_client()).unwrap().bunches;
@@ -1218,7 +1223,10 @@ fn actor_open_datagram_failures_leave_the_state_unchanged() {
     // One export fewer fills the window exactly and is sent.
     let mut window = open_peer(16);
     let fits = &too_many[1..];
-    let datagrams = window.reliable_actor_open_datagrams(&body, fits).unwrap();
+    let datagrams = window
+        .reliable_actor_open_datagrams(&body, fits)
+        .unwrap()
+        .datagrams;
     assert_eq!(window.pending_actor_reliable(2), Some(MAX_PENDING_RELIABLE));
     assert!(datagrams.len() >= 2);
 

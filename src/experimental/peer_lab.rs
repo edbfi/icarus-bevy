@@ -59,9 +59,11 @@
 //!   [`PeerLab::enable_player_controller_open`], a successful `Join` (not
 //!   `SplitJoin`) is answered with the composed PlayerController open
 //!   ([`compose_player_controller_open`], F-778, F-779) through
-//!   [`LabPeer::reliable_actor_open`]: GUIDs come from one driver-wide cache
-//!   and static paths are exported once per connection
-//!   (`player_controller_opens_sent`, `player_controller_open_errors`). With
+//!   [`LabPeer::reliable_actor_open_datagrams`]: GUIDs come from one
+//!   driver-wide cache, and each connection's exports are committed to the
+//!   packet carrying them and repeated until it is acked, its acks and naks
+//!   applied in packet order (F-796; `player_controller_opens_sent`,
+//!   `player_controller_open_errors`). With
 //!   [`PeerLab::enable_game_state_open`] the world's GameState follows
 //!   ([`compose_game_state_open`], F-794) through
 //!   [`LabPeer::reliable_actor_open_datagrams`], one actor and driver-wide
@@ -160,7 +162,9 @@ use super::handshake_lab::{
 };
 use super::packet::BunchLimits;
 use super::packet::Payload;
-use super::packet_lab::{DeliveredSummary, LabPeer, PacketDisposition, PacketLabConfig};
+use super::packet_lab::{
+    ActorOpenSent, DeliveredSummary, LabPeer, PacketDisposition, PacketLabConfig,
+};
 use super::release::ReleaseProfile;
 use super::rep_layout::RepValue;
 use super::session_open::{
@@ -545,6 +549,15 @@ pub struct SessionCounts {
     pub shutdown_closes_sent: u64,
     /// Control messages rejected by `IsClientMsgTypeValid` (`F-713`).
     pub invalid_state_messages: u64,
+}
+
+/// `NotifyBunchCommit` for a sent open: its exports went out in the packet
+/// carrying the last export part (F-796).
+fn commit_exports(exports: &mut ConnectionExports, sent: &ActorOpenSent) {
+    match sent.exports_packet_id {
+        Some(packet_id) => exports.commit_bunch(packet_id),
+        None => exports.begin_bunch(),
+    }
 }
 
 fn bump(counter: &mut u64) {
@@ -934,12 +947,12 @@ impl PeerLab {
                     entry.peer.connection_byte_order(),
                 )?;
                 let export_payloads: Vec<Payload> = composed.exports.into_iter().collect();
-                let datagram = entry
+                let sent = entry
                     .peer
-                    .reliable_actor_open(&composed.bunch, &export_payloads)?;
-                Ok((channel, datagram))
+                    .reliable_actor_open_datagrams(&composed.bunch, &export_payloads)?;
+                Ok((channel, sent))
             });
-        let (channel, datagram) = match sent {
+        let (channel, sent) = match sent {
             Ok(sent) => sent,
             Err(_) => {
                 bump(&mut self.stats.actor_open_errors);
@@ -950,6 +963,7 @@ impl PeerLab {
                 return None;
             }
         };
+        commit_exports(&mut exports, &sent);
         entry.exports = exports;
         entry.ack_pending = false;
         entry.opened_actors.insert(key, channel);
@@ -957,7 +971,7 @@ impl PeerLab {
             entry.actor_locations.insert(key, location);
         }
         self.guid_cache = cache;
-        if self.send(&datagram, address) {
+        if self.send_all(&sent, address) {
             bump(&mut self.stats.actor_opens_sent);
         }
         Some(channel)
@@ -1313,6 +1327,21 @@ impl PeerLab {
                         bump(&mut self.stats.data_accepted);
                         for packet_id in &summary.acked {
                             entry.movement_in_flight.remove(packet_id);
+                        }
+                        // `ReceivedAck` / `ReceivedNak` in packet order (F-796).
+                        let mut outcomes: Vec<(u32, bool)> = summary
+                            .acked
+                            .iter()
+                            .map(|id| (*id, true))
+                            .chain(summary.naked.iter().map(|id| (*id, false)))
+                            .collect();
+                        outcomes.sort_unstable();
+                        for (packet_id, acked) in outcomes {
+                            if acked {
+                                entry.exports.received_ack(packet_id);
+                            } else {
+                                entry.exports.received_nak(packet_id);
+                            }
                         }
                         // A lost movement update is sent again, as UE re-sends
                         // the properties of a naked packet: forget the sent
@@ -1705,10 +1734,10 @@ impl PeerLab {
         .and_then(|open| {
             entry
                 .peer
-                .reliable_actor_open(&open.bunch, std::slice::from_ref(&open.exports))
-                .map(|datagram| (open.guids, datagram))
+                .reliable_actor_open_datagrams(&open.bunch, std::slice::from_ref(&open.exports))
+                .map(|sent| (open.guids, sent))
         });
-        let (guids, datagram) = match sent {
+        let (guids, sent) = match sent {
             Ok(sent) => sent,
             Err(_) => {
                 bump(&mut self.stats.player_controller_open_errors);
@@ -1719,10 +1748,11 @@ impl PeerLab {
                 return false;
             }
         };
+        commit_exports(&mut exports, &sent);
         entry.exports = exports;
         entry.ack_pending = false;
         self.guid_cache = cache;
-        if self.send(&datagram, address) {
+        if self.send_all(&sent, address) {
             bump(&mut self.stats.player_controller_opens_sent);
         }
         if self.game_state_open.is_some() {
@@ -1765,8 +1795,8 @@ impl PeerLab {
                 .peer
                 .reliable_actor_open_datagrams(&open.bunch, &export_payloads)
         });
-        let datagrams = match sent {
-            Ok(datagrams) => datagrams,
+        let sent = match sent {
+            Ok(sent) => sent,
             Err(_) => {
                 bump(&mut self.stats.game_state_open_errors);
                 if entry.peer.is_failed() {
@@ -1776,14 +1806,11 @@ impl PeerLab {
                 return;
             }
         };
+        commit_exports(&mut exports, &sent);
         entry.exports = exports;
         entry.ack_pending = false;
         self.guid_cache = cache;
-        let mut delivered = true;
-        for datagram in &datagrams {
-            delivered &= self.send(datagram, address);
-        }
-        if delivered {
+        if self.send_all(&sent, address) {
             bump(&mut self.stats.game_state_opens_sent);
         }
     }
@@ -1828,10 +1855,10 @@ impl PeerLab {
             let export_payloads: Vec<Payload> = open.exports.into_iter().collect();
             entry
                 .peer
-                .reliable_actor_open(&open.bunch, &export_payloads)
+                .reliable_actor_open_datagrams(&open.bunch, &export_payloads)
         })();
-        let datagram = match sent {
-            Ok(datagram) => datagram,
+        let sent = match sent {
+            Ok(sent) => sent,
             Err(_) => {
                 bump(&mut self.stats.player_state_open_errors);
                 if entry.peer.is_failed() {
@@ -1841,11 +1868,12 @@ impl PeerLab {
                 return;
             }
         };
+        commit_exports(&mut exports, &sent);
         entry.exports = exports;
         entry.ack_pending = false;
         self.guid_cache = cache;
         self.host_assigned = true;
-        if self.send(&datagram, address) {
+        if self.send_all(&sent, address) {
             bump(&mut self.stats.player_state_opens_sent);
         }
     }
@@ -1872,6 +1900,15 @@ impl PeerLab {
                 bump(&mut self.stats.acks_sent);
             }
         }
+    }
+
+    /// Send every datagram of an open; true when all went out whole.
+    fn send_all(&mut self, sent: &ActorOpenSent, address: SocketAddrV4) -> bool {
+        let mut delivered = true;
+        for datagram in &sent.datagrams {
+            delivered &= self.send(datagram, address);
+        }
+        delivered
     }
 
     fn send(&mut self, datagram: &[u8], address: SocketAddrV4) -> bool {

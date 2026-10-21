@@ -77,6 +77,9 @@ fn main() -> Result<()> {
             &[PathSegment::new(&format!("burn{index}"), 0, false)],
         )?;
     }
+    // The client had acked those exports when the capture's open went out.
+    exports.commit_bunch(1);
+    exports.received_ack(1);
     let state = PlayerStateOpenState {
         player_state: file.player_state,
         owner: file.owner,
