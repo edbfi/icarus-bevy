@@ -1946,3 +1946,55 @@ fn concurrent_hold_session_counts_are_bounded() {
     .unwrap_err();
     assert!(error.to_string().contains("hold lasts"), "{error}");
 }
+
+/// Past one bunch of player names the NetworkingStatus update goes out as
+/// unreliable partial bunches on consecutive packets, and every one of 48
+/// held sessions reassembles it and sees all 48 players listed.
+#[test]
+fn a_networking_status_over_one_bunch_reaches_every_held_session() {
+    use icarus_bevy::experimental::session_hold::{HoldConfig, MultiHoldConfig, run_holds};
+    let directory = tempfile::tempdir().unwrap();
+    let config = directory.path().join("server.toml");
+    let profile_path = toml::Value::String(release_toml().display().to_string());
+    fs::write(
+        &config,
+        format!(
+            "status_interval_seconds = 1\n[network]\nenabled = true\nport = 0\nmax_players = 48\nrelease_profile = {profile_path}\n"
+        ),
+    )
+    .unwrap();
+    let state = directory.path().join("state");
+    let mut server = spawn_run(&config, &state);
+    let (address, _) = listening_address(&mut server);
+    let profile = ReleaseProfile::load(&release_toml()).unwrap();
+    let summary = run_holds(&MultiHoldConfig {
+        hold: HoldConfig {
+            server: address,
+            network_version: profile.pin.network_checksum,
+            engine_net_version: profile.engine_network_version,
+            duration: Duration::from_secs(4),
+            step_timeout: Duration::from_secs(3),
+        },
+        sessions: 48,
+    })
+    .unwrap();
+    sigterm(&server);
+    assert!(server.wait_exit().success());
+    assert_eq!(
+        (summary.joined, summary.refused, summary.failed),
+        (48, 0, 0),
+        "{summary:?}"
+    );
+    assert_eq!(summary.decode_errors, 0, "{summary:?}");
+    assert_eq!(summary.regressions, 0, "{summary:?}");
+    for session in &summary.sessions {
+        assert_eq!(session.max_listed_players, Some(48), "{session:?}");
+    }
+    assert!(
+        summary
+            .sessions
+            .iter()
+            .any(|session| session.hold.partial_parts > 0),
+        "no update was split"
+    );
+}
