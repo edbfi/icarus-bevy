@@ -66,23 +66,23 @@ const ACTOR_VARIABLE_RECORDS: [&str; 5] = [
     "LinearColorVariableRecord",
 ];
 /// Fields whose role a static read of their recorder's record and restore
-/// established, as `(property, enclosing struct, role)`; an empty struct is a
+/// established, as `(property, enclosing struct, role)`; `None` is a
 /// recorder's top level.
-const READ_FIELD_ROLES: [(&str, &str, ContentRole); 5] = [
+const READ_FIELD_ROLES: [(&str, Option<&str>, ContentRole); 5] = [
     // Item stat records name stat rows (F-660).
-    ("Stat", "ItemRecordStatData", ContentRole::DataRow),
+    ("Stat", Some("ItemRecordStatData"), ContentRole::DataRow),
     // The container manager saves each inventory's info row name (F-651).
     (
         "InventoryInfo",
-        "SavedInventoryContainerData",
+        Some("SavedInventoryContainerData"),
         ContentRole::DataRow,
     ),
     // The world boss recorder writes name i into boss i's row handle (F-654).
-    ("RecordedWorldBossTableNames", "", ContentRole::DataRow),
+    ("RecordedWorldBossTableNames", None, ContentRole::DataRow),
     // The sign recorder saves the sign's icon row name (F-677).
-    ("SignIconRecord", "", ContentRole::DataRow),
+    ("SignIconRecord", None, ContentRole::DataRow),
     // The tree recorder saves the tree's prefab class (F-656).
-    ("TreePrefabClassName", "", ContentRole::ActorClass),
+    ("TreePrefabClassName", None, ContentRole::ActorClass),
 ];
 
 /// Independently authored native content the importer can resolve references
@@ -225,22 +225,26 @@ impl ContentRole {
         self != Self::InstanceName
     }
 
-    /// The role of a reference under `property`, inside a tagged struct of
-    /// type `within` (empty at a recorder's top level and in map or set
-    /// items).
-    fn of(property: &[u16], within: &[u16]) -> Self {
+    /// The role of a reference under `property`, at a recorder's top level
+    /// (`within` is `None`) or inside a struct of type `within` (empty in map
+    /// or set items).
+    fn of(property: &[u16], within: Option<&[u16]>) -> Self {
         let name = String::from_utf16_lossy(property);
-        let enclosing = |owner: &str| owner.encode_utf16().eq(within.iter().copied());
+        let enclosing = |owner: Option<&str>| match (owner, within) {
+            (None, None) => true,
+            (Some(owner), Some(within)) => owner.encode_utf16().eq(within.iter().copied()),
+            _ => false,
+        };
         if let Some((_, _, role)) = READ_FIELD_ROLES
             .iter()
-            .find(|(field, owner, _)| *field == name && enclosing(owner))
+            .find(|(field, owner, _)| *field == name && enclosing(*owner))
         {
             return *role;
         }
         if name == VARIABLE_NAME
             && ACTOR_VARIABLE_RECORDS
                 .iter()
-                .any(|record| enclosing(record))
+                .any(|record| enclosing(Some(record)))
         {
             return Self::ClassVariable;
         }
@@ -415,7 +419,7 @@ pub fn plan_import(reader: impl Read, catalog: &ContentCatalog) -> Result<Import
         }
 
         let mut references = References::default();
-        references.tree(&typed.tree, &[]);
+        references.tree(&typed.tree, None);
         plan.content.name_references += references.names;
         plan.content.path_references += references.paths;
         for (role, reference) in references.values {
@@ -564,8 +568,9 @@ struct References {
 }
 
 impl References {
-    /// Walk `tree`, a tagged struct of type `within` (empty when unknown).
-    fn tree(&mut self, tree: &TypedTree, within: &[u16]) {
+    /// Walk `tree`: a recorder's top level (`within` is `None`) or a struct
+    /// of type `within` (empty when unknown).
+    fn tree(&mut self, tree: &TypedTree, within: Option<&[u16]>) {
         for property in &tree.properties {
             self.value(ContentRole::of(&property.name, within), &property.value);
         }
@@ -579,12 +584,12 @@ impl References {
                     items.iter().for_each(|item| self.scalar(role, item));
                 }
             }
-            Value::TaggedStruct { type_name, tree } => self.tree(tree, type_name),
+            Value::TaggedStruct { type_name, tree } => self.tree(tree, Some(type_name)),
             Value::StructArray {
                 type_name,
                 elements,
                 ..
-            } => elements.iter().for_each(|e| self.tree(e, type_name)),
+            } => elements.iter().for_each(|e| self.tree(e, Some(type_name))),
             Value::Map { removed, entries } => {
                 removed.iter().for_each(|item| self.item(role, item));
                 for (key, value) in entries {
@@ -608,7 +613,7 @@ impl References {
     fn item(&mut self, role: ContentRole, item: &Item) {
         match item {
             Item::Scalar(scalar) => self.scalar(role, scalar),
-            Item::Struct(tree) => self.tree(tree, &[]),
+            Item::Struct(tree) => self.tree(tree, Some(&[])),
             Item::UnnamedStruct(_) => {}
         }
     }

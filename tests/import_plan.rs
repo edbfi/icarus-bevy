@@ -174,6 +174,26 @@ fn component(body: &Body) -> Vec<u8> {
             ),
             name("SignIconRecord", "SecretIcon"),
             name("TreePrefabClassName", "SecretTree_C"),
+            // Top-level fields nested in a named struct or a map item
+            // struct stay unclassified.
+            struct_tag(
+                "Holder",
+                "SecretHolder",
+                &[name("SignIconRecord", "SecretNestedIcon"), end()].concat(),
+            ),
+            tag(
+                "Items",
+                "MapProperty",
+                &[fstring("NameProperty"), fstring("StructProperty"), vec![0]].concat(),
+                &[
+                    0_i32.to_le_bytes().to_vec(),
+                    1_i32.to_le_bytes().to_vec(),
+                    fstring("SecretKey"),
+                    name("TreePrefabClassName", "SecretItemTree_C"),
+                    end(),
+                ]
+                .concat(),
+            ),
         ]);
     }
     fields.push(end());
@@ -354,8 +374,9 @@ fn read_row_and_class_fields_classify_only_inside_their_owners() {
     assert_eq!(plan.content.roles[&ContentRole::DataRow], role(6, 6));
     // The actor class and the tree prefab class.
     assert_eq!(plan.content.roles[&ContentRole::ActorClass], role(2, 2));
-    // The tile, the quest variable and the stat outside its record.
-    assert_eq!(plan.content.roles[&ContentRole::Unclassified], role(3, 3));
+    // The tile, the quest variable, the stat outside its record, the nested
+    // icon, the map key and the map item's prefab class.
+    assert_eq!(plan.content.roles[&ContentRole::Unclassified], role(6, 6));
     let text = serde_json::to_string(&plan).unwrap();
     assert!(!text.contains("Secret"), "a reference leaked");
 }
