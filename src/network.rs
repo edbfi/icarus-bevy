@@ -26,9 +26,10 @@
 //! `[player_state]` identifiers the referenced PlayerState on channel 5
 //! (F-784: PlayerId from 256, the Login name and unique net id, `bIsHost`
 //! for the first player only). Each open takes as many datagrams as it
-//! needs. Once a connection acks the GameState open, its
-//! world time, level clock and time of day follow as property updates
-//! (F-805). Nothing else replicates.
+//! needs. Once a connection acks the GameState open, its world time, level
+//! clock, time of day and `ServerFPS` (this server's frame rate over its
+//! poll intervals) follow as property updates (F-805). Nothing else
+//! replicates.
 //!
 //! Ordering: the lab polls at most `PACKETS_PER_UPDATE` datagrams once per
 //! app update in `RunFixedMainLoopSystems::BeforeFixedMainLoop`, so network
@@ -57,6 +58,7 @@ use crate::{
         peer_lab::{PeerLab, PeerLabAdmission, PeerLabConfig, PeerLabPlugin, SessionCounts},
         release::{ReleasePin, ReleaseProfile},
         rep_layout::{NetworkName, RepValue},
+        server_fps::{DEFAULT_SAMPLES, ServerFpsMeter},
         session_open::ActorKey,
         time_of_day::{RateCurve, TimeOfDayClock},
     },
@@ -270,6 +272,8 @@ pub fn bind(network: &NetworkConfig) -> Result<Option<BoundNetwork>> {
         };
         if let Some(game_state) = game_state {
             lab.enable_game_state_open(game_state, game_state_values()?, GAME_STATE_CHANNEL_INDEX)?;
+            // The server's own frame rate, measured as the original does.
+            lab.enable_server_fps(ServerFpsMeter::new(DEFAULT_SAMPLES)?)?;
         }
         if let Some(player_state) = player_state {
             lab.enable_player_state_open(player_state)?;

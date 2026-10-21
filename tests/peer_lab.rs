@@ -1876,6 +1876,7 @@ fn game_state_updates_advance_the_clocks_once_the_open_is_acked() {
         peer_lab::GAME_STATE_UPDATE_SECONDS,
         release::ReleaseProfile,
         rep_layout::RepValue,
+        server_fps::ServerFpsMeter,
         session_open::ActorKey,
         time_of_day::{RateCurve, TimeOfDayClock},
     };
@@ -1916,6 +1917,9 @@ fn game_state_updates_advance_the_clocks_once_the_open_is_acked() {
         .unwrap();
     bound.set_game_state_level_time(1_000).unwrap();
     bound.enable_time_of_day(clock).unwrap();
+    bound
+        .enable_server_fps(ServerFpsMeter::new(64).unwrap())
+        .unwrap();
     let address = bound.local_addr().unwrap();
     app.insert_resource(bound).add_plugins(PeerLabPlugin);
     let mut client = Client::connect(&mut app, address);
@@ -1935,12 +1939,13 @@ fn game_state_updates_advance_the_clocks_once_the_open_is_acked() {
 
     // Then each pass sends what changed: the time of day every time (one
     // game minute per world second here), the world time and the level clock
-    // when due. Passes run until eight updates span 1.1 s (the level clock's
-    // whole second), bounded for slow runners; the 0.1 s world-time rule
-    // itself is pinned by the replica unit test.
+    // when due, and ServerFPS once a 2 s window of polls closed. Passes run
+    // until eight updates span 2.3 s (the level clock's whole second and the
+    // first ServerFPS window), bounded for slow runners; the 0.1 s
+    // world-time rule itself is pinned by the replica unit test.
     let mut updates = Vec::new();
     let started = std::time::Instant::now();
-    while (updates.len() < 8 || started.elapsed() < Duration::from_millis(1_100))
+    while (updates.len() < 8 || started.elapsed() < Duration::from_millis(2_300))
         && started.elapsed() < Duration::from_secs(20)
     {
         pause();
@@ -1986,6 +1991,25 @@ fn game_state_updates_advance_the_clocks_once_the_open_is_acked() {
         levels
             .iter()
             .all(|level| matches!(level, RepValue::Int(seconds) if *seconds > 1_000))
+    );
+    // The lab's poll rate, about 1 / (2 * GAME_STATE_UPDATE_SECONDS) here.
+    let rates: Vec<&RepValue> = updates
+        .iter()
+        .filter_map(|update| update.get(&handle::SERVER_FPS))
+        .collect();
+    assert!(!rates.is_empty());
+    assert!(
+        rates
+            .iter()
+            .all(|rate| matches!(rate, RepValue::Int(fps) if (1..=1_000).contains(fps))),
+        "{rates:?}"
+    );
+    assert_eq!(
+        lab(&app).server_fps().map(ServerFpsMeter::fps),
+        Some(match rates.last() {
+            Some(RepValue::Int(fps)) => *fps,
+            other => panic!("{other:?}"),
+        })
     );
     let advanced = lab(&app).time_of_day().unwrap().time_of_day();
     assert!(advanced >= *times.last().unwrap());

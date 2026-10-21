@@ -47,7 +47,8 @@ TimeOfDay advances by a per-world rate curve of the hour, and prospect setup
 writes SecondsPerGameDay from that curve; the open carried the saved
 SecondsPerGameDay (F-803, F-805, F-806; U-071 resolved). `run` follows the
 open with GameState updates in the captured form and cadence, its time of
-day advancing at the saved day length's constant rate (F-807).
+day advancing at the saved day length's constant rate (F-807), and its
+own frame rate as `ServerFPS` by the original's rule (F-808, F-809).
 
 ## Open
 
@@ -58,4 +59,4 @@ day advancing at the saved day length's constant rate (F-807).
 
 ## Artifacts
 
-M-420..M-449, M-455..M-470, M-570..M-576, M-581..M-588, M-600..M-605, M-707..M-717, M-720, M-728..M-748, M-776, M-777, M-782, M-794, M-795, M-797..M-799, M-801, M-802, M-804, M-805, M-807, M-813..M-819, M-832, M-834 to M-836, M-838 to M-844.
+M-420..M-449, M-455..M-470, M-570..M-576, M-581..M-588, M-600..M-605, M-707..M-717, M-720, M-728..M-748, M-776, M-777, M-782, M-794, M-795, M-797..M-799, M-801, M-802, M-804, M-805, M-807, M-813..M-819, M-832, M-834 to M-836, M-838 to M-846.
