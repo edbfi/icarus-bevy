@@ -4,7 +4,7 @@
 
 Experimental: pure rules in `experimental::restore_rules` (`tests/restore_rules.rs`,
 U-045; U-020..U-022, U-032, U-046, U-048, U-050 resolved).
-Last reconciled: 2026-10-20.
+Last reconciled: 2026-10-21.
 
 ## Scope
 
@@ -173,6 +173,16 @@ construction, script owners and data-table rows are out of scope (F-660).
     `evaluate_n016_stitch_blackboard_ints`, `evaluate_n020_validate_override`,
     `evaluate_n026_stitch_transfer` and `evaluate_n027_stitch_transfer`.
 
+- Saved names that restores turn into row handles through each table's
+  `FromName` (F-820): crop seeds (`UCultivation::LoadSaveData`, `0x14196e790`),
+  stomach modifiers (`AddSaveDataToStomach`, `0x141890940`), juvenile and mount
+  lineages and genetic values (`0x141449940`, `0x141449c30`), quests
+  (`0x1418f4cf0`), faction missions and mission prospects (`0x1418f4540`),
+  prebuilt structures (`0x14178c680`) and session flags (`C015`,
+  `0x1418bae00`). The FLOD tile recorder (`C014`) finds the level's tile whose
+  name equals the saved one (`0x14189b800`) or respawns `FLODTile_<name>`
+  (`0x1418ac0f0`) and restores its records (`0x1418babc0`).
+
 ## Candidate
 
 - Float-to-int uses x86 truncation (`i32::MIN`); trig is approximate.
@@ -184,4 +194,4 @@ construction, script owners and data-table rows are out of scope (F-660).
 ## Evidence
 
 F-645..F-681, F-716, F-727, F-728, F-734..F-736, F-741..F-744, F-746, F-747,
-F-750, F-752; M-642..M-698, M-755..M-792, M-794..M-807.
+F-750, F-752, F-820; M-642..M-698, M-755..M-792, M-794..M-807, M-858.
