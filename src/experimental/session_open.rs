@@ -400,3 +400,117 @@ pub fn compose_player_controller_open_body(
         blocks,
     })
 }
+
+/// `NAME_Actor`, the hard-coded channel name of actor channels (F-778).
+pub const ACTOR_CHANNEL_NAME_INDEX: u32 = 102;
+/// The capture's PlayerController channel index (F-778): the first after the
+/// control (0) and voice (1) channels.
+pub const PLAYER_CONTROLLER_CHANNEL_INDEX: u32 = 2;
+
+/// The level chain of a map package (`/Game/Maps/.../Name`, URL options
+/// ignored): `PersistentLevel`, the world (the package's short name) and the
+/// package, each `no_load` with checksum `0` (F-778).
+pub fn map_level_chain(map_url: &str) -> Result<Vec<PathSegment>> {
+    let package = map_url.split('?').next().unwrap_or_default();
+    let world = package.rsplit('/').next().unwrap_or_default();
+    anyhow::ensure!(
+        package.starts_with('/') && !world.is_empty() && package.is_ascii(),
+        "map URL does not name a map package"
+    );
+    Ok(vec![
+        PathSegment::new("PersistentLevel", 0, true),
+        PathSegment::new(world, 0, true),
+        PathSegment::new(package, 0, true),
+    ])
+}
+
+/// Everything a session needs to open a joined player's PlayerController:
+/// release identifiers with the map's level chain, the rep layouts and codec
+/// parameters, and lab-chosen state.
+#[derive(Clone, Debug)]
+pub struct PlayerControllerOpenPlan {
+    pub profile: PlayerControllerProfile,
+    pub actor_layout: Vec<RepCommand>,
+    pub component_layout: Vec<RepCommand>,
+    pub engine_net_version: u32,
+    /// Server-chosen spawn location (no world geometry is consulted).
+    pub spawn_location: [f32; 3],
+    pub channel_index: u32,
+}
+
+/// One composed open: the export-only payload and the open bunch (its
+/// reliable sequence still unset), ready for `UChannel::SendBunch` splitting.
+#[derive(Clone, Debug)]
+pub struct ComposedOpen {
+    pub guids: PlayerControllerGuids,
+    pub exports: Payload,
+    pub bunch: super::packet::Bunch,
+}
+
+/// Compose the PlayerController open for one connection (F-778, F-779): GUID
+/// assignment in `cache`, per-connection export state in `exports`, then the
+/// export prefix and the body in the connection's byte `order`.
+pub fn compose_player_controller_open(
+    cache: &mut NetGuidCache,
+    exports: &mut ConnectionExports,
+    plan: &PlayerControllerOpenPlan,
+    net_player_index: u8,
+    order: super::archive::ByteOrder,
+) -> Result<ComposedOpen> {
+    use super::actor_channel::{ActorChannelLimits, encode_player_controller_open_bunch_body};
+    use super::packet::{Bunch, BunchHeader, Name};
+    use super::rep_layout::RepLayoutLimits;
+    let codec = ActorChannelCodec {
+        engine_net_version: plan.engine_net_version,
+        exports_enabled: false,
+        has_level: true,
+        order,
+        limits: ActorChannelLimits::default(),
+    };
+    let (guids, references) = cache.player_controller_exports(exports, &plan.profile)?;
+    let export_payload = encode_exports(&references, &codec)?;
+    let state = PlayerControllerOpenState {
+        spawn_location: plan.spawn_location,
+        net_player_index,
+        remote_role: 2,
+        role: 3,
+    };
+    let rep_codec = RepLayoutCodec {
+        actor: codec,
+        checksums: false,
+        limits: RepLayoutLimits::default(),
+    };
+    let body = compose_player_controller_open_body(
+        &guids,
+        &plan.profile,
+        &state,
+        &plan.actor_layout,
+        &plan.component_layout,
+        &rep_codec,
+    )?;
+    let payload = encode_player_controller_open_bunch_body(&body, &codec)?;
+    let bunch = Bunch {
+        header: BunchHeader {
+            control: true,
+            open: true,
+            close: false,
+            close_reason: None,
+            paused: false,
+            reliable: true,
+            channel_index: plan.channel_index,
+            has_package_map_exports: false,
+            has_must_be_mapped_guids: false,
+            partial: false,
+            reliable_sequence_raw: None,
+            partial_initial: false,
+            partial_final: false,
+            channel_name: Some(Name::Hardcoded(ACTOR_CHANNEL_NAME_INDEX)),
+        },
+        payload,
+    };
+    Ok(ComposedOpen {
+        guids,
+        exports: export_payload,
+        bunch,
+    })
+}

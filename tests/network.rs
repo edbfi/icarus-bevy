@@ -747,6 +747,7 @@ fn pinned_run_upgrades_a_mismatched_hello_and_admits_the_pinned_version() {
         ("admissions_rejected", 0),
         ("welcomes_sent", 1),
         ("joins_succeeded", 1),
+        ("player_controller_opens_sent", 1),
         ("closed_by_client", 1),
         ("active_peers", 0),
     ] {
@@ -843,4 +844,134 @@ fn production_run_survives_two_hundred_sequential_churn_cycles() {
     );
     let store = icarus_bevy::persistence::SnapshotStore::open(&state).unwrap();
     assert!(store.load().unwrap().is_some());
+}
+
+/// Hello with `version`, Login, then Netspeed and Join; returns the datagram
+/// answering the Join.
+fn join_pinned(server: SocketAddr, version: u32) -> Vec<u8> {
+    let mut client = connect(server);
+    let report = client.hello(version, "").unwrap();
+    assert!(matches!(
+        report.messages().collect::<Vec<_>>().as_slice(),
+        [ControlMessage::Challenge { .. }]
+    ));
+    client.send_control(&[login()], false).unwrap();
+    let welcome = client.collect(Duration::from_secs(3), 1).unwrap();
+    assert!(matches!(
+        welcome.messages().collect::<Vec<_>>().as_slice(),
+        [ControlMessage::Welcome { .. }]
+    ));
+    let (_, packet_id) = client
+        .send_control(
+            &[
+                ControlMessage::Netspeed { rate: 100_000 },
+                ControlMessage::Join,
+            ],
+            false,
+        )
+        .unwrap();
+    let collected = client.collect(Duration::from_secs(3), 1).unwrap();
+    assert!(collected.acked.contains(&packet_id), "Join acknowledged");
+    let reply = collected.replies.into_iter().next().unwrap();
+    client.close().unwrap();
+    reply.bytes
+}
+
+#[test]
+fn pinned_join_is_answered_with_the_composed_player_controller_open() {
+    use icarus_bevy::experimental::{
+        actor_channel::{
+            ActorChannelCodec, ActorChannelLimits, PackageMapState,
+            parse_player_controller_open_bunch,
+        },
+        archive::ByteOrder,
+        packet::{Bunch, read_packet},
+        peer_lab::PeerLabAdmission,
+        session_open::{
+            ConnectionExports, NetGuidCache, PLAYER_CONTROLLER_CHANNEL_INDEX,
+            compose_player_controller_open,
+        },
+    };
+    let profile = ReleaseProfile::load(&release_toml()).unwrap();
+    let pinned = profile.pin.network_checksum;
+    let (mut app, address) = server_app(&NetworkConfig {
+        release_profile: Some(release_toml()),
+        ..enabled(0)
+    });
+    let (datagrams, _) = with_server(&mut app, move || {
+        [join_pinned(address, pinned), join_pinned(address, pinned)]
+    });
+    let counts = counts(&app);
+    assert_eq!(
+        (counts.joins_succeeded, counts.player_controller_opens_sent),
+        (2, 2)
+    );
+    assert_eq!(
+        app.world()
+            .resource::<PeerLab>()
+            .stats()
+            .player_controller_open_errors,
+        0
+    );
+
+    // The same plan composed independently, for both connections in order.
+    let plan = profile
+        .player_controller_open_plan(PeerLabAdmission::default().map_url, network::SPAWN_LOCATION)
+        .unwrap()
+        .unwrap();
+    let mut cache = NetGuidCache::new();
+    cache.register_level(&plan.profile.level);
+    let codec = ActorChannelCodec {
+        engine_net_version: profile.engine_network_version,
+        exports_enabled: false,
+        has_level: true,
+        order: ByteOrder::Little,
+        limits: ActorChannelLimits::default(),
+    };
+    let to_client = PacketConfig {
+        receiver: PacketReceiver::Client,
+        ..probe_config().packet
+    };
+    for (index, datagram) in datagrams.iter().enumerate() {
+        let expected = compose_player_controller_open(
+            &mut cache,
+            &mut ConnectionExports::new(),
+            &plan,
+            0,
+            ByteOrder::Little,
+        )
+        .unwrap();
+        // Each connection gets its own dynamic GUIDs: actor 2, then 20.
+        assert_eq!(expected.guids.actor, 2 + 18 * index as u32);
+        let packet = read_packet(datagram, &to_client).unwrap();
+        let [exports, body] = packet.bunches.as_slice() else {
+            panic!("the open travels as exports plus body");
+        };
+        for part in [exports, body] {
+            assert_eq!(part.header.channel_index, PLAYER_CONTROLLER_CHANNEL_INDEX);
+            assert!(part.header.reliable && part.header.partial);
+        }
+        assert!(exports.header.open && exports.header.has_package_map_exports);
+        assert!(body.header.partial_final && !body.header.has_package_map_exports);
+        assert_eq!(exports.payload, expected.exports);
+        assert_eq!(body.payload, expected.bunch.payload);
+
+        // Each connection receives the static paths in full and resolves them.
+        let mut map = PackageMapState::new();
+        map.consume_export_prefix(&mut exports.payload.reader(), &codec)
+            .unwrap();
+        assert_eq!(
+            map.resolve_full_path(expected.guids.archetype).as_deref(),
+            Some(
+                "/Game/BP/Player/BP_IcarusPlayerControllerSurvival.Default__BP_IcarusPlayerControllerSurvival_C"
+            )
+        );
+        let whole = Bunch {
+            header: expected.bunch.header.clone(),
+            payload: body.payload.clone(),
+        };
+        let parsed = parse_player_controller_open_bunch(&whole, &codec).unwrap();
+        assert_eq!(parsed.net_player_index, 0);
+        assert_eq!(parsed.blocks.len(), 7, "actor block plus six components");
+    }
 }

@@ -20,7 +20,8 @@ use super::{
     default_version_string_checksum,
     rep_layout::{
         ICARUS_ROW_HANDLE_NONE, ICARUS_ROW_HANDLE_TABLE_COUNT, ICARUS_TWO_BYTE_ROW_TABLES,
-        ICARUS_ZERO_ROW_TABLES, TagEncoding,
+        ICARUS_ZERO_ROW_TABLES, MovementLevel, RotationLevel, TagEncoding,
+        actor_component_rep_layout, icarus_player_controller_survival_rep_layout,
     },
     rep_rpc::{
         BP_ICARUS_PLAYER_CONTROLLER_SURVIVAL_FIELD_INDEX_BOUND,
@@ -30,7 +31,8 @@ use super::{
         UI_PROJECTION_MOUNT_STATUS_FIELD_INDEX_BOUND,
     },
     session_open::{
-        COMPONENT_HANDLES, ComponentBlock, ComponentExport, PathSegment, PlayerControllerProfile,
+        COMPONENT_HANDLES, ComponentBlock, ComponentExport, PLAYER_CONTROLLER_CHANNEL_INDEX,
+        PathSegment, PlayerControllerOpenPlan, PlayerControllerProfile, map_level_chain,
     },
 };
 
@@ -712,6 +714,34 @@ impl ReleaseProfile {
         };
         profile.validate()?;
         Ok(profile)
+    }
+
+    /// The PlayerController open plan for the map package of `map_url` and a
+    /// server-chosen spawn location, or `None` without `[player_controller]`.
+    /// Rep layouts are the statically observed `AIcarusPlayerControllerSurvival`
+    /// and `UActorComponent` layouts (F-703, F-704) with this release's tag
+    /// encoding.
+    pub fn player_controller_open_plan(
+        &self,
+        map_url: &str,
+        spawn_location: [f32; 3],
+    ) -> Result<Option<PlayerControllerOpenPlan>> {
+        let Some(player_controller) = &self.player_controller else {
+            return Ok(None);
+        };
+        Ok(Some(PlayerControllerOpenPlan {
+            profile: player_controller.session_profile(map_level_chain(map_url)?),
+            actor_layout: icarus_player_controller_survival_rep_layout(
+                MovementLevel::Whole,
+                MovementLevel::Whole,
+                RotationLevel::Bytes,
+                self.tags.tag_encoding(),
+            ),
+            component_layout: actor_component_rep_layout(),
+            engine_net_version: self.engine_network_version,
+            spawn_location,
+            channel_index: PLAYER_CONTROLLER_CHANNEL_INDEX,
+        }))
     }
 
     /// Load and validate a release profile from disk.

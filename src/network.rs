@@ -12,6 +12,11 @@
 //! validated before the socket binds and its network checksum becomes the
 //! lab's local Hello version: a differing Hello gets Upgrade and the peer is
 //! removed (`upgrades_sent`, `closed_by_reply`). Unset, any version is accepted.
+//! When the profile carries `[player_controller]` identifiers (built in for
+//! the qualified builds, F-780), every successful Join is answered with the
+//! PlayerController open on actor channel 2 (F-778, F-779): exports, spawn at
+//! [`SPAWN_LOCATION`], roles, references and component blocks. Nothing else
+//! replicates, and the PlayerState it references is never opened.
 //!
 //! Ordering: the lab polls at most `PACKETS_PER_UPDATE` datagrams once per
 //! app update in `RunFixedMainLoopSystems::BeforeFixedMainLoop`, so network
@@ -34,6 +39,9 @@ use crate::{
 
 /// Spectator slots granted beside `max_players` (the lab's default policy).
 pub const SPECTATOR_SLOTS: u32 = 2;
+/// Lab choice: the PlayerController spawn location (no world geometry or
+/// PlayerStart is consulted).
+pub const SPAWN_LOCATION: [f32; 3] = [0.0, 0.0, 0.0];
 
 /// Session counts kept after [`teardown`] so a repeated call and the final
 /// record report the same values.
@@ -96,9 +104,18 @@ pub fn bind(network: &NetworkConfig) -> Result<Option<BoundNetwork>> {
     if let Some(profile) = &profile {
         config = config.with_release_profile(profile);
     }
+    let plan = match (&profile, &config.admission) {
+        (Some(profile), Some(admission)) => profile
+            .player_controller_open_plan(admission.map_url, SPAWN_LOCATION)
+            .context("compose the PlayerController open plan")?,
+        _ => None,
+    };
     let address = SocketAddrV4::new(network.bind, network.port);
-    let lab = PeerLab::bind_address(address, config)
+    let mut lab = PeerLab::bind_address(address, config)
         .context("bind the experimental network session socket")?;
+    if let Some(plan) = plan {
+        lab.enable_player_controller_open(plan)?;
+    }
     Ok(Some(BoundNetwork {
         lab,
         release: profile.map(|profile| profile.pin),
