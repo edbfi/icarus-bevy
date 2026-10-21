@@ -1720,6 +1720,23 @@ fn a_held_session_receives_steady_game_state_updates() {
     assert_eq!(summary.world_time_regressions, 0);
     assert_eq!(summary.level_time_regressions, 0);
     assert_eq!(summary.time_of_day_regressions, 0);
+    // Out-of-range parameters fail before any socket is opened.
+    for (duration, step_timeout) in [
+        (Duration::ZERO, Duration::from_secs(1)),
+        (Duration::from_secs(73 * 3600), Duration::from_secs(1)),
+        (Duration::from_secs(3), Duration::ZERO),
+    ] {
+        assert!(
+            run_hold(&HoldConfig {
+                server: address,
+                network_version: profile.pin.network_checksum,
+                engine_net_version: profile.engine_network_version,
+                duration,
+                step_timeout,
+            })
+            .is_err()
+        );
+    }
     // Generous for loaded runners: the world time alone is due every 0.1 s.
     assert!(summary.max_update_gap_ms < 1_000, "{summary:?}");
     assert_eq!(summary.ended_by_error, None);
