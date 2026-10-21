@@ -25,7 +25,7 @@ use super::{
     game_state_open::{GAME_STATE_CHANNEL_INDEX, handle},
     packet::{PacketConfig, Receiver, read_packet},
     peer_lab::PeerLabConfig,
-    probe_client::{ProbeClient, ProbeConfig},
+    probe_client::{ProbeClient, ProbeConfig, ReplyDecode},
     rep_layout::{
         MovementLevel, RepLayoutCodec, RepLayoutLimits, RepValue, RotationLevel,
         icarus_game_state_survival_rep_layout, read_rep_properties,
@@ -61,7 +61,11 @@ pub struct HoldConfig {
 /// One JSON-serializable hold result.
 #[derive(Clone, Debug, Default, PartialEq, Serialize)]
 pub struct HoldSummary {
+    /// The server opened an actor channel after Join (its PlayerController).
     pub joined: bool,
+    /// The server answered with a Failure control message (the join or
+    /// session refused); the hold ends there.
+    pub refused: bool,
     pub held_ms: u64,
     pub datagrams: u64,
     pub keepalives: u64,
@@ -154,12 +158,12 @@ pub fn run_hold(config: &HoldConfig) -> Result<HoldSummary> {
         ],
         false,
     )?;
-    let mut summary = HoldSummary {
-        joined: true,
-        ..HoldSummary::default()
-    };
+    let mut summary = HoldSummary::default();
     let mut tracker = Tracker::new(config.engine_net_version);
     let started = Instant::now();
+    // The first gap runs from the start, so a hold without updates reports
+    // its whole length.
+    tracker.last_update = Some(started);
     while started.elapsed() < config.duration {
         // A socket error (the server gone, say) ends the hold but keeps
         // what was gathered.
@@ -172,11 +176,24 @@ pub fn run_hold(config: &HoldConfig) -> Result<HoldSummary> {
         };
         for reply in &collected.replies {
             summary.datagrams += 1;
-            // Undecodable datagrams are kept by the probe; skip them here.
+            // Only packets the probe accepted count: stale or duplicate
+            // sequences (and undecodable datagrams) are skipped.
+            let ReplyDecode::Decoded { messages, .. } = &reply.decode else {
+                continue;
+            };
+            if messages
+                .iter()
+                .any(|message| matches!(message, ControlMessage::Failure { .. }))
+            {
+                summary.refused = true;
+            }
             let Ok(packet) = read_packet(&reply.bytes, &to_client) else {
                 continue;
             };
             for bunch in packet.bunches {
+                if bunch.header.open && bunch.header.channel_index != 0 {
+                    summary.joined = true;
+                }
                 if bunch.header.channel_index == GAME_STATE_CHANNEL_INDEX
                     && !bunch.header.open
                     && !bunch.header.reliable
@@ -184,6 +201,9 @@ pub fn run_hold(config: &HoldConfig) -> Result<HoldSummary> {
                     tracker.update(&bunch.payload, reply.received_at, &mut summary);
                 }
             }
+        }
+        if summary.refused {
+            break;
         }
         if let Err(error) = client.keepalive() {
             summary.ended_by_error = Some(error_kind(&error));
@@ -194,7 +214,7 @@ pub fn run_hold(config: &HoldConfig) -> Result<HoldSummary> {
     let ended = Instant::now();
     tracker.gap_to(ended, &mut summary);
     summary.held_ms = u64::try_from(ended.duration_since(started).as_millis()).unwrap_or(u64::MAX);
-    if summary.ended_by_error.is_none() {
+    if summary.ended_by_error.is_none() && !summary.refused {
         client.close()?;
     }
     Ok(summary)
