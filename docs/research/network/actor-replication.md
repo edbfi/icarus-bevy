@@ -42,8 +42,10 @@ GameState (F-794) and pawn (F-797) opens bit for bit, including the pawn's
 contents from session values (F-799) and the GameState's active prospect
 and game mode values from the save the capture's server loaded (F-801,
 F-803); `run` sends all four opens after Join, with a preserved world's
-saved state (F-804). TimeOfDay advances by a per-world curve of the hour,
-which also yields SecondsPerGameDay (F-805, F-806; U-071 resolved).
+saved state (F-804). On the capture's server build, as on the client,
+TimeOfDay advances by a per-world rate curve of the hour, and prospect setup
+writes SecondsPerGameDay from that curve; the open carried the saved
+SecondsPerGameDay (F-803, F-805, F-806; U-071 resolved).
 
 ## Open
 
@@ -54,4 +56,4 @@ which also yields SecondsPerGameDay (F-805, F-806; U-071 resolved).
 
 ## Artifacts
 
-M-420..M-449, M-455..M-470, M-570..M-576, M-581..M-588, M-600..M-605, M-707..M-717, M-720, M-728..M-748, M-776, M-777, M-782, M-794, M-795, M-797..M-799, M-801, M-802, M-804, M-805, M-807, M-813..M-819, M-832, M-834 to M-836, M-838 to M-842.
+M-420..M-449, M-455..M-470, M-570..M-576, M-581..M-588, M-600..M-605, M-707..M-717, M-720, M-728..M-748, M-776, M-777, M-782, M-794, M-795, M-797..M-799, M-801, M-802, M-804, M-805, M-807, M-813..M-819, M-832, M-834 to M-836, M-838 to M-843.
