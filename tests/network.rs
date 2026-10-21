@@ -1249,3 +1249,93 @@ fn replication_selections_open_archetyped_actors_on_free_channels() {
     assert_eq!(actor_guids(&replies), [20, 22]);
     assert_eq!(actor_guids(&later), [20, 22], "driver-wide GUIDs");
 }
+
+#[test]
+fn replication_closes_actors_that_stop_being_relevant() {
+    use icarus_bevy::{
+        experimental::{
+            packet::read_packet,
+            peer_lab::PeerLabAdmission,
+            session_open::{PathSegment, map_level_chain},
+        },
+        replication::{NetActor, NetParameters, ReplicationConfig, ReplicationPlugin},
+        session_replication::{NetArchetype, SessionReplication, SessionReplicationPlugin},
+        simulation::{DomainId, Position},
+    };
+    let profile = ReleaseProfile::load(&release_toml()).unwrap();
+    let pinned = profile.pin.network_checksum;
+    let (mut app, address) = server_app(&NetworkConfig {
+        release_profile: Some(release_toml()),
+        ..enabled(0)
+    });
+    // A short authored relevancy timeout past the 1 s re-check window: the
+    // near actor is re-checked and refreshed, the far one (only forced on the
+    // first frame, F-772) closes once the timeout passes (F-749, F-788).
+    app.add_plugins((
+        ReplicationPlugin {
+            config: ReplicationConfig {
+                relevant_timeout_seconds: 1.5,
+                ..ReplicationConfig::default()
+            },
+        },
+        SessionReplicationPlugin,
+    ))
+    .insert_resource(SessionReplication {
+        level: map_level_chain(PeerLabAdmission::default().map_url).unwrap(),
+        engine_net_version: profile.engine_network_version,
+        first_channel: 2,
+        viewer_location: network::SPAWN_LOCATION,
+    });
+    let archetype = vec![
+        PathSegment::new("Default__LabCrate_C", 0x1234_5678, false),
+        PathSegment::new("/Game/Lab/LabCrate", 0, false),
+    ];
+    for (id, location) in [(42, [100.0, 0.0, 0.0]), (44, [20_000.0, 0.0, 0.0])] {
+        app.world_mut().spawn((
+            NetActor {
+                id: DomainId(id),
+                params: NetParameters::default(),
+            },
+            Position(location),
+            NetArchetype {
+                archetype: archetype.clone(),
+            },
+        ));
+    }
+    let (replies, _) = with_server(&mut app, move || {
+        let mut client = connect(address);
+        let report = client.hello(pinned, "").unwrap();
+        assert!(report.hello_acked);
+        client.send_control(&[login()], false).unwrap();
+        client.collect(Duration::from_secs(3), 1).unwrap();
+        client.send_control(&[ControlMessage::Join], false).unwrap();
+        // Keep the session alive and acknowledged for 3 s, past the far
+        // actor's relevancy timeout.
+        let mut replies = Vec::new();
+        let deadline = Instant::now() + Duration::from_secs(3);
+        while Instant::now() < deadline {
+            let collected = client.collect(Duration::from_millis(200), 64).unwrap();
+            replies.extend(collected.replies.into_iter().map(|reply| reply.bytes));
+            client.keepalive().unwrap();
+        }
+        client.close().unwrap();
+        replies
+    });
+    let stats = app.world().resource::<PeerLab>().stats().clone();
+    assert_eq!((stats.actor_opens_sent, stats.actor_closes_sent), (2, 1));
+    assert_eq!(stats.actor_close_errors, 0);
+    let to_client = PacketConfig {
+        receiver: PacketReceiver::Client,
+        ..probe_config().packet
+    };
+    let closes: Vec<_> = replies
+        .iter()
+        .flat_map(|datagram| read_packet(datagram, &to_client).unwrap().bunches)
+        .filter(|bunch| bunch.header.close)
+        .collect();
+    let [close] = closes.as_slice() else {
+        panic!("one actor channel close");
+    };
+    assert!(close.header.reliable && close.header.channel_index >= 4);
+    assert_eq!(close.header.close_reason, Some(3), "no longer relevant");
+}

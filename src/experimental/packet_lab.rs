@@ -62,6 +62,7 @@ use super::sequencing::{
     MAX_QUEUED_RELIABLE, PacketSequencer, ReliableChannel, ReliableReceive, SEQUENCE_MASK,
     max_single_bunch_size_bits, split_outgoing_bunch, wire_reliable_sequence,
 };
+use super::session_open::ACTOR_CHANNEL_NAME_INDEX;
 
 /// Handshake cookie length of the short framing (`handshake`).
 pub const COOKIE_BYTES: usize = 20;
@@ -327,6 +328,8 @@ pub struct LabPeer {
     resend: VecDeque<Resend>,
     /// The control channel's close bunch: its reliable sequence and reason.
     control_close: Option<(u32, u32)>,
+    /// Actor channels whose close bunch was sent; removed once acked.
+    closing_actors: std::collections::BTreeSet<u32>,
     /// Mirrors `UControlChannel::bNeedsHeaderInspection` (`+0x68`, F-712):
     /// cleared when the first delivered control bunch starting with `Hello`
     /// sets `Connection->bNeedsByteSwapping` (`+0x158`).
@@ -370,6 +373,7 @@ impl LabPeer {
             actors: BTreeMap::new(),
             resend: VecDeque::new(),
             control_close: None,
+            closing_actors: std::collections::BTreeSet::new(),
             header_inspection_pending: true,
             failed: false,
         })
@@ -575,6 +579,25 @@ impl LabPeer {
                 for channel in self.actors.values_mut() {
                     summary.released_reliable += channel.acked(packet_id).len();
                 }
+                // A closed channel's index frees once its close is acked.
+                let actors = &self.actors;
+                let released: Vec<u32> = self
+                    .closing_actors
+                    .iter()
+                    .copied()
+                    .filter(|index| {
+                        actors
+                            .get(index)
+                            .is_none_or(|channel| channel.out_bunches().is_empty())
+                    })
+                    .collect();
+                for index in released {
+                    self.closing_actors.remove(&index);
+                    self.actors.remove(&index);
+                    self.resend.retain(
+                        |entry| !matches!(entry, Resend::Actor(channel, _) if *channel == index),
+                    );
+                }
             } else {
                 summary.naked.push(packet_id);
                 let lost = self
@@ -756,6 +779,72 @@ impl LabPeer {
     /// resent on naks like control bunches. Fails without a state change when
     /// the channel is the control channel or already open, the bunch is not an
     /// open reliable bunch, or the parts do not fit one datagram.
+    /// Close actor channel `index` as `UChannel::Close(Reason)` does (F-782):
+    /// an empty reliable bunch with `bClose` and `reason` on the channel's next
+    /// sequence, in a datagram with the ack state and resends. The channel
+    /// keeps its index until every bunch on it, the close included, is acked;
+    /// nothing more may be sent on it. Fails without a state change when the
+    /// channel is not open or already closing.
+    pub fn reliable_actor_close(&mut self, index: u32, reason: u32) -> Result<Vec<u8>> {
+        self.ensure_usable()?;
+        ensure!(
+            !self.closing_actors.contains(&index),
+            "actor channel {index} is already closing"
+        );
+        let channel = self
+            .actors
+            .get(&index)
+            .with_context(|| format!("actor channel {index} is not open"))?;
+        ensure!(
+            channel.out_bunches().len() < MAX_PENDING_RELIABLE,
+            "{MAX_PENDING_RELIABLE} outgoing reliable bunches are unacknowledged"
+        );
+        let sequence = channel
+            .out_reliable()
+            .checked_add(1)
+            .context("reliable sequence counter exhausted")?;
+        let close = Bunch {
+            header: BunchHeader {
+                control: true,
+                open: false,
+                close: true,
+                close_reason: Some(reason),
+                paused: false,
+                reliable: true,
+                channel_index: index,
+                has_package_map_exports: false,
+                has_must_be_mapped_guids: false,
+                partial: false,
+                reliable_sequence_raw: Some(wire_reliable_sequence(sequence)),
+                partial_initial: false,
+                partial_final: false,
+                channel_name: Some(Name::Hardcoded(ACTOR_CHANNEL_NAME_INDEX)),
+            },
+            payload: Payload::from_writer(BitWriter::new()),
+        };
+        let (datagram, packet_id, resends) = self.assemble(std::slice::from_ref(&close))?;
+        let committed = self.sequencer.commit()?;
+        let recorded = (|| {
+            ensure!(committed == packet_id, "committed packet ID mismatch");
+            self.record_resends(packet_id, &resends)?;
+            let channel = self
+                .actors
+                .get_mut(&index)
+                .context("closed actor channel vanished")?;
+            let assigned = channel.send_reliable(packet_id, close)?;
+            ensure!(assigned == sequence, "outgoing reliable sequence mismatch");
+            self.closing_actors.insert(index);
+            Ok(())
+        })();
+        self.fail_on_error(recorded)?;
+        Ok(datagram)
+    }
+
+    /// Whether actor channel `index` has sent its close and awaits its ack.
+    pub fn actor_channel_closing(&self, index: u32) -> bool {
+        self.closing_actors.contains(&index)
+    }
+
     pub fn reliable_actor_open(&mut self, bunch: &Bunch, exports: &[Payload]) -> Result<Vec<u8>> {
         self.ensure_usable()?;
         let index = bunch.header.channel_index;

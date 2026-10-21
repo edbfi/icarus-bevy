@@ -453,6 +453,10 @@ pub struct PeerLabStats {
     /// a persistent failure is retried, and counted, every time the actor is
     /// selected again.
     pub actor_open_errors: u64,
+    /// Replicated actor channel closes sent through [`PeerLab::close_actor`].
+    pub actor_closes_sent: u64,
+    /// Replicated actor channel closes that could not be framed.
+    pub actor_close_errors: u64,
     /// Failure notices sent by [`PeerLab::shutdown`] (F-782).
     pub shutdown_failures_sent: u64,
     /// Control-channel close bunches sent by [`PeerLab::shutdown`] (F-782).
@@ -704,6 +708,44 @@ impl PeerLab {
         self.peers.values().any(|entry| {
             entry.connection_id == Some(connection) && entry.opened_actors.contains_key(&key)
         })
+    }
+
+    /// Close the actor `key`'s channel on the joined connection `connection`
+    /// with `reason` ([`LabPeer::reliable_actor_close`]); the actor may be
+    /// opened again later on a free channel. Returns whether a close was
+    /// sent; failures count `actor_close_errors` and change nothing.
+    pub fn close_actor(&mut self, connection: u32, key: u64, reason: u32) -> bool {
+        let Some(address) = self
+            .peers
+            .iter()
+            .find(|(_, entry)| entry.connection_id == Some(connection))
+            .map(|(address, _)| *address)
+        else {
+            return false;
+        };
+        let Some(entry) = self.peers.get_mut(&address) else {
+            return false;
+        };
+        let Some(channel) = entry.opened_actors.get(&key).copied() else {
+            return false;
+        };
+        let datagram = match entry.peer.reliable_actor_close(channel, reason) {
+            Ok(datagram) => datagram,
+            Err(_) => {
+                bump(&mut self.stats.actor_close_errors);
+                if entry.peer.is_failed() {
+                    self.peers.remove(&address);
+                    bump(&mut self.stats.peers_failed);
+                }
+                return false;
+            }
+        };
+        entry.opened_actors.remove(&key);
+        entry.ack_pending = false;
+        if self.send(&datagram, address) {
+            bump(&mut self.stats.actor_closes_sent);
+        }
+        true
     }
 
     /// Open the actor `key` on the joined connection `connection` with

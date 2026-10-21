@@ -869,3 +869,51 @@ fn control_close_is_a_reliable_close_bunch_resent_unchanged() {
         .bunches;
     assert_eq!(resent, packet.bunches);
 }
+
+#[test]
+fn actor_close_holds_its_channel_until_acknowledged() {
+    let mut peer = peer();
+    let mut client = Client::new();
+    let (opening, _) = client.send(Vec::new());
+    peer.receive(&opening).unwrap();
+    let open = actor_open_bunch(4, &[0x11; 4]);
+    let datagram = peer.reliable_actor_open(&open, &[]).unwrap();
+    accept_header(&mut client, &datagram);
+    assert!(peer.reliable_actor_close(5, 3).is_err(), "not open");
+
+    let close = peer.reliable_actor_close(4, 3).unwrap();
+    assert!(peer.actor_channel_closing(4));
+    let packet = read_packet(&close, &to_client()).unwrap();
+    let [bunch] = packet.bunches.as_slice() else {
+        panic!("one close bunch");
+    };
+    let header = &bunch.header;
+    assert!(header.close && header.reliable && header.control && !header.open);
+    assert_eq!((header.channel_index, header.close_reason), (4, Some(3)));
+    assert_eq!(header.channel_name, Some(Name::Hardcoded(102)));
+    assert_eq!(bunch.payload.bit_len(), 0);
+    let before = format!("{peer:?}");
+    assert!(peer.reliable_actor_close(4, 3).is_err(), "already closing");
+    assert!(
+        peer.reliable_actor_open(&open, &[]).is_err(),
+        "index still held"
+    );
+    assert_eq!(peer.free_actor_channel(4), Some(5));
+    assert_eq!(format!("{peer:?}"), before);
+
+    // Once the client acknowledges the close, the index is free again.
+    accept_header(&mut client, &close);
+    let (ack, _) = client.send(Vec::new());
+    peer.receive(&ack).unwrap();
+    assert!(!peer.actor_channel_closing(4));
+    assert!(!peer.has_actor_channel(4));
+    assert_eq!(peer.free_actor_channel(4), Some(4));
+    peer.reliable_actor_open(&open, &[]).unwrap();
+}
+
+/// Accept a lab datagram's header as the client, whatever its bunches.
+fn accept_header(client: &mut Client, datagram: &[u8]) {
+    let packet = read_packet(datagram, &to_client()).unwrap();
+    let received = client.sequencer.receive(&packet.header).unwrap().unwrap();
+    client.sequencer.ack_seq(received.sequence, true).unwrap();
+}

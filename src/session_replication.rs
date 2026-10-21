@@ -5,9 +5,10 @@
 //! has no pawn yet); after it, every actor the stage selected for a connection
 //! that carries a [`NetArchetype`] is opened on that connection's lowest free
 //! actor channel through [`PeerLab::open_actor`], once per connection, with
-//! its position as the spawn location and no content blocks yet. Actor GUIDs
-//! are driver-wide and stable per [`DomainId`]. Closing channels and property
-//! replication are not modelled. Archetypes are caller data; nothing here
+//! its position as the spawn location and no content blocks yet; a channel the
+//! stage closes (no longer relevant `3`, torn off `4`; F-749) gets its close
+//! bunch first ([`PeerLab::close_actor`]). Actor GUIDs are driver-wide and
+//! stable per [`DomainId`]. Property replication is not modelled. Archetypes are caller data; nothing here
 //! reads original files or demonstrates ICARUS compatibility.
 use bevy::prelude::*;
 
@@ -100,9 +101,19 @@ fn open_selected_actors(
         .decisions
         .connections
         .iter()
-        .all(|c| c.selected.is_empty())
+        .all(|c| c.selected.is_empty() && c.closed.is_empty())
     {
         return;
+    }
+    // Closes first, so an actor closed and selected again reopens.
+    for connection in &frame.decisions.connections {
+        for closed in &connection.closed {
+            lab.close_actor(
+                connection.connection,
+                closed.id.0,
+                u32::from(closed.close_reason),
+            );
+        }
     }
     let by_id: std::collections::BTreeMap<DomainId, (&Position, &NetArchetype)> = actors
         .iter()
