@@ -385,6 +385,16 @@ fn a_preserved_world_supplies_the_session_prospect() {
     );
 }
 
+/// A child process killed and reaped when dropped, also when a test panics.
+struct Killed(std::process::Child);
+
+impl Drop for Killed {
+    fn drop(&mut self) {
+        let _ = self.0.kill();
+        let _ = self.0.wait();
+    }
+}
+
 /// `run` on a world preserved from a save sends the save's active prospect
 /// in its GameState open (real binary, authored probe on loopback).
 #[test]
@@ -434,23 +444,36 @@ fn run_replicates_a_preserved_worlds_prospect() {
         ),
     )
     .unwrap();
-    let mut child = Command::new(env!("CARGO_BIN_EXE_icarus-server"))
-        .arg("run")
-        .arg("--config")
-        .arg(&config)
-        .args(["--tick-hz", "240", "--max-ticks", "1000000", "--data-dir"])
-        .arg(&state)
-        .stderr(Stdio::piped())
-        .stdout(Stdio::null())
-        .spawn()
-        .unwrap();
-    let mut lines = BufReader::new(child.stderr.take().unwrap()).lines();
+    let mut child = Killed(
+        Command::new(env!("CARGO_BIN_EXE_icarus-server"))
+            .arg("run")
+            .arg("--config")
+            .arg(&config)
+            .args(["--tick-hz", "240", "--max-ticks", "1000000", "--data-dir"])
+            .arg(&state)
+            .stderr(Stdio::piped())
+            .stdout(Stdio::null())
+            .spawn()
+            .unwrap(),
+    );
+    // Read records on a thread so the deadline holds while none arrive.
+    let stderr = child.0.stderr.take().unwrap();
+    let (sender, records) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        for line in BufReader::new(stderr).lines() {
+            if sender.send(line).is_err() {
+                break;
+            }
+        }
+    });
     let deadline = Instant::now() + Duration::from_secs(20);
     let mut replicated = false;
     let address: SocketAddr = loop {
-        assert!(Instant::now() < deadline, "no network_listening record");
-        let record: serde_json::Value =
-            serde_json::from_str(&lines.next().unwrap().unwrap()).unwrap();
+        let line = records
+            .recv_timeout(deadline.saturating_duration_since(Instant::now()))
+            .expect("a network_listening record within 20 s")
+            .unwrap();
+        let record: serde_json::Value = serde_json::from_str(&line).unwrap();
         replicated |= record["event"] == "active_prospect_replicated";
         if record["event"] == "network_listening" {
             break record["address"].as_str().unwrap().parse().unwrap();
@@ -501,8 +524,7 @@ fn run_replicates_a_preserved_worlds_prospect() {
         )
         .unwrap();
     let collected = client.collect(Duration::from_secs(3), 4).unwrap();
-    let _ = child.kill();
-    let _ = child.wait();
+    drop(child);
     let to_client = PacketConfig {
         magic_bits: 0,
         receiver: Receiver::Client,
