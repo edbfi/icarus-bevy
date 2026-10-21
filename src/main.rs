@@ -452,6 +452,11 @@ fn run(options: ConfigOptions, max_ticks: Option<u64>, compressed: bool) -> Resu
         app.insert_resource(TimeUpdateStrategy::FixedTimesteps(1));
     }
     let mut bound = bound;
+    if let Some(bound) = &mut bound
+        && bound.lab.has_game_state_open()
+    {
+        network::apply_server_settings(&mut bound.lab, config.autosave_seconds)?;
+    }
     if let (Some(bound), Some(section)) = (&mut bound, &snapshot.preserved_prospect)
         && bound.lab.has_game_state_open()
     {

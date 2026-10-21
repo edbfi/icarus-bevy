@@ -472,3 +472,137 @@ pub fn compose_game_state_update(
         &codec,
     )
 }
+
+/// `FNetworkingStatus`, the GameState's `NetworkingStatus` (handles
+/// `68..=79`; field names from the client PDB's property statics, sources
+/// from the 3.0.31 server's `GatherNetworkingStatus`, F-810).
+#[derive(Clone, Debug, PartialEq)]
+pub struct NetworkingStatus {
+    pub current_host_player_name: Vec<u16>,
+    pub backup_host_player_name: Vec<u16>,
+    /// One name per listed player, in player-array order.
+    pub player_names: Vec<Vec<u16>>,
+    /// The engine's compressed ping per listed player.
+    pub player_ping: Vec<u8>,
+    pub saved_locally: bool,
+    pub time_between_state_saves: f32,
+    pub time_since_database_save: f32,
+    pub time_between_heartbeats: f32,
+    pub time_since_heartbeat: f32,
+    pub end_prospect_update_timeout: f32,
+    pub update_prospect_state_failed_counter: i32,
+    pub update_unreal_session_failed_counter: i32,
+}
+
+/// `CurrentHostPlayerName` on a dedicated server (`0x1449f8de0`, F-810).
+pub const DEDICATED_SERVER_HOST_NAME: &str = "Dedicated Server";
+
+impl NetworkingStatus {
+    /// What a server saving locally gathers (F-810): the dedicated-server
+    /// host name, no backup host, saved locally, the state-save interval,
+    /// no database save or heartbeat yet (-1), a 10 s heartbeat interval,
+    /// the prospect update timeout `max(interval + 120, 180)` and zero
+    /// failure counters; no players are listed.
+    pub fn local(time_between_state_saves: f32) -> Self {
+        Self {
+            current_host_player_name: DEDICATED_SERVER_HOST_NAME.encode_utf16().collect(),
+            backup_host_player_name: Vec::new(),
+            player_names: Vec::new(),
+            player_ping: Vec::new(),
+            saved_locally: true,
+            time_between_state_saves,
+            time_since_database_save: -1.0,
+            time_between_heartbeats: 10.0,
+            time_since_heartbeat: -1.0,
+            end_prospect_update_timeout: (time_between_state_saves + 120.0).max(180.0),
+            update_prospect_state_failed_counter: 0,
+            update_unreal_session_failed_counter: 0,
+        }
+    }
+
+    /// Every field's value by handle (`68..=79`), defaults included. The
+    /// two player arrays must have equal lengths.
+    pub fn values(&self) -> Result<BTreeMap<u32, RepValue>> {
+        ensure!(
+            self.player_names.len() == self.player_ping.len(),
+            "every listed player has one name and one ping"
+        );
+        let array = |elements: Vec<RepValue>| -> Result<RepValue> {
+            Ok(RepValue::DynamicArray(RepArray {
+                count: u16::try_from(elements.len()).context("array exceeds its count width")?,
+                stream: PropertyStream {
+                    entries: elements
+                        .into_iter()
+                        .zip(1..)
+                        .map(|(value, handle)| RepEntry {
+                            handle,
+                            checksum: None,
+                            value,
+                        })
+                        .collect(),
+                    terminator_checksum: None,
+                },
+            }))
+        };
+        let names = self
+            .player_names
+            .iter()
+            .map(|name| Ok(RepValue::Str(ArchiveText::new(name)?)))
+            .collect::<Result<Vec<_>>>()?;
+        let pings = self
+            .player_ping
+            .iter()
+            .map(|ping| RepValue::Int(i32::from(*ping)))
+            .collect();
+        let fields = [
+            RepValue::Str(ArchiveText::new(&self.current_host_player_name)?),
+            RepValue::Str(ArchiveText::new(&self.backup_host_player_name)?),
+            array(names)?,
+            array(pings)?,
+            RepValue::Bool(self.saved_locally),
+            RepValue::Float(self.time_between_state_saves.to_bits()),
+            RepValue::Float(self.time_since_database_save.to_bits()),
+            RepValue::Float(self.time_between_heartbeats.to_bits()),
+            RepValue::Float(self.time_since_heartbeat.to_bits()),
+            RepValue::Float(self.end_prospect_update_timeout.to_bits()),
+            RepValue::Int(self.update_prospect_state_failed_counter),
+            RepValue::Int(self.update_unreal_session_failed_counter),
+        ];
+        Ok(fields
+            .into_iter()
+            .zip(handle::NETWORKING_STATUS_FIRST..)
+            .map(|(value, handle)| (handle, value))
+            .collect())
+    }
+}
+
+/// The class default of an update-carried GameState handle: zero, false,
+/// empty strings and empty arrays (`None` for other handles).
+pub fn class_default(handle: u32) -> Option<RepValue> {
+    use handle::*;
+    let empty_array = || {
+        RepValue::DynamicArray(RepArray {
+            count: 0,
+            stream: PropertyStream {
+                entries: Vec::new(),
+                terminator_checksum: None,
+            },
+        })
+    };
+    Some(match handle {
+        WORLD_TIME_SECONDS | TIME_OF_DAY | TIME_BETWEEN_SAVES => RepValue::Float(0),
+        LEVEL_TIME_ELAPSED_SEC | SERVER_FPS => RepValue::Int(0),
+        h if h == NETWORKING_STATUS_FIRST || h == NETWORKING_STATUS_FIRST + 1 => {
+            RepValue::Str(ArchiveText::new(&[]).ok()?)
+        }
+        h if h == NETWORKING_STATUS_FIRST + 2 || h == NETWORKING_STATUS_FIRST + 3 => empty_array(),
+        h if h == NETWORKING_STATUS_FIRST + 4 => RepValue::Bool(false),
+        h if (NETWORKING_STATUS_FIRST + 5..=NETWORKING_STATUS_FIRST + 9).contains(&h) => {
+            RepValue::Float(0)
+        }
+        h if h == NETWORKING_STATUS_FIRST + 10 || h == NETWORKING_STATUS_FIRST + 11 => {
+            RepValue::Int(0)
+        }
+        _ => return None,
+    })
+}

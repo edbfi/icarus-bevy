@@ -28,8 +28,10 @@
 //! for the first player only). Each open takes as many datagrams as it
 //! needs. Once a connection acks the GameState open, its world time, level
 //! clock, time of day and `ServerFPS` (this server's frame rate over its
-//! poll intervals) follow as property updates (F-805). Nothing else
-//! replicates.
+//! poll intervals) follow as property updates (F-805); with
+//! [`apply_server_settings`], `TimeBetweenSaves` and a locally saving
+//! server's `NetworkingStatus` listing the joined players (F-810). Nothing
+//! else replicates.
 //!
 //! Ordering: the lab polls at most `PACKETS_PER_UPDATE` datagrams once per
 //! app update in `RunFixedMainLoopSystems::BeforeFixedMainLoop`, so network
@@ -52,7 +54,8 @@ use crate::{
         control_messages::ArchiveText,
         game_state_open::{
             GAME_STATE_CHANNEL_INDEX, GameStateManagers, GameStateOpenState,
-            MATCH_STATE_IN_PROGRESS, active_prospect_values, handle, saved_game_mode_values,
+            MATCH_STATE_IN_PROGRESS, NetworkingStatus, active_prospect_values, handle,
+            saved_game_mode_values,
         },
         pawn_open::{CharacterVitals, PAWN_CHANNEL_INDEX, PawnContent},
         peer_lab::{PeerLab, PeerLabAdmission, PeerLabConfig, PeerLabPlugin, SessionCounts},
@@ -162,6 +165,19 @@ pub fn saved_game_state(section: &PreservedSection) -> Result<SavedGameState> {
         level_time_elapsed_sec: level_time,
         time_of_day,
     })
+}
+
+/// Add this server's save settings to `lab`'s GameState (F-810): its
+/// autosave interval as `TimeBetweenSaves` and as the state-save interval
+/// of a locally saving server's `NetworkingStatus`, which then lists the
+/// joined players.
+pub fn apply_server_settings(lab: &mut PeerLab, autosave_seconds: u64) -> Result<()> {
+    let interval = autosave_seconds as f32;
+    lab.extend_game_state_values(BTreeMap::from([(
+        handle::TIME_BETWEEN_SAVES,
+        RepValue::Float(interval.to_bits()),
+    )]))?;
+    lab.enable_networking_status(NetworkingStatus::local(interval))
 }
 
 /// Add a loaded world's [`saved_game_state`] to `lab`'s GameState open.
