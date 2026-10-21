@@ -110,6 +110,9 @@ fn open_selected_actors(
         .collect();
     for connection in &frame.decisions.connections {
         for selected in &connection.selected {
+            if lab.is_actor_open(connection.connection, selected.id.0) {
+                continue;
+            }
             let Some((position, archetype)) = by_id.get(&selected.id) else {
                 continue;
             };

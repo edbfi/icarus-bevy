@@ -698,6 +698,14 @@ impl PeerLab {
         ids
     }
 
+    /// Whether the actor `key` is open on the joined connection `connection`;
+    /// a cheap check before building an [`ActorOpenSpec`].
+    pub fn is_actor_open(&self, connection: u32, key: u64) -> bool {
+        self.peers.values().any(|entry| {
+            entry.connection_id == Some(connection) && entry.opened_actors.contains_key(&key)
+        })
+    }
+
     /// Open the actor `key` on the joined connection `connection` with
     /// `open` on the lowest free channel from `first_channel`. The lab owns
     /// actor GUIDs: `open.actor` is ignored and replaced by the driver-wide
