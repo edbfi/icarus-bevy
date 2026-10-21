@@ -51,8 +51,10 @@ pub struct SessionReplication {
     pub viewer_location: [f32; 3],
     /// Every opened actor's initial block ([`actor_role_block`], F-791).
     actor_block: ContentBlock,
-    /// Opens and updates skipped because a position could not be quantized
-    /// for `ReplicatedMovement` (outside the packed range).
+    /// Open attempts skipped because a position could not be quantized for
+    /// `ReplicatedMovement` (outside the packed range). It counts attempts:
+    /// the actor stays unopened and is retried, and counted, each time it is
+    /// selected. Update failures count in the lab's `actor_update_errors`.
     pub movement_errors: u64,
 }
 
