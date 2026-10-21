@@ -75,8 +75,8 @@ F-745, F-748, F-749, F-751); force relevance compares with the connection's
 `LastProcessedFrame`, unsigned (F-772), and the mark step re-forces every
 unprocessed entry regardless of relevance (F-774). A native scheduling stage
 drives these evaluators over 2,626 supplied actor positions; with UE default
-parameters it saturates its budget in 0.6 to 5.4 ms per frame for 1 to 8
-viewers (F-775). Export checksums are class network checksums computed natively
+parameters and the corrected 1 s relevancy window (F-788) it takes 0.3 to 5.2 ms
+per frame for 1 to 8 viewers (F-790). Export checksums are class network checksums computed natively
 (F-776), reproducing 77 of 79 captured values (F-777; U-067), and the
 original's first post-Join bunch opens the PlayerController channel (F-778),
 which the native composer reproduces bit for bit (F-779) and `run` sends after
