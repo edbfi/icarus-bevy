@@ -226,8 +226,9 @@ pub fn active_prospect_values(info: &ProspectInfo) -> Result<BTreeMap<u32, RepVa
 }
 
 /// GameState values a loaded save's game mode record restores (`F-803`):
-/// `Seed` with `SeedInitialised`, `TimeOfDay` (as saved; its advance is not
-/// modelled, U-071), `SecondsPerGameDay`, `DynamicQuestSeed` and
+/// `Seed` with `SeedInitialised`, `TimeOfDay` (as saved; the original
+/// advances it by a world rate curve, F-806), `SecondsPerGameDay`,
+/// `DynamicQuestSeed` and
 /// `LastSessionProspectGameTime` (the saved `ProspectGameTime`), each sent
 /// when it differs from its default. `LevelTimeElapsedSec` advances with the
 /// world clock and is written when the open is sent.
