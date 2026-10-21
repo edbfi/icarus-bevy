@@ -1823,3 +1823,170 @@ fn a_naked_movement_update_is_sent_again() {
     assert_eq!(lab_ref.stats().actor_update_naks, 3);
     assert_eq!(lab_ref.stats().actor_updates_lost, 1);
 }
+
+/// Decoded GameState property updates (not opens) on its channel among
+/// `datagrams`, in arrival order.
+fn game_state_updates(
+    datagrams: &[Vec<u8>],
+    layout: &[icarus_bevy::experimental::rep_layout::RepCommand],
+) -> Vec<std::collections::BTreeMap<u32, icarus_bevy::experimental::rep_layout::RepValue>> {
+    use icarus_bevy::experimental::{
+        actor_channel::{ActorChannelCodec, ActorChannelLimits, read_actor_bunch_body},
+        archive::ByteOrder,
+        game_state_open::GAME_STATE_CHANNEL_INDEX,
+        rep_layout::{RepLayoutCodec, RepLayoutLimits, read_rep_properties},
+    };
+    let codec = ActorChannelCodec {
+        engine_net_version: 17,
+        exports_enabled: false,
+        has_level: true,
+        order: ByteOrder::Little,
+        limits: ActorChannelLimits::default(),
+    };
+    let rep_codec = RepLayoutCodec {
+        actor: codec,
+        checksums: false,
+        limits: RepLayoutLimits::default(),
+    };
+    datagrams
+        .iter()
+        .flat_map(|datagram| read_packet(datagram, &to_client()).unwrap().bunches)
+        .filter(|bunch| {
+            bunch.header.channel_index == GAME_STATE_CHANNEL_INDEX
+                && !bunch.header.open
+                && !bunch.header.reliable
+        })
+        .map(|bunch| {
+            let body = read_actor_bunch_body(&mut bunch.payload.reader(), false, &codec).unwrap();
+            assert_eq!(body.blocks.len(), 1, "one actor block");
+            read_rep_properties(&mut body.blocks[0].payload.reader(), layout, &rep_codec)
+                .unwrap()
+                .entries
+                .into_iter()
+                .map(|entry| (entry.handle, entry.value))
+                .collect()
+        })
+        .collect()
+}
+
+#[test]
+fn game_state_updates_advance_the_clocks_once_the_open_is_acked() {
+    use icarus_bevy::experimental::{
+        game_state_open::{GAME_STATE_CHANNEL_INDEX, GameStateOpenState, handle},
+        peer_lab::GAME_STATE_UPDATE_SECONDS,
+        release::ReleaseProfile,
+        rep_layout::RepValue,
+        session_open::ActorKey,
+        time_of_day::{RateCurve, TimeOfDayClock},
+    };
+    let config = PeerLabConfig {
+        admission: Some(PeerLabAdmission::default()),
+        ..PeerLabConfig::default()
+    };
+    let mut app = build_app(&ServerConfig::default(), &WorldSnapshot::default()).unwrap();
+    let mut bound = PeerLab::bind(0, config).unwrap();
+    let profile = ReleaseProfile::release_3_0_32();
+    let map_url = PeerLabAdmission::default().map_url;
+    let plan = profile.game_state_open_plan(map_url).unwrap().unwrap();
+    let layout = plan.layout.clone();
+    let clock = TimeOfDayClock::new(RateCurve::constant(60.0).unwrap(), 600.0);
+    assert!(
+        bound.enable_time_of_day(clock.clone()).is_err(),
+        "the clock needs a GameState open"
+    );
+    bound
+        .enable_player_controller_open(
+            profile
+                .player_controller_open_plan(map_url, [0.0; 3])
+                .unwrap()
+                .unwrap(),
+        )
+        .unwrap();
+    bound
+        .enable_game_state_open(
+            plan,
+            GameStateOpenState {
+                key: ActorKey::Session(0),
+                managers: Default::default(),
+                values: Default::default(),
+                weather: Vec::new(),
+            },
+            GAME_STATE_CHANNEL_INDEX,
+        )
+        .unwrap();
+    bound.set_game_state_level_time(1_000).unwrap();
+    bound.enable_time_of_day(clock).unwrap();
+    let address = bound.local_addr().unwrap();
+    app.insert_resource(bound).add_plugins(PeerLabPlugin);
+    let mut client = Client::connect(&mut app, address);
+    client.exchange(&mut app, short_hello("", 0), false);
+    client.exchange(&mut app, login(), false);
+    client.exchange(&mut app, ControlMessage::Join, false);
+    assert_eq!(stats(&app).game_state_opens_sent, 1);
+    let pause = || std::thread::sleep(Duration::from_secs_f32(GAME_STATE_UPDATE_SECONDS * 2.0));
+
+    // No update before the client acknowledges the open.
+    pause();
+    app.update();
+    assert_eq!(stats(&app).game_state_updates_sent, 0);
+    accept_all_headers(&mut client);
+    let (ack, _) = client.packet(Vec::new());
+    client.send(&ack);
+
+    // Then each pass sends what changed: the time of day every time (one
+    // game minute per world second here), the world time and the level clock
+    // when due. Passes run until eight updates span 1.1 s (the level clock's
+    // whole second), bounded for slow runners; the 0.1 s world-time rule
+    // itself is pinned by the replica unit test.
+    let mut updates = Vec::new();
+    let started = std::time::Instant::now();
+    while (updates.len() < 8 || started.elapsed() < Duration::from_millis(1_100))
+        && started.elapsed() < Duration::from_secs(20)
+    {
+        pause();
+        app.update();
+        let datagrams = drain(&client);
+        for datagram in &datagrams {
+            let packet = read_packet(datagram, &to_client()).unwrap();
+            if let Some(received) = client.sequencer.receive(&packet.header).unwrap() {
+                client.sequencer.ack_seq(received.sequence, true).unwrap();
+            }
+        }
+        updates.extend(game_state_updates(&datagrams, &layout));
+        let (ack, _) = client.packet(Vec::new());
+        client.send(&ack);
+    }
+    let counted = stats(&app);
+    assert_eq!(counted.game_state_update_errors, 0);
+    assert_eq!(counted.game_state_updates_sent, updates.len() as u64);
+    assert!(updates.len() >= 8, "{} updates", updates.len());
+    let float = |value: &RepValue| match value {
+        RepValue::Float(bits) => f32::from_bits(*bits),
+        other => panic!("{other:?}"),
+    };
+    let times: Vec<f32> = updates
+        .iter()
+        .map(|update| float(&update[&handle::TIME_OF_DAY]))
+        .collect();
+    assert!(times[0] > 600.0);
+    assert!(times.windows(2).all(|pair| pair[0] < pair[1]), "{times:?}");
+    let worlds: Vec<f32> = updates
+        .iter()
+        .filter_map(|update| update.get(&handle::WORLD_TIME_SECONDS).map(float))
+        .collect();
+    assert!(worlds.len() >= 2);
+    assert!(worlds.windows(2).all(|pair| pair[1] - pair[0] >= 0.1));
+    // The level clock moved past its restored value after 1.1 s.
+    let levels: Vec<&RepValue> = updates
+        .iter()
+        .filter_map(|update| update.get(&handle::LEVEL_TIME_ELAPSED_SEC))
+        .collect();
+    assert!(!levels.is_empty());
+    assert!(
+        levels
+            .iter()
+            .all(|level| matches!(level, RepValue::Int(seconds) if *seconds > 1_000))
+    );
+    let advanced = lab(&app).time_of_day().unwrap().time_of_day();
+    assert!(advanced >= *times.last().unwrap());
+}

@@ -21,10 +21,14 @@
 //! inventories);
 //! with `[game_state]` identifiers the world's GameState on channel 4 (F-794:
 //! [`game_state_values`], plus a preserved world's prospect and game mode
-//! record, [`saved_game_state`]); with `[player_state]` identifiers the referenced
-//! PlayerState on channel 5 (F-784: PlayerId from 256, the Login name and
-//! unique net id, `bIsHost` for the first player only). Each open takes as
-//! many datagrams as it needs. Nothing else replicates.
+//! record, [`saved_game_state`], whose `TimeOfDay` then advances at the
+//! constant rate of its saved `SecondsPerGameDay`, F-806); with
+//! `[player_state]` identifiers the referenced PlayerState on channel 5
+//! (F-784: PlayerId from 256, the Login name and unique net id, `bIsHost`
+//! for the first player only). Each open takes as many datagrams as it
+//! needs. Once a connection acks the GameState open, its
+//! world time, level clock and time of day follow as property updates
+//! (F-805). Nothing else replicates.
 //!
 //! Ordering: the lab polls at most `PACKETS_PER_UPDATE` datagrams once per
 //! app update in `RunFixedMainLoopSystems::BeforeFixedMainLoop`, so network
@@ -54,6 +58,7 @@ use crate::{
         release::{ReleasePin, ReleaseProfile},
         rep_layout::{NetworkName, RepValue},
         session_open::ActorKey,
+        time_of_day::{RateCurve, TimeOfDayClock},
     },
     preservation::PreservedSection,
 };
@@ -120,10 +125,14 @@ pub fn pawn_content() -> PawnContent {
 /// `ElapsedTime` from the recorded level clock and no member playing (no
 /// connection is matched to a member), as the original showed for its
 /// loaded save (F-801); the game mode record's values; and the restored
-/// level clock (F-803).
+/// level clock (F-803); and a time-of-day clock from the saved `TimeOfDay`
+/// (F-806). The original's rate curve is world data and out of scope: the
+/// clock runs at the constant rate whose day lasts the saved positive
+/// `SecondsPerGameDay`.
 pub struct SavedGameState {
     pub values: BTreeMap<u32, RepValue>,
     pub level_time_elapsed_sec: Option<i32>,
+    pub time_of_day: Option<TimeOfDayClock>,
 }
 
 pub fn saved_game_state(section: &PreservedSection) -> Result<SavedGameState> {
@@ -138,9 +147,18 @@ pub fn saved_game_state(section: &PreservedSection) -> Result<SavedGameState> {
     if let Some(mode) = &saved.game_mode {
         values.extend(saved_game_mode_values(mode));
     }
+    let time_of_day = saved
+        .game_mode
+        .filter(|mode| mode.seconds_per_game_day > 0)
+        .map(|mode| {
+            RateCurve::for_seconds_per_game_day(mode.seconds_per_game_day)
+                .map(|curve| TimeOfDayClock::new(curve, mode.time_of_day))
+        })
+        .transpose()?;
     Ok(SavedGameState {
         values,
         level_time_elapsed_sec: level_time,
+        time_of_day,
     })
 }
 
@@ -150,6 +168,9 @@ pub fn apply_saved_game_state(lab: &mut PeerLab, section: &PreservedSection) -> 
     lab.extend_game_state_values(saved.values)?;
     if let Some(level_time) = saved.level_time_elapsed_sec {
         lab.set_game_state_level_time(level_time)?;
+    }
+    if let Some(clock) = saved.time_of_day {
+        lab.enable_time_of_day(clock)?;
     }
     Ok(())
 }

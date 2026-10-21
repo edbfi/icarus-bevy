@@ -430,6 +430,12 @@ fn a_preserved_world_supplies_the_session_game_state() {
     let saved = icarus_bevy::network::saved_game_state(&section).unwrap();
     assert_eq!(saved.values, expected_saved_values());
     assert_eq!(saved.level_time_elapsed_sec, Some(150));
+    // The saved time of day advances at the saved day length's rate (F-806).
+    let mut clock = saved.time_of_day.expect("a time-of-day clock");
+    assert_eq!(clock.time_of_day(), 12.5);
+    assert_eq!(clock.seconds_per_game_day(), 3_600);
+    clock.advance(10.0);
+    assert!((clock.time_of_day() - (12.5 + 10.0 * 1_440.0 / 3_600.0)).abs() < 1e-4);
     // Without the game mode recorder, the saved elapsed time stands and no
     // game mode values or level clock are added.
     let bare = PreservedSection::from_inner_payload(
@@ -444,6 +450,7 @@ fn a_preserved_world_supplies_the_session_game_state() {
     );
     assert!(!saved.values.contains_key(&handle::SEED_INITIALISED));
     assert_eq!(saved.level_time_elapsed_sec, None);
+    assert!(saved.time_of_day.is_none());
 }
 
 /// A child process killed and reaped when dropped, also when a test panics.
@@ -457,8 +464,8 @@ impl Drop for Killed {
 }
 
 /// `run` on a world preserved from a save sends the save's active prospect,
-/// game mode values and advancing level clock in its GameState open (real
-/// binary, authored probe on loopback).
+/// game mode values, advancing level clock and time of day in its GameState
+/// open (real binary, authored probe on loopback).
 #[test]
 fn run_replicates_a_preserved_worlds_prospect() {
     use icarus_bevy::experimental::{
@@ -640,7 +647,19 @@ fn run_replicates_a_preserved_worlds_prospect() {
             f32::from_bits(world_time)
         )))
     );
-    let expected = expected_saved_values();
+    // TimeOfDay: the saved 12.5 minutes advanced at 1440 / 3600 minutes
+    // per world second since the clock started, at most the world time.
+    let Some(RepValue::Float(time_of_day)) = sent.remove(&handle::TIME_OF_DAY) else {
+        panic!("time of day");
+    };
+    let time_of_day = f32::from_bits(time_of_day);
+    let latest = 12.5 + f32::from_bits(world_time) * 1_440.0 / 3_600.0;
+    assert!(
+        (12.5..=latest + 1e-3).contains(&time_of_day),
+        "{time_of_day} outside 12.5..={latest}"
+    );
+    let mut expected = expected_saved_values();
+    expected.remove(&handle::TIME_OF_DAY);
     sent.retain(|handle, _| expected.contains_key(handle));
     assert_eq!(sent, expected);
 }

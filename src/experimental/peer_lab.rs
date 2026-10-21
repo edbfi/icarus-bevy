@@ -69,7 +69,15 @@
 //!   [`LabPeer::reliable_actor_open_datagrams`], one actor and driver-wide
 //!   component GUIDs for every connection (`game_state_opens_sent`,
 //!   `game_state_open_errors`); with [`PeerLab::enable_player_state_open`]
-//!   the player's PlayerState comes last (F-784).
+//!   the player's PlayerState comes last (F-784). Once a connection's
+//!   GameState open is acked, [`PeerLab::poll`] sends it unreliable
+//!   GameState property updates at most every [`GAME_STATE_UPDATE_SECONDS`]
+//!   (the capture's cadence, F-805): `TimeOfDay` when it changed (with
+//!   [`PeerLab::enable_time_of_day`], advanced by [`TimeOfDayClock`],
+//!   F-806), the world time every [`WORLD_TIME_UPDATE_SECONDS`] and
+//!   `LevelTimeElapsedSec` when its whole second changed. A naked update's
+//!   values that were still the latest are sent again
+//!   (`game_state_updates_lost`).
 //! - Swap (ID 15, `NMT_PCSwap`) and Debug (ID 17, `NMT_DebugText`), when
 //!   [`PeerLabConfig::admission`] is `Some`: `Swap` evaluates
 //!   [`evaluate_pc_swap_target`] against the peer's splitscreen child count
@@ -154,7 +162,9 @@ use super::admission::{
 use super::control_messages::{
     ArchiveText, ControlFallback, ControlMessage, Decoded, NetIdValue, UniqueNetId,
 };
-use super::game_state_open::{GameStateOpenPlan, GameStateOpenState, compose_game_state_open};
+use super::game_state_open::{
+    GameStateOpenPlan, GameStateOpenState, compose_game_state_open, compose_game_state_update,
+};
 use super::handshake::decode;
 use super::handshake_lab::{
     CookieAuthority, HANDSHAKE_BYTES, HandshakeReply, PACKETS_PER_UPDATE, bind_loopback,
@@ -173,6 +183,7 @@ use super::session_open::{
     PlayerStateOpenPlan, PlayerStateOpenState, compose_actor_open, compose_player_controller_open,
     compose_player_state_open, movement_update_block, replicated_unique_net_id, resting_movement,
 };
+use super::time_of_day::TimeOfDayClock;
 
 /// Lab text of the Failure reply to Login; not an original message.
 pub const ADMISSION_DISABLED_MESSAGE: &str = "icarus-bevy peer lab: game admission is disabled";
@@ -459,6 +470,13 @@ pub struct PeerLabStats {
     pub game_state_opens_sent: u64,
     /// GameState opens that could not be composed or framed.
     pub game_state_open_errors: u64,
+    /// GameState property updates sent after its open was acked (F-805).
+    pub game_state_updates_sent: u64,
+    /// GameState updates that could not be composed or framed.
+    pub game_state_update_errors: u64,
+    /// Naked GameState updates whose values were still the latest and are
+    /// due again.
+    pub game_state_updates_lost: u64,
     /// PlayerState opens sent after the PlayerController open (F-784).
     pub player_state_opens_sent: u64,
     /// PlayerState opens that could not be composed or framed.
@@ -613,6 +631,101 @@ fn net_id_form(value: &NetIdValue) -> &'static str {
     }
 }
 
+/// The shortest interval between a connection's GameState updates: the
+/// M-707 server's 30 updates per second (F-805).
+pub const GAME_STATE_UPDATE_SECONDS: f32 = 1.0 / 30.0;
+
+/// How often the world time (`ReplicatedWorldTimeSeconds`) is sent: every
+/// third GameState update in the capture, UE's 0.1 s default (F-805).
+pub const WORLD_TIME_UPDATE_SECONDS: f32 = 0.1;
+
+/// The GameState handles updates carry: the world time, `TimeOfDay` and
+/// `LevelTimeElapsedSec`.
+const UPDATE_HANDLES: [u32; 3] = [
+    super::game_state_open::handle::WORLD_TIME_SECONDS,
+    super::game_state_open::handle::TIME_OF_DAY,
+    super::game_state_open::handle::LEVEL_TIME_ELAPSED_SEC,
+];
+
+/// What one connection last received of the GameState's changing values.
+#[derive(Default)]
+struct GameStateReplica {
+    /// Each update handle's last sent value; a missing handle is due.
+    sent: BTreeMap<u32, RepValue>,
+    /// World time of the last sent world time.
+    world_time_at: f32,
+    /// Updates awaiting the client's ack or nak: packet ID -> handles.
+    in_flight: BTreeMap<u32, Vec<u32>>,
+    /// Each handle's latest update packet; only its nak repairs.
+    last_packet: BTreeMap<u32, u32>,
+}
+
+impl GameStateReplica {
+    /// What is due at `world_seconds`: the world time when it is missing or
+    /// [`WORLD_TIME_UPDATE_SECONDS`] old, and every `changing` value that
+    /// differs from the one sent.
+    fn due(
+        &self,
+        world_seconds: f32,
+        changing: &[(u32, Option<RepValue>)],
+    ) -> BTreeMap<u32, RepValue> {
+        use super::game_state_open::handle::WORLD_TIME_SECONDS;
+        let mut values = BTreeMap::new();
+        if !self.sent.contains_key(&WORLD_TIME_SECONDS)
+            || world_seconds - self.world_time_at >= WORLD_TIME_UPDATE_SECONDS
+        {
+            values.insert(WORLD_TIME_SECONDS, RepValue::Float(world_seconds.to_bits()));
+        }
+        for (handle, value) in changing {
+            if let Some(value) = value
+                && self.sent.get(handle) != Some(value)
+            {
+                values.insert(*handle, value.clone());
+            }
+        }
+        values
+    }
+
+    /// Record `values` as sent in packet `packet_id` at `world_seconds`.
+    fn sent(&mut self, packet_id: u32, values: BTreeMap<u32, RepValue>, world_seconds: f32) {
+        use super::game_state_open::handle::WORLD_TIME_SECONDS;
+        if values.contains_key(&WORLD_TIME_SECONDS) {
+            self.world_time_at = world_seconds;
+        }
+        let handles: Vec<u32> = values.keys().copied().collect();
+        for (handle, value) in values {
+            self.sent.insert(handle, value);
+            self.last_packet.insert(handle, packet_id);
+        }
+        self.in_flight.insert(packet_id, handles);
+        // Only a handle's latest packet repairs: at most three stay.
+        let latest = &self.last_packet;
+        self.in_flight
+            .retain(|id, _| latest.values().any(|packet| packet == id));
+    }
+
+    fn acked(&mut self, packet_id: u32) {
+        self.in_flight.remove(&packet_id);
+    }
+
+    /// The client lost `packet_id`: its values that no newer packet carried
+    /// are due again. Returns whether any was.
+    fn naked(&mut self, packet_id: u32) -> bool {
+        let Some(handles) = self.in_flight.remove(&packet_id) else {
+            return false;
+        };
+        let mut lost = false;
+        for handle in handles {
+            if self.last_packet.get(&handle) == Some(&packet_id) {
+                self.last_packet.remove(&handle);
+                self.sent.remove(&handle);
+                lost = true;
+            }
+        }
+        lost
+    }
+}
+
 struct PeerEntry {
     peer: LabPeer,
     /// The cookie that created this peer; compared only, never reported.
@@ -647,6 +760,8 @@ struct PeerEntry {
     movement_in_flight: BTreeMap<u32, u64>,
     /// Each actor's latest movement update packet; only its nak repairs.
     last_movement_packet: BTreeMap<u64, u32>,
+    /// The GameState's updated values, once its open was sent.
+    game_state: Option<GameStateReplica>,
 }
 
 /// A player registered by `AGameSession::RegisterPlayer` (F-784): its
@@ -665,6 +780,11 @@ struct GameStateSession {
     /// The restored `LevelTimeElapsedSec`, advanced with the world time at
     /// each send.
     level_time: Option<i32>,
+    /// The world's time of day, advanced to `clock_at` world seconds.
+    clock: Option<TimeOfDayClock>,
+    clock_at: f32,
+    /// World seconds of the last GameState update pass.
+    updated_at: f32,
 }
 
 /// The loopback peer lab. `Debug` reports only the peer count and counters.
@@ -1078,6 +1198,9 @@ impl PeerLab {
             state,
             channel_index,
             level_time: None,
+            clock: None,
+            clock_at: 0.0,
+            updated_at: 0.0,
         });
         Ok(())
     }
@@ -1111,6 +1234,29 @@ impl PeerLab {
         };
         session.level_time = Some(restored);
         Ok(())
+    }
+
+    /// Advance the GameState's `TimeOfDay` with `clock` from now on (F-806):
+    /// opens carry its current value and updates its changes. Fails without
+    /// a GameState open.
+    pub fn enable_time_of_day(&mut self, clock: TimeOfDayClock) -> Result<()> {
+        let world_seconds = self.world_seconds();
+        let Some(session) = &mut self.game_state_open else {
+            bail!("no GameState open is enabled");
+        };
+        session.clock = Some(clock);
+        session.clock_at = world_seconds;
+        Ok(())
+    }
+
+    /// The GameState's current `TimeOfDay` clock, if enabled.
+    pub fn time_of_day(&self) -> Option<&TimeOfDayClock> {
+        self.game_state_open.as_ref()?.clock.as_ref()
+    }
+
+    /// World seconds: real time since bind (the lab's world clock).
+    fn world_seconds(&self) -> f32 {
+        self.started.elapsed().as_secs_f32()
     }
 
     /// After [`enable_player_controller_open`](Self::enable_player_controller_open),
@@ -1390,6 +1536,7 @@ impl PeerLab {
                         actor_locations: BTreeMap::new(),
                         movement_in_flight: BTreeMap::new(),
                         last_movement_packet: BTreeMap::new(),
+                        game_state: None,
                     },
                 );
                 self.peak_peers = self.peak_peers.max(self.peers.len());
@@ -1442,6 +1589,18 @@ impl PeerLab {
                                 entry.last_movement_packet.remove(&key);
                                 entry.actor_locations.remove(&key);
                                 bump(&mut self.stats.actor_updates_lost);
+                            }
+                        }
+                        // Likewise a naked GameState update's values that
+                        // no newer update carried.
+                        if let Some(replica) = &mut entry.game_state {
+                            for packet_id in &summary.acked {
+                                replica.acked(*packet_id);
+                            }
+                            for packet_id in &summary.naked {
+                                if replica.naked(*packet_id) {
+                                    bump(&mut self.stats.game_state_updates_lost);
+                                }
                             }
                         }
                         if summary.control_close_seen {
@@ -1926,6 +2085,20 @@ impl PeerLab {
         let mut exports = entry.exports.clone();
         let mut state = session.state.clone();
         let world_seconds = self.started.elapsed().as_secs_f32();
+        if let Some(clock) = &session.clock {
+            // An open sends only values that differ from the default (0).
+            let time_of_day = clock.time_of_day();
+            if time_of_day == 0.0 {
+                state
+                    .values
+                    .remove(&super::game_state_open::handle::TIME_OF_DAY);
+            } else {
+                state.values.insert(
+                    super::game_state_open::handle::TIME_OF_DAY,
+                    RepValue::Float(time_of_day.to_bits()),
+                );
+            }
+        }
         state.values.insert(
             super::game_state_open::handle::WORLD_TIME_SECONDS,
             RepValue::Float(world_seconds.to_bits()),
@@ -1967,6 +2140,24 @@ impl PeerLab {
         commit_exports(&mut exports, &sent);
         entry.exports = exports;
         entry.ack_pending = false;
+        // The open's values are what the connection has; a lost open is
+        // resent whole, as it is reliable.
+        let mut replica = GameStateReplica {
+            world_time_at: world_seconds,
+            ..GameStateReplica::default()
+        };
+        for handle in UPDATE_HANDLES {
+            let value = state.values.get(&handle).cloned().unwrap_or_else(|| {
+                // Absent from an open: the class default.
+                if handle == super::game_state_open::handle::LEVEL_TIME_ELAPSED_SEC {
+                    RepValue::Int(0)
+                } else {
+                    RepValue::Float(0.0f32.to_bits())
+                }
+            });
+            replica.sent.insert(handle, value);
+        }
+        entry.game_state = Some(replica);
         self.guid_cache = cache;
         if self.send_all(&sent, address) {
             bump(&mut self.stats.game_state_opens_sent);
@@ -2115,6 +2306,101 @@ impl PeerLab {
             self.data(address, length, now);
         }
         self.send_acks();
+        self.update_game_state();
+    }
+
+    /// One GameState update pass (module docs): advance the clock to the
+    /// world time, then, at most every [`GAME_STATE_UPDATE_SECONDS`], send
+    /// each connection whose GameState open is acked the values it lacks.
+    fn update_game_state(&mut self) {
+        use super::game_state_open::handle;
+        let world_seconds = self.world_seconds();
+        let Some(session) = &mut self.game_state_open else {
+            return;
+        };
+        if let Some(clock) = &mut session.clock {
+            clock.advance(world_seconds - session.clock_at);
+            session.clock_at = world_seconds;
+        }
+        if world_seconds - session.updated_at < GAME_STATE_UPDATE_SECONDS {
+            return;
+        }
+        session.updated_at = world_seconds;
+        let changing = [
+            (
+                handle::TIME_OF_DAY,
+                session
+                    .clock
+                    .as_ref()
+                    .map(|clock| RepValue::Float(clock.time_of_day().to_bits())),
+            ),
+            (
+                handle::LEVEL_TIME_ELAPSED_SEC,
+                session.level_time.map(|restored| {
+                    RepValue::Int(super::game_state_open::level_time_elapsed_sec(
+                        restored,
+                        world_seconds,
+                    ))
+                }),
+            ),
+        ];
+        let (channel, layout, engine) = (
+            session.channel_index,
+            &session.plan.layout,
+            session.plan.engine_net_version,
+        );
+        let mut outgoing = Vec::new();
+        let mut failed = Vec::new();
+        for (address, entry) in &mut self.peers {
+            let Some(replica) = &entry.game_state else {
+                continue;
+            };
+            if !entry.peer.actor_channel_settled(channel) {
+                continue;
+            }
+            let values = replica.due(world_seconds, &changing);
+            if values.is_empty() {
+                continue;
+            }
+            let packet_id = entry.peer.sequencer().out_packet_id();
+            let sent = compose_game_state_update(
+                layout,
+                engine,
+                &values,
+                entry.peer.connection_byte_order(),
+            )
+            .and_then(|payload| entry.peer.actor_update(channel, payload));
+            match sent {
+                Ok(datagram) => {
+                    entry.ack_pending = false;
+                    outgoing.push((*address, datagram, packet_id, values));
+                }
+                Err(_) => {
+                    bump(&mut self.stats.game_state_update_errors);
+                    if entry.peer.is_failed() {
+                        failed.push(*address);
+                    }
+                }
+            }
+        }
+        for address in failed {
+            self.peers.remove(&address);
+            bump(&mut self.stats.peers_failed);
+        }
+        for (address, datagram, packet_id, values) in outgoing {
+            // Not recorded when unsent: the next pass builds it again.
+            if !self.send(&datagram, address) {
+                continue;
+            }
+            if let Some(replica) = self
+                .peers
+                .get_mut(&address)
+                .and_then(|entry| entry.game_state.as_mut())
+            {
+                replica.sent(packet_id, values, world_seconds);
+                bump(&mut self.stats.game_state_updates_sent);
+            }
+        }
     }
 }
 
@@ -2144,6 +2430,55 @@ fn poll_peer_lab(mut lab: ResMut<PeerLab>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn game_state_replicas_send_what_is_due_and_repair_only_the_latest() {
+        use super::super::game_state_open::handle::{
+            LEVEL_TIME_ELAPSED_SEC, TIME_OF_DAY, WORLD_TIME_SECONDS,
+        };
+        let float = |value: f32| RepValue::Float(value.to_bits());
+        let mut replica = GameStateReplica {
+            world_time_at: 10.0,
+            ..GameStateReplica::default()
+        };
+        replica.sent.insert(WORLD_TIME_SECONDS, float(10.0));
+        replica.sent.insert(TIME_OF_DAY, float(600.0));
+        replica
+            .sent
+            .insert(LEVEL_TIME_ELAPSED_SEC, RepValue::Int(5));
+        let changing = |tod: f32, level: i32| {
+            [
+                (TIME_OF_DAY, Some(float(tod))),
+                (LEVEL_TIME_ELAPSED_SEC, Some(RepValue::Int(level))),
+            ]
+        };
+        // Nothing changed and the world time is fresh: nothing is due.
+        assert!(replica.due(10.05, &changing(600.0, 5)).is_empty());
+        // A changed time of day alone, then the world time once 0.1 s old.
+        let due = replica.due(10.05, &changing(600.5, 5));
+        assert_eq!(due.keys().copied().collect::<Vec<_>>(), [TIME_OF_DAY]);
+        replica.sent(1, due, 10.05);
+        let due = replica.due(10.1, &changing(601.0, 6));
+        assert_eq!(
+            due.keys().copied().collect::<Vec<_>>(),
+            [WORLD_TIME_SECONDS, TIME_OF_DAY, LEVEL_TIME_ELAPSED_SEC]
+        );
+        replica.sent(2, due, 10.1);
+        assert_eq!(replica.world_time_at, 10.1);
+        // Packet 1's handle is now carried by packet 2: its nak repairs
+        // nothing, and only latest packets stay in flight.
+        assert_eq!(replica.in_flight.keys().copied().collect::<Vec<_>>(), [2]);
+        assert!(!replica.naked(1));
+        // Losing packet 2 makes all three due again, even unchanged.
+        assert!(replica.naked(2));
+        assert_eq!(replica.due(10.15, &changing(601.0, 6)).len(), 3);
+        // An acked packet is forgotten; its nak (never sent) changes nothing.
+        let due = replica.due(10.15, &changing(601.0, 6));
+        replica.sent(3, due, 10.15);
+        replica.acked(3);
+        assert!(!replica.naked(3));
+        assert!(replica.due(10.2, &changing(601.0, 6)).is_empty());
+    }
 
     #[test]
     fn config_is_validated() {
