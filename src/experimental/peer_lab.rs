@@ -75,7 +75,9 @@
 //!   (the capture's cadence, F-805): `TimeOfDay` when it changed (with
 //!   [`PeerLab::enable_time_of_day`], advanced by [`TimeOfDayClock`],
 //!   F-806), the world time every [`WORLD_TIME_UPDATE_SECONDS`] and
-//!   `LevelTimeElapsedSec` when its whole second changed. A naked update's
+//!   `LevelTimeElapsedSec` when its whole second changed, and `ServerFPS`
+//!   when it changed (with [`PeerLab::enable_server_fps`], measured over
+//!   the lab's own poll intervals by [`ServerFpsMeter`]). A naked update's
 //!   values that were still the latest are sent again
 //!   (`game_state_updates_lost`).
 //! - Swap (ID 15, `NMT_PCSwap`) and Debug (ID 17, `NMT_DebugText`), when
@@ -178,6 +180,7 @@ use super::packet_lab::{
 use super::pawn_open::{PawnContent, PawnOpenPlan, PawnOpenState, compose_pawn_open};
 use super::release::ReleaseProfile;
 use super::rep_layout::RepValue;
+use super::server_fps::ServerFpsMeter;
 use super::session_open::{
     ActorKey, ActorOpenSpec, ConnectionExports, NetGuidCache, PlayerControllerOpenPlan,
     PlayerStateOpenPlan, PlayerStateOpenState, compose_actor_open, compose_player_controller_open,
@@ -639,12 +642,13 @@ pub const GAME_STATE_UPDATE_SECONDS: f32 = 1.0 / 30.0;
 /// third GameState update in the capture, UE's 0.1 s default (F-805).
 pub const WORLD_TIME_UPDATE_SECONDS: f32 = 0.1;
 
-/// The GameState handles updates carry: the world time, `TimeOfDay` and
-/// `LevelTimeElapsedSec`.
-const UPDATE_HANDLES: [u32; 3] = [
+/// The GameState handles updates carry: the world time, `TimeOfDay`,
+/// `LevelTimeElapsedSec` and `ServerFPS`.
+const UPDATE_HANDLES: [u32; 4] = [
     super::game_state_open::handle::WORLD_TIME_SECONDS,
     super::game_state_open::handle::TIME_OF_DAY,
     super::game_state_open::handle::LEVEL_TIME_ELAPSED_SEC,
+    super::game_state_open::handle::SERVER_FPS,
 ];
 
 /// What one connection last received of the GameState's changing values.
@@ -783,6 +787,9 @@ struct GameStateSession {
     /// The world's time of day, advanced to `clock_at` world seconds.
     clock: Option<TimeOfDayClock>,
     clock_at: f32,
+    /// `ServerFPS` over the poll intervals, the last poll at `polled_at`.
+    fps: Option<ServerFpsMeter>,
+    polled_at: f32,
     /// World seconds of the last GameState update pass.
     updated_at: f32,
 }
@@ -1200,6 +1207,8 @@ impl PeerLab {
             level_time: None,
             clock: None,
             clock_at: 0.0,
+            fps: None,
+            polled_at: 0.0,
             updated_at: 0.0,
         });
         Ok(())
@@ -1247,6 +1256,24 @@ impl PeerLab {
         session.clock = Some(clock);
         session.clock_at = world_seconds;
         Ok(())
+    }
+
+    /// Measure `ServerFPS` with `meter` over the intervals between polls
+    /// from now on: opens carry its last value and updates its changes.
+    /// Fails without a GameState open.
+    pub fn enable_server_fps(&mut self, meter: ServerFpsMeter) -> Result<()> {
+        let world_seconds = self.world_seconds();
+        let Some(session) = &mut self.game_state_open else {
+            bail!("no GameState open is enabled");
+        };
+        session.fps = Some(meter);
+        session.polled_at = world_seconds;
+        Ok(())
+    }
+
+    /// The GameState's `ServerFPS` meter, if enabled.
+    pub fn server_fps(&self) -> Option<&ServerFpsMeter> {
+        self.game_state_open.as_ref()?.fps.as_ref()
     }
 
     /// The GameState's current `TimeOfDay` clock, if enabled.
@@ -2085,6 +2112,18 @@ impl PeerLab {
         let mut exports = entry.exports.clone();
         let mut state = session.state.clone();
         let world_seconds = self.started.elapsed().as_secs_f32();
+        if let Some(meter) = &session.fps {
+            // As for the time of day below: 0 is the default and unsent.
+            match meter.fps() {
+                0 => state
+                    .values
+                    .remove(&super::game_state_open::handle::SERVER_FPS),
+                fps => state.values.insert(
+                    super::game_state_open::handle::SERVER_FPS,
+                    RepValue::Int(fps),
+                ),
+            };
+        }
         if let Some(clock) = &session.clock {
             // An open sends only values that differ from the default (0).
             let time_of_day = clock.time_of_day();
@@ -2149,7 +2188,9 @@ impl PeerLab {
         for handle in UPDATE_HANDLES {
             let value = state.values.get(&handle).cloned().unwrap_or_else(|| {
                 // Absent from an open: the class default.
-                if handle == super::game_state_open::handle::LEVEL_TIME_ELAPSED_SEC {
+                if handle == super::game_state_open::handle::LEVEL_TIME_ELAPSED_SEC
+                    || handle == super::game_state_open::handle::SERVER_FPS
+                {
                     RepValue::Int(0)
                 } else {
                     RepValue::Float(0.0f32.to_bits())
@@ -2322,6 +2363,10 @@ impl PeerLab {
             clock.advance(world_seconds - session.clock_at);
             session.clock_at = world_seconds;
         }
+        if let Some(meter) = &mut session.fps {
+            meter.observe(world_seconds - session.polled_at);
+            session.polled_at = world_seconds;
+        }
         if world_seconds - session.updated_at < GAME_STATE_UPDATE_SECONDS {
             return;
         }
@@ -2333,6 +2378,10 @@ impl PeerLab {
                     .clock
                     .as_ref()
                     .map(|clock| RepValue::Float(clock.time_of_day().to_bits())),
+            ),
+            (
+                handle::SERVER_FPS,
+                session.fps.as_ref().map(|meter| RepValue::Int(meter.fps())),
             ),
             (
                 handle::LEVEL_TIME_ELAPSED_SEC,
