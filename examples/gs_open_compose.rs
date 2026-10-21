@@ -191,6 +191,9 @@ fn main() -> Result<()> {
     for _ in 0..file.burn_dynamic {
         cache.assign_dynamic();
     }
+    // The client had acked those exports when the capture's open went out.
+    exports.commit_bunch(1);
+    exports.received_ack(1);
     // Managers keyed 1..=7 in handle order; the GameState is a session key.
     let key = |index: u64| {
         supplied_managers

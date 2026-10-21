@@ -13,8 +13,10 @@
 //!
 //! GUIDs follow a deterministic policy that reproduces the capture's numbering:
 //! static GUIDs are odd and assigned leaf-first along an outer chain, dynamic
-//! GUIDs are even and assigned in serialization order, and each connection
-//! exports a given static path once. Identifiers and checksums are caller
+//! GUIDs are even and assigned in serialization order, and a connection
+//! receives a stably named object's full path once per bunch until a packet
+//! carrying it is acked ([`ConnectionExports`], F-796). Identifiers and
+//! checksums are caller
 //! data (per release); nothing here reads original files. Checksums come from
 //! [`super::class_checksum`].
 use std::collections::{BTreeMap, BTreeSet};
@@ -100,10 +102,16 @@ pub struct NetGuidCache {
     keyed: BTreeMap<(ActorKey, Option<String>), u32>,
 }
 
-/// Which GUIDs one connection has already received with their paths.
+/// One connection's `NetGUIDAckStatus` (F-796): a GUID's full path is sent
+/// with every reference until a packet that carried it is acked, and once per
+/// bunch. A GUID is not acked (absent), pending on the packet that first
+/// carried its export, or acked.
 #[derive(Clone, Debug, Default)]
 pub struct ConnectionExports {
-    exported: BTreeSet<u32>,
+    /// Pending (`Some(packet_id)`) or acked (`None`) GUIDs.
+    status: BTreeMap<u32, Option<u32>>,
+    /// GUIDs exported in the bunch being composed (`ExportNetGUIDs`).
+    bunch: BTreeSet<u32>,
 }
 
 impl ConnectionExports {
@@ -111,8 +119,50 @@ impl ConnectionExports {
         Self::default()
     }
 
-    pub fn contains(&self, guid: u32) -> bool {
-        self.exported.contains(&guid)
+    /// Whether a packet carrying `guid`'s export has been acked.
+    pub fn is_acked(&self, guid: u32) -> bool {
+        self.status.get(&guid) == Some(&None)
+    }
+
+    /// `ShouldSendFullPath` for a stably named object: not yet acked and not
+    /// already exported in the current bunch.
+    fn should_send_full_path(&self, guid: u32) -> bool {
+        !self.is_acked(guid) && !self.bunch.contains(&guid)
+    }
+
+    /// Start composing a new bunch (an empty `ExportNetGUIDs`).
+    pub fn begin_bunch(&mut self) {
+        self.bunch.clear();
+    }
+
+    /// GUIDs exported in the current bunch, ascending.
+    pub fn bunch_exports(&self) -> impl Iterator<Item = u32> + '_ {
+        self.bunch.iter().copied()
+    }
+
+    /// `NotifyBunchCommit`: the current bunch's exports went out in
+    /// `packet_id`; a not-acked GUID becomes pending on it, a pending one
+    /// keeps its first packet. Starts a new bunch.
+    pub fn commit_bunch(&mut self, packet_id: u32) {
+        for guid in std::mem::take(&mut self.bunch) {
+            self.status.entry(guid).or_insert(Some(packet_id));
+        }
+    }
+
+    /// `ReceivedAck`: GUIDs pending on `packet_id` or earlier are acked.
+    /// Acks and naks must be applied in packet order.
+    pub fn received_ack(&mut self, packet_id: u32) {
+        for status in self.status.values_mut() {
+            if matches!(status, Some(pending) if *pending <= packet_id) {
+                *status = None;
+            }
+        }
+    }
+
+    /// `ReceivedNak`: GUIDs pending on exactly `packet_id` are not acked
+    /// again, so their next reference exports them again.
+    pub fn received_nak(&mut self, packet_id: u32) {
+        self.status.retain(|_, status| *status != Some(packet_id));
     }
 }
 
@@ -168,11 +218,11 @@ impl NetGuidCache {
         component: &ComponentExport,
     ) -> Result<NetGuidRef> {
         let guid = self.keyed_guid(key, Some(&component.name));
-        if exports.contains(guid) {
+        if !exports.should_send_full_path(guid) {
             return Ok(NetGuidRef::plain(guid));
         }
         let reference = subobject_export(guid, actor, component)?;
-        exports.exported.insert(guid);
+        exports.bunch.insert(guid);
         Ok(reference)
     }
 
@@ -198,17 +248,19 @@ impl NetGuidCache {
         leaf
     }
 
-    /// The reference for a static chain: a full export (with outers) the first
-    /// time `exports`' connection sees the leaf, a plain reference afterwards.
+    /// The reference for a static chain: a full export (outers by the same
+    /// rule) while `exports` says the full path should be sent, a plain
+    /// reference otherwise (F-796).
     pub fn export_static(
         &mut self,
         exports: &mut ConnectionExports,
         chain: &[PathSegment],
     ) -> Result<NetGuidRef> {
         let guid = self.assign_static(chain);
-        if !exports.exported.insert(guid) {
+        if !exports.should_send_full_path(guid) {
             return Ok(NetGuidRef::plain(guid));
         }
+        exports.bunch.insert(guid);
         let segment = chain.first().context("empty static chain")?;
         let outer = if chain.len() > 1 {
             self.export_static(exports, &chain[1..])?
@@ -237,7 +289,7 @@ impl NetGuidCache {
         component: &ComponentExport,
     ) -> Result<(u32, NetGuidRef)> {
         let guid = self.assign_dynamic();
-        exports.exported.insert(guid);
+        exports.bunch.insert(guid);
         Ok((guid, subobject_export(guid, actor, component)?))
     }
 
@@ -547,6 +599,7 @@ pub fn compose_player_controller_open(
         order,
         limits: ActorChannelLimits::default(),
     };
+    exports.begin_bunch();
     let (guids, references) = cache.player_controller_exports(exports, &plan.profile)?;
     let export_payload = encode_exports(&references, &codec)?;
     let state = PlayerControllerOpenState {
@@ -635,7 +688,8 @@ pub struct PlayerStateOpenState {
 }
 
 /// One composed actor open: the export-only payload (absent when every path
-/// was already exported to the connection) and the open bunch.
+/// when no reference needs its full path on the connection, F-796) and the
+/// open bunch.
 #[derive(Clone, Debug)]
 pub struct ComposedActorOpen {
     pub exports: Option<Payload>,
@@ -771,6 +825,7 @@ pub fn compose_actor_open(
     order: super::archive::ByteOrder,
 ) -> Result<ComposedActorOpen> {
     let codec = actor_codec(engine_net_version, order);
+    exports.begin_bunch();
     let archetype = cache.export_static(exports, &spec.archetype)?;
     let level = cache.export_static(exports, &spec.level)?;
     let export_payload = exports_of(&[archetype.clone(), level.clone()], &codec)?;

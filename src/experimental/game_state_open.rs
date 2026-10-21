@@ -4,7 +4,7 @@
 //! after Join. Its open carries:
 //!
 //! - an export prefix with the archetype (`Default__<Class>_C` and its
-//!   package), the level when the connection lacks it, the `GameModeClass`
+//!   package), the level unless the connection acked it, the `GameModeClass`
 //!   and `SpectatorClass` class chains, and the `ConnectedPlayers`,
 //!   `DialogueSystem` and `WeatherComp` components under the actor;
 //! - a dynamic spawn without location;
@@ -233,6 +233,7 @@ pub fn compose_game_state_open(
     }
     let codec = actor_codec(plan.engine_net_version, order);
     let actor = cache.actor_guid(state.key);
+    exports.begin_bunch();
     let archetype = cache.export_static(exports, &plan.archetype)?;
     let level = cache.export_static(exports, &plan.level)?;
     let game_mode = cache.export_static(exports, &plan.game_mode_class)?;

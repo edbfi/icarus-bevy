@@ -1385,6 +1385,79 @@ fn the_game_state_open_follows_the_controller_over_several_datagrams() {
     assert!(carrying >= 2, "the GameState spans datagrams");
 }
 
+#[test]
+fn exports_repeat_until_their_packet_is_acked_and_again_after_a_nak() {
+    use icarus_bevy::experimental::session_open::{ActorOpenSpec, PathSegment, map_level_chain};
+    let config = PeerLabConfig {
+        admission: Some(PeerLabAdmission::default()),
+        ..PeerLabConfig::default()
+    };
+    let (mut app, address) = lab_app(config);
+    let mut client = Client::connect(&mut app, address);
+    client.exchange(&mut app, short_hello("", 0), false);
+    client.exchange(&mut app, login(), false);
+    client.exchange(&mut app, ControlMessage::Join, false);
+    accept_all_headers(&mut client);
+    let connection = lab(&app).joined_connections()[0];
+    let spec = |name: &str| ActorOpenSpec {
+        actor: 0,
+        archetype: vec![
+            PathSegment::new(&format!("Default__{name}_C"), 0x0cab_0cab, false),
+            PathSegment::new(&format!("/Game/Lab/{name}"), 0, false),
+        ],
+        level: map_level_chain(PeerLabAdmission::default().map_url).unwrap(),
+        location: Some([0.0; 3]),
+        blocks: Vec::new(),
+    };
+    // Whether each queued open datagram starts with an export-only part.
+    let exported = |client: &mut Client, accept: bool| -> Vec<bool> {
+        let datagrams = drain(client);
+        datagrams
+            .iter()
+            .map(|datagram| {
+                let packet = read_packet(datagram, &to_client()).unwrap();
+                if accept && let Some(received) = client.sequencer.receive(&packet.header).unwrap()
+                {
+                    client.sequencer.ack_seq(received.sequence, true).unwrap();
+                }
+                packet.bunches[0].header.has_package_map_exports
+            })
+            .collect()
+    };
+    let open = |app: &mut App, key: u64, name: &str| {
+        let mut lab_mut = app.world_mut().resource_mut::<PeerLab>();
+        lab_mut
+            .open_actor(connection, key, spec(name), 2, 17)
+            .unwrap();
+    };
+    // Two opens before any ack: both export the archetype (F-796).
+    open(&mut app, 7, "LabCart");
+    open(&mut app, 8, "LabCart");
+    assert_eq!(exported(&mut client, true), [true, true]);
+    // Once the client acks them, a third open references it plainly.
+    let (ack, _) = client.packet(Vec::new());
+    client.send(&ack);
+    app.update();
+    accept_all_headers(&mut client);
+    open(&mut app, 9, "LabCart");
+    assert_eq!(exported(&mut client, true), [false]);
+
+    // A new archetype whose open is lost: the nak returns it to not acked,
+    // so the next open exports it again.
+    open(&mut app, 10, "LabBox");
+    assert_eq!(exported(&mut client, false), [true], "lost");
+    let (keepalive, _) = client.packet(Vec::new());
+    client.send(&keepalive);
+    app.update();
+    accept_all_headers(&mut client);
+    let (report, _) = client.packet(Vec::new());
+    client.send(&report);
+    app.update();
+    accept_all_headers(&mut client);
+    open(&mut app, 11, "LabBox");
+    assert_eq!(exported(&mut client, true), [true]);
+}
+
 /// Accept every queued lab datagram's header as the client (acks only).
 fn accept_all_headers(client: &mut Client) -> usize {
     let datagrams = drain(client);

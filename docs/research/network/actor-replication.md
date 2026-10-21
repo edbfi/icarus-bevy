@@ -60,7 +60,8 @@ original's first post-Join bunch opens the PlayerController channel (F-778),
 which the native composer reproduces bit for bit (F-779). The GameState open
 names its manager actors by GUIDs assigned on first reference, before their
 own opens, and is also reproduced bit for bit (F-794); `run` sends the
-PlayerController, GameState and PlayerState opens after Join (F-795).
+PlayerController, GameState and PlayerState opens after Join (F-795). Paths
+are exported again until a packet carrying them is acked (F-796).
 
 ## Open
 
@@ -69,4 +70,4 @@ PlayerController, GameState and PlayerState opens after Join (F-795).
 
 ## Artifacts
 
-M-420..M-449, M-455..M-470, M-570..M-576, M-581..M-588, M-600..M-605, M-707..M-717, M-720, M-728..M-748, M-776, M-777, M-782, M-794, M-795, M-797..M-799, M-801, M-802, M-804, M-805, M-807, M-813..M-819, M-832.
+M-420..M-449, M-455..M-470, M-570..M-576, M-581..M-588, M-600..M-605, M-707..M-717, M-720, M-728..M-748, M-776, M-777, M-782, M-794, M-795, M-797..M-799, M-801, M-802, M-804, M-805, M-807, M-813..M-819, M-832, M-834.

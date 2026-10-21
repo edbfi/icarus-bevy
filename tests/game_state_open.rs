@@ -121,7 +121,10 @@ fn game_state_open_composes_references_in_the_captured_order() {
     let plan = plan();
     let mut cache = NetGuidCache::new();
     let mut exports = ConnectionExports::new();
+    // The level went out in packet 1, which the client acked (F-796).
     cache.export_static(&mut exports, &plan.level).unwrap();
+    exports.commit_bunch(1);
+    exports.received_ack(1);
     let open = compose_game_state_open(
         &mut cache,
         &mut exports,
@@ -215,16 +218,17 @@ fn every_connection_gets_the_same_guids_with_its_own_exports() {
     assert_eq!(one.bunch.payload, two.bunch.payload);
     // A manager's own open later reuses the GUID the GameState named.
     assert_eq!(cache.actor_guid(FLOD), 10);
-    // Reopening on a connection that has every path exports nothing.
-    let again = compose_game_state_open(
-        &mut cache,
-        &mut first,
-        &plan,
-        &state(),
-        6,
-        ByteOrder::Little,
-    )
-    .unwrap();
+    // Until a packet carrying them is acked, every open exports the paths
+    // again (F-796); afterwards it exports nothing.
+    let mut reopen = |exports: &mut ConnectionExports| {
+        compose_game_state_open(&mut cache, exports, &plan, &state(), 6, ByteOrder::Little).unwrap()
+    };
+    first.commit_bunch(1);
+    let pending = reopen(&mut first);
+    assert_eq!(pending.exports, one.exports);
+    first.commit_bunch(2);
+    first.received_ack(1);
+    let again = reopen(&mut first);
     assert!(again.exports.is_none());
     assert_eq!(again.bunch.payload, one.bunch.payload);
 }

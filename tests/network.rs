@@ -1315,18 +1315,22 @@ fn replication_selections_open_archetyped_actors_on_free_channels() {
         ..probe_config().packet
     };
     // Channels 2 to 4 hold the PlayerController, GameState and PlayerState;
-    // the actors take the next free ones. Only the first carries the
-    // archetype export.
-    let second = read_packet(&replies[4], &to_client).unwrap();
-    let [only] = second.bunches.as_slice() else {
-        panic!("a repeated archetype needs no export part");
-    };
-    assert_eq!(only.header.channel_index, 6);
+    // the actors take the next free ones. The second open exports the same
+    // archetype again unless the client acked the first one's packet in
+    // between (F-796).
     let packet = read_packet(&replies[3], &to_client).unwrap();
     let [exports, body] = packet.bunches.as_slice() else {
         panic!("the actor open travels as exports plus body");
     };
     assert_eq!(body.header.channel_index, 5);
+    let second = read_packet(&replies[4], &to_client).unwrap();
+    let second_body = second.bunches.last().unwrap();
+    assert_eq!(second_body.header.channel_index, 6);
+    match second.bunches.as_slice() {
+        [_] => {}
+        [again, _] => assert!(again.header.has_package_map_exports),
+        other => panic!("{} bunches in the second open", other.len()),
+    }
     let codec = ActorChannelCodec {
         engine_net_version: profile.engine_network_version,
         exports_enabled: false,

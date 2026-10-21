@@ -99,7 +99,7 @@ fn encoded_exports_decode_back_into_the_package_map() {
 }
 
 #[test]
-fn a_connection_exports_each_static_path_once() {
+fn a_path_is_exported_once_per_bunch_until_a_carrying_packet_is_acked() {
     let profile = profile();
     let mut cache = NetGuidCache::new();
     cache.register_level(&profile.level);
@@ -107,19 +107,48 @@ fn a_connection_exports_each_static_path_once() {
     let first = cache
         .export_static(&mut first_connection, &profile.archetype)
         .unwrap();
+    // Once per bunch (`ExportNetGUIDs`).
     let again = cache
         .export_static(&mut first_connection, &profile.archetype)
         .unwrap();
     assert!(first.export.is_some());
     assert_eq!(again.guid, first.guid);
     assert!(again.export.is_none());
+    let exported: Vec<u32> = first_connection.bunch_exports().collect();
+    assert_eq!(exported.len(), 2, "the archetype and its package");
+    // Committed to packet 10 but not acked: the next bunch exports it again.
+    first_connection.commit_bunch(10);
+    first_connection.begin_bunch();
+    let pending = cache
+        .export_static(&mut first_connection, &profile.archetype)
+        .unwrap();
+    assert_eq!(pending, first);
+    // A second commit keeps the first packet; a nak of the later one changes
+    // nothing, a nak of packet 10 returns the GUID to not acked.
+    first_connection.commit_bunch(11);
+    first_connection.received_nak(11);
+    first_connection.received_ack(9);
+    assert!(!first_connection.is_acked(first.guid));
+    first_connection.received_nak(10);
+    first_connection.begin_bunch();
+    cache
+        .export_static(&mut first_connection, &profile.archetype)
+        .unwrap();
+    first_connection.commit_bunch(12);
+    // An ack of a later packet acks it; then only plain references follow.
+    first_connection.received_ack(13);
+    assert!(first_connection.is_acked(first.guid));
+    let acked = cache
+        .export_static(&mut first_connection, &profile.archetype)
+        .unwrap();
+    assert!(acked.export.is_none());
     // A second connection shares the GUID but still receives the full export.
     let mut second_connection = ConnectionExports::new();
     let other = cache
         .export_static(&mut second_connection, &profile.archetype)
         .unwrap();
     assert_eq!(other, first);
-    assert!(second_connection.contains(first.guid));
+    assert!(!second_connection.is_acked(first.guid));
 }
 
 #[test]
@@ -290,6 +319,9 @@ fn player_state_open_reuses_exported_paths_and_carries_player_values() {
     let (guids, _) = cache
         .player_controller_exports(&mut exports, &profile)
         .unwrap();
+    // The controller's exports went out in packet 1, acked (F-796).
+    exports.commit_bunch(1);
+    exports.received_ack(1);
     let login = UniqueNetId {
         kind: NetIdType::Named(ArchiveText::text("null").unwrap()),
         value: NetIdValue::Text(ArchiveText::text("Player-0001").unwrap()),
@@ -354,7 +386,10 @@ fn player_state_open_reuses_exported_paths_and_carries_player_values() {
     assert!(matches!(values[3], RepValue::Int(256)));
     assert!(matches!(values[4], RepValue::UniqueNetId(id) if *id == unique_id));
     assert!(matches!(values[6], RepValue::Bool(true)));
-    // A second open to the same connection exports nothing new.
+    // Once its packet is acked, a second open to the same connection
+    // exports nothing new.
+    exports.commit_bunch(2);
+    exports.received_ack(2);
     let again = compose_player_state_open(
         &mut cache,
         &mut exports,

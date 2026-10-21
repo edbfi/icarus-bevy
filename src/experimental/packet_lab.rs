@@ -87,6 +87,16 @@ pub const MAX_CONSTRUCTED_BUNCH_BYTES: usize = 65_536;
 /// Resends carried by one assembled datagram, with their wire bunches.
 type Resends = Vec<(Resend, Bunch)>;
 
+/// The datagrams of an actor open, in send order, with their packet IDs.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ActorOpenSent {
+    pub datagrams: Vec<Vec<u8>>,
+    pub packet_ids: Vec<u32>,
+    /// The packet carrying the last export-only part, if any: the packet the
+    /// open's exports are committed to (`NotifyBunchCommit`, F-796).
+    pub exports_packet_id: Option<u32>,
+}
+
 /// An actor open built on a copy of the sequencer; nothing is committed yet.
 struct ActorOpenPlan {
     /// The copy, advanced past every planned datagram.
@@ -909,9 +919,12 @@ impl LabPeer {
     /// open reliable bunch, or the parts do not fit one datagram.
     pub fn reliable_actor_open(&mut self, bunch: &Bunch, exports: &[Payload]) -> Result<Vec<u8>> {
         let plan = self.plan_actor_open(bunch, exports, 1)?;
-        let mut datagrams = self.commit_actor_open(plan)?;
-        let datagram = datagrams.pop().context("an actor open has one datagram")?;
-        ensure!(datagrams.is_empty(), "an actor open has one datagram");
+        let mut sent = self.commit_actor_open(plan)?;
+        let datagram = sent
+            .datagrams
+            .pop()
+            .context("an actor open has one datagram")?;
+        ensure!(sent.datagrams.is_empty(), "an actor open has one datagram");
         Ok(datagram)
     }
 
@@ -937,7 +950,7 @@ impl LabPeer {
         &mut self,
         bunch: &Bunch,
         exports: &[Payload],
-    ) -> Result<Vec<Vec<u8>>> {
+    ) -> Result<ActorOpenSent> {
         let plan = self.plan_actor_open(bunch, exports, MAX_PENDING_RELIABLE)?;
         self.commit_actor_open(plan)
     }
@@ -1023,7 +1036,7 @@ impl LabPeer {
 
     /// Install a planned open: the advanced sequencer, the resends and every
     /// part under the packet ID that carried it.
-    fn commit_actor_open(&mut self, plan: ActorOpenPlan) -> Result<Vec<Vec<u8>>> {
+    fn commit_actor_open(&mut self, plan: ActorOpenPlan) -> Result<ActorOpenSent> {
         let ActorOpenPlan {
             sequencer,
             channel,
@@ -1035,15 +1048,26 @@ impl LabPeer {
             .map(|(_, packet_id, _)| *packet_id)
             .context("an actor open has at least one datagram")?;
         self.sequencer = sequencer;
-        let mut bytes = Vec::with_capacity(datagrams.len());
+        let mut sent = ActorOpenSent {
+            datagrams: Vec::with_capacity(datagrams.len()),
+            packet_ids: Vec::with_capacity(datagrams.len()),
+            exports_packet_id: None,
+        };
         let mut parts = Vec::new();
         for (datagram, packet_id, carried) in datagrams {
-            bytes.push(datagram);
+            if carried
+                .iter()
+                .any(|part| part.header.has_package_map_exports)
+            {
+                sent.exports_packet_id = Some(packet_id);
+            }
+            sent.datagrams.push(datagram);
+            sent.packet_ids.push(packet_id);
             parts.extend(carried.into_iter().map(|part| (packet_id, part)));
         }
         let recorded = self.record_actor_open(first, &resends, channel, parts);
         self.fail_on_error(recorded)?;
-        Ok(bytes)
+        Ok(sent)
     }
 
     /// The most leading `parts` (at least one, at most the configured bunch

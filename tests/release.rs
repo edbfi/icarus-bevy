@@ -345,6 +345,9 @@ fn builtin_player_state_identifiers_compose_the_captured_export_prefix() {
             )
             .unwrap();
     }
+    // The client had acked them (F-796).
+    exports.commit_bunch(1);
+    exports.received_ack(1);
     // The capture's values: the authored probe's synthetic Login id and name
     // (`examples/handshake_probe.rs`), PlayerId 256, owner 2, host.
     let state = PlayerStateOpenState {
@@ -413,6 +416,9 @@ fn builtin_game_state_identifiers_compose_the_captured_export_prefix() {
     for _ in 0..33 {
         cache.assign_dynamic();
     }
+    // The client had acked them (F-796).
+    exports.commit_bunch(1);
+    exports.received_ack(1);
     // All seven managers are named, so the weather component takes 88.
     let manager = |id| Some(ActorKey::World(id));
     let state = GameStateOpenState {
