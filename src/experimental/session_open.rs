@@ -744,3 +744,42 @@ pub fn compose_actor_open(
         bunch,
     })
 }
+
+/// `ROLE_SimulatedProxy` and `ROLE_Authority`: the roles 286 of the capture's
+/// 287 actor opens carry (F-791). Independent of the PlayerState constants,
+/// which match them by capture (F-784).
+const WORLD_REMOTE_ROLE: u8 = 1;
+const WORLD_ROLE: u8 = 3;
+
+/// The initial actor block of a world actor's open: `RemoteRole =
+/// ROLE_SimulatedProxy` (handle 5) and `Role = ROLE_Authority` (handle 14),
+/// as 286 of the capture's 287 actor opens carry (the other is the joining
+/// player's own pawn, `RemoteRole = 2`; F-791). Encoded against the `AActor`
+/// handle prefix, which every class layout shares (F-703); handles are packed.
+/// Both values are single bytes, so the block is the same in either byte
+/// order and one encoding serves every connection.
+pub fn actor_role_block(engine_net_version: u32) -> Result<ContentBlock> {
+    use super::rep_layout::{MovementLevel, RepLayoutLimits, RotationLevel, actor_rep_layout};
+    let stream = PropertyStream {
+        entries: vec![
+            entry(HANDLE_REMOTE_ROLE, RepValue::Byte(WORLD_REMOTE_ROLE)),
+            entry(HANDLE_ROLE, RepValue::Byte(WORLD_ROLE)),
+        ],
+        terminator_checksum: None,
+    };
+    let codec = RepLayoutCodec {
+        actor: actor_codec(engine_net_version, super::archive::ByteOrder::Little),
+        checksums: false,
+        limits: RepLayoutLimits::default(),
+    };
+    let layout = actor_rep_layout(
+        MovementLevel::Whole,
+        MovementLevel::Whole,
+        RotationLevel::Bytes,
+    );
+    Ok(ContentBlock {
+        has_rep_layout: true,
+        target: BlockTarget::Actor,
+        payload: encode_rep_properties(&stream, &layout, &codec)?,
+    })
+}

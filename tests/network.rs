@@ -1131,6 +1131,10 @@ fn replication_selections_open_archetyped_actors_on_free_channels() {
             archive::ByteOrder,
             packet::read_packet,
             peer_lab::PeerLabAdmission,
+            rep_layout::{
+                MovementLevel, RepLayoutCodec, RepLayoutLimits, RepValue, RotationLevel,
+                actor_rep_layout, read_rep_properties,
+            },
             session_open::{PathSegment, map_level_chain},
         },
         replication::{NetActor, NetParameters, ReplicationPlugin},
@@ -1145,12 +1149,15 @@ fn replication_selections_open_archetyped_actors_on_free_channels() {
     });
     let level = map_level_chain(PeerLabAdmission::default().map_url).unwrap();
     app.add_plugins((ReplicationPlugin::default(), SessionReplicationPlugin))
-        .insert_resource(SessionReplication {
-            level,
-            engine_net_version: profile.engine_network_version,
-            first_channel: 2,
-            viewer_location: network::SPAWN_LOCATION,
-        });
+        .insert_resource(
+            SessionReplication::new(
+                level,
+                profile.engine_network_version,
+                2,
+                network::SPAWN_LOCATION,
+            )
+            .unwrap(),
+        );
     // Authored identifiers only: two actors with an archetype (one beyond the
     // default cull distance, yet force-relevant on the connection's first
     // processed frame, F-772) and one without.
@@ -1228,7 +1235,27 @@ fn replication_selections_open_archetyped_actors_on_free_channels() {
     // The first connection's controller took dynamic GUIDs 2..18.
     assert_eq!(spawn.actor.guid, 20);
     assert!(spawn.dynamic.unwrap().location.is_some());
-    assert!(open.blocks.is_empty());
+    // One actor block with the captured world-actor roles (F-791).
+    let [roles] = open.blocks.as_slice() else {
+        panic!("one role block");
+    };
+    let rep_codec = RepLayoutCodec {
+        actor: codec,
+        checksums: false,
+        limits: RepLayoutLimits::default(),
+    };
+    let layout = actor_rep_layout(
+        MovementLevel::Whole,
+        MovementLevel::Whole,
+        RotationLevel::Bytes,
+    );
+    let stream = read_rep_properties(&mut roles.payload.reader(), &layout, &rep_codec).unwrap();
+    let [remote_role, role] = stream.entries.as_slice() else {
+        panic!("two role entries");
+    };
+    assert_eq!((remote_role.handle, role.handle), (5, 14));
+    assert!(matches!(remote_role.value, RepValue::Byte(1)));
+    assert!(matches!(role.value, RepValue::Byte(3)));
     let actor_guids = |datagrams: &[Vec<u8>]| -> Vec<u32> {
         let mut guids: Vec<u32> = datagrams[2..]
             .iter()
@@ -1280,12 +1307,15 @@ fn replication_closes_actors_that_stop_being_relevant() {
         },
         SessionReplicationPlugin,
     ))
-    .insert_resource(SessionReplication {
-        level: map_level_chain(PeerLabAdmission::default().map_url).unwrap(),
-        engine_net_version: profile.engine_network_version,
-        first_channel: 2,
-        viewer_location: network::SPAWN_LOCATION,
-    });
+    .insert_resource(
+        SessionReplication::new(
+            map_level_chain(PeerLabAdmission::default().map_url).unwrap(),
+            profile.engine_network_version,
+            2,
+            network::SPAWN_LOCATION,
+        )
+        .unwrap(),
+    );
     let archetype = vec![
         PathSegment::new("Default__LabCrate_C", 0x1234_5678, false),
         PathSegment::new("/Game/Lab/LabCrate", 0, false),

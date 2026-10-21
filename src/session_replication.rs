@@ -5,17 +5,20 @@
 //! has no pawn yet); after it, every actor the stage selected for a connection
 //! that carries a [`NetArchetype`] is opened on that connection's lowest free
 //! actor channel through [`PeerLab::open_actor`], once per connection, with
-//! its position as the spawn location and no content blocks yet; a channel the
-//! stage closes (no longer relevant `3`, torn off `4`; F-749) gets its close
-//! bunch first ([`PeerLab::close_actor`]). Actor GUIDs are driver-wide and
-//! stable per [`DomainId`]. Property replication is not modelled. Archetypes are caller data; nothing here
-//! reads original files or demonstrates ICARUS compatibility.
+//! its position as the spawn location and one actor block carrying the roles
+//! the capture's world-actor opens carry (F-791); a channel the stage closes
+//! (no longer relevant `3`, torn off `4`; F-749) gets its close bunch first
+//! ([`PeerLab::close_actor`]). Actor GUIDs are driver-wide and stable per
+//! [`DomainId`]. Further property replication is not modelled. Archetypes are
+//! caller data; nothing here reads original files or demonstrates ICARUS
+//! compatibility.
 use bevy::prelude::*;
 
 use crate::{
     experimental::{
+        actor_channel::ContentBlock,
         peer_lab::PeerLab,
-        session_open::{ActorOpenSpec, PathSegment},
+        session_open::{ActorOpenSpec, PathSegment, actor_role_block},
     },
     replication::{NetActor, NetViewer, ReplicationFrame, ReplicationSet},
     simulation::{DomainId, Position},
@@ -38,6 +41,26 @@ pub struct SessionReplication {
     pub first_channel: u32,
     /// Where each connection's viewer stands.
     pub viewer_location: [f32; 3],
+    /// Every opened actor's initial block ([`actor_role_block`], F-791).
+    actor_block: ContentBlock,
+}
+
+impl SessionReplication {
+    /// Session parameters with the role block encoded once up front.
+    pub fn new(
+        level: Vec<PathSegment>,
+        engine_net_version: u32,
+        first_channel: u32,
+        viewer_location: [f32; 3],
+    ) -> anyhow::Result<Self> {
+        Ok(Self {
+            level,
+            engine_net_version,
+            first_channel,
+            viewer_location,
+            actor_block: actor_role_block(engine_net_version)?,
+        })
+    }
 }
 
 /// Marks the viewer entity of one lab connection.
@@ -134,7 +157,7 @@ fn open_selected_actors(
                 archetype: archetype.archetype.clone(),
                 level: session.level.clone(),
                 location: Some(position.0),
-                blocks: Vec::new(),
+                blocks: vec![session.actor_block.clone()],
             };
             lab.open_actor(
                 connection.connection,
