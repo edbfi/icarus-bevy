@@ -1425,6 +1425,7 @@ fn a_naked_movement_update_is_sent_again() {
     app.update();
     accept_all_headers(&mut client);
     let mut lab_mut = app.world_mut().resource_mut::<PeerLab>();
+    assert_eq!(lab_mut.stats().actor_update_naks, 1);
     assert_eq!(lab_mut.stats().actor_updates_lost, 1);
     // The same location is due again and goes out once more.
     assert!(lab_mut.update_actor_movement(connection, 7, [50.0, 0.0, 0.0], 17));
@@ -1440,6 +1441,24 @@ fn a_naked_movement_update_is_sent_again() {
     client.send(&report);
     app.update();
     let mut lab_mut = app.world_mut().resource_mut::<PeerLab>();
+    // The nak arrived (two naks so far) but the newer update supersedes it.
+    assert_eq!(lab_mut.stats().actor_update_naks, 2);
     assert_eq!(lab_mut.stats().actor_updates_lost, 1, "superseded");
     assert!(!lab_mut.update_actor_movement(connection, 7, [60.0, 0.0, 0.0], 17));
+
+    // A -> B -> A: the nak of the first A finds a newer packet carrying A in
+    // flight, so it repairs nothing (the guard compares packets, not places).
+    accept_all_headers(&mut client);
+    assert!(lab_mut.update_actor_movement(connection, 7, [70.0, 0.0, 0.0], 17));
+    assert_eq!(drain(&client).len(), 1, "the first A is lost");
+    let mut lab_mut = app.world_mut().resource_mut::<PeerLab>();
+    assert!(lab_mut.update_actor_movement(connection, 7, [80.0, 0.0, 0.0], 17));
+    assert!(lab_mut.update_actor_movement(connection, 7, [70.0, 0.0, 0.0], 17));
+    accept_all_headers(&mut client);
+    let (report, _) = client.packet(Vec::new());
+    client.send(&report);
+    app.update();
+    let lab_ref = lab(&app);
+    assert_eq!(lab_ref.stats().actor_update_naks, 3);
+    assert_eq!(lab_ref.stats().actor_updates_lost, 1);
 }
