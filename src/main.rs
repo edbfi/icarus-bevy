@@ -461,9 +461,10 @@ fn run(options: ConfigOptions, max_ticks: Option<u64>, compressed: bool) -> Resu
             .and_then(|values| bound.lab.extend_game_state_values(values))
         {
             Ok(()) => eprintln!("{}", json!({"event": "active_prospect_replicated"})),
-            Err(_) => eprintln!(
+            // Reader errors name fields and kinds, never saved values.
+            Err(error) => eprintln!(
                 "{}",
-                json!({"event": "active_prospect_unavailable", "warning": "the preserved prospect supplies no replicated active prospect"})
+                json!({"event": "active_prospect_unavailable", "warning": "the preserved prospect supplies no replicated active prospect", "error": format!("{error:#}")})
             ),
         }
     }
