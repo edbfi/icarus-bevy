@@ -7,9 +7,11 @@ use std::io::Write;
 use base64::{Engine, engine::general_purpose::STANDARD};
 use flate2::{Compression, write::ZlibEncoder};
 use icarus_bevy::experimental::control_messages::ArchiveText;
-use icarus_bevy::experimental::game_state_open::{active_prospect_values, handle};
+use icarus_bevy::experimental::game_state_open::{
+    active_prospect_values, handle, level_time_elapsed_sec, saved_game_mode_values,
+};
 use icarus_bevy::experimental::property_tree::{PropertyTree, TreeLimits};
-use icarus_bevy::experimental::prospect_info::{AssociatedMember, ProspectInfo};
+use icarus_bevy::experimental::prospect_info::{AssociatedMember, ProspectInfo, SavedGameMode};
 use icarus_bevy::experimental::recorders::recorder_class_label;
 use icarus_bevy::experimental::rep_layout::RepValue;
 use icarus_bevy::experimental::tagged::TagProfile;
@@ -167,8 +169,22 @@ fn game_mode_recorder(level_time: i32) -> Vec<u8> {
             struct_tag(
                 "GameModeRecord",
                 "GameModeRecord",
-                &[int("LevelTimeElapsedSec", level_time), end()].concat(),
+                &[
+                    int("GameStateSeed", 4_242),
+                    tag("TimeOfDay", "FloatProperty", &[0], &12.5_f32.to_le_bytes()),
+                    tag(
+                        "ProspectGameTime",
+                        "FloatProperty",
+                        &[0],
+                        &99.5_f32.to_le_bytes(),
+                    ),
+                    int("SecondsPerGameDay", 3_600),
+                    int("LevelTimeElapsedSec", level_time),
+                    end(),
+                ]
+                .concat(),
             ),
+            int("DynamicQuestSeed", 77),
             end(),
         ]
         .concat(),
@@ -242,7 +258,17 @@ fn the_game_mode_fixture_class_is_c015() {
 fn a_saved_prospect_types_its_info_and_level_clock() {
     let source = envelope(&payload(&prospect_info(), &[game_mode_recorder(150)]));
     let saved = read_saved_prospect(source.as_slice()).unwrap();
-    assert_eq!(saved.level_time_elapsed_sec, Some(150));
+    assert_eq!(
+        saved.game_mode,
+        Some(SavedGameMode {
+            game_state_seed: 4_242,
+            time_of_day: 12.5,
+            prospect_game_time: 99.5,
+            seconds_per_game_day: 3_600,
+            level_time_elapsed_sec: 150,
+            dynamic_quest_seed: 77,
+        })
+    );
     let info = &saved.info;
     assert_eq!(info.prospect_id, units("lab-prospect"));
     assert_eq!(info.claimed_account_character, 2);
@@ -269,7 +295,7 @@ fn a_saved_prospect_types_its_info_and_level_clock() {
     assert_eq!(info.custom_settings[0].setting_value, 7);
     // Without a game mode recorder there is no level clock.
     let bare = read_saved_prospect(envelope(&payload(&prospect_info(), &[])).as_slice()).unwrap();
-    assert_eq!(bare.level_time_elapsed_sec, None);
+    assert_eq!(bare.game_mode, None);
     assert_eq!(bare.info, saved.info);
 }
 
@@ -365,24 +391,59 @@ fn the_active_prospect_maps_nondefault_fields_in_declaration_order() {
 }
 
 #[test]
-fn a_preserved_world_supplies_the_session_prospect() {
+fn game_mode_values_map_nondefaults_and_the_level_clock_advances() {
+    let mode = SavedGameMode {
+        game_state_seed: 4_242,
+        time_of_day: 12.5,
+        prospect_game_time: 0.0,
+        seconds_per_game_day: 3_600,
+        level_time_elapsed_sec: 150,
+        dynamic_quest_seed: 0,
+    };
+    assert_eq!(
+        saved_game_mode_values(&mode),
+        BTreeMap::from([
+            (handle::SEED, RepValue::Int(4_242)),
+            (handle::SEED_INITIALISED, RepValue::Bool(true)),
+            (handle::TIME_OF_DAY, RepValue::Float(12.5_f32.to_bits())),
+            (handle::SECONDS_PER_GAME_DAY, RepValue::Int(3_600)),
+        ])
+    );
+    assert_eq!(level_time_elapsed_sec(150, 14.9), 164);
+    assert_eq!(level_time_elapsed_sec(150, -1.0), 150);
+    assert_eq!(level_time_elapsed_sec(i32::MAX, 5.0), i32::MAX);
+}
+
+/// The GameState values a preserved world adds for this fixture.
+fn expected_saved_values() -> BTreeMap<u32, RepValue> {
+    let saved = saved_prospect_from_payload(&payload(&prospect_info(), &[game_mode_recorder(150)]))
+        .unwrap();
+    let mut expected = active_prospect_values(&saved.info.for_session(150, |_| false)).unwrap();
+    expected.extend(saved_game_mode_values(&saved.game_mode.unwrap()));
+    expected
+}
+
+#[test]
+fn a_preserved_world_supplies_the_session_game_state() {
     let inner = payload(&prospect_info(), &[game_mode_recorder(150)]);
     let section = PreservedSection::from_inner_payload(&inner, PreserveLimits::default()).unwrap();
-    let values = icarus_bevy::network::saved_prospect_values(&section).unwrap();
-    let saved = saved_prospect_from_payload(&inner).unwrap();
-    let expected = active_prospect_values(&saved.info.for_session(150, |_| false)).unwrap();
-    assert_eq!(values, expected);
-    // Without the level clock, the saved elapsed time stands.
+    let saved = icarus_bevy::network::saved_game_state(&section).unwrap();
+    assert_eq!(saved.values, expected_saved_values());
+    assert_eq!(saved.level_time_elapsed_sec, Some(150));
+    // Without the game mode recorder, the saved elapsed time stands and no
+    // game mode values or level clock are added.
     let bare = PreservedSection::from_inner_payload(
         &payload(&prospect_info(), &[]),
         PreserveLimits::default(),
     )
     .unwrap();
-    let values = icarus_bevy::network::saved_prospect_values(&bare).unwrap();
+    let saved = icarus_bevy::network::saved_game_state(&bare).unwrap();
     assert_eq!(
-        values[&(handle::ACTIVE_PROSPECT_FIRST + 14)],
+        saved.values[&(handle::ACTIVE_PROSPECT_FIRST + 14)],
         RepValue::Int(100)
     );
+    assert!(!saved.values.contains_key(&handle::SEED_INITIALISED));
+    assert_eq!(saved.level_time_elapsed_sec, None);
 }
 
 /// A child process killed and reaped when dropped, also when a test panics.
@@ -395,8 +456,9 @@ impl Drop for Killed {
     }
 }
 
-/// `run` on a world preserved from a save sends the save's active prospect
-/// in its GameState open (real binary, authored probe on loopback).
+/// `run` on a world preserved from a save sends the save's active prospect,
+/// game mode values and advancing level clock in its GameState open (real
+/// binary, authored probe on loopback).
 #[test]
 fn run_replicates_a_preserved_worlds_prospect() {
     use icarus_bevy::experimental::{
@@ -562,14 +624,56 @@ fn run_replicates_a_preserved_worlds_prospect() {
         },
     )
     .unwrap();
-    let sent: BTreeMap<u32, RepValue> = stream
+    let mut sent: BTreeMap<u32, RepValue> = stream
         .entries
         .into_iter()
-        .filter(|entry| (handle::ACTIVE_PROSPECT_FIRST..=67).contains(&entry.handle))
         .map(|entry| (entry.handle, entry.value))
         .collect();
-    let saved = saved_prospect_from_payload(&payload(&prospect_info(), &[game_mode_recorder(150)]))
-        .unwrap();
-    let expected = active_prospect_values(&saved.info.for_session(150, |_| false)).unwrap();
+    // The level clock: restored plus the whole world seconds at the send.
+    let Some(&RepValue::Float(world_time)) = sent.get(&handle::WORLD_TIME_SECONDS) else {
+        panic!("world time");
+    };
+    assert_eq!(
+        sent.remove(&handle::LEVEL_TIME_ELAPSED_SEC),
+        Some(RepValue::Int(level_time_elapsed_sec(
+            150,
+            f32::from_bits(world_time)
+        )))
+    );
+    let expected = expected_saved_values();
+    sent.retain(|handle, _| expected.contains_key(handle));
     assert_eq!(sent, expected);
+}
+
+#[test]
+fn mistyped_game_mode_fields_fail_closed() {
+    let typed = |fields: &[Vec<u8>]| {
+        let stream = [fields.concat(), end()].concat();
+        let tree =
+            PropertyTree::parse(&stream, TagProfile::MemoryArchive522, TreeLimits::default())
+                .unwrap();
+        SavedGameMode::from_tree(&TypedTree::from_tree(&tree).unwrap().0)
+    };
+    assert_eq!(typed(&[]).unwrap(), SavedGameMode::default());
+    let record =
+        |field: Vec<u8>| struct_tag("GameModeRecord", "GameModeRecord", &[field, end()].concat());
+    assert_eq!(
+        typed(&[record(int("SecondsPerGameDay", 5))])
+            .unwrap()
+            .seconds_per_game_day,
+        5
+    );
+    for bad in [
+        record(int("TimeOfDay", 5)),
+        record(tag(
+            "GameStateSeed",
+            "FloatProperty",
+            &[0],
+            &1.0_f32.to_le_bytes(),
+        )),
+        int("GameModeRecord", 1),
+        string("DynamicQuestSeed", "7"),
+    ] {
+        assert!(typed(&[bad]).is_err());
+    }
 }

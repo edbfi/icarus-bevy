@@ -27,7 +27,7 @@ use super::actor_open::{
     BlockContent, ComponentActorOpen, OpenComponent, Reference, compose_component_actor_open,
 };
 use super::control_messages::ArchiveText;
-use super::prospect_info::ProspectInfo;
+use super::prospect_info::{ProspectInfo, SavedGameMode};
 use super::rep_layout::{
     PropertyStream, RepArray, RepCommand, RepEntry, RepLayoutCodec, RepLayoutLimits, RepValue,
     encode_rep_properties,
@@ -223,6 +223,38 @@ pub fn active_prospect_values(info: &ProspectInfo) -> Result<BTreeMap<u32, RepVa
         .zip(handle::ACTIVE_PROSPECT_FIRST..)
         .filter_map(|(value, handle)| value.map(|value| (handle, value)))
         .collect())
+}
+
+/// GameState values a loaded save's game mode record restores (`F-803`):
+/// `Seed` with `SeedInitialised`, `TimeOfDay` (as saved; its advance is not
+/// modelled, U-071), `SecondsPerGameDay`, `DynamicQuestSeed` and
+/// `LastSessionProspectGameTime` (the saved `ProspectGameTime`), each sent
+/// when it differs from its default. `LevelTimeElapsedSec` advances with the
+/// world clock and is written when the open is sent.
+pub fn saved_game_mode_values(mode: &SavedGameMode) -> BTreeMap<u32, RepValue> {
+    let int = |handle, value: i32| (value != 0).then_some((handle, RepValue::Int(value)));
+    let float =
+        |handle, value: f32| (value != 0.0).then_some((handle, RepValue::Float(value.to_bits())));
+    [
+        int(handle::SEED, mode.game_state_seed),
+        Some((handle::SEED_INITIALISED, RepValue::Bool(true))),
+        float(handle::TIME_OF_DAY, mode.time_of_day),
+        int(handle::SECONDS_PER_GAME_DAY, mode.seconds_per_game_day),
+        int(handle::DYNAMIC_QUEST_SEED, mode.dynamic_quest_seed),
+        float(
+            handle::LAST_SESSION_PROSPECT_GAME_TIME,
+            mode.prospect_game_time,
+        ),
+    ]
+    .into_iter()
+    .flatten()
+    .collect()
+}
+
+/// `LevelTimeElapsedSec` at world time `world_seconds`: the restored clock
+/// plus the whole seconds since (as captured, F-803).
+pub fn level_time_elapsed_sec(restored: i32, world_seconds: f32) -> i32 {
+    restored.saturating_add(world_seconds.max(0.0) as i32)
 }
 
 /// The GameState's replicated components, in serialization order.

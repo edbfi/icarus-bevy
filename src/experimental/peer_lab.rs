@@ -662,6 +662,9 @@ struct GameStateSession {
     plan: GameStateOpenPlan,
     state: GameStateOpenState,
     channel_index: u32,
+    /// The restored `LevelTimeElapsedSec`, advanced with the world time at
+    /// each send.
+    level_time: Option<i32>,
 }
 
 /// The loopback peer lab. `Debug` reports only the peer count and counters.
@@ -1074,6 +1077,7 @@ impl PeerLab {
             plan,
             state,
             channel_index,
+            level_time: None,
         });
         Ok(())
     }
@@ -1096,6 +1100,16 @@ impl PeerLab {
             "the lab writes the GameState's world time"
         );
         session.state.values.extend(values);
+        Ok(())
+    }
+
+    /// Send the GameState's `LevelTimeElapsedSec` as `restored` plus the
+    /// whole world seconds at each send. Fails without a GameState open.
+    pub fn set_game_state_level_time(&mut self, restored: i32) -> Result<()> {
+        let Some(session) = &mut self.game_state_open else {
+            bail!("no GameState open is enabled");
+        };
+        session.level_time = Some(restored);
         Ok(())
     }
 
@@ -1911,10 +1925,20 @@ impl PeerLab {
         let mut cache = self.guid_cache.clone();
         let mut exports = entry.exports.clone();
         let mut state = session.state.clone();
+        let world_seconds = self.started.elapsed().as_secs_f32();
         state.values.insert(
             super::game_state_open::handle::WORLD_TIME_SECONDS,
-            RepValue::Float(self.started.elapsed().as_secs_f32().to_bits()),
+            RepValue::Float(world_seconds.to_bits()),
         );
+        if let Some(restored) = session.level_time {
+            state.values.insert(
+                super::game_state_open::handle::LEVEL_TIME_ELAPSED_SEC,
+                RepValue::Int(super::game_state_open::level_time_elapsed_sec(
+                    restored,
+                    world_seconds,
+                )),
+            );
+        }
         let sent = compose_game_state_open(
             &mut cache,
             &mut exports,

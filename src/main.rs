@@ -455,11 +455,10 @@ fn run(options: ConfigOptions, max_ticks: Option<u64>, compressed: bool) -> Resu
     if let (Some(bound), Some(section)) = (&mut bound, &snapshot.preserved_prospect)
         && bound.lab.has_game_state_open()
     {
-        // A loaded world's prospect replicates in the GameState open; a
-        // prospect that cannot supply it leaves the lab's values alone.
-        match network::saved_prospect_values(section)
-            .and_then(|values| bound.lab.extend_game_state_values(values))
-        {
+        // A loaded world's prospect and game mode record replicate in the
+        // GameState open; a prospect that cannot supply them leaves the
+        // lab's values alone.
+        match network::apply_saved_game_state(&mut bound.lab, section) {
             Ok(()) => eprintln!("{}", json!({"event": "active_prospect_replicated"})),
             // Reader errors name fields and kinds, never saved values.
             Err(error) => eprintln!(
