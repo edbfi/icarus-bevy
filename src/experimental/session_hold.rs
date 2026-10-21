@@ -100,6 +100,11 @@ pub fn run_hold(config: &HoldConfig) -> Result<HoldSummary> {
         (Duration::from_secs(1)..=MAX_HOLD).contains(&config.duration),
         "a hold lasts 1 s to 72 h"
     );
+    // A zero socket timeout is rejected by the OS deep in the handshake.
+    ensure!(
+        !config.step_timeout.is_zero(),
+        "admission receives need a positive bound"
+    );
     let socket = UdpSocket::bind("127.0.0.1:0").context("bind the hold probe socket")?;
     socket.connect(config.server)?;
     let to_client = PacketConfig {
