@@ -185,8 +185,9 @@ fn main() -> Result<()> {
                 f32::from_bits(*world_time),
             )),
         );
-        // TimeOfDay advances from the saved value at a rate not modelled
-        // (U-071): report the drift and keep the captured value.
+        // TimeOfDay advances from the saved value by the world's rate curve
+        // (F-806), whose values stay out of scope: report the drift and keep
+        // the captured value.
         if let (Some(RepValue::Float(captured)), Some(RepValue::Float(saved_time))) = (
             values.get(&handle::TIME_OF_DAY),
             native.remove(&handle::TIME_OF_DAY),
