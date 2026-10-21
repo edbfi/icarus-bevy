@@ -769,16 +769,6 @@ impl LabPeer {
         })
     }
 
-    /// Open actor channel `bunch.header.channel_index` with `bunch` (open and
-    /// reliable) preceded by `exports` (export-only payloads), split into
-    /// `OutgoingBunches` as `UChannel::SendBunch` does (F-709,
-    /// [`split_outgoing_bunch`]): parts take consecutive reliable sequences
-    /// from the channel's initial value and travel together in one datagram
-    /// that also carries the ack state and, as space permits, naked bunches
-    /// awaiting resend. The parts are retained unchanged until acked and are
-    /// resent on naks like control bunches. Fails without a state change when
-    /// the channel is the control channel or already open, the bunch is not an
-    /// open reliable bunch, or the parts do not fit one datagram.
     /// Close actor channel `index` as `UChannel::Close(Reason)` does (F-782):
     /// an empty reliable bunch with `bClose` and `reason` on the channel's next
     /// sequence, in a datagram with the ack state and resends. The channel
@@ -845,6 +835,16 @@ impl LabPeer {
         self.closing_actors.contains(&index)
     }
 
+    /// Open actor channel `bunch.header.channel_index` with `bunch` (open and
+    /// reliable) preceded by `exports` (export-only payloads), split into
+    /// `OutgoingBunches` as `UChannel::SendBunch` does (F-709,
+    /// [`split_outgoing_bunch`]): parts take consecutive reliable sequences
+    /// from the channel's initial value and travel together in one datagram
+    /// that also carries the ack state and, as space permits, naked bunches
+    /// awaiting resend. The parts are retained unchanged until acked and are
+    /// resent on naks like control bunches. Fails without a state change when
+    /// the channel is the control channel or already open, the bunch is not an
+    /// open reliable bunch, or the parts do not fit one datagram.
     pub fn reliable_actor_open(&mut self, bunch: &Bunch, exports: &[Payload]) -> Result<Vec<u8>> {
         self.ensure_usable()?;
         let index = bunch.header.channel_index;
