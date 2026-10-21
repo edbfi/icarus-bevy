@@ -119,8 +119,9 @@ pub struct MultiHoldConfig {
 /// One session of a concurrent hold.
 #[derive(Clone, Debug, Default, PartialEq, Serialize)]
 pub struct SessionHold {
-    /// The error that ended the session outside its hold loop (admission or
-    /// the final close; kind only); the hold fields are then empty.
+    /// The error that ended the session outside its hold loop (kind only):
+    /// after a failed admission the hold fields are empty; after a failed
+    /// final close they keep what the hold received.
     pub setup_error: Option<String>,
     #[serde(flatten)]
     pub hold: HoldSummary,
@@ -156,7 +157,9 @@ pub struct MultiHoldSummary {
 /// server refuses ends the hold at once with [`HoldSummary::refused`].
 pub fn run_hold(config: &HoldConfig) -> Result<HoldSummary> {
     validate(config)?;
-    hold_session(config, 0).map(|session| session.hold)
+    let (session, closed) = hold_session(config, 0)?;
+    closed?;
+    Ok(session.hold)
 }
 
 /// Hold `config.sessions` probe sessions concurrently, each for
@@ -184,7 +187,12 @@ pub fn run_holds(config: &MultiHoldConfig) -> Result<MultiHoldSummary> {
     };
     for result in results {
         let session = match result.map_err(|_| anyhow::anyhow!("hold session panicked"))? {
-            Ok(session) => session,
+            Ok((session, Ok(()))) => session,
+            // A failed final close keeps what the hold received.
+            Ok((session, Err(error))) => SessionHold {
+                setup_error: Some(error_kind(&error)),
+                ..session
+            },
             Err(error) => SessionHold {
                 setup_error: Some(error_kind(&error)),
                 ..SessionHold::default()
@@ -251,8 +259,9 @@ fn identity(index: usize) -> (String, String) {
     )
 }
 
-/// Join session `index` and hold it for `config.duration`.
-fn hold_session(config: &HoldConfig, index: usize) -> Result<SessionHold> {
+/// Join session `index` and hold it for `config.duration`. The second value
+/// is the final close's outcome, apart so a failed close keeps the summary.
+fn hold_session(config: &HoldConfig, index: usize) -> Result<(SessionHold, Result<()>)> {
     let (name, net_id) = identity(index);
     let socket = UdpSocket::bind("127.0.0.1:0").context("bind the hold probe socket")?;
     socket.connect(config.server)?;
@@ -294,13 +303,14 @@ fn hold_session(config: &HoldConfig, index: usize) -> Result<SessionHold> {
         .messages()
         .any(|message| matches!(message, ControlMessage::Failure { .. }))
     {
-        return Ok(SessionHold {
+        let refused = SessionHold {
             hold: HoldSummary {
                 refused: true,
                 ..HoldSummary::default()
             },
             ..SessionHold::default()
-        });
+        };
+        return Ok((refused, Ok(())));
     }
     ensure!(
         welcome
@@ -371,14 +381,19 @@ fn hold_session(config: &HoldConfig, index: usize) -> Result<SessionHold> {
     let ended = Instant::now();
     tracker.gap_to(ended, &mut summary);
     summary.held_ms = u64::try_from(ended.duration_since(started).as_millis()).unwrap_or(u64::MAX);
-    if summary.ended_by_error.is_none() && !summary.refused {
-        client.close()?;
-    }
-    Ok(SessionHold {
-        setup_error: None,
-        hold: summary,
-        max_listed_players: tracker.max_listed_players,
-    })
+    let closed = if summary.ended_by_error.is_none() && !summary.refused {
+        client.close().map(drop)
+    } else {
+        Ok(())
+    };
+    Ok((
+        SessionHold {
+            setup_error: None,
+            hold: summary,
+            max_listed_players: tracker.max_listed_players,
+        },
+        closed,
+    ))
 }
 
 /// The I/O error kind behind `error`, or a fixed label; never addresses or
