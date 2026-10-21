@@ -65,6 +65,25 @@ const ACTOR_VARIABLE_RECORDS: [&str; 5] = [
     "ActorTextVariableRecord",
     "LinearColorVariableRecord",
 ];
+/// Fields whose role a static read of their recorder's record and restore
+/// established, as `(property, enclosing struct, role)`; an empty struct is a
+/// recorder's top level.
+const READ_FIELD_ROLES: [(&str, &str, ContentRole); 5] = [
+    // Item stat records name stat rows (F-660).
+    ("Stat", "ItemRecordStatData", ContentRole::DataRow),
+    // The container manager saves each inventory's info row name (F-651).
+    (
+        "InventoryInfo",
+        "SavedInventoryContainerData",
+        ContentRole::DataRow,
+    ),
+    // The world boss recorder writes name i into boss i's row handle (F-654).
+    ("RecordedWorldBossTableNames", "", ContentRole::DataRow),
+    // The sign recorder saves the sign's icon row name (F-677).
+    ("SignIconRecord", "", ContentRole::DataRow),
+    // The tree recorder saves the tree's prefab class (F-656).
+    ("TreePrefabClassName", "", ContentRole::ActorClass),
+];
 
 /// Independently authored native content the importer can resolve references
 /// against. Empty until native world data exists; every reference it lacks
@@ -170,17 +189,21 @@ pub struct ActorPlan {
     pub owner_resolution: BTreeMap<&'static str, usize>,
 }
 
-/// What a content reference names, judged only by the property it sits under.
+/// What a content reference names, judged only by the property it sits under
+/// and the struct enclosing that property.
 /// The rules are authored and deliberately narrow; anything else is
 /// `Unclassified` rather than guessed.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ContentRole {
-    /// An actor or Blueprint class to spawn (`*ActorClassName`).
+    /// An actor or Blueprint class to spawn (`*ActorClassName`, a tree's
+    /// prefab class).
     ActorClass,
     /// A level placement path of an existing actor (`ActorPathName`).
     ActorPath,
-    /// A data-table row (`*RowName`, `*Row`, `*StaticData`, `*DTKey`).
+    /// A data-table row (`*RowName`, `*Row`, `*StaticData`, `*DTKey`, and
+    /// the read row fields of item stats, inventories, world bosses and
+    /// sign icons).
     DataRow,
     /// A packaged asset path (`*AssetPath`).
     AssetPath,
@@ -207,10 +230,17 @@ impl ContentRole {
     /// items).
     fn of(property: &[u16], within: &[u16]) -> Self {
         let name = String::from_utf16_lossy(property);
+        let enclosing = |owner: &str| owner.encode_utf16().eq(within.iter().copied());
+        if let Some((_, _, role)) = READ_FIELD_ROLES
+            .iter()
+            .find(|(field, owner, _)| *field == name && enclosing(owner))
+        {
+            return *role;
+        }
         if name == VARIABLE_NAME
             && ACTOR_VARIABLE_RECORDS
                 .iter()
-                .any(|record| record.encode_utf16().eq(within.iter().copied()))
+                .any(|record| enclosing(record))
         {
             return Self::ClassVariable;
         }

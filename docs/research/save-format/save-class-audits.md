@@ -50,10 +50,10 @@ Under the hard tree limits every recorder value of all 15 prospects types
 losslessly with no uninterpreted leaf (F-766), and a dry-run native import plan
 then blocks only on name and path references that no native content catalog
 yet defines (F-767). Per-instance object names are identity, not content, and
-never block (F-813), which leaves 3,528 to 3,782 distinct references: 155 to
-167 actor classes, one level path per recorder, 504 to 570 data rows, 26 to
-32 class properties named by actor variable records (F-817) and 195 to 212
-unclassified names, with 52 find-only owners per save (F-818).
+never block (F-813), and actor variable records name class properties
+(F-817). Fields whose recorder reads already gave them a meaning classify by
+property and enclosing struct, which leaves 149 to 164 of 3,528 to 3,782
+distinct references unclassified, with 52 find-only owners per save (F-819).
 
 No saved class identifier, field or type name, or recorder version tells the
 older server from the newer client, and the prospect carries no version string

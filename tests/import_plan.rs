@@ -64,6 +64,9 @@ struct Body {
     owner_byte: bool,
     /// `ActorClassName` under an unexpected wire type (IntProperty).
     class_as_int: bool,
+    /// Add the fields whose roles static reads established, plus a loose
+    /// `Stat` outside its record.
+    read_fields: bool,
 }
 
 fn component(body: &Body) -> Vec<u8> {
@@ -144,6 +147,35 @@ fn component(body: &Body) -> Vec<u8> {
     if body.gap {
         fields.push(struct_tag("Mystery", "SecretBlobType", &[1, 2, 3]));
     }
+    if body.read_fields {
+        let name = |property, value| tag(property, "NameProperty", &[0], &fstring(value));
+        let bosses = [
+            2_i32.to_le_bytes().to_vec(),
+            fstring("SecretBossA"),
+            fstring("SecretBossB"),
+        ];
+        fields.extend([
+            struct_tag(
+                "Stats",
+                "ItemRecordStatData",
+                &[name("Stat", "SecretStat"), end()].concat(),
+            ),
+            name("Stat", "SecretLooseStat"),
+            struct_tag(
+                "Inventories",
+                "SavedInventoryContainerData",
+                &[name("InventoryInfo", "SecretInventory"), end()].concat(),
+            ),
+            tag(
+                "RecordedWorldBossTableNames",
+                "ArrayProperty",
+                &[fstring("NameProperty"), vec![0]].concat(),
+                &bosses.concat(),
+            ),
+            name("SignIconRecord", "SecretIcon"),
+            name("TreePrefabClassName", "SecretTree_C"),
+        ]);
+    }
     fields.push(end());
     [fields.concat(), vec![0; 4]].concat()
 }
@@ -217,6 +249,7 @@ const CLEAN: Body = Body {
     gap: false,
     owner_byte: false,
     class_as_int: false,
+    read_fields: false,
 };
 
 #[test]
@@ -302,6 +335,29 @@ fn empty_catalog_blocks_on_unmapped_content_and_reports_counts_only() {
     for private in ["Secret", "secret", "/Game", "ActorState", "NoRecorder"] {
         assert!(!text.contains(private), "{private} leaked");
     }
+}
+
+#[test]
+fn read_row_and_class_fields_classify_only_inside_their_owners() {
+    let body = Body {
+        read_fields: true,
+        ..CLEAN
+    };
+    let source = envelope(2, &[recorder(ACTOR, &body)]);
+    let plan = plan_import(source.as_slice(), &ContentCatalog::empty()).unwrap();
+    let role = |references, distinct| RoleCount {
+        references,
+        distinct,
+        unmapped_distinct: distinct,
+    };
+    // The item static data, stat, inventory, both bosses and the icon.
+    assert_eq!(plan.content.roles[&ContentRole::DataRow], role(6, 6));
+    // The actor class and the tree prefab class.
+    assert_eq!(plan.content.roles[&ContentRole::ActorClass], role(2, 2));
+    // The tile, the quest variable and the stat outside its record.
+    assert_eq!(plan.content.roles[&ContentRole::Unclassified], role(3, 3));
+    let text = serde_json::to_string(&plan).unwrap();
+    assert!(!text.contains("Secret"), "a reference leaked");
 }
 
 #[test]
