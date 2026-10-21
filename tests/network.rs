@@ -1176,14 +1176,21 @@ fn replication_selections_open_archetyped_actors_on_free_channels() {
             });
         }
     }
-    let (replies, _) = with_server(&mut app, move || join_pinned_replies(address, pinned, 4));
+    // Two sessions in turn: each gets both actors, under the same GUIDs.
+    let ([replies, later], _) = with_server(&mut app, move || {
+        [
+            join_pinned_replies(address, pinned, 4),
+            join_pinned_replies(address, pinned, 4),
+        ]
+    });
     let stats = app.world().resource::<PeerLab>().stats().clone();
-    assert_eq!((stats.actor_opens_sent, stats.actor_open_errors), (2, 0));
+    assert_eq!((stats.actor_opens_sent, stats.actor_open_errors), (4, 0));
     assert_eq!(
         replies.len(),
         4,
         "controller, player state, then two actors"
     );
+    assert_eq!(later.len(), 4);
 
     let to_client = PacketConfig {
         receiver: PacketReceiver::Client,
@@ -1222,4 +1229,23 @@ fn replication_selections_open_archetyped_actors_on_free_channels() {
     assert_eq!(spawn.actor.guid, 20);
     assert!(spawn.dynamic.unwrap().location.is_some());
     assert!(open.blocks.is_empty());
+    let actor_guids = |datagrams: &[Vec<u8>]| -> Vec<u32> {
+        let mut guids: Vec<u32> = datagrams[2..]
+            .iter()
+            .map(|datagram| {
+                let packet = read_packet(datagram, &to_client).unwrap();
+                let body = packet.bunches.last().unwrap();
+                read_actor_bunch_body(&mut body.payload.reader(), true, &codec)
+                    .unwrap()
+                    .spawn
+                    .unwrap()
+                    .actor
+                    .guid
+            })
+            .collect();
+        guids.sort_unstable();
+        guids
+    };
+    assert_eq!(actor_guids(&replies), [20, 22]);
+    assert_eq!(actor_guids(&later), [20, 22], "driver-wide GUIDs");
 }
