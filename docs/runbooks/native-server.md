@@ -62,8 +62,9 @@ Each update polls at most 32 datagrams before the fixed ticks. SIGINT/SIGTERM
 stops admission, closes every session, then drains and saves. `network_listening`
 gives the bound address and `version_check`; `status` and `stopped` carry
 `sessions` counts only. A world seeded by `preserve-save` sends its save's
-active prospect in the GameState open (`active_prospect_replicated`, F-802). No ICARUS client compatibility, identity check,
-replication or gameplay is implied; only the authored probe is tested:
+active prospect in the GameState open (`active_prospect_replicated`, F-802).
+No ICARUS client compatibility, identity check, replication or gameplay is
+implied; only the authored probe is tested:
 
 ```bash
 cargo test --locked --test network

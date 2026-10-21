@@ -1,9 +1,10 @@
 //! Describe a supplied pawn or (with `--game-state`) GameState open body
 //! block by block (one JSON line per block): the actor block and each
 //! component block as rep-layout property entries, `Stat Container` and
-//! runtime `Inventory` blocks as their custom deltas. Reads the `pawn_open_compose` profile JSON and one schema name per
-//! component block, in block order. Never reads original files; values are
-//! printed in full and stay with the caller.
+//! runtime `Inventory` blocks as their custom deltas. Reads the
+//! `pawn_open_compose` profile JSON and one schema name per component block,
+//! in block order. Never reads original files; values are printed in full and
+//! stay with the caller.
 use std::path::PathBuf;
 
 use anyhow::{Context, Result, bail, ensure};
