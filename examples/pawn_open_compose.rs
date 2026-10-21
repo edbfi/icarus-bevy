@@ -11,8 +11,8 @@ use anyhow::{Context, Result, bail, ensure};
 use clap::Parser;
 use icarus_bevy::experimental::{
     actor_channel::{
-        ActorChannelCodec, ActorChannelLimits, BlockTarget, NetGuidRef, SubObjectClass,
-        read_actor_bunch_body,
+        ActorChannelCodec, ActorChannelLimits, BlockTarget, DynamicSpawn, NetGuidRef, SpawnVector,
+        SubObjectClass, read_actor_bunch_body,
     },
     actor_open::{
         BlockContent, ComponentActorOpen, OpenComponent, OpenSubobject, Reference,
@@ -273,10 +273,7 @@ fn main() -> Result<()> {
 
 /// The spawn location a quantized spawn vector stands for: each component
 /// is the packed value divided by the scale of 10 (F-571).
-fn spawn_location(
-    dynamic: &icarus_bevy::experimental::actor_channel::DynamicSpawn,
-) -> Result<[f32; 3]> {
-    use icarus_bevy::experimental::actor_channel::SpawnVector;
+fn spawn_location(dynamic: &DynamicSpawn) -> Result<[f32; 3]> {
     match dynamic.location.as_ref().context("location")? {
         SpawnVector::Quantized { bits, components } => {
             let bias = 1i64 << (bits + 1);
