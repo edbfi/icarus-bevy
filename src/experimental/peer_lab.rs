@@ -787,9 +787,10 @@ struct GameStateSession {
     /// The world's time of day, advanced to `clock_at` world seconds.
     clock: Option<TimeOfDayClock>,
     clock_at: f32,
-    /// `ServerFPS` over the poll intervals, the last poll at `polled_at`.
+    /// `ServerFPS` over the poll intervals, the last poll at `polled_at`
+    /// (an instant, so intervals keep their resolution on long runs).
     fps: Option<ServerFpsMeter>,
-    polled_at: f32,
+    polled_at: Instant,
     /// World seconds of the last GameState update pass.
     updated_at: f32,
 }
@@ -1208,7 +1209,7 @@ impl PeerLab {
             clock: None,
             clock_at: 0.0,
             fps: None,
-            polled_at: 0.0,
+            polled_at: Instant::now(),
             updated_at: 0.0,
         });
         Ok(())
@@ -1262,12 +1263,11 @@ impl PeerLab {
     /// from now on: opens carry its last value and updates its changes.
     /// Fails without a GameState open.
     pub fn enable_server_fps(&mut self, meter: ServerFpsMeter) -> Result<()> {
-        let world_seconds = self.world_seconds();
         let Some(session) = &mut self.game_state_open else {
             bail!("no GameState open is enabled");
         };
         session.fps = Some(meter);
-        session.polled_at = world_seconds;
+        session.polled_at = Instant::now();
         Ok(())
     }
 
@@ -2355,7 +2355,8 @@ impl PeerLab {
     /// each connection whose GameState open is acked the values it lacks.
     fn update_game_state(&mut self) {
         use super::game_state_open::handle;
-        let world_seconds = self.world_seconds();
+        let now = Instant::now();
+        let world_seconds = now.duration_since(self.started).as_secs_f32();
         let Some(session) = &mut self.game_state_open else {
             return;
         };
@@ -2364,8 +2365,8 @@ impl PeerLab {
             session.clock_at = world_seconds;
         }
         if let Some(meter) = &mut session.fps {
-            meter.observe(world_seconds - session.polled_at);
-            session.polled_at = world_seconds;
+            meter.observe(now.duration_since(session.polled_at).as_secs_f32());
+            session.polled_at = now;
         }
         if world_seconds - session.updated_at < GAME_STATE_UPDATE_SECONDS {
             return;
