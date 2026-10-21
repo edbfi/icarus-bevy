@@ -4,7 +4,7 @@ Rows retired from [the active ledger](../save-format.md): superseded by a summar
 execution receipts, or historical session state. Full text is kept and IDs stay
 permanent; cite the superseding row where one exists.
 
-Last reconciled: 2026-10-20
+Last reconciled: 2026-10-21
 
 | ID | Claim | Kind | Evidence | Scope and limits | Unknowns | Status |
 | --- | --- | --- | --- | --- | --- | --- |
@@ -31,3 +31,5 @@ Last reconciled: 2026-10-20
 | F-289 | Older tag reader gates Struct GUID at version 441, Array inner type at 282, property GUID at 503; all apply at 522 | observed | static-decompile; M-147; build 25621760 | medium; tag reader 0x14215f530 |  | superseded-by F-765 |
 | F-290 | Built-in name table gives UInt32Property ID 25; it reaches common GUID flag without type-specific extensions | observed | static-decompile; M-147; build 25621760 | medium; 0x14215f530; payload undecoded |  | superseded-by F-765 |
 | F-291 | Size counts only value bytes after the full header; 0x142166850 compares property-reader position change to it | observed | static-decompile; M-147; build 25621760 | medium; M-147/E-010; C++ object offset is not file offset |  | superseded-by F-765 |
+| F-769 | Across 15 prospects the plan's references split into 155..167 actor classes, one unique level path per retained recorder, 504..570 data rows, 1..5 asset paths and 2,742..2,958 unclassified names; 52 retained owners per save are find-only (level actors) | measured | authored-test; M-811 | high; roles by property name only; meanings unmapped (F-660) | U-045 | superseded-by F-814 |
+| F-814 | Across 15 prospects, with instance names (F-813) never resolved, the plan's catalog references are 3,528..3,782 distinct: 155..167 actor classes, one level path per retained recorder, 504..570 data rows, 1..5 asset paths, 222..238 unclassified; 52 owners per save are find-only | measured | authored-test; M-811, M-851 | high; roles by property name | U-045 | superseded-by F-818 |
