@@ -41,6 +41,26 @@ pub struct SessionReplication {
     pub first_channel: u32,
     /// Where each connection's viewer stands.
     pub viewer_location: [f32; 3],
+    /// Every opened actor's initial block ([`actor_role_block`], F-791).
+    actor_block: ContentBlock,
+}
+
+impl SessionReplication {
+    /// Session parameters with the role block encoded once up front.
+    pub fn new(
+        level: Vec<PathSegment>,
+        engine_net_version: u32,
+        first_channel: u32,
+        viewer_location: [f32; 3],
+    ) -> anyhow::Result<Self> {
+        Ok(Self {
+            level,
+            engine_net_version,
+            first_channel,
+            viewer_location,
+            actor_block: actor_role_block(engine_net_version)?,
+        })
+    }
 }
 
 /// Marks the viewer entity of one lab connection.
@@ -95,7 +115,6 @@ fn sync_viewers(
 }
 
 fn open_selected_actors(
-    mut role_block: Local<Option<ContentBlock>>,
     mut lab: ResMut<PeerLab>,
     session: Res<SessionReplication>,
     frame: Res<ReplicationFrame>,
@@ -132,23 +151,13 @@ fn open_selected_actors(
             let Some((position, archetype)) = by_id.get(&selected.id) else {
                 continue;
             };
-            let blocks = match &*role_block {
-                Some(block) => vec![block.clone()],
-                None => match actor_role_block(session.engine_net_version) {
-                    Ok(block) => {
-                        *role_block = Some(block.clone());
-                        vec![block]
-                    }
-                    Err(_) => continue,
-                },
-            };
             let spec = ActorOpenSpec {
                 // Placeholder: `open_actor` assigns the driver-wide GUID.
                 actor: 0,
                 archetype: archetype.archetype.clone(),
                 level: session.level.clone(),
                 location: Some(position.0),
-                blocks,
+                blocks: vec![session.actor_block.clone()],
             };
             lab.open_actor(
                 connection.connection,
