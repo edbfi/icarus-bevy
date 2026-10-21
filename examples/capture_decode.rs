@@ -105,7 +105,8 @@ struct Options {
     /// Per-item detail JSONL; must lie under this checkout's `work/`.
     detail: PathBuf,
     /// Also record the decoded values of every later actor block on this
-    /// channel (`update_actor_values`), with its arrival time.
+    /// channel (`update_actor_values`), with its arrival time. Both decode
+    /// passes write their rows, so select one `pass` before counting.
     #[arg(long)]
     values_channel: Option<u32>,
 }
