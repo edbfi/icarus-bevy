@@ -26,8 +26,10 @@ gameplay-tag net-index dictionary derives from the client's tag table and
 configuration per release (F-702; U-065 resolved). Native descriptors, cooked
 Blueprint schemas, `FClassNetCache` bounds and the `NetSerialize` census in
 `experimental::rep_layout`, `rep_rpc`, `sequencing` and `actor_channel` replay
-and re-encode every export, partial, dormancy, open and typed content block
-of M-707 with 0 failures (F-571 to F-644, F-703 to F-711, F-739; U-064, U-066
+and re-encode every export (317), partial sequence (300), dormancy close (136),
+actor open (288) and typed content block (23,486: 20,407 with a rep layout,
+3,072 without; 66,859 property entries, 2,607 RPC calls, 2,361 stat pairs) of
+M-707 with 0 failures (F-571 to F-644, F-703 to F-711, F-739; U-064, U-066
 resolved).
 
 Server and client builds also match across relevancy, priority, tick rate,
