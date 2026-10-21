@@ -423,10 +423,11 @@ pub fn compose_game_state_open(
 }
 
 /// Frame a property update of the GameState actor (rep `layout`, the plan's)
-/// for its open channel: an actor bunch body without spawn holding one actor block with `values` in
-/// handle order (F-805: the original sends `TimeOfDay`, the world time and
-/// `LevelTimeElapsedSec` this way). Handles outside `18..=82`, the `RepSkip`
-/// handle 26 and empty updates are rejected.
+/// for its open channel: an actor bunch body without spawn holding one actor
+/// block with `values` in handle order (F-805: the original sends
+/// `TimeOfDay`, the world time and `LevelTimeElapsedSec` this way). Handles
+/// outside `18..=82`, the `RepSkip` handle 26 and empty updates are
+/// rejected.
 pub fn compose_game_state_update(
     layout: &[RepCommand],
     engine_net_version: u32,

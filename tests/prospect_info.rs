@@ -465,8 +465,7 @@ impl Drop for Killed {
 
 /// `run` on a world preserved from a save sends the save's active prospect,
 /// game mode values, advancing level clock and time of day in its GameState
-/// open (real
-/// binary, authored probe on loopback).
+/// open (real binary, authored probe on loopback).
 #[test]
 fn run_replicates_a_preserved_worlds_prospect() {
     use icarus_bevy::experimental::{

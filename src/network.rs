@@ -22,10 +22,11 @@
 //! with `[game_state]` identifiers the world's GameState on channel 4 (F-794:
 //! [`game_state_values`], plus a preserved world's prospect and game mode
 //! record, [`saved_game_state`], whose `TimeOfDay` then advances at the
-//! constant rate of its saved `SecondsPerGameDay`, F-806); with `[player_state]` identifiers the referenced
-//! PlayerState on channel 5 (F-784: PlayerId from 256, the Login name and
-//! unique net id, `bIsHost` for the first player only). Each open takes as
-//! many datagrams as it needs. Once a connection acks the GameState open, its
+//! constant rate of its saved `SecondsPerGameDay`, F-806); with
+//! `[player_state]` identifiers the referenced PlayerState on channel 5
+//! (F-784: PlayerId from 256, the Login name and unique net id, `bIsHost`
+//! for the first player only). Each open takes as many datagrams as it
+//! needs. Once a connection acks the GameState open, its
 //! world time, level clock and time of day follow as property updates
 //! (F-805). Nothing else replicates.
 //!
