@@ -723,6 +723,17 @@ impl ReleaseProfile {
         }
     }
 
+    /// Built-in PlayerState identifiers for a qualified build ID; `None`
+    /// elsewhere, so a pin bump never inherits an older build's checksums.
+    fn default_player_state_for_build(build_id: u64) -> Option<ReleasePlayerStateProfile> {
+        match build_id {
+            25_793_607 | 25_793_767 | 25_956_137 => {
+                Some(ReleasePlayerStateProfile::icarus_survival())
+            }
+            _ => None,
+        }
+    }
+
     /// Validate all release-profile invariants.
     pub fn validate(&self) -> Result<()> {
         self.pin.validate()?;
@@ -756,10 +767,9 @@ impl ReleaseProfile {
         let player_controller = parsed
             .player_controller
             .or_else(|| Self::default_player_controller_for_build(parsed.release.build_id));
-        let player_state = parsed.player_state.or_else(|| {
-            Self::default_player_controller_for_build(parsed.release.build_id)
-                .map(|_| ReleasePlayerStateProfile::icarus_survival())
-        });
+        let player_state = parsed
+            .player_state
+            .or_else(|| Self::default_player_state_for_build(parsed.release.build_id));
         let profile = Self {
             pin: parsed.release,
             engine_network_version: ENGINE_NETWORK_VERSION,
