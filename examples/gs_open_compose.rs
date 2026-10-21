@@ -69,6 +69,10 @@ fn hex(bytes: &[u8]) -> String {
 }
 
 fn payload(text: &str, bits: usize) -> Result<Payload> {
+    anyhow::ensure!(
+        text.is_ascii() && text.len().is_multiple_of(2),
+        "hex must be ASCII digit pairs"
+    );
     let bytes = (0..text.len())
         .step_by(2)
         .map(|index| u8::from_str_radix(&text[index..index + 2], 16))
