@@ -23,6 +23,7 @@ pub mod packet;
 pub mod packet_lab;
 pub mod pawn_open;
 pub mod peer_lab;
+pub mod ping;
 pub mod probe_client;
 pub mod property_tree;
 pub mod prospect_info;
