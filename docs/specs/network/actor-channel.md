@@ -4,7 +4,7 @@
 
 Experimental: static observations of client build 25793767 and server build
 25621760, wire-checked against the 3.0.31 capture (F-704 to F-711, F-739,
-F-761). Last reconciled: 2026-10-21.
+F-761). Last reconciled: 2026-10-22.
 
 ## Scope
 
@@ -208,7 +208,11 @@ Address pairs are server / client.
   (38) when changed, `ReplicatedWorldTimeSeconds` (19) every 0.1 s and
   `LevelTimeElapsedSec` (46) when its whole second changes, `ServerFPS` (82)
   when its 2 s recomputation changes it, and `NetworkingStatus` (68..79,
-  F-810) when its player lists change; F-806 and F-808 give the rules.
+  F-810) when its player lists change; F-806 and F-808 give the rules. An
+  update over one bunch goes out as unreliable partial bunches on consecutive
+  packets: `net.PartialBunchReliableThreshold` is zero in the client and the
+  pinned server, and `ReceivedNextBunch` joins an unreliable part only on the
+  same or the next packet (F-825; `LabPeer::actor_update_datagrams`).
 
 ## Candidate
 
@@ -227,4 +231,4 @@ Address pairs are server / client.
   M-560, M-570 to M-588, M-602 to M-605, M-614, M-615, M-620 to M-624, M-628 to
   M-635, M-707, M-708, M-710 to M-713, M-717, M-720, M-731 to M-748, M-776,
   M-777, M-782, M-794, M-795, M-797 to M-799, M-801, M-802, M-804, M-805, M-807,
-  M-832, M-834 to M-836, M-841, M-844 to M-848.
+  M-832, M-834 to M-836, M-841, M-844 to M-848, M-863.

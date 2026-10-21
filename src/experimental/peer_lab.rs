@@ -77,9 +77,12 @@
 //!   F-806), the world time every [`WORLD_TIME_UPDATE_SECONDS`] and
 //!   `LevelTimeElapsedSec` when its whole second changed, and `ServerFPS`
 //!   when it changed (with [`PeerLab::enable_server_fps`], measured over
-//!   the lab's own poll intervals by [`ServerFpsMeter`]). A naked update's
-//!   values that were still the latest are sent again
-//!   (`game_state_updates_lost`).
+//!   the lab's own poll intervals by [`ServerFpsMeter`]). An update over
+//!   one bunch (a long `NetworkingStatus`) goes out through
+//!   [`LabPeer::actor_update_datagrams`] as unreliable partial bunches in
+//!   consecutive datagrams (`game_state_update_datagrams`). A naked update's
+//!   values (a nak of any of its datagrams) that were still the latest are
+//!   sent again (`game_state_updates_lost`).
 //! - Swap (ID 15, `NMT_PCSwap`) and Debug (ID 17, `NMT_DebugText`), when
 //!   [`PeerLabConfig::admission`] is `Some`: `Swap` evaluates
 //!   [`evaluate_pc_swap_target`] against the peer's splitscreen child count
@@ -477,6 +480,9 @@ pub struct PeerLabStats {
     pub game_state_open_errors: u64,
     /// GameState property updates sent after its open was acked (F-805).
     pub game_state_updates_sent: u64,
+    /// Datagrams sent carrying GameState updates: one per update unless it
+    /// was split into partial bunches over several.
+    pub game_state_update_datagrams: u64,
     /// GameState updates that could not be composed or framed.
     pub game_state_update_errors: u64,
     /// Naked GameState updates whose values were still the latest and are
@@ -665,9 +671,13 @@ struct GameStateReplica {
     sent: BTreeMap<u32, RepValue>,
     /// World time of the last sent world time.
     world_time_at: f32,
-    /// Updates awaiting the client's ack or nak: packet ID -> handles.
-    in_flight: BTreeMap<u32, Vec<u32>>,
-    /// Each handle's latest update packet; only its nak repairs.
+    /// Updates awaiting the client's ack or nak: each packet that carried a
+    /// part -> the update (its last packet ID) and its handles. A split
+    /// update arrives only whole (`ReceivedNextBunch` drops a partial bunch
+    /// with a gap), so a nak of any part loses it and acks of all clear it.
+    in_flight: BTreeMap<u32, (u32, Vec<u32>)>,
+    /// Each handle's latest update (its last packet ID); only its nak
+    /// repairs.
     last_packet: BTreeMap<u32, u32>,
 }
 
@@ -697,37 +707,45 @@ impl GameStateReplica {
         values
     }
 
-    /// Record `values` as sent in packet `packet_id` at `world_seconds`.
-    fn sent(&mut self, packet_id: u32, values: BTreeMap<u32, RepValue>, world_seconds: f32) {
+    /// Record `values` as sent in the packets `packet_ids` (one update, in
+    /// send order) at `world_seconds`.
+    fn sent(&mut self, packet_ids: &[u32], values: BTreeMap<u32, RepValue>, world_seconds: f32) {
         use super::game_state_open::handle::WORLD_TIME_SECONDS;
+        let Some(&update) = packet_ids.last() else {
+            return;
+        };
         if values.contains_key(&WORLD_TIME_SECONDS) {
             self.world_time_at = world_seconds;
         }
         let handles: Vec<u32> = values.keys().copied().collect();
         for (handle, value) in values {
             self.sent.insert(handle, value);
-            self.last_packet.insert(handle, packet_id);
+            self.last_packet.insert(handle, update);
         }
-        self.in_flight.insert(packet_id, handles);
-        // Only a handle's latest packet repairs: at most three stay.
+        for packet_id in packet_ids {
+            self.in_flight.insert(*packet_id, (update, handles.clone()));
+        }
+        // Only a handle's latest update repairs: at most one per handle stays.
         let latest = &self.last_packet;
         self.in_flight
-            .retain(|id, _| latest.values().any(|packet| packet == id));
+            .retain(|_, (update, _)| latest.values().any(|packet| packet == update));
     }
 
     fn acked(&mut self, packet_id: u32) {
         self.in_flight.remove(&packet_id);
     }
 
-    /// The client lost `packet_id`: its values that no newer packet carried
-    /// are due again. Returns whether any was.
+    /// The client lost `packet_id`, so the whole update that it carried a
+    /// part of: its values that no newer update carried are due again.
+    /// Returns whether any was.
     fn naked(&mut self, packet_id: u32) -> bool {
-        let Some(handles) = self.in_flight.remove(&packet_id) else {
+        let Some((update, handles)) = self.in_flight.remove(&packet_id) else {
             return false;
         };
+        self.in_flight.retain(|_, (other, _)| *other != update);
         let mut lost = false;
         for handle in handles {
-            if self.last_packet.get(&handle) == Some(&packet_id) {
+            if self.last_packet.get(&handle) == Some(&update) {
                 self.last_packet.remove(&handle);
                 self.sent.remove(&handle);
                 lost = true;
@@ -2490,14 +2508,16 @@ impl PeerLab {
             if values.is_empty() {
                 continue;
             }
-            let packet_id = entry.peer.sequencer().out_packet_id();
             let order = entry.peer.connection_byte_order();
+            // An update over one bunch (a long NetworkingStatus) goes out as
+            // unreliable partial bunches in consecutive datagrams.
             let mut sent = compose_game_state_update(layout, engine, &values, order)
-                .and_then(|payload| entry.peer.actor_update(channel, payload));
-            // A NetworkingStatus too large for one datagram (long player
-            // lists) must not hold back the clocks: count the failure and
-            // send the other values; the status stays due. Composition and
-            // framing failures change no state, so the retry is clean.
+                .and_then(|payload| entry.peer.actor_update_datagrams(channel, payload));
+            // A NetworkingStatus that still cannot be sent (over the 64 KiB
+            // bunch bound or the sent-record ring's room) must not hold back
+            // the clocks: count the failure and send the other values; the
+            // status stays due. Composition and framing failures change no
+            // state, so the retry is clean.
             let status = handle::NETWORKING_STATUS;
             let mut counted = false;
             if sent.is_err()
@@ -2513,12 +2533,12 @@ impl PeerLab {
                     continue;
                 }
                 sent = compose_game_state_update(layout, engine, &values, order)
-                    .and_then(|payload| entry.peer.actor_update(channel, payload));
+                    .and_then(|payload| entry.peer.actor_update_datagrams(channel, payload));
             }
             match sent {
-                Ok(datagram) => {
+                Ok(datagrams) => {
                     entry.ack_pending = false;
-                    outgoing.push((*address, datagram, packet_id, values));
+                    outgoing.push((*address, datagrams, values));
                 }
                 Err(_) => {
                     if !counted {
@@ -2534,9 +2554,20 @@ impl PeerLab {
             self.peers.remove(&address);
             bump(&mut self.stats.peers_failed);
         }
-        for (address, datagram, packet_id, values) in outgoing {
-            // Not recorded when unsent: the next pass builds it again.
-            if !self.send(&datagram, address) {
+        for (address, datagrams, values) in outgoing {
+            // In order and back to back: the client joins the parts only on
+            // the same or the next packet ID.
+            let mut delivered = true;
+            for (datagram, _) in &datagrams {
+                if self.send(datagram, address) {
+                    bump(&mut self.stats.game_state_update_datagrams);
+                } else {
+                    delivered = false;
+                }
+            }
+            // Not recorded unless every part went out: the next pass builds
+            // it again.
+            if !delivered {
                 continue;
             }
             if let Some(replica) = self
@@ -2544,7 +2575,8 @@ impl PeerLab {
                 .get_mut(&address)
                 .and_then(|entry| entry.game_state.as_mut())
             {
-                replica.sent(packet_id, values, world_seconds);
+                let packet_ids: Vec<u32> = datagrams.iter().map(|(_, id)| *id).collect();
+                replica.sent(&packet_ids, values, world_seconds);
                 bump(&mut self.stats.game_state_updates_sent);
             }
         }
@@ -2604,13 +2636,13 @@ mod tests {
         // A changed time of day alone, then the world time once 0.1 s old.
         let due = replica.due(10.05, &changing(600.5, 5));
         assert_eq!(due.keys().copied().collect::<Vec<_>>(), [TIME_OF_DAY]);
-        replica.sent(1, due, 10.05);
+        replica.sent(&[1], due, 10.05);
         let due = replica.due(10.1, &changing(601.0, 6));
         assert_eq!(
             due.keys().copied().collect::<Vec<_>>(),
             [WORLD_TIME_SECONDS, TIME_OF_DAY, LEVEL_TIME_ELAPSED_SEC]
         );
-        replica.sent(2, due, 10.1);
+        replica.sent(&[2], due, 10.1);
         assert_eq!(replica.world_time_at, 10.1);
         // Packet 1's handle is now carried by packet 2: its nak repairs
         // nothing, and only latest packets stay in flight.
@@ -2621,10 +2653,65 @@ mod tests {
         assert_eq!(replica.due(10.15, &changing(601.0, 6)).len(), 3);
         // An acked packet is forgotten; its nak (never sent) changes nothing.
         let due = replica.due(10.15, &changing(601.0, 6));
-        replica.sent(3, due, 10.15);
+        replica.sent(&[3], due, 10.15);
         replica.acked(3);
         assert!(!replica.naked(3));
         assert!(replica.due(10.2, &changing(601.0, 6)).is_empty());
+    }
+
+    #[test]
+    fn a_split_update_is_lost_by_a_nak_of_any_part_and_cleared_by_all_acks() {
+        use super::super::game_state_open::handle::{TIME_OF_DAY, WORLD_TIME_SECONDS};
+        let float = |value: f32| RepValue::Float(value.to_bits());
+        let changing = |tod: f32| [(TIME_OF_DAY, Some(float(tod)))];
+        let split = |replica: &mut GameStateReplica, ids: &[u32], tod: f32, at: f32| {
+            let due = replica.due(at, &changing(tod));
+            assert_eq!(due.len(), 2, "the world time and the time of day");
+            replica.sent(ids, due, at);
+        };
+        // A nak of any one part makes the values due again, once.
+        for lost in [10, 11, 12] {
+            let mut replica = GameStateReplica::default();
+            split(&mut replica, &[10, 11, 12], 600.0, 1.0);
+            assert_eq!(
+                replica.in_flight.keys().copied().collect::<Vec<_>>(),
+                [10, 11, 12]
+            );
+            assert!(replica.due(1.05, &changing(600.0)).is_empty());
+            for acked in [10, 11, 12].into_iter().filter(|id| *id < lost) {
+                replica.acked(acked);
+            }
+            assert!(replica.naked(lost), "part {lost}");
+            assert!(replica.in_flight.is_empty(), "part {lost}");
+            assert_eq!(
+                replica
+                    .due(1.05, &changing(600.0))
+                    .keys()
+                    .copied()
+                    .collect::<Vec<_>>(),
+                [WORLD_TIME_SECONDS, TIME_OF_DAY]
+            );
+            // The other parts' naks repair nothing more.
+            for other in [10, 11, 12] {
+                assert!(!replica.naked(other));
+            }
+        }
+        // Acks of every part clear the update; a later nak changes nothing.
+        let mut replica = GameStateReplica::default();
+        split(&mut replica, &[20, 21], 600.0, 1.0);
+        replica.acked(21);
+        assert_eq!(replica.in_flight.keys().copied().collect::<Vec<_>>(), [20]);
+        replica.acked(20);
+        assert!(replica.in_flight.is_empty());
+        assert!(!replica.naked(20) && !replica.naked(21));
+        assert!(replica.due(1.05, &changing(600.0)).is_empty());
+        // A newer update supersedes a split one: the older parts leave the
+        // flight and their naks repair nothing.
+        split(&mut replica, &[30, 31], 601.0, 2.0);
+        split(&mut replica, &[32], 602.0, 3.0);
+        assert_eq!(replica.in_flight.keys().copied().collect::<Vec<_>>(), [32]);
+        assert!(!replica.naked(30));
+        assert!(replica.due(3.05, &changing(602.0)).is_empty());
     }
 
     #[test]

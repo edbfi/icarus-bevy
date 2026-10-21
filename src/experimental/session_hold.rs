@@ -36,6 +36,7 @@ use super::{
         MovementLevel, RepArray, RepLayoutCodec, RepLayoutLimits, RepValue, RotationLevel,
         icarus_game_state_survival_rep_layout, read_rep_properties,
     },
+    sequencing::{MAX_CONSTRUCTED_PARTIAL_BUNCH_BYTES, PartialBunchReassembler, PartialReceive},
 };
 
 /// Longest accepted [`HoldConfig::duration`]: 72 hours.
@@ -84,6 +85,9 @@ pub struct HoldSummary {
     pub game_state_updates: u64,
     /// GameState update blocks that did not decode with the layout.
     pub decode_errors: u64,
+    /// Unreliable partial parts of GameState updates received (updates over
+    /// one bunch, such as a long `NetworkingStatus`).
+    pub partial_parts: u64,
     /// Longest wait between GameState updates by datagram arrival,
     /// including the waits from the hold's start to the first update and
     /// from the last update to its end (the whole hold when none arrive).
@@ -141,6 +145,8 @@ pub struct MultiHoldSummary {
     pub wall_ms: u64,
     pub game_state_updates: u64,
     pub decode_errors: u64,
+    /// Unreliable partial parts of GameState updates, over all sessions.
+    pub partial_parts: u64,
     /// World time, `TimeOfDay` and `LevelTimeElapsedSec` regressions.
     pub regressions: u64,
     /// The longest [`HoldSummary::max_update_gap_ms`] of a joined session.
@@ -204,6 +210,7 @@ pub fn run_holds(config: &MultiHoldConfig) -> Result<MultiHoldSummary> {
         summary.failed += u64::from(session.setup_error.is_some());
         summary.game_state_updates += hold.game_state_updates;
         summary.decode_errors += hold.decode_errors;
+        summary.partial_parts += hold.partial_parts;
         summary.regressions += hold.world_time_regressions
             + hold.time_of_day_regressions
             + hold.level_time_regressions;
@@ -327,6 +334,8 @@ fn hold_session(config: &HoldConfig, index: usize) -> Result<(SessionHold, Resul
     )?;
     let mut summary = HoldSummary::default();
     let mut tracker = Tracker::new(config.engine_net_version);
+    let mut partials = PartialBunchReassembler::new();
+    let mut last_packet: Option<(u16, i64)> = None;
     let started = Instant::now();
     // The first gap runs from the start, so a hold without updates reports
     // its whole length.
@@ -357,14 +366,35 @@ fn hold_session(config: &HoldConfig, index: usize) -> Result<(SessionHold, Resul
             let Ok(packet) = read_packet(&reply.bytes, &to_client) else {
                 continue;
             };
+            // Unreliable partial parts join on the same or the next packet
+            // ID (the 14-bit sequence, unwrapped here), as the client's
+            // `ReceivedNextBunch` joins them; a gap drops the update.
+            let sequence = packet.header.sequence;
+            let packet_id = last_packet.map_or(i64::from(sequence), |(last, id)| {
+                id + i64::from(sequence.wrapping_sub(last) & 0x3fff)
+            });
+            last_packet = Some((sequence, packet_id));
             for bunch in packet.bunches {
                 if bunch.header.open && bunch.header.channel_index != 0 {
                     summary.joined = true;
                 }
-                if bunch.header.channel_index == GAME_STATE_CHANNEL_INDEX
-                    && !bunch.header.open
-                    && !bunch.header.reliable
+                if bunch.header.channel_index != GAME_STATE_CHANNEL_INDEX
+                    || bunch.header.open
+                    || bunch.header.reliable
                 {
+                    continue;
+                }
+                if !bunch.header.partial {
+                    tracker.update(&bunch.payload, reply.received_at, &mut summary);
+                    continue;
+                }
+                summary.partial_parts += 1;
+                if let Ok(PartialReceive::Complete { bunch, .. }) = partials.receive_part(
+                    packet_id,
+                    &bunch.header,
+                    &bunch.payload,
+                    Some(MAX_CONSTRUCTED_PARTIAL_BUNCH_BYTES),
+                ) {
                     tracker.update(&bunch.payload, reply.received_at, &mut summary);
                 }
             }
