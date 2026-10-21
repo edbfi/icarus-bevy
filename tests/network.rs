@@ -849,6 +849,11 @@ fn production_run_survives_two_hundred_sequential_churn_cycles() {
 /// Hello with `version`, Login, then Netspeed and Join; returns the datagram
 /// answering the Join.
 fn join_pinned(server: SocketAddr, version: u32) -> Vec<u8> {
+    join_pinned_replies(server, version, 1).remove(0)
+}
+
+/// As [`join_pinned`], collecting up to `max` datagrams after the Join.
+fn join_pinned_replies(server: SocketAddr, version: u32, max: usize) -> Vec<Vec<u8>> {
     let mut client = connect(server);
     let report = client.hello(version, "").unwrap();
     assert!(matches!(
@@ -870,11 +875,14 @@ fn join_pinned(server: SocketAddr, version: u32) -> Vec<u8> {
             false,
         )
         .unwrap();
-    let collected = client.collect(Duration::from_secs(3), 1).unwrap();
+    let collected = client.collect(Duration::from_secs(3), max).unwrap();
     assert!(collected.acked.contains(&packet_id), "Join acknowledged");
-    let reply = collected.replies.into_iter().next().unwrap();
     client.close().unwrap();
-    reply.bytes
+    collected
+        .replies
+        .into_iter()
+        .map(|reply| reply.bytes)
+        .collect()
 }
 
 #[test]
@@ -1018,4 +1026,97 @@ fn teardown_sends_host_closed_failure_then_control_close() {
     assert_eq!(collected.replies.len(), 1);
     // Idempotent: a repeated teardown sends nothing more.
     assert_eq!(network::teardown(app.world_mut()).unwrap(), counts);
+}
+
+#[test]
+fn pinned_joins_open_each_player_state_after_its_player_controller() {
+    use icarus_bevy::experimental::{
+        archive::ByteOrder,
+        control_messages::{ArchiveText, NetIdType},
+        packet::read_packet,
+        peer_lab::{FIRST_PLAYER_ID, PeerLabAdmission},
+        session_open::{
+            ConnectionExports, NetGuidCache, PLAYER_STATE_CHANNEL_INDEX, PlayerStateOpenState,
+            compose_player_controller_open, compose_player_state_open, replicated_unique_net_id,
+        },
+    };
+    let profile = ReleaseProfile::load(&release_toml()).unwrap();
+    let pinned = profile.pin.network_checksum;
+    let (mut app, address) = server_app(&NetworkConfig {
+        release_profile: Some(release_toml()),
+        ..enabled(0)
+    });
+    let (replies, _) = with_server(&mut app, move || {
+        [
+            join_pinned_replies(address, pinned, 2),
+            join_pinned_replies(address, pinned, 2),
+        ]
+    });
+    let stats = app.world().resource::<PeerLab>().stats().clone();
+    assert_eq!(
+        (
+            stats.player_state_opens_sent,
+            stats.player_state_open_errors
+        ),
+        (2, 0)
+    );
+
+    // Independent composition in the lab's order: each player's
+    // PlayerController open, then its PlayerState open.
+    let admission = PeerLabAdmission::default();
+    let controller = profile
+        .player_controller_open_plan(admission.map_url, network::SPAWN_LOCATION)
+        .unwrap()
+        .unwrap();
+    let state_plan = profile
+        .player_state_open_plan(admission.map_url)
+        .unwrap()
+        .unwrap();
+    let mut cache = NetGuidCache::new();
+    cache.register_level(&controller.profile.level);
+    let ControlMessage::Login { unique_net_id, .. } = login() else {
+        unreachable!()
+    };
+    let unique_id = replicated_unique_net_id(&unique_net_id, admission.indexed_subsystems);
+    assert_eq!(unique_id.kind, NetIdType::Indexed(3), "STEAM by index");
+    let to_client = PacketConfig {
+        receiver: PacketReceiver::Client,
+        ..probe_config().packet
+    };
+    for (index, datagrams) in replies.iter().enumerate() {
+        assert_eq!(datagrams.len(), 2, "controller then player state");
+        let mut exports = ConnectionExports::new();
+        let controller_open = compose_player_controller_open(
+            &mut cache,
+            &mut exports,
+            &controller,
+            0,
+            ByteOrder::Little,
+        )
+        .unwrap();
+        let state = PlayerStateOpenState {
+            player_state: controller_open.guids.player_state,
+            owner: controller_open.guids.actor,
+            player_id: FIRST_PLAYER_ID + index as i32,
+            unique_id: unique_id.clone(),
+            player_name: ArchiveText::text(NAME_SENTINEL).unwrap(),
+            is_host: index == 0,
+        };
+        let expected = compose_player_state_open(
+            &mut cache,
+            &mut exports,
+            &state_plan,
+            &state,
+            ByteOrder::Little,
+        )
+        .unwrap();
+        let packet = read_packet(&datagrams[1], &to_client).unwrap();
+        let [state_exports, body] = packet.bunches.as_slice() else {
+            panic!("the PlayerState open travels as exports plus body");
+        };
+        assert_eq!(body.header.channel_index, PLAYER_STATE_CHANNEL_INDEX);
+        assert!(state_exports.header.open && state_exports.header.has_package_map_exports);
+        assert_eq!(Some(&state_exports.payload), expected.exports.as_ref());
+        assert_eq!(body.payload, expected.bunch.payload);
+    }
 }

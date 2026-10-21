@@ -122,7 +122,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use anyhow::{Context, Result, ensure};
+use anyhow::{Context, Result, bail, ensure};
 use bevy::{
     app::{RunFixedMainLoop, RunFixedMainLoopSystems},
     prelude::{App, IntoScheduleConfigs, Plugin, ResMut, Resource, resource_exists},
@@ -131,19 +131,23 @@ use serde::Serialize;
 
 use super::admission::{
     AdmissionPolicy, ClientLoginState, ConnectionLoginAdmission, DEFAULT_MAX_CLIENT_RATE,
-    JoinSpawnContext, Occupancy, clamp_client_netspeed, evaluate_pc_swap_target, int_option,
+    FIND_PLAYER_START_ERROR, JoinSpawnContext, Occupancy, clamp_client_netspeed,
+    evaluate_pc_swap_target, int_option,
 };
-use super::control_messages::{ArchiveText, ControlMessage, Decoded, NetIdValue};
+use super::control_messages::{ArchiveText, ControlMessage, Decoded, NetIdValue, UniqueNetId};
 use super::handshake::decode;
 use super::handshake_lab::{
     CookieAuthority, HANDSHAKE_BYTES, HandshakeReply, PACKETS_PER_UPDATE, bind_loopback,
     lab_seconds,
 };
 use super::packet::BunchLimits;
+use super::packet::Payload;
 use super::packet_lab::{DeliveredSummary, LabPeer, PacketDisposition, PacketLabConfig};
 use super::release::ReleaseProfile;
 use super::session_open::{
-    ConnectionExports, NetGuidCache, PlayerControllerOpenPlan, compose_player_controller_open,
+    ConnectionExports, NetGuidCache, PlayerControllerOpenPlan, PlayerStateOpenPlan,
+    PlayerStateOpenState, compose_player_controller_open, compose_player_state_open,
+    replicated_unique_net_id,
 };
 
 /// Lab text of the Failure reply to Login; not an original message.
@@ -153,6 +157,9 @@ pub const ADMISSION_DISABLED_MESSAGE: &str = "icarus-bevy peer lab: game admissi
 pub const HOST_CLOSED_CONNECTION_MESSAGE: &str = "Host closed the connection.";
 /// `EChannelCloseReason::Destroyed`, the reason of the shutdown close bunch.
 pub const CLOSE_REASON_DESTROYED: u32 = 0;
+/// `AGameSession::GetNextPlayerID`'s first value (`NextPlayerID` in `.data`,
+/// post-incremented by `RegisterPlayer`; F-784).
+pub const FIRST_PLAYER_ID: i32 = 256;
 /// Lab text of the Failure reply to Login or Join after admission stopped;
 /// not an original message.
 pub const SHUTTING_DOWN_MESSAGE: &str = "icarus-bevy peer lab: server is shutting down";
@@ -420,6 +427,10 @@ pub struct PeerLabStats {
     pub player_controller_opens_sent: u64,
     /// PlayerController opens that could not be composed or framed.
     pub player_controller_open_errors: u64,
+    /// PlayerState opens sent after the PlayerController open (F-784).
+    pub player_state_opens_sent: u64,
+    /// PlayerState opens that could not be composed or framed.
+    pub player_state_open_errors: u64,
     /// Failure notices sent by [`PeerLab::shutdown`] (F-782).
     pub shutdown_failures_sent: u64,
     /// Control-channel close bunches sent by [`PeerLab::shutdown`] (F-782).
@@ -542,6 +553,18 @@ struct PeerEntry {
     current_net_speed: Option<i32>,
     /// Static GUIDs this connection has received with their paths.
     exports: ConnectionExports,
+    /// The Login's unique net id; used only to replicate the PlayerState,
+    /// never reported.
+    login_unique_id: Option<UniqueNetId>,
+    /// The primary player registered at Join (PlayerId and name).
+    player: Option<RegisteredPlayer>,
+}
+
+/// A player registered by `AGameSession::RegisterPlayer` (F-784): its
+/// `PlayerId` and initial name.
+struct RegisteredPlayer {
+    player_id: i32,
+    name_units: Vec<u16>,
 }
 
 /// The loopback peer lab. `Debug` reports only the peer count and counters.
@@ -558,7 +581,14 @@ pub struct PeerLab {
     peak_peers: usize,
     /// Opt-in PlayerController open after Join, and the driver-wide GUIDs.
     player_controller_open: Option<PlayerControllerOpenPlan>,
+    /// Opt-in PlayerState open after the PlayerController open.
+    player_state_open: Option<PlayerStateOpenPlan>,
     guid_cache: NetGuidCache,
+    /// `AGameSession::GetNextPlayerID`'s counter (F-784): 256 first.
+    next_player_id: i32,
+    /// Lab choice (U-068): only the first PlayerState opened since bind
+    /// replicates `bIsHost = true`.
+    host_assigned: bool,
 }
 
 impl fmt::Debug for PeerLab {
@@ -617,8 +647,31 @@ impl PeerLab {
             admitting: true,
             peak_peers: 0,
             player_controller_open: None,
+            player_state_open: None,
             guid_cache: NetGuidCache::new(),
+            next_player_id: FIRST_PLAYER_ID,
+            host_assigned: false,
         }
+    }
+
+    /// After [`enable_player_controller_open`](Self::enable_player_controller_open),
+    /// also open each joined player's PlayerState (F-784) on `plan.channel_index`.
+    pub fn enable_player_state_open(&mut self, plan: PlayerStateOpenPlan) -> Result<()> {
+        let Some(controller) = &self.player_controller_open else {
+            bail!("the PlayerState open follows the PlayerController open");
+        };
+        ensure!(
+            plan.channel_index != self.config.packet.control_channel_index
+                && plan.channel_index != controller.channel_index
+                && plan.channel_index < self.config.packet.packet.limits.max_channels,
+            "the PlayerState channel collides with another channel or is out of range"
+        );
+        ensure!(
+            plan.level == controller.profile.level,
+            "the PlayerState and PlayerController opens name different levels"
+        );
+        self.player_state_open = Some(plan);
+        Ok(())
     }
 
     /// Open each joined peer's PlayerController with `plan` (module docs):
@@ -867,6 +920,8 @@ impl PeerLab {
                         splitscreen_count: 0,
                         current_net_speed: None,
                         exports: ConnectionExports::new(),
+                        login_unique_id: None,
+                        player: None,
                     },
                 );
                 self.peak_peers = self.peak_peers.max(self.peers.len());
@@ -985,6 +1040,7 @@ impl PeerLab {
                         let spectator = int_option(options, "SpectatorOnly") == 1;
                         if let Some(entry) = self.peers.get_mut(&address) {
                             entry.login_url_units = options.to_vec();
+                            entry.login_unique_id = Some(unique_net_id.clone());
                         }
                         Some(Reply::Welcome { spectator })
                     }
@@ -1023,14 +1079,21 @@ impl PeerLab {
                     has_player_start: admission.has_player_start,
                     must_spectate: admission.must_spectate,
                     default_player_name: admission.default_player_name,
-                    player_id: 1,
+                    player_id: self.next_player_id,
                     net_player_index: 0,
                 };
-                match admission
+                let result = admission
                     .policy
-                    .login_and_init_new_player(&options, occupancy, ctx)
-                {
-                    Ok(_) => {
+                    .login_and_init_new_player(&options, occupancy, ctx);
+                self.consume_player_id(&result);
+                match result {
+                    Ok(outcome) => {
+                        if let Some(entry) = self.peers.get_mut(&address) {
+                            entry.player = Some(RegisteredPlayer {
+                                player_id: ctx.player_id,
+                                name_units: outcome.player_name_units,
+                            });
+                        }
                         bump(&mut self.stats.joins_succeeded);
                         self.player_controller_open
                             .is_some()
@@ -1051,13 +1114,15 @@ impl PeerLab {
                     has_player_start: admission.has_player_start,
                     must_spectate: admission.must_spectate,
                     default_player_name: admission.default_player_name,
-                    player_id: 1 + i32::from(next_split),
+                    player_id: self.next_player_id,
                     net_player_index: next_split,
                 };
-                match admission
-                    .policy
-                    .login_and_init_new_player(url.units(), occupancy, ctx)
-                {
+                let result =
+                    admission
+                        .policy
+                        .login_and_init_new_player(url.units(), occupancy, ctx);
+                self.consume_player_id(&result);
+                match result {
                     Ok(_) => {
                         if let Some(entry) = self.peers.get_mut(&address) {
                             entry.splitscreen_count = next_split;
@@ -1086,6 +1151,15 @@ impl PeerLab {
                 None
             }
             _ => None,
+        }
+    }
+
+    /// `AGameModeBase::InitNewPlayer` registers the player (taking the next
+    /// PlayerId) before its player-start check, so an admitted Join and one
+    /// refused only for a missing player start both consume an ID (F-784).
+    fn consume_player_id<T>(&mut self, result: &Result<T, &'static str>) {
+        if matches!(result, Ok(_) | Err(FIND_PLAYER_START_ERROR)) {
+            self.next_player_id = self.next_player_id.wrapping_add(1);
         }
     }
 
@@ -1169,7 +1243,7 @@ impl PeerLab {
         };
         let mut cache = self.guid_cache.clone();
         let mut exports = entry.exports.clone();
-        let datagram = compose_player_controller_open(
+        let sent = compose_player_controller_open(
             &mut cache,
             &mut exports,
             plan,
@@ -1180,9 +1254,10 @@ impl PeerLab {
             entry
                 .peer
                 .reliable_actor_open(&open.bunch, std::slice::from_ref(&open.exports))
+                .map(|datagram| (open.guids, datagram))
         });
-        let datagram = match datagram {
-            Ok(datagram) => datagram,
+        let (guids, datagram) = match sent {
+            Ok(sent) => sent,
             Err(_) => {
                 bump(&mut self.stats.player_controller_open_errors);
                 if entry.peer.is_failed() {
@@ -1198,7 +1273,72 @@ impl PeerLab {
         if self.send(&datagram, address) {
             bump(&mut self.stats.player_controller_opens_sent);
         }
+        if self.player_state_open.is_some() {
+            self.send_player_state_open(address, guids.actor, guids.player_state);
+        }
         true
+    }
+
+    /// Compose and send the PlayerState open the PlayerController references
+    /// (F-784), committing GUID, export and host state only once the datagram
+    /// is built; a failure counts `player_state_open_errors`.
+    fn send_player_state_open(&mut self, address: SocketAddrV4, owner: u32, player_state: u32) {
+        let (Some(plan), Some(admission)) = (&self.player_state_open, &self.config.admission)
+        else {
+            return;
+        };
+        let Some(entry) = self.peers.get_mut(&address) else {
+            return;
+        };
+        let mut cache = self.guid_cache.clone();
+        let mut exports = entry.exports.clone();
+        let sent = (|| {
+            let player = entry
+                .player
+                .as_ref()
+                .context("no admitted player for the PlayerState")?;
+            let login_id = entry
+                .login_unique_id
+                .as_ref()
+                .context("no login unique net id")?;
+            let state = PlayerStateOpenState {
+                player_state,
+                owner,
+                player_id: player.player_id,
+                unique_id: replicated_unique_net_id(login_id, admission.indexed_subsystems),
+                player_name: ArchiveText::new(&player.name_units)?,
+                is_host: !self.host_assigned,
+            };
+            let open = compose_player_state_open(
+                &mut cache,
+                &mut exports,
+                plan,
+                &state,
+                entry.peer.connection_byte_order(),
+            )?;
+            let export_payloads: Vec<Payload> = open.exports.into_iter().collect();
+            entry
+                .peer
+                .reliable_actor_open(&open.bunch, &export_payloads)
+        })();
+        let datagram = match sent {
+            Ok(datagram) => datagram,
+            Err(_) => {
+                bump(&mut self.stats.player_state_open_errors);
+                if entry.peer.is_failed() {
+                    self.peers.remove(&address);
+                    bump(&mut self.stats.peers_failed);
+                }
+                return;
+            }
+        };
+        entry.exports = exports;
+        entry.ack_pending = false;
+        self.guid_cache = cache;
+        self.host_assigned = true;
+        if self.send(&datagram, address) {
+            bump(&mut self.stats.player_state_opens_sent);
+        }
     }
 
     fn send_acks(&mut self) {

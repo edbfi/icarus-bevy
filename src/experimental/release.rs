@@ -21,7 +21,8 @@ use super::{
     rep_layout::{
         ICARUS_ROW_HANDLE_NONE, ICARUS_ROW_HANDLE_TABLE_COUNT, ICARUS_TWO_BYTE_ROW_TABLES,
         ICARUS_ZERO_ROW_TABLES, MovementLevel, RotationLevel, TagEncoding,
-        actor_component_rep_layout, icarus_player_controller_survival_rep_layout,
+        actor_component_rep_layout, bp_icarus_player_state_rep_layout,
+        icarus_player_controller_survival_rep_layout,
     },
     rep_rpc::{
         BP_ICARUS_PLAYER_CONTROLLER_SURVIVAL_FIELD_INDEX_BOUND,
@@ -32,7 +33,8 @@ use super::{
     },
     session_open::{
         COMPONENT_HANDLES, ComponentBlock, ComponentExport, PLAYER_CONTROLLER_CHANNEL_INDEX,
-        PathSegment, PlayerControllerOpenPlan, PlayerControllerProfile, map_level_chain,
+        PLAYER_STATE_CHANNEL_INDEX, PathSegment, PlayerControllerOpenPlan, PlayerControllerProfile,
+        PlayerStateOpenPlan, map_level_chain,
     },
 };
 
@@ -377,6 +379,70 @@ pub struct ReleasePlayerControllerProfile {
     pub components: Vec<ReleaseComponent>,
 }
 
+/// An archetype outer chain: the archetype with its class network checksum,
+/// then its package with checksum `0`, all nonempty ASCII paths.
+fn validate_archetype(section: &str, archetype: &[ReleasePathSegment]) -> Result<()> {
+    ensure!(
+        archetype.len() >= 2,
+        "{section} archetype needs the archetype and its package"
+    );
+    for segment in archetype {
+        ensure!(
+            segment.path.is_ascii() && !segment.path.is_empty(),
+            "{section} archetype paths must be nonempty ASCII"
+        );
+    }
+    ensure!(
+        archetype[0].checksum != 0,
+        "{section} archetype needs its class network checksum"
+    );
+    ensure!(
+        archetype[archetype.len() - 1].checksum == 0,
+        "{section} archetype package carries checksum 0"
+    );
+    Ok(())
+}
+
+fn session_segments(archetype: &[ReleasePathSegment]) -> Vec<PathSegment> {
+    archetype
+        .iter()
+        .map(|segment| PathSegment::new(&segment.path, segment.checksum, segment.no_load))
+        .collect()
+}
+
+/// Per-release identifiers of the PlayerState open (`[player_state]`, F-784):
+/// its archetype chain. Values come from the session and admission.
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct ReleasePlayerStateProfile {
+    pub archetype: Vec<ReleasePathSegment>,
+}
+
+impl ReleasePlayerStateProfile {
+    /// `BP_IcarusPlayerState_C`: reproduced bit-exactly against the 3.0.31
+    /// capture and derived unchanged for 3.0.32 (F-780, F-784).
+    pub fn icarus_survival() -> Self {
+        Self {
+            archetype: vec![
+                ReleasePathSegment {
+                    path: "Default__BP_IcarusPlayerState_C".to_owned(),
+                    checksum: 628_225_127,
+                    no_load: false,
+                },
+                ReleasePathSegment {
+                    path: "/Game/BP/Systems/BP_IcarusPlayerState".to_owned(),
+                    checksum: 0,
+                    no_load: false,
+                },
+            ],
+        }
+    }
+
+    pub fn validate(&self) -> Result<()> {
+        validate_archetype("player_state", &self.archetype)
+    }
+}
+
 /// `UActorComponent`'s two bool handles (F-703).
 const ACTOR_COMPONENT_BOOL_HANDLES: std::ops::RangeInclusive<u32> = 1..=2;
 
@@ -433,24 +499,7 @@ impl ReleasePlayerControllerProfile {
     }
 
     pub fn validate(&self) -> Result<()> {
-        ensure!(
-            self.archetype.len() >= 2,
-            "player_controller archetype needs the archetype and its package"
-        );
-        for segment in &self.archetype {
-            ensure!(
-                segment.path.is_ascii() && !segment.path.is_empty(),
-                "player_controller archetype paths must be nonempty ASCII"
-            );
-        }
-        ensure!(
-            self.archetype[0].checksum != 0,
-            "player_controller archetype needs its class network checksum"
-        );
-        ensure!(
-            self.archetype[self.archetype.len() - 1].checksum == 0,
-            "player_controller archetype package carries checksum 0"
-        );
+        validate_archetype("player_controller", &self.archetype)?;
         ensure!(
             self.components.len() >= COMPONENT_HANDLES,
             "player_controller needs at least {COMPONENT_HANDLES} components"
@@ -491,11 +540,7 @@ impl ReleasePlayerControllerProfile {
     /// The `session_open` profile for this release and the caller's level chain.
     pub fn session_profile(&self, level: Vec<PathSegment>) -> PlayerControllerProfile {
         PlayerControllerProfile {
-            archetype: self
-                .archetype
-                .iter()
-                .map(|segment| PathSegment::new(&segment.path, segment.checksum, segment.no_load))
-                .collect(),
+            archetype: session_segments(&self.archetype),
             level,
             components: self
                 .components
@@ -534,6 +579,7 @@ pub struct ReleaseProfile {
     pub class_net_cache: ReleaseClassNetCacheBounds,
     pub row_handles: ReleaseRowHandleProfile,
     pub player_controller: Option<ReleasePlayerControllerProfile>,
+    pub player_state: Option<ReleasePlayerStateProfile>,
 }
 
 #[derive(Deserialize)]
@@ -554,6 +600,8 @@ struct ReleaseFile {
     row_handles: Option<ReleaseRowHandleProfile>,
     #[serde(default)]
     player_controller: Option<ReleasePlayerControllerProfile>,
+    #[serde(default)]
+    player_state: Option<ReleasePlayerStateProfile>,
 }
 
 impl ReleasePin {
@@ -613,6 +661,7 @@ impl ReleaseProfile {
             class_net_cache: ReleaseClassNetCacheBounds::default(),
             row_handles: ReleaseRowHandleProfile::default(),
             player_controller: Some(ReleasePlayerControllerProfile::icarus_survival()),
+            player_state: Some(ReleasePlayerStateProfile::icarus_survival()),
         }
     }
 
@@ -643,6 +692,7 @@ impl ReleaseProfile {
             class_net_cache: ReleaseClassNetCacheBounds::default(),
             row_handles: ReleaseRowHandleProfile::default(),
             player_controller: Some(ReleasePlayerControllerProfile::icarus_survival()),
+            player_state: Some(ReleasePlayerStateProfile::icarus_survival()),
         }
     }
 
@@ -686,6 +736,9 @@ impl ReleaseProfile {
         if let Some(player_controller) = &self.player_controller {
             player_controller.validate()?;
         }
+        if let Some(player_state) = &self.player_state {
+            player_state.validate()?;
+        }
         Ok(())
     }
 
@@ -703,6 +756,10 @@ impl ReleaseProfile {
         let player_controller = parsed
             .player_controller
             .or_else(|| Self::default_player_controller_for_build(parsed.release.build_id));
+        let player_state = parsed.player_state.or_else(|| {
+            Self::default_player_controller_for_build(parsed.release.build_id)
+                .map(|_| ReleasePlayerStateProfile::icarus_survival())
+        });
         let profile = Self {
             pin: parsed.release,
             engine_network_version: ENGINE_NETWORK_VERSION,
@@ -711,6 +768,7 @@ impl ReleaseProfile {
             class_net_cache,
             row_handles,
             player_controller,
+            player_state,
         };
         profile.validate()?;
         Ok(profile)
@@ -741,6 +799,27 @@ impl ReleaseProfile {
             engine_net_version: self.engine_network_version,
             spawn_location,
             channel_index: PLAYER_CONTROLLER_CHANNEL_INDEX,
+        }))
+    }
+
+    /// The PlayerState open plan for the map package of `map_url`, or `None`
+    /// without `[player_state]`. The layout is the cooked
+    /// `BP_IcarusPlayerState_C` layout (F-705) with the movement levels the
+    /// capture decodes with.
+    pub fn player_state_open_plan(&self, map_url: &str) -> Result<Option<PlayerStateOpenPlan>> {
+        let Some(player_state) = &self.player_state else {
+            return Ok(None);
+        };
+        Ok(Some(PlayerStateOpenPlan {
+            archetype: session_segments(&player_state.archetype),
+            level: map_level_chain(map_url)?,
+            layout: bp_icarus_player_state_rep_layout(
+                MovementLevel::Whole,
+                MovementLevel::Whole,
+                RotationLevel::Bytes,
+            ),
+            engine_net_version: self.engine_network_version,
+            channel_index: PLAYER_STATE_CHANNEL_INDEX,
         }))
     }
 

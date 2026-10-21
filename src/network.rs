@@ -15,8 +15,10 @@
 //! When the profile carries `[player_controller]` identifiers (built in for
 //! the qualified builds, F-780), every successful Join is answered with the
 //! PlayerController open on actor channel 2 (F-778, F-779): exports, spawn at
-//! [`SPAWN_LOCATION`], roles, references and component blocks. Nothing else
-//! replicates, and the PlayerState it references is never opened.
+//! [`SPAWN_LOCATION`], roles, references and component blocks; with
+//! `[player_state]` identifiers the referenced PlayerState follows on channel
+//! 3 (F-784: PlayerId from 256, the Login name and unique net id, `bIsHost`
+//! for the first player only). Nothing else replicates.
 //!
 //! Ordering: the lab polls at most `PACKETS_PER_UPDATE` datagrams once per
 //! app update in `RunFixedMainLoopSystems::BeforeFixedMainLoop`, so network
@@ -117,6 +119,15 @@ pub fn bind(network: &NetworkConfig) -> Result<Option<BoundNetwork>> {
         .context("bind the experimental network session socket")?;
     if let Some(plan) = plan {
         lab.enable_player_controller_open(plan)?;
+        let player_state = match (&profile, &config.admission) {
+            (Some(profile), Some(admission)) => profile
+                .player_state_open_plan(admission.map_url)
+                .context("compose the PlayerState open plan")?,
+            _ => None,
+        };
+        if let Some(player_state) = player_state {
+            lab.enable_player_state_open(player_state)?;
+        }
     }
     Ok(Some(BoundNetwork {
         lab,

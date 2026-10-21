@@ -254,3 +254,114 @@ fn open_body_carries_roles_references_and_component_blocks() {
         body
     );
 }
+
+#[test]
+fn player_state_open_reuses_exported_paths_and_carries_player_values() {
+    use icarus_bevy::experimental::actor_channel::read_actor_bunch_body;
+    use icarus_bevy::experimental::control_messages::{
+        ArchiveText, NetIdType, NetIdValue, UniqueNetId,
+    };
+    use icarus_bevy::experimental::rep_layout::{
+        MovementLevel, RepLayoutCodec, RepLayoutLimits, RepValue, RotationLevel,
+        bp_icarus_player_state_rep_layout, read_rep_properties,
+    };
+    use icarus_bevy::experimental::session_open::{
+        PlayerStateOpenPlan, PlayerStateOpenState, compose_player_state_open,
+        replicated_unique_net_id,
+    };
+    let profile = profile();
+    let plan = PlayerStateOpenPlan {
+        archetype: vec![
+            PathSegment::new("Default__TestState_C", 0x0bad_cafe, false),
+            PathSegment::new("/Game/Test/TestState", 0, false),
+        ],
+        level: profile.level.clone(),
+        layout: bp_icarus_player_state_rep_layout(
+            MovementLevel::Whole,
+            MovementLevel::Whole,
+            RotationLevel::Bytes,
+        ),
+        engine_net_version: 17,
+        channel_index: 3,
+    };
+    let mut cache = NetGuidCache::new();
+    cache.register_level(&profile.level);
+    let mut exports = ConnectionExports::new();
+    let (guids, _) = cache
+        .player_controller_exports(&mut exports, &profile)
+        .unwrap();
+    let login = UniqueNetId {
+        kind: NetIdType::Named(ArchiveText::text("null").unwrap()),
+        value: NetIdValue::Text(ArchiveText::text("Player-0001").unwrap()),
+    };
+    let unique_id = replicated_unique_net_id(&login, &[(1, "NULL"), (3, "STEAM")]);
+    assert_eq!(unique_id.kind, NetIdType::Indexed(1));
+    assert_eq!(unique_id.value, login.value);
+    let unknown = UniqueNetId {
+        kind: NetIdType::Named(ArchiveText::text("EOS").unwrap()),
+        value: login.value.clone(),
+    };
+    assert_eq!(replicated_unique_net_id(&unknown, &[(1, "NULL")]), unknown);
+    let state = PlayerStateOpenState {
+        player_state: guids.player_state,
+        owner: guids.actor,
+        player_id: 256,
+        unique_id: unique_id.clone(),
+        player_name: ArchiveText::text("Tester").unwrap(),
+        is_host: true,
+    };
+    let open = compose_player_state_open(
+        &mut cache,
+        &mut exports,
+        &plan,
+        &state,
+        icarus_bevy::experimental::archive::ByteOrder::Little,
+    )
+    .unwrap();
+    // Only the new archetype chain is exported; the level is a plain reference.
+    let mut map = icarus_bevy::experimental::actor_channel::PackageMapState::new();
+    let decoded = map
+        .consume_export_prefix(&mut open.exports.unwrap().reader(), &codec())
+        .unwrap();
+    assert_eq!(decoded.len(), 1);
+    assert_eq!(
+        map.resolve_full_path(decoded[0].guid).as_deref(),
+        Some("/Game/Test/TestState.Default__TestState_C")
+    );
+    let header = &open.bunch.header;
+    assert!(header.open && header.reliable && header.channel_index == 3);
+    let body = read_actor_bunch_body(&mut open.bunch.payload.reader(), true, &codec()).unwrap();
+    let spawn = body.spawn.unwrap();
+    assert_eq!(spawn.actor.guid, guids.player_state);
+    let dynamic = spawn.dynamic.unwrap();
+    assert_eq!(dynamic.level.unwrap().guid, guids.level);
+    assert!(dynamic.location.is_none() && dynamic.rotation.is_none());
+    let rep_codec = RepLayoutCodec {
+        actor: codec(),
+        checksums: false,
+        limits: RepLayoutLimits::default(),
+    };
+    let stream = read_rep_properties(
+        &mut body.blocks[0].payload.reader(),
+        &plan.layout,
+        &rep_codec,
+    )
+    .unwrap();
+    let handles: Vec<u32> = stream.entries.iter().map(|entry| entry.handle).collect();
+    assert_eq!(handles, [5, 13, 14, 17, 25, 26, 79]);
+    let values: Vec<&RepValue> = stream.entries.iter().map(|entry| &entry.value).collect();
+    assert!(matches!(values[1], RepValue::Object(owner) if owner.guid == guids.actor));
+    assert!(matches!(values[3], RepValue::Int(256)));
+    assert!(matches!(values[4], RepValue::UniqueNetId(id) if *id == unique_id));
+    assert!(matches!(values[6], RepValue::Bool(true)));
+    // A second open to the same connection exports nothing new.
+    let again = compose_player_state_open(
+        &mut cache,
+        &mut exports,
+        &plan,
+        &state,
+        icarus_bevy::experimental::archive::ByteOrder::Little,
+    )
+    .unwrap();
+    assert!(again.exports.is_none());
+}

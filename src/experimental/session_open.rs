@@ -406,6 +406,9 @@ pub const ACTOR_CHANNEL_NAME_INDEX: u32 = 102;
 /// The capture's PlayerController channel index (F-778): the first after the
 /// control (0) and voice (1) channels.
 pub const PLAYER_CONTROLLER_CHANNEL_INDEX: u32 = 2;
+/// The PlayerState's channel: the next free index (a lab choice; the capture
+/// opened three other actors first and used 6, F-784).
+pub const PLAYER_STATE_CHANNEL_INDEX: u32 = 3;
 
 /// The level chain of a map package (`/Game/Maps/.../Name`, URL options
 /// ignored): `PersistentLevel`, the world (the package's short name) and the
@@ -510,6 +513,183 @@ pub fn compose_player_controller_open(
     };
     Ok(ComposedOpen {
         guids,
+        exports: export_payload,
+        bunch,
+    })
+}
+
+/// The PlayerState actor block's handles in the original's first open (F-784):
+/// `RemoteRole`, `Owner`, `Role`, `PlayerId`, `UniqueId`, `PlayerNamePrivate`
+/// and `AIcarusPlayerState::bIsHost`.
+const PS_HANDLE_REMOTE_ROLE: u32 = 5;
+const PS_HANDLE_OWNER: u32 = 13;
+const PS_HANDLE_ROLE: u32 = 14;
+const PS_HANDLE_PLAYER_ID: u32 = 17;
+const PS_HANDLE_UNIQUE_ID: u32 = 25;
+const PS_HANDLE_PLAYER_NAME: u32 = 26;
+const PS_HANDLE_IS_HOST: u32 = 79;
+/// `ROLE_SimulatedProxy` and `ROLE_Authority`, as captured (F-784).
+const PS_REMOTE_ROLE: u8 = 1;
+const PS_ROLE: u8 = 3;
+
+/// Everything a session needs to open a joined player's PlayerState.
+#[derive(Clone, Debug)]
+pub struct PlayerStateOpenPlan {
+    /// `Default__<Class>_C`, then its package.
+    pub archetype: Vec<PathSegment>,
+    /// `PersistentLevel`, the world, then the map package.
+    pub level: Vec<PathSegment>,
+    pub layout: Vec<RepCommand>,
+    pub engine_net_version: u32,
+    pub channel_index: u32,
+}
+
+/// Server-side PlayerState values for one player (F-784).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PlayerStateOpenState {
+    /// The PlayerState's dynamic GUID (assigned with the PlayerController).
+    pub player_state: u32,
+    /// The owning PlayerController's dynamic GUID.
+    pub owner: u32,
+    pub player_id: i32,
+    pub unique_id: super::control_messages::UniqueNetId,
+    pub player_name: ArchiveText,
+    pub is_host: bool,
+}
+
+/// One composed actor open: the export-only payload (absent when every path
+/// was already exported to the connection) and the open bunch.
+#[derive(Clone, Debug)]
+pub struct ComposedActorOpen {
+    pub exports: Option<Payload>,
+    pub bunch: super::packet::Bunch,
+}
+
+/// The type a server replicates a login's unique net id under
+/// (`FUniqueNetIdRepl::NetSerialize`): a named type that has a replication
+/// index is written by index (`NULL` -> 1 in the capture, F-636, F-784);
+/// every other form is kept.
+pub fn replicated_unique_net_id(
+    login: &super::control_messages::UniqueNetId,
+    indexed: &[(u8, &str)],
+) -> super::control_messages::UniqueNetId {
+    use super::control_messages::NetIdType;
+    let kind = match &login.kind {
+        NetIdType::Named(name) => {
+            let text = String::from_utf16_lossy(name.units());
+            indexed
+                .iter()
+                .find(|(_, known)| known.eq_ignore_ascii_case(&text))
+                .map_or_else(
+                    || login.kind.clone(),
+                    |(index, _)| NetIdType::Indexed(*index),
+                )
+        }
+        other => other.clone(),
+    };
+    super::control_messages::UniqueNetId {
+        kind,
+        value: login.value.clone(),
+    }
+}
+
+/// Compose the PlayerState open for one connection (F-784): static exports
+/// not yet sent to this connection, a dynamic spawn without location, and one
+/// actor block with the captured handles.
+pub fn compose_player_state_open(
+    cache: &mut NetGuidCache,
+    exports: &mut ConnectionExports,
+    plan: &PlayerStateOpenPlan,
+    state: &PlayerStateOpenState,
+    order: super::archive::ByteOrder,
+) -> Result<ComposedActorOpen> {
+    use super::actor_channel::{ActorBunchBody, ActorChannelLimits, encode_actor_bunch_body};
+    use super::packet::{Bunch, BunchHeader, Name};
+    use super::rep_layout::RepLayoutLimits;
+    let codec = ActorChannelCodec {
+        engine_net_version: plan.engine_net_version,
+        exports_enabled: false,
+        has_level: true,
+        order,
+        limits: ActorChannelLimits::default(),
+    };
+    let archetype = cache.export_static(exports, &plan.archetype)?;
+    let level = cache.export_static(exports, &plan.level)?;
+    let references: Vec<NetGuidRef> = [&archetype, &level]
+        .into_iter()
+        .filter(|reference| reference.export.is_some())
+        .cloned()
+        .collect();
+    let export_payload = if references.is_empty() {
+        None
+    } else {
+        Some(encode_exports(&references, &codec)?)
+    };
+    let spawn = SpawnRecord {
+        actor: NetGuidRef::plain(state.player_state),
+        dynamic: Some(DynamicSpawn {
+            archetype: NetGuidRef::plain(archetype.guid),
+            level: Some(NetGuidRef::plain(level.guid)),
+            location: None,
+            rotation: None,
+            scale: None,
+            velocity: None,
+        }),
+    };
+    let stream = PropertyStream {
+        entries: vec![
+            entry(PS_HANDLE_REMOTE_ROLE, RepValue::Byte(PS_REMOTE_ROLE)),
+            entry(
+                PS_HANDLE_OWNER,
+                RepValue::Object(NetGuidRef::plain(state.owner)),
+            ),
+            entry(PS_HANDLE_ROLE, RepValue::Byte(PS_ROLE)),
+            entry(PS_HANDLE_PLAYER_ID, RepValue::Int(state.player_id)),
+            entry(
+                PS_HANDLE_UNIQUE_ID,
+                RepValue::UniqueNetId(state.unique_id.clone()),
+            ),
+            entry(
+                PS_HANDLE_PLAYER_NAME,
+                RepValue::Str(state.player_name.clone()),
+            ),
+            entry(PS_HANDLE_IS_HOST, RepValue::Bool(state.is_host)),
+        ],
+        terminator_checksum: None,
+    };
+    let rep_codec = RepLayoutCodec {
+        actor: codec,
+        checksums: false,
+        limits: RepLayoutLimits::default(),
+    };
+    let body = ActorBunchBody {
+        spawn: Some(spawn),
+        blocks: vec![ContentBlock {
+            has_rep_layout: true,
+            target: BlockTarget::Actor,
+            payload: encode_rep_properties(&stream, &plan.layout, &rep_codec)?,
+        }],
+    };
+    let bunch = Bunch {
+        header: BunchHeader {
+            control: true,
+            open: true,
+            close: false,
+            close_reason: None,
+            paused: false,
+            reliable: true,
+            channel_index: plan.channel_index,
+            has_package_map_exports: false,
+            has_must_be_mapped_guids: false,
+            partial: false,
+            reliable_sequence_raw: None,
+            partial_initial: false,
+            partial_final: false,
+            channel_name: Some(Name::Hardcoded(ACTOR_CHANNEL_NAME_INDEX)),
+        },
+        payload: encode_actor_bunch_body(&body, &codec)?,
+    };
+    Ok(ComposedActorOpen {
         exports: export_payload,
         bunch,
     })

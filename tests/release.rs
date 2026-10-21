@@ -311,3 +311,63 @@ components = [
         );
     }
 }
+
+#[test]
+fn builtin_player_state_identifiers_compose_the_captured_export_prefix() {
+    use icarus_bevy::experimental::{
+        archive::ByteOrder,
+        control_messages::{ArchiveText, NetIdType, NetIdValue, UniqueNetId},
+        session_open::{
+            ConnectionExports, NetGuidCache, PathSegment, PlayerStateOpenState,
+            compose_player_state_open,
+        },
+    };
+    use sha2::{Digest, Sha256};
+    let p31 = ReleaseProfile::release_3_0_31();
+    assert_eq!(
+        ReleaseProfile::release_3_0_32().player_state,
+        p31.player_state
+    );
+    let plan = p31
+        .player_state_open_plan("/Game/Maps/Terrain_016_OLY/Terrain_016")
+        .unwrap()
+        .unwrap();
+    // The capture had exported the level and 16 other static paths to this
+    // connection first, so the archetype took GUID 41 (F-784).
+    let mut cache = NetGuidCache::new();
+    let mut exports = ConnectionExports::new();
+    cache.export_static(&mut exports, &plan.level).unwrap();
+    for index in 0..16 {
+        cache
+            .export_static(
+                &mut exports,
+                &[PathSegment::new(&format!("other{index}"), 0, false)],
+            )
+            .unwrap();
+    }
+    let state = PlayerStateOpenState {
+        player_state: 4,
+        owner: 2,
+        player_id: 256,
+        unique_id: UniqueNetId {
+            kind: NetIdType::Indexed(1),
+            value: NetIdValue::Text(ArchiveText::text("x").unwrap()),
+        },
+        player_name: ArchiveText::text("x").unwrap(),
+        is_host: true,
+    };
+    let open =
+        compose_player_state_open(&mut cache, &mut exports, &plan, &state, ByteOrder::Little)
+            .unwrap();
+    let payload = open.exports.unwrap();
+    // SHA-256 of the capture's 96-byte, 761-bit PlayerState export prefix (M-823).
+    assert_eq!(payload.bit_len(), 761);
+    let digest: String = Sha256::digest(payload.bytes())
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect();
+    assert_eq!(
+        digest,
+        "f65a6aea3492ebf6b3082a530a4adfd8379634320f1201f059d3ce1b6e46a9df"
+    );
+}
