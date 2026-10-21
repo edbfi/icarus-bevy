@@ -174,6 +174,31 @@ fn component(body: &Body) -> Vec<u8> {
             ),
             name("SignIconRecord", "SecretIcon"),
             name("TreePrefabClassName", "SecretTree_C"),
+            struct_tag(
+                "Crops",
+                "CultivationSaveData",
+                &[name("Seed", "SecretSeed"), end()].concat(),
+            ),
+            name("QuestName", "SecretQuest"),
+            struct_tag(
+                "Record",
+                "GameModeRecord",
+                &[
+                    tag(
+                        "SessionFlagRecords",
+                        "ArrayProperty",
+                        &[fstring("NameProperty"), vec![0]].concat(),
+                        &[1_i32.to_le_bytes().to_vec(), fstring("SecretFlag")].concat(),
+                    ),
+                    end(),
+                ]
+                .concat(),
+            ),
+            struct_tag(
+                "Tile",
+                "FLODTileRecorderRecord",
+                &[name("TileName", "SecretWorldTile"), end()].concat(),
+            ),
             // Top-level fields nested in a named struct or a map item
             // struct stay unclassified.
             struct_tag(
@@ -370,8 +395,12 @@ fn read_row_and_class_fields_classify_only_inside_their_owners() {
         distinct,
         unmapped_distinct: distinct,
     };
-    // The item static data, stat, inventory, both bosses and the icon.
-    assert_eq!(plan.content.roles[&ContentRole::DataRow], role(6, 6));
+    // The item static data, stat, inventory, both bosses, the icon, the
+    // seed, the quest and the session flag.
+    assert_eq!(plan.content.roles[&ContentRole::DataRow], role(9, 9));
+    // Only the tile name inside a FLOD tile record names a world tile; the
+    // loose top-level tile name stays unclassified.
+    assert_eq!(plan.content.roles[&ContentRole::WorldTile], role(1, 1));
     // The actor class and the tree prefab class.
     assert_eq!(plan.content.roles[&ContentRole::ActorClass], role(2, 2));
     // The tile, the quest variable, the stat outside its record, the nested

@@ -68,7 +68,7 @@ const ACTOR_VARIABLE_RECORDS: [&str; 5] = [
 /// Fields whose role a static read of their recorder's record and restore
 /// established, as `(property, enclosing struct, role)`; `None` is a
 /// recorder's top level.
-const READ_FIELD_ROLES: [(&str, Option<&str>, ContentRole); 5] = [
+const READ_FIELD_ROLES: [(&str, Option<&str>, ContentRole); 15] = [
     // Item stat records name stat rows (F-660).
     ("Stat", Some("ItemRecordStatData"), ContentRole::DataRow),
     // The container manager saves each inventory's info row name (F-651).
@@ -83,6 +83,38 @@ const READ_FIELD_ROLES: [(&str, Option<&str>, ContentRole); 5] = [
     ("SignIconRecord", None, ContentRole::DataRow),
     // The tree recorder saves the tree's prefab class (F-656).
     ("TreePrefabClassName", None, ContentRole::ActorClass),
+    // Restores that turn each name into a row handle with the table's
+    // `FromName` (F-820): crop seeds, stomach modifiers, mount and juvenile
+    // lineages and genetic values, quests, faction missions, dynamic
+    // mission prospects, prebuilt structures and session flags.
+    ("Seed", Some("CultivationSaveData"), ContentRole::DataRow),
+    (
+        "ModifierName",
+        Some("StomachContentSaveData"),
+        ContentRole::DataRow,
+    ),
+    ("Lineage", None, ContentRole::DataRow),
+    (
+        "GeneticValueName",
+        Some("MountGeneticsSaveData"),
+        ContentRole::DataRow,
+    ),
+    ("QuestName", None, ContentRole::DataRow),
+    ("FactionMissionName", None, ContentRole::DataRow),
+    ("DynamicMissionProspectName", None, ContentRole::DataRow),
+    ("PrebuiltStructureName", None, ContentRole::DataRow),
+    (
+        "SessionFlagRecords",
+        Some("GameModeRecord"),
+        ContentRole::DataRow,
+    ),
+    // The FLOD tile recorder finds its tile among the level's tiles by this
+    // name or respawns one under it (F-820).
+    (
+        "TileName",
+        Some("FLODTileRecorderRecord"),
+        ContentRole::WorldTile,
+    ),
 ];
 
 /// Independently authored native content the importer can resolve references
@@ -202,11 +234,13 @@ pub enum ContentRole {
     /// A level placement path of an existing actor (`ActorPathName`).
     ActorPath,
     /// A data-table row (`*RowName`, `*Row`, `*StaticData`, `*DTKey`, and
-    /// the read row fields of item stats, inventories, world bosses and
-    /// sign icons).
+    /// the fields whose restores were read to name rows).
     DataRow,
     /// A packaged asset path (`*AssetPath`).
     AssetPath,
+    /// A tile of the world's landscape FLOD grid, named by a FLOD tile
+    /// recorder (F-820): resolved against native world data.
+    WorldTile,
     /// The owner's object name at record time (`ObjectFName`). Owner
     /// resolution and restore never read it (F-813): it is a saved
     /// instance's identity, not content, so it is never resolved against
