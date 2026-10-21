@@ -1248,3 +1248,24 @@ fn actor_open_datagram_failures_leave_the_state_unchanged() {
         roomy.reliable_actor_open_datagrams(&small, &[]).unwrap()
     );
 }
+
+#[test]
+fn committed_packets_keep_their_send_instant_for_the_last_256() {
+    use icarus_bevy::experimental::packet_lab::SENT_AT_CAPACITY;
+    let mut config = PacketLabConfig::new(LIMITS);
+    config.sent_capacity = 1_024;
+    let mut peer = LabPeer::from_cookie(&COOKIE, config).unwrap();
+    let first = peer.sequencer().out_packet_id();
+    let before = std::time::Instant::now();
+    peer.ack_packet().unwrap();
+    let stamped = peer.sent_at(first).expect("the first packet is stamped");
+    assert!(stamped >= before);
+    assert_eq!(peer.sent_at(first.wrapping_add(1)), None, "not sent yet");
+    for _ in 0..SENT_AT_CAPACITY {
+        peer.ack_packet().unwrap();
+    }
+    // The first packet fell out of the window; the latest is kept.
+    assert_eq!(peer.sent_at(first), None);
+    let last = peer.sequencer().out_packet_id().wrapping_sub(1);
+    assert!(peer.sent_at(last).is_some());
+}

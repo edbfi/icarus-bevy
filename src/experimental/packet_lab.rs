@@ -358,7 +358,13 @@ pub struct LabPeer {
     /// sets `Connection->bNeedsByteSwapping` (`+0x158`).
     header_inspection_pending: bool,
     failed: bool,
+    /// When each recent packet was committed (at most [`SENT_AT_CAPACITY`],
+    /// oldest first), for round-trip samples when its ack arrives.
+    sent_at: VecDeque<(u32, std::time::Instant)>,
 }
+
+/// Committed packets whose send instant is kept (UE keeps 256 lag slots).
+pub const SENT_AT_CAPACITY: usize = 256;
 
 impl std::fmt::Debug for LabPeer {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -399,6 +405,7 @@ impl LabPeer {
             closing_actors: std::collections::BTreeSet::new(),
             header_inspection_pending: true,
             failed: false,
+            sent_at: VecDeque::new(),
         })
     }
 
@@ -414,6 +421,25 @@ impl LabPeer {
     /// Whether `UControlChannel::bNeedsHeaderInspection` (`+0x68`) is still set.
     pub fn header_inspection_pending(&self) -> bool {
         self.header_inspection_pending
+    }
+
+    /// When packet `packet_id` was committed, while it is among the last
+    /// [`SENT_AT_CAPACITY`] committed packets.
+    pub fn sent_at(&self, packet_id: u32) -> Option<std::time::Instant> {
+        self.sent_at
+            .iter()
+            .rev()
+            .find(|(id, _)| *id == packet_id)
+            .map(|(_, at)| *at)
+    }
+
+    /// Stamp a committed packet with the current instant.
+    fn note_sent(&mut self, packet_id: u32) {
+        if self.sent_at.len() == SENT_AT_CAPACITY {
+            self.sent_at.pop_front();
+        }
+        self.sent_at
+            .push_back((packet_id, std::time::Instant::now()));
     }
 
     pub fn sequencer(&self) -> &PacketSequencer {
@@ -837,6 +863,7 @@ impl LabPeer {
         };
         let (datagram, packet_id, resends) = self.assemble(std::slice::from_ref(&close))?;
         let committed = self.sequencer.commit()?;
+        self.note_sent(committed);
         let recorded = (|| {
             ensure!(committed == packet_id, "committed packet ID mismatch");
             self.record_resends(packet_id, &resends)?;
@@ -894,6 +921,7 @@ impl LabPeer {
         };
         let (datagram, packet_id, resends) = self.assemble(std::slice::from_ref(&update))?;
         let committed = self.sequencer.commit()?;
+        self.note_sent(committed);
         let recorded = (|| {
             ensure!(committed == packet_id, "committed packet ID mismatch");
             self.record_resends(packet_id, &resends)
@@ -1063,6 +1091,7 @@ impl LabPeer {
             }
             sent.datagrams.push(datagram);
             sent.packet_ids.push(packet_id);
+            self.note_sent(packet_id);
             parts.extend(carried.into_iter().map(|part| (packet_id, part)));
         }
         let recorded = self.record_actor_open(first, &resends, channel, parts);
@@ -1193,6 +1222,7 @@ impl LabPeer {
         let new_bunches: Vec<Bunch> = new.iter().map(|(_, bunch, ..)| bunch.clone()).collect();
         let (datagram, packet_id, resends) = self.assemble(&new_bunches)?;
         let committed = self.sequencer.commit()?;
+        self.note_sent(committed);
         let recorded = self.record_sent(committed, packet_id, &resends, new);
         self.fail_on_error(recorded)?;
         Ok(datagram)

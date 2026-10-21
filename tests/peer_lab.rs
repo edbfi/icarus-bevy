@@ -2138,6 +2138,8 @@ fn the_networking_status_lists_joined_players_in_join_order() {
         Some(vec!["Player256".to_owned(), "Player257".to_owned()])
     );
     let status = lab(&app).networking_status().unwrap();
-    assert_eq!(status.player_ping, [0, 0]);
+    // One measured ping per listed player (loopback round trips plus poll
+    // pauses; the values depend on the runner).
+    assert_eq!(status.player_ping.len(), 2);
     assert_eq!(stats(&app).game_state_update_errors, 0);
 }

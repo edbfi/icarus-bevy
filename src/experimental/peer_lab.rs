@@ -179,6 +179,7 @@ use super::packet_lab::{
     ActorOpenSent, DeliveredSummary, LabPeer, PacketDisposition, PacketLabConfig,
 };
 use super::pawn_open::{PawnContent, PawnOpenPlan, PawnOpenState, compose_pawn_open};
+use super::ping::PingEstimator;
 use super::release::ReleaseProfile;
 use super::rep_layout::RepValue;
 use super::server_fps::ServerFpsMeter;
@@ -772,6 +773,8 @@ struct PeerEntry {
     last_movement_packet: BTreeMap<u64, u32>,
     /// The GameState's updated values, once its open was sent.
     game_state: Option<GameStateReplica>,
+    /// Ping from the round trips of acked packets (F-815).
+    ping: PingEstimator,
 }
 
 /// A player registered by `AGameSession::RegisterPlayer` (F-784): its
@@ -1282,9 +1285,9 @@ impl PeerLab {
 
     /// Replicate `status` as the GameState's `NetworkingStatus` (F-810):
     /// opens carry it as last gathered and each update pass lists the
-    /// joined players (names; pings unmeasured, 0) in join order, sending
-    /// the fields that changed. Fails without a GameState open or with
-    /// players already listed.
+    /// joined players (names; pings from acked round trips, F-815) in join
+    /// order, sending the fields that changed. Fails without a GameState
+    /// open or with players already listed.
     pub fn enable_networking_status(&mut self, status: NetworkingStatus) -> Result<()> {
         let Some(session) = &mut self.game_state_open else {
             bail!("no GameState open is enabled");
@@ -1590,6 +1593,7 @@ impl PeerLab {
                         movement_in_flight: BTreeMap::new(),
                         last_movement_packet: BTreeMap::new(),
                         game_state: None,
+                        ping: PingEstimator::new(),
                     },
                 );
                 self.peak_peers = self.peak_peers.max(self.peers.len());
@@ -1612,8 +1616,16 @@ impl PeerLab {
                         entry.last_seen = now;
                         entry.ack_pending = true;
                         bump(&mut self.stats.data_accepted);
+                        let world_seconds = now.duration_since(self.started).as_secs_f64();
                         for packet_id in &summary.acked {
                             entry.movement_in_flight.remove(packet_id);
+                            // Each acked packet's round trip is a ping sample.
+                            if let Some(sent) = entry.peer.sent_at(*packet_id) {
+                                entry.ping.update(
+                                    now.saturating_duration_since(sent).as_secs_f32(),
+                                    world_seconds,
+                                );
+                            }
                         }
                         // `ReceivedAck` / `ReceivedNak` in packet order (F-796).
                         let mut outcomes: Vec<(u32, bool)> = summary
@@ -2418,19 +2430,20 @@ impl PeerLab {
         session.updated_at = Some(now);
         if let Some(status) = &mut session.networking {
             // GatherNetworkingStatus lists the player array's players.
-            let mut joined: Vec<(u32, Vec<u16>)> = self
+            let mut joined: Vec<(u32, Vec<u16>, u8)> = self
                 .peers
                 .values()
                 .filter_map(|entry| {
                     Some((
                         entry.connection_id?,
                         entry.player.as_ref()?.name_units.clone(),
+                        entry.ping.ping(),
                     ))
                 })
                 .collect();
-            joined.sort_unstable_by_key(|(connection, _)| *connection);
-            status.player_ping = vec![0; joined.len()];
-            status.player_names = joined.into_iter().map(|(_, name)| name).collect();
+            joined.sort_unstable_by_key(|(connection, ..)| *connection);
+            status.player_ping = joined.iter().map(|(.., ping)| *ping).collect();
+            status.player_names = joined.into_iter().map(|(_, name, _)| name).collect();
         }
         let mut changing = vec![
             (
