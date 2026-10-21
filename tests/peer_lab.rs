@@ -2157,3 +2157,104 @@ fn the_networking_status_lists_joined_players_in_join_order() {
     );
     assert_eq!(stats(&app).game_state_update_errors, 0);
 }
+
+/// A NetworkingStatus too large for one datagram (48 players with 20-unit
+/// names) is counted as an update error and left due, while the clocks keep
+/// flowing to every connection.
+#[test]
+fn an_oversized_networking_status_does_not_hold_back_the_clocks() {
+    use icarus_bevy::experimental::{
+        game_state_open::{GAME_STATE_CHANNEL_INDEX, GameStateOpenState, NetworkingStatus, handle},
+        peer_lab::GAME_STATE_UPDATE_SECONDS,
+        release::ReleaseProfile,
+        session_open::ActorKey,
+    };
+    let mut admission = PeerLabAdmission::default();
+    admission.policy.max_players = 64;
+    let config = PeerLabConfig {
+        admission: Some(admission),
+        max_peers: 64,
+        ..PeerLabConfig::default()
+    };
+    let mut app = build_app(&ServerConfig::default(), &WorldSnapshot::default()).unwrap();
+    let mut bound = PeerLab::bind(0, config).unwrap();
+    let profile = ReleaseProfile::release_3_0_32();
+    let map_url = PeerLabAdmission::default().map_url;
+    let plan = profile.game_state_open_plan(map_url).unwrap().unwrap();
+    let layout = plan.layout.clone();
+    bound
+        .enable_player_controller_open(
+            profile
+                .player_controller_open_plan(map_url, [0.0; 3])
+                .unwrap()
+                .unwrap(),
+        )
+        .unwrap();
+    bound
+        .enable_game_state_open(
+            plan,
+            GameStateOpenState {
+                key: ActorKey::Session(0),
+                managers: Default::default(),
+                values: Default::default(),
+                weather: Vec::new(),
+            },
+            GAME_STATE_CHANNEL_INDEX,
+        )
+        .unwrap();
+    bound
+        .enable_networking_status(NetworkingStatus::local(600.0))
+        .unwrap();
+    let address = bound.local_addr().unwrap();
+    app.insert_resource(bound).add_plugins(PeerLabPlugin);
+    let mut clients = Vec::new();
+    for index in 0..48 {
+        let mut client = Client::connect(&mut app, address);
+        client.exchange(&mut app, short_hello("", 0), false);
+        let login = ControlMessage::Login {
+            response: ArchiveText::text("0").unwrap(),
+            url: ArchiveText::text(&format!("?Name=P{index:019}")).unwrap(),
+            unique_net_id: UniqueNetId {
+                kind: NetIdType::Default,
+                value: NetIdValue::from_hex(NET_ID_HEX).unwrap(),
+            },
+            platform: ArchiveText::text(PLATFORM_SENTINEL).unwrap(),
+        };
+        client.exchange(&mut app, login, false);
+        client.exchange(&mut app, ControlMessage::Join, false);
+        clients.push(client);
+    }
+    assert_eq!(lab(&app).joined_connections().len(), 48);
+    // Every client acknowledges its opens; then the first keeps receiving
+    // world-time updates although the 48-name status never fits.
+    let mut world_times = 0;
+    for _ in 0..12 {
+        for client in &mut clients {
+            accept_all_headers(client);
+            let (ack, _) = client.packet(Vec::new());
+            client.send(&ack);
+        }
+        std::thread::sleep(Duration::from_secs_f32(GAME_STATE_UPDATE_SECONDS * 4.0));
+        app.update();
+        let datagrams = drain(&clients[0]);
+        for datagram in &datagrams {
+            let packet = read_packet(datagram, &to_client()).unwrap();
+            if let Some(received) = clients[0].sequencer.receive(&packet.header).unwrap() {
+                clients[0]
+                    .sequencer
+                    .ack_seq(received.sequence, true)
+                    .unwrap();
+            }
+        }
+        world_times += game_state_updates(&datagrams, &layout)
+            .iter()
+            .filter(|update| update.contains_key(&handle::WORLD_TIME_SECONDS))
+            .count();
+    }
+    assert!(world_times >= 3, "{world_times} world-time updates");
+    assert!(stats(&app).game_state_update_errors > 0);
+    assert_eq!(
+        lab(&app).networking_status().unwrap().player_names.len(),
+        48
+    );
+}

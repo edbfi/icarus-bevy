@@ -2490,14 +2490,28 @@ impl PeerLab {
             if values.is_empty() {
                 continue;
             }
+            let mut values = values;
             let packet_id = entry.peer.sequencer().out_packet_id();
-            let sent = compose_game_state_update(
-                layout,
-                engine,
-                &values,
-                entry.peer.connection_byte_order(),
-            )
-            .and_then(|payload| entry.peer.actor_update(channel, payload));
+            let order = entry.peer.connection_byte_order();
+            let mut sent = compose_game_state_update(layout, engine, &values, order)
+                .and_then(|payload| entry.peer.actor_update(channel, payload));
+            // A NetworkingStatus too large for one datagram (long player
+            // lists) must not hold back the clocks: count the failure and
+            // send the other values; the status stays due. Composition and
+            // framing failures change no state, so the retry is clean.
+            let status = handle::NETWORKING_STATUS_FIRST..handle::NETWORKING_STATUS_FIRST + 12;
+            if sent.is_err()
+                && !entry.peer.is_failed()
+                && values.keys().any(|handle| status.contains(handle))
+            {
+                bump(&mut self.stats.game_state_update_errors);
+                values.retain(|handle, _| !status.contains(handle));
+                if values.is_empty() {
+                    continue;
+                }
+                sent = compose_game_state_update(layout, engine, &values, order)
+                    .and_then(|payload| entry.peer.actor_update(channel, payload));
+            }
             match sent {
                 Ok(datagram) => {
                     entry.ack_pending = false;
