@@ -12,10 +12,10 @@
 //! [`LabPeer::reliable_actor_open`] opens an actor channel with a caller-built
 //! open bunch and its exports split as `UChannel::SendBunch` does (F-709), and
 //! [`LabPeer::ack_packet`] writes the ack state alone; all also carry any
-//! reliable bunches awaiting resend (actor-channel parts unchanged). The client's ack and nak handling is
-//! mirrored (F-539, INFERRED for this side): an acked packet releases its
-//! out-bunches in order and a naked one queues its unacked bunches for resend
-//! in the next written packet. Resend is driven only by naks; there is no
+//! reliable bunches awaiting resend (actor-channel parts unchanged). The
+//! client's ack and nak handling is mirrored (F-539, INFERRED for this side):
+//! an acked packet releases its out-bunches in order and a naked one queues
+//! its unacked bunches for resend in the next written packet. Resend is driven only by naks; there is no
 //! timer. The bunch is assembled from codec fields (F-522, F-712): not open,
 //! reliable (`FControlChannelOutBunch` sets `bReliable = 1`, `0x1437a83c0`),
 //! the configured control channel index, the hard-coded control name 255 and
