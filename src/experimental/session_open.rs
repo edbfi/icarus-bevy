@@ -553,7 +553,7 @@ pub const PLAYER_CONTROLLER_CHANNEL_INDEX: u32 = 2;
 /// The PlayerState's channel: the next index after the GameState's (a lab
 /// choice keeping the capture's order; it opened the pawn, the GameState and
 /// the FLOD first and used 6, F-784, F-794).
-pub const PLAYER_STATE_CHANNEL_INDEX: u32 = 4;
+pub const PLAYER_STATE_CHANNEL_INDEX: u32 = 5;
 
 /// The level chain of a map package (`/Game/Maps/.../Name`, URL options
 /// ignored): `PersistentLevel`, the world (the package's short name) and the

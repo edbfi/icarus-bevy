@@ -15,12 +15,14 @@
 //! When the profile carries `[player_controller]` identifiers (built in for
 //! the qualified builds, F-780), every successful Join is answered with the
 //! PlayerController open on actor channel 2 (F-778, F-779): exports, spawn at
-//! [`SPAWN_LOCATION`], roles, references and component blocks; with
-//! `[game_state]` identifiers the world's GameState follows on channel 3
-//! (F-794: [`game_state_values`], over as many datagrams as it needs); with
-//! `[player_state]` identifiers the referenced PlayerState follows on channel
-//! 4 (F-784: PlayerId from 256, the Login name and unique net id, `bIsHost`
-//! for the first player only). Nothing else replicates.
+//! [`SPAWN_LOCATION`], roles, references and component blocks; with `[pawn]`
+//! identifiers the player's pawn follows on channel 3 (F-797: captured roles
+//! and references, every component without properties, no inventories);
+//! with `[game_state]` identifiers the world's GameState on channel 4 (F-794:
+//! [`game_state_values`]); with `[player_state]` identifiers the referenced
+//! PlayerState on channel 5 (F-784: PlayerId from 256, the Login name and
+//! unique net id, `bIsHost` for the first player only). Each open takes as
+//! many datagrams as it needs. Nothing else replicates.
 //!
 //! Ordering: the lab polls at most `PACKETS_PER_UPDATE` datagrams once per
 //! app update in `RunFixedMainLoopSystems::BeforeFixedMainLoop`, so network
@@ -45,6 +47,7 @@ use crate::{
             GAME_STATE_CHANNEL_INDEX, GameStateManagers, GameStateOpenState,
             MATCH_STATE_IN_PROGRESS, handle,
         },
+        pawn_open::PAWN_CHANNEL_INDEX,
         peer_lab::{PeerLab, PeerLabAdmission, PeerLabConfig, PeerLabPlugin, SessionCounts},
         release::{ReleasePin, ReleaseProfile},
         rep_layout::{NetworkName, RepValue},
@@ -161,6 +164,15 @@ pub fn bind(network: &NetworkConfig) -> Result<Option<BoundNetwork>> {
                 .context("compose the PlayerState open plan")?,
             _ => None,
         };
+        let pawn = match (&profile, &config.admission) {
+            (Some(profile), Some(admission)) => profile
+                .pawn_open_plan(admission.map_url)
+                .context("compose the pawn open plan")?,
+            _ => None,
+        };
+        if let Some(pawn) = pawn {
+            lab.enable_pawn_open(pawn, PAWN_CHANNEL_INDEX)?;
+        }
         let game_state = match (&profile, &config.admission) {
             (Some(profile), Some(admission)) => profile
                 .game_state_open_plan(admission.map_url)

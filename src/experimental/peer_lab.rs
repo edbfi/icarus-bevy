@@ -165,6 +165,7 @@ use super::packet::Payload;
 use super::packet_lab::{
     ActorOpenSent, DeliveredSummary, LabPeer, PacketDisposition, PacketLabConfig,
 };
+use super::pawn_open::{PawnOpenPlan, PawnOpenState, compose_pawn_open};
 use super::release::ReleaseProfile;
 use super::rep_layout::RepValue;
 use super::session_open::{
@@ -450,6 +451,10 @@ pub struct PeerLabStats {
     pub player_controller_opens_sent: u64,
     /// PlayerController opens that could not be composed or framed.
     pub player_controller_open_errors: u64,
+    /// Pawn opens sent after the PlayerController open (F-797).
+    pub pawn_opens_sent: u64,
+    /// Pawn opens that could not be composed or framed.
+    pub pawn_open_errors: u64,
     /// GameState opens sent after the PlayerController open (F-794).
     pub game_state_opens_sent: u64,
     /// GameState opens that could not be composed or framed.
@@ -549,6 +554,12 @@ pub struct SessionCounts {
     pub shutdown_closes_sent: u64,
     /// Control messages rejected by `IsClientMsgTypeValid` (`F-713`).
     pub invalid_state_messages: u64,
+}
+
+/// The session key of connection `connection`'s pawn: session keys from
+/// `1 << 32` up (below that, the caller's, such as the GameState's).
+pub fn pawn_key(connection: u32) -> ActorKey {
+    ActorKey::Session((1 << 32) | u64::from(connection))
 }
 
 /// `NotifyBunchCommit` for a sent open: its exports went out in the packet
@@ -667,6 +678,8 @@ pub struct PeerLab {
     peak_peers: usize,
     /// Opt-in PlayerController open after Join, and the driver-wide GUIDs.
     player_controller_open: Option<PlayerControllerOpenPlan>,
+    /// Opt-in pawn open after the PlayerController open, on its channel.
+    pawn_open: Option<(PawnOpenPlan, u32)>,
     /// Opt-in GameState open after the PlayerController open.
     game_state_open: Option<GameStateSession>,
     /// Opt-in PlayerState open after the PlayerController open.
@@ -738,6 +751,7 @@ impl PeerLab {
             admitting: true,
             peak_peers: 0,
             player_controller_open: None,
+            pawn_open: None,
             game_state_open: None,
             player_state_open: None,
             guid_cache: NetGuidCache::new(),
@@ -977,6 +991,45 @@ impl PeerLab {
         Some(channel)
     }
 
+    /// Whether `channel` is in range, not the control channel and not taken
+    /// by another enabled session open.
+    fn free_session_channel(&self, channel: u32) -> bool {
+        let taken = [
+            Some(self.config.packet.control_channel_index),
+            self.player_controller_open
+                .as_ref()
+                .map(|plan| plan.channel_index),
+            self.pawn_open.as_ref().map(|(_, channel)| *channel),
+            self.game_state_open
+                .as_ref()
+                .map(|session| session.channel_index),
+            self.player_state_open
+                .as_ref()
+                .map(|plan| plan.channel_index),
+        ];
+        channel < self.config.packet.packet.limits.max_channels && !taken.contains(&Some(channel))
+    }
+
+    /// After [`enable_player_controller_open`](Self::enable_player_controller_open),
+    /// also open each joined player's pawn (F-797) on `channel_index`, right
+    /// after its PlayerController, at the controller's spawn location, under
+    /// [`pawn_key`] (a session key per connection).
+    pub fn enable_pawn_open(&mut self, plan: PawnOpenPlan, channel_index: u32) -> Result<()> {
+        let Some(controller) = &self.player_controller_open else {
+            bail!("the pawn open follows the PlayerController open");
+        };
+        ensure!(
+            plan.level == controller.profile.level,
+            "the pawn and PlayerController opens name different levels"
+        );
+        ensure!(
+            self.free_session_channel(channel_index),
+            "the pawn channel collides with another channel or is out of range"
+        );
+        self.pawn_open = Some((plan, channel_index));
+        Ok(())
+    }
+
     /// After [`enable_player_controller_open`](Self::enable_player_controller_open),
     /// also open the world's GameState (F-794) on each joined connection, on
     /// `channel_index`, after its PlayerController and before its PlayerState,
@@ -1004,13 +1057,7 @@ impl PeerLab {
             "the lab writes the GameState's world time"
         );
         ensure!(
-            channel_index != self.config.packet.control_channel_index
-                && channel_index != controller.channel_index
-                && self
-                    .player_state_open
-                    .as_ref()
-                    .is_none_or(|player_state| player_state.channel_index != channel_index)
-                && channel_index < self.config.packet.packet.limits.max_channels,
+            self.free_session_channel(channel_index),
             "the GameState channel collides with another channel or is out of range"
         );
         ensure!(
@@ -1032,13 +1079,7 @@ impl PeerLab {
             bail!("the PlayerState open follows the PlayerController open");
         };
         ensure!(
-            plan.channel_index != self.config.packet.control_channel_index
-                && plan.channel_index != controller.channel_index
-                && self
-                    .game_state_open
-                    .as_ref()
-                    .is_none_or(|game_state| game_state.channel_index != plan.channel_index)
-                && plan.channel_index < self.config.packet.packet.limits.max_channels,
+            self.free_session_channel(plan.channel_index),
             "the PlayerState channel collides with another channel or is out of range"
         );
         ensure!(
@@ -1073,6 +1114,11 @@ impl PeerLab {
 
     pub fn config(&self) -> &PeerLabConfig {
         &self.config
+    }
+
+    /// The driver-wide GUID cache (read-only).
+    pub fn guid_cache(&self) -> &NetGuidCache {
+        &self.guid_cache
     }
 
     pub fn stats(&self) -> &PeerLabStats {
@@ -1755,6 +1801,9 @@ impl PeerLab {
         if self.send_all(&sent, address) {
             bump(&mut self.stats.player_controller_opens_sent);
         }
+        if self.pawn_open.is_some() {
+            self.send_pawn_open(address, guids.actor, guids.player_state);
+        }
         if self.game_state_open.is_some() {
             self.send_game_state_open(address);
         }
@@ -1762,6 +1811,63 @@ impl PeerLab {
             self.send_player_state_open(address, guids.actor, guids.player_state);
         }
         true
+    }
+
+    /// Compose and send the player's pawn open (F-797) on its owner's
+    /// connection, committing GUID and export state only once every datagram
+    /// is built; a failure counts `pawn_open_errors`.
+    fn send_pawn_open(&mut self, address: SocketAddrV4, controller: u32, player_state: u32) {
+        let (Some((plan, channel)), Some(controller_plan)) =
+            (&self.pawn_open, &self.player_controller_open)
+        else {
+            return;
+        };
+        let Some(entry) = self.peers.get_mut(&address) else {
+            return;
+        };
+        let Some(connection) = entry.connection_id else {
+            return;
+        };
+        let mut cache = self.guid_cache.clone();
+        let mut exports = entry.exports.clone();
+        let state = PawnOpenState {
+            key: pawn_key(connection),
+            controller,
+            player_state,
+            location: controller_plan.spawn_location,
+        };
+        let sent = compose_pawn_open(
+            &mut cache,
+            &mut exports,
+            plan,
+            &state,
+            *channel,
+            entry.peer.connection_byte_order(),
+        )
+        .and_then(|open| {
+            let export_payloads: Vec<Payload> = open.exports.into_iter().collect();
+            entry
+                .peer
+                .reliable_actor_open_datagrams(&open.bunch, &export_payloads)
+        });
+        let sent = match sent {
+            Ok(sent) => sent,
+            Err(_) => {
+                bump(&mut self.stats.pawn_open_errors);
+                if entry.peer.is_failed() {
+                    self.peers.remove(&address);
+                    bump(&mut self.stats.peers_failed);
+                }
+                return;
+            }
+        };
+        commit_exports(&mut exports, &sent);
+        entry.exports = exports;
+        entry.ack_pending = false;
+        self.guid_cache = cache;
+        if self.send_all(&sent, address) {
+            bump(&mut self.stats.pawn_opens_sent);
+        }
     }
 
     /// Compose and send the GameState open (F-794) over as many datagrams as

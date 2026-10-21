@@ -45,6 +45,10 @@ pub mod handle {
     pub const INVENTORY_COMPONENT: u32 = 56;
 }
 
+/// The pawn's channel: the next index after the PlayerController's, as
+/// captured (F-797).
+pub const PAWN_CHANNEL_INDEX: u32 = 3;
+
 /// `ROLE_AutonomousProxy` for the owning connection and `ROLE_Authority`,
 /// as captured (F-797).
 const OWNER_REMOTE_ROLE: u8 = 2;
