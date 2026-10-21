@@ -821,3 +821,51 @@ fn actor_open_splits_exports_and_body_and_resends_them_unchanged() {
     assert_eq!(summary.released_reliable, 2);
     assert_eq!(peer.pending_actor_reliable(2), Some(0));
 }
+
+#[test]
+fn control_close_is_a_reliable_close_bunch_resent_unchanged() {
+    let mut peer = peer();
+    let mut client = Client::new();
+    let (opening, _) = client.send(Vec::new());
+    peer.receive(&opening).unwrap();
+    assert!(!peer.has_received_client_packet(), "no reliable bunch yet");
+    let (hello_datagram, _) = client.send_reliable(hello(), true);
+    peer.receive(&hello_datagram).unwrap();
+    assert!(peer.has_received_client_packet());
+    let (_, initial_out) = peer.sequencer().initial_reliable();
+    let close_id = peer.sequencer().out_packet_id();
+
+    let datagram = peer.reliable_control_close(0).unwrap();
+    assert!(peer.control_closing());
+    let packet = read_packet(&datagram, &to_client()).unwrap();
+    let [bunch] = packet.bunches.as_slice() else {
+        panic!("one close bunch");
+    };
+    let header = &bunch.header;
+    assert!(header.control && header.close && header.reliable && !header.open);
+    assert_eq!(header.close_reason, Some(0));
+    assert_eq!(header.channel_index, 0);
+    assert_eq!(header.channel_name, Some(Name::Hardcoded(255)));
+    assert_eq!(
+        header.reliable_sequence_raw,
+        Some(wire_reliable_sequence(initial_out + 1))
+    );
+    assert_eq!(bunch.payload.bit_len(), 0);
+
+    // Nothing may follow the close, and a second close fails the same way.
+    let before = format!("{peer:?}");
+    assert!(peer.reliable_control_packet(hello()).is_err());
+    assert!(peer.reliable_control_close(0).is_err());
+    assert_eq!(format!("{peer:?}"), before);
+
+    // Lost, then naked: the resend is the same close bunch.
+    let ack = peer.ack_packet().unwrap();
+    client.receive(&ack);
+    let (next, _) = client.send(Vec::new());
+    let summary = peer.receive(&next).unwrap().summary().clone();
+    assert_eq!(summary.naked, [close_id]);
+    let resent = read_packet(&peer.ack_packet().unwrap(), &to_client())
+        .unwrap()
+        .bunches;
+    assert_eq!(resent, packet.bunches);
+}

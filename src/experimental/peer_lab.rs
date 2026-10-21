@@ -73,14 +73,15 @@
 //!   (ID 6) carrying [`SHUTTING_DOWN_MESSAGE`], then the peer is removed
 //!   (`refused_draining`, `peers_closed`).
 //!
-//! Removing a peer is the lab's close: no close bunch is written, so a lost
-//! Upgrade or Failure is never resent. An accepted data packet carrying a
-//! control bunch with the close flag removes its peer after that packet's
-//! delivered messages are answered (`peers_closed_by_client`); this is a lab
-//! choice, applied even when the close bunch itself waits in the reliable
-//! queue. Naked reliable replies of live peers are
-//! resent only inside later ack or reply datagrams (see `packet_lab`), which
-//! the lab writes only after accepting a client packet; there is no timer.
+//! Removing a peer is the lab's close: outside [`PeerLab::shutdown`] no close
+//! bunch is written, so a lost Upgrade or Failure is never resent. An accepted
+//! data packet carrying a control bunch with the close flag removes its peer
+//! after that packet's delivered messages are answered
+//! (`peers_closed_by_client`); this is a lab choice, applied even when the
+//! close bunch itself waits in the reliable queue. Naked reliable replies of
+//! live peers are resent only inside later ack or reply datagrams (see
+//! `packet_lab`), which the lab writes only after accepting a client packet;
+//! there is no timer.
 //!
 //! Policy (lab choices):
 //! - At most [`PeerLabConfig::max_peers`] peers. When the table is full, a
@@ -95,8 +96,14 @@
 //!   ack packet cannot be built are removed at once.
 //! - After [`PeerLab::stop_admission`] no exact handshake form is answered
 //!   (`refused_draining`), so no peer is created or replaced; live peers keep
-//!   their packet state until [`PeerLab::shutdown`] removes them all
-//!   (`peers_shutdown`). Both calls are idempotent.
+//!   their packet state until [`PeerLab::shutdown`] notifies and removes them
+//!   all (`peers_shutdown`). Both calls are idempotent.
+//! - [`PeerLab::shutdown`] mirrors `UNetDriver::Shutdown` (F-782): every peer
+//!   whose control channel is not closing gets a reliable Failure (ID 6)
+//!   carrying [`HOST_CLOSED_CONNECTION_MESSAGE`] in its own datagram; then each
+//!   peer that has delivered a reliable control bunch gets the control
+//!   channel's reliable close bunch (reason 0, `Destroyed`) in another. Nothing
+//!   is resent afterwards: the peers are removed at once.
 //! - At most [`PACKETS_PER_UPDATE`] datagrams per update. The receive buffer is
 //!   one byte longer than the configured maximum datagram size
 //!   (`limits.max_packet_bytes`), so a longer, kernel-truncated datagram is
@@ -141,6 +148,11 @@ use super::session_open::{
 
 /// Lab text of the Failure reply to Login; not an original message.
 pub const ADMISSION_DISABLED_MESSAGE: &str = "icarus-bevy peer lab: game admission is disabled";
+/// Source text of `NSLOCTEXT("NetworkErrors", "HostClosedConnection", ...)`,
+/// the Failure every client receives when the server shuts down (F-782).
+pub const HOST_CLOSED_CONNECTION_MESSAGE: &str = "Host closed the connection.";
+/// `EChannelCloseReason::Destroyed`, the reason of the shutdown close bunch.
+pub const CLOSE_REASON_DESTROYED: u32 = 0;
 /// Lab text of the Failure reply to Login or Join after admission stopped;
 /// not an original message.
 pub const SHUTTING_DOWN_MESSAGE: &str = "icarus-bevy peer lab: server is shutting down";
@@ -408,6 +420,10 @@ pub struct PeerLabStats {
     pub player_controller_opens_sent: u64,
     /// PlayerController opens that could not be composed or framed.
     pub player_controller_open_errors: u64,
+    /// Failure notices sent by [`PeerLab::shutdown`] (F-782).
+    pub shutdown_failures_sent: u64,
+    /// Control-channel close bunches sent by [`PeerLab::shutdown`] (F-782).
+    pub shutdown_closes_sent: u64,
 }
 
 impl PeerLabStats {
@@ -463,6 +479,10 @@ pub struct SessionCounts {
     pub closed_by_shutdown: u64,
     /// PlayerController opens sent after Join.
     pub player_controller_opens_sent: u64,
+    /// Shutdown Failure notices sent (F-782).
+    pub shutdown_failures_sent: u64,
+    /// Shutdown control-channel close bunches sent (F-782).
+    pub shutdown_closes_sent: u64,
     /// Control messages rejected by `IsClientMsgTypeValid` (`F-713`).
     pub invalid_state_messages: u64,
 }
@@ -654,14 +674,58 @@ impl PeerLab {
         self.admitting = false;
     }
 
-    /// Stop admission and remove every peer (no close bunch is written).
-    /// Returns the number removed; a repeated call removes none.
+    /// Stop admission, notify every peer as `UNetDriver::Shutdown` does
+    /// (module docs, F-782) and remove them all. Returns the number removed;
+    /// a repeated call removes none.
     pub fn shutdown(&mut self) -> usize {
         self.stop_admission();
+        let mut addresses: Vec<SocketAddrV4> = self.peers.keys().copied().collect();
+        addresses.sort_unstable();
+        for address in &addresses {
+            self.send_shutdown_notice(*address, false);
+        }
+        for address in addresses.iter().rev() {
+            self.send_shutdown_notice(*address, true);
+        }
         let removed = self.peers.len();
         self.peers.clear();
         self.stats.peers_shutdown = self.stats.peers_shutdown.saturating_add(removed as u64);
         removed
+    }
+
+    /// One shutdown datagram for `address`: the Failure notice, or (`close`)
+    /// the control channel's close bunch. Errors only count; the peer is
+    /// removed by the caller either way.
+    fn send_shutdown_notice(&mut self, address: SocketAddrV4, close: bool) {
+        let Some(entry) = self.peers.get_mut(&address) else {
+            return;
+        };
+        if entry.peer.is_failed() || entry.peer.control_closing() {
+            return;
+        }
+        let datagram = if close {
+            if !entry.peer.has_received_client_packet() {
+                return;
+            }
+            entry.peer.reliable_control_close(CLOSE_REASON_DESTROYED)
+        } else {
+            ArchiveText::text(HOST_CLOSED_CONNECTION_MESSAGE).and_then(|message| {
+                entry
+                    .peer
+                    .reliable_control_packet(ControlMessage::Failure { message })
+            })
+        };
+        let Ok(datagram) = datagram else {
+            bump(&mut self.stats.reply_errors);
+            return;
+        };
+        if self.send(&datagram, address) {
+            bump(if close {
+                &mut self.stats.shutdown_closes_sent
+            } else {
+                &mut self.stats.shutdown_failures_sent
+            });
+        }
     }
 
     /// Current session gauges and counters (counts only).
@@ -682,6 +746,8 @@ impl PeerLab {
             closed_failed: self.stats.peers_failed,
             closed_by_shutdown: self.stats.peers_shutdown,
             player_controller_opens_sent: self.stats.player_controller_opens_sent,
+            shutdown_failures_sent: self.stats.shutdown_failures_sent,
+            shutdown_closes_sent: self.stats.shutdown_closes_sent,
             invalid_state_messages: self.stats.invalid_state_messages,
             ..SessionCounts::default()
         };

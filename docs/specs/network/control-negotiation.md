@@ -91,7 +91,7 @@ initialization, compression or integrity protection.
   | 3 Challenge | to client | string (F-531) |
   | 4 Netspeed | to server | i32 rate |
   | 5 Login | to server | string response (`"0"`, F-548), string URL, unique-net-id (F-531), string platform |
-  | 6 Failure | to client | string, then the client closes |
+  | 6 Failure | to client | string, then the client closes; shutdown sends it, then a reason-0 control close (F-782) |
   | 9 Join | to server | none |
   | 10 Split join | to server | string URL, unique-net-id |
   | 15 Swap | to server | i32 child index (`-1` parent, `>= 0` splitscreen child) |
@@ -103,9 +103,8 @@ initialization, compression or integrity protection.
 
 ## Candidate
 
-- Experimental modules (`control`, `packet`, `control_receive`,
-  `control_messages`, `sequencing`, `admission`, `packet_lab`, `peer_lab`) model
-  the headers, the 20-entry fallback table, unique-net-id forms (F-543, F-636),
+- The `experimental` control, packet, sequencing, admission and lab modules
+  model the headers, the 20-entry fallback table, unique-net-id forms (F-543, F-636),
   `clamp_client_netspeed`, `evaluate_pc_swap_target`,
   `evaluate_actor_channel_failure` (F-740), and disconnected loopback
   negotiation through `Hello`, `Challenge`, `Login`, `PreLogin`, `Welcome`,

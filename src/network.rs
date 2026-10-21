@@ -21,8 +21,10 @@
 //! Ordering: the lab polls at most `PACKETS_PER_UPDATE` datagrams once per
 //! app update in `RunFixedMainLoopSystems::BeforeFixedMainLoop`, so network
 //! input is processed before every `SimulationSet` of that update's fixed
-//! ticks. Shutdown first stops admission ([`stop_admission`]), then removes
-//! every session and drops the socket ([`teardown`]); both are idempotent.
+//! ticks. Shutdown first stops admission ([`stop_admission`]), then sends
+//! every session the original's shutdown notice (Failure "Host closed the
+//! connection.", then the control channel close; F-782), removes them all and
+//! drops the socket ([`teardown`]); both are idempotent.
 use std::net::{SocketAddr, SocketAddrV4};
 
 use anyhow::{Context, Result};
@@ -149,8 +151,8 @@ pub fn stop_admission(world: &mut World) {
     }
 }
 
-/// Stop admission, remove every session and drop the socket. Idempotent: a
-/// repeated call returns the same final counts.
+/// Stop admission, notify and remove every session and drop the socket.
+/// Idempotent: a repeated call returns the same final counts.
 pub fn teardown(world: &mut World) -> Option<SessionCounts> {
     if let Some(mut lab) = world.remove_resource::<PeerLab>() {
         lab.shutdown();

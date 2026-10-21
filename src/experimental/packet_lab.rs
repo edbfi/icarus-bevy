@@ -84,6 +84,12 @@ pub const MAX_CONSTRUCTED_BUNCH_BYTES: usize = 65_536;
 /// Resends carried by one assembled datagram, with their wire bunches.
 type Resends = Vec<(Resend, Bunch)>;
 
+/// A new reliable control bunch: one message, or the channel's close.
+enum NewControl {
+    Message(ControlMessage),
+    Close(u32),
+}
+
 /// A naked reliable bunch awaiting resend.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Resend {
@@ -314,6 +320,8 @@ pub struct LabPeer {
     actors: BTreeMap<u32, ReliableChannel<Bunch>>,
     /// Naked out-bunches awaiting resend, oldest first.
     resend: VecDeque<Resend>,
+    /// The control channel's close bunch: its reliable sequence and reason.
+    control_close: Option<(u32, u32)>,
     /// Mirrors `UControlChannel::bNeedsHeaderInspection` (`+0x68`, F-712):
     /// cleared when the first delivered control bunch starting with `Hello`
     /// sets `Connection->bNeedsByteSwapping` (`+0x158`).
@@ -356,6 +364,7 @@ impl LabPeer {
             control,
             actors: BTreeMap::new(),
             resend: VecDeque::new(),
+            control_close: None,
             header_inspection_pending: true,
             failed: false,
         })
@@ -648,12 +657,48 @@ impl LabPeer {
     /// change when the message cannot be encoded, too many bunches are
     /// outstanding or the datagram would exceed the maximum packet size.
     pub fn reliable_control_packet(&mut self, message: ControlMessage) -> Result<Vec<u8>> {
-        self.write_data_packet(Some(message))
+        self.write_data_packet(Some(NewControl::Message(message)))
+    }
+
+    /// Close the control channel as `UChannel::Close(Reason)` does (F-782):
+    /// the next reliable sequence carries an empty bunch with `bClose` and
+    /// `reason`, in a datagram with the ack state and resends; it is resent
+    /// unchanged on naks and no control message may follow it. Fails without
+    /// a state change when the channel is already closing.
+    pub fn reliable_control_close(&mut self, reason: u32) -> Result<Vec<u8>> {
+        self.write_data_packet(Some(NewControl::Close(reason)))
+    }
+
+    /// `UNetConnection::HasReceivedClientPacket` on a server (F-782): a
+    /// reliable control bunch has been delivered (`InReliable[0]` moved from
+    /// its initial value).
+    pub fn has_received_client_packet(&self) -> bool {
+        self.control.in_reliable() != self.sequencer.initial_reliable().0
+    }
+
+    /// Whether the control channel close bunch has been sent.
+    pub fn control_closing(&self) -> bool {
+        self.control_close.is_some()
     }
 
     /// One reliable control-channel bunch carrying `messages`: codec fields
     /// (F-522); the hard-coded name index 255 is inferred.
     fn reliable_bunch(&self, sequence: u32, messages: &[Decoded]) -> Result<Bunch> {
+        let close_reason = self
+            .control_close
+            .filter(|(closing, _)| *closing == sequence)
+            .map(|(_, reason)| reason);
+        self.control_bunch(sequence, messages, close_reason)
+    }
+
+    /// A reliable control bunch; `close_reason` makes it the channel's close
+    /// bunch (`bClose`, `CloseReason`; F-782).
+    fn control_bunch(
+        &self,
+        sequence: u32,
+        messages: &[Decoded],
+        close_reason: Option<u32>,
+    ) -> Result<Bunch> {
         let mut writer = BitWriter::new();
         for decoded in messages {
             let Decoded::Message(message) = decoded else {
@@ -663,10 +708,10 @@ impl LabPeer {
         }
         Ok(Bunch {
             header: BunchHeader {
-                control: false,
+                control: close_reason.is_some(),
                 open: false,
-                close: false,
-                close_reason: None,
+                close: close_reason.is_some(),
+                close_reason,
                 paused: false,
                 reliable: true,
                 channel_index: self.config.control_channel_index,
@@ -808,10 +853,14 @@ impl LabPeer {
 
     /// Build the datagram completely, then commit: errors before the commit
     /// leave the state unchanged.
-    fn write_data_packet(&mut self, message: Option<ControlMessage>) -> Result<Vec<u8>> {
+    fn write_data_packet(&mut self, message: Option<NewControl>) -> Result<Vec<u8>> {
         self.ensure_usable()?;
         let new = match message {
             Some(message) => {
+                ensure!(
+                    self.control_close.is_none(),
+                    "the control channel is closing"
+                );
                 ensure!(
                     self.control.out_bunches().len() < MAX_PENDING_RELIABLE,
                     "{MAX_PENDING_RELIABLE} outgoing reliable control bunches are unacknowledged"
@@ -821,13 +870,16 @@ impl LabPeer {
                     .out_reliable()
                     .checked_add(1)
                     .context("reliable sequence counter exhausted")?;
-                let payload = vec![Decoded::Message(message)];
-                let bunch = self.reliable_bunch(sequence, &payload)?;
-                Some((sequence, bunch, payload))
+                let (payload, close_reason) = match message {
+                    NewControl::Message(message) => (vec![Decoded::Message(message)], None),
+                    NewControl::Close(reason) => (Vec::new(), Some(reason)),
+                };
+                let bunch = self.control_bunch(sequence, &payload, close_reason)?;
+                Some((sequence, bunch, payload, close_reason))
             }
             None => None,
         };
-        let new_bunches: Vec<Bunch> = new.iter().map(|(_, bunch, _)| bunch.clone()).collect();
+        let new_bunches: Vec<Bunch> = new.iter().map(|(_, bunch, ..)| bunch.clone()).collect();
         let (datagram, packet_id, resends) = self.assemble(&new_bunches)?;
         let committed = self.sequencer.commit()?;
         let recorded = self.record_sent(committed, packet_id, &resends, new);
@@ -878,13 +930,16 @@ impl LabPeer {
         committed: u32,
         packet_id: u32,
         resends: &[(Resend, Bunch)],
-        new: Option<(u32, Bunch, Vec<Decoded>)>,
+        new: Option<(u32, Bunch, Vec<Decoded>, Option<u32>)>,
     ) -> Result<()> {
         ensure!(committed == packet_id, "committed packet ID mismatch");
         self.record_resends(packet_id, resends)?;
-        if let Some((sequence, _, payload)) = new {
+        if let Some((sequence, _, payload, close_reason)) = new {
             let assigned = self.control.send_reliable(packet_id, payload)?;
             ensure!(assigned == sequence, "outgoing reliable sequence mismatch");
+            if let Some(reason) = close_reason {
+                self.control_close = Some((sequence, reason));
+            }
         }
         Ok(())
     }
