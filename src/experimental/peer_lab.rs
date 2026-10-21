@@ -449,7 +449,9 @@ pub struct PeerLabStats {
     pub fallbacks_ignored: u64,
     /// Replicated actor opens sent through [`PeerLab::open_actor`].
     pub actor_opens_sent: u64,
-    /// Replicated actor opens that could not be composed or framed.
+    /// Replicated actor open attempts that could not be composed or framed;
+    /// a persistent failure is retried, and counted, every time the actor is
+    /// selected again.
     pub actor_open_errors: u64,
     /// Failure notices sent by [`PeerLab::shutdown`] (F-782).
     pub shutdown_failures_sent: u64,
@@ -697,11 +699,12 @@ impl PeerLab {
     }
 
     /// Open the actor `key` on the joined connection `connection` with
-    /// `open` (a caller-built spec whose `actor` GUID is replaced by the
-    /// driver-wide GUID for `key`) on the lowest free channel from
-    /// `first_channel`. Returns the channel, or `None` when the actor is
-    /// already open there or the connection is unknown. Composition and
-    /// framing failures count `actor_open_errors` and change nothing.
+    /// `open` on the lowest free channel from `first_channel`. The lab owns
+    /// actor GUIDs: `open.actor` is ignored and replaced by the driver-wide
+    /// GUID for `key`. Returns the channel, or `None` when the actor is
+    /// already open there or the connection is unknown; the already-open
+    /// check runs first and allocates nothing. Composition and framing
+    /// failures count `actor_open_errors` and change nothing.
     pub fn open_actor(
         &mut self,
         connection: u32,
@@ -715,16 +718,16 @@ impl PeerLab {
             .iter()
             .find(|(_, entry)| entry.connection_id == Some(connection))
             .map(|(address, _)| *address)?;
+        let entry = self.peers.get_mut(&address)?;
+        if entry.opened_actors.contains_key(&key) {
+            return None;
+        }
         let mut cache = self.guid_cache.clone();
         let guid = match self.actor_guids.get(&key) {
             Some(guid) => *guid,
             None => cache.assign_dynamic(),
         };
         open.actor = guid;
-        let entry = self.peers.get_mut(&address)?;
-        if entry.opened_actors.contains_key(&key) {
-            return None;
-        }
         let mut exports = entry.exports.clone();
         let sent = entry
             .peer
