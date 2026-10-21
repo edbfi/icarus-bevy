@@ -464,6 +464,10 @@ pub struct PeerLabStats {
     pub actor_updates_sent: u64,
     /// Movement updates that could not be composed or framed.
     pub actor_update_errors: u64,
+    /// Naks of in-flight movement updates, superseded ones included.
+    pub actor_update_naks: u64,
+    /// Naked movement updates that were still the latest and are due again.
+    pub actor_updates_lost: u64,
     /// Failure notices sent by [`PeerLab::shutdown`] (F-782).
     pub shutdown_failures_sent: u64,
     /// Control-channel close bunches sent by [`PeerLab::shutdown`] (F-782).
@@ -601,6 +605,12 @@ struct PeerEntry {
     /// The location each open actor was last sent at (its spawn, then
     /// movement updates).
     actor_locations: BTreeMap<u64, [f32; 3]>,
+    /// Movement updates awaiting the client's ack or nak: packet ID -> actor.
+    /// A record the client never reports stays until the actor closes or the
+    /// peer is removed, so this is bounded by the peer's lifetime.
+    movement_in_flight: BTreeMap<u32, u64>,
+    /// Each actor's latest movement update packet; only its nak repairs.
+    last_movement_packet: BTreeMap<u64, u32>,
 }
 
 /// A player registered by `AGameSession::RegisterPlayer` (F-784): its
@@ -734,9 +744,10 @@ impl PeerLab {
     /// the location differs from the one last sent and the channel's open is
     /// acked (UE drops unreliable bunches for a channel the client has not
     /// opened yet). Returns whether an update was sent; failures count
-    /// `actor_update_errors` and change nothing. A lost update is not
-    /// repaired: unlike UE's changelist resend on a nak, the client keeps the
-    /// stale position until the actor moves again.
+    /// `actor_update_errors` and change nothing. A lost update is repaired as
+    /// UE re-sends a naked packet's properties: when the client naks its
+    /// packet and no newer update was sent since, the location counts as
+    /// unsent (`actor_updates_lost`) and the next selection sends it again.
     pub fn update_actor_movement(
         &mut self,
         connection: u32,
@@ -767,6 +778,7 @@ impl PeerLab {
             order: entry.peer.connection_byte_order(),
             limits: ActorChannelLimits::default(),
         };
+        let packet_id = entry.peer.sequencer().out_packet_id();
         let sent = resting_movement(location)
             .and_then(|movement| movement_update_block(engine_net_version, movement))
             .and_then(|block| {
@@ -797,6 +809,8 @@ impl PeerLab {
         }
         if let Some(entry) = self.peers.get_mut(&address) {
             entry.actor_locations.insert(key, location);
+            entry.movement_in_flight.insert(packet_id, key);
+            entry.last_movement_packet.insert(key, packet_id);
         }
         bump(&mut self.stats.actor_updates_sent);
         true
@@ -848,6 +862,8 @@ impl PeerLab {
         entry.pending_closes.remove(&key);
         entry.opened_actors.remove(&key);
         entry.actor_locations.remove(&key);
+        entry.movement_in_flight.retain(|_, actor| *actor != key);
+        entry.last_movement_packet.remove(&key);
         entry.ack_pending = false;
         if self.send(&datagram, address) {
             bump(&mut self.stats.actor_closes_sent);
@@ -1202,6 +1218,8 @@ impl PeerLab {
                         opened_actors: BTreeMap::new(),
                         pending_closes: BTreeMap::new(),
                         actor_locations: BTreeMap::new(),
+                        movement_in_flight: BTreeMap::new(),
+                        last_movement_packet: BTreeMap::new(),
                     },
                 );
                 self.peak_peers = self.peak_peers.max(self.peers.len());
@@ -1224,6 +1242,23 @@ impl PeerLab {
                         entry.last_seen = now;
                         entry.ack_pending = true;
                         bump(&mut self.stats.data_accepted);
+                        for packet_id in &summary.acked {
+                            entry.movement_in_flight.remove(packet_id);
+                        }
+                        // A lost movement update is sent again, as UE re-sends
+                        // the properties of a naked packet: forget the sent
+                        // location unless a newer update has gone out since.
+                        for packet_id in &summary.naked {
+                            let Some(key) = entry.movement_in_flight.remove(packet_id) else {
+                                continue;
+                            };
+                            bump(&mut self.stats.actor_update_naks);
+                            if entry.last_movement_packet.get(&key) == Some(packet_id) {
+                                entry.last_movement_packet.remove(&key);
+                                entry.actor_locations.remove(&key);
+                                bump(&mut self.stats.actor_updates_lost);
+                            }
+                        }
                         if summary.control_close_seen {
                             bump(&mut self.stats.control_close_seen);
                             close = true;

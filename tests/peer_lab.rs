@@ -1360,3 +1360,105 @@ fn a_close_that_cannot_be_framed_stays_pending_until_retried() {
     lab_mut.retry_pending_closes();
     assert_eq!(lab_mut.stats().actor_closes_sent, 1, "sent once");
 }
+
+#[test]
+fn a_naked_movement_update_is_sent_again() {
+    use icarus_bevy::experimental::session_open::{ActorOpenSpec, PathSegment, map_level_chain};
+    let config = PeerLabConfig {
+        admission: Some(PeerLabAdmission::default()),
+        ..PeerLabConfig::default()
+    };
+    let (mut app, address) = lab_app(config);
+    let mut client = Client::connect(&mut app, address);
+    client.exchange(&mut app, short_hello("", 0), false);
+    let login = ControlMessage::Login {
+        response: ArchiveText::text("0").unwrap(),
+        url: ArchiveText::text("?Name=Tester").unwrap(),
+        unique_net_id: UniqueNetId {
+            kind: NetIdType::Named(ArchiveText::text("STEAM").unwrap()),
+            value: NetIdValue::from_hex(NET_ID_HEX).unwrap(),
+        },
+        platform: ArchiveText::text(PLATFORM_SENTINEL).unwrap(),
+    };
+    client.exchange(&mut app, login, false);
+    client.exchange(&mut app, ControlMessage::Join, false);
+    accept_all_headers(&mut client);
+    let connection = lab(&app).joined_connections()[0];
+    let spec = ActorOpenSpec {
+        actor: 0,
+        archetype: vec![
+            PathSegment::new("Default__LabCart_C", 0x0cab_0cab, false),
+            PathSegment::new("/Game/Lab/LabCart", 0, false),
+        ],
+        level: map_level_chain(PeerLabAdmission::default().map_url).unwrap(),
+        location: Some([0.0; 3]),
+        blocks: Vec::new(),
+    };
+    let mut lab_mut = app.world_mut().resource_mut::<PeerLab>();
+    lab_mut.open_actor(connection, 7, spec, 2, 17).unwrap();
+    // Not settled yet: no update before the client acknowledges the open.
+    assert!(!lab_mut.update_actor_movement(connection, 7, [50.0, 0.0, 0.0], 17));
+
+    // The client acknowledges the open.
+    accept_all_headers(&mut client);
+    let (ack, _) = client.packet(Vec::new());
+    client.send(&ack);
+    app.update();
+    accept_all_headers(&mut client);
+    let mut lab_mut = app.world_mut().resource_mut::<PeerLab>();
+    assert!(lab_mut.update_actor_movement(connection, 7, [50.0, 0.0, 0.0], 17));
+    assert!(
+        !lab_mut.update_actor_movement(connection, 7, [50.0, 0.0, 0.0], 17),
+        "unchanged location"
+    );
+    // The update datagram is lost.
+    assert_eq!(drain(&client).len(), 1);
+
+    // The client's next packet draws an ack it receives, so the packet after
+    // that reports the lost one: a nak.
+    let (keepalive, _) = client.packet(Vec::new());
+    client.send(&keepalive);
+    app.update();
+    accept_all_headers(&mut client);
+    let (report, _) = client.packet(Vec::new());
+    client.send(&report);
+    app.update();
+    accept_all_headers(&mut client);
+    let mut lab_mut = app.world_mut().resource_mut::<PeerLab>();
+    assert_eq!(lab_mut.stats().actor_update_naks, 1);
+    assert_eq!(lab_mut.stats().actor_updates_lost, 1);
+    // The same location is due again and goes out once more.
+    assert!(lab_mut.update_actor_movement(connection, 7, [50.0, 0.0, 0.0], 17));
+    assert_eq!(lab_mut.stats().actor_updates_sent, 2);
+
+    // A nak for an older update does not undo a newer location: the resent
+    // update is lost too, but the actor moves on before the nak arrives.
+    assert_eq!(drain(&client).len(), 1);
+    let mut lab_mut = app.world_mut().resource_mut::<PeerLab>();
+    assert!(lab_mut.update_actor_movement(connection, 7, [60.0, 0.0, 0.0], 17));
+    accept_all_headers(&mut client);
+    let (report, _) = client.packet(Vec::new());
+    client.send(&report);
+    app.update();
+    let mut lab_mut = app.world_mut().resource_mut::<PeerLab>();
+    // The nak arrived (two naks so far) but the newer update supersedes it.
+    assert_eq!(lab_mut.stats().actor_update_naks, 2);
+    assert_eq!(lab_mut.stats().actor_updates_lost, 1, "superseded");
+    assert!(!lab_mut.update_actor_movement(connection, 7, [60.0, 0.0, 0.0], 17));
+
+    // A -> B -> A: the nak of the first A finds a newer packet carrying A in
+    // flight, so it repairs nothing (the guard compares packets, not places).
+    accept_all_headers(&mut client);
+    assert!(lab_mut.update_actor_movement(connection, 7, [70.0, 0.0, 0.0], 17));
+    assert_eq!(drain(&client).len(), 1, "the first A is lost");
+    let mut lab_mut = app.world_mut().resource_mut::<PeerLab>();
+    assert!(lab_mut.update_actor_movement(connection, 7, [80.0, 0.0, 0.0], 17));
+    assert!(lab_mut.update_actor_movement(connection, 7, [70.0, 0.0, 0.0], 17));
+    accept_all_headers(&mut client);
+    let (report, _) = client.packet(Vec::new());
+    client.send(&report);
+    app.update();
+    let lab_ref = lab(&app);
+    assert_eq!(lab_ref.stats().actor_update_naks, 3);
+    assert_eq!(lab_ref.stats().actor_updates_lost, 1);
+}
