@@ -555,7 +555,10 @@ pub struct ReleasePawnProfile {
 
 impl ReleasePawnProfile {
     /// `BP_IcarusPlayerCharacterSurvival_C`: reproduced bit-exactly against the
-    /// 3.0.31 capture (F-797) and derived unchanged for 3.0.32 (F-780).
+    /// 3.0.31 capture (F-797). For 3.0.32 the archetype and component
+    /// checksums are among the 77 oracle values the 25956137 derivation
+    /// reproduces (M-820, behind F-780); the component set and order are
+    /// assumed unchanged.
     pub fn icarus_survival() -> Self {
         let segment = |path: &str, checksum| ReleasePathSegment {
             path: path.to_owned(),
