@@ -339,8 +339,6 @@ enum TargetSchema {
     SubObjectLifecycle(&'static str),
 }
 
-/// Resolve an actor channel's archetype name to a known native or cooked
-/// Blueprint rep-layout schema when every property in the hierarchy is known.
 /// One decoded value for private detail records (values may be private).
 fn value_json(value: &icarus_bevy::experimental::rep_layout::RepValue) -> Value {
     use icarus_bevy::experimental::rep_layout::RepValue;
@@ -359,6 +357,8 @@ fn value_json(value: &icarus_bevy::experimental::rep_layout::RepValue) -> Value 
     }
 }
 
+/// Resolve an actor channel's archetype name to a known native or cooked
+/// Blueprint rep-layout schema when every property in the hierarchy is known.
 fn classify_actor_schema(archetype: &str) -> Option<TargetSchema> {
     if archetype.contains("BP_IcarusPlayerControllerSurvival") {
         Some(TargetSchema::RepLayout("AIcarusPlayerControllerSurvival"))
