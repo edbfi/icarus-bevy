@@ -61,7 +61,13 @@
 //!   ([`compose_player_controller_open`], F-778, F-779) through
 //!   [`LabPeer::reliable_actor_open`]: GUIDs come from one driver-wide cache
 //!   and static paths are exported once per connection
-//!   (`player_controller_opens_sent`, `player_controller_open_errors`).
+//!   (`player_controller_opens_sent`, `player_controller_open_errors`). With
+//!   [`PeerLab::enable_game_state_open`] the world's GameState follows
+//!   ([`compose_game_state_open`], F-794) through
+//!   [`LabPeer::reliable_actor_open_datagrams`], one actor and driver-wide
+//!   component GUIDs for every connection (`game_state_opens_sent`,
+//!   `game_state_open_errors`); with [`PeerLab::enable_player_state_open`]
+//!   the player's PlayerState comes last (F-784).
 //! - Swap (ID 15, `NMT_PCSwap`) and Debug (ID 17, `NMT_DebugText`), when
 //!   [`PeerLabConfig::admission`] is `Some`: `Swap` evaluates
 //!   [`evaluate_pc_swap_target`] against the peer's splitscreen child count
@@ -146,6 +152,7 @@ use super::admission::{
 use super::control_messages::{
     ArchiveText, ControlFallback, ControlMessage, Decoded, NetIdValue, UniqueNetId,
 };
+use super::game_state_open::{GameStateOpenPlan, GameStateOpenState, compose_game_state_open};
 use super::handshake::decode;
 use super::handshake_lab::{
     CookieAuthority, HANDSHAKE_BYTES, HandshakeReply, PACKETS_PER_UPDATE, bind_loopback,
@@ -155,9 +162,10 @@ use super::packet::BunchLimits;
 use super::packet::Payload;
 use super::packet_lab::{DeliveredSummary, LabPeer, PacketDisposition, PacketLabConfig};
 use super::release::ReleaseProfile;
+use super::rep_layout::RepValue;
 use super::session_open::{
-    ActorOpenSpec, ConnectionExports, NetGuidCache, PlayerControllerOpenPlan, PlayerStateOpenPlan,
-    PlayerStateOpenState, compose_actor_open, compose_player_controller_open,
+    ActorKey, ActorOpenSpec, ConnectionExports, NetGuidCache, PlayerControllerOpenPlan,
+    PlayerStateOpenPlan, PlayerStateOpenState, compose_actor_open, compose_player_controller_open,
     compose_player_state_open, movement_update_block, replicated_unique_net_id, resting_movement,
 };
 
@@ -438,6 +446,10 @@ pub struct PeerLabStats {
     pub player_controller_opens_sent: u64,
     /// PlayerController opens that could not be composed or framed.
     pub player_controller_open_errors: u64,
+    /// GameState opens sent after the PlayerController open (F-794).
+    pub game_state_opens_sent: u64,
+    /// GameState opens that could not be composed or framed.
+    pub game_state_open_errors: u64,
     /// PlayerState opens sent after the PlayerController open (F-784).
     pub player_state_opens_sent: u64,
     /// PlayerState opens that could not be composed or framed.
@@ -620,6 +632,14 @@ struct RegisteredPlayer {
     name_units: Vec<u16>,
 }
 
+/// The GameState every joined connection is opened with (F-794).
+#[derive(Clone, Debug)]
+struct GameStateSession {
+    plan: GameStateOpenPlan,
+    state: GameStateOpenState,
+    channel_index: u32,
+}
+
 /// The loopback peer lab. `Debug` reports only the peer count and counters.
 #[derive(Resource)]
 pub struct PeerLab {
@@ -634,6 +654,8 @@ pub struct PeerLab {
     peak_peers: usize,
     /// Opt-in PlayerController open after Join, and the driver-wide GUIDs.
     player_controller_open: Option<PlayerControllerOpenPlan>,
+    /// Opt-in GameState open after the PlayerController open.
+    game_state_open: Option<GameStateSession>,
     /// Opt-in PlayerState open after the PlayerController open.
     player_state_open: Option<PlayerStateOpenPlan>,
     /// Driver-wide NetGUIDs, replicated actors keyed by the caller's key.
@@ -703,6 +725,7 @@ impl PeerLab {
             admitting: true,
             peak_peers: 0,
             player_controller_open: None,
+            game_state_open: None,
             player_state_open: None,
             guid_cache: NetGuidCache::new(),
             next_player_id: FIRST_PLAYER_ID,
@@ -894,7 +917,7 @@ impl PeerLab {
             return None;
         }
         let mut cache = self.guid_cache.clone();
-        let guid = cache.actor_guid(key);
+        let guid = cache.actor_guid(ActorKey::World(key));
         open.actor = guid;
         let mut exports = entry.exports.clone();
         let sent = entry
@@ -941,6 +964,54 @@ impl PeerLab {
     }
 
     /// After [`enable_player_controller_open`](Self::enable_player_controller_open),
+    /// also open the world's GameState (F-794) on each joined connection, on
+    /// `channel_index`, after its PlayerController and before its PlayerState,
+    /// spread over as many datagrams as it needs. `state.key` must be an
+    /// [`ActorKey::Session`] key. The lab writes `ReplicatedWorldTimeSeconds`
+    /// (handle 19) itself: seconds since bind, a lab choice for the world's
+    /// time (`state.values` may not carry it).
+    pub fn enable_game_state_open(
+        &mut self,
+        plan: GameStateOpenPlan,
+        state: GameStateOpenState,
+        channel_index: u32,
+    ) -> Result<()> {
+        let Some(controller) = &self.player_controller_open else {
+            bail!("the GameState open follows the PlayerController open");
+        };
+        ensure!(
+            matches!(state.key, ActorKey::Session(_)),
+            "the GameState is a session actor"
+        );
+        ensure!(
+            !state
+                .values
+                .contains_key(&super::game_state_open::handle::WORLD_TIME_SECONDS),
+            "the lab writes the GameState's world time"
+        );
+        ensure!(
+            channel_index != self.config.packet.control_channel_index
+                && channel_index != controller.channel_index
+                && self
+                    .player_state_open
+                    .as_ref()
+                    .is_none_or(|player_state| player_state.channel_index != channel_index)
+                && channel_index < self.config.packet.packet.limits.max_channels,
+            "the GameState channel collides with another channel or is out of range"
+        );
+        ensure!(
+            plan.level == controller.profile.level,
+            "the GameState and PlayerController opens name different levels"
+        );
+        self.game_state_open = Some(GameStateSession {
+            plan,
+            state,
+            channel_index,
+        });
+        Ok(())
+    }
+
+    /// After [`enable_player_controller_open`](Self::enable_player_controller_open),
     /// also open each joined player's PlayerState (F-784) on `plan.channel_index`.
     pub fn enable_player_state_open(&mut self, plan: PlayerStateOpenPlan) -> Result<()> {
         let Some(controller) = &self.player_controller_open else {
@@ -949,6 +1020,10 @@ impl PeerLab {
         ensure!(
             plan.channel_index != self.config.packet.control_channel_index
                 && plan.channel_index != controller.channel_index
+                && self
+                    .game_state_open
+                    .as_ref()
+                    .is_none_or(|game_state| game_state.channel_index != plan.channel_index)
                 && plan.channel_index < self.config.packet.packet.limits.max_channels,
             "the PlayerState channel collides with another channel or is out of range"
         );
@@ -1650,10 +1725,67 @@ impl PeerLab {
         if self.send(&datagram, address) {
             bump(&mut self.stats.player_controller_opens_sent);
         }
+        if self.game_state_open.is_some() {
+            self.send_game_state_open(address);
+        }
         if self.player_state_open.is_some() {
             self.send_player_state_open(address, guids.actor, guids.player_state);
         }
         true
+    }
+
+    /// Compose and send the GameState open (F-794) over as many datagrams as
+    /// it needs, committing GUID and export state only once every datagram
+    /// is built; a failure counts `game_state_open_errors`.
+    fn send_game_state_open(&mut self, address: SocketAddrV4) {
+        let Some(session) = &self.game_state_open else {
+            return;
+        };
+        let Some(entry) = self.peers.get_mut(&address) else {
+            return;
+        };
+        let mut cache = self.guid_cache.clone();
+        let mut exports = entry.exports.clone();
+        let mut state = session.state.clone();
+        state.values.insert(
+            super::game_state_open::handle::WORLD_TIME_SECONDS,
+            RepValue::Float(self.started.elapsed().as_secs_f32().to_bits()),
+        );
+        let sent = compose_game_state_open(
+            &mut cache,
+            &mut exports,
+            &session.plan,
+            &state,
+            session.channel_index,
+            entry.peer.connection_byte_order(),
+        )
+        .and_then(|open| {
+            let export_payloads: Vec<Payload> = open.exports.into_iter().collect();
+            entry
+                .peer
+                .reliable_actor_open_datagrams(&open.bunch, &export_payloads)
+        });
+        let datagrams = match sent {
+            Ok(datagrams) => datagrams,
+            Err(_) => {
+                bump(&mut self.stats.game_state_open_errors);
+                if entry.peer.is_failed() {
+                    self.peers.remove(&address);
+                    bump(&mut self.stats.peers_failed);
+                }
+                return;
+            }
+        };
+        entry.exports = exports;
+        entry.ack_pending = false;
+        self.guid_cache = cache;
+        let mut delivered = true;
+        for datagram in &datagrams {
+            delivered &= self.send(datagram, address);
+        }
+        if delivered {
+            bump(&mut self.stats.game_state_opens_sent);
+        }
     }
 
     /// Compose and send the PlayerState open the PlayerController references

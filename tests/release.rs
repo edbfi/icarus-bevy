@@ -387,7 +387,7 @@ fn builtin_game_state_identifiers_compose_the_captured_export_prefix() {
     use icarus_bevy::experimental::{
         archive::ByteOrder,
         game_state_open::{GameStateManagers, GameStateOpenState, compose_game_state_open},
-        session_open::{ConnectionExports, NetGuidCache, PathSegment},
+        session_open::{ActorKey, ConnectionExports, NetGuidCache, PathSegment},
     };
     use sha2::{Digest, Sha256};
     let p31 = ReleaseProfile::release_3_0_31();
@@ -414,18 +414,20 @@ fn builtin_game_state_identifiers_compose_the_captured_export_prefix() {
         cache.assign_dynamic();
     }
     // All seven managers are named, so the weather component takes 88.
+    let manager = |id| Some(ActorKey::World(id));
     let state = GameStateOpenState {
-        key: 0,
+        key: ActorKey::Session(0),
         managers: GameStateManagers {
-            quest_manager: Some(1),
-            world_talent_manager: Some(2),
-            radiation_manager: Some(3),
-            inventory_container_manager: Some(4),
-            player_history_tracker: Some(5),
-            flod: Some(6),
-            disaster_controller: Some(7),
+            quest_manager: manager(1),
+            world_talent_manager: manager(2),
+            radiation_manager: manager(3),
+            inventory_container_manager: manager(4),
+            player_history_tracker: manager(5),
+            flod: manager(6),
+            disaster_controller: manager(7),
         },
-        ..GameStateOpenState::default()
+        values: std::collections::BTreeMap::new(),
+        weather: Vec::new(),
     };
     let open = compose_game_state_open(
         &mut cache,
@@ -436,8 +438,8 @@ fn builtin_game_state_identifiers_compose_the_captured_export_prefix() {
         ByteOrder::Little,
     )
     .unwrap();
-    assert_eq!(cache.actor_guid(0), 68);
-    assert_eq!(cache.actor_guid(6), 84);
+    assert_eq!(cache.actor_guid(ActorKey::Session(0)), 68);
+    assert_eq!(cache.actor_guid(ActorKey::World(6)), 84);
     // SHA-256 of the capture's 298-byte, 2,377-bit GameState export prefix.
     let payload = open.exports.unwrap();
     assert_eq!(payload.bit_len(), 2_377);

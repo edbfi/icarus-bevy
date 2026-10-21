@@ -80,6 +80,15 @@ pub struct PlayerControllerProfile {
     pub components: Vec<ComponentExport>,
 }
 
+/// Identity of a keyed actor in the driver-wide GUID cache.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub enum ActorKey {
+    /// A world actor, by its stable domain id.
+    World(u64),
+    /// An actor the session layer owns, such as the GameState.
+    Session(u64),
+}
+
 /// Driver-wide NetGUID assignment, shared by every connection.
 #[derive(Clone, Debug, Default)]
 pub struct NetGuidCache {
@@ -88,7 +97,7 @@ pub struct NetGuidCache {
     statics: BTreeMap<Vec<String>, u32>,
     /// Dynamic GUIDs of keyed world objects: an actor `(key, None)` or one
     /// of its components `(key, Some(name))`.
-    keyed: BTreeMap<(u64, Option<String>), u32>,
+    keyed: BTreeMap<(ActorKey, Option<String>), u32>,
 }
 
 /// Which GUIDs one connection has already received with their paths.
@@ -133,11 +142,11 @@ impl NetGuidCache {
     /// serialized, whether by its own open or by a reference from another
     /// actor's properties (the GameState's references precede the opens of
     /// the actors they name, F-794).
-    pub fn actor_guid(&mut self, key: u64) -> u32 {
+    pub fn actor_guid(&mut self, key: ActorKey) -> u32 {
         self.keyed_guid(key, None)
     }
 
-    fn keyed_guid(&mut self, key: u64, component: Option<&str>) -> u32 {
+    fn keyed_guid(&mut self, key: ActorKey, component: Option<&str>) -> u32 {
         let entry = (key, component.map(str::to_owned));
         if let Some(guid) = self.keyed.get(&entry) {
             return *guid;
@@ -154,7 +163,7 @@ impl NetGuidCache {
     pub fn export_keyed_subobject(
         &mut self,
         exports: &mut ConnectionExports,
-        key: u64,
+        key: ActorKey,
         actor: u32,
         component: &ComponentExport,
     ) -> Result<NetGuidRef> {
@@ -473,9 +482,10 @@ pub const ACTOR_CHANNEL_NAME_INDEX: u32 = 102;
 /// The capture's PlayerController channel index (F-778): the first after the
 /// control (0) and voice (1) channels.
 pub const PLAYER_CONTROLLER_CHANNEL_INDEX: u32 = 2;
-/// The PlayerState's channel: the next free index (a lab choice; the capture
-/// opened three other actors first and used 6, F-784).
-pub const PLAYER_STATE_CHANNEL_INDEX: u32 = 3;
+/// The PlayerState's channel: the next index after the GameState's (a lab
+/// choice keeping the capture's order; it opened the pawn, the GameState and
+/// the FLOD first and used 6, F-784, F-794).
+pub const PLAYER_STATE_CHANNEL_INDEX: u32 = 4;
 
 /// The level chain of a map package (`/Game/Maps/.../Name`, URL options
 /// ignored): `PersistentLevel`, the world (the package's short name) and the

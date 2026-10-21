@@ -32,8 +32,8 @@ use super::rep_layout::{
     encode_rep_properties,
 };
 use super::session_open::{
-    ComponentExport, ComposedActorOpen, ConnectionExports, NetGuidCache, PathSegment, actor_codec,
-    actor_open_bunch, entry, exports_of,
+    ActorKey, ComponentExport, ComposedActorOpen, ConnectionExports, NetGuidCache, PathSegment,
+    actor_codec, actor_open_bunch, entry, exports_of,
 };
 
 /// Handles of the `AIcarusGameStateSurvival` rep layout (82 handles; names
@@ -106,6 +106,14 @@ pub mod handle {
     pub const LAST: u32 = 82;
 }
 
+/// The GameState's channel: the next index after the PlayerController's (a
+/// lab choice; the capture opened the pawn first and used 4, F-794).
+pub const GAME_STATE_CHANNEL_INDEX: u32 = 3;
+
+/// `AGameState::MatchState` once the match has started
+/// (`MatchState::InProgress`, as captured, F-794).
+pub const MATCH_STATE_IN_PROGRESS: &str = "InProgress";
+
 /// `ROLE_SimulatedProxy` and `ROLE_Authority`, as captured (F-791, F-794).
 const REMOTE_ROLE: u8 = 1;
 const ROLE: u8 = 3;
@@ -163,18 +171,18 @@ pub struct GameStateOpenPlan {
 /// leaves the reference at its default (null) and unsent.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct GameStateManagers {
-    pub quest_manager: Option<u64>,
-    pub world_talent_manager: Option<u64>,
-    pub radiation_manager: Option<u64>,
-    pub inventory_container_manager: Option<u64>,
-    pub player_history_tracker: Option<u64>,
-    pub flod: Option<u64>,
-    pub disaster_controller: Option<u64>,
+    pub quest_manager: Option<ActorKey>,
+    pub world_talent_manager: Option<ActorKey>,
+    pub radiation_manager: Option<ActorKey>,
+    pub inventory_container_manager: Option<ActorKey>,
+    pub player_history_tracker: Option<ActorKey>,
+    pub flod: Option<ActorKey>,
+    pub disaster_controller: Option<ActorKey>,
 }
 
 impl GameStateManagers {
     /// The referencing handle of each manager, in handle order.
-    fn by_handle(&self) -> [(u32, Option<u64>); 7] {
+    fn by_handle(&self) -> [(u32, Option<ActorKey>); 7] {
         [
             (handle::QUEST_MANAGER, self.quest_manager),
             (handle::WORLD_TALENT_MANAGER, self.world_talent_manager),
@@ -191,10 +199,10 @@ impl GameStateManagers {
 }
 
 /// Server-side GameState values.
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug)]
 pub struct GameStateOpenState {
-    /// The GameState's world-actor key.
-    pub key: u64,
+    /// The GameState's key.
+    pub key: ActorKey,
     pub managers: GameStateManagers,
     /// Values for the other handles that differ from the class defaults, as
     /// an initial open sends only those. Handles the composer writes, the

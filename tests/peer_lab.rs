@@ -1232,7 +1232,7 @@ fn player_controller_channel_failure_closes_the_connection() {
     assert_eq!(stats(&app).player_state_opens_sent, 1);
     drain(&client);
 
-    // The PlayerState channel (3) failing only notifies the controller.
+    // Another actor channel (3) failing only notifies the controller.
     let other = fallback_bunch(
         &mut client,
         &ControlFallback::ActorChannelFailure { channel_index: 3 },
@@ -1275,6 +1275,114 @@ fn player_controller_channel_failure_closes_the_connection() {
         (close.header.channel_index, close.header.close_reason),
         (0, Some(0))
     );
+}
+
+#[test]
+fn the_game_state_open_follows_the_controller_over_several_datagrams() {
+    use icarus_bevy::experimental::{
+        game_state_open::{GAME_STATE_CHANNEL_INDEX, handle},
+        release::ReleaseProfile,
+        rep_layout::RepValue,
+        session_open::{ActorKey, PLAYER_STATE_CHANNEL_INDEX},
+    };
+    let config = PeerLabConfig {
+        admission: Some(PeerLabAdmission::default()),
+        ..PeerLabConfig::default()
+    };
+    let mut app = build_app(&ServerConfig::default(), &WorldSnapshot::default()).unwrap();
+    let mut bound = PeerLab::bind(0, config).unwrap();
+    let profile = ReleaseProfile::release_3_0_32();
+    let map_url = PeerLabAdmission::default().map_url;
+    let plan = profile.game_state_open_plan(map_url).unwrap().unwrap();
+    // A RichPresenceGUID long enough to need a second datagram.
+    let state = || icarus_bevy::experimental::game_state_open::GameStateOpenState {
+        key: ActorKey::Session(0),
+        managers: Default::default(),
+        values: std::collections::BTreeMap::from([(
+            handle::RICH_PRESENCE_GUID,
+            RepValue::Str(ArchiveText::text(&"G".repeat(1_500)).unwrap()),
+        )]),
+        weather: Vec::new(),
+    };
+    assert!(
+        bound
+            .enable_game_state_open(plan.clone(), state(), GAME_STATE_CHANNEL_INDEX)
+            .is_err(),
+        "the GameState follows the PlayerController"
+    );
+    bound
+        .enable_player_controller_open(
+            profile
+                .player_controller_open_plan(map_url, [0.0; 3])
+                .unwrap()
+                .unwrap(),
+        )
+        .unwrap();
+    bound
+        .enable_player_state_open(profile.player_state_open_plan(map_url).unwrap().unwrap())
+        .unwrap();
+    let mut world_key = state();
+    world_key.key = ActorKey::World(0);
+    let mut timed = state();
+    timed
+        .values
+        .insert(handle::WORLD_TIME_SECONDS, RepValue::Float(0));
+    for (state, channel) in [
+        (world_key, GAME_STATE_CHANNEL_INDEX),
+        (timed, GAME_STATE_CHANNEL_INDEX),
+        (state(), 0),
+        (state(), 2),
+        (state(), PLAYER_STATE_CHANNEL_INDEX),
+    ] {
+        assert!(
+            bound
+                .enable_game_state_open(plan.clone(), state, channel)
+                .is_err()
+        );
+    }
+    bound
+        .enable_game_state_open(plan, state(), GAME_STATE_CHANNEL_INDEX)
+        .unwrap();
+    let address = bound.local_addr().unwrap();
+    app.insert_resource(bound).add_plugins(PeerLabPlugin);
+    let mut client = Client::connect(&mut app, address);
+    client.exchange(&mut app, short_hello("", 0), false);
+    client.exchange(&mut app, login(), false);
+    client.exchange(&mut app, ControlMessage::Join, false);
+    let counted = stats(&app);
+    assert_eq!(
+        (
+            counted.player_controller_opens_sent,
+            counted.game_state_opens_sent,
+            counted.game_state_open_errors,
+            counted.player_state_opens_sent
+        ),
+        (1, 1, 0, 1)
+    );
+    // The GameState's parts arrive in order across consecutive datagrams,
+    // after the controller's and before the PlayerState's.
+    let channels: Vec<Vec<u32>> = drain(&client)
+        .iter()
+        .map(|datagram| {
+            read_packet(datagram, &to_client())
+                .unwrap()
+                .bunches
+                .iter()
+                .map(|bunch| bunch.header.channel_index)
+                .collect()
+        })
+        .filter(|channels: &Vec<u32>| !channels.is_empty())
+        .collect();
+    let order: Vec<u32> = channels.iter().flatten().copied().collect();
+    let first = order.iter().position(|&channel| channel == 3).unwrap();
+    let last = order.iter().rposition(|&channel| channel == 3).unwrap();
+    assert!(order[first..=last].iter().all(|&channel| channel == 3));
+    assert!(order[..first].contains(&2) && order[last + 1..].contains(&4));
+    let carrying = channels
+        .iter()
+        .filter(|channels| channels.contains(&3))
+        .count();
+    assert!(carrying >= 2, "the GameState spans datagrams");
 }
 
 /// Accept every queued lab datagram's header as the client (acks only).

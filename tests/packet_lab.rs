@@ -13,7 +13,8 @@ use icarus_bevy::experimental::packet_lab::{
     client_cookie_seeds, server_cookie_seeds,
 };
 use icarus_bevy::experimental::sequencing::{
-    Notification, PacketSequencer, ReliableChannel, ReliableReceive, wire_reliable_sequence,
+    MAX_CONSTRUCTED_PARTIAL_BUNCH_BYTES, Notification, PacketSequencer, PartialBunchReassembler,
+    PartialReceive, ReliableChannel, ReliableReceive, wire_reliable_sequence,
 };
 
 // Independently authored synthetic client built from the experimental codec and
@@ -968,4 +969,274 @@ fn actor_updates_need_an_open_channel_and_settle_after_the_open_ack() {
     assert!(peer.actor_update(4, update()).is_err(), "closing");
     assert_eq!(format!("{peer:?}"), before);
     accept_header(&mut client, &close);
+}
+
+fn bytes_payload(bytes: &[u8]) -> Payload {
+    let mut writer = BitWriter::new();
+    writer.write_bytes(bytes);
+    Payload::from_writer(writer)
+}
+
+/// A GameState-sized open on channel 2: 2,400 export bits and an 8,400-bit
+/// body, which `SendBunch` splits into 7,624 and 776 bits.
+fn large_open() -> (Bunch, Payload) {
+    (
+        actor_open_bunch(2, &[0x5a; 1050]),
+        bytes_payload(&[0xa5; 300]),
+    )
+}
+
+/// Feed every part of `datagrams`, in order, through the client's partial
+/// reassembler; returns the parts and the reassembled bunch.
+fn reassemble(datagrams: &[Vec<u8>]) -> (Vec<Bunch>, Bunch) {
+    let mut reassembler = PartialBunchReassembler::new();
+    let mut parts = Vec::new();
+    let mut complete = None;
+    for datagram in datagrams {
+        for part in read_packet(datagram, &to_client()).unwrap().bunches {
+            assert!(complete.is_none(), "no part after the final one");
+            let header = &part.header;
+            assert!(header.partial && header.reliable && header.channel_index == 2);
+            // Export parts carry only exports, stripped before reassembly.
+            let after_exports = if header.has_package_map_exports {
+                Payload::from_writer(BitWriter::new())
+            } else {
+                part.payload.clone()
+            };
+            let sequence = i64::from(header.reliable_sequence_raw.unwrap());
+            let received = reassembler
+                .receive_part(
+                    sequence,
+                    header,
+                    &after_exports,
+                    Some(MAX_CONSTRUCTED_PARTIAL_BUNCH_BYTES),
+                )
+                .unwrap();
+            if let PartialReceive::Complete { bunch, .. } = received {
+                complete = Some(bunch);
+            }
+            parts.push(part);
+        }
+    }
+    (parts, complete.expect("the final part completes the bunch"))
+}
+
+#[test]
+fn actor_open_spreads_parts_over_datagrams_and_resends_each_unchanged() {
+    let mut peer = peer();
+    let mut client = Client::new();
+    let (opening, _) = client.send(Vec::new());
+    peer.receive(&opening).unwrap();
+    let (_, initial_out) = peer.sequencer().initial_reliable();
+    let first_id = peer.sequencer().out_packet_id();
+    let (body, exports) = large_open();
+
+    // The single-datagram form refuses it without a state change.
+    let before = format!("{peer:?}");
+    assert!(
+        peer.reliable_actor_open(&body, std::slice::from_ref(&exports))
+            .is_err()
+    );
+    assert_eq!(format!("{peer:?}"), before);
+    assert_eq!(peer.sequencer().out_packet_id(), first_id);
+
+    let datagrams = peer
+        .reliable_actor_open_datagrams(&body, std::slice::from_ref(&exports))
+        .unwrap();
+    // Exports, then the body's two slices: no two fit one 1,024-byte packet.
+    assert_eq!(datagrams.len(), 3);
+    assert_eq!(peer.sequencer().out_packet_id(), first_id + 3);
+    assert_eq!(peer.pending_actor_reliable(2), Some(3));
+    let packets: Vec<Packet> = datagrams
+        .iter()
+        .map(|datagram| read_packet(datagram, &to_client()).unwrap())
+        .collect();
+    for (offset, (datagram, packet)) in datagrams.iter().zip(&packets).enumerate() {
+        assert!(datagram.len() <= LIMITS.max_packet_bytes as usize);
+        assert_eq!(packet.bunches.len(), 1);
+        assert_eq!(usize::from(packet.header.sequence), 0x1234 + offset);
+    }
+
+    // In order, the parts reassemble the open on consecutive sequences.
+    let (parts, bunch) = reassemble(&datagrams);
+    let raws: Vec<u32> = parts
+        .iter()
+        .map(|part| part.header.reliable_sequence_raw.unwrap())
+        .collect();
+    let expected_raws: Vec<u32> = (1..=3)
+        .map(|offset| wire_reliable_sequence(initial_out + offset))
+        .collect();
+    assert_eq!(raws, expected_raws);
+    let flags: Vec<[bool; 4]> = parts
+        .iter()
+        .map(|part| {
+            let header = &part.header;
+            [
+                header.open,
+                header.partial_initial,
+                header.partial_final,
+                header.has_package_map_exports,
+            ]
+        })
+        .collect();
+    assert_eq!(
+        flags,
+        [
+            [true, true, false, true],
+            [false, false, false, false],
+            [false, false, true, false]
+        ]
+    );
+    assert_eq!(parts[0].payload, exports);
+    assert_eq!(
+        (parts[1].payload.bit_len(), parts[2].payload.bit_len()),
+        (7_624, 776)
+    );
+    let mut expected = body.clone();
+    expected.header.reliable_sequence_raw = Some(wire_reliable_sequence(initial_out + 1));
+    assert_eq!(bunch, expected);
+
+    // The client loses the second datagram only: it is naked, the others
+    // acked; the first part is released, the third waits behind the second.
+    accept_header(&mut client, &datagrams[0]);
+    accept_header(&mut client, &datagrams[2]);
+    let (next, _) = client.send(Vec::new());
+    let summary = peer.receive(&next).unwrap().summary().clone();
+    assert_eq!(summary.acked, [first_id, first_id + 2]);
+    assert_eq!(summary.naked, [first_id + 1]);
+    assert_eq!((summary.resend_queued, summary.released_reliable), (1, 1));
+    assert_eq!(peer.pending_actor_reliable(2), Some(2));
+    let resent = peer.ack_packet().unwrap();
+    assert_eq!(
+        read_packet(&resent, &to_client()).unwrap().bunches,
+        packets[1].bunches,
+        "exactly the naked datagram's part, unchanged"
+    );
+    assert_eq!(peer.pending_resends(), 0);
+
+    // Acknowledging the resend releases the rest; nothing more is resent.
+    accept_header(&mut client, &resent);
+    let (next, _) = client.send(Vec::new());
+    let summary = peer.receive(&next).unwrap().summary().clone();
+    assert_eq!(summary.acked, [first_id + 3]);
+    assert!(summary.naked.is_empty());
+    assert_eq!(summary.released_reliable, 2);
+    assert_eq!(peer.pending_actor_reliable(2), Some(0));
+    assert!(peer.actor_channel_settled(2));
+    assert_eq!(peer.pending_resends(), 0);
+    let ack = peer.ack_packet().unwrap();
+    assert!(read_packet(&ack, &to_client()).unwrap().bunches.is_empty());
+}
+
+#[test]
+fn actor_open_datagrams_carry_pending_resends_in_the_first_only() {
+    let mut peer = peer();
+    let mut client = Client::new();
+    let (opening, _) = client.send(Vec::new());
+    peer.receive(&opening).unwrap();
+    let lost_id = peer.sequencer().out_packet_id();
+    let lost = peer.reliable_control_packet(challenge("lost")).unwrap();
+    let ack = peer.ack_packet().unwrap();
+    accept_header(&mut client, &ack);
+    let (next, _) = client.send(Vec::new());
+    assert_eq!(peer.receive(&next).unwrap().summary().naked, [lost_id]);
+    assert_eq!(peer.pending_resends(), 1);
+
+    let (body, exports) = large_open();
+    let datagrams = peer
+        .reliable_actor_open_datagrams(&body, std::slice::from_ref(&exports))
+        .unwrap();
+    assert_eq!(datagrams.len(), 3);
+    assert_eq!(peer.pending_resends(), 0);
+    let first = read_packet(&datagrams[0], &to_client()).unwrap().bunches;
+    let [resend, export] = first.as_slice() else {
+        panic!("the resend precedes the export part");
+    };
+    assert_eq!(
+        std::slice::from_ref(resend),
+        read_packet(&lost, &to_client()).unwrap().bunches
+    );
+    assert!(export.header.partial_initial && export.header.has_package_map_exports);
+    for datagram in &datagrams[1..] {
+        let bunches = read_packet(datagram, &to_client()).unwrap().bunches;
+        assert!(bunches.iter().all(|bunch| bunch.header.channel_index == 2));
+    }
+    // The resent control bunch now rides the first datagram's packet ID.
+    for datagram in &datagrams {
+        accept_header(&mut client, datagram);
+    }
+    let (next, _) = client.send(Vec::new());
+    assert_eq!(peer.receive(&next).unwrap().summary().released_reliable, 4);
+    assert_eq!(
+        (peer.pending_reliable(), peer.pending_actor_reliable(2)),
+        (0, Some(0))
+    );
+}
+
+#[test]
+fn actor_open_datagram_failures_leave_the_state_unchanged() {
+    let open_peer = |sent_capacity: usize| {
+        let mut config = PacketLabConfig::new(LIMITS);
+        config.sent_capacity = sent_capacity;
+        let mut peer = LabPeer::from_cookie(&COOKIE, config).unwrap();
+        let (opening, _) = Client::new().send(Vec::new());
+        peer.receive(&opening).unwrap();
+        peer
+    };
+    let (body, exports) = large_open();
+    let exports = std::slice::from_ref(&exports);
+    let small = actor_open_bunch(3, &[0x11; 4]);
+    let mut tried = open_peer(16);
+    let mut fresh = open_peer(16);
+    assert_eq!(
+        tried.reliable_actor_open_datagrams(&small, &[]).unwrap(),
+        fresh.reliable_actor_open_datagrams(&small, &[]).unwrap()
+    );
+
+    // 254 exports and the body's two slices: one part beyond the window.
+    let too_many = vec![bytes_payload(&[1]); MAX_PENDING_RELIABLE - 1];
+    let oversized = [bytes_payload(&[0xa5; 1100])];
+    let control = actor_open_bunch(0, &[1]);
+    let attempts: [(&Bunch, &[Payload], &str); 4] = [
+        (&control, &[], "control channel"),
+        (&small, &[], "already open"),
+        (&body, &too_many, "parts beyond the reliable window"),
+        (&body, &oversized, "an export part beyond one datagram"),
+    ];
+    let before = format!("{tried:?}");
+    let out_id = tried.sequencer().out_packet_id();
+    for (bunch, exports, why) in attempts {
+        assert!(
+            tried.reliable_actor_open_datagrams(bunch, exports).is_err(),
+            "{why}"
+        );
+        assert_eq!(format!("{tried:?}"), before, "{why}");
+        assert_eq!(tried.sequencer().out_packet_id(), out_id, "{why}");
+        assert!(!tried.is_failed(), "{why}");
+    }
+    assert!(!tried.has_actor_channel(2));
+    // One export fewer fills the window exactly and is sent.
+    let mut window = open_peer(16);
+    let fits = &too_many[1..];
+    let datagrams = window.reliable_actor_open_datagrams(&body, fits).unwrap();
+    assert_eq!(window.pending_actor_reliable(2), Some(MAX_PENDING_RELIABLE));
+    assert!(datagrams.len() >= 2);
+
+    // A later open gets the same sequences, packet IDs and bytes.
+    assert_eq!(
+        tried.reliable_actor_open_datagrams(&body, exports).unwrap(),
+        fresh.reliable_actor_open_datagrams(&body, exports).unwrap()
+    );
+
+    // A sent-record ring without room for every datagram: nothing commits.
+    let mut tight = open_peer(2);
+    let before = format!("{tight:?}");
+    assert!(tight.reliable_actor_open_datagrams(&body, exports).is_err());
+    assert_eq!(format!("{tight:?}"), before);
+    assert!(!tight.has_actor_channel(2) && !tight.is_failed());
+    let mut roomy = open_peer(2);
+    assert_eq!(
+        tight.reliable_actor_open_datagrams(&small, &[]).unwrap(),
+        roomy.reliable_actor_open_datagrams(&small, &[]).unwrap()
+    );
 }

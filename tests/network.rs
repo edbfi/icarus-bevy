@@ -885,6 +885,40 @@ fn join_pinned_replies(server: SocketAddr, version: u32, max: usize) -> Vec<Vec<
         .collect()
 }
 
+/// Compose the GameState open the lab sends after each PlayerController open
+/// (F-794), with `world_time` for the lab-written handle 19.
+fn compose_lab_game_state(
+    profile: &ReleaseProfile,
+    cache: &mut icarus_bevy::experimental::session_open::NetGuidCache,
+    exports: &mut icarus_bevy::experimental::session_open::ConnectionExports,
+    world_time: f32,
+) -> icarus_bevy::experimental::session_open::ComposedActorOpen {
+    use icarus_bevy::experimental::{
+        archive::ByteOrder,
+        game_state_open::{GAME_STATE_CHANNEL_INDEX, compose_game_state_open, handle},
+        peer_lab::PeerLabAdmission,
+        rep_layout::RepValue,
+    };
+    let plan = profile
+        .game_state_open_plan(PeerLabAdmission::default().map_url)
+        .unwrap()
+        .unwrap();
+    let mut state = network::game_state_values().unwrap();
+    state.values.insert(
+        handle::WORLD_TIME_SECONDS,
+        RepValue::Float(world_time.to_bits()),
+    );
+    compose_game_state_open(
+        cache,
+        exports,
+        &plan,
+        &state,
+        GAME_STATE_CHANNEL_INDEX,
+        ByteOrder::Little,
+    )
+    .unwrap()
+}
+
 #[test]
 fn pinned_join_is_answered_with_the_composed_player_controller_open() {
     use icarus_bevy::experimental::{
@@ -941,16 +975,14 @@ fn pinned_join_is_answered_with_the_composed_player_controller_open() {
         ..probe_config().packet
     };
     for (index, datagram) in datagrams.iter().enumerate() {
-        let expected = compose_player_controller_open(
-            &mut cache,
-            &mut ConnectionExports::new(),
-            &plan,
-            0,
-            ByteOrder::Little,
-        )
-        .unwrap();
-        // Each connection gets its own dynamic GUIDs: actor 2, then 20.
-        assert_eq!(expected.guids.actor, 2 + 18 * index as u32);
+        let mut exports = ConnectionExports::new();
+        let expected =
+            compose_player_controller_open(&mut cache, &mut exports, &plan, 0, ByteOrder::Little)
+                .unwrap();
+        // The lab then opens the GameState, which takes 20..26 once.
+        compose_lab_game_state(&profile, &mut cache, &mut exports, 0.0);
+        // Each connection gets its own dynamic GUIDs: actor 2, then 28.
+        assert_eq!(expected.guids.actor, 2 + 26 * index as u32);
         let packet = read_packet(datagram, &to_client).unwrap();
         let [exports, body] = packet.bunches.as_slice() else {
             panic!("the open travels as exports plus body");
@@ -1028,11 +1060,60 @@ fn teardown_sends_host_closed_failure_then_control_close() {
     assert_eq!(network::teardown(app.world_mut()).unwrap(), counts);
 }
 
-#[test]
-fn pinned_joins_open_each_player_state_after_its_player_controller() {
+/// The world time the lab wrote into a GameState open body (handle 19).
+fn sent_world_time(
+    profile: &ReleaseProfile,
+    body: &icarus_bevy::experimental::packet::Payload,
+) -> f32 {
     use icarus_bevy::experimental::{
+        actor_channel::{ActorChannelCodec, ActorChannelLimits, read_actor_bunch_body},
+        archive::ByteOrder,
+        game_state_open::handle,
+        rep_layout::{RepLayoutCodec, RepLayoutLimits, RepValue, read_rep_properties},
+    };
+    let codec = ActorChannelCodec {
+        engine_net_version: profile.engine_network_version,
+        exports_enabled: false,
+        has_level: true,
+        order: ByteOrder::Little,
+        limits: ActorChannelLimits::default(),
+    };
+    let open = read_actor_bunch_body(&mut body.reader(), true, &codec).unwrap();
+    let plan = profile
+        .game_state_open_plan(
+            icarus_bevy::experimental::peer_lab::PeerLabAdmission::default().map_url,
+        )
+        .unwrap()
+        .unwrap();
+    let rep_codec = RepLayoutCodec {
+        actor: codec,
+        checksums: false,
+        limits: RepLayoutLimits::default(),
+    };
+    let stream = read_rep_properties(
+        &mut open.blocks[0].payload.reader(),
+        &plan.layout,
+        &rep_codec,
+    )
+    .unwrap();
+    let entry = stream
+        .entries
+        .iter()
+        .find(|entry| entry.handle == handle::WORLD_TIME_SECONDS)
+        .unwrap();
+    let RepValue::Float(bits) = entry.value else {
+        panic!("world time is a float");
+    };
+    f32::from_bits(bits)
+}
+
+#[test]
+fn pinned_joins_open_the_game_state_then_each_player_state() {
+    use icarus_bevy::experimental::{
+        actor_channel::{ActorChannelCodec, ActorChannelLimits, read_actor_bunch_body},
         archive::ByteOrder,
         control_messages::{ArchiveText, NetIdType},
+        game_state_open::GAME_STATE_CHANNEL_INDEX,
         packet::read_packet,
         peer_lab::{FIRST_PLAYER_ID, PeerLabAdmission},
         session_open::{
@@ -1048,8 +1129,8 @@ fn pinned_joins_open_each_player_state_after_its_player_controller() {
     });
     let (replies, _) = with_server(&mut app, move || {
         [
-            join_pinned_replies(address, pinned, 2),
-            join_pinned_replies(address, pinned, 2),
+            join_pinned_replies(address, pinned, 3),
+            join_pinned_replies(address, pinned, 3),
         ]
     });
     let stats = app.world().resource::<PeerLab>().stats().clone();
@@ -1061,8 +1142,13 @@ fn pinned_joins_open_each_player_state_after_its_player_controller() {
         (2, 0)
     );
 
+    assert_eq!(
+        (stats.game_state_opens_sent, stats.game_state_open_errors),
+        (2, 0)
+    );
+
     // Independent composition in the lab's order: each player's
-    // PlayerController open, then its PlayerState open.
+    // PlayerController open, the GameState, then its PlayerState open.
     let admission = PeerLabAdmission::default();
     let controller = profile
         .player_controller_open_plan(admission.map_url, network::SPAWN_LOCATION)
@@ -1084,7 +1170,7 @@ fn pinned_joins_open_each_player_state_after_its_player_controller() {
         ..probe_config().packet
     };
     for (index, datagrams) in replies.iter().enumerate() {
-        assert_eq!(datagrams.len(), 2, "controller then player state");
+        assert_eq!(datagrams.len(), 3, "controller, game state, player state");
         let mut exports = ConnectionExports::new();
         let controller_open = compose_player_controller_open(
             &mut cache,
@@ -1094,6 +1180,30 @@ fn pinned_joins_open_each_player_state_after_its_player_controller() {
             ByteOrder::Little,
         )
         .unwrap();
+        // The GameState carries the lab's world time; compose with the sent
+        // value and compare everything else bit for bit.
+        let packet = read_packet(&datagrams[1], &to_client).unwrap();
+        let [game_exports, game_body] = packet.bunches.as_slice() else {
+            panic!("the GameState open travels as exports plus body");
+        };
+        assert_eq!(game_body.header.channel_index, GAME_STATE_CHANNEL_INDEX);
+        let world_time = sent_world_time(&profile, &game_body.payload);
+        let game_state = compose_lab_game_state(&profile, &mut cache, &mut exports, world_time);
+        assert_eq!(Some(&game_exports.payload), game_state.exports.as_ref());
+        assert_eq!(game_body.payload, game_state.bunch.payload);
+        // One GameState: the same actor GUID on every connection.
+        let codec = ActorChannelCodec {
+            engine_net_version: profile.engine_network_version,
+            exports_enabled: false,
+            has_level: true,
+            order: ByteOrder::Little,
+            limits: ActorChannelLimits::default(),
+        };
+        let spawn = read_actor_bunch_body(&mut game_body.payload.reader(), true, &codec)
+            .unwrap()
+            .spawn
+            .unwrap();
+        assert_eq!(spawn.actor.guid, 20);
         let state = PlayerStateOpenState {
             player_state: controller_open.guids.player_state,
             owner: controller_open.guids.actor,
@@ -1110,7 +1220,7 @@ fn pinned_joins_open_each_player_state_after_its_player_controller() {
             ByteOrder::Little,
         )
         .unwrap();
-        let packet = read_packet(&datagrams[1], &to_client).unwrap();
+        let packet = read_packet(&datagrams[2], &to_client).unwrap();
         let [state_exports, body] = packet.bunches.as_slice() else {
             panic!("the PlayerState open travels as exports plus body");
         };
@@ -1187,35 +1297,36 @@ fn replication_selections_open_archetyped_actors_on_free_channels() {
     // Two sessions in turn: each gets both actors, under the same GUIDs.
     let ([replies, later], _) = with_server(&mut app, move || {
         [
-            join_pinned_replies(address, pinned, 4),
-            join_pinned_replies(address, pinned, 4),
+            join_pinned_replies(address, pinned, 5),
+            join_pinned_replies(address, pinned, 5),
         ]
     });
     let stats = app.world().resource::<PeerLab>().stats().clone();
     assert_eq!((stats.actor_opens_sent, stats.actor_open_errors), (4, 0));
     assert_eq!(
         replies.len(),
-        4,
-        "controller, player state, then two actors"
+        5,
+        "controller, game state, player state, then two actors"
     );
-    assert_eq!(later.len(), 4);
+    assert_eq!(later.len(), 5);
 
     let to_client = PacketConfig {
         receiver: PacketReceiver::Client,
         ..probe_config().packet
     };
-    // Channels 2 and 3 hold the PlayerController and PlayerState; the actors
-    // take the next free ones. Only the first carries the archetype export.
-    let second = read_packet(&replies[3], &to_client).unwrap();
+    // Channels 2 to 4 hold the PlayerController, GameState and PlayerState;
+    // the actors take the next free ones. Only the first carries the
+    // archetype export.
+    let second = read_packet(&replies[4], &to_client).unwrap();
     let [only] = second.bunches.as_slice() else {
         panic!("a repeated archetype needs no export part");
     };
-    assert_eq!(only.header.channel_index, 5);
-    let packet = read_packet(&replies[2], &to_client).unwrap();
+    assert_eq!(only.header.channel_index, 6);
+    let packet = read_packet(&replies[3], &to_client).unwrap();
     let [exports, body] = packet.bunches.as_slice() else {
         panic!("the actor open travels as exports plus body");
     };
-    assert_eq!(body.header.channel_index, 4);
+    assert_eq!(body.header.channel_index, 5);
     let codec = ActorChannelCodec {
         engine_net_version: profile.engine_network_version,
         exports_enabled: false,
@@ -1233,8 +1344,9 @@ fn replication_selections_open_archetyped_actors_on_free_channels() {
     );
     let open = read_actor_bunch_body(&mut body.payload.reader(), true, &codec).unwrap();
     let spawn = open.spawn.unwrap();
-    // The first connection's controller took dynamic GUIDs 2..18.
-    assert_eq!(spawn.actor.guid, 20);
+    // The first connection's controller took dynamic GUIDs 2..18 and the
+    // GameState 20..26.
+    assert_eq!(spawn.actor.guid, 28);
     assert!(spawn.dynamic.unwrap().location.is_some());
     // One actor block with the captured world-actor roles (F-791).
     let [roles] = open.blocks.as_slice() else {
@@ -1258,7 +1370,7 @@ fn replication_selections_open_archetyped_actors_on_free_channels() {
     assert!(matches!(remote_role.value, RepValue::Byte(1)));
     assert!(matches!(role.value, RepValue::Byte(3)));
     let actor_guids = |datagrams: &[Vec<u8>]| -> Vec<u32> {
-        let mut guids: Vec<u32> = datagrams[2..]
+        let mut guids: Vec<u32> = datagrams[3..]
             .iter()
             .map(|datagram| {
                 let packet = read_packet(datagram, &to_client).unwrap();
@@ -1274,8 +1386,8 @@ fn replication_selections_open_archetyped_actors_on_free_channels() {
         guids.sort_unstable();
         guids
     };
-    assert_eq!(actor_guids(&replies), [20, 22]);
-    assert_eq!(actor_guids(&later), [20, 22], "driver-wide GUIDs");
+    assert_eq!(actor_guids(&replies), [28, 30]);
+    assert_eq!(actor_guids(&later), [28, 30], "driver-wide GUIDs");
 }
 
 #[test]
@@ -1479,7 +1591,7 @@ fn replicated_movement_opens_at_rest_and_updates_after_a_move() {
     let bunches: Vec<_> = replies
         .iter()
         .flat_map(|datagram| read_packet(datagram, &to_client).unwrap().bunches)
-        .filter(|bunch| bunch.header.channel_index == 4)
+        .filter(|bunch| bunch.header.channel_index == 5)
         .collect();
     let location_of = |payload: &icarus_bevy::experimental::packet::Payload, open: bool| {
         let body = read_actor_bunch_body(&mut payload.reader(), open, &codec).unwrap();

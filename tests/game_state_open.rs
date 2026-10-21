@@ -14,7 +14,7 @@ use icarus_bevy::experimental::rep_layout::{
     weather_manager_component_rep_layout,
 };
 use icarus_bevy::experimental::session_open::{
-    ComponentBlock, ComponentExport, ConnectionExports, NetGuidCache, PathSegment,
+    ActorKey, ComponentBlock, ComponentExport, ConnectionExports, NetGuidCache, PathSegment,
 };
 
 fn codec() -> ActorChannelCodec {
@@ -78,9 +78,9 @@ fn plan() -> GameStateOpenPlan {
     }
 }
 
-const GAME_STATE: u64 = 900;
-const FLOD: u64 = 901;
-const QUESTS: u64 = 902;
+const GAME_STATE: ActorKey = ActorKey::Session(0);
+const FLOD: ActorKey = ActorKey::World(901);
+const QUESTS: ActorKey = ActorKey::World(902);
 
 fn state() -> GameStateOpenState {
     GameStateOpenState {
@@ -257,6 +257,16 @@ fn a_manager_opened_first_keeps_its_guid_in_the_game_state() {
         .find(|entry| entry.handle == handle::FLOD)
         .unwrap();
     assert!(matches!(&named.value, RepValue::Object(reference) if reference.guid == flod));
+}
+
+#[test]
+fn session_and_world_keys_never_share_a_guid() {
+    let mut cache = NetGuidCache::new();
+    let session = cache.actor_guid(ActorKey::Session(7));
+    let world = cache.actor_guid(ActorKey::World(7));
+    assert_ne!(session, world);
+    assert_eq!(cache.actor_guid(ActorKey::Session(7)), session);
+    assert_eq!(cache.actor_guid(ActorKey::World(7)), world);
 }
 
 #[test]

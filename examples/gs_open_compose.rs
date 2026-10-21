@@ -24,7 +24,9 @@ use icarus_bevy::experimental::{
         icarus_game_state_survival_rep_layout, read_rep_properties,
         weather_manager_component_rep_layout,
     },
-    session_open::{ComponentBlock, ComponentExport, ConnectionExports, NetGuidCache, PathSegment},
+    session_open::{
+        ActorKey, ComponentBlock, ComponentExport, ConnectionExports, NetGuidCache, PathSegment,
+    },
 };
 use serde::Deserialize;
 use serde_json::json;
@@ -185,14 +187,14 @@ fn main() -> Result<()> {
     for _ in 0..file.burn_dynamic {
         cache.assign_dynamic();
     }
-    // Managers keyed 1..=7 in handle order; the GameState is key 0.
+    // Managers keyed 1..=7 in handle order; the GameState is a session key.
     let key = |index: u64| {
         supplied_managers
             .contains_key(&MANAGER_HANDLES[index as usize])
-            .then_some(index + 1)
+            .then_some(ActorKey::World(index + 1))
     };
     let state = GameStateOpenState {
-        key: 0,
+        key: ActorKey::Session(0),
         managers: GameStateManagers {
             quest_manager: key(0),
             world_talent_manager: key(1),
@@ -217,7 +219,7 @@ fn main() -> Result<()> {
         .iter()
         .enumerate()
         .filter(|(_, handle)| supplied_managers.contains_key(handle))
-        .map(|(index, handle)| (*handle, cache.actor_guid(index as u64 + 1)))
+        .map(|(index, handle)| (*handle, cache.actor_guid(ActorKey::World(index as u64 + 1))))
         .collect();
     let composed_exports = open.exports.context("exports")?;
     let supplied_exports = payload(&file.exports_hex, file.exports_bits)?;
