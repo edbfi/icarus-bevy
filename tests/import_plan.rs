@@ -110,6 +110,36 @@ fn component(body: &Body) -> Vec<u8> {
             &[0],
             &fstring("SecretObject_C_7"),
         ),
+        // A class variable record and a quest variable record: only the
+        // first names a class property.
+        struct_tag(
+            "BoolVariables",
+            "ActorBoolVariableRecord",
+            &[
+                tag(
+                    "VariableName",
+                    "NameProperty",
+                    &[0],
+                    &fstring("bSecretFlag"),
+                ),
+                end(),
+            ]
+            .concat(),
+        ),
+        struct_tag(
+            "QuestVariables",
+            "QuestVariableRecord",
+            &[
+                tag(
+                    "VariableName",
+                    "NameProperty",
+                    &[0],
+                    &fstring("SecretQuestVar"),
+                ),
+                end(),
+            ]
+            .concat(),
+        ),
     ];
     if body.gap {
         fields.push(struct_tag("Mystery", "SecretBlobType", &[1, 2, 3]));
@@ -222,14 +252,15 @@ fn empty_catalog_blocks_on_unmapped_content_and_reports_counts_only() {
     assert_eq!(plan.actors.actor_recorders, 2);
     assert_eq!(plan.actors.transform_restoring, 2);
     assert_eq!(plan.actors.recorded_transforms, 2);
-    // Per retained recorder: class, row, tile and object names and one
-    // package path; "None" and plain text are not references, and the
-    // object name is an instance identity the catalog never resolves.
-    assert_eq!(plan.content.name_references, 8);
+    // Per retained recorder: class, row, tile, object and two variable
+    // names and one package path; "None" and plain text are not
+    // references, and the object name is an instance identity the catalog
+    // never resolves.
+    assert_eq!(plan.content.name_references, 12);
     assert_eq!(plan.content.path_references, 2);
-    assert_eq!(plan.content.distinct, 3);
-    assert_eq!(plan.content.unmapped_distinct, 3);
-    assert_eq!(plan.content.unmapped_references, 8);
+    assert_eq!(plan.content.distinct, 5);
+    assert_eq!(plan.content.unmapped_distinct, 5);
+    assert_eq!(plan.content.unmapped_references, 12);
     let role = |references, distinct| RoleCount {
         references,
         distinct,
@@ -238,7 +269,9 @@ fn empty_catalog_blocks_on_unmapped_content_and_reports_counts_only() {
     assert_eq!(plan.content.roles[&ContentRole::ActorClass], role(2, 1));
     assert_eq!(plan.content.roles[&ContentRole::ActorPath], role(2, 1));
     assert_eq!(plan.content.roles[&ContentRole::DataRow], role(2, 1));
-    assert_eq!(plan.content.roles[&ContentRole::Unclassified], role(2, 1));
+    // The quest variable name stays unclassified beside the tile name.
+    assert_eq!(plan.content.roles[&ContentRole::Unclassified], role(4, 2));
+    assert_eq!(plan.content.roles[&ContentRole::ClassVariable], role(2, 1));
     assert_eq!(
         plan.content.roles[&ContentRole::InstanceName],
         RoleCount {
@@ -255,8 +288,8 @@ fn empty_catalog_blocks_on_unmapped_content_and_reports_counts_only() {
         vec![
             ImportBlocker::UninterpretedValues { leaves: 1 },
             ImportBlocker::UnmappedContent {
-                distinct: 3,
-                references: 8
+                distinct: 5,
+                references: 12
             },
         ]
     );
@@ -264,7 +297,7 @@ fn empty_catalog_blocks_on_unmapped_content_and_reports_counts_only() {
     assert!(!plan.world_imported);
     let label = recorder_class_label(&units(ACTOR)).unwrap();
     assert_eq!(plan.classes[&label].retained, 2);
-    assert_eq!(plan.classes[&label].unmapped_references, 8);
+    assert_eq!(plan.classes[&label].unmapped_references, 12);
     let text = serde_json::to_string(&plan).unwrap();
     for private in ["Secret", "secret", "/Game", "ActorState", "NoRecorder"] {
         assert!(!text.contains(private), "{private} leaked");
@@ -274,10 +307,11 @@ fn empty_catalog_blocks_on_unmapped_content_and_reports_counts_only() {
 #[test]
 fn a_catalog_covering_every_reference_makes_a_clean_save_importable() {
     let source = envelope(2, &[recorder(ACTOR, &CLEAN), recorder(ACTOR, &CLEAN)]);
-    let catalog = ContentCatalog::from_references([ROW, PATH, "SecretTile"]);
+    let catalog =
+        ContentCatalog::from_references([ROW, PATH, "SecretTile", "bSecretFlag", "SecretQuestVar"]);
     let plan = plan_import(source.as_slice(), &catalog).unwrap();
-    assert_eq!(plan.catalog_references, 3);
-    assert_eq!(plan.content.mapped_distinct, 3);
+    assert_eq!(plan.catalog_references, 5);
+    assert_eq!(plan.content.mapped_distinct, 5);
     assert!(
         plan.content
             .roles
@@ -294,15 +328,16 @@ fn a_catalog_covering_every_reference_makes_a_clean_save_importable() {
     assert_eq!(
         plan.blockers,
         vec![ImportBlocker::UnmappedContent {
-            distinct: 2,
-            references: 4
+            distinct: 4,
+            references: 8
         }]
     );
 }
 
 #[test]
 fn version_zero_and_all_invalid_saves_would_import_as_empty_worlds() {
-    let catalog = ContentCatalog::from_references([ROW, PATH, "SecretTile"]);
+    let catalog =
+        ContentCatalog::from_references([ROW, PATH, "SecretTile", "bSecretFlag", "SecretQuestVar"]);
     for source in [
         envelope(0, &[recorder(ACTOR, &CLEAN)]),
         envelope(2, &[recorder(NO_RECORDER, &CLEAN)]),
@@ -316,7 +351,8 @@ fn version_zero_and_all_invalid_saves_would_import_as_empty_worlds() {
 
 #[test]
 fn non_finite_transforms_block_import() {
-    let catalog = ContentCatalog::from_references([ROW, PATH, "SecretTile"]);
+    let catalog =
+        ContentCatalog::from_references([ROW, PATH, "SecretTile", "bSecretFlag", "SecretQuestVar"]);
     let source = envelope(
         2,
         &[recorder(
@@ -418,7 +454,8 @@ fn planned_actors_keep_retained_finite_transforms_in_order() {
 
 #[test]
 fn byte_owner_policies_count_and_unexpected_base_types_block() {
-    let catalog = ContentCatalog::from_references([ROW, PATH, "SecretTile"]);
+    let catalog =
+        ContentCatalog::from_references([ROW, PATH, "SecretTile", "bSecretFlag", "SecretQuestVar"]);
     let bytes = envelope(
         2,
         &[recorder(
