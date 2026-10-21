@@ -165,7 +165,8 @@ use super::control_messages::{
     ArchiveText, ControlFallback, ControlMessage, Decoded, NetIdValue, UniqueNetId,
 };
 use super::game_state_open::{
-    GameStateOpenPlan, GameStateOpenState, compose_game_state_open, compose_game_state_update,
+    GameStateOpenPlan, GameStateOpenState, NetworkingStatus, class_default,
+    compose_game_state_open, compose_game_state_update,
 };
 use super::handshake::decode;
 use super::handshake_lab::{
@@ -643,13 +644,18 @@ pub const GAME_STATE_UPDATE_SECONDS: f32 = 1.0 / 30.0;
 pub const WORLD_TIME_UPDATE_SECONDS: f32 = 0.1;
 
 /// The GameState handles updates carry: the world time, `TimeOfDay`,
-/// `LevelTimeElapsedSec` and `ServerFPS`.
-const UPDATE_HANDLES: [u32; 4] = [
-    super::game_state_open::handle::WORLD_TIME_SECONDS,
-    super::game_state_open::handle::TIME_OF_DAY,
-    super::game_state_open::handle::LEVEL_TIME_ELAPSED_SEC,
-    super::game_state_open::handle::SERVER_FPS,
-];
+/// `LevelTimeElapsedSec`, `ServerFPS` and the `NetworkingStatus` fields.
+fn update_handles() -> impl Iterator<Item = u32> {
+    use super::game_state_open::handle;
+    [
+        handle::WORLD_TIME_SECONDS,
+        handle::TIME_OF_DAY,
+        handle::LEVEL_TIME_ELAPSED_SEC,
+        handle::SERVER_FPS,
+    ]
+    .into_iter()
+    .chain(handle::NETWORKING_STATUS_FIRST..handle::NETWORKING_STATUS_FIRST + 12)
+}
 
 /// What one connection last received of the GameState's changing values.
 #[derive(Default)]
@@ -793,6 +799,9 @@ struct GameStateSession {
     polled_at: Instant,
     /// The last GameState update pass.
     updated_at: Option<Instant>,
+    /// `NetworkingStatus` as last gathered: the enabled base with the joined
+    /// players listed at each update pass (F-810).
+    networking: Option<NetworkingStatus>,
 }
 
 /// The loopback peer lab. `Debug` reports only the peer count and counters.
@@ -1211,6 +1220,7 @@ impl PeerLab {
             fps: None,
             polled_at: Instant::now(),
             updated_at: None,
+            networking: None,
         });
         Ok(())
     }
@@ -1268,6 +1278,28 @@ impl PeerLab {
         session.fps = Some(meter);
         session.polled_at = Instant::now();
         Ok(())
+    }
+
+    /// Replicate `status` as the GameState's `NetworkingStatus` (F-810):
+    /// opens carry it as last gathered and each update pass lists the
+    /// joined players (names; pings unmeasured, 0) in join order, sending
+    /// the fields that changed. Fails without a GameState open or with
+    /// players already listed.
+    pub fn enable_networking_status(&mut self, status: NetworkingStatus) -> Result<()> {
+        let Some(session) = &mut self.game_state_open else {
+            bail!("no GameState open is enabled");
+        };
+        ensure!(
+            status.player_names.is_empty() && status.player_ping.is_empty(),
+            "the lab lists the joined players itself"
+        );
+        session.networking = Some(status);
+        Ok(())
+    }
+
+    /// The GameState's `NetworkingStatus` as last gathered, if enabled.
+    pub fn networking_status(&self) -> Option<&NetworkingStatus> {
+        self.game_state_open.as_ref()?.networking.as_ref()
     }
 
     /// The GameState's `ServerFPS` meter, if enabled.
@@ -2106,6 +2138,24 @@ impl PeerLab {
         let mut exports = entry.exports.clone();
         let mut state = session.state.clone();
         let world_seconds = self.started.elapsed().as_secs_f32();
+        if let Some(status) = &session.networking {
+            // As gathered at the last update pass; defaults stay unsent.
+            match status.values() {
+                Ok(values) => {
+                    for (handle, value) in values {
+                        if class_default(handle).as_ref() == Some(&value) {
+                            state.values.remove(&handle);
+                        } else {
+                            state.values.insert(handle, value);
+                        }
+                    }
+                }
+                Err(_) => {
+                    bump(&mut self.stats.game_state_open_errors);
+                    return;
+                }
+            }
+        }
         if let Some(meter) = &session.fps {
             // As for the time of day below: 0 is the default and unsent.
             match meter.fps() {
@@ -2179,18 +2229,16 @@ impl PeerLab {
             world_time_at: world_seconds,
             ..GameStateReplica::default()
         };
-        for handle in UPDATE_HANDLES {
-            let value = state.values.get(&handle).cloned().unwrap_or_else(|| {
-                // Absent from an open: the class default.
-                if handle == super::game_state_open::handle::LEVEL_TIME_ELAPSED_SEC
-                    || handle == super::game_state_open::handle::SERVER_FPS
-                {
-                    RepValue::Int(0)
-                } else {
-                    RepValue::Float(0.0f32.to_bits())
-                }
-            });
-            replica.sent.insert(handle, value);
+        for handle in update_handles() {
+            // Absent from an open: the class default.
+            if let Some(value) = state
+                .values
+                .get(&handle)
+                .cloned()
+                .or_else(|| class_default(handle))
+            {
+                replica.sent.insert(handle, value);
+            }
         }
         entry.game_state = Some(replica);
         self.guid_cache = cache;
@@ -2368,7 +2416,23 @@ impl PeerLab {
             return;
         }
         session.updated_at = Some(now);
-        let changing = [
+        if let Some(status) = &mut session.networking {
+            // GatherNetworkingStatus lists the player array's players.
+            let mut joined: Vec<(u32, Vec<u16>)> = self
+                .peers
+                .values()
+                .filter_map(|entry| {
+                    Some((
+                        entry.connection_id?,
+                        entry.player.as_ref()?.name_units.clone(),
+                    ))
+                })
+                .collect();
+            joined.sort_unstable_by_key(|(connection, _)| *connection);
+            status.player_ping = vec![0; joined.len()];
+            status.player_names = joined.into_iter().map(|(_, name)| name).collect();
+        }
+        let mut changing = vec![
             (
                 handle::TIME_OF_DAY,
                 session
@@ -2390,6 +2454,11 @@ impl PeerLab {
                 }),
             ),
         ];
+        match session.networking.as_ref().map(NetworkingStatus::values) {
+            Some(Ok(values)) => changing.extend(values.into_iter().map(|(h, v)| (h, Some(v)))),
+            Some(Err(_)) => bump(&mut self.stats.game_state_update_errors),
+            None => {}
+        }
         let (channel, layout, engine) = (
             session.channel_index,
             &session.plan.layout,
