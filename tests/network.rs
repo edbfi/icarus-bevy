@@ -975,3 +975,47 @@ fn pinned_join_is_answered_with_the_composed_player_controller_open() {
         assert_eq!(parsed.blocks.len(), 7, "actor block plus six components");
     }
 }
+
+#[test]
+fn teardown_sends_host_closed_failure_then_control_close() {
+    use icarus_bevy::experimental::{
+        packet::read_packet,
+        peer_lab::{CLOSE_REASON_DESTROYED, HOST_CLOSED_CONNECTION_MESSAGE},
+    };
+    let (mut app, address) = server_app(&enabled(0));
+    // One joined session and one that only completed the handshake.
+    let ((mut joined, mut silent), _) =
+        with_server(&mut app, move || (join(address), connect(address)));
+    let counts = network::teardown(app.world_mut()).unwrap();
+    assert_eq!(counts.active_peers, 0);
+    assert_eq!(counts.closed_by_shutdown, 2);
+    // Both get the Failure; only the joined one delivered a reliable bunch,
+    // so only it gets the control close.
+    assert_eq!(
+        (counts.shutdown_failures_sent, counts.shutdown_closes_sent),
+        (2, 1)
+    );
+
+    let to_client = PacketConfig {
+        receiver: PacketReceiver::Client,
+        ..probe_config().packet
+    };
+    let collected = joined.collect(Duration::from_secs(2), 2).unwrap();
+    assert_eq!(collected.replies.len(), 2);
+    let messages: Vec<_> = collected.messages().map(failure_text).collect();
+    assert_eq!(messages, [HOST_CLOSED_CONNECTION_MESSAGE]);
+    let close = read_packet(&collected.replies[1].bytes, &to_client).unwrap();
+    let [bunch] = close.bunches.as_slice() else {
+        panic!("one close bunch");
+    };
+    assert!(bunch.header.close && bunch.header.reliable);
+    assert_eq!(bunch.header.channel_index, 0);
+    assert_eq!(bunch.header.close_reason, Some(CLOSE_REASON_DESTROYED));
+
+    let collected = silent.collect(Duration::from_millis(500), 2).unwrap();
+    let messages: Vec<_> = collected.messages().map(failure_text).collect();
+    assert_eq!(messages, [HOST_CLOSED_CONNECTION_MESSAGE]);
+    assert_eq!(collected.replies.len(), 1);
+    // Idempotent: a repeated teardown sends nothing more.
+    assert_eq!(network::teardown(app.world_mut()).unwrap(), counts);
+}
