@@ -9,7 +9,9 @@ use std::{collections::BTreeMap, path::PathBuf};
 
 use anyhow::{Context, Result, bail};
 use clap::Parser;
-use icarus_bevy::experimental::game_state_open::active_prospect_values;
+use icarus_bevy::experimental::game_state_open::{
+    active_prospect_values, level_time_elapsed_sec, saved_game_mode_values,
+};
 use icarus_bevy::experimental::{
     actor_channel::{
         ActorChannelCodec, ActorChannelLimits, BlockTarget, NetGuidRef, read_actor_bunch_body,
@@ -37,9 +39,10 @@ struct Options {
     /// Profile JSON (see `ProfileFile`).
     profile: PathBuf,
     /// The prospect save the capture's server loaded: handles 51..=67
-    /// (`ReplicatedActiveProspect`) come from its `ProspectInfo` and level
-    /// clock through `ProspectInfo::for_session` (no member playing) and
-    /// `game_state_open::active_prospect_values` instead of the body.
+    /// (`ReplicatedActiveProspect`, through `ProspectInfo::for_session` with
+    /// no member playing) and the game mode record's handles (with the level
+    /// clock at the captured world time) come from it instead of the body;
+    /// `TimeOfDay` stays captured and its advance is reported.
     #[arg(long)]
     prospect: Option<PathBuf>,
 }
@@ -160,19 +163,49 @@ fn main() -> Result<()> {
     let mut prospect_handles = BTreeMap::new();
     let mut array_differences = BTreeMap::new();
     let mut int_differences = BTreeMap::new();
+    let mut time_of_day_advance = None;
     if let Some(path) = &options.prospect {
         let file = std::fs::File::open(path).context("open the prospect save")?;
         let saved = icarus_bevy::prospect::read_saved_prospect(file)?;
+        let mode = saved.game_mode.context("the save records no game mode")?;
         // The capture's only client was no member.
-        let info = saved.info.for_session(
-            saved
-                .level_time_elapsed_sec
-                .context("the save records no level time")?,
-            |_| false,
+        let info = saved
+            .info
+            .for_session(mode.level_time_elapsed_sec, |_| false);
+        let mut native = active_prospect_values(&info)?;
+        native.extend(saved_game_mode_values(&mode));
+        // The level clock at the captured world time.
+        let Some(RepValue::Float(world_time)) = values.get(&handle::WORLD_TIME_SECONDS) else {
+            bail!("no captured world time");
+        };
+        native.insert(
+            handle::LEVEL_TIME_ELAPSED_SEC,
+            RepValue::Int(level_time_elapsed_sec(
+                mode.level_time_elapsed_sec,
+                f32::from_bits(*world_time),
+            )),
         );
-        let native = active_prospect_values(&info)?;
+        // TimeOfDay advances from the saved value at a rate not modelled
+        // (U-071): report the drift and keep the captured value.
+        if let (Some(RepValue::Float(captured)), Some(RepValue::Float(saved_time))) = (
+            values.get(&handle::TIME_OF_DAY),
+            native.remove(&handle::TIME_OF_DAY),
+        ) {
+            time_of_day_advance = Some(f32::from_bits(*captured) - f32::from_bits(saved_time));
+        }
         let range = handle::ACTIVE_PROSPECT_FIRST..handle::ACTIVE_PROSPECT_FIRST + 17;
-        for handle in range.clone() {
+        let handles: Vec<u32> = [
+            handle::SEED,
+            handle::SEED_INITIALISED,
+            handle::SECONDS_PER_GAME_DAY,
+            handle::DYNAMIC_QUEST_SEED,
+            handle::LAST_SESSION_PROSPECT_GAME_TIME,
+            handle::LEVEL_TIME_ELAPSED_SEC,
+        ]
+        .into_iter()
+        .chain(range.clone())
+        .collect();
+        for &handle in &handles {
             let supplied = values.get(&handle);
             let mapped = native.get(&handle);
             prospect_handles.insert(
@@ -203,7 +236,7 @@ fn main() -> Result<()> {
                 },
             );
         }
-        values.retain(|handle, _| !range.contains(handle));
+        values.retain(|handle, _| !handles.contains(handle));
         values.extend(native);
     }
     let weather_block = supplied.blocks.get(3).context("weather block")?;
@@ -300,6 +333,7 @@ fn main() -> Result<()> {
             "prospect_handles": prospect_handles,
             "array_differences": array_differences,
             "int_differences": int_differences,
+            "time_of_day_advance": time_of_day_advance,
             "composed_exports_hex": hex(composed_exports.bytes()),
         })
     );

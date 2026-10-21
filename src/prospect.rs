@@ -18,7 +18,7 @@ use crate::experimental::component::{
 use crate::experimental::property_tree::{
     BaseComponentTree, MAX_TREE_DEPTH, MAX_TREE_NODES, PropertyTree, TreeLimits,
 };
-use crate::experimental::prospect_info::ProspectInfo;
+use crate::experimental::prospect_info::{ProspectInfo, SavedGameMode};
 use crate::experimental::recorders::{
     RecorderSummary, StagedProspectSaveState, read_recorders, recorder_class_label,
     stage_prospect_save_state,
@@ -28,9 +28,7 @@ use crate::experimental::struct_array::MAX_BOUNDED_STRUCT_ARRAY_BYTES;
 use crate::experimental::tagged::{
     ParsedRecord, RootTagSummary, TagProfile, is_name, read_record, read_root,
 };
-use crate::experimental::typed_value::{
-    Gap, Scalar, TypedComponent, TypedSummary, TypedTree, Value,
-};
+use crate::experimental::typed_value::{Gap, TypedComponent, TypedSummary, TypedTree};
 use crate::json::JsonObject;
 use crate::preservation::{PreserveLimits, PreservedSection};
 
@@ -281,18 +279,17 @@ pub fn typed_check(reader: impl Read) -> Result<TypedProspectInspection> {
     Ok(report)
 }
 
-/// What replicating the active prospect needs from a save: its typed
-/// `ProspectInfo` (`F-738`) and the game mode's recorded
-/// `GameModeRecord.LevelTimeElapsedSec` (`C015`, `F-650`), when a `C015`
-/// recorder exists.
-/// The values are the save's; callers must keep them private.
+/// What replicating a loaded prospect's GameState needs from its save: the
+/// typed `ProspectInfo` (`F-738`) and the game mode recorder's values
+/// (`C015`, `F-650`), when a `C015` recorder exists. The values are the
+/// save's; callers must keep them private.
 pub struct SavedProspect {
     pub info: ProspectInfo,
-    pub level_time_elapsed_sec: Option<i32>,
+    pub game_mode: Option<SavedGameMode>,
 }
 
 /// Stage the prospect exactly as [`stage_prospect`] does, then type its root
-/// `ProspectInfo` and its one `C015` recorder's `LevelTimeElapsedSec`.
+/// `ProspectInfo` and its one `C015` recorder.
 pub fn read_saved_prospect(reader: impl Read) -> Result<SavedProspect> {
     saved_prospect_from_payload(&decode_envelope(reader)?.payload)
 }
@@ -319,7 +316,7 @@ pub fn saved_prospect_from_payload(payload: &[u8]) -> Result<SavedProspect> {
     let info = info.context("the prospect has no ProspectInfo")?;
     let recorders =
         read_recorders(&tags.tags, profile).context("invalid experimental recorder framing")?;
-    let mut level_time_elapsed_sec = None;
+    let mut game_mode = None;
     for recorder in recorders.records() {
         let class = decode_string(recorder.class_value, ByteOrder::Little)
             .context("invalid experimental recorder class string")?;
@@ -327,7 +324,7 @@ pub fn saved_prospect_from_payload(payload: &[u8]) -> Result<SavedProspect> {
             continue;
         }
         ensure!(
-            level_time_elapsed_sec.is_none(),
+            game_mode.is_none(),
             "the prospect has more than one C015 recorder"
         );
         let tree = BaseComponentTree::parse(
@@ -338,30 +335,9 @@ pub fn saved_prospect_from_payload(payload: &[u8]) -> Result<SavedProspect> {
         )
         .context("invalid C015 recorder tree")?;
         let (typed, _) = TypedComponent::from_component(&tree)?;
-        let record = match typed
-            .tree
-            .get("GameModeRecord")
-            .map(|property| &property.value)
-        {
-            Some(Value::TaggedStruct { tree, .. }) => Some(tree),
-            None => None,
-            Some(_) => anyhow::bail!("C015 GameModeRecord is not a tagged struct"),
-        };
-        level_time_elapsed_sec = Some(
-            match record
-                .and_then(|record| record.get("LevelTimeElapsedSec"))
-                .map(|property| &property.value)
-            {
-                Some(Value::Scalar(Scalar::Int(value))) => *value,
-                None => 0,
-                Some(_) => anyhow::bail!("C015 LevelTimeElapsedSec is not an IntProperty"),
-            },
-        );
+        game_mode = Some(SavedGameMode::from_tree(&typed.tree)?);
     }
-    Ok(SavedProspect {
-        info,
-        level_time_elapsed_sec,
-    })
+    Ok(SavedProspect { info, game_mode })
 }
 
 /// Envelope observations plus a verified lossless preservation of its payload.

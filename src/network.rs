@@ -20,8 +20,8 @@
 //! and references, component bools, [`pawn_content`]; no stats or
 //! inventories);
 //! with `[game_state]` identifiers the world's GameState on channel 4 (F-794:
-//! [`game_state_values`], plus a preserved world's active prospect,
-//! [`saved_prospect_values`]); with `[player_state]` identifiers the referenced
+//! [`game_state_values`], plus a preserved world's prospect and game mode
+//! record, [`saved_game_state`]); with `[player_state]` identifiers the referenced
 //! PlayerState on channel 5 (F-784: PlayerId from 256, the Login name and
 //! unique net id, `bIsHost` for the first player only). Each open takes as
 //! many datagrams as it needs. Nothing else replicates.
@@ -47,7 +47,7 @@ use crate::{
         control_messages::ArchiveText,
         game_state_open::{
             GAME_STATE_CHANNEL_INDEX, GameStateManagers, GameStateOpenState,
-            MATCH_STATE_IN_PROGRESS, active_prospect_values, handle,
+            MATCH_STATE_IN_PROGRESS, active_prospect_values, handle, saved_game_mode_values,
         },
         pawn_open::{CharacterVitals, PAWN_CHANNEL_INDEX, PawnContent},
         peer_lab::{PeerLab, PeerLabAdmission, PeerLabConfig, PeerLabPlugin, SessionCounts},
@@ -115,18 +115,43 @@ pub fn pawn_content() -> PawnContent {
     }
 }
 
-/// The GameState values a loaded world's preserved prospect supplies: its
+/// What a loaded world's preserved prospect adds to the GameState open: its
 /// `ReplicatedActiveProspect` from the save's `ProspectInfo`, with
 /// `ElapsedTime` from the recorded level clock and no member playing (no
 /// connection is matched to a member), as the original showed for its
-/// loaded save (F-801).
-pub fn saved_prospect_values(section: &PreservedSection) -> Result<BTreeMap<u32, RepValue>> {
+/// loaded save (F-801); the game mode record's values; and the restored
+/// level clock (F-803).
+pub struct SavedGameState {
+    pub values: BTreeMap<u32, RepValue>,
+    pub level_time_elapsed_sec: Option<i32>,
+}
+
+pub fn saved_game_state(section: &PreservedSection) -> Result<SavedGameState> {
     let payload = section.decode()?.to_inner_payload()?;
     let saved = crate::prospect::saved_prospect_from_payload(&payload)?;
-    let level_time = saved
-        .level_time_elapsed_sec
-        .unwrap_or(saved.info.elapsed_time);
-    active_prospect_values(&saved.info.for_session(level_time, |_| false))
+    let level_time = saved.game_mode.map(|mode| mode.level_time_elapsed_sec);
+    let mut values = active_prospect_values(
+        &saved
+            .info
+            .for_session(level_time.unwrap_or(saved.info.elapsed_time), |_| false),
+    )?;
+    if let Some(mode) = &saved.game_mode {
+        values.extend(saved_game_mode_values(mode));
+    }
+    Ok(SavedGameState {
+        values,
+        level_time_elapsed_sec: level_time,
+    })
+}
+
+/// Add a loaded world's [`saved_game_state`] to `lab`'s GameState open.
+pub fn apply_saved_game_state(lab: &mut PeerLab, section: &PreservedSection) -> Result<()> {
+    let saved = saved_game_state(section)?;
+    lab.extend_game_state_values(saved.values)?;
+    if let Some(level_time) = saved.level_time_elapsed_sec {
+        lab.set_game_state_level_time(level_time)?;
+    }
+    Ok(())
 }
 
 /// Session counts kept after [`teardown`] so a repeated call and the final

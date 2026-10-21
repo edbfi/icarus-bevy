@@ -141,6 +141,23 @@ impl<'a> Fields<'a> {
         }
     }
 
+    fn float(&self, name: &str) -> Result<f32> {
+        match self.scalar(name) {
+            Some(Scalar::Float(value)) => Ok(*value),
+            None if !self.present(name) => Ok(0.0),
+            _ => bail!("{}.{name} is not a FloatProperty", self.what),
+        }
+    }
+
+    /// A tagged struct's fields; missing reads as an empty struct.
+    fn tagged(&self, name: &str, what: &'static str) -> Result<Option<Fields<'a>>> {
+        match self.tree.get(name).map(|property| &property.value) {
+            Some(Value::TaggedStruct { tree, .. }) => Ok(Some(Fields { tree, what })),
+            None => Ok(None),
+            _ => bail!("{}.{name} is not a tagged struct", self.what),
+        }
+    }
+
     fn int64(&self, name: &str) -> Result<i64> {
         match self.scalar(name) {
             Some(Scalar::Int64(value)) => Ok(*value),
@@ -287,6 +304,51 @@ impl ProspectInfo {
                     })
                 })
                 .collect::<Result<_>>()?,
+        })
+    }
+}
+
+/// The game mode recorder's values the GameState restores from (`C015`,
+/// `F-650`): `GameModeRecord`'s seed, time of day, prospect game time, day
+/// length and level clock, and the top-level `DynamicQuestSeed`. Missing
+/// properties read as their defaults; `Debug` shows no values.
+#[derive(Clone, Copy, Default, PartialEq)]
+pub struct SavedGameMode {
+    pub game_state_seed: i32,
+    pub time_of_day: f32,
+    pub prospect_game_time: f32,
+    pub seconds_per_game_day: i32,
+    pub level_time_elapsed_sec: i32,
+    pub dynamic_quest_seed: i32,
+}
+
+impl std::fmt::Debug for SavedGameMode {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("SavedGameMode")
+    }
+}
+
+impl SavedGameMode {
+    /// Type a `C015` component's tagged properties.
+    pub fn from_tree(tree: &TypedTree) -> Result<Self> {
+        let fields = Fields {
+            tree,
+            what: "GameModeStateRecorderComponent",
+        };
+        let dynamic_quest_seed = fields.int("DynamicQuestSeed")?;
+        let Some(record) = fields.tagged("GameModeRecord", "GameModeRecord")? else {
+            return Ok(Self {
+                dynamic_quest_seed,
+                ..Self::default()
+            });
+        };
+        Ok(Self {
+            game_state_seed: record.int("GameStateSeed")?,
+            time_of_day: record.float("TimeOfDay")?,
+            prospect_game_time: record.float("ProspectGameTime")?,
+            seconds_per_game_day: record.int("SecondsPerGameDay")?,
+            level_time_elapsed_sec: record.int("LevelTimeElapsedSec")?,
+            dynamic_quest_seed,
         })
     }
 }

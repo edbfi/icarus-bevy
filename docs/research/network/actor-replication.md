@@ -40,16 +40,17 @@ natively (F-776, F-777; U-067) and exports repeat until acked (F-796). The
 native composers rebuild the captured PlayerController (F-778, F-779),
 GameState (F-794) and pawn (F-797) opens bit for bit, including the pawn's
 contents from session values (F-799) and the GameState's active prospect
-from the save the capture's server loaded (F-801); `run` sends all four
-opens after Join, with a preserved world's prospect (F-802).
+and game mode values from the save the capture's server loaded (F-801,
+F-803); `run` sends all four opens after Join, with a preserved world's
+saved state (F-804).
 
 ## Open
 
 - Two Blueprint class checksums with user-struct arrays (U-067).
 - Authenticated runtime relevancy and priority exercise (U-038).
 - Item, stat and character values of a played character at open (U-069).
-- When the active prospect is refreshed after open (U-070).
+- When the active prospect is refreshed after open (U-070); how TimeOfDay advances (U-071).
 
 ## Artifacts
 
-M-420..M-449, M-455..M-470, M-570..M-576, M-581..M-588, M-600..M-605, M-707..M-717, M-720, M-728..M-748, M-776, M-777, M-782, M-794, M-795, M-797..M-799, M-801, M-802, M-804, M-805, M-807, M-813..M-819, M-832, M-834 to M-836, M-838, M-839.
+M-420..M-449, M-455..M-470, M-570..M-576, M-581..M-588, M-600..M-605, M-707..M-717, M-720, M-728..M-748, M-776, M-777, M-782, M-794, M-795, M-797..M-799, M-801, M-802, M-804, M-805, M-807, M-813..M-819, M-832, M-834 to M-836, M-838 to M-840.
