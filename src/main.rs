@@ -451,6 +451,22 @@ fn run(options: ConfigOptions, max_ticks: Option<u64>, compressed: bool) -> Resu
     if compressed {
         app.insert_resource(TimeUpdateStrategy::FixedTimesteps(1));
     }
+    let mut bound = bound;
+    if let (Some(bound), Some(section)) = (&mut bound, &snapshot.preserved_prospect)
+        && bound.lab.has_game_state_open()
+    {
+        // A loaded world's prospect replicates in the GameState open; a
+        // prospect that cannot supply it leaves the lab's values alone.
+        match network::saved_prospect_values(section)
+            .and_then(|values| bound.lab.extend_game_state_values(values))
+        {
+            Ok(()) => eprintln!("{}", json!({"event": "active_prospect_replicated"})),
+            Err(_) => eprintln!(
+                "{}",
+                json!({"event": "active_prospect_unavailable", "warning": "the preserved prospect supplies no replicated active prospect"})
+            ),
+        }
+    }
     let network_address = bound
         .map(|bound| network::install(&mut app, bound.lab))
         .transpose()?;

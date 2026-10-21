@@ -1,0 +1,553 @@
+//! The save's `ProspectInfo` and level clock typed, and the GameState's
+//! `ReplicatedActiveProspect` mapped from them (F-738, F-801), over an
+//! independently framed authored envelope (no supplied save).
+use std::collections::BTreeMap;
+use std::io::Write;
+
+use base64::{Engine, engine::general_purpose::STANDARD};
+use flate2::{Compression, write::ZlibEncoder};
+use icarus_bevy::experimental::control_messages::ArchiveText;
+use icarus_bevy::experimental::game_state_open::{active_prospect_values, handle};
+use icarus_bevy::experimental::property_tree::{PropertyTree, TreeLimits};
+use icarus_bevy::experimental::prospect_info::{AssociatedMember, ProspectInfo};
+use icarus_bevy::experimental::recorders::recorder_class_label;
+use icarus_bevy::experimental::rep_layout::RepValue;
+use icarus_bevy::experimental::tagged::TagProfile;
+use icarus_bevy::experimental::typed_value::TypedTree;
+use icarus_bevy::preservation::{PreserveLimits, PreservedSection};
+use icarus_bevy::prospect::{read_saved_prospect, saved_prospect_from_payload};
+use serde_json::json;
+use sha1::{Digest, Sha1};
+
+const GAME_MODE: &str = "/Script/Icarus.GameModeStateRecorderComponent";
+
+fn fstring(value: &str) -> Vec<u8> {
+    if value.is_empty() {
+        0_i32.to_le_bytes().to_vec()
+    } else if value.is_ascii() {
+        [
+            i32::try_from(value.len() + 1)
+                .unwrap()
+                .to_le_bytes()
+                .as_slice(),
+            value.as_bytes(),
+            &[0],
+        ]
+        .concat()
+    } else {
+        let units: Vec<u16> = value.encode_utf16().chain([0]).collect();
+        let mut bytes = (-i32::try_from(units.len()).unwrap())
+            .to_le_bytes()
+            .to_vec();
+        bytes.extend(units.iter().flat_map(|unit| unit.to_le_bytes()));
+        bytes
+    }
+}
+
+fn tag(name: &str, kind: &str, extras: &[u8], payload: &[u8]) -> Vec<u8> {
+    [
+        fstring(name).as_slice(),
+        &fstring(kind),
+        &i32::try_from(payload.len()).unwrap().to_le_bytes(),
+        &0_i32.to_le_bytes(),
+        extras,
+        payload,
+    ]
+    .concat()
+}
+
+fn string(name: &str, value: &str) -> Vec<u8> {
+    tag(name, "StrProperty", &[0], &fstring(value))
+}
+
+fn int(name: &str, value: i32) -> Vec<u8> {
+    tag(name, "IntProperty", &[0], &value.to_le_bytes())
+}
+
+fn boolean(name: &str, value: bool) -> Vec<u8> {
+    tag(name, "BoolProperty", &[u8::from(value), 0], &[])
+}
+
+fn enumerator(name: &str, enum_name: &str, value: &str) -> Vec<u8> {
+    tag(
+        name,
+        "EnumProperty",
+        &[fstring(enum_name), vec![0]].concat(),
+        &fstring(&format!("{enum_name}::{value}")),
+    )
+}
+
+fn struct_tag(name: &str, type_name: &str, payload: &[u8]) -> Vec<u8> {
+    tag(
+        name,
+        "StructProperty",
+        &[fstring(type_name), vec![0; 17]].concat(),
+        payload,
+    )
+}
+
+fn struct_array(name: &str, type_name: &str, elements: &[Vec<u8>]) -> Vec<u8> {
+    let shared = tag(
+        name,
+        "StructProperty",
+        &[fstring(type_name), vec![0; 17]].concat(),
+        &elements.concat(),
+    );
+    let count = i32::try_from(elements.len()).unwrap().to_le_bytes();
+    tag(
+        name,
+        "ArrayProperty",
+        &[fstring("StructProperty"), vec![0]].concat(),
+        &[count.as_slice(), &shared].concat(),
+    )
+}
+
+fn end() -> Vec<u8> {
+    fstring("None")
+}
+
+fn member(name: &str, user: &str, slot: i32, status: &str, playing: bool) -> Vec<u8> {
+    [
+        string("AccountName", name),
+        string("CharacterName", name),
+        string("UserID", user),
+        int("ChrSlot", slot),
+        int("Experience", 0),
+        enumerator("Status", "EProspectLocation", status),
+        boolean("Settled", false),
+        boolean("IsCurrentlyPlaying", playing),
+        end(),
+    ]
+    .concat()
+}
+
+/// An authored `ProspectInfo`: some fields at defaults (absent, empty or
+/// zero), a wide member name, enumerators by name.
+fn prospect_info() -> Vec<u8> {
+    [
+        string("ProspectID", "lab-prospect"),
+        string("ClaimedAccountID", "account-1"),
+        int("ClaimedAccountCharacter", 2),
+        string("ProspectDTKey", "Lab_Key"),
+        string("LobbyName", ""),
+        tag("ExpireTime", "Int64Property", &[0], &(-1_i64).to_le_bytes()),
+        enumerator("ProspectState", "EProspectState", "Active"),
+        struct_array(
+            "AssociatedMembers",
+            "AssociatedMemberInfo",
+            &[
+                member("First", "user-1", 1, "Prospect_Conifer", true),
+                member("Ærø", "user-2", 0, "Hab", false),
+            ],
+        ),
+        int("Reward", 0),
+        enumerator("Difficulty", "EMissionDifficulty", "Hard"),
+        boolean("Insurance", false),
+        boolean("NoRespawns", true),
+        int("ElapsedTime", 100),
+        int("SelectedDropPoint", 3),
+        struct_array(
+            "CustomSettings",
+            "CustomGameSetting",
+            &[[
+                string("SettingRowName", "Lab_Setting"),
+                int("SettingValue", 7),
+                end(),
+            ]
+            .concat()],
+        ),
+        end(),
+    ]
+    .concat()
+}
+
+fn game_mode_recorder(level_time: i32) -> Vec<u8> {
+    let component = [
+        [
+            struct_tag(
+                "GameModeRecord",
+                "GameModeRecord",
+                &[int("LevelTimeElapsedSec", level_time), end()].concat(),
+            ),
+            end(),
+        ]
+        .concat(),
+        vec![0; 4],
+    ]
+    .concat();
+    let count = i32::try_from(component.len()).unwrap().to_le_bytes();
+    [
+        string("ComponentClassName", GAME_MODE),
+        tag(
+            "BinaryData",
+            "ArrayProperty",
+            &[fstring("ByteProperty"), vec![0]].concat(),
+            &[count.as_slice(), &component].concat(),
+        ),
+        end(),
+    ]
+    .concat()
+}
+
+fn payload(info: &[u8], recorders: &[Vec<u8>]) -> Vec<u8> {
+    let shared = tag(
+        "StateRecorderBlobs",
+        "StructProperty",
+        &[fstring("StateRecorderBlob"), vec![0; 17]].concat(),
+        &recorders.concat(),
+    );
+    let count = i32::try_from(recorders.len()).unwrap().to_le_bytes();
+    [
+        int("Version", 2),
+        struct_tag("ProspectInfo", "ProspectInfo", info),
+        tag(
+            "StateRecorderBlobs",
+            "ArrayProperty",
+            &[fstring("StructProperty"), vec![0]].concat(),
+            &[count.as_slice(), &shared].concat(),
+        ),
+        end(),
+    ]
+    .concat()
+}
+
+fn envelope(payload: &[u8]) -> Vec<u8> {
+    let mut encoder = ZlibEncoder::new(Vec::new(), Compression::fast());
+    encoder.write_all(payload).unwrap();
+    let compressed = encoder.finish().unwrap();
+    let hash = Sha1::digest(payload)
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect::<String>();
+    serde_json::to_vec(&json!({"ProspectBlob": {
+        "Hash": hash, "TotalLength": compressed.len(), "DataLength": 0,
+        "UncompressedLength": payload.len(), "BinaryBlob": STANDARD.encode(compressed)
+    }}))
+    .unwrap()
+}
+
+fn units(text: &str) -> Vec<u16> {
+    text.encode_utf16().collect()
+}
+
+#[test]
+fn the_game_mode_fixture_class_is_c015() {
+    assert_eq!(
+        recorder_class_label(&units(GAME_MODE)).as_deref(),
+        Some("C015")
+    );
+}
+
+#[test]
+fn a_saved_prospect_types_its_info_and_level_clock() {
+    let source = envelope(&payload(&prospect_info(), &[game_mode_recorder(150)]));
+    let saved = read_saved_prospect(source.as_slice()).unwrap();
+    assert_eq!(saved.level_time_elapsed_sec, Some(150));
+    let info = &saved.info;
+    assert_eq!(info.prospect_id, units("lab-prospect"));
+    assert_eq!(info.claimed_account_character, 2);
+    assert!(info.faction_mission_dt_key.is_empty() && info.lobby_name.is_empty());
+    assert_eq!(info.expire_time, -1);
+    assert_eq!((info.prospect_state, info.difficulty), (2, 3));
+    assert_eq!((info.cost, info.reward), (0, 0));
+    assert!(!info.insurance && info.no_respawns);
+    assert_eq!((info.elapsed_time, info.selected_drop_point), (100, 3));
+    assert_eq!(
+        info.associated_members[1],
+        AssociatedMember {
+            account_name: units("Ærø"),
+            character_name: units("Ærø"),
+            user_id: units("user-2"),
+            chr_slot: 0,
+            experience: 0,
+            status: 1,
+            settled: false,
+            is_currently_playing: false,
+        }
+    );
+    assert_eq!(info.associated_members[0].status, 2);
+    assert_eq!(info.custom_settings[0].setting_value, 7);
+    // Without a game mode recorder there is no level clock.
+    let bare = read_saved_prospect(envelope(&payload(&prospect_info(), &[])).as_slice()).unwrap();
+    assert_eq!(bare.level_time_elapsed_sec, None);
+    assert_eq!(bare.info, saved.info);
+}
+
+#[test]
+fn mistyped_or_unknown_fields_fail_closed() {
+    let typed = |fields: &[Vec<u8>]| {
+        let stream = [fields.concat(), end()].concat();
+        let tree =
+            PropertyTree::parse(&stream, TagProfile::MemoryArchive522, TreeLimits::default())
+                .unwrap();
+        ProspectInfo::from_tree(&TypedTree::from_tree(&tree).unwrap().0)
+    };
+    // Absent fields read as defaults.
+    assert_eq!(typed(&[]).unwrap(), ProspectInfo::default());
+    assert_eq!(typed(&[int("Cost", 5)]).unwrap().cost, 5);
+    for bad in [
+        int("ProspectState", 2),
+        enumerator("Difficulty", "EMissionDifficulty", "Brutal"),
+        enumerator("ProspectState", "EProspectState", "MaxProspectStates2"),
+        int("ProspectID", 1),
+        string("ElapsedTime", "100"),
+        tag("ExpireTime", "IntProperty", &[0], &1_i32.to_le_bytes()),
+        int("NoRespawns", 1),
+        int("AssociatedMembers", 1),
+    ] {
+        assert!(typed(&[bad]).is_err());
+    }
+    // A member with a mistyped field fails the whole struct.
+    let members = struct_array(
+        "AssociatedMembers",
+        "AssociatedMemberInfo",
+        &[[int("UserID", 1), end()].concat()],
+    );
+    assert!(typed(&[members]).is_err());
+}
+
+fn text(value: &str) -> RepValue {
+    RepValue::Str(ArchiveText::new(&units(value)).unwrap())
+}
+
+#[test]
+fn the_active_prospect_maps_nondefault_fields_in_declaration_order() {
+    let saved = read_saved_prospect(envelope(&payload(&prospect_info(), &[])).as_slice()).unwrap();
+    let session = saved
+        .info
+        .for_session(150, |member| member.user_id == units("user-2"));
+    assert_eq!(session.elapsed_time, 150);
+    let playing: Vec<bool> = session
+        .associated_members
+        .iter()
+        .map(|member| member.is_currently_playing)
+        .collect();
+    assert_eq!(playing, [false, true]);
+    let values = active_prospect_values(&session).unwrap();
+    let first = handle::ACTIVE_PROSPECT_FIRST;
+    // Defaults stay unsent: FactionMissionDTKey, LobbyName, Cost, Reward,
+    // Insurance.
+    let sent: Vec<u32> = values.keys().map(|handle| handle - first + 1).collect();
+    assert_eq!(sent, [1, 2, 3, 4, 7, 8, 9, 12, 14, 15, 16, 17]);
+    assert_eq!(values[&first], text("lab-prospect"));
+    assert_eq!(values[&(first + 6)], RepValue::Int64(-1));
+    assert_eq!(values[&(first + 7)], RepValue::Enum(2));
+    assert_eq!(values[&(first + 11)], RepValue::Enum(3));
+    assert_eq!(values[&(first + 13)], RepValue::Bool(true));
+    assert_eq!(values[&(first + 14)], RepValue::Int(150));
+    // Members: every element field, 8 handles each.
+    let RepValue::DynamicArray(members) = &values[&(first + 8)] else {
+        panic!("members array");
+    };
+    assert_eq!(members.count, 2);
+    let entries: BTreeMap<u32, RepValue> = members
+        .stream
+        .entries
+        .iter()
+        .map(|entry| (entry.handle, entry.value.clone()))
+        .collect();
+    assert_eq!(entries.len(), 16);
+    assert_eq!(entries[&9], text("Ærø"));
+    assert_eq!(entries[&14], RepValue::Enum(1));
+    assert_eq!(entries[&8], RepValue::Bool(false));
+    assert_eq!(entries[&16], RepValue::Bool(true));
+    let RepValue::DynamicArray(settings) = &values[&(first + 16)] else {
+        panic!("settings array");
+    };
+    assert_eq!(settings.count, 1);
+    assert_eq!(settings.stream.entries[1].value, RepValue::Int(7));
+    // An empty prospect sends nothing.
+    assert!(
+        active_prospect_values(&ProspectInfo::default())
+            .unwrap()
+            .is_empty()
+    );
+}
+
+#[test]
+fn a_preserved_world_supplies_the_session_prospect() {
+    let inner = payload(&prospect_info(), &[game_mode_recorder(150)]);
+    let section = PreservedSection::from_inner_payload(&inner, PreserveLimits::default()).unwrap();
+    let values = icarus_bevy::network::saved_prospect_values(&section).unwrap();
+    let saved = saved_prospect_from_payload(&inner).unwrap();
+    let expected = active_prospect_values(&saved.info.for_session(150, |_| false)).unwrap();
+    assert_eq!(values, expected);
+    // Without the level clock, the saved elapsed time stands.
+    let bare = PreservedSection::from_inner_payload(
+        &payload(&prospect_info(), &[]),
+        PreserveLimits::default(),
+    )
+    .unwrap();
+    let values = icarus_bevy::network::saved_prospect_values(&bare).unwrap();
+    assert_eq!(
+        values[&(handle::ACTIVE_PROSPECT_FIRST + 14)],
+        RepValue::Int(100)
+    );
+}
+
+/// `run` on a world preserved from a save sends the save's active prospect
+/// in its GameState open (real binary, authored probe on loopback).
+#[test]
+fn run_replicates_a_preserved_worlds_prospect() {
+    use icarus_bevy::experimental::{
+        actor_channel::{ActorChannelCodec, ActorChannelLimits, read_actor_bunch_body},
+        archive::ByteOrder,
+        control_messages::{ControlCodec, ControlMessage, NetIdType, NetIdValue, UniqueNetId},
+        packet::{PacketConfig, Receiver, read_packet},
+        peer_lab::{PeerLabAdmission, PeerLabConfig},
+        probe_client::{ProbeClient, ProbeConfig},
+        release::ReleaseProfile,
+        rep_layout::{RepLayoutCodec, RepLayoutLimits, read_rep_properties},
+    };
+    use std::{
+        io::{BufRead, BufReader},
+        net::{SocketAddr, UdpSocket},
+        process::{Command, Stdio},
+        time::{Duration, Instant},
+    };
+
+    let directory = tempfile::tempdir().unwrap();
+    let source = directory.path().join("prospect.json");
+    std::fs::write(
+        &source,
+        envelope(&payload(&prospect_info(), &[game_mode_recorder(150)])),
+    )
+    .unwrap();
+    let state = directory.path().join("state");
+    let preserved = Command::new(env!("CARGO_BIN_EXE_icarus-server"))
+        .arg("preserve-save")
+        .arg("--source")
+        .arg(&source)
+        .arg("--data-dir")
+        .arg(&state)
+        .output()
+        .unwrap();
+    assert!(preserved.status.success(), "{preserved:?}");
+    let release = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("config/release.toml");
+    let profile = ReleaseProfile::load(&release).unwrap();
+    let config = directory.path().join("server.toml");
+    std::fs::write(
+        &config,
+        format!(
+            "[network]\nenabled = true\nport = 0\nrelease_profile = {}\n",
+            toml::Value::String(release.display().to_string())
+        ),
+    )
+    .unwrap();
+    let mut child = Command::new(env!("CARGO_BIN_EXE_icarus-server"))
+        .arg("run")
+        .arg("--config")
+        .arg(&config)
+        .args(["--tick-hz", "240", "--max-ticks", "1000000", "--data-dir"])
+        .arg(&state)
+        .stderr(Stdio::piped())
+        .stdout(Stdio::null())
+        .spawn()
+        .unwrap();
+    let mut lines = BufReader::new(child.stderr.take().unwrap()).lines();
+    let deadline = Instant::now() + Duration::from_secs(20);
+    let mut replicated = false;
+    let address: SocketAddr = loop {
+        assert!(Instant::now() < deadline, "no network_listening record");
+        let record: serde_json::Value =
+            serde_json::from_str(&lines.next().unwrap().unwrap()).unwrap();
+        replicated |= record["event"] == "active_prospect_replicated";
+        if record["event"] == "network_listening" {
+            break record["address"].as_str().unwrap().parse().unwrap();
+        }
+    };
+    assert!(replicated, "the preserved prospect replicates");
+    let socket = UdpSocket::bind("127.0.0.1:0").unwrap();
+    socket.connect(address).unwrap();
+    let mut client = ProbeClient::connect(
+        socket,
+        ProbeConfig {
+            packet: PacketConfig {
+                magic_bits: 0,
+                receiver: Receiver::Server,
+                limits: PeerLabConfig::default().packet.packet.limits,
+            },
+            codec: ControlCodec::default(),
+            handshake_timeout: Duration::from_secs(2),
+            handshake_attempts: 3,
+            reply_window: Duration::from_secs(3),
+            max_datagrams: 1,
+        },
+    )
+    .unwrap();
+    client.hello(profile.pin.network_checksum, "").unwrap();
+    client
+        .send_control(
+            &[ControlMessage::Login {
+                response: ArchiveText::text("0").unwrap(),
+                url: ArchiveText::text("?Name=Probe").unwrap(),
+                unique_net_id: UniqueNetId {
+                    kind: NetIdType::Named(ArchiveText::text("STEAM").unwrap()),
+                    value: NetIdValue::from_hex("0123456789ABCDEF7654").unwrap(),
+                },
+                platform: ArchiveText::text("").unwrap(),
+            }],
+            false,
+        )
+        .unwrap();
+    client.collect(Duration::from_secs(3), 1).unwrap();
+    client
+        .send_control(
+            &[
+                ControlMessage::Netspeed { rate: 100_000 },
+                ControlMessage::Join,
+            ],
+            false,
+        )
+        .unwrap();
+    let collected = client.collect(Duration::from_secs(3), 4).unwrap();
+    let _ = child.kill();
+    let _ = child.wait();
+    let to_client = PacketConfig {
+        magic_bits: 0,
+        receiver: Receiver::Client,
+        limits: PeerLabConfig::default().packet.packet.limits,
+    };
+    let body = collected
+        .replies
+        .iter()
+        .flat_map(|reply| read_packet(&reply.bytes, &to_client).unwrap().bunches)
+        .find(|bunch| {
+            bunch.header.channel_index
+                == icarus_bevy::experimental::game_state_open::GAME_STATE_CHANNEL_INDEX
+                && !bunch.header.has_package_map_exports
+        })
+        .expect("a GameState open");
+    let codec = ActorChannelCodec {
+        engine_net_version: profile.engine_network_version,
+        exports_enabled: false,
+        has_level: true,
+        order: ByteOrder::Little,
+        limits: ActorChannelLimits::default(),
+    };
+    let plan = profile
+        .game_state_open_plan(PeerLabAdmission::default().map_url)
+        .unwrap()
+        .unwrap();
+    let open = read_actor_bunch_body(&mut body.payload.reader(), true, &codec).unwrap();
+    let stream = read_rep_properties(
+        &mut open.blocks[0].payload.reader(),
+        &plan.layout,
+        &RepLayoutCodec {
+            actor: codec,
+            checksums: false,
+            limits: RepLayoutLimits::default(),
+        },
+    )
+    .unwrap();
+    let sent: BTreeMap<u32, RepValue> = stream
+        .entries
+        .into_iter()
+        .filter(|entry| (handle::ACTIVE_PROSPECT_FIRST..=67).contains(&entry.handle))
+        .map(|entry| (entry.handle, entry.value))
+        .collect();
+    let saved = saved_prospect_from_payload(&payload(&prospect_info(), &[game_mode_recorder(150)]))
+        .unwrap();
+    let expected = active_prospect_values(&saved.info.for_session(150, |_| false)).unwrap();
+    assert_eq!(sent, expected);
+}

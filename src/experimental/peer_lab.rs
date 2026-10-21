@@ -1078,6 +1078,27 @@ impl PeerLab {
         Ok(())
     }
 
+    /// Whether joined players are sent the GameState open.
+    pub fn has_game_state_open(&self) -> bool {
+        self.game_state_open.is_some()
+    }
+
+    /// Add `values` to the GameState open's values (replacing equal
+    /// handles), for state that is known only after bind, such as a loaded
+    /// world's active prospect. Fails without a GameState open, or for the
+    /// lab-written world time.
+    pub fn extend_game_state_values(&mut self, values: BTreeMap<u32, RepValue>) -> Result<()> {
+        let Some(session) = &mut self.game_state_open else {
+            bail!("no GameState open is enabled");
+        };
+        ensure!(
+            !values.contains_key(&super::game_state_open::handle::WORLD_TIME_SECONDS),
+            "the lab writes the GameState's world time"
+        );
+        session.state.values.extend(values);
+        Ok(())
+    }
+
     /// After [`enable_player_controller_open`](Self::enable_player_controller_open),
     /// also open each joined player's PlayerState (F-784) on `plan.channel_index`.
     pub fn enable_player_state_open(&mut self, plan: PlayerStateOpenPlan) -> Result<()> {

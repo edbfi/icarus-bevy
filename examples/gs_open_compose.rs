@@ -9,6 +9,7 @@ use std::{collections::BTreeMap, path::PathBuf};
 
 use anyhow::{Context, Result, bail};
 use clap::Parser;
+use icarus_bevy::experimental::game_state_open::active_prospect_values;
 use icarus_bevy::experimental::{
     actor_channel::{
         ActorChannelCodec, ActorChannelLimits, BlockTarget, NetGuidRef, read_actor_bunch_body,
@@ -35,6 +36,12 @@ use serde_json::json;
 struct Options {
     /// Profile JSON (see `ProfileFile`).
     profile: PathBuf,
+    /// The prospect save the capture's server loaded: handles 51..=67
+    /// (`ReplicatedActiveProspect`) come from its `ProspectInfo` and level
+    /// clock through `ProspectInfo::for_session` (no member playing) and
+    /// `game_state_open::active_prospect_values` instead of the body.
+    #[arg(long)]
+    prospect: Option<PathBuf>,
 }
 
 #[derive(Deserialize)]
@@ -148,6 +155,57 @@ fn main() -> Result<()> {
             values.insert(entry.handle, entry.value);
         }
     }
+    // Per prospect handle: whether the save's value equals the supplied one
+    // (no values are printed).
+    let mut prospect_handles = BTreeMap::new();
+    let mut array_differences = BTreeMap::new();
+    let mut int_differences = BTreeMap::new();
+    if let Some(path) = &options.prospect {
+        let file = std::fs::File::open(path).context("open the prospect save")?;
+        let saved = icarus_bevy::prospect::read_saved_prospect(file)?;
+        // The capture's only client was no member.
+        let info = saved.info.for_session(
+            saved
+                .level_time_elapsed_sec
+                .context("the save records no level time")?,
+            |_| false,
+        );
+        let native = active_prospect_values(&info)?;
+        let range = handle::ACTIVE_PROSPECT_FIRST..handle::ACTIVE_PROSPECT_FIRST + 17;
+        for handle in range.clone() {
+            let supplied = values.get(&handle);
+            let mapped = native.get(&handle);
+            prospect_handles.insert(
+                handle,
+                match (supplied, mapped) {
+                    (None, None) => "both_default",
+                    (Some(a), Some(b)) if a == b => "equal",
+                    (Some(RepValue::DynamicArray(a)), Some(RepValue::DynamicArray(b))) => {
+                        // Which element entries differ, by position only.
+                        let positions: Vec<u32> = a
+                            .stream
+                            .entries
+                            .iter()
+                            .zip(&b.stream.entries)
+                            .filter(|(x, y)| x != y)
+                            .map(|(x, _)| x.handle)
+                            .collect();
+                        array_differences.insert(handle, (a.count, b.count, positions));
+                        "differ"
+                    }
+                    (Some(RepValue::Int(a)), Some(RepValue::Int(b))) => {
+                        int_differences.insert(handle, i64::from(*a) - i64::from(*b));
+                        "differ"
+                    }
+                    (Some(_), Some(_)) => "differ",
+                    (Some(_), None) => "supplied_only",
+                    (None, Some(_)) => "save_only",
+                },
+            );
+        }
+        values.retain(|handle, _| !range.contains(handle));
+        values.extend(native);
+    }
     let weather_block = supplied.blocks.get(3).context("weather block")?;
     let weather = if weather_block.has_rep_layout {
         read_rep_properties(
@@ -239,6 +297,9 @@ fn main() -> Result<()> {
             "body_identical": open.bunch.payload == supplied_body,
             "manager_guids_identical": composed_managers == supplied_managers,
             "manager_guids": composed_managers,
+            "prospect_handles": prospect_handles,
+            "array_differences": array_differences,
+            "int_differences": int_differences,
             "composed_exports_hex": hex(composed_exports.bytes()),
         })
     );
