@@ -39,8 +39,8 @@ pub const PROSPECT_LOCATIONS: [&str; 13] = [
 /// `EMissionDifficulty` enumerators, by value.
 pub const MISSION_DIFFICULTIES: [&str; 5] = ["None", "Easy", "Medium", "Hard", "Extreme"];
 
-/// One `FAssociatedMemberInfo`.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+/// One `FAssociatedMemberInfo`; `Debug` shows no values.
+#[derive(Clone, Default, PartialEq, Eq)]
 pub struct AssociatedMember {
     pub account_name: Vec<u16>,
     pub character_name: Vec<u16>,
@@ -53,15 +53,16 @@ pub struct AssociatedMember {
     pub is_currently_playing: bool,
 }
 
-/// One `FCustomGameSetting`.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+/// One `FCustomGameSetting`; `Debug` shows no values.
+#[derive(Clone, Default, PartialEq, Eq)]
 pub struct CustomGameSetting {
     pub setting_row_name: Vec<u16>,
     pub setting_value: i32,
 }
 
 /// One `FProspectInfo`; strings are UTF-16 units without the terminator.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+/// `Debug` shows only the member and setting counts.
+#[derive(Clone, Default, PartialEq, Eq)]
 pub struct ProspectInfo {
     pub prospect_id: Vec<u16>,
     pub claimed_account_id: Vec<u16>,
@@ -82,6 +83,28 @@ pub struct ProspectInfo {
     pub elapsed_time: i32,
     pub selected_drop_point: i32,
     pub custom_settings: Vec<CustomGameSetting>,
+}
+
+impl std::fmt::Debug for AssociatedMember {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("AssociatedMember")
+    }
+}
+
+impl std::fmt::Debug for CustomGameSetting {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("CustomGameSetting")
+    }
+}
+
+impl std::fmt::Debug for ProspectInfo {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("ProspectInfo")
+            .field("associated_members", &self.associated_members.len())
+            .field("custom_settings", &self.custom_settings.len())
+            .finish_non_exhaustive()
+    }
 }
 
 /// Typed access to one tagged struct's properties by name.
