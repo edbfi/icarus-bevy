@@ -1228,7 +1228,33 @@ fn replication_selections_open_archetyped_actors_on_free_channels() {
     // The first connection's controller took dynamic GUIDs 2..18.
     assert_eq!(spawn.actor.guid, 20);
     assert!(spawn.dynamic.unwrap().location.is_some());
-    assert!(open.blocks.is_empty());
+    // One actor block with the captured world-actor roles (F-791).
+    let [roles] = open.blocks.as_slice() else {
+        panic!("one role block");
+    };
+    let rep_codec = icarus_bevy::experimental::rep_layout::RepLayoutCodec {
+        actor: codec,
+        checksums: false,
+        limits: icarus_bevy::experimental::rep_layout::RepLayoutLimits::default(),
+    };
+    let layout = icarus_bevy::experimental::rep_layout::actor_rep_layout(
+        icarus_bevy::experimental::rep_layout::MovementLevel::Whole,
+        icarus_bevy::experimental::rep_layout::MovementLevel::Whole,
+        icarus_bevy::experimental::rep_layout::RotationLevel::Bytes,
+    );
+    let stream = icarus_bevy::experimental::rep_layout::read_rep_properties(
+        &mut roles.payload.reader(),
+        &layout,
+        &rep_codec,
+    )
+    .unwrap();
+    use icarus_bevy::experimental::rep_layout::RepValue;
+    let [remote_role, role] = stream.entries.as_slice() else {
+        panic!("two role entries");
+    };
+    assert_eq!((remote_role.handle, role.handle), (5, 14));
+    assert!(matches!(remote_role.value, RepValue::Byte(1)));
+    assert!(matches!(role.value, RepValue::Byte(3)));
     let actor_guids = |datagrams: &[Vec<u8>]| -> Vec<u32> {
         let mut guids: Vec<u32> = datagrams[2..]
             .iter()

@@ -5,17 +5,20 @@
 //! has no pawn yet); after it, every actor the stage selected for a connection
 //! that carries a [`NetArchetype`] is opened on that connection's lowest free
 //! actor channel through [`PeerLab::open_actor`], once per connection, with
-//! its position as the spawn location and no content blocks yet; a channel the
-//! stage closes (no longer relevant `3`, torn off `4`; F-749) gets its close
-//! bunch first ([`PeerLab::close_actor`]). Actor GUIDs are driver-wide and
-//! stable per [`DomainId`]. Property replication is not modelled. Archetypes are caller data; nothing here
-//! reads original files or demonstrates ICARUS compatibility.
+//! its position as the spawn location and one actor block carrying the roles
+//! the capture's world-actor opens carry (F-791); a channel the stage closes
+//! (no longer relevant `3`, torn off `4`; F-749) gets its close bunch first
+//! ([`PeerLab::close_actor`]). Actor GUIDs are driver-wide and stable per
+//! [`DomainId`]. Further property replication is not modelled. Archetypes are
+//! caller data; nothing here reads original files or demonstrates ICARUS
+//! compatibility.
 use bevy::prelude::*;
 
 use crate::{
     experimental::{
+        actor_channel::ContentBlock,
         peer_lab::PeerLab,
-        session_open::{ActorOpenSpec, PathSegment},
+        session_open::{ActorOpenSpec, PathSegment, actor_role_block},
     },
     replication::{NetActor, NetViewer, ReplicationFrame, ReplicationSet},
     simulation::{DomainId, Position},
@@ -92,6 +95,7 @@ fn sync_viewers(
 }
 
 fn open_selected_actors(
+    mut role_block: Local<Option<ContentBlock>>,
     mut lab: ResMut<PeerLab>,
     session: Res<SessionReplication>,
     frame: Res<ReplicationFrame>,
@@ -128,13 +132,23 @@ fn open_selected_actors(
             let Some((position, archetype)) = by_id.get(&selected.id) else {
                 continue;
             };
+            let blocks = match &*role_block {
+                Some(block) => vec![block.clone()],
+                None => match actor_role_block(session.engine_net_version) {
+                    Ok(block) => {
+                        *role_block = Some(block.clone());
+                        vec![block]
+                    }
+                    Err(_) => continue,
+                },
+            };
             let spec = ActorOpenSpec {
                 // Placeholder: `open_actor` assigns the driver-wide GUID.
                 actor: 0,
                 archetype: archetype.archetype.clone(),
                 level: session.level.clone(),
                 location: Some(position.0),
-                blocks: Vec::new(),
+                blocks,
             };
             lab.open_actor(
                 connection.connection,
