@@ -135,7 +135,7 @@ symlinks allowed; F-671), read it, and write nothing unless stated:
   preserved prospect (tick 0); refuses an existing world.
 - `import-save --source … --destination … --dry-run`: prints the import plan
   (staging, `Validate`, typing, base fields, transforms, content references by
-  role against the native catalog, blockers; F-767, F-818). Without `--dry-run`
+  role against the native catalog, blockers; F-767, F-819). Without `--dry-run`
   the import is refused; nothing is written.
 
 Value meanings and original-server round trips remain unvalidated. The
