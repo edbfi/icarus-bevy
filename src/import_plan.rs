@@ -54,6 +54,17 @@ const ACTOR_TRANSFORM: &str = "ActorTransform";
 /// `UActorStateRecorderComponent::ObjectFName` (recorder `+0x148`): the
 /// owner's object name at record time (F-813).
 const OBJECT_NAME: &str = "ObjectFName";
+/// The name field of the actor variable records that `UpdateOwnerVariables`
+/// applies to the owner class's `SaveGame` properties by name (F-817).
+const VARIABLE_NAME: &str = "VariableName";
+/// Those records' struct types (the client's public property statics).
+const ACTOR_VARIABLE_RECORDS: [&str; 5] = [
+    "ActorBoolVariableRecord",
+    "ActorIntVariableRecord",
+    "ActorNameVariableRecord",
+    "ActorTextVariableRecord",
+    "LinearColorVariableRecord",
+];
 
 /// Independently authored native content the importer can resolve references
 /// against. Empty until native world data exists; every reference it lacks
@@ -178,6 +189,9 @@ pub enum ContentRole {
     /// instance's identity, not content, so it is never resolved against
     /// the catalog and never blocks import.
     InstanceName,
+    /// A `SaveGame` property of the owner's class, named by an actor
+    /// variable record (F-817): resolved against the native class schema.
+    ClassVariable,
     Unclassified,
 }
 
@@ -188,8 +202,18 @@ impl ContentRole {
         self != Self::InstanceName
     }
 
-    fn of(property: &[u16]) -> Self {
+    /// The role of a reference under `property`, inside a tagged struct of
+    /// type `within` (empty at a recorder's top level and in map or set
+    /// items).
+    fn of(property: &[u16], within: &[u16]) -> Self {
         let name = String::from_utf16_lossy(property);
+        if name == VARIABLE_NAME
+            && ACTOR_VARIABLE_RECORDS
+                .iter()
+                .any(|record| record.encode_utf16().eq(within.iter().copied()))
+        {
+            return Self::ClassVariable;
+        }
         if name.ends_with("ActorClassName") {
             Self::ActorClass
         } else if name == ACTOR_PATH {
@@ -361,7 +385,7 @@ pub fn plan_import(reader: impl Read, catalog: &ContentCatalog) -> Result<Import
         }
 
         let mut references = References::default();
-        references.tree(&typed.tree);
+        references.tree(&typed.tree, &[]);
         plan.content.name_references += references.names;
         plan.content.path_references += references.paths;
         for (role, reference) in references.values {
@@ -510,9 +534,10 @@ struct References {
 }
 
 impl References {
-    fn tree(&mut self, tree: &TypedTree) {
+    /// Walk `tree`, a tagged struct of type `within` (empty when unknown).
+    fn tree(&mut self, tree: &TypedTree, within: &[u16]) {
         for property in &tree.properties {
-            self.value(ContentRole::of(&property.name), &property.value);
+            self.value(ContentRole::of(&property.name, within), &property.value);
         }
     }
 
@@ -524,8 +549,12 @@ impl References {
                     items.iter().for_each(|item| self.scalar(role, item));
                 }
             }
-            Value::TaggedStruct { tree, .. } => self.tree(tree),
-            Value::StructArray { elements, .. } => elements.iter().for_each(|e| self.tree(e)),
+            Value::TaggedStruct { type_name, tree } => self.tree(tree, type_name),
+            Value::StructArray {
+                type_name,
+                elements,
+                ..
+            } => elements.iter().for_each(|e| self.tree(e, type_name)),
             Value::Map { removed, entries } => {
                 removed.iter().for_each(|item| self.item(role, item));
                 for (key, value) in entries {
@@ -549,7 +578,7 @@ impl References {
     fn item(&mut self, role: ContentRole, item: &Item) {
         match item {
             Item::Scalar(scalar) => self.scalar(role, scalar),
-            Item::Struct(tree) => self.tree(tree),
+            Item::Struct(tree) => self.tree(tree, &[]),
             Item::UnnamedStruct(_) => {}
         }
     }
