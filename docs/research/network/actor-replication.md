@@ -79,7 +79,8 @@ parameters it saturates its budget in 0.6 to 5.4 ms per frame for 1 to 8
 viewers (F-775). Export checksums are class network checksums computed natively
 (F-776), reproducing 77 of 79 captured values (F-777; U-067), and the
 original's first post-Join bunch opens the PlayerController channel (F-778),
-which the native composer reproduces bit for bit (F-779).
+which the native composer reproduces bit for bit (F-779) and `run` sends after
+Join (F-781).
 
 ## Open
 
