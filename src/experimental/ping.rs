@@ -5,11 +5,12 @@
 //! 13-bit sum of up to seven whole-millisecond samples and their 3-bit count.
 //! When a sample arrives a second or more after the current bucket opened,
 //! the average over all four buckets is recomputed first (sum over count),
-//! then the next bucket is reset to hold the new sample. The original also
-//! keeps each bucket's seven lowest samples for a second average that is not
-//! replicated; that is not modelled. The replicated ping byte is that average times 0.25,
-//! truncated and capped at 255. Arithmetic is `f32` and integer, in the
-//! original's order; the round-trip times measured here are this server's.
+//! then the next bucket is reset to hold the new sample. The replicated ping
+//! byte is the average times 0.25, truncated and capped at 255. The original
+//! also keeps each bucket's seven lowest samples for a second average that is
+//! not replicated; that is not modelled. Arithmetic is `f32` and integer, in
+//! the original's order; the round-trip times measured here are this
+//! server's.
 
 /// The longest round trip a sample keeps, in seconds.
 pub const MAX_RTT_SECONDS: f32 = 1.1;

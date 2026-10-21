@@ -24,8 +24,9 @@ fn a_bucket_keeps_seven_samples_and_four_buckets_roll() {
     }
     ping.update(0.200, 1.0);
     assert_eq!(ping.exact_ping_ms(), 40.0);
-    // Buckets for seconds 1..=4 hold 200 ms each; at second 5 the first
-    // bucket (40 ms) is overwritten, so only 200 ms samples remain.
+    // Seconds 1, 2, 3 and 4 fill buckets 1, 2, 3 and 0, so the 40 ms bucket
+    // is overwritten at second 4, after that second's recomputation; the one
+    // at second 5 is the first to see only 200 ms samples.
     for second in 2..=5 {
         ping.update(0.200, f64::from(second));
     }
