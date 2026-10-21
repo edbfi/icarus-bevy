@@ -106,6 +106,9 @@ pub mod handle {
     pub const ACTIVE_PROSPECT_FIRST: u32 = 51;
     /// `NetworkingStatus` (`FNetworkingStatus`, 12 commands), 68..=79.
     pub const NETWORKING_STATUS_FIRST: u32 = 68;
+    /// Every `NetworkingStatus` handle (its 12 commands).
+    pub const NETWORKING_STATUS: std::ops::Range<u32> =
+        NETWORKING_STATUS_FIRST..NETWORKING_STATUS_FIRST + 12;
     pub const TIME_BETWEEN_SAVES: u32 = 80;
     pub const METEOR_DIRECTION: u32 = 81;
     pub const SERVER_FPS: u32 = 82;
@@ -581,7 +584,7 @@ impl NetworkingStatus {
         ];
         Ok(fields
             .into_iter()
-            .zip(handle::NETWORKING_STATUS_FIRST..)
+            .zip(handle::NETWORKING_STATUS)
             .map(|(value, handle)| (handle, value))
             .collect())
     }

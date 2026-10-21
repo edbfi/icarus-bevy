@@ -1779,3 +1779,30 @@ fn a_hold_keeps_its_summary_when_the_server_goes_away() {
         "{summary:?}"
     );
 }
+
+/// Without a release profile the server opens no actors after Join: the
+/// hold reports no join, no updates and its whole length as the gap.
+#[test]
+fn a_hold_without_actor_opens_reports_no_join_and_the_whole_gap() {
+    use icarus_bevy::experimental::session_hold::{HoldConfig, run_hold};
+    let directory = tempfile::tempdir().unwrap();
+    let config = server_config(directory.path());
+    let state = directory.path().join("state");
+    let mut server = spawn_run(&config, &state);
+    let (address, _) = listening_address(&mut server);
+    let summary = run_hold(&HoldConfig {
+        server: address,
+        network_version: 0,
+        engine_net_version: ReleaseProfile::load(&release_toml())
+            .unwrap()
+            .engine_network_version,
+        duration: Duration::from_secs(2),
+        step_timeout: Duration::from_secs(3),
+    })
+    .unwrap();
+    sigterm(&server);
+    assert!(server.wait_exit().success());
+    assert!(!summary.joined && !summary.refused, "{summary:?}");
+    assert_eq!(summary.game_state_updates, 0);
+    assert!(summary.max_update_gap_ms >= 1_900, "{summary:?}");
+}

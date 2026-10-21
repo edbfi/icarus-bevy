@@ -655,7 +655,7 @@ fn update_handles() -> impl Iterator<Item = u32> {
         handle::SERVER_FPS,
     ]
     .into_iter()
-    .chain(handle::NETWORKING_STATUS_FIRST..handle::NETWORKING_STATUS_FIRST + 12)
+    .chain(handle::NETWORKING_STATUS)
 }
 
 /// What one connection last received of the GameState's changing values.
@@ -2486,25 +2486,44 @@ impl PeerLab {
             if !entry.peer.actor_channel_settled(channel) {
                 continue;
             }
-            let values = replica.due(world_seconds, &changing);
+            let mut values = replica.due(world_seconds, &changing);
             if values.is_empty() {
                 continue;
             }
             let packet_id = entry.peer.sequencer().out_packet_id();
-            let sent = compose_game_state_update(
-                layout,
-                engine,
-                &values,
-                entry.peer.connection_byte_order(),
-            )
-            .and_then(|payload| entry.peer.actor_update(channel, payload));
+            let order = entry.peer.connection_byte_order();
+            let mut sent = compose_game_state_update(layout, engine, &values, order)
+                .and_then(|payload| entry.peer.actor_update(channel, payload));
+            // A NetworkingStatus too large for one datagram (long player
+            // lists) must not hold back the clocks: count the failure and
+            // send the other values; the status stays due. Composition and
+            // framing failures change no state, so the retry is clean.
+            let status = handle::NETWORKING_STATUS;
+            let mut counted = false;
+            if sent.is_err()
+                && !entry.peer.is_failed()
+                && values.keys().any(|handle| status.contains(handle))
+            {
+                // One failed attempt counts once, whether or not the retry
+                // goes out.
+                bump(&mut self.stats.game_state_update_errors);
+                counted = true;
+                values.retain(|handle, _| !status.contains(handle));
+                if values.is_empty() {
+                    continue;
+                }
+                sent = compose_game_state_update(layout, engine, &values, order)
+                    .and_then(|payload| entry.peer.actor_update(channel, payload));
+            }
             match sent {
                 Ok(datagram) => {
                     entry.ack_pending = false;
                     outgoing.push((*address, datagram, packet_id, values));
                 }
                 Err(_) => {
-                    bump(&mut self.stats.game_state_update_errors);
+                    if !counted {
+                        bump(&mut self.stats.game_state_update_errors);
+                    }
                     if entry.peer.is_failed() {
                         failed.push(*address);
                     }
