@@ -91,15 +91,24 @@ pub enum ActorKey {
     Session(u64),
 }
 
+/// Which part of a keyed actor a dynamic GUID names.
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+enum KeyedPart {
+    Actor,
+    Component(String),
+    /// A runtime (class-referenced) subobject, by the caller's index.
+    Subobject(u32),
+}
+
 /// Driver-wide NetGUID assignment, shared by every connection.
 #[derive(Clone, Debug, Default)]
 pub struct NetGuidCache {
     static_index: u32,
     dynamic_index: u32,
     statics: BTreeMap<Vec<String>, u32>,
-    /// Dynamic GUIDs of keyed world objects: an actor `(key, None)` or one
-    /// of its components `(key, Some(name))`.
-    keyed: BTreeMap<(ActorKey, Option<String>), u32>,
+    /// Dynamic GUIDs of keyed world objects: an actor, one of its stably
+    /// named components, or one of its runtime subobjects.
+    keyed: BTreeMap<(ActorKey, KeyedPart), u32>,
 }
 
 /// One connection's `NetGUIDAckStatus` (F-796): a GUID's full path is sent
@@ -193,11 +202,18 @@ impl NetGuidCache {
     /// actor's properties (the GameState's references precede the opens of
     /// the actors they name, F-794).
     pub fn actor_guid(&mut self, key: ActorKey) -> u32 {
-        self.keyed_guid(key, None)
+        self.keyed_guid(key, KeyedPart::Actor)
     }
 
-    fn keyed_guid(&mut self, key: ActorKey, component: Option<&str>) -> u32 {
-        let entry = (key, component.map(str::to_owned));
+    /// The driver-wide dynamic GUID of runtime subobject `index` of the keyed
+    /// actor `key` (never exported: its block names its class), assigned on
+    /// first use.
+    pub fn subobject_guid(&mut self, key: ActorKey, index: u32) -> u32 {
+        self.keyed_guid(key, KeyedPart::Subobject(index))
+    }
+
+    fn keyed_guid(&mut self, key: ActorKey, part: KeyedPart) -> u32 {
+        let entry = (key, part);
         if let Some(guid) = self.keyed.get(&entry) {
             return *guid;
         }
@@ -217,7 +233,7 @@ impl NetGuidCache {
         actor: u32,
         component: &ComponentExport,
     ) -> Result<NetGuidRef> {
-        let guid = self.keyed_guid(key, Some(&component.name));
+        let guid = self.keyed_guid(key, KeyedPart::Component(component.name.clone()));
         if !exports.should_send_full_path(guid) {
             return Ok(NetGuidRef::plain(guid));
         }
