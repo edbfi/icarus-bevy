@@ -135,6 +135,9 @@ use bevy::{
 };
 use serde::Serialize;
 
+use super::actor_channel::{
+    ActorBunchBody, ActorChannelCodec, ActorChannelLimits, encode_actor_bunch_body,
+};
 use super::admission::{
     ActorChannelFailureAction, AdmissionPolicy, ClientLoginState, ConnectionLoginAdmission,
     DEFAULT_MAX_CLIENT_RATE, FIND_PLAYER_START_ERROR, JoinSpawnContext, Occupancy,
@@ -155,7 +158,7 @@ use super::release::ReleaseProfile;
 use super::session_open::{
     ActorOpenSpec, ConnectionExports, NetGuidCache, PlayerControllerOpenPlan, PlayerStateOpenPlan,
     PlayerStateOpenState, compose_actor_open, compose_player_controller_open,
-    compose_player_state_open, replicated_unique_net_id,
+    compose_player_state_open, movement_update_block, replicated_unique_net_id, resting_movement,
 };
 
 /// Lab text of the Failure reply to Login; not an original message.
@@ -457,6 +460,10 @@ pub struct PeerLabStats {
     pub actor_closes_sent: u64,
     /// Replicated actor channel closes that could not be framed.
     pub actor_close_errors: u64,
+    /// Movement updates sent through [`PeerLab::update_actor_movement`].
+    pub actor_updates_sent: u64,
+    /// Movement updates that could not be composed or framed.
+    pub actor_update_errors: u64,
     /// Failure notices sent by [`PeerLab::shutdown`] (F-782).
     pub shutdown_failures_sent: u64,
     /// Control-channel close bunches sent by [`PeerLab::shutdown`] (F-782).
@@ -591,6 +598,9 @@ struct PeerEntry {
     /// Closes that could not be framed yet (key -> reason), retried by
     /// [`PeerLab::retry_pending_closes`]; their actors stay open meanwhile.
     pending_closes: BTreeMap<u64, u32>,
+    /// The location each open actor was last sent at (its spawn, then
+    /// movement updates).
+    actor_locations: BTreeMap<u64, [f32; 3]>,
 }
 
 /// A player registered by `AGameSession::RegisterPlayer` (F-784): its
@@ -719,6 +729,79 @@ impl PeerLab {
         }
     }
 
+    /// Send the actor `key`'s resting `ReplicatedMovement` at `location` to the
+    /// joined connection `connection` as an unreliable property update, when
+    /// the location differs from the one last sent and the channel's open is
+    /// acked (UE drops unreliable bunches for a channel the client has not
+    /// opened yet). Returns whether an update was sent; failures count
+    /// `actor_update_errors` and change nothing. A lost update is not
+    /// repaired: unlike UE's changelist resend on a nak, the client keeps the
+    /// stale position until the actor moves again.
+    pub fn update_actor_movement(
+        &mut self,
+        connection: u32,
+        key: u64,
+        location: [f32; 3],
+        engine_net_version: u32,
+    ) -> bool {
+        let Some((address, entry)) = self
+            .peers
+            .iter_mut()
+            .find(|(_, entry)| entry.connection_id == Some(connection))
+        else {
+            return false;
+        };
+        let address = *address;
+        let Some(channel) = entry.opened_actors.get(&key).copied() else {
+            return false;
+        };
+        if entry.actor_locations.get(&key) == Some(&location)
+            || !entry.peer.actor_channel_settled(channel)
+        {
+            return false;
+        }
+        let codec = ActorChannelCodec {
+            engine_net_version,
+            exports_enabled: false,
+            has_level: true,
+            order: entry.peer.connection_byte_order(),
+            limits: ActorChannelLimits::default(),
+        };
+        let sent = resting_movement(location)
+            .and_then(|movement| movement_update_block(engine_net_version, movement))
+            .and_then(|block| {
+                encode_actor_bunch_body(
+                    &ActorBunchBody {
+                        spawn: None,
+                        blocks: vec![block],
+                    },
+                    &codec,
+                )
+            })
+            .and_then(|payload| entry.peer.actor_update(channel, payload));
+        let datagram = match sent {
+            Ok(datagram) => datagram,
+            Err(_) => {
+                bump(&mut self.stats.actor_update_errors);
+                if entry.peer.is_failed() {
+                    self.peers.remove(&address);
+                    bump(&mut self.stats.peers_failed);
+                }
+                return false;
+            }
+        };
+        entry.ack_pending = false;
+        if !self.send(&datagram, address) {
+            // Not recorded: the next selection builds the update again.
+            return false;
+        }
+        if let Some(entry) = self.peers.get_mut(&address) {
+            entry.actor_locations.insert(key, location);
+        }
+        bump(&mut self.stats.actor_updates_sent);
+        true
+    }
+
     /// Whether the actor `key` is open on the joined connection `connection`;
     /// a cheap check before building an [`ActorOpenSpec`].
     pub fn is_actor_open(&self, connection: u32, key: u64) -> bool {
@@ -764,6 +847,7 @@ impl PeerLab {
         };
         entry.pending_closes.remove(&key);
         entry.opened_actors.remove(&key);
+        entry.actor_locations.remove(&key);
         entry.ack_pending = false;
         if self.send(&datagram, address) {
             bump(&mut self.stats.actor_closes_sent);
@@ -835,6 +919,9 @@ impl PeerLab {
         entry.exports = exports;
         entry.ack_pending = false;
         entry.opened_actors.insert(key, channel);
+        if let Some(location) = open.location {
+            entry.actor_locations.insert(key, location);
+        }
         self.guid_cache = cache;
         self.actor_guids.insert(key, guid);
         if self.send(&datagram, address) {
@@ -1114,6 +1201,7 @@ impl PeerLab {
                         connection_id: None,
                         opened_actors: BTreeMap::new(),
                         pending_closes: BTreeMap::new(),
+                        actor_locations: BTreeMap::new(),
                     },
                 );
                 self.peak_peers = self.peak_peers.max(self.peers.len());

@@ -917,3 +917,55 @@ fn accept_header(client: &mut Client, datagram: &[u8]) {
     let received = client.sequencer.receive(&packet.header).unwrap().unwrap();
     client.sequencer.ack_seq(received.sequence, true).unwrap();
 }
+
+#[test]
+fn actor_updates_need_an_open_channel_and_settle_after_the_open_ack() {
+    let mut peer = peer();
+    let mut client = Client::new();
+    let (opening, _) = client.send(Vec::new());
+    peer.receive(&opening).unwrap();
+    let update = || {
+        let mut writer = BitWriter::new();
+        writer.write_bytes(&[0x42]);
+        Payload::from_writer(writer)
+    };
+    assert!(peer.actor_update(4, update()).is_err(), "not open");
+    assert!(!peer.actor_channel_settled(4));
+
+    let open = peer
+        .reliable_actor_open(&actor_open_bunch(4, &[1]), &[])
+        .unwrap();
+    assert!(!peer.actor_channel_settled(4), "open not acked yet");
+    let sent = peer.actor_update(4, update()).unwrap();
+    let packet = read_packet(&sent, &to_client()).unwrap();
+    let [bunch] = packet.bunches.as_slice() else {
+        panic!("one update bunch");
+    };
+    let header = &bunch.header;
+    assert!(!header.reliable && !header.open && !header.close && !header.control);
+    assert_eq!(
+        (header.channel_index, header.channel_name.clone()),
+        (4, None)
+    );
+    assert_eq!(bunch.payload, update());
+    assert_eq!(
+        peer.pending_actor_reliable(4),
+        Some(1),
+        "updates are not retained"
+    );
+
+    // Acknowledging the open settles the channel.
+    accept_header(&mut client, &open);
+    accept_header(&mut client, &sent);
+    let (ack, _) = client.send(Vec::new());
+    peer.receive(&ack).unwrap();
+    assert!(peer.actor_channel_settled(4));
+
+    // A closing channel takes no more updates and is no longer settled.
+    let close = peer.reliable_actor_close(4, 3).unwrap();
+    assert!(!peer.actor_channel_settled(4));
+    let before = format!("{peer:?}");
+    assert!(peer.actor_update(4, update()).is_err(), "closing");
+    assert_eq!(format!("{peer:?}"), before);
+    accept_header(&mut client, &close);
+}

@@ -434,3 +434,37 @@ fn byte_angles_round_half_up_and_wrap() {
     assert!(reader.at_end());
     assert!(!format!("{rotator:?}").contains("64"));
 }
+
+#[test]
+fn quantize_vector_matches_the_bit_exact_spawn_packing_and_bounds() {
+    use icarus_bevy::experimental::actor_channel::SpawnVector;
+    use icarus_bevy::experimental::rep_layout::quantize_vector;
+    use icarus_bevy::experimental::session_open::quantize_spawn_vector;
+    // `<10, 24>` is the spawn packing reproduced bit for bit (F-779).
+    for value in [
+        [248.0, 3.0, 103_485.2],
+        [0.0, 0.0, 0.0],
+        [-1.25, 7.5, -99_999.9],
+    ] {
+        let SpawnVector::Quantized { bits, components } = quantize_spawn_vector(value).unwrap()
+        else {
+            panic!("quantized");
+        };
+        let quantized = quantize_vector(value, VectorPacking::NetQuantize10).unwrap();
+        assert_eq!((quantized.bits, quantized.components), (bits, components));
+    }
+    // Whole-number movement: unscaled, round half up, biased.
+    let whole = quantize_vector([500.4, -2.5, 0.0], VectorPacking::MovementWhole).unwrap();
+    assert_eq!(whole.unbiased(), [500, -2, 0]);
+    assert_eq!(whole.bits, 8, "CeilLogTwo(1 + 500) - 1");
+    let hundredths = quantize_vector([1.234, 0.0, 0.0], VectorPacking::MovementHundredths).unwrap();
+    assert_eq!(hundredths.unbiased(), [123, 0, 0]);
+    // The bit count must stay below the packing's maximum; no clamping.
+    // The rounding runs in f32, as UE's float `RoundToInt` does: 16,777,214
+    // stays below 2^24 (bit count field 23, below 24), but 16,777,215 + 0.5
+    // rounds to 2^24 in f32, which needs 25 bits.
+    let edge = quantize_vector([16_777_214.0, 0.0, 0.0], VectorPacking::MovementWhole).unwrap();
+    assert_eq!(edge.bits, 23);
+    assert!(quantize_vector([16_777_215.0, 0.0, 0.0], VectorPacking::MovementWhole).is_err());
+    assert!(quantize_vector([f32::NAN, 0.0, 0.0], VectorPacking::MovementWhole).is_err());
+}

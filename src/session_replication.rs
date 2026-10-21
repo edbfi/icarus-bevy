@@ -6,10 +6,13 @@
 //! that carries a [`NetArchetype`] is opened on that connection's lowest free
 //! actor channel through [`PeerLab::open_actor`], once per connection, with
 //! its position as the spawn location and one actor block carrying the roles
-//! the capture's world-actor opens carry (F-791); a channel the stage closes
+//! the capture's world-actor opens carry (F-791), plus its resting
+//! `ReplicatedMovement` when it replicates movement; such an actor, selected
+//! again after moving, gets an unreliable movement update once its open is
+//! acked ([`PeerLab::update_actor_movement`]); a channel the stage closes
 //! (no longer relevant `3`, torn off `4`; F-749) gets its close bunch first
 //! ([`PeerLab::close_actor`]). Actor GUIDs are driver-wide and stable per
-//! [`DomainId`]. Further property replication is not modelled. Archetypes are
+//! [`DomainId`]. Other properties are not replicated. Archetypes are
 //! caller data; nothing here reads original files or demonstrates ICARUS
 //! compatibility.
 use bevy::prelude::*;
@@ -18,7 +21,9 @@ use crate::{
     experimental::{
         actor_channel::ContentBlock,
         peer_lab::PeerLab,
-        session_open::{ActorOpenSpec, PathSegment, actor_role_block},
+        session_open::{
+            ActorOpenSpec, PathSegment, actor_role_block, resting_movement, world_actor_block,
+        },
     },
     replication::{NetActor, NetViewer, ReplicationFrame, ReplicationSet},
     simulation::{DomainId, Position},
@@ -29,6 +34,9 @@ use crate::{
 #[derive(Component, Clone, Debug, PartialEq, Eq)]
 pub struct NetArchetype {
     pub archetype: Vec<PathSegment>,
+    /// `bReplicateMovement`: the open carries the actor's resting
+    /// `ReplicatedMovement`, and a changed position is sent as an update.
+    pub replicate_movement: bool,
 }
 
 /// Session parameters the bridge opens actors with.
@@ -43,6 +51,11 @@ pub struct SessionReplication {
     pub viewer_location: [f32; 3],
     /// Every opened actor's initial block ([`actor_role_block`], F-791).
     actor_block: ContentBlock,
+    /// Open attempts skipped because a position could not be quantized for
+    /// `ReplicatedMovement` (outside the packed range). It counts attempts:
+    /// the actor stays unopened and is retried, and counted, each time it is
+    /// selected. Update failures count in the lab's `actor_update_errors`.
+    pub movement_errors: u64,
 }
 
 impl SessionReplication {
@@ -59,6 +72,7 @@ impl SessionReplication {
             first_channel,
             viewer_location,
             actor_block: actor_role_block(engine_net_version)?,
+            movement_errors: 0,
         })
     }
 }
@@ -116,7 +130,7 @@ fn sync_viewers(
 
 fn open_selected_actors(
     mut lab: ResMut<PeerLab>,
-    session: Res<SessionReplication>,
+    mut session: ResMut<SessionReplication>,
     frame: Res<ReplicationFrame>,
     actors: Query<(&NetActor, &Position, &NetArchetype)>,
 ) {
@@ -145,11 +159,33 @@ fn open_selected_actors(
         .collect();
     for connection in &frame.decisions.connections {
         for selected in &connection.selected {
-            if lab.is_actor_open(connection.connection, selected.id.0) {
-                continue;
-            }
             let Some((position, archetype)) = by_id.get(&selected.id) else {
                 continue;
+            };
+            if lab.is_actor_open(connection.connection, selected.id.0) {
+                // A selected open actor replicates its changed movement.
+                if archetype.replicate_movement {
+                    lab.update_actor_movement(
+                        connection.connection,
+                        selected.id.0,
+                        position.0,
+                        session.engine_net_version,
+                    );
+                }
+                continue;
+            }
+            let block = if archetype.replicate_movement {
+                match resting_movement(position.0).and_then(|movement| {
+                    world_actor_block(session.engine_net_version, Some(movement))
+                }) {
+                    Ok(block) => block,
+                    Err(_) => {
+                        session.movement_errors = session.movement_errors.saturating_add(1);
+                        continue;
+                    }
+                }
+            } else {
+                session.actor_block.clone()
             };
             let spec = ActorOpenSpec {
                 // Placeholder: `open_actor` assigns the driver-wide GUID.
@@ -157,7 +193,7 @@ fn open_selected_actors(
                 archetype: archetype.archetype.clone(),
                 level: session.level.clone(),
                 location: Some(position.0),
-                blocks: vec![session.actor_block.clone()],
+                blocks: vec![block],
             };
             lab.open_actor(
                 connection.connection,

@@ -292,6 +292,8 @@ pub struct PlayerControllerOpenState {
 /// Handles of the PlayerController layout this composer writes (F-778).
 const HANDLE_REMOTE_ROLE: u32 = 5;
 const HANDLE_ROLE: u32 = 14;
+/// `AActor::ReplicatedMovement` (F-703).
+const HANDLE_REPLICATED_MOVEMENT: u32 = 6;
 const HANDLE_PLAYER_STATE: u32 = 16;
 const HANDLE_SPAWN_LOCATION: u32 = 19;
 /// The first `COMPONENT_HANDLES` components (`BackendProxyComponent`,
@@ -759,14 +761,54 @@ const WORLD_ROLE: u8 = 3;
 /// Both values are single bytes, so the block is the same in either byte
 /// order and one encoding serves every connection.
 pub fn actor_role_block(engine_net_version: u32) -> Result<ContentBlock> {
+    world_actor_block(engine_net_version, None)
+}
+
+/// `AActor::ReplicatedMovement` (handle 6) of a resting actor at `location`:
+/// no flags, zero rotation (every byte-rotator axis absent) and zero linear
+/// velocity, quantized at the `AActor` defaults the opens are encoded with
+/// (whole-number location and velocity, byte rotation; F-588, F-589).
+pub fn resting_movement(location: [f32; 3]) -> Result<super::rep_layout::RepMovement> {
+    use super::rep_layout::{ByteRotator, MovementRotation, RepMovement, quantize_vector};
+    Ok(RepMovement {
+        flags: 0,
+        location: quantize_vector(location, super::rep_layout::MovementLevel::Whole.packing())?,
+        rotation: Some(MovementRotation::Bytes(ByteRotator {
+            pitch: None,
+            yaw: None,
+            roll: None,
+        })),
+        linear_velocity: quantize_vector(
+            [0.0; 3],
+            super::rep_layout::MovementLevel::Whole.packing(),
+        )?,
+        angular_velocity: None,
+    })
+}
+
+/// An actor block on the `AActor` handle prefix (F-703): the world-actor
+/// roles (F-791) when `roles`, and `ReplicatedMovement` (handle 6) when given.
+/// Every value is bit-serialized, so the encoding does not depend on the
+/// connection's byte order.
+fn actor_handles_block(
+    engine_net_version: u32,
+    roles: bool,
+    movement: Option<super::rep_layout::RepMovement>,
+) -> Result<ContentBlock> {
     use super::rep_layout::{MovementLevel, RepLayoutLimits, RotationLevel, actor_rep_layout};
-    let stream = PropertyStream {
-        entries: vec![
-            entry(HANDLE_REMOTE_ROLE, RepValue::Byte(WORLD_REMOTE_ROLE)),
-            entry(HANDLE_ROLE, RepValue::Byte(WORLD_ROLE)),
-        ],
-        terminator_checksum: None,
-    };
+    let mut entries = Vec::new();
+    if roles {
+        entries.push(entry(HANDLE_REMOTE_ROLE, RepValue::Byte(WORLD_REMOTE_ROLE)));
+    }
+    if let Some(movement) = movement {
+        entries.push(entry(
+            HANDLE_REPLICATED_MOVEMENT,
+            RepValue::Movement(movement),
+        ));
+    }
+    if roles {
+        entries.push(entry(HANDLE_ROLE, RepValue::Byte(WORLD_ROLE)));
+    }
     let codec = RepLayoutCodec {
         actor: actor_codec(engine_net_version, super::archive::ByteOrder::Little),
         checksums: false,
@@ -777,9 +819,31 @@ pub fn actor_role_block(engine_net_version: u32) -> Result<ContentBlock> {
         MovementLevel::Whole,
         RotationLevel::Bytes,
     );
+    let stream = PropertyStream {
+        entries,
+        terminator_checksum: None,
+    };
     Ok(ContentBlock {
         has_rep_layout: true,
         target: BlockTarget::Actor,
         payload: encode_rep_properties(&stream, &layout, &codec)?,
     })
+}
+
+/// A world actor's initial block: the roles (F-791), plus its resting
+/// `ReplicatedMovement` when `movement` is given (30 of the capture's 287
+/// opens carry handle 6).
+pub fn world_actor_block(
+    engine_net_version: u32,
+    movement: Option<super::rep_layout::RepMovement>,
+) -> Result<ContentBlock> {
+    actor_handles_block(engine_net_version, true, movement)
+}
+
+/// A property update carrying only `ReplicatedMovement` (handle 6).
+pub fn movement_update_block(
+    engine_net_version: u32,
+    movement: super::rep_layout::RepMovement,
+) -> Result<ContentBlock> {
+    actor_handles_block(engine_net_version, false, Some(movement))
 }

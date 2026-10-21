@@ -830,6 +830,55 @@ impl LabPeer {
         Ok(datagram)
     }
 
+    /// Whether actor channel `index` is open, not closing, and has every
+    /// reliable bunch acked (its open included).
+    pub fn actor_channel_settled(&self, index: u32) -> bool {
+        !self.closing_actors.contains(&index)
+            && self
+                .actors
+                .get(&index)
+                .is_some_and(|channel| channel.out_bunches().is_empty())
+    }
+
+    /// Send `payload` (an actor bunch body without spawn) as one unreliable
+    /// bunch on open actor channel `index`, in a datagram with the ack state
+    /// and resends; nothing is retained, as for UE property updates. Fails
+    /// without a state change when the channel is not open or is closing.
+    pub fn actor_update(&mut self, index: u32, payload: Payload) -> Result<Vec<u8>> {
+        self.ensure_usable()?;
+        ensure!(
+            self.actors.contains_key(&index) && !self.closing_actors.contains(&index),
+            "actor channel {index} is not open"
+        );
+        let update = Bunch {
+            header: BunchHeader {
+                control: false,
+                open: false,
+                close: false,
+                close_reason: None,
+                paused: false,
+                reliable: false,
+                channel_index: index,
+                has_package_map_exports: false,
+                has_must_be_mapped_guids: false,
+                partial: false,
+                reliable_sequence_raw: None,
+                partial_initial: false,
+                partial_final: false,
+                channel_name: None,
+            },
+            payload,
+        };
+        let (datagram, packet_id, resends) = self.assemble(std::slice::from_ref(&update))?;
+        let committed = self.sequencer.commit()?;
+        let recorded = (|| {
+            ensure!(committed == packet_id, "committed packet ID mismatch");
+            self.record_resends(packet_id, &resends)
+        })();
+        self.fail_on_error(recorded)?;
+        Ok(datagram)
+    }
+
     /// Whether actor channel `index` has sent its close and awaits its ack.
     pub fn actor_channel_closing(&self, index: u32) -> bool {
         self.closing_actors.contains(&index)
