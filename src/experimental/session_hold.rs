@@ -68,8 +68,12 @@ pub struct HoldSummary {
     pub game_state_updates: u64,
     /// GameState update blocks that did not decode with the layout.
     pub decode_errors: u64,
-    /// Longest wait between two GameState updates.
+    /// Longest wait between two GameState updates by datagram arrival,
+    /// including the wait from the last update to the end of the hold.
     pub max_update_gap_ms: u64,
+    /// The socket error that ended the hold early, if any (kind only); the
+    /// summary covers what arrived before it.
+    pub ended_by_error: Option<String>,
     pub world_time_updates: u64,
     /// World times that did not increase.
     pub world_time_regressions: u64,
@@ -152,7 +156,15 @@ pub fn run_hold(config: &HoldConfig) -> Result<HoldSummary> {
     let mut tracker = Tracker::new(config.engine_net_version);
     let started = Instant::now();
     while started.elapsed() < config.duration {
-        let collected = client.collect(WINDOW, 4_096)?;
+        // A socket error (the server gone, say) ends the hold but keeps
+        // what was gathered.
+        let collected = match client.collect(WINDOW, 4_096) {
+            Ok(collected) => collected,
+            Err(error) => {
+                summary.ended_by_error = Some(error_kind(&error));
+                break;
+            }
+        };
         for reply in &collected.replies {
             summary.datagrams += 1;
             // Undecodable datagrams are kept by the probe; skip them here.
@@ -164,16 +176,32 @@ pub fn run_hold(config: &HoldConfig) -> Result<HoldSummary> {
                     && !bunch.header.open
                     && !bunch.header.reliable
                 {
-                    tracker.update(&bunch.payload, &mut summary);
+                    tracker.update(&bunch.payload, reply.received_at, &mut summary);
                 }
             }
         }
-        client.keepalive()?;
+        if let Err(error) = client.keepalive() {
+            summary.ended_by_error = Some(error_kind(&error));
+            break;
+        }
         summary.keepalives += 1;
     }
-    summary.held_ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
-    client.close()?;
+    let ended = Instant::now();
+    tracker.gap_to(ended, &mut summary);
+    summary.held_ms = u64::try_from(ended.duration_since(started).as_millis()).unwrap_or(u64::MAX);
+    if summary.ended_by_error.is_none() {
+        client.close()?;
+    }
     Ok(summary)
+}
+
+/// The I/O error kind behind `error`, or a fixed label; never addresses or
+/// payload bytes.
+fn error_kind(error: &anyhow::Error) -> String {
+    error
+        .chain()
+        .find_map(|cause| cause.downcast_ref::<std::io::Error>())
+        .map_or_else(|| "probe error".to_owned(), |io| format!("{:?}", io.kind()))
 }
 
 /// Checks each GameState update against the previous values.
@@ -208,7 +236,21 @@ impl Tracker {
         }
     }
 
-    fn update(&mut self, payload: &super::packet::Payload, summary: &mut HoldSummary) {
+    /// Widen `max_update_gap_ms` with the wait from the last update to `at`.
+    fn gap_to(&mut self, at: Instant, summary: &mut HoldSummary) {
+        if let Some(last) = self.last_update {
+            let gap =
+                u64::try_from(at.saturating_duration_since(last).as_millis()).unwrap_or(u64::MAX);
+            summary.max_update_gap_ms = summary.max_update_gap_ms.max(gap);
+        }
+    }
+
+    fn update(
+        &mut self,
+        payload: &super::packet::Payload,
+        received_at: Instant,
+        summary: &mut HoldSummary,
+    ) {
         let rep = RepLayoutCodec {
             actor: self.actor,
             checksums: false,
@@ -228,12 +270,8 @@ impl Tracker {
             return;
         };
         summary.game_state_updates += 1;
-        let now = Instant::now();
-        if let Some(last) = self.last_update {
-            let gap = u64::try_from(now.duration_since(last).as_millis()).unwrap_or(u64::MAX);
-            summary.max_update_gap_ms = summary.max_update_gap_ms.max(gap);
-        }
-        self.last_update = Some(now);
+        self.gap_to(received_at, summary);
+        self.last_update = Some(received_at);
         for entry in stream.entries {
             match (entry.handle, entry.value) {
                 (handle::WORLD_TIME_SECONDS, RepValue::Float(bits)) => {

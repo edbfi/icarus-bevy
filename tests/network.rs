@@ -1720,6 +1720,45 @@ fn a_held_session_receives_steady_game_state_updates() {
     assert_eq!(summary.world_time_regressions, 0);
     assert_eq!(summary.level_time_regressions, 0);
     assert_eq!(summary.time_of_day_regressions, 0);
+    // Generous for loaded runners: the world time alone is due every 0.1 s.
     assert!(summary.max_update_gap_ms < 1_000, "{summary:?}");
-    assert!(summary.keepalives >= 10);
+    assert_eq!(summary.ended_by_error, None);
+}
+
+/// A server that disappears mid-hold ends the hold early with the socket
+/// error's kind, keeping what arrived before it.
+#[test]
+fn a_hold_keeps_its_summary_when_the_server_goes_away() {
+    use icarus_bevy::experimental::session_hold::{HoldConfig, run_hold};
+    let directory = tempfile::tempdir().unwrap();
+    let config = pinned_server_config(directory.path(), &release_toml());
+    let state = directory.path().join("state");
+    let mut server = spawn_run(&config, &state);
+    let (address, _) = listening_address(&mut server);
+    let profile = ReleaseProfile::load(&release_toml()).unwrap();
+    let pid = server.child.id().to_string();
+    let killer = thread::spawn(move || {
+        thread::sleep(Duration::from_millis(1_500));
+        Command::new("kill").args(["-KILL", &pid]).status().unwrap();
+    });
+    let started = Instant::now();
+    let summary = run_hold(&HoldConfig {
+        server: address,
+        network_version: profile.pin.network_checksum,
+        engine_net_version: profile.engine_network_version,
+        duration: Duration::from_secs(20),
+        step_timeout: Duration::from_secs(3),
+    })
+    .unwrap();
+    killer.join().unwrap();
+    assert!(started.elapsed() < Duration::from_secs(15), "{summary:?}");
+    assert!(
+        summary.joined && summary.game_state_updates > 0,
+        "{summary:?}"
+    );
+    assert_eq!(
+        summary.ended_by_error.as_deref(),
+        Some("ConnectionRefused"),
+        "{summary:?}"
+    );
 }

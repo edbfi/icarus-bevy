@@ -72,6 +72,8 @@ pub enum ReplyDecode {
 pub struct ReplyDatagram {
     pub bytes: Vec<u8>,
     pub decode: ReplyDecode,
+    /// When the probe received it (before decoding).
+    pub received_at: Instant,
 }
 
 /// The result of one Hello.
@@ -294,10 +296,15 @@ impl ProbeClient {
             let Some(size) = receive(&self.socket, &mut buffer)? else {
                 break;
             };
+            let received_at = Instant::now();
             let bytes = buffer[..size].to_vec();
             let (acked, decode) = self.decode_reply(&bytes);
             collected.acked.extend(acked);
-            collected.replies.push(ReplyDatagram { bytes, decode });
+            collected.replies.push(ReplyDatagram {
+                bytes,
+                decode,
+                received_at,
+            });
         }
         Ok(collected)
     }
