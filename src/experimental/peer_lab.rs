@@ -153,9 +153,9 @@ use super::packet::Payload;
 use super::packet_lab::{DeliveredSummary, LabPeer, PacketDisposition, PacketLabConfig};
 use super::release::ReleaseProfile;
 use super::session_open::{
-    ConnectionExports, NetGuidCache, PlayerControllerOpenPlan, PlayerStateOpenPlan,
-    PlayerStateOpenState, compose_player_controller_open, compose_player_state_open,
-    replicated_unique_net_id,
+    ActorOpenSpec, ConnectionExports, NetGuidCache, PlayerControllerOpenPlan, PlayerStateOpenPlan,
+    PlayerStateOpenState, compose_actor_open, compose_player_controller_open,
+    compose_player_state_open, replicated_unique_net_id,
 };
 
 /// Lab text of the Failure reply to Login; not an original message.
@@ -447,6 +447,10 @@ pub struct PeerLabStats {
     pub channel_failure_closes_sent: u64,
     /// Other fallback entries (no action in the lab).
     pub fallbacks_ignored: u64,
+    /// Replicated actor opens sent through [`PeerLab::open_actor`].
+    pub actor_opens_sent: u64,
+    /// Replicated actor opens that could not be composed or framed.
+    pub actor_open_errors: u64,
     /// Failure notices sent by [`PeerLab::shutdown`] (F-782).
     pub shutdown_failures_sent: u64,
     /// Control-channel close bunches sent by [`PeerLab::shutdown`] (F-782).
@@ -574,6 +578,10 @@ struct PeerEntry {
     login_unique_id: Option<UniqueNetId>,
     /// The primary player registered at Join (PlayerId and name).
     player: Option<RegisteredPlayer>,
+    /// Lab connection ID assigned at Join (replication viewers use it).
+    connection_id: Option<u32>,
+    /// Replicated actors this connection opened, by caller key.
+    opened_actors: BTreeMap<u64, u32>,
 }
 
 /// A player registered by `AGameSession::RegisterPlayer` (F-784): its
@@ -605,6 +613,10 @@ pub struct PeerLab {
     /// Lab choice (U-068): only the first PlayerState opened since bind
     /// replicates `bIsHost = true`.
     host_assigned: bool,
+    /// Next lab connection ID (from 1) for joined peers.
+    next_connection_id: u32,
+    /// Driver-wide dynamic GUIDs of replicated actors, by caller key.
+    actor_guids: BTreeMap<u64, u32>,
 }
 
 impl fmt::Debug for PeerLab {
@@ -667,7 +679,92 @@ impl PeerLab {
             guid_cache: NetGuidCache::new(),
             next_player_id: FIRST_PLAYER_ID,
             host_assigned: false,
+            next_connection_id: 1,
+            actor_guids: BTreeMap::new(),
         }
+    }
+
+    /// Joined peers with their lab connection IDs, in ID order: the
+    /// replication viewers a session bridge maintains.
+    pub fn joined_connections(&self) -> Vec<u32> {
+        let mut ids: Vec<u32> = self
+            .peers
+            .values()
+            .filter_map(|entry| entry.connection_id)
+            .collect();
+        ids.sort_unstable();
+        ids
+    }
+
+    /// Open the actor `key` on the joined connection `connection` with
+    /// `open` (a caller-built spec whose `actor` GUID is replaced by the
+    /// driver-wide GUID for `key`) on the lowest free channel from
+    /// `first_channel`. Returns the channel, or `None` when the actor is
+    /// already open there or the connection is unknown. Composition and
+    /// framing failures count `actor_open_errors` and change nothing.
+    pub fn open_actor(
+        &mut self,
+        connection: u32,
+        key: u64,
+        mut open: ActorOpenSpec,
+        first_channel: u32,
+        engine_net_version: u32,
+    ) -> Option<u32> {
+        let address = self
+            .peers
+            .iter()
+            .find(|(_, entry)| entry.connection_id == Some(connection))
+            .map(|(address, _)| *address)?;
+        let mut cache = self.guid_cache.clone();
+        let guid = match self.actor_guids.get(&key) {
+            Some(guid) => *guid,
+            None => cache.assign_dynamic(),
+        };
+        open.actor = guid;
+        let entry = self.peers.get_mut(&address)?;
+        if entry.opened_actors.contains_key(&key) {
+            return None;
+        }
+        let mut exports = entry.exports.clone();
+        let sent = entry
+            .peer
+            .free_actor_channel(first_channel)
+            .context("no free actor channel")
+            .and_then(|channel| {
+                let composed = compose_actor_open(
+                    &mut cache,
+                    &mut exports,
+                    &open,
+                    channel,
+                    engine_net_version,
+                    entry.peer.connection_byte_order(),
+                )?;
+                let export_payloads: Vec<Payload> = composed.exports.into_iter().collect();
+                let datagram = entry
+                    .peer
+                    .reliable_actor_open(&composed.bunch, &export_payloads)?;
+                Ok((channel, datagram))
+            });
+        let (channel, datagram) = match sent {
+            Ok(sent) => sent,
+            Err(_) => {
+                bump(&mut self.stats.actor_open_errors);
+                if entry.peer.is_failed() {
+                    self.peers.remove(&address);
+                    bump(&mut self.stats.peers_failed);
+                }
+                return None;
+            }
+        };
+        entry.exports = exports;
+        entry.ack_pending = false;
+        entry.opened_actors.insert(key, channel);
+        self.guid_cache = cache;
+        self.actor_guids.insert(key, guid);
+        if self.send(&datagram, address) {
+            bump(&mut self.stats.actor_opens_sent);
+        }
+        Some(channel)
     }
 
     /// After [`enable_player_controller_open`](Self::enable_player_controller_open),
@@ -938,6 +1035,8 @@ impl PeerLab {
                         exports: ConnectionExports::new(),
                         login_unique_id: None,
                         player: None,
+                        connection_id: None,
+                        opened_actors: BTreeMap::new(),
                     },
                 );
                 self.peak_peers = self.peak_peers.max(self.peers.len());
@@ -1169,11 +1268,14 @@ impl PeerLab {
                 self.consume_player_id(&result);
                 match result {
                     Ok(outcome) => {
+                        let connection_id = self.next_connection_id;
+                        self.next_connection_id = self.next_connection_id.wrapping_add(1).max(1);
                         if let Some(entry) = self.peers.get_mut(&address) {
                             entry.player = Some(RegisteredPlayer {
                                 player_id: ctx.player_id,
                                 name_units: outcome.player_name_units,
                             });
+                            entry.connection_id = Some(connection_id);
                         }
                         bump(&mut self.stats.joins_succeeded);
                         self.player_controller_open

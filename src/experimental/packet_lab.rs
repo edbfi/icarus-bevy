@@ -681,6 +681,15 @@ impl LabPeer {
         self.control.in_reliable() != self.sequencer.initial_reliable().0
     }
 
+    /// The lowest channel index at or above `first` that is neither the
+    /// control channel nor an actor channel this peer opened, below the
+    /// channel limit.
+    pub fn free_actor_channel(&self, first: u32) -> Option<u32> {
+        (first..self.config.packet.limits.max_channels).find(|index| {
+            *index != self.config.control_channel_index && !self.actors.contains_key(index)
+        })
+    }
+
     /// Whether this peer opened actor channel `index`.
     pub fn has_actor_channel(&self, index: u32) -> bool {
         self.actors.contains_key(&index)
