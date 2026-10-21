@@ -443,6 +443,8 @@ pub struct PeerLabStats {
     pub actor_channel_failures: u64,
     /// Peers closed because their PlayerController channel failed.
     pub peers_closed_by_channel_failure: u64,
+    /// Control close bunches sent to those peers.
+    pub channel_failure_closes_sent: u64,
     /// Other fallback entries (no action in the lab).
     pub fallbacks_ignored: u64,
     /// Failure notices sent by [`PeerLab::shutdown`] (F-782).
@@ -1059,10 +1061,15 @@ impl PeerLab {
         let Some(entry) = self.peers.get_mut(&address) else {
             return true;
         };
-        if entry.peer.has_received_client_packet()
-            && let Ok(datagram) = entry.peer.reliable_control_close(CLOSE_REASON_DESTROYED)
-        {
-            self.send(&datagram, address);
+        if entry.peer.has_received_client_packet() {
+            match entry.peer.reliable_control_close(CLOSE_REASON_DESTROYED) {
+                Ok(datagram) => {
+                    if self.send(&datagram, address) {
+                        bump(&mut self.stats.channel_failure_closes_sent);
+                    }
+                }
+                Err(_) => bump(&mut self.stats.reply_errors),
+            }
         }
         self.peers.remove(&address);
         bump(&mut self.stats.peers_closed_by_channel_failure);
