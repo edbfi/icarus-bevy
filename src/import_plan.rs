@@ -182,6 +182,12 @@ pub enum ContentRole {
 }
 
 impl ContentRole {
+    /// Whether references in this role are resolved against the catalog
+    /// (and so can block import); instance names are not.
+    fn resolves_against_catalog(self) -> bool {
+        self != Self::InstanceName
+    }
+
     fn of(property: &[u16]) -> Self {
         let name = String::from_utf16_lossy(property);
         if name.ends_with("ActorClassName") {
@@ -361,7 +367,7 @@ pub fn plan_import(reader: impl Read, catalog: &ContentCatalog) -> Result<Import
         for (role, reference) in references.values {
             plan.content.roles.entry(role).or_default().references += 1;
             role_distinct.insert((role, reference.clone()));
-            if role == ContentRole::InstanceName {
+            if !role.resolves_against_catalog() {
                 continue;
             }
             let mapped = *distinct
@@ -376,8 +382,7 @@ pub fn plan_import(reader: impl Read, catalog: &ContentCatalog) -> Result<Import
     for (role, reference) in &role_distinct {
         let count = plan.content.roles.entry(*role).or_default();
         count.distinct += 1;
-        if *role != ContentRole::InstanceName && !distinct.get(reference).copied().unwrap_or(false)
-        {
+        if role.resolves_against_catalog() && !distinct.get(reference).copied().unwrap_or(false) {
             count.unmapped_distinct += 1;
         }
     }
