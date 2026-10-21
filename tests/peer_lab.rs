@@ -1257,9 +1257,11 @@ fn player_controller_channel_failure_closes_the_connection() {
     assert_eq!(
         (
             counted.actor_channel_failures,
-            counted.peers_closed_by_channel_failure
+            counted.peers_closed_by_channel_failure,
+            counted.channel_failure_closes_sent,
+            counted.reply_errors
         ),
-        (2, 1)
+        (2, 1, 1, 0)
     );
     let closes: Vec<_> = drain(&client)
         .iter()
