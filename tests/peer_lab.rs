@@ -1935,10 +1935,14 @@ fn game_state_updates_advance_the_clocks_once_the_open_is_acked() {
 
     // Then each pass sends what changed: the time of day every time (one
     // game minute per world second here), the world time and the level clock
-    // when due.
+    // when due. Passes run until eight updates span 1.1 s (the level clock's
+    // whole second), bounded for slow runners; the 0.1 s world-time rule
+    // itself is pinned by the replica unit test.
     let mut updates = Vec::new();
     let started = std::time::Instant::now();
-    while started.elapsed() < Duration::from_millis(1_300) {
+    while (updates.len() < 8 || started.elapsed() < Duration::from_millis(1_100))
+        && started.elapsed() < Duration::from_secs(20)
+    {
         pause();
         app.update();
         let datagrams = drain(&client);
@@ -1955,7 +1959,7 @@ fn game_state_updates_advance_the_clocks_once_the_open_is_acked() {
     let counted = stats(&app);
     assert_eq!(counted.game_state_update_errors, 0);
     assert_eq!(counted.game_state_updates_sent, updates.len() as u64);
-    assert!(updates.len() >= 5, "{} updates", updates.len());
+    assert!(updates.len() >= 8, "{} updates", updates.len());
     let float = |value: &RepValue| match value {
         RepValue::Float(bits) => f32::from_bits(*bits),
         other => panic!("{other:?}"),
@@ -1970,9 +1974,9 @@ fn game_state_updates_advance_the_clocks_once_the_open_is_acked() {
         .iter()
         .filter_map(|update| update.get(&handle::WORLD_TIME_SECONDS).map(float))
         .collect();
-    assert!(worlds.len() >= 2 && worlds.len() < updates.len());
+    assert!(worlds.len() >= 2);
     assert!(worlds.windows(2).all(|pair| pair[1] - pair[0] >= 0.1));
-    // The level clock moved past its restored value within 1.3 s.
+    // The level clock moved past its restored value after 1.1 s.
     let levels: Vec<&RepValue> = updates
         .iter()
         .filter_map(|update| update.get(&handle::LEVEL_TIME_ELAPSED_SEC))
