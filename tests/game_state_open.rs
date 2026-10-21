@@ -377,31 +377,19 @@ fn updates_carry_one_actor_block_in_handle_order() {
     assert!(block.has_rep_layout && matches!(block.target, BlockTarget::Actor));
     let stream =
         read_rep_properties(&mut block.payload.reader(), &plan.layout, &rep_codec()).unwrap();
+    assert!(
+        stream
+            .entries
+            .windows(2)
+            .all(|pair| pair[0].handle < pair[1].handle),
+        "entries are written in handle order"
+    );
     let decoded: BTreeMap<u32, RepValue> = stream
         .entries
         .into_iter()
         .map(|entry| (entry.handle, entry.value))
         .collect();
     assert_eq!(decoded, values);
-    assert!(
-        stream_handles_ascend(&plan, &values),
-        "entries are written in handle order"
-    );
-}
-
-fn stream_handles_ascend(plan: &GameStateOpenPlan, values: &BTreeMap<u32, RepValue>) -> bool {
-    let payload = compose_game_state_update(&plan.layout, 17, values, ByteOrder::Little).unwrap();
-    let body = read_actor_bunch_body(&mut payload.reader(), false, &codec()).unwrap();
-    let stream = read_rep_properties(
-        &mut body.blocks[0].payload.reader(),
-        &plan.layout,
-        &rep_codec(),
-    )
-    .unwrap();
-    stream
-        .entries
-        .windows(2)
-        .all(|pair| pair[0].handle < pair[1].handle)
 }
 
 #[test]
