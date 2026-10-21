@@ -117,8 +117,8 @@ pub struct ComponentActorGuids {
 }
 
 /// Compose `open` for one connection on `channel_index` in the connection's
-/// byte `order`. Fails before any assignment on an invalid reference or a
-/// handle given both a reference and a value.
+/// byte `order`. Fails before any assignment on a duplicate component name,
+/// an invalid reference or a handle given both a reference and a value.
 pub fn compose_component_actor_open(
     cache: &mut NetGuidCache,
     exports: &mut ConnectionExports,
@@ -126,6 +126,16 @@ pub fn compose_component_actor_open(
     channel_index: u32,
     order: super::archive::ByteOrder,
 ) -> Result<(ComposedActorOpen, ComponentActorGuids)> {
+    // A name keys one component GUID: two components with one name would
+    // be one object with two blocks.
+    let mut names = std::collections::BTreeSet::new();
+    for component in &open.components {
+        ensure!(
+            names.insert(component.name.as_str()),
+            "duplicate component {}",
+            component.name
+        );
+    }
     for (handle, reference) in &open.references {
         ensure!(
             !open.values.contains_key(handle),

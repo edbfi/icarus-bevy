@@ -202,7 +202,7 @@ fn a_second_connection_gets_the_same_objects_and_its_own_exports() {
 }
 
 #[test]
-fn invalid_references_fail_before_any_assignment() {
+fn invalid_references_and_duplicate_components_fail_before_any_assignment() {
     for broken in [
         {
             let mut open = open();
@@ -212,6 +212,11 @@ fn invalid_references_fail_before_any_assignment() {
         {
             let mut open = open();
             open.references.insert(16, Reference::Component(3));
+            open
+        },
+        {
+            let mut open = open();
+            open.components[1].name = "Stats".to_owned();
             open
         },
     ] {
