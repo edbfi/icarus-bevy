@@ -72,8 +72,9 @@ pub struct HoldSummary {
     pub game_state_updates: u64,
     /// GameState update blocks that did not decode with the layout.
     pub decode_errors: u64,
-    /// Longest wait between two GameState updates by datagram arrival,
-    /// including the wait from the last update to the end of the hold.
+    /// Longest wait between GameState updates by datagram arrival,
+    /// including the waits from the hold's start to the first update and
+    /// from the last update to its end (the whole hold when none arrive).
     pub max_update_gap_ms: u64,
     /// The socket error that ended the hold early, if any (kind only); the
     /// summary covers what arrived before it.
