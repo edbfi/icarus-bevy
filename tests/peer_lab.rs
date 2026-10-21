@@ -1276,3 +1276,87 @@ fn player_controller_channel_failure_closes_the_connection() {
         (0, Some(0))
     );
 }
+
+/// Accept every queued lab datagram's header as the client (acks only).
+fn accept_all_headers(client: &mut Client) -> usize {
+    let datagrams = drain(client);
+    for datagram in &datagrams {
+        let packet = read_packet(datagram, &to_client()).unwrap();
+        if let Some(received) = client.sequencer.receive(&packet.header).unwrap() {
+            client.sequencer.ack_seq(received.sequence, true).unwrap();
+        }
+    }
+    datagrams.len()
+}
+
+#[test]
+fn a_close_that_cannot_be_framed_stays_pending_until_retried() {
+    use icarus_bevy::experimental::session_open::{ActorOpenSpec, PathSegment, map_level_chain};
+    let mut config = PeerLabConfig {
+        admission: Some(PeerLabAdmission::default()),
+        ..PeerLabConfig::default()
+    };
+    // A small sent-record ring: unacknowledged lab packets fill it quickly,
+    // and a full ring makes framing fail without failing the peer.
+    config.packet.sent_capacity = 12;
+    let (mut app, address) = lab_app(config);
+    let mut client = Client::connect(&mut app, address);
+    client.exchange(&mut app, short_hello("", 0), false);
+    let login = ControlMessage::Login {
+        response: ArchiveText::text("0").unwrap(),
+        url: ArchiveText::text("?Name=Tester").unwrap(),
+        unique_net_id: UniqueNetId {
+            kind: NetIdType::Named(ArchiveText::text("STEAM").unwrap()),
+            value: NetIdValue::from_hex(NET_ID_HEX).unwrap(),
+        },
+        platform: ArchiveText::text(PLATFORM_SENTINEL).unwrap(),
+    };
+    client.exchange(&mut app, login, false);
+    client.exchange(&mut app, ControlMessage::Join, false);
+    accept_all_headers(&mut client);
+    let (ack, _) = client.packet(Vec::new());
+    client.send(&ack);
+    app.update();
+    accept_all_headers(&mut client);
+    let connection = lab(&app).joined_connections()[0];
+    let spec = ActorOpenSpec {
+        actor: 0,
+        archetype: vec![
+            PathSegment::new("Default__LabCrate_C", 0x1234_5678, false),
+            PathSegment::new("/Game/Lab/LabCrate", 0, false),
+        ],
+        level: map_level_chain(PeerLabAdmission::default().map_url).unwrap(),
+        location: Some([0.0; 3]),
+        blocks: Vec::new(),
+    };
+
+    // Open actors without the client acknowledging until framing fails.
+    let mut lab_mut = app.world_mut().resource_mut::<PeerLab>();
+    let mut opened = 0;
+    while lab_mut
+        .open_actor(connection, 100 + opened, spec.clone(), 2, 17)
+        .is_some()
+    {
+        opened += 1;
+        assert!(opened < 64, "the ring should fill");
+    }
+    assert!(opened >= 1);
+    assert!(!lab_mut.close_actor(connection, 100, 3));
+    assert!(lab_mut.is_actor_open(connection, 100), "kept open, pending");
+    assert_eq!(lab_mut.stats().actor_close_errors, 1);
+    // Still full: a retry fails again and keeps the close pending.
+    lab_mut.retry_pending_closes();
+    assert_eq!(lab_mut.stats().actor_closes_sent, 0);
+
+    // Once the client acknowledges, the retry frames and sends the close.
+    accept_all_headers(&mut client);
+    let (ack, _) = client.packet(Vec::new());
+    client.send(&ack);
+    app.update();
+    let mut lab_mut = app.world_mut().resource_mut::<PeerLab>();
+    lab_mut.retry_pending_closes();
+    assert_eq!(lab_mut.stats().actor_closes_sent, 1);
+    assert!(!lab_mut.is_actor_open(connection, 100));
+    lab_mut.retry_pending_closes();
+    assert_eq!(lab_mut.stats().actor_closes_sent, 1, "sent once");
+}
