@@ -1180,6 +1180,7 @@ fn replication_selections_open_archetyped_actors_on_free_channels() {
         if archetyped {
             entity.insert(NetArchetype {
                 archetype: archetype.clone(),
+                replicate_movement: false,
             });
         }
     }
@@ -1329,6 +1330,7 @@ fn replication_closes_actors_that_stop_being_relevant() {
             Position(location),
             NetArchetype {
                 archetype: archetype.clone(),
+                replicate_movement: false,
             },
         ));
     }
@@ -1368,4 +1370,144 @@ fn replication_closes_actors_that_stop_being_relevant() {
     };
     assert!(close.header.reliable && close.header.channel_index >= 4);
     assert_eq!(close.header.close_reason, Some(3), "no longer relevant");
+}
+
+#[test]
+fn replicated_movement_opens_at_rest_and_updates_after_a_move() {
+    use bevy::prelude::{FixedUpdate, Query, Res};
+    use icarus_bevy::{
+        experimental::{
+            actor_channel::{ActorChannelCodec, ActorChannelLimits, read_actor_bunch_body},
+            archive::ByteOrder,
+            packet::read_packet,
+            peer_lab::PeerLabAdmission,
+            rep_layout::{
+                MovementLevel, RepLayoutCodec, RepLayoutLimits, RepValue, RotationLevel,
+                actor_rep_layout, read_rep_properties,
+            },
+            session_open::{PathSegment, map_level_chain},
+        },
+        replication::{NetActor, NetParameters, ReplicationPlugin},
+        session_replication::{NetArchetype, SessionReplication, SessionReplicationPlugin},
+        simulation::{DomainId, Position},
+    };
+    /// Authored motion: the actor moves once, a second after start.
+    fn mover(time: Res<bevy::time::Time>, mut actors: Query<&mut Position>) {
+        if time.elapsed_secs() > 1.0 {
+            for mut position in &mut actors {
+                position.0 = [500.0, -20.0, 30.0];
+            }
+        }
+    }
+    let profile = ReleaseProfile::load(&release_toml()).unwrap();
+    let pinned = profile.pin.network_checksum;
+    let (mut app, address) = server_app(&NetworkConfig {
+        release_profile: Some(release_toml()),
+        ..enabled(0)
+    });
+    app.add_plugins((ReplicationPlugin::default(), SessionReplicationPlugin))
+        .add_systems(FixedUpdate, mover)
+        .insert_resource(
+            SessionReplication::new(
+                map_level_chain(PeerLabAdmission::default().map_url).unwrap(),
+                profile.engine_network_version,
+                2,
+                network::SPAWN_LOCATION,
+            )
+            .unwrap(),
+        );
+    app.world_mut().spawn((
+        NetActor {
+            id: DomainId(42),
+            params: NetParameters::default(),
+        },
+        Position([100.0, 0.0, 0.0]),
+        NetArchetype {
+            archetype: vec![
+                PathSegment::new("Default__LabCart_C", 0x0cab_0cab, false),
+                PathSegment::new("/Game/Lab/LabCart", 0, false),
+            ],
+            replicate_movement: true,
+        },
+    ));
+    let (replies, _) = with_server(&mut app, move || {
+        let mut client = connect(address);
+        assert!(client.hello(pinned, "").unwrap().hello_acked);
+        client.send_control(&[login()], false).unwrap();
+        client.collect(Duration::from_secs(3), 1).unwrap();
+        client.send_control(&[ControlMessage::Join], false).unwrap();
+        // Keep the session acknowledged for 2.5 s, past the move.
+        let mut replies = Vec::new();
+        let deadline = Instant::now() + Duration::from_millis(2_500);
+        while Instant::now() < deadline {
+            let collected = client.collect(Duration::from_millis(200), 64).unwrap();
+            replies.extend(collected.replies.into_iter().map(|reply| reply.bytes));
+            client.keepalive().unwrap();
+        }
+        client.close().unwrap();
+        replies
+    });
+    let stats = app.world().resource::<PeerLab>().stats().clone();
+    assert_eq!((stats.actor_opens_sent, stats.actor_updates_sent), (1, 1));
+    assert_eq!(stats.actor_update_errors, 0);
+    assert_eq!(
+        app.world().resource::<SessionReplication>().movement_errors,
+        0
+    );
+
+    let to_client = PacketConfig {
+        receiver: PacketReceiver::Client,
+        ..probe_config().packet
+    };
+    let codec = ActorChannelCodec {
+        engine_net_version: profile.engine_network_version,
+        exports_enabled: false,
+        has_level: true,
+        order: ByteOrder::Little,
+        limits: ActorChannelLimits::default(),
+    };
+    let rep_codec = RepLayoutCodec {
+        actor: codec,
+        checksums: false,
+        limits: RepLayoutLimits::default(),
+    };
+    let layout = actor_rep_layout(
+        MovementLevel::Whole,
+        MovementLevel::Whole,
+        RotationLevel::Bytes,
+    );
+    let bunches: Vec<_> = replies
+        .iter()
+        .flat_map(|datagram| read_packet(datagram, &to_client).unwrap().bunches)
+        .filter(|bunch| bunch.header.channel_index == 4)
+        .collect();
+    let location_of = |payload: &icarus_bevy::experimental::packet::Payload, open: bool| {
+        let body = read_actor_bunch_body(&mut payload.reader(), open, &codec).unwrap();
+        let stream =
+            read_rep_properties(&mut body.blocks[0].payload.reader(), &layout, &rep_codec).unwrap();
+        stream
+            .entries
+            .iter()
+            .find_map(|entry| match &entry.value {
+                RepValue::Movement(movement) => Some((entry.handle, movement.location.unbiased())),
+                _ => None,
+            })
+            .unwrap()
+    };
+    // The open (its body part) carries the resting movement at the start.
+    let open = bunches
+        .iter()
+        .find(|bunch| bunch.header.partial_final)
+        .unwrap();
+    assert_eq!(location_of(&open.payload, true), (6, [100, 0, 0]));
+    // Then one unreliable update with the new location.
+    let updates: Vec<_> = bunches
+        .iter()
+        .filter(|bunch| !bunch.header.reliable)
+        .collect();
+    let [update] = updates.as_slice() else {
+        panic!("one movement update, got {}", updates.len());
+    };
+    assert!(!update.header.open && update.header.channel_name.is_none());
+    assert_eq!(location_of(&update.payload, false), (6, [500, -20, 30]));
 }

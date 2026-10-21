@@ -458,6 +458,30 @@ impl VectorPacking {
     }
 }
 
+/// Quantize `value` as `WritePackedVector<divisor, bits_max>` writes it
+/// (F-589, F-593; the spawn's `<10, 24>` instance is bit-exact, F-779): each
+/// component `floor(v * divisor + 0.5)`, the bit count `CeilLogTwo(1 + max
+/// |c|)` (at least 1) minus 1, components biased by `1 << (bits + 1)`. A value
+/// whose bit count would reach `bits_max` fails instead of being clamped.
+pub fn quantize_vector(value: [f32; 3], packing: VectorPacking) -> Result<QuantizedVector> {
+    ensure!(value.iter().all(|v| v.is_finite()), "vector must be finite");
+    let divisor = packing.divisor() as f32;
+    let scaled = value.map(|v| (v * divisor + 0.5).floor() as i64);
+    let max = scaled.iter().map(|v| v.unsigned_abs()).max().unwrap_or(0);
+    let ceil_log2 = 64 - max.leading_zeros();
+    ensure!(
+        ceil_log2 <= packing.bits_max(),
+        "vector exceeds the {}-bit packed range",
+        packing.bits_max()
+    );
+    let bits = ceil_log2.max(1) - 1;
+    let bias = 1i64 << (bits + 1);
+    Ok(QuantizedVector {
+        bits,
+        components: scaled.map(|v| (v + bias) as u32),
+    })
+}
+
 /// How a gameplay tag crosses the wire (F-591, F-592); both depend on tag
 /// configuration the caller supplies.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
