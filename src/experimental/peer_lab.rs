@@ -67,6 +67,12 @@
 //!   [`evaluate_pc_swap_target`] against the peer's splitscreen child count
 //!   (`swaps_received` vs `invalid_swaps_ignored`), and `Debug` counts
 //!   [`PeerLabStats::debug_texts_received`] without retaining text (`F-713`, `F-740`).
+//! - `NMT_ActorChannelFailure` (ID 16, a fallback entry), gated like other
+//!   messages: on the PlayerController's channel the peer gets the control
+//!   close (reason 0) and is removed (`peers_closed_by_channel_failure`);
+//!   other channels only count (`actor_channel_failures`), as the base
+//!   `NotifyActorChannelFailure` is a no-op (F-740). Other fallback entries
+//!   count in `fallbacks_ignored`.
 //! - Messages after a closing reply in the same delivery are not processed.
 //!
 //! - Login, Join and SplitJoin after [`PeerLab::stop_admission`]: Failure
@@ -130,11 +136,13 @@ use bevy::{
 use serde::Serialize;
 
 use super::admission::{
-    AdmissionPolicy, ClientLoginState, ConnectionLoginAdmission, DEFAULT_MAX_CLIENT_RATE,
-    FIND_PLAYER_START_ERROR, JoinSpawnContext, Occupancy, clamp_client_netspeed,
-    evaluate_pc_swap_target, int_option,
+    ActorChannelFailureAction, AdmissionPolicy, ClientLoginState, ConnectionLoginAdmission,
+    DEFAULT_MAX_CLIENT_RATE, FIND_PLAYER_START_ERROR, JoinSpawnContext, Occupancy,
+    clamp_client_netspeed, evaluate_actor_channel_failure, evaluate_pc_swap_target, int_option,
 };
-use super::control_messages::{ArchiveText, ControlMessage, Decoded, NetIdValue, UniqueNetId};
+use super::control_messages::{
+    ArchiveText, ControlFallback, ControlMessage, Decoded, NetIdValue, UniqueNetId,
+};
 use super::handshake::decode;
 use super::handshake_lab::{
     CookieAuthority, HANDSHAKE_BYTES, HandshakeReply, PACKETS_PER_UPDATE, bind_loopback,
@@ -431,6 +439,14 @@ pub struct PeerLabStats {
     pub player_state_opens_sent: u64,
     /// PlayerState opens that could not be composed or framed.
     pub player_state_open_errors: u64,
+    /// `NMT_ActorChannelFailure` entries delivered in a valid login state.
+    pub actor_channel_failures: u64,
+    /// Peers closed because their PlayerController channel failed.
+    pub peers_closed_by_channel_failure: u64,
+    /// Control close bunches sent to those peers.
+    pub channel_failure_closes_sent: u64,
+    /// Other fallback entries (no action in the lab).
+    pub fallbacks_ignored: u64,
     /// Failure notices sent by [`PeerLab::shutdown`] (F-782).
     pub shutdown_failures_sent: u64,
     /// Control-channel close bunches sent by [`PeerLab::shutdown`] (F-782).
@@ -974,8 +990,15 @@ impl PeerLab {
     /// stopping after a reply that closes the peer.
     fn answer(&mut self, address: SocketAddrV4, messages: &[Decoded]) {
         for decoded in messages {
-            let Decoded::Message(message) = decoded else {
-                continue;
+            let message = match decoded {
+                Decoded::Message(message) => message,
+                Decoded::Fallback(fallback) => {
+                    if self.fallback(address, fallback) {
+                        return;
+                    }
+                    continue;
+                }
+                Decoded::Unknown { .. } => continue,
             };
             if self.config.admission.is_some() {
                 let Some(entry) = self.peers.get(&address) else {
@@ -993,6 +1016,64 @@ impl PeerLab {
                 return;
             }
         }
+    }
+
+    /// A fallback entry from `UControlChannel::ReceivedBunch` (F-740, F-757),
+    /// gated like other messages. Only `NMT_ActorChannelFailure` acts: on the
+    /// PlayerController's channel the server closes the connection
+    /// (`UNetConnection::Close`: the control close, reason 0; F-782), and the
+    /// peer is removed. Returns whether the peer is gone.
+    fn fallback(&mut self, address: SocketAddrV4, fallback: &ControlFallback) -> bool {
+        let Some(entry) = self.peers.get(&address) else {
+            return true;
+        };
+        if self.config.admission.is_some()
+            && !entry.admission.is_client_msg_type_valid(fallback.id())
+        {
+            bump(&mut self.stats.invalid_state_messages);
+            return false;
+        }
+        let ControlFallback::ActorChannelFailure { channel_index } = fallback else {
+            bump(&mut self.stats.fallbacks_ignored);
+            return false;
+        };
+        bump(&mut self.stats.actor_channel_failures);
+        let controller_channel = self
+            .player_controller_open
+            .as_ref()
+            .map(|plan| plan.channel_index);
+        let has_controller =
+            controller_channel.is_some_and(|channel| entry.peer.has_actor_channel(channel));
+        let index = u32::try_from(*channel_index).ok();
+        let is_actor_channel = index.is_some_and(|index| entry.peer.has_actor_channel(index));
+        let action = evaluate_actor_channel_failure(
+            true,
+            *channel_index,
+            self.config.packet.packet.limits.max_channels as usize,
+            is_actor_channel,
+            is_actor_channel,
+            is_actor_channel && index == controller_channel,
+            has_controller,
+        );
+        if action != ActorChannelFailureAction::CloseConnection {
+            return false;
+        }
+        let Some(entry) = self.peers.get_mut(&address) else {
+            return true;
+        };
+        if entry.peer.has_received_client_packet() {
+            match entry.peer.reliable_control_close(CLOSE_REASON_DESTROYED) {
+                Ok(datagram) => {
+                    if self.send(&datagram, address) {
+                        bump(&mut self.stats.channel_failure_closes_sent);
+                    }
+                }
+                Err(_) => bump(&mut self.stats.reply_errors),
+            }
+        }
+        self.peers.remove(&address);
+        bump(&mut self.stats.peers_closed_by_channel_failure);
+        true
     }
 
     fn reply_for(&mut self, address: SocketAddrV4, message: &ControlMessage) -> Option<Reply> {

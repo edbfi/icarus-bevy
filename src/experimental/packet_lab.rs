@@ -49,7 +49,7 @@ use serde::Serialize;
 use super::archive::ByteOrder;
 use super::control::sender_byte_order;
 use super::control_messages::{
-    ControlCodec, ControlMessage, Decoded, MessageSummary, read_control_message,
+    ControlCodec, ControlMessage, Decoded, MessageSummary, read_control_entry,
     write_control_message,
 };
 use super::control_receive::{INFERRED_CONTROL_CHANNEL_INDEX, INFERRED_CONTROL_NAME_INDEX};
@@ -209,6 +209,10 @@ pub enum PacketDisposition {
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum DeliveredSummary {
     Message(MessageSummary),
+    /// A fallback or direct-dispatch entry (ID only; fields are not reported).
+    Fallback {
+        id: u8,
+    },
     /// First ID without a known layout; the rest of its bunch was not read.
     Unknown {
         id: u8,
@@ -219,6 +223,7 @@ impl DeliveredSummary {
     fn of(decoded: &Decoded) -> Self {
         match decoded {
             Decoded::Message(message) => Self::Message(message.summary()),
+            Decoded::Fallback(fallback) => Self::Fallback { id: fallback.id() },
             Decoded::Unknown { id } => Self::Unknown { id: *id },
         }
     }
@@ -227,7 +232,7 @@ impl DeliveredSummary {
     pub fn id(&self) -> u8 {
         match self {
             Self::Message(summary) => summary.id,
-            Self::Unknown { id } => *id,
+            Self::Fallback { id } | Self::Unknown { id } => *id,
         }
     }
 }
@@ -497,7 +502,7 @@ impl LabPeer {
             let mut messages = Vec::new();
             while !reader.at_end() {
                 let msg_index = messages.len();
-                let next = read_control_message(&mut reader, &codec).with_context(|| {
+                let next = read_control_entry(&mut reader, &codec).with_context(|| {
                     format!("control bunch {index}: control message {msg_index}")
                 })?;
                 if inspect_pending
@@ -674,6 +679,11 @@ impl LabPeer {
     /// its initial value).
     pub fn has_received_client_packet(&self) -> bool {
         self.control.in_reliable() != self.sequencer.initial_reliable().0
+    }
+
+    /// Whether this peer opened actor channel `index`.
+    pub fn has_actor_channel(&self, index: u32) -> bool {
+        self.actors.contains_key(&index)
     }
 
     /// Whether the control channel close bunch has been sent.

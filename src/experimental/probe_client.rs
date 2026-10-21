@@ -376,6 +376,9 @@ impl ProbeClient {
                             messages.extend(batch);
                         }
                     }
+                    Decoded::Fallback(fallback) => {
+                        notes.push(format!("bunch {index}: fallback id {}", fallback.id()))
+                    }
                     Decoded::Unknown { id } => {
                         notes.push(format!("bunch {index}: unknown id {id}"))
                     }

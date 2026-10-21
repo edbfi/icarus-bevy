@@ -568,3 +568,33 @@ fn control_channel_send_queue_enforces_out_rec_and_queued_message_caps() {
         (ControlSendDisposition::OverflowClose, None)
     );
 }
+
+#[test]
+fn control_entries_include_fallback_layouts_without_changing_message_reads() {
+    use icarus_bevy::experimental::control_messages::read_control_entry;
+    use icarus_bevy::experimental::packet::Payload;
+    let codec = ControlCodec::default();
+    let failure = ControlFallback::ActorChannelFailure { channel_index: 2 };
+    let mut writer = BitWriter::new();
+    write_control_fallback(&mut writer, &failure, &codec).unwrap();
+    let payload = Payload::from_writer(writer);
+    let mut reader = payload.reader();
+    assert_eq!(
+        read_control_entry(&mut reader, &codec).unwrap(),
+        Decoded::Fallback(failure)
+    );
+    assert!(reader.at_end());
+    // The message reader still stops at the ID without reading the body.
+    assert_eq!(
+        read_control_messages(&mut payload.reader(), &codec).unwrap(),
+        [Decoded::Unknown { id: 16 }]
+    );
+    // An ID outside both tables stays unknown.
+    let mut writer = BitWriter::new();
+    writer.write_bits(7, 8);
+    let payload = Payload::from_writer(writer);
+    assert_eq!(
+        read_control_entry(&mut payload.reader(), &codec).unwrap(),
+        Decoded::Unknown { id: 7 }
+    );
+}
