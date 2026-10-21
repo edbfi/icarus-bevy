@@ -32,6 +32,10 @@ Address pairs are server / client.
   `NotifyBunchCommit` `0x143719b60`, `ReceivedAck` / `ReceivedNak`
   `0x14371e8b0` / `0x14371e9f0` in server 25956137);
   `experimental::session_open::ConnectionExports` mirrors the state.
+- Actor opens with components (F-797): GUIDs and exports follow serialization
+  order (actor and spawn, actor-block references by handle, component blocks,
+  runtime subobject blocks naming their exported class);
+  `experimental::actor_open` composes the pawn and GameState opens that way.
 - Gameplay-tag net index (F-702; U-065 resolved): `ConstructGameplayTagTree`
   builds the tree; `ConstructNetIndex` sorts nodes
   by `GetAllNodes` + `FName::LexicalLess`, sets `InvalidTagNetIndex = N + 1`,
@@ -203,4 +207,4 @@ Address pairs are server / client.
   M-560, M-570 to M-588, M-602 to M-605, M-614, M-615, M-620 to M-624, M-628 to
   M-635, M-707, M-708, M-710 to M-713, M-717, M-720, M-731 to M-748, M-776,
   M-777, M-782, M-794, M-795, M-797 to M-799, M-801, M-802, M-804, M-805, M-807,
-  M-832, M-834.
+  M-832, M-834, M-835.

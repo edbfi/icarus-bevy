@@ -15,19 +15,11 @@ normative wire and scheduling rules live in
 ## Current answer
 
 Open actor bunches frame the actor NetGUID and, for dynamic actors, the
-archetype, level, and optional location, rotation, scale, and velocity blocks
-(`UPackageMapClient::SerializeNewActor` `0x1437201a0` / `0x1439be280`, F-569,
-F-739), followed by `OnActorChannelOpen` / `OnSerializeNewActor` (`AActor`
-empty; `APlayerController` 1-byte `NetPlayerIndex` at `+0x3d4`, F-610, F-709,
-F-751). Outgoing `UChannel::SendBunch` (`0x14353c300` / `0x1437c9690`) enforces
-the 64 KiB partial cap, prepends export-only bunches (`ExportNetGUIDHeader` /
-`ExportNetGUID`, `<= 2048` entries) and `bHasMustBeMappedGUIDs` prefixes, and
-splits bunches `> 7,625` bits into `7,624`-bit (`953` B) slices (F-709 to F-711).
-Incoming `ReceiveNetGUIDBunch`, `ReceivedNextBunch`, `StartBecomingDormant`, and
-`UActorChannel::CleanUp` reassemble partial sequences and preserve dormant
-actors on `CloseReason == 1` (`Dormancy`, F-710). Content blocks carry a
-rep-layout bit, is-actor bit, optional sub-object/class NetGUIDs, and packed bit
-count for `FObjectReplicator::ReplicateProperties` (F-576, F-586).
+archetype, level and optional spawn vectors, then the actor-channel open hook
+(F-569, F-610, F-739, F-751). Outgoing bunches carry export-only prefixes and
+split into partial slices; incoming ones reassemble and keep dormant actors
+(F-709 to F-711); content blocks frame per-object replicator input (F-576,
+F-586). Addresses and limits are in the [spec](../../specs/network/actor-channel.md).
 
 Offline schema derivation is authorized ([gates](../../gates.md)). The runtime
 gameplay-tag net-index dictionary derives from `Data/Tags/D_Tags` (130 rows) and
@@ -61,7 +53,9 @@ which the native composer reproduces bit for bit (F-779). The GameState open
 names its manager actors by GUIDs assigned on first reference, before their
 own opens, and is also reproduced bit for bit (F-794); `run` sends the
 PlayerController, GameState and PlayerState opens after Join (F-795). Paths
-are exported again until a packet carrying them is acked (F-796).
+are exported again until a packet carrying them is acked (F-796), and the
+pawn open, with its components and inventory subobjects, is reproduced bit for
+bit by the same serialization-order rule (F-797).
 
 ## Open
 
@@ -70,4 +64,4 @@ are exported again until a packet carrying them is acked (F-796).
 
 ## Artifacts
 
-M-420..M-449, M-455..M-470, M-570..M-576, M-581..M-588, M-600..M-605, M-707..M-717, M-720, M-728..M-748, M-776, M-777, M-782, M-794, M-795, M-797..M-799, M-801, M-802, M-804, M-805, M-807, M-813..M-819, M-832, M-834.
+M-420..M-449, M-455..M-470, M-570..M-576, M-581..M-588, M-600..M-605, M-707..M-717, M-720, M-728..M-748, M-776, M-777, M-782, M-794, M-795, M-797..M-799, M-801, M-802, M-804, M-805, M-807, M-813..M-819, M-832, M-834, M-835.

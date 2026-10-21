@@ -7,6 +7,7 @@
 //! decisions.
 
 pub mod actor_channel;
+pub mod actor_open;
 pub mod admission;
 pub mod archive;
 pub mod class_checksum;

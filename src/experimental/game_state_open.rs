@@ -23,17 +23,16 @@ use std::collections::BTreeMap;
 
 use anyhow::{Result, ensure};
 
-use super::actor_channel::{
-    BlockTarget, ContentBlock, DynamicSpawn, NetGuidRef, SpawnRecord, SubObjectClass,
+use super::actor_open::{
+    BlockContent, ComponentActorOpen, OpenComponent, Reference, compose_component_actor_open,
 };
-use super::packet::{BitWriter, Payload};
 use super::rep_layout::{
     PropertyStream, RepCommand, RepEntry, RepLayoutCodec, RepLayoutLimits, RepValue,
     encode_rep_properties,
 };
 use super::session_open::{
     ActorKey, ComponentExport, ComposedActorOpen, ConnectionExports, NetGuidCache, PathSegment,
-    actor_codec, actor_open_bunch, entry, exports_of,
+    actor_codec,
 };
 
 /// Handles of the `AIcarusGameStateSurvival` rep layout (82 handles; names
@@ -231,103 +230,65 @@ pub fn compose_game_state_open(
             "GameState handle {handle} is composed, RepSkip or out of range"
         );
     }
-    let codec = actor_codec(plan.engine_net_version, order);
-    let actor = cache.actor_guid(state.key);
-    exports.begin_bunch();
-    let archetype = cache.export_static(exports, &plan.archetype)?;
-    let level = cache.export_static(exports, &plan.level)?;
-    let game_mode = cache.export_static(exports, &plan.game_mode_class)?;
-    let spectator = cache.export_static(exports, &plan.spectator_class)?;
-    let components = &plan.components;
-    let connected_players =
-        cache.export_keyed_subobject(exports, state.key, actor, &components.connected_players)?;
-    let dialogue_system =
-        cache.export_keyed_subobject(exports, state.key, actor, &components.dialogue_system)?;
-    let mut values: BTreeMap<u32, RepValue> = state.values.clone();
-    let mut reference = |handle: u32, guid: u32| {
-        values.insert(handle, RepValue::Object(NetGuidRef::plain(guid)));
-    };
-    reference(handle::GAME_MODE_CLASS, game_mode.guid);
-    reference(handle::SPECTATOR_CLASS, spectator.guid);
-    reference(handle::CONNECTED_PLAYERS, connected_players.guid);
-    reference(handle::DIALOGUE_SYSTEM, dialogue_system.guid);
+    let mut references = BTreeMap::from([
+        (
+            handle::GAME_MODE_CLASS,
+            Reference::Static(plan.game_mode_class.clone()),
+        ),
+        (
+            handle::SPECTATOR_CLASS,
+            Reference::Static(plan.spectator_class.clone()),
+        ),
+        (handle::CONNECTED_PLAYERS, Reference::Component(0)),
+        (handle::DIALOGUE_SYSTEM, Reference::Component(1)),
+    ]);
     for (handle, key) in state.managers.by_handle() {
         if let Some(key) = key {
-            reference(handle, cache.actor_guid(key));
+            references.insert(handle, Reference::Actor(key));
         }
     }
+    let mut values = state.values.clone();
     values.insert(handle::REMOTE_ROLE, RepValue::Byte(REMOTE_ROLE));
     values.insert(handle::ROLE, RepValue::Byte(ROLE));
-    // The weather component gets its GUID after the actor block's references.
-    let weather = cache.export_keyed_subobject(exports, state.key, actor, &components.weather)?;
-    let rep_codec = RepLayoutCodec {
-        actor: codec,
-        checksums: false,
-        limits: RepLayoutLimits::default(),
-    };
-    let actor_stream = PropertyStream {
-        entries: values
-            .into_iter()
-            .map(|(handle, value)| entry(handle, value))
-            .collect(),
-        terminator_checksum: None,
-    };
-    let component_block = |guid: u32, payload: Option<Payload>| ContentBlock {
-        has_rep_layout: payload.is_some(),
-        target: BlockTarget::SubObject {
-            object: NetGuidRef::plain(guid),
-            class: SubObjectClass::StablyNamed,
-        },
-        payload: payload.unwrap_or_else(|| Payload::from_writer(BitWriter::new())),
-    };
-    let weather_payload = if state.weather.is_empty() {
-        None
+    let weather = if state.weather.is_empty() {
+        BlockContent::create_only()
     } else {
+        let rep_codec = RepLayoutCodec {
+            actor: actor_codec(plan.engine_net_version, order),
+            checksums: false,
+            limits: RepLayoutLimits::default(),
+        };
         let stream = PropertyStream {
             entries: state.weather.clone(),
             terminator_checksum: None,
         };
-        Some(encode_rep_properties(
-            &stream,
-            &plan.weather_layout,
-            &rep_codec,
-        )?)
-    };
-    let blocks = vec![
-        ContentBlock {
+        BlockContent {
             has_rep_layout: true,
-            target: BlockTarget::Actor,
-            payload: encode_rep_properties(&actor_stream, &plan.layout, &rep_codec)?,
-        },
-        component_block(connected_players.guid, None),
-        component_block(dialogue_system.guid, None),
-        component_block(weather.guid, weather_payload),
-    ];
-    let export_payload = exports_of(
-        &[
-            archetype.clone(),
-            level.clone(),
-            game_mode,
-            spectator,
-            connected_players,
-            dialogue_system,
-            weather,
-        ],
-        &codec,
-    )?;
-    let spawn = SpawnRecord {
-        actor: NetGuidRef::plain(actor),
-        dynamic: Some(DynamicSpawn {
-            archetype: NetGuidRef::plain(archetype.guid),
-            level: Some(NetGuidRef::plain(level.guid)),
-            location: None,
-            rotation: None,
-            scale: None,
-            velocity: None,
-        }),
+            payload: encode_rep_properties(&stream, &plan.weather_layout, &rep_codec)?,
+        }
     };
-    Ok(ComposedActorOpen {
-        exports: export_payload,
-        bunch: actor_open_bunch(spawn, blocks, channel_index, &codec)?,
-    })
+    let component = |export: &ComponentExport, block: BlockContent| OpenComponent {
+        name: export.name.clone(),
+        checksum: export.checksum,
+        block: Some(block),
+    };
+    let components = &plan.components;
+    let open = ComponentActorOpen {
+        key: state.key,
+        archetype: plan.archetype.clone(),
+        level: plan.level.clone(),
+        location: None,
+        layout: plan.layout.clone(),
+        references,
+        values,
+        components: vec![
+            component(&components.connected_players, BlockContent::create_only()),
+            component(&components.dialogue_system, BlockContent::create_only()),
+            component(&components.weather, weather),
+        ],
+        subobjects: Vec::new(),
+        engine_net_version: plan.engine_net_version,
+    };
+    let (composed, _) = compose_component_actor_open(cache, exports, &open, channel_index, order)?;
+    Ok(composed)
 }
