@@ -1120,3 +1120,132 @@ fn pinned_joins_open_each_player_state_after_its_player_controller() {
         assert_eq!(body.payload, expected.bunch.payload);
     }
 }
+
+#[test]
+fn replication_selections_open_archetyped_actors_on_free_channels() {
+    use icarus_bevy::{
+        experimental::{
+            actor_channel::{
+                ActorChannelCodec, ActorChannelLimits, PackageMapState, read_actor_bunch_body,
+            },
+            archive::ByteOrder,
+            packet::read_packet,
+            peer_lab::PeerLabAdmission,
+            session_open::{PathSegment, map_level_chain},
+        },
+        replication::{NetActor, NetParameters, ReplicationPlugin},
+        session_replication::{NetArchetype, SessionReplication, SessionReplicationPlugin},
+        simulation::{DomainId, Position},
+    };
+    let profile = ReleaseProfile::load(&release_toml()).unwrap();
+    let pinned = profile.pin.network_checksum;
+    let (mut app, address) = server_app(&NetworkConfig {
+        release_profile: Some(release_toml()),
+        ..enabled(0)
+    });
+    let level = map_level_chain(PeerLabAdmission::default().map_url).unwrap();
+    app.add_plugins((ReplicationPlugin::default(), SessionReplicationPlugin))
+        .insert_resource(SessionReplication {
+            level,
+            engine_net_version: profile.engine_network_version,
+            first_channel: 2,
+            viewer_location: network::SPAWN_LOCATION,
+        });
+    // Authored identifiers only: two actors with an archetype (one beyond the
+    // default cull distance, yet force-relevant on the connection's first
+    // processed frame, F-772) and one without.
+    let archetype = vec![
+        PathSegment::new("Default__LabCrate_C", 0x1234_5678, false),
+        PathSegment::new("/Game/Lab/LabCrate", 0, false),
+    ];
+    for (id, location, archetyped) in [
+        (42, [100.0, 0.0, 0.0], true),
+        (43, [200.0, 0.0, 0.0], false),
+        (44, [20_000.0, 0.0, 0.0], true),
+    ] {
+        let mut entity = app.world_mut().spawn((
+            NetActor {
+                id: DomainId(id),
+                params: NetParameters::default(),
+            },
+            Position(location),
+        ));
+        if archetyped {
+            entity.insert(NetArchetype {
+                archetype: archetype.clone(),
+            });
+        }
+    }
+    // Two sessions in turn: each gets both actors, under the same GUIDs.
+    let ([replies, later], _) = with_server(&mut app, move || {
+        [
+            join_pinned_replies(address, pinned, 4),
+            join_pinned_replies(address, pinned, 4),
+        ]
+    });
+    let stats = app.world().resource::<PeerLab>().stats().clone();
+    assert_eq!((stats.actor_opens_sent, stats.actor_open_errors), (4, 0));
+    assert_eq!(
+        replies.len(),
+        4,
+        "controller, player state, then two actors"
+    );
+    assert_eq!(later.len(), 4);
+
+    let to_client = PacketConfig {
+        receiver: PacketReceiver::Client,
+        ..probe_config().packet
+    };
+    // Channels 2 and 3 hold the PlayerController and PlayerState; the actors
+    // take the next free ones. Only the first carries the archetype export.
+    let second = read_packet(&replies[3], &to_client).unwrap();
+    let [only] = second.bunches.as_slice() else {
+        panic!("a repeated archetype needs no export part");
+    };
+    assert_eq!(only.header.channel_index, 5);
+    let packet = read_packet(&replies[2], &to_client).unwrap();
+    let [exports, body] = packet.bunches.as_slice() else {
+        panic!("the actor open travels as exports plus body");
+    };
+    assert_eq!(body.header.channel_index, 4);
+    let codec = ActorChannelCodec {
+        engine_net_version: profile.engine_network_version,
+        exports_enabled: false,
+        has_level: true,
+        order: ByteOrder::Little,
+        limits: ActorChannelLimits::default(),
+    };
+    let mut map = PackageMapState::new();
+    let decoded = map
+        .consume_export_prefix(&mut exports.payload.reader(), &codec)
+        .unwrap();
+    assert_eq!(
+        map.resolve_full_path(decoded[0].guid).as_deref(),
+        Some("/Game/Lab/LabCrate.Default__LabCrate_C")
+    );
+    let open = read_actor_bunch_body(&mut body.payload.reader(), true, &codec).unwrap();
+    let spawn = open.spawn.unwrap();
+    // The first connection's controller took dynamic GUIDs 2..18.
+    assert_eq!(spawn.actor.guid, 20);
+    assert!(spawn.dynamic.unwrap().location.is_some());
+    assert!(open.blocks.is_empty());
+    let actor_guids = |datagrams: &[Vec<u8>]| -> Vec<u32> {
+        let mut guids: Vec<u32> = datagrams[2..]
+            .iter()
+            .map(|datagram| {
+                let packet = read_packet(datagram, &to_client).unwrap();
+                let body = packet.bunches.last().unwrap();
+                read_actor_bunch_body(&mut body.payload.reader(), true, &codec)
+                    .unwrap()
+                    .spawn
+                    .unwrap()
+                    .actor
+                    .guid
+            })
+            .collect();
+        guids.sort_unstable();
+        guids
+    };
+    assert_eq!(actor_guids(&replies), [20, 22]);
+    assert_eq!(actor_guids(&later), [20, 22], "driver-wide GUIDs");
+}

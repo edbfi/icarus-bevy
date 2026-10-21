@@ -9,6 +9,7 @@ pub mod persistence;
 pub mod preservation;
 pub mod prospect;
 pub mod replication;
+pub mod session_replication;
 pub mod simulation;
 
 /// Open without blocking so a FIFO or device cannot stall a read; callers then

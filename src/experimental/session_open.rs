@@ -603,39 +603,7 @@ pub fn compose_player_state_open(
     state: &PlayerStateOpenState,
     order: super::archive::ByteOrder,
 ) -> Result<ComposedActorOpen> {
-    use super::actor_channel::{ActorBunchBody, ActorChannelLimits, encode_actor_bunch_body};
-    use super::packet::{Bunch, BunchHeader, Name};
     use super::rep_layout::RepLayoutLimits;
-    let codec = ActorChannelCodec {
-        engine_net_version: plan.engine_net_version,
-        exports_enabled: false,
-        has_level: true,
-        order,
-        limits: ActorChannelLimits::default(),
-    };
-    let archetype = cache.export_static(exports, &plan.archetype)?;
-    let level = cache.export_static(exports, &plan.level)?;
-    let references: Vec<NetGuidRef> = [&archetype, &level]
-        .into_iter()
-        .filter(|reference| reference.export.is_some())
-        .cloned()
-        .collect();
-    let export_payload = if references.is_empty() {
-        None
-    } else {
-        Some(encode_exports(&references, &codec)?)
-    };
-    let spawn = SpawnRecord {
-        actor: NetGuidRef::plain(state.player_state),
-        dynamic: Some(DynamicSpawn {
-            archetype: NetGuidRef::plain(archetype.guid),
-            level: Some(NetGuidRef::plain(level.guid)),
-            location: None,
-            rotation: None,
-            scale: None,
-            velocity: None,
-        }),
-    };
     let stream = PropertyStream {
         entries: vec![
             entry(PS_HANDLE_REMOTE_ROLE, RepValue::Byte(PS_REMOTE_ROLE)),
@@ -658,17 +626,99 @@ pub fn compose_player_state_open(
         terminator_checksum: None,
     };
     let rep_codec = RepLayoutCodec {
-        actor: codec,
+        actor: actor_codec(plan.engine_net_version, order),
         checksums: false,
         limits: RepLayoutLimits::default(),
     };
-    let body = ActorBunchBody {
-        spawn: Some(spawn),
+    let spec = ActorOpenSpec {
+        actor: state.player_state,
+        archetype: plan.archetype.clone(),
+        level: plan.level.clone(),
+        location: None,
         blocks: vec![ContentBlock {
             has_rep_layout: true,
             target: BlockTarget::Actor,
             payload: encode_rep_properties(&stream, &plan.layout, &rep_codec)?,
         }],
+    };
+    compose_actor_open(
+        cache,
+        exports,
+        &spec,
+        plan.channel_index,
+        plan.engine_net_version,
+        order,
+    )
+}
+
+/// The actor-channel codec the opens use: exports outside the body, levels
+/// present, the connection's byte order.
+fn actor_codec(engine_net_version: u32, order: super::archive::ByteOrder) -> ActorChannelCodec {
+    ActorChannelCodec {
+        engine_net_version,
+        exports_enabled: false,
+        has_level: true,
+        order,
+        limits: super::actor_channel::ActorChannelLimits::default(),
+    }
+}
+
+/// A dynamic actor to open on a channel: its GUID, archetype and level chains,
+/// an optional quantized location, and its initial content blocks.
+#[derive(Clone, Debug)]
+pub struct ActorOpenSpec {
+    /// The actor's dynamic GUID. [`super::peer_lab::PeerLab::open_actor`]
+    /// ignores the caller's value and assigns its driver-wide GUID.
+    pub actor: u32,
+    /// `Default__<Class>_C`, then its package.
+    pub archetype: Vec<PathSegment>,
+    /// `PersistentLevel`, the world, then the map package.
+    pub level: Vec<PathSegment>,
+    pub location: Option<[f32; 3]>,
+    pub blocks: Vec<ContentBlock>,
+}
+
+/// Compose a dynamic actor's open for one connection, as the original's
+/// PlayerState open is framed (F-784): exports for the static paths the
+/// connection has not received, the spawn record (location quantized like
+/// the PlayerController's, F-779) and the content blocks.
+pub fn compose_actor_open(
+    cache: &mut NetGuidCache,
+    exports: &mut ConnectionExports,
+    spec: &ActorOpenSpec,
+    channel_index: u32,
+    engine_net_version: u32,
+    order: super::archive::ByteOrder,
+) -> Result<ComposedActorOpen> {
+    use super::actor_channel::{ActorBunchBody, encode_actor_bunch_body};
+    use super::packet::{Bunch, BunchHeader, Name};
+    let codec = actor_codec(engine_net_version, order);
+    let archetype = cache.export_static(exports, &spec.archetype)?;
+    let level = cache.export_static(exports, &spec.level)?;
+    let references: Vec<NetGuidRef> = [&archetype, &level]
+        .into_iter()
+        .filter(|reference| reference.export.is_some())
+        .cloned()
+        .collect();
+    let export_payload = if references.is_empty() {
+        None
+    } else {
+        Some(encode_exports(&references, &codec)?)
+    };
+    let spawn = SpawnRecord {
+        actor: NetGuidRef::plain(spec.actor),
+        dynamic: Some(DynamicSpawn {
+            archetype: NetGuidRef::plain(archetype.guid),
+            level: Some(NetGuidRef::plain(level.guid)),
+            location: spec.location.map(quantize_spawn_vector).transpose()?,
+            rotation: None,
+            scale: None,
+            velocity: None,
+        }),
+    };
+    let body = ActorBunchBody {
+        spawn: Some(spawn),
+        blocks: spec.blocks.clone(),
     };
     let bunch = Bunch {
         header: BunchHeader {
@@ -678,7 +728,7 @@ pub fn compose_player_state_open(
             close_reason: None,
             paused: false,
             reliable: true,
-            channel_index: plan.channel_index,
+            channel_index,
             has_package_map_exports: false,
             has_must_be_mapped_guids: false,
             partial: false,
