@@ -460,7 +460,11 @@ fn quantize_vector_matches_the_bit_exact_spawn_packing_and_bounds() {
     let hundredths = quantize_vector([1.234, 0.0, 0.0], VectorPacking::MovementHundredths).unwrap();
     assert_eq!(hundredths.unbiased(), [123, 0, 0]);
     // The bit count must stay below the packing's maximum; no clamping.
-    assert!(quantize_vector([8_388_607.0, 0.0, 0.0], VectorPacking::MovementWhole).is_ok());
-    assert!(quantize_vector([16_777_216.0, 0.0, 0.0], VectorPacking::MovementWhole).is_err());
+    // The rounding runs in f32, as UE's float `RoundToInt` does: 16,777,214
+    // stays below 2^24 (bit count field 23, below 24), but 16,777,215 + 0.5
+    // rounds to 2^24 in f32, which needs 25 bits.
+    let edge = quantize_vector([16_777_214.0, 0.0, 0.0], VectorPacking::MovementWhole).unwrap();
+    assert_eq!(edge.bits, 23);
+    assert!(quantize_vector([16_777_215.0, 0.0, 0.0], VectorPacking::MovementWhole).is_err());
     assert!(quantize_vector([f32::NAN, 0.0, 0.0], VectorPacking::MovementWhole).is_err());
 }
