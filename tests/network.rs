@@ -754,6 +754,7 @@ fn pinned_run_upgrades_a_mismatched_hello_and_admits_the_pinned_version() {
         // Without a loaded save only the three bound managers open.
         ("manager_opens_sent", 3),
         ("open_errors", 0),
+        ("io_errors", 0),
         ("closed_by_client", 1),
         ("active_peers", 0),
     ] {

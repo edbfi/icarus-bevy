@@ -590,8 +590,11 @@ pub struct SessionCounts {
     pub game_state_opens_sent: u64,
     pub player_state_opens_sent: u64,
     pub manager_opens_sent: u64,
-    /// Actor opens of any kind that failed to compose or send.
+    /// Actor opens (session and replicated) that failed to compose or
+    /// frame; a datagram the socket failed to send counts in `io_errors`.
     pub open_errors: u64,
+    /// Socket send or receive failures.
+    pub io_errors: u64,
     /// Shutdown Failure notices sent (F-782).
     pub shutdown_failures_sent: u64,
     /// Shutdown control-channel close bunches sent (F-782).
@@ -1624,9 +1627,11 @@ impl PeerLab {
                 self.stats.game_state_open_errors,
                 self.stats.player_state_open_errors,
                 self.stats.manager_open_errors,
+                self.stats.actor_open_errors,
             ]
             .into_iter()
             .fold(0, u64::saturating_add),
+            io_errors: self.stats.io_errors,
             shutdown_failures_sent: self.stats.shutdown_failures_sent,
             shutdown_closes_sent: self.stats.shutdown_closes_sent,
             invalid_state_messages: self.stats.invalid_state_messages,
