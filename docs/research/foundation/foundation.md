@@ -63,9 +63,9 @@ failures (F-827), and in 300 s sweeps of 8 to 64 concurrent sessions tick p99
 stays under 80 us; a networking status over one bunch, once withheld, now goes
 out as unreliable partial bunches that every session reassembles (F-824,
 F-826). No ICARUS client has
-used it. `install-official-data` and `icarus-fetch` fetch the free official
-server's files anonymously from Steam without steamcmd; the fetched data.pak
-matches the steamcmd install byte for byte (F-831).
+used it. Under input parity (F-828), `install-official-data` and `icarus-fetch`
+fetch the free official server's data.pak (F-829) anonymously from Steam
+without steamcmd, matching the steamcmd install byte for byte (F-831).
 
 The toolchain is pinned and current (F-483), authored Python passes
 basedpyright recommended (F-484), and the release links no render, window or
