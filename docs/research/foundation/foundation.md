@@ -19,60 +19,60 @@ Before restructure: 96ddb0b:docs/research/foundation/2026-10-13-foundation-recei
 ## Current answer
 
 The project is an independent foundation, not an ICARUS-compatible server
-(F-487). It validates configuration (F-226), runs a fixed-step loop at a
-provisional 30 Hz (F-227, F-215) and persists checksummed native generations
-with atomic manifest publication and two-generation recovery (F-228, F-771);
-native snapshot v1 is not the ICARUS save format (F-216). Capture rejects
+(F-487). It validates configuration (F-868), runs a fixed-step loop at a
+provisional 30 Hz (F-868) and persists checksummed native generations
+with atomic manifest publication and two-generation recovery (F-869, F-771);
+native snapshot v1 is not the ICARUS save format (F-869). Capture rejects
 incomplete domain state before publication (F-482), stale snapshots and
-save-worker loss stop safely (F-672), and signals trigger a final save within a
-bounded shutdown (F-230, F-672).
+save-worker loss stop safely (F-869), and signals trigger a final save within a
+bounded shutdown (F-869).
 
 Reproduced faults are fixed for FIFO manifests, generations, configs and
 save-inspection inputs (F-671), malformed manifest digests
-(F-417), positional JSON arrays (F-428), current-generation read errors (F-452)
-and diagnostics that leaked supplied strings (F-412, F-423); real ENOSPC and
+(F-870), positional JSON arrays (F-870), current-generation read errors (F-870)
+and diagnostics that leaked supplied strings (F-880, F-423); real ENOSPC and
 EACCES faults keep acknowledged state (F-239). Synthetic runs pass at 100,000
-entities and across kill/restart cycles (F-485); the 7,200 s soak predates later
-persistence changes (F-237), and a later soak stopped early at 21.9 h (F-612).
+entities and across kill/restart cycles (F-871); the 7,200 s soak predates later
+persistence changes (F-871), and a later soak stopped early at 21.9 h (F-872).
 Compressed simulated time now runs the full 72-hour tick and save schedule
 in under an hour, at 100,000 synthetic entities and for a world seeded from
 the supplied save, without save failures or retained growth, one tick missing its deadline
-(F-615, F-616). A modeled POSIX power-loss harness over the real
+(F-872, F-873). A modeled POSIX power-loss harness over the real
 write path recovers acknowledged state in every enumerated crash state and found
 stranded temporaries, now removed (F-511). None of this measures ICARUS performance.
 
 Save inspection reads supplied prospect envelopes within measured bounds and
 frames root properties and recorders to exact EOF, matching independent
-scanners with values opaque and `world_imported` false (F-241 to F-245, F-411).
+scanners with values opaque and `world_imported` false (F-880 to F-883).
 Both supplied copies are preserved losslessly in a write-once schema-3
 sidecar and reload byte-identically; later saves stay small (F-567). A seeded world
-runs 180 autosaves without deadline misses (F-584). Randomized mutations
+runs 180 autosaves without deadline misses (F-873). Randomized mutations
 never panic preservation or the replication codecs, accepted inputs re-encode
 exactly, and the streaming verifier matches the tree decoder (F-604, F-605);
 mutated datagrams and control bodies never panic their readers or the peer
 lab, whose table stays within capacity (F-606, F-607); corrupted snapshot
 stores load a committed snapshot exactly or fail closed (F-611).
 Bounded header, component, struct-array and Int-array readers are tested
-(F-246 to F-249, F-200, F-207). An opt-in loopback session layer in `run`
+(F-886 to F-888). An opt-in loopback session layer in `run`
 admits authored probes, enforces the player limit, evicts idle sessions, closes
 all before the final save and retains no session over 1,000 join/close cycles
-(F-768); it pins the Hello version to the release profile and survives 200
-real-binary cycles (F-770). Held probe sessions (one for 8 hours, eight for an
+(F-875); it pins the Hello version to the release profile and survives 200
+real-binary cycles (F-875). Held probe sessions (one for 8 hours, eight for an
 hour) receive steady GameState updates without regressions or save failures;
 eight held 10.1 hours until a host reboot, whose SIGTERM shut the server down
 cleanly, and the world reloaded at its last save (F-833). In 300 s sweeps of 8
 to 64 concurrent sessions tick p99 stays under 80 us; a networking status over
 one bunch, once withheld, now goes out as unreliable partial bunches that every
-session reassembles (F-824, F-826). No ICARUS client has used it. Under input
+session reassembles (F-877). No ICARUS client has used it. Under input
 parity (F-828), `install-official-data` and `icarus-fetch` fetch the free
 official server's data.pak (F-829) anonymously from Steam without steamcmd,
 matching the steamcmd install byte for byte (F-831).
 
-The toolchain is pinned and current (F-483), authored Python passes
+The toolchain is pinned and current (F-879), authored Python passes
 basedpyright recommended (F-484), and the release links no render, window or
-audio backend (F-250); the CI definition passes on hosted runners for a feature commit (F-497). The
+audio backend (F-879); the CI definition passes on hosted runners for a feature commit (F-497). The
 client's debug identity and Steam AppID `1149460` / depot `1149461` manifests
-and PE headers/symbols are verified across `3.0.31` and `3.0.32` (`F-486`,
+and PE headers/symbols are verified across `3.0.31` and `3.0.32` (`F-878`,
 `F-731`; `U-034` resolved). Earlier original-server cases hashed
 the baseline (F-265), exported no functions in one bounded Ghidra pass (F-266),
 reached the entry map offline without reproducing crashes (F-268) and observed

@@ -18,9 +18,9 @@ Before restructure: 96ddb0b:docs/research/save-format/2026-10-13-save-class-audi
 Every body of every one of the save's 38 classes frames and round-trips
 byte-identically through a lossless value-opaque tree in both copies, under
 statically qualified Map, Set and Int64 headers and 1 MiB component and
-struct-array bounds (F-556, F-557, F-634); all 163 Maps per copy frame into
-items and no Set occurs (F-559, F-562). The census began with C009, C013, C028
-and C034 (F-496), then C001 (F-534, F-540, F-722; U-023 resolved), the
+struct-array bounds (F-556, F-900); all 163 Maps per copy frame into
+items and no Set occurs (F-559, F-900). The census began with C009, C013, C028
+and C034 (F-496), then C001 (F-901, F-722; U-023 resolved), the
 player-state candidates and the remaining classes (F-668; F-213). Server
 25621760 matches client 25793767 across `FString`/`FName`, `FFloatProperty`,
 `FVector`, `FArrayProperty`, tagged wrap-around, C013/C028 migration/restore,
@@ -40,27 +40,29 @@ entry-path failure matrices, `FProspectBlob` `SL-004` decode contracts,
 `C031`, `2,743` retained (`971` skip-owner, `52` `FindOnly`, `798` `RespawnOnly`,
 `658` `FindOrRespawn`, `264` `ManuallyResolved`, `821` stitching), `2` dynamic
 `C033` -> `2,741` on `M-691`; F-645 to F-680, F-715 to F-720, F-725 to F-728,
-F-731 to F-738, F-741 to F-744, F-746, F-747, F-750, F-752; U-020 to U-024, U-026,
-U-028 to U-033, U-039, U-046, U-048, U-050, U-053 to U-063 resolved). Every
-opaque Struct payload is one of four fixed-width engine math types (F-565,
+F-731 to F-738, F-741 to F-744, F-746, F-747, F-750, F-893, F-894,
+F-899, F-902 to F-904; U-020 to U-024, U-026, U-028 to U-033, U-039, U-046,
+U-048, U-050, U-053 to U-063 resolved). Every
+opaque Struct payload is one of four fixed-width engine math types (F-900,
 F-602), and construction grids nest per-type row names over placed pieces
 sharing the grid's frame (F-643).
 
 Under the hard tree limits every recorder value of all 15 prospects types
 losslessly with no uninterpreted leaf (F-766), and a dry-run native import plan
 then blocks only on name and path references that no native content catalog
-yet defines (F-767). Per-instance object names are identity, not content, and
-never block (F-813), and actor variable records name class properties
-(F-817). Fields whose recorder restores were read classify by property and
+yet defines (F-898). Per-instance object names are identity, not content, and
+never block (F-897), and actor variable records name class properties
+(F-897). Fields whose recorder restores were read classify by property and
 enclosing struct: most name data rows through each table's row handle, and
-FLOD tile records name landscape tiles (F-820). That leaves 23 to 26 of 3,528
+FLOD tile records name landscape tiles (F-897). That leaves 23 to 26 of 3,528
 to 3,782 distinct references unclassified, with 52 find-only owners per save
-(F-821).
+(F-898).
 
 No saved class identifier, field or type name, or recorder version tells the
 older server from the newer client, and the prospect carries no version string
-(F-635, F-682). Recorder code gives every class's fields their meanings (F-645 to
-F-666, F-676, F-677, F-734 to F-736, F-741 to F-744, F-746, F-747, F-750, F-752); item
+(F-635, F-896). Recorder code gives every class's fields their meanings (F-645 to
+F-666, F-676, F-677, F-734 to F-736, F-741 to F-744, F-746, F-747, F-750, F-902 to
+F-904); item
 stats, alterations and slots are row references (F-660). Readers use borrowed
 strict string frames without success-path allocation (F-142); comparator limits
 stay at 128 KiB (F-198).
@@ -68,8 +70,8 @@ stay at 128 KiB (F-198).
 ## Open
 
 - Packaged data-table row meanings remain out of scope by policy (F-660).
-- Native content catalog and import writer: classify the F-767 references by role and author native world data for them; connected client compatibility (U-025, U-038, U-045).
-- Heavy-world save work order: the preserved server's offline load/save/reload baseline (F-678 to F-681, F-736) and connected scenario S1 on server 25956137 (3.0.32, F-701) both frame and preserve byte-identically; build pairing of the original save remains open (U-040), and native interpreted import stays gated (U-038, U-045).
+- Native content catalog and import writer: classify the F-898 references by role and author native world data for them; connected client compatibility (U-025, U-038, U-045).
+- Heavy-world save work order: the preserved server's offline load/save/reload baseline (F-894, F-736) and connected scenario S1 on server 25956137 (3.0.32, F-701) both frame and preserve byte-identically; build pairing of the original save remains open (U-040), and native interpreted import stays gated (U-038, U-045).
 
 ## Artifacts
 

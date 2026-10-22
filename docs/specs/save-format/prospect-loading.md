@@ -2,7 +2,7 @@
 
 ## Status
 
-Experimental; scope dedicated-server build 25621760 (supplied saves are user-reported from 25793767). Last reconciled: 2026-10-20.
+Experimental; scope dedicated-server build 25621760 (supplied saves are user-reported from 25793767). Last reconciled: 2026-10-22.
 Full text: d5b0ae6:docs/specs/save-format/prospect-loading.md
 
 ## Scope
@@ -18,7 +18,7 @@ row meanings, reference resolution and world import.
 
 Entry paths and failure reporting
 
-- By name (F-717, F-733, F-737; U-057, U-063 resolved): `LoadProspect`
+- By name (F-899, F-733, F-737; U-057, U-063 resolved): `LoadProspect`
   (`0x14146e590`) -> `LoadProspectByName` rejects empty names, strips `.json`
   case-insensitively, reads it via `GetProspectBlob` (`0x141817bd0`) and
   `GetProspectInfo` (`0x14181e530`), and calls `TransitionToProspect`; missing,
@@ -26,14 +26,14 @@ Entry paths and failure reporting
   inner `BinaryBlob` fails in `ReadFromProspectBlob` *after*
   `ResetActiveProspect` (`0x1418333b0`) and `SetActiveProspectInfo`
   (`0x141837100`) overwrite the active `ProspectInfo`.
-- From file (F-717, F-732, F-733; U-056, U-058, U-063 resolved):
+- From file (F-899, F-733; U-056, U-058, U-063 resolved):
   `SetupLoadedProspect`, called from `InitGame` (`0x1414acc40`) with
   `?LocalSavePath=`, logs Fatal at `0x1414bb15f` when a header or state load
-  fails (F-732), before `ResetActiveProspect`.
+  fails (F-899), before `ResetActiveProspect`.
 
 Inner state, version and archive mode
 
-- State and header registration and sizes: F-328, F-329. Reflected
+- State and header registration and sizes: F-889. Reflected
   `FProspectInfo` (F-738; `0xa0` B) carries `ProspectID` `+0x00`,
   `ClaimedAccountID` `+0x10`, `ClaimedAccountCharacter` `+0x20`, `ProspectDTKey`
   `+0x28`, `FactionMissionDTKey` `+0x38`, `LobbyName` `+0x48`, `ExpireTime`
@@ -44,18 +44,18 @@ Inner state, version and archive mode
   `Reward` `+0x7c`, `Difficulty` `+0x80`, `Insurance` `+0x84`, `NoRespawns`
   `+0x85`, `ElapsedTime` `+0x88`, `SelectedDropPoint` `+0x8c` and
   `CustomSettings` `+0x90` (`0x18` B).
-- Root fields (object offsets F-330): `Version` (integer tested by load
+- Root fields (object offsets F-889): `Version` (integer tested by load
   fixups), `LobbyPrivacy` (enum, byte underlying descriptor), `ProspectInfo`
   (`FProspectInfo`), `ProspectMapName` (string), `LastSavedDateTime` (date/time),
   legacy strings `ProspectID` and `ProspectDTKey` (`0xd8`) for pre-version-2 fixups, and
   `StateRecorderBlobs` (`0xe8`, array of a derived state type).
-- `StateRecorderBlob` layout: F-332; descriptor order is not serialized order
-  (F-330, F-332).
-- Dispatch and tagged traversal (F-257, F-335, F-336, F-718; U-062 resolved):
+- `StateRecorderBlob` layout: F-884; descriptor order is not serialized order
+  (F-889, F-884).
+- Dispatch and tagged traversal (F-257, F-890, F-718; U-062 resolved):
   `UStruct::SerializeVersionedTaggedProperties` reads `FPropertyTag` headers
   until `None`, wraps to the head on out-of-order tags and keeps defaults for
   omitted tags.
-- Version (F-260, F-715; U-059, U-060 resolved; `migrate_prospect_save_state`):
+- Version (F-885, F-715; U-059, U-060 resolved; `migrate_prospect_save_state`):
   `Version = 2` is the schema version, unrelated to game build.
   `PostLoadSerialize` (`0x1418e4250` / `0x1418e44f0`) at `Version == 0` also sets
   `LobbyPrivacy = 1` (`FriendsOnly`), clears `StateRecorderBlobs` and stamps
@@ -64,16 +64,16 @@ Inner state, version and archive mode
 Recorders and base component
 
 - Each recorder is a `None`-terminated tagged sequence after the array's shared
-  inner tag; `BinaryData` is a signed 32-bit count and raw bytes (F-245, F-257,
-  F-340, F-341).
-- Restore (F-342..F-347, F-669): the class string resolves, the component is
+  inner tag; `BinaryData` is a signed 32-bit count and raw bytes (F-883, F-257,
+  F-884).
+- Restore (F-890, F-891, F-909): the class string resolves, the component is
   constructed, and `+0x4a0` (`0x1418a9c80` -> `+0xa0` = `0x1418aaf70` -> `0x14200ea70`) reads
   tagged `CPF_SaveGame` properties, a 4-byte GUID-trailer boolean and the
   `+0x488` version-upgrade hook.
 
 C013, C028, C034, C009 and D01
 
-- `C013` (`UFLODRecorderComponent`; F-248, F-350..F-353, F-646, F-716; U-039
+- `C013` (`UFLODRecorderComponent`; F-887, F-350..F-353, F-646, F-716; U-039
   resolved): base load, serialize and post-load; two 548-byte bodies
   (5 properties, zero trailer, exact EOF); record, stitch and restore of
   `FLODTiles` per F-716.
@@ -99,7 +99,7 @@ Acceptance conditions for any importer
   unmapped content-dependent fields reported as incompatibility (F-771, F-269,
   F-403). Strict readers enforce binary transfer lengths and
   0/1 trailer booleans under explicit byte/element caps up to 1 MiB
-  (F-134..F-200, F-249, F-346..F-382, F-634).
+  (F-134..F-200, F-888, F-346..F-382, F-891, F-900).
 
 ## Candidate
 
@@ -115,7 +115,8 @@ Acceptance conditions for any importer
 - All 65 `RecorderComponent` `FClassParams`, ctor defaults and vtable overrides
   ([restore rules](restore-rules.md)), and `C001` provenance
   ([C001 digest](../../research/save-format/c001-constructor.md)) match across
-  builds (F-469..F-747; U-003..U-006, U-020..U-024, U-032, U-041, U-042, U-046,
+  builds (F-469..F-747, F-902, F-905..F-910; U-003..U-006, U-020..U-024, U-032,
+  U-041, U-042, U-046,
   U-048, U-050 resolved).
 
 ## Open questions

@@ -4,7 +4,7 @@
 
 Experimental: pure rules in `experimental::restore_rules` (`tests/restore_rules.rs`,
 U-045; U-020..U-022, U-032, U-046, U-048, U-050 resolved).
-Last reconciled: 2026-10-21.
+Last reconciled: 2026-10-22.
 
 ## Scope
 
@@ -20,12 +20,12 @@ construction, script owners and data-table rows are out of scope (F-660).
   (`evaluate_attach_recorder_to_actor` / `evaluate_resolve_owner_recorder_state`);
   `RespawnOnly` (`1`) destroys `+0x450` actors (`0x143331760`) before `+0x458`;
   `FindOrRespawn` (`2`) tries `+0x450` then `+0x458`; `ManuallyResolved` (`3`)
-  keeps the recorder; then `+0x468` runs (F-752).
+  keeps the recorder; then `+0x468` runs (F-902).
 - `recorder_restore_dispatch`, `recorder_ctor_defaults` (`C001..C038`),
   `non_blob_recorder_restore_dispatch` and `non_blob_recorder_ctor_defaults`
   (`N001..N027`): all 65 classes inherit `+0xa0 = 0x1418aaf70` and match ctor
   flags and slots `+0xa0..+0x4c0` across server 25621760 and client 25793767
-  (F-727, F-742, F-746, F-747):
+  (F-902, F-904, F-746, F-747):
   - `C001..C038`: `+0xb0` (`bSaveModifiers`) `1`, but `0` on
     `C003, C007..C010, C020, C021, C025, C026, C029, C030, C033, C034`; `+0xb1`
     (`bSkipDefaultOwnerResolution`) `0`, but `1` on `C015, C020, C025, C026, C031, C034`;
@@ -50,7 +50,7 @@ construction, script owners and data-table rows are out of scope (F-660).
     N008, N016, N017, N019, N024..N027`, `CharacterParentUidPresent` on
     `N010..N014`, else `AlwaysFalse` (10); only `N011` overrides `+0x4a0`
     (`0x141400150`).
-- `Validate` (`+0x408`, base `0x140899f70` = `true`; F-652, F-663, F-680, F-742, F-747):
+- `Validate` (`+0x408`, base `0x140899f70` = `true`; F-652, F-663, F-680, F-904, F-747):
   - `UProspectSubsystem` (`0x141704d70`, `+0x30`): the F-652 checks (via
     `0x1418231d0`) scan `0x40`-B members for `UserID` (`+0x20`, `Stricmp`) and
     `ChrSlot` (`+0x30`, `resolve_prospect_player_list`).
@@ -69,7 +69,7 @@ construction, script owners and data-table rows are out of scope (F-660).
     subclass `N020` (`UResourceDepositIceRecorderComponent`,
     `evaluate_n020_validate_override`) overrides `+0x408` back to base `true`; `+0x460` (`0x1418f76c0`,
     `should_grant_deposit_map_icon_stat`) grants stat `0xbe` iff
-    `+0x1cc && !GetStat(0xbe)` (F-645, F-752).
+    `+0x1cc && !GetStat(0xbe)` (F-645, F-902).
   - `C031` and `C034` (F-680; `C034` `0x1418e96c0`, `evaluate_voxel_record`,
     `voxel_record_valid`) reject `RespawnOnly && bIsVoxelFullyMined`; `+0x460`
     (`0x1418f7bb0`, `evaluate_voxel_database_restore`) scales if `+0xb2 == 1`,
@@ -93,7 +93,7 @@ construction, script owners and data-table rows are out of scope (F-660).
   `evaluate_container_manager_record`, `evaluate_container_manager_stitch`, F-651);
   `C026` (`0x1418f5540`) runs `evaluate_player_state_life_restore` and
   `filter_restored_cosmetic_armour_overrides` (F-648, F-657).
-- `DoesRecorderMatchActor` (`+0x478`, F-742, F-743): base
+- `DoesRecorderMatchActor` (`+0x478`, F-904): base
   (`does_state_recorder_match_actor`) checks `+0xc0`; `C001`
   (`does_actor_recorder_match_actor`) checks GUID if `HasValidOwner` else `+0xc8`;
   `C025` (`does_player_recorder_match_actor`) checks `+0xfc >= 1` and
@@ -123,11 +123,11 @@ construction, script owners and data-table rows are out of scope (F-660).
   (`0x1418e9500`/`0x1418f7930`, `evaluate_spawn_blocker_transfer`); `C032`
   (`0x1418e95f0`, `evaluate_spline_record`, `evaluate_spline_recorder_respawn`,
   F-658); `C033` (`0x1418e9820`/`0x1418ed770`, `evaluate_tree_record`,
-  `should_drop_respawned_tree_recorder_on_resave`, F-656, F-681, F-736); `C035`
+  `should_drop_respawned_tree_recorder_on_resave`, F-656, F-894, F-736); `C035`
   (`0x1418e98b0`/`0x1418f8120`, `evaluate_weather_controller_record`,
   `evaluate_weather_controller_restore`, F-734); `C036`
   (`0x1418e9ff0`/`0x1418f86c0`, `evaluate_weather_forecast_record`,
-  `evaluate_weather_forecast_restore`, F-654, F-665); `C038` (`0x141930060`,
+  `evaluate_weather_forecast_restore`, F-903); `C038` (`0x141930060`,
   `evaluate_world_talent_record`, `evaluate_world_talent_stitch`, F-676).
 - `C001` (`0x1418a0170`/`0x1418b6ed0`, `evaluate_actor_recorder_base_record`) runs
   `evaluate_actor_guid_restore`, `evaluate_modifier_state_restore`,
@@ -136,9 +136,9 @@ construction, script owners and data-table rows are out of scope (F-660).
   (`evaluate_game_mode_record`) runs `restored_elapsed_seconds`,
   `restore_game_mode_exported_currencies`, `restore_game_mode_mission_history` and
   `restored_next_meteor_shower_time` (F-653); `C037` (`0x1418ea790`/`0x1418f8610`,
-  `evaluate_world_boss_record`, `restore_world_boss_row_handles`, F-654); `-1` is
+  `evaluate_world_boss_record`, `restore_world_boss_row_handles`, F-903); `-1` is
   unrecorded (`recorded_level`, F-648).
-- `UIcarusGameStateRecorder` pipeline (F-750, F-752):
+- `UIcarusGameStateRecorder` pipeline (F-750, F-902):
   - `BeginRecording` (`0x1414961b0`/`0x1414d0900`, `evaluate_begin_recording`) rejects
     null or pending-kill components and GameplayTag `0x65`-excluded owners;
     returns `true` if `bIsRecording` (`+0xd1`); while `bIsRestoring` (`+0x128`)
@@ -174,7 +174,7 @@ construction, script owners and data-table rows are out of scope (F-660).
     `evaluate_n026_stitch_transfer` and `evaluate_n027_stitch_transfer`.
 
 - Saved names that restores turn into row handles through each table's
-  `FromName` (F-820): crop seeds (`UCultivation::LoadSaveData`, `0x14196e790`),
+  `FromName` (F-897): crop seeds (`UCultivation::LoadSaveData`, `0x14196e790`),
   stomach modifiers (`AddSaveDataToStomach`, `0x141890940`), juvenile and mount
   lineages and genetic values (`0x141449940`, `0x141449c30`), quests
   (`0x1418f4cf0`), faction missions and mission prospects (`0x1418f4540`),
@@ -193,5 +193,5 @@ construction, script owners and data-table rows are out of scope (F-660).
 
 ## Evidence
 
-F-645..F-681, F-716, F-727, F-728, F-734..F-736, F-741..F-744, F-746, F-747,
-F-750, F-752, F-820; M-642..M-698, M-755..M-792, M-794..M-807, M-858.
+F-645..F-681, F-716, F-894, F-902..F-904, F-728, F-734..F-736, F-741..F-744, F-746, F-747,
+F-750, F-897; M-642..M-698, M-755..M-792, M-794..M-807, M-858.
