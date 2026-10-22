@@ -496,10 +496,9 @@ pub fn apply_saved_game_state(
     quest_manager: Option<ManagerOpenPlan>,
 ) -> Result<AppliedGameState> {
     let saved = saved_game_state(section, tables)?;
-    let quest_manager_channel = match (quest_manager, &saved.quest_manager) {
-        (Some(plan), Some((quest, row))) => {
-            Some(lab.add_manager_open(ManagerSlot::Quest, plan.with_quest_state(quest, *row)?)?)
-        }
+    // The QuestManager joins last, after every other step that can fail.
+    let quest_plan = match (quest_manager, &saved.quest_manager) {
+        (Some(plan), Some((quest, row))) => Some(plan.with_quest_state(quest, *row)?),
         _ => None,
     };
     lab.extend_game_state_values(saved.values)?;
@@ -513,6 +512,9 @@ pub fn apply_saved_game_state(
     if let Some(clock) = saved.time_of_day {
         lab.enable_time_of_day(clock)?;
     }
+    let quest_manager_channel = quest_plan
+        .map(|plan| lab.add_manager_open(ManagerSlot::Quest, plan))
+        .transpose()?;
     Ok(AppliedGameState {
         unmapped_session_flags: saved.unmapped_session_flags,
         locked_missions,

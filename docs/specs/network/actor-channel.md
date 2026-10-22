@@ -52,7 +52,8 @@ Address pairs are server / client.
   save's C018 record: the faction mission's 1-byte `D_FactionMissions` row,
   nondefault difficulty, flags and delay, `InitialQuest` and the keyed
   relevant persistent actors and characters as `(Str, Object)` arrays, each
-  actor by its Icarus actor GUID's key (F-861; `with_quest_state`).
+  actor keyed by its saved Icarus actor GUID (`ActorKey::Saved`, apart from
+  domain ids; F-861; `with_quest_state`).
 - GameState active prospect (F-855): handles 51..67 carry the loaded save's
   `ProspectInfo` fields that differ from their defaults, arrays with every
   element field; `ElapsedTime` is the game mode's recorded

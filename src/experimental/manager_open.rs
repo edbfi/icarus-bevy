@@ -90,13 +90,13 @@ impl ManagerSlot {
     }
 }
 
-/// A saved Icarus actor GUID's actor key: world actors are keyed by it, so
-/// a quest actor opened later gets the GUID referenced here.
+/// A saved Icarus actor GUID's actor key, apart from domain ids, so a
+/// saved actor opened later under it gets the GUID referenced here.
 pub fn icarus_actor_key(icarus_uid: i32) -> Option<ActorKey> {
     u64::try_from(icarus_uid)
         .ok()
         .filter(|uid| *uid > 0)
-        .map(ActorKey::World)
+        .map(ActorKey::Saved)
 }
 
 /// The stably named component names the managers carry, as captured.

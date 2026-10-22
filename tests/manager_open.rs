@@ -229,7 +229,7 @@ fn saved_quest_state_composes_into_the_quest_manager_open() {
     let RepValue::Object(initial) = &values[&quest_handle::INITIAL_QUEST] else {
         panic!("an initial quest reference");
     };
-    assert_eq!(initial.guid, cache.actor_guid(ActorKey::World(9_001)));
+    assert_eq!(initial.guid, cache.actor_guid(ActorKey::Saved(9_001)));
     let RepValue::DynamicArray(actors) = &values[&quest_handle::RELEVANT_PERSISTENT_ACTORS] else {
         panic!("relevant persistent actors");
     };
@@ -241,6 +241,8 @@ fn saved_quest_state_composes_into_the_quest_manager_open() {
     let RepValue::Object(base) = &actors.stream.entries[1].value else {
         panic!("a persistent actor reference");
     };
-    assert_eq!(base.guid, cache.actor_guid(ActorKey::World(501)));
+    assert_eq!(base.guid, cache.actor_guid(ActorKey::Saved(501)));
     assert_ne!(base.guid, initial.guid);
+    // Saved links never share a GUID with a domain actor of the same id.
+    assert_ne!(cache.actor_guid(ActorKey::World(501)), base.guid);
 }
