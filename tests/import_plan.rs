@@ -680,7 +680,10 @@ fn malformed_catalogs_fail_without_naming_their_references() {
             "format = 1\n[references]\ndata_row = [\"SecretRow\"\n",
             "invalid content catalog",
         ),
-        ("format = 1\nSecretKey = 1\n", "invalid content catalog"),
+        (
+            "format = 1\nSecretKey = 1\n",
+            "invalid content catalog near line 2",
+        ),
     ] {
         let error = format!("{:#}", ContentCatalog::parse(text).unwrap_err());
         assert!(error.contains(expected), "{error}");

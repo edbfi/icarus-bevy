@@ -190,9 +190,13 @@ impl ContentCatalog {
     /// role and position only, never a reference.
     pub fn parse(text: &str) -> Result<Self> {
         let file: CatalogFile = toml::from_str(text).map_err(|error| {
-            let line = error
-                .span()
-                .map_or(0, |span| text[..span.start.min(text.len())].lines().count());
+            // The 1-based line holding the error's start (0 when unknown).
+            let line = error.span().map_or(0, |span| {
+                1 + text.as_bytes()[..span.start.min(text.len())]
+                    .iter()
+                    .filter(|byte| **byte == b'\n')
+                    .count()
+            });
             anyhow::anyhow!("invalid content catalog near line {line}")
         })?;
         ensure!(file.format == 1, "unsupported content catalog format");
