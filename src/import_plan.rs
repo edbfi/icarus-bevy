@@ -475,6 +475,7 @@ pub struct ContentPlan {
     /// Non-empty name values other than `None`.
     pub name_references: usize,
     /// String values naming a `/Game/` or `/Script/` package path.
+    /// Excludes classified string references without a package prefix.
     pub path_references: usize,
     /// Distinct references resolved against the catalog (every role but
     /// [`ContentRole::InstanceName`]); the `mapped`/`unmapped` counts split them.
@@ -824,9 +825,14 @@ impl References {
                 self.names += 1;
                 self.values.push((role, units.clone()));
             }
-            Scalar::Str(units) if is_package_path(units) => {
-                self.paths += 1;
-                self.values.push((role, units.clone()));
+            Scalar::Str(units) if !units.is_empty() && !is_none(units) => {
+                let package_path = is_package_path(units);
+                if package_path {
+                    self.paths += 1;
+                }
+                if package_path || role != ContentRole::Unclassified {
+                    self.values.push((role, units.clone()));
+                }
             }
             _ => {}
         }
