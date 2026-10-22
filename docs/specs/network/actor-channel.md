@@ -63,7 +63,8 @@ Address pairs are server / client.
   `bIsOpenWorldProspect` (48) and `bIsOutpostProspect` (49) are set when the
   `D_ProspectStats` rows of the prospect row's `WorldStatList` grant
   `WorldIsOpenWorldProspect_?` or `WorldIsOutpostProspect_?` above 0 (F-911;
-  `network::prospect_world_flags`).
+  `network::prospect_world_flags`). `RichPresenceGUID` (24) is a fresh GUID
+  per run, 32 uppercase hex digits (F-912; `network::rich_presence_guid`).
 - Gameplay-tag net index (F-702; U-065 resolved): `ConstructGameplayTagTree`
   builds the tree; `ConstructNetIndex` sorts nodes
   by `GetAllNodes` + `FName::LexicalLess`, sets `InvalidTagNetIndex = N + 1`,

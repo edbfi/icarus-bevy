@@ -935,6 +935,7 @@ fn compose_lab_game_state(
     cache: &mut icarus_bevy::experimental::session_open::NetGuidCache,
     exports: &mut icarus_bevy::experimental::session_open::ConnectionExports,
     world_time: f32,
+    rich_presence: Option<icarus_bevy::experimental::rep_layout::RepValue>,
 ) -> icarus_bevy::experimental::session_open::ComposedActorOpen {
     use icarus_bevy::experimental::{
         archive::ByteOrder,
@@ -951,6 +952,11 @@ fn compose_lab_game_state(
         handle::WORLD_TIME_SECONDS,
         RepValue::Float(world_time.to_bits()),
     );
+    // Each run draws its own RichPresenceGUID (F-912): compose with the
+    // sent one when comparing bits.
+    if let Some(value) = rich_presence {
+        state.values.insert(handle::RICH_PRESENCE_GUID, value);
+    }
     // The lab references its managers from the GameState (F-859).
     for (slot, _) in lab_manager_plans(profile) {
         slot.reference_from(&mut state.managers);
@@ -1075,7 +1081,7 @@ fn pinned_join_is_answered_with_the_composed_player_controller_open() {
             index as u32 + 1,
             &expected.guids,
         );
-        compose_lab_game_state(&profile, &mut cache, &mut exports, 0.0);
+        compose_lab_game_state(&profile, &mut cache, &mut exports, 0.0, None);
         compose_lab_managers(&profile, &mut cache, &mut exports);
         // Each connection gets its own dynamic GUIDs: actor 2, then 78.
         assert_eq!(expected.guids.actor, 2 + 76 * index as u32);
@@ -1161,11 +1167,24 @@ fn sent_world_time(
     profile: &ReleaseProfile,
     body: &icarus_bevy::experimental::packet::Payload,
 ) -> f32 {
+    use icarus_bevy::experimental::{game_state_open::handle, rep_layout::RepValue};
+    let RepValue::Float(bits) = sent_game_state_value(profile, body, handle::WORLD_TIME_SECONDS)
+    else {
+        panic!("world time is a float");
+    };
+    f32::from_bits(bits)
+}
+
+/// The value a sent GameState open body carries for `wanted`.
+fn sent_game_state_value(
+    profile: &ReleaseProfile,
+    body: &icarus_bevy::experimental::packet::Payload,
+    wanted: u32,
+) -> icarus_bevy::experimental::rep_layout::RepValue {
     use icarus_bevy::experimental::{
         actor_channel::{ActorChannelCodec, ActorChannelLimits, read_actor_bunch_body},
         archive::ByteOrder,
-        game_state_open::handle,
-        rep_layout::{RepLayoutCodec, RepLayoutLimits, RepValue, read_rep_properties},
+        rep_layout::{RepLayoutCodec, RepLayoutLimits, read_rep_properties},
     };
     let codec = ActorChannelCodec {
         engine_net_version: profile.engine_network_version,
@@ -1192,15 +1211,12 @@ fn sent_world_time(
         &rep_codec,
     )
     .unwrap();
-    let entry = stream
+    stream
         .entries
-        .iter()
-        .find(|entry| entry.handle == handle::WORLD_TIME_SECONDS)
-        .unwrap();
-    let RepValue::Float(bits) = entry.value else {
-        panic!("world time is a float");
-    };
-    f32::from_bits(bits)
+        .into_iter()
+        .find(|entry| entry.handle == wanted)
+        .unwrap()
+        .value
 }
 
 #[test]
@@ -1307,7 +1323,18 @@ fn pinned_joins_open_the_game_state_then_each_player_state() {
         };
         assert_eq!(game_body.header.channel_index, GAME_STATE_CHANNEL_INDEX);
         let world_time = sent_world_time(&profile, &game_body.payload);
-        let game_state = compose_lab_game_state(&profile, &mut cache, &mut exports, world_time);
+        let rich_presence = sent_game_state_value(
+            &profile,
+            &game_body.payload,
+            icarus_bevy::experimental::game_state_open::handle::RICH_PRESENCE_GUID,
+        );
+        let game_state = compose_lab_game_state(
+            &profile,
+            &mut cache,
+            &mut exports,
+            world_time,
+            Some(rich_presence),
+        );
         assert_eq!(Some(&game_exports.payload), game_state.exports.as_ref());
         assert_eq!(game_body.payload, game_state.bunch.payload);
         // One GameState: the same actor GUID on every connection.
@@ -2117,4 +2144,32 @@ fn the_saved_managers_follow_the_bound_managers() {
             .add_manager_open(ManagerSlot::Quest, quest)
             .is_err()
     );
+}
+
+/// Each run's GameState carries a fresh `RichPresenceGUID` as the original
+/// formats it: 32 uppercase hex digits (F-912).
+#[test]
+fn the_game_state_carries_a_fresh_rich_presence_guid() {
+    use icarus_bevy::experimental::game_state_open::handle;
+    let guid =
+        |values: &icarus_bevy::experimental::game_state_open::GameStateOpenState| match values
+            .values
+            .get(&handle::RICH_PRESENCE_GUID)
+        {
+            Some(icarus_bevy::experimental::rep_layout::RepValue::Str(text)) => {
+                String::from_utf16(text.units()).unwrap()
+            }
+            other => panic!("no RichPresenceGUID: {other:?}"),
+        };
+    let first = guid(&network::game_state_values().unwrap());
+    let second = guid(&network::game_state_values().unwrap());
+    for value in [&first, &second] {
+        assert_eq!(value.len(), 32);
+        assert!(
+            value
+                .chars()
+                .all(|c| c.is_ascii_digit() || ('A'..='F').contains(&c))
+        );
+    }
+    assert_ne!(first, second);
 }
