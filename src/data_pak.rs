@@ -413,12 +413,12 @@ impl DataPak {
             name: String,
         }
         let bytes = self.read(member)?;
-        let parsed: serde_json::Value = serde_json::from_slice(&bytes)
+        let mut parsed: serde_json::Value = serde_json::from_slice(&bytes)
             .map_err(|error| crate::json_parse_error("invalid data table member", error))?;
-        let Some(rows) = parsed.get("Rows") else {
+        let Some(rows) = parsed.get_mut("Rows").map(serde_json::Value::take) else {
             return Ok(None);
         };
-        let rows: Vec<Row> = serde_json::from_value(rows.clone())
+        let rows: Vec<Row> = serde_json::from_value(rows)
             .map_err(|error| crate::json_parse_error("invalid data table rows", error))?;
         ensure!(rows.len() <= MAX_TABLE_ROWS, "data table has too many rows");
         Ok(Some(rows.into_iter().map(|row| row.name).collect()))
