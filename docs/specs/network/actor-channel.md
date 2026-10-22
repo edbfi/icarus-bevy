@@ -196,7 +196,7 @@ Address pairs are server / client.
     `0.4` (`dot < 0 && dist_sq > 250k`, or `dot >= 0 && dist_sq > 9,998,244`).
   - `ProcessPrioritizedActors` (`0x1439c1bf0`, `evaluate_process_prioritized_actor`)
     checks `IsNetReady(0)`, sends `SendDestructionInfo`, skips
-    `IsActorRelevantToConnection` within `1.0` s of `RelevantTime` (F-851),
+    `IsActorRelevantToConnection` within `1.0` s of `RelevantTime` (F-788),
     counts an actor recently relevant when `ForceRelevantFrame >=
     Connection->LastProcessedFrame` (unsigned, `+0xd4` vs `+0x200`; F-851),
     sets `RelevantTime = ElapsedTime + 0.5 * SRand()` only if relevant, delays unopenable `< 1.0` Hz
@@ -211,7 +211,7 @@ Address pairs are server / client.
     and `ForceRelevantFrame = ReplicationFrame + 1` when
     `ForceRelevantFrame >= Connection->LastProcessedFrame` for every
     unprocessed entry, relevant or not, then sets `LastProcessedFrame` (F-851).
-- GameState updates (F-807, F-856): about 30 per second after the open,
+- GameState updates (F-805, F-807): about 30 per second after the open,
   unreliable, one actor block (component blocks may follow) with `TimeOfDay`
   (38) when changed, `ReplicatedWorldTimeSeconds` (19) every 0.1 s and
   `LevelTimeElapsedSec` (46) when its whole second changes, `ServerFPS` (82)

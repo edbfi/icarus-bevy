@@ -37,7 +37,7 @@ resolved).
 
 Server and client builds match in every scheduling stage, whose constants
 and guards the [spec](../../specs/network/actor-channel.md) lists (F-745,
-F-748, F-749, F-751, refined by F-851); a native stage drives
+F-748, F-749, F-751, refined by F-788, F-851); a native stage drives
 them over supplied actor positions (F-790). Export checksums are computed
 natively (F-853; U-067) and exports repeat until acked (F-796). The
 native composers rebuild the captured PlayerController (F-852),
@@ -48,7 +48,7 @@ and game mode values from the save the capture's server loaded
 saved state (F-804). On the capture's server build, as on the client,
 TimeOfDay advances by a per-world rate curve of the hour, and prospect setup
 writes SecondsPerGameDay from that curve; the open carried the saved
-SecondsPerGameDay (F-855, F-856; U-071 resolved). `run` follows the
+SecondsPerGameDay (F-805, F-855, F-856; U-071 resolved). `run` follows the
 open with GameState updates in the captured form and cadence, its time of
 day advancing at the saved day length's constant rate (F-807), and its
 own frame rate as `ServerFPS` by the original's rule (F-808, F-809), and a
