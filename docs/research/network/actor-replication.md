@@ -67,8 +67,9 @@ manager record it opens the InventoryContainerManager with the saved
 inventories and their items, the first replicated items: 96 of the 98
 captured inventories match, and two also carry a weight whose rule is open
 (F-866; U-075). The FLOD manager's open carries the save's tile count as
-tile references and composes bit for bit (F-914). On each of the 15 qualified prospects `run` admits a probe
-session and composes every open without errors (F-867).
+tile references and composes bit for bit (F-914). On each of the 15
+qualified prospects `run` admits a probe session and composes every open
+without errors (F-867).
 The original appends a player to the history once per user ID and slot when
 it initialises the player for the prospect, which `run` does not yet (F-865).
 The quest actors the QuestManager references stay closed: which sub-quests

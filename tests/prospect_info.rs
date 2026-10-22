@@ -999,6 +999,48 @@ fn a_saved_flod_record_supplies_its_tile_count() {
         )])
         .is_err()
     );
+    // A count past an array's bound skips only the FLOD manager.
+    use icarus_bevy::experimental::manager_open::ManagerSlot;
+    let network = icarus_bevy::config::NetworkConfig {
+        enabled: true,
+        port: 0,
+        release_profile: Some(
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("config/release.toml"),
+        ),
+        ..icarus_bevy::config::NetworkConfig::default()
+    };
+    let mut bound = icarus_bevy::network::bind(&network).unwrap().unwrap();
+    let huge = PreservedSection::from_inner_payload(
+        &payload(
+            &prospect_info(),
+            &[flod_recorder(i32::MAX), player_history_recorder()],
+        ),
+        PreserveLimits::default(),
+    )
+    .unwrap();
+    let applied = icarus_bevy::network::apply_saved_game_state(
+        &mut bound.lab,
+        &huge,
+        None,
+        std::mem::take(&mut bound.saved_managers),
+    )
+    .unwrap();
+    assert_eq!(
+        applied
+            .saved_managers
+            .iter()
+            .map(|(slot, _)| *slot)
+            .collect::<Vec<_>>(),
+        [ManagerSlot::PlayerHistory]
+    );
+    assert_eq!(
+        applied
+            .skipped_managers
+            .iter()
+            .map(|(slot, _)| *slot)
+            .collect::<Vec<_>>(),
+        [ManagerSlot::Flod]
+    );
 }
 
 /// The saved player history (`C024`) types in saved order (F-862).

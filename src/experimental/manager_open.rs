@@ -281,13 +281,15 @@ impl ManagerOpenPlan {
     /// Add the saved FLOD tile count (`C013`, F-914) to a FLOD manager plan:
     /// its tile array references `count` tile actors, keyed by position; the
     /// original assigns their GUIDs at this open, in array order. None is
-    /// the class default and adds nothing; a negative count fails.
+    /// the class default and adds nothing. A count that is negative or past
+    /// a replicated array's bound fails before anything is allocated.
     pub fn with_flod_tiles(mut self, count: i32) -> Result<Self> {
-        let count = u64::try_from(count).context("a negative saved FLOD tile count")?;
+        let count = u16::try_from(count)
+            .context("the saved FLOD tile count is negative or exceeds an array's bound")?;
         if count > 0 {
             self.actor_arrays.insert(
                 FLOD_TILES_HANDLE,
-                (0..count).map(ActorKey::FlodTile).collect(),
+                (0..u64::from(count)).map(ActorKey::FlodTile).collect(),
             );
         }
         Ok(self)

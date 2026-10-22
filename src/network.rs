@@ -730,7 +730,13 @@ pub fn apply_saved_game_state(
                 None => continue,
             },
             ManagerSlot::Flod => match saved.flod_tiles {
-                Some(count) => plan.with_flod_tiles(count)?,
+                Some(count) => match plan.with_flod_tiles(count) {
+                    Ok(plan) => plan,
+                    Err(error) => {
+                        saved.skipped_managers.push((slot, format!("{error:#}")));
+                        continue;
+                    }
+                },
                 None => continue,
             },
             _ => continue,

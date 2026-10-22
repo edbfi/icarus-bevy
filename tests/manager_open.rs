@@ -424,7 +424,9 @@ fn flod_tiles_compose_as_keyed_tile_references() {
         .unwrap()
         .unwrap();
     assert_eq!(base.location, Some([0.0, 0.0, -100_000.0]));
-    assert!(base.clone().with_flod_tiles(-1).is_err());
+    for bad in [-1, i32::from(u16::MAX) + 1, i32::MAX] {
+        assert!(base.clone().with_flod_tiles(bad).is_err(), "{bad}");
+    }
     assert!(
         base.clone()
             .with_flod_tiles(0)
