@@ -522,7 +522,7 @@ pub fn prospect_world_flags(tables: &mut DataTables, prospect: &[u16]) -> Result
     if !tables.has_table(PROSPECT_LIST_TABLE) || !tables.has_table(PROSPECT_STATS_TABLE) {
         return Ok([false; 2]);
     }
-    let Some(row) = tables.row(PROSPECT_LIST_TABLE, &String::from_utf16(prospect)?)? else {
+    let Some(row) = tables.row(PROSPECT_LIST_TABLE, &String::from_utf16_lossy(prospect))? else {
         return Ok([false; 2]);
     };
     let listed: Vec<String> = match row.get("WorldStatList") {
