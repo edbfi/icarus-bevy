@@ -58,7 +58,8 @@ original's `LockedMissions` come from the save's mission history and the
 server's `D_FactionMissions` by a fixed rule, which `run` follows (F-834,
 F-835). A fresh player's pawn vitals and empty inventories are data.pak rows,
 which `run` sends (F-836); its stats are mostly starting grants, with 8
-virtual stats whose formulas the server declares in code (F-838).
+virtual stats whose formulas the server declares in code; `run` sends them
+from data.pak by the same formulas (F-839).
 
 ## Open
 
