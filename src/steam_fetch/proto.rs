@@ -1,0 +1,320 @@
+//! Minimal hand-written protobuf messages for anonymous SteamPipe access.
+//!
+//! Field numbers follow Steam's documented/observed protocol (SteamKit2 and
+//! SteamDatabase/Protobufs as reference, independently implemented). Only the
+//! fields this fetcher reads or writes are declared; prost skips the rest.
+
+/// `CMsgProtoBufHeader`, the header of every protobuf-flagged CM message.
+#[derive(Clone, PartialEq, prost::Message)]
+pub struct ProtoHeader {
+    #[prost(fixed64, optional, tag = "1")]
+    pub steamid: Option<u64>,
+    #[prost(int32, optional, tag = "2")]
+    pub client_sessionid: Option<i32>,
+    #[prost(uint32, optional, tag = "3")]
+    pub routing_appid: Option<u32>,
+    /// Absent means the protocol default `u64::MAX` (no job).
+    #[prost(fixed64, optional, tag = "10")]
+    pub jobid_source: Option<u64>,
+    #[prost(fixed64, optional, tag = "11")]
+    pub jobid_target: Option<u64>,
+    #[prost(string, optional, tag = "12")]
+    pub target_job_name: Option<String>,
+    /// Absent means the protocol default 2 (`Fail`).
+    #[prost(int32, optional, tag = "13")]
+    pub eresult: Option<i32>,
+    #[prost(string, optional, tag = "14")]
+    pub error_message: Option<String>,
+}
+
+/// `CMsgMulti`: several length-prefixed messages, gzip-compressed when
+/// `size_unzipped` is non-zero.
+#[derive(Clone, PartialEq, prost::Message)]
+pub struct Multi {
+    #[prost(uint32, optional, tag = "1")]
+    pub size_unzipped: Option<u32>,
+    #[prost(bytes = "vec", optional, tag = "2")]
+    pub message_body: Option<Vec<u8>>,
+}
+
+/// `CMsgClientHello`.
+#[derive(Clone, PartialEq, prost::Message)]
+pub struct ClientHello {
+    #[prost(uint32, optional, tag = "1")]
+    pub protocol_version: Option<u32>,
+}
+
+/// `CMsgClientHeartBeat`.
+#[derive(Clone, PartialEq, prost::Message)]
+pub struct ClientHeartBeat {
+    #[prost(bool, optional, tag = "1")]
+    pub send_reply: Option<bool>,
+}
+
+/// `CMsgClientLogon`, reduced to the fields an anonymous logon sets.
+#[derive(Clone, PartialEq, prost::Message)]
+pub struct ClientLogon {
+    #[prost(uint32, optional, tag = "1")]
+    pub protocol_version: Option<u32>,
+    #[prost(uint32, optional, tag = "3")]
+    pub cell_id: Option<u32>,
+    #[prost(string, optional, tag = "6")]
+    pub client_language: Option<String>,
+    #[prost(uint32, optional, tag = "7")]
+    pub client_os_type: Option<u32>,
+}
+
+/// `CMsgClientLogonResponse`.
+#[derive(Clone, PartialEq, prost::Message)]
+pub struct ClientLogonResponse {
+    #[prost(int32, optional, tag = "1")]
+    pub eresult: Option<i32>,
+    #[prost(int32, optional, tag = "2")]
+    pub legacy_out_of_game_heartbeat_seconds: Option<i32>,
+    #[prost(int32, optional, tag = "3")]
+    pub heartbeat_seconds: Option<i32>,
+    #[prost(uint32, optional, tag = "7")]
+    pub cell_id: Option<u32>,
+    #[prost(int32, optional, tag = "10")]
+    pub eresult_extended: Option<i32>,
+}
+
+/// `CMsgClientLoggedOff`.
+#[derive(Clone, PartialEq, prost::Message)]
+pub struct ClientLoggedOff {
+    #[prost(int32, optional, tag = "1")]
+    pub eresult: Option<i32>,
+}
+
+/// `CMsgClientPICSAccessTokenRequest`.
+#[derive(Clone, PartialEq, prost::Message)]
+pub struct PicsAccessTokenRequest {
+    #[prost(uint32, repeated, packed = "false", tag = "1")]
+    pub packageids: Vec<u32>,
+    #[prost(uint32, repeated, packed = "false", tag = "2")]
+    pub appids: Vec<u32>,
+}
+
+/// `CMsgClientPICSAccessTokenResponse.AppToken`.
+#[derive(Clone, PartialEq, prost::Message)]
+pub struct PicsAppToken {
+    #[prost(uint32, optional, tag = "1")]
+    pub appid: Option<u32>,
+    #[prost(uint64, optional, tag = "2")]
+    pub access_token: Option<u64>,
+}
+
+/// `CMsgClientPICSAccessTokenResponse`.
+#[derive(Clone, PartialEq, prost::Message)]
+pub struct PicsAccessTokenResponse {
+    #[prost(message, repeated, tag = "3")]
+    pub app_access_tokens: Vec<PicsAppToken>,
+    #[prost(uint32, repeated, tag = "4")]
+    pub app_denied_tokens: Vec<u32>,
+}
+
+/// `CMsgClientPICSProductInfoRequest.AppInfo`.
+#[derive(Clone, PartialEq, prost::Message)]
+pub struct PicsAppRequest {
+    #[prost(uint32, optional, tag = "1")]
+    pub appid: Option<u32>,
+    #[prost(uint64, optional, tag = "2")]
+    pub access_token: Option<u64>,
+}
+
+/// `CMsgClientPICSProductInfoRequest`.
+#[derive(Clone, PartialEq, prost::Message)]
+pub struct PicsProductInfoRequest {
+    #[prost(message, repeated, tag = "2")]
+    pub apps: Vec<PicsAppRequest>,
+    #[prost(bool, optional, tag = "3")]
+    pub meta_data_only: Option<bool>,
+}
+
+/// `CMsgClientPICSProductInfoResponse.AppInfo`.
+#[derive(Clone, PartialEq, prost::Message)]
+pub struct PicsAppInfo {
+    #[prost(uint32, optional, tag = "1")]
+    pub appid: Option<u32>,
+    #[prost(uint32, optional, tag = "2")]
+    pub change_number: Option<u32>,
+    #[prost(bool, optional, tag = "3")]
+    pub missing_token: Option<bool>,
+    #[prost(bytes = "vec", optional, tag = "4")]
+    pub sha: Option<Vec<u8>>,
+    #[prost(bytes = "vec", optional, tag = "5")]
+    pub buffer: Option<Vec<u8>>,
+    #[prost(uint32, optional, tag = "7")]
+    pub size: Option<u32>,
+}
+
+/// `CMsgClientPICSProductInfoResponse`.
+#[derive(Clone, PartialEq, prost::Message)]
+pub struct PicsProductInfoResponse {
+    #[prost(message, repeated, tag = "1")]
+    pub apps: Vec<PicsAppInfo>,
+    #[prost(uint32, repeated, tag = "2")]
+    pub unknown_appids: Vec<u32>,
+    #[prost(bool, optional, tag = "6")]
+    pub response_pending: Option<bool>,
+    #[prost(string, optional, tag = "8")]
+    pub http_host: Option<String>,
+}
+
+/// `CMsgClientGetDepotDecryptionKey`.
+#[derive(Clone, PartialEq, prost::Message)]
+pub struct GetDepotDecryptionKey {
+    #[prost(uint32, optional, tag = "1")]
+    pub depot_id: Option<u32>,
+    #[prost(uint32, optional, tag = "2")]
+    pub app_id: Option<u32>,
+}
+
+/// `CMsgClientGetDepotDecryptionKeyResponse`.
+#[derive(Clone, PartialEq, prost::Message)]
+pub struct GetDepotDecryptionKeyResponse {
+    #[prost(int32, optional, tag = "1")]
+    pub eresult: Option<i32>,
+    #[prost(uint32, optional, tag = "2")]
+    pub depot_id: Option<u32>,
+    #[prost(bytes = "vec", optional, tag = "3")]
+    pub depot_encryption_key: Option<Vec<u8>>,
+}
+
+/// `CContentServerDirectory_GetServersForSteamPipe_Request`.
+#[derive(Clone, PartialEq, prost::Message)]
+pub struct GetServersForSteamPipeRequest {
+    #[prost(uint32, optional, tag = "1")]
+    pub cell_id: Option<u32>,
+    #[prost(uint32, optional, tag = "2")]
+    pub max_servers: Option<u32>,
+}
+
+/// `CContentServerDirectory_ServerInfo`.
+#[derive(Clone, PartialEq, prost::Message)]
+pub struct ContentServerInfo {
+    #[prost(string, optional, tag = "1")]
+    pub r#type: Option<String>,
+    #[prost(int32, optional, tag = "2")]
+    pub source_id: Option<i32>,
+    #[prost(int32, optional, tag = "3")]
+    pub cell_id: Option<i32>,
+    #[prost(int32, optional, tag = "4")]
+    pub load: Option<i32>,
+    #[prost(float, optional, tag = "5")]
+    pub weighted_load: Option<f32>,
+    #[prost(bool, optional, tag = "7")]
+    pub steam_china_only: Option<bool>,
+    #[prost(string, optional, tag = "8")]
+    pub host: Option<String>,
+    #[prost(string, optional, tag = "9")]
+    pub vhost: Option<String>,
+    #[prost(bool, optional, tag = "10")]
+    pub use_as_proxy: Option<bool>,
+    #[prost(string, optional, tag = "12")]
+    pub https_support: Option<String>,
+    #[prost(uint32, repeated, tag = "13")]
+    pub allowed_app_ids: Vec<u32>,
+    #[prost(uint32, optional, tag = "15")]
+    pub priority_class: Option<u32>,
+}
+
+/// `CContentServerDirectory_GetServersForSteamPipe_Response`.
+#[derive(Clone, PartialEq, prost::Message)]
+pub struct GetServersForSteamPipeResponse {
+    #[prost(message, repeated, tag = "1")]
+    pub servers: Vec<ContentServerInfo>,
+}
+
+/// `CContentServerDirectory_GetManifestRequestCode_Request`.
+#[derive(Clone, PartialEq, prost::Message)]
+pub struct GetManifestRequestCodeRequest {
+    #[prost(uint32, optional, tag = "1")]
+    pub app_id: Option<u32>,
+    #[prost(uint32, optional, tag = "2")]
+    pub depot_id: Option<u32>,
+    #[prost(uint64, optional, tag = "3")]
+    pub manifest_id: Option<u64>,
+    #[prost(string, optional, tag = "4")]
+    pub app_branch: Option<String>,
+}
+
+/// `CContentServerDirectory_GetManifestRequestCode_Response`.
+#[derive(Clone, PartialEq, prost::Message)]
+pub struct GetManifestRequestCodeResponse {
+    #[prost(uint64, optional, tag = "1")]
+    pub manifest_request_code: Option<u64>,
+}
+
+/// `ContentManifestPayload.FileMapping.ChunkData`.
+#[derive(Clone, PartialEq, prost::Message)]
+pub struct ManifestChunk {
+    /// SHA-1 of the uncompressed chunk; also the chunk's CDN id.
+    #[prost(bytes = "vec", optional, tag = "1")]
+    pub sha: Option<Vec<u8>>,
+    /// Adler-32 (seed 0) of the uncompressed chunk, despite the field name.
+    #[prost(fixed32, optional, tag = "2")]
+    pub crc: Option<u32>,
+    #[prost(uint64, optional, tag = "3")]
+    pub offset: Option<u64>,
+    #[prost(uint32, optional, tag = "4")]
+    pub cb_original: Option<u32>,
+    #[prost(uint32, optional, tag = "5")]
+    pub cb_compressed: Option<u32>,
+}
+
+/// `ContentManifestPayload.FileMapping`.
+#[derive(Clone, PartialEq, prost::Message)]
+pub struct ManifestFileMapping {
+    #[prost(string, optional, tag = "1")]
+    pub filename: Option<String>,
+    #[prost(uint64, optional, tag = "2")]
+    pub size: Option<u64>,
+    #[prost(uint32, optional, tag = "3")]
+    pub flags: Option<u32>,
+    #[prost(bytes = "vec", optional, tag = "4")]
+    pub sha_filename: Option<Vec<u8>>,
+    #[prost(bytes = "vec", optional, tag = "5")]
+    pub sha_content: Option<Vec<u8>>,
+    #[prost(message, repeated, tag = "6")]
+    pub chunks: Vec<ManifestChunk>,
+    #[prost(string, optional, tag = "7")]
+    pub linktarget: Option<String>,
+}
+
+/// `ContentManifestPayload`.
+#[derive(Clone, PartialEq, prost::Message)]
+pub struct ManifestPayload {
+    #[prost(message, repeated, tag = "1")]
+    pub mappings: Vec<ManifestFileMapping>,
+}
+
+/// `ContentManifestMetadata`.
+#[derive(Clone, PartialEq, prost::Message)]
+pub struct ManifestMetadata {
+    #[prost(uint32, optional, tag = "1")]
+    pub depot_id: Option<u32>,
+    #[prost(uint64, optional, tag = "2")]
+    pub gid_manifest: Option<u64>,
+    #[prost(uint32, optional, tag = "3")]
+    pub creation_time: Option<u32>,
+    #[prost(bool, optional, tag = "4")]
+    pub filenames_encrypted: Option<bool>,
+    #[prost(uint64, optional, tag = "5")]
+    pub cb_disk_original: Option<u64>,
+    #[prost(uint64, optional, tag = "6")]
+    pub cb_disk_compressed: Option<u64>,
+    #[prost(uint32, optional, tag = "7")]
+    pub unique_chunks: Option<u32>,
+    #[prost(uint32, optional, tag = "8")]
+    pub crc_encrypted: Option<u32>,
+    #[prost(uint32, optional, tag = "9")]
+    pub crc_clear: Option<u32>,
+}
+
+/// `ContentManifestSignature`.
+#[derive(Clone, PartialEq, prost::Message)]
+pub struct ManifestSignature {
+    #[prost(bytes = "vec", optional, tag = "1")]
+    pub signature: Option<Vec<u8>>,
+}
