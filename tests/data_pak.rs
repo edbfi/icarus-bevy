@@ -163,3 +163,18 @@ fn a_data_pak_without_the_session_flags_table_fails_before_binding() {
     );
     assert!(text.contains("not found"), "the cause is kept: {text}");
 }
+
+#[test]
+fn the_install_record_is_published_whole_and_replaced() {
+    let root = TempDir::new().unwrap();
+    let first = serde_json::json!({"build_id": 1});
+    icarus_bevy::network::write_install_record(root.path(), &first).unwrap();
+    let read = |path: &std::path::Path| -> serde_json::Value {
+        serde_json::from_slice(&fs::read(path.join("install.json")).unwrap()).unwrap()
+    };
+    assert_eq!(read(root.path()), first);
+    let second = serde_json::json!({"build_id": 2});
+    icarus_bevy::network::write_install_record(root.path(), &second).unwrap();
+    assert_eq!(read(root.path()), second);
+    assert!(!root.path().join("install.json.tmp").exists());
+}

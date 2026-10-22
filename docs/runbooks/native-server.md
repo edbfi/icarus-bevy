@@ -10,17 +10,19 @@ Requires native Linux and Rust 1.99.1 (pinned with Rustfmt and Clippy). Bevy 0.2
 uses headless features; no GPU, display, original game files or Proton are required.
 A compatible server will also need basic data from the free official dedicated
 server (Steam app 2089300), fetched unattended at install time (F-828); the game
-client is never needed. The native fetcher does this anonymously, without
-steamcmd (F-831):
+client is never needed. The install step fetches it anonymously, without
+steamcmd or prompts (F-831), into the data directory, where `run` finds it when
+`network.data_pak` is unset (`network_listening` reports `data_pak` and its `data_pak_source`, `configured` or `installed`):
 
 ```bash
-target/release/icarus-fetch --app 2089300 --branch public \
-  --file Icarus/Content/Data/data.pak --out /var/lib/icarus-native/official
+target/release/icarus-server install-official-data --data-dir /var/lib/icarus-native
+# -> /var/lib/icarus-native/official/Icarus/Content/Data/data.pak and install.json
 ```
 
-It prints one JSON summary (build, depot, manifest, size, SHA-1 and SHA-256);
-`--list` prints the depot's file list instead. Point `network.data_pak` at the
-fetched file.
+It prints one JSON record (build, depot, manifest, size, SHA-1 and SHA-256) and
+keeps it as `official/install.json`; rerun it after an official update. The
+lower-level `icarus-fetch --app 2089300 --file PATH --out DIR` fetches any file
+of the official server, and `--list` lists them.
 
 ```bash
 cargo build --release --locked

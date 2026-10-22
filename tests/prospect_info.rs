@@ -558,9 +558,13 @@ fn run_replicates_a_preserved_worlds_prospect() {
     assert!(preserved.status.success(), "{preserved:?}");
     let release = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("config/release.toml");
     let profile = ReleaseProfile::load(&release).unwrap();
-    // The official server's data tables, authored: two of the three saved
-    // session flags are listed.
-    let pak = directory.path().join("data.pak");
+    // The official server's data tables, authored, where the install step
+    // puts them in the data directory: two of the three saved session flags
+    // are listed, and run finds them without a configured data_pak.
+    let pak = state
+        .join(icarus_bevy::network::OFFICIAL_DIR)
+        .join(icarus_bevy::network::OFFICIAL_DATA_PAK);
+    std::fs::create_dir_all(pak.parent().unwrap()).unwrap();
     std::fs::write(
         &pak,
         pak_writer::write_pak(&[(
@@ -574,9 +578,8 @@ fn run_replicates_a_preserved_worlds_prospect() {
     std::fs::write(
         &config,
         format!(
-            "[network]\nenabled = true\nport = 0\nrelease_profile = {}\ndata_pak = {}\n",
-            toml::Value::String(release.display().to_string()),
-            toml::Value::String(pak.display().to_string())
+            "[network]\nenabled = true\nport = 0\nrelease_profile = {}\n",
+            toml::Value::String(release.display().to_string())
         ),
     )
     .unwrap();
@@ -615,6 +618,8 @@ fn run_replicates_a_preserved_worlds_prospect() {
             assert_eq!(record["unmapped_session_flags"], 1);
         }
         if record["event"] == "network_listening" {
+            // The installed official data tables were picked up.
+            assert_eq!(record["data_pak_source"], "installed");
             break record["address"].as_str().unwrap().parse().unwrap();
         }
     };
