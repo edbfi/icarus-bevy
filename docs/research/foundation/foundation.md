@@ -59,14 +59,14 @@ all before the final save and retains no session over 1,000 join/close cycles
 (F-768); it pins the Hello version to the release profile and survives 200
 real-binary cycles (F-770). Held probe sessions (one for 8 hours, eight for an
 hour) receive steady GameState updates without regressions or save failures;
-eight held 10 hours until a host reboot, whose SIGTERM shut the server down
-cleanly, and the world reloaded at its last save (F-833), and in 300 s sweeps of 8 to 64 concurrent sessions tick p99
-stays under 80 us; a networking status over one bunch, once withheld, now goes
-out as unreliable partial bunches that every session reassembles (F-824,
-F-826). No ICARUS client has
-used it. Under input parity (F-828), `install-official-data` and `icarus-fetch`
-fetch the free official server's data.pak (F-829) anonymously from Steam
-without steamcmd, matching the steamcmd install byte for byte (F-831).
+eight held 10.1 hours until a host reboot, whose SIGTERM shut the server down
+cleanly, and the world reloaded at its last save (F-833). In 300 s sweeps of 8
+to 64 concurrent sessions tick p99 stays under 80 us; a networking status over
+one bunch, once withheld, now goes out as unreliable partial bunches that every
+session reassembles (F-824, F-826). No ICARUS client has used it. Under input
+parity (F-828), `install-official-data` and `icarus-fetch` fetch the free
+official server's data.pak (F-829) anonymously from Steam without steamcmd,
+matching the steamcmd install byte for byte (F-831).
 
 The toolchain is pinned and current (F-483), authored Python passes
 basedpyright recommended (F-484), and the release links no render, window or
