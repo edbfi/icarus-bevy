@@ -263,13 +263,18 @@ impl ContentCatalog {
         Self::parse(text)
     }
 
-    /// Distinct references across every role.
+    /// Distinct authored reference spellings across every role, plus table row
+    /// names not already represented by an authored reference. Table row names
+    /// are deduplicated across tables and compared to authored references with
+    /// ASCII case folding. Authored spellings remain distinct because their
+    /// resolution is case-sensitive; counting does not change role resolution.
     pub fn len(&self) -> usize {
         let mut all: BTreeSet<&[u16]> = self.any.iter().map(Vec::as_slice).collect();
         for entries in self.by_role.values() {
             all.extend(entries.iter().map(Vec::as_slice));
         }
-        all.len()
+        let authored_rows: BTreeSet<Vec<u16>> = all.iter().map(|units| fold_case(units)).collect();
+        all.len() + self.data_rows.difference(&authored_rows).count()
     }
 
     pub fn is_empty(&self) -> bool {
@@ -526,6 +531,7 @@ pub struct ImportPlan {
     pub validation: &'static str,
     pub envelope: EnvelopeInspection,
     pub staged: StagedProspectSaveState,
+    /// Catalog size under [`ContentCatalog::len`]'s counting rules.
     pub catalog_references: usize,
     pub recorders: RecorderPlan,
     pub base_fields: BaseFieldPlan,

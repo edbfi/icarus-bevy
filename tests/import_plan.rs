@@ -1191,6 +1191,73 @@ fn data_pak(root: &TempDir) -> std::path::PathBuf {
     path
 }
 
+#[test]
+fn table_catalog_counts_distinct_rows_and_authored_overlap() {
+    let root = TempDir::new().unwrap();
+    let path = root.path().join("counts.pak");
+    fs::write(
+        &path,
+        pak_writer::write_pak(&[
+            (
+                "A/D_Rows.json",
+                pak_writer::table_json(&[ROW, "Other", "CASE"]).as_slice(),
+                false,
+            ),
+            (
+                "B/D_Rows.json",
+                pak_writer::table_json(&[&ROW.to_ascii_lowercase(), "Other", "case"]).as_slice(),
+                true,
+            ),
+        ]),
+    )
+    .unwrap();
+    let mut pak = icarus_bevy::data_pak::DataPak::open(&path).unwrap();
+    let empty = ContentCatalog::empty();
+    assert!(empty.is_empty());
+    assert_eq!(empty.len(), 0);
+    let (catalog, tables, skipped) = empty.with_data_tables(&mut pak).unwrap();
+    assert_eq!((tables, skipped), (2, 0));
+    assert!(!catalog.is_empty());
+    assert_eq!(catalog.len(), 3);
+    let source =
+        string_reference_source(&[tag("ItemStaticData", "StrProperty", &[0], &fstring(ROW))]);
+    let plan = plan_import(source.as_slice(), &catalog).unwrap();
+    assert_eq!(plan.catalog_references, 3);
+    assert!(plan.importable);
+    assert!(format!("{catalog:?}").contains("references: 3"));
+
+    // Repeated attachment and rows shared across tables add no references.
+    let (catalog, ..) = catalog.with_data_tables(&mut pak).unwrap();
+    assert_eq!(catalog.len(), 3);
+
+    for authored in [
+        ContentCatalog::from_references([ROW, "AuthoredOnly"]),
+        ContentCatalog::parse(&format!(
+            "format = 1\n[references]\nactor_class = [\"{ROW}\", \"AuthoredOnly\"]\ndata_row = [\"{ROW}\"]\n"
+        ))
+        .unwrap(),
+    ] {
+        let (catalog, ..) = authored.with_data_tables(&mut pak).unwrap();
+        assert_eq!(catalog.len(), 4);
+        assert_eq!(plan_import(source.as_slice(), &catalog).unwrap().catalog_references, 4);
+    }
+
+    // Case-sensitive authored spellings still count separately. A table row
+    // covered by either spelling does not add a third entry.
+    let (catalog, ..) = ContentCatalog::from_references(["Case", "CASE"])
+        .with_data_tables(&mut pak)
+        .unwrap();
+    assert_eq!(catalog.len(), 4);
+    let source =
+        string_reference_source(&[tag("ActorPathName", "StrProperty", &[0], &fstring("case"))]);
+    let plan = plan_import(source.as_slice(), &catalog).unwrap();
+    assert_eq!(
+        plan.content.roles[&ContentRole::ActorPath].unmapped_distinct,
+        1
+    );
+    assert!(!plan.importable);
+}
+
 /// Data-row references resolve against the official server's data tables
 /// without case; other roles do not, and non-table members are skipped.
 #[test]
