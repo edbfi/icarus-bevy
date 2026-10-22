@@ -84,6 +84,13 @@ Last reconciled: 2026-10-19
   inputs only and must not ship with the replacement. Each analysis still
   needs a bounded case scope and session; runtime and connected experiments
   retain their separate gates below.
+- The user decided (2026-10-22, F-828) that the shipped server must not
+  depend on the game client, which is not publicly available, or on data
+  derived only from it. Basic data it needs to work may come from the free,
+  public dedicated-server distribution, read from the operator's install;
+  whether to package such data is undecided. Client-derived metadata counts
+  toward the shipped server only once re-derived from or checked against
+  that distribution (U-072).
 
 ## Before any original-server or client run
 
