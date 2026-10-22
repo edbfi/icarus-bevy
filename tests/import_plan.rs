@@ -620,3 +620,145 @@ fn version_zero_saves_with_unregistered_classes_still_plan() {
     assert_eq!(plan.blockers, vec![ImportBlocker::NoRetainedRecorders]);
     assert!(planned_actors(source.as_slice()).unwrap().is_empty());
 }
+
+/// A catalog with every reference of [`CLEAN`] in its role except the item
+/// row; `extra` lists more TOML lines under `[references]`.
+fn clean_catalog(extra: &str) -> String {
+    format!(
+        "format = 1\n[references]\nactor_class = [\"{ROW}\"]\nactor_path = [\"{PATH}\"]\nclass_variable = [\"bSecretFlag\"]\nunclassified = [\"SecretTile\", \"SecretQuestVar\"]\n{extra}"
+    )
+}
+
+#[test]
+fn a_catalog_resolves_each_reference_only_in_the_roles_it_lists() {
+    let source = envelope(2, &[recorder(ACTOR, &CLEAN)]);
+    // The row name is the actor class and the item's static data row; the
+    // catalog lists it as an actor class only.
+    let catalog = ContentCatalog::parse(&clean_catalog("")).unwrap();
+    assert_eq!(catalog.len(), 5);
+    let plan = plan_import(source.as_slice(), &catalog).unwrap();
+    assert_eq!(plan.catalog_references, 5);
+    assert_eq!(
+        plan.content.roles[&ContentRole::ActorClass].unmapped_distinct,
+        0
+    );
+    assert_eq!(
+        plan.content.roles[&ContentRole::DataRow].unmapped_distinct,
+        1
+    );
+    assert_eq!(
+        plan.blockers,
+        vec![ImportBlocker::UnmappedContent {
+            distinct: 1,
+            references: 1
+        }]
+    );
+    let catalog =
+        ContentCatalog::parse(&clean_catalog(&format!("data_row = [\"{ROW}\"]\n"))).unwrap();
+    let plan = plan_import(source.as_slice(), &catalog).unwrap();
+    assert!(plan.blockers.is_empty(), "{:?}", plan.blockers);
+    assert!(plan.importable);
+}
+
+#[test]
+fn malformed_catalogs_fail_without_naming_their_references() {
+    for (text, expected) in [
+        ("format = 2\n", "unsupported content catalog format"),
+        (
+            "format = 1\n[references]\ninstance_name = [\"SecretObject\"]\n",
+            "invalid content catalog",
+        ),
+        (
+            "format = 1\n[references]\ndata_row = [\"SecretRow\", \"SecretRow\"]\n",
+            "lists a reference twice",
+        ),
+        (
+            "format = 1\n[references]\ndata_row = [\"\"]\n",
+            "reference must be",
+        ),
+        (
+            "format = 1\n[references]\ndata_row = [\"SecretRow\"\n",
+            "invalid content catalog",
+        ),
+        ("format = 1\nSecretKey = 1\n", "invalid content catalog"),
+    ] {
+        let error = format!("{:#}", ContentCatalog::parse(text).unwrap_err());
+        assert!(error.contains(expected), "{error}");
+        assert!(!error.contains("Secret"), "{error}");
+    }
+    let long = "x".repeat(1_025);
+    let error = ContentCatalog::parse(&format!(
+        "format = 1\n[references]\ndata_row = [\"{long}\"]\n"
+    ))
+    .unwrap_err();
+    assert!(format!("{error:#}").contains("reference must be"));
+}
+
+#[test]
+fn catalog_files_must_be_small_regular_files() {
+    let root = TempDir::new().unwrap();
+    let error = ContentCatalog::load(root.path()).unwrap_err();
+    assert!(format!("{error:#}").contains("regular file"), "{error:#}");
+    let fifo = root.path().join("catalog.fifo");
+    rustix::fs::mkfifoat(
+        rustix::fs::CWD,
+        &fifo,
+        rustix::fs::Mode::RUSR | rustix::fs::Mode::WUSR,
+    )
+    .unwrap();
+    let error = ContentCatalog::load(&fifo).unwrap_err();
+    assert!(format!("{error:#}").contains("regular file"), "{error:#}");
+    let large = root.path().join("large.toml");
+    let file = fs::File::create(&large).unwrap();
+    file.set_len(icarus_bevy::import_plan::MAX_CATALOG_BYTES + 1)
+        .unwrap();
+    let error = ContentCatalog::load(&large).unwrap_err();
+    assert!(format!("{error:#}").contains("4 MiB"), "{error:#}");
+}
+
+#[test]
+fn import_cli_resolves_against_a_catalog_file() {
+    let root = TempDir::new().unwrap();
+    let path = root.path().join("authored.json");
+    fs::write(&path, envelope(2, &[recorder(ACTOR, &CLEAN)])).unwrap();
+    let catalog = root.path().join("catalog.toml");
+    fs::write(
+        &catalog,
+        clean_catalog(&format!("data_row = [\"{ROW}\"]\n")),
+    )
+    .unwrap();
+    let output = Command::new(env!("CARGO_BIN_EXE_icarus-server"))
+        .args(["import-save", "--dry-run", "--source"])
+        .arg(&path)
+        .arg("--destination")
+        .arg(root.path().join("world"))
+        .arg("--catalog")
+        .arg(&catalog)
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "{:?}", output.stderr);
+    let plan: Value = serde_json::from_slice(&output.stdout).unwrap();
+    // The row name counts once though listed in two roles.
+    assert_eq!(plan["catalog_references"], 5);
+    assert_eq!(plan["importable"], true);
+    assert!(!String::from_utf8_lossy(&output.stdout).contains("Secret"));
+
+    fs::write(
+        &catalog,
+        "format = 1\n[references]\ndata_row = [\"SecretRow\"\n",
+    )
+    .unwrap();
+    let output = Command::new(env!("CARGO_BIN_EXE_icarus-server"))
+        .args(["import-save", "--dry-run", "--source"])
+        .arg(&path)
+        .arg("--destination")
+        .arg(root.path().join("world"))
+        .arg("--catalog")
+        .arg(&catalog)
+        .output()
+        .unwrap();
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("invalid content catalog"), "{stderr}");
+    assert!(!stderr.contains("Secret"), "{stderr}");
+}

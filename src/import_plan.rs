@@ -14,7 +14,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::io::Read;
 
 use anyhow::{Context, Result, ensure};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 use crate::experimental::archive::{ByteOrder, decode_string};
 use crate::experimental::component::MAX_BOUNDED_COMPONENT_BYTES;
@@ -117,21 +117,57 @@ const READ_FIELD_ROLES: [(&str, Option<&str>, ContentRole); 15] = [
     ),
 ];
 
+/// Largest accepted content catalog file.
+pub const MAX_CATALOG_BYTES: u64 = 4 * 1024 * 1024;
+/// Largest accepted catalog reference, in UTF-16 units.
+pub const MAX_CATALOG_REFERENCE_UNITS: usize = 1024;
+
 /// Independently authored native content the importer can resolve references
-/// against. Empty until native world data exists; every reference it lacks
-/// blocks import.
+/// against, by role. Empty until native world data exists; every reference
+/// it lacks in the role it is used in blocks import.
 #[derive(Clone, Default)]
 pub struct ContentCatalog {
-    references: BTreeSet<Vec<u16>>,
+    /// References that resolve in every role ([`Self::from_references`]).
+    any: BTreeSet<Vec<u16>>,
+    by_role: BTreeMap<ContentRole, BTreeSet<Vec<u16>>>,
 }
 
 impl std::fmt::Debug for ContentCatalog {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        // References come from supplied saves; print only the count.
+        // References may come from supplied saves; print only the count.
         f.debug_struct("ContentCatalog")
-            .field("references", &self.references.len())
+            .field("references", &self.len())
             .finish()
     }
+}
+
+/// A catalog file: `format = 1` and one list of references per role under
+/// `[references]`. Instance names are never resolved, so they have no list.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct CatalogFile {
+    format: u32,
+    #[serde(default)]
+    references: CatalogReferences,
+}
+
+#[derive(Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct CatalogReferences {
+    #[serde(default)]
+    actor_class: Vec<String>,
+    #[serde(default)]
+    actor_path: Vec<String>,
+    #[serde(default)]
+    data_row: Vec<String>,
+    #[serde(default)]
+    asset_path: Vec<String>,
+    #[serde(default)]
+    world_tile: Vec<String>,
+    #[serde(default)]
+    class_variable: Vec<String>,
+    #[serde(default)]
+    unclassified: Vec<String>,
 }
 
 impl ContentCatalog {
@@ -139,25 +175,101 @@ impl ContentCatalog {
         Self::default()
     }
 
+    /// References that resolve in every role.
     pub fn from_references<'a>(references: impl IntoIterator<Item = &'a str>) -> Self {
         Self {
-            references: references
+            any: references
                 .into_iter()
                 .map(|reference| reference.encode_utf16().collect())
                 .collect(),
+            by_role: BTreeMap::new(),
         }
     }
 
+    /// Parse a catalog file's text (see [`Self::load`]). Errors name the
+    /// role and position only, never a reference.
+    pub fn parse(text: &str) -> Result<Self> {
+        let file: CatalogFile = toml::from_str(text).map_err(|error| {
+            let line = error
+                .span()
+                .map_or(0, |span| text[..span.start.min(text.len())].lines().count());
+            anyhow::anyhow!("invalid content catalog near line {line}")
+        })?;
+        ensure!(file.format == 1, "unsupported content catalog format");
+        let lists = file.references;
+        let mut catalog = Self::default();
+        for (role, list) in [
+            (ContentRole::ActorClass, lists.actor_class),
+            (ContentRole::ActorPath, lists.actor_path),
+            (ContentRole::DataRow, lists.data_row),
+            (ContentRole::AssetPath, lists.asset_path),
+            (ContentRole::WorldTile, lists.world_tile),
+            (ContentRole::ClassVariable, lists.class_variable),
+            (ContentRole::Unclassified, lists.unclassified),
+        ] {
+            let entries = catalog.by_role.entry(role).or_default();
+            for reference in list {
+                let units: Vec<u16> = reference.encode_utf16().collect();
+                ensure!(
+                    !units.is_empty() && units.len() <= MAX_CATALOG_REFERENCE_UNITS,
+                    "content catalog {role:?} reference must be 1..={MAX_CATALOG_REFERENCE_UNITS} UTF-16 units"
+                );
+                ensure!(
+                    entries.insert(units),
+                    "content catalog {role:?} lists a reference twice"
+                );
+            }
+        }
+        catalog.by_role.retain(|_, entries| !entries.is_empty());
+        Ok(catalog)
+    }
+
+    /// Load a catalog file: a regular file of at most [`MAX_CATALOG_BYTES`],
+    /// opened without blocking so a FIFO cannot stall the importer.
+    pub fn load(path: &std::path::Path) -> Result<Self> {
+        use std::os::unix::fs::OpenOptionsExt;
+        let file = std::fs::OpenOptions::new()
+            .read(true)
+            .custom_flags(crate::nonblocking_flag())
+            .open(path)
+            .context("open content catalog")?;
+        let metadata = file.metadata()?;
+        ensure!(metadata.is_file(), "content catalog must be a regular file");
+        ensure!(
+            metadata.len() <= MAX_CATALOG_BYTES,
+            "content catalog exceeds 4 MiB limit"
+        );
+        let mut bytes = Vec::new();
+        file.take(MAX_CATALOG_BYTES + 1).read_to_end(&mut bytes)?;
+        // The metadata bound alone does not cover growth after the check.
+        ensure!(
+            bytes.len() as u64 <= MAX_CATALOG_BYTES,
+            "content catalog exceeds 4 MiB limit"
+        );
+        let text = std::str::from_utf8(&bytes).context("content catalog is not UTF-8")?;
+        Self::parse(text)
+    }
+
+    /// Distinct references across every role.
     pub fn len(&self) -> usize {
-        self.references.len()
+        let mut all: BTreeSet<&[u16]> = self.any.iter().map(Vec::as_slice).collect();
+        for entries in self.by_role.values() {
+            all.extend(entries.iter().map(Vec::as_slice));
+        }
+        all.len()
     }
 
     pub fn is_empty(&self) -> bool {
-        self.references.is_empty()
+        self.any.is_empty() && self.by_role.is_empty()
     }
 
-    fn contains(&self, units: &[u16]) -> bool {
-        self.references.contains(units)
+    /// Whether `units` resolves in `role`.
+    fn contains(&self, role: ContentRole, units: &[u16]) -> bool {
+        self.any.contains(units)
+            || self
+                .by_role
+                .get(&role)
+                .is_some_and(|entries| entries.contains(units))
     }
 }
 
@@ -462,9 +574,13 @@ pub fn plan_import(reader: impl Read, catalog: &ContentCatalog) -> Result<Import
             if !role.resolves_against_catalog() {
                 continue;
             }
-            let mapped = *distinct
+            // A reference maps only where the catalog defines it in every
+            // role it is used in.
+            let mapped = catalog.contains(role, &reference);
+            distinct
                 .entry(reference)
-                .or_insert_with_key(|key| catalog.contains(key));
+                .and_modify(|all| *all &= mapped)
+                .or_insert(mapped);
             if !mapped {
                 plan.content.unmapped_references += 1;
                 class_plan.unmapped_references += 1;
@@ -474,7 +590,7 @@ pub fn plan_import(reader: impl Read, catalog: &ContentCatalog) -> Result<Import
     for (role, reference) in &role_distinct {
         let count = plan.content.roles.entry(*role).or_default();
         count.distinct += 1;
-        if role.resolves_against_catalog() && !distinct.get(reference).copied().unwrap_or(false) {
+        if role.resolves_against_catalog() && !catalog.contains(*role, reference) {
             count.unmapped_distinct += 1;
         }
     }

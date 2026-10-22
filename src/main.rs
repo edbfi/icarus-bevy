@@ -103,7 +103,9 @@ enum Command {
     },
     /// Plan a native import of a supplied prospect. `--dry-run` prints the
     /// plan (counts only); without it the import is refused while the plan has
-    /// blockers. Nothing is ever written; the destination is not touched.
+    /// blockers. `--catalog` resolves references against a native content
+    /// catalog file (empty without it). Nothing is ever written; the
+    /// destination is not touched.
     ImportSave {
         #[arg(long)]
         source: PathBuf,
@@ -111,6 +113,8 @@ enum Command {
         destination: PathBuf,
         #[arg(long)]
         dry_run: bool,
+        #[arg(long)]
+        catalog: Option<PathBuf>,
     },
 }
 
@@ -139,13 +143,18 @@ fn execute(cli: Cli) -> Result<()> {
             Ok(())
         }
         Command::ImportSave {
-            source, dry_run, ..
+            source,
+            dry_run,
+            catalog,
+            ..
         } => {
+            use icarus_bevy::import_plan::{ContentCatalog, plan_import};
+            let catalog = match catalog {
+                Some(path) => ContentCatalog::load(&path)?,
+                None => ContentCatalog::empty(),
+            };
             let file = open_regular_source(&source)?;
-            let plan = icarus_bevy::import_plan::plan_import(
-                file,
-                &icarus_bevy::import_plan::ContentCatalog::empty(),
-            )?;
+            let plan = plan_import(file, &catalog)?;
             if dry_run {
                 println!("{}", serde_json::to_string(&plan)?);
                 return Ok(());
