@@ -49,13 +49,14 @@ use bevy::prelude::{App, Resource, World};
 
 use crate::{
     config::{NetworkConfig, read_configuration},
+    data_pak::DataTables,
     experimental::{
         admission::AdmissionPolicy,
         control_messages::ArchiveText,
         game_state_open::{
             GAME_STATE_CHANNEL_INDEX, GameStateManagers, GameStateOpenState,
             MATCH_STATE_IN_PROGRESS, NetworkingStatus, active_prospect_values, handle,
-            saved_game_mode_values,
+            saved_game_mode_values, session_flags_value,
         },
         pawn_open::{CharacterVitals, PAWN_CHANNEL_INDEX, PawnContent},
         peer_lab::{PeerLab, PeerLabAdmission, PeerLabConfig, PeerLabPlugin, SessionCounts},
@@ -67,6 +68,9 @@ use crate::{
     },
     preservation::PreservedSection,
 };
+
+/// The data table whose row order `SessionFlags` indices follow.
+pub const SESSION_FLAGS_TABLE: &str = "D_SessionFlags";
 
 /// Spectator slots granted beside `max_players` (the lab's default policy).
 pub const SPECTATOR_SLOTS: u32 = 2;
@@ -138,22 +142,53 @@ pub struct SavedGameState {
     pub values: BTreeMap<u32, RepValue>,
     pub level_time_elapsed_sec: Option<i32>,
     pub time_of_day: Option<TimeOfDayClock>,
+    /// Saved session flags that the data tables do not list (or all of
+    /// them without tables); they are not replicated.
+    pub unmapped_session_flags: usize,
 }
 
-pub fn saved_game_state(section: &PreservedSection) -> Result<SavedGameState> {
+/// With the official server's data tables (F-828), the saved session flags
+/// also replicate as `SessionFlags` row indices in saved order (F-830).
+pub fn saved_game_state(
+    section: &PreservedSection,
+    tables: Option<&mut DataTables>,
+) -> Result<SavedGameState> {
     let payload = section.decode()?.to_inner_payload()?;
     let saved = crate::prospect::saved_prospect_from_payload(&payload)?;
-    let level_time = saved.game_mode.map(|mode| mode.level_time_elapsed_sec);
+    let level_time = saved
+        .game_mode
+        .as_ref()
+        .map(|mode| mode.level_time_elapsed_sec);
     let mut values = active_prospect_values(
         &saved
             .info
             .for_session(level_time.unwrap_or(saved.info.elapsed_time), |_| false),
     )?;
+    let mut unmapped_session_flags = 0;
     if let Some(mode) = &saved.game_mode {
         values.extend(saved_game_mode_values(mode));
+        let mut indices = Vec::new();
+        match tables {
+            Some(tables) => {
+                for name in &mode.session_flags {
+                    match tables
+                        .row_index(SESSION_FLAGS_TABLE, name)?
+                        .and_then(|index| u8::try_from(index).ok())
+                    {
+                        Some(index) => indices.push(index),
+                        None => unmapped_session_flags += 1,
+                    }
+                }
+            }
+            None => unmapped_session_flags = mode.session_flags.len(),
+        }
+        if !indices.is_empty() {
+            values.insert(handle::SESSION_FLAGS, session_flags_value(&indices));
+        }
     }
     let time_of_day = saved
         .game_mode
+        .as_ref()
         .filter(|mode| mode.seconds_per_game_day > 0)
         .map(|mode| {
             RateCurve::for_seconds_per_game_day(mode.seconds_per_game_day)
@@ -164,6 +199,7 @@ pub fn saved_game_state(section: &PreservedSection) -> Result<SavedGameState> {
         values,
         level_time_elapsed_sec: level_time,
         time_of_day,
+        unmapped_session_flags,
     })
 }
 
@@ -180,9 +216,14 @@ pub fn apply_server_settings(lab: &mut PeerLab, autosave_seconds: u64) -> Result
     lab.enable_networking_status(NetworkingStatus::local(interval))
 }
 
-/// Add a loaded world's [`saved_game_state`] to `lab`'s GameState open.
-pub fn apply_saved_game_state(lab: &mut PeerLab, section: &PreservedSection) -> Result<()> {
-    let saved = saved_game_state(section)?;
+/// Add a loaded world's [`saved_game_state`] to `lab`'s GameState open;
+/// returns how many saved session flags could not be replicated.
+pub fn apply_saved_game_state(
+    lab: &mut PeerLab,
+    section: &PreservedSection,
+    tables: Option<&mut DataTables>,
+) -> Result<usize> {
+    let saved = saved_game_state(section, tables)?;
     lab.extend_game_state_values(saved.values)?;
     if let Some(level_time) = saved.level_time_elapsed_sec {
         lab.set_game_state_level_time(level_time)?;
@@ -190,7 +231,7 @@ pub fn apply_saved_game_state(lab: &mut PeerLab, section: &PreservedSection) -> 
     if let Some(clock) = saved.time_of_day {
         lab.enable_time_of_day(clock)?;
     }
-    Ok(())
+    Ok(saved.unmapped_session_flags)
 }
 
 /// Session counts kept after [`teardown`] so a repeated call and the final
@@ -226,6 +267,8 @@ pub fn peer_lab_config(network: &NetworkConfig) -> PeerLabConfig {
 pub struct BoundNetwork {
     pub lab: PeerLab,
     pub release: Option<ReleasePin>,
+    /// The official server's data tables, when `data_pak` is set.
+    pub tables: Option<DataTables>,
 }
 
 /// Load and validate the configured release profile (bounded regular-file
@@ -242,6 +285,13 @@ pub fn release_profile(network: &NetworkConfig) -> Result<Option<ReleaseProfile>
         .transpose()
 }
 
+/// Open a data pak and load the tables `run` reads from it.
+fn load_data_tables(path: &std::path::Path) -> Result<DataTables> {
+    let mut tables = DataTables::open(path)?;
+    tables.rows(SESSION_FLAGS_TABLE)?;
+    Ok(tables)
+}
+
 /// Validate `network`, load its release profile and only then bind its
 /// socket, or return `None` when disabled.
 pub fn bind(network: &NetworkConfig) -> Result<Option<BoundNetwork>> {
@@ -250,6 +300,16 @@ pub fn bind(network: &NetworkConfig) -> Result<Option<BoundNetwork>> {
     }
     network.validate()?;
     let profile = release_profile(network)?;
+    // The tables run reads are loaded here, so a pak without them fails
+    // before the socket binds rather than at the first apply.
+    let tables = network
+        .data_pak
+        .as_deref()
+        .map(|path| {
+            load_data_tables(path)
+                .with_context(|| format!("load network.data_pak {}", path.display()))
+        })
+        .transpose()?;
     let mut config = peer_lab_config(network);
     if let Some(profile) = &profile {
         config = config.with_release_profile(profile);
@@ -298,6 +358,7 @@ pub fn bind(network: &NetworkConfig) -> Result<Option<BoundNetwork>> {
     Ok(Some(BoundNetwork {
         lab,
         release: profile.map(|profile| profile.pin),
+        tables,
     }))
 }
 

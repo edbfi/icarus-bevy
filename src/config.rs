@@ -67,6 +67,12 @@ pub struct NetworkConfig {
     /// checksum is answered with Upgrade. Unset accepts any Hello version.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub release_profile: Option<PathBuf>,
+    /// Optional `Icarus/Content/Data/data.pak` of the free official dedicated
+    /// server (fetched at install time, F-828). When set, it is opened before
+    /// the socket binds, and its data tables give replicated row handles
+    /// their indices (saved session flags; F-830).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub data_pak: Option<PathBuf>,
 }
 
 impl Default for NetworkConfig {
@@ -78,6 +84,7 @@ impl Default for NetworkConfig {
             max_players: 8,
             session_timeout_seconds: 30,
             release_profile: None,
+            data_pak: None,
         }
     }
 }
@@ -101,6 +108,12 @@ impl NetworkConfig {
                 .as_ref()
                 .is_none_or(|path| !path.as_os_str().is_empty()),
             "network.release_profile is empty"
+        );
+        ensure!(
+            self.data_pak
+                .as_ref()
+                .is_none_or(|path| !path.as_os_str().is_empty()),
+            "network.data_pak is empty"
         );
         Ok(())
     }

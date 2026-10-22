@@ -57,6 +57,7 @@ port = 17777                # 0 selects an ephemeral port; CLI: --network-port
 max_players = 8             # admission occupancy limit, 1..=64
 session_timeout_seconds = 30  # idle eviction, 1..=600, monotonic real time
 release_profile = "config/release.toml"  # optional Hello version pin
+data_pak = "/path/to/IcarusServer/Icarus/Content/Data/data.pak"  # optional, official server's data tables
 ```
 
 The release profile, then the socket, are set up before the data directory
@@ -66,7 +67,10 @@ stops admission, closes every session, then drains and saves. `network_listening
 gives the bound address and `version_check`; `status` and `stopped` carry
 `sessions` counts only. A world seeded by `preserve-save` sends its save's
 active prospect and game mode values in the GameState open
-(`active_prospect_replicated`, F-804). No ICARUS client compatibility,
+(`active_prospect_replicated`, F-804); with `data_pak` (the free official
+server's `Icarus/Content/Data/data.pak`, F-828) its saved session flags also
+replicate as row indices, and the record counts the flags the tables lack
+(`unmapped_session_flags`, F-830). No ICARUS client compatibility,
 identity check, replication or gameplay is implied; only the authored probe
 is tested:
 

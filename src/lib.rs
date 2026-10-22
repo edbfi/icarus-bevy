@@ -1,5 +1,6 @@
 //! Native, headless Bevy foundation. ICARUS interoperability remains unverified.
 pub mod config;
+pub mod data_pak;
 pub mod experimental;
 pub mod import_plan;
 mod json;
