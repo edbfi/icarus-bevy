@@ -137,7 +137,12 @@ symlinks allowed; F-671), read it, and write nothing unless stated:
 - `import-save --source … --destination … --dry-run`: prints the import plan
   (staging, `Validate`, typing, base fields, transforms, content references by
   role against the native catalog, blockers; F-767, F-821). Without `--dry-run`
-  the import is refused; nothing is written.
+  the import is refused; nothing is written. `--catalog FILE` resolves
+  references against a native content catalog: a regular TOML file of at most
+  4 MiB with `format = 1` and, under `[references]`, one list per role
+  (`actor_class`, `actor_path`, `data_row`, `asset_path`, `world_tile`,
+  `class_variable`, `unclassified`); a reference maps only in the roles that
+  list it. Instance names are never resolved and have no list.
 
 Value meanings and original-server round trips remain unvalidated. The
 [synthetic workload](synthetic-workload.md) exercises native scheduling and
