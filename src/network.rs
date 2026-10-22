@@ -60,12 +60,13 @@ use crate::{
             MATCH_STATE_IN_PROGRESS, NetworkingStatus, active_prospect_values, handle,
             saved_game_mode_values, session_flags_value,
         },
+        manager_open::{ManagerOpenPlan, ManagerSlot},
         pawn_open::{
             CharacterVitals, EmptySlot, FastArrayContent, PAWN_CHANNEL_INDEX, PawnContent,
             PawnInventory,
         },
         peer_lab::{PeerLab, PeerLabAdmission, PeerLabConfig, PeerLabPlugin, SessionCounts},
-        prospect_info::MissionHistoryRecord,
+        prospect_info::{MissionHistoryRecord, SavedQuestManager},
         release::{ReleasePin, ReleaseProfile},
         rep_layout::{NetworkName, RepValue},
         server_fps::{DEFAULT_SAMPLES, ServerFpsMeter},
@@ -357,6 +358,10 @@ pub struct SavedGameState {
     /// The saved missions `LockedMissions` lists while their locks last
     /// ([`locked_missions`]); empty without tables.
     pub locked_missions: Vec<LockedMission>,
+    /// The saved quest manager state (`C018`) and its faction mission's
+    /// `D_FactionMissions` row (F-861); `None` without the record, without
+    /// tables or when the table lacks the mission.
+    pub quest_manager: Option<(SavedQuestManager, u8)>,
 }
 
 /// The saved missions `AIcarusGameModeSurvival::UpdateLockedMissions`
@@ -394,7 +399,7 @@ pub fn locked_missions(
 /// the saved mission history yields the [`locked_missions`] (F-834).
 pub fn saved_game_state(
     section: &PreservedSection,
-    tables: Option<&mut DataTables>,
+    mut tables: Option<&mut DataTables>,
 ) -> Result<SavedGameState> {
     let payload = section.decode()?.to_inner_payload()?;
     let saved = crate::prospect::saved_prospect_from_payload(&payload)?;
@@ -412,7 +417,7 @@ pub fn saved_game_state(
     if let Some(mode) = &saved.game_mode {
         values.extend(saved_game_mode_values(mode));
         let mut indices = Vec::new();
-        match tables {
+        match tables.as_deref_mut() {
             Some(tables) => {
                 locked = locked_missions(&mode.mission_history, tables)?;
                 for name in &mode.session_flags {
@@ -440,12 +445,20 @@ pub fn saved_game_state(
                 .map(|curve| TimeOfDayClock::new(curve, mode.time_of_day))
         })
         .transpose()?;
+    let quest_manager = match (saved.quest_manager, tables) {
+        (Some(quest), Some(tables)) => tables
+            .row_index(FACTION_MISSIONS_TABLE, &quest.faction_mission)?
+            .and_then(|index| u8::try_from(index).ok())
+            .map(|row| (quest, row)),
+        _ => None,
+    };
     Ok(SavedGameState {
         values,
         level_time_elapsed_sec: level_time,
         time_of_day,
         unmapped_session_flags,
         locked_missions: locked,
+        quest_manager,
     })
 }
 
@@ -469,15 +482,25 @@ pub struct AppliedGameState {
     pub unmapped_session_flags: usize,
     /// Missions `LockedMissions` lists while their locks last.
     pub locked_missions: usize,
+    /// The QuestManager's channel, when its saved state opens it (F-861).
+    pub quest_manager_channel: Option<u32>,
 }
 
-/// Add a loaded world's [`saved_game_state`] to `lab`'s GameState open.
+/// Add a loaded world's [`saved_game_state`] to `lab`'s GameState open,
+/// and open `quest_manager` (the release's plan) after the other managers
+/// with the saved quest state, when the save supplies it (F-861).
 pub fn apply_saved_game_state(
     lab: &mut PeerLab,
     section: &PreservedSection,
     tables: Option<&mut DataTables>,
+    quest_manager: Option<ManagerOpenPlan>,
 ) -> Result<AppliedGameState> {
     let saved = saved_game_state(section, tables)?;
+    // The QuestManager joins last, after every other step that can fail.
+    let quest_plan = match (quest_manager, &saved.quest_manager) {
+        (Some(plan), Some((quest, row))) => Some(plan.with_quest_state(quest, *row)?),
+        _ => None,
+    };
     lab.extend_game_state_values(saved.values)?;
     let locked_missions = saved.locked_missions.len();
     if let Some(level_time) = saved.level_time_elapsed_sec {
@@ -489,9 +512,13 @@ pub fn apply_saved_game_state(
     if let Some(clock) = saved.time_of_day {
         lab.enable_time_of_day(clock)?;
     }
+    let quest_manager_channel = quest_plan
+        .map(|plan| lab.add_manager_open(ManagerSlot::Quest, plan))
+        .transpose()?;
     Ok(AppliedGameState {
         unmapped_session_flags: saved.unmapped_session_flags,
         locked_missions,
+        quest_manager_channel,
     })
 }
 
@@ -530,6 +557,9 @@ pub struct BoundNetwork {
     pub release: Option<ReleasePin>,
     /// The official server's data tables, when `data_pak` is set.
     pub tables: Option<DataTables>,
+    /// The release's QuestManager plan, opened only with a save's quest
+    /// state ([`apply_saved_game_state`]).
+    pub quest_manager: Option<ManagerOpenPlan>,
 }
 
 /// Load and validate the configured release profile (bounded regular-file
@@ -587,6 +617,7 @@ pub fn bind(network: &NetworkConfig) -> Result<Option<BoundNetwork>> {
     let address = SocketAddrV4::new(network.bind, network.port);
     let mut lab = PeerLab::bind_address(address, config)
         .context("bind the experimental network session socket")?;
+    let mut quest_manager = None;
     if let Some(plan) = plan {
         lab.enable_player_controller_open(plan)?;
         let player_state = match (&profile, &config.admission) {
@@ -627,6 +658,9 @@ pub fn bind(network: &NetworkConfig) -> Result<Option<BoundNetwork>> {
                 .context("compose the manager open plans")?;
             if !managers.is_empty() {
                 lab.enable_manager_opens(managers, MANAGER_FIRST_CHANNEL)?;
+                quest_manager = profile
+                    .quest_manager_open_plan(admission.map_url)
+                    .context("compose the QuestManager open plan")?;
             }
         }
     }
@@ -634,6 +668,7 @@ pub fn bind(network: &NetworkConfig) -> Result<Option<BoundNetwork>> {
         lab,
         release: profile.map(|profile| profile.pin),
         tables,
+        quest_manager,
     }))
 }
 

@@ -18,7 +18,7 @@ use crate::experimental::component::{
 use crate::experimental::property_tree::{
     BaseComponentTree, MAX_TREE_DEPTH, MAX_TREE_NODES, PropertyTree, TreeLimits,
 };
-use crate::experimental::prospect_info::{ProspectInfo, SavedGameMode};
+use crate::experimental::prospect_info::{ProspectInfo, SavedGameMode, SavedQuestManager};
 use crate::experimental::recorders::{
     RecorderSummary, StagedProspectSaveState, read_recorders, recorder_class_label,
     stage_prospect_save_state,
@@ -279,17 +279,20 @@ pub fn typed_check(reader: impl Read) -> Result<TypedProspectInspection> {
     Ok(report)
 }
 
-/// What replicating a loaded prospect's GameState needs from its save: the
-/// typed `ProspectInfo` (`F-738`) and the game mode recorder's values
-/// (`C015`, `F-650`), when a `C015` recorder exists. The values are the
-/// save's; callers must keep them private.
+/// What replicating a loaded prospect's GameState and quest manager needs
+/// from its save: the typed `ProspectInfo` (`F-738`) and the game mode and
+/// quest manager recorders' values (`C015`, `C018`, `F-650`), when those
+/// recorders exist. The values are the save's; callers must keep them
+/// private.
 pub struct SavedProspect {
     pub info: ProspectInfo,
     pub game_mode: Option<SavedGameMode>,
+    /// The quest manager recorder's values (`C018`), when one exists.
+    pub quest_manager: Option<SavedQuestManager>,
 }
 
 /// Stage the prospect exactly as [`stage_prospect`] does, then type its root
-/// `ProspectInfo` and its one `C015` recorder.
+/// `ProspectInfo` and its one `C015` and `C018` recorders.
 pub fn read_saved_prospect(reader: impl Read) -> Result<SavedProspect> {
     saved_prospect_from_payload(&decode_envelope(reader)?.payload)
 }
@@ -317,27 +320,42 @@ pub fn saved_prospect_from_payload(payload: &[u8]) -> Result<SavedProspect> {
     let recorders =
         read_recorders(&tags.tags, profile).context("invalid experimental recorder framing")?;
     let mut game_mode = None;
+    let mut quest_manager = None;
     for recorder in recorders.records() {
         let class = decode_string(recorder.class_value, ByteOrder::Little)
             .context("invalid experimental recorder class string")?;
-        if recorder_class_label(&class.units).as_deref() != Some("C015") {
-            continue;
-        }
-        ensure!(
-            game_mode.is_none(),
-            "the prospect has more than one C015 recorder"
-        );
+        let label = recorder_class_label(&class.units);
+        let label = match label.as_deref() {
+            Some(label @ ("C015" | "C018")) => label,
+            _ => continue,
+        };
         let tree = BaseComponentTree::parse(
             recorder.binary_data,
             profile,
             MAX_BOUNDED_COMPONENT_BYTES,
             TYPED_TREE_LIMITS,
         )
-        .context("invalid C015 recorder tree")?;
+        .with_context(|| format!("invalid {label} recorder tree"))?;
         let (typed, _) = TypedComponent::from_component(&tree)?;
-        game_mode = Some(SavedGameMode::from_tree(&typed.tree)?);
+        if label == "C015" {
+            ensure!(
+                game_mode.is_none(),
+                "the prospect has more than one C015 recorder"
+            );
+            game_mode = Some(SavedGameMode::from_tree(&typed.tree)?);
+        } else {
+            ensure!(
+                quest_manager.is_none(),
+                "the prospect has more than one C018 recorder"
+            );
+            quest_manager = Some(SavedQuestManager::from_tree(&typed.tree)?);
+        }
     }
-    Ok(SavedProspect { info, game_mode })
+    Ok(SavedProspect {
+        info,
+        game_mode,
+        quest_manager,
+    })
 }
 
 /// Envelope observations plus a verified lossless preservation of its payload.

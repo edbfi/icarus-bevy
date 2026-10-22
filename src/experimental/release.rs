@@ -31,8 +31,8 @@ use super::{
         bp_icarus_player_character_survival_rep_layout, bp_icarus_player_state_rep_layout,
         icarus_game_state_survival_rep_layout, icarus_player_controller_survival_rep_layout,
         inventory_rep_layout, inventory_slot_commands, player_character_state_rep_layout,
-        radiation_manager_rep_layout, weather_manager_component_rep_layout,
-        world_talent_manager_rep_layout,
+        quest_manager_rep_layout, radiation_manager_rep_layout,
+        weather_manager_component_rep_layout, world_talent_manager_rep_layout,
     },
     rep_rpc::{
         BP_ICARUS_PLAYER_CONTROLLER_SURVIVAL_FIELD_INDEX_BOUND,
@@ -426,6 +426,7 @@ fn session_segments(archetype: &[ReleasePathSegment]) -> Vec<PathSegment> {
 #[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct ReleaseManagersProfile {
+    pub quest_manager: Vec<ReleasePathSegment>,
     pub radiation_manager: Vec<ReleasePathSegment>,
     pub world_talent_manager: Vec<ReleasePathSegment>,
     pub disaster_controller: Vec<ReleasePathSegment>,
@@ -436,7 +437,7 @@ pub struct ReleaseManagersProfile {
 
 impl ReleaseManagersProfile {
     /// The managers reproduced bit-exactly against the 3.0.31 capture
-    /// (F-859). For 3.0.32 the five checksums, including the Blueprint
+    /// (F-859, F-861). For 3.0.32 the six checksums, including the Blueprint
     /// `BP_DisasterController_C`'s, are among the values the 25956137
     /// derivation reproduces unchanged (M-820, behind F-780); the component
     /// set and order are assumed unchanged.
@@ -456,6 +457,7 @@ impl ReleaseManagersProfile {
             ]
         };
         Self {
+            quest_manager: native("QuestManager", 3_539_440_926),
             radiation_manager: native("RadiationManager", 2_158_376_861),
             world_talent_manager: native("WorldTalentManager", 3_510_503_235),
             disaster_controller: vec![
@@ -476,6 +478,7 @@ impl ReleaseManagersProfile {
     }
 
     pub fn validate(&self) -> Result<()> {
+        validate_archetype("managers quest_manager", &self.quest_manager)?;
         validate_archetype("managers radiation_manager", &self.radiation_manager)?;
         validate_archetype("managers world_talent_manager", &self.world_talent_manager)?;
         validate_archetype("managers disaster_controller", &self.disaster_controller)
@@ -1203,12 +1206,31 @@ impl ReleaseProfile {
         }))
     }
 
-    /// The world manager open plans for the map package of `map_url`, in
-    /// the order the GameState references them, or none without
-    /// `[managers]` (F-859): the radiation and world-talent managers carry
-    /// a stat container and an actor state (`CurrentBiome` row 0, as
-    /// captured), the disaster controller a stat container only.
+    /// The world manager open plans for the map package of `map_url`, or
+    /// none without `[managers]` (F-859): the radiation and world-talent
+    /// managers carry a stat container and an actor state (`CurrentBiome`
+    /// row 0, as captured), the disaster controller a stat container only.
+    /// The QuestManager is [`Self::quest_manager_open_plan`]'s.
     pub fn manager_open_plans(&self, map_url: &str) -> Result<Vec<(ManagerSlot, ManagerOpenPlan)>> {
+        Ok(self
+            .all_manager_open_plans(map_url)?
+            .into_iter()
+            .filter(|(slot, _)| *slot != ManagerSlot::Quest)
+            .collect())
+    }
+
+    /// The QuestManager open plan for the map package of `map_url`, or
+    /// `None` without `[managers]` (F-861): a stat container and an actor
+    /// state like the radiation manager's, without quest state, which
+    /// [`ManagerOpenPlan::with_quest_state`] adds from a save.
+    pub fn quest_manager_open_plan(&self, map_url: &str) -> Result<Option<ManagerOpenPlan>> {
+        Ok(self
+            .all_manager_open_plans(map_url)?
+            .into_iter()
+            .find_map(|(slot, plan)| (slot == ManagerSlot::Quest).then_some(plan)))
+    }
+
+    fn all_manager_open_plans(&self, map_url: &str) -> Result<Vec<(ManagerSlot, ManagerOpenPlan)>> {
         let Some(managers) = &self.managers else {
             return Ok(Vec::new());
         };
@@ -1238,9 +1260,19 @@ impl ReleaseProfile {
             layout,
             components,
             values: BTreeMap::new(),
+            actors: BTreeMap::new(),
+            keyed_actors: BTreeMap::new(),
             engine_net_version: self.engine_network_version,
         };
         Ok(vec![
+            (
+                ManagerSlot::Quest,
+                plan(
+                    &managers.quest_manager,
+                    quest_manager_rep_layout(location, velocity, rotation, tags),
+                    icarus_components(),
+                ),
+            ),
             (
                 ManagerSlot::WorldTalent,
                 plan(

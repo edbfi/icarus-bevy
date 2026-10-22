@@ -28,6 +28,7 @@ use serde_json::json;
 use sha1::{Digest, Sha1};
 
 const GAME_MODE: &str = "/Script/Icarus.GameModeStateRecorderComponent";
+const QUEST_MANAGER: &str = "/Script/Icarus.IcarusQuestManagerRecorderComponent";
 
 fn fstring(value: &str) -> Vec<u8> {
     if value.is_empty() {
@@ -196,63 +197,64 @@ fn faction_missions_json() -> Vec<u8> {
 
 fn game_mode_recorder(level_time: i32) -> Vec<u8> {
     let component = [
-        [
-            struct_tag(
-                "GameModeRecord",
-                "GameModeRecord",
-                &[
-                    int("GameStateSeed", 4_242),
-                    tag("TimeOfDay", "FloatProperty", &[0], &12.5_f32.to_le_bytes()),
-                    tag(
-                        "ProspectGameTime",
-                        "FloatProperty",
-                        &[0],
-                        &99.5_f32.to_le_bytes(),
-                    ),
-                    int("SecondsPerGameDay", 3_600),
-                    int("LevelTimeElapsedSec", level_time),
-                    tag(
-                        "SessionFlagRecords",
-                        "ArrayProperty",
-                        &[fstring("NameProperty"), vec![0]].concat(),
-                        &[
-                            3_i32.to_le_bytes().to_vec(),
-                            fstring("Flag_B"),
-                            fstring("Flag_Unknown"),
-                            fstring("Flag_A"),
-                        ]
-                        .concat(),
-                    ),
-                    end(),
-                ]
-                .concat(),
-            ),
-            int("DynamicQuestSeed", 77),
-            struct_array(
-                "MissionHistory",
-                "MissionHistoryRecord",
-                &MISSION_HISTORY
-                    .iter()
-                    .map(|(mission, status, end_time)| {
-                        [
-                            string("Mission", mission),
-                            int("Status", *status),
-                            int("MissionEndTime", *end_time),
-                            end(),
-                        ]
-                        .concat()
-                    })
-                    .collect::<Vec<_>>(),
-            ),
-            end(),
-        ]
-        .concat(),
-        vec![0; 4],
+        struct_tag(
+            "GameModeRecord",
+            "GameModeRecord",
+            &[
+                int("GameStateSeed", 4_242),
+                tag("TimeOfDay", "FloatProperty", &[0], &12.5_f32.to_le_bytes()),
+                tag(
+                    "ProspectGameTime",
+                    "FloatProperty",
+                    &[0],
+                    &99.5_f32.to_le_bytes(),
+                ),
+                int("SecondsPerGameDay", 3_600),
+                int("LevelTimeElapsedSec", level_time),
+                tag(
+                    "SessionFlagRecords",
+                    "ArrayProperty",
+                    &[fstring("NameProperty"), vec![0]].concat(),
+                    &[
+                        3_i32.to_le_bytes().to_vec(),
+                        fstring("Flag_B"),
+                        fstring("Flag_Unknown"),
+                        fstring("Flag_A"),
+                    ]
+                    .concat(),
+                ),
+                end(),
+            ]
+            .concat(),
+        ),
+        int("DynamicQuestSeed", 77),
+        struct_array(
+            "MissionHistory",
+            "MissionHistoryRecord",
+            &MISSION_HISTORY
+                .iter()
+                .map(|(mission, status, end_time)| {
+                    [
+                        string("Mission", mission),
+                        int("Status", *status),
+                        int("MissionEndTime", *end_time),
+                        end(),
+                    ]
+                    .concat()
+                })
+                .collect::<Vec<_>>(),
+        ),
     ]
     .concat();
+    recorder(GAME_MODE, &component)
+}
+
+/// A recorder blob of `class` whose component holds tagged `fields`.
+fn recorder(class: &str, fields: &[u8]) -> Vec<u8> {
+    let component = [fields, &end(), &[0; 4]].concat();
     let count = i32::try_from(component.len()).unwrap().to_le_bytes();
     [
-        string("ComponentClassName", GAME_MODE),
+        string("ComponentClassName", class),
         tag(
             "BinaryData",
             "ArrayProperty",
@@ -262,6 +264,64 @@ fn game_mode_recorder(level_time: i32) -> Vec<u8> {
         end(),
     ]
     .concat()
+}
+
+/// A quest manager recorder (`C018`): faction mission `Mission_C` (row 3
+/// of `faction_missions_json`), difficulty 2, quests running, the initial
+/// quest actor 9001 and two persistent actors, one without a valid GUID.
+fn quest_manager_recorder() -> Vec<u8> {
+    let relevant = |class: &str, key: &str, uid: i32| {
+        [
+            string("RelevantActorClassName", class),
+            string("Key", key),
+            int("RelevantActorIcarusUID", uid),
+            end(),
+        ]
+        .concat()
+    };
+    let fields = [
+        tag(
+            "FactionMissionName",
+            "NameProperty",
+            &[0],
+            &fstring("Mission_C"),
+        ),
+        struct_tag(
+            "InitialQuestRecord",
+            "InitialQuestRecord",
+            &[
+                string("QuestActorName", "BPQ_Lab_C"),
+                int("RelevantActorIcarusUID", 9_001),
+                end(),
+            ]
+            .concat(),
+        ),
+        boolean("bMissionComplete", false),
+        boolean("bRunQuests", true),
+        int("DynamicQuestDifficulty", 2),
+        tag(
+            "DynamicQuestDelay",
+            "FloatProperty",
+            &[0],
+            &0.0_f32.to_le_bytes(),
+        ),
+        struct_array(
+            "RelevantPersistentActorRecords",
+            "RelevantQuestActorRecord",
+            &[
+                relevant("BP_Lab_Base_C", "LAB_BASE", 501),
+                relevant("BP_Lab_Gone_C", "LAB_GONE", -1),
+            ],
+        ),
+        struct_array(
+            "RelevantPersistentCharacterRecords",
+            "RelevantQuestActorRecord",
+            &[],
+        ),
+        int("IcarusActorGUID", 77),
+    ]
+    .concat();
+    recorder(QUEST_MANAGER, &fields)
 }
 
 fn payload(info: &[u8], recorders: &[Vec<u8>]) -> Vec<u8> {
@@ -583,6 +643,105 @@ fn expected_locked_missions() -> Vec<LockedMission> {
     ]
 }
 
+/// The saved quest manager (`C018`) types from its record, and with the
+/// server's data tables the faction mission maps to its row (F-861).
+#[test]
+fn a_saved_quest_manager_supplies_the_quest_manager_state() {
+    use icarus_bevy::experimental::prospect_info::RelevantQuestActor;
+    let inner = payload(
+        &prospect_info(),
+        &[game_mode_recorder(150), quest_manager_recorder()],
+    );
+    let saved = saved_prospect_from_payload(&inner).unwrap();
+    let quest = saved.quest_manager.expect("a quest manager record");
+    assert_eq!(quest.faction_mission, units("Mission_C"));
+    assert_eq!(quest.initial_quest, Some(9_001));
+    assert!(quest.run_quests && !quest.mission_complete);
+    assert_eq!(quest.dynamic_quest_difficulty, 2);
+    assert_eq!(quest.dynamic_quest_delay, 0.0);
+    assert_eq!(
+        quest.persistent_actors,
+        [
+            RelevantQuestActor {
+                key: units("LAB_BASE"),
+                icarus_uid: 501,
+            },
+            RelevantQuestActor {
+                key: units("LAB_GONE"),
+                icarus_uid: -1,
+            },
+        ]
+    );
+    assert!(quest.persistent_characters.is_empty());
+    let section = PreservedSection::from_inner_payload(&inner, PreserveLimits::default()).unwrap();
+    // Without the server's data tables the faction mission has no row.
+    let saved = icarus_bevy::network::saved_game_state(&section, None).unwrap();
+    assert!(saved.quest_manager.is_none());
+    let root = tempfile::TempDir::new().unwrap();
+    let pak = root.path().join("data.pak");
+    std::fs::write(
+        &pak,
+        pak_writer::official_pak(&[
+            (
+                "Flags/D_SessionFlags.json",
+                pak_writer::table_json(&["Flag_A"]),
+            ),
+            ("Factions/D_FactionMissions.json", faction_missions_json()),
+        ]),
+    )
+    .unwrap();
+    let mut tables = icarus_bevy::data_pak::DataTables::open(&pak).unwrap();
+    let saved = icarus_bevy::network::saved_game_state(&section, Some(&mut tables)).unwrap();
+    let (saved_quest, row) = saved.quest_manager.expect("a mapped quest manager");
+    assert_eq!(row, 3);
+    assert_eq!(saved_quest, quest);
+    // Without the record, nothing to open.
+    let bare = PreservedSection::from_inner_payload(
+        &payload(&prospect_info(), &[game_mode_recorder(150)]),
+        PreserveLimits::default(),
+    )
+    .unwrap();
+    let saved = icarus_bevy::network::saved_game_state(&bare, Some(&mut tables)).unwrap();
+    assert!(saved.quest_manager.is_none());
+}
+
+#[test]
+fn mistyped_quest_manager_fields_fail_closed() {
+    use icarus_bevy::experimental::prospect_info::SavedQuestManager;
+    let typed = |fields: &[Vec<u8>]| {
+        let stream = [fields.concat(), end()].concat();
+        let tree =
+            PropertyTree::parse(&stream, TagProfile::MemoryArchive522, TreeLimits::default())
+                .unwrap();
+        SavedQuestManager::from_tree(&TypedTree::from_tree(&tree).unwrap().0)
+    };
+    assert_eq!(typed(&[]).unwrap(), SavedQuestManager::default());
+    // A non-positive initial quest GUID links nothing.
+    let initial = |uid| {
+        struct_tag(
+            "InitialQuestRecord",
+            "InitialQuestRecord",
+            &[int("RelevantActorIcarusUID", uid), end()].concat(),
+        )
+    };
+    assert_eq!(typed(&[initial(0)]).unwrap().initial_quest, None);
+    assert_eq!(typed(&[initial(7)]).unwrap().initial_quest, Some(7));
+    for bad in [
+        string("FactionMissionName", "Mission_C"),
+        int("DynamicQuestDifficulty", 256),
+        string("DynamicQuestDifficulty", "2"),
+        int("bRunQuests", 1),
+        int("RelevantPersistentActorRecords", 1),
+        struct_array(
+            "RelevantPersistentActorRecords",
+            "RelevantQuestActorRecord",
+            &[[string("RelevantActorIcarusUID", "5"), end()].concat()],
+        ),
+    ] {
+        assert!(typed(&[bad]).is_err());
+    }
+}
+
 /// A child process killed and reaped when dropped, also when a test panics.
 struct Killed(std::process::Child);
 
@@ -619,7 +778,10 @@ fn run_replicates_a_preserved_worlds_prospect() {
     let source = directory.path().join("prospect.json");
     std::fs::write(
         &source,
-        envelope(&payload(&prospect_info(), &[game_mode_recorder(150)])),
+        envelope(&payload(
+            &prospect_info(),
+            &[game_mode_recorder(150), quest_manager_recorder()],
+        )),
     )
     .unwrap();
     let state = directory.path().join("state");
@@ -695,6 +857,8 @@ fn run_replicates_a_preserved_worlds_prospect() {
             replicated = true;
             assert_eq!(record["unmapped_session_flags"], 1);
             assert_eq!(record["locked_missions"], 2);
+            // The saved quest manager opens after the other managers.
+            assert_eq!(record["quest_manager_channel"], 9);
         }
         if record["event"] == "network_listening" {
             // The installed official data tables were picked up.
@@ -746,7 +910,7 @@ fn run_replicates_a_preserved_worlds_prospect() {
             false,
         )
         .unwrap();
-    let collected = client.collect(Duration::from_secs(3), 4).unwrap();
+    let collected = client.collect(Duration::from_secs(3), 16).unwrap();
     drop(child);
     let to_client = PacketConfig {
         magic_bits: 0,
@@ -827,6 +991,37 @@ fn run_replicates_a_preserved_worlds_prospect() {
     );
     sent.retain(|handle, _| expected.contains_key(handle));
     assert_eq!(sent, expected);
+    // The QuestManager open carries the saved quest state (F-861).
+    let quest = collected
+        .replies
+        .iter()
+        .flat_map(|reply| read_packet(&reply.bytes, &to_client).unwrap().bunches)
+        .find(|bunch| bunch.header.channel_index == 9 && !bunch.header.has_package_map_exports)
+        .expect("a QuestManager open");
+    let open = read_actor_bunch_body(&mut quest.payload.reader(), true, &codec).unwrap();
+    let plan = profile
+        .quest_manager_open_plan(PeerLabAdmission::default().map_url)
+        .unwrap()
+        .unwrap();
+    let stream = read_rep_properties(
+        &mut open.blocks[0].payload.reader(),
+        &plan.layout,
+        &RepLayoutCodec {
+            actor: codec,
+            checksums: false,
+            limits: RepLayoutLimits::default(),
+        },
+    )
+    .unwrap();
+    let quest: BTreeMap<u32, RepValue> = stream
+        .entries
+        .into_iter()
+        .map(|entry| (entry.handle, entry.value))
+        .collect();
+    assert_eq!(quest.get(&19), Some(&RepValue::Byte(3)));
+    assert_eq!(quest.get(&20), Some(&RepValue::Enum(2)));
+    assert_eq!(quest.get(&24), Some(&RepValue::Bool(true)));
+    assert!(quest.contains_key(&21) && quest.contains_key(&25));
 }
 
 #[test]

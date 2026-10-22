@@ -89,6 +89,9 @@ pub enum ActorKey {
     World(u64),
     /// An actor the session layer owns, such as the GameState.
     Session(u64),
+    /// A saved actor, by its `IcarusActorGUID`: saved links (quest
+    /// references, F-861) name actors this way, apart from domain ids.
+    Saved(u64),
 }
 
 /// Which part of a keyed actor a dynamic GUID names.

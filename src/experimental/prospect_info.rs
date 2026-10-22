@@ -158,6 +158,14 @@ impl<'a> Fields<'a> {
         }
     }
 
+    fn name(&self, name: &str) -> Result<Vec<u16>> {
+        match self.scalar(name) {
+            Some(Scalar::Name(units)) => Ok(units.clone()),
+            None if !self.present(name) => Ok(Vec::new()),
+            _ => bail!("{}.{name} is not a NameProperty", self.what),
+        }
+    }
+
     fn int64(&self, name: &str) -> Result<i64> {
         match self.scalar(name) {
             Some(Scalar::Int64(value)) => Ok(*value),
@@ -407,6 +415,92 @@ impl SavedGameMode {
             dynamic_quest_seed,
             session_flags: record.names("SessionFlagRecords")?,
             mission_history,
+        })
+    }
+}
+
+/// The quest manager recorder's values (`C018`, F-650) its replicated
+/// state restores from: the faction mission's row name, the initial quest
+/// and the relevant persistent actors and characters, linked by Icarus
+/// actor GUID. Missing properties read as their defaults; `Debug` shows no
+/// values.
+#[derive(Clone, Default, PartialEq)]
+pub struct SavedQuestManager {
+    pub faction_mission: Vec<u16>,
+    /// `InitialQuestRecord.RelevantActorIcarusUID`: the initial quest
+    /// actor's `IcarusActorGUID` (its `C019` record's), if positive.
+    pub initial_quest: Option<i32>,
+    pub mission_complete: bool,
+    pub run_quests: bool,
+    pub dynamic_quest_difficulty: u8,
+    pub dynamic_quest_delay: f32,
+    pub persistent_actors: Vec<RelevantQuestActor>,
+    pub persistent_characters: Vec<RelevantQuestActor>,
+}
+
+/// One saved `RelevantQuestActorRecord`: the key the quests look the actor
+/// up by and the actor's Icarus actor GUID.
+#[derive(Clone, Default, PartialEq, Eq)]
+pub struct RelevantQuestActor {
+    pub key: Vec<u16>,
+    pub icarus_uid: i32,
+}
+
+impl std::fmt::Debug for SavedQuestManager {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("SavedQuestManager")
+    }
+}
+
+impl std::fmt::Debug for RelevantQuestActor {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("RelevantQuestActor")
+    }
+}
+
+impl SavedQuestManager {
+    /// Type a `C018` component's tagged properties.
+    pub fn from_tree(tree: &TypedTree) -> Result<Self> {
+        let fields = Fields {
+            tree,
+            what: "IcarusQuestManagerRecorderComponent",
+        };
+        let relevant = |name| -> Result<Vec<RelevantQuestActor>> {
+            fields
+                .structs(name)?
+                .iter()
+                .map(|tree| {
+                    let fields = Fields {
+                        tree,
+                        what: "RelevantQuestActorRecord",
+                    };
+                    Ok(RelevantQuestActor {
+                        key: fields.string("Key")?,
+                        icarus_uid: fields.int("RelevantActorIcarusUID")?,
+                    })
+                })
+                .collect()
+        };
+        let initial_quest = match fields.tagged("InitialQuestRecord", "InitialQuestRecord")? {
+            Some(record) => Some(record.int("RelevantActorIcarusUID")?).filter(|uid| *uid > 0),
+            None => None,
+        };
+        let difficulty = match fields.scalar("DynamicQuestDifficulty") {
+            Some(Scalar::Int(value)) => u8::try_from(*value).ok(),
+            Some(Scalar::Byte(value)) => Some(*value),
+            None if !fields.present("DynamicQuestDifficulty") => Some(0),
+            _ => None,
+        }
+        .context("IcarusQuestManagerRecorderComponent.DynamicQuestDifficulty is not a byte")?;
+        Ok(Self {
+            faction_mission: fields.name("FactionMissionName")?,
+            initial_quest,
+            mission_complete: fields.bool("bMissionComplete")?,
+            run_quests: fields.bool("bRunQuests")?,
+            dynamic_quest_difficulty: difficulty,
+            dynamic_quest_delay: fields.float("DynamicQuestDelay")?,
+            persistent_actors: relevant("RelevantPersistentActorRecords")?,
+            persistent_characters: relevant("RelevantPersistentCharacterRecords")?,
         })
     }
 }

@@ -1328,11 +1328,7 @@ impl PeerLab {
                 self.free_session_channel(channel),
                 "a manager channel collides with another channel or is out of range"
             );
-            match slot {
-                ManagerSlot::WorldTalent => managers.world_talent_manager = Some(slot.key()),
-                ManagerSlot::Radiation => managers.radiation_manager = Some(slot.key()),
-                ManagerSlot::Disaster => managers.disaster_controller = Some(slot.key()),
-            }
+            slot.reference_from(&mut managers);
             opens.push((slot.key(), plan, channel));
         }
         if let Some(session) = &mut self.game_state_open {
@@ -1340,6 +1336,44 @@ impl PeerLab {
         }
         self.manager_opens = opens;
         Ok(())
+    }
+
+    /// Also open `plan` in `slot` on each joined connection after the
+    /// enabled managers, on the channel after theirs, and reference it from
+    /// the GameState open; returns the channel. Fails without enabled
+    /// managers, on a slot already opened, on a level other than the
+    /// GameState's or on a taken channel.
+    pub fn add_manager_open(&mut self, slot: ManagerSlot, plan: ManagerOpenPlan) -> Result<u32> {
+        let Some(session) = &self.game_state_open else {
+            bail!("the manager opens follow the GameState open");
+        };
+        ensure!(
+            plan.level == session.plan.level,
+            "a manager and the GameState name different levels"
+        );
+        ensure!(
+            self.manager_opens
+                .iter()
+                .all(|(key, ..)| *key != slot.key()),
+            "the manager slot is already opened"
+        );
+        let channel = self
+            .manager_opens
+            .iter()
+            .map(|(.., channel)| *channel)
+            .max()
+            .context("a manager added after the enabled managers")?
+            .checked_add(1)
+            .context("manager channel overflow")?;
+        ensure!(
+            self.free_session_channel(channel),
+            "a manager channel collides with another channel or is out of range"
+        );
+        if let Some(session) = &mut self.game_state_open {
+            slot.reference_from(&mut session.state.managers);
+        }
+        self.manager_opens.push((slot.key(), plan, channel));
+        Ok(channel)
     }
 
     /// Send the GameState's `LevelTimeElapsedSec` as `restored` plus the
