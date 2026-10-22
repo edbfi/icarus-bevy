@@ -84,6 +84,9 @@ same formulas (F-839).
 - Two Blueprint class checksums with user-struct arrays (U-067).
 - Authenticated runtime relevancy and priority exercise (U-038).
 - Item, stat and character values of a played character at open (U-069).
+- Partial weight and UID investigations are retained in M-892 and M-893;
+  their unresolved tick gating and UID source are not qualified findings.
+  M-894 retains the private quest extracts for the unfinished U-074 work.
 - When the active prospect is refreshed after open at runtime; its direct
   callers are spawn completion, dropship leave and backend, setting or
   difficulty updates (F-822; U-070).
