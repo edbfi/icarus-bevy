@@ -861,6 +861,14 @@ fn join_pinned(server: SocketAddr, version: u32) -> Vec<u8> {
 
 /// As [`join_pinned`], collecting up to `max` datagrams after the Join.
 fn join_pinned_replies(server: SocketAddr, version: u32, max: usize) -> Vec<Vec<u8>> {
+    let (client, collected) = join_pinned_open(server, version, max);
+    client.close().unwrap();
+    collected
+}
+
+/// Join on the pinned version and collect up to `max` datagrams after the
+/// Join, leaving the session open.
+fn join_pinned_open(server: SocketAddr, version: u32, max: usize) -> (ProbeClient, Vec<Vec<u8>>) {
     let mut client = connect(server);
     let report = client.hello(version, "").unwrap();
     assert!(matches!(
@@ -884,12 +892,12 @@ fn join_pinned_replies(server: SocketAddr, version: u32, max: usize) -> Vec<Vec<
         .unwrap();
     let collected = client.collect(Duration::from_secs(3), max).unwrap();
     assert!(collected.acked.contains(&packet_id), "Join acknowledged");
-    client.close().unwrap();
-    collected
+    let replies = collected
         .replies
         .into_iter()
         .map(|reply| reply.bytes)
-        .collect()
+        .collect();
+    (client, replies)
 }
 
 /// Compose the pawn open the lab sends after connection `connection`'s
@@ -1356,7 +1364,9 @@ fn pinned_joins_open_the_game_state_then_each_player_state() {
             player_id: FIRST_PLAYER_ID + index as i32,
             unique_id: unique_id.clone(),
             player_name: ArchiveText::text(NAME_SENTINEL).unwrap(),
-            is_host: index == 0,
+            // Each session closes before the next joins, so each joins with
+            // no other player and is host (F-913).
+            is_host: true,
         };
         let expected = compose_player_state_open(
             &mut cache,
@@ -2173,4 +2183,80 @@ fn the_game_state_carries_a_fresh_rich_presence_guid() {
         );
     }
     assert_ne!(first, second);
+}
+
+/// A player joining while another is joined is not host; one joining alone
+/// is (F-913): the first PlayerState carries `bIsHost`, the second, joined
+/// alongside, does not.
+#[test]
+fn only_a_player_joining_alone_is_host() {
+    use icarus_bevy::experimental::{
+        actor_channel::{ActorChannelCodec, ActorChannelLimits, read_actor_bunch_body},
+        archive::ByteOrder,
+        packet::read_packet,
+        rep_layout::{
+            MovementLevel, RepLayoutCodec, RepLayoutLimits, RepValue, RotationLevel,
+            bp_icarus_player_state_rep_layout, read_rep_properties,
+        },
+        session_open::PLAYER_STATE_CHANNEL_INDEX,
+    };
+    let profile = ReleaseProfile::load(&release_toml()).unwrap();
+    let pinned = profile.pin.network_checksum;
+    let (mut app, address) = server_app(&NetworkConfig {
+        release_profile: Some(release_toml()),
+        ..enabled(0)
+    });
+    let (replies, _) = with_server(&mut app, move || {
+        let (first, first_replies) = join_pinned_open(address, pinned, 7);
+        let (second, second_replies) = join_pinned_open(address, pinned, 7);
+        first.close().unwrap();
+        second.close().unwrap();
+        [first_replies, second_replies]
+    });
+    let to_client = PacketConfig {
+        magic_bits: 0,
+        receiver: PacketReceiver::Client,
+        limits: PeerLabConfig::default().packet.packet.limits,
+    };
+    let codec = ActorChannelCodec {
+        engine_net_version: profile.engine_network_version,
+        exports_enabled: false,
+        has_level: true,
+        order: ByteOrder::Little,
+        limits: ActorChannelLimits::default(),
+    };
+    let layout = bp_icarus_player_state_rep_layout(
+        MovementLevel::Whole,
+        MovementLevel::Whole,
+        RotationLevel::Bytes,
+    );
+    let hosts: Vec<bool> = replies
+        .iter()
+        .map(|datagrams| {
+            let body = datagrams
+                .iter()
+                .flat_map(|datagram| read_packet(datagram, &to_client).unwrap().bunches)
+                .find(|bunch| {
+                    bunch.header.channel_index == PLAYER_STATE_CHANNEL_INDEX
+                        && !bunch.header.has_package_map_exports
+                })
+                .expect("a PlayerState open");
+            let open = read_actor_bunch_body(&mut body.payload.reader(), true, &codec).unwrap();
+            let stream = read_rep_properties(
+                &mut open.blocks[0].payload.reader(),
+                &layout,
+                &RepLayoutCodec {
+                    actor: codec,
+                    checksums: false,
+                    limits: RepLayoutLimits::default(),
+                },
+            )
+            .unwrap();
+            stream
+                .entries
+                .iter()
+                .any(|entry| entry.handle == 79 && entry.value == RepValue::Bool(true))
+        })
+        .collect();
+    assert_eq!(hosts, [true, false]);
 }

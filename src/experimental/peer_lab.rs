@@ -890,9 +890,6 @@ pub struct PeerLab {
     guid_cache: NetGuidCache,
     /// `AGameSession::GetNextPlayerID`'s counter (F-784): 256 first.
     next_player_id: i32,
-    /// Lab choice (U-068): only the first PlayerState opened since bind
-    /// replicates `bIsHost = true`.
-    host_assigned: bool,
     /// Next lab connection ID (from 1) for joined peers.
     next_connection_id: u32,
 }
@@ -959,7 +956,6 @@ impl PeerLab {
             manager_opens: Vec::new(),
             guid_cache: NetGuidCache::new(),
             next_player_id: FIRST_PLAYER_ID,
-            host_assigned: false,
             next_connection_id: 1,
         }
     }
@@ -2450,6 +2446,13 @@ impl PeerLab {
         else {
             return;
         };
+        // The original sets bIsHost at the PlayerState's BeginPlay when the
+        // first player controller's character is this PlayerState's pawn,
+        // which does not exist yet (F-913). On the lab every joined player
+        // has a pawn, so a player is host when no other player is joined.
+        let is_host = !self.peers.iter().any(|(other, peer)| {
+            *other != address && peer.admission.state == ClientLoginState::Joined
+        });
         let Some(entry) = self.peers.get_mut(&address) else {
             return;
         };
@@ -2470,7 +2473,7 @@ impl PeerLab {
                 player_id: player.player_id,
                 unique_id: replicated_unique_net_id(login_id, admission.indexed_subsystems),
                 player_name: ArchiveText::new(&player.name_units)?,
-                is_host: !self.host_assigned,
+                is_host,
             };
             let open = compose_player_state_open(
                 &mut cache,
@@ -2499,7 +2502,6 @@ impl PeerLab {
         entry.exports = exports;
         entry.ack_pending = false;
         self.guid_cache = cache;
-        self.host_assigned = true;
         if self.send_all(&sent, address) {
             bump(&mut self.stats.player_state_opens_sent);
         }
