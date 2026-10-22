@@ -71,7 +71,7 @@ Reader policy (authored; research limits, not recovered format limits):
   exact EOF, terminal `None`, trailer flag `0` (rejecting GUID trailer `1`), and
   pre-allocation caps (32 MiB / 16,384 recorders / 65,536 fields; 64 KiB default
   up to 1 MiB `_with_limit` / 256 fields per component or struct element / 4,096
-  elements; F-178, F-198, F-888, F-887, F-883, F-312, F-900).
+  elements; F-178, F-198, F-888, F-887, F-882, F-883, F-312, F-900).
 
 Typed values (authored `experimental::typed_value`): under the hard tree
 ceilings every leaf of 15 prospects is a scalar, archive string, text frame,
