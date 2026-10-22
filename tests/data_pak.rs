@@ -350,6 +350,16 @@ fn missing_or_malformed_player_rows_fail_before_binding() {
             table_json(&["Base_Stats"]),
             "grant no map",
         ),
+        (
+            "Inventory/D_InventoryInfo.json",
+            serde_json::to_vec(&serde_json::json!({"Rows": [
+                {"Name": "Hands", "SlotTemplate": {"RowName": "Any"}, "StartingSlots": 1,
+                 "SlotOverrides": [{"Query": {"RowName": "Fists"}}]},
+                {"Name": "Bag"},
+            ]}))
+            .unwrap(),
+            "lacks its Location or Query row",
+        ),
     ] {
         let text = bind(pak_writer::official_pak(&[flags.clone(), (member, bytes)]));
         assert!(text.contains("network.data_pak"), "{text}");

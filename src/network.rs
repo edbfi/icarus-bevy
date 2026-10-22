@@ -226,21 +226,23 @@ pub fn player_inventories(tables: &mut DataTables) -> Result<Vec<PawnInventory>>
                 .context("an inventory's StartingSlots is out of range")?,
         };
         let template = info.get("SlotTemplate").and_then(row_name);
-        let overrides: Vec<(i64, &str)> = info
-            .get("SlotOverrides")
-            .and_then(serde_json::Value::as_array)
-            .map(|entries| {
-                entries
-                    .iter()
-                    .filter_map(|entry| {
-                        Some((
-                            entry.get("Location")?.as_i64()?,
-                            row_name(entry.get("Query")?)?,
-                        ))
-                    })
-                    .collect()
-            })
-            .unwrap_or_default();
+        // A malformed override fails, as a changed table shape would
+        // otherwise send the template's query for its slot.
+        let overrides: Vec<(i64, &str)> = match info.get("SlotOverrides") {
+            None => Vec::new(),
+            Some(entries) => entries
+                .as_array()
+                .context("an inventory's SlotOverrides is not an array")?
+                .iter()
+                .map(|entry| {
+                    let location = entry.get("Location").and_then(serde_json::Value::as_i64);
+                    let query = entry.get("Query").and_then(row_name);
+                    location
+                        .zip(query)
+                        .context("a slot override lacks its Location or Query row")
+                })
+                .collect::<Result<_>>()?,
+        };
         let mut slots = Vec::new();
         for slot in 0..starting {
             let query = overrides
