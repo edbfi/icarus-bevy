@@ -83,7 +83,8 @@ active prospect and game mode values in the GameState open
 server's `Icarus/Content/Data/data.pak`, F-828) its saved session flags also
 replicate as row indices, and the record counts the flags the tables lack
 (`unmapped_session_flags`, F-830) and the missions sent as `LockedMissions`
-(`locked_missions`, F-835). No ICARUS client compatibility,
+(`locked_missions`, F-835). With the tables every pawn opens with a fresh
+player's vitals and empty inventories from them (F-836). No ICARUS client compatibility,
 identity check, replication or gameplay is implied; only the authored probe
 is tested:
 

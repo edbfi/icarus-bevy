@@ -56,7 +56,9 @@ locally saving server's `NetworkingStatus` listing its players with pings
 measured by the original's rule (F-810, F-811, F-815, F-816). The
 original's `LockedMissions` come from the save's mission history and the
 server's `D_FactionMissions` by a fixed rule, which `run` follows (F-834,
-F-835).
+F-835). A fresh player's pawn vitals and empty inventories are data.pak rows,
+which `run` sends (F-836); its stats are mostly starting grants, with 8
+derived by rules not yet read (F-837).
 
 ## Open
 
