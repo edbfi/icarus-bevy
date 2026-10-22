@@ -75,14 +75,20 @@ struct Body {
     read_fields: bool,
 }
 
-fn component(body: &Body) -> Vec<u8> {
-    let transform = [
+fn transform_children(body: &Body) -> Vec<Vec<u8>> {
+    vec![
         struct_tag("Rotation", "Quat", &floats(&[0.0, 0.0, 0.0, 1.0])),
         struct_tag("Translation", "Vector", &floats(&body.translation)),
         struct_tag("Scale3D", "Vector", &floats(&[1.0, 1.0, 1.0])),
-        end(),
     ]
-    .concat();
+}
+
+fn transform_tag(type_name: &str, mut children: Vec<Vec<u8>>) -> Vec<u8> {
+    children.push(end());
+    struct_tag("ActorTransform", type_name, &children.concat())
+}
+
+fn component(body: &Body, transform: Option<Vec<u8>>) -> Vec<u8> {
     let owner = if body.owner_byte {
         tag(
             "OwnerResolvePolicy",
@@ -108,7 +114,6 @@ fn component(body: &Body) -> Vec<u8> {
         class,
         tag("ActorPathName", "StrProperty", &[0], &fstring(PATH)),
         tag("bWasMovedToSubLevel", "BoolProperty", &[0, 0], &[]),
-        struct_tag("ActorTransform", "Transform", &transform),
         tag("Label", "StrProperty", &[0], &fstring("secret plain text")),
         tag("Nothing", "NameProperty", &[0], &fstring("None")),
         tag("ItemStaticData", "NameProperty", &[0], &fstring(ROW)),
@@ -150,6 +155,9 @@ fn component(body: &Body) -> Vec<u8> {
             .concat(),
         ),
     ];
+    if let Some(transform) = transform {
+        fields.insert(4, transform);
+    }
     if body.gap {
         fields.push(struct_tag("Mystery", "SecretBlobType", &[1, 2, 3]));
     }
@@ -232,7 +240,15 @@ fn component(body: &Body) -> Vec<u8> {
 }
 
 fn recorder(class: &str, body: &Body) -> Vec<u8> {
-    let bytes = component(body);
+    recorder_with_transform(
+        class,
+        body,
+        Some(transform_tag("Transform", transform_children(body))),
+    )
+}
+
+fn recorder_with_transform(class: &str, body: &Body, transform: Option<Vec<u8>>) -> Vec<u8> {
+    let bytes = component(body, transform);
     recorder_bytes(class, &bytes)
 }
 
@@ -466,6 +482,102 @@ fn version_zero_and_all_invalid_saves_would_import_as_empty_worlds() {
 }
 
 #[test]
+fn malformed_present_transforms_block_import_and_are_not_planned_actors() {
+    let catalog =
+        ContentCatalog::from_references([ROW, PATH, "SecretTile", "bSecretFlag", "SecretQuestVar"]);
+    let mut cases = vec![
+        (
+            "wrong outer struct identity".to_owned(),
+            transform_tag("AuthoredImpostor", transform_children(&CLEAN)),
+        ),
+        (
+            "wrong outer wire type".to_owned(),
+            tag("ActorTransform", "IntProperty", &[0], &0_i32.to_le_bytes()),
+        ),
+    ];
+    for (index, name, impostor, values) in [
+        (0, "Rotation", "LinearColor", vec![0.0, 0.0, 0.0, 1.0]),
+        (1, "Translation", "Rotator", CLEAN.translation.to_vec()),
+        (2, "Scale3D", "Rotator", vec![1.0, 1.0, 1.0]),
+    ] {
+        // These impostors type losslessly with the same number of floats.
+        let mut children = transform_children(&CLEAN);
+        children[index] = struct_tag(name, impostor, &floats(&values));
+        cases.push((
+            format!("{name} same-width impostor"),
+            transform_tag("Transform", children),
+        ));
+
+        let mut children = transform_children(&CLEAN);
+        children.remove(index);
+        cases.push((
+            format!("{name} absent"),
+            transform_tag("Transform", children),
+        ));
+
+        let mut children = transform_children(&CLEAN);
+        children[index] = tag(name, "FloatProperty", &[0], &1.0_f32.to_le_bytes());
+        cases.push((
+            format!("{name} wrong wire type"),
+            transform_tag("Transform", children),
+        ));
+    }
+    for (case, transform) in cases {
+        let source = envelope(
+            2,
+            &[recorder_with_transform(ACTOR, &CLEAN, Some(transform))],
+        );
+        let plan = plan_import(source.as_slice(), &catalog).unwrap();
+        assert_eq!(plan.recorders.typed, 1, "{case}");
+        assert_eq!(plan.recorders.uninterpreted_leaves, 0, "{case}");
+        assert_eq!(plan.actors.malformed_transforms, 1, "{case}");
+        assert_eq!(plan.actors.missing_transforms, 0, "{case}");
+        assert_eq!(plan.actors.recorded_transforms, 0, "{case}");
+        assert_eq!(plan.actors.non_finite_transforms, 0, "{case}");
+        assert_eq!(
+            plan.blockers,
+            vec![ImportBlocker::MalformedTransforms { recorders: 1 }],
+            "{case}"
+        );
+        assert!(!plan.importable, "{case}");
+        assert!(
+            planned_actors(source.as_slice()).unwrap().is_empty(),
+            "{case}"
+        );
+        let json = serde_json::to_value(&plan).unwrap();
+        assert_eq!(json["actors"]["malformed_transforms"], 1, "{case}");
+        assert_eq!(
+            json["blockers"][0]["blocker"], "malformed_transforms",
+            "{case}"
+        );
+    }
+}
+
+#[test]
+fn valid_and_absent_transforms_remain_importable_without_inventing_defaults() {
+    let catalog =
+        ContentCatalog::from_references([ROW, PATH, "SecretTile", "bSecretFlag", "SecretQuestVar"]);
+    let absent = recorder_with_transform(ACTOR, &CLEAN, None);
+    for recorders in [vec![absent.clone()], vec![recorder(ACTOR, &CLEAN), absent]] {
+        let source = envelope(2, &recorders);
+        let plan = plan_import(source.as_slice(), &catalog).unwrap();
+        assert_eq!(plan.actors.recorded_transforms, recorders.len() - 1);
+        assert_eq!(plan.actors.missing_transforms, 1);
+        assert_eq!(plan.actors.malformed_transforms, 0);
+        assert_eq!(plan.actors.non_finite_transforms, 0);
+        assert!(plan.blockers.is_empty());
+        assert!(plan.importable);
+        let actors = planned_actors(source.as_slice()).unwrap();
+        assert_eq!(actors.len(), recorders.len() - 1);
+        if let Some(actor) = actors.first() {
+            assert_eq!(actor.translation, CLEAN.translation);
+            assert_eq!(actor.rotation, [0.0, 0.0, 0.0, 1.0]);
+            assert_eq!(actor.scale, [1.0, 1.0, 1.0]);
+        }
+    }
+}
+
+#[test]
 fn non_finite_transforms_block_import() {
     let catalog =
         ContentCatalog::from_references([ROW, PATH, "SecretTile", "bSecretFlag", "SecretQuestVar"]);
@@ -483,10 +595,14 @@ fn non_finite_transforms_block_import() {
     let plan = plan_import(source.as_slice(), &catalog).unwrap();
     assert_eq!(plan.actors.non_finite_transforms, 1);
     assert_eq!(plan.actors.recorded_transforms, 0);
+    assert_eq!(plan.actors.missing_transforms, 0);
+    assert_eq!(plan.actors.malformed_transforms, 0);
     assert_eq!(
         plan.blockers,
         vec![ImportBlocker::NonFiniteTransforms { recorders: 1 }]
     );
+    assert!(!plan.importable);
+    assert!(planned_actors(source.as_slice()).unwrap().is_empty());
 }
 
 #[test]
