@@ -19,14 +19,17 @@ performance targets are not demonstrated.
 
 Offline research resumed under the user's execution instruction (F-404);
 offline original-server save-load runs are now authorized, connected-client
-tests only per approved scenario ([gates](gates.md)). The shipped server must
-not depend on the game client; basic data it needs may come from the public
-dedicated-server distribution, fetched at install time (F-828). The user reports the local client/save
-pair compatible, with authenticated and reference access deferred (F-421).
+tests only per approved scenario ([gates](gates.md)). Input parity: the native
+server needs no more than the official dedicated server needs, never the game
+client (F-828). The user reports the local client/save pair compatible, with
+authenticated and reference access deferred (F-421).
 
-The native server now types every supplied recorder value losslessly and
-plans imports with field-level blockers (F-766, F-767), and `run` can host an
-opt-in loopback session layer tested only with authored probes (F-768).
+The native server types every supplied recorder value losslessly and plans
+imports with field-level blockers by role (F-766, F-767, F-821); `run` hosts an
+opt-in loopback session layer tested only with authored probes (F-768, F-827).
+`install-official-data` fetches the official server's data tables anonymously
+without steamcmd (F-831), and replicated row handles take their indices from
+them (F-830).
 
 What the foundation does is in the
 [foundation digest](research/foundation/foundation.md). Research state is in the
@@ -41,7 +44,7 @@ What the foundation does is in the
 | --- | --- | --- |
 | M0: reference baseline | In progress | 435 files hashed; build 25621760; isolated entry-map startup observed; supplied save integrity/outer format characterized; client PE/PDB identity and MSF streams verified (F-486, F-730; U-034 resolved); producing save build log pending (U-040) |
 | M1: original bug reproduction | Pending | Offline startup did not reproduce reported crashes; no official bug is marked reproduced or fixed (F-217); controlled workloads still required |
-| M2: interoperability/data feasibility | In progress, partial observations | Stateless exchange observed; authenticated protocol, world-data and import feasibility gates remain open |
+| M2: interoperability/data feasibility | In progress, partial observations | Stateless exchange observed; the official server's data tables fetch natively and drive row handles (F-830, F-831); authenticated protocol, world-data and import feasibility gates remain open |
 | M3: Bevy gameplay slice | In progress, foundation only | Rust 1.99.1 / Bevy 0.20.0 foundation tested; opt-in loopback session layer admits authored probes (F-768, F-770); stock-client slice pending M2 |
 | M4: complete behavior | Pending | All required compatibility matrix entries must pass |
 | M5: migration/hardening | Pending, native hardening underway | Real native filesystem faults pass; real saves preserve losslessly in native generations and run through autosaves (F-567, F-584); randomized inputs never panic the readers or the peer lab, and corrupted stores load a committed snapshot or fail closed (F-604 to F-607, F-611); every supplied value types losslessly and a dry-run import plan reports field-level blockers (F-766, F-767); value meanings and migration fidelity remain unvalidated |
