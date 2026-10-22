@@ -48,7 +48,11 @@ Address pairs are server / client.
   `pawn_stats`).
 - GameState managers (F-859): dynamic actors with roles 1 and 3, a created-only
   `Stat Container` and, for Icarus actors, an `ActorState` (handles 16 and 17;
-  `experimental::manager_open`).
+  `experimental::manager_open`). The QuestManager's handles 19..26 carry the
+  save's C018 record: the faction mission's 1-byte `D_FactionMissions` row,
+  nondefault difficulty, flags and delay, `InitialQuest` and the keyed
+  relevant persistent actors and characters as `(Str, Object)` arrays, each
+  actor by its Icarus actor GUID's key (F-861; `with_quest_state`).
 - GameState active prospect (F-855): handles 51..67 carry the loaded save's
   `ProspectInfo` fields that differ from their defaults, arrays with every
   element field; `ElapsedTime` is the game mode's recorded
