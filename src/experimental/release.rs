@@ -435,8 +435,11 @@ pub struct ReleaseManagersProfile {
 }
 
 impl ReleaseManagersProfile {
-    /// The managers reproduced bit-exactly against the 3.0.31 capture and
-    /// derived unchanged for 3.0.32 (F-780, F-859).
+    /// The managers reproduced bit-exactly against the 3.0.31 capture
+    /// (F-859). For 3.0.32 the five checksums, including the Blueprint
+    /// `BP_DisasterController_C`'s, are among the values the 25956137
+    /// derivation reproduces unchanged (M-820, behind F-780); the component
+    /// set and order are assumed unchanged.
     pub fn icarus_survival() -> Self {
         let native = |class: &str, checksum| {
             vec![

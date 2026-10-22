@@ -58,9 +58,10 @@ original's `LockedMissions` come from the save's mission history and the
 server's `D_FactionMissions` by a fixed rule, which `run` follows (F-834,
 F-835). A fresh player's pawn vitals and empty inventories are data.pak rows,
 which `run` sends (F-836); after each PlayerState it opens the GameState's
-radiation, world-talent and disaster managers as the capture did (F-859); its stats are mostly starting grants, with 8
-virtual stats whose formulas the server declares in code; `run` sends them
-from data.pak by the same formulas (F-839).
+radiation, world-talent and disaster managers as the capture did (F-859).
+The pawn's stats are mostly starting grants, with 8 virtual stats whose
+formulas the server declares in code; `run` sends them from data.pak by the
+same formulas (F-839).
 
 ## Open
 
