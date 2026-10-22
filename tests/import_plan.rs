@@ -268,16 +268,26 @@ fn recorder_bytes(class: &str, bytes: &[u8]) -> Vec<u8> {
 }
 
 fn envelope(version: i32, recorders: &[Vec<u8>]) -> Vec<u8> {
-    let info = [
-        tag(
-            "ProspectID",
-            "StrProperty",
-            &[0],
-            &fstring("secret-prospect"),
-        ),
-        end(),
-    ]
-    .concat();
+    envelope_with_prospect_keys(version, recorders, None, None)
+}
+
+fn envelope_with_prospect_keys(
+    version: i32,
+    recorders: &[Vec<u8>],
+    nested: Option<&str>,
+    legacy: Option<&str>,
+) -> Vec<u8> {
+    let mut info = vec![tag(
+        "ProspectID",
+        "StrProperty",
+        &[0],
+        &fstring("secret-prospect"),
+    )];
+    if let Some(key) = nested {
+        info.push(tag("ProspectDTKey", "StrProperty", &[0], &fstring(key)));
+    }
+    info.push(end());
+    let info = info.concat();
     let shared = tag(
         "StateRecorderBlobs",
         "StructProperty",
@@ -285,7 +295,7 @@ fn envelope(version: i32, recorders: &[Vec<u8>]) -> Vec<u8> {
         &recorders.concat(),
     );
     let count = i32::try_from(recorders.len()).unwrap().to_le_bytes();
-    let payload = [
+    let mut roots = vec![
         tag("Version", "IntProperty", &[0], &version.to_le_bytes()),
         struct_tag("ProspectInfo", "ProspectInfo", &info),
         tag(
@@ -294,9 +304,12 @@ fn envelope(version: i32, recorders: &[Vec<u8>]) -> Vec<u8> {
             &[fstring("StructProperty"), vec![0]].concat(),
             &[count.as_slice(), &shared].concat(),
         ),
-        end(),
-    ]
-    .concat();
+    ];
+    if let Some(key) = legacy {
+        roots.push(tag("ProspectDTKey", "StrProperty", &[0], &fstring(key)));
+    }
+    roots.push(end());
+    let payload = roots.concat();
     let mut encoder = ZlibEncoder::new(Vec::new(), Compression::fast());
     encoder.write_all(&payload).unwrap();
     let compressed = encoder.finish().unwrap();
@@ -610,7 +623,12 @@ fn import_cli_prints_the_plan_on_dry_run_and_refuses_otherwise_without_writing()
     let root = TempDir::new().unwrap();
     let path = root.path().join("authored.json");
     let destination = root.path().join("world");
-    let source = envelope(2, &[recorder(ACTOR, &CLEAN)]);
+    let source = envelope_with_prospect_keys(
+        2,
+        &[recorder(ACTOR, &CLEAN)],
+        Some("SecretProspectRow"),
+        None,
+    );
     fs::write(&path, &source).unwrap();
     let run = |dry_run: bool| {
         let mut command = Command::new(env!("CARGO_BIN_EXE_icarus-server"));
@@ -760,6 +778,138 @@ fn clean_catalog(extra: &str) -> String {
 fn string_reference_source(fields: &[Vec<u8>]) -> Vec<u8> {
     let bytes = [fields.concat(), end(), vec![0; 4]].concat();
     envelope(2, &[recorder_bytes(ACTOR, &bytes)])
+}
+
+#[test]
+fn effective_prospect_key_resolves_only_as_a_data_row_without_leaking() {
+    let key = "SecretProspectRow";
+    let body = [end(), vec![0; 4]].concat();
+    let source = envelope_with_prospect_keys(2, &[recorder_bytes(ACTOR, &body)], Some(key), None);
+    for role in [None, Some("actor_class"), Some("data_row")] {
+        let catalog = role.map_or_else(ContentCatalog::empty, |role| {
+            ContentCatalog::parse(&format!("format = 1\n[references]\n{role} = [\"{key}\"]\n"))
+                .unwrap()
+        });
+        let plan = plan_import(source.as_slice(), &catalog).unwrap();
+        let mapped = role == Some("data_row");
+        assert_eq!(plan.content.name_references, 0);
+        assert_eq!(plan.content.path_references, 0);
+        assert_eq!(plan.content.distinct, 1);
+        assert_eq!(plan.content.mapped_distinct, usize::from(mapped));
+        assert_eq!(
+            plan.content.roles[&ContentRole::DataRow],
+            RoleCount {
+                references: 1,
+                distinct: 1,
+                unmapped_distinct: usize::from(!mapped),
+            }
+        );
+        assert_eq!(
+            plan.classes
+                .values()
+                .map(|class| class.unmapped_references)
+                .sum::<usize>(),
+            0
+        );
+        assert_eq!(plan.importable, mapped);
+        assert!(!plan.world_imported);
+        assert_eq!(
+            plan.blockers,
+            if mapped {
+                vec![]
+            } else {
+                vec![ImportBlocker::UnmappedContent {
+                    distinct: 1,
+                    references: 1,
+                }]
+            }
+        );
+        assert!(!serde_json::to_string(&plan).unwrap().contains(key));
+        assert!(!format!("{plan:?}").contains(key));
+    }
+}
+
+#[test]
+fn prospect_key_resolution_uses_staged_migration_precedence() {
+    let body = [end(), vec![0; 4]].concat();
+    for (version, nested, legacy, effective) in [
+        (
+            1,
+            Some("SecretNested"),
+            Some("SecretLegacy"),
+            Some("SecretLegacy"),
+        ),
+        (1, Some("SecretNested"), None, Some("SecretNested")),
+        (1, Some("SecretNested"), Some(""), None),
+        (
+            2,
+            Some("SecretNested"),
+            Some("SecretLegacy"),
+            Some("SecretNested"),
+        ),
+        (2, None, Some("SecretLegacy"), None),
+        (0, Some("SecretNested"), Some("SecretLegacy"), None),
+    ] {
+        let source =
+            envelope_with_prospect_keys(version, &[recorder_bytes(ACTOR, &body)], nested, legacy);
+        let plan = plan_import(source.as_slice(), &ContentCatalog::empty()).unwrap();
+        assert_eq!(plan.staged.has_prospect_dt_key, effective.is_some());
+        assert_eq!(plan.content.distinct, usize::from(effective.is_some()));
+        assert_eq!(plan.content.name_references, 0);
+        if version == 0 {
+            assert_eq!(plan.blockers, vec![ImportBlocker::NoRetainedRecorders]);
+        } else {
+            let catalog = ContentCatalog::from_references(effective);
+            let resolved = plan_import(source.as_slice(), &catalog).unwrap();
+            assert!(resolved.blockers.is_empty(), "{version}: {resolved:?}");
+            assert!(resolved.importable);
+        }
+    }
+}
+
+#[test]
+fn root_and_recorder_rows_deduplicate_but_keep_occurrence_counts() {
+    let body = [
+        tag("ItemStaticData", "NameProperty", &[0], &fstring(ROW)),
+        end(),
+        vec![0; 4],
+    ]
+    .concat();
+    let source = envelope_with_prospect_keys(2, &[recorder_bytes(ACTOR, &body)], Some(ROW), None);
+    let plan = plan_import(source.as_slice(), &ContentCatalog::empty()).unwrap();
+    assert_eq!(plan.content.name_references, 1);
+    assert_eq!(plan.content.distinct, 1);
+    assert_eq!(plan.content.unmapped_references, 2);
+    assert_eq!(
+        plan.content.roles[&ContentRole::DataRow],
+        RoleCount {
+            references: 2,
+            distinct: 1,
+            unmapped_distinct: 1,
+        }
+    );
+    assert_eq!(
+        plan.classes
+            .values()
+            .map(|class| class.unmapped_references)
+            .sum::<usize>(),
+        1
+    );
+    assert_eq!(
+        plan.blockers,
+        vec![ImportBlocker::UnmappedContent {
+            distinct: 1,
+            references: 2,
+        }]
+    );
+    let catalog = ContentCatalog::parse(&format!(
+        "format = 1\n[references]\ndata_row = [\"{ROW}\"]\n"
+    ))
+    .unwrap();
+    let plan = plan_import(source.as_slice(), &catalog).unwrap();
+    assert_eq!(plan.content.mapped_distinct, 1);
+    assert_eq!(plan.content.roles[&ContentRole::DataRow].references, 2);
+    assert!(plan.importable);
 }
 
 #[test]

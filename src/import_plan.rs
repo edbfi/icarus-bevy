@@ -23,7 +23,8 @@ use crate::experimental::property_tree::{
 };
 use crate::experimental::recorders::{
     StagedProspectSaveState, StagedRecorderDecision, lookup_recorder_ctor_defaults, read_recorders,
-    recorder_class_label, stage_prospect_save_state_with_decisions,
+    recorder_class_label, stage_prospect_save_state_for_import,
+    stage_prospect_save_state_with_decisions,
 };
 use crate::experimental::restore_rules::OwnerResolvePolicy;
 use crate::experimental::struct_array::MAX_BOUNDED_STRUCT_ARRAY_BYTES;
@@ -523,13 +524,15 @@ pub struct ImportPlan {
 pub fn plan_import(reader: impl Read, catalog: &ContentCatalog) -> Result<ImportPlan> {
     let validated = decode_envelope(reader)?;
     let tags = read_root(&validated.payload, PROFILE).context("invalid experimental root tags")?;
-    let (staged, decisions) = stage_prospect_save_state_with_decisions(
+    let staged_import = stage_prospect_save_state_for_import(
         &tags.tags,
         PROFILE,
         MAX_BOUNDED_COMPONENT_BYTES,
         None,
     )
     .context("invalid staged FProspectSaveState")?;
+    let staged = staged_import.summary;
+    let decisions = staged_import.decisions;
     let recorders =
         read_recorders(&tags.tags, PROFILE).context("invalid experimental recorder framing")?;
     ensure!(
@@ -555,6 +558,19 @@ pub fn plan_import(reader: impl Read, catalog: &ContentCatalog) -> Result<Import
     };
     let mut distinct: BTreeMap<Vec<u16>, bool> = BTreeMap::new();
     let mut role_distinct: BTreeSet<(ContentRole, Vec<u16>)> = BTreeSet::new();
+    // The effective ProspectInfo key names a D_ProspectList row (F-911).
+    // It is a root string reference, outside recorder name/class counts.
+    if !staged_import.prospect_dt_key.is_empty() {
+        let reference = staged_import.prospect_dt_key;
+        let role = ContentRole::DataRow;
+        let mapped = catalog.contains(role, &reference);
+        plan.content.roles.entry(role).or_default().references += 1;
+        role_distinct.insert((role, reference.clone()));
+        distinct.insert(reference, mapped);
+        if !mapped {
+            plan.content.unmapped_references += 1;
+        }
+    }
     for (recorder, decision) in recorders.records().iter().zip(&decisions) {
         // read_recorders and staging validated this exact FString; it is never reported.
         let class = decode_string(recorder.class_value, ByteOrder::Little)
