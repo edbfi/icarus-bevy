@@ -24,7 +24,8 @@ they carry. Framing is in [actor channel bunches](actor-channel.md).
   `D_FactionMissions` row, nondefault difficulty, flags and delay,
   `InitialQuest` and the keyed relevant persistent actors and characters as
   `(Str, Object)` arrays, each actor keyed by its saved Icarus actor GUID
-  (`ActorKey::Saved`, apart from domain ids; F-861; `with_quest_state`).
+  (`ActorKey::Saved`, apart from domain ids; F-861; `with_quest_state`). A
+  saved faction mission the tables lack skips the QuestManager.
 - PlayerHistoryTracker (`Default__PlayerHistoryTracker`, checksum 243959002):
   handle 19 `History` carries the save's C024 `SavedHistoryData`, every
   element field (`UserId`, `ChrSlot`, `CachedCharacterName`) in saved order

@@ -1063,6 +1063,35 @@ fn a_saved_quest_manager_supplies_the_quest_manager_state() {
     let (saved_quest, row) = saved.quest_manager.expect("a mapped quest manager");
     assert_eq!(row, 3);
     assert_eq!(saved_quest, quest);
+    assert!(saved.skipped_managers.is_empty());
+    // A faction mission the tables lack skips the QuestManager, with a
+    // reason.
+    let other = root.path().join("other.pak");
+    std::fs::write(
+        &other,
+        pak_writer::official_pak(&[
+            (
+                "Flags/D_SessionFlags.json",
+                pak_writer::table_json(&["Flag_A"]),
+            ),
+            (
+                "Factions/D_FactionMissions.json",
+                pak_writer::table_json(&["Mission_Z"]),
+            ),
+        ]),
+    )
+    .unwrap();
+    let mut other = icarus_bevy::data_pak::DataTables::open(&other).unwrap();
+    let saved = icarus_bevy::network::saved_game_state(&section, Some(&mut other)).unwrap();
+    assert!(saved.quest_manager.is_none());
+    assert_eq!(
+        saved
+            .skipped_managers
+            .iter()
+            .map(|(slot, _)| *slot)
+            .collect::<Vec<_>>(),
+        [icarus_bevy::experimental::manager_open::ManagerSlot::Quest]
+    );
     // Without the record, nothing to open.
     let bare = PreservedSection::from_inner_payload(
         &payload(&prospect_info(), &[game_mode_recorder(150)]),
