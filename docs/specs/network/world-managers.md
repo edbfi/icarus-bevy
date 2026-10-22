@@ -43,7 +43,9 @@ they carry. Framing is in [actor channel bunches](actor-channel.md).
 - `run` opens the radiation, world-talent and disaster managers after each
   PlayerState, then the QuestManager, InventoryContainerManager and
   PlayerHistoryTracker when the loaded save supplies their records (F-859,
-  F-861, F-862, F-866).
+  F-861, F-862, F-866); on the 15 qualified prospects every run opens them
+  without errors, saves with list gaps or an unknown faction mission
+  skipping those managers (F-867).
 - Quest actors: 1,772 of 3.0.32's 2,044 `D_Quests` classes keep native
   `Quest`'s checksum 4033596864, 270 add replicated properties (F-863).
   `AQuest::RunQuest` keeps a sub-quest in `ActiveQuests` only while its
@@ -66,4 +68,4 @@ they carry. Framing is in [actor channel bunches](actor-channel.md).
 
 ## Evidence
 
-- M-707, M-820, M-879, M-881 to M-886.
+- M-707, M-820, M-879, M-881 to M-887.
