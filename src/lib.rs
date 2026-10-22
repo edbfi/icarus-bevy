@@ -6,6 +6,7 @@ pub mod import_plan;
 mod json;
 pub mod metrics;
 pub mod network;
+pub mod pawn_stats;
 pub mod persistence;
 pub mod preservation;
 pub mod prospect;
