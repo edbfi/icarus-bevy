@@ -208,11 +208,44 @@ pub fn player_tables() -> Vec<(&'static str, Vec<u8>)> {
             "Character/D_CharacterGrowth.json",
             table_json(&["Creature", "Player"]),
         ),
+        ("Stats/D_Stats.json", stats_json()),
         (
             "Factions/D_FactionMissions.json",
             table_json(&["Mission_Z"]),
         ),
     ]
+}
+
+/// An authored `D_Stats`: the starting grants' stats and the movement and
+/// health stats, `bIsReplicated` where the pawn sends them.
+pub fn stats_json() -> Vec<u8> {
+    let rows: Vec<serde_json::Value> = [
+        ("MaximumHealth_+", true),
+        ("BaseMaximumHealth_+", false),
+        ("BaseMaximumHealth_+%", false),
+        ("MaximumStamina_+", true),
+        ("BaseMaximumStamina_+", false),
+        ("BaseMaximumOxygen_+", false),
+        ("BaseMaximumWater_+", false),
+        ("BaseMaximumFood_+", false),
+        ("WeightCapacity_+", false),
+        ("BaseWeightCapacity_+", false),
+        ("MovementSpeed_+", true),
+        ("BaseMovementSpeed_+", false),
+        ("SprintSpeed_+", true),
+        ("SprintMovementSpeedCoefficient_%", false),
+        ("CanSeeCompass_?", true),
+    ]
+    .iter()
+    .map(|(name, replicated)| {
+        if *replicated {
+            serde_json::json!({"Name": name, "bIsReplicated": true})
+        } else {
+            serde_json::json!({"Name": name})
+        }
+    })
+    .collect();
+    serde_json::to_vec(&serde_json::json!({"Rows": rows})).unwrap()
 }
 
 /// A pak with `extra` members beside [`player_tables`] (a member of the

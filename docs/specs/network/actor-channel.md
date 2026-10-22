@@ -44,7 +44,8 @@ Address pairs are server / client.
   item new (struct-delta bit set, base key 0, no deletes, IDs from 1); an
   empty slot sends handles 2 and 10..18 (`experimental::pawn_open`). A fresh
   player's vitals, inventory rows and slot queries are data.pak rows (F-836;
-  `network::pawn_content`); stats are 50 grants and 8 virtual stats (F-838).
+  `network::pawn_content`); stats are starting grants through the virtual-stat formulas (F-839;
+  `pawn_stats`).
 - GameState active prospect (F-801): handles 51..67 carry the loaded save's
   `ProspectInfo` fields that differ from their defaults, arrays with every
   element field; `ElapsedTime` is the game mode's recorded
