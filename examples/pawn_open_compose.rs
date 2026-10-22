@@ -28,7 +28,8 @@ use icarus_bevy::experimental::{
     archive::ByteOrder,
     packet::{BitWriter, Payload},
     pawn_open::{
-        EmptySlot, FastArrayContent, PawnContent, PawnInventory, PawnOpenState, compose_pawn_open,
+        FastArrayContent, InventorySlot, PawnContent, PawnInventory, PawnOpenState,
+        compose_pawn_open,
     },
     release::ReleaseProfile,
     rep_layout::{
@@ -472,10 +473,7 @@ fn native(
                         };
                         match (handle_value(stream, 14), handle_value(stream, 18)) {
                             (Some(RepValue::UInt16(query_row)), Some(RepValue::Int(index))) => {
-                                Ok(EmptySlot {
-                                    query_row: *query_row,
-                                    index: *index,
-                                })
+                                Ok(InventorySlot::empty(*query_row, *index))
                             }
                             _ => bail!("slot without its query row and index"),
                         }

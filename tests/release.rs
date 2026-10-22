@@ -597,8 +597,8 @@ fn builtin_pawn_content_composes_every_block() {
         },
         archive::ByteOrder,
         pawn_open::{
-            CharacterVitals, EmptySlot, FastArrayContent, INVENTORY_SLOTS_FIELD_INDEX, PawnContent,
-            PawnInventory, PawnOpenState, STAT_ARRAY_FIELD_INDEX, compose_pawn_open,
+            CharacterVitals, FastArrayContent, INVENTORY_SLOTS_FIELD_INDEX, InventorySlot,
+            PawnContent, PawnInventory, PawnOpenState, STAT_ARRAY_FIELD_INDEX, compose_pawn_open,
         },
         rep_layout::{
             GameplayTag, RepLayoutCodec, RepLayoutLimits, RepValue, StatPairRepState,
@@ -652,10 +652,7 @@ fn builtin_pawn_content_composes_every_block() {
                 slots: FastArrayContent {
                     replication_key: 2,
                     items: (0..3)
-                        .map(|index| EmptySlot {
-                            query_row: 30 + index as u16,
-                            index,
-                        })
+                        .map(|index| InventorySlot::empty(30 + index as u16, index))
                         .collect(),
                 },
             },
@@ -1010,6 +1007,7 @@ fn manager_sections_parse_and_fail_closed() {
     );
     let section = "[managers]\n\
         quest_manager = [{ path = \"Default__Q\", checksum = 6 }, { path = \"/Script/I\", checksum = 0 }]\n\
+        inventory_container_manager = [{ path = \"Default__C\", checksum = 8 }, { path = \"/Script/I\", checksum = 0 }]\n\
         player_history_tracker = [{ path = \"Default__H\", checksum = 7 }, { path = \"/Script/I\", checksum = 0 }]\n\
         radiation_manager = [{ path = \"Default__R\", checksum = 1 }, { path = \"/Script/I\", checksum = 0 }]\n\
         world_talent_manager = [{ path = \"Default__W\", checksum = 2 }, { path = \"/Script/I\", checksum = 0 }]\n\
@@ -1026,6 +1024,15 @@ fn manager_sections_parse_and_fail_closed() {
         .unwrap()
         .unwrap();
     assert_eq!(quest.archetype[0].path, "Default__Q");
+    // Without `[pawn]` the container manager has no inventory layouts and
+    // no plan; the others keep theirs.
+    assert!(parsed.pawn.is_none());
+    assert!(
+        parsed
+            .manager_open_plan(ManagerSlot::InventoryContainer, "/Game/Maps/Test/Test")
+            .unwrap()
+            .is_none()
+    );
     assert_eq!(quest.components.len(), 2);
     assert!(quest.values.is_empty() && quest.actors.is_empty());
     for bad in [

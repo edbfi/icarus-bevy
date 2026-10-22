@@ -24,8 +24,8 @@ use super::archive::ByteOrder;
 use super::control_messages::ArchiveText;
 use super::packet::{BitWriter, Payload};
 use super::rep_layout::{
-    GameplayTag, PropertyStream, RepCommand, RepLayoutCodec, RepLayoutLimits, RepValue,
-    StatPairRepState,
+    GameplayTag, NetworkName, PropertyStream, RepArray, RepCommand, RepLayoutCodec,
+    RepLayoutLimits, RepValue, StatPairRepState,
 };
 use super::rep_rpc::{
     CustomDeltaHeader, FAST_ARRAY_COUNT_CAP, FastArrayDelta, FastArrayItem, FastArrayItemLayout,
@@ -101,12 +101,18 @@ const INVENTORY_IS_ACTIVE: u32 = 2;
 const INVENTORY_OWNING_COMPONENT: u32 = 3;
 const INVENTORY_INFO_ROW: u32 = 7;
 
-/// `FInventorySlot` handles an empty slot writes (`inventory_slot_commands`):
-/// the item's static row (2), its flag (10), string (11), integer (12) and
-/// tags (13), then `Query` (14), `Locked` (15), `LastItem` (16), `Slotable`
-/// (17) and `Index` (18). Item arrays (1, 3..=9) stay empty and unsent.
+/// `FInventorySlot` handles a slot writes (`inventory_slot_commands`): the
+/// item's static row (2), its flag (10), string (11), integer (12) and tags
+/// (13), then `Query` (14), `Locked` (15), `LastItem` (16), `Slotable` (17)
+/// and `Index` (18). An item slot adds its nonempty dynamic data (3) and
+/// stats (7); the other item arrays (1, 4..=6, 8, 9) stay unsent (F-866).
 mod slot_handle {
     pub const ITEM_ROW: u32 = 2;
+    /// `ItemData.ItemDynamicData`: (`EDynamicItemProperties`, value) pairs.
+    pub const ITEM_DYNAMIC: u32 = 3;
+    /// `ItemData.CustomProperties.Stats`: (stat name, value) pairs.
+    pub const ITEM_STATS: u32 = 7;
+    /// `ItemData.bIsItemInstance`.
     pub const ITEM_FLAG: u32 = 10;
     pub const ITEM_STRING: u32 = 11;
     pub const ITEM_INTEGER: u32 = 12;
@@ -141,7 +147,7 @@ pub struct PawnComponent {
 }
 
 /// Release identifiers and layouts for the pawn's content blocks.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct PawnContentPlan {
     /// `UActorComponent`'s layout, for component bools.
     pub component_layout: Vec<RepCommand>,
@@ -237,18 +243,41 @@ impl<T> Default for FastArrayContent<T> {
     }
 }
 
-/// An empty inventory slot: its query row and index.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct EmptySlot {
+/// An item in a slot as `FItemData` replicates it (F-866): its
+/// `D_ItemsStatic` row, its `ItemDynamicData` (`EDynamicItemProperties`
+/// value, value) pairs and its `CustomProperties.Stats` (stat name, value)
+/// pairs; the other fields keep their defaults.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SlotItem {
+    pub row: u16,
+    pub dynamic: Vec<(u32, i32)>,
+    pub stats: Vec<(ArchiveText, i32)>,
+}
+
+/// An inventory slot: its query row and index, and its item if any.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct InventorySlot {
     pub query_row: u16,
     pub index: i32,
+    pub item: Option<SlotItem>,
+}
+
+impl InventorySlot {
+    /// An empty slot.
+    pub fn empty(query_row: u16, index: i32) -> Self {
+        Self {
+            query_row,
+            index,
+            item: None,
+        }
+    }
 }
 
 /// One runtime inventory: its info row and its slots.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PawnInventory {
     pub info_row: u8,
-    pub slots: FastArrayContent<EmptySlot>,
+    pub slots: FastArrayContent<InventorySlot>,
 }
 
 /// One player's pawn content beyond identifiers; [`Default`] adds nothing
@@ -340,20 +369,73 @@ fn item_stream(entries: Vec<(u32, RepValue)>) -> PropertyStream {
     }
 }
 
-fn empty_slot(slot: &EmptySlot) -> Result<PropertyStream> {
+/// A `(element field, value)` pair array, two fields per element.
+fn pair_array(pairs: impl ExactSizeIterator<Item = (RepValue, RepValue)>) -> Result<RepValue> {
+    let count = u16::try_from(pairs.len())?;
+    let entries = pairs
+        .zip(0u32..)
+        .flat_map(|((first, second), element)| {
+            [
+                entry(2 * element + 1, first),
+                entry(2 * element + 2, second),
+            ]
+        })
+        .collect();
+    Ok(RepValue::DynamicArray(RepArray {
+        count,
+        stream: PropertyStream {
+            entries,
+            terminator_checksum: None,
+        },
+    }))
+}
+
+/// A slot's every field, as an initial open sends it: an item's row, its
+/// nonempty dynamic data and stats and `bIsItemInstance`, or the empty
+/// slot's defaults, then the slot's own fields (`LastItem` is the item's
+/// row).
+fn slot_stream(slot: &InventorySlot) -> Result<PropertyStream> {
     use slot_handle as h;
-    Ok(item_stream(vec![
-        (h::ITEM_ROW, RepValue::UInt16(NO_ROW)),
-        (h::ITEM_FLAG, RepValue::Bool(false)),
+    let row = slot.item.as_ref().map_or(NO_ROW, |item| item.row);
+    let mut entries = vec![(h::ITEM_ROW, RepValue::UInt16(row))];
+    if let Some(item) = &slot.item {
+        if !item.dynamic.is_empty() {
+            entries.push((
+                h::ITEM_DYNAMIC,
+                pair_array(
+                    item.dynamic.iter().map(|(property, value)| {
+                        (RepValue::Enum(*property), RepValue::Int(*value))
+                    }),
+                )?,
+            ));
+        }
+        if !item.stats.is_empty() {
+            entries.push((
+                h::ITEM_STATS,
+                pair_array(item.stats.iter().map(|(name, value)| {
+                    (
+                        RepValue::NetworkName(NetworkName::String {
+                            text: name.clone(),
+                            number: 0,
+                        }),
+                        RepValue::Int(*value),
+                    )
+                }))?,
+            ));
+        }
+    }
+    entries.extend([
+        (h::ITEM_FLAG, RepValue::Bool(slot.item.is_some())),
         (h::ITEM_STRING, RepValue::Str(ArchiveText::new(&[])?)),
         (h::ITEM_INTEGER, RepValue::Int(-1)),
         (h::ITEM_TAGS, RepValue::GameplayTagContainer(None)),
         (h::QUERY, RepValue::UInt16(slot.query_row)),
         (h::LOCKED, RepValue::Bool(false)),
-        (h::LAST_ITEM, RepValue::UInt16(NO_ROW)),
+        (h::LAST_ITEM, RepValue::UInt16(row)),
         (h::SLOTABLE, RepValue::Bool(false)),
         (h::INDEX, RepValue::Int(slot.index)),
-    ]))
+    ]);
+    Ok(item_stream(entries))
 }
 
 /// A component block: its bools and the caller's values and fields, or a
@@ -377,6 +459,47 @@ fn component_block(
         values,
         fields,
         field_bound,
+    })
+}
+
+/// A runtime `UInventory` subobject: active, its info row, its owning
+/// component when `owner` names one, and its slots as the custom-delta
+/// field (F-799, F-866).
+pub fn inventory_subobject(
+    blocks: &PawnContentPlan,
+    inventory: &PawnInventory,
+    owner: Option<Reference>,
+    engine_net_version: u32,
+    order: ByteOrder,
+) -> Result<OpenSubobject> {
+    let slots = fast_array_field(
+        INVENTORY_SLOTS_FIELD_INDEX,
+        inventory.slots.replication_key,
+        inventory
+            .slots
+            .items
+            .iter()
+            .map(slot_stream)
+            .collect::<Result<_>>()?,
+        &blocks.slot_layout,
+        engine_net_version,
+        order,
+    )?;
+    Ok(OpenSubobject {
+        class: blocks.inventory_class.clone(),
+        block: Block::Composed(BlockProperties {
+            layout: blocks.inventory_layout.clone(),
+            references: owner
+                .map(|owner| (INVENTORY_OWNING_COMPONENT, owner))
+                .into_iter()
+                .collect(),
+            values: BTreeMap::from([
+                (INVENTORY_IS_ACTIVE, RepValue::Bool(true)),
+                (INVENTORY_INFO_ROW, RepValue::Byte(inventory.info_row)),
+            ]),
+            fields: vec![slots],
+            field_bound: blocks.inventory_bound,
+        }),
     })
 }
 
@@ -491,35 +614,13 @@ pub fn compose_pawn_open(
         .inventories
         .iter()
         .map(|inventory| {
-            let slots = fast_array_field(
-                INVENTORY_SLOTS_FIELD_INDEX,
-                inventory.slots.replication_key,
-                inventory
-                    .slots
-                    .items
-                    .iter()
-                    .map(empty_slot)
-                    .collect::<Result<_>>()?,
-                &blocks.slot_layout,
+            inventory_subobject(
+                blocks,
+                inventory,
+                Some(Reference::Component(plan.inventory_component)),
                 plan.engine_net_version,
                 order,
-            )?;
-            Ok(OpenSubobject {
-                class: blocks.inventory_class.clone(),
-                block: Block::Composed(BlockProperties {
-                    layout: blocks.inventory_layout.clone(),
-                    references: BTreeMap::from([(
-                        INVENTORY_OWNING_COMPONENT,
-                        Reference::Component(plan.inventory_component),
-                    )]),
-                    values: BTreeMap::from([
-                        (INVENTORY_IS_ACTIVE, RepValue::Bool(true)),
-                        (INVENTORY_INFO_ROW, RepValue::Byte(inventory.info_row)),
-                    ]),
-                    fields: vec![slots],
-                    field_bound: blocks.inventory_bound,
-                }),
-            })
+            )
         })
         .collect::<Result<_>>()?;
     let open = ComponentActorOpen {

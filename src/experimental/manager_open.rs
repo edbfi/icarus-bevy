@@ -11,10 +11,12 @@
 //! The QuestManager also replicates its saved quest state (`C018`): the
 //! faction mission's row, difficulty, flags, the initial quest actor and the
 //! keyed relevant persistent actors, all referenced by actor key. The
-//! PlayerHistoryTracker replicates its saved history (`C024`).
+//! PlayerHistoryTracker replicates its saved history (`C024`), the
+//! InventoryContainerManager its saved inventories (`C016`) as runtime
+//! `UInventory` subobjects its `Inventories` lists.
 use std::collections::BTreeMap;
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 
 use super::actor_channel::NetGuidRef;
 use super::actor_open::{
@@ -24,6 +26,7 @@ use super::actor_open::{
 use super::archive::ByteOrder;
 use super::control_messages::ArchiveText;
 use super::game_state_open::GameStateManagers;
+use super::pawn_open::{PawnContentPlan, PawnInventory, inventory_subobject};
 use super::prospect_info::{PlayerHistoryEntry, RelevantQuestActor, SavedQuestManager};
 use super::rep_layout::{PropertyStream, RepArray, RepCommand, RepEntry, RepValue};
 use super::session_open::{
@@ -61,12 +64,17 @@ pub mod quest_handle {
 /// `APlayerHistoryTracker::History` (`player_history_tracker_rep_layout`).
 pub const PLAYER_HISTORY_HANDLE: u32 = 19;
 
+/// `AInventoryContainerManager::Inventories`
+/// (`inventory_container_manager_rep_layout`).
+pub const CONTAINER_INVENTORIES_HANDLE: u32 = 19;
+
 /// Which GameState manager reference a manager open fills (F-794, F-859).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum ManagerSlot {
     Quest,
     WorldTalent,
     Radiation,
+    InventoryContainer,
     PlayerHistory,
     Disaster,
 }
@@ -79,6 +87,7 @@ impl ManagerSlot {
             Self::Quest => 1,
             Self::WorldTalent => 2,
             Self::Radiation => 3,
+            Self::InventoryContainer => 4,
             Self::PlayerHistory => 5,
             Self::Disaster => 7,
         })
@@ -91,6 +100,7 @@ impl ManagerSlot {
             Self::Quest => managers.quest_manager = reference,
             Self::WorldTalent => managers.world_talent_manager = reference,
             Self::Radiation => managers.radiation_manager = reference,
+            Self::InventoryContainer => managers.inventory_container_manager = reference,
             Self::PlayerHistory => managers.player_history_tracker = reference,
             Self::Disaster => managers.disaster_controller = reference,
         }
@@ -171,7 +181,21 @@ pub struct ManagerOpenPlan {
     pub actors: BTreeMap<u32, ActorKey>,
     /// `(Str, Object)` array handles: each element's string and keyed actor.
     pub keyed_actors: BTreeMap<u32, Vec<(ArchiveText, ActorKey)>>,
+    /// Runtime inventories opened as subobjects and listed by an
+    /// actor-block array.
+    pub inventories: Option<ManagerInventories>,
     pub engine_net_version: u32,
+}
+
+/// Runtime `UInventory` subobjects a manager opens, in block order, and
+/// the actor-block array handle that lists their GUIDs in the same order;
+/// none opens no subobject and sends no array.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ManagerInventories {
+    pub handle: u32,
+    /// The inventory class, layouts and field bound (the pawn's).
+    pub blocks: PawnContentPlan,
+    pub inventories: Vec<PawnInventory>,
 }
 
 impl ManagerOpenPlan {
@@ -227,6 +251,19 @@ impl ManagerOpenPlan {
                 self.keyed_actors.insert(handle, actors);
             }
         }
+        Ok(self)
+    }
+
+    /// Add the saved container inventories (`C016`, F-866) to an
+    /// InventoryContainerManager plan, whose release plan carries the
+    /// inventory layouts: subobjects listed by `Inventories`. Fails on a
+    /// plan without inventory layouts.
+    pub fn with_container_inventories(mut self, inventories: Vec<PawnInventory>) -> Result<Self> {
+        let owned = self
+            .inventories
+            .as_mut()
+            .context("the manager plan has no inventory layouts")?;
+        owned.inventories = inventories;
         Ok(self)
     }
 
@@ -286,6 +323,28 @@ pub fn compose_manager_open(
     for (handle, actors) in &plan.keyed_actors {
         values.insert(*handle, keyed_actor_array(cache, actors)?);
     }
+    // The inventories get their GUIDs where the actor block lists them,
+    // before any block, as the subobjects' own blocks then reuse them.
+    let mut subobjects = Vec::new();
+    if let Some(owned) = plan
+        .inventories
+        .as_ref()
+        .filter(|owned| !owned.inventories.is_empty())
+    {
+        let guids = (0..u32::try_from(owned.inventories.len())?)
+            .map(|index| cache.subobject_guid(key, index))
+            .collect::<Vec<_>>();
+        values.insert(owned.handle, object_array(&guids)?);
+        for inventory in &owned.inventories {
+            subobjects.push(inventory_subobject(
+                &owned.blocks,
+                inventory,
+                None,
+                plan.engine_net_version,
+                order,
+            )?);
+        }
+    }
     let references = plan
         .components
         .iter()
@@ -318,7 +377,7 @@ pub fn compose_manager_open(
                 block: Some(component.block.clone()),
             })
             .collect(),
-        subobjects: Vec::new(),
+        subobjects,
         engine_net_version: plan.engine_net_version,
     };
     let (composed, _) = compose_component_actor_open(cache, exports, &open, channel_index, order)?;
@@ -351,6 +410,28 @@ fn keyed_actor_array(
         count: u16::try_from(actors.len())?,
         stream: PropertyStream {
             entries,
+            terminator_checksum: None,
+        },
+    }))
+}
+
+/// An `Object` dynamic array of `guids`, in order.
+fn object_array(guids: &[u32]) -> Result<RepValue> {
+    Ok(RepValue::DynamicArray(RepArray {
+        count: u16::try_from(guids.len())?,
+        stream: PropertyStream {
+            entries: guids
+                .iter()
+                .zip(1u32..)
+                .map(|(guid, handle)| RepEntry {
+                    handle,
+                    checksum: None,
+                    value: RepValue::Object(NetGuidRef {
+                        guid: *guid,
+                        export: None,
+                    }),
+                })
+                .collect(),
             terminator_checksum: None,
         },
     }))

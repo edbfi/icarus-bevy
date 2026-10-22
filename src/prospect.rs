@@ -19,7 +19,8 @@ use crate::experimental::property_tree::{
     BaseComponentTree, MAX_TREE_DEPTH, MAX_TREE_NODES, PropertyTree, TreeLimits,
 };
 use crate::experimental::prospect_info::{
-    PlayerHistoryEntry, ProspectInfo, SavedGameMode, SavedQuestManager, saved_player_history,
+    PlayerHistoryEntry, ProspectInfo, SavedContainerManager, SavedGameMode, SavedQuestManager,
+    saved_container_manager, saved_player_history,
 };
 use crate::experimental::recorders::{
     RecorderSummary, StagedProspectSaveState, read_recorders, recorder_class_label,
@@ -282,10 +283,10 @@ pub fn typed_check(reader: impl Read) -> Result<TypedProspectInspection> {
 }
 
 /// What replicating a loaded prospect's GameState and managers needs from
-/// its save: the typed `ProspectInfo` (`F-738`) and the game mode, quest
-/// manager and player history recorders' values (`C015`, `C018`, `C024`,
-/// `F-650`), when those recorders exist. The values are the save's; callers
-/// must keep them private.
+/// its save: the typed `ProspectInfo` (`F-738`) and the game mode,
+/// container manager, quest manager and player history recorders' values
+/// (`C015`, `C016`, `C018`, `C024`, `F-650`), when those recorders exist.
+/// The values are the save's; callers must keep them private.
 pub struct SavedProspect {
     pub info: ProspectInfo,
     pub game_mode: Option<SavedGameMode>,
@@ -293,10 +294,13 @@ pub struct SavedProspect {
     pub quest_manager: Option<SavedQuestManager>,
     /// The player history recorder's entries (`C024`), when one exists.
     pub player_history: Option<Vec<PlayerHistoryEntry>>,
+    /// The container manager recorder's inventories (`C016`), when one
+    /// exists.
+    pub inventory_containers: Option<SavedContainerManager>,
 }
 
 /// Stage the prospect exactly as [`stage_prospect`] does, then type its root
-/// `ProspectInfo` and its one `C015`, `C018` and `C024` recorders.
+/// `ProspectInfo` and its one `C015`, `C016`, `C018` and `C024` recorders.
 pub fn read_saved_prospect(reader: impl Read) -> Result<SavedProspect> {
     saved_prospect_from_payload(&decode_envelope(reader)?.payload)
 }
@@ -326,12 +330,13 @@ pub fn saved_prospect_from_payload(payload: &[u8]) -> Result<SavedProspect> {
     let mut game_mode = None;
     let mut quest_manager = None;
     let mut player_history = None;
+    let mut inventory_containers = None;
     for recorder in recorders.records() {
         let class = decode_string(recorder.class_value, ByteOrder::Little)
             .context("invalid experimental recorder class string")?;
         let label = recorder_class_label(&class.units);
         let label = match label.as_deref() {
-            Some(label @ ("C015" | "C018" | "C024")) => label,
+            Some(label @ ("C015" | "C016" | "C018" | "C024")) => label,
             _ => continue,
         };
         let tree = BaseComponentTree::parse(
@@ -345,6 +350,9 @@ pub fn saved_prospect_from_payload(payload: &[u8]) -> Result<SavedProspect> {
         let repeated = match label {
             "C015" => game_mode
                 .replace(SavedGameMode::from_tree(&typed.tree)?)
+                .is_some(),
+            "C016" => inventory_containers
+                .replace(saved_container_manager(&typed.tree)?)
                 .is_some(),
             "C018" => quest_manager
                 .replace(SavedQuestManager::from_tree(&typed.tree)?)
@@ -360,6 +368,7 @@ pub fn saved_prospect_from_payload(payload: &[u8]) -> Result<SavedProspect> {
         game_mode,
         quest_manager,
         player_history,
+        inventory_containers,
     })
 }
 

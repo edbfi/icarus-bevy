@@ -30,6 +30,7 @@ use sha1::{Digest, Sha1};
 const GAME_MODE: &str = "/Script/Icarus.GameModeStateRecorderComponent";
 const QUEST_MANAGER: &str = "/Script/Icarus.IcarusQuestManagerRecorderComponent";
 const PLAYER_HISTORY: &str = "/Script/Icarus.PlayerHistoryRecorderComponent";
+const CONTAINER_MANAGER: &str = "/Script/Icarus.IcarusContainerManagerRecorderComponent";
 
 fn fstring(value: &str) -> Vec<u8> {
     if value.is_empty() {
@@ -674,6 +675,288 @@ fn player_history_recorder() -> Vec<u8> {
     )
 }
 
+fn name(name: &str, value: &str) -> Vec<u8> {
+    tag(name, "NameProperty", &[0], &fstring(value))
+}
+
+/// A saved item's fields the fixtures vary.
+struct ItemFields {
+    location: i32,
+    guid: &'static str,
+    owner: i32,
+    dynamic_property: i32,
+    stat_index: i32,
+}
+
+impl ItemFields {
+    /// `Tonic` at `location` with a stack of 4 and a named `Potency` stat
+    /// of 3, no GUID and no owner.
+    fn at(location: i32) -> Self {
+        Self {
+            location,
+            guid: "",
+            owner: -1,
+            dynamic_property: 7,
+            stat_index: -1,
+        }
+    }
+}
+
+fn item_with(fields: &ItemFields, extra: &[Vec<u8>]) -> Vec<u8> {
+    [
+        int("Location", fields.location),
+        name("ItemStaticData", "Tonic"),
+        string("ItemGuid", fields.guid),
+        int("ItemOwnerLookupId", fields.owner),
+        struct_array(
+            "DynamicData",
+            "InventorySlotDynamicData",
+            &[[
+                int("Index", fields.dynamic_property),
+                int("Value", 4),
+                end(),
+            ]
+            .concat()],
+        ),
+        struct_array(
+            "AdditionalStats",
+            "InventorySlotStatData",
+            &[[
+                int("Index", fields.stat_index),
+                string("Name", "Potency"),
+                int("Value", 3),
+                end(),
+            ]
+            .concat()],
+        ),
+        extra.concat(),
+        end(),
+    ]
+    .concat()
+}
+
+/// One saved item at `location` ([`ItemFields::at`]) plus `extra` fields.
+fn saved_item(location: i32, extra: &[Vec<u8>]) -> Vec<u8> {
+    item_with(&ItemFields::at(location), extra)
+}
+
+/// A container manager recorder (`C016`) of `count` positions holding the
+/// `containers` (index, info row, items).
+fn container_manager_recorder(count: i32, containers: &[(i32, &str, Vec<Vec<u8>>)]) -> Vec<u8> {
+    let elements: Vec<Vec<u8>> = containers
+        .iter()
+        .map(|(index, info, items)| {
+            [
+                int("InventoryIndex", *index),
+                name("InventoryInfo", info),
+                struct_tag(
+                    "InventorySaveData",
+                    "InventorySaveData",
+                    &[
+                        struct_array("Slots", "InventorySlotSaveData", items),
+                        int("InventoryID", -1),
+                        end(),
+                    ]
+                    .concat(),
+                ),
+                boolean("bInventoryWantsTick", false),
+                end(),
+            ]
+            .concat()
+        })
+        .collect();
+    recorder(
+        CONTAINER_MANAGER,
+        &[
+            int("NumInventories", count),
+            struct_array(
+                "SavedInventoryContainers",
+                "SavedInventoryContainerData",
+                &elements,
+            ),
+        ]
+        .concat(),
+    )
+}
+
+/// The authored fixture: `Hands` (3 slots) with an item in slot 1, then an
+/// empty `Bag` (no slots).
+fn two_containers() -> Vec<u8> {
+    container_manager_recorder(
+        2,
+        &[
+            (0, "Hands", vec![saved_item(1, &[])]),
+            (1, "Bag", Vec::new()),
+        ],
+    )
+}
+
+/// The official tables the container fixture maps through: the player
+/// tables plus an authored `D_ItemsStatic`.
+fn container_tables(root: &std::path::Path) -> icarus_bevy::data_pak::DataTables {
+    let pak = root.join("data.pak");
+    std::fs::write(
+        &pak,
+        pak_writer::official_pak(&[
+            (
+                "Items/D_ItemsStatic.json",
+                pak_writer::table_json(&["Wood", "Stone", "Tonic"]),
+            ),
+            (
+                "Flags/D_SessionFlags.json",
+                pak_writer::table_json(&["Flag_A"]),
+            ),
+        ]),
+    )
+    .unwrap();
+    icarus_bevy::data_pak::DataTables::open(&pak).unwrap()
+}
+
+/// The saved container manager (`C016`) types, and with the server's data
+/// tables maps to inventories: each info row's slots with the saved items
+/// in place, one more replication-key change per item (F-866); a list with
+/// empty positions or an item with fields the server does not send yet
+/// skips the manager.
+#[test]
+fn saved_containers_map_to_inventories() {
+    use icarus_bevy::experimental::control_messages::ArchiveText;
+    use icarus_bevy::experimental::manager_open::ManagerSlot;
+    use icarus_bevy::experimental::pawn_open::{InventorySlot, SlotItem};
+    let inner = payload(&prospect_info(), &[two_containers()]);
+    let saved = saved_prospect_from_payload(&inner)
+        .unwrap()
+        .inventory_containers
+        .expect("a container manager record");
+    assert_eq!(saved.count, 2);
+    assert_eq!(saved.containers.len(), 2);
+    let item = &saved.containers[0].items[0];
+    assert_eq!(
+        (item.location, &item.row_name, &item.dynamic),
+        (1, &units("Tonic"), &vec![(7, 4)])
+    );
+    assert_eq!(item.stats, [(-1, units("Potency"), 3)]);
+    let root = tempfile::TempDir::new().unwrap();
+    let mut tables = container_tables(root.path());
+    let inventories = icarus_bevy::network::container_inventories(&mut tables, &saved).unwrap();
+    assert_eq!(inventories.len(), 2);
+    // Hands is D_InventoryInfo row 1: slots query Any, Any, Fists.
+    assert_eq!(inventories[0].info_row, 1);
+    assert_eq!(inventories[0].slots.replication_key, 3);
+    assert_eq!(
+        inventories[0].slots.items,
+        [
+            InventorySlot::empty(1, 0),
+            InventorySlot {
+                item: Some(SlotItem {
+                    row: 2,
+                    dynamic: vec![(7, 4)],
+                    stats: vec![(ArchiveText::new(&units("Potency")).unwrap(), 3)],
+                }),
+                ..InventorySlot::empty(1, 1)
+            },
+            InventorySlot::empty(2, 2),
+        ]
+    );
+    assert_eq!(inventories[1].info_row, 2);
+    assert!(inventories[1].slots.items.is_empty());
+    assert_eq!(inventories[1].slots.replication_key, 2);
+    let section = PreservedSection::from_inner_payload(&inner, PreserveLimits::default()).unwrap();
+    let state = icarus_bevy::network::saved_game_state(&section, Some(&mut tables)).unwrap();
+    assert_eq!(state.inventory_containers, Some(inventories));
+    assert!(state.skipped_managers.is_empty());
+    // Saves the server cannot send yet skip the manager, with the reason.
+    for bad in [
+        container_manager_recorder(3, &[(0, "Hands", Vec::new()), (2, "Bag", Vec::new())]),
+        container_manager_recorder(
+            1,
+            &[(
+                0,
+                "Hands",
+                vec![saved_item(
+                    0,
+                    &[struct_array(
+                        "Alterations",
+                        "InventorySlotAlterationData",
+                        &[end()],
+                    )],
+                )],
+            )],
+        ),
+        container_manager_recorder(1, &[(0, "Hands", vec![saved_item(3, &[])])]),
+        container_manager_recorder(1, &[(0, "Missing", Vec::new())]),
+        container_manager_recorder(
+            1,
+            &[(0, "Hands", vec![saved_item(0, &[]), saved_item(0, &[])])],
+        ),
+        container_manager_recorder(
+            1,
+            &[(
+                0,
+                "Hands",
+                vec![item_with(
+                    &ItemFields {
+                        guid: "g",
+                        ..ItemFields::at(0)
+                    },
+                    &[],
+                )],
+            )],
+        ),
+        container_manager_recorder(
+            1,
+            &[(
+                0,
+                "Hands",
+                vec![item_with(
+                    &ItemFields {
+                        owner: 5,
+                        ..ItemFields::at(0)
+                    },
+                    &[],
+                )],
+            )],
+        ),
+        container_manager_recorder(
+            1,
+            &[(
+                0,
+                "Hands",
+                vec![item_with(
+                    &ItemFields {
+                        stat_index: 2,
+                        ..ItemFields::at(0)
+                    },
+                    &[],
+                )],
+            )],
+        ),
+        container_manager_recorder(
+            1,
+            &[(
+                0,
+                "Hands",
+                vec![item_with(
+                    &ItemFields {
+                        dynamic_property: 16,
+                        ..ItemFields::at(0)
+                    },
+                    &[],
+                )],
+            )],
+        ),
+    ] {
+        let section = PreservedSection::from_inner_payload(
+            &payload(&prospect_info(), &[bad]),
+            PreserveLimits::default(),
+        )
+        .unwrap();
+        let state = icarus_bevy::network::saved_game_state(&section, Some(&mut tables)).unwrap();
+        assert!(state.inventory_containers.is_none());
+        assert_eq!(state.skipped_managers.len(), 1);
+        assert_eq!(state.skipped_managers[0].0, ManagerSlot::InventoryContainer);
+    }
+}
+
 /// The saved player history (`C024`) types in saved order (F-862).
 #[test]
 fn a_saved_player_history_supplies_the_history() {
@@ -780,6 +1063,35 @@ fn a_saved_quest_manager_supplies_the_quest_manager_state() {
     let (saved_quest, row) = saved.quest_manager.expect("a mapped quest manager");
     assert_eq!(row, 3);
     assert_eq!(saved_quest, quest);
+    assert!(saved.skipped_managers.is_empty());
+    // A faction mission the tables lack skips the QuestManager, with a
+    // reason.
+    let other = root.path().join("other.pak");
+    std::fs::write(
+        &other,
+        pak_writer::official_pak(&[
+            (
+                "Flags/D_SessionFlags.json",
+                pak_writer::table_json(&["Flag_A"]),
+            ),
+            (
+                "Factions/D_FactionMissions.json",
+                pak_writer::table_json(&["Mission_Z"]),
+            ),
+        ]),
+    )
+    .unwrap();
+    let mut other = icarus_bevy::data_pak::DataTables::open(&other).unwrap();
+    let saved = icarus_bevy::network::saved_game_state(&section, Some(&mut other)).unwrap();
+    assert!(saved.quest_manager.is_none());
+    assert_eq!(
+        saved
+            .skipped_managers
+            .iter()
+            .map(|(slot, _)| *slot)
+            .collect::<Vec<_>>(),
+        [icarus_bevy::experimental::manager_open::ManagerSlot::Quest]
+    );
     // Without the record, nothing to open.
     let bare = PreservedSection::from_inner_payload(
         &payload(&prospect_info(), &[game_mode_recorder(150)]),
@@ -869,6 +1181,7 @@ fn run_replicates_a_preserved_worlds_prospect() {
                 game_mode_recorder(150),
                 quest_manager_recorder(),
                 player_history_recorder(),
+                two_containers(),
             ],
         )),
     )
@@ -900,6 +1213,10 @@ fn run_replicates_a_preserved_worlds_prospect() {
                 pak_writer::table_json(&["Flag_A", "Flag_X", "Flag_B"]),
             ),
             ("Factions/D_FactionMissions.json", faction_missions_json()),
+            (
+                "Items/D_ItemsStatic.json",
+                pak_writer::table_json(&["Wood", "Stone", "Tonic"]),
+            ),
         ]),
     )
     .unwrap();
@@ -948,7 +1265,9 @@ fn run_replicates_a_preserved_worlds_prospect() {
             assert_eq!(record["locked_missions"], 2);
             // The saved quest manager opens after the other managers.
             assert_eq!(record["quest_manager_channel"], 9);
-            assert_eq!(record["player_history_channel"], 10);
+            assert_eq!(record["container_manager_channel"], 10);
+            assert_eq!(record["player_history_channel"], 11);
+            assert_eq!(record["skipped_managers"], json!([]));
         }
         if record["event"] == "network_listening" {
             // The installed official data tables were picked up.
@@ -1120,7 +1439,7 @@ fn run_replicates_a_preserved_worlds_prospect() {
         .replies
         .iter()
         .flat_map(|reply| read_packet(&reply.bytes, &to_client).unwrap().bunches)
-        .find(|bunch| bunch.header.channel_index == 10 && !bunch.header.has_package_map_exports)
+        .find(|bunch| bunch.header.channel_index == 11 && !bunch.header.has_package_map_exports)
         .expect("a PlayerHistoryTracker open");
     let open = read_actor_bunch_body(&mut history.payload.reader(), true, &codec).unwrap();
     let plan = profile
@@ -1151,6 +1470,41 @@ fn run_replicates_a_preserved_worlds_prospect() {
     assert_eq!(sent.stream.entries.len(), 6);
     assert_eq!(sent.stream.entries[4].value, RepValue::Int(3));
     assert_eq!(sent.stream.entries[5].value, text("Bjørn"));
+    // The InventoryContainerManager open lists its two saved inventories
+    // and opens them as runtime subobjects (F-866).
+    let containers = collected
+        .replies
+        .iter()
+        .flat_map(|reply| read_packet(&reply.bytes, &to_client).unwrap().bunches)
+        .find(|bunch| bunch.header.channel_index == 10 && !bunch.header.has_package_map_exports)
+        .expect("an InventoryContainerManager open");
+    let open = read_actor_bunch_body(&mut containers.payload.reader(), true, &codec).unwrap();
+    assert_eq!(open.blocks.len(), 3);
+    let plan = profile
+        .manager_open_plan(
+            icarus_bevy::experimental::manager_open::ManagerSlot::InventoryContainer,
+            PeerLabAdmission::default().map_url,
+        )
+        .unwrap()
+        .unwrap();
+    let stream = read_rep_properties(
+        &mut open.blocks[0].payload.reader(),
+        &plan.layout,
+        &RepLayoutCodec {
+            actor: codec,
+            checksums: false,
+            limits: RepLayoutLimits::default(),
+        },
+    )
+    .unwrap();
+    let Some(RepValue::DynamicArray(listed)) = stream
+        .entries
+        .into_iter()
+        .find_map(|entry| (entry.handle == 19).then_some(entry.value))
+    else {
+        panic!("an Inventories array");
+    };
+    assert_eq!(listed.count, 2);
 }
 
 #[test]

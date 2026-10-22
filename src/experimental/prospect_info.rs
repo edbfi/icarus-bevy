@@ -544,3 +544,126 @@ pub fn saved_player_history(tree: &TypedTree) -> Result<Vec<PlayerHistoryEntry>>
         })
         .collect()
 }
+
+/// One saved item (`InventorySlotSaveData`): its slot `Location`, its
+/// `D_ItemsStatic` row name, its `DynamicData` (property index, value)
+/// pairs, its `AdditionalStats` (stat index, name, value) triples, its
+/// `ItemGuid` and `ItemOwnerLookupId`, and how many `Alterations` and
+/// `LivingItemSlots` it has. `Debug` shows no values.
+#[derive(Clone, Default, PartialEq, Eq)]
+pub struct SavedItem {
+    pub location: i32,
+    pub row_name: Vec<u16>,
+    pub dynamic: Vec<(i32, i32)>,
+    pub stats: Vec<(i32, Vec<u16>, i32)>,
+    pub guid: Vec<u16>,
+    pub owner_lookup_id: i32,
+    pub alterations: usize,
+    pub living_slots: usize,
+}
+
+impl std::fmt::Debug for SavedItem {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("SavedItem")
+    }
+}
+
+/// One saved inventory container (`SavedInventoryContainerData`, `C016`):
+/// its `InventoryIndex`, `D_InventoryInfo` row name and saved items.
+/// `Debug` shows no values.
+#[derive(Clone, Default, PartialEq, Eq)]
+pub struct SavedInventoryContainer {
+    pub index: i32,
+    pub info: Vec<u16>,
+    pub items: Vec<SavedItem>,
+}
+
+impl std::fmt::Debug for SavedInventoryContainer {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("SavedInventoryContainer")
+    }
+}
+
+/// A saved container manager (`C016`, F-651): the list length
+/// (`NumInventories`) and the present containers, each at its list
+/// position, empty positions skipped.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct SavedContainerManager {
+    pub count: i32,
+    pub containers: Vec<SavedInventoryContainer>,
+}
+
+/// Type a `C016` (`IcarusContainerManagerRecorderComponent`) component's
+/// `NumInventories` and `SavedInventoryContainers`, in saved order;
+/// missing reads as empty.
+pub fn saved_container_manager(tree: &TypedTree) -> Result<SavedContainerManager> {
+    let fields = Fields {
+        tree,
+        what: "IcarusContainerManagerRecorderComponent",
+    };
+    let containers = fields
+        .structs("SavedInventoryContainers")?
+        .iter()
+        .map(|tree| {
+            let fields = Fields {
+                tree,
+                what: "SavedInventoryContainerData",
+            };
+            let items = match fields.tagged("InventorySaveData", "InventorySaveData")? {
+                Some(data) => data
+                    .structs("Slots")?
+                    .iter()
+                    .map(saved_item)
+                    .collect::<Result<_>>()?,
+                None => Vec::new(),
+            };
+            Ok(SavedInventoryContainer {
+                index: fields.int("InventoryIndex")?,
+                info: fields.name("InventoryInfo")?,
+                items,
+            })
+        })
+        .collect::<Result<_>>()?;
+    Ok(SavedContainerManager {
+        count: fields.int("NumInventories")?,
+        containers,
+    })
+}
+
+fn saved_item(tree: &TypedTree) -> Result<SavedItem> {
+    let fields = Fields {
+        tree,
+        what: "InventorySlotSaveData",
+    };
+    let elements = |name, what| -> Result<Vec<Fields<'_>>> {
+        Ok(fields
+            .structs(name)?
+            .iter()
+            .map(|tree| Fields { tree, what })
+            .collect())
+    };
+    let dynamic = elements("DynamicData", "InventorySlotDynamicData")?
+        .iter()
+        .map(|entry| Ok((entry.int("Index")?, entry.int("Value")?)))
+        .collect::<Result<_>>()?;
+    let stats = elements("AdditionalStats", "InventorySlotStatData")?
+        .iter()
+        .map(|entry| {
+            Ok((
+                entry.int("Index")?,
+                entry.string("Name")?,
+                entry.int("Value")?,
+            ))
+        })
+        .collect::<Result<_>>()?;
+    Ok(SavedItem {
+        location: fields.int("Location")?,
+        row_name: fields.name("ItemStaticData")?,
+        dynamic,
+        stats,
+        guid: fields.string("ItemGuid")?,
+        owner_lookup_id: fields.int("ItemOwnerLookupId")?,
+        alterations: fields.structs("Alterations")?.len(),
+        living_slots: fields.structs("LivingItemSlots")?.len(),
+    })
+}

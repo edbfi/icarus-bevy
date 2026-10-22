@@ -46,7 +46,7 @@ use std::net::{SocketAddr, SocketAddrV4};
 
 use std::collections::BTreeMap;
 
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, ensure};
 use bevy::prelude::{App, Resource, World};
 
 use crate::{
@@ -62,13 +62,15 @@ use crate::{
         },
         manager_open::{ManagerOpenPlan, ManagerSlot},
         pawn_open::{
-            CharacterVitals, EmptySlot, FastArrayContent, PAWN_CHANNEL_INDEX, PawnContent,
-            PawnInventory,
+            CharacterVitals, FastArrayContent, InventorySlot, PAWN_CHANNEL_INDEX, PawnContent,
+            PawnInventory, SlotItem,
         },
         peer_lab::{PeerLab, PeerLabAdmission, PeerLabConfig, PeerLabPlugin, SessionCounts},
-        prospect_info::{MissionHistoryRecord, PlayerHistoryEntry, SavedQuestManager},
+        prospect_info::{
+            MissionHistoryRecord, PlayerHistoryEntry, SavedContainerManager, SavedQuestManager,
+        },
         release::{ReleasePin, ReleaseProfile},
-        rep_layout::{NetworkName, RepValue},
+        rep_layout::{DYNAMIC_ITEM_PROPERTIES_MAX_VALUE, NetworkName, RepValue},
         server_fps::{DEFAULT_SAMPLES, ServerFpsMeter},
         session_open::ActorKey,
         time_of_day::{RateCurve, TimeOfDayClock},
@@ -191,6 +193,7 @@ pub fn pawn_content(tables: Option<&mut DataTables>) -> Result<PawnContent> {
 pub const INVENTORY_TABLE: &str = "D_Inventory";
 pub const INVENTORY_INFO_TABLE: &str = "D_InventoryInfo";
 pub const TAG_QUERIES_TABLE: &str = "D_TagQueries";
+pub const ITEMS_STATIC_TABLE: &str = "D_ItemsStatic";
 pub const STARTING_STATS_TABLE: &str = "D_CharacterStartingStats";
 pub const CHARACTER_GROWTH_TABLE: &str = "D_CharacterGrowth";
 /// The player's rows in `D_Inventory`, `D_CharacterStartingStats` and
@@ -219,73 +222,157 @@ pub fn player_inventories(tables: &mut DataTables) -> Result<Vec<PawnInventory>>
         .get("Inventories")
         .and_then(serde_json::Value::as_array)
         .context("the player's Inventories is not an array")?;
-    let mut inventories = Vec::new();
-    for handle in listed {
-        let name = row_name(handle).context("an inventory names no row")?;
-        let index = tables
-            .row_index(
-                INVENTORY_INFO_TABLE,
-                &name.encode_utf16().collect::<Vec<u16>>(),
-            )?
-            .with_context(|| format!("{INVENTORY_INFO_TABLE} lacks a player inventory"))?;
-        let info = tables
-            .row(INVENTORY_INFO_TABLE, name)?
-            .context("an inventory info row vanished")?;
-        let starting = match info.get("StartingSlots") {
-            None => 0,
-            Some(value) => value
-                .as_i64()
-                .and_then(|slots| i32::try_from(slots).ok())
-                .filter(|slots| (0..=MAX_STARTING_SLOTS).contains(slots))
-                .context("an inventory's StartingSlots is out of range")?,
-        };
-        let template = info.get("SlotTemplate").and_then(row_name);
-        // A malformed override fails, as a changed table shape would
-        // otherwise send the template's query for its slot.
-        let overrides: Vec<(i64, &str)> = match info.get("SlotOverrides") {
-            None => Vec::new(),
-            Some(entries) => entries
-                .as_array()
-                .context("an inventory's SlotOverrides is not an array")?
-                .iter()
-                .map(|entry| {
-                    let location = entry.get("Location").and_then(serde_json::Value::as_i64);
-                    let query = entry.get("Query").and_then(row_name);
-                    location
-                        .zip(query)
-                        .context("a slot override lacks its Location or Query row")
-                })
-                .collect::<Result<_>>()?,
-        };
-        let mut slots = Vec::new();
-        for slot in 0..starting {
-            let query = overrides
+    listed
+        .iter()
+        .map(|handle| {
+            let name = row_name(handle).context("an inventory names no row")?;
+            info_inventory(tables, &name.encode_utf16().collect::<Vec<u16>>())
+        })
+        .collect()
+}
+
+/// The inventory a `D_InventoryInfo` row describes, empty: its row and its
+/// `StartingSlots` empty slots (none when omitted), slot `i` querying the
+/// `SlotOverrides` entry at `Location` `i`, else the `SlotTemplate`, as a
+/// `D_TagQueries` row (F-836).
+fn info_inventory(tables: &mut DataTables, name: &[u16]) -> Result<PawnInventory> {
+    let index = tables
+        .row_index(INVENTORY_INFO_TABLE, name)?
+        .with_context(|| format!("{INVENTORY_INFO_TABLE} lacks an inventory"))?;
+    let info = tables
+        .row(INVENTORY_INFO_TABLE, &String::from_utf16(name)?)?
+        .context("an inventory info row vanished")?;
+    let starting = match info.get("StartingSlots") {
+        None => 0,
+        Some(value) => value
+            .as_i64()
+            .and_then(|slots| i32::try_from(slots).ok())
+            .filter(|slots| (0..=MAX_STARTING_SLOTS).contains(slots))
+            .context("an inventory's StartingSlots is out of range")?,
+    };
+    let template = info.get("SlotTemplate").and_then(row_name);
+    // A malformed override fails, as a changed table shape would
+    // otherwise send the template's query for its slot.
+    let overrides: Vec<(i64, &str)> = match info.get("SlotOverrides") {
+        None => Vec::new(),
+        Some(entries) => entries
+            .as_array()
+            .context("an inventory's SlotOverrides is not an array")?
+            .iter()
+            .map(|entry| {
+                let location = entry.get("Location").and_then(serde_json::Value::as_i64);
+                let query = entry.get("Query").and_then(row_name);
+                location
+                    .zip(query)
+                    .context("a slot override lacks its Location or Query row")
+            })
+            .collect::<Result<_>>()?,
+    };
+    let queries: Vec<String> = (0..starting)
+        .map(|slot| {
+            overrides
                 .iter()
                 .find(|(location, _)| *location == i64::from(slot))
                 .map(|(_, query)| *query)
                 .or(template)
-                .context("an inventory slot has no query")?;
-            let query_row = tables
-                .row_index(
-                    TAG_QUERIES_TABLE,
-                    &query.encode_utf16().collect::<Vec<u16>>(),
-                )?
-                .and_then(|row| u16::try_from(row).ok())
-                .with_context(|| format!("{TAG_QUERIES_TABLE} lacks a slot query"))?;
-            slots.push(EmptySlot {
-                query_row,
-                index: slot,
-            });
-        }
-        inventories.push(PawnInventory {
-            info_row: u8::try_from(index).context("an inventory info row past 255")?,
-            slots: FastArrayContent {
-                replication_key: INVENTORY_SLOTS_REPLICATION_KEY,
-                items: slots,
-            },
-        });
+                .map(str::to_owned)
+                .context("an inventory slot has no query")
+        })
+        .collect::<Result<_>>()?;
+    let mut slots = Vec::new();
+    for (query, slot) in queries.iter().zip(0..) {
+        let query_row = tables
+            .row_index(
+                TAG_QUERIES_TABLE,
+                &query.encode_utf16().collect::<Vec<u16>>(),
+            )?
+            .and_then(|row| u16::try_from(row).ok())
+            .with_context(|| format!("{TAG_QUERIES_TABLE} lacks a slot query"))?;
+        slots.push(InventorySlot::empty(query_row, slot));
     }
-    Ok(inventories)
+    Ok(PawnInventory {
+        info_row: u8::try_from(index).context("an inventory info row past 255")?,
+        slots: FastArrayContent {
+            replication_key: INVENTORY_SLOTS_REPLICATION_KEY,
+            items: slots,
+        },
+    })
+}
+
+/// A saved container manager's inventories (`C016`, F-866), in list
+/// order: each one's [`info_inventory`] with its saved
+/// items in their slots, each item's `D_ItemsStatic` row, dynamic data and
+/// by-name stats. The slots' replication key counts one more change per
+/// item, as captured. Fails on a list with empty positions (F-651; how
+/// the original replicates them is unobserved), an item the native server
+/// cannot send yet (a GUID, an owner, alterations, living slots or an
+/// indexed stat), a location outside the slots or a row the tables lack.
+pub fn container_inventories(
+    tables: &mut DataTables,
+    saved: &SavedContainerManager,
+) -> Result<Vec<PawnInventory>> {
+    ensure!(
+        usize::try_from(saved.count).ok() == Some(saved.containers.len()),
+        "the saved inventory list has empty positions"
+    );
+    saved
+        .containers
+        .iter()
+        .zip(0..)
+        .map(|(container, expected)| {
+            ensure!(
+                container.index == expected,
+                "the saved inventory list has empty positions"
+            );
+            let mut inventory = info_inventory(tables, &container.info)?;
+            for item in &container.items {
+                ensure!(
+                    item.guid.is_empty()
+                        && item.owner_lookup_id == -1
+                        && item.alterations == 0
+                        && item.living_slots == 0,
+                    "a saved item carries fields the native server does not send yet"
+                );
+                let row = tables
+                    .row_index(ITEMS_STATIC_TABLE, &item.row_name)?
+                    .and_then(|row| u16::try_from(row).ok())
+                    .with_context(|| format!("{ITEMS_STATIC_TABLE} lacks a saved item"))?;
+                let dynamic = item
+                    .dynamic
+                    .iter()
+                    .map(|(property, value)| {
+                        u32::try_from(*property)
+                            .ok()
+                            .filter(|property| {
+                                i64::from(*property) <= DYNAMIC_ITEM_PROPERTIES_MAX_VALUE
+                            })
+                            .map(|property| (property, *value))
+                            .context("a saved dynamic item property is out of range")
+                    })
+                    .collect::<Result<_>>()?;
+                let stats = item
+                    .stats
+                    .iter()
+                    .map(|(index, name, value)| {
+                        ensure!(*index == -1, "a saved item stat is indexed, not named");
+                        Ok((ArchiveText::new(name)?, *value))
+                    })
+                    .collect::<Result<_>>()?;
+                let slot = usize::try_from(item.location)
+                    .ok()
+                    .and_then(|location| inventory.slots.items.get_mut(location))
+                    .context("a saved item lies outside its inventory's slots")?;
+                ensure!(slot.item.is_none(), "two saved items share a slot");
+                slot.item = Some(SlotItem {
+                    row,
+                    dynamic,
+                    stats,
+                });
+                inventory.slots.replication_key += 1;
+            }
+            Ok(inventory)
+        })
+        .collect()
 }
 
 /// The most starting slots one inventory may list.
@@ -360,11 +447,18 @@ pub struct SavedGameState {
     pub locked_missions: Vec<LockedMission>,
     /// The saved quest manager state (`C018`) and its faction mission's
     /// `D_FactionMissions` row (F-861); `None` without the record, without
-    /// tables or when the table lacks the mission.
+    /// tables or when the table lacks the mission (a skipped manager).
     pub quest_manager: Option<(SavedQuestManager, u8)>,
     /// The saved player history (`C024`), when the save has the record
     /// (F-862).
     pub player_history: Option<Vec<PlayerHistoryEntry>>,
+    /// The saved container inventories (`C016`, F-866) as sendable
+    /// inventories; `None` without the record or without tables (as the
+    /// QuestManager, without a skip reason).
+    pub inventory_containers: Option<Vec<PawnInventory>>,
+    /// Managers whose saved state the native server cannot send yet, with
+    /// the reason; they stay closed.
+    pub skipped_managers: Vec<(ManagerSlot, String)>,
 }
 
 /// The saved missions `AIcarusGameModeSurvival::UpdateLockedMissions`
@@ -448,11 +542,32 @@ pub fn saved_game_state(
                 .map(|curve| TimeOfDayClock::new(curve, mode.time_of_day))
         })
         .transpose()?;
+    let mut skipped_managers = Vec::new();
+    let inventory_containers = match (&saved.inventory_containers, tables.as_deref_mut()) {
+        (Some(containers), Some(tables)) => match container_inventories(tables, containers) {
+            Ok(inventories) => Some(inventories),
+            Err(error) => {
+                skipped_managers.push((ManagerSlot::InventoryContainer, format!("{error:#}")));
+                None
+            }
+        },
+        _ => None,
+    };
     let quest_manager = match (saved.quest_manager, tables) {
-        (Some(quest), Some(tables)) => tables
-            .row_index(FACTION_MISSIONS_TABLE, &quest.faction_mission)?
-            .and_then(|index| u8::try_from(index).ok())
-            .map(|row| (quest, row)),
+        (Some(quest), Some(tables)) => {
+            let row = tables
+                .row_index(FACTION_MISSIONS_TABLE, &quest.faction_mission)?
+                .and_then(|index| u8::try_from(index).ok());
+            if row.is_none() {
+                skipped_managers.push((
+                    ManagerSlot::Quest,
+                    format!(
+                        "the saved faction mission is not a 1-byte {FACTION_MISSIONS_TABLE} row"
+                    ),
+                ));
+            }
+            row.map(|row| (quest, row))
+        }
         _ => None,
     };
     Ok(SavedGameState {
@@ -463,6 +578,8 @@ pub fn saved_game_state(
         locked_missions: locked,
         quest_manager,
         player_history: saved.player_history,
+        inventory_containers,
+        skipped_managers,
     })
 }
 
@@ -487,28 +604,47 @@ pub struct AppliedGameState {
     /// Missions `LockedMissions` lists while their locks last.
     pub locked_missions: usize,
     /// The managers the save's state opened, with their channels, in
-    /// opening order (F-861, F-862).
+    /// opening order (F-861, F-862, F-866).
     pub saved_managers: Vec<(ManagerSlot, u32)>,
+    /// Managers whose saved state could not be sent, with the reason.
+    pub skipped_managers: Vec<(ManagerSlot, String)>,
 }
 
 /// Add a loaded world's [`saved_game_state`] to `lab`'s GameState open,
 /// and open those of `saved_managers` (the release's plans) whose state
 /// the save supplies after the other managers: the QuestManager with the
-/// saved quest state (F-861), the PlayerHistoryTracker with the saved
-/// history (F-862).
+/// saved quest state (F-861), the InventoryContainerManager with the saved
+/// container inventories (F-866) and the PlayerHistoryTracker with the
+/// saved history (F-862).
 pub fn apply_saved_game_state(
     lab: &mut PeerLab,
     section: &PreservedSection,
     tables: Option<&mut DataTables>,
     saved_managers: Vec<(ManagerSlot, ManagerOpenPlan)>,
 ) -> Result<AppliedGameState> {
-    let saved = saved_game_state(section, tables)?;
+    let mut saved = saved_game_state(section, tables)?;
     // The managers join last, after every other step that can fail.
     let mut manager_plans = Vec::new();
     for (slot, plan) in saved_managers {
-        let plan = match (slot, &saved.quest_manager, &saved.player_history) {
-            (ManagerSlot::Quest, Some((quest, row)), _) => plan.with_quest_state(quest, *row)?,
-            (ManagerSlot::PlayerHistory, _, Some(history)) => plan.with_player_history(history)?,
+        let plan = match slot {
+            ManagerSlot::Quest => match &saved.quest_manager {
+                Some((quest, row)) => plan.with_quest_state(quest, *row)?,
+                None => continue,
+            },
+            ManagerSlot::InventoryContainer => match &saved.inventory_containers {
+                Some(inventories) => match plan.with_container_inventories(inventories.clone()) {
+                    Ok(plan) => plan,
+                    Err(error) => {
+                        saved.skipped_managers.push((slot, format!("{error:#}")));
+                        continue;
+                    }
+                },
+                None => continue,
+            },
+            ManagerSlot::PlayerHistory => match &saved.player_history {
+                Some(history) => plan.with_player_history(history)?,
+                None => continue,
+            },
             _ => continue,
         };
         manager_plans.push((slot, plan));
@@ -532,6 +668,7 @@ pub fn apply_saved_game_state(
         unmapped_session_flags: saved.unmapped_session_flags,
         locked_missions,
         saved_managers,
+        skipped_managers: saved.skipped_managers,
     })
 }
 

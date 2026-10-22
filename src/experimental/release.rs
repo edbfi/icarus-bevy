@@ -20,8 +20,8 @@ use super::{
     default_version_string_checksum,
     game_state_open::{GameStateComponents, GameStateOpenPlan},
     manager_open::{
-        ACTOR_STATE_CURRENT_BIOME, ManagerComponent, ManagerOpenPlan, ManagerSlot,
-        STAT_CONTAINER_HANDLE,
+        ACTOR_STATE_CURRENT_BIOME, CONTAINER_INVENTORIES_HANDLE, ManagerComponent,
+        ManagerInventories, ManagerOpenPlan, ManagerSlot, STAT_CONTAINER_HANDLE,
     },
     pawn_open::{PawnComponent, PawnContentPlan, PawnOpenPlan},
     rep_layout::{
@@ -30,8 +30,9 @@ use super::{
         actor_component_rep_layout, actor_rep_layout, actor_state_rep_layout,
         bp_icarus_player_character_survival_rep_layout, bp_icarus_player_state_rep_layout,
         icarus_game_state_survival_rep_layout, icarus_player_controller_survival_rep_layout,
-        inventory_rep_layout, inventory_slot_commands, player_character_state_rep_layout,
-        player_history_tracker_rep_layout, quest_manager_rep_layout, radiation_manager_rep_layout,
+        inventory_container_manager_rep_layout, inventory_rep_layout, inventory_slot_commands,
+        player_character_state_rep_layout, player_history_tracker_rep_layout,
+        quest_manager_rep_layout, radiation_manager_rep_layout,
         weather_manager_component_rep_layout, world_talent_manager_rep_layout,
     },
     rep_rpc::{
@@ -427,6 +428,7 @@ fn session_segments(archetype: &[ReleasePathSegment]) -> Vec<PathSegment> {
 #[serde(deny_unknown_fields)]
 pub struct ReleaseManagersProfile {
     pub quest_manager: Vec<ReleasePathSegment>,
+    pub inventory_container_manager: Vec<ReleasePathSegment>,
     pub player_history_tracker: Vec<ReleasePathSegment>,
     pub radiation_manager: Vec<ReleasePathSegment>,
     pub world_talent_manager: Vec<ReleasePathSegment>,
@@ -438,7 +440,7 @@ pub struct ReleaseManagersProfile {
 
 impl ReleaseManagersProfile {
     /// The managers reproduced bit-exactly against the 3.0.31 capture
-    /// (F-859, F-861, F-862). For 3.0.32 the seven checksums, including the Blueprint
+    /// (F-859, F-861, F-862, F-866). For 3.0.32 the eight checksums, including the Blueprint
     /// `BP_DisasterController_C`'s, are among the values the 25956137
     /// derivation reproduces unchanged (M-820, behind F-780); the component
     /// set and order are assumed unchanged.
@@ -459,6 +461,7 @@ impl ReleaseManagersProfile {
         };
         Self {
             quest_manager: native("QuestManager", 3_539_440_926),
+            inventory_container_manager: native("InventoryContainerManager", 3_504_939_521),
             player_history_tracker: native("PlayerHistoryTracker", 243_959_002),
             radiation_manager: native("RadiationManager", 2_158_376_861),
             world_talent_manager: native("WorldTalentManager", 3_510_503_235),
@@ -482,6 +485,10 @@ impl ReleaseManagersProfile {
     pub fn validate(&self) -> Result<()> {
         validate_archetype("managers quest_manager", &self.quest_manager)?;
         validate_archetype(
+            "managers inventory_container_manager",
+            &self.inventory_container_manager,
+        )?;
+        validate_archetype(
             "managers player_history_tracker",
             &self.player_history_tracker,
         )?;
@@ -492,7 +499,11 @@ impl ReleaseManagersProfile {
 }
 
 /// Managers that open only with a save's state, in opening order.
-const SAVED_MANAGER_SLOTS: [ManagerSlot; 2] = [ManagerSlot::Quest, ManagerSlot::PlayerHistory];
+const SAVED_MANAGER_SLOTS: [ManagerSlot; 3] = [
+    ManagerSlot::Quest,
+    ManagerSlot::InventoryContainer,
+    ManagerSlot::PlayerHistory,
+];
 
 /// Per-release identifiers of the PlayerState open (`[player_state]`, F-784):
 /// its archetype chain. Values come from the session and admission.
@@ -1291,9 +1302,10 @@ impl ReleaseProfile {
             values: BTreeMap::new(),
             actors: BTreeMap::new(),
             keyed_actors: BTreeMap::new(),
+            inventories: None,
             engine_net_version: self.engine_network_version,
         };
-        Ok(vec![
+        let mut plans = vec![
             (
                 ManagerSlot::Quest,
                 plan(
@@ -1337,7 +1349,30 @@ impl ReleaseProfile {
                     )],
                 ),
             ),
-        ])
+        ];
+        // The InventoryContainerManager's inventories are the pawn's
+        // runtime inventories, without the pawn's owning component, so it
+        // has a plan only with `[pawn]`.
+        if let Some(pawn) = &self.pawn {
+            let container = ManagerOpenPlan {
+                inventories: Some(ManagerInventories {
+                    handle: CONTAINER_INVENTORIES_HANDLE,
+                    blocks: self.pawn_content_plan(pawn),
+                    inventories: Vec::new(),
+                }),
+                ..plan(
+                    &managers.inventory_container_manager,
+                    inventory_container_manager_rep_layout(location, velocity, rotation, tags),
+                    Vec::new(),
+                )
+            };
+            let at = plans
+                .iter()
+                .position(|(slot, _)| *slot == ManagerSlot::PlayerHistory)
+                .unwrap_or(plans.len());
+            plans.insert(at, (ManagerSlot::InventoryContainer, container));
+        }
+        Ok(plans)
     }
 
     /// The GameState open plan for the map package of `map_url`, or `None`
@@ -1402,17 +1437,23 @@ impl ReleaseProfile {
                 RotationLevel::Bytes,
                 self.tags.tag_encoding(),
             ),
-            content: PawnContentPlan {
-                component_layout: actor_component_rep_layout(),
-                character_state_layout: player_character_state_rep_layout(),
-                inventory_class: session_segments(&pawn.inventory_class),
-                inventory_layout: inventory_rep_layout(),
-                slot_layout: inventory_slot_commands(self.tags.tag_encoding()),
-                stat_container_bound: self.class_net_cache.stat_container,
-                inventory_bound: self.class_net_cache.inventory,
-            },
+            content: self.pawn_content_plan(pawn),
             engine_net_version: self.engine_network_version,
         }))
+    }
+
+    /// The pawn's content-block identifiers and layouts, which the
+    /// InventoryContainerManager's inventories share (F-866).
+    fn pawn_content_plan(&self, pawn: &ReleasePawnProfile) -> PawnContentPlan {
+        PawnContentPlan {
+            component_layout: actor_component_rep_layout(),
+            character_state_layout: player_character_state_rep_layout(),
+            inventory_class: session_segments(&pawn.inventory_class),
+            inventory_layout: inventory_rep_layout(),
+            slot_layout: inventory_slot_commands(self.tags.tag_encoding()),
+            stat_container_bound: self.class_net_cache.stat_container,
+            inventory_bound: self.class_net_cache.inventory,
+        }
     }
 
     /// Load and validate a release profile from disk.

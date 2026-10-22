@@ -3,8 +3,8 @@
 ## Status
 
 Experimental: wire-checked against the 3.0.31 capture (F-859, F-861,
-F-862) and static observations of server build 25793607 (F-864, F-865) and
-the 3.0.32 server paks (F-863). Last reconciled: 2026-10-22.
+F-862, F-866) and static observations of server build 25793607 (F-864,
+F-865) and the 3.0.32 server paks (F-863). Last reconciled: 2026-10-22.
 
 ## Scope
 
@@ -24,16 +24,26 @@ they carry. Framing is in [actor channel bunches](actor-channel.md).
   `D_FactionMissions` row, nondefault difficulty, flags and delay,
   `InitialQuest` and the keyed relevant persistent actors and characters as
   `(Str, Object)` arrays, each actor keyed by its saved Icarus actor GUID
-  (`ActorKey::Saved`, apart from domain ids; F-861; `with_quest_state`).
+  (`ActorKey::Saved`, apart from domain ids; F-861; `with_quest_state`). A
+  saved faction mission the tables lack skips the QuestManager.
 - PlayerHistoryTracker (`Default__PlayerHistoryTracker`, checksum 243959002):
   handle 19 `History` carries the save's C024 `SavedHistoryData`, every
   element field (`UserId`, `ChrSlot`, `CachedCharacterName`) in saved order
   (F-862; `with_player_history`). The original appends a player in
   `InitialisePlayerForProspect` unless an entry has the same user ID
   (case-insensitive) and slot; an existing entry is not refreshed (F-865).
+- InventoryContainerManager (`Default__InventoryContainerManager`, checksum
+  3504939521, no components): handle 19 `Inventories` lists its runtime
+  `UInventory` subobjects' GUIDs in block order. Each block sends `bIsActive`,
+  its `D_InventoryInfo` row and its slots (the pawn's slot layout); an item
+  slot sends its `D_ItemsStatic` row (handle 2 and `LastItem`), its saved
+  `DynamicData` (3) and named `AdditionalStats` as `CustomProperties.Stats`
+  (7) and `bIsItemInstance`; the slots' key is 2 plus the items (F-866;
+  `with_container_inventories`, `network::container_inventories`).
 - `run` opens the radiation, world-talent and disaster managers after each
-  PlayerState, then the QuestManager and PlayerHistoryTracker when the loaded
-  save supplies their records (F-859, F-861, F-862).
+  PlayerState, then the QuestManager, InventoryContainerManager and
+  PlayerHistoryTracker when the loaded save supplies their records (F-859,
+  F-861, F-862, F-866).
 - Quest actors: 1,772 of 3.0.32's 2,044 `D_Quests` classes keep native
   `Quest`'s checksum 4033596864, 270 add replicated properties (F-863).
   `AQuest::RunQuest` keeps a sub-quest in `ActiveQuests` only while its
@@ -50,9 +60,10 @@ they carry. Framing is in [actor channel bunches](actor-channel.md).
   `ActiveQuests` without its Blueprint logic (U-074).
 - Appending joining players to `History` in `run`: the user ID and slot of a
   stock client (F-865; U-038).
-- The inventory container and FLOD managers, which reference world actors and
-  inventories (F-794).
+- `CurrentWeight`, sent for 2 of the captured item inventories only, and
+  saved container lists with empty positions, which `run` skips (U-075).
+- The FLOD manager, which references world actors (F-794).
 
 ## Evidence
 
-- M-707, M-820, M-879, M-881 to M-885.
+- M-707, M-820, M-879, M-881 to M-886.
