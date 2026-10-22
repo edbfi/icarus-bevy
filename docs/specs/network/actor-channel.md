@@ -60,6 +60,10 @@ Address pairs are server / client.
   (50) holds, per kept C015 `MissionHistory` entry, its `D_FactionMissions`
   row as 1 byte and the end of its lock as an int, refreshed every ~60 s
   (F-834, F-835; `game_state_open::locked_missions_value`).
+  `bIsOpenWorldProspect` (48) and `bIsOutpostProspect` (49) are set when the
+  `D_ProspectStats` rows of the prospect row's `WorldStatList` grant
+  `WorldIsOpenWorldProspect_?` or `WorldIsOutpostProspect_?` above 0 (F-911;
+  `network::prospect_world_flags`).
 - Gameplay-tag net index (F-702; U-065 resolved): `ConstructGameplayTagTree`
   builds the tree; `ConstructNetIndex` sorts nodes
   by `GetAllNodes` + `FName::LexicalLess`, sets `InvalidTagNetIndex = N + 1`,

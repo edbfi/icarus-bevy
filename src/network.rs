@@ -491,9 +491,65 @@ pub fn locked_missions(
     Ok(missions)
 }
 
+/// `D_ProspectList`: a prospect row's `WorldStatList` names the
+/// `D_ProspectStats` rows whose `WorldStats` the world starts with.
+pub const PROSPECT_LIST_TABLE: &str = "D_ProspectList";
+pub const PROSPECT_STATS_TABLE: &str = "D_ProspectStats";
+/// The world stats `AIcarusGameStateSurvival::UpdateIsOpenWorldProspect`
+/// reads for `bIsOpenWorldProspect` and `bIsOutpostProspect` (F-911).
+const OPEN_WORLD_STAT: &str = "WorldIsOpenWorldProspect_?";
+const OUTPOST_STAT: &str = "WorldIsOutpostProspect_?";
+
+/// The GameState's `bIsOpenWorldProspect` and `bIsOutpostProspect` for the
+/// prospect row `prospect` (F-911): each is set when the `WorldStats` of
+/// the row's `WorldStatList` entries grant its stat a positive total, as
+/// the original sets them from the world's stats. Without either table, or
+/// for a prospect the table lacks, neither is set; a malformed entry fails.
+pub fn prospect_world_flags(tables: &mut DataTables, prospect: &[u16]) -> Result<[bool; 2]> {
+    if !tables.has_table(PROSPECT_LIST_TABLE) || !tables.has_table(PROSPECT_STATS_TABLE) {
+        return Ok([false; 2]);
+    }
+    let Some(row) = tables.row(PROSPECT_LIST_TABLE, &String::from_utf16_lossy(prospect))? else {
+        return Ok([false; 2]);
+    };
+    let listed: Vec<String> = match row.get("WorldStatList") {
+        None => Vec::new(),
+        Some(list) => list
+            .as_array()
+            .context("a prospect's WorldStatList is not an array")?
+            .iter()
+            .map(|entry| row_name(entry).map(str::to_owned))
+            .collect::<Option<_>>()
+            .context("a WorldStatList entry names no row")?,
+    };
+    let mut totals = [0_i64; 2];
+    for name in listed {
+        let Some(stats) = tables.row(PROSPECT_STATS_TABLE, &name)? else {
+            continue;
+        };
+        let Some(granted) = stats.get("WorldStats") else {
+            continue;
+        };
+        let granted = granted
+            .as_object()
+            .context("a prospect stats row's WorldStats is not a map")?;
+        // Keys are exported as `(Value="<stat row>")`.
+        for (total, stat) in totals.iter_mut().zip([OPEN_WORLD_STAT, OUTPOST_STAT]) {
+            if let Some(value) = granted.get(&format!("(Value=\"{stat}\")")) {
+                *total += value
+                    .as_i64()
+                    .context("a world stat grant is not an integer")?;
+            }
+        }
+    }
+    Ok(totals.map(|total| total > 0))
+}
+
 /// With the official server's data tables (F-828), the saved session flags
-/// also replicate as `SessionFlags` row indices in saved order (F-830), and
-/// the saved mission history yields the [`locked_missions`] (F-834).
+/// also replicate as `SessionFlags` row indices in saved order (F-830), the
+/// saved mission history yields the [`locked_missions`] (F-834) and the
+/// prospect's row sets the open-world and outpost flags
+/// ([`prospect_world_flags`], F-911).
 pub fn saved_game_state(
     section: &PreservedSection,
     mut tables: Option<&mut DataTables>,
@@ -531,6 +587,17 @@ pub fn saved_game_state(
         }
         if !indices.is_empty() {
             values.insert(handle::SESSION_FLAGS, session_flags_value(&indices));
+        }
+    }
+    if let Some(tables) = tables.as_deref_mut() {
+        let [open_world, outpost] = prospect_world_flags(tables, &saved.info.prospect_dt_key)?;
+        for (handle, set) in [
+            (handle::IS_OPEN_WORLD_PROSPECT, open_world),
+            (handle::IS_OUTPOST_PROSPECT, outpost),
+        ] {
+            if set {
+                values.insert(handle, RepValue::Bool(true));
+            }
         }
     }
     let time_of_day = saved
