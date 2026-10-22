@@ -298,6 +298,13 @@ impl DataPak {
         self.members.keys().map(String::as_str)
     }
 
+    /// Whether a member's path ends with `/suffix` (or is `suffix`).
+    pub fn has(&self, suffix: &str) -> bool {
+        self.members
+            .keys()
+            .any(|path| path.as_str() == suffix || path.ends_with(&format!("/{suffix}")))
+    }
+
     /// The bytes of the one member whose path ends with `/suffix` (or is
     /// `suffix`).
     pub fn read(&mut self, suffix: &str) -> Result<Vec<u8>> {
@@ -483,6 +490,11 @@ impl DataTables {
             bools: BTreeMap::new(),
             objects: BTreeMap::new(),
         })
+    }
+
+    /// Whether the pak holds data table `table`.
+    pub fn has_table(&self, table: &str) -> bool {
+        self.pak.has(&format!("{table}.json"))
     }
 
     pub fn rows(&mut self, table: &str) -> Result<&[String]> {

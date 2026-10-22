@@ -366,3 +366,22 @@ fn missing_or_malformed_player_rows_fail_before_binding() {
         assert!(text.contains(expected), "{expected}: {text}");
     }
 }
+
+/// `has_table` reports whether a data table member is in the pak, by the
+/// same path suffix rule `read` uses.
+#[test]
+fn table_presence_follows_the_member_paths() {
+    let root = TempDir::new().unwrap();
+    let path = pak_file(
+        &root,
+        &pak_writer::write_pak(&[(
+            "Flags/D_SessionFlags.json",
+            &pak_writer::table_json(&["Flag_A"]),
+            true,
+        )]),
+    );
+    let tables = icarus_bevy::data_pak::DataTables::open(&path).unwrap();
+    assert!(tables.has_table("D_SessionFlags"));
+    assert!(!tables.has_table("D_ProspectList"));
+    assert!(!tables.has_table("SessionFlags"));
+}

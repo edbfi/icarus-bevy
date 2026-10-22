@@ -203,6 +203,20 @@ fn main() -> Result<()> {
             ) {
                 native.insert(handle::LOCKED_MISSIONS, value);
             }
+            // The open-world and outpost flags from the prospect's row
+            // (F-911).
+            let flags = icarus_bevy::network::prospect_world_flags(
+                &mut tables,
+                &saved.info.prospect_dt_key,
+            )?;
+            for (handle, set) in [
+                (handle::IS_OPEN_WORLD_PROSPECT, flags[0]),
+                (handle::IS_OUTPOST_PROSPECT, flags[1]),
+            ] {
+                if set {
+                    native.insert(handle, RepValue::Bool(true));
+                }
+            }
         }
         // The level clock at the captured world time.
         let Some(RepValue::Float(world_time)) = values.get(&handle::WORLD_TIME_SECONDS) else {
@@ -238,7 +252,12 @@ fn main() -> Result<()> {
             options
                 .data_pak
                 .is_some()
-                .then_some([handle::SESSION_FLAGS, handle::LOCKED_MISSIONS])
+                .then_some([
+                    handle::SESSION_FLAGS,
+                    handle::LOCKED_MISSIONS,
+                    handle::IS_OPEN_WORLD_PROSPECT,
+                    handle::IS_OUTPOST_PROSPECT,
+                ])
                 .into_iter()
                 .flatten(),
         )

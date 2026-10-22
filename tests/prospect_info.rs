@@ -1139,6 +1139,82 @@ fn mistyped_quest_manager_fields_fail_closed() {
     }
 }
 
+/// The GameState's open-world and outpost flags follow the prospect row's
+/// `WorldStatList`: each is set when its `D_ProspectStats` world stat sums
+/// above 0 (F-911); a prospect the table lacks sets neither.
+#[test]
+fn prospect_rows_set_the_open_world_and_outpost_flags() {
+    use icarus_bevy::network::prospect_world_flags;
+    let root = tempfile::TempDir::new().unwrap();
+    let pak = root.path().join("data.pak");
+    let list = json!({"Rows": [
+        {"Name": "Lab_Key", "WorldStatList": [
+            {"RowName": "OpenWorld", "DataTableName": "D_ProspectStats"},
+            {"RowName": "Plain", "DataTableName": "D_ProspectStats"},
+        ]},
+        {"Name": "Lab_Outpost", "WorldStatList": [
+            {"RowName": "Outpost", "DataTableName": "D_ProspectStats"},
+            {"RowName": "Cancel", "DataTableName": "D_ProspectStats"},
+        ]},
+        {"Name": "Lab_None"},
+        {"Name": "Lab_Bad", "WorldStatList": [{"Table": "D_ProspectStats"}]},
+    ]});
+    let stats = json!({"Rows": [
+        {"Name": "OpenWorld", "WorldStats": {"(Value=\"WorldIsOpenWorldProspect_?\")": 1}},
+        {"Name": "Outpost", "WorldStats": {"(Value=\"WorldIsOutpostProspect_?\")": 1}},
+        {"Name": "Cancel", "WorldStats": {"(Value=\"WorldIsOutpostProspect_?\")": -1}},
+        {"Name": "Plain", "WorldStats": {"(Value=\"OtherStat_+\")": 5}},
+    ]});
+    std::fs::write(
+        &pak,
+        pak_writer::official_pak(&[
+            (
+                "Prospects/D_ProspectList.json",
+                serde_json::to_vec(&list).unwrap(),
+            ),
+            (
+                "Stats/D_ProspectStats.json",
+                serde_json::to_vec(&stats).unwrap(),
+            ),
+            (
+                "Flags/D_SessionFlags.json",
+                pak_writer::table_json(&["Flag_A"]),
+            ),
+            ("Factions/D_FactionMissions.json", faction_missions_json()),
+        ]),
+    )
+    .unwrap();
+    let mut tables = icarus_bevy::data_pak::DataTables::open(&pak).unwrap();
+    assert_eq!(
+        prospect_world_flags(&mut tables, &units("Lab_Key")).unwrap(),
+        [true, false]
+    );
+    // An outpost grant cancelled by another row sums to 0.
+    assert_eq!(
+        prospect_world_flags(&mut tables, &units("Lab_Outpost")).unwrap(),
+        [false, false]
+    );
+    for none in ["Lab_None", "Missing"] {
+        assert_eq!(
+            prospect_world_flags(&mut tables, &units(none)).unwrap(),
+            [false, false]
+        );
+    }
+    assert!(prospect_world_flags(&mut tables, &units("Lab_Bad")).is_err());
+    // The saved prospect (`Lab_Key`) sends `bIsOpenWorldProspect` only.
+    let section = PreservedSection::from_inner_payload(
+        &payload(&prospect_info(), &[game_mode_recorder(150)]),
+        PreserveLimits::default(),
+    )
+    .unwrap();
+    let saved = icarus_bevy::network::saved_game_state(&section, Some(&mut tables)).unwrap();
+    assert_eq!(
+        saved.values.get(&handle::IS_OPEN_WORLD_PROSPECT),
+        Some(&RepValue::Bool(true))
+    );
+    assert!(!saved.values.contains_key(&handle::IS_OUTPOST_PROSPECT));
+}
+
 /// A child process killed and reaped when dropped, also when a test panics.
 struct Killed(std::process::Child);
 
