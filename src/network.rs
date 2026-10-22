@@ -121,10 +121,10 @@ pub const MANAGER_FIRST_CHANNEL: u32 = 6;
 /// The session layer's key for the world's one GameState.
 pub const GAME_STATE_KEY: ActorKey = ActorKey::Session(0);
 
-/// The GameState values `run` opens every connection with: play has begun
-/// and the match is in progress (as captured, F-794); the lab adds the world
-/// time. No manager actors exist yet, so their references stay null, and no
-/// survival state (prospect, weather, time of day) is modelled or sent.
+/// The GameState values `run` opens every connection with: play has begun,
+/// the match is in progress (as captured, F-794) and this run's
+/// `RichPresenceGUID` (F-912); the lab adds the world time, and a loaded
+/// save its state ([`saved_game_state`]).
 pub fn game_state_values() -> Result<GameStateOpenState> {
     Ok(GameStateOpenState {
         key: GAME_STATE_KEY,
@@ -138,9 +138,22 @@ pub fn game_state_values() -> Result<GameStateOpenState> {
                     number: 0,
                 }),
             ),
+            (
+                handle::RICH_PRESENCE_GUID,
+                RepValue::Str(ArchiveText::text(&rich_presence_guid()?)?),
+            ),
         ]),
         weather: Vec::new(),
     })
+}
+
+/// A fresh `RichPresenceGUID` (F-912): the original's GameState sets it at
+/// `BeginPlay` to `FGuid::NewGuid().ToString(EGuidFormats::Digits)`, 32
+/// uppercase hex digits, once per server run.
+pub fn rich_presence_guid() -> Result<String> {
+    let mut bytes = [0_u8; 16];
+    getrandom::fill(&mut bytes).map_err(|error| anyhow::anyhow!("system randomness: {error}"))?;
+    Ok(bytes.iter().map(|byte| format!("{byte:02X}")).collect())
 }
 
 /// The lab vitals a pawn opens with when no data tables are loaded; they

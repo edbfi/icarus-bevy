@@ -2118,3 +2118,31 @@ fn the_saved_managers_follow_the_bound_managers() {
             .is_err()
     );
 }
+
+/// Each run's GameState carries a fresh `RichPresenceGUID` as the original
+/// formats it: 32 uppercase hex digits (F-912).
+#[test]
+fn the_game_state_carries_a_fresh_rich_presence_guid() {
+    use icarus_bevy::experimental::game_state_open::handle;
+    let guid =
+        |values: &icarus_bevy::experimental::game_state_open::GameStateOpenState| match values
+            .values
+            .get(&handle::RICH_PRESENCE_GUID)
+        {
+            Some(icarus_bevy::experimental::rep_layout::RepValue::Str(text)) => {
+                String::from_utf16(text.units()).unwrap()
+            }
+            other => panic!("no RichPresenceGUID: {other:?}"),
+        };
+    let first = guid(&network::game_state_values().unwrap());
+    let second = guid(&network::game_state_values().unwrap());
+    for value in [&first, &second] {
+        assert_eq!(value.len(), 32);
+        assert!(
+            value
+                .chars()
+                .all(|c| c.is_ascii_digit() || ('A'..='F').contains(&c))
+        );
+    }
+    assert_ne!(first, second);
+}
