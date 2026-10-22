@@ -164,6 +164,8 @@ symlinks allowed; F-671), read it, and write nothing unless stated:
   (`actor_class`, `actor_path`, `data_row`, `asset_path`, `world_tile`,
   `class_variable`, `unclassified`); a reference maps only in the roles that
   list it. Instance names are never resolved and have no list.
+  `--data-pak PATH` also resolves data-row references against every table of
+  the official server's data.pak, without case (F-840).
 
 Value meanings and original-server round trips remain unvalidated. The
 [synthetic workload](synthetic-workload.md) exercises native scheduling and
