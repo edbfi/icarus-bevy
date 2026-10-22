@@ -92,7 +92,8 @@ Last reconciled: 2026-10-22
   `icarus-fetch` now does this anonymously without steamcmd (F-831, U-073).
   The requirement must be documented for operators. Nothing original is committed or
   redistributed. Client-derived metadata counts toward the shipped server only
-  once re-derived from or checked against that distribution (U-072).
+  once re-derived from or checked against that distribution; for 3.0.32
+  every table `run` uses is (F-832; U-072 resolved).
 
 ## Before any original-server or client run
 
