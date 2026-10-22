@@ -10,7 +10,8 @@
 //!
 //! The QuestManager also replicates its saved quest state (`C018`): the
 //! faction mission's row, difficulty, flags, the initial quest actor and the
-//! keyed relevant persistent actors, all referenced by actor key.
+//! keyed relevant persistent actors, all referenced by actor key. The
+//! PlayerHistoryTracker replicates its saved history (`C024`).
 use std::collections::BTreeMap;
 
 use anyhow::Result;
@@ -23,7 +24,7 @@ use super::actor_open::{
 use super::archive::ByteOrder;
 use super::control_messages::ArchiveText;
 use super::game_state_open::GameStateManagers;
-use super::prospect_info::{RelevantQuestActor, SavedQuestManager};
+use super::prospect_info::{PlayerHistoryEntry, RelevantQuestActor, SavedQuestManager};
 use super::rep_layout::{PropertyStream, RepArray, RepCommand, RepEntry, RepValue};
 use super::session_open::{
     ActorKey, ComposedActorOpen, ConnectionExports, NetGuidCache, PathSegment,
@@ -57,12 +58,16 @@ pub mod quest_handle {
     pub const RELEVANT_PERSISTENT_CHARACTERS: u32 = 26;
 }
 
+/// `APlayerHistoryTracker::History` (`player_history_tracker_rep_layout`).
+pub const PLAYER_HISTORY_HANDLE: u32 = 19;
+
 /// Which GameState manager reference a manager open fills (F-794, F-859).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum ManagerSlot {
     Quest,
     WorldTalent,
     Radiation,
+    PlayerHistory,
     Disaster,
 }
 
@@ -74,6 +79,7 @@ impl ManagerSlot {
             Self::Quest => 1,
             Self::WorldTalent => 2,
             Self::Radiation => 3,
+            Self::PlayerHistory => 5,
             Self::Disaster => 7,
         })
     }
@@ -85,6 +91,7 @@ impl ManagerSlot {
             Self::Quest => managers.quest_manager = reference,
             Self::WorldTalent => managers.world_talent_manager = reference,
             Self::Radiation => managers.radiation_manager = reference,
+            Self::PlayerHistory => managers.player_history_tracker = reference,
             Self::Disaster => managers.disaster_controller = reference,
         }
     }
@@ -220,6 +227,45 @@ impl ManagerOpenPlan {
                 self.keyed_actors.insert(handle, actors);
             }
         }
+        Ok(self)
+    }
+
+    /// Add the saved player history (`C024`) to a PlayerHistoryTracker
+    /// plan as `History`, every element field, in saved order; an empty
+    /// history is the class default and adds nothing. Fails on more
+    /// entries than an array counts or on a string that cannot be sent.
+    pub fn with_player_history(mut self, history: &[PlayerHistoryEntry]) -> Result<Self> {
+        if history.is_empty() {
+            return Ok(self);
+        }
+        let mut entries = Vec::with_capacity(3 * history.len());
+        for (entry, element) in history.iter().zip(0u32..) {
+            for (field, value) in [
+                RepValue::Str(ArchiveText::new(&entry.user_id)?),
+                RepValue::Int(entry.chr_slot),
+                RepValue::Str(ArchiveText::new(&entry.cached_character_name)?),
+            ]
+            .into_iter()
+            .zip(1u32..)
+            .map(|(value, field)| (field, value))
+            {
+                entries.push(RepEntry {
+                    handle: 3 * element + field,
+                    checksum: None,
+                    value,
+                });
+            }
+        }
+        self.values.insert(
+            PLAYER_HISTORY_HANDLE,
+            RepValue::DynamicArray(RepArray {
+                count: u16::try_from(history.len())?,
+                stream: PropertyStream {
+                    entries,
+                    terminator_checksum: None,
+                },
+            }),
+        );
         Ok(self)
     }
 }

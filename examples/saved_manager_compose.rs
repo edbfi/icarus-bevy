@@ -1,12 +1,15 @@
-//! Compose the QuestManager open (F-861) from a save's quest manager record
-//! (`C018`) with `manager_open::compose_manager_open` and compare it with a
-//! supplied open. The profile file maps channel indices to a supplied open
-//! (`exports_hex`, `exports_bits`, `body_hex`, `body_bits`) and its GUIDs
-//! (`actor`, `archetype`, `outer`, `components`); the plan is the built-in
-//! 3.0.31 release profile's, the faction mission's row comes from the
-//! official server's data.pak. The referenced actors' GUIDs are read from
-//! the supplied body so the composed open names the same ones. Prints
-//! counts and comparisons only, never saved values.
+//! Compose the managers that replicate a save's state with
+//! `manager_open::compose_manager_open` and compare them with supplied
+//! opens: the QuestManager (F-861) from the quest manager record (`C018`)
+//! on channel 126 and the PlayerHistoryTracker (F-862) from the player
+//! history record (`C024`) on channel 54, as M-707 opened them. The profile
+//! file maps channel indices to a supplied open (`exports_hex`,
+//! `exports_bits`, `body_hex`, `body_bits`) and its GUIDs (`actor`,
+//! `archetype`, `outer`, `components`); the plans are the built-in 3.0.31
+//! release profile's, the faction mission's row comes from the official
+//! server's data.pak. The referenced actors' GUIDs are read from the
+//! supplied body so the composed open names the same ones. Prints counts
+//! and comparisons only, never saved values.
 use std::{collections::BTreeMap, fs::File, path::PathBuf};
 
 use anyhow::{Context, Result, ensure};
@@ -16,13 +19,10 @@ use icarus_bevy::{
     experimental::{
         actor_channel::{ActorChannelCodec, ActorChannelLimits, read_actor_bunch_body},
         archive::ByteOrder,
-        manager_open::{compose_manager_open, quest_handle},
+        manager_open::{ManagerSlot, compose_manager_open, quest_handle},
         packet::{BitWriter, Payload},
         release::ReleaseProfile,
-        rep_layout::{
-            MovementLevel, RepLayoutCodec, RepLayoutLimits, RepValue, RotationLevel,
-            quest_manager_rep_layout, read_rep_properties,
-        },
+        rep_layout::{RepLayoutCodec, RepLayoutLimits, RepValue, read_rep_properties},
         session_open::{ActorKey, ConnectionExports, NetGuidCache, PathSegment},
     },
     prospect::read_saved_prospect,
@@ -34,12 +34,12 @@ use serde_json::json;
 struct Options {
     /// Profile JSON: `{"<channel>": Supplied, ...}`.
     profile: PathBuf,
-    /// The save whose `C018` record the open replicates.
+    /// The save whose `C018` and `C024` records the opens replicate.
     #[arg(long)]
     save: PathBuf,
-    /// The official dedicated server's `data.pak`.
+    /// The official dedicated server's `data.pak` (for the QuestManager).
     #[arg(long)]
-    data_pak: PathBuf,
+    data_pak: Option<PathBuf>,
 }
 
 #[derive(Deserialize)]
@@ -105,18 +105,13 @@ fn main() -> Result<()> {
     let text = std::fs::read_to_string(&options.profile).context("read profile")?;
     let profile: BTreeMap<String, Supplied> =
         serde_json::from_str(&text).context("parse profile")?;
-    let saved = read_saved_prospect(File::open(&options.save).context("open save")?)?
-        .quest_manager
-        .context("the save has no quest manager record")?;
-    let mut tables = DataTables::open(&options.data_pak)?;
-    let row = tables
-        .row_index("D_FactionMissions", &saved.faction_mission)?
-        .and_then(|index| u8::try_from(index).ok())
-        .context("the faction mission has no 1-byte row")?;
-    let plan = ReleaseProfile::release_3_0_31()
-        .quest_manager_open_plan("/Game/Maps/Terrain_016_OLY/Terrain_016")?
-        .context("a QuestManager plan")?
-        .with_quest_state(&saved, row)?;
+    let saved = read_saved_prospect(File::open(&options.save).context("open save")?)?;
+    let release = ReleaseProfile::release_3_0_31();
+    let base = |slot| {
+        release
+            .manager_open_plan(slot, "/Game/Maps/Terrain_016_OLY/Terrain_016")?
+            .context("a manager plan")
+    };
     let codec = ActorChannelCodec {
         engine_net_version: 17,
         exports_enabled: false,
@@ -130,23 +125,42 @@ fn main() -> Result<()> {
         limits: RepLayoutLimits::default(),
     };
     for (channel, supplied) in &profile {
+        let (slot, plan) = match channel.as_str() {
+            "126" => {
+                let quest = saved
+                    .quest_manager
+                    .as_ref()
+                    .context("the save has no quest manager record")?;
+                let path = options
+                    .data_pak
+                    .as_ref()
+                    .context("the QuestManager needs --data-pak")?;
+                let row = DataTables::open(path)?
+                    .row_index("D_FactionMissions", &quest.faction_mission)?
+                    .and_then(|index| u8::try_from(index).ok())
+                    .context("the faction mission has no 1-byte row")?;
+                let slot = ManagerSlot::Quest;
+                (slot, base(slot)?.with_quest_state(quest, row)?)
+            }
+            "54" => {
+                let history = saved
+                    .player_history
+                    .as_ref()
+                    .context("the save has no player history record")?;
+                let slot = ManagerSlot::PlayerHistory;
+                (slot, base(slot)?.with_player_history(history)?)
+            }
+            _ => continue,
+        };
         let body = payload(&supplied.body_hex, supplied.body_bits)?;
         let decoded = read_actor_bunch_body(&mut body.reader(), true, &codec)?;
         let actor_block = decoded.blocks.first().context("an actor block")?;
-        let supplied_values: BTreeMap<u32, RepValue> = read_rep_properties(
-            &mut actor_block.payload.reader(),
-            &quest_manager_rep_layout(
-                MovementLevel::Whole,
-                MovementLevel::Whole,
-                RotationLevel::Bytes,
-                ReleaseProfile::release_3_0_31().tags.tag_encoding(),
-            ),
-            &rep_codec,
-        )?
-        .entries
-        .into_iter()
-        .map(|entry| (entry.handle, entry.value))
-        .collect();
+        let supplied_values: BTreeMap<u32, RepValue> =
+            read_rep_properties(&mut actor_block.payload.reader(), &plan.layout, &rep_codec)?
+                .entries
+                .into_iter()
+                .map(|entry| (entry.handle, entry.value))
+                .collect();
         // The referenced actors' supplied GUIDs, keyed as the plan keys them.
         let mut keyed: Vec<(u32, ActorKey)> = Vec::new();
         if let (Some(key), Some(RepValue::Object(reference))) = (
@@ -185,7 +199,7 @@ fn main() -> Result<()> {
         let outer = cache.export_static(&mut exports, &plan.archetype[1..])?;
         ensure!(outer.guid == supplied.outer, "outer GUID");
         burn_static_to(&mut cache, supplied.archetype)?;
-        let manager = ActorKey::Session(1);
+        let manager = slot.key();
         let mut assigned: Vec<(u32, ActorKey)> = keyed.clone();
         assigned.push((supplied.actor, manager));
         assigned.sort_unstable_by_key(|(guid, _)| *guid);
@@ -211,6 +225,7 @@ fn main() -> Result<()> {
             "{}",
             json!({
                 "channel": channel,
+                "slot": format!("{slot:?}"),
                 "referenced_actors": keyed.len(),
                 "supplied_handles": supplied_values.keys().collect::<Vec<_>>(),
                 "exports_bits": [composed_exports.bit_len(), supplied_exports.bit_len()],

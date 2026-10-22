@@ -29,6 +29,7 @@ use sha1::{Digest, Sha1};
 
 const GAME_MODE: &str = "/Script/Icarus.GameModeStateRecorderComponent";
 const QUEST_MANAGER: &str = "/Script/Icarus.IcarusQuestManagerRecorderComponent";
+const PLAYER_HISTORY: &str = "/Script/Icarus.PlayerHistoryRecorderComponent";
 
 fn fstring(value: &str) -> Vec<u8> {
     if value.is_empty() {
@@ -643,6 +644,90 @@ fn expected_locked_missions() -> Vec<LockedMission> {
     ]
 }
 
+/// Two authored player history entries (`C024`), the second with a
+/// non-ASCII name.
+const HISTORY: [(&str, i32, &str); 2] = [("user-1", 0, "Ada"), ("user-2", 3, "Bjørn")];
+
+fn player_history_recorder() -> Vec<u8> {
+    recorder(
+        PLAYER_HISTORY,
+        &[
+            struct_array(
+                "SavedHistoryData",
+                "PlayerHistoryEntryRecord",
+                &HISTORY
+                    .iter()
+                    .map(|(user, slot, name)| {
+                        [
+                            string("UserID", user),
+                            int("ChrSlot", *slot),
+                            string("CachedCharacterName", name),
+                            end(),
+                        ]
+                        .concat()
+                    })
+                    .collect::<Vec<_>>(),
+            ),
+            int("IcarusActorGUID", 78),
+        ]
+        .concat(),
+    )
+}
+
+/// The saved player history (`C024`) types in saved order (F-862).
+#[test]
+fn a_saved_player_history_supplies_the_history() {
+    use icarus_bevy::experimental::prospect_info::{PlayerHistoryEntry, saved_player_history};
+    let inner = payload(&prospect_info(), &[player_history_recorder()]);
+    let history = saved_prospect_from_payload(&inner)
+        .unwrap()
+        .player_history
+        .expect("a player history record");
+    let expected: Vec<PlayerHistoryEntry> = HISTORY
+        .iter()
+        .map(|(user, slot, name)| PlayerHistoryEntry {
+            user_id: units(user),
+            chr_slot: *slot,
+            cached_character_name: units(name),
+        })
+        .collect();
+    assert_eq!(history, expected);
+    let section = PreservedSection::from_inner_payload(&inner, PreserveLimits::default()).unwrap();
+    let saved = icarus_bevy::network::saved_game_state(&section, None).unwrap();
+    assert_eq!(saved.player_history, Some(expected));
+    // Two history recorders are rejected; mistyped fields fail closed.
+    assert!(
+        saved_prospect_from_payload(&payload(
+            &prospect_info(),
+            &[player_history_recorder(), player_history_recorder()],
+        ))
+        .is_err()
+    );
+    let typed = |fields: &[Vec<u8>]| {
+        let stream = [fields.concat(), end()].concat();
+        let tree =
+            PropertyTree::parse(&stream, TagProfile::MemoryArchive522, TreeLimits::default())
+                .unwrap();
+        saved_player_history(&TypedTree::from_tree(&tree).unwrap().0)
+    };
+    assert!(typed(&[]).unwrap().is_empty());
+    let entry = |field: Vec<u8>| {
+        struct_array(
+            "SavedHistoryData",
+            "PlayerHistoryEntryRecord",
+            &[[field, end()].concat()],
+        )
+    };
+    assert_eq!(typed(&[entry(int("ChrSlot", 2))]).unwrap()[0].chr_slot, 2);
+    for bad in [
+        int("SavedHistoryData", 1),
+        entry(string("ChrSlot", "2")),
+        entry(int("UserID", 7)),
+    ] {
+        assert!(typed(&[bad]).is_err());
+    }
+}
+
 /// The saved quest manager (`C018`) types from its record, and with the
 /// server's data tables the faction mission maps to its row (F-861).
 #[test]
@@ -780,7 +865,11 @@ fn run_replicates_a_preserved_worlds_prospect() {
         &source,
         envelope(&payload(
             &prospect_info(),
-            &[game_mode_recorder(150), quest_manager_recorder()],
+            &[
+                game_mode_recorder(150),
+                quest_manager_recorder(),
+                player_history_recorder(),
+            ],
         )),
     )
     .unwrap();
@@ -859,6 +948,7 @@ fn run_replicates_a_preserved_worlds_prospect() {
             assert_eq!(record["locked_missions"], 2);
             // The saved quest manager opens after the other managers.
             assert_eq!(record["quest_manager_channel"], 9);
+            assert_eq!(record["player_history_channel"], 10);
         }
         if record["event"] == "network_listening" {
             // The installed official data tables were picked up.
@@ -1000,7 +1090,10 @@ fn run_replicates_a_preserved_worlds_prospect() {
         .expect("a QuestManager open");
     let open = read_actor_bunch_body(&mut quest.payload.reader(), true, &codec).unwrap();
     let plan = profile
-        .quest_manager_open_plan(PeerLabAdmission::default().map_url)
+        .manager_open_plan(
+            icarus_bevy::experimental::manager_open::ManagerSlot::Quest,
+            PeerLabAdmission::default().map_url,
+        )
         .unwrap()
         .unwrap();
     let stream = read_rep_properties(
@@ -1022,6 +1115,42 @@ fn run_replicates_a_preserved_worlds_prospect() {
     assert_eq!(quest.get(&20), Some(&RepValue::Enum(2)));
     assert_eq!(quest.get(&24), Some(&RepValue::Bool(true)));
     assert!(quest.contains_key(&21) && quest.contains_key(&25));
+    // The PlayerHistoryTracker open carries the saved history (F-862).
+    let history = collected
+        .replies
+        .iter()
+        .flat_map(|reply| read_packet(&reply.bytes, &to_client).unwrap().bunches)
+        .find(|bunch| bunch.header.channel_index == 10 && !bunch.header.has_package_map_exports)
+        .expect("a PlayerHistoryTracker open");
+    let open = read_actor_bunch_body(&mut history.payload.reader(), true, &codec).unwrap();
+    let plan = profile
+        .manager_open_plan(
+            icarus_bevy::experimental::manager_open::ManagerSlot::PlayerHistory,
+            PeerLabAdmission::default().map_url,
+        )
+        .unwrap()
+        .unwrap();
+    let stream = read_rep_properties(
+        &mut open.blocks[0].payload.reader(),
+        &plan.layout,
+        &RepLayoutCodec {
+            actor: codec,
+            checksums: false,
+            limits: RepLayoutLimits::default(),
+        },
+    )
+    .unwrap();
+    let Some(RepValue::DynamicArray(sent)) = stream
+        .entries
+        .into_iter()
+        .find_map(|entry| (entry.handle == 19).then_some(entry.value))
+    else {
+        panic!("a History array");
+    };
+    assert_eq!(sent.count, 2);
+    assert_eq!(sent.stream.entries.len(), 6);
+    assert_eq!(sent.stream.entries[4].value, RepValue::Int(3));
+    assert_eq!(sent.stream.entries[5].value, text("Bjørn"));
 }
 
 #[test]

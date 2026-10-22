@@ -555,12 +555,20 @@ fn run(options: ConfigOptions, max_ticks: Option<u64>, compressed: bool) -> Resu
             &mut bound.lab,
             section,
             bound.tables.as_mut(),
-            bound.quest_manager.take(),
+            std::mem::take(&mut bound.saved_managers),
         ) {
-            Ok(applied) => eprintln!(
-                "{}",
-                json!({"event": "active_prospect_replicated", "unmapped_session_flags": applied.unmapped_session_flags, "locked_missions": applied.locked_missions, "quest_manager_channel": applied.quest_manager_channel})
-            ),
+            Ok(applied) => {
+                let channel = |wanted| {
+                    applied
+                        .saved_managers
+                        .iter()
+                        .find_map(|(slot, channel)| (*slot == wanted).then_some(*channel))
+                };
+                eprintln!(
+                    "{}",
+                    json!({"event": "active_prospect_replicated", "unmapped_session_flags": applied.unmapped_session_flags, "locked_missions": applied.locked_missions, "quest_manager_channel": channel(icarus_bevy::experimental::manager_open::ManagerSlot::Quest), "player_history_channel": channel(icarus_bevy::experimental::manager_open::ManagerSlot::PlayerHistory)})
+                );
+            }
             // Reader errors name fields and kinds, never saved values.
             Err(error) => eprintln!(
                 "{}",

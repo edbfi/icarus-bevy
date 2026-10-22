@@ -174,7 +174,7 @@ fn saved_quest_state_composes_into_the_quest_manager_open() {
         persistent_characters: Vec::new(),
     };
     let plan = profile
-        .quest_manager_open_plan("/Game/Maps/Test/Test")
+        .manager_open_plan(ManagerSlot::Quest, "/Game/Maps/Test/Test")
         .unwrap()
         .unwrap()
         .with_quest_state(&saved, 3)
