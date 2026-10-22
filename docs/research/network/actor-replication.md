@@ -16,10 +16,10 @@ normative wire and scheduling rules live in
 
 Open actor bunches frame the actor NetGUID and, for dynamic actors, the
 archetype, level and optional spawn vectors, then the actor-channel open hook
-(F-569, F-610, F-739, F-751). Outgoing bunches carry export-only prefixes and
+(F-751, F-845, F-849). Outgoing bunches carry export-only prefixes and
 split into partial slices; incoming ones reassemble and keep dormant actors
-(F-709 to F-711); content blocks frame per-object replicator input (F-576,
-F-586). Addresses and limits are in the [spec](../../specs/network/actor-channel.md).
+(F-709 to F-711); content blocks frame per-object replicator input (F-846,
+F-849). Addresses and limits are in the [spec](../../specs/network/actor-channel.md).
 
 Offline schema derivation is authorized ([gates](../../gates.md)). The
 gameplay-tag net-index dictionary derives from the client's tag table and
@@ -32,23 +32,23 @@ Native descriptors, cooked Blueprint schemas, `FClassNetCache` bounds and the
 and re-encode every export (317), partial sequence (300), dormancy close (136),
 actor open (288) and typed content block (23,486: 20,407 with a rep layout,
 3,072 without; 66,859 property entries, 2,607 RPC calls, 2,361 stat pairs) of
-M-707 with 0 failures (F-571 to F-644, F-703 to F-711, F-739; U-064, U-066
+M-707 with 0 failures (F-571 to F-644, F-703 to F-711, F-843 to F-850; U-064, U-066
 resolved).
 
 Server and client builds match in every scheduling stage, whose constants
 and guards the [spec](../../specs/network/actor-channel.md) lists (F-745,
-F-748, F-749, F-751, refined by F-772, F-774, F-788); a native stage drives
+F-748, F-749, F-751, refined by F-788, F-851); a native stage drives
 them over supplied actor positions (F-790). Export checksums are computed
-natively (F-776, F-777; U-067) and exports repeat until acked (F-796). The
-native composers rebuild the captured PlayerController (F-778, F-779),
-GameState (F-794) and pawn (F-797) opens bit for bit, including the pawn's
-contents from session values (F-799) and the GameState's active prospect
-and game mode values from the save the capture's server loaded (F-801,
-F-803); `run` sends all four opens after Join, with a preserved world's
+natively (F-853; U-067) and exports repeat until acked (F-796). The
+native composers rebuild the captured PlayerController (F-852),
+GameState (F-794) and pawn (F-854) opens bit for bit, including the pawn's
+contents from session values (F-854) and the GameState's active prospect
+and game mode values from the save the capture's server loaded
+(F-855); `run` sends all four opens after Join, with a preserved world's
 saved state (F-804). On the capture's server build, as on the client,
 TimeOfDay advances by a per-world rate curve of the hour, and prospect setup
 writes SecondsPerGameDay from that curve; the open carried the saved
-SecondsPerGameDay (F-803, F-805, F-806; U-071 resolved). `run` follows the
+SecondsPerGameDay (F-805, F-855, F-856; U-071 resolved). `run` follows the
 open with GameState updates in the captured form and cadence, its time of
 day advancing at the saved day length's constant rate (F-807), and its
 own frame rate as `ServerFPS` by the original's rule (F-808, F-809), and a

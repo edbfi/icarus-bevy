@@ -5,7 +5,7 @@
 Experimental: static interpretation with independent arithmetic tests, one
 matching early-startup value, both builds' wire values and exhaustive delegate
 cross-reference scans across both binaries (F-689, F-713; U-037 resolved). Scope: build 25621760 (M-168); addresses
-are preferred virtual addresses in that file. Last reconciled: 2026-10-17.
+are preferred virtual addresses in that file. Last reconciled: 2026-10-22.
 Full text: d5b0ae6:docs/specs/network/network-checksum.md.
 
 ## Scope
