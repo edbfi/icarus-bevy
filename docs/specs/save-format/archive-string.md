@@ -4,7 +4,7 @@
 
 Experimental: bounded independent codec with authored tests; original wire
 round trip pending. Scope: build 25621760 (M-168) for the original reader, with
-supplied-save comparisons on both copies. Last reconciled: 2026-10-18.
+supplied-save comparisons on both copies. Last reconciled: 2026-10-22.
 Full text: d5b0ae6:docs/specs/save-format/archive-string.md.
 
 ## Scope
@@ -20,7 +20,7 @@ and the meaning of any decoded value.
   a positive count measures narrow bytes, a negative count measures UTF-16
   units, and nonzero counts include one terminating unit. `i32::MIN` is rejected
   before negation; a configured archive maximum bounds the absolute count; wide
-  units may be byte-swapped by archive flags (F-282, F-719; U-026 resolved).
+  units may be byte-swapped by archive flags (F-893; U-026 resolved).
 - The reader overwrites the final unit with zero instead of requiring a
   terminator, so a count of one yields an empty string. Narrow conversion at
   `0x1408a91f0` handles ASCII directly and replaces negative signed bytes
@@ -29,13 +29,13 @@ and the meaning of any decoded value.
   (`0x140b68ee0`) checks overrun only (`Offset + Num <= Limit`) and sets
   `ArIsError` without requiring exact enclosing-property EOF. The default writer
   selects narrow for ASCII and wide otherwise, a flag can force wide, and the
-  narrow helper at `0x1409d1a30` has a replacement path (F-282, F-719).
+  narrow helper at `0x1409d1a30` has a replacement path (F-893).
 - `FArchive::operator<<(FName&)` (`0x140962300`) deserializes a temporary
   `FString` and calls `FName(WIDECHAR*, FNAME_Add = 1)` (`0x141f66440`):
   `FNameHelper::MakeDetectNumber` (`0x141f65a60`) and `ParseNumber`
   (`0x141f65d70`) split a trailing `_<1..10 digits>` suffix (`0` or non-`0`-prefixed,
   `<= 2,147,483,646`, stored as `Number = value + 1`) and enforce `NAME_SIZE = 1024`,
-  hashed via case-preserving/case-insensitive CityHash64 (`0x141f70090`; F-719;
+  hashed via case-preserving/case-insensitive CityHash64 (`0x141f70090`; F-893;
   U-033 resolved; `parse_fname_number_suffix` in `experimental::archive`).
 - Successful demand is four count bytes plus the declared narrow byte count or
   twice the declared wide-unit magnitude; zero and magnitude-one cases keep
@@ -64,7 +64,7 @@ and the meaning of any decoded value.
   spans, counts, encoding and consumed bytes with allocation-free UTF-16 unit
   iteration; `decode_string` materializes units into a `Vec<u16>` when ownership
   is needed, and `parse_fname_number_suffix` mirrors `FName` `_<digits>`
-  splitting and `NAME_SIZE = 1024` bounds (F-142, F-719). Neither converts
+  splitting and `NAME_SIZE = 1024` bounds (F-142, F-893). Neither converts
   invalid surrogates to a Rust `String`; following fields are untouched; empty
   output uses count zero; ASCII is preferred for writing; forced-wide output is
   not implemented (F-142).
@@ -74,7 +74,7 @@ and the meaning of any decoded value.
   embedded NUL and `U+FFFF`. Error precedence: count/limit/payload, narrow
   ASCII, final terminator, embedded NUL, then `U+FFFF`. These are documented
   strict-reader differences from the original's lossy `?`/zeroing normalization
-  (F-719; U-026 resolved).
+  (F-893; U-026 resolved).
 
 ## Open questions
 

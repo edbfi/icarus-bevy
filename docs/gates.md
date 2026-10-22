@@ -16,8 +16,8 @@ Last reconciled: 2026-10-22
   preservation (`0x1418824d0` keeps `rbx`), vftable targets (`0x1449d9f90` /
   `0x1449da448`, `+0x4a0` `0x1418a9bb0` -> `0x1418a9c80` -> `+0xa0` `0x1418aaf70` ->
   `+0x488` `0x14189d380`), and the `-noanalysis` cause of the M-568/M-569
-  rejection are qualified (F-469 to F-477, F-495, F-508, F-509, F-513, F-669,
-  F-670, F-721, F-722; U-001 to U-006, U-023, U-041, U-042 resolved).
+  rejection are qualified (F-474, F-476, F-477, F-905 to F-910, F-722; U-001 to
+  U-006, U-023, U-041, U-042 resolved).
 - Do not retry these completed reads or unchanged helpers; preserve the failed
   nine-mode receipt, strict replay and split outputs (M-307). Any new C001
   original-code case requires its own fresh scope, bindings and session.
@@ -33,7 +33,8 @@ Last reconciled: 2026-10-22
   `RecorderComponent` `FClassParams`, all 38 `StateRecorderBlobs` (`C001..C038`)
   record/restore/stitch/match/validate methods, `D01` inventory/variable
   restore (`14` `EDynamicItemProperties`), and entry-path failure matrices are
-  qualified (F-715 to F-720, F-725 to F-728, F-731 to F-738, F-741 to F-744;
+  qualified (F-715 to F-720, F-725 to F-728, F-731 to F-738, F-741 to F-744,
+  F-893, F-899, F-902, F-904;
   U-020 to U-024, U-026, U-028 to U-033, U-039, U-046, U-048, U-050, U-053 to
   U-063 resolved); do not repeat those static reads.
 - Audit selected coverage before choosing another save boundary; do not repeat

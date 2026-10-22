@@ -59,7 +59,7 @@ Use `--help` on each subcommand for supported overrides.
 ## Network sessions (experimental)
 
 An opt-in `[network]` table (disabled by default) runs the loopback peer lab
-inside `run` (F-768, F-770):
+inside `run` (F-875):
 
 ```toml
 [network]
@@ -128,15 +128,15 @@ schemas fail closed (F-567).
 
 Each generation is checksummed and synchronized before the manifest is
 atomically published; two committed generations are kept, and a corrupt
-current one recovers from the previous (F-228, F-771). Corrupt or missing
+current one recovers from the previous (F-869, F-771). Corrupt or missing
 manifests beside snapshots, noncanonical digests and unsupported schemas fail
-closed instead of creating a fresh world (F-417, F-428). I/O errors other than
-a missing current file stop loading; repair the fault and retry (F-452).
+closed instead of creating a fresh world (F-870). I/O errors other than
+a missing current file stop loading; repair the fault and retry (F-870).
 Preserve a copy before manual recovery.
 
 SIGINT/SIGTERM freezes simulation, drains outstanding work and saves a final
 snapshot within a deadline, exiting nonzero on failure; it is not a hard
-process-exit-time guarantee (F-230, F-672). Durability is qualified for local
+process-exit-time guarantee (F-869). Durability is qualified for local
 Linux storage, not network filesystems or physical power loss (U-035).
 
 ## Supplied saves
@@ -152,12 +152,12 @@ symlinks allowed; F-671), read it, and write nothing unless stated:
 - `--typed-check`: staging, then every recorder value typed and re-encoded
   exactly; gaps counted by reason per class pseudonym (F-766).
 - `--preserve-check`: lossless preservation saved and reloaded through a
-  temporary schema-3 store it removes, with sizes, timings and memory (F-567, F-584).
+  temporary schema-3 store it removes, with sizes, timings and memory (F-567, F-873).
 - `preserve-save --source … --data-dir …`: seeds a new world holding only the
   preserved prospect (tick 0); refuses an existing world.
 - `import-save --source … --destination … --dry-run`: prints the import plan
   (staging, `Validate`, typing, base fields, transforms, content references by
-  role against the native catalog, blockers; F-767, F-821). Without `--dry-run`
+  role against the native catalog, blockers; F-898). Without `--dry-run`
   the import is refused; nothing is written. `--catalog FILE` resolves
   references against a native content catalog: a regular TOML file of at most
   4 MiB with `format = 1` and, under `[references]`, one list per role
@@ -165,7 +165,7 @@ symlinks allowed; F-671), read it, and write nothing unless stated:
   `class_variable`, `unclassified`); a reference maps only in the roles that
   list it. Instance names are never resolved and have no list.
   `--data-pak PATH` also resolves data-row references against every table of
-  the official server's data.pak, without case (F-840).
+  the official server's data.pak, without case (F-898).
 
 Value meanings and original-server round trips remain unvalidated. The
 [synthetic workload](synthetic-workload.md) exercises native scheduling and

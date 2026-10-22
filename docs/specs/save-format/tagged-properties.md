@@ -2,7 +2,7 @@
 
 ## Status
 
-experimental; older-server build 25621760 profile `MemoryArchive522`, with bounded static comparison to client build 25793767. Last reconciled: 2026-10-20
+experimental; older-server build 25621760 profile `MemoryArchive522`, with bounded static comparison to client build 25793767. Last reconciled: 2026-10-22
 Full text: d5b0ae6:docs/specs/save-format/tagged-properties.md
 
 ## Scope
@@ -26,7 +26,7 @@ Recovered tag layout (older server):
   narrow bytes, negative = UTF-16 code units; nonzero counts include a
   terminating zero. The native strict subset rejects malformed terminators and
   unsupported normalizations instead of reproducing the original's lossy `?` /
-  zeroing corrections (F-287, F-719; U-026, U-033 resolved).
+  zeroing corrections (F-287, F-893; U-026, U-033 resolved).
 - Tag record, in order (F-287):
 
   | Component | Encoding |
@@ -41,16 +41,16 @@ Recovered tag layout (older server):
 
 - Type metadata per kind: F-288; from version 509, Map (name 28), Set (29) and
   Int64 (20): F-556, with identical client branching. `UInt32Property` is
-  built-in name ID 25 (F-290, F-247); Float/Text use only the common GUID flag
-  (F-206, F-207).
+  built-in name ID 25 (F-290, F-886); Float/Text use only the common GUID flag
+  (F-206, F-886).
 - Version gates in `0x14215f530`: Struct GUID at 441, Array inner type at 282,
   property GUID at 503; all apply at 522; other profiles unsupported (F-289).
 - Size counts only the value bytes after the complete header; a C++ object
   offset is not a file offset (F-291).
 - Struct-array body: count, one shared inner tag, then elements; the root scanner
-  leaves it opaque (F-292). Recorder array layout: F-298.
+  leaves it opaque (F-292). Recorder array layout: F-884.
 - Root `Version` is an index-zero `IntProperty`, 4 payload bytes, signed value 2
-  in both copies: a serialization scalar, not the Steam build ID (F-260, F-715;
+  in both copies: a serialization scalar, not the Steam build ID (F-885, F-715;
   U-060 resolved).
 - Name values remain opaque; in-memory width is not serialized width (F-293).
 
@@ -63,16 +63,15 @@ Reader policy (authored; research limits, not recovered format limits):
   (`ArrayProperty`, `StructProperty`, `StrProperty`, `IntProperty`,
   `UInt32Property`, `NameProperty`, `FloatProperty`, `TextProperty`,
   `ByteProperty`, `EnumProperty`, `BoolProperty`, `MapProperty`, `SetProperty`,
-  `Int64Property`; F-206, F-246, F-247, F-294, F-295, F-556).
+  `Int64Property`; F-206, F-886, F-882, F-556).
 - CLI: `--inner-tags` reports `experimental_root_tags_only`
   (`experimental_memory_archive_522`); `--recorders` implies root framing and
-  reports `experimental_recorder_framing_only` (F-244, F-245, F-295).
+  reports `experimental_recorder_framing_only` (F-882, F-883).
 - Recorder, base-component, Int-array and tagged-struct-array readers enforce
   exact EOF, terminal `None`, trailer flag `0` (rejecting GUID trailer `1`), and
   pre-allocation caps (32 MiB / 16,384 recorders / 65,536 fields; 64 KiB default
   up to 1 MiB `_with_limit` / 256 fields per component or struct element / 4,096
-  elements; F-178, F-198, F-200, F-248, F-249, F-300, F-302, F-312, F-313,
-  F-315, F-634).
+  elements; F-178, F-198, F-888, F-887, F-882, F-883, F-312, F-900).
 
 Typed values (authored `experimental::typed_value`): under the hard tree
 ceilings every leaf of 15 prospects is a scalar, archive string, text frame,
@@ -82,13 +81,12 @@ Map item, and re-encodes exactly (F-766).
 Supplied-data measurements (two private copies):
 
 - Root: six root tags, 378 header/terminator bytes per copy, exact EOF; opaque
-  totals 18,512,856 and 18,492,297 bytes (F-244, F-296).
+  totals 18,512,856 and 18,492,297 bytes (F-882).
 - Recorders: 2,744 / 2,741 entries across 38 / 36 classes (all 36 shared at equal
-  frequency); 18,051,461 / 18,031,390 opaque `BinaryData` bytes (F-245, F-260,
-  F-299, F-301).
+  frequency); 18,051,461 / 18,031,390 opaque `BinaryData` bytes (F-883, F-885).
 - Component, Int-array and struct-array populations (`C013`, `C028`, `C034`,
   `C009`): all bodies and nested streams frame to exact EOF under 1 MiB (F-174,
-  F-188, F-191, F-196, F-203, F-249, F-259, F-303, F-304, F-307, F-310, F-311,
+  F-188, F-191, F-196, F-203, F-888, F-259, F-303, F-304, F-307, F-310, F-311,
   F-314, F-316, F-317, F-664).
 
 ## Candidate
@@ -96,25 +94,25 @@ Supplied-data measurements (two private copies):
 - `experimental::property_tree` holds one stream as an owned value-opaque tree:
   tagged Struct payloads and struct arrays nest to a depth limit, other payloads
   stay opaque and writing checks each declared size; every body in both copies
-  frames under 1 MiB and re-serializes byte-identically (F-557).
+  frames under 1 MiB and re-serializes byte-identically (F-900).
 - Map and Set item layout (`experimental::archive_frame`, F-559, F-725): server
   (`0x142159080`/`0x14215a4b0`) and client (`0x142124c50`/`0x142126080`) match
   across all 14 `TagKind`s, and `UScriptStruct::SerializeItem` (`0x14200e610`)
   branches on `StructFlags & 0x800` (`FIntPoint` 8 B vs tagged). All 28 `C030`
   `SignTextRecord` `TextProperty` bodies (`0x142182820` -> `0x141eb4390`, history
-  `-1`) and all 163 Maps per copy (`C015`, `C022`, `C032`, F-562, F-725, F-726;
+  `-1`) and all 163 Maps per copy (`C015`, `C022`, `C032`, F-900, F-725, F-726;
   U-053, U-055 resolved) frame to exact EOF.
 - Base-component layout and all 65 `RecorderComponent` `FClassParams` (including all
   38 `StateRecorderBlobs` classes' `+0xa0`/`+0x488`/`+0x4a0`/`+0x4b0` overrides) match
   across builds; `ConstructFProperty` (`0x14216e730`) sets `PropertyFlags` (`+0x40`)
   from static `Descriptor->PropertyFlags` and `LinkInternal` (`0x1408ad190`) never
-  mutates `+0x40` (`CPF_SaveGame` `0x01000000`, F-258, F-305, F-716, F-720, F-727,
+  mutates `+0x40` (`CPF_SaveGame` `0x01000000`, F-258, F-305, F-716, F-720, F-902,
   F-728, F-734 to F-736; U-020 to U-022, U-024, U-032, U-039, U-046, U-048, U-050,
   U-054, U-061 resolved).
-- Every opaque Struct leaf is one of four fixed-width engine math types (F-565,
+- Every opaque Struct leaf is one of four fixed-width engine math types (F-900,
   F-602; U-027 resolved), and client 25793767 matches server 25621760 on tag,
-  Array, `FFloatProperty`, `FVector`, and `CppStructOps` serializers (F-193,
-  F-318, F-659, F-667, F-720; U-029 to U-031 resolved).
+  Array, `FFloatProperty`, `FVector`, and `CppStructOps` serializers (F-892,
+  F-659, F-667, F-720; U-029 to U-031 resolved).
 
 ## Open questions
 

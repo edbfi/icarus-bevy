@@ -19,25 +19,25 @@ Before restructure: 96ddb0b:docs/research/save-format/2026-10-13-c001-decoder.md
 
 The callback 0x1419fe870 (305 B) and candidate constructor 0x141788530 (296 B)
 are complete functions (.pdata 103538 and 95461, unwind v1 flags=2, push/pop
-rbx) rather than fragments (F-471, F-721; U-005 resolved). The retained listing
+rbx) rather than fragments (F-905; U-005 resolved). The retained listing
 query in M-568/M-569 rejected because the project was imported/opened with
 `-noanalysis`, leaving 0x1419fe870 undisassembled so `getInstructionAt`
-returned null with no API exception (F-470, F-721; U-003, U-042 resolved). The
+returned null with no API exception (F-905; U-003, U-042 resolved). The
 native getter 0x1419fe200 (.pdata 103518 at 0x14655d468) is registered by CRT
 init 0x1406a8ab0 -> 0x142187f70 and 0x141a00220 via 0x144abc1b0[0] with 48
-`.text` references (F-472, F-513, F-722; U-006 resolved).
+`.text` references (F-906, F-722; U-006 resolved).
 
 A standalone decoder that works on fixed buffers without a Program or database
-(F-473) passes its authored fixtures, including one- and two-window variants
-(F-469). With zero lookahead it decodes every physical byte of the callback,
-the candidate, their common callee and that callee's two callees (F-474, F-475).
+(F-907) passes its authored fixtures, including one- and two-window variants
+(F-907). With zero lookahead it decodes every physical byte of the callback,
+the candidate, their common callee and that callee's two callees (F-474, F-908).
 Retained-frame replay qualifies its inputs: unwind records, register and space
-descriptors and public opcode constants (F-476, F-477, F-508). The old slot
-preparation mis-stated two addresses (F-465); same-build base and offsets give
-three candidate slots (F-495).
+descriptors and public opcode constants (F-476, F-477, F-908). The old slot
+preparation mis-stated two addresses (F-910); same-build base and offsets give
+three candidate slots (F-910).
 
 Decompilation and client-PDB correspondence resolve the complete bridge and
-runtime restoration (F-509, F-513, F-669, F-670, F-722, F-727, F-728, F-733,
+runtime restoration (F-908, F-906, F-909, F-722, F-902, F-728, F-733,
 F-735; U-004, U-020 to U-023, U-041 resolved). Callback 0x1419fe870
 dereferences `rbx = *(C001**)rcx` and inlines constructor 0x141788530: both
 call base constructor 0x1418824d0 (which preserves `rbx`), store vftables
