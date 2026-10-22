@@ -46,6 +46,9 @@ Address pairs are server / client.
   player's vitals, inventory rows and slot queries are data.pak rows (F-836;
   `network::pawn_content`); stats are starting grants through the virtual-stat formulas (F-839;
   `pawn_stats`).
+- GameState managers (F-859): dynamic actors with roles 1 and 3, a created-only
+  `Stat Container` and, for Icarus actors, an `ActorState` (handles 16 and 17;
+  `experimental::manager_open`).
 - GameState active prospect (F-801): handles 51..67 carry the loaded save's
   `ProspectInfo` fields that differ from their defaults, arrays with every
   element field; `ElapsedTime` is the game mode's recorded
