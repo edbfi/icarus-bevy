@@ -1281,7 +1281,6 @@ impl ReleaseProfile {
             RotationLevel::Bytes,
         );
         let tags = self.tags.tag_encoding();
-        let pawn_content = self.pawn_open_plan(map_url)?.map(|pawn| pawn.content);
         let icarus_components = || {
             vec![
                 ManagerComponent::stat_container(
@@ -1306,7 +1305,7 @@ impl ReleaseProfile {
             inventories: None,
             engine_net_version: self.engine_network_version,
         };
-        Ok(vec![
+        let mut plans = vec![
             (
                 ManagerSlot::Quest,
                 plan(
@@ -1332,23 +1331,6 @@ impl ReleaseProfile {
                 ),
             ),
             (
-                ManagerSlot::InventoryContainer,
-                ManagerOpenPlan {
-                    // Its inventories are the pawn's runtime inventories,
-                    // without the pawn's owning component.
-                    inventories: pawn_content.map(|blocks| ManagerInventories {
-                        handle: CONTAINER_INVENTORIES_HANDLE,
-                        blocks,
-                        inventories: Vec::new(),
-                    }),
-                    ..plan(
-                        &managers.inventory_container_manager,
-                        inventory_container_manager_rep_layout(location, velocity, rotation, tags),
-                        Vec::new(),
-                    )
-                },
-            ),
-            (
                 ManagerSlot::PlayerHistory,
                 plan(
                     &managers.player_history_tracker,
@@ -1367,7 +1349,30 @@ impl ReleaseProfile {
                     )],
                 ),
             ),
-        ])
+        ];
+        // The InventoryContainerManager's inventories are the pawn's
+        // runtime inventories, without the pawn's owning component, so it
+        // has a plan only with `[pawn]`.
+        if let Some(pawn) = &self.pawn {
+            let container = ManagerOpenPlan {
+                inventories: Some(ManagerInventories {
+                    handle: CONTAINER_INVENTORIES_HANDLE,
+                    blocks: self.pawn_content_plan(pawn),
+                    inventories: Vec::new(),
+                }),
+                ..plan(
+                    &managers.inventory_container_manager,
+                    inventory_container_manager_rep_layout(location, velocity, rotation, tags),
+                    Vec::new(),
+                )
+            };
+            let at = plans
+                .iter()
+                .position(|(slot, _)| *slot == ManagerSlot::PlayerHistory)
+                .unwrap_or(plans.len());
+            plans.insert(at, (ManagerSlot::InventoryContainer, container));
+        }
+        Ok(plans)
     }
 
     /// The GameState open plan for the map package of `map_url`, or `None`
@@ -1432,17 +1437,23 @@ impl ReleaseProfile {
                 RotationLevel::Bytes,
                 self.tags.tag_encoding(),
             ),
-            content: PawnContentPlan {
-                component_layout: actor_component_rep_layout(),
-                character_state_layout: player_character_state_rep_layout(),
-                inventory_class: session_segments(&pawn.inventory_class),
-                inventory_layout: inventory_rep_layout(),
-                slot_layout: inventory_slot_commands(self.tags.tag_encoding()),
-                stat_container_bound: self.class_net_cache.stat_container,
-                inventory_bound: self.class_net_cache.inventory,
-            },
+            content: self.pawn_content_plan(pawn),
             engine_net_version: self.engine_network_version,
         }))
+    }
+
+    /// The pawn's content-block identifiers and layouts, which the
+    /// InventoryContainerManager's inventories share (F-866).
+    fn pawn_content_plan(&self, pawn: &ReleasePawnProfile) -> PawnContentPlan {
+        PawnContentPlan {
+            component_layout: actor_component_rep_layout(),
+            character_state_layout: player_character_state_rep_layout(),
+            inventory_class: session_segments(&pawn.inventory_class),
+            inventory_layout: inventory_rep_layout(),
+            slot_layout: inventory_slot_commands(self.tags.tag_encoding()),
+            stat_container_bound: self.class_net_cache.stat_container,
+            inventory_bound: self.class_net_cache.inventory,
+        }
     }
 
     /// Load and validate a release profile from disk.

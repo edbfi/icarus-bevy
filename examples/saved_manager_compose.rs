@@ -1,16 +1,15 @@
 //! Compose the managers that replicate a save's state with
 //! `manager_open::compose_manager_open` and compare them with supplied
-//! opens: the QuestManager (F-861) from the quest manager record (`C018`)
-//! on channel 126 and the PlayerHistoryTracker (F-862) from the player
-//! history record (`C024`) on channel 54 and the InventoryContainerManager
-//! (F-866) from the container manager record (`C016`) on channel 79, as
-//! M-707 opened them. The profile
-//! file maps channel indices to a supplied open (`exports_hex`,
-//! `exports_bits`, `body_hex`, `body_bits`) and its GUIDs (`actor`,
-//! `archetype`, `outer`, `components` (or the first runtime subobject's),
-//! `class` (a runtime subobject class's, exported earlier)); the plans are
-//! the built-in 3.0.31
-//! release profile's, the faction mission's row comes from the official
+//! opens, as M-707 opened them: the QuestManager (F-861) from the quest
+//! manager record (`C018`) on channel 126, the PlayerHistoryTracker (F-862)
+//! from the player history record (`C024`) on channel 54 and the
+//! InventoryContainerManager (F-866) from the container manager record
+//! (`C016`) on channel 79. The profile file maps channel indices to a
+//! supplied open (`exports_hex`, `exports_bits`, `body_hex`, `body_bits`)
+//! and its GUIDs (`actor`, `archetype`, `outer`, `components` or the first
+//! runtime subobject's, and `class`, a runtime subobject class exported
+//! earlier). The plans are the built-in 3.0.31 release profile's; the
+//! faction mission's row and the inventories' rows come from the official
 //! server's data.pak. The referenced actors' GUIDs are read from the
 //! supplied body so the composed open names the same ones. Prints counts
 //! and comparisons only, never saved values.

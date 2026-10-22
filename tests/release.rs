@@ -1024,6 +1024,15 @@ fn manager_sections_parse_and_fail_closed() {
         .unwrap()
         .unwrap();
     assert_eq!(quest.archetype[0].path, "Default__Q");
+    // Without `[pawn]` the container manager has no inventory layouts and
+    // no plan; the others keep theirs.
+    assert!(parsed.pawn.is_none());
+    assert!(
+        parsed
+            .manager_open_plan(ManagerSlot::InventoryContainer, "/Game/Maps/Test/Test")
+            .unwrap()
+            .is_none()
+    );
     assert_eq!(quest.components.len(), 2);
     assert!(quest.values.is_empty() && quest.actors.is_empty());
     for bad in [

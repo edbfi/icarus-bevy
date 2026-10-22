@@ -285,8 +285,8 @@ pub fn typed_check(reader: impl Read) -> Result<TypedProspectInspection> {
 /// What replicating a loaded prospect's GameState and managers needs from
 /// its save: the typed `ProspectInfo` (`F-738`) and the game mode,
 /// container manager, quest manager and player history recorders' values
-/// (`C015`, `C016`, `C018`, `C024`, `F-650`), when those recorders exist. The values are the save's; callers
-/// must keep them private.
+/// (`C015`, `C016`, `C018`, `C024`, `F-650`), when those recorders exist.
+/// The values are the save's; callers must keep them private.
 pub struct SavedProspect {
     pub info: ProspectInfo,
     pub game_mode: Option<SavedGameMode>,

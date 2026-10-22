@@ -679,24 +679,50 @@ fn name(name: &str, value: &str) -> Vec<u8> {
     tag(name, "NameProperty", &[0], &fstring(value))
 }
 
-/// One saved item at `location`: `Tonic` with a stack of 4 and a named
-/// `Potency` stat of 3, plus `extra` fields.
-fn saved_item(location: i32, extra: &[Vec<u8>]) -> Vec<u8> {
+/// A saved item's fields the fixtures vary.
+struct ItemFields {
+    location: i32,
+    guid: &'static str,
+    owner: i32,
+    dynamic_property: i32,
+    stat_index: i32,
+}
+
+impl ItemFields {
+    /// `Tonic` at `location` with a stack of 4 and a named `Potency` stat
+    /// of 3, no GUID and no owner.
+    fn at(location: i32) -> Self {
+        Self {
+            location,
+            guid: "",
+            owner: -1,
+            dynamic_property: 7,
+            stat_index: -1,
+        }
+    }
+}
+
+fn item_with(fields: &ItemFields, extra: &[Vec<u8>]) -> Vec<u8> {
     [
-        int("Location", location),
+        int("Location", fields.location),
         name("ItemStaticData", "Tonic"),
-        string("ItemGuid", ""),
-        int("ItemOwnerLookupId", -1),
+        string("ItemGuid", fields.guid),
+        int("ItemOwnerLookupId", fields.owner),
         struct_array(
             "DynamicData",
             "InventorySlotDynamicData",
-            &[[int("Index", 7), int("Value", 4), end()].concat()],
+            &[[
+                int("Index", fields.dynamic_property),
+                int("Value", 4),
+                end(),
+            ]
+            .concat()],
         ),
         struct_array(
             "AdditionalStats",
             "InventorySlotStatData",
             &[[
-                int("Index", -1),
+                int("Index", fields.stat_index),
                 string("Name", "Potency"),
                 int("Value", 3),
                 end(),
@@ -707,6 +733,11 @@ fn saved_item(location: i32, extra: &[Vec<u8>]) -> Vec<u8> {
         end(),
     ]
     .concat()
+}
+
+/// One saved item at `location` ([`ItemFields::at`]) plus `extra` fields.
+fn saved_item(location: i32, extra: &[Vec<u8>]) -> Vec<u8> {
+    item_with(&ItemFields::at(location), extra)
 }
 
 /// A container manager recorder (`C016`) of `count` positions holding the
@@ -853,6 +884,66 @@ fn saved_containers_map_to_inventories() {
         ),
         container_manager_recorder(1, &[(0, "Hands", vec![saved_item(3, &[])])]),
         container_manager_recorder(1, &[(0, "Missing", Vec::new())]),
+        container_manager_recorder(
+            1,
+            &[(0, "Hands", vec![saved_item(0, &[]), saved_item(0, &[])])],
+        ),
+        container_manager_recorder(
+            1,
+            &[(
+                0,
+                "Hands",
+                vec![item_with(
+                    &ItemFields {
+                        guid: "g",
+                        ..ItemFields::at(0)
+                    },
+                    &[],
+                )],
+            )],
+        ),
+        container_manager_recorder(
+            1,
+            &[(
+                0,
+                "Hands",
+                vec![item_with(
+                    &ItemFields {
+                        owner: 5,
+                        ..ItemFields::at(0)
+                    },
+                    &[],
+                )],
+            )],
+        ),
+        container_manager_recorder(
+            1,
+            &[(
+                0,
+                "Hands",
+                vec![item_with(
+                    &ItemFields {
+                        stat_index: 2,
+                        ..ItemFields::at(0)
+                    },
+                    &[],
+                )],
+            )],
+        ),
+        container_manager_recorder(
+            1,
+            &[(
+                0,
+                "Hands",
+                vec![item_with(
+                    &ItemFields {
+                        dynamic_property: 16,
+                        ..ItemFields::at(0)
+                    },
+                    &[],
+                )],
+            )],
+        ),
     ] {
         let section = PreservedSection::from_inner_payload(
             &payload(&prospect_info(), &[bad]),
