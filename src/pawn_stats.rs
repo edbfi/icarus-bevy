@@ -10,9 +10,11 @@
 //! stat reads as its summed sources, which for a fresh player matches the
 //! original only because no grant feeds another virtual stat. Enumerated
 //! keys (tool types, atmospheres, times of day) are the original's enum
-//! values, as its selections use them.
+//! values, as its selections use them. Arithmetic wraps as the original's
+//! 32-bit integers do.
 use std::cell::RefCell;
 use std::collections::BTreeMap;
+use std::num::Wrapping;
 
 use anyhow::{Context, Result, ensure};
 
@@ -56,7 +58,7 @@ impl<'a> StatValues<'a> {
         }
         let name = self.names.get(stat).map(String::as_str);
         let value = match name.and_then(formula) {
-            Some(formula) => formula(self),
+            Some(formula) => formula(self).0,
             None => self.sources.get(&stat).copied().unwrap_or(0),
         };
         self.cache.borrow_mut().insert(stat, value);
@@ -64,63 +66,72 @@ impl<'a> StatValues<'a> {
     }
 
     /// The value of the stat named `name`; a name the table lacks reads 0.
-    pub fn get(&self, name: &str) -> i32 {
+    pub fn value(&self, name: &str) -> i32 {
         self.index.get(name).map_or(0, |stat| self.at(*stat))
     }
 
+    /// [`Self::value`] as a wrapping 32-bit integer, for the formulas.
+    fn get(&self, name: &str) -> Wrapping<i32> {
+        Wrapping(self.value(name))
+    }
+
     /// `max(floor, (pct + 100) * base / 100)`, without a floor when `None`.
-    fn scaled(&self, base: &str, pct: &str, floor: Option<i32>) -> i32 {
-        let value = (self.get(pct) + 100).wrapping_mul(self.get(base)) / 100;
-        floor.map_or(value, |floor| value.max(floor))
+    fn scaled(&self, base: &str, pct: &str, floor: Option<i32>) -> Wrapping<i32> {
+        let value = (self.get(pct) + HUNDRED) * self.get(base) / HUNDRED;
+        floor.map_or(value, |floor| Wrapping(value.0.max(floor)))
     }
 
     /// `(coefficient * parent / 100 + base) * (pct + 100) / 100`.
-    fn speed(&self, base: &str, parent: &str, coefficient: &str, pct: &str) -> i32 {
-        (self.get(coefficient).wrapping_mul(self.get(parent)) / 100 + self.get(base))
-            .wrapping_mul(self.get(pct) + 100)
-            / 100
+    fn speed(&self, base: &str, parent: &str, coefficient: &str, pct: &str) -> Wrapping<i32> {
+        (self.get(coefficient) * self.get(parent) / HUNDRED + self.get(base))
+            * (self.get(pct) + HUNDRED)
+            / HUNDRED
     }
 
     /// `stat` when the flag stat equals 1, else 0.
-    fn when(&self, flag: &str, stat: &str) -> i32 {
-        if self.get(flag) == 1 {
+    fn when(&self, flag: &str, stat: &str) -> Wrapping<i32> {
+        if self.value(flag) == 1 {
             self.get(stat)
         } else {
-            0
+            Wrapping(0)
         }
     }
 
     /// `stat` when the flag stat is nonzero, else 0.
-    fn nonzero(&self, flag: &str, stat: &str) -> i32 {
-        if self.get(flag) != 0 {
+    fn nonzero(&self, flag: &str, stat: &str) -> Wrapping<i32> {
+        if self.value(flag) != 0 {
             self.get(stat)
         } else {
-            0
+            Wrapping(0)
         }
     }
 
     /// The stat `map` names for the enum value of `key`, or 0.
-    fn select(&self, key: &str, map: &[(i32, &str)]) -> i32 {
-        let key = self.get(key);
+    fn select(&self, key: &str, map: &[(i32, &str)]) -> Wrapping<i32> {
+        let key = self.value(key);
         map.iter()
             .find(|(value, _)| *value == key)
-            .map_or(0, |(_, stat)| self.get(stat))
+            .map_or(Wrapping(0), |(_, stat)| self.get(stat))
     }
 
     /// The `Base<biome><suffix>` stat of the current atmosphere, or 0.
-    fn atmosphere(&self, suffix: &str) -> i32 {
-        let key = self.get(ATMOSPHERE);
+    fn atmosphere(&self, suffix: &str) -> Wrapping<i32> {
+        let key = self.value(ATMOSPHERE);
         ATMOSPHERE_BIOMES
             .iter()
             .find(|(value, _)| *value == key)
-            .map_or(0, |(_, biome)| self.get(&format!("Base{biome}{suffix}")))
+            .map_or(Wrapping(0), |(_, biome)| {
+                self.get(&format!("Base{biome}{suffix}"))
+            })
     }
 
     /// `trunc(value * scale * difference)` in single precision.
-    fn insulated(&self, value: &str, scale: f32, difference: i32) -> i32 {
-        (self.get(value) as f32 * scale * difference as f32) as i32
+    fn insulated(&self, value: &str, scale: f32, difference: Wrapping<i32>) -> Wrapping<i32> {
+        Wrapping((self.value(value) as f32 * scale * difference.0 as f32) as i32)
     }
 }
+
+const HUNDRED: Wrapping<i32> = Wrapping(100);
 
 const TOOL_TYPE: &str = "ToolType_Enum";
 const ATMOSPHERE: &str = "Atmosphere_Enum";
@@ -149,7 +160,7 @@ const ATMOSPHERE_BIOMES: [(i32, &str); 16] = [
 /// Tool types the original counts as firearms.
 const FIREARMS: [i32; 3] = [10, 11, 12];
 
-type Formula = fn(&StatValues<'_>) -> i32;
+type Formula = fn(&StatValues<'_>) -> Wrapping<i32>;
 
 /// The modelled virtual stat named `name`.
 fn formula(name: &str) -> Option<Formula> {
@@ -299,9 +310,9 @@ fn formula(name: &str) -> Option<Formula> {
                 + s.nonzero("IsHarvestCartActive_?", "BaseCartActiveMovementSpeed_+%")
         },
         "OverencumberedMovementSpeed_+%" => |s| {
-            (s.get("BaseOverencumberedPenalty_+%") + 100)
-                .wrapping_mul(s.when("IsOverencumbered_?", "BaseOverencumberedMovementSpeed_+%"))
-                / 100
+            (s.get("BaseOverencumberedPenalty_+%") + HUNDRED)
+                * s.when("IsOverencumbered_?", "BaseOverencumberedMovementSpeed_+%")
+                / HUNDRED
         },
         "LocationMovementSpeed_+%" => |s| s.atmosphere("MovementSpeed_+%"),
         "TimeMovementSpeed_+%" => |s| {
@@ -360,7 +371,7 @@ fn formula(name: &str) -> Option<Formula> {
                     ],
                 )
         },
-        "IsFirearm_?" => |s| i32::from(FIREARMS.contains(&s.get(TOOL_TYPE))),
+        "IsFirearm_?" => |s| Wrapping(i32::from(FIREARMS.contains(&s.value(TOOL_TYPE)))),
         "CriticalDamage_+%" => |s| {
             s.get("BaseCriticalDamage_+%")
                 + s.select(
@@ -411,13 +422,21 @@ fn formula(name: &str) -> Option<Formula> {
                 + s.atmosphere("WaterConsumption_+%")
         },
         // Temperature.
-        "ColdResistance_%" => {
-            |s| (s.get("BaseColdResistance_%") + s.atmosphere("ColdResistance_+%")).clamp(-50, 75)
-        }
-        "HeatResistance_%" => {
-            |s| (s.get("BaseHeatResistance_%") + s.atmosphere("HeatResistance_+%")).clamp(-50, 75)
-        }
-        "ArmorInsulation_%" => |s| s.get("BaseArmorInsulation_%").clamp(-100, 100),
+        "ColdResistance_%" => |s| {
+            Wrapping(
+                (s.get("BaseColdResistance_%") + s.atmosphere("ColdResistance_+%"))
+                    .0
+                    .clamp(-50, 75),
+            )
+        },
+        "HeatResistance_%" => |s| {
+            Wrapping(
+                (s.get("BaseHeatResistance_%") + s.atmosphere("HeatResistance_+%"))
+                    .0
+                    .clamp(-50, 75),
+            )
+        },
+        "ArmorInsulation_%" => |s| Wrapping(s.value("BaseArmorInsulation_%").clamp(-100, 100)),
         "ColdInsulation_+" => |s| {
             s.insulated(
                 "ArmorInsulation_%",
@@ -455,24 +474,36 @@ fn formula(name: &str) -> Option<Formula> {
                 + s.get("BaseInternalTemperatureSafeRegionMinimum_+")
         },
         "CooldownDegreePerMinute_+" => |s| {
-            let factor = match s.get("ThirstLevel_+") {
+            let factor = match s.value("ThirstLevel_+") {
                 1 => 50,
                 2 => 0,
                 _ => 100,
             };
-            (s.get("BaseCooldownDegreePerMinute_+").wrapping_mul(factor) / 100).max(1)
+            Wrapping(
+                (s.get("BaseCooldownDegreePerMinute_+") * Wrapping(factor) / HUNDRED)
+                    .0
+                    .max(1),
+            )
         },
         "WarmupDegreePerMinute_+" => |s| {
-            let factor = match s.get("HungerLevel_+") {
+            let factor = match s.value("HungerLevel_+") {
                 1 => 50,
                 2 => 0,
                 _ => 100,
             };
-            (s.get("BaseWarmupDegreePerMinute_+").wrapping_mul(factor) / 100).max(1)
+            Wrapping(
+                (s.get("BaseWarmupDegreePerMinute_+") * Wrapping(factor) / HUNDRED)
+                    .0
+                    .max(1),
+            )
         },
         "TreeCollisionDamageResistance_%" => |s| {
-            (s.get("BaseTreeCollisionDamageResistance_%") + s.get("CollisionDamageResistance_%"))
-                .min(99)
+            Wrapping(
+                (s.get("BaseTreeCollisionDamageResistance_%")
+                    + s.get("CollisionDamageResistance_%"))
+                .0
+                .min(99),
+            )
         },
         _ => return None,
     };

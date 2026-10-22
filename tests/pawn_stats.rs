@@ -141,8 +141,8 @@ fn virtual_formulas_select_clamp_and_scale() {
         ("BaseFirearmCriticalDamage_+%", 40),
     ]);
     let stats = StatValues::new(&names, sources);
-    assert_eq!(stats.get("CriticalDamage_+%"), 325);
-    assert_eq!(stats.get("IsFirearm_?"), 0);
+    assert_eq!(stats.value("CriticalDamage_+%"), 325);
+    assert_eq!(stats.value("IsFirearm_?"), 0);
     // A rifle (11) is a firearm.
     let stats = StatValues::new(
         &names,
@@ -152,8 +152,8 @@ fn virtual_formulas_select_clamp_and_scale() {
             ("BaseFirearmCriticalDamage_+%", 40),
         ]),
     );
-    assert_eq!(stats.get("IsFirearm_?"), 1);
-    assert_eq!(stats.get("CriticalDamage_+%"), 340);
+    assert_eq!(stats.value("IsFirearm_?"), 1);
+    assert_eq!(stats.value("CriticalDamage_+%"), 340);
     // Atmosphere 9 selects the arctic bonus; the sum clamps to 75.
     let stats = StatValues::new(
         &names,
@@ -163,7 +163,7 @@ fn virtual_formulas_select_clamp_and_scale() {
             ("BaseArcticColdResistance_+%", 30),
         ]),
     );
-    assert_eq!(stats.get("ColdResistance_%"), 75);
+    assert_eq!(stats.value("ColdResistance_%"), 75);
     // Thirst level 1 halves the cooldown rate; level 2 floors it at 1.
     let stats = StatValues::new(
         &names,
@@ -172,7 +172,7 @@ fn virtual_formulas_select_clamp_and_scale() {
             ("BaseThirstLevel_+", 1),
         ]),
     );
-    assert_eq!(stats.get("CooldownDegreePerMinute_+"), 12);
+    assert_eq!(stats.value("CooldownDegreePerMinute_+"), 12);
     let stats = StatValues::new(
         &names,
         values(&[
@@ -180,7 +180,7 @@ fn virtual_formulas_select_clamp_and_scale() {
             ("BaseThirstLevel_+", 2),
         ]),
     );
-    assert_eq!(stats.get("CooldownDegreePerMinute_+"), 1);
+    assert_eq!(stats.value("CooldownDegreePerMinute_+"), 1);
     // Insulation: clamp(150) = 100, * 0.01 * (4200 - 6600) = -2400.
     let stats = StatValues::new(
         &names,
@@ -190,8 +190,8 @@ fn virtual_formulas_select_clamp_and_scale() {
             ("BaseMaximumInternalTemperature_+", 6600),
         ]),
     );
-    assert_eq!(stats.get("ArmorInsulation_%"), 100);
-    assert_eq!(stats.get("ColdInsulation_+"), -2400);
+    assert_eq!(stats.value("ArmorInsulation_%"), 100);
+    assert_eq!(stats.value("ColdInsulation_+"), -2400);
     // Night (1) adds the night water bonus.
     let stats = StatValues::new(
         &names,
@@ -201,7 +201,35 @@ fn virtual_formulas_select_clamp_and_scale() {
             ("BaseNightWaterConsumption_+%", 20),
         ]),
     );
-    assert_eq!(stats.get("WaterConsumption_+%"), 25);
+    assert_eq!(stats.value("WaterConsumption_+%"), 25);
     // A name the table lacks reads 0.
-    assert_eq!(stats.get("NoSuchStat_+"), 0);
+    assert_eq!(stats.value("NoSuchStat_+"), 0);
+}
+
+/// Extreme grants wrap as the original's 32-bit arithmetic does instead of
+/// overflowing.
+#[test]
+fn extreme_grants_wrap_instead_of_overflowing() {
+    let names: Vec<String> = [
+        "BaseMaximumHealth_+",
+        "BaseMaximumHealth_+%",
+        "MaximumHealth_+",
+        "BaseMovementSpeed_+",
+        "MovementSpeed_+",
+        "SprintMovementSpeedCoefficient_%",
+        "SprintSpeed_+",
+    ]
+    .iter()
+    .map(|name| name.to_string())
+    .collect();
+    let sources: BTreeMap<usize, i32> =
+        [(0, i32::MAX), (1, i32::MAX), (3, i32::MAX), (5, i32::MAX)]
+            .into_iter()
+            .collect();
+    let stats = StatValues::new(&names, sources);
+    let health = (std::num::Wrapping(i32::MAX) + std::num::Wrapping(100))
+        * std::num::Wrapping(i32::MAX)
+        / std::num::Wrapping(100);
+    assert_eq!(stats.value("MaximumHealth_+"), health.0.max(1));
+    let _ = stats.value("SprintSpeed_+");
 }
