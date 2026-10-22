@@ -7,7 +7,7 @@ full text under `retired/`. Admission and columns follow `.agents/rules/docs.md`
 
 Before restructure: 96ddb0b:docs/ledgers/findings.md
 
-Last reconciled: 2026-10-21
+Last reconciled: 2026-10-22
 
 | ID | Claim | Kind | Evidence | Scope and limits | Unknowns | Status |
 | --- | --- | --- | --- | --- | --- | --- |
@@ -34,6 +34,8 @@ Last reconciled: 2026-10-21
 | F-671 | FIFOs once hung startup (manifest/generation), config loads and four save-inspection modes (path swap); nonblocking opens, opened-handle type checks and a 64 KiB regular-file config guard reject them, keeping recovery and error causes | observed | native-regression; M-175, M-240, M-241, M-269, M-270 | high; authored native inputs; no original-bug or file-latency proof | U-035 | active |
 | F-417 | Malformed manifest digest admitted rollback or unchecked fallback metadata; both references now require canonical 64-digit lowercase hex before selection | observed | regression-test; M-191 | high; authored native snapshots; valid checksum mismatch still recovers; no manifest authentication |  | active |
 | F-421 | User reports local client/save pair compatible; authenticated client/reference access comes later | reported | user-report; M-200 | medium; local client/save pair; no runtime/build-pair proof; producing save build unconfirmed; offline work continues | U-038, U-040, U-052 | active |
+| F-828 | User decisions (2026-10-22): the native server must work without the game client (not public) or data derived only from it; basic data it needs may come from the free public dedicated server, fetched unattended at install time, preferably by its own Rust fetcher instead of steamcmd | observed | authorization; M-866 | high; scope decision | U-072, U-073 | active |
+| F-829 | The pinned dedicated server 25956137 ships its data tables as 299 JSON members of an unencrypted pak v11, Icarus/Content/Data/data.pak (2.5 MB; session flags, stats, items, seeds, modifiers, quests, missions, prospects among them); DefaultGameplayTags.ini and D_Tags in its content paks | observed | static-bytes; M-867 | high; index listing, contents unread | U-072, U-073 | active |
 | F-423 | Eight native JSON cases disclosed supplied strings/keys through Serde causes; shared stage/category/location diagnostics now drop causes at all 3 decode boundaries | observed | regression-test; M-203, M-204 | high; authored API/CLI; preserves unsupported schema, recovery and raw I/O causes; no private inputs |  | active |
 | F-428 | Native metadata/entity positional arrays were admitted; map gates now reject them and recover malformed array headers while proper future objects refuse rollback | observed | regression-test; M-214..M-220 | high; native storage JSON; 55 tests/6 release cases and full suite pass; Serialize unchanged; direct domain Serde root remains general |  | active |
 | F-452 | Read EACCES rolled back/deleted valid tick 20; non-NotFound I/O now fails closed | observed | native-regression; M-251, M-252 | high; authored native state; UID 1000 release 5 cases/26 tests/injected 13+5/full suite exit 0; repair, missing/corrupt recovery, future refusal pass; oracle/Clippy failures retained; no power-loss/stock proof | U-035 | active |
