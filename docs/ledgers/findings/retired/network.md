@@ -4,7 +4,7 @@ Rows retired from [the active ledger](../network.md): superseded by a summary ro
 execution receipts, or historical session state. Full text is kept and IDs stay
 permanent; cite the superseding row where one exists.
 
-Last reconciled: 2026-10-20
+Last reconciled: 2026-10-22
 
 | ID | Claim | Kind | Evidence | Scope and limits | Unknowns | Status |
 | --- | --- | --- | --- | --- | --- | --- |
@@ -146,3 +146,4 @@ Last reconciled: 2026-10-20
 | F-708 | FClassNetCache (0x141fff0e0, 0x141fec960) sets SerializeInt bounds (5, 11, 7, 38, 84..86, 183); 220 actor RPCs, 299 0-bit subobject headers and ch 2 open replay 23,486/23,486 (100%) M-707 blocks | observed | static-decompile, static-bytes, authored-test; M-707, M-741/ev_0aea118a01a9, M-742 | high; 3.0.31/32 | U-064, U-066 | superseded-by F-762 |
 | F-773 | Native scheduling over 2,626 supplied actor positions (UE default net parameters, budget 256, 5 seeds) costs 0.12..0.15 ms mean per frame at 1 viewer, 0.97..1.64 ms at 8 (~300 relevant near bases); a grid decides identically, no gain | measured | runtime-capture; M-814 | medium; synthetic viewers, authored parameters; not ICARUS performance | U-049 | superseded-by F-775 |
 | F-775 | Native scheduling over 2,626 supplied positions with UE default net params (100 Hz, awake, 0 initial frames) saturates a 256 budget each frame: 0.62..0.70 ms mean at 1 viewer, 2.5..2.9 at 4, 5.3..5.4 at 8 (5 seeds); grid decides identically, no gain | measured | runtime-capture; M-816 | medium; synthetic viewers, authored parameters; not ICARUS performance | U-049 | superseded-by F-790 |
+| F-837 | M-707's 58 pawn stat pairs are its nonzero bIsReplicated D_Stats rows in order: 50 are D_CharacterStartingStats grants (of the stat or Base plus it); 8 are derived (5 speeds by coefficients, truncated; oxygen per stamina; tree collision resistance) by rules in code, unread | observed | runtime-capture; M-875 | high; one fresh character | U-069 | superseded-by F-838 |
