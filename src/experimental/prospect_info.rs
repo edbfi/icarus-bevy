@@ -667,3 +667,16 @@ fn saved_item(tree: &TypedTree) -> Result<SavedItem> {
         living_slots: fields.structs("LivingItemSlots")?.len(),
     })
 }
+
+/// Type a `C013` (`FLODRecorderComponent`) component's `Record.NumTiles`,
+/// the FLOD manager's tile count (F-914); missing reads as 0.
+pub fn saved_flod_tile_count(tree: &TypedTree) -> Result<i32> {
+    let fields = Fields {
+        tree,
+        what: "FLODRecorderComponent",
+    };
+    match fields.tagged("Record", "FLODRecorderRecord")? {
+        Some(record) => record.int("NumTiles"),
+        None => Ok(0),
+    }
+}

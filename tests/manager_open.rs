@@ -407,3 +407,77 @@ fn container_inventories_compose_as_listed_subobjects() {
         }
     }
 }
+
+/// A saved FLOD tile count composes into the FLOD manager open (F-914):
+/// its tile array references that many tile actors, keyed by position, at
+/// the captured spawn location; a negative count fails.
+#[test]
+fn flod_tiles_compose_as_keyed_tile_references() {
+    use icarus_bevy::experimental::{
+        actor_channel::{ActorChannelCodec, ActorChannelLimits, read_actor_bunch_body},
+        manager_open::FLOD_TILES_HANDLE,
+        rep_layout::{RepLayoutCodec, RepLayoutLimits, RepValue, read_rep_properties},
+    };
+    let profile = ReleaseProfile::release_3_0_32();
+    let base = profile
+        .manager_open_plan(ManagerSlot::Flod, "/Game/Maps/Test/Test")
+        .unwrap()
+        .unwrap();
+    assert_eq!(base.location, Some([0.0, 0.0, -100_000.0]));
+    for bad in [-1, i32::from(u16::MAX) + 1, i32::MAX] {
+        assert!(base.clone().with_flod_tiles(bad).is_err(), "{bad}");
+    }
+    assert!(
+        base.clone()
+            .with_flod_tiles(0)
+            .unwrap()
+            .actor_arrays
+            .is_empty()
+    );
+    let plan = base.with_flod_tiles(3).unwrap();
+    let mut cache = NetGuidCache::new();
+    let mut exports = ConnectionExports::new();
+    let key = ManagerSlot::Flod.key();
+    let open =
+        compose_manager_open(&mut cache, &mut exports, &plan, key, 6, ByteOrder::Little).unwrap();
+    let codec = ActorChannelCodec {
+        engine_net_version: profile.engine_network_version,
+        exports_enabled: false,
+        has_level: true,
+        order: ByteOrder::Little,
+        limits: ActorChannelLimits::default(),
+    };
+    let body = read_actor_bunch_body(&mut open.bunch.payload.reader(), true, &codec).unwrap();
+    assert_eq!(body.blocks.len(), 1);
+    assert!(body.spawn.unwrap().dynamic.unwrap().location.is_some());
+    let values = read_rep_properties(
+        &mut body.blocks[0].payload.reader(),
+        &plan.layout,
+        &RepLayoutCodec {
+            actor: codec,
+            checksums: false,
+            limits: RepLayoutLimits::default(),
+        },
+    )
+    .unwrap();
+    let Some(RepValue::DynamicArray(tiles)) = values
+        .entries
+        .into_iter()
+        .find_map(|entry| (entry.handle == FLOD_TILES_HANDLE).then_some(entry.value))
+    else {
+        panic!("a tile array");
+    };
+    let guids: Vec<u32> = tiles
+        .stream
+        .entries
+        .iter()
+        .map(|entry| match &entry.value {
+            RepValue::Object(reference) => reference.guid,
+            other => panic!("not an object: {other:?}"),
+        })
+        .collect();
+    let expected: Vec<u32> = (0..3)
+        .map(|index| cache.actor_guid(ActorKey::FlodTile(index)))
+        .collect();
+    assert_eq!(guids, expected);
+}

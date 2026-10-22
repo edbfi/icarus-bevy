@@ -3,7 +3,7 @@
 ## Status
 
 Experimental: wire-checked against the 3.0.31 capture (F-859, F-861,
-F-862, F-866) and static observations of server build 25793607 (F-864,
+F-862, F-866, F-914) and static observations of server build 25793607 (F-864,
 F-865) and the 3.0.32 server paks (F-863). Last reconciled: 2026-10-22.
 
 ## Scope
@@ -40,12 +40,18 @@ they carry. Framing is in [actor channel bunches](actor-channel.md).
   `DynamicData` (3) and named `AdditionalStats` as `CustomProperties.Stats`
   (7) and `bIsItemInstance`; the slots' key is 2 plus the items (F-866;
   `with_container_inventories`, `network::container_inventories`).
+- FLOD manager (`Default__BP_IcarusFLOD_Default_C`, checksum 519276901, no
+  components): the Blueprint archetype and its package are exported in the
+  open, the actor spawns at (0, 0, -100000) as captured, and handle 16 lists
+  the save's C013 `NumTiles` tile actors, keyed by position
+  (`ActorKey::FlodTile`) and given GUIDs at this open in array order
+  (F-914; `with_flod_tiles`).
 - `run` opens the radiation, world-talent and disaster managers after each
-  PlayerState, then the QuestManager, InventoryContainerManager and
-  PlayerHistoryTracker when the loaded save supplies their records (F-859,
-  F-861, F-862, F-866); on the 15 qualified prospects every run composes
-  them without errors, saves with list gaps or an unknown faction mission
-  skipping those managers (F-867).
+  PlayerState, then the QuestManager, InventoryContainerManager,
+  PlayerHistoryTracker and FLOD manager when the loaded save supplies their
+  records (F-859, F-861, F-862, F-866, F-914); on the 15 qualified
+  prospects every run composes them without errors, saves with list gaps or
+  an unknown faction mission skipping those managers (F-867).
 - Quest actors: 1,772 of 3.0.32's 2,044 `D_Quests` classes keep native
   `Quest`'s checksum 4033596864, 270 add replicated properties (F-863).
   `AQuest::RunQuest` keeps a sub-quest in `ActiveQuests` only while its
@@ -64,8 +70,9 @@ they carry. Framing is in [actor channel bunches](actor-channel.md).
   stock client (F-865; U-038).
 - `CurrentWeight`, sent for 2 of the captured item inventories only, and
   saved container lists with empty positions, which `run` skips (U-075).
-- The FLOD manager, which references world actors (F-794).
+- The FLOD tile actors the FLOD manager references, which M-707 never opens
+  (F-914).
 
 ## Evidence
 
-- M-707, M-820, M-879, M-881 to M-887.
+- M-707, M-820, M-879, M-881 to M-887, M-891.

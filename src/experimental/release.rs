@@ -29,10 +29,10 @@ use super::{
         ICARUS_ZERO_ROW_TABLES, MovementLevel, RepValue, RotationLevel, TagEncoding,
         actor_component_rep_layout, actor_rep_layout, actor_state_rep_layout,
         bp_icarus_player_character_survival_rep_layout, bp_icarus_player_state_rep_layout,
-        icarus_game_state_survival_rep_layout, icarus_player_controller_survival_rep_layout,
-        inventory_container_manager_rep_layout, inventory_rep_layout, inventory_slot_commands,
-        player_character_state_rep_layout, player_history_tracker_rep_layout,
-        quest_manager_rep_layout, radiation_manager_rep_layout,
+        flod_rep_layout, icarus_game_state_survival_rep_layout,
+        icarus_player_controller_survival_rep_layout, inventory_container_manager_rep_layout,
+        inventory_rep_layout, inventory_slot_commands, player_character_state_rep_layout,
+        player_history_tracker_rep_layout, quest_manager_rep_layout, radiation_manager_rep_layout,
         weather_manager_component_rep_layout, world_talent_manager_rep_layout,
     },
     rep_rpc::{
@@ -430,6 +430,7 @@ pub struct ReleaseManagersProfile {
     pub quest_manager: Vec<ReleasePathSegment>,
     pub inventory_container_manager: Vec<ReleasePathSegment>,
     pub player_history_tracker: Vec<ReleasePathSegment>,
+    pub flod: Vec<ReleasePathSegment>,
     pub radiation_manager: Vec<ReleasePathSegment>,
     pub world_talent_manager: Vec<ReleasePathSegment>,
     pub disaster_controller: Vec<ReleasePathSegment>,
@@ -440,7 +441,7 @@ pub struct ReleaseManagersProfile {
 
 impl ReleaseManagersProfile {
     /// The managers reproduced bit-exactly against the 3.0.31 capture
-    /// (F-859, F-861, F-862, F-866). For 3.0.32 the eight checksums, including the Blueprint
+    /// (F-859, F-861, F-862, F-866, F-914). For 3.0.32 the nine checksums, including the Blueprint
     /// `BP_DisasterController_C`'s, are among the values the 25956137
     /// derivation reproduces unchanged (M-820, behind F-780); the component
     /// set and order are assumed unchanged.
@@ -463,6 +464,18 @@ impl ReleaseManagersProfile {
             quest_manager: native("QuestManager", 3_539_440_926),
             inventory_container_manager: native("InventoryContainerManager", 3_504_939_521),
             player_history_tracker: native("PlayerHistoryTracker", 243_959_002),
+            flod: vec![
+                ReleasePathSegment {
+                    path: "Default__BP_IcarusFLOD_Default_C".to_owned(),
+                    checksum: 519_276_901,
+                    no_load: false,
+                },
+                ReleasePathSegment {
+                    path: "/Game/BP/FLOD/BP_IcarusFLOD_Default".to_owned(),
+                    checksum: 0,
+                    no_load: false,
+                },
+            ],
             radiation_manager: native("RadiationManager", 2_158_376_861),
             world_talent_manager: native("WorldTalentManager", 3_510_503_235),
             disaster_controller: vec![
@@ -492,17 +505,22 @@ impl ReleaseManagersProfile {
             "managers player_history_tracker",
             &self.player_history_tracker,
         )?;
+        validate_archetype("managers flod", &self.flod)?;
         validate_archetype("managers radiation_manager", &self.radiation_manager)?;
         validate_archetype("managers world_talent_manager", &self.world_talent_manager)?;
         validate_archetype("managers disaster_controller", &self.disaster_controller)
     }
 }
 
+/// The FLOD manager's spawn location in M-707 (F-914).
+const FLOD_SPAWN_LOCATION: [f32; 3] = [0.0, 0.0, -100_000.0];
+
 /// Managers that open only with a save's state, in opening order.
-const SAVED_MANAGER_SLOTS: [ManagerSlot; 3] = [
+const SAVED_MANAGER_SLOTS: [ManagerSlot; 4] = [
     ManagerSlot::Quest,
     ManagerSlot::InventoryContainer,
     ManagerSlot::PlayerHistory,
+    ManagerSlot::Flod,
 ];
 
 /// Per-release identifiers of the PlayerState open (`[player_state]`, F-784):
@@ -1241,11 +1259,10 @@ impl ReleaseProfile {
     }
 
     /// The open plans of the managers that replicate a save's state, or
-    /// none without `[managers]`: the QuestManager (F-861) and the
-    /// PlayerHistoryTracker (F-862), each with a stat container and an
-    /// actor state like the radiation manager's and without saved state,
-    /// which [`ManagerOpenPlan::with_quest_state`] and
-    /// [`ManagerOpenPlan::with_player_history`] add.
+    /// none without `[managers]`: the QuestManager (F-861), the
+    /// InventoryContainerManager (F-866) and the PlayerHistoryTracker
+    /// (F-862), and the FLOD manager (F-914), without saved state, which
+    /// the `ManagerOpenPlan::with_*` methods add.
     pub fn saved_manager_open_plans(
         &self,
         map_url: &str,
@@ -1297,11 +1314,13 @@ impl ReleaseProfile {
         let plan = |archetype: &[ReleasePathSegment], layout, components| ManagerOpenPlan {
             archetype: session_segments(archetype),
             level: level.clone(),
+            location: None,
             layout,
             components,
             values: BTreeMap::new(),
             actors: BTreeMap::new(),
             keyed_actors: BTreeMap::new(),
+            actor_arrays: BTreeMap::new(),
             inventories: None,
             engine_net_version: self.engine_network_version,
         };
@@ -1337,6 +1356,19 @@ impl ReleaseProfile {
                     player_history_tracker_rep_layout(location, velocity, rotation, tags),
                     icarus_components(),
                 ),
+            ),
+            (
+                ManagerSlot::Flod,
+                ManagerOpenPlan {
+                    // As captured (F-914); where the original takes it from
+                    // is unread.
+                    location: Some(FLOD_SPAWN_LOCATION),
+                    ..plan(
+                        &managers.flod,
+                        flod_rep_layout(location, velocity, rotation),
+                        Vec::new(),
+                    )
+                },
             ),
             (
                 ManagerSlot::Disaster,

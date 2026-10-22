@@ -13,7 +13,8 @@
 //! keyed relevant persistent actors, all referenced by actor key. The
 //! PlayerHistoryTracker replicates its saved history (`C024`), the
 //! InventoryContainerManager its saved inventories (`C016`) as runtime
-//! `UInventory` subobjects its `Inventories` lists.
+//! `UInventory` subobjects its `Inventories` lists, and the FLOD manager
+//! references its saved tiles (`C013`).
 use std::collections::BTreeMap;
 
 use anyhow::{Context, Result};
@@ -68,6 +69,9 @@ pub const PLAYER_HISTORY_HANDLE: u32 = 19;
 /// (`inventory_container_manager_rep_layout`).
 pub const CONTAINER_INVENTORIES_HANDLE: u32 = 19;
 
+/// `AFLOD`'s tile actor array (`flod_rep_layout` handle 16).
+pub const FLOD_TILES_HANDLE: u32 = 16;
+
 /// Which GameState manager reference a manager open fills (F-794, F-859).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum ManagerSlot {
@@ -76,6 +80,7 @@ pub enum ManagerSlot {
     Radiation,
     InventoryContainer,
     PlayerHistory,
+    Flod,
     Disaster,
 }
 
@@ -89,6 +94,7 @@ impl ManagerSlot {
             Self::Radiation => 3,
             Self::InventoryContainer => 4,
             Self::PlayerHistory => 5,
+            Self::Flod => 6,
             Self::Disaster => 7,
         })
     }
@@ -102,6 +108,7 @@ impl ManagerSlot {
             Self::Radiation => managers.radiation_manager = reference,
             Self::InventoryContainer => managers.inventory_container_manager = reference,
             Self::PlayerHistory => managers.player_history_tracker = reference,
+            Self::Flod => managers.flod = reference,
             Self::Disaster => managers.disaster_controller = reference,
         }
     }
@@ -172,6 +179,8 @@ pub struct ManagerOpenPlan {
     pub archetype: Vec<PathSegment>,
     /// `PersistentLevel`, the world, then the map package.
     pub level: Vec<PathSegment>,
+    /// The spawn location, when the open sends one.
+    pub location: Option<[f32; 3]>,
     /// The actor's rep layout.
     pub layout: Vec<RepCommand>,
     pub components: Vec<ManagerComponent>,
@@ -181,6 +190,8 @@ pub struct ManagerOpenPlan {
     pub actors: BTreeMap<u32, ActorKey>,
     /// `(Str, Object)` array handles: each element's string and keyed actor.
     pub keyed_actors: BTreeMap<u32, Vec<(ArchiveText, ActorKey)>>,
+    /// `Object` array handles: each element's keyed actor.
+    pub actor_arrays: BTreeMap<u32, Vec<ActorKey>>,
     /// Runtime inventories opened as subobjects and listed by an
     /// actor-block array.
     pub inventories: Option<ManagerInventories>,
@@ -267,6 +278,23 @@ impl ManagerOpenPlan {
         Ok(self)
     }
 
+    /// Add the saved FLOD tile count (`C013`, F-914) to a FLOD manager plan:
+    /// its tile array references `count` tile actors, keyed by position; the
+    /// original assigns their GUIDs at this open, in array order. None is
+    /// the class default and adds nothing. A count that is negative or past
+    /// a replicated array's bound fails before anything is allocated.
+    pub fn with_flod_tiles(mut self, count: i32) -> Result<Self> {
+        let count = u16::try_from(count)
+            .context("the saved FLOD tile count is negative or exceeds an array's bound")?;
+        if count > 0 {
+            self.actor_arrays.insert(
+                FLOD_TILES_HANDLE,
+                (0..u64::from(count)).map(ActorKey::FlodTile).collect(),
+            );
+        }
+        Ok(self)
+    }
+
     /// Add the saved player history (`C024`) to a PlayerHistoryTracker
     /// plan as `History`, every element field, in saved order; an empty
     /// history is the class default and adds nothing. Fails on more
@@ -323,6 +351,10 @@ pub fn compose_manager_open(
     for (handle, actors) in &plan.keyed_actors {
         values.insert(*handle, keyed_actor_array(cache, actors)?);
     }
+    for (handle, actors) in &plan.actor_arrays {
+        let guids: Vec<u32> = actors.iter().map(|key| cache.actor_guid(*key)).collect();
+        values.insert(*handle, object_array(&guids)?);
+    }
     // The inventories get their GUIDs where the actor block lists them,
     // before any block, as the subobjects' own blocks then reuse them.
     let mut subobjects = Vec::new();
@@ -364,7 +396,7 @@ pub fn compose_manager_open(
         key,
         archetype: plan.archetype.clone(),
         level: plan.level.clone(),
-        location: None,
+        location: plan.location,
         layout: plan.layout.clone(),
         references,
         values,

@@ -31,6 +31,7 @@ const GAME_MODE: &str = "/Script/Icarus.GameModeStateRecorderComponent";
 const QUEST_MANAGER: &str = "/Script/Icarus.IcarusQuestManagerRecorderComponent";
 const PLAYER_HISTORY: &str = "/Script/Icarus.PlayerHistoryRecorderComponent";
 const CONTAINER_MANAGER: &str = "/Script/Icarus.IcarusContainerManagerRecorderComponent";
+const FLOD: &str = "/Script/Icarus.FLODRecorderComponent";
 
 fn fstring(value: &str) -> Vec<u8> {
     if value.is_empty() {
@@ -957,6 +958,91 @@ fn saved_containers_map_to_inventories() {
     }
 }
 
+/// A FLOD recorder (`C013`) of `tiles` tiles.
+fn flod_recorder(tiles: i32) -> Vec<u8> {
+    recorder(
+        FLOD,
+        &struct_tag(
+            "Record",
+            "FLODRecorderRecord",
+            &[int("NumTiles", tiles), end()].concat(),
+        ),
+    )
+}
+
+/// The saved FLOD tile count (`C013`) types, missing reads as 0, and a
+/// mistyped count fails (F-914).
+#[test]
+fn a_saved_flod_record_supplies_its_tile_count() {
+    use icarus_bevy::experimental::prospect_info::saved_flod_tile_count;
+    let inner = payload(&prospect_info(), &[flod_recorder(5)]);
+    assert_eq!(
+        saved_prospect_from_payload(&inner).unwrap().flod_tiles,
+        Some(5)
+    );
+    let section = PreservedSection::from_inner_payload(&inner, PreserveLimits::default()).unwrap();
+    let saved = icarus_bevy::network::saved_game_state(&section, None).unwrap();
+    assert_eq!(saved.flod_tiles, Some(5));
+    let typed = |fields: &[Vec<u8>]| {
+        let stream = [fields.concat(), end()].concat();
+        let tree =
+            PropertyTree::parse(&stream, TagProfile::MemoryArchive522, TreeLimits::default())
+                .unwrap();
+        saved_flod_tile_count(&TypedTree::from_tree(&tree).unwrap().0)
+    };
+    assert_eq!(typed(&[]).unwrap(), 0);
+    assert!(
+        typed(&[struct_tag(
+            "Record",
+            "FLODRecorderRecord",
+            &[string("NumTiles", "5"), end()].concat(),
+        )])
+        .is_err()
+    );
+    // A count past an array's bound skips only the FLOD manager.
+    use icarus_bevy::experimental::manager_open::ManagerSlot;
+    let network = icarus_bevy::config::NetworkConfig {
+        enabled: true,
+        port: 0,
+        release_profile: Some(
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("config/release.toml"),
+        ),
+        ..icarus_bevy::config::NetworkConfig::default()
+    };
+    let mut bound = icarus_bevy::network::bind(&network).unwrap().unwrap();
+    let huge = PreservedSection::from_inner_payload(
+        &payload(
+            &prospect_info(),
+            &[flod_recorder(i32::MAX), player_history_recorder()],
+        ),
+        PreserveLimits::default(),
+    )
+    .unwrap();
+    let applied = icarus_bevy::network::apply_saved_game_state(
+        &mut bound.lab,
+        &huge,
+        None,
+        std::mem::take(&mut bound.saved_managers),
+    )
+    .unwrap();
+    assert_eq!(
+        applied
+            .saved_managers
+            .iter()
+            .map(|(slot, _)| *slot)
+            .collect::<Vec<_>>(),
+        [ManagerSlot::PlayerHistory]
+    );
+    assert_eq!(
+        applied
+            .skipped_managers
+            .iter()
+            .map(|(slot, _)| *slot)
+            .collect::<Vec<_>>(),
+        [ManagerSlot::Flod]
+    );
+}
+
 /// The saved player history (`C024`) types in saved order (F-862).
 #[test]
 fn a_saved_player_history_supplies_the_history() {
@@ -1258,6 +1344,7 @@ fn run_replicates_a_preserved_worlds_prospect() {
                 quest_manager_recorder(),
                 player_history_recorder(),
                 two_containers(),
+                flod_recorder(3),
             ],
         )),
     )
@@ -1343,6 +1430,7 @@ fn run_replicates_a_preserved_worlds_prospect() {
             assert_eq!(record["quest_manager_channel"], 9);
             assert_eq!(record["container_manager_channel"], 10);
             assert_eq!(record["player_history_channel"], 11);
+            assert_eq!(record["flod_channel"], 12);
             assert_eq!(record["skipped_managers"], json!([]));
         }
         if record["event"] == "network_listening" {
