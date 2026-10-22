@@ -31,12 +31,16 @@ including supported content variants, with an explicit compatibility matrix.
   Bevy provides the application, ECS and scheduling foundation; legitimate Linux
   platform SDKs may provide authentication and discovery.
 - No dependency on the original server executable, Unreal runtime, Wine or Proton.
-- Do not extract or reuse original art, audio, terrain, collision, navigation or
-  gameplay data tables. Basic data the server needs that ships with the free,
-  public dedicated-server distribution may be used where parity requires it,
-  fetched at install time; the game client is never a source for what the
-  server consumes (F-828, [gates](gates.md)). Record provenance of
-  independently authored data.
+- **Input parity:** the native server may need no more than the official
+  dedicated server needs. What that free, public distribution ships (its data
+  tables and other basic data) may be used where needed, fetched unattended at
+  install time by our own fetcher (F-828, F-831); anything only the game client
+  provides is never a runtime or build input. Better still is needing nothing
+  official at all: where reverse engineering or independently authored data can
+  replace an official file, prefer that, toward a fully standalone binary.
+- Otherwise do not extract or reuse original art, audio, terrain, collision,
+  navigation or gameplay data tables; record provenance of independently
+  authored data.
 - Record protocol identifiers and experimentally established behavior in
   specifications; do not bulk-convert original assets. Save import may consume
   player-created state, never packaged game assets. Stock clients keep their

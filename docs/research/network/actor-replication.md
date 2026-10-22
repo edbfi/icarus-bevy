@@ -23,9 +23,9 @@ F-586). Addresses and limits are in the [spec](../../specs/network/actor-channel
 
 Offline schema derivation is authorized ([gates](../../gates.md)). The
 gameplay-tag net-index dictionary derives from the client's tag table and
-configuration per release (F-702; U-065 resolved); for the shipped server such
-metadata must come from the dedicated-server distribution instead (F-828,
-U-072). Native descriptors, cooked
+configuration per release (F-702; U-065 resolved); for 3.0.32 it, the class
+checksums, cooked schemas and row indices all derive from the dedicated-server
+distribution, which is what the shipped server may use (F-828, F-832). Native descriptors, cooked
 Blueprint schemas, `FClassNetCache` bounds and the `NetSerialize` census in
 `experimental::rep_layout`, `rep_rpc`, `sequencing` and `actor_channel` replay
 and re-encode every export (317), partial sequence (300), dormancy close (136),
