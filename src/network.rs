@@ -285,6 +285,13 @@ pub fn release_profile(network: &NetworkConfig) -> Result<Option<ReleaseProfile>
         .transpose()
 }
 
+/// Open a data pak and load the tables `run` reads from it.
+fn load_data_tables(path: &std::path::Path) -> Result<DataTables> {
+    let mut tables = DataTables::open(path)?;
+    tables.rows(SESSION_FLAGS_TABLE)?;
+    Ok(tables)
+}
+
 /// Validate `network`, load its release profile and only then bind its
 /// socket, or return `None` when disabled.
 pub fn bind(network: &NetworkConfig) -> Result<Option<BoundNetwork>> {
@@ -299,12 +306,10 @@ pub fn bind(network: &NetworkConfig) -> Result<Option<BoundNetwork>> {
         .data_pak
         .as_deref()
         .map(|path| {
-            let mut tables = DataTables::open(path)?;
-            tables.rows(SESSION_FLAGS_TABLE)?;
-            Ok::<_, anyhow::Error>(tables)
+            load_data_tables(path)
+                .with_context(|| format!("load network.data_pak {}", path.display()))
         })
-        .transpose()
-        .context("load network.data_pak")?;
+        .transpose()?;
     let mut config = peer_lab_config(network);
     if let Some(profile) = &profile {
         config = config.with_release_profile(profile);

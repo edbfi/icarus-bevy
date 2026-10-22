@@ -155,8 +155,11 @@ fn a_data_pak_without_the_session_flags_table_fails_before_binding() {
     let error = icarus_bevy::network::bind(&network)
         .err()
         .expect("bind fails");
+    let text = format!("{error:#}");
+    assert!(text.contains("network.data_pak"), "{text}");
     assert!(
-        format!("{error:#}").contains("network.data_pak"),
-        "{error:#}"
+        text.contains("data.pak"),
+        "the message names the file: {text}"
     );
+    assert!(text.contains("not found"), "the cause is kept: {text}");
 }
