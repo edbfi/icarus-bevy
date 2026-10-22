@@ -39,6 +39,9 @@ diagnosed provider/resource limitation, record the reason, and export
 - Resuming research needs explicit user authorization. Original-server, client
   and original-code experiments also need current authorization, scope, session
   and cleared gates. Historical records in `docs/history/` grant nothing.
+- Input parity: the native server may need no more than the official dedicated
+  server needs. Its free public files may be fetched at install time; the game
+  client never; needing nothing official is better still (F-828).
 - Original materials are research inputs only. Save import reads player-created
   state only.
 - Preserve original inputs, private saves, evidence, provenance, licenses and

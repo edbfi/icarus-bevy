@@ -46,6 +46,16 @@ be demonstrated rather than assumed.
   updating. Retain existing research scopes, fixity receipts and evidence;
   replacing tooling does not resume paused research or extend runtime windows.
 
+# Input parity
+
+- The native server may need no more than the official dedicated server needs
+  (user decision, F-828). It may use what the free, public dedicated-server
+  distribution ships, fetched unattended at install time by our own fetcher;
+  it must never require the game client or anything derived only from it.
+  Prefer removing even that dependency through reverse engineering or
+  independently authored data, toward a fully standalone binary. The client
+  stays a research cross-check only.
+
 # Research scope
 
 - Tool installation does not authorize a target experiment. Before new target
