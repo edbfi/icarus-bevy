@@ -22,9 +22,9 @@ persistence, recovery and save inspection.
 
 **Planned install requirement:** like the official Windows server, a compatible
 server will need basic data (such as data tables) that ships with the free
-official ICARUS dedicated server (Steam app 2089300). The install step will
-fetch those files unattended from Steam; nothing original is bundled with this
-repository. The fetcher does not exist yet.
+official ICARUS dedicated server (Steam app 2089300). `icarus-fetch` downloads
+those files anonymously from Steam without steamcmd; nothing original is
+bundled with this repository. Wiring it into an install step is still to do.
 
 ## Documentation
 

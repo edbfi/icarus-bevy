@@ -12,6 +12,7 @@ pub mod prospect;
 pub mod replication;
 pub mod session_replication;
 pub mod simulation;
+pub mod steam_fetch;
 
 /// Open without blocking so a FIFO or device cannot stall a read; callers then
 /// check the opened handle's file type.
