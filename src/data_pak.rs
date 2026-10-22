@@ -402,12 +402,39 @@ impl DataPak {
         );
         Ok(parsed.rows.into_iter().map(|row| row.name).collect())
     }
+
+    /// The bool `field` of every row of data table `table`, in `Rows`
+    /// order; `None` where a row omits it, so its struct default applies.
+    pub fn table_bool_column(&mut self, table: &str, field: &str) -> Result<Vec<Option<bool>>> {
+        #[derive(Deserialize)]
+        struct Table {
+            #[serde(rename = "Rows")]
+            rows: Vec<serde_json::Map<String, serde_json::Value>>,
+        }
+        let bytes = self.read(&format!("{table}.json"))?;
+        let parsed: Table = serde_json::from_slice(&bytes)
+            .map_err(|error| crate::json_parse_error("invalid data table", error))?;
+        ensure!(
+            parsed.rows.len() <= MAX_TABLE_ROWS,
+            "data table has too many rows"
+        );
+        parsed
+            .rows
+            .iter()
+            .map(|row| match row.get(field) {
+                None => Ok(None),
+                Some(serde_json::Value::Bool(value)) => Ok(Some(*value)),
+                Some(_) => bail!("data table {table} has a non-bool {field}"),
+            })
+            .collect()
+    }
 }
 
 /// Row names by table, loaded on demand from one [`DataPak`].
 pub struct DataTables {
     pak: DataPak,
     rows: BTreeMap<String, Vec<String>>,
+    bools: BTreeMap<(String, String), Vec<Option<bool>>>,
 }
 
 impl std::fmt::Debug for DataTables {
@@ -424,6 +451,7 @@ impl DataTables {
         Ok(Self {
             pak: DataPak::open(path)?,
             rows: BTreeMap::new(),
+            bools: BTreeMap::new(),
         })
     }
 
@@ -439,5 +467,16 @@ impl DataTables {
     pub fn row_index(&mut self, table: &str, name: &[u16]) -> Result<Option<usize>> {
         let name = String::from_utf16_lossy(name);
         Ok(self.rows(table)?.iter().position(|row| *row == name))
+    }
+
+    /// The bool `field` of row `index` in `table`: `None` where the row
+    /// omits it or the table has no such row.
+    pub fn row_bool(&mut self, table: &str, field: &str, index: usize) -> Result<Option<bool>> {
+        let key = (table.to_owned(), field.to_owned());
+        if !self.bools.contains_key(&key) {
+            let column = self.pak.table_bool_column(table, field)?;
+            self.bools.insert(key.clone(), column);
+        }
+        Ok(self.bools[&key].get(index).copied().flatten())
     }
 }

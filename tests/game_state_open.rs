@@ -502,3 +502,106 @@ fn networking_status_debug_omits_player_names() {
         "{shown}"
     );
 }
+
+/// `LockedMissions` as `UpdateLockedMissions` builds it (F-834): each lock
+/// ends the retry timeout after the mission's end, or after `now` while it
+/// is unfinished; ended locks drop out and an empty list is the default.
+#[test]
+fn locked_missions_list_each_lock_end_as_row_and_int_commands() {
+    use icarus_bevy::experimental::game_state_open::{
+        LockedMission, MISSION_RETRY_TIMEOUT_SECONDS, class_default, locked_missions_value,
+    };
+    let timeout = MISSION_RETRY_TIMEOUT_SECONDS;
+    assert_eq!(timeout, 5 * 365 * 86_400);
+    let missions = [
+        LockedMission {
+            row: 126,
+            end_time: 23_727,
+        },
+        LockedMission {
+            row: 36,
+            end_time: -1,
+        },
+    ];
+    let Some(RepValue::DynamicArray(array)) = locked_missions_value(&missions, 439_141) else {
+        panic!("a locked missions array");
+    };
+    assert_eq!(array.count, 2);
+    let entries: Vec<(u32, RepValue)> = array
+        .stream
+        .entries
+        .iter()
+        .map(|entry| (entry.handle, entry.value.clone()))
+        .collect();
+    assert_eq!(
+        entries,
+        [
+            (1, RepValue::Byte(126)),
+            (2, RepValue::Int(157_703_727)),
+            (3, RepValue::Byte(36)),
+            (4, RepValue::Int(158_119_141)),
+        ]
+    );
+    // A lock lasts until its end time plus the timeout, inclusive.
+    let ended = 23_727 + timeout;
+    let Some(RepValue::DynamicArray(array)) = locked_missions_value(&missions, ended) else {
+        panic!("a locked missions array");
+    };
+    assert_eq!(array.count, 2);
+    let Some(RepValue::DynamicArray(array)) = locked_missions_value(&missions, ended + 1) else {
+        panic!("a locked missions array");
+    };
+    assert_eq!(array.count, 1);
+    assert_eq!(array.stream.entries[0].handle, 1);
+    assert_eq!(array.stream.entries[0].value, RepValue::Byte(36));
+    assert!(locked_missions_value(&missions[..1], ended + 1).is_none());
+    assert!(locked_missions_value(&[], 0).is_none());
+    assert!(matches!(
+        class_default(handle::LOCKED_MISSIONS),
+        Some(RepValue::DynamicArray(array)) if array.count == 0
+    ));
+}
+
+#[test]
+fn locked_missions_refresh_at_the_restore_and_every_minute() {
+    use icarus_bevy::experimental::game_state_open::locked_missions_refreshed_at;
+    assert_eq!(locked_missions_refreshed_at(150, 0.0), 150);
+    assert_eq!(locked_missions_refreshed_at(150, 59.9), 150);
+    assert_eq!(locked_missions_refreshed_at(150, 60.0), 210);
+    assert_eq!(locked_missions_refreshed_at(150, 179.0), 270);
+    assert_eq!(locked_missions_refreshed_at(150, -5.0), 150);
+    assert_eq!(locked_missions_refreshed_at(i32::MAX, 120.0), i32::MAX);
+}
+
+#[test]
+fn locked_missions_updates_round_trip_through_the_layout() {
+    use icarus_bevy::experimental::game_state_open::{LockedMission, locked_missions_value};
+    let plan = plan();
+    let missions = [
+        LockedMission {
+            row: 90,
+            end_time: 234_203,
+        },
+        LockedMission {
+            row: 36,
+            end_time: -1,
+        },
+    ];
+    let values = BTreeMap::from([(
+        handle::LOCKED_MISSIONS,
+        locked_missions_value(&missions, 439_201).unwrap(),
+    )]);
+    let payload = compose_game_state_update(&plan.layout, 17, &values, ByteOrder::Little).unwrap();
+    let body = read_actor_bunch_body(&mut payload.reader(), false, &codec()).unwrap();
+    let [block] = body.blocks.as_slice() else {
+        panic!("one block");
+    };
+    let stream =
+        read_rep_properties(&mut block.payload.reader(), &plan.layout, &rep_codec()).unwrap();
+    let decoded: BTreeMap<u32, RepValue> = stream
+        .entries
+        .into_iter()
+        .map(|entry| (entry.handle, entry.value))
+        .collect();
+    assert_eq!(decoded, values);
+}

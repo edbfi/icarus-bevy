@@ -11,10 +11,13 @@ use base64::{Engine, engine::general_purpose::STANDARD};
 use flate2::{Compression, write::ZlibEncoder};
 use icarus_bevy::experimental::control_messages::ArchiveText;
 use icarus_bevy::experimental::game_state_open::{
-    active_prospect_values, handle, level_time_elapsed_sec, saved_game_mode_values,
+    LockedMission, active_prospect_values, handle, level_time_elapsed_sec, locked_missions_value,
+    saved_game_mode_values,
 };
 use icarus_bevy::experimental::property_tree::{PropertyTree, TreeLimits};
-use icarus_bevy::experimental::prospect_info::{AssociatedMember, ProspectInfo, SavedGameMode};
+use icarus_bevy::experimental::prospect_info::{
+    AssociatedMember, MissionHistoryRecord, ProspectInfo, SavedGameMode,
+};
 use icarus_bevy::experimental::recorders::recorder_class_label;
 use icarus_bevy::experimental::rep_layout::RepValue;
 use icarus_bevy::experimental::tagged::TagProfile;
@@ -166,6 +169,31 @@ fn prospect_info() -> Vec<u8> {
     .concat()
 }
 
+/// The fixture's saved missions: (row name, status, end time).
+const MISSION_HISTORY: [(&str, i32, i32); 5] = [
+    ("Mission_A", 1, 40),
+    ("Dyn_X", 1, 50),
+    ("Mission_B", 2, 60),
+    ("Mission_Unknown", 1, 70),
+    ("Mission_C", 0, -1),
+];
+
+/// An authored `D_FactionMissions`: `Dyn_X` clears the retry timeout,
+/// `Mission_Unknown` is missing.
+fn faction_missions_json() -> Vec<u8> {
+    serde_json::to_vec(&json!({
+        "RowStruct": "/Script/Icarus.FactionMission",
+        "Rows": [
+            {"Name": "Mission_Z"},
+            {"Name": "Mission_A"},
+            {"Name": "Dyn_X", "bUseOpenWorldRetryTimeout": false},
+            {"Name": "Mission_C", "bUseOpenWorldRetryTimeout": true},
+            {"Name": "Mission_B"},
+        ],
+    }))
+    .unwrap()
+}
+
 fn game_mode_recorder(level_time: i32) -> Vec<u8> {
     let component = [
         [
@@ -200,6 +228,22 @@ fn game_mode_recorder(level_time: i32) -> Vec<u8> {
                 .concat(),
             ),
             int("DynamicQuestSeed", 77),
+            struct_array(
+                "MissionHistory",
+                "MissionHistoryRecord",
+                &MISSION_HISTORY
+                    .iter()
+                    .map(|(mission, status, end_time)| {
+                        [
+                            string("Mission", mission),
+                            int("Status", *status),
+                            int("MissionEndTime", *end_time),
+                            end(),
+                        ]
+                        .concat()
+                    })
+                    .collect::<Vec<_>>(),
+            ),
             end(),
         ]
         .concat(),
@@ -283,6 +327,14 @@ fn a_saved_prospect_types_its_info_and_level_clock() {
             level_time_elapsed_sec: 150,
             dynamic_quest_seed: 77,
             session_flags: vec![units("Flag_B"), units("Flag_Unknown"), units("Flag_A")],
+            mission_history: MISSION_HISTORY
+                .iter()
+                .map(|(mission, status, end_time)| MissionHistoryRecord {
+                    mission: units(mission),
+                    status: *status,
+                    end_time: *end_time,
+                })
+                .collect(),
         })
     );
     let info = &saved.info;
@@ -416,6 +468,7 @@ fn game_mode_values_map_nondefaults_and_the_level_clock_advances() {
         level_time_elapsed_sec: 150,
         dynamic_quest_seed: 0,
         session_flags: Vec::new(),
+        mission_history: Vec::new(),
     };
     assert_eq!(
         saved_game_mode_values(&mode),
@@ -481,11 +534,18 @@ fn saved_session_flags_replicate_as_data_table_row_indices() {
     let pak = root.path().join("data.pak");
     std::fs::write(
         &pak,
-        pak_writer::write_pak(&[(
-            "Flags/D_SessionFlags.json",
-            &pak_writer::table_json(&["Flag_A", "Flag_X", "Flag_B"]),
-            true,
-        )]),
+        pak_writer::write_pak(&[
+            (
+                "Flags/D_SessionFlags.json",
+                &pak_writer::table_json(&["Flag_A", "Flag_X", "Flag_B"]),
+                true,
+            ),
+            (
+                "Factions/D_FactionMissions.json",
+                &faction_missions_json(),
+                false,
+            ),
+        ]),
     )
     .unwrap();
     let mut tables = icarus_bevy::data_pak::DataTables::open(&pak).unwrap();
@@ -505,6 +565,22 @@ fn saved_session_flags_replicate_as_data_table_row_indices() {
     assert_eq!(flags.count, 2);
     assert_eq!(flags.stream.entries[0].value, RepValue::Byte(2));
     assert_eq!(flags.stream.entries[1].value, RepValue::Byte(0));
+    // Locked missions (F-834): status 2 and 3, rows that clear the retry
+    // timeout and missions the table lacks are left out; order is saved.
+    assert_eq!(saved.locked_missions, expected_locked_missions());
+}
+
+fn expected_locked_missions() -> Vec<LockedMission> {
+    vec![
+        LockedMission {
+            row: 1,
+            end_time: 40,
+        },
+        LockedMission {
+            row: 3,
+            end_time: -1,
+        },
+    ]
 }
 
 /// A child process killed and reaped when dropped, also when a test panics.
@@ -567,11 +643,18 @@ fn run_replicates_a_preserved_worlds_prospect() {
     std::fs::create_dir_all(pak.parent().unwrap()).unwrap();
     std::fs::write(
         &pak,
-        pak_writer::write_pak(&[(
-            "Flags/D_SessionFlags.json",
-            &pak_writer::table_json(&["Flag_A", "Flag_X", "Flag_B"]),
-            false,
-        )]),
+        pak_writer::write_pak(&[
+            (
+                "Flags/D_SessionFlags.json",
+                &pak_writer::table_json(&["Flag_A", "Flag_X", "Flag_B"]),
+                false,
+            ),
+            (
+                "Factions/D_FactionMissions.json",
+                &faction_missions_json(),
+                true,
+            ),
+        ]),
     )
     .unwrap();
     let config = directory.path().join("server.toml");
@@ -616,6 +699,7 @@ fn run_replicates_a_preserved_worlds_prospect() {
         if record["event"] == "active_prospect_replicated" {
             replicated = true;
             assert_eq!(record["unmapped_session_flags"], 1);
+            assert_eq!(record["locked_missions"], 2);
         }
         if record["event"] == "network_listening" {
             // The installed official data tables were picked up.
@@ -738,6 +822,13 @@ fn run_replicates_a_preserved_worlds_prospect() {
     expected.insert(
         handle::SESSION_FLAGS,
         icarus_bevy::experimental::game_state_open::session_flags_value(&[2, 0]),
+    );
+    // LockedMissions as refreshed at the restored level clock (the open
+    // went out within the first minute of world time).
+    assert!(f32::from_bits(world_time) < 60.0);
+    expected.insert(
+        handle::LOCKED_MISSIONS,
+        locked_missions_value(&expected_locked_missions(), 150).unwrap(),
     );
     sent.retain(|handle, _| expected.contains_key(handle));
     assert_eq!(sent, expected);

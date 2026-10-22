@@ -28,7 +28,8 @@
 //! for the first player only). Each open takes as many datagrams as it
 //! needs. Once a connection acks the GameState open, its world time, level
 //! clock, time of day and `ServerFPS` (this server's frame rate over its
-//! poll intervals) follow as property updates (F-805); with
+//! poll intervals) follow as property updates (F-805), and with a loaded
+//! world and the official data tables its `LockedMissions` (F-834); with
 //! [`apply_server_settings`], `TimeBetweenSaves` and a locally saving
 //! server's `NetworkingStatus` listing the joined players (F-810). Nothing
 //! else replicates.
@@ -54,12 +55,13 @@ use crate::{
         admission::AdmissionPolicy,
         control_messages::ArchiveText,
         game_state_open::{
-            GAME_STATE_CHANNEL_INDEX, GameStateManagers, GameStateOpenState,
+            GAME_STATE_CHANNEL_INDEX, GameStateManagers, GameStateOpenState, LockedMission,
             MATCH_STATE_IN_PROGRESS, NetworkingStatus, active_prospect_values, handle,
             saved_game_mode_values, session_flags_value,
         },
         pawn_open::{CharacterVitals, PAWN_CHANNEL_INDEX, PawnContent},
         peer_lab::{PeerLab, PeerLabAdmission, PeerLabConfig, PeerLabPlugin, SessionCounts},
+        prospect_info::MissionHistoryRecord,
         release::{ReleasePin, ReleaseProfile},
         rep_layout::{NetworkName, RepValue},
         server_fps::{DEFAULT_SAMPLES, ServerFpsMeter},
@@ -94,6 +96,11 @@ pub fn write_install_record(official: &std::path::Path, record: &serde_json::Val
 
 /// The data table whose row order `SessionFlags` indices follow.
 pub const SESSION_FLAGS_TABLE: &str = "D_SessionFlags";
+/// The data table whose row order `LockedMissions` rows follow (F-834).
+pub const FACTION_MISSIONS_TABLE: &str = "D_FactionMissions";
+/// The `D_FactionMissions` field a row clears to never lock (F-834); a row
+/// that omits it keeps the struct default, set.
+pub const RETRY_TIMEOUT_FIELD: &str = "bUseOpenWorldRetryTimeout";
 
 /// Spectator slots granted beside `max_players` (the lab's default policy).
 pub const SPECTATOR_SLOTS: u32 = 2;
@@ -168,10 +175,44 @@ pub struct SavedGameState {
     /// Saved session flags that the data tables do not list (or all of
     /// them without tables); they are not replicated.
     pub unmapped_session_flags: usize,
+    /// The saved missions `LockedMissions` lists while their locks last
+    /// ([`locked_missions`]); empty without tables.
+    pub locked_missions: Vec<LockedMission>,
+}
+
+/// The saved missions `AIcarusGameModeSurvival::UpdateLockedMissions`
+/// keeps (F-834), in saved order: those whose status (its low byte) is
+/// neither 2 nor 3 and whose `D_FactionMissions` row does not clear
+/// [`RETRY_TIMEOUT_FIELD`]. Missions the table lacks are skipped, as by the
+/// original; so are rows past 255, which no 1-byte enumerator names.
+pub fn locked_missions(
+    history: &[MissionHistoryRecord],
+    tables: &mut DataTables,
+) -> Result<Vec<LockedMission>> {
+    let mut missions = Vec::new();
+    for record in history {
+        if matches!(record.status.to_le_bytes()[0], 2 | 3) {
+            continue;
+        }
+        let Some(index) = tables.row_index(FACTION_MISSIONS_TABLE, &record.mission)? else {
+            continue;
+        };
+        if tables.row_bool(FACTION_MISSIONS_TABLE, RETRY_TIMEOUT_FIELD, index)? == Some(false) {
+            continue;
+        }
+        if let Ok(row) = u8::try_from(index) {
+            missions.push(LockedMission {
+                row,
+                end_time: record.end_time,
+            });
+        }
+    }
+    Ok(missions)
 }
 
 /// With the official server's data tables (F-828), the saved session flags
-/// also replicate as `SessionFlags` row indices in saved order (F-830).
+/// also replicate as `SessionFlags` row indices in saved order (F-830), and
+/// the saved mission history yields the [`locked_missions`] (F-834).
 pub fn saved_game_state(
     section: &PreservedSection,
     tables: Option<&mut DataTables>,
@@ -188,11 +229,13 @@ pub fn saved_game_state(
             .for_session(level_time.unwrap_or(saved.info.elapsed_time), |_| false),
     )?;
     let mut unmapped_session_flags = 0;
+    let mut locked = Vec::new();
     if let Some(mode) = &saved.game_mode {
         values.extend(saved_game_mode_values(mode));
         let mut indices = Vec::new();
         match tables {
             Some(tables) => {
+                locked = locked_missions(&mode.mission_history, tables)?;
                 for name in &mode.session_flags {
                     match tables
                         .row_index(SESSION_FLAGS_TABLE, name)?
@@ -223,6 +266,7 @@ pub fn saved_game_state(
         level_time_elapsed_sec: level_time,
         time_of_day,
         unmapped_session_flags,
+        locked_missions: locked,
     })
 }
 
@@ -239,22 +283,37 @@ pub fn apply_server_settings(lab: &mut PeerLab, autosave_seconds: u64) -> Result
     lab.enable_networking_status(NetworkingStatus::local(interval))
 }
 
-/// Add a loaded world's [`saved_game_state`] to `lab`'s GameState open;
-/// returns how many saved session flags could not be replicated.
+/// What [`apply_saved_game_state`] replicated beyond the values.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct AppliedGameState {
+    /// Saved session flags that could not be replicated.
+    pub unmapped_session_flags: usize,
+    /// Missions `LockedMissions` lists while their locks last.
+    pub locked_missions: usize,
+}
+
+/// Add a loaded world's [`saved_game_state`] to `lab`'s GameState open.
 pub fn apply_saved_game_state(
     lab: &mut PeerLab,
     section: &PreservedSection,
     tables: Option<&mut DataTables>,
-) -> Result<usize> {
+) -> Result<AppliedGameState> {
     let saved = saved_game_state(section, tables)?;
     lab.extend_game_state_values(saved.values)?;
+    let locked_missions = saved.locked_missions.len();
     if let Some(level_time) = saved.level_time_elapsed_sec {
         lab.set_game_state_level_time(level_time)?;
+        if locked_missions > 0 {
+            lab.enable_locked_missions(saved.locked_missions)?;
+        }
     }
     if let Some(clock) = saved.time_of_day {
         lab.enable_time_of_day(clock)?;
     }
-    Ok(saved.unmapped_session_flags)
+    Ok(AppliedGameState {
+        unmapped_session_flags: saved.unmapped_session_flags,
+        locked_missions,
+    })
 }
 
 /// Session counts kept after [`teardown`] so a repeated call and the final
@@ -312,6 +371,8 @@ pub fn release_profile(network: &NetworkConfig) -> Result<Option<ReleaseProfile>
 fn load_data_tables(path: &std::path::Path) -> Result<DataTables> {
     let mut tables = DataTables::open(path)?;
     tables.rows(SESSION_FLAGS_TABLE)?;
+    tables.rows(FACTION_MISSIONS_TABLE)?;
+    tables.row_bool(FACTION_MISSIONS_TABLE, RETRY_TIMEOUT_FIELD, 0)?;
     Ok(tables)
 }
 

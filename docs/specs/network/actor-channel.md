@@ -51,7 +51,10 @@ Address pairs are server / client.
   C015's record restores handles 34, 35, 39, 41 and 42, and 46 advances with
   whole world seconds (F-803). `SessionFlags` (47) holds the record's
   `SessionFlagRecords` as 1-byte row positions in the server data.pak's
-  `D_SessionFlags` (F-830; `network::saved_game_state`).
+  `D_SessionFlags` (F-830; `network::saved_game_state`). `LockedMissions`
+  (50) holds, per kept C015 `MissionHistory` entry, its `D_FactionMissions`
+  row as 1 byte and the end of its lock as an int, refreshed every ~60 s
+  (F-834, F-835; `game_state_open::locked_missions_value`).
 - Gameplay-tag net index (F-702; U-065 resolved): `ConstructGameplayTagTree`
   builds the tree; `ConstructNetIndex` sorts nodes
   by `GetAllNodes` + `FName::LexicalLess`, sets `InvalidTagNetIndex = N + 1`,

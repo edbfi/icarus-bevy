@@ -75,9 +75,11 @@
 //!   (the capture's cadence, F-805): `TimeOfDay` when it changed (with
 //!   [`PeerLab::enable_time_of_day`], advanced by [`TimeOfDayClock`],
 //!   F-806), the world time every [`WORLD_TIME_UPDATE_SECONDS`] and
-//!   `LevelTimeElapsedSec` when its whole second changed, and `ServerFPS`
+//!   `LevelTimeElapsedSec` when its whole second changed, `ServerFPS`
 //!   when it changed (with [`PeerLab::enable_server_fps`], measured over
-//!   the lab's own poll intervals by [`ServerFpsMeter`]). An update over
+//!   the lab's own poll intervals by [`ServerFpsMeter`]), and
+//!   `LockedMissions` when a minute's refresh changed it (with
+//!   [`PeerLab::enable_locked_missions`], F-834). An update over
 //!   one bunch (a long `NetworkingStatus`) goes out through
 //!   [`LabPeer::actor_update_datagrams`] as unreliable partial bunches in
 //!   consecutive datagrams (`game_state_update_datagrams`). A naked update's
@@ -168,7 +170,7 @@ use super::control_messages::{
     ArchiveText, ControlFallback, ControlMessage, Decoded, NetIdValue, UniqueNetId,
 };
 use super::game_state_open::{
-    GameStateOpenPlan, GameStateOpenState, NetworkingStatus, class_default,
+    GameStateOpenPlan, GameStateOpenState, LockedMission, NetworkingStatus, class_default,
     compose_game_state_open, compose_game_state_update,
 };
 use super::handshake::decode;
@@ -650,8 +652,23 @@ pub const GAME_STATE_UPDATE_SECONDS: f32 = 1.0 / 30.0;
 /// third GameState update in the capture, UE's 0.1 s default (F-805).
 pub const WORLD_TIME_UPDATE_SECONDS: f32 = 0.1;
 
+/// `LockedMissions` as last refreshed at `world_seconds` (`Some(None)`
+/// when every lock has ended), or `None` when it is not replicated.
+fn locked_missions(session: &GameStateSession, world_seconds: f32) -> Option<Option<RepValue>> {
+    let restored = session.level_time?;
+    if session.locked_missions.is_empty() {
+        return None;
+    }
+    let now = super::game_state_open::locked_missions_refreshed_at(restored, world_seconds);
+    Some(super::game_state_open::locked_missions_value(
+        &session.locked_missions,
+        now,
+    ))
+}
+
 /// The GameState handles updates carry: the world time, `TimeOfDay`,
-/// `LevelTimeElapsedSec`, `ServerFPS` and the `NetworkingStatus` fields.
+/// `LevelTimeElapsedSec`, `ServerFPS`, `LockedMissions` and the
+/// `NetworkingStatus` fields.
 fn update_handles() -> impl Iterator<Item = u32> {
     use super::game_state_open::handle;
     [
@@ -659,6 +676,7 @@ fn update_handles() -> impl Iterator<Item = u32> {
         handle::TIME_OF_DAY,
         handle::LEVEL_TIME_ELAPSED_SEC,
         handle::SERVER_FPS,
+        handle::LOCKED_MISSIONS,
     ]
     .into_iter()
     .chain(handle::NETWORKING_STATUS)
@@ -811,6 +829,9 @@ struct GameStateSession {
     /// The restored `LevelTimeElapsedSec`, advanced with the world time at
     /// each send.
     level_time: Option<i32>,
+    /// The missions `LockedMissions` lists while their locks last, at the
+    /// level time of its last refresh (F-834); empty when none.
+    locked_missions: Vec<LockedMission>,
     /// The world's time of day, advanced to the instant `clock_at`.
     clock: Option<TimeOfDayClock>,
     clock_at: Instant,
@@ -1236,6 +1257,7 @@ impl PeerLab {
             state,
             channel_index,
             level_time: None,
+            locked_missions: Vec::new(),
             clock: None,
             clock_at: Instant::now(),
             fps: None,
@@ -1274,6 +1296,22 @@ impl PeerLab {
             bail!("no GameState open is enabled");
         };
         session.level_time = Some(restored);
+        Ok(())
+    }
+
+    /// Replicate `missions` as the GameState's `LockedMissions` (F-834),
+    /// refreshed at the restored level clock and every
+    /// `LOCKED_MISSIONS_REFRESH_SECONDS` of world time after it. Fails
+    /// without a GameState open or a restored level clock.
+    pub fn enable_locked_missions(&mut self, missions: Vec<LockedMission>) -> Result<()> {
+        let Some(session) = &mut self.game_state_open else {
+            bail!("no GameState open is enabled");
+        };
+        ensure!(
+            session.level_time.is_some(),
+            "locked missions need the restored level clock"
+        );
+        session.locked_missions = missions;
         Ok(())
     }
 
@@ -2225,6 +2263,17 @@ impl PeerLab {
                 )),
             );
         }
+        if let Some(value) = locked_missions(session, world_seconds) {
+            // An empty list is the default and unsent.
+            match value {
+                Some(value) => state
+                    .values
+                    .insert(super::game_state_open::handle::LOCKED_MISSIONS, value),
+                None => state
+                    .values
+                    .remove(&super::game_state_open::handle::LOCKED_MISSIONS),
+            };
+        }
         let sent = compose_game_state_open(
             &mut cache,
             &mut exports,
@@ -2483,6 +2532,11 @@ impl PeerLab {
                         world_seconds,
                     ))
                 }),
+            ),
+            (
+                handle::LOCKED_MISSIONS,
+                locked_missions(session, world_seconds)
+                    .and_then(|value| value.or_else(|| class_default(handle::LOCKED_MISSIONS))),
             ),
         ];
         match session.networking.as_ref().map(NetworkingStatus::values) {

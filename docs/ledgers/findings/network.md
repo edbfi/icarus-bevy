@@ -7,7 +7,7 @@ full text under `retired/`. Admission and columns follow `.agents/rules/docs.md`
 
 Before restructure: 96ddb0b:docs/ledgers/findings.md
 
-Last reconciled: 2026-10-21
+Last reconciled: 2026-10-22
 
 | ID | Claim | Kind | Evidence | Scope and limits | Unknowns | Status |
 | --- | --- | --- | --- | --- | --- | --- |
@@ -110,3 +110,5 @@ Last reconciled: 2026-10-21
 | F-825 | The original's SendBunch splits any oversized bunch into partials whatever its reliability; net.PartialBunchReliableThreshold is zero-initialized in client and pinned server, so oversized unreliable bunches stay unreliable partials, which ReceivedNextBunch joins only on the same or next packet | observed | static-decompile; M-863 | high; packaged config unread | U-038 | active |
 | F-830 | A replicated row handle's index is the row's place in the server data.pak table's Rows: M-707's SessionFlags 73, 37, 71 are its save's 3 SessionFlagRecords in order in D_SessionFlags (137 rows, same in 3.0.31/3.0.32); composed from save and data.pak the open matches bit for bit | observed | runtime-capture, authored-test; M-868, M-869 | high; one capture, one table | U-072 | active |
 | F-832 | For pinned 3.0.32 every protocol table run uses derives from the dedicated-server distribution: tag counts and hash (paks, F-702), class checksums (binary and paks, F-780), cooked Blueprint schemas (paks, F-762), row indices (data.pak, F-830); client data only cross-checked | observed | static-bytes; M-729, M-738, M-820, M-869 | medium; one build; F-780 derived | U-072 | active |
+| F-834 | Original 3.0.31 UpdateLockedMissions lists as LockedMissions (row, int) each saved MissionHistory entry of status not 2 or 3 whose D_FactionMissions row keeps bUseOpenWorldRetryTimeout (default set), ended within 157,680,000 s; int = end (now if unfinished) + that; M-707's 8 are its save's | observed | static-decompile, runtime-capture; M-845, M-874 | high; one capture | U-038 | active |
+| F-835 | run sends a preserved world's locked missions (F-834) from save and data.pak in the GameState open at the restored level clock, then as updates when its refresh every 60 s of world time changes them; composed so, M-707's open matches bit for bit with either build's data.pak | measured | authored-test, runtime-capture; M-874 | high; refresh phase a lab choice | U-038 | active |

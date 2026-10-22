@@ -328,8 +328,9 @@ impl ProspectInfo {
 
 /// The game mode recorder's values the GameState restores from (`C015`,
 /// `F-650`): `GameModeRecord`'s seed, time of day, prospect game time, day
-/// length and level clock, and the top-level `DynamicQuestSeed`. Missing
-/// properties read as their defaults; `Debug` shows no values.
+/// length and level clock, and the top-level `DynamicQuestSeed` and
+/// `MissionHistory`. Missing properties read as their defaults; `Debug`
+/// shows no values.
 #[derive(Clone, Default, PartialEq)]
 pub struct SavedGameMode {
     pub game_state_seed: i32,
@@ -341,6 +342,24 @@ pub struct SavedGameMode {
     /// `GameModeRecord.SessionFlagRecords`: `D_SessionFlags` row names, in
     /// saved order, that the restore turns into row handles (F-820).
     pub session_flags: Vec<Vec<u16>>,
+    /// The top-level `MissionHistory`, in saved order: the source of the
+    /// GameState's `LockedMissions` (F-834).
+    pub mission_history: Vec<MissionHistoryRecord>,
+}
+
+/// One saved `MissionHistoryRecord`: a mission's row name, its status and
+/// its end time in level seconds (negative while it is not finished).
+#[derive(Clone, Default, PartialEq, Eq)]
+pub struct MissionHistoryRecord {
+    pub mission: Vec<u16>,
+    pub status: i32,
+    pub end_time: i32,
+}
+
+impl std::fmt::Debug for MissionHistoryRecord {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("MissionHistoryRecord")
+    }
 }
 
 impl std::fmt::Debug for SavedGameMode {
@@ -357,9 +376,25 @@ impl SavedGameMode {
             what: "GameModeStateRecorderComponent",
         };
         let dynamic_quest_seed = fields.int("DynamicQuestSeed")?;
+        let mission_history = fields
+            .structs("MissionHistory")?
+            .iter()
+            .map(|tree| {
+                let fields = Fields {
+                    tree,
+                    what: "MissionHistoryRecord",
+                };
+                Ok(MissionHistoryRecord {
+                    mission: fields.string("Mission")?,
+                    status: fields.int("Status")?,
+                    end_time: fields.int("MissionEndTime")?,
+                })
+            })
+            .collect::<Result<_>>()?;
         let Some(record) = fields.tagged("GameModeRecord", "GameModeRecord")? else {
             return Ok(Self {
                 dynamic_quest_seed,
+                mission_history,
                 ..Self::default()
             });
         };
@@ -371,6 +406,7 @@ impl SavedGameMode {
             level_time_elapsed_sec: record.int("LevelTimeElapsedSec")?,
             dynamic_quest_seed,
             session_flags: record.names("SessionFlagRecords")?,
+            mission_history,
         })
     }
 }

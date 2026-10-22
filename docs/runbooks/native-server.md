@@ -82,7 +82,8 @@ active prospect and game mode values in the GameState open
 (`active_prospect_replicated`, F-804); with `data_pak` (the free official
 server's `Icarus/Content/Data/data.pak`, F-828) its saved session flags also
 replicate as row indices, and the record counts the flags the tables lack
-(`unmapped_session_flags`, F-830). No ICARUS client compatibility,
+(`unmapped_session_flags`, F-830) and the missions sent as `LockedMissions`
+(`locked_missions`, F-835). No ICARUS client compatibility,
 identity check, replication or gameplay is implied; only the authored probe
 is tested:
 

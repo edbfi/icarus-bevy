@@ -536,9 +536,9 @@ fn run(options: ConfigOptions, max_ticks: Option<u64>, compressed: bool) -> Resu
         // GameState open; a prospect that cannot supply them leaves the
         // lab's values alone.
         match network::apply_saved_game_state(&mut bound.lab, section, bound.tables.as_mut()) {
-            Ok(unmapped) => eprintln!(
+            Ok(applied) => eprintln!(
                 "{}",
-                json!({"event": "active_prospect_replicated", "unmapped_session_flags": unmapped})
+                json!({"event": "active_prospect_replicated", "unmapped_session_flags": applied.unmapped_session_flags, "locked_missions": applied.locked_missions})
             ),
             // Reader errors name fields and kinds, never saved values.
             Err(error) => eprintln!(

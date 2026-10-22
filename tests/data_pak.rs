@@ -178,3 +178,58 @@ fn the_install_record_is_published_whole_and_replaced() {
     assert_eq!(read(root.path()), second);
     assert!(!root.path().join("install.json.tmp").exists());
 }
+
+#[test]
+fn bool_columns_keep_omitted_fields_apart_and_reject_other_types() {
+    let root = TempDir::new().unwrap();
+    let table = serde_json::to_vec(&serde_json::json!({"Rows": [
+        {"Name": "A"},
+        {"Name": "B", "bFlag": false},
+        {"Name": "C", "bFlag": true},
+        {"Name": "D", "bOther": 3},
+    ]}))
+    .unwrap();
+    let wrong =
+        serde_json::to_vec(&serde_json::json!({"Rows": [{"Name": "A", "bFlag": 1}]})).unwrap();
+    let path = pak_file(
+        &root,
+        &write_pak(&[
+            ("Factions/D_Table.json", &table, true),
+            ("D_Wrong.json", &wrong, false),
+        ]),
+    );
+    let mut pak = DataPak::open(&path).unwrap();
+    assert_eq!(
+        pak.table_bool_column("D_Table", "bFlag").unwrap(),
+        [None, Some(false), Some(true), None]
+    );
+    assert!(pak.table_bool_column("D_Table", "bOther").is_err());
+    assert!(pak.table_bool_column("D_Wrong", "bFlag").is_err());
+    let mut tables = DataTables::open(&path).unwrap();
+    assert_eq!(tables.row_bool("D_Table", "bFlag", 1).unwrap(), Some(false));
+    assert_eq!(tables.row_bool("D_Table", "bFlag", 2).unwrap(), Some(true));
+    assert_eq!(tables.row_bool("D_Table", "bFlag", 0).unwrap(), None);
+    assert_eq!(tables.row_bool("D_Table", "bFlag", 9).unwrap(), None);
+    assert!(tables.row_bool("D_Missing", "bFlag", 0).is_err());
+}
+
+#[test]
+fn a_data_pak_without_the_faction_missions_table_fails_before_binding() {
+    let root = TempDir::new().unwrap();
+    let path = pak_file(
+        &root,
+        &write_pak(&[("Flags/D_SessionFlags.json", &table_json(&["A"]), false)]),
+    );
+    let network = icarus_bevy::config::NetworkConfig {
+        enabled: true,
+        port: 0,
+        data_pak: Some(path),
+        ..Default::default()
+    };
+    let error = icarus_bevy::network::bind(&network)
+        .err()
+        .expect("bind fails");
+    let text = format!("{error:#}");
+    assert!(text.contains("network.data_pak"), "{text}");
+    assert!(text.contains("not found"), "the cause is kept: {text}");
+}
