@@ -12,31 +12,68 @@ fn fstring(text: &str) -> Vec<u8> {
     bytes
 }
 
-/// A pak holding `members` (`path` under the mount, bytes, Zlib or stored).
+/// A pak holding `members` (`path` under the mount, bytes, Zlib or stored),
+/// each Zlib member in one block.
 pub fn write_pak(members: &[(&str, &[u8], bool)]) -> Vec<u8> {
+    let members: Vec<(&str, &[u8], usize)> = members
+        .iter()
+        .map(|(path, data, zlib)| (*path, *data, usize::from(*zlib)))
+        .collect();
+    write_pak_blocks(&members, 0)
+}
+
+/// A pak holding `members` (`path`, bytes, Zlib blocks: 0 stores the
+/// member, n splits it into n equal Zlib blocks); `understate` bytes are
+/// taken off every compressed member's declared size, to test bounds.
+pub fn write_pak_blocks(members: &[(&str, &[u8], usize)], understate: u64) -> Vec<u8> {
     let mut file = Vec::new();
     let mut encoded = Vec::new();
     let mut directories: Vec<(String, Vec<(String, i32)>)> = Vec::new();
-    for (path, data, zlib) in members {
+    for (path, data, blocks) in members {
         let offset = file.len() as u64;
-        let (stored, method) = if *zlib {
-            let mut encoder = ZlibEncoder::new(Vec::new(), Compression::fast());
-            encoder.write_all(data).unwrap();
-            (encoder.finish().unwrap(), 1_u32)
+        let block_count = *blocks;
+        let mut compressed_blocks = Vec::new();
+        if block_count > 0 {
+            let step = data.len().div_ceil(block_count).max(1);
+            for chunk in data.chunks(step) {
+                let mut encoder = ZlibEncoder::new(Vec::new(), Compression::fast());
+                encoder.write_all(chunk).unwrap();
+                compressed_blocks.push(encoder.finish().unwrap());
+            }
+        }
+        let (stored, method) = if block_count > 0 {
+            (compressed_blocks.concat(), 1_u32)
         } else {
             (data.to_vec(), 0)
         };
-        let header_bytes: u64 = if method == 0 { 53 } else { 53 + 4 + 16 };
+        let declared = if method == 0 {
+            data.len() as u64
+        } else {
+            data.len() as u64 - understate
+        };
+        let header_bytes: u64 = if method == 0 {
+            53
+        } else {
+            53 + 4 + 16 * compressed_blocks.len() as u64
+        };
         // Member header.
         file.extend_from_slice(&0_u64.to_le_bytes());
         file.extend_from_slice(&(stored.len() as u64).to_le_bytes());
-        file.extend_from_slice(&(data.len() as u64).to_le_bytes());
+        file.extend_from_slice(&declared.to_le_bytes());
         file.extend_from_slice(&method.to_le_bytes());
         file.extend_from_slice(&[0; 20]);
         if method != 0 {
-            file.extend_from_slice(&1_u32.to_le_bytes());
-            file.extend_from_slice(&header_bytes.to_le_bytes());
-            file.extend_from_slice(&(header_bytes + stored.len() as u64).to_le_bytes());
+            file.extend_from_slice(
+                &u32::try_from(compressed_blocks.len())
+                    .unwrap()
+                    .to_le_bytes(),
+            );
+            let mut start = header_bytes;
+            for block in &compressed_blocks {
+                file.extend_from_slice(&start.to_le_bytes());
+                start += block.len() as u64;
+                file.extend_from_slice(&start.to_le_bytes());
+            }
         }
         file.push(0);
         let block_size: u32 = if method == 0 { 0 } else { 64 * 1024 };
@@ -44,14 +81,20 @@ pub fn write_pak(members: &[(&str, &[u8], bool)]) -> Vec<u8> {
         file.extend_from_slice(&stored);
         // Encoded index entry: sizes and offset as u32 (bits 29..31).
         let location = i32::try_from(encoded.len()).unwrap();
-        let blocks: u32 = u32::from(method != 0);
+        let blocks = u32::try_from(compressed_blocks.len()).unwrap();
         let size_code: u32 = if method == 0 { 0 } else { 32 };
         let bits = size_code | (blocks << 6) | (method << 23) | (1 << 29) | (1 << 30) | (1 << 31);
         encoded.extend_from_slice(&bits.to_le_bytes());
         encoded.extend_from_slice(&u32::try_from(offset).unwrap().to_le_bytes());
-        encoded.extend_from_slice(&u32::try_from(data.len()).unwrap().to_le_bytes());
+        encoded.extend_from_slice(&u32::try_from(declared).unwrap().to_le_bytes());
         if method != 0 {
             encoded.extend_from_slice(&u32::try_from(stored.len()).unwrap().to_le_bytes());
+        }
+        if blocks > 1 {
+            // Per-block compressed sizes, as the engine lists them.
+            for block in &compressed_blocks {
+                encoded.extend_from_slice(&u32::try_from(block.len()).unwrap().to_le_bytes());
+            }
         }
         let (parent, name) = match path.rfind('/') {
             Some(at) => (path[..=at].to_owned(), path[at + 1..].to_owned()),

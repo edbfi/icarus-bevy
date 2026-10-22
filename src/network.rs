@@ -293,14 +293,18 @@ pub fn bind(network: &NetworkConfig) -> Result<Option<BoundNetwork>> {
     }
     network.validate()?;
     let profile = release_profile(network)?;
+    // The tables run reads are loaded here, so a pak without them fails
+    // before the socket binds rather than at the first apply.
     let tables = network
         .data_pak
         .as_deref()
         .map(|path| {
-            DataTables::open(path)
-                .with_context(|| format!("load network.data_pak {}", path.display()))
+            let mut tables = DataTables::open(path)?;
+            tables.rows(SESSION_FLAGS_TABLE)?;
+            Ok::<_, anyhow::Error>(tables)
         })
-        .transpose()?;
+        .transpose()
+        .context("load network.data_pak")?;
     let mut config = peer_lab_config(network);
     if let Some(profile) = &profile {
         config = config.with_release_profile(profile);

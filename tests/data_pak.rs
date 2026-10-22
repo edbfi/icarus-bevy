@@ -5,7 +5,7 @@ mod pak_writer;
 use std::fs;
 
 use icarus_bevy::data_pak::{DataPak, DataTables};
-use pak_writer::{table_json, write_pak};
+use pak_writer::{table_json, write_pak, write_pak_blocks};
 use tempfile::TempDir;
 
 fn pak_file(root: &TempDir, bytes: &[u8]) -> std::path::PathBuf {
@@ -122,4 +122,41 @@ fn malformed_paks_fail_closed() {
         &write_pak(&[("D_Bad.json", b"{\"Rows\": [1]}", false)]),
     );
     assert!(DataPak::open(&path).unwrap().table_rows("D_Bad").is_err());
+}
+
+#[test]
+fn multi_block_members_inflate_in_order_within_their_size() {
+    let root = TempDir::new().unwrap();
+    let data: Vec<u8> = (0..40_000_u32)
+        .flat_map(|i| (i * 7).to_le_bytes())
+        .collect();
+    let path = pak_file(&root, &write_pak_blocks(&[("D_Big.bin", &data, 3)], 0));
+    let mut pak = DataPak::open(&path).unwrap();
+    assert_eq!(pak.read("D_Big.bin").unwrap(), data);
+    // A member whose blocks inflate past its declared size is rejected.
+    let path = pak_file(&root, &write_pak_blocks(&[("D_Big.bin", &data, 3)], 10));
+    let error = DataPak::open(&path).unwrap().read("D_Big.bin").unwrap_err();
+    assert!(format!("{error:#}").contains("past its size"), "{error:#}");
+}
+
+#[test]
+fn a_data_pak_without_the_session_flags_table_fails_before_binding() {
+    let root = TempDir::new().unwrap();
+    let path = pak_file(
+        &root,
+        &write_pak(&[("D_Other.json", &table_json(&["A"]), false)]),
+    );
+    let network = icarus_bevy::config::NetworkConfig {
+        enabled: true,
+        port: 0,
+        data_pak: Some(path),
+        ..Default::default()
+    };
+    let error = icarus_bevy::network::bind(&network)
+        .err()
+        .expect("bind fails");
+    assert!(
+        format!("{error:#}").contains("network.data_pak"),
+        "{error:#}"
+    );
 }
