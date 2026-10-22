@@ -300,9 +300,10 @@ impl DataPak {
 
     /// Whether a member's path ends with `/suffix` (or is `suffix`).
     pub fn has(&self, suffix: &str) -> bool {
+        let nested = format!("/{suffix}");
         self.members
             .keys()
-            .any(|path| path.as_str() == suffix || path.ends_with(&format!("/{suffix}")))
+            .any(|path| path.as_str() == suffix || path.ends_with(&nested))
     }
 
     /// The bytes of the one member whose path ends with `/suffix` (or is
