@@ -88,9 +88,9 @@ Last reconciled: 2026-10-22
   depend on the game client, which is not publicly available, or on data
   derived only from it. Basic data it needs to work may come from the free,
   public dedicated-server distribution, fetched at install time without an
-  interactive confirmation (container installs), preferably by the native
-  server's own Rust fetcher instead of steamcmd (U-073); the requirement must
-  be documented for operators. Nothing original is committed or
+  interactive confirmation (container installs); the native Rust fetcher
+  `icarus-fetch` now does this anonymously without steamcmd (F-831, U-073).
+  The requirement must be documented for operators. Nothing original is committed or
   redistributed. Client-derived metadata counts toward the shipped server only
   once re-derived from or checked against that distribution (U-072).
 
