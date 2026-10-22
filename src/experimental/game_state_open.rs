@@ -283,6 +283,81 @@ pub fn session_flags_value(indices: &[u8]) -> RepValue {
     })
 }
 
+/// How long `AIcarusGameModeSurvival::UpdateLockedMissions` keeps a
+/// finished mission locked: 157,680,000 s (five 365-day years), added to its
+/// end time (F-834).
+pub const MISSION_RETRY_TIMEOUT_SECONDS: i32 = 157_680_000;
+
+/// How often the original refreshes `LockedMissions`, as captured (F-808).
+pub const LOCKED_MISSIONS_REFRESH_SECONDS: i32 = 60;
+
+/// A mission that `LockedMissions` lists while its lock lasts: its
+/// `D_FactionMissions` row position and its saved end time in level
+/// seconds (negative while unfinished).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct LockedMission {
+    pub row: u8,
+    pub end_time: i32,
+}
+
+/// `LockedMissions` (handle 50) at level time `now`, as
+/// `UpdateLockedMissions` builds it (F-834): each mission, in order, whose
+/// end time is negative or at most [`MISSION_RETRY_TIMEOUT_SECONDS`] before
+/// `now`, as its row and the time its lock ends, the end time (or `now` for
+/// an unfinished mission) plus that timeout. Each element is two commands,
+/// the row's 1-byte enumerator and the int, as captured. `None` when no
+/// mission is locked: the empty default.
+pub fn locked_missions_value(missions: &[LockedMission], now: i32) -> Option<RepValue> {
+    use super::rep_layout::{PropertyStream, RepArray, RepEntry};
+    let oldest = now.wrapping_sub(MISSION_RETRY_TIMEOUT_SECONDS);
+    let locked: Vec<&LockedMission> = missions
+        .iter()
+        .filter(|mission| mission.end_time < 0 || mission.end_time >= oldest)
+        .collect();
+    if locked.is_empty() {
+        return None;
+    }
+    let entries = locked
+        .iter()
+        .zip(0u32..)
+        .flat_map(|(mission, element)| {
+            let start = if mission.end_time < 0 {
+                now
+            } else {
+                mission.end_time
+            };
+            [
+                RepEntry {
+                    handle: 2 * element + 1,
+                    checksum: None,
+                    value: RepValue::Byte(mission.row),
+                },
+                RepEntry {
+                    handle: 2 * element + 2,
+                    checksum: None,
+                    value: RepValue::Int(start.wrapping_add(MISSION_RETRY_TIMEOUT_SECONDS)),
+                },
+            ]
+        })
+        .collect();
+    Some(RepValue::DynamicArray(RepArray {
+        count: u16::try_from(locked.len()).ok()?,
+        stream: PropertyStream {
+            entries,
+            terminator_checksum: None,
+        },
+    }))
+}
+
+/// The level time `LockedMissions` was last refreshed at, world time
+/// `world_seconds` after the level clock was restored at `restored`: the
+/// first refresh runs at the restore, the next every
+/// [`LOCKED_MISSIONS_REFRESH_SECONDS`].
+pub fn locked_missions_refreshed_at(restored: i32, world_seconds: f32) -> i32 {
+    let elapsed = world_seconds.max(0.0) as i32;
+    restored.saturating_add(elapsed - elapsed % LOCKED_MISSIONS_REFRESH_SECONDS)
+}
+
 /// `LevelTimeElapsedSec` at world time `world_seconds`: the restored clock
 /// plus the whole seconds since (as captured, F-803).
 pub fn level_time_elapsed_sec(restored: i32, world_seconds: f32) -> i32 {
@@ -628,6 +703,7 @@ pub fn class_default(handle: u32) -> Option<RepValue> {
     Some(match handle {
         WORLD_TIME_SECONDS | TIME_OF_DAY | TIME_BETWEEN_SAVES => RepValue::Float(0),
         LEVEL_TIME_ELAPSED_SEC | SERVER_FPS => RepValue::Int(0),
+        LOCKED_MISSIONS => empty_array(),
         h if h == NETWORKING_STATUS_FIRST || h == NETWORKING_STATUS_FIRST + 1 => {
             RepValue::Str(ArchiveText::new(&[]).ok()?)
         }

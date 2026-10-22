@@ -46,7 +46,9 @@ struct Options {
     #[arg(long)]
     prospect: Option<PathBuf>,
     /// The official server's `data.pak`: with `--prospect`, the saved
-    /// session flags replicate from it too (`SessionFlags`, F-830).
+    /// session flags (`SessionFlags`, F-830) and locked missions
+    /// (`LockedMissions` at the saved level clock, F-834) replicate from it
+    /// too.
     #[arg(long, requires = "prospect")]
     data_pak: Option<PathBuf>,
 }
@@ -193,6 +195,14 @@ fn main() -> Result<()> {
                     icarus_bevy::experimental::game_state_open::session_flags_value(&indices),
                 );
             }
+            // The original refreshed them as it restored the level clock.
+            let locked = icarus_bevy::network::locked_missions(&mode.mission_history, &mut tables)?;
+            if let Some(value) = icarus_bevy::experimental::game_state_open::locked_missions_value(
+                &locked,
+                mode.level_time_elapsed_sec,
+            ) {
+                native.insert(handle::LOCKED_MISSIONS, value);
+            }
         }
         // The level clock at the captured world time.
         let Some(RepValue::Float(world_time)) = values.get(&handle::WORLD_TIME_SECONDS) else {
@@ -224,7 +234,14 @@ fn main() -> Result<()> {
             handle::LEVEL_TIME_ELAPSED_SEC,
         ]
         .into_iter()
-        .chain(options.data_pak.is_some().then_some(handle::SESSION_FLAGS))
+        .chain(
+            options
+                .data_pak
+                .is_some()
+                .then_some([handle::SESSION_FLAGS, handle::LOCKED_MISSIONS])
+                .into_iter()
+                .flatten(),
+        )
         .chain(range.clone())
         .collect();
         for &handle in &handles {
