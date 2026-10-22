@@ -584,6 +584,14 @@ pub struct SessionCounts {
     pub closed_by_shutdown: u64,
     /// PlayerController opens sent after Join.
     pub player_controller_opens_sent: u64,
+    /// Pawn, GameState, PlayerState and world manager opens sent after
+    /// Join.
+    pub pawn_opens_sent: u64,
+    pub game_state_opens_sent: u64,
+    pub player_state_opens_sent: u64,
+    pub manager_opens_sent: u64,
+    /// Actor opens of any kind that failed to compose or send.
+    pub open_errors: u64,
     /// Shutdown Failure notices sent (F-782).
     pub shutdown_failures_sent: u64,
     /// Shutdown control-channel close bunches sent (F-782).
@@ -1606,6 +1614,19 @@ impl PeerLab {
             closed_failed: self.stats.peers_failed,
             closed_by_shutdown: self.stats.peers_shutdown,
             player_controller_opens_sent: self.stats.player_controller_opens_sent,
+            pawn_opens_sent: self.stats.pawn_opens_sent,
+            game_state_opens_sent: self.stats.game_state_opens_sent,
+            player_state_opens_sent: self.stats.player_state_opens_sent,
+            manager_opens_sent: self.stats.manager_opens_sent,
+            open_errors: [
+                self.stats.player_controller_open_errors,
+                self.stats.pawn_open_errors,
+                self.stats.game_state_open_errors,
+                self.stats.player_state_open_errors,
+                self.stats.manager_open_errors,
+            ]
+            .into_iter()
+            .fold(0, u64::saturating_add),
             shutdown_failures_sent: self.stats.shutdown_failures_sent,
             shutdown_closes_sent: self.stats.shutdown_closes_sent,
             invalid_state_messages: self.stats.invalid_state_messages,

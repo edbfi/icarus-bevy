@@ -748,6 +748,12 @@ fn pinned_run_upgrades_a_mismatched_hello_and_admits_the_pinned_version() {
         ("welcomes_sent", 1),
         ("joins_succeeded", 1),
         ("player_controller_opens_sent", 1),
+        ("pawn_opens_sent", 1),
+        ("game_state_opens_sent", 1),
+        ("player_state_opens_sent", 1),
+        // Without a loaded save only the three bound managers open.
+        ("manager_opens_sent", 3),
+        ("open_errors", 0),
         ("closed_by_client", 1),
         ("active_peers", 0),
     ] {
