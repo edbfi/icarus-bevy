@@ -46,6 +46,17 @@ enum Command {
         #[arg(long, requires = "max_ticks")]
         compressed: bool,
     },
+    /// Fetch the basic data the server needs from the free official ICARUS
+    /// dedicated server (Steam app 2089300) anonymously, without steamcmd,
+    /// into `<data-dir>/official/` (F-828, F-831): its data tables
+    /// (`Icarus/Content/Data/data.pak`). Unattended; rerunning refreshes it.
+    InstallOfficialData {
+        #[arg(long)]
+        data_dir: PathBuf,
+        /// Steam branch of the official server.
+        #[arg(long, default_value = "public")]
+        branch: String,
+    },
     /// Validate and print effective native configuration without writing files.
     CheckConfig {
         #[command(flatten)]
@@ -133,6 +144,10 @@ fn main() -> std::process::ExitCode {
 
 fn execute(cli: Cli) -> Result<()> {
     match cli.command {
+        Command::InstallOfficialData { data_dir, branch } => {
+            println!("{}", install_official_data(&data_dir, &branch)?);
+            Ok(())
+        }
         Command::CheckConfig { options } => {
             println!("{}", toml::to_string_pretty(&options.resolve()?)?);
             Ok(())
@@ -422,8 +437,57 @@ impl Autosave {
     }
 }
 
+/// Fetch the official server's data tables into `<data_dir>/official/` and
+/// record what was fetched beside them.
+fn install_official_data(data_dir: &std::path::Path, branch: &str) -> Result<serde_json::Value> {
+    use icarus_bevy::steam_fetch::{FetchRequest, hex, resolve};
+    let official = data_dir.join(network::OFFICIAL_DIR);
+    std::fs::create_dir_all(&official).context("create the official data directory")?;
+    let request = FetchRequest::new(
+        network::OFFICIAL_SERVER_APP_ID,
+        branch,
+        Some(network::OFFICIAL_DATA_PAK),
+    );
+    let progress =
+        |message: &str| eprintln!("{}", json!({"event": "fetch_progress", "message": message}));
+    let resolved = resolve(&request, &progress)?;
+    let file = resolved
+        .file(&request)?
+        .context("the official server lists no data.pak")?;
+    let sha1 = hex(&file.sha_content);
+    let written = resolved.download(&request, &official)?;
+    let record = json!({
+        "event": "official_data_installed",
+        "app": network::OFFICIAL_SERVER_APP_ID,
+        "branch": branch,
+        "build_id": resolved.build_id,
+        "depot": resolved.depot_id,
+        "manifest_gid": resolved.manifest_gid.to_string(),
+        "file": network::OFFICIAL_DATA_PAK,
+        "size": written.size,
+        "sha1": sha1,
+        "sha256": written.sha256,
+    });
+    let manifest = official.join("install.json");
+    let temporary = official.join("install.json.tmp");
+    std::fs::write(&temporary, serde_json::to_vec_pretty(&record)?)?;
+    std::fs::rename(&temporary, &manifest)?;
+    Ok(record)
+}
+
 fn run(options: ConfigOptions, max_ticks: Option<u64>, compressed: bool) -> Result<()> {
-    let config = options.resolve()?;
+    let mut config = options.resolve()?;
+    // The official data tables an install step fetched into the data
+    // directory serve when no data pak is configured.
+    if config.network.enabled && config.network.data_pak.is_none() {
+        let installed = config
+            .data_dir
+            .join(network::OFFICIAL_DIR)
+            .join(network::OFFICIAL_DATA_PAK);
+        if installed.is_file() {
+            config.network.data_pak = Some(installed);
+        }
+    }
     ensure!(max_ticks != Some(0), "max_ticks must be positive");
     ensure!(
         !compressed || max_ticks.is_some(),

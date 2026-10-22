@@ -69,6 +69,14 @@ use crate::{
     preservation::PreservedSection,
 };
 
+/// The free official ICARUS dedicated server's Steam app (F-828).
+pub const OFFICIAL_SERVER_APP_ID: u32 = 2089300;
+/// Where `install-official-data` puts the official server's files, below
+/// the data directory.
+pub const OFFICIAL_DIR: &str = "official";
+/// The official server's data tables (F-829).
+pub const OFFICIAL_DATA_PAK: &str = "Icarus/Content/Data/data.pak";
+
 /// The data table whose row order `SessionFlags` indices follow.
 pub const SESSION_FLAGS_TABLE: &str = "D_SessionFlags";
 
