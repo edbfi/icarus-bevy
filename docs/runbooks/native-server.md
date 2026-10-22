@@ -8,6 +8,9 @@ Operating guide for the headless foundation. Design constraints are in
 
 Requires native Linux and Rust 1.99.1 (pinned with Rustfmt and Clippy). Bevy 0.20.0
 uses headless features; no GPU, display, original game files or Proton are required.
+A compatible server will also need basic data from the free official dedicated
+server (Steam app 2089300), fetched unattended at install time by a native
+fetcher that is not yet written (F-828, U-073); the game client is never needed.
 
 ```bash
 cargo build --release --locked

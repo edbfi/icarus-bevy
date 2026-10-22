@@ -20,6 +20,12 @@ target/release/icarus-server run --data-dir work/smoke-world --max-ticks 10
 The [native server runbook](docs/runbooks/native-server.md) covers configuration,
 persistence, recovery and save inspection.
 
+**Planned install requirement:** like the official Windows server, a compatible
+server will need basic data (such as data tables) that ships with the free
+official ICARUS dedicated server (Steam app 2089300). The install step will
+fetch those files unattended from Steam; nothing original is bundled with this
+repository. The fetcher does not exist yet.
+
 ## Documentation
 
 | Read | For |
