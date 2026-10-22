@@ -1306,3 +1306,108 @@ fn unreadable_data_table_members_fail_and_shared_names_both_load() {
         0
     );
 }
+
+#[test]
+fn prospect_pak_resolution_requires_the_prospect_table_for_every_occurrence() {
+    let root = TempDir::new().unwrap();
+    let body = [
+        tag("ItemStaticData", "NameProperty", &[0], &fstring(ROW)),
+        end(),
+        vec![0; 4],
+    ]
+    .concat();
+    for prospect_table in [false, true] {
+        let path = root.path().join("prospect.pak");
+        let mut members = vec![("Items/D_Unrelated.json", pak_writer::table_json(&[ROW]))];
+        if prospect_table {
+            members.push((
+                "Prospects/D_ProspectList.json",
+                pak_writer::table_json(&[&ROW.to_ascii_lowercase()]),
+            ));
+        }
+        fs::write(&path, pak_writer::official_pak(&members)).unwrap();
+        let mut pak = icarus_bevy::data_pak::DataPak::open(&path).unwrap();
+        let (catalog, ..) = ContentCatalog::empty().with_data_tables(&mut pak).unwrap();
+        for version in [1, 2] {
+            let source = envelope_with_prospect_keys(
+                version,
+                &[recorder_bytes(ACTOR, &body)],
+                Some(if version == 1 {
+                    "SecretOverwritten"
+                } else {
+                    ROW
+                }),
+                (version == 1).then_some(ROW),
+            );
+            let plan = plan_import(source.as_slice(), &catalog).unwrap();
+            assert_eq!(plan.importable, prospect_table);
+            assert_eq!(plan.content.distinct, 1);
+            assert_eq!(
+                plan.content.unmapped_references,
+                usize::from(!prospect_table)
+            );
+            assert_eq!(
+                plan.content.roles[&ContentRole::DataRow],
+                RoleCount {
+                    references: 2,
+                    distinct: 1,
+                    unmapped_distinct: usize::from(!prospect_table),
+                }
+            );
+            assert_eq!(
+                plan.classes
+                    .values()
+                    .map(|class| class.unmapped_references)
+                    .sum::<usize>(),
+                0
+            );
+            assert_eq!(
+                plan.blockers,
+                if prospect_table {
+                    vec![]
+                } else {
+                    vec![ImportBlocker::UnmappedContent {
+                        distinct: 1,
+                        references: 1,
+                    }]
+                }
+            );
+        }
+        for role in ["data_row", "actor_class"] {
+            let explicit =
+                ContentCatalog::parse(&format!("format = 1\n[references]\n{role} = [\"{ROW}\"]\n"))
+                    .unwrap();
+            let (explicit, ..) = explicit.with_data_tables(&mut pak).unwrap();
+            let source =
+                envelope_with_prospect_keys(2, &[recorder_bytes(ACTOR, &body)], Some(ROW), None);
+            assert_eq!(
+                plan_import(source.as_slice(), &explicit)
+                    .unwrap()
+                    .importable,
+                prospect_table || role == "data_row"
+            );
+        }
+        let (any, ..) = ContentCatalog::from_references([ROW])
+            .with_data_tables(&mut pak)
+            .unwrap();
+        let source =
+            envelope_with_prospect_keys(2, &[recorder_bytes(ACTOR, &body)], Some(ROW), None);
+        assert!(plan_import(source.as_slice(), &any).unwrap().importable);
+    }
+}
+
+#[test]
+fn ambiguous_prospect_tables_fail_instead_of_unioning_their_rows() {
+    let root = TempDir::new().unwrap();
+    let path = root.path().join("ambiguous.pak");
+    fs::write(
+        &path,
+        pak_writer::official_pak(&[
+            ("A/D_ProspectList.json", pak_writer::table_json(&[ROW])),
+            ("B/D_ProspectList.json", pak_writer::table_json(&["Other"])),
+        ]),
+    )
+    .unwrap();
+    let mut pak = icarus_bevy::data_pak::DataPak::open(&path).unwrap();
+    assert!(ContentCatalog::empty().with_data_tables(&mut pak).is_err());
+}
