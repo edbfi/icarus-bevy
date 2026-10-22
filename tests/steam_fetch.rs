@@ -259,8 +259,12 @@ fn cm_list_and_cdn_selection() {
     proxy.use_as_proxy = Some(true);
     let mut other_app = server("SteamCache", "cache.example.net", 0.0, "optional");
     other_app.allowed_app_ids = vec![1];
+    let mut unstated = server("CDN", "unstated.example.net", 0.0, "");
+    unstated.https_support = None;
     let list = vec![
-        server("CDN", "b.example.net", 50.0, "none"),
+        server("CDN", "b.example.net", 50.0, "optional"),
+        server("CDN", "plain.example.net", 0.0, "none"),
+        unstated,
         server("SteamCache", "a.example.net", 10.0, "mandatory"),
         server("OpenCache", "c.example.net", 0.0, "mandatory"),
         server("CDN", "bad/host", 0.0, "mandatory"),
@@ -273,17 +277,75 @@ fn cm_list_and_cdn_selection() {
         vec![
             net::CdnServer {
                 host: "a.example.net".into(),
-                https: true
             },
             net::CdnServer {
                 host: "b.example.net".into(),
-                https: false
             },
         ]
     );
+    for server in &selected {
+        assert!(server.url("depot/1/chunk/ab").starts_with("https://"));
+    }
     assert_eq!(
         selected[0].url("depot/1/chunk/ab"),
         "https://a.example.net/depot/1/chunk/ab"
+    );
+    // Hosts without HTTPS are never selected, so the list can be empty.
+    let plain_only = vec![
+        server("CDN", "plain.example.net", 0.0, "none"),
+        server("SteamCache", "plain2.example.net", 0.0, ""),
+    ];
+    assert!(net::select_cdn_servers(&plain_only, 4242).is_empty());
+}
+
+/// A corrupt body from one host is retried on the next: each attempt is the
+/// whole fetch-and-decode pair, bounded by `max_attempts`.
+#[test]
+fn chunk_decode_failures_retry_on_the_next_host() {
+    use std::{cell::RefCell, time::Duration};
+
+    let data = sample(9000, 5);
+    let good = chunk::symmetric_encrypt(&chunk::compress_vzip(&data), &KEY, IV).unwrap();
+    let spec = spec_for(&data, 0, good.len() as u32);
+    let mut flipped = good.clone();
+    let last = flipped.len() - 20;
+    flipped[last] ^= 0x55;
+    // Host 2 serves a corrupt body, host 3 a short one, host 0 the real chunk.
+    let bodies = [
+        good.clone(),
+        good.clone(),
+        flipped,
+        good[..good.len() - 16].to_vec(),
+    ];
+    let visited = RefCell::new(Vec::new());
+    let fetch_and_decode = |host: usize| {
+        visited.borrow_mut().push(host);
+        chunk::process_chunk(&bodies[host], &KEY, &spec)
+    };
+    let decoded =
+        net::retry_across_hosts(bodies.len(), 6, 2, Duration::ZERO, fetch_and_decode).unwrap();
+    assert_eq!(decoded, data);
+    assert_eq!(*visited.borrow(), vec![2, 3, 0]);
+
+    // Every host bad: exactly `max_attempts` attempts, then an error that
+    // names each failure.
+    visited.borrow_mut().clear();
+    let error = net::retry_across_hosts(2, 3, 0, Duration::ZERO, |host| {
+        visited.borrow_mut().push(host);
+        chunk::process_chunk(&bodies[3], &KEY, &spec)
+    })
+    .unwrap_err();
+    assert_eq!(*visited.borrow(), vec![0, 1, 0]);
+    let message = format!("{error:#}");
+    assert!(message.contains("3 attempt"), "{message}");
+    assert_eq!(message.matches("host ").count(), 3, "{message}");
+
+    // No hosts at all fails without calling the closure.
+    assert!(
+        net::retry_across_hosts(0, 3, 0, Duration::ZERO, |_| -> anyhow::Result<()> {
+            panic!("no host to try")
+        })
+        .is_err()
     );
 }
 
@@ -704,10 +766,9 @@ fn a_body_at_exactly_the_limit_is_accepted() {
                 .unwrap();
         }
     });
-    let Ok(tls) = Tls::from_native_roots() else {
-        // No system roots on this host: the agent cannot be built.
-        return;
-    };
+    // Plain HTTP to the local server needs no trusted roots.
+    let tls = Tls::from_roots(Vec::new()).unwrap();
+    assert!(tls.roots.is_empty());
     let agent = http_agent(&tls, &HttpTimeouts::default());
     let url = format!("http://{address}/chunk");
     assert_eq!(get_bounded(&agent, &url, 5).unwrap(), b"hello");

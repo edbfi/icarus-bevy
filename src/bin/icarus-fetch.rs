@@ -1,8 +1,9 @@
 //! `icarus-fetch`: download one file from a public Steam app anonymously.
 //!
 //! Prints progress on stderr and JSON on stdout: with `--list`, one line per
-//! manifest file of the selected depot and then the summary; otherwise only
-//! the summary of the verified, atomically written file.
+//! manifest file of the selected depot and then the summary (file fields
+//! only when `--file` is given); otherwise only the summary of the verified,
+//! atomically written file.
 
 use std::path::PathBuf;
 
@@ -23,13 +24,16 @@ struct Cli {
     /// Branch whose manifests are used.
     #[arg(long, default_value = "public")]
     branch: String,
-    /// Depot-relative path of the wanted file.
-    #[arg(long)]
-    file: String,
+    /// Depot-relative path of the wanted file. Required to download; with
+    /// --list it selects the depot holding it and adds it to the summary.
+    #[arg(long, required_unless_present = "list")]
+    file: Option<String>,
     /// Output directory; the file keeps its depot-relative path below it.
     #[arg(long, required_unless_present = "list")]
     out: Option<PathBuf>,
-    /// Print the selected depot's file list and download nothing.
+    /// Print a depot's file list and download nothing. The depot is the one
+    /// holding --file, else --depot, else the first candidate depot (Windows
+    /// first) whose branch manifest reads.
     #[arg(long)]
     list: bool,
     /// Only consider this depot.
@@ -45,7 +49,7 @@ struct Cli {
 
 fn main() -> Result<()> {
     let cli = Cli::parse();
-    let mut request = FetchRequest::new(cli.app, &cli.branch, &cli.file);
+    let mut request = FetchRequest::new(cli.app, &cli.branch, cli.file.as_deref());
     request.depot = cli.depot;
     request.workers = usize::from(cli.workers);
     request.assembly.max_file_bytes = cli.max_file_bytes;
@@ -64,27 +68,30 @@ fn main() -> Result<()> {
                 })
             );
         }
-        println!(
-            "{}",
-            json!({
-                "mode": "list",
-                "app": cli.app,
-                "branch": cli.branch,
-                "build_id": resolved.build_id,
-                "depot": resolved.depot_id,
-                "manifest_gid": resolved.manifest_gid.to_string(),
-                "manifest_files": resolved.manifest.files.len(),
-                "filenames_encrypted": resolved.manifest.filenames_encrypted,
-                "file": file.path,
-                "size": file.size,
-                "chunks": file.chunks.len(),
-                "sha1": icarus_bevy::steam_fetch::hex(&file.sha_content),
-                "sha256": null,
-            })
-        );
+        let mut summary = json!({
+            "mode": "list",
+            "app": cli.app,
+            "branch": cli.branch,
+            "build_id": resolved.build_id,
+            "depot": resolved.depot_id,
+            "manifest_gid": resolved.manifest_gid.to_string(),
+            "manifest_files": resolved.manifest.files.len(),
+            "filenames_encrypted": resolved.manifest.filenames_encrypted,
+        });
+        if let (Some(file), Some(fields)) = (file, summary.as_object_mut()) {
+            fields.insert("file".into(), json!(file.path));
+            fields.insert("size".into(), json!(file.size));
+            fields.insert("chunks".into(), json!(file.chunks.len()));
+            fields.insert(
+                "sha1".into(),
+                json!(icarus_bevy::steam_fetch::hex(&file.sha_content)),
+            );
+        }
+        println!("{summary}");
         return Ok(());
     }
 
+    let file = file.context("--file is required without --list")?;
     let out = cli.out.context("--out is required without --list")?;
     let written = resolved.download(&request, &out)?;
     println!(

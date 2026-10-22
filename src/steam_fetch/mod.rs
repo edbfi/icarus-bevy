@@ -6,6 +6,10 @@
 //! the zipped manifest and the chunks of the requested file from the CDN.
 //! Nothing secret is persisted. Steam's documented/observed protocol
 //! (SteamKit2 as reference, independently implemented).
+//!
+//! Manifest signatures are not verified: integrity rests on HTTPS to Valve's
+//! CDN for the manifest, the manifest GID taken from PICS app info, and each
+//! chunk's SHA-1 (and the file's SHA-1) from that manifest.
 
 pub mod assemble;
 pub mod chunk;
@@ -54,7 +58,9 @@ pub fn hex(bytes: &[u8]) -> String {
 pub struct FetchRequest {
     pub app_id: u32,
     pub branch: String,
-    pub file: String,
+    /// Wanted depot-relative path. Without it the first candidate depot
+    /// (or `depot`) is selected, which only suits listing.
+    pub file: Option<String>,
     /// Restrict the search to one depot.
     pub depot: Option<u32>,
     pub cm: CmTimeouts,
@@ -67,11 +73,11 @@ pub struct FetchRequest {
 }
 
 impl FetchRequest {
-    pub fn new(app_id: u32, branch: &str, file: &str) -> Self {
+    pub fn new(app_id: u32, branch: &str, file: Option<&str>) -> Self {
         Self {
             app_id,
             branch: branch.to_owned(),
-            file: file.to_owned(),
+            file: file.map(str::to_owned),
             depot: None,
             cm: CmTimeouts::default(),
             cm_limits: CmLimits::default(),
@@ -84,8 +90,9 @@ impl FetchRequest {
     }
 }
 
-/// The depot and manifest holding the requested file, with what is needed
-/// to download it. The depot key lives only in memory.
+/// The selected depot and manifest (holding the requested file, when one
+/// was named), with what is needed to download from it. The depot key lives
+/// only in memory.
 pub struct Resolved {
     pub build_id: Option<u64>,
     pub depot_id: u32,
@@ -96,20 +103,32 @@ pub struct Resolved {
 }
 
 impl Resolved {
-    /// The requested file's manifest entry.
-    pub fn file<'a>(&'a self, request: &FetchRequest) -> Result<&'a manifest::ManifestFile> {
+    /// The requested file's manifest entry, if a file was requested.
+    pub fn file<'a>(
+        &'a self,
+        request: &FetchRequest,
+    ) -> Result<Option<&'a manifest::ManifestFile>> {
+        let Some(wanted) = request.file.as_deref() else {
+            return Ok(None);
+        };
         self.manifest
-            .find(&request.file)
-            .with_context(|| format!("{} is not in depot {}", request.file, self.depot_id))
+            .find(wanted)
+            .map(Some)
+            .with_context(|| format!("{wanted} is not in depot {}", self.depot_id))
     }
 
-    /// Download, verify and atomically write the requested file.
+    /// Download, verify and atomically write the requested file. Each chunk
+    /// is downloaded, decrypted, decompressed and verified as one attempt,
+    /// so a bad body from one CDN host is retried on another.
     pub fn download(&self, request: &FetchRequest, out_dir: &Path) -> Result<AssembledFile> {
-        let file = self.file(request)?;
+        let file = self
+            .file(request)?
+            .context("downloading needs a requested file")?;
         assemble::assemble(out_dir, file, &request.assembly, request.workers, |chunk| {
             let start = usize::from(chunk.id[0]);
-            let raw = self.cdn.chunk(self.depot_id, chunk, start)?;
-            chunk::decode_chunk(&raw, &self.depot_key, chunk)
+            self.cdn.chunk(self.depot_id, chunk, start, |raw| {
+                chunk::process_chunk(&raw, &self.depot_key, chunk)
+            })
         })
     }
 }
@@ -231,8 +250,10 @@ fn depot_key(session: &mut CmSession, app_id: u32, depot_id: u32) -> Result<Vec<
     Ok(key)
 }
 
-/// Log on anonymously and find the depot whose current manifest holds the
-/// requested file. Downloads only metadata (app info and manifests).
+/// Log on anonymously and select a depot: the first candidate whose current
+/// manifest holds the requested file, or without a file the first candidate
+/// (or `request.depot`) whose manifest reads. Downloads only metadata (app
+/// info and manifests).
 pub fn resolve(request: &FetchRequest, progress: &dyn Fn(&str)) -> Result<Resolved> {
     let tls = Tls::from_native_roots()?;
     let agent = net::http_agent(&tls, &request.http);
@@ -284,54 +305,31 @@ fn resolve_in_session(
     let cdn_servers = net::select_cdn_servers(&servers.servers, request.app_id);
     ensure!(
         !cdn_servers.is_empty(),
-        "no usable CDN servers among {}",
+        "none of the {} offered CDN servers is usable over HTTPS",
         servers.servers.len()
     );
-    progress(&format!("{} CDN server(s)", cdn_servers.len()));
+    progress(&format!("{} HTTPS CDN server(s)", cdn_servers.len()));
     let cdn = Cdn {
         agent,
         servers: cdn_servers,
         limits: request.cdn,
     };
 
+    // Every per-depot failure is noted and the next candidate tried.
     let mut notes = Vec::new();
     for entry in candidates.iter().take(MAX_DEPOT_CANDIDATES) {
-        let key = match depot_key(session, request.app_id, entry.depot_id) {
-            Ok(key) => key,
+        let (manifest, key) = match depot_manifest(session, &cdn, request, entry, progress) {
+            Ok(found) => found,
             Err(error) => {
                 notes.push(format!("{}: {error:#}", entry.depot_id));
                 continue;
             }
         };
-        let code: GetManifestRequestCodeResponse = session.service_call(
-            "ContentServerDirectory.GetManifestRequestCode#1",
-            &GetManifestRequestCodeRequest {
-                app_id: Some(request.app_id),
-                depot_id: Some(entry.depot_id),
-                manifest_id: Some(entry.manifest_gid),
-                app_branch: (!request.branch.eq_ignore_ascii_case("public"))
-                    .then(|| request.branch.clone()),
-            },
-        )?;
-        let code = code.manifest_request_code.unwrap_or(0);
-        progress(&format!(
-            "depot {} manifest {}: request code {}",
-            entry.depot_id,
-            entry.manifest_gid,
-            if code == 0 { "absent" } else { "received" }
-        ));
-        let zipped = cdn.manifest(entry.depot_id, entry.manifest_gid, code)?;
-        let manifest = manifest::decode_zipped(&zipped, Some(&key), &request.manifest)
-            .with_context(|| format!("depot {} manifest", entry.depot_id))?;
-        ensure!(
-            manifest.depot_id == entry.depot_id && manifest.gid == entry.manifest_gid,
-            "manifest metadata names depot {} gid {}, expected {} {}",
-            manifest.depot_id,
-            manifest.gid,
-            entry.depot_id,
-            entry.manifest_gid
-        );
-        if manifest.find(&request.file).is_some() {
+        let selected = match request.file.as_deref() {
+            Some(wanted) => manifest.find(wanted).is_some(),
+            None => true,
+        };
+        if selected {
             return Ok(Resolved {
                 build_id: depots.build_id,
                 depot_id: entry.depot_id,
@@ -343,5 +341,50 @@ fn resolve_in_session(
         }
         notes.push(format!("{}: file not in manifest", entry.depot_id));
     }
-    bail!("no depot holds {}: {}", request.file, notes.join("; "))
+    match request.file.as_deref() {
+        Some(wanted) => bail!("no depot holds {wanted}: {}", notes.join("; ")),
+        None => bail!("no depot manifest could be read: {}", notes.join("; ")),
+    }
+}
+
+/// Depot key, manifest request code, then the manifest download and decode
+/// (retried across CDN hosts) for one candidate depot.
+fn depot_manifest(
+    session: &mut CmSession,
+    cdn: &Cdn,
+    request: &FetchRequest,
+    entry: &vdf::DepotEntry,
+    progress: &dyn Fn(&str),
+) -> Result<(Manifest, Vec<u8>)> {
+    let key = depot_key(session, request.app_id, entry.depot_id)?;
+    let code: GetManifestRequestCodeResponse = session.service_call(
+        "ContentServerDirectory.GetManifestRequestCode#1",
+        &GetManifestRequestCodeRequest {
+            app_id: Some(request.app_id),
+            depot_id: Some(entry.depot_id),
+            manifest_id: Some(entry.manifest_gid),
+            app_branch: (!request.branch.eq_ignore_ascii_case("public"))
+                .then(|| request.branch.clone()),
+        },
+    )?;
+    let code = code.manifest_request_code.unwrap_or(0);
+    progress(&format!(
+        "depot {} manifest {}: request code {}",
+        entry.depot_id,
+        entry.manifest_gid,
+        if code == 0 { "absent" } else { "received" }
+    ));
+    let manifest = cdn.manifest(entry.depot_id, entry.manifest_gid, code, |zipped| {
+        let manifest = manifest::decode_zipped(&zipped, Some(&key), &request.manifest)?;
+        ensure!(
+            manifest.depot_id == entry.depot_id && manifest.gid == entry.manifest_gid,
+            "manifest metadata names depot {} gid {}, expected {} {}",
+            manifest.depot_id,
+            manifest.gid,
+            entry.depot_id,
+            entry.manifest_gid
+        );
+        Ok(manifest)
+    })?;
+    Ok((manifest, key))
 }
