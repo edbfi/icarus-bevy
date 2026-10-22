@@ -134,3 +134,113 @@ fn manager_opens_match_the_captured_bit_lengths_and_digests() {
         );
     }
 }
+
+/// Saved quest state (`C018`) composes into the QuestManager open (F-861):
+/// the faction mission's row, nondefault difficulty and flags, and the
+/// initial quest and keyed persistent actors by their Icarus actor GUIDs'
+/// keys; defaults and links without a valid GUID are left out.
+#[test]
+fn saved_quest_state_composes_into_the_quest_manager_open() {
+    use icarus_bevy::experimental::{
+        actor_channel::{ActorChannelCodec, ActorChannelLimits, read_actor_bunch_body},
+        control_messages::ArchiveText,
+        manager_open::quest_handle,
+        prospect_info::{RelevantQuestActor, SavedQuestManager},
+        rep_layout::{
+            MovementLevel, RepLayoutCodec, RepLayoutLimits, RepValue, RotationLevel,
+            quest_manager_rep_layout, read_rep_properties,
+        },
+    };
+    use std::collections::BTreeMap;
+    let units = |text: &str| text.encode_utf16().collect::<Vec<u16>>();
+    let profile = ReleaseProfile::release_3_0_32();
+    let saved = SavedQuestManager {
+        faction_mission: units("Mission_C"),
+        initial_quest: Some(9_001),
+        mission_complete: false,
+        run_quests: true,
+        dynamic_quest_difficulty: 2,
+        dynamic_quest_delay: 0.0,
+        persistent_actors: vec![
+            RelevantQuestActor {
+                key: units("LAB_BASE"),
+                icarus_uid: 501,
+            },
+            RelevantQuestActor {
+                key: units("LAB_GONE"),
+                icarus_uid: 0,
+            },
+        ],
+        persistent_characters: Vec::new(),
+    };
+    let plan = profile
+        .quest_manager_open_plan("/Game/Maps/Test/Test")
+        .unwrap()
+        .unwrap()
+        .with_quest_state(&saved, 3)
+        .unwrap();
+    let mut cache = NetGuidCache::new();
+    let mut exports = ConnectionExports::new();
+    let open = compose_manager_open(
+        &mut cache,
+        &mut exports,
+        &plan,
+        ManagerSlot::Quest.key(),
+        9,
+        ByteOrder::Little,
+    )
+    .unwrap();
+    let codec = ActorChannelCodec {
+        engine_net_version: profile.engine_network_version,
+        exports_enabled: false,
+        has_level: true,
+        order: ByteOrder::Little,
+        limits: ActorChannelLimits::default(),
+    };
+    let body = read_actor_bunch_body(&mut open.bunch.payload.reader(), true, &codec).unwrap();
+    assert_eq!(body.blocks.len(), 3);
+    let values: BTreeMap<u32, RepValue> = read_rep_properties(
+        &mut body.blocks[0].payload.reader(),
+        &quest_manager_rep_layout(
+            MovementLevel::Whole,
+            MovementLevel::Whole,
+            RotationLevel::Bytes,
+            profile.tags.tag_encoding(),
+        ),
+        &RepLayoutCodec {
+            actor: codec,
+            checksums: false,
+            limits: RepLayoutLimits::default(),
+        },
+    )
+    .unwrap()
+    .entries
+    .into_iter()
+    .map(|entry| (entry.handle, entry.value))
+    .collect();
+    let sent: Vec<u32> = values.keys().copied().collect();
+    assert_eq!(sent, [5, 14, 16, 17, 19, 20, 21, 24, 25]);
+    assert_eq!(values[&quest_handle::FACTION_MISSION], RepValue::Byte(3));
+    assert_eq!(
+        values[&quest_handle::DYNAMIC_QUEST_DIFFICULTY],
+        RepValue::Enum(2)
+    );
+    assert_eq!(values[&quest_handle::RUN_QUESTS], RepValue::Bool(true));
+    let RepValue::Object(initial) = &values[&quest_handle::INITIAL_QUEST] else {
+        panic!("an initial quest reference");
+    };
+    assert_eq!(initial.guid, cache.actor_guid(ActorKey::World(9_001)));
+    let RepValue::DynamicArray(actors) = &values[&quest_handle::RELEVANT_PERSISTENT_ACTORS] else {
+        panic!("relevant persistent actors");
+    };
+    assert_eq!(actors.count, 1);
+    assert_eq!(
+        actors.stream.entries[0].value,
+        RepValue::Str(ArchiveText::new(&units("LAB_BASE")).unwrap())
+    );
+    let RepValue::Object(base) = &actors.stream.entries[1].value else {
+        panic!("a persistent actor reference");
+    };
+    assert_eq!(base.guid, cache.actor_guid(ActorKey::World(501)));
+    assert_ne!(base.guid, initial.guid);
+}

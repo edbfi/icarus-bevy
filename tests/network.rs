@@ -946,12 +946,7 @@ fn compose_lab_game_state(
     );
     // The lab references its managers from the GameState (F-859).
     for (slot, _) in lab_manager_plans(profile) {
-        use icarus_bevy::experimental::manager_open::ManagerSlot;
-        match slot {
-            ManagerSlot::WorldTalent => state.managers.world_talent_manager = Some(slot.key()),
-            ManagerSlot::Radiation => state.managers.radiation_manager = Some(slot.key()),
-            ManagerSlot::Disaster => state.managers.disaster_controller = Some(slot.key()),
-        }
+        slot.reference_from(&mut state.managers);
     }
     compose_game_state_open(
         cache,
@@ -2072,4 +2067,38 @@ fn a_networking_status_over_one_bunch_reaches_every_held_session() {
             .map(|session| session.hold.partial_parts)
             .sum::<u64>()
     );
+}
+
+/// The saved QuestManager joins the bound managers on the next channel
+/// (F-861); a repeated slot fails, and so does a lab without managers.
+#[test]
+fn the_quest_manager_follows_the_bound_managers() {
+    use icarus_bevy::experimental::manager_open::ManagerSlot;
+    let network = NetworkConfig {
+        release_profile: Some(
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("config/release.toml"),
+        ),
+        ..enabled(0)
+    };
+    let mut bound = network::bind(&network).unwrap().unwrap();
+    let plan = bound
+        .quest_manager
+        .take()
+        .expect("the release's QuestManager plan");
+    assert_eq!(
+        bound
+            .lab
+            .add_manager_open(ManagerSlot::Quest, plan.clone())
+            .unwrap(),
+        network::MANAGER_FIRST_CHANNEL + 3
+    );
+    assert!(
+        bound
+            .lab
+            .add_manager_open(ManagerSlot::Quest, plan.clone())
+            .is_err()
+    );
+    let mut bare = network::bind(&enabled(0)).unwrap().unwrap();
+    assert!(bare.quest_manager.is_none());
+    assert!(bare.lab.add_manager_open(ManagerSlot::Quest, plan).is_err());
 }

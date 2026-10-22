@@ -998,11 +998,18 @@ fn manager_sections_parse_and_fail_closed() {
     assert!(unknown.managers.is_none());
     assert!(
         unknown
+            .quest_manager_open_plan("/Game/Maps/Test/Test")
+            .unwrap()
+            .is_none()
+    );
+    assert!(
+        unknown
             .manager_open_plans("/Game/Maps/Test/Test")
             .unwrap()
             .is_empty()
     );
     let section = "[managers]\n\
+        quest_manager = [{ path = \"Default__Q\", checksum = 6 }, { path = \"/Script/I\", checksum = 0 }]\n\
         radiation_manager = [{ path = \"Default__R\", checksum = 1 }, { path = \"/Script/I\", checksum = 0 }]\n\
         world_talent_manager = [{ path = \"Default__W\", checksum = 2 }, { path = \"/Script/I\", checksum = 0 }]\n\
         disaster_controller = [{ path = \"Default__D_C\", checksum = 3 }, { path = \"/Game/D\", checksum = 0 }]\n\
@@ -1013,7 +1020,15 @@ fn manager_sections_parse_and_fail_closed() {
     assert_eq!(plans[0].1.archetype[0].path, "Default__W");
     assert_eq!(plans[0].1.components[0].checksum, 4);
     assert_eq!(plans[0].1.components[1].checksum, 5);
+    let quest = parsed
+        .quest_manager_open_plan("/Game/Maps/Test/Test")
+        .unwrap()
+        .unwrap();
+    assert_eq!(quest.archetype[0].path, "Default__Q");
+    assert_eq!(quest.components.len(), 2);
+    assert!(quest.values.is_empty() && quest.actors.is_empty());
     for bad in [
+        section.replace("checksum = 6 }", "checksum = 0 }"),
         section.replace("checksum = 1 }", "checksum = 0 }"),
         section.replace(", { path = \"/Game/D\", checksum = 0 }", ""),
         section.replace("actor_state_checksum = 5\n", ""),
