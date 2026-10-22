@@ -279,7 +279,23 @@ impl NetGuidCache {
         exports.bunch.insert(guid);
         let segment = chain.first().context("empty static chain")?;
         let outer = if chain.len() > 1 {
-            self.export_static(exports, &chain[1..])?
+            let outer = self.export_static(exports, &chain[1..])?;
+            if outer.export.is_some() {
+                outer
+            } else {
+                // An outer the client already holds is written with only
+                // the bare checksum flag, as the original does (F-692,
+                // F-859).
+                NetGuidRef {
+                    guid: outer.guid,
+                    export: Some(GuidExport {
+                        no_load: chain[1].no_load,
+                        path: None,
+                        checksum: None,
+                        bare_checksum_flag: true,
+                    }),
+                }
+            }
         } else {
             NetGuidRef::null()
         };

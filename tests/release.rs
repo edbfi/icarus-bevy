@@ -962,3 +962,67 @@ fn pawn_sections_parse_and_fail_closed() {
         );
     }
 }
+
+/// World manager identifiers (F-859): built in for the qualified builds,
+/// none for unknown ones, parsed from `[managers]` and validated.
+#[test]
+fn manager_sections_parse_and_fail_closed() {
+    use icarus_bevy::experimental::manager_open::ManagerSlot;
+    let builtin = ReleaseProfile::release_3_0_32();
+    let plans = builtin.manager_open_plans("/Game/Maps/Test/Test").unwrap();
+    let slots: Vec<ManagerSlot> = plans.iter().map(|(slot, _)| *slot).collect();
+    assert_eq!(
+        slots,
+        [
+            ManagerSlot::WorldTalent,
+            ManagerSlot::Radiation,
+            ManagerSlot::Disaster
+        ]
+    );
+    assert_eq!(plans[1].1.archetype[0].path, "Default__RadiationManager");
+    assert_eq!(plans[1].1.archetype[1].path, "/Script/Icarus");
+    assert_eq!(plans[1].1.components.len(), 2);
+    assert_eq!(plans[2].1.components.len(), 1);
+    assert_eq!(plans[2].1.level[2].path, "/Game/Maps/Test/Test");
+    let release = "[release]\napp_id = 2089300\nbuild_id = 1\nproject_version = \"1.0\"\n";
+    let release = release.replace(
+        "\"1.0\"\n",
+        &format!(
+            "\"1.0\"\nnetwork_checksum = {}\n",
+            icarus_bevy::experimental::release::network_checksum("1.0")
+        ),
+    );
+    let tags = "[tags]\ndata_table_tag_count = 130\nini_tag_count = 1889\nunique_node_count = 2302\ntotal_bits = 12\nconfigured_first_segment = 16\neffective_first_segment = 0\ncontainer_bits = 6\nnet_index_hash = 1829726063\n";
+    let base = format!("{release}{tags}");
+    let unknown = ReleaseProfile::parse(&base).unwrap();
+    assert!(unknown.managers.is_none());
+    assert!(
+        unknown
+            .manager_open_plans("/Game/Maps/Test/Test")
+            .unwrap()
+            .is_empty()
+    );
+    let section = "[managers]\n\
+        radiation_manager = [{ path = \"Default__R\", checksum = 1 }, { path = \"/Script/I\", checksum = 0 }]\n\
+        world_talent_manager = [{ path = \"Default__W\", checksum = 2 }, { path = \"/Script/I\", checksum = 0 }]\n\
+        disaster_controller = [{ path = \"Default__D_C\", checksum = 3 }, { path = \"/Game/D\", checksum = 0 }]\n\
+        stat_container_checksum = 4\n\
+        actor_state_checksum = 5\n";
+    let parsed = ReleaseProfile::parse(&format!("{base}{section}")).unwrap();
+    let plans = parsed.manager_open_plans("/Game/Maps/Test/Test").unwrap();
+    assert_eq!(plans[0].1.archetype[0].path, "Default__W");
+    assert_eq!(plans[0].1.components[0].checksum, 4);
+    assert_eq!(plans[0].1.components[1].checksum, 5);
+    for bad in [
+        section.replace("checksum = 1 }", "checksum = 0 }"),
+        section.replace(", { path = \"/Game/D\", checksum = 0 }", ""),
+        section.replace("actor_state_checksum = 5\n", ""),
+        format!("{section}extra = 1\n"),
+    ] {
+        assert_ne!(bad, section);
+        assert!(
+            ReleaseProfile::parse(&format!("{base}{bad}")).is_err(),
+            "{bad}"
+        );
+    }
+}

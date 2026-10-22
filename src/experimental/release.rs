@@ -11,7 +11,7 @@
 //! moves or diffs it when Steam's public branch moves.
 //! Nothing here claims compatibility with the pinned build.
 
-use std::{fs, path::Path};
+use std::{collections::BTreeMap, fs, path::Path};
 
 use anyhow::{Context, Result, bail, ensure};
 use serde::Deserialize;
@@ -19,15 +19,20 @@ use serde::Deserialize;
 use super::{
     default_version_string_checksum,
     game_state_open::{GameStateComponents, GameStateOpenPlan},
+    manager_open::{
+        ACTOR_STATE_CURRENT_BIOME, ManagerComponent, ManagerOpenPlan, ManagerSlot,
+        STAT_CONTAINER_HANDLE,
+    },
     pawn_open::{PawnComponent, PawnContentPlan, PawnOpenPlan},
     rep_layout::{
         ICARUS_ROW_HANDLE_NONE, ICARUS_ROW_HANDLE_TABLE_COUNT, ICARUS_TWO_BYTE_ROW_TABLES,
-        ICARUS_ZERO_ROW_TABLES, MovementLevel, RotationLevel, TagEncoding,
-        actor_component_rep_layout, bp_icarus_player_character_survival_rep_layout,
-        bp_icarus_player_state_rep_layout, icarus_game_state_survival_rep_layout,
-        icarus_player_controller_survival_rep_layout, inventory_rep_layout,
-        inventory_slot_commands, player_character_state_rep_layout,
-        weather_manager_component_rep_layout,
+        ICARUS_ZERO_ROW_TABLES, MovementLevel, RepValue, RotationLevel, TagEncoding,
+        actor_component_rep_layout, actor_rep_layout, actor_state_rep_layout,
+        bp_icarus_player_character_survival_rep_layout, bp_icarus_player_state_rep_layout,
+        icarus_game_state_survival_rep_layout, icarus_player_controller_survival_rep_layout,
+        inventory_rep_layout, inventory_slot_commands, player_character_state_rep_layout,
+        radiation_manager_rep_layout, weather_manager_component_rep_layout,
+        world_talent_manager_rep_layout,
     },
     rep_rpc::{
         BP_ICARUS_PLAYER_CONTROLLER_SURVIVAL_FIELD_INDEX_BOUND,
@@ -413,6 +418,65 @@ fn session_segments(archetype: &[ReleasePathSegment]) -> Vec<PathSegment> {
         .iter()
         .map(|segment| PathSegment::new(&segment.path, segment.checksum, segment.no_load))
         .collect()
+}
+
+/// Per-release identifiers of the world manager opens (`[managers]`,
+/// F-859): each manager's archetype chain and the component classes'
+/// checksums. Values are the managers' defaults.
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct ReleaseManagersProfile {
+    pub radiation_manager: Vec<ReleasePathSegment>,
+    pub world_talent_manager: Vec<ReleasePathSegment>,
+    pub disaster_controller: Vec<ReleasePathSegment>,
+    /// `UIcarusStatContainer` and `UActorState` network checksums.
+    pub stat_container_checksum: u32,
+    pub actor_state_checksum: u32,
+}
+
+impl ReleaseManagersProfile {
+    /// The managers reproduced bit-exactly against the 3.0.31 capture and
+    /// derived unchanged for 3.0.32 (F-780, F-859).
+    pub fn icarus_survival() -> Self {
+        let native = |class: &str, checksum| {
+            vec![
+                ReleasePathSegment {
+                    path: format!("Default__{class}"),
+                    checksum,
+                    no_load: false,
+                },
+                ReleasePathSegment {
+                    path: "/Script/Icarus".to_owned(),
+                    checksum: 0,
+                    no_load: false,
+                },
+            ]
+        };
+        Self {
+            radiation_manager: native("RadiationManager", 2_158_376_861),
+            world_talent_manager: native("WorldTalentManager", 3_510_503_235),
+            disaster_controller: vec![
+                ReleasePathSegment {
+                    path: "Default__BP_DisasterController_C".to_owned(),
+                    checksum: 2_281_024_597,
+                    no_load: false,
+                },
+                ReleasePathSegment {
+                    path: "/Game/BP/Systems/Disaster/BP_DisasterController".to_owned(),
+                    checksum: 0,
+                    no_load: false,
+                },
+            ],
+            stat_container_checksum: 4_037_894_903,
+            actor_state_checksum: 455_559_420,
+        }
+    }
+
+    pub fn validate(&self) -> Result<()> {
+        validate_archetype("managers radiation_manager", &self.radiation_manager)?;
+        validate_archetype("managers world_talent_manager", &self.world_talent_manager)?;
+        validate_archetype("managers disaster_controller", &self.disaster_controller)
+    }
 }
 
 /// Per-release identifiers of the PlayerState open (`[player_state]`, F-784):
@@ -819,6 +883,7 @@ pub struct ReleaseProfile {
     pub player_state: Option<ReleasePlayerStateProfile>,
     pub game_state: Option<ReleaseGameStateProfile>,
     pub pawn: Option<ReleasePawnProfile>,
+    pub managers: Option<ReleaseManagersProfile>,
 }
 
 #[derive(Deserialize)]
@@ -845,6 +910,8 @@ struct ReleaseFile {
     game_state: Option<ReleaseGameStateProfile>,
     #[serde(default)]
     pawn: Option<ReleasePawnProfile>,
+    #[serde(default)]
+    managers: Option<ReleaseManagersProfile>,
 }
 
 impl ReleasePin {
@@ -907,6 +974,7 @@ impl ReleaseProfile {
             player_state: Some(ReleasePlayerStateProfile::icarus_survival()),
             game_state: Some(ReleaseGameStateProfile::icarus_survival()),
             pawn: Some(ReleasePawnProfile::icarus_survival()),
+            managers: Some(ReleaseManagersProfile::icarus_survival()),
         }
     }
 
@@ -940,6 +1008,7 @@ impl ReleaseProfile {
             player_state: Some(ReleasePlayerStateProfile::icarus_survival()),
             game_state: Some(ReleaseGameStateProfile::icarus_survival()),
             pawn: Some(ReleasePawnProfile::icarus_survival()),
+            managers: Some(ReleaseManagersProfile::icarus_survival()),
         }
     }
 
@@ -977,6 +1046,15 @@ impl ReleaseProfile {
             25_793_607 | 25_793_767 | 25_956_137 => {
                 Some(ReleasePlayerStateProfile::icarus_survival())
             }
+            _ => None,
+        }
+    }
+
+    /// Built-in manager identifiers for a qualified build ID; `None`
+    /// elsewhere, so a pin bump never inherits an older build's checksums.
+    fn default_managers_for_build(build_id: u64) -> Option<ReleaseManagersProfile> {
+        match build_id {
+            25_793_607 | 25_793_767 | 25_956_137 => Some(ReleaseManagersProfile::icarus_survival()),
             _ => None,
         }
     }
@@ -1023,6 +1101,9 @@ impl ReleaseProfile {
         if let Some(pawn) = &self.pawn {
             pawn.validate()?;
         }
+        if let Some(managers) = &self.managers {
+            managers.validate()?;
+        }
         Ok(())
     }
 
@@ -1050,6 +1131,9 @@ impl ReleaseProfile {
         let pawn = parsed
             .pawn
             .or_else(|| Self::default_pawn_for_build(parsed.release.build_id));
+        let managers = parsed
+            .managers
+            .or_else(|| Self::default_managers_for_build(parsed.release.build_id));
         let profile = Self {
             pin: parsed.release,
             engine_network_version: ENGINE_NETWORK_VERSION,
@@ -1061,6 +1145,7 @@ impl ReleaseProfile {
             player_state,
             game_state,
             pawn,
+            managers,
         };
         profile.validate()?;
         Ok(profile)
@@ -1113,6 +1198,74 @@ impl ReleaseProfile {
             engine_net_version: self.engine_network_version,
             channel_index: PLAYER_STATE_CHANNEL_INDEX,
         }))
+    }
+
+    /// The world manager open plans for the map package of `map_url`, in
+    /// the order the GameState references them, or none without
+    /// `[managers]` (F-859): the radiation and world-talent managers carry
+    /// a stat container and an actor state (`CurrentBiome` row 0, as
+    /// captured), the disaster controller a stat container only.
+    pub fn manager_open_plans(&self, map_url: &str) -> Result<Vec<(ManagerSlot, ManagerOpenPlan)>> {
+        let Some(managers) = &self.managers else {
+            return Ok(Vec::new());
+        };
+        let level = map_level_chain(map_url)?;
+        let (location, velocity, rotation) = (
+            MovementLevel::Whole,
+            MovementLevel::Whole,
+            RotationLevel::Bytes,
+        );
+        let tags = self.tags.tag_encoding();
+        let icarus_components = || {
+            vec![
+                ManagerComponent::stat_container(
+                    managers.stat_container_checksum,
+                    Some(STAT_CONTAINER_HANDLE),
+                ),
+                ManagerComponent::actor_state(
+                    managers.actor_state_checksum,
+                    actor_state_rep_layout(),
+                    BTreeMap::from([(ACTOR_STATE_CURRENT_BIOME, RepValue::Byte(0))]),
+                ),
+            ]
+        };
+        let plan = |archetype: &[ReleasePathSegment], layout, components| ManagerOpenPlan {
+            archetype: session_segments(archetype),
+            level: level.clone(),
+            layout,
+            components,
+            values: BTreeMap::new(),
+            engine_net_version: self.engine_network_version,
+        };
+        Ok(vec![
+            (
+                ManagerSlot::WorldTalent,
+                plan(
+                    &managers.world_talent_manager,
+                    world_talent_manager_rep_layout(location, velocity, rotation, tags),
+                    icarus_components(),
+                ),
+            ),
+            (
+                ManagerSlot::Radiation,
+                plan(
+                    &managers.radiation_manager,
+                    radiation_manager_rep_layout(location, velocity, rotation, tags),
+                    icarus_components(),
+                ),
+            ),
+            (
+                ManagerSlot::Disaster,
+                plan(
+                    &managers.disaster_controller,
+                    actor_rep_layout(location, velocity, rotation),
+                    vec![ManagerComponent::stat_container(
+                        managers.stat_container_checksum,
+                        None,
+                    )],
+                ),
+            ),
+        ])
     }
 
     /// The GameState open plan for the map package of `map_url`, or `None`
