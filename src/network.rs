@@ -26,7 +26,7 @@
 //! constant rate of its saved `SecondsPerGameDay`, F-806); with
 //! `[player_state]` identifiers the referenced PlayerState on channel 5
 //! (F-784: PlayerId from 256, the Login name and unique net id, `bIsHost`
-//! for the first player only). Each open takes as many datagrams as it
+//! for a player joining with no other joined player, F-913). Each open takes as many datagrams as it
 //! needs. Once a connection acks the GameState open, its world time, level
 //! clock, time of day and `ServerFPS` (this server's frame rate over its
 //! poll intervals) follow as property updates (F-805), and with a loaded
