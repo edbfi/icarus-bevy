@@ -20,6 +20,9 @@ const PATH: &str = "/Game/Secret/Path.Secret_C";
 
 // Authored framing, independent of the readers and the archive encoder.
 fn fstring(value: &str) -> Vec<u8> {
+    if value.is_empty() {
+        return 0_i32.to_le_bytes().to_vec();
+    }
     [
         i32::try_from(value.len() + 1)
             .unwrap()
@@ -230,6 +233,10 @@ fn component(body: &Body) -> Vec<u8> {
 
 fn recorder(class: &str, body: &Body) -> Vec<u8> {
     let bytes = component(body);
+    recorder_bytes(class, &bytes)
+}
+
+fn recorder_bytes(class: &str, bytes: &[u8]) -> Vec<u8> {
     let count = i32::try_from(bytes.len()).unwrap().to_le_bytes();
     [
         tag("ComponentClassName", "StrProperty", &[0], &fstring(class)),
@@ -237,7 +244,7 @@ fn recorder(class: &str, body: &Body) -> Vec<u8> {
             "BinaryData",
             "ArrayProperty",
             &[fstring("ByteProperty"), vec![0]].concat(),
-            &[count.as_slice(), &bytes].concat(),
+            &[count.as_slice(), bytes].concat(),
         ),
         end(),
     ]
@@ -630,6 +637,138 @@ fn clean_catalog(extra: &str) -> String {
     format!(
         "format = 1\n[references]\nactor_class = [\"{ROW}\"]\nactor_path = [\"{PATH}\"]\nclass_variable = [\"bSecretFlag\"]\nunclassified = [\"SecretTile\", \"SecretQuestVar\"]\n{extra}"
     )
+}
+
+// Minimal authored recorder framing for planning strings; these fixtures make
+// no claim about the wire types used by the original game.
+fn string_reference_source(fields: &[Vec<u8>]) -> Vec<u8> {
+    let bytes = [fields.concat(), end(), vec![0; 4]].concat();
+    envelope(2, &[recorder_bytes(ACTOR, &bytes)])
+}
+
+#[test]
+fn classified_strings_without_package_prefixes_resolve_only_in_their_role() {
+    for (property, role, catalog_role, wrong_role) in [
+        (
+            "ItemStaticData",
+            ContentRole::DataRow,
+            "data_row",
+            "actor_path",
+        ),
+        (
+            "ActorPathName",
+            ContentRole::ActorPath,
+            "actor_path",
+            "data_row",
+        ),
+    ] {
+        let source = string_reference_source(&[tag(property, "StrProperty", &[0], &fstring(ROW))]);
+        for catalog in [
+            ContentCatalog::empty(),
+            ContentCatalog::parse(&format!(
+                "format = 1\n[references]\n{wrong_role} = [\"{ROW}\"]\n"
+            ))
+            .unwrap(),
+        ] {
+            let plan = plan_import(source.as_slice(), &catalog).unwrap();
+            assert_eq!(plan.recorders.typed, 1);
+            assert_eq!(plan.content.name_references, 0);
+            assert_eq!(plan.content.path_references, 0);
+            assert_eq!(plan.content.roles[&role].references, 1);
+            assert_eq!(plan.content.roles[&role].unmapped_distinct, 1);
+            assert_eq!(
+                plan.blockers,
+                vec![ImportBlocker::UnmappedContent {
+                    distinct: 1,
+                    references: 1,
+                }]
+            );
+            assert!(!plan.importable);
+        }
+        let catalog = ContentCatalog::parse(&format!(
+            "format = 1\n[references]\n{catalog_role} = [\"{ROW}\"]\n"
+        ))
+        .unwrap();
+        let plan = plan_import(source.as_slice(), &catalog).unwrap();
+        assert_eq!(plan.content.mapped_distinct, 1);
+        assert_eq!(plan.content.roles[&role].unmapped_distinct, 0);
+        assert!(plan.blockers.is_empty());
+        assert!(plan.importable);
+        assert!(!plan.world_imported);
+    }
+}
+
+#[test]
+fn free_text_and_empty_or_none_strings_are_not_references() {
+    let mut fields = vec![("Label", ROW)];
+    for property in ["ItemStaticData", "ActorPathName", "Label"] {
+        for value in ["", "None"] {
+            fields.push((property, value));
+        }
+    }
+    for (property, value) in fields {
+        let source =
+            string_reference_source(&[tag(property, "StrProperty", &[0], &fstring(value))]);
+        let plan = plan_import(source.as_slice(), &ContentCatalog::empty()).unwrap();
+        assert_eq!(plan.recorders.typed, 1);
+        assert_eq!(plan.content.name_references, 0);
+        assert_eq!(plan.content.path_references, 0);
+        assert_eq!(plan.content.distinct, 0);
+        assert!(plan.content.roles.is_empty());
+        assert!(plan.blockers.is_empty(), "{property}={value:?}: {plan:?}");
+        assert!(plan.importable);
+    }
+}
+
+#[test]
+fn nested_classified_string_arrays_collect_references_and_skip_sentinels() {
+    let source = string_reference_source(&[struct_tag(
+        "Record",
+        "GameModeRecord",
+        &[
+            tag(
+                "SessionFlagRecords",
+                "ArrayProperty",
+                &[fstring("StrProperty"), vec![0]].concat(),
+                &[
+                    4_i32.to_le_bytes().to_vec(),
+                    fstring(ROW),
+                    fstring(ROW),
+                    fstring(""),
+                    fstring("None"),
+                ]
+                .concat(),
+            ),
+            end(),
+        ]
+        .concat(),
+    )]);
+    let plan = plan_import(source.as_slice(), &ContentCatalog::empty()).unwrap();
+    assert_eq!(plan.recorders.typed, 1);
+    assert_eq!(plan.recorders.uninterpreted_leaves, 0, "{plan:?}");
+    assert_eq!(plan.content.path_references, 0);
+    assert_eq!(
+        plan.content.roles[&ContentRole::DataRow],
+        RoleCount {
+            references: 2,
+            distinct: 1,
+            unmapped_distinct: 1,
+        }
+    );
+    assert_eq!(
+        plan.blockers,
+        vec![ImportBlocker::UnmappedContent {
+            distinct: 1,
+            references: 2,
+        }]
+    );
+    let catalog = ContentCatalog::parse(&format!(
+        "format = 1\n[references]\ndata_row = [\"{ROW}\"]\n"
+    ))
+    .unwrap();
+    let plan = plan_import(source.as_slice(), &catalog).unwrap();
+    assert!(plan.blockers.is_empty());
+    assert!(plan.importable);
 }
 
 #[test]
