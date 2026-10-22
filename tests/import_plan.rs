@@ -792,18 +792,20 @@ fn data_pak(root: &TempDir) -> std::path::PathBuf {
 fn data_rows_resolve_against_the_official_data_tables() {
     let root = TempDir::new().unwrap();
     let mut pak = icarus_bevy::data_pak::DataPak::open(&data_pak(&root)).unwrap();
-    let (catalog, tables) = ContentCatalog::parse(&clean_catalog(""))
+    let (catalog, tables, skipped) = ContentCatalog::parse(&clean_catalog(""))
         .unwrap()
         .with_data_tables(&mut pak)
         .unwrap();
-    // The authored player tables plus the item table; not the metadata.
+    // The authored player tables plus the item table; the metadata member
+    // is skipped as not a table.
     assert_eq!(tables, pak_writer::player_tables().len() + 1);
+    assert_eq!(skipped, 1);
     let source = envelope(2, &[recorder(ACTOR, &CLEAN)]);
     let plan = plan_import(source.as_slice(), &catalog).unwrap();
     assert!(plan.blockers.is_empty(), "{:?}", plan.blockers);
     assert!(plan.importable);
     // Without the actor class listed, the table's row does not resolve it.
-    let (catalog, _) = ContentCatalog::empty().with_data_tables(&mut pak).unwrap();
+    let (catalog, ..) = ContentCatalog::empty().with_data_tables(&mut pak).unwrap();
     let plan = plan_import(source.as_slice(), &catalog).unwrap();
     assert_eq!(
         plan.content.roles[&ContentRole::DataRow].unmapped_distinct,
@@ -845,6 +847,7 @@ fn import_cli_resolves_data_rows_against_a_data_pak() {
     )
     .unwrap();
     assert_eq!(record["event"], "data_tables_loaded");
+    assert_eq!(record["skipped_members"], 1);
     // A missing pak fails before planning.
     let output = Command::new(env!("CARGO_BIN_EXE_icarus-server"))
         .args(["import-save", "--dry-run", "--source"])
@@ -857,4 +860,44 @@ fn import_cli_resolves_data_rows_against_a_data_pak() {
         .unwrap();
     assert!(!output.status.success());
     assert!(String::from_utf8_lossy(&output.stderr).contains("--data-pak"));
+}
+
+/// A JSON member that does not parse, or two tables sharing a file name,
+/// fail instead of being skipped: every member is read by its full path.
+#[test]
+fn unreadable_data_table_members_fail_and_shared_names_both_load() {
+    let root = TempDir::new().unwrap();
+    let path = root.path().join("broken.pak");
+    fs::write(
+        &path,
+        pak_writer::write_pak(&[("Items/D_Broken.json", b"{\"Rows\": [".as_slice(), false)]),
+    )
+    .unwrap();
+    let mut pak = icarus_bevy::data_pak::DataPak::open(&path).unwrap();
+    assert!(ContentCatalog::empty().with_data_tables(&mut pak).is_err());
+    let path = root.path().join("shared.pak");
+    fs::write(
+        &path,
+        pak_writer::write_pak(&[
+            (
+                "A/D_Same.json",
+                pak_writer::table_json(&["Other"]).as_slice(),
+                false,
+            ),
+            (
+                "B/D_Same.json",
+                pak_writer::table_json(&[ROW]).as_slice(),
+                true,
+            ),
+        ]),
+    )
+    .unwrap();
+    let mut pak = icarus_bevy::data_pak::DataPak::open(&path).unwrap();
+    let (catalog, tables, skipped) = ContentCatalog::empty().with_data_tables(&mut pak).unwrap();
+    assert_eq!((tables, skipped), (2, 0));
+    let plan = plan_import(envelope(2, &[recorder(ACTOR, &CLEAN)]).as_slice(), &catalog).unwrap();
+    assert_eq!(
+        plan.content.roles[&ContentRole::DataRow].unmapped_distinct,
+        0
+    );
 }

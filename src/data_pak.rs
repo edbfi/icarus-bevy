@@ -403,6 +403,27 @@ impl DataPak {
         Ok(parsed.rows.into_iter().map(|row| row.name).collect())
     }
 
+    /// The row names of the data table at member path `member`, or `None`
+    /// when the member is JSON without a `Rows` array (not a table). Read
+    /// and size failures are errors.
+    pub fn member_rows(&mut self, member: &str) -> Result<Option<Vec<String>>> {
+        #[derive(Deserialize)]
+        struct Row {
+            #[serde(rename = "Name")]
+            name: String,
+        }
+        let bytes = self.read(member)?;
+        let parsed: serde_json::Value = serde_json::from_slice(&bytes)
+            .map_err(|error| crate::json_parse_error("invalid data table member", error))?;
+        let Some(rows) = parsed.get("Rows") else {
+            return Ok(None);
+        };
+        let rows: Vec<Row> = serde_json::from_value(rows.clone())
+            .map_err(|error| crate::json_parse_error("invalid data table rows", error))?;
+        ensure!(rows.len() <= MAX_TABLE_ROWS, "data table has too many rows");
+        Ok(Some(rows.into_iter().map(|row| row.name).collect()))
+    }
+
     /// Every row of data table `table` as its JSON object, in `Rows` order.
     pub fn table_objects(
         &mut self,

@@ -175,11 +175,13 @@ fn execute(cli: Cli) -> Result<()> {
             if let Some(path) = data_pak {
                 let mut pak = icarus_bevy::data_pak::DataPak::open(&path)
                     .with_context(|| format!("open --data-pak {}", path.display()))?;
-                let (with_rows, tables) = catalog.with_data_tables(&mut pak)?;
+                let (with_rows, tables, skipped) = catalog
+                    .with_data_tables(&mut pak)
+                    .with_context(|| format!("read --data-pak {}", path.display()))?;
                 catalog = with_rows;
                 eprintln!(
                     "{}",
-                    json!({"event": "data_tables_loaded", "tables": tables})
+                    json!({"event": "data_tables_loaded", "tables": tables, "skipped_members": skipped})
                 );
             }
             let file = open_regular_source(&source)?;

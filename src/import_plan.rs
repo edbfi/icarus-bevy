@@ -273,27 +273,32 @@ impl ContentCatalog {
     }
 
     /// Also resolve data-row references against every row of every data
-    /// table in `pak` (F-828, F-840); returns the catalog and the number of
-    /// tables read. JSON members that are not tables are skipped.
-    pub fn with_data_tables(mut self, pak: &mut crate::data_pak::DataPak) -> Result<(Self, usize)> {
-        let tables: Vec<String> = pak
+    /// table in `pak` (F-828, F-840); returns the catalog, the number of
+    /// tables read and of JSON members skipped as not tables. A member that
+    /// cannot be read or parsed fails.
+    pub fn with_data_tables(
+        mut self,
+        pak: &mut crate::data_pak::DataPak,
+    ) -> Result<(Self, usize, usize)> {
+        let members: Vec<String> = pak
             .members()
-            .filter_map(|member| member.rsplit('/').next())
-            .filter_map(|name| name.strip_suffix(".json"))
+            .filter(|member| member.ends_with(".json"))
             .map(str::to_owned)
             .collect();
-        let mut read = 0;
-        for table in tables {
-            let Ok(rows) = pak.table_rows(&table) else {
-                continue;
-            };
-            read += 1;
-            self.data_rows.extend(
-                rows.iter()
-                    .map(|row| fold_case(&row.encode_utf16().collect::<Vec<u16>>())),
-            );
+        let (mut read, mut skipped) = (0, 0);
+        for member in members {
+            match pak.member_rows(&member)? {
+                Some(rows) => {
+                    read += 1;
+                    self.data_rows.extend(
+                        rows.iter()
+                            .map(|row| fold_case(&row.encode_utf16().collect::<Vec<u16>>())),
+                    );
+                }
+                None => skipped += 1,
+            }
         }
-        Ok((self, read))
+        Ok((self, read, skipped))
     }
 
     /// Whether `units` resolves in `role`.
