@@ -3,10 +3,10 @@
 ## Status
 
 Experimental: static observations; the framing and Hello exchange are
-wire-validated offline, and a synthetic Login and Join are welcomed (F-688
-to F-690, F-712 to F-714). Scope: dedicated-server build 25621760 (M-168)
+wire-validated offline, and a synthetic Login and Join are welcomed (F-688,
+F-689, F-712 to F-714, F-858). Scope: dedicated-server build 25621760 (M-168)
 unless a current-client (build 25793767) comparison is named.
-Last reconciled: 2026-10-20.
+Last reconciled: 2026-10-22.
 Full text: d5b0ae6:docs/specs/network/control-negotiation.md.
 
 ## Scope
@@ -67,7 +67,7 @@ initialization, compression or integrity protection.
   | --- | --- | --- |
   | 1 | Packet word | 32 bits: history words minus one (0-3, at most 8), acked sequence (4-17), sequence (18-31) |
   | 2 | Ack history | that many 32-bit words |
-  | 3 | Packet info | one bit; if set, jitter below 1024, frame-time bit and, to a client, one frame-time byte (F-525) |
+  | 3 | Packet info | one bit; if set, jitter below 1024, frame-time bit and, to a client, one frame-time byte (F-843) |
   | 4 | Control | one bit; if set, open and close bits |
   | 5 | Close reason | if closing: value below 15 |
   | 6 | Paused, reliable | one bit each |
@@ -75,12 +75,12 @@ initialization, compression or integrity protection.
   | 8 | Exports, mapped GUIDs, partial | one bit each |
   | 9 | Reliable sequence | if reliable: below 1024, relative to the channel's last |
   | 10 | Partial initial, final | if partial: one bit each |
-  | 11 | Channel name | if open or reliable: one bit; set, a packed index (`<= 702`), else an archive string and 32-bit number (F-525) |
+  | 11 | Channel name | if open or reliable: one bit; set, a packed index (`<= 702`), else an archive string and 32-bit number (F-843) |
   | 12 | Payload | bit count below `8 * MaxPacket`, then those bits |
 
 - Reliability: sequence seeding, ack history and resend F-759 (steps F-535 to
   F-539); reliable reordering F-710.
-- Control vocabulary (F-529 to F-531, F-548, F-740, F-758); strings are archive
+- Control vocabulary (F-529, F-530, F-548, F-740, F-758, F-844); strings are archive
   strings and `u32` values follow the Hello byte-swap flag:
 
   | ID | Direction | Fields |
@@ -88,9 +88,9 @@ initialization, compression or integrity protection.
   | 0 Hello | to server | byte, u32 version, string token |
   | 1 Welcome | to client | strings: map URL, game name, redirect URL |
   | 2 Upgrade | to client | u32 local version, then close |
-  | 3 Challenge | to client | string (F-531) |
+  | 3 Challenge | to client | string (F-844) |
   | 4 Netspeed | to server | i32 rate |
-  | 5 Login | to server | string response (`"0"`, F-548), string URL, unique-net-id (F-531), string platform |
+  | 5 Login | to server | string response (`"0"`, F-548), string URL, unique-net-id (F-844), string platform |
   | 6 Failure | to client | string, then the client closes; shutdown sends it, then a reason-0 control close (F-782) |
   | 9 Join | to server | none |
   | 10 Split join | to server | string URL, unique-net-id |
@@ -104,12 +104,12 @@ initialization, compression or integrity protection.
 ## Candidate
 
 - The `experimental` control, packet, sequencing, admission and lab modules
-  model the headers, the 20-entry fallback table, unique-net-id forms (F-543, F-636),
+  model the headers, the 20-entry fallback table, unique-net-id forms (F-543, F-844),
   `clamp_client_netspeed`, `evaluate_pc_swap_target`,
   `evaluate_actor_channel_failure` (F-740), and disconnected loopback
   negotiation through `Hello`, `Challenge`, `Login`, `PreLogin`, `Welcome`,
   `Netspeed`, `Swap`, `Debug` and `Join` / `SplitJoin` (F-558, F-564, F-689,
-  F-690, F-712 to F-714).
+  F-712 to F-714, F-858).
 - `UWorld::NotifyControlMessage` (F-563, F-713, F-740) and `WelcomePlayer`
   (`0x1439fdeb0`, F-580): `IsClientMsgTypeValid` admits only
   `ExpectedClientLoginMsgType` (`0` Hello, `5` Login) in `ClientLoginState`

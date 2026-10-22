@@ -5,7 +5,7 @@
 Experimental: static interpretation with independent arithmetic tests, one
 matching early-startup value, both builds' wire values and exhaustive delegate
 cross-reference scans across both binaries (F-689, F-713; U-037 resolved). Scope: build 25621760 (M-168); addresses
-are preferred virtual addresses in that file. Last reconciled: 2026-10-17.
+are preferred virtual addresses in that file. Last reconciled: 2026-10-22.
 Full text: d5b0ae6:docs/specs/network/network-checksum.md.
 
 ## Scope
@@ -29,20 +29,20 @@ this module for admission.
   checksum **1447163286** for project `Icarus`, version `1.0.0`, NetCL 0,
   EngineNetVer 17, GameNetVer 0. Supplementary characters contribute two
   separately expanded surrogate units, so UTF-32 encoding is not equivalent
-  (F-254).
+  (F-841).
 - The log then sets ProjectVersion to `3.0.30.158174-rel-DangerousHorizons` and
   invalidates the cached checksum; the early value must not be hard-coded as
-  the accepted game version (F-254).
+  the accepted game version (F-841).
 - Cache-valid storage is `0x146210cf0`, the cached checksum `0x146210cf4`, and
   the generation/comparison delegates `0x1462116a0` / `0x1462116b0`. Generation
   checks the cache before its callback-enable argument; an uncached call needs
   nonzero occupancy, a nonnull object and a successful virtual predicate.
   Comparison has its own delegate checks and otherwise falls back to exact
-  32-bit equality (F-255).
+  32-bit equality (F-841).
 - Setter `0x141f39000` ignores null/empty strings; nonempty input updates
   project-version storage and clears cache-valid, even when the input already
   points at the stored buffer. Caller `0x143996c54` supplies a string from a
-  `GeneralProjectSettings` default object (F-255).
+  `GeneralProjectSettings` default object (F-841).
 - On the wire both builds compare a Hello's version exactly: 3.0.31 answers its
   own 2406501229 with a Challenge and 1379612455 with Upgrade, 3.0.30 the
   reverse, each logging its value (F-689). A connected client needs a server of
@@ -60,7 +60,7 @@ this module for admission.
   `0x1462116b0`) are referenced only by their reader functions (`0x141f13b30` /
   `0x141f2b220`, `0x141f16ef0` / `0x141f2e6e0`) and CRT `atexit` destructors
   (`0x144800cb0..d10` / `0x14461eb50..b0`), with 0 callbacks bound in either
-  binary (F-255, F-713; U-037 resolved).
+  binary (F-713, F-841; U-037 resolved).
 
 ## Candidate
 

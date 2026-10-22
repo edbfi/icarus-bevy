@@ -3,8 +3,8 @@
 ## Status
 
 Experimental: static observations of client build 25793767 and server build
-25621760, wire-checked against the 3.0.31 capture (F-704 to F-711, F-739,
-F-761). Last reconciled: 2026-10-22.
+25621760, wire-checked against the 3.0.31 capture (F-704 to F-711, F-761,
+F-845). Last reconciled: 2026-10-22.
 
 ## Scope
 
@@ -15,11 +15,11 @@ Address pairs are server / client.
 
 ## Confirmed
 
-- NetGUID references and export flags: F-572; checksum placement on the wire:
-  F-692. Object exports carry the class network checksum of F-776
+- NetGUID references, export flags and checksum placement on the wire:
+  F-850. Object exports carry the class network checksum of F-853
   (`experimental::class_checksum`); package and level exports carry `0`
-  (F-777, F-778); `experimental::session_open` composes the PlayerController
-  open (exports and body) from release identifiers and server state (F-779),
+  (F-852, F-853); `experimental::session_open` composes the PlayerController
+  open (exports and body) from release identifiers and server state (F-852),
   and `experimental::game_state_open` the GameState open (F-794); `run` sends
   the PlayerController, pawn, GameState and PlayerState opens after Join
   (F-784, F-804).
@@ -33,12 +33,12 @@ Address pairs are server / client.
   `NotifyBunchCommit` `0x143719b60`, `ReceivedAck` / `ReceivedNak`
   `0x14371e8b0` / `0x14371e9f0` in server 25956137);
   `experimental::session_open::ConnectionExports` mirrors the state.
-- Actor opens with components (F-797): GUIDs and exports follow serialization
+- Actor opens with components (F-854): GUIDs and exports follow serialization
   order (actor and spawn, actor-block references by handle, component blocks,
   runtime subobject blocks naming their exported class); a block's own
   references resolve after its header; `experimental::actor_open` composes
   the pawn and GameState opens that way.
-- Pawn open contents (F-799): component blocks carry `bIsActive` alone or
+- Pawn open contents (F-854): component blocks carry `bIsActive` alone or
   nothing; `UIcarusStatContainer::ReplicatedStatArray` (field 2) and
   `UInventory::Slots` (field 4) follow as custom-delta fast arrays with every
   item new (struct-delta bit set, base key 0, no deletes, IDs from 1); an
@@ -46,13 +46,13 @@ Address pairs are server / client.
   player's vitals, inventory rows and slot queries are data.pak rows (F-836;
   `network::pawn_content`); stats are starting grants through the virtual-stat formulas (F-839;
   `pawn_stats`).
-- GameState active prospect (F-801): handles 51..67 carry the loaded save's
+- GameState active prospect (F-855): handles 51..67 carry the loaded save's
   `ProspectInfo` fields that differ from their defaults, arrays with every
   element field; `ElapsedTime` is the game mode's recorded
   `LevelTimeElapsedSec` and `IsCurrentlyPlaying` marks connected members only
   (`game_state_open::active_prospect_values`, `ProspectInfo::for_session`);
   C015's record restores handles 34, 35, 39, 41 and 42, and 46 advances with
-  whole world seconds (F-803). `SessionFlags` (47) holds the record's
+  whole world seconds (F-855). `SessionFlags` (47) holds the record's
   `SessionFlagRecords` as 1-byte row positions in the server data.pak's
   `D_SessionFlags` (F-830; `network::saved_game_state`). `LockedMissions`
   (50) holds, per kept C015 `MissionHistory` entry, its `D_FactionMissions`
@@ -82,8 +82,8 @@ Address pairs are server / client.
   (`0x143537690` / `0x1437c5500`) reassembles into `InPartialBunch`, and
   `UActorChannel::ReceivedBunch` (`0x143535c60` / `0x1437c43f0`) reads
   `bHasMustBeMappedGUIDs` before `ProcessBunch` (`0x143530b30` / `0x1437c0c30`).
-- Open bunch, actor hook and dormancy (F-569, F-610, F-709 to F-711, F-739,
-  F-751): `UPackageMapClient::SerializeNewActor` frames F-569's fields with
+- Open bunch, actor hook and dormancy (F-709 to F-711, F-751,
+  F-845, F-849): `UPackageMapClient::SerializeNewActor` frames F-845's fields with
   `bQuantized = 1` for Location/Velocity and `0` for Scale3D (client
   `SerializeOptionalValue<FVector>` `0x14399cac0` and `FRotator::NetSerialize`
   `0x141ed36b0`; `SerializeCompressedShort` `0x141eeb7d0` / `0x141ed7810`).
@@ -112,23 +112,23 @@ Address pairs are server / client.
     `bPendingDormancy = 1` across `ReplicationMap` (`+0xa0`); on `bClose` with
     `CloseReason == 1` (`ChannelCloseReason::Dormancy`), `UActorChannel::CleanUp`
     sets `Actor->NetDormancy = DORM_DormantAll` (`2`) and keeps the actor.
-- Content blocks (F-571, F-576, F-581, F-586, F-609, F-644, F-703 to F-709):
-  framing per F-576 and F-581; the payload feeds
+- Content blocks (F-644, F-703 to F-709, F-846, F-849):
+  framing per F-849; the payload feeds
   `FObjectReplicator::ReplicateProperties` (`0x1437f6b80`).
   `FRepLayout::ReceiveProperties` (`0x143b20720`) reads `bDoChecksum` and the
-  F-571 handle stream, then field headers (`SerializeInt` index below
+  F-846 handle stream, then field headers (`SerializeInt` index below
   `FClassNetCache::GetMaxIndex() + 1` `0x1437c2650`, packed bit count, payload;
-  `experimental::rep_rpc`). Handle order follows F-609 (native `ConstructUClass`
+  `experimental::rep_rpc`). Handle order follows F-846 (native `ConstructUClass`
   descriptors; cooked `UBlueprintGeneratedClass` exports keep `ChildProperties`
   order; `experimental::rep_layout`: 64 schemas).
   Custom-delta fast arrays carry a 1-bit header, packed static-array index, four
   4-byte header words, 4-byte delete IDs and changed elements.
-- Spawn vectors and property serializers (F-571, F-573 to F-575, F-583, F-588,
-  F-589, F-591 to F-593, F-595, F-597, F-599, F-632, F-639, F-673 to F-675,
-  F-704 to F-709, F-739, F-762; U-064, U-066 resolved):
-  - Spawn vectors and compressed rotators: F-571, F-573 (quantized bit count
+- Spawn vectors and property serializers (F-588, F-589, F-593, F-597,
+  F-639, F-673 to F-675, F-704 to F-709, F-762, F-843, F-845 to F-848;
+  U-064, U-066 resolved):
+  - Spawn vectors and compressed rotators: F-845 (quantized bit count
     `<= 24`).
-  - `FRepLayout::ReceiveCustomProperty` (`0x143b219b0`) dispatches the F-574 and F-632 item
+  - `FRepLayout::ReceiveCustomProperty` (`0x143b219b0`) dispatches the F-847 item
     types (`_MAX = max_explicit + 1`), `FNumericProperty` (1/2/4/8 B), 12-bit
     gameplay tags, network Names, archive Strings and soft-object paths, and v522 `FText`
     histories (`experimental::rep_text`). Structs (`StructFlags & 0x400`): `3,637`
@@ -196,9 +196,9 @@ Address pairs are server / client.
     `0.4` (`dot < 0 && dist_sq > 250k`, or `dot >= 0 && dist_sq > 9,998,244`).
   - `ProcessPrioritizedActors` (`0x1439c1bf0`, `evaluate_process_prioritized_actor`)
     checks `IsNetReady(0)`, sends `SendDestructionInfo`, skips
-    `IsActorRelevantToConnection` within `1.0` s of `RelevantTime` (F-788),
+    `IsActorRelevantToConnection` within `1.0` s of `RelevantTime` (F-851),
     counts an actor recently relevant when `ForceRelevantFrame >=
-    Connection->LastProcessedFrame` (unsigned, `+0xd4` vs `+0x200`; F-772),
+    Connection->LastProcessedFrame` (unsigned, `+0xd4` vs `+0x200`; F-851),
     sets `RelevantTime = ElapsedTime + 0.5 * SRand()` only if relevant, delays unopenable `< 1.0` Hz
     actors by `0.2 * srands()`, replicates until saturation, and closes
     irrelevant or torn-off channels when
@@ -210,13 +210,13 @@ Address pairs are server / client.
     `Channel->RelevantTime = ElapsedTime + 0.5 * SRand()` if a channel exists),
     and `ForceRelevantFrame = ReplicationFrame + 1` when
     `ForceRelevantFrame >= Connection->LastProcessedFrame` for every
-    unprocessed entry, relevant or not, then sets `LastProcessedFrame` (F-774).
-- GameState updates (F-805, F-807): about 30 per second after the open,
+    unprocessed entry, relevant or not, then sets `LastProcessedFrame` (F-851).
+- GameState updates (F-807, F-856): about 30 per second after the open,
   unreliable, one actor block (component blocks may follow) with `TimeOfDay`
   (38) when changed, `ReplicatedWorldTimeSeconds` (19) every 0.1 s and
   `LevelTimeElapsedSec` (46) when its whole second changes, `ServerFPS` (82)
   when its 2 s recomputation changes it, and `NetworkingStatus` (68..79,
-  F-810) when its player lists change; F-806 and F-808 give the rules. An
+  F-810) when its player lists change; F-856 and F-808 give the rules. An
   update over one bunch goes out as unreliable partial bunches on consecutive
   packets: `net.PartialBunchReliableThreshold` is zero in the client and the
   pinned server, and `ReceivedNextBunch` joins an unreliable part only on the
@@ -227,7 +227,7 @@ Address pairs are server / client.
 - `experimental::actor_channel`, `sequencing` and `rep_layout` replay the
   captured bunches (F-709 to F-711), `PackageMapState` mappings and
   must-be-mapped lists, and model the scheduling policies; fixtures and
-  randomized checks: F-763, F-764 (F-577, F-604, F-673, F-739, F-761).
+  randomized checks: F-763, F-764 (F-577, F-604, F-673, F-761, F-845).
 
 ## Open questions
 
