@@ -53,7 +53,10 @@ open with GameState updates in the captured form and cadence, its time of
 day advancing at the saved day length's constant rate (F-807), and its
 own frame rate as `ServerFPS` by the original's rule (F-808, F-809), and a
 locally saving server's `NetworkingStatus` listing its players with pings
-measured by the original's rule (F-810, F-811, F-815, F-816).
+measured by the original's rule (F-810, F-811, F-815, F-816). The
+original's `LockedMissions` come from the save's mission history and the
+server's `D_FactionMissions` by a fixed rule, which `run` follows (F-834,
+F-835).
 
 ## Open
 
