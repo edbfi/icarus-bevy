@@ -2,10 +2,14 @@
 //! `manager_open::compose_manager_open` and compare them with supplied
 //! opens: the QuestManager (F-861) from the quest manager record (`C018`)
 //! on channel 126 and the PlayerHistoryTracker (F-862) from the player
-//! history record (`C024`) on channel 54, as M-707 opened them. The profile
+//! history record (`C024`) on channel 54 and the InventoryContainerManager
+//! (F-866) from the container manager record (`C016`) on channel 79, as
+//! M-707 opened them. The profile
 //! file maps channel indices to a supplied open (`exports_hex`,
 //! `exports_bits`, `body_hex`, `body_bits`) and its GUIDs (`actor`,
-//! `archetype`, `outer`, `components`); the plans are the built-in 3.0.31
+//! `archetype`, `outer`, `components` (or the first runtime subobject's),
+//! `class` (a runtime subobject class's, exported earlier)); the plans are
+//! the built-in 3.0.31
 //! release profile's, the faction mission's row comes from the official
 //! server's data.pak. The referenced actors' GUIDs are read from the
 //! supplied body so the composed open names the same ones. Prints counts
@@ -25,6 +29,7 @@ use icarus_bevy::{
         rep_layout::{RepLayoutCodec, RepLayoutLimits, RepValue, read_rep_properties},
         session_open::{ActorKey, ConnectionExports, NetGuidCache, PathSegment},
     },
+    network::container_inventories,
     prospect::read_saved_prospect,
 };
 use serde::Deserialize;
@@ -37,9 +42,14 @@ struct Options {
     /// The save whose `C018` and `C024` records the opens replicate.
     #[arg(long)]
     save: PathBuf,
-    /// The official dedicated server's `data.pak` (for the QuestManager).
+    /// The official dedicated server's `data.pak` (for the QuestManager
+    /// and the InventoryContainerManager).
     #[arg(long)]
     data_pak: Option<PathBuf>,
+    /// Write each composed body as `{"body_hex", "body_bits"}` to
+    /// `<dir>/<channel>-composed-private.json` (values are the save's).
+    #[arg(long)]
+    dump_composed: Option<PathBuf>,
 }
 
 #[derive(Deserialize)]
@@ -52,6 +62,8 @@ struct Supplied {
     archetype: u32,
     outer: u32,
     components: Vec<u32>,
+    #[serde(default)]
+    class: Option<u32>,
 }
 
 fn payload(text: &str, bits: usize) -> Result<Payload> {
@@ -150,6 +162,19 @@ fn main() -> Result<()> {
                 let slot = ManagerSlot::PlayerHistory;
                 (slot, base(slot)?.with_player_history(history)?)
             }
+            "79" => {
+                let containers = saved
+                    .inventory_containers
+                    .as_ref()
+                    .context("the save has no container manager record")?;
+                let path = options
+                    .data_pak
+                    .as_ref()
+                    .context("the InventoryContainerManager needs --data-pak")?;
+                let inventories = container_inventories(&mut DataTables::open(path)?, containers)?;
+                let slot = ManagerSlot::InventoryContainer;
+                (slot, base(slot)?.with_container_inventories(inventories)?)
+            }
             _ => continue,
         };
         let body = payload(&supplied.body_hex, supplied.body_bits)?;
@@ -195,7 +220,19 @@ fn main() -> Result<()> {
         let mut cache = NetGuidCache::new();
         let mut exports = ConnectionExports::new();
         cache.export_static(&mut exports, &plan.level)?;
-        burn_static_to(&mut cache, supplied.outer)?;
+        // A runtime subobject class exported earlier, below the outer.
+        let class_exported = match (supplied.class, &plan.inventories) {
+            (Some(class), Some(owned)) => {
+                burn_static_to(&mut cache, class)?;
+                let held = cache.export_static(&mut exports, &owned.blocks.inventory_class)?;
+                ensure!(held.guid == class, "class GUID");
+                true
+            }
+            _ => false,
+        };
+        if !class_exported {
+            burn_static_to(&mut cache, supplied.outer)?;
+        }
         let outer = cache.export_static(&mut exports, &plan.archetype[1..])?;
         ensure!(outer.guid == supplied.outer, "outer GUID");
         burn_static_to(&mut cache, supplied.archetype)?;
@@ -221,6 +258,26 @@ fn main() -> Result<()> {
         .context("compose")?;
         let composed_exports = composed.exports.context("exports")?;
         let supplied_exports = payload(&supplied.exports_hex, supplied.exports_bits)?;
+        if let Some(dir) = &options.dump_composed {
+            let bytes = composed.bunch.payload.bytes();
+            let hex: String = bytes.iter().map(|byte| format!("{byte:02x}")).collect();
+            std::fs::write(
+                dir.join(format!("{channel}-composed-private.json")),
+                json!({"body_hex": hex, "body_bits": composed.bunch.payload.bit_len()}).to_string(),
+            )?;
+        }
+        // Blocks whose bits differ, as (index, composed bits, supplied bits).
+        let composed_blocks =
+            read_actor_bunch_body(&mut composed.bunch.payload.reader(), true, &codec)?.blocks;
+        let differing: Vec<(usize, usize, usize)> = composed_blocks
+            .iter()
+            .zip(&decoded.blocks)
+            .enumerate()
+            .filter(|(_, (ours, theirs))| ours.payload != theirs.payload)
+            .map(|(index, (ours, theirs))| {
+                (index, ours.payload.bit_len(), theirs.payload.bit_len())
+            })
+            .collect();
         println!(
             "{}",
             json!({
@@ -232,6 +289,8 @@ fn main() -> Result<()> {
                 "exports_identical": composed_exports == supplied_exports,
                 "body_bits": [composed.bunch.payload.bit_len(), body.bit_len()],
                 "body_identical": composed.bunch.payload == body,
+                "blocks": [composed_blocks.len(), decoded.blocks.len()],
+                "differing_blocks": differing,
             })
         );
     }

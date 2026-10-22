@@ -1,4 +1,5 @@
-//! Describe a supplied pawn or (with `--game-state`) GameState open body
+//! Describe a supplied pawn, (with `--game-state`) GameState or (with
+//! `--container-manager`) InventoryContainerManager open body
 //! block by block (one JSON line per block): the actor block and each
 //! component block as rep-layout property entries, `Stat Container` and
 //! runtime `Inventory` blocks as their custom deltas. Reads the
@@ -22,9 +23,10 @@ use icarus_bevy::experimental::{
         bp_flammable_actor_rep_layout, bp_icarus_player_character_survival_rep_layout,
         bp_sheltered_component_rep_layout, bp_swimming_component_rep_layout,
         bp_ui_projection_component_player_rep_layout, icarus_game_state_survival_rep_layout,
-        inventory_rep_layout, inventory_slot_commands, player_character_state_rep_layout,
-        read_rep_properties, stomach_component_rep_layout, trait_component_rep_layout,
-        transmutable_component_rep_layout, weather_manager_component_rep_layout,
+        inventory_container_manager_rep_layout, inventory_rep_layout, inventory_slot_commands,
+        player_character_state_rep_layout, read_rep_properties, stomach_component_rep_layout,
+        trait_component_rep_layout, transmutable_component_rep_layout,
+        weather_manager_component_rep_layout,
     },
     rep_rpc::{
         FAST_ARRAY_COUNT_CAP, FastArrayItem, FastArrayItemLayout, read_custom_delta_header,
@@ -39,11 +41,14 @@ struct Options {
     /// Profile JSON (the `pawn_open_compose` shape; only the body is read).
     profile: PathBuf,
     /// One schema name per component block, in block order.
-    #[arg(long = "schema", required = true)]
+    #[arg(long = "schema")]
     schemas: Vec<String>,
     /// The body is the GameState's open (`BP_IcarusGameState_C`).
     #[arg(long)]
     game_state: bool,
+    /// The body is the InventoryContainerManager's open.
+    #[arg(long, conflicts_with = "game_state")]
+    container_manager: bool,
 }
 
 #[derive(Deserialize)]
@@ -198,7 +203,17 @@ fn main() -> Result<()> {
     for (index, block) in body.blocks.iter().enumerate() {
         let described = match &block.target {
             BlockTarget::Actor => {
-                let (schema, layout) = if options.game_state {
+                let (schema, layout) = if options.container_manager {
+                    (
+                        "AInventoryContainerManager",
+                        inventory_container_manager_rep_layout(
+                            MovementLevel::Whole,
+                            MovementLevel::Whole,
+                            RotationLevel::Bytes,
+                            tags,
+                        ),
+                    )
+                } else if options.game_state {
                     (
                         "BP_IcarusGameState_C",
                         icarus_game_state_survival_rep_layout(

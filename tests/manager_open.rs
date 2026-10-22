@@ -246,3 +246,164 @@ fn saved_quest_state_composes_into_the_quest_manager_open() {
     // Saved links never share a GUID with a domain actor of the same id.
     assert_ne!(cache.actor_guid(ActorKey::World(501)), base.guid);
 }
+
+/// Saved container inventories compose into the InventoryContainerManager
+/// open (F-866): `Inventories` lists the runtime subobjects' GUIDs in block
+/// order, and each block carries its info row and its slots, an item's row,
+/// dynamic data and named stats included.
+#[test]
+fn container_inventories_compose_as_listed_subobjects() {
+    use icarus_bevy::experimental::{
+        actor_channel::{
+            ActorChannelCodec, ActorChannelLimits, BlockTarget, read_actor_bunch_body,
+        },
+        control_messages::ArchiveText,
+        manager_open::CONTAINER_INVENTORIES_HANDLE,
+        pawn_open::{FastArrayContent, InventorySlot, PawnInventory, SlotItem},
+        rep_layout::{NetworkName, RepLayoutCodec, RepLayoutLimits, RepValue, read_rep_properties},
+        rep_rpc::{
+            FAST_ARRAY_COUNT_CAP, FastArrayItem, FastArrayItemLayout, read_custom_delta_header,
+            read_fast_array_delta, read_field_header,
+        },
+    };
+    let units = |text: &str| text.encode_utf16().collect::<Vec<u16>>();
+    let profile = ReleaseProfile::release_3_0_32();
+    let item = SlotItem {
+        row: 42,
+        dynamic: vec![(7, 15)],
+        stats: vec![(ArchiveText::new(&units("Potency")).unwrap(), 3)],
+    };
+    let inventories = vec![
+        PawnInventory {
+            info_row: 9,
+            slots: FastArrayContent {
+                replication_key: 3,
+                items: vec![InventorySlot {
+                    item: Some(item),
+                    ..InventorySlot::empty(5, 0)
+                }],
+            },
+        },
+        PawnInventory {
+            info_row: 10,
+            slots: FastArrayContent {
+                replication_key: 2,
+                items: vec![InventorySlot::empty(6, 0)],
+            },
+        },
+    ];
+    let plan = profile
+        .manager_open_plan(ManagerSlot::InventoryContainer, "/Game/Maps/Test/Test")
+        .unwrap()
+        .unwrap()
+        .with_container_inventories(inventories)
+        .unwrap();
+    let key = ManagerSlot::InventoryContainer.key();
+    let mut cache = NetGuidCache::new();
+    let mut exports = ConnectionExports::new();
+    let open =
+        compose_manager_open(&mut cache, &mut exports, &plan, key, 10, ByteOrder::Little).unwrap();
+    let codec = ActorChannelCodec {
+        engine_net_version: profile.engine_network_version,
+        exports_enabled: false,
+        has_level: true,
+        order: ByteOrder::Little,
+        limits: ActorChannelLimits::default(),
+    };
+    let rep_codec = RepLayoutCodec {
+        actor: codec,
+        checksums: false,
+        limits: RepLayoutLimits::default(),
+    };
+    let body = read_actor_bunch_body(&mut open.bunch.payload.reader(), true, &codec).unwrap();
+    assert_eq!(body.blocks.len(), 3);
+    let actor = read_rep_properties(
+        &mut body.blocks[0].payload.reader(),
+        &plan.layout,
+        &rep_codec,
+    )
+    .unwrap();
+    let Some(RepValue::DynamicArray(listed)) = actor
+        .entries
+        .iter()
+        .find(|entry| entry.handle == CONTAINER_INVENTORIES_HANDLE)
+        .map(|entry| entry.value.clone())
+    else {
+        panic!("an Inventories array");
+    };
+    let listed: Vec<u32> = listed
+        .stream
+        .entries
+        .iter()
+        .map(|entry| match &entry.value {
+            RepValue::Object(reference) => reference.guid,
+            other => panic!("not an object: {other:?}"),
+        })
+        .collect();
+    let blocks = &plan.inventories.as_ref().unwrap().blocks;
+    for (index, block) in body.blocks[1..].iter().enumerate() {
+        let BlockTarget::SubObject { object, .. } = &block.target else {
+            panic!("a subobject block");
+        };
+        assert_eq!(object.guid, listed[index]);
+        assert_eq!(object.guid, cache.subobject_guid(key, index as u32));
+        let mut reader = block.payload.reader();
+        let properties =
+            read_rep_properties(&mut reader, &blocks.inventory_layout, &rep_codec).unwrap();
+        assert!(
+            properties
+                .entries
+                .iter()
+                .any(|entry| entry.handle == 7 && entry.value == RepValue::Byte(9 + index as u8))
+        );
+        let field = read_field_header(
+            &mut reader,
+            blocks.inventory_bound,
+            rep_codec.limits.max_opaque_bits,
+        )
+        .unwrap();
+        let mut field = field.payload.reader();
+        read_custom_delta_header(&mut field, profile.engine_network_version, 1).unwrap();
+        let delta = read_fast_array_delta(
+            &mut field,
+            &FastArrayItemLayout::Delta(blocks.slot_layout.clone()),
+            &rep_codec,
+            FAST_ARRAY_COUNT_CAP,
+        )
+        .unwrap();
+        assert_eq!(delta.array_replication_key, 3 - index as i32);
+        let FastArrayItem::Delta(slot) = &delta.changed[0].1 else {
+            panic!("a delta item");
+        };
+        let value = |handle: u32| {
+            slot.entries
+                .iter()
+                .find(|entry| entry.handle == handle)
+                .map(|entry| entry.value.clone())
+        };
+        if index == 0 {
+            assert_eq!(value(2), Some(RepValue::UInt16(42)));
+            assert_eq!(value(16), Some(RepValue::UInt16(42)));
+            assert_eq!(value(10), Some(RepValue::Bool(true)));
+            let Some(RepValue::DynamicArray(dynamic)) = value(3) else {
+                panic!("dynamic data");
+            };
+            assert_eq!(dynamic.stream.entries[0].value, RepValue::Enum(7));
+            assert_eq!(dynamic.stream.entries[1].value, RepValue::Int(15));
+            let Some(RepValue::DynamicArray(stats)) = value(7) else {
+                panic!("stats");
+            };
+            assert_eq!(
+                stats.stream.entries[0].value,
+                RepValue::NetworkName(NetworkName::String {
+                    text: ArchiveText::new(&units("Potency")).unwrap(),
+                    number: 0,
+                })
+            );
+        } else {
+            assert_eq!(value(2), Some(RepValue::UInt16(u16::MAX)));
+            assert_eq!(value(3), None);
+            assert_eq!(value(10), Some(RepValue::Bool(false)));
+        }
+    }
+}

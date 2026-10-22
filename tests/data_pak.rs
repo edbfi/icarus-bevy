@@ -254,7 +254,7 @@ fn rows_read_back_as_json_objects_by_name() {
 #[test]
 fn a_fresh_players_vitals_and_inventories_come_from_the_tables() {
     use icarus_bevy::experimental::pawn_open::{
-        CharacterVitals, EmptySlot, FastArrayContent, PawnInventory,
+        CharacterVitals, FastArrayContent, InventorySlot, PawnInventory,
     };
     let root = TempDir::new().unwrap();
     let path = pak_file(&root, &pak_writer::official_pak(&[]));
@@ -276,7 +276,7 @@ fn a_fresh_players_vitals_and_inventories_come_from_the_tables() {
     };
     assert_eq!(content.character_state, vitals.values());
     assert!(content.frozen_movement);
-    let slot = |query_row, index| EmptySlot { query_row, index };
+    let slot = InventorySlot::empty;
     assert_eq!(
         content.inventories,
         [
