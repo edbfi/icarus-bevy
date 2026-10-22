@@ -403,9 +403,11 @@ impl DataPak {
         Ok(parsed.rows.into_iter().map(|row| row.name).collect())
     }
 
-    /// The bool `field` of every row of data table `table`, in `Rows`
-    /// order; `None` where a row omits it, so its struct default applies.
-    pub fn table_bool_column(&mut self, table: &str, field: &str) -> Result<Vec<Option<bool>>> {
+    /// Every row of data table `table` as its JSON object, in `Rows` order.
+    pub fn table_objects(
+        &mut self,
+        table: &str,
+    ) -> Result<Vec<serde_json::Map<String, serde_json::Value>>> {
         #[derive(Deserialize)]
         struct Table {
             #[serde(rename = "Rows")]
@@ -418,8 +420,13 @@ impl DataPak {
             parsed.rows.len() <= MAX_TABLE_ROWS,
             "data table has too many rows"
         );
-        parsed
-            .rows
+        Ok(parsed.rows)
+    }
+
+    /// The bool `field` of every row of data table `table`, in `Rows`
+    /// order; `None` where a row omits it, so its struct default applies.
+    pub fn table_bool_column(&mut self, table: &str, field: &str) -> Result<Vec<Option<bool>>> {
+        self.table_objects(table)?
             .iter()
             .map(|row| match row.get(field) {
                 None => Ok(None),
@@ -435,6 +442,7 @@ pub struct DataTables {
     pak: DataPak,
     rows: BTreeMap<String, Vec<String>>,
     bools: BTreeMap<(String, String), Vec<Option<bool>>>,
+    objects: BTreeMap<String, Vec<serde_json::Map<String, serde_json::Value>>>,
 }
 
 impl std::fmt::Debug for DataTables {
@@ -452,6 +460,7 @@ impl DataTables {
             pak: DataPak::open(path)?,
             rows: BTreeMap::new(),
             bools: BTreeMap::new(),
+            objects: BTreeMap::new(),
         })
     }
 
@@ -467,6 +476,22 @@ impl DataTables {
     pub fn row_index(&mut self, table: &str, name: &[u16]) -> Result<Option<usize>> {
         let name = String::from_utf16_lossy(name);
         Ok(self.rows(table)?.iter().position(|row| *row == name))
+    }
+
+    /// Row `name` (UTF-8) of `table` as its JSON object, if listed.
+    pub fn row(
+        &mut self,
+        table: &str,
+        name: &str,
+    ) -> Result<Option<serde_json::Map<String, serde_json::Value>>> {
+        if !self.objects.contains_key(table) {
+            let rows = self.pak.table_objects(table)?;
+            self.objects.insert(table.to_owned(), rows);
+        }
+        Ok(self.objects[table]
+            .iter()
+            .find(|row| row.get("Name").and_then(serde_json::Value::as_str) == Some(name))
+            .cloned())
     }
 
     /// The bool `field` of row `index` in `table`: `None` where the row

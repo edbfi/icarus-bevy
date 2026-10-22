@@ -17,8 +17,9 @@
 //! PlayerController open on actor channel 2 (F-778, F-779): exports, spawn at
 //! [`SPAWN_LOCATION`], roles, references and component blocks; with `[pawn]`
 //! identifiers the player's pawn follows on channel 3 (F-797: captured roles
-//! and references, component bools, [`pawn_content`]; no stats or
-//! inventories);
+//! and references, component bools, [`pawn_content`]: with the official
+//! data tables a fresh player's vitals and empty inventories, F-836; no
+//! stats);
 //! with `[game_state]` identifiers the world's GameState on channel 4 (F-794:
 //! [`game_state_values`], plus a preserved world's prospect and game mode
 //! record, [`saved_game_state`], whose `TimeOfDay` then advances at the
@@ -59,7 +60,10 @@ use crate::{
             MATCH_STATE_IN_PROGRESS, NetworkingStatus, active_prospect_values, handle,
             saved_game_mode_values, session_flags_value,
         },
-        pawn_open::{CharacterVitals, PAWN_CHANNEL_INDEX, PawnContent},
+        pawn_open::{
+            CharacterVitals, EmptySlot, FastArrayContent, PAWN_CHANNEL_INDEX, PawnContent,
+            PawnInventory,
+        },
         peer_lab::{PeerLab, PeerLabAdmission, PeerLabConfig, PeerLabPlugin, SessionCounts},
         prospect_info::MissionHistoryRecord,
         release::{ReleasePin, ReleaseProfile},
@@ -133,30 +137,192 @@ pub fn game_state_values() -> Result<GameStateOpenState> {
     })
 }
 
+/// The lab vitals a pawn opens with when no data tables are loaded; they
+/// are not ICARUS balance values.
+const LAB_VITALS: CharacterVitals = CharacterVitals {
+    health: 100,
+    max_health: 100,
+    stamina: 100,
+    max_stamina: 100,
+    oxygen: 100,
+    max_oxygen: 100,
+    water: 100,
+    max_water: 100,
+    food: 100,
+    max_food: 100,
+    biome_row: 0,
+    growth_row: 0,
+};
+
 /// The pawn content `run` opens every player's pawn with: movement frozen
-/// at open (as captured, F-797) and authored lab vitals, which are not
-/// ICARUS balance values. No `IcarusUID`, tags, stats or inventories are
-/// sent: they need imported or catalogued content.
-pub fn pawn_content() -> PawnContent {
-    PawnContent {
+/// at open (as captured, F-797). With the official server's data tables a
+/// fresh player's vitals and empty inventories come from them
+/// ([`fresh_player_vitals`], [`player_inventories`], F-836); without, lab
+/// vitals and no inventories. No `IcarusUID`, tags or stats are sent: they
+/// need imported or catalogued content.
+pub fn pawn_content(tables: Option<&mut DataTables>) -> Result<PawnContent> {
+    let (vitals, inventories) = match tables {
+        Some(tables) => (fresh_player_vitals(tables)?, player_inventories(tables)?),
+        None => (LAB_VITALS, Vec::new()),
+    };
+    Ok(PawnContent {
         frozen_movement: true,
-        character_state: CharacterVitals {
-            health: 100,
-            max_health: 100,
-            stamina: 100,
-            max_stamina: 100,
-            oxygen: 100,
-            max_oxygen: 100,
-            water: 100,
-            max_water: 100,
-            food: 100,
-            max_food: 100,
-            biome_row: 0,
-            growth_row: 0,
-        }
-        .values(),
+        character_state: vitals.values(),
+        inventories,
         ..PawnContent::default()
+    })
+}
+
+/// The data tables a fresh player's pawn content comes from (F-836).
+pub const INVENTORY_TABLE: &str = "D_Inventory";
+pub const INVENTORY_INFO_TABLE: &str = "D_InventoryInfo";
+pub const TAG_QUERIES_TABLE: &str = "D_TagQueries";
+pub const STARTING_STATS_TABLE: &str = "D_CharacterStartingStats";
+pub const CHARACTER_GROWTH_TABLE: &str = "D_CharacterGrowth";
+/// The player's rows in `D_Inventory`, `D_CharacterStartingStats` and
+/// `D_CharacterGrowth`.
+pub const PLAYER_INVENTORY_ROW: &str = "Player";
+pub const STARTING_STATS_ROW: &str = "Base_Stats";
+pub const PLAYER_GROWTH_ROW: &str = "Player";
+/// The slot arrays' replication key at open, as captured (F-799).
+pub const INVENTORY_SLOTS_REPLICATION_KEY: i32 = 2;
+
+/// The row named by a `{"RowName": ...}` handle.
+fn row_name(value: &serde_json::Value) -> Option<&str> {
+    value.get("RowName")?.as_str()
+}
+
+/// A fresh player's inventories (F-836), in the order `D_Inventory`'s
+/// `Player` row lists them: each one's `D_InventoryInfo` row and its
+/// `StartingSlots` empty slots (none when omitted), slot `i` querying the
+/// `SlotOverrides` entry at `Location` `i`, else the `SlotTemplate`, as a
+/// `D_TagQueries` row.
+pub fn player_inventories(tables: &mut DataTables) -> Result<Vec<PawnInventory>> {
+    let player = tables
+        .row(INVENTORY_TABLE, PLAYER_INVENTORY_ROW)?
+        .with_context(|| format!("{INVENTORY_TABLE} has no {PLAYER_INVENTORY_ROW} row"))?;
+    let listed = player
+        .get("Inventories")
+        .and_then(serde_json::Value::as_array)
+        .context("the player's Inventories is not an array")?;
+    let mut inventories = Vec::new();
+    for handle in listed {
+        let name = row_name(handle).context("an inventory names no row")?;
+        let index = tables
+            .row_index(
+                INVENTORY_INFO_TABLE,
+                &name.encode_utf16().collect::<Vec<u16>>(),
+            )?
+            .with_context(|| format!("{INVENTORY_INFO_TABLE} lacks a player inventory"))?;
+        let info = tables
+            .row(INVENTORY_INFO_TABLE, name)?
+            .context("an inventory info row vanished")?;
+        let starting = match info.get("StartingSlots") {
+            None => 0,
+            Some(value) => value
+                .as_i64()
+                .and_then(|slots| i32::try_from(slots).ok())
+                .filter(|slots| (0..=MAX_STARTING_SLOTS).contains(slots))
+                .context("an inventory's StartingSlots is out of range")?,
+        };
+        let template = info.get("SlotTemplate").and_then(row_name);
+        // A malformed override fails, as a changed table shape would
+        // otherwise send the template's query for its slot.
+        let overrides: Vec<(i64, &str)> = match info.get("SlotOverrides") {
+            None => Vec::new(),
+            Some(entries) => entries
+                .as_array()
+                .context("an inventory's SlotOverrides is not an array")?
+                .iter()
+                .map(|entry| {
+                    let location = entry.get("Location").and_then(serde_json::Value::as_i64);
+                    let query = entry.get("Query").and_then(row_name);
+                    location
+                        .zip(query)
+                        .context("a slot override lacks its Location or Query row")
+                })
+                .collect::<Result<_>>()?,
+        };
+        let mut slots = Vec::new();
+        for slot in 0..starting {
+            let query = overrides
+                .iter()
+                .find(|(location, _)| *location == i64::from(slot))
+                .map(|(_, query)| *query)
+                .or(template)
+                .context("an inventory slot has no query")?;
+            let query_row = tables
+                .row_index(
+                    TAG_QUERIES_TABLE,
+                    &query.encode_utf16().collect::<Vec<u16>>(),
+                )?
+                .and_then(|row| u16::try_from(row).ok())
+                .with_context(|| format!("{TAG_QUERIES_TABLE} lacks a slot query"))?;
+            slots.push(EmptySlot {
+                query_row,
+                index: slot,
+            });
+        }
+        inventories.push(PawnInventory {
+            info_row: u8::try_from(index).context("an inventory info row past 255")?,
+            slots: FastArrayContent {
+                replication_key: INVENTORY_SLOTS_REPLICATION_KEY,
+                items: slots,
+            },
+        });
     }
+    Ok(inventories)
+}
+
+/// The most starting slots one inventory may list.
+const MAX_STARTING_SLOTS: i32 = 1_024;
+
+/// A fresh player's vitals (F-836): full at the maxima the starting stats
+/// grant (`BaseMaximum{Health,Stamina,Oxygen,Water,Food}_+`), the growth
+/// row `Player` and biome row 0.
+pub fn fresh_player_vitals(tables: &mut DataTables) -> Result<CharacterVitals> {
+    let row = tables
+        .row(STARTING_STATS_TABLE, STARTING_STATS_ROW)?
+        .with_context(|| format!("{STARTING_STATS_TABLE} has no {STARTING_STATS_ROW} row"))?;
+    let granted = row
+        .get("StatsGranted")
+        .and_then(serde_json::Value::as_object)
+        .context("the starting stats grant no map")?;
+    // Keys are exported as `(Value="<stat row>")`.
+    let stat = |name: &str| -> Result<i32> {
+        granted
+            .get(&format!("(Value=\"{name}\")"))
+            .and_then(serde_json::Value::as_i64)
+            .and_then(|value| i32::try_from(value).ok())
+            .with_context(|| format!("the starting stats grant no {name}"))
+    };
+    let (health, stamina, oxygen, water, food) = (
+        stat("BaseMaximumHealth_+")?,
+        stat("BaseMaximumStamina_+")?,
+        stat("BaseMaximumOxygen_+")?,
+        stat("BaseMaximumWater_+")?,
+        stat("BaseMaximumFood_+")?,
+    );
+    let growth = tables
+        .row_index(
+            CHARACTER_GROWTH_TABLE,
+            &PLAYER_GROWTH_ROW.encode_utf16().collect::<Vec<u16>>(),
+        )?
+        .with_context(|| format!("{CHARACTER_GROWTH_TABLE} has no {PLAYER_GROWTH_ROW} row"))?;
+    Ok(CharacterVitals {
+        health,
+        max_health: health,
+        stamina,
+        max_stamina: stamina,
+        oxygen,
+        max_oxygen: oxygen,
+        water,
+        max_water: water,
+        food,
+        max_food: food,
+        biome_row: 0,
+        growth_row: u8::try_from(growth).context("the growth row past 255")?,
+    })
 }
 
 /// What a loaded world's preserved prospect adds to the GameState open: its
@@ -373,6 +539,8 @@ fn load_data_tables(path: &std::path::Path) -> Result<DataTables> {
     tables.rows(SESSION_FLAGS_TABLE)?;
     tables.rows(FACTION_MISSIONS_TABLE)?;
     tables.row_bool(FACTION_MISSIONS_TABLE, RETRY_TIMEOUT_FIELD, 0)?;
+    fresh_player_vitals(&mut tables)?;
+    player_inventories(&mut tables)?;
     Ok(tables)
 }
 
@@ -386,7 +554,7 @@ pub fn bind(network: &NetworkConfig) -> Result<Option<BoundNetwork>> {
     let profile = release_profile(network)?;
     // The tables run reads are loaded here, so a pak without them fails
     // before the socket binds rather than at the first apply.
-    let tables = network
+    let mut tables = network
         .data_pak
         .as_deref()
         .map(|path| {
@@ -422,7 +590,7 @@ pub fn bind(network: &NetworkConfig) -> Result<Option<BoundNetwork>> {
             _ => None,
         };
         if let Some(pawn) = pawn {
-            lab.enable_pawn_open(pawn, PAWN_CHANNEL_INDEX, pawn_content())?;
+            lab.enable_pawn_open(pawn, PAWN_CHANNEL_INDEX, pawn_content(tables.as_mut())?)?;
         }
         let game_state = match (&profile, &config.admission) {
             (Some(profile), Some(admission)) => profile

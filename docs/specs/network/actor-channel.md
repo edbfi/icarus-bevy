@@ -42,7 +42,9 @@ Address pairs are server / client.
   nothing; `UIcarusStatContainer::ReplicatedStatArray` (field 2) and
   `UInventory::Slots` (field 4) follow as custom-delta fast arrays with every
   item new (struct-delta bit set, base key 0, no deletes, IDs from 1); an
-  empty slot sends handles 2 and 10..18 (`experimental::pawn_open`).
+  empty slot sends handles 2 and 10..18 (`experimental::pawn_open`). A fresh
+  player's vitals, inventory rows and slot queries are data.pak rows (F-836;
+  `network::pawn_content`); stats are 50 grants and 8 derived (F-837).
 - GameState active prospect (F-801): handles 51..67 carry the loaded save's
   `ProspectInfo` fields that differ from their defaults, arrays with every
   element field; `ElapsedTime` is the game mode's recorded

@@ -643,17 +643,12 @@ fn run_replicates_a_preserved_worlds_prospect() {
     std::fs::create_dir_all(pak.parent().unwrap()).unwrap();
     std::fs::write(
         &pak,
-        pak_writer::write_pak(&[
+        pak_writer::official_pak(&[
             (
                 "Flags/D_SessionFlags.json",
-                &pak_writer::table_json(&["Flag_A", "Flag_X", "Flag_B"]),
-                false,
+                pak_writer::table_json(&["Flag_A", "Flag_X", "Flag_B"]),
             ),
-            (
-                "Factions/D_FactionMissions.json",
-                &faction_missions_json(),
-                true,
-            ),
+            ("Factions/D_FactionMissions.json", faction_missions_json()),
         ]),
     )
     .unwrap();

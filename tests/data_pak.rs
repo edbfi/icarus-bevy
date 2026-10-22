@@ -233,3 +233,136 @@ fn a_data_pak_without_the_faction_missions_table_fails_before_binding() {
     assert!(text.contains("network.data_pak"), "{text}");
     assert!(text.contains("not found"), "the cause is kept: {text}");
 }
+
+#[test]
+fn rows_read_back_as_json_objects_by_name() {
+    let root = TempDir::new().unwrap();
+    let path = pak_file(&root, &pak_writer::official_pak(&[]));
+    let mut tables = DataTables::open(&path).unwrap();
+    let row = tables
+        .row("D_InventoryInfo", "Hands")
+        .unwrap()
+        .expect("the Hands row");
+    assert_eq!(row["StartingSlots"], 3);
+    assert!(tables.row("D_InventoryInfo", "Absent").unwrap().is_none());
+    assert!(tables.row("D_Missing", "Hands").is_err());
+}
+
+/// A fresh player's pawn content from the data tables (F-836): vitals full
+/// at the granted maxima, growth row `Player`, and the player's inventories
+/// in listed order with their slots' queries.
+#[test]
+fn a_fresh_players_vitals_and_inventories_come_from_the_tables() {
+    use icarus_bevy::experimental::pawn_open::{
+        CharacterVitals, EmptySlot, FastArrayContent, PawnInventory,
+    };
+    let root = TempDir::new().unwrap();
+    let path = pak_file(&root, &pak_writer::official_pak(&[]));
+    let mut tables = DataTables::open(&path).unwrap();
+    let content = icarus_bevy::network::pawn_content(Some(&mut tables)).unwrap();
+    let vitals = CharacterVitals {
+        health: 250,
+        max_health: 250,
+        stamina: 150,
+        max_stamina: 150,
+        oxygen: 220,
+        max_oxygen: 220,
+        water: 230,
+        max_water: 230,
+        food: 240,
+        max_food: 240,
+        biome_row: 0,
+        growth_row: 1,
+    };
+    assert_eq!(content.character_state, vitals.values());
+    assert!(content.frozen_movement);
+    let slot = |query_row, index| EmptySlot { query_row, index };
+    assert_eq!(
+        content.inventories,
+        [
+            PawnInventory {
+                info_row: 2,
+                slots: FastArrayContent {
+                    replication_key: 2,
+                    items: Vec::new(),
+                },
+            },
+            PawnInventory {
+                info_row: 1,
+                slots: FastArrayContent {
+                    replication_key: 2,
+                    items: vec![slot(1, 0), slot(1, 1), slot(2, 2)],
+                },
+            },
+        ]
+    );
+    // Without tables: lab vitals and no inventories.
+    let lab = icarus_bevy::network::pawn_content(None).unwrap();
+    assert!(lab.inventories.is_empty());
+    assert_ne!(lab.character_state, vitals.values());
+}
+
+#[test]
+fn missing_or_malformed_player_rows_fail_before_binding() {
+    let root = TempDir::new().unwrap();
+    let bind = |pak: Vec<u8>| {
+        let path = pak_file(&root, &pak);
+        let network = icarus_bevy::config::NetworkConfig {
+            enabled: true,
+            port: 0,
+            data_pak: Some(path),
+            ..Default::default()
+        };
+        format!(
+            "{:#}",
+            icarus_bevy::network::bind(&network)
+                .err()
+                .expect("bind fails")
+        )
+    };
+    let flags = ("Flags/D_SessionFlags.json", table_json(&["A"]));
+    // The complete authored set binds.
+    let path = pak_file(
+        &root,
+        &pak_writer::official_pak(std::slice::from_ref(&flags)),
+    );
+    let network = icarus_bevy::config::NetworkConfig {
+        enabled: true,
+        port: 0,
+        data_pak: Some(path),
+        ..Default::default()
+    };
+    assert!(icarus_bevy::network::bind(&network).unwrap().is_some());
+    // No Player row, a slot query the tag queries lack, no starting stats.
+    for (member, bytes, expected) in [
+        (
+            "Traits/D_Inventory.json",
+            table_json(&["Crate"]),
+            "no Player row",
+        ),
+        (
+            "Tags/D_TagQueries.json",
+            table_json(&["Q0", "Any"]),
+            "lacks a slot query",
+        ),
+        (
+            "Stats/D_CharacterStartingStats.json",
+            table_json(&["Base_Stats"]),
+            "grant no map",
+        ),
+        (
+            "Inventory/D_InventoryInfo.json",
+            serde_json::to_vec(&serde_json::json!({"Rows": [
+                {"Name": "Hands", "SlotTemplate": {"RowName": "Any"}, "StartingSlots": 1,
+                 "SlotOverrides": [{"Query": {"RowName": "Fists"}}]},
+                {"Name": "Bag"},
+            ]}))
+            .unwrap(),
+            "lacks its Location or Query row",
+        ),
+    ] {
+        let text = bind(pak_writer::official_pak(&[flags.clone(), (member, bytes)]));
+        assert!(text.contains("network.data_pak"), "{text}");
+        assert!(text.contains(expected), "{expected}: {text}");
+    }
+}
