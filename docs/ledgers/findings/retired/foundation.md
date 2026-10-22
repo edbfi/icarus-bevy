@@ -4,7 +4,7 @@ Rows retired from [the active ledger](../foundation.md): superseded by a summary
 execution receipts, or historical session state. Full text is kept and IDs stay
 permanent; cite the superseding row where one exists.
 
-Last reconciled: 2026-10-21
+Last reconciled: 2026-10-22
 
 | ID | Claim | Kind | Evidence | Scope and limits | Unknowns | Status |
 | --- | --- | --- | --- | --- | --- | --- |
@@ -101,3 +101,4 @@ Last reconciled: 2026-10-21
 | F-802 | run answers Join with PlayerController (channel 2, F-779), pawn (3, F-799), GameState (4, F-794; a preserved world's prospect, F-801) and PlayerState (5, F-784) opens: exports until acked (F-796), resent on nak | measured | authored-test; M-821, M-823, M-832, M-836, M-838, M-839 | high; loopback probe; no ICARUS client | U-038, U-068 | superseded-by F-804 |
 | F-812 | One probe session held 1 h on run (30 Hz, preserved world, 60 s autosave) got 94,691 GameState updates, some in every 250 ms receive window: 0 decode errors, world time and level clock never decreasing, TimeOfDay monotonic but one day wrap, ServerFPS 24..29; 60 autosaves, 0 failures | measured | authored-test; M-849 | high; 1 h; RSS not tracked | U-035 | superseded-by F-827 |
 | F-823 | Eight probe sessions held 1 h concurrently on run (30 Hz, preserved world, max_players 8) each got 88,537..88,543 GameState updates (gap <= 268 ms), 0 decode errors or clock regressions, all 8 listed; 61 saves, 0 failures; tick p99 <= 151 us, max 9.5 ms, 0 misses; RSS 113.4 MB flat | measured | authored-test; M-861 | high; 1 h; loopback probes | U-035 | superseded-by F-827 |
+| F-827 | Paced holds on run (30 Hz, preserved world, 60 s autosave), one session 1 h and 8 h, eight 1 h: updates gap <= 278 ms, 0 decode errors or clock regressions, 0 save failures or tick misses, p99 <= 151 us; RSS ~113.7 MB until the host swapped the idle 8 h server out | measured | authored-test; M-849, M-861, M-865 | high; up to 8 h; 8 h probe predates #57 | U-035 | superseded-by F-833 |
