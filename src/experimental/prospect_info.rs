@@ -204,6 +204,24 @@ impl<'a> Fields<'a> {
         Ok(u8::try_from(value)?)
     }
 
+    /// A name array's elements; missing reads as empty.
+    fn names(&self, name: &str) -> Result<Vec<Vec<u16>>> {
+        match self.tree.get(name).map(|property| &property.value) {
+            Some(Value::ScalarArray {
+                inner: TagKind::Name,
+                items,
+            }) => items
+                .iter()
+                .map(|item| match item {
+                    Scalar::Name(units) => Ok(units.clone()),
+                    _ => bail!("{}.{name} holds a non-name item", self.what),
+                })
+                .collect(),
+            None => Ok(Vec::new()),
+            _ => bail!("{}.{name} is not a name array", self.what),
+        }
+    }
+
     /// A tagged struct array's elements; missing reads as empty.
     fn structs(&self, name: &str) -> Result<&'a [TypedTree]> {
         match self
@@ -312,7 +330,7 @@ impl ProspectInfo {
 /// `F-650`): `GameModeRecord`'s seed, time of day, prospect game time, day
 /// length and level clock, and the top-level `DynamicQuestSeed`. Missing
 /// properties read as their defaults; `Debug` shows no values.
-#[derive(Clone, Copy, Default, PartialEq)]
+#[derive(Clone, Default, PartialEq)]
 pub struct SavedGameMode {
     pub game_state_seed: i32,
     pub time_of_day: f32,
@@ -320,6 +338,9 @@ pub struct SavedGameMode {
     pub seconds_per_game_day: i32,
     pub level_time_elapsed_sec: i32,
     pub dynamic_quest_seed: i32,
+    /// `GameModeRecord.SessionFlagRecords`: `D_SessionFlags` row names, in
+    /// saved order, that the restore turns into row handles (F-820).
+    pub session_flags: Vec<Vec<u16>>,
 }
 
 impl std::fmt::Debug for SavedGameMode {
@@ -349,6 +370,7 @@ impl SavedGameMode {
             seconds_per_game_day: record.int("SecondsPerGameDay")?,
             level_time_elapsed_sec: record.int("LevelTimeElapsedSec")?,
             dynamic_quest_seed,
+            session_flags: record.names("SessionFlagRecords")?,
         })
     }
 }

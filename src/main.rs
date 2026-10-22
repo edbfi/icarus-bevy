@@ -472,8 +472,11 @@ fn run(options: ConfigOptions, max_ticks: Option<u64>, compressed: bool) -> Resu
         // A loaded world's prospect and game mode record replicate in the
         // GameState open; a prospect that cannot supply them leaves the
         // lab's values alone.
-        match network::apply_saved_game_state(&mut bound.lab, section) {
-            Ok(()) => eprintln!("{}", json!({"event": "active_prospect_replicated"})),
+        match network::apply_saved_game_state(&mut bound.lab, section, bound.tables.as_mut()) {
+            Ok(unmapped) => eprintln!(
+                "{}",
+                json!({"event": "active_prospect_replicated", "unmapped_session_flags": unmapped})
+            ),
             // Reader errors name fields and kinds, never saved values.
             Err(error) => eprintln!(
                 "{}",

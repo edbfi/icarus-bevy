@@ -261,6 +261,28 @@ pub fn saved_game_mode_values(mode: &SavedGameMode) -> BTreeMap<u32, RepValue> {
     .collect()
 }
 
+/// `SessionFlags` (handle 47) holding `indices`, `D_SessionFlags` row
+/// positions (its elements are 1-byte enumerators of the generated enum,
+/// as captured; F-830).
+pub fn session_flags_value(indices: &[u8]) -> RepValue {
+    use super::rep_layout::{PropertyStream, RepArray, RepEntry};
+    RepValue::DynamicArray(RepArray {
+        count: indices.len() as u16,
+        stream: PropertyStream {
+            entries: indices
+                .iter()
+                .zip(1..)
+                .map(|(index, handle)| RepEntry {
+                    handle,
+                    checksum: None,
+                    value: RepValue::Byte(*index),
+                })
+                .collect(),
+            terminator_checksum: None,
+        },
+    })
+}
+
 /// `LevelTimeElapsedSec` at world time `world_seconds`: the restored clock
 /// plus the whole seconds since (as captured, F-803).
 pub fn level_time_elapsed_sec(restored: i32, world_seconds: f32) -> i32 {

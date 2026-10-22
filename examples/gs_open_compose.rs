@@ -45,6 +45,10 @@ struct Options {
     /// `TimeOfDay` stays captured and its advance is reported.
     #[arg(long)]
     prospect: Option<PathBuf>,
+    /// The official server's `data.pak`: with `--prospect`, the saved
+    /// session flags replicate from it too (`SessionFlags`, F-830).
+    #[arg(long, requires = "prospect")]
+    data_pak: Option<PathBuf>,
 }
 
 #[derive(Deserialize)]
@@ -174,6 +178,22 @@ fn main() -> Result<()> {
             .for_session(mode.level_time_elapsed_sec, |_| false);
         let mut native = active_prospect_values(&info)?;
         native.extend(saved_game_mode_values(&mode));
+        if let Some(path) = &options.data_pak {
+            let mut tables = icarus_bevy::data_pak::DataTables::open(path)?;
+            let mut indices = Vec::new();
+            for name in &mode.session_flags {
+                let index = tables
+                    .row_index(icarus_bevy::network::SESSION_FLAGS_TABLE, name)?
+                    .context("a saved session flag is not in the data tables")?;
+                indices.push(u8::try_from(index)?);
+            }
+            if !indices.is_empty() {
+                native.insert(
+                    handle::SESSION_FLAGS,
+                    icarus_bevy::experimental::game_state_open::session_flags_value(&indices),
+                );
+            }
+        }
         // The level clock at the captured world time.
         let Some(RepValue::Float(world_time)) = values.get(&handle::WORLD_TIME_SECONDS) else {
             bail!("no captured world time");
@@ -204,6 +224,7 @@ fn main() -> Result<()> {
             handle::LEVEL_TIME_ELAPSED_SEC,
         ]
         .into_iter()
+        .chain(options.data_pak.is_some().then_some(handle::SESSION_FLAGS))
         .chain(range.clone())
         .collect();
         for &handle in &handles {

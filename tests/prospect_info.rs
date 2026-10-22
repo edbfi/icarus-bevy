@@ -1,6 +1,9 @@
 //! The save's `ProspectInfo` and level clock typed, and the GameState's
 //! `ReplicatedActiveProspect` mapped from them (F-738, F-801), over an
 //! independently framed authored envelope (no supplied save).
+#[path = "pak_writer/mod.rs"]
+mod pak_writer;
+
 use std::collections::BTreeMap;
 use std::io::Write;
 
@@ -180,6 +183,18 @@ fn game_mode_recorder(level_time: i32) -> Vec<u8> {
                     ),
                     int("SecondsPerGameDay", 3_600),
                     int("LevelTimeElapsedSec", level_time),
+                    tag(
+                        "SessionFlagRecords",
+                        "ArrayProperty",
+                        &[fstring("NameProperty"), vec![0]].concat(),
+                        &[
+                            3_i32.to_le_bytes().to_vec(),
+                            fstring("Flag_B"),
+                            fstring("Flag_Unknown"),
+                            fstring("Flag_A"),
+                        ]
+                        .concat(),
+                    ),
                     end(),
                 ]
                 .concat(),
@@ -267,6 +282,7 @@ fn a_saved_prospect_types_its_info_and_level_clock() {
             seconds_per_game_day: 3_600,
             level_time_elapsed_sec: 150,
             dynamic_quest_seed: 77,
+            session_flags: vec![units("Flag_B"), units("Flag_Unknown"), units("Flag_A")],
         })
     );
     let info = &saved.info;
@@ -399,6 +415,7 @@ fn game_mode_values_map_nondefaults_and_the_level_clock_advances() {
         seconds_per_game_day: 3_600,
         level_time_elapsed_sec: 150,
         dynamic_quest_seed: 0,
+        session_flags: Vec::new(),
     };
     assert_eq!(
         saved_game_mode_values(&mode),
@@ -427,8 +444,10 @@ fn expected_saved_values() -> BTreeMap<u32, RepValue> {
 fn a_preserved_world_supplies_the_session_game_state() {
     let inner = payload(&prospect_info(), &[game_mode_recorder(150)]);
     let section = PreservedSection::from_inner_payload(&inner, PreserveLimits::default()).unwrap();
-    let saved = icarus_bevy::network::saved_game_state(&section).unwrap();
+    let saved = icarus_bevy::network::saved_game_state(&section, None).unwrap();
     assert_eq!(saved.values, expected_saved_values());
+    // Without the server's data tables no session flag replicates.
+    assert_eq!(saved.unmapped_session_flags, 3);
     assert_eq!(saved.level_time_elapsed_sec, Some(150));
     // The saved time of day advances at the saved day length's rate (F-806).
     let mut clock = saved.time_of_day.expect("a time-of-day clock");
@@ -443,7 +462,7 @@ fn a_preserved_world_supplies_the_session_game_state() {
         PreserveLimits::default(),
     )
     .unwrap();
-    let saved = icarus_bevy::network::saved_game_state(&bare).unwrap();
+    let saved = icarus_bevy::network::saved_game_state(&bare, None).unwrap();
     assert_eq!(
         saved.values[&(handle::ACTIVE_PROSPECT_FIRST + 14)],
         RepValue::Int(100)
@@ -451,6 +470,41 @@ fn a_preserved_world_supplies_the_session_game_state() {
     assert!(!saved.values.contains_key(&handle::SEED_INITIALISED));
     assert_eq!(saved.level_time_elapsed_sec, None);
     assert!(saved.time_of_day.is_none());
+}
+
+/// With the official server's data tables, the saved session flags it lists
+/// replicate as `SessionFlags` row indices in saved order; others are
+/// counted and left out (F-830).
+#[test]
+fn saved_session_flags_replicate_as_data_table_row_indices() {
+    let root = tempfile::TempDir::new().unwrap();
+    let pak = root.path().join("data.pak");
+    std::fs::write(
+        &pak,
+        pak_writer::write_pak(&[(
+            "Flags/D_SessionFlags.json",
+            &pak_writer::table_json(&["Flag_A", "Flag_X", "Flag_B"]),
+            true,
+        )]),
+    )
+    .unwrap();
+    let mut tables = icarus_bevy::data_pak::DataTables::open(&pak).unwrap();
+    let inner = payload(&prospect_info(), &[game_mode_recorder(150)]);
+    let section = PreservedSection::from_inner_payload(&inner, PreserveLimits::default()).unwrap();
+    let saved = icarus_bevy::network::saved_game_state(&section, Some(&mut tables)).unwrap();
+    assert_eq!(saved.unmapped_session_flags, 1);
+    let mut expected = expected_saved_values();
+    expected.insert(
+        handle::SESSION_FLAGS,
+        icarus_bevy::experimental::game_state_open::session_flags_value(&[2, 0]),
+    );
+    assert_eq!(saved.values, expected);
+    let RepValue::DynamicArray(flags) = &saved.values[&handle::SESSION_FLAGS] else {
+        panic!("session flags array");
+    };
+    assert_eq!(flags.count, 2);
+    assert_eq!(flags.stream.entries[0].value, RepValue::Byte(2));
+    assert_eq!(flags.stream.entries[1].value, RepValue::Byte(0));
 }
 
 /// A child process killed and reaped when dropped, also when a test panics.
@@ -504,12 +558,25 @@ fn run_replicates_a_preserved_worlds_prospect() {
     assert!(preserved.status.success(), "{preserved:?}");
     let release = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("config/release.toml");
     let profile = ReleaseProfile::load(&release).unwrap();
+    // The official server's data tables, authored: two of the three saved
+    // session flags are listed.
+    let pak = directory.path().join("data.pak");
+    std::fs::write(
+        &pak,
+        pak_writer::write_pak(&[(
+            "Flags/D_SessionFlags.json",
+            &pak_writer::table_json(&["Flag_A", "Flag_X", "Flag_B"]),
+            false,
+        )]),
+    )
+    .unwrap();
     let config = directory.path().join("server.toml");
     std::fs::write(
         &config,
         format!(
-            "[network]\nenabled = true\nport = 0\nrelease_profile = {}\n",
-            toml::Value::String(release.display().to_string())
+            "[network]\nenabled = true\nport = 0\nrelease_profile = {}\ndata_pak = {}\n",
+            toml::Value::String(release.display().to_string()),
+            toml::Value::String(pak.display().to_string())
         ),
     )
     .unwrap();
@@ -543,7 +610,10 @@ fn run_replicates_a_preserved_worlds_prospect() {
             .expect("a network_listening record within 20 s")
             .unwrap();
         let record: serde_json::Value = serde_json::from_str(&line).unwrap();
-        replicated |= record["event"] == "active_prospect_replicated";
+        if record["event"] == "active_prospect_replicated" {
+            replicated = true;
+            assert_eq!(record["unmapped_session_flags"], 1);
+        }
         if record["event"] == "network_listening" {
             break record["address"].as_str().unwrap().parse().unwrap();
         }
@@ -660,6 +730,10 @@ fn run_replicates_a_preserved_worlds_prospect() {
     );
     let mut expected = expected_saved_values();
     expected.remove(&handle::TIME_OF_DAY);
+    expected.insert(
+        handle::SESSION_FLAGS,
+        icarus_bevy::experimental::game_state_open::session_flags_value(&[2, 0]),
+    );
     sent.retain(|handle, _| expected.contains_key(handle));
     assert_eq!(sent, expected);
 }
