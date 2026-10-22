@@ -338,6 +338,8 @@ pub enum ImportBlocker {
     UnmappedContent { distinct: usize, references: usize },
     /// Actor transforms with a non-finite component.
     NonFiniteTransforms { recorders: usize },
+    /// Present actor transforms with an unexpected struct identity or shape.
+    MalformedTransforms { recorders: usize },
     /// Base recorder fields under an unexpected wire type, whose references
     /// and policies the plan could not read.
     UnexpectedBaseFieldTypes { fields: usize },
@@ -374,9 +376,12 @@ pub struct ActorPlan {
     pub actor_recorders: usize,
     /// Of those, classes whose constructor keeps `bRecordActorTransform` set.
     pub transform_restoring: usize,
-    /// Transforms with a translation, rotation and scale that all type.
+    /// Finite transforms with the expected outer and child struct identities.
     pub recorded_transforms: usize,
+    /// Actor recorders without an `ActorTransform` property; not a blocker.
     pub missing_transforms: usize,
+    /// Present transforms with an unexpected struct identity or shape.
+    pub malformed_transforms: usize,
     pub non_finite_transforms: usize,
     /// Retained recorders by how restore finds their owner (`F-741`, `F-752`):
     /// `find_only` owners must already exist in the level.
@@ -607,6 +612,9 @@ pub fn plan_import(reader: impl Read, catalog: &ContentCatalog) -> Result<Import
                 plan.actors.transform_restoring += 1;
             }
             match actor_transform(&typed.tree) {
+                None if typed.tree.get(ACTOR_TRANSFORM).is_some() => {
+                    plan.actors.malformed_transforms += 1;
+                }
                 None => plan.actors.missing_transforms += 1,
                 Some(parts) if parts.iter().all(|part| part.is_finite()) => {
                     plan.actors.recorded_transforms += 1;
@@ -678,6 +686,11 @@ pub fn plan_import(reader: impl Read, catalog: &ContentCatalog) -> Result<Import
             recorders: plan.actors.non_finite_transforms,
         });
     }
+    if plan.actors.malformed_transforms > 0 {
+        plan.blockers.push(ImportBlocker::MalformedTransforms {
+            recorders: plan.actors.malformed_transforms,
+        });
+    }
     plan.importable = plan.blockers.is_empty();
     Ok(plan)
 }
@@ -741,18 +754,31 @@ fn base_fields(tree: &TypedTree, plan: &mut BaseFieldPlan) {
 }
 
 /// The ten transform parts (translation, rotation quaternion, scale) when the
-/// actor transform is a tagged struct whose three parts all type as floats.
+/// actor transform is a tagged `Transform` with `Vector` translation/scale and
+/// `Quat` rotation. Returns `None` for absent or malformed transforms; finite
+/// components are checked by callers.
 pub fn actor_transform(tree: &TypedTree) -> Option<[f32; 10]> {
-    let Value::TaggedStruct { tree: inner, .. } = &tree.get(ACTOR_TRANSFORM)?.value else {
+    let Value::TaggedStruct {
+        type_name,
+        tree: inner,
+    } = &tree.get(ACTOR_TRANSFORM)?.value
+    else {
         return None;
     };
-    let part = |name: &str| match &inner.get(name)?.value {
-        Value::FixedStruct { value, .. } => Some(value.clone()),
+    if !type_name.iter().copied().eq("Transform".encode_utf16()) {
+        return None;
+    }
+    let part = |name: &str, expected: &str| match &inner.get(name)?.value {
+        Value::FixedStruct { type_name, value }
+            if type_name.iter().copied().eq(expected.encode_utf16()) =>
+        {
+            Some(value.clone())
+        }
         _ => None,
     };
-    let translation = part("Translation")?.floats::<3>()?;
-    let rotation = part("Rotation")?.floats::<4>()?;
-    let scale = part("Scale3D")?.floats::<3>()?;
+    let translation = part("Translation", "Vector")?.floats::<3>()?;
+    let rotation = part("Rotation", "Quat")?.floats::<4>()?;
+    let scale = part("Scale3D", "Vector")?.floats::<3>()?;
     let mut out = [0.0; 10];
     out[..3].copy_from_slice(&translation);
     out[3..7].copy_from_slice(&rotation);
