@@ -2,8 +2,8 @@
 
 How a scenario with a real player is prepared, run and taken in. Each scenario
 needs the user's approval and a case (gates "Before any original-server or
-client run"). An empty server pauses the game (F-684); the offline launcher's
-join mode lifts the pause with a synthetic player (F-691), which covers
+client run"). An empty server pauses the game (F-895); the offline launcher's
+join mode lifts the pause with a synthetic player (F-895), which covers
 time-driven state. Map, harvest and build actions need a real player.
 
 ## Route B: matched server on this host

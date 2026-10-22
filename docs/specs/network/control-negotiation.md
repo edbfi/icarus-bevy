@@ -108,7 +108,7 @@ initialization, compression or integrity protection.
   `clamp_client_netspeed`, `evaluate_pc_swap_target`,
   `evaluate_actor_channel_failure` (F-740), and disconnected loopback
   negotiation through `Hello`, `Challenge`, `Login`, `PreLogin`, `Welcome`,
-  `Netspeed`, `Swap`, `Debug` and `Join` / `SplitJoin` (F-558, F-564, F-689,
+  `Netspeed`, `Swap`, `Debug` and `Join` / `SplitJoin` (F-874, F-689,
   F-712 to F-714, F-858).
 - `UWorld::NotifyControlMessage` (F-563, F-713, F-740) and `WelcomePlayer`
   (`0x1439fdeb0`, F-580): `IsClientMsgTypeValid` admits only
