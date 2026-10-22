@@ -57,6 +57,10 @@ they carry. Framing is in [actor channel bunches](actor-channel.md).
   `AQuest::RunQuest` keeps a sub-quest in `ActiveQuests` only while its
   Blueprint `Check` reports it incomplete (F-864).
 
+- The inventory tick has a pointer/byte guard before dirty-weight
+  recalculation (F-915); this does not establish tick activation or loaded
+  dirty state.
+
 ## Candidate
 
 - The 3.0.32 manager checksums are the M-820 derivation's, with the component
@@ -75,4 +79,4 @@ they carry. Framing is in [actor channel bunches](actor-channel.md).
 
 ## Evidence
 
-- M-707, M-820, M-879, M-881 to M-887, M-891.
+- M-707, M-820, M-879, M-881 to M-887, M-891, M-895, M-896.
