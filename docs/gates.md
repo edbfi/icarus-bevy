@@ -6,7 +6,7 @@ here instead of restating them.
 
 Before restructure: 96ddb0b:docs/gates.md
 
-Last reconciled: 2026-10-19
+Last reconciled: 2026-10-22
 
 ## Before any C001 original-code case
 
@@ -87,10 +87,11 @@ Last reconciled: 2026-10-19
 - The user decided (2026-10-22, F-828) that the shipped server must not
   depend on the game client, which is not publicly available, or on data
   derived only from it. Basic data it needs to work may come from the free,
-  public dedicated-server distribution, read from the operator's install;
-  whether to package such data is undecided. Client-derived metadata counts
-  toward the shipped server only once re-derived from or checked against
-  that distribution (U-072).
+  public dedicated-server distribution. How that data reaches the server
+  (read from the operator's install, the lead's working reading, or packaged
+  with it) awaits the user; until then nothing original is committed or
+  redistributed. Client-derived metadata counts toward the shipped server only
+  once re-derived from or checked against that distribution (U-072).
 
 ## Before any original-server or client run
 

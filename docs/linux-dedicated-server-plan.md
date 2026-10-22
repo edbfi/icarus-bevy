@@ -33,10 +33,10 @@ including supported content variants, with an explicit compatibility matrix.
 - No dependency on the original server executable, Unreal runtime, Wine or Proton.
 - Do not extract or reuse original art, audio, terrain, collision, navigation or
   gameplay data tables. Basic data the server needs that ships with the free,
-  public dedicated-server distribution may be read from the operator's install
-  where parity requires it; the game client is never a source for what the
-  server consumes (F-828, [gates](gates.md)). Record provenance of
-  independently authored data.
+  public dedicated-server distribution may be used where parity requires it,
+  supplied in a way the user has yet to decide; the game client is never a
+  source for what the server consumes (F-828, [gates](gates.md)). Record
+  provenance of independently authored data.
 - Record protocol identifiers and experimentally established behavior in
   specifications; do not bulk-convert original assets. Save import may consume
   player-created state, never packaged game assets. Stock clients keep their
