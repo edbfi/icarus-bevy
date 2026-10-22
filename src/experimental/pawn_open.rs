@@ -101,10 +101,11 @@ const INVENTORY_IS_ACTIVE: u32 = 2;
 const INVENTORY_OWNING_COMPONENT: u32 = 3;
 const INVENTORY_INFO_ROW: u32 = 7;
 
-/// `FInventorySlot` handles an empty slot writes (`inventory_slot_commands`):
-/// the item's static row (2), its flag (10), string (11), integer (12) and
-/// tags (13), then `Query` (14), `Locked` (15), `LastItem` (16), `Slotable`
-/// (17) and `Index` (18). Item arrays (1, 3..=9) stay empty and unsent.
+/// `FInventorySlot` handles a slot writes (`inventory_slot_commands`): the
+/// item's static row (2), its flag (10), string (11), integer (12) and tags
+/// (13), then `Query` (14), `Locked` (15), `LastItem` (16), `Slotable` (17)
+/// and `Index` (18). An item slot adds its nonempty dynamic data (3) and
+/// stats (7); the other item arrays (1, 4..=6, 8, 9) stay unsent (F-866).
 mod slot_handle {
     pub const ITEM_ROW: u32 = 2;
     /// `ItemData.ItemDynamicData`: (`EDynamicItemProperties`, value) pairs.

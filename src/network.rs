@@ -453,7 +453,8 @@ pub struct SavedGameState {
     /// (F-862).
     pub player_history: Option<Vec<PlayerHistoryEntry>>,
     /// The saved container inventories (`C016`, F-866) as sendable
-    /// inventories; `None` without the record or tables.
+    /// inventories; `None` without the record or without tables (as the
+    /// QuestManager, without a skip reason).
     pub inventory_containers: Option<Vec<PawnInventory>>,
     /// Managers whose saved state the native server cannot send yet, with
     /// the reason; they stay closed.
@@ -611,7 +612,7 @@ pub fn apply_saved_game_state(
     tables: Option<&mut DataTables>,
     saved_managers: Vec<(ManagerSlot, ManagerOpenPlan)>,
 ) -> Result<AppliedGameState> {
-    let saved = saved_game_state(section, tables)?;
+    let mut saved = saved_game_state(section, tables)?;
     // The managers join last, after every other step that can fail.
     let mut manager_plans = Vec::new();
     for (slot, plan) in saved_managers {
@@ -621,7 +622,13 @@ pub fn apply_saved_game_state(
                 None => continue,
             },
             ManagerSlot::InventoryContainer => match &saved.inventory_containers {
-                Some(inventories) => plan.with_container_inventories(inventories.clone())?,
+                Some(inventories) => match plan.with_container_inventories(inventories.clone()) {
+                    Ok(plan) => plan,
+                    Err(error) => {
+                        saved.skipped_managers.push((slot, format!("{error:#}")));
+                        continue;
+                    }
+                },
                 None => continue,
             },
             ManagerSlot::PlayerHistory => match &saved.player_history {
