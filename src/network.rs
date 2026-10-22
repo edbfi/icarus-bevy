@@ -77,6 +77,21 @@ pub const OFFICIAL_DIR: &str = "official";
 /// The official server's data tables (F-829).
 pub const OFFICIAL_DATA_PAK: &str = "Icarus/Content/Data/data.pak";
 
+/// Write `record` as `install.json` in `official` durably: a synced
+/// temporary file renamed into place, then the directory synced, so a
+/// crash leaves the old record or the new one, never a partial file.
+pub fn write_install_record(official: &std::path::Path, record: &serde_json::Value) -> Result<()> {
+    use std::io::Write;
+    let temporary = official.join("install.json.tmp");
+    let mut file = std::fs::File::create(&temporary).context("create install.json.tmp")?;
+    file.write_all(&serde_json::to_vec_pretty(record)?)?;
+    file.sync_all()?;
+    drop(file);
+    std::fs::rename(&temporary, official.join("install.json")).context("publish install.json")?;
+    std::fs::File::open(official)?.sync_all()?;
+    Ok(())
+}
+
 /// The data table whose row order `SessionFlags` indices follow.
 pub const SESSION_FLAGS_TABLE: &str = "D_SessionFlags";
 

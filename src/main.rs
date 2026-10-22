@@ -468,10 +468,7 @@ fn install_official_data(data_dir: &std::path::Path, branch: &str) -> Result<ser
         "sha1": sha1,
         "sha256": written.sha256,
     });
-    let manifest = official.join("install.json");
-    let temporary = official.join("install.json.tmp");
-    std::fs::write(&temporary, serde_json::to_vec_pretty(&record)?)?;
-    std::fs::rename(&temporary, &manifest)?;
+    network::write_install_record(&official, &record)?;
     Ok(record)
 }
 
@@ -479,6 +476,7 @@ fn run(options: ConfigOptions, max_ticks: Option<u64>, compressed: bool) -> Resu
     let mut config = options.resolve()?;
     // The official data tables an install step fetched into the data
     // directory serve when no data pak is configured.
+    let mut data_pak_source = config.network.data_pak.as_ref().map(|_| "configured");
     if config.network.enabled && config.network.data_pak.is_none() {
         let installed = config
             .data_dir
@@ -486,6 +484,7 @@ fn run(options: ConfigOptions, max_ticks: Option<u64>, compressed: bool) -> Resu
             .join(network::OFFICIAL_DATA_PAK);
         if installed.is_file() {
             config.network.data_pak = Some(installed);
+            data_pak_source = Some("installed");
         }
     }
     ensure!(max_ticks != Some(0), "max_ticks must be positive");
@@ -591,6 +590,8 @@ fn run(options: ConfigOptions, max_ticks: Option<u64>, compressed: bool) -> Resu
             "address": address.to_string(), "max_players": config.network.max_players,
             "session_timeout_seconds": config.network.session_timeout_seconds,
             "version_check": pinned_build.is_some(), "release_build_id": pinned_build,
+            "data_pak": config.network.data_pak.as_ref().map(|path| path.display().to_string()),
+            "data_pak_source": data_pak_source,
             "icarus_compatible": false, "gameplay_ready": false})
         );
     }

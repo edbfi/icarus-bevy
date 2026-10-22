@@ -12,7 +12,7 @@ A compatible server will also need basic data from the free official dedicated
 server (Steam app 2089300), fetched unattended at install time (F-828); the game
 client is never needed. The install step fetches it anonymously, without
 steamcmd or prompts (F-831), into the data directory, where `run` finds it when
-`network.data_pak` is unset:
+`network.data_pak` is unset (`network_listening` reports `data_pak` and its `data_pak_source`, `configured` or `installed`):
 
 ```bash
 target/release/icarus-server install-official-data --data-dir /var/lib/icarus-native

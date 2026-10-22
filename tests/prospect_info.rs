@@ -618,6 +618,8 @@ fn run_replicates_a_preserved_worlds_prospect() {
             assert_eq!(record["unmapped_session_flags"], 1);
         }
         if record["event"] == "network_listening" {
+            // The installed official data tables were picked up.
+            assert_eq!(record["data_pak_source"], "installed");
             break record["address"].as_str().unwrap().parse().unwrap();
         }
     };
