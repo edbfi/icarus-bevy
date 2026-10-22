@@ -2448,8 +2448,8 @@ impl PeerLab {
         };
         // The original sets bIsHost at the PlayerState's BeginPlay when the
         // first player controller's character is this PlayerState's pawn,
-        // which does not exist yet (F-913): so when no other player with a
-        // pawn is joined, every lab player having one.
+        // which does not exist yet (F-913). On the lab every joined player
+        // has a pawn, so a player is host when no other player is joined.
         let is_host = !self.peers.iter().any(|(other, peer)| {
             *other != address && peer.admission.state == ClientLoginState::Joined
         });
