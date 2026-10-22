@@ -447,7 +447,7 @@ pub struct SavedGameState {
     pub locked_missions: Vec<LockedMission>,
     /// The saved quest manager state (`C018`) and its faction mission's
     /// `D_FactionMissions` row (F-861); `None` without the record, without
-    /// tables or when the table lacks the mission.
+    /// tables or when the table lacks the mission (a skipped manager).
     pub quest_manager: Option<(SavedQuestManager, u8)>,
     /// The saved player history (`C024`), when the save has the record
     /// (F-862).
@@ -554,10 +554,20 @@ pub fn saved_game_state(
         _ => None,
     };
     let quest_manager = match (saved.quest_manager, tables) {
-        (Some(quest), Some(tables)) => tables
-            .row_index(FACTION_MISSIONS_TABLE, &quest.faction_mission)?
-            .and_then(|index| u8::try_from(index).ok())
-            .map(|row| (quest, row)),
+        (Some(quest), Some(tables)) => {
+            let row = tables
+                .row_index(FACTION_MISSIONS_TABLE, &quest.faction_mission)?
+                .and_then(|index| u8::try_from(index).ok());
+            if row.is_none() {
+                skipped_managers.push((
+                    ManagerSlot::Quest,
+                    format!(
+                        "the saved faction mission is not a 1-byte {FACTION_MISSIONS_TABLE} row"
+                    ),
+                ));
+            }
+            row.map(|row| (quest, row))
+        }
         _ => None,
     };
     Ok(SavedGameState {
