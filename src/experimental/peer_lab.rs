@@ -652,8 +652,6 @@ pub const GAME_STATE_UPDATE_SECONDS: f32 = 1.0 / 30.0;
 /// third GameState update in the capture, UE's 0.1 s default (F-805).
 pub const WORLD_TIME_UPDATE_SECONDS: f32 = 0.1;
 
-/// The GameState handles updates carry: the world time, `TimeOfDay`,
-/// `LevelTimeElapsedSec`, `ServerFPS` and the `NetworkingStatus` fields.
 /// `LockedMissions` as last refreshed at `world_seconds` (`Some(None)`
 /// when every lock has ended), or `None` when it is not replicated.
 fn locked_missions(session: &GameStateSession, world_seconds: f32) -> Option<Option<RepValue>> {
@@ -668,6 +666,9 @@ fn locked_missions(session: &GameStateSession, world_seconds: f32) -> Option<Opt
     ))
 }
 
+/// The GameState handles updates carry: the world time, `TimeOfDay`,
+/// `LevelTimeElapsedSec`, `ServerFPS`, `LockedMissions` and the
+/// `NetworkingStatus` fields.
 fn update_handles() -> impl Iterator<Item = u32> {
     use super::game_state_open::handle;
     [
