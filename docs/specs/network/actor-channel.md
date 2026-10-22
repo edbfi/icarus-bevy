@@ -46,14 +46,8 @@ Address pairs are server / client.
   player's vitals, inventory rows and slot queries are data.pak rows (F-836;
   `network::pawn_content`); stats are starting grants through the virtual-stat formulas (F-839;
   `pawn_stats`).
-- GameState managers (F-859): dynamic actors with roles 1 and 3, a created-only
-  `Stat Container` and, for Icarus actors, an `ActorState` (handles 16 and 17;
-  `experimental::manager_open`). The QuestManager's handles 19..26 carry the
-  save's C018 record: the faction mission's 1-byte `D_FactionMissions` row,
-  nondefault difficulty, flags and delay, `InitialQuest` and the keyed
-  relevant persistent actors and characters as `(Str, Object)` arrays, each
-  actor keyed by its saved Icarus actor GUID (`ActorKey::Saved`, apart from
-  domain ids; F-861; `with_quest_state`).
+- GameState managers: in the [world managers spec](world-managers.md)
+  (F-859, F-861, F-862).
 - GameState active prospect (F-855): handles 51..67 carry the loaded save's
   `ProspectInfo` fields that differ from their defaults, arrays with every
   element field; `ElapsedTime` is the game mode's recorded
