@@ -178,6 +178,7 @@ use super::handshake_lab::{
     CookieAuthority, HANDSHAKE_BYTES, HandshakeReply, PACKETS_PER_UPDATE, bind_loopback,
     lab_seconds,
 };
+use super::manager_open::{ManagerOpenPlan, ManagerSlot, compose_manager_open};
 use super::packet::BunchLimits;
 use super::packet::Payload;
 use super::packet_lab::{
@@ -494,6 +495,10 @@ pub struct PeerLabStats {
     pub player_state_opens_sent: u64,
     /// PlayerState opens that could not be composed or framed.
     pub player_state_open_errors: u64,
+    /// World manager opens sent after the PlayerState open (F-859).
+    pub manager_opens_sent: u64,
+    /// World manager opens that could not be composed or framed.
+    pub manager_open_errors: u64,
     /// `NMT_ActorChannelFailure` entries delivered in a valid login state.
     pub actor_channel_failures: u64,
     /// Peers closed because their PlayerController channel failed.
@@ -867,6 +872,9 @@ pub struct PeerLab {
     game_state_open: Option<GameStateSession>,
     /// Opt-in PlayerState open after the PlayerController open.
     player_state_open: Option<PlayerStateOpenPlan>,
+    /// Opt-in world manager opens after the PlayerState: each manager's
+    /// key, plan and channel (F-859).
+    manager_opens: Vec<(ActorKey, ManagerOpenPlan, u32)>,
     /// Driver-wide NetGUIDs, replicated actors keyed by the caller's key.
     guid_cache: NetGuidCache,
     /// `AGameSession::GetNextPlayerID`'s counter (F-784): 256 first.
@@ -937,6 +945,7 @@ impl PeerLab {
             pawn_open: None,
             game_state_open: None,
             player_state_open: None,
+            manager_opens: Vec::new(),
             guid_cache: NetGuidCache::new(),
             next_player_id: FIRST_PLAYER_ID,
             host_assigned: false,
@@ -1190,7 +1199,12 @@ impl PeerLab {
                 .as_ref()
                 .map(|plan| plan.channel_index),
         ];
-        channel < self.config.packet.packet.limits.max_channels && !taken.contains(&Some(channel))
+        channel < self.config.packet.packet.limits.max_channels
+            && !taken.contains(&Some(channel))
+            && !self
+                .manager_opens
+                .iter()
+                .any(|(_, _, taken)| *taken == channel)
     }
 
     /// After [`enable_player_controller_open`](Self::enable_player_controller_open),
@@ -1286,6 +1300,45 @@ impl PeerLab {
             "the lab writes the GameState's world time"
         );
         session.state.values.extend(values);
+        Ok(())
+    }
+
+    /// After the GameState open, also open the world's managers (F-859) on
+    /// each joined connection, after its PlayerState, on consecutive
+    /// channels from `first_channel`, and reference them from the GameState
+    /// open by their slots' keys. Fails without a GameState open, on a level
+    /// other than the GameState's, or on a taken channel.
+    pub fn enable_manager_opens(
+        &mut self,
+        plans: Vec<(ManagerSlot, ManagerOpenPlan)>,
+        first_channel: u32,
+    ) -> Result<()> {
+        let Some(session) = &self.game_state_open else {
+            bail!("the manager opens follow the GameState open");
+        };
+        let level = session.plan.level.clone();
+        let mut managers = session.state.managers.clone();
+        let mut opens = Vec::new();
+        for (channel, (slot, plan)) in (first_channel..).zip(plans) {
+            ensure!(
+                plan.level == level,
+                "a manager and the GameState name different levels"
+            );
+            ensure!(
+                self.free_session_channel(channel),
+                "a manager channel collides with another channel or is out of range"
+            );
+            match slot {
+                ManagerSlot::WorldTalent => managers.world_talent_manager = Some(slot.key()),
+                ManagerSlot::Radiation => managers.radiation_manager = Some(slot.key()),
+                ManagerSlot::Disaster => managers.disaster_controller = Some(slot.key()),
+            }
+            opens.push((slot.key(), plan, channel));
+        }
+        if let Some(session) = &mut self.game_state_open {
+            session.state.managers = managers;
+        }
+        self.manager_opens = opens;
         Ok(())
     }
 
@@ -2131,6 +2184,9 @@ impl PeerLab {
         if self.player_state_open.is_some() {
             self.send_player_state_open(address, guids.actor, guids.player_state);
         }
+        for index in 0..self.manager_opens.len() {
+            self.send_manager_open(address, index);
+        }
         true
     }
 
@@ -2386,6 +2442,52 @@ impl PeerLab {
         self.host_assigned = true;
         if self.send_all(&sent, address) {
             bump(&mut self.stats.player_state_opens_sent);
+        }
+    }
+
+    /// Compose and send world manager `index` (F-859), committing GUID and
+    /// export state only once every datagram is built; a failure counts
+    /// `manager_open_errors`.
+    fn send_manager_open(&mut self, address: SocketAddrV4, index: usize) {
+        let Some((key, plan, channel)) = self.manager_opens.get(index) else {
+            return;
+        };
+        let Some(entry) = self.peers.get_mut(&address) else {
+            return;
+        };
+        let mut cache = self.guid_cache.clone();
+        let mut exports = entry.exports.clone();
+        let sent = compose_manager_open(
+            &mut cache,
+            &mut exports,
+            plan,
+            *key,
+            *channel,
+            entry.peer.connection_byte_order(),
+        )
+        .and_then(|open| {
+            let export_payloads: Vec<Payload> = open.exports.into_iter().collect();
+            entry
+                .peer
+                .reliable_actor_open_datagrams(&open.bunch, &export_payloads)
+        });
+        let sent = match sent {
+            Ok(sent) => sent,
+            Err(_) => {
+                bump(&mut self.stats.manager_open_errors);
+                if entry.peer.is_failed() {
+                    self.peers.remove(&address);
+                    bump(&mut self.stats.peers_failed);
+                }
+                return;
+            }
+        };
+        commit_exports(&mut exports, &sent);
+        entry.exports = exports;
+        entry.ack_pending = false;
+        self.guid_cache = cache;
+        if self.send_all(&sent, address) {
+            bump(&mut self.stats.manager_opens_sent);
         }
     }
 

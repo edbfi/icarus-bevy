@@ -400,3 +400,53 @@ fn player_state_open_reuses_exported_paths_and_carries_player_values() {
     .unwrap();
     assert!(again.exports.is_none());
 }
+
+/// A new static export whose outer the connection already holds names that
+/// outer with only the bare checksum flag, as the original does (F-692,
+/// F-859), and the export prefix round-trips.
+#[test]
+fn an_acked_outer_is_written_with_only_the_bare_checksum_flag() {
+    use icarus_bevy::experimental::{
+        actor_channel::{
+            ActorChannelCodec, ActorChannelLimits, read_export_prefix, write_export_prefix,
+        },
+        archive::ByteOrder,
+        packet::BitWriter,
+        session_open::{ConnectionExports, NetGuidCache, PathSegment},
+    };
+    let mut cache = NetGuidCache::new();
+    let mut exports = ConnectionExports::new();
+    let package = PathSegment::new("/Script/Icarus", 0, false);
+    let first = cache
+        .export_static(&mut exports, std::slice::from_ref(&package))
+        .unwrap();
+    assert!(first.export.is_some());
+    exports.commit_bunch(1);
+    exports.received_ack(1);
+    let archetype = cache
+        .export_static(
+            &mut exports,
+            &[
+                PathSegment::new("Default__RadiationManager", 2_158_376_861, false),
+                package,
+            ],
+        )
+        .unwrap();
+    let export = archetype.export.as_ref().unwrap();
+    let path = export.path.as_ref().unwrap();
+    let outer = path.outer.export.as_ref().unwrap();
+    assert_eq!(path.outer.guid, first.guid);
+    assert!(outer.path.is_none() && outer.checksum.is_none() && outer.bare_checksum_flag);
+    let codec = ActorChannelCodec {
+        engine_net_version: 17,
+        exports_enabled: false,
+        has_level: true,
+        order: ByteOrder::Little,
+        limits: ActorChannelLimits::default(),
+    };
+    let mut writer = BitWriter::new();
+    write_export_prefix(&mut writer, std::slice::from_ref(&archetype), &codec).unwrap();
+    let payload = icarus_bevy::experimental::packet::Payload::from_writer(writer);
+    let read = read_export_prefix(&mut payload.reader(), &codec).unwrap();
+    assert_eq!(read, vec![archetype]);
+}

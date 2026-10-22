@@ -112,6 +112,9 @@ pub const SPECTATOR_SLOTS: u32 = 2;
 /// PlayerStart is consulted).
 pub const SPAWN_LOCATION: [f32; 3] = [0.0, 0.0, 0.0];
 
+/// The first channel of the world manager opens, after the PlayerState's.
+pub const MANAGER_FIRST_CHANNEL: u32 = 6;
+
 /// The session layer's key for the world's one GameState.
 pub const GAME_STATE_KEY: ActorKey = ActorKey::Session(0);
 
@@ -614,6 +617,17 @@ pub fn bind(network: &NetworkConfig) -> Result<Option<BoundNetwork>> {
         }
         if let Some(player_state) = player_state {
             lab.enable_player_state_open(player_state)?;
+        }
+        // The GameState's managers, after the PlayerState (F-859).
+        if lab.has_game_state_open()
+            && let (Some(profile), Some(admission)) = (&profile, &config.admission)
+        {
+            let managers = profile
+                .manager_open_plans(admission.map_url)
+                .context("compose the manager open plans")?;
+            if !managers.is_empty() {
+                lab.enable_manager_opens(managers, MANAGER_FIRST_CHANNEL)?;
+            }
         }
     }
     Ok(Some(BoundNetwork {
