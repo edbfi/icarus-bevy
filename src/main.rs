@@ -115,8 +115,9 @@ enum Command {
     /// Plan a native import of a supplied prospect. `--dry-run` prints the
     /// plan (counts only); without it the import is refused while the plan has
     /// blockers. `--catalog` resolves references against a native content
-    /// catalog file (empty without it). Nothing is ever written; the
-    /// destination is not touched.
+    /// catalog file (empty without it); `--data-pak` also resolves data-row
+    /// references against the official server's data tables (F-840).
+    /// Nothing is ever written; the destination is not touched.
     ImportSave {
         #[arg(long)]
         source: PathBuf,
@@ -126,6 +127,8 @@ enum Command {
         dry_run: bool,
         #[arg(long)]
         catalog: Option<PathBuf>,
+        #[arg(long)]
+        data_pak: Option<PathBuf>,
     },
 }
 
@@ -161,13 +164,24 @@ fn execute(cli: Cli) -> Result<()> {
             source,
             dry_run,
             catalog,
+            data_pak,
             ..
         } => {
             use icarus_bevy::import_plan::{ContentCatalog, plan_import};
-            let catalog = match catalog {
+            let mut catalog = match catalog {
                 Some(path) => ContentCatalog::load(&path)?,
                 None => ContentCatalog::empty(),
             };
+            if let Some(path) = data_pak {
+                let mut pak = icarus_bevy::data_pak::DataPak::open(&path)
+                    .with_context(|| format!("open --data-pak {}", path.display()))?;
+                let (with_rows, tables) = catalog.with_data_tables(&mut pak)?;
+                catalog = with_rows;
+                eprintln!(
+                    "{}",
+                    json!({"event": "data_tables_loaded", "tables": tables})
+                );
+            }
             let file = open_regular_source(&source)?;
             let plan = plan_import(file, &catalog)?;
             if dry_run {

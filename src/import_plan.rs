@@ -130,6 +130,10 @@ pub struct ContentCatalog {
     /// References that resolve in every role ([`Self::from_references`]).
     any: BTreeSet<Vec<u16>>,
     by_role: BTreeMap<ContentRole, BTreeSet<Vec<u16>>>,
+    /// Row names of the official server's data tables, ASCII-lowercased:
+    /// a [`ContentRole::DataRow`] reference resolves when a table names
+    /// it, compared without case as row names are (F-840).
+    data_rows: BTreeSet<Vec<u16>>,
 }
 
 impl std::fmt::Debug for ContentCatalog {
@@ -183,6 +187,7 @@ impl ContentCatalog {
                 .map(|reference| reference.encode_utf16().collect())
                 .collect(),
             by_role: BTreeMap::new(),
+            data_rows: BTreeSet::new(),
         }
     }
 
@@ -264,7 +269,31 @@ impl ContentCatalog {
     }
 
     pub fn is_empty(&self) -> bool {
-        self.any.is_empty() && self.by_role.is_empty()
+        self.any.is_empty() && self.by_role.is_empty() && self.data_rows.is_empty()
+    }
+
+    /// Also resolve data-row references against every row of every data
+    /// table in `pak` (F-828, F-840); returns the catalog and the number of
+    /// tables read. JSON members that are not tables are skipped.
+    pub fn with_data_tables(mut self, pak: &mut crate::data_pak::DataPak) -> Result<(Self, usize)> {
+        let tables: Vec<String> = pak
+            .members()
+            .filter_map(|member| member.rsplit('/').next())
+            .filter_map(|name| name.strip_suffix(".json"))
+            .map(str::to_owned)
+            .collect();
+        let mut read = 0;
+        for table in tables {
+            let Ok(rows) = pak.table_rows(&table) else {
+                continue;
+            };
+            read += 1;
+            self.data_rows.extend(
+                rows.iter()
+                    .map(|row| fold_case(&row.encode_utf16().collect::<Vec<u16>>())),
+            );
+        }
+        Ok((self, read))
     }
 
     /// Whether `units` resolves in `role`.
@@ -274,7 +303,19 @@ impl ContentCatalog {
                 .by_role
                 .get(&role)
                 .is_some_and(|entries| entries.contains(units))
+            || (role == ContentRole::DataRow && self.data_rows.contains(&fold_case(units)))
     }
+}
+
+/// `units` with ASCII letters lowercased.
+fn fold_case(units: &[u16]) -> Vec<u16> {
+    units
+        .iter()
+        .map(|unit| match u8::try_from(*unit) {
+            Ok(byte) => u16::from(byte.to_ascii_lowercase()),
+            Err(_) => *unit,
+        })
+        .collect()
 }
 
 /// Why the plan cannot import; each carries counts only.
