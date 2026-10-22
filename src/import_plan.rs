@@ -23,7 +23,8 @@ use crate::experimental::property_tree::{
 };
 use crate::experimental::recorders::{
     StagedProspectSaveState, StagedRecorderDecision, lookup_recorder_ctor_defaults, read_recorders,
-    recorder_class_label, stage_prospect_save_state_with_decisions,
+    recorder_class_label, stage_prospect_save_state_for_import,
+    stage_prospect_save_state_with_decisions,
 };
 use crate::experimental::restore_rules::OwnerResolvePolicy;
 use crate::experimental::struct_array::MAX_BOUNDED_STRUCT_ARRAY_BYTES;
@@ -134,6 +135,8 @@ pub struct ContentCatalog {
     /// a [`ContentRole::DataRow`] reference resolves when a table names
     /// it, compared without case as row names are (F-840).
     data_rows: BTreeSet<Vec<u16>>,
+    /// Pak rows from the unique D_ProspectList table only (F-911).
+    prospect_rows: BTreeSet<Vec<u16>>,
 }
 
 impl std::fmt::Debug for ContentCatalog {
@@ -188,6 +191,7 @@ impl ContentCatalog {
                 .collect(),
             by_role: BTreeMap::new(),
             data_rows: BTreeSet::new(),
+            prospect_rows: BTreeSet::new(),
         }
     }
 
@@ -303,7 +307,24 @@ impl ContentCatalog {
                 None => skipped += 1,
             }
         }
+        // Use the same suffix lookup and ambiguity rejection as DataTables.
+        if pak.has("D_ProspectList.json") {
+            self.prospect_rows.extend(
+                pak.table_rows(crate::network::PROSPECT_LIST_TABLE)?
+                    .iter()
+                    .map(|row| fold_case(&row.encode_utf16().collect::<Vec<u16>>())),
+            );
+        }
         Ok((self, read, skipped))
+    }
+
+    fn contains_prospect(&self, units: &[u16]) -> bool {
+        self.any.contains(units)
+            || self
+                .by_role
+                .get(&ContentRole::DataRow)
+                .is_some_and(|entries| entries.contains(units))
+            || self.prospect_rows.contains(&fold_case(units))
     }
 
     /// Whether `units` resolves in `role`.
@@ -529,13 +550,15 @@ pub struct ImportPlan {
 pub fn plan_import(reader: impl Read, catalog: &ContentCatalog) -> Result<ImportPlan> {
     let validated = decode_envelope(reader)?;
     let tags = read_root(&validated.payload, PROFILE).context("invalid experimental root tags")?;
-    let (staged, decisions) = stage_prospect_save_state_with_decisions(
+    let staged_import = stage_prospect_save_state_for_import(
         &tags.tags,
         PROFILE,
         MAX_BOUNDED_COMPONENT_BYTES,
         None,
     )
     .context("invalid staged FProspectSaveState")?;
+    let staged = staged_import.summary;
+    let decisions = staged_import.decisions;
     let recorders =
         read_recorders(&tags.tags, PROFILE).context("invalid experimental recorder framing")?;
     ensure!(
@@ -560,7 +583,20 @@ pub fn plan_import(reader: impl Read, catalog: &ContentCatalog) -> Result<Import
         world_imported: false,
     };
     let mut distinct: BTreeMap<Vec<u16>, bool> = BTreeMap::new();
-    let mut role_distinct: BTreeSet<(ContentRole, Vec<u16>)> = BTreeSet::new();
+    let mut role_distinct: BTreeMap<(ContentRole, Vec<u16>), bool> = BTreeMap::new();
+    // The effective ProspectInfo key names a D_ProspectList row (F-911).
+    // It is a root string reference, outside recorder name/class counts.
+    if !staged_import.prospect_dt_key.is_empty() {
+        let reference = staged_import.prospect_dt_key;
+        let role = ContentRole::DataRow;
+        let mapped = catalog.contains_prospect(&reference);
+        plan.content.roles.entry(role).or_default().references += 1;
+        role_distinct.insert((role, reference.clone()), mapped);
+        distinct.insert(reference, mapped);
+        if !mapped {
+            plan.content.unmapped_references += 1;
+        }
+    }
     for (recorder, decision) in recorders.records().iter().zip(&decisions) {
         // read_recorders and staging validated this exact FString; it is never reported.
         let class = decode_string(recorder.class_value, ByteOrder::Little)
@@ -635,13 +671,16 @@ pub fn plan_import(reader: impl Read, catalog: &ContentCatalog) -> Result<Import
         plan.content.path_references += references.paths;
         for (role, reference) in references.values {
             plan.content.roles.entry(role).or_default().references += 1;
-            role_distinct.insert((role, reference.clone()));
+            let mapped = catalog.contains(role, &reference);
+            role_distinct
+                .entry((role, reference.clone()))
+                .and_modify(|all| *all &= mapped)
+                .or_insert(mapped);
             if !role.resolves_against_catalog() {
                 continue;
             }
             // A reference maps only where the catalog defines it in every
             // role it is used in.
-            let mapped = catalog.contains(role, &reference);
             distinct
                 .entry(reference)
                 .and_modify(|all| *all &= mapped)
@@ -652,10 +691,10 @@ pub fn plan_import(reader: impl Read, catalog: &ContentCatalog) -> Result<Import
             }
         }
     }
-    for (role, reference) in &role_distinct {
+    for ((role, _), mapped) in &role_distinct {
         let count = plan.content.roles.entry(*role).or_default();
         count.distinct += 1;
-        if role.resolves_against_catalog() && !catalog.contains(*role, reference) {
+        if role.resolves_against_catalog() && !mapped {
             count.unmapped_distinct += 1;
         }
     }

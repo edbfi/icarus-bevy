@@ -1214,6 +1214,29 @@ pub fn stage_prospect_save_state_with_decisions(
     component_byte_limit: usize,
     expected_prospect_id: Option<&[u16]>,
 ) -> Result<(StagedProspectSaveState, Vec<StagedRecorderDecision>)> {
+    let staged = stage_prospect_save_state_for_import(
+        roots,
+        profile,
+        component_byte_limit,
+        expected_prospect_id,
+    )?;
+    Ok((staged.summary, staged.decisions))
+}
+
+/// Internal staging output with the migrated row key. Deliberately has no
+/// Debug or Serialize implementation: supplied values stay out of reports.
+pub(crate) struct StagedImportState {
+    pub(crate) summary: StagedProspectSaveState,
+    pub(crate) decisions: Vec<StagedRecorderDecision>,
+    pub(crate) prospect_dt_key: Vec<u16>,
+}
+
+pub(crate) fn stage_prospect_save_state_for_import(
+    roots: &[RootTag<'_>],
+    profile: TagProfile,
+    component_byte_limit: usize,
+    expected_prospect_id: Option<&[u16]>,
+) -> Result<StagedImportState> {
     ensure!(
         (1..=MAX_BOUNDED_COMPONENT_BYTES).contains(&component_byte_limit),
         "component byte limit must be between 1 byte and 1 MiB"
@@ -1494,5 +1517,9 @@ pub fn stage_prospect_save_state_with_decisions(
         total_component_field_tags,
         world_imported: false,
     };
-    Ok((staged, decisions))
+    Ok(StagedImportState {
+        summary: staged,
+        decisions,
+        prospect_dt_key: info.prospect_dt_key,
+    })
 }
