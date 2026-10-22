@@ -160,3 +160,72 @@ pub fn table_json(names: &[&str]) -> Vec<u8> {
     }))
     .unwrap()
 }
+
+/// Authored tables for a fresh player's pawn content (`network::pawn_content`):
+/// `D_Inventory`'s `Player` lists `Bag` (no starting slots) then `Hands`
+/// (three slots of query `Any`, slot 2 overridden by `Fists`); the starting
+/// stats grant maxima 250, 150, 220, 230 and 240; `Player` is growth row 1.
+pub fn player_tables() -> Vec<(&'static str, Vec<u8>)> {
+    let json = |value: serde_json::Value| serde_json::to_vec(&value).unwrap();
+    vec![
+        (
+            "Traits/D_Inventory.json",
+            json(serde_json::json!({"Rows": [
+                {"Name": "Crate", "Inventories": []},
+                {"Name": "Player", "Inventories": [
+                    {"RowName": "Bag", "DataTableName": "D_InventoryInfo"},
+                    {"RowName": "Hands", "DataTableName": "D_InventoryInfo"},
+                ]},
+            ]})),
+        ),
+        (
+            "Inventory/D_InventoryInfo.json",
+            json(serde_json::json!({"Rows": [
+                {"Name": "Unused", "StartingSlots": 4},
+                {"Name": "Hands", "SlotTemplate": {"RowName": "Any"}, "StartingSlots": 3,
+                 "SlotOverrides": [{"Query": {"RowName": "Fists", "DataTableName": "D_TagQueries"}, "Location": 2}]},
+                {"Name": "Bag", "SlotTemplate": {"RowName": "Any"}},
+            ]})),
+        ),
+        (
+            "Tags/D_TagQueries.json",
+            table_json(&["Q0", "Any", "Fists"]),
+        ),
+        (
+            "Stats/D_CharacterStartingStats.json",
+            json(
+                serde_json::json!({"Rows": [{"Name": "Base_Stats", "StatsGranted": {
+                    "(Value=\"BaseMaximumHealth_+\")": 250,
+                    "(Value=\"BaseMaximumStamina_+\")": 150,
+                    "(Value=\"BaseMaximumOxygen_+\")": 220,
+                    "(Value=\"BaseMaximumWater_+\")": 230,
+                    "(Value=\"BaseMaximumFood_+\")": 240,
+                    "(Value=\"BaseWeightCapacity_+\")": 100,
+                }}]}),
+            ),
+        ),
+        (
+            "Character/D_CharacterGrowth.json",
+            table_json(&["Creature", "Player"]),
+        ),
+        (
+            "Factions/D_FactionMissions.json",
+            table_json(&["Mission_Z"]),
+        ),
+    ]
+}
+
+/// A pak with `extra` members beside [`player_tables`] (a member of the
+/// same path in `extra` wins).
+pub fn official_pak(extra: &[(&str, Vec<u8>)]) -> Vec<u8> {
+    let mut members: Vec<(&str, Vec<u8>)> = player_tables()
+        .into_iter()
+        .filter(|(path, _)| extra.iter().all(|(other, _)| other != path))
+        .collect();
+    members.extend(extra.iter().map(|(path, bytes)| (*path, bytes.clone())));
+    let borrowed: Vec<(&str, &[u8], bool)> = members
+        .iter()
+        .map(|(path, bytes)| (*path, bytes.as_slice(), true))
+        .collect();
+    write_pak(&borrowed)
+}

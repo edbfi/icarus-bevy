@@ -7,8 +7,10 @@
 //! framing come from the composer. With `--native`, the open is composed by
 //! `pawn_open::compose_pawn_open` from the built-in 3.0.31 pawn identifiers
 //! instead, and only the session's values (`IcarusUID`, tags, character
-//! state, stats, inventory rows and slots) are decoded from the body.
-//! Never reads original files.
+//! state, stats, inventory rows and slots) are decoded from the body; with
+//! `--data-pak` the character state and inventories come from the official
+//! server's data tables instead (F-836) and are compared with the decoded
+//! ones. Reads no original file but that data.pak.
 use std::{collections::BTreeMap, path::PathBuf};
 
 use anyhow::{Context, Result, bail, ensure};
@@ -53,6 +55,10 @@ struct Options {
     /// Compose with `compose_pawn_open` and the built-in identifiers.
     #[arg(long)]
     native: bool,
+    /// With `--native`: take the character state and inventories from this
+    /// official server `data.pak` (F-836).
+    #[arg(long, requires = "native")]
+    data_pak: Option<PathBuf>,
 }
 
 /// How a handle's object reference is composed.
@@ -246,6 +252,7 @@ fn main() -> Result<()> {
             location,
             &rep_codec,
             (&supplied_body, &supplied_exports(&file)?),
+            options.data_pak.as_deref(),
         );
     }
     let (composed, guids) = compose_component_actor_open(
@@ -380,6 +387,7 @@ fn native(
     location: Option<[f32; 3]>,
     rep_codec: &RepLayoutCodec,
     (supplied_body, supplied_exports): (&Payload, &Payload),
+    data_pak: Option<&std::path::Path>,
 ) -> Result<()> {
     let mut plan = release
         .pawn_open_plan("/Game/Maps/Unused/Unused")?
@@ -476,6 +484,19 @@ fn native(
             },
         });
     }
+    // From the data tables: whether they equal the decoded values, which
+    // they then replace.
+    let mut from_data_pak = None;
+    if let Some(path) = data_pak {
+        let mut tables = icarus_bevy::data_pak::DataTables::open(path)?;
+        let tabled = icarus_bevy::network::pawn_content(Some(&mut tables))?;
+        from_data_pak = Some(json!({
+            "character_state_equal": tabled.character_state == content.character_state,
+            "inventories_equal": tabled.inventories == content.inventories,
+        }));
+        content.character_state = tabled.character_state;
+        content.inventories = tabled.inventories;
+    }
     let state = PawnOpenState {
         key: ActorKey::Session(1),
         controller: *references.get(&13).context("Owner")?,
@@ -501,6 +522,7 @@ fn native(
             "exports_identical": composed_exports == *supplied_exports,
             "body_bits": [composed.bunch.payload.bit_len(), supplied_body.bit_len()],
             "body_identical": composed.bunch.payload == *supplied_body,
+            "from_data_pak": from_data_pak,
         })
     );
     Ok(())

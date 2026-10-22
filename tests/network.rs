@@ -908,7 +908,7 @@ fn compose_lab_pawn(
         controller: guids.actor,
         player_state: guids.player_state,
         location: network::SPAWN_LOCATION,
-        content: network::pawn_content(),
+        content: network::pawn_content(None).unwrap(),
     };
     compose_pawn_open(
         cache,
