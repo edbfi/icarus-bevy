@@ -2069,10 +2069,11 @@ fn a_networking_status_over_one_bunch_reaches_every_held_session() {
     );
 }
 
-/// The saved QuestManager joins the bound managers on the next channel
-/// (F-861); a repeated slot fails, and so does a lab without managers.
+/// The saved QuestManager (F-861) and PlayerHistoryTracker (F-862) join the
+/// bound managers on the next channels; a repeated slot fails, and so does a
+/// lab without managers.
 #[test]
-fn the_quest_manager_follows_the_bound_managers() {
+fn the_saved_managers_follow_the_bound_managers() {
     use icarus_bevy::experimental::manager_open::ManagerSlot;
     let network = NetworkConfig {
         release_profile: Some(
@@ -2081,24 +2082,25 @@ fn the_quest_manager_follows_the_bound_managers() {
         ..enabled(0)
     };
     let mut bound = network::bind(&network).unwrap().unwrap();
-    let plan = bound
-        .quest_manager
-        .take()
-        .expect("the release's QuestManager plan");
-    assert_eq!(
-        bound
-            .lab
-            .add_manager_open(ManagerSlot::Quest, plan.clone())
-            .unwrap(),
-        network::MANAGER_FIRST_CHANNEL + 3
-    );
+    let saved = std::mem::take(&mut bound.saved_managers);
+    let slots: Vec<ManagerSlot> = saved.iter().map(|(slot, _)| *slot).collect();
+    assert_eq!(slots, [ManagerSlot::Quest, ManagerSlot::PlayerHistory]);
+    let quest = saved[0].1.clone();
+    for ((slot, plan), channel) in saved.into_iter().zip(9..) {
+        assert_eq!(bound.lab.add_manager_open(slot, plan).unwrap(), channel);
+    }
+    assert_eq!(network::MANAGER_FIRST_CHANNEL + 3, 9);
     assert!(
         bound
             .lab
-            .add_manager_open(ManagerSlot::Quest, plan.clone())
+            .add_manager_open(ManagerSlot::Quest, quest.clone())
             .is_err()
     );
     let mut bare = network::bind(&enabled(0)).unwrap().unwrap();
-    assert!(bare.quest_manager.is_none());
-    assert!(bare.lab.add_manager_open(ManagerSlot::Quest, plan).is_err());
+    assert!(bare.saved_managers.is_empty());
+    assert!(
+        bare.lab
+            .add_manager_open(ManagerSlot::Quest, quest)
+            .is_err()
+    );
 }

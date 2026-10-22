@@ -504,3 +504,43 @@ impl SavedQuestManager {
         })
     }
 }
+
+/// One saved `PlayerHistoryEntryRecord` (`C024`): a player who joined the
+/// world, as the PlayerHistoryTracker's `History` replicates it. `Debug`
+/// shows no values.
+#[derive(Clone, Default, PartialEq, Eq)]
+pub struct PlayerHistoryEntry {
+    pub user_id: Vec<u16>,
+    pub chr_slot: i32,
+    pub cached_character_name: Vec<u16>,
+}
+
+impl std::fmt::Debug for PlayerHistoryEntry {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("PlayerHistoryEntry")
+    }
+}
+
+/// Type a `C024` (`PlayerHistoryRecorderComponent`) component's
+/// `SavedHistoryData`, in saved order; missing reads as empty.
+pub fn saved_player_history(tree: &TypedTree) -> Result<Vec<PlayerHistoryEntry>> {
+    let fields = Fields {
+        tree,
+        what: "PlayerHistoryRecorderComponent",
+    };
+    fields
+        .structs("SavedHistoryData")?
+        .iter()
+        .map(|tree| {
+            let fields = Fields {
+                tree,
+                what: "PlayerHistoryEntryRecord",
+            };
+            Ok(PlayerHistoryEntry {
+                user_id: fields.string("UserID")?,
+                chr_slot: fields.int("ChrSlot")?,
+                cached_character_name: fields.string("CachedCharacterName")?,
+            })
+        })
+        .collect()
+}

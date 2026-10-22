@@ -66,7 +66,7 @@ use crate::{
             PawnInventory,
         },
         peer_lab::{PeerLab, PeerLabAdmission, PeerLabConfig, PeerLabPlugin, SessionCounts},
-        prospect_info::{MissionHistoryRecord, SavedQuestManager},
+        prospect_info::{MissionHistoryRecord, PlayerHistoryEntry, SavedQuestManager},
         release::{ReleasePin, ReleaseProfile},
         rep_layout::{NetworkName, RepValue},
         server_fps::{DEFAULT_SAMPLES, ServerFpsMeter},
@@ -362,6 +362,9 @@ pub struct SavedGameState {
     /// `D_FactionMissions` row (F-861); `None` without the record, without
     /// tables or when the table lacks the mission.
     pub quest_manager: Option<(SavedQuestManager, u8)>,
+    /// The saved player history (`C024`), when the save has the record
+    /// (F-862).
+    pub player_history: Option<Vec<PlayerHistoryEntry>>,
 }
 
 /// The saved missions `AIcarusGameModeSurvival::UpdateLockedMissions`
@@ -459,6 +462,7 @@ pub fn saved_game_state(
         unmapped_session_flags,
         locked_missions: locked,
         quest_manager,
+        player_history: saved.player_history,
     })
 }
 
@@ -476,31 +480,39 @@ pub fn apply_server_settings(lab: &mut PeerLab, autosave_seconds: u64) -> Result
 }
 
 /// What [`apply_saved_game_state`] replicated beyond the values.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct AppliedGameState {
     /// Saved session flags that could not be replicated.
     pub unmapped_session_flags: usize,
     /// Missions `LockedMissions` lists while their locks last.
     pub locked_missions: usize,
-    /// The QuestManager's channel, when its saved state opens it (F-861).
-    pub quest_manager_channel: Option<u32>,
+    /// The managers the save's state opened, with their channels, in
+    /// opening order (F-861, F-862).
+    pub saved_managers: Vec<(ManagerSlot, u32)>,
 }
 
 /// Add a loaded world's [`saved_game_state`] to `lab`'s GameState open,
-/// and open `quest_manager` (the release's plan) after the other managers
-/// with the saved quest state, when the save supplies it (F-861).
+/// and open those of `saved_managers` (the release's plans) whose state
+/// the save supplies after the other managers: the QuestManager with the
+/// saved quest state (F-861), the PlayerHistoryTracker with the saved
+/// history (F-862).
 pub fn apply_saved_game_state(
     lab: &mut PeerLab,
     section: &PreservedSection,
     tables: Option<&mut DataTables>,
-    quest_manager: Option<ManagerOpenPlan>,
+    saved_managers: Vec<(ManagerSlot, ManagerOpenPlan)>,
 ) -> Result<AppliedGameState> {
     let saved = saved_game_state(section, tables)?;
-    // The QuestManager joins last, after every other step that can fail.
-    let quest_plan = match (quest_manager, &saved.quest_manager) {
-        (Some(plan), Some((quest, row))) => Some(plan.with_quest_state(quest, *row)?),
-        _ => None,
-    };
+    // The managers join last, after every other step that can fail.
+    let mut manager_plans = Vec::new();
+    for (slot, plan) in saved_managers {
+        let plan = match (slot, &saved.quest_manager, &saved.player_history) {
+            (ManagerSlot::Quest, Some((quest, row)), _) => plan.with_quest_state(quest, *row)?,
+            (ManagerSlot::PlayerHistory, _, Some(history)) => plan.with_player_history(history)?,
+            _ => continue,
+        };
+        manager_plans.push((slot, plan));
+    }
     lab.extend_game_state_values(saved.values)?;
     let locked_missions = saved.locked_missions.len();
     if let Some(level_time) = saved.level_time_elapsed_sec {
@@ -512,13 +524,14 @@ pub fn apply_saved_game_state(
     if let Some(clock) = saved.time_of_day {
         lab.enable_time_of_day(clock)?;
     }
-    let quest_manager_channel = quest_plan
-        .map(|plan| lab.add_manager_open(ManagerSlot::Quest, plan))
-        .transpose()?;
+    let saved_managers = manager_plans
+        .into_iter()
+        .map(|(slot, plan)| Ok((slot, lab.add_manager_open(slot, plan)?)))
+        .collect::<Result<_>>()?;
     Ok(AppliedGameState {
         unmapped_session_flags: saved.unmapped_session_flags,
         locked_missions,
-        quest_manager_channel,
+        saved_managers,
     })
 }
 
@@ -557,9 +570,9 @@ pub struct BoundNetwork {
     pub release: Option<ReleasePin>,
     /// The official server's data tables, when `data_pak` is set.
     pub tables: Option<DataTables>,
-    /// The release's QuestManager plan, opened only with a save's quest
+    /// The release's plans of the managers that open only with a save's
     /// state ([`apply_saved_game_state`]).
-    pub quest_manager: Option<ManagerOpenPlan>,
+    pub saved_managers: Vec<(ManagerSlot, ManagerOpenPlan)>,
 }
 
 /// Load and validate the configured release profile (bounded regular-file
@@ -617,7 +630,7 @@ pub fn bind(network: &NetworkConfig) -> Result<Option<BoundNetwork>> {
     let address = SocketAddrV4::new(network.bind, network.port);
     let mut lab = PeerLab::bind_address(address, config)
         .context("bind the experimental network session socket")?;
-    let mut quest_manager = None;
+    let mut saved_managers = Vec::new();
     if let Some(plan) = plan {
         lab.enable_player_controller_open(plan)?;
         let player_state = match (&profile, &config.admission) {
@@ -658,9 +671,9 @@ pub fn bind(network: &NetworkConfig) -> Result<Option<BoundNetwork>> {
                 .context("compose the manager open plans")?;
             if !managers.is_empty() {
                 lab.enable_manager_opens(managers, MANAGER_FIRST_CHANNEL)?;
-                quest_manager = profile
-                    .quest_manager_open_plan(admission.map_url)
-                    .context("compose the QuestManager open plan")?;
+                saved_managers = profile
+                    .saved_manager_open_plans(admission.map_url)
+                    .context("compose the saved manager open plans")?;
             }
         }
     }
@@ -668,7 +681,7 @@ pub fn bind(network: &NetworkConfig) -> Result<Option<BoundNetwork>> {
         lab,
         release: profile.map(|profile| profile.pin),
         tables,
-        quest_manager,
+        saved_managers,
     }))
 }
 

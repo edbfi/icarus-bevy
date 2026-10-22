@@ -998,7 +998,7 @@ fn manager_sections_parse_and_fail_closed() {
     assert!(unknown.managers.is_none());
     assert!(
         unknown
-            .quest_manager_open_plan("/Game/Maps/Test/Test")
+            .manager_open_plan(ManagerSlot::Quest, "/Game/Maps/Test/Test")
             .unwrap()
             .is_none()
     );
@@ -1010,6 +1010,7 @@ fn manager_sections_parse_and_fail_closed() {
     );
     let section = "[managers]\n\
         quest_manager = [{ path = \"Default__Q\", checksum = 6 }, { path = \"/Script/I\", checksum = 0 }]\n\
+        player_history_tracker = [{ path = \"Default__H\", checksum = 7 }, { path = \"/Script/I\", checksum = 0 }]\n\
         radiation_manager = [{ path = \"Default__R\", checksum = 1 }, { path = \"/Script/I\", checksum = 0 }]\n\
         world_talent_manager = [{ path = \"Default__W\", checksum = 2 }, { path = \"/Script/I\", checksum = 0 }]\n\
         disaster_controller = [{ path = \"Default__D_C\", checksum = 3 }, { path = \"/Game/D\", checksum = 0 }]\n\
@@ -1021,7 +1022,7 @@ fn manager_sections_parse_and_fail_closed() {
     assert_eq!(plans[0].1.components[0].checksum, 4);
     assert_eq!(plans[0].1.components[1].checksum, 5);
     let quest = parsed
-        .quest_manager_open_plan("/Game/Maps/Test/Test")
+        .manager_open_plan(ManagerSlot::Quest, "/Game/Maps/Test/Test")
         .unwrap()
         .unwrap();
     assert_eq!(quest.archetype[0].path, "Default__Q");

@@ -18,7 +18,9 @@ use crate::experimental::component::{
 use crate::experimental::property_tree::{
     BaseComponentTree, MAX_TREE_DEPTH, MAX_TREE_NODES, PropertyTree, TreeLimits,
 };
-use crate::experimental::prospect_info::{ProspectInfo, SavedGameMode, SavedQuestManager};
+use crate::experimental::prospect_info::{
+    PlayerHistoryEntry, ProspectInfo, SavedGameMode, SavedQuestManager, saved_player_history,
+};
 use crate::experimental::recorders::{
     RecorderSummary, StagedProspectSaveState, read_recorders, recorder_class_label,
     stage_prospect_save_state,
@@ -279,20 +281,22 @@ pub fn typed_check(reader: impl Read) -> Result<TypedProspectInspection> {
     Ok(report)
 }
 
-/// What replicating a loaded prospect's GameState and quest manager needs
-/// from its save: the typed `ProspectInfo` (`F-738`) and the game mode and
-/// quest manager recorders' values (`C015`, `C018`, `F-650`), when those
-/// recorders exist. The values are the save's; callers must keep them
-/// private.
+/// What replicating a loaded prospect's GameState and managers needs from
+/// its save: the typed `ProspectInfo` (`F-738`) and the game mode, quest
+/// manager and player history recorders' values (`C015`, `C018`, `C024`,
+/// `F-650`), when those recorders exist. The values are the save's; callers
+/// must keep them private.
 pub struct SavedProspect {
     pub info: ProspectInfo,
     pub game_mode: Option<SavedGameMode>,
     /// The quest manager recorder's values (`C018`), when one exists.
     pub quest_manager: Option<SavedQuestManager>,
+    /// The player history recorder's entries (`C024`), when one exists.
+    pub player_history: Option<Vec<PlayerHistoryEntry>>,
 }
 
 /// Stage the prospect exactly as [`stage_prospect`] does, then type its root
-/// `ProspectInfo` and its one `C015` and `C018` recorders.
+/// `ProspectInfo` and its one `C015`, `C018` and `C024` recorders.
 pub fn read_saved_prospect(reader: impl Read) -> Result<SavedProspect> {
     saved_prospect_from_payload(&decode_envelope(reader)?.payload)
 }
@@ -321,12 +325,13 @@ pub fn saved_prospect_from_payload(payload: &[u8]) -> Result<SavedProspect> {
         read_recorders(&tags.tags, profile).context("invalid experimental recorder framing")?;
     let mut game_mode = None;
     let mut quest_manager = None;
+    let mut player_history = None;
     for recorder in recorders.records() {
         let class = decode_string(recorder.class_value, ByteOrder::Little)
             .context("invalid experimental recorder class string")?;
         let label = recorder_class_label(&class.units);
         let label = match label.as_deref() {
-            Some(label @ ("C015" | "C018")) => label,
+            Some(label @ ("C015" | "C018" | "C024")) => label,
             _ => continue,
         };
         let tree = BaseComponentTree::parse(
@@ -337,24 +342,24 @@ pub fn saved_prospect_from_payload(payload: &[u8]) -> Result<SavedProspect> {
         )
         .with_context(|| format!("invalid {label} recorder tree"))?;
         let (typed, _) = TypedComponent::from_component(&tree)?;
-        if label == "C015" {
-            ensure!(
-                game_mode.is_none(),
-                "the prospect has more than one C015 recorder"
-            );
-            game_mode = Some(SavedGameMode::from_tree(&typed.tree)?);
-        } else {
-            ensure!(
-                quest_manager.is_none(),
-                "the prospect has more than one C018 recorder"
-            );
-            quest_manager = Some(SavedQuestManager::from_tree(&typed.tree)?);
-        }
+        let repeated = match label {
+            "C015" => game_mode
+                .replace(SavedGameMode::from_tree(&typed.tree)?)
+                .is_some(),
+            "C018" => quest_manager
+                .replace(SavedQuestManager::from_tree(&typed.tree)?)
+                .is_some(),
+            _ => player_history
+                .replace(saved_player_history(&typed.tree)?)
+                .is_some(),
+        };
+        ensure!(!repeated, "the prospect has more than one {label} recorder");
     }
     Ok(SavedProspect {
         info,
         game_mode,
         quest_manager,
+        player_history,
     })
 }
 
