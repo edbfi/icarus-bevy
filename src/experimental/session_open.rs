@@ -92,6 +92,8 @@ pub enum ActorKey {
     /// A saved actor, by its `IcarusActorGUID`: saved links (quest
     /// references, F-861) name actors this way, apart from domain ids.
     Saved(u64),
+    /// A FLOD tile, by its position in the saved tile list (F-914).
+    FlodTile(u64),
 }
 
 /// Which part of a keyed actor a dynamic GUID names.

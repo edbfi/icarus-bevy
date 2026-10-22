@@ -20,7 +20,7 @@ use crate::experimental::property_tree::{
 };
 use crate::experimental::prospect_info::{
     PlayerHistoryEntry, ProspectInfo, SavedContainerManager, SavedGameMode, SavedQuestManager,
-    saved_container_manager, saved_player_history,
+    saved_container_manager, saved_flod_tile_count, saved_player_history,
 };
 use crate::experimental::recorders::{
     RecorderSummary, StagedProspectSaveState, read_recorders, recorder_class_label,
@@ -283,9 +283,10 @@ pub fn typed_check(reader: impl Read) -> Result<TypedProspectInspection> {
 }
 
 /// What replicating a loaded prospect's GameState and managers needs from
-/// its save: the typed `ProspectInfo` (`F-738`) and the game mode,
+/// its save: the typed `ProspectInfo` (`F-738`) and the FLOD, game mode,
 /// container manager, quest manager and player history recorders' values
-/// (`C015`, `C016`, `C018`, `C024`, `F-650`), when those recorders exist.
+/// (`C013`, `C015`, `C016`, `C018`, `C024`, `F-650`), when those recorders
+/// exist.
 /// The values are the save's; callers must keep them private.
 pub struct SavedProspect {
     pub info: ProspectInfo,
@@ -297,10 +298,13 @@ pub struct SavedProspect {
     /// The container manager recorder's inventories (`C016`), when one
     /// exists.
     pub inventory_containers: Option<SavedContainerManager>,
+    /// The FLOD recorder's tile count (`C013`), when one exists.
+    pub flod_tiles: Option<i32>,
 }
 
 /// Stage the prospect exactly as [`stage_prospect`] does, then type its root
-/// `ProspectInfo` and its one `C015`, `C016`, `C018` and `C024` recorders.
+/// `ProspectInfo` and its one `C013`, `C015`, `C016`, `C018` and `C024`
+/// recorders.
 pub fn read_saved_prospect(reader: impl Read) -> Result<SavedProspect> {
     saved_prospect_from_payload(&decode_envelope(reader)?.payload)
 }
@@ -331,12 +335,13 @@ pub fn saved_prospect_from_payload(payload: &[u8]) -> Result<SavedProspect> {
     let mut quest_manager = None;
     let mut player_history = None;
     let mut inventory_containers = None;
+    let mut flod_tiles = None;
     for recorder in recorders.records() {
         let class = decode_string(recorder.class_value, ByteOrder::Little)
             .context("invalid experimental recorder class string")?;
         let label = recorder_class_label(&class.units);
         let label = match label.as_deref() {
-            Some(label @ ("C015" | "C016" | "C018" | "C024")) => label,
+            Some(label @ ("C013" | "C015" | "C016" | "C018" | "C024")) => label,
             _ => continue,
         };
         let tree = BaseComponentTree::parse(
@@ -350,6 +355,9 @@ pub fn saved_prospect_from_payload(payload: &[u8]) -> Result<SavedProspect> {
         let repeated = match label {
             "C015" => game_mode
                 .replace(SavedGameMode::from_tree(&typed.tree)?)
+                .is_some(),
+            "C013" => flod_tiles
+                .replace(saved_flod_tile_count(&typed.tree)?)
                 .is_some(),
             "C016" => inventory_containers
                 .replace(saved_container_manager(&typed.tree)?)
@@ -369,6 +377,7 @@ pub fn saved_prospect_from_payload(payload: &[u8]) -> Result<SavedProspect> {
         quest_manager,
         player_history,
         inventory_containers,
+        flod_tiles,
     })
 }
 
