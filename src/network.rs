@@ -156,18 +156,28 @@ const LAB_VITALS: CharacterVitals = CharacterVitals {
 
 /// The pawn content `run` opens every player's pawn with: movement frozen
 /// at open (as captured, F-797). With the official server's data tables a
-/// fresh player's vitals and empty inventories come from them
-/// ([`fresh_player_vitals`], [`player_inventories`], F-836); without, lab
-/// vitals and no inventories. No `IcarusUID`, tags or stats are sent: they
-/// need imported or catalogued content.
+/// fresh player's vitals, empty inventories and replicated stats come from
+/// them ([`fresh_player_vitals`], [`player_inventories`], F-836;
+/// [`crate::pawn_stats::fresh_player_stats`], F-839); without, lab vitals,
+/// no inventories and no stats. No `IcarusUID` or tags are sent: they need
+/// imported or catalogued content.
 pub fn pawn_content(tables: Option<&mut DataTables>) -> Result<PawnContent> {
-    let (vitals, inventories) = match tables {
-        Some(tables) => (fresh_player_vitals(tables)?, player_inventories(tables)?),
-        None => (LAB_VITALS, Vec::new()),
+    let (vitals, inventories, stats) = match tables {
+        Some(tables) => (
+            fresh_player_vitals(tables)?,
+            player_inventories(tables)?,
+            Some(crate::pawn_stats::fresh_player_stats(
+                tables,
+                STARTING_STATS_TABLE,
+                STARTING_STATS_ROW,
+            )?),
+        ),
+        None => (LAB_VITALS, Vec::new(), None),
     };
     Ok(PawnContent {
         frozen_movement: true,
         character_state: vitals.values(),
+        stats,
         inventories,
         ..PawnContent::default()
     })
@@ -539,8 +549,7 @@ fn load_data_tables(path: &std::path::Path) -> Result<DataTables> {
     tables.rows(SESSION_FLAGS_TABLE)?;
     tables.rows(FACTION_MISSIONS_TABLE)?;
     tables.row_bool(FACTION_MISSIONS_TABLE, RETRY_TIMEOUT_FIELD, 0)?;
-    fresh_player_vitals(&mut tables)?;
-    player_inventories(&mut tables)?;
+    pawn_content(Some(&mut tables))?;
     Ok(tables)
 }
 

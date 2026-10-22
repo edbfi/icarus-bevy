@@ -8,9 +8,9 @@
 //! `pawn_open::compose_pawn_open` from the built-in 3.0.31 pawn identifiers
 //! instead, and only the session's values (`IcarusUID`, tags, character
 //! state, stats, inventory rows and slots) are decoded from the body; with
-//! `--data-pak` the character state and inventories come from the official
-//! server's data tables instead (F-836) and are compared with the decoded
-//! ones. Reads no original file but that data.pak.
+//! `--data-pak` the character state, inventories and stats come from the
+//! official server's data tables instead (F-836, F-839) and are compared
+//! with the decoded ones. Reads no original file but that data.pak.
 use std::{collections::BTreeMap, path::PathBuf};
 
 use anyhow::{Context, Result, bail, ensure};
@@ -55,8 +55,8 @@ struct Options {
     /// Compose with `compose_pawn_open` and the built-in identifiers.
     #[arg(long)]
     native: bool,
-    /// With `--native`: take the character state and inventories from this
-    /// official server `data.pak` (F-836).
+    /// With `--native`: take the character state, inventories and stats
+    /// from this official server `data.pak` (F-836, F-839).
     #[arg(long, requires = "native")]
     data_pak: Option<PathBuf>,
 }
@@ -493,9 +493,11 @@ fn native(
         from_data_pak = Some(json!({
             "character_state_equal": tabled.character_state == content.character_state,
             "inventories_equal": tabled.inventories == content.inventories,
+            "stats_equal": tabled.stats == content.stats,
         }));
         content.character_state = tabled.character_state;
         content.inventories = tabled.inventories;
+        content.stats = tabled.stats;
     }
     let state = PawnOpenState {
         key: ActorKey::Session(1),
