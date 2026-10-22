@@ -61,9 +61,13 @@ which `run` sends (F-836); after each PlayerState it opens the GameState's
 radiation, world-talent and disaster managers as the capture did (F-859),
 then, from a save's quest manager and player history records, the
 QuestManager and the PlayerHistoryTracker, which compose bit for bit against
-the capture (F-861, F-862; [world managers](../../specs/network/world-managers.md)). The quest actors the QuestManager references stay
-closed: which sub-quests are active is each quest Blueprint's logic (F-864),
-and 270 of the 2,044 quest classes add replicated properties (F-863; U-074).
+the capture (F-861, F-862;
+[world managers](../../specs/network/world-managers.md)).
+The original appends a player to the history once per user ID and slot when
+it initialises the player for the prospect, which `run` does not yet (F-865).
+The quest actors the QuestManager references stay closed: which sub-quests
+are active is each quest Blueprint's logic (F-864), and 270 of the 2,044
+quest classes add replicated properties (F-863; U-074).
 The pawn's stats are mostly starting grants, with 8 virtual stats whose
 formulas the server declares in code; `run` sends them from data.pak by the
 same formulas (F-839).
@@ -79,4 +83,4 @@ same formulas (F-839).
 
 ## Artifacts
 
-M-420..M-449, M-455..M-470, M-570..M-576, M-581..M-588, M-600..M-605, M-707..M-717, M-720, M-728..M-748, M-776, M-777, M-782, M-794, M-795, M-797..M-799, M-801, M-802, M-804, M-805, M-807, M-813..M-819, M-832, M-834 to M-836, M-838 to M-848, M-852, M-853, M-860, M-863, M-868, M-869, M-879, M-881 to M-884.
+M-420..M-449, M-455..M-470, M-570..M-576, M-581..M-588, M-600..M-605, M-707..M-717, M-720, M-728..M-748, M-776, M-777, M-782, M-794, M-795, M-797..M-799, M-801, M-802, M-804, M-805, M-807, M-813..M-819, M-832, M-834 to M-836, M-838 to M-848, M-852, M-853, M-860, M-863, M-868, M-869, M-879, M-881 to M-885.

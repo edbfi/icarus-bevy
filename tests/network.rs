@@ -2069,8 +2069,9 @@ fn a_networking_status_over_one_bunch_reaches_every_held_session() {
     );
 }
 
-/// The saved QuestManager joins the bound managers on the next channel
-/// (F-861); a repeated slot fails, and so does a lab without managers.
+/// The saved QuestManager (F-861) and PlayerHistoryTracker (F-862) join the
+/// bound managers on the next channels; a repeated slot fails, and so does a
+/// lab without managers.
 #[test]
 fn the_saved_managers_follow_the_bound_managers() {
     use icarus_bevy::experimental::manager_open::ManagerSlot;

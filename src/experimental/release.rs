@@ -1219,8 +1219,8 @@ impl ReleaseProfile {
     /// none without `[managers]` (F-859): the radiation and world-talent
     /// managers carry a stat container and an actor state (`CurrentBiome`
     /// row 0, as captured), the disaster controller a stat container only.
-    /// The managers that open only with a save's state are
-    /// [`Self::saved_manager_open_plans`]'.
+    /// The managers that open only with a save's state are planned by
+    /// [`Self::saved_manager_open_plans`].
     pub fn manager_open_plans(&self, map_url: &str) -> Result<Vec<(ManagerSlot, ManagerOpenPlan)>> {
         Ok(self
             .all_manager_open_plans(map_url)?

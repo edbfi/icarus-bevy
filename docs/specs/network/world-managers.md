@@ -2,9 +2,9 @@
 
 ## Status
 
-Experimental: wire-checked against the 3.0.31 capture (F-859, F-861, F-862)
-and static observations of server build 25793607 (F-864) and the 3.0.32 server
-paks (F-863). Last reconciled: 2026-10-22.
+Experimental: wire-checked against the 3.0.31 capture (F-859, F-861,
+F-862) and static observations of server build 25793607 (F-864, F-865) and
+the 3.0.32 server paks (F-863). Last reconciled: 2026-10-22.
 
 ## Scope
 
@@ -28,7 +28,9 @@ they carry. Framing is in [actor channel bunches](actor-channel.md).
 - PlayerHistoryTracker (`Default__PlayerHistoryTracker`, checksum 243959002):
   handle 19 `History` carries the save's C024 `SavedHistoryData`, every
   element field (`UserId`, `ChrSlot`, `CachedCharacterName`) in saved order
-  (F-862; `with_player_history`).
+  (F-862; `with_player_history`). The original appends a player in
+  `InitialisePlayerForProspect` unless an entry has the same user ID
+  (case-insensitive) and slot; an existing entry is not refreshed (F-865).
 - `run` opens the radiation, world-talent and disaster managers after each
   PlayerState, then the QuestManager and PlayerHistoryTracker when the loaded
   save supplies their records (F-859, F-861, F-862).
@@ -46,9 +48,11 @@ they carry. Framing is in [actor channel bunches](actor-channel.md).
 
 - Opening a save's quest actors: the 270 classes' checksums and each quest's
   `ActiveQuests` without its Blueprint logic (U-074).
+- Appending joining players to `History` in `run`: the user ID and slot of a
+  stock client (F-865; U-038).
 - The inventory container and FLOD managers, which reference world actors and
   inventories (F-794).
 
 ## Evidence
 
-- M-707, M-820, M-879, M-881 to M-884.
+- M-707, M-820, M-879, M-881 to M-885.
