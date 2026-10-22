@@ -231,5 +231,8 @@ fn extreme_grants_wrap_instead_of_overflowing() {
         * std::num::Wrapping(i32::MAX)
         / std::num::Wrapping(100);
     assert_eq!(stats.value("MaximumHealth_+"), health.0.max(1));
-    let _ = stats.value("SprintSpeed_+");
+    // 100 * i32::MAX wraps to -100; / 100 = -1, floored at 0; so the
+    // sprint speed over it is (i32::MAX * 0 / 100 + 0) * 100 / 100 = 0.
+    assert_eq!(stats.value("MovementSpeed_+"), 0);
+    assert_eq!(stats.value("SprintSpeed_+"), 0);
 }
