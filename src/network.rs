@@ -465,6 +465,9 @@ pub struct SavedGameState {
     /// The saved player history (`C024`), when the save has the record
     /// (F-862).
     pub player_history: Option<Vec<PlayerHistoryEntry>>,
+    /// The saved FLOD tile count (`C013`), when the save has the record
+    /// (F-914).
+    pub flod_tiles: Option<i32>,
     /// The saved container inventories (`C016`, F-866) as sendable
     /// inventories; `None` without the record or without tables (as the
     /// QuestManager, without a skip reason).
@@ -658,6 +661,7 @@ pub fn saved_game_state(
         locked_missions: locked,
         quest_manager,
         player_history: saved.player_history,
+        flod_tiles: saved.flod_tiles,
         inventory_containers,
         skipped_managers,
     })
@@ -694,8 +698,8 @@ pub struct AppliedGameState {
 /// and open those of `saved_managers` (the release's plans) whose state
 /// the save supplies after the other managers: the QuestManager with the
 /// saved quest state (F-861), the InventoryContainerManager with the saved
-/// container inventories (F-866) and the PlayerHistoryTracker with the
-/// saved history (F-862).
+/// container inventories (F-866), the PlayerHistoryTracker with the saved
+/// history (F-862) and the FLOD manager with the saved tile count (F-914).
 pub fn apply_saved_game_state(
     lab: &mut PeerLab,
     section: &PreservedSection,
@@ -723,6 +727,10 @@ pub fn apply_saved_game_state(
             },
             ManagerSlot::PlayerHistory => match &saved.player_history {
                 Some(history) => plan.with_player_history(history)?,
+                None => continue,
+            },
+            ManagerSlot::Flod => match saved.flod_tiles {
+                Some(count) => plan.with_flod_tiles(count)?,
                 None => continue,
             },
             _ => continue,

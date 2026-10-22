@@ -4,7 +4,8 @@
 //! manager record (`C018`) on channel 126, the PlayerHistoryTracker (F-862)
 //! from the player history record (`C024`) on channel 54 and the
 //! InventoryContainerManager (F-866) from the container manager record
-//! (`C016`) on channel 79. The profile file maps channel indices to a
+//! (`C016`) on channel 79 and the FLOD manager (F-914) from the FLOD
+//! record (`C013`) on channel 5. The profile file maps channel indices to a
 //! supplied open (`exports_hex`, `exports_bits`, `body_hex`, `body_bits`)
 //! and its GUIDs (`actor`, `archetype`, `outer`, `components` or the first
 //! runtime subobject's, and `class`, a runtime subobject class exported
@@ -63,6 +64,14 @@ struct Supplied {
     components: Vec<u32>,
     #[serde(default)]
     class: Option<u32>,
+    /// Whether the archetype's outer package was exported before the
+    /// open (native managers); a Blueprint's is exported in the open.
+    #[serde(default = "held")]
+    outer_held: bool,
+}
+
+fn held() -> bool {
+    true
 }
 
 fn payload(text: &str, bits: usize) -> Result<Payload> {
@@ -161,6 +170,11 @@ fn main() -> Result<()> {
                 let slot = ManagerSlot::PlayerHistory;
                 (slot, base(slot)?.with_player_history(history)?)
             }
+            "5" => {
+                let count = saved.flod_tiles.context("the save has no FLOD record")?;
+                let slot = ManagerSlot::Flod;
+                (slot, base(slot)?.with_flod_tiles(count)?)
+            }
             "79" => {
                 let containers = saved
                     .inventory_containers
@@ -229,11 +243,13 @@ fn main() -> Result<()> {
             }
             _ => false,
         };
-        if !class_exported {
-            burn_static_to(&mut cache, supplied.outer)?;
+        if supplied.outer_held {
+            if !class_exported {
+                burn_static_to(&mut cache, supplied.outer)?;
+            }
+            let outer = cache.export_static(&mut exports, &plan.archetype[1..])?;
+            ensure!(outer.guid == supplied.outer, "outer GUID");
         }
-        let outer = cache.export_static(&mut exports, &plan.archetype[1..])?;
-        ensure!(outer.guid == supplied.outer, "outer GUID");
         burn_static_to(&mut cache, supplied.archetype)?;
         let manager = slot.key();
         let mut assigned: Vec<(u32, ActorKey)> = keyed.clone();

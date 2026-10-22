@@ -1009,6 +1009,7 @@ fn manager_sections_parse_and_fail_closed() {
         quest_manager = [{ path = \"Default__Q\", checksum = 6 }, { path = \"/Script/I\", checksum = 0 }]\n\
         inventory_container_manager = [{ path = \"Default__C\", checksum = 8 }, { path = \"/Script/I\", checksum = 0 }]\n\
         player_history_tracker = [{ path = \"Default__H\", checksum = 7 }, { path = \"/Script/I\", checksum = 0 }]\n\
+        flod = [{ path = \"Default__F_C\", checksum = 9 }, { path = \"/Game/F\", checksum = 0 }]\n\
         radiation_manager = [{ path = \"Default__R\", checksum = 1 }, { path = \"/Script/I\", checksum = 0 }]\n\
         world_talent_manager = [{ path = \"Default__W\", checksum = 2 }, { path = \"/Script/I\", checksum = 0 }]\n\
         disaster_controller = [{ path = \"Default__D_C\", checksum = 3 }, { path = \"/Game/D\", checksum = 0 }]\n\

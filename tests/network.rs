@@ -2123,7 +2123,8 @@ fn the_saved_managers_follow_the_bound_managers() {
         [
             ManagerSlot::Quest,
             ManagerSlot::InventoryContainer,
-            ManagerSlot::PlayerHistory
+            ManagerSlot::PlayerHistory,
+            ManagerSlot::Flod
         ]
     );
     let quest = saved[0].1.clone();
