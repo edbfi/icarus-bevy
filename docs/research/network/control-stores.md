@@ -54,7 +54,7 @@ reaches `NotifyControlMessage` through `Driver + 0x208` slot `+0x18` (including
 active branches `0`, `4`, `5`, `9`, `10`, `15`, `17`), and falls back across the
 20-entry skip table (`0..18`, `21`, `22`, plus special handlers `16`, `19`, `20`)
 inside `ReceivedPacket`'s packet-word, ack-history, and bunch-header framing
-(F-096, F-097, F-284, F-514 to F-539, F-579, F-712 to F-714, F-740; U-014, U-044
+(F-284, F-514 to F-539, F-579, F-712 to F-714, F-740, F-857; U-014, U-044
 resolved; [control negotiation](../../specs/network/control-negotiation.md)).
 
 ## Open

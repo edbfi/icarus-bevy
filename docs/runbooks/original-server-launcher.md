@@ -80,7 +80,7 @@ runs the probe with `--hello <hello_version>`; the session allows `hello`
 beside `handshake` and binds `hello_version`, an unsigned 32-bit value.
 `--join-probe` adds `--join <join_seconds>` (30 to 600): synthetic ids log
 in, join and hold the connection from `probe_delay_seconds` after start
-(F-690); allow `join` too.
+(F-858); allow `join` too.
 
 ## Save-load mode
 
