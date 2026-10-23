@@ -9,6 +9,7 @@ pub mod metrics;
 pub mod native_c001_owners;
 pub mod native_c001_scalar_owners;
 pub mod native_import;
+pub mod native_inventory;
 pub mod native_lifecycle;
 pub mod native_lifecycle_runtime;
 pub mod native_relationships;

@@ -36,6 +36,7 @@ use crate::{
     simulation::{DomainId, SNAPSHOT_SCHEMA_C001_INERT, WorldSnapshot},
 };
 
+pub mod c001_inventory_source;
 pub(crate) mod c001_source;
 use c001_source::{
     C001SourceProfile, SourceOwner, source_owner, validate_root, validate_source_headers,

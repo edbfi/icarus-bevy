@@ -974,7 +974,7 @@ impl RestoreBatch {
     pub fn load(path: &Path) -> Result<Self> {
         Self::parse(&load_document(path, MAX_RESTORE_BATCH_BYTES)?)
     }
-    fn validate_bounds(&self) -> Result<()> {
+    pub(crate) fn validate_bounds(&self) -> Result<()> {
         digest_capacity(&self.lifecycle_id)?;
         ensure!(self.sequence > 0, "native restore header invalid");
         ensure!(
@@ -1012,7 +1012,7 @@ impl RestoreBatch {
         encoded_size(self, MAX_RESTORE_BATCH_BYTES)?;
         Ok(())
     }
-    fn canonical(&self) -> Result<Self> {
+    pub(crate) fn canonical(&self) -> Result<Self> {
         self.validate_bounds()?;
         let mut canonical = self.clone();
         canonical
@@ -1099,23 +1099,90 @@ pub fn prepare_owner_restore(
         .native_world
         .as_ref()
         .context("native restore spatial state missing")?;
-    let compiled = CompiledNativeLifecycle::from_snapshot(lifecycle, native)?;
-    validate_lifecycle_relationships(native, lifecycle, base.native_relationships.as_ref())?;
     SnapshotStore::preflight(base)?;
+    let canonical = batch.canonical()?;
+    let request_digest = digest(&canonical, MAX_RESTORE_BATCH_BYTES)?;
+    let staged = if lifecycle.restore_sequence == 0 {
+        stage_initial_owner_restore_parts(
+            native,
+            lifecycle,
+            base.native_relationships.as_ref(),
+            &canonical,
+            |_, _| Ok(request_digest),
+        )?
+    } else {
+        stage_owner_restore_parts(
+            native,
+            lifecycle,
+            base.native_relationships.as_ref(),
+            &canonical,
+            &request_digest,
+        )?
+    };
+    let snapshot = WorldSnapshot {
+        schema_version: base.schema_version,
+        tick: base.tick,
+        entities: base.entities.clone(),
+        preserved_prospect: base.preserved_prospect.clone(),
+        native_world: Some(staged.native),
+        native_import: base.native_import.clone(),
+        native_relationships: base.native_relationships.clone(),
+        native_lifecycle: Some(staged.lifecycle),
+        native_owner_import: base.native_owner_import.clone(),
+        native_scalar_contracts: base.native_scalar_contracts.clone(),
+        native_scalar_owner_import: base.native_scalar_owner_import.clone(),
+    };
+    if !staged.already_completed {
+        snapshot.validate()?;
+        SnapshotStore::preflight(&snapshot)?;
+    }
+    Ok(PreparedRestore {
+        snapshot,
+        already_completed: staged.already_completed,
+    })
+}
+
+/// Private composition boundary: evaluates owner policies without publishing a
+/// snapshot or choosing a request digest. The composing adapter must validate
+/// every other domain and preflight its complete representation before commit.
+pub(crate) struct StagedOwnerRestoreParts {
+    pub(crate) native: NativeWorldSnapshot,
+    pub(crate) lifecycle: LifecycleSnapshot,
+    pub(crate) already_completed: bool,
+}
+
+pub(crate) fn stage_owner_restore_parts(
+    native: &NativeWorldSnapshot,
+    lifecycle: &LifecycleSnapshot,
+    relationships: Option<&NativeRelationshipsSnapshot>,
+    batch: &RestoreBatch,
+    request_digest: &str,
+) -> Result<StagedOwnerRestoreParts> {
+    validate_native_bounds(native)?;
+    validate_snapshot_bounds(lifecycle)?;
+    if let Some(relationships) = relationships {
+        validate_relationship_capacities(relationships)?;
+    }
+    ensure!(
+        digest_valid(request_digest),
+        "native restore digest invalid"
+    );
+    let compiled = CompiledNativeLifecycle::from_snapshot(lifecycle, native)?;
+    validate_lifecycle_relationships(native, lifecycle, relationships)?;
     let canonical = batch.canonical()?;
     ensure!(
         canonical.lifecycle_id == lifecycle.lifecycle_id,
         "native restore lifecycle identity mismatch"
     );
-    let request_digest = digest(&canonical, MAX_RESTORE_BATCH_BYTES)?;
     if let Some(completed) = &lifecycle.completed {
         if canonical.sequence == completed.sequence {
             ensure!(
                 request_digest == completed.request_digest,
                 "native restore sequence conflict"
             );
-            return Ok(PreparedRestore {
-                snapshot: base.clone(),
+            return Ok(StagedOwnerRestoreParts {
+                native: native.clone(),
+                lifecycle: lifecycle.clone(),
                 already_completed: true,
             });
         }
@@ -1129,45 +1196,91 @@ pub fn prepare_owner_restore(
             "native restore initial sequence must be one"
         );
     }
+    stage_new_owner_restore_parts(
+        native,
+        lifecycle,
+        relationships,
+        &compiled,
+        &canonical,
+        |_, _| Ok(request_digest.to_owned()),
+    )
+}
+
+/// Initial source adapters can derive a complete request from admitted owner
+/// outcomes before sealing its single completion. No provisional digest or
+/// incomplete public snapshot is exposed, and the callback cannot mutate input.
+pub(crate) fn stage_initial_owner_restore_parts(
+    native: &NativeWorldSnapshot,
+    lifecycle: &LifecycleSnapshot,
+    relationships: Option<&NativeRelationshipsSnapshot>,
+    batch: &RestoreBatch,
+    complete_request: impl FnOnce(&NativeWorldSnapshot, &[CompletedRecorder]) -> Result<String>,
+) -> Result<StagedOwnerRestoreParts> {
+    validate_native_bounds(native)?;
+    validate_snapshot_bounds(lifecycle)?;
+    if let Some(relationships) = relationships {
+        validate_relationship_capacities(relationships)?;
+    }
+    let compiled = CompiledNativeLifecycle::from_snapshot(lifecycle, native)?;
+    validate_lifecycle_relationships(native, lifecycle, relationships)?;
+    let canonical = batch.canonical()?;
+    ensure!(
+        lifecycle.restore_sequence == 0
+            && lifecycle.completed.is_none()
+            && canonical.sequence == 1
+            && canonical.lifecycle_id == lifecycle.lifecycle_id,
+        "native initial restore identity or sequence invalid"
+    );
+    stage_new_owner_restore_parts(
+        native,
+        lifecycle,
+        relationships,
+        &compiled,
+        &canonical,
+        complete_request,
+    )
+}
+
+fn stage_new_owner_restore_parts(
+    native: &NativeWorldSnapshot,
+    lifecycle: &LifecycleSnapshot,
+    relationships: Option<&NativeRelationshipsSnapshot>,
+    compiled: &CompiledNativeLifecycle,
+    canonical: &RestoreBatch,
+    complete_request: impl FnOnce(&NativeWorldSnapshot, &[CompletedRecorder]) -> Result<String>,
+) -> Result<StagedOwnerRestoreParts> {
     // Each command is checked against the same pre-batch state; duplicate
     // targets and GUIDs were rejected before canonicalization or staging.
-    let mut snapshot = base.clone();
-    let staged_lifecycle = snapshot
-        .native_lifecycle
-        .as_mut()
-        .context("native restore lifecycle missing")?;
-    let staged_native = snapshot
-        .native_world
-        .as_mut()
-        .context("native restore spatial state missing")?;
+    let mut staged_lifecycle = lifecycle.clone();
+    let mut staged_native = native.clone();
     let mut outcomes = Vec::with_capacity(canonical.recorders.len());
     for command in &canonical.recorders {
         outcomes.push(stage_recorder(
-            &compiled,
+            compiled,
             lifecycle,
             native,
-            staged_lifecycle,
-            staged_native,
+            &mut staged_lifecycle,
+            &mut staged_native,
             command,
         )?);
     }
     sort_bindings(&mut staged_lifecycle.bindings);
+    let request_digest = complete_request(&staged_native, &outcomes)?;
+    ensure!(
+        digest_valid(&request_digest),
+        "native restore digest invalid"
+    );
     staged_lifecycle.restore_sequence = canonical.sequence;
     staged_lifecycle.completed = Some(CompletedRestore {
         sequence: canonical.sequence,
         request_digest,
         outcomes,
     });
-    compiled.validate_snapshot(staged_lifecycle, staged_native)?;
-    validate_lifecycle_relationships(
-        staged_native,
-        staged_lifecycle,
-        snapshot.native_relationships.as_ref(),
-    )?;
-    snapshot.validate()?;
-    SnapshotStore::preflight(&snapshot)?;
-    Ok(PreparedRestore {
-        snapshot,
+    compiled.validate_snapshot(&staged_lifecycle, &staged_native)?;
+    validate_lifecycle_relationships(&staged_native, &staged_lifecycle, relationships)?;
+    Ok(StagedOwnerRestoreParts {
+        native: staged_native,
+        lifecycle: staged_lifecycle,
         already_completed: false,
     })
 }
@@ -1480,4 +1593,99 @@ fn stage_recorder(
         disposition,
         component_disposition,
     })
+}
+
+#[cfg(test)]
+mod owner_parts_tests {
+    use super::*;
+
+    #[test]
+    fn initial_completion_is_sealed_from_final_outcomes_without_mutating_input() {
+        let fixture = crate::scalar_owner_fixture::fixture();
+        let before = fixture.base.clone();
+        let native = before.native_world.as_ref().unwrap();
+        let lifecycle = before.native_lifecycle.as_ref().unwrap();
+        let batch = fixture.initial_batch();
+        let request_digest = "d".repeat(64);
+        let staged = stage_initial_owner_restore_parts(
+            native,
+            lifecycle,
+            before.native_relationships.as_ref(),
+            &batch,
+            |actors, outcomes| {
+                assert_eq!(actors.actors.len(), 3);
+                assert_eq!(outcomes.len(), 3);
+                assert!(
+                    outcomes
+                        .iter()
+                        .any(|o| o.disposition == RestoreDisposition::Spawned)
+                );
+                assert!(
+                    outcomes
+                        .iter()
+                        .any(|o| o.disposition == RestoreDisposition::Replaced)
+                );
+                for outcome in outcomes {
+                    assert!(actors.actors.iter().any(|a| a.id == outcome.owner.id));
+                }
+                Ok(request_digest.clone())
+            },
+        )
+        .unwrap();
+        assert_eq!(fixture.base, before);
+        assert!(!staged.already_completed);
+        assert_eq!(staged.lifecycle.restore_sequence, 1);
+        assert_eq!(
+            staged.lifecycle.completed.as_ref().unwrap().request_digest,
+            request_digest
+        );
+        let retry = stage_owner_restore_parts(
+            &staged.native,
+            &staged.lifecycle,
+            before.native_relationships.as_ref(),
+            &batch,
+            &request_digest,
+        )
+        .unwrap();
+        assert!(retry.already_completed);
+        assert_eq!(retry.native, staged.native);
+        assert_eq!(retry.lifecycle, staged.lifecycle);
+        assert!(
+            stage_owner_restore_parts(
+                &staged.native,
+                &staged.lifecycle,
+                before.native_relationships.as_ref(),
+                &batch,
+                &"e".repeat(64),
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn initial_finalizer_failure_or_invalid_digest_exposes_no_partial_restore() {
+        let fixture = crate::scalar_owner_fixture::fixture();
+        let before = fixture.base.clone();
+        let native = before.native_world.as_ref().unwrap();
+        let lifecycle = before.native_lifecycle.as_ref().unwrap();
+        let batch = fixture.initial_batch();
+        for invalid_digest in [false, true] {
+            let result = stage_initial_owner_restore_parts(
+                native,
+                lifecycle,
+                before.native_relationships.as_ref(),
+                &batch,
+                |_, outcomes| {
+                    assert_eq!(outcomes.len(), 3);
+                    if invalid_digest {
+                        Ok("invalid".into())
+                    } else {
+                        anyhow::bail!("authored final-domain refusal")
+                    }
+                },
+            );
+            assert!(result.is_err());
+            assert_eq!(fixture.base, before);
+        }
+    }
 }

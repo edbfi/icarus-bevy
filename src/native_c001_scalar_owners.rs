@@ -335,11 +335,31 @@ impl C001ScalarOwnerBindingsV1 {
     }
 }
 #[derive(Clone, Debug)]
-pub(crate) struct CompiledC001ScalarLayout {
+pub struct CompiledC001ScalarLayout {
     definition: C001ScalarLayoutV1,
 }
 impl CompiledC001ScalarLayout {
-    pub(crate) fn definition(&self) -> &C001ScalarLayoutV1 {
+    pub fn compile(definition: C001ScalarLayoutV1) -> Result<Self> {
+        layout_bounds(&definition, &mut Names::default())?;
+        for array in [&definition.enabled, &definition.remaining_uses] {
+            for name in [
+                &array.array_name,
+                &array.element_tag_name,
+                &array.record_type,
+                &array.value_field,
+            ] {
+                ensure!(
+                    name.len() < crate::experimental::tagged::MAX_HEADER_STRING_UNITS
+                        && name.iter().all(|u| *u != 0 && *u != u16::MAX),
+                    "scalar layout header name invalid"
+                );
+            }
+        }
+        encoded_size(&definition, MAX_C001_SCALAR_OWNER_BINDINGS_BYTES)?;
+        Ok(Self { definition })
+    }
+
+    pub fn definition(&self) -> &C001ScalarLayoutV1 {
         &self.definition
     }
 }
