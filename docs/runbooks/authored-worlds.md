@@ -195,3 +195,7 @@ retirement remain valid: provenance does not replace current bindings or poses.
 Imported slots stay live and cannot regress below their initial incarnation.
 Capture checks pinned provenance and current state without reconstructing source
 bytes. Missing or changed provenance rejects; schemas 1–7 retain their contracts.
+Storage validation and preflight reconstruct and revalidate the source, including
+the initial restore receipt. Autosave, edits and restores therefore also cost
+time proportional to source size; restore preparation repeats this validation.
+The capture-only shortcut does not qualify these paths for tick-loop use.
