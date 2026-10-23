@@ -331,10 +331,11 @@ impl DecodedImportCandidate {
             ) {
                 Err(_) => RecorderTyping::Unavailable(RecorderTypingFailure::Framing),
                 Ok(tree) => {
-                    // Keep the full reservation through exact re-encoding below,
-                    // before starting another component. Optional typing/encoding
-                    // failures still required admission, even without a retained
-                    // result. No source values enter this count-only high-water mark.
+                    // Count the full requirement on top of prior retained charges.
+                    // The local budget checks it, then commits only retained bytes;
+                    // this high-water mark also accounts for sequential re-encoding
+                    // before the next component. Optional typing/encoding failures
+                    // needed admission even though they retain no result.
                     let requirement = typing_requirement(&tree)?;
                     required.owned_bytes = required.owned_bytes.max(
                         owned
