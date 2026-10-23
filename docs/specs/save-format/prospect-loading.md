@@ -103,6 +103,20 @@ Acceptance conditions for any importer
 
 ## Candidate
 
+- `C001InertPlacementV1` accepts an explicitly bound authored fixture only
+  (F-921). Source version 2, recorder version 3, exact C001 identity, neutral
+  prospect behavior and complete one-to-one native placement coverage are
+  required. Class, path, object-name and GUID bind exactly; no CRC-only dispatch,
+  dropped record, partial result, respawn or stitching is admitted. The closed
+  component fields are class/path/object-name, positive GUID, recorded version,
+  false sublevel flag and complete transform, with optional supported find
+  policy and false skip-owner flag. Any additional field rejects the input.
+  Independently authored inert geometry has no variables. Explicit native-frame
+  coordinates transfer translation, quaternion and scale without conversion or
+  normalization. Schema 5 requires the preserved source and immutable identity,
+  timestamp, root-presence and binding metadata alongside mutable native poses;
+  reload cross-checks that metadata against the preserved bytes. This does not
+  qualify original coordinates, official loadability or faithful save import.
 - `DecodedImportCandidate` retains migrated root values, exact UTF-16 recorder
   identities, decisions, optional typing outcomes and unchanged preserved bytes
   from one envelope decode (F-920). Unknown root enums remain explicit;

@@ -218,7 +218,7 @@ fn proper_future_schema_objects_still_refuse_rollback_without_writes() {
     let directory = initial(true);
     let root = directory.path();
     // Schema 4 holds authored native worlds; 5 is the future one.
-    replace_current(root, &json!({"schema_version":5,"tick":20,"entities":[]}));
+    replace_current(root, &json!({"schema_version":6,"tick":20,"entities":[]}));
     let before = inventory(root);
     let mut store = SnapshotStore::open(root).unwrap();
     for error in [
