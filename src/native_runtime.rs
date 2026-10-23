@@ -9,6 +9,10 @@ use anyhow::{Context, Result, ensure};
 use bevy::prelude::{Component, Entity, Resource, World};
 
 use crate::{
+    native_relationships::{
+        CompiledNativeRelationships, NativeActorLinkV1, NativeFoundationRecord,
+        NativeRelationshipRole, NativeRelationshipsSnapshot,
+    },
     native_world::{
         Aabb3, CompiledNativeCatalog, NativeActorRecord, NativeActorView, NativeTransform,
         NativeVariableValue, NativeWorldSnapshot,
@@ -35,6 +39,34 @@ pub struct NativeVariables(pub Vec<NativeVariableValue>);
 #[derive(Component, Clone, PartialEq)]
 pub struct NativeLocalBounds(pub Aabb3);
 
+/// Immutable authored identity and capability; class names never imply a role.
+#[derive(Component, Clone, PartialEq)]
+pub struct NativeRelationshipIdentity {
+    pub identity: NativeActorLinkV1,
+    pub role: NativeRelationshipRole,
+}
+
+/// Authoritative mutable edge, required exactly on declared deployables.
+#[derive(Component, Clone, Copy, PartialEq, Eq)]
+pub struct NativeFoundation(pub Option<DomainId>);
+
+/// Deterministic derived index, including foundations with no dependents.
+#[derive(Resource, Clone, PartialEq, Eq)]
+pub struct NativeFoundationDependents(pub BTreeMap<DomainId, Vec<DomainId>>);
+
+#[derive(Resource, Clone)]
+pub struct NativeRelationshipsContext {
+    compiled: Arc<CompiledNativeRelationships>,
+    expected: BTreeMap<DomainId, NativeRelationshipIdentity>,
+    activation: Arc<()>,
+}
+
+impl NativeRelationshipsContext {
+    pub(crate) fn same_activation(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.activation, &other.activation)
+    }
+}
+
 /// Immutable loaded definitions and expected runtime membership. Bevy entities
 /// remain confined to this resource and never enter persistent records.
 #[derive(Resource, Clone)]
@@ -42,6 +74,13 @@ pub struct NativeWorldContext {
     catalog: Arc<CompiledNativeCatalog>,
     map: String,
     expected: BTreeMap<DomainId, Entity>,
+    activation: Arc<()>,
+}
+
+impl NativeWorldContext {
+    pub(crate) fn same_activation(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.activation, &other.activation)
+    }
 }
 
 pub(crate) fn activate(world: &mut World, native: &NativeWorldSnapshot) -> Result<()> {
@@ -83,8 +122,213 @@ pub(crate) fn activate(world: &mut World, native: &NativeWorldSnapshot) -> Resul
         catalog,
         map: native.map.clone(),
         expected,
+        activation: Arc::new(()),
     });
     Ok(())
+}
+
+/// Startup-only seam: resolve and stage every component and edge before writing.
+/// SnapshotMode pins are installed by the caller after activation completes.
+pub(crate) fn activate_relationships(
+    world: &mut World,
+    native: &NativeWorldSnapshot,
+    relationships: &NativeRelationshipsSnapshot,
+) -> Result<()> {
+    ensure_no_relationship_state(world)?;
+    let context = world
+        .get_resource::<NativeWorldContext>()
+        .context("native world lacks required catalog context")?;
+    let actors = validated_native_actors(world, context)?;
+    ensure!(
+        context.catalog.identity() == native.catalog_id && context.map == native.map,
+        "native relationship activation catalog binding mismatch"
+    );
+    ensure!(
+        actors.len() == native.actors.len(),
+        "native relationship activation actor coverage mismatch"
+    );
+    let compiled = Arc::new(CompiledNativeRelationships::from_snapshot(
+        relationships,
+        native,
+    )?);
+    let bindings: BTreeMap<_, _> = actors
+        .iter()
+        .map(|actor| (actor.placement, actor.id))
+        .collect();
+    let mut expected = BTreeMap::new();
+    let mut staged = Vec::new();
+    let edges: BTreeMap<_, _> = relationships
+        .foundations
+        .iter()
+        .map(|row| (row.owner, row.foundation))
+        .collect();
+    for declaration in &compiled.definition().actors {
+        let id = *bindings
+            .get(declaration.placement.as_str())
+            .context("native relationship activation placement missing")?;
+        let entity = *context
+            .expected
+            .get(&id)
+            .context("native relationship activation actor missing")?;
+        let identity = NativeRelationshipIdentity {
+            identity: declaration.identity.clone(),
+            role: declaration.role,
+        };
+        let foundation = if declaration.role == NativeRelationshipRole::Deployable {
+            Some(NativeFoundation(*edges.get(&id).context(
+                "native relationship activation deployable state missing",
+            )?))
+        } else {
+            None
+        };
+        ensure!(
+            expected.insert(id, identity.clone()).is_none(),
+            "native relationship activation duplicate actor"
+        );
+        staged.push((entity, identity, foundation));
+    }
+    ensure!(
+        expected.len() == context.expected.len(),
+        "native relationship activation coverage incomplete"
+    );
+    let dependents = derive_dependents(&expected, &relationships.foundations)?;
+    let context = NativeRelationshipsContext {
+        compiled,
+        expected,
+        activation: Arc::new(()),
+    };
+    for (entity, identity, foundation) in staged {
+        let mut entity = world.entity_mut(entity);
+        entity.insert(identity);
+        if let Some(foundation) = foundation {
+            entity.insert(foundation);
+        }
+    }
+    world.insert_resource(dependents);
+    world.insert_resource(context);
+    Ok(())
+}
+
+/// Legacy and spatial-only modes cannot silently omit relationship state.
+pub(crate) fn ensure_no_relationship_state(world: &World) -> Result<()> {
+    ensure!(
+        !world.contains_resource::<NativeRelationshipsContext>()
+            && !world.contains_resource::<NativeFoundationDependents>(),
+        "world contains unexpected native relationship resources"
+    );
+    for entity in world.iter_entities() {
+        ensure!(
+            !entity.contains::<NativeRelationshipIdentity>()
+                && !entity.contains::<NativeFoundation>()
+                && !entity.contains::<NativeRelationshipsContext>()
+                && !entity.contains::<NativeFoundationDependents>(),
+            "world contains unexpected native relationship components"
+        );
+    }
+    Ok(())
+}
+
+fn derive_dependents(
+    expected: &BTreeMap<DomainId, NativeRelationshipIdentity>,
+    foundations: &[NativeFoundationRecord],
+) -> Result<NativeFoundationDependents> {
+    let mut reverse: BTreeMap<_, Vec<_>> = expected
+        .iter()
+        .filter(|(_, identity)| identity.role == NativeRelationshipRole::Foundation)
+        .map(|(id, _)| (*id, Vec::new()))
+        .collect();
+    for row in foundations {
+        if let Some(target) = row.foundation {
+            reverse
+                .get_mut(&target)
+                .context("native relationship target is not a foundation")?
+                .push(row.owner);
+        }
+    }
+    for owners in reverse.values_mut() {
+        owners.sort_unstable();
+    }
+    Ok(NativeFoundationDependents(reverse))
+}
+
+fn validated_relationships(
+    world: &World,
+    native: &NativeWorldContext,
+) -> Result<Option<Vec<NativeFoundationRecord>>> {
+    let Some(context) = world.get_resource::<NativeRelationshipsContext>() else {
+        ensure_no_relationship_state(world)?;
+        return Ok(None);
+    };
+    ensure!(
+        context.expected.len() == native.expected.len(),
+        "native relationship actor coverage incomplete"
+    );
+    for entity in world.iter_entities() {
+        if entity.contains::<NativeRelationshipIdentity>() || entity.contains::<NativeFoundation>()
+        {
+            let id = entity
+                .get::<DomainId>()
+                .context("native relationship component lacks domain identity")?;
+            ensure!(
+                native.expected.get(id) == Some(&entity.id()) && context.expected.contains_key(id),
+                "native relationship component belongs to an unregistered actor"
+            );
+        }
+    }
+    let mut foundations = Vec::new();
+    for (id, expected) in &context.expected {
+        let entity = *native
+            .expected
+            .get(id)
+            .context("native relationship actor binding missing")?;
+        let identity = world
+            .get::<NativeRelationshipIdentity>(entity)
+            .context("native actor lacks required relationship identity")?;
+        ensure!(
+            identity == expected,
+            "native relationship identity or role differs from its declaration"
+        );
+        match (expected.role, world.get::<NativeFoundation>(entity)) {
+            (NativeRelationshipRole::Deployable, Some(foundation)) => {
+                foundations.push(NativeFoundationRecord {
+                    owner: *id,
+                    foundation: foundation.0,
+                });
+            }
+            (NativeRelationshipRole::Deployable, None) => {
+                anyhow::bail!("native deployable lacks required foundation state");
+            }
+            (_, Some(_)) => anyhow::bail!("native foundation state belongs to an invalid role"),
+            (_, None) => {}
+        }
+    }
+    context.compiled.validate_foundations(&foundations)?;
+    let reverse = world
+        .get_resource::<NativeFoundationDependents>()
+        .context("native relationships lack required reverse index")?;
+    ensure!(
+        *reverse == derive_dependents(&context.expected, &foundations)?,
+        "native relationship reverse index differs from authoritative edges"
+    );
+    Ok(Some(foundations))
+}
+
+struct ValidatedNativeState<'a> {
+    actors: Vec<NativeActorView<'a>>,
+    foundations: Option<Vec<NativeFoundationRecord>>,
+}
+
+fn validated_native_state<'a>(
+    world: &'a World,
+    context: &NativeWorldContext,
+) -> Result<ValidatedNativeState<'a>> {
+    crate::simulation::validate_native_activation(world, context)?;
+    let actors = validated_native_actors(world, context)?;
+    let foundations = validated_relationships(world, context)?;
+    Ok(ValidatedNativeState {
+        actors,
+        foundations,
+    })
 }
 
 /// Check ECS membership and every required component, then validate all mutable
@@ -168,18 +412,30 @@ fn validated_native_actors<'a>(
     Ok(actors)
 }
 
-pub(crate) fn capture_native(world: &mut World) -> Result<NativeWorldSnapshot> {
+pub(crate) fn capture_native(
+    world: &World,
+) -> Result<(NativeWorldSnapshot, Option<NativeRelationshipsSnapshot>)> {
     let context = world
         .get_resource::<NativeWorldContext>()
         .context("native world lacks required catalog context")?;
-    let actors = validated_native_actors(world, context)?;
+    let state = validated_native_state(world, context)?;
+    let relationships = state.foundations.map(|foundations| {
+        // Complete state validation above established this context's presence.
+        let context = world.resource::<NativeRelationshipsContext>();
+        NativeRelationshipsSnapshot {
+            relationship_id: context.compiled.identity().to_owned(),
+            definition: context.compiled.definition().clone(),
+            foundations,
+        }
+    });
     // Only snapshot output needs owned definitions and actor payloads. The
     // complete record validation above does not recompile or hash the catalog.
-    Ok(NativeWorldSnapshot {
+    let native = NativeWorldSnapshot {
         catalog_id: context.catalog.identity().to_owned(),
         definitions: context.catalog.definition().clone(),
         map: context.map.clone(),
-        actors: actors
+        actors: state
+            .actors
             .into_iter()
             .map(|actor| NativeActorRecord {
                 id: actor.id,
@@ -190,7 +446,8 @@ pub(crate) fn capture_native(world: &mut World) -> Result<NativeWorldSnapshot> {
                 variables: actor.variables.to_vec(),
             })
             .collect(),
-    })
+    };
+    Ok((native, relationships))
 }
 
 /// Replace one object's pose and typed state only after the complete proposed
@@ -207,14 +464,14 @@ pub fn update_native_actor(
             .context("native world lacks required catalog context")?;
         // Validate current state first, so an edit cannot silently repair or
         // conceal existing corruption, even on the targeted actor.
-        let actors = validated_native_actors(world, context)?;
+        let state = validated_native_state(world, context)?;
         let entity = *context
             .expected
             .get(&id)
             .context("native edit targets an unknown domain identity")?;
         context.catalog.validate_records(
             &context.map,
-            actors.into_iter().map(|actor| {
+            state.actors.into_iter().map(|actor| {
                 if actor.id == id {
                     NativeActorView {
                         transform: transform.clone(),
@@ -242,8 +499,9 @@ pub fn native_world_bounds(world: &mut World, id: DomainId) -> Result<Aabb3> {
     let context = world
         .get_resource::<NativeWorldContext>()
         .context("native world lacks required catalog context")?;
-    let actors = validated_native_actors(world, context)?;
-    let actor = actors
+    let state = validated_native_state(world, context)?;
+    let actor = state
+        .actors
         .into_iter()
         .find(|actor| actor.id == id)
         .context("native bounds target an unknown domain identity")?;
@@ -252,4 +510,96 @@ pub fn native_world_bounds(world: &mut World, id: DomainId) -> Result<Aabb3> {
         .class(actor.class)
         .context("native bounds class is undeclared")?;
     actor.transform.transformed_bounds(&class.local_bounds)
+}
+
+fn require_relationship_role(
+    context: &NativeRelationshipsContext,
+    id: DomainId,
+    role: NativeRelationshipRole,
+) -> Result<()> {
+    ensure!(
+        context.expected.get(&id).map(|identity| identity.role) == Some(role),
+        "native relationship domain identity missing or wrong role"
+    );
+    Ok(())
+}
+
+/// Atomically replace one authoritative edge and its deterministic reverse index.
+/// Existing damage is rejected even when the proposed edit would repair it.
+pub fn reassign_native_foundation(
+    world: &mut World,
+    owner: DomainId,
+    target: Option<DomainId>,
+) -> Result<()> {
+    let (entity, dependents) = {
+        let native = world
+            .get_resource::<NativeWorldContext>()
+            .context("native world lacks required catalog context")?;
+        let state = validated_native_state(world, native)?;
+        let context = world
+            .get_resource::<NativeRelationshipsContext>()
+            .context("native world lacks required relationship context")?;
+        require_relationship_role(context, owner, NativeRelationshipRole::Deployable)?;
+        if let Some(target) = target {
+            require_relationship_role(context, target, NativeRelationshipRole::Foundation)?;
+        }
+        let mut foundations = state
+            .foundations
+            .context("native world lacks required foundation state")?;
+        let row = foundations
+            .iter_mut()
+            .find(|row| row.owner == owner)
+            .context("native relationship owner state missing")?;
+        if row.foundation == target {
+            return Ok(());
+        }
+        row.foundation = target;
+        let dependents = derive_dependents(&context.expected, &foundations)?;
+        let entity = *native
+            .expected
+            .get(&owner)
+            .context("native relationship owner binding missing")?;
+        (entity, dependents)
+    };
+    // All fallible work precedes exclusive writes. No system can interleave
+    // between the authoritative component update and its derived index update.
+    world.entity_mut(entity).insert(NativeFoundation(target));
+    world.insert_resource(dependents);
+    Ok(())
+}
+
+pub fn native_foundation_of(world: &World, owner: DomainId) -> Result<Option<DomainId>> {
+    let native = world
+        .get_resource::<NativeWorldContext>()
+        .context("native world lacks required catalog context")?;
+    let state = validated_native_state(world, native)?;
+    let context = world
+        .get_resource::<NativeRelationshipsContext>()
+        .context("native world lacks required relationship context")?;
+    require_relationship_role(context, owner, NativeRelationshipRole::Deployable)?;
+    Ok(state
+        .foundations
+        .context("native world lacks required foundation state")?
+        .into_iter()
+        .find(|row| row.owner == owner)
+        .context("native relationship owner state missing")?
+        .foundation)
+}
+
+pub fn native_dependents_of(world: &World, foundation: DomainId) -> Result<Vec<DomainId>> {
+    let native = world
+        .get_resource::<NativeWorldContext>()
+        .context("native world lacks required catalog context")?;
+    validated_native_state(world, native)?;
+    let context = world
+        .get_resource::<NativeRelationshipsContext>()
+        .context("native world lacks required relationship context")?;
+    require_relationship_role(context, foundation, NativeRelationshipRole::Foundation)?;
+    Ok(world
+        .get_resource::<NativeFoundationDependents>()
+        .context("native relationships lack required reverse index")?
+        .0
+        .get(&foundation)
+        .context("native foundation reverse index entry missing")?
+        .clone())
 }

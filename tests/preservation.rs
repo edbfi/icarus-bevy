@@ -203,6 +203,7 @@ fn preserved_snapshot(tick: u64, preserved: &Arc<PreservedSection>) -> WorldSnap
         preserved_prospect: Some(Arc::clone(preserved)),
         native_world: None,
         native_import: None,
+        native_relationships: None,
     }
 }
 
@@ -515,6 +516,44 @@ fn schema_one_snapshots_still_load_and_stay_schema_one() {
     }
     assert!(!directory.path().join("snapshot-2.json").exists());
     assert!(sidecars(directory.path()).is_empty());
+}
+
+#[test]
+fn legacy_disk_field_sets_do_not_expand_with_new_optional_relationship_state() {
+    let preserved = section(&mixed_payload());
+    for schema in [1, 2] {
+        let directory = tempfile::tempdir().unwrap();
+        let root = directory.path();
+        let mut store = SnapshotStore::open(root).unwrap();
+        let previous = WorldSnapshot {
+            tick: 10,
+            ..Default::default()
+        };
+        let current = if schema == 1 {
+            WorldSnapshot {
+                tick: 20,
+                ..Default::default()
+            }
+        } else {
+            legacy_snapshot(20, &preserved)
+        };
+        store.save(&previous).unwrap();
+        store.save(&current).unwrap();
+        // These null fields belonged to the old in-memory DTO and remain legal
+        // on legacy disks. Schema 2 still admits its original inline section.
+        let mut legacy = serde_json::to_value(&current).unwrap();
+        legacy["native_world"] = Value::Null;
+        legacy["native_import"] = Value::Null;
+        rewrite_generation(root, 2, &legacy);
+        assert_eq!(store.load().unwrap().unwrap().snapshot, current);
+        legacy["native_relationships"] = Value::Null;
+        rewrite_generation(root, 2, &legacy);
+        let before = fs::read(root.join("manifest.json")).unwrap();
+        let recovered = store.load().unwrap().unwrap();
+        assert!(recovered.recovered_previous);
+        assert_eq!(recovered.snapshot, previous);
+        assert_eq!(fs::read(root.join("manifest.json")).unwrap(), before);
+    }
 }
 
 #[test]

@@ -40,6 +40,13 @@ and unchanged payload through schema-5 storage, Bevy edits, capture and reload
 (F-921). Unsupported state rejects the whole candidate; required metadata loss
 fails capture. This narrow contract leaves ordinary official-save import closed.
 
+Authored foundation relationships resolve completely before publication and
+persist edited domain-ID edges through schema 6, Bevy capture and recovery
+(F-922). Missing or replaced activation state and inconsistent reverse indices
+reject operations; future formats remain terminal even beside malformed known
+state. The relationship contract adds no parenting, structural support or C009
+source adapter.
+
 Reproduced faults are fixed for FIFO manifests, generations, configs and
 save-inspection inputs (F-671), malformed manifest digests
 (F-870), positional JSON arrays (F-870), current-generation read errors (F-870)
@@ -102,4 +109,4 @@ original server (F-252), and historical runtime windows have expired (F-218).
 
 ## Artifacts
 
-M-001, M-002, M-006, M-009, M-010, M-015..M-022, M-076, M-078, M-109..M-117, M-131..M-165, M-174, M-175, M-178, M-182..M-184, M-191, M-192, M-200, M-203, M-204, M-207, M-208, M-212..M-220, M-225, M-240, M-241, M-251, M-252, M-269, M-270, M-271, M-277, M-311, M-391, M-397..M-399, M-411..M-419, M-452..M-454, M-471..M-475, M-577, M-578, M-770, M-771, M-809, M-810, M-812, M-861, M-862, M-864..M-867, M-870, M-898, M-899, M-915..M-918, M-926..M-929.
+M-001, M-002, M-006, M-009, M-010, M-015..M-022, M-076, M-078, M-109..M-117, M-131..M-165, M-174, M-175, M-178, M-182..M-184, M-191, M-192, M-200, M-203, M-204, M-207, M-208, M-212..M-220, M-225, M-240, M-241, M-251, M-252, M-269, M-270, M-271, M-277, M-311, M-391, M-397..M-399, M-411..M-419, M-452..M-454, M-471..M-475, M-577, M-578, M-770, M-771, M-809, M-810, M-812, M-861, M-862, M-864..M-867, M-870, M-898, M-899, M-915..M-918, M-926..M-932.

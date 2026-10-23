@@ -15,6 +15,8 @@ use crate::{
     config::ServerConfig,
     metrics::LatencyHistogram,
     native_import::C001InertImportMetadataV1,
+    native_relationships::{CompiledNativeRelationships, NativeRelationshipsSnapshot},
+    native_runtime::{NativeRelationshipsContext, NativeWorldContext},
     native_world::{NativeWorldSnapshot, PreparedNativeWorld},
     preservation::PreservedSection,
 };
@@ -33,6 +35,8 @@ pub const SNAPSHOT_SCHEMA_NATIVE: u32 = 4;
 /// Explicit authored C001 inert-placement interpretation, with required source
 /// preservation and immutable source identities. This is not official import.
 pub const SNAPSHOT_SCHEMA_C001_INERT: u32 = 5;
+/// Independently authored actor identities and mutable native foundation edges.
+pub const SNAPSHOT_SCHEMA_RELATIONSHIPS: u32 = 6;
 
 /// Stable domain identity, independent of Bevy's runtime entity allocation.
 #[derive(Component, Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
@@ -57,12 +61,12 @@ pub struct WorldSnapshot {
     #[serde(deserialize_with = "crate::json::objects")]
     pub entities: Vec<EntityRecord>,
     /// Lossless, value-opaque supplied-save state carried unchanged between
-    /// generations; required in schemas 2, 3 and 5, optional in schema 4.
+    /// generations; required in schemas 2, 3 and 5, optional in schemas 4 and 6.
     /// Shared and held compactly as its verified native encoding. Schema 5
     /// separately records its explicitly accepted authored interpretation.
     /// Serde writes the section inline under the stored `schema_version`, which is
     /// a loadable document only for schema 2; the snapshot store writes schemas
-    /// 3 through 5 itself, with a sidecar reference.
+    /// 3 through 6 itself, with a sidecar reference.
     #[serde(
         default,
         skip_serializing_if = "Option::is_none",
@@ -71,10 +75,12 @@ pub struct WorldSnapshot {
     pub preserved_prospect: Option<Arc<PreservedSection>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub native_world: Option<NativeWorldSnapshot>,
-    /// Required only for schema 5; immutable source identity and interpretation,
+    /// Required for schema 5, optional in schema 6; immutable source interpretation,
     /// independent of mutable native actor poses and simulation ticks.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub native_import: Option<C001InertImportMetadataV1>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub native_relationships: Option<NativeRelationshipsSnapshot>,
 }
 
 impl Default for WorldSnapshot {
@@ -86,12 +92,43 @@ impl Default for WorldSnapshot {
             preserved_prospect: None,
             native_world: None,
             native_import: None,
+            native_relationships: None,
         }
     }
 }
 
 impl WorldSnapshot {
     pub fn validate(&self) -> Result<()> {
+        if self.schema_version == SNAPSHOT_SCHEMA_RELATIONSHIPS {
+            ensure!(
+                self.entities.is_empty(),
+                "schema 6 cannot hold foundation entities"
+            );
+            let native = self
+                .native_world
+                .as_ref()
+                .context("schema 6 requires native world records")?;
+            native.validate()?;
+            CompiledNativeRelationships::from_snapshot(
+                self.native_relationships
+                    .as_ref()
+                    .context("schema 6 requires relationship state")?,
+                native,
+            )?;
+            if let Some(metadata) = &self.native_import {
+                metadata.validate(
+                    native,
+                    self.preserved_prospect
+                        .as_deref()
+                        .context("import metadata requires its preserved source")?,
+                )?;
+            }
+            return Ok(());
+        }
+        ensure!(
+            self.native_relationships.is_none(),
+            "this snapshot schema cannot hold relationships"
+        );
         if self.schema_version == SNAPSHOT_SCHEMA_C001_INERT {
             ensure!(
                 self.entities.is_empty(),
@@ -180,8 +217,40 @@ impl PreparedNativeWorld {
 #[derive(Resource, Clone)]
 pub struct SnapshotMode {
     native: bool,
+    native_activation: Option<NativeWorldContext>,
+    relationship_activation: Option<NativeRelationshipsContext>,
     preserved: Option<Arc<PreservedSection>>,
     imported: Option<Arc<C001InertImportMetadataV1>>,
+}
+
+/// Validate private activation pins before any native query, edit or capture.
+pub(crate) fn validate_native_activation(
+    world: &World,
+    context: &NativeWorldContext,
+) -> Result<()> {
+    let mode = world
+        .get_resource::<SnapshotMode>()
+        .context("world lacks required snapshot mode")?;
+    ensure!(
+        mode.native
+            && mode
+                .native_activation
+                .as_ref()
+                .is_some_and(|expected| expected.same_activation(context)),
+        "world native context differs from its loaded activation"
+    );
+    ensure!(
+        match (
+            world.get_resource::<NativeRelationshipsContext>(),
+            &mode.relationship_activation
+        ) {
+            (None, None) => true,
+            (Some(actual), Some(expected)) => actual.same_activation(expected),
+            _ => false,
+        },
+        "world relationship context differs from its loaded activation"
+    );
+    Ok(())
 }
 
 /// The loaded preserved section, handed back unchanged to every capture.
@@ -271,6 +340,8 @@ pub fn build_app(config: &ServerConfig, snapshot: &WorldSnapshot) -> Result<App>
         })
         .insert_resource(SnapshotMode {
             native: snapshot.native_world.is_some(),
+            native_activation: None,
+            relationship_activation: None,
             preserved: snapshot.preserved_prospect.clone(),
             imported: imported.clone(),
         })
@@ -295,6 +366,9 @@ pub fn build_app(config: &ServerConfig, snapshot: &WorldSnapshot) -> Result<App>
     }
     if let Some(native) = &snapshot.native_world {
         crate::native_runtime::activate(app.world_mut(), native)?;
+        if let Some(relationships) = &snapshot.native_relationships {
+            crate::native_runtime::activate_relationships(app.world_mut(), native, relationships)?;
+        }
     }
     if let Some(preserved) = &snapshot.preserved_prospect {
         app.insert_resource(PreservedProspectState(Arc::clone(preserved)));
@@ -302,6 +376,14 @@ pub fn build_app(config: &ServerConfig, snapshot: &WorldSnapshot) -> Result<App>
     if let Some(imported) = imported {
         app.insert_resource(C001InertImportState(imported));
     }
+    let native_activation = app.world().get_resource::<NativeWorldContext>().cloned();
+    let relationship_activation = app
+        .world()
+        .get_resource::<NativeRelationshipsContext>()
+        .cloned();
+    let mut mode = app.world_mut().resource_mut::<SnapshotMode>();
+    mode.native_activation = native_activation;
+    mode.relationship_activation = relationship_activation;
     Ok(app)
 }
 
@@ -362,7 +444,7 @@ pub fn capture(world: &mut World) -> Result<WorldSnapshot> {
         "world import metadata differs from its loaded capture contract"
     );
     if mode.native {
-        let native = crate::native_runtime::capture_native(world)?;
+        let (native, relationships) = crate::native_runtime::capture_native(world)?;
         if let Some(metadata) = &mode.imported {
             ensure!(
                 native.catalog_id == metadata.native_catalog_id
@@ -371,7 +453,9 @@ pub fn capture(world: &mut World) -> Result<WorldSnapshot> {
             );
         }
         let snapshot = WorldSnapshot {
-            schema_version: if mode.imported.is_some() {
+            schema_version: if mode.relationship_activation.is_some() {
+                SNAPSHOT_SCHEMA_RELATIONSHIPS
+            } else if mode.imported.is_some() {
                 SNAPSHOT_SCHEMA_C001_INERT
             } else {
                 SNAPSHOT_SCHEMA_NATIVE
@@ -381,12 +465,14 @@ pub fn capture(world: &mut World) -> Result<WorldSnapshot> {
             preserved_prospect,
             native_world: Some(native),
             native_import: mode.imported.as_deref().cloned(),
+            native_relationships: relationships,
         };
         // capture_native validates every record against the immutable loaded
         // catalog. Storage independently validates the serialized snapshot;
         // recompiling that catalog again on this thread adds no check here.
         return Ok(snapshot);
     }
+    crate::native_runtime::ensure_no_relationship_state(world)?;
     ensure!(
         !world.contains_resource::<crate::native_runtime::NativeWorldContext>(),
         "foundation world contains an unexpected native catalog context"
@@ -417,6 +503,7 @@ pub fn capture(world: &mut World) -> Result<WorldSnapshot> {
         preserved_prospect,
         native_world: None,
         native_import: None,
+        native_relationships: None,
     };
     snapshot.validate()?;
     Ok(snapshot)

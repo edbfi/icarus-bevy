@@ -96,6 +96,11 @@ Schema 5 adds the explicitly bound authored C001 inert-fixture contract:
 required immutable source metadata and unchanged source sidecar accompany the
 native world. Capture pins that metadata to its catalog and map; preparation
 rejects unsupported state before destination access (F-921).
+Schema 6 adds authored actor identities, explicit capabilities and mutable
+foundation edges. Capture pins activation contexts and checks authoritative
+edges against the derived reverse index; edited links survive reload without
+reapplying initial declarations (F-922). Optional C001 metadata remains source
+provenance, not acceptance of original relationship state.
 Supplied-save state may ride along as one lossless, value-opaque preserved
 section that reconstructs the verified payload byte-identically, is carried
 unchanged into every later generation and is written once as a content-addressed

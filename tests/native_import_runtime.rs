@@ -394,9 +394,8 @@ fn imported_capture_refuses_missing_or_changed_context_and_allows_repair() {
             .remove_resource::<NativeWorldContext>()
             .unwrap();
         app.insert_resource(replacement);
-        // The actor membership and poses still validate; import source metadata
-        // must prevent silently selecting this replacement map/catalog.
-        assert!(native_world_bounds(app.world_mut(), DomainId(1)).is_ok());
+        // Even valid replacement definitions cannot replace the pinned activation.
+        assert!(native_world_bounds(app.world_mut(), DomainId(1)).is_err());
         assert!(capture(app.world_mut()).is_err());
         app.insert_resource(original_context.clone());
     }
