@@ -1,7 +1,10 @@
-use icarus_bevy::experimental::property_tree::{BaseComponentTree, PropertyTree, TreeLimits};
+use icarus_bevy::experimental::property_tree::{
+    BaseComponentTree, NodeValue, PropertyTree, TreeLimits,
+};
 use icarus_bevy::experimental::tagged::{TagKind, TagProfile};
 use icarus_bevy::experimental::typed_value::{
-    FixedStruct, Gap, Item, Scalar, TypedComponent, TypedTree, Value,
+    FixedStruct, Gap, Item, Scalar, TypedBudgetExceeded, TypedComponent, TypedTree, TypingBudget,
+    Value,
 };
 
 const END: &[u8] = b"\x05\0\0\0None\0";
@@ -473,4 +476,262 @@ fn fixed_struct_debug_prints_layout_not_values() {
         FixedStruct::I64(0x5151_5151_5151)
     );
     assert_eq!(printed, "F32x3 I64");
+}
+
+fn component(properties: &[Vec<u8>]) -> BaseComponentTree {
+    let bytes = [stream(properties), vec![0; 4]].concat();
+    BaseComponentTree::parse(
+        &bytes,
+        TagProfile::MemoryArchive522,
+        bytes.len(),
+        TreeLimits::default(),
+    )
+    .unwrap()
+}
+
+fn byte_array(count: usize) -> BaseComponentTree {
+    let payload = [
+        i32::try_from(count).unwrap().to_le_bytes().as_slice(),
+        &vec![7; count],
+    ]
+    .concat();
+    component(&[prop(ARRAY, &[BYTE, &[0]].concat(), &payload)])
+}
+
+fn charge(component: &BaseComponentTree) -> (usize, usize) {
+    let mut budget = TypingBudget::new(usize::MAX, usize::MAX);
+    TypedComponent::from_component_with_budget(component, &mut budget).unwrap();
+    (budget.charged_bytes(), budget.charged_elements())
+}
+
+#[test]
+fn separate_valid_byte_arrays_exhaust_one_cumulative_budget() {
+    let input = byte_array(256);
+    let (bytes, elements) = charge(&input);
+    assert_eq!(elements, 257); // One property plus the array's owned scalar slots.
+    for mut budget in [
+        TypingBudget::new(bytes * 3, usize::MAX),
+        TypingBudget::new(usize::MAX, elements * 3),
+    ] {
+        // Keep the components alive together, as an import candidate does.
+        let mut retained = Vec::new();
+        for _ in 0..3 {
+            retained.push(
+                TypedComponent::from_component_with_budget(&input, &mut budget)
+                    .unwrap()
+                    .0,
+            );
+        }
+        let before = (budget.charged_bytes(), budget.charged_elements());
+        let error = TypedComponent::from_component_with_budget(&input, &mut budget)
+            .err()
+            .unwrap();
+        assert!(error.downcast_ref::<TypedBudgetExceeded>().is_some());
+        assert_eq!((budget.charged_bytes(), budget.charged_elements()), before);
+        assert_eq!(retained.len(), 3);
+    }
+    // Exhausting a shared policy does not impose a limit on the old API.
+    let (typed, summary) = TypedComponent::from_component(&input).unwrap();
+    assert_eq!(summary.array_elements, 256);
+    assert_eq!(typed.to_bytes().unwrap(), input.to_bytes().unwrap());
+}
+
+#[test]
+fn typing_allowance_accepts_exact_boundaries_and_rejects_one_less() {
+    let input = byte_array(17);
+    let (bytes, elements) = charge(&input);
+    let mut exact = TypingBudget::new(bytes, elements);
+    let (typed, summary) = TypedComponent::from_component_with_budget(&input, &mut exact).unwrap();
+    let (legacy, legacy_summary) = TypedComponent::from_component(&input).unwrap();
+    assert_eq!(typed.to_bytes().unwrap(), legacy.to_bytes().unwrap());
+    assert_eq!(summary, legacy_summary);
+    assert_eq!(
+        (exact.charged_bytes(), exact.charged_elements()),
+        (bytes, elements)
+    );
+    for mut budget in [
+        TypingBudget::new(bytes - 1, elements),
+        TypingBudget::new(bytes, elements - 1),
+    ] {
+        let error = TypedComponent::from_component_with_budget(&input, &mut budget)
+            .err()
+            .unwrap();
+        assert!(error.is::<TypedBudgetExceeded>());
+        assert_eq!((budget.charged_bytes(), budget.charged_elements()), (0, 0));
+    }
+}
+
+#[test]
+fn empty_struct_array_elements_consume_the_shared_element_allowance() {
+    let payload = [
+        3_i32.to_le_bytes().as_slice(),
+        &named("Empty", STRUCT, &struct_ext("Demo"), &END.repeat(3)),
+    ]
+    .concat();
+    let input = component(&[prop(ARRAY, &[STRUCT, &[0]].concat(), &payload)]);
+    let (bytes, elements) = charge(&input);
+    assert_eq!(elements, 4);
+    let mut budget = TypingBudget::new(bytes * 2, elements);
+    let (typed, summary) = TypedComponent::from_component_with_budget(&input, &mut budget).unwrap();
+    assert_eq!(summary.array_elements, 3);
+    let Value::StructArray { elements, .. } = &typed.tree.properties[0].value else {
+        panic!("empty struct array did not frame");
+    };
+    assert!(elements.iter().all(|tree| tree.properties.is_empty()));
+    assert!(
+        TypedComponent::from_component_with_budget(&input, &mut budget)
+            .err()
+            .unwrap()
+            .is::<TypedBudgetExceeded>()
+    );
+}
+
+#[test]
+fn container_items_fixed_parts_and_decoded_strings_have_allowances() {
+    let map = [
+        0_i32.to_le_bytes().as_slice(),
+        &1_i32.to_le_bytes(),
+        &string(b"Key"),
+        &string(SECRET),
+    ]
+    .concat();
+    let set_kind = b"\x0c\0\0\0SetProperty\0";
+    let set = [
+        1_i32.to_le_bytes().as_slice(),
+        &string(b"Removed"),
+        &1_i32.to_le_bytes(),
+        &string(b"Present"),
+    ]
+    .concat();
+    let input = component(&[
+        prop(MAP, &[NAME, STR, &[0]].concat(), &map),
+        prop(set_kind, &[STR, &[0]].concat(), &set),
+        prop(STR, &[0], &string(&[b'Q'; 512])),
+        prop(STRUCT, &struct_ext("Vector"), &floats(&[1.0, 2.0, 3.0])),
+    ]);
+    let (bytes, elements) = charge(&input);
+    assert_eq!(elements, 8); // Four properties, two Map items, two Set items.
+    assert!(bytes > 512 * size_of::<u16>());
+    let mut budget = TypingBudget::new(bytes, elements);
+    let (typed, summary) = TypedComponent::from_component_with_budget(&input, &mut budget).unwrap();
+    assert_eq!(
+        (summary.maps, summary.sets, summary.fixed_structs),
+        (1, 1, 1)
+    );
+    assert_eq!(summary.uninterpreted, 0);
+    assert_eq!(typed.to_bytes().unwrap(), input.to_bytes().unwrap());
+}
+
+#[test]
+fn impossible_declared_array_counts_remain_small_exact_gaps() {
+    for inner in [BYTE, INT, STRUCT] {
+        let input = component(&[prop(
+            ARRAY,
+            &[inner, &[0]].concat(),
+            &[i32::MAX.to_le_bytes().as_slice(), &[7]].concat(),
+        )]);
+        let mut budget = TypingBudget::new(64 * 1024, 1);
+        let (typed, summary) =
+            TypedComponent::from_component_with_budget(&input, &mut budget).unwrap();
+        assert_eq!(budget.charged_elements(), 1);
+        assert_eq!(summary.uninterpreted, 1);
+        assert!(matches!(
+            typed.tree.properties[0].value,
+            Value::Uninterpreted { .. }
+        ));
+        assert_eq!(typed.to_bytes().unwrap(), input.to_bytes().unwrap());
+    }
+}
+
+#[test]
+fn structural_typing_failure_retains_no_charge_and_budget_errors_are_private_free() {
+    let good = byte_array(4);
+    let (bytes, elements) = charge(&good);
+    let mut budget = TypingBudget::new(bytes * 3, elements * 3);
+    TypedComponent::from_component_with_budget(&good, &mut budget).unwrap();
+    let before = (budget.charged_bytes(), budget.charged_elements());
+    let mut invalid = byte_array(4);
+    invalid.tree.properties[0].header.clear();
+    let error = TypedComponent::from_component_with_budget(&invalid, &mut budget)
+        .err()
+        .unwrap();
+    assert!(!error.is::<TypedBudgetExceeded>());
+    assert_eq!((budget.charged_bytes(), budget.charged_elements()), before);
+    let mut exhausted = TypingBudget::new(0, 0);
+    let error = TypedComponent::from_component_with_budget(&good, &mut exhausted)
+        .err()
+        .unwrap();
+    assert!(error.is::<TypedBudgetExceeded>());
+    assert_eq!(error.to_string(), "typed allocation budget exceeded");
+    assert!(!format!("{error:?}").contains("Sentinel"));
+    assert_eq!(
+        (exhausted.charged_bytes(), exhausted.charged_elements()),
+        (0, 0)
+    );
+}
+
+#[test]
+fn budgeted_arrays_and_optional_gaps_preserve_legacy_typing() {
+    let vectors = [
+        2_i32.to_le_bytes().as_slice(),
+        &named("Points", STRUCT, &struct_ext("Vector"), &floats(&[1.0; 6])),
+    ]
+    .concat();
+    let names = [
+        2_i32.to_le_bytes().as_slice(),
+        &string(b"A"),
+        &string(SECRET),
+    ]
+    .concat();
+    let bad_array = [3_i32.to_le_bytes().as_slice(), &1_i32.to_le_bytes()].concat();
+    let wide = [(-3_i32).to_le_bytes().as_slice(), b"A\0B\0\0\0"].concat();
+    let bad_set = [
+        0_i32.to_le_bytes().as_slice(),
+        &2_i32.to_le_bytes(),
+        &[1, 2],
+    ]
+    .concat();
+    let set_kind = b"\x0c\0\0\0SetProperty\0";
+    let input = component(&[
+        prop(ARRAY, &[STRUCT, &[0]].concat(), &vectors),
+        prop(ARRAY, &[NAME, &[0]].concat(), &names),
+        prop(ARRAY, &[INT, &[0]].concat(), &bad_array),
+        prop(STR, &[0], &wide),
+        prop(set_kind, &[BOOL, &[0]].concat(), &bad_set),
+    ]);
+    let (bytes, elements) = charge(&input);
+    let mut budget = TypingBudget::new(bytes, elements);
+    let (typed, summary) = TypedComponent::from_component_with_budget(&input, &mut budget).unwrap();
+    let (legacy, legacy_summary) = TypedComponent::from_component(&input).unwrap();
+    assert_eq!(typed.to_bytes().unwrap(), input.to_bytes().unwrap());
+    assert_eq!(typed.to_bytes().unwrap(), legacy.to_bytes().unwrap());
+    assert_eq!(summary, legacy_summary);
+    assert_eq!(summary.fixed_struct_arrays, 1);
+    assert_eq!(summary.scalar_arrays, 1);
+    assert_eq!(summary.uninterpreted, 3);
+    assert_eq!(summary.gaps.get(&Gap::NonCanonical), Some(&1));
+    assert_eq!(summary.gaps.get(&Gap::ContainerItem), Some(&1));
+}
+
+#[test]
+fn shared_header_declared_scratch_is_checked_before_typing() {
+    let payload = [
+        1_i32.to_le_bytes().as_slice(),
+        &named("Empty", STRUCT, &struct_ext("Demo"), END),
+    ]
+    .concat();
+    let mut input = component(&[prop(ARRAY, &[STRUCT, &[0]].concat(), &payload)]);
+    let NodeValue::StructArray { shared_header, .. } = &mut input.tree.properties[0].value else {
+        panic!("authored array did not frame");
+    };
+    // The typed shared-header decoder uses this declared size to zero-fill its
+    // scratch record. Alter only that size in a public, caller-owned tree.
+    let size_offset = string(b"Empty").len() + STRUCT.len();
+    shared_header[size_offset..size_offset + 4].copy_from_slice(&i32::MAX.to_le_bytes());
+    let mut budget = TypingBudget::new(64 * 1024, 100);
+    let error = TypedComponent::from_component_with_budget(&input, &mut budget)
+        .err()
+        .unwrap();
+    assert!(error.is::<TypedBudgetExceeded>());
+    assert_eq!((budget.charged_bytes(), budget.charged_elements()), (0, 0));
 }

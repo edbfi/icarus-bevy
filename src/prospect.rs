@@ -57,7 +57,7 @@ struct Blob {
     binary_blob: String,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Clone, Debug, Serialize)]
 pub struct EnvelopeInspection {
     pub validation: &'static str,
     pub compressed_bytes: usize,

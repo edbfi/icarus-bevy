@@ -12,6 +12,10 @@ use super::checksum_utf16;
 use super::component::{
     BaseComponent, MAX_BOUNDED_COMPONENT_BYTES, read_base_component_with_limit,
 };
+use super::prospect_info::{
+    AssociatedMember, CustomGameSetting, MISSION_DIFFICULTIES, PROSPECT_LOCATIONS, PROSPECT_STATES,
+    ProspectInfo,
+};
 use super::restore_rules::{
     LobbyPrivacy, OwnerResolvePolicy, PROSPECT_SAVE_STATE_CURRENT_VERSION,
     ProspectAssociatedMember, RecorderCtorDefaults, evaluate_requires_stitching,
@@ -98,6 +102,230 @@ pub struct StagedProspectSaveState {
     pub requires_stitching_count: usize,
     pub total_component_field_tags: usize,
     pub world_imported: bool,
+}
+
+/// Which root fields were supplied, independently of their effective defaults.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct StagedRootPresence {
+    pub version: bool,
+    pub lobby_privacy: bool,
+    pub prospect_info: bool,
+    pub prospect_map_name: bool,
+    pub last_saved_date_time: bool,
+    pub legacy_prospect_id: bool,
+    pub legacy_prospect_dt_key: bool,
+    pub state_recorder_blobs: bool,
+}
+
+/// Qualified structural migration only; no gameplay acceptance is implied.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum StagedRootMigration {
+    CurrentVersion,
+    Version1LegacyOverlay,
+    /// Reset ProspectInfo, force FriendsOnly, and discard all recorders.
+    /// Map and timestamp are retained.
+    Version0Reset,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum StagedLegacyDisposition {
+    Absent,
+    AppliedToProspectInfo,
+    AppliedThenReset,
+    IgnoredAtCurrentVersion,
+}
+
+/// Locations within the source ProspectInfo; member indices are source order.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum StagedRootEnumField {
+    ProspectState,
+    Difficulty,
+    AssociatedMemberStatus(usize),
+}
+
+/// Exact accepted enum input. Deliberately neither Debug nor Serialize.
+#[derive(Clone, PartialEq, Eq)]
+pub enum StagedRootEnumValue {
+    Byte(u8),
+    Name(Vec<u16>),
+}
+
+/// An accepted source enum and its qualified DTO mapping, when known.
+/// Unrecognized names remain accepted by strict staging, with a zero DTO
+/// placeholder and `resolved_value = None`; unrecognized raw bytes remain
+/// unchanged in the DTO, also with `resolved_value = None`. Consumers must
+/// check this qualification before treating the DTO as semantically resolved.
+/// These source values survive even when version 0 resets the effective DTO.
+#[derive(Clone, PartialEq, Eq)]
+pub struct StagedRootEnum {
+    pub field: StagedRootEnumField,
+    /// Distinguishes named EnumProperty from named/raw ByteProperty inputs.
+    pub source_kind: TagKind,
+    pub source_value: StagedRootEnumValue,
+    pub resolved_value: Option<u8>,
+}
+
+/// Owned, strictly staged root values for incremental import preparation.
+/// Strings retain exact UTF-16 units, including accepted unpaired surrogates.
+/// No Serialize implementation; Debug reports counts only. Structural staging
+/// and migration dispositions do not qualify gameplay restoration.
+#[derive(Clone, PartialEq, Eq)]
+pub struct StagedRootValues {
+    /// Effective values after the existing qualified version migrations.
+    /// See source_enum_values for enum mappings that remain unqualified.
+    prospect_info: ProspectInfo,
+    lobby_privacy: LobbyPrivacy,
+    prospect_map_name: Vec<u16>,
+    /// Exact signed saved value; absence is distinct from an explicit zero.
+    last_saved_date_time: Option<i64>,
+    /// None when omitted (the existing migration then uses version 0).
+    loaded_version: Option<i32>,
+    source_presence: StagedRootPresence,
+    legacy_prospect_id: Option<Vec<u16>>,
+    legacy_prospect_dt_key: Option<Vec<u16>>,
+    migration: StagedRootMigration,
+    legacy_prospect_id_disposition: StagedLegacyDisposition,
+    legacy_prospect_dt_key_disposition: StagedLegacyDisposition,
+    source_enum_values: Vec<StagedRootEnum>,
+}
+
+impl StagedRootValues {
+    /// Structurally accepted DTO. Unknown named enums have placeholders; inspect
+    /// `source_enum_values` or use `resolved_prospect_info` before consuming them.
+    pub fn prospect_info(&self) -> &ProspectInfo {
+        &self.prospect_info
+    }
+
+    /// Effective DTO only when all effective enum values have known mappings.
+    /// Version 0 resets the DTO, so unresolved source enums no longer affect it.
+    /// This qualifies enum mapping only, not gameplay restoration.
+    pub fn resolved_prospect_info(&self) -> Option<&ProspectInfo> {
+        (self.migration == StagedRootMigration::Version0Reset
+            || self
+                .source_enum_values
+                .iter()
+                .all(|value| value.resolved_value.is_some()))
+        .then_some(&self.prospect_info)
+    }
+
+    pub fn lobby_privacy(&self) -> LobbyPrivacy {
+        self.lobby_privacy
+    }
+
+    pub fn prospect_map_name(&self) -> &[u16] {
+        &self.prospect_map_name
+    }
+
+    pub fn last_saved_date_time(&self) -> Option<i64> {
+        self.last_saved_date_time
+    }
+
+    pub fn loaded_version(&self) -> Option<i32> {
+        self.loaded_version
+    }
+
+    pub fn source_presence(&self) -> StagedRootPresence {
+        self.source_presence
+    }
+
+    pub fn legacy_prospect_id(&self) -> Option<&[u16]> {
+        self.legacy_prospect_id.as_deref()
+    }
+
+    pub fn legacy_prospect_dt_key(&self) -> Option<&[u16]> {
+        self.legacy_prospect_dt_key.as_deref()
+    }
+
+    pub fn migration(&self) -> StagedRootMigration {
+        self.migration
+    }
+
+    pub fn legacy_prospect_id_disposition(&self) -> StagedLegacyDisposition {
+        self.legacy_prospect_id_disposition
+    }
+
+    pub fn legacy_prospect_dt_key_disposition(&self) -> StagedLegacyDisposition {
+        self.legacy_prospect_dt_key_disposition
+    }
+
+    pub fn source_enum_values(&self) -> &[StagedRootEnum] {
+        &self.source_enum_values
+    }
+
+    /// Retained allocation accounting, not RSS or transient parsing memory.
+    /// Includes Self, all vector capacities (including unused slots), and the
+    /// nested allocations of initialized members, settings, enums and legacy
+    /// strings. Presence and scalar options are inline and counted in Self.
+    pub fn owned_bytes(&self) -> Result<usize> {
+        fn add_capacity<T>(total: &mut usize, capacity: usize) -> Result<()> {
+            let bytes = capacity
+                .checked_mul(std::mem::size_of::<T>())
+                .context("staged root allocation size overflow")?;
+            *total = total
+                .checked_add(bytes)
+                .context("staged root allocation size overflow")?;
+            Ok(())
+        }
+
+        let mut total = std::mem::size_of::<Self>();
+        for units in [
+            &self.prospect_info.prospect_id,
+            &self.prospect_info.claimed_account_id,
+            &self.prospect_info.prospect_dt_key,
+            &self.prospect_info.faction_mission_dt_key,
+            &self.prospect_info.lobby_name,
+            &self.prospect_map_name,
+        ] {
+            add_capacity::<u16>(&mut total, units.capacity())?;
+        }
+        add_capacity::<AssociatedMember>(
+            &mut total,
+            self.prospect_info.associated_members.capacity(),
+        )?;
+        for member in &self.prospect_info.associated_members {
+            for units in [
+                &member.account_name,
+                &member.character_name,
+                &member.user_id,
+            ] {
+                add_capacity::<u16>(&mut total, units.capacity())?;
+            }
+        }
+        add_capacity::<CustomGameSetting>(
+            &mut total,
+            self.prospect_info.custom_settings.capacity(),
+        )?;
+        for setting in &self.prospect_info.custom_settings {
+            add_capacity::<u16>(&mut total, setting.setting_row_name.capacity())?;
+        }
+        for units in [&self.legacy_prospect_id, &self.legacy_prospect_dt_key]
+            .into_iter()
+            .flatten()
+        {
+            add_capacity::<u16>(&mut total, units.capacity())?;
+        }
+        add_capacity::<StagedRootEnum>(&mut total, self.source_enum_values.capacity())?;
+        for value in &self.source_enum_values {
+            if let StagedRootEnumValue::Name(units) = &value.source_value {
+                add_capacity::<u16>(&mut total, units.capacity())?;
+            }
+        }
+        Ok(total)
+    }
+}
+
+impl std::fmt::Debug for StagedRootValues {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("StagedRootValues")
+            .field(
+                "associated_members",
+                &self.prospect_info.associated_members.len(),
+            )
+            .field("custom_settings", &self.prospect_info.custom_settings.len())
+            .field("source_enum_values", &self.source_enum_values.len())
+            .finish_non_exhaustive()
+    }
 }
 
 impl<'a> Recorder<'a> {
@@ -407,18 +635,86 @@ fn parse_owner_resolve_policy(property: &PropertyRecord<'_>) -> Result<OwnerReso
     }
 }
 
+fn retain_root_enum(
+    property: &PropertyRecord<'_>,
+    enum_name: &str,
+    names: &[&str],
+    field: StagedRootEnumField,
+    source_values: &mut Vec<StagedRootEnum>,
+) -> Result<u8> {
+    let (wrong_type, invalid_name, invalid_byte_name, wrong_kind) = match field {
+        StagedRootEnumField::ProspectState => (
+            "ProspectInfo.ProspectState must use EProspectState",
+            "invalid ProspectState enum",
+            "invalid ProspectState byte enum",
+            "ProspectInfo.ProspectState must be EnumProperty or ByteProperty",
+        ),
+        StagedRootEnumField::Difficulty => (
+            "ProspectInfo.Difficulty must use EMissionDifficulty",
+            "invalid Difficulty enum",
+            "invalid Difficulty byte enum",
+            "ProspectInfo.Difficulty must be EnumProperty or ByteProperty",
+        ),
+        StagedRootEnumField::AssociatedMemberStatus(_) => (
+            "AssociatedMemberInfo.Status must use EProspectLocation",
+            "invalid AssociatedMemberInfo.Status enum string",
+            "invalid AssociatedMemberInfo.Status byte enum",
+            "AssociatedMemberInfo.Status must be EnumProperty or ByteProperty",
+        ),
+    };
+    let source_value = match property.tag.kind {
+        TagKind::Enum => {
+            ensure!(extra_is(property, enum_name), wrong_type);
+            StagedRootEnumValue::Name(decode_exact_string_units(
+                property.tag.payload,
+                invalid_name,
+            )?)
+        }
+        TagKind::Byte if property.tag.payload.len() == 1 => {
+            StagedRootEnumValue::Byte(property.tag.payload[0])
+        }
+        TagKind::Byte => StagedRootEnumValue::Name(decode_exact_string_units(
+            property.tag.payload,
+            invalid_byte_name,
+        )?),
+        _ => bail!(wrong_kind),
+    };
+    let resolved_value = match &source_value {
+        StagedRootEnumValue::Byte(value) => (usize::from(*value) < names.len()).then_some(*value),
+        StagedRootEnumValue::Name(units) => names
+            .iter()
+            .position(|name| {
+                units_eq_ascii(units, name)
+                    || units_eq_ascii(units, &format!("{enum_name}::{name}"))
+            })
+            .and_then(|index| u8::try_from(index).ok()),
+    };
+    let dto_value = match &source_value {
+        StagedRootEnumValue::Byte(value) => *value,
+        StagedRootEnumValue::Name(_) => resolved_value.unwrap_or(0),
+    };
+    source_values.push(StagedRootEnum {
+        field,
+        source_kind: property.tag.kind,
+        source_value,
+        resolved_value,
+    });
+    Ok(dto_value)
+}
+
 /// Validates `ProspectInfo.AssociatedMembers` against the reflected
 /// `FAssociatedMemberInfo` descriptor (`0x145fad8e0` / `0x143dbc380`):
 /// shared `StructProperty` header `"AssociatedMemberInfo"` and up to the 8
 /// reflected fields (`AccountName`, `CharacterName`, `UserID`, `ChrSlot`,
 /// `Experience`, `Status`, `Settled`, `IsCurrentlyPlaying`), returning the
-/// post-default `(UserID, ChrSlot)` pairs (`FAssociatedMemberInfo::Construct`
+/// complete post-default DTOs (`FAssociatedMemberInfo::Construct`
 /// `0x143dbc230` zero-initializes `UserID = ""` and `ChrSlot = 0`).
 fn validate_associated_members(
     payload: &[u8],
     profile: TagProfile,
     component_byte_limit: usize,
-) -> Result<Vec<(Vec<u16>, i32)>> {
+    source_enum_values: &mut Vec<StagedRootEnum>,
+) -> Result<Vec<AssociatedMember>> {
     let members = read_tagged_struct_array_with_limit(payload, profile, component_byte_limit)
         .context("invalid AssociatedMembers struct array")?;
     let ParsedRecord::Property(shared_prop) = read_record(members.shared().record, profile)? else {
@@ -431,10 +727,9 @@ fn validate_associated_members(
         "AssociatedMembers shared header must be StructProperty(AssociatedMemberInfo)"
     );
     let mut parsed_members = Vec::with_capacity(members.elements().len());
-    for element in members.elements() {
+    for (member_index, element) in members.elements().iter().enumerate() {
         let mut seen: Vec<Vec<u16>> = Vec::with_capacity(element.fields().len());
-        let mut user_id = Vec::new();
-        let mut chr_slot = 0_i32;
+        let mut member = AssociatedMember::default();
         for field_tag in element.fields() {
             let ParsedRecord::Property(field_prop) = read_record(field_tag.record, profile)? else {
                 bail!("unexpected AssociatedMemberInfo terminator");
@@ -453,7 +748,7 @@ fn validate_associated_members(
                     field_prop.tag.kind == TagKind::String,
                     "AssociatedMemberInfo.UserID must be StrProperty"
                 );
-                user_id = decode_exact_string_units(
+                member.user_id = decode_exact_string_units(
                     field_prop.tag.payload,
                     "invalid AssociatedMemberInfo.UserID",
                 )?;
@@ -464,43 +759,35 @@ fn validate_associated_members(
                     field_prop.tag.kind == TagKind::String,
                     "AssociatedMemberInfo string field must be StrProperty"
                 );
-                decode_exact_string_units(
+                let units = decode_exact_string_units(
                     field_prop.tag.payload,
                     "invalid AssociatedMemberInfo string",
                 )?;
+                if is_name(&field_prop.name, "AccountName") {
+                    member.account_name = units;
+                } else {
+                    member.character_name = units;
+                }
             } else if is_name(&field_prop.name, "ChrSlot") {
                 ensure!(
                     field_prop.tag.kind == TagKind::Int && field_prop.tag.payload.len() == 4,
                     "AssociatedMemberInfo.ChrSlot must be 4-byte IntProperty"
                 );
-                chr_slot = i32::from_le_bytes(field_prop.tag.payload.try_into()?);
+                member.chr_slot = i32::from_le_bytes(field_prop.tag.payload.try_into()?);
             } else if is_name(&field_prop.name, "Experience") {
                 ensure!(
                     field_prop.tag.kind == TagKind::Int && field_prop.tag.payload.len() == 4,
                     "AssociatedMemberInfo int field must be 4-byte IntProperty"
                 );
+                member.experience = i32::from_le_bytes(field_prop.tag.payload.try_into()?);
             } else if is_name(&field_prop.name, "Status") {
-                match field_prop.tag.kind {
-                    TagKind::Enum => {
-                        ensure!(
-                            extra_is(&field_prop, "EProspectLocation"),
-                            "AssociatedMemberInfo.Status must use EProspectLocation"
-                        );
-                        decode_exact_string_units(
-                            field_prop.tag.payload,
-                            "invalid AssociatedMemberInfo.Status enum string",
-                        )?;
-                    }
-                    TagKind::Byte => {
-                        if field_prop.tag.payload.len() != 1 {
-                            decode_exact_string_units(
-                                field_prop.tag.payload,
-                                "invalid AssociatedMemberInfo.Status byte enum",
-                            )?;
-                        }
-                    }
-                    _ => bail!("AssociatedMemberInfo.Status must be EnumProperty or ByteProperty"),
-                }
+                member.status = retain_root_enum(
+                    &field_prop,
+                    "EProspectLocation",
+                    &PROSPECT_LOCATIONS,
+                    StagedRootEnumField::AssociatedMemberStatus(member_index),
+                    source_enum_values,
+                )?;
             } else if is_name(&field_prop.name, "Settled")
                 || is_name(&field_prop.name, "IsCurrentlyPlaying")
             {
@@ -508,11 +795,17 @@ fn validate_associated_members(
                     field_prop.tag.kind == TagKind::Bool && field_prop.tag.payload.is_empty(),
                     "AssociatedMemberInfo bool field must be BoolProperty"
                 );
+                let value = bool_tag_value(&field_prop)?;
+                if is_name(&field_prop.name, "Settled") {
+                    member.settled = value;
+                } else {
+                    member.is_currently_playing = value;
+                }
             } else {
                 bail!("unmapped AssociatedMemberInfo property");
             }
         }
-        parsed_members.push((user_id, chr_slot));
+        parsed_members.push(member);
     }
     Ok(parsed_members)
 }
@@ -525,7 +818,8 @@ fn validate_custom_settings(
     payload: &[u8],
     profile: TagProfile,
     component_byte_limit: usize,
-) -> Result<Vec<Vec<u16>>> {
+) -> Result<(Vec<CustomGameSetting>, Vec<Vec<u16>>)> {
+    let mut parsed_settings = Vec::new();
     let mut row_names = Vec::new();
     let settings = read_tagged_struct_array_with_limit(payload, profile, component_byte_limit)
         .context("invalid CustomSettings struct array")?;
@@ -540,6 +834,7 @@ fn validate_custom_settings(
         "CustomSettings shared header must be StructProperty(CustomGameSetting)"
     );
     for element in settings.elements() {
+        let mut setting = CustomGameSetting::default();
         let mut seen: Vec<Vec<u16>> = Vec::with_capacity(element.fields().len());
         for field_tag in element.fields() {
             let ParsedRecord::Property(field_prop) = read_record(field_tag.record, profile)? else {
@@ -559,29 +854,31 @@ fn validate_custom_settings(
                     field_prop.tag.kind == TagKind::String,
                     "CustomGameSetting.SettingRowName must be StrProperty"
                 );
-                row_names.push(decode_exact_string_units(
+                setting.setting_row_name = decode_exact_string_units(
                     field_prop.tag.payload,
                     "invalid CustomGameSetting.SettingRowName",
-                )?);
+                )?;
+                row_names.push(setting.setting_row_name.clone());
             } else if is_name(&field_prop.name, "SettingValue") {
                 ensure!(
                     field_prop.tag.kind == TagKind::Int && field_prop.tag.payload.len() == 4,
                     "CustomGameSetting.SettingValue must be 4-byte IntProperty"
                 );
+                setting.setting_value = i32::from_le_bytes(field_prop.tag.payload.try_into()?);
             } else {
                 bail!("unmapped CustomGameSetting property");
             }
         }
+        parsed_settings.push(setting);
     }
-    Ok(row_names)
+    Ok((parsed_settings, row_names))
 }
 
+#[derive(Default)]
 struct ParsedProspectInfo {
     tag_count: usize,
-    associated_members: Vec<(Vec<u16>, i32)>,
-    prospect_id: Vec<u16>,
-    prospect_dt_key: Vec<u16>,
-    faction_mission_dt_key: Vec<u16>,
+    values: ProspectInfo,
+    source_enum_values: Vec<StagedRootEnum>,
     setting_row_names: Vec<Vec<u16>>,
     has_expire_time: bool,
 }
@@ -593,10 +890,8 @@ fn validate_prospect_info(
 ) -> Result<ParsedProspectInfo> {
     let nested = read_root(payload, profile).context("invalid ProspectInfo tagged sequence")?;
     let mut seen_names: Vec<Vec<u16>> = Vec::with_capacity(nested.tags.len());
-    let mut associated_members = Vec::new();
-    let mut prospect_id = Vec::new();
-    let mut prospect_dt_key = Vec::new();
-    let mut faction_mission_dt_key = Vec::new();
+    let mut info = ProspectInfo::default();
+    let mut source_enum_values = Vec::new();
     let mut setting_row_names = Vec::new();
     let mut has_expire_time = false;
 
@@ -619,26 +914,32 @@ fn validate_prospect_info(
                 prop.tag.kind == TagKind::String,
                 "ProspectInfo.ProspectID must be StrProperty"
             );
-            prospect_id = decode_exact_string_units(prop.tag.payload, "invalid ProspectID")?;
+            info.prospect_id = decode_exact_string_units(prop.tag.payload, "invalid ProspectID")?;
         } else if is_name(&prop.name, "ProspectDTKey") {
             ensure!(
                 prop.tag.kind == TagKind::String,
                 "ProspectInfo.ProspectDTKey must be StrProperty"
             );
-            prospect_dt_key = decode_exact_string_units(prop.tag.payload, "invalid ProspectDTKey")?;
+            info.prospect_dt_key =
+                decode_exact_string_units(prop.tag.payload, "invalid ProspectDTKey")?;
         } else if is_name(&prop.name, "FactionMissionDTKey") {
             ensure!(
                 prop.tag.kind == TagKind::String,
                 "ProspectInfo string field must be StrProperty"
             );
-            faction_mission_dt_key =
+            info.faction_mission_dt_key =
                 decode_exact_string_units(prop.tag.payload, "invalid ProspectInfo string")?;
         } else if is_name(&prop.name, "ClaimedAccountID") || is_name(&prop.name, "LobbyName") {
             ensure!(
                 prop.tag.kind == TagKind::String,
                 "ProspectInfo string field must be StrProperty"
             );
-            decode_exact_string_units(prop.tag.payload, "invalid ProspectInfo string")?;
+            let units = decode_exact_string_units(prop.tag.payload, "invalid ProspectInfo string")?;
+            if is_name(&prop.name, "ClaimedAccountID") {
+                info.claimed_account_id = units;
+            } else {
+                info.lobby_name = units;
+            }
         } else if is_name(&prop.name, "ClaimedAccountCharacter")
             || is_name(&prop.name, "Cost")
             || is_name(&prop.name, "Reward")
@@ -649,68 +950,69 @@ fn validate_prospect_info(
                 prop.tag.kind == TagKind::Int && prop.tag.payload.len() == 4,
                 "ProspectInfo int field must be 4-byte IntProperty"
             );
+            let value = i32::from_le_bytes(prop.tag.payload.try_into()?);
+            if is_name(&prop.name, "ClaimedAccountCharacter") {
+                info.claimed_account_character = value;
+            } else if is_name(&prop.name, "Cost") {
+                info.cost = value;
+            } else if is_name(&prop.name, "Reward") {
+                info.reward = value;
+            } else if is_name(&prop.name, "ElapsedTime") {
+                info.elapsed_time = value;
+            } else {
+                info.selected_drop_point = value;
+            }
         } else if is_name(&prop.name, "ExpireTime") {
             ensure!(
                 prop.tag.kind == TagKind::Int64 && prop.tag.payload.len() == 8,
                 "ProspectInfo.ExpireTime must be 8-byte Int64Property"
             );
+            info.expire_time = i64::from_le_bytes(prop.tag.payload.try_into()?);
             has_expire_time = true;
         } else if is_name(&prop.name, "ProspectState") {
-            match prop.tag.kind {
-                TagKind::Enum => {
-                    ensure!(
-                        extra_is(&prop, "EProspectState"),
-                        "ProspectInfo.ProspectState must use EProspectState"
-                    );
-                    decode_exact_string_units(prop.tag.payload, "invalid ProspectState enum")?;
-                }
-                TagKind::Byte => {
-                    if prop.tag.payload.len() != 1 {
-                        decode_exact_string_units(
-                            prop.tag.payload,
-                            "invalid ProspectState byte enum",
-                        )?;
-                    }
-                }
-                _ => bail!("ProspectInfo.ProspectState must be EnumProperty or ByteProperty"),
-            }
+            info.prospect_state = retain_root_enum(
+                &prop,
+                "EProspectState",
+                &PROSPECT_STATES,
+                StagedRootEnumField::ProspectState,
+                &mut source_enum_values,
+            )?;
         } else if is_name(&prop.name, "Difficulty") {
-            match prop.tag.kind {
-                TagKind::Enum => {
-                    ensure!(
-                        extra_is(&prop, "EMissionDifficulty"),
-                        "ProspectInfo.Difficulty must use EMissionDifficulty"
-                    );
-                    decode_exact_string_units(prop.tag.payload, "invalid Difficulty enum")?;
-                }
-                TagKind::Byte => {
-                    if prop.tag.payload.len() != 1 {
-                        decode_exact_string_units(
-                            prop.tag.payload,
-                            "invalid Difficulty byte enum",
-                        )?;
-                    }
-                }
-                _ => bail!("ProspectInfo.Difficulty must be EnumProperty or ByteProperty"),
-            }
+            info.difficulty = retain_root_enum(
+                &prop,
+                "EMissionDifficulty",
+                &MISSION_DIFFICULTIES,
+                StagedRootEnumField::Difficulty,
+                &mut source_enum_values,
+            )?;
         } else if is_name(&prop.name, "Insurance") || is_name(&prop.name, "NoRespawns") {
             ensure!(
                 prop.tag.kind == TagKind::Bool && prop.tag.payload.is_empty(),
                 "ProspectInfo bool field must be BoolProperty"
             );
+            let value = bool_tag_value(&prop)?;
+            if is_name(&prop.name, "Insurance") {
+                info.insurance = value;
+            } else {
+                info.no_respawns = value;
+            }
         } else if is_name(&prop.name, "AssociatedMembers") {
             ensure!(
                 prop.tag.kind == TagKind::Array && extra_is(&prop, "StructProperty"),
                 "ProspectInfo.AssociatedMembers must be ArrayProperty<StructProperty>"
             );
-            associated_members =
-                validate_associated_members(prop.tag.payload, profile, component_byte_limit)?;
+            info.associated_members = validate_associated_members(
+                prop.tag.payload,
+                profile,
+                component_byte_limit,
+                &mut source_enum_values,
+            )?;
         } else if is_name(&prop.name, "CustomSettings") {
             ensure!(
                 prop.tag.kind == TagKind::Array && extra_is(&prop, "StructProperty"),
                 "ProspectInfo.CustomSettings must be ArrayProperty<StructProperty>"
             );
-            setting_row_names =
+            (info.custom_settings, setting_row_names) =
                 validate_custom_settings(prop.tag.payload, profile, component_byte_limit)?;
         } else {
             bail!("unmapped ProspectInfo property");
@@ -719,10 +1021,8 @@ fn validate_prospect_info(
 
     Ok(ParsedProspectInfo {
         tag_count: nested.tags.len(),
-        associated_members,
-        prospect_id,
-        prospect_dt_key,
-        faction_mission_dt_key,
+        values: info,
+        source_enum_values,
         setting_row_names,
         has_expire_time,
     })
@@ -1235,11 +1535,34 @@ pub fn stage_prospect_save_state_with_decisions(
     Ok((staged.summary, staged.decisions))
 }
 
+/// Strict staging with owned root values and recorder decisions. This performs
+/// the same admission and migrations as stage_prospect_save_state; the returned
+/// values do not authorize restoration or native-world publication.
+pub fn stage_prospect_save_state_with_root_values(
+    roots: &[RootTag<'_>],
+    profile: TagProfile,
+    component_byte_limit: usize,
+    expected_prospect_id: Option<&[u16]>,
+) -> Result<(
+    StagedProspectSaveState,
+    StagedRootValues,
+    Vec<StagedRecorderDecision>,
+)> {
+    let staged = stage_prospect_save_state_for_import(
+        roots,
+        profile,
+        component_byte_limit,
+        expected_prospect_id,
+    )?;
+    Ok((staged.summary, staged.root_values, staged.decisions))
+}
+
 /// Internal staging output with migrated content references. Deliberately has no
 /// Debug or Serialize implementation: supplied values stay out of reports.
 pub(crate) struct StagedImportState {
     pub(crate) summary: StagedProspectSaveState,
     pub(crate) decisions: Vec<StagedRecorderDecision>,
+    pub(crate) root_values: StagedRootValues,
     pub(crate) prospect_dt_key: Vec<u16>,
     pub(crate) prospect_map_name: Vec<u16>,
     pub(crate) faction_mission_dt_key: Vec<u16>,
@@ -1275,7 +1598,8 @@ pub(crate) fn stage_prospect_save_state_for_import(
     let mut prospect_info: Option<ParsedProspectInfo> = None;
     let mut has_map_name = false;
     let mut prospect_map_name = Vec::new();
-    let mut has_last_saved_date_time = false;
+    let mut last_saved_date_time = None;
+    let mut source_presence = StagedRootPresence::default();
     let mut legacy_prospect_id: Option<Vec<u16>> = None;
     let mut legacy_prospect_dt_key: Option<Vec<u16>> = None;
     let mut has_recorders_root = false;
@@ -1316,6 +1640,7 @@ pub(crate) fn stage_prospect_save_state_for_import(
                     && extra_is(&property, "ProspectInfo"),
                 "invalid ProspectInfo root header"
             );
+            source_presence.prospect_info = true;
             prospect_info = Some(validate_prospect_info(
                 property.tag.payload,
                 profile,
@@ -1327,6 +1652,7 @@ pub(crate) fn stage_prospect_save_state_for_import(
                 "invalid ProspectMapName root header"
             );
             let units = decode_exact_string_units(property.tag.payload, "invalid ProspectMapName")?;
+            source_presence.prospect_map_name = true;
             has_map_name = !units.is_empty();
             prospect_map_name = units;
         } else if is_name(&property.name, "LastSavedDateTime") {
@@ -1337,7 +1663,7 @@ pub(crate) fn stage_prospect_save_state_for_import(
                     && property.tag.payload.len() == 8,
                 "invalid LastSavedDateTime root header"
             );
-            has_last_saved_date_time = true;
+            last_saved_date_time = Some(i64::from_le_bytes(property.tag.payload.try_into()?));
         } else if is_name(&property.name, "ProspectID") {
             ensure!(
                 property.tag.kind == TagKind::String && property.index == 0,
@@ -1365,41 +1691,37 @@ pub(crate) fn stage_prospect_save_state_for_import(
 
     let version = loaded_version.unwrap_or(0);
     let mut privacy = lobby_privacy.unwrap_or(LobbyPrivacy::Unknown);
-    let mut info = prospect_info.unwrap_or(ParsedProspectInfo {
-        tag_count: 0,
-        associated_members: Vec::new(),
-        prospect_id: Vec::new(),
-        prospect_dt_key: Vec::new(),
-        faction_mission_dt_key: Vec::new(),
-        setting_row_names: Vec::new(),
-        has_expire_time: false,
-    });
+    source_presence.version = loaded_version.is_some();
+    source_presence.lobby_privacy = lobby_privacy.is_some();
+    source_presence.last_saved_date_time = last_saved_date_time.is_some();
+    source_presence.legacy_prospect_id = legacy_prospect_id.is_some();
+    source_presence.legacy_prospect_dt_key = legacy_prospect_dt_key.is_some();
+    source_presence.state_recorder_blobs = has_recorders_root;
+    let mut info = prospect_info.unwrap_or_default();
 
     if version < PROSPECT_SAVE_STATE_CURRENT_VERSION {
-        if let Some(legacy_id) = legacy_prospect_id {
-            info.prospect_id = legacy_id;
+        if let Some(legacy_id) = &legacy_prospect_id {
+            info.values.prospect_id.clone_from(legacy_id);
         }
-        if let Some(legacy_dt_key) = legacy_prospect_dt_key {
-            info.prospect_dt_key = legacy_dt_key;
+        if let Some(legacy_dt_key) = &legacy_prospect_dt_key {
+            info.values.prospect_dt_key.clone_from(legacy_dt_key);
         }
     }
     if version == 0 {
         info.tag_count = 0;
-        info.associated_members.clear();
-        info.prospect_id.clear();
-        info.prospect_dt_key.clear();
-        info.faction_mission_dt_key.clear();
+        info.values = ProspectInfo::default();
         info.setting_row_names.clear();
         info.has_expire_time = false;
         privacy = LobbyPrivacy::FriendsOnly;
     }
 
     let member_refs: Vec<ProspectAssociatedMember<'_>> = info
+        .values
         .associated_members
         .iter()
-        .map(|(user_id, chr_slot)| ProspectAssociatedMember {
-            user_id: user_id.as_slice(),
-            chr_slot: *chr_slot,
+        .map(|member| ProspectAssociatedMember {
+            user_id: member.user_id.as_slice(),
+            chr_slot: member.chr_slot,
         })
         .collect();
 
@@ -1456,7 +1778,7 @@ pub(crate) fn stage_prospect_save_state_for_import(
                     &class_units,
                     &component,
                     profile,
-                    &info.prospect_id,
+                    &info.values.prospect_id,
                     &member_refs,
                 )?;
                 if !eval.is_valid {
@@ -1504,7 +1826,8 @@ pub(crate) fn stage_prospect_save_state_for_import(
 
     if let Some(expected) = expected_prospect_id {
         ensure!(
-            !info.prospect_id.is_empty() && prospect_ids_match(expected, &info.prospect_id),
+            !info.values.prospect_id.is_empty()
+                && prospect_ids_match(expected, &info.values.prospect_id),
             "staged ProspectID mismatch"
         );
     }
@@ -1518,11 +1841,11 @@ pub(crate) fn stage_prospect_save_state_for_import(
         lobby_privacy: privacy,
         root_tag_count: roots.len(),
         prospect_info_tag_count: info.tag_count,
-        associated_member_count: info.associated_members.len(),
-        has_prospect_id: !info.prospect_id.is_empty(),
-        has_prospect_dt_key: !info.prospect_dt_key.is_empty(),
+        associated_member_count: info.values.associated_members.len(),
+        has_prospect_id: !info.values.prospect_id.is_empty(),
+        has_prospect_dt_key: !info.values.prospect_dt_key.is_empty(),
         has_map_name,
-        has_last_saved_date_time,
+        has_last_saved_date_time: last_saved_date_time.is_some(),
         has_expire_time: info.has_expire_time,
         parsed_recorder_count,
         invalid_recorder_count,
@@ -1538,12 +1861,125 @@ pub(crate) fn stage_prospect_save_state_for_import(
         total_component_field_tags,
         world_imported: false,
     };
+    let legacy_disposition = |present: bool| {
+        if !present {
+            StagedLegacyDisposition::Absent
+        } else if version == 0 {
+            StagedLegacyDisposition::AppliedThenReset
+        } else if version < PROSPECT_SAVE_STATE_CURRENT_VERSION {
+            StagedLegacyDisposition::AppliedToProspectInfo
+        } else {
+            StagedLegacyDisposition::IgnoredAtCurrentVersion
+        }
+    };
+    let root_values = StagedRootValues {
+        prospect_info: info.values,
+        lobby_privacy: privacy,
+        prospect_map_name,
+        last_saved_date_time,
+        loaded_version,
+        source_presence,
+        legacy_prospect_id,
+        legacy_prospect_dt_key,
+        migration: match version {
+            0 => StagedRootMigration::Version0Reset,
+            1 => StagedRootMigration::Version1LegacyOverlay,
+            _ => StagedRootMigration::CurrentVersion,
+        },
+        legacy_prospect_id_disposition: legacy_disposition(source_presence.legacy_prospect_id),
+        legacy_prospect_dt_key_disposition: legacy_disposition(
+            source_presence.legacy_prospect_dt_key,
+        ),
+        source_enum_values: info.source_enum_values,
+    };
     Ok(StagedImportState {
         summary: staged,
         decisions,
-        prospect_dt_key: info.prospect_dt_key,
-        prospect_map_name,
-        faction_mission_dt_key: info.faction_mission_dt_key,
+        prospect_dt_key: root_values.prospect_info.prospect_dt_key.clone(),
+        prospect_map_name: root_values.prospect_map_name.clone(),
+        faction_mission_dt_key: root_values.prospect_info.faction_mission_dt_key.clone(),
         setting_row_names: info.setting_row_names,
+        root_values,
     })
+}
+
+#[cfg(test)]
+mod owned_root_allocation_tests {
+    use super::*;
+
+    #[test]
+    fn owned_bytes_counts_nested_spare_capacity_and_inline_storage() {
+        fn units(capacity: usize) -> Vec<u16> {
+            let mut result = Vec::with_capacity(capacity);
+            result.push(0xd800);
+            result
+        }
+        let mut members = Vec::with_capacity(2);
+        members.push(AssociatedMember {
+            account_name: units(17),
+            character_name: units(19),
+            user_id: units(23),
+            ..Default::default()
+        });
+        let mut settings = Vec::with_capacity(3);
+        settings.push(CustomGameSetting {
+            setting_row_name: units(29),
+            setting_value: 1,
+        });
+        let mut enums = Vec::with_capacity(5);
+        enums.push(StagedRootEnum {
+            field: StagedRootEnumField::ProspectState,
+            source_kind: TagKind::Enum,
+            source_value: StagedRootEnumValue::Name(units(43)),
+            resolved_value: None,
+        });
+        enums.push(StagedRootEnum {
+            field: StagedRootEnumField::Difficulty,
+            source_kind: TagKind::Byte,
+            source_value: StagedRootEnumValue::Byte(250),
+            resolved_value: None,
+        });
+        let root = StagedRootValues {
+            prospect_info: ProspectInfo {
+                prospect_id: units(3),
+                claimed_account_id: units(5),
+                prospect_dt_key: units(7),
+                faction_mission_dt_key: units(11),
+                lobby_name: units(13),
+                associated_members: members,
+                custom_settings: settings,
+                ..Default::default()
+            },
+            lobby_privacy: LobbyPrivacy::Private,
+            prospect_map_name: units(31),
+            last_saved_date_time: Some(i64::MAX),
+            loaded_version: Some(2),
+            source_presence: StagedRootPresence::default(),
+            legacy_prospect_id: Some(units(37)),
+            legacy_prospect_dt_key: Some(units(41)),
+            migration: StagedRootMigration::CurrentVersion,
+            legacy_prospect_id_disposition: StagedLegacyDisposition::IgnoredAtCurrentVersion,
+            legacy_prospect_dt_key_disposition: StagedLegacyDisposition::IgnoredAtCurrentVersion,
+            source_enum_values: enums,
+        };
+        // Thirteen UTF-16 allocations have one initialized unit each, but
+        // jointly reserve 279 units. Array allocations also have spare slots.
+        let expected = std::mem::size_of::<StagedRootValues>()
+            + 279 * std::mem::size_of::<u16>()
+            + 2 * std::mem::size_of::<AssociatedMember>()
+            + 3 * std::mem::size_of::<CustomGameSetting>()
+            + 5 * std::mem::size_of::<StagedRootEnum>();
+        assert_eq!(root.owned_bytes().unwrap(), expected);
+    }
+
+    #[test]
+    fn owned_bytes_includes_empty_root_inline_storage() {
+        let staged =
+            stage_prospect_save_state_for_import(&[], TagProfile::MemoryArchive522, 1, None)
+                .unwrap();
+        assert_eq!(
+            staged.root_values.owned_bytes().unwrap(),
+            std::mem::size_of::<StagedRootValues>()
+        );
+    }
 }

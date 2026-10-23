@@ -6,8 +6,10 @@ use std::{fs, io::Write, process::Command};
 use base64::{Engine, engine::general_purpose::STANDARD};
 use flate2::{Compression, write::ZlibEncoder};
 use icarus_bevy::experimental::recorders::{lookup_recorder_ctor_defaults, recorder_class_label};
+use icarus_bevy::import_candidate::{CandidateLimits, DecodedImportCandidate};
 use icarus_bevy::import_plan::{
-    ContentCatalog, ContentRole, ImportBlocker, RoleCount, plan_import, planned_actors,
+    ContentCatalog, ContentRole, ImportBlocker, RoleCount, plan_decoded_import, plan_import,
+    planned_actors, planned_actors_from_candidate,
 };
 use serde_json::{Value, json};
 use sha1::{Digest, Sha1};
@@ -827,6 +829,210 @@ fn clean_catalog(extra: &str) -> String {
 fn string_reference_source(fields: &[Vec<u8>]) -> Vec<u8> {
     let bytes = [fields.concat(), end(), vec![0; 4]].concat();
     envelope(2, &[recorder_bytes(ACTOR, &bytes)])
+}
+
+#[test]
+fn decoded_candidate_outlives_one_source_traversal_and_serves_all_consumers() {
+    use std::{
+        cell::Cell,
+        io::{self, Read},
+        rc::Rc,
+    };
+    struct OnceReader {
+        bytes: Vec<u8>,
+        offset: usize,
+        eof: bool,
+        reads: Rc<Cell<usize>>,
+    }
+    impl Read for OnceReader {
+        fn read(&mut self, output: &mut [u8]) -> io::Result<usize> {
+            if self.eof {
+                return Err(io::Error::other("second traversal"));
+            }
+            self.reads.set(self.reads.get() + 1);
+            let count = output.len().min(7).min(self.bytes.len() - self.offset);
+            output[..count].copy_from_slice(&self.bytes[self.offset..self.offset + count]);
+            self.offset += count;
+            self.eof = count == 0;
+            Ok(count)
+        }
+    }
+    let records = vec![recorder(ACTOR, &CLEAN), recorder(NO_RECORDER, &CLEAN)];
+    let source = envelope(2, &records);
+    let expected = plan_import(source.as_slice(), &ContentCatalog::empty()).unwrap();
+    let reads = Rc::new(Cell::new(0));
+    let candidate = DecodedImportCandidate::decode(OnceReader {
+        bytes: source,
+        offset: 0,
+        eof: false,
+        reads: Rc::clone(&reads),
+    })
+    .unwrap();
+    let traversed = reads.get();
+    let plan = plan_decoded_import(&candidate, &ContentCatalog::empty()).unwrap();
+    assert_eq!(
+        serde_json::to_value(plan).unwrap(),
+        serde_json::to_value(expected).unwrap()
+    );
+    let covered = plan_decoded_import(
+        &candidate,
+        &ContentCatalog::from_references([
+            ROW,
+            PATH,
+            "SecretTile",
+            "bSecretFlag",
+            "SecretQuestVar",
+        ]),
+    )
+    .unwrap();
+    assert_eq!(covered.content.unmapped_distinct, 0);
+    assert_eq!(covered.recorders.retained, 1);
+    assert_eq!(covered.recorders.typed, 1);
+    assert_eq!(planned_actors_from_candidate(&candidate).unwrap().len(), 1);
+    assert_eq!(
+        candidate
+            .preserved()
+            .decode()
+            .unwrap()
+            .to_inner_payload()
+            .unwrap(),
+        candidate.payload()
+    );
+    for (index, record) in candidate.recorders().iter().enumerate() {
+        assert_eq!(record.source_index(), index);
+        assert_eq!(candidate.recorder_bytes(index).unwrap(), records[index]);
+        assert!(record.typing().lossless().is_some());
+        assert_eq!(
+            record.typing().lossless().unwrap().0.to_bytes().unwrap(),
+            candidate.recorder_binary_data(index).unwrap()
+        );
+        assert!(!format!("{record:?}").contains("Secret"));
+    }
+    assert!(!candidate.recorders()[1].decision().retained);
+    assert!(candidate.recorder_bytes(2).is_none());
+    assert!(candidate.recorder_class_encoding(2).is_none());
+    assert!(candidate.recorder_binary_data(2).is_none());
+    assert!(!format!("{candidate:?}").contains("secret"));
+    assert_eq!(reads.get(), traversed);
+}
+
+#[test]
+fn decoded_candidate_keeps_unregistered_utf16_identity_when_version_zero_drops_it() {
+    let units = [0xd800_u16, 0x61, 0xdc00];
+    let encoded: Vec<u8> = [
+        (-4_i32).to_le_bytes().to_vec(),
+        units.iter().flat_map(|unit| unit.to_le_bytes()).collect(),
+        vec![0, 0],
+    ]
+    .concat();
+    let body = [end(), vec![0; 4]].concat();
+    let record = [
+        tag("ComponentClassName", "StrProperty", &[0], &encoded),
+        tag(
+            "BinaryData",
+            "ArrayProperty",
+            &[fstring("ByteProperty"), vec![0]].concat(),
+            &[
+                i32::try_from(body.len()).unwrap().to_le_bytes().to_vec(),
+                body.clone(),
+            ]
+            .concat(),
+        ),
+        end(),
+    ]
+    .concat();
+    let candidate = DecodedImportCandidate::decode(envelope(0, &[record]).as_slice()).unwrap();
+    let record = &candidate.recorders()[0];
+    assert_eq!(record.class_units(), units);
+    assert!(record.defaults().is_none());
+    assert!(!record.decision().retained);
+    assert_eq!(candidate.recorder_class_encoding(0).unwrap(), encoded);
+    assert_eq!(candidate.recorder_binary_data(0).unwrap(), body);
+    assert!(candidate.root_values().resolved_prospect_info().is_some());
+    assert_eq!(
+        plan_decoded_import(&candidate, &ContentCatalog::empty())
+            .unwrap()
+            .blockers,
+        vec![ImportBlocker::NoRetainedRecorders]
+    );
+    assert!(
+        planned_actors_from_candidate(&candidate)
+            .unwrap()
+            .is_empty()
+    );
+}
+
+#[test]
+fn decoded_candidate_retains_lossless_gaps_and_enforces_aggregate_allowances() {
+    let source = envelope(2, &[recorder(ACTOR, &Body { gap: true, ..CLEAN })]);
+    let candidate = DecodedImportCandidate::decode(source.as_slice()).unwrap();
+    assert!(
+        candidate.recorders()[0]
+            .typing()
+            .lossless()
+            .unwrap()
+            .1
+            .uninterpreted
+            > 0
+    );
+    let plan = plan_decoded_import(&candidate, &ContentCatalog::empty()).unwrap();
+    assert!(
+        plan.blockers
+            .iter()
+            .any(|blocker| matches!(blocker, ImportBlocker::UninterpretedValues { .. }))
+    );
+    let exact = CandidateLimits {
+        owned_bytes: candidate.owned_bytes(),
+        typed_elements: candidate.typed_elements(),
+    };
+    DecodedImportCandidate::decode_with_limits(source.as_slice(), exact).unwrap();
+    for limits in [
+        CandidateLimits {
+            owned_bytes: exact.owned_bytes - 1,
+            ..exact
+        },
+        CandidateLimits {
+            typed_elements: exact.typed_elements - 1,
+            ..exact
+        },
+    ] {
+        let error =
+            DecodedImportCandidate::decode_with_limits(source.as_slice(), limits).unwrap_err();
+        assert!(!format!("{error:#}").contains("Secret"));
+    }
+    let array = tag(
+        "PrivateBytes",
+        "ArrayProperty",
+        &[fstring("ByteProperty"), vec![0]].concat(),
+        &[4096_i32.to_le_bytes().to_vec(), vec![7; 4096]].concat(),
+    );
+    let body = [array, end(), vec![0; 4]].concat();
+    let single = envelope(2, &[recorder_bytes(ACTOR, &body)]);
+    let one = DecodedImportCandidate::decode(single.as_slice()).unwrap();
+    let pair = envelope(
+        2,
+        &[recorder_bytes(ACTOR, &body), recorder_bytes(ACTOR, &body)],
+    );
+    assert!(
+        DecodedImportCandidate::decode_with_limits(
+            pair.as_slice(),
+            CandidateLimits {
+                typed_elements: one.typed_elements(),
+                ..CandidateLimits::default()
+            }
+        )
+        .is_err()
+    );
+    assert!(
+        DecodedImportCandidate::decode_with_limits(
+            pair.as_slice(),
+            CandidateLimits {
+                owned_bytes: one.owned_bytes(),
+                ..CandidateLimits::default()
+            }
+        )
+        .is_err()
+    );
 }
 
 #[test]
@@ -2075,5 +2281,105 @@ fn scoped_catalog_cli_reports_context_and_never_writes_an_import() {
         assert_eq!(fs::read(&source).unwrap(), bytes);
         assert!(!String::from_utf8_lossy(&output.stdout).contains("Private"));
         assert!(!String::from_utf8_lossy(&output.stderr).contains("Private"));
+    }
+}
+
+// Each body is below its existing framing limit and independently fits the
+// default candidate policy. Together the scalar elements exceed the new
+// aggregate ceiling. These bytes are authored, not a supplied-save sample.
+fn dropped_budget_sources(version: i32, class: &str) -> (Vec<u8>, Vec<u8>) {
+    let count = icarus_bevy::import_candidate::MAX_CANDIDATE_TYPED_ELEMENTS / 2 + 1;
+    let body = [
+        tag(
+            "PrivateBudgetArray",
+            "ArrayProperty",
+            &[fstring("ByteProperty"), vec![0]].concat(),
+            &[
+                i32::try_from(count).unwrap().to_le_bytes().to_vec(),
+                vec![7; count],
+            ]
+            .concat(),
+        ),
+        end(),
+        vec![0; 4],
+    ]
+    .concat();
+    let record = recorder_bytes(class, &body);
+    (
+        envelope(version, std::slice::from_ref(&record)),
+        envelope(version, &[record.clone(), record]),
+    )
+}
+
+#[test]
+fn dropped_recorders_still_obey_the_whole_candidate_budget() {
+    use icarus_bevy::experimental::typed_value::TypedBudgetExceeded;
+    for (version, class) in [(0, "/Script/Icarus.Unregistered"), (2, NO_RECORDER)] {
+        let (single, pair) = dropped_budget_sources(version, class);
+        let candidate = DecodedImportCandidate::decode(single.as_slice()).unwrap();
+        assert!(!candidate.recorders()[0].decision().retained);
+        assert!(candidate.recorders()[0].typing().lossless().is_some());
+        let plan = plan_decoded_import(&candidate, &ContentCatalog::empty()).unwrap();
+        assert_eq!(plan.blockers, vec![ImportBlocker::NoRetainedRecorders]);
+        assert_eq!(plan.recorders.typed, 0);
+        drop(candidate);
+        // Policy exhaustion cannot silently turn dropped typing into an
+        // optional failure, or return a partial candidate/report instead.
+        assert!(
+            DecodedImportCandidate::decode(pair.as_slice())
+                .unwrap_err()
+                .is::<TypedBudgetExceeded>()
+        );
+        assert!(
+            plan_import(pair.as_slice(), &ContentCatalog::empty())
+                .unwrap_err()
+                .is::<TypedBudgetExceeded>()
+        );
+        assert!(
+            planned_actors(pair.as_slice())
+                .err()
+                .unwrap()
+                .is::<TypedBudgetExceeded>()
+        );
+    }
+}
+
+#[test]
+fn cli_budget_refusal_for_dropped_records_never_opens_the_destination() {
+    let root = TempDir::new().unwrap();
+    let source = root.path().join("source.json");
+    let destination = root.path().join("destination");
+    let (_, bytes) = dropped_budget_sources(0, "/Script/Icarus.Unregistered");
+    fs::write(&source, &bytes).unwrap();
+    for (existing, dry_run) in [(false, true), (false, false), (true, true), (true, false)] {
+        let sentinel = destination.join("sentinel");
+        if existing && !destination.exists() {
+            fs::create_dir(&destination).unwrap();
+            fs::write(&sentinel, b"prior world").unwrap();
+        }
+        let mut command = Command::new(env!("CARGO_BIN_EXE_icarus-server"));
+        command
+            .args(["import-save", "--source"])
+            .arg(&source)
+            .arg("--destination")
+            .arg(&destination);
+        if dry_run {
+            command.arg("--dry-run");
+        }
+        let output = command.output().unwrap();
+        assert!(!output.status.success());
+        assert!(output.stdout.is_empty());
+        let error = String::from_utf8_lossy(&output.stderr);
+        assert!(
+            error.contains("typed allocation budget exceeded"),
+            "{error}"
+        );
+        assert!(!error.contains("Private") && !error.contains("Unregistered"));
+        assert_eq!(destination.exists(), existing);
+        if existing {
+            assert_eq!(fs::read(&sentinel).unwrap(), b"prior world");
+            assert_eq!(fs::read_dir(&destination).unwrap().count(), 1);
+        }
+        assert_eq!(fs::read(&source).unwrap(), bytes);
     }
 }
