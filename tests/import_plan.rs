@@ -869,6 +869,7 @@ fn decoded_candidate_outlives_one_source_traversal_and_serves_all_consumers() {
     })
     .unwrap();
     let traversed = reads.get();
+    assert_eq!(candidate.inspection().recorders.total, records.len());
     let plan = plan_decoded_import(&candidate, &ContentCatalog::empty()).unwrap();
     assert_eq!(
         serde_json::to_value(plan).unwrap(),
@@ -981,10 +982,8 @@ fn decoded_candidate_retains_lossless_gaps_and_enforces_aggregate_allowances() {
             .iter()
             .any(|blocker| matches!(blocker, ImportBlocker::UninterpretedValues { .. }))
     );
-    let exact = CandidateLimits {
-        owned_bytes: candidate.owned_bytes(),
-        typed_elements: candidate.typed_elements(),
-    };
+    let exact = candidate.required_decode_limits();
+    assert!(exact.owned_bytes > candidate.owned_bytes());
     DecodedImportCandidate::decode_with_limits(source.as_slice(), exact).unwrap();
     for limits in [
         CandidateLimits {
@@ -1033,6 +1032,288 @@ fn decoded_candidate_retains_lossless_gaps_and_enforces_aggregate_allowances() {
         )
         .is_err()
     );
+}
+
+#[test]
+fn candidate_decode_requirements_include_sequential_reservations_for_dropped_records() {
+    for version in [0, 2] {
+        let source = envelope(
+            version,
+            &[
+                recorder(ACTOR, &CLEAN),
+                recorder(NO_RECORDER, &Body { gap: true, ..CLEAN }),
+                recorder(ACTOR, &CLEAN),
+            ],
+        );
+        let candidate = DecodedImportCandidate::decode(source.as_slice()).unwrap();
+        let exact = candidate.required_decode_limits();
+        assert!(exact.owned_bytes > candidate.owned_bytes());
+        assert!(candidate.inspection().recorders.dropped > 0);
+        let repeated =
+            DecodedImportCandidate::decode_with_limits(source.as_slice(), exact).unwrap();
+        assert_eq!(repeated.required_decode_limits(), exact);
+        assert_eq!(repeated.owned_bytes(), candidate.owned_bytes());
+        assert_eq!(
+            repeated.inspection().recorders,
+            candidate.inspection().recorders
+        );
+        for limits in [
+            CandidateLimits {
+                owned_bytes: exact.owned_bytes - 1,
+                ..exact
+            },
+            CandidateLimits {
+                typed_elements: exact.typed_elements - 1,
+                ..exact
+            },
+        ] {
+            let error =
+                DecodedImportCandidate::decode_with_limits(source.as_slice(), limits).unwrap_err();
+            assert!(!format!("{error:#}").contains("Secret"));
+        }
+    }
+}
+
+#[test]
+fn candidate_inspection_reports_configured_allowances_and_headroom() {
+    let source = envelope(2, &[recorder(ACTOR, &CLEAN)]);
+    let baseline = DecodedImportCandidate::decode(source.as_slice()).unwrap();
+    let required = baseline.required_decode_limits();
+    for (bytes, elements) in [(0, 0), (1234, 17)] {
+        let limits = CandidateLimits {
+            owned_bytes: required.owned_bytes + bytes,
+            typed_elements: required.typed_elements + elements,
+        };
+        let candidate =
+            DecodedImportCandidate::decode_with_limits(source.as_slice(), limits).unwrap();
+        let allocation = candidate.inspection().allocation;
+        assert_eq!(allocation.charged_owned_bytes, candidate.owned_bytes());
+        assert_eq!(
+            allocation.charged_typed_elements,
+            candidate.typed_elements()
+        );
+        assert_eq!(allocation.configured_limits, limits);
+        assert_ne!(allocation.configured_limits, CandidateLimits::default());
+        assert_eq!(allocation.default_limits, CandidateLimits::default());
+        assert_eq!(allocation.implementation_limits, CandidateLimits::default());
+        assert_eq!(allocation.required_decode_limits, required);
+        assert_eq!(
+            allocation.remaining_headroom,
+            CandidateLimits {
+                owned_bytes: limits.owned_bytes - candidate.owned_bytes(),
+                typed_elements: limits.typed_elements - candidate.typed_elements(),
+            }
+        );
+    }
+}
+
+#[test]
+fn candidate_check_cli_reports_counts_and_default_headroom_without_writing() {
+    let root = TempDir::new().unwrap();
+    let source = root.path().join("PrivateSource.json");
+    let prior = root.path().join("prior-store");
+    fs::create_dir(&prior).unwrap();
+    fs::write(prior.join("sentinel"), b"prior world").unwrap();
+    let gap = Body { gap: true, ..CLEAN };
+    for (version, records, retained, dropped, retained_gaps, dropped_gaps) in [
+        (
+            2,
+            vec![recorder(ACTOR, &gap), recorder(NO_RECORDER, &gap)],
+            1,
+            1,
+            1,
+            1,
+        ),
+        (
+            0,
+            vec![recorder("/Script/Private.Unregistered", &gap)],
+            0,
+            1,
+            0,
+            1,
+        ),
+        (2, vec![], 0, 0, 0, 0),
+    ] {
+        let bytes = envelope(version, &records);
+        fs::write(&source, &bytes).unwrap();
+        let candidate = DecodedImportCandidate::decode(bytes.as_slice()).unwrap();
+        let inspection = candidate.inspection();
+        assert_eq!(inspection.validation, "native_import_candidate_only");
+        assert_eq!(inspection.payload_bytes, candidate.payload().len());
+        assert_eq!(inspection.recorders.total, candidate.recorders().len());
+        assert_eq!(inspection.recorders.retained, retained);
+        assert_eq!(inspection.recorders.dropped, dropped);
+        assert_eq!(inspection.recorders.lossless, records.len());
+        assert_eq!(inspection.recorders.unavailable, 0);
+        assert_eq!(
+            inspection.recorders.retained_uninterpreted_leaves,
+            retained_gaps
+        );
+        assert_eq!(
+            inspection.recorders.dropped_uninterpreted_leaves,
+            dropped_gaps
+        );
+        assert_eq!(
+            inspection.allocation.charged_owned_bytes,
+            candidate.owned_bytes()
+        );
+        assert_eq!(
+            inspection.allocation.charged_typed_elements,
+            candidate.typed_elements()
+        );
+        assert_eq!(
+            inspection.allocation.configured_limits,
+            CandidateLimits::default()
+        );
+        assert_eq!(
+            inspection.allocation.default_limits,
+            CandidateLimits::default()
+        );
+        assert_eq!(
+            inspection.allocation.implementation_limits,
+            CandidateLimits::default()
+        );
+        assert_eq!(
+            inspection.allocation.remaining_headroom,
+            CandidateLimits {
+                owned_bytes: CandidateLimits::default().owned_bytes - candidate.owned_bytes(),
+                typed_elements: CandidateLimits::default().typed_elements
+                    - candidate.typed_elements(),
+            }
+        );
+        assert_eq!(
+            inspection.allocation.accounting,
+            "conservative_owned_allocation_allowance_not_rss_or_peak_memory"
+        );
+        assert!(!inspection.world_imported && !inspection.gameplay_ready);
+        let output = Command::new(env!("CARGO_BIN_EXE_icarus-server"))
+            .current_dir(root.path())
+            .args(["inspect-save", "--candidate-check", "--source"])
+            .arg(&source)
+            .output()
+            .unwrap();
+        assert!(output.status.success(), "{:?}", output.stderr);
+        assert!(output.stderr.is_empty());
+        let report: Value = serde_json::from_slice(&output.stdout).unwrap();
+        assert_eq!(report, serde_json::to_value(&inspection).unwrap());
+        let debug = format!("{candidate:?} {inspection:?} {:?}", candidate.recorders());
+        let hash = Sha1::digest(candidate.payload())
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<String>();
+        for private in [
+            "Private",
+            "Secret",
+            "secret",
+            "ActorState",
+            "NoRecorder",
+            "/Script/",
+            "/Game/",
+            "ProspectID",
+            "ActorClassName",
+            root.path().to_str().unwrap(),
+            &hash,
+        ] {
+            assert!(
+                !report.to_string().contains(private),
+                "JSON leaked {private}"
+            );
+            assert!(!debug.contains(private), "Debug leaked {private}");
+        }
+        assert_eq!(fs::read(&source).unwrap(), bytes);
+        assert_eq!(fs::read_dir(root.path()).unwrap().count(), 2);
+        assert_eq!(fs::read_dir(&prior).unwrap().count(), 1);
+        assert_eq!(fs::read(prior.join("sentinel")).unwrap(), b"prior world");
+    }
+}
+
+#[test]
+fn candidate_check_conflicts_with_every_inspection_selector_and_stage_name() {
+    let root = TempDir::new().unwrap();
+    let source = root.path().join("source.json");
+    let bytes = envelope(2, &[recorder(ACTOR, &CLEAN)]);
+    fs::write(&source, &bytes).unwrap();
+    for selector in [
+        "--inner-tags",
+        "--recorders",
+        "--stage-check",
+        "--preserve-check",
+        "--typed-check",
+    ] {
+        for selectors in [
+            ["--candidate-check", selector],
+            [selector, "--candidate-check"],
+        ] {
+            let output = Command::new(env!("CARGO_BIN_EXE_icarus-server"))
+                .current_dir(root.path())
+                .args(["inspect-save", "--source"])
+                .arg(&source)
+                .args(selectors)
+                .output()
+                .unwrap();
+            assert!(!output.status.success());
+            assert!(output.stdout.is_empty());
+            assert!(String::from_utf8_lossy(&output.stderr).contains("cannot be used with"));
+        }
+    }
+    let output = Command::new(env!("CARGO_BIN_EXE_icarus-server"))
+        .current_dir(root.path())
+        .args(["inspect-save", "--source"])
+        .arg(&source)
+        .args([
+            "--candidate-check",
+            "--expect-prospect-name",
+            "secret-prospect.json",
+        ])
+        .output()
+        .unwrap();
+    assert!(!output.status.success());
+    assert!(output.stdout.is_empty());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("cannot be used with"));
+    let stage = Command::new(env!("CARGO_BIN_EXE_icarus-server"))
+        .current_dir(root.path())
+        .args(["inspect-save", "--source"])
+        .arg(&source)
+        .args([
+            "--stage-check",
+            "--expect-prospect-name",
+            "secret-prospect.json",
+        ])
+        .output()
+        .unwrap();
+    assert!(stage.status.success(), "{:?}", stage.stderr);
+    assert_eq!(fs::read(&source).unwrap(), bytes);
+    assert_eq!(fs::read_dir(root.path()).unwrap().count(), 1);
+}
+
+#[test]
+fn candidate_check_rejects_schema_and_default_budget_failures_without_writing() {
+    let root = TempDir::new().unwrap();
+    let source = root.path().join("PrivateSource.json");
+    let (_, over_budget) = dropped_budget_sources(0, "/Script/Icarus.Unregistered");
+    // Invalid recorder schema must fail even though the envelope is valid.
+    let bad_schema = envelope(2, &[recorder_bytes(ACTOR, &[1, 2, 3])]);
+    for (bytes, message) in [
+        (bad_schema, "invalid staged recorder base component"),
+        (over_budget, "typed allocation budget exceeded"),
+    ] {
+        fs::write(&source, &bytes).unwrap();
+        let output = Command::new(env!("CARGO_BIN_EXE_icarus-server"))
+            .current_dir(root.path())
+            .args(["inspect-save", "--candidate-check", "--source"])
+            .arg(&source)
+            .output()
+            .unwrap();
+        assert!(!output.status.success());
+        assert!(output.stdout.is_empty());
+        let error = String::from_utf8_lossy(&output.stderr);
+        assert!(error.contains(message), "{error}");
+        for private in ["Private", "Unregistered", root.path().to_str().unwrap()] {
+            assert!(!error.contains(private), "error leaked {private}");
+        }
+        assert_eq!(fs::read(&source).unwrap(), bytes);
+        assert_eq!(fs::read_dir(root.path()).unwrap().count(), 1);
+    }
 }
 
 #[test]

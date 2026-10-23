@@ -3,8 +3,8 @@ use icarus_bevy::experimental::property_tree::{
 };
 use icarus_bevy::experimental::tagged::{TagKind, TagProfile};
 use icarus_bevy::experimental::typed_value::{
-    FixedStruct, Gap, Item, Scalar, TypedBudgetExceeded, TypedComponent, TypedTree, TypingBudget,
-    Value,
+    FixedStruct, Gap, Item, SUMMARY_OWNED_ALLOWANCE, Scalar, TypedBudgetExceeded, TypedComponent,
+    TypedSummary, TypedTree, TypingBudget, TypingRequirement, Value, typing_requirement,
 };
 
 const END: &[u8] = b"\x05\0\0\0None\0";
@@ -498,28 +498,419 @@ fn byte_array(count: usize) -> BaseComponentTree {
     component(&[prop(ARRAY, &[BYTE, &[0]].concat(), &payload)])
 }
 
-fn charge(component: &BaseComponentTree) -> (usize, usize) {
-    let mut budget = TypingBudget::new(usize::MAX, usize::MAX);
-    TypedComponent::from_component_with_budget(component, &mut budget).unwrap();
-    (budget.charged_bytes(), budget.charged_elements())
+// Independently total the returned objects' owned capacities. Inline enum and
+// nested tree storage lives in its enclosing Vec slot, so add only allocations
+// reached through those slots. The summary is a fixed policy allowance.
+fn capacity_bytes<T>(values: &Vec<T>) -> usize {
+    values.capacity() * size_of::<T>()
+}
+
+fn scalar_bytes(scalar: &Scalar) -> usize {
+    match scalar {
+        Scalar::Str(units) | Scalar::Name(units) | Scalar::Enum(units) => capacity_bytes(units),
+        Scalar::Bool(_)
+        | Scalar::Int(_)
+        | Scalar::UInt32(_)
+        | Scalar::Int64(_)
+        | Scalar::Float(_)
+        | Scalar::Byte(_) => 0,
+    }
+}
+
+fn fixed_bytes(value: &FixedStruct) -> usize {
+    match value {
+        FixedStruct::F32(parts) => capacity_bytes(parts),
+        FixedStruct::I32(parts) => capacity_bytes(parts),
+        FixedStruct::U32(parts) => capacity_bytes(parts),
+        FixedStruct::I64(_) => 0,
+    }
+}
+
+fn item_bytes(item: &Item) -> usize {
+    match item {
+        Item::Scalar(scalar) => scalar_bytes(scalar),
+        Item::Struct(tree) => tree_bytes(tree),
+        Item::UnnamedStruct(bytes) => capacity_bytes(bytes),
+    }
+}
+
+fn value_bytes(value: &Value) -> usize {
+    match value {
+        Value::Scalar(scalar) => scalar_bytes(scalar),
+        Value::Text(bytes) | Value::Uninterpreted { bytes, .. } => capacity_bytes(bytes),
+        Value::TaggedStruct { type_name, tree } => capacity_bytes(type_name) + tree_bytes(tree),
+        Value::FixedStruct { type_name, value } => capacity_bytes(type_name) + fixed_bytes(value),
+        Value::StructArray {
+            shared_header,
+            type_name,
+            elements,
+        } => {
+            capacity_bytes(shared_header)
+                + capacity_bytes(type_name)
+                + capacity_bytes(elements)
+                + elements.iter().map(tree_bytes).sum::<usize>()
+        }
+        Value::FixedStructArray {
+            shared_header,
+            type_name,
+            elements,
+        } => {
+            capacity_bytes(shared_header)
+                + capacity_bytes(type_name)
+                + capacity_bytes(elements)
+                + elements.iter().map(fixed_bytes).sum::<usize>()
+        }
+        Value::ScalarArray { items, .. } => {
+            capacity_bytes(items) + items.iter().map(scalar_bytes).sum::<usize>()
+        }
+        Value::Map { removed, entries } => {
+            capacity_bytes(removed)
+                + capacity_bytes(entries)
+                + removed.iter().map(item_bytes).sum::<usize>()
+                + entries
+                    .iter()
+                    .map(|(key, value)| item_bytes(key) + item_bytes(value))
+                    .sum::<usize>()
+        }
+        Value::Set { removed, elements } => {
+            capacity_bytes(removed)
+                + capacity_bytes(elements)
+                + removed
+                    .iter()
+                    .chain(elements)
+                    .map(item_bytes)
+                    .sum::<usize>()
+        }
+    }
+}
+
+fn tree_bytes(tree: &TypedTree) -> usize {
+    capacity_bytes(&tree.properties)
+        + capacity_bytes(&tree.terminator)
+        + tree
+            .properties
+            .iter()
+            .map(|property| {
+                capacity_bytes(&property.name)
+                    + capacity_bytes(&property.header)
+                    + value_bytes(&property.value)
+            })
+            .sum::<usize>()
+}
+
+fn retained_bytes(component: &TypedComponent) -> usize {
+    size_of::<TypedComponent>()
+        + SUMMARY_OWNED_ALLOWANCE
+        + capacity_bytes(&component.trailer)
+        + tree_bytes(&component.tree)
+}
+
+fn check_retained_accounting(input: &BaseComponentTree) -> (TypedComponent, TypedSummary) {
+    let requirement = typing_requirement(input).unwrap();
+    let mut budget = TypingBudget::new(requirement.bytes, requirement.elements);
+    let (typed, summary) = TypedComponent::from_component_with_budget(input, &mut budget).unwrap();
+    assert_eq!(budget.charged_bytes(), retained_bytes(&typed));
+    assert!(budget.charged_bytes() <= requirement.bytes);
+    assert_eq!(budget.charged_elements(), requirement.elements);
+    assert!(
+        summary.properties + summary.array_elements + summary.container_items
+            <= requirement.elements
+    );
+    let (legacy, legacy_summary) = TypedComponent::from_component(input).unwrap();
+    assert_eq!(summary, legacy_summary);
+    assert_eq!(typed.to_bytes().unwrap(), input.to_bytes().unwrap());
+    assert_eq!(typed.to_bytes().unwrap(), legacy.to_bytes().unwrap());
+    (typed, summary)
+}
+
+#[test]
+fn retained_charge_accounts_for_all_value_and_item_allocations() {
+    assert_eq!(SUMMARY_OWNED_ALLOWANCE, 4096);
+    assert!(size_of::<TypedSummary>() < SUMMARY_OWNED_ALLOWANCE);
+    let nested = stream(&[prop(STR, &[0], &string(SECRET))]);
+    let struct_array = [
+        2_i32.to_le_bytes().as_slice(),
+        &named("Elements", STRUCT, &struct_ext("Demo"), &nested.repeat(2)),
+    ]
+    .concat();
+    let fixed_array = [
+        2_i32.to_le_bytes().as_slice(),
+        &named("Points", STRUCT, &struct_ext("Vector"), &floats(&[1.0; 6])),
+    ]
+    .concat();
+    let map = [
+        1_i32.to_le_bytes().as_slice(),
+        &string(b"Removed"),
+        &1_i32.to_le_bytes(),
+        &string(b"Key"),
+        &nested,
+    ]
+    .concat();
+    let set = [
+        1_i32.to_le_bytes().as_slice(),
+        &string(b"Removed"),
+        &1_i32.to_le_bytes(),
+        &string(SECRET),
+    ]
+    .concat();
+    let set_kind = b"\x0c\0\0\0SetProperty\0";
+    let text_kind = b"\x0d\0\0\0TextProperty\0";
+    let input = component(&[
+        named("Text", text_kind, &[0], &[0, 0, 0, 0, 255, 0, 0, 0, 0]),
+        named("Nested", STRUCT, &struct_ext("Demo"), &nested),
+        named("Structs", ARRAY, &[STRUCT, &[0]].concat(), &struct_array),
+        named("FixedArray", ARRAY, &[STRUCT, &[0]].concat(), &fixed_array),
+        named("Map", MAP, &[NAME, STRUCT, &[0]].concat(), &map),
+        named("Set", set_kind, &[STR, &[0]].concat(), &set),
+        named("Gap", STRUCT, &struct_ext("Unknown"), &[1, 2, 3]),
+        named("F32", STRUCT, &struct_ext("Vector"), &floats(&[1.0; 3])),
+        named("I32", STRUCT, &struct_ext("IntPoint"), &[1; 8]),
+        named("U32", STRUCT, &struct_ext("Guid"), &[2; 16]),
+        named(
+            "I64",
+            STRUCT,
+            &struct_ext("DateTime"),
+            &42_i64.to_le_bytes(),
+        ),
+        named("Bool", BOOL, &[1, 0], &[]),
+        named("Int", INT, &[0], &7_i32.to_le_bytes()),
+        named("UInt32", UINT32, &[0], &7_u32.to_le_bytes()),
+        named("Int64", INT64, &[0], &7_i64.to_le_bytes()),
+        named("Float", FLOAT, &[0], &7_f32.to_le_bytes()),
+        named("Byte", BYTE, &[NONE_NAME, &[0]].concat(), &[7]),
+        named("Str", STR, &[0], &string(SECRET)),
+        named("Name", NAME, &[0], &string(SECRET)),
+        named(
+            "Enum",
+            ENUM,
+            &[string(b"EDemo").as_slice(), &[0]].concat(),
+            &string(b"EDemo::A"),
+        ),
+        named(
+            "Strings",
+            ARRAY,
+            &[STR, &[0]].concat(),
+            &[1_i32.to_le_bytes().as_slice(), &string(SECRET)].concat(),
+        ),
+        named(
+            "Names",
+            ARRAY,
+            &[NAME, &[0]].concat(),
+            &[1_i32.to_le_bytes().as_slice(), &string(SECRET)].concat(),
+        ),
+        named(
+            "Enums",
+            ARRAY,
+            &[ENUM, &[0]].concat(),
+            &[1_i32.to_le_bytes().as_slice(), &string(b"EDemo::A")].concat(),
+        ),
+    ]);
+    let (typed, summary) = check_retained_accounting(&input);
+    assert!(matches!(
+        typed.tree.get("Text").unwrap().value,
+        Value::Text(_)
+    ));
+    assert!(matches!(
+        typed.tree.get("Nested").unwrap().value,
+        Value::TaggedStruct { .. }
+    ));
+    assert!(matches!(
+        typed.tree.get("Structs").unwrap().value,
+        Value::StructArray { .. }
+    ));
+    assert!(matches!(
+        typed.tree.get("FixedArray").unwrap().value,
+        Value::FixedStructArray { .. }
+    ));
+    let Value::Map { removed, entries } = &typed.tree.get("Map").unwrap().value else {
+        panic!("map not typed")
+    };
+    assert!(matches!(removed[0], Item::Scalar(Scalar::Name(_))));
+    assert!(matches!(
+        entries[0],
+        (Item::Scalar(Scalar::Name(_)), Item::Struct(_))
+    ));
+    assert!(matches!(
+        typed.tree.get("Set").unwrap().value,
+        Value::Set { .. }
+    ));
+    assert_eq!(summary.fixed_structs, 4);
+    assert_eq!(summary.scalar_arrays, 3);
+    assert_eq!(summary.uninterpreted, 1);
+    assert_eq!(summary.gaps.get(&Gap::UnknownStruct), Some(&1));
+
+    // Binary container structs need an explicit authored width. Include both
+    // removed and retained items, so every Item variant is capacity-accounted.
+    let payload = [
+        1_i32.to_le_bytes().as_slice(),
+        &[3; 8],
+        &1_i32.to_le_bytes(),
+        &[4; 8],
+        &5_i32.to_le_bytes(),
+    ]
+    .concat();
+    let body = [
+        stream(&[prop(MAP, &[STRUCT, INT, &[0]].concat(), &payload)]),
+        vec![0; 4],
+    ]
+    .concat();
+    let binary = BaseComponentTree::parse(
+        &body,
+        TagProfile::MemoryArchive522,
+        body.len(),
+        TreeLimits::default().with_container_struct_bytes(8),
+    )
+    .unwrap();
+    let (typed, summary) = check_retained_accounting(&binary);
+    let Value::Map { removed, entries } = &typed.tree.properties[0].value else {
+        panic!("binary map not typed")
+    };
+    assert!(matches!(removed[0], Item::UnnamedStruct(_)));
+    assert!(matches!(
+        entries[0],
+        (Item::UnnamedStruct(_), Item::Scalar(Scalar::Int(5)))
+    ));
+    assert_eq!(summary.gaps.get(&Gap::UnnamedContainerStruct), Some(&2));
+}
+
+#[test]
+fn empty_values_still_retain_summary_allowance_and_exact_capacities() {
+    let (_, summary) = check_retained_accounting(&component(&[]));
+    assert_eq!(summary, TypedSummary::default());
+    let input = component(&[
+        named(
+            "EmptyBytes",
+            ARRAY,
+            &[BYTE, &[0]].concat(),
+            &0_i32.to_le_bytes(),
+        ),
+        named(
+            "EmptyStructs",
+            ARRAY,
+            &[STRUCT, &[0]].concat(),
+            &[
+                0_i32.to_le_bytes().as_slice(),
+                &named("Elements", STRUCT, &struct_ext("Demo"), &[]),
+            ]
+            .concat(),
+        ),
+    ]);
+    let (typed, summary) = check_retained_accounting(&input);
+    assert_eq!(summary.array_elements, 0);
+    assert_eq!(summary.uninterpreted, 0);
+    assert_eq!(typing_requirement(&input).unwrap().elements, 2);
+    assert!(
+        matches!(&typed.tree.get("EmptyBytes").unwrap().value, Value::ScalarArray { items, .. } if items.is_empty())
+    );
+    assert!(
+        matches!(&typed.tree.get("EmptyStructs").unwrap().value, Value::StructArray { elements, .. } if elements.is_empty())
+    );
+}
+
+#[test]
+fn plausible_arrays_keep_attempted_element_charges_when_demoted() {
+    let wide = [(-3_i32).to_le_bytes().as_slice(), b"A\0B\0\0\0"].concat();
+    let input = component(&[
+        named(
+            "BadBools",
+            ARRAY,
+            &[BOOL, &[0]].concat(),
+            &[3_i32.to_le_bytes().as_slice(), &[1, 0, 2]].concat(),
+        ),
+        named(
+            "WideNames",
+            ARRAY,
+            &[NAME, &[0]].concat(),
+            &[1_i32.to_le_bytes().as_slice(), &wide].concat(),
+        ),
+    ]);
+    let requirement = typing_requirement(&input).unwrap();
+    assert_eq!(requirement.elements, 6); // Two properties plus four attempted slots.
+    let (typed, summary) = check_retained_accounting(&input);
+    assert!(matches!(
+        typed.tree.get("BadBools").unwrap().value,
+        Value::Uninterpreted {
+            gap: Gap::ArrayFraming,
+            ..
+        }
+    ));
+    assert!(matches!(
+        typed.tree.get("WideNames").unwrap().value,
+        Value::Uninterpreted {
+            gap: Gap::NonCanonical,
+            ..
+        }
+    ));
+    assert_eq!(
+        (
+            summary.properties,
+            summary.array_elements,
+            summary.bools,
+            summary.names
+        ),
+        (2, 0, 0, 0)
+    );
+    let mut budget = TypingBudget::new(requirement.bytes, requirement.elements - 1);
+    assert!(
+        TypedComponent::from_component_with_budget(&input, &mut budget)
+            .err()
+            .unwrap()
+            .is::<TypedBudgetExceeded>()
+    );
+    assert_eq!((budget.charged_bytes(), budget.charged_elements()), (0, 0));
+}
+
+#[test]
+fn typing_requirement_is_a_copyable_private_free_count_report() {
+    let input = byte_array(7);
+    let requirement = typing_requirement(&input).unwrap();
+    let copied = requirement;
+    assert_eq!(copied, requirement);
+    assert_eq!(
+        format!("{requirement:?}"),
+        format!(
+            "TypingRequirement {{ bytes: {}, elements: 8 }}",
+            requirement.bytes
+        )
+    );
+    // The report is caller-owned data, never an admission token.
+    let forged = TypingRequirement {
+        bytes: 0,
+        elements: 0,
+    };
+    let mut budget = TypingBudget::new(forged.bytes, forged.elements);
+    assert!(
+        TypedComponent::from_component_with_budget(&input, &mut budget)
+            .err()
+            .unwrap()
+            .is::<TypedBudgetExceeded>()
+    );
+    assert_eq!((budget.charged_bytes(), budget.charged_elements()), (0, 0));
+    assert_eq!(typing_requirement(&input).unwrap(), requirement);
 }
 
 #[test]
 fn separate_valid_byte_arrays_exhaust_one_cumulative_budget() {
     let input = byte_array(256);
-    let (bytes, elements) = charge(&input);
+    let TypingRequirement { bytes, elements } = typing_requirement(&input).unwrap();
+    let (typed, summary) = TypedComponent::from_component(&input).unwrap();
+    let retained_bytes = retained_bytes(&typed);
+    assert!(retained_bytes < bytes);
     assert_eq!(elements, 257); // One property plus the array's owned scalar slots.
     for mut budget in [
-        TypingBudget::new(bytes * 3, usize::MAX),
+        TypingBudget::new(bytes + 2 * retained_bytes, usize::MAX),
         TypingBudget::new(usize::MAX, elements * 3),
     ] {
-        // Keep the components alive together, as an import candidate does.
+        // Keep components AND summaries alive together, as a candidate does.
         let mut retained = Vec::new();
-        for _ in 0..3 {
-            retained.push(
-                TypedComponent::from_component_with_budget(&input, &mut budget)
-                    .unwrap()
-                    .0,
+        for count in 1..=3 {
+            retained.push(TypedComponent::from_component_with_budget(&input, &mut budget).unwrap());
+            assert_eq!(budget.charged_bytes(), count * retained_bytes);
+            assert_eq!(budget.charged_elements(), count * elements);
+            // Caller verification is sequential, before the next admission.
+            assert_eq!(
+                retained.last().unwrap().0.to_bytes().unwrap(),
+                input.to_bytes().unwrap()
             );
         }
         let before = (budget.charged_bytes(), budget.charged_elements());
@@ -529,9 +920,9 @@ fn separate_valid_byte_arrays_exhaust_one_cumulative_budget() {
         assert!(error.downcast_ref::<TypedBudgetExceeded>().is_some());
         assert_eq!((budget.charged_bytes(), budget.charged_elements()), before);
         assert_eq!(retained.len(), 3);
+        assert!(retained.iter().all(|(_, kept)| *kept == summary));
     }
     // Exhausting a shared policy does not impose a limit on the old API.
-    let (typed, summary) = TypedComponent::from_component(&input).unwrap();
     assert_eq!(summary.array_elements, 256);
     assert_eq!(typed.to_bytes().unwrap(), input.to_bytes().unwrap());
 }
@@ -539,7 +930,7 @@ fn separate_valid_byte_arrays_exhaust_one_cumulative_budget() {
 #[test]
 fn typing_allowance_accepts_exact_boundaries_and_rejects_one_less() {
     let input = byte_array(17);
-    let (bytes, elements) = charge(&input);
+    let TypingRequirement { bytes, elements } = typing_requirement(&input).unwrap();
     let mut exact = TypingBudget::new(bytes, elements);
     let (typed, summary) = TypedComponent::from_component_with_budget(&input, &mut exact).unwrap();
     let (legacy, legacy_summary) = TypedComponent::from_component(&input).unwrap();
@@ -547,7 +938,7 @@ fn typing_allowance_accepts_exact_boundaries_and_rejects_one_less() {
     assert_eq!(summary, legacy_summary);
     assert_eq!(
         (exact.charged_bytes(), exact.charged_elements()),
-        (bytes, elements)
+        (retained_bytes(&typed), elements)
     );
     for mut budget in [
         TypingBudget::new(bytes - 1, elements),
@@ -569,7 +960,7 @@ fn empty_struct_array_elements_consume_the_shared_element_allowance() {
     ]
     .concat();
     let input = component(&[prop(ARRAY, &[STRUCT, &[0]].concat(), &payload)]);
-    let (bytes, elements) = charge(&input);
+    let TypingRequirement { bytes, elements } = typing_requirement(&input).unwrap();
     assert_eq!(elements, 4);
     let mut budget = TypingBudget::new(bytes * 2, elements);
     let (typed, summary) = TypedComponent::from_component_with_budget(&input, &mut budget).unwrap();
@@ -609,7 +1000,7 @@ fn container_items_fixed_parts_and_decoded_strings_have_allowances() {
         prop(STR, &[0], &string(&[b'Q'; 512])),
         prop(STRUCT, &struct_ext("Vector"), &floats(&[1.0, 2.0, 3.0])),
     ]);
-    let (bytes, elements) = charge(&input);
+    let TypingRequirement { bytes, elements } = typing_requirement(&input).unwrap();
     assert_eq!(elements, 8); // Four properties, two Map items, two Set items.
     assert!(bytes > 512 * size_of::<u16>());
     let mut budget = TypingBudget::new(bytes, elements);
@@ -646,9 +1037,12 @@ fn impossible_declared_array_counts_remain_small_exact_gaps() {
 #[test]
 fn structural_typing_failure_retains_no_charge_and_budget_errors_are_private_free() {
     let good = byte_array(4);
-    let (bytes, elements) = charge(&good);
+    let TypingRequirement { bytes, elements } = typing_requirement(&good).unwrap();
     let mut budget = TypingBudget::new(bytes * 3, elements * 3);
-    TypedComponent::from_component_with_budget(&good, &mut budget).unwrap();
+    let mut retained = Vec::new();
+    for _ in 0..2 {
+        retained.push(TypedComponent::from_component_with_budget(&good, &mut budget).unwrap());
+    }
     let before = (budget.charged_bytes(), budget.charged_elements());
     let mut invalid = byte_array(4);
     invalid.tree.properties[0].header.clear();
@@ -657,6 +1051,18 @@ fn structural_typing_failure_retains_no_charge_and_budget_errors_are_private_fre
         .unwrap();
     assert!(!error.is::<TypedBudgetExceeded>());
     assert_eq!((budget.charged_bytes(), budget.charged_elements()), before);
+    // A failed preflight also leaves previous successful charges intact.
+    let error = TypedComponent::from_component_with_budget(&byte_array(32), &mut budget)
+        .err()
+        .unwrap();
+    assert!(error.is::<TypedBudgetExceeded>());
+    assert_eq!((budget.charged_bytes(), budget.charged_elements()), before);
+    retained.push(TypedComponent::from_component_with_budget(&good, &mut budget).unwrap());
+    assert_eq!(budget.charged_bytes(), 3 * retained_bytes(&retained[0].0));
+    assert_eq!(budget.charged_elements(), 3 * elements);
+    assert!(retained.iter().all(|(typed, summary)| {
+        typed.to_bytes().unwrap() == good.to_bytes().unwrap() && summary.array_elements == 4
+    }));
     let mut exhausted = TypingBudget::new(0, 0);
     let error = TypedComponent::from_component_with_budget(&good, &mut exhausted)
         .err()
@@ -699,7 +1105,7 @@ fn budgeted_arrays_and_optional_gaps_preserve_legacy_typing() {
         prop(STR, &[0], &wide),
         prop(set_kind, &[BOOL, &[0]].concat(), &bad_set),
     ]);
-    let (bytes, elements) = charge(&input);
+    let TypingRequirement { bytes, elements } = typing_requirement(&input).unwrap();
     let mut budget = TypingBudget::new(bytes, elements);
     let (typed, summary) = TypedComponent::from_component_with_budget(&input, &mut budget).unwrap();
     let (legacy, legacy_summary) = TypedComponent::from_component(&input).unwrap();
