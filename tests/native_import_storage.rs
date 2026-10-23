@@ -223,6 +223,7 @@ fn fixture(tick: u64, variant: u8) -> (WorldSnapshot, Vec<u8>) {
             preserved_prospect: Some(preserved),
             native_import: Some(metadata),
             native_relationships: None,
+            native_lifecycle: None,
         },
         payload,
     )

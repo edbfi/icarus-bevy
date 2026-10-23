@@ -72,6 +72,12 @@ enum Command {
         /// Independently authored identities, capabilities and foundation links.
         #[arg(long)]
         relationships: Option<PathBuf>,
+        /// Authored owner slots, initial presence and recorder components.
+        #[arg(long)]
+        lifecycle: Option<PathBuf>,
+        /// Apply one complete authored owner restore batch before publication.
+        #[arg(long, requires = "lifecycle")]
+        restore: Option<PathBuf>,
         #[arg(long)]
         data_dir: PathBuf,
         /// Validate and report counts without opening the destination store.
@@ -200,6 +206,8 @@ fn execute(cli: Cli) -> Result<()> {
             catalog,
             map,
             relationships,
+            lifecycle,
+            restore,
             data_dir,
             dry_run,
         } => {
@@ -220,23 +228,54 @@ fn execute(cli: Cli) -> Result<()> {
             let snapshot = related
                 .as_ref()
                 .map_or(&base, |prepared| prepared.snapshot());
+            let with_lifecycle = lifecycle
+                .map(|path| {
+                    use icarus_bevy::native_lifecycle::{
+                        CompiledNativeLifecycle, prepare_lifecycle_world,
+                    };
+                    let declarations = CompiledNativeLifecycle::load(&path, &catalog)?;
+                    prepare_lifecycle_world(snapshot.clone(), &declarations)
+                })
+                .transpose()?;
+            let snapshot = with_lifecycle
+                .as_ref()
+                .map_or(snapshot, |prepared| prepared.snapshot());
+            let restored = restore
+                .map(|path| {
+                    use icarus_bevy::native_lifecycle::{RestoreBatch, prepare_owner_restore};
+                    prepare_owner_restore(snapshot, &RestoreBatch::load(&path)?)
+                })
+                .transpose()?;
+            let snapshot = restored
+                .as_ref()
+                .map_or(snapshot, |prepared| prepared.snapshot());
+            SnapshotStore::preflight(snapshot)?;
             let actors = prepared.snapshot().actors.len();
+            let live_actors = snapshot.native_lifecycle.as_ref().map(|lifecycle| {
+                lifecycle
+                    .slots
+                    .iter()
+                    .filter(|slot| slot.presence == icarus_bevy::native_lifecycle::Presence::Live)
+                    .count()
+            });
             if dry_run {
-                println!(
-                    "{}",
-                    json!({"event": "native_world_prepared", "actors": actors,
+                let mut report = json!({"event": "native_world_prepared", "actors": actors,
                     "schema_version": snapshot.schema_version, "dry_run": true,
-                    "world_imported": false, "gameplay_ready": false})
-                );
+                    "world_imported": false, "gameplay_ready": false});
+                if let Some(live_actors) = live_actors {
+                    report["live_actors"] = json!(live_actors);
+                }
+                println!("{report}");
             } else {
                 let mut store = SnapshotStore::open(&data_dir)?;
                 let receipt = store.save_new(snapshot)?;
-                println!(
-                    "{}",
-                    json!({"event": "native_world_created", "actors": actors,
+                let mut report = json!({"event": "native_world_created", "actors": actors,
                     "schema_version": snapshot.schema_version, "receipt": receipt,
-                    "world_imported": false, "gameplay_ready": false})
-                );
+                    "world_imported": false, "gameplay_ready": false});
+                if let Some(live_actors) = live_actors {
+                    report["live_actors"] = json!(live_actors);
+                }
+                println!("{report}");
             }
             Ok(())
         }

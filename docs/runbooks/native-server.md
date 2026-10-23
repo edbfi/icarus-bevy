@@ -139,12 +139,13 @@ typed variables and fixed placement identities, optionally sharing that sidecar
 (F-919). Schema 5 adds the accepted authored C001 inert-fixture metadata and
 requires its unchanged source sidecar (F-921). Schema 6 adds authored relationship
 declarations and mutable foundation edges; C001 provenance is optional (F-922).
-Schemas 3–6 share a 64 MiB + 4 KiB aggregate generation cap, including all inline
+Schema 7 adds explicit live/dormant owner slots and completed restore state (F-923).
+Schemas 3–7 share a 64 MiB + 4 KiB aggregate generation cap, including all inline
 sections and the sidecar reference. Preparation rejects combined encodings over
 that cap even when each section fits its own limit. Unsupported schemas fail closed.
 
 See [authored native worlds](authored-worlds.md) for spatial creation, the
-strict C001 inert fixture and independently authored foundation relationships.
+strict C001 inert fixture, foundation relationships and owner lifecycle.
 
 Each generation is checksummed and synchronized before the manifest is
 atomically published; two committed generations are kept, and a corrupt
