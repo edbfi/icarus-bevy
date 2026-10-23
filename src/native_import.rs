@@ -1280,12 +1280,12 @@ pub fn prepare_c001_inert_import(
     })
 }
 
-/// Preflight before opening the destination; storage owns exclusive creation and
-/// atomic publication and refuses existing or recoverable snapshot stores.
+/// Publish the immutable snapshot already preflighted during preparation.
+/// Storage owns exclusive creation and atomic publication, independently
+/// validates at its writer boundary, and refuses existing or recoverable stores.
 pub fn publish_new_c001_inert_import(
     prepared: PreparedC001InertImport,
     destination: &Path,
 ) -> Result<SaveReceipt> {
-    SnapshotStore::preflight(prepared.snapshot())?;
     SnapshotStore::open(destination)?.save_new(prepared.snapshot())
 }
