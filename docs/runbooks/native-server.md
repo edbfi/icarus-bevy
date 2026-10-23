@@ -133,8 +133,30 @@ authored domain records and a simulation clock, not ICARUS gameplay. Capture
 fails before submission if an entity with a domain ID lacks its position
 (F-482). Schema 1 holds records and the clock (64 MiB per generation); a world
 with a preserved prospect saves schema 3, referencing a write-once,
-digest-verified `preserved-<sha256>.bin` sidecar; schema 2 still loads, other
-schemas fail closed (F-567).
+digest-verified `preserved-<sha256>.bin` sidecar; schema 2 still loads (F-567).
+Schema 4 embeds authored definitions and their verified identity, full poses,
+typed variables and fixed placement identities, optionally sharing that sidecar
+(F-919). Unsupported schemas fail closed.
+
+Create an independently authored spatial world, then run it without the source
+catalog file:
+
+```bash
+cargo run --locked -- create-native-world --catalog config/native-world.example.toml \
+  --map workshop --data-dir work/authored-world --dry-run
+cargo run --locked -- create-native-world --catalog config/native-world.example.toml \
+  --map workshop --data-dir work/authored-world
+cargo run --locked -- run --data-dir work/authored-world
+```
+
+Preparation validates every placement before opening the destination. Dry runs
+create nothing; publication refuses existing or recoverable worlds. Coordinates
+are metres, right-handed and Z-up; quaternions are `[x,y,z,w]`. Every transformed
+object must fit its tile. `native_runtime::update_native_actor` validates pose
+and variable edits before applying them; capture rejects missing components,
+deleted or extra actors, changed bindings and invalid values. Topology is fixed.
+Bounds describe authored geometry only, without physics/navigation or ICARUS
+behavior; `world_imported` and `gameplay_ready` remain false (F-919).
 
 Each generation is checksummed and synchronized before the manifest is
 atomically published; two committed generations are kept, and a corrupt

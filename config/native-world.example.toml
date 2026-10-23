@@ -1,0 +1,33 @@
+# Independently authored spatial objects, in metres, right-handed and Z-up.
+# Bounds describe geometry only; this example implements no physics or ICARUS gameplay.
+native_format = 1
+frame = "right_handed_z_up_meters"
+
+[[classes]]
+key = "marker"
+kind = "spatial_object_v1"
+local_bounds = { min = [-0.5, -0.5, 0.0], max = [0.5, 0.5, 1.0] }
+variables = [
+    { key = "enabled", default = { type = "bool", value = true } },
+    { key = "label", default = { type = "string", value = "Authored marker" } },
+]
+
+[[maps]]
+key = "workshop"
+
+[[maps.tiles]]
+key = "central"
+bounds = { min = [-50.0, -50.0, -10.0], max = [50.0, 50.0, 20.0] }
+
+[[maps.placements]]
+key = "marker_a"
+class = "marker"
+tile = "central"
+transform = { translation = [2.0, 3.0, 0.0], rotation = [0.0, 0.0, 0.0, 1.0], scale = [1.0, 2.0, 1.0] }
+
+[[maps.placements]]
+key = "marker_b"
+class = "marker"
+tile = "central"
+transform = { translation = [-2.0, 3.0, 0.0], rotation = [0.0, 0.0, 1.0, 0.0], scale = [1.0, 1.0, 2.0] }
+initial_values = [{ key = "enabled", value = { type = "bool", value = false } }]

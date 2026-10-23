@@ -4,11 +4,19 @@ use std::{
     time::{Duration, Instant},
 };
 
-use anyhow::{Result, bail, ensure};
-use bevy::prelude::*;
+use anyhow::{Context, Result, bail, ensure};
+use bevy::prelude::{
+    App, Component, Fixed, FixedUpdate, IntoScheduleConfigs, MinimalPlugins, Res, ResMut, Resource,
+    SystemSet, Time, Virtual, World,
+};
 use serde::{Deserialize, Serialize};
 
-use crate::{config::ServerConfig, metrics::LatencyHistogram, preservation::PreservedSection};
+use crate::{
+    config::ServerConfig,
+    metrics::LatencyHistogram,
+    native_world::{NativeWorldSnapshot, PreparedNativeWorld},
+    preservation::PreservedSection,
+};
 
 /// Native schema without a preserved section; still written when none exists.
 pub const SNAPSHOT_SCHEMA_DOMAIN: u32 = 1;
@@ -18,6 +26,9 @@ pub const SNAPSHOT_SCHEMA_PRESERVED: u32 = 2;
 /// Native schema 1 plus a reference to exactly one preserved prospect section
 /// held in a write-once, content-addressed sidecar file of the snapshot store.
 pub const SNAPSHOT_SCHEMA_REFERENCED: u32 = 3;
+/// Independently authored spatial world, embedded definitions and optional
+/// opaque preserved section. The store writes any preserved section by reference.
+pub const SNAPSHOT_SCHEMA_NATIVE: u32 = 4;
 
 /// Stable domain identity, independent of Bevy's runtime entity allocation.
 #[derive(Component, Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
@@ -42,17 +53,19 @@ pub struct WorldSnapshot {
     #[serde(deserialize_with = "crate::json::objects")]
     pub entities: Vec<EntityRecord>,
     /// Lossless, value-opaque supplied-save state carried unchanged between
-    /// generations; present exactly in schemas 2 and 3. Shared, never interpreted,
+    /// generations; required in schemas 2 and 3, optional in schema 4. Shared, never interpreted,
     /// and held compactly as its verified native encoding (no value tree).
     /// Serde writes the section inline under the stored `schema_version`, which is
-    /// a loadable document only for schema 2; the snapshot store writes schema 3
-    /// itself, as a sidecar reference.
+    /// a loadable document only for schema 2; the snapshot store writes schemas
+    /// 3 and 4 itself, with a sidecar reference.
     #[serde(
         default,
         skip_serializing_if = "Option::is_none",
         with = "crate::preservation::snapshot_section"
     )]
     pub preserved_prospect: Option<Arc<PreservedSection>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub native_world: Option<NativeWorldSnapshot>,
 }
 
 impl Default for WorldSnapshot {
@@ -62,12 +75,28 @@ impl Default for WorldSnapshot {
             tick: 0,
             entities: Vec::new(),
             preserved_prospect: None,
+            native_world: None,
         }
     }
 }
 
 impl WorldSnapshot {
     pub fn validate(&self) -> Result<()> {
+        if self.schema_version == SNAPSHOT_SCHEMA_NATIVE {
+            ensure!(
+                self.entities.is_empty(),
+                "schema 4 cannot hold foundation entities"
+            );
+            return self
+                .native_world
+                .as_ref()
+                .context("schema 4 requires native world records")?
+                .validate();
+        }
+        ensure!(
+            self.native_world.is_none(),
+            "legacy schema cannot hold native world records"
+        );
         match (self.schema_version, &self.preserved_prospect) {
             (SNAPSHOT_SCHEMA_DOMAIN, None)
             | (SNAPSHOT_SCHEMA_PRESERVED | SNAPSHOT_SCHEMA_REFERENCED, Some(_)) => {}
@@ -98,6 +127,25 @@ impl WorldSnapshot {
         }
         Ok(())
     }
+}
+
+impl PreparedNativeWorld {
+    /// A complete authored world at tick zero; this performs no I/O or import.
+    pub fn initial_snapshot(&self) -> WorldSnapshot {
+        WorldSnapshot {
+            schema_version: SNAPSHOT_SCHEMA_NATIVE,
+            native_world: Some(self.snapshot().clone()),
+            ..Default::default()
+        }
+    }
+}
+
+/// Required capture contract, installed only by `build_app`. Losing it is an
+/// incomplete world, never a reason to select a smaller persistence schema.
+#[derive(Resource, Clone)]
+pub struct SnapshotMode {
+    native: bool,
+    preserved: Option<Arc<PreservedSection>>,
 }
 
 /// The loaded preserved section, handed back unchanged to every capture.
@@ -175,6 +223,10 @@ pub fn build_app(config: &ServerConfig, snapshot: &WorldSnapshot) -> Result<App>
         .insert_resource(SimulationClock {
             tick: snapshot.tick,
         })
+        .insert_resource(SnapshotMode {
+            native: snapshot.native_world.is_some(),
+            preserved: snapshot.preserved_prospect.clone(),
+        })
         .init_resource::<TickMetrics>()
         .configure_sets(
             FixedUpdate,
@@ -193,6 +245,9 @@ pub fn build_app(config: &ServerConfig, snapshot: &WorldSnapshot) -> Result<App>
         .set_max_delta(config.tick_interval() * config.max_catch_up_ticks);
     for entity in &snapshot.entities {
         app.world_mut().spawn((entity.id, entity.position));
+    }
+    if let Some(native) = &snapshot.native_world {
+        crate::native_runtime::activate(app.world_mut(), native)?;
     }
     if let Some(preserved) = &snapshot.preserved_prospect {
         app.insert_resource(PreservedProspectState(Arc::clone(preserved)));
@@ -223,7 +278,43 @@ fn finish_tick(
 }
 
 pub fn capture(world: &mut World) -> Result<WorldSnapshot> {
-    let tick = world.resource::<SimulationClock>().tick;
+    let tick = world
+        .get_resource::<SimulationClock>()
+        .context("world lacks required simulation clock")?
+        .tick;
+    let mode = world
+        .get_resource::<SnapshotMode>()
+        .context("world lacks required snapshot mode")?
+        .clone();
+    let preserved_prospect = world
+        .get_resource::<PreservedProspectState>()
+        .map(|state| Arc::clone(&state.0));
+    let same_preserved = match (&preserved_prospect, &mode.preserved) {
+        (None, None) => true,
+        (Some(actual), Some(expected)) => {
+            Arc::ptr_eq(actual, expected) || actual.encoded_sha256() == expected.encoded_sha256()
+        }
+        _ => false,
+    };
+    ensure!(
+        same_preserved,
+        "world preserved section differs from its loaded capture contract"
+    );
+    if mode.native {
+        let snapshot = WorldSnapshot {
+            schema_version: SNAPSHOT_SCHEMA_NATIVE,
+            tick,
+            entities: Vec::new(),
+            preserved_prospect,
+            native_world: Some(crate::native_runtime::capture_native(world)?),
+        };
+        snapshot.validate()?;
+        return Ok(snapshot);
+    }
+    ensure!(
+        !world.contains_resource::<crate::native_runtime::NativeWorldContext>(),
+        "foundation world contains an unexpected native catalog context"
+    );
     // Domain identity opts an entity into the current native snapshot schema.
     // Missing required data is an incomplete world, not a despawn to persist.
     let mut entities = Vec::new();
@@ -239,9 +330,6 @@ pub fn capture(world: &mut World) -> Result<WorldSnapshot> {
     entities.sort_by_key(|entity| entity.id);
     // Sharing the immutable section keeps capture cheap; the worker writes its
     // held encoding only when no verified sidecar already holds it.
-    let preserved_prospect = world
-        .get_resource::<PreservedProspectState>()
-        .map(|state| Arc::clone(&state.0));
     let snapshot = WorldSnapshot {
         schema_version: if preserved_prospect.is_some() {
             SNAPSHOT_SCHEMA_REFERENCED
@@ -251,6 +339,7 @@ pub fn capture(world: &mut World) -> Result<WorldSnapshot> {
         tick,
         entities,
         preserved_prospect,
+        native_world: None,
     };
     snapshot.validate()?;
     Ok(snapshot)

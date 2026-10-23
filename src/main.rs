@@ -62,6 +62,19 @@ enum Command {
         #[command(flatten)]
         options: ConfigOptions,
     },
+    /// Prepare every placement in an independently authored native map.
+    /// This creates spatial state, not an imported or gameplay-ready world.
+    CreateNativeWorld {
+        #[arg(long)]
+        catalog: PathBuf,
+        #[arg(long)]
+        map: String,
+        #[arg(long)]
+        data_dir: PathBuf,
+        /// Validate and report counts without opening the destination store.
+        #[arg(long)]
+        dry_run: bool,
+    },
     /// Inspect an experimental prospect envelope without importing or writing state.
     InspectSave {
         #[arg(long)]
@@ -154,6 +167,37 @@ fn execute(cli: Cli) -> Result<()> {
         }
         Command::CheckConfig { options } => {
             println!("{}", toml::to_string_pretty(&options.resolve()?)?);
+            Ok(())
+        }
+        Command::CreateNativeWorld {
+            catalog,
+            map,
+            data_dir,
+            dry_run,
+        } => {
+            use icarus_bevy::native_world::{CompiledNativeCatalog, prepare_authored_world};
+            // All semantic rejection precedes the destination lock/directory.
+            let catalog = Arc::new(CompiledNativeCatalog::load(&catalog)?);
+            let prepared = prepare_authored_world(catalog, &map)?;
+            let snapshot = prepared.initial_snapshot();
+            let actors = prepared.snapshot().actors.len();
+            if dry_run {
+                println!(
+                    "{}",
+                    json!({"event": "native_world_prepared", "actors": actors,
+                    "schema_version": snapshot.schema_version, "dry_run": true,
+                    "world_imported": false, "gameplay_ready": false})
+                );
+            } else {
+                let mut store = SnapshotStore::open(&data_dir)?;
+                let receipt = store.save_new(&snapshot)?;
+                println!(
+                    "{}",
+                    json!({"event": "native_world_created", "actors": actors,
+                    "schema_version": snapshot.schema_version, "receipt": receipt,
+                    "world_imported": false, "gameplay_ready": false})
+                );
+            }
             Ok(())
         }
         Command::PreserveSave { source, data_dir } => {
