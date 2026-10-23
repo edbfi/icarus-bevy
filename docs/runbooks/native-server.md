@@ -244,13 +244,21 @@ Library callers can decode once with `DecodedImportCandidate::decode`, then
 borrow it for `plan_decoded_import`, `planned_actors_from_candidate` and source
 preservation (F-920). Candidates retain migrated roots and all recorder outcomes,
 including dropped records. Unknown enum mappings remain explicit. The default
-policy allows 256 MiB of conservative owned-allocation charges and 1,048,576
-typed elements across all recorders. `import-save`, `plan_import` and
+policy allows 256 MiB of retained charges plus each sequential typing scratch
+reservation, and 1,048,576 typed elements across all recorders. Completed scratch
+reservations are released; retained charges include vector capacities and a
+conservative summary allowance. `import-save`, `plan_import` and
 `planned_actors` inherit these defaults. Exhaustion rejects the entire candidate,
 including when a dropped recorder causes it; resource-policy errors are never
-downgraded to optional typing outcomes. Headroom for the 15 supplied prospects
-has not been measured: `import-save` may reject inputs it previously planned
-(F-920). These are implementation allowances, not peak-memory or RSS guarantees.
+downgraded to optional typing outcomes. These are implementation allowances,
+not peak-memory or RSS guarantees (F-920).
+
+`inspect-save --candidate-check --source prospect.json` reports counts without
+saved names or values. It exposes retained charges, configured limits and
+`required_decode_limits`: the high-water requirement including temporary
+reservations. `remaining_headroom` is configured allowance minus retained
+charges; it does not promise another recorder can pass preflight. Inspection
+creates no destination and does not authorize semantic import.
 
 Value meanings and original-server round trips remain unvalidated. The
 [synthetic workload](synthetic-workload.md) exercises native scheduling and

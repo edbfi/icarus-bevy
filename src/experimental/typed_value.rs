@@ -238,15 +238,18 @@ pub struct TypedComponent {
 
 /// Cumulative allocation allowance for typing a candidate's components.
 ///
-/// This is a conservative policy allowance, not measured RSS or a bound on all
-/// working memory. It includes owned vector capacities and inline enum slots,
-/// decoded strings/names/headers, and margin for the existing header parsing and
-/// roundtrip buffers. The caller must separately bound the input/preservation
-/// trees and payloads. Elements count properties, array elements (even empty
-/// struct trees), and Map/Set items; string units and fixed-struct parts are
-/// accounted for in bytes. Allowances may include attempted array/container
-/// typing that later becomes a gap, so counters need not equal retained sizes.
-/// Failed calls leave both counters unchanged.
+/// Each call admits its full conservative preflight requirement alongside
+/// previous retained charges, including header parsing and roundtrip scratch.
+/// Success retains only owned vector capacities, inline component storage and
+/// [`SUMMARY_OWNED_ALLOWANCE`] for the returned summary. This is implementation
+/// accounting, not measured RSS or a bound on all working memory. The caller
+/// must separately bound input/preservation trees and payloads, and finish any
+/// sequential component roundtrip before admitting the next component.
+///
+/// Elements count properties, array elements (even empty struct trees), and
+/// Map/Set items; string units and fixed-struct parts are accounted for in bytes.
+/// Element charges retain the full preflight allowance, including attempts that
+/// later become gaps. Failed calls leave both counters unchanged.
 #[derive(Debug)]
 pub struct TypingBudget {
     max_owned_bytes: usize,
@@ -273,7 +276,7 @@ impl TypingBudget {
         self.charged_elements
     }
 
-    fn check(&self, allowance: &TypingAllowance) -> std::result::Result<(), TypedBudgetExceeded> {
+    fn check(&self, allowance: &TypingRequirement) -> std::result::Result<(), TypedBudgetExceeded> {
         let bytes = checked_add(self.charged_bytes, allowance.bytes)?;
         let elements = checked_add(self.charged_elements, allowance.elements)?;
         if bytes > self.max_owned_bytes || elements > self.max_elements {
@@ -297,6 +300,40 @@ impl fmt::Display for TypedBudgetExceeded {
 }
 
 impl std::error::Error for TypedBudgetExceeded {}
+
+/// Conservative per-component admission requirement, containing counts only.
+/// This includes temporary typing/verification allocations, so its byte count
+/// can exceed the retained charge after successful typing.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct TypingRequirement {
+    pub bytes: usize,
+    pub elements: usize,
+}
+
+/// Allowance for returned [`TypedSummary`] inline storage and Gap map nodes.
+/// The current finite set of ten [`Gap`] variants fits one BTreeMap leaf under
+/// the pinned Rust 1.99.1 implementation. 4096 bytes conservatively covers that
+/// bookkeeping and the inline summary even when no gaps occur. Revisit this
+/// allowance if the enum or pinned collection implementation changes; it is an
+/// implementation policy allowance, not an allocator or RSS measurement.
+pub const SUMMARY_OWNED_ALLOWANCE: usize = 4096;
+
+/// Calculate the full conservative preflight without typing or roundtrip
+/// buffers. This reports a requirement, not an admission token: budgeted typing
+/// always recalculates it from the supplied tree before constructing values.
+pub fn typing_requirement(
+    component: &BaseComponentTree,
+) -> std::result::Result<TypingRequirement, TypedBudgetExceeded> {
+    let mut allowance = TypingAllowance::default();
+    allowance.bytes(size_of::<TypedComponent>())?;
+    allowance.bytes(SUMMARY_OWNED_ALLOWANCE)?;
+    allowance.wire(component.trailer.len())?;
+    allowance.tree(&component.tree)?;
+    Ok(TypingRequirement {
+        bytes: allowance.bytes,
+        elements: allowance.elements,
+    })
+}
 
 fn checked_add(left: usize, right: usize) -> std::result::Result<usize, TypedBudgetExceeded> {
     left.checked_add(right).ok_or(TypedBudgetExceeded)
@@ -1271,24 +1308,22 @@ impl TypedComponent {
 
     /// Type with a shared, transactional allocation allowance. Preflight walks
     /// the framed input without constructing typed values or roundtrip buffers.
+    /// The full requirement remains admitted through typing and verification;
+    /// only success replaces its temporary bytes with the retained charge for
+    /// both returned objects. Elements keep the full preflight charge.
     /// A structural failure (unlike an untypeable leaf/gap) retains no charge.
     /// The legacy `from_component` API does not apply this allowance.
     pub fn from_component_with_budget(
         component: &BaseComponentTree,
         budget: &mut TypingBudget,
     ) -> Result<(Self, TypedSummary)> {
-        let mut allowance = TypingAllowance::default();
-        allowance.bytes(size_of::<Self>())?;
-        // Bounded Gap-key summary bookkeeping and small-buffer slack. This is
-        // intentionally charged even when the component has no gaps.
-        allowance.bytes(4096)?;
-        allowance.wire(component.trailer.len())?;
-        allowance.tree(&component.tree)?;
+        let allowance = typing_requirement(component)?;
         budget.check(&allowance)?;
 
         let (typed, summary) = Self::from_component(component)?;
         let mut owned = TypingAllowance::default();
         owned.bytes(size_of::<Self>())?;
+        owned.bytes(SUMMARY_OWNED_ALLOWANCE)?;
         owned.owned_vec(&typed.trailer)?;
         owned.owned_tree(&typed.tree)?;
         // An additional invariant for allocator/collection growth changes; this
@@ -1297,7 +1332,9 @@ impl TypedComponent {
         if owned.bytes > allowance.bytes || owned.elements > allowance.elements {
             return Err(TypedBudgetExceeded.into());
         }
-        let charged_bytes = checked_add(budget.charged_bytes, allowance.bytes)?;
+        // Compute both replacements before mutating either counter. No public
+        // refund operation is needed: only a completed call commits charges.
+        let charged_bytes = checked_add(budget.charged_bytes, owned.bytes)?;
         let charged_elements = checked_add(budget.charged_elements, allowance.elements)?;
         budget.charged_bytes = charged_bytes;
         budget.charged_elements = charged_elements;

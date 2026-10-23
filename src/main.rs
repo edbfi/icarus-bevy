@@ -115,6 +115,13 @@ enum Command {
             conflicts_with_all = ["inner_tags", "recorders", "stage_check", "preserve_check"]
         )]
         typed_check: bool,
+        /// Decode one import candidate under default allocation allowances;
+        /// report counts and remaining allowance, not RSS or import readiness.
+        #[arg(
+            long,
+            conflicts_with_all = ["inner_tags", "recorders", "stage_check", "preserve_check", "typed_check", "expect_prospect_name"]
+        )]
+        candidate_check: bool,
     },
     /// Seed a NEW native world whose only content is the lossless, value-opaque
     /// preservation of a supplied prospect. Nothing is interpreted or imported;
@@ -250,11 +257,16 @@ fn execute(cli: Cli) -> Result<()> {
             expect_prospect_name,
             preserve_check,
             typed_check,
+            candidate_check,
         } => {
             // Check the opened handle: a path can change to a FIFO after a
             // regular-file precheck. Normal regular-file symlinks still work.
             let file = open_regular_source(&source)?;
-            let output = if typed_check {
+            let output = if candidate_check {
+                let candidate =
+                    icarus_bevy::import_candidate::DecodedImportCandidate::decode(file)?;
+                serde_json::to_string(&candidate.inspection())?
+            } else if typed_check {
                 serde_json::to_string(&icarus_bevy::prospect::typed_check(file)?)?
             } else if preserve_check {
                 serde_json::to_string(&preserve_check_report(file)?)?

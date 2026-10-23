@@ -106,7 +106,9 @@ Acceptance conditions for any importer
 - `DecodedImportCandidate` retains migrated root values, exact UTF-16 recorder
   identities, decisions, optional typing outcomes and unchanged preserved bytes
   from one envelope decode (F-920). Unknown root enums remain explicit;
-  allocation allowances bound cumulative typing. Borrowed assessment and actor
+  allocation allowances bound retained typing plus each sequential scratch
+  reservation. Count-only inspection separates retained charges from required
+  decode limits. Borrowed assessment and actor
   projection do not supply restoration adapters or authorize publication.
 - `stage_prospect_save_state` (`experimental::recorders`), `stage_prospect`
   (`prospect`) and `icarus-server inspect-save --stage-check` validate the

@@ -3,6 +3,7 @@
 use std::{fmt, io::Read, mem::size_of, ops::Range};
 
 use anyhow::{Context, Result, ensure};
+use serde::Serialize;
 
 use crate::{
     experimental::{
@@ -16,7 +17,9 @@ use crate::{
         restore_rules::RecorderCtorDefaults,
         struct_array::MAX_BOUNDED_STRUCT_ARRAY_BYTES,
         tagged::{TagProfile, read_root},
-        typed_value::{TypedBudgetExceeded, TypedComponent, TypedSummary, TypingBudget},
+        typed_value::{
+            TypedBudgetExceeded, TypedComponent, TypedSummary, TypingBudget, typing_requirement,
+        },
     },
     preservation::{PreserveLimits, PreservedSection},
     prospect::{EnvelopeInspection, decode_envelope},
@@ -37,7 +40,7 @@ const TREE_LIMITS: TreeLimits = TreeLimits {
 /// The defaults also govern `plan_import`, `planned_actors` and `import-save`.
 /// Exhaustion rejects the whole candidate, even when a dropped recorder caused
 /// it: resource-policy errors are never downgraded to optional typing outcomes.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
 pub struct CandidateLimits {
     pub owned_bytes: usize,
     pub typed_elements: usize,
@@ -50,6 +53,51 @@ impl Default for CandidateLimits {
             typed_elements: MAX_CANDIDATE_TYPED_ELEMENTS,
         }
     }
+}
+
+/// Count-only qualification of a successfully decoded candidate. No source
+/// identity, saved values or semantic-import readiness is exposed.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub struct CandidateInspection {
+    pub validation: &'static str,
+    pub payload_bytes: usize,
+    pub recorders: CandidateRecorderCounts,
+    pub allocation: CandidateAllocationInspection,
+    pub world_imported: bool,
+    pub gameplay_ready: bool,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize)]
+pub struct CandidateRecorderCounts {
+    pub total: usize,
+    pub retained: usize,
+    pub dropped: usize,
+    /// Includes both retained and dropped recorders.
+    pub lossless: usize,
+    /// Includes both retained and dropped recorders.
+    pub unavailable: usize,
+    /// Leaves in losslessly typed recorders only; unavailable typing is not
+    /// counted as zero uninterpreted leaves.
+    pub retained_uninterpreted_leaves: usize,
+    pub dropped_uninterpreted_leaves: usize,
+}
+
+/// Conservative retained-allocation charges, not actual heap use, peak memory
+/// or process RSS. Temporary decoding allocations have independent bounds.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub struct CandidateAllocationInspection {
+    pub accounting: &'static str,
+    pub charged_owned_bytes: usize,
+    pub charged_typed_elements: usize,
+    pub configured_limits: CandidateLimits,
+    pub default_limits: CandidateLimits,
+    pub implementation_limits: CandidateLimits,
+    /// Maximum retained charges plus each sequential preflight reservation.
+    /// These limits suffice to repeat this decode under the same implementation.
+    pub required_decode_limits: CandidateLimits,
+    /// Remaining retained allowance, not RAM or a promise that another
+    /// component's transient preflight can be admitted.
+    pub remaining_headroom: CandidateLimits,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -124,6 +172,8 @@ pub struct DecodedImportCandidate {
     root_values: StagedRootValues,
     root_references: ImportRootReferences,
     recorders: Box<[DecodedRecorder]>,
+    limits: CandidateLimits,
+    required_decode_limits: CandidateLimits,
     owned_bytes: usize,
     typed_elements: usize,
 }
@@ -245,6 +295,10 @@ impl DecodedImportCandidate {
         )?;
         let mut recorders = Vec::with_capacity(framed.records().len());
         let mut elements = 0usize;
+        let mut required = CandidateLimits {
+            owned_bytes: owned,
+            typed_elements: elements,
+        };
         for (index, (recorder, decision)) in
             framed.records().iter().zip(staged.decisions).enumerate()
         {
@@ -276,28 +330,48 @@ impl DecodedImportCandidate {
                 TREE_LIMITS,
             ) {
                 Err(_) => RecorderTyping::Unavailable(RecorderTypingFailure::Framing),
-                Ok(tree) => match TypedComponent::from_component_with_budget(&tree, &mut budget) {
-                    Err(error) if error.is::<TypedBudgetExceeded>() => return Err(error),
-                    Err(_) => RecorderTyping::Unavailable(RecorderTypingFailure::Typing),
-                    Ok((component, summary)) => match component.to_bytes() {
-                        Err(_) => RecorderTyping::Unavailable(RecorderTypingFailure::Encoding),
-                        Ok(bytes) if bytes != recorder.binary_data => {
-                            RecorderTyping::Unavailable(RecorderTypingFailure::RoundTripMismatch)
-                        }
-                        Ok(_) => {
-                            charge(&mut owned, budget.charged_bytes(), limit)?;
-                            charge(
-                                &mut elements,
-                                budget.charged_elements(),
-                                limits.typed_elements,
-                            )?;
-                            RecorderTyping::Lossless(Box::new(LosslessRecorder {
-                                component,
-                                summary,
-                            }))
-                        }
-                    },
-                },
+                Ok(tree) => {
+                    // Count the full requirement on top of prior retained charges.
+                    // The local budget checks it, then commits only retained bytes;
+                    // this high-water mark also accounts for sequential re-encoding
+                    // before the next component. Optional typing/encoding failures
+                    // needed admission even though they retain no result.
+                    let requirement = typing_requirement(&tree)?;
+                    required.owned_bytes = required.owned_bytes.max(
+                        owned
+                            .checked_add(requirement.bytes)
+                            .ok_or(TypedBudgetExceeded)?,
+                    );
+                    required.typed_elements = required.typed_elements.max(
+                        elements
+                            .checked_add(requirement.elements)
+                            .ok_or(TypedBudgetExceeded)?,
+                    );
+                    match TypedComponent::from_component_with_budget(&tree, &mut budget) {
+                        Err(error) if error.is::<TypedBudgetExceeded>() => return Err(error),
+                        Err(_) => RecorderTyping::Unavailable(RecorderTypingFailure::Typing),
+                        Ok((component, summary)) => match component.to_bytes() {
+                            Err(_) => RecorderTyping::Unavailable(RecorderTypingFailure::Encoding),
+                            Ok(bytes) if bytes != recorder.binary_data => {
+                                RecorderTyping::Unavailable(
+                                    RecorderTypingFailure::RoundTripMismatch,
+                                )
+                            }
+                            Ok(_) => {
+                                charge(&mut owned, budget.charged_bytes(), limit)?;
+                                charge(
+                                    &mut elements,
+                                    budget.charged_elements(),
+                                    limits.typed_elements,
+                                )?;
+                                RecorderTyping::Lossless(Box::new(LosslessRecorder {
+                                    component,
+                                    summary,
+                                }))
+                            }
+                        },
+                    }
+                }
             };
             recorders.push(DecodedRecorder {
                 source_index: index,
@@ -310,6 +384,8 @@ impl DecodedImportCandidate {
                 typing,
             });
         }
+        required.owned_bytes = required.owned_bytes.max(owned);
+        required.typed_elements = required.typed_elements.max(elements);
         Ok(Self {
             envelope: validated.inspection,
             payload: validated.payload.into_boxed_slice(),
@@ -318,9 +394,60 @@ impl DecodedImportCandidate {
             root_values: staged.root_values,
             root_references: references,
             recorders: recorders.into_boxed_slice(),
+            limits,
+            required_decode_limits: required,
             owned_bytes: owned,
             typed_elements: elements,
         })
+    }
+
+    /// Inspect the existing decode without rereading or interpreting its values.
+    pub fn inspection(&self) -> CandidateInspection {
+        let mut recorders = CandidateRecorderCounts {
+            total: self.recorders.len(),
+            ..CandidateRecorderCounts::default()
+        };
+        for recorder in &self.recorders {
+            if recorder.decision.retained {
+                recorders.retained += 1;
+            } else {
+                recorders.dropped += 1;
+            }
+            match &recorder.typing {
+                RecorderTyping::Lossless(value) => {
+                    recorders.lossless += 1;
+                    if recorder.decision.retained {
+                        recorders.retained_uninterpreted_leaves += value.summary.uninterpreted;
+                    } else {
+                        recorders.dropped_uninterpreted_leaves += value.summary.uninterpreted;
+                    }
+                }
+                RecorderTyping::Unavailable(_) => recorders.unavailable += 1,
+            }
+        }
+        CandidateInspection {
+            validation: "native_import_candidate_only",
+            payload_bytes: self.payload.len(),
+            recorders,
+            allocation: CandidateAllocationInspection {
+                accounting: "conservative_owned_allocation_allowance_not_rss_or_peak_memory",
+                charged_owned_bytes: self.owned_bytes,
+                charged_typed_elements: self.typed_elements,
+                configured_limits: self.limits,
+                default_limits: CandidateLimits::default(),
+                implementation_limits: CandidateLimits {
+                    owned_bytes: MAX_CANDIDATE_OWNED_BYTES,
+                    typed_elements: MAX_CANDIDATE_TYPED_ELEMENTS,
+                },
+                required_decode_limits: self.required_decode_limits,
+                remaining_headroom: CandidateLimits {
+                    owned_bytes: self.limits.owned_bytes - self.owned_bytes,
+                    typed_elements: self.limits.typed_elements - self.typed_elements,
+                },
+            },
+            world_imported: false,
+            gameplay_ready: false,
+        }
     }
 
     pub fn envelope(&self) -> &EnvelopeInspection {
@@ -344,6 +471,11 @@ impl DecodedImportCandidate {
     /// Conservative retained allocation allowance; not measured heap use or RSS.
     pub fn owned_bytes(&self) -> usize {
         self.owned_bytes
+    }
+    /// Minimum successful limits under this implementation's sequential
+    /// reservation policy; retained charges alone need not admit decoding.
+    pub fn required_decode_limits(&self) -> CandidateLimits {
+        self.required_decode_limits
     }
     pub fn typed_elements(&self) -> usize {
         self.typed_elements
