@@ -584,15 +584,47 @@ pub fn plan_import(reader: impl Read, catalog: &ContentCatalog) -> Result<Import
     };
     let mut distinct: BTreeMap<Vec<u16>, bool> = BTreeMap::new();
     let mut role_distinct: BTreeMap<(ContentRole, Vec<u16>), bool> = BTreeMap::new();
-    // The effective ProspectInfo key names a D_ProspectList row (F-911).
-    // It is a root string reference, outside recorder name/class counts.
-    if !staged_import.prospect_dt_key.is_empty() {
-        let reference = staged_import.prospect_dt_key;
-        let role = ContentRole::DataRow;
-        let mapped = catalog.contains_prospect(&reference);
+    // Root content stays outside recorder name/class counts. Only the
+    // prospect key has a qualified table identity (F-911); the other row
+    // fields follow the same suffix convention as recorder references.
+    // Map names have no qualified native role yet, so remain unclassified.
+    let mut root_references = vec![
+        (ContentRole::DataRow, staged_import.prospect_dt_key, true),
+        (
+            ContentRole::Unclassified,
+            staged_import.prospect_map_name,
+            false,
+        ),
+        (
+            ContentRole::DataRow,
+            staged_import.faction_mission_dt_key,
+            false,
+        ),
+    ];
+    root_references.extend(
+        staged_import
+            .setting_row_names
+            .into_iter()
+            .map(|name| (ContentRole::DataRow, name, false)),
+    );
+    for (role, reference, prospect) in root_references {
+        if reference.is_empty() {
+            continue;
+        }
+        let mapped = if prospect {
+            catalog.contains_prospect(&reference)
+        } else {
+            catalog.contains(role, &reference)
+        };
         plan.content.roles.entry(role).or_default().references += 1;
-        role_distinct.insert((role, reference.clone()), mapped);
-        distinct.insert(reference, mapped);
+        role_distinct
+            .entry((role, reference.clone()))
+            .and_modify(|all| *all &= mapped)
+            .or_insert(mapped);
+        distinct
+            .entry(reference)
+            .and_modify(|all| *all &= mapped)
+            .or_insert(mapped);
         if !mapped {
             plan.content.unmapped_references += 1;
         }
