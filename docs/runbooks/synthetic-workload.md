@@ -1,9 +1,8 @@
 # Synthetic durability workload
 
-The synthetic soak runs a bounded, authored population through the real Bevy fixed
-schedule and asynchronous snapshot writer. Use a fresh data directory. The example
-mutates positions deterministically, records tick and save observations, then
-reopens the store and compares the complete final snapshot.
+The synthetic soak runs authored entities through Bevy's fixed schedule and
+asynchronous writer. In a fresh data directory, it mutates positions, measures
+ticks and saves, then reopens the store and compares the complete snapshot.
 
 ```bash
 cargo run --release --locked --example synthetic_soak -- \
@@ -27,12 +26,10 @@ binary hash, host resources and concurrent workloads with results.
 `rss_slope_kib_per_hour` fits a least-squares line to every status sample
 after warm-up, a steadier leak signal than the two-point growth.
 
-Long runs need not take their wall time. `--compressed` treats the duration as
-simulated time: each update runs exactly one fixed step with no pacing, saves
-fall due every `--save-seconds` of simulated time and a save still in flight is
-awaited (`save_waits`), so a run executes the duration's exact tick and save
-counts as fast as the host allows. `--start-tick` starts the clock high to
-exercise long-uptime counters. Warm-up, status and growth use simulated time.
+`--compressed` uses simulated time: one fixed step per unpaced update, saves
+every `--save-seconds`, awaiting in-flight saves (`save_waits`). It executes
+exact tick/save counts as fast as the host allows. Warm-up, status and growth
+use simulated time. `--start-tick` exercises long-uptime counters.
 
 ```bash
 cargo run --release --locked --example synthetic_soak -- --compressed \
@@ -45,11 +42,9 @@ production loop's autosave timer, peer idle timeouts), real-time deadline
 pressure between ticks, or storage, page-cache and host effects that accrue
 over days; pair it with a short paced run for those.
 
-This tests native scheduling and persistence under synthetic load. It contains no
-ICARUS gameplay, networking or original content, and cannot establish stock-client
-compatibility or a performance improvement over the official server. A 72-hour
-synthetic run is not the [canonical plan's](../linux-dedicated-server-plan.md)
-stability target, which needs heavy ICARUS worlds.
+These authored workloads establish neither stock-client compatibility nor an
+official-server speedup. The [plan's](../linux-dedicated-server-plan.md) stability
+target requires heavy ICARUS worlds, not 72 hours of synthetic scheduling.
 
 For repeated synchronous persistence measurements, use:
 
@@ -65,13 +60,27 @@ revision, the same CPU affinity and population, and retain the executable hashes
 and must not be labeled steady-state server memory. Keep baseline binaries under
 ignored `work/` when comparing revisions.
 
-The recovery campaign exercises repeated process termination and
-recovery with 10,000 authored entities. It alternates SIGKILL and SIGTERM around a
-later autosave window after observing an initial committed save. Every cycle checks
-the published checksum, restored clock, acknowledged generation and complete
-entity state. It does not claim deterministic interception of each filesystem
-operation, real disk exhaustion or physical power-loss qualification. Use a fresh
-output directory and retain the helper/binary provenance and per-cycle logs.
+For schemas 7–9, `native_lifecycle_bench` measures capture, preflight, storage
+and owner actions, verifying full state outside each timer. Create the case
+directory first; its store child must be absent:
+
+```bash
+cargo run --release --locked --example native_lifecycle_bench -- \
+  --data-dir work/CASE/new-store --operations preflight --slots 3,64,256,1024
+```
+
+Select operations separately to avoid starving later ones under the shared
+20-second case limit. Defaults are three repetitions, five warm-ups and 50
+samples; JSON retains raw times and marks incomplete cases. Enforce external
+CPU, memory and hard-time limits. Action timings include internal capture and
+preflight; load uses the same open store. Match fixtures, build settings and
+affinity across revisions; exclude incomplete cases from comparisons.
+
+The recovery campaign alternates SIGKILL/SIGTERM near autosaves after an initial
+committed save, using 10,000 authored entities. Each cycle checks the checksum,
+clock, acknowledged generation and all entities. Use a fresh directory; retain
+helper/binary provenance and cycle logs. It does not qualify exact filesystem
+interception, disk exhaustion or physical power loss.
 
 ```bash
 python3 tools/native_recovery_campaign.py --binary target/release/icarus-server \
