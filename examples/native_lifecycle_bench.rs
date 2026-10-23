@@ -11,7 +11,7 @@
 //! Selected operations share the case budget in canonical order. Select one late
 //! operation to give it the full case allowance; deadlines are never reset.
 //!
-//! Root validation (not performed by the source-only author):
+//! Validation commands:
 //! cargo check --locked --example native_lifecycle_bench
 //! cargo test --locked --example native_lifecycle_bench
 //! cargo run --release --locked --example native_lifecycle_bench -- \

@@ -598,6 +598,13 @@ fn future_owner_import_discriminator(metadata: &serde_json::Value) -> bool {
         || future_completion_discriminator(&metadata["initial_completion"])
 }
 
+fn generation_size_limit_message(limit: u64) -> String {
+    format!(
+        "native snapshot exceeds {} MiB limit",
+        limit / (1024 * 1024)
+    )
+}
+
 fn count_bounded_generation(value: &impl Serialize, limit: u64) -> Result<u64> {
     struct Counter {
         bytes: u64,
@@ -609,7 +616,7 @@ fn count_bounded_generation(value: &impl Serialize, limit: u64) -> Result<u64> {
                 .bytes
                 .checked_add(bytes.len() as u64)
                 .filter(|total| *total <= self.limit)
-                .ok_or_else(|| std::io::Error::other("native snapshot exceeds its size limit"))?;
+                .ok_or_else(|| std::io::Error::other(generation_size_limit_message(self.limit)))?;
             Ok(bytes.len())
         }
         fn flush(&mut self) -> std::io::Result<()> {
@@ -650,8 +657,7 @@ impl GenerationOutput for Vec<u8> {
         let bytes = serde_json::to_vec(value)?;
         ensure!(
             bytes.len() as u64 <= limit,
-            "native snapshot exceeds {} MiB limit",
-            limit / (1024 * 1024)
+            generation_size_limit_message(limit)
         );
         Ok(bytes)
     }
@@ -2970,9 +2976,23 @@ mod crash_consistency_tests {
                 for section in serde_json::to_value(value)?.as_object().unwrap().values() {
                     assert!((serde_json::to_vec(section)?.len() as u64) < exact);
                 }
-                assert!(count_bounded_generation(value, exact - 1).is_err());
-                assert!(encode_bounded_generation(value, exact - 1).is_err());
-                assert!(Vec::<u8>::serialize_generation(value, exact - 1).is_err());
+                // Oversize diagnostics must also agree through the counting,
+                // direct publication and count-before-publication paths.
+                let counted_error = count_bounded_generation(value, exact - 1)
+                    .unwrap_err()
+                    .to_string();
+                assert_eq!(
+                    counted_error,
+                    encode_bounded_generation(value, exact - 1)
+                        .unwrap_err()
+                        .to_string()
+                );
+                assert_eq!(
+                    counted_error,
+                    Vec::<u8>::serialize_generation(value, exact - 1)
+                        .unwrap_err()
+                        .to_string()
+                );
                 Ok(Self(limit))
             }
         }
