@@ -75,6 +75,20 @@ enum Command {
         #[arg(long)]
         dry_run: bool,
     },
+    /// Materialize only the explicitly bound, authored C001 inert fixture
+    /// contract. This does not enable ordinary ICARUS save import.
+    CreateC001InertFixture {
+        #[arg(long)]
+        source: PathBuf,
+        #[arg(long)]
+        catalog: PathBuf,
+        #[arg(long)]
+        bindings: PathBuf,
+        #[arg(long)]
+        data_dir: PathBuf,
+        #[arg(long)]
+        dry_run: bool,
+    },
     /// Inspect an experimental prospect envelope without importing or writing state.
     InspectSave {
         #[arg(long)]
@@ -203,6 +217,42 @@ fn execute(cli: Cli) -> Result<()> {
                     json!({"event": "native_world_created", "actors": actors,
                     "schema_version": snapshot.schema_version, "receipt": receipt,
                     "world_imported": false, "gameplay_ready": false})
+                );
+            }
+            Ok(())
+        }
+        Command::CreateC001InertFixture {
+            source,
+            catalog,
+            bindings,
+            data_dir,
+            dry_run,
+        } => {
+            use icarus_bevy::{
+                import_candidate::DecodedImportCandidate,
+                native_import::{
+                    CompiledC001InertBindings, prepare_c001_inert_import,
+                    publish_new_c001_inert_import,
+                },
+                native_world::CompiledNativeCatalog,
+            };
+            let catalog = Arc::new(CompiledNativeCatalog::load(&catalog)?);
+            let bindings = CompiledC001InertBindings::load(&bindings)?;
+            let candidate = DecodedImportCandidate::decode(open_regular_source(&source)?)?;
+            let prepared = prepare_c001_inert_import(&candidate, catalog, &bindings)?;
+            let inspection = prepared.inspection();
+            if dry_run {
+                println!(
+                    "{}",
+                    json!({"event": "c001_inert_fixture_prepared", "dry_run": true,
+                    "inspection": inspection, "world_imported": false, "gameplay_ready": false})
+                );
+            } else {
+                let receipt = publish_new_c001_inert_import(prepared, &data_dir)?;
+                println!(
+                    "{}",
+                    json!({"event": "c001_inert_fixture_materialized", "inspection": inspection,
+                    "receipt": receipt, "world_imported": false, "gameplay_ready": false})
                 );
             }
             Ok(())

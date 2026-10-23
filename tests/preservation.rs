@@ -202,6 +202,7 @@ fn preserved_snapshot(tick: u64, preserved: &Arc<PreservedSection>) -> WorldSnap
         }],
         preserved_prospect: Some(Arc::clone(preserved)),
         native_world: None,
+        native_import: None,
     }
 }
 

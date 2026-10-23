@@ -14,6 +14,7 @@ use serde::{Deserialize, Serialize};
 use crate::{
     config::ServerConfig,
     metrics::LatencyHistogram,
+    native_import::C001InertImportMetadataV1,
     native_world::{NativeWorldSnapshot, PreparedNativeWorld},
     preservation::PreservedSection,
 };
@@ -29,6 +30,9 @@ pub const SNAPSHOT_SCHEMA_REFERENCED: u32 = 3;
 /// Independently authored spatial world, embedded definitions and optional
 /// opaque preserved section. The store writes any preserved section by reference.
 pub const SNAPSHOT_SCHEMA_NATIVE: u32 = 4;
+/// Explicit authored C001 inert-placement interpretation, with required source
+/// preservation and immutable source identities. This is not official import.
+pub const SNAPSHOT_SCHEMA_C001_INERT: u32 = 5;
 
 /// Stable domain identity, independent of Bevy's runtime entity allocation.
 #[derive(Component, Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
@@ -53,11 +57,12 @@ pub struct WorldSnapshot {
     #[serde(deserialize_with = "crate::json::objects")]
     pub entities: Vec<EntityRecord>,
     /// Lossless, value-opaque supplied-save state carried unchanged between
-    /// generations; required in schemas 2 and 3, optional in schema 4. Shared, never interpreted,
-    /// and held compactly as its verified native encoding (no value tree).
+    /// generations; required in schemas 2, 3 and 5, optional in schema 4.
+    /// Shared and held compactly as its verified native encoding. Schema 5
+    /// separately records its explicitly accepted authored interpretation.
     /// Serde writes the section inline under the stored `schema_version`, which is
     /// a loadable document only for schema 2; the snapshot store writes schemas
-    /// 3 and 4 itself, with a sidecar reference.
+    /// 3 through 5 itself, with a sidecar reference.
     #[serde(
         default,
         skip_serializing_if = "Option::is_none",
@@ -66,6 +71,10 @@ pub struct WorldSnapshot {
     pub preserved_prospect: Option<Arc<PreservedSection>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub native_world: Option<NativeWorldSnapshot>,
+    /// Required only for schema 5; immutable source identity and interpretation,
+    /// independent of mutable native actor poses and simulation ticks.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub native_import: Option<C001InertImportMetadataV1>,
 }
 
 impl Default for WorldSnapshot {
@@ -76,12 +85,38 @@ impl Default for WorldSnapshot {
             entities: Vec::new(),
             preserved_prospect: None,
             native_world: None,
+            native_import: None,
         }
     }
 }
 
 impl WorldSnapshot {
     pub fn validate(&self) -> Result<()> {
+        if self.schema_version == SNAPSHOT_SCHEMA_C001_INERT {
+            ensure!(
+                self.entities.is_empty(),
+                "schema 5 cannot hold foundation entities"
+            );
+            let native = self
+                .native_world
+                .as_ref()
+                .context("schema 5 requires native world records")?;
+            native.validate()?;
+            return self
+                .native_import
+                .as_ref()
+                .context("schema 5 requires import metadata")?
+                .validate(
+                    native,
+                    self.preserved_prospect
+                        .as_deref()
+                        .context("schema 5 requires its preserved source")?,
+                );
+        }
+        ensure!(
+            self.native_import.is_none(),
+            "this snapshot schema cannot hold import metadata"
+        );
         if self.schema_version == SNAPSHOT_SCHEMA_NATIVE {
             ensure!(
                 self.entities.is_empty(),
@@ -146,11 +181,18 @@ impl PreparedNativeWorld {
 pub struct SnapshotMode {
     native: bool,
     preserved: Option<Arc<PreservedSection>>,
+    imported: Option<Arc<C001InertImportMetadataV1>>,
 }
 
 /// The loaded preserved section, handed back unchanged to every capture.
 #[derive(Resource, Clone)]
 pub struct PreservedProspectState(pub Arc<PreservedSection>);
+
+/// Immutable source interpretation retained through native edits and saves.
+/// Capture checks it against the privately pinned loaded contract; losing it or
+/// replacing it with different metadata cannot downgrade the persistence mode.
+#[derive(Resource, Clone)]
+pub struct C001InertImportState(pub Arc<C001InertImportMetadataV1>);
 
 #[derive(Resource, Default)]
 pub struct SimulationClock {
@@ -217,6 +259,10 @@ pub enum SimulationSet {
 pub fn build_app(config: &ServerConfig, snapshot: &WorldSnapshot) -> Result<App> {
     config.validate()?;
     snapshot.validate()?;
+    let imported = snapshot
+        .native_import
+        .as_ref()
+        .map(|metadata| Arc::new(metadata.clone()));
     let mut app = App::new();
     app.add_plugins(MinimalPlugins)
         .insert_resource(Time::<Fixed>::from_duration(config.tick_interval()))
@@ -226,6 +272,7 @@ pub fn build_app(config: &ServerConfig, snapshot: &WorldSnapshot) -> Result<App>
         .insert_resource(SnapshotMode {
             native: snapshot.native_world.is_some(),
             preserved: snapshot.preserved_prospect.clone(),
+            imported: imported.clone(),
         })
         .init_resource::<TickMetrics>()
         .configure_sets(
@@ -251,6 +298,9 @@ pub fn build_app(config: &ServerConfig, snapshot: &WorldSnapshot) -> Result<App>
     }
     if let Some(preserved) = &snapshot.preserved_prospect {
         app.insert_resource(PreservedProspectState(Arc::clone(preserved)));
+    }
+    if let Some(imported) = imported {
+        app.insert_resource(C001InertImportState(imported));
     }
     Ok(app)
 }
@@ -300,13 +350,37 @@ pub fn capture(world: &mut World) -> Result<WorldSnapshot> {
         same_preserved,
         "world preserved section differs from its loaded capture contract"
     );
+    let actual_import = world
+        .get_resource::<C001InertImportState>()
+        .map(|state| &state.0);
+    ensure!(
+        match (actual_import, &mode.imported) {
+            (None, None) => true,
+            (Some(actual), Some(expected)) => Arc::ptr_eq(actual, expected) || actual == expected,
+            _ => false,
+        },
+        "world import metadata differs from its loaded capture contract"
+    );
     if mode.native {
+        let native = crate::native_runtime::capture_native(world)?;
+        if let Some(metadata) = &mode.imported {
+            ensure!(
+                native.catalog_id == metadata.native_catalog_id
+                    && native.map == metadata.native_map,
+                "world native context differs from its loaded import contract"
+            );
+        }
         let snapshot = WorldSnapshot {
-            schema_version: SNAPSHOT_SCHEMA_NATIVE,
+            schema_version: if mode.imported.is_some() {
+                SNAPSHOT_SCHEMA_C001_INERT
+            } else {
+                SNAPSHOT_SCHEMA_NATIVE
+            },
             tick,
             entities: Vec::new(),
             preserved_prospect,
-            native_world: Some(crate::native_runtime::capture_native(world)?),
+            native_world: Some(native),
+            native_import: mode.imported.as_deref().cloned(),
         };
         // capture_native validates every record against the immutable loaded
         // catalog. Storage independently validates the serialized snapshot;
@@ -342,6 +416,7 @@ pub fn capture(world: &mut World) -> Result<WorldSnapshot> {
         entities,
         preserved_prospect,
         native_world: None,
+        native_import: None,
     };
     snapshot.validate()?;
     Ok(snapshot)

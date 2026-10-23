@@ -92,9 +92,14 @@ stable domain IDs, class/placement/tile bindings, full poses and typed variables
 Activation pins the catalog and expected entities; capture rejects missing or
 extra actors/components and invalid state. Authored bounds provide geometry,
 not physics or navigation. Coverage catalogs do not authorize native import.
+Schema 5 adds the explicitly bound authored C001 inert-fixture contract:
+required immutable source metadata and unchanged source sidecar accompany the
+native world. Capture pins that metadata to its catalog and map; preparation
+rejects unsupported state before destination access (F-921).
 Supplied-save state may ride along as one lossless, value-opaque preserved
 section that reconstructs the verified payload byte-identically, is carried
-unchanged into every later generation and is never interpreted; it is written once as a content-addressed sidecar (F-567).
+unchanged into every later generation and is written once as a content-addressed
+sidecar (F-567). Preserving a section alone grants no semantic import acceptance.
 Reverse export to official saves is not promised. Rollback uses original backups;
 replacement-only progress is not assumed transferable.
 

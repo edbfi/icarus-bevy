@@ -158,6 +158,32 @@ deleted or extra actors, changed bindings and invalid values. Topology is fixed.
 Bounds describe authored geometry only, without physics/navigation or ICARUS
 behavior; `world_imported` and `gameplay_ready` remain false (F-919).
 
+The separate `create-c001-inert-fixture` command accepts only the authored
+`C001InertPlacementV1` contract (F-921):
+
+```bash
+cargo run --locked -- create-c001-inert-fixture --source authored.json \
+  --catalog authored.toml --bindings bindings.json --data-dir work/inert-world --dry-run
+```
+
+Omit `--dry-run` to publish a new world. The strict JSON/TOML binding DTO is
+`native_import::C001InertBindingsV1`: format 1, payload SHA-256, native catalog
+identity, exact source-map UTF-16 units, native map and complete owner bindings.
+Each owner binds source class/path/object-name units and positive source GUID
+to a native placement/class. Coordinates must explicitly declare
+`right_handed_z_up_meters_quat_xyzw_world_space`; the fixture author supplies
+those coordinates, with no original-coordinate conversion inferred.
+
+Every recorder must be exact C001, current-version, fully interpreted and
+supported; every selected-map placement must bind once. Only inert spatial
+classes without variables are accepted. Additional state, owner spawning,
+stitching and nonneutral prospect behavior reject the whole input. Schema 5
+retains accepted source identities, metadata and unchanged source sidecar
+alongside mutable native poses. Normal `run` preserves that contract through
+capture and autosave. Diagnostics contain counts and static categories only.
+This proves an authored contract; ordinary `import-save` still refuses writing,
+and both readiness flags remain false (F-921).
+
 Each generation is checksummed and synchronized before the manifest is
 atomically published; two committed generations are kept, and a corrupt
 current one recovers from the previous (F-869, F-771). Corrupt or missing

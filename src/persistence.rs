@@ -18,11 +18,12 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 use crate::json::JsonObject;
+use crate::native_import::C001InertImportMetadataV1;
 use crate::native_world::NativeWorldSnapshot;
 use crate::preservation::{MAX_PRESERVED_BASE64_BYTES, SectionReference, is_sidecar_name};
 use crate::simulation::{
-    EntityRecord, SNAPSHOT_SCHEMA_DOMAIN, SNAPSHOT_SCHEMA_NATIVE, SNAPSHOT_SCHEMA_PRESERVED,
-    SNAPSHOT_SCHEMA_REFERENCED, WorldSnapshot,
+    EntityRecord, SNAPSHOT_SCHEMA_C001_INERT, SNAPSHOT_SCHEMA_DOMAIN, SNAPSHOT_SCHEMA_NATIVE,
+    SNAPSHOT_SCHEMA_PRESERVED, SNAPSHOT_SCHEMA_REFERENCED, WorldSnapshot,
 };
 
 /// Schema 1 bound, unchanged: domain records and the clock only.
@@ -30,7 +31,7 @@ const MAX_DOMAIN_SNAPSHOT_BYTES: u64 = 64 * 1024 * 1024;
 /// Schema 2 adds at most one 64 MiB Base64 preserved section (whose decoded
 /// size is checked separately), so a generation file may reach 128 MiB.
 const MAX_SNAPSHOT_BYTES: u64 = MAX_DOMAIN_SNAPSHOT_BYTES + MAX_PRESERVED_BASE64_BYTES as u64;
-/// Schemas 3 and 4 add only a fixed-size sidecar reference to the domain bound;
+/// Schemas 3 through 5 add a fixed-size sidecar reference to the domain bound;
 /// the sidecar itself is bounded by the 48 MiB native encoding cap.
 const MAX_REFERENCED_SNAPSHOT_BYTES: u64 = MAX_DOMAIN_SNAPSHOT_BYTES + 4 * 1024;
 /// Streaming verification buffer, so checking a sidecar never holds it whole.
@@ -126,6 +127,22 @@ struct NativeClassProbe {
     kind: serde_json::Value,
 }
 
+#[derive(Deserialize)]
+struct ImportProbe {
+    #[serde(deserialize_with = "crate::json::object")]
+    native_import: ImportDiscriminators,
+}
+
+#[derive(Deserialize)]
+struct ImportDiscriminators {
+    #[serde(default)]
+    format: serde_json::Value,
+    #[serde(default)]
+    adapter: serde_json::Value,
+    #[serde(default)]
+    coordinates: serde_json::Value,
+}
+
 /// Schema 3 generation as written: schema 1 fields in their schema 1 order,
 /// then the sidecar reference. The preserved data itself is never inline.
 #[derive(Serialize)]
@@ -172,6 +189,96 @@ struct NativeIn {
     preserved_prospect: Option<SectionReference>,
 }
 
+/// Schema 5 always retains both the original-player-format authored source and
+/// its explicit native identity metadata. Neither field is optional on disk.
+#[derive(Serialize)]
+struct C001InertOut<'a> {
+    schema_version: u32,
+    tick: u64,
+    entities: &'a [EntityRecord],
+    native_world: &'a NativeWorldSnapshot,
+    preserved_prospect: &'a SectionReference,
+    native_import: &'a C001InertImportMetadataV1,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct C001InertIn {
+    schema_version: u32,
+    tick: u64,
+    #[serde(deserialize_with = "crate::json::objects")]
+    entities: Vec<EntityRecord>,
+    #[serde(deserialize_with = "crate::json::object")]
+    native_world: NativeWorldSnapshot,
+    #[serde(deserialize_with = "crate::json::object")]
+    preserved_prospect: SectionReference,
+    #[serde(deserialize_with = "crate::json::object")]
+    native_import: C001InertImportMetadataV1,
+}
+
+/// Pure generation preparation shared by preflight and durable publication.
+fn encode_generation(snapshot: &WorldSnapshot) -> Result<(Vec<u8>, Option<SectionReference>)> {
+    snapshot.validate()?;
+    let reference = snapshot
+        .preserved_prospect
+        .as_ref()
+        .map(|preserved| SectionReference::of(preserved));
+    if let Some(reference) = &reference {
+        reference.validate()?;
+    }
+    // Dispatch by schema before considering an optional source sidecar.
+    let (bytes, limit) = match snapshot.schema_version {
+        SNAPSHOT_SCHEMA_C001_INERT => (
+            serde_json::to_vec(&C001InertOut {
+                schema_version: SNAPSHOT_SCHEMA_C001_INERT,
+                tick: snapshot.tick,
+                entities: &snapshot.entities,
+                native_world: snapshot
+                    .native_world
+                    .as_ref()
+                    .context("native world required")?,
+                preserved_prospect: reference.as_ref().context("preserved source required")?,
+                native_import: snapshot
+                    .native_import
+                    .as_ref()
+                    .context("native import metadata required")?,
+            })?,
+            MAX_REFERENCED_SNAPSHOT_BYTES,
+        ),
+        SNAPSHOT_SCHEMA_NATIVE => (
+            serde_json::to_vec(&NativeOut {
+                schema_version: SNAPSHOT_SCHEMA_NATIVE,
+                tick: snapshot.tick,
+                entities: &snapshot.entities,
+                native_world: snapshot
+                    .native_world
+                    .as_ref()
+                    .context("native world required")?,
+                preserved_prospect: reference.as_ref(),
+            })?,
+            MAX_REFERENCED_SNAPSHOT_BYTES,
+        ),
+        _ => match &reference {
+            Some(reference) => (
+                serde_json::to_vec(&ReferencedOut {
+                    schema_version: SNAPSHOT_SCHEMA_REFERENCED,
+                    tick: snapshot.tick,
+                    entities: &snapshot.entities,
+                    preserved_prospect: reference,
+                })?,
+                MAX_REFERENCED_SNAPSHOT_BYTES,
+            ),
+            None => (serde_json::to_vec(snapshot)?, MAX_DOMAIN_SNAPSHOT_BYTES),
+        },
+    };
+    ensure!(
+        bytes.len() as u64 <= limit,
+        "native snapshot exceeds {} MiB limit",
+        limit / (1024 * 1024)
+    );
+    Ok((bytes, reference))
+}
+
 /// What a save needs from a committed generation: its tick and the sidecar it
 /// keeps retained.
 #[derive(Clone, Debug)]
@@ -206,6 +313,12 @@ pub struct SnapshotStore {
 }
 
 impl SnapshotStore {
+    /// Validate and encode the exact bounded generation representation without
+    /// opening, reading or modifying any destination.
+    pub fn preflight(snapshot: &WorldSnapshot) -> Result<()> {
+        encode_generation(snapshot).map(|_| ())
+    }
+
     pub fn open(root: &Path) -> Result<Self> {
         let mut created_ancestors = Vec::new();
         let mut ancestor = root;
@@ -323,6 +436,9 @@ impl SnapshotStore {
             Some(schema) if schema == u64::from(SNAPSHOT_SCHEMA_NATIVE) => {
                 return self.decode_native(bytes);
             }
+            Some(schema) if schema == u64::from(SNAPSHOT_SCHEMA_C001_INERT) => {
+                return self.decode_c001_inert(bytes);
+            }
             _ => return Err(UnsupportedSchema.into()),
         }
         let snapshot = serde_json::from_slice::<JsonObject<WorldSnapshot>>(bytes)
@@ -358,6 +474,7 @@ impl SnapshotStore {
             entities: referenced.entities,
             preserved_prospect: Some(Arc::new(preserved)),
             native_world: None,
+            native_import: None,
         };
         snapshot.validate()?;
         Ok((snapshot, Some(reference)))
@@ -368,6 +485,86 @@ impl SnapshotStore {
             bytes.len() as u64 <= MAX_REFERENCED_SNAPSHOT_BYTES,
             "schema 4 native snapshot exceeds its size limit"
         );
+        Self::probe_native_discriminators(bytes)?;
+        let native = serde_json::from_slice::<JsonObject<NativeIn>>(bytes)
+            .map_err(|error| crate::json_parse_error("decode native snapshot fields JSON", error))?
+            .0;
+        let reference = native.preserved_prospect;
+        let preserved = reference
+            .as_ref()
+            .map(|reference| {
+                reference.validate()?;
+                let encoded = read_bounded(
+                    &self.root.join(reference.sidecar_name()),
+                    reference.encoded_bytes(),
+                )?;
+                reference.decode(encoded).map(Arc::new)
+            })
+            .transpose()?;
+        let snapshot = WorldSnapshot {
+            schema_version: native.schema_version,
+            tick: native.tick,
+            entities: native.entities,
+            native_world: Some(native.native_world),
+            preserved_prospect: preserved,
+            native_import: None,
+        };
+        // Validation recompiles the embedded catalog and verifies its identity
+        // and every native record before this generation can be activated.
+        snapshot.validate()?;
+        Ok((snapshot, reference))
+    }
+
+    fn decode_c001_inert(&self, bytes: &[u8]) -> Result<(WorldSnapshot, Option<SectionReference>)> {
+        ensure!(
+            bytes.len() as u64 <= MAX_REFERENCED_SNAPSHOT_BYTES,
+            "schema 5 native snapshot exceeds its size limit"
+        );
+        let discriminators = serde_json::from_slice::<JsonObject<ImportProbe>>(bytes)
+            .map_err(|error| crate::json_parse_error("decode native import metadata JSON", error))?
+            .0
+            .native_import;
+        if discriminators
+            .format
+            .as_u64()
+            .is_some_and(|format| format > 1)
+            || discriminators
+                .adapter
+                .as_str()
+                .is_some_and(|adapter| adapter != "c001_inert_placement_v1")
+            || discriminators
+                .coordinates
+                .as_str()
+                .is_some_and(|coordinates| {
+                    coordinates != "right_handed_z_up_meters_quat_xyzw_world_space"
+                })
+        {
+            return Err(UnsupportedSchema.into());
+        }
+        Self::probe_native_discriminators(bytes)?;
+        let native = serde_json::from_slice::<JsonObject<C001InertIn>>(bytes)
+            .map_err(|error| crate::json_parse_error("decode native snapshot fields JSON", error))?
+            .0;
+        let reference = native.preserved_prospect;
+        reference.validate()?;
+        let encoded = read_bounded(
+            &self.root.join(reference.sidecar_name()),
+            reference.encoded_bytes(),
+        )?;
+        let preserved = reference.decode(encoded)?;
+        let snapshot = WorldSnapshot {
+            schema_version: native.schema_version,
+            tick: native.tick,
+            entities: native.entities,
+            native_world: Some(native.native_world),
+            preserved_prospect: Some(Arc::new(preserved)),
+            native_import: Some(native.native_import),
+        };
+        snapshot.validate()?;
+        Ok((snapshot, Some(reference)))
+    }
+
+    fn probe_native_discriminators(bytes: &[u8]) -> Result<()> {
         // Probe the format separately first: a future format is terminal even
         // when its class definitions no longer have the current shape.
         let format = serde_json::from_slice::<JsonObject<NativeProbe<NativeFormatProbe>>>(bytes)
@@ -396,32 +593,7 @@ impl SnapshotStore {
         }) {
             return Err(UnsupportedSchema.into());
         }
-        let native = serde_json::from_slice::<JsonObject<NativeIn>>(bytes)
-            .map_err(|error| crate::json_parse_error("decode native snapshot fields JSON", error))?
-            .0;
-        let reference = native.preserved_prospect;
-        let preserved = reference
-            .as_ref()
-            .map(|reference| {
-                reference.validate()?;
-                let encoded = read_bounded(
-                    &self.root.join(reference.sidecar_name()),
-                    reference.encoded_bytes(),
-                )?;
-                reference.decode(encoded).map(Arc::new)
-            })
-            .transpose()?;
-        let snapshot = WorldSnapshot {
-            schema_version: native.schema_version,
-            tick: native.tick,
-            entities: native.entities,
-            native_world: Some(native.native_world),
-            preserved_prospect: preserved,
-        };
-        // Validation recompiles the embedded catalog and verifies its identity
-        // and every native record before this generation can be activated.
-        snapshot.validate()?;
-        Ok((snapshot, reference))
+        Ok(())
     }
 
     /// The committed facts a save needs, with the outcomes of a full read: the
@@ -522,7 +694,7 @@ impl SnapshotStore {
 
     // The writer boundary permits deterministic publication failures in tests.
     // A preserved snapshot loaded from schema 2 or 3 writes schema 3; a native
-    // world stays schema 4. Its sidecar is durable (data, rename
+    // world stays schema 4 or 5. Its sidecar is durable (data, rename
     // and directory synchronized) before the generation referencing it is
     // written, and a sidecar that already verifies is reused, never rewritten.
     fn save_with_writer(
@@ -530,7 +702,7 @@ impl SnapshotStore {
         snapshot: &WorldSnapshot,
         mut write: impl FnMut(&Path, &str, &[u8]) -> Result<()>,
     ) -> Result<SaveReceipt> {
-        snapshot.validate()?;
+        let (bytes, reference) = encode_generation(snapshot)?;
         let manifest = self.manifest()?;
         let (number, previous, previous_sidecar) = match &manifest {
             Some(manifest) => {
@@ -554,12 +726,7 @@ impl SnapshotStore {
             }
             None => (1, None, None),
         };
-        let reference = snapshot
-            .preserved_prospect
-            .as_ref()
-            .map(|preserved| SectionReference::of(preserved));
         if let Some(reference) = &reference {
-            reference.validate()?;
             if previous_sidecar.as_ref() == Some(reference) {
                 // The probe just verified this sidecar's size and digest,
                 // and the committed generation's publication made it durable.
@@ -571,40 +738,6 @@ impl SnapshotStore {
                 self.publish_sidecar(snapshot, reference, &mut write)?;
             }
         }
-        // Choose schema 4 first: its optional preserved section must never
-        // route a native world through the schema-3 serializer.
-        let (bytes, limit) = if snapshot.schema_version == SNAPSHOT_SCHEMA_NATIVE {
-            let bytes = serde_json::to_vec(&NativeOut {
-                schema_version: SNAPSHOT_SCHEMA_NATIVE,
-                tick: snapshot.tick,
-                entities: &snapshot.entities,
-                native_world: snapshot
-                    .native_world
-                    .as_ref()
-                    .context("native world required")?,
-                preserved_prospect: reference.as_ref(),
-            })?;
-            (bytes, MAX_REFERENCED_SNAPSHOT_BYTES)
-        } else {
-            match &reference {
-                Some(reference) => {
-                    let bytes = serde_json::to_vec(&ReferencedOut {
-                        schema_version: SNAPSHOT_SCHEMA_REFERENCED,
-                        tick: snapshot.tick,
-                        entities: &snapshot.entities,
-                        preserved_prospect: reference,
-                    })?;
-                    (bytes, MAX_REFERENCED_SNAPSHOT_BYTES)
-                }
-                // Schema 1 serialization is unchanged.
-                None => (serde_json::to_vec(snapshot)?, MAX_DOMAIN_SNAPSHOT_BYTES),
-            }
-        };
-        ensure!(
-            bytes.len() as u64 <= limit,
-            "native snapshot exceeds {} MiB limit",
-            limit / (1024 * 1024)
-        );
         let generation = Generation {
             number,
             sha256: checksum(&bytes),
@@ -1386,7 +1519,7 @@ mod crash_consistency_tests {
         empty_worlds: usize,
         recovered_previous: usize,
         refused_orphans: usize,
-        /// Intact manifest-referenced schema-3/4 generations whose sidecar was
+        /// Intact manifest-referenced schema-3/4/5 generations whose sidecar was
         /// present with its recorded size and digest.
         referenced_sidecars: usize,
         /// Loads of a snapshot from an enclosing trace that a rewritten
@@ -1500,10 +1633,122 @@ mod crash_consistency_tests {
         }
     }
 
+    /// Complete authored C001 source; metadata is bound to its actual bytes.
+    fn inert(tick: u64, variant: u8) -> WorldSnapshot {
+        let structure = |name: &str, kind: &str, value: &[u8]| {
+            tag(
+                name,
+                "StructProperty",
+                &[string(kind), vec![0; 16]].concat(),
+                value,
+            )
+        };
+        let floats = |values: &[f32]| {
+            values
+                .iter()
+                .flat_map(|v| v.to_le_bytes())
+                .collect::<Vec<_>>()
+        };
+        let transform = [
+            structure("Translation", "Vector", &floats(&[0.0; 3])),
+            structure("Rotation", "Quat", &floats(&[0.0, 0.0, 0.0, 1.0])),
+            structure("Scale3D", "Vector", &floats(&[1.0; 3])),
+            string("None"),
+        ]
+        .concat();
+        let path = format!("/Authored/Model{variant}");
+        let body = [
+            tag("ActorClassName", "NameProperty", &[], &string("ModelClass")),
+            tag("ActorPathName", "StrProperty", &[], &string(&path)),
+            tag("ObjectFName", "NameProperty", &[], &string("ModelObject")),
+            tag(
+                "IcarusActorGUID",
+                "IntProperty",
+                &[],
+                &i32::from(variant).to_le_bytes(),
+            ),
+            tag("RecordedVersion", "IntProperty", &[], &3_i32.to_le_bytes()),
+            tag("bWasMovedToSubLevel", "BoolProperty", &[0], &[]),
+            structure("ActorTransform", "Transform", &transform),
+            string("None"),
+            vec![0; 4],
+        ]
+        .concat();
+        let record = [
+            tag(
+                "ComponentClassName",
+                "StrProperty",
+                &[],
+                &string("/Script/Icarus.ActorStateRecorderComponent"),
+            ),
+            tag(
+                "BinaryData",
+                "ArrayProperty",
+                &string("ByteProperty"),
+                &[
+                    i32::try_from(body.len()).unwrap().to_le_bytes().as_slice(),
+                    &body,
+                ]
+                .concat(),
+            ),
+            string("None"),
+        ]
+        .concat();
+        let shared = structure("StateRecorderBlobs", "StateRecorderBlob", &record);
+        let info = [
+            tag("ProspectID", "StrProperty", &[], &string("ModelProspect")),
+            string("None"),
+        ]
+        .concat();
+        let payload = [
+            tag("Version", "IntProperty", &[], &2_i32.to_le_bytes()),
+            structure("ProspectInfo", "ProspectInfo", &info),
+            tag("ProspectMapName", "StrProperty", &[], &string("ModelMap")),
+            tag(
+                "StateRecorderBlobs",
+                "ArrayProperty",
+                &string("StructProperty"),
+                &[1_i32.to_le_bytes().as_slice(), &shared].concat(),
+            ),
+            string("None"),
+        ]
+        .concat();
+        let source = Arc::new(
+            PreservedSection::from_inner_payload(&payload, PreserveLimits::default()).unwrap(),
+        );
+        let mut snapshot = native_snapshot(tick);
+        let native = snapshot.native_world.as_ref().unwrap();
+        let units = |value: &str| value.encode_utf16().collect::<Vec<_>>();
+        snapshot.native_import = Some(serde_json::from_value(serde_json::json!({
+            "format": 1, "adapter": "c001_inert_placement_v1",
+            "coordinates": "right_handed_z_up_meters_quat_xyzw_world_space",
+            "source_version": 2, "source_payload_sha256": crate::hex_lower(&source.payload_sha256()),
+            "native_catalog_id": native.catalog_id, "native_map": native.map,
+            "source_map": units("ModelMap"), "source_prospect_id": units("ModelProspect"),
+            "source_lobby_name": [], "source_last_saved_date_time": null,
+            "root_presence": {
+                "version": true, "lobby_privacy": false, "prospect_info": true,
+                "prospect_map_name": true, "last_saved_date_time": false,
+                "legacy_prospect_id": false, "legacy_prospect_dt_key": false,
+                "state_recorder_blobs": true
+            },
+            "owners": [{
+                "source_index": 0, "id": native.actors[0].id,
+                "source_actor_class": units("ModelClass"), "source_actor_path": units(&path),
+                "source_object_name": units("ModelObject"), "source_icarus_guid": i32::from(variant),
+                "native_placement": native.actors[0].placement, "native_class": native.actors[0].class
+            }]
+        })).unwrap());
+        snapshot.schema_version = SNAPSHOT_SCHEMA_C001_INERT;
+        snapshot.preserved_prospect = Some(source);
+        snapshot
+    }
+
     #[test]
     fn native_publication_fault_matrix_preserves_committed_state() {
         let (first, second) = (section(5), section(6));
-        for preserve in [false, true] {
+        for mode in 0..3 {
+            let preserve = mode != 0;
             for fail_at in ["sidecar", "snapshot-2.json", "manifest.json"] {
                 if fail_at == "sidecar" && !preserve {
                     continue;
@@ -1511,8 +1756,16 @@ mod crash_consistency_tests {
                 for after_write in [false, true] {
                     let directory = tempfile::tempdir().unwrap();
                     let root = directory.path();
-                    let before = native(10, preserve.then_some(&first));
-                    let attempted = native(20, preserve.then_some(&second));
+                    let before = if mode == 2 {
+                        inert(10, 5)
+                    } else {
+                        native(10, preserve.then_some(&first))
+                    };
+                    let attempted = if mode == 2 {
+                        inert(20, 6)
+                    } else {
+                        native(20, preserve.then_some(&second))
+                    };
                     let mut store = SnapshotStore::open(root).unwrap();
                     store.save(&before).unwrap();
                     let error = store
@@ -1541,7 +1794,11 @@ mod crash_consistency_tests {
                     let published = after_write && fail_at == "manifest.json";
                     let expected = if published { &attempted } else { &before };
                     assert_eq!(&reopened.load().unwrap().unwrap().snapshot, expected);
-                    let next = native(30, preserve.then_some(&second));
+                    let next = if mode == 2 {
+                        inert(30, 6)
+                    } else {
+                        native(30, preserve.then_some(&second))
+                    };
                     assert_eq!(
                         reopened.save(&next).unwrap().generation,
                         if published { 3 } else { 2 }
@@ -1552,7 +1809,7 @@ mod crash_consistency_tests {
         }
     }
 
-    /// Every intact, manifest-referenced schema-3/4 generation must find its
+    /// Every intact, manifest-referenced schema-3/4/5 generation must find its
     /// sidecar present with the recorded size and digest, whether or not the
     /// generation is ultimately selected by recovery.
     fn referenced_sidecars(state: &DiskState, exempt: u64) -> Result<usize, String> {
@@ -1583,6 +1840,11 @@ mod crash_consistency_tests {
                     serde_json::from_slice::<NativeIn>(bytes)
                         .ok()
                         .and_then(|native| native.preserved_prospect)
+                }
+                Some(schema) if schema == u64::from(SNAPSHOT_SCHEMA_C001_INERT) => {
+                    serde_json::from_slice::<C001InertIn>(bytes)
+                        .ok()
+                        .map(|native| native.preserved_prospect)
                 }
                 _ => None,
             };
@@ -2340,6 +2602,76 @@ mod crash_consistency_tests {
         }
         assert!(!root.join(sidecar_name(&first)).exists());
         assert!(!root.join(sidecar_name(&second)).exists());
+        assert_sidecar_durable_before_generation(&steps);
+        drop(store);
+        let trace = Trace {
+            root,
+            base: DiskState::new(),
+            initial: None,
+            exempt: 0,
+            history: Vec::new(),
+            steps,
+        };
+        let mut tally = Tally::default();
+        if let Err(violation) = enumerate(&trace, 1, &mut tally) {
+            panic!("{violation}");
+        }
+        assert!(tally.main.empty_worlds > 0);
+        assert!(tally.main.refused_orphans > 0);
+        assert!(tally.main.recovered_previous > 0);
+        assert!(tally.main.referenced_sidecars > 0);
+        assert!(tally.after_recovery.referenced_sidecars > tally.main.referenced_sidecars);
+        assert_eq!(
+            tally.recovery_saves,
+            tally.main.states - tally.main.refused_orphans
+        );
+    }
+
+    #[test]
+    fn inert_import_power_loss_preserves_metadata_source_and_sidecar_retention() {
+        let directory = tempfile::tempdir().unwrap();
+        let root = directory.path().to_path_buf();
+        let mut store = SnapshotStore::open(&root).unwrap();
+        let mut steps = Vec::new();
+        for (tick, variant) in [(10, 1), (20, 1), (30, 2)] {
+            traced_save(
+                &mut store,
+                &root,
+                &inert(tick, variant),
+                &mut steps,
+                atomic_write,
+            )
+            .unwrap();
+        }
+        let before = inert(20, 1);
+        let current = inert(30, 2);
+        damage(
+            &root,
+            &mut steps,
+            &sidecar_name(current.preserved_prospect.as_ref().unwrap()),
+            before.clone(),
+            3,
+        );
+        let recovered = store.load().unwrap().unwrap();
+        assert!(recovered.recovered_previous);
+        assert_eq!(recovered.snapshot, before);
+        for (tick, variant) in [(40, 2), (50, 3), (60, 3)] {
+            traced_save(
+                &mut store,
+                &root,
+                &inert(tick, variant),
+                &mut steps,
+                atomic_write,
+            )
+            .unwrap();
+        }
+        for obsolete in [&before, &current] {
+            assert!(
+                !root
+                    .join(sidecar_name(obsolete.preserved_prospect.as_ref().unwrap()))
+                    .exists()
+            );
+        }
         assert_sidecar_durable_before_generation(&steps);
         drop(store);
         let trace = Trace {

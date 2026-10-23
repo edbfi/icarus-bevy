@@ -109,6 +109,7 @@ fn snapshot(tick: u64, value: i32) -> WorldSnapshot {
         }],
         preserved_prospect: Some(Arc::new(section)),
         native_world: None,
+        native_import: None,
     }
 }
 
