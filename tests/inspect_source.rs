@@ -403,4 +403,23 @@ fn preserve_save_seeds_a_new_world_that_runs_and_never_overwrites() {
         .unwrap();
     assert!(committed["save_latency_micros"].as_u64().is_some());
     assert_eq!(sidecars(), 1);
+
+    // Recovery of the previous generation still means this destination is
+    // occupied: preservation must not replace its acknowledged world.
+    let manifest: Value =
+        serde_json::from_slice(&fs::read(world.join("manifest.json")).unwrap()).unwrap();
+    let generation = manifest["current"]["number"].as_u64().unwrap();
+    fs::write(
+        world.join(format!("snapshot-{generation}.json")),
+        b"corrupt",
+    )
+    .unwrap();
+    let store = icarus_bevy::persistence::SnapshotStore::open(&world).unwrap();
+    assert!(store.load().unwrap().unwrap().recovered_previous);
+    drop(store);
+    let before = inventory(&world);
+    let refused = preserve(directory.path());
+    assert_eq!(refused.status.code(), Some(1));
+    assert!(String::from_utf8_lossy(&refused.stderr).contains("refusing to overwrite"));
+    assert_eq!(inventory(&world), before);
 }

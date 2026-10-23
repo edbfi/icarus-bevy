@@ -108,6 +108,7 @@ fn snapshot(tick: u64, value: i32) -> WorldSnapshot {
             position: Position([1.0, 2.0, tick as f32]),
         }],
         preserved_prospect: Some(Arc::new(section)),
+        native_world: None,
     }
 }
 

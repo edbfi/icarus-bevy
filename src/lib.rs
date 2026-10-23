@@ -5,6 +5,8 @@ pub mod experimental;
 pub mod import_plan;
 mod json;
 pub mod metrics;
+pub mod native_runtime;
+pub mod native_world;
 pub mod network;
 pub mod pawn_stats;
 pub mod persistence;

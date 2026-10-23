@@ -87,6 +87,11 @@ manifest publication, preceding valid generation retained. Autosave defaults to
 60 seconds. Acknowledge only durable publication; validate/migrate before activation.
 Capture requires all components declared by the current native domain schema;
 an identified entity with missing required data must fail before publication.
+Schema 4 embeds a verified authored catalog and fixed-topology spatial records:
+stable domain IDs, class/placement/tile bindings, full poses and typed variables.
+Activation pins the catalog and expected entities; capture rejects missing or
+extra actors/components and invalid state. Authored bounds provide geometry,
+not physics or navigation. Coverage catalogs do not authorize native import.
 Supplied-save state may ride along as one lossless, value-opaque preserved
 section that reconstructs the verified payload byte-identically, is carried
 unchanged into every later generation and is never interpreted; it is written once as a content-addressed sidecar (F-567).

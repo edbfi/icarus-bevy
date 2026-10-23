@@ -366,6 +366,52 @@ fn snapshots_round_trip_and_keep_only_two_committed_generations() {
 }
 
 #[test]
+fn save_new_publishes_once_and_refuses_existing_or_recovered_worlds() {
+    let directory = tempfile::tempdir().unwrap();
+    let root = directory.path();
+    let mut store = SnapshotStore::open(root).unwrap();
+    let receipt = store.save_new(&snapshot(10)).unwrap();
+    assert_eq!(receipt.generation, 1);
+    assert_eq!(receipt.tick, 10);
+    assert_eq!(store.load().unwrap().unwrap().snapshot, snapshot(10));
+    let manifest = fs::read(root.join("manifest.json")).unwrap();
+    assert!(store.save_new(&snapshot(20)).is_err());
+    assert_eq!(fs::read(root.join("manifest.json")).unwrap(), manifest);
+    assert!(!root.join("snapshot-2.json").exists());
+
+    store.save(&snapshot(20)).unwrap();
+    fs::write(root.join("snapshot-2.json"), b"damaged").unwrap();
+    let manifest = fs::read(root.join("manifest.json")).unwrap();
+    drop(store);
+    let mut store = SnapshotStore::open(root).unwrap();
+    assert!(store.load().unwrap().unwrap().recovered_previous);
+    assert!(store.save_new(&snapshot(30)).is_err());
+    assert_eq!(fs::read(root.join("manifest.json")).unwrap(), manifest);
+    assert_eq!(fs::read(root.join("snapshot-2.json")).unwrap(), b"damaged");
+    assert!(!root.join("snapshot-3.json").exists());
+}
+
+#[test]
+fn save_new_refuses_orphan_generations_and_malformed_stores() {
+    for malformed_manifest in [false, true] {
+        let directory = tempfile::tempdir().unwrap();
+        let root = directory.path();
+        fs::write(root.join("snapshot-1.json"), b"orphan").unwrap();
+        if malformed_manifest {
+            fs::write(root.join("manifest.json"), b"malformed").unwrap();
+        }
+        let mut store = SnapshotStore::open(root).unwrap();
+        assert!(store.save_new(&snapshot(10)).is_err());
+        assert_eq!(fs::read(root.join("snapshot-1.json")).unwrap(), b"orphan");
+        if malformed_manifest {
+            assert_eq!(fs::read(root.join("manifest.json")).unwrap(), b"malformed");
+        } else {
+            assert!(!root.join("manifest.json").exists());
+        }
+    }
+}
+
+#[test]
 fn data_directory_has_a_single_writer() {
     let directory = tempfile::tempdir().unwrap();
     let store = SnapshotStore::open(directory.path()).unwrap();
@@ -627,16 +673,15 @@ fn future_schema_is_not_silently_rolled_back() {
     let mut store = SnapshotStore::open(directory.path()).unwrap();
     store.save(&snapshot(10)).unwrap();
     store.save(&snapshot(20)).unwrap();
-    // Schemas 2 and 3 are now the defined preserved-section schemas, so the
-    // future schema fixture uses 4.
-    let bytes = br#"{"schema_version":4,"tick":20,"entities":[],"new_field":true}"#;
+    // Schema 4 is the native-world format, so the future schema fixture uses 5.
+    let bytes = br#"{"schema_version":5,"tick":20,"entities":[],"new_field":true}"#;
     fs::write(directory.path().join("snapshot-2.json"), bytes).unwrap();
     let path = directory.path().join("manifest.json");
     let mut manifest: serde_json::Value =
         serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
     // Independently calculated with coreutils sha256sum over the fixture bytes.
     manifest["current"]["sha256"] =
-        "30b2354e0efef1bf1d79f23b3448e25c1695a8b330f73bf03701d0db9dc8123f".into();
+        "c18f2207dd8753a20c3e86be7f391c818f28d0fe21ffd07273bd5c02cbdfd6a8".into();
     fs::write(path, serde_json::to_vec(&manifest).unwrap()).unwrap();
     assert!(
         store

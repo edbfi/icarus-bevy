@@ -7,7 +7,7 @@ full text under `retired/`. Admission and columns follow `.agents/rules/docs.md`
 
 Before restructure: 96ddb0b:docs/ledgers/findings.md
 
-Last reconciled: 2026-10-22
+Last reconciled: 2026-10-23
 
 | ID | Claim | Kind | Evidence | Scope and limits | Unknowns | Status |
 | --- | --- | --- | --- | --- | --- | --- |
@@ -54,3 +54,4 @@ Last reconciled: 2026-10-22
 | F-804 | run answers Join with PlayerController (2, F-852), pawn (3, F-854), GameState (4, F-794; a preserved world's prospect, game mode values and level clock, F-855) and PlayerState (5, F-784) opens; exports until acked (F-796), resent on nak | measured | authored-test; M-821, M-823, M-832, M-836, M-838 to M-840 | high; loopback probe; no ICARUS client | U-038, U-068 | active |
 | F-833 | Paced holds on run (30 Hz, 60 s saves): one session 1 h and 8 h, eight 1 h and 10.1 h (until a host reboot's SIGTERM closed all 8): 0 save failures or tick misses, p99 <= 151 us, gaps <= 278 ms, RSS ~113 MB flat; the world reloads its last save | measured | authored-test; M-849, M-861, M-865, M-871 | high; 8 h RSS until swapped; 8 h probe pre-#57; no 10.1 h stats | U-035 | active |
 | F-877 | Per 300 s with 8..64 sessions on run all join and update (gaps <= 302 ms, tick p99 <= 76 us, 0 misses, RSS ~113.8 MB); updates over a datagram go as unreliable partials (F-825), so all 64 reassemble NetworkingStatus (2..6 parts), which 41 of 64 once never saw | measured | authored-test; M-862, M-864 | high; 300 s each; loopback probes | U-035, U-049 | active |
+| F-919 | Authored spatial worlds prepare atomically and retain full poses, typed state and pinned definitions through schema-4 storage, Bevy capture and reload; damaged topology rejects, publication faults and modeled crashes preserve acknowledged state | observed | authored-test; M-915, M-918 | high; fixed topology, geometry only; no official import, physics or client proof | U-045 | active |

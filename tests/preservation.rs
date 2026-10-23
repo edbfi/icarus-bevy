@@ -201,6 +201,7 @@ fn preserved_snapshot(tick: u64, preserved: &Arc<PreservedSection>) -> WorldSnap
             position: Position([1.0, 2.0, 3.0]),
         }],
         preserved_prospect: Some(Arc::clone(preserved)),
+        native_world: None,
     }
 }
 
@@ -494,6 +495,7 @@ fn schema_one_snapshots_still_load_and_stay_schema_one() {
     let loaded = store.load().unwrap().unwrap();
     assert!(!loaded.recovered_previous);
     assert_eq!(loaded.snapshot.schema_version, 1);
+    assert!(loaded.snapshot.native_world.is_none());
     assert!(loaded.snapshot.preserved_prospect.is_none());
     assert_eq!(loaded.snapshot.entities[0].id, DomainId(3));
 
@@ -630,6 +632,7 @@ fn schema_two_inline_worlds_migrate_to_schema_three_on_the_next_save() {
     let store = SnapshotStore::open(root).unwrap();
     let loaded = store.load().unwrap().unwrap();
     assert_eq!(loaded.snapshot, legacy_snapshot(10, &preserved));
+    assert!(loaded.snapshot.native_world.is_none());
     assert!(sidecars(root).is_empty());
     // The running world captures schema 3, and the save writes the sidecar.
     let mut app = build_app(&ServerConfig::default(), &loaded.snapshot).unwrap();
@@ -955,6 +958,7 @@ fn schema_three_recovery_from_previous_generation_is_unchanged() {
     let recovered = store.load().unwrap().unwrap();
     assert!(recovered.recovered_previous);
     assert_eq!(recovered.snapshot, preserved_snapshot(10, &preserved));
+    assert!(recovered.snapshot.native_world.is_none());
     assert_eq!(
         recovered
             .snapshot
