@@ -12,6 +12,7 @@ use anyhow::{Context, Result, ensure};
 use bevy::prelude::{Component, Entity, Resource, World};
 
 use crate::{
+    native_c001_owners::C001OwnerImportMetadataV1,
     native_lifecycle::{
         CompiledNativeLifecycle, CompletedRestore, LifecycleSnapshot, OwnerHandle, Presence,
         RecorderComponentRecord, RestoreBatch, prepare_owner_restore,
@@ -31,8 +32,8 @@ use crate::{
     },
     persistence::SnapshotStore,
     simulation::{
-        DomainId, Position, PreservedProspectState, SNAPSHOT_SCHEMA_LIFECYCLE, SimulationClock,
-        WorldSnapshot,
+        DomainId, Position, PreservedProspectState, SNAPSHOT_SCHEMA_C001_OWNERS,
+        SNAPSHOT_SCHEMA_LIFECYCLE, SimulationClock, WorldSnapshot,
     },
 };
 
@@ -46,6 +47,11 @@ pub struct NativeOwnerName(pub Vec<u16>);
 #[derive(Component, Clone, PartialEq)]
 pub struct NativeOwnerRecorder(pub RecorderComponentRecord);
 
+/// Immutable authored source provenance. Capture checks this resource against
+/// the privately pinned activation; it never becomes mutable owner authority.
+#[derive(Resource, Clone)]
+pub struct C001OwnerImportState(pub Arc<C001OwnerImportMetadataV1>);
+
 struct Definitions {
     // Shared by every activation pin, including clones of SnapshotMode. A
     // stale resource cannot roll this back by restoring its observed generation.
@@ -54,6 +60,7 @@ struct Definitions {
     lifecycle: CompiledNativeLifecycle,
     relationships: Option<CompiledNativeRelationships>,
     identities: BTreeMap<DomainId, NativeRelationshipIdentity>,
+    imported: Option<Arc<C001OwnerImportMetadataV1>>,
 }
 
 /// Private fields prevent callers from updating a registry independently of its
@@ -90,7 +97,8 @@ pub enum NativeRestoreResult {
 pub(crate) fn ensure_no_lifecycle_state(world: &World) -> Result<()> {
     ensure!(
         !world.contains_resource::<NativeLifecycleContext>()
-            && !world.contains_resource::<DormantNativeSlots>(),
+            && !world.contains_resource::<DormantNativeSlots>()
+            && !world.contains_resource::<C001OwnerImportState>(),
         "world contains unexpected lifecycle resources"
     );
     for entity in world.iter_entities() {
@@ -99,7 +107,8 @@ pub(crate) fn ensure_no_lifecycle_state(world: &World) -> Result<()> {
                 && !entity.contains::<NativeOwnerName>()
                 && !entity.contains::<NativeOwnerRecorder>()
                 && !entity.contains::<NativeLifecycleContext>()
-                && !entity.contains::<DormantNativeSlots>(),
+                && !entity.contains::<DormantNativeSlots>()
+                && !entity.contains::<C001OwnerImportState>(),
             "world contains unexpected lifecycle components"
         );
     }
@@ -151,6 +160,13 @@ fn stage(snapshot: &WorldSnapshot, definitions: &Definitions) -> Result<StagedWo
         .native_lifecycle
         .as_ref()
         .context("lifecycle state missing")?;
+    ensure!(
+        snapshot.native_owner_import.as_ref() == definitions.imported.as_deref(),
+        "owner source provenance differs from loaded activation"
+    );
+    if let Some(metadata) = &definitions.imported {
+        metadata.validate_current_state(native, lifecycle)?;
+    }
     definitions.lifecycle.validate_snapshot(lifecycle, native)?;
     let by_id: BTreeMap<_, _> = native
         .actors
@@ -262,7 +278,10 @@ fn insert_actor(world: &mut World, entity: Entity, actor: StagedActor) {
 pub(crate) fn activate_lifecycle(world: &mut World, snapshot: &WorldSnapshot) -> Result<()> {
     snapshot.validate()?;
     ensure!(
-        snapshot.schema_version == SNAPSHOT_SCHEMA_LIFECYCLE,
+        matches!(
+            snapshot.schema_version,
+            SNAPSHOT_SCHEMA_LIFECYCLE | SNAPSHOT_SCHEMA_C001_OWNERS
+        ),
         "lifecycle schema required"
     );
     ensure_no_lifecycle_state(world)?;
@@ -308,8 +327,15 @@ pub(crate) fn activate_lifecycle(world: &mut World, snapshot: &WorldSnapshot) ->
         lifecycle: compiled,
         relationships,
         identities,
+        imported: snapshot
+            .native_owner_import
+            .as_ref()
+            .map(|metadata| Arc::new(metadata.clone())),
     });
     let staged = stage(snapshot, &definitions)?;
+    if let Some(metadata) = &definitions.imported {
+        world.insert_resource(C001OwnerImportState(Arc::clone(metadata)));
+    }
     let mut live = BTreeMap::new();
     for actor in staged.actors {
         let id = actor.record.id;
@@ -403,6 +429,18 @@ pub(crate) fn capture_lifecycle(world: &World) -> Result<WorldSnapshot> {
         "dormant state differs from loaded activation"
     );
     let definitions = &context.definitions;
+    ensure!(
+        match (
+            world.get_resource::<C001OwnerImportState>(),
+            &definitions.imported
+        ) {
+            (None, None) => true,
+            (Some(actual), Some(expected)) =>
+                Arc::ptr_eq(&actual.0, expected) || actual.0 == *expected,
+            _ => false,
+        },
+        "owner source provenance differs from loaded activation"
+    );
     let slots: BTreeMap<_, _> = context
         .lifecycle
         .slots
@@ -431,6 +469,14 @@ pub(crate) fn capture_lifecycle(world: &World) -> Result<WorldSnapshot> {
     );
     let expected_entities: BTreeSet<_> = context.live.values().copied().collect();
     for entity in world.iter_entities() {
+        if let Some(metadata) = entity.get::<C001OwnerImportState>() {
+            ensure!(
+                world
+                    .get_resource::<C001OwnerImportState>()
+                    .is_some_and(|resource| std::ptr::eq(metadata, resource)),
+                "lifecycle world contains unregistered owner provenance"
+            );
+        }
         if let Some(id) = entity.get::<DomainId>() {
             ensure!(
                 context.live.get(id) == Some(&entity.id()),
@@ -614,8 +660,15 @@ pub(crate) fn capture_lifecycle(world: &World) -> Result<WorldSnapshot> {
     definitions
         .lifecycle
         .validate_snapshot(&context.lifecycle, &native)?;
+    if let Some(metadata) = &definitions.imported {
+        metadata.validate_current_state(&native, &context.lifecycle)?;
+    }
     Ok(WorldSnapshot {
-        schema_version: SNAPSHOT_SCHEMA_LIFECYCLE,
+        schema_version: if definitions.imported.is_some() {
+            SNAPSHOT_SCHEMA_C001_OWNERS
+        } else {
+            SNAPSHOT_SCHEMA_LIFECYCLE
+        },
         tick: world
             .get_resource::<SimulationClock>()
             .context("world lacks simulation clock")?
@@ -625,6 +678,7 @@ pub(crate) fn capture_lifecycle(world: &World) -> Result<WorldSnapshot> {
         native_import: None,
         native_relationships: relationships,
         native_lifecycle: Some(context.lifecycle.clone()),
+        native_owner_import: definitions.imported.as_deref().cloned(),
         preserved_prospect: world
             .get_resource::<PreservedProspectState>()
             .map(|state| Arc::clone(&state.0)),

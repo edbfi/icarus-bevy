@@ -18,15 +18,16 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 use crate::json::JsonObject;
+use crate::native_c001_owners::C001OwnerImportMetadataV1;
 use crate::native_import::C001InertImportMetadataV1;
 use crate::native_lifecycle::LifecycleSnapshot;
 use crate::native_relationships::NativeRelationshipsSnapshot;
 use crate::native_world::NativeWorldSnapshot;
 use crate::preservation::{MAX_PRESERVED_BASE64_BYTES, SectionReference, is_sidecar_name};
 use crate::simulation::{
-    EntityRecord, SNAPSHOT_SCHEMA_C001_INERT, SNAPSHOT_SCHEMA_DOMAIN, SNAPSHOT_SCHEMA_LIFECYCLE,
-    SNAPSHOT_SCHEMA_NATIVE, SNAPSHOT_SCHEMA_PRESERVED, SNAPSHOT_SCHEMA_REFERENCED,
-    SNAPSHOT_SCHEMA_RELATIONSHIPS, WorldSnapshot,
+    EntityRecord, SNAPSHOT_SCHEMA_C001_INERT, SNAPSHOT_SCHEMA_C001_OWNERS, SNAPSHOT_SCHEMA_DOMAIN,
+    SNAPSHOT_SCHEMA_LIFECYCLE, SNAPSHOT_SCHEMA_NATIVE, SNAPSHOT_SCHEMA_PRESERVED,
+    SNAPSHOT_SCHEMA_REFERENCED, SNAPSHOT_SCHEMA_RELATIONSHIPS, WorldSnapshot,
 };
 
 /// Schema 1 bound, unchanged: domain records and the clock only.
@@ -34,7 +35,7 @@ const MAX_DOMAIN_SNAPSHOT_BYTES: u64 = 64 * 1024 * 1024;
 /// Schema 2 adds at most one 64 MiB Base64 preserved section (whose decoded
 /// size is checked separately), so a generation file may reach 128 MiB.
 const MAX_SNAPSHOT_BYTES: u64 = MAX_DOMAIN_SNAPSHOT_BYTES + MAX_PRESERVED_BASE64_BYTES as u64;
-/// Aggregate generation cap for schemas 3 through 7, including inline native
+/// Aggregate generation cap for schemas 3 through 8, including inline native
 /// definitions, metadata, relationship/lifecycle state and any fixed-size
 /// sidecar reference. Individual section limits do not reserve extra space:
 /// preflight and publication reject a combined encoding above this cap.
@@ -335,6 +336,56 @@ struct DedicatedLifecycleIn {
     preserved_prospect: Option<SectionReference>,
 }
 
+/// Schema 8 binds complete lifecycle state to immutable authored C001 source
+/// provenance. Preservation is a required sidecar reference, never inline.
+#[derive(Serialize)]
+struct C001OwnersOut<'a> {
+    schema_version: u32,
+    tick: u64,
+    entities: &'a [EntityRecord],
+    native_world: &'a NativeWorldSnapshot,
+    native_lifecycle: &'a LifecycleSnapshot,
+    native_owner_import: &'a C001OwnerImportMetadataV1,
+    preserved_prospect: &'a SectionReference,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    native_relationships: Option<&'a NativeRelationshipsSnapshot>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct C001OwnersIn {
+    schema_version: u32,
+    tick: u64,
+    #[serde(deserialize_with = "crate::json::objects")]
+    entities: Vec<EntityRecord>,
+    #[serde(deserialize_with = "crate::json::object")]
+    native_world: NativeWorldSnapshot,
+    #[serde(deserialize_with = "crate::json::object")]
+    native_lifecycle: LifecycleSnapshot,
+    #[serde(deserialize_with = "crate::json::object")]
+    native_owner_import: C001OwnerImportMetadataV1,
+    #[serde(deserialize_with = "crate::json::object")]
+    preserved_prospect: SectionReference,
+    #[serde(default, deserialize_with = "crate::json::optional_object")]
+    native_relationships: Option<NativeRelationshipsSnapshot>,
+}
+
+/// Raw section probes deliberately accept malformed member shapes. Typed
+/// decoding rejects them only after every independent discriminator was scanned.
+#[derive(Deserialize)]
+struct C001OwnersProbe {
+    #[serde(default)]
+    native_world: serde_json::Value,
+    #[serde(default)]
+    native_lifecycle: serde_json::Value,
+    #[serde(default)]
+    native_relationships: serde_json::Value,
+    #[serde(default)]
+    native_owner_import: serde_json::Value,
+    #[serde(default)]
+    preserved_prospect: serde_json::Value,
+}
+
 #[derive(Deserialize)]
 struct LifecycleProbe {
     #[serde(default)]
@@ -371,6 +422,167 @@ struct OptionalRelationshipsProbe {
     native_relationships: Option<RelationshipDefinitionProbe<RelationshipFormatProbe>>,
 }
 
+fn future_enum(value: &serde_json::Value, accepted: &[&str]) -> bool {
+    value
+        .as_str()
+        .is_some_and(|value| !accepted.contains(&value))
+}
+
+fn future_format(value: &serde_json::Value, current: u32) -> bool {
+    value
+        .as_u64()
+        .is_some_and(|format| format > u64::from(current))
+}
+
+fn future_completion_discriminator(completion: &serde_json::Value) -> bool {
+    completion["outcomes"].as_array().is_some_and(|outcomes| {
+        outcomes.iter().any(|outcome| {
+            future_enum(
+                &outcome["policy"],
+                &["find_only", "find_or_respawn", "respawn_only"],
+            ) || future_enum(&outcome["source"]["type"], &["bound", "detached"])
+                || future_enum(&outcome["before_presence"], &["absent", "live"])
+                || future_enum(
+                    &outcome["disposition"],
+                    &["kept_bound", "attached", "spawned", "replaced"],
+                )
+                || future_enum(&outcome["component_disposition"], &["existing", "created"])
+        })
+    })
+}
+
+fn future_native_discriminator(native: &serde_json::Value) -> bool {
+    let future_values = |values: &serde_json::Value| {
+        values.as_array().is_some_and(|values| {
+            values.iter().any(|value| {
+                future_enum(&value["value"]["type"], &["bool", "i32", "f32", "string"])
+            })
+        })
+    };
+    future_format(
+        &native["definitions"]["native_format"],
+        crate::native_world::NATIVE_FORMAT,
+    ) || future_enum(
+        &native["definitions"]["frame"],
+        &["right_handed_z_up_meters"],
+    ) || native["definitions"]["classes"]
+        .as_array()
+        .is_some_and(|classes| {
+            classes.iter().any(|class| {
+                future_enum(&class["kind"], &["spatial_object_v1"])
+                    || class["variables"].as_array().is_some_and(|variables| {
+                        variables.iter().any(|variable| {
+                            future_enum(
+                                &variable["default"]["type"],
+                                &["bool", "i32", "f32", "string"],
+                            )
+                        })
+                    })
+            })
+        })
+        || native["definitions"]["maps"]
+            .as_array()
+            .is_some_and(|maps| {
+                maps.iter().any(|map| {
+                    map["placements"].as_array().is_some_and(|placements| {
+                        placements
+                            .iter()
+                            .any(|placement| future_values(&placement["initial_values"]))
+                    })
+                })
+            })
+        || native["actors"].as_array().is_some_and(|actors| {
+            actors
+                .iter()
+                .any(|actor| future_values(&actor["variables"]))
+        })
+}
+
+fn future_lifecycle_discriminator(lifecycle: &serde_json::Value) -> bool {
+    future_format(
+        &lifecycle["definition"]["lifecycle_format"],
+        crate::native_lifecycle::NATIVE_LIFECYCLE_FORMAT,
+    ) || lifecycle["definition"]["slots"]
+        .as_array()
+        .is_some_and(|slots| {
+            slots.iter().any(|slot| {
+                future_enum(&slot["recorder_kind"], &["spatial_state_v1"])
+                    || future_enum(&slot["initial_presence"], &["absent", "live"])
+                    || future_enum(&slot["spawn_component"], &["missing", "declared_kind"])
+                    || future_enum(&slot["initial_component"]["kind"], &["spatial_state_v1"])
+            })
+        })
+        || lifecycle["slots"].as_array().is_some_and(|slots| {
+            slots.iter().any(|slot| {
+                future_enum(&slot["presence"], &["absent", "live"])
+                    || future_enum(&slot["component"]["kind"], &["spatial_state_v1"])
+            })
+        })
+        || lifecycle["bindings"].as_array().is_some_and(|bindings| {
+            bindings
+                .iter()
+                .any(|binding| future_enum(&binding["kind"], &["spatial_state_v1"]))
+        })
+        || future_completion_discriminator(&lifecycle["completed"])
+}
+
+fn future_relationship_discriminator(relationships: &serde_json::Value) -> bool {
+    future_format(
+        &relationships["definition"]["relationship_format"],
+        crate::native_relationships::NATIVE_RELATIONSHIP_FORMAT,
+    ) || relationships["definition"]["actors"]
+        .as_array()
+        .is_some_and(|actors| {
+            actors
+                .iter()
+                .any(|actor| future_enum(&actor["role"], &["spatial", "deployable", "foundation"]))
+        })
+}
+
+fn future_owner_import_discriminator(metadata: &serde_json::Value) -> bool {
+    future_format(
+        &metadata["format"],
+        crate::native_c001_owners::C001_OWNER_IMPORT_FORMAT,
+    ) || future_enum(&metadata["adapter"], &["c001_authored_owners_v1"])
+        || future_enum(
+            &metadata["coordinates"],
+            &["right_handed_z_up_meters_quat_xyzw_world_space"],
+        )
+        || metadata["owners"].as_array().is_some_and(|owners| {
+            owners.iter().any(|owner| {
+                future_enum(
+                    &owner["source_policy"],
+                    &["find_only", "find_or_respawn", "respawn_only"],
+                ) || future_enum(&owner["binding"]["expected_presence"], &["absent", "live"])
+            })
+        })
+        || future_completion_discriminator(&metadata["initial_completion"])
+}
+
+fn encode_bounded_generation(value: &impl Serialize, limit: u64) -> Result<Vec<u8>> {
+    struct Counter {
+        bytes: u64,
+        limit: u64,
+    }
+    impl Write for Counter {
+        fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+            self.bytes = self
+                .bytes
+                .checked_add(bytes.len() as u64)
+                .filter(|total| *total <= self.limit)
+                .ok_or_else(|| std::io::Error::other("native snapshot exceeds its size limit"))?;
+            Ok(bytes.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+    // Count all inline sections and the sidecar reference together before
+    // allocating the complete encoding, with exactly the publication serializer.
+    serde_json::to_writer(&mut Counter { bytes: 0, limit }, value)?;
+    Ok(serde_json::to_vec(value)?)
+}
+
 /// Pure generation preparation shared by preflight and durable publication.
 fn encode_generation(snapshot: &WorldSnapshot) -> Result<(Vec<u8>, Option<SectionReference>)> {
     snapshot.validate()?;
@@ -383,6 +595,31 @@ fn encode_generation(snapshot: &WorldSnapshot) -> Result<(Vec<u8>, Option<Sectio
     }
     // Dispatch by schema before considering an optional source sidecar.
     let (bytes, limit) = match snapshot.schema_version {
+        SNAPSHOT_SCHEMA_C001_OWNERS => (
+            encode_bounded_generation(
+                &C001OwnersOut {
+                    schema_version: SNAPSHOT_SCHEMA_C001_OWNERS,
+                    tick: snapshot.tick,
+                    entities: &snapshot.entities,
+                    native_world: snapshot
+                        .native_world
+                        .as_ref()
+                        .context("native world required")?,
+                    native_lifecycle: snapshot
+                        .native_lifecycle
+                        .as_ref()
+                        .context("native lifecycle required")?,
+                    native_owner_import: snapshot
+                        .native_owner_import
+                        .as_ref()
+                        .context("native owner import metadata required")?,
+                    preserved_prospect: reference.as_ref().context("preserved source required")?,
+                    native_relationships: snapshot.native_relationships.as_ref(),
+                },
+                MAX_REFERENCED_SNAPSHOT_BYTES,
+            )?,
+            MAX_REFERENCED_SNAPSHOT_BYTES,
+        ),
         SNAPSHOT_SCHEMA_LIFECYCLE => (
             serde_json::to_vec(&DedicatedLifecycleOut {
                 schema_version: SNAPSHOT_SCHEMA_LIFECYCLE,
@@ -636,6 +873,9 @@ impl SnapshotStore {
             Some(schema) if schema == u64::from(SNAPSHOT_SCHEMA_LIFECYCLE) => {
                 return self.decode_lifecycle(bytes);
             }
+            Some(schema) if schema == u64::from(SNAPSHOT_SCHEMA_C001_OWNERS) => {
+                return self.decode_c001_owners(bytes);
+            }
             _ => return Err(UnsupportedSchema.into()),
         }
         let legacy = serde_json::from_slice::<JsonObject<LegacyIn>>(bytes)
@@ -650,6 +890,7 @@ impl SnapshotStore {
             native_import: legacy.native_import,
             native_relationships: None,
             native_lifecycle: None,
+            native_owner_import: None,
         };
         snapshot.validate()?;
         Ok((snapshot, None))
@@ -684,6 +925,7 @@ impl SnapshotStore {
             native_import: None,
             native_relationships: None,
             native_lifecycle: None,
+            native_owner_import: None,
         };
         snapshot.validate()?;
         Ok((snapshot, Some(reference)))
@@ -719,6 +961,7 @@ impl SnapshotStore {
             native_import: None,
             native_relationships: None,
             native_lifecycle: None,
+            native_owner_import: None,
         };
         // Validation recompiles the embedded catalog and verifies its identity
         // and every native record before this generation can be activated.
@@ -756,6 +999,7 @@ impl SnapshotStore {
             native_import: Some(native.native_import),
             native_relationships: None,
             native_lifecycle: None,
+            native_owner_import: None,
         };
         snapshot.validate()?;
         Ok((snapshot, Some(reference)))
@@ -837,6 +1081,7 @@ impl SnapshotStore {
             native_import: native.native_import,
             native_relationships: Some(native.native_relationships),
             native_lifecycle: None,
+            native_owner_import: None,
         };
         snapshot.validate()?;
         Ok((snapshot, reference))
@@ -873,16 +1118,7 @@ impl SnapshotStore {
             })?
             .0
             .native_relationships;
-        if raw["definition"]["actors"]
-            .as_array()
-            .is_some_and(|actors| {
-                actors.iter().any(|actor| {
-                    actor["role"].as_str().is_some_and(|role| {
-                        !matches!(role, "spatial" | "deployable" | "foundation")
-                    })
-                })
-            })
-        {
+        if future_relationship_discriminator(&raw) {
             return Err(UnsupportedSchema.into());
         }
         format?;
@@ -942,9 +1178,67 @@ impl SnapshotStore {
             native_relationships: native.native_relationships,
             preserved_prospect: preserved,
             native_import: None,
+            native_owner_import: None,
         };
         snapshot.validate()?;
         Ok((snapshot, reference))
+    }
+
+    fn decode_c001_owners(
+        &self,
+        bytes: &[u8],
+    ) -> Result<(WorldSnapshot, Option<SectionReference>)> {
+        ensure!(
+            bytes.len() as u64 <= MAX_REFERENCED_SNAPSHOT_BYTES,
+            "schema 8 native snapshot exceeds its size limit"
+        );
+        Self::probe_c001_owner_discriminators(bytes)?;
+        let native = serde_json::from_slice::<JsonObject<C001OwnersIn>>(bytes)
+            .map_err(|error| crate::json_parse_error("decode native snapshot fields JSON", error))?
+            .0;
+        let reference = native.preserved_prospect;
+        reference.validate()?;
+        let encoded = read_bounded(
+            &self.root.join(reference.sidecar_name()),
+            reference.encoded_bytes(),
+        )?;
+        let preserved = reference.decode(encoded)?;
+        let snapshot = WorldSnapshot {
+            schema_version: native.schema_version,
+            tick: native.tick,
+            entities: native.entities,
+            native_world: Some(native.native_world),
+            native_lifecycle: Some(native.native_lifecycle),
+            native_owner_import: Some(native.native_owner_import),
+            native_relationships: native.native_relationships,
+            preserved_prospect: Some(Arc::new(preserved)),
+            native_import: None,
+        };
+        snapshot.validate()?;
+        Ok((snapshot, Some(reference)))
+    }
+
+    fn probe_c001_owner_discriminators(bytes: &[u8]) -> Result<()> {
+        let probe = serde_json::from_slice::<JsonObject<C001OwnersProbe>>(bytes)
+            .map_err(|error| {
+                crate::json_parse_error("decode native snapshot discriminators JSON", error)
+            })?
+            .0;
+        // All scans are independent of typed field admission. In particular,
+        // malformed objects or enums early in an array cannot hide later
+        // upgrade requirements or cause a missing sidecar to select old state.
+        if future_native_discriminator(&probe.native_world)
+            || future_lifecycle_discriminator(&probe.native_lifecycle)
+            || future_relationship_discriminator(&probe.native_relationships)
+            || future_owner_import_discriminator(&probe.native_owner_import)
+            || future_format(
+                &probe.preserved_prospect["encoding"],
+                crate::preservation::PRESERVED_ENCODING_VERSION,
+            )
+        {
+            return Err(UnsupportedSchema.into());
+        }
+        Ok(())
     }
 
     fn probe_lifecycle_discriminators(bytes: &[u8]) -> Result<()> {
@@ -969,54 +1263,8 @@ impl SnapshotStore {
             .map_err(|error| crate::json_parse_error("decode native lifecycle fields JSON", error))?
             .0
             .native_lifecycle;
-        let future = |value: &serde_json::Value, accepted: &[&str]| {
-            value
-                .as_str()
-                .is_some_and(|value| !accepted.contains(&value))
-        };
-        if let Some(slots) = lifecycle["definition"]["slots"].as_array() {
-            for slot in slots {
-                if future(&slot["recorder_kind"], &["spatial_state_v1"])
-                    || future(&slot["initial_presence"], &["absent", "live"])
-                    || future(&slot["spawn_component"], &["missing", "declared_kind"])
-                    || future(&slot["initial_component"]["kind"], &["spatial_state_v1"])
-                {
-                    return Err(UnsupportedSchema.into());
-                }
-            }
-        }
-        if let Some(slots) = lifecycle["slots"].as_array() {
-            for slot in slots {
-                if future(&slot["presence"], &["absent", "live"])
-                    || future(&slot["component"]["kind"], &["spatial_state_v1"])
-                {
-                    return Err(UnsupportedSchema.into());
-                }
-            }
-        }
-        if let Some(bindings) = lifecycle["bindings"].as_array()
-            && bindings
-                .iter()
-                .any(|binding| future(&binding["kind"], &["spatial_state_v1"]))
-        {
+        if future_lifecycle_discriminator(&lifecycle) {
             return Err(UnsupportedSchema.into());
-        }
-        if let Some(outcomes) = lifecycle["completed"]["outcomes"].as_array() {
-            for outcome in outcomes {
-                if future(
-                    &outcome["policy"],
-                    &["find_only", "find_or_respawn", "respawn_only"],
-                ) || future(&outcome["source"]["type"], &["bound", "detached"])
-                    || future(&outcome["before_presence"], &["absent", "live"])
-                    || future(
-                        &outcome["disposition"],
-                        &["kept_bound", "attached", "spawned", "replaced"],
-                    )
-                    || future(&outcome["component_disposition"], &["existing", "created"])
-                {
-                    return Err(UnsupportedSchema.into());
-                }
-            }
         }
         format?;
         Ok(())
@@ -1036,53 +1284,7 @@ impl SnapshotStore {
             .map_err(|error| crate::json_parse_error("decode native snapshot fields JSON", error))?
             .0
             .native_world;
-        let future = |value: &serde_json::Value, accepted: &[&str]| {
-            value
-                .as_str()
-                .is_some_and(|value| !accepted.contains(&value))
-        };
-        let future_values = |values: &serde_json::Value| {
-            values.as_array().is_some_and(|values| {
-                values
-                    .iter()
-                    .any(|value| future(&value["value"]["type"], &["bool", "i32", "f32", "string"]))
-            })
-        };
-        if future(
-            &native["definitions"]["frame"],
-            &["right_handed_z_up_meters"],
-        ) {
-            return Err(UnsupportedSchema.into());
-        }
-        if let Some(classes) = native["definitions"]["classes"].as_array() {
-            for class in classes {
-                if future(&class["kind"], &["spatial_object_v1"])
-                    || class["variables"].as_array().is_some_and(|variables| {
-                        variables.iter().any(|value| {
-                            future(&value["default"]["type"], &["bool", "i32", "f32", "string"])
-                        })
-                    })
-                {
-                    return Err(UnsupportedSchema.into());
-                }
-            }
-        }
-        if let Some(maps) = native["definitions"]["maps"].as_array() {
-            for map in maps {
-                if map["placements"].as_array().is_some_and(|placements| {
-                    placements
-                        .iter()
-                        .any(|placement| future_values(&placement["initial_values"]))
-                }) {
-                    return Err(UnsupportedSchema.into());
-                }
-            }
-        }
-        if native["actors"].as_array().is_some_and(|actors| {
-            actors
-                .iter()
-                .any(|actor| future_values(&actor["variables"]))
-        }) {
+        if future_native_discriminator(&native) {
             return Err(UnsupportedSchema.into());
         }
         probe
@@ -1218,7 +1420,7 @@ impl SnapshotStore {
 
     // The writer boundary permits deterministic publication failures in tests.
     // A preserved snapshot loaded from schema 2 or 3 writes schema 3; a native
-    // world stays schema 4, 5, 6 or 7. Its sidecar is durable (data, rename
+    // world stays schema 4, 5, 6, 7 or 8. Its sidecar is durable (data, rename
     // and directory synchronized) before the generation referencing it is
     // written, and a sidecar that already verifies is reused, never rewritten.
     fn save_with_writer(
@@ -2043,7 +2245,7 @@ mod crash_consistency_tests {
         empty_worlds: usize,
         recovered_previous: usize,
         refused_orphans: usize,
-        /// Intact manifest-referenced schema-3/4/5/6/7 generations whose sidecar was
+        /// Intact manifest-referenced schema-3/4/5/6/7/8 generations whose sidecar was
         /// present with its recorded size and digest.
         referenced_sidecars: usize,
         /// Loads of a snapshot from an enclosing trace that a rewritten
@@ -2400,6 +2602,112 @@ mod crash_consistency_tests {
         snapshot
     }
 
+    /// Independently authored provenance with an initial detached live attach.
+    /// Source variants exercise sidecar replacement, reuse and collection.
+    fn owners(tick: u64, variant: u8, rounds: u64) -> WorldSnapshot {
+        use crate::native_c001_owners::{
+            C001OwnerAdapter, C001OwnerBindingV1, C001OwnerImportMetadataV1, ResolvedC001OwnerV1,
+        };
+        use crate::native_lifecycle::{
+            Presence, RecorderKind, RecorderSource, ResolvePolicy, RestoreBatch, RestoreRecorder,
+            prepare_owner_restore,
+        };
+        let source = inert(tick, variant);
+        let old = source.native_import.unwrap();
+        let mut state = lifecycle(tick, None, 0);
+        let spatial = state.native_world.as_ref().unwrap();
+        let life = state.native_lifecycle.as_ref().unwrap();
+        let binding = C001OwnerBindingV1 {
+            source_actor_class: old.owners[0].source_actor_class.clone(),
+            source_actor_path: old.owners[0].source_actor_path.clone(),
+            source_object_name: old.owners[0].source_object_name.clone(),
+            source_icarus_guid: old.owners[0].source_icarus_guid,
+            native_placement: spatial.actors[0].placement.clone(),
+            native_class: spatial.actors[0].class.clone(),
+            native_owner_name: vec![65],
+            native_recorder_guid: 100 + i32::from(variant),
+            create_if_missing: false,
+            expected_presence: Presence::Live,
+            expected_incarnation: 1,
+            expected_prior_binding: None,
+        };
+        let batch = RestoreBatch {
+            lifecycle_id: life.lifecycle_id.clone(),
+            sequence: 1,
+            recorders: vec![RestoreRecorder {
+                guid: binding.native_recorder_guid,
+                kind: RecorderKind::SpatialStateV1,
+                target_placement: binding.native_placement.clone(),
+                owner_name: binding.native_owner_name.clone(),
+                policy: ResolvePolicy::FindOrRespawn,
+                source: RecorderSource::Detached {
+                    expected_prior_binding: None,
+                },
+                create_if_missing: binding.create_if_missing,
+                expected_presence: binding.expected_presence,
+                expected_incarnation: binding.expected_incarnation,
+                transform: spatial.actors[0].transform.clone(),
+                variables: Vec::new(),
+            }],
+        };
+        let lifecycle_id = life.lifecycle_id.clone();
+        state = prepare_owner_restore(&state, &batch)
+            .unwrap()
+            .snapshot()
+            .clone();
+        let initial_completion = state
+            .native_lifecycle
+            .as_ref()
+            .unwrap()
+            .completed
+            .clone()
+            .unwrap();
+        state.native_owner_import = Some(C001OwnerImportMetadataV1 {
+            format: 1,
+            adapter: C001OwnerAdapter::C001AuthoredOwnersV1,
+            source_version: old.source_version,
+            source_payload_sha256: old.source_payload_sha256,
+            native_catalog_id: old.native_catalog_id,
+            native_lifecycle_id: lifecycle_id,
+            native_map: old.native_map,
+            coordinates: old.coordinates,
+            source_map: old.source_map,
+            source_prospect_id: old.source_prospect_id,
+            source_lobby_name: old.source_lobby_name,
+            source_last_saved_date_time: old.source_last_saved_date_time,
+            root_presence: old.root_presence,
+            owners: vec![ResolvedC001OwnerV1 {
+                source_index: 0,
+                id: old.owners[0].id,
+                binding,
+                source_policy: ResolvePolicy::FindOrRespawn,
+            }],
+            initial_completion,
+        });
+        state.preserved_prospect = source.preserved_prospect;
+        state.schema_version = SNAPSHOT_SCHEMA_C001_OWNERS;
+        for sequence in 2..=rounds {
+            let lifecycle = state.native_lifecycle.as_ref().unwrap();
+            let actor = &state.native_world.as_ref().unwrap().actors[0];
+            let mut recorder = batch.recorders[0].clone();
+            recorder.guid = 1000 + i32::try_from(sequence).unwrap();
+            recorder.policy = ResolvePolicy::RespawnOnly;
+            recorder.expected_incarnation = lifecycle.slots[0].incarnation;
+            recorder.transform = actor.transform.clone();
+            recorder.transform.translation[0] = sequence as f32 / 10.0;
+            let request = RestoreBatch {
+                lifecycle_id: lifecycle.lifecycle_id.clone(),
+                sequence,
+                recorders: vec![recorder],
+            };
+            state = prepare_owner_restore(&state, &request)
+                .unwrap()
+                .snapshot()
+                .clone();
+        }
+        state
+    }
+
     #[test]
     fn relationship_preflight_and_publication_share_exact_generation_encoding() {
         assert_eq!(MAX_REFERENCED_SNAPSHOT_BYTES, 64 * 1024 * 1024 + 4 * 1024);
@@ -2463,10 +2771,80 @@ mod crash_consistency_tests {
     }
 
     #[test]
+    fn owner_import_preflight_and_publication_share_exact_aggregate_encoding() {
+        assert_eq!(MAX_REFERENCED_SNAPSHOT_BYTES, 64 * 1024 * 1024 + 4 * 1024);
+        let state = owners(10, 1, 2);
+        SnapshotStore::preflight(&state).unwrap();
+        let (encoded, reference) = encode_generation(&state).unwrap();
+        let dto = C001OwnersOut {
+            schema_version: SNAPSHOT_SCHEMA_C001_OWNERS,
+            tick: state.tick,
+            entities: &state.entities,
+            native_world: state.native_world.as_ref().unwrap(),
+            native_lifecycle: state.native_lifecycle.as_ref().unwrap(),
+            native_owner_import: state.native_owner_import.as_ref().unwrap(),
+            preserved_prospect: reference.as_ref().unwrap(),
+            native_relationships: None,
+        };
+        assert_eq!(encoded, serde_json::to_vec(&dto).unwrap());
+        assert_eq!(
+            encode_bounded_generation(&dto, encoded.len() as u64).unwrap(),
+            encoded
+        );
+        assert!(encode_bounded_generation(&dto, encoded.len() as u64 - 1).is_err());
+        let directory = tempfile::tempdir().unwrap();
+        let mut store = SnapshotStore::open(directory.path()).unwrap();
+        store.save(&state).unwrap();
+        assert_eq!(
+            fs::read(directory.path().join("snapshot-1.json")).unwrap(),
+            encoded
+        );
+        assert_eq!(store.load().unwrap().unwrap().snapshot, state);
+    }
+
+    #[test]
+    fn pre_owner_storage_dtos_reject_even_null_owner_metadata_in_otherwise_valid_generations() {
+        let source = section(22);
+        let mut inline = preserved(10, &source);
+        inline.schema_version = SNAPSHOT_SCHEMA_PRESERVED;
+        let states = [
+            snapshot(10),
+            inline,
+            preserved(10, &source),
+            native(10, Some(&source)),
+            inert(10, 1),
+            relationships(10, Some(&source), Some(DomainId(2))),
+            lifecycle(10, Some(&source), 1),
+        ];
+        for state in states {
+            let directory = tempfile::tempdir().unwrap();
+            let store = SnapshotStore::open(directory.path()).unwrap();
+            let (mut bytes, reference) = encode_generation(&state).unwrap();
+            if let Some(reference) = reference {
+                fs::write(
+                    directory.path().join(reference.sidecar_name()),
+                    state.preserved_prospect.as_ref().unwrap().native_encoding(),
+                )
+                .unwrap();
+            }
+            if state.schema_version == SNAPSHOT_SCHEMA_PRESERVED {
+                bytes = serde_json::to_vec(&state).unwrap();
+            }
+            assert_eq!(store.decode_generation(&bytes).unwrap().0, state);
+            let mut wire: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+            wire["native_owner_import"] = serde_json::Value::Null;
+            let error = store
+                .decode_generation(&serde_json::to_vec(&wire).unwrap())
+                .unwrap_err();
+            assert!(!error.is::<UnsupportedSchema>());
+        }
+    }
+
+    #[test]
     fn native_publication_fault_matrix_preserves_committed_state() {
         let (first, second) = (section(5), section(6));
-        for mode in 0..7 {
-            let preserve = matches!(mode, 1 | 2 | 4 | 6);
+        for mode in 0..8 {
+            let preserve = matches!(mode, 1 | 2 | 4 | 6 | 7);
             for fail_at in ["sidecar", "snapshot-2.json", "manifest.json"] {
                 if fail_at == "sidecar" && !preserve {
                     continue;
@@ -2474,7 +2852,9 @@ mod crash_consistency_tests {
                 for after_write in [false, true] {
                     let directory = tempfile::tempdir().unwrap();
                     let root = directory.path();
-                    let before = if mode == 2 {
+                    let before = if mode == 7 {
+                        owners(10, 5, 1)
+                    } else if mode == 2 {
                         inert(10, 5)
                     } else if mode >= 5 {
                         lifecycle(10, preserve.then_some(&first), 0)
@@ -2483,7 +2863,9 @@ mod crash_consistency_tests {
                     } else {
                         native(10, preserve.then_some(&first))
                     };
-                    let attempted = if mode == 2 {
+                    let attempted = if mode == 7 {
+                        owners(20, 6, 2)
+                    } else if mode == 2 {
                         inert(20, 6)
                     } else if mode >= 5 {
                         lifecycle(20, preserve.then_some(&second), 1)
@@ -2520,7 +2902,9 @@ mod crash_consistency_tests {
                     let published = after_write && fail_at == "manifest.json";
                     let expected = if published { &attempted } else { &before };
                     assert_eq!(&reopened.load().unwrap().unwrap().snapshot, expected);
-                    let next = if mode == 2 {
+                    let next = if mode == 7 {
+                        owners(30, 6, 3)
+                    } else if mode == 2 {
                         inert(30, 6)
                     } else if mode >= 5 {
                         lifecycle(30, preserve.then_some(&second), 2)
@@ -2539,7 +2923,7 @@ mod crash_consistency_tests {
         }
     }
 
-    /// Every intact, manifest-referenced schema-3/4/5/6/7 generation must find its
+    /// Every intact, manifest-referenced schema-3/4/5/6/7/8 generation must find its
     /// sidecar present with the recorded size and digest, whether or not the
     /// generation is ultimately selected by recovery.
     fn referenced_sidecars(state: &DiskState, exempt: u64) -> Result<usize, String> {
@@ -2585,6 +2969,11 @@ mod crash_consistency_tests {
                     serde_json::from_slice::<DedicatedLifecycleIn>(bytes)
                         .ok()
                         .and_then(|native| native.preserved_prospect)
+                }
+                Some(schema) if schema == u64::from(SNAPSHOT_SCHEMA_C001_OWNERS) => {
+                    serde_json::from_slice::<C001OwnersIn>(bytes)
+                        .ok()
+                        .map(|native| native.preserved_prospect)
                 }
                 _ => None,
             };
@@ -3438,6 +3827,97 @@ mod crash_consistency_tests {
     }
 
     #[test]
+    fn owner_import_power_loss_preserves_provenance_current_owners_and_sidecar_retention() {
+        let directory = tempfile::tempdir().unwrap();
+        let root = directory.path().to_path_buf();
+        let mut store = SnapshotStore::open(&root).unwrap();
+        let mut steps = Vec::new();
+        for (tick, variant, rounds) in [(10, 1, 1), (20, 1, 2), (30, 2, 3)] {
+            traced_save(
+                &mut store,
+                &root,
+                &owners(tick, variant, rounds),
+                &mut steps,
+                atomic_write,
+            )
+            .unwrap();
+        }
+        let before = owners(20, 1, 2);
+        let current = owners(30, 2, 3);
+        damage(
+            &root,
+            &mut steps,
+            &sidecar_name(current.preserved_prospect.as_ref().unwrap()),
+            before.clone(),
+            3,
+        );
+        let recovered = store.load().unwrap().unwrap();
+        assert!(recovered.recovered_previous);
+        assert_eq!(recovered.snapshot, before);
+        for (tick, variant, rounds) in [(40, 2, 4), (50, 3, 5), (60, 3, 6)] {
+            let state = owners(tick, variant, rounds);
+            traced_save(&mut store, &root, &state, &mut steps, atomic_write).unwrap();
+            assert_eq!(store.load().unwrap().unwrap().snapshot, state);
+        }
+        for obsolete in [&before, &current] {
+            assert!(
+                !root
+                    .join(sidecar_name(obsolete.preserved_prospect.as_ref().unwrap()))
+                    .exists()
+            );
+        }
+        assert_sidecar_durable_before_generation(&steps);
+        drop(store);
+        let trace = Trace {
+            root,
+            base: DiskState::new(),
+            initial: None,
+            exempt: 0,
+            history: Vec::new(),
+            steps,
+        };
+        let mut tally = Tally::default();
+        if let Err(violation) = enumerate(&trace, 1, &mut tally) {
+            panic!("{violation}");
+        }
+        assert!(tally.main.empty_worlds > 0);
+        assert!(tally.main.refused_orphans > 0);
+        assert!(tally.main.recovered_previous > 0);
+        assert!(tally.main.referenced_sidecars > 0);
+        assert!(tally.after_recovery.referenced_sidecars > tally.main.referenced_sidecars);
+        assert_eq!(
+            tally.recovery_saves,
+            tally.main.states - tally.main.refused_orphans
+        );
+    }
+
+    #[test]
+    fn owner_import_sidecar_checker_rejects_an_intact_generation_with_missing_source() {
+        let directory = tempfile::tempdir().unwrap();
+        let root = directory.path();
+        let snapshot = owners(10, 1, 1);
+        let mut store = SnapshotStore::open(root).unwrap();
+        store.save(&snapshot).unwrap();
+        let mut state: DiskState = fs::read_dir(root)
+            .unwrap()
+            .map(|entry| {
+                let entry = entry.unwrap();
+                (
+                    entry.file_name().into_string().unwrap(),
+                    fs::read(entry.path()).unwrap(),
+                )
+            })
+            .collect();
+        assert_eq!(referenced_sidecars(&state, 0).unwrap(), 1);
+        state.remove(&sidecar_name(snapshot.preserved_prospect.as_ref().unwrap()));
+        assert!(
+            referenced_sidecars(&state, 0)
+                .unwrap_err()
+                .contains("references a missing or damaged sidecar")
+        );
+    }
+
+    #[test]
     fn relationship_power_loss_recovers_exact_edges_and_saves_again() {
         for preserve in [false, true] {
             let directory = tempfile::tempdir().unwrap();
@@ -3716,6 +4196,36 @@ mod crash_consistency_tests {
             &mut store,
             &root,
             &lifecycle(10, Some(&section(20)), 1),
+            &mut steps,
+            sidecar_before_data_sync,
+        )
+        .unwrap();
+        drop(store);
+        let trace = Trace {
+            root,
+            base: DiskState::new(),
+            initial: None,
+            exempt: 0,
+            history: Vec::new(),
+            steps,
+        };
+        let violation = enumerate(&trace, 0, &mut Tally::default()).unwrap_err();
+        assert!(
+            violation.contains("references a missing or damaged sidecar"),
+            "{violation}"
+        );
+    }
+
+    #[test]
+    fn owner_import_power_loss_model_rejects_undurable_sidecar() {
+        let directory = tempfile::tempdir().unwrap();
+        let root = directory.path().to_path_buf();
+        let mut store = SnapshotStore::open(&root).unwrap();
+        let mut steps = Vec::new();
+        traced_save(
+            &mut store,
+            &root,
+            &owners(10, 1, 1),
             &mut steps,
             sidecar_before_data_sync,
         )

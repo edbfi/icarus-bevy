@@ -30,8 +30,8 @@ use crate::{
     },
     persistence::{SaveReceipt, SnapshotStore},
     simulation::{
-        DomainId, SNAPSHOT_SCHEMA_LIFECYCLE, SNAPSHOT_SCHEMA_NATIVE, SNAPSHOT_SCHEMA_RELATIONSHIPS,
-        WorldSnapshot,
+        DomainId, SNAPSHOT_SCHEMA_C001_OWNERS, SNAPSHOT_SCHEMA_LIFECYCLE, SNAPSHOT_SCHEMA_NATIVE,
+        SNAPSHOT_SCHEMA_RELATIONSHIPS, WorldSnapshot,
     },
 };
 
@@ -610,7 +610,7 @@ fn validate_presence(
     }
     Ok(())
 }
-fn validate_snapshot_bounds(lifecycle: &LifecycleSnapshot) -> Result<()> {
+pub(crate) fn validate_snapshot_bounds(lifecycle: &LifecycleSnapshot) -> Result<()> {
     validate_definition(&lifecycle.definition)?;
     digest_capacity(&lifecycle.lifecycle_id)?;
     ensure!(
@@ -628,7 +628,7 @@ fn validate_snapshot_bounds(lifecycle: &LifecycleSnapshot) -> Result<()> {
     encoded_size(lifecycle, MAX_LIFECYCLE_BYTES)?;
     Ok(())
 }
-fn validate_native_bounds(native: &NativeWorldSnapshot) -> Result<()> {
+pub(crate) fn validate_native_bounds(native: &NativeWorldSnapshot) -> Result<()> {
     ensure!(
         native.actors.capacity() <= MAX_NATIVE_PLACEMENTS,
         "native lifecycle spatial count limit"
@@ -736,7 +736,9 @@ fn validate_catalog_capacities(definition: &NativeCatalogDefinition) -> Result<(
     Ok(())
 }
 
-fn validate_relationship_capacities(relationships: &NativeRelationshipsSnapshot) -> Result<()> {
+pub(crate) fn validate_relationship_capacities(
+    relationships: &NativeRelationshipsSnapshot,
+) -> Result<()> {
     digest_capacity(&relationships.relationship_id)?;
     digest_capacity(&relationships.definition.native_catalog_id)?;
     key_capacity(&relationships.definition.map)?;
@@ -905,7 +907,7 @@ pub fn prepare_lifecycle_world(
         "native lifecycle requires schema 4 or 6 base"
     );
     ensure!(
-        base.native_import.is_none(),
+        base.native_import.is_none() && base.native_owner_import.is_none(),
         "native lifecycle cannot accept import metadata"
     );
     validate_native_bounds(
@@ -1055,15 +1057,32 @@ pub fn prepare_owner_restore(
 ) -> Result<PreparedRestore> {
     // Validate the entire current state even for an exact retry. No expectations
     // or request payload can hide corrupt unrelated slots or relationship edges.
-    base.validate()?;
     ensure!(
-        base.schema_version == SNAPSHOT_SCHEMA_LIFECYCLE && base.native_import.is_none(),
-        "native restore requires schema 7 without import metadata"
+        matches!(
+            base.schema_version,
+            SNAPSHOT_SCHEMA_LIFECYCLE | SNAPSHOT_SCHEMA_C001_OWNERS
+        ) && base.native_import.is_none(),
+        "native restore requires schema 7 or 8 without inert import metadata"
     );
+    // Reject caller-owned spare allocations before validation clones definitions
+    // or replays schema-8 provenance, and before either retry path clones base.
+    if let Some(native) = &base.native_world {
+        validate_native_bounds(native)?;
+    }
+    if let Some(lifecycle) = &base.native_lifecycle {
+        validate_snapshot_bounds(lifecycle)?;
+    }
+    if let Some(relationships) = &base.native_relationships {
+        validate_relationship_capacities(relationships)?;
+    }
+    if let Some(metadata) = &base.native_owner_import {
+        metadata.validate_bounds()?;
+    }
     ensure!(
         base.entities.capacity() <= MAX_NATIVE_PLACEMENTS,
         "native restore legacy entity capacity limit"
     );
+    base.validate()?;
     let lifecycle = base
         .native_lifecycle
         .as_ref()

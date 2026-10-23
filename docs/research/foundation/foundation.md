@@ -28,9 +28,11 @@ save-worker loss stop safely (F-869), and signals trigger a final save within a
 bounded shutdown (F-869).
 
 Authored worlds retain full spatial state through schema 4 (F-919), strictly
-bound C001 inert-fixture provenance through schema 5 (F-921), and edited
+bound C001 inert-fixture provenance through schema 5 (F-924), and edited
 foundation links through schema 6 (F-922). Schema 7 adds atomic owner find/spawn/
 replacement, explicit dormant slots and durable retry completion (F-923).
+Schema 8 connects authored C001 policies and poses to that lifecycle while
+retaining immutable source provenance across later edits and reload (F-924).
 Preparation rejects unsupported
 state; capture rejects damaged membership or activation contexts. Publication
 faults and modeled crashes preserve acknowledged state. These contracts establish
@@ -81,16 +83,12 @@ parity (F-828), `install-official-data` and `icarus-fetch` fetch the free
 official server's data.pak (F-829) anonymously from Steam without steamcmd,
 matching the steamcmd install byte for byte (F-831).
 
-The toolchain is pinned and current (F-879), authored Python passes
-basedpyright recommended (F-484), and the release links no render, window or
-audio backend (F-879); the CI definition passes on hosted runners for a feature commit (F-497). The
-client's debug identity and Steam AppID `1149460` / depot `1149461` manifests
-and PE headers/symbols are verified across `3.0.31` and `3.0.32` (`F-878`,
-`F-731`; `U-034` resolved). Earlier original-server cases hashed
-the baseline (F-265), exported no functions in one bounded Ghidra pass (F-266),
-reached the entry map offline without reproducing crashes (F-268) and observed
-one stateless exchange (F-253). The offline launcher revision has not run the
-original server (F-252), and historical runtime windows have expired (F-218).
+Toolchain and headless linkage are qualified by F-879; Python typing by F-484,
+hosted CI by F-497, and client identity/version correspondence by F-878/F-731
+(U-034 resolved). Original baseline fixity, the unsuccessful Ghidra export,
+offline entry-map run and stateless exchange remain bounded by F-265/F-266/
+F-268/F-253. The launcher revision remains unrun (F-252); historical runtime
+windows expired (F-218).
 
 ## Open
 
@@ -100,4 +98,4 @@ original server (F-252), and historical runtime windows have expired (F-218).
 
 ## Artifacts
 
-M-001, M-002, M-006, M-009, M-010, M-015..M-022, M-076, M-078, M-109..M-117, M-131..M-165, M-174, M-175, M-178, M-182..M-184, M-191, M-192, M-200, M-203, M-204, M-207, M-208, M-212..M-220, M-225, M-240, M-241, M-251, M-252, M-269, M-270, M-271, M-277, M-311, M-391, M-397..M-399, M-411..M-419, M-452..M-454, M-471..M-475, M-577, M-578, M-770, M-771, M-809, M-810, M-812, M-861, M-862, M-864..M-867, M-870, M-898, M-899, M-915..M-918, M-926..M-936.
+M-001, M-002, M-006, M-009, M-010, M-015..M-022, M-076, M-078, M-109..M-117, M-131..M-165, M-174, M-175, M-178, M-182..M-184, M-191, M-192, M-200, M-203, M-204, M-207, M-208, M-212..M-220, M-225, M-240, M-241, M-251, M-252, M-269, M-270, M-271, M-277, M-311, M-391, M-397..M-399, M-411..M-419, M-452..M-454, M-471..M-475, M-577, M-578, M-770, M-771, M-809, M-810, M-812, M-861, M-862, M-864..M-867, M-870, M-898, M-899, M-915..M-918, M-926..M-939.
