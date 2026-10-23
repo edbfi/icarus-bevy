@@ -15,6 +15,11 @@
 use std::{
     collections::BTreeMap,
     net::{SocketAddr, UdpSocket},
+    sync::{
+        Mutex,
+        atomic::{AtomicBool, Ordering},
+        mpsc,
+    },
     thread,
     time::{Duration, Instant},
 };
@@ -159,51 +164,195 @@ pub struct MultiHoldSummary {
     pub sessions: Vec<SessionHold>,
 }
 
-/// Join one probe session and hold it for `config.duration`. A Login the
-/// server refuses ends the hold at once with [`HoldSummary::refused`].
-pub fn run_hold(config: &HoldConfig) -> Result<HoldSummary> {
-    validate(config)?;
-    let (session, closed) = hold_session(config, 0)?;
-    closed?;
+/// An incomplete, aggregate-only observation of an ongoing hold. Workers
+/// publish their latest snapshots after receive windows (normally 250 ms);
+/// these observations are not a synchronized world snapshot.
+#[derive(Clone, Debug, PartialEq, Serialize)]
+pub struct HoldProgress {
+    pub event: &'static str,
+    pub incomplete: bool,
+    pub wall_ms: u64,
+    pub sessions_requested: usize,
+    pub completed: usize,
+    pub joined: u64,
+    pub refused: u64,
+    pub failed: u64,
+    pub game_state_updates: u64,
+    pub decode_errors: u64,
+    pub partial_parts: u64,
+    pub regressions: u64,
+    pub max_update_gap_ms: Option<u64>,
+}
+
+struct ProgressState {
+    sessions: Mutex<Vec<SessionHold>>,
+    cancelled: AtomicBool,
+}
+
+struct CancelOnDrop<'a>(&'a AtomicBool);
+
+impl Drop for CancelOnDrop<'_> {
+    fn drop(&mut self) {
+        self.0.store(true, Ordering::Relaxed);
+    }
+}
+
+/// Hold one session, reporting incomplete observations at a positive interval.
+/// A callback error cancels the owned probe and is returned after it stops.
+pub fn run_hold_with_progress(
+    config: &HoldConfig,
+    interval: Duration,
+    progress: impl FnMut(&HoldProgress) -> Result<()>,
+) -> Result<HoldSummary> {
+    let mut summary = run_holds_with_progress(
+        &MultiHoldConfig {
+            hold: config.clone(),
+            sessions: 1,
+        },
+        interval,
+        progress,
+    )?;
+    let session = summary.sessions.pop().expect("one requested session");
+    ensure!(
+        session.setup_error.is_none(),
+        "hold probe failed: {}",
+        session.setup_error.as_deref().unwrap_or("probe error")
+    );
     Ok(session.hold)
 }
 
-/// Hold `config.sessions` probe sessions concurrently, each for
-/// `config.hold.duration`.
-pub fn run_holds(config: &MultiHoldConfig) -> Result<MultiHoldSummary> {
+/// Hold concurrent sessions with bounded latest-state observations. Callback
+/// calls are serialized on the caller's thread; errors cancel all owned probes.
+pub fn run_holds_with_progress(
+    config: &MultiHoldConfig,
+    interval: Duration,
+    mut progress: impl FnMut(&HoldProgress) -> Result<()>,
+) -> Result<MultiHoldSummary> {
     validate(&config.hold)?;
     ensure!(
         (1..=MAX_HOLD_SESSIONS).contains(&config.sessions),
         "sessions must be 1..={MAX_HOLD_SESSIONS}"
     );
+    ensure!(!interval.is_zero(), "progress interval must be positive");
     let started = Instant::now();
-    let results = thread::scope(|scope| {
+    let state = ProgressState {
+        sessions: Mutex::new(vec![SessionHold::default(); config.sessions]),
+        cancelled: AtomicBool::new(false),
+    };
+    let (done_tx, done_rx) = mpsc::sync_channel(config.sessions);
+    thread::scope(|scope| -> Result<MultiHoldSummary> {
+        // Drop inside the scope before scoped threads are joined on unwind.
+        let _cancel = CancelOnDrop(&state.cancelled);
         let handles: Vec<_> = (0..config.sessions)
-            .map(|index| scope.spawn(move || hold_session(&config.hold, index)))
+            .map(|index| {
+                let state = &state;
+                let done_tx = done_tx.clone();
+                scope.spawn(move || {
+                    let session =
+                        session_result(hold_session_observed(&config.hold, index, Some(state)));
+                    state.sessions.lock().expect("hold progress lock poisoned")[index] =
+                        session.clone();
+                    let _ = done_tx.send(());
+                    session
+                })
+            })
             .collect();
-        handles
-            .into_iter()
-            .map(|handle| handle.join())
-            .collect::<Vec<_>>()
-    });
+        drop(done_tx);
+        let mut completed = 0;
+        let mut callback_error = None;
+        let mut reported = started;
+        while completed < config.sessions {
+            let remaining = interval.saturating_sub(reported.elapsed());
+            match done_rx.recv_timeout(remaining) {
+                Ok(()) => completed += 1,
+                Err(mpsc::RecvTimeoutError::Disconnected) => break,
+                Err(mpsc::RecvTimeoutError::Timeout) => {}
+            }
+            if completed < config.sessions
+                && reported.elapsed() >= interval
+                && callback_error.is_none()
+            {
+                let sessions = state
+                    .sessions
+                    .lock()
+                    .expect("hold progress lock poisoned")
+                    .clone();
+                let summary = aggregate(config.sessions, started.elapsed(), sessions);
+                let receipt = HoldProgress {
+                    event: "session_hold_progress",
+                    incomplete: true,
+                    wall_ms: summary.wall_ms,
+                    sessions_requested: config.sessions,
+                    completed,
+                    joined: summary.joined,
+                    refused: summary.refused,
+                    failed: summary.failed,
+                    game_state_updates: summary.game_state_updates,
+                    decode_errors: summary.decode_errors,
+                    partial_parts: summary.partial_parts,
+                    regressions: summary.regressions,
+                    max_update_gap_ms: summary
+                        .sessions
+                        .iter()
+                        .filter(|session| session.hold.held_ms > 0)
+                        .map(|session| session.hold.max_update_gap_ms)
+                        .max(),
+                };
+                if let Err(error) = progress(&receipt) {
+                    state.cancelled.store(true, Ordering::Relaxed);
+                    callback_error = Some(error);
+                }
+                reported = Instant::now();
+            }
+            // Once cancelled, wait for completion without repeatedly timing out.
+            if callback_error.is_some() {
+                break;
+            }
+        }
+        let mut sessions = Vec::with_capacity(config.sessions);
+        let mut panicked = false;
+        for handle in handles {
+            match handle.join() {
+                Ok(session) => sessions.push(session),
+                Err(_) => {
+                    panicked = true;
+                    state.cancelled.store(true, Ordering::Relaxed);
+                }
+            }
+        }
+        if let Some(error) = callback_error {
+            return Err(error);
+        }
+        ensure!(!panicked, "hold session panicked");
+        Ok(aggregate(config.sessions, started.elapsed(), sessions))
+    })
+}
+
+fn session_result(result: Result<(SessionHold, Result<()>)>) -> SessionHold {
+    match result {
+        Ok((session, Ok(()))) => session,
+        Ok((session, Err(error))) => SessionHold {
+            setup_error: Some(error_kind(&error)),
+            ..session
+        },
+        Err(error) => SessionHold {
+            setup_error: Some(error_kind(&error)),
+            ..SessionHold::default()
+        },
+    }
+}
+
+fn aggregate(
+    sessions_requested: usize,
+    elapsed: Duration,
+    sessions: Vec<SessionHold>,
+) -> MultiHoldSummary {
     let mut summary = MultiHoldSummary {
-        sessions_requested: config.sessions,
-        wall_ms: u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX),
+        sessions_requested,
+        wall_ms: u64::try_from(elapsed.as_millis()).unwrap_or(u64::MAX),
         ..MultiHoldSummary::default()
     };
-    for result in results {
-        let session = match result.map_err(|_| anyhow::anyhow!("hold session panicked"))? {
-            Ok((session, Ok(()))) => session,
-            // A failed final close keeps what the hold received.
-            Ok((session, Err(error))) => SessionHold {
-                setup_error: Some(error_kind(&error)),
-                ..session
-            },
-            Err(error) => SessionHold {
-                setup_error: Some(error_kind(&error)),
-                ..SessionHold::default()
-            },
-        };
+    for session in sessions {
         let hold = &session.hold;
         summary.joined += u64::from(hold.joined);
         summary.refused += u64::from(hold.refused);
@@ -232,7 +381,45 @@ pub fn run_holds(config: &MultiHoldConfig) -> Result<MultiHoldSummary> {
         }
         summary.sessions.push(session);
     }
-    Ok(summary)
+    summary
+}
+
+/// Join one probe session and hold it for `config.duration`. A Login the
+/// server refuses ends the hold at once with [`HoldSummary::refused`].
+pub fn run_hold(config: &HoldConfig) -> Result<HoldSummary> {
+    validate(config)?;
+    let (session, closed) = hold_session(config, 0)?;
+    closed?;
+    Ok(session.hold)
+}
+
+/// Hold `config.sessions` probe sessions concurrently, each for
+/// `config.hold.duration`.
+pub fn run_holds(config: &MultiHoldConfig) -> Result<MultiHoldSummary> {
+    validate(&config.hold)?;
+    ensure!(
+        (1..=MAX_HOLD_SESSIONS).contains(&config.sessions),
+        "sessions must be 1..={MAX_HOLD_SESSIONS}"
+    );
+    let started = Instant::now();
+    let results = thread::scope(|scope| {
+        let handles: Vec<_> = (0..config.sessions)
+            .map(|index| scope.spawn(move || hold_session(&config.hold, index)))
+            .collect();
+        handles
+            .into_iter()
+            .map(|handle| handle.join())
+            .collect::<Vec<_>>()
+    });
+    let sessions = results
+        .into_iter()
+        .map(|result| {
+            result
+                .map(session_result)
+                .map_err(|_| anyhow::anyhow!("hold session panicked"))
+        })
+        .collect::<Result<Vec<_>>>()?;
+    Ok(aggregate(config.sessions, started.elapsed(), sessions))
 }
 
 /// Out-of-range parameters fail before any socket is opened.
@@ -269,6 +456,16 @@ fn identity(index: usize) -> (String, String) {
 /// Join session `index` and hold it for `config.duration`. The second value
 /// is the final close's outcome, apart so a failed close keeps the summary.
 fn hold_session(config: &HoldConfig, index: usize) -> Result<(SessionHold, Result<()>)> {
+    hold_session_observed(config, index, None)
+}
+
+fn hold_session_observed(
+    config: &HoldConfig,
+    index: usize,
+    progress: Option<&ProgressState>,
+) -> Result<(SessionHold, Result<()>)> {
+    let cancelled = || progress.is_some_and(|state| state.cancelled.load(Ordering::Relaxed));
+    ensure!(!cancelled(), "hold cancelled");
     let (name, net_id) = identity(index);
     let socket = UdpSocket::bind("127.0.0.1:0").context("bind the hold probe socket")?;
     socket.connect(config.server)?;
@@ -292,7 +489,15 @@ fn hold_session(config: &HoldConfig, index: usize) -> Result<(SessionHold, Resul
             max_datagrams: 1,
         },
     )?;
+    if cancelled() {
+        let _ = client.close();
+        anyhow::bail!("hold cancelled");
+    }
     client.hello(config.network_version, "")?;
+    if cancelled() {
+        let _ = client.close();
+        anyhow::bail!("hold cancelled");
+    }
     client.send_control(
         &[ControlMessage::Login {
             response: ArchiveText::text("0")?,
@@ -306,6 +511,10 @@ fn hold_session(config: &HoldConfig, index: usize) -> Result<(SessionHold, Resul
         false,
     )?;
     let welcome = client.collect(config.step_timeout, 1)?;
+    if cancelled() {
+        let _ = client.close();
+        anyhow::bail!("hold cancelled");
+    }
     if welcome
         .messages()
         .any(|message| matches!(message, ControlMessage::Failure { .. }))
@@ -340,7 +549,7 @@ fn hold_session(config: &HoldConfig, index: usize) -> Result<(SessionHold, Resul
     // The first gap runs from the start, so a hold without updates reports
     // its whole length.
     tracker.last_update = Some(started);
-    while started.elapsed() < config.duration {
+    while started.elapsed() < config.duration && !cancelled() {
         // A socket error (the server gone, say) ends the hold but keeps
         // what was gathered.
         let collected = match client.collect(WINDOW, 4_096) {
@@ -398,6 +607,17 @@ fn hold_session(config: &HoldConfig, index: usize) -> Result<(SessionHold, Resul
                     tracker.update(&bunch.payload, reply.received_at, &mut summary);
                 }
             }
+        }
+        if let Some(state) = progress {
+            let now = Instant::now();
+            tracker.gap_to(now, &mut summary);
+            summary.held_ms =
+                u64::try_from(now.duration_since(started).as_millis()).unwrap_or(u64::MAX);
+            state.sessions.lock().expect("hold progress lock poisoned")[index] = SessionHold {
+                setup_error: None,
+                hold: summary.clone(),
+                max_listed_players: tracker.max_listed_players,
+            };
         }
         if summary.refused {
             break;

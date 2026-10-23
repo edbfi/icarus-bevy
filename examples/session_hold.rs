@@ -4,13 +4,16 @@
 //! summary of the GameState updates received (counts, timings and the
 //! server's own clock ranges). Demonstrates no compatibility with any ICARUS
 //! client.
-use std::{net::SocketAddr, path::PathBuf, time::Duration};
+use std::{io::Write, net::SocketAddr, path::PathBuf, time::Duration};
 
 use anyhow::Result;
 use clap::Parser;
 use icarus_bevy::experimental::{
     release::ReleaseProfile,
-    session_hold::{HoldConfig, MultiHoldConfig, run_hold, run_holds},
+    session_hold::{
+        HoldConfig, HoldProgress, MultiHoldConfig, run_hold, run_hold_with_progress, run_holds,
+        run_holds_with_progress,
+    },
 };
 
 #[derive(Parser)]
@@ -31,6 +34,9 @@ struct Options {
     /// Concurrent sessions; above 1 the multi-session summary is printed.
     #[arg(long, default_value_t = 1)]
     sessions: usize,
+    /// Emit incomplete aggregate JSON progress to stderr at this interval.
+    #[arg(long, value_parser = clap::value_parser!(u64).range(1..))]
+    progress_interval_seconds: Option<u64>,
 }
 
 fn main() -> Result<()> {
@@ -43,7 +49,28 @@ fn main() -> Result<()> {
         duration: Duration::from_secs(options.seconds),
         step_timeout: Duration::from_millis(options.step_timeout_ms),
     };
-    let summary = if options.sessions == 1 {
+    let mut progress = |receipt: &HoldProgress| -> Result<()> {
+        let mut stderr = std::io::stderr().lock();
+        serde_json::to_writer(&mut stderr, receipt)?;
+        writeln!(stderr)?;
+        stderr.flush()?;
+        Ok(())
+    };
+    let summary = if let Some(seconds) = options.progress_interval_seconds {
+        let interval = Duration::from_secs(seconds);
+        if options.sessions == 1 {
+            serde_json::to_string(&run_hold_with_progress(&hold, interval, &mut progress)?)?
+        } else {
+            serde_json::to_string(&run_holds_with_progress(
+                &MultiHoldConfig {
+                    hold,
+                    sessions: options.sessions,
+                },
+                interval,
+                &mut progress,
+            )?)?
+        }
+    } else if options.sessions == 1 {
         serde_json::to_string(&run_hold(&hold)?)?
     } else {
         serde_json::to_string(&run_holds(&MultiHoldConfig {

@@ -2058,6 +2058,167 @@ fn concurrent_hold_session_counts_are_bounded() {
     assert!(error.to_string().contains("hold lasts"), "{error}");
 }
 
+#[test]
+fn concurrent_hold_progress_arrives_before_completion_and_preserves_counts() {
+    use icarus_bevy::experimental::session_hold::{
+        HoldConfig, MultiHoldConfig, run_holds_with_progress,
+    };
+    let directory = tempfile::tempdir().unwrap();
+    let config = pinned_server_config(directory.path(), &release_toml());
+    let mut server = spawn_run(&config, &directory.path().join("state"));
+    let (address, _) = listening_address(&mut server);
+    let profile = ReleaseProfile::load(&release_toml()).unwrap();
+    let started = Instant::now();
+    let mut receipts = Vec::new();
+    let summary = run_holds_with_progress(
+        &MultiHoldConfig {
+            hold: HoldConfig {
+                server: address,
+                network_version: profile.pin.network_checksum,
+                engine_net_version: profile.engine_network_version,
+                duration: Duration::from_secs(3),
+                step_timeout: Duration::from_secs(3),
+            },
+            sessions: 4,
+        },
+        Duration::from_millis(300),
+        |receipt| {
+            assert!(started.elapsed() < Duration::from_secs(12));
+            assert!(receipt.incomplete);
+            assert!(receipt.completed < receipt.sessions_requested);
+            assert_eq!(receipt.event, "session_hold_progress");
+            let printed = serde_json::to_string(receipt).unwrap();
+            for private in ["HoldProbe", "127.0.0.1", "sessions\":", "STEAM"] {
+                assert!(!printed.contains(private), "{printed}");
+            }
+            receipts.push(receipt.clone());
+            Ok(())
+        },
+    )
+    .unwrap();
+    sigterm(&server);
+    assert!(server.wait_exit().success());
+    assert!(!receipts.is_empty());
+    assert!(
+        receipts
+            .iter()
+            .any(|receipt| receipt.joined == 4 && receipt.game_state_updates > 0)
+    );
+    for pair in receipts.windows(2) {
+        assert!(pair[1].wall_ms >= pair[0].wall_ms);
+        assert!(pair[1].joined >= pair[0].joined);
+        assert!(pair[1].game_state_updates >= pair[0].game_state_updates);
+        assert!(pair[1].decode_errors >= pair[0].decode_errors);
+        assert!(pair[1].regressions >= pair[0].regressions);
+    }
+    let last = receipts.last().unwrap();
+    assert!(summary.game_state_updates >= last.game_state_updates);
+    assert!(summary.decode_errors >= last.decode_errors);
+    assert!(summary.regressions >= last.regressions);
+    assert_eq!(summary.joined, 4);
+}
+
+#[test]
+fn hold_progress_includes_the_ongoing_gap_without_updates() {
+    use icarus_bevy::experimental::session_hold::{HoldConfig, run_hold_with_progress};
+    let directory = tempfile::tempdir().unwrap();
+    let config = server_config(directory.path());
+    let mut server = spawn_run(&config, &directory.path().join("state"));
+    let (address, _) = listening_address(&mut server);
+    let mut gaps = Vec::new();
+    let summary = run_hold_with_progress(
+        &HoldConfig {
+            server: address,
+            network_version: 0,
+            engine_net_version: ReleaseProfile::load(&release_toml())
+                .unwrap()
+                .engine_network_version,
+            duration: Duration::from_secs(3),
+            step_timeout: Duration::from_secs(3),
+        },
+        Duration::from_millis(300),
+        |receipt| {
+            assert_eq!(receipt.game_state_updates, 0);
+            if let Some(gap) = receipt.max_update_gap_ms {
+                gaps.push(gap);
+            }
+            Ok(())
+        },
+    )
+    .unwrap();
+    sigterm(&server);
+    assert!(server.wait_exit().success());
+    assert!(gaps.iter().any(|gap| *gap >= 1_000), "{gaps:?}");
+    assert!(gaps.windows(2).all(|pair| pair[1] >= pair[0]));
+    assert!(summary.max_update_gap_ms >= *gaps.last().unwrap());
+}
+
+#[test]
+fn hold_progress_sink_failure_or_panic_cancels_long_holds() {
+    use icarus_bevy::experimental::session_hold::{
+        HoldConfig, MultiHoldConfig, run_holds_with_progress,
+    };
+    let directory = tempfile::tempdir().unwrap();
+    let config = pinned_server_config(directory.path(), &release_toml());
+    let mut server = spawn_run(&config, &directory.path().join("state"));
+    let (address, _) = listening_address(&mut server);
+    let profile = ReleaseProfile::load(&release_toml()).unwrap();
+    let holds = MultiHoldConfig {
+        hold: HoldConfig {
+            server: address,
+            network_version: profile.pin.network_checksum,
+            engine_net_version: profile.engine_network_version,
+            duration: Duration::from_secs(60),
+            step_timeout: Duration::from_secs(2),
+        },
+        sessions: 2,
+    };
+    for panic in [false, true] {
+        let started = Instant::now();
+        let result = std::panic::catch_unwind(|| {
+            run_holds_with_progress(&holds, Duration::from_millis(500), |_| {
+                if panic {
+                    panic!("authored progress sink panic");
+                }
+                Err(
+                    std::io::Error::new(std::io::ErrorKind::BrokenPipe, "authored sink failure")
+                        .into(),
+                )
+            })
+        });
+        assert!(started.elapsed() < Duration::from_secs(15));
+        if panic {
+            assert!(result.is_err());
+        } else {
+            let error = result.unwrap().unwrap_err();
+            assert_eq!(
+                error.downcast_ref::<std::io::Error>().unwrap().kind(),
+                std::io::ErrorKind::BrokenPipe
+            );
+        }
+    }
+    sigterm(&server);
+    assert!(server.wait_exit().success());
+}
+
+#[test]
+fn zero_hold_progress_interval_fails_before_opening_a_socket() {
+    use icarus_bevy::experimental::session_hold::{HoldConfig, run_hold_with_progress};
+    let error = run_hold_with_progress(
+        &HoldConfig {
+            server: "127.0.0.1:9".parse().unwrap(),
+            network_version: 0,
+            engine_net_version: 0,
+            duration: Duration::from_secs(1),
+            step_timeout: Duration::from_secs(1),
+        },
+        Duration::ZERO,
+        |_| panic!("invalid interval must not report progress"),
+    )
+    .unwrap_err();
+    assert!(error.to_string().contains("progress interval"), "{error}");
+}
+
 /// Past one bunch of player names the NetworkingStatus update goes out as
 /// unreliable partial bunches on consecutive packets, and every one of 48
 /// held sessions reassembles it and sees all 48 players listed.
