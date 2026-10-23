@@ -598,7 +598,14 @@ fn future_owner_import_discriminator(metadata: &serde_json::Value) -> bool {
         || future_completion_discriminator(&metadata["initial_completion"])
 }
 
-fn encode_bounded_generation(value: &impl Serialize, limit: u64) -> Result<Vec<u8>> {
+fn generation_size_limit_message(limit: u64) -> String {
+    format!(
+        "native snapshot exceeds {} MiB limit",
+        limit / (1024 * 1024)
+    )
+}
+
+fn count_bounded_generation(value: &impl Serialize, limit: u64) -> Result<u64> {
     struct Counter {
         bytes: u64,
         limit: u64,
@@ -609,7 +616,7 @@ fn encode_bounded_generation(value: &impl Serialize, limit: u64) -> Result<Vec<u
                 .bytes
                 .checked_add(bytes.len() as u64)
                 .filter(|total| *total <= self.limit)
-                .ok_or_else(|| std::io::Error::other("native snapshot exceeds its size limit"))?;
+                .ok_or_else(|| std::io::Error::other(generation_size_limit_message(self.limit)))?;
             Ok(bytes.len())
         }
         fn flush(&mut self) -> std::io::Result<()> {
@@ -618,12 +625,53 @@ fn encode_bounded_generation(value: &impl Serialize, limit: u64) -> Result<Vec<u
     }
     // Count all inline sections and the sidecar reference together before
     // allocating the complete encoding, with exactly the publication serializer.
-    serde_json::to_writer(&mut Counter { bytes: 0, limit }, value)?;
-    Ok(serde_json::to_vec(value)?)
+    let mut counter = Counter { bytes: 0, limit };
+    serde_json::to_writer(&mut counter, value)?;
+    Ok(counter.bytes)
 }
 
-/// Pure generation preparation shared by preflight and durable publication.
-fn encode_generation(snapshot: &WorldSnapshot) -> Result<(Vec<u8>, Option<SectionReference>)> {
+fn encode_bounded_generation(value: &impl Serialize, limit: u64) -> Result<Vec<u8>> {
+    count_bounded_generation(value, limit)?;
+    Vec::<u8>::serialize_generation(value, limit)
+}
+
+/// Select only the output, never the schema DTO or serializer. Counting retains
+/// no outer generation buffer; snapshot validation can still allocate/replay
+/// nested native contracts and immutable source provenance.
+trait GenerationOutput: Sized {
+    fn serialize_generation(value: &impl Serialize, limit: u64) -> Result<Self>;
+
+    fn serialize_bounded_generation(value: &impl Serialize, limit: u64) -> Result<Self> {
+        Self::serialize_generation(value, limit)
+    }
+}
+
+impl GenerationOutput for u64 {
+    fn serialize_generation(value: &impl Serialize, limit: u64) -> Result<Self> {
+        count_bounded_generation(value, limit)
+    }
+}
+
+impl GenerationOutput for Vec<u8> {
+    fn serialize_generation(value: &impl Serialize, limit: u64) -> Result<Self> {
+        let bytes = serde_json::to_vec(value)?;
+        ensure!(
+            bytes.len() as u64 <= limit,
+            generation_size_limit_message(limit)
+        );
+        Ok(bytes)
+    }
+
+    fn serialize_bounded_generation(value: &impl Serialize, limit: u64) -> Result<Self> {
+        encode_bounded_generation(value, limit)
+    }
+}
+
+/// Validate once and select the exact stored representation for both counting
+/// and durable publication. In particular, schema 2 publishes as schema 3.
+fn prepare_generation<O: GenerationOutput>(
+    snapshot: &WorldSnapshot,
+) -> Result<(O, Option<SectionReference>)> {
     snapshot.validate()?;
     let reference = snapshot
         .preserved_prospect
@@ -633,63 +681,57 @@ fn encode_generation(snapshot: &WorldSnapshot) -> Result<(Vec<u8>, Option<Sectio
         reference.validate()?;
     }
     // Dispatch by schema before considering an optional source sidecar.
-    let (bytes, limit) = match snapshot.schema_version {
-        SNAPSHOT_SCHEMA_C001_SCALAR_OWNERS => (
-            encode_bounded_generation(
-                &C001ScalarOwnersOut {
-                    schema_version: SNAPSHOT_SCHEMA_C001_SCALAR_OWNERS,
-                    tick: snapshot.tick,
-                    entities: &snapshot.entities,
-                    native_world: snapshot
-                        .native_world
-                        .as_ref()
-                        .context("native world required")?,
-                    native_lifecycle: snapshot
-                        .native_lifecycle
-                        .as_ref()
-                        .context("native lifecycle required")?,
-                    native_scalar_contracts: snapshot
-                        .native_scalar_contracts
-                        .as_ref()
-                        .context("scalar contracts required")?,
-                    native_scalar_owner_import: snapshot
-                        .native_scalar_owner_import
-                        .as_ref()
-                        .context("scalar owner provenance required")?,
-                    preserved_prospect: reference.as_ref().context("preserved source required")?,
-                    native_relationships: snapshot.native_relationships.as_ref(),
-                },
-                MAX_REFERENCED_SNAPSHOT_BYTES,
-            )?,
+    let output = match snapshot.schema_version {
+        SNAPSHOT_SCHEMA_C001_SCALAR_OWNERS => O::serialize_bounded_generation(
+            &C001ScalarOwnersOut {
+                schema_version: SNAPSHOT_SCHEMA_C001_SCALAR_OWNERS,
+                tick: snapshot.tick,
+                entities: &snapshot.entities,
+                native_world: snapshot
+                    .native_world
+                    .as_ref()
+                    .context("native world required")?,
+                native_lifecycle: snapshot
+                    .native_lifecycle
+                    .as_ref()
+                    .context("native lifecycle required")?,
+                native_scalar_contracts: snapshot
+                    .native_scalar_contracts
+                    .as_ref()
+                    .context("scalar contracts required")?,
+                native_scalar_owner_import: snapshot
+                    .native_scalar_owner_import
+                    .as_ref()
+                    .context("scalar owner provenance required")?,
+                preserved_prospect: reference.as_ref().context("preserved source required")?,
+                native_relationships: snapshot.native_relationships.as_ref(),
+            },
             MAX_REFERENCED_SNAPSHOT_BYTES,
-        ),
-        SNAPSHOT_SCHEMA_C001_OWNERS => (
-            encode_bounded_generation(
-                &C001OwnersOut {
-                    schema_version: SNAPSHOT_SCHEMA_C001_OWNERS,
-                    tick: snapshot.tick,
-                    entities: &snapshot.entities,
-                    native_world: snapshot
-                        .native_world
-                        .as_ref()
-                        .context("native world required")?,
-                    native_lifecycle: snapshot
-                        .native_lifecycle
-                        .as_ref()
-                        .context("native lifecycle required")?,
-                    native_owner_import: snapshot
-                        .native_owner_import
-                        .as_ref()
-                        .context("native owner import metadata required")?,
-                    preserved_prospect: reference.as_ref().context("preserved source required")?,
-                    native_relationships: snapshot.native_relationships.as_ref(),
-                },
-                MAX_REFERENCED_SNAPSHOT_BYTES,
-            )?,
+        )?,
+        SNAPSHOT_SCHEMA_C001_OWNERS => O::serialize_bounded_generation(
+            &C001OwnersOut {
+                schema_version: SNAPSHOT_SCHEMA_C001_OWNERS,
+                tick: snapshot.tick,
+                entities: &snapshot.entities,
+                native_world: snapshot
+                    .native_world
+                    .as_ref()
+                    .context("native world required")?,
+                native_lifecycle: snapshot
+                    .native_lifecycle
+                    .as_ref()
+                    .context("native lifecycle required")?,
+                native_owner_import: snapshot
+                    .native_owner_import
+                    .as_ref()
+                    .context("native owner import metadata required")?,
+                preserved_prospect: reference.as_ref().context("preserved source required")?,
+                native_relationships: snapshot.native_relationships.as_ref(),
+            },
             MAX_REFERENCED_SNAPSHOT_BYTES,
-        ),
-        SNAPSHOT_SCHEMA_LIFECYCLE => (
-            serde_json::to_vec(&DedicatedLifecycleOut {
+        )?,
+        SNAPSHOT_SCHEMA_LIFECYCLE => O::serialize_generation(
+            &DedicatedLifecycleOut {
                 schema_version: SNAPSHOT_SCHEMA_LIFECYCLE,
                 tick: snapshot.tick,
                 entities: &snapshot.entities,
@@ -703,11 +745,11 @@ fn encode_generation(snapshot: &WorldSnapshot) -> Result<(Vec<u8>, Option<Sectio
                     .context("native lifecycle required")?,
                 native_relationships: snapshot.native_relationships.as_ref(),
                 preserved_prospect: reference.as_ref(),
-            })?,
+            },
             MAX_REFERENCED_SNAPSHOT_BYTES,
-        ),
-        SNAPSHOT_SCHEMA_RELATIONSHIPS => (
-            serde_json::to_vec(&DedicatedRelationshipsOut {
+        )?,
+        SNAPSHOT_SCHEMA_RELATIONSHIPS => O::serialize_generation(
+            &DedicatedRelationshipsOut {
                 schema_version: SNAPSHOT_SCHEMA_RELATIONSHIPS,
                 tick: snapshot.tick,
                 entities: &snapshot.entities,
@@ -721,11 +763,11 @@ fn encode_generation(snapshot: &WorldSnapshot) -> Result<(Vec<u8>, Option<Sectio
                     .context("native relationships required")?,
                 preserved_prospect: reference.as_ref(),
                 native_import: snapshot.native_import.as_ref(),
-            })?,
+            },
             MAX_REFERENCED_SNAPSHOT_BYTES,
-        ),
-        SNAPSHOT_SCHEMA_C001_INERT => (
-            serde_json::to_vec(&C001InertOut {
+        )?,
+        SNAPSHOT_SCHEMA_C001_INERT => O::serialize_generation(
+            &C001InertOut {
                 schema_version: SNAPSHOT_SCHEMA_C001_INERT,
                 tick: snapshot.tick,
                 entities: &snapshot.entities,
@@ -738,11 +780,11 @@ fn encode_generation(snapshot: &WorldSnapshot) -> Result<(Vec<u8>, Option<Sectio
                     .native_import
                     .as_ref()
                     .context("native import metadata required")?,
-            })?,
+            },
             MAX_REFERENCED_SNAPSHOT_BYTES,
-        ),
-        SNAPSHOT_SCHEMA_NATIVE => (
-            serde_json::to_vec(&NativeOut {
+        )?,
+        SNAPSHOT_SCHEMA_NATIVE => O::serialize_generation(
+            &NativeOut {
                 schema_version: SNAPSHOT_SCHEMA_NATIVE,
                 tick: snapshot.tick,
                 entities: &snapshot.entities,
@@ -751,28 +793,27 @@ fn encode_generation(snapshot: &WorldSnapshot) -> Result<(Vec<u8>, Option<Sectio
                     .as_ref()
                     .context("native world required")?,
                 preserved_prospect: reference.as_ref(),
-            })?,
+            },
             MAX_REFERENCED_SNAPSHOT_BYTES,
-        ),
+        )?,
         _ => match &reference {
-            Some(reference) => (
-                serde_json::to_vec(&ReferencedOut {
+            Some(reference) => O::serialize_generation(
+                &ReferencedOut {
                     schema_version: SNAPSHOT_SCHEMA_REFERENCED,
                     tick: snapshot.tick,
                     entities: &snapshot.entities,
                     preserved_prospect: reference,
-                })?,
+                },
                 MAX_REFERENCED_SNAPSHOT_BYTES,
-            ),
-            None => (serde_json::to_vec(snapshot)?, MAX_DOMAIN_SNAPSHOT_BYTES),
+            )?,
+            None => O::serialize_generation(snapshot, MAX_DOMAIN_SNAPSHOT_BYTES)?,
         },
     };
-    ensure!(
-        bytes.len() as u64 <= limit,
-        "native snapshot exceeds {} MiB limit",
-        limit / (1024 * 1024)
-    );
-    Ok((bytes, reference))
+    Ok((output, reference))
+}
+
+fn encode_generation(snapshot: &WorldSnapshot) -> Result<(Vec<u8>, Option<SectionReference>)> {
+    prepare_generation(snapshot)
 }
 
 /// What a save needs from a committed generation: its tick and the sidecar it
@@ -809,10 +850,11 @@ pub struct SnapshotStore {
 }
 
 impl SnapshotStore {
-    /// Validate and encode the exact bounded generation representation without
-    /// opening, reading or modifying any destination.
+    /// Validate and count the exact bounded generation representation without
+    /// allocating its outer byte buffer or opening, reading or modifying any
+    /// destination. Nested validation and source replay may still allocate.
     pub fn preflight(snapshot: &WorldSnapshot) -> Result<()> {
-        encode_generation(snapshot).map(|_| ())
+        prepare_generation::<u64>(snapshot).map(|_| ())
     }
 
     pub fn open(root: &Path) -> Result<Self> {
@@ -2844,6 +2886,283 @@ mod crash_consistency_tests {
         state
     }
 
+    /// Add an independent optional relationship contract for the same world.
+    fn spatial_relationships(state: &WorldSnapshot) -> NativeRelationshipsSnapshot {
+        use crate::native_relationships::{
+            CompiledNativeRelationships, NativeActorLinkV1, NativeRelationshipActorV1,
+            NativeRelationshipRole, NativeRelationshipsDefinition,
+        };
+        let native = state.native_world.as_ref().unwrap();
+        let catalog =
+            crate::native_world::CompiledNativeCatalog::compile(native.definitions.clone())
+                .unwrap();
+        CompiledNativeRelationships::compile(
+            NativeRelationshipsDefinition {
+                relationship_format: 1,
+                native_catalog_id: catalog.identity().into(),
+                map: native.map.clone(),
+                actors: native
+                    .actors
+                    .iter()
+                    .enumerate()
+                    .map(|(index, actor)| NativeRelationshipActorV1 {
+                        placement: actor.placement.clone(),
+                        identity: NativeActorLinkV1 {
+                            name: vec![65],
+                            guid: i32::try_from(index + 1).unwrap(),
+                        },
+                        role: NativeRelationshipRole::Spatial,
+                        foundation: None,
+                    })
+                    .collect(),
+            },
+            &catalog,
+        )
+        .unwrap()
+        .initial_snapshot()
+    }
+
+    #[test]
+    fn preflight_counts_exact_stored_bytes_for_every_schema_and_optional_section() {
+        let source = section(23);
+        let mut inline = preserved(10, &source);
+        inline.schema_version = SNAPSHOT_SCHEMA_PRESERVED;
+        let mut states = vec![snapshot(10), inline, preserved(10, &source), inert(10, 1)];
+        for preserve in [false, true] {
+            states.push(native(10, preserve.then_some(&source)));
+            states.push(relationships(
+                10,
+                preserve.then_some(&source),
+                Some(DomainId(3)),
+            ));
+            for include_relationships in [false, true] {
+                let mut state = lifecycle(10, preserve.then_some(&source), 1);
+                if include_relationships {
+                    state.native_relationships = Some(spatial_relationships(&state));
+                }
+                states.push(state);
+            }
+        }
+        let mut imported_relationships = inert(10, 2);
+        imported_relationships.schema_version = SNAPSHOT_SCHEMA_RELATIONSHIPS;
+        imported_relationships.native_relationships =
+            Some(spatial_relationships(&imported_relationships));
+        states.push(imported_relationships);
+        for include_relationships in [false, true] {
+            let mut state = owners(10, 1, 2);
+            if include_relationships {
+                state.native_relationships = Some(spatial_relationships(&state));
+            }
+            states.push(state);
+            let mut state = scalar_owners(10, 1, 8);
+            if !include_relationships {
+                state.native_relationships = None;
+            }
+            states.push(state);
+        }
+
+        // Exercise the shared DTO dispatch with reduced exact ceilings, without
+        // needing huge worlds to test aggregate generation accounting.
+        struct Boundaries(u64);
+        impl GenerationOutput for Boundaries {
+            fn serialize_generation(value: &impl Serialize, limit: u64) -> Result<Self> {
+                let bytes = serde_json::to_vec(value)?;
+                let exact = bytes.len() as u64;
+                assert!(exact <= limit);
+                assert_eq!(count_bounded_generation(value, exact)?, exact);
+                assert_eq!(encode_bounded_generation(value, exact)?, bytes);
+                assert_eq!(Vec::<u8>::serialize_generation(value, exact)?, bytes);
+                // Each individual section fits; the complete generation does not.
+                for section in serde_json::to_value(value)?.as_object().unwrap().values() {
+                    assert!((serde_json::to_vec(section)?.len() as u64) < exact);
+                }
+                // Oversize diagnostics must also agree through the counting,
+                // direct publication and count-before-publication paths.
+                let counted_error = count_bounded_generation(value, exact - 1)
+                    .unwrap_err()
+                    .to_string();
+                assert_eq!(
+                    counted_error,
+                    encode_bounded_generation(value, exact - 1)
+                        .unwrap_err()
+                        .to_string()
+                );
+                assert_eq!(
+                    counted_error,
+                    Vec::<u8>::serialize_generation(value, exact - 1)
+                        .unwrap_err()
+                        .to_string()
+                );
+                Ok(Self(limit))
+            }
+        }
+
+        for state in states {
+            SnapshotStore::preflight(&state).unwrap();
+            let (count, counted_reference) = prepare_generation::<u64>(&state).unwrap();
+            let (bytes, reference) = encode_generation(&state).unwrap();
+            assert_eq!(count, bytes.len() as u64);
+            assert_eq!(counted_reference, reference);
+            let (Boundaries(limit), _) = prepare_generation::<Boundaries>(&state).unwrap();
+            assert_eq!(
+                limit,
+                if state.schema_version == SNAPSHOT_SCHEMA_DOMAIN {
+                    MAX_DOMAIN_SNAPSHOT_BYTES
+                } else {
+                    MAX_REFERENCED_SNAPSHOT_BYTES
+                }
+            );
+            let wire: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+            let stored_schema = if state.schema_version == SNAPSHOT_SCHEMA_PRESERVED {
+                assert_ne!(count, serde_json::to_vec(&state).unwrap().len() as u64);
+                SNAPSHOT_SCHEMA_REFERENCED
+            } else {
+                state.schema_version
+            };
+            assert_eq!(wire["schema_version"], stored_schema);
+            let directory = tempfile::tempdir().unwrap();
+            let mut store = SnapshotStore::open(directory.path()).unwrap();
+            store.save_new(&state).unwrap();
+            assert_eq!(
+                fs::read(directory.path().join("snapshot-1.json")).unwrap(),
+                bytes
+            );
+        }
+    }
+
+    #[test]
+    fn preflight_counter_preserves_json_escaping_and_stops_at_the_size_ceiling() {
+        use std::cell::Cell;
+
+        use serde::ser::SerializeSeq;
+
+        struct Probe<'a>(&'a Cell<usize>);
+        impl Serialize for Probe<'_> {
+            fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+                let mut sequence = serializer.serialize_seq(Some(3))?;
+                for value in ["first", "second", "unvisited"] {
+                    self.0.set(self.0.get() + 1);
+                    sequence.serialize_element(value)?;
+                }
+                sequence.end()
+            }
+        }
+        let visited = Cell::new(0);
+        assert!(count_bounded_generation(&Probe(&visited), 10).is_err());
+        assert_eq!(visited.get(), 2);
+        visited.set(0);
+        assert!(encode_bounded_generation(&Probe(&visited), 10).is_err());
+        assert_eq!(visited.get(), 2);
+
+        let value = ["\"\\\n\t\0", "é🦀", ""];
+        let bytes = serde_json::to_vec(&value).unwrap();
+        assert_eq!(
+            count_bounded_generation(&value, bytes.len() as u64).unwrap(),
+            bytes.len() as u64
+        );
+        assert!(count_bounded_generation(&value, bytes.len() as u64 - 1).is_err());
+    }
+
+    #[test]
+    fn preflight_and_publication_reject_invalid_source_capacity_and_future_state() {
+        let mut invalid = Vec::new();
+        let mut state = snapshot(10);
+        state.entities[0].position.0[0] = f32::NAN;
+        invalid.push(state);
+        let mut state = snapshot(10);
+        state.entities.push(state.entities[0].clone());
+        invalid.push(state);
+        let mut state = snapshot(10);
+        state.schema_version = SNAPSHOT_SCHEMA_C001_SCALAR_OWNERS + 1;
+        invalid.push(state);
+        for mut state in [inert(10, 1), owners(10, 1, 2), scalar_owners(10, 1, 8)] {
+            state.preserved_prospect = inert(10, 2).preserved_prospect;
+            invalid.push(state);
+        }
+        let mut state = inert(10, 1);
+        state.native_import.as_mut().unwrap().owners[0]
+            .source_actor_path
+            .push(65);
+        invalid.push(state);
+        let mut state = owners(10, 1, 2);
+        state.native_owner_import.as_mut().unwrap().owners[0]
+            .binding
+            .source_actor_path
+            .push(65);
+        invalid.push(state);
+        let mut state = scalar_owners(10, 1, 8);
+        state
+            .native_scalar_owner_import
+            .as_mut()
+            .unwrap()
+            .bindings
+            .owners[0]
+            .owner
+            .source_actor_path
+            .push(65);
+        invalid.push(state);
+        for mut state in [
+            native(10, None),
+            lifecycle(10, None, 1),
+            owners(10, 1, 2),
+            scalar_owners(10, 1, 8),
+        ] {
+            state
+                .native_world
+                .as_mut()
+                .unwrap()
+                .definitions
+                .native_format += 1;
+            invalid.push(state);
+        }
+        let mut state = relationships(10, None, Some(DomainId(3)));
+        state
+            .native_relationships
+            .as_mut()
+            .unwrap()
+            .definition
+            .relationship_format += 1;
+        invalid.push(state);
+        let mut state = lifecycle(10, None, 1);
+        state
+            .native_lifecycle
+            .as_mut()
+            .unwrap()
+            .definition
+            .lifecycle_format += 1;
+        invalid.push(state);
+        let mut state = owners(10, 1, 2);
+        state.native_owner_import.as_mut().unwrap().format += 1;
+        invalid.push(state);
+        let mut state = scalar_owners(10, 1, 8);
+        state.native_scalar_owner_import.as_mut().unwrap().format += 1;
+        invalid.push(state);
+        let mut state = owners(10, 1, 2);
+        state
+            .native_owner_import
+            .as_mut()
+            .unwrap()
+            .source_map
+            .reserve_exact(4 * 1024 * 1024);
+        invalid.push(state);
+        let mut state = scalar_owners(10, 1, 8);
+        state.native_scalar_contracts = None;
+        invalid.push(state);
+
+        for state in invalid {
+            let error = SnapshotStore::preflight(&state).unwrap_err().to_string();
+            assert_eq!(encode_generation(&state).unwrap_err().to_string(), error);
+            let directory = tempfile::tempdir().unwrap();
+            let mut store = SnapshotStore::open(directory.path()).unwrap();
+            assert_eq!(store.save_new(&state).unwrap_err().to_string(), error);
+            assert!(store.manifest().unwrap().is_none());
+            // Publication must fail before the first sidecar/generation write.
+            store
+                .save_with_writer(&state, |_, _, _| panic!("invalid snapshot reached writer"))
+                .unwrap_err();
+        }
+    }
+
     #[test]
     fn relationship_preflight_and_publication_share_exact_generation_encoding() {
         assert_eq!(MAX_REFERENCED_SNAPSHOT_BYTES, 64 * 1024 * 1024 + 4 * 1024);
@@ -2928,6 +3247,11 @@ mod crash_consistency_tests {
             encoded
         );
         assert!(encode_bounded_generation(&dto, encoded.len() as u64 - 1).is_err());
+        assert_eq!(
+            count_bounded_generation(&dto, encoded.len() as u64).unwrap(),
+            encoded.len() as u64
+        );
+        assert!(count_bounded_generation(&dto, encoded.len() as u64 - 1).is_err());
         let directory = tempfile::tempdir().unwrap();
         let mut store = SnapshotStore::open(directory.path()).unwrap();
         store.save(&state).unwrap();
@@ -2996,6 +3320,11 @@ mod crash_consistency_tests {
             encoded
         );
         assert!(encode_bounded_generation(&dto, encoded.len() as u64 - 1).is_err());
+        assert_eq!(
+            count_bounded_generation(&dto, encoded.len() as u64).unwrap(),
+            encoded.len() as u64
+        );
+        assert!(count_bounded_generation(&dto, encoded.len() as u64 - 1).is_err());
         assert_eq!(serde_json::to_vec(&dto).unwrap(), encoded);
         let directory = tempfile::tempdir().unwrap();
         let mut store = SnapshotStore::open(directory.path()).unwrap();
