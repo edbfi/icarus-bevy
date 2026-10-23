@@ -101,6 +101,12 @@ foundation edges. Capture pins activation contexts and checks authoritative
 edges against the derived reverse index; edited links survive reload without
 reapplying initial declarations (F-922). Optional C001 metadata remains source
 provenance, not acceptance of original relationship state.
+Schema 7 retains complete spatial slots with explicit live/dormant presence,
+checked incarnations and authoritative recorder bindings. Its separate activation
+path validates the two disjoint partitions; replacement preserves logical IDs
+and valid foundation edges. A persistent latest request digest and sequence
+prevent restore replay; shared runtime generations reject stale resource clones
+(F-923). C001 metadata composition remains unsupported.
 Supplied-save state may ride along as one lossless, value-opaque preserved
 section that reconstructs the verified payload byte-identically, is carried
 unchanged into every later generation and is written once as a content-addressed

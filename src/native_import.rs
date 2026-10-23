@@ -1264,6 +1264,7 @@ pub fn prepare_c001_inert_import(
         native_world: Some(native),
         native_import: Some(metadata),
         native_relationships: None,
+        native_lifecycle: None,
     };
     // Preflight validates the entire snapshot before encoding it. Avoid a
     // separate validation that would reconstruct and check the source twice.

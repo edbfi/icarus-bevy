@@ -103,3 +103,60 @@ destruction propagation or tame permissions. Full C009 import also requires
 inherited item state and owner lifecycle behavior; no such adapter is admitted.
 Schemas 4/5 retain their contracts when `--relationships` is absent. Ordinary
 `import-save` remains closed and both readiness flags remain false.
+
+## Owner lifecycle
+
+The authored lifecycle contract (F-923) adds `--lifecycle FILE` and optional
+`--restore FILE` to `create-native-world`:
+
+```bash
+cargo run --locked -- create-native-world --catalog authored.toml --map workshop \
+  --lifecycle lifecycle.json --restore restore.json --data-dir work/owners --dry-run
+```
+
+The JSON/TOML `native_lifecycle::LifecycleDefinition` declares format 1, catalog
+identity, map and every placement's exact UTF-16 owner name, `spatial_state_v1`
+recorder kind, initial `live`/`absent` presence, optional positive-GUID component,
+and `missing`/`declared_kind` spawn component. Names have 1–1,024 units and at
+most 1,048,576 units in aggregate. Definitions are limited to 4 MiB; lifecycle
+state to 8 MiB; restore inputs to 64 MiB. Counts cannot exceed 16,384 slots,
+bindings or commands. The combined stored generation retains its existing cap.
+
+Schema 7 stores every spatial slot, including dormant values, with explicit
+presence, incarnation and authoritative recorder bindings. Only live slots
+spawn entities. Missing live actors or dormant records fail capture. No C001
+metadata composition is admitted; opaque preservation and authored relationships
+are optional. Existing schemas retain their meanings.
+
+`RestoreBatch` supplies a lifecycle identity, sequence and nonempty recorder list.
+Each command supplies its GUID/kind, target placement, owner name, policy, source
+mode, creation permission, expected presence/incarnation and complete pose and
+variables. Detached lookup compares names with ASCII-only folding across all
+declarations and rejects ambiguity. Bound lookup uses the existing recorder GUID;
+it requires unchanged supplied state and keeps the owner even for `respawn_only`.
+Explicit detachment requires the expected prior binding, or null for an unbound
+GUID. These names and GUIDs are independent of foundation-link identities.
+
+Detached `find_only` requires a live owner. `find_or_respawn` attaches to a live
+owner or spawns an absent slot; failed live attachment rejects. `respawn_only`
+replaces a live owner or spawns an absent slot. Replacement retains the domain ID
+and advances its incarnation. All commands validate before any actor changes;
+manual resolution, forced restore and undeclared spawning are unsupported.
+
+Sequences begin at 1 and advance by one. An exact retry of the latest request
+returns its stored completion without replay or resetting later edits; changed
+or older requests reject. The stored `restore_sequence` must agree with the
+completion; a missing receipt cannot reset a completed world to sequence zero.
+Reload activates saved results without executing
+policies. In-memory completion is not a durable receipt: autosave or shutdown
+must publish it through the normal store.
+
+`native_lifecycle_runtime` provides `restore_native_owners`, guarded pose/state
+edits and foundation reassignment. Mutation handles contain domain ID and current
+incarnation; stale handles reject. Replacement preserves edited foundation edges,
+whose endpoints must remain live. Capture and no-op requests still reject damaged
+components, stale resource generations, replaced contexts and inconsistent indices. Dry runs create nothing;
+publication refuses existing or recoverable worlds. `live_actors` distinguishes
+materialized owners from the complete `actors` slot count. Both readiness flags
+remain false; this authored facility does not qualify official owner lookup,
+spawning or complete recorder restoration.

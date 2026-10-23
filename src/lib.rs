@@ -7,6 +7,8 @@ pub mod import_plan;
 mod json;
 pub mod metrics;
 pub mod native_import;
+pub mod native_lifecycle;
+pub mod native_lifecycle_runtime;
 pub mod native_relationships;
 pub mod native_runtime;
 pub mod native_world;

@@ -111,6 +111,7 @@ fn snapshot(tick: u64, value: i32) -> WorldSnapshot {
         native_world: None,
         native_import: None,
         native_relationships: None,
+        native_lifecycle: None,
     }
 }
 

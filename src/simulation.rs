@@ -15,6 +15,10 @@ use crate::{
     config::ServerConfig,
     metrics::LatencyHistogram,
     native_import::C001InertImportMetadataV1,
+    native_lifecycle::{
+        CompiledNativeLifecycle, LifecycleSnapshot, validate_lifecycle_relationships,
+    },
+    native_lifecycle_runtime::NativeLifecycleContext,
     native_relationships::{CompiledNativeRelationships, NativeRelationshipsSnapshot},
     native_runtime::{NativeRelationshipsContext, NativeWorldContext},
     native_world::{NativeWorldSnapshot, PreparedNativeWorld},
@@ -37,6 +41,9 @@ pub const SNAPSHOT_SCHEMA_NATIVE: u32 = 4;
 pub const SNAPSHOT_SCHEMA_C001_INERT: u32 = 5;
 /// Independently authored actor identities and mutable native foundation edges.
 pub const SNAPSHOT_SCHEMA_RELATIONSHIPS: u32 = 6;
+/// Complete declared spatial slots, with explicit live/dormant owner state and
+/// transactional recorder bindings. Loading never replays a restore request.
+pub const SNAPSHOT_SCHEMA_LIFECYCLE: u32 = 7;
 
 /// Stable domain identity, independent of Bevy's runtime entity allocation.
 #[derive(Component, Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
@@ -61,12 +68,12 @@ pub struct WorldSnapshot {
     #[serde(deserialize_with = "crate::json::objects")]
     pub entities: Vec<EntityRecord>,
     /// Lossless, value-opaque supplied-save state carried unchanged between
-    /// generations; required in schemas 2, 3 and 5, optional in schemas 4 and 6.
+    /// generations; required in schemas 2, 3 and 5, optional in schemas 4, 6 and 7.
     /// Shared and held compactly as its verified native encoding. Schema 5
     /// separately records its explicitly accepted authored interpretation.
     /// Serde writes the section inline under the stored `schema_version`, which is
     /// a loadable document only for schema 2; the snapshot store writes schemas
-    /// 3 through 6 itself, with a sidecar reference.
+    /// 3 through 7 itself, with a sidecar reference.
     #[serde(
         default,
         skip_serializing_if = "Option::is_none",
@@ -81,6 +88,8 @@ pub struct WorldSnapshot {
     pub native_import: Option<C001InertImportMetadataV1>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub native_relationships: Option<NativeRelationshipsSnapshot>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub native_lifecycle: Option<LifecycleSnapshot>,
 }
 
 impl Default for WorldSnapshot {
@@ -93,12 +102,42 @@ impl Default for WorldSnapshot {
             native_world: None,
             native_import: None,
             native_relationships: None,
+            native_lifecycle: None,
         }
     }
 }
 
 impl WorldSnapshot {
     pub fn validate(&self) -> Result<()> {
+        if self.schema_version == SNAPSHOT_SCHEMA_LIFECYCLE {
+            ensure!(
+                self.entities.is_empty(),
+                "schema 7 cannot hold foundation entities"
+            );
+            ensure!(
+                self.native_import.is_none(),
+                "schema 7 cannot hold source import metadata"
+            );
+            let native = self
+                .native_world
+                .as_ref()
+                .context("schema 7 requires spatial slots")?;
+            let lifecycle = self
+                .native_lifecycle
+                .as_ref()
+                .context("schema 7 requires lifecycle state")?;
+            CompiledNativeLifecycle::from_snapshot(lifecycle, native)?;
+            validate_lifecycle_relationships(
+                native,
+                lifecycle,
+                self.native_relationships.as_ref(),
+            )?;
+            return Ok(());
+        }
+        ensure!(
+            self.native_lifecycle.is_none(),
+            "this snapshot schema cannot hold lifecycle state"
+        );
         if self.schema_version == SNAPSHOT_SCHEMA_RELATIONSHIPS {
             ensure!(
                 self.entities.is_empty(),
@@ -219,6 +258,7 @@ pub struct SnapshotMode {
     native: bool,
     native_activation: Option<NativeWorldContext>,
     relationship_activation: Option<NativeRelationshipsContext>,
+    lifecycle_activation: Option<NativeLifecycleContext>,
     preserved: Option<Arc<PreservedSection>>,
     imported: Option<Arc<C001InertImportMetadataV1>>,
 }
@@ -228,6 +268,7 @@ pub(crate) fn validate_native_activation(
     world: &World,
     context: &NativeWorldContext,
 ) -> Result<()> {
+    crate::native_lifecycle_runtime::ensure_no_lifecycle_state(world)?;
     let mode = world
         .get_resource::<SnapshotMode>()
         .context("world lacks required snapshot mode")?;
@@ -249,6 +290,51 @@ pub(crate) fn validate_native_activation(
             _ => false,
         },
         "world relationship context differs from its loaded activation"
+    );
+    Ok(())
+}
+
+/// Pin the lifecycle mode independently of its mutable entity registry. A
+/// replacement updates that registry, but cannot replace the loaded contract.
+pub(crate) fn validate_lifecycle_activation(
+    world: &World,
+    context: &NativeLifecycleContext,
+) -> Result<()> {
+    let mode = world
+        .get_resource::<SnapshotMode>()
+        .context("world lacks required snapshot mode")?;
+    ensure!(
+        mode.lifecycle_activation
+            .as_ref()
+            .is_some_and(|expected| expected.same_activation(context)),
+        "world lifecycle context differs from its loaded activation"
+    );
+    ensure!(
+        mode.native_activation.is_none()
+            && mode.relationship_activation.is_none()
+            && mode.imported.is_none(),
+        "lifecycle world contains an incompatible capture contract"
+    );
+    ensure!(
+        world.contains_resource::<SimulationClock>(),
+        "world lacks required simulation clock"
+    );
+    ensure!(
+        !world.contains_resource::<C001InertImportState>(),
+        "lifecycle world contains source import metadata"
+    );
+    let actual = world
+        .get_resource::<PreservedProspectState>()
+        .map(|state| &state.0);
+    ensure!(
+        match (actual, &mode.preserved) {
+            (None, None) => true,
+            (Some(actual), Some(expected)) =>
+                Arc::ptr_eq(actual, expected)
+                    || actual.encoded_sha256() == expected.encoded_sha256(),
+            _ => false,
+        },
+        "world preserved section differs from its loaded capture contract"
     );
     Ok(())
 }
@@ -342,6 +428,7 @@ pub fn build_app(config: &ServerConfig, snapshot: &WorldSnapshot) -> Result<App>
             native: snapshot.native_world.is_some(),
             native_activation: None,
             relationship_activation: None,
+            lifecycle_activation: None,
             preserved: snapshot.preserved_prospect.clone(),
             imported: imported.clone(),
         })
@@ -364,7 +451,9 @@ pub fn build_app(config: &ServerConfig, snapshot: &WorldSnapshot) -> Result<App>
     for entity in &snapshot.entities {
         app.world_mut().spawn((entity.id, entity.position));
     }
-    if let Some(native) = &snapshot.native_world {
+    if snapshot.schema_version == SNAPSHOT_SCHEMA_LIFECYCLE {
+        crate::native_lifecycle_runtime::activate_lifecycle(app.world_mut(), snapshot)?;
+    } else if let Some(native) = &snapshot.native_world {
         crate::native_runtime::activate(app.world_mut(), native)?;
         if let Some(relationships) = &snapshot.native_relationships {
             crate::native_runtime::activate_relationships(app.world_mut(), native, relationships)?;
@@ -381,9 +470,14 @@ pub fn build_app(config: &ServerConfig, snapshot: &WorldSnapshot) -> Result<App>
         .world()
         .get_resource::<NativeRelationshipsContext>()
         .cloned();
+    let lifecycle_activation = app
+        .world()
+        .get_resource::<NativeLifecycleContext>()
+        .cloned();
     let mut mode = app.world_mut().resource_mut::<SnapshotMode>();
     mode.native_activation = native_activation;
     mode.relationship_activation = relationship_activation;
+    mode.lifecycle_activation = lifecycle_activation;
     Ok(app)
 }
 
@@ -444,6 +538,10 @@ pub fn capture(world: &mut World) -> Result<WorldSnapshot> {
         },
         "world import metadata differs from its loaded capture contract"
     );
+    if mode.lifecycle_activation.is_some() {
+        return crate::native_lifecycle_runtime::capture_lifecycle(world);
+    }
+    crate::native_lifecycle_runtime::ensure_no_lifecycle_state(world)?;
     if mode.native {
         let (native, relationships) = crate::native_runtime::capture_native(world)?;
         if let Some(metadata) = &mode.imported {
@@ -467,6 +565,7 @@ pub fn capture(world: &mut World) -> Result<WorldSnapshot> {
             native_world: Some(native),
             native_import: mode.imported.as_deref().cloned(),
             native_relationships: relationships,
+            native_lifecycle: None,
         };
         // capture_native validates every record against the immutable loaded
         // catalog. Storage independently validates the serialized snapshot;
@@ -505,6 +604,7 @@ pub fn capture(world: &mut World) -> Result<WorldSnapshot> {
         native_world: None,
         native_import: None,
         native_relationships: None,
+        native_lifecycle: None,
     };
     snapshot.validate()?;
     Ok(snapshot)
