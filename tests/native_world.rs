@@ -412,6 +412,22 @@ fn snapshot_requires_full_topology_stable_ids_exact_bindings_and_schema() {
 }
 
 #[test]
+fn snapshot_rechecks_embedded_definitions_and_identity_with_unchanged_records() {
+    let mut snapshot = prepared();
+    // A valid change to an unused definition must still invalidate catalog_id.
+    snapshot.definitions.classes[1].local_bounds.min[0] -= 0.25;
+    assert!(snapshot.validate().is_err());
+    snapshot.catalog_id = CompiledNativeCatalog::compile(snapshot.definitions.clone())
+        .unwrap()
+        .identity()
+        .to_owned();
+    snapshot.validate().unwrap();
+    // Recompilation must include definitions outside the active map as well.
+    snapshot.definitions.maps[1].placements[0].transform.scale = [0.0; 3];
+    assert!(snapshot.validate().is_err());
+}
+
+#[test]
 fn keys_and_utf16_values_obey_exact_limits() {
     for key in [
         "".to_owned(),

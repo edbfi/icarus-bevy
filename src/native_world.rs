@@ -189,6 +189,31 @@ object_dto! {
     }
 }
 
+/// Borrow mutable records without copying their names or variable payloads.
+/// The small pose is owned so ECS components can supply it directly.
+#[derive(Clone)]
+pub(crate) struct NativeActorView<'a> {
+    pub id: DomainId,
+    pub placement: &'a str,
+    pub class: &'a str,
+    pub tile: &'a str,
+    pub transform: NativeTransform,
+    pub variables: &'a [NativeVariableValue],
+}
+
+impl<'a> From<&'a NativeActorRecord> for NativeActorView<'a> {
+    fn from(actor: &'a NativeActorRecord) -> Self {
+        Self {
+            id: actor.id,
+            placement: &actor.placement,
+            class: &actor.class,
+            tile: &actor.tile,
+            transform: actor.transform.clone(),
+            variables: &actor.variables,
+        }
+    }
+}
+
 impl Default for NativeTransform {
     fn default() -> Self {
         Self {
@@ -630,23 +655,33 @@ impl NativeWorldSnapshot {
             self.catalog_id == catalog.identity(),
             "native snapshot catalog identity mismatch"
         );
-        validate_key(&self.map).context("native snapshot map")?;
-        let map = catalog
-            .map(&self.map)
-            .context("native snapshot map binding")?;
+        catalog.validate_records(&self.map, self.actors.iter().map(NativeActorView::from))
+    }
+}
+
+impl CompiledNativeCatalog {
+    /// Validate the complete mutable state against already verified, immutable
+    /// definitions. Persisted snapshots must also verify their embedded catalog.
+    pub(crate) fn validate_records<'a>(
+        &self,
+        map: &str,
+        actors: impl ExactSizeIterator<Item = NativeActorView<'a>>,
+    ) -> Result<()> {
+        validate_key(map).context("native snapshot map")?;
+        let map = self.map(map).context("native snapshot map binding")?;
         ensure!(
-            !self.actors.is_empty() && self.actors.len() == map.placements.len(),
+            !map.placements.is_empty() && actors.len() == map.placements.len(),
             "native snapshot placement set incomplete"
         );
         let mut seen = BTreeSet::new();
         let mut values = 0;
         let mut value_bytes = 0;
-        for (index, actor) in self.actors.iter().enumerate() {
+        for (index, actor) in actors.enumerate() {
             let validate_actor = || -> Result<()> {
-                validate_key(&actor.placement)?;
+                validate_key(actor.placement)?;
                 let rank = map
                     .placements
-                    .binary_search_by(|v| v.key.cmp(&actor.placement))
+                    .binary_search_by(|v| v.key.as_str().cmp(actor.placement))
                     .ok()
                     .context("native actor placement binding")?;
                 let placement = &map.placements[rank];
@@ -658,7 +693,7 @@ impl NativeWorldSnapshot {
                     actor.class == placement.class && actor.tile == placement.tile,
                     "native actor immutable binding mismatch"
                 );
-                let class = catalog
+                let class = self
                     .class(&placement.class)
                     .context("native actor class binding")?;
                 let tile = map
@@ -667,7 +702,7 @@ impl NativeWorldSnapshot {
                     .ok()
                     .map(|i| &map.tiles[i])
                     .context("native actor tile binding")?;
-                validate_values(&actor.variables, class, true)?;
+                validate_values(actor.variables, class, true)?;
                 ensure!(
                     tile.bounds
                         .contains(&actor.transform.transformed_bounds(&class.local_bounds)?),
@@ -677,7 +712,7 @@ impl NativeWorldSnapshot {
             };
             validate_actor().with_context(|| format!("native actor index {index}"))?;
             ensure!(
-                seen.insert(&actor.placement),
+                seen.insert(actor.placement),
                 "native duplicate placement index {index}"
             );
             add_count(
@@ -685,7 +720,7 @@ impl NativeWorldSnapshot {
                 actor.variables.len(),
                 MAX_NATIVE_VARIABLE_VALUES,
             )?;
-            for variable in &actor.variables {
+            for variable in actor.variables {
                 add_count(
                     &mut value_bytes,
                     variable_bytes(&variable.key, &variable.value)?,

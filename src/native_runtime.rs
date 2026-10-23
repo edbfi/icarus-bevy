@@ -10,8 +10,8 @@ use bevy::prelude::{Component, Entity, Resource, World};
 
 use crate::{
     native_world::{
-        Aabb3, CompiledNativeCatalog, NativeActorRecord, NativeTransform, NativeVariableValue,
-        NativeWorldSnapshot,
+        Aabb3, CompiledNativeCatalog, NativeActorRecord, NativeActorView, NativeTransform,
+        NativeVariableValue, NativeWorldSnapshot,
     },
     simulation::{DomainId, Position},
 };
@@ -87,11 +87,12 @@ pub(crate) fn activate(world: &mut World, native: &NativeWorldSnapshot) -> Resul
     Ok(())
 }
 
-pub(crate) fn capture_native(world: &mut World) -> Result<NativeWorldSnapshot> {
-    let context = world
-        .get_resource::<NativeWorldContext>()
-        .context("native world lacks required catalog context")?
-        .clone();
+/// Check ECS membership and every required component, then validate all mutable
+/// records using the catalog verified at activation. No variable state is cloned.
+fn validated_native_actors<'a>(
+    world: &'a World,
+    context: &NativeWorldContext,
+) -> Result<Vec<NativeActorView<'a>>> {
     // The registry detects removal of identity or complete actor deletion;
     // optional-component queries alone cannot observe either failure.
     let expected_entities: BTreeSet<_> = context.expected.values().copied().collect();
@@ -148,27 +149,48 @@ pub(crate) fn capture_native(world: &mut World) -> Result<NativeWorldSnapshot> {
             bounds.0 == class.local_bounds,
             "native actor local bounds differ from its definition"
         );
-        actors.push(NativeActorRecord {
+        actors.push(NativeActorView {
             id: *id,
-            placement: identity.placement.clone(),
-            class: identity.class.clone(),
-            tile: identity.tile.clone(),
+            placement: &identity.placement,
+            class: &identity.class,
+            tile: &identity.tile,
             transform: NativeTransform {
                 translation: position.0,
                 rotation: rotation.0,
                 scale: scale.0,
             },
-            variables: variables.0.clone(),
+            variables: &variables.0,
         });
     }
-    let snapshot = NativeWorldSnapshot {
+    context
+        .catalog
+        .validate_records(&context.map, actors.iter().cloned())?;
+    Ok(actors)
+}
+
+pub(crate) fn capture_native(world: &mut World) -> Result<NativeWorldSnapshot> {
+    let context = world
+        .get_resource::<NativeWorldContext>()
+        .context("native world lacks required catalog context")?;
+    let actors = validated_native_actors(world, context)?;
+    // Only snapshot output needs owned definitions and actor payloads. The
+    // complete record validation above does not recompile or hash the catalog.
+    Ok(NativeWorldSnapshot {
         catalog_id: context.catalog.identity().to_owned(),
         definitions: context.catalog.definition().clone(),
-        map: context.map,
-        actors,
-    };
-    snapshot.validate()?;
-    Ok(snapshot)
+        map: context.map.clone(),
+        actors: actors
+            .into_iter()
+            .map(|actor| NativeActorRecord {
+                id: actor.id,
+                placement: actor.placement.to_owned(),
+                class: actor.class.to_owned(),
+                tile: actor.tile.to_owned(),
+                transform: actor.transform,
+                variables: actor.variables.to_vec(),
+            })
+            .collect(),
+    })
 }
 
 /// Replace one object's pose and typed state only after the complete proposed
@@ -179,46 +201,55 @@ pub fn update_native_actor(
     transform: NativeTransform,
     variables: Vec<NativeVariableValue>,
 ) -> Result<()> {
-    let mut proposed = capture_native(world)?;
-    let actor = proposed
-        .actors
-        .iter_mut()
-        .find(|actor| actor.id == id)
-        .context("native edit targets an unknown domain identity")?;
-    actor.transform = transform;
-    actor.variables = variables;
-    proposed.validate()?;
-    let actor = proposed
-        .actors
-        .iter()
-        .find(|actor| actor.id == id)
-        .context("native edit lost its candidate")?;
-    let entity = *world
-        .resource::<NativeWorldContext>()
-        .expected
-        .get(&id)
-        .context("native edit lost its runtime identity")?;
+    let entity = {
+        let context = world
+            .get_resource::<NativeWorldContext>()
+            .context("native world lacks required catalog context")?;
+        // Validate current state first, so an edit cannot silently repair or
+        // conceal existing corruption, even on the targeted actor.
+        let actors = validated_native_actors(world, context)?;
+        let entity = *context
+            .expected
+            .get(&id)
+            .context("native edit targets an unknown domain identity")?;
+        context.catalog.validate_records(
+            &context.map,
+            actors.into_iter().map(|actor| {
+                if actor.id == id {
+                    NativeActorView {
+                        transform: transform.clone(),
+                        variables: &variables,
+                        ..actor
+                    }
+                } else {
+                    actor
+                }
+            }),
+        )?;
+        entity
+    };
     world.entity_mut(entity).insert((
-        Position(actor.transform.translation),
-        NativeRotation(actor.transform.rotation),
-        NativeScale(actor.transform.scale),
-        NativeVariables(actor.variables.clone()),
+        Position(transform.translation),
+        NativeRotation(transform.rotation),
+        NativeScale(transform.scale),
+        NativeVariables(variables),
     ));
     Ok(())
 }
 
 /// World-space axis-aligned bounds of the authored geometry after its full pose.
 pub fn native_world_bounds(world: &mut World, id: DomainId) -> Result<Aabb3> {
-    let snapshot = capture_native(world)?;
-    let actor = snapshot
-        .actors
-        .iter()
+    let context = world
+        .get_resource::<NativeWorldContext>()
+        .context("native world lacks required catalog context")?;
+    let actors = validated_native_actors(world, context)?;
+    let actor = actors
+        .into_iter()
         .find(|actor| actor.id == id)
         .context("native bounds target an unknown domain identity")?;
-    let class = world
-        .resource::<NativeWorldContext>()
+    let class = context
         .catalog
-        .class(&actor.class)
+        .class(actor.class)
         .context("native bounds class is undeclared")?;
     actor.transform.transformed_bounds(&class.local_bounds)
 }

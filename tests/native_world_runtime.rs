@@ -8,7 +8,8 @@ use icarus_bevy::{
         NativeWorldContext, native_world_bounds, update_native_actor,
     },
     native_world::{
-        Aabb3, CompiledNativeCatalog, NativeCatalogDefinition, NativeClassDefinition,
+        Aabb3, CompiledNativeCatalog, MAX_NATIVE_STRING_UNITS, MAX_NATIVE_VARIABLE_BYTES,
+        MAX_NATIVE_VARIABLES_PER_CLASS, NativeCatalogDefinition, NativeClassDefinition,
         NativeClassKind, NativeFrame, NativeMapDefinition, NativePlacement, NativeTileDefinition,
         NativeTransform, NativeValue, NativeVariableValue, VariableDefinition,
         prepare_authored_world,
@@ -148,6 +149,17 @@ fn missing_component<T: Component + Clone>() {
     let entity = actor(&mut app);
     let saved = app.world().get::<T>(entity).unwrap().clone();
     app.world_mut().entity_mut(entity).remove::<T>();
+    let original = &initial.native_world.as_ref().unwrap().actors[0];
+    assert!(native_world_bounds(app.world_mut(), original.id).is_err());
+    assert!(
+        update_native_actor(
+            app.world_mut(),
+            original.id,
+            original.transform.clone(),
+            original.variables.clone(),
+        )
+        .is_err()
+    );
     assert!(
         capture(app.world_mut())
             .and_then(|snapshot| store.save(&snapshot))
@@ -246,6 +258,19 @@ fn disabling_components_cannot_hide_invalid_topology_from_capture() {
 
     fn check<T: Component + Default>() {
         let initial = snapshot();
+        let original = &initial.native_world.as_ref().unwrap().actors[0];
+        let rejects_edit_and_bounds = |world: &mut World| {
+            assert!(native_world_bounds(world, original.id).is_err());
+            assert!(
+                update_native_actor(
+                    world,
+                    original.id,
+                    original.transform.clone(),
+                    original.variables.clone(),
+                )
+                .is_err()
+            );
+        };
         let mut app = build_app(&ServerConfig::default(), &initial).unwrap();
         let disabling = app.world_mut().register_component::<T>();
         app.world_mut()
@@ -260,6 +285,7 @@ fn disabling_components_cannot_hide_invalid_topology_from_capture() {
             .world_mut()
             .spawn((T::default(), DomainId(1), Position([0.0; 3])))
             .id();
+        rejects_edit_and_bounds(app.world_mut());
         assert!(
             capture(app.world_mut())
                 .and_then(|s| store.save(&s))
@@ -270,6 +296,7 @@ fn disabling_components_cannot_hide_invalid_topology_from_capture() {
             .world_mut()
             .spawn((T::default(), NativeScale([1.0; 3])))
             .id();
+        rejects_edit_and_bounds(app.world_mut());
         assert!(
             capture(app.world_mut())
                 .and_then(|s| store.save(&s))
@@ -282,6 +309,14 @@ fn disabling_components_cannot_hide_invalid_topology_from_capture() {
         app.world_mut().despawn(unregistered);
         // Legitimate disabled actors remain part of the persisted topology.
         app.world_mut().entity_mut(registered).insert(T::default());
+        native_world_bounds(app.world_mut(), original.id).unwrap();
+        update_native_actor(
+            app.world_mut(),
+            original.id,
+            original.transform.clone(),
+            original.variables.clone(),
+        )
+        .unwrap();
         assert_eq!(capture(app.world_mut()).unwrap(), initial);
         assert_eq!(
             store
@@ -321,6 +356,194 @@ fn invalid_pose_or_state_edit_is_atomic_and_has_private_free_errors() {
         .is_err()
     );
     assert_eq!(capture(app.world_mut()).unwrap(), initial);
+    let entity = actor(&mut app);
+    app.world_mut()
+        .get_mut::<NativeVariables>(entity)
+        .unwrap()
+        .0[0]
+        .value = NativeValue::I32(7);
+    // A valid replacement must not hide an invalid current record.
+    assert!(
+        update_native_actor(
+            app.world_mut(),
+            original.id,
+            original.transform.clone(),
+            original.variables.clone(),
+        )
+        .is_err()
+    );
+    assert!(matches!(
+        app.world().get::<NativeVariables>(entity).unwrap().0[0].value,
+        NativeValue::I32(7)
+    ));
+    app.world_mut()
+        .entity_mut(entity)
+        .insert(NativeVariables(original.variables.clone()));
+    assert_eq!(capture(app.world_mut()).unwrap(), initial);
+}
+
+fn unrelated_damage<T: Component + Clone>(damage: impl FnOnce(&mut World, Entity)) {
+    let mut definition = definition();
+    let mut other = definition.maps[0].placements[0].clone();
+    other.key = "second_placement".into();
+    definition.maps[0].placements.push(other);
+    let initial = prepare_authored_world(
+        Arc::new(CompiledNativeCatalog::compile(definition).unwrap()),
+        "private_map",
+    )
+    .unwrap()
+    .initial_snapshot();
+    let original = &initial.native_world.as_ref().unwrap().actors[0];
+    let mut app = build_app(&ServerConfig::default(), &initial).unwrap();
+    let unrelated = app
+        .world()
+        .iter_entities()
+        .find(|entity| entity.get::<DomainId>() == Some(&DomainId(2)))
+        .unwrap()
+        .id();
+    let saved = app.world().get::<T>(unrelated).unwrap().clone();
+    let bounds = native_world_bounds(app.world_mut(), original.id).unwrap();
+    let mut proposed = original.transform.clone();
+    proposed.translation = [0.0; 3];
+    damage(app.world_mut(), unrelated);
+    assert!(native_world_bounds(app.world_mut(), original.id).is_err());
+    assert!(
+        update_native_actor(
+            app.world_mut(),
+            original.id,
+            proposed.clone(),
+            original.variables.clone(),
+        )
+        .is_err()
+    );
+    assert!(capture(app.world_mut()).is_err());
+    app.world_mut().entity_mut(unrelated).insert(saved);
+    // Repairing the unrelated actor exposes any partial edit of the target.
+    assert_eq!(capture(app.world_mut()).unwrap(), initial);
+    assert_eq!(
+        native_world_bounds(app.world_mut(), original.id).unwrap(),
+        bounds
+    );
+    update_native_actor(
+        app.world_mut(),
+        original.id,
+        proposed.clone(),
+        original.variables.clone(),
+    )
+    .unwrap();
+    let changed = capture(app.world_mut()).unwrap();
+    assert_eq!(
+        changed.native_world.as_ref().unwrap().actors[0].transform,
+        proposed
+    );
+    changed.validate().unwrap();
+}
+
+#[test]
+fn bounds_and_edits_reject_unrelated_corruption_and_retry_after_repair() {
+    unrelated_damage::<NativeVariables>(|world, entity| {
+        world.get_mut::<NativeVariables>(entity).unwrap().0[0].value = NativeValue::I32(7);
+    });
+    unrelated_damage::<Position>(|world, entity| {
+        world.get_mut::<Position>(entity).unwrap().0 = [1000.0; 3];
+    });
+    unrelated_damage::<NativeActorIdentity>(|world, entity| {
+        world.get_mut::<NativeActorIdentity>(entity).unwrap().tile = "missing_tile".into();
+    });
+    unrelated_damage::<DomainId>(|world, entity| {
+        world.entity_mut(entity).insert(DomainId(1));
+    });
+    unrelated_damage::<NativeLocalBounds>(|world, entity| {
+        world.get_mut::<NativeLocalBounds>(entity).unwrap().0.min[0] = -2.0;
+    });
+    unrelated_damage::<NativeRotation>(|world, entity| {
+        world.entity_mut(entity).remove::<NativeRotation>();
+    });
+}
+
+#[test]
+fn proposed_edit_checks_aggregate_bytes_without_partial_writes() {
+    let mut definition = definition();
+    definition.classes[0].variables = (0..MAX_NATIVE_VARIABLES_PER_CLASS)
+        .map(|i| VariableDefinition {
+            key: format!("v{i:02}"),
+            default: NativeValue::String(String::new()),
+        })
+        .collect();
+    let placement = definition.maps[0].placements[0].clone();
+    definition.maps[0].placements = (0..96)
+        .map(|i| NativePlacement {
+            key: format!("p{i:02}"),
+            ..placement.clone()
+        })
+        .collect();
+    let initial = prepare_authored_world(
+        Arc::new(CompiledNativeCatalog::compile(definition).unwrap()),
+        "private_map",
+    )
+    .unwrap()
+    .initial_snapshot();
+    let original = &initial.native_world.as_ref().unwrap().actors[0];
+    let expanded: Vec<_> = original
+        .variables
+        .iter()
+        .map(|v| NativeVariableValue {
+            key: v.key.clone(),
+            // JSON escaping counts toward the byte budget, independently of UTF-16.
+            value: NativeValue::String("\0".repeat(MAX_NATIVE_STRING_UNITS)),
+        })
+        .collect();
+    let bytes = |values: &[NativeVariableValue]| {
+        values
+            .iter()
+            .map(|value| serde_json::to_vec(value).unwrap().len())
+            .sum::<usize>()
+    };
+    let empty_bytes = bytes(&original.variables);
+    let expanded_bytes = bytes(&expanded);
+    let actors = initial.native_world.as_ref().unwrap().actors.len();
+    let filled =
+        (MAX_NATIVE_VARIABLE_BYTES - actors * empty_bytes) / (expanded_bytes - empty_bytes);
+    assert!(filled < actors);
+    let mut app = build_app(&ServerConfig::default(), &initial).unwrap();
+    let entities: Vec<_> = app
+        .world()
+        .iter_entities()
+        .filter_map(|entity| entity.get::<DomainId>().map(|id| (*id, entity.id())))
+        .collect();
+    for (id, entity) in entities {
+        if id.0 > 1 && id.0 <= filled as u64 + 1 {
+            app.world_mut()
+                .entity_mut(entity)
+                .insert(NativeVariables(expanded.clone()));
+        }
+    }
+    let bounds = native_world_bounds(app.world_mut(), original.id).unwrap();
+    let mut pose = original.transform.clone();
+    pose.translation = [0.0; 3];
+    assert!(update_native_actor(app.world_mut(), original.id, pose.clone(), expanded).is_err());
+    assert_eq!(
+        native_world_bounds(app.world_mut(), original.id).unwrap(),
+        bounds
+    );
+    let unchanged = capture(app.world_mut()).unwrap();
+    assert_eq!(
+        &unchanged.native_world.as_ref().unwrap().actors[0],
+        original
+    );
+    update_native_actor(
+        app.world_mut(),
+        original.id,
+        pose.clone(),
+        original.variables.clone(),
+    )
+    .unwrap();
+    let changed = capture(app.world_mut()).unwrap();
+    assert_eq!(
+        changed.native_world.as_ref().unwrap().actors[0].transform,
+        pose
+    );
+    changed.validate().unwrap();
 }
 
 fn create(

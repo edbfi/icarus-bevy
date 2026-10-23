@@ -308,7 +308,9 @@ pub fn capture(world: &mut World) -> Result<WorldSnapshot> {
             preserved_prospect,
             native_world: Some(crate::native_runtime::capture_native(world)?),
         };
-        snapshot.validate()?;
+        // capture_native validates every record against the immutable loaded
+        // catalog. Storage independently validates the serialized snapshot;
+        // recompiling that catalog again on this thread adds no check here.
         return Ok(snapshot);
     }
     ensure!(
