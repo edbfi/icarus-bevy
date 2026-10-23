@@ -414,10 +414,11 @@ pub fn capture(world: &mut World) -> Result<WorldSnapshot> {
         .get_resource::<SimulationClock>()
         .context("world lacks required simulation clock")?
         .tick;
+    // Borrow the immutable capture contract; cloning it also copies the pinned
+    // actor registries and relationship identities on every autosave.
     let mode = world
         .get_resource::<SnapshotMode>()
-        .context("world lacks required snapshot mode")?
-        .clone();
+        .context("world lacks required snapshot mode")?;
     let preserved_prospect = world
         .get_resource::<PreservedProspectState>()
         .map(|state| Arc::clone(&state.0));

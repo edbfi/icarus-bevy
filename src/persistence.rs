@@ -33,8 +33,11 @@ const MAX_DOMAIN_SNAPSHOT_BYTES: u64 = 64 * 1024 * 1024;
 /// Schema 2 adds at most one 64 MiB Base64 preserved section (whose decoded
 /// size is checked separately), so a generation file may reach 128 MiB.
 const MAX_SNAPSHOT_BYTES: u64 = MAX_DOMAIN_SNAPSHOT_BYTES + MAX_PRESERVED_BASE64_BYTES as u64;
-/// Schemas 3 through 6 add a fixed-size sidecar reference to the domain bound;
-/// the sidecar itself is bounded by the 48 MiB native encoding cap.
+/// Aggregate generation cap for schemas 3 through 6, including inline native
+/// definitions, metadata, relationship declarations/edges and any fixed-size
+/// sidecar reference. Individual section limits do not reserve extra space:
+/// preflight and publication reject a combined encoding above this cap.
+/// The separate sidecar is bounded by the 48 MiB native encoding cap.
 const MAX_REFERENCED_SNAPSHOT_BYTES: u64 = MAX_DOMAIN_SNAPSHOT_BYTES + 4 * 1024;
 /// Streaming verification buffer, so checking a sidecar never holds it whole.
 const VERIFY_CHUNK_BYTES: usize = 1024 * 1024;

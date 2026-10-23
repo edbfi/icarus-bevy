@@ -136,7 +136,12 @@ with a preserved prospect saves schema 3, referencing a write-once,
 digest-verified `preserved-<sha256>.bin` sidecar; schema 2 still loads (F-567).
 Schema 4 embeds authored definitions and their verified identity, full poses,
 typed variables and fixed placement identities, optionally sharing that sidecar
-(F-919). Unsupported schemas fail closed.
+(F-919). Schema 5 adds the accepted authored C001 inert-fixture metadata and
+requires its unchanged source sidecar (F-921). Schema 6 adds authored relationship
+declarations and mutable foundation edges; C001 provenance is optional (F-922).
+Schemas 3–6 share a 64 MiB + 4 KiB aggregate generation cap, including all inline
+sections and the sidecar reference. Preparation rejects combined encodings over
+that cap even when each section fits its own limit. Unsupported schemas fail closed.
 
 See [authored native worlds](authored-worlds.md) for spatial creation, the
 strict C001 inert fixture and independently authored foundation relationships.
