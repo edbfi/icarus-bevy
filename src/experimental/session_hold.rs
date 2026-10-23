@@ -199,6 +199,8 @@ impl Drop for CancelOnDrop<'_> {
 
 /// Hold one session, reporting incomplete observations at a positive interval.
 /// A callback error cancels the owned probe and is returned after it stops.
+/// Like [`run_holds`], setup and final-close failures report only their error
+/// kind; unlike [`run_hold`], their original error chain is not retained.
 pub fn run_hold_with_progress(
     config: &HoldConfig,
     interval: Duration,

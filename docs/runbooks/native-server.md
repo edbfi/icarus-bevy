@@ -106,6 +106,8 @@ latest receive-window observations, not a synchronized snapshot. It includes
 ongoing update gaps, but cannot certify completion after an interruption.
 Without the option, output is unchanged. A progress-write failure stops the
 probes after their bounded receive or admission work.
+With progress enabled, single-session setup and final-close failures report
+only the error kind, as concurrent holds do, rather than the full error chain.
 
 ## Replication scheduling (experimental)
 
