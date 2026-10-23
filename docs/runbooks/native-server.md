@@ -99,6 +99,16 @@ cargo run --locked --release --example session_hold -- --server 127.0.0.1:17777 
   --release-profile config/release.toml --seconds 3600 --sessions 8
 ```
 
+For long holds, add `--progress-interval-seconds 60` and retain stderr.
+The probe flushes aggregate JSON lines marked `incomplete: true`; stdout
+still contains only the final summary. Progress combines each session's
+latest receive-window observations, not a synchronized snapshot. It includes
+ongoing update gaps, but cannot certify completion after an interruption.
+Without the option, output is unchanged. A progress-write failure stops the
+probes after their bounded receive or admission work.
+With progress enabled, single-session setup and final-close failures report
+only the error kind, as concurrent holds do, rather than the full error chain.
+
 ## Replication scheduling (experimental)
 
 `replication::ReplicationPlugin` runs in `FixedUpdate` between gameplay and
