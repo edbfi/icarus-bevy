@@ -305,6 +305,7 @@ fn info_inventory(tables: &mut DataTables, name: &[u16]) -> Result<PawnInventory
     }
     Ok(PawnInventory {
         info_row: u8::try_from(index).context("an inventory info row past 255")?,
+        current_weight: None,
         slots: FastArrayContent {
             replication_key: INVENTORY_SLOTS_REPLICATION_KEY,
             items: slots,

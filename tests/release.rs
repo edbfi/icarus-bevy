@@ -649,6 +649,7 @@ fn builtin_pawn_content_composes_every_block() {
         inventories: vec![
             PawnInventory {
                 info_row: 6,
+                current_weight: None,
                 slots: FastArrayContent {
                     replication_key: 2,
                     items: (0..3)
@@ -658,6 +659,7 @@ fn builtin_pawn_content_composes_every_block() {
             },
             PawnInventory {
                 info_row: 7,
+                current_weight: None,
                 slots: FastArrayContent::default(),
             },
         ],

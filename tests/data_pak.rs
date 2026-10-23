@@ -282,6 +282,7 @@ fn a_fresh_players_vitals_and_inventories_come_from_the_tables() {
         [
             PawnInventory {
                 info_row: 2,
+                current_weight: None,
                 slots: FastArrayContent {
                     replication_key: 2,
                     items: Vec::new(),
@@ -289,6 +290,7 @@ fn a_fresh_players_vitals_and_inventories_come_from_the_tables() {
             },
             PawnInventory {
                 info_row: 1,
+                current_weight: None,
                 slots: FastArrayContent {
                     replication_key: 2,
                     items: vec![slot(1, 0), slot(1, 1), slot(2, 2)],

@@ -462,6 +462,7 @@ fn native(
         };
         content.inventories.push(PawnInventory {
             info_row: *info_row,
+            current_weight: None,
             slots: FastArrayContent {
                 replication_key: slots.array_replication_key,
                 items: slots
