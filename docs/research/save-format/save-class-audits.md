@@ -48,15 +48,15 @@ F-602), and construction grids nest per-type row names over placed pieces
 sharing the grid's frame (F-643).
 
 Under the hard tree limits every recorder value of all 15 prospects types
-losslessly with no uninterpreted leaf (F-766), and a dry-run native import plan
-then blocks only on name and path references that no native content catalog
-yet defines (F-898). Per-instance object names are identity, not content, and
-never block (F-897), and actor variable records name class properties
-(F-897). Fields whose recorder restores were read classify by property and
+losslessly with no uninterpreted leaf (F-766). Before root-content resolution,
+the dry-run native import plan blocked only on name and path references that
+no native content catalog defined (F-898). Per-instance object names are
+identity, not content, and never block; actor variable records name class
+properties (F-897). Fields whose recorder restores were read classify by property and
 enclosing struct: most name data rows through each table's row handle, and
-FLOD tile records name landscape tiles (F-897). That leaves 23 to 26 of 3,528
-to 3,782 distinct references unclassified, with 52 find-only owners per save
-(F-898).
+FLOD tile records name landscape tiles (F-897). Those earlier plans left 23
+to 26 of 3,528 to 3,782 distinct references unclassified, with 52 find-only
+owners per save (F-898); these counts exclude root-content resolution.
 
 No saved class identifier, field or type name, or recorder version tells the
 older server from the newer client, and the prospect carries no version string

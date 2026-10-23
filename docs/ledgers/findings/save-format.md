@@ -7,7 +7,7 @@ full text under `retired/`. Admission and columns follow `.agents/rules/docs.md`
 
 Before restructure: 96ddb0b:docs/ledgers/findings.md
 
-Last reconciled: 2026-10-22
+Last reconciled: 2026-10-23
 
 | ID | Claim | Kind | Evidence | Scope and limits | Unknowns | Status |
 | --- | --- | --- | --- | --- | --- | --- |
@@ -51,6 +51,6 @@ Last reconciled: 2026-10-22
 | F-738 | FAccoladeSaveData (0x145dc1790), FProspectInfo (0x145fae2d0, 17 props), FAssociatedMemberInfo (0x145fad8e0, 8 props) and FCustomGameSetting (0x145fadbf0) pass stage-check in 15/15 saves | observed | static-decompile, authored-test, tool-receipt; M-776/ev_2e9c09126f64, M-777, M-791/ev_298296be07a0, M-780 | high; 15 saves | U-025 | active |
 | F-746 | C001..C038 ctor defaults (+0xb0..0xb2, +0xd8..0xd9: bSaveModifiers=0 on 13, skipOwner=1 on 6, policies 13/15/4/6, bRecordModifierStates=1 on C026, bRecordTransform=0 on 5) and +0x470 (17 true, C017 uid!=-1), +0x498 (C004), +0x4a8/+0x4b0 (C004/C032) match | observed | static-decompile, authored-test; M-794, M-796, M-797 | high; 2 builds | U-025 | active |
 | F-766 | Every recorder body of 15 prospects types losslessly: 0 of 211,215..229,486 properties stay uninterpreted, each re-encodes exactly; leaves are scalars, strings, text, tagged/fixed structs, arrays, Map items; default limits leave a 646,614-B C004 struct opaque | measured | authored-test, structural-comparison; M-808 | high; 15 prospects, 2 builds; values private | U-045 | active |
-| F-898 | Dry-run import of 15 prospects blocks only on unmapped content - actor recorders keep finite transforms; 3,528..3,782 distinct references (155..168 actor classes, 573..641 data rows, 105 tiles, 26..32 class variables, 23..26 other); --data-pak resolves all data rows | measured | authored-test; M-808, M-855..M-857, M-859, M-878 | high; names; 3.0.32 caseless | U-025, U-045 | active |
+| F-898 | 15-prospect dry-run blocks only on unmapped content; actor transforms finite; 3,528..3,782 distinct references (155..168 actor classes, 573..641 data rows, 105 tiles, 26..32 class variables, 23..26 other); --data-pak resolves all data rows | measured | authored-test; M-808, M-855..M-857, M-859, M-878 | high; before root resolution; 3.0.32 caseless | U-025, U-045 | active |
 | F-897 | Restore names: the actor recorder's name (0x148) is an unread instance name; variable records set the owner's SaveGame property named VariableName, then rep-notify; crop, modifier, quest, mission, structure, session-flag names make row handles; FLOD tiles match by name | observed | static-decompile; M-850, M-854, M-858 | high; client 25793767; some code, fields unread | U-045 | active |
 | F-860 | The capture save's 168 distinct actor classes: 161 Blueprints whose assets server 25956137 (3.0.32) ships, 7 native script classes; all 2,743 actor paths name shipped level packages, its one asset path a shipped asset | measured | static-bytes; M-867, M-880 | high; one save; by name against the pak index, contents unread: not shown loadable or spawnable | U-045 | active |
