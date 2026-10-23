@@ -40,7 +40,14 @@ pub const MAX_LIFECYCLE_DEFINITION_BYTES: usize = 4 * 1024 * 1024;
 pub const MAX_LIFECYCLE_BYTES: usize = 8 * 1024 * 1024;
 pub const MAX_RESTORE_BATCH_BYTES: usize = 64 * 1024 * 1024;
 pub const MAX_LIFECYCLE_NAME_UNITS: usize = 1024;
+/// Logical UTF-16 units, independent of Vec growth during deserialization.
 pub const MAX_LIFECYCLE_NAME_TOTAL_UNITS: usize = 1 << 20;
+/// Bound retained allocation, including caller-supplied spare capacity. Pinned
+/// JSON/TOML decoding grows u16 vectors by doubling with minimum capacity four:
+/// capacity <= 2 * len + 2 for each nonempty name. Relationship declarations
+/// have at most two names per placement; definitions and requests have one.
+pub const MAX_LIFECYCLE_NAME_TOTAL_CAPACITY_UNITS: usize =
+    2 * MAX_LIFECYCLE_NAME_TOTAL_UNITS + 4 * MAX_NATIVE_PLACEMENTS;
 
 // All named boundaries reject sequences and replace serde diagnostics, which
 // otherwise include unknown field names and caller-supplied enum strings.
@@ -210,12 +217,27 @@ fn add_count(total: &mut usize, count: usize, limit: usize) -> Result<()> {
     ensure!(*total <= limit, "native lifecycle aggregate limit");
     Ok(())
 }
-fn validate_name(name: &Vec<u16>, total: &mut usize) -> Result<()> {
+#[derive(Default)]
+struct NameBudget {
+    logical_units: usize,
+    capacity_units: usize,
+}
+
+fn validate_name(name: &Vec<u16>, total: &mut NameBudget) -> Result<()> {
     ensure!(
         !name.is_empty() && name.capacity() <= MAX_LIFECYCLE_NAME_UNITS,
         "native lifecycle name length invalid"
     );
-    add_count(total, name.capacity(), MAX_LIFECYCLE_NAME_TOTAL_UNITS)
+    add_count(
+        &mut total.logical_units,
+        name.len(),
+        MAX_LIFECYCLE_NAME_TOTAL_UNITS,
+    )?;
+    add_count(
+        &mut total.capacity_units,
+        name.capacity(),
+        MAX_LIFECYCLE_NAME_TOTAL_CAPACITY_UNITS,
+    )
 }
 
 fn key_capacity(key: &String) -> Result<()> {
@@ -320,7 +342,7 @@ fn validate_definition(definition: &LifecycleDefinition) -> Result<()> {
         !definition.slots.is_empty() && definition.slots.capacity() <= MAX_NATIVE_PLACEMENTS,
         "native lifecycle slot count invalid"
     );
-    let mut units = 0;
+    let mut units = NameBudget::default();
     for slot in &definition.slots {
         key_capacity(&slot.placement)?;
         validate_name(&slot.owner_name, &mut units)?;
@@ -677,14 +699,29 @@ fn validate_catalog_capacities(definition: &NativeCatalogDefinition) -> Result<(
     }
     let mut placements = 0;
     let mut tiles = 0;
+    let mut placement_capacity = 0;
+    let mut tile_capacity = 0;
     for map in &definition.maps {
         key_capacity(&map.key)?;
+        ensure!(
+            map.placements.capacity() <= MAX_NATIVE_PLACEMENTS
+                && map.tiles.capacity() <= MAX_NATIVE_TILES,
+            "native lifecycle map allocation limit"
+        );
+        // Counts describe persisted entries. Keep a separate allocation guard
+        // for each map's decoded doubling/minimum-four growth and caller slack.
+        add_count(&mut placements, map.placements.len(), MAX_NATIVE_PLACEMENTS)?;
+        add_count(&mut tiles, map.tiles.len(), MAX_NATIVE_TILES)?;
         add_count(
-            &mut placements,
+            &mut placement_capacity,
             map.placements.capacity(),
-            MAX_NATIVE_PLACEMENTS,
+            2 * MAX_NATIVE_PLACEMENTS + 2 * MAX_NATIVE_MAPS,
         )?;
-        add_count(&mut tiles, map.tiles.capacity(), MAX_NATIVE_TILES)?;
+        add_count(
+            &mut tile_capacity,
+            map.tiles.capacity(),
+            2 * MAX_NATIVE_TILES + 2 * MAX_NATIVE_MAPS,
+        )?;
         for tile in &map.tiles {
             key_capacity(&tile.key)?;
         }
@@ -708,7 +745,7 @@ fn validate_relationship_capacities(relationships: &NativeRelationshipsSnapshot)
             && relationships.foundations.capacity() <= MAX_NATIVE_PLACEMENTS,
         "native lifecycle relationship capacity limit"
     );
-    let mut names = 0;
+    let mut names = NameBudget::default();
     for declaration in &relationships.definition.actors {
         key_capacity(&declaration.placement)?;
         validate_name(&declaration.identity.name, &mut names)?;
@@ -942,7 +979,7 @@ impl RestoreBatch {
             !self.recorders.is_empty() && self.recorders.capacity() <= MAX_NATIVE_PLACEMENTS,
             "native restore recorder count invalid"
         );
-        let mut names = 0;
+        let mut names = NameBudget::default();
         let mut values = 0;
         let mut bytes = 0;
         let mut guids = BTreeSet::new();

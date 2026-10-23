@@ -118,9 +118,12 @@ The JSON/TOML `native_lifecycle::LifecycleDefinition` declares format 1, catalog
 identity, map and every placement's exact UTF-16 owner name, `spatial_state_v1`
 recorder kind, initial `live`/`absent` presence, optional positive-GUID component,
 and `missing`/`declared_kind` spawn component. Names have 1–1,024 units and at
-most 1,048,576 units in aggregate. Definitions are limited to 4 MiB; lifecycle
-state to 8 MiB; restore inputs to 64 MiB. Counts cannot exceed 16,384 slots,
-bindings or commands. The combined stored generation retains its existing cap.
+most 1,048,576 logical units in aggregate. A separate 2,162,688-unit capacity
+guard allows decoder growth while bounding spare allocation. Placement and tile
+totals likewise count entries, with separate capacity guards. Definitions are
+limited to 4 MiB; lifecycle state to 8 MiB; restore inputs to 64 MiB.
+Counts cannot exceed 16,384 slots, bindings or commands. The combined stored
+generation retains its existing cap.
 
 Schema 7 stores every spatial slot, including dormant values, with explicit
 presence, incarnation and authoritative recorder bindings. Only live slots

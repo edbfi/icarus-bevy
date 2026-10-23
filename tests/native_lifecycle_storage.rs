@@ -50,6 +50,129 @@ tile = "tile"
 transform = { translation = [1.0, 0.0, 0.0], rotation = [0.0, 0.0, 0.0, 1.0], scale = [1.0, 1.0, 1.0] }
 "#;
 
+#[test]
+fn admitted_large_name_aggregate_survives_durable_reload() {
+    let catalog = CompiledNativeCatalog::parse(CATALOG).unwrap();
+    let mut definition = catalog.definition().clone();
+    let placement = definition.maps[0].placements[0].clone();
+    definition.maps[0].placements = (0..4097)
+        .map(|index| {
+            let mut placement = placement.clone();
+            placement.key = format!("slot_{index:05}");
+            placement
+        })
+        .collect();
+    let catalog = Arc::new(CompiledNativeCatalog::compile(definition).unwrap());
+    let native = prepare_authored_world(Arc::clone(&catalog), "demo").unwrap();
+    let compiled = CompiledNativeLifecycle::compile(
+        LifecycleDefinition {
+            lifecycle_format: 1,
+            native_catalog_id: catalog.identity().into(),
+            map: "demo".into(),
+            slots: native
+                .snapshot()
+                .actors
+                .iter()
+                .map(|actor| SlotDeclaration {
+                    placement: actor.placement.clone(),
+                    owner_name: vec![65; 200],
+                    recorder_kind: RecorderKind::SpatialStateV1,
+                    initial_presence: Presence::Absent,
+                    initial_component: None,
+                    spawn_component: SpawnComponent::Missing,
+                })
+                .collect(),
+        },
+        &catalog,
+    )
+    .unwrap();
+    let world = prepare_lifecycle_world(native.initial_snapshot(), &compiled).unwrap();
+    let directory = tempfile::tempdir().unwrap();
+    let mut store = SnapshotStore::open(directory.path()).unwrap();
+    store.save_new(world.snapshot()).unwrap();
+    drop(store);
+    let store = SnapshotStore::open(directory.path()).unwrap();
+    let loaded = store
+        .load()
+        .expect("an acknowledged name aggregate must reload")
+        .unwrap();
+    assert_eq!(&loaded.snapshot, world.snapshot());
+    assert!(!loaded.recovered_previous);
+}
+
+#[test]
+fn admitted_catalog_placements_across_maps_survive_durable_reload() {
+    assert_catalog_vectors_reload(false);
+}
+
+#[test]
+fn admitted_catalog_tiles_across_maps_survive_durable_reload() {
+    assert_catalog_vectors_reload(true);
+}
+
+fn assert_catalog_vectors_reload(tiles: bool) {
+    let original = CompiledNativeCatalog::parse(CATALOG).unwrap();
+    let mut definition = original.definition().clone();
+    let mut large = definition.maps[0].clone();
+    large.key = "large".into();
+    let mut selected = definition.maps[0].clone();
+    selected.key = "selected".into();
+    selected.placements.truncate(1);
+    if tiles {
+        let tile = large.tiles[0].clone();
+        large.tiles = (0..2049)
+            .map(|index| {
+                let mut tile = tile.clone();
+                tile.key = format!("tile_{index:05}");
+                tile
+            })
+            .collect();
+        large.placements.truncate(1);
+        large.placements[0].tile = large.tiles[0].key.clone();
+    } else {
+        let placement = large.placements[0].clone();
+        large.placements = (0..8193)
+            .map(|index| {
+                let mut placement = placement.clone();
+                placement.key = format!("slot_{index:05}");
+                placement
+            })
+            .collect();
+    }
+    definition.maps = vec![large, selected];
+    let catalog = Arc::new(CompiledNativeCatalog::compile(definition).unwrap());
+    let native = prepare_authored_world(Arc::clone(&catalog), "selected").unwrap();
+    let compiled = CompiledNativeLifecycle::compile(
+        LifecycleDefinition {
+            lifecycle_format: 1,
+            native_catalog_id: catalog.identity().into(),
+            map: "selected".into(),
+            slots: vec![SlotDeclaration {
+                placement: native.snapshot().actors[0].placement.clone(),
+                owner_name: vec![65],
+                recorder_kind: RecorderKind::SpatialStateV1,
+                initial_presence: Presence::Live,
+                initial_component: None,
+                spawn_component: SpawnComponent::Missing,
+            }],
+        },
+        &catalog,
+    )
+    .unwrap();
+    let world = prepare_lifecycle_world(native.initial_snapshot(), &compiled).unwrap();
+    let directory = tempfile::tempdir().unwrap();
+    let mut store = SnapshotStore::open(directory.path()).unwrap();
+    store.save_new(world.snapshot()).unwrap();
+    drop(store);
+    let store = SnapshotStore::open(directory.path()).unwrap();
+    let loaded = store
+        .load()
+        .expect("acknowledged catalog vectors must reload")
+        .unwrap();
+    assert_eq!(&loaded.snapshot, world.snapshot());
+    assert!(!loaded.recovered_previous);
+}
+
 fn fixture(tick: u64, preserve: bool, relationships: bool) -> WorldSnapshot {
     let catalog = Arc::new(CompiledNativeCatalog::parse(CATALOG).unwrap());
     let native = prepare_authored_world(Arc::clone(&catalog), "demo")

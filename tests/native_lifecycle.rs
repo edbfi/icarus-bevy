@@ -4,15 +4,16 @@ use std::{fs, sync::Arc};
 use icarus_bevy::{
     native_lifecycle::{
         CompiledNativeLifecycle, ComponentDisposition, LifecycleDefinition, LifecycleSnapshot,
-        MAX_LIFECYCLE_DEFINITION_BYTES, MAX_LIFECYCLE_NAME_TOTAL_UNITS, MAX_LIFECYCLE_NAME_UNITS,
-        MAX_RESTORE_BATCH_BYTES, OwnerHandle, Presence, RecorderComponentRecord, RecorderKind,
-        RecorderSource, ResolvePolicy, RestoreBatch, RestoreDisposition, RestoreRecorder,
-        SlotDeclaration, prepare_lifecycle_world, prepare_owner_restore,
-        publish_new_lifecycle_world, validate_lifecycle_relationships,
+        MAX_LIFECYCLE_DEFINITION_BYTES, MAX_LIFECYCLE_NAME_TOTAL_CAPACITY_UNITS,
+        MAX_LIFECYCLE_NAME_TOTAL_UNITS, MAX_LIFECYCLE_NAME_UNITS, MAX_RESTORE_BATCH_BYTES,
+        OwnerHandle, Presence, RecorderComponentRecord, RecorderKind, RecorderSource,
+        ResolvePolicy, RestoreBatch, RestoreDisposition, RestoreRecorder, SlotDeclaration,
+        prepare_lifecycle_world, prepare_owner_restore, publish_new_lifecycle_world,
+        validate_lifecycle_relationships,
     },
     native_relationships::{
         CompiledNativeRelationships, NativeActorLinkV1, NativeRelationshipActorV1,
-        NativeRelationshipRole, NativeRelationshipsDefinition,
+        NativeRelationshipRole, NativeRelationshipsDefinition, NativeRelationshipsSnapshot,
     },
     native_world::{
         Aabb3, CompiledNativeCatalog, MAX_NATIVE_PLACEMENTS, NativeCatalogDefinition,
@@ -398,6 +399,284 @@ fn definitions_and_requests_admit_bounded_regular_json_and_toml_only() {
     assert!(RestoreBatch::load(temp.path()).is_err());
 }
 
+fn definition_with_names(
+    names: impl IntoIterator<Item = Vec<u16>>,
+) -> (CompiledNativeCatalog, LifecycleDefinition) {
+    let original = catalog();
+    let mut definition = definition(&original);
+    definition.slots = names
+        .into_iter()
+        .enumerate()
+        .map(|(rank, owner_name)| SlotDeclaration {
+            placement: format!("p{rank:05}"),
+            owner_name,
+            recorder_kind: RecorderKind::SpatialStateV1,
+            initial_presence: Presence::Absent,
+            initial_component: None,
+            spawn_component: SpawnComponent::DeclaredKind,
+        })
+        .collect();
+    let mut catalog = original.definition().clone();
+    let recipe = catalog.maps[0].placements[0].clone();
+    catalog.maps[0].placements = definition
+        .slots
+        .iter()
+        .map(|slot| NativePlacement {
+            key: slot.placement.clone(),
+            ..recipe.clone()
+        })
+        .collect();
+    let catalog = CompiledNativeCatalog::compile(catalog).unwrap();
+    definition.native_catalog_id = catalog.identity().into();
+    (catalog, definition)
+}
+
+fn request_with_names(names: impl IntoIterator<Item = Vec<u16>>) -> RestoreBatch {
+    let world = world();
+    let template = command(&world, "a", 1, ResolvePolicy::FindOnly);
+    batch(
+        &world,
+        1,
+        names
+            .into_iter()
+            .enumerate()
+            .map(|(rank, owner_name)| RestoreRecorder {
+                guid: i32::try_from(rank + 1).unwrap(),
+                target_placement: format!("p{rank:05}"),
+                owner_name,
+                ..template.clone()
+            })
+            .collect(),
+    )
+}
+
+fn names_near_logical_limit(total: usize) -> impl Iterator<Item = Vec<u16>> {
+    // 513 units grows to 1024 when decoded, approaching the doubling bound.
+    (0..total.div_ceil(513)).map(move |rank| vec![0; 513.min(total - rank * 513)])
+}
+
+#[test]
+fn definition_logical_name_boundary_is_stable_across_json_and_toml() {
+    for total in [
+        MAX_LIFECYCLE_NAME_TOTAL_UNITS - 1,
+        MAX_LIFECYCLE_NAME_TOTAL_UNITS,
+        MAX_LIFECYCLE_NAME_TOTAL_UNITS + 1,
+    ] {
+        let (catalog, definition) = definition_with_names(names_near_logical_limit(total));
+        let compiled = CompiledNativeLifecycle::compile(definition.clone(), &catalog);
+        let documents = [
+            serde_json::to_string(&definition).unwrap(),
+            toml::to_string(&definition).unwrap(),
+        ];
+        if total > MAX_LIFECYCLE_NAME_TOTAL_UNITS {
+            assert!(compiled.unwrap_err().to_string().contains("aggregate"));
+            for document in documents {
+                assert!(
+                    CompiledNativeLifecycle::parse(&document, &catalog)
+                        .unwrap_err()
+                        .to_string()
+                        .contains("aggregate")
+                );
+            }
+        } else {
+            let compiled = compiled.unwrap();
+            for document in documents {
+                let parsed = CompiledNativeLifecycle::parse(&document, &catalog).unwrap();
+                assert_eq!(parsed.definition(), compiled.definition());
+                assert_eq!(parsed.identity(), compiled.identity());
+                assert!(
+                    parsed
+                        .definition()
+                        .slots
+                        .iter()
+                        .map(|slot| slot.owner_name.capacity())
+                        .sum::<usize>()
+                        > MAX_LIFECYCLE_NAME_TOTAL_UNITS
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn request_logical_name_boundary_is_stable_across_json_and_toml() {
+    let world = world();
+    for total in [
+        MAX_LIFECYCLE_NAME_TOTAL_UNITS - 1,
+        MAX_LIFECYCLE_NAME_TOTAL_UNITS,
+        MAX_LIFECYCLE_NAME_TOTAL_UNITS + 1,
+    ] {
+        let request = request_with_names(names_near_logical_limit(total));
+        if total > MAX_LIFECYCLE_NAME_TOTAL_UNITS {
+            assert!(
+                prepare_owner_restore(&world, &request)
+                    .err()
+                    .unwrap()
+                    .to_string()
+                    .contains("aggregate")
+            );
+        }
+        for document in [
+            serde_json::to_string(&request).unwrap(),
+            toml::to_string(&request).unwrap(),
+        ] {
+            let parsed = RestoreBatch::parse(&document);
+            if total > MAX_LIFECYCLE_NAME_TOTAL_UNITS {
+                assert!(parsed.unwrap_err().to_string().contains("aggregate"));
+            } else {
+                assert_eq!(parsed.unwrap(), request);
+            }
+        }
+    }
+}
+
+#[test]
+fn mixed_small_and_large_names_allow_decoded_minimum_vector_capacity() {
+    // Exactly the logical limit, but decoded minimum-four allocations for the
+    // tiny names push aggregate capacity above twice that limit.
+    let names = || {
+        std::iter::repeat_with(|| vec![0; 513])
+            .take(2032)
+            .chain(std::iter::repeat_with(|| vec![0]).take(6160))
+    };
+    let (catalog, definition) = definition_with_names(names());
+    let compiled = CompiledNativeLifecycle::compile(definition.clone(), &catalog).unwrap();
+    let parsed =
+        CompiledNativeLifecycle::parse(&serde_json::to_string(&definition).unwrap(), &catalog)
+            .unwrap();
+    assert_eq!(parsed.identity(), compiled.identity());
+    assert_eq!(
+        parsed
+            .definition()
+            .slots
+            .iter()
+            .map(|slot| slot.owner_name.len())
+            .sum::<usize>(),
+        MAX_LIFECYCLE_NAME_TOTAL_UNITS
+    );
+    assert!(
+        parsed
+            .definition()
+            .slots
+            .iter()
+            .map(|slot| slot.owner_name.capacity())
+            .sum::<usize>()
+            > 2 * MAX_LIFECYCLE_NAME_TOTAL_UNITS
+    );
+    let relationships = CompiledNativeRelationships::compile(
+        NativeRelationshipsDefinition {
+            relationship_format: 1,
+            native_catalog_id: catalog.identity().into(),
+            map: "map".into(),
+            actors: definition
+                .slots
+                .iter()
+                .enumerate()
+                .map(|(rank, slot)| NativeRelationshipActorV1 {
+                    placement: slot.placement.clone(),
+                    identity: NativeActorLinkV1 {
+                        name: slot.owner_name.clone(),
+                        guid: i32::try_from(rank + 1).unwrap(),
+                    },
+                    role: NativeRelationshipRole::Foundation,
+                    foundation: None,
+                })
+                .collect(),
+        },
+        &catalog,
+    )
+    .unwrap()
+    .initial_snapshot();
+    let decoded: NativeRelationshipsSnapshot =
+        serde_json::from_str(&serde_json::to_string(&relationships).unwrap()).unwrap();
+    let spatial = spatial(&catalog);
+    validate_lifecycle_relationships(
+        spatial.native_world.as_ref().unwrap(),
+        &compiled.initial_snapshot(),
+        Some(&decoded),
+    )
+    .unwrap();
+    let request = request_with_names(names());
+    for document in [
+        serde_json::to_string(&request).unwrap(),
+        toml::to_string(&request).unwrap(),
+    ] {
+        let parsed = RestoreBatch::parse(&document).unwrap();
+        assert_eq!(parsed, request);
+        assert!(
+            parsed
+                .recorders
+                .iter()
+                .map(|recorder| recorder.owner_name.capacity())
+                .sum::<usize>()
+                > 2 * MAX_LIFECYCLE_NAME_TOTAL_UNITS
+        );
+    }
+}
+
+#[test]
+fn aggregate_spare_name_capacity_remains_bounded_before_cloning() {
+    let count = MAX_LIFECYCLE_NAME_TOTAL_CAPACITY_UNITS / MAX_LIFECYCLE_NAME_UNITS;
+    let names = |count| {
+        (0..count).map(|_| {
+            let mut name = Vec::with_capacity(MAX_LIFECYCLE_NAME_UNITS);
+            name.push(0);
+            name
+        })
+    };
+    let (catalog, definition) = definition_with_names(names(count));
+    CompiledNativeLifecycle::compile(definition, &catalog).unwrap();
+    let (catalog, definition) = definition_with_names(names(count + 1));
+    assert!(
+        CompiledNativeLifecycle::compile(definition, &catalog)
+            .unwrap_err()
+            .to_string()
+            .contains("aggregate")
+    );
+    let world = world();
+    let mut request = batch(
+        &world,
+        1,
+        vec![command(&world, "a", 20, ResolvePolicy::FindOnly)],
+    );
+    request.recorders[0].owner_name = names(1).next().unwrap();
+    // The original three-slot fixture still needs its declared owner name.
+    request.recorders[0].owner_name.clear();
+    request.recorders[0]
+        .owner_name
+        .extend("Alpha".encode_utf16());
+    prepare_owner_restore(&world, &request).unwrap();
+    let request = request_with_names(names(count + 1));
+    assert!(
+        prepare_owner_restore(&world, &request)
+            .err()
+            .unwrap()
+            .to_string()
+            .contains("aggregate")
+    );
+    let world = relationship_world();
+    let mut relationships = world.native_relationships.as_ref().unwrap().clone();
+    let template = relationships.definition.actors[0].clone();
+    relationships.definition.actors = (0..count / 2 + 1)
+        .map(|_| {
+            let mut actor = template.clone();
+            actor.identity.name = names(1).next().unwrap();
+            actor.foundation.as_mut().unwrap().name = names(1).next().unwrap();
+            actor
+        })
+        .collect();
+    assert!(
+        validate_lifecycle_relationships(
+            world.native_world.as_ref().unwrap(),
+            lifecycle(&world),
+            Some(&relationships),
+        )
+        .unwrap_err()
+        .to_string()
+        .contains("aggregate")
+    );
+}
+
 #[test]
 fn programmatic_lengths_aggregates_and_spare_capacities_reject_before_cloning() {
     let catalog = catalog();
@@ -460,6 +739,43 @@ fn programmatic_lengths_aggregates_and_spare_capacities_reject_before_cloning() 
         value
     });
     assert!(invalid.validate().is_err());
+}
+
+#[test]
+fn catalog_vector_spare_allocations_stay_bounded_before_recompilation() {
+    let world = world();
+    for tiles in [false, true] {
+        for aggregate in [false, true] {
+            let mut native = world.native_world.as_ref().unwrap().clone();
+            let template = native.definitions.maps[0].clone();
+            native.definitions.maps = (0..if aggregate { 3 } else { 1 })
+                .map(|index| {
+                    let mut map = template.clone();
+                    map.key = format!("map{index}");
+                    if tiles {
+                        map.tiles = Vec::with_capacity(
+                            icarus_bevy::native_world::MAX_NATIVE_TILES + usize::from(!aggregate),
+                        );
+                        map.tiles.push(template.tiles[0].clone());
+                    } else {
+                        map.placements =
+                            Vec::with_capacity(MAX_NATIVE_PLACEMENTS + usize::from(!aggregate));
+                        map.placements.push(template.placements[0].clone());
+                    }
+                    map
+                })
+                .collect();
+            // The pre-clone allocation guard must run before catalog digest or
+            // selected-map mismatches from this deliberately altered DTO.
+            let error =
+                CompiledNativeLifecycle::from_snapshot(lifecycle(&world), &native).unwrap_err();
+            assert!(error.to_string().contains(if aggregate {
+                "aggregate"
+            } else {
+                "map allocation"
+            }));
+        }
+    }
 }
 
 #[test]
