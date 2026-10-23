@@ -15,14 +15,14 @@ use serde::{Deserialize, Deserializer, Serialize};
 
 use crate::{
     experimental::{
-        archive::{ByteOrder, decode_string, encode_string},
-        component::{MAX_BOUNDED_COMPONENT_BYTES, read_base_component_with_limit},
+        archive::{ByteOrder, decode_string},
+        component::MAX_BOUNDED_COMPONENT_BYTES,
         recorders::{
-            StagedRootMigration, StagedRootPresence, StagedRootValues, read_recorders,
+            StagedRootPresence, StagedRootValues, read_recorders,
             stage_prospect_save_state_with_root_values,
         },
-        restore_rules::{LobbyPrivacy, OwnerResolvePolicy},
-        tagged::{ParsedRecord, PropertyRecord, TagKind, TagProfile, read_record, read_root},
+        restore_rules::OwnerResolvePolicy,
+        tagged::{TagProfile, read_root},
     },
     import_candidate::DecodedImportCandidate,
     native_world::{
@@ -34,6 +34,12 @@ use crate::{
     persistence::{SaveReceipt, SnapshotStore},
     preservation::PreservedSection,
     simulation::{DomainId, SNAPSHOT_SCHEMA_C001_INERT, WorldSnapshot},
+};
+
+pub(crate) mod c001_source;
+use c001_source::{
+    C001SourceProfile, SourceOwner, source_owner, validate_root, validate_source_headers,
+    validate_wrapper,
 };
 
 pub const C001_INERT_METADATA_FORMAT: u32 = 1;
@@ -338,8 +344,15 @@ impl fmt::Display for SemanticImportError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
             f,
-            "C001 inert import {:?}: field {}, recorder {:?}",
-            self.category, self.field, self.recorder_index
+            "{} {:?}: field {}, recorder {:?}",
+            if self.field.starts_with("c001_owners.") {
+                "C001 authored owner import"
+            } else {
+                "C001 inert import"
+            },
+            self.category,
+            self.field,
+            self.recorder_index
         )
     }
 }
@@ -382,445 +395,6 @@ impl From<StagedRootPresence> for C001RootPresence {
             state_recorder_blobs: p.state_recorder_blobs,
         }
     }
-}
-
-fn validate_root(root: &StagedRootValues) -> SemanticResult<()> {
-    use SemanticImportCategory::{Missing, Unsupported, Value};
-    let p = root.source_presence();
-    require(
-        p.version
-            && root.loaded_version() == Some(2)
-            && root.migration() == StagedRootMigration::CurrentVersion,
-        None,
-        "Version",
-        Unsupported,
-    )?;
-    require(
-        !p.legacy_prospect_id && !p.legacy_prospect_dt_key,
-        None,
-        "legacy_root",
-        Unsupported,
-    )?;
-    require(
-        p.prospect_info && p.prospect_map_name && p.state_recorder_blobs,
-        None,
-        "root_presence",
-        Missing,
-    )?;
-    require(
-        root.lobby_privacy() == LobbyPrivacy::Unknown,
-        None,
-        "LobbyPrivacy",
-        Unsupported,
-    )?;
-    require(
-        units_valid(root.prospect_map_name(), true),
-        None,
-        "ProspectMapName",
-        Value,
-    )?;
-    require(
-        root.resolved_prospect_info().is_some(),
-        None,
-        "ProspectInfo.enum",
-        Unsupported,
-    )?;
-    let info = root.prospect_info();
-    require(
-        units_valid(&info.prospect_id, true) && units_valid(&info.lobby_name, false),
-        None,
-        "ProspectInfo.identity",
-        Value,
-    )?;
-    // The two descriptive strings are retained; every other property must be neutral.
-    require(
-        info.claimed_account_id.is_empty()
-            && info.claimed_account_character == 0
-            && info.prospect_dt_key.is_empty()
-            && info.faction_mission_dt_key.is_empty()
-            && info.expire_time == 0
-            && info.prospect_state == 0
-            && info.associated_members.is_empty()
-            && info.cost == 0
-            && info.reward == 0
-            && info.difficulty == 0
-            && !info.insurance
-            && !info.no_respawns
-            && info.elapsed_time == 0
-            && info.selected_drop_point == 0
-            && info.custom_settings.is_empty(),
-        None,
-        "ProspectInfo.state",
-        Unsupported,
-    )
-}
-
-/// Check the original header, including index and both kinds of GUID extension.
-/// Values and encoded names are never formatted into an error.
-fn header_valid(header: &[u8], kind: TagKind) -> bool {
-    fn string_end(bytes: &[u8], offset: &mut usize) -> Option<()> {
-        let value = decode_string(bytes.get(*offset..)?, ByteOrder::Little).ok()?;
-        *offset = offset.checked_add(value.consumed)?;
-        Some(())
-    }
-    fn check(header: &[u8], kind: TagKind) -> Option<bool> {
-        let mut offset = 0;
-        string_end(header, &mut offset)?;
-        string_end(header, &mut offset)?;
-        let ints = header.get(offset..offset.checked_add(8)?)?;
-        if ints[4..] != [0; 4] {
-            return Some(false);
-        }
-        offset += 8;
-        match kind {
-            TagKind::Struct => {
-                string_end(header, &mut offset)?;
-                if header.get(offset..offset.checked_add(16)?)? != [0; 16] {
-                    return Some(false);
-                }
-                offset += 16;
-            }
-            TagKind::Array | TagKind::Byte | TagKind::Enum | TagKind::Set => {
-                string_end(header, &mut offset)?
-            }
-            TagKind::Map => {
-                string_end(header, &mut offset)?;
-                string_end(header, &mut offset)?;
-            }
-            TagKind::Bool => {
-                header.get(offset)?;
-                offset += 1;
-            }
-            _ => {}
-        }
-        Some(header.get(offset..) == Some(&[0][..]))
-    }
-    check(header, kind) == Some(true)
-}
-
-fn property<'a>(
-    bytes: &'a [u8],
-    index: Option<usize>,
-    field: &'static str,
-) -> SemanticResult<PropertyRecord<'a>> {
-    let ParsedRecord::Property(p) = read_record(bytes, PROFILE)
-        .map_err(|_| error(index, field, SemanticImportCategory::Header))?
-    else {
-        return Err(error(index, field, SemanticImportCategory::Header));
-    };
-    require(
-        header_valid(p.tag.header, p.tag.kind),
-        index,
-        field,
-        SemanticImportCategory::Header,
-    )?;
-    Ok(p)
-}
-
-/// Reject ignored wrapper fields and header extensions at every admitted root
-/// boundary. Staging already supplies exact schema/type/duplicate validation.
-fn validate_source_headers(payload: &[u8]) -> SemanticResult<()> {
-    let roots = read_root(payload, PROFILE)
-        .map_err(|_| error(None, "root", SemanticImportCategory::Header))?;
-    for tag in roots.tags {
-        let p = property(tag.record, None, "root.header")?;
-        if exact(&p.name, "ProspectInfo") {
-            let info = read_root(p.tag.payload, PROFILE)
-                .map_err(|_| error(None, "ProspectInfo", SemanticImportCategory::Header))?;
-            for child in info.tags {
-                let p = property(child.record, None, "ProspectInfo.header")?;
-                if p.tag.kind == TagKind::Array {
-                    let shared = p.tag.payload.get(4..).ok_or_else(|| {
-                        error(None, "ProspectInfo.array", SemanticImportCategory::Header)
-                    })?;
-                    property(shared, None, "ProspectInfo.array.header")?;
-                }
-            }
-        } else if exact(&p.name, "StateRecorderBlobs") {
-            let bytes =
-                p.tag.payload.get(4..).ok_or_else(|| {
-                    error(None, "StateRecorderBlobs", SemanticImportCategory::Header)
-                })?;
-            property(bytes, None, "StateRecorderBlobs.header")?;
-        }
-    }
-    Ok(())
-}
-
-fn validate_wrapper(bytes: &[u8], index: usize) -> SemanticResult<()> {
-    let roots = read_root(bytes, PROFILE)
-        .map_err(|_| error(Some(index), "recorder", SemanticImportCategory::Header))?;
-    require(
-        roots.tags.len() == 2,
-        Some(index),
-        "recorder.fields",
-        SemanticImportCategory::Unsupported,
-    )?;
-    for tag in roots.tags {
-        property(tag.record, Some(index), "recorder.header")?;
-    }
-    Ok(())
-}
-
-struct SourceOwner {
-    actor_class: Vec<u16>,
-    actor_path: Vec<u16>,
-    object_name: Vec<u16>,
-    guid: i32,
-    transform: NativeTransform,
-}
-
-fn source_string(
-    p: &PropertyRecord<'_>,
-    kind: TagKind,
-    index: usize,
-    field: &'static str,
-) -> SemanticResult<Vec<u16>> {
-    require(
-        p.tag.kind == kind,
-        Some(index),
-        field,
-        SemanticImportCategory::Type,
-    )?;
-    let value = decode_string(p.tag.payload, ByteOrder::Little)
-        .map_err(|_| error(Some(index), field, SemanticImportCategory::Value))?;
-    require(
-        value.consumed == p.tag.payload.len()
-            && units_valid(&value.units, true)
-            && canonical_source_string(p.tag.payload, &value.units),
-        Some(index),
-        field,
-        SemanticImportCategory::Value,
-    )?;
-    Ok(value.units)
-}
-
-// Persisted metadata can be constructed without preparation. Keep its source
-// admission aligned with preparation's zero-gap typing contract: forced-wide
-// ASCII and other noncanonical scalar encodings are not part of this adapter.
-fn canonical_source_string(payload: &[u8], units: &[u16]) -> bool {
-    encode_string(units, ByteOrder::Little).is_ok_and(|encoded| encoded == payload)
-}
-fn source_int(p: &PropertyRecord<'_>, index: usize, field: &'static str) -> SemanticResult<i32> {
-    require(
-        p.tag.kind == TagKind::Int,
-        Some(index),
-        field,
-        SemanticImportCategory::Type,
-    )?;
-    let bytes = p
-        .tag
-        .payload
-        .try_into()
-        .map_err(|_| error(Some(index), field, SemanticImportCategory::Value))?;
-    Ok(i32::from_le_bytes(bytes))
-}
-fn false_bool(p: &PropertyRecord<'_>, index: usize, field: &'static str) -> SemanticResult<()> {
-    require(
-        p.tag.kind == TagKind::Bool && p.tag.payload.is_empty() && p.bool_value == Some(false),
-        Some(index),
-        field,
-        SemanticImportCategory::Unsupported,
-    )
-}
-fn struct_name(
-    p: &PropertyRecord<'_>,
-    name: &str,
-    index: usize,
-    field: &'static str,
-) -> SemanticResult<()> {
-    require(
-        p.tag.kind == TagKind::Struct && p.extra.as_ref().is_some_and(|units| exact(units, name)),
-        Some(index),
-        field,
-        SemanticImportCategory::Type,
-    )
-}
-fn source_transform(p: &PropertyRecord<'_>, index: usize) -> SemanticResult<NativeTransform> {
-    struct_name(p, "Transform", index, "ActorTransform")?;
-    let roots = read_root(p.tag.payload, PROFILE)
-        .map_err(|_| error(Some(index), "ActorTransform", SemanticImportCategory::Type))?;
-    let (mut translation, mut rotation, mut scale) = (None, None, None);
-    for tag in roots.tags {
-        let p = property(tag.record, Some(index), "ActorTransform.header")?;
-        let (slot, width, type_name, field) = if exact(&p.name, "Translation") {
-            (&mut translation, 3, "Vector", "ActorTransform.Translation")
-        } else if exact(&p.name, "Rotation") {
-            (&mut rotation, 4, "Quat", "ActorTransform.Rotation")
-        } else if exact(&p.name, "Scale3D") {
-            (&mut scale, 3, "Vector", "ActorTransform.Scale3D")
-        } else {
-            return Err(error(
-                Some(index),
-                "ActorTransform.field",
-                SemanticImportCategory::Unsupported,
-            ));
-        };
-        require(
-            slot.is_none(),
-            Some(index),
-            field,
-            SemanticImportCategory::Header,
-        )?;
-        struct_name(&p, type_name, index, field)?;
-        require(
-            p.tag.payload.len() == width * 4,
-            Some(index),
-            field,
-            SemanticImportCategory::Type,
-        )?;
-        *slot = Some(
-            p.tag
-                .payload
-                .as_chunks::<4>()
-                .0
-                .iter()
-                .map(|v| f32::from_le_bytes(*v))
-                .collect::<Vec<_>>(),
-        );
-    }
-    let missing = || {
-        error(
-            Some(index),
-            "ActorTransform",
-            SemanticImportCategory::Missing,
-        )
-    };
-    let transform = NativeTransform {
-        translation: translation
-            .ok_or_else(missing)?
-            .try_into()
-            .map_err(|_| missing())?,
-        rotation: rotation
-            .ok_or_else(missing)?
-            .try_into()
-            .map_err(|_| missing())?,
-        scale: scale
-            .ok_or_else(missing)?
-            .try_into()
-            .map_err(|_| missing())?,
-    };
-    transform
-        .validate()
-        .map_err(|_| error(Some(index), "ActorTransform", SemanticImportCategory::Value))?;
-    Ok(transform)
-}
-
-fn source_owner(bytes: &[u8], index: usize) -> SemanticResult<SourceOwner> {
-    let component = read_base_component_with_limit(bytes, PROFILE, MAX_BOUNDED_COMPONENT_BYTES)
-        .map_err(|_| error(Some(index), "component", SemanticImportCategory::Header))?;
-    require(
-        component.trailer() == [0; 4],
-        Some(index),
-        "component.trailer",
-        SemanticImportCategory::Unsupported,
-    )?;
-    let (mut actor_class, mut actor_path, mut object_name, mut guid, mut transform) =
-        (None, None, None, None, None);
-    let (mut moved, mut version) = (false, false);
-    let mut seen = BTreeSet::new();
-    for tag in component.fields() {
-        let p = property(tag.record, Some(index), "component.header")?;
-        require(
-            seen.insert(p.name.clone()),
-            Some(index),
-            "component.field",
-            SemanticImportCategory::Header,
-        )?;
-        if exact(&p.name, "ActorClassName") {
-            actor_class = Some(source_string(&p, TagKind::Name, index, "ActorClassName")?);
-        } else if exact(&p.name, "ActorPathName") {
-            actor_path = Some(source_string(&p, TagKind::String, index, "ActorPathName")?);
-        } else if exact(&p.name, "ObjectFName") {
-            object_name = Some(source_string(&p, TagKind::Name, index, "ObjectFName")?);
-        } else if exact(&p.name, "IcarusActorGUID") {
-            let value = source_int(&p, index, "IcarusActorGUID")?;
-            require(
-                value > 0,
-                Some(index),
-                "IcarusActorGUID",
-                SemanticImportCategory::Value,
-            )?;
-            guid = Some(value);
-        } else if exact(&p.name, "RecordedVersion") {
-            require(
-                source_int(&p, index, "RecordedVersion")? == 3,
-                Some(index),
-                "RecordedVersion",
-                SemanticImportCategory::Unsupported,
-            )?;
-            version = true;
-        } else if exact(&p.name, "bWasMovedToSubLevel") {
-            false_bool(&p, index, "bWasMovedToSubLevel")?;
-            moved = true;
-        } else if exact(&p.name, "ActorTransform") {
-            transform = Some(source_transform(&p, index)?);
-        } else if exact(&p.name, "bSkipDefaultOwnerResolution") {
-            false_bool(&p, index, "bSkipDefaultOwnerResolution")?;
-        } else if exact(&p.name, "OwnerResolvePolicy") {
-            // Staging qualifies the accepted byte/enum representations. Check
-            // them again here so persisted metadata cannot expand the subset.
-            let supported = match p.tag.kind {
-                TagKind::Byte if p.tag.payload.len() == 1 => {
-                    p.extra.as_ref().is_some_and(|u| exact(u, "None"))
-                        && matches!(p.tag.payload[0], 0 | 2)
-                }
-                TagKind::Byte | TagKind::Enum
-                    if p.extra
-                        .as_ref()
-                        .is_some_and(|u| exact(u, "EStateRecorderOwnerResolvePolicy")) =>
-                {
-                    decode_string(p.tag.payload, ByteOrder::Little)
-                        .ok()
-                        .is_some_and(|v| {
-                            v.consumed == p.tag.payload.len()
-                                && canonical_source_string(p.tag.payload, &v.units)
-                                && [
-                                    "FindOnly",
-                                    "FindOrRespawn",
-                                    "EStateRecorderOwnerResolvePolicy::FindOnly",
-                                    "EStateRecorderOwnerResolvePolicy::FindOrRespawn",
-                                ]
-                                .iter()
-                                .any(|s| exact(&v.units, s))
-                        })
-                }
-                _ => false,
-            };
-            require(
-                supported,
-                Some(index),
-                "OwnerResolvePolicy",
-                SemanticImportCategory::Unsupported,
-            )?;
-        } else {
-            return Err(error(
-                Some(index),
-                "component.field",
-                SemanticImportCategory::Unsupported,
-            ));
-        }
-    }
-    require(
-        moved,
-        Some(index),
-        "bWasMovedToSubLevel",
-        SemanticImportCategory::Missing,
-    )?;
-    require(
-        version,
-        Some(index),
-        "RecordedVersion",
-        SemanticImportCategory::Missing,
-    )?;
-    let missing = |field| error(Some(index), field, SemanticImportCategory::Missing);
-    Ok(SourceOwner {
-        actor_class: actor_class.ok_or_else(|| missing("ActorClassName"))?,
-        actor_path: actor_path.ok_or_else(|| missing("ActorPathName"))?,
-        object_name: object_name.ok_or_else(|| missing("ObjectFName"))?,
-        guid: guid.ok_or_else(|| missing("IcarusActorGUID"))?,
-        transform: transform.ok_or_else(|| missing("ActorTransform"))?,
-    })
 }
 
 fn source_matches(owner: &SourceOwner, binding: &ResolvedC001Placement) -> bool {
@@ -1037,7 +611,15 @@ impl C001InertImportMetadataV1 {
                 "C001 metadata source class unsupported"
             );
             validate_wrapper(recorder.record, index)?;
-            let source = source_owner(recorder.binary_data, index)?;
+            let source = source_owner(
+                recorder.binary_data,
+                index,
+                C001SourceProfile::InertPlacementV1,
+            )?;
+            ensure!(
+                source.effective_policy() == decision.owner_resolve_policy,
+                "C001 metadata policy mismatch"
+            );
             let owner = owners[&index];
             ensure!(
                 source_matches(&source, owner) && native_bindings.matches(owner, &source.transform),
@@ -1187,6 +769,13 @@ pub fn prepare_c001_inert_import(
                 .recorder_binary_data(index)
                 .ok_or_else(|| error(at, "component", Validation))?,
             index,
+            C001SourceProfile::InertPlacementV1,
+        )?;
+        require(
+            source.effective_policy() == d.owner_resolve_policy,
+            at,
+            "OwnerResolvePolicy",
+            Unsupported,
         )?;
         require(
             paths.insert(source.actor_path.clone()) && guids.insert(source.guid),
@@ -1263,6 +852,7 @@ pub fn prepare_c001_inert_import(
         preserved_prospect: Some(Arc::new(preserved)),
         native_world: Some(native),
         native_import: Some(metadata),
+        native_owner_import: None,
         native_relationships: None,
         native_lifecycle: None,
     };

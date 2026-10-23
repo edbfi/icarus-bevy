@@ -217,8 +217,8 @@ fn proper_future_schema_objects_still_refuse_rollback_without_writes() {
     let _fixture = FIXTURE_LOCK.lock().unwrap();
     let directory = initial(true);
     let root = directory.path();
-    // Schema 7 holds authored owner lifecycles; 8 is the future one.
-    replace_current(root, &json!({"schema_version":8,"tick":20,"entities":[]}));
+    // Schema 8 holds authored C001 owner provenance; 9 is the future one.
+    replace_current(root, &json!({"schema_version":9,"tick":20,"entities":[]}));
     let before = inventory(root);
     let mut store = SnapshotStore::open(root).unwrap();
     for error in [

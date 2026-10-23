@@ -6,6 +6,7 @@ pub mod import_candidate;
 pub mod import_plan;
 mod json;
 pub mod metrics;
+pub mod native_c001_owners;
 pub mod native_import;
 pub mod native_lifecycle;
 pub mod native_lifecycle_runtime;

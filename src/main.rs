@@ -101,6 +101,25 @@ enum Command {
         #[arg(long)]
         dry_run: bool,
     },
+    /// Restore an explicitly bound authored C001 fixture through native owner
+    /// find, spawn and replacement. Ordinary ICARUS save import stays closed.
+    CreateC001OwnerFixture {
+        #[arg(long)]
+        source: PathBuf,
+        #[arg(long)]
+        catalog: PathBuf,
+        #[arg(long)]
+        lifecycle: PathBuf,
+        #[arg(long)]
+        bindings: PathBuf,
+        /// Independently authored links; source relationship state is unsupported.
+        #[arg(long)]
+        relationships: Option<PathBuf>,
+        #[arg(long)]
+        data_dir: PathBuf,
+        #[arg(long)]
+        dry_run: bool,
+    },
     /// Inspect an experimental prospect envelope without importing or writing state.
     InspectSave {
         #[arg(long)]
@@ -333,6 +352,60 @@ fn execute(cli: Cli) -> Result<()> {
                     "{}",
                     json!({"event": "c001_inert_fixture_materialized", "inspection": inspection,
                     "receipt": receipt, "schema_version": schema_version,
+                    "world_imported": false, "gameplay_ready": false})
+                );
+            }
+            Ok(())
+        }
+        Command::CreateC001OwnerFixture {
+            source,
+            catalog,
+            lifecycle,
+            bindings,
+            relationships,
+            data_dir,
+            dry_run,
+        } => {
+            use icarus_bevy::{
+                import_candidate::DecodedImportCandidate,
+                native_c001_owners::{
+                    CompiledC001OwnerBindings, prepare_c001_owner_import,
+                    publish_new_c001_owner_import,
+                },
+                native_lifecycle::{CompiledNativeLifecycle, prepare_lifecycle_world},
+                native_relationships::{CompiledNativeRelationships, prepare_relationship_world},
+                native_world::{CompiledNativeCatalog, prepare_authored_world},
+            };
+            let catalog = Arc::new(CompiledNativeCatalog::load(&catalog)?);
+            let bindings = CompiledC001OwnerBindings::load(&bindings)?;
+            let mut base =
+                prepare_authored_world(Arc::clone(&catalog), &bindings.definition().native_map)?
+                    .initial_snapshot();
+            if let Some(path) = relationships {
+                let declarations = CompiledNativeRelationships::load(&path, &catalog)?;
+                base = prepare_relationship_world(base, &declarations)?
+                    .snapshot()
+                    .clone();
+            }
+            let declarations = CompiledNativeLifecycle::load(&lifecycle, &catalog)?;
+            let base = prepare_lifecycle_world(base, &declarations)?.into_snapshot();
+            let candidate = DecodedImportCandidate::decode(open_regular_source(&source)?)?;
+            let prepared = prepare_c001_owner_import(&candidate, base, &bindings)?;
+            let inspection = prepared.inspection();
+            let schema_version = prepared.snapshot().schema_version;
+            if dry_run {
+                println!(
+                    "{}",
+                    json!({"event": "c001_owner_fixture_prepared", "dry_run": true,
+                    "inspection": inspection, "schema_version": schema_version,
+                    "world_imported": false, "gameplay_ready": false})
+                );
+            } else {
+                let receipt = publish_new_c001_owner_import(prepared, &data_dir)?;
+                println!(
+                    "{}",
+                    json!({"event": "c001_owner_fixture_materialized",
+                    "inspection": inspection, "receipt": receipt, "schema_version": schema_version,
                     "world_imported": false, "gameplay_ready": false})
                 );
             }

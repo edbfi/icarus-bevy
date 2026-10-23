@@ -87,26 +87,14 @@ manifest publication, preceding valid generation retained. Autosave defaults to
 60 seconds. Acknowledge only durable publication; validate/migrate before activation.
 Capture requires all components declared by the current native domain schema;
 an identified entity with missing required data must fail before publication.
-Schema 4 embeds a verified authored catalog and fixed-topology spatial records:
-stable domain IDs, class/placement/tile bindings, full poses and typed variables.
-Activation pins the catalog and expected entities; capture rejects missing or
-extra actors/components and invalid state. Authored bounds provide geometry,
-not physics or navigation. Coverage catalogs do not authorize native import.
-Schema 5 adds the explicitly bound authored C001 inert-fixture contract:
-required immutable source metadata and unchanged source sidecar accompany the
-native world. Capture pins that metadata to its catalog and map; preparation
-rejects unsupported state before destination access (F-921).
-Schema 6 adds authored actor identities, explicit capabilities and mutable
-foundation edges. Capture pins activation contexts and checks authoritative
-edges against the derived reverse index; edited links survive reload without
-reapplying initial declarations (F-922). Optional C001 metadata remains source
-provenance, not acceptance of original relationship state.
-Schema 7 retains complete spatial slots with explicit live/dormant presence,
-checked incarnations and authoritative recorder bindings. Its separate activation
-path validates the two disjoint partitions; replacement preserves logical IDs
-and valid foundation edges. A persistent latest request digest and sequence
-prevent restore replay; shared runtime generations reject stale resource clones
-(F-923). C001 metadata composition remains unsupported.
+Authored schemas retain spatial worlds (4; F-919), bound C001 inert-fixture
+provenance (5; F-924), foundation edges (6; F-922), live/dormant owner slots
+with transactional replacement and retry completion (7; F-923), and authored
+C001 owner restoration with immutable provenance (8; F-924). Each mode pins
+its activation contract and rejects incomplete state. Bounds imply neither
+physics nor navigation; reference coverage grants no import authority. Detailed
+creation and editing contracts live in the
+[authored-worlds runbook](runbooks/authored-worlds.md).
 Supplied-save state may ride along as one lossless, value-opaque preserved
 section that reconstructs the verified payload byte-identically, is carried
 unchanged into every later generation and is written once as a content-addressed

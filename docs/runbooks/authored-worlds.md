@@ -16,17 +16,18 @@ cargo run --locked -- create-native-world --catalog config/native-world.example.
 cargo run --locked -- run --data-dir work/authored-world
 ```
 
-Preparation validates every placement before opening the destination. Dry runs
-create nothing; publication refuses existing or recoverable worlds. Coordinates
+All creation commands prepare and preflight before destination access. Dry runs
+create nothing; publication refuses existing or recoverable worlds. Both
+`world_imported` and `gameplay_ready` remain false. Coordinates
 are metres, right-handed and Z-up; quaternions are `[x,y,z,w]`. Every transformed
 object must fit its tile. `native_runtime::update_native_actor` validates pose
 and variable edits before applying them; capture rejects missing components,
 deleted or extra actors, changed bindings and invalid values. Topology is fixed.
 Bounds describe authored geometry only, without physics/navigation or ICARUS
-behavior; `world_imported` and `gameplay_ready` remain false (F-919).
+behavior (F-919).
 
-The separate `create-c001-inert-fixture` command accepts only the authored
-`C001InertPlacementV1` contract (F-921):
+`create-c001-inert-fixture` accepts the authored `C001InertPlacementV1` contract
+(F-921):
 
 ```bash
 cargo run --locked -- create-c001-inert-fixture --source authored.json \
@@ -41,21 +42,16 @@ to a native placement/class. Coordinates must explicitly declare
 `right_handed_z_up_meters_quat_xyzw_world_space`; the fixture author supplies
 those coordinates, with no original-coordinate conversion inferred.
 
-Every recorder must be exact C001, current-version, fully interpreted and
-supported; every selected-map placement must bind once. Only inert spatial
-classes without variables are accepted. Additional state, owner spawning,
-stitching and nonneutral prospect behavior reject the whole input. Schema 5
-retains accepted source identities, metadata and unchanged source sidecar
-alongside mutable native poses. Normal `run` preserves that contract through
-capture and autosave. Diagnostics contain counts and static categories only.
-This proves an authored contract; ordinary `import-save` still refuses writing,
-and both readiness flags remain false (F-921).
+Every recorder must be exact, current-version C001 and fully interpreted; every
+placement binds once. Only inert classes without variables are accepted. Extra
+state, spawning, stitching or nonneutral prospect behavior rejects the input.
+Schema 5 retains immutable source identities and sidecar alongside mutable poses
+through autosave. Diagnostics contain counts and static categories only.
+Ordinary `import-save` still refuses writing (F-921).
 
 ## Foundation relationships
 
-The authored relationship lifecycle is qualified by F-922.
-
-Both creation commands accept `--relationships FILE`. Supply a strict JSON/TOML
+Creation commands accept `--relationships FILE`. Supply a strict JSON/TOML
 `native_relationships::NativeRelationshipsDefinition` with `relationship_format = 1`,
 the compiled catalog's `native_catalog_id`, selected `map` and exactly one actor
 declaration per placement. Each declaration contains:
@@ -73,19 +69,18 @@ declaration. Native class keys and source recorder/object names never supply
 implicit link identities. Names are bounded to 1,024 units each and 1,048,576
 units in aggregate, including initial links; declarations are limited to 4 MiB.
 
-This reuses the assignment evaluator qualified in F-646, F-650 and F-663 for
-server 25621760/client 25793767. The authored admission rule is deliberately
-stricter: an unresolved nonempty link rejects the complete world. It does not
-qualify later releases or every consequence of the original foundation setter.
+The authored contract (F-922) reuses the assignment evaluator from F-646,
+F-650 and F-663 for server 25621760/client 25793767, with stricter rejection
+of unresolved links. Later releases and other foundation-setter effects remain
+unqualified.
 
 ```bash
 cargo run --locked -- create-native-world --catalog authored.toml --map workshop \
   --relationships relationships.json --data-dir work/linked-world --dry-run
 ```
 
-Omit `--dry-run` to publish. Complete preparation and bounded stored encoding
-checks precede destination access. Schema 6 embeds immutable declarations and
-their identity, with mutable domain-ID edges. Normal `run` loads without either
+Schema 6 embeds immutable declarations and their identity, with mutable domain-ID
+edges. Normal `run` loads without either
 input file and preserves edited edges through autosave and recovery. Optional
 C001 metadata and its required unchanged source sidecar remain provenance; they
 do not establish that these authored relationships came from the source.
@@ -101,8 +96,7 @@ valid; a missing required component is corruption.
 These links do not parent transforms, implement structural support, collapse,
 destruction propagation or tame permissions. Full C009 import also requires
 inherited item state and owner lifecycle behavior; no such adapter is admitted.
-Schemas 4/5 retain their contracts when `--relationships` is absent. Ordinary
-`import-save` remains closed and both readiness flags remain false.
+Schemas 4/5 retain their contracts when `--relationships` is absent.
 
 ## Owner lifecycle
 
@@ -152,8 +146,8 @@ Sequences begin at 1 and advance by one. An exact retry of the latest request
 returns its stored completion without replay or resetting later edits; changed
 or older requests reject. The stored `restore_sequence` must agree with the
 completion; a missing receipt cannot reset a completed world to sequence zero.
-Reload activates saved results without executing
-policies. In-memory completion is not a durable receipt: autosave or shutdown
+Reload activates saved results without executing policies. In-memory completion
+is not a durable receipt: autosave or shutdown
 must publish it through the normal store.
 
 `native_lifecycle_runtime` provides `restore_native_owners`, guarded pose/state
@@ -161,10 +155,43 @@ edits and foundation reassignment. Mutation handles contain domain ID and curren
 incarnation; stale handles reject. Replacement preserves edited foundation edges,
 whose endpoints must remain live. Capture and no-op requests still reject damaged
 components, stale resource generations, replaced contexts and inconsistent
-indices. Dry runs create nothing; publication refuses existing or recoverable
-worlds. `live_actors` distinguishes
-materialized owners from the complete `actors` slot count. Both readiness flags
-remain false. Helpers inspect complete world state and mutations preflight the
+indices. `live_actors` distinguishes materialized owners from the complete
+`actors` slot count. Helpers inspect complete world state and mutations preflight the
 stored generation; their cost scales with the whole world, and tick-loop use is
 unqualified. This authored facility does not qualify official owner lookup,
 spawning or complete recorder restoration.
+
+## Authored C001 owners
+
+`create-c001-owner-fixture` consumes source policies through the owner lifecycle
+(F-924):
+
+```bash
+cargo run --locked -- create-c001-owner-fixture --source authored.json \
+  --catalog authored.toml --lifecycle lifecycle.json --bindings owners.json \
+  --data-dir work/source-owners --dry-run
+```
+
+The distinct `native_c001_owners::C001OwnerBindingsV1` format 1 uses adapter
+`c001_authored_owners_v1`. It pins payload, catalog and lifecycle identities,
+source/native maps and the explicit authored coordinate declaration used above.
+Every recorder, binding and slot must correspond exactly once. Bindings supply
+exact source identities plus native placement/class, explicit owner name and
+recorder GUID, creation permission, expected presence/incarnation and incoming
+GUID prior binding. Native identities are never inferred from source names.
+
+The strict inert source/root restrictions remain, except source policy may be
+`FindOnly`, `FindOrRespawn` or `RespawnOnly`; omission uses the qualified C001
+default `FindOrRespawn`. Bindings cannot override policy or pose. The complete
+sequence-1 detached restore must succeed, including every attachment and spawn.
+Optional `--relationships` supplies authored links independently of source state.
+There is no `--restore` override. Bindings and metadata are each capped at 4 MiB;
+the aggregate generation remains capped at 64 MiB plus 4 KiB.
+
+Schema 8 requires immutable source metadata, its unchanged sidecar and completed
+lifecycle state. Load verifies the initial receipt against a temporary authored
+world, then activates saved state without replay. Later native edits and GUID
+retirement remain valid: provenance does not replace current bindings or poses.
+Imported slots stay live and cannot regress below their initial incarnation.
+Capture checks pinned provenance and current state without reconstructing source
+bytes. Missing or changed provenance rejects; schemas 1–7 retain their contracts.

@@ -14,6 +14,7 @@ use serde::{Deserialize, Serialize};
 use crate::{
     config::ServerConfig,
     metrics::LatencyHistogram,
+    native_c001_owners::C001OwnerImportMetadataV1,
     native_import::C001InertImportMetadataV1,
     native_lifecycle::{
         CompiledNativeLifecycle, LifecycleSnapshot, validate_lifecycle_relationships,
@@ -44,6 +45,8 @@ pub const SNAPSHOT_SCHEMA_RELATIONSHIPS: u32 = 6;
 /// Complete declared spatial slots, with explicit live/dormant owner state and
 /// transactional recorder bindings. Loading never replays a restore request.
 pub const SNAPSHOT_SCHEMA_LIFECYCLE: u32 = 7;
+/// Strict authored C001 owner restoration, with immutable source provenance.
+pub const SNAPSHOT_SCHEMA_C001_OWNERS: u32 = 8;
 
 /// Stable domain identity, independent of Bevy's runtime entity allocation.
 #[derive(Component, Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
@@ -68,12 +71,12 @@ pub struct WorldSnapshot {
     #[serde(deserialize_with = "crate::json::objects")]
     pub entities: Vec<EntityRecord>,
     /// Lossless, value-opaque supplied-save state carried unchanged between
-    /// generations; required in schemas 2, 3 and 5, optional in schemas 4, 6 and 7.
+    /// generations; required in schemas 2, 3, 5 and 8, optional in 4, 6 and 7.
     /// Shared and held compactly as its verified native encoding. Schema 5
     /// separately records its explicitly accepted authored interpretation.
     /// Serde writes the section inline under the stored `schema_version`, which is
     /// a loadable document only for schema 2; the snapshot store writes schemas
-    /// 3 through 7 itself, with a sidecar reference.
+    /// 3 through 8 itself, with a sidecar reference.
     #[serde(
         default,
         skip_serializing_if = "Option::is_none",
@@ -90,6 +93,8 @@ pub struct WorldSnapshot {
     pub native_relationships: Option<NativeRelationshipsSnapshot>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub native_lifecycle: Option<LifecycleSnapshot>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub native_owner_import: Option<C001OwnerImportMetadataV1>,
 }
 
 impl Default for WorldSnapshot {
@@ -103,37 +108,62 @@ impl Default for WorldSnapshot {
             native_import: None,
             native_relationships: None,
             native_lifecycle: None,
+            native_owner_import: None,
         }
     }
 }
 
 impl WorldSnapshot {
     pub fn validate(&self) -> Result<()> {
-        if self.schema_version == SNAPSHOT_SCHEMA_LIFECYCLE {
+        if matches!(
+            self.schema_version,
+            SNAPSHOT_SCHEMA_LIFECYCLE | SNAPSHOT_SCHEMA_C001_OWNERS
+        ) {
             ensure!(
                 self.entities.is_empty(),
-                "schema 7 cannot hold foundation entities"
+                "lifecycle schema cannot hold foundation entities"
             );
             ensure!(
                 self.native_import.is_none(),
-                "schema 7 cannot hold source import metadata"
+                "lifecycle schema cannot hold inert import metadata"
             );
             let native = self
                 .native_world
                 .as_ref()
-                .context("schema 7 requires spatial slots")?;
+                .context("lifecycle schema requires spatial slots")?;
             let lifecycle = self
                 .native_lifecycle
                 .as_ref()
-                .context("schema 7 requires lifecycle state")?;
+                .context("lifecycle schema requires lifecycle state")?;
             CompiledNativeLifecycle::from_snapshot(lifecycle, native)?;
             validate_lifecycle_relationships(
                 native,
                 lifecycle,
                 self.native_relationships.as_ref(),
             )?;
+            if self.schema_version == SNAPSHOT_SCHEMA_C001_OWNERS {
+                self.native_owner_import
+                    .as_ref()
+                    .context("schema 8 requires owner import metadata")?
+                    .validate(
+                        native,
+                        lifecycle,
+                        self.preserved_prospect
+                            .as_deref()
+                            .context("schema 8 requires its preserved source")?,
+                    )?;
+            } else {
+                ensure!(
+                    self.native_owner_import.is_none(),
+                    "schema 7 cannot hold owner import metadata"
+                );
+            }
             return Ok(());
         }
+        ensure!(
+            self.native_owner_import.is_none(),
+            "this snapshot schema cannot hold owner import metadata"
+        );
         ensure!(
             self.native_lifecycle.is_none(),
             "this snapshot schema cannot hold lifecycle state"
@@ -451,7 +481,10 @@ pub fn build_app(config: &ServerConfig, snapshot: &WorldSnapshot) -> Result<App>
     for entity in &snapshot.entities {
         app.world_mut().spawn((entity.id, entity.position));
     }
-    if snapshot.schema_version == SNAPSHOT_SCHEMA_LIFECYCLE {
+    if matches!(
+        snapshot.schema_version,
+        SNAPSHOT_SCHEMA_LIFECYCLE | SNAPSHOT_SCHEMA_C001_OWNERS
+    ) {
         crate::native_lifecycle_runtime::activate_lifecycle(app.world_mut(), snapshot)?;
     } else if let Some(native) = &snapshot.native_world {
         crate::native_runtime::activate(app.world_mut(), native)?;
@@ -566,6 +599,7 @@ pub fn capture(world: &mut World) -> Result<WorldSnapshot> {
             native_import: mode.imported.as_deref().cloned(),
             native_relationships: relationships,
             native_lifecycle: None,
+            native_owner_import: None,
         };
         // capture_native validates every record against the immutable loaded
         // catalog. Storage independently validates the serialized snapshot;
@@ -605,6 +639,7 @@ pub fn capture(world: &mut World) -> Result<WorldSnapshot> {
         native_import: None,
         native_relationships: None,
         native_lifecycle: None,
+        native_owner_import: None,
     };
     snapshot.validate()?;
     Ok(snapshot)
