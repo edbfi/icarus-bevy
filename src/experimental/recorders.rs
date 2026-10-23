@@ -525,7 +525,8 @@ fn validate_custom_settings(
     payload: &[u8],
     profile: TagProfile,
     component_byte_limit: usize,
-) -> Result<()> {
+) -> Result<Vec<Vec<u16>>> {
+    let mut row_names = Vec::new();
     let settings = read_tagged_struct_array_with_limit(payload, profile, component_byte_limit)
         .context("invalid CustomSettings struct array")?;
     let ParsedRecord::Property(shared_prop) = read_record(settings.shared().record, profile)?
@@ -558,10 +559,10 @@ fn validate_custom_settings(
                     field_prop.tag.kind == TagKind::String,
                     "CustomGameSetting.SettingRowName must be StrProperty"
                 );
-                decode_exact_string_units(
+                row_names.push(decode_exact_string_units(
                     field_prop.tag.payload,
                     "invalid CustomGameSetting.SettingRowName",
-                )?;
+                )?);
             } else if is_name(&field_prop.name, "SettingValue") {
                 ensure!(
                     field_prop.tag.kind == TagKind::Int && field_prop.tag.payload.len() == 4,
@@ -572,7 +573,7 @@ fn validate_custom_settings(
             }
         }
     }
-    Ok(())
+    Ok(row_names)
 }
 
 struct ParsedProspectInfo {
@@ -580,6 +581,8 @@ struct ParsedProspectInfo {
     associated_members: Vec<(Vec<u16>, i32)>,
     prospect_id: Vec<u16>,
     prospect_dt_key: Vec<u16>,
+    faction_mission_dt_key: Vec<u16>,
+    setting_row_names: Vec<Vec<u16>>,
     has_expire_time: bool,
 }
 
@@ -593,6 +596,8 @@ fn validate_prospect_info(
     let mut associated_members = Vec::new();
     let mut prospect_id = Vec::new();
     let mut prospect_dt_key = Vec::new();
+    let mut faction_mission_dt_key = Vec::new();
+    let mut setting_row_names = Vec::new();
     let mut has_expire_time = false;
 
     for tag in &nested.tags {
@@ -621,10 +626,14 @@ fn validate_prospect_info(
                 "ProspectInfo.ProspectDTKey must be StrProperty"
             );
             prospect_dt_key = decode_exact_string_units(prop.tag.payload, "invalid ProspectDTKey")?;
-        } else if is_name(&prop.name, "ClaimedAccountID")
-            || is_name(&prop.name, "FactionMissionDTKey")
-            || is_name(&prop.name, "LobbyName")
-        {
+        } else if is_name(&prop.name, "FactionMissionDTKey") {
+            ensure!(
+                prop.tag.kind == TagKind::String,
+                "ProspectInfo string field must be StrProperty"
+            );
+            faction_mission_dt_key =
+                decode_exact_string_units(prop.tag.payload, "invalid ProspectInfo string")?;
+        } else if is_name(&prop.name, "ClaimedAccountID") || is_name(&prop.name, "LobbyName") {
             ensure!(
                 prop.tag.kind == TagKind::String,
                 "ProspectInfo string field must be StrProperty"
@@ -701,7 +710,8 @@ fn validate_prospect_info(
                 prop.tag.kind == TagKind::Array && extra_is(&prop, "StructProperty"),
                 "ProspectInfo.CustomSettings must be ArrayProperty<StructProperty>"
             );
-            validate_custom_settings(prop.tag.payload, profile, component_byte_limit)?;
+            setting_row_names =
+                validate_custom_settings(prop.tag.payload, profile, component_byte_limit)?;
         } else {
             bail!("unmapped ProspectInfo property");
         }
@@ -712,6 +722,8 @@ fn validate_prospect_info(
         associated_members,
         prospect_id,
         prospect_dt_key,
+        faction_mission_dt_key,
+        setting_row_names,
         has_expire_time,
     })
 }
@@ -1223,12 +1235,15 @@ pub fn stage_prospect_save_state_with_decisions(
     Ok((staged.summary, staged.decisions))
 }
 
-/// Internal staging output with the migrated row key. Deliberately has no
+/// Internal staging output with migrated content references. Deliberately has no
 /// Debug or Serialize implementation: supplied values stay out of reports.
 pub(crate) struct StagedImportState {
     pub(crate) summary: StagedProspectSaveState,
     pub(crate) decisions: Vec<StagedRecorderDecision>,
     pub(crate) prospect_dt_key: Vec<u16>,
+    pub(crate) prospect_map_name: Vec<u16>,
+    pub(crate) faction_mission_dt_key: Vec<u16>,
+    pub(crate) setting_row_names: Vec<Vec<u16>>,
 }
 
 pub(crate) fn stage_prospect_save_state_for_import(
@@ -1259,6 +1274,7 @@ pub(crate) fn stage_prospect_save_state_for_import(
     let mut lobby_privacy: Option<LobbyPrivacy> = None;
     let mut prospect_info: Option<ParsedProspectInfo> = None;
     let mut has_map_name = false;
+    let mut prospect_map_name = Vec::new();
     let mut has_last_saved_date_time = false;
     let mut legacy_prospect_id: Option<Vec<u16>> = None;
     let mut legacy_prospect_dt_key: Option<Vec<u16>> = None;
@@ -1312,6 +1328,7 @@ pub(crate) fn stage_prospect_save_state_for_import(
             );
             let units = decode_exact_string_units(property.tag.payload, "invalid ProspectMapName")?;
             has_map_name = !units.is_empty();
+            prospect_map_name = units;
         } else if is_name(&property.name, "LastSavedDateTime") {
             ensure!(
                 property.tag.kind == TagKind::Struct
@@ -1353,6 +1370,8 @@ pub(crate) fn stage_prospect_save_state_for_import(
         associated_members: Vec::new(),
         prospect_id: Vec::new(),
         prospect_dt_key: Vec::new(),
+        faction_mission_dt_key: Vec::new(),
+        setting_row_names: Vec::new(),
         has_expire_time: false,
     });
 
@@ -1369,6 +1388,8 @@ pub(crate) fn stage_prospect_save_state_for_import(
         info.associated_members.clear();
         info.prospect_id.clear();
         info.prospect_dt_key.clear();
+        info.faction_mission_dt_key.clear();
+        info.setting_row_names.clear();
         info.has_expire_time = false;
         privacy = LobbyPrivacy::FriendsOnly;
     }
@@ -1521,5 +1542,8 @@ pub(crate) fn stage_prospect_save_state_for_import(
         summary: staged,
         decisions,
         prospect_dt_key: info.prospect_dt_key,
+        prospect_map_name,
+        faction_mission_dt_key: info.faction_mission_dt_key,
+        setting_row_names: info.setting_row_names,
     })
 }

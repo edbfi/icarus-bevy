@@ -166,6 +166,12 @@ symlinks allowed; F-671), read it, and write nothing unless stated:
   list it. Instance names are never resolved and have no list.
   `--data-pak PATH` also resolves data-row references against every table of
   the official server's data.pak, without case (F-898).
+  Root content is checked after migration too: `ProspectDTKey` must resolve
+  in `D_ProspectList` or an authored data-row catalog; `FactionMissionDTKey`
+  and custom-setting row names use data-row resolution. `ProspectMapName`
+  requires an explicit `unclassified` catalog entry until a native map
+  catalog exists. Empty optional references do not block. Reports retain
+  counts only; resolving names does not establish world or gameplay parity.
 
 Value meanings and original-server round trips remain unvalidated. The
 [synthetic workload](synthetic-workload.md) exercises native scheduling and

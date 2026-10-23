@@ -277,6 +277,18 @@ fn envelope_with_prospect_keys(
     nested: Option<&str>,
     legacy: Option<&str>,
 ) -> Vec<u8> {
+    envelope_with_root_content(version, recorders, nested, legacy, None, None, &[])
+}
+
+fn envelope_with_root_content(
+    version: i32,
+    recorders: &[Vec<u8>],
+    nested: Option<&str>,
+    legacy: Option<&str>,
+    map: Option<&str>,
+    faction: Option<&str>,
+    settings: &[&str],
+) -> Vec<u8> {
     let mut info = vec![tag(
         "ProspectID",
         "StrProperty",
@@ -285,6 +297,40 @@ fn envelope_with_prospect_keys(
     )];
     if let Some(key) = nested {
         info.push(tag("ProspectDTKey", "StrProperty", &[0], &fstring(key)));
+    }
+    if let Some(key) = faction {
+        info.push(tag(
+            "FactionMissionDTKey",
+            "StrProperty",
+            &[0],
+            &fstring(key),
+        ));
+    }
+    if !settings.is_empty() {
+        let elements: Vec<u8> = settings
+            .iter()
+            .flat_map(|key| {
+                [
+                    tag("SettingRowName", "StrProperty", &[0], &fstring(key)),
+                    end(),
+                ]
+                .concat()
+            })
+            .collect();
+        let shared = struct_tag("CustomSettings", "CustomGameSetting", &elements);
+        info.push(tag(
+            "CustomSettings",
+            "ArrayProperty",
+            &[fstring("StructProperty"), vec![0]].concat(),
+            &[
+                i32::try_from(settings.len())
+                    .unwrap()
+                    .to_le_bytes()
+                    .as_slice(),
+                &shared,
+            ]
+            .concat(),
+        ));
     }
     info.push(end());
     let info = info.concat();
@@ -307,6 +353,9 @@ fn envelope_with_prospect_keys(
     ];
     if let Some(key) = legacy {
         roots.push(tag("ProspectDTKey", "StrProperty", &[0], &fstring(key)));
+    }
+    if let Some(name) = map {
+        roots.push(tag("ProspectMapName", "StrProperty", &[0], &fstring(name)));
     }
     roots.push(end());
     let payload = roots.concat();
@@ -1477,4 +1526,173 @@ fn ambiguous_prospect_tables_fail_instead_of_unioning_their_rows() {
     .unwrap();
     let mut pak = icarus_bevy::data_pak::DataPak::open(&path).unwrap();
     assert!(ContentCatalog::empty().with_data_tables(&mut pak).is_err());
+}
+
+#[test]
+fn root_content_requires_its_role_and_reports_no_values() {
+    let body = [end(), vec![0; 4]].concat();
+    let recorders = [recorder_bytes(ACTOR, &body)];
+    let key = "PrivateRootContent";
+    let settings = [key];
+    for version in [1, 2] {
+        for field in 0..3 {
+            let source = envelope_with_root_content(
+                version,
+                &recorders,
+                None,
+                None,
+                (field == 0).then_some(key),
+                (field == 1).then_some(key),
+                if field == 2 { &settings } else { &[] },
+            );
+            for role in [
+                None,
+                Some("actor_class"),
+                Some("data_row"),
+                Some("unclassified"),
+            ] {
+                let catalog = role.map_or_else(ContentCatalog::empty, |role| {
+                    ContentCatalog::parse(&format!(
+                        "format = 1\n[references]\n{role} = [\"{key}\"]\n"
+                    ))
+                    .unwrap()
+                });
+                let plan = plan_import(source.as_slice(), &catalog).unwrap();
+                let mapped = role
+                    == Some(if field == 0 {
+                        "unclassified"
+                    } else {
+                        "data_row"
+                    });
+                assert_eq!(
+                    plan.importable, mapped,
+                    "version {version}, field {field}, role {role:?}"
+                );
+                assert_eq!(
+                    plan.blockers,
+                    if mapped {
+                        vec![]
+                    } else {
+                        vec![ImportBlocker::UnmappedContent {
+                            distinct: 1,
+                            references: 1,
+                        }]
+                    }
+                );
+                assert!(!plan.world_imported);
+                assert_eq!(plan.content.distinct, 1);
+                assert_eq!(plan.content.unmapped_references, usize::from(!mapped));
+                assert_eq!(plan.content.name_references, 0);
+                assert_eq!(plan.content.path_references, 0);
+                assert!(!serde_json::to_string(&plan).unwrap().contains(key));
+                assert!(!format!("{plan:?}").contains(key));
+            }
+        }
+    }
+    for version in [1, 2] {
+        for value in [None, Some("")] {
+            let source =
+                envelope_with_root_content(version, &recorders, None, None, value, value, &[""]);
+            let plan = plan_import(source.as_slice(), &ContentCatalog::empty()).unwrap();
+            assert!(plan.importable);
+            assert_eq!(plan.content.distinct, 0);
+        }
+    }
+}
+
+#[test]
+fn root_content_migration_clears_info_but_preserves_map() {
+    let body = [end(), vec![0; 4]].concat();
+    let recorders = [recorder_bytes(ACTOR, &body)];
+    let source = envelope_with_root_content(
+        0,
+        &recorders,
+        Some(ROW),
+        Some(ROW),
+        Some(PATH),
+        Some(ROW),
+        &[ROW],
+    );
+    let plan = plan_import(source.as_slice(), &ContentCatalog::empty()).unwrap();
+    assert_eq!(plan.recorders.retained, 0);
+    assert_eq!(plan.content.distinct, 1);
+    assert_eq!(plan.content.unmapped_references, 1);
+    assert_eq!(plan.content.roles.len(), 1);
+    assert_eq!(plan.content.roles[&ContentRole::Unclassified].references, 1);
+    assert!(plan.blockers.contains(&ImportBlocker::NoRetainedRecorders));
+}
+
+#[test]
+fn root_content_aggregates_occurrences_and_roles_with_recorders() {
+    let body = [
+        tag("ItemStaticData", "NameProperty", &[0], &fstring(ROW)),
+        end(),
+        vec![0; 4],
+    ]
+    .concat();
+    let recorders = [recorder_bytes(ACTOR, &body)];
+    for role in ["data_row", "unclassified"] {
+        let catalog =
+            ContentCatalog::parse(&format!("format = 1\n[references]\n{role} = [\"{ROW}\"]\n"))
+                .unwrap();
+        let source = envelope_with_root_content(
+            2,
+            &recorders,
+            Some(ROW),
+            None,
+            Some(ROW),
+            Some(ROW),
+            &[ROW, ROW],
+        );
+        let plan = plan_import(source.as_slice(), &catalog).unwrap();
+        assert!(!plan.importable);
+        assert_eq!(plan.content.distinct, 1);
+        assert_eq!(plan.content.unmapped_distinct, 1);
+        assert_eq!(plan.content.roles[&ContentRole::DataRow].references, 5);
+        assert_eq!(plan.content.roles[&ContentRole::Unclassified].references, 1);
+        assert_eq!(
+            plan.content.unmapped_references,
+            if role == "data_row" { 1 } else { 5 }
+        );
+    }
+}
+
+#[test]
+fn generic_root_rows_cannot_overwrite_an_unmapped_prospect_occurrence() {
+    let root = TempDir::new().unwrap();
+    let path = root.path().join("root-rows.pak");
+    fs::write(
+        &path,
+        pak_writer::official_pak(&[("Items/D_Unrelated.json", pak_writer::table_json(&[ROW]))]),
+    )
+    .unwrap();
+    let mut pak = icarus_bevy::data_pak::DataPak::open(&path).unwrap();
+    let (catalog, ..) = ContentCatalog::empty().with_data_tables(&mut pak).unwrap();
+    let body = [
+        tag("ItemStaticData", "NameProperty", &[0], &fstring(ROW)),
+        end(),
+        vec![0; 4],
+    ]
+    .concat();
+    let source = envelope_with_root_content(
+        2,
+        &[recorder_bytes(ACTOR, &body)],
+        Some(ROW),
+        None,
+        None,
+        Some(ROW),
+        &[ROW, ROW],
+    );
+    let plan = plan_import(source.as_slice(), &catalog).unwrap();
+    assert!(!plan.importable);
+    assert_eq!(plan.content.unmapped_references, 1);
+    assert_eq!(plan.content.unmapped_distinct, 1);
+    assert_eq!(
+        plan.content.roles[&ContentRole::DataRow],
+        RoleCount {
+            references: 5,
+            distinct: 1,
+            unmapped_distinct: 1,
+        }
+    );
 }
