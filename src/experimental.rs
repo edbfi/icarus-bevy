@@ -19,6 +19,7 @@ pub mod game_state_open;
 pub mod handshake;
 pub mod handshake_lab;
 pub mod int_array;
+pub mod inventory_weight;
 pub mod manager_open;
 pub mod packet;
 pub mod packet_lab;

@@ -95,10 +95,10 @@ pub const STAT_ARRAY_FIELD_INDEX: u32 = 2;
 /// `UTraitBehaviour::OwningComponent` and `CurrentWeight` (F-708).
 pub const INVENTORY_SLOTS_FIELD_INDEX: u32 = 4;
 
-/// `UInventory` handles the open writes: `bIsActive`, `OwningComponent` and
-/// `InventoryInfoRowHandle` (`inventory_rep_layout`).
+/// `UInventory` handles the open writes (`inventory_rep_layout`).
 const INVENTORY_IS_ACTIVE: u32 = 2;
 const INVENTORY_OWNING_COMPONENT: u32 = 3;
+const INVENTORY_CURRENT_WEIGHT: u32 = 4;
 const INVENTORY_INFO_ROW: u32 = 7;
 
 /// `FInventorySlot` handles a slot writes (`inventory_slot_commands`): the
@@ -273,10 +273,13 @@ impl InventorySlot {
     }
 }
 
-/// One runtime inventory: its info row and its slots.
-#[derive(Clone, Debug, PartialEq, Eq)]
+/// One runtime inventory: its info row, optional caller-supplied weight and slots.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct PawnInventory {
     pub info_row: u8,
+    /// Explicit `CurrentWeight` at rep-layout handle 4 (F-708). `None` omits
+    /// the property; no weight is inferred from slots, saves or tables.
+    pub current_weight: Option<i32>,
     pub slots: FastArrayContent<InventorySlot>,
 }
 
@@ -463,8 +466,9 @@ fn component_block(
 }
 
 /// A runtime `UInventory` subobject: active, its info row, its owning
-/// component when `owner` names one, and its slots as the custom-delta
-/// field (F-799, F-866).
+/// component when `owner` names one, an explicitly supplied weight and its
+/// slots as the custom-delta field (F-799, F-866, F-915). `owner` names the
+/// `OwningComponent`, not the actor owner used by the weight tick gate.
 pub fn inventory_subobject(
     blocks: &PawnContentPlan,
     inventory: &PawnInventory,
@@ -485,6 +489,13 @@ pub fn inventory_subobject(
         engine_net_version,
         order,
     )?;
+    let mut values = BTreeMap::from([
+        (INVENTORY_IS_ACTIVE, RepValue::Bool(true)),
+        (INVENTORY_INFO_ROW, RepValue::Byte(inventory.info_row)),
+    ]);
+    if let Some(weight) = inventory.current_weight {
+        values.insert(INVENTORY_CURRENT_WEIGHT, RepValue::Int(weight));
+    }
     Ok(OpenSubobject {
         class: blocks.inventory_class.clone(),
         block: Block::Composed(BlockProperties {
@@ -493,10 +504,7 @@ pub fn inventory_subobject(
                 .map(|owner| (INVENTORY_OWNING_COMPONENT, owner))
                 .into_iter()
                 .collect(),
-            values: BTreeMap::from([
-                (INVENTORY_IS_ACTIVE, RepValue::Bool(true)),
-                (INVENTORY_INFO_ROW, RepValue::Byte(inventory.info_row)),
-            ]),
+            values,
             fields: vec![slots],
             field_bound: blocks.inventory_bound,
         }),

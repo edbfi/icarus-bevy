@@ -4,7 +4,7 @@
 
 Experimental: wire-checked against the 3.0.31 capture (F-859, F-861,
 F-862, F-866, F-914) and static observations of server build 25793607 (F-864,
-F-865) and the 3.0.32 server paks (F-863). Last reconciled: 2026-10-22.
+F-865) and the 3.0.32 server paks (F-863). Last reconciled: 2026-10-23.
 
 ## Scope
 
@@ -57,9 +57,22 @@ they carry. Framing is in [actor channel bunches](actor-channel.md).
   `AQuest::RunQuest` keeps a sub-quest in `ActiveQuests` only while its
   Blueprint `Check` reports it incomplete (F-864).
 
-- The inventory tick has a pointer/byte guard before dirty-weight
-  recalculation (F-915); this does not establish tick activation or loaded
-  dirty state.
+- The inventory tick requires an actor owner and unsigned local role >=3,
+  then recalculates only if dirty and clears that flag (F-915). The constructor clears
+  dirty; authority-only initialization sets it (F-917).
+- Component construction sets the start-enabled flag; inventory construction
+  enables tick capability. Component registration requests enabled ticking
+  when that flag or the current tick state is set (F-917). Explicit component
+  enable requests pass through capability and helper guards
+  (M-903/ev_44975023ea86); tick construction, registration and state mutation
+  are bounded static observations (M-908/ev_aa563a322a20,
+  M-906/ev_be342f7e3311, M-909/ev_dbfc5e7474c5). Instance overrides, loaded
+  owner assignment and actual scheduler execution remain unqualified.
+
+- Native experimental weight state accepts a caller calculation behind the
+  qualified tick guard; the shared inventory composer emits handle 4 only
+  for an explicit optional weight, including zero (F-918). `run` does not
+  infer it from loaded items.
 
 ## Candidate
 
@@ -79,4 +92,4 @@ they carry. Framing is in [actor channel bunches](actor-channel.md).
 
 ## Evidence
 
-- M-707, M-820, M-879, M-881 to M-887, M-891, M-895, M-896.
+- M-707, M-820, M-879, M-881 to M-887, M-891, M-892, M-895, M-896, M-901 to M-913.

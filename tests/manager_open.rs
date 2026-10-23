@@ -276,6 +276,7 @@ fn container_inventories_compose_as_listed_subobjects() {
     let inventories = vec![
         PawnInventory {
             info_row: 9,
+            current_weight: None,
             slots: FastArrayContent {
                 replication_key: 3,
                 items: vec![InventorySlot {
@@ -286,6 +287,7 @@ fn container_inventories_compose_as_listed_subobjects() {
         },
         PawnInventory {
             info_row: 10,
+            current_weight: None,
             slots: FastArrayContent {
                 replication_key: 2,
                 items: vec![InventorySlot::empty(6, 0)],
@@ -405,6 +407,113 @@ fn container_inventories_compose_as_listed_subobjects() {
             assert_eq!(value(3), None);
             assert_eq!(value(10), Some(RepValue::Bool(false)));
         }
+    }
+}
+
+/// Explicit weight uses rep-layout handle 4 independently of the slots'
+/// custom-delta field index 4. Absence never supplies an inferred value.
+#[test]
+fn inventory_weight_is_optional_and_decodes_alongside_slots() {
+    use icarus_bevy::experimental::{
+        actor_channel::{ActorChannelCodec, ActorChannelLimits, read_actor_bunch_body},
+        pawn_open::{FastArrayContent, INVENTORY_SLOTS_FIELD_INDEX, InventorySlot, PawnInventory},
+        rep_layout::{RepLayoutCodec, RepLayoutLimits, RepValue, read_rep_properties},
+        rep_rpc::{
+            FAST_ARRAY_COUNT_CAP, FastArrayItem, FastArrayItemLayout, read_custom_delta_header,
+            read_fast_array_delta, read_field_header,
+        },
+    };
+    assert_eq!(PawnInventory::default().current_weight, None);
+    let weights = [None, Some(0), Some(-42), Some(i32::MIN), Some(i32::MAX)];
+    let inventories = weights
+        .iter()
+        .map(|weight| PawnInventory {
+            info_row: 9,
+            current_weight: *weight,
+            slots: FastArrayContent {
+                replication_key: 2,
+                items: vec![InventorySlot::empty(6, 0)],
+            },
+        })
+        .collect();
+    let profile = ReleaseProfile::release_3_0_32();
+    let plan = profile
+        .manager_open_plan(ManagerSlot::InventoryContainer, "/Game/Maps/Test/Test")
+        .unwrap()
+        .unwrap()
+        .with_container_inventories(inventories)
+        .unwrap();
+    let mut cache = NetGuidCache::new();
+    let mut exports = ConnectionExports::new();
+    let open = compose_manager_open(
+        &mut cache,
+        &mut exports,
+        &plan,
+        ManagerSlot::InventoryContainer.key(),
+        10,
+        ByteOrder::Little,
+    )
+    .unwrap();
+    let codec = ActorChannelCodec {
+        engine_net_version: profile.engine_network_version,
+        exports_enabled: false,
+        has_level: true,
+        order: ByteOrder::Little,
+        limits: ActorChannelLimits::default(),
+    };
+    let rep_codec = RepLayoutCodec {
+        actor: codec,
+        checksums: false,
+        limits: RepLayoutLimits::default(),
+    };
+    let body = read_actor_bunch_body(&mut open.bunch.payload.reader(), true, &codec).unwrap();
+    assert_eq!(body.blocks.len(), 1 + weights.len());
+    let blocks = &plan.inventories.as_ref().unwrap().blocks;
+    for (block, weight) in body.blocks[1..].iter().zip(weights) {
+        let mut reader = block.payload.reader();
+        let properties =
+            read_rep_properties(&mut reader, &blocks.inventory_layout, &rep_codec).unwrap();
+        assert_eq!(
+            properties
+                .entries
+                .iter()
+                .find(|entry| entry.handle == 4)
+                .map(|entry| entry.value.clone()),
+            weight.map(RepValue::Int)
+        );
+        let field = read_field_header(
+            &mut reader,
+            blocks.inventory_bound,
+            rep_codec.limits.max_opaque_bits,
+        )
+        .unwrap();
+        assert_eq!(field.index, INVENTORY_SLOTS_FIELD_INDEX);
+        let mut field_reader = field.payload.reader();
+        read_custom_delta_header(&mut field_reader, profile.engine_network_version, 1).unwrap();
+        let slots = read_fast_array_delta(
+            &mut field_reader,
+            &FastArrayItemLayout::Delta(blocks.slot_layout.clone()),
+            &rep_codec,
+            FAST_ARRAY_COUNT_CAP,
+        )
+        .unwrap();
+        assert_eq!(slots.array_replication_key, 2);
+        assert_eq!(slots.changed.len(), 1);
+        assert_eq!(field_reader.remaining(), 0);
+        assert_eq!(reader.remaining(), 0);
+        let FastArrayItem::Delta(slot) = &slots.changed[0].1 else {
+            panic!("a delta slot");
+        };
+        assert!(
+            slot.entries
+                .iter()
+                .any(|entry| entry.handle == 14 && entry.value == RepValue::UInt16(6))
+        );
+        assert!(
+            slot.entries
+                .iter()
+                .any(|entry| entry.handle == 18 && entry.value == RepValue::Int(0))
+        );
     }
 }
 
