@@ -217,8 +217,8 @@ fn proper_future_schema_objects_still_refuse_rollback_without_writes() {
     let _fixture = FIXTURE_LOCK.lock().unwrap();
     let directory = initial(true);
     let root = directory.path();
-    // Schema 4 holds authored native worlds; 5 is the future one.
-    replace_current(root, &json!({"schema_version":6,"tick":20,"entities":[]}));
+    // Schema 6 holds authored relationships; 7 is the future one.
+    replace_current(root, &json!({"schema_version":7,"tick":20,"entities":[]}));
     let before = inventory(root);
     let mut store = SnapshotStore::open(root).unwrap();
     for error in [

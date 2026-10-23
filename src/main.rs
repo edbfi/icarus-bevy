@@ -69,6 +69,9 @@ enum Command {
         catalog: PathBuf,
         #[arg(long)]
         map: String,
+        /// Independently authored identities, capabilities and foundation links.
+        #[arg(long)]
+        relationships: Option<PathBuf>,
         #[arg(long)]
         data_dir: PathBuf,
         /// Validate and report counts without opening the destination store.
@@ -84,6 +87,9 @@ enum Command {
         catalog: PathBuf,
         #[arg(long)]
         bindings: PathBuf,
+        /// Independently authored links; these do not interpret source relationships.
+        #[arg(long)]
+        relationships: Option<PathBuf>,
         #[arg(long)]
         data_dir: PathBuf,
         #[arg(long)]
@@ -193,14 +199,27 @@ fn execute(cli: Cli) -> Result<()> {
         Command::CreateNativeWorld {
             catalog,
             map,
+            relationships,
             data_dir,
             dry_run,
         } => {
             use icarus_bevy::native_world::{CompiledNativeCatalog, prepare_authored_world};
             // All semantic rejection precedes the destination lock/directory.
             let catalog = Arc::new(CompiledNativeCatalog::load(&catalog)?);
-            let prepared = prepare_authored_world(catalog, &map)?;
-            let snapshot = prepared.initial_snapshot();
+            let prepared = prepare_authored_world(Arc::clone(&catalog), &map)?;
+            let base = prepared.initial_snapshot();
+            let related = relationships
+                .map(|path| {
+                    use icarus_bevy::native_relationships::{
+                        CompiledNativeRelationships, prepare_relationship_world,
+                    };
+                    let declarations = CompiledNativeRelationships::load(&path, &catalog)?;
+                    prepare_relationship_world(base.clone(), &declarations)
+                })
+                .transpose()?;
+            let snapshot = related
+                .as_ref()
+                .map_or(&base, |prepared| prepared.snapshot());
             let actors = prepared.snapshot().actors.len();
             if dry_run {
                 println!(
@@ -211,7 +230,7 @@ fn execute(cli: Cli) -> Result<()> {
                 );
             } else {
                 let mut store = SnapshotStore::open(&data_dir)?;
-                let receipt = store.save_new(&snapshot)?;
+                let receipt = store.save_new(snapshot)?;
                 println!(
                     "{}",
                     json!({"event": "native_world_created", "actors": actors,
@@ -225,6 +244,7 @@ fn execute(cli: Cli) -> Result<()> {
             source,
             catalog,
             bindings,
+            relationships,
             data_dir,
             dry_run,
         } => {
@@ -239,20 +259,42 @@ fn execute(cli: Cli) -> Result<()> {
             let catalog = Arc::new(CompiledNativeCatalog::load(&catalog)?);
             let bindings = CompiledC001InertBindings::load(&bindings)?;
             let candidate = DecodedImportCandidate::decode(open_regular_source(&source)?)?;
-            let prepared = prepare_c001_inert_import(&candidate, catalog, &bindings)?;
+            let prepared = prepare_c001_inert_import(&candidate, Arc::clone(&catalog), &bindings)?;
+            let related = relationships
+                .map(|path| {
+                    use icarus_bevy::native_relationships::{
+                        CompiledNativeRelationships, prepare_relationship_world,
+                    };
+                    let declarations = CompiledNativeRelationships::load(&path, &catalog)?;
+                    prepare_relationship_world(prepared.snapshot().clone(), &declarations)
+                })
+                .transpose()?;
+            let schema_version = related
+                .as_ref()
+                .map_or(prepared.snapshot().schema_version, |prepared| {
+                    prepared.snapshot().schema_version
+                });
             let inspection = prepared.inspection();
             if dry_run {
                 println!(
                     "{}",
                     json!({"event": "c001_inert_fixture_prepared", "dry_run": true,
-                    "inspection": inspection, "world_imported": false, "gameplay_ready": false})
+                    "inspection": inspection, "schema_version": schema_version,
+                    "world_imported": false, "gameplay_ready": false})
                 );
             } else {
-                let receipt = publish_new_c001_inert_import(prepared, &data_dir)?;
+                let receipt = if let Some(related) = related {
+                    icarus_bevy::native_relationships::publish_new_relationship_world(
+                        related, &data_dir,
+                    )?
+                } else {
+                    publish_new_c001_inert_import(prepared, &data_dir)?
+                };
                 println!(
                     "{}",
                     json!({"event": "c001_inert_fixture_materialized", "inspection": inspection,
-                    "receipt": receipt, "world_imported": false, "gameplay_ready": false})
+                    "receipt": receipt, "schema_version": schema_version,
+                    "world_imported": false, "gameplay_ready": false})
                 );
             }
             Ok(())

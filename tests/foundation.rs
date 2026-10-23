@@ -673,15 +673,15 @@ fn future_schema_is_not_silently_rolled_back() {
     let mut store = SnapshotStore::open(directory.path()).unwrap();
     store.save(&snapshot(10)).unwrap();
     store.save(&snapshot(20)).unwrap();
-    // Schema 5 is the inert-placement adapter, so the future fixture uses 6.
-    let bytes = br#"{"schema_version":6,"tick":20,"entities":[],"new_field":true}"#;
+    // Schema 6 holds authored relationships, so the future fixture uses 7.
+    let bytes = br#"{"schema_version":7,"tick":20,"entities":[],"new_field":true}"#;
     fs::write(directory.path().join("snapshot-2.json"), bytes).unwrap();
     let path = directory.path().join("manifest.json");
     let mut manifest: serde_json::Value =
         serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
     // Independently calculated with coreutils sha256sum over the fixture bytes.
     manifest["current"]["sha256"] =
-        "c763e84c8c49bbb949421e35a915b500e5f23dcf69d6ee05a508ac5f8383c765".into();
+        "f416e148252e6ee07881f471ca72976264bbf4b53c355357ba2d88168a1a995e".into();
     fs::write(path, serde_json::to_vec(&manifest).unwrap()).unwrap();
     assert!(
         store
