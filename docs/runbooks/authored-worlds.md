@@ -137,8 +137,10 @@ mode, creation permission, expected presence/incarnation and complete pose and
 variables. Detached lookup compares names with ASCII-only folding across all
 declarations and rejects ambiguity. Bound lookup uses the existing recorder GUID;
 it requires unchanged supplied state and keeps the owner even for `respawn_only`.
-Explicit detachment requires the expected prior binding, or null for an unbound
-GUID. These names and GUIDs are independent of foundation-link identities.
+Explicit detachment requires the incoming GUID's expected prior binding, or null
+when that GUID is unbound. Attachment may replace a different incumbent GUID on
+the target slot, atomically retiring its binding while keeping the incarnation.
+These names and GUIDs are independent of foundation-link identities.
 
 Detached `find_only` requires a live owner. `find_or_respawn` attaches to a live
 owner or spawns an absent slot; failed live attachment rejects. `respawn_only`
@@ -158,8 +160,11 @@ must publish it through the normal store.
 edits and foundation reassignment. Mutation handles contain domain ID and current
 incarnation; stale handles reject. Replacement preserves edited foundation edges,
 whose endpoints must remain live. Capture and no-op requests still reject damaged
-components, stale resource generations, replaced contexts and inconsistent indices. Dry runs create nothing;
-publication refuses existing or recoverable worlds. `live_actors` distinguishes
+components, stale resource generations, replaced contexts and inconsistent
+indices. Dry runs create nothing; publication refuses existing or recoverable
+worlds. `live_actors` distinguishes
 materialized owners from the complete `actors` slot count. Both readiness flags
-remain false; this authored facility does not qualify official owner lookup,
+remain false. Helpers inspect complete world state and mutations preflight the
+stored generation; their cost scales with the whole world, and tick-loop use is
+unqualified. This authored facility does not qualify official owner lookup,
 spawning or complete recorder restoration.
