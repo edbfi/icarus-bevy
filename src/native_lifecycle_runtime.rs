@@ -10,9 +10,11 @@ use std::{
 
 use anyhow::{Context, Result, ensure};
 use bevy::prelude::{Component, Entity, Resource, World};
+use sha2::{Digest, Sha256};
 
 use crate::{
     native_c001_owners::C001OwnerImportMetadataV1,
+    native_c001_scalar_owners::C001ScalarOwnerImportMetadataV1,
     native_lifecycle::{
         CompiledNativeLifecycle, CompletedRestore, LifecycleSnapshot, OwnerHandle, Presence,
         RecorderComponentRecord, RestoreBatch, prepare_owner_restore,
@@ -26,14 +28,19 @@ use crate::{
         NativeRelationshipIdentity, NativeRelationshipsContext, NativeRotation, NativeScale,
         NativeVariables, NativeWorldContext,
     },
+    native_scalar_owners::{
+        CompiledScalarOwnerContracts, ScalarOwnerContractsSnapshotV1, ScalarOwnerState,
+        ScalarUseOutcome, ScalarValues,
+    },
     native_world::{
         Aabb3, CompiledNativeCatalog, NativeActorRecord, NativeActorView, NativeTransform,
-        NativeVariableValue, NativeWorldSnapshot,
+        NativeValue, NativeVariableValue, NativeWorldSnapshot,
     },
     persistence::SnapshotStore,
     simulation::{
         DomainId, Position, PreservedProspectState, SNAPSHOT_SCHEMA_C001_OWNERS,
-        SNAPSHOT_SCHEMA_LIFECYCLE, SimulationClock, WorldSnapshot,
+        SNAPSHOT_SCHEMA_C001_SCALAR_OWNERS, SNAPSHOT_SCHEMA_LIFECYCLE, SimulationClock,
+        WorldSnapshot,
     },
 };
 
@@ -52,6 +59,22 @@ pub struct NativeOwnerRecorder(pub RecorderComponentRecord);
 #[derive(Resource, Clone)]
 pub struct C001OwnerImportState(pub Arc<C001OwnerImportMetadataV1>);
 
+/// Immutable declarations and provenance, checked against the activation pins.
+#[derive(Resource, Clone)]
+pub struct NativeScalarOwnerContractsState(pub Arc<ScalarOwnerContractsSnapshotV1>);
+
+#[derive(Resource, Clone)]
+pub struct C001ScalarOwnerImportState(pub Arc<C001ScalarOwnerImportMetadataV1>);
+
+#[derive(Component, Clone)]
+struct ScalarOwnerDerived {
+    activation: Arc<Definitions>,
+    generation: u64,
+    owner: OwnerHandle,
+    input_fingerprint: [u8; 32],
+    available: bool,
+}
+
 struct Definitions {
     // Shared by every activation pin, including clones of SnapshotMode. A
     // stale resource cannot roll this back by restoring its observed generation.
@@ -61,6 +84,9 @@ struct Definitions {
     relationships: Option<CompiledNativeRelationships>,
     identities: BTreeMap<DomainId, NativeRelationshipIdentity>,
     imported: Option<Arc<C001OwnerImportMetadataV1>>,
+    scalar_contracts: Option<CompiledScalarOwnerContracts>,
+    scalar_snapshot: Option<Arc<ScalarOwnerContractsSnapshotV1>>,
+    scalar_imported: Option<Arc<C001ScalarOwnerImportMetadataV1>>,
 }
 
 /// Private fields prevent callers from updating a registry independently of its
@@ -98,7 +124,9 @@ pub(crate) fn ensure_no_lifecycle_state(world: &World) -> Result<()> {
     ensure!(
         !world.contains_resource::<NativeLifecycleContext>()
             && !world.contains_resource::<DormantNativeSlots>()
-            && !world.contains_resource::<C001OwnerImportState>(),
+            && !world.contains_resource::<C001OwnerImportState>()
+            && !world.contains_resource::<NativeScalarOwnerContractsState>()
+            && !world.contains_resource::<C001ScalarOwnerImportState>(),
         "world contains unexpected lifecycle resources"
     );
     for entity in world.iter_entities() {
@@ -108,7 +136,10 @@ pub(crate) fn ensure_no_lifecycle_state(world: &World) -> Result<()> {
                 && !entity.contains::<NativeOwnerRecorder>()
                 && !entity.contains::<NativeLifecycleContext>()
                 && !entity.contains::<DormantNativeSlots>()
-                && !entity.contains::<C001OwnerImportState>(),
+                && !entity.contains::<C001OwnerImportState>()
+                && !entity.contains::<NativeScalarOwnerContractsState>()
+                && !entity.contains::<C001ScalarOwnerImportState>()
+                && !entity.contains::<ScalarOwnerDerived>(),
             "world contains unexpected lifecycle components"
         );
     }
@@ -132,6 +163,7 @@ struct StagedActor {
     recorder: Option<RecorderComponentRecord>,
     relationship: Option<NativeRelationshipIdentity>,
     foundation: Option<NativeFoundation>,
+    scalar: Option<ScalarOwnerDerived>,
 }
 
 struct StagedWorld {
@@ -141,9 +173,43 @@ struct StagedWorld {
     dependents: Option<NativeFoundationDependents>,
 }
 
+fn scalar_fingerprint(
+    contracts: &CompiledScalarOwnerContracts,
+    owner: OwnerHandle,
+    values: ScalarValues,
+) -> [u8; 32] {
+    let mut hash = Sha256::new();
+    hash.update(b"icarus/native_scalar_owner_inputs/v1\0");
+    hash.update(contracts.identity().as_bytes());
+    hash.update(owner.id.0.to_le_bytes());
+    hash.update(owner.incarnation.to_le_bytes());
+    hash.update([u8::from(values.enabled)]);
+    hash.update(values.remaining_uses.to_le_bytes());
+    hash.finalize().into()
+}
+
+#[cfg(test)]
+thread_local! {
+    // Only staging consults this private fault: capture can still verify the
+    // unchanged world while testing a failure on the final prepared actor.
+    static SCALAR_STAGE_FAILURE: std::cell::Cell<Option<DomainId>> = const { std::cell::Cell::new(None) };
+}
+
+fn staged_scalar_values(
+    contracts: &CompiledScalarOwnerContracts,
+    record: &NativeActorRecord,
+) -> Result<ScalarValues> {
+    #[cfg(test)]
+    ensure!(
+        !SCALAR_STAGE_FAILURE.with(|failure| failure.get() == Some(record.id)),
+        "injected scalar callback staging failure"
+    );
+    contracts.evaluate(&record.class, &record.variables)
+}
+
 /// Every lookup and validation precedes entity mutation, including the reverse
 /// index allocation. The commit only moves already prepared component values.
-fn stage(snapshot: &WorldSnapshot, definitions: &Definitions) -> Result<StagedWorld> {
+fn stage(snapshot: &WorldSnapshot, definitions: &Arc<Definitions>) -> Result<StagedWorld> {
     // Exhaustion is a preparation failure, before any ECS mutation. All runtime
     // operations use exclusive World access; the atomic is a shared pin, not a
     // concurrent writer protocol.
@@ -166,6 +232,27 @@ fn stage(snapshot: &WorldSnapshot, definitions: &Definitions) -> Result<StagedWo
     );
     if let Some(metadata) = &definitions.imported {
         metadata.validate_current_state(native, lifecycle)?;
+    }
+    ensure!(
+        snapshot.native_scalar_contracts.as_ref() == definitions.scalar_snapshot.as_deref()
+            && snapshot.native_scalar_owner_import.as_ref()
+                == definitions.scalar_imported.as_deref(),
+        "scalar contracts or provenance differ from loaded activation"
+    );
+    if let Some(contracts) = &definitions.scalar_contracts {
+        contracts.validate_native(native)?;
+        definitions
+            .scalar_imported
+            .as_ref()
+            .context("scalar provenance missing")?
+            .validate_current_state(
+                native,
+                lifecycle,
+                definitions
+                    .scalar_snapshot
+                    .as_deref()
+                    .context("scalar contracts missing")?,
+            )?;
     }
     definitions.lifecycle.validate_snapshot(lifecycle, native)?;
     let by_id: BTreeMap<_, _> = native
@@ -229,6 +316,24 @@ fn stage(snapshot: &WorldSnapshot, definitions: &Definitions) -> Result<StagedWo
             recorder: slot.component.clone(),
             relationship,
             foundation,
+            scalar: definitions
+                .scalar_contracts
+                .as_ref()
+                .map(|contracts| {
+                    let values = staged_scalar_values(contracts, record)?;
+                    let owner = OwnerHandle {
+                        id: slot.id,
+                        incarnation: slot.incarnation,
+                    };
+                    Ok::<_, anyhow::Error>(ScalarOwnerDerived {
+                        activation: Arc::clone(definitions),
+                        generation,
+                        owner,
+                        input_fingerprint: scalar_fingerprint(contracts, owner, values),
+                        available: values.available,
+                    })
+                })
+                .transpose()?,
         });
     }
     let dependents = validate_relationships(
@@ -273,14 +378,25 @@ fn insert_actor(world: &mut World, entity: Entity, actor: StagedActor) {
     if let Some(foundation) = actor.foundation {
         entity.insert(foundation);
     }
+    if let Some(scalar) = actor.scalar {
+        entity.insert(scalar);
+    } else {
+        entity.remove::<ScalarOwnerDerived>();
+    }
 }
 
 pub(crate) fn activate_lifecycle(world: &mut World, snapshot: &WorldSnapshot) -> Result<()> {
-    snapshot.validate()?;
+    if snapshot.schema_version == SNAPSHOT_SCHEMA_C001_SCALAR_OWNERS {
+        SnapshotStore::preflight(snapshot)?;
+    } else {
+        snapshot.validate()?;
+    }
     ensure!(
         matches!(
             snapshot.schema_version,
-            SNAPSHOT_SCHEMA_LIFECYCLE | SNAPSHOT_SCHEMA_C001_OWNERS
+            SNAPSHOT_SCHEMA_LIFECYCLE
+                | SNAPSHOT_SCHEMA_C001_OWNERS
+                | SNAPSHOT_SCHEMA_C001_SCALAR_OWNERS
         ),
         "lifecycle schema required"
     );
@@ -331,10 +447,29 @@ pub(crate) fn activate_lifecycle(world: &mut World, snapshot: &WorldSnapshot) ->
             .native_owner_import
             .as_ref()
             .map(|metadata| Arc::new(metadata.clone())),
+        scalar_contracts: snapshot
+            .native_scalar_contracts
+            .as_ref()
+            .map(|contracts| CompiledScalarOwnerContracts::from_snapshot(contracts, native))
+            .transpose()?,
+        scalar_snapshot: snapshot
+            .native_scalar_contracts
+            .as_ref()
+            .map(|contracts| Arc::new(contracts.clone())),
+        scalar_imported: snapshot
+            .native_scalar_owner_import
+            .as_ref()
+            .map(|metadata| Arc::new(metadata.clone())),
     });
     let staged = stage(snapshot, &definitions)?;
     if let Some(metadata) = &definitions.imported {
         world.insert_resource(C001OwnerImportState(Arc::clone(metadata)));
+    }
+    if let Some(contracts) = &definitions.scalar_snapshot {
+        world.insert_resource(NativeScalarOwnerContractsState(Arc::clone(contracts)));
+    }
+    if let Some(metadata) = &definitions.scalar_imported {
+        world.insert_resource(C001ScalarOwnerImportState(Arc::clone(metadata)));
     }
     let mut live = BTreeMap::new();
     for actor in staged.actors {
@@ -431,6 +566,30 @@ pub(crate) fn capture_lifecycle(world: &World) -> Result<WorldSnapshot> {
     let definitions = &context.definitions;
     ensure!(
         match (
+            world.get_resource::<NativeScalarOwnerContractsState>(),
+            &definitions.scalar_snapshot
+        ) {
+            (None, None) => true,
+            (Some(actual), Some(expected)) =>
+                Arc::ptr_eq(&actual.0, expected) || actual.0 == *expected,
+            _ => false,
+        },
+        "scalar contracts differ from loaded activation"
+    );
+    ensure!(
+        match (
+            world.get_resource::<C001ScalarOwnerImportState>(),
+            &definitions.scalar_imported
+        ) {
+            (None, None) => true,
+            (Some(actual), Some(expected)) =>
+                Arc::ptr_eq(&actual.0, expected) || actual.0 == *expected,
+            _ => false,
+        },
+        "scalar source provenance differs from loaded activation"
+    );
+    ensure!(
+        match (
             world.get_resource::<C001OwnerImportState>(),
             &definitions.imported
         ) {
@@ -469,6 +628,22 @@ pub(crate) fn capture_lifecycle(world: &World) -> Result<WorldSnapshot> {
     );
     let expected_entities: BTreeSet<_> = context.live.values().copied().collect();
     for entity in world.iter_entities() {
+        if let Some(contracts) = entity.get::<NativeScalarOwnerContractsState>() {
+            ensure!(
+                world
+                    .get_resource::<NativeScalarOwnerContractsState>()
+                    .is_some_and(|resource| std::ptr::eq(contracts, resource)),
+                "lifecycle world contains unregistered scalar contracts"
+            );
+        }
+        if let Some(metadata) = entity.get::<C001ScalarOwnerImportState>() {
+            ensure!(
+                world
+                    .get_resource::<C001ScalarOwnerImportState>()
+                    .is_some_and(|resource| std::ptr::eq(metadata, resource)),
+                "lifecycle world contains unregistered scalar provenance"
+            );
+        }
         if let Some(metadata) = entity.get::<C001OwnerImportState>() {
             ensure!(
                 world
@@ -493,6 +668,7 @@ pub(crate) fn capture_lifecycle(world: &World) -> Result<WorldSnapshot> {
             || entity.contains::<NativeOwnerRecorder>()
             || entity.contains::<NativeRelationshipIdentity>()
             || entity.contains::<NativeFoundation>()
+            || entity.contains::<ScalarOwnerDerived>()
         {
             ensure!(
                 expected_entities.contains(&entity.id()),
@@ -555,6 +731,13 @@ pub(crate) fn capture_lifecycle(world: &World) -> Result<WorldSnapshot> {
                     .local_bounds,
             "owner local bounds differ from catalog"
         );
+        let variables = &world
+            .get::<NativeVariables>(*entity)
+            .context("owner lacks variables")?
+            .0;
+        if definitions.scalar_contracts.is_some() {
+            ensure!(variables.capacity() <= 4, "scalar variable capacity limit");
+        }
         let record = NativeActorView {
             id: *id,
             placement: &identity.placement,
@@ -574,11 +757,33 @@ pub(crate) fn capture_lifecycle(world: &World) -> Result<WorldSnapshot> {
                     .context("owner lacks scale")?
                     .0,
             },
-            variables: &world
-                .get::<NativeVariables>(*entity)
-                .context("owner lacks variables")?
-                .0,
+            variables,
         };
+        match &definitions.scalar_contracts {
+            Some(contracts) => {
+                let values = contracts.evaluate(record.class, record.variables)?;
+                let owner = OwnerHandle {
+                    id: *id,
+                    incarnation: slot.incarnation,
+                };
+                let derived = world
+                    .get::<ScalarOwnerDerived>(*entity)
+                    .context("scalar owner lacks derived state")?;
+                ensure!(
+                    Arc::ptr_eq(&derived.activation, definitions)
+                        && derived.generation == context.generation
+                        && derived.owner == owner
+                        && derived.input_fingerprint
+                            == scalar_fingerprint(contracts, owner, values)
+                        && derived.available == values.available,
+                    "scalar derived state differs from its activation or inputs"
+                );
+            }
+            None => ensure!(
+                world.get::<ScalarOwnerDerived>(*entity).is_none(),
+                "owner has unexpected scalar derived state"
+            ),
+        }
         records.insert(*id, record);
         match definitions.identities.get(id) {
             Some(expected) => {
@@ -663,8 +868,25 @@ pub(crate) fn capture_lifecycle(world: &World) -> Result<WorldSnapshot> {
     if let Some(metadata) = &definitions.imported {
         metadata.validate_current_state(&native, &context.lifecycle)?;
     }
+    if let Some(contracts) = &definitions.scalar_contracts {
+        contracts.validate_native(&native)?;
+        definitions
+            .scalar_imported
+            .as_ref()
+            .context("scalar provenance missing")?
+            .validate_current_state(
+                &native,
+                &context.lifecycle,
+                definitions
+                    .scalar_snapshot
+                    .as_deref()
+                    .context("scalar contracts missing")?,
+            )?;
+    }
     Ok(WorldSnapshot {
-        schema_version: if definitions.imported.is_some() {
+        schema_version: if definitions.scalar_imported.is_some() {
+            SNAPSHOT_SCHEMA_C001_SCALAR_OWNERS
+        } else if definitions.imported.is_some() {
             SNAPSHOT_SCHEMA_C001_OWNERS
         } else {
             SNAPSHOT_SCHEMA_LIFECYCLE
@@ -679,6 +901,8 @@ pub(crate) fn capture_lifecycle(world: &World) -> Result<WorldSnapshot> {
         native_relationships: relationships,
         native_lifecycle: Some(context.lifecycle.clone()),
         native_owner_import: definitions.imported.as_deref().cloned(),
+        native_scalar_contracts: definitions.scalar_snapshot.as_deref().cloned(),
+        native_scalar_owner_import: definitions.scalar_imported.as_deref().cloned(),
         preserved_prospect: world
             .get_resource::<PreservedProspectState>()
             .map(|state| Arc::clone(&state.0)),
@@ -714,6 +938,107 @@ pub fn native_owner_handle(world: &World, id: DomainId) -> Result<OwnerHandle> {
         id,
         incarnation: slot.incarnation,
     })
+}
+
+fn scalar_state_from_snapshot(
+    world: &World,
+    snapshot: &WorldSnapshot,
+    owner: OwnerHandle,
+) -> Result<ScalarOwnerState> {
+    require_handle(snapshot, owner)?;
+    let contracts = world
+        .resource::<NativeLifecycleContext>()
+        .definitions
+        .scalar_contracts
+        .as_ref()
+        .context("world has no scalar owner contract")?;
+    let actor = snapshot
+        .native_world
+        .as_ref()
+        .context("spatial slots missing")?
+        .actors
+        .iter()
+        .find(|actor| actor.id == owner.id)
+        .context("owner spatial record missing")?;
+    let values = contracts.evaluate(&actor.class, &actor.variables)?;
+    Ok(ScalarOwnerState {
+        owner,
+        enabled: values.enabled,
+        remaining_uses: values.remaining_uses,
+        available: values.available,
+    })
+}
+
+/// Validate the entire activation before reading an owner's native state.
+pub fn scalar_owner_state(world: &World, owner: OwnerHandle) -> Result<ScalarOwnerState> {
+    let snapshot = capture_lifecycle(world)?;
+    scalar_state_from_snapshot(world, &snapshot, owner)
+}
+
+fn commit_scalar_values(
+    world: &mut World,
+    mut snapshot: WorldSnapshot,
+    owner: OwnerHandle,
+    enabled: bool,
+    remaining_uses: i32,
+) -> Result<ScalarOwnerState> {
+    let actor = snapshot
+        .native_world
+        .as_mut()
+        .context("spatial slots missing")?
+        .actors
+        .iter_mut()
+        .find(|actor| actor.id == owner.id)
+        .context("owner spatial record missing")?;
+    // Capture established the exact pair before this helper was entered. Keep
+    // the canonical order and capacities; evaluate still checks the new range.
+    for variable in &mut actor.variables {
+        variable.value = match variable.key.as_str() {
+            "enabled" => NativeValue::Bool(enabled),
+            "remaining_uses" => NativeValue::I32(remaining_uses),
+            _ => anyhow::bail!("unexpected scalar variable"),
+        };
+    }
+    let result = scalar_state_from_snapshot(world, &snapshot, owner)?;
+    // This deliberately retains whole-store validation and encoding preflight,
+    // including provenance replay. Runtime capture itself never replays source.
+    SnapshotStore::preflight(&snapshot)?;
+    let staged = stage(
+        &snapshot,
+        &world.resource::<NativeLifecycleContext>().definitions,
+    )?;
+    commit(world, snapshot, staged);
+    Ok(result)
+}
+
+/// A synchronous native attempt; callers must not retry an ambiguous external
+/// acknowledgment. Disabled and exhausted attempts are validated no-ops.
+pub fn try_use(world: &mut World, owner: OwnerHandle) -> Result<ScalarUseOutcome> {
+    let snapshot = capture_lifecycle(world)?;
+    let current = scalar_state_from_snapshot(world, &snapshot, owner)?;
+    if !current.enabled {
+        return Ok(ScalarUseOutcome::Disabled(current));
+    }
+    if current.remaining_uses == 0 {
+        return Ok(ScalarUseOutcome::Exhausted(current));
+    }
+    let next = commit_scalar_values(world, snapshot, owner, true, current.remaining_uses - 1)?;
+    Ok(ScalarUseOutcome::Used(next))
+}
+
+/// Set the authoritative Bool while preserving the count. Equal values still
+/// validate the entire world, then return without advancing its generation.
+pub fn set_enabled(
+    world: &mut World,
+    owner: OwnerHandle,
+    enabled: bool,
+) -> Result<ScalarOwnerState> {
+    let snapshot = capture_lifecycle(world)?;
+    let current = scalar_state_from_snapshot(world, &snapshot, owner)?;
+    if current.enabled == enabled {
+        return Ok(current);
+    }
+    commit_scalar_values(world, snapshot, owner, enabled, current.remaining_uses)
 }
 
 /// Exclusive commit of a fully prepared state. Existing entities survive find
@@ -797,6 +1122,17 @@ pub fn update_lifecycle_actor(
         .iter_mut()
         .find(|actor| actor.id == owner.id)
         .context("owner spatial record missing")?;
+    if world
+        .resource::<NativeLifecycleContext>()
+        .definitions
+        .scalar_contracts
+        .is_some()
+    {
+        ensure!(
+            variables == actor.variables,
+            "scalar variables require the scalar owner action API"
+        );
+    }
     actor.transform = transform;
     actor.variables = variables;
     SnapshotStore::preflight(&snapshot)?;
@@ -919,6 +1255,9 @@ pub fn lifecycle_world_bounds(world: &World, owner: OwnerHandle) -> Result<Aabb3
 }
 
 #[cfg(test)]
+use crate::scalar_owner_fixture as scalar_fixture;
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use crate::{
@@ -1035,5 +1374,228 @@ mod tests {
         let entity = context.live[&DomainId(1)];
         app.world_mut().despawn(entity);
         assert!(capture(app.world_mut()).is_err());
+    }
+
+    fn scalar_app() -> bevy::prelude::App {
+        build_app(&ServerConfig::default(), &scalar_fixture::imported()).unwrap()
+    }
+
+    fn scalar_entity(world: &World, id: DomainId) -> Entity {
+        world.resource::<NativeLifecycleContext>().live[&id]
+    }
+
+    fn assert_scalar_calls_reject(world: &mut World, owner: OwnerHandle) {
+        assert!(capture(world).is_err());
+        assert!(scalar_owner_state(world, owner).is_err());
+        assert!(try_use(world, owner).is_err());
+        // Both the changed and unchanged Bool paths must validate every actor.
+        assert!(set_enabled(world, owner, false).is_err());
+        assert!(set_enabled(world, owner, true).is_err());
+        assert!(restore_native_owners(world, &scalar_fixture::fixture().initial_batch()).is_err());
+    }
+
+    #[test]
+    fn missing_stale_transplanted_and_hidden_derived_state_rejects() {
+        use bevy::ecs::entity_disabling::Disabled;
+        for mode in 0..9 {
+            let mut app = scalar_app();
+            let owner = native_owner_handle(app.world(), DomainId(1)).unwrap();
+            let victim = scalar_entity(app.world(), DomainId(2));
+            let derived = app
+                .world()
+                .get::<ScalarOwnerDerived>(victim)
+                .unwrap()
+                .clone();
+            app.world_mut().entity_mut(victim).insert(Disabled);
+            match mode {
+                0 => {
+                    app.world_mut()
+                        .entity_mut(victim)
+                        .remove::<ScalarOwnerDerived>();
+                }
+                1 => {
+                    app.world_mut()
+                        .get_mut::<ScalarOwnerDerived>(victim)
+                        .unwrap()
+                        .generation -= 1;
+                }
+                2 => {
+                    app.world_mut()
+                        .get_mut::<ScalarOwnerDerived>(victim)
+                        .unwrap()
+                        .owner
+                        .incarnation += 1;
+                }
+                3 => {
+                    app.world_mut()
+                        .get_mut::<ScalarOwnerDerived>(victim)
+                        .unwrap()
+                        .input_fingerprint[0] ^= 1;
+                }
+                4 => {
+                    app.world_mut()
+                        .get_mut::<ScalarOwnerDerived>(victim)
+                        .unwrap()
+                        .available = false;
+                }
+                5 => {
+                    let other = scalar_app();
+                    let other_entity = scalar_entity(other.world(), DomainId(2));
+                    app.world_mut().entity_mut(victim).insert(
+                        other
+                            .world()
+                            .get::<ScalarOwnerDerived>(other_entity)
+                            .unwrap()
+                            .clone(),
+                    );
+                }
+                6 => {
+                    app.world_mut().spawn((Disabled, derived));
+                }
+                7 => {
+                    let source = scalar_entity(app.world(), DomainId(1));
+                    let transplanted = app
+                        .world()
+                        .get::<ScalarOwnerDerived>(source)
+                        .unwrap()
+                        .clone();
+                    app.world_mut().entity_mut(victim).insert(transplanted);
+                }
+                _ => {
+                    set_enabled(app.world_mut(), owner, true).unwrap();
+                    // The old derived record has matching scalar inputs on the
+                    // untouched actor but belongs to the previous generation.
+                    app.world_mut().entity_mut(victim).insert(derived);
+                }
+            }
+            let position = app.world().get::<Position>(victim).unwrap().0;
+            assert_scalar_calls_reject(app.world_mut(), owner);
+            assert_eq!(app.world().get::<Position>(victim).unwrap().0, position);
+        }
+    }
+
+    struct ResetScalarFailure;
+    impl Drop for ResetScalarFailure {
+        fn drop(&mut self) {
+            SCALAR_STAGE_FAILURE.with(|failure| failure.set(None));
+        }
+    }
+
+    #[test]
+    fn final_scalar_callback_staging_failure_is_atomic_for_action_and_replacement() {
+        let mut app = scalar_app();
+        let owner = native_owner_handle(app.world(), DomainId(1)).unwrap();
+        set_enabled(app.world_mut(), owner, true).unwrap();
+        let before = capture(app.world_mut()).unwrap();
+        let context = app.world().resource::<NativeLifecycleContext>().clone();
+        let mut batch = scalar_fixture::fixture().initial_batch();
+        batch.sequence = 2;
+        for command in &mut batch.recorders {
+            let actor = before
+                .native_world
+                .as_ref()
+                .unwrap()
+                .actors
+                .iter()
+                .find(|actor| actor.placement == command.target_placement)
+                .unwrap();
+            let slot = before
+                .native_lifecycle
+                .as_ref()
+                .unwrap()
+                .slots
+                .iter()
+                .find(|slot| slot.id == actor.id)
+                .unwrap();
+            command.guid = 900 + actor.id.0 as i32;
+            command.expected_presence = Presence::Live;
+            command.expected_incarnation = slot.incarnation;
+            command.policy = crate::native_lifecycle::ResolvePolicy::RespawnOnly;
+            command.source = crate::native_lifecycle::RecorderSource::Detached {
+                expected_prior_binding: None,
+            };
+            command.variables = scalar_fixture::scalar_pair(false, 4);
+        }
+        SCALAR_STAGE_FAILURE.with(|failure| failure.set(Some(DomainId(3))));
+        let _reset = ResetScalarFailure;
+        let error = try_use(app.world_mut(), owner).unwrap_err();
+        assert!(error.to_string().contains("injected scalar callback"));
+        assert_eq!(capture(app.world_mut()).unwrap(), before);
+        let error = restore_native_owners(app.world_mut(), &batch).unwrap_err();
+        assert!(error.to_string().contains("injected scalar callback"));
+        assert_eq!(capture(app.world_mut()).unwrap(), before);
+        let current = app.world().resource::<NativeLifecycleContext>();
+        assert_eq!(current.generation, context.generation);
+        assert_eq!(current.live, context.live);
+        for entity in current.live.values() {
+            assert_eq!(
+                app.world()
+                    .get::<ScalarOwnerDerived>(*entity)
+                    .unwrap()
+                    .generation,
+                context.generation
+            );
+        }
+    }
+
+    #[test]
+    fn scalar_generation_exhaustion_and_oversized_capacity_fail_before_writes() {
+        let mut app = scalar_app();
+        let owner = native_owner_handle(app.world(), DomainId(1)).unwrap();
+        let entities: Vec<_> = app
+            .world()
+            .resource::<NativeLifecycleContext>()
+            .live
+            .values()
+            .copied()
+            .collect();
+        {
+            let mut context = app.world_mut().resource_mut::<NativeLifecycleContext>();
+            context
+                .definitions
+                .current_generation
+                .store(u64::MAX, Ordering::Relaxed);
+            context.generation = u64::MAX;
+        }
+        app.world_mut()
+            .resource_mut::<DormantNativeSlots>()
+            .generation = u64::MAX;
+        for entity in &entities {
+            app.world_mut()
+                .get_mut::<ScalarOwnerDerived>(*entity)
+                .unwrap()
+                .generation = u64::MAX;
+        }
+        let before = capture(app.world_mut()).unwrap();
+        assert!(set_enabled(app.world_mut(), owner, true).is_err());
+        let enabled = native_owner_handle(app.world(), DomainId(2)).unwrap();
+        assert!(try_use(app.world_mut(), enabled).is_err());
+        assert_eq!(capture(app.world_mut()).unwrap(), before);
+        let entity = scalar_entity(app.world(), DomainId(2));
+        app.world_mut()
+            .get_mut::<NativeVariables>(entity)
+            .unwrap()
+            .0
+            .reserve(20);
+        assert_scalar_calls_reject(app.world_mut(), owner);
+    }
+
+    #[test]
+    fn legacy_world_refuses_even_hidden_scalar_derived_components() {
+        use bevy::ecs::entity_disabling::Disabled;
+        let scalar = scalar_app();
+        let entity = scalar_entity(scalar.world(), DomainId(2));
+        let derived = scalar
+            .world()
+            .get::<ScalarOwnerDerived>(entity)
+            .unwrap()
+            .clone();
+        for mut app in [
+            app(),
+            build_app(&ServerConfig::default(), &WorldSnapshot::default()).unwrap(),
+        ] {
+            app.world_mut().spawn((Disabled, derived.clone()));
+            assert!(capture(app.world_mut()).is_err());
+        }
     }
 }

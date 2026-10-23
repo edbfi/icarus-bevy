@@ -673,15 +673,15 @@ fn future_schema_is_not_silently_rolled_back() {
     let mut store = SnapshotStore::open(directory.path()).unwrap();
     store.save(&snapshot(10)).unwrap();
     store.save(&snapshot(20)).unwrap();
-    // Schema 8 holds authored C001 owner provenance, so the future fixture uses 9.
-    let bytes = br#"{"schema_version":9,"tick":20,"entities":[],"new_field":true}"#;
+    // Schema 9 holds authored scalar owner state, so the future fixture uses 10.
+    let bytes = br#"{"schema_version":10,"tick":20,"entities":[],"new_field":true}"#;
     fs::write(directory.path().join("snapshot-2.json"), bytes).unwrap();
     let path = directory.path().join("manifest.json");
     let mut manifest: serde_json::Value =
         serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
     // Independently calculated with coreutils sha256sum over the fixture bytes.
     manifest["current"]["sha256"] =
-        "d22c4dc00718f4dade1f67c7daff235af7dd9774741071096cd6164ce36a6b53".into();
+        "c0315e8f0c0634f808a56520b6dd612a3f45675a502db3d7037025ace04d6d6e".into();
     fs::write(path, serde_json::to_vec(&manifest).unwrap()).unwrap();
     assert!(
         store

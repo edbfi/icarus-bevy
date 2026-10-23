@@ -16,13 +16,15 @@ use std::collections::BTreeSet;
 pub(crate) enum C001SourceProfile {
     InertPlacementV1,
     AuthoredOwnersV1,
+    AuthoredScalarOwnersV1,
 }
 impl C001SourceProfile {
     pub(crate) fn admits(self, policy: OwnerResolvePolicy) -> bool {
         matches!(
             policy,
             OwnerResolvePolicy::FindOnly | OwnerResolvePolicy::FindOrRespawn
-        ) || (matches!(self, Self::AuthoredOwnersV1) && policy == OwnerResolvePolicy::RespawnOnly)
+        ) || (matches!(self, Self::AuthoredOwnersV1 | Self::AuthoredScalarOwnersV1)
+            && policy == OwnerResolvePolicy::RespawnOnly)
     }
 }
 impl SourceOwner {
@@ -360,6 +362,15 @@ pub(crate) fn source_owner(
     index: usize,
     profile: C001SourceProfile,
 ) -> SemanticResult<SourceOwner> {
+    parse_owner(bytes, index, profile, |_| Ok(false))
+}
+
+fn parse_owner(
+    bytes: &[u8],
+    index: usize,
+    profile: C001SourceProfile,
+    mut extra: impl FnMut(&PropertyRecord<'_>) -> SemanticResult<bool>,
+) -> SemanticResult<SourceOwner> {
     let component = read_base_component_with_limit(bytes, PROFILE, MAX_BOUNDED_COMPONENT_BYTES)
         .map_err(|_| error(Some(index), "component", SemanticImportCategory::Header))?;
     require(
@@ -457,6 +468,8 @@ pub(crate) fn source_owner(
                 SemanticImportCategory::Unsupported,
             )?;
             explicit_policy = policy;
+        } else if extra(&p)? {
+            // Additional fields belong only to the explicitly selected profile.
         } else {
             return Err(error(
                 Some(index),
@@ -486,4 +499,241 @@ pub(crate) fn source_owner(
         transform: transform.ok_or_else(|| missing("ActorTransform"))?,
         explicit_policy,
     })
+}
+
+pub(crate) struct SourceScalarOwner {
+    pub owner: SourceOwner,
+    pub enabled_source_name: Vec<u16>,
+    pub enabled: bool,
+    pub remaining_uses_source_name: Vec<u16>,
+    pub remaining_uses: i32,
+}
+
+pub(crate) fn source_scalar_owner(
+    bytes: &[u8],
+    index: usize,
+    layout: &crate::native_c001_scalar_owners::CompiledC001ScalarLayout,
+) -> SemanticResult<SourceScalarOwner> {
+    // Scalar admission additionally requires canonical encoded header names.
+    // Existing source_owner profiles keep their original acceptance behavior.
+    let component = read_base_component_with_limit(bytes, PROFILE, MAX_BOUNDED_COMPONENT_BYTES)
+        .map_err(|_| {
+            error(
+                Some(index),
+                "scalar.component",
+                SemanticImportCategory::Header,
+            )
+        })?;
+    require(
+        canonical_source_string(
+            component.terminator(),
+            &"None".encode_utf16().collect::<Vec<_>>(),
+        ),
+        Some(index),
+        "scalar.terminator",
+        SemanticImportCategory::Header,
+    )?;
+    for tag in component.fields() {
+        let p = property(tag.record, Some(index), "scalar.component.header")?;
+        require(
+            canonical_header(p.tag.header, p.tag.kind),
+            Some(index),
+            "scalar.component.header",
+            SemanticImportCategory::Header,
+        )?;
+        if exact(&p.name, "ActorTransform") {
+            let root = read_root(p.tag.payload, PROFILE).map_err(|_| {
+                error(
+                    Some(index),
+                    "scalar.transform",
+                    SemanticImportCategory::Header,
+                )
+            })?;
+            for child in root.tags {
+                require(
+                    canonical_header(child.header, child.kind),
+                    Some(index),
+                    "scalar.transform.header",
+                    SemanticImportCategory::Header,
+                )?;
+            }
+        }
+    }
+    let mut enabled = None;
+    let mut remaining_uses = None;
+    let owner = parse_owner(
+        bytes,
+        index,
+        C001SourceProfile::AuthoredScalarOwnersV1,
+        |p| {
+            if p.name == layout.definition().enabled.array_name {
+                let (name, value) = scalar_record(p, index, &layout.definition().enabled, true)?;
+                let crate::native_world::NativeValue::Bool(value) = value else {
+                    unreachable!()
+                };
+                enabled = Some((name, value));
+                Ok(true)
+            } else if p.name == layout.definition().remaining_uses.array_name {
+                let (name, value) =
+                    scalar_record(p, index, &layout.definition().remaining_uses, false)?;
+                let crate::native_world::NativeValue::I32(value) = value else {
+                    unreachable!()
+                };
+                remaining_uses = Some((name, value));
+                Ok(true)
+            } else {
+                Ok(false)
+            }
+        },
+    )?;
+    let (enabled_source_name, enabled) = enabled.ok_or_else(|| {
+        error(
+            Some(index),
+            "scalar.enabled",
+            SemanticImportCategory::Missing,
+        )
+    })?;
+    let (remaining_uses_source_name, remaining_uses) = remaining_uses.ok_or_else(|| {
+        error(
+            Some(index),
+            "scalar.remaining_uses",
+            SemanticImportCategory::Missing,
+        )
+    })?;
+    Ok(SourceScalarOwner {
+        owner,
+        enabled_source_name,
+        enabled,
+        remaining_uses_source_name,
+        remaining_uses,
+    })
+}
+fn scalar_record(
+    p: &PropertyRecord<'_>,
+    index: usize,
+    declaration: &crate::native_c001_scalar_owners::C001ScalarArrayV1,
+    boolean: bool,
+) -> SemanticResult<(Vec<u16>, crate::native_world::NativeValue)> {
+    use crate::experimental::struct_array::read_tagged_struct_array_with_limit;
+    use crate::native_world::NativeValue;
+    let fail = || error(Some(index), "scalar.array", SemanticImportCategory::Header);
+    require(
+        p.tag.kind == TagKind::Array
+            && p.extra.as_ref().is_some_and(|u| exact(u, "StructProperty")),
+        Some(index),
+        "scalar.array",
+        SemanticImportCategory::Type,
+    )?;
+    // Count before the framing reader allocates its element/field collections.
+    require(
+        p.tag.payload.get(..4) == Some(&1_i32.to_le_bytes()[..]),
+        Some(index),
+        "scalar.count",
+        SemanticImportCategory::Value,
+    )?;
+    let array =
+        read_tagged_struct_array_with_limit(p.tag.payload, PROFILE, MAX_BOUNDED_COMPONENT_BYTES)
+            .map_err(|_| fail())?;
+    let shared = property(array.shared().record, Some(index), "scalar.shared")?;
+    require(
+        canonical_header(shared.tag.header, shared.tag.kind),
+        Some(index),
+        "scalar.shared.header",
+        SemanticImportCategory::Header,
+    )?;
+    require(
+        shared.name == declaration.element_tag_name
+            && shared.tag.kind == TagKind::Struct
+            && shared.extra.as_ref() == Some(&declaration.record_type),
+        Some(index),
+        "scalar.shared",
+        SemanticImportCategory::Type,
+    )?;
+    let element = &array.elements()[0];
+    require(
+        canonical_source_string(
+            element.terminator(),
+            &"None".encode_utf16().collect::<Vec<_>>(),
+        ),
+        Some(index),
+        "scalar.terminator",
+        SemanticImportCategory::Header,
+    )?;
+    require(
+        element.fields().len() == 2,
+        Some(index),
+        "scalar.fields",
+        SemanticImportCategory::Unsupported,
+    )?;
+    let mut name = None;
+    let mut value = None;
+    for tag in element.fields() {
+        let field = property(tag.record, Some(index), "scalar.header")?;
+        require(
+            canonical_header(field.tag.header, field.tag.kind),
+            Some(index),
+            "scalar.header",
+            SemanticImportCategory::Header,
+        )?;
+        if exact(&field.name, "VariableName") && name.is_none() {
+            name = Some(source_string(
+                &field,
+                TagKind::Name,
+                index,
+                "scalar.VariableName",
+            )?);
+        } else if field.name == declaration.value_field && value.is_none() {
+            value = Some(if boolean {
+                require(
+                    field.tag.kind == TagKind::Bool
+                        && field.tag.payload.is_empty()
+                        && field.bool_value.is_some(),
+                    Some(index),
+                    "scalar.Bool",
+                    SemanticImportCategory::Type,
+                )?;
+                NativeValue::Bool(field.bool_value.ok_or_else(fail)?)
+            } else {
+                NativeValue::I32(source_int(&field, index, "scalar.Int")?)
+            });
+        } else {
+            return Err(error(
+                Some(index),
+                "scalar.field",
+                SemanticImportCategory::Unsupported,
+            ));
+        }
+    }
+    Ok((name.ok_or_else(fail)?, value.ok_or_else(fail)?))
+}
+
+// Header string checks are scoped to the new profile so no old profile changes.
+fn canonical_header(header: &[u8], kind: TagKind) -> bool {
+    fn take_string(header: &[u8], offset: &mut usize) -> Option<()> {
+        let bytes = header.get(*offset..)?;
+        let decoded = decode_string(bytes, ByteOrder::Little).ok()?;
+        if !canonical_source_string(bytes.get(..decoded.consumed)?, &decoded.units) {
+            return None;
+        }
+        *offset = offset.checked_add(decoded.consumed)?;
+        Some(())
+    }
+    let check = || -> Option<()> {
+        let mut offset = 0;
+        take_string(header, &mut offset)?;
+        take_string(header, &mut offset)?;
+        offset = offset.checked_add(8)?;
+        match kind {
+            TagKind::Struct | TagKind::Array | TagKind::Byte | TagKind::Enum | TagKind::Set => {
+                take_string(header, &mut offset)?
+            }
+            TagKind::Map => {
+                take_string(header, &mut offset)?;
+                take_string(header, &mut offset)?;
+            }
+            _ => {}
+        }
+        Some(())
+    };
+    check().is_some()
 }

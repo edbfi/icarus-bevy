@@ -225,6 +225,8 @@ fn fixture(tick: u64, variant: u8) -> (WorldSnapshot, Vec<u8>) {
             native_relationships: None,
             native_lifecycle: None,
             native_owner_import: None,
+            native_scalar_contracts: None,
+            native_scalar_owner_import: None,
         },
         payload,
     )

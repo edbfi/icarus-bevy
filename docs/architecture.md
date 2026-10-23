@@ -88,9 +88,10 @@ manifest publication, preceding valid generation retained. Autosave defaults to
 Capture requires all components declared by the current native domain schema;
 an identified entity with missing required data must fail before publication.
 Authored schemas retain spatial worlds (4; F-919), bound C001 inert-fixture
-provenance (5; F-924), foundation edges (6; F-922), live/dormant owner slots
+provenance (5; F-925), foundation edges (6; F-922), live/dormant owner slots
 with transactional replacement and retry completion (7; F-923), and authored
-C001 owner restoration with immutable provenance (8; F-924). Each mode pins
+C001 owner restoration (8) and scalar use-gate state (9) with immutable source
+provenance (F-925). Each mode pins
 its activation contract and rejects incomplete state. Bounds imply neither
 physics nor navigation; reference coverage grants no import authority. Detailed
 creation and editing contracts live in the

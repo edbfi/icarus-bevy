@@ -1,4 +1,5 @@
 //! Native snapshots only. Official ICARUS save import requires a recovered spec.
+mod discriminators;
 use std::{
     collections::BTreeMap,
     fs::{self, File, OpenOptions},
@@ -19,15 +20,18 @@ use sha2::{Digest, Sha256};
 
 use crate::json::JsonObject;
 use crate::native_c001_owners::C001OwnerImportMetadataV1;
+use crate::native_c001_scalar_owners::C001ScalarOwnerImportMetadataV1;
 use crate::native_import::C001InertImportMetadataV1;
 use crate::native_lifecycle::LifecycleSnapshot;
 use crate::native_relationships::NativeRelationshipsSnapshot;
+use crate::native_scalar_owners::ScalarOwnerContractsSnapshotV1;
 use crate::native_world::NativeWorldSnapshot;
 use crate::preservation::{MAX_PRESERVED_BASE64_BYTES, SectionReference, is_sidecar_name};
 use crate::simulation::{
-    EntityRecord, SNAPSHOT_SCHEMA_C001_INERT, SNAPSHOT_SCHEMA_C001_OWNERS, SNAPSHOT_SCHEMA_DOMAIN,
-    SNAPSHOT_SCHEMA_LIFECYCLE, SNAPSHOT_SCHEMA_NATIVE, SNAPSHOT_SCHEMA_PRESERVED,
-    SNAPSHOT_SCHEMA_REFERENCED, SNAPSHOT_SCHEMA_RELATIONSHIPS, WorldSnapshot,
+    EntityRecord, SNAPSHOT_SCHEMA_C001_INERT, SNAPSHOT_SCHEMA_C001_OWNERS,
+    SNAPSHOT_SCHEMA_C001_SCALAR_OWNERS, SNAPSHOT_SCHEMA_DOMAIN, SNAPSHOT_SCHEMA_LIFECYCLE,
+    SNAPSHOT_SCHEMA_NATIVE, SNAPSHOT_SCHEMA_PRESERVED, SNAPSHOT_SCHEMA_REFERENCED,
+    SNAPSHOT_SCHEMA_RELATIONSHIPS, WorldSnapshot,
 };
 
 /// Schema 1 bound, unchanged: domain records and the clock only.
@@ -35,7 +39,7 @@ const MAX_DOMAIN_SNAPSHOT_BYTES: u64 = 64 * 1024 * 1024;
 /// Schema 2 adds at most one 64 MiB Base64 preserved section (whose decoded
 /// size is checked separately), so a generation file may reach 128 MiB.
 const MAX_SNAPSHOT_BYTES: u64 = MAX_DOMAIN_SNAPSHOT_BYTES + MAX_PRESERVED_BASE64_BYTES as u64;
-/// Aggregate generation cap for schemas 3 through 8, including inline native
+/// Aggregate generation cap for schemas 3 through 9, including inline native
 /// definitions, metadata, relationship/lifecycle state and any fixed-size
 /// sidecar reference. Individual section limits do not reserve extra space:
 /// preflight and publication reject a combined encoding above this cap.
@@ -386,6 +390,41 @@ struct C001OwnersProbe {
     preserved_prospect: serde_json::Value,
 }
 
+#[derive(Serialize)]
+struct C001ScalarOwnersOut<'a> {
+    schema_version: u32,
+    tick: u64,
+    entities: &'a [EntityRecord],
+    native_world: &'a NativeWorldSnapshot,
+    native_lifecycle: &'a LifecycleSnapshot,
+    native_scalar_contracts: &'a ScalarOwnerContractsSnapshotV1,
+    native_scalar_owner_import: &'a C001ScalarOwnerImportMetadataV1,
+    preserved_prospect: &'a SectionReference,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    native_relationships: Option<&'a NativeRelationshipsSnapshot>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct C001ScalarOwnersIn {
+    schema_version: u32,
+    tick: u64,
+    #[serde(deserialize_with = "crate::json::objects")]
+    entities: Vec<EntityRecord>,
+    #[serde(deserialize_with = "crate::json::object")]
+    native_world: NativeWorldSnapshot,
+    #[serde(deserialize_with = "crate::json::object")]
+    native_lifecycle: LifecycleSnapshot,
+    #[serde(deserialize_with = "crate::json::object")]
+    native_scalar_contracts: ScalarOwnerContractsSnapshotV1,
+    #[serde(deserialize_with = "crate::json::object")]
+    native_scalar_owner_import: C001ScalarOwnerImportMetadataV1,
+    #[serde(deserialize_with = "crate::json::object")]
+    preserved_prospect: SectionReference,
+    #[serde(default, deserialize_with = "crate::json::optional_object")]
+    native_relationships: Option<NativeRelationshipsSnapshot>,
+}
+
 #[derive(Deserialize)]
 struct LifecycleProbe {
     #[serde(default)]
@@ -595,6 +634,35 @@ fn encode_generation(snapshot: &WorldSnapshot) -> Result<(Vec<u8>, Option<Sectio
     }
     // Dispatch by schema before considering an optional source sidecar.
     let (bytes, limit) = match snapshot.schema_version {
+        SNAPSHOT_SCHEMA_C001_SCALAR_OWNERS => (
+            encode_bounded_generation(
+                &C001ScalarOwnersOut {
+                    schema_version: SNAPSHOT_SCHEMA_C001_SCALAR_OWNERS,
+                    tick: snapshot.tick,
+                    entities: &snapshot.entities,
+                    native_world: snapshot
+                        .native_world
+                        .as_ref()
+                        .context("native world required")?,
+                    native_lifecycle: snapshot
+                        .native_lifecycle
+                        .as_ref()
+                        .context("native lifecycle required")?,
+                    native_scalar_contracts: snapshot
+                        .native_scalar_contracts
+                        .as_ref()
+                        .context("scalar contracts required")?,
+                    native_scalar_owner_import: snapshot
+                        .native_scalar_owner_import
+                        .as_ref()
+                        .context("scalar owner provenance required")?,
+                    preserved_prospect: reference.as_ref().context("preserved source required")?,
+                    native_relationships: snapshot.native_relationships.as_ref(),
+                },
+                MAX_REFERENCED_SNAPSHOT_BYTES,
+            )?,
+            MAX_REFERENCED_SNAPSHOT_BYTES,
+        ),
         SNAPSHOT_SCHEMA_C001_OWNERS => (
             encode_bounded_generation(
                 &C001OwnersOut {
@@ -849,6 +917,13 @@ impl SnapshotStore {
     /// Decode checksummed generation bytes completely, including any referenced
     /// sidecar, which is verified by size and digest before it is decoded.
     fn decode_generation(&self, bytes: &[u8]) -> Result<(WorldSnapshot, Option<SectionReference>)> {
+        if discriminators::header(bytes)? {
+            ensure!(
+                bytes.len() as u64 <= MAX_REFERENCED_SNAPSHOT_BYTES,
+                "schema 9 native snapshot exceeds its size limit"
+            );
+            discriminators::scalar_owners(bytes)?;
+        }
         let header = serde_json::from_slice::<JsonObject<SnapshotHeader>>(bytes)
             .map_err(|error| crate::json_parse_error("decode native snapshot JSON", error))?
             .0;
@@ -876,6 +951,9 @@ impl SnapshotStore {
             Some(schema) if schema == u64::from(SNAPSHOT_SCHEMA_C001_OWNERS) => {
                 return self.decode_c001_owners(bytes);
             }
+            Some(schema) if schema == u64::from(SNAPSHOT_SCHEMA_C001_SCALAR_OWNERS) => {
+                return self.decode_c001_scalar_owners(bytes);
+            }
             _ => return Err(UnsupportedSchema.into()),
         }
         let legacy = serde_json::from_slice::<JsonObject<LegacyIn>>(bytes)
@@ -891,6 +969,8 @@ impl SnapshotStore {
             native_relationships: None,
             native_lifecycle: None,
             native_owner_import: None,
+            native_scalar_contracts: None,
+            native_scalar_owner_import: None,
         };
         snapshot.validate()?;
         Ok((snapshot, None))
@@ -926,6 +1006,8 @@ impl SnapshotStore {
             native_relationships: None,
             native_lifecycle: None,
             native_owner_import: None,
+            native_scalar_contracts: None,
+            native_scalar_owner_import: None,
         };
         snapshot.validate()?;
         Ok((snapshot, Some(reference)))
@@ -962,6 +1044,8 @@ impl SnapshotStore {
             native_relationships: None,
             native_lifecycle: None,
             native_owner_import: None,
+            native_scalar_contracts: None,
+            native_scalar_owner_import: None,
         };
         // Validation recompiles the embedded catalog and verifies its identity
         // and every native record before this generation can be activated.
@@ -1000,6 +1084,8 @@ impl SnapshotStore {
             native_relationships: None,
             native_lifecycle: None,
             native_owner_import: None,
+            native_scalar_contracts: None,
+            native_scalar_owner_import: None,
         };
         snapshot.validate()?;
         Ok((snapshot, Some(reference)))
@@ -1082,6 +1168,8 @@ impl SnapshotStore {
             native_relationships: Some(native.native_relationships),
             native_lifecycle: None,
             native_owner_import: None,
+            native_scalar_contracts: None,
+            native_scalar_owner_import: None,
         };
         snapshot.validate()?;
         Ok((snapshot, reference))
@@ -1179,6 +1267,8 @@ impl SnapshotStore {
             preserved_prospect: preserved,
             native_import: None,
             native_owner_import: None,
+            native_scalar_contracts: None,
+            native_scalar_owner_import: None,
         };
         snapshot.validate()?;
         Ok((snapshot, reference))
@@ -1210,9 +1300,46 @@ impl SnapshotStore {
             native_world: Some(native.native_world),
             native_lifecycle: Some(native.native_lifecycle),
             native_owner_import: Some(native.native_owner_import),
+            native_scalar_contracts: None,
+            native_scalar_owner_import: None,
             native_relationships: native.native_relationships,
             preserved_prospect: Some(Arc::new(preserved)),
             native_import: None,
+        };
+        snapshot.validate()?;
+        Ok((snapshot, Some(reference)))
+    }
+
+    fn decode_c001_scalar_owners(
+        &self,
+        bytes: &[u8],
+    ) -> Result<(WorldSnapshot, Option<SectionReference>)> {
+        ensure!(
+            bytes.len() as u64 <= MAX_REFERENCED_SNAPSHOT_BYTES,
+            "schema 9 native snapshot exceeds its size limit"
+        );
+        let native = serde_json::from_slice::<JsonObject<C001ScalarOwnersIn>>(bytes)
+            .map_err(|error| crate::json_parse_error("decode native snapshot fields JSON", error))?
+            .0;
+        let reference = native.preserved_prospect;
+        reference.validate()?;
+        let encoded = read_bounded(
+            &self.root.join(reference.sidecar_name()),
+            reference.encoded_bytes(),
+        )?;
+        let preserved = reference.decode(encoded)?;
+        let snapshot = WorldSnapshot {
+            schema_version: native.schema_version,
+            tick: native.tick,
+            entities: native.entities,
+            native_world: Some(native.native_world),
+            native_lifecycle: Some(native.native_lifecycle),
+            native_scalar_contracts: Some(native.native_scalar_contracts),
+            native_scalar_owner_import: Some(native.native_scalar_owner_import),
+            native_relationships: native.native_relationships,
+            preserved_prospect: Some(Arc::new(preserved)),
+            native_import: None,
+            native_owner_import: None,
         };
         snapshot.validate()?;
         Ok((snapshot, Some(reference)))
@@ -2604,6 +2731,15 @@ mod crash_consistency_tests {
 
     /// Independently authored provenance with an initial detached live attach.
     /// Source variants exercise sidecar replacement, reuse and collection.
+    fn scalar_owners(tick: u64, variant: u8, remaining: i32) -> WorldSnapshot {
+        let mut state = crate::scalar_owner_fixture::imported_variant(variant);
+        state.tick = tick;
+        state.native_world.as_mut().unwrap().actors[0].variables =
+            crate::scalar_owner_fixture::scalar_pair(true, remaining);
+        state.validate().unwrap();
+        state
+    }
+
     fn owners(tick: u64, variant: u8, rounds: u64) -> WorldSnapshot {
         use crate::native_c001_owners::{
             C001OwnerAdapter, C001OwnerBindingV1, C001OwnerImportMetadataV1, ResolvedC001OwnerV1,
@@ -2841,10 +2977,41 @@ mod crash_consistency_tests {
     }
 
     #[test]
+    fn scalar_owner_preflight_counts_the_complete_generation_before_encoding() {
+        let state = scalar_owners(10, 1, 8);
+        let (encoded, reference) = encode_generation(&state).unwrap();
+        let dto = C001ScalarOwnersOut {
+            schema_version: SNAPSHOT_SCHEMA_C001_SCALAR_OWNERS,
+            tick: state.tick,
+            entities: &state.entities,
+            native_world: state.native_world.as_ref().unwrap(),
+            native_lifecycle: state.native_lifecycle.as_ref().unwrap(),
+            native_scalar_contracts: state.native_scalar_contracts.as_ref().unwrap(),
+            native_scalar_owner_import: state.native_scalar_owner_import.as_ref().unwrap(),
+            preserved_prospect: reference.as_ref().unwrap(),
+            native_relationships: state.native_relationships.as_ref(),
+        };
+        assert_eq!(
+            encode_bounded_generation(&dto, encoded.len() as u64).unwrap(),
+            encoded
+        );
+        assert!(encode_bounded_generation(&dto, encoded.len() as u64 - 1).is_err());
+        assert_eq!(serde_json::to_vec(&dto).unwrap(), encoded);
+        let directory = tempfile::tempdir().unwrap();
+        let mut store = SnapshotStore::open(directory.path()).unwrap();
+        store.save(&state).unwrap();
+        assert_eq!(
+            fs::read(directory.path().join("snapshot-1.json")).unwrap(),
+            encoded
+        );
+        assert_eq!(store.load().unwrap().unwrap().snapshot, state);
+    }
+
+    #[test]
     fn native_publication_fault_matrix_preserves_committed_state() {
         let (first, second) = (section(5), section(6));
-        for mode in 0..8 {
-            let preserve = matches!(mode, 1 | 2 | 4 | 6 | 7);
+        for mode in 0..9 {
+            let preserve = matches!(mode, 1 | 2 | 4 | 6 | 7 | 8);
             for fail_at in ["sidecar", "snapshot-2.json", "manifest.json"] {
                 if fail_at == "sidecar" && !preserve {
                     continue;
@@ -2852,7 +3019,9 @@ mod crash_consistency_tests {
                 for after_write in [false, true] {
                     let directory = tempfile::tempdir().unwrap();
                     let root = directory.path();
-                    let before = if mode == 7 {
+                    let before = if mode == 8 {
+                        scalar_owners(10, 5, 3)
+                    } else if mode == 7 {
                         owners(10, 5, 1)
                     } else if mode == 2 {
                         inert(10, 5)
@@ -2863,7 +3032,9 @@ mod crash_consistency_tests {
                     } else {
                         native(10, preserve.then_some(&first))
                     };
-                    let attempted = if mode == 7 {
+                    let attempted = if mode == 8 {
+                        scalar_owners(20, 6, 2)
+                    } else if mode == 7 {
                         owners(20, 6, 2)
                     } else if mode == 2 {
                         inert(20, 6)
@@ -2902,7 +3073,9 @@ mod crash_consistency_tests {
                     let published = after_write && fail_at == "manifest.json";
                     let expected = if published { &attempted } else { &before };
                     assert_eq!(&reopened.load().unwrap().unwrap().snapshot, expected);
-                    let next = if mode == 7 {
+                    let next = if mode == 8 {
+                        scalar_owners(30, 6, 1)
+                    } else if mode == 7 {
                         owners(30, 6, 3)
                     } else if mode == 2 {
                         inert(30, 6)
@@ -2923,7 +3096,55 @@ mod crash_consistency_tests {
         }
     }
 
-    /// Every intact, manifest-referenced schema-3/4/5/6/7/8 generation must find its
+    #[test]
+    fn legacy_schemas_reject_scalar_fields_even_when_null() {
+        let directory = tempfile::tempdir().unwrap();
+        let store = SnapshotStore::open(directory.path()).unwrap();
+        let source = section(19);
+        for state in [
+            WorldSnapshot::default(),
+            WorldSnapshot {
+                schema_version: SNAPSHOT_SCHEMA_PRESERVED,
+                preserved_prospect: Some(Arc::clone(&source)),
+                ..WorldSnapshot::default()
+            },
+            WorldSnapshot {
+                schema_version: SNAPSHOT_SCHEMA_REFERENCED,
+                preserved_prospect: Some(Arc::clone(&source)),
+                ..WorldSnapshot::default()
+            },
+            native(10, None),
+            inert(10, 1),
+            relationships(10, None, None),
+            lifecycle(10, None, 0),
+            owners(10, 1, 1),
+        ] {
+            // Publish any required sidecar before exercising the original valid decoder.
+            if let Some(preserved) = &state.preserved_prospect {
+                atomic_write(
+                    directory.path(),
+                    &sidecar_name(preserved),
+                    preserved.native_encoding(),
+                )
+                .unwrap();
+            }
+            let mut bytes = encode_generation(&state).unwrap().0;
+            if state.schema_version == SNAPSHOT_SCHEMA_PRESERVED {
+                bytes = serde_json::to_vec(&state).unwrap();
+            }
+            assert_eq!(store.decode_generation(&bytes).unwrap().0, state);
+            for field in ["native_scalar_contracts", "native_scalar_owner_import"] {
+                let mut wire: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+                wire[field] = serde_json::Value::Null;
+                let error = store
+                    .decode_generation(&serde_json::to_vec(&wire).unwrap())
+                    .unwrap_err();
+                assert!(!error.is::<UnsupportedSchema>());
+            }
+        }
+    }
+
+    /// Every intact, manifest-referenced schema-3/4/5/6/7/8/9 generation must find its
     /// sidecar present with the recorded size and digest, whether or not the
     /// generation is ultimately selected by recovery.
     fn referenced_sidecars(state: &DiskState, exempt: u64) -> Result<usize, String> {
@@ -2972,6 +3193,11 @@ mod crash_consistency_tests {
                 }
                 Some(schema) if schema == u64::from(SNAPSHOT_SCHEMA_C001_OWNERS) => {
                     serde_json::from_slice::<C001OwnersIn>(bytes)
+                        .ok()
+                        .map(|native| native.preserved_prospect)
+                }
+                Some(schema) if schema == u64::from(SNAPSHOT_SCHEMA_C001_SCALAR_OWNERS) => {
+                    serde_json::from_slice::<C001ScalarOwnersIn>(bytes)
                         .ok()
                         .map(|native| native.preserved_prospect)
                 }
@@ -3828,6 +4054,17 @@ mod crash_consistency_tests {
 
     #[test]
     fn owner_import_power_loss_preserves_provenance_current_owners_and_sidecar_retention() {
+        imported_power_loss(owners);
+    }
+
+    #[test]
+    fn scalar_owner_power_loss_preserves_mutated_values_provenance_and_sidecars() {
+        imported_power_loss(|tick, variant, rounds| {
+            scalar_owners(tick, variant, i32::try_from(rounds).unwrap())
+        });
+    }
+
+    fn imported_power_loss(make: fn(u64, u8, u64) -> WorldSnapshot) {
         let directory = tempfile::tempdir().unwrap();
         let root = directory.path().to_path_buf();
         let mut store = SnapshotStore::open(&root).unwrap();
@@ -3836,14 +4073,14 @@ mod crash_consistency_tests {
             traced_save(
                 &mut store,
                 &root,
-                &owners(tick, variant, rounds),
+                &make(tick, variant, rounds),
                 &mut steps,
                 atomic_write,
             )
             .unwrap();
         }
-        let before = owners(20, 1, 2);
-        let current = owners(30, 2, 3);
+        let before = make(20, 1, 2);
+        let current = make(30, 2, 3);
         damage(
             &root,
             &mut steps,
@@ -3855,7 +4092,7 @@ mod crash_consistency_tests {
         assert!(recovered.recovered_previous);
         assert_eq!(recovered.snapshot, before);
         for (tick, variant, rounds) in [(40, 2, 4), (50, 3, 5), (60, 3, 6)] {
-            let state = owners(tick, variant, rounds);
+            let state = make(tick, variant, rounds);
             traced_save(&mut store, &root, &state, &mut steps, atomic_write).unwrap();
             assert_eq!(store.load().unwrap().unwrap().snapshot, state);
         }
@@ -4218,6 +4455,15 @@ mod crash_consistency_tests {
 
     #[test]
     fn owner_import_power_loss_model_rejects_undurable_sidecar() {
+        import_model_rejects_undurable_sidecar(owners(10, 1, 1));
+    }
+
+    #[test]
+    fn scalar_owner_power_loss_model_rejects_undurable_sidecar() {
+        import_model_rejects_undurable_sidecar(scalar_owners(10, 1, 1));
+    }
+
+    fn import_model_rejects_undurable_sidecar(state: WorldSnapshot) {
         let directory = tempfile::tempdir().unwrap();
         let root = directory.path().to_path_buf();
         let mut store = SnapshotStore::open(&root).unwrap();
@@ -4225,7 +4471,7 @@ mod crash_consistency_tests {
         traced_save(
             &mut store,
             &root,
-            &owners(10, 1, 1),
+            &state,
             &mut steps,
             sidecar_before_data_sync,
         )
