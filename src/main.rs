@@ -139,6 +139,27 @@ enum Command {
         #[arg(long)]
         dry_run: bool,
     },
+    /// Restore an authored inventory and scalar owner contract from a strict fixture.
+    CreateC001InventoryOwnerFixture {
+        #[arg(long)]
+        source: PathBuf,
+        #[arg(long)]
+        catalog: PathBuf,
+        #[arg(long)]
+        lifecycle: PathBuf,
+        #[arg(long)]
+        scalar_contracts: PathBuf,
+        #[arg(long)]
+        inventory_contracts: PathBuf,
+        #[arg(long)]
+        bindings: PathBuf,
+        #[arg(long)]
+        relationships: Option<PathBuf>,
+        #[arg(long)]
+        data_dir: PathBuf,
+        #[arg(long)]
+        dry_run: bool,
+    },
     /// Inspect an experimental prospect envelope without importing or writing state.
     InspectSave {
         #[arg(long)]
@@ -481,6 +502,66 @@ fn execute(cli: Cli) -> Result<()> {
                 println!(
                     "{}",
                     json!({"event":"c001_scalar_owner_fixture_materialized", "receipt":receipt,
+                    "inspection":inspection,"schema_version":schema_version,"world_imported":false,"gameplay_ready":false})
+                );
+            }
+            Ok(())
+        }
+        Command::CreateC001InventoryOwnerFixture {
+            source,
+            catalog,
+            lifecycle,
+            scalar_contracts,
+            inventory_contracts,
+            bindings,
+            relationships,
+            data_dir,
+            dry_run,
+        } => {
+            use icarus_bevy::{
+                import_candidate::DecodedImportCandidate,
+                native_c001_inventory_owners::{
+                    CompiledC001InventoryOwnerBindings, prepare_c001_inventory_owner_import,
+                    publish_new_c001_inventory_owner_import,
+                },
+                native_inventory::CompiledInventoryContractsV1,
+                native_lifecycle::{CompiledNativeLifecycle, prepare_lifecycle_world},
+                native_relationships::{CompiledNativeRelationships, prepare_relationship_world},
+                native_scalar_owners::CompiledScalarOwnerContracts,
+                native_world::{CompiledNativeCatalog, prepare_authored_world},
+            };
+            let catalog = Arc::new(CompiledNativeCatalog::load(&catalog)?);
+            let bindings = CompiledC001InventoryOwnerBindings::load(&bindings)?;
+            let scalar = CompiledScalarOwnerContracts::load(&scalar_contracts, &catalog)?;
+            let inventory = CompiledInventoryContractsV1::load(&inventory_contracts, &catalog)?;
+            let mut base =
+                prepare_authored_world(Arc::clone(&catalog), &bindings.definition().native_map)?
+                    .initial_snapshot();
+            if let Some(path) = relationships {
+                let declarations = CompiledNativeRelationships::load(&path, &catalog)?;
+                base = prepare_relationship_world(base, &declarations)?
+                    .snapshot()
+                    .clone();
+            }
+            let lifecycle = CompiledNativeLifecycle::load(&lifecycle, &catalog)?;
+            let base = prepare_lifecycle_world(base, &lifecycle)?.into_snapshot();
+            let candidate = DecodedImportCandidate::decode(open_regular_source(&source)?)?;
+            let prepared = prepare_c001_inventory_owner_import(
+                &candidate, base, &bindings, &scalar, &inventory,
+            )?;
+            let inspection = serde_json::to_value(prepared.inspection())?;
+            let schema_version = prepared.snapshot().schema_version;
+            if dry_run {
+                println!(
+                    "{}",
+                    json!({"event":"c001_inventory_owner_fixture_prepared", "dry_run":true,
+                    "inspection":inspection,"schema_version":schema_version,"world_imported":false,"gameplay_ready":false})
+                );
+            } else {
+                let receipt = publish_new_c001_inventory_owner_import(prepared, &data_dir)?;
+                println!(
+                    "{}",
+                    json!({"event":"c001_inventory_owner_fixture_materialized", "receipt":receipt,
                     "inspection":inspection,"schema_version":schema_version,"world_imported":false,"gameplay_ready":false})
                 );
             }

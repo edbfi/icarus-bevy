@@ -6,10 +6,12 @@ pub mod import_candidate;
 pub mod import_plan;
 mod json;
 pub mod metrics;
+pub mod native_c001_inventory_owners;
 pub mod native_c001_owners;
 pub mod native_c001_scalar_owners;
 pub mod native_import;
 pub mod native_inventory;
+pub mod native_inventory_restore;
 pub mod native_lifecycle;
 pub mod native_lifecycle_runtime;
 pub mod native_relationships;
@@ -29,8 +31,16 @@ pub mod replication;
 #[cfg(test)]
 #[path = "../tests/common/c001_scalar_owners.rs"]
 mod scalar_owner_fixture;
+#[cfg(test)]
+pub(crate) use scalar_owner_fixture as scalar;
+#[cfg(test)]
+#[path = "../tests/common/c001_inventory_owners.rs"]
+pub(crate) mod inventory_owner_fixture;
 pub mod session_replication;
 pub mod simulation;
+#[cfg(test)]
+#[path = "../tests/common/c001_inventory_source.rs"]
+pub(crate) mod source;
 pub mod steam_fetch;
 
 /// Open without blocking so a FIFO or device cannot stall a read; callers then

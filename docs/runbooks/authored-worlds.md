@@ -1,7 +1,30 @@
 # Authored native worlds
 
-Creation and editing contracts for independently authored native state.
-For running, autosave and recovery, see the [native server runbook](native-server.md).
+Before restructure: 9559fc7:docs/runbooks/authored-worlds.md
+
+Running, autosave and recovery: [native server](native-server.md).
+
+## Shared contracts
+
+Preflight before destination access. `--dry-run` writes nothing; omission
+publishes, rejecting existing/recoverable worlds. `world_imported`/`gameplay_ready`
+stay false; `import-save` stays closed. Strict JSON/TOML, format 1. Fixtures pin
+payload SHA-256, catalog/map, exact UTF-16 identities/unchanged sidecar;
+`run` needs no creation inputs.
+
+Coordinates: metres, right-handed, Z-up, quaternion `[x,y,z,w]`; bindings declare
+`right_handed_z_up_meters_quat_xyzw_world_space`, without inferred conversion.
+Objects must fit tiles (F-919); no official behavior/geometry, physics/navigation,
+layouts, callbacks, networking or performance qualification.
+Definitions/contracts/bindings/metadata: 4 MiB each unless noted.
+Schemas 4–10: 64 MiB + 4 KiB generation, including sections/sidecar
+reference. Earlier adapters retain acceptance; older schemas reject new fields,
+even null. Runtime helpers validate worlds/handles before queries/no-ops/capture,
+stage mutations; lifecycle modes also preflight storage. Reject missing, invalid,
+stale, transplanted or hidden
+unregistered state; pin membership, contexts/generations, indices. Handles bind
+domain ID/incarnation; replacement invalidates them. Costs depend on source/world
+size; tick-loop use unqualified.
 
 ## Spatial worlds and inert source fixtures
 
@@ -9,71 +32,34 @@ For running, autosave and recovery, see the [native server runbook](native-serve
 cargo run --locked -- create-native-world --catalog config/native-world.example.toml \
   --map workshop --data-dir work/authored-world
 cargo run --locked -- run --data-dir work/authored-world
-```
-
-Every creation command preflights before destination access. Omit `--dry-run` to
-publish; dry runs create nothing, existing/recoverable worlds reject. Both
-`world_imported` and `gameplay_ready` remain false. Normal `run` needs no source
-files after creation. Coordinates are metres, right-handed and Z-up; quaternions
-are `[x,y,z,w]`. Transformed objects must fit their tiles. Bounds describe authored
-geometry, without physics/navigation or ICARUS behavior (F-919).
-
-Schema 4 has fixed topology. `native_runtime::update_native_actor` validates pose
-and variable edits before applying them. Capture rejects missing components,
-deleted/extra actors, changed bindings and invalid values.
-
-```bash
 cargo run --locked -- create-c001-inert-fixture --source authored.json \
   --catalog authored.toml --bindings bindings.json --data-dir work/inert-world --dry-run
 ```
 
-The strict JSON/TOML `native_import::C001InertBindingsV1` format 1 pins payload
-SHA-256, native catalog identity, exact source-map UTF-16 units, native map and
-complete owner bindings. Each owner binds source class/path/object-name units
-and a positive GUID to a native placement/class. Declare coordinates explicitly
-as `right_handed_z_up_meters_quat_xyzw_world_space`; no original conversion is
-inferred.
-
-Every recorder must be exact, current-version C001 and fully interpreted; every
-placement binds once. Only inert classes without variables are admitted. Extra
-state, spawning, stitching or nonneutral prospect behavior rejects the whole
-candidate. Schema 5 preserves immutable source identities and bytes alongside
-mutable poses; diagnostics expose counts and static categories (F-925).
-Ordinary `import-save` remains closed.
+Schema 4 fixes topology. `update_native_actor` validates edits.
+Bind source map/class/path/object-name units and positive GUIDs
+to native placements/classes.
+Exact current C001 recorders must be fully interpreted; placements bind once.
+No variables, extra state, spawning, stitching or nonneutral prospect behavior.
+Schema 5: immutable source identities/bytes, mutable poses, count/category output
+(F-927).
 
 ## Foundation relationships
 
-Creation commands accept `--relationships FILE`: a strict JSON/TOML
-`native_relationships::NativeRelationshipsDefinition` with `relationship_format = 1`,
-`native_catalog_id`, selected `map` and one actor declaration per placement:
+`--relationships FILE`: `relationship_format = 1`,
+`native_catalog_id`, `map`; each `placement` declares positive `identity.guid`,
+UTF-16 `identity.name`, `role` (`spatial`, `deployable`, `foundation`). Only
+deployables link `foundation`; omission/null unlinks, nonempty must resolve.
+Prepare identities, then match GUID/ASCII-folded name; non-ASCII/unpaired
+surrogates match exactly. Duplicate/unresolved pairs reject; identities are
+explicit. Names: 1–1,024 units, 1,048,576 total including links (F-922).
 
-- `placement`: native key.
-- `identity`: positive `guid` and nonempty exact UTF-16 `name` units.
-- `role`: independently declared `spatial`, `deployable` or `foundation`.
-- `foundation`: optional initial identity pair, only on deployables. Omission or
-  null means unlinked; nonempty links must resolve to a foundation.
-
-Prepare all identities before resolving links. Match GUID plus ASCII-folded
-name; non-ASCII units, including unpaired surrogates, compare exactly. Duplicate
-identity pairs reject. Source names and native class keys never supply implicit
-link identities. Names have at most 1,024 units each and 1,048,576 in aggregate,
-including initial links; declarations are bounded to 4 MiB.
-
-F-922 uses F-646/F-650/F-663's assignment rule from server 25621760/client
-25793767, with stricter unresolved-link rejection. Other setter effects and
-releases remain unqualified.
-
-Schema 6 embeds immutable declarations and mutable domain-ID edges. Optional
-C001 metadata requires its unchanged sidecar; authored links need not come from
-the source. Without this option, schemas 4/5 retain their contracts.
-
-`native_runtime::reassign_native_foundation` validates the whole world before
-changing an edge and its reverse index. `native_foundation_of` and
-`native_dependents_of` query it. `None` unlinks; valid no-ops succeed. Capture,
-edits and queries reject damaged actors, changed identities/contexts and
-inconsistent indices. A present unlinked component is valid; a missing required
-component is corruption. Parenting, support/collapse, destruction propagation,
-tame permissions and full C009 restoration remain unsupported.
+Schema 6: immutable declarations, mutable domain-ID edges, optional C001 metadata;
+links independent of source. Otherwise schemas 4/5.
+`reassign_native_foundation` updates edge/reverse index;
+`native_foundation_of`/`native_dependents_of` query. `None` unlinks; no-ops succeed.
+Unlinked components are valid. Only edge assignment, without parenting/support/collapse,
+destruction propagation, tame permissions or full C009 restoration.
 
 ## Owner lifecycle
 
@@ -82,50 +68,32 @@ cargo run --locked -- create-native-world --catalog authored.toml --map workshop
   --lifecycle lifecycle.json --restore restore.json --data-dir work/owners --dry-run
 ```
 
-`native_lifecycle::LifecycleDefinition` declares format 1, catalog identity, map
-and every placement's exact UTF-16 owner name, `spatial_state_v1` recorder kind,
-initial `live`/`absent` presence, optional positive-GUID component and
-`missing`/`declared_kind` spawn component. Names have 1–1,024 units each and
-1,048,576 logical units total; a separate 2,162,688-unit capacity guard permits
-decoder growth. Placement/tile totals also separate counts from capacities.
-Limits: 4 MiB definition, 8 MiB lifecycle section, 64 MiB restore input and
-16,384 slots, bindings or commands. The complete generation cap still applies.
+Lifecycle: catalog/map; each placement declares UTF-16 name,
+`spatial_state_v1`, `live`/`absent`, optional positive GUID, spawn component
+`missing`/`declared_kind`. Limits: 1–1,024 units/name, 1,048,576 logical/2,162,688
+capacity units; 8 MiB lifecycle, 64 MiB restore, 16,384 slots/bindings/commands.
+Placement/tile counts also have capacity guards. Schema 7 persists live/dormant
+slots/incarnations/bindings (F-923). Only live slots spawn; missing actors/dormant
+records reject capture. No C001 metadata; preservation/relationships optional.
 
-Schema 7 persists complete live/dormant slots, incarnations and recorder
-bindings (F-923). Only live slots spawn entities; missing live actors or dormant
-records reject capture. C001 metadata is forbidden; opaque preservation and
-authored relationships are optional.
+`RestoreBatch`: lifecycle ID/sequence, nonempty commands with GUID/kind, placement,
+name, policy, source mode, creation permission, expected presence/incarnation,
+complete pose/variables. Detached lookup ASCII-folds all names; ambiguity rejects.
+Bound lookup uses GUID, requires unchanged state, retains even `respawn_only`.
+Detachment supplies expected prior binding/null; attachment may retire incumbent
+GUID binding without incarnation change. Foundation identities stay separate.
 
-`RestoreBatch` supplies lifecycle identity, sequence and nonempty commands with
-GUID/kind, target placement, owner name, policy, source mode, creation permission,
-expected presence/incarnation and complete pose/variables. Detached lookup
-compares names with ASCII-only folding across all declarations and rejects
-ambiguity. Bound lookup uses recorder GUID, requires unchanged supplied state
-and keeps the owner even for `respawn_only`. Explicit detachment supplies the
-incoming GUID's expected prior binding, or null if unbound. Attachment may
-retire a different incumbent GUID's binding without changing incarnation.
-Lifecycle and foundation identities remain separate.
+Detached `find_only` attaches live; `find_or_respawn` attaches live/spawns absent,
+rejecting failed attachment; `respawn_only` replaces live/spawns absent.
+Replacement keeps domain ID/edited live-endpoint edges, increments incarnation.
+Validate all commands before mutation; no forced/manual resolution/undeclared
+spawning. Sequence starts at 1, increments, matches `restore_sequence`; exact
+latest retries preserve edits, altered/older reject. Reload never replays policies;
+durability requires a save receipt.
 
-For detached commands, `find_only` requires a live owner; `find_or_respawn`
-attaches live or spawns absent, rejecting failed live attachment; `respawn_only`
-replaces live or spawns absent. Replacement keeps domain ID and increments
-incarnation. Every command validates before any changes. Manual/forced resolution
-and undeclared spawning are unsupported.
-
-Sequences start at 1 and increment by one. Exact latest-request retries return
-stored completion without resetting later edits; altered/older requests reject.
-`restore_sequence` must agree with completion. Reload activates saved results
-without executing policies. In-memory completion is not durable until autosave
-or shutdown publishes it.
-
-`native_lifecycle_runtime` exposes `restore_native_owners`, guarded pose/state
-edits and foundation reassignment. Handles include domain ID and incarnation;
-stale handles reject. Replacement preserves edited edges with live endpoints.
-Capture and no-ops reject missing components, stale resource generations,
-replaced contexts and inconsistent indices. `live_actors` counts materialized
-owners; `actors` includes dormant slots. Helpers validate the whole world and
-mutations preflight storage. Tick-loop cost and official lookup/spawn behavior
-remain unqualified.
+Runtime: `restore_native_owners`, edits, foundation reassignment.
+No managed-owner Bevy linked-spawn relationships or despawn hooks.
+`live_actors` counts live; `actors` includes dormant.
 
 ## Authored C001 owners
 
@@ -135,30 +103,17 @@ cargo run --locked -- create-c001-owner-fixture --source authored.json \
   --data-dir work/source-owners --dry-run
 ```
 
-`native_c001_owners::C001OwnerBindingsV1` format 1 uses adapter
-`c001_authored_owners_v1`. It pins payload/catalog/lifecycle identities, maps and
-the explicit authored coordinate declaration. Every recorder, binding and slot
-corresponds once. Bindings supply exact source identities plus native
-placement/class, owner name, recorder GUID, creation permission, expected
-presence/incarnation and incoming-GUID prior binding. Native identities are not
-inferred from source names.
+`c001_authored_owners_v1`: lifecycle ID, one recorder/binding per slot; explicit
+placement/class, lookup name, GUID, creation permission/presence/incarnation/prior-binding
+expectations. Inert restrictions except `FindOnly`,
+`FindOrRespawn` (default), `RespawnOnly`. No policy/pose overrides. Sequence-1
+detached restore completes all owners. Independent `--relationships`; no `--restore`.
 
-The inert source/root restrictions remain, except policy may be `FindOnly`,
-`FindOrRespawn` or `RespawnOnly`; omission uses qualified C001 `FindOrRespawn`.
-Bindings cannot override policy or pose. The sequence-1 detached restore must
-complete every attachment/spawn. Optional `--relationships` supplies authored
-links independently. There is no `--restore` override. Bindings and metadata each
-have a 4 MiB cap; complete generations remain bounded to 64 MiB plus 4 KiB.
-
-Schema 8 requires immutable source metadata, unchanged sidecar and completed
-lifecycle state (F-925). Load verifies the initial receipt against a temporary
-authored world, then activates saved state. Later edits and GUID retirement are
-valid: provenance is separate from current poses/bindings. Imported slots stay
-live with a recorder component and cannot regress below initial incarnation.
-Capture validates pinned current state without source reconstruction. Storage
-validation/preflight reconstruct source and verify the receipt, repeatedly during
-restore preparation. Autosave/edit/restore cost therefore depends on source and
-world size; capture's shortcut does not qualify those paths for tick-loop use.
+Schema 8: immutable provenance/completed lifecycle (F-927). Load verifies initial
+receipt in temporary world, activates current state. Edits/GUID retirement allowed;
+imported slots stay live with recorders, incarnation at least initial. Capture
+checks pinned state without source reconstruction; storage/preflight repeats
+reconstruction/receipt verification during restore.
 
 ## Authored scalar owners
 
@@ -168,39 +123,65 @@ cargo run --locked -- create-c001-scalar-owner-fixture --source authored.json \
   --bindings scalar-bindings.json --data-dir work/scalar-owners --dry-run
 ```
 
-The separate `c001_authored_scalar_owners_v1` adapter admits the owner contract
-above plus two explicitly authored arrays, each containing one property record.
-`native_c001_scalar_owners::C001ScalarOwnerBindingsV1` declares exact UTF-16 array,
-element-tag, record-type, value-field and source-variable names. Each record has
-exact `VariableName: NameProperty` plus canonical Bool or I32 value. Both saved
-properties are required. Unknown fields, even empty arrays, wrong headers/types,
-duplicates and incomplete owner coverage reject the whole candidate. These
-layout declarations are not claims about official variable schemas.
+`c001_authored_scalar_owners_v1` adds two single-record
+arrays with exact UTF-16 array/element-tag/record-type/value-field/source-variable
+names. Require `VariableName: NameProperty`, canonical Bool/I32. Unknown fields
+(even empty arrays), wrong headers/types, duplicates/incomplete coverage reject all.
 
-`native_scalar_owners::ScalarOwnerContractsV1` binds every used native class to
-`recompute_use_availability_v1` and positive `authored_max`. Classes have exactly
-`enabled: Bool` and `remaining_uses: I32`; counts must be within `0..=authored_max`.
-Defaults and placement overrides are authored and validated, then fully replaced
-by saved values during initial attachment, spawn or replacement.
+Used classes bind `recompute_use_availability_v1`,
+positive `authored_max`, exactly `enabled: Bool`, `remaining_uses: I32` in
+`0..=authored_max`. Saved pairs replace validated defaults/placement overrides on
+attachment/spawn/replacement. `try_use`: `Disabled`/`Exhausted` unchanged, else
+decrement once, return `Used`; `set_enabled` sets, `scalar_owner_state` queries.
+Distinct in-memory actions, no retry/durable ack. Availability derives from
+variables; stage its authored callback before mutation, without RepNotify claims.
+Generic edits preserve scalars; explicit restore supplies valid complete pairs.
+Schema 9 stores contract/binding IDs/provenance, reloads current availability
+without initial replay; relationships compose.
 
-`native_lifecycle_runtime::try_use` returns `Disabled` or `Exhausted` without a
-mutation, otherwise decrements once and returns `Used`. `set_enabled` changes the
-switch; `scalar_owner_state` queries it. All require current owner handles and
-valid complete worlds. Each invocation is a distinct in-memory action, not a
-network retry protocol or durable acknowledgement. Availability is derived from
-the authoritative variables; missing/stale/transplanted derived state rejects
-capture. The callback is authored behavior, not original RepNotify.
+## Authored inventory owners
 
-Generic actor edits allow pose changes only when scalar values are unchanged.
-Explicit owner restore can supply a new complete valid pair; exact restore
-retries preserve subsequent consumption. Replacement invalidates old handles.
-All validation, callback staging and storage preflight precede live mutation.
-Schema 9 embeds contract and binding identities, source provenance and the
-unchanged sidecar. Reload restores current values and recomputes availability
-without reapplying saved initial values. Optional authored relationships compose;
-schemas 1–8 and their old adapters retain their acceptance rules.
+```bash
+cargo run --locked -- create-c001-inventory-owner-fixture --source authored.json \
+  --catalog authored.toml --lifecycle lifecycle.json --scalar-contracts scalars.json \
+  --inventory-contracts inventories.json --bindings inventory-bindings.json \
+  --data-dir work/inventory-owners --dry-run
+```
 
-Contract, bindings and metadata each have a 4 MiB bound. Existing name, owner and
-aggregate generation limits apply; source-size validation costs remain as above.
-No official property resolution, callback compatibility, networking or performance
-is established by this authored consumer.
+`c001_authored_inventory_owners_v1`: scalars plus authored item/inventory keys,
+stack limits/capacities/eligibility. Saved rows select exact bindings, never
+packaged meanings. Pin source/catalog/lifecycle/scalar/inventory IDs, nested
+array/struct/field names. Exact UTF-16 limits: 1,023 header content units plus
+terminator, 1,024 payload units. Every owner/inventory, even empty, required;
+unsupported final records reject all.
+
+D01: location `0..=255`, nonempty static row, one `ItemableStack` dynamic property
+(index 7), positive bounded count; explicitly empty additional stats, alterations,
+living slots, item GUID; owner lookup ID `-1`. Selector 263 cannot alias 7.
+Associated inventories/ammo/durability/decay/energy/other state reject. Canonical
+types/headers/terminators/widths required.
+
+IDs follow recorder/inventory/item order. Eligible empty allocated slots accept
+whole stacks. Rejection: zero slots may force-add one eligible slot; nonzero slots
+defer whole stacks in ordered overflow. Saturation rejects. Routing: F-735;
+acceptance/growth authored.
+
+`inventory_owner_state`/`inventory_stack`: owned state/location.
+Move/split/merge/consume/place-overflow actions work across owners; overflow
+destinations select an empty allocated slot or append one eligible next slot.
+Handles/global revisions guard writes. Move keeps IDs; split allocates one;
+merge/full consumption retires IDs; only consumption reduces totals.
+
+`InventoryRestoreBatchV1`: hash complete owner/inventory state, contract IDs and
+revision expectations under one lifecycle sequence/completion. No pose-only
+restore. Replacement conserves targeted stack-ID/item/count multisets; bound
+inventories must be unchanged. Scalar/pose/foundation edits preserve inventories.
+
+Schema 10 embeds contracts, current contents/allocator/revisions/consumed totals,
+lifecycle, immutable initial provenance/source; optional relationships. Reload
+never resurrects consumed stacks. Limits: 16,384 owners, 1,024 item definitions,
+eight inventories/owner, 65,536 instances/stacks each, 256 slots/overflow entries
+per inventory, 512 source items/inventory, counts ≤1,000,000; 16 MiB state,
+64 MiB joint graph allowance including decoder growth/conversions, not RSS;
+shared caps apply (F-927).
+No weight, replication, general D01/C001 restore or official-save compatibility.

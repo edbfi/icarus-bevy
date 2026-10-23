@@ -14,9 +14,15 @@ use serde::{Deserialize, Serialize};
 use crate::{
     config::ServerConfig,
     metrics::LatencyHistogram,
+    native_c001_inventory_owners::C001InventoryOwnerImportMetadataV1,
     native_c001_owners::C001OwnerImportMetadataV1,
     native_c001_scalar_owners::C001ScalarOwnerImportMetadataV1,
     native_import::C001InertImportMetadataV1,
+    native_inventory::{
+        CompiledInventoryContractsV1, InventoryContractsSnapshotV1, InventoryLiveOwnersV1,
+        InventoryStateSnapshotV1, MAX_INVENTORY_GRAPH_BYTES, inventory_snapshot_allocation_bytes,
+        validate_inventory_state,
+    },
     native_lifecycle::{
         CompiledNativeLifecycle, LifecycleSnapshot, validate_lifecycle_relationships,
     },
@@ -51,6 +57,8 @@ pub const SNAPSHOT_SCHEMA_LIFECYCLE: u32 = 7;
 pub const SNAPSHOT_SCHEMA_C001_OWNERS: u32 = 8;
 /// Authored Bool/I32 owner behavior with strict source interpretation.
 pub const SNAPSHOT_SCHEMA_C001_SCALAR_OWNERS: u32 = 9;
+/// Authored stacked inventory, complete owner restoration and source provenance.
+pub const SNAPSHOT_SCHEMA_C001_INVENTORY_OWNERS: u32 = 10;
 
 /// Stable domain identity, independent of Bevy's runtime entity allocation.
 #[derive(Component, Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
@@ -75,12 +83,12 @@ pub struct WorldSnapshot {
     #[serde(deserialize_with = "crate::json::objects")]
     pub entities: Vec<EntityRecord>,
     /// Lossless, value-opaque supplied-save state carried unchanged between
-    /// generations; required in schemas 2, 3, 5, 8 and 9, optional in 4, 6 and 7.
+    /// generations; required in schemas 2, 3, 5 and 8–10, optional in 4, 6 and 7.
     /// Shared and held compactly as its verified native encoding. Schema 5
     /// separately records its explicitly accepted authored interpretation.
     /// Serde writes the section inline under the stored `schema_version`, which is
     /// a loadable document only for schema 2; the snapshot store writes schemas
-    /// 3 through 9 itself, with a sidecar reference.
+    /// 3 through 10 itself, with a sidecar reference.
     #[serde(
         default,
         skip_serializing_if = "Option::is_none",
@@ -103,6 +111,12 @@ pub struct WorldSnapshot {
     pub native_scalar_contracts: Option<ScalarOwnerContractsSnapshotV1>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub native_scalar_owner_import: Option<C001ScalarOwnerImportMetadataV1>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub native_inventory_contracts: Option<InventoryContractsSnapshotV1>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub native_inventories: Option<InventoryStateSnapshotV1>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub native_inventory_owner_import: Option<C001InventoryOwnerImportMetadataV1>,
 }
 
 impl Default for WorldSnapshot {
@@ -119,13 +133,47 @@ impl Default for WorldSnapshot {
             native_owner_import: None,
             native_scalar_contracts: None,
             native_scalar_owner_import: None,
+            native_inventory_contracts: None,
+            native_inventories: None,
+            native_inventory_owner_import: None,
         }
     }
 }
 
 impl WorldSnapshot {
     pub fn validate(&self) -> Result<()> {
-        if self.schema_version != SNAPSHOT_SCHEMA_C001_SCALAR_OWNERS {
+        if self.schema_version != SNAPSHOT_SCHEMA_C001_INVENTORY_OWNERS {
+            ensure!(
+                self.native_inventory_contracts.is_none()
+                    && self.native_inventories.is_none()
+                    && self.native_inventory_owner_import.is_none(),
+                "this snapshot schema cannot hold inventory owner state"
+            );
+        } else {
+            let bytes = inventory_snapshot_allocation_bytes(
+                self.native_inventory_contracts
+                    .as_ref()
+                    .context("schema 10 requires inventory contracts")?,
+                self.native_inventories
+                    .as_ref()
+                    .context("schema 10 requires inventory state")?,
+            )?
+            .checked_add(
+                self.native_inventory_owner_import
+                    .as_ref()
+                    .context("schema 10 requires inventory provenance")?
+                    .allocation_bytes()?,
+            )
+            .context("inventory snapshot allocation limit")?;
+            ensure!(
+                bytes <= MAX_INVENTORY_GRAPH_BYTES,
+                "inventory snapshot allocation limit"
+            );
+        }
+        if !matches!(
+            self.schema_version,
+            SNAPSHOT_SCHEMA_C001_SCALAR_OWNERS | SNAPSHOT_SCHEMA_C001_INVENTORY_OWNERS
+        ) {
             ensure!(
                 self.native_scalar_contracts.is_none() && self.native_scalar_owner_import.is_none(),
                 "this snapshot schema cannot hold scalar owner state"
@@ -136,6 +184,7 @@ impl WorldSnapshot {
             SNAPSHOT_SCHEMA_LIFECYCLE
                 | SNAPSHOT_SCHEMA_C001_OWNERS
                 | SNAPSHOT_SCHEMA_C001_SCALAR_OWNERS
+                | SNAPSHOT_SCHEMA_C001_INVENTORY_OWNERS
         ) {
             ensure!(
                 self.entities.is_empty(),
@@ -159,7 +208,61 @@ impl WorldSnapshot {
                 lifecycle,
                 self.native_relationships.as_ref(),
             )?;
-            if self.schema_version == SNAPSHOT_SCHEMA_C001_SCALAR_OWNERS {
+            if self.schema_version == SNAPSHOT_SCHEMA_C001_INVENTORY_OWNERS {
+                ensure!(
+                    self.native_owner_import.is_none() && self.native_scalar_owner_import.is_none(),
+                    "schema 10 cannot hold older owner provenance"
+                );
+                let scalar = self
+                    .native_scalar_contracts
+                    .as_ref()
+                    .context("schema 10 requires scalar contracts")?;
+                CompiledScalarOwnerContracts::from_snapshot(scalar, native)?
+                    .validate_native(native)?;
+                let contracts = self
+                    .native_inventory_contracts
+                    .as_ref()
+                    .context("schema 10 requires inventory contracts")?;
+                let state = self
+                    .native_inventories
+                    .as_ref()
+                    .context("schema 10 requires inventory state")?;
+                let metadata = self
+                    .native_inventory_owner_import
+                    .as_ref()
+                    .context("schema 10 requires inventory provenance")?;
+                let catalog = crate::native_world::CompiledNativeCatalog::compile(
+                    native.definitions.clone(),
+                )?;
+                let compiled = CompiledInventoryContractsV1::from_snapshot(contracts, &catalog)?;
+                let live = InventoryLiveOwnersV1 {
+                    owners: lifecycle
+                        .slots
+                        .iter()
+                        .filter(|s| s.presence == crate::native_lifecycle::Presence::Live)
+                        .map(|s| crate::native_lifecycle::OwnerHandle {
+                            id: s.id,
+                            incarnation: s.incarnation,
+                        })
+                        .collect(),
+                };
+                validate_inventory_state(
+                    &compiled,
+                    state,
+                    &metadata.inventory_initial.initial_totals,
+                    &live,
+                )?;
+                metadata.validate(
+                    native,
+                    lifecycle,
+                    scalar,
+                    contracts,
+                    state,
+                    self.preserved_prospect
+                        .as_deref()
+                        .context("schema 10 requires its preserved source")?,
+                )?;
+            } else if self.schema_version == SNAPSHOT_SCHEMA_C001_SCALAR_OWNERS {
                 ensure!(
                     self.native_owner_import.is_none(),
                     "schema 9 cannot hold owner import metadata"
@@ -526,6 +629,7 @@ pub fn build_app(config: &ServerConfig, snapshot: &WorldSnapshot) -> Result<App>
         SNAPSHOT_SCHEMA_LIFECYCLE
             | SNAPSHOT_SCHEMA_C001_OWNERS
             | SNAPSHOT_SCHEMA_C001_SCALAR_OWNERS
+            | SNAPSHOT_SCHEMA_C001_INVENTORY_OWNERS
     ) {
         crate::native_lifecycle_runtime::activate_lifecycle(app.world_mut(), snapshot)?;
     } else if let Some(native) = &snapshot.native_world {
@@ -644,6 +748,9 @@ pub fn capture(world: &mut World) -> Result<WorldSnapshot> {
             native_owner_import: None,
             native_scalar_contracts: None,
             native_scalar_owner_import: None,
+            native_inventory_contracts: None,
+            native_inventories: None,
+            native_inventory_owner_import: None,
         };
         // capture_native validates every record against the immutable loaded
         // catalog. Storage independently validates the serialized snapshot;
@@ -686,6 +793,9 @@ pub fn capture(world: &mut World) -> Result<WorldSnapshot> {
         native_owner_import: None,
         native_scalar_contracts: None,
         native_scalar_owner_import: None,
+        native_inventory_contracts: None,
+        native_inventories: None,
+        native_inventory_owner_import: None,
     };
     snapshot.validate()?;
     Ok(snapshot)

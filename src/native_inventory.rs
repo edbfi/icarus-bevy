@@ -133,6 +133,10 @@ thread_local! {
 }
 pub(crate) struct InventoryDecodeScope;
 impl InventoryDecodeScope {
+    pub(crate) fn charge_bytes(bytes: usize) -> Result<()> {
+        charge::<serde::de::value::Error>(bytes)?;
+        Ok(())
+    }
     pub(crate) fn enter() -> Self {
         DECODE_DEPTH.with(|d| {
             if d.get() == 0 {
@@ -392,6 +396,9 @@ dto!(InitialInventoryItemsV1,1,{pub items:Vec<InitialInventoryItemV1>});
 dto!(InventoryInitialTotalsV1,1,{pub items:Vec<ItemTotalV1>});
 dto!(InventoryStackEndpointV1,1,{pub owner:OwnerHandle,pub inventory:String,pub stack_id:StackId});
 dto!(InventorySlotEndpointV1,1,{pub owner:OwnerHandle,pub inventory:String,pub slot:u16});
+// An explicit null slot appends one eligible next slot; a number names an
+// existing allocated slot. All fields are required when decoding.
+dto!(InventoryOverflowDestinationV1,1,{pub owner:OwnerHandle,pub inventory:String,pub slot:Option<u16>});
 
 #[derive(Clone, PartialEq, Serialize)]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
@@ -414,10 +421,11 @@ pub enum InventoryActionV1 {
         source: InventoryStackEndpointV1,
         amount: u32,
     },
-    /// None explicitly appends one slot; Some uses an existing allocated slot.
+    /// Transfers an overflow stack to the explicit destination. None appends
+    /// one eligible next slot; Some requires an empty allocated slot.
     PlaceOverflow {
         source: InventoryStackEndpointV1,
-        slot: Option<u16>,
+        destination: InventoryOverflowDestinationV1,
     },
 }
 impl<'de> Deserialize<'de> for InventoryActionV1 {
@@ -444,7 +452,7 @@ impl<'de> Deserialize<'de> for InventoryActionV1 {
             #[serde(deserialize_with = "field")]
             inventory: String,
             #[serde(default)]
-            slot: Arg<u16>,
+            slot: Arg<Option<u16>>,
             #[serde(default)]
             stack_id: Arg<StackId>,
         }
@@ -463,8 +471,6 @@ impl<'de> Deserialize<'de> for InventoryActionV1 {
             destination: Arg<Destination>,
             #[serde(default)]
             amount: Arg<u32>,
-            #[serde(default)]
-            slot: Arg<Option<u16>>,
         }
         let f: Fields = crate::json::object(d)
             .map_err(|_| <D::Error as de::Error>::custom("inventory action invalid"))?;
@@ -472,9 +478,6 @@ impl<'de> Deserialize<'de> for InventoryActionV1 {
         let source = f.source;
         match f.kind.as_str() {
             "move" | "split" => {
-                if f.slot.0.is_some() {
-                    return Err(invalid());
-                }
                 let d = f.destination.0.ok_or_else(invalid)?;
                 if d.stack_id.0.is_some() {
                     return Err(invalid());
@@ -482,7 +485,7 @@ impl<'de> Deserialize<'de> for InventoryActionV1 {
                 let destination = InventorySlotEndpointV1 {
                     owner: d.owner,
                     inventory: d.inventory,
-                    slot: d.slot.0.ok_or_else(invalid)?,
+                    slot: d.slot.0.flatten().ok_or_else(invalid)?,
                 };
                 if f.kind == "move" {
                     if f.amount.0.is_some() {
@@ -501,9 +504,6 @@ impl<'de> Deserialize<'de> for InventoryActionV1 {
                 }
             }
             "merge" => {
-                if f.slot.0.is_some() {
-                    return Err(invalid());
-                }
                 let d = f.destination.0.ok_or_else(invalid)?;
                 if d.slot.0.is_some() {
                     return Err(invalid());
@@ -520,7 +520,7 @@ impl<'de> Deserialize<'de> for InventoryActionV1 {
                 })
             }
             "consume" => {
-                if f.destination.0.is_some() || f.slot.0.is_some() {
+                if f.destination.0.is_some() {
                     return Err(invalid());
                 }
                 Ok(Self::Consume {
@@ -529,12 +529,20 @@ impl<'de> Deserialize<'de> for InventoryActionV1 {
                 })
             }
             "place_overflow" => {
-                if f.destination.0.is_some() || f.amount.0.is_some() {
+                if f.amount.0.is_some() {
+                    return Err(invalid());
+                }
+                let d = f.destination.0.ok_or_else(invalid)?;
+                if d.stack_id.0.is_some() {
                     return Err(invalid());
                 }
                 Ok(Self::PlaceOverflow {
                     source,
-                    slot: f.slot.0.ok_or_else(invalid)?,
+                    destination: InventoryOverflowDestinationV1 {
+                        owner: d.owner,
+                        inventory: d.inventory,
+                        slot: d.slot.0.ok_or_else(invalid)?,
+                    },
                 })
             }
             _ => Err(invalid()),
@@ -575,7 +583,14 @@ impl Graph for InventoryActionV1 {
                 source.walk(b)?;
                 destination.walk(b)?;
             }
-            Self::Consume { source, .. } | Self::PlaceOverflow { source, .. } => source.walk(b)?,
+            Self::PlaceOverflow {
+                source,
+                destination,
+            } => {
+                source.walk(b)?;
+                destination.walk(b)?;
+            }
+            Self::Consume { source, .. } => source.walk(b)?,
         }
         Ok(())
     }
@@ -955,6 +970,17 @@ fn input_budget(values: &[&dyn InventoryGraph]) -> Result<usize> {
         v.inventory_walk(&mut b)?;
     }
     Ok(b.0)
+}
+
+/// Simultaneous inventory definitions/state allowance, including decoder growth.
+/// Callers add the independently checked provenance allowance before admission.
+pub(crate) fn inventory_snapshot_allocation_bytes(
+    contracts: &InventoryContractsSnapshotV1,
+    state: &InventoryStateSnapshotV1,
+) -> Result<usize> {
+    contracts.validate_bounds()?;
+    state.validate_bounds()?;
+    input_budget(&[contracts, state])
 }
 // Object-safe adapter keeps each operation's simultaneous borrowed graph under
 // one allowance, including all nested spare capacities, before cloning.
@@ -1440,7 +1466,7 @@ pub fn prepare_inventory_action(
         Split(Address, Address, u32, u64),
         Merge(Address, Address, u32),
         Consume(Address, u32),
-        Place(Address, usize, bool),
+        Place(Address, Address, Option<usize>),
     }
     let plan = match &request.action {
         InventoryActionV1::Move {
@@ -1517,24 +1543,41 @@ pub fn prepare_inventory_action(
             );
             Plan::Consume(s, *amount)
         }
-        InventoryActionV1::PlaceOverflow { source, slot } => {
+        InventoryActionV1::PlaceOverflow {
+            source,
+            destination: dest,
+        } => {
             let s = stack_address(current, source)?;
             ensure!(
                 matches!(s.location, Location::Overflow(_)),
                 "inventory overflow endpoint required"
             );
-            let inv = &current.owners[s.owner].inventories[s.inventory];
-            let index = slot.map_or(inv.slots.len(), usize::from);
+            let (owner, inventory) = inventory_address(current, dest.owner, &dest.inventory)?;
+            let inv = &current.owners[owner].inventories[inventory];
+            let index = dest.slot.map_or(inv.slots.len(), usize::from);
             ensure!(
-                (slot.is_none() || inv.slots.get(index).is_some_and(Option::is_none))
+                (dest.slot.is_none() || inv.slots.get(index).is_some_and(Option::is_none))
                     && eligible(
-                        contracts.recipe(source.owner.id, &source.inventory)?,
+                        contracts.recipe(dest.owner.id, &dest.inventory)?,
                         index,
                         &at(current, s).item
                     ),
                 "inventory overflow placement refused"
             );
-            Plan::Place(s, index, slot.is_none())
+            let capacity = if dest.slot.is_none() {
+                Some(decode_capacity::<Option<StackV1>>(index + 1)?)
+            } else {
+                None
+            };
+            Plan::Place(
+                s,
+                Address {
+                    owner,
+                    inventory,
+                    location: Location::Slot(index),
+                },
+                capacity,
+            )
         }
     };
     let next_revision = if matches!(plan, Plan::Noop) {
@@ -1556,14 +1599,12 @@ pub fn prepare_inventory_action(
             );
             64
         }
-        Plan::Place(s, _, true) => {
-            let slots = &current.owners[s.owner].inventories[s.inventory].slots;
+        Plan::Place(_, d, Some(capacity)) => {
+            let slots = &current.owners[d.owner].inventories[d.inventory].slots;
             let before = slots
                 .capacity()
                 .max(decode_capacity::<Option<StackV1>>(slots.len())?);
-            let after = slots
-                .capacity()
-                .max(decode_capacity::<Option<StackV1>>(slots.len() + 1)?);
+            let after = slots.capacity().max(capacity);
             (after - before)
                 .checked_mul(size_of::<Option<StackV1>>())
                 .ok_or_else(|| anyhow::anyhow!("inventory allocation limit"))?
@@ -1576,7 +1617,19 @@ pub fn prepare_inventory_action(
             .is_some_and(|n| n <= MAX_INVENTORY_GRAPH_BYTES),
         "inventory result allocation limit"
     );
+    // Stage the only fallible placement allocation before cloning or removing
+    // the source. The commit fills this vector without further growth.
+    let mut appended_slots = if let Plan::Place(_, _, Some(capacity)) = plan {
+        let mut slots = Vec::new();
+        slots
+            .try_reserve_exact(capacity)
+            .map_err(|_| anyhow::anyhow!("inventory allocation limit"))?;
+        Some(slots)
+    } else {
+        None
+    };
     let mut state = current.clone();
+    let placement = matches!(plan, Plan::Place(..));
     let outcome = if matches!(plan, Plan::Noop) {
         InventoryActionOutcomeV1::NoChange
     } else {
@@ -1621,26 +1674,28 @@ pub fn prepare_inventory_action(
                 at_mut(&mut state, s).count -= amount;
             }
         }
-        Plan::Place(s, index, append) => {
+        Plan::Place(s, d, capacity) => {
             let stack = remove(&mut state, s);
-            let inv = &mut state.owners[s.owner].inventories[s.inventory];
-            if append {
-                // The result preflight already covered this reload capacity.
-                // Reserve explicitly so native push cannot grow beyond it.
-                let capacity = decode_capacity::<Option<StackV1>>(inv.slots.len() + 1)?;
-                if inv.slots.capacity() < capacity {
-                    inv.slots
-                        .try_reserve_exact(capacity - inv.slots.len())
-                        .map_err(|_| anyhow::anyhow!("inventory allocation limit"))?;
-                }
-                inv.slots.push(Some(stack));
+            if capacity.is_some() {
+                let inv = &mut state.owners[d.owner].inventories[d.inventory];
+                let mut slots = appended_slots.take().expect("staged slot allocation");
+                slots.append(&mut inv.slots);
+                slots.push(Some(stack));
+                inv.slots = slots;
             } else {
-                inv.slots[index] = Some(stack);
+                install(&mut state, d, stack);
             }
         }
     }
     state.revision = next_revision;
-    validate_inventory_state(contracts, &state, initial_totals, live)?;
+    if !placement {
+        validate_inventory_state(contracts, &state, initial_totals, live)?;
+    }
+    // Placement's complete checks precede mutation: it transfers the unchanged
+    // stack, preserves coverage/allocator/totals, and grows only the admitted
+    // destination slots. Removing the overflow wrapper saves more JSON bytes
+    // than a slot append and any revision digit growth can add, so the input's
+    // encoding admission covers the result too. No fallible placement commit.
     Ok(PreparedInventoryStateV1 { state, outcome })
 }
 

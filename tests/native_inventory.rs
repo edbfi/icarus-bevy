@@ -131,6 +131,17 @@ fn slot(owner: u64, inventory: &str, slot: u16) -> InventorySlotEndpointV1 {
         slot,
     }
 }
+fn overflow_destination(
+    owner: u64,
+    inventory: &str,
+    slot: Option<u16>,
+) -> InventoryOverflowDestinationV1 {
+    InventoryOverflowDestinationV1 {
+        owner: handle(owner),
+        inventory: inventory.into(),
+        slot,
+    }
+}
 fn apply(
     c: &CompiledInventoryContractsV1,
     s: &InventoryStateSnapshotV1,
@@ -420,7 +431,7 @@ fn cross_owner_actions_preserve_quantities_allocate_and_retire_ids() {
         t,
         InventoryActionV1::PlaceOverflow {
             source: source(1, "bag", 3),
-            slot: Some(1),
+            destination: overflow_destination(1, "bag", Some(1)),
         },
     );
     assert!(inv(&s, 1, "bag").overflow.is_empty());
@@ -455,7 +466,7 @@ fn overflow_append_is_explicit_bounded_and_preserves_remaining_order() {
         p.initial_totals(),
         InventoryActionV1::PlaceOverflow {
             source: source(1, "bag", 1),
-            slot: None,
+            destination: overflow_destination(1, "bag", None),
         },
     );
     assert_eq!(inv(&s, 1, "bag").slots.len(), 3);
@@ -466,7 +477,7 @@ fn overflow_append_is_explicit_bounded_and_preserves_remaining_order() {
         p.initial_totals(),
         InventoryActionV1::PlaceOverflow {
             source: source(1, "bag", 2),
-            slot: None,
+            destination: overflow_destination(1, "bag", None),
         },
     );
     assert_eq!(inv(&s, 1, "bag").slots.len(), 4);
@@ -484,10 +495,221 @@ fn overflow_append_is_explicit_bounded_and_preserves_remaining_order() {
         p.initial_totals(),
         InventoryActionV1::PlaceOverflow {
             source: source(1, "zero", 2),
-            slot: None,
+            destination: overflow_destination(1, "zero", None),
         },
     );
     assert_eq!(inv(&s, 1, "zero").overflow[0].stack.id.get(), 3);
+}
+
+#[test]
+fn overflow_can_append_to_another_owner_or_inventory_and_reload_exactly() {
+    let c = contracts();
+    let p = prepare(
+        &c,
+        vec![
+            item(1, "bag", 255, "stone", 3),
+            item(1, "bag", 254, "apple", 2),
+        ],
+    );
+    for owner in [1, 2] {
+        assert!(inv(p.state(), owner, "zero").slots.is_empty());
+        let s = apply(
+            &c,
+            p.state(),
+            p.initial_totals(),
+            InventoryActionV1::PlaceOverflow {
+                source: source(1, "bag", 2),
+                destination: overflow_destination(owner, "zero", None),
+            },
+        );
+        let target = inv(&s, owner, "zero");
+        assert_eq!(target.slots.len(), 1);
+        // A zero-length destination reserves the decoder's four-slot growth.
+        assert_eq!(target.slots.capacity(), 4);
+        assert_eq!(
+            target.slots[0],
+            Some(inv(p.state(), 1, "bag").overflow[1].stack.clone())
+        );
+        assert!(target.overflow.is_empty());
+        assert_eq!(
+            inv(&s, 1, "bag").overflow.as_slice(),
+            &inv(p.state(), 1, "bag").overflow[..1]
+        );
+        assert_eq!(s.revision, p.state().revision + 1);
+        assert_eq!(s.next_stack_id, p.state().next_stack_id);
+        assert_eq!(s.consumed, p.state().consumed);
+        let reloaded =
+            InventoryStateSnapshotV1::parse(&serde_json::to_string(&s).unwrap()).unwrap();
+        assert_eq!(reloaded, s);
+        validate_inventory_state(&c, &reloaded, p.initial_totals(), &live()).unwrap();
+    }
+}
+
+#[test]
+fn overflow_placement_and_move_use_existing_cross_owner_slots_without_growth() {
+    let c = contracts();
+    let p = initial(&c);
+    for action in [
+        InventoryActionV1::PlaceOverflow {
+            source: source(1, "bag", 3),
+            destination: overflow_destination(2, "bag", Some(1)),
+        },
+        InventoryActionV1::Move {
+            source: source(1, "bag", 3),
+            destination: slot(2, "bag", 1),
+        },
+    ] {
+        let s = apply(&c, p.state(), p.initial_totals(), action);
+        assert!(inv(&s, 1, "bag").overflow.is_empty());
+        assert_eq!(inv(&s, 2, "bag").slots.len(), 2);
+        assert_eq!(
+            inv(&s, 2, "bag").slots[1],
+            Some(inv(p.state(), 1, "bag").overflow[0].stack.clone())
+        );
+        assert_eq!(s.next_stack_id, p.state().next_stack_id);
+        assert_eq!(s.revision, 2);
+        let reloaded =
+            InventoryStateSnapshotV1::parse(&serde_json::to_string(&s).unwrap()).unwrap();
+        assert_eq!(reloaded, s);
+        validate_inventory_state(&c, &reloaded, p.initial_totals(), &live()).unwrap();
+    }
+}
+
+#[test]
+fn overflow_destinations_reject_full_ineligible_stale_and_unknown_inputs_atomically() {
+    let cat = catalog_with_owners(2);
+    let mut d = definition(&cat);
+    for class in &mut d.classes {
+        let zero = class
+            .inventories
+            .iter_mut()
+            .find(|i| i.key == "zero")
+            .unwrap();
+        zero.slot_rules[0].allowed_items = vec!["apple".into()];
+    }
+    let c = CompiledInventoryContractsV1::compile(d, &cat).unwrap();
+    let p = initial(&c); // Overflow stack 3 is stone, so zero's next slot refuses it.
+    let mut stale_source = source(1, "bag", 3);
+    stale_source.owner.incarnation += 1;
+    let mut stale_destination = overflow_destination(2, "bag", Some(1));
+    stale_destination.owner.incarnation += 1;
+    let mut oversized_key = overflow_destination(2, "bag", Some(1));
+    oversized_key.inventory.reserve_exact(133);
+    for (source, destination) in [
+        (source(1, "bag", 3), overflow_destination(2, "zero", None)),
+        (source(1, "bag", 3), overflow_destination(2, "bag", Some(0))),
+        (source(1, "bag", 3), overflow_destination(2, "bag", Some(2))),
+        (
+            source(1, "bag", 3),
+            overflow_destination(2, "zero", Some(0)),
+        ),
+        (
+            source(1, "bag", 3),
+            overflow_destination(2, "missing", None),
+        ),
+        (
+            source(1, "missing", 3),
+            overflow_destination(2, "bag", None),
+        ),
+        (source(1, "bag", 999), overflow_destination(2, "bag", None)),
+        (source(1, "bag", 1), overflow_destination(2, "bag", None)),
+        (stale_source, overflow_destination(2, "bag", Some(1))),
+        (source(1, "bag", 3), stale_destination),
+        (source(1, "bag", 3), overflow_destination(3, "bag", None)),
+        (source(1, "bag", 3), oversized_key),
+    ] {
+        assert_action_refused(
+            &c,
+            p.state(),
+            p.initial_totals(),
+            InventoryActionRequestV1 {
+                expected_inventory_revision: 1,
+                action: InventoryActionV1::PlaceOverflow {
+                    source,
+                    destination,
+                },
+            },
+        );
+    }
+    let action = InventoryActionV1::PlaceOverflow {
+        source: source(1, "bag", 3),
+        destination: overflow_destination(2, "bag", None),
+    };
+    for revision in [0, 2] {
+        assert_action_refused(
+            &c,
+            p.state(),
+            p.initial_totals(),
+            InventoryActionRequestV1 {
+                expected_inventory_revision: revision,
+                action: action.clone(),
+            },
+        );
+    }
+    for change in 0..7 {
+        let mut state = p.state().clone();
+        match change {
+            0 => inv_mut(&mut state, 2, "bag").slots.resize(4, None), // No next slot.
+            1 => inv_mut(&mut state, 2, "bag")
+                .overflow
+                .push(DeferredStackV1 {
+                    stack: StackV1 {
+                        id: StackId::new(4).unwrap(),
+                        item: "apple".into(),
+                        count: 1,
+                    },
+                    requested_slot: 256,
+                }),
+            2 => inv_mut(&mut state, 2, "zero").key = "missing".into(),
+            3 => {
+                inv_mut(&mut state, 2, "bag").slots[0]
+                    .as_mut()
+                    .unwrap()
+                    .count += 1
+            }
+            4 => {
+                inv_mut(&mut state, 2, "bag").slots[0]
+                    .as_mut()
+                    .unwrap()
+                    .item = "missing".into()
+            }
+            5 => {
+                state
+                    .owners
+                    .iter_mut()
+                    .find(|o| o.owner.id == DomainId(2))
+                    .unwrap()
+                    .owner
+                    .incarnation += 1
+            }
+            _ => state.revision = u64::MAX,
+        }
+        assert_action_refused(
+            &c,
+            &state,
+            p.initial_totals(),
+            InventoryActionRequestV1 {
+                expected_inventory_revision: state.revision,
+                action: action.clone(),
+            },
+        );
+    }
+    // An unrelated bad owner must also reject a valid same-owner placement.
+    let mut state = p.state().clone();
+    let unrelated_overflow = inv(&state, 1, "bag").overflow[0].clone();
+    inv_mut(&mut state, 2, "bag").overflow = vec![unrelated_overflow; 3];
+    assert_action_refused(
+        &c,
+        &state,
+        p.initial_totals(),
+        InventoryActionRequestV1 {
+            expected_inventory_revision: 1,
+            action: InventoryActionV1::PlaceOverflow {
+                source: source(1, "bag", 3),
+                destination: overflow_destination(1, "bag", Some(1)),
+            },
+        },
+    );
 }
 
 #[test]
@@ -540,15 +762,15 @@ fn stale_handles_revisions_and_invalid_commands_leave_input_unchanged() {
         },
         InventoryActionV1::PlaceOverflow {
             source: source(1, "bag", 1),
-            slot: None,
+            destination: overflow_destination(1, "bag", None),
         },
         InventoryActionV1::PlaceOverflow {
             source: source(1, "bag", 3),
-            slot: Some(0),
+            destination: overflow_destination(1, "bag", Some(0)),
         },
         InventoryActionV1::PlaceOverflow {
             source: source(1, "bag", 3),
-            slot: Some(2),
+            destination: overflow_destination(1, "bag", Some(2)),
         },
     ];
     for action in commands {
@@ -858,6 +1080,8 @@ fn every_named_dto_is_strict_and_debug_and_errors_are_value_free() {
     strict(p.initial_totals().clone());
     strict(source(1, "bag", 1));
     strict(slot(1, "bag", 0));
+    strict(overflow_destination(2, "zero", None));
+    strict(overflow_destination(2, "bag", Some(1)));
     strict(InventoryActionRequestV1 {
         expected_inventory_revision: 1,
         action: noop(),
@@ -940,7 +1164,7 @@ fn actions_roundtrip_with_decode_spare_capacity_and_can_continue() {
         },
         InventoryActionV1::PlaceOverflow {
             source: source(1, "bag", 3),
-            slot: None,
+            destination: overflow_destination(1, "bag", None),
         },
     ] {
         assert_eq!(
@@ -1103,7 +1327,7 @@ fn saturated_capacity_and_eligibility_refuse_explicit_placement_and_moves() {
         },
         InventoryActionV1::PlaceOverflow {
             source: source(1, "bag", 3),
-            slot: None,
+            destination: overflow_destination(1, "bag", None),
         },
     ] {
         assert_action_refused(
@@ -1122,7 +1346,7 @@ fn saturated_capacity_and_eligibility_refuse_explicit_placement_and_moves() {
         p.initial_totals(),
         InventoryActionV1::PlaceOverflow {
             source: source(1, "bag", 3),
-            slot: Some(1),
+            destination: overflow_destination(1, "bag", Some(1)),
         },
     );
     assert_eq!(inv(&s, 1, "bag").slots.len(), 2);
@@ -1356,12 +1580,13 @@ fn state_encoding_limit_is_checked_under_the_graph_and_stack_limits() {
 #[test]
 fn malformed_action_field_sets_are_strict_with_tag_last() {
     let endpoint = json!({"owner":{"id":1,"incarnation":1},"inventory":"bag","stack_id":1});
-    let action = json!({"source":endpoint.clone(),"slot":null,"type":"place_overflow"});
+    let action = json!({"source":endpoint.clone(),"destination":{"owner":{"id":2,"incarnation":1},"inventory":"zero","slot":null},"type":"place_overflow"});
     assert!(serde_json::from_value::<InventoryActionV1>(action.clone()).is_ok());
     for extra in [
         json!({"amount":null}),
         json!({"amount":1}),
         json!({"destination":null}),
+        json!({"slot":null}),
     ] {
         let mut bad = action.clone();
         bad.as_object_mut()
@@ -1370,7 +1595,10 @@ fn malformed_action_field_sets_are_strict_with_tag_last() {
         assert!(serde_json::from_value::<InventoryActionV1>(bad).is_err());
     }
     let mut missing = action;
-    missing.as_object_mut().unwrap().remove("slot");
+    missing["destination"]
+        .as_object_mut()
+        .unwrap()
+        .remove("slot");
     assert!(serde_json::from_value::<InventoryActionV1>(missing).is_err());
     let good = format!(r#"{{"source":{},"amount":1,"type":"consume"}}"#, endpoint);
     assert!(serde_json::from_str::<InventoryActionV1>(&good).is_ok());
@@ -1379,6 +1607,125 @@ fn malformed_action_field_sets_are_strict_with_tag_last() {
         endpoint
     );
     assert!(serde_json::from_str::<InventoryActionV1>(&bad).is_err());
+}
+
+#[test]
+fn overflow_destination_json_requires_exact_explicit_shape_and_redacts_errors() {
+    for target_slot in [None, Some(0), Some(255)] {
+        let destination = overflow_destination(2, "zero", target_slot);
+        let expected = json!({
+            "owner":{"id":2,"incarnation":1}, "inventory":"zero", "slot":target_slot
+        });
+        assert_eq!(serde_json::to_value(&destination).unwrap(), expected);
+        assert_eq!(
+            serde_json::from_value::<InventoryOverflowDestinationV1>(expected.clone()).unwrap(),
+            destination
+        );
+        let action = InventoryActionV1::PlaceOverflow {
+            source: source(1, "bag", 3),
+            destination: destination.clone(),
+        };
+        let expected = json!({
+            "type":"place_overflow",
+            "source":{"owner":{"id":1,"incarnation":1},"inventory":"bag","stack_id":3},
+            "destination":expected,
+        });
+        assert_eq!(serde_json::to_value(&action).unwrap(), expected);
+        assert_eq!(
+            serde_json::from_value::<InventoryActionV1>(expected.clone()).unwrap(),
+            action
+        );
+        let text = serde_json::to_string(&expected).unwrap();
+        assert_eq!(
+            serde_json::from_str::<InventoryActionV1>(&text).unwrap(),
+            action
+        );
+        strict(action);
+        for key in ["owner", "inventory", "slot"] {
+            let mut bad = expected["destination"].clone();
+            bad.as_object_mut().unwrap().remove(key);
+            assert!(serde_json::from_value::<InventoryOverflowDestinationV1>(bad.clone()).is_err());
+            let mut bad_action = expected.clone();
+            bad_action["destination"] = bad;
+            assert!(serde_json::from_value::<InventoryActionV1>(bad_action).is_err());
+        }
+        for key in ["source", "destination"] {
+            let mut bad = expected.clone();
+            bad.as_object_mut().unwrap().remove(key);
+            assert!(serde_json::from_value::<InventoryActionV1>(bad).is_err());
+        }
+    }
+    let good = json!({
+        "type":"place_overflow",
+        "source":{"owner":{"id":1,"incarnation":1},"inventory":"bag","stack_id":3},
+        "destination":{"owner":{"id":2,"incarnation":1},"inventory":"zero","slot":null},
+    });
+    let mut bad_values = vec![json!(null), json!([])];
+    for (key, value) in [
+        ("owner", json!(null)),
+        ("inventory", json!(null)),
+        ("inventory", json!("private_invalid/value")),
+        ("slot", json!("private_value")),
+        ("slot", json!(-1)),
+        ("slot", json!(65536)),
+        ("slot", json!([])),
+        ("slot", json!({"private_key":"private_value"})),
+        ("stack_id", json!(1)),
+        ("stack_id", json!(null)),
+        ("private_unknown", json!({"private_key":"private_value"})),
+    ] {
+        let mut bad = good["destination"].clone();
+        bad[key] = value;
+        bad_values.push(bad);
+    }
+    for destination in bad_values {
+        let error = serde_json::from_value::<InventoryOverflowDestinationV1>(destination.clone())
+            .unwrap_err()
+            .to_string();
+        assert!(!error.contains("private"), "{error}");
+        let mut action = good.clone();
+        action["destination"] = destination;
+        let error = serde_json::from_value::<InventoryActionV1>(action)
+            .unwrap_err()
+            .to_string();
+        assert!(!error.contains("private"), "{error}");
+    }
+    for text in [
+        r#"{"owner":{"id":2,"incarnation":1},"inventory":"zero","slot":null,"slot":1}"#,
+        r#"{"owner":{"id":2,"incarnation":1},"inventory":"zero","slot":null,"inventory":"private_value"}"#,
+        r#"{"owner":{"id":2,"incarnation":1,"private_key":0},"inventory":"zero","slot":null}"#,
+    ] {
+        let error = serde_json::from_str::<InventoryOverflowDestinationV1>(text)
+            .unwrap_err()
+            .to_string();
+        assert!(!error.contains("private"), "{error}");
+        let action = format!(
+            r#"{{"destination":{text},"source":{},"type":"place_overflow"}}"#,
+            good["source"]
+        );
+        let error = serde_json::from_str::<InventoryActionV1>(&action)
+            .unwrap_err()
+            .to_string();
+        assert!(!error.contains("private"), "{error}");
+    }
+    // The shared action decoder must keep the other destinations exact too.
+    for kind in ["move", "split", "merge"] {
+        let mut bad = good.clone();
+        bad["type"] = json!(kind);
+        if kind != "move" {
+            bad["amount"] = json!(1);
+        }
+        if kind == "merge" {
+            bad["destination"]["stack_id"] = json!(2);
+        }
+        assert!(serde_json::from_value::<InventoryActionV1>(bad).is_err());
+    }
+    let debug = format!(
+        "{:?}",
+        overflow_destination(123456789, "private_inventory", None)
+    );
+    assert!(!debug.contains("private"));
+    assert!(!debug.contains("123456789"));
 }
 
 fn wide_definition(cat: &CompiledNativeCatalog, slots: u16) -> InventoryContractsV1 {
@@ -1503,7 +1850,7 @@ fn append_and_restore_across_128_slots_reload_and_fail_atomically() {
         expected_inventory_revision: 1,
         action: InventoryActionV1::PlaceOverflow {
             source: source(1, "bag", 1),
-            slot: None,
+            destination: overflow_destination(1, "bag", None),
         },
     };
     let before = serde_json::to_string(p.state()).unwrap();
@@ -1641,7 +1988,7 @@ fn append_growth_cannot_use_clone_compaction_to_escape_caller_spare_budget() {
         expected_inventory_revision: 1,
         action: InventoryActionV1::PlaceOverflow {
             source: source(1, "bag_0", 1),
-            slot: None,
+            destination: overflow_destination(2, "bag_0", None),
         },
     };
     // This fixture has 190 owners (reload capacity 256), eight inventories
@@ -1666,7 +2013,7 @@ fn append_growth_cannot_use_clone_compaction_to_escape_caller_spare_budget() {
         + size_of::<InventoryLiveOwnersV1>()
         + 256 * size_of::<OwnerHandle>()
         + size_of::<InventoryActionRequestV1>()
-        + 5; // request inventory key
+        + 10; // source and destination inventory keys
     for owner in &state.owners {
         charge += 8 * size_of::<InventoryStateV1>();
         for inv in &owner.inventories {
@@ -1687,7 +2034,7 @@ fn append_growth_cannot_use_clone_compaction_to_escape_caller_spare_budget() {
     let target = MAX_INVENTORY_GRAPH_BYTES - 1024;
     for owner in &mut state.owners {
         for inv in &mut owner.inventories {
-            if owner.owner.id == DomainId(1) && inv.key == "bag_0" {
+            if owner.owner.id == DomainId(2) && inv.key == "bag_0" {
                 continue;
             }
             let more =
@@ -1711,13 +2058,20 @@ fn append_growth_cannot_use_clone_compaction_to_escape_caller_spare_budget() {
     let error = prepare_inventory_action(&c, &state, &totals, &l, &request).unwrap_err();
     assert_eq!(error.to_string(), "inventory result allocation limit");
     assert_eq!(serde_json::to_string(&state).unwrap(), before);
-    assert_eq!(inv(&state, 1, "bag_0").slots.capacity(), 128);
+    assert_eq!(inv(&state, 2, "bag_0").slots.capacity(), 128);
+    assert_eq!(inv(&state, 1, "bag_0").overflow.len(), 1);
     // The same logical state with the decoder's small allocations has room;
     // refusing the caller's oversized result must not silently compact it.
     let admitted = prepare_inventory_action(&c, &decoded, &totals, &l, &request).unwrap();
+    assert!(inv(admitted.state(), 1, "bag_0").overflow.is_empty());
+    assert_eq!(inv(admitted.state(), 2, "bag_0").slots.len(), 129);
+    assert_eq!(inv(admitted.state(), 2, "bag_0").slots.capacity(), 256);
+    assert_eq!(admitted.state().next_stack_id, state.next_stack_id);
+    assert_eq!(admitted.state().revision, state.revision + 1);
     let reloaded =
         InventoryStateSnapshotV1::parse(&serde_json::to_string(admitted.state()).unwrap()).unwrap();
     assert_eq!(&reloaded, admitted.state());
+    validate_inventory_state(&c, &reloaded, &totals, &l).unwrap();
 }
 
 #[test]

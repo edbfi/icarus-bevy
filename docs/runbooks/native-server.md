@@ -134,10 +134,10 @@ fails before submission if an entity with a domain ID lacks its position
 (F-482). Schema 1 holds records and the clock (64 MiB per generation); a world
 with a preserved prospect saves schema 3, referencing a write-once,
 digest-verified `preserved-<sha256>.bin` sidecar; schema 2 still loads (F-567).
-Schemas 4–9 retain independently authored spatial worlds, C001 fixture provenance,
-relationships, owner lifecycle and scalar use-gate state (F-919, F-922, F-923,
-F-925). Their contracts and creation commands are in
-[authored native worlds](authored-worlds.md). Schemas 3–9 share a 64 MiB + 4 KiB
+Schemas 4–10 retain authored spatial worlds, C001 fixture provenance,
+relationships, owner lifecycle, scalar use gates and inventories (F-919, F-922, F-923,
+F-927). Their contracts and creation commands are in
+[authored native worlds](authored-worlds.md). Schemas 3–10 share a 64 MiB + 4 KiB
 aggregate generation cap, including inline sections and the sidecar reference.
 Unsupported schemas fail closed; preservation alone grants no import acceptance.
 

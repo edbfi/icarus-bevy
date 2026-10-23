@@ -1131,6 +1131,9 @@ pub fn prepare_owner_restore(
         native_owner_import: base.native_owner_import.clone(),
         native_scalar_contracts: base.native_scalar_contracts.clone(),
         native_scalar_owner_import: base.native_scalar_owner_import.clone(),
+        native_inventory_contracts: None,
+        native_inventories: None,
+        native_inventory_owner_import: None,
     };
     if !staged.already_completed {
         snapshot.validate()?;
