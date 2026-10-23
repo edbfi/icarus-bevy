@@ -57,6 +57,10 @@ enclosing struct: most name data rows through each table's row handle, and
 FLOD tile records name landscape tiles (F-897). Those earlier plans left 23
 to 26 of 3,528 to 3,782 distinct references unclassified, with 52 find-only
 owners per save (F-898); these counts exclude root-content resolution.
+Scoped catalog declarations now check map-owned paths and tiles and
+class-owned variables, with explicit root-map resolution (F-916). This is
+reference coverage, not native geometry or restoration behavior; the CLI
+still refuses writing.
 
 No saved class identifier, field or type name, or recorder version tells the
 older server from the newer client, and the prospect carries no version string
@@ -70,9 +74,9 @@ stay at 128 KiB (F-198).
 ## Open
 
 - Packaged data-table row meanings remain out of scope by policy (F-660).
-- Native content catalog and import writer: classify the F-898 references by role and author native world data for them; connected client compatibility (U-025, U-038, U-045).
+- Native definitions, complete recorder adapters, owner resolution and stitching, then persistent world records and an all-or-nothing writer; scoped declarations (F-916) do not establish semantic acceptance (U-025, U-038, U-045).
 - Heavy-world save work order: the preserved server's offline load/save/reload baseline (F-894, F-736) and connected scenario S1 on server 25956137 (3.0.32, F-701) both frame and preserve byte-identically; build pairing of the original save remains open (U-040), and native interpreted import stays gated (U-038, U-045).
 
 ## Artifacts
 
-M-047..M-077, M-079..M-108, M-118..M-130, M-278..M-280, M-351, M-352, M-376..M-384, M-389, M-390, M-401..M-404, M-407..M-410, M-606..M-613, M-616..M-618, M-626, M-627, M-636..M-638, M-727, M-755..M-760, M-766..M-769, M-772..M-777, M-780, M-782, M-784, M-786, M-788, M-790..M-792, M-794..M-808, M-811, M-850, M-851, M-854..M-859, M-873, M-878, M-880.
+M-047..M-077, M-079..M-108, M-118..M-130, M-278..M-280, M-351, M-352, M-376..M-384, M-389, M-390, M-401..M-404, M-407..M-410, M-606..M-613, M-616..M-618, M-626, M-627, M-636..M-638, M-727, M-755..M-760, M-766..M-769, M-772..M-777, M-780, M-782, M-784, M-786, M-788, M-790..M-792, M-794..M-808, M-811, M-850, M-851, M-854..M-859, M-873, M-878, M-880, M-900.

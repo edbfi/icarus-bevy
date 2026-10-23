@@ -178,10 +178,45 @@ symlinks allowed; F-671), read it, and write nothing unless stated:
   the official server's data.pak, without case (F-898).
   Root content is checked after migration too: `ProspectDTKey` must resolve
   in `D_ProspectList` or an authored data-row catalog; `FactionMissionDTKey`
-  and custom-setting row names use data-row resolution. `ProspectMapName`
-  requires an explicit `unclassified` catalog entry until a native map
-  catalog exists. Empty optional references do not block. Reports retain
-  counts only; resolving names does not establish world or gameplay parity.
+  and custom-setting row names use data-row resolution. With format 1,
+  `ProspectMapName` requires an explicit `unclassified` entry. Empty optional
+  references do not block.
+
+Catalog format 2 scopes world references (F-916). Use the same `--catalog`
+option with independently authored declarations, for example:
+
+```toml
+format = 2
+[references]
+data_row = ["ExampleRow"]
+[[world.classes]]
+name = "ExampleClass"
+variables = ["ExampleVariable"]
+[[world.maps]]
+name = "ExampleMap"
+tiles = ["ExampleTile"]
+[[world.maps.actors]]
+path = "/Game/Authored/ExampleActor"
+class = "ExampleClass"
+```
+
+Format 2 requires `[world]` (the nested tables above create it). Its
+`[references]` accepts `data_row`, `asset_path` and `unclassified`; nonempty
+flat lists for actor classes, paths, tiles or class variables are rejected.
+The saved root map must be present and declared. Actor paths must belong to
+that map and match the recorder's top-level `ActorClassName`; class variables
+must belong to that class, and tiles to that map. A missing owner class cannot
+resolve a path or variable. Authored names compare exactly, including case.
+Duplicate definitions within one scope and undeclared placement classes fail
+before planning. Each reference is limited to 1,024 UTF-16 units, and either
+catalog format is limited to 4 MiB. Data-pak rows never satisfy world roles.
+
+These declarations establish reference coverage only. They supply no geometry,
+class behavior or restoration adapters. `importable: true` means this planning
+pass has no blockers; it does not qualify native world materialization.
+Both formats still refuse writing and report `world_imported: false`.
+Reports retain counts only; resolving names does not establish world or
+gameplay parity.
 
 Value meanings and original-server round trips remain unvalidated. The
 [synthetic workload](synthetic-workload.md) exercises native scheduling and
