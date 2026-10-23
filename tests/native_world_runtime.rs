@@ -1,4 +1,8 @@
-use std::{fs, process::Command, sync::Arc};
+use std::{
+    fs,
+    process::Command,
+    sync::{Arc, Mutex},
+};
 
 use bevy::prelude::*;
 use icarus_bevy::{
@@ -19,6 +23,11 @@ use icarus_bevy::{
         DomainId, Position, SimulationClock, SnapshotMode, WorldSnapshot, build_app, capture,
     },
 };
+
+// Concurrent CLI forks can retain a sibling fixture's advisory lock until
+// exec. Serialize this executable's child launches and store fixtures, as in
+// native_object_admission; production lock semantics remain unchanged.
+static FIXTURE_LOCK: Mutex<()> = Mutex::new(());
 
 fn definition() -> NativeCatalogDefinition {
     NativeCatalogDefinition {
@@ -85,6 +94,7 @@ fn actor(app: &mut App) -> Entity {
 
 #[test]
 fn authored_world_mutations_capture_and_reload_full_pose_state_and_bounds() {
+    let _fixture = FIXTURE_LOCK.lock().unwrap();
     let directory = tempfile::tempdir().unwrap();
     let initial = snapshot();
     let mut store = SnapshotStore::open(directory.path()).unwrap();
@@ -182,6 +192,7 @@ fn missing_component<T: Component + Clone>() {
 
 #[test]
 fn every_required_native_component_is_checked_and_repair_permits_retry() {
+    let _fixture = FIXTURE_LOCK.lock().unwrap();
     missing_component::<DomainId>();
     missing_component::<Position>();
     missing_component::<NativeActorIdentity>();
@@ -193,6 +204,7 @@ fn every_required_native_component_is_checked_and_repair_permits_retry() {
 
 #[test]
 fn missing_context_mode_clock_or_whole_actor_never_downgrades_the_snapshot() {
+    let _fixture = FIXTURE_LOCK.lock().unwrap();
     let initial = snapshot();
     let mut app = build_app(&ServerConfig::default(), &initial).unwrap();
     let context = app
@@ -218,6 +230,7 @@ fn missing_context_mode_clock_or_whole_actor_never_downgrades_the_snapshot() {
 
 #[test]
 fn duplicate_unregistered_and_corrupted_actors_fail_capture() {
+    let _fixture = FIXTURE_LOCK.lock().unwrap();
     let mut app = build_app(&ServerConfig::default(), &snapshot()).unwrap();
     let duplicate = app
         .world_mut()
@@ -251,6 +264,7 @@ fn duplicate_unregistered_and_corrupted_actors_fail_capture() {
 
 #[test]
 fn disabling_components_cannot_hide_invalid_topology_from_capture() {
+    let _fixture = FIXTURE_LOCK.lock().unwrap();
     use bevy::ecs::entity_disabling::{DefaultQueryFilters, Disabled};
 
     #[derive(Component, Default)]
@@ -332,6 +346,7 @@ fn disabling_components_cannot_hide_invalid_topology_from_capture() {
 
 #[test]
 fn invalid_pose_or_state_edit_is_atomic_and_has_private_free_errors() {
+    let _fixture = FIXTURE_LOCK.lock().unwrap();
     let initial = snapshot();
     let original = &initial.native_world.as_ref().unwrap().actors[0];
     let mut app = build_app(&ServerConfig::default(), &initial).unwrap();
@@ -441,6 +456,7 @@ fn unrelated_damage<T: Component + Clone>(damage: impl FnOnce(&mut World, Entity
 
 #[test]
 fn bounds_and_edits_reject_unrelated_corruption_and_retry_after_repair() {
+    let _fixture = FIXTURE_LOCK.lock().unwrap();
     unrelated_damage::<NativeVariables>(|world, entity| {
         world.get_mut::<NativeVariables>(entity).unwrap().0[0].value = NativeValue::I32(7);
     });
@@ -463,6 +479,7 @@ fn bounds_and_edits_reject_unrelated_corruption_and_retry_after_repair() {
 
 #[test]
 fn proposed_edit_checks_aggregate_bytes_without_partial_writes() {
+    let _fixture = FIXTURE_LOCK.lock().unwrap();
     let mut definition = definition();
     definition.classes[0].variables = (0..MAX_NATIVE_VARIABLES_PER_CLASS)
         .map(|i| VariableDefinition {
@@ -566,6 +583,7 @@ fn create(
 
 #[test]
 fn cli_prepares_without_writes_then_runs_without_the_source_catalog() {
+    let _fixture = FIXTURE_LOCK.lock().unwrap();
     let directory = tempfile::tempdir().unwrap();
     let catalog = directory.path().join("authored.toml");
     fs::write(&catalog, toml::to_string(&definition()).unwrap()).unwrap();
@@ -617,6 +635,7 @@ fn cli_prepares_without_writes_then_runs_without_the_source_catalog() {
 
 #[test]
 fn cli_invalid_placement_leaves_absent_and_existing_destinations_untouched() {
+    let _fixture = FIXTURE_LOCK.lock().unwrap();
     let directory = tempfile::tempdir().unwrap();
     let catalog = directory.path().join("invalid.toml");
     let mut definition = definition();
