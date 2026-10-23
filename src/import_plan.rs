@@ -5,7 +5,7 @@
 //! The plan runs the importer acceptance conditions of the prospect-loading
 //! spec in order: stage and validate the full schema (`F-403`, `F-715` ..
 //! `F-738`), keep each recorder's `Validate` decision, type every recorder
-//! value losslessly ([`TypedComponent`]), read the base recorder fields every
+//! value losslessly ([`crate::experimental::typed_value::TypedComponent`]), read the base recorder fields every
 //! class shares, and resolve each content reference (row names, object names,
 //! package paths) through a native [`ContentCatalog`]. Unmapped content is an
 //! incompatibility, never silently dropped. The plan never writes, and reports
@@ -16,36 +16,17 @@ use std::io::Read;
 use anyhow::{Context, Result, ensure};
 use serde::{Deserialize, Serialize};
 
-use crate::experimental::archive::{ByteOrder, decode_string};
-use crate::experimental::component::MAX_BOUNDED_COMPONENT_BYTES;
-use crate::experimental::property_tree::{
-    BaseComponentTree, MAX_TREE_DEPTH, MAX_TREE_NODES, TreeLimits,
-};
 use crate::experimental::recorders::{
-    StagedProspectSaveState, StagedRecorderDecision, lookup_recorder_ctor_defaults, read_recorders,
-    recorder_class_label, stage_prospect_save_state_for_import,
-    stage_prospect_save_state_with_decisions,
+    StagedProspectSaveState, StagedRecorderDecision, recorder_class_label,
 };
 use crate::experimental::restore_rules::OwnerResolvePolicy;
-use crate::experimental::struct_array::MAX_BOUNDED_STRUCT_ARRAY_BYTES;
-use crate::experimental::tagged::{TagKind, TagProfile, read_root};
-use crate::experimental::typed_value::{
-    Item, Scalar, TypedComponent, TypedProperty, TypedTree, Value,
-};
-use crate::prospect::{EnvelopeInspection, decode_envelope};
+use crate::experimental::tagged::TagKind;
+use crate::experimental::typed_value::{Item, Scalar, TypedProperty, TypedTree, Value};
+use crate::import_candidate::DecodedImportCandidate;
+use crate::prospect::EnvelopeInspection;
 
 mod world_catalog;
 use world_catalog::{WorldCatalog, WorldCatalogFile};
-
-const PROFILE: TagProfile = TagProfile::MemoryArchive522;
-
-/// The hard tree ceilings, so large construction bodies frame fully.
-const PLAN_TREE_LIMITS: TreeLimits = TreeLimits {
-    max_depth: MAX_TREE_DEPTH,
-    max_nodes: MAX_TREE_NODES,
-    struct_array_bytes: MAX_BOUNDED_STRUCT_ARRAY_BYTES,
-    container_struct_bytes: None,
-};
 
 /// Base recorder fields: the policy, class and path every class saves, the
 /// sub-level flag, and the actor transform of `UActorStateRecorderComponent`
@@ -619,30 +600,25 @@ pub struct ImportPlan {
 /// Fails on any staging error; otherwise always returns a plan whose
 /// `blockers` list every reason it is not importable.
 pub fn plan_import(reader: impl Read, catalog: &ContentCatalog) -> Result<ImportPlan> {
-    let validated = decode_envelope(reader)?;
-    let tags = read_root(&validated.payload, PROFILE).context("invalid experimental root tags")?;
-    let staged_import = stage_prospect_save_state_for_import(
-        &tags.tags,
-        PROFILE,
-        MAX_BOUNDED_COMPONENT_BYTES,
-        None,
-    )
-    .context("invalid staged FProspectSaveState")?;
-    let staged = staged_import.summary;
-    let decisions = staged_import.decisions;
-    let recorders =
-        read_recorders(&tags.tags, PROFILE).context("invalid experimental recorder framing")?;
-    ensure!(
-        decisions.len() == recorders.records().len(),
-        "staging decisions do not match the recorder array"
-    );
+    let candidate = DecodedImportCandidate::decode(reader)?;
+    plan_decoded_import(&candidate, catalog)
+}
+
+/// Assess an already decoded immutable candidate without rereading its source.
+/// Coverage success remains separate from semantic preparation/publication.
+pub fn plan_decoded_import(
+    candidate: &DecodedImportCandidate,
+    catalog: &ContentCatalog,
+) -> Result<ImportPlan> {
+    let staged = candidate.staged().clone();
+    let staged_import = candidate.root_references();
     let mut plan = ImportPlan {
         validation: "native_import_plan_only",
-        envelope: validated.inspection,
+        envelope: candidate.envelope().clone(),
         staged,
         catalog_references: catalog.len(),
         recorders: RecorderPlan {
-            parsed: decisions.len(),
+            parsed: candidate.recorders().len(),
             ..RecorderPlan::default()
         },
         base_fields: BaseFieldPlan::default(),
@@ -655,7 +631,7 @@ pub fn plan_import(reader: impl Read, catalog: &ContentCatalog) -> Result<Import
     };
     let mut distinct: BTreeMap<Vec<u16>, bool> = BTreeMap::new();
     let mut role_distinct: BTreeMap<(ContentRole, Vec<u16>), bool> = BTreeMap::new();
-    let map = staged_import.prospect_map_name;
+    let map = staged_import.prospect_map_name.clone();
     if catalog.world.is_some() && map.is_empty() {
         plan.blockers.push(ImportBlocker::MissingWorldMap);
     }
@@ -665,7 +641,11 @@ pub fn plan_import(reader: impl Read, catalog: &ContentCatalog) -> Result<Import
     // Legacy format-1 catalogs retain their unclassified map lookup. Format 2
     // makes the map explicit and scopes placements and tiles to it.
     let mut root_references = vec![
-        (ContentRole::DataRow, staged_import.prospect_dt_key, true),
+        (
+            ContentRole::DataRow,
+            staged_import.prospect_dt_key.clone(),
+            true,
+        ),
         (
             if catalog.world.is_some() {
                 ContentRole::WorldMap
@@ -677,14 +657,15 @@ pub fn plan_import(reader: impl Read, catalog: &ContentCatalog) -> Result<Import
         ),
         (
             ContentRole::DataRow,
-            staged_import.faction_mission_dt_key,
+            staged_import.faction_mission_dt_key.clone(),
             false,
         ),
     ];
     root_references.extend(
         staged_import
             .setting_row_names
-            .into_iter()
+            .iter()
+            .cloned()
             .map(|name| (ContentRole::DataRow, name, false)),
     );
     for (role, reference, prospect) in root_references {
@@ -709,20 +690,20 @@ pub fn plan_import(reader: impl Read, catalog: &ContentCatalog) -> Result<Import
             plan.content.unmapped_references += 1;
         }
     }
-    for (recorder, decision) in recorders.records().iter().zip(&decisions) {
-        // read_recorders and staging validated this exact FString; it is never reported.
-        let class = decode_string(recorder.class_value, ByteOrder::Little)
-            .context("invalid experimental recorder class string")?;
-        // A version-0 save drops every recorder unevaluated, so a dropped
-        // class may be unregistered; retained ones always resolve.
-        let label = recorder_class_label(&class.units).unwrap_or_else(|| "unregistered".to_owned());
+    for recorder in candidate.recorders() {
+        let decision = recorder.decision();
+        // A version-0 save drops every recorder unevaluated; its exact class
+        // identity remains in the candidate even when it is unregistered.
+        let label = recorder_class_label(recorder.class_units())
+            .unwrap_or_else(|| "unregistered".to_owned());
         let class_plan = plan.classes.entry(label).or_default();
         if !decision.retained {
             plan.recorders.dropped_by_validate += 1;
             class_plan.dropped += 1;
             continue;
         }
-        let defaults = lookup_recorder_ctor_defaults(&class.units)
+        let defaults = recorder
+            .defaults()
             .context("retained recorder class has no constructor defaults")?;
         plan.recorders.retained += 1;
         class_plan.retained += 1;
@@ -734,22 +715,8 @@ pub fn plan_import(reader: impl Read, catalog: &ContentCatalog) -> Result<Import
         if decision.physics_dynamic_tree {
             plan.recorders.physics_dynamic_trees += 1;
         }
-        // A body that does not frame, type or re-encode exactly is a blocker,
-        // so the plan stays total.
-        let typed = BaseComponentTree::parse(
-            recorder.binary_data,
-            PROFILE,
-            MAX_BOUNDED_COMPONENT_BYTES,
-            PLAN_TREE_LIMITS,
-        )
-        .and_then(|tree| TypedComponent::from_component(&tree))
-        .ok()
-        .filter(|(typed, _)| {
-            typed
-                .to_bytes()
-                .is_ok_and(|bytes| bytes == recorder.binary_data)
-        });
-        let Some((typed, summary)) = typed else {
+        // Optional typing failures remain report blockers, not decode errors.
+        let Some((typed, summary)) = recorder.typing().lossless() else {
             plan.recorders.untyped += 1;
             class_plan.untyped += 1;
             continue;
@@ -1059,48 +1026,38 @@ pub struct PlannedActor {
 /// lossless typing as [`plan_import`]. Positions are recorded values only; no
 /// world frame or gameplay meaning is implied.
 pub fn planned_actors(reader: impl Read) -> Result<Vec<PlannedActor>> {
-    let validated = decode_envelope(reader)?;
-    let tags = read_root(&validated.payload, PROFILE).context("invalid experimental root tags")?;
-    let (_, decisions) = stage_prospect_save_state_with_decisions(
-        &tags.tags,
-        PROFILE,
-        MAX_BOUNDED_COMPONENT_BYTES,
-        None,
-    )
-    .context("invalid staged FProspectSaveState")?;
-    let recorders =
-        read_recorders(&tags.tags, PROFILE).context("invalid experimental recorder framing")?;
-    ensure!(
-        decisions.len() == recorders.records().len(),
-        "staging decisions do not match the recorder array"
-    );
+    let candidate = DecodedImportCandidate::decode(reader)?;
+    planned_actors_from_candidate(&candidate)
+}
+
+/// Recorded actor poses from the same decoded input used for assessment.
+/// This remains a lab projection, not a prepared world or semantic acceptance.
+pub fn planned_actors_from_candidate(
+    candidate: &DecodedImportCandidate,
+) -> Result<Vec<PlannedActor>> {
     let mut actors = Vec::new();
-    for (recorder, decision) in recorders.records().iter().zip(&decisions) {
+    for recorder in candidate.recorders() {
+        let decision = recorder.decision();
         if !decision.retained {
             continue;
         }
-        let class = decode_string(recorder.class_value, ByteOrder::Little)
-            .context("invalid experimental recorder class string")?;
-        let defaults = lookup_recorder_ctor_defaults(&class.units)
+        let defaults = recorder
+            .defaults()
             .context("staged recorder class has no constructor defaults")?;
         if !defaults.is_actor_recorder {
             continue;
         }
-        let tree = BaseComponentTree::parse(
-            recorder.binary_data,
-            PROFILE,
-            MAX_BOUNDED_COMPONENT_BYTES,
-            PLAN_TREE_LIMITS,
-        )
-        .context("retained recorder body does not frame under the plan's tree limits")?;
-        let (typed, _) = TypedComponent::from_component(&tree)?;
+        let (typed, _) = recorder
+            .typing()
+            .lossless()
+            .context("retained actor recorder lacks lossless component typing")?;
         let Some(parts) = actor_transform(&typed.tree) else {
             continue;
         };
         if !parts.iter().all(|part| part.is_finite()) {
             continue;
         }
-        let label = recorder_class_label(&class.units)
+        let label = recorder_class_label(recorder.class_units())
             .context("staged recorder class is not registered")?;
         actors.push(PlannedActor {
             class_label: label,

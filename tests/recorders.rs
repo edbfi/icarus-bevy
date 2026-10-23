@@ -1,7 +1,11 @@
 use icarus_bevy::experimental::component::MAX_COMPONENT_BYTES;
+use icarus_bevy::experimental::prospect_info::{AssociatedMember, CustomGameSetting, ProspectInfo};
 use icarus_bevy::experimental::recorders::{
-    MAX_RECORDER_FIELDS, MAX_RECORDERS, RecorderArray, lookup_recorder_ctor_defaults,
-    read_recorders, stage_prospect_save_state,
+    MAX_RECORDER_FIELDS, MAX_RECORDERS, RecorderArray, StagedLegacyDisposition,
+    StagedProspectSaveState, StagedRecorderDecision, StagedRootEnumField, StagedRootEnumValue,
+    StagedRootMigration, StagedRootPresence, StagedRootValues, lookup_recorder_ctor_defaults,
+    read_recorders, stage_prospect_save_state, stage_prospect_save_state_with_decisions,
+    stage_prospect_save_state_with_root_values,
 };
 use icarus_bevy::experimental::restore_rules::{
     LobbyPrivacy, non_blob_recorder_ctor_defaults, recorder_ctor_defaults,
@@ -1430,4 +1434,870 @@ fn lookup_recorder_ctor_defaults_pins_all_38_blob_and_documented_non_blob_ordina
         .encode_utf16()
         .collect();
     assert_eq!(lookup_recorder_ctor_defaults(&unknown), None);
+}
+
+// Independent authored encodings for owned-root retention. No original inputs.
+fn root_value_struct(name: &str, type_name: &str, fields: &[Vec<u8>]) -> Vec<u8> {
+    let mut payload = fields.concat();
+    payload.extend_from_slice(END);
+    tag(
+        name,
+        "StructProperty",
+        0,
+        &[string(type_name), vec![0; 17]].concat(),
+        &payload,
+    )
+}
+
+fn root_value_struct_array(name: &str, type_name: &str, elements: &[Vec<Vec<u8>>]) -> Vec<u8> {
+    let mut body = Vec::new();
+    for fields in elements {
+        body.extend(fields.concat());
+        body.extend_from_slice(END);
+    }
+    let shared = tag(
+        name,
+        "StructProperty",
+        0,
+        &[string(type_name), vec![0; 17]].concat(),
+        &body,
+    );
+    tag(
+        name,
+        "ArrayProperty",
+        0,
+        &[string("StructProperty"), vec![0]].concat(),
+        &[
+            i32::try_from(elements.len())
+                .unwrap()
+                .to_le_bytes()
+                .to_vec(),
+            shared,
+        ]
+        .concat(),
+    )
+}
+
+fn root_value_wide_string(units: &[u16]) -> Vec<u8> {
+    let mut bytes = (-i32::try_from(units.len() + 1).unwrap())
+        .to_le_bytes()
+        .to_vec();
+    for unit in units {
+        bytes.extend_from_slice(&unit.to_le_bytes());
+    }
+    bytes.extend_from_slice(&0_u16.to_le_bytes());
+    bytes
+}
+
+fn root_value_version(version: i32) -> Vec<u8> {
+    tag("Version", "IntProperty", 0, &[0], &version.to_le_bytes())
+}
+
+fn root_value_timestamp(value: i64) -> Vec<u8> {
+    tag(
+        "LastSavedDateTime",
+        "StructProperty",
+        0,
+        &[string("DateTime"), vec![0; 17]].concat(),
+        &value.to_le_bytes(),
+    )
+}
+
+fn stage_owned_root(
+    fields: &[Vec<u8>],
+) -> (
+    StagedProspectSaveState,
+    StagedRootValues,
+    Vec<StagedRecorderDecision>,
+) {
+    let mut bytes = fields.concat();
+    bytes.extend_from_slice(END);
+    let parsed = read_root(&bytes, PROFILE).unwrap();
+    stage_prospect_save_state_with_root_values(&parsed.tags, PROFILE, MAX_COMPONENT_BYTES, None)
+        .unwrap()
+    // The source allocation and all borrowed tags are gone on return.
+}
+
+fn complete_owned_prospect_info() -> Vec<u8> {
+    root_value_struct(
+        "ProspectInfo",
+        "ProspectInfo",
+        &[
+            tag(
+                "ProspectID",
+                "StrProperty",
+                0,
+                &[0],
+                &string("private-root-id"),
+            ),
+            tag(
+                "ClaimedAccountID",
+                "StrProperty",
+                0,
+                &[0],
+                &string("private-claim"),
+            ),
+            tag(
+                "ClaimedAccountCharacter",
+                "IntProperty",
+                0,
+                &[0],
+                &(-7_i32).to_le_bytes(),
+            ),
+            tag(
+                "ProspectDTKey",
+                "StrProperty",
+                0,
+                &[0],
+                &string("private-root-key"),
+            ),
+            tag(
+                "FactionMissionDTKey",
+                "StrProperty",
+                0,
+                &[0],
+                &string("private-mission"),
+            ),
+            tag(
+                "LobbyName",
+                "StrProperty",
+                0,
+                &[0],
+                &string("private-lobby"),
+            ),
+            tag(
+                "ExpireTime",
+                "Int64Property",
+                0,
+                &[0],
+                &i64::MIN.to_le_bytes(),
+            ),
+            tag(
+                "ProspectState",
+                "EnumProperty",
+                0,
+                &[string("EProspectState"), vec![0]].concat(),
+                &string("EProspectState::Active"),
+            ),
+            root_value_struct_array(
+                "AssociatedMembers",
+                "AssociatedMemberInfo",
+                &[
+                    vec![
+                        tag(
+                            "AccountName",
+                            "StrProperty",
+                            0,
+                            &[0],
+                            &string("private-account"),
+                        ),
+                        tag(
+                            "CharacterName",
+                            "StrProperty",
+                            0,
+                            &[0],
+                            &string("private-character"),
+                        ),
+                        tag("UserID", "StrProperty", 0, &[0], &string("private-user")),
+                        tag("ChrSlot", "IntProperty", 0, &[0], &(-3_i32).to_le_bytes()),
+                        tag(
+                            "Experience",
+                            "IntProperty",
+                            0,
+                            &[0],
+                            &i32::MAX.to_le_bytes(),
+                        ),
+                        tag(
+                            "Status",
+                            "EnumProperty",
+                            0,
+                            &[string("EProspectLocation"), vec![0]].concat(),
+                            &string("Prospect_Jungle"),
+                        ),
+                        tag("Settled", "BoolProperty", 0, &[1, 0], &[]),
+                        tag("IsCurrentlyPlaying", "BoolProperty", 0, &[1, 0], &[]),
+                    ],
+                    vec![],
+                ],
+            ),
+            tag("Cost", "IntProperty", 0, &[0], &i32::MIN.to_le_bytes()),
+            tag("Reward", "IntProperty", 0, &[0], &31_i32.to_le_bytes()),
+            tag(
+                "Difficulty",
+                "ByteProperty",
+                0,
+                &[string("EMissionDifficulty"), vec![0]].concat(),
+                &[4],
+            ),
+            tag("Insurance", "BoolProperty", 0, &[1, 0], &[]),
+            tag("NoRespawns", "BoolProperty", 0, &[1, 0], &[]),
+            tag(
+                "ElapsedTime",
+                "IntProperty",
+                0,
+                &[0],
+                &123456_i32.to_le_bytes(),
+            ),
+            tag(
+                "SelectedDropPoint",
+                "IntProperty",
+                0,
+                &[0],
+                &(-22_i32).to_le_bytes(),
+            ),
+            root_value_struct_array(
+                "CustomSettings",
+                "CustomGameSetting",
+                &[
+                    vec![
+                        tag(
+                            "SettingRowName",
+                            "StrProperty",
+                            0,
+                            &[0],
+                            &string("private-setting-first"),
+                        ),
+                        tag(
+                            "SettingValue",
+                            "IntProperty",
+                            0,
+                            &[0],
+                            &(-100_i32).to_le_bytes(),
+                        ),
+                    ],
+                    vec![tag(
+                        "SettingValue",
+                        "IntProperty",
+                        0,
+                        &[0],
+                        &77_i32.to_le_bytes(),
+                    )],
+                ],
+            ),
+        ],
+    )
+}
+
+#[test]
+fn staged_root_values_own_every_prospect_member_and_setting_value() {
+    let fields = [
+        complete_owned_prospect_info(),
+        root_value_timestamp(i64::MAX),
+        tag(
+            "ProspectMapName",
+            "StrProperty",
+            0,
+            &[0],
+            &string("private-map"),
+        ),
+        tag(
+            "LobbyPrivacy",
+            "ByteProperty",
+            0,
+            &[string("ELobbyPrivacy"), vec![0]].concat(),
+            &[2],
+        ),
+        root_value_version(2),
+    ];
+    let (summary, root, decisions) = stage_owned_root(&fields);
+    let utf16 = |text: &str| text.encode_utf16().collect::<Vec<u16>>();
+    assert_eq!(
+        root.prospect_info(),
+        &ProspectInfo {
+            prospect_id: utf16("private-root-id"),
+            claimed_account_id: utf16("private-claim"),
+            claimed_account_character: -7,
+            prospect_dt_key: utf16("private-root-key"),
+            faction_mission_dt_key: utf16("private-mission"),
+            lobby_name: utf16("private-lobby"),
+            expire_time: i64::MIN,
+            prospect_state: 2,
+            associated_members: vec![
+                AssociatedMember {
+                    account_name: utf16("private-account"),
+                    character_name: utf16("private-character"),
+                    user_id: utf16("private-user"),
+                    chr_slot: -3,
+                    experience: i32::MAX,
+                    status: 12,
+                    settled: true,
+                    is_currently_playing: true,
+                },
+                AssociatedMember::default()
+            ],
+            cost: i32::MIN,
+            reward: 31,
+            difficulty: 4,
+            insurance: true,
+            no_respawns: true,
+            elapsed_time: 123456,
+            selected_drop_point: -22,
+            custom_settings: vec![
+                CustomGameSetting {
+                    setting_row_name: utf16("private-setting-first"),
+                    setting_value: -100,
+                },
+                CustomGameSetting {
+                    setting_row_name: vec![],
+                    setting_value: 77,
+                }
+            ],
+        }
+    );
+    assert_eq!(root.prospect_map_name(), utf16("private-map"));
+    assert_eq!(root.last_saved_date_time(), Some(i64::MAX));
+    assert_eq!(root.loaded_version(), Some(2));
+    assert_eq!(root.lobby_privacy(), LobbyPrivacy::Private);
+    assert_eq!(root.migration(), StagedRootMigration::CurrentVersion);
+    assert_eq!(root.source_enum_values().len(), 3);
+    assert_eq!(root.source_enum_values()[0].resolved_value, Some(2));
+    assert!(matches!(&root.source_enum_values()[0].source_value,
+        StagedRootEnumValue::Name(units) if *units == utf16("EProspectState::Active")));
+    assert_eq!(root.source_enum_values()[1].resolved_value, Some(12));
+    assert!(matches!(&root.source_enum_values()[1].source_value,
+        StagedRootEnumValue::Name(units) if *units == utf16("Prospect_Jungle")));
+    assert_eq!(root.source_enum_values()[2].resolved_value, Some(4));
+    assert!(matches!(
+        root.source_enum_values()[2].source_value,
+        StagedRootEnumValue::Byte(4)
+    ));
+    assert_eq!(summary.prospect_info_tag_count, 17);
+    assert_eq!(summary.associated_member_count, 2);
+    assert!(decisions.is_empty());
+
+    // Existing summary and decision entry points retain their exact contract.
+    let bytes = [fields.concat(), END.to_vec()].concat();
+    let parsed = read_root(&bytes, PROFILE).unwrap();
+    assert_eq!(
+        stage_prospect_save_state(&parsed.tags, PROFILE, MAX_COMPONENT_BYTES, None).unwrap(),
+        summary
+    );
+    assert_eq!(
+        stage_prospect_save_state_with_decisions(&parsed.tags, PROFILE, MAX_COMPONENT_BYTES, None)
+            .unwrap(),
+        (summary.clone(), decisions)
+    );
+    assert_eq!(
+        format!("{root:?}"),
+        "StagedRootValues { associated_members: 2, custom_settings: 2, source_enum_values: 3, .. }"
+    );
+    assert!(!serde_json::to_string(&summary).unwrap().contains("private"));
+}
+
+#[test]
+fn staged_root_values_preserve_exact_utf16_in_all_owned_strings() {
+    let units = [0xd800, 0x61, 0xdc00, 0xdfff];
+    let wide = root_value_wide_string(&units);
+    let info = root_value_struct(
+        "ProspectInfo",
+        "ProspectInfo",
+        &[
+            tag("ProspectID", "StrProperty", 0, &[0], &wide),
+            tag("ProspectDTKey", "StrProperty", 0, &[0], &wide),
+            tag("FactionMissionDTKey", "StrProperty", 0, &[0], &wide),
+            tag("ClaimedAccountID", "StrProperty", 0, &[0], &wide),
+            tag("LobbyName", "StrProperty", 0, &[0], &wide),
+            root_value_struct_array(
+                "AssociatedMembers",
+                "AssociatedMemberInfo",
+                &[vec![
+                    tag("AccountName", "StrProperty", 0, &[0], &wide),
+                    tag("CharacterName", "StrProperty", 0, &[0], &wide),
+                    tag("UserID", "StrProperty", 0, &[0], &wide),
+                ]],
+            ),
+            root_value_struct_array(
+                "CustomSettings",
+                "CustomGameSetting",
+                &[vec![tag("SettingRowName", "StrProperty", 0, &[0], &wide)]],
+            ),
+        ],
+    );
+    let (_, root, _) = stage_owned_root(&[
+        root_value_version(2),
+        info,
+        tag("ProspectMapName", "StrProperty", 0, &[0], &wide),
+        tag("ProspectID", "StrProperty", 0, &[0], &wide),
+        tag("ProspectDTKey", "StrProperty", 0, &[0], &wide),
+    ]);
+    assert_eq!(root.prospect_map_name(), units);
+    for retained in [
+        &root.prospect_info().prospect_id,
+        &root.prospect_info().prospect_dt_key,
+        &root.prospect_info().faction_mission_dt_key,
+        &root.prospect_info().claimed_account_id,
+        &root.prospect_info().lobby_name,
+        &root.prospect_info().associated_members[0].account_name,
+        &root.prospect_info().associated_members[0].character_name,
+        &root.prospect_info().associated_members[0].user_id,
+        &root.prospect_info().custom_settings[0].setting_row_name,
+    ] {
+        assert_eq!(retained.as_slice(), units);
+    }
+    assert_eq!(root.legacy_prospect_id(), Some(units.as_slice()));
+    assert_eq!(root.legacy_prospect_dt_key(), Some(units.as_slice()));
+}
+
+#[test]
+fn staged_root_values_distinguish_omitted_and_present_defaults() {
+    let (omitted_summary, omitted, _) = stage_owned_root(&[root_value_version(2)]);
+    let (present_summary, present, _) = stage_owned_root(&[
+        root_value_version(2),
+        tag(
+            "LobbyPrivacy",
+            "ByteProperty",
+            0,
+            &[string("ELobbyPrivacy"), vec![0]].concat(),
+            &[0],
+        ),
+        root_value_struct("ProspectInfo", "ProspectInfo", &[]),
+        tag("ProspectMapName", "StrProperty", 0, &[0], &string("")),
+        root_value_timestamp(0),
+        tag("ProspectID", "StrProperty", 0, &[0], &string("")),
+        tag("ProspectDTKey", "StrProperty", 0, &[0], &string("")),
+        tag(
+            "StateRecorderBlobs",
+            "ArrayProperty",
+            0,
+            &[string("StructProperty"), vec![0]].concat(),
+            &[0_i32.to_le_bytes().to_vec(), shared(&[])].concat(),
+        ),
+    ]);
+    assert_eq!(omitted.prospect_info(), present.prospect_info());
+    assert_eq!(omitted.lobby_privacy(), present.lobby_privacy());
+    assert_eq!(omitted.prospect_map_name(), present.prospect_map_name());
+    assert_eq!(
+        omitted.source_presence(),
+        StagedRootPresence {
+            version: true,
+            ..Default::default()
+        }
+    );
+    assert_eq!(
+        present.source_presence(),
+        StagedRootPresence {
+            version: true,
+            lobby_privacy: true,
+            prospect_info: true,
+            prospect_map_name: true,
+            last_saved_date_time: true,
+            legacy_prospect_id: true,
+            legacy_prospect_dt_key: true,
+            state_recorder_blobs: true,
+        }
+    );
+    assert_eq!(omitted.last_saved_date_time(), None);
+    assert_eq!(present.last_saved_date_time(), Some(0));
+    assert_eq!(omitted.legacy_prospect_id(), None);
+    assert_eq!(present.legacy_prospect_id(), Some([].as_slice()));
+    assert_eq!(omitted.legacy_prospect_dt_key(), None);
+    assert_eq!(present.legacy_prospect_dt_key(), Some([].as_slice()));
+    assert!(!omitted_summary.has_last_saved_date_time);
+    assert!(present_summary.has_last_saved_date_time);
+    assert!(!omitted_summary.has_map_name && !present_summary.has_map_name);
+    let (_, absent_version, _) = stage_owned_root(&[]);
+    let (_, zero_version, _) = stage_owned_root(&[root_value_version(0)]);
+    assert_eq!(absent_version.loaded_version(), None);
+    assert_eq!(zero_version.loaded_version(), Some(0));
+    assert!(!absent_version.source_presence().version);
+    assert!(zero_version.source_presence().version);
+    assert_eq!(
+        absent_version.migration(),
+        StagedRootMigration::Version0Reset
+    );
+    assert_eq!(zero_version.migration(), absent_version.migration());
+}
+
+#[test]
+fn staged_root_values_version_zero_resets_info_but_keeps_map_timestamp_and_legacy_source() {
+    let map = [0xd800, 0x78, 0xdc00];
+    for explicit_version in [false, true] {
+        let blobs = fixture(
+            1,
+            &recorder_element("/Script/Icarus.ActorStateRecorderComponent", &[]),
+        );
+        let mut fields = vec![
+            complete_owned_prospect_info(),
+            tag(
+                "LobbyPrivacy",
+                "ByteProperty",
+                0,
+                &[string("ELobbyPrivacy"), vec![0]].concat(),
+                &[2],
+            ),
+            tag(
+                "ProspectMapName",
+                "StrProperty",
+                0,
+                &[0],
+                &root_value_wide_string(&map),
+            ),
+            root_value_timestamp(i64::MIN),
+            tag(
+                "ProspectID",
+                "StrProperty",
+                0,
+                &[0],
+                &string("private-legacy-id"),
+            ),
+            tag("ProspectDTKey", "StrProperty", 0, &[0], &string("")),
+            blobs[..blobs.len() - END.len()].to_vec(),
+        ];
+        if explicit_version {
+            fields.push(root_value_version(0));
+        }
+        let (summary, root, decisions) = stage_owned_root(&fields);
+        assert_eq!(root.loaded_version(), explicit_version.then_some(0));
+        assert_eq!(root.prospect_info(), &ProspectInfo::default());
+        assert_eq!(root.lobby_privacy(), LobbyPrivacy::FriendsOnly);
+        assert_eq!(root.prospect_map_name(), map);
+        assert_eq!(root.last_saved_date_time(), Some(i64::MIN));
+        assert_eq!(
+            root.legacy_prospect_id(),
+            Some(
+                "private-legacy-id"
+                    .encode_utf16()
+                    .collect::<Vec<_>>()
+                    .as_slice()
+            )
+        );
+        assert_eq!(root.legacy_prospect_dt_key(), Some([].as_slice()));
+        assert_eq!(root.migration(), StagedRootMigration::Version0Reset);
+        assert_eq!(
+            root.legacy_prospect_id_disposition(),
+            StagedLegacyDisposition::AppliedThenReset
+        );
+        assert_eq!(
+            root.legacy_prospect_dt_key_disposition(),
+            StagedLegacyDisposition::AppliedThenReset
+        );
+        assert!(
+            root.source_presence().prospect_info && root.source_presence().state_recorder_blobs
+        );
+        assert_eq!(root.source_enum_values().len(), 3);
+        assert_eq!(summary.prospect_info_tag_count, 0);
+        assert!(!summary.has_expire_time);
+        assert_eq!(summary.parsed_recorder_count, 1);
+        assert_eq!(summary.retained_recorder_count, 0);
+        assert_eq!(decisions.len(), 1);
+        assert!(!decisions[0].retained);
+    }
+}
+
+#[test]
+fn staged_root_values_legacy_precedence_preserves_explicit_empty_and_v2_ignored_sources() {
+    for version in [1, 2] {
+        for legacy in [None, Some(""), Some("private-legacy")] {
+            let mut fields = vec![root_value_version(version), complete_owned_prospect_info()];
+            if let Some(value) = legacy {
+                fields.push(tag("ProspectID", "StrProperty", 0, &[0], &string(value)));
+                fields.push(tag("ProspectDTKey", "StrProperty", 0, &[0], &string(value)));
+            }
+            let (summary, root, _) = stage_owned_root(&fields);
+            let expected_id = if version == 1 {
+                legacy.unwrap_or("private-root-id")
+            } else {
+                "private-root-id"
+            };
+            let expected_key = if version == 1 {
+                legacy.unwrap_or("private-root-key")
+            } else {
+                "private-root-key"
+            };
+            assert_eq!(
+                root.prospect_info().prospect_id,
+                expected_id.encode_utf16().collect::<Vec<_>>()
+            );
+            assert_eq!(
+                root.prospect_info().prospect_dt_key,
+                expected_key.encode_utf16().collect::<Vec<_>>()
+            );
+            assert_eq!(
+                root.legacy_prospect_id(),
+                legacy
+                    .map(|value| value.encode_utf16().collect::<Vec<_>>())
+                    .as_deref()
+            );
+            assert_eq!(root.legacy_prospect_dt_key(), root.legacy_prospect_id());
+            let disposition = match (version, legacy) {
+                (_, None) => StagedLegacyDisposition::Absent,
+                (1, Some(_)) => StagedLegacyDisposition::AppliedToProspectInfo,
+                _ => StagedLegacyDisposition::IgnoredAtCurrentVersion,
+            };
+            assert_eq!(root.legacy_prospect_id_disposition(), disposition);
+            assert_eq!(root.legacy_prospect_dt_key_disposition(), disposition);
+            assert_eq!(summary.has_prospect_id, !expected_id.is_empty());
+            assert_eq!(summary.has_prospect_dt_key, !expected_key.is_empty());
+            assert_eq!(root.prospect_info().associated_members.len(), 2);
+            assert_eq!(root.prospect_info().custom_settings[0].setting_value, -100);
+        }
+    }
+}
+
+#[test]
+fn staged_root_values_keep_unqualified_enum_names_and_out_of_range_bytes() {
+    let unpaired = [0xd800, 0x71, 0xdc00];
+    for kind in ["EnumProperty", "ByteProperty"] {
+        for raw_byte in [false, true] {
+            if kind == "EnumProperty" && raw_byte {
+                continue;
+            }
+            let state = if raw_byte {
+                vec![255]
+            } else {
+                string("private-unknown-state")
+            };
+            let difficulty = if raw_byte {
+                vec![254]
+            } else {
+                root_value_wide_string(&unpaired)
+            };
+            let status = if raw_byte {
+                vec![253]
+            } else {
+                string("EProspectLocation::Prospect_Inhabit")
+            };
+            let info = root_value_struct(
+                "ProspectInfo",
+                "ProspectInfo",
+                &[
+                    tag(
+                        "ProspectState",
+                        kind,
+                        0,
+                        &[string("EProspectState"), vec![0]].concat(),
+                        &state,
+                    ),
+                    tag(
+                        "Difficulty",
+                        kind,
+                        0,
+                        &[string("EMissionDifficulty"), vec![0]].concat(),
+                        &difficulty,
+                    ),
+                    root_value_struct_array(
+                        "AssociatedMembers",
+                        "AssociatedMemberInfo",
+                        &[vec![tag(
+                            "Status",
+                            kind,
+                            0,
+                            &[string("EProspectLocation"), vec![0]].concat(),
+                            &status,
+                        )]],
+                    ),
+                ],
+            );
+            let (_, reset, _) = stage_owned_root(&[root_value_version(0), info.clone()]);
+            assert!(reset.resolved_prospect_info().is_some());
+            let (_, root, _) = stage_owned_root(&[root_value_version(2), info]);
+            assert!(root.resolved_prospect_info().is_none());
+            assert_eq!(root.source_enum_values().len(), 3);
+            for (index, field) in [
+                StagedRootEnumField::ProspectState,
+                StagedRootEnumField::Difficulty,
+                StagedRootEnumField::AssociatedMemberStatus(0),
+            ]
+            .into_iter()
+            .enumerate()
+            {
+                let retained = &root.source_enum_values()[index];
+                assert_eq!(retained.field, field);
+                assert_eq!(
+                    retained.source_kind,
+                    if kind == "EnumProperty" {
+                        TagKind::Enum
+                    } else {
+                        TagKind::Byte
+                    }
+                );
+                assert_eq!(retained.resolved_value, None);
+                if raw_byte {
+                    assert!(
+                        matches!(retained.source_value, StagedRootEnumValue::Byte(value) if value == 255 - u8::try_from(index).unwrap())
+                    );
+                } else {
+                    let expected = match index {
+                        0 => "private-unknown-state".encode_utf16().collect::<Vec<_>>(),
+                        1 => unpaired.to_vec(),
+                        _ => "EProspectLocation::Prospect_Inhabit"
+                            .encode_utf16()
+                            .collect::<Vec<_>>(),
+                    };
+                    assert!(
+                        matches!(&retained.source_value, StagedRootEnumValue::Name(units) if *units == expected)
+                    );
+                }
+            }
+            if raw_byte {
+                assert_eq!(root.prospect_info().prospect_state, 255);
+                assert_eq!(root.prospect_info().difficulty, 254);
+                assert_eq!(root.prospect_info().associated_members[0].status, 253);
+            }
+            assert!(!format!("{root:?}").contains("private"));
+        }
+    }
+}
+
+#[test]
+fn staged_root_values_fail_closed_without_supplied_diagnostics() {
+    let invalid_infos = [
+        vec![tag(
+            "private-unknown-field",
+            "StrProperty",
+            0,
+            &[0],
+            &string("private-value"),
+        )],
+        vec![tag(
+            "Cost",
+            "StrProperty",
+            0,
+            &[0],
+            &string("private-value"),
+        )],
+        vec![
+            tag("Cost", "IntProperty", 0, &[0], &1_i32.to_le_bytes()),
+            tag("Cost", "IntProperty", 0, &[0], &2_i32.to_le_bytes()),
+        ],
+        vec![tag("Reward", "IntProperty", 1, &[0], &1_i32.to_le_bytes())],
+        vec![tag(
+            "ProspectState",
+            "EnumProperty",
+            0,
+            &[string("private-enum-type"), vec![0]].concat(),
+            &string("private-value"),
+        )],
+        vec![root_value_struct_array(
+            "AssociatedMembers",
+            "AssociatedMemberInfo",
+            &[vec![tag(
+                "private-unknown-member-field",
+                "IntProperty",
+                0,
+                &[0],
+                &7_i32.to_le_bytes(),
+            )]],
+        )],
+        vec![root_value_struct_array(
+            "CustomSettings",
+            "CustomGameSetting",
+            &[vec![tag(
+                "SettingValue",
+                "IntProperty",
+                0,
+                &[0],
+                &[1, 2, 3],
+            )]],
+        )],
+    ];
+    for fields in invalid_infos {
+        let bytes = [
+            root_value_version(2),
+            root_value_struct("ProspectInfo", "ProspectInfo", &fields),
+            END.to_vec(),
+        ]
+        .concat();
+        let parsed = read_root(&bytes, PROFILE).unwrap();
+        let old_error = stage_prospect_save_state(&parsed.tags, PROFILE, MAX_COMPONENT_BYTES, None)
+            .unwrap_err();
+        let error = stage_prospect_save_state_with_root_values(
+            &parsed.tags,
+            PROFILE,
+            MAX_COMPONENT_BYTES,
+            None,
+        )
+        .unwrap_err();
+        assert_eq!(format!("{old_error:#}"), format!("{error:#}"));
+        assert!(!format!("{error:?}").contains("private"));
+    }
+}
+
+#[test]
+fn owned_enum_staging_preserves_field_specific_static_diagnostics() {
+    for (field, descriptor, expected) in [
+        (
+            "ProspectState",
+            "EProspectState",
+            [
+                "ProspectInfo.ProspectState must use EProspectState",
+                "invalid ProspectState enum",
+                "invalid ProspectState byte enum",
+                "ProspectInfo.ProspectState must be EnumProperty or ByteProperty",
+            ],
+        ),
+        (
+            "Difficulty",
+            "EMissionDifficulty",
+            [
+                "ProspectInfo.Difficulty must use EMissionDifficulty",
+                "invalid Difficulty enum",
+                "invalid Difficulty byte enum",
+                "ProspectInfo.Difficulty must be EnumProperty or ByteProperty",
+            ],
+        ),
+        (
+            "Status",
+            "EProspectLocation",
+            [
+                "AssociatedMemberInfo.Status must use EProspectLocation",
+                "invalid AssociatedMemberInfo.Status enum string",
+                "invalid AssociatedMemberInfo.Status byte enum",
+                "AssociatedMemberInfo.Status must be EnumProperty or ByteProperty",
+            ],
+        ),
+    ] {
+        let cases = [
+            tag(
+                field,
+                "EnumProperty",
+                0,
+                &[string("private-wrong-type"), vec![0]].concat(),
+                &string("private-value"),
+            ),
+            tag(
+                field,
+                "EnumProperty",
+                0,
+                &[string(descriptor), vec![0]].concat(),
+                &[1, 2],
+            ),
+            tag(
+                field,
+                "ByteProperty",
+                0,
+                &[string(descriptor), vec![0]].concat(),
+                &[1, 2],
+            ),
+            tag(field, "IntProperty", 0, &[0], &0_i32.to_le_bytes()),
+        ];
+        for (property, expected) in cases.into_iter().zip(expected) {
+            let field = if field == "Status" {
+                root_value_struct_array(
+                    "AssociatedMembers",
+                    "AssociatedMemberInfo",
+                    &[vec![property]],
+                )
+            } else {
+                property
+            };
+            let bytes = [
+                root_value_version(2),
+                root_value_struct("ProspectInfo", "ProspectInfo", &[field]),
+                END.to_vec(),
+            ]
+            .concat();
+            let roots = read_root(&bytes, PROFILE).unwrap();
+            let error = stage_prospect_save_state_with_root_values(
+                &roots.tags,
+                PROFILE,
+                MAX_COMPONENT_BYTES,
+                None,
+            )
+            .unwrap_err();
+            let message = format!("{error:#}");
+            assert!(message.contains(expected), "{message}");
+            assert!(!message.contains("private"));
+        }
+    }
 }

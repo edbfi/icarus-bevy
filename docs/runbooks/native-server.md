@@ -240,6 +240,14 @@ Both formats still refuse writing and report `world_imported: false`.
 Reports retain counts only; resolving names does not establish world or
 gameplay parity.
 
+Library callers can decode once with `DecodedImportCandidate::decode`, then
+borrow it for `plan_decoded_import`, `planned_actors_from_candidate` and source
+preservation (F-920). Candidates retain migrated roots and all recorder outcomes,
+including dropped records. Unknown enum mappings remain explicit. The default
+policy allows 256 MiB of conservative owned-allocation charges and 1,048,576
+typed elements across all recorders; exceeding either rejects the candidate.
+These are implementation allowances, not peak-memory or RSS guarantees.
+
 Value meanings and original-server round trips remain unvalidated. The
 [synthetic workload](synthetic-workload.md) exercises native scheduling and
 durability; it is not an ICARUS performance benchmark.

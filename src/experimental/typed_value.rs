@@ -236,6 +236,317 @@ pub struct TypedComponent {
     pub trailer: Vec<u8>,
 }
 
+/// Cumulative allocation allowance for typing a candidate's components.
+///
+/// This is a conservative policy allowance, not measured RSS or a bound on all
+/// working memory. It includes owned vector capacities and inline enum slots,
+/// decoded strings/names/headers, and margin for the existing header parsing and
+/// roundtrip buffers. The caller must separately bound the input/preservation
+/// trees and payloads. Elements count properties, array elements (even empty
+/// struct trees), and Map/Set items; string units and fixed-struct parts are
+/// accounted for in bytes. Allowances may include attempted array/container
+/// typing that later becomes a gap, so counters need not equal retained sizes.
+/// Failed calls leave both counters unchanged.
+#[derive(Debug)]
+pub struct TypingBudget {
+    max_owned_bytes: usize,
+    max_elements: usize,
+    charged_bytes: usize,
+    charged_elements: usize,
+}
+
+impl TypingBudget {
+    pub fn new(max_owned_bytes: usize, max_elements: usize) -> Self {
+        Self {
+            max_owned_bytes,
+            max_elements,
+            charged_bytes: 0,
+            charged_elements: 0,
+        }
+    }
+
+    pub fn charged_bytes(&self) -> usize {
+        self.charged_bytes
+    }
+
+    pub fn charged_elements(&self) -> usize {
+        self.charged_elements
+    }
+
+    fn check(&self, allowance: &TypingAllowance) -> std::result::Result<(), TypedBudgetExceeded> {
+        let bytes = checked_add(self.charged_bytes, allowance.bytes)?;
+        let elements = checked_add(self.charged_elements, allowance.elements)?;
+        if bytes > self.max_owned_bytes || elements > self.max_elements {
+            return Err(TypedBudgetExceeded);
+        }
+        Ok(())
+    }
+}
+
+/// A typing allowance was exhausted, overflowed, or failed its capacity guard.
+/// This error contains no property names, values, or input bytes. Callers can
+/// downcast it through `anyhow::Error` to make exhaustion terminal while keeping
+/// structural typing failures optional.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct TypedBudgetExceeded;
+
+impl fmt::Display for TypedBudgetExceeded {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("typed allocation budget exceeded")
+    }
+}
+
+impl std::error::Error for TypedBudgetExceeded {}
+
+fn checked_add(left: usize, right: usize) -> std::result::Result<usize, TypedBudgetExceeded> {
+    left.checked_add(right).ok_or(TypedBudgetExceeded)
+}
+
+fn checked_mul(left: usize, right: usize) -> std::result::Result<usize, TypedBudgetExceeded> {
+    left.checked_mul(right).ok_or(TypedBudgetExceeded)
+}
+
+#[derive(Default)]
+struct TypingAllowance {
+    bytes: usize,
+    elements: usize,
+}
+
+impl TypingAllowance {
+    fn bytes(&mut self, bytes: usize) -> std::result::Result<(), TypedBudgetExceeded> {
+        self.bytes = checked_add(self.bytes, bytes)?;
+        Ok(())
+    }
+
+    fn elements(&mut self, elements: usize) -> std::result::Result<(), TypedBudgetExceeded> {
+        self.elements = checked_add(self.elements, elements)?;
+        Ok(())
+    }
+
+    fn slots<T>(&mut self, len: usize) -> std::result::Result<(), TypedBudgetExceeded> {
+        // Collect<Result<...>> may grow geometrically rather than reserving an
+        // exact iterator length. Cover doubling and the small-vector minimum,
+        // including the entire inline value/enum, not merely its wire width.
+        if len != 0 {
+            self.bytes(checked_mul(
+                checked_add(checked_mul(len, 2)?, 8)?,
+                size_of::<T>(),
+            )?)?;
+        }
+        Ok(())
+    }
+
+    fn wire(&mut self, len: usize) -> std::result::Result<(), TypedBudgetExceeded> {
+        // A narrow string can expand to u16, with spare vector capacity. This
+        // also covers exact byte copies, fixed-struct part vectors, header
+        // decode/clone scratch and value verification/encoding buffers. Nested
+        // payloads are charged again at each enclosing property: original_payload
+        // and verify reconstruct these streams while children are being typed.
+        self.bytes(checked_mul(checked_add(len, 8)?, 16)?)
+    }
+
+    fn tree(&mut self, tree: &PropertyTree) -> std::result::Result<usize, TypedBudgetExceeded> {
+        self.slots::<TypedProperty>(tree.properties.len())?;
+        self.elements(tree.properties.len())?;
+        self.wire(tree.terminator.len())?;
+        let mut encoded_len = tree.terminator.len();
+        for node in &tree.properties {
+            let payload_len = self.value(&node.value, node.kind)?;
+            let record_len = checked_add(node.header.len(), payload_len)?;
+            self.wire(record_len)?;
+            encoded_len = checked_add(encoded_len, record_len)?;
+        }
+        Ok(encoded_len)
+    }
+
+    fn item(&mut self, item: &ContainerItem) -> std::result::Result<usize, TypedBudgetExceeded> {
+        match item {
+            ContainerItem::Bytes(bytes) => {
+                self.wire(bytes.len())?;
+                Ok(bytes.len())
+            }
+            ContainerItem::Struct(tree) => self.tree(tree),
+        }
+    }
+
+    fn value(
+        &mut self,
+        value: &NodeValue,
+        kind: TagKind,
+    ) -> std::result::Result<usize, TypedBudgetExceeded> {
+        match value {
+            NodeValue::Opaque(bytes) => {
+                if kind == TagKind::Array {
+                    // Every scalar or fixed-struct element occupies at least
+                    // one wire byte. The legacy typer rejects impossible
+                    // counts before reserving; do not turn them into enormous
+                    // reservations (or charges) here. Plausible counts are
+                    // conservative even when later decoding produces a gap.
+                    let count = bytes.get(..4).and_then(|word| {
+                        usize::try_from(i32::from_le_bytes(word.try_into().ok()?)).ok()
+                    });
+                    if let Some(count) =
+                        count.filter(|count| *count <= bytes.len().saturating_sub(4))
+                    {
+                        self.elements(count)?;
+                        self.slots::<Scalar>(count)?;
+                        self.slots::<FixedStruct>(count)?;
+                    }
+                }
+                Ok(bytes.len())
+            }
+            NodeValue::Struct(tree) => self.tree(tree),
+            NodeValue::StructArray {
+                prefix,
+                shared_header,
+                elements,
+            } => {
+                self.elements(elements.len())?;
+                self.slots::<TypedTree>(elements.len())?;
+                // The legacy shared-header decoder makes a zero-filled record
+                // using the header's declared size. Cover that scratch even
+                // for a caller-mutated tree whose size no longer matches its
+                // framed elements; it must not bypass preflight.
+                if let Ok(size) = declared_size(shared_header) {
+                    self.wire(size)?;
+                }
+                let mut len = checked_add(prefix.len(), shared_header.len())?;
+                for tree in elements {
+                    len = checked_add(len, self.tree(tree)?)?;
+                }
+                Ok(len)
+            }
+            NodeValue::Map { removed, entries } => {
+                self.elements(checked_add(removed.len(), checked_mul(entries.len(), 2)?)?)?;
+                self.slots::<Item>(removed.len())?;
+                self.slots::<(Item, Item)>(entries.len())?;
+                let mut len = 8;
+                for item in removed {
+                    len = checked_add(len, self.item(item)?)?;
+                }
+                for (key, value) in entries {
+                    len = checked_add(len, self.item(key)?)?;
+                    len = checked_add(len, self.item(value)?)?;
+                }
+                Ok(len)
+            }
+            NodeValue::Set { removed, elements } => {
+                self.elements(checked_add(removed.len(), elements.len())?)?;
+                self.slots::<Item>(removed.len())?;
+                self.slots::<Item>(elements.len())?;
+                let mut len = 8;
+                for item in removed.iter().chain(elements) {
+                    len = checked_add(len, self.item(item)?)?;
+                }
+                Ok(len)
+            }
+        }
+    }
+
+    fn owned_vec<T>(&mut self, values: &Vec<T>) -> std::result::Result<(), TypedBudgetExceeded> {
+        self.bytes(checked_mul(values.capacity(), size_of::<T>())?)
+    }
+
+    fn owned_tree(&mut self, tree: &TypedTree) -> std::result::Result<(), TypedBudgetExceeded> {
+        self.owned_vec(&tree.properties)?;
+        self.elements(tree.properties.len())?;
+        self.owned_vec(&tree.terminator)?;
+        for property in &tree.properties {
+            self.owned_vec(&property.name)?;
+            self.owned_vec(&property.header)?;
+            match &property.value {
+                Value::Scalar(scalar) => self.owned_scalar(scalar)?,
+                Value::Text(bytes) | Value::Uninterpreted { bytes, .. } => self.owned_vec(bytes)?,
+                Value::TaggedStruct { type_name, tree } => {
+                    self.owned_vec(type_name)?;
+                    self.owned_tree(tree)?;
+                }
+                Value::FixedStruct { type_name, value } => {
+                    self.owned_vec(type_name)?;
+                    self.owned_fixed(value)?;
+                }
+                Value::StructArray {
+                    shared_header,
+                    type_name,
+                    elements,
+                } => {
+                    self.owned_vec(shared_header)?;
+                    self.owned_vec(type_name)?;
+                    self.owned_vec(elements)?;
+                    self.elements(elements.len())?;
+                    for tree in elements {
+                        self.owned_tree(tree)?;
+                    }
+                }
+                Value::FixedStructArray {
+                    shared_header,
+                    type_name,
+                    elements,
+                } => {
+                    self.owned_vec(shared_header)?;
+                    self.owned_vec(type_name)?;
+                    self.owned_vec(elements)?;
+                    self.elements(elements.len())?;
+                    for value in elements {
+                        self.owned_fixed(value)?;
+                    }
+                }
+                Value::ScalarArray { items, .. } => {
+                    self.owned_vec(items)?;
+                    self.elements(items.len())?;
+                    for scalar in items {
+                        self.owned_scalar(scalar)?;
+                    }
+                }
+                Value::Map { removed, entries } => {
+                    self.owned_vec(removed)?;
+                    self.owned_vec(entries)?;
+                    for item in removed {
+                        self.owned_item(item)?;
+                    }
+                    for (key, value) in entries {
+                        self.owned_item(key)?;
+                        self.owned_item(value)?;
+                    }
+                }
+                Value::Set { removed, elements } => {
+                    self.owned_vec(removed)?;
+                    self.owned_vec(elements)?;
+                    for item in removed.iter().chain(elements) {
+                        self.owned_item(item)?;
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn owned_scalar(&mut self, scalar: &Scalar) -> std::result::Result<(), TypedBudgetExceeded> {
+        match scalar {
+            Scalar::Str(units) | Scalar::Name(units) | Scalar::Enum(units) => self.owned_vec(units),
+            _ => Ok(()),
+        }
+    }
+
+    fn owned_fixed(&mut self, value: &FixedStruct) -> std::result::Result<(), TypedBudgetExceeded> {
+        match value {
+            FixedStruct::F32(parts) => self.owned_vec(parts),
+            FixedStruct::I32(parts) => self.owned_vec(parts),
+            FixedStruct::U32(parts) => self.owned_vec(parts),
+            FixedStruct::I64(_) => Ok(()),
+        }
+    }
+
+    fn owned_item(&mut self, item: &Item) -> std::result::Result<(), TypedBudgetExceeded> {
+        self.elements(1)?;
+        match item {
+            Item::Scalar(scalar) => self.owned_scalar(scalar),
+            Item::Struct(tree) => self.owned_tree(tree),
+            Item::UnnamedStruct(bytes) => self.owned_vec(bytes),
+        }
+    }
+}
+
 /// Counts of typed leaves and gaps; never names or values.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize)]
 pub struct TypedSummary {
@@ -956,6 +1267,41 @@ impl TypedComponent {
             },
             summary,
         ))
+    }
+
+    /// Type with a shared, transactional allocation allowance. Preflight walks
+    /// the framed input without constructing typed values or roundtrip buffers.
+    /// A structural failure (unlike an untypeable leaf/gap) retains no charge.
+    /// The legacy `from_component` API does not apply this allowance.
+    pub fn from_component_with_budget(
+        component: &BaseComponentTree,
+        budget: &mut TypingBudget,
+    ) -> Result<(Self, TypedSummary)> {
+        let mut allowance = TypingAllowance::default();
+        allowance.bytes(size_of::<Self>())?;
+        // Bounded Gap-key summary bookkeeping and small-buffer slack. This is
+        // intentionally charged even when the component has no gaps.
+        allowance.bytes(4096)?;
+        allowance.wire(component.trailer.len())?;
+        allowance.tree(&component.tree)?;
+        budget.check(&allowance)?;
+
+        let (typed, summary) = Self::from_component(component)?;
+        let mut owned = TypingAllowance::default();
+        owned.bytes(size_of::<Self>())?;
+        owned.owned_vec(&typed.trailer)?;
+        owned.owned_tree(&typed.tree)?;
+        // An additional invariant for allocator/collection growth changes; this
+        // post-check alone does not bound peak allocation. Preflight is the
+        // admission check, before the first owned typed value is constructed.
+        if owned.bytes > allowance.bytes || owned.elements > allowance.elements {
+            return Err(TypedBudgetExceeded.into());
+        }
+        let charged_bytes = checked_add(budget.charged_bytes, allowance.bytes)?;
+        let charged_elements = checked_add(budget.charged_elements, allowance.elements)?;
+        budget.charged_bytes = charged_bytes;
+        budget.charged_elements = charged_elements;
+        Ok((typed, summary))
     }
 
     pub fn to_bytes(&self) -> Result<Vec<u8>> {

@@ -2,7 +2,7 @@
 
 ## Status
 
-Experimental; scope dedicated-server build 25621760 (supplied saves are user-reported from 25793767). Last reconciled: 2026-10-22.
+Experimental; scope dedicated-server build 25621760 (supplied saves are user-reported from 25793767). Last reconciled: 2026-10-23.
 Full text: d5b0ae6:docs/specs/save-format/prospect-loading.md
 
 ## Scope
@@ -103,6 +103,11 @@ Acceptance conditions for any importer
 
 ## Candidate
 
+- `DecodedImportCandidate` retains migrated root values, exact UTF-16 recorder
+  identities, decisions, optional typing outcomes and unchanged preserved bytes
+  from one envelope decode (F-920). Unknown root enums remain explicit;
+  allocation allowances bound cumulative typing. Borrowed assessment and actor
+  projection do not supply restoration adapters or authorize publication.
 - `stage_prospect_save_state` (`experimental::recorders`), `stage_prospect`
   (`prospect`) and `icarus-server inspect-save --stage-check` validate the
   `FProspectSaveState` root schema, out-of-order tags, `PostLoadSerialize`
