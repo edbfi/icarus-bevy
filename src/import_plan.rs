@@ -34,6 +34,9 @@ use crate::experimental::typed_value::{
 };
 use crate::prospect::{EnvelopeInspection, decode_envelope};
 
+mod world_catalog;
+use world_catalog::{WorldCatalog, WorldCatalogFile};
+
 const PROFILE: TagProfile = TagProfile::MemoryArchive522;
 
 /// The hard tree ceilings, so large construction bodies frame fully.
@@ -137,6 +140,8 @@ pub struct ContentCatalog {
     data_rows: BTreeSet<Vec<u16>>,
     /// Pak rows from the unique D_ProspectList table only (F-911).
     prospect_rows: BTreeSet<Vec<u16>>,
+    /// Format-2 declarations resolve world references in their owning context.
+    world: Option<WorldCatalog>,
 }
 
 impl std::fmt::Debug for ContentCatalog {
@@ -148,14 +153,15 @@ impl std::fmt::Debug for ContentCatalog {
     }
 }
 
-/// A catalog file: `format = 1` and one list of references per role under
-/// `[references]`. Instance names are never resolved, so they have no list.
+/// Format 1 lists references by role. Format 2 adds scoped world declarations
+/// instead of the flat world-role lists. Instance names are never resolved.
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct CatalogFile {
     format: u32,
     #[serde(default)]
     references: CatalogReferences,
+    world: Option<WorldCatalogFile>,
 }
 
 #[derive(Default, Deserialize)]
@@ -192,12 +198,17 @@ impl ContentCatalog {
             by_role: BTreeMap::new(),
             data_rows: BTreeSet::new(),
             prospect_rows: BTreeSet::new(),
+            world: None,
         }
     }
 
     /// Parse a catalog file's text (see [`Self::load`]). Errors name the
     /// role and position only, never a reference.
     pub fn parse(text: &str) -> Result<Self> {
+        ensure!(
+            text.len() as u64 <= MAX_CATALOG_BYTES,
+            "content catalog exceeds 4 MiB limit"
+        );
         let file: CatalogFile = toml::from_str(text).map_err(|error| {
             // The 1-based line holding the error's start (0 when unknown).
             let line = error.span().map_or(0, |span| {
@@ -208,9 +219,28 @@ impl ContentCatalog {
             });
             anyhow::anyhow!("invalid content catalog near line {line}")
         })?;
-        ensure!(file.format == 1, "unsupported content catalog format");
+        ensure!(
+            matches!(file.format, 1 | 2),
+            "unsupported content catalog format"
+        );
+        ensure!(
+            (file.format == 2) == file.world.is_some(),
+            "content catalog format 2 requires world declarations; format 1 forbids them"
+        );
         let lists = file.references;
-        let mut catalog = Self::default();
+        if file.format == 2 {
+            ensure!(
+                lists.actor_class.is_empty()
+                    && lists.actor_path.is_empty()
+                    && lists.world_tile.is_empty()
+                    && lists.class_variable.is_empty(),
+                "content catalog format 2 requires scoped world roles, not flat role lists"
+            );
+        }
+        let mut catalog = Self {
+            world: file.world.map(WorldCatalog::compile).transpose()?,
+            ..Self::default()
+        };
         for (role, list) in [
             (ContentRole::ActorClass, lists.actor_class),
             (ContentRole::ActorPath, lists.actor_path),
@@ -273,12 +303,21 @@ impl ContentCatalog {
         for entries in self.by_role.values() {
             all.extend(entries.iter().map(Vec::as_slice));
         }
+        if let Some(world) = &self.world {
+            all.extend(world.references());
+        }
         let authored_rows: BTreeSet<Vec<u16>> = all.iter().map(|units| fold_case(units)).collect();
         all.len() + self.data_rows.difference(&authored_rows).count()
     }
 
     pub fn is_empty(&self) -> bool {
-        self.any.is_empty() && self.by_role.is_empty() && self.data_rows.is_empty()
+        self.any.is_empty()
+            && self.by_role.is_empty()
+            && self.data_rows.is_empty()
+            && self
+                .world
+                .as_ref()
+                .is_none_or(|world| world.references().next().is_none())
     }
 
     /// Also resolve data-row references against every row of every data
@@ -336,6 +375,32 @@ impl ContentCatalog {
                 .is_some_and(|entries| entries.contains(units))
             || (role == ContentRole::DataRow && self.data_rows.contains(&fold_case(units)))
     }
+
+    /// A format-2 declaration is authoritative for world roles. No legacy
+    /// list or table row can satisfy a reference from the wrong map/class.
+    fn contains_in_world(
+        &self,
+        role: ContentRole,
+        units: &[u16],
+        map: &[u16],
+        owner_class: Option<&[u16]>,
+    ) -> bool {
+        let Some(world) = &self.world else {
+            return self.contains(role, units);
+        };
+        match role {
+            ContentRole::WorldMap => world.contains_map(units),
+            ContentRole::ActorClass => world.contains_class(units),
+            ContentRole::ActorPath => {
+                owner_class.is_some_and(|class| world.contains_actor(map, units, class))
+            }
+            ContentRole::WorldTile => world.contains_tile(map, units),
+            ContentRole::ClassVariable => {
+                owner_class.is_some_and(|class| world.contains_variable(class, units))
+            }
+            _ => self.contains(role, units),
+        }
+    }
 }
 
 /// `units` with ASCII letters lowercased.
@@ -353,6 +418,8 @@ fn fold_case(units: &[u16]) -> Vec<u16> {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 #[serde(tag = "blocker", rename_all = "snake_case")]
 pub enum ImportBlocker {
+    /// Scoped world declarations need an explicit saved map identity.
+    MissingWorldMap,
     /// A prospect without any recorder that survives `Validate` would import
     /// as an empty world, which the acceptance conditions forbid.
     NoRetainedRecorders,
@@ -421,6 +488,8 @@ pub struct ActorPlan {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ContentRole {
+    /// Root map identity in a scoped native catalog (format 2).
+    WorldMap,
     /// An actor or Blueprint class to spawn (`*ActorClassName`, a tree's
     /// prefab class).
     ActorClass,
@@ -540,6 +609,8 @@ pub struct ImportPlan {
     /// Per class pseudonym.
     pub classes: BTreeMap<String, ClassPlan>,
     pub blockers: Vec<ImportBlocker>,
+    /// This planning pass has no blockers. This is not semantic preparation
+    /// or authorization to publish native world records; no writer exists.
     pub importable: bool,
     pub world_imported: bool,
 }
@@ -584,15 +655,24 @@ pub fn plan_import(reader: impl Read, catalog: &ContentCatalog) -> Result<Import
     };
     let mut distinct: BTreeMap<Vec<u16>, bool> = BTreeMap::new();
     let mut role_distinct: BTreeMap<(ContentRole, Vec<u16>), bool> = BTreeMap::new();
+    let map = staged_import.prospect_map_name;
+    if catalog.world.is_some() && map.is_empty() {
+        plan.blockers.push(ImportBlocker::MissingWorldMap);
+    }
     // Root content stays outside recorder name/class counts. Only the
     // prospect key has a qualified table identity (F-911); the other row
     // fields follow the same suffix convention as recorder references.
-    // Map names have no qualified native role yet, so remain unclassified.
+    // Legacy format-1 catalogs retain their unclassified map lookup. Format 2
+    // makes the map explicit and scopes placements and tiles to it.
     let mut root_references = vec![
         (ContentRole::DataRow, staged_import.prospect_dt_key, true),
         (
-            ContentRole::Unclassified,
-            staged_import.prospect_map_name,
+            if catalog.world.is_some() {
+                ContentRole::WorldMap
+            } else {
+                ContentRole::Unclassified
+            },
+            map.clone(),
             false,
         ),
         (
@@ -614,7 +694,7 @@ pub fn plan_import(reader: impl Read, catalog: &ContentCatalog) -> Result<Import
         let mapped = if prospect {
             catalog.contains_prospect(&reference)
         } else {
-            catalog.contains(role, &reference)
+            catalog.contains_in_world(role, &reference, &map, None)
         };
         plan.content.roles.entry(role).or_default().references += 1;
         role_distinct
@@ -699,11 +779,18 @@ pub fn plan_import(reader: impl Read, catalog: &ContentCatalog) -> Result<Import
 
         let mut references = References::default();
         references.tree(&typed.tree, None);
+        let owner_class = typed
+            .tree
+            .get(ACTOR_CLASS)
+            .and_then(|property| match &property.value {
+                Value::Scalar(Scalar::Name(units)) => Some(units.as_slice()),
+                _ => None,
+            });
         plan.content.name_references += references.names;
         plan.content.path_references += references.paths;
         for (role, reference) in references.values {
             plan.content.roles.entry(role).or_default().references += 1;
-            let mapped = catalog.contains(role, &reference);
+            let mapped = catalog.contains_in_world(role, &reference, &map, owner_class);
             role_distinct
                 .entry((role, reference.clone()))
                 .and_modify(|all| *all &= mapped)

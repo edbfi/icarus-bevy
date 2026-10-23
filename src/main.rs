@@ -117,6 +117,7 @@ enum Command {
     /// blockers. `--catalog` resolves references against a native content
     /// catalog file (empty without it); `--data-pak` also resolves data-row
     /// references against the official server's data tables (F-840).
+    /// Catalog format 2 scopes paths/tiles to maps and variables to classes.
     /// Nothing is ever written; the destination is not touched.
     ImportSave {
         #[arg(long)]

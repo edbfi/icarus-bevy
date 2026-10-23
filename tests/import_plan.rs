@@ -1120,7 +1120,7 @@ fn a_catalog_resolves_each_reference_only_in_the_roles_it_lists() {
 #[test]
 fn malformed_catalogs_fail_without_naming_their_references() {
     for (text, expected) in [
-        ("format = 2\n", "unsupported content catalog format"),
+        ("format = 3\n", "unsupported content catalog format"),
         (
             "format = 1\n[references]\ninstance_name = [\"SecretObject\"]\n",
             "invalid content catalog",
@@ -1695,4 +1695,385 @@ fn generic_root_rows_cannot_overwrite_an_unmapped_prospect_occurrence() {
             unmapped_distinct: 1,
         }
     );
+}
+
+// Authored declarations only. They do not provide runtime archetypes or world
+// geometry, and a plan passing these checks must still never write a world.
+const SCOPED_CATALOG: &str = r#"
+format = 2
+[references]
+data_row = ["PrivateRow"]
+unclassified = ["PrivateMapA", "PrivateMapMissing", "PrivateVariable", "PrivateTile"]
+[[world.classes]]
+name = "PrivateClassA"
+variables = ["PrivateVariable"]
+[[world.classes]]
+name = "PrivateClassB"
+[[world.maps]]
+name = "PrivateMapA"
+tiles = ["PrivateTile"]
+[[world.maps.actors]]
+path = "/Game/Private/Placement"
+class = "PrivateClassA"
+[[world.maps]]
+name = "PrivateMapB"
+[[world.maps.actors]]
+path = "/Game/Private/Placement"
+class = "PrivateClassB"
+"#;
+
+fn scoped_recorder(class: Option<&str>, path: Option<&str>, variable: bool, tile: bool) -> Vec<u8> {
+    let mut fields = Vec::new();
+    if let Some(class) = class {
+        fields.push(tag("ActorClassName", "NameProperty", &[0], &fstring(class)));
+    }
+    if let Some(path) = path {
+        fields.push(tag("ActorPathName", "StrProperty", &[0], &fstring(path)));
+    }
+    if variable {
+        fields.push(struct_tag(
+            "Variables",
+            "ActorBoolVariableRecord",
+            &[
+                tag(
+                    "VariableName",
+                    "NameProperty",
+                    &[0],
+                    &fstring("PrivateVariable"),
+                ),
+                end(),
+            ]
+            .concat(),
+        ));
+    }
+    if tile {
+        fields.push(struct_tag(
+            "Tile",
+            "FLODTileRecorderRecord",
+            &[
+                tag("TileName", "NameProperty", &[0], &fstring("PrivateTile")),
+                end(),
+            ]
+            .concat(),
+        ));
+    }
+    fields.push(end());
+    fields.push(vec![0; 4]);
+    recorder_bytes(ACTOR, &fields.concat())
+}
+
+#[test]
+fn scoped_world_references_require_the_saved_map_and_owner_class() {
+    let catalog = ContentCatalog::parse(SCOPED_CATALOG).unwrap();
+    assert!(!catalog.is_empty());
+    assert_eq!(catalog.len(), 9);
+    let recorder = scoped_recorder(
+        Some("PrivateClassA"),
+        Some("/Game/Private/Placement"),
+        true,
+        true,
+    );
+    let source = envelope_with_root_content(
+        2,
+        &[recorder],
+        None,
+        None,
+        Some("PrivateMapA"),
+        Some("PrivateRow"),
+        &[],
+    );
+    let plan = plan_import(source.as_slice(), &catalog).unwrap();
+    assert!(plan.importable, "{:?}", plan.blockers);
+    assert!(!plan.world_imported);
+    assert_eq!(
+        plan.content.roles[&ContentRole::WorldMap].unmapped_distinct,
+        0
+    );
+    assert_eq!(plan.content.distinct, 6);
+    assert_eq!(plan.catalog_references, 9);
+    for text in [
+        format!("{catalog:?}"),
+        format!("{plan:?}"),
+        serde_json::to_string(&plan).unwrap(),
+    ] {
+        assert!(!text.contains("Private"), "{text}");
+    }
+
+    // The path exists in both maps, but has a different class in the second;
+    // its tile is absent there. Flat unclassified entries cannot override it.
+    let recorder = scoped_recorder(
+        Some("PrivateClassA"),
+        Some("/Game/Private/Placement"),
+        true,
+        true,
+    );
+    let source =
+        envelope_with_root_content(2, &[recorder], None, None, Some("PrivateMapB"), None, &[]);
+    let plan = plan_import(source.as_slice(), &catalog).unwrap();
+    assert_eq!(
+        plan.blockers,
+        vec![ImportBlocker::UnmappedContent {
+            distinct: 2,
+            references: 2
+        }]
+    );
+    assert_eq!(
+        plan.content.roles[&ContentRole::ActorPath].unmapped_distinct,
+        1
+    );
+    assert_eq!(
+        plan.content.roles[&ContentRole::WorldTile].unmapped_distinct,
+        1
+    );
+
+    // This class matches the second placement, but does not declare the variable.
+    let recorder = scoped_recorder(
+        Some("PrivateClassB"),
+        Some("/Game/Private/Placement"),
+        true,
+        false,
+    );
+    let source =
+        envelope_with_root_content(2, &[recorder], None, None, Some("PrivateMapB"), None, &[]);
+    let plan = plan_import(source.as_slice(), &catalog).unwrap();
+    assert_eq!(
+        plan.blockers,
+        vec![ImportBlocker::UnmappedContent {
+            distinct: 1,
+            references: 1
+        }]
+    );
+    assert_eq!(
+        plan.content.roles[&ContentRole::ActorPath].unmapped_distinct,
+        0
+    );
+    assert_eq!(
+        plan.content.roles[&ContentRole::ClassVariable].unmapped_distinct,
+        1
+    );
+}
+
+#[test]
+fn scoped_resolution_keeps_every_occurrence_in_its_own_class_context() {
+    let catalog = ContentCatalog::parse(SCOPED_CATALOG).unwrap();
+    let a = scoped_recorder(Some("PrivateClassA"), None, true, false);
+    let b = scoped_recorder(Some("PrivateClassB"), None, true, false);
+    for recorders in [[a.clone(), b.clone()], [b.clone(), a.clone()]] {
+        let source =
+            envelope_with_root_content(2, &recorders, None, None, Some("PrivateMapA"), None, &[]);
+        let plan = plan_import(source.as_slice(), &catalog).unwrap();
+        assert_eq!(
+            plan.blockers,
+            vec![ImportBlocker::UnmappedContent {
+                distinct: 1,
+                references: 1
+            }]
+        );
+        assert_eq!(
+            plan.content.roles[&ContentRole::ClassVariable],
+            RoleCount {
+                references: 2,
+                distinct: 1,
+                unmapped_distinct: 1,
+            }
+        );
+        assert_eq!(plan.classes["C001"].unmapped_references, 1);
+    }
+}
+
+#[test]
+fn scoped_world_context_cannot_be_missing_or_inferred_from_a_matching_name() {
+    let catalog = ContentCatalog::parse(SCOPED_CATALOG).unwrap();
+    for map in [
+        None,
+        Some(""),
+        Some("PrivateMapMissing"),
+        Some("privatemapa"),
+    ] {
+        let source = envelope_with_root_content(
+            2,
+            &[scoped_recorder(None, None, false, false)],
+            None,
+            None,
+            map,
+            None,
+            &[],
+        );
+        let plan = plan_import(source.as_slice(), &catalog).unwrap();
+        assert!(!plan.importable);
+        if map.is_none_or(str::is_empty) {
+            assert_eq!(plan.blockers, vec![ImportBlocker::MissingWorldMap]);
+        } else {
+            assert_eq!(
+                plan.blockers,
+                vec![ImportBlocker::UnmappedContent {
+                    distinct: 1,
+                    references: 1
+                }]
+            );
+            assert_eq!(
+                plan.content.roles[&ContentRole::WorldMap].unmapped_distinct,
+                1
+            );
+        }
+    }
+    let source = envelope_with_root_content(
+        2,
+        &[scoped_recorder(
+            None,
+            Some("/Game/Private/Placement"),
+            true,
+            false,
+        )],
+        None,
+        None,
+        Some("PrivateMapA"),
+        None,
+        &[],
+    );
+    let plan = plan_import(source.as_slice(), &catalog).unwrap();
+    assert_eq!(
+        plan.blockers,
+        vec![ImportBlocker::UnmappedContent {
+            distinct: 2,
+            references: 2
+        }]
+    );
+}
+
+#[test]
+fn scoped_catalog_rejects_legacy_world_role_bypasses() {
+    for role in ["actor_class", "actor_path", "world_tile", "class_variable"] {
+        let text = SCOPED_CATALOG.replace(
+            "[references]",
+            &format!("[references]\n{role} = [\"PrivateBypass\"]"),
+        );
+        let error = format!("{:#}", ContentCatalog::parse(&text).unwrap_err());
+        assert!(error.contains("scoped world roles"), "{error}");
+        assert!(!error.contains("Private"));
+    }
+    for text in ["format = 2", "format = 1\n[world]"] {
+        let error = ContentCatalog::parse(text).unwrap_err().to_string();
+        assert!(
+            error.contains("format 2 requires world declarations"),
+            "{error}"
+        );
+    }
+    let oversized = format!("format = 1\n#{}", "x".repeat(4 * 1024 * 1024));
+    assert!(
+        ContentCatalog::parse(&oversized)
+            .unwrap_err()
+            .to_string()
+            .contains("4 MiB")
+    );
+}
+
+#[test]
+fn installed_rows_cannot_resolve_scoped_world_references() {
+    let root = TempDir::new().unwrap();
+    let path = root.path().join("rows.pak");
+    fs::write(
+        &path,
+        pak_writer::official_pak(&[(
+            "D_Authored.json",
+            pak_writer::table_json(&["PrivateMissingClass"]),
+        )]),
+    )
+    .unwrap();
+    let mut pak = icarus_bevy::data_pak::DataPak::open(&path).unwrap();
+    let (catalog, ..) = ContentCatalog::parse(SCOPED_CATALOG)
+        .unwrap()
+        .with_data_tables(&mut pak)
+        .unwrap();
+    let source = envelope_with_root_content(
+        2,
+        &[scoped_recorder(
+            Some("PrivateMissingClass"),
+            None,
+            false,
+            false,
+        )],
+        None,
+        None,
+        Some("PrivateMapA"),
+        Some("PrivateMissingClass"),
+        &[],
+    );
+    let plan = plan_import(source.as_slice(), &catalog).unwrap();
+    assert_eq!(
+        plan.content.roles[&ContentRole::DataRow].unmapped_distinct,
+        0
+    );
+    assert_eq!(
+        plan.content.roles[&ContentRole::ActorClass].unmapped_distinct,
+        1
+    );
+    assert_eq!(
+        plan.blockers,
+        vec![ImportBlocker::UnmappedContent {
+            distinct: 1,
+            references: 1
+        }]
+    );
+}
+
+#[test]
+fn scoped_catalog_cli_reports_context_and_never_writes_an_import() {
+    let root = TempDir::new().unwrap();
+    let source = root.path().join("source.json");
+    let catalog = root.path().join("world.toml");
+    let destination = root.path().join("destination");
+    let bytes = envelope_with_root_content(
+        2,
+        &[scoped_recorder(
+            Some("PrivateClassA"),
+            Some("/Game/Private/Placement"),
+            true,
+            true,
+        )],
+        None,
+        None,
+        Some("PrivateMapA"),
+        None,
+        &[],
+    );
+    fs::write(&source, &bytes).unwrap();
+    fs::write(&catalog, SCOPED_CATALOG).unwrap();
+    for (existing, dry_run) in [(false, true), (false, false), (true, true), (true, false)] {
+        let sentinel = destination.join("sentinel");
+        if existing && !destination.exists() {
+            fs::create_dir(&destination).unwrap();
+            fs::write(&sentinel, b"prior world").unwrap();
+        }
+        let mut command = Command::new(env!("CARGO_BIN_EXE_icarus-server"));
+        command
+            .arg("import-save")
+            .arg("--source")
+            .arg(&source)
+            .arg("--destination")
+            .arg(&destination)
+            .arg("--catalog")
+            .arg(&catalog);
+        if dry_run {
+            command.arg("--dry-run");
+        }
+        let output = command.output().unwrap();
+        assert_eq!(output.status.success(), dry_run);
+        if dry_run {
+            let report: Value = serde_json::from_slice(&output.stdout).unwrap();
+            assert_eq!(report["importable"], true);
+            assert_eq!(report["world_imported"], false);
+            assert_eq!(report["content"]["roles"]["world_map"]["references"], 1);
+        } else {
+            assert!(String::from_utf8_lossy(&output.stderr).contains("writing is not implemented"));
+        }
+        assert_eq!(destination.exists(), existing);
+        if existing {
+            assert_eq!(fs::read(&sentinel).unwrap(), b"prior world");
+            assert_eq!(fs::read_dir(&destination).unwrap().count(), 1);
+        }
+        assert_eq!(fs::read(&source).unwrap(), bytes);
+        assert!(!String::from_utf8_lossy(&output.stdout).contains("Private"));
+        assert!(!String::from_utf8_lossy(&output.stderr).contains("Private"));
+    }
 }
