@@ -515,7 +515,7 @@ impl SnapshotStore {
     pub fn save_new(&mut self, snapshot: &WorldSnapshot) -> Result<SaveReceipt> {
         ensure!(
             self.load()?.is_none(),
-            "destination already contains a world"
+            "destination already contains a world; refusing to overwrite it"
         );
         self.save(snapshot)
     }

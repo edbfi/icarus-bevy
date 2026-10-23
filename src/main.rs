@@ -327,16 +327,12 @@ fn preserve_save(file: std::fs::File, data_dir: &std::path::Path) -> Result<serd
     let preserved = icarus_bevy::prospect::preserve(file, PreserveLimits::default())?;
     let summary = serde_json::to_value(preserved.preserved.summary())?;
     let mut store = SnapshotStore::open(data_dir)?;
-    ensure!(
-        store.load()?.is_none(),
-        "data directory already holds a native world; refusing to overwrite it"
-    );
     let snapshot = WorldSnapshot {
         schema_version: SNAPSHOT_SCHEMA_REFERENCED,
         preserved_prospect: Some(std::sync::Arc::new(preserved.preserved)),
         ..WorldSnapshot::default()
     };
-    let receipt = store.save(&snapshot)?;
+    let receipt = store.save_new(&snapshot)?;
     Ok(json!({
         "event": "preserved_world_created",
         "validation": "experimental_lossless_preservation",
