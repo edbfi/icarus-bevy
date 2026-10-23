@@ -34,6 +34,9 @@ const TREE_LIMITS: TreeLimits = TreeLimits {
 
 /// Retained allocation allowances, not a process RSS or peak-memory guarantee.
 /// Envelope, staging and preservation retain their independent input ceilings.
+/// The defaults also govern `plan_import`, `planned_actors` and `import-save`.
+/// Exhaustion rejects the whole candidate, even when a dropped recorder caused
+/// it: resource-policy errors are never downgraded to optional typing outcomes.
 #[derive(Clone, Copy, Debug)]
 pub struct CandidateLimits {
     pub owned_bytes: usize,

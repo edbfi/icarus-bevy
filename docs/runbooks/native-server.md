@@ -245,8 +245,12 @@ borrow it for `plan_decoded_import`, `planned_actors_from_candidate` and source
 preservation (F-920). Candidates retain migrated roots and all recorder outcomes,
 including dropped records. Unknown enum mappings remain explicit. The default
 policy allows 256 MiB of conservative owned-allocation charges and 1,048,576
-typed elements across all recorders; exceeding either rejects the candidate.
-These are implementation allowances, not peak-memory or RSS guarantees.
+typed elements across all recorders. `import-save`, `plan_import` and
+`planned_actors` inherit these defaults. Exhaustion rejects the entire candidate,
+including when a dropped recorder causes it; resource-policy errors are never
+downgraded to optional typing outcomes. Headroom for the 15 supplied prospects
+has not been measured: `import-save` may reject inputs it previously planned
+(F-920). These are implementation allowances, not peak-memory or RSS guarantees.
 
 Value meanings and original-server round trips remain unvalidated. The
 [synthetic workload](synthetic-workload.md) exercises native scheduling and

@@ -5,8 +5,8 @@
 //! The plan runs the importer acceptance conditions of the prospect-loading
 //! spec in order: stage and validate the full schema (`F-403`, `F-715` ..
 //! `F-738`), keep each recorder's `Validate` decision, type every recorder
-//! value losslessly ([`crate::experimental::typed_value::TypedComponent`]), read the base recorder fields every
-//! class shares, and resolve each content reference (row names, object names,
+//! value losslessly, read the base recorder fields every class shares, and
+//! resolve each content reference (row names, object names,
 //! package paths) through a native [`ContentCatalog`]. Unmapped content is an
 //! incompatibility, never silently dropped. The plan never writes, and reports
 //! counts only: no class strings, names, paths or values.
@@ -597,8 +597,9 @@ pub struct ImportPlan {
 }
 
 /// Plan the import of one supplied prospect envelope against `catalog`.
-/// Fails on any staging error; otherwise always returns a plan whose
-/// `blockers` list every reason it is not importable.
+/// Fails on staging or candidate resource-policy errors, including exhaustion
+/// while typing a dropped recorder. Otherwise returns a plan whose `blockers`
+/// list every assessed reason it is not importable.
 pub fn plan_import(reader: impl Read, catalog: &ContentCatalog) -> Result<ImportPlan> {
     let candidate = DecodedImportCandidate::decode(reader)?;
     plan_decoded_import(&candidate, catalog)

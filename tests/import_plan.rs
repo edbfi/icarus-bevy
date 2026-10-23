@@ -2283,3 +2283,103 @@ fn scoped_catalog_cli_reports_context_and_never_writes_an_import() {
         assert!(!String::from_utf8_lossy(&output.stderr).contains("Private"));
     }
 }
+
+// Each body is below its existing framing limit and independently fits the
+// default candidate policy. Together the scalar elements exceed the new
+// aggregate ceiling. These bytes are authored, not a supplied-save sample.
+fn dropped_budget_sources(version: i32, class: &str) -> (Vec<u8>, Vec<u8>) {
+    let count = icarus_bevy::import_candidate::MAX_CANDIDATE_TYPED_ELEMENTS / 2 + 1;
+    let body = [
+        tag(
+            "PrivateBudgetArray",
+            "ArrayProperty",
+            &[fstring("ByteProperty"), vec![0]].concat(),
+            &[
+                i32::try_from(count).unwrap().to_le_bytes().to_vec(),
+                vec![7; count],
+            ]
+            .concat(),
+        ),
+        end(),
+        vec![0; 4],
+    ]
+    .concat();
+    let record = recorder_bytes(class, &body);
+    (
+        envelope(version, std::slice::from_ref(&record)),
+        envelope(version, &[record.clone(), record]),
+    )
+}
+
+#[test]
+fn dropped_recorders_still_obey_the_whole_candidate_budget() {
+    use icarus_bevy::experimental::typed_value::TypedBudgetExceeded;
+    for (version, class) in [(0, "/Script/Icarus.Unregistered"), (2, NO_RECORDER)] {
+        let (single, pair) = dropped_budget_sources(version, class);
+        let candidate = DecodedImportCandidate::decode(single.as_slice()).unwrap();
+        assert!(!candidate.recorders()[0].decision().retained);
+        assert!(candidate.recorders()[0].typing().lossless().is_some());
+        let plan = plan_decoded_import(&candidate, &ContentCatalog::empty()).unwrap();
+        assert_eq!(plan.blockers, vec![ImportBlocker::NoRetainedRecorders]);
+        assert_eq!(plan.recorders.typed, 0);
+        drop(candidate);
+        // Policy exhaustion cannot silently turn dropped typing into an
+        // optional failure, or return a partial candidate/report instead.
+        assert!(
+            DecodedImportCandidate::decode(pair.as_slice())
+                .unwrap_err()
+                .is::<TypedBudgetExceeded>()
+        );
+        assert!(
+            plan_import(pair.as_slice(), &ContentCatalog::empty())
+                .unwrap_err()
+                .is::<TypedBudgetExceeded>()
+        );
+        assert!(
+            planned_actors(pair.as_slice())
+                .err()
+                .unwrap()
+                .is::<TypedBudgetExceeded>()
+        );
+    }
+}
+
+#[test]
+fn cli_budget_refusal_for_dropped_records_never_opens_the_destination() {
+    let root = TempDir::new().unwrap();
+    let source = root.path().join("source.json");
+    let destination = root.path().join("destination");
+    let (_, bytes) = dropped_budget_sources(0, "/Script/Icarus.Unregistered");
+    fs::write(&source, &bytes).unwrap();
+    for (existing, dry_run) in [(false, true), (false, false), (true, true), (true, false)] {
+        let sentinel = destination.join("sentinel");
+        if existing && !destination.exists() {
+            fs::create_dir(&destination).unwrap();
+            fs::write(&sentinel, b"prior world").unwrap();
+        }
+        let mut command = Command::new(env!("CARGO_BIN_EXE_icarus-server"));
+        command
+            .args(["import-save", "--source"])
+            .arg(&source)
+            .arg("--destination")
+            .arg(&destination);
+        if dry_run {
+            command.arg("--dry-run");
+        }
+        let output = command.output().unwrap();
+        assert!(!output.status.success());
+        assert!(output.stdout.is_empty());
+        let error = String::from_utf8_lossy(&output.stderr);
+        assert!(
+            error.contains("typed allocation budget exceeded"),
+            "{error}"
+        );
+        assert!(!error.contains("Private") && !error.contains("Unregistered"));
+        assert_eq!(destination.exists(), existing);
+        if existing {
+            assert_eq!(fs::read(&sentinel).unwrap(), b"prior world");
+            assert_eq!(fs::read_dir(&destination).unwrap().count(), 1);
+        }
+        assert_eq!(fs::read(&source).unwrap(), bytes);
+    }
+}
