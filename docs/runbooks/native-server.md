@@ -134,18 +134,12 @@ fails before submission if an entity with a domain ID lacks its position
 (F-482). Schema 1 holds records and the clock (64 MiB per generation); a world
 with a preserved prospect saves schema 3, referencing a write-once,
 digest-verified `preserved-<sha256>.bin` sidecar; schema 2 still loads (F-567).
-Schema 4 embeds authored definitions and their verified identity, full poses,
-typed variables and fixed placement identities, optionally sharing that sidecar
-(F-919). Schema 5 adds the accepted authored C001 inert-fixture metadata and
-requires its unchanged source sidecar (F-921). Schema 6 adds authored relationship
-declarations and mutable foundation edges; C001 provenance is optional (F-922).
-Schema 7 adds explicit live/dormant owner slots and completed restore state (F-923).
-Schemas 3–7 share a 64 MiB + 4 KiB aggregate generation cap, including all inline
-sections and the sidecar reference. Preparation rejects combined encodings over
-that cap even when each section fits its own limit. Unsupported schemas fail closed.
-
-See [authored native worlds](authored-worlds.md) for spatial creation, the
-strict C001 inert fixture, foundation relationships and owner lifecycle.
+Schemas 4–9 retain independently authored spatial worlds, C001 fixture provenance,
+relationships, owner lifecycle and scalar use-gate state (F-919, F-922, F-923,
+F-925). Their contracts and creation commands are in
+[authored native worlds](authored-worlds.md). Schemas 3–9 share a 64 MiB + 4 KiB
+aggregate generation cap, including inline sections and the sidecar reference.
+Unsupported schemas fail closed; preservation alone grants no import acceptance.
 
 Each generation is checksummed and synchronized before the manifest is
 atomically published; two committed generations are kept, and a corrupt

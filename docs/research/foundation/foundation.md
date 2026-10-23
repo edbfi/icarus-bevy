@@ -28,13 +28,13 @@ save-worker loss stop safely (F-869), and signals trigger a final save within a
 bounded shutdown (F-869).
 
 Authored worlds retain full spatial state through schema 4 (F-919), strictly
-bound C001 inert-fixture provenance through schema 5 (F-924), and edited
+bound C001 inert-fixture provenance through schema 5 (F-925), and edited
 foundation links through schema 6 (F-922). Schema 7 adds atomic owner find/spawn/
 replacement, explicit dormant slots and durable retry completion (F-923).
 Schema 8 connects authored C001 policies and poses to that lifecycle while
-retaining immutable source provenance across later edits and reload (F-924).
-Preparation rejects unsupported
-state; capture rejects damaged membership or activation contexts. Publication
+retaining immutable source provenance. Schema 9 adds authored Bool/I32 use-gate
+actions; consumed and disabled state survives reload without source replay
+(F-925). Preparation rejects unsupported state; capture rejects damaged membership or activation contexts. Publication
 faults and modeled crashes preserve acknowledged state. These contracts establish
 neither ordinary official-save import, physics/navigation, C009 restoration nor
 client compatibility; procedures are in the
@@ -98,4 +98,4 @@ windows expired (F-218).
 
 ## Artifacts
 
-M-001, M-002, M-006, M-009, M-010, M-015..M-022, M-076, M-078, M-109..M-117, M-131..M-165, M-174, M-175, M-178, M-182..M-184, M-191, M-192, M-200, M-203, M-204, M-207, M-208, M-212..M-220, M-225, M-240, M-241, M-251, M-252, M-269, M-270, M-271, M-277, M-311, M-391, M-397..M-399, M-411..M-419, M-452..M-454, M-471..M-475, M-577, M-578, M-770, M-771, M-809, M-810, M-812, M-861, M-862, M-864..M-867, M-870, M-898, M-899, M-915..M-918, M-926..M-939.
+M-001, M-002, M-006, M-009, M-010, M-015..M-022, M-076, M-078, M-109..M-117, M-131..M-165, M-174, M-175, M-178, M-182..M-184, M-191, M-192, M-200, M-203, M-204, M-207, M-208, M-212..M-220, M-225, M-240, M-241, M-251, M-252, M-269, M-270, M-271, M-277, M-311, M-391, M-397..M-399, M-411..M-419, M-452..M-454, M-471..M-475, M-577, M-578, M-770, M-771, M-809, M-810, M-812, M-861, M-862, M-864..M-867, M-870, M-898, M-899, M-915..M-918, M-926..M-943.

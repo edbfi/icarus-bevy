@@ -1060,9 +1060,11 @@ pub fn prepare_owner_restore(
     ensure!(
         matches!(
             base.schema_version,
-            SNAPSHOT_SCHEMA_LIFECYCLE | SNAPSHOT_SCHEMA_C001_OWNERS
+            SNAPSHOT_SCHEMA_LIFECYCLE
+                | SNAPSHOT_SCHEMA_C001_OWNERS
+                | crate::simulation::SNAPSHOT_SCHEMA_C001_SCALAR_OWNERS
         ) && base.native_import.is_none(),
-        "native restore requires schema 7 or 8 without inert import metadata"
+        "native restore requires schema 7, 8 or 9 without inert import metadata"
     );
     // Reject caller-owned spare allocations before validation clones definitions
     // or replays schema-8 provenance, and before either retry path clones base.
@@ -1077,6 +1079,12 @@ pub fn prepare_owner_restore(
     }
     if let Some(metadata) = &base.native_owner_import {
         metadata.validate_bounds()?;
+    }
+    if let Some(metadata) = &base.native_scalar_owner_import {
+        metadata.validate_bounds()?;
+    }
+    if let Some(contracts) = &base.native_scalar_contracts {
+        contracts.validate_bounds()?;
     }
     ensure!(
         base.entities.capacity() <= MAX_NATIVE_PLACEMENTS,

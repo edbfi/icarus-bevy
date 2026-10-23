@@ -206,6 +206,8 @@ fn preserved_snapshot(tick: u64, preserved: &Arc<PreservedSection>) -> WorldSnap
         native_relationships: None,
         native_lifecycle: None,
         native_owner_import: None,
+        native_scalar_contracts: None,
+        native_scalar_owner_import: None,
     }
 }
 

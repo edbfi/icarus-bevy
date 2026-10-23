@@ -853,6 +853,8 @@ pub fn prepare_c001_inert_import(
         native_world: Some(native),
         native_import: Some(metadata),
         native_owner_import: None,
+        native_scalar_contracts: None,
+        native_scalar_owner_import: None,
         native_relationships: None,
         native_lifecycle: None,
     };

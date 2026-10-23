@@ -15,6 +15,7 @@ use crate::{
     config::ServerConfig,
     metrics::LatencyHistogram,
     native_c001_owners::C001OwnerImportMetadataV1,
+    native_c001_scalar_owners::C001ScalarOwnerImportMetadataV1,
     native_import::C001InertImportMetadataV1,
     native_lifecycle::{
         CompiledNativeLifecycle, LifecycleSnapshot, validate_lifecycle_relationships,
@@ -22,6 +23,7 @@ use crate::{
     native_lifecycle_runtime::NativeLifecycleContext,
     native_relationships::{CompiledNativeRelationships, NativeRelationshipsSnapshot},
     native_runtime::{NativeRelationshipsContext, NativeWorldContext},
+    native_scalar_owners::{CompiledScalarOwnerContracts, ScalarOwnerContractsSnapshotV1},
     native_world::{NativeWorldSnapshot, PreparedNativeWorld},
     preservation::PreservedSection,
 };
@@ -47,6 +49,8 @@ pub const SNAPSHOT_SCHEMA_RELATIONSHIPS: u32 = 6;
 pub const SNAPSHOT_SCHEMA_LIFECYCLE: u32 = 7;
 /// Strict authored C001 owner restoration, with immutable source provenance.
 pub const SNAPSHOT_SCHEMA_C001_OWNERS: u32 = 8;
+/// Authored Bool/I32 owner behavior with strict source interpretation.
+pub const SNAPSHOT_SCHEMA_C001_SCALAR_OWNERS: u32 = 9;
 
 /// Stable domain identity, independent of Bevy's runtime entity allocation.
 #[derive(Component, Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
@@ -71,12 +75,12 @@ pub struct WorldSnapshot {
     #[serde(deserialize_with = "crate::json::objects")]
     pub entities: Vec<EntityRecord>,
     /// Lossless, value-opaque supplied-save state carried unchanged between
-    /// generations; required in schemas 2, 3, 5 and 8, optional in 4, 6 and 7.
+    /// generations; required in schemas 2, 3, 5, 8 and 9, optional in 4, 6 and 7.
     /// Shared and held compactly as its verified native encoding. Schema 5
     /// separately records its explicitly accepted authored interpretation.
     /// Serde writes the section inline under the stored `schema_version`, which is
     /// a loadable document only for schema 2; the snapshot store writes schemas
-    /// 3 through 8 itself, with a sidecar reference.
+    /// 3 through 9 itself, with a sidecar reference.
     #[serde(
         default,
         skip_serializing_if = "Option::is_none",
@@ -95,6 +99,10 @@ pub struct WorldSnapshot {
     pub native_lifecycle: Option<LifecycleSnapshot>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub native_owner_import: Option<C001OwnerImportMetadataV1>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub native_scalar_contracts: Option<ScalarOwnerContractsSnapshotV1>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub native_scalar_owner_import: Option<C001ScalarOwnerImportMetadataV1>,
 }
 
 impl Default for WorldSnapshot {
@@ -109,15 +117,25 @@ impl Default for WorldSnapshot {
             native_relationships: None,
             native_lifecycle: None,
             native_owner_import: None,
+            native_scalar_contracts: None,
+            native_scalar_owner_import: None,
         }
     }
 }
 
 impl WorldSnapshot {
     pub fn validate(&self) -> Result<()> {
+        if self.schema_version != SNAPSHOT_SCHEMA_C001_SCALAR_OWNERS {
+            ensure!(
+                self.native_scalar_contracts.is_none() && self.native_scalar_owner_import.is_none(),
+                "this snapshot schema cannot hold scalar owner state"
+            );
+        }
         if matches!(
             self.schema_version,
-            SNAPSHOT_SCHEMA_LIFECYCLE | SNAPSHOT_SCHEMA_C001_OWNERS
+            SNAPSHOT_SCHEMA_LIFECYCLE
+                | SNAPSHOT_SCHEMA_C001_OWNERS
+                | SNAPSHOT_SCHEMA_C001_SCALAR_OWNERS
         ) {
             ensure!(
                 self.entities.is_empty(),
@@ -141,7 +159,29 @@ impl WorldSnapshot {
                 lifecycle,
                 self.native_relationships.as_ref(),
             )?;
-            if self.schema_version == SNAPSHOT_SCHEMA_C001_OWNERS {
+            if self.schema_version == SNAPSHOT_SCHEMA_C001_SCALAR_OWNERS {
+                ensure!(
+                    self.native_owner_import.is_none(),
+                    "schema 9 cannot hold owner import metadata"
+                );
+                let contracts = self
+                    .native_scalar_contracts
+                    .as_ref()
+                    .context("schema 9 requires scalar contracts")?;
+                CompiledScalarOwnerContracts::from_snapshot(contracts, native)?
+                    .validate_native(native)?;
+                self.native_scalar_owner_import
+                    .as_ref()
+                    .context("schema 9 requires scalar import metadata")?
+                    .validate(
+                        native,
+                        lifecycle,
+                        contracts,
+                        self.preserved_prospect
+                            .as_deref()
+                            .context("schema 9 requires its preserved source")?,
+                    )?;
+            } else if self.schema_version == SNAPSHOT_SCHEMA_C001_OWNERS {
                 self.native_owner_import
                     .as_ref()
                     .context("schema 8 requires owner import metadata")?
@@ -483,7 +523,9 @@ pub fn build_app(config: &ServerConfig, snapshot: &WorldSnapshot) -> Result<App>
     }
     if matches!(
         snapshot.schema_version,
-        SNAPSHOT_SCHEMA_LIFECYCLE | SNAPSHOT_SCHEMA_C001_OWNERS
+        SNAPSHOT_SCHEMA_LIFECYCLE
+            | SNAPSHOT_SCHEMA_C001_OWNERS
+            | SNAPSHOT_SCHEMA_C001_SCALAR_OWNERS
     ) {
         crate::native_lifecycle_runtime::activate_lifecycle(app.world_mut(), snapshot)?;
     } else if let Some(native) = &snapshot.native_world {
@@ -600,6 +642,8 @@ pub fn capture(world: &mut World) -> Result<WorldSnapshot> {
             native_relationships: relationships,
             native_lifecycle: None,
             native_owner_import: None,
+            native_scalar_contracts: None,
+            native_scalar_owner_import: None,
         };
         // capture_native validates every record against the immutable loaded
         // catalog. Storage independently validates the serialized snapshot;
@@ -640,6 +684,8 @@ pub fn capture(world: &mut World) -> Result<WorldSnapshot> {
         native_relationships: None,
         native_lifecycle: None,
         native_owner_import: None,
+        native_scalar_contracts: None,
+        native_scalar_owner_import: None,
     };
     snapshot.validate()?;
     Ok(snapshot)

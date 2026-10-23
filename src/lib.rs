@@ -7,11 +7,17 @@ pub mod import_plan;
 mod json;
 pub mod metrics;
 pub mod native_c001_owners;
+pub mod native_c001_scalar_owners;
 pub mod native_import;
 pub mod native_lifecycle;
 pub mod native_lifecycle_runtime;
 pub mod native_relationships;
 pub mod native_runtime;
+pub mod native_scalar_owners;
+
+// Reuse the complete authored source fixture in storage crash-model unit tests.
+#[cfg(test)]
+extern crate self as icarus_bevy;
 pub mod native_world;
 pub mod network;
 pub mod pawn_stats;
@@ -19,6 +25,9 @@ pub mod persistence;
 pub mod preservation;
 pub mod prospect;
 pub mod replication;
+#[cfg(test)]
+#[path = "../tests/common/c001_scalar_owners.rs"]
+mod scalar_owner_fixture;
 pub mod session_replication;
 pub mod simulation;
 pub mod steam_fetch;
