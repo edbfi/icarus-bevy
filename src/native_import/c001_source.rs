@@ -3,7 +3,7 @@ use super::{PROFILE, SemanticImportCategory, SemanticResult, error, exact, requi
 use crate::{
     experimental::{
         archive::{ByteOrder, decode_string, encode_string},
-        component::{MAX_BOUNDED_COMPONENT_BYTES, read_base_component_with_limit},
+        component::{BaseComponent, MAX_BOUNDED_COMPONENT_BYTES, read_base_component_with_limit},
         recorders::{StagedRootMigration, StagedRootValues},
         restore_rules::{LobbyPrivacy, OwnerResolvePolicy},
         tagged::{ParsedRecord, PropertyRecord, TagKind, read_record, read_root},
@@ -362,17 +362,17 @@ pub(crate) fn source_owner(
     index: usize,
     profile: C001SourceProfile,
 ) -> SemanticResult<SourceOwner> {
-    parse_owner(bytes, index, profile, |_| Ok(false))
+    let component = read_base_component_with_limit(bytes, PROFILE, MAX_BOUNDED_COMPONENT_BYTES)
+        .map_err(|_| error(Some(index), "component", SemanticImportCategory::Header))?;
+    parse_owner(&component, index, profile, |_| Ok(false))
 }
 
 fn parse_owner(
-    bytes: &[u8],
+    component: &BaseComponent<'_>,
     index: usize,
     profile: C001SourceProfile,
     mut extra: impl FnMut(&PropertyRecord<'_>) -> SemanticResult<bool>,
 ) -> SemanticResult<SourceOwner> {
-    let component = read_base_component_with_limit(bytes, PROFILE, MAX_BOUNDED_COMPONENT_BYTES)
-        .map_err(|_| error(Some(index), "component", SemanticImportCategory::Header))?;
     require(
         component.trailer() == [0; 4],
         Some(index),
@@ -562,24 +562,25 @@ pub(crate) fn source_scalar_owner(
     let mut enabled = None;
     let mut remaining_uses = None;
     let owner = parse_owner(
-        bytes,
+        &component,
         index,
         C001SourceProfile::AuthoredScalarOwnersV1,
         |p| {
             if p.name == layout.definition().enabled.array_name {
-                let (name, value) = scalar_record(p, index, &layout.definition().enabled, true)?;
-                let crate::native_world::NativeValue::Bool(value) = value else {
-                    unreachable!()
-                };
-                enabled = Some((name, value));
+                enabled = Some(scalar_record(
+                    p,
+                    index,
+                    &layout.definition().enabled,
+                    scalar_bool,
+                )?);
                 Ok(true)
             } else if p.name == layout.definition().remaining_uses.array_name {
-                let (name, value) =
-                    scalar_record(p, index, &layout.definition().remaining_uses, false)?;
-                let crate::native_world::NativeValue::I32(value) = value else {
-                    unreachable!()
-                };
-                remaining_uses = Some((name, value));
+                remaining_uses = Some(scalar_record(
+                    p,
+                    index,
+                    &layout.definition().remaining_uses,
+                    |field, index| source_int(field, index, "scalar.Int"),
+                )?);
                 Ok(true)
             } else {
                 Ok(false)
@@ -608,14 +609,27 @@ pub(crate) fn source_scalar_owner(
         remaining_uses,
     })
 }
-fn scalar_record(
+fn scalar_bool(field: &PropertyRecord<'_>, index: usize) -> SemanticResult<bool> {
+    require(
+        field.tag.kind == TagKind::Bool
+            && field.tag.payload.is_empty()
+            && field.bool_value.is_some(),
+        Some(index),
+        "scalar.Bool",
+        SemanticImportCategory::Type,
+    )?;
+    field
+        .bool_value
+        .ok_or_else(|| error(Some(index), "scalar.array", SemanticImportCategory::Header))
+}
+
+fn scalar_record<T>(
     p: &PropertyRecord<'_>,
     index: usize,
     declaration: &crate::native_c001_scalar_owners::C001ScalarArrayV1,
-    boolean: bool,
-) -> SemanticResult<(Vec<u16>, crate::native_world::NativeValue)> {
+    read_value: impl Fn(&PropertyRecord<'_>, usize) -> SemanticResult<T>,
+) -> SemanticResult<(Vec<u16>, T)> {
     use crate::experimental::struct_array::read_tagged_struct_array_with_limit;
-    use crate::native_world::NativeValue;
     let fail = || error(Some(index), "scalar.array", SemanticImportCategory::Header);
     require(
         p.tag.kind == TagKind::Array
@@ -683,19 +697,7 @@ fn scalar_record(
                 "scalar.VariableName",
             )?);
         } else if field.name == declaration.value_field && value.is_none() {
-            value = Some(if boolean {
-                require(
-                    field.tag.kind == TagKind::Bool
-                        && field.tag.payload.is_empty()
-                        && field.bool_value.is_some(),
-                    Some(index),
-                    "scalar.Bool",
-                    SemanticImportCategory::Type,
-                )?;
-                NativeValue::Bool(field.bool_value.ok_or_else(fail)?)
-            } else {
-                NativeValue::I32(source_int(&field, index, "scalar.Int")?)
-            });
+            value = Some(read_value(&field, index)?);
         } else {
             return Err(error(
                 Some(index),

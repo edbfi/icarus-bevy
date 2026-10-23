@@ -313,6 +313,35 @@ fn source_arrays_require_exact_names_types_headers_count_and_members() {
     }
 }
 #[test]
+fn integer_array_rejects_wrong_type_width_and_header() {
+    for variant in 0..5 {
+        let mut f = fixture();
+        let mut value = Tag::integer("SavedInt", 2);
+        match variant {
+            0 => value = Tag::boolean("SavedInt", true),
+            1 => {
+                value.payload.pop();
+            }
+            2 => value.payload.push(0),
+            3 => value.index = 1,
+            4 => value.property_guid(),
+            _ => unreachable!(),
+        }
+        let array = f.owners[2]
+            .iter_mut()
+            .find(|t| t.name == "AuthoredUses")
+            .unwrap();
+        *array = scalar_array(
+            "AuthoredUses",
+            "UsesElement",
+            "AuthoredIntRecord",
+            value,
+            &units("Usesé"),
+        );
+        rejected(&mut f);
+    }
+}
+#[test]
 fn whole_candidate_rejects_missing_extra_duplicate_and_unrelated_recorders() {
     for variant in 0..7 {
         let mut f = fixture();

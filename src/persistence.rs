@@ -1547,7 +1547,7 @@ impl SnapshotStore {
 
     // The writer boundary permits deterministic publication failures in tests.
     // A preserved snapshot loaded from schema 2 or 3 writes schema 3; a native
-    // world stays schema 4, 5, 6, 7 or 8. Its sidecar is durable (data, rename
+    // world retains its schema (4–9). Its sidecar is durable (data, rename
     // and directory synchronized) before the generation referencing it is
     // written, and a sidecar that already verifies is reused, never rewritten.
     fn save_with_writer(

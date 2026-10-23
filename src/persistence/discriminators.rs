@@ -218,3 +218,410 @@ pub(super) fn scalar_owners(bytes: &[u8]) -> anyhow::Result<()> {
         crate::json_parse_error("decode native snapshot discriminators JSON", error)
     })
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::native_lifecycle::{
+        ComponentDisposition, Presence, RecorderKind, RecorderSource, ResolvePolicy,
+        RestoreDisposition, SpawnComponent,
+    };
+    use crate::native_world::{NativeClassKind, NativeFrame, NativeValue};
+    use serde::{Serialize, de::DeserializeOwned};
+    use serde_json::{Value, json};
+    use std::collections::BTreeSet;
+
+    struct Legacy {
+        path: &'static str,
+        probe: fn(&Value) -> bool,
+    }
+
+    struct Case {
+        path: &'static str,
+        accepted: Vec<Value>,
+        legacy: Option<Legacy>,
+    }
+
+    impl Case {
+        fn specific(path: &'static str, accepted: &[Value]) -> Self {
+            Self {
+                path,
+                accepted: accepted.to_vec(),
+                legacy: None,
+            }
+        }
+
+        fn shared(path: &'static str, probe: fn(&Value) -> bool, accepted: &[Value]) -> Self {
+            Self::remapped(path, path.split_once('/').unwrap().1, probe, accepted)
+        }
+
+        fn remapped(
+            path: &'static str,
+            legacy_path: &'static str,
+            probe: fn(&Value) -> bool,
+            accepted: &[Value],
+        ) -> Self {
+            Self {
+                legacy: Some(Legacy {
+                    path: legacy_path,
+                    probe,
+                }),
+                ..Self::specific(path, accepted)
+            }
+        }
+    }
+
+    // Obtain spellings from real serializers, and check their deserializers too.
+    // Neither the fixtures nor their expected classifications come from RULES.
+    fn wire<T: Serialize + DeserializeOwned>(values: impl IntoIterator<Item = T>) -> Vec<Value> {
+        values
+            .into_iter()
+            .map(|value| {
+                let encoded = serde_json::to_value(value).unwrap();
+                let decoded: T = serde_json::from_value(encoded.clone()).unwrap();
+                assert_eq!(serde_json::to_value(decoded).unwrap(), encoded);
+                encoded
+            })
+            .collect()
+    }
+
+    fn cases() -> Vec<Case> {
+        use super::super::{
+            future_completion_discriminator, future_lifecycle_discriminator,
+            future_native_discriminator, future_owner_import_discriminator,
+            future_relationship_discriminator,
+        };
+        use crate::native_relationships::NativeRelationshipRole;
+
+        let values: Vec<_> = wire([
+            NativeValue::Bool(false),
+            NativeValue::I32(0),
+            NativeValue::F32(0.0),
+            NativeValue::String(String::new()),
+        ])
+        .into_iter()
+        .map(|value| value["type"].clone())
+        .collect();
+        let recorder = wire([RecorderKind::SpatialStateV1]);
+        let presence = wire([Presence::Absent, Presence::Live]);
+        let policy = wire([
+            ResolvePolicy::FindOnly,
+            ResolvePolicy::FindOrRespawn,
+            ResolvePolicy::RespawnOnly,
+        ]);
+        let source: Vec<_> = wire([
+            RecorderSource::Bound,
+            RecorderSource::Detached {
+                expected_prior_binding: None,
+            },
+        ])
+        .into_iter()
+        .map(|value| value["type"].clone())
+        .collect();
+        let disposition = wire([
+            RestoreDisposition::KeptBound,
+            RestoreDisposition::Attached,
+            RestoreDisposition::Spawned,
+            RestoreDisposition::Replaced,
+        ]);
+        let component = wire([
+            ComponentDisposition::Existing,
+            ComponentDisposition::Created,
+        ]);
+
+        vec![
+            Case::shared(
+                "native_world/definitions/native_format",
+                future_native_discriminator,
+                &[json!(crate::native_world::NATIVE_FORMAT)],
+            ),
+            Case::shared(
+                "native_world/definitions/frame",
+                future_native_discriminator,
+                &wire([NativeFrame::RightHandedZUpMeters]),
+            ),
+            Case::shared(
+                "native_world/definitions/classes/*/kind",
+                future_native_discriminator,
+                &wire([NativeClassKind::SpatialObjectV1]),
+            ),
+            Case::shared(
+                "native_world/definitions/classes/*/variables/*/default/type",
+                future_native_discriminator,
+                &values,
+            ),
+            Case::shared(
+                "native_world/definitions/maps/*/placements/*/initial_values/*/value/type",
+                future_native_discriminator,
+                &values,
+            ),
+            Case::shared(
+                "native_world/actors/*/variables/*/value/type",
+                future_native_discriminator,
+                &values,
+            ),
+            Case::shared(
+                "native_lifecycle/definition/lifecycle_format",
+                future_lifecycle_discriminator,
+                &[json!(crate::native_lifecycle::NATIVE_LIFECYCLE_FORMAT)],
+            ),
+            Case::shared(
+                "native_lifecycle/definition/slots/*/recorder_kind",
+                future_lifecycle_discriminator,
+                &recorder,
+            ),
+            Case::shared(
+                "native_lifecycle/definition/slots/*/initial_presence",
+                future_lifecycle_discriminator,
+                &presence,
+            ),
+            Case::shared(
+                "native_lifecycle/definition/slots/*/spawn_component",
+                future_lifecycle_discriminator,
+                &wire([SpawnComponent::Missing, SpawnComponent::DeclaredKind]),
+            ),
+            Case::shared(
+                "native_lifecycle/definition/slots/*/initial_component/kind",
+                future_lifecycle_discriminator,
+                &recorder,
+            ),
+            Case::shared(
+                "native_lifecycle/slots/*/presence",
+                future_lifecycle_discriminator,
+                &presence,
+            ),
+            Case::shared(
+                "native_lifecycle/slots/*/component/kind",
+                future_lifecycle_discriminator,
+                &recorder,
+            ),
+            Case::shared(
+                "native_lifecycle/bindings/*/kind",
+                future_lifecycle_discriminator,
+                &recorder,
+            ),
+            Case::shared(
+                "native_lifecycle/completed/outcomes/*/policy",
+                future_lifecycle_discriminator,
+                &policy,
+            ),
+            Case::shared(
+                "native_lifecycle/completed/outcomes/*/source/type",
+                future_lifecycle_discriminator,
+                &source,
+            ),
+            Case::shared(
+                "native_lifecycle/completed/outcomes/*/before_presence",
+                future_lifecycle_discriminator,
+                &presence,
+            ),
+            Case::shared(
+                "native_lifecycle/completed/outcomes/*/disposition",
+                future_lifecycle_discriminator,
+                &disposition,
+            ),
+            Case::shared(
+                "native_lifecycle/completed/outcomes/*/component_disposition",
+                future_lifecycle_discriminator,
+                &component,
+            ),
+            Case::shared(
+                "native_relationships/definition/relationship_format",
+                future_relationship_discriminator,
+                &[json!(crate::native_relationships::NATIVE_RELATIONSHIP_FORMAT)],
+            ),
+            Case::shared(
+                "native_relationships/definition/actors/*/role",
+                future_relationship_discriminator,
+                &wire([
+                    NativeRelationshipRole::Spatial,
+                    NativeRelationshipRole::Deployable,
+                    NativeRelationshipRole::Foundation,
+                ]),
+            ),
+            // These five schema-9-only rules have no legacy aggregate predicate.
+            Case::specific(
+                "native_scalar_contracts/definition/format",
+                &[json!(crate::native_scalar_owners::SCALAR_OWNER_CONTRACT_FORMAT)],
+            ),
+            Case::specific(
+                "native_scalar_contracts/definition/classes/*/callback",
+                &wire([crate::native_scalar_owners::ScalarOwnerCallback::RecomputeUseAvailabilityV1]),
+            ),
+            Case::specific(
+                "native_scalar_owner_import/format",
+                &[json!(crate::native_c001_scalar_owners::C001_SCALAR_OWNER_IMPORT_FORMAT)],
+            ),
+            Case::specific(
+                "native_scalar_owner_import/bindings/format",
+                &[json!(crate::native_c001_scalar_owners::C001_SCALAR_OWNER_IMPORT_FORMAT)],
+            ),
+            Case::specific(
+                "native_scalar_owner_import/bindings/adapter",
+                &wire([crate::native_c001_scalar_owners::C001ScalarOwnerAdapter::C001AuthoredScalarOwnersV1]),
+            ),
+            // Schema 9 moved these fields; compare with the actual schema-8
+            // owner/completion predicates at their original relative paths.
+            Case::remapped(
+                "native_scalar_owner_import/bindings/coordinates",
+                "coordinates",
+                future_owner_import_discriminator,
+                &wire([crate::native_import::AuthoredCoordinatesV1::RightHandedZUpMetersQuatXyzwWorldSpace]),
+            ),
+            Case::remapped(
+                "native_scalar_owner_import/bindings/owners/*/owner/expected_presence",
+                "owners/*/binding/expected_presence",
+                future_owner_import_discriminator,
+                &presence,
+            ),
+            Case::remapped(
+                "native_scalar_owner_import/resolved/*/source_policy",
+                "owners/*/source_policy",
+                future_owner_import_discriminator,
+                &policy,
+            ),
+            Case::remapped(
+                "native_scalar_owner_import/initial_completion/outcomes/*/policy",
+                "outcomes/*/policy",
+                future_completion_discriminator,
+                &policy,
+            ),
+            Case::remapped(
+                "native_scalar_owner_import/initial_completion/outcomes/*/source/type",
+                "outcomes/*/source/type",
+                future_completion_discriminator,
+                &source,
+            ),
+            Case::remapped(
+                "native_scalar_owner_import/initial_completion/outcomes/*/before_presence",
+                "outcomes/*/before_presence",
+                future_completion_discriminator,
+                &presence,
+            ),
+            Case::remapped(
+                "native_scalar_owner_import/initial_completion/outcomes/*/disposition",
+                "outcomes/*/disposition",
+                future_completion_discriminator,
+                &disposition,
+            ),
+            Case::remapped(
+                "native_scalar_owner_import/initial_completion/outcomes/*/component_disposition",
+                "outcomes/*/component_disposition",
+                future_completion_discriminator,
+                &component,
+            ),
+            Case::shared(
+                "preserved_prospect/encoding",
+                |value| super::super::future_format(&value["encoding"], crate::preservation::PRESERVED_ENCODING_VERSION),
+                &[json!(crate::preservation::PRESERVED_ENCODING_VERSION)],
+            ),
+        ]
+    }
+
+    // Isolate one discriminator so a different future field cannot mask a
+    // missing path. Put it after a malformed entry at every array depth.
+    fn document(path: &str, value: Value) -> Value {
+        path.rsplit('/').fold(value, |value, member| {
+            if member == "*" {
+                json!([null, value])
+            } else {
+                json!({ (member): value })
+            }
+        })
+    }
+
+    #[test]
+    fn every_streaming_rule_matches_independent_variants_and_constants() {
+        let cases = cases();
+        let paths: BTreeSet<_> = cases.iter().map(|case| case.path).collect();
+        let rules: BTreeSet<_> = RULES.iter().map(|rule| rule.path).collect();
+        assert_eq!(paths.len(), cases.len(), "duplicate fixture path");
+        assert_eq!(rules.len(), RULES.len(), "duplicate streaming rule");
+        assert_eq!(paths, rules, "each rule needs an independent fixture");
+
+        for case in cases {
+            let rule = RULES.iter().find(|rule| rule.path == case.path).unwrap();
+            match rule.kind {
+                Kind::Format(current) => {
+                    assert_eq!(case.accepted, [json!(current)], "{}", case.path);
+                }
+                Kind::Enum(accepted) => {
+                    let variants: BTreeSet<_> = case
+                        .accepted
+                        .iter()
+                        .map(|value| value.as_str().unwrap())
+                        .collect();
+                    assert_eq!(variants.len(), case.accepted.len(), "{}", case.path);
+                    assert_eq!(
+                        variants,
+                        accepted.iter().copied().collect::<BTreeSet<_>>(),
+                        "{}",
+                        case.path
+                    );
+                    assert_eq!(accepted.len(), variants.len(), "{}", case.path);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn streaming_rules_match_legacy_predicates_for_accepted_future_and_malformed_values() {
+        for case in cases() {
+            let mut samples: Vec<_> = case
+                .accepted
+                .iter()
+                .cloned()
+                .map(|value| (value, false))
+                .collect();
+            if let Some(current) = case.accepted[0].as_u64() {
+                samples.extend([
+                    (json!(0), false),
+                    (json!(current.saturating_sub(1)), false),
+                    (json!(current + 1), true),
+                    (json!(u64::MAX), true),
+                    (json!("future_format"), false),
+                ]);
+            } else {
+                samples.extend([
+                    (json!("future_discriminator_v999"), true),
+                    (json!(""), true),
+                    (json!(u64::MAX), false),
+                ]);
+            }
+            // Malformed values are not upgrades; typed admission is separate.
+            samples.extend(
+                [
+                    Value::Null,
+                    json!(true),
+                    json!(-1),
+                    json!(1.5),
+                    json!([]),
+                    json!({}),
+                ]
+                .map(|value| (value, false)),
+            );
+            for (value, expected) in samples {
+                if let Some(legacy) = &case.legacy {
+                    assert_eq!(
+                        (legacy.probe)(&document(legacy.path, value.clone())),
+                        expected,
+                        "legacy {}: {value}",
+                        case.path
+                    );
+                }
+                let bytes = serde_json::to_vec(&document(case.path, value.clone())).unwrap();
+                let result = scalar_owners(&bytes);
+                if expected {
+                    let error = result.expect_err(case.path);
+                    assert!(
+                        error.is::<super::super::UnsupportedSchema>(),
+                        "{}: {value}: {error}",
+                        case.path
+                    );
+                } else {
+                    assert!(result.is_ok(), "{}: {value}: {result:?}", case.path);
+                }
+            }
+        }
+    }
+}

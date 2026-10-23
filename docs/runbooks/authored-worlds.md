@@ -59,8 +59,9 @@ identity pairs reject. Source names and native class keys never supply implicit
 link identities. Names have at most 1,024 units each and 1,048,576 in aggregate,
 including initial links; declarations are bounded to 4 MiB.
 
-F-922 uses F-646/F-650/F-663's assignment rule with stricter unresolved-link
-rejection. Other setter effects and releases remain unqualified.
+F-922 uses F-646/F-650/F-663's assignment rule from server 25621760/client
+25793767, with stricter unresolved-link rejection. Other setter effects and
+releases remain unqualified.
 
 Schema 6 embeds immutable declarations and mutable domain-ID edges. Optional
 C001 metadata requires its unchanged sidecar; authored links need not come from
