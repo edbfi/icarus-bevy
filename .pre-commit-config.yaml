@@ -74,6 +74,12 @@ repos:
         language: system
         pass_filenames: false
         files: ^tools/(pdb_public_symbols\.cjs|tests/pdb_public_symbols.*\.cjs)$
+      - id: pe-function-range-tests
+        name: Test hash-bound PE exception ranges
+        entry: node --test tools/tests/pe_function_ranges.test.cjs
+        language: system
+        pass_filenames: false
+        files: ^tools/(pe_function_ranges\.cjs|pe_candidates\.cjs|tests/pe_function_ranges\.test\.cjs)$
       - id: pak-protocol-metadata-tests
         name: Test bounded packaged protocol metadata reader
         entry: node --test tools/tests/pak_protocol_metadata.test.cjs

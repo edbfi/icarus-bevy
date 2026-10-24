@@ -23,40 +23,43 @@ trust prompts when presented. Do not run upstream global setup; it would change
 configuration outside this repository. Preserve the package lock, skill
 provenance and third-party licenses when updating.
 
-The scoped Ghidra doctor check reports provider readiness. Its informational
-checks inspect user-wide registrations and may report them missing because this
-installation deliberately uses project configuration. Verify registration with
-`codex mcp get rea` and `claude mcp get rea`; verify the live connection with the
-MCP `binary_session` tool or `.agents/rea/rea.sh mcp doctor --json`. REA 6.7.0's
-skill metadata lists 207 MCP tools; its scoped Ghidra doctor and stdio MCP doctor
-reported the existing Ghidra 12.1.4/JDK 21 provider healthy and the 207-tool,
-6-prompt catalog (`96d8f6e6...`) aligned on 2026-10-18 (M-778; 6.5.0: M-563;
-6.4.0: F-432). Recheck live session alignment with `binary_session` after
-restarting on 6.7.0. Ghidra byte reads require default
-auto-analysis and return loader-adjusted Program memory. For exact physical
-metadata work, record that capability/effect gap and use a reviewed bounded
-fallback; connected readiness does not qualify target bytes.
+Doctor reports provider readiness, not a live connection. Verify registration
+with `codex mcp get rea` or `claude mcp get rea`, then query MCP
+`binary_session`. Missing user-wide registrations are informational for this
+project-local setup. M-778 records the earlier healthy 12.1.4/JDK 21 provider;
+M-975 records current drift: REA 6.7.0 rejects Ghidra 12.2, whose installation also
+needed JDK 25 and a matching native decompiler. Do not relabel installations or
+bypass policy. The scoped direct fallback built the matching public source in
+an owned overlay. M-973/M-974 validate an owned REA stdio session and authored
+fixture through bounded GNU objdump, not Ghidra provider readiness.
+
+Ghidra byte reads return loader-adjusted analysis memory and require default
+auto-analysis through REA. Exact physical metadata needs a reviewed bounded
+fallback and independent input hashes. A legacy bundle's current-reader refusal
+does not prove corruption; preserve its bytes and producing-version evidence
+(M-975). Never repair identifiers or overwrite frozen bundles.
 
 Use the installed Homebrew tools recorded in `Brewfile`: radare2, headless Ghidra
 and Wireshark CLI utilities. Check `tshark --version` separately. A GUI failure
 does not mean headless Ghidra is broken. For a justified direct Ghidra fallback,
-resolve the arguments before presenting an analysis command:
+resolve the matching JDK and tool paths in its scope before running:
 
 ```bash
-JAVA_HOME="$(brew --prefix openjdk@21)/libexec" \
-  "$(brew --prefix ghidra)/libexec/support/analyzeHeadless" <arguments>
+JAVA_HOME="$SCOPED_JDK" "$SCOPED_GHIDRA/support/analyzeHeadless" <arguments>
 ```
 
-For a targeted decompilation of a few PDB-named functions in a large image,
-import with `-noanalysis` and run `tools/ghidra/DecompileFlowFunctions.java`
-with the starts: it disassembles each start by flow within 64 KiB, lets Ghidra
-compute the body (the PE loader already creates one-byte functions at exception
-records, so guessed end ranges overlap) and decompiles with a 30-second cap.
-When pseudocode drops a call argument, `tools/ghidra/ListFlowInstructions.java`
-lists the same flow (jumps and fallthrough, never calls, at most 4096
-instructions per start) with address, bytes and instruction text. Header-inline
-struct methods have no class-method symbol; `tools/pdb_public_symbols.cjs`
-selects their `TCppStructOps` instance through `struct_ops_methods` pairs.
+For exact-range traces, bind public symbols with `tools/pdb_public_symbols.cjs`
+and exception metadata with `tools/pe_function_ranges.cjs`; neither proves
+ownership or instruction boundaries. Import with `-noanalysis` and run
+`tools/ghidra/TraceBoundedFunctions.java NEW_DIRECTORY START:END_EXCLUSIVE`.
+It exports bounded instruction/p-code/context records, observed intervals and
+partial-flow statuses. Require `EXPORT_FINISHED.txt`, no `FAILED.txt`, then
+inspect each status. Pseudocode is disabled; unaudited userops, overrides and
+noncanonical execution context reject. Memory hashes need physical-span checks
+(M-977, M-979).
+The older `DecompileFlowFunctions.java` and `ListFlowInstructions.java` use
+forward windows; their completion flags do not prove whole-function coverage.
+`struct_ops_methods` selects inline `TCppStructOps` symbols in the PDB helper.
 
 ## Evidence at session close
 
@@ -99,11 +102,8 @@ git clone -q . "$RESTORE_CHECK" && rsync -a "$ICARUS_EVIDENCE_BACKUP/" "$RESTORE
 python3 tools/docs_lint.py --local --root "$RESTORE_CHECK"
 ```
 
-`--files-from` disables recursion unless `-r` is given. A dry run (`-n --stats`)
-on 2026-10-14 listed 224 paths and about 60 GB, mostly the client copy under
-`icarus-client-orig/` and `reference-data/`. Back up after each
-session close that adds rows; deleting an artifact still requires its row to be
-retired first.
+`--files-from` disables recursion unless `-r` is given. Back up after each session
+that adds rows; retire an artifact's row before deletion.
 
 ## Reference environments
 
