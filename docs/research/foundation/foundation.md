@@ -42,7 +42,7 @@ Randomized preservation/codecs/readers and bounded peer tables: F-604 to F-607;
 fail-closed corrupted stores: F-611.
 
 Loopback authored-probe admission, cleanup and version pinning: F-875;
-held-session updates/reboot recovery: F-833; bounded concurrency/partial-bunch
+held-session updates/recovery and controller limits: F-833; historical metrics: F-932; bounded concurrency/partial-bunch
 sweeps: F-877. No ICARUS client has used this layer; the interrupted rerun
 has no final result/exit receipt (M-898).
 Input parity (F-828) permits the anonymous, byte-matched dedicated-server
@@ -61,4 +61,4 @@ expired (F-218).
 
 ## Artifacts
 
-M-001, M-002, M-006, M-009, M-010, M-015..M-022, M-076, M-078, M-109..M-117, M-131..M-165, M-174, M-175, M-178, M-182..M-184, M-191, M-192, M-200, M-203, M-204, M-207, M-208, M-212..M-220, M-225, M-240, M-241, M-251, M-252, M-269, M-270, M-271, M-277, M-311, M-391, M-397..M-399, M-411..M-419, M-452..M-454, M-471..M-475, M-577, M-578, M-770, M-771, M-809, M-810, M-812, M-861, M-862, M-864..M-867, M-870, M-898, M-899, M-915..M-918, M-926..M-972, M-1012..M-1016.
+M-001, M-002, M-006, M-009, M-010, M-015..M-022, M-076, M-078, M-109..M-117, M-131..M-165, M-174, M-175, M-178, M-182..M-184, M-191, M-192, M-200, M-203, M-204, M-207, M-208, M-212..M-220, M-225, M-240, M-241, M-251, M-252, M-269, M-270, M-271, M-277, M-311, M-391, M-397..M-399, M-411..M-419, M-452..M-454, M-471..M-475, M-577, M-578, M-770, M-771, M-809, M-810, M-812, M-861, M-862, M-864..M-867, M-870, M-898, M-899, M-915..M-918, M-926..M-972, M-1012..M-1019.
