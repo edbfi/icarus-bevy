@@ -42,7 +42,7 @@ Randomized preservation/codecs/readers and bounded peer tables: F-604 to F-607;
 fail-closed corrupted stores: F-611.
 
 Loopback authored-probe admission, cleanup and version pinning: F-875;
-held-session updates/recovery and controller limits: F-833; bounded concurrency/partial-bunch
+held-session updates/recovery and controller limits: F-833; historical metrics: F-932; bounded concurrency/partial-bunch
 sweeps: F-877. No ICARUS client has used this layer; the interrupted rerun
 has no final result/exit receipt (M-898).
 Input parity (F-828) permits the anonymous, byte-matched dedicated-server

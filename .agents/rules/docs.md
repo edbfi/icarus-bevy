@@ -93,7 +93,8 @@ Status.
    row; retire it with its full text. A pushed M- row changes only its
    `status`, `superseded_by`, `note`, `label` and, for legacy rows, `kind`; a
    corrected `path` or `sha256` keeps the old value in `note`. Every status, spec and ledger file carries
-   `Last reconciled: YYYY-MM-DD`. Canonical workflow rules live under
+   `Last reconciled: YYYY-MM-DD`. Use UTC for reconciliation and evidence dates;
+   frozen artifact paths keep their original creation labels. Canonical workflow rules live under
    `.agents/rules/`; `CLAUDE.md` (`AGENTS.md`) summarizes and links to them.
 
 ## Caps
