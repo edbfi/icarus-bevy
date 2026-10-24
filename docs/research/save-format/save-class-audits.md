@@ -60,21 +60,20 @@ owners per save (F-898); these counts exclude root-content resolution.
 Scoped catalog declarations now check map-owned paths and tiles and
 class-owned variables, with explicit root-map resolution (F-916). This is
 reference coverage, not native geometry or restoration behavior; the CLI
-still refuses writing. Decoded candidates retain complete staged roots and
-every recorder outcome for reuse, with aggregate typing allowances (F-920).
-Releasing completed scratch reservations admits all 15 supplied prospects
-under the unchanged limits; the instrumented baseline refused all 15.
-The highest decode requirement is 130,988,191 bytes and 266,350 elements,
-with no unavailable typing or uninterpreted leaves (F-920). These counts
-qualify retention, not restoration semantics or a peak-memory guarantee.
+still refuses writing. Decoded candidates retain staged roots and every recorder outcome;
+all 15 supplied prospects fit unchanged typing limits after completed scratch
+is released (F-920). These allowances measure retention, not restoration or RSS.
 
 Strict authored C001 adapters bind source state to placements, owner lifecycle,
 Bool/I32 use gates and stacked inventories with durable actions (F-927).
 Coordinates, layouts and semantics are authored; ordinary import stays closed.
 Reload duration uses a distinct callback: both builds restore base/cache and
 authority-gated remaining time; finite positive duration selects timer setup.
-Their unordered guards differ. Creation, full callback effects and owner/row
-bindings remain unqualified (F-930).
+Their unordered guards differ. Expiration wrappers require role 3 and issue a
+reason-zero virtual destruction tail. Selected server EndPlay branches select
+removal, timer-clear and deactivation calls; virtual receivers, callee effects,
+creation and owner/row bindings remain unqualified (F-930). Deactivation has a preliminary GNU listing and callee names;
+p-code/effects remain open (M-1008..M-1010).
 
 No saved class identifier, field or type name, or recorder version tells the
 older server from the newer client, and the prospect carries no version string
@@ -93,4 +92,4 @@ stay at 128 KiB (F-198).
 
 ## Artifacts
 
-M-047..M-077, M-079..M-108, M-118..M-130, M-278..M-280, M-351, M-352, M-376..M-384, M-389, M-390, M-401..M-404, M-407..M-410, M-606..M-613, M-616..M-618, M-626, M-627, M-636..M-638, M-727, M-755..M-760, M-766..M-769, M-772..M-777, M-780, M-782, M-784, M-786, M-788, M-790..M-792, M-794..M-808, M-811, M-850, M-851, M-854..M-859, M-873, M-878, M-880, M-900, M-919..M-925, M-926..M-929, M-937..M-943, M-958, M-959; M-983, M-984, M-986, M-987, M-989..M-993; M-990/ev_693319f721fe, M-992/ev_5ad56afa9170.
+M-047..M-077, M-079..M-108, M-118..M-130, M-278..M-280, M-351, M-352, M-376..M-384, M-389, M-390, M-401..M-404, M-407..M-410, M-606..M-613, M-616..M-618, M-626, M-627, M-636..M-638, M-727, M-755..M-760, M-766..M-769, M-772..M-777, M-780, M-782, M-784, M-786, M-788, M-790..M-792, M-794..M-808, M-811, M-850, M-851, M-854..M-859, M-873, M-878, M-880, M-900, M-919..M-925, M-926..M-929, M-937..M-943, M-958, M-959; M-983, M-984, M-986, M-987, M-989..M-993; M-990/ev_693319f721fe, M-992/ev_5ad56afa9170, M-995..M-1010.

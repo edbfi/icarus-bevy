@@ -1,4 +1,4 @@
-//! Streaming schema-9/10 upgrade probes. Visit every occurrence, including duplicate
+//! Streaming schema-9/10/11 upgrade probes. Visit every occurrence, including duplicate
 //! members; typed decoding remains responsible for field admission afterward.
 use serde::Deserialize;
 use serde::Deserializer;
@@ -78,6 +78,10 @@ const RULES: &[Rule] = rules![
     "native_inventory_owner_import/initial_completion/outcomes/*/before_presence" => PRESENCE,
     "native_inventory_owner_import/initial_completion/outcomes/*/disposition" => DISPOSITION,
     "native_inventory_owner_import/initial_completion/outcomes/*/component_disposition" => COMPONENT,
+    "native_modifiers/format" => Kind::Format(1),
+    "native_modifiers/owners/*/format" => Kind::Format(1),
+    "native_modifiers/owners/*/entries/*/definition/duration/type" => Kind::Enum(&["indefinite", "timed"]),
+    "native_modifiers/owners/*/entries/*/timer/type" => Kind::Enum(&["indefinite", "timed"]),
     "preserved_prospect/encoding" => Kind::Format(crate::preservation::PRESERVED_ENCODING_VERSION),
 ];
 
@@ -102,9 +106,10 @@ impl<'de> Visitor<'de> for &mut HeaderProbe {
             if key == "schema_version" {
                 let value = map.next_value::<serde_json::Value>()?;
                 if let Some(schema) = value.as_u64() {
-                    let current =
-                        u64::from(crate::simulation::SNAPSHOT_SCHEMA_C001_INVENTORY_OWNERS);
+                    let current = u64::from(crate::simulation::SNAPSHOT_SCHEMA_MODIFIER_OWNERS);
                     self.authored_owners |= schema == current
+                        || schema
+                            == u64::from(crate::simulation::SNAPSHOT_SCHEMA_C001_INVENTORY_OWNERS)
                         || schema
                             == u64::from(crate::simulation::SNAPSHOT_SCHEMA_C001_SCALAR_OWNERS);
                     self.future |= schema > current;
@@ -532,6 +537,10 @@ mod tests {
                 &[json!(crate::preservation::PRESERVED_ENCODING_VERSION)],
             ),
             Case::specific("native_inventory_contracts/definition/format", &[json!(1)]),
+            Case::specific("native_modifiers/format", &[json!(1)]),
+            Case::specific("native_modifiers/owners/*/format", &[json!(1)]),
+            Case::specific("native_modifiers/owners/*/entries/*/definition/duration/type", &[json!("indefinite"), json!("timed")]),
+            Case::specific("native_modifiers/owners/*/entries/*/timer/type", &[json!("indefinite"), json!("timed")]),
             Case::specific("native_inventories/format", &[json!(1)]),
             Case::specific("native_inventory_owner_import/format", &[json!(crate::native_c001_inventory_owners::C001_INVENTORY_OWNER_IMPORT_FORMAT)]),
             Case::specific("native_inventory_owner_import/bindings/format", &[json!(crate::native_c001_inventory_owners::C001_INVENTORY_OWNER_IMPORT_FORMAT)]),
@@ -698,10 +707,10 @@ mod tests {
     }
 
     #[test]
-    fn both_authored_schema_headers_are_scanned_and_future_duplicates_are_terminal() {
-        for schema in [9, 10] {
+    fn authored_schema_headers_are_scanned_and_future_duplicates_are_terminal() {
+        for schema in [9, 10, 11] {
             assert!(header(format!("{{\"schema_version\":{schema}}}").as_bytes()).unwrap());
-            for other in [9, 10] {
+            for other in [9, 10, 11] {
                 assert!(
                     header(
                         format!("{{\"schema_version\":{schema},\"schema_version\":{other}}}")
@@ -712,9 +721,9 @@ mod tests {
             }
             for future_first in [false, true] {
                 let (first, second) = if future_first {
-                    (11, schema)
+                    (12, schema)
                 } else {
-                    (schema, 11)
+                    (schema, 12)
                 };
                 let bytes = format!(
                     "{{\"schema_version\":{first},\"tick\":null,\"schema_version\":{second}}}"

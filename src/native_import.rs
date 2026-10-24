@@ -860,6 +860,7 @@ pub fn prepare_c001_inert_import(
         native_inventory_contracts: None,
         native_inventories: None,
         native_inventory_owner_import: None,
+        native_modifiers: None,
         native_relationships: None,
         native_lifecycle: None,
     };

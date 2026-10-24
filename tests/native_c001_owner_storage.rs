@@ -394,7 +394,7 @@ fn every_future_discriminator_wins_over_corruption_and_missing_sidecars() {
         wire["native_world"]["actors"][0]["variables"] =
             json!([{"value":{"type":"i32","value":0}}]);
         *wire.pointer_mut(path).unwrap() = if path == "/schema_version" {
-            11.into()
+            12.into()
         } else if path.ends_with("_format")
             || path == "/native_owner_import/format"
             || path == "/preserved_prospect/encoding"
