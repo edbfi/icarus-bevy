@@ -1,4 +1,4 @@
-//! Streaming schema-9 upgrade probes. Visit every occurrence, including duplicate
+//! Streaming schema-9/10 upgrade probes. Visit every occurrence, including duplicate
 //! members; typed decoding remains responsible for field admission afterward.
 use serde::Deserialize;
 use serde::Deserializer;
@@ -65,6 +65,19 @@ const RULES: &[Rule] = rules![
     "native_scalar_owner_import/initial_completion/outcomes/*/before_presence" => PRESENCE,
     "native_scalar_owner_import/initial_completion/outcomes/*/disposition" => DISPOSITION,
     "native_scalar_owner_import/initial_completion/outcomes/*/component_disposition" => COMPONENT,
+    "native_inventory_contracts/definition/format" => Kind::Format(1),
+    "native_inventories/format" => Kind::Format(1),
+    "native_inventory_owner_import/format" => Kind::Format(1),
+    "native_inventory_owner_import/bindings/format" => Kind::Format(1),
+    "native_inventory_owner_import/bindings/adapter" => Kind::Enum(&["c001_authored_inventory_owners_v1"]),
+    "native_inventory_owner_import/bindings/coordinates" => Kind::Enum(&["right_handed_z_up_meters_quat_xyzw_world_space"]),
+    "native_inventory_owner_import/bindings/owners/*/scalar/owner/expected_presence" => PRESENCE,
+    "native_inventory_owner_import/resolved/*/source_policy" => POLICY,
+    "native_inventory_owner_import/initial_completion/outcomes/*/policy" => POLICY,
+    "native_inventory_owner_import/initial_completion/outcomes/*/source/type" => SOURCE,
+    "native_inventory_owner_import/initial_completion/outcomes/*/before_presence" => PRESENCE,
+    "native_inventory_owner_import/initial_completion/outcomes/*/disposition" => DISPOSITION,
+    "native_inventory_owner_import/initial_completion/outcomes/*/component_disposition" => COMPONENT,
     "preserved_prospect/encoding" => Kind::Format(crate::preservation::PRESERVED_ENCODING_VERSION),
 ];
 
@@ -75,7 +88,7 @@ struct Probe<'a> {
 
 #[derive(Default)]
 struct HeaderProbe {
-    scalar_owners: bool,
+    authored_owners: bool,
     future: bool,
 }
 
@@ -89,8 +102,11 @@ impl<'de> Visitor<'de> for &mut HeaderProbe {
             if key == "schema_version" {
                 let value = map.next_value::<serde_json::Value>()?;
                 if let Some(schema) = value.as_u64() {
-                    let current = u64::from(crate::simulation::SNAPSHOT_SCHEMA_C001_SCALAR_OWNERS);
-                    self.scalar_owners |= schema == current;
+                    let current =
+                        u64::from(crate::simulation::SNAPSHOT_SCHEMA_C001_INVENTORY_OWNERS);
+                    self.authored_owners |= schema == current
+                        || schema
+                            == u64::from(crate::simulation::SNAPSHOT_SCHEMA_C001_SCALAR_OWNERS);
                     self.future |= schema > current;
                 }
             } else {
@@ -113,7 +129,7 @@ pub(super) fn header(bytes: &[u8]) -> anyhow::Result<bool> {
         return Err(super::UnsupportedSchema.into());
     }
     result.map_err(|error| crate::json_parse_error("decode native snapshot JSON", error))?;
-    Ok(probe.scalar_owners)
+    Ok(probe.authored_owners)
 }
 
 impl Probe<'_> {
@@ -201,7 +217,7 @@ impl<'de> Visitor<'de> for Probe<'_> {
     }
 }
 
-pub(super) fn scalar_owners(bytes: &[u8]) -> anyhow::Result<()> {
+pub(super) fn authored_owners(bytes: &[u8]) -> anyhow::Result<()> {
     let mut future = false;
     let mut decoder = serde_json::Deserializer::from_slice(bytes);
     let result = Probe {
@@ -515,6 +531,62 @@ mod tests {
                 |value| super::super::future_format(&value["encoding"], crate::preservation::PRESERVED_ENCODING_VERSION),
                 &[json!(crate::preservation::PRESERVED_ENCODING_VERSION)],
             ),
+            Case::specific("native_inventory_contracts/definition/format", &[json!(1)]),
+            Case::specific("native_inventories/format", &[json!(1)]),
+            Case::specific("native_inventory_owner_import/format", &[json!(crate::native_c001_inventory_owners::C001_INVENTORY_OWNER_IMPORT_FORMAT)]),
+            Case::specific("native_inventory_owner_import/bindings/format", &[json!(crate::native_c001_inventory_owners::C001_INVENTORY_OWNER_IMPORT_FORMAT)]),
+            Case::specific(
+                "native_inventory_owner_import/bindings/adapter",
+                &wire([crate::native_c001_inventory_owners::C001InventoryOwnerAdapter::C001AuthoredInventoryOwnersV1]),
+            ),
+            Case::remapped(
+                "native_inventory_owner_import/bindings/coordinates",
+                "coordinates",
+                future_owner_import_discriminator,
+                &wire([crate::native_import::AuthoredCoordinatesV1::RightHandedZUpMetersQuatXyzwWorldSpace]),
+            ),
+            Case::remapped(
+                "native_inventory_owner_import/bindings/owners/*/scalar/owner/expected_presence",
+                "owners/*/binding/expected_presence",
+                future_owner_import_discriminator,
+                &presence,
+            ),
+            Case::remapped(
+                "native_inventory_owner_import/resolved/*/source_policy",
+                "owners/*/source_policy",
+                future_owner_import_discriminator,
+                &policy,
+            ),
+            Case::remapped(
+                "native_inventory_owner_import/initial_completion/outcomes/*/policy",
+                "outcomes/*/policy",
+                future_completion_discriminator,
+                &policy,
+            ),
+            Case::remapped(
+                "native_inventory_owner_import/initial_completion/outcomes/*/source/type",
+                "outcomes/*/source/type",
+                future_completion_discriminator,
+                &source,
+            ),
+            Case::remapped(
+                "native_inventory_owner_import/initial_completion/outcomes/*/before_presence",
+                "outcomes/*/before_presence",
+                future_completion_discriminator,
+                &presence,
+            ),
+            Case::remapped(
+                "native_inventory_owner_import/initial_completion/outcomes/*/disposition",
+                "outcomes/*/disposition",
+                future_completion_discriminator,
+                &disposition,
+            ),
+            Case::remapped(
+                "native_inventory_owner_import/initial_completion/outcomes/*/component_disposition",
+                "outcomes/*/component_disposition",
+                future_completion_discriminator,
+                &component,
+            ),
         ]
     }
 
@@ -610,7 +682,7 @@ mod tests {
                     );
                 }
                 let bytes = serde_json::to_vec(&document(case.path, value.clone())).unwrap();
-                let result = scalar_owners(&bytes);
+                let result = authored_owners(&bytes);
                 if expected {
                     let error = result.expect_err(case.path);
                     assert!(
@@ -620,6 +692,82 @@ mod tests {
                     );
                 } else {
                     assert!(result.is_ok(), "{}: {value}: {result:?}", case.path);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn both_authored_schema_headers_are_scanned_and_future_duplicates_are_terminal() {
+        for schema in [9, 10] {
+            assert!(header(format!("{{\"schema_version\":{schema}}}").as_bytes()).unwrap());
+            for other in [9, 10] {
+                assert!(
+                    header(
+                        format!("{{\"schema_version\":{schema},\"schema_version\":{other}}}")
+                            .as_bytes()
+                    )
+                    .unwrap()
+                );
+            }
+            for future_first in [false, true] {
+                let (first, second) = if future_first {
+                    (11, schema)
+                } else {
+                    (schema, 11)
+                };
+                let bytes = format!(
+                    "{{\"schema_version\":{first},\"tick\":null,\"schema_version\":{second}}}"
+                );
+                assert!(
+                    header(bytes.as_bytes())
+                        .unwrap_err()
+                        .is::<super::super::UnsupportedSchema>()
+                );
+            }
+        }
+        for schema in 1..=8 {
+            assert!(!header(format!("{{\"schema_version\":{schema}}}").as_bytes()).unwrap());
+        }
+    }
+
+    #[test]
+    fn every_rule_detects_future_values_in_duplicate_members_and_parents() {
+        for case in cases() {
+            let known = serde_json::to_string(&case.accepted[0]).unwrap();
+            let future = case.accepted[0].as_u64().map_or_else(
+                || json!("future_discriminator_v999"),
+                |current| json!(current + 1),
+            );
+            for future_first in [false, true] {
+                let (parent, tail) = case.path.split_once('/').unwrap();
+                let body = serde_json::to_string(&document(tail, future.clone())).unwrap();
+                let parent_pair = if future_first {
+                    format!("{{\"{parent}\":{body},\"{parent}\":null}}")
+                } else {
+                    format!("{{\"{parent}\":null,\"{parent}\":{body}}}")
+                };
+                let (ancestors, leaf) = case.path.rsplit_once('/').unwrap();
+                let future = serde_json::to_string(&future).unwrap();
+                let leaf_pair = if future_first {
+                    format!("{{\"{leaf}\":{future},\"{leaf}\":{known}}}")
+                } else {
+                    format!("{{\"{leaf}\":{known},\"{leaf}\":{future}}}")
+                };
+                let leaf_pair = ancestors.rsplit('/').fold(leaf_pair, |body, member| {
+                    if member == "*" {
+                        format!("[null,{body}]")
+                    } else {
+                        format!("{{\"{member}\":{body}}}")
+                    }
+                });
+                for bytes in [parent_pair, leaf_pair] {
+                    let error = authored_owners(bytes.as_bytes()).expect_err(case.path);
+                    assert!(
+                        error.is::<super::super::UnsupportedSchema>(),
+                        "{}: {error}",
+                        case.path
+                    );
                 }
             }
         }

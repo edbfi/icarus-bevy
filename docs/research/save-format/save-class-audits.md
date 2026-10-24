@@ -68,9 +68,9 @@ The highest decode requirement is 130,988,191 bytes and 266,350 elements,
 with no unavailable typing or uninterpreted leaves (F-920). These counts
 qualify retention, not restoration semantics or a peak-memory guarantee.
 
-Strict authored C001 adapters bind source state to fixed placements, owner
-lifecycle and a Bool/I32 use gate with durable actions (F-925). Coordinates,
-scalar layouts and callbacks are explicitly authored; ordinary import stays closed.
+Strict authored C001 adapters bind source state to placements, owner lifecycle,
+Bool/I32 use gates and stacked inventories with durable actions (F-927).
+Coordinates, layouts and semantics are authored; ordinary import stays closed.
 
 No saved class identifier, field or type name, or recorder version tells the
 older server from the newer client, and the prospect carries no version string
@@ -84,9 +84,9 @@ stay at 128 KiB (F-198).
 ## Open
 
 - Packaged data-table row meanings remain out of scope by policy (F-660).
-- Complete further recorder adapters and qualify coordinates before an all-or-nothing official-save writer. Authored consumers (F-925) and reference coverage (F-916) do not qualify original behavior (U-025, U-038, U-045).
+- Complete further recorder adapters and qualify coordinates before an all-or-nothing official-save writer. Authored consumers (F-927) and reference coverage (F-916) do not qualify original behavior (U-025, U-038, U-045).
 - Heavy-world save work order: the preserved server's offline load/save/reload baseline (F-894, F-736) and connected scenario S1 on server 25956137 (3.0.32, F-701) both frame and preserve byte-identically; build pairing of the original save remains open (U-040), and native interpreted import stays gated (U-038, U-045).
 
 ## Artifacts
 
-M-047..M-077, M-079..M-108, M-118..M-130, M-278..M-280, M-351, M-352, M-376..M-384, M-389, M-390, M-401..M-404, M-407..M-410, M-606..M-613, M-616..M-618, M-626, M-627, M-636..M-638, M-727, M-755..M-760, M-766..M-769, M-772..M-777, M-780, M-782, M-784, M-786, M-788, M-790..M-792, M-794..M-808, M-811, M-850, M-851, M-854..M-859, M-873, M-878, M-880, M-900, M-919..M-925, M-926..M-929, M-937..M-943.
+M-047..M-077, M-079..M-108, M-118..M-130, M-278..M-280, M-351, M-352, M-376..M-384, M-389, M-390, M-401..M-404, M-407..M-410, M-606..M-613, M-616..M-618, M-626, M-627, M-636..M-638, M-727, M-755..M-760, M-766..M-769, M-772..M-777, M-780, M-782, M-784, M-786, M-788, M-790..M-792, M-794..M-808, M-811, M-850, M-851, M-854..M-859, M-873, M-878, M-880, M-900, M-919..M-925, M-926..M-929, M-937..M-943, M-958, M-959.

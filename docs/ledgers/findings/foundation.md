@@ -7,7 +7,7 @@ full text under `retired/`. Admission and columns follow `.agents/rules/docs.md`
 
 Before restructure: 96ddb0b:docs/ledgers/findings.md
 
-Last reconciled: 2026-10-23
+Last reconciled: 2026-10-24
 
 | ID | Claim | Kind | Evidence | Scope and limits | Unknowns | Status |
 | --- | --- | --- | --- | --- | --- | --- |
@@ -59,5 +59,6 @@ Last reconciled: 2026-10-23
 | F-922 | Authored foundation links resolve completely and retain edits through Bevy capture and schema-6 recovery; invalid links, damaged activation state and future formats fail closed | observed | authored-test; M-930..M-932 | high; fixed topology, authored relationships only; no parenting, support, C009 import or client proof | U-025, U-045 | active |
 | F-923 | Authored owner find/spawn/replacement retains dormant slots, incarnations, bindings, edited edges and retry completion through schema-7 capture/recovery; stale contexts and unsupported formats reject | observed | authored-test; M-933..M-936 | high; declared slots and native-frame state only; no official lookup, full recorder import or client proof | U-025, U-045 | active |
 | F-924 | Strict authored C001 fixtures persist fixed placements or owner find/spawn/replacement with source provenance; edits and retries survive reload without source replay | observed | authored-test; M-926..M-929, M-937..M-939 | high; schemas 5/8, native-frame inert fixtures only; no official coordinates, full import or gameplay proof | U-025, U-045 | superseded-by F-925 |
-| F-925 | Strict authored C001 fixtures preserve source provenance through placements, owner lifecycle and Bool/I32 use-gate actions; edits, retries and recovery retain current state | observed | authored-test; M-926..M-929, M-937..M-943 | high; schemas 5/8/9, authored coordinates/layouts/callbacks only; no official import or client proof | U-025, U-045 | active |
+| F-925 | Strict authored C001 fixtures preserve source provenance through placements, owner lifecycle and Bool/I32 use-gate actions; edits, retries and recovery retain current state | observed | authored-test; M-926..M-929, M-937..M-943 | high; schemas 5/8/9, authored coordinates/layouts/callbacks only; no official import or client proof | U-025, U-045 | superseded-by F-927 |
 | F-926 | Authored schemas 7–9 at 3–1,024 slots preserve state and stored bytes across count-only preflight; costs vary by schema and size | observed | runtime-capture; M-944..M-954; b53a224/eb3c061 | high; bounded same-host synthetic runs; no uniform speedup, peak-memory reduction or tick-loop claim | U-035, U-049 | active |
+| F-927 | Authored C001 fixtures retain provenance through placements, owner lifecycle, scalars and inventories; edits, transfers, consumption, retries and recovery preserve state | observed | authored-test; M-926..M-929, M-937..M-943, M-958, M-959 | high; schemas 5/8/9/10; authored coordinates/layouts/callbacks/semantics only; no official import/client proof | U-025, U-045 | active |

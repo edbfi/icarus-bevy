@@ -17,14 +17,17 @@ pub(crate) enum C001SourceProfile {
     InertPlacementV1,
     AuthoredOwnersV1,
     AuthoredScalarOwnersV1,
+    AuthoredInventoryOwnersV1,
 }
 impl C001SourceProfile {
     pub(crate) fn admits(self, policy: OwnerResolvePolicy) -> bool {
         matches!(
             policy,
             OwnerResolvePolicy::FindOnly | OwnerResolvePolicy::FindOrRespawn
-        ) || (matches!(self, Self::AuthoredOwnersV1 | Self::AuthoredScalarOwnersV1)
-            && policy == OwnerResolvePolicy::RespawnOnly)
+        ) || (matches!(
+            self,
+            Self::AuthoredOwnersV1 | Self::AuthoredScalarOwnersV1 | Self::AuthoredInventoryOwnersV1
+        ) && policy == OwnerResolvePolicy::RespawnOnly)
     }
 }
 impl SourceOwner {
@@ -148,7 +151,7 @@ fn header_valid(header: &[u8], kind: TagKind) -> bool {
     check(header, kind) == Some(true)
 }
 
-fn property<'a>(
+pub(crate) fn property<'a>(
     bytes: &'a [u8],
     index: Option<usize>,
     field: &'static str,
@@ -249,10 +252,14 @@ fn source_string(
 // Persisted metadata can be constructed without preparation. Keep its source
 // admission aligned with preparation's zero-gap typing contract: forced-wide
 // ASCII and other noncanonical scalar encodings are not part of this adapter.
-fn canonical_source_string(payload: &[u8], units: &[u16]) -> bool {
+pub(crate) fn canonical_source_string(payload: &[u8], units: &[u16]) -> bool {
     encode_string(units, ByteOrder::Little).is_ok_and(|encoded| encoded == payload)
 }
-fn source_int(p: &PropertyRecord<'_>, index: usize, field: &'static str) -> SemanticResult<i32> {
+pub(crate) fn source_int(
+    p: &PropertyRecord<'_>,
+    index: usize,
+    field: &'static str,
+) -> SemanticResult<i32> {
     require(
         p.tag.kind == TagKind::Int,
         Some(index),
@@ -514,6 +521,22 @@ pub(crate) fn source_scalar_owner(
     index: usize,
     layout: &crate::native_c001_scalar_owners::CompiledC001ScalarLayout,
 ) -> SemanticResult<SourceScalarOwner> {
+    let component = frame_scalar_component(bytes, index)?;
+    parse_scalar_component(
+        &component,
+        index,
+        layout,
+        C001SourceProfile::AuthoredScalarOwnersV1,
+        |p, i| source_string(p, TagKind::Name, i, "scalar.VariableName"),
+        |_| Ok(false),
+    )
+}
+
+/// Frame exactly once and apply the canonical scalar-profile header checks.
+pub(crate) fn frame_scalar_component(
+    bytes: &[u8],
+    index: usize,
+) -> SemanticResult<BaseComponent<'_>> {
     // Scalar admission additionally requires canonical encoded header names.
     // Existing source_owner profiles keep their original acceptance behavior.
     let component = read_base_component_with_limit(bytes, PROFILE, MAX_BOUNDED_COMPONENT_BYTES)
@@ -559,34 +582,46 @@ pub(crate) fn source_scalar_owner(
             }
         }
     }
+    Ok(component)
+}
+
+/// Only the inventory profile can admit additional declared component fields.
+/// Legacy owner/scalar entry points never acquire generic unknown-field admission.
+pub(crate) fn parse_scalar_component(
+    component: &BaseComponent<'_>,
+    index: usize,
+    layout: &crate::native_c001_scalar_owners::CompiledC001ScalarLayout,
+    profile: C001SourceProfile,
+    mut read_name: impl FnMut(&PropertyRecord<'_>, usize) -> SemanticResult<Vec<u16>>,
+    mut extra: impl FnMut(&PropertyRecord<'_>) -> SemanticResult<bool>,
+) -> SemanticResult<SourceScalarOwner> {
     let mut enabled = None;
     let mut remaining_uses = None;
-    let owner = parse_owner(
-        &component,
-        index,
-        C001SourceProfile::AuthoredScalarOwnersV1,
-        |p| {
-            if p.name == layout.definition().enabled.array_name {
-                enabled = Some(scalar_record(
-                    p,
-                    index,
-                    &layout.definition().enabled,
-                    scalar_bool,
-                )?);
-                Ok(true)
-            } else if p.name == layout.definition().remaining_uses.array_name {
-                remaining_uses = Some(scalar_record(
-                    p,
-                    index,
-                    &layout.definition().remaining_uses,
-                    |field, index| source_int(field, index, "scalar.Int"),
-                )?);
-                Ok(true)
-            } else {
-                Ok(false)
-            }
-        },
-    )?;
+    let owner = parse_owner(component, index, profile, |p| {
+        if p.name == layout.definition().enabled.array_name {
+            enabled = Some(scalar_record(
+                p,
+                index,
+                &layout.definition().enabled,
+                &mut read_name,
+                scalar_bool,
+            )?);
+            Ok(true)
+        } else if p.name == layout.definition().remaining_uses.array_name {
+            remaining_uses = Some(scalar_record(
+                p,
+                index,
+                &layout.definition().remaining_uses,
+                &mut read_name,
+                |field, index| source_int(field, index, "scalar.Int"),
+            )?);
+            Ok(true)
+        } else if matches!(profile, C001SourceProfile::AuthoredInventoryOwnersV1) {
+            extra(p)
+        } else {
+            Ok(false)
+        }
+    })?;
     let (enabled_source_name, enabled) = enabled.ok_or_else(|| {
         error(
             Some(index),
@@ -627,6 +662,7 @@ fn scalar_record<T>(
     p: &PropertyRecord<'_>,
     index: usize,
     declaration: &crate::native_c001_scalar_owners::C001ScalarArrayV1,
+    read_name: &mut impl FnMut(&PropertyRecord<'_>, usize) -> SemanticResult<Vec<u16>>,
     read_value: impl Fn(&PropertyRecord<'_>, usize) -> SemanticResult<T>,
 ) -> SemanticResult<(Vec<u16>, T)> {
     use crate::experimental::struct_array::read_tagged_struct_array_with_limit;
@@ -690,12 +726,7 @@ fn scalar_record<T>(
             SemanticImportCategory::Header,
         )?;
         if exact(&field.name, "VariableName") && name.is_none() {
-            name = Some(source_string(
-                &field,
-                TagKind::Name,
-                index,
-                "scalar.VariableName",
-            )?);
+            name = Some(read_name(&field, index)?);
         } else if field.name == declaration.value_field && value.is_none() {
             value = Some(read_value(&field, index)?);
         } else {
@@ -710,7 +741,7 @@ fn scalar_record<T>(
 }
 
 // Header string checks are scoped to the new profile so no old profile changes.
-fn canonical_header(header: &[u8], kind: TagKind) -> bool {
+pub(crate) fn canonical_header(header: &[u8], kind: TagKind) -> bool {
     fn take_string(header: &[u8], offset: &mut usize) -> Option<()> {
         let bytes = header.get(*offset..)?;
         let decoded = decode_string(bytes, ByteOrder::Little).ok()?;

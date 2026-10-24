@@ -36,6 +36,7 @@ use crate::{
     simulation::{DomainId, SNAPSHOT_SCHEMA_C001_INERT, WorldSnapshot},
 };
 
+pub mod c001_inventory_source;
 pub(crate) mod c001_source;
 use c001_source::{
     C001SourceProfile, SourceOwner, source_owner, validate_root, validate_source_headers,
@@ -855,6 +856,9 @@ pub fn prepare_c001_inert_import(
         native_owner_import: None,
         native_scalar_contracts: None,
         native_scalar_owner_import: None,
+        native_inventory_contracts: None,
+        native_inventories: None,
+        native_inventory_owner_import: None,
         native_relationships: None,
         native_lifecycle: None,
     };

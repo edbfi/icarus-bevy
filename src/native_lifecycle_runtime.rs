@@ -10,11 +10,22 @@ use std::{
 
 use anyhow::{Context, Result, ensure};
 use bevy::prelude::{Component, Entity, Resource, World};
+use serde::Serialize;
 use sha2::{Digest, Sha256};
 
 use crate::{
+    native_c001_inventory_owners::C001InventoryOwnerImportMetadataV1,
     native_c001_owners::C001OwnerImportMetadataV1,
     native_c001_scalar_owners::C001ScalarOwnerImportMetadataV1,
+    native_inventory::{
+        CompiledInventoryContractsV1, InventoryActionOutcomeV1, InventoryActionRequestV1,
+        InventoryContractsSnapshotV1, InventoryLiveOwnersV1, InventoryStateSnapshotV1,
+        InventoryStateV1, ItemTotalV1, MAX_INVENTORY_GRAPH_BYTES, MAX_INVENTORY_INSTANCES,
+        MAX_INVENTORY_ITEMS, MAX_INVENTORY_OWNERS, MAX_INVENTORY_STACKS, MAX_INVENTORY_STATE_BYTES,
+        OwnerInventoriesV1, StackId, StackV1, inventory_collection_bytes,
+        inventory_snapshot_allocation_bytes, prepare_inventory_action, validate_inventory_state,
+    },
+    native_inventory_restore::{InventoryRestoreBatchV1, prepare_inventory_owner_restore},
     native_lifecycle::{
         CompiledNativeLifecycle, CompletedRestore, LifecycleSnapshot, OwnerHandle, Presence,
         RecorderComponentRecord, RestoreBatch, prepare_owner_restore,
@@ -38,9 +49,9 @@ use crate::{
     },
     persistence::SnapshotStore,
     simulation::{
-        DomainId, Position, PreservedProspectState, SNAPSHOT_SCHEMA_C001_OWNERS,
-        SNAPSHOT_SCHEMA_C001_SCALAR_OWNERS, SNAPSHOT_SCHEMA_LIFECYCLE, SimulationClock,
-        WorldSnapshot,
+        DomainId, Position, PreservedProspectState, SNAPSHOT_SCHEMA_C001_INVENTORY_OWNERS,
+        SNAPSHOT_SCHEMA_C001_OWNERS, SNAPSHOT_SCHEMA_C001_SCALAR_OWNERS, SNAPSHOT_SCHEMA_LIFECYCLE,
+        SimulationClock, WorldSnapshot,
     },
 };
 
@@ -66,6 +77,50 @@ pub struct NativeScalarOwnerContractsState(pub Arc<ScalarOwnerContractsSnapshotV
 #[derive(Resource, Clone)]
 pub struct C001ScalarOwnerImportState(pub Arc<C001ScalarOwnerImportMetadataV1>);
 
+#[derive(Resource, Clone)]
+pub struct NativeInventoryContractsState(pub Arc<InventoryContractsSnapshotV1>);
+
+#[derive(Resource, Clone)]
+pub struct C001InventoryOwnerImportState(pub Arc<C001InventoryOwnerImportMetadataV1>);
+
+/// Inventory values have exactly one authority, on the registered live owner.
+#[derive(Component, Clone)]
+struct InventoryOwnerState {
+    activation: Arc<Definitions>,
+    generation: u64,
+    owner: OwnerHandle,
+    inventories: Vec<InventoryStateV1>,
+}
+
+#[derive(Clone)]
+struct InventoryHeader {
+    revision: u64,
+    next_stack_id: u64,
+    consumed: Vec<ItemTotalV1>,
+    // Covers the complete borrowed graph, including header and every owner.
+    // Capture checks this before cloning caller-corruptible component values.
+    fingerprint: [u8; 32],
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum SourceMode {
+    Lifecycle,
+    Owners,
+    ScalarOwners,
+    InventoryOwners,
+}
+
+impl SourceMode {
+    fn schema(self) -> u32 {
+        match self {
+            Self::Lifecycle => SNAPSHOT_SCHEMA_LIFECYCLE,
+            Self::Owners => SNAPSHOT_SCHEMA_C001_OWNERS,
+            Self::ScalarOwners => SNAPSHOT_SCHEMA_C001_SCALAR_OWNERS,
+            Self::InventoryOwners => SNAPSHOT_SCHEMA_C001_INVENTORY_OWNERS,
+        }
+    }
+}
+
 #[derive(Component, Clone)]
 struct ScalarOwnerDerived {
     activation: Arc<Definitions>,
@@ -79,6 +134,7 @@ struct Definitions {
     // Shared by every activation pin, including clones of SnapshotMode. A
     // stale resource cannot roll this back by restoring its observed generation.
     current_generation: AtomicU64,
+    mode: SourceMode,
     catalog: Arc<CompiledNativeCatalog>,
     lifecycle: CompiledNativeLifecycle,
     relationships: Option<CompiledNativeRelationships>,
@@ -87,6 +143,10 @@ struct Definitions {
     scalar_contracts: Option<CompiledScalarOwnerContracts>,
     scalar_snapshot: Option<Arc<ScalarOwnerContractsSnapshotV1>>,
     scalar_imported: Option<Arc<C001ScalarOwnerImportMetadataV1>>,
+    inventory_contracts: Option<CompiledInventoryContractsV1>,
+    inventory_snapshot: Option<Arc<InventoryContractsSnapshotV1>>,
+    inventory_imported: Option<Arc<C001InventoryOwnerImportMetadataV1>>,
+    inventory_pinned_bytes: usize,
 }
 
 /// Private fields prevent callers from updating a registry independently of its
@@ -97,6 +157,7 @@ pub struct NativeLifecycleContext {
     generation: u64,
     lifecycle: LifecycleSnapshot,
     live: BTreeMap<DomainId, Entity>,
+    inventory: Option<InventoryHeader>,
 }
 
 impl NativeLifecycleContext {
@@ -126,7 +187,9 @@ pub(crate) fn ensure_no_lifecycle_state(world: &World) -> Result<()> {
             && !world.contains_resource::<DormantNativeSlots>()
             && !world.contains_resource::<C001OwnerImportState>()
             && !world.contains_resource::<NativeScalarOwnerContractsState>()
-            && !world.contains_resource::<C001ScalarOwnerImportState>(),
+            && !world.contains_resource::<C001ScalarOwnerImportState>()
+            && !world.contains_resource::<NativeInventoryContractsState>()
+            && !world.contains_resource::<C001InventoryOwnerImportState>(),
         "world contains unexpected lifecycle resources"
     );
     for entity in world.iter_entities() {
@@ -139,7 +202,10 @@ pub(crate) fn ensure_no_lifecycle_state(world: &World) -> Result<()> {
                 && !entity.contains::<C001OwnerImportState>()
                 && !entity.contains::<NativeScalarOwnerContractsState>()
                 && !entity.contains::<C001ScalarOwnerImportState>()
-                && !entity.contains::<ScalarOwnerDerived>(),
+                && !entity.contains::<ScalarOwnerDerived>()
+                && !entity.contains::<NativeInventoryContractsState>()
+                && !entity.contains::<C001InventoryOwnerImportState>()
+                && !entity.contains::<InventoryOwnerState>(),
             "world contains unexpected lifecycle components"
         );
     }
@@ -164,6 +230,7 @@ struct StagedActor {
     relationship: Option<NativeRelationshipIdentity>,
     foundation: Option<NativeFoundation>,
     scalar: Option<ScalarOwnerDerived>,
+    inventory: Option<InventoryOwnerState>,
 }
 
 struct StagedWorld {
@@ -171,6 +238,175 @@ struct StagedWorld {
     actors: Vec<StagedActor>,
     dormant: BTreeMap<DomainId, NativeActorRecord>,
     dependents: Option<NativeFoundationDependents>,
+    inventory: Option<InventoryHeader>,
+}
+
+#[derive(Serialize)]
+struct BorrowedInventoryOwner<'a> {
+    owner: OwnerHandle,
+    inventories: &'a Vec<InventoryStateV1>,
+}
+
+#[derive(Serialize)]
+struct BorrowedInventories<'a> {
+    format: u32,
+    contract_id: &'a str,
+    revision: u64,
+    next_stack_id: u64,
+    consumed: &'a Vec<ItemTotalV1>,
+    owners: Vec<BorrowedInventoryOwner<'a>>,
+}
+
+fn inventory_fingerprint(state: &BorrowedInventories<'_>) -> Result<[u8; 32]> {
+    struct CounterHash {
+        bytes: usize,
+        hash: Sha256,
+    }
+    impl std::io::Write for CounterHash {
+        fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+            self.bytes = self
+                .bytes
+                .checked_add(bytes.len())
+                .filter(|bytes| *bytes <= MAX_INVENTORY_STATE_BYTES)
+                .ok_or_else(|| std::io::Error::other("inventory state byte limit"))?;
+            self.hash.update(bytes);
+            Ok(bytes.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+    let mut writer = CounterHash {
+        bytes: 0,
+        hash: Sha256::new(),
+    };
+    writer.hash.update(b"icarus/native_inventory_runtime/v1\0");
+    serde_json::to_writer(&mut writer, state)
+        .map_err(|_| anyhow::anyhow!("inventory state encoding limit"))?;
+    Ok(writer.hash.finalize().into())
+}
+
+fn inventory_header(state: &InventoryStateSnapshotV1) -> Result<InventoryHeader> {
+    let mut owners: Vec<_> = state
+        .owners
+        .iter()
+        .map(|owner| BorrowedInventoryOwner {
+            owner: owner.owner,
+            inventories: &owner.inventories,
+        })
+        .collect();
+    owners.sort_by_key(|owner| owner.owner.id);
+    let fingerprint = inventory_fingerprint(&BorrowedInventories {
+        format: state.format,
+        contract_id: &state.contract_id,
+        revision: state.revision,
+        next_stack_id: state.next_stack_id,
+        consumed: &state.consumed,
+        owners,
+    })?;
+    Ok(InventoryHeader {
+        revision: state.revision,
+        next_stack_id: state.next_stack_id,
+        consumed: state.consumed.clone(),
+        fingerprint,
+    })
+}
+
+fn live_inventory_owners(lifecycle: &LifecycleSnapshot) -> InventoryLiveOwnersV1 {
+    InventoryLiveOwnersV1 {
+        owners: lifecycle
+            .slots
+            .iter()
+            .filter(|slot| slot.presence == Presence::Live)
+            .map(|slot| OwnerHandle {
+                id: slot.id,
+                incarnation: slot.incarnation,
+            })
+            .collect(),
+    }
+}
+
+/// Shared by activation, staging and capture. Schema 9 and 10 deliberately
+/// share scalar behavior while retaining distinct provenance validators.
+fn validate_current_values(
+    definitions: &Definitions,
+    native: &NativeWorldSnapshot,
+    lifecycle: &LifecycleSnapshot,
+    inventories: Option<&InventoryStateSnapshotV1>,
+) -> Result<()> {
+    ensure!(
+        definitions.mode == SourceMode::InventoryOwners || inventories.is_none(),
+        "legacy source mode has inventory state"
+    );
+    if let Some(contracts) = &definitions.scalar_contracts {
+        contracts.validate_native(native)?;
+    }
+    match definitions.mode {
+        SourceMode::ScalarOwners => definitions
+            .scalar_imported
+            .as_ref()
+            .context("scalar provenance missing")?
+            .validate_current_state(
+                native,
+                lifecycle,
+                definitions
+                    .scalar_snapshot
+                    .as_deref()
+                    .context("scalar contracts missing")?,
+            )?,
+        SourceMode::InventoryOwners => {
+            ensure!(
+                lifecycle
+                    .slots
+                    .iter()
+                    .all(|slot| slot.presence == Presence::Live),
+                "inventory owners must all be live"
+            );
+            let state = inventories.context("inventory state missing")?;
+            let contracts = definitions
+                .inventory_contracts
+                .as_ref()
+                .context("inventory contracts missing")?;
+            let metadata = definitions
+                .inventory_imported
+                .as_deref()
+                .context("inventory provenance missing")?;
+            let bytes = inventory_snapshot_allocation_bytes(
+                definitions
+                    .inventory_snapshot
+                    .as_deref()
+                    .context("inventory declarations missing")?,
+                state,
+            )?
+            .checked_add(metadata.allocation_bytes()?)
+            .context("inventory allocation overflow")?;
+            ensure!(
+                bytes <= MAX_INVENTORY_GRAPH_BYTES,
+                "inventory allocation limit"
+            );
+            validate_inventory_state(
+                contracts,
+                state,
+                &metadata.inventory_initial.initial_totals,
+                &live_inventory_owners(lifecycle),
+            )?;
+            metadata.validate_current_state(
+                native,
+                lifecycle,
+                definitions
+                    .scalar_snapshot
+                    .as_deref()
+                    .context("scalar contracts missing")?,
+                definitions
+                    .inventory_snapshot
+                    .as_deref()
+                    .context("inventory declarations missing")?,
+                state,
+            )?;
+        }
+        _ => ensure!(inventories.is_none(), "unexpected inventory state"),
+    }
+    Ok(())
 }
 
 fn scalar_fingerprint(
@@ -210,6 +446,10 @@ fn staged_scalar_values(
 /// Every lookup and validation precedes entity mutation, including the reverse
 /// index allocation. The commit only moves already prepared component values.
 fn stage(snapshot: &WorldSnapshot, definitions: &Arc<Definitions>) -> Result<StagedWorld> {
+    ensure!(
+        snapshot.schema_version == definitions.mode.schema(),
+        "lifecycle source mode changed"
+    );
     // Exhaustion is a preparation failure, before any ECS mutation. All runtime
     // operations use exclusive World access; the atomic is a shared pin, not a
     // concurrent writer protocol.
@@ -239,21 +479,34 @@ fn stage(snapshot: &WorldSnapshot, definitions: &Arc<Definitions>) -> Result<Sta
                 == definitions.scalar_imported.as_deref(),
         "scalar contracts or provenance differ from loaded activation"
     );
-    if let Some(contracts) = &definitions.scalar_contracts {
-        contracts.validate_native(native)?;
-        definitions
-            .scalar_imported
-            .as_ref()
-            .context("scalar provenance missing")?
-            .validate_current_state(
-                native,
-                lifecycle,
-                definitions
-                    .scalar_snapshot
-                    .as_deref()
-                    .context("scalar contracts missing")?,
-            )?;
-    }
+    ensure!(
+        snapshot.native_inventory_contracts.as_ref() == definitions.inventory_snapshot.as_deref()
+            && snapshot.native_inventory_owner_import.as_ref()
+                == definitions.inventory_imported.as_deref(),
+        "inventory contracts or provenance differ from loaded activation"
+    );
+    validate_current_values(
+        definitions,
+        native,
+        lifecycle,
+        snapshot.native_inventories.as_ref(),
+    )?;
+    let inventory = snapshot
+        .native_inventories
+        .as_ref()
+        .map(inventory_header)
+        .transpose()?;
+    let inventory_owners: BTreeMap<_, _> = snapshot
+        .native_inventories
+        .as_ref()
+        .map(|state| {
+            state
+                .owners
+                .iter()
+                .map(|owner| (owner.owner.id, owner))
+                .collect()
+        })
+        .unwrap_or_default();
     definitions.lifecycle.validate_snapshot(lifecycle, native)?;
     let by_id: BTreeMap<_, _> = native
         .actors
@@ -334,6 +587,14 @@ fn stage(snapshot: &WorldSnapshot, definitions: &Arc<Definitions>) -> Result<Sta
                     })
                 })
                 .transpose()?,
+            inventory: inventory_owners
+                .get(&slot.id)
+                .map(|owner| InventoryOwnerState {
+                    activation: Arc::clone(definitions),
+                    generation,
+                    owner: owner.owner,
+                    inventories: owner.inventories.clone(),
+                }),
         });
     }
     let dependents = validate_relationships(
@@ -346,6 +607,7 @@ fn stage(snapshot: &WorldSnapshot, definitions: &Arc<Definitions>) -> Result<Sta
         actors,
         dormant,
         dependents,
+        inventory,
     })
 }
 
@@ -383,10 +645,18 @@ fn insert_actor(world: &mut World, entity: Entity, actor: StagedActor) {
     } else {
         entity.remove::<ScalarOwnerDerived>();
     }
+    if let Some(inventory) = actor.inventory {
+        entity.insert(inventory);
+    } else {
+        entity.remove::<InventoryOwnerState>();
+    }
 }
 
 pub(crate) fn activate_lifecycle(world: &mut World, snapshot: &WorldSnapshot) -> Result<()> {
-    if snapshot.schema_version == SNAPSHOT_SCHEMA_C001_SCALAR_OWNERS {
+    if matches!(
+        snapshot.schema_version,
+        SNAPSHOT_SCHEMA_C001_SCALAR_OWNERS | SNAPSHOT_SCHEMA_C001_INVENTORY_OWNERS
+    ) {
         SnapshotStore::preflight(snapshot)?;
     } else {
         snapshot.validate()?;
@@ -397,6 +667,7 @@ pub(crate) fn activate_lifecycle(world: &mut World, snapshot: &WorldSnapshot) ->
             SNAPSHOT_SCHEMA_LIFECYCLE
                 | SNAPSHOT_SCHEMA_C001_OWNERS
                 | SNAPSHOT_SCHEMA_C001_SCALAR_OWNERS
+                | SNAPSHOT_SCHEMA_C001_INVENTORY_OWNERS
         ),
         "lifecycle schema required"
     );
@@ -411,6 +682,51 @@ pub(crate) fn activate_lifecycle(world: &mut World, snapshot: &WorldSnapshot) ->
         .native_lifecycle
         .as_ref()
         .context("lifecycle state missing")?;
+    let mode = match snapshot.schema_version {
+        SNAPSHOT_SCHEMA_LIFECYCLE => SourceMode::Lifecycle,
+        SNAPSHOT_SCHEMA_C001_OWNERS => SourceMode::Owners,
+        SNAPSHOT_SCHEMA_C001_SCALAR_OWNERS => SourceMode::ScalarOwners,
+        SNAPSHOT_SCHEMA_C001_INVENTORY_OWNERS => SourceMode::InventoryOwners,
+        _ => unreachable!("validated lifecycle schema"),
+    };
+    // Admit the joint borrowed graph before any declaration/provenance clone.
+    let inventory_pinned_bytes = if mode == SourceMode::InventoryOwners {
+        let declarations = snapshot
+            .native_inventory_contracts
+            .as_ref()
+            .context("inventory contracts missing")?;
+        let state = snapshot
+            .native_inventories
+            .as_ref()
+            .context("inventory state missing")?;
+        let metadata = snapshot
+            .native_inventory_owner_import
+            .as_ref()
+            .context("inventory provenance missing")?;
+        let metadata_bytes = metadata.allocation_bytes()?;
+        let bytes = inventory_snapshot_allocation_bytes(declarations, state)?
+            .checked_add(metadata_bytes)
+            .context("inventory allocation overflow")?;
+        ensure!(
+            bytes <= MAX_INVENTORY_GRAPH_BYTES,
+            "inventory allocation limit"
+        );
+        // Empty state is used only for allocation accounting, never validation
+        // or publication. Count current component/header allocations on capture.
+        let empty = InventoryStateSnapshotV1 {
+            format: 1,
+            contract_id: declarations.contract_id.clone(),
+            revision: 1,
+            next_stack_id: 1,
+            consumed: Vec::new(),
+            owners: Vec::new(),
+        };
+        inventory_snapshot_allocation_bytes(declarations, &empty)?
+            .checked_add(metadata_bytes)
+            .context("inventory allocation overflow")?
+    } else {
+        0
+    };
     let catalog = Arc::new(CompiledNativeCatalog::compile(native.definitions.clone())?);
     let compiled = CompiledNativeLifecycle::from_snapshot(lifecycle, native)?;
     let relationships = snapshot
@@ -439,6 +755,21 @@ pub(crate) fn activate_lifecycle(world: &mut World, snapshot: &WorldSnapshot) ->
     }
     let definitions = Arc::new(Definitions {
         current_generation: AtomicU64::new(0),
+        mode,
+        inventory_pinned_bytes,
+        inventory_contracts: snapshot
+            .native_inventory_contracts
+            .as_ref()
+            .map(|contracts| CompiledInventoryContractsV1::from_snapshot(contracts, &catalog))
+            .transpose()?,
+        inventory_snapshot: snapshot
+            .native_inventory_contracts
+            .as_ref()
+            .map(|contracts| Arc::new(contracts.clone())),
+        inventory_imported: snapshot
+            .native_inventory_owner_import
+            .as_ref()
+            .map(|metadata| Arc::new(metadata.clone())),
         catalog,
         lifecycle: compiled,
         relationships,
@@ -471,6 +802,12 @@ pub(crate) fn activate_lifecycle(world: &mut World, snapshot: &WorldSnapshot) ->
     if let Some(metadata) = &definitions.scalar_imported {
         world.insert_resource(C001ScalarOwnerImportState(Arc::clone(metadata)));
     }
+    if let Some(contracts) = &definitions.inventory_snapshot {
+        world.insert_resource(NativeInventoryContractsState(Arc::clone(contracts)));
+    }
+    if let Some(metadata) = &definitions.inventory_imported {
+        world.insert_resource(C001InventoryOwnerImportState(Arc::clone(metadata)));
+    }
     let mut live = BTreeMap::new();
     for actor in staged.actors {
         let id = actor.record.id;
@@ -494,6 +831,7 @@ pub(crate) fn activate_lifecycle(world: &mut World, snapshot: &WorldSnapshot) ->
         generation: staged.generation,
         lifecycle: lifecycle.clone(),
         live,
+        inventory: staged.inventory,
     });
     Ok(())
 }
@@ -549,6 +887,135 @@ fn validate_relationships(
     Ok(Some(NativeFoundationDependents(reverse)))
 }
 
+fn capture_inventories(
+    world: &World,
+    context: &NativeLifecycleContext,
+) -> Result<Option<InventoryStateSnapshotV1>> {
+    let definitions = &context.definitions;
+    if definitions.mode != SourceMode::InventoryOwners {
+        ensure!(
+            context.inventory.is_none(),
+            "legacy world has inventory header"
+        );
+        return Ok(None);
+    }
+    let header = context
+        .inventory
+        .as_ref()
+        .context("inventory header missing")?;
+    let contracts = definitions
+        .inventory_snapshot
+        .as_deref()
+        .context("inventory contracts missing")?;
+    ensure!(
+        context.live.len() <= MAX_INVENTORY_OWNERS
+            && header.consumed.len() <= MAX_INVENTORY_ITEMS
+            && header.consumed.capacity() <= 2 * MAX_INVENTORY_ITEMS + 4,
+        "inventory header allocation limit"
+    );
+    let mut bytes = definitions.inventory_pinned_bytes;
+    let mut charge = |n: usize| -> Result<()> {
+        bytes = bytes
+            .checked_add(n)
+            .filter(|bytes| *bytes <= MAX_INVENTORY_GRAPH_BYTES)
+            .context("inventory allocation limit")?;
+        Ok(())
+    };
+    // Include caller capacities and a conservative decoded-vector allowance.
+    charge(
+        header
+            .consumed
+            .capacity()
+            .max(header.consumed.len() * 2)
+            .checked_mul(size_of::<ItemTotalV1>())
+            .context("inventory allocation overflow")?,
+    )?;
+    charge(
+        context
+            .live
+            .len()
+            .checked_mul(2 * size_of::<OwnerInventoriesV1>())
+            .context("inventory allocation overflow")?,
+    )?;
+    for total in &header.consumed {
+        ensure!(
+            !total.item.is_empty() && total.item.len() <= 64 && total.item.capacity() <= 132,
+            "inventory consumed key limit"
+        );
+        charge(total.item.capacity())?;
+    }
+    let mut owners = Vec::with_capacity(context.live.len());
+    let slots: BTreeMap<_, _> = context
+        .lifecycle
+        .slots
+        .iter()
+        .map(|slot| (slot.id, slot))
+        .collect();
+    let mut instances = 0usize;
+    let mut stacks = 0usize;
+    for (id, entity) in &context.live {
+        let state = world
+            .get::<InventoryOwnerState>(*entity)
+            .context("owner lacks inventory state")?;
+        let slot = slots.get(id).context("inventory lifecycle owner missing")?;
+        ensure!(
+            Arc::ptr_eq(&state.activation, definitions)
+                && state.generation == context.generation
+                && state.owner
+                    == OwnerHandle {
+                        id: *id,
+                        incarnation: slot.incarnation
+                    }
+                && slot.presence == Presence::Live,
+            "inventory state differs from its activation or owner"
+        );
+        charge(inventory_collection_bytes(&state.inventories)?)?;
+        instances = instances
+            .checked_add(state.inventories.len())
+            .filter(|count| *count <= MAX_INVENTORY_INSTANCES)
+            .context("inventory instance limit")?;
+        for inventory in &state.inventories {
+            stacks = stacks
+                .checked_add(inventory.slots.iter().flatten().count())
+                .and_then(|count| count.checked_add(inventory.overflow.len()))
+                .filter(|count| *count <= MAX_INVENTORY_STACKS)
+                .context("inventory stack limit")?;
+        }
+        owners.push(BorrowedInventoryOwner {
+            owner: state.owner,
+            inventories: &state.inventories,
+        });
+    }
+    let borrowed = BorrowedInventories {
+        format: 1,
+        contract_id: &contracts.contract_id,
+        revision: header.revision,
+        next_stack_id: header.next_stack_id,
+        consumed: &header.consumed,
+        owners,
+    };
+    ensure!(
+        inventory_fingerprint(&borrowed)? == header.fingerprint,
+        "inventory state differs from its committed checksum"
+    );
+    // All capacities, aggregate sizes and bytes were checked before cloning.
+    Ok(Some(InventoryStateSnapshotV1 {
+        format: 1,
+        contract_id: contracts.contract_id.clone(),
+        revision: header.revision,
+        next_stack_id: header.next_stack_id,
+        consumed: header.consumed.clone(),
+        owners: borrowed
+            .owners
+            .into_iter()
+            .map(|owner| OwnerInventoriesV1 {
+                owner: owner.owner,
+                inventories: owner.inventories.clone(),
+            })
+            .collect(),
+    }))
+}
+
 pub(crate) fn capture_lifecycle(world: &World) -> Result<WorldSnapshot> {
     let context = world
         .get_resource::<NativeLifecycleContext>()
@@ -564,6 +1031,34 @@ pub(crate) fn capture_lifecycle(world: &World) -> Result<WorldSnapshot> {
         "dormant state differs from loaded activation"
     );
     let definitions = &context.definitions;
+    ensure!(
+        context.generation == definitions.current_generation.load(Ordering::Relaxed),
+        "lifecycle context generation is stale"
+    );
+    ensure!(
+        match (
+            world.get_resource::<NativeInventoryContractsState>(),
+            &definitions.inventory_snapshot
+        ) {
+            (None, None) => true,
+            (Some(actual), Some(expected)) =>
+                Arc::ptr_eq(&actual.0, expected) || actual.0 == *expected,
+            _ => false,
+        },
+        "inventory contracts differ from loaded activation"
+    );
+    ensure!(
+        match (
+            world.get_resource::<C001InventoryOwnerImportState>(),
+            &definitions.inventory_imported
+        ) {
+            (None, None) => true,
+            (Some(actual), Some(expected)) =>
+                Arc::ptr_eq(&actual.0, expected) || actual.0 == *expected,
+            _ => false,
+        },
+        "inventory provenance differs from loaded activation"
+    );
     ensure!(
         match (
             world.get_resource::<NativeScalarOwnerContractsState>(),
@@ -628,6 +1123,63 @@ pub(crate) fn capture_lifecycle(world: &World) -> Result<WorldSnapshot> {
     );
     let expected_entities: BTreeSet<_> = context.live.values().copied().collect();
     for entity in world.iter_entities() {
+        if expected_entities.contains(&entity.id()) {
+            // Lifecycle modes 7–10 have no ECS lifetime relationships. Inspect
+            // both ends, including empty targets and disabled owners, before
+            // staging: despawning one owner must not cascade into another.
+            // Foundation domain links are ordinary components, unaffected here.
+            // An empty target can have an uninitialized relationship accessor,
+            // but its registered despawn hook still makes lifetime mutation
+            // possible. These authored owners admit no despawn hooks.
+            ensure!(
+                !entity.archetype().has_despawn_hook(),
+                "managed owner has unsupported ECS despawn hook"
+            );
+            for component in entity.archetype().components() {
+                let info = world
+                    .components()
+                    .get_info(*component)
+                    .context("managed owner component metadata missing")?;
+                ensure!(
+                    !info
+                        .relationship_accessor()
+                        .is_some_and(|accessor| accessor.linked_spawn()),
+                    "managed owner has unsupported ECS lifetime relationship"
+                );
+            }
+        }
+        if let Some(actual) = entity.get::<NativeLifecycleContext>() {
+            ensure!(
+                std::ptr::eq(actual, context),
+                "unregistered lifecycle context"
+            );
+        }
+        if let Some(actual) = entity.get::<DormantNativeSlots>() {
+            ensure!(std::ptr::eq(actual, dormant), "unregistered dormant slots");
+        }
+        if let Some(actual) = entity.get::<NativeInventoryContractsState>() {
+            ensure!(
+                world
+                    .get_resource::<NativeInventoryContractsState>()
+                    .is_some_and(|resource| std::ptr::eq(actual, resource)),
+                "unregistered inventory contracts"
+            );
+        }
+        if let Some(actual) = entity.get::<C001InventoryOwnerImportState>() {
+            ensure!(
+                world
+                    .get_resource::<C001InventoryOwnerImportState>()
+                    .is_some_and(|resource| std::ptr::eq(actual, resource)),
+                "unregistered inventory provenance"
+            );
+        }
+        if entity.contains::<InventoryOwnerState>() {
+            ensure!(
+                definitions.mode == SourceMode::InventoryOwners
+                    && expected_entities.contains(&entity.id()),
+                "unregistered inventory owner state"
+            );
+        }
         if let Some(contracts) = entity.get::<NativeScalarOwnerContractsState>() {
             ensure!(
                 world
@@ -669,6 +1221,7 @@ pub(crate) fn capture_lifecycle(world: &World) -> Result<WorldSnapshot> {
             || entity.contains::<NativeRelationshipIdentity>()
             || entity.contains::<NativeFoundation>()
             || entity.contains::<ScalarOwnerDerived>()
+            || entity.contains::<InventoryOwnerState>()
         {
             ensure!(
                 expected_entities.contains(&entity.id()),
@@ -846,6 +1399,7 @@ pub(crate) fn capture_lifecycle(world: &World) -> Result<WorldSnapshot> {
     definitions
         .catalog
         .validate_records(&context.lifecycle.definition.map, records.values().cloned())?;
+    let inventories = capture_inventories(world, context)?;
     let native = NativeWorldSnapshot {
         catalog_id: definitions.catalog.identity().to_owned(),
         definitions: definitions.catalog.definition().clone(),
@@ -868,29 +1422,14 @@ pub(crate) fn capture_lifecycle(world: &World) -> Result<WorldSnapshot> {
     if let Some(metadata) = &definitions.imported {
         metadata.validate_current_state(&native, &context.lifecycle)?;
     }
-    if let Some(contracts) = &definitions.scalar_contracts {
-        contracts.validate_native(&native)?;
-        definitions
-            .scalar_imported
-            .as_ref()
-            .context("scalar provenance missing")?
-            .validate_current_state(
-                &native,
-                &context.lifecycle,
-                definitions
-                    .scalar_snapshot
-                    .as_deref()
-                    .context("scalar contracts missing")?,
-            )?;
-    }
+    validate_current_values(
+        definitions,
+        &native,
+        &context.lifecycle,
+        inventories.as_ref(),
+    )?;
     Ok(WorldSnapshot {
-        schema_version: if definitions.scalar_imported.is_some() {
-            SNAPSHOT_SCHEMA_C001_SCALAR_OWNERS
-        } else if definitions.imported.is_some() {
-            SNAPSHOT_SCHEMA_C001_OWNERS
-        } else {
-            SNAPSHOT_SCHEMA_LIFECYCLE
-        },
+        schema_version: definitions.mode.schema(),
         tick: world
             .get_resource::<SimulationClock>()
             .context("world lacks simulation clock")?
@@ -903,6 +1442,9 @@ pub(crate) fn capture_lifecycle(world: &World) -> Result<WorldSnapshot> {
         native_owner_import: definitions.imported.as_deref().cloned(),
         native_scalar_contracts: definitions.scalar_snapshot.as_deref().cloned(),
         native_scalar_owner_import: definitions.scalar_imported.as_deref().cloned(),
+        native_inventory_contracts: definitions.inventory_snapshot.as_deref().cloned(),
+        native_inventory_owner_import: definitions.inventory_imported.as_deref().cloned(),
+        native_inventories: inventories,
         preserved_prospect: world
             .get_resource::<PreservedProspectState>()
             .map(|state| Arc::clone(&state.0)),
@@ -938,6 +1480,202 @@ pub fn native_owner_handle(world: &World, id: DomainId) -> Result<OwnerHandle> {
         id,
         incarnation: slot.incarnation,
     })
+}
+
+#[derive(Clone, PartialEq)]
+pub struct InventoryOwnerQueryV1 {
+    pub revision: u64,
+    pub owner: OwnerInventoriesV1,
+}
+
+impl std::fmt::Debug for InventoryOwnerQueryV1 {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("InventoryOwnerQueryV1")
+            .finish_non_exhaustive()
+    }
+}
+
+/// Every query validates all registered owners and the global header first.
+pub fn inventory_owner_state(world: &World, owner: OwnerHandle) -> Result<InventoryOwnerQueryV1> {
+    let snapshot = capture_lifecycle(world)?;
+    require_handle(&snapshot, owner)?;
+    let state = snapshot
+        .native_inventories
+        .context("world has no inventory owner contract")?;
+    let row = state
+        .owners
+        .into_iter()
+        .find(|row| row.owner == owner)
+        .context("inventory owner missing")?;
+    Ok(InventoryOwnerQueryV1 {
+        revision: state.revision,
+        owner: row,
+    })
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum InventoryStackLocationV1 {
+    Slot { index: u16 },
+    Overflow { index: usize, requested_slot: u16 },
+}
+
+impl std::fmt::Debug for InventoryStackLocationV1 {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let name = match self {
+            Self::Slot { .. } => "Slot",
+            Self::Overflow { .. } => "Overflow",
+        };
+        f.debug_struct(name).finish_non_exhaustive()
+    }
+}
+
+/// An owned stack view at the world's current global inventory revision.
+#[derive(Clone, PartialEq)]
+pub struct InventoryStackQueryV1 {
+    pub revision: u64,
+    pub owner: OwnerHandle,
+    pub inventory: String,
+    pub stack: StackV1,
+    pub location: InventoryStackLocationV1,
+}
+
+impl std::fmt::Debug for InventoryStackQueryV1 {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("InventoryStackQueryV1")
+            .finish_non_exhaustive()
+    }
+}
+
+/// Validate the entire world and handle before resolving an exact endpoint.
+/// Retired stack identities never resolve, and the revision is not a caller CAS.
+pub fn inventory_stack(
+    world: &World,
+    owner: OwnerHandle,
+    inventory_key: &str,
+    stack_id: StackId,
+) -> Result<InventoryStackQueryV1> {
+    let snapshot = capture_lifecycle(world)?;
+    require_handle(&snapshot, owner)?;
+    ensure!(
+        !inventory_key.is_empty()
+            && inventory_key.len() <= 64
+            && inventory_key
+                .bytes()
+                .all(|value| value.is_ascii_alphanumeric() || b"-_.".contains(&value)),
+        "inventory key invalid"
+    );
+    let state = snapshot
+        .native_inventories
+        .context("world has no inventory owner contract")?;
+    let row = state
+        .owners
+        .into_iter()
+        .find(|row| row.owner == owner)
+        .context("inventory owner missing")?;
+    let inventory = row
+        .inventories
+        .into_iter()
+        .find(|inventory| inventory.key == inventory_key)
+        .context("inventory endpoint instance invalid")?;
+    for (index, stack) in inventory.slots.into_iter().enumerate() {
+        if let Some(stack) = stack.filter(|stack| stack.id == stack_id) {
+            return Ok(InventoryStackQueryV1 {
+                revision: state.revision,
+                owner,
+                inventory: inventory.key,
+                stack,
+                location: InventoryStackLocationV1::Slot {
+                    index: u16::try_from(index).context("inventory slot index invalid")?,
+                },
+            });
+        }
+    }
+    for (index, deferred) in inventory.overflow.into_iter().enumerate() {
+        if deferred.stack.id == stack_id {
+            return Ok(InventoryStackQueryV1 {
+                revision: state.revision,
+                owner,
+                inventory: inventory.key,
+                stack: deferred.stack,
+                location: InventoryStackLocationV1::Overflow {
+                    index,
+                    requested_slot: deferred.requested_slot,
+                },
+            });
+        }
+    }
+    anyhow::bail!("inventory endpoint stack missing")
+}
+
+/// Prepare and preflight the entire resulting world before changing any ECS
+/// value. No-change requests still validate unrelated owners and provenance.
+pub fn apply_native_inventory_action(
+    world: &mut World,
+    request: &InventoryActionRequestV1,
+) -> Result<InventoryActionOutcomeV1> {
+    let mut snapshot = capture_lifecycle(world)?;
+    let definitions = &world.resource::<NativeLifecycleContext>().definitions;
+    let prepared = prepare_inventory_action(
+        definitions
+            .inventory_contracts
+            .as_ref()
+            .context("world has no inventory owner contract")?,
+        snapshot
+            .native_inventories
+            .as_ref()
+            .context("inventory state missing")?,
+        &definitions
+            .inventory_imported
+            .as_ref()
+            .context("inventory provenance missing")?
+            .inventory_initial
+            .initial_totals,
+        &live_inventory_owners(
+            snapshot
+                .native_lifecycle
+                .as_ref()
+                .context("lifecycle state missing")?,
+        ),
+        request,
+    )?;
+    let outcome = prepared.outcome();
+    if outcome == InventoryActionOutcomeV1::NoChange {
+        return Ok(outcome);
+    }
+    snapshot.native_inventories = Some(prepared.into_state());
+    SnapshotStore::preflight(&snapshot)?;
+    let staged = stage(&snapshot, definitions)?;
+    commit(world, snapshot, staged);
+    Ok(outcome)
+}
+
+pub fn restore_native_inventory_owners(
+    world: &mut World,
+    batch: &InventoryRestoreBatchV1,
+) -> Result<NativeRestoreResult> {
+    let current = capture_lifecycle(world)?;
+    ensure!(
+        current.schema_version == SNAPSHOT_SCHEMA_C001_INVENTORY_OWNERS,
+        "inventory restore requires schema 10"
+    );
+    let prepared = prepare_inventory_owner_restore(&current, batch)?;
+    let completion = prepared
+        .snapshot()
+        .native_lifecycle
+        .as_ref()
+        .and_then(|lifecycle| lifecycle.completed.as_ref())
+        .context("prepared inventory restore completion missing")?
+        .clone();
+    if prepared.already_completed() {
+        return Ok(NativeRestoreResult::AlreadyCompleted(completion));
+    }
+    SnapshotStore::preflight(prepared.snapshot())?;
+    let staged = stage(
+        prepared.snapshot(),
+        &world.resource::<NativeLifecycleContext>().definitions,
+    )?;
+    commit(world, prepared.into_snapshot(), staged);
+    Ok(NativeRestoreResult::AppliedInMemory(completion))
 }
 
 fn scalar_state_from_snapshot(
@@ -1085,6 +1823,7 @@ fn commit(world: &mut World, snapshot: WorldSnapshot, staged: StagedWorld) {
         generation: staged.generation,
         lifecycle: snapshot.native_lifecycle.expect("prepared lifecycle state"),
         live,
+        inventory: staged.inventory,
     });
 }
 
@@ -1093,6 +1832,10 @@ pub fn restore_native_owners(
     batch: &RestoreBatch,
 ) -> Result<NativeRestoreResult> {
     let current = capture_lifecycle(world)?;
+    ensure!(
+        current.schema_version != SNAPSHOT_SCHEMA_C001_INVENTORY_OWNERS,
+        "schema 10 requires composite inventory owner restore"
+    );
     let prepared = prepare_owner_restore(&current, batch)?;
     let completion = prepared.completion().clone();
     if prepared.already_completed() {
@@ -1596,6 +2339,836 @@ mod tests {
         ] {
             app.world_mut().spawn((Disabled, derived.clone()));
             assert!(capture(app.world_mut()).is_err());
+        }
+    }
+
+    fn inventory_app() -> bevy::prelude::App {
+        build_app(
+            &ServerConfig::default(),
+            &crate::inventory_owner_fixture::imported(),
+        )
+        .unwrap()
+    }
+
+    fn inventory_noop(world: &World, owner: OwnerHandle) -> InventoryActionRequestV1 {
+        use crate::native_inventory::{
+            InventoryActionV1, InventorySlotEndpointV1, InventoryStackEndpointV1,
+        };
+        let current = inventory_owner_state(world, owner).unwrap();
+        let bag = current
+            .owner
+            .inventories
+            .iter()
+            .find(|inventory| inventory.key == "bag")
+            .unwrap();
+        InventoryActionRequestV1 {
+            expected_inventory_revision: current.revision,
+            action: InventoryActionV1::Move {
+                source: InventoryStackEndpointV1 {
+                    owner,
+                    inventory: "bag".into(),
+                    stack_id: bag.slots[0].as_ref().unwrap().id,
+                },
+                destination: InventorySlotEndpointV1 {
+                    owner,
+                    inventory: "bag".into(),
+                    slot: 0,
+                },
+            },
+        }
+    }
+
+    fn inventory_replacement(world: &World) -> InventoryRestoreBatchV1 {
+        use crate::native_inventory_restore::InventoryOwnerRestoreV1;
+        let snapshot = capture_lifecycle(world).unwrap();
+        let native = snapshot.native_world.as_ref().unwrap();
+        let lifecycle = snapshot.native_lifecycle.as_ref().unwrap();
+        let inventories = snapshot.native_inventories.as_ref().unwrap();
+        let mut batch = crate::inventory_owner_fixture::fixture().lifecycle_batch;
+        batch.sequence = lifecycle.restore_sequence + 1;
+        for command in &mut batch.recorders {
+            let actor = native
+                .actors
+                .iter()
+                .find(|actor| actor.placement == command.target_placement)
+                .unwrap();
+            let slot = lifecycle
+                .slots
+                .iter()
+                .find(|slot| slot.id == actor.id)
+                .unwrap();
+            command.guid = 900 + actor.id.0 as i32;
+            command.expected_presence = Presence::Live;
+            command.expected_incarnation = slot.incarnation;
+            command.policy = crate::native_lifecycle::ResolvePolicy::RespawnOnly;
+            command.source = crate::native_lifecycle::RecorderSource::Detached {
+                expected_prior_binding: None,
+            };
+            command.create_if_missing = true;
+            command.transform = actor.transform.clone();
+            command.variables = actor.variables.clone();
+        }
+        InventoryRestoreBatchV1 {
+            format: 1,
+            scalar_contract_id: snapshot
+                .native_scalar_contracts
+                .as_ref()
+                .unwrap()
+                .contract_id
+                .clone(),
+            inventory_contract_id: inventories.contract_id.clone(),
+            expected_inventory_revision: inventories.revision,
+            lifecycle: batch,
+            owners: native
+                .actors
+                .iter()
+                .map(|actor| InventoryOwnerRestoreV1 {
+                    target_placement: actor.placement.clone(),
+                    inventories: inventories
+                        .owners
+                        .iter()
+                        .find(|owner| owner.owner.id == actor.id)
+                        .unwrap()
+                        .inventories
+                        .clone(),
+                })
+                .collect(),
+        }
+    }
+
+    fn assert_inventory_calls_reject(
+        world: &mut World,
+        owner: OwnerHandle,
+        noop: &InventoryActionRequestV1,
+        batch: &InventoryRestoreBatchV1,
+    ) {
+        assert!(capture(world).is_err());
+        assert!(inventory_owner_state(world, owner).is_err());
+        if let crate::native_inventory::InventoryActionV1::Move { source, .. } = &noop.action {
+            assert!(inventory_stack(world, owner, &source.inventory, source.stack_id).is_err());
+        }
+        assert!(native_owner_handle(world, owner.id).is_err());
+        assert!(scalar_owner_state(world, owner).is_err());
+        assert!(apply_native_inventory_action(world, noop).is_err());
+        assert!(set_enabled(world, owner, true).is_err());
+        assert!(try_use(world, owner).is_err());
+        assert!(
+            update_lifecycle_actor(
+                world,
+                owner,
+                NativeTransform::default(),
+                scalar_fixture::scalar_pair(true, 1)
+            )
+            .is_err()
+        );
+        assert!(reassign_lifecycle_foundation(world, owner, None).is_err());
+        assert!(restore_native_inventory_owners(world, batch).is_err());
+        assert!(restore_native_owners(world, &batch.lifecycle).is_err());
+    }
+
+    #[derive(Component)]
+    #[relationship(relationship_target = LifetimeDependents)]
+    struct LifetimeOwner(Entity);
+
+    #[derive(Component, Default)]
+    #[relationship_target(relationship = LifetimeOwner, linked_spawn)]
+    struct LifetimeDependents(Vec<Entity>);
+
+    #[test]
+    fn legacy_lifecycle_modes_also_reject_lifetime_components_on_owners() {
+        use bevy::prelude::Children;
+        for mut app in [app(), scalar_app()] {
+            let entity = scalar_entity(app.world(), DomainId(1));
+            let owner = native_owner_handle(app.world(), DomainId(1)).unwrap();
+            let before = capture(app.world_mut()).unwrap();
+            app.world_mut()
+                .entity_mut(entity)
+                .insert(Children::default());
+            assert!(capture(app.world_mut()).is_err());
+            assert!(native_owner_handle(app.world(), owner.id).is_err());
+            app.world_mut().entity_mut(entity).remove::<Children>();
+            assert!(capture(app.world_mut()).unwrap() == before);
+            app.world_mut()
+                .entity_mut(entity)
+                .insert(LifetimeDependents::default());
+            assert!(capture(app.world_mut()).is_err());
+            assert!(native_owner_handle(app.world(), owner.id).is_err());
+            app.world_mut()
+                .entity_mut(entity)
+                .remove::<LifetimeDependents>();
+            assert!(capture(app.world_mut()).unwrap() == before);
+        }
+    }
+
+    #[test]
+    fn lifetime_relationships_reject_before_inventory_writes_and_repair_allows_retry() {
+        use bevy::{
+            ecs::entity_disabling::Disabled,
+            prelude::{ChildOf, Children},
+        };
+        for mode in 0..8 {
+            let mut app = inventory_app();
+            let owner = native_owner_handle(app.world(), DomainId(3)).unwrap();
+            let noop = inventory_noop(app.world(), owner);
+            let batch = inventory_replacement(app.world());
+            let before = capture(app.world_mut()).unwrap();
+            let context = app.world().resource::<NativeLifecycleContext>().clone();
+            let alpha = context.live[&DomainId(1)];
+            let zulu = context.live[&DomainId(3)];
+            let unrelated = app.world_mut().spawn_empty().id();
+            app.world_mut().entity_mut(zulu).insert(Disabled);
+            match mode {
+                0 => {
+                    app.world_mut().entity_mut(zulu).insert(ChildOf(alpha));
+                }
+                1 => {
+                    app.world_mut().entity_mut(zulu).insert(ChildOf(unrelated));
+                }
+                2 => {
+                    app.world_mut().entity_mut(unrelated).insert(ChildOf(zulu));
+                }
+                3 => {
+                    app.world_mut().entity_mut(zulu).insert(Children::default());
+                }
+                4 => {
+                    app.world_mut()
+                        .entity_mut(zulu)
+                        .insert(LifetimeOwner(alpha));
+                }
+                5 => {
+                    app.world_mut()
+                        .entity_mut(zulu)
+                        .insert(LifetimeOwner(unrelated));
+                }
+                6 => {
+                    app.world_mut()
+                        .entity_mut(unrelated)
+                        .insert(LifetimeOwner(zulu));
+                }
+                _ => {
+                    app.world_mut()
+                        .entity_mut(zulu)
+                        .insert(LifetimeDependents::default());
+                }
+            }
+            let entities: BTreeSet<_> = app
+                .world()
+                .iter_entities()
+                .map(|entity| entity.id())
+                .collect();
+            let inventories: Vec<_> = context
+                .live
+                .values()
+                .map(|entity| {
+                    (
+                        *entity,
+                        app.world()
+                            .get::<InventoryOwnerState>(*entity)
+                            .unwrap()
+                            .clone(),
+                    )
+                })
+                .collect();
+            assert!(capture(app.world_mut()).is_err(), "lifetime mode {mode}");
+            assert_inventory_calls_reject(app.world_mut(), owner, &noop, &batch);
+            let after = app.world().resource::<NativeLifecycleContext>();
+            assert_eq!(after.generation, context.generation);
+            assert_eq!(after.live, context.live);
+            assert_eq!(
+                after.definitions.current_generation.load(Ordering::Relaxed),
+                context.generation
+            );
+            assert_eq!(
+                after.inventory.as_ref().unwrap().revision,
+                context.inventory.as_ref().unwrap().revision
+            );
+            assert_eq!(
+                after.inventory.as_ref().unwrap().fingerprint,
+                context.inventory.as_ref().unwrap().fingerprint
+            );
+            assert_eq!(
+                after.inventory.as_ref().unwrap().next_stack_id,
+                context.inventory.as_ref().unwrap().next_stack_id
+            );
+            assert_eq!(
+                after.inventory.as_ref().unwrap().consumed,
+                context.inventory.as_ref().unwrap().consumed
+            );
+            assert_eq!(
+                app.world()
+                    .iter_entities()
+                    .map(|entity| entity.id())
+                    .collect::<BTreeSet<_>>(),
+                entities
+            );
+            for (entity, before) in inventories {
+                let after = app.world().get::<InventoryOwnerState>(entity).unwrap();
+                assert_eq!(after.inventories, before.inventories);
+                assert_eq!(after.owner, before.owner);
+                assert_eq!(after.generation, before.generation);
+                assert!(Arc::ptr_eq(&after.activation, &before.activation));
+            }
+            // Remove sources first, then any deliberately empty targets.
+            for entity in [alpha, zulu, unrelated] {
+                app.world_mut()
+                    .entity_mut(entity)
+                    .remove::<(ChildOf, LifetimeOwner)>();
+            }
+            for entity in [alpha, zulu, unrelated] {
+                app.world_mut()
+                    .entity_mut(entity)
+                    .remove::<(Children, LifetimeDependents)>();
+            }
+            assert!(capture(app.world_mut()).unwrap() == before);
+            assert_eq!(
+                apply_native_inventory_action(app.world_mut(), &noop).unwrap(),
+                InventoryActionOutcomeV1::NoChange
+            );
+            assert!(matches!(
+                restore_native_inventory_owners(app.world_mut(), &batch).unwrap(),
+                NativeRestoreResult::AppliedInMemory(_)
+            ));
+            let committed = capture(app.world_mut()).unwrap();
+            assert!(matches!(
+                restore_native_inventory_owners(app.world_mut(), &batch).unwrap(),
+                NativeRestoreResult::AlreadyCompleted(_)
+            ));
+            assert!(capture(app.world_mut()).unwrap() == committed);
+        }
+    }
+
+    #[test]
+    fn unrelated_lifetime_relationships_do_not_block_managed_owners() {
+        use bevy::prelude::ChildOf;
+        let mut app = inventory_app();
+        let owner = native_owner_handle(app.world(), DomainId(3)).unwrap();
+        let noop = inventory_noop(app.world(), owner);
+        let batch = inventory_replacement(app.world());
+        let before = capture(app.world_mut()).unwrap();
+        let parent = app.world_mut().spawn_empty().id();
+        let child = app
+            .world_mut()
+            .spawn((ChildOf(parent), LifetimeOwner(parent)))
+            .id();
+        assert!(capture(app.world_mut()).unwrap() == before);
+        assert_eq!(
+            apply_native_inventory_action(app.world_mut(), &noop).unwrap(),
+            InventoryActionOutcomeV1::NoChange
+        );
+        restore_native_inventory_owners(app.world_mut(), &batch).unwrap();
+        assert_eq!(app.world().get::<ChildOf>(child).unwrap().parent(), parent);
+        assert_eq!(app.world().get::<LifetimeOwner>(child).unwrap().0, parent);
+        assert!(
+            inventory_owner_state(
+                app.world(),
+                native_owner_handle(app.world(), owner.id).unwrap()
+            )
+            .is_ok()
+        );
+    }
+
+    #[test]
+    fn inventory_missing_stale_cross_activation_transplanted_and_hidden_components_reject() {
+        use bevy::ecs::entity_disabling::Disabled;
+        for mode in 0..8 {
+            let mut app = inventory_app();
+            let owner = native_owner_handle(app.world(), DomainId(3)).unwrap();
+            let noop = inventory_noop(app.world(), owner);
+            let batch = inventory_replacement(app.world());
+            let victim = scalar_entity(app.world(), DomainId(2));
+            let original = app
+                .world()
+                .get::<InventoryOwnerState>(victim)
+                .unwrap()
+                .clone();
+            app.world_mut().entity_mut(victim).insert(Disabled);
+            match mode {
+                0 => {
+                    app.world_mut()
+                        .entity_mut(victim)
+                        .remove::<InventoryOwnerState>();
+                }
+                1 => {
+                    app.world_mut()
+                        .get_mut::<InventoryOwnerState>(victim)
+                        .unwrap()
+                        .generation -= 1;
+                }
+                2 => {
+                    app.world_mut()
+                        .get_mut::<InventoryOwnerState>(victim)
+                        .unwrap()
+                        .owner
+                        .incarnation += 1;
+                }
+                3 => {
+                    let other = inventory_app();
+                    let other_entity = scalar_entity(other.world(), DomainId(2));
+                    app.world_mut().entity_mut(victim).insert(
+                        other
+                            .world()
+                            .get::<InventoryOwnerState>(other_entity)
+                            .unwrap()
+                            .clone(),
+                    );
+                }
+                4 => {
+                    let source = scalar_entity(app.world(), DomainId(1));
+                    let transplanted = app
+                        .world()
+                        .get::<InventoryOwnerState>(source)
+                        .unwrap()
+                        .clone();
+                    app.world_mut().entity_mut(victim).insert(transplanted);
+                }
+                5 => {
+                    let alpha = native_owner_handle(app.world(), DomainId(1)).unwrap();
+                    set_enabled(app.world_mut(), alpha, true).unwrap();
+                    // Identical contents and owner, but a prior generation.
+                    app.world_mut().entity_mut(victim).insert(original);
+                }
+                6 => {
+                    app.world_mut().spawn((Disabled, original));
+                }
+                _ => {
+                    app.world_mut()
+                        .get_mut::<InventoryOwnerState>(victim)
+                        .unwrap()
+                        .inventories
+                        .reserve(32);
+                }
+            }
+            let generation = app.world().resource::<NativeLifecycleContext>().generation;
+            let live = app
+                .world()
+                .resource::<NativeLifecycleContext>()
+                .live
+                .clone();
+            assert!(capture(app.world_mut()).is_err(), "corruption mode {mode}");
+            assert_inventory_calls_reject(app.world_mut(), owner, &noop, &batch);
+            assert_eq!(
+                app.world().resource::<NativeLifecycleContext>().generation,
+                generation
+            );
+            assert_eq!(app.world().resource::<NativeLifecycleContext>().live, live);
+        }
+    }
+
+    #[test]
+    fn inventory_checksum_rejects_header_damage_and_conservation_valid_direct_component_edits() {
+        for mode in 0..7 {
+            let mut app = inventory_app();
+            let owner = native_owner_handle(app.world(), DomainId(3)).unwrap();
+            let noop = inventory_noop(app.world(), owner);
+            let batch = inventory_replacement(app.world());
+            match mode {
+                0..=3 => {
+                    let mut context = app.world_mut().resource_mut::<NativeLifecycleContext>();
+                    let header = context.inventory.as_mut().unwrap();
+                    match mode {
+                        0 => header.revision += 1,
+                        1 => header.next_stack_id += 1,
+                        2 => header.consumed[0].count += 1,
+                        _ => header.consumed.reserve(4096),
+                    }
+                }
+                4 => {
+                    app.world_mut()
+                        .resource_mut::<NativeLifecycleContext>()
+                        .inventory = None;
+                }
+                5 => {
+                    let entity = scalar_entity(app.world(), DomainId(2));
+                    let mut component = app
+                        .world_mut()
+                        .get_mut::<InventoryOwnerState>(entity)
+                        .unwrap();
+                    let bag = component
+                        .inventories
+                        .iter_mut()
+                        .find(|inventory| inventory.key == "bag")
+                        .unwrap();
+                    // Moving to an eligible empty slot preserves conservation.
+                    bag.slots.swap(0, 1);
+                }
+                _ => {
+                    let entity = scalar_entity(app.world(), DomainId(3));
+                    let mut component = app
+                        .world_mut()
+                        .get_mut::<InventoryOwnerState>(entity)
+                        .unwrap();
+                    component
+                        .inventories
+                        .iter_mut()
+                        .find(|inventory| inventory.key == "bag")
+                        .unwrap()
+                        .overflow
+                        .reserve(600);
+                }
+            }
+            assert_inventory_calls_reject(app.world_mut(), owner, &noop, &batch);
+        }
+    }
+
+    #[test]
+    fn inventory_global_context_rollback_and_transplant_cannot_reset_generation_or_header() {
+        for mode in 0..4 {
+            let mut app = inventory_app();
+            let owner = native_owner_handle(app.world(), DomainId(3)).unwrap();
+            let noop = inventory_noop(app.world(), owner);
+            let batch = inventory_replacement(app.world());
+            let old = app.world().resource::<NativeLifecycleContext>().clone();
+            let old_dormant = app.world().resource::<DormantNativeSlots>().clone();
+            set_enabled(app.world_mut(), owner, false).unwrap();
+            match mode {
+                0 => {
+                    app.world_mut().insert_resource(old);
+                }
+                1 => {
+                    app.world_mut().insert_resource(old);
+                    app.world_mut().insert_resource(old_dormant);
+                }
+                2 => {
+                    let other = inventory_app();
+                    app.world_mut().insert_resource(
+                        other.world().resource::<NativeLifecycleContext>().clone(),
+                    );
+                }
+                _ => {
+                    use crate::native_inventory::InventoryActionV1;
+                    let InventoryActionV1::Move { source, .. } = noop.action.clone() else {
+                        unreachable!()
+                    };
+                    apply_native_inventory_action(
+                        app.world_mut(),
+                        &InventoryActionRequestV1 {
+                            expected_inventory_revision: 1,
+                            action: InventoryActionV1::Consume { source, amount: 1 },
+                        },
+                    )
+                    .unwrap();
+                    app.world_mut()
+                        .resource_mut::<NativeLifecycleContext>()
+                        .inventory = old.inventory;
+                }
+            }
+            assert_inventory_calls_reject(app.world_mut(), owner, &noop, &batch);
+        }
+    }
+
+    #[test]
+    fn inventory_readonly_contract_and_provenance_pins_and_required_resources_reject_damage() {
+        use bevy::ecs::entity_disabling::Disabled;
+        for mode in 0..9 {
+            let mut app = inventory_app();
+            let owner = native_owner_handle(app.world(), DomainId(3)).unwrap();
+            let noop = inventory_noop(app.world(), owner);
+            let batch = inventory_replacement(app.world());
+            match mode {
+                0 => {
+                    app.world_mut()
+                        .remove_resource::<NativeInventoryContractsState>();
+                }
+                1 => {
+                    app.world_mut()
+                        .remove_resource::<C001InventoryOwnerImportState>();
+                }
+                2 => {
+                    app.world_mut()
+                        .remove_resource::<NativeScalarOwnerContractsState>();
+                }
+                3 => {
+                    app.world_mut().remove_resource::<PreservedProspectState>();
+                }
+                4 => {
+                    Arc::make_mut(
+                        &mut app
+                            .world_mut()
+                            .resource_mut::<NativeInventoryContractsState>()
+                            .0,
+                    )
+                    .contract_id = "f".repeat(64);
+                }
+                5 => {
+                    Arc::make_mut(
+                        &mut app
+                            .world_mut()
+                            .resource_mut::<C001InventoryOwnerImportState>()
+                            .0,
+                    )
+                    .inventory_initial
+                    .initial_next_stack_id += 1;
+                }
+                6 => {
+                    let mut state = app
+                        .world()
+                        .resource::<NativeInventoryContractsState>()
+                        .clone();
+                    // Bevy removes a second resource automatically. Remove the
+                    // original first so this installs a real hidden replacement.
+                    Arc::make_mut(&mut state.0).contract_id = "f".repeat(64);
+                    app.world_mut()
+                        .remove_resource::<NativeInventoryContractsState>();
+                    app.world_mut().spawn((Disabled, state));
+                }
+                7 => {
+                    let mut metadata = app
+                        .world()
+                        .resource::<C001InventoryOwnerImportState>()
+                        .clone();
+                    Arc::make_mut(&mut metadata.0)
+                        .inventory_initial
+                        .initial_next_stack_id += 1;
+                    app.world_mut()
+                        .remove_resource::<C001InventoryOwnerImportState>();
+                    app.world_mut().spawn((Disabled, metadata));
+                }
+                _ => {
+                    app.world_mut()
+                        .remove_resource::<NativeFoundationDependents>();
+                }
+            }
+            assert!(capture(app.world_mut()).is_err(), "pin mode {mode}");
+            assert_inventory_calls_reject(app.world_mut(), owner, &noop, &batch);
+        }
+    }
+
+    #[test]
+    fn final_owner_callback_failure_leaves_inventory_scalars_entities_and_generation_unchanged() {
+        use crate::native_inventory::InventoryActionV1;
+        let mut app = inventory_app();
+        let owner = native_owner_handle(app.world(), DomainId(3)).unwrap();
+        let noop = inventory_noop(app.world(), owner);
+        let InventoryActionV1::Move { source, .. } = noop.action else {
+            unreachable!()
+        };
+        let request = InventoryActionRequestV1 {
+            expected_inventory_revision: 1,
+            action: InventoryActionV1::Consume { source, amount: 1 },
+        };
+        let batch = inventory_replacement(app.world());
+        let before = capture(app.world_mut()).unwrap();
+        let context = app.world().resource::<NativeLifecycleContext>().clone();
+        SCALAR_STAGE_FAILURE.with(|failure| failure.set(Some(DomainId(3))));
+        let _reset = ResetScalarFailure;
+        let error = apply_native_inventory_action(app.world_mut(), &request).unwrap_err();
+        assert!(error.to_string().contains("injected scalar callback"));
+        assert!(capture(app.world_mut()).unwrap() == before);
+        let error = restore_native_inventory_owners(app.world_mut(), &batch).unwrap_err();
+        assert!(error.to_string().contains("injected scalar callback"));
+        assert!(capture(app.world_mut()).unwrap() == before);
+        let current = app.world().resource::<NativeLifecycleContext>();
+        assert_eq!(current.generation, context.generation);
+        assert_eq!(current.live, context.live);
+        for entity in current.live.values() {
+            assert_eq!(
+                app.world()
+                    .get::<InventoryOwnerState>(*entity)
+                    .unwrap()
+                    .generation,
+                context.generation
+            );
+            assert_eq!(
+                app.world()
+                    .get::<ScalarOwnerDerived>(*entity)
+                    .unwrap()
+                    .generation,
+                context.generation
+            );
+        }
+    }
+
+    #[test]
+    fn inventory_runtime_generation_exhaustion_is_atomic_but_validated_noop_needs_no_generation() {
+        let mut app = inventory_app();
+        let owner = native_owner_handle(app.world(), DomainId(3)).unwrap();
+        let noop = inventory_noop(app.world(), owner);
+        let batch = inventory_replacement(app.world());
+        let live = app
+            .world()
+            .resource::<NativeLifecycleContext>()
+            .live
+            .clone();
+        {
+            let mut context = app.world_mut().resource_mut::<NativeLifecycleContext>();
+            context
+                .definitions
+                .current_generation
+                .store(u64::MAX, Ordering::Relaxed);
+            context.generation = u64::MAX;
+        }
+        app.world_mut()
+            .resource_mut::<DormantNativeSlots>()
+            .generation = u64::MAX;
+        for entity in live.values() {
+            app.world_mut()
+                .get_mut::<InventoryOwnerState>(*entity)
+                .unwrap()
+                .generation = u64::MAX;
+            app.world_mut()
+                .get_mut::<ScalarOwnerDerived>(*entity)
+                .unwrap()
+                .generation = u64::MAX;
+        }
+        let before = capture(app.world_mut()).unwrap();
+        assert_eq!(
+            apply_native_inventory_action(app.world_mut(), &noop).unwrap(),
+            InventoryActionOutcomeV1::NoChange
+        );
+        let crate::native_inventory::InventoryActionV1::Move { source, .. } = noop.action else {
+            unreachable!()
+        };
+        let consume = InventoryActionRequestV1 {
+            expected_inventory_revision: 1,
+            action: crate::native_inventory::InventoryActionV1::Consume { source, amount: 1 },
+        };
+        assert!(apply_native_inventory_action(app.world_mut(), &consume).is_err());
+        assert!(set_enabled(app.world_mut(), owner, false).is_err());
+        assert!(try_use(app.world_mut(), owner).is_err());
+        assert!(restore_native_inventory_owners(app.world_mut(), &batch).is_err());
+        assert!(capture(app.world_mut()).unwrap() == before);
+        assert_eq!(app.world().resource::<NativeLifecycleContext>().live, live);
+    }
+
+    #[test]
+    fn inventory_and_scalar_components_share_the_current_pin_after_every_mutation_path() {
+        use crate::native_inventory::InventoryActionV1;
+        fn assert_pin(world: &World, generation: u64) {
+            let context = world.resource::<NativeLifecycleContext>();
+            assert_eq!(context.generation, generation);
+            assert_eq!(
+                context
+                    .definitions
+                    .current_generation
+                    .load(Ordering::Relaxed),
+                generation
+            );
+            for entity in context.live.values() {
+                let inventory = world.get::<InventoryOwnerState>(*entity).unwrap();
+                let scalar = world.get::<ScalarOwnerDerived>(*entity).unwrap();
+                assert_eq!(inventory.generation, generation);
+                assert_eq!(scalar.generation, generation);
+                assert!(Arc::ptr_eq(&inventory.activation, &context.definitions));
+                assert!(Arc::ptr_eq(&scalar.activation, &context.definitions));
+            }
+        }
+        let mut app = inventory_app();
+        let owner = native_owner_handle(app.world(), DomainId(3)).unwrap();
+        let alpha = native_owner_handle(app.world(), DomainId(1)).unwrap();
+        let noop = inventory_noop(app.world(), owner);
+        let InventoryActionV1::Move { source, .. } = noop.action.clone() else {
+            unreachable!()
+        };
+        let original_entities = app
+            .world()
+            .resource::<NativeLifecycleContext>()
+            .live
+            .clone();
+        assert_pin(app.world(), 1);
+        apply_native_inventory_action(app.world_mut(), &noop).unwrap();
+        assert_pin(app.world(), 1);
+        apply_native_inventory_action(
+            app.world_mut(),
+            &InventoryActionRequestV1 {
+                expected_inventory_revision: 1,
+                action: InventoryActionV1::Consume { source, amount: 1 },
+            },
+        )
+        .unwrap();
+        assert_pin(app.world(), 2);
+        set_enabled(app.world_mut(), alpha, true).unwrap();
+        assert_pin(app.world(), 3);
+        try_use(app.world_mut(), alpha).unwrap();
+        assert_pin(app.world(), 4);
+        let snapshot = capture_lifecycle(app.world()).unwrap();
+        let actor = snapshot
+            .native_world
+            .as_ref()
+            .unwrap()
+            .actors
+            .iter()
+            .find(|actor| actor.id == owner.id)
+            .unwrap();
+        let mut pose = actor.transform.clone();
+        pose.translation[0] += 0.125;
+        update_lifecycle_actor(app.world_mut(), owner, pose, actor.variables.clone()).unwrap();
+        assert_pin(app.world(), 5);
+        reassign_lifecycle_foundation(app.world_mut(), owner, Some(alpha)).unwrap();
+        assert_pin(app.world(), 6);
+        assert_eq!(
+            app.world().resource::<NativeLifecycleContext>().live,
+            original_entities
+        );
+        let batch = inventory_replacement(app.world());
+        restore_native_inventory_owners(app.world_mut(), &batch).unwrap();
+        assert_pin(app.world(), 7);
+        let after = capture_lifecycle(app.world()).unwrap();
+        restore_native_inventory_owners(app.world_mut(), &batch).unwrap();
+        assert_pin(app.world(), 7);
+        assert!(capture_lifecycle(app.world()).unwrap() == after);
+    }
+
+    #[test]
+    fn legacy_activations_reject_inventory_components_resources_and_private_headers() {
+        use bevy::ecs::entity_disabling::Disabled;
+        let inventory = inventory_app();
+        let entity = scalar_entity(inventory.world(), DomainId(2));
+        for mode in 0..4 {
+            for mut app in [
+                app(),
+                scalar_app(),
+                build_app(&ServerConfig::default(), &WorldSnapshot::default()).unwrap(),
+            ] {
+                match mode {
+                    0 => {
+                        app.world_mut().spawn((
+                            Disabled,
+                            inventory
+                                .world()
+                                .get::<InventoryOwnerState>(entity)
+                                .unwrap()
+                                .clone(),
+                        ));
+                    }
+                    1 => {
+                        app.world_mut().insert_resource(
+                            inventory
+                                .world()
+                                .resource::<NativeInventoryContractsState>()
+                                .clone(),
+                        );
+                    }
+                    2 => {
+                        app.world_mut().insert_resource(
+                            inventory
+                                .world()
+                                .resource::<C001InventoryOwnerImportState>()
+                                .clone(),
+                        );
+                    }
+                    _ => {
+                        if let Some(mut context) =
+                            app.world_mut().get_resource_mut::<NativeLifecycleContext>()
+                        {
+                            context.inventory = inventory
+                                .world()
+                                .resource::<NativeLifecycleContext>()
+                                .inventory
+                                .clone();
+                        } else {
+                            app.world_mut().spawn((
+                                Disabled,
+                                inventory
+                                    .world()
+                                    .get::<InventoryOwnerState>(entity)
+                                    .unwrap()
+                                    .clone(),
+                            ));
+                        }
+                    }
+                }
+                assert!(capture(app.world_mut()).is_err());
+            }
         }
     }
 }
