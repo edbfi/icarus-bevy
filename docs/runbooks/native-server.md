@@ -223,25 +223,19 @@ Both formats still refuse writing and report `world_imported: false`.
 Reports retain counts only; resolving names does not establish world or
 gameplay parity.
 
-Library callers can decode once with `DecodedImportCandidate::decode`, then
-borrow it for `plan_decoded_import`, `planned_actors_from_candidate` and source
-preservation (F-920). Candidates retain migrated roots and all recorder outcomes,
-including dropped records. Unknown enum mappings remain explicit. The default
-policy allows 256 MiB of retained charges plus each sequential typing scratch
-reservation, and 1,048,576 typed elements across all recorders. Completed scratch
-reservations are released; retained charges include vector capacities and a
-conservative summary allowance. `import-save`, `plan_import` and
-`planned_actors` inherit these defaults. Exhaustion rejects the entire candidate,
-including when a dropped recorder causes it; resource-policy errors are never
-downgraded to optional typing outcomes. These are implementation allowances,
-not peak-memory or RSS guarantees (F-920).
+Decode once with `DecodedImportCandidate::decode`, borrowing for
+`plan_decoded_import`, `planned_actors_from_candidate` and preservation (F-920).
+Candidates retain migrated roots, dropped/typed recorder outcomes and explicit
+unknown enums. Defaults: 256 MiB charged bytes, including retained vector
+capacities/summary allowance plus sequential typing scratch, and 1,048,576
+typed elements. Completed scratch is released. `import-save`, `plan_import` and
+`planned_actors` inherit these limits; exhaustion rejects all, even on dropped
+records, and never becomes an optional typing outcome. Charges do not bound RSS.
 
-`inspect-save --candidate-check --source prospect.json` reports counts without
-saved names or values. It exposes retained charges, configured limits and
-`required_decode_limits`: the high-water requirement including temporary
-reservations. `remaining_headroom` is configured allowance minus retained
-charges; it does not promise another recorder can pass preflight. Inspection
-creates no destination and does not authorize semantic import.
+`inspect-save --candidate-check --source prospect.json` reports counts, retained
+charges, limits and `required_decode_limits` (high-water including scratch).
+`remaining_headroom` subtracts retained charges from limits; it cannot guarantee
+another recorder's preflight. No names/values, destination or import authority.
 
 Value meanings and original-server round trips remain unvalidated. The
 [synthetic workload](synthetic-workload.md) exercises native scheduling and

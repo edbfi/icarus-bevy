@@ -27,17 +27,18 @@ incomplete domain state before publication (F-482), stale snapshots and
 save-worker loss stop safely (F-869), and signals trigger a final save within a
 bounded shutdown (F-869).
 
-Authored schemas 4–10 retain spatial state (F-919), bound C001 provenance
-(F-927), edited foundation links (F-922), atomic owner find/spawn/replacement,
-dormant slots and durable retry completion (F-923). Bool/I32 use gates and stacked
-inventories share that lifecycle; transfers, split/merge, consumption and overflow
-preserve identity and quantity. Retries and reload retain current state and
-immutable provenance (F-927). Preparation rejects unsupported state; capture
-rejects damaged membership, activation contexts and ECS mutation callbacks
-(F-928). Publication faults and modeled crashes preserve acknowledged state.
-These contracts establish neither ordinary official-save import,
-physics/navigation, C009 restoration nor client compatibility; procedures are in
-the [authored-worlds runbook](../../runbooks/authored-worlds.md).
+Authored schemas 4–10 persist spatial state, foundation links, owner lifecycle
+and C001 provenance (F-919, F-922, F-923, F-927). Scalar/inventory actions,
+retries and reload preserve current state; capture rejects damaged membership,
+activation contexts and ECS mutation callbacks (F-928). Publication faults and
+modeled crashes preserve acknowledged state. Procedures and limits:
+[authored worlds](../../runbooks/authored-worlds.md).
+
+Candidate-borrowing Bool/I32 assessment requires exact authored bindings and
+retains borrowed provenance (F-929). Every assignment retains an unqualified
+property-restore/RepNotify obligation; empty results also remain assessment-only.
+Neither this API nor the fixtures establishes ordinary official-save import,
+coordinates, physics/navigation, C009 restoration or client compatibility.
 
 Authored schema-7/8/9 costs are measured at 3–1,024 slots (F-926). Count-only
 preflight preserves stored bytes and removes its outer generation buffer; source
@@ -102,4 +103,4 @@ windows expired (F-218).
 
 ## Artifacts
 
-M-001, M-002, M-006, M-009, M-010, M-015..M-022, M-076, M-078, M-109..M-117, M-131..M-165, M-174, M-175, M-178, M-182..M-184, M-191, M-192, M-200, M-203, M-204, M-207, M-208, M-212..M-220, M-225, M-240, M-241, M-251, M-252, M-269, M-270, M-271, M-277, M-311, M-391, M-397..M-399, M-411..M-419, M-452..M-454, M-471..M-475, M-577, M-578, M-770, M-771, M-809, M-810, M-812, M-861, M-862, M-864..M-867, M-870, M-898, M-899, M-915..M-918, M-926..M-959.
+M-001, M-002, M-006, M-009, M-010, M-015..M-022, M-076, M-078, M-109..M-117, M-131..M-165, M-174, M-175, M-178, M-182..M-184, M-191, M-192, M-200, M-203, M-204, M-207, M-208, M-212..M-220, M-225, M-240, M-241, M-251, M-252, M-269, M-270, M-271, M-277, M-311, M-391, M-397..M-399, M-411..M-419, M-452..M-454, M-471..M-475, M-577, M-578, M-770, M-771, M-809, M-810, M-812, M-861, M-862, M-864..M-867, M-870, M-898, M-899, M-915..M-918, M-926..M-972.

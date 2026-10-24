@@ -125,6 +125,30 @@ imported slots stay live with recorders, incarnation at least initial. Capture
 checks pinned state without source reconstruction; storage/preflight repeats
 reconstruction/receipt verification during restore.
 
+## Candidate Bool/I32 assessment
+
+Library-only `native_import::c001_variables::prepare_c001_variables` borrows a
+decoded candidate, compiled catalog, layout and bindings (F-929). Pin payload,
+catalog/maps, recorder ordinals, exact UTF-16 owner/property identities,
+placements/classes and native types. Cover every retained, losslessly typed C001
+recorder and both arrays, including exact shared headers for empty arrays.
+Property bindings assert `save_game = true`; official schema qualification
+and property handlers remain open (F-735, F-897).
+
+Independent array/element-tag/record-type/name-field/value-field names support
+multiple Bool/I32 properties and signed I32 extrema. Duplicate/incomplete bindings,
+unsupported state, dropped/unavailable/non-C001 records and malformed terminal
+records reject all. Limits: 16,384 owners, 64 combined properties/owner,
+1,048,576 assignments, 32 MiB charged output/temporary lookup capacity;
+candidate byte/element headroom independently constrains preparation (F-920),
+including empty output. Charges are not RSS measurements.
+
+Assignments borrow headers and provenance. Debug/serialization redact details;
+errors expose only ordinal/category. Every assignment retains
+`UnqualifiedPropertyRestoreAndRepNotify`; activation stays false even empty.
+No world mutation, callbacks or publication; unrelated roots remain unapproved.
+Use-gate behavior below qualifies no handler here.
+
 ## Authored scalar owners
 
 ```bash
