@@ -71,6 +71,8 @@ qualify retention, not restoration semantics or a peak-memory guarantee.
 Strict authored C001 adapters bind source state to placements, owner lifecycle,
 Bool/I32 use gates and stacked inventories with durable actions (F-927).
 Coordinates, layouts and semantics are authored; ordinary import stays closed.
+Modifier setters continue into time/stat callbacks; their downstream effects,
+enabled recorder path and server parity remain unqualified (F-930).
 
 No saved class identifier, field or type name, or recorder version tells the
 older server from the newer client, and the prospect carries no version string
