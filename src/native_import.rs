@@ -38,6 +38,7 @@ use crate::{
 
 pub mod c001_inventory_source;
 pub(crate) mod c001_source;
+pub mod c001_variables;
 use c001_source::{
     C001SourceProfile, SourceOwner, source_owner, validate_root, validate_source_headers,
     validate_wrapper,
