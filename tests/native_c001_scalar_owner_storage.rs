@@ -82,7 +82,7 @@ fn duplicate_members_cannot_conceal_future_scalar_discriminators() {
                 wire = wire.replace("recompute_use_availability_v1", &format!("{SECRET}Future"));
                 let extra = match duplicate {
                     "header" => "\"schema_version\":9",
-                    "future_header" => "\"schema_version\":11",
+                    "future_header" => "\"schema_version\":12",
                     _ => "\"native_relationships\":null",
                 };
                 if future_first {
@@ -275,7 +275,7 @@ fn future_discriminators_override_corruption_and_missing_source() {
         store.save(&current).unwrap();
         let mut wire = read_json(&root.join("snapshot-2.json"));
         *wire.pointer_mut(path).unwrap() = if path == "/schema_version" {
-            json!(11)
+            json!(12)
         } else if path.ends_with("format") || path.ends_with("encoding") {
             json!(u64::MAX)
         } else {

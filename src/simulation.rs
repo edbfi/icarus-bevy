@@ -59,6 +59,9 @@ pub const SNAPSHOT_SCHEMA_C001_OWNERS: u32 = 8;
 pub const SNAPSHOT_SCHEMA_C001_SCALAR_OWNERS: u32 = 9;
 /// Authored stacked inventory, complete owner restoration and source provenance.
 pub const SNAPSHOT_SCHEMA_C001_INVENTORY_OWNERS: u32 = 10;
+/// Independently authored owner modifiers extending the schema-7 lifecycle.
+/// This contract carries no C001 source interpretation or inventory behavior.
+pub const SNAPSHOT_SCHEMA_MODIFIER_OWNERS: u32 = 11;
 
 /// Stable domain identity, independent of Bevy's runtime entity allocation.
 #[derive(Component, Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
@@ -83,12 +86,12 @@ pub struct WorldSnapshot {
     #[serde(deserialize_with = "crate::json::objects")]
     pub entities: Vec<EntityRecord>,
     /// Lossless, value-opaque supplied-save state carried unchanged between
-    /// generations; required in schemas 2, 3, 5 and 8–10, optional in 4, 6 and 7.
+    /// generations; required in schemas 2, 3, 5 and 8–10, optional in 4, 6, 7 and 11.
     /// Shared and held compactly as its verified native encoding. Schema 5
     /// separately records its explicitly accepted authored interpretation.
     /// Serde writes the section inline under the stored `schema_version`, which is
     /// a loadable document only for schema 2; the snapshot store writes schemas
-    /// 3 through 10 itself, with a sidecar reference.
+    /// 3 through 11 itself, with a sidecar reference.
     #[serde(
         default,
         skip_serializing_if = "Option::is_none",
@@ -105,6 +108,8 @@ pub struct WorldSnapshot {
     pub native_relationships: Option<NativeRelationshipsSnapshot>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub native_lifecycle: Option<LifecycleSnapshot>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub native_modifiers: Option<crate::native_modifiers::ModifierWorldSnapshot>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub native_owner_import: Option<C001OwnerImportMetadataV1>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -130,6 +135,7 @@ impl Default for WorldSnapshot {
             native_import: None,
             native_relationships: None,
             native_lifecycle: None,
+            native_modifiers: None,
             native_owner_import: None,
             native_scalar_contracts: None,
             native_scalar_owner_import: None,
@@ -142,6 +148,16 @@ impl Default for WorldSnapshot {
 
 impl WorldSnapshot {
     pub fn validate(&self) -> Result<()> {
+        if self.schema_version != SNAPSHOT_SCHEMA_MODIFIER_OWNERS {
+            ensure!(
+                self.native_modifiers.is_none(),
+                "this snapshot schema cannot hold modifier owner state"
+            );
+        } else {
+            self.native_modifiers
+                .as_ref()
+                .context("schema 11 requires modifier owner state")?;
+        }
         if self.schema_version != SNAPSHOT_SCHEMA_C001_INVENTORY_OWNERS {
             ensure!(
                 self.native_inventory_contracts.is_none()
@@ -185,6 +201,7 @@ impl WorldSnapshot {
                 | SNAPSHOT_SCHEMA_C001_OWNERS
                 | SNAPSHOT_SCHEMA_C001_SCALAR_OWNERS
                 | SNAPSHOT_SCHEMA_C001_INVENTORY_OWNERS
+                | SNAPSHOT_SCHEMA_MODIFIER_OWNERS
         ) {
             ensure!(
                 self.entities.is_empty(),
@@ -208,6 +225,9 @@ impl WorldSnapshot {
                 lifecycle,
                 self.native_relationships.as_ref(),
             )?;
+            if let Some(modifiers) = &self.native_modifiers {
+                modifiers.validate(lifecycle)?;
+            }
             if self.schema_version == SNAPSHOT_SCHEMA_C001_INVENTORY_OWNERS {
                 ensure!(
                     self.native_owner_import.is_none() && self.native_scalar_owner_import.is_none(),
@@ -298,7 +318,8 @@ impl WorldSnapshot {
             } else {
                 ensure!(
                     self.native_owner_import.is_none(),
-                    "schema 7 cannot hold owner import metadata"
+                    "schema {} cannot hold owner import metadata",
+                    self.schema_version
                 );
             }
             return Ok(());
@@ -434,6 +455,14 @@ pub struct SnapshotMode {
     lifecycle_activation: Option<NativeLifecycleContext>,
     preserved: Option<Arc<PreservedSection>>,
     imported: Option<Arc<C001InertImportMetadataV1>>,
+}
+
+pub(crate) fn lifecycle_activation(world: &World) -> Result<Option<&NativeLifecycleContext>> {
+    Ok(world
+        .get_resource::<SnapshotMode>()
+        .context("world lacks required snapshot mode")?
+        .lifecycle_activation
+        .as_ref())
 }
 
 /// Validate private activation pins before any native query, edit or capture.
@@ -630,6 +659,7 @@ pub fn build_app(config: &ServerConfig, snapshot: &WorldSnapshot) -> Result<App>
             | SNAPSHOT_SCHEMA_C001_OWNERS
             | SNAPSHOT_SCHEMA_C001_SCALAR_OWNERS
             | SNAPSHOT_SCHEMA_C001_INVENTORY_OWNERS
+            | SNAPSHOT_SCHEMA_MODIFIER_OWNERS
     ) {
         crate::native_lifecycle_runtime::activate_lifecycle(app.world_mut(), snapshot)?;
     } else if let Some(native) = &snapshot.native_world {
@@ -637,6 +667,17 @@ pub fn build_app(config: &ServerConfig, snapshot: &WorldSnapshot) -> Result<App>
         if let Some(relationships) = &snapshot.native_relationships {
             crate::native_runtime::activate_relationships(app.world_mut(), native, relationships)?;
         }
+    }
+    if snapshot.schema_version == SNAPSHOT_SCHEMA_MODIFIER_OWNERS {
+        let activation = app.world().resource::<NativeLifecycleContext>().clone();
+        app.add_systems(
+            FixedUpdate,
+            (move |world: &mut World| {
+                crate::native_lifecycle_runtime::tick_native_modifiers(world, &activation)
+            })
+            .after(SimulationSet::Input)
+            .before(SimulationSet::Gameplay),
+        );
     }
     if let Some(preserved) = &snapshot.preserved_prospect {
         app.insert_resource(PreservedProspectState(Arc::clone(preserved)));
@@ -745,6 +786,7 @@ pub fn capture(world: &mut World) -> Result<WorldSnapshot> {
             native_import: mode.imported.as_deref().cloned(),
             native_relationships: relationships,
             native_lifecycle: None,
+            native_modifiers: None,
             native_owner_import: None,
             native_scalar_contracts: None,
             native_scalar_owner_import: None,
@@ -790,6 +832,7 @@ pub fn capture(world: &mut World) -> Result<WorldSnapshot> {
         native_import: None,
         native_relationships: None,
         native_lifecycle: None,
+        native_modifiers: None,
         native_owner_import: None,
         native_scalar_contracts: None,
         native_scalar_owner_import: None,

@@ -14,6 +14,7 @@ pub mod native_inventory;
 pub mod native_inventory_restore;
 pub mod native_lifecycle;
 pub mod native_lifecycle_runtime;
+pub mod native_modifiers;
 pub mod native_relationships;
 pub mod native_runtime;
 pub mod native_scalar_owners;

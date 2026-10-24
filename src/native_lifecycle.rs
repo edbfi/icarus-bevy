@@ -1063,6 +1063,7 @@ pub fn prepare_owner_restore(
             SNAPSHOT_SCHEMA_LIFECYCLE
                 | SNAPSHOT_SCHEMA_C001_OWNERS
                 | crate::simulation::SNAPSHOT_SCHEMA_C001_SCALAR_OWNERS
+                | crate::simulation::SNAPSHOT_SCHEMA_MODIFIER_OWNERS
         ) && base.native_import.is_none(),
         "native restore requires schema 7, 8 or 9 without inert import metadata"
     );
@@ -1119,6 +1120,11 @@ pub fn prepare_owner_restore(
             &request_digest,
         )?
     };
+    let modifiers = base
+        .native_modifiers
+        .as_ref()
+        .map(|state| state.reconcile(&staged.lifecycle))
+        .transpose()?;
     let snapshot = WorldSnapshot {
         schema_version: base.schema_version,
         tick: base.tick,
@@ -1134,6 +1140,7 @@ pub fn prepare_owner_restore(
         native_inventory_contracts: None,
         native_inventories: None,
         native_inventory_owner_import: None,
+        native_modifiers: modifiers,
     };
     if !staged.already_completed {
         snapshot.validate()?;

@@ -6,25 +6,27 @@ Running, autosave and recovery: [native server](native-server.md).
 
 ## Shared contracts
 
-Preflight before destination access. `--dry-run` writes nothing; omission
-publishes, rejecting existing/recoverable worlds. `world_imported`/`gameplay_ready`
-stay false; `import-save` stays closed. Strict JSON/TOML, format 1. Fixtures pin
-payload SHA-256, catalog/map, exact UTF-16 identities/unchanged sidecar;
-`run` needs no creation inputs.
+Creation preflights before destination access; `--dry-run` writes nothing,
+omission publishes, existing/recoverable worlds reject. Strict JSON/TOML, format 1.
+Fixtures pin payload SHA-256, catalog/map, UTF-16 identities/unchanged sidecar.
+Owner-fixture commands share `--source`, `--catalog`, `--lifecycle`, `--bindings`,
+`--data-dir` and optional `--dry-run`; `run` needs no creation inputs.
 
 Coordinates: metres, right-handed, Z-up, quaternion `[x,y,z,w]`; bindings declare
 `right_handed_z_up_meters_quat_xyzw_world_space`, without inferred conversion.
-Objects must fit tiles (F-919); no official behavior/geometry, physics/navigation,
-layouts, callbacks, networking or performance qualification.
+Objects must fit tiles (F-919). All modes remain independent authored behavior:
+no official geometry/layout/stat/row meaning, physics/navigation, callbacks,
+network replication, general C001/D01/C009 restore, client/save compatibility or
+performance/RSS qualification.
+`world_imported`/`gameplay_ready` stay false; `import-save` stays closed.
 Definitions/contracts/bindings/metadata: 4 MiB each unless noted.
-Schemas 4–10: 64 MiB + 4 KiB generation, including sections/sidecar
-reference. Earlier adapters retain acceptance; older schemas reject new fields,
-even null. Runtime helpers validate worlds/handles before queries/no-ops/capture,
-stage mutations; lifecycle modes also preflight storage. Reject missing, invalid,
-stale, transplanted or hidden
-unregistered state; pin membership, contexts/generations, indices. Handles bind
-domain ID/incarnation; replacement invalidates them. Costs depend on source/world
-size; tick-loop use unqualified.
+Schemas 4–11: 64 MiB + 4 KiB generation including sections/sidecar reference.
+Earlier adapters retain acceptance; older schemas reject new fields, even null.
+Runtime queries/no-ops/capture validate membership, contexts/generations, indices
+and domain-ID/incarnation handles; mutations stage changes and lifecycle modes
+preflight storage. Missing, malformed, stale, transplanted or hidden unregistered
+state rejects. Replacement invalidates handles. Costs depend on source/world size;
+tick-loop use remains unqualified (F-926).
 
 ## Spatial worlds and inert source fixtures
 
@@ -36,14 +38,11 @@ cargo run --locked -- create-c001-inert-fixture --source authored.json \
   --catalog authored.toml --bindings bindings.json --data-dir work/inert-world --dry-run
 ```
 
-Schema 4 fixes topology. `update_native_actor` validates edits; capture rejects
-missing components, deleted/extra actors and changed bindings.
-Bind source map/class/path/object-name units and positive GUIDs
-to native placements/classes.
-Exact current C001 recorders must be fully interpreted; placements bind once.
+Schema 4 fixes topology; `update_native_actor` validates edits. Schema 5 binds source
+map/class/path/object-name units and positive GUIDs to placements/classes once;
+fully interpret exact current C001 recorders. Source identities/bytes stay immutable;
+poses mutate, output reports counts/categories (F-927).
 No variables, extra state, spawning, stitching or nonneutral prospect behavior.
-Schema 5: immutable source identities/bytes, mutable poses, count/category output
-(F-927).
 
 ## Foundation relationships
 
@@ -54,16 +53,15 @@ deployables link `foundation`; omission/null unlinks, nonempty must resolve.
 Prepare identities, then match GUID/ASCII-folded name; non-ASCII/unpaired
 surrogates match exactly. Duplicate/unresolved pairs reject; identities are
 explicit. Names: 1–1,024 units, 1,048,576 total including links (F-922).
-Assignment follows F-646/F-650/F-663 on server 25621760/client 25793767,
-with stricter unresolved-link rejection. Other setter effects/releases remain
-unqualified.
+Assignment: F-646/F-650/F-663, server 25621760/client 25793767; unresolved-link
+rejection is stricter, other setter effects/releases unqualified.
 
 Schema 6: immutable declarations, mutable domain-ID edges, optional C001 metadata;
 links independent of source. Otherwise schemas 4/5.
 `reassign_native_foundation` updates edge/reverse index;
 `native_foundation_of`/`native_dependents_of` query. `None` unlinks; no-ops succeed.
-Unlinked components are valid. Only edge assignment, without parenting/support/collapse,
-destruction propagation, tame permissions or full C009 restoration.
+Unlinked components are valid; no parenting/support/collapse, destruction
+propagation or tame permissions.
 
 ## Owner lifecycle
 
@@ -76,9 +74,9 @@ Lifecycle: catalog/map; each placement declares UTF-16 name,
 `spatial_state_v1`, `live`/`absent`, optional positive GUID, spawn component
 `missing`/`declared_kind`. Limits: 1–1,024 units/name, 1,048,576 logical/2,162,688
 capacity units; 8 MiB lifecycle, 64 MiB restore, 16,384 slots/bindings/commands.
-Placement/tile counts also have capacity guards. Schema 7 persists live/dormant
-slots/incarnations/bindings (F-923). Only live slots spawn; missing actors/dormant
-records reject capture. No C001 metadata; preservation/relationships optional.
+Placement/tile counts have capacity guards. Schema 7 persists live/dormant
+slots/incarnations/bindings (F-923); only live slots spawn. No C001 metadata;
+preservation/relationships optional.
 
 `RestoreBatch`: lifecycle ID/sequence, nonempty commands with GUID/kind, placement,
 name, policy, source mode, creation permission, expected presence/incarnation,
@@ -95,25 +93,67 @@ spawning. Sequence starts at 1, increments, matches `restore_sequence`; exact
 latest retries preserve edits, altered/older reject. Reload never replays policies.
 In-memory completion is not durable until autosave or shutdown publishes it.
 
-Runtime: `restore_native_owners`, edits, foundation reassignment.
-Capture and mutations reject managed-owner ECS hooks, component requirements
-and lifecycle observers, including callbacks on disabled or untouched owners
-and optional types not yet instantiated (F-928). Unrelated entity observers
-remain allowed. Global raw lifecycle-event observers (such as `On<RemoveEvent>`)
-also block capture, including autosaves, even when intended for unrelated entities.
-Flush pending commands/registrations before these APIs; arbitrary
-component `Drop` side effects and activation setup are outside this contract.
+`restore_native_owners`, edits, foundation reassignment and capture reject
+managed-owner ECS hooks, requirements and lifecycle observers, including disabled/
+untouched owners and uninstantiated optional types (F-928). Unrelated entity
+observers are allowed; global raw lifecycle-event observers (`On<RemoveEvent>`)
+block even autosave capture regardless of intended entity. Flush pending commands/
+registrations first; arbitrary component `Drop` effects and activation setup are
+outside this contract. These exclusions also apply to modifiers below.
 `live_actors` counts live; `actors` includes dormant.
+
+## Authored owner modifiers
+
+Schema 11 extends authored lifecycle 7 only (F-931), explicitly via
+`enable_modifier_owners` or:
+
+```bash
+icarus-server create-native-world --catalog authored.toml --map workshop \
+  --lifecycle lifecycle.json --modifiers --data-dir authored-world --dry-run
+icarus-server apply-native-modifier --request modifier-request.json --data-dir authored-world
+```
+
+Omit creation's `--dry-run` to publish before applying a request. Optional
+preservation/foundation relationships compose. C001/scalar/inventory fixtures
+never implicitly upgrade. Each live handle has current per-owner modifiers;
+dormant slots have none. Replacement retires old state; the same incarnation
+retains it across unrelated edits, exact restore retry and reload.
+
+```json
+{"owner":{"id":1,"incarnation":1},"expected_revision":0,"action":{"type":"add","definition":{"name":"authored_boost","duration":{"type":"timed","seconds":5.0},"contributions":[{"stat":"authored_power","amount":3}]}}}
+```
+
+Owner state: `format: 1`, `owner {id, incarnation}`, `revision`, `next_id`,
+`entries [{id, definition {name, duration, contributions [{stat, amount: i32}]}, timer}]`,
+`cache [{stat, amount}]`. Definition names are unique per owner; local IDs increase without
+reuse. Definition duration is `{type: indefinite}` or `{type: timed, seconds: f32}`.
+Authored durations explicitly quantize to nearest nanosecond; positive durations
+below half a nanosecond and durations over 365 days reject. Current timer is
+`{type: indefinite}` or `{type: timed, remaining_nanos: u64, armed: bool}`;
+positive timers arm, restored zero stays unarmed.
+
+`ModifierRequest {owner, expected_revision, action}` adds a definition, removes
+an ID or advances `elapsed_nanos: u64`. Cached flat i32 stat totals aggregate
+in i64, checking the final range. Removal/expiry overflow rejects the entire
+operation or all-owner step unchanged. `native_owner_modifiers` returns a
+validated copy; `native_lifecycle_runtime::{apply_native_modifier, advance_native_modifiers}`
+stage changes with `SnapshotStore` preflight before any operation commits.
+Fixed simulation time advances before `Gameplay`; no wall-clock catch-up on restart.
+
+Activation is system-owned and immutable; a private nonclone health anchor
+latches errors closed, and `run` checks health. Malformed, transplanted or missing
+components/resources reject. The apply CLI requires an existing world and strict
+JSON ≤64 KiB; symlink path components and FIFOs reject. It has no
+`--dry-run`: opening the store mutates its lock/directory.
+
+Limits: 1,024 live owners, 64 entries/owner, 16 contributions/definition,
+128 stat names/owner, 4,096 entries/world, 8 MiB charged capacities.
+Shared snapshot cap and qualification exclusions are unchanged.
 
 ## Authored C001 owners
 
-```bash
-cargo run --locked -- create-c001-owner-fixture --source authored.json \
-  --catalog authored.toml --lifecycle lifecycle.json --bindings owners.json \
-  --data-dir work/source-owners --dry-run
-```
-
-`c001_authored_owners_v1`: lifecycle ID, one recorder/binding per slot; explicit
+`create-c001-owner-fixture`, binding mode `c001_authored_owners_v1`:
+lifecycle ID, one recorder/binding per slot; explicit
 placement/class, lookup name, GUID, creation permission/presence/incarnation/prior-binding
 expectations. Inert restrictions except `FindOnly`,
 `FindOrRespawn` (default), `RespawnOnly`. No policy/pose overrides. Sequence-1
@@ -132,32 +172,25 @@ decoded candidate, compiled catalog, layout and bindings (F-929). Pin payload,
 catalog/maps, recorder ordinals, exact UTF-16 owner/property identities,
 placements/classes and native types. Cover every retained, losslessly typed C001
 recorder and both arrays, including exact shared headers for empty arrays.
-Property bindings assert `save_game = true`; official schema qualification
-and property handlers remain open (F-735, F-897).
+Bindings assert `save_game = true`; official schema/handlers remain open (F-735, F-897).
 
 Independent array/element-tag/record-type/name-field/value-field names support
 multiple Bool/I32 properties and signed I32 extrema. Duplicate/incomplete bindings,
 unsupported state, dropped/unavailable/non-C001 records and malformed terminal
 records reject all. Limits: 16,384 owners, 64 combined properties/owner,
 1,048,576 assignments, 32 MiB charged output/temporary lookup capacity;
-candidate byte/element headroom independently constrains preparation (F-920),
-including empty output. Charges are not RSS measurements.
+candidate byte/element headroom also applies, even empty (F-920).
 
 Assignments borrow headers and provenance. Debug/serialization redact details;
 errors expose only ordinal/category. Every assignment retains
 `UnqualifiedPropertyRestoreAndRepNotify`; activation stays false even empty.
-No world mutation, callbacks or publication; unrelated roots remain unapproved.
-Use-gate behavior below qualifies no handler here.
+No mutation/callbacks/publication or approval of unrelated roots; use-gate behavior below
+qualifies no handler here.
 
 ## Authored scalar owners
 
-```bash
-cargo run --locked -- create-c001-scalar-owner-fixture --source authored.json \
-  --catalog authored.toml --lifecycle lifecycle.json --contracts scalars.json \
-  --bindings scalar-bindings.json --data-dir work/scalar-owners --dry-run
-```
-
-`c001_authored_scalar_owners_v1` adds two single-record
+`create-c001-scalar-owner-fixture --contracts FILE`, binding mode
+`c001_authored_scalar_owners_v1`, adds two single-record
 arrays with exact UTF-16 array/element-tag/record-type/value-field/source-variable
 names. Require `VariableName: NameProperty`, canonical Bool/I32. Unknown fields
 (even empty arrays), wrong headers/types, duplicates/incomplete coverage reject all.
@@ -168,21 +201,15 @@ positive `authored_max`, exactly `enabled: Bool`, `remaining_uses: I32` in
 attachment/spawn/replacement. `try_use`: `Disabled`/`Exhausted` unchanged, else
 decrement once, return `Used`; `set_enabled` sets, `scalar_owner_state` queries.
 Distinct in-memory actions, no retry/durable ack. Availability derives from
-variables; stage its authored callback before mutation, without RepNotify claims.
+variables; stage its authored callback before mutation. RepNotify stays unqualified.
 Generic edits preserve scalars; explicit restore supplies valid complete pairs.
 Schema 9 stores contract/binding IDs/provenance, reloads current availability
 without initial replay; relationships compose.
 
 ## Authored inventory owners
 
-```bash
-cargo run --locked -- create-c001-inventory-owner-fixture --source authored.json \
-  --catalog authored.toml --lifecycle lifecycle.json --scalar-contracts scalars.json \
-  --inventory-contracts inventories.json --bindings inventory-bindings.json \
-  --data-dir work/inventory-owners --dry-run
-```
-
-`c001_authored_inventory_owners_v1`: scalars plus authored item/inventory keys,
+`create-c001-inventory-owner-fixture --scalar-contracts FILE --inventory-contracts FILE`,
+binding mode `c001_authored_inventory_owners_v1`: scalars plus authored item/inventory keys,
 stack limits/capacities/eligibility. Saved rows select exact bindings, never
 packaged meanings. Pin source/catalog/lifecycle/scalar/inventory IDs, nested
 array/struct/field names. Exact UTF-16 limits: 1,023 header content units plus
@@ -217,5 +244,4 @@ never resurrects consumed stacks. Limits: 16,384 owners, 1,024 item definitions,
 eight inventories/owner, 65,536 instances/stacks each, 256 slots/overflow entries
 per inventory, 512 source items/inventory, counts ≤1,000,000; 16 MiB state,
 64 MiB joint graph allowance including decoder growth/conversions, not RSS;
-shared caps apply (F-927).
-No weight, replication, general D01/C001 restore or official-save compatibility.
+shared caps apply (F-927). No weight behavior.
