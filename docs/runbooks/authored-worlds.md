@@ -1,6 +1,6 @@
 # Authored native worlds
 
-Before restructure: 9559fc7:docs/runbooks/authored-worlds.md
+Before restructure: 3e49565:docs/runbooks/authored-worlds.md
 
 Running, autosave and recovery: [native server](native-server.md).
 
@@ -36,7 +36,8 @@ cargo run --locked -- create-c001-inert-fixture --source authored.json \
   --catalog authored.toml --bindings bindings.json --data-dir work/inert-world --dry-run
 ```
 
-Schema 4 fixes topology. `update_native_actor` validates edits.
+Schema 4 fixes topology. `update_native_actor` validates edits; capture rejects
+missing components, deleted/extra actors and changed bindings.
 Bind source map/class/path/object-name units and positive GUIDs
 to native placements/classes.
 Exact current C001 recorders must be fully interpreted; placements bind once.
@@ -53,6 +54,9 @@ deployables link `foundation`; omission/null unlinks, nonempty must resolve.
 Prepare identities, then match GUID/ASCII-folded name; non-ASCII/unpaired
 surrogates match exactly. Duplicate/unresolved pairs reject; identities are
 explicit. Names: 1–1,024 units, 1,048,576 total including links (F-922).
+Assignment follows F-646/F-650/F-663 on server 25621760/client 25793767,
+with stricter unresolved-link rejection. Other setter effects/releases remain
+unqualified.
 
 Schema 6: immutable declarations, mutable domain-ID edges, optional C001 metadata;
 links independent of source. Otherwise schemas 4/5.
@@ -88,8 +92,8 @@ rejecting failed attachment; `respawn_only` replaces live/spawns absent.
 Replacement keeps domain ID/edited live-endpoint edges, increments incarnation.
 Validate all commands before mutation; no forced/manual resolution/undeclared
 spawning. Sequence starts at 1, increments, matches `restore_sequence`; exact
-latest retries preserve edits, altered/older reject. Reload never replays policies;
-durability requires a save receipt.
+latest retries preserve edits, altered/older reject. Reload never replays policies.
+In-memory completion is not durable until autosave or shutdown publishes it.
 
 Runtime: `restore_native_owners`, edits, foundation reassignment.
 No managed-owner Bevy linked-spawn relationships or despawn hooks.

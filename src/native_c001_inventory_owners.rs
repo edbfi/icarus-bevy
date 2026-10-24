@@ -1011,7 +1011,8 @@ struct BorrowedMetadata<'a> {
     inventory_initial: &'a InventoryInitialReceiptV1,
 }
 /// Private fields prevent fabrication. These parts have no persistence or runtime
-/// authority; the lead composes them with unchanged preservation/relationships.
+/// authority; `prepare_c001_inventory_owner_import` composes them with unchanged
+/// preservation/relationships.
 pub struct PreparedC001InventoryOwnerParts {
     native: NativeWorldSnapshot,
     lifecycle: LifecycleSnapshot,
