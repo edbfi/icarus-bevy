@@ -31,10 +31,63 @@ const FUNCTION_NAMES = [
   'authored_undefined_override',
 ];
 const SOURCE_FILES = [
+  'tools/tests/trace_bounded_functions.integration.cjs',
   'tools/ghidra/TraceBoundedFunctions.java',
   'tools/ghidra/fixtures/PrepareTraceAdversarial.java',
   'tools/ghidra/fixtures/trace_adversarial.S',
 ];
+// Read-only assertions on the raw import, both before and after tracing. The
+// exact generated source is frozen with the other inputs; it repairs no context,
+// creates no function and installs no instruction. Bounds come only from nm/ELF.
+const RAW_IMPORT_CHECK_SOURCE = `// @category IcarusResearch
+import ghidra.app.script.GhidraScript;
+import ghidra.program.model.mem.MemoryBlock;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.security.MessageDigest;
+import java.util.HexFormat;
+
+public class VerifyRawTraceImport extends GhidraScript {
+    @Override
+    public AnalysisMode getScriptAnalysisMode() {
+        return AnalysisMode.DISABLED;
+    }
+
+    @Override
+    public void run() throws Exception {
+        String[] args = getScriptArgs();
+        if (args.length != 6 || currentProgram == null) {
+            throw new IllegalArgumentException("Expected fragment, hash, start, end, block and stage");
+        }
+        Path fragment = Path.of(args[0]);
+        byte[] bytes = Files.readAllBytes(fragment);
+        long start = Long.parseUnsignedLong(args[2], 16);
+        long end = Long.parseUnsignedLong(args[3], 16);
+        MemoryBlock[] blocks = currentProgram.getMemory().getBlocks();
+        if (!fragment.equals(fragment.toRealPath()) ||
+                !fragment.equals(Path.of(currentProgram.getExecutablePath()).toRealPath()) ||
+                !args[1].equals(HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256").digest(bytes))) ||
+                !currentProgram.getLanguageID().toString().equals("x86:LE:64:default") ||
+                !currentProgram.getCompilerSpec().getCompilerSpecID().toString().equals("windows") ||
+                currentProgram.getImageBase().getOffset() != 0 ||
+                end <= start || bytes.length != end - start || blocks.length != 1) {
+            throw new IllegalStateException("Raw input, language, Windows compiler or zero image base mismatch");
+        }
+        MemoryBlock block = blocks[0];
+        byte[] selected = new byte[bytes.length];
+        if (!block.getName().equals(args[4]) || block.getStart().getOffset() != start ||
+                block.getEnd().getOffset() != end - 1 || block.getSize() != bytes.length ||
+                !block.isInitialized() || !block.isLoaded() || !block.isExecute() ||
+                currentProgram.getMemory().getBytes(block.getStart(), selected) != selected.length ||
+                !java.util.Arrays.equals(bytes, selected) ||
+                currentProgram.getFunctionManager().getFunctionCount() != 0 ||
+                currentProgram.getListing().getNumInstructions() != 0) {
+            throw new IllegalStateException("Raw block/physical bytes changed or function/instruction installed");
+        }
+        println("TRACE_RAW_IMPORT_VERIFIED " + args[5] + " " + args[1]);
+    }
+}
+`;
 const sha256 = bytes => crypto.createHash('sha256').update(bytes).digest('hex');
 const hex = value => value.toString(16);
 let activeProcess;
@@ -217,6 +270,10 @@ async function main() {
       fs.chmodSync(destination, 0o444);
       sourceHashes.push({ source, frozen: destination, sha256: sha256(fs.readFileSync(destination)) });
     }
+    const rawCheckSource = path.join(sources, 'VerifyRawTraceImport.java');
+    fs.writeFileSync(rawCheckSource, RAW_IMPORT_CHECK_SOURCE, { flag: 'wx', mode: 0o444 });
+    sourceHashes.push({ source: 'inline:VerifyRawTraceImport.java', frozen: rawCheckSource,
+      sha256: sha256(fs.readFileSync(rawCheckSource)) });
     fs.writeFileSync(path.join(root, 'sources.sha256'),
       sourceHashes.map(item => `${item.sha256}  sources/${path.basename(item.frozen)}\n`).join(''), { flag: 'wx' });
     receipt.sources = sourceHashes;
@@ -330,18 +387,23 @@ async function main() {
       bounds.get('authored_many_pcode'),
     ];
     const rangeArg = span => `${hex(span.start)}:${hex(span.end)}`;
-    async function ghidraRun(name, output, ranges) {
+    async function ghidraCommand(name, importArgs, scriptArgs) {
       const log = path.join(root, `${name}.ghidra.log`);
       const scriptlog = path.join(root, `${name}.scripts.log`);
       // Direct public launch.sh invocation makes the 4G heap explicit instead of
       // relying on an analyzeHeadless shell script's hardcoded MAXMEM value.
       const text = await command(name, launcher, ['fg', 'jdk', 'Ghidra-Headless', '4G', '',
         'ghidra.app.util.headless.AnalyzeHeadless', projects, name,
-        '-import', elfPath, '-processor', 'x86:LE:64:default', '-noanalysis', '-max-cpu', '2',
+        ...importArgs, '-noanalysis', '-max-cpu', '2',
         '-scriptPath', sources, '-log', log, '-scriptlog', scriptlog,
-        '-preScript', 'PrepareTraceAdversarial.java', ...prepArgs,
-        '-postScript', 'TraceBoundedFunctions.java', output, ...ranges, '-deleteProject']);
-      const logs = text + [log, scriptlog].map(file => fs.existsSync(file) ? fs.readFileSync(file, 'utf8') : '').join('\n');
+        ...scriptArgs, '-deleteProject']);
+      return text + [log, scriptlog].map(file => fs.existsSync(file) ? fs.readFileSync(file, 'utf8') : '').join('\n');
+    }
+    async function ghidraRun(name, output, ranges) {
+      const logs = await ghidraCommand(name,
+        ['-import', elfPath, '-processor', 'x86:LE:64:default'],
+        ['-preScript', 'PrepareTraceAdversarial.java', ...prepArgs,
+          '-postScript', 'TraceBoundedFunctions.java', output, ...ranges]);
       assert(logs.includes(`TRACE_ADVERSARIAL_PREPARED ${elfHash}`),
         `${name}: preparation did not finish; inspect retained logs`);
       return logs;
@@ -525,6 +587,159 @@ async function main() {
     assert(!fs.existsSync(path.join(undefinedOutput, 'range-01.c')));
     passed('primary override on undefined RET rejected before raw instruction admission');
 
+    // Import only this small authored function's physical bytes. The function
+    // extent is already bound by nm's size/end marker and the ELF PT_LOAD map;
+    // neither the raw program image base (zero) nor its block infers an extent.
+    const rawSpan = bounds.get('authored_good_gate');
+    const rawBytes = physicalBytes(rawSpan.start, rawSpan.end);
+    assert(rawBytes.length > 0 && rawBytes.length <= 64, 'Expected a tiny authored raw fragment');
+    const rawPath = path.join(root, 'authored-good-gate.bin');
+    fs.writeFileSync(rawPath, rawBytes, { flag: 'wx', mode: 0o444 });
+    assert(fs.readFileSync(rawPath).equals(rawBytes));
+    const rawHash = sha256(rawBytes);
+    const rawOutput = path.join(root, 'raw-output');
+    const rawPartialOutput = path.join(root, 'raw-partial-output');
+    const rawPartialSpan = { ...rawSpan, end: rawSpan.end - 2n };
+    const cutInstructions = goodInstructions.filter(row => address(row.address) < rawPartialSpan.end &&
+      address(row.address) + BigInt(number(row, 'length')) > rawPartialSpan.end);
+    assert.equal(cutInstructions.length, 1, 'The partial raw range must cut one known ELF instruction');
+    const cutAddress = address(cutInstructions[0].address);
+    assert.match(cutInstructions[0].asm, /MOV EAX,0xfffffff9\b/i);
+    receipt.rawFixture = { path: rawPath, sha256: rawHash, bytes: rawBytes.length,
+      sourceElfSha256: elfHash, symbol: rawSpan.name, start: hex(rawSpan.start),
+      endExclusive: hex(rawSpan.end), referenceRange: 'accepted-output/range-01',
+      traceRanges: [rangeArg(rawSpan), rangeArg(rawPartialSpan)] };
+    record();
+    const originalOutputs = () => [output, undefinedOutput].map(directory => ({
+      path: directory, entries: snapshot(directory),
+    }));
+    const beforeRaw = originalOutputs();
+    fs.writeFileSync(path.join(root, 'raw-original-outputs.before.json'),
+      `${JSON.stringify(beforeRaw, null, 2)}\n`, { flag: 'wx' });
+    const rawCheckArgs = [rawPath, rawHash, hex(rawSpan.start), hex(rawSpan.end), 'bounded_fragment'];
+    const rawLogs = await ghidraCommand('raw-binary',
+      ['-import', rawPath, '-loader', 'BinaryLoader', '-processor', 'x86:LE:64:default',
+        '-cspec', 'windows', '-loader-baseAddr', `0x${hex(rawSpan.start)}`,
+        '-loader-fileOffset', '0x0', '-loader-length', `0x${hex(BigInt(rawBytes.length))}`,
+        '-loader-blockName', 'bounded_fragment', '-loader-applyLabels', 'false'],
+      ['-preScript', 'VerifyRawTraceImport.java', ...rawCheckArgs, 'before',
+        '-postScript', 'TraceBoundedFunctions.java', rawOutput, rangeArg(rawSpan),
+        '-postScript', 'TraceBoundedFunctions.java', rawPartialOutput, rangeArg(rawPartialSpan),
+        '-postScript', 'VerifyRawTraceImport.java', ...rawCheckArgs, 'after']);
+    for (const stage of ['before', 'after']) {
+      assert(rawLogs.includes(`TRACE_RAW_IMPORT_VERIFIED ${stage} ${rawHash}`),
+        `Raw import ${stage} checks did not finish; inspect retained logs`);
+    }
+    const afterRaw = originalOutputs();
+    fs.writeFileSync(path.join(root, 'raw-original-outputs.after.json'),
+      `${JSON.stringify(afterRaw, null, 2)}\n`, { flag: 'wx' });
+    assert.deepEqual(afterRaw, beforeRaw, 'Raw tracing changed an original ELF trace output');
+
+    function rawTrace(directory, span, complete) {
+      assert(fs.statSync(path.join(directory, 'EXPORT_FINISHED.txt')).isFile());
+      assert(!fs.existsSync(path.join(directory, 'FAILED.txt')));
+      assert(!fs.existsSync(path.join(directory, 'range-01.c')));
+      assert.match(fs.readFileSync(path.join(directory, 'range-01.decompiler.txt'), 'utf8'), /disabled/i);
+      const rows = tsv(path.join(directory, 'status.tsv'));
+      assert.equal(rows.length, 1);
+      const status = rows[0];
+      assert.equal(status.range, 'range-01');
+      assert.equal(address(status.start), span.start);
+      assert.equal(address(status.end_exclusive), span.end);
+      assert.equal(number(status, 'selected_bytes'), Number(span.end - span.start));
+      assert.equal(status.flow_complete, String(complete));
+      assert.equal(status.body_binding, 'skipped_no_bounded_listing_installation');
+      assert.equal(status.decompilation, 'disabled_raw_trace_only_no_pseudocode');
+      const table = suffix => tsv(path.join(directory, `range-01.${suffix}.tsv`));
+      const memory = table('memory');
+      const expected = physicalBytes(span.start, span.end);
+      assert.equal(memory.length, 1);
+      assert.equal(memory[0].source, 'selected_analysis_memory_not_physical_file');
+      assert.equal(address(memory[0].start), span.start);
+      assert.equal(address(memory[0].end_exclusive), span.end);
+      assert.equal(number(memory[0], 'bytes'), expected.length);
+      assert.equal(memory[0].hex, expected.toString('hex'));
+      assert.equal(memory[0].sha256, sha256(expected));
+      const instructions = table('instructions');
+      assert.equal(instructions.length, number(status, 'instructions'));
+      const covered = new Set();
+      for (const row of instructions) {
+        const at = address(row.address);
+        const length = number(row, 'length');
+        assert(length > 0 && at >= span.start && at + BigInt(length) <= span.end);
+        assert.equal(row.bytes, physicalBytes(at, at + BigInt(length)).toString('hex'));
+        for (let byte = at; byte < at + BigInt(length); byte++) {
+          assert(!covered.has(byte.toString()), 'Raw decoded instructions overlap');
+          covered.add(byte.toString());
+        }
+      }
+      assert.equal(covered.size, number(status, 'decoded_instruction_bytes'));
+      assert.equal(expected.length - covered.size, number(status, 'unvisited_bytes'));
+      assert.equal(table('pcode').length, number(status, 'pcode_ops_exported'));
+      assert.equal(table('issues').length, number(status, 'issues'));
+      assert.equal(number(status, 'pending_addresses'), 0);
+      assert.equal(number(status, 'issues'), complete ? 0 : 1);
+      assert.equal(number(status, 'unvisited_bytes'), complete ? 0 : Number(span.end - cutAddress));
+      if (!complete) {
+        assert.equal(address(table('issues')[0].address), cutAddress);
+        assert(['decode_insufficient_bytes_possible_straddling', 'straddling_instruction']
+          .includes(table('issues')[0].reason));
+      }
+      const contexts = new Map();
+      for (const row of table('context')) {
+        const at = address(row.address).toString();
+        assert.equal(row.status, 'canonical', 'Windows raw import must supply canonical context without repair');
+        assert(address(row.mask_hex) > 0n, 'Canonical context must have known bits');
+        if (!contexts.has(at)) contexts.set(at, new Map());
+        assert(!contexts.get(at).has(row.register), 'Duplicate raw context register');
+        contexts.get(at).set(row.register, row);
+      }
+      assert.equal(contexts.size, instructions.length + (complete ? 0 : 1));
+      assert(contexts.has(span.start.toString()), 'Missing Windows entry context');
+      for (const row of instructions) assert(contexts.has(address(row.address).toString()));
+      if (!complete) assert(contexts.has(cutAddress.toString()));
+      for (const registers of contexts.values()) {
+        for (const [register, expectedValue] of [['longMode', 1n], ['addrsize', 2n],
+          ['opsize', 1n], ['rexprefix', 0n]]) {
+          assert(registers.has(register), `Missing canonical Windows context field ${register}`);
+          assert.equal(address(registers.get(register).value_hex), expectedValue);
+          assert.equal(address(registers.get(register).expected_hex), expectedValue);
+        }
+      }
+      // Ignore imported-function body metadata: the raw import deliberately has
+      // no functions, while the ELF loader may supply symbol-backed functions.
+      const body = table('body');
+      assert(body.every(row => ['observed_decoded_instruction_bytes',
+        'unvisited_not_classified_as_code_or_data'].includes(row.kind)));
+      for (const row of body) {
+        assert(address(row.start) >= span.start && address(row.end_exclusive) <= span.end);
+        assert.equal(number(row, 'bytes'), Number(address(row.end_exclusive) - address(row.start)));
+      }
+      for (const [kind, bytes] of [['observed_decoded_instruction_bytes', covered.size],
+        ['unvisited_not_classified_as_code_or_data', expected.length - covered.size]]) {
+        assert.equal(body.filter(row => row.kind === kind).reduce((sum, row) => sum + number(row, 'bytes'), 0), bytes);
+      }
+      return { status, table, instructions };
+    }
+    const raw = rawTrace(rawOutput, rawSpan, true);
+    assert(number(raw.status, 'pcode_ops_exported') > 0);
+    assert(raw.table('varnodes').length > 0, 'Raw pcode needs operand semantics');
+    for (const suffix of ['memory', 'instructions', 'pcode', 'varnodes', 'targets', 'flows', 'issues']) {
+      assert.deepEqual(raw.table(suffix), tsv(file(0, `.${suffix}.tsv`)),
+        `Canonical raw and ELF ${suffix} must agree for the same physical function bytes`);
+    }
+    const rawPartial = rawTrace(rawPartialOutput, rawPartialSpan, false);
+    const admitted = new Set(goodInstructions.filter(row =>
+      address(row.address) + BigInt(number(row, 'length')) <= rawPartialSpan.end).map(row => row.address));
+    assert(rawPartial.instructions.length > 0, 'Partial raw trace must retain admitted instructions');
+    assert.deepEqual(rawPartial.instructions, goodInstructions.filter(row => admitted.has(row.address)));
+    for (const suffix of ['pcode', 'varnodes', 'targets']) {
+      assert.deepEqual(rawPartial.table(suffix), tsv(file(0, `.${suffix}.tsv`))
+        .filter(row => admitted.has(row.instruction)), `Partial raw ${suffix} must match admitted ELF instructions`);
+    }
+    passed('exact physical BinaryLoader fragment matches ELF instructions/pcode/varnodes in canonical Windows context');
+    passed('raw full trace completes, narrower straddle stays partial, no listing installs or original output changes');
+
     for (const [name, ranges, diagnostic] of [
       ['malformed', ['not-a-range'], /IllegalArgumentException: Malformed start:end_exclusive range/],
       ['overlap', [rangeArg(spans[0]), rangeArg(spans[0])],
@@ -550,6 +765,8 @@ async function main() {
       assert.equal(sha256(fs.readFileSync(source.frozen)), source.sha256, 'Frozen source changed');
     }
     assert.equal(sha256(fs.readFileSync(elfPath)), elfHash, 'Authored input ELF changed');
+    assert.equal(sha256(fs.readFileSync(rawPath)), rawHash, 'Authored raw fragment changed');
+    assert(fs.readFileSync(rawPath).equals(physicalBytes(rawSpan.start, rawSpan.end)));
     assert(!interrupted, `Interrupted: ${interrupted}`);
     receipt.success = true;
   } catch (error) {
