@@ -217,8 +217,8 @@ fn proper_future_schema_objects_still_refuse_rollback_without_writes() {
     let _fixture = FIXTURE_LOCK.lock().unwrap();
     let directory = initial(true);
     let root = directory.path();
-    // Schema 10 holds authored inventory owner state; 11 is the future one.
-    replace_current(root, &json!({"schema_version":11,"tick":20,"entities":[]}));
+    // Schema 11 holds authored modifier owner state; 12 is the future one.
+    replace_current(root, &json!({"schema_version":12,"tick":20,"entities":[]}));
     let before = inventory(root);
     let mut store = SnapshotStore::open(root).unwrap();
     for error in [

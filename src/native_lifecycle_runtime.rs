@@ -4,7 +4,7 @@ use std::{
     collections::{BTreeMap, BTreeSet},
     sync::{
         Arc,
-        atomic::{AtomicU64, Ordering},
+        atomic::{AtomicBool, AtomicU64, Ordering},
     },
 };
 
@@ -30,6 +30,10 @@ use crate::{
         CompiledNativeLifecycle, CompletedRestore, LifecycleSnapshot, OwnerHandle, Presence,
         RecorderComponentRecord, RestoreBatch, prepare_owner_restore,
     },
+    native_modifiers::{
+        MAX_MODIFIER_OWNERS, MAX_MODIFIER_WORLD_BYTES, MAX_WORLD_MODIFIERS, ModifierAction,
+        ModifierRequest, ModifierWorldSnapshot, OwnerModifierState, prepare_modifiers,
+    },
     native_relationships::{
         CompiledNativeRelationships, NativeFoundationRecord, NativeRelationshipRole,
         NativeRelationshipsSnapshot,
@@ -51,7 +55,7 @@ use crate::{
     simulation::{
         DomainId, Position, PreservedProspectState, SNAPSHOT_SCHEMA_C001_INVENTORY_OWNERS,
         SNAPSHOT_SCHEMA_C001_OWNERS, SNAPSHOT_SCHEMA_C001_SCALAR_OWNERS, SNAPSHOT_SCHEMA_LIFECYCLE,
-        SimulationClock, WorldSnapshot,
+        SNAPSHOT_SCHEMA_MODIFIER_OWNERS, SimulationClock, WorldSnapshot,
     },
 };
 
@@ -92,6 +96,19 @@ struct InventoryOwnerState {
     inventories: Vec<InventoryStateV1>,
 }
 
+#[derive(Component, Clone)]
+struct ModifierOwnerState {
+    activation: Arc<Definitions>,
+    generation: u64,
+    state: OwnerModifierState,
+}
+
+/// Non-clonable runtime authority, independent of public capture/context copies.
+#[derive(Resource)]
+struct ModifierRuntimeAnchor {
+    definitions: Arc<Definitions>,
+}
+
 #[derive(Clone)]
 struct InventoryHeader {
     revision: u64,
@@ -108,6 +125,7 @@ enum SourceMode {
     Owners,
     ScalarOwners,
     InventoryOwners,
+    ModifierOwners,
 }
 
 impl SourceMode {
@@ -117,6 +135,7 @@ impl SourceMode {
             Self::Owners => SNAPSHOT_SCHEMA_C001_OWNERS,
             Self::ScalarOwners => SNAPSHOT_SCHEMA_C001_SCALAR_OWNERS,
             Self::InventoryOwners => SNAPSHOT_SCHEMA_C001_INVENTORY_OWNERS,
+            Self::ModifierOwners => SNAPSHOT_SCHEMA_MODIFIER_OWNERS,
         }
     }
 }
@@ -134,6 +153,7 @@ struct Definitions {
     // Shared by every activation pin, including clones of SnapshotMode. A
     // stale resource cannot roll this back by restoring its observed generation.
     current_generation: AtomicU64,
+    modifier_failed: AtomicBool,
     mode: SourceMode,
     catalog: Arc<CompiledNativeCatalog>,
     lifecycle: CompiledNativeLifecycle,
@@ -183,7 +203,8 @@ pub enum NativeRestoreResult {
 
 pub(crate) fn ensure_no_lifecycle_state(world: &World) -> Result<()> {
     ensure!(
-        !world.contains_resource::<NativeLifecycleContext>()
+        !world.contains_resource::<ModifierRuntimeAnchor>()
+            && !world.contains_resource::<NativeLifecycleContext>()
             && !world.contains_resource::<DormantNativeSlots>()
             && !world.contains_resource::<C001OwnerImportState>()
             && !world.contains_resource::<NativeScalarOwnerContractsState>()
@@ -194,7 +215,8 @@ pub(crate) fn ensure_no_lifecycle_state(world: &World) -> Result<()> {
     );
     for entity in world.iter_entities() {
         ensure!(
-            !entity.contains::<NativeOwnerIncarnation>()
+            !entity.contains::<ModifierRuntimeAnchor>()
+                && !entity.contains::<NativeOwnerIncarnation>()
                 && !entity.contains::<NativeOwnerName>()
                 && !entity.contains::<NativeOwnerRecorder>()
                 && !entity.contains::<NativeLifecycleContext>()
@@ -205,7 +227,8 @@ pub(crate) fn ensure_no_lifecycle_state(world: &World) -> Result<()> {
                 && !entity.contains::<ScalarOwnerDerived>()
                 && !entity.contains::<NativeInventoryContractsState>()
                 && !entity.contains::<C001InventoryOwnerImportState>()
-                && !entity.contains::<InventoryOwnerState>(),
+                && !entity.contains::<InventoryOwnerState>()
+                && !entity.contains::<ModifierOwnerState>(),
             "world contains unexpected lifecycle components"
         );
     }
@@ -270,6 +293,7 @@ fn require_callback_free_commit(world: &World, context: &NativeLifecycleContext)
             world.component_id::<NativeFoundation>(),
             world.component_id::<ScalarOwnerDerived>(),
             world.component_id::<InventoryOwnerState>(),
+            world.component_id::<ModifierOwnerState>(),
         ]
         .into_iter()
         .flatten(),
@@ -354,6 +378,7 @@ struct StagedActor {
     foundation: Option<NativeFoundation>,
     scalar: Option<ScalarOwnerDerived>,
     inventory: Option<InventoryOwnerState>,
+    modifier: Option<ModifierOwnerState>,
 }
 
 struct StagedWorld {
@@ -614,6 +639,28 @@ fn stage(snapshot: &WorldSnapshot, definitions: &Arc<Definitions>) -> Result<Sta
         lifecycle,
         snapshot.native_inventories.as_ref(),
     )?;
+    match definitions.mode {
+        SourceMode::ModifierOwners => snapshot
+            .native_modifiers
+            .as_ref()
+            .context("modifier state missing")?
+            .validate(lifecycle)?,
+        _ => ensure!(
+            snapshot.native_modifiers.is_none(),
+            "unexpected modifier state"
+        ),
+    }
+    let modifiers: BTreeMap<_, _> = snapshot
+        .native_modifiers
+        .as_ref()
+        .map(|state| {
+            state
+                .owners
+                .iter()
+                .map(|owner| (owner.owner.id, owner))
+                .collect()
+        })
+        .unwrap_or_default();
     let inventory = snapshot
         .native_inventories
         .as_ref()
@@ -710,6 +757,11 @@ fn stage(snapshot: &WorldSnapshot, definitions: &Arc<Definitions>) -> Result<Sta
                     })
                 })
                 .transpose()?,
+            modifier: modifiers.get(&slot.id).map(|state| ModifierOwnerState {
+                activation: Arc::clone(definitions),
+                generation,
+                state: (*state).clone(),
+            }),
             inventory: inventory_owners
                 .get(&slot.id)
                 .map(|owner| InventoryOwnerState {
@@ -768,6 +820,11 @@ fn insert_actor(world: &mut World, entity: Entity, actor: StagedActor) {
     } else {
         entity.remove::<ScalarOwnerDerived>();
     }
+    if let Some(modifier) = actor.modifier {
+        entity.insert(modifier);
+    } else {
+        entity.remove::<ModifierOwnerState>();
+    }
     if let Some(inventory) = actor.inventory {
         entity.insert(inventory);
     } else {
@@ -791,6 +848,7 @@ pub(crate) fn activate_lifecycle(world: &mut World, snapshot: &WorldSnapshot) ->
                 | SNAPSHOT_SCHEMA_C001_OWNERS
                 | SNAPSHOT_SCHEMA_C001_SCALAR_OWNERS
                 | SNAPSHOT_SCHEMA_C001_INVENTORY_OWNERS
+                | SNAPSHOT_SCHEMA_MODIFIER_OWNERS
         ),
         "lifecycle schema required"
     );
@@ -810,6 +868,7 @@ pub(crate) fn activate_lifecycle(world: &mut World, snapshot: &WorldSnapshot) ->
         SNAPSHOT_SCHEMA_C001_OWNERS => SourceMode::Owners,
         SNAPSHOT_SCHEMA_C001_SCALAR_OWNERS => SourceMode::ScalarOwners,
         SNAPSHOT_SCHEMA_C001_INVENTORY_OWNERS => SourceMode::InventoryOwners,
+        SNAPSHOT_SCHEMA_MODIFIER_OWNERS => SourceMode::ModifierOwners,
         _ => unreachable!("validated lifecycle schema"),
     };
     // Admit the joint borrowed graph before any declaration/provenance clone.
@@ -878,6 +937,7 @@ pub(crate) fn activate_lifecycle(world: &mut World, snapshot: &WorldSnapshot) ->
     }
     let definitions = Arc::new(Definitions {
         current_generation: AtomicU64::new(0),
+        modifier_failed: AtomicBool::new(false),
         mode,
         inventory_pinned_bytes,
         inventory_contracts: snapshot
@@ -916,6 +976,11 @@ pub(crate) fn activate_lifecycle(world: &mut World, snapshot: &WorldSnapshot) ->
             .map(|metadata| Arc::new(metadata.clone())),
     });
     let staged = stage(snapshot, &definitions)?;
+    if mode == SourceMode::ModifierOwners {
+        world.insert_resource(ModifierRuntimeAnchor {
+            definitions: Arc::clone(&definitions),
+        });
+    }
     if let Some(metadata) = &definitions.imported {
         world.insert_resource(C001OwnerImportState(Arc::clone(metadata)));
     }
@@ -1140,6 +1205,7 @@ fn capture_inventories(
 }
 
 pub(crate) fn capture_lifecycle(world: &World) -> Result<WorldSnapshot> {
+    modifier_runtime_health(world)?;
     let context = world
         .get_resource::<NativeLifecycleContext>()
         .context("world lacks lifecycle context")?;
@@ -1248,7 +1314,7 @@ pub(crate) fn capture_lifecycle(world: &World) -> Result<WorldSnapshot> {
     let expected_entities: BTreeSet<_> = context.live.values().copied().collect();
     for entity in world.iter_entities() {
         if expected_entities.contains(&entity.id()) {
-            // Lifecycle modes 7–10 have no ECS lifetime relationships. Inspect
+            // Lifecycle modes 7–11 have no ECS lifetime relationships. Inspect
             // both ends, including empty targets and disabled owners, before
             // staging: despawning one owner must not cascade into another.
             // Foundation domain links are ordinary components, unaffected here.
@@ -1266,6 +1332,14 @@ pub(crate) fn capture_lifecycle(world: &World) -> Result<WorldSnapshot> {
                     "managed owner has unsupported ECS lifetime relationship"
                 );
             }
+        }
+        if let Some(anchor) = entity.get::<ModifierRuntimeAnchor>() {
+            ensure!(
+                world
+                    .get_resource::<ModifierRuntimeAnchor>()
+                    .is_some_and(|expected| std::ptr::eq(anchor, expected)),
+                "unregistered modifier runtime anchor"
+            );
         }
         if let Some(actual) = entity.get::<NativeLifecycleContext>() {
             ensure!(
@@ -1290,6 +1364,13 @@ pub(crate) fn capture_lifecycle(world: &World) -> Result<WorldSnapshot> {
                     .get_resource::<C001InventoryOwnerImportState>()
                     .is_some_and(|resource| std::ptr::eq(actual, resource)),
                 "unregistered inventory provenance"
+            );
+        }
+        if entity.contains::<ModifierOwnerState>() {
+            ensure!(
+                definitions.mode == SourceMode::ModifierOwners
+                    && expected_entities.contains(&entity.id()),
+                "unregistered modifier owner state"
             );
         }
         if entity.contains::<InventoryOwnerState>() {
@@ -1341,6 +1422,7 @@ pub(crate) fn capture_lifecycle(world: &World) -> Result<WorldSnapshot> {
             || entity.contains::<NativeFoundation>()
             || entity.contains::<ScalarOwnerDerived>()
             || entity.contains::<InventoryOwnerState>()
+            || entity.contains::<ModifierOwnerState>()
         {
             ensure!(
                 expected_entities.contains(&entity.id()),
@@ -1518,6 +1600,7 @@ pub(crate) fn capture_lifecycle(world: &World) -> Result<WorldSnapshot> {
     definitions
         .catalog
         .validate_records(&context.lifecycle.definition.map, records.values().cloned())?;
+    let modifiers = capture_modifiers(world, context)?;
     let inventories = capture_inventories(world, context)?;
     let native = NativeWorldSnapshot {
         catalog_id: definitions.catalog.identity().to_owned(),
@@ -1564,6 +1647,7 @@ pub(crate) fn capture_lifecycle(world: &World) -> Result<WorldSnapshot> {
         native_inventory_contracts: definitions.inventory_snapshot.as_deref().cloned(),
         native_inventory_owner_import: definitions.inventory_imported.as_deref().cloned(),
         native_inventories: inventories,
+        native_modifiers: modifiers,
         preserved_prospect: world
             .get_resource::<PreservedProspectState>()
             .map(|state| Arc::clone(&state.0)),
@@ -2118,6 +2202,187 @@ pub fn lifecycle_world_bounds(world: &World, owner: OwnerHandle) -> Result<Aabb3
 
 #[cfg(test)]
 use crate::scalar_owner_fixture as scalar_fixture;
+
+/// A timer failure latches the activation closed; subsequent capture and CLI
+/// progress checks fail instead of publishing a partially advanced world.
+pub fn modifier_runtime_health(world: &World) -> Result<()> {
+    let pin = crate::simulation::lifecycle_activation(world)?;
+    if let Some(anchor) = world.get_resource::<ModifierRuntimeAnchor>() {
+        ensure!(
+            !anchor.definitions.modifier_failed.load(Ordering::Relaxed),
+            "authored modifier timer step failed"
+        );
+        let current = world
+            .get_resource::<NativeLifecycleContext>()
+            .context("modifier lifecycle context missing")?;
+        ensure!(
+            Arc::ptr_eq(&anchor.definitions, &current.definitions),
+            "modifier lifecycle activation changed"
+        );
+        crate::simulation::validate_lifecycle_activation(world, current)?;
+    } else {
+        ensure!(
+            !pin.is_some_and(|context| context.definitions.mode == SourceMode::ModifierOwners)
+                && !world
+                    .get_resource::<NativeLifecycleContext>()
+                    .is_some_and(|context| context.definitions.mode == SourceMode::ModifierOwners)
+                && !world
+                    .component_id::<ModifierOwnerState>()
+                    .is_some_and(|component| {
+                        world
+                            .archetypes()
+                            .iter()
+                            .any(|archetype| !archetype.is_empty() && archetype.contains(component))
+                    }),
+            "modifier runtime anchor missing"
+        );
+    }
+    Ok(())
+}
+
+fn capture_modifiers(
+    world: &World,
+    context: &NativeLifecycleContext,
+) -> Result<Option<ModifierWorldSnapshot>> {
+    if context.definitions.mode != SourceMode::ModifierOwners {
+        for entity in context.live.values() {
+            ensure!(
+                world.get::<ModifierOwnerState>(*entity).is_none(),
+                "unexpected modifier state"
+            );
+        }
+        return Ok(None);
+    }
+    ensure!(
+        context.live.len() <= MAX_MODIFIER_OWNERS,
+        "modifier owner limit"
+    );
+    let mut refs = Vec::with_capacity(context.live.len());
+    let mut entries = 0;
+    let mut bytes = context.live.len() * std::mem::size_of::<OwnerModifierState>();
+    for (id, entity) in &context.live {
+        let value = world
+            .get::<ModifierOwnerState>(*entity)
+            .context("owner modifier state missing")?;
+        ensure!(
+            Arc::ptr_eq(&value.activation, &context.definitions)
+                && value.generation == context.generation
+                && value.state.owner.id == *id
+                && world.get::<NativeOwnerIncarnation>(*entity)
+                    == Some(&NativeOwnerIncarnation(value.state.owner.incarnation)),
+            "modifier state differs from activation"
+        );
+        bytes += value.state.allocation_bytes()?;
+        entries += value.state.entries.len();
+        ensure!(
+            bytes <= MAX_MODIFIER_WORLD_BYTES && entries <= MAX_WORLD_MODIFIERS,
+            "modifier world allocation or entry limit"
+        );
+        refs.push(&value.state);
+    }
+    let snapshot = ModifierWorldSnapshot {
+        format: 1,
+        owners: refs.into_iter().cloned().collect(),
+    };
+    snapshot.validate(&context.lifecycle)?;
+    Ok(Some(snapshot))
+}
+
+/// Return a validated copy; callers cannot transplant mutable component authority.
+pub fn native_owner_modifiers(world: &World, owner: OwnerHandle) -> Result<OwnerModifierState> {
+    let snapshot = capture_lifecycle(world)?;
+    require_handle(&snapshot, owner)?;
+    snapshot
+        .native_modifiers
+        .context("authored modifiers are not enabled")?
+        .owners
+        .into_iter()
+        .find(|state| state.owner == owner)
+        .context("modifier owner missing")
+}
+
+/// Stage an explicit authored operation and validate the complete world budget
+/// before replacing existing private component values. No ECS callbacks run.
+pub fn apply_native_modifier(world: &mut World, request: &ModifierRequest) -> Result<()> {
+    let mut snapshot = capture_lifecycle(world)?;
+    require_handle(&snapshot, request.owner)?;
+    let state = snapshot
+        .native_modifiers
+        .as_mut()
+        .context("authored modifiers are not enabled")?;
+    let index = state
+        .owners
+        .binary_search_by_key(&request.owner.id, |state| state.owner.id)
+        .map_err(|_| anyhow::anyhow!("modifier owner missing"))?;
+    let change = prepare_modifiers(&state.owners[index], request)?;
+    state.owners[index] = change.apply(&state.owners[index])?;
+    let context = world.resource::<NativeLifecycleContext>();
+    state.validate(&context.lifecycle)?;
+    let entity = *context
+        .live
+        .get(&request.owner.id)
+        .context("modifier owner absent")?;
+    SnapshotStore::preflight(&snapshot)?;
+    let mut state = snapshot.native_modifiers.expect("prepared modifier world");
+    world
+        .get_mut::<ModifierOwnerState>(entity)
+        .expect("admitted modifier owner")
+        .state = state.owners.swap_remove(index);
+    Ok(())
+}
+
+/// One all-or-nothing fixed-clock advance. Integer nanoseconds are persisted,
+/// so small steps cannot disappear when a long-running timer is reloaded.
+pub fn advance_native_modifiers(world: &mut World, elapsed: std::time::Duration) -> Result<()> {
+    let mut snapshot = capture_lifecycle(world)?;
+    let state = snapshot
+        .native_modifiers
+        .as_mut()
+        .context("authored modifiers are not enabled")?;
+    let elapsed_nanos = u64::try_from(elapsed.as_nanos()).context("modifier elapsed time limit")?;
+    for owner in &mut state.owners {
+        let request = ModifierRequest {
+            owner: owner.owner,
+            expected_revision: owner.revision,
+            action: ModifierAction::Advance { elapsed_nanos },
+        };
+        *owner = prepare_modifiers(owner, &request)?.apply(owner)?;
+    }
+    let context = world.resource::<NativeLifecycleContext>();
+    state.validate(&context.lifecycle)?;
+    let targets: Vec<_> = state
+        .owners
+        .iter()
+        .map(|owner| context.live[&owner.owner.id])
+        .collect();
+    SnapshotStore::preflight(&snapshot)?;
+    let state = snapshot.native_modifiers.expect("prepared modifier world");
+    for (entity, state) in targets.into_iter().zip(state.owners) {
+        world
+            .get_mut::<ModifierOwnerState>(entity)
+            .expect("admitted modifier owner")
+            .state = state;
+    }
+    Ok(())
+}
+
+/// Installed only for schema 11, before ordinary gameplay/replication. A failed
+/// preparation changes no owner state and prevents all later publication.
+pub(crate) fn tick_native_modifiers(world: &mut World, activation: &NativeLifecycleContext) {
+    let result = world
+        .get_resource::<bevy::prelude::Time<bevy::prelude::Fixed>>()
+        .map(|time| time.delta())
+        .context("modifier fixed clock missing")
+        .and_then(|elapsed| advance_native_modifiers(world, elapsed));
+    if result.is_err() {
+        // The system closure owns this activation, even when caller-owned
+        // resources are missing or transplanted. Never latch a foreign app.
+        activation
+            .definitions
+            .modifier_failed
+            .store(true, Ordering::Relaxed);
+    }
+}
 
 #[cfg(test)]
 mod tests {

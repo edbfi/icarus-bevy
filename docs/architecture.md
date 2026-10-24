@@ -91,9 +91,11 @@ Authored schemas retain spatial worlds (4; F-919), bound C001 inert-fixture
 provenance (5; F-927), foundation edges (6; F-922), live/dormant owner slots
 with transactional replacement and retry completion (7; F-923), and authored
 C001 owner restoration (8), scalar use-gate state (9) and stacked inventories
-(10) with immutable source
-provenance (F-927). Each mode pins
-its activation contract and rejects incomplete state. Bounds imply neither
+(10) with immutable source provenance (F-927). Schema 11 explicitly extends
+lifecycle 7 with authored modifier timers/cache; replacement retires the prior
+incarnation, while retry/reload retains current progress (F-931). C001 fixture
+modes have no implicit promotion. Each mode pins its activation and rejects
+incomplete state. Bounds imply neither
 physics nor navigation; reference coverage grants no import authority. Detailed
 creation and editing contracts live in the
 [authored-worlds runbook](runbooks/authored-worlds.md).

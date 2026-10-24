@@ -78,11 +78,23 @@ enum Command {
         /// Apply one complete authored owner restore batch before publication.
         #[arg(long, requires = "lifecycle")]
         restore: Option<PathBuf>,
+        /// Enable empty modifier state on every live owner (authored schema 11,
+        /// extending schema 7). No C001 import or official semantics are implied.
+        #[arg(long, requires = "lifecycle")]
+        modifiers: bool,
         #[arg(long)]
         data_dir: PathBuf,
         /// Validate and report counts without opening the destination store.
         #[arg(long)]
         dry_run: bool,
+    },
+    /// Apply one strict authored modifier request to an existing native world.
+    /// Publication follows complete validation, runtime application and capture.
+    ApplyNativeModifier {
+        #[arg(long)]
+        request: PathBuf,
+        #[arg(long)]
+        data_dir: PathBuf,
     },
     /// Materialize only the explicitly bound, authored C001 inert fixture
     /// contract. This does not enable ordinary ICARUS save import.
@@ -267,6 +279,7 @@ fn execute(cli: Cli) -> Result<()> {
             relationships,
             lifecycle,
             restore,
+            modifiers,
             data_dir,
             dry_run,
         } => {
@@ -308,6 +321,10 @@ fn execute(cli: Cli) -> Result<()> {
             let snapshot = restored
                 .as_ref()
                 .map_or(snapshot, |prepared| prepared.snapshot());
+            let with_modifiers = modifiers
+                .then(|| icarus_bevy::native_modifiers::enable_modifier_owners(snapshot.clone()))
+                .transpose()?;
+            let snapshot = with_modifiers.as_ref().unwrap_or(snapshot);
             SnapshotStore::preflight(snapshot)?;
             let actors = prepared.snapshot().actors.len();
             let live_actors = snapshot.native_lifecycle.as_ref().map(|lifecycle| {
@@ -336,6 +353,37 @@ fn execute(cli: Cli) -> Result<()> {
                 }
                 println!("{report}");
             }
+            Ok(())
+        }
+        Command::ApplyNativeModifier { request, data_dir } => {
+            let request = read_native_modifier_request(&request)?;
+            ensure!(
+                data_dir.is_dir(),
+                "modifier command requires an existing store"
+            );
+            let mut store = SnapshotStore::open(&data_dir)
+                .map_err(|_| anyhow::anyhow!("open native modifier store failed"))?;
+            let loaded = store
+                .load()
+                .map_err(|_| anyhow::anyhow!("load native modifier world failed"))?
+                .context("modifier command requires an existing committed world")?;
+            let mut app = build_app(
+                &icarus_bevy::config::ServerConfig::default(),
+                &loaded.snapshot,
+            )
+            .map_err(|_| anyhow::anyhow!("activate native modifier world failed"))?;
+            icarus_bevy::native_lifecycle_runtime::apply_native_modifier(app.world_mut(), &request)
+                .map_err(|_| anyhow::anyhow!("native modifier request rejected"))?;
+            let snapshot = capture(app.world_mut())
+                .map_err(|_| anyhow::anyhow!("capture native modifier world failed"))?;
+            let receipt = store
+                .save(&snapshot)
+                .map_err(|_| anyhow::anyhow!("save native modifier world failed"))?;
+            println!(
+                "{}",
+                json!({"event": "native_modifier_applied", "receipt": receipt,
+                    "world_imported": false, "gameplay_ready": false})
+            );
             Ok(())
         }
         Command::CreateC001InertFixture {
@@ -686,6 +734,80 @@ fn open_regular_source(source: &std::path::Path) -> Result<std::fs::File> {
         .context("open prospect envelope")?;
     ensure!(file.metadata()?.is_file(), "source must be a regular file");
     Ok(file)
+}
+
+/// Request inputs are bounded independently of the saved world. Resolve each
+/// component through an opened directory so intermediate symlinks are refused
+/// too. NONBLOCK prevents a FIFO from stalling before the handle's type check.
+fn read_native_modifier_request(
+    source: &std::path::Path,
+) -> Result<icarus_bevy::native_modifiers::ModifierRequest> {
+    use rustix::fs::{Mode, OFlags, open, openat};
+    use std::io::Read;
+
+    const MAX_REQUEST_BYTES: u64 = 64 * 1024;
+    let flags = OFlags::RDONLY | OFlags::NONBLOCK | OFlags::NOFOLLOW | OFlags::CLOEXEC;
+    let mut directory = open(
+        if source.is_absolute() { "/" } else { "." },
+        flags | OFlags::DIRECTORY,
+        Mode::empty(),
+    )
+    .map_err(|_| anyhow::anyhow!("open modifier request directory failed"))?;
+    let mut components = source
+        .components()
+        .filter(|component| {
+            !matches!(
+                component,
+                std::path::Component::RootDir | std::path::Component::CurDir
+            )
+        })
+        .peekable();
+    let mut file = loop {
+        let component = components
+            .next()
+            .context("modifier request path is empty")?;
+        let last = components.peek().is_none();
+        let handle = openat(
+            &directory,
+            component.as_os_str(),
+            if last {
+                flags
+            } else {
+                flags | OFlags::DIRECTORY
+            },
+            Mode::empty(),
+        )
+        .map_err(|_| anyhow::anyhow!("open native modifier request failed"))?;
+        if last {
+            break std::fs::File::from(handle);
+        }
+        directory = handle;
+    };
+    let metadata = file.metadata().context("inspect native modifier request")?;
+    ensure!(
+        metadata.is_file(),
+        "modifier request must be a regular file"
+    );
+    ensure!(
+        metadata.len() <= MAX_REQUEST_BYTES,
+        "modifier request exceeds 64 KiB limit"
+    );
+    let mut bytes = Vec::new();
+    file.by_ref()
+        .take(MAX_REQUEST_BYTES)
+        .read_to_end(&mut bytes)
+        .context("read native modifier request")?;
+    // Recheck growth without ever reading more than the 64 KiB allowance.
+    ensure!(
+        file.metadata()
+            .context("reinspect native modifier request")?
+            .len()
+            <= MAX_REQUEST_BYTES,
+        "modifier request exceeds 64 KiB limit"
+    );
+    // Serde diagnostics can contain caller-controlled values and field names.
+    serde_json::from_slice(&bytes)
+        .map_err(|_| anyhow::anyhow!("invalid native modifier request JSON"))
 }
 
 /// Preserve a supplied envelope into a fresh native world at tick 0. The
@@ -1048,6 +1170,7 @@ fn run(options: ConfigOptions, max_ticks: Option<u64>, compressed: bool) -> Resu
         previous_frame = frame;
         // Manual runner still executes Bevy's complete app schedules and clocks.
         app.update();
+        icarus_bevy::native_lifecycle_runtime::modifier_runtime_health(app.world())?;
         let tick = app.world().resource::<SimulationClock>().tick;
         let now = clock.elapsed(tick);
         autosave.observe(writer.poll(), now)?;

@@ -299,7 +299,7 @@ fn future_discriminators_override_malformed_state_and_missing_source() {
         store.save(&current).unwrap();
         let mut wire = read_json(&root.join("snapshot-2.json"));
         *wire.pointer_mut(path).expect(path) = if path == "/schema_version" {
-            json!(11)
+            json!(12)
         } else if path.ends_with("format") || path.ends_with("encoding") {
             json!(u64::MAX)
         } else {
@@ -356,7 +356,7 @@ fn duplicate_members_cannot_conceal_future_inventory_discriminators() {
                 );
                 let extra = match duplicate {
                     "header" => "\"schema_version\":9",
-                    "future_header" => "\"schema_version\":11",
+                    "future_header" => "\"schema_version\":12",
                     _ => "\"native_inventory_owner_import\":null",
                 };
                 if future_first {
