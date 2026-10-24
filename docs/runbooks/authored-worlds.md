@@ -17,7 +17,7 @@ Coordinates: metres, right-handed, Z-up, quaternion `[x,y,z,w]`; bindings declar
 Objects must fit tiles (F-919). All modes remain independent authored behavior:
 no official geometry/layout/stat/row meaning, physics/navigation, callbacks,
 network replication, general C001/D01/C009 restore, client/save compatibility or
-performance/RSS qualification.
+ICARUS performance/RSS qualification.
 `world_imported`/`gameplay_ready` stay false; `import-save` stays closed.
 Definitions/contracts/bindings/metadata: 4 MiB each unless noted.
 Schemas 4–11: 64 MiB + 4 KiB generation including sections/sidecar reference.
@@ -123,10 +123,9 @@ retains it across unrelated edits, exact restore retry and reload.
 {"owner":{"id":1,"incarnation":1},"expected_revision":0,"action":{"type":"add","definition":{"name":"authored_boost","duration":{"type":"timed","seconds":5.0},"contributions":[{"stat":"authored_power","amount":3}]}}}
 ```
 
-Owner state: `format: 1`, `owner {id, incarnation}`, `revision`, `next_id`,
-`entries [{id, definition {name, duration, contributions [{stat, amount: i32}]}, timer}]`,
-`cache [{stat, amount}]`. Definition names are unique per owner; local IDs increase without
-reuse. Definition duration is `{type: indefinite}` or `{type: timed, seconds: f32}`.
+State format 1 stores the owner handle, revision, next ID, entries and stat cache.
+Definition names are unique per owner; local IDs increase without reuse.
+Duration is `{type: indefinite}` or `{type: timed, seconds: f32}`.
 Authored durations explicitly quantize to nearest nanosecond; positive durations
 below half a nanosecond and durations over 365 days reject. Current timer is
 `{type: indefinite}` or `{type: timed, remaining_nanos: u64, armed: bool}`;
@@ -149,6 +148,29 @@ JSON ≤64 KiB; symlink path components and FIFOs reject. It has no
 Limits: 1,024 live owners, 64 entries/owner, 16 contributions/definition,
 128 stat names/owner, 4,096 entries/world, 8 MiB charged capacities.
 Shared snapshot cap and qualification exclusions are unchanged.
+
+### Modifier advance costs
+
+Full capture and preflight encode run on every fixed step, even without armed
+timers; catch-up repeats that cost (F-926). Schema 11 remains opt-in.
+Release Rust 1.99.1/Bevy 0.20.0 on two pinned EPYC 9534 CPUs, with a native
+hold on other CPUs: three fresh apps × ten calls per cell, nearest-rank p95 ms.
+
+| State per owner | 1 owner | 32 | 256 | 1,024 |
+| --- | --- | --- | --- | --- |
+| empty | 0.059 | 0.385 | 2.916 | 11.265 |
+| indefinite | 0.065 | 0.671 | 4.878 | 22.487 |
+| armed timers | 0.043 | 0.663 | 5.386 | 23.524 |
+
+Four entries per nonempty owner; exact state verified after each call.
+Setup/verification excluded; full capture/preflight included. No relationships
+or sidecars. This accepted authored phase cost preserves integrity checks;
+1,024 owners is an admission cap, not a 30 Hz guarantee. Whole-frame, health,
+catch-up and larger-world costs remain unqualified; no improvement/RSS claim.
+
+```bash
+cargo run --release --locked --example native_modifier_bench -- --seconds 120
+```
 
 ## Authored C001 owners
 
