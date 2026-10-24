@@ -35,10 +35,9 @@ preserve identity and quantity. Retries and reload retain current state and
 immutable provenance (F-927). Preparation rejects unsupported state; capture
 rejects damaged membership, activation contexts and ECS mutation callbacks
 (F-928). Publication faults and modeled crashes preserve acknowledged state.
-These contracts establish
-neither ordinary official-save import, physics/navigation, C009 restoration nor
-client compatibility; procedures are in the
-[authored-worlds runbook](../../runbooks/authored-worlds.md).
+These contracts establish neither ordinary official-save import,
+physics/navigation, C009 restoration nor client compatibility; procedures are in
+the [authored-worlds runbook](../../runbooks/authored-worlds.md).
 
 Authored schema-7/8/9 costs are measured at 3–1,024 slots (F-926). Count-only
 preflight preserves stored bytes and removes its outer generation buffer; source

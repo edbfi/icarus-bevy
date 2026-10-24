@@ -99,7 +99,9 @@ Runtime: `restore_native_owners`, edits, foundation reassignment.
 Capture and mutations reject managed-owner ECS hooks, component requirements
 and lifecycle observers, including callbacks on disabled or untouched owners
 and optional types not yet instantiated (F-928). Unrelated entity observers
-remain allowed. Flush pending commands/registrations before these APIs; arbitrary
+remain allowed. Global raw lifecycle-event observers (such as `On<RemoveEvent>`)
+also block capture, including autosaves, even when intended for unrelated entities.
+Flush pending commands/registrations before these APIs; arbitrary
 component `Drop` side effects and activation setup are outside this contract.
 `live_actors` counts live; `actors` includes dormant.
 
