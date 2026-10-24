@@ -27,16 +27,15 @@ incomplete domain state before publication (F-482), stale snapshots and
 save-worker loss stop safely (F-869), and signals trigger a final save within a
 bounded shutdown (F-869).
 
-Authored worlds retain full spatial state through schema 4 (F-919), strictly
-bound C001 inert-fixture provenance through schema 5 (F-927), and edited
-foundation links through schema 6 (F-922). Schema 7 adds atomic owner find/spawn/
-replacement, explicit dormant slots and durable retry completion (F-923).
-Schemas 8–10 connect authored C001 policies and poses, Bool/I32 use-gate actions
-and stacked inventories to that lifecycle. Transfers, split/merge, consumption
-and overflow placement preserve identity and quantity; retries and reload retain
-current state and immutable provenance (F-927). Preparation rejects unsupported
-state; capture rejects damaged membership or activation contexts. Publication
-faults and modeled crashes preserve acknowledged state. These contracts establish
+Authored schemas 4–10 retain spatial state (F-919), bound C001 provenance
+(F-927), edited foundation links (F-922), atomic owner find/spawn/replacement,
+dormant slots and durable retry completion (F-923). Bool/I32 use gates and stacked
+inventories share that lifecycle; transfers, split/merge, consumption and overflow
+preserve identity and quantity. Retries and reload retain current state and
+immutable provenance (F-927). Preparation rejects unsupported state; capture
+rejects damaged membership, activation contexts and ECS mutation callbacks
+(F-928). Publication faults and modeled crashes preserve acknowledged state.
+These contracts establish
 neither ordinary official-save import, physics/navigation, C009 restoration nor
 client compatibility; procedures are in the
 [authored-worlds runbook](../../runbooks/authored-worlds.md).

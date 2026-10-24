@@ -96,7 +96,11 @@ latest retries preserve edits, altered/older reject. Reload never replays polici
 In-memory completion is not durable until autosave or shutdown publishes it.
 
 Runtime: `restore_native_owners`, edits, foundation reassignment.
-No managed-owner Bevy linked-spawn relationships or despawn hooks.
+Capture and mutations reject managed-owner ECS hooks, component requirements
+and lifecycle observers, including callbacks on disabled or untouched owners
+and optional types not yet instantiated (F-928). Unrelated entity observers
+remain allowed. Flush pending commands/registrations before these APIs; arbitrary
+component `Drop` side effects and activation setup are outside this contract.
 `live_actors` counts live; `actors` includes dormant.
 
 ## Authored C001 owners
