@@ -48,15 +48,19 @@ resolve the matching JDK and tool paths in its scope before running:
 JAVA_HOME="$SCOPED_JDK" "$SCOPED_GHIDRA/support/analyzeHeadless" <arguments>
 ```
 
-For exact-range traces, bind public symbols with `tools/pdb_public_symbols.cjs`
-and exception metadata with `tools/pe_function_ranges.cjs`; neither proves
-ownership or instruction boundaries. Import with `-noanalysis` and run
-`tools/ghidra/TraceBoundedFunctions.java NEW_DIRECTORY START:END_EXCLUSIVE`.
-It exports bounded instruction/p-code/context records, observed intervals and
-partial-flow statuses. Require `EXPORT_FINISHED.txt`, no `FAILED.txt`, then
-inspect each status. Pseudocode is disabled; unaudited userops, overrides and
-noncanonical execution context reject. Memory hashes need physical-span checks
-(M-977, M-979).
+Bind symbols with `tools/pdb_public_symbols.cjs` and exception entries with
+`tools/pe_function_ranges.cjs`; neither proves ownership, instruction boundaries or whole functions.
+Run `tools/ghidra/TraceBoundedFunctions.java NEW_DIRECTORY START:END_EXCLUSIVE`
+with `-noanalysis`. Require `EXPORT_FINISHED.txt`, no `FAILED.txt`, physical-byte
+checks and inspected statuses. Pseudocode and listing installation are disabled;
+userops, overrides and noncanonical context refuse admission (M-977, M-979).
+
+For a separate raw program, supply only the hashed physical fragment with
+`-loader BinaryLoader -processor x86:LE:64:default -cspec windows`, explicit
+original VA and positive hexadecimal length. Provider hashing reads its whole
+input. Preserve PE metadata and prior partial traces; the raw block establishes
+no function extent (M-985).
+
 The older `DecompileFlowFunctions.java` and `ListFlowInstructions.java` use
 forward windows; their completion flags do not prove whole-function coverage.
 `struct_ops_methods` selects inline `TCppStructOps` symbols in the PDB helper.

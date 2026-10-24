@@ -4,7 +4,7 @@
 
 Experimental: pure rules in `experimental::restore_rules` (`tests/restore_rules.rs`,
 U-045; U-020..U-022, U-032, U-046, U-048, U-050 resolved).
-Last reconciled: 2026-10-22.
+Last reconciled: 2026-10-24.
 
 ## Scope
 
@@ -129,15 +129,10 @@ construction, script owners and data-table rows are out of scope (F-660).
   (`0x1418e9ff0`/`0x1418f86c0`, `evaluate_weather_forecast_record`,
   `evaluate_weather_forecast_restore`, F-903); `C038` (`0x141930060`,
   `evaluate_world_talent_record`, `evaluate_world_talent_stitch`, F-676).
-- `C001` (`0x1418a0170`/`0x1418b6ed0`, `evaluate_actor_recorder_base_record`) runs
-  `evaluate_actor_guid_restore`, `evaluate_modifier_state_restore`,
-  `evaluate_actor_subcomponent_restore`, `D01`, `evaluate_legacy_gun_ammo_upgrade`
-  (`0x14189a250`), overflow and `CPF_SaveGame` vars (F-735); `C015`
-  (`evaluate_game_mode_record`) runs `restored_elapsed_seconds`,
-  `restore_game_mode_exported_currencies`, `restore_game_mode_mission_history` and
-  `restored_next_meteor_shower_time` (F-653); `C037` (`0x1418ea790`/`0x1418f8610`,
-  `evaluate_world_boss_record`, `restore_world_boss_row_handles`, F-903); `-1` is
-  unrecorded (`recorded_level`, F-648).
+- C001 GUID/modifier/subcomponent/D01/variable restoration and legacy ammo
+  upgrades follow F-735. C015 elapsed time, currencies, mission history and next
+  meteor transfer follow F-653; C037 world-boss rows follow F-903.
+  Recorded level `-1` is unrecorded (F-648).
 - `UIcarusGameStateRecorder` pipeline (F-750, F-902):
   - `BeginRecording` (`0x1414961b0`/`0x1414d0900`, `evaluate_begin_recording`) rejects
     null or pending-kill components and GameplayTag `0x65`-excluded owners;
@@ -173,15 +168,15 @@ construction, script owners and data-table rows are out of scope (F-660).
     `evaluate_n016_stitch_blackboard_ints`, `evaluate_n020_validate_override`,
     `evaluate_n026_stitch_transfer` and `evaluate_n027_stitch_transfer`.
 
-- Saved names that restores turn into row handles through each table's
-  `FromName` (F-897): crop seeds (`UCultivation::LoadSaveData`, `0x14196e790`),
-  stomach modifiers (`AddSaveDataToStomach`, `0x141890940`), juvenile and mount
-  lineages and genetic values (`0x141449940`, `0x141449c30`), quests
-  (`0x1418f4cf0`), faction missions and mission prospects (`0x1418f4540`),
-  prebuilt structures (`0x14178c680`) and session flags (`C015`,
-  `0x1418bae00`). The FLOD tile recorder (`C014`) finds the level's tile whose
-  name equals the saved one (`0x14189b800`) or respawns `FLODTile_<name>`
-  (`0x1418ac0f0`) and restores its records (`0x1418babc0`).
+- Saved row references and FLOD tile matching/respawn follow F-897; packaged
+  row meanings remain excluded (F-660).
+- Static-only modifier reload duration uses a distinct callback (F-930). Both builds store
+  base duration, call authority-gated remaining-time restoration, restore cached
+  multiplier, clear any old timer and select setup for finite positive remaining
+  time, then call OnRep. Their unordered scheduling guards differ; floating-point
+  runtime state is unobserved. Selected remaining-time/OnRep raw operands match
+  after relocation, including u16 tenths. Conversion rounding, mapped callees,
+  complete creation/expiration effects and owner/row binding remain unqualified.
 
 ## Candidate
 
@@ -194,4 +189,4 @@ construction, script owners and data-table rows are out of scope (F-660).
 ## Evidence
 
 F-645..F-681, F-716, F-894, F-902..F-904, F-728, F-734..F-736, F-741..F-744, F-746, F-747,
-F-750, F-897; M-642..M-698, M-755..M-792, M-794..M-807, M-858.
+F-750, F-897, F-930; M-642..M-698, M-755..M-792, M-794..M-807, M-858.
