@@ -221,6 +221,129 @@ fn require_separate_mode(world: &World) -> Result<()> {
     Ok(())
 }
 
+/// Commit rewrites every live actor, including owners outside a restore batch,
+/// and updates singleton values. Admit no observable lifecycle
+/// callbacks on that boundary: a hook/observer can write another owner or queue
+/// a despawn which Bevy flushes before the next `entity_mut` in commit.
+///
+/// This is deliberately conservative about hooks on an affected archetype.
+/// Unflushed registrations/commands and arbitrary Drop side effects are outside
+/// this check; callers must keep those out of the mutation boundary. Activation has
+/// its own caller-owned world setup boundary; this checks subsequent mutations.
+fn require_callback_free_commit(world: &World, context: &NativeLifecycleContext) -> Result<()> {
+    use bevy::ecs::lifecycle::{ADD, DESPAWN, DISCARD, INSERT, REMOVE};
+
+    let mut targets: BTreeSet<_> = context.live.values().copied().collect();
+    targets.extend(world.resource_entity::<NativeLifecycleContext>());
+    targets.extend(world.resource_entity::<DormantNativeSlots>());
+    targets.extend(world.resource_entity::<NativeFoundationDependents>());
+    let mut components = BTreeSet::new();
+    for target in context.live.values() {
+        let entity = world.get_entity(*target).context("commit target missing")?;
+        let archetype = entity.archetype();
+        ensure!(
+            !archetype.has_add_hook()
+                && !archetype.has_insert_hook()
+                && !archetype.has_discard_hook()
+                && !archetype.has_remove_hook()
+                && !archetype.has_despawn_hook(),
+            "lifecycle commit has unsupported ECS component hook"
+        );
+        components.extend(entity.archetype().components().iter().copied());
+    }
+    // Include optional components which may first be inserted by this commit,
+    // so component observers do not escape admission simply by watching a type
+    // absent from the current live actors.
+    components.extend(
+        [
+            world.component_id::<DomainId>(),
+            world.component_id::<Position>(),
+            world.component_id::<NativeActorIdentity>(),
+            world.component_id::<NativeRotation>(),
+            world.component_id::<NativeScale>(),
+            world.component_id::<NativeVariables>(),
+            world.component_id::<NativeLocalBounds>(),
+            world.component_id::<NativeOwnerName>(),
+            world.component_id::<NativeOwnerIncarnation>(),
+            world.component_id::<NativeOwnerRecorder>(),
+            world.component_id::<NativeRelationshipIdentity>(),
+            world.component_id::<NativeFoundation>(),
+            world.component_id::<ScalarOwnerDerived>(),
+            world.component_id::<InventoryOwnerState>(),
+        ]
+        .into_iter()
+        .flatten(),
+    );
+    // Even hook-free required components can execute arbitrary constructors
+    // when an optional component first appears. Reject requirements entirely:
+    // their constructors cannot be staged without executing caller-owned code.
+    // Probe cloned hook metadata through its fallible setters, observing occupied
+    // slots without installing or calling hooks in the actual world.
+    fn probe(_: bevy::ecs::world::DeferredWorld, _: bevy::ecs::lifecycle::HookContext) {}
+    for component in &components {
+        let info = world
+            .components()
+            .get_info(*component)
+            .context("commit component metadata missing")?;
+        ensure!(
+            info.required_components().iter_ids().next().is_none(),
+            "lifecycle commit has unsupported ECS component requirement"
+        );
+        let mut hooks = info.hooks().clone();
+        ensure!(
+            hooks.try_on_add(probe).is_some()
+                && hooks.try_on_insert(probe).is_some()
+                && hooks.try_on_discard(probe).is_some()
+                && hooks.try_on_remove(probe).is_some()
+                && hooks.try_on_despawn(probe).is_some(),
+            "lifecycle commit has unsupported ECS component hook"
+        );
+    }
+    // Resources have Bevy's required IsResource hooks. Commit updates their
+    // existing values directly instead of inserting/replacing ECS components,
+    // so neither those hooks nor user resource hooks are invoked.
+    components.extend(
+        [
+            world.component_id::<NativeLifecycleContext>(),
+            world.component_id::<DormantNativeSlots>(),
+            world.component_id::<NativeFoundationDependents>(),
+        ]
+        .into_iter()
+        .flatten(),
+    );
+    // Archetype observer flags only index component observers; they do not
+    // cover global or entity-only observers. Use the public central caches and
+    // match entity targets explicitly, including disabled managed owners.
+    for event in [ADD, INSERT, DISCARD, REMOVE, DESPAWN] {
+        let Some(observers) = world.observers().try_get_observers(event) else {
+            continue;
+        };
+        ensure!(
+            observers.global_observers().is_empty()
+                && !observers
+                    .entity_observers()
+                    .iter()
+                    .any(|(entity, callbacks)| {
+                        targets.contains(entity) && !callbacks.is_empty()
+                    })
+                && !observers
+                    .component_observers()
+                    .iter()
+                    .any(|(component, callbacks)| {
+                        components.contains(component)
+                            && (!callbacks.global_observers().is_empty()
+                                || callbacks.entity_component_observers().iter().any(
+                                    |(entity, callbacks)| {
+                                        targets.contains(entity) && !callbacks.is_empty()
+                                    },
+                                ))
+                    }),
+            "lifecycle commit has unsupported ECS lifecycle observer"
+        );
+    }
+    Ok(())
+}
+
 struct StagedActor {
     record: NativeActorRecord,
     bounds: Aabb3,
@@ -1121,6 +1244,7 @@ pub(crate) fn capture_lifecycle(world: &World) -> Result<WorldSnapshot> {
             && dormant.records.keys().copied().collect::<BTreeSet<_>>() == expected_dormant,
         "lifecycle dormant partition incomplete"
     );
+    require_callback_free_commit(world, context)?;
     let expected_entities: BTreeSet<_> = context.live.values().copied().collect();
     for entity in world.iter_entities() {
         if expected_entities.contains(&entity.id()) {
@@ -1128,13 +1252,8 @@ pub(crate) fn capture_lifecycle(world: &World) -> Result<WorldSnapshot> {
             // both ends, including empty targets and disabled owners, before
             // staging: despawning one owner must not cascade into another.
             // Foundation domain links are ordinary components, unaffected here.
-            // An empty target can have an uninitialized relationship accessor,
-            // but its registered despawn hook still makes lifetime mutation
-            // possible. These authored owners admit no despawn hooks.
-            ensure!(
-                !entity.archetype().has_despawn_hook(),
-                "managed owner has unsupported ECS despawn hook"
-            );
+            // Empty targets can have an uninitialized relationship accessor;
+            // their hooks are covered by require_callback_free_commit above.
             for component in entity.archetype().components() {
                 let info = world
                     .components()
@@ -1808,23 +1927,23 @@ fn commit(world: &mut World, snapshot: WorldSnapshot, staged: StagedWorld) {
     }
     // V1 never removes a live slot. The prepared model enforces that invariant.
     if let Some(dependents) = staged.dependents {
-        world.insert_resource(dependents);
+        *world.resource_mut::<NativeFoundationDependents>() = dependents;
     }
-    world.insert_resource(DormantNativeSlots {
+    *world.resource_mut::<DormantNativeSlots>() = DormantNativeSlots {
         definitions: Arc::clone(&definitions),
         generation: staged.generation,
         records: staged.dormant,
-    });
+    };
     definitions
         .current_generation
         .store(staged.generation, Ordering::Relaxed);
-    world.insert_resource(NativeLifecycleContext {
+    *world.resource_mut::<NativeLifecycleContext>() = NativeLifecycleContext {
         definitions,
         generation: staged.generation,
         lifecycle: snapshot.native_lifecycle.expect("prepared lifecycle state"),
         live,
         inventory: staged.inventory,
-    });
+    };
 }
 
 pub fn restore_native_owners(
@@ -2497,6 +2616,132 @@ mod tests {
                 .entity_mut(entity)
                 .remove::<LifetimeDependents>();
             assert!(capture(app.world_mut()).unwrap() == before);
+        }
+    }
+
+    #[test]
+    fn legacy_capture_rejects_insert_observers_for_absent_optional_components() {
+        use bevy::{ecs::lifecycle::Insert, prelude::On};
+        for mut app in [app(), scalar_app()] {
+            let before = capture(app.world_mut()).unwrap();
+            let observer = app
+                .world_mut()
+                .add_observer(|_: On<Insert<NativeOwnerRecorder>>| {
+                    panic!("observer entered commit")
+                })
+                .id();
+            assert!(capture(app.world_mut()).is_err());
+            app.world_mut().despawn(observer);
+            assert!(capture(app.world_mut()).unwrap() == before);
+        }
+    }
+
+    #[test]
+    fn never_instantiated_optional_component_hooks_reject_without_execution() {
+        fn attack(_: bevy::ecs::world::DeferredWorld, _: bevy::ecs::lifecycle::HookContext) {
+            panic!("hook entered commit")
+        }
+        for phase in 0..5 {
+            let mut app = app();
+            let before = capture(app.world_mut()).unwrap();
+            let generation = app.world().resource::<NativeLifecycleContext>().generation;
+            let hooks = app
+                .world_mut()
+                .register_component_hooks::<NativeOwnerRecorder>();
+            match phase {
+                0 => hooks.on_add(attack),
+                1 => hooks.on_insert(attack),
+                2 => hooks.on_discard(attack),
+                3 => hooks.on_remove(attack),
+                _ => hooks.on_despawn(attack),
+            };
+            assert!(capture(app.world_mut()).is_err());
+            let context = app.world().resource::<NativeLifecycleContext>();
+            assert_eq!(context.lifecycle, before.native_lifecycle.unwrap());
+            assert_eq!(context.generation, generation);
+        }
+    }
+
+    #[test]
+    fn optional_component_requirements_reject_before_replacing_a_live_owner() {
+        use crate::native_lifecycle::{RecorderSource, ResolvePolicy, RestoreRecorder};
+
+        #[derive(Component, Default)]
+        struct Bridge;
+        #[derive(Component)]
+        struct Leaf;
+
+        for transitive in [false, true] {
+            let mut app = app();
+            let before = capture(app.world_mut()).unwrap();
+            let original = app.world().resource::<NativeLifecycleContext>().clone();
+            let dormant = app.world().resource::<DormantNativeSlots>().clone();
+            let actor = &before.native_world.as_ref().unwrap().actors[0];
+            let lifecycle = before.native_lifecycle.as_ref().unwrap();
+            let slot = &lifecycle.slots[0];
+            let request = RestoreBatch {
+                lifecycle_id: lifecycle.lifecycle_id.clone(),
+                sequence: lifecycle.restore_sequence + 1,
+                recorders: vec![RestoreRecorder {
+                    guid: 7,
+                    kind: RecorderKind::SpatialStateV1,
+                    target_placement: actor.placement.clone(),
+                    owner_name: lifecycle.definition.slots[0].owner_name.clone(),
+                    policy: ResolvePolicy::RespawnOnly,
+                    source: RecorderSource::Detached {
+                        expected_prior_binding: None,
+                    },
+                    create_if_missing: true,
+                    expected_presence: slot.presence,
+                    expected_incarnation: slot.incarnation,
+                    transform: actor.transform.clone(),
+                    variables: actor.variables.clone(),
+                }],
+            };
+            // Prove rejection cannot come from a malformed restore request.
+            let prepared = prepare_owner_restore(&before, &request).unwrap();
+            assert!(
+                prepared.snapshot().native_lifecycle.as_ref().unwrap().slots[0]
+                    .component
+                    .is_some()
+            );
+            let calls = Arc::new(AtomicU64::new(0));
+            let constructor_calls = Arc::clone(&calls);
+            let constructor = move || -> Leaf {
+                constructor_calls.fetch_add(1, Ordering::Relaxed);
+                panic!("required component constructor entered commit");
+            };
+            if transitive {
+                app.world_mut()
+                    .register_required_components_with::<Bridge, Leaf>(constructor);
+                app.world_mut()
+                    .register_required_components::<NativeOwnerRecorder, Bridge>();
+            } else {
+                app.world_mut()
+                    .register_required_components_with::<NativeOwnerRecorder, Leaf>(constructor);
+            }
+            assert!(capture(app.world_mut()).is_err());
+            assert!(restore_native_owners(app.world_mut(), &request).is_err());
+            app.world_mut().flush();
+            assert_eq!(calls.load(Ordering::Relaxed), 0);
+            let current = app.world().resource::<NativeLifecycleContext>();
+            assert_eq!(current.generation, original.generation);
+            assert_eq!(current.lifecycle, original.lifecycle);
+            assert_eq!(current.live, original.live);
+            assert_eq!(
+                app.world().resource::<DormantNativeSlots>().records,
+                dormant.records
+            );
+            let entity = current.live[&actor.id];
+            assert_eq!(
+                app.world().get::<Position>(entity).unwrap().0,
+                actor.transform.translation
+            );
+            assert_eq!(
+                app.world().get::<NativeOwnerIncarnation>(entity).unwrap().0,
+                slot.incarnation
+            );
+            assert!(app.world().get::<NativeOwnerRecorder>(entity).is_none());
         }
     }
 

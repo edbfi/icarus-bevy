@@ -8,7 +8,13 @@ mod source;
 
 use std::time::{Duration, Instant};
 
-use bevy::prelude::App;
+use bevy::{
+    ecs::{
+        lifecycle::{Add, Despawn, Discard, HookContext, Insert, Remove, RemoveEvent},
+        world::DeferredWorld,
+    },
+    prelude::{App, Commands, Component, Entity, On, Query, ResMut, Resource, World},
+};
 use icarus_bevy::{
     config::ServerConfig,
     native_inventory::{
@@ -30,8 +36,8 @@ use icarus_bevy::{
     native_scalar_owners::ScalarUseOutcome,
     persistence::{SaveWorker, SnapshotStore},
     simulation::{
-        DomainId, PreservedProspectState, SNAPSHOT_SCHEMA_C001_INVENTORY_OWNERS, WorldSnapshot,
-        build_app, capture,
+        DomainId, Position, PreservedProspectState, SNAPSHOT_SCHEMA_C001_INVENTORY_OWNERS,
+        WorldSnapshot, build_app, capture,
     },
 };
 
@@ -167,6 +173,35 @@ fn replacement(current: &WorldSnapshot) -> InventoryRestoreBatchV1 {
             })
             .collect(),
     }
+}
+
+fn selective_replacement(current: &WorldSnapshot, ids: &[u64]) -> InventoryRestoreBatchV1 {
+    let placements: Vec<_> = current
+        .native_world
+        .as_ref()
+        .unwrap()
+        .actors
+        .iter()
+        .filter(|actor| ids.contains(&actor.id.0))
+        .map(|actor| actor.placement.as_str())
+        .collect();
+    let mut request = replacement(current);
+    request
+        .lifecycle
+        .recorders
+        .retain(|command| placements.contains(&command.target_placement.as_str()));
+    request
+        .owners
+        .retain(|owner| placements.contains(&owner.target_placement.as_str()));
+    request
+}
+
+fn owner_entity(world: &World, id: u64) -> Entity {
+    world
+        .iter_entities()
+        .find(|entity| entity.get::<DomainId>() == Some(&DomainId(id)))
+        .unwrap()
+        .id()
 }
 
 #[test]
@@ -863,5 +898,436 @@ fn storage_rejects_invalid_revision_allocator_and_consumption_headers() {
         let mut store = SnapshotStore::open(dir.path()).unwrap();
         assert!(store.save(&initial).is_err());
         assert!(store.load().unwrap().is_none());
+    }
+}
+
+#[derive(Resource)]
+struct CallbackAttack {
+    victim: Entity,
+    armed: bool,
+    calls: usize,
+}
+
+// A single callback can both corrupt an untouched owner immediately and queue
+// its destruction. Bevy flushes that queue during despawn/insert, before commit
+// reaches the untouched owner's entity_mut. Admission must prevent both effects.
+fn attack_hook(mut world: DeferredWorld, _: HookContext) {
+    let victim = {
+        let mut attack = world.resource_mut::<CallbackAttack>();
+        if !attack.armed {
+            return;
+        }
+        attack.calls += 1;
+        attack.victim
+    };
+    world.get_mut::<Position>(victim).unwrap().0 = [999.0; 3];
+    world.commands().entity(victim).despawn();
+}
+
+#[derive(Component)]
+#[component(on_remove = attack_hook)]
+struct RemoveAttack;
+
+#[derive(Component)]
+#[component(on_discard = attack_hook)]
+struct DiscardAttack;
+
+#[derive(Component)]
+#[component(on_add = attack_hook)]
+struct AddAttack;
+
+#[derive(Component)]
+#[component(on_insert = attack_hook)]
+struct InsertAttack;
+
+#[derive(Component)]
+#[component(on_despawn = attack_hook)]
+struct DespawnAttack;
+
+fn assert_callback_rejection(app: &mut App, before: &WorldSnapshot) {
+    let owner = OwnerHandle {
+        id: DomainId(3),
+        incarnation: before
+            .native_lifecycle
+            .as_ref()
+            .unwrap()
+            .slots
+            .iter()
+            .find(|slot| slot.id == DomainId(3))
+            .unwrap()
+            .incarnation,
+    };
+    let mut request = selective_replacement(before, &[1, 2]);
+    // One replacement, one find, and C absent from the request entirely.
+    request.lifecycle.recorders[1].policy = ResolvePolicy::FindOnly;
+    let entities: Vec<_> = (1..=3).map(|id| owner_entity(app.world(), id)).collect();
+    assert!(capture(app.world_mut()).is_err());
+    assert!(restore_native_inventory_owners(app.world_mut(), &request).is_err());
+    assert!(set_enabled(app.world_mut(), owner, false).is_err());
+    assert!(try_use(app.world_mut(), owner).is_err());
+    let actor = before
+        .native_world
+        .as_ref()
+        .unwrap()
+        .actors
+        .iter()
+        .find(|actor| actor.id == owner.id)
+        .unwrap();
+    let mut transform = actor.transform.clone();
+    transform.translation[0] += 1.0;
+    assert!(
+        update_lifecycle_actor(app.world_mut(), owner, transform, actor.variables.clone()).is_err()
+    );
+    assert!(reassign_lifecycle_foundation(app.world_mut(), owner, None).is_err());
+    let inventory = before.native_inventories.as_ref().unwrap();
+    let stack = inventory
+        .owners
+        .iter()
+        .find(|row| row.owner == owner)
+        .unwrap()
+        .inventories
+        .iter()
+        .find(|row| row.key == "bag")
+        .unwrap()
+        .slots
+        .iter()
+        .flatten()
+        .next()
+        .unwrap()
+        .id;
+    assert!(
+        apply_native_inventory_action(
+            app.world_mut(),
+            &InventoryActionRequestV1 {
+                expected_inventory_revision: inventory.revision,
+                action: InventoryActionV1::Consume {
+                    source: endpoint(owner, "bag", stack),
+                    amount: 1
+                },
+            }
+        )
+        .is_err()
+    );
+    // A flush cannot reveal commands accidentally queued by a rejected call.
+    app.world_mut().flush();
+    assert_eq!(app.world().resource::<CallbackAttack>().calls, 0);
+    for (id, entity) in (1..=3).zip(entities) {
+        assert_eq!(owner_entity(app.world(), id), entity);
+        let expected = before
+            .native_world
+            .as_ref()
+            .unwrap()
+            .actors
+            .iter()
+            .find(|actor| actor.id == DomainId(id))
+            .unwrap();
+        assert_eq!(
+            app.world().get::<Position>(entity).unwrap().0,
+            expected.transform.translation
+        );
+    }
+}
+
+#[test]
+fn component_hooks_reject_before_mixed_restore_or_any_mutation() {
+    for phase in 0..5 {
+        let mut app = app();
+        let before = snapshot(&mut app);
+        let first = owner_entity(app.world(), 1);
+        let victim = owner_entity(app.world(), 3);
+        app.world_mut().insert_resource(CallbackAttack {
+            victim,
+            armed: false,
+            calls: 0,
+        });
+        // Hidden owners remain part of admission and of the untouched registry.
+        app.world_mut()
+            .entity_mut(victim)
+            .insert(bevy::ecs::entity_disabling::Disabled);
+        match phase {
+            0 => {
+                app.world_mut().entity_mut(first).insert(RemoveAttack);
+            }
+            1 => {
+                app.world_mut().entity_mut(first).insert(DiscardAttack);
+            }
+            2 => {
+                app.world_mut().entity_mut(first).insert(AddAttack);
+            }
+            3 => {
+                app.world_mut().entity_mut(first).insert(InsertAttack);
+            }
+            _ => {
+                app.world_mut().entity_mut(first).insert(DespawnAttack);
+            }
+        }
+        app.world_mut().resource_mut::<CallbackAttack>().armed = true;
+        assert_callback_rejection(&mut app, &before);
+        app.world_mut().resource_mut::<CallbackAttack>().armed = false;
+        app.world_mut().entity_mut(first).remove::<(
+            RemoveAttack,
+            DiscardAttack,
+            AddAttack,
+            InsertAttack,
+            DespawnAttack,
+        )>();
+        app.world_mut()
+            .entity_mut(victim)
+            .remove::<bevy::ecs::entity_disabling::Disabled>();
+        // Full snapshot equality covers inventory/header, scalar state, links,
+        // completion and generation pins after every rejected operation.
+        assert!(snapshot(&mut app) == before);
+        let mut request = selective_replacement(&before, &[1, 2]);
+        request.lifecycle.recorders[1].policy = ResolvePolicy::FindOnly;
+        assert!(matches!(
+            restore_native_inventory_owners(app.world_mut(), &request).unwrap(),
+            NativeRestoreResult::AppliedInMemory(_)
+        ));
+    }
+}
+
+#[test]
+fn lifecycle_observers_reject_global_component_and_entity_callbacks() {
+    for entity_scoped in [false, true] {
+        for phase in 0..6 {
+            let mut app = app();
+            let before = snapshot(&mut app);
+            let first = owner_entity(app.world(), 1);
+            let victim = owner_entity(app.world(), 3);
+            app.world_mut().insert_resource(CallbackAttack {
+                victim,
+                armed: true,
+                calls: 0,
+            });
+            // Query writes are immediate; Commands despawns run on flush.
+            macro_rules! observer {
+                ($event:ty) => {{
+                    let observer = bevy::prelude::Observer::new(
+                        |_: On<$event>,
+                         mut attack: ResMut<CallbackAttack>,
+                         mut positions: Query<&mut Position>,
+                         mut commands: Commands| {
+                            if attack.armed {
+                                attack.calls += 1;
+                                positions.get_mut(attack.victim).unwrap().0 = [999.0; 3];
+                                commands.entity(attack.victim).despawn();
+                            }
+                        },
+                    );
+                    let observer = if entity_scoped {
+                        observer.with_entity(first)
+                    } else {
+                        observer
+                    };
+                    app.world_mut().spawn(observer).id()
+                }};
+            }
+            let observer = match phase {
+                0 => observer!(Add<Position>),
+                1 => observer!(Insert<Position>),
+                2 => observer!(Discard<Position>),
+                3 => observer!(Remove<Position>),
+                4 => observer!(Despawn<Position>),
+                // Raw event has no component filter: archetype component
+                // observer flags alone cannot establish its absence.
+                _ => observer!(RemoveEvent),
+            };
+            app.world_mut().flush();
+            assert_callback_rejection(&mut app, &before);
+            app.world_mut().despawn(observer);
+            assert!(snapshot(&mut app) == before);
+        }
+    }
+}
+
+#[test]
+fn observer_on_an_unrelated_entity_does_not_block_managed_owner_edits() {
+    let mut app = app();
+    let zulu = handle(&app, 3);
+    let before = snapshot(&mut app);
+    let unrelated = app.world_mut().spawn(Position([0.0; 3])).id();
+    app.world_mut().spawn(
+        bevy::prelude::Observer::new(|_: On<Insert<Position>>| {
+            panic!("unrelated observer entered commit")
+        })
+        .with_entity(unrelated),
+    );
+    app.world_mut().flush();
+    assert!(snapshot(&mut app) == before);
+    assert!(!set_enabled(app.world_mut(), zulu, false).unwrap().enabled);
+    assert_eq!(app.world().get::<Position>(unrelated).unwrap().0, [0.0; 3]);
+    assert_eq!(state(&mut app), before.native_inventories.unwrap());
+}
+
+#[test]
+fn observer_on_commit_resource_rejects_before_any_actor_changes() {
+    use icarus_bevy::native_lifecycle_runtime::NativeLifecycleContext;
+    let mut app = app();
+    let before = snapshot(&mut app);
+    let victim = owner_entity(app.world(), 3);
+    app.world_mut().insert_resource(CallbackAttack {
+        victim,
+        armed: true,
+        calls: 0,
+    });
+    let observer = app
+        .world_mut()
+        .add_observer(|_: On<Insert<NativeLifecycleContext>>| {
+            panic!("resource callback entered commit")
+        })
+        .id();
+    assert_callback_rejection(&mut app, &before);
+    app.world_mut().despawn(observer);
+    assert!(snapshot(&mut app) == before);
+}
+
+#[test]
+fn entity_only_observer_on_commit_resource_rejects_before_owner_changes() {
+    use icarus_bevy::native_lifecycle_runtime::NativeLifecycleContext;
+    let mut app = app();
+    let before = snapshot(&mut app);
+    let victim = owner_entity(app.world(), 3);
+    app.world_mut().insert_resource(CallbackAttack {
+        victim,
+        armed: true,
+        calls: 0,
+    });
+    let target = app
+        .world()
+        .resource_entity::<NativeLifecycleContext>()
+        .unwrap();
+    // ObservedBy has its own hook. Target a singleton, whose components are
+    // updated in place, so the managed-actor hook guard cannot mask this branch.
+    let observer = app
+        .world_mut()
+        .spawn(
+            bevy::prelude::Observer::new(|_: On<RemoveEvent>| {
+                panic!("entity-only resource observer entered commit")
+            })
+            .with_entity(target),
+        )
+        .id();
+    app.world_mut().flush();
+    assert_callback_rejection(&mut app, &before);
+    app.world_mut().despawn(observer);
+    assert!(snapshot(&mut app) == before);
+}
+
+#[test]
+fn callback_only_on_disabled_owner_outside_the_batch_rejects_before_changes() {
+    let mut app = app();
+    let before = snapshot(&mut app);
+    let victim = owner_entity(app.world(), 3);
+    app.world_mut().insert_resource(CallbackAttack {
+        victim,
+        armed: false,
+        calls: 0,
+    });
+    app.world_mut()
+        .entity_mut(victim)
+        .insert((bevy::ecs::entity_disabling::Disabled, DiscardAttack));
+    app.world_mut().resource_mut::<CallbackAttack>().armed = true;
+    // assert_callback_rejection replaces/finds owners 1/2 and never requests 3.
+    assert_callback_rejection(&mut app, &before);
+    app.world_mut().resource_mut::<CallbackAttack>().armed = false;
+    app.world_mut()
+        .entity_mut(victim)
+        .remove::<(bevy::ecs::entity_disabling::Disabled, DiscardAttack)>();
+    assert!(snapshot(&mut app) == before);
+    let request = selective_replacement(&before, &[1, 2]);
+    assert!(matches!(
+        restore_native_inventory_owners(app.world_mut(), &request).unwrap(),
+        NativeRestoreResult::AppliedInMemory(_)
+    ));
+}
+
+#[test]
+fn selective_replacement_and_mixed_policy_restore_preserve_untouched_owners_and_retry() {
+    for mixed in [false, true] {
+        let mut app = app();
+        let zulu = handle(&app, 3);
+        let stack = bag_stack(&app, zulu);
+        action(
+            &mut app,
+            InventoryActionV1::Consume {
+                source: endpoint(zulu, "bag", stack),
+                amount: 5,
+            },
+        );
+        let before = snapshot(&mut app);
+        let entities: Vec<_> = (1..=3).map(|id| owner_entity(app.world(), id)).collect();
+        let owners: Vec<_> = (1..=3).map(|id| handle(&app, id)).collect();
+        let mut request = selective_replacement(&before, if mixed { &[1, 2] } else { &[2] });
+        if mixed {
+            request.lifecycle.recorders[0].policy = ResolvePolicy::FindOnly;
+        }
+        assert!(matches!(
+            restore_native_inventory_owners(app.world_mut(), &request).unwrap(),
+            NativeRestoreResult::AppliedInMemory(_)
+        ));
+        let new_foundation = handle(&app, 2);
+        assert_eq!(new_foundation.incarnation, owners[1].incarnation + 1);
+        assert_ne!(owner_entity(app.world(), 2), entities[1]);
+        assert!(app.world().get_entity(entities[1]).is_err());
+        for id in [1, 3] {
+            assert_eq!(owner_entity(app.world(), id), entities[(id - 1) as usize]);
+            assert_eq!(handle(&app, id), owners[(id - 1) as usize]);
+        }
+        assert_eq!(
+            lifecycle_foundation_of(app.world(), zulu).unwrap(),
+            Some(new_foundation)
+        );
+        let committed = snapshot(&mut app);
+        for id in [1, 3] {
+            let inventory = |snapshot: &WorldSnapshot| {
+                snapshot
+                    .native_inventories
+                    .as_ref()
+                    .unwrap()
+                    .owners
+                    .iter()
+                    .find(|owner| owner.owner.id == DomainId(id))
+                    .unwrap()
+                    .clone()
+            };
+            assert_eq!(inventory(&committed), inventory(&before));
+        }
+        assert_eq!(committed.native_relationships, before.native_relationships);
+        // Subsequent mutation must survive an exact retry, including on disk.
+        action(
+            &mut app,
+            InventoryActionV1::Consume {
+                source: endpoint(zulu, "bag", stack),
+                amount: 2,
+            },
+        );
+        let current = snapshot(&mut app);
+        assert!(matches!(
+            restore_native_inventory_owners(app.world_mut(), &request).unwrap(),
+            NativeRestoreResult::AlreadyCompleted(_)
+        ));
+        assert!(snapshot(&mut app) == current);
+        let dir = tempfile::tempdir().unwrap();
+        let mut store = SnapshotStore::open(dir.path()).unwrap();
+        store.save(&current).unwrap();
+        let loaded = store.load().unwrap().unwrap().snapshot;
+        let mut reloaded = build_app(&ServerConfig::default(), &loaded).unwrap();
+        assert!(snapshot(&mut reloaded) == current);
+        assert!(matches!(
+            restore_native_inventory_owners(reloaded.world_mut(), &request).unwrap(),
+            NativeRestoreResult::AlreadyCompleted(_)
+        ));
+        assert!(snapshot(&mut reloaded) == current);
+        assert_eq!(
+            inventory_stack(reloaded.world(), zulu, "bag", stack)
+                .unwrap()
+                .stack
+                .count,
+            25
+        );
+        assert_eq!(
+            lifecycle_foundation_of(reloaded.world(), zulu).unwrap(),
+            Some(new_foundation)
+        );
     }
 }
