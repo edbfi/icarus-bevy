@@ -129,10 +129,8 @@ construction, script owners and data-table rows are out of scope (F-660).
   (`0x1418e9ff0`/`0x1418f86c0`, `evaluate_weather_forecast_record`,
   `evaluate_weather_forecast_restore`, F-903); `C038` (`0x141930060`,
   `evaluate_world_talent_record`, `evaluate_world_talent_stitch`, F-676).
-- C001 GUID/modifier/subcomponent/D01/variable restoration and legacy ammo
-  upgrades follow F-735. C015 elapsed time, currencies, mission history and next
-  meteor transfer follow F-653; C037 world-boss rows follow F-903.
-  Recorded level `-1` is unrecorded (F-648).
+- C001 restoration follows F-735; C015 clocks/currencies/missions F-653;
+  C037 world-boss rows F-903. Recorded level `-1` is unrecorded (F-648).
 - `UIcarusGameStateRecorder` pipeline (F-750, F-902):
   - `BeginRecording` (`0x1414961b0`/`0x1414d0900`, `evaluate_begin_recording`) rejects
     null or pending-kill components and GameplayTag `0x65`-excluded owners;
@@ -170,6 +168,8 @@ construction, script owners and data-table rows are out of scope (F-660).
 
 - Saved row references and FLOD tile matching/respawn follow F-897; packaged
   row meanings remain excluded (F-660).
+  Trace points: crop seeds `0x14196e790`, stomach modifiers `0x141890940`,
+  FLOD name lookup `0x14189b800` and respawn `0x1418ac0f0`.
 - Static-only modifier reload duration uses a distinct callback (F-930). Both builds store
   base duration, call authority-gated remaining-time restoration, restore cached
   multiplier, clear any old timer and select setup for finite positive remaining
