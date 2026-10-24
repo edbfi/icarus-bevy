@@ -556,7 +556,7 @@ fn combined_bool_i32_property_limit_accepts_64_and_rejects_65() {
         })
         .collect();
     let catalog = CompiledNativeCatalog::compile(definition).unwrap();
-    let properties: Vec<_> = source_names[..64]
+    let mut properties: Vec<_> = source_names[..64]
         .iter()
         .zip(&native_names)
         .enumerate()
@@ -573,20 +573,38 @@ fn combined_bool_i32_property_limit_accepts_64_and_rejects_65() {
             },
         )
         .collect();
+    // The first source record matches the last binding, so all 64 lookup
+    // positions are exercised independently of declaration order.
+    properties.reverse();
     let owners = [ids.owner(0, &properties)];
-    for count in [64, 65] {
+    for (count, duplicate) in [
+        (64, None),
+        (65, None),
+        (64, Some(C001VariableKind::Bool)),
+        (64, Some(C001VariableKind::I32)),
+    ] {
         let mut source = fields(0, false);
-        let bools: Vec<_> = source_names[..32].iter().map(|n| flag(n, true)).collect();
-        let ints: Vec<_> = source_names[32..count]
+        let mut bools: Vec<_> = source_names[..32].iter().map(|n| flag(n, true)).collect();
+        let mut ints: Vec<_> = source_names[32..count]
             .iter()
             .map(|n| counter(n, -7))
             .collect();
+        match duplicate {
+            Some(C001VariableKind::Bool) => {
+                *bools.last_mut().unwrap() = flag(&source_names[0], false);
+            }
+            Some(C001VariableKind::I32) => {
+                *ints.last_mut().unwrap() = counter(&source_names[32], -19);
+            }
+            None => {}
+        }
         // Each array is independently below the per-class ceiling.
         assert!(bools.len() < MAX_NATIVE_VARIABLES_PER_CLASS);
         assert!(ints.len() < MAX_NATIVE_VARIABLES_PER_CLASS);
         replace(&mut source, "Flags", flags(&bools));
         replace(&mut source, "Counters", counters(&ints));
         let c = candidate(&[source]);
+        assert!(c.recorders()[0].typing().lossless().is_some());
         let result = prepare_c001_variables(
             &c,
             &catalog,
@@ -594,12 +612,18 @@ fn combined_bool_i32_property_limit_accepts_64_and_rejects_65() {
             ids.bindings(&c, &catalog, &owners),
             C001VariableLimits::default(),
         );
-        if count == 64 {
+        if duplicate.is_some() {
+            let err = result.unwrap_err();
+            assert_eq!(err.kind, C001VariableErrorKind::Binding);
+            assert_eq!(err.source_index, Some(0));
+        } else if count == 64 {
             let p = result.unwrap();
             assert_eq!(p.inspection().assignments, 64);
             assert_eq!(p.inspection().bool_assignments, 32);
             assert_eq!(p.inspection().i32_assignments, 32);
             assert_eq!(p.inspection().unresolved_callbacks, 64);
+            assert_eq!(p.assignments()[0].binding().native_variable, "value0");
+            assert_eq!(p.assignments()[63].binding().native_variable, "value63");
             assert!(
                 p.assignments()[..32]
                     .iter()

@@ -1003,6 +1003,7 @@ pub fn prepare_c001_variables<'a>(
             (layout.i32s, C001VariableKind::I32),
         ];
         let mut count = 0usize;
+        let mut seen_properties = [false; MAX_NATIVE_VARIABLES_PER_CLASS];
         for (shape, kind) in arrays {
             let elements = array(component, shape, at)?;
             count = count.checked_add(elements.len()).ok_or(C001VariableError {
@@ -1010,25 +1011,21 @@ pub fn prepare_c001_variables<'a>(
                 kind: Limit,
             })?;
             check(count <= MAX_NATIVE_VARIABLES_PER_CLASS, at, Limit)?;
-            for (i, tree) in elements.iter().enumerate() {
+            for tree in elements {
                 let v = variable(tree, shape, kind, at)?;
-                check(
-                    binding
-                        .properties
-                        .iter()
-                        .any(|b| b.source_property == v.name && b.kind == kind),
-                    at,
-                    Binding,
-                )?;
-                // Same identity in Bool and I32 also rejects: their binding can
-                // match only one exact type. Within each array reject duplicates.
-                for prior in &elements[..i] {
-                    check(
-                        variable(prior, shape, kind, at)?.name != v.name,
-                        at,
-                        Binding,
-                    )?;
-                }
+                let property_index = binding
+                    .properties
+                    .iter()
+                    .position(|b| b.source_property == v.name && b.kind == kind)
+                    .ok_or(C001VariableError {
+                        source_index: at,
+                        kind: Binding,
+                    })?;
+                // Binding names are unique and their count fits this stack
+                // array. Mark across both source arrays without reparsing any
+                // previously validated record or allocating another lookup.
+                check(!seen_properties[property_index], at, Binding)?;
+                seen_properties[property_index] = true;
             }
             if kind == C001VariableKind::Bool {
                 bools += elements.len();
