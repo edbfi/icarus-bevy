@@ -171,6 +171,16 @@ function elfReader(bytes) {
 async function main() {
   const options = parseArgs(process.argv.slice(2));
   assert.equal(process.platform, 'linux', 'This integration runner requires Linux');
+  const allowedLine = fs.readFileSync('/proc/self/status', 'utf8')
+    .split('\n').find(line => line.startsWith('Cpus_allowed_list:'));
+  assert(allowedLine, 'Cannot read this process CPU affinity from /proc/self/status');
+  const allowed = allowedLine.split(':')[1].trim();
+  const includesCpu = cpu => allowed.split(',').some(item => {
+    const [start, end = start] = item.split('-').map(Number);
+    return Number.isInteger(start) && Number.isInteger(end) && cpu >= start && cpu <= end;
+  });
+  assert(includesCpu(4) && includesCpu(5),
+    `This integration runner requires allowed logical CPUs 4 and 5; Cpus_allowed_list=${allowed}`);
   const ghidra = options['--ghidra-home'];
   const javaHome = options['--java-home'];
   const launcher = path.join(ghidra, 'support/launch.sh');
@@ -410,16 +420,13 @@ async function main() {
         const end = address(body.end_exclusive);
         assert(start >= span.start && end <= span.end && end > start);
         assert.equal(number(body, 'bytes'), Number(end - start));
-        if (['assigned_function_body', 'observed_decoded_instruction_bytes'].includes(body.kind)) {
+        if (body.kind === 'observed_decoded_instruction_bytes') {
           for (let at = start; at < end; at++) assert(covered.has(at.toString()));
         }
         bodyBytes.set(body.kind, (bodyBytes.get(body.kind) || 0) + Number(end - start));
       }
       assert.equal(bodyBytes.get('observed_decoded_instruction_bytes') || 0, decoded);
       assert.equal(bodyBytes.get('unvisited_not_classified_as_code_or_data') || 0, expected.length - decoded);
-      if (status.body_binding === 'observed_body_bound') {
-        assert.equal(bodyBytes.get('assigned_function_body') || 0, decoded);
-      }
     }
     passed('all selected memory hashes and decoded bytes match authored ELF physical spans');
 

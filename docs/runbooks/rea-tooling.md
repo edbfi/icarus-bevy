@@ -26,9 +26,9 @@ provenance and third-party licenses when updating.
 Doctor reports provider readiness, not a live connection. Verify registration
 with `codex mcp get rea` or `claude mcp get rea`, then query MCP
 `binary_session`. Missing user-wide registrations are informational for this
-project-local setup. M-778 records the earlier healthy 12.1.4/JDK21 provider;
-M-975 records current drift: REA6.7 rejects Ghidra12.2, whose installation also
-needed JDK25 and a matching native decompiler. Do not relabel installations or
+project-local setup. M-778 records the earlier healthy 12.1.4/JDK 21 provider;
+M-975 records current drift: REA 6.7.0 rejects Ghidra 12.2, whose installation also
+needed JDK 25 and a matching native decompiler. Do not relabel installations or
 bypass policy. The scoped direct fallback built the matching public source in
 an owned overlay. M-973/M-974 validate an owned REA stdio session and authored
 fixture through bounded GNU objdump, not Ghidra provider readiness.
@@ -56,7 +56,7 @@ It exports bounded instruction/p-code/context records, observed intervals and
 partial-flow statuses. Require `EXPORT_FINISHED.txt`, no `FAILED.txt`, then
 inspect each status. Pseudocode is disabled; unaudited userops, overrides and
 noncanonical execution context reject. Memory hashes need physical-span checks
-(M-977).
+(M-977, M-979).
 The older `DecompileFlowFunctions.java` and `ListFlowInstructions.java` use
 forward windows; their completion flags do not prove whole-function coverage.
 `struct_ops_methods` selects inline `TCppStructOps` symbols in the PDB helper.
