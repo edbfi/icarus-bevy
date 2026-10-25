@@ -20,13 +20,13 @@ F-869, F-771; incomplete-state rejection: F-482.
 Authored schemas 4–10: spatial state (F-919), foundation links (F-922), lifecycle
 (F-923), C001/scalar/inventory persistence (F-927), runtime integrity/callback
 exclusions (F-928). Schema 11 preserves opt-in modifier timers/cache and owner authority through
-reload, replacement and retry; failed steps are atomic (F-931). Procedures and limits:
+near-budget reload, replacement and retry; failed steps are atomic (F-931). Procedures and limits:
 [authored worlds](../../runbooks/authored-worlds.md).
 
 Bool/I32 assessment retains provenance and unqualified restore/RepNotify obligations
 even when empty (F-929); fixture exclusions remain in the runbook.
 
-Schema-7/8/9 preflight and schema-11 modifier-call costs: F-926. Full modifier
+Authored preflight and modifier-call costs: F-926. Full modifier
 preflight remains per step, even empty; full ticks and uniform latency,
 peak-memory or speedup gains remain unqualified.
 

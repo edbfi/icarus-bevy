@@ -108,7 +108,9 @@ where
                 }
                 values.push(value);
             }
-            Ok(values)
+            // Validation charges retained capacity. Do not let decoder growth
+            // make a published world exceed its allocation budget on reload.
+            Ok(values.into_boxed_slice().into_vec())
         }
     }
     d.deserialize_seq(ListVisitor::<T, N>(PhantomData))
