@@ -171,19 +171,27 @@ construction, script owners and data-table rows are out of scope (F-660).
   row meanings remain excluded (F-660).
   Trace points: crop seeds `0x14196e790`, stomach modifiers `0x141890940`,
   FLOD name lookup `0x14189b800` and respawn `0x1418ac0f0`.
-- `UModifierStateComponent` (`experimental::modifier_lifecycle`, F-930): vftable
-  (`0x144a263a8`/`0x144b94c08`) binds `+0x278` `Activate`, `+0x280` `Deactivate`,
-  `+0x338` `BeginPlay`, `+0x340` `EndPlay`, `+0x3c0` `DestroyComponent`, `+0x408`
-  `UpdateStats` and `+0x410`/`+0x418` `Applied`/`Removed_Implementation` across
-  both builds. `Deactivate` (`0x1416d48e0`/`0x1416e6960`) removes `(3, [+0xf8])`
-  on `UIcarusStatContainer`; `Activate` (`0x1416ccb60`/`0x1416df050`) gates
-  `![+0x8a]&1` and `[+0xa0]`, binds `OnPreStatContainerUpdateComplete` (null
-  crash) and calls `+0x408`; `UpdateStats` (`0x1416fea90`/`0x14170f320`) refreshes
-  `(3, [+0xf8])` from `GrantedStats` (`+0xa0`). `BeginPlay` gates role `3` and
-  `[+0x3b0] == 0`; `EndPlay` zeroes `[+0x3c0]`, gates `reason == 0`, runs role-`3`
-  removal/timers/`+0x280`/`[+0x319]==3` `FixModifierActivation`, destroys
-  `[+0x100]` (`+0x3c0`) and notifies owner/delegates. Reload unordered guards
-  differ; BP overrides, scaling/`InitComponent` internals and live runs stay open.
+- Static-only modifier reload duration uses a distinct callback (F-930): both
+  builds store base duration, call authority-gated remaining-time restoration,
+  restore cached multiplier, clear any old timer, select setup for finite
+  positive remaining time, and call `OnRep`; remaining-time/`OnRep` raw operands
+  match after relocation (including `u16` tenths), while unordered scheduling
+  guards differ and floating-point runtime state is unobserved. Role-`3`
+  expiration wrappers issue a reason-`0` `+0x3c0` tail. On primary
+  `UModifierStateComponent` (`0x144a263a8`/`0x144b94c08`;
+  `experimental::modifier_lifecycle`, M-1024, M-1025), `+0x278` `Activate`,
+  `+0x280` `Deactivate`, `+0x338` `BeginPlay`, `+0x340` `EndPlay`, `+0x3c0`
+  `DestroyComponent`, `+0x408` `UpdateStats` and `+0x410`/`+0x418`
+  `Applied`/`Removed_Implementation` match across builds: `Deactivate` removes
+  `(3, [+0xf8])` on `UIcarusStatContainer`; `Activate` gates `![+0x8a]&1` and
+  `[+0xa0]`, binds `OnPreStatContainerUpdateComplete` (null crash) and calls
+  `+0x408`; `UpdateStats` refreshes `(3, [+0xf8])` from `GrantedStats` (`+0xa0`);
+  `BeginPlay` gates role `3` and `[+0x3b0] == 0`; `EndPlay` zeroes `[+0x3c0]`,
+  gates `reason == 0`, runs role-`3` removal/timers/`+0x280`/`[+0x319]==3`
+  `FixModifierActivation`, destroys `[+0x100]` (`+0x3c0`) and notifies
+  owner/delegates. Subclass virtual receivers, downstream callee/creation/expiration
+  effects, conversion rounding, BP/scaling/`InitComponent` internals, owner/row
+  binding and live execution remain unqualified.
 
 ## Candidate
 

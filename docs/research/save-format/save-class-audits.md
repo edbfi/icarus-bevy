@@ -67,15 +67,15 @@ is released (F-920). These allowances measure retention, not restoration or RSS.
 Strict authored C001 adapters bind source state to placements, owner lifecycle,
 Bool/I32 use gates and stacked inventories with durable actions (F-927).
 Coordinates, layouts and semantics are authored; ordinary import stays closed.
-`UModifierStateComponent` matches across builds on its primary vftable (`+0x278`
-`Activate`, `+0x280` `Deactivate`, `+0x338`/`+0x340` `Begin`/`EndPlay`, `+0x3c0`
-`DestroyComponent`, `+0x408` `UpdateStats`, `+0x410`/`+0x418` no-ops): `Deactivate`
-removes `(3, [+0xf8])`, `Activate` binds `OnPreStatContainerUpdateComplete` (null
-crash) then calls `+0x408` to refresh `GrantedStats`, `BeginPlay` gates role `3`
-and `[+0x3b0] == 0`, `EndPlay` gates `reason == 0` and role `3`, expiration
-wrappers issue `+0x3c0`, and reload duration differs only in unordered guards;
-BP overrides, scaling/`InitComponent` internals and row meanings remain open
-(F-930).
+Reload duration restores base/cache and authority-gated remaining time (`u16`
+tenths operands match; unordered guards differ; float/rounding unobserved), and
+role-`3` expiration wrappers issue reason-`0` `+0x3c0`. Primary
+`UModifierStateComponent` matches across builds on `+0x278` `Activate` (null
+delegate crash), `+0x280` `Deactivate`, `+0x338`/`+0x340` `Begin`/`EndPlay`
+(role `3`/`reason == 0`), `+0x3c0` `DestroyComponent`, `+0x408` `UpdateStats`
+and `+0x410`/`+0x418`; subclass receivers, callee/creation/expiration effects,
+BP/scaling/`InitComponent` internals, owner/row bindings and live runs remain
+open (F-930).
 
 No saved class identifier, field or type name, or recorder version tells the
 older server from the newer client, and the prospect carries no version string
