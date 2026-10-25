@@ -1,22 +1,22 @@
 //! Native quest actor (`AQuest`, `C019`) stitching, pure `Check()` completion
-//! evaluation and open composition (`F-934`, `F-935`, `U-074`).
+//! evaluation and open composition (`F-934`, `F-935`, `U-074`, `U-076`).
 //!
-//! `UIcarusQuestRecorderComponent` (`C019`) records each live quest actor's
-//! `IcarusActorGUID`, class name, transform, `D_Quests` row name, subquest
-//! links, quest variables and relevant actor/character links. On load,
-//! `C019::StitchingOperation` (`0x1418f66a0`) wires `SubQuests` and
-//! `QuestParent`, `C018::StitchingOperation` (`0x1418f5ef0`) binds
-//! `AQuestManager::InitialQuest` to the live `C019` actor matching
-//! `InitialQuestRecord` (leaving `None` when the mission's root quest was
-//! destroyed on completion), and `AQuestManager::Reload` (`0x1418ecd30`)
-//! populates each active parent quest's `ActiveQuests` with children whose
-//! `Check()` returns `false`.
+//! `UIcarusQuestRecorderComponent::RecordOwnerState` (`C019`, `0x1418e8de0`)
+//! records each live quest actor's `IcarusActorGUID`, class name, transform,
+//! `D_Quests` row name, subquest links, quest variables and relevant
+//! actor/character links. On load, `C019::StitchingOperation` (`0x1418f66a0`)
+//! wires `SubQuests` and `QuestParent`, `C018::StitchingOperation`
+//! (`0x1418f5ef0`) binds `AQuestManager::InitialQuest` to the live `C019`
+//! actor matching `InitialQuestRecord` (leaving `None` when the mission's root
+//! quest was destroyed on completion), and `AQuestManager::Reload`
+//! (`0x1418ecd30`) populates each active parent quest's `ActiveQuests` with
+//! children whose `Check()` returns `false`.
 //!
 //! Checksums and `Check()` rules come from [`super::quest_table`] (derived
 //! offline from official dedicated-server paks). Quests whose `Check()` reads
 //! world/instance state or mutating helpers, whose class adds Blueprint
-//! `CPF_Net` properties outside `AQuest`, or whose recorder carries base
-//! modifiers/inventories/variables fail closed before any channel opens.
+//! `CPF_Net` properties outside `AQuest` (`U-076`), or whose recorder carries
+//! base modifiers/inventories/variables fail closed before any channel opens.
 use std::collections::BTreeMap;
 
 use anyhow::{Context, Result, bail, ensure};
@@ -41,7 +41,7 @@ use super::session_open::{
     ActorKey, ComposedActorOpen, ConnectionExports, NetGuidCache, PathSegment, resting_movement,
 };
 
-/// `AQuest` actor-block rep-layout handles (`quest_rep_layout`, `F-705`, `F-863`).
+/// `AQuest` actor-block rep-layout handles (`quest_rep_layout`, `F-705`, `F-935`).
 pub mod quest_actor_handle {
     pub const REMOTE_ROLE: u32 = 5;
     pub const REPLICATED_MOVEMENT: u32 = 6;

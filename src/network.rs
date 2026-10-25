@@ -895,12 +895,14 @@ pub fn saved_game_state(
                 .row_index(FACTION_MISSIONS_TABLE, &quest.faction_mission)?
                 .and_then(|index| u8::try_from(index).ok());
             if row.is_none() {
-                skipped_managers.push((
-                    ManagerSlot::Quest,
-                    format!(
-                        "the saved faction mission is not a 1-byte {FACTION_MISSIONS_TABLE} row"
-                    ),
-                ));
+                let reason = format!(
+                    "the saved faction mission is not a 1-byte {FACTION_MISSIONS_TABLE} row"
+                );
+                if !quests.is_empty() {
+                    skipped_quests = Some((quests.len(), reason.clone()));
+                    quests.clear();
+                }
+                skipped_managers.push((ManagerSlot::Quest, reason));
             }
             row.map(|row| (quest, row))
         }
@@ -992,40 +994,61 @@ pub fn apply_saved_game_state(
         }
     }
     // The managers join last, after every other step that can fail.
+    let mut quest_manager_plan = None;
     let mut manager_plans = Vec::new();
     for (slot, plan) in saved_managers {
-        let plan = match slot {
+        match slot {
             ManagerSlot::Quest => match &saved.quest_manager {
-                Some((quest, row)) => plan.with_quest_state(quest, *row)?,
+                Some((quest, row)) => match plan.with_quest_state(quest, *row) {
+                    Ok(plan) => quest_manager_plan = Some((slot, plan)),
+                    Err(error) => {
+                        let reason = format!("{error:#}");
+                        if !quest_plans.is_empty() {
+                            saved.skipped_quests = Some((quest_plans.len(), reason.clone()));
+                            quest_plans.clear();
+                        }
+                        saved.skipped_managers.push((slot, reason));
+                    }
+                },
                 None => continue,
             },
             ManagerSlot::InventoryContainer => match &saved.inventory_containers {
                 Some(inventories) => match plan.with_container_inventories(inventories.clone()) {
-                    Ok(plan) => plan,
-                    Err(error) => {
-                        saved.skipped_managers.push((slot, format!("{error:#}")));
-                        continue;
-                    }
+                    Ok(plan) => manager_plans.push((slot, plan)),
+                    Err(error) => saved.skipped_managers.push((slot, format!("{error:#}"))),
                 },
                 None => continue,
             },
             ManagerSlot::PlayerHistory => match &saved.player_history {
-                Some(history) => plan.with_player_history(history)?,
+                Some(history) => match plan.with_player_history(history) {
+                    Ok(plan) => manager_plans.push((slot, plan)),
+                    Err(error) => saved.skipped_managers.push((slot, format!("{error:#}"))),
+                },
                 None => continue,
             },
             ManagerSlot::Flod => match saved.flod_tiles {
                 Some(count) => match plan.with_flod_tiles(count) {
-                    Ok(plan) => plan,
-                    Err(error) => {
-                        saved.skipped_managers.push((slot, format!("{error:#}")));
-                        continue;
-                    }
+                    Ok(plan) => manager_plans.push((slot, plan)),
+                    Err(error) => saved.skipped_managers.push((slot, format!("{error:#}"))),
                 },
                 None => continue,
             },
             _ => continue,
-        };
-        manager_plans.push((slot, plan));
+        }
+    }
+    if saved.quest_manager.is_some()
+        && quest_manager_plan.is_none()
+        && !saved
+            .skipped_managers
+            .iter()
+            .any(|(slot, _)| *slot == ManagerSlot::Quest)
+    {
+        let reason = "the release profile has no QuestManager open plan".to_owned();
+        if !quest_plans.is_empty() {
+            saved.skipped_quests = Some((quest_plans.len(), reason.clone()));
+            quest_plans.clear();
+        }
+        saved.skipped_managers.push((ManagerSlot::Quest, reason));
     }
     lab.extend_game_state_values(saved.values)?;
     let locked_missions = saved.locked_missions.len();
@@ -1038,20 +1061,39 @@ pub fn apply_saved_game_state(
     if let Some(clock) = saved.time_of_day {
         lab.enable_time_of_day(clock)?;
     }
-    let quest_channels = quest_plans
-        .into_iter()
-        .map(|plan| lab.add_quest_open(plan))
-        .collect::<Result<Vec<_>>>()?;
-    let saved_managers = manager_plans
-        .into_iter()
-        .map(|(slot, plan)| Ok((slot, lab.add_manager_open(slot, plan)?)))
-        .collect::<Result<_>>()?;
+    let quest_count = quest_plans.len();
+    let quest_manager_slot = quest_manager_plan.as_ref().map(|(slot, _)| *slot);
+    let mut opened_managers = Vec::new();
+    let quest_channels = match lab.add_quest_opens_with_manager(quest_plans, quest_manager_plan) {
+        Ok((channels, opened_channel)) => {
+            if let (Some(slot), Some(channel)) = (quest_manager_slot, opened_channel) {
+                opened_managers.push((slot, channel));
+            }
+            channels
+        }
+        Err(error) => {
+            let reason = format!("{error:#}");
+            if quest_count > 0 {
+                saved.skipped_quests = Some((quest_count, reason.clone()));
+            }
+            if quest_manager_slot.is_some() {
+                saved.skipped_managers.push((ManagerSlot::Quest, reason));
+            }
+            Vec::new()
+        }
+    };
+    for (slot, plan) in manager_plans {
+        match lab.add_manager_open(slot, plan) {
+            Ok(channel) => opened_managers.push((slot, channel)),
+            Err(error) => saved.skipped_managers.push((slot, format!("{error:#}"))),
+        }
+    }
     Ok(AppliedGameState {
         unmapped_session_flags: saved.unmapped_session_flags,
         locked_missions,
         quest_channels,
         skipped_quests: saved.skipped_quests,
-        saved_managers,
+        saved_managers: opened_managers,
         skipped_managers: saved.skipped_managers,
     })
 }

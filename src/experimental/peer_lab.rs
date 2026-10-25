@@ -226,7 +226,11 @@ pub const DEFAULT_IDLE_TIMEOUT: Duration = Duration::from_secs(30);
 pub const DEFAULT_MAX_DATAGRAM_BYTES: u32 = 1024;
 /// Largest UDP payload over IPv4.
 pub const MAX_UDP_PAYLOAD_BYTES: u32 = 65_507;
-/// Lab choice: default channel-index limit for bunch parsing.
+/// Lab choice: default channel-index limit for bunch parsing and actor-channel
+/// failure checks (UE4's `UNetConnection::MAX_CHANNELS` is `10240`, while
+/// `M-707` opens quest and manager channels up to `126`, `F-858`, `F-934`;
+/// `256` leaves room above channels `0..=8` for multi-stage `C019` quest DAGs
+/// and the saved managers without allocating `10240`-entry tables).
 pub const DEFAULT_MAX_CHANNELS: u32 = 256;
 /// Lab choice: default archive-string unit cap for channel names.
 pub const DEFAULT_MAX_STRING_UNITS: usize = 256;
@@ -1422,40 +1426,118 @@ impl PeerLab {
         self.quest_open_base.as_ref()
     }
 
+    /// Number of enabled world manager opens (`F-859`).
+    pub fn manager_open_count(&self) -> usize {
+        self.manager_opens.len()
+    }
+
+    /// Number of enabled `C019` quest actor opens (`F-934`).
+    pub fn quest_open_count(&self) -> usize {
+        self.quest_opens.len()
+    }
+
     /// Also open the saved quest actor `plan` (`C019`, `F-934`) on each joined
     /// connection after the enabled managers and quests, on the next channel;
     /// returns the channel. Fails without enabled managers, on a duplicate
     /// actor key, on a level other than the GameState's or on a taken channel.
     pub fn add_quest_open(&mut self, plan: QuestOpenPlan) -> Result<u32> {
+        let (channels, _) = self.add_quest_opens_with_manager(vec![plan], None)?;
+        Ok(channels[0])
+    }
+
+    /// Atomically validate and add a batch of saved `C019` quest actor opens
+    /// (`F-934`), plus an optional trailing world manager (such as
+    /// `ManagerSlot::Quest`), on consecutive channels after the enabled
+    /// managers and quests. If any quest or the trailing manager fails level,
+    /// key-uniqueness or channel-capacity validation, neither `quest_opens`
+    /// nor `manager_opens` is modified.
+    pub fn add_quest_opens_with_manager(
+        &mut self,
+        plans: Vec<QuestOpenPlan>,
+        manager: Option<(ManagerSlot, ManagerOpenPlan)>,
+    ) -> Result<(Vec<u32>, Option<u32>)> {
+        if plans.is_empty() && manager.is_none() {
+            return Ok((Vec::new(), None));
+        }
         let Some(session) = &self.game_state_open else {
             bail!("the quest opens follow the GameState open");
         };
-        ensure!(
-            plan.level == session.plan.level,
-            "a quest actor and the GameState name different levels"
-        );
-        ensure!(
-            self.quest_opens
-                .iter()
-                .all(|(existing, _)| existing.key != plan.key)
-                && self.manager_opens.iter().all(|(key, ..)| *key != plan.key),
-            "the quest actor key is already opened"
-        );
-        let channel = self
+        let first_channel = self
             .manager_opens
             .iter()
             .map(|(.., channel)| *channel)
             .chain(self.quest_opens.iter().map(|(_, channel)| *channel))
             .max()
-            .context("a quest actor added after the enabled managers")?
+            .context(if plans.is_empty() {
+                "a manager added after the enabled managers"
+            } else {
+                "a quest actor added after the enabled managers"
+            })?
             .checked_add(1)
             .context("quest channel overflow")?;
-        ensure!(
-            self.free_session_channel(channel),
-            "a quest channel collides with another channel or is out of range"
-        );
-        self.quest_opens.push((plan, channel));
-        Ok(channel)
+        let mut quest_channels = Vec::with_capacity(plans.len());
+        for (index, plan) in plans.iter().enumerate() {
+            ensure!(
+                plan.level == session.plan.level,
+                "a quest actor and the GameState name different levels"
+            );
+            ensure!(
+                self.quest_opens
+                    .iter()
+                    .all(|(existing, _)| existing.key != plan.key)
+                    && self.manager_opens.iter().all(|(key, ..)| *key != plan.key)
+                    && plans[..index].iter().all(|earlier| earlier.key != plan.key),
+                "the quest actor key is already opened"
+            );
+            let offset = u32::try_from(index).context("quest channel overflow")?;
+            let channel = first_channel
+                .checked_add(offset)
+                .context("quest channel overflow")?;
+            ensure!(
+                self.free_session_channel(channel),
+                "a quest channel collides with another channel or is out of range"
+            );
+            quest_channels.push(channel);
+        }
+        let manager_channel = match &manager {
+            Some((slot, plan)) => {
+                ensure!(
+                    plan.level == session.plan.level,
+                    "a manager and the GameState name different levels"
+                );
+                ensure!(
+                    self.manager_opens
+                        .iter()
+                        .all(|(key, ..)| *key != slot.key())
+                        && self
+                            .quest_opens
+                            .iter()
+                            .all(|(quest, _)| quest.key != slot.key())
+                        && plans.iter().all(|quest| quest.key != slot.key()),
+                    "the manager slot is already opened"
+                );
+                let offset = u32::try_from(plans.len()).context("manager channel overflow")?;
+                let channel = first_channel
+                    .checked_add(offset)
+                    .context("manager channel overflow")?;
+                ensure!(
+                    self.free_session_channel(channel),
+                    "a manager channel collides with another channel or is out of range"
+                );
+                Some(channel)
+            }
+            None => None,
+        };
+        for (plan, &channel) in plans.into_iter().zip(&quest_channels) {
+            self.quest_opens.push((plan, channel));
+        }
+        if let (Some((slot, plan)), Some(channel)) = (manager, manager_channel) {
+            if let Some(session) = &mut self.game_state_open {
+                slot.reference_from(&mut session.state.managers);
+            }
+            self.manager_opens.push((slot.key(), plan, channel));
+        }
+        Ok((quest_channels, manager_channel))
     }
 
     /// Send the GameState's `LevelTimeElapsedSec` as `restored` plus the

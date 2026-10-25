@@ -1,5 +1,5 @@
 //! Native `C019` quest actor stitching, pure `Check()` completion evaluation,
-//! and `AQuest` open composition (`F-934`, `F-935`, `U-074`), using authored
+//! and `AQuest` open composition (`F-934`, `F-935`, `U-074`, `U-076`), using authored
 //! records and captured `M-707` bit-length / SHA-256 vectors (no supplied save
 //! files).
 mod pak_writer;
@@ -15,6 +15,7 @@ use icarus_bevy::{
         control_messages::ArchiveText,
         manager_open::{ManagerSlot, compose_manager_open, quest_handle},
         packet::Payload,
+        peer_lab::DEFAULT_MAX_CHANNELS,
         prospect_info::{
             RelevantQuestActor, SavedQuestActor, SavedQuestManager, SavedQuestVariable,
             SavedSubQuest,
@@ -1232,4 +1233,183 @@ fn apply_saved_game_state_opens_quests_before_quest_manager_and_skips_closed_on_
     assert!(done_state.quests.is_empty());
     assert!(done_state.skipped_quests.is_none());
     assert_eq!(done_state.quest_manager.unwrap().0.initial_quest, None);
+}
+
+fn c024_blob() -> Vec<u8> {
+    let mut entry = Vec::new();
+    entry.extend_from_slice(&prop_str_or_name("UserID", "StrProperty", "user-1"));
+    entry.extend_from_slice(&prop_int("ChrSlot", 0));
+    entry.extend_from_slice(&prop_str_or_name(
+        "CachedCharacterName",
+        "StrProperty",
+        "Runner",
+    ));
+    none_tag(&mut entry);
+
+    let mut fields = Vec::new();
+    fields.extend_from_slice(&prop_struct_array(
+        "SavedHistoryData",
+        "SavedHistoryData",
+        "PlayerHistoryEntryRecord",
+        &[entry],
+    ));
+    fields.extend_from_slice(&prop_int("IcarusActorGUID", 78));
+    recorder_blob("/Script/Icarus.PlayerHistoryRecorderComponent", &fields)
+}
+
+#[test]
+fn quest_opens_exceed_legacy_32_channel_bound_under_default_256_limit() {
+    assert_eq!(DEFAULT_MAX_CHANNELS, 256);
+    let temp = tempfile::tempdir().unwrap();
+    let pak_path = synthetic_quest_pak(
+        temp.path(),
+        r#"{"Rows":[
+            {"Name":"Root_Quest","Class":"/Game/BP/Quests/Olympus/Riverlands/Construction/BPQ_OLY_Riverlands_Construction.BPQ_OLY_Riverlands_Construction_C"},
+            {"Name":"Step_Travel","Class":"/Game/BP/Quests/Common/BPQ_Travel.BPQ_Travel_C"}
+        ]}"#,
+    );
+
+    // 1 root quest + 29 subquests = 30 C019 quests on channels 9..=38, plus
+    // AQuestManager on channel 39 (exceeding the legacy 32-channel cap).
+    let mut recorders = vec![c018_blob(
+        "Mission_One",
+        1_000,
+        "BPQ_OLY_Riverlands_Construction_C",
+    )];
+    let mut root_links = Vec::new();
+    for step in 1..30 {
+        let uid = 1_000 + step;
+        recorders.push(c019_blob(
+            uid,
+            "Step_Travel",
+            "BPQ_Travel_C",
+            &[],
+            Some(false),
+        ));
+        root_links.push(("Step_Travel", "BPQ_Travel_C", uid));
+    }
+    recorders.push(c019_blob(
+        1_000,
+        "Root_Quest",
+        "BPQ_OLY_Riverlands_Construction_C",
+        &root_links,
+        None,
+    ));
+
+    let payload = prospect_payload(&recorders);
+    let section =
+        PreservedSection::from_inner_payload(&payload, PreserveLimits::default()).unwrap();
+    let net_cfg = NetworkConfig {
+        enabled: true,
+        port: 0,
+        release_profile: Some(
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("config/release.toml"),
+        ),
+        data_pak: Some(pak_path),
+        ..NetworkConfig::default()
+    };
+    let mut bound = bind(&net_cfg).unwrap().unwrap();
+    let applied = apply_saved_game_state(
+        &mut bound.lab,
+        &section,
+        bound.tables.as_mut(),
+        std::mem::take(&mut bound.saved_managers),
+    )
+    .unwrap();
+
+    let expected_channels: Vec<u32> = (9..=38).collect();
+    assert_eq!(applied.quest_channels, expected_channels);
+    assert!(applied.skipped_quests.is_none());
+    assert_eq!(applied.saved_managers, vec![(ManagerSlot::Quest, 39)]);
+    assert!(applied.skipped_managers.is_empty());
+    assert_eq!(bound.lab.quest_open_count(), 30);
+    assert_eq!(bound.lab.manager_open_count(), 4);
+}
+
+#[test]
+fn channel_exhaustion_skips_quests_and_quest_manager_atomically_without_dropping_other_managers() {
+    let temp = tempfile::tempdir().unwrap();
+    let pak_path = synthetic_quest_pak(
+        temp.path(),
+        r#"{"Rows":[
+            {"Name":"Root_Quest","Class":"/Game/BP/Quests/Olympus/Riverlands/Construction/BPQ_OLY_Riverlands_Construction.BPQ_OLY_Riverlands_Construction_C"},
+            {"Name":"Step_Travel","Class":"/Game/BP/Quests/Common/BPQ_Travel.BPQ_Travel_C"}
+        ]}"#,
+    );
+    let net_cfg = NetworkConfig {
+        enabled: true,
+        port: 0,
+        release_profile: Some(
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("config/release.toml"),
+        ),
+        data_pak: Some(pak_path),
+        ..NetworkConfig::default()
+    };
+
+    // Baseline managers occupy 6..=8 (`first_channel = 9`) and `DEFAULT_MAX_CHANNELS = 256`:
+    // - 247 quests occupy 9..=255, leaving no channel (256) for `ManagerSlot::Quest`.
+    // - 250 quests overflow partway through the quest batch itself at channel 256.
+    // Both cases must leave zero quests installed on `lab`, record `skipped_quests`
+    // and `ManagerSlot::Quest` in `skipped_managers`, and still open `PlayerHistory`
+    // cleanly on channel 9 without aborting `apply_saved_game_state`.
+    for total_quests in [247_usize, 250_usize] {
+        let mut recorders = vec![
+            c018_blob("Mission_One", 2_000, "BPQ_OLY_Riverlands_Construction_C"),
+            c024_blob(),
+        ];
+        let mut root_links = Vec::new();
+        for step in 1..total_quests {
+            let uid = 2_000 + i32::try_from(step).unwrap();
+            recorders.push(c019_blob(
+                uid,
+                "Step_Travel",
+                "BPQ_Travel_C",
+                &[],
+                Some(false),
+            ));
+            root_links.push(("Step_Travel", "BPQ_Travel_C", uid));
+        }
+        recorders.push(c019_blob(
+            2_000,
+            "Root_Quest",
+            "BPQ_OLY_Riverlands_Construction_C",
+            &root_links,
+            None,
+        ));
+
+        let payload = prospect_payload(&recorders);
+        let section =
+            PreservedSection::from_inner_payload(&payload, PreserveLimits::default()).unwrap();
+        let mut bound = bind(&net_cfg).unwrap().unwrap();
+        let applied = apply_saved_game_state(
+            &mut bound.lab,
+            &section,
+            bound.tables.as_mut(),
+            std::mem::take(&mut bound.saved_managers),
+        )
+        .unwrap();
+
+        assert!(applied.quest_channels.is_empty(), "{total_quests}");
+        assert_eq!(bound.lab.quest_open_count(), 0, "{total_quests}");
+        assert_eq!(
+            applied.skipped_quests.as_ref().map(|(count, _)| *count),
+            Some(total_quests),
+            "{total_quests}"
+        );
+        assert_eq!(
+            applied.saved_managers,
+            vec![(ManagerSlot::PlayerHistory, 9)],
+            "{total_quests}"
+        );
+        assert_eq!(
+            applied
+                .skipped_managers
+                .iter()
+                .map(|(slot, _)| *slot)
+                .collect::<Vec<_>>(),
+            vec![ManagerSlot::Quest],
+            "{total_quests}"
+        );
+        assert_eq!(bound.lab.manager_open_count(), 4, "{total_quests}");
+    }
 }

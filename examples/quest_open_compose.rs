@@ -1,4 +1,4 @@
-//! Compose a save's `C019` quest actor opens (`F-934`, `F-935`, `U-074`) with
+//! Compose a save's `C019` quest actor opens (`F-934`, `F-935`, `U-074`, `U-076`) with
 //! `quest_open::{stitch_saved_quests, compose_quest_open}` across one shared
 //! connection `NetGuidCache` (plus optional `C018` `AQuestManager` on channel
 //! `126`) and compare every export bunch and actor bunch body bit for bit
