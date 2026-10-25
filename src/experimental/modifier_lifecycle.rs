@@ -16,6 +16,10 @@
 //! and supplied opaque comparison results.
 //! It describes a request and a local success-after-return flag, never destruction.
 //! Enumeration, owner lookup, comparison semantics and subclass effects are excluded.
+//!
+//! The optional comparator model below describes physical caller-local operation
+//! order only. Its callbacks retain opaque operands, result tokens and effects;
+//! it is independent of the selection model's supplied comparison bools.
 
 /// `EStatSources` discriminant (`3`) passed by `UModifierStateComponent::Deactivate`
 /// and `UModifierStateComponent::UpdateStats` to `UIcarusStatContainer::RemoveStats_BP`
@@ -1039,4 +1043,61 @@ pub fn select_remove_modifier_state_local(
         virtual_call_request,
         local_success_after_request_returns: virtual_call_request.is_some(),
     }
+}
+
+/// Authored identities for the two distinct scratch slots in the local comparator.
+/// These labels specify call order, without assigning addresses or data meanings.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ModifierComparatorScratchSlot {
+    /// Scratch slot supplied to the first call, with the right operand.
+    FirstRight,
+    /// A different scratch slot supplied to the second call, with the left operand.
+    SecondLeft,
+}
+
+/// Caller-supplied operations for an optional physical caller-local comparator model.
+///
+/// `normalize` names an opaque call, not a claim of canonicalization or purity.
+/// Both operations may mutate shared state, and result tokens may alias. No
+/// equality, copying or ownership semantics are required of operands or tokens.
+pub trait ModifierComparatorOperations {
+    /// Opaque input representation; left and right may refer to the same operand.
+    type Operand: ?Sized;
+    /// Opaque returned handle, retained across subsequent callback invocations.
+    type ResultToken;
+
+    /// Requests the same opaque operation with an operand and distinct scratch label.
+    fn normalize(
+        &mut self,
+        operand: &Self::Operand,
+        scratch_slot: ModifierComparatorScratchSlot,
+    ) -> Self::ResultToken;
+
+    /// Reads one exact `u64` through a result token at the time of this callback.
+    fn read_u64(&mut self, result_token: &Self::ResultToken) -> u64;
+}
+
+/// Models only the bounded physical caller-local comparator operation order.
+///
+/// Left and right denote initial Windows ABI RCX and RDX respectively in the
+/// qualified server `25621760` / client `25793767` entries. Both calls precede
+/// either word read: right with first scratch, left with second scratch, then
+/// reads through the left result and the saved right result. Exact `u64`
+/// equality models the returned AL boolean; token identity is never compared.
+///
+/// The caller adds no semantic writes beyond its local scratch/token storage;
+/// callback effects remain opaque. This supplies no callee semantics, row-name
+/// interpretation, purity, unique C++ owner, logical-function completeness,
+/// runtime qualification or import authority. It does not integrate with
+/// persistence, the live native server or `RemoveModifierStateCandidate`.
+pub fn evaluate_modifier_comparator_local<O: ModifierComparatorOperations + ?Sized>(
+    operations: &mut O,
+    left: &O::Operand,
+    right: &O::Operand,
+) -> bool {
+    let right_result = operations.normalize(right, ModifierComparatorScratchSlot::FirstRight);
+    let left_result = operations.normalize(left, ModifierComparatorScratchSlot::SecondLeft);
+    let left_word = operations.read_u64(&left_result);
+    let right_word = operations.read_u64(&right_result);
+    left_word == right_word
 }

@@ -4,20 +4,21 @@ use icarus_bevy::experimental::modifier_lifecycle::{
     MODIFIER_HIGH_FREQUENCY_TICK_RATE_BITS, MODIFIER_INVALID_STAT_ENUM,
     MODIFIER_SCENE_ATTACH_KEEP_RELATIVE_PACKED, MODIFIER_STAT_SCALE_CENTI_BITS,
     MODIFIER_STAT_SOURCE_KIND, MODIFIER_TIMER_DEFAULT_FIRST_DELAY, ModifierActivateOutcome,
-    ModifierAppliedOutcome, ModifierBeginPlayOutcome, ModifierDeactivateOutcome,
-    ModifierEndPlayInputs, ModifierEndPlayOutcome, ModifierInitComponentInputs,
-    ModifierInitComponentOutcome, ModifierLoopingTimerSetup, ModifierOnStatContainerUpdatedInputs,
+    ModifierAppliedOutcome, ModifierBeginPlayOutcome, ModifierComparatorOperations,
+    ModifierComparatorScratchSlot, ModifierDeactivateOutcome, ModifierEndPlayInputs,
+    ModifierEndPlayOutcome, ModifierInitComponentInputs, ModifierInitComponentOutcome,
+    ModifierLoopingTimerSetup, ModifierOnStatContainerUpdatedInputs,
     ModifierOnStatContainerUpdatedOutcome, ModifierPrimaryVftableSlot, ModifierRemovedOutcome,
     ModifierSceneComponentInitAction, ModifierStateDataSource, ModifierTimerClearTarget,
     ModifierUpdateStatsOutcome, RemoveModifierStateCandidate, RemoveModifierStateSelection,
     RemoveModifierStateSelectionOutcome, RemoveModifierStateVirtualCallRequest,
     SiblingModifierGrantedTags, evaluate_modifier_activate, evaluate_modifier_applied_impl,
-    evaluate_modifier_begin_play, evaluate_modifier_deactivate, evaluate_modifier_end_play,
-    evaluate_modifier_get_state_data, evaluate_modifier_init_component_impl,
-    evaluate_modifier_on_stat_container_updated, evaluate_modifier_removed_impl,
-    evaluate_modifier_update_stats, resolve_modifier_primary_vftable_slot,
-    scale_modifier_granted_stat_value, select_fix_modifier_activation_actions,
-    select_remove_modifier_state_local,
+    evaluate_modifier_begin_play, evaluate_modifier_comparator_local, evaluate_modifier_deactivate,
+    evaluate_modifier_end_play, evaluate_modifier_get_state_data,
+    evaluate_modifier_init_component_impl, evaluate_modifier_on_stat_container_updated,
+    evaluate_modifier_removed_impl, evaluate_modifier_update_stats,
+    resolve_modifier_primary_vftable_slot, scale_modifier_granted_stat_value,
+    select_fix_modifier_activation_actions, select_remove_modifier_state_local,
 };
 
 #[test]
@@ -1018,4 +1019,206 @@ fn local_removal_preserves_signed_uid_boundaries_and_only_minus_one_is_sentinel(
         );
         assert_local_removal_request(&outcome, Some(1));
     }
+}
+
+// Entirely authored state and operation scripts. Neither opaque type implements
+// Copy, Clone or equality; the comparator must not require those capabilities.
+struct AuthoredComparatorOperand(u8);
+struct AuthoredComparatorResultToken(usize);
+
+#[derive(Debug, PartialEq, Eq)]
+enum ComparatorLocalEvent {
+    Normalize {
+        operand: u8,
+        scratch_slot: ModifierComparatorScratchSlot,
+    },
+    Read {
+        token: usize,
+        word: u64,
+    },
+}
+
+struct AuthoredComparatorOperations {
+    result_indices: [usize; 2],
+    words: [u64; 2],
+    normalizations: usize,
+    reads: usize,
+    second_normalization_write: Option<(usize, u64)>,
+    first_read_write: Option<(usize, u64)>,
+    events: Vec<ComparatorLocalEvent>,
+}
+
+impl AuthoredComparatorOperations {
+    fn new(result_indices: [usize; 2], words: [u64; 2]) -> Self {
+        Self {
+            result_indices,
+            words,
+            normalizations: 0,
+            reads: 0,
+            second_normalization_write: None,
+            first_read_write: None,
+            events: Vec::new(),
+        }
+    }
+
+    fn assert_order(&self, left: u8, right: u8, left_word: u64, right_word: u64) {
+        assert_eq!(self.normalizations, 2);
+        assert_eq!(self.reads, 2);
+        assert_eq!(
+            self.events,
+            vec![
+                ComparatorLocalEvent::Normalize {
+                    operand: right,
+                    scratch_slot: ModifierComparatorScratchSlot::FirstRight,
+                },
+                ComparatorLocalEvent::Normalize {
+                    operand: left,
+                    scratch_slot: ModifierComparatorScratchSlot::SecondLeft,
+                },
+                ComparatorLocalEvent::Read {
+                    token: self.result_indices[1],
+                    word: left_word,
+                },
+                ComparatorLocalEvent::Read {
+                    token: self.result_indices[0],
+                    word: right_word,
+                },
+            ]
+        );
+    }
+}
+
+impl ModifierComparatorOperations for AuthoredComparatorOperations {
+    type Operand = AuthoredComparatorOperand;
+    type ResultToken = AuthoredComparatorResultToken;
+
+    fn normalize(
+        &mut self,
+        operand: &Self::Operand,
+        scratch_slot: ModifierComparatorScratchSlot,
+    ) -> Self::ResultToken {
+        self.events.push(ComparatorLocalEvent::Normalize {
+            operand: operand.0,
+            scratch_slot,
+        });
+        let token = AuthoredComparatorResultToken(self.result_indices[self.normalizations]);
+        self.normalizations += 1;
+        if self.normalizations == 2
+            && let Some((index, word)) = self.second_normalization_write
+        {
+            self.words[index] = word;
+        }
+        token
+    }
+
+    fn read_u64(&mut self, result_token: &Self::ResultToken) -> u64 {
+        assert_eq!(self.normalizations, 2, "both calls must precede any read");
+        let word = self.words[result_token.0];
+        self.events.push(ComparatorLocalEvent::Read {
+            token: result_token.0,
+            word,
+        });
+        self.reads += 1;
+        if self.reads == 1
+            && let Some((index, word)) = self.first_read_write
+        {
+            self.words[index] = word;
+        }
+        word
+    }
+}
+
+#[test]
+fn local_comparator_orders_requests_with_distinct_scratch_then_left_and_right_reads() {
+    let left = AuthoredComparatorOperand(17);
+    let right = AuthoredComparatorOperand(29);
+    let mut operations = AuthoredComparatorOperations::new([0, 1], [7, 8]);
+
+    assert_ne!(
+        ModifierComparatorScratchSlot::FirstRight,
+        ModifierComparatorScratchSlot::SecondLeft
+    );
+    assert!(!evaluate_modifier_comparator_local(
+        &mut operations,
+        &left,
+        &right
+    ));
+    operations.assert_order(17, 29, 8, 7);
+}
+
+#[test]
+fn local_comparator_compares_all_u64_bits_and_allows_different_tokens_with_equal_words() {
+    let left = AuthoredComparatorOperand(17);
+    let right = AuthoredComparatorOperand(29);
+    let boundary_words = [
+        0,
+        1,
+        u64::from(u32::MAX),
+        1_u64 << 63,
+        (1_u64 << 63) | 1,
+        u64::MAX,
+    ];
+
+    for left_word in boundary_words {
+        for right_word in boundary_words {
+            // Different token indices include equal-word cases on the diagonal.
+            let mut operations = AuthoredComparatorOperations::new([0, 1], [right_word, left_word]);
+            assert_eq!(
+                evaluate_modifier_comparator_local(&mut operations, &left, &right),
+                left_word == right_word,
+                "left={left_word:#018x}, right={right_word:#018x}"
+            );
+            operations.assert_order(17, 29, left_word, right_word);
+        }
+    }
+}
+
+#[test]
+fn local_comparator_same_operand_and_equal_tokens_still_make_both_calls_and_reads() {
+    let operand = AuthoredComparatorOperand(17);
+    let mut operations = AuthoredComparatorOperations::new([0, 0], [u64::MAX, 0]);
+
+    assert!(evaluate_modifier_comparator_local(
+        &mut operations,
+        &operand,
+        &operand
+    ));
+    operations.assert_order(17, 17, u64::MAX, u64::MAX);
+}
+
+#[test]
+fn local_comparator_second_normalization_can_mutate_the_first_result_referent() {
+    let left = AuthoredComparatorOperand(17);
+    let right = AuthoredComparatorOperand(29);
+
+    for updated_right_word in [9, 10] {
+        let mut operations = AuthoredComparatorOperations::new([0, 1], [7, 9]);
+        operations.second_normalization_write = Some((0, updated_right_word));
+
+        assert_eq!(
+            evaluate_modifier_comparator_local(&mut operations, &left, &right),
+            updated_right_word == 9
+        );
+        // The right result is a retained token, not a word snapshot taken at
+        // the first return. The second call changes what the later read sees.
+        operations.assert_order(17, 29, 9, updated_right_word);
+    }
+}
+
+#[test]
+fn local_comparator_aliased_tokens_read_updated_shared_state_twice_after_calls() {
+    let left = AuthoredComparatorOperand(17);
+    let right = AuthoredComparatorOperand(29);
+    let mut operations = AuthoredComparatorOperations::new([0, 0], [0, 0]);
+    operations.second_normalization_write = Some((0, u64::MAX));
+    // Authored read effects demonstrate that neither equal tokens nor a prior
+    // read permits skipping the second callback or inventing a pure snapshot.
+    operations.first_read_write = Some((0, 0));
+
+    assert!(!evaluate_modifier_comparator_local(
+        &mut operations,
+        &left,
+        &right
+    ));
+    operations.assert_order(17, 29, u64::MAX, 0);
 }
