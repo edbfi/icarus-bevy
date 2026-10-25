@@ -19,8 +19,8 @@ use crate::experimental::property_tree::{
     BaseComponentTree, MAX_TREE_DEPTH, MAX_TREE_NODES, PropertyTree, TreeLimits,
 };
 use crate::experimental::prospect_info::{
-    PlayerHistoryEntry, ProspectInfo, SavedContainerManager, SavedGameMode, SavedQuestManager,
-    saved_container_manager, saved_flod_tile_count, saved_player_history,
+    PlayerHistoryEntry, ProspectInfo, SavedContainerManager, SavedGameMode, SavedQuestActor,
+    SavedQuestManager, saved_container_manager, saved_flod_tile_count, saved_player_history,
 };
 use crate::experimental::recorders::{
     RecorderSummary, StagedProspectSaveState, read_recorders, recorder_class_label,
@@ -282,17 +282,19 @@ pub fn typed_check(reader: impl Read) -> Result<TypedProspectInspection> {
     Ok(report)
 }
 
-/// What replicating a loaded prospect's GameState and managers needs from
-/// its save: the typed `ProspectInfo` (`F-738`) and the FLOD, game mode,
-/// container manager, quest manager and player history recorders' values
-/// (`C013`, `C015`, `C016`, `C018`, `C024`, `F-650`), when those recorders
-/// exist.
+/// What replicating a loaded prospect's GameState, managers and quest actors
+/// needs from its save: the typed `ProspectInfo` (`F-738`) and the FLOD, game
+/// mode, container manager, quest manager, quest actor and player history
+/// recorders' values (`C013`, `C015`, `C016`, `C018`, `C019`, `C024`, `F-650`,
+/// `F-934`), when those recorders exist.
 /// The values are the save's; callers must keep them private.
 pub struct SavedProspect {
     pub info: ProspectInfo,
     pub game_mode: Option<SavedGameMode>,
     /// The quest manager recorder's values (`C018`), when one exists.
     pub quest_manager: Option<SavedQuestManager>,
+    /// The quest actor recorders (`C019`), in saved array order.
+    pub quests: Vec<SavedQuestActor>,
     /// The player history recorder's entries (`C024`), when one exists.
     pub player_history: Option<Vec<PlayerHistoryEntry>>,
     /// The container manager recorder's inventories (`C016`), when one
@@ -303,8 +305,8 @@ pub struct SavedProspect {
 }
 
 /// Stage the prospect exactly as [`stage_prospect`] does, then type its root
-/// `ProspectInfo` and its one `C013`, `C015`, `C016`, `C018` and `C024`
-/// recorders.
+/// `ProspectInfo`, its one `C013`, `C015`, `C016`, `C018` and `C024`
+/// recorders, and its `C019` quest actor recorders in saved order.
 pub fn read_saved_prospect(reader: impl Read) -> Result<SavedProspect> {
     saved_prospect_from_payload(&decode_envelope(reader)?.payload)
 }
@@ -333,6 +335,7 @@ pub fn saved_prospect_from_payload(payload: &[u8]) -> Result<SavedProspect> {
         read_recorders(&tags.tags, profile).context("invalid experimental recorder framing")?;
     let mut game_mode = None;
     let mut quest_manager = None;
+    let mut quests = Vec::new();
     let mut player_history = None;
     let mut inventory_containers = None;
     let mut flod_tiles = None;
@@ -341,7 +344,7 @@ pub fn saved_prospect_from_payload(payload: &[u8]) -> Result<SavedProspect> {
             .context("invalid experimental recorder class string")?;
         let label = recorder_class_label(&class.units);
         let label = match label.as_deref() {
-            Some(label @ ("C013" | "C015" | "C016" | "C018" | "C024")) => label,
+            Some(label @ ("C013" | "C015" | "C016" | "C018" | "C019" | "C024")) => label,
             _ => continue,
         };
         let tree = BaseComponentTree::parse(
@@ -365,6 +368,10 @@ pub fn saved_prospect_from_payload(payload: &[u8]) -> Result<SavedProspect> {
             "C018" => quest_manager
                 .replace(SavedQuestManager::from_tree(&typed.tree)?)
                 .is_some(),
+            "C019" => {
+                quests.push(SavedQuestActor::from_tree(&typed.tree)?);
+                false
+            }
             _ => player_history
                 .replace(saved_player_history(&typed.tree)?)
                 .is_some(),
@@ -375,6 +382,7 @@ pub fn saved_prospect_from_payload(payload: &[u8]) -> Result<SavedProspect> {
         info,
         game_mode,
         quest_manager,
+        quests,
         player_history,
         inventory_containers,
         flod_tiles,

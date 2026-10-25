@@ -157,6 +157,7 @@ fn saved_quest_state_composes_into_the_quest_manager_open() {
     let saved = SavedQuestManager {
         faction_mission: units("Mission_C"),
         initial_quest: Some(9_001),
+        initial_quest_class: Vec::new(),
         mission_complete: false,
         run_quests: true,
         dynamic_quest_difficulty: 2,

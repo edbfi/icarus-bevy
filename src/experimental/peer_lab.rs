@@ -186,6 +186,7 @@ use super::packet_lab::{
 };
 use super::pawn_open::{PawnContent, PawnOpenPlan, PawnOpenState, compose_pawn_open};
 use super::ping::PingEstimator;
+use super::quest_open::{QuestOpenBasePlan, QuestOpenPlan, compose_quest_open};
 use super::release::ReleaseProfile;
 use super::rep_layout::RepValue;
 use super::server_fps::ServerFpsMeter;
@@ -226,7 +227,7 @@ pub const DEFAULT_MAX_DATAGRAM_BYTES: u32 = 1024;
 /// Largest UDP payload over IPv4.
 pub const MAX_UDP_PAYLOAD_BYTES: u32 = 65_507;
 /// Lab choice: default channel-index limit for bunch parsing.
-pub const DEFAULT_MAX_CHANNELS: u32 = 32;
+pub const DEFAULT_MAX_CHANNELS: u32 = 256;
 /// Lab choice: default archive-string unit cap for channel names.
 pub const DEFAULT_MAX_STRING_UNITS: usize = 256;
 
@@ -499,6 +500,10 @@ pub struct PeerLabStats {
     pub manager_opens_sent: u64,
     /// World manager opens that could not be composed or framed.
     pub manager_open_errors: u64,
+    /// Saved quest actor opens sent with the world managers (`F-934`).
+    pub quest_opens_sent: u64,
+    /// Saved quest actor opens that could not be composed or framed.
+    pub quest_open_errors: u64,
     /// `NMT_ActorChannelFailure` entries delivered in a valid login state.
     pub actor_channel_failures: u64,
     /// Peers closed because their PlayerController channel failed.
@@ -584,12 +589,13 @@ pub struct SessionCounts {
     pub closed_by_shutdown: u64,
     /// PlayerController opens sent after Join.
     pub player_controller_opens_sent: u64,
-    /// Pawn, GameState, PlayerState and world manager opens sent after
-    /// Join.
+    /// Pawn, GameState, PlayerState, world manager and saved quest opens sent
+    /// after Join.
     pub pawn_opens_sent: u64,
     pub game_state_opens_sent: u64,
     pub player_state_opens_sent: u64,
     pub manager_opens_sent: u64,
+    pub quest_opens_sent: u64,
     /// Actor opens (session and replicated) that failed to compose or
     /// frame; a datagram the socket failed to send counts in `io_errors`.
     pub open_errors: u64,
@@ -886,6 +892,10 @@ pub struct PeerLab {
     /// Opt-in world manager opens after the PlayerState: each manager's
     /// key, plan and channel (F-859).
     manager_opens: Vec<(ActorKey, ManagerOpenPlan, u32)>,
+    /// Base layout and checksums for `C019` quest actor opens (`F-934`).
+    quest_open_base: Option<QuestOpenBasePlan>,
+    /// Saved `C019` quest actor opens (`F-934`), each with its channel.
+    quest_opens: Vec<(QuestOpenPlan, u32)>,
     /// Driver-wide NetGUIDs, replicated actors keyed by the caller's key.
     guid_cache: NetGuidCache,
     /// `AGameSession::GetNextPlayerID`'s counter (F-784): 256 first.
@@ -954,6 +964,8 @@ impl PeerLab {
             game_state_open: None,
             player_state_open: None,
             manager_opens: Vec::new(),
+            quest_open_base: None,
+            quest_opens: Vec::new(),
             guid_cache: NetGuidCache::new(),
             next_player_id: FIRST_PLAYER_ID,
             next_connection_id: 1,
@@ -993,7 +1005,7 @@ impl PeerLab {
     /// opened yet). Returns whether an update was sent; failures count
     /// `actor_update_errors` and change nothing. A lost update is repaired as
     /// UE re-sends a naked packet's properties: when the client naks its
-    /// packet and no newer update was sent since, the location counts as
+    /// packet and no newer update has gone out since, the location counts as
     /// unsent (`actor_updates_lost`) and the next selection sends it again.
     pub fn update_actor_movement(
         &mut self,
@@ -1212,6 +1224,7 @@ impl PeerLab {
                 .manager_opens
                 .iter()
                 .any(|(_, _, taken)| *taken == channel)
+            && !self.quest_opens.iter().any(|(_, taken)| *taken == channel)
     }
 
     /// After [`enable_player_controller_open`](Self::enable_player_controller_open),
@@ -1346,8 +1359,8 @@ impl PeerLab {
     }
 
     /// Also open `plan` in `slot` on each joined connection after the
-    /// enabled managers, on the channel after theirs, and reference it from
-    /// the GameState open; returns the channel. Fails without enabled
+    /// enabled managers and quests, on the channel after theirs, and reference
+    /// it from the GameState open; returns the channel. Fails without enabled
     /// managers, on a slot already opened, on a level other than the
     /// GameState's or on a taken channel.
     pub fn add_manager_open(&mut self, slot: ManagerSlot, plan: ManagerOpenPlan) -> Result<u32> {
@@ -1361,13 +1374,18 @@ impl PeerLab {
         ensure!(
             self.manager_opens
                 .iter()
-                .all(|(key, ..)| *key != slot.key()),
+                .all(|(key, ..)| *key != slot.key())
+                && self
+                    .quest_opens
+                    .iter()
+                    .all(|(quest, _)| quest.key != slot.key()),
             "the manager slot is already opened"
         );
         let channel = self
             .manager_opens
             .iter()
             .map(|(.., channel)| *channel)
+            .chain(self.quest_opens.iter().map(|(_, channel)| *channel))
             .max()
             .context("a manager added after the enabled managers")?
             .checked_add(1)
@@ -1380,6 +1398,63 @@ impl PeerLab {
             slot.reference_from(&mut session.state.managers);
         }
         self.manager_opens.push((slot.key(), plan, channel));
+        Ok(channel)
+    }
+
+    /// Record the release's base layout and component checksums for saved
+    /// `C019` quest actor opens (`F-934`). Fails without a GameState open or
+    /// on a level other than the GameState's.
+    pub fn enable_quest_opens(&mut self, base: QuestOpenBasePlan) -> Result<()> {
+        let Some(session) = &self.game_state_open else {
+            bail!("the quest opens follow the GameState open");
+        };
+        ensure!(
+            base.level == session.plan.level,
+            "the quest open base and the GameState name different levels"
+        );
+        self.quest_open_base = Some(base);
+        Ok(())
+    }
+
+    /// The release's base layout and checksums for `C019` quest actor opens,
+    /// if enabled.
+    pub fn quest_open_base(&self) -> Option<&QuestOpenBasePlan> {
+        self.quest_open_base.as_ref()
+    }
+
+    /// Also open the saved quest actor `plan` (`C019`, `F-934`) on each joined
+    /// connection after the enabled managers and quests, on the next channel;
+    /// returns the channel. Fails without enabled managers, on a duplicate
+    /// actor key, on a level other than the GameState's or on a taken channel.
+    pub fn add_quest_open(&mut self, plan: QuestOpenPlan) -> Result<u32> {
+        let Some(session) = &self.game_state_open else {
+            bail!("the quest opens follow the GameState open");
+        };
+        ensure!(
+            plan.level == session.plan.level,
+            "a quest actor and the GameState name different levels"
+        );
+        ensure!(
+            self.quest_opens
+                .iter()
+                .all(|(existing, _)| existing.key != plan.key)
+                && self.manager_opens.iter().all(|(key, ..)| *key != plan.key),
+            "the quest actor key is already opened"
+        );
+        let channel = self
+            .manager_opens
+            .iter()
+            .map(|(.., channel)| *channel)
+            .chain(self.quest_opens.iter().map(|(_, channel)| *channel))
+            .max()
+            .context("a quest actor added after the enabled managers")?
+            .checked_add(1)
+            .context("quest channel overflow")?;
+        ensure!(
+            self.free_session_channel(channel),
+            "a quest channel collides with another channel or is out of range"
+        );
+        self.quest_opens.push((plan, channel));
         Ok(channel)
     }
 
@@ -1617,12 +1692,14 @@ impl PeerLab {
             game_state_opens_sent: self.stats.game_state_opens_sent,
             player_state_opens_sent: self.stats.player_state_opens_sent,
             manager_opens_sent: self.stats.manager_opens_sent,
+            quest_opens_sent: self.stats.quest_opens_sent,
             open_errors: [
                 self.stats.player_controller_open_errors,
                 self.stats.pawn_open_errors,
                 self.stats.game_state_open_errors,
                 self.stats.player_state_open_errors,
                 self.stats.manager_open_errors,
+                self.stats.quest_open_errors,
                 self.stats.actor_open_errors,
             ]
             .into_iter()
@@ -2240,8 +2317,25 @@ impl PeerLab {
         if self.player_state_open.is_some() {
             self.send_player_state_open(address, guids.actor, guids.player_state);
         }
-        for index in 0..self.manager_opens.len() {
-            self.send_manager_open(address, index);
+        let mut extra_opens: Vec<(u32, bool, usize)> = self
+            .manager_opens
+            .iter()
+            .enumerate()
+            .map(|(index, (.., channel))| (*channel, false, index))
+            .chain(
+                self.quest_opens
+                    .iter()
+                    .enumerate()
+                    .map(|(index, (_, channel))| (*channel, true, index)),
+            )
+            .collect();
+        extra_opens.sort_unstable_by_key(|&(channel, ..)| channel);
+        for (_, is_quest, index) in extra_opens {
+            if is_quest {
+                self.send_quest_open(address, index);
+            } else {
+                self.send_manager_open(address, index);
+            }
         }
         true
     }
@@ -2550,6 +2644,51 @@ impl PeerLab {
         self.guid_cache = cache;
         if self.send_all(&sent, address) {
             bump(&mut self.stats.manager_opens_sent);
+        }
+    }
+
+    /// Compose and send saved quest actor `index` (`C019`, `F-934`),
+    /// committing GUID and export state only once every datagram is built; a
+    /// failure counts `quest_open_errors`.
+    fn send_quest_open(&mut self, address: SocketAddrV4, index: usize) {
+        let Some((plan, channel)) = self.quest_opens.get(index) else {
+            return;
+        };
+        let Some(entry) = self.peers.get_mut(&address) else {
+            return;
+        };
+        let mut cache = self.guid_cache.clone();
+        let mut exports = entry.exports.clone();
+        let sent = compose_quest_open(
+            &mut cache,
+            &mut exports,
+            plan,
+            *channel,
+            entry.peer.connection_byte_order(),
+        )
+        .and_then(|open| {
+            let export_payloads: Vec<Payload> = open.exports.into_iter().collect();
+            entry
+                .peer
+                .reliable_actor_open_datagrams(&open.bunch, &export_payloads)
+        });
+        let sent = match sent {
+            Ok(sent) => sent,
+            Err(_) => {
+                bump(&mut self.stats.quest_open_errors);
+                if entry.peer.is_failed() {
+                    self.peers.remove(&address);
+                    bump(&mut self.stats.peers_failed);
+                }
+                return;
+            }
+        };
+        commit_exports(&mut exports, &sent);
+        entry.exports = exports;
+        entry.ack_pending = false;
+        self.guid_cache = cache;
+        if self.send_all(&sent, address) {
+            bump(&mut self.stats.quest_opens_sent);
         }
     }
 

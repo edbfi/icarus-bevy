@@ -26,10 +26,11 @@ use anyhow::{Result, ensure};
 use super::actor_channel::{
     BlockTarget, ContentBlock, DynamicSpawn, NetGuidRef, SpawnRecord, SubObjectClass,
 };
+use super::control_messages::ArchiveText;
 use super::packet::{BitWriter, Payload};
 use super::rep_layout::{
-    PropertyStream, RepCommand, RepLayoutCodec, RepLayoutLimits, RepValue, encode_rep_properties,
-    write_rep_properties,
+    NetworkName, PropertyStream, RepArray, RepCommand, RepLayoutCodec, RepLayoutLimits, RepValue,
+    encode_rep_properties, write_rep_properties,
 };
 use super::rep_rpc::{FieldHeader, write_field_header};
 use super::session_open::{
@@ -47,6 +48,12 @@ pub enum Reference {
     Component(usize),
     /// A keyed actor: its driver-wide GUID, never exported.
     Actor(ActorKey),
+    /// A dynamic array of keyed actors, resolved in element order.
+    Actors(Vec<ActorKey>),
+    /// A `(Str, Object)` dynamic array of keyed actors (`FRelevantQuestActor`).
+    KeyedActors(Vec<(ArchiveText, ActorKey)>),
+    /// A `(NetworkName, Object)` dynamic array of keyed actors (`FSubQuest`).
+    NamedActors(Vec<(NetworkName, ActorKey)>),
     /// The opened actor itself (`Instigator` of a pawn, for example).
     Itself,
     /// An object whose GUID the caller already holds (a PlayerController).
@@ -174,11 +181,36 @@ fn validate_references(
             !values.contains_key(handle),
             "{what} handle {handle} has both a reference and a value"
         );
-        if let Reference::Component(index) = reference {
-            ensure!(
-                *index < components,
-                "{what} handle {handle} references component {index} of {components}"
-            );
+        match reference {
+            Reference::Component(index) => {
+                ensure!(
+                    *index < components,
+                    "{what} handle {handle} references component {index} of {components}"
+                );
+            }
+            Reference::Actors(items) => {
+                ensure!(
+                    u16::try_from(items.len()).is_ok(),
+                    "{what} handle {handle} array length {} exceeds u16::MAX",
+                    items.len()
+                );
+            }
+            Reference::KeyedActors(items) => {
+                ensure!(
+                    u16::try_from(items.len()).is_ok(),
+                    "{what} handle {handle} array length {} exceeds u16::MAX",
+                    items.len()
+                );
+            }
+            Reference::NamedActors(items) => {
+                ensure!(
+                    u16::try_from(items.len()).is_ok(),
+                    "{what} handle {handle} array length {} exceeds u16::MAX",
+                    items.len()
+                );
+            }
+            Reference::Static(_) | Reference::Actor(_) | Reference::Itself | Reference::Guid(_) => {
+            }
         }
     }
     Ok(())
@@ -232,14 +264,75 @@ impl Serializer<'_> {
     ) -> Result<BTreeMap<u32, RepValue>> {
         let mut values = values.clone();
         for (handle, reference) in references {
-            let guid = match reference {
-                Reference::Static(chain) => self.static_object(chain)?,
-                Reference::Component(index) => self.component(*index)?,
-                Reference::Actor(key) => self.cache.actor_guid(*key),
-                Reference::Itself => self.actor,
-                Reference::Guid(guid) => *guid,
+            let value = match reference {
+                Reference::Static(chain) => {
+                    RepValue::Object(NetGuidRef::plain(self.static_object(chain)?))
+                }
+                Reference::Component(index) => {
+                    RepValue::Object(NetGuidRef::plain(self.component(*index)?))
+                }
+                Reference::Actor(key) => {
+                    RepValue::Object(NetGuidRef::plain(self.cache.actor_guid(*key)))
+                }
+                Reference::Actors(keys) => {
+                    let entries = keys
+                        .iter()
+                        .zip(1u32..)
+                        .map(|(key, item_handle)| {
+                            entry(
+                                item_handle,
+                                RepValue::Object(NetGuidRef::plain(self.cache.actor_guid(*key))),
+                            )
+                        })
+                        .collect();
+                    RepValue::DynamicArray(RepArray {
+                        count: u16::try_from(keys.len())?,
+                        stream: PropertyStream {
+                            entries,
+                            terminator_checksum: None,
+                        },
+                    })
+                }
+                Reference::KeyedActors(items) => {
+                    let mut entries = Vec::with_capacity(2 * items.len());
+                    for ((key, actor), index) in items.iter().zip(0u32..) {
+                        let guid = self.cache.actor_guid(*actor);
+                        entries.push(entry(2 * index + 1, RepValue::Str(key.clone())));
+                        entries.push(entry(
+                            2 * index + 2,
+                            RepValue::Object(NetGuidRef::plain(guid)),
+                        ));
+                    }
+                    RepValue::DynamicArray(RepArray {
+                        count: u16::try_from(items.len())?,
+                        stream: PropertyStream {
+                            entries,
+                            terminator_checksum: None,
+                        },
+                    })
+                }
+                Reference::NamedActors(items) => {
+                    let mut entries = Vec::with_capacity(2 * items.len());
+                    for ((name, actor), index) in items.iter().zip(0u32..) {
+                        let guid = self.cache.actor_guid(*actor);
+                        entries.push(entry(2 * index + 1, RepValue::NetworkName(name.clone())));
+                        entries.push(entry(
+                            2 * index + 2,
+                            RepValue::Object(NetGuidRef::plain(guid)),
+                        ));
+                    }
+                    RepValue::DynamicArray(RepArray {
+                        count: u16::try_from(items.len())?,
+                        stream: PropertyStream {
+                            entries,
+                            terminator_checksum: None,
+                        },
+                    })
+                }
+                Reference::Itself => RepValue::Object(NetGuidRef::plain(self.actor)),
+                Reference::Guid(guid) => RepValue::Object(NetGuidRef::plain(*guid)),
             };
-            values.insert(*handle, RepValue::Object(NetGuidRef::plain(guid)));
+            values.insert(*handle, value);
         }
         Ok(values)
     }

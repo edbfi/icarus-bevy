@@ -24,6 +24,7 @@ use super::{
         ManagerInventories, ManagerOpenPlan, ManagerSlot, STAT_CONTAINER_HANDLE,
     },
     pawn_open::{PawnComponent, PawnContentPlan, PawnOpenPlan},
+    quest_open::QuestOpenBasePlan,
     rep_layout::{
         ICARUS_ROW_HANDLE_NONE, ICARUS_ROW_HANDLE_TABLE_COUNT, ICARUS_TWO_BYTE_ROW_TABLES,
         ICARUS_ZERO_ROW_TABLES, MovementLevel, RepValue, RotationLevel, TagEncoding,
@@ -32,8 +33,9 @@ use super::{
         flod_rep_layout, icarus_game_state_survival_rep_layout,
         icarus_player_controller_survival_rep_layout, inventory_container_manager_rep_layout,
         inventory_rep_layout, inventory_slot_commands, player_character_state_rep_layout,
-        player_history_tracker_rep_layout, quest_manager_rep_layout, radiation_manager_rep_layout,
-        weather_manager_component_rep_layout, world_talent_manager_rep_layout,
+        player_history_tracker_rep_layout, quest_manager_rep_layout, quest_rep_layout,
+        radiation_manager_rep_layout, weather_manager_component_rep_layout,
+        world_talent_manager_rep_layout,
     },
     rep_rpc::{
         BP_ICARUS_PLAYER_CONTROLLER_SURVIVAL_FIELD_INDEX_BOUND,
@@ -1285,6 +1287,33 @@ impl ReleaseProfile {
             .all_manager_open_plans(map_url)?
             .into_iter()
             .find_map(|(candidate, plan)| (candidate == slot).then_some(plan)))
+    }
+
+    /// The base `AQuest` open plan (`C019`, `F-934`, `F-935`) for the map
+    /// package of `map_url`, or `None` without `[managers]` or when
+    /// `pin.build_id` is outside the builds whose `QUEST_CLASSES` checksums
+    /// and `Check()` rules are qualified (`25793607`/`25793767` for 3.0.31,
+    /// `25956137` for 3.0.32).
+    pub fn quest_open_base_plan(&self, map_url: &str) -> Result<Option<QuestOpenBasePlan>> {
+        let Some(managers) = &self.managers else {
+            return Ok(None);
+        };
+        if !matches!(self.pin.build_id, 25_793_607 | 25_793_767 | 25_956_137) {
+            return Ok(None);
+        }
+        Ok(Some(QuestOpenBasePlan {
+            level: map_level_chain(map_url)?,
+            layout: quest_rep_layout(
+                MovementLevel::Whole,
+                MovementLevel::Whole,
+                RotationLevel::Bytes,
+                self.tags.tag_encoding(),
+            ),
+            actor_state_layout: actor_state_rep_layout(),
+            stat_container_checksum: managers.stat_container_checksum,
+            actor_state_checksum: managers.actor_state_checksum,
+            engine_net_version: self.engine_network_version,
+        }))
     }
 
     fn all_manager_open_plans(&self, map_url: &str) -> Result<Vec<(ManagerSlot, ManagerOpenPlan)>> {

@@ -59,22 +59,25 @@ server's `D_FactionMissions` by a fixed rule, which `run` follows (F-834,
 F-835). A fresh player's pawn vitals and empty inventories are data.pak rows,
 which `run` sends (F-836); after each PlayerState it opens the GameState's
 radiation, world-talent and disaster managers as the capture did (F-859),
-then, from a save's quest manager and player history records, the
-QuestManager and the PlayerHistoryTracker, which compose bit for bit against
-the capture (F-861, F-862;
-[world managers](../../specs/network/world-managers.md)). From the container
-manager record it opens the InventoryContainerManager with the saved
+then, from a save's quest, quest manager and player history records, the
+stitched `C019` quest actors followed by the QuestManager and the
+PlayerHistoryTracker, which compose bit for bit against the capture (F-861,
+F-862, F-934; [world managers](../../specs/network/world-managers.md)). All
+2,044 `D_Quests` class checksums derive identically from the 3.0.31 and 3.0.32
+server paks (1,774 keep `AQuest`'s 4033596864, 270 add `CPF_Net` properties),
+and cooked Kismet `Check` bytecode plus CDO guards compile 1,635 pure and 44
+false-only completion rules (matching all 8 of 8 captured quest opens and
+channel 126 bit for bit) while failing closed on the 270 `CPF_Net` extensions
+and 365 impure `Check` graphs (F-864, F-934, F-935; U-074 resolved). From the
+container manager record it opens the InventoryContainerManager with the saved
 inventories and their items, matching all 98 of 98 captured inventories bit
 for bit, including `CurrentWeight` on ticked C016 containers via
 `RecalculateWeight` (F-866, F-933; U-075 resolved). The FLOD manager's open
 carries the save's tile count as tile references and composes bit for bit
 (F-914). On each of the 15 qualified prospects `run` admits a probe session
-and composes every open without errors (F-867).
+and composes every open without errors (F-867, F-934).
 The original appends a player to the history once per user ID and slot when
 it initialises the player for the prospect, which `run` does not yet (F-865).
-The quest actors the QuestManager references stay closed: which sub-quests
-are active is each quest Blueprint's logic (F-864), and 270 of the 2,044
-quest classes add replicated properties (F-863; U-074).
 The pawn's stats are mostly starting grants, with 8 virtual stats whose
 formulas the server declares in code; `run` sends them from data.pak by the
 same formulas (F-839).
@@ -85,7 +88,8 @@ same formulas (F-839).
 - Authenticated runtime relevancy and priority exercise (U-038).
 - Item, stat and character values of a played character at open (U-069).
   M-893 retains the unfinished UID-source investigation.
-  M-894 retains the private quest extracts for the unfinished U-074 work.
+- Saved `C019` quests using the 270 `CPF_Net`-extending classes or 365 impure
+  `Check` graphs, which fail closed in `run` (F-934, F-935).
 - Saved container lists with empty positions (which `run` skips) and live
   `C016::StitchingOperation` nulling of unreferenced containers, whose wire
   encoding is unobserved (F-866, F-867).
@@ -95,4 +99,4 @@ same formulas (F-839).
 
 ## Artifacts
 
-M-420..M-449, M-455..M-470, M-570..M-576, M-581..M-588, M-600..M-605, M-707..M-717, M-720, M-728..M-748, M-776, M-777, M-782, M-794, M-795, M-797..M-799, M-801, M-802, M-804, M-805, M-807, M-813..M-819, M-832, M-834 to M-836, M-838 to M-848, M-852, M-853, M-860, M-863, M-868, M-869, M-879, M-881 to M-887, M-891 to M-896, M-901 to M-913, M-1027, M-1028.
+M-420..M-449, M-455..M-470, M-570..M-576, M-581..M-588, M-600..M-605, M-707..M-717, M-720, M-728..M-748, M-776, M-777, M-782, M-794, M-795, M-797..M-799, M-801, M-802, M-804, M-805, M-807, M-813..M-819, M-832, M-834 to M-836, M-838 to M-848, M-852, M-853, M-860, M-863, M-868, M-869, M-879, M-881 to M-887, M-891 to M-896, M-901 to M-913, M-1027 to M-1030.

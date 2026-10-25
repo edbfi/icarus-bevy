@@ -30,6 +30,8 @@ pub mod ping;
 pub mod probe_client;
 pub mod property_tree;
 pub mod prospect_info;
+pub mod quest_open;
+pub mod quest_table;
 pub mod recorders;
 pub mod release;
 pub mod rep_layout;

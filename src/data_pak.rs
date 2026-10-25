@@ -512,17 +512,26 @@ impl DataTables {
         Ok(self.rows(table)?.iter().position(|row| *row == name))
     }
 
+    /// Every row of `table` as its JSON object, in `Rows` order.
+    pub fn objects(
+        &mut self,
+        table: &str,
+    ) -> Result<&[serde_json::Map<String, serde_json::Value>]> {
+        if !self.objects.contains_key(table) {
+            let rows = self.pak.table_objects(table)?;
+            self.objects.insert(table.to_owned(), rows);
+        }
+        Ok(&self.objects[table])
+    }
+
     /// Row `name` (UTF-8) of `table` as its JSON object, if listed.
     pub fn row(
         &mut self,
         table: &str,
         name: &str,
     ) -> Result<Option<serde_json::Map<String, serde_json::Value>>> {
-        if !self.objects.contains_key(table) {
-            let rows = self.pak.table_objects(table)?;
-            self.objects.insert(table.to_owned(), rows);
-        }
-        Ok(self.objects[table]
+        Ok(self
+            .objects(table)?
             .iter()
             .find(|row| row.get("Name").and_then(serde_json::Value::as_str) == Some(name))
             .cloned())

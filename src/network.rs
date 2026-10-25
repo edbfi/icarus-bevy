@@ -75,6 +75,7 @@ use crate::{
             MissionHistoryRecord, PlayerHistoryEntry, SavedContainerManager, SavedItem,
             SavedQuestManager,
         },
+        quest_open::{StitchedQuest, quest_table_rows, stitch_saved_quests},
         release::{ReleasePin, ReleaseProfile},
         rep_layout::{DYNAMIC_ITEM_PROPERTIES_MAX_VALUE, NetworkName, RepValue},
         server_fps::{DEFAULT_SAMPLES, ServerFpsMeter},
@@ -111,6 +112,9 @@ pub fn write_install_record(official: &std::path::Path, record: &serde_json::Val
 pub const SESSION_FLAGS_TABLE: &str = "D_SessionFlags";
 /// The data table whose row order `LockedMissions` rows follow (F-834).
 pub const FACTION_MISSIONS_TABLE: &str = "D_FactionMissions";
+/// The data table whose rows map `C019` quest actors to their row handles and
+/// Blueprint classes (`F-934`).
+pub const QUESTS_TABLE: &str = "D_Quests";
 /// The `D_FactionMissions` field a row clears to never lock (F-834); a row
 /// that omits it keeps the struct default, set.
 pub const RETRY_TIMEOUT_FIELD: &str = "bUseOpenWorldRetryTimeout";
@@ -659,6 +663,14 @@ pub struct SavedGameState {
     /// The saved missions `LockedMissions` lists while their locks last
     /// ([`locked_missions`]); empty without tables.
     pub locked_missions: Vec<LockedMission>,
+    /// Stitched quest actors (`C019`, `F-934`, `F-935`) in channel-open order,
+    /// ready to compose with a release's `QuestOpenBasePlan`; empty when the
+    /// save has no `C019` records or when quest stitching was skipped.
+    pub quests: Vec<StitchedQuest>,
+    /// Saved `C019` quest actors that could not be stitched or opened, with
+    /// the reason; when present, any saved `QuestManager` (`C018`) is also
+    /// skipped so `InitialQuest` never points to an unopened quest actor.
+    pub skipped_quests: Option<(usize, String)>,
     /// The saved quest manager state (`C018`) and its faction mission's
     /// `D_FactionMissions` row (F-861); `None` without the record, without
     /// tables or when the table lacks the mission (a skipped manager).
@@ -764,9 +776,10 @@ pub fn prospect_world_flags(tables: &mut DataTables, prospect: &[u16]) -> Result
 
 /// With the official server's data tables (F-828), the saved session flags
 /// also replicate as `SessionFlags` row indices in saved order (F-830), the
-/// saved mission history yields the [`locked_missions`] (F-834) and the
+/// saved mission history yields the [`locked_missions`] (F-834), the
 /// prospect's row sets the open-world and outpost flags
-/// ([`prospect_world_flags`], F-911).
+/// ([`prospect_world_flags`], F-911), and `D_Quests` stitches any saved
+/// `C019` quest actors (`F-934`, `F-935`).
 pub fn saved_game_state(
     section: &PreservedSection,
     mut tables: Option<&mut DataTables>,
@@ -837,7 +850,46 @@ pub fn saved_game_state(
         },
         _ => None,
     };
-    let quest_manager = match (saved.quest_manager, tables) {
+    let session_flags = saved
+        .game_mode
+        .as_ref()
+        .map_or(&[][..], |mode| mode.session_flags.as_slice());
+    let mut quests = Vec::new();
+    let mut skipped_quests = None;
+    let effective_quest_manager = match tables.as_deref_mut() {
+        Some(tables) if tables.has_table(QUESTS_TABLE) => {
+            let quest_rows = quest_table_rows(tables.objects(QUESTS_TABLE)?)?;
+            match stitch_saved_quests(
+                &saved.quests,
+                saved.quest_manager.as_ref(),
+                session_flags,
+                &quest_rows,
+            ) {
+                Ok(stitched) => {
+                    quests = stitched.quests;
+                    stitched.quest_manager
+                }
+                Err(error) => {
+                    let reason = format!("{error:#}");
+                    skipped_quests = Some((saved.quests.len(), reason.clone()));
+                    if saved.quest_manager.is_some() {
+                        skipped_managers.push((ManagerSlot::Quest, reason));
+                    }
+                    None
+                }
+            }
+        }
+        other_tables if !saved.quests.is_empty() => {
+            let reason = format!("saved C019 quest actors require {QUESTS_TABLE}");
+            skipped_quests = Some((saved.quests.len(), reason.clone()));
+            if saved.quest_manager.is_some() && other_tables.is_some() {
+                skipped_managers.push((ManagerSlot::Quest, reason));
+            }
+            None
+        }
+        _ => saved.quest_manager,
+    };
+    let quest_manager = match (effective_quest_manager, tables) {
         (Some(quest), Some(tables)) => {
             let row = tables
                 .row_index(FACTION_MISSIONS_TABLE, &quest.faction_mission)?
@@ -860,6 +912,8 @@ pub fn saved_game_state(
         time_of_day,
         unmapped_session_flags,
         locked_missions: locked,
+        quests,
+        skipped_quests,
         quest_manager,
         player_history: saved.player_history,
         flod_tiles: saved.flod_tiles,
@@ -888,6 +942,11 @@ pub struct AppliedGameState {
     pub unmapped_session_flags: usize,
     /// Missions `LockedMissions` lists while their locks last.
     pub locked_missions: usize,
+    /// Channels opened for the save's stitched `C019` quest actors, in
+    /// opening order (`F-934`).
+    pub quest_channels: Vec<u32>,
+    /// Saved `C019` quest actors that could not be opened, with the reason.
+    pub skipped_quests: Option<(usize, String)>,
     /// The managers the save's state opened, with their channels, in
     /// opening order (F-861, F-862, F-866).
     pub saved_managers: Vec<(ManagerSlot, u32)>,
@@ -896,11 +955,12 @@ pub struct AppliedGameState {
 }
 
 /// Add a loaded world's [`saved_game_state`] to `lab`'s GameState open,
-/// and open those of `saved_managers` (the release's plans) whose state
-/// the save supplies after the other managers: the QuestManager with the
-/// saved quest state (F-861), the InventoryContainerManager with the saved
-/// container inventories (F-866), the PlayerHistoryTracker with the saved
-/// history (F-862) and the FLOD manager with the saved tile count (F-914).
+/// open any stitched `C019` quest actors (`F-934`), and open those of
+/// `saved_managers` (the release's plans) whose state the save supplies after
+/// the other managers: the QuestManager with the saved quest state (F-861),
+/// the InventoryContainerManager with the saved container inventories (F-866),
+/// the PlayerHistoryTracker with the saved history (F-862) and the FLOD
+/// manager with the saved tile count (F-914).
 pub fn apply_saved_game_state(
     lab: &mut PeerLab,
     section: &PreservedSection,
@@ -908,6 +968,29 @@ pub fn apply_saved_game_state(
     saved_managers: Vec<(ManagerSlot, ManagerOpenPlan)>,
 ) -> Result<AppliedGameState> {
     let mut saved = saved_game_state(section, tables)?;
+    let mut quest_plans = Vec::new();
+    if !saved.quests.is_empty() {
+        let built = match lab.quest_open_base() {
+            Some(base) => saved
+                .quests
+                .iter()
+                .map(|quest| base.quest_plan(quest))
+                .collect::<Result<Vec<_>>>(),
+            None => Err(anyhow::anyhow!(
+                "the release profile has no qualified quest open plan"
+            )),
+        };
+        match built {
+            Ok(plans) => quest_plans = plans,
+            Err(error) => {
+                let reason = format!("{error:#}");
+                saved.skipped_quests = Some((saved.quests.len(), reason.clone()));
+                if saved.quest_manager.take().is_some() {
+                    saved.skipped_managers.push((ManagerSlot::Quest, reason));
+                }
+            }
+        }
+    }
     // The managers join last, after every other step that can fail.
     let mut manager_plans = Vec::new();
     for (slot, plan) in saved_managers {
@@ -955,6 +1038,10 @@ pub fn apply_saved_game_state(
     if let Some(clock) = saved.time_of_day {
         lab.enable_time_of_day(clock)?;
     }
+    let quest_channels = quest_plans
+        .into_iter()
+        .map(|plan| lab.add_quest_open(plan))
+        .collect::<Result<Vec<_>>>()?;
     let saved_managers = manager_plans
         .into_iter()
         .map(|(slot, plan)| Ok((slot, lab.add_manager_open(slot, plan)?)))
@@ -962,6 +1049,8 @@ pub fn apply_saved_game_state(
     Ok(AppliedGameState {
         unmapped_session_flags: saved.unmapped_session_flags,
         locked_missions,
+        quest_channels,
+        skipped_quests: saved.skipped_quests,
         saved_managers,
         skipped_managers: saved.skipped_managers,
     })
@@ -1027,6 +1116,9 @@ fn load_data_tables(path: &std::path::Path) -> Result<DataTables> {
     tables.rows(SESSION_FLAGS_TABLE)?;
     tables.rows(FACTION_MISSIONS_TABLE)?;
     tables.row_bool(FACTION_MISSIONS_TABLE, RETRY_TIMEOUT_FIELD, 0)?;
+    if tables.has_table(QUESTS_TABLE) {
+        quest_table_rows(tables.objects(QUESTS_TABLE)?)?;
+    }
     pawn_content(Some(&mut tables))?;
     Ok(tables)
 }
@@ -1103,6 +1195,12 @@ pub fn bind(network: &NetworkConfig) -> Result<Option<BoundNetwork>> {
                 .context("compose the manager open plans")?;
             if !managers.is_empty() {
                 lab.enable_manager_opens(managers, MANAGER_FIRST_CHANNEL)?;
+                if let Some(quest_base) = profile
+                    .quest_open_base_plan(admission.map_url)
+                    .context("compose the quest open base plan")?
+                {
+                    lab.enable_quest_opens(quest_base)?;
+                }
                 saved_managers = profile
                     .saved_manager_open_plans(admission.map_url)
                     .context("compose the saved manager open plans")?;
