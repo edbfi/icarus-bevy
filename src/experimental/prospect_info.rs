@@ -10,7 +10,7 @@
 use anyhow::{Context, Result, bail, ensure};
 
 use super::tagged::TagKind;
-use super::typed_value::{Scalar, TypedTree, Value};
+use super::typed_value::{FixedStruct, Scalar, TypedTree, Value};
 
 /// `EProspectState` enumerators, by value.
 pub const PROSPECT_STATES: [&str; 5] = [
@@ -155,6 +155,22 @@ impl<'a> Fields<'a> {
             Some(Value::TaggedStruct { tree, .. }) => Ok(Some(Fields { tree, what })),
             None => Ok(None),
             _ => bail!("{}.{name} is not a tagged struct", self.what),
+        }
+    }
+
+    /// A fixed-width float struct (`Vector`, `Quat`, `Rotator`); missing
+    /// reads as `default`.
+    fn fixed_f32<const N: usize>(&self, name: &str, default: [f32; N]) -> Result<[f32; N]> {
+        match self.tree.get(name).map(|property| &property.value) {
+            Some(Value::FixedStruct {
+                value: FixedStruct::F32(items),
+                ..
+            }) => items
+                .as_slice()
+                .try_into()
+                .map_err(|_| anyhow::anyhow!("{}.{name} does not hold {N} floats", self.what)),
+            None => Ok(default),
+            _ => bail!("{}.{name} is not a float fixed struct", self.what),
         }
     }
 
@@ -430,6 +446,9 @@ pub struct SavedQuestManager {
     /// `InitialQuestRecord.RelevantActorIcarusUID`: the initial quest
     /// actor's `IcarusActorGUID` (its `C019` record's), if positive.
     pub initial_quest: Option<i32>,
+    /// `InitialQuestRecord.QuestActorName`: class name `C018::StitchingOperation`
+    /// checks when binding `InitialQuest` (`F-934`).
+    pub initial_quest_class: Vec<u16>,
     pub mission_complete: bool,
     pub run_quests: bool,
     pub dynamic_quest_difficulty: u8,
@@ -458,6 +477,23 @@ impl std::fmt::Debug for RelevantQuestActor {
     }
 }
 
+fn relevant_quest_actors(fields: &Fields<'_>, name: &str) -> Result<Vec<RelevantQuestActor>> {
+    fields
+        .structs(name)?
+        .iter()
+        .map(|tree| {
+            let fields = Fields {
+                tree,
+                what: "RelevantQuestActorRecord",
+            };
+            Ok(RelevantQuestActor {
+                key: fields.string("Key")?,
+                icarus_uid: fields.int("RelevantActorIcarusUID")?,
+            })
+        })
+        .collect()
+}
+
 impl SavedQuestManager {
     /// Type a `C018` component's tagged properties.
     pub fn from_tree(tree: &TypedTree) -> Result<Self> {
@@ -465,26 +501,14 @@ impl SavedQuestManager {
             tree,
             what: "IcarusQuestManagerRecorderComponent",
         };
-        let relevant = |name| -> Result<Vec<RelevantQuestActor>> {
-            fields
-                .structs(name)?
-                .iter()
-                .map(|tree| {
-                    let fields = Fields {
-                        tree,
-                        what: "RelevantQuestActorRecord",
-                    };
-                    Ok(RelevantQuestActor {
-                        key: fields.string("Key")?,
-                        icarus_uid: fields.int("RelevantActorIcarusUID")?,
-                    })
-                })
-                .collect()
-        };
-        let initial_quest = match fields.tagged("InitialQuestRecord", "InitialQuestRecord")? {
-            Some(record) => Some(record.int("RelevantActorIcarusUID")?).filter(|uid| *uid > 0),
-            None => None,
-        };
+        let (initial_quest, initial_quest_class) =
+            match fields.tagged("InitialQuestRecord", "InitialQuestRecord")? {
+                Some(record) => (
+                    Some(record.int("RelevantActorIcarusUID")?).filter(|uid| *uid > 0),
+                    record.string("QuestActorName")?,
+                ),
+                None => (None, Vec::new()),
+            };
         let difficulty = match fields.scalar("DynamicQuestDifficulty") {
             Some(Scalar::Int(value)) => u8::try_from(*value).ok(),
             Some(Scalar::Byte(value)) => Some(*value),
@@ -495,12 +519,156 @@ impl SavedQuestManager {
         Ok(Self {
             faction_mission: fields.name("FactionMissionName")?,
             initial_quest,
+            initial_quest_class,
             mission_complete: fields.bool("bMissionComplete")?,
             run_quests: fields.bool("bRunQuests")?,
             dynamic_quest_difficulty: difficulty,
             dynamic_quest_delay: fields.float("DynamicQuestDelay")?,
-            persistent_actors: relevant("RelevantPersistentActorRecords")?,
-            persistent_characters: relevant("RelevantPersistentCharacterRecords")?,
+            persistent_actors: relevant_quest_actors(&fields, "RelevantPersistentActorRecords")?,
+            persistent_characters: relevant_quest_actors(
+                &fields,
+                "RelevantPersistentCharacterRecords",
+            )?,
+        })
+    }
+}
+
+/// One saved `SubQuestRecord` (`C019`, `F-934`): child quest class name,
+/// `D_Quests` row name and child `IcarusActorGUID`. `Debug` shows no values.
+#[derive(Clone, Default, PartialEq, Eq)]
+pub struct SavedSubQuest {
+    pub class_name: Vec<u16>,
+    pub row_name: Vec<u16>,
+    pub icarus_uid: i32,
+}
+
+impl std::fmt::Debug for SavedSubQuest {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("SavedSubQuest")
+    }
+}
+
+/// One saved `QuestVariableRecord` (`C019`, `F-934`): variable name and its
+/// bool, float and int slots. `Debug` shows no values.
+#[derive(Clone, Default, PartialEq)]
+pub struct SavedQuestVariable {
+    pub name: Vec<u16>,
+    pub bool_value: bool,
+    pub float_value: f32,
+    pub int_value: i32,
+}
+
+impl std::fmt::Debug for SavedQuestVariable {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("SavedQuestVariable")
+    }
+}
+
+/// One saved quest actor (`C019`, `UIcarusQuestRecorderComponent`, `F-934`):
+/// its `IcarusActorGUID`, class name, transform, `D_Quests` row name,
+/// subquest links, quest variables, relevant actor/character links and count
+/// of non-empty base-recorder collections (`Modifiers`, `SavedInventories`,
+/// `*Variables`). `Debug` shows no values.
+#[derive(Clone, Default, PartialEq)]
+pub struct SavedQuestActor {
+    pub icarus_guid: i32,
+    pub class_name: Vec<u16>,
+    pub translation: [f32; 3],
+    pub rotation: [f32; 4],
+    pub scale_3d: [f32; 3],
+    pub quest_name: Vec<u16>,
+    pub subquests: Vec<SavedSubQuest>,
+    pub variables: Vec<SavedQuestVariable>,
+    pub relevant_actors: Vec<RelevantQuestActor>,
+    pub relevant_characters: Vec<RelevantQuestActor>,
+    pub base_extras: usize,
+}
+
+impl std::fmt::Debug for SavedQuestActor {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("SavedQuestActor")
+    }
+}
+
+impl SavedQuestActor {
+    /// Type a `C019` (`UIcarusQuestRecorderComponent`) component's tagged
+    /// properties.
+    pub fn from_tree(tree: &TypedTree) -> Result<Self> {
+        let fields = Fields {
+            tree,
+            what: "IcarusQuestRecorderComponent",
+        };
+        let (translation, rotation, scale_3d) =
+            match fields.tagged("ActorTransform", "Transform")? {
+                Some(transform) => (
+                    transform.fixed_f32("Translation", [0.0, 0.0, 0.0])?,
+                    transform.fixed_f32("Rotation", [0.0, 0.0, 0.0, 1.0])?,
+                    transform.fixed_f32("Scale3D", [1.0, 1.0, 1.0])?,
+                ),
+                None => ([0.0, 0.0, 0.0], [0.0, 0.0, 0.0, 1.0], [1.0, 1.0, 1.0]),
+            };
+        let subquests = fields
+            .structs("SubQuestRecords")?
+            .iter()
+            .map(|tree| {
+                let fields = Fields {
+                    tree,
+                    what: "SubQuestRecord",
+                };
+                Ok(SavedSubQuest {
+                    class_name: fields.string("SubQuestName")?,
+                    row_name: fields.name("SubQuestRowName")?,
+                    icarus_uid: fields.int("RelevantActorIcarusUID")?,
+                })
+            })
+            .collect::<Result<_>>()?;
+        let variables = fields
+            .structs("VariableRecords")?
+            .iter()
+            .map(|tree| {
+                let fields = Fields {
+                    tree,
+                    what: "QuestVariableRecord",
+                };
+                Ok(SavedQuestVariable {
+                    name: fields.string("VariableName")?,
+                    bool_value: fields.bool("bVariable")?,
+                    float_value: fields.float("fVariable")?,
+                    int_value: fields.int("iVariable")?,
+                })
+            })
+            .collect::<Result<_>>()?;
+        let base_extras = [
+            "Modifiers",
+            "SavedInventories",
+            "IntVariables",
+            "BoolVariables",
+            "NameVariables",
+            "TextVariables",
+            "LinearColorVariables",
+        ]
+        .into_iter()
+        .filter(
+            |name| match fields.tree.get(name).map(|property| &property.value) {
+                None => false,
+                Some(Value::StructArray { elements, .. }) => !elements.is_empty(),
+                Some(Value::ScalarArray { items, .. }) => !items.is_empty(),
+                Some(_) => true,
+            },
+        )
+        .count();
+        Ok(Self {
+            icarus_guid: fields.int("IcarusActorGUID")?,
+            class_name: fields.name("ActorClassName")?,
+            translation,
+            rotation,
+            scale_3d,
+            quest_name: fields.name("QuestName")?,
+            subquests,
+            variables,
+            relevant_actors: relevant_quest_actors(&fields, "RelevantActorRecords")?,
+            relevant_characters: relevant_quest_actors(&fields, "RelevantCharacterRecords")?,
+            base_extras,
         })
     }
 }

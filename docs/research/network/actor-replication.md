@@ -27,57 +27,41 @@ configuration per release (F-702; U-065 resolved); for 3.0.32 it, the class
 checksums, cooked schemas and row indices all derive from the dedicated-server
 distribution, which is what the shipped server may use (F-828, F-832).
 Native descriptors, cooked Blueprint schemas, `FClassNetCache` bounds and the
-`NetSerialize` census in
-`experimental::rep_layout`, `rep_rpc`, `sequencing` and `actor_channel` replay
-and re-encode every export (317), partial sequence (300), dormancy close (136),
-actor open (288) and typed content block (23,486: 20,407 with a rep layout,
-3,072 without; 66,859 property entries, 2,607 RPC calls, 2,361 stat pairs) of
-M-707 with 0 failures (F-571 to F-644, F-703 to F-711, F-843 to F-850; U-064, U-066
-resolved).
+`NetSerialize` census in `experimental::rep_layout`, `rep_rpc`, `sequencing`
+and `actor_channel` replay and re-encode every export (317), partial sequence
+(300), dormancy close (136), actor open (288) and typed content block (23,486:
+20,407 with a rep layout, 3,072 without; 66,859 property entries, 2,607 RPC
+calls, 2,361 stat pairs) of M-707 with 0 failures (F-571 to F-644, F-703 to
+F-711, F-843 to F-850; U-064, U-066 resolved).
 
-Server and client builds match in every scheduling stage, whose constants
-and guards the [spec](../../specs/network/actor-channel.md) lists (F-745,
-F-748, F-749, F-751, refined by F-788, F-851); a native stage drives
-them over supplied actor positions (F-790). Export checksums are computed
-natively (F-853; U-067) and exports repeat until acked (F-796). The
-native composers rebuild the captured PlayerController (F-852),
-GameState (F-794) and pawn (F-854) opens bit for bit, including the pawn's
-contents from session values (F-854) and the GameState's active prospect
-and game mode values from the save the capture's server loaded
-(F-855); `run` sends all four opens after Join, with a preserved world's
-saved state (F-804). On the capture's server build, as on the client,
-TimeOfDay advances by a per-world rate curve of the hour, and prospect setup
-writes SecondsPerGameDay from that curve; the open carried the saved
-SecondsPerGameDay (F-805, F-855, F-856; U-071 resolved). `run` follows the
-open with GameState updates in the captured form and cadence, its time of
-day advancing at the saved day length's constant rate (F-807), and its
-own frame rate as `ServerFPS` by the original's rule (F-808, F-809), and a
-locally saving server's `NetworkingStatus` listing its players with pings
-measured by the original's rule (F-810, F-811, F-815, F-816). The
-original's `LockedMissions` come from the save's mission history and the
-server's `D_FactionMissions` by a fixed rule, which `run` follows (F-834,
-F-835). A fresh player's pawn vitals and empty inventories are data.pak rows,
-which `run` sends (F-836); after each PlayerState it opens the GameState's
-radiation, world-talent and disaster managers as the capture did (F-859),
-then, from a save's quest manager and player history records, the
-QuestManager and the PlayerHistoryTracker, which compose bit for bit against
-the capture (F-861, F-862;
-[world managers](../../specs/network/world-managers.md)). From the container
-manager record it opens the InventoryContainerManager with the saved
-inventories and their items, matching all 98 of 98 captured inventories bit
-for bit, including `CurrentWeight` on ticked C016 containers via
-`RecalculateWeight` (F-866, F-933; U-075 resolved). The FLOD manager's open
-carries the save's tile count as tile references and composes bit for bit
-(F-914). On each of the 15 qualified prospects `run` admits a probe session
-and composes every open without errors (F-867).
-The original appends a player to the history once per user ID and slot when
-it initialises the player for the prospect, which `run` does not yet (F-865).
-The quest actors the QuestManager references stay closed: which sub-quests
-are active is each quest Blueprint's logic (F-864), and 270 of the 2,044
-quest classes add replicated properties (F-863; U-074).
-The pawn's stats are mostly starting grants, with 8 virtual stats whose
-formulas the server declares in code; `run` sends them from data.pak by the
-same formulas (F-839).
+Server and client builds match in every scheduling stage, whose constants and
+guards the [spec](../../specs/network/actor-channel.md) lists (F-745, F-748,
+F-749, F-751, F-788, F-851); a native stage drives them over supplied actor
+positions (F-790). Export checksums compute natively (F-853; U-067) and exports
+repeat until acked (F-796). Native composers rebuild the captured
+PlayerController (F-852), GameState (F-794) and pawn (F-854) opens bit for bit,
+including session pawn contents (F-854) and saved GameState prospect/mode
+values (F-855); `run` sends all four opens after Join (F-804). TimeOfDay
+advances on the original by a per-world hourly rate curve setting
+SecondsPerGameDay (F-805, F-855, F-856; U-071 resolved); `run` sends GameState
+updates at the captured cadence with constant-rate TimeOfDay (F-807),
+`ServerFPS` (F-808, F-809), locally saving `NetworkingStatus` with player pings
+(F-810, F-811, F-815, F-816), and `LockedMissions` from `D_FactionMissions`
+(F-834, F-835). Fresh pawn vitals, empty inventories and 58 stats (incl. 8
+virtual formulas) come from data.pak (F-836, F-839). After PlayerState, `run`
+opens the radiation, world-talent and disaster managers (F-859), then stitched
+`C019` quest actors followed by QuestManager and PlayerHistoryTracker bit for
+bit against M-707 (F-861, F-862, F-934;
+[world managers](../../specs/network/world-managers.md)). All 2,044 `D_Quests`
+checksums match across 3.0.31/3.0.32 server paks (1,774 keep 4033596864, 270
+add `CPF_Net`), and Kismet `Check()` + CDO guards compile 1,635 pure + 44
+false-only rules (matching 8/8 captured quest opens + ch 126 bit for bit) while
+failing closed on the 270 `CPF_Net` extensions and 365 impure graphs (F-864,
+F-934, F-935; U-074 resolved, U-076). InventoryContainerManager matches 98/98
+captured inventories bit for bit incl. ticked C016 `CurrentWeight` (F-866,
+F-933; U-075 resolved), FLOD matches C013 tiles bit for bit (F-914), and all 15
+prospects run cleanly (6 open 8 quests, 9 empty, 0 skipped; F-867, F-934).
+Joining players are not yet appended to `History` (F-865).
 
 ## Open
 
@@ -85,7 +69,9 @@ same formulas (F-839).
 - Authenticated runtime relevancy and priority exercise (U-038).
 - Item, stat and character values of a played character at open (U-069).
   M-893 retains the unfinished UID-source investigation.
-  M-894 retains the private quest extracts for the unfinished U-074 work.
+- Saved `C019` quests using the 270 `CPF_Net`-extending classes, 365 impure
+  `Check` graphs, or true-valued 44 `AllowChecksAfterCompletion` rules, which
+  fail closed in `run` (F-934, F-935; U-076).
 - Saved container lists with empty positions (which `run` skips) and live
   `C016::StitchingOperation` nulling of unreferenced containers, whose wire
   encoding is unobserved (F-866, F-867).
@@ -95,4 +81,4 @@ same formulas (F-839).
 
 ## Artifacts
 
-M-420..M-449, M-455..M-470, M-570..M-576, M-581..M-588, M-600..M-605, M-707..M-717, M-720, M-728..M-748, M-776, M-777, M-782, M-794, M-795, M-797..M-799, M-801, M-802, M-804, M-805, M-807, M-813..M-819, M-832, M-834 to M-836, M-838 to M-848, M-852, M-853, M-860, M-863, M-868, M-869, M-879, M-881 to M-887, M-891 to M-896, M-901 to M-913, M-1027, M-1028.
+M-420..M-449, M-455..M-470, M-570..M-576, M-581..M-588, M-600..M-605, M-707..M-717, M-720, M-728..M-748, M-776, M-777, M-782, M-794, M-795, M-797..M-799, M-801, M-802, M-804, M-805, M-807, M-813..M-819, M-832, M-834 to M-836, M-838 to M-848, M-852, M-853, M-860, M-863, M-868, M-869, M-879, M-881 to M-887, M-891 to M-896, M-901 to M-913, M-1027 to M-1030.
