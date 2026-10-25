@@ -94,6 +94,14 @@ not a synchronized snapshot, and cannot certify interrupted runs; write failures
 stop probes after bounded work, and single-session setup/close errors report
 error kinds only, like concurrent holds.
 
+Keep the supervisor independent of the terminal and retain both child exit
+receipts plus the service manager's final exit status. Verify actual namespaces,
+affinity and cgroup limits: accepted user-service settings did not enforce
+network isolation or CPU affinity on this host (M-1042). An explicit bubblewrap
+network namespace and `CPUAffinity` passed a loopback probe and supervisor tests
+(M-1043). Bind each run to a fresh scope, frozen inputs and a bounded owned unit;
+an ongoing run establishes no duration result.
+
 ## Replication scheduling (experimental)
 
 `replication::ReplicationPlugin` runs in `FixedUpdate` between gameplay and
