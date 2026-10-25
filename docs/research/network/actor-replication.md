@@ -64,12 +64,12 @@ QuestManager and the PlayerHistoryTracker, which compose bit for bit against
 the capture (F-861, F-862;
 [world managers](../../specs/network/world-managers.md)). From the container
 manager record it opens the InventoryContainerManager with the saved
-inventories and their items, the first replicated items: 96 of the 98
-captured inventories match, and two also carry a weight whose rule is open
-(F-866; U-075). The FLOD manager's open carries the save's tile count as
-tile references and composes bit for bit (F-914). On each of the 15
-qualified prospects `run` admits a probe session and composes every open
-without errors (F-867).
+inventories and their items, matching all 98 of 98 captured inventories bit
+for bit, including `CurrentWeight` on ticked C016 containers via
+`RecalculateWeight` (F-866, F-933; U-075 resolved). The FLOD manager's open
+carries the save's tile count as tile references and composes bit for bit
+(F-914). On each of the 15 qualified prospects `run` admits a probe session
+and composes every open without errors (F-867).
 The original appends a player to the history once per user ID and slot when
 it initialises the player for the prospect, which `run` does not yet (F-865).
 The quest actors the QuestManager references stay closed: which sub-quests
@@ -84,17 +84,14 @@ same formulas (F-839).
 - Two Blueprint class checksums with user-struct arrays (U-067).
 - Authenticated runtime relevancy and priority exercise (U-038).
 - Item, stat and character values of a played character at open (U-069).
-- The inventory actor-owner guard, constructor/initialization dirty writes
-  and static tick registration flow are qualified (F-915, F-917); restored
-  instance flags, owner and dirty-write order remain open (U-075). Native
-  experimental cache and explicit weight composition pass authored tests
-  without automatic load inference (F-918).
   M-893 retains the unfinished UID-source investigation.
   M-894 retains the private quest extracts for the unfinished U-074 work.
+- Saved container lists with null stitched entries (`C016::StitchingOperation`),
+  whose wire encoding is unobserved and which `run` skips (F-866, F-867).
 - When the active prospect is refreshed after open at runtime; its direct
   callers are spawn completion, dropship leave and backend, setting or
   difficulty updates (F-822; U-070).
 
 ## Artifacts
 
-M-420..M-449, M-455..M-470, M-570..M-576, M-581..M-588, M-600..M-605, M-707..M-717, M-720, M-728..M-748, M-776, M-777, M-782, M-794, M-795, M-797..M-799, M-801, M-802, M-804, M-805, M-807, M-813..M-819, M-832, M-834 to M-836, M-838 to M-848, M-852, M-853, M-860, M-863, M-868, M-869, M-879, M-881 to M-887, M-891 to M-896, M-901 to M-913.
+M-420..M-449, M-455..M-470, M-570..M-576, M-581..M-588, M-600..M-605, M-707..M-717, M-720, M-728..M-748, M-776, M-777, M-782, M-794, M-795, M-797..M-799, M-801, M-802, M-804, M-805, M-807, M-813..M-819, M-832, M-834 to M-836, M-838 to M-848, M-852, M-853, M-860, M-863, M-868, M-869, M-879, M-881 to M-887, M-891 to M-896, M-901 to M-913, M-1027, M-1028.

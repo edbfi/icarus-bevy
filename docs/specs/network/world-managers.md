@@ -3,8 +3,9 @@
 ## Status
 
 Experimental: wire-checked against the 3.0.31 capture (F-859, F-861,
-F-862, F-866, F-914) and static observations of server build 25793607 (F-864,
-F-865) and the 3.0.32 server paks (F-863). Last reconciled: 2026-10-23.
+F-862, F-866, F-914, F-933) and static observations of server build 25793607
+(F-864, F-865, F-933) and the 3.0.32 server paks (F-863). Last reconciled:
+2026-10-25.
 
 ## Scope
 
@@ -35,11 +36,30 @@ they carry. Framing is in [actor channel bunches](actor-channel.md).
 - InventoryContainerManager (`Default__InventoryContainerManager`, checksum
   3504939521, no components): handle 19 `Inventories` lists its runtime
   `UInventory` subobjects' GUIDs in block order. Each block sends `bIsActive`,
-  its `D_InventoryInfo` row and its slots (the pawn's slot layout); an item
-  slot sends its `D_ItemsStatic` row (handle 2 and `LastItem`), its saved
-  `DynamicData` (3) and named `AdditionalStats` as `CustomProperties.Stats`
-  (7) and `bIsItemInstance`; the slots' key is 2 plus the items (F-866;
-  `with_container_inventories`, `network::container_inventories`).
+  its `D_InventoryInfo` row, nonzero `CurrentWeight` (handle 4) and its slots
+  (the pawn's slot layout); an item slot sends its `D_ItemsStatic` row (handle
+  2 and `LastItem`), its saved `DynamicData` (3) and named `AdditionalStats`
+  as `CustomProperties.Stats` (7) and `bIsItemInstance`; the slots' key is 2
+  plus the items (F-866, F-933; `with_container_inventories`,
+  `network::container_inventories`).
+- `C016::RecordOwnerState` (`0x1416f0b50`, M-1027/ev_c0f01470c374) saves
+  `bInventoryWantsTick = IsComponentTickEnabled()`. `C016::UpdateOwnerToDatabaseState`
+  (`0x1416fccb0`, M-1027/ev_a99e12baab7a) calls `CreateInventoryInIndex`
+  (`0x1416d38a0`, M-1027/ev_c60be6e23515: `OwnerPrivate = AInventoryContainerManager`,
+  role `3`, `Initialise` setting `bDirtyWeight` and disabling tick; tick
+  capability/registration guards in M-903/ev_44975023ea86,
+  M-908/ev_aa563a322a20, M-906/ev_be342f7e3311, M-909/ev_dbfc5e7474c5),
+  restores `SetComponentTickEnabled(bInventoryWantsTick)` and writes saved
+  slots via `SetItem` (`+0x331 = 0x0101`, keeping `bDirtyWeight`). Unticked
+  containers (`96/98` in M-707) stay at CDO `CurrentWeight == 0` and omit
+  handle 4; ticked ones (`2/98` in M-707) run `RecalculateWeight`
+  (`0x14197db50`, M-1027/ev_d89f1ec2a578) and `GetItemWeight` (`0x1416e0460`,
+  M-1027/ev_2035950b2f15; `OnContainerManagerUpdated` `0x1419781f0`,
+  M-1027/ev_6cb8d023357c), skipping slots without dynamic property `7`
+  (`ItemableStack`), summing `(D_Itemable.Weight + fillable 10 on
+  Any_Weighable_Resource_Container 0x16c) * stack` and matching all `98/98`
+  captured blocks bit for bit (`run` fails closed on ticked custom stats,
+  nested `13 >= 0` or static `Weight_+`; F-933, M-1028; U-075 resolved).
 - FLOD manager (`Default__BP_IcarusFLOD_Default_C`, checksum 519276901, no
   components): the Blueprint archetype and its package are exported in the
   open, the actor spawns at (0, 0, -100000) as captured, and handle 16 lists
@@ -49,30 +69,13 @@ they carry. Framing is in [actor channel bunches](actor-channel.md).
 - `run` opens the radiation, world-talent and disaster managers after each
   PlayerState, then the QuestManager, InventoryContainerManager,
   PlayerHistoryTracker and FLOD manager when the loaded save supplies their
-  records (F-859, F-861, F-862, F-866, F-914); on the 15 qualified
+  records (F-859, F-861, F-862, F-866, F-914, F-933); on the 15 qualified
   prospects every run composes them without errors, saves with list gaps or
   an unknown faction mission skipping those managers (F-867).
 - Quest actors: 1,772 of 3.0.32's 2,044 `D_Quests` classes keep native
   `Quest`'s checksum 4033596864, 270 add replicated properties (F-863).
   `AQuest::RunQuest` keeps a sub-quest in `ActiveQuests` only while its
   Blueprint `Check` reports it incomplete (F-864).
-
-- The inventory tick requires an actor owner and unsigned local role >=3,
-  then recalculates only if dirty and clears that flag (F-915). The constructor clears
-  dirty; authority-only initialization sets it (F-917).
-- Component construction sets the start-enabled flag; inventory construction
-  enables tick capability. Component registration requests enabled ticking
-  when that flag or the current tick state is set (F-917). Explicit component
-  enable requests pass through capability and helper guards
-  (M-903/ev_44975023ea86); tick construction, registration and state mutation
-  are bounded static observations (M-908/ev_aa563a322a20,
-  M-906/ev_be342f7e3311, M-909/ev_dbfc5e7474c5). Instance overrides, loaded
-  owner assignment and actual scheduler execution remain unqualified.
-
-- Native experimental weight state accepts a caller calculation behind the
-  qualified tick guard; the shared inventory composer emits handle 4 only
-  for an explicit optional weight, including zero (F-918). `run` does not
-  infer it from loaded items.
 
 ## Candidate
 
@@ -85,11 +88,11 @@ they carry. Framing is in [actor channel bunches](actor-channel.md).
   `ActiveQuests` without its Blueprint logic (U-074).
 - Appending joining players to `History` in `run`: the user ID and slot of a
   stock client (F-865; U-038).
-- `CurrentWeight`, sent for 2 of the captured item inventories only, and
-  saved container lists with empty positions, which `run` skips (U-075).
+- Saved container lists with unreferenced null entries (`C016::StitchingOperation`),
+  whose wire encoding is unobserved and which `run` skips (F-866, F-867).
 - The FLOD tile actors the FLOD manager references, which M-707 never opens
   (F-914).
 
 ## Evidence
 
-- M-707, M-820, M-879, M-881 to M-887, M-891, M-892, M-895, M-896, M-901 to M-913.
+- M-707, M-820, M-879, M-881 to M-887, M-891, M-892, M-895, M-896, M-901 to M-913, M-1027, M-1028.

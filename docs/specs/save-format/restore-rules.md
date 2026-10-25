@@ -174,24 +174,29 @@ construction, script owners and data-table rows are out of scope (F-660).
 - Static-only modifier reload duration uses a distinct callback (F-930): both
   builds store base duration, call authority-gated remaining-time restoration,
   restore cached multiplier, clear any old timer, select setup for finite
-  positive remaining time, and call `OnRep`; remaining-time/`OnRep` raw operands
-  match after relocation (including `u16` tenths), while unordered scheduling
-  guards differ and floating-point runtime state is unobserved. Role-`3`
-  expiration wrappers issue a reason-`0` `+0x3c0` tail. On primary
-  `UModifierStateComponent` (`0x144a263a8`/`0x144b94c08`;
-  `experimental::modifier_lifecycle`, M-1024, M-1025), `+0x278` `Activate`,
-  `+0x280` `Deactivate`, `+0x338` `BeginPlay`, `+0x340` `EndPlay`, `+0x3c0`
-  `DestroyComponent`, `+0x408` `UpdateStats` and `+0x410`/`+0x418`
-  `Applied`/`Removed_Implementation` match across builds: `Deactivate` removes
-  `(3, [+0xf8])` on `UIcarusStatContainer`; `Activate` gates `![+0x8a]&1` and
-  `[+0xa0]`, binds `OnPreStatContainerUpdateComplete` (null crash) and calls
-  `+0x408`; `UpdateStats` refreshes `(3, [+0xf8])` from `GrantedStats` (`+0xa0`);
-  `BeginPlay` gates role `3` and `[+0x3b0] == 0`; `EndPlay` zeroes `[+0x3c0]`,
-  gates `reason == 0`, runs role-`3` removal/timers/`+0x280`/`[+0x319]==3`
-  `FixModifierActivation`, destroys `[+0x100]` (`+0x3c0`) and notifies
-  owner/delegates. Subclass virtual receivers, downstream callee/creation/expiration
-  effects, conversion rounding, BP/scaling/`InitComponent` internals, owner/row
-  binding and live execution remain unqualified.
+  positive remaining time, and call `OnRep` (`u16` tenths match; unordered
+  guards differ). Role-`3` expiration wrappers issue reason-`0` `+0x3c0`. On
+  primary `UModifierStateComponent` (`0x144a263a8`/`0x144b94c08`;
+  `experimental::modifier_lifecycle`, M-1024, M-1025, M-1027, M-1028), `+0x278`
+  `Activate`, `+0x280` `Deactivate`, `+0x338` `BeginPlay`, `+0x340` `EndPlay`,
+  `+0x3c0` `DestroyComponent`, `+0x408` `UpdateStats`, `+0x410`/`+0x418`
+  `Applied`/`Removed_Implementation` and `InitComponent_Implementation`
+  (`0x1416e88f0`/`0x1416fa330`, M-1027/ev_51aa536d68b6) match across builds:
+  `ScaleStatsHelper` (`0x1416b6710`/`0x1416ce2f0`, M-1027/ev_c40e7a02c708)
+  copies `GrantedStats` (`+0xa0`) inside the `1.0f` `UCOMISS` deadband or rounds
+  `f32 * Effectiveness` (`+0x290`) with `0.5f` away-from-zero before `CVTTSS2SI`;
+  `InitComponent` gates role `3`, registers, sets permanent (`-1`) or timed
+  (`> 0`: `(f32 / 100.0) * multiplier` + `SetTimer` + `ModifierTick`; `<= 0`
+  rejected) state, runs `ScaleStatsHelper`, sets `[+0x3b0] = 1` and calls
+  `+0x278` then `+0x410`; `OnStatContainerUpdated`
+  (`0x1416efd80`/`0x1417012a0`, M-1027/ev_3681a1228c84) gates `bIsActive` and
+  `EffectiveStat != -1` (`+0x298`) and updates `+0x290 = 1.0 + GetStat * 0.01f`
+  outside `1e-4f` before `+0x408`; `FixModifierActivation`
+  (`0x1414a0fc0`/`0x1414db100`, M-1027/ev_9785b53a7a36) activates dormant
+  siblings matching `ModifierRow.Index` (`+0xe8`) up to `max(1, stack_limit)`
+  only when no active sibling has `stack_limit > 0`. Subclass/Blueprint
+  overrides, downstream callee effects, owner/row binding and live execution
+  remain unqualified.
 
 ## Candidate
 
@@ -204,4 +209,5 @@ construction, script owners and data-table rows are out of scope (F-660).
 ## Evidence
 
 F-645..F-681, F-716, F-894, F-902..F-904, F-728, F-734..F-736, F-741..F-744, F-746, F-747,
-F-750, F-897, F-930; M-642..M-698, M-755..M-792, M-794..M-807, M-858, M-1024, M-1025.
+F-750, F-897, F-930; M-642..M-698, M-755..M-792, M-794..M-807, M-858, M-1024, M-1025,
+M-1027, M-1028.
