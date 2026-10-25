@@ -305,11 +305,22 @@ fn modifier_stat_scaling_and_state_data_rules_match_sse2_and_row_branches() {
     assert_eq!(scale_modifier_granted_stat_value(7, 25, 0), (7, 25));
     assert_eq!(scale_modifier_granted_stat_value(7, -25, 0), (7, -25));
 
-    // Half-away-from-zero SSE2 rounding: +22.5 -> +23, -22.5 -> -23, +0.5 -> +1, -0.5 -> -1
+    // Away-from-zero ceiling on magnitude (MSVC ceilf(|scaled|) * sgn):
+    // .5 boundaries: +22.5 -> +23, -22.5 -> -23, +0.5 -> +1, -0.5 -> -1
     assert_eq!(scale_modifier_granted_stat_value(4, 15, 50), (4, 23));
     assert_eq!(scale_modifier_granted_stat_value(4, -15, 50), (4, -23));
     assert_eq!(scale_modifier_granted_stat_value(4, 1, -50), (4, 1));
     assert_eq!(scale_modifier_granted_stat_value(4, -1, -50), (4, -1));
+    // Non-half fractions below .5 distinguish ceil(|scaled|) from nearest rounding:
+    // +2.1 -> +3, -2.1 -> -3, +10.3 -> +11, -10.3 -> -11, +0.3 -> +1, -0.3 -> -1, +2.91 -> +3, -2.91 -> -3
+    assert_eq!(scale_modifier_granted_stat_value(4, 2, 5), (4, 3));
+    assert_eq!(scale_modifier_granted_stat_value(4, -2, 5), (4, -3));
+    assert_eq!(scale_modifier_granted_stat_value(4, 10, 3), (4, 11));
+    assert_eq!(scale_modifier_granted_stat_value(4, -10, 3), (4, -11));
+    assert_eq!(scale_modifier_granted_stat_value(4, 1, -70), (4, 1));
+    assert_eq!(scale_modifier_granted_stat_value(4, -1, -70), (4, -1));
+    assert_eq!(scale_modifier_granted_stat_value(4, 3, -3), (4, 3));
+    assert_eq!(scale_modifier_granted_stat_value(4, -3, -3), (4, -3));
 
     // -100% effectiveness zeroes out any finite raw stat; < -100% flips sign
     assert_eq!(scale_modifier_granted_stat_value(9, 40, -100), (9, 0));

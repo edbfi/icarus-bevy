@@ -392,7 +392,8 @@ fn cvttss2si_i32(x: f32) -> i32 {
 /// and `(stat_enum, raw_value)` is returned unchanged. Otherwise executes the
 /// exact SSE2 sequence (`((effectiveness_pct as f32) + 100.0f32) * (raw_value as f32)
 /// * f32::from_bits(0x3c23d70a)` followed by MSVC's `-0.5f32 - 2.0f32 * abs`
-/// `CVTSS2SI`/`SAR 1`/`NEG` half-away-from-zero round and `CVTTSS2SI`).
+/// `CVTSS2SI`/`SAR 1`/`NEG` `ceilf(|scaled|)` idiom, sign restoration and
+/// `CVTTSS2SI`, rounding non-integer magnitudes away from zero).
 pub fn scale_modifier_granted_stat_value(
     stat_enum: u8,
     raw_value: i32,
