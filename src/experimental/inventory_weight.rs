@@ -1,5 +1,5 @@
 //! Experimental inventory weight cache, `C016` restore enablement, and
-//! `RecalculateWeight` / `GetItemWeight` rules (F-915, F-917, F-918; U-075).
+//! `RecalculateWeight` / `GetItemWeight` rules (F-933; U-075 resolved).
 //!
 //! Each helper models a bounded static rule from `3.0.31` server `25793607`:
 //! - `UIcarusContainerManagerRecorderComponent` (`C016`) recording
@@ -21,7 +21,7 @@
 
 /// `ENetRole::ROLE_Authority` (`3`), required (unsigned `>= 3`) by
 /// `UInventory::Initialise` (`0x1419750b0`) and `UInventory::TickComponent`
-/// (`0x141987d90`) (F-915, F-917).
+/// (`0x141987d90`) (F-933).
 pub const AUTHORITY_LOCAL_ROLE: u8 = 3;
 
 /// `D_Stats` index (`0x5c8` / `1480`, `Weight_+`) queried on the item stat
@@ -95,7 +95,7 @@ impl InventoryWeightState {
     }
 
     /// Recalculate only while dirty with an actor owner whose local role byte
-    /// is at least 3 (unsigned, F-915). Return the new weight and clear dirty
+    /// is at least 3 (unsigned, F-933). Return the new weight and clear dirty
     /// after calculation; otherwise preserve the cache and dirty state without
     /// calling `recalculate`. `None` means the actor owner is absent.
     pub fn tick(

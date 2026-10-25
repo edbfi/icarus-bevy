@@ -214,7 +214,7 @@ pub const INVENTORY_INFO_TABLE: &str = "D_InventoryInfo";
 pub const TAG_QUERIES_TABLE: &str = "D_TagQueries";
 pub const ITEMS_STATIC_TABLE: &str = "D_ItemsStatic";
 /// The item trait table whose `Weight` feeds ticked container `CurrentWeight`
-/// (`U-075`).
+/// (`F-933`).
 pub const ITEMABLE_TABLE: &str = "D_Itemable";
 pub const STARTING_STATS_TABLE: &str = "D_CharacterStartingStats";
 pub const CHARACTER_GROWTH_TABLE: &str = "D_CharacterGrowth";
@@ -226,7 +226,7 @@ pub const PLAYER_GROWTH_ROW: &str = "Player";
 /// The slot arrays' replication key at open, as captured (F-799).
 pub const INVENTORY_SLOTS_REPLICATION_KEY: i32 = 2;
 /// The `D_TagQueries` row `UInventoryItemLibrary::GetItemWeight` evaluates
-/// before adding dynamic fillable units (`10`) (`U-075`).
+/// before adding dynamic fillable units (`10`) (`F-933`).
 const WEIGHABLE_RESOURCE_CONTAINER_QUERY: &str = "Any_Weighable_Resource_Container";
 
 /// The row named by a `{"RowName": ...}` handle.
@@ -481,7 +481,7 @@ fn info_inventory(tables: &mut DataTables, name: &[u16]) -> Result<PawnInventory
     })
 }
 
-/// A saved container manager's inventories (`C016`, F-866, U-075), in list
+/// A saved container manager's inventories (`C016`, F-866, F-933), in list
 /// order: each one's [`info_inventory`] with its saved items in their slots,
 /// each item's `D_ItemsStatic` row, dynamic data and by-name stats, plus
 /// `CurrentWeight` when `bInventoryWantsTick` is set and recalculates
@@ -570,19 +570,18 @@ pub fn container_inventories(
                     .into_iter()
                     .map(|item| ticked_item_weight_input(tables, item, tags))
                     .collect::<Result<_>>()?;
-                restored.tick_if_enabled(|| {
-                    recalculate_inventory_weight(
-                        DEFAULT_CDO_CURRENT_WEIGHT,
-                        true,
-                        true,
-                        false,
-                        false,
-                        &slot_inputs,
-                        &[],
-                    )
-                    .expect("container manager owner is eligible")
-                    .current_weight
-                });
+                let weight = recalculate_inventory_weight(
+                    DEFAULT_CDO_CURRENT_WEIGHT,
+                    true,
+                    true,
+                    false,
+                    false,
+                    &slot_inputs,
+                    &[],
+                )
+                .context("container manager owner is ineligible")?
+                .current_weight;
+                restored.tick_if_enabled(|| weight);
             }
             inventory.current_weight = restored.initial_open_weight();
             Ok(inventory)
