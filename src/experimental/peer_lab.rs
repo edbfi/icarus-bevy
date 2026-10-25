@@ -195,8 +195,9 @@ use super::rep_layout::RepValue;
 use super::server_fps::ServerFpsMeter;
 use super::session_open::{
     ActorKey, ActorOpenSpec, ConnectionExports, NetGuidCache, PlayerControllerOpenPlan,
-    PlayerStateOpenPlan, PlayerStateOpenState, compose_actor_open, compose_player_controller_open,
-    compose_player_state_open, movement_update_block, replicated_unique_net_id, resting_movement,
+    PlayerStateOpenPlan, PlayerStateOpenState, authored_movement, compose_actor_open,
+    compose_player_controller_open, compose_player_state_open, initial_movement,
+    movement_update_block, replicated_unique_net_id,
 };
 use super::time_of_day::TimeOfDayClock;
 
@@ -828,12 +829,12 @@ struct PeerEntry {
     /// Closes that could not be framed yet (key -> reason), retried by
     /// [`PeerLab::retry_pending_closes`]; their actors stay open meanwhile.
     pending_closes: BTreeMap<u64, u32>,
-    /// The location each open actor was last sent at (its spawn, then
-    /// movement updates).
-    actor_locations: BTreeMap<u64, [f32; 3]>,
+    /// Complete quantized property 6 last sent, initially only if the open
+    /// actually carried it. A latest-packet NAK makes it due again.
+    actor_movements: BTreeMap<u64, super::rep_layout::RepMovement>,
     /// Movement updates awaiting the client's ack or nak: packet ID -> actor.
-    /// A record the client never reports stays until the actor closes or the
-    /// peer is removed, so this is bounded by the peer's lifetime.
+    /// Bounded by the existing sent-record ring; notifications or close remove
+    /// records, and a full ring rejects further packets.
     movement_in_flight: BTreeMap<u32, u64>,
     /// Each actor's latest movement update packet; only its nak repairs.
     last_movement_packet: BTreeMap<u64, u32>,
@@ -1070,18 +1071,40 @@ impl PeerLab {
 
     /// Send the actor `key`'s resting `ReplicatedMovement` at `location` to the
     /// joined connection `connection` as an unreliable property update, when
-    /// the location differs from the one last sent and the channel's open is
-    /// acked (UE drops unreliable bunches for a channel the client has not
+    /// the quantized movement differs from the one last sent and the channel's
+    /// open is acked (UE drops unreliable bunches for a channel the client has not
     /// opened yet). Returns whether an update was sent; failures count
     /// `actor_update_errors` and change nothing. A lost update is repaired as
     /// UE re-sends a naked packet's properties: when the client naks its
-    /// packet and no newer update has gone out since, the location counts as
+    /// packet and no newer update has gone out since, the movement counts as
     /// unsent (`actor_updates_lost`) and the next selection sends it again.
     pub fn update_actor_movement(
         &mut self,
         connection: u32,
         key: u64,
         location: [f32; 3],
+        engine_net_version: u32,
+    ) -> bool {
+        self.update_actor_motion(
+            connection,
+            key,
+            location,
+            [0.0; 3],
+            [0.0; 3],
+            engine_net_version,
+        )
+    }
+
+    /// Send complete authored property 6 at the AActor defaults. Rotation is
+    /// pitch/yaw/roll degrees; velocity is linear only. Invalid or unframeable
+    /// attempts leave the baseline and packet repair identity unchanged.
+    pub fn update_actor_motion(
+        &mut self,
+        connection: u32,
+        key: u64,
+        location: [f32; 3],
+        rotation: [f32; 3],
+        velocity: [f32; 3],
         engine_net_version: u32,
     ) -> bool {
         let Some((address, entry)) = self
@@ -1095,9 +1118,17 @@ impl PeerLab {
         let Some(channel) = entry.opened_actors.get(&key).copied() else {
             return false;
         };
-        if entry.actor_locations.get(&key) == Some(&location)
-            || !entry.peer.actor_channel_settled(channel)
-        {
+        if !entry.peer.actor_channel_settled(channel) {
+            return false;
+        }
+        let movement = match authored_movement(location, rotation, velocity) {
+            Ok(movement) => movement,
+            Err(_) => {
+                bump(&mut self.stats.actor_update_errors);
+                return false;
+            }
+        };
+        if entry.actor_movements.get(&key) == Some(&movement) {
             return false;
         }
         let codec = ActorChannelCodec {
@@ -1108,8 +1139,7 @@ impl PeerLab {
             limits: ActorChannelLimits::default(),
         };
         let packet_id = entry.peer.sequencer().out_packet_id();
-        let sent = resting_movement(location)
-            .and_then(|movement| movement_update_block(engine_net_version, movement))
+        let sent = movement_update_block(engine_net_version, movement.clone())
             .and_then(|block| {
                 encode_actor_bunch_body(
                     &ActorBunchBody {
@@ -1137,7 +1167,7 @@ impl PeerLab {
             return false;
         }
         if let Some(entry) = self.peers.get_mut(&address) {
-            entry.actor_locations.insert(key, location);
+            entry.actor_movements.insert(key, movement);
             entry.movement_in_flight.insert(packet_id, key);
             entry.last_movement_packet.insert(key, packet_id);
         }
@@ -1190,7 +1220,7 @@ impl PeerLab {
         };
         entry.pending_closes.remove(&key);
         entry.opened_actors.remove(&key);
-        entry.actor_locations.remove(&key);
+        entry.actor_movements.remove(&key);
         entry.movement_in_flight.retain(|_, actor| *actor != key);
         entry.last_movement_packet.remove(&key);
         entry.ack_pending = false;
@@ -1228,6 +1258,11 @@ impl PeerLab {
         let guid = cache.actor_guid(ActorKey::World(key));
         open.actor = guid;
         let mut exports = entry.exports.clone();
+        let movement = initial_movement(
+            &open.blocks,
+            engine_net_version,
+            entry.peer.connection_byte_order(),
+        );
         let sent = entry
             .peer
             .free_actor_channel(first_channel)
@@ -1262,8 +1297,8 @@ impl PeerLab {
         entry.exports = exports;
         entry.ack_pending = false;
         entry.opened_actors.insert(key, channel);
-        if let Some(location) = open.location {
-            entry.actor_locations.insert(key, location);
+        if let Some(movement) = movement {
+            entry.actor_movements.insert(key, movement);
         }
         self.guid_cache = cache;
         if self.send_all(&sent, address) {
@@ -2049,7 +2084,7 @@ impl PeerLab {
                         connection_id: None,
                         opened_actors: BTreeMap::new(),
                         pending_closes: BTreeMap::new(),
-                        actor_locations: BTreeMap::new(),
+                        actor_movements: BTreeMap::new(),
                         movement_in_flight: BTreeMap::new(),
                         last_movement_packet: BTreeMap::new(),
                         game_state: None,
@@ -2104,7 +2139,7 @@ impl PeerLab {
                         }
                         // A lost movement update is sent again, as UE re-sends
                         // the properties of a naked packet: forget the sent
-                        // location unless a newer update has gone out since.
+                        // movement unless a newer update has gone out since.
                         for packet_id in &summary.naked {
                             let Some(key) = entry.movement_in_flight.remove(packet_id) else {
                                 continue;
@@ -2112,7 +2147,7 @@ impl PeerLab {
                             bump(&mut self.stats.actor_update_naks);
                             if entry.last_movement_packet.get(&key) == Some(packet_id) {
                                 entry.last_movement_packet.remove(&key);
-                                entry.actor_locations.remove(&key);
+                                entry.actor_movements.remove(&key);
                                 bump(&mut self.stats.actor_updates_lost);
                             }
                         }

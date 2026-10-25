@@ -1420,7 +1420,9 @@ fn replication_selections_open_archetyped_actors_on_free_channels() {
             session_open::{PathSegment, map_level_chain},
         },
         replication::{NetActor, NetParameters, ReplicationPlugin},
-        session_replication::{NetArchetype, SessionReplication, SessionReplicationPlugin},
+        session_replication::{
+            NetArchetype, NetMotion, SessionReplication, SessionReplicationPlugin,
+        },
         simulation::{DomainId, Position},
     };
     let profile = ReleaseProfile::load(&release_toml()).unwrap();
@@ -1465,6 +1467,14 @@ fn replication_selections_open_archetyped_actors_on_free_channels() {
                 replicate_movement: false,
             });
         }
+        if id == 42 {
+            // Spawn motion is independent of bReplicateMovement. This actor
+            // still carries only roles and emits no movement updates.
+            entity.insert(NetMotion {
+                rotation_degrees: [1.0, 90.0, -45.0],
+                linear_velocity: [5.25, 0.0, -8.25],
+            });
+        }
     }
     // Two sessions in turn: each gets both actors, under the same GUIDs.
     let ([replies, later], _) = with_server(&mut app, move || {
@@ -1475,6 +1485,7 @@ fn replication_selections_open_archetyped_actors_on_free_channels() {
     });
     let stats = app.world().resource::<PeerLab>().stats().clone();
     assert_eq!((stats.actor_opens_sent, stats.actor_open_errors), (4, 0));
+    assert_eq!(stats.actor_updates_sent, 0);
     assert_eq!(
         replies.len(),
         9,
@@ -1525,7 +1536,14 @@ fn replication_selections_open_archetyped_actors_on_free_channels() {
     // 20..52, the GameState 54..60, its managers 62..66 and their
     // components 68..76.
     assert_eq!(spawn.actor.guid, 78);
-    assert!(spawn.dynamic.unwrap().location.is_some());
+    let dynamic = spawn.dynamic.unwrap();
+    assert!(dynamic.location.is_some());
+    let rotation = dynamic.rotation.unwrap().degrees();
+    assert!((rotation[0] - 1.0).abs() < 360.0 / 65536.0);
+    assert_eq!(rotation[1..], [90.0, 315.0]);
+    let velocity = dynamic.velocity.unwrap().decode();
+    assert!((velocity[0] - 5.3).abs() < 0.0001);
+    assert!((velocity[2] + 8.2).abs() < 0.0001);
     // One actor block with the captured world-actor roles (F-791).
     let [roles] = open.blocks.as_slice() else {
         panic!("one role block");

@@ -17,6 +17,157 @@ fn codec() -> ActorChannelCodec {
     }
 }
 
+#[test]
+fn authored_spawn_motion_and_property_six_keep_their_independent_precision() {
+    use icarus_bevy::experimental::{
+        actor_channel::read_actor_bunch_body,
+        rep_layout::{
+            MovementLevel, MovementRotation, RepLayoutCodec, RepLayoutLimits, RepValue,
+            RotationLevel, actor_rep_layout, read_rep_properties,
+        },
+        session_open::{ActorOpenSpec, authored_movement, compose_actor_open, world_actor_block},
+    };
+    let location = [12.26, -34.26, 0.0];
+    let rotation = [1.0, -90.0, 360.0];
+    let velocity = [5.26, -8.26, 0.0];
+    let movement = authored_movement(location, rotation, velocity).unwrap();
+    let spec = ActorOpenSpec {
+        actor: 2,
+        archetype: profile().archetype,
+        level: profile().level,
+        location: Some(location),
+        rotation: Some(rotation),
+        velocity: Some(velocity),
+        blocks: vec![world_actor_block(17, Some(movement.clone())).unwrap()],
+    };
+    for order in [ByteOrder::Little, ByteOrder::Big] {
+        let composed = compose_actor_open(
+            &mut NetGuidCache::new(),
+            &mut ConnectionExports::new(),
+            &spec,
+            2,
+            17,
+            order,
+        )
+        .unwrap();
+        let actor = ActorChannelCodec { order, ..codec() };
+        let body =
+            read_actor_bunch_body(&mut composed.bunch.payload.reader(), true, &actor).unwrap();
+        let spawn = body.spawn.unwrap().dynamic.unwrap();
+        let close = |actual: [f32; 3], expected: [f32; 3]| {
+            for (actual, expected) in actual.into_iter().zip(expected) {
+                assert!((actual - expected).abs() < 0.0001);
+            }
+        };
+        close(spawn.location.unwrap().decode(), [12.3, -34.3, 0.0]);
+        close(spawn.velocity.unwrap().decode(), [5.3, -8.3, 0.0]);
+        let spawn_rotation = spawn.rotation.unwrap().degrees();
+        assert!((spawn_rotation[0] - 1.0).abs() < 360.0 / 65536.0);
+        assert_eq!(spawn_rotation[1..], [270.0, 0.0]);
+        let rep = RepLayoutCodec {
+            actor,
+            checksums: false,
+            limits: RepLayoutLimits::default(),
+        };
+        let stream = read_rep_properties(
+            &mut body.blocks[0].payload.reader(),
+            &actor_rep_layout(
+                MovementLevel::Whole,
+                MovementLevel::Whole,
+                RotationLevel::Bytes,
+            ),
+            &rep,
+        )
+        .unwrap();
+        let entry = stream
+            .entries
+            .iter()
+            .find(|entry| entry.handle == 6)
+            .unwrap();
+        let RepValue::Movement(decoded) = &entry.value else {
+            panic!("movement")
+        };
+        assert_eq!(decoded, &movement);
+        assert_eq!(decoded.location.unbiased(), [12, -34, 0]);
+        assert_eq!(decoded.linear_velocity.unbiased(), [5, -8, 0]);
+        let Some(MovementRotation::Bytes(rotation)) = decoded.rotation else {
+            panic!("byte rotator")
+        };
+        assert_eq!(rotation.degrees(), [1.40625, 270.0, 0.0]);
+    }
+}
+
+#[test]
+fn invalid_spawn_motion_rejects_before_guid_or_export_changes_and_can_retry() {
+    use icarus_bevy::experimental::session_open::{
+        ActorOpenSpec, authored_movement, compose_actor_open,
+    };
+    // Both values fit property-6 defaults but exceed the independent spawn
+    // representations. Valid property data must not bypass spawn validation.
+    assert!(authored_movement([0.0; 3], [1.0e17, 0.0, 0.0], [2_000_000.0, 0.0, 0.0]).is_ok());
+    for order in [ByteOrder::Little, ByteOrder::Big] {
+        let valid = ActorOpenSpec {
+            actor: 2,
+            archetype: profile().archetype,
+            level: profile().level,
+            location: Some([0.0; 3]),
+            rotation: Some([0.0; 3]),
+            velocity: Some([0.0; 3]),
+            blocks: Vec::new(),
+        };
+        let mut cache = NetGuidCache::new();
+        let mut exports = ConnectionExports::new();
+        for field in 0..3 {
+            // Velocity fits property-6 whole packing but not spawn <10,24>.
+            for bad in [
+                f32::NAN,
+                f32::INFINITY,
+                -f32::INFINITY,
+                f32::MAX,
+                1.0e17,
+                2_000_000.0,
+            ] {
+                if field == 1 && bad == 2_000_000.0 {
+                    continue;
+                }
+                let mut spec = valid.clone();
+                match field {
+                    0 => spec.location = Some([bad, 0.0, 0.0]),
+                    1 => spec.rotation = Some([bad, 0.0, 0.0]),
+                    _ => spec.velocity = Some([bad, 0.0, 0.0]),
+                }
+                let before = (format!("{cache:?}"), format!("{exports:?}"));
+                assert!(compose_actor_open(&mut cache, &mut exports, &spec, 2, 17, order).is_err());
+                assert_eq!((format!("{cache:?}"), format!("{exports:?}")), before);
+            }
+        }
+        let composed = compose_actor_open(&mut cache, &mut exports, &valid, 2, 17, order).unwrap();
+        let fresh = compose_actor_open(
+            &mut NetGuidCache::new(),
+            &mut ConnectionExports::new(),
+            &valid,
+            2,
+            17,
+            order,
+        )
+        .unwrap();
+        assert_eq!(composed.bunch.payload, fresh.bunch.payload);
+        assert_eq!(composed.exports, fresh.exports);
+        let mut absent = valid;
+        absent.rotation = None;
+        absent.velocity = None;
+        let composed = compose_actor_open(&mut cache, &mut exports, &absent, 3, 17, order).unwrap();
+        let body = icarus_bevy::experimental::actor_channel::read_actor_bunch_body(
+            &mut composed.bunch.payload.reader(),
+            true,
+            &ActorChannelCodec { order, ..codec() },
+        )
+        .unwrap();
+        let spawn = body.spawn.unwrap().dynamic.unwrap();
+        assert!(spawn.rotation.is_none() && spawn.velocity.is_none());
+    }
+}
+
 /// Authored identifiers in the shape of F-778 (not release data).
 fn profile() -> PlayerControllerProfile {
     PlayerControllerProfile {
