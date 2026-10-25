@@ -1,7 +1,7 @@
-//! Experimental `UModifierStateComponent` lifecycle, stat-scaling and callback rules (F-930).
+//! Experimental `UModifierStateComponent` lifecycle, stat-scaling and callback rules.
 //!
-//! Each function is a pure rule over caller-supplied component and owner state,
-//! statically recovered from server `25621760` and client `25793767`
+//! The existing lifecycle rules are pure rules over caller-supplied component and
+//! owner state, statically recovered from server `25621760` and client `25793767` (F-930)
 //! (`UModifierStateComponent` primary vftable `0x144a263a8` server / `0x144b94c08`
 //! client, `Deactivate`, `Activate`, `UpdateStats`, per-stat scaling helper
 //! `0x1416b6710` / `0x1416ce2f0`, `GetModifierStateData`, `BeginPlay`, `EndPlay`,
@@ -10,6 +10,11 @@
 //! `OnStatContainerUpdated`, and `UIcarusFunctionLibrary::FixModifierActivation`).
 //! Blueprint `ProcessEvent` overrides, packaged data-table row meanings (F-660)
 //! and live original-process execution remain outside this module.
+//!
+//! The local `RemoveModifierState` selection model additionally consumes an ordered
+//! snapshot of valid, non-null candidates and supplied opaque comparison results.
+//! It describes a request and a local success-after-return flag, never destruction.
+//! Enumeration, owner lookup, comparison semantics and subclass effects are excluded.
 
 /// `EStatSources` discriminant (`3`) passed by `UModifierStateComponent::Deactivate`
 /// and `UModifierStateComponent::UpdateStats` to `UIcarusStatContainer::RemoveStats_BP`
@@ -921,4 +926,116 @@ pub fn select_fix_modifier_activation_actions(
         }
     }
     actions
+}
+
+/// Caller-supplied view of one already-enumerated valid, non-null component for
+/// the local post-enumeration selection in `RemoveModifierState`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct RemoveModifierStateCandidate {
+    /// Raw byte at component `+0x8b`; mask `0x02` excludes this candidate.
+    pub flags_8b: u8,
+    /// Signed component UID at `+0xf8`.
+    pub uid_f8: i32,
+    /// Provided opaque result for a comparison invocation using the saved row
+    /// argument and component `+0xb4`. No row equality or callee purity is implied.
+    /// This value is consumed only if this candidate's input index is compared.
+    pub opaque_comparison_result: bool,
+}
+
+/// Why a candidate was selected by the local `RemoveModifierState` model.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RemoveModifierStateSelection {
+    /// First retained exact UID match; its comparison and all later comparisons
+    /// are bypassed, even if earlier comparisons returned true.
+    ExplicitUid { input_index: usize },
+    /// Last comparison-true candidate in retained enumeration order, used only
+    /// when no explicit UID match was selected.
+    LastComparisonTrue { input_index: usize },
+}
+
+/// A modeled request only; no virtual call is executed or destruction inferred.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct RemoveModifierStateVirtualCallRequest {
+    /// Index in the original caller-supplied candidate slice.
+    pub input_index: usize,
+    /// Requested virtual byte offset, always `+0x3c0`. F-930 supplies only the
+    /// existing primary-slot baseline; it does not qualify subclass effects.
+    pub vftable_byte_offset: u16,
+    /// Requested EDX argument, always zero.
+    pub edx: u32,
+}
+
+/// Local selection results, without owner validation, removal or lifecycle effects.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RemoveModifierStateSelectionOutcome {
+    /// All retained original input indices, in input order. Filtering completes
+    /// before selection, including inputs after an eventual explicit UID match.
+    pub filtered_input_indices: Vec<usize>,
+    /// Original input indices whose opaque comparison results were consumed,
+    /// in invocation order. Filtered-out inputs are never compared.
+    pub compared_input_indices: Vec<usize>,
+    pub selection: Option<RemoveModifierStateSelection>,
+    /// Exactly one request on selection; none when no candidate is selected.
+    pub virtual_call_request: Option<RemoveModifierStateVirtualCallRequest>,
+    /// Modeled caller flag after the requested call returns. This is true on
+    /// selection regardless of subclass effects; no call is made by this model.
+    pub local_success_after_request_returns: bool,
+}
+
+/// Models only the local post-enumeration `RemoveModifierState` selection.
+///
+/// First filters all candidates by raw `flags_8b & 0x02`, preserving input order.
+/// Then the first exact signed UID match wins immediately unless the requested
+/// UID is `-1`. Every other visited candidate consumes its provided opaque bool;
+/// absent an explicit match, the last true result wins. UID mismatch permits
+/// fallback, and `-1` suppresses only the UID path, even for component UID `-1`.
+///
+/// Inputs must already describe valid, non-null candidates. This pure model does
+/// not enumerate components, interpret row equality or invalid pointers, resolve
+/// owner virtual lookups, perform logging, or invoke comparisons or virtual calls.
+/// Its request and success-after-return flag establish no destruction, subclass
+/// behavior, owner pipeline, import authority or stock-client compatibility.
+pub fn select_remove_modifier_state_local(
+    requested_uid: i32,
+    candidates: &[RemoveModifierStateCandidate],
+) -> RemoveModifierStateSelectionOutcome {
+    let mut filtered_input_indices = Vec::new();
+    for (input_index, candidate) in candidates.iter().enumerate() {
+        if candidate.flags_8b & 0x02 == 0 {
+            filtered_input_indices.push(input_index);
+        }
+    }
+
+    let mut compared_input_indices = Vec::new();
+    let mut selection = None;
+    for &input_index in &filtered_input_indices {
+        let candidate = &candidates[input_index];
+        if requested_uid != -1 && requested_uid == candidate.uid_f8 {
+            selection = Some(RemoveModifierStateSelection::ExplicitUid { input_index });
+            break;
+        }
+        compared_input_indices.push(input_index);
+        if candidate.opaque_comparison_result {
+            selection = Some(RemoveModifierStateSelection::LastComparisonTrue { input_index });
+        }
+    }
+
+    let virtual_call_request = match selection {
+        Some(RemoveModifierStateSelection::ExplicitUid { input_index })
+        | Some(RemoveModifierStateSelection::LastComparisonTrue { input_index }) => {
+            Some(RemoveModifierStateVirtualCallRequest {
+                input_index,
+                vftable_byte_offset: 0x3c0,
+                edx: 0,
+            })
+        }
+        None => None,
+    };
+    RemoveModifierStateSelectionOutcome {
+        filtered_input_indices,
+        compared_input_indices,
+        selection,
+        virtual_call_request,
+        local_success_after_request_returns: virtual_call_request.is_some(),
+    }
 }

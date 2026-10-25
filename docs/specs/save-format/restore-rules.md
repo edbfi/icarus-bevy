@@ -208,6 +208,11 @@ construction, script owners and data-table rows are out of scope (F-660).
   `bAutoActivate` (`+0x8b & 1 != 0`) match and `+0x280` `Deactivate()` on all
   others. Subclass/Blueprint overrides, downstream callee effects, owner/row
   binding and live execution remain unqualified.
+- `UIcarusFunctionLibrary::RemoveModifierState` local selection matches in
+  25621760/25793767 (F-937): filter `+0x8b & 2`, prefer the first explicit UID
+  match (`-1` disables), otherwise the last opaque-comparison match; request
+  virtual `+0x3c0(0)`. The pure model consumes supplied candidates/results;
+  enumeration, comparison semantics and destruction effects remain unqualified.
 
 ## Candidate
 
@@ -220,5 +225,5 @@ construction, script owners and data-table rows are out of scope (F-660).
 ## Evidence
 
 F-645..F-681, F-716, F-894, F-902..F-904, F-728, F-734..F-736, F-741..F-744, F-746, F-747,
-F-750, F-897, F-930; M-642..M-698, M-755..M-792, M-794..M-807, M-858, M-1024, M-1025,
-M-1027, M-1028.
+F-750, F-897, F-930, F-937; M-642..M-698, M-755..M-792, M-794..M-807, M-858, M-1024, M-1025,
+M-1027, M-1028, M-1035..M-1037.
