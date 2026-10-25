@@ -27,7 +27,8 @@ configuration per release (F-702; U-065 resolved); for 3.0.32 it, the class
 checksums, cooked schemas and row indices all derive from the dedicated-server
 distribution, which is what the shipped server may use (F-828, F-832).
 Native descriptors, cooked Blueprint schemas, `FClassNetCache` bounds and
-qualified codecs replay M-707 completely (F-762; U-064, U-066 resolved).
+qualified codecs replay M-707 completely: 66,859 property entries, 2,607 RPC
+calls and 2,361 stat pairs (F-762; U-064, U-066 resolved).
 
 Server and client builds match in every scheduling stage, whose constants and
 guards the [spec](../../specs/network/actor-channel.md) lists (F-745, F-748,

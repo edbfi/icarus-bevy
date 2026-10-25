@@ -23,15 +23,13 @@ trust prompts when presented. Do not run upstream global setup; it would change
 configuration outside this repository. Preserve the package lock, skill
 provenance and third-party licenses when updating.
 
-Doctor reports provider readiness, not a live connection. Verify registration
-with `codex mcp get rea` or `claude mcp get rea`, then query MCP
-`binary_session`. Missing user-wide registrations are informational for this
-project-local setup. M-778 records a healthy 12.1.4/JDK 21 provider; M-975 the
-drift to Homebrew's 12.2, which REA 6.7.0 rejects. M-973/M-974 validate an owned
-REA stdio session and authored fixture through bounded GNU objdump, not Ghidra
-provider readiness. For `unsupported_version` and other Ghidra drift, follow
+Doctor reports provider readiness; MCP `binary_session` verifies the live
+connection. Missing user-wide registrations are informational for this
+project-local setup. For `unsupported_version` and other Ghidra drift, follow
 "Ghidra drift" in `.agents/rules/project.md`. `rea.sh` prefers
-`~/.local/share/rea-ghidra/current` over Homebrew's Ghidra.
+`~/.local/share/rea-ghidra/current` over Homebrew's Ghidra. It selects the
+declared minimum JDK, unversioned Homebrew JDK, or closest installed newer
+`openjdk@N`, in that order; explicit `JAVA_HOME` takes precedence.
 
 Ghidra byte reads return loader-adjusted analysis memory and require default
 auto-analysis through REA. Exact physical metadata needs a reviewed bounded

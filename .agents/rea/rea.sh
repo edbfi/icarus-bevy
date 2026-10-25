@@ -34,6 +34,21 @@ if command -v brew >/dev/null 2>&1; then
         break
       fi
     done
+    # Homebrew may keep only a versioned newer JDK (for example openjdk@25).
+    # Prefer the closest installed line meeting Ghidra's declared minimum.
+    if [[ -z "${JAVA_HOME:-}" && "$rea_java_min" =~ ^[1-9][0-9]*$ ]]; then
+      rea_java_selected=""
+      for rea_java_home in "$brew_prefix"/opt/openjdk@*/libexec; do
+        rea_java_line="${rea_java_home%/libexec}"
+        rea_java_line="${rea_java_line##*@}"
+        if [[ "$rea_java_line" =~ ^[1-9][0-9]*$ && -x "$rea_java_home/bin/java" ]] &&
+          (( rea_java_line >= rea_java_min )) &&
+          [[ -z "$rea_java_selected" || "$rea_java_line" -lt "$rea_java_selected" ]]; then
+          rea_java_selected="$rea_java_line"
+          export JAVA_HOME="$rea_java_home"
+        fi
+      done
+    fi
   fi
 fi
 if [[ -z "${REA_TSHARK_COMMAND:-}" ]] && command -v tshark >/dev/null 2>&1; then
