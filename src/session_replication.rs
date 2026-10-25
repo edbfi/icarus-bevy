@@ -8,8 +8,11 @@
 //! its position as the spawn location and one actor block carrying the roles
 //! the capture's world-actor opens carry (F-791), plus its authored or resting
 //! `ReplicatedMovement` when it replicates movement; such an actor, selected
-//! again after a quantized change, gets an unreliable movement update once its
-//! open is acked ([`PeerLab::update_actor_motion`]); a channel the stage closes
+//! again after a quantized change, gets an unreliable property update once its
+//! open is acked ([`PeerLab::update_actor_properties`]). Optional authored
+//! [`NetActorFlags`] adds explicit handles 1 and 4 to opens and updates; removal
+//! requests the lab reset `(false, false)` for previously managed actors.
+//! A channel the stage closes
 //! (no longer relevant `3`, torn off `4`; F-749) gets its close bunch first
 //! ([`PeerLab::close_actor`]). Actor GUIDs are driver-wide and stable per
 //! [`DomainId`]. Other properties are not replicated. Archetypes are
@@ -22,10 +25,11 @@ use crate::{
         actor_channel::ContentBlock,
         peer_lab::PeerLab,
         session_open::{
-            ActorOpenSpec, PathSegment, actor_role_block, authored_movement, world_actor_block,
+            ActorOpenSpec, PathSegment, actor_role_block, authored_movement,
+            world_actor_state_block,
         },
     },
-    replication::{NetActor, NetViewer, ReplicationFrame, ReplicationSet},
+    replication::{NetActor, NetActorFlags, NetViewer, ReplicationFrame, ReplicationSet},
     simulation::{DomainId, Position},
 };
 
@@ -138,11 +142,23 @@ fn sync_viewers(
     }
 }
 
+type AuthoredActors<'world, 'state> = Query<
+    'world,
+    'state,
+    (
+        &'static NetActor,
+        &'static Position,
+        &'static NetArchetype,
+        Option<&'static NetMotion>,
+        Option<&'static NetActorFlags>,
+    ),
+>;
+
 fn open_selected_actors(
     mut lab: ResMut<PeerLab>,
     mut session: ResMut<SessionReplication>,
     frame: Res<ReplicationFrame>,
-    actors: Query<(&NetActor, &Position, &NetArchetype, Option<&NetMotion>)>,
+    actors: AuthoredActors,
 ) {
     lab.retry_pending_closes();
     if frame
@@ -165,34 +181,48 @@ fn open_selected_actors(
     }
     let by_id: std::collections::BTreeMap<DomainId, _> = actors
         .iter()
-        .map(|(actor, position, archetype, motion)| (actor.id, (position, archetype, motion)))
+        .map(|(actor, position, archetype, motion, flags)| {
+            (actor.id, (position, archetype, motion, flags))
+        })
         .collect();
     for connection in &frame.decisions.connections {
         for selected in &connection.selected {
-            let Some((position, archetype, motion)) = by_id.get(&selected.id) else {
+            let Some((position, archetype, motion, flags)) = by_id.get(&selected.id) else {
                 continue;
             };
             if lab.is_actor_open(connection.connection, selected.id.0) {
-                // A selected open actor replicates its changed movement.
-                if archetype.replicate_movement {
+                let movement = archetype.replicate_movement.then(|| {
                     let motion = motion.copied().unwrap_or_default();
-                    lab.update_actor_motion(
-                        connection.connection,
-                        selected.id.0,
-                        position.0,
-                        motion.rotation_degrees,
-                        motion.linear_velocity,
-                        session.engine_net_version,
-                    );
-                }
+                    [position.0, motion.rotation_degrees, motion.linear_velocity]
+                });
+                lab.update_actor_properties(
+                    connection.connection,
+                    selected.id.0,
+                    movement,
+                    flags.copied(),
+                    session.engine_net_version,
+                );
                 continue;
             }
             let block = if archetype.replicate_movement {
                 let motion = motion.copied().unwrap_or_default();
                 match authored_movement(position.0, motion.rotation_degrees, motion.linear_velocity)
                     .and_then(|movement| {
-                        world_actor_block(session.engine_net_version, Some(movement))
+                        world_actor_state_block(
+                            session.engine_net_version,
+                            Some(movement),
+                            flags.copied(),
+                        )
                     }) {
+                    Ok(block) => block,
+                    Err(_) => {
+                        session.movement_errors = session.movement_errors.saturating_add(1);
+                        continue;
+                    }
+                }
+            } else if flags.is_some() {
+                // Typed Boolean encoding uses the existing supported prefix.
+                match world_actor_state_block(session.engine_net_version, None, flags.copied()) {
                     Ok(block) => block,
                     Err(_) => {
                         session.movement_errors = session.movement_errors.saturating_add(1);
