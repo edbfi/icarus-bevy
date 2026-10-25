@@ -27,6 +27,7 @@ For any reverse-engineering work (binary/package inspection, decompilation,
 protocol recovery, runtime observation or version comparison), load the
 `reverse-engineer-anything` skill (`.agents/skills/reverse-engineer-anything/SKILL.md`)
 and use the `rea` MCP server as the primary interface (`docs/runbooks/rea-tooling.md`).
+On Ghidra `unsupported_version`, follow "Ghidra drift" in `.agents/rules/project.md`.
 Use `.agents/rea/rea.sh` or direct tools only for capabilities REA lacks or a
 diagnosed provider/resource limitation, record the reason, and export
 `work/<case>/rea-bundle.json` at session close. Project-authored Python uses

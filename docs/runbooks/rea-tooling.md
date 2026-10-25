@@ -26,12 +26,12 @@ provenance and third-party licenses when updating.
 Doctor reports provider readiness, not a live connection. Verify registration
 with `codex mcp get rea` or `claude mcp get rea`, then query MCP
 `binary_session`. Missing user-wide registrations are informational for this
-project-local setup. M-778 records the earlier healthy 12.1.4/JDK 21 provider;
-M-975 records current drift: REA 6.7.0 rejects Ghidra 12.2, whose installation also
-needed JDK 25 and a matching native decompiler. Do not relabel installations or
-bypass policy. The scoped direct fallback built the matching public source in
-an owned overlay. M-973/M-974 validate an owned REA stdio session and authored
-fixture through bounded GNU objdump, not Ghidra provider readiness.
+project-local setup. M-778 records a healthy 12.1.4/JDK 21 provider; M-975 the
+drift to Homebrew's 12.2, which REA 6.7.0 rejects. M-973/M-974 validate an owned
+REA stdio session and authored fixture through bounded GNU objdump, not Ghidra
+provider readiness. For `unsupported_version` and other Ghidra drift, follow
+"Ghidra drift" in `.agents/rules/project.md`. `rea.sh` prefers
+`~/.local/share/rea-ghidra/current` over Homebrew's Ghidra.
 
 Ghidra byte reads return loader-adjusted analysis memory and require default
 auto-analysis through REA. Exact physical metadata needs a reviewed bounded

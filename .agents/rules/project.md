@@ -35,8 +35,29 @@ be demonstrated rather than assumed.
 - Check REA's installed provider from the project root with
   `.agents/rea/rea.sh doctor --provider ghidra --json`. Use the installed
   `Brewfile` tools and check `tshark --version` separately when needed.
-- When a direct Ghidra fallback is needed, run it headlessly with
-  `JAVA_HOME="$(brew --prefix openjdk@21)/libexec" "$(brew --prefix ghidra)/libexec/support/analyzeHeadless" <arguments>`.
+- Ghidra drift. Ghidra and REA both update often; never pin a Ghidra release in
+  the repository. Each REA release accepts one Ghidra line, named in doctor's
+  `ghidra-version` detail. When doctor or a provider reports
+  `unsupported_version` (usually Homebrew upgraded Ghidra), resolve it in order
+  and record what you did:
+  1. Check REA's releases and issues (`gh release list -R morluto/rea`). If a
+     newer REA admits the installed Ghidra, update REA as its own change
+     (package lock, `upstream.json`, skill snapshot, licenses).
+  2. Otherwise install the release doctor names from the official
+     `NationalSecurityAgency/ghidra` GitHub release, after checking the SHA-256
+     published there, under `~/.local/share/rea-ghidra/`, and point its
+     `current` link at it. `rea.sh` prefers `current` over Homebrew and picks
+     the Homebrew `openjdk@N` that the selected Ghidra's `application.java.min`
+     names; install that JDK with Homebrew if it is missing.
+  3. Rerun doctor, restart the client (the MCP server reads its environment at
+     launch) and query `binary_session`. Remove `current` once Homebrew's
+     Ghidra is accepted again.
+  Never downgrade Homebrew's Ghidra, relabel an installation, patch REA's
+  policy or force an override past the gate. For other doctor failures follow
+  its `remediation`; Homebrew's Linux bottle has lacked the native decompiler
+  that the official archive ships (M-975).
+- When a direct Ghidra fallback is needed, run it headlessly with the Ghidra and
+  JDK that `rea.sh` selects (the `current` link, else Homebrew's).
 - Keep original server files under the ignored `icarus-orig/` directory and
   generated analysis artifacts under the ignored `work/` directory. Keep
   reusable source code and documentation outside those ignored directories.
