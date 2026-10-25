@@ -9,13 +9,15 @@ use icarus_bevy::experimental::modifier_lifecycle::{
     ModifierInitComponentOutcome, ModifierLoopingTimerSetup, ModifierOnStatContainerUpdatedInputs,
     ModifierOnStatContainerUpdatedOutcome, ModifierPrimaryVftableSlot, ModifierRemovedOutcome,
     ModifierSceneComponentInitAction, ModifierStateDataSource, ModifierTimerClearTarget,
-    ModifierUpdateStatsOutcome, SiblingModifierGrantedTags, evaluate_modifier_activate,
-    evaluate_modifier_applied_impl, evaluate_modifier_begin_play, evaluate_modifier_deactivate,
-    evaluate_modifier_end_play, evaluate_modifier_get_state_data,
-    evaluate_modifier_init_component_impl, evaluate_modifier_on_stat_container_updated,
-    evaluate_modifier_removed_impl, evaluate_modifier_update_stats,
-    resolve_modifier_primary_vftable_slot, scale_modifier_granted_stat_value,
-    select_fix_modifier_activation_actions,
+    ModifierUpdateStatsOutcome, RemoveModifierStateCandidate, RemoveModifierStateSelection,
+    RemoveModifierStateSelectionOutcome, RemoveModifierStateVirtualCallRequest,
+    SiblingModifierGrantedTags, evaluate_modifier_activate, evaluate_modifier_applied_impl,
+    evaluate_modifier_begin_play, evaluate_modifier_deactivate, evaluate_modifier_end_play,
+    evaluate_modifier_get_state_data, evaluate_modifier_init_component_impl,
+    evaluate_modifier_on_stat_container_updated, evaluate_modifier_removed_impl,
+    evaluate_modifier_update_stats, resolve_modifier_primary_vftable_slot,
+    scale_modifier_granted_stat_value, select_fix_modifier_activation_actions,
+    select_remove_modifier_state_local,
 };
 
 #[test]
@@ -811,5 +813,209 @@ fn exhaustive_modifier_lifecycle_invariants() {
                 }
             }
         }
+    }
+}
+
+fn removal_candidate(
+    uid_f8: i32,
+    flags_8b: u8,
+    opaque_comparison_result: bool,
+) -> RemoveModifierStateCandidate {
+    RemoveModifierStateCandidate {
+        flags_8b,
+        uid_f8,
+        opaque_comparison_result,
+    }
+}
+
+fn assert_local_removal_request(
+    outcome: &RemoveModifierStateSelectionOutcome,
+    selected_input_index: Option<usize>,
+) {
+    // An Option pins the cardinality to at most one modeled request. The flag
+    // describes the caller after return, with no claim about destruction.
+    let expected_request =
+        selected_input_index.map(|input_index| RemoveModifierStateVirtualCallRequest {
+            input_index,
+            vftable_byte_offset: 0x3c0,
+            edx: 0,
+        });
+    assert_eq!(outcome.virtual_call_request, expected_request);
+    assert_eq!(
+        outcome.local_success_after_request_returns,
+        selected_input_index.is_some()
+    );
+    match outcome.selection {
+        Some(RemoveModifierStateSelection::ExplicitUid { input_index })
+        | Some(RemoveModifierStateSelection::LastComparisonTrue { input_index }) => {
+            assert_eq!(Some(input_index), selected_input_index);
+        }
+        None => assert_eq!(selected_input_index, None),
+    }
+}
+
+#[test]
+fn local_removal_empty_or_all_flagged_has_no_selection_or_request() {
+    let all_flagged = [
+        removal_candidate(7, 0x02, true),
+        removal_candidate(7, 0xff, true),
+        removal_candidate(-1, 0x82, false),
+    ];
+    for candidates in [&[][..], &all_flagged[..]] {
+        let outcome = select_remove_modifier_state_local(7, candidates);
+        assert!(outcome.filtered_input_indices.is_empty());
+        assert!(outcome.compared_input_indices.is_empty());
+        assert_eq!(outcome.selection, None);
+        assert_local_removal_request(&outcome, None);
+    }
+}
+
+#[test]
+fn local_removal_first_uid_match_overrides_comparison_and_stops_the_scan() {
+    let candidates = [
+        removal_candidate(90, 0, true),
+        removal_candidate(7, 0, false),
+        removal_candidate(7, 0, true),
+        removal_candidate(8, 0, true),
+    ];
+    let outcome = select_remove_modifier_state_local(7, &candidates);
+    // The entire filtering pass precedes selection, even though selection stops
+    // at index 1. Neither the selected candidate nor later inputs are compared.
+    assert_eq!(outcome.filtered_input_indices, vec![0, 1, 2, 3]);
+    assert_eq!(outcome.compared_input_indices, vec![0]);
+    assert_eq!(
+        outcome.selection,
+        Some(RemoveModifierStateSelection::ExplicitUid { input_index: 1 })
+    );
+    assert_local_removal_request(&outcome, Some(1));
+}
+
+#[test]
+fn local_removal_duplicate_uids_choose_first_retained_without_comparison() {
+    let candidates = [
+        removal_candidate(7, 0x02, true),
+        removal_candidate(7, 0x01, false),
+        removal_candidate(7, 0x80, true),
+    ];
+    let outcome = select_remove_modifier_state_local(7, &candidates);
+    assert_eq!(outcome.filtered_input_indices, vec![1, 2]);
+    assert!(outcome.compared_input_indices.is_empty());
+    assert_eq!(
+        outcome.selection,
+        Some(RemoveModifierStateSelection::ExplicitUid { input_index: 1 })
+    );
+    assert_local_removal_request(&outcome, Some(1));
+}
+
+#[test]
+fn local_removal_uid_mismatch_uses_last_true_in_enumeration_order() {
+    let candidates = [
+        removal_candidate(90, 0, true),
+        removal_candidate(120, 0, false),
+        removal_candidate(-80, 0, true),
+        removal_candidate(40, 0, true),
+        removal_candidate(i32::MIN, 0, false),
+    ];
+    let outcome = select_remove_modifier_state_local(7, &candidates);
+    assert_eq!(outcome.filtered_input_indices, vec![0, 1, 2, 3, 4]);
+    assert_eq!(outcome.compared_input_indices, vec![0, 1, 2, 3, 4]);
+    // UID 40 is neither the smallest nor largest comparison-true UID.
+    assert_eq!(
+        outcome.selection,
+        Some(RemoveModifierStateSelection::LastComparisonTrue { input_index: 3 })
+    );
+    assert_local_removal_request(&outcome, Some(3));
+}
+
+#[test]
+fn local_removal_minus_one_suppresses_uid_only_even_for_component_minus_one() {
+    let candidates = [
+        removal_candidate(-1, 0, true),
+        removal_candidate(4, 0, false),
+        removal_candidate(-1, 0, true),
+    ];
+    let outcome = select_remove_modifier_state_local(-1, &candidates);
+    assert_eq!(outcome.filtered_input_indices, vec![0, 1, 2]);
+    assert_eq!(outcome.compared_input_indices, vec![0, 1, 2]);
+    assert_eq!(
+        outcome.selection,
+        Some(RemoveModifierStateSelection::LastComparisonTrue { input_index: 2 })
+    );
+    assert_local_removal_request(&outcome, Some(2));
+
+    let no_match = select_remove_modifier_state_local(-1, &[removal_candidate(-1, 0, false)]);
+    assert_eq!(no_match.filtered_input_indices, vec![0]);
+    assert_eq!(no_match.compared_input_indices, vec![0]);
+    assert_eq!(no_match.selection, None);
+    assert_local_removal_request(&no_match, None);
+}
+
+#[test]
+fn local_removal_filters_flags_before_uid_and_comparison_selection() {
+    let candidates = [
+        removal_candidate(7, 0x02, true),
+        removal_candidate(8, 0x01, true),
+        removal_candidate(9, 0x00, false),
+        removal_candidate(10, 0xfe, true),
+    ];
+    let outcome = select_remove_modifier_state_local(7, &candidates);
+    assert_eq!(outcome.filtered_input_indices, vec![1, 2]);
+    assert_eq!(outcome.compared_input_indices, vec![1, 2]);
+    assert_eq!(
+        outcome.selection,
+        Some(RemoveModifierStateSelection::LastComparisonTrue { input_index: 1 })
+    );
+    assert_local_removal_request(&outcome, Some(1));
+
+    // Only mask 0x02 matters; unrelated raw bits must not exclude a candidate.
+    for flags in u8::MIN..=u8::MAX {
+        let outcome = select_remove_modifier_state_local(7, &[removal_candidate(7, flags, false)]);
+        if flags & 0x02 == 0 {
+            assert_eq!(outcome.filtered_input_indices, vec![0]);
+            assert_eq!(
+                outcome.selection,
+                Some(RemoveModifierStateSelection::ExplicitUid { input_index: 0 })
+            );
+            assert_local_removal_request(&outcome, Some(0));
+        } else {
+            assert!(outcome.filtered_input_indices.is_empty());
+            assert_eq!(outcome.selection, None);
+            assert_local_removal_request(&outcome, None);
+        }
+        assert!(outcome.compared_input_indices.is_empty());
+    }
+}
+
+#[test]
+fn local_removal_no_uid_or_comparison_match_has_no_request_or_success_flag() {
+    let candidates = [
+        removal_candidate(1, 0, false),
+        removal_candidate(2, 0x80, false),
+        removal_candidate(3, 0x02, true),
+    ];
+    let outcome = select_remove_modifier_state_local(7, &candidates);
+    assert_eq!(outcome.filtered_input_indices, vec![0, 1]);
+    assert_eq!(outcome.compared_input_indices, vec![0, 1]);
+    assert_eq!(outcome.selection, None);
+    assert_local_removal_request(&outcome, None);
+}
+
+#[test]
+fn local_removal_preserves_signed_uid_boundaries_and_only_minus_one_is_sentinel() {
+    for requested_uid in [i32::MIN, i32::MIN + 1, -2, 0, 1, i32::MAX - 1, i32::MAX] {
+        // The boundary UID must override an earlier opaque comparison result.
+        let candidates = [
+            removal_candidate(-1, 0, true),
+            removal_candidate(requested_uid, 0, false),
+            removal_candidate(requested_uid, 0, true),
+        ];
+        let outcome = select_remove_modifier_state_local(requested_uid, &candidates);
+        assert_eq!(outcome.filtered_input_indices, vec![0, 1, 2]);
+        assert_eq!(outcome.compared_input_indices, vec![0]);
+        assert_eq!(
+            outcome.selection,
+            Some(RemoveModifierStateSelection::ExplicitUid { input_index: 1 })
+        );
+        assert_local_removal_request(&outcome, Some(1));
     }
 }
