@@ -7,7 +7,7 @@ three reference environments. Rules for when to use REA are in
 ## REA runtime
 
 The project uses [REA](https://github.com/morluto/rea), pinned as
-`rea-agents@6.7.0` in `.agents/rea/package-lock.json`. Its wrapper and MCP
+`rea-agents@6.8.0` in `.agents/rea/package-lock.json`. Its wrapper and MCP
 configuration are local to this repository: Codex reads `.codex/config.toml`,
 Claude reads `.mcp.json`, and both discover the same skill through
 `.agents/skills/reverse-engineer-anything/` and its `.claude/skills/` link.
