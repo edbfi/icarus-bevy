@@ -7,7 +7,7 @@ full text under `retired/`. Admission and columns follow `.agents/rules/docs.md`
 
 Before restructure: 96ddb0b:docs/ledgers/findings.md
 
-Last reconciled: 2026-10-24
+Last reconciled: 2026-10-25
 
 | ID | Claim | Kind | Evidence | Scope and limits | Unknowns | Status |
 | --- | --- | --- | --- | --- | --- | --- |
@@ -56,4 +56,4 @@ Last reconciled: 2026-10-24
 | F-860 | The capture save's 168 distinct actor classes: 161 Blueprints whose assets server 25956137 (3.0.32) ships, 7 native script classes; all 2,743 actor paths name shipped level packages, its one asset path a shipped asset | measured | static-bytes; M-867, M-880 | high; one save; by name against the pak index, contents unread: not shown loadable or spawnable | U-045 | active |
 | F-916 | Format-2 catalog planning requires a declared root map, map-owned actor paths/tiles and class-owned variables; wrong contexts, duplicate declarations and dangling placement classes fail; CLI never writes | observed | authored-test; M-900 | high; authored fixtures; declaration coverage only, no native geometry or behavior | U-025, U-045 | active |
 | F-920 | Candidates retain roots, identities, typing and bytes from one decode; releasing scratch lets 15/15 supplied saves fit unchanged limits | observed | native-probe, authored-test; M-919..M-925 | high; 15/15 baseline refusals; max decode 130,988,191 B / 266,350 elements; exhaustion rejects all; no RSS guarantee or semantic import | U-025, U-045 | active |
-| F-930 | Modifier reload/time guards, expiration wrappers and server teardown branches are bounded | observed | static-instruction, static-pcode; M-976/ev_b1012887f656, M-978, M-990..M-1004, M-1005/ev_8c02a85a6efb, M-1006 | high; unordered guards differ; destruction partial; virtual receivers, callee effects, owner/row binding and activation unqualified | U-025, U-045 | active |
+| F-930 | UModifierStateComponent matches across builds (+0x278/+0x280 Activate/Deactivate, +0x338/+0x340 Begin/EndPlay, +0x3c0, +0x408 UpdateStats, +0x410/+0x418): (3,[+0xf8])/GrantedStats; null-delegate crash; role 3/reason 0 | observed | static-pcode, authored-test; M-976, M-978, M-990..M-1010, M-1024/ev_053a26045f8e, M-1025 | high; 2 builds; BP/scaling/live open | U-025, U-045 | active |
