@@ -605,3 +605,123 @@ fn locked_missions_updates_round_trip_through_the_layout() {
         .collect();
     assert_eq!(decoded, values);
 }
+
+#[test]
+fn complete_active_prospect_values_round_trip_including_clears_in_both_orders() {
+    use icarus_bevy::experimental::{
+        game_state_open::{active_prospect_update_values, active_prospect_values, class_default},
+        prospect_info::{AssociatedMember, CustomGameSetting, ProspectInfo},
+    };
+    let info = ProspectInfo {
+        prospect_id: "authored".encode_utf16().collect(),
+        claimed_account_character: i32::MIN,
+        expire_time: i64::MAX,
+        prospect_state: 4,
+        associated_members: vec![AssociatedMember {
+            account_name: "Æ".encode_utf16().collect(),
+            chr_slot: i32::MAX,
+            experience: i32::MIN,
+            status: 12,
+            is_currently_playing: true,
+            ..Default::default()
+        }],
+        cost: i32::MAX,
+        reward: i32::MIN,
+        difficulty: 4,
+        insurance: true,
+        no_respawns: true,
+        elapsed_time: i32::MAX,
+        selected_drop_point: i32::MIN,
+        custom_settings: vec![CustomGameSetting {
+            setting_row_name: "setting".encode_utf16().collect(),
+            setting_value: i32::MIN,
+        }],
+        ..Default::default()
+    };
+    let cleared = ProspectInfo::default();
+    let defaults = active_prospect_update_values(&cleared).unwrap();
+    assert_eq!(defaults.len(), 17);
+    assert!(active_prospect_values(&cleared).unwrap().is_empty());
+    for handle in handle::ACTIVE_PROSPECT {
+        assert_eq!(defaults.get(&handle), class_default(handle).as_ref());
+    }
+    for current in [&info, &cleared] {
+        let values = active_prospect_update_values(current).unwrap();
+        assert_eq!(
+            values.keys().copied().collect::<Vec<_>>(),
+            handle::ACTIVE_PROSPECT.collect::<Vec<_>>()
+        );
+        let open = active_prospect_values(current).unwrap();
+        assert!(
+            open.iter()
+                .all(|(handle, value)| values.get(handle) == Some(value))
+        );
+        for order in [ByteOrder::Little, ByteOrder::Big] {
+            let mut actor = codec();
+            actor.order = order;
+            let mut rep = rep_codec();
+            rep.actor = actor;
+            let payload = compose_game_state_update(&plan().layout, 17, &values, order).unwrap();
+            let body = read_actor_bunch_body(&mut payload.reader(), false, &actor).unwrap();
+            let decoded: BTreeMap<u32, RepValue> =
+                read_rep_properties(&mut body.blocks[0].payload.reader(), &plan().layout, &rep)
+                    .unwrap()
+                    .entries
+                    .into_iter()
+                    .map(|entry| (entry.handle, entry.value))
+                    .collect();
+            assert_eq!(decoded, values);
+        }
+    }
+}
+
+#[test]
+fn active_prospect_values_reject_invalid_enums_strings_and_resource_counts() {
+    use icarus_bevy::experimental::{
+        game_state_open::active_prospect_update_values,
+        prospect_info::{AssociatedMember, CustomGameSetting, ProspectInfo},
+    };
+    let invalid = [
+        ProspectInfo {
+            prospect_state: 5,
+            ..Default::default()
+        },
+        ProspectInfo {
+            difficulty: 5,
+            ..Default::default()
+        },
+        ProspectInfo {
+            associated_members: vec![AssociatedMember {
+                status: 13,
+                ..Default::default()
+            }],
+            ..Default::default()
+        },
+        ProspectInfo {
+            prospect_id: vec![0],
+            ..Default::default()
+        },
+        ProspectInfo {
+            custom_settings: vec![CustomGameSetting {
+                setting_row_name: vec![0xffff],
+                setting_value: 0,
+            }],
+            ..Default::default()
+        },
+        ProspectInfo {
+            lobby_name: vec![65; 65_536],
+            ..Default::default()
+        },
+        ProspectInfo {
+            associated_members: vec![AssociatedMember::default(); 512],
+            ..Default::default()
+        },
+        ProspectInfo {
+            custom_settings: vec![CustomGameSetting::default(); 4097],
+            ..Default::default()
+        },
+    ];
+    for info in invalid {
+        assert!(active_prospect_update_values(&info).is_err());
+    }
+}

@@ -1906,6 +1906,371 @@ fn game_state_updates(
         .collect()
 }
 
+fn active_prospect_lab(
+    mut config: PeerLabConfig,
+    initial: &icarus_bevy::experimental::prospect_info::ProspectInfo,
+) -> (
+    App,
+    SocketAddr,
+    Vec<icarus_bevy::experimental::rep_layout::RepCommand>,
+) {
+    use icarus_bevy::experimental::{
+        game_state_open::{GAME_STATE_CHANNEL_INDEX, GameStateOpenState, active_prospect_values},
+        release::ReleaseProfile,
+        session_open::ActorKey,
+    };
+    config.admission = Some(PeerLabAdmission::default());
+    let profile = ReleaseProfile::release_3_0_32();
+    let map = PeerLabAdmission::default().map_url;
+    let plan = profile.game_state_open_plan(map).unwrap().unwrap();
+    let layout = plan.layout.clone();
+    let mut bound = PeerLab::bind(0, config).unwrap();
+    bound
+        .enable_player_controller_open(
+            profile
+                .player_controller_open_plan(map, [0.0; 3])
+                .unwrap()
+                .unwrap(),
+        )
+        .unwrap();
+    bound
+        .enable_game_state_open(
+            plan,
+            GameStateOpenState {
+                key: ActorKey::Session(0),
+                managers: Default::default(),
+                values: active_prospect_values(initial).unwrap(),
+                weather: Vec::new(),
+            },
+            GAME_STATE_CHANNEL_INDEX,
+        )
+        .unwrap();
+    let address = bound.local_addr().unwrap();
+    let mut app = build_app(&ServerConfig::default(), &WorldSnapshot::default()).unwrap();
+    app.insert_resource(bound).add_plugins(PeerLabPlugin);
+    (app, address, layout)
+}
+
+fn join_active_prospect_peer(app: &mut App, address: SocketAddr) -> Client {
+    let mut client = Client::connect(app, address);
+    client.exchange(app, short_hello("", 0), false);
+    client.exchange(app, login(), false);
+    client.exchange(app, ControlMessage::Join, false);
+    client
+}
+
+fn acknowledge_datagrams(client: &mut Client, datagrams: &[Vec<u8>]) {
+    for datagram in datagrams {
+        let packet = read_packet(datagram, &to_client()).unwrap();
+        if let Some(received) = client.sequencer.receive(&packet.header).unwrap() {
+            client.sequencer.ack_seq(received.sequence, true).unwrap();
+        }
+    }
+}
+
+fn prospect_update_step(app: &mut App, client: &mut Client) -> Vec<Vec<u8>> {
+    use icarus_bevy::experimental::peer_lab::GAME_STATE_UPDATE_SECONDS;
+    let (ack, _) = client.packet(Vec::new());
+    client.send(&ack);
+    thread::sleep(Duration::from_secs_f32(GAME_STATE_UPDATE_SECONDS * 1.5));
+    app.update();
+    let datagrams = drain(client);
+    acknowledge_datagrams(client, &datagrams);
+    datagrams
+}
+
+#[test]
+fn explicit_prospect_refresh_waits_for_open_ack_deduplicates_and_clears() {
+    use icarus_bevy::experimental::{
+        game_state_open::{active_prospect_update_values, handle},
+        prospect_info::{AssociatedMember, CustomGameSetting, ProspectInfo},
+        rep_layout::RepValue,
+    };
+    let initial = ProspectInfo::default();
+    let (mut app, address, layout) = active_prospect_lab(PeerLabConfig::default(), &initial);
+    let mut client = join_active_prospect_peer(&mut app, address);
+    let current = ProspectInfo {
+        prospect_id: "prospect".encode_utf16().collect(),
+        claimed_account_id: "account".encode_utf16().collect(),
+        claimed_account_character: 1,
+        prospect_dt_key: "row".encode_utf16().collect(),
+        faction_mission_dt_key: "mission".encode_utf16().collect(),
+        lobby_name: "lobby".encode_utf16().collect(),
+        expire_time: -1,
+        prospect_state: 2,
+        associated_members: vec![AssociatedMember {
+            // Matching a lab name must not alter this supplied false flag.
+            account_name: "Player256".encode_utf16().collect(),
+            is_currently_playing: false,
+            ..Default::default()
+        }],
+        cost: 1,
+        reward: 2,
+        difficulty: 3,
+        insurance: true,
+        no_respawns: true,
+        elapsed_time: 71,
+        selected_drop_point: 1,
+        custom_settings: vec![CustomGameSetting {
+            setting_row_name: "setting".encode_utf16().collect(),
+            setting_value: 2,
+        }],
+    };
+    app.world_mut()
+        .resource_mut::<PeerLab>()
+        .refresh_active_prospect(&current)
+        .unwrap();
+    thread::sleep(Duration::from_millis(60));
+    app.update();
+    assert_eq!(
+        stats(&app).game_state_updates_sent,
+        0,
+        "open is unacknowledged"
+    );
+    let pending = drain(&client);
+    acknowledge_datagrams(&mut client, &pending);
+    let updates = game_state_updates(&prospect_update_step(&mut app, &mut client), &layout);
+    let expected = active_prospect_update_values(&current).unwrap();
+    let seen: std::collections::BTreeMap<_, _> = updates
+        .iter()
+        .flat_map(|values| values.iter())
+        .filter(|(h, _)| handle::ACTIVE_PROSPECT.contains(h))
+        .map(|(h, v)| (*h, v.clone()))
+        .collect();
+    assert_eq!(seen, expected, "all 17 non-default top-level fields change");
+    // An identical explicit refresh and ordinary polls carry no prospect.
+    app.world_mut()
+        .resource_mut::<PeerLab>()
+        .refresh_active_prospect(&current)
+        .unwrap();
+    for _ in 0..3 {
+        for update in game_state_updates(&prospect_update_step(&mut app, &mut client), &layout) {
+            assert!(!update.keys().any(|h| handle::ACTIVE_PROSPECT.contains(h)));
+        }
+    }
+    app.world_mut()
+        .resource_mut::<PeerLab>()
+        .refresh_active_prospect(&ProspectInfo::default())
+        .unwrap();
+    let updates = game_state_updates(&prospect_update_step(&mut app, &mut client), &layout);
+    let clear = updates
+        .iter()
+        .find(|values| values.contains_key(&51))
+        .unwrap();
+    for h in handle::ACTIVE_PROSPECT {
+        assert_eq!(
+            clear.get(&h),
+            icarus_bevy::experimental::game_state_open::class_default(h).as_ref(),
+            "clear {h}"
+        );
+    }
+    assert_eq!(clear.get(&63), Some(&RepValue::Bool(false)));
+}
+
+#[test]
+fn later_join_uses_refreshed_template_and_never_infers_a_refresh() {
+    use icarus_bevy::experimental::{
+        actor_channel::{ActorChannelCodec, ActorChannelLimits, read_actor_bunch_body},
+        archive::ByteOrder,
+        game_state_open::{GAME_STATE_CHANNEL_INDEX, active_prospect_values, handle},
+        prospect_info::{AssociatedMember, ProspectInfo},
+        rep_layout::{RepLayoutCodec, RepLayoutLimits, read_rep_properties},
+    };
+    let initial = ProspectInfo {
+        elapsed_time: 123,
+        insurance: true,
+        ..Default::default()
+    };
+    let (mut app, address, layout) = active_prospect_lab(PeerLabConfig::default(), &initial);
+    let mut first = join_active_prospect_peer(&mut app, address);
+    accept_all_headers(&mut first);
+    // Template initialization alone must not schedule active-prospect updates.
+    for _ in 0..3 {
+        assert!(
+            game_state_updates(&prospect_update_step(&mut app, &mut first), &layout)
+                .iter()
+                .all(|values| !values.keys().any(|h| handle::ACTIVE_PROSPECT.contains(h)))
+        );
+    }
+    let latest = ProspectInfo {
+        lobby_name: "latest".encode_utf16().collect(),
+        associated_members: vec![AssociatedMember {
+            account_name: "Player257".encode_utf16().collect(),
+            is_currently_playing: false,
+            ..Default::default()
+        }],
+        elapsed_time: 77,
+        ..Default::default()
+    };
+    app.world_mut()
+        .resource_mut::<PeerLab>()
+        .refresh_active_prospect(&latest)
+        .unwrap();
+    prospect_update_step(&mut app, &mut first);
+    let mut second = join_active_prospect_peer(&mut app, address);
+    let datagrams = drain(&second);
+    let bunch = datagrams
+        .iter()
+        .flat_map(|bytes| read_packet(bytes, &to_client()).unwrap().bunches)
+        .find(|bunch| {
+            bunch.header.channel_index == GAME_STATE_CHANNEL_INDEX
+                && !bunch.header.has_package_map_exports
+        })
+        .unwrap();
+    let actor = ActorChannelCodec {
+        engine_net_version: 17,
+        exports_enabled: false,
+        has_level: true,
+        order: ByteOrder::Little,
+        limits: ActorChannelLimits::default(),
+    };
+    let body = read_actor_bunch_body(&mut bunch.payload.reader(), true, &actor).unwrap();
+    let values: std::collections::BTreeMap<_, _> = read_rep_properties(
+        &mut body.blocks[0].payload.reader(),
+        &layout,
+        &RepLayoutCodec {
+            actor,
+            checksums: false,
+            limits: RepLayoutLimits::default(),
+        },
+    )
+    .unwrap()
+    .entries
+    .into_iter()
+    .filter(|entry| handle::ACTIVE_PROSPECT.contains(&entry.handle))
+    .map(|entry| (entry.handle, entry.value))
+    .collect();
+    assert_eq!(values, active_prospect_values(&latest).unwrap());
+    acknowledge_datagrams(&mut second, &datagrams);
+    for _ in 0..3 {
+        for update in game_state_updates(&prospect_update_step(&mut app, &mut second), &layout) {
+            assert!(
+                !update.keys().any(|h| handle::ACTIVE_PROSPECT.contains(h)),
+                "the open established the latest baseline"
+            );
+        }
+        for update in game_state_updates(&prospect_update_step(&mut app, &mut first), &layout) {
+            assert!(
+                !update.keys().any(|h| handle::ACTIVE_PROSPECT.contains(h)),
+                "join does not infer member flags or elapsed time"
+            );
+        }
+    }
+}
+
+#[test]
+fn a_lost_prospect_partial_repairs_current_state_and_superseded_updates_stay_retired() {
+    use icarus_bevy::experimental::{
+        game_state_open::{GAME_STATE_CHANNEL_INDEX, handle},
+        prospect_info::ProspectInfo,
+        rep_layout::RepValue,
+    };
+    let (mut app, address, layout) =
+        active_prospect_lab(PeerLabConfig::default(), &ProspectInfo::default());
+    let mut client = join_active_prospect_peer(&mut app, address);
+    accept_all_headers(&mut client);
+    prospect_update_step(&mut app, &mut client);
+    let refresh = |app: &mut App, letter: u16, elapsed: i32| {
+        app.world_mut()
+            .resource_mut::<PeerLab>()
+            .refresh_active_prospect(&ProspectInfo {
+                lobby_name: vec![letter; 3_000],
+                elapsed_time: elapsed,
+                ..Default::default()
+            })
+            .unwrap();
+        thread::sleep(Duration::from_millis(60));
+        app.update();
+    };
+    refresh(&mut app, 65, 10);
+    let sent = drain(&client);
+    let parts: Vec<usize> = sent
+        .iter()
+        .enumerate()
+        .filter_map(|(index, bytes)| {
+            read_packet(bytes, &to_client())
+                .unwrap()
+                .bunches
+                .iter()
+                .any(|bunch| {
+                    bunch.header.channel_index == GAME_STATE_CHANNEL_INDEX
+                        && bunch.header.partial
+                        && !bunch.header.reliable
+                })
+                .then_some(index)
+        })
+        .collect();
+    assert!(parts.len() >= 3, "a real multipart prospect update");
+    let lost = parts[1];
+    let delivered: Vec<Vec<u8>> = sent
+        .into_iter()
+        .enumerate()
+        .filter(|(index, _)| *index != lost)
+        .map(|(_, bytes)| bytes)
+        .collect();
+    assert!(
+        game_state_updates(&delivered, &layout).is_empty(),
+        "the missing middle part prevents assembly"
+    );
+    acknowledge_datagrams(&mut client, &delivered);
+    // The next ACK reports the gap; losing any part makes the whole latest
+    // prospect update due, and it reassembles from consecutive repair parts.
+    let repaired = game_state_updates(&prospect_update_step(&mut app, &mut client), &layout);
+    assert!(repaired.iter().any(|values| matches!(values.get(&56), Some(RepValue::Str(text)) if text.units() == vec![65; 3_000])));
+    assert!(stats(&app).game_state_updates_lost >= 1);
+
+    refresh(&mut app, 66, 11);
+    let lost_old = drain(&client);
+    assert!(
+        game_state_updates(&lost_old, &layout)
+            .iter()
+            .any(|values| values.get(&65) == Some(&RepValue::Int(11)))
+    );
+    // A newer complete state is sent before the old gap is reported.
+    refresh(&mut app, 67, 12);
+    let latest = drain(&client);
+    assert!(
+        game_state_updates(&latest, &layout)
+            .iter()
+            .any(|values| values.get(&65) == Some(&RepValue::Int(12)))
+    );
+    acknowledge_datagrams(&mut client, &latest);
+    let after_nak = game_state_updates(&prospect_update_step(&mut app, &mut client), &layout);
+    assert!(
+        after_nak
+            .iter()
+            .all(|values| !values.keys().any(|h| handle::ACTIVE_PROSPECT.contains(h))),
+        "the old NAK cannot undo newer prospect values"
+    );
+    // A later refresh supersedes a lost value before repair is generated:
+    // the repair reads current state, rather than retaining the old payload.
+    refresh(&mut app, 68, 13);
+    drain(&client);
+    let (keepalive, _) = client.packet(Vec::new());
+    client.send(&keepalive);
+    app.update();
+    accept_all_headers(&mut client);
+    app.world_mut()
+        .resource_mut::<PeerLab>()
+        .refresh_active_prospect(&ProspectInfo {
+            lobby_name: vec![69; 3_000],
+            elapsed_time: 14,
+            ..Default::default()
+        })
+        .unwrap();
+    let repaired_latest = game_state_updates(&prospect_update_step(&mut app, &mut client), &layout);
+    assert!(
+        repaired_latest
+            .iter()
+            .any(|values| values.get(&65) == Some(&RepValue::Int(14)))
+    );
+    assert!(
+        repaired_latest
+            .iter()
+            .all(|values| values.get(&65) != Some(&RepValue::Int(13)))
+    );
+}
+
 #[test]
 fn game_state_updates_advance_the_clocks_once_the_open_is_acked() {
     use icarus_bevy::experimental::{

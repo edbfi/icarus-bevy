@@ -26,13 +26,9 @@ gameplay-tag net-index dictionary derives from the client's tag table and
 configuration per release (F-702; U-065 resolved); for 3.0.32 it, the class
 checksums, cooked schemas and row indices all derive from the dedicated-server
 distribution, which is what the shipped server may use (F-828, F-832).
-Native descriptors, cooked Blueprint schemas, `FClassNetCache` bounds and the
-`NetSerialize` census in `experimental::rep_layout`, `rep_rpc`, `sequencing`
-and `actor_channel` replay and re-encode every export (317), partial sequence
-(300), dormancy close (136), actor open (288) and typed content block (23,486:
-20,407 with a rep layout, 3,072 without; 66,859 property entries, 2,607 RPC
-calls, 2,361 stat pairs) of M-707 with 0 failures (F-571 to F-644, F-703 to
-F-711, F-843 to F-850; U-064, U-066 resolved).
+Native descriptors, cooked Blueprint schemas, `FClassNetCache` bounds and
+qualified codecs replay M-707 completely: 66,859 property entries, 2,607 RPC
+calls and 2,361 stat pairs (F-762; U-064, U-066 resolved).
 
 Server and client builds match in every scheduling stage, whose constants and
 guards the [spec](../../specs/network/actor-channel.md) lists (F-745, F-748,
@@ -47,21 +43,17 @@ SecondsPerGameDay (F-805, F-855, F-856; U-071 resolved); `run` sends GameState
 updates at the captured cadence with constant-rate TimeOfDay (F-807),
 `ServerFPS` (F-808, F-809), locally saving `NetworkingStatus` with player pings
 (F-810, F-811, F-815, F-816), and `LockedMissions` from `D_FactionMissions`
-(F-834, F-835). Fresh pawn vitals, empty inventories and 58 stats (incl. 8
-virtual formulas) come from data.pak (F-836, F-839). After PlayerState, `run`
-opens the radiation, world-talent and disaster managers (F-859), then stitched
-`C019` quest actors followed by QuestManager and PlayerHistoryTracker bit for
-bit against M-707 (F-861, F-862, F-934;
-[world managers](../../specs/network/world-managers.md)). All 2,044 `D_Quests`
-checksums match across 3.0.31/3.0.32 server paks (1,774 keep 4033596864, 270
-add `CPF_Net`), and Kismet `Check()` + CDO guards compile 1,635 pure + 44
-false-only rules (matching 8/8 captured quest opens + ch 126 bit for bit) while
-failing closed on the 270 `CPF_Net` extensions and 365 impure graphs (F-864,
-F-934, F-935; U-074 resolved, U-076). InventoryContainerManager matches 98/98
-captured inventories bit for bit incl. ticked C016 `CurrentWeight` (F-866,
-F-933; U-075 resolved), FLOD matches C013 tiles bit for bit (F-914), and all 15
-prospects run cleanly (6 open 8 quests, 9 empty, 0 skipped; F-867, F-934).
+(F-834, F-835). Fresh-pawn vitals, inventories and stats: F-836, F-839.
+Saved manager/quest opens, bitwise capture comparisons and the 15-prospect
+census: F-859, F-861, F-862, F-864, F-866, F-867, F-914, F-933 to F-935;
+[world managers](../../specs/network/world-managers.md). U-074 and U-075 are
+resolved; unsupported quest classes and `Check()` graphs fail closed (U-076).
 Joining players are not yet appended to `History` (F-865).
+
+Explicit native prospect refreshes retain current values and future-open
+templates, clear defaults and repair loss after open ACK; invalid combined
+opens reject atomically and temporary pressure preserves clocks (F-936).
+These are authored loopback tests; original trigger timing remains U-070.
 
 ## Open
 
@@ -81,4 +73,4 @@ Joining players are not yet appended to `History` (F-865).
 
 ## Artifacts
 
-M-420..M-449, M-455..M-470, M-570..M-576, M-581..M-588, M-600..M-605, M-707..M-717, M-720, M-728..M-748, M-776, M-777, M-782, M-794, M-795, M-797..M-799, M-801, M-802, M-804, M-805, M-807, M-813..M-819, M-832, M-834 to M-836, M-838 to M-848, M-852, M-853, M-860, M-863, M-868, M-869, M-879, M-881 to M-887, M-891 to M-896, M-901 to M-913, M-1027 to M-1030.
+M-420..M-449, M-455..M-470, M-570..M-576, M-581..M-588, M-600..M-605, M-707..M-717, M-720, M-728..M-748, M-776, M-777, M-782, M-794, M-795, M-797..M-799, M-801, M-802, M-804, M-805, M-807, M-813..M-819, M-832, M-834 to M-836, M-838 to M-848, M-852, M-853, M-860, M-863, M-868, M-869, M-879, M-881 to M-887, M-891 to M-896, M-901 to M-913, M-1027 to M-1030, M-1034.

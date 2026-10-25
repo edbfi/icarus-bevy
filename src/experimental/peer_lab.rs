@@ -79,8 +79,10 @@
 //!   when it changed (with [`PeerLab::enable_server_fps`], measured over
 //!   the lab's own poll intervals by [`ServerFpsMeter`]), and
 //!   `LockedMissions` when a minute's refresh changed it (with
-//!   [`PeerLab::enable_locked_missions`], F-834). An update over
-//!   one bunch (a long `NetworkingStatus`) goes out through
+//!   [`PeerLab::enable_locked_missions`], F-834). Explicit
+//!   [`PeerLab::refresh_active_prospect`] calls supply complete prospect
+//!   values; polling and lab Login/Join never infer a prospect refresh. An
+//!   update over one bunch (a long `NetworkingStatus`) goes out through
 //!   [`LabPeer::actor_update_datagrams`] as unreliable partial bunches in
 //!   consecutive datagrams (`game_state_update_datagrams`). A naked update's
 //!   values (a nak of any of its datagrams) that were still the latest are
@@ -170,8 +172,9 @@ use super::control_messages::{
     ArchiveText, ControlFallback, ControlMessage, Decoded, NetIdValue, UniqueNetId,
 };
 use super::game_state_open::{
-    GameStateOpenPlan, GameStateOpenState, LockedMission, NetworkingStatus, class_default,
-    compose_game_state_open, compose_game_state_update,
+    GameStateOpenPlan, GameStateOpenState, LockedMission, NetworkingStatus,
+    active_prospect_update_values, class_default, compose_game_state_open,
+    compose_game_state_update,
 };
 use super::handshake::decode;
 use super::handshake_lab::{
@@ -694,7 +697,7 @@ fn locked_missions(session: &GameStateSession, world_seconds: f32) -> Option<Opt
 
 /// The GameState handles updates carry: the world time, `TimeOfDay`,
 /// `LevelTimeElapsedSec`, `ServerFPS`, `LockedMissions` and the
-/// `NetworkingStatus` fields.
+/// `NetworkingStatus` fields and explicitly refreshed active prospect.
 fn update_handles() -> impl Iterator<Item = u32> {
     use super::game_state_open::handle;
     [
@@ -705,6 +708,7 @@ fn update_handles() -> impl Iterator<Item = u32> {
         handle::LOCKED_MISSIONS,
     ]
     .into_iter()
+    .chain(handle::ACTIVE_PROSPECT)
     .chain(handle::NETWORKING_STATUS)
 }
 
@@ -851,6 +855,9 @@ struct RegisteredPlayer {
 struct GameStateSession {
     plan: GameStateOpenPlan,
     state: GameStateOpenState,
+    /// Complete values supplied by the last explicit refresh, including
+    /// defaults. None leaves legacy template-only initialization unchanged.
+    active_prospect: Option<BTreeMap<u32, RepValue>>,
     channel_index: u32,
     /// The restored `LevelTimeElapsedSec`, advanced with the world time at
     /// each send.
@@ -870,6 +877,65 @@ struct GameStateSession {
     /// `NetworkingStatus` as last gathered: the enabled base with the joined
     /// players listed at each update pass (F-810).
     networking: Option<NetworkingStatus>,
+}
+
+impl GameStateSession {
+    /// Assemble the template with the dynamic values an open would send now.
+    fn open_state(
+        &self,
+        template: &GameStateOpenState,
+        world_seconds: f32,
+    ) -> Result<GameStateOpenState> {
+        use super::game_state_open::handle;
+        let mut state = template.clone();
+        if let Some(status) = &self.networking {
+            // As gathered at the last update pass; defaults stay unsent.
+            for (handle, value) in status.values()? {
+                if class_default(handle).as_ref() == Some(&value) {
+                    state.values.remove(&handle);
+                } else {
+                    state.values.insert(handle, value);
+                }
+            }
+        }
+        if let Some(meter) = &self.fps {
+            match meter.fps() {
+                0 => state.values.remove(&handle::SERVER_FPS),
+                fps => state.values.insert(handle::SERVER_FPS, RepValue::Int(fps)),
+            };
+        }
+        if let Some(clock) = &self.clock {
+            let time_of_day = clock.time_of_day();
+            if time_of_day == 0.0 {
+                state.values.remove(&handle::TIME_OF_DAY);
+            } else {
+                state
+                    .values
+                    .insert(handle::TIME_OF_DAY, RepValue::Float(time_of_day.to_bits()));
+            }
+        }
+        state.values.insert(
+            handle::WORLD_TIME_SECONDS,
+            RepValue::Float(world_seconds.to_bits()),
+        );
+        if let Some(restored) = self.level_time {
+            state.values.insert(
+                handle::LEVEL_TIME_ELAPSED_SEC,
+                RepValue::Int(super::game_state_open::level_time_elapsed_sec(
+                    restored,
+                    world_seconds,
+                )),
+            );
+        }
+        if let Some(value) = locked_missions(self, world_seconds) {
+            // An empty list is the default and unsent.
+            match value {
+                Some(value) => state.values.insert(handle::LOCKED_MISSIONS, value),
+                None => state.values.remove(&handle::LOCKED_MISSIONS),
+            };
+        }
+        Ok(state)
+    }
 }
 
 /// The loopback peer lab. `Debug` reports only the peer count and counters.
@@ -1293,6 +1359,7 @@ impl PeerLab {
         self.game_state_open = Some(GameStateSession {
             plan,
             state,
+            active_prospect: None,
             channel_index,
             level_time: None,
             locked_missions: Vec::new(),
@@ -1314,7 +1381,10 @@ impl PeerLab {
     /// Add `values` to the GameState open's values (replacing equal
     /// handles), for state that is known only after bind, such as a loaded
     /// world's active prospect. Fails without a GameState open, or for the
-    /// lab-written world time.
+    /// lab-written world time. After an explicit prospect refresh, any
+    /// active-prospect handle rejects the entire map; use
+    /// [`refresh_active_prospect`](Self::refresh_active_prospect) instead.
+    /// Unrelated handles still change the future-open template only.
     pub fn extend_game_state_values(&mut self, values: BTreeMap<u32, RepValue>) -> Result<()> {
         let Some(session) = &mut self.game_state_open else {
             bail!("no GameState open is enabled");
@@ -1323,7 +1393,81 @@ impl PeerLab {
             !values.contains_key(&super::game_state_open::handle::WORLD_TIME_SECONDS),
             "the lab writes the GameState's world time"
         );
+        ensure!(
+            session.active_prospect.is_none()
+                || !values
+                    .keys()
+                    .any(|handle| super::game_state_open::handle::ACTIVE_PROSPECT.contains(handle)),
+            "use refresh_active_prospect after an explicit prospect refresh"
+        );
         session.state.values.extend(values);
+        Ok(())
+    }
+
+    /// Replace the active prospect for future opens and joined peers.
+    ///
+    /// The caller supplies current `ElapsedTime` and each member's
+    /// `IsCurrentlyPlaying`; [`super::prospect_info::ProspectInfo::for_session`]
+    /// can compose those from explicitly supplied state. This operation
+    /// establishes no original trigger timing (F-822; U-070), and lab Login,
+    /// Join, disconnect and clock ticks never call it automatically.
+    ///
+    /// Validate enums, codec kinds/widths, resource bounds and both byte
+    /// orders against the configured release before changing either state,
+    /// including the open's dynamic fields as they stand at this call.
+    /// Defaults disappear from the future-open template but remain explicit
+    /// current values, so zero/false/empty clear what a peer previously saw.
+    /// Updates wait for each peer's open ACK and use the existing pacing and
+    /// ACK/NAK/partial repair path. No packet is sent by this call itself.
+    pub fn refresh_active_prospect(
+        &mut self,
+        info: &super::prospect_info::ProspectInfo,
+    ) -> Result<()> {
+        use super::archive::ByteOrder;
+        use super::game_state_open::handle;
+        let Some(session) = &mut self.game_state_open else {
+            bail!("no GameState open is enabled");
+        };
+        let values = active_prospect_update_values(info)?;
+        let mut state = session.state.clone();
+        state
+            .values
+            .retain(|handle, _| !handle::ACTIVE_PROSPECT.contains(handle));
+        for (&handle, value) in &values {
+            if class_default(handle).as_ref() != Some(value) {
+                state.values.insert(handle, value.clone());
+            }
+        }
+        let open_state = session.open_state(&state, self.started.elapsed().as_secs_f32())?;
+        for order in [ByteOrder::Little, ByteOrder::Big] {
+            let update = compose_game_state_update(
+                &session.plan.layout,
+                session.plan.engine_net_version,
+                &values,
+                order,
+            )?;
+            ensure!(
+                update.bit_len().div_ceil(8) <= super::packet_lab::MAX_CONSTRUCTED_BUNCH_BYTES,
+                "active prospect update exceeds the bunch byte limit"
+            );
+            // Compose with disposable GUID/export state: an invalid future
+            // open must not publish either the template or current values.
+            let open = compose_game_state_open(
+                &mut self.guid_cache.clone(),
+                &mut ConnectionExports::new(),
+                &session.plan,
+                &open_state,
+                session.channel_index,
+                order,
+            )?;
+            ensure!(
+                open.bunch.payload.bit_len().div_ceil(8)
+                    <= super::packet_lab::MAX_CONSTRUCTED_BUNCH_BYTES,
+                "active prospect open exceeds the bunch byte limit"
+            );
+        }
+        session.state = state;
+        session.active_prospect = Some(values);
         Ok(())
     }
 
@@ -2492,76 +2636,14 @@ impl PeerLab {
         };
         let mut cache = self.guid_cache.clone();
         let mut exports = entry.exports.clone();
-        let mut state = session.state.clone();
         let world_seconds = self.started.elapsed().as_secs_f32();
-        if let Some(status) = &session.networking {
-            // As gathered at the last update pass; defaults stay unsent.
-            match status.values() {
-                Ok(values) => {
-                    for (handle, value) in values {
-                        if class_default(handle).as_ref() == Some(&value) {
-                            state.values.remove(&handle);
-                        } else {
-                            state.values.insert(handle, value);
-                        }
-                    }
-                }
-                Err(_) => {
-                    bump(&mut self.stats.game_state_open_errors);
-                    return;
-                }
+        let state = match session.open_state(&session.state, world_seconds) {
+            Ok(state) => state,
+            Err(_) => {
+                bump(&mut self.stats.game_state_open_errors);
+                return;
             }
-        }
-        if let Some(meter) = &session.fps {
-            // As for the time of day below: 0 is the default and unsent.
-            match meter.fps() {
-                0 => state
-                    .values
-                    .remove(&super::game_state_open::handle::SERVER_FPS),
-                fps => state.values.insert(
-                    super::game_state_open::handle::SERVER_FPS,
-                    RepValue::Int(fps),
-                ),
-            };
-        }
-        if let Some(clock) = &session.clock {
-            // An open sends only values that differ from the default (0).
-            let time_of_day = clock.time_of_day();
-            if time_of_day == 0.0 {
-                state
-                    .values
-                    .remove(&super::game_state_open::handle::TIME_OF_DAY);
-            } else {
-                state.values.insert(
-                    super::game_state_open::handle::TIME_OF_DAY,
-                    RepValue::Float(time_of_day.to_bits()),
-                );
-            }
-        }
-        state.values.insert(
-            super::game_state_open::handle::WORLD_TIME_SECONDS,
-            RepValue::Float(world_seconds.to_bits()),
-        );
-        if let Some(restored) = session.level_time {
-            state.values.insert(
-                super::game_state_open::handle::LEVEL_TIME_ELAPSED_SEC,
-                RepValue::Int(super::game_state_open::level_time_elapsed_sec(
-                    restored,
-                    world_seconds,
-                )),
-            );
-        }
-        if let Some(value) = locked_missions(session, world_seconds) {
-            // An empty list is the default and unsent.
-            match value {
-                Some(value) => state
-                    .values
-                    .insert(super::game_state_open::handle::LOCKED_MISSIONS, value),
-                None => state
-                    .values
-                    .remove(&super::game_state_open::handle::LOCKED_MISSIONS),
-            };
-        }
+        };
         let sent = compose_game_state_open(
             &mut cache,
             &mut exports,
@@ -2929,6 +3011,13 @@ impl PeerLab {
             Some(Err(_)) => bump(&mut self.stats.game_state_update_errors),
             None => {}
         }
+        if let Some(values) = &session.active_prospect {
+            changing.extend(
+                values
+                    .iter()
+                    .map(|(handle, value)| (*handle, Some(value.clone()))),
+            );
+        }
         let (channel, layout, engine) = (
             session.channel_index,
             &session.plan.layout,
@@ -2943,7 +3032,7 @@ impl PeerLab {
             if !entry.peer.actor_channel_settled(channel) {
                 continue;
             }
-            let mut values = replica.due(world_seconds, &changing);
+            let values = replica.due(world_seconds, &changing);
             if values.is_empty() {
                 continue;
             }
@@ -2952,32 +3041,39 @@ impl PeerLab {
             // unreliable partial bunches in consecutive datagrams.
             let mut sent = compose_game_state_update(layout, engine, &values, order)
                 .and_then(|payload| entry.peer.actor_update_datagrams(channel, payload));
-            // A NetworkingStatus that still cannot be sent (over the 64 KiB
-            // bunch bound or the sent-record ring's room) must not hold back
-            // the clocks: count the failure and send the other values; the
-            // status stays due. Composition and framing failures change no
-            // state, so the retry is clean.
-            let status = handle::NETWORKING_STATUS;
+            // Large status/prospect fields must not hold back clocks under
+            // bunch-size or sent-ring pressure. Try each group independently
+            // from the original due map, then clocks alone; omitted fields
+            // stay due. Failed framing attempts are transactional.
+            let mut sent_values = None;
             let mut counted = false;
-            if sent.is_err()
-                && !entry.peer.is_failed()
-                && values.keys().any(|handle| status.contains(handle))
-            {
-                // One failed attempt counts once, whether or not the retry
-                // goes out.
-                bump(&mut self.stats.game_state_update_errors);
-                counted = true;
-                values.retain(|handle, _| !status.contains(handle));
-                if values.is_empty() {
+            for (omit_status, omit_prospect) in [(true, false), (false, true), (true, true)] {
+                if sent.is_ok() || entry.peer.is_failed() {
+                    break;
+                }
+                if !counted {
+                    bump(&mut self.stats.game_state_update_errors);
+                    counted = true;
+                }
+                let candidate: BTreeMap<_, _> = values
+                    .iter()
+                    .filter(|(handle, _)| {
+                        !(omit_status && handle::NETWORKING_STATUS.contains(handle)
+                            || omit_prospect && handle::ACTIVE_PROSPECT.contains(handle))
+                    })
+                    .map(|(&handle, value)| (handle, value.clone()))
+                    .collect();
+                if candidate.is_empty() || candidate == values {
                     continue;
                 }
-                sent = compose_game_state_update(layout, engine, &values, order)
+                sent = compose_game_state_update(layout, engine, &candidate, order)
                     .and_then(|payload| entry.peer.actor_update_datagrams(channel, payload));
+                sent_values = Some(candidate);
             }
             match sent {
                 Ok(datagrams) => {
                     entry.ack_pending = false;
-                    outgoing.push((*address, datagrams, values));
+                    outgoing.push((*address, datagrams, sent_values.unwrap_or(values)));
                 }
                 Err(_) => {
                     if !counted {
@@ -3048,6 +3144,764 @@ fn poll_peer_lab(mut lab: ResMut<PeerLab>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn prospect_refresh_lab() -> PeerLab {
+        use super::super::{game_state_open::GAME_STATE_CHANNEL_INDEX, release::ReleaseProfile};
+        let mut lab = PeerLab::bind(
+            0,
+            PeerLabConfig {
+                admission: Some(PeerLabAdmission::default()),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let profile = ReleaseProfile::release_3_0_32();
+        let map = PeerLabAdmission::default().map_url;
+        lab.enable_player_controller_open(
+            profile
+                .player_controller_open_plan(map, [0.0; 3])
+                .unwrap()
+                .unwrap(),
+        )
+        .unwrap();
+        lab.enable_game_state_open(
+            profile.game_state_open_plan(map).unwrap().unwrap(),
+            GameStateOpenState {
+                key: ActorKey::Session(0),
+                managers: Default::default(),
+                values: BTreeMap::from([(
+                    super::super::game_state_open::handle::SEED,
+                    RepValue::Int(7),
+                )]),
+                weather: Vec::new(),
+            },
+            GAME_STATE_CHANNEL_INDEX,
+        )
+        .unwrap();
+        lab
+    }
+
+    #[test]
+    fn template_extension_rejects_prospect_handles_atomically_after_refresh() {
+        use super::super::{game_state_open::handle, prospect_info::ProspectInfo};
+        let mut lab = prospect_refresh_lab();
+        // Bootstrap callers may still supply prospect handles before the
+        // first typed refresh establishes the authoritative current values.
+        lab.extend_game_state_values(BTreeMap::from([
+            (handle::SEED, RepValue::Int(8)),
+            (65, RepValue::Int(3)),
+        ]))
+        .unwrap();
+        assert_eq!(
+            lab.game_state_open.as_ref().unwrap().state.values.get(&65),
+            Some(&RepValue::Int(3))
+        );
+        lab.refresh_active_prospect(&ProspectInfo {
+            elapsed_time: 9,
+            ..Default::default()
+        })
+        .unwrap();
+        let before = lab.game_state_open.as_ref().unwrap().clone();
+        for prospect_handle in handle::ACTIVE_PROSPECT {
+            assert!(
+                lab.extend_game_state_values(BTreeMap::from([
+                    (handle::SEED, RepValue::Int(99)),
+                    (prospect_handle, class_default(prospect_handle).unwrap()),
+                ]))
+                .is_err()
+            );
+            let after = lab.game_state_open.as_ref().unwrap();
+            assert_eq!(after.state.values, before.state.values);
+            assert_eq!(after.active_prospect, before.active_prospect);
+        }
+        lab.extend_game_state_values(BTreeMap::from([(handle::SEED, RepValue::Int(10))]))
+            .unwrap();
+        let after = lab.game_state_open.as_ref().unwrap();
+        let mut expected = before.state.values.clone();
+        expected.insert(handle::SEED, RepValue::Int(10));
+        assert_eq!(after.state.values, expected);
+        assert_eq!(after.active_prospect, before.active_prospect);
+    }
+
+    /// Establish a lab peer and ACK its GameState open without app clocks
+    /// or Login/Join behavior. All input is independently authored.
+    fn acked_game_state_peer(
+        lab: &mut PeerLab,
+    ) -> (
+        UdpSocket,
+        SocketAddrV4,
+        super::super::sequencing::PacketSequencer,
+    ) {
+        use super::super::{
+            handshake::initial_request,
+            packet::{Packet, Receiver, read_packet, write_packet},
+            packet_lab::client_cookie_seeds,
+            sequencing::PacketSequencer,
+        };
+        let socket = UdpSocket::bind("127.0.0.1:0").unwrap();
+        socket.connect(lab.local_addr().unwrap()).unwrap();
+        socket
+            .set_read_timeout(Some(Duration::from_secs(1)))
+            .unwrap();
+        let SocketAddr::V4(address) = socket.local_addr().unwrap() else {
+            unreachable!("IPv4 loopback")
+        };
+        let mut buffer = [0; 2048];
+        socket.send(&initial_request()).unwrap();
+        lab.poll();
+        let length = socket.recv(&mut buffer).unwrap();
+        let cookie = decode(&buffer[..length]).unwrap().cookie;
+        socket.send(&buffer[..length]).unwrap();
+        lab.poll();
+        let length = socket.recv(&mut buffer).unwrap();
+        assert_eq!(decode(&buffer[..length]).unwrap().cookie, cookie);
+        let (incoming, outgoing) = client_cookie_seeds(&cookie);
+        let mut client = PacketSequencer::new(incoming, outgoing, 64).unwrap();
+        lab.send_game_state_open(address);
+        let entry = &lab.peers[&address];
+        assert!(entry.game_state.is_some());
+        let count = entry.peer.sequencer().notify().sent_records().len();
+        assert!(count > 0);
+        let to_client = super::super::packet::PacketConfig {
+            receiver: Receiver::Client,
+            ..lab.config.packet.packet
+        };
+        for _ in 0..count {
+            let length = socket.recv(&mut buffer).unwrap();
+            let packet = read_packet(&buffer[..length], &to_client).unwrap();
+            let received = client.receive(&packet.header).unwrap().unwrap();
+            client.ack_seq(received.sequence, true).unwrap();
+        }
+        let ack = write_packet(
+            &Packet {
+                magic: 0,
+                header: client.header().unwrap(),
+                info: None,
+                bunches: Vec::new(),
+            },
+            &lab.config.packet.packet,
+        )
+        .unwrap();
+        client.commit().unwrap();
+        let channel = lab.game_state_open.as_ref().unwrap().channel_index;
+        let entry = lab.peers.get_mut(&address).unwrap();
+        entry.peer.receive(&ack).unwrap();
+        assert!(entry.peer.actor_channel_settled(channel));
+        assert!(entry.peer.sequencer().notify().sent_records().is_empty());
+        (socket, address, client)
+    }
+
+    fn receive_game_state_update(
+        socket: &UdpSocket,
+        lab: &PeerLab,
+        mut client: Option<&mut super::super::sequencing::PacketSequencer>,
+    ) -> BTreeMap<u32, RepValue> {
+        use super::super::{
+            actor_channel::read_actor_bunch_body,
+            archive::ByteOrder,
+            packet::{PacketConfig, Receiver, read_packet},
+            rep_layout::{RepLayoutCodec, RepLayoutLimits, read_rep_properties},
+            sequencing::{
+                MAX_CONSTRUCTED_PARTIAL_BUNCH_BYTES, PartialBunchReassembler, PartialReceive,
+            },
+        };
+        let session = lab.game_state_open.as_ref().unwrap();
+        let mut buffer = [0; 2048];
+        let mut reassembler = PartialBunchReassembler::new();
+        let mut packet_id: Option<(u16, i64)> = None;
+        let mut complete = None;
+        for _ in 0..32 {
+            let length = socket.recv(&mut buffer).unwrap();
+            let packet = read_packet(
+                &buffer[..length],
+                &PacketConfig {
+                    receiver: Receiver::Client,
+                    ..lab.config.packet.packet
+                },
+            )
+            .unwrap();
+            if let Some(client) = client.as_mut() {
+                let received = client.receive(&packet.header).unwrap().unwrap();
+                client.ack_seq(received.sequence, true).unwrap();
+            }
+            let sequence = packet.header.sequence;
+            let id = packet_id.map_or(i64::from(sequence), |(last, id)| {
+                id + i64::from(sequence.wrapping_sub(last) & 0x3fff)
+            });
+            packet_id = Some((sequence, id));
+            assert_eq!(packet.bunches.len(), 1, "one GameState update part");
+            let bunch = packet.bunches.into_iter().next().unwrap();
+            assert_eq!(bunch.header.channel_index, session.channel_index);
+            assert!(!bunch.header.open && !bunch.header.reliable);
+            if !bunch.header.partial {
+                complete = Some(bunch);
+                break;
+            }
+            if let PartialReceive::Complete { bunch, .. } = reassembler
+                .receive_part(
+                    id,
+                    &bunch.header,
+                    &bunch.payload,
+                    Some(MAX_CONSTRUCTED_PARTIAL_BUNCH_BYTES),
+                )
+                .unwrap()
+            {
+                complete = Some(bunch);
+                break;
+            }
+        }
+        let bunch = complete.expect("bounded GameState update completes");
+        let codec = RepLayoutCodec {
+            actor: ActorChannelCodec {
+                engine_net_version: session.plan.engine_net_version,
+                exports_enabled: false,
+                has_level: true,
+                order: ByteOrder::Little,
+                limits: ActorChannelLimits::default(),
+            },
+            checksums: false,
+            limits: RepLayoutLimits::default(),
+        };
+        let body = read_actor_bunch_body(&mut bunch.payload.reader(), false, &codec.actor).unwrap();
+        assert_eq!(body.blocks.len(), 1);
+        read_rep_properties(
+            &mut body.blocks[0].payload.reader(),
+            &session.plan.layout,
+            &codec,
+        )
+        .unwrap()
+        .entries
+        .into_iter()
+        .map(|entry| (entry.handle, entry.value))
+        .collect()
+    }
+
+    #[test]
+    fn update_fallback_preserves_each_viable_group_and_retries_omitted_fields() {
+        use super::super::{
+            game_state_open::handle, prospect_info::ProspectInfo, time_of_day::RateCurve,
+        };
+        for oversized_prospect in [true, false] {
+            let mut lab = prospect_refresh_lab();
+            lab.refresh_active_prospect(&ProspectInfo::default())
+                .unwrap();
+            lab.enable_networking_status(NetworkingStatus::local(600.0))
+                .unwrap();
+            lab.enable_time_of_day(TimeOfDayClock::new(
+                RateCurve::constant(60.0).unwrap(),
+                600.0,
+            ))
+            .unwrap();
+            lab.set_game_state_level_time(1_000).unwrap();
+            let (socket, address, _) = acked_game_state_peer(&mut lab);
+            let before = lab.peers[&address]
+                .game_state
+                .as_ref()
+                .unwrap()
+                .sent
+                .clone();
+            lab.refresh_active_prospect(&ProspectInfo {
+                lobby_name: vec![65],
+                elapsed_time: 9,
+                insurance: true,
+                ..Default::default()
+            })
+            .unwrap();
+            let session = lab.game_state_open.as_mut().unwrap();
+            let status = session.networking.as_mut().unwrap();
+            status.current_host_player_name = vec![66];
+            status.saved_locally = false;
+            let prospect = session.active_prospect.as_ref().unwrap().clone();
+            let status_values = status.values().unwrap();
+            let (omitted, retained, repaired) = if oversized_prospect {
+                // Model state that has grown past framing limits after
+                // validation, without exposing an invalid public refresh.
+                session
+                    .active_prospect
+                    .as_mut()
+                    .unwrap()
+                    .insert(56, RepValue::Str(ArchiveText::new(&[65; 9_000]).unwrap()));
+                (handle::ACTIVE_PROSPECT, status_values, prospect)
+            } else {
+                status.current_host_player_name = vec![66; 9_000];
+                (handle::NETWORKING_STATUS, prospect, status_values)
+            };
+            let earlier = Instant::now() - Duration::from_secs(2);
+            lab.started = earlier;
+            session.clock_at = earlier;
+            session.updated_at = None;
+            let errors = lab.stats.game_state_update_errors;
+            let packets = lab.peers[&address].peer.sequencer().out_packet_id();
+            lab.update_game_state();
+            let update = receive_game_state_update(&socket, &lab, None);
+            let retained_due: BTreeMap<_, _> = retained
+                .into_iter()
+                .filter(|(handle, value)| before.get(handle) != Some(value))
+                .collect();
+            assert!(!retained_due.is_empty());
+            let mut expected = retained_due;
+            for clock in [
+                handle::WORLD_TIME_SECONDS,
+                handle::TIME_OF_DAY,
+                handle::LEVEL_TIME_ELAPSED_SEC,
+            ] {
+                expected.insert(
+                    clock,
+                    update.get(&clock).expect("clock survives fallback").clone(),
+                );
+            }
+            assert_eq!(update, expected);
+            assert!(update.keys().all(|handle| !omitted.contains(handle)));
+            assert_eq!(lab.stats.game_state_update_errors, errors + 1);
+            let entry = &lab.peers[&address];
+            assert!(!entry.peer.is_failed());
+            assert_eq!(entry.peer.sequencer().out_packet_id(), packets + 1);
+            let replica = entry.game_state.as_ref().unwrap();
+            let mut expected_sent = before.clone();
+            expected_sent.extend(update.clone());
+            assert_eq!(replica.sent, expected_sent);
+            assert_eq!(replica.in_flight.len(), 1);
+            assert_eq!(
+                replica.in_flight.values().next().unwrap().1,
+                update.keys().copied().collect::<Vec<_>>()
+            );
+            // Remove the framing pressure and force the next paced pass.
+            // The omitted group must arrive without another typed refresh.
+            let session = lab.game_state_open.as_mut().unwrap();
+            if oversized_prospect {
+                session.active_prospect = Some(repaired.clone());
+            } else {
+                session
+                    .networking
+                    .as_mut()
+                    .unwrap()
+                    .current_host_player_name = vec![66];
+            }
+            session.updated_at = None;
+            lab.update_game_state();
+            let retry = receive_game_state_update(&socket, &lab, None);
+            let repaired_due: BTreeMap<_, _> = repaired
+                .into_iter()
+                .filter(|(handle, value)| before.get(handle) != Some(value))
+                .collect();
+            assert!(!repaired_due.is_empty());
+            assert_eq!(
+                retry
+                    .iter()
+                    .filter(|(handle, _)| omitted.contains(handle))
+                    .map(|(&handle, value)| (handle, value.clone()))
+                    .collect::<BTreeMap<_, _>>(),
+                repaired_due
+            );
+            assert!(retry.keys().all(|handle| {
+                omitted.contains(handle)
+                    || [
+                        handle::WORLD_TIME_SECONDS,
+                        handle::TIME_OF_DAY,
+                        handle::LEVEL_TIME_ELAPSED_SEC,
+                    ]
+                    .contains(handle)
+            }));
+            assert_eq!(lab.stats.game_state_update_errors, errors + 1);
+        }
+    }
+
+    #[test]
+    fn prospect_send_pressure_leaves_clocks_running_and_same_refresh_due() {
+        use super::super::{
+            game_state_open::handle,
+            packet::{Packet, PacketConfig, Receiver, read_packet, write_packet},
+            prospect_info::ProspectInfo,
+            time_of_day::RateCurve,
+        };
+        let mut lab = prospect_refresh_lab();
+        lab.config.packet.sent_capacity = 12;
+        lab.enable_time_of_day(TimeOfDayClock::new(
+            RateCurve::constant(60.0).unwrap(),
+            600.0,
+        ))
+        .unwrap();
+        lab.set_game_state_level_time(1_000).unwrap();
+        let (socket, address, mut client) = acked_game_state_peer(&mut lab);
+        // Fill exactly six of twelve sent records with disposable ACKs.
+        // The client remembers them but reports none until pressure clears.
+        let to_client = PacketConfig {
+            receiver: Receiver::Client,
+            ..lab.config.packet.packet
+        };
+        for _ in 0..6 {
+            let datagram = lab
+                .peers
+                .get_mut(&address)
+                .unwrap()
+                .peer
+                .ack_packet()
+                .unwrap();
+            let packet = read_packet(&datagram, &to_client).unwrap();
+            let received = client.receive(&packet.header).unwrap().unwrap();
+            client.ack_seq(received.sequence, true).unwrap();
+        }
+        let large = ProspectInfo {
+            lobby_name: vec![65; 7_000],
+            elapsed_time: 10,
+            ..Default::default()
+        };
+        lab.refresh_active_prospect(&large).unwrap();
+        let mut previous_world = 0.0;
+        let mut previous_clock = 600.0;
+        let mut previous_level = 1_000;
+        let errors = lab.stats.game_state_update_errors;
+        for step in 0..4 {
+            // Drive the existing private timestamps, so clock progress and
+            // pacing are independent of wall-clock scheduling and sleeps.
+            let now = Instant::now();
+            lab.started = now - Duration::from_secs(2 + step);
+            let session = lab.game_state_open.as_mut().unwrap();
+            session.clock_at = now - Duration::from_secs(1);
+            session.updated_at = None;
+            lab.update_game_state();
+            let update = receive_game_state_update(&socket, &lab, Some(&mut client));
+            assert_eq!(update.len(), 3, "only the three clocks fit");
+            let RepValue::Float(world) = update[&handle::WORLD_TIME_SECONDS] else {
+                panic!("world time is a float")
+            };
+            let RepValue::Float(clock) = update[&handle::TIME_OF_DAY] else {
+                panic!("time of day is a float")
+            };
+            let RepValue::Int(level) = update[&handle::LEVEL_TIME_ELAPSED_SEC] else {
+                panic!("level time is an integer")
+            };
+            assert!(f32::from_bits(world) > previous_world);
+            assert!(f32::from_bits(clock) > previous_clock);
+            assert!(level > previous_level);
+            previous_world = f32::from_bits(world);
+            previous_clock = f32::from_bits(clock);
+            previous_level = level;
+            assert_eq!(lab.stats.game_state_update_errors, errors + step + 1);
+        }
+        assert_eq!(
+            lab.peers[&address]
+                .peer
+                .sequencer()
+                .notify()
+                .sent_records()
+                .len(),
+            10
+        );
+        assert_eq!(lab.stats.peers_failed, 0);
+        // Release every outstanding packet through the normal ACK path,
+        // then deliver the same refresh with no replacement or new call.
+        let ack = write_packet(
+            &Packet {
+                magic: 0,
+                header: client.header().unwrap(),
+                info: None,
+                bunches: Vec::new(),
+            },
+            &lab.config.packet.packet,
+        )
+        .unwrap();
+        client.commit().unwrap();
+        lab.buffer[..ack.len()].copy_from_slice(&ack);
+        lab.data(address, ack.len(), Instant::now());
+        assert!(
+            lab.peers[&address]
+                .peer
+                .sequencer()
+                .notify()
+                .sent_records()
+                .is_empty()
+        );
+        lab.game_state_open.as_mut().unwrap().updated_at = None;
+        lab.update_game_state();
+        let update = receive_game_state_update(&socket, &lab, Some(&mut client));
+        assert_eq!(update.get(&65), Some(&RepValue::Int(10)));
+        assert!(
+            matches!(update.get(&56), Some(RepValue::Str(text)) if text.units() == large.lobby_name)
+        );
+        assert_eq!(lab.stats.game_state_update_errors, errors + 4);
+        assert_eq!(lab.stats.peers_failed, 0);
+    }
+
+    #[test]
+    fn prospect_refresh_validates_before_publishing_template_or_current_values() {
+        use super::super::{
+            game_state_open::handle,
+            prospect_info::{AssociatedMember, ProspectInfo},
+            rep_layout::RepCommand,
+        };
+        let initial = ProspectInfo {
+            elapsed_time: 123,
+            insurance: true,
+            ..Default::default()
+        };
+        let mut disabled = PeerLab::bind(0, PeerLabConfig::default()).unwrap();
+        assert!(disabled.refresh_active_prospect(&initial).is_err());
+        let mut lab = prospect_refresh_lab();
+        lab.refresh_active_prospect(&initial).unwrap();
+        let before = lab.game_state_open.as_ref().unwrap().clone();
+        for invalid in [
+            ProspectInfo {
+                prospect_state: 8,
+                ..Default::default()
+            },
+            ProspectInfo {
+                difficulty: 255,
+                ..Default::default()
+            },
+            ProspectInfo {
+                associated_members: vec![AssociatedMember {
+                    status: 13,
+                    ..Default::default()
+                }],
+                ..Default::default()
+            },
+            ProspectInfo {
+                lobby_name: vec![0],
+                ..Default::default()
+            },
+            ProspectInfo {
+                lobby_name: vec![65; 65_536],
+                ..Default::default()
+            },
+            // Each string fits the actor block; their combined bytes do not.
+            ProspectInfo {
+                prospect_id: vec![65; 4_500],
+                lobby_name: vec![66; 4_500],
+                ..Default::default()
+            },
+            ProspectInfo {
+                associated_members: vec![AssociatedMember::default(); 512],
+                ..Default::default()
+            },
+            // ASCII text fits 8 KiB, but its framing exceeds the actor block.
+            ProspectInfo {
+                lobby_name: vec![65; 8_190],
+                ..Default::default()
+            },
+        ] {
+            assert!(lab.refresh_active_prospect(&invalid).is_err());
+            let after = lab.game_state_open.as_ref().unwrap();
+            assert_eq!(after.state.values, before.state.values);
+            assert_eq!(after.active_prospect, before.active_prospect);
+        }
+        // A release layout with the wrong property kind also rejects
+        // atomically, even though ProspectInfo itself is correctly typed.
+        lab.game_state_open.as_mut().unwrap().plan.layout[50] = RepCommand::Bool;
+        assert!(
+            lab.refresh_active_prospect(&ProspectInfo::default())
+                .is_err()
+        );
+        assert_eq!(
+            lab.game_state_open.as_ref().unwrap().state.values,
+            before.state.values
+        );
+        assert_eq!(
+            lab.game_state_open.as_ref().unwrap().active_prospect,
+            before.active_prospect
+        );
+        lab.game_state_open.as_mut().unwrap().plan = before.plan.clone();
+        lab.game_state_open.as_mut().unwrap().plan.layout[57] = RepCommand::Enum { bits: 1 };
+        assert!(
+            lab.refresh_active_prospect(&super::super::prospect_info::ProspectInfo {
+                prospect_state: 2,
+                ..Default::default()
+            })
+            .is_err()
+        );
+        assert_eq!(
+            lab.game_state_open.as_ref().unwrap().state.values,
+            before.state.values
+        );
+        assert_eq!(
+            lab.game_state_open.as_ref().unwrap().active_prospect,
+            before.active_prospect
+        );
+        lab.game_state_open.as_mut().unwrap().plan = before.plan.clone();
+        lab.refresh_active_prospect(&ProspectInfo::default())
+            .unwrap();
+        let session = lab.game_state_open.as_ref().unwrap();
+        assert_eq!(
+            session.state.values,
+            BTreeMap::from([(handle::SEED, RepValue::Int(7))])
+        );
+        assert_eq!(session.active_prospect.as_ref().unwrap().len(), 17);
+        for handle in handle::ACTIVE_PROSPECT {
+            assert_eq!(
+                session.active_prospect.as_ref().unwrap().get(&handle),
+                class_default(handle).as_ref()
+            );
+        }
+    }
+
+    #[test]
+    fn prospect_refresh_rejects_combined_dynamic_open_without_publishing() {
+        use super::super::{archive::ByteOrder, prospect_info::ProspectInfo};
+        let large = ProspectInfo {
+            lobby_name: vec![65; 7_000],
+            elapsed_time: 9,
+            ..Default::default()
+        };
+        // The prospect alone fits both the update and the open codecs.
+        prospect_refresh_lab()
+            .refresh_active_prospect(&large)
+            .unwrap();
+        let mut lab = prospect_refresh_lab();
+        let mut status = NetworkingStatus::local(600.0);
+        status.current_host_player_name = vec![66; 2_000];
+        lab.enable_networking_status(status).unwrap();
+        // The dynamic status alone also fits, with a small current prospect.
+        lab.refresh_active_prospect(&ProspectInfo {
+            elapsed_time: 123,
+            insurance: true,
+            ..Default::default()
+        })
+        .unwrap();
+        let before = lab.game_state_open.as_ref().unwrap().clone();
+        let mut template = before.state.clone();
+        template.values.retain(|handle, _| {
+            !super::super::game_state_open::handle::ACTIVE_PROSPECT.contains(handle)
+        });
+        template
+            .values
+            .extend(super::super::game_state_open::active_prospect_values(&large).unwrap());
+        let assembled = before
+            .open_state(&template, lab.started.elapsed().as_secs_f32())
+            .unwrap();
+        for order in [ByteOrder::Little, ByteOrder::Big] {
+            // This is the old dry-run: the template still fits by itself.
+            compose_game_state_open(
+                &mut lab.guid_cache.clone(),
+                &mut ConnectionExports::new(),
+                &before.plan,
+                &template,
+                before.channel_index,
+                order,
+            )
+            .unwrap();
+            let error = compose_game_state_open(
+                &mut lab.guid_cache.clone(),
+                &mut ConnectionExports::new(),
+                &before.plan,
+                &assembled,
+                before.channel_index,
+                order,
+            )
+            .expect_err("the combined actor content block exceeds 65,536 bits");
+            assert!(format!("{error:#}").contains("payload bit limit"));
+        }
+        assert!(lab.refresh_active_prospect(&large).is_err());
+        let after = lab.game_state_open.as_ref().unwrap();
+        assert_eq!(after.state.values, before.state.values);
+        assert_eq!(after.active_prospect, before.active_prospect);
+    }
+
+    #[test]
+    fn advancing_clocks_does_not_refresh_prospect_values_or_member_flags() {
+        use super::super::{
+            prospect_info::{AssociatedMember, ProspectInfo},
+            time_of_day::RateCurve,
+        };
+        let mut lab = prospect_refresh_lab();
+        lab.enable_time_of_day(TimeOfDayClock::new(
+            RateCurve::constant(60.0).unwrap(),
+            600.0,
+        ))
+        .unwrap();
+        lab.set_game_state_level_time(1_000).unwrap();
+        let current = ProspectInfo {
+            elapsed_time: 7,
+            associated_members: vec![AssociatedMember {
+                is_currently_playing: true,
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        lab.refresh_active_prospect(&current).unwrap();
+        let before = lab.game_state_open.as_ref().unwrap().clone();
+        let earlier = Instant::now() - Duration::from_secs(121);
+        lab.started = earlier;
+        lab.game_state_open.as_mut().unwrap().clock_at = earlier;
+        lab.update_game_state();
+        let after = lab.game_state_open.as_ref().unwrap();
+        assert!(after.clock.as_ref().unwrap().time_of_day() > 600.0);
+        assert_eq!(after.state.values, before.state.values);
+        assert_eq!(after.active_prospect, before.active_prospect);
+        // Legacy template-only initialization also stays template-only.
+        lab.game_state_open.as_mut().unwrap().active_prospect = None;
+        lab.game_state_open.as_mut().unwrap().updated_at = None;
+        lab.update_game_state();
+        assert!(
+            lab.game_state_open
+                .as_ref()
+                .unwrap()
+                .active_prospect
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn prospect_replica_repairs_latest_fields_after_partial_loss_and_supersession() {
+        use super::super::prospect_info::ProspectInfo;
+        let changing = |info: &ProspectInfo| {
+            active_prospect_update_values(info)
+                .unwrap()
+                .into_iter()
+                .map(|(h, v)| (h, Some(v)))
+                .collect::<Vec<_>>()
+        };
+        let mut replica = GameStateReplica::default();
+        for handle in update_handles() {
+            if let Some(value) = class_default(handle) {
+                replica.sent.insert(handle, value);
+            }
+        }
+        let first = ProspectInfo {
+            insurance: true,
+            elapsed_time: 5,
+            ..Default::default()
+        };
+        let latest = ProspectInfo {
+            insurance: true,
+            elapsed_time: 6,
+            ..Default::default()
+        };
+        let due = replica.due(0.0, &changing(&first));
+        assert_eq!(due.keys().copied().collect::<Vec<_>>(), [63, 65]);
+        replica.sent(&[10, 11, 12], due, 0.0);
+        replica.acked(10);
+        assert!(replica.due(0.0, &changing(&first)).is_empty());
+        let due = replica.due(0.0, &changing(&latest));
+        assert_eq!(due.keys().copied().collect::<Vec<_>>(), [65]);
+        replica.sent(&[13], due, 0.0);
+        // Only insurance still depends on the old partial update. Losing
+        // any unacked part repairs it, without replacing the latest elapsed.
+        assert!(replica.naked(11));
+        assert!(!replica.naked(12));
+        let due = replica.due(0.0, &changing(&latest));
+        assert_eq!(due.keys().copied().collect::<Vec<_>>(), [63]);
+        replica.sent(&[14, 15], due, 0.0);
+        replica.acked(13);
+        replica.acked(14);
+        replica.acked(15);
+        assert!(!replica.naked(15));
+        assert!(replica.due(0.0, &changing(&latest)).is_empty());
+        // Clearing is a new value, and its lost split repairs the clear.
+        let cleared = changing(&ProspectInfo::default());
+        let due = replica.due(0.0, &cleared);
+        replica.sent(&[16, 17], due, 0.0);
+        assert!(replica.naked(17));
+        assert_eq!(
+            replica.due(0.0, &cleared),
+            BTreeMap::from([(63, RepValue::Bool(false)), (65, RepValue::Int(0))])
+        );
+        // A -> B -> A is protected by packet identity, not equal values.
+        replica.sent(&[18], replica.due(0.0, &changing(&first)), 0.0);
+        replica.sent(&[19], replica.due(0.0, &changing(&latest)), 0.0);
+        replica.sent(&[20], replica.due(0.0, &changing(&first)), 0.0);
+        assert!(!replica.naked(19));
+        assert!(replica.due(0.0, &changing(&first)).is_empty());
+    }
 
     #[test]
     fn game_state_replicas_send_what_is_due_and_repair_only_the_latest() {
