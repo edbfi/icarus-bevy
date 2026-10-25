@@ -21,6 +21,7 @@ pub mod handshake_lab;
 pub mod int_array;
 pub mod inventory_weight;
 pub mod manager_open;
+pub mod modifier_lifecycle;
 pub mod packet;
 pub mod packet_lab;
 pub mod pawn_open;
