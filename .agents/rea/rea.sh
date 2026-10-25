@@ -13,6 +13,8 @@ rea_ghidra_current="${REA_GHIDRA_ROOT:-${XDG_DATA_HOME:-$HOME/.local/share}/rea-
 if [[ -z "${GHIDRA_INSTALL_DIR:-}" && -f "$rea_ghidra_current/support/analyzeHeadless" ]]; then
   GHIDRA_INSTALL_DIR="$(cd -- "$rea_ghidra_current" && pwd -P)"
   export GHIDRA_INSTALL_DIR
+  # Name the override so a stale link shows up in session logs.
+  echo "rea.sh: using Ghidra $GHIDRA_INSTALL_DIR from $rea_ghidra_current" >&2
 fi
 if command -v brew >/dev/null 2>&1; then
   brew_prefix="$(cd -- "$(dirname -- "$(command -v brew)")/.." && pwd)"
