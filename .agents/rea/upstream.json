@@ -1,12 +1,12 @@
 {
   "repository": "https://github.com/morluto/rea",
-  "release": "rea-agents-6.7.0",
-  "revision": "27dc42d10249f0410904a75c0997842eb03b931c",
+  "release": "rea-agents-6.8.0",
+  "revision": "160d821ac9a0310afcb8d1fc427862dd6508add5",
   "package": "rea-agents",
-  "version": "6.7.0",
+  "version": "6.8.0",
   "scope": "project",
   "skill_path": ".agents/skills/reverse-engineer-anything",
   "skill_source": "Published npm package skills/reverse-engineer-anything, including generated release metadata; references match the release tag.",
   "license": "MIT",
-  "integrity": "sha512-yhIx2ioJYYT1C/tONfYeitC6LhnKmCh+ZwRUOgYuhSc733lGhkkt73zhug9WmLgxoMdKuqIYGCoBfD4fXkOhFw=="
+  "integrity": "sha512-9QDeRnGqEDzABZyr04eLnBXBv/c6I9/TWu/6M0MD4pEfkySI/BIgwTODIbAReX3C1x6hjw9+Jlx4A2yUSPZ9ww=="
 }
