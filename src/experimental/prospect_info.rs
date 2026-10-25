@@ -569,12 +569,14 @@ impl std::fmt::Debug for SavedItem {
 }
 
 /// One saved inventory container (`SavedInventoryContainerData`, `C016`):
-/// its `InventoryIndex`, `D_InventoryInfo` row name and saved items.
+/// its `InventoryIndex`, `D_InventoryInfo` row name, whether its component
+/// tick was enabled (`bInventoryWantsTick`, U-075) and its saved items.
 /// `Debug` shows no values.
 #[derive(Clone, Default, PartialEq, Eq)]
 pub struct SavedInventoryContainer {
     pub index: i32,
     pub info: Vec<u16>,
+    pub wants_tick: bool,
     pub items: Vec<SavedItem>,
 }
 
@@ -620,6 +622,7 @@ pub fn saved_container_manager(tree: &TypedTree) -> Result<SavedContainerManager
             Ok(SavedInventoryContainer {
                 index: fields.int("InventoryIndex")?,
                 info: fields.name("InventoryInfo")?,
+                wants_tick: fields.bool("bInventoryWantsTick")?,
                 items,
             })
         })
