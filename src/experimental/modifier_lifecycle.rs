@@ -11,8 +11,9 @@
 //! Blueprint `ProcessEvent` overrides, packaged data-table row meanings (F-660)
 //! and live original-process execution remain outside this module.
 //!
-//! The local `RemoveModifierState` selection model additionally consumes an ordered
-//! snapshot of valid, non-null candidates and supplied opaque comparison results.
+//! The local `RemoveModifierState` selection model (F-937; server `25621760`,
+//! client `25793767`) consumes an ordered snapshot of valid, non-null candidates
+//! and supplied opaque comparison results.
 //! It describes a request and a local success-after-return flag, never destruction.
 //! Enumeration, owner lookup, comparison semantics and subclass effects are excluded.
 
