@@ -33,6 +33,37 @@ const PLAYER_HISTORY: &str = "/Script/Icarus.PlayerHistoryRecorderComponent";
 const CONTAINER_MANAGER: &str = "/Script/Icarus.IcarusContainerManagerRecorderComponent";
 const FLOD: &str = "/Script/Icarus.FLODRecorderComponent";
 
+#[test]
+fn session_prospect_composition_uses_only_the_supplied_clock_and_member_decision() {
+    let saved = ProspectInfo {
+        elapsed_time: 12,
+        associated_members: vec![
+            AssociatedMember {
+                chr_slot: 1,
+                is_currently_playing: true,
+                ..Default::default()
+            },
+            AssociatedMember {
+                chr_slot: 2,
+                is_currently_playing: false,
+                ..Default::default()
+            },
+        ],
+        ..Default::default()
+    };
+    let current = saved.for_session(0, |member| member.chr_slot == 2);
+    assert_eq!(current.elapsed_time, 0);
+    assert!(!current.associated_members[0].is_currently_playing);
+    assert!(current.associated_members[1].is_currently_playing);
+    assert_eq!(saved.elapsed_time, 12);
+    assert!(saved.associated_members[0].is_currently_playing);
+    assert!(!saved.associated_members[1].is_currently_playing);
+    assert!(current.validate_enumerators().is_ok());
+    let mut invalid = current;
+    invalid.associated_members[1].status = 255;
+    assert!(invalid.validate_enumerators().is_err());
+}
+
 fn fstring(value: &str) -> Vec<u8> {
     if value.is_empty() {
         0_i32.to_le_bytes().to_vec()

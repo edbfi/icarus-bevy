@@ -280,6 +280,26 @@ impl AssociatedMember {
 }
 
 impl ProspectInfo {
+    /// Check caller-authored enum values against the qualified descriptors.
+    /// Integer field types already retain their declared signed widths.
+    pub fn validate_enumerators(&self) -> Result<()> {
+        ensure!(
+            usize::from(self.prospect_state) < PROSPECT_STATES.len(),
+            "ProspectInfo.ProspectState is outside EProspectState"
+        );
+        ensure!(
+            usize::from(self.difficulty) < MISSION_DIFFICULTIES.len(),
+            "ProspectInfo.Difficulty is outside EMissionDifficulty"
+        );
+        ensure!(
+            self.associated_members
+                .iter()
+                .all(|member| usize::from(member.status) < PROSPECT_LOCATIONS.len()),
+            "AssociatedMemberInfo.Status is outside EProspectLocation"
+        );
+        Ok(())
+    }
+
     /// The active prospect as a running server replicates it: `ElapsedTime`
     /// is the level clock, and only `playing` members are currently playing
     /// (the M-707 server showed the save's recorded `LevelTimeElapsedSec`

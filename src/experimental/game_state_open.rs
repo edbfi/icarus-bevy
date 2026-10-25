@@ -104,6 +104,9 @@ pub mod handle {
     pub const LOCKED_MISSIONS: u32 = 50;
     /// `ReplicatedActiveProspect` (`FProspectInfo`, 17 commands), 51..=67.
     pub const ACTIVE_PROSPECT_FIRST: u32 = 51;
+    /// Every field of `ReplicatedActiveProspect`, including its arrays.
+    pub const ACTIVE_PROSPECT: std::ops::Range<u32> =
+        ACTIVE_PROSPECT_FIRST..ACTIVE_PROSPECT_FIRST + 17;
     /// `NetworkingStatus` (`FNetworkingStatus`, 12 commands), 68..=79.
     pub const NETWORKING_STATUS_FIRST: u32 = 68;
     /// Every `NetworkingStatus` handle (its 12 commands).
@@ -151,16 +154,79 @@ const COMPOSED_HANDLES: [u32; 13] = [
 /// default (empty, zero, false), arrays with every element field. Members
 /// carry 8 commands and custom settings 2 (`prospect_info_commands`).
 pub fn active_prospect_values(info: &ProspectInfo) -> Result<BTreeMap<u32, RepValue>> {
-    fn text(units: &[u16]) -> Result<Option<RepValue>> {
-        Ok((!units.is_empty())
-            .then(|| ArchiveText::new(units))
-            .transpose()?
-            .map(RepValue::Str))
+    Ok(active_prospect_update_values(info)?
+        .into_iter()
+        .filter(|(handle, value)| class_default(*handle).as_ref() != Some(value))
+        .collect())
+}
+
+/// Complete current `ReplicatedActiveProspect` state (51..=67), including
+/// defaults that clear previously sent fields. This maps caller-provided
+/// state only: refresh timing, level time and member identity remain the
+/// caller's decisions (F-822; U-070). Array elements carry every child field.
+/// Codec entry, array and string limits are checked before constructing the
+/// transport values; the session also validates its release layout and size.
+pub fn active_prospect_update_values(info: &ProspectInfo) -> Result<BTreeMap<u32, RepValue>> {
+    let limits = RepLayoutLimits::default();
+    ensure!(
+        info.associated_members.len() <= usize::from(limits.max_array_elements)
+            && info.custom_settings.len() <= usize::from(limits.max_array_elements),
+        "active prospect exceeds the array element limit"
+    );
+    // Counts are bounded above before the multiplication.
+    ensure!(
+        17 + info.associated_members.len() * 8 + info.custom_settings.len() * 2
+            <= limits.max_entries,
+        "active prospect exceeds the property entry limit"
+    );
+    info.validate_enumerators()?;
+    // Bound aggregate text before cloning it into entries. This is a lower
+    // bound on the encoded body; the session checks the complete body size.
+    let mut text_bytes = 0usize;
+    let texts = [
+        &info.prospect_id,
+        &info.claimed_account_id,
+        &info.prospect_dt_key,
+        &info.faction_mission_dt_key,
+        &info.lobby_name,
+    ]
+    .into_iter()
+    .chain(info.associated_members.iter().flat_map(|member| {
+        [
+            &member.account_name,
+            &member.character_name,
+            &member.user_id,
+        ]
+    }))
+    .chain(
+        info.custom_settings
+            .iter()
+            .map(|setting| &setting.setting_row_name),
+    );
+    for units in texts {
+        ensure!(
+            units.len() < limits.max_string_units,
+            "active prospect exceeds the string unit limit"
+        );
+        let width = if units.iter().all(|unit| *unit <= 0x7f) {
+            1
+        } else {
+            2
+        };
+        text_bytes += 4 + if units.is_empty() {
+            0
+        } else {
+            (units.len() + 1) * width
+        };
+        ensure!(
+            text_bytes <= super::packet_lab::MAX_CONSTRUCTED_BUNCH_BYTES,
+            "active prospect text exceeds the bunch byte limit"
+        );
     }
-    fn array(elements: Vec<Vec<RepValue>>) -> Result<Option<RepValue>> {
-        if elements.is_empty() {
-            return Ok(None);
-        }
+    fn text(units: &[u16]) -> Result<RepValue> {
+        Ok(RepValue::Str(ArchiveText::new(units)?))
+    }
+    fn array(elements: Vec<Vec<RepValue>>) -> Result<RepValue> {
         let count = u16::try_from(elements.len()).context("array exceeds its count width")?;
         let entries = elements
             .into_iter()
@@ -172,16 +238,14 @@ pub fn active_prospect_values(info: &ProspectInfo) -> Result<BTreeMap<u32, RepVa
                 value,
             })
             .collect();
-        Ok(Some(RepValue::DynamicArray(RepArray {
+        Ok(RepValue::DynamicArray(RepArray {
             count,
             stream: PropertyStream {
                 entries,
                 terminator_checksum: None,
             },
-        })))
+        }))
     }
-    let int = |value: i32| (value != 0).then_some(RepValue::Int(value));
-    let flag = |value: bool| value.then_some(RepValue::Bool(true));
     let members = info
         .associated_members
         .iter()
@@ -211,26 +275,26 @@ pub fn active_prospect_values(info: &ProspectInfo) -> Result<BTreeMap<u32, RepVa
     let fields = [
         text(&info.prospect_id)?,
         text(&info.claimed_account_id)?,
-        int(info.claimed_account_character),
+        RepValue::Int(info.claimed_account_character),
         text(&info.prospect_dt_key)?,
         text(&info.faction_mission_dt_key)?,
         text(&info.lobby_name)?,
-        (info.expire_time != 0).then_some(RepValue::Int64(info.expire_time)),
-        (info.prospect_state != 0).then_some(RepValue::Enum(u32::from(info.prospect_state))),
+        RepValue::Int64(info.expire_time),
+        RepValue::Enum(u32::from(info.prospect_state)),
         array(members)?,
-        int(info.cost),
-        int(info.reward),
-        (info.difficulty != 0).then_some(RepValue::Enum(u32::from(info.difficulty))),
-        flag(info.insurance),
-        flag(info.no_respawns),
-        int(info.elapsed_time),
-        int(info.selected_drop_point),
+        RepValue::Int(info.cost),
+        RepValue::Int(info.reward),
+        RepValue::Enum(u32::from(info.difficulty)),
+        RepValue::Bool(info.insurance),
+        RepValue::Bool(info.no_respawns),
+        RepValue::Int(info.elapsed_time),
+        RepValue::Int(info.selected_drop_point),
         array(settings)?,
     ];
     Ok(fields
         .into_iter()
         .zip(handle::ACTIVE_PROSPECT_FIRST..)
-        .filter_map(|(value, handle)| value.map(|value| (handle, value)))
+        .map(|(value, handle)| (handle, value))
         .collect())
 }
 
@@ -703,6 +767,12 @@ pub fn class_default(handle: u32) -> Option<RepValue> {
     Some(match handle {
         WORLD_TIME_SECONDS | TIME_OF_DAY | TIME_BETWEEN_SAVES => RepValue::Float(0),
         LEVEL_TIME_ELAPSED_SEC | SERVER_FPS => RepValue::Int(0),
+        h if [51, 52, 54, 55, 56].contains(&h) => RepValue::Str(ArchiveText::new(&[]).ok()?),
+        53 | 60 | 61 | 65 | 66 => RepValue::Int(0),
+        57 => RepValue::Int64(0),
+        58 | 62 => RepValue::Enum(0),
+        59 | 67 => empty_array(),
+        63 | 64 => RepValue::Bool(false),
         LOCKED_MISSIONS => empty_array(),
         h if h == NETWORKING_STATUS_FIRST || h == NETWORKING_STATUS_FIRST + 1 => {
             RepValue::Str(ArchiveText::new(&[]).ok()?)

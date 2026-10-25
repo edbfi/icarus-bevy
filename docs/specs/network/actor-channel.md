@@ -206,6 +206,13 @@ Address pairs are server / client.
 
 ## Candidate
 
+- Authored native refresh transport (F-936): `PeerLab::refresh_active_prospect`
+  validates complete handles 51..67 and the current dynamic open in both byte
+  orders before publishing. Joined peers receive deltas after open ACK;
+  zero/false/empty values clear earlier state, NAK/partial loss repairs, and
+  temporary send pressure leaves the refresh due while clocks advance.
+  Future joins use the latest template. Calls remain explicit; original
+  trigger timing and stock-client behavior remain unqualified (U-070, U-038).
 - `experimental::actor_channel`, `sequencing` and `rep_layout` replay captured
   bunches (F-709 to F-711), `PackageMapState` mappings/must-be-mapped lists and
   scheduling policies; fixtures and randomized checks: F-763, F-764 (F-577,
@@ -221,4 +228,4 @@ Address pairs are server / client.
   M-560, M-570 to M-588, M-602 to M-605, M-614, M-615, M-620 to M-624, M-628 to
   M-635, M-707, M-708, M-710 to M-713, M-717, M-720, M-731 to M-748, M-776,
   M-777, M-782, M-794, M-795, M-797 to M-799, M-801, M-802, M-804, M-805, M-807,
-  M-832, M-834 to M-836, M-841, M-844 to M-848, M-863, M-868, M-869.
+  M-832, M-834 to M-836, M-841, M-844 to M-848, M-863, M-868, M-869, M-1034.
