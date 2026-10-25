@@ -73,9 +73,10 @@ wrappers issue reason-`0` `+0x3c0`. Primary `UModifierStateComponent` matches
 across builds on `+0x278` `Activate` (null delegate crash), `+0x280`
 `Deactivate`, `+0x338`/`+0x340` `Begin`/`EndPlay` (role `3`/`reason == 0`),
 `+0x3c0` `DestroyComponent`, `+0x408` `UpdateStats`, `+0x410`/`+0x418`,
-`ScaleStatsHelper`, `InitComponent_Implementation`, `OnStatContainerUpdated`
-and `FixModifierActivation`; Blueprint overrides, downstream callee effects,
-owner/row bindings and live runs remain open (F-930).
+`ScaleStatsHelper`, `GetModifierStateData`, `InitComponent_Implementation`,
+`OnStatContainerUpdated` and `FixModifierActivation`; subclass/Blueprint
+overrides, downstream callee effects, owner/row bindings and live runs remain
+open (F-930).
 
 No saved class identifier, field or type name, or recorder version tells the
 older server from the newer client, and the prospect carries no version string

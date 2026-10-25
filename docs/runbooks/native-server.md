@@ -150,11 +150,13 @@ write nothing unless stated:
   plan; without `--dry-run` writing is refused (F-898). `--catalog FILE`
   (regular TOML `<= 4` MiB, `format = 1`) maps `[references]` lists per role
   (`actor_class`, `actor_path`, `data_row`, `asset_path`, `world_tile`,
-  `class_variable`, `unclassified`; instance names need no list). `--data-pak PATH`
-  resolves `data_row` references case-insensitively against official server
-  tables, including migrated `ProspectDTKey` (`D_ProspectList`),
-  `FactionMissionDTKey` and custom-setting rows (`ProspectMapName` uses
-  `unclassified` in format 1; empty optional refs do not block; F-898).
+  `class_variable`, `unclassified`); a reference maps only in the roles that
+  list it, and instance names need no list. `--data-pak PATH` also resolves
+  `data_row` references case-insensitively against official server tables.
+  After migration, `ProspectDTKey` must resolve in `D_ProspectList` or an
+  authored `data_row` catalog, while `FactionMissionDTKey` and custom-setting
+  rows use `data_row` resolution (`ProspectMapName` uses `unclassified` in
+  format 1; empty optional refs do not block; F-898).
 
 Catalog format 2 scopes world references (F-916):
 

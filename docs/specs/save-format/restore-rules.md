@@ -180,23 +180,34 @@ construction, script owners and data-table rows are out of scope (F-660).
   `experimental::modifier_lifecycle`, M-1024, M-1025, M-1027, M-1028), `+0x278`
   `Activate`, `+0x280` `Deactivate`, `+0x338` `BeginPlay`, `+0x340` `EndPlay`,
   `+0x3c0` `DestroyComponent`, `+0x408` `UpdateStats`, `+0x410`/`+0x418`
-  `Applied`/`Removed_Implementation` and `InitComponent_Implementation`
+  `Applied`/`Removed_Implementation`, `GetModifierStateData`
+  (`0x1416e2e90`/`0x1416f4960`) and `+0x430` `InitComponent_Implementation`
   (`0x1416e88f0`/`0x1416fa330`, M-1027/ev_51aa536d68b6) match across builds:
   `ScaleStatsHelper` (`0x1416b6710`/`0x1416ce2f0`, M-1027/ev_c40e7a02c708)
-  copies `GrantedStats` (`+0xa0`) inside the `1.0f` `UCOMISS` deadband or rounds
-  `f32 * Effectiveness` (`+0x290`) with `0.5f` away-from-zero before `CVTTSS2SI`;
-  `InitComponent` gates role `3`, registers, sets permanent (`-1`) or timed
-  (`> 0`: `(f32 / 100.0) * multiplier` + `SetTimer` + `ModifierTick`; `<= 0`
-  rejected) state, runs `ScaleStatsHelper`, sets `[+0x3b0] = 1` and calls
-  `+0x278` then `+0x410`; `OnStatContainerUpdated`
-  (`0x1416efd80`/`0x1417012a0`, M-1027/ev_3681a1228c84) gates `bIsActive` and
-  `EffectiveStat != -1` (`+0x298`) and updates `+0x290 = 1.0 + GetStat * 0.01f`
-  outside `1e-4f` before `+0x408`; `FixModifierActivation`
-  (`0x1414a0fc0`/`0x1414db100`, M-1027/ev_9785b53a7a36) activates dormant
-  siblings matching `ModifierRow.Index` (`+0xe8`) up to `max(1, stack_limit)`
-  only when no active sibling has `stack_limit > 0`. Subclass/Blueprint
-  overrides, downstream callee effects, owner/row binding and live execution
-  remain unqualified.
+  skips `stat_enum == 0xff` and computes `ceil(|((i32[+0x128] as f32) + 100.0f) *
+  (raw as f32) * f32::from_bits(0x3c23d70a)|) * sgn` via `-0.5f - 2.0f * |scaled|`
+  `CVTSS2SI`/`SAR 1`/`NEG` before `CVTTSS2SI`; `InitComponent_Implementation`
+  skips empty `+0x1b0`, constructs/registers/attaches `TSoftClassPtr<USceneComponent>`
+  (`+0x1a0`) at `+0x100` with `KeepRelative` `0x0002_0202` (crashing on
+  unresolved/non-`USceneComponent` `StaticConstructObject_Internal(nullptr)`),
+  snapshots `World + 0x5a0 -> +0xb0` with a `0.1f` looping `HighFrequencyTick`
+  timer (`+0x3c0`) when `[+0x300] != 0`, and runs `ModifierTick(this, 0.0f)` when
+  `[+0x301] != 0 && CheckTickConditions(this)`; `Applied_Implementation` sets
+  `+0xe0..+0xf0`, `+0xf8 = Execute_GetNextUID`, `[+0x3b0] = 1`, fallback `+0xd0`,
+  `RefreshLifetime`, `+0x320` tags and notifications, while `Removed_Implementation`
+  subtracts `+0x320` tags still covered by sibling `GrantedTags` (`GameplayTags`
+  or `ParentTags`); `OnStatContainerUpdated` (`0x1416efd80`/`0x1417012a0`,
+  M-1027/ev_3681a1228c84) updates `+0x10c` on ordered change, clears/restarts
+  looping `+0x3a8` `AutoDestroy` (rescaling `+0x110` when `base_lifetime (+0x108) > 0`,
+  `!(remaining > base * old_mult)` and `old_mult > 0`), and sums `+0x230` stat
+  values plus `+0x114` into `+0x128` (broadcasting `+0x130` on role `3` and
+  dispatching `+0x408` on change); `FixModifierActivation`
+  (`0x1414a0fc0`/`0x1414db100`, M-1027/ev_9785b53a7a36) `LowerBound`-inserts
+  `!bIsBeingDestroyed` (`+0x8b & 2 == 0`) modifiers matching `target_row_name`
+  by `uid_f8` (`+0xf8`), calling `+0x278` `Activate(false)` on the first
+  `bAutoActivate` (`+0x8b & 1 != 0`) match and `+0x280` `Deactivate()` on all
+  others. Subclass/Blueprint overrides, downstream callee effects, owner/row
+  binding and live execution remain unqualified.
 
 ## Candidate
 

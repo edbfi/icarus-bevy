@@ -86,8 +86,9 @@ same formulas (F-839).
 - Item, stat and character values of a played character at open (U-069).
   M-893 retains the unfinished UID-source investigation.
   M-894 retains the private quest extracts for the unfinished U-074 work.
-- Saved container lists with null stitched entries (`C016::StitchingOperation`),
-  whose wire encoding is unobserved and which `run` skips (F-866, F-867).
+- Saved container lists with empty positions (which `run` skips) and live
+  `C016::StitchingOperation` nulling of unreferenced containers, whose wire
+  encoding is unobserved (F-866, F-867).
 - When the active prospect is refreshed after open at runtime; its direct
   callers are spawn completion, dropship leave and backend, setting or
   difficulty updates (F-822; U-070).

@@ -88,8 +88,10 @@ they carry. Framing is in [actor channel bunches](actor-channel.md).
   `ActiveQuests` without its Blueprint logic (U-074).
 - Appending joining players to `History` in `run`: the user ID and slot of a
   stock client (F-865; U-038).
-- Saved container lists with unreferenced null entries (`C016::StitchingOperation`),
-  whose wire encoding is unobserved and which `run` skips (F-866, F-867).
+- Saved container lists with empty positions (`count != containers.len()` or
+  non-contiguous `index`, which `run` skips) and live `C016::StitchingOperation`
+  nulling of unreferenced containers, whose wire encoding is unobserved
+  (F-866, F-867).
 - The FLOD tile actors the FLOD manager references, which M-707 never opens
   (F-914).
 
