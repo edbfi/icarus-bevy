@@ -153,20 +153,20 @@ Shared snapshot cap and qualification exclusions are unchanged.
 
 Full capture and preflight encode run on every fixed step, even without armed
 timers; catch-up repeats that cost (F-926). Schema 11 remains opt-in.
-Release Rust 1.99.1/Bevy 0.20.0 on two pinned EPYC 9534 CPUs, with a native
-hold on other CPUs: three fresh apps × ten calls per cell, nearest-rank p95 ms.
+Release Rust 1.99.1/Bevy 0.20.0 on two pinned EPYC 9534 CPUs across five
+matched pairs (three fresh apps × ten calls/cell; five-run median p95 ms):
 
 | State per owner | 1 owner | 32 | 256 | 1,024 |
 | --- | --- | --- | --- | --- |
-| empty | 0.059 | 0.385 | 2.916 | 11.265 |
-| indefinite | 0.065 | 0.671 | 4.878 | 22.487 |
-| armed timers | 0.043 | 0.663 | 5.386 | 23.524 |
+| empty | 0.055 | 0.386 | 2.754 | 11.685 |
+| indefinite | 0.043 | 0.583 | 4.716 | 18.267 |
+| armed timers | 0.056 | 0.579 | 4.400 | 18.521 |
 
 Four entries per nonempty owner; exact state verified after each call.
-Setup/verification excluded; full capture/preflight included. No relationships
-or sidecars. This accepted authored phase cost preserves integrity checks;
-1,024 owners is an admission cap, not a 30 Hz guarantee. Whole-frame, health,
-catch-up and larger-world costs remain unqualified; no improvement/RSS claim.
+Same-borrow charging dedup lowered nonempty 1,024-owner p95; empty/1-owner cells
+were mixed. Setup/verification excluded; full capture/preflight included; no
+relationships/sidecars. 1,024 owners is an admission cap, not a 30 Hz guarantee;
+whole-frame, health, catch-up, uniform speedup and RSS stay unqualified.
 
 ```bash
 cargo run --release --locked --example native_modifier_bench -- --seconds 120

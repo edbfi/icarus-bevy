@@ -724,6 +724,129 @@ fn authored_clock_bounds_reject_subresolution_and_excessive_durations() {
 }
 
 #[test]
+fn world_validation_rechecks_malformed_current_owner_state() {
+    let state = add(
+        &OwnerModifierState::empty(owner(1)).unwrap(),
+        definition(
+            "private_sentinel",
+            ModifierDuration::Timed { seconds: 5.0 },
+            3,
+        ),
+    );
+    let mut world = ModifierWorldSnapshot {
+        format: NATIVE_MODIFIERS_FORMAT,
+        owners: vec![state],
+    };
+    for case in 0..6 {
+        world.validate_structure().unwrap();
+        let before = world.owners[0].clone();
+        let state = &mut world.owners[0];
+        match case {
+            0 => state.cache[0].amount += 1,
+            1 => {
+                state.entries[0].timer = ModifierTimer::Timed {
+                    remaining_nanos: 6 * NANOS_PER_SECOND,
+                    armed: true,
+                };
+            }
+            2 => state.next_id = state.entries[0].id.get(),
+            3 => state.owner.id = DomainId(0),
+            4 => state.owner.incarnation = 0,
+            5 => {
+                state.entries[0].timer = ModifierTimer::Timed {
+                    remaining_nanos: NANOS_PER_SECOND,
+                    armed: false,
+                };
+            }
+            _ => unreachable!(),
+        }
+        let error = world.validate_structure().unwrap_err();
+        assert!(!format!("{error:?} {error:#}").contains("private_sentinel"));
+        world.owners[0] = before;
+    }
+    world.validate_structure().unwrap();
+}
+
+#[test]
+fn world_validation_admits_bounded_spare_capacity_and_rejects_nested_capacity_excess() {
+    let mut state = add(
+        &OwnerModifierState::empty(owner(1)).unwrap(),
+        definition("spare", ModifierDuration::Indefinite, 3),
+    );
+    state.entries.reserve_exact(MAX_MODIFIERS_PER_OWNER);
+    state.cache.reserve_exact(MAX_MODIFIER_STATS);
+    let definition = &mut state.entries[0].definition;
+    definition.name.reserve_exact(MAX_MODIFIER_NAME_BYTES);
+    definition
+        .contributions
+        .reserve_exact(MAX_MODIFIER_CONTRIBUTIONS);
+    definition.contributions[0]
+        .stat
+        .reserve_exact(MAX_MODIFIER_NAME_BYTES);
+    state.cache[0].stat.reserve_exact(MAX_MODIFIER_NAME_BYTES);
+    let mut world = ModifierWorldSnapshot {
+        format: NATIVE_MODIFIERS_FORMAT,
+        owners: vec![state],
+    };
+    world.owners.reserve_exact(MAX_MODIFIER_OWNERS);
+    world.validate_structure().unwrap();
+
+    // Only capacities change: lengths, names, timers and cache remain valid.
+    for case in 0..7 {
+        let mut oversized = world.clone();
+        match case {
+            0 => oversized.owners.reserve_exact(2 * MAX_MODIFIER_OWNERS),
+            1 => oversized.owners[0]
+                .entries
+                .reserve_exact(2 * MAX_MODIFIERS_PER_OWNER),
+            2 => oversized.owners[0]
+                .cache
+                .reserve_exact(2 * MAX_MODIFIER_STATS),
+            3 => oversized.owners[0].entries[0]
+                .definition
+                .name
+                .reserve_exact(2 * MAX_MODIFIER_NAME_BYTES),
+            4 => oversized.owners[0].entries[0]
+                .definition
+                .contributions
+                .reserve_exact(2 * MAX_MODIFIER_CONTRIBUTIONS),
+            5 => oversized.owners[0].entries[0].definition.contributions[0]
+                .stat
+                .reserve_exact(2 * MAX_MODIFIER_NAME_BYTES),
+            6 => oversized.owners[0].cache[0]
+                .stat
+                .reserve_exact(2 * MAX_MODIFIER_NAME_BYTES),
+            _ => unreachable!(),
+        }
+        assert_eq!(oversized, world);
+        assert!(oversized.validate_structure().is_err());
+    }
+    world.validate_structure().unwrap();
+}
+
+#[test]
+fn world_validation_rejects_duplicate_and_descending_owner_ids() {
+    let first = OwnerModifierState::empty(owner(1)).unwrap();
+    let mut second = first.clone();
+    second.owner.id = DomainId(first.owner.id.0 + 1);
+    let mut world = ModifierWorldSnapshot {
+        format: NATIVE_MODIFIERS_FORMAT,
+        owners: vec![first, second],
+    };
+    world.validate_structure().unwrap();
+    world.owners.reverse();
+    assert_eq!(
+        world.validate_structure().unwrap_err().to_string(),
+        "modifier owner order invalid"
+    );
+    world.owners[1].owner.id = world.owners[0].owner.id;
+    assert_eq!(
+        world.validate_structure().unwrap_err().to_string(),
+        "modifier owner order invalid"
+    );
+}
+
+#[test]
 fn whole_world_entry_budget_is_checked_across_individually_valid_owners() {
     let mut one = OwnerModifierState::empty(owner(1)).unwrap();
     for index in 0..MAX_MODIFIERS_PER_OWNER {

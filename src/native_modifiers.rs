@@ -403,6 +403,12 @@ impl OwnerModifierState {
 
     pub(crate) fn allocation_bytes(&self) -> Result<usize> {
         self.validate()?;
+        Ok(self.allocation_bytes_after_validation())
+    }
+
+    /// Requires successful validation of this same immutable value. Validation
+    /// of a value before mutation, cloning or reloading does not satisfy this.
+    fn allocation_bytes_after_validation(&self) -> usize {
         let mut bytes = self.entries.capacity() * std::mem::size_of::<ModifierEntry>()
             + self.cache.capacity() * std::mem::size_of::<FlatStatContribution>();
         for value in &self.cache {
@@ -416,7 +422,7 @@ impl OwnerModifierState {
                 bytes += value.stat.capacity();
             }
         }
-        Ok(bytes)
+        bytes
     }
 
     /// Normalizes definition contribution order only, retaining all current
@@ -715,7 +721,7 @@ impl ModifierWorldSnapshot {
             previous = owner.owner.id.0;
             entries += owner.entries.len();
             ensure!(entries <= MAX_WORLD_MODIFIERS, "modifier world entry limit");
-            bytes += owner.allocation_bytes()?;
+            bytes += owner.allocation_bytes_after_validation();
             ensure!(
                 bytes <= MAX_MODIFIER_WORLD_BYTES,
                 "modifier world allocation limit"
