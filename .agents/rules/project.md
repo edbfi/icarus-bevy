@@ -54,8 +54,8 @@ be demonstrated rather than assumed.
      Ghidra is accepted again.
   Never downgrade Homebrew's Ghidra, relabel an installation, patch REA's
   policy or force an override past the gate. For other doctor failures follow
-  its `remediation`; Homebrew's Linux bottle has lacked the native decompiler
-  that the official archive ships (M-975).
+  its `remediation`; Homebrew's Linux Ghidra 12.2 also needed a matching native
+  decompiler (M-975), so check that the chosen install has one for this host.
 - When a direct Ghidra fallback is needed, run it headlessly with the Ghidra and
   JDK that `rea.sh` selects (the `current` link, else Homebrew's).
 - Keep original server files under the ignored `icarus-orig/` directory and
