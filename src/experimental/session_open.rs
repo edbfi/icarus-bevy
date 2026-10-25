@@ -803,6 +803,8 @@ pub fn compose_player_state_open(
         archetype: plan.archetype.clone(),
         level: plan.level.clone(),
         location: None,
+        rotation: None,
+        velocity: None,
         blocks: vec![ContentBlock {
             has_rep_layout: true,
             target: BlockTarget::Actor,
@@ -835,7 +837,7 @@ pub(super) fn actor_codec(
 }
 
 /// A dynamic actor to open on a channel: its GUID, archetype and level chains,
-/// an optional quantized location, and its initial content blocks.
+/// optional spawn transform/motion, and its initial content blocks.
 #[derive(Clone, Debug)]
 pub struct ActorOpenSpec {
     /// The actor's dynamic GUID. [`super::peer_lab::PeerLab::open_actor`]
@@ -846,6 +848,10 @@ pub struct ActorOpenSpec {
     /// `PersistentLevel`, the world, then the map package.
     pub level: Vec<PathSegment>,
     pub location: Option<[f32; 3]>,
+    /// Authored pitch, yaw and roll in degrees (16-bit spawn rotator).
+    pub rotation: Option<[f32; 3]>,
+    /// Authored linear velocity (spawn packed vector `<10,24>`).
+    pub velocity: Option<[f32; 3]>,
     pub blocks: Vec<ContentBlock>,
 }
 
@@ -862,6 +868,16 @@ pub fn compose_actor_open(
     order: super::archive::ByteOrder,
 ) -> Result<ComposedActorOpen> {
     let codec = actor_codec(engine_net_version, order);
+    // Validate spawn precision independently of any property-6 block, before
+    // touching GUID/export state. These are not the AActor movement defaults.
+    let location = spec.location.map(quantize_spawn_vector).transpose()?;
+    let rotation = spec
+        .rotation
+        .map(|[pitch, yaw, roll]| {
+            super::actor_channel::CompressedRotator::from_degrees(pitch, yaw, roll)
+        })
+        .transpose()?;
+    let velocity = spec.velocity.map(quantize_spawn_vector).transpose()?;
     exports.begin_bunch();
     let archetype = cache.export_static(exports, &spec.archetype)?;
     let level = cache.export_static(exports, &spec.level)?;
@@ -871,10 +887,10 @@ pub fn compose_actor_open(
         dynamic: Some(DynamicSpawn {
             archetype: NetGuidRef::plain(archetype.guid),
             level: Some(NetGuidRef::plain(level.guid)),
-            location: spec.location.map(quantize_spawn_vector).transpose()?,
-            rotation: None,
+            location,
+            rotation,
             scale: None,
-            velocity: None,
+            velocity,
         }),
     };
     let bunch = actor_open_bunch(spawn, spec.blocks.clone(), channel_index, &codec)?;
@@ -942,21 +958,75 @@ pub fn actor_role_block(engine_net_version: u32) -> Result<ContentBlock> {
 /// velocity, quantized at the `AActor` defaults the opens are encoded with
 /// (whole-number location and velocity, byte rotation; F-588, F-589).
 pub fn resting_movement(location: [f32; 3]) -> Result<super::rep_layout::RepMovement> {
+    authored_movement(location, [0.0; 3], [0.0; 3])
+}
+
+/// Authored motion at the AActor defaults (F-588, F-589), with no physics
+/// flags or angular velocity. All fields use canonical quantization, including
+/// absent zero rotator axes, so equality is equality of transmitted values.
+pub fn authored_movement(
+    location: [f32; 3],
+    rotation: [f32; 3],
+    velocity: [f32; 3],
+) -> Result<super::rep_layout::RepMovement> {
     use super::rep_layout::{ByteRotator, MovementRotation, RepMovement, quantize_vector};
     Ok(RepMovement {
         flags: 0,
         location: quantize_vector(location, super::rep_layout::MovementLevel::Whole.packing())?,
-        rotation: Some(MovementRotation::Bytes(ByteRotator {
-            pitch: None,
-            yaw: None,
-            roll: None,
-        })),
+        rotation: Some(MovementRotation::Bytes(ByteRotator::from_degrees(
+            rotation[0],
+            rotation[1],
+            rotation[2],
+        )?)),
         linear_velocity: quantize_vector(
-            [0.0; 3],
+            velocity,
             super::rep_layout::MovementLevel::Whole.packing(),
         )?,
         angular_velocity: None,
     })
+}
+
+/// Recover an initial movement baseline only from a composed AActor-default
+/// property block. Generic opens without a decodable handle 6 establish none;
+/// their spawn location/rotation/velocity cannot stand in for that property.
+/// An undecodable actor property block invalidates any earlier baseline, since
+/// it may carry newer movement. A later decodable handle 6 can establish it again.
+pub(super) fn initial_movement(
+    blocks: &[ContentBlock],
+    engine_net_version: u32,
+    order: super::archive::ByteOrder,
+) -> Option<super::rep_layout::RepMovement> {
+    use super::rep_layout::{
+        MovementLevel, RepLayoutLimits, RotationLevel, actor_rep_layout, parse_rep_properties,
+    };
+    let layout = actor_rep_layout(
+        MovementLevel::Whole,
+        MovementLevel::Whole,
+        RotationLevel::Bytes,
+    );
+    let codec = RepLayoutCodec {
+        actor: actor_codec(engine_net_version, order),
+        checksums: false,
+        limits: RepLayoutLimits::default(),
+    };
+    let mut movement = None;
+    for block in blocks
+        .iter()
+        .filter(|block| block.has_rep_layout && block.target == BlockTarget::Actor)
+    {
+        let Ok(stream) = parse_rep_properties(&block.payload, &layout, &codec) else {
+            movement = None;
+            continue;
+        };
+        for entry in stream.entries {
+            if let RepValue::Movement(value) = entry.value
+                && entry.handle == HANDLE_REPLICATED_MOVEMENT
+            {
+                movement = Some(value);
+            }
+        }
+    }
+    movement
 }
 
 /// An actor block on the `AActor` handle prefix (F-703): the world-actor

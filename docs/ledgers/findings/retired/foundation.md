@@ -4,7 +4,7 @@ Rows retired from [the active ledger](../foundation.md): superseded by a summary
 execution receipts, or historical session state. Full text is kept and IDs stay
 permanent; cite the superseding row where one exists.
 
-Last reconciled: 2026-10-22
+Last reconciled: 2026-10-25
 
 | ID | Claim | Kind | Evidence | Scope and limits | Unknowns | Status |
 | --- | --- | --- | --- | --- | --- | --- |
@@ -131,3 +131,4 @@ Last reconciled: 2026-10-22
 | F-789 | The session bridge closes channels the stage closes (reason 3 no longer relevant, 4 torn off) with a reliable close bunch, holding the index until acked; under F-788 a far actor forced open at join closes after the timeout while a near one stays | measured | authored-test; M-826 | high; authored actors and probe; no ICARUS client | U-038 | superseded-by F-876 |
 | F-824 | Per 300 s with 8, 16, 32 and 64 sessions on run, all join and update without gaps over 302 ms or regressions; tick p50 <= 13 us, p99 <= 76 us, 0 misses, RSS 113.7..113.8 MB; past one datagram of names (36 of 64) run withholds NetworkingStatus, so 41 of 64 never saw it | measured | authored-test; M-862 | high; 300 s each; loopback probes | U-035, U-049 | superseded-by F-877 |
 | F-826 | run sends a GameState update over one bunch as unreliable partials on consecutive packets (F-825); with 64 held sessions for 300 s every session reassembles the NetworkingStatus and sees all 64 listed (2..6 parts each), 0 decode errors, tick p99 <= 54 us | measured | authored-test; M-864 | high; 300 s; loopback probes | U-035 | superseded-by F-877 |
+| F-793 | NetArchetype::replicate_movement actors open with resting ReplicatedMovement (handle 6, whole-number packing; 30 of M-707's 287 opens carry it); once the open is acked a move sends an unreliable update, and a naked update is sent again unless a newer update went out | measured | authored-test; M-829, M-831 | high; authored actors, probe; no ICARUS client | U-038 | superseded-by F-938 |

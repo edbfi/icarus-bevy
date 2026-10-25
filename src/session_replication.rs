@@ -6,10 +6,10 @@
 //! that carries a [`NetArchetype`] is opened on that connection's lowest free
 //! actor channel through [`PeerLab::open_actor`], once per connection, with
 //! its position as the spawn location and one actor block carrying the roles
-//! the capture's world-actor opens carry (F-791), plus its resting
+//! the capture's world-actor opens carry (F-791), plus its authored or resting
 //! `ReplicatedMovement` when it replicates movement; such an actor, selected
-//! again after moving, gets an unreliable movement update once its open is
-//! acked ([`PeerLab::update_actor_movement`]); a channel the stage closes
+//! again after a quantized change, gets an unreliable movement update once its
+//! open is acked ([`PeerLab::update_actor_motion`]); a channel the stage closes
 //! (no longer relevant `3`, torn off `4`; F-749) gets its close bunch first
 //! ([`PeerLab::close_actor`]). Actor GUIDs are driver-wide and stable per
 //! [`DomainId`]. Other properties are not replicated. Archetypes are
@@ -22,7 +22,7 @@ use crate::{
         actor_channel::ContentBlock,
         peer_lab::PeerLab,
         session_open::{
-            ActorOpenSpec, PathSegment, actor_role_block, resting_movement, world_actor_block,
+            ActorOpenSpec, PathSegment, actor_role_block, authored_movement, world_actor_block,
         },
     },
     replication::{NetActor, NetViewer, ReplicationFrame, ReplicationSet},
@@ -34,9 +34,19 @@ use crate::{
 #[derive(Component, Clone, Debug, PartialEq, Eq)]
 pub struct NetArchetype {
     pub archetype: Vec<PathSegment>,
-    /// `bReplicateMovement`: the open carries the actor's resting
-    /// `ReplicatedMovement`, and a changed position is sent as an update.
+    /// `bReplicateMovement`: the open carries `ReplicatedMovement`, and
+    /// changes to its quantized fields are sent as updates.
     pub replicate_movement: bool,
+}
+
+/// Optional authored motion for this bridge only. Position remains the spatial
+/// input to replication scheduling. Absence means zero rotation and velocity;
+/// this component neither advances physics nor interprets saved poses.
+#[derive(Component, Clone, Copy, Debug, Default, PartialEq)]
+pub struct NetMotion {
+    /// Pitch, yaw and roll in degrees.
+    pub rotation_degrees: [f32; 3],
+    pub linear_velocity: [f32; 3],
 }
 
 /// Session parameters the bridge opens actors with.
@@ -51,7 +61,7 @@ pub struct SessionReplication {
     pub viewer_location: [f32; 3],
     /// Every opened actor's initial block ([`actor_role_block`], F-791).
     actor_block: ContentBlock,
-    /// Open attempts skipped because a position could not be quantized for
+    /// Open attempts skipped because authored motion could not be quantized for
     /// `ReplicatedMovement` (outside the packed range). It counts attempts:
     /// the actor stays unopened and is retried, and counted, each time it is
     /// selected. Update failures count in the lab's `actor_update_errors`.
@@ -132,7 +142,7 @@ fn open_selected_actors(
     mut lab: ResMut<PeerLab>,
     mut session: ResMut<SessionReplication>,
     frame: Res<ReplicationFrame>,
-    actors: Query<(&NetActor, &Position, &NetArchetype)>,
+    actors: Query<(&NetActor, &Position, &NetArchetype, Option<&NetMotion>)>,
 ) {
     lab.retry_pending_closes();
     if frame
@@ -153,31 +163,36 @@ fn open_selected_actors(
             );
         }
     }
-    let by_id: std::collections::BTreeMap<DomainId, (&Position, &NetArchetype)> = actors
+    let by_id: std::collections::BTreeMap<DomainId, _> = actors
         .iter()
-        .map(|(actor, position, archetype)| (actor.id, (position, archetype)))
+        .map(|(actor, position, archetype, motion)| (actor.id, (position, archetype, motion)))
         .collect();
     for connection in &frame.decisions.connections {
         for selected in &connection.selected {
-            let Some((position, archetype)) = by_id.get(&selected.id) else {
+            let Some((position, archetype, motion)) = by_id.get(&selected.id) else {
                 continue;
             };
             if lab.is_actor_open(connection.connection, selected.id.0) {
                 // A selected open actor replicates its changed movement.
                 if archetype.replicate_movement {
-                    lab.update_actor_movement(
+                    let motion = motion.copied().unwrap_or_default();
+                    lab.update_actor_motion(
                         connection.connection,
                         selected.id.0,
                         position.0,
+                        motion.rotation_degrees,
+                        motion.linear_velocity,
                         session.engine_net_version,
                     );
                 }
                 continue;
             }
             let block = if archetype.replicate_movement {
-                match resting_movement(position.0).and_then(|movement| {
-                    world_actor_block(session.engine_net_version, Some(movement))
-                }) {
+                let motion = motion.copied().unwrap_or_default();
+                match authored_movement(position.0, motion.rotation_degrees, motion.linear_velocity)
+                    .and_then(|movement| {
+                        world_actor_block(session.engine_net_version, Some(movement))
+                    }) {
                     Ok(block) => block,
                     Err(_) => {
                         session.movement_errors = session.movement_errors.saturating_add(1);
@@ -193,6 +208,8 @@ fn open_selected_actors(
                 archetype: archetype.archetype.clone(),
                 level: session.level.clone(),
                 location: Some(position.0),
+                rotation: motion.map(|motion| motion.rotation_degrees),
+                velocity: motion.map(|motion| motion.linear_velocity),
                 blocks: vec![block],
             };
             lab.open_actor(

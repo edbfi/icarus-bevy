@@ -1409,6 +1409,8 @@ fn exports_repeat_until_their_packet_is_acked_and_again_after_a_nak() {
         ],
         level: map_level_chain(PeerLabAdmission::default().map_url).unwrap(),
         location: Some([0.0; 3]),
+        rotation: None,
+        velocity: None,
         blocks: Vec::new(),
     };
     // Whether each queued open datagram starts with an export-only part.
@@ -1650,6 +1652,710 @@ fn accept_all_headers(client: &mut Client) -> usize {
     datagrams.len()
 }
 
+fn acknowledge_lab(app: &mut App, client: &mut Client) {
+    accept_all_headers(client);
+    let (ack, _) = client.packet(Vec::new());
+    client.send(&ack);
+    app.update();
+    accept_all_headers(client);
+}
+
+fn join_motion_client(
+    app: &mut App,
+    address: SocketAddr,
+    order: icarus_bevy::experimental::archive::ByteOrder,
+) -> Client {
+    use icarus_bevy::experimental::archive::ByteOrder;
+    let mut client = Client::connect(app, address);
+    let hello = ControlMessage::Hello {
+        first_field: u8::from(matches!(order, ByteOrder::Little)),
+        version: 0,
+        token: ArchiveText::text("").unwrap(),
+    };
+    for message in [hello, login(), ControlMessage::Join] {
+        let mut bunch = client.reliable_bunch(message.clone(), false);
+        let mut writer = BitWriter::new();
+        writer.write_bytes(
+            &encode_control_message(
+                &message,
+                &ControlCodec {
+                    order,
+                    ..ControlCodec::default()
+                },
+            )
+            .unwrap(),
+        );
+        bunch.payload = Payload::from_writer(writer);
+        let (datagram, _) = client.packet(vec![bunch]);
+        client.send(&datagram);
+        app.update();
+        accept_all_headers(&mut client);
+    }
+    acknowledge_lab(app, &mut client);
+    client
+}
+
+fn motion_spec(
+    location: [f32; 3],
+    rotation: [f32; 3],
+    velocity: [f32; 3],
+) -> icarus_bevy::experimental::session_open::ActorOpenSpec {
+    use icarus_bevy::experimental::session_open::{
+        ActorOpenSpec, PathSegment, authored_movement, map_level_chain, world_actor_block,
+    };
+    ActorOpenSpec {
+        actor: 0,
+        archetype: vec![
+            PathSegment::new("Default__Motion_C", 0x1234_5678, false),
+            PathSegment::new("/Game/Lab/Motion", 0, false),
+        ],
+        level: map_level_chain(PeerLabAdmission::default().map_url).unwrap(),
+        location: Some(location),
+        rotation: Some(rotation),
+        velocity: Some(velocity),
+        blocks: vec![
+            world_actor_block(
+                17,
+                Some(authored_movement(location, rotation, velocity).unwrap()),
+            )
+            .unwrap(),
+        ],
+    }
+}
+
+fn decoded_motion_updates(
+    client: &Client,
+    order: icarus_bevy::experimental::archive::ByteOrder,
+) -> Vec<icarus_bevy::experimental::rep_layout::RepMovement> {
+    use icarus_bevy::experimental::{
+        actor_channel::{ActorChannelCodec, ActorChannelLimits, read_actor_bunch_body},
+        rep_layout::{
+            MovementLevel, RepLayoutCodec, RepLayoutLimits, RepValue, RotationLevel,
+            actor_rep_layout, read_rep_properties,
+        },
+    };
+    let codec = RepLayoutCodec {
+        actor: ActorChannelCodec {
+            engine_net_version: 17,
+            exports_enabled: false,
+            has_level: true,
+            order,
+            limits: ActorChannelLimits::default(),
+        },
+        checksums: false,
+        limits: RepLayoutLimits::default(),
+    };
+    drain(client)
+        .into_iter()
+        .flat_map(|datagram| read_packet(&datagram, &to_client()).unwrap().bunches)
+        .filter(|bunch| !bunch.header.reliable && bunch.header.channel_index != 0)
+        .map(|bunch| {
+            let body =
+                read_actor_bunch_body(&mut bunch.payload.reader(), false, &codec.actor).unwrap();
+            assert!(body.spawn.is_none());
+            assert_eq!(body.blocks.len(), 1);
+            let stream = read_rep_properties(
+                &mut body.blocks[0].payload.reader(),
+                &actor_rep_layout(
+                    MovementLevel::Whole,
+                    MovementLevel::Whole,
+                    RotationLevel::Bytes,
+                ),
+                &codec,
+            )
+            .unwrap();
+            assert_eq!(stream.entries.len(), 1, "complete handle 6 only");
+            assert_eq!(stream.entries[0].handle, 6);
+            let RepValue::Movement(movement) = &stream.entries[0].value else {
+                panic!("movement")
+            };
+            assert_eq!(movement.flags, 0);
+            assert!(movement.angular_velocity.is_none());
+            movement.clone()
+        })
+        .collect()
+}
+
+#[test]
+fn generic_open_movement_baselines_follow_actor_block_transmission_order() {
+    use icarus_bevy::experimental::{
+        actor_channel::{
+            ActorChannelCodec, ActorChannelLimits, BlockTarget, ContentBlock, NetGuidRef,
+        },
+        archive::ByteOrder,
+        rep_layout::{
+            MovementLevel, PropertyStream, RepEntry, RepLayoutCodec, RepLayoutLimits, RepValue,
+            RotationLevel, actor_rep_layout, controller_rep_layout, encode_rep_properties,
+            parse_rep_properties,
+        },
+        session_open::{authored_movement, world_actor_block},
+    };
+    for order in [ByteOrder::Little, ByteOrder::Big] {
+        for reestablish in [false, true] {
+            let (mut app, address) = lab_app(PeerLabConfig {
+                admission: Some(PeerLabAdmission::default()),
+                ..PeerLabConfig::default()
+            });
+            let mut client = join_motion_client(&mut app, address, order);
+            let connection = lab(&app).joined_connections()[0];
+            let mut spec = motion_spec([0.0; 3], [0.0; 3], [0.0; 3]);
+            let codec = RepLayoutCodec {
+                actor: ActorChannelCodec {
+                    engine_net_version: 17,
+                    exports_enabled: false,
+                    has_level: true,
+                    order,
+                    limits: ActorChannelLimits::default(),
+                },
+                checksums: false,
+                limits: RepLayoutLimits::default(),
+            };
+            // Valid subclass properties can supersede handle 6 while making
+            // the whole block undecodable under the AActor-default layout.
+            let stream = PropertyStream {
+                entries: vec![
+                    RepEntry {
+                        handle: 6,
+                        checksum: None,
+                        value: RepValue::Movement(
+                            authored_movement([10.0, 0.0, 0.0], [90.0; 3], [1.0; 3]).unwrap(),
+                        ),
+                    },
+                    RepEntry {
+                        handle: 16,
+                        checksum: None,
+                        value: RepValue::Object(NetGuidRef::plain(0)),
+                    },
+                ],
+                terminator_checksum: None,
+            };
+            let layout = controller_rep_layout(
+                MovementLevel::Whole,
+                MovementLevel::Whole,
+                RotationLevel::Bytes,
+            );
+            let payload = encode_rep_properties(&stream, &layout, &codec).unwrap();
+            assert_eq!(
+                parse_rep_properties(&payload, &layout, &codec).unwrap(),
+                stream
+            );
+            assert!(
+                parse_rep_properties(
+                    &payload,
+                    &actor_rep_layout(
+                        MovementLevel::Whole,
+                        MovementLevel::Whole,
+                        RotationLevel::Bytes,
+                    ),
+                    &codec,
+                )
+                .is_err()
+            );
+            spec.blocks.push(ContentBlock {
+                has_rep_layout: true,
+                target: BlockTarget::Actor,
+                payload,
+            });
+            let latest = authored_movement([20.0, 30.0, 40.0], [45.0; 3], [2.0; 3]).unwrap();
+            if reestablish {
+                spec.blocks
+                    .push(world_actor_block(17, Some(latest)).unwrap());
+            }
+            app.world_mut()
+                .resource_mut::<PeerLab>()
+                .open_actor(connection, 7, spec, 2, 17)
+                .unwrap();
+            acknowledge_lab(&mut app, &mut client);
+            if reestablish {
+                assert!(
+                    !app.world_mut()
+                        .resource_mut::<PeerLab>()
+                        .update_actor_motion(
+                            connection,
+                            7,
+                            [20.0, 30.0, 40.0],
+                            [45.0; 3],
+                            [2.0; 3],
+                            17,
+                        ),
+                    "later decodable handle 6 reestablishes the baseline"
+                );
+                assert!(drain(&client).is_empty());
+            }
+            assert!(
+                app.world_mut()
+                    .resource_mut::<PeerLab>()
+                    .update_actor_motion(connection, 7, [0.0; 3], [0.0; 3], [0.0; 3], 17),
+                "the earlier movement must send after the open is acknowledged"
+            );
+            assert_eq!(
+                decoded_motion_updates(&client, order),
+                vec![authored_movement([0.0; 3], [0.0; 3], [0.0; 3]).unwrap()]
+            );
+        }
+    }
+}
+
+#[test]
+fn authored_motion_sends_complete_quantized_changes_and_rejects_invalid_attempts_atomically() {
+    use icarus_bevy::experimental::{archive::ByteOrder, session_open::authored_movement};
+    for order in [ByteOrder::Little, ByteOrder::Big] {
+        let (mut app, address) = lab_app(PeerLabConfig {
+            admission: Some(PeerLabAdmission::default()),
+            ..PeerLabConfig::default()
+        });
+        let mut client = join_motion_client(&mut app, address, order);
+        let connection = lab(&app).joined_connections()[0];
+        let location = [10.0, 20.0, 30.0];
+        let mut spec = motion_spec(location, [10.0, 20.0, 30.0], [4.0, 5.0, 6.0]);
+        // Baseline is the actual property value, independently of spawn data.
+        spec.location = Some([500.0, 0.0, 0.0]);
+        app.world_mut()
+            .resource_mut::<PeerLab>()
+            .open_actor(connection, 7, spec.clone(), 2, 17)
+            .unwrap();
+        assert!(
+            !app.world_mut()
+                .resource_mut::<PeerLab>()
+                .update_actor_motion(connection, 7, location, [90.0; 3], [9.0; 3], 17),
+            "open must be acknowledged"
+        );
+        acknowledge_lab(&mut app, &mut client);
+        assert!(
+            !app.world_mut()
+                .resource_mut::<PeerLab>()
+                .update_actor_motion(
+                    connection,
+                    7,
+                    location,
+                    [10.0, 20.0, 30.0],
+                    [4.0, 5.0, 6.0],
+                    17
+                )
+        );
+        let changes = [
+            ([90.0, 20.0, 30.0], [4.0, 5.0, 6.0]),     // rotation only
+            ([90.0, 20.0, 30.0], [40.0, 50.0, 60.0]),  // velocity only
+            ([45.0, -90.0, 180.0], [-7.0, 8.0, -9.0]), // combined
+            ([45.0, -90.0, 180.0], [0.0; 3]),          // stop
+            ([0.0; 3], [0.0; 3]),                      // clear all axes
+        ];
+        for (rotation, velocity) in changes {
+            assert!(
+                app.world_mut()
+                    .resource_mut::<PeerLab>()
+                    .update_actor_motion(connection, 7, location, rotation, velocity, 17)
+            );
+            assert_eq!(
+                decoded_motion_updates(&client, order),
+                vec![authored_movement(location, rotation, velocity).unwrap()]
+            );
+        }
+        // Full wraps and differences below both vector and byte-rotator
+        // quantization must not consume another packet or change the baseline.
+        for rotation in [[360.0, -360.0, 720.0], [0.1, -0.1, 0.1]] {
+            assert!(
+                !app.world_mut()
+                    .resource_mut::<PeerLab>()
+                    .update_actor_motion(connection, 7, [10.1, 20.1, 30.1], rotation, [0.1; 3], 17)
+            );
+        }
+        assert!(drain(&client).is_empty());
+        let before = stats(&app);
+        for field in 0..3 {
+            for bad in [f32::NAN, f32::INFINITY, -f32::INFINITY, f32::MAX] {
+                let mut values = [location, [0.0; 3], [0.0; 3]];
+                values[field][1] = bad;
+                assert!(
+                    !app.world_mut()
+                        .resource_mut::<PeerLab>()
+                        .update_actor_motion(connection, 7, values[0], values[1], values[2], 17)
+                );
+            }
+        }
+        assert_eq!(
+            stats(&app).actor_update_errors,
+            before.actor_update_errors + 12
+        );
+        for values in [
+            [[20_000_000.0; 3], [0.0; 3], [0.0; 3]],
+            [location, [0.0; 3], [20_000_000.0; 3]],
+            [location, [1.0e20; 3], [0.0; 3]],
+        ] {
+            assert!(
+                !app.world_mut()
+                    .resource_mut::<PeerLab>()
+                    .update_actor_motion(connection, 7, values[0], values[1], values[2], 17,)
+            );
+        }
+        assert_eq!(
+            stats(&app).actor_update_errors,
+            before.actor_update_errors + 15
+        );
+        assert_eq!(stats(&app).actor_updates_sent, before.actor_updates_sent);
+        assert!(
+            !app.world_mut()
+                .resource_mut::<PeerLab>()
+                .update_actor_movement(connection, 7, location, 17),
+            "failed attempts preserve zero baseline"
+        );
+        assert!(
+            app.world_mut()
+                .resource_mut::<PeerLab>()
+                .update_actor_motion(connection, 7, location, [1.0; 3], [1.0; 3], 17),
+            "valid retry"
+        );
+
+        // No property 6 in a generic open means no inferred movement baseline.
+        let mut generic = spec.clone();
+        generic.blocks.clear();
+        app.world_mut()
+            .resource_mut::<PeerLab>()
+            .open_actor(connection, 8, generic, 2, 17)
+            .unwrap();
+        acknowledge_lab(&mut app, &mut client);
+        assert!(
+            app.world_mut()
+                .resource_mut::<PeerLab>()
+                .update_actor_motion(
+                    connection,
+                    8,
+                    spec.location.unwrap(),
+                    spec.rotation.unwrap(),
+                    spec.velocity.unwrap(),
+                    17
+                )
+        );
+
+        // A spawn-only range failure does not consume a GUID or actor slot;
+        // the same actor can be opened after correcting its authored velocity.
+        let before_guid = format!("{:?}", lab(&app).guid_cache());
+        let mut invalid = spec.clone();
+        invalid.velocity = Some([2_000_000.0, 0.0, 0.0]);
+        assert!(
+            app.world_mut()
+                .resource_mut::<PeerLab>()
+                .open_actor(connection, 9, invalid, 2, 17)
+                .is_none()
+        );
+        assert!(!lab(&app).is_actor_open(connection, 9));
+        assert_eq!(format!("{:?}", lab(&app).guid_cache()), before_guid);
+        let mut oversized = spec.clone();
+        let mut writer = BitWriter::new();
+        writer.write_bytes(&vec![0; 8193]); // Above the actor block's 65,536-bit cap.
+        oversized
+            .blocks
+            .push(icarus_bevy::experimental::actor_channel::ContentBlock {
+                has_rep_layout: false,
+                target: icarus_bevy::experimental::actor_channel::BlockTarget::Actor,
+                payload: Payload::from_writer(writer),
+            });
+        assert!(
+            app.world_mut()
+                .resource_mut::<PeerLab>()
+                .open_actor(connection, 9, oversized, 2, 17)
+                .is_none()
+        );
+        assert!(!lab(&app).is_actor_open(connection, 9));
+        assert_eq!(format!("{:?}", lab(&app).guid_cache()), before_guid);
+        assert!(
+            app.world_mut()
+                .resource_mut::<PeerLab>()
+                .open_actor(connection, 9, spec, 2, 17)
+                .is_some()
+        );
+    }
+}
+
+#[test]
+fn movement_packet_pressure_preserves_the_baseline_until_release_and_retry() {
+    use icarus_bevy::experimental::archive::ByteOrder;
+    let mut config = PeerLabConfig {
+        admission: Some(PeerLabAdmission::default()),
+        ..PeerLabConfig::default()
+    };
+    config.packet.sent_capacity = 12;
+    let (mut app, address) = lab_app(config);
+    let mut client = join_motion_client(&mut app, address, ByteOrder::Little);
+    let connection = lab(&app).joined_connections()[0];
+    app.world_mut()
+        .resource_mut::<PeerLab>()
+        .open_actor(
+            connection,
+            7,
+            motion_spec([0.0; 3], [0.0; 3], [0.0; 3]),
+            2,
+            17,
+        )
+        .unwrap();
+    acknowledge_lab(&mut app, &mut client);
+    let mut failed = None;
+    for value in 1..64 {
+        if !app
+            .world_mut()
+            .resource_mut::<PeerLab>()
+            .update_actor_motion(connection, 7, [0.0; 3], [0.0; 3], [value as f32; 3], 17)
+        {
+            failed = Some(value);
+            break;
+        }
+    }
+    let failed = failed.expect("bounded sent ring fills");
+    assert!(failed > 1);
+    let retry_open = motion_spec([5.0; 3], [90.0; 3], [3.0; 3]);
+    let before_guid = format!("{:?}", lab(&app).guid_cache());
+    assert!(
+        app.world_mut()
+            .resource_mut::<PeerLab>()
+            .open_actor(connection, 9, retry_open.clone(), 2, 17)
+            .is_none()
+    );
+    assert!(!lab(&app).is_actor_open(connection, 9));
+    assert_eq!(format!("{:?}", lab(&app).guid_cache()), before_guid);
+    let before = stats(&app);
+    assert!(
+        !app.world_mut()
+            .resource_mut::<PeerLab>()
+            .update_actor_motion(
+                connection,
+                7,
+                [0.0; 3],
+                [0.0; 3],
+                [(failed - 1) as f32; 3],
+                17
+            ),
+        "last successful baseline remains"
+    );
+    assert!(
+        !app.world_mut()
+            .resource_mut::<PeerLab>()
+            .update_actor_motion(connection, 7, [0.0; 3], [0.0; 3], [failed as f32; 3], 17),
+        "failure is retryable under pressure"
+    );
+    assert_eq!(stats(&app).actor_updates_sent, before.actor_updates_sent);
+    assert_eq!(stats(&app).peers_failed, 0);
+    acknowledge_lab(&mut app, &mut client);
+    assert!(
+        app.world_mut()
+            .resource_mut::<PeerLab>()
+            .update_actor_motion(connection, 7, [0.0; 3], [0.0; 3], [failed as f32; 3], 17)
+    );
+    assert!(
+        !app.world_mut()
+            .resource_mut::<PeerLab>()
+            .update_actor_motion(connection, 7, [0.0; 3], [0.0; 3], [failed as f32; 3], 17)
+    );
+    app.world_mut()
+        .resource_mut::<PeerLab>()
+        .open_actor(connection, 9, retry_open, 2, 17)
+        .unwrap();
+    acknowledge_lab(&mut app, &mut client);
+    assert!(
+        !app.world_mut()
+            .resource_mut::<PeerLab>()
+            .update_actor_motion(connection, 9, [5.0; 3], [90.0; 3], [3.0; 3], 17),
+        "retried open seeds only its successfully composed baseline"
+    );
+}
+
+#[test]
+fn motion_baselines_are_per_peer_and_close_reopen_uses_current_motion() {
+    use icarus_bevy::experimental::{archive::ByteOrder, session_open::authored_movement};
+    let (mut app, address) = lab_app(PeerLabConfig {
+        admission: Some(PeerLabAdmission::default()),
+        ..PeerLabConfig::default()
+    });
+    let mut first = join_motion_client(&mut app, address, ByteOrder::Little);
+    let first_id = lab(&app).joined_connections()[0];
+    let mut second = join_motion_client(&mut app, address, ByteOrder::Big);
+    let second_id = *lab(&app)
+        .joined_connections()
+        .iter()
+        .find(|&&id| id != first_id)
+        .unwrap();
+    let spec = motion_spec([10.0; 3], [0.0; 3], [0.0; 3]);
+    for connection in [first_id, second_id] {
+        app.world_mut()
+            .resource_mut::<PeerLab>()
+            .open_actor(connection, 7, spec.clone(), 2, 17)
+            .unwrap();
+    }
+    acknowledge_lab(&mut app, &mut first);
+    acknowledge_lab(&mut app, &mut second);
+    for connection in [first_id, second_id] {
+        assert!(
+            app.world_mut()
+                .resource_mut::<PeerLab>()
+                .update_actor_motion(connection, 7, [10.0; 3], [90.0; 3], [1.0; 3], 17)
+        );
+    }
+    let expected = authored_movement([10.0; 3], [90.0; 3], [1.0; 3]).unwrap();
+    assert_eq!(
+        decoded_motion_updates(&first, ByteOrder::Little),
+        vec![expected.clone()]
+    );
+    assert_eq!(
+        decoded_motion_updates(&second, ByteOrder::Big),
+        vec![expected]
+    );
+    assert!(
+        app.world_mut()
+            .resource_mut::<PeerLab>()
+            .close_actor(first_id, 7, 3)
+    );
+    let current = motion_spec([40.0; 3], [180.0; 3], [0.0; 3]);
+    app.world_mut()
+        .resource_mut::<PeerLab>()
+        .open_actor(first_id, 7, current, 2, 17)
+        .unwrap();
+    assert!(
+        !app.world_mut()
+            .resource_mut::<PeerLab>()
+            .update_actor_motion(first_id, 7, [40.0; 3], [0.0; 3], [0.0; 3], 17)
+    );
+    acknowledge_lab(&mut app, &mut first);
+    assert!(
+        !app.world_mut()
+            .resource_mut::<PeerLab>()
+            .update_actor_motion(first_id, 7, [40.0; 3], [180.0; 3], [0.0; 3], 17),
+        "new open seeds current complete movement"
+    );
+    assert!(
+        !app.world_mut()
+            .resource_mut::<PeerLab>()
+            .update_actor_motion(second_id, 7, [10.0; 3], [90.0; 3], [1.0; 3], 17),
+        "other peer unchanged"
+    );
+    assert!(
+        app.world_mut()
+            .resource_mut::<PeerLab>()
+            .update_actor_motion(first_id, 7, [40.0; 3], [0.0; 3], [0.0; 3], 17),
+        "zero clears reopened rotation"
+    );
+}
+
+#[test]
+fn selected_actor_bridge_uses_optional_motion_without_mutating_position() {
+    use bevy::prelude::FixedUpdate;
+    use icarus_bevy::{
+        experimental::{
+            archive::ByteOrder,
+            session_open::{authored_movement, map_level_chain},
+        },
+        replication::{
+            ClosedActor, ConnectionFrame, NetActor, NetParameters, ReplicationFrame, SelectedActor,
+        },
+        session_replication::{
+            NetArchetype, NetMotion, SessionReplication, SessionReplicationPlugin,
+        },
+        simulation::{DomainId, Position},
+    };
+    let (mut app, address) = lab_app(PeerLabConfig {
+        admission: Some(PeerLabAdmission::default()),
+        ..PeerLabConfig::default()
+    });
+    let mut client = join_motion_client(&mut app, address, ByteOrder::Little);
+    let connection = lab(&app).joined_connections()[0];
+    // Supply authored selections directly to isolate the bridge from policy.
+    app.insert_resource(bevy::time::TimeUpdateStrategy::ManualDuration(
+        Duration::ZERO,
+    ));
+    app.init_resource::<ReplicationFrame>()
+        .insert_resource(
+            SessionReplication::new(
+                map_level_chain(PeerLabAdmission::default().map_url).unwrap(),
+                17,
+                2,
+                [0.0; 3],
+            )
+            .unwrap(),
+        )
+        .add_plugins(SessionReplicationPlugin);
+    let location = [10.0, 20.0, 30.0];
+    let spec = motion_spec(location, [0.0; 3], [0.0; 3]);
+    let actor = app
+        .world_mut()
+        .spawn((
+            NetActor {
+                id: DomainId(7),
+                params: NetParameters::default(),
+            },
+            Position(location),
+            NetArchetype {
+                archetype: spec.archetype,
+                replicate_movement: true,
+            },
+            NetMotion {
+                rotation_degrees: [1.0, 2.0, 3.0],
+                linear_velocity: [4.0, 5.0, 6.0],
+            },
+        ))
+        .id();
+    app.world_mut()
+        .resource_mut::<ReplicationFrame>()
+        .decisions
+        .connections = vec![ConnectionFrame {
+        connection,
+        selected: vec![SelectedActor {
+            id: DomainId(7),
+            priority: 1,
+        }],
+        ..ConnectionFrame::default()
+    }];
+    app.world_mut().run_schedule(FixedUpdate);
+    assert_eq!(stats(&app).actor_opens_sent, 1);
+    app.world_mut().entity_mut(actor).insert(NetMotion {
+        rotation_degrees: [90.0; 3],
+        linear_velocity: [10.0; 3],
+    });
+    app.world_mut().run_schedule(FixedUpdate);
+    assert_eq!(stats(&app).actor_updates_sent, 0);
+    acknowledge_lab(&mut app, &mut client);
+    app.world_mut().run_schedule(FixedUpdate);
+    assert_eq!(
+        decoded_motion_updates(&client, ByteOrder::Little),
+        vec![authored_movement(location, [90.0; 3], [10.0; 3]).unwrap()]
+    );
+    app.world_mut().entity_mut(actor).remove::<NetMotion>();
+    app.world_mut().run_schedule(FixedUpdate);
+    assert_eq!(
+        decoded_motion_updates(&client, ByteOrder::Little),
+        vec![authored_movement(location, [0.0; 3], [0.0; 3]).unwrap()]
+    );
+    app.world_mut().run_schedule(FixedUpdate);
+    assert!(decoded_motion_updates(&client, ByteOrder::Little).is_empty());
+    assert_eq!(app.world().get::<Position>(actor).unwrap().0, location);
+
+    // A close followed by the same selection seeds a fresh baseline from
+    // the current component; ACKs are required again for further changes.
+    app.world_mut().entity_mut(actor).insert(NetMotion {
+        rotation_degrees: [180.0; 3],
+        linear_velocity: [3.0; 3],
+    });
+    app.world_mut()
+        .resource_mut::<ReplicationFrame>()
+        .decisions
+        .connections[0]
+        .closed = vec![ClosedActor {
+        id: DomainId(7),
+        close_reason: 3,
+    }];
+    app.world_mut().run_schedule(FixedUpdate);
+    app.world_mut()
+        .resource_mut::<ReplicationFrame>()
+        .decisions
+        .connections[0]
+        .closed
+        .clear();
+    assert_eq!(stats(&app).actor_opens_sent, 2);
+    assert_eq!(stats(&app).actor_closes_sent, 1);
+    acknowledge_lab(&mut app, &mut client);
+    let before = stats(&app).actor_updates_sent;
+    app.world_mut().run_schedule(FixedUpdate);
+    assert_eq!(stats(&app).actor_updates_sent, before);
+    assert_eq!(app.world().get::<Position>(actor).unwrap().0, location);
+}
+
 #[test]
 fn a_close_that_cannot_be_framed_stays_pending_until_retried() {
     use icarus_bevy::experimental::session_open::{ActorOpenSpec, PathSegment, map_level_chain};
@@ -1688,6 +2394,8 @@ fn a_close_that_cannot_be_framed_stays_pending_until_retried() {
         ],
         level: map_level_chain(PeerLabAdmission::default().map_url).unwrap(),
         location: Some([0.0; 3]),
+        rotation: None,
+        velocity: None,
         blocks: Vec::new(),
     };
 
@@ -1724,6 +2432,15 @@ fn a_close_that_cannot_be_framed_stays_pending_until_retried() {
 
 #[test]
 fn a_naked_movement_update_is_sent_again() {
+    movement_loss_case(false);
+}
+
+#[test]
+fn a_naked_authored_motion_update_is_sent_again() {
+    movement_loss_case(true);
+}
+
+fn movement_loss_case(authored_motion: bool) {
     use icarus_bevy::experimental::session_open::{ActorOpenSpec, PathSegment, map_level_chain};
     let config = PeerLabConfig {
         admission: Some(PeerLabAdmission::default()),
@@ -1745,6 +2462,20 @@ fn a_naked_movement_update_is_sent_again() {
     client.exchange(&mut app, ControlMessage::Join, false);
     accept_all_headers(&mut client);
     let connection = lab(&app).joined_connections()[0];
+    let update = |lab: &mut PeerLab, value: f32| {
+        if authored_motion {
+            lab.update_actor_motion(
+                connection,
+                7,
+                [0.0; 3],
+                [value, 0.0, 0.0],
+                [0.0, value, 0.0],
+                17,
+            )
+        } else {
+            lab.update_actor_movement(connection, 7, [value, 0.0, 0.0], 17)
+        }
+    };
     let spec = ActorOpenSpec {
         actor: 0,
         archetype: vec![
@@ -1753,12 +2484,14 @@ fn a_naked_movement_update_is_sent_again() {
         ],
         level: map_level_chain(PeerLabAdmission::default().map_url).unwrap(),
         location: Some([0.0; 3]),
+        rotation: None,
+        velocity: None,
         blocks: Vec::new(),
     };
     let mut lab_mut = app.world_mut().resource_mut::<PeerLab>();
     lab_mut.open_actor(connection, 7, spec, 2, 17).unwrap();
     // Not settled yet: no update before the client acknowledges the open.
-    assert!(!lab_mut.update_actor_movement(connection, 7, [50.0, 0.0, 0.0], 17));
+    assert!(!update(&mut lab_mut, 50.0));
 
     // The client acknowledges the open.
     accept_all_headers(&mut client);
@@ -1767,11 +2500,8 @@ fn a_naked_movement_update_is_sent_again() {
     app.update();
     accept_all_headers(&mut client);
     let mut lab_mut = app.world_mut().resource_mut::<PeerLab>();
-    assert!(lab_mut.update_actor_movement(connection, 7, [50.0, 0.0, 0.0], 17));
-    assert!(
-        !lab_mut.update_actor_movement(connection, 7, [50.0, 0.0, 0.0], 17),
-        "unchanged location"
-    );
+    assert!(update(&mut lab_mut, 50.0));
+    assert!(!update(&mut lab_mut, 50.0), "unchanged location");
     // The update datagram is lost.
     assert_eq!(drain(&client).len(), 1);
 
@@ -1789,14 +2519,14 @@ fn a_naked_movement_update_is_sent_again() {
     assert_eq!(lab_mut.stats().actor_update_naks, 1);
     assert_eq!(lab_mut.stats().actor_updates_lost, 1);
     // The same location is due again and goes out once more.
-    assert!(lab_mut.update_actor_movement(connection, 7, [50.0, 0.0, 0.0], 17));
+    assert!(update(&mut lab_mut, 50.0));
     assert_eq!(lab_mut.stats().actor_updates_sent, 2);
 
     // A nak for an older update does not undo a newer location: the resent
     // update is lost too, but the actor moves on before the nak arrives.
     assert_eq!(drain(&client).len(), 1);
     let mut lab_mut = app.world_mut().resource_mut::<PeerLab>();
-    assert!(lab_mut.update_actor_movement(connection, 7, [60.0, 0.0, 0.0], 17));
+    assert!(update(&mut lab_mut, 60.0));
     accept_all_headers(&mut client);
     let (report, _) = client.packet(Vec::new());
     client.send(&report);
@@ -1805,16 +2535,16 @@ fn a_naked_movement_update_is_sent_again() {
     // The nak arrived (two naks so far) but the newer update supersedes it.
     assert_eq!(lab_mut.stats().actor_update_naks, 2);
     assert_eq!(lab_mut.stats().actor_updates_lost, 1, "superseded");
-    assert!(!lab_mut.update_actor_movement(connection, 7, [60.0, 0.0, 0.0], 17));
+    assert!(!update(&mut lab_mut, 60.0));
 
     // A -> B -> A: the nak of the first A finds a newer packet carrying A in
     // flight, so it repairs nothing (the guard compares packets, not places).
     accept_all_headers(&mut client);
-    assert!(lab_mut.update_actor_movement(connection, 7, [70.0, 0.0, 0.0], 17));
+    assert!(update(&mut lab_mut, 70.0));
     assert_eq!(drain(&client).len(), 1, "the first A is lost");
     let mut lab_mut = app.world_mut().resource_mut::<PeerLab>();
-    assert!(lab_mut.update_actor_movement(connection, 7, [80.0, 0.0, 0.0], 17));
-    assert!(lab_mut.update_actor_movement(connection, 7, [70.0, 0.0, 0.0], 17));
+    assert!(update(&mut lab_mut, 80.0));
+    assert!(update(&mut lab_mut, 70.0));
     accept_all_headers(&mut client);
     let (report, _) = client.packet(Vec::new());
     client.send(&report);
