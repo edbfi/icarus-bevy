@@ -68,13 +68,14 @@ Strict authored C001 adapters bind source state to placements, owner lifecycle,
 Bool/I32 use gates and stacked inventories with durable actions (F-927).
 Coordinates, layouts and semantics are authored; ordinary import stays closed.
 Reload duration restores base/cache and authority-gated remaining time (`u16`
-tenths operands match; unordered guards differ; float/rounding unobserved), and
-role-`3` expiration wrappers issue reason-`0` `+0x3c0`. Primary
-`UModifierStateComponent` matches across builds on `+0x278` `Activate` (null
-delegate crash), `+0x280` `Deactivate`, `+0x338`/`+0x340` `Begin`/`EndPlay`
-(role `3`/`reason == 0`), `+0x3c0` `DestroyComponent`, `+0x408` `UpdateStats`
-and `+0x410`/`+0x418`; subclass receivers, callee/creation/expiration effects,
-BP/scaling/`InitComponent` internals, owner/row bindings and live runs remain
+tenths operands match; unordered guards differ), and role-`3` expiration
+wrappers issue reason-`0` `+0x3c0`. Primary `UModifierStateComponent` matches
+across builds on `+0x278` `Activate` (null delegate crash), `+0x280`
+`Deactivate`, `+0x338`/`+0x340` `Begin`/`EndPlay` (role `3`/`reason == 0`),
+`+0x3c0` `DestroyComponent`, `+0x408` `UpdateStats`, `+0x410`/`+0x418`,
+`ScaleStatsHelper`, `GetModifierStateData`, `InitComponent_Implementation`,
+`OnStatContainerUpdated` and `FixModifierActivation`; subclass/Blueprint
+overrides, downstream callee effects, owner/row bindings and live runs remain
 open (F-930).
 
 No saved class identifier, field or type name, or recorder version tells the
@@ -94,4 +95,4 @@ stay at 128 KiB (F-198).
 
 ## Artifacts
 
-M-047..M-077, M-079..M-108, M-118..M-130, M-278..M-280, M-351, M-352, M-376..M-384, M-389, M-390, M-401..M-404, M-407..M-410, M-606..M-613, M-616..M-618, M-626, M-627, M-636..M-638, M-727, M-755..M-760, M-766..M-769, M-772..M-777, M-780, M-782, M-784, M-786, M-788, M-790..M-792, M-794..M-808, M-811, M-850, M-851, M-854..M-859, M-873, M-878, M-880, M-900, M-919..M-925, M-926..M-929, M-937..M-943, M-958, M-959; M-983, M-984, M-986, M-987, M-989..M-993; M-990/ev_693319f721fe, M-992/ev_5ad56afa9170, M-995..M-1010, M-1024/ev_053a26045f8e, M-1025.
+M-047..M-077, M-079..M-108, M-118..M-130, M-278..M-280, M-351, M-352, M-376..M-384, M-389, M-390, M-401..M-404, M-407..M-410, M-606..M-613, M-616..M-618, M-626, M-627, M-636..M-638, M-727, M-755..M-760, M-766..M-769, M-772..M-777, M-780, M-782, M-784, M-786, M-788, M-790..M-792, M-794..M-808, M-811, M-850, M-851, M-854..M-859, M-873, M-878, M-880, M-900, M-919..M-925, M-926..M-929, M-937..M-943, M-958, M-959; M-983, M-984, M-986, M-987, M-989..M-993; M-990/ev_693319f721fe, M-992/ev_5ad56afa9170, M-995..M-1010, M-1024/ev_053a26045f8e, M-1025, M-1027/ev_c40e7a02c708, M-1028.

@@ -174,23 +174,39 @@ construction, script owners and data-table rows are out of scope (F-660).
 - Static-only modifier reload duration uses a distinct callback (F-930): both
   builds store base duration, call authority-gated remaining-time restoration,
   restore cached multiplier, clear any old timer, select setup for finite
-  positive remaining time, and call `OnRep`; remaining-time/`OnRep` raw operands
-  match after relocation (including `u16` tenths), while unordered scheduling
-  guards differ and floating-point runtime state is unobserved. Role-`3`
-  expiration wrappers issue a reason-`0` `+0x3c0` tail. On primary
-  `UModifierStateComponent` (`0x144a263a8`/`0x144b94c08`;
-  `experimental::modifier_lifecycle`, M-1024, M-1025), `+0x278` `Activate`,
-  `+0x280` `Deactivate`, `+0x338` `BeginPlay`, `+0x340` `EndPlay`, `+0x3c0`
-  `DestroyComponent`, `+0x408` `UpdateStats` and `+0x410`/`+0x418`
-  `Applied`/`Removed_Implementation` match across builds: `Deactivate` removes
-  `(3, [+0xf8])` on `UIcarusStatContainer`; `Activate` gates `![+0x8a]&1` and
-  `[+0xa0]`, binds `OnPreStatContainerUpdateComplete` (null crash) and calls
-  `+0x408`; `UpdateStats` refreshes `(3, [+0xf8])` from `GrantedStats` (`+0xa0`);
-  `BeginPlay` gates role `3` and `[+0x3b0] == 0`; `EndPlay` zeroes `[+0x3c0]`,
-  gates `reason == 0`, runs role-`3` removal/timers/`+0x280`/`[+0x319]==3`
-  `FixModifierActivation`, destroys `[+0x100]` (`+0x3c0`) and notifies
-  owner/delegates. Subclass virtual receivers, downstream callee/creation/expiration
-  effects, conversion rounding, BP/scaling/`InitComponent` internals, owner/row
+  positive remaining time, and call `OnRep` (`u16` tenths match; unordered
+  guards differ). Role-`3` expiration wrappers issue reason-`0` `+0x3c0`. On
+  primary `UModifierStateComponent` (`0x144a263a8`/`0x144b94c08`;
+  `experimental::modifier_lifecycle`, M-1024, M-1025, M-1027, M-1028), `+0x278`
+  `Activate`, `+0x280` `Deactivate`, `+0x338` `BeginPlay`, `+0x340` `EndPlay`,
+  `+0x3c0` `DestroyComponent`, `+0x408` `UpdateStats`, `+0x410`/`+0x418`
+  `Applied`/`Removed_Implementation`, `GetModifierStateData`
+  (`0x1416e2e90`/`0x1416f4960`) and `+0x430` `InitComponent_Implementation`
+  (`0x1416e88f0`/`0x1416fa330`, M-1027/ev_51aa536d68b6) match across builds:
+  `ScaleStatsHelper` (`0x1416b6710`/`0x1416ce2f0`, M-1027/ev_c40e7a02c708)
+  skips `stat_enum == 0xff` and computes `ceil(|((i32[+0x128] as f32) + 100.0f) *
+  (raw as f32) * f32::from_bits(0x3c23d70a)|) * sgn` via `-0.5f - 2.0f * |scaled|`
+  `CVTSS2SI`/`SAR 1`/`NEG` before `CVTTSS2SI`; `InitComponent_Implementation`
+  skips empty `+0x1b0`, constructs/registers/attaches `TSoftClassPtr<USceneComponent>`
+  (`+0x1a0`) at `+0x100` with `KeepRelative` `0x0002_0202` (crashing on
+  unresolved/non-`USceneComponent` `StaticConstructObject_Internal(nullptr)`),
+  snapshots `World + 0x5a0 -> +0xb0` with a `0.1f` looping `HighFrequencyTick`
+  timer (`+0x3c0`) when `[+0x300] != 0`, and runs `ModifierTick(this, 0.0f)` when
+  `[+0x301] != 0 && CheckTickConditions(this)`; `Applied_Implementation` sets
+  `+0xe0..+0xf0`, `+0xf8 = Execute_GetNextUID`, `[+0x3b0] = 1`, fallback `+0xd0`,
+  `RefreshLifetime`, `+0x320` tags and notifications, while `Removed_Implementation`
+  subtracts `+0x320` tags still covered by sibling `GrantedTags` (`GameplayTags`
+  or `ParentTags`); `OnStatContainerUpdated` (`0x1416efd80`/`0x1417012a0`,
+  M-1027/ev_3681a1228c84) updates `+0x10c` on ordered change, clears/restarts
+  looping `+0x3a8` `AutoDestroy` (rescaling `+0x110` when `base_lifetime (+0x108) > 0`,
+  `!(remaining > base * old_mult)` and `old_mult > 0`), and sums `+0x230` stat
+  values plus `+0x114` into `+0x128` (broadcasting `+0x130` on role `3` and
+  dispatching `+0x408` on change); `FixModifierActivation`
+  (`0x1414a0fc0`/`0x1414db100`, M-1027/ev_9785b53a7a36) `LowerBound`-inserts
+  `!bIsBeingDestroyed` (`+0x8b & 2 == 0`) modifiers matching `target_row_name`
+  by `uid_f8` (`+0xf8`), calling `+0x278` `Activate(false)` on the first
+  `bAutoActivate` (`+0x8b & 1 != 0`) match and `+0x280` `Deactivate()` on all
+  others. Subclass/Blueprint overrides, downstream callee effects, owner/row
   binding and live execution remain unqualified.
 
 ## Candidate
@@ -204,4 +220,5 @@ construction, script owners and data-table rows are out of scope (F-660).
 ## Evidence
 
 F-645..F-681, F-716, F-894, F-902..F-904, F-728, F-734..F-736, F-741..F-744, F-746, F-747,
-F-750, F-897, F-930; M-642..M-698, M-755..M-792, M-794..M-807, M-858, M-1024, M-1025.
+F-750, F-897, F-930; M-642..M-698, M-755..M-792, M-794..M-807, M-858, M-1024, M-1025,
+M-1027, M-1028.

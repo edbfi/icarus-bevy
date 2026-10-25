@@ -467,7 +467,7 @@ fn component_block(
 
 /// A runtime `UInventory` subobject: active, its info row, its owning
 /// component when `owner` names one, an explicitly supplied weight and its
-/// slots as the custom-delta field (F-799, F-866, F-915). `owner` names the
+/// slots as the custom-delta field (F-799, F-866, F-933). `owner` names the
 /// `OwningComponent`, not the actor owner used by the weight tick gate.
 pub fn inventory_subobject(
     blocks: &PawnContentPlan,

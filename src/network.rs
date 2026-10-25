@@ -46,7 +46,7 @@ use std::net::{SocketAddr, SocketAddrV4};
 
 use std::collections::BTreeMap;
 
-use anyhow::{Context, Result, ensure};
+use anyhow::{Context, Result, bail, ensure};
 use bevy::prelude::{App, Resource, World};
 
 use crate::{
@@ -60,6 +60,11 @@ use crate::{
             MATCH_STATE_IN_PROGRESS, NetworkingStatus, active_prospect_values, handle,
             saved_game_mode_values, session_flags_value,
         },
+        inventory_weight::{
+            AUTHORITY_LOCAL_ROLE, DEFAULT_CDO_CURRENT_WEIGHT, DYNAMIC_PROP_ASSOCIATED_INVENTORY_ID,
+            DYNAMIC_PROP_FILLABLE_UNITS, DYNAMIC_PROP_ITEMABLE_STACK, ItemWeightInput,
+            RestoredContainerInventory, recalculate_inventory_weight,
+        },
         manager_open::{ManagerOpenPlan, ManagerSlot},
         pawn_open::{
             CharacterVitals, FastArrayContent, InventorySlot, PAWN_CHANNEL_INDEX, PawnContent,
@@ -67,7 +72,8 @@ use crate::{
         },
         peer_lab::{PeerLab, PeerLabAdmission, PeerLabConfig, PeerLabPlugin, SessionCounts},
         prospect_info::{
-            MissionHistoryRecord, PlayerHistoryEntry, SavedContainerManager, SavedQuestManager,
+            MissionHistoryRecord, PlayerHistoryEntry, SavedContainerManager, SavedItem,
+            SavedQuestManager,
         },
         release::{ReleasePin, ReleaseProfile},
         rep_layout::{DYNAMIC_ITEM_PROPERTIES_MAX_VALUE, NetworkName, RepValue},
@@ -207,6 +213,9 @@ pub const INVENTORY_TABLE: &str = "D_Inventory";
 pub const INVENTORY_INFO_TABLE: &str = "D_InventoryInfo";
 pub const TAG_QUERIES_TABLE: &str = "D_TagQueries";
 pub const ITEMS_STATIC_TABLE: &str = "D_ItemsStatic";
+/// The item trait table whose `Weight` feeds ticked container `CurrentWeight`
+/// (`F-933`).
+pub const ITEMABLE_TABLE: &str = "D_Itemable";
 pub const STARTING_STATS_TABLE: &str = "D_CharacterStartingStats";
 pub const CHARACTER_GROWTH_TABLE: &str = "D_CharacterGrowth";
 /// The player's rows in `D_Inventory`, `D_CharacterStartingStats` and
@@ -216,10 +225,169 @@ pub const STARTING_STATS_ROW: &str = "Base_Stats";
 pub const PLAYER_GROWTH_ROW: &str = "Player";
 /// The slot arrays' replication key at open, as captured (F-799).
 pub const INVENTORY_SLOTS_REPLICATION_KEY: i32 = 2;
+/// The `D_TagQueries` row `UInventoryItemLibrary::GetItemWeight` evaluates
+/// before adding dynamic fillable units (`10`) (`F-933`).
+const WEIGHABLE_RESOURCE_CONTAINER_QUERY: &str = "Any_Weighable_Resource_Container";
 
 /// The row named by a `{"RowName": ...}` handle.
 fn row_name(value: &serde_json::Value) -> Option<&str> {
     value.get("RowName")?.as_str()
+}
+
+/// Tags listed in `D_TagQueries`'s `Any_Weighable_Resource_Container` when
+/// its `QueryTokenStream` is an `AnyTagsMatch` (`[0, 1, 1, N, 0..N]`).
+fn weighable_resource_tags(tables: &mut DataTables) -> Result<Vec<String>> {
+    let row = tables
+        .row(TAG_QUERIES_TABLE, WEIGHABLE_RESOURCE_CONTAINER_QUERY)?
+        .with_context(|| {
+            format!("{TAG_QUERIES_TABLE} lacks {WEIGHABLE_RESOURCE_CONTAINER_QUERY}")
+        })?;
+    let query = row
+        .get("Query")
+        .and_then(serde_json::Value::as_object)
+        .with_context(|| format!("{WEIGHABLE_RESOURCE_CONTAINER_QUERY} has no Query object"))?;
+    let tags: Vec<String> = query
+        .get("TagDictionary")
+        .and_then(serde_json::Value::as_array)
+        .with_context(|| format!("{WEIGHABLE_RESOURCE_CONTAINER_QUERY} has no TagDictionary"))?
+        .iter()
+        .map(|entry| {
+            entry
+                .get("TagName")
+                .and_then(serde_json::Value::as_str)
+                .map(str::to_owned)
+                .with_context(|| {
+                    format!(
+                        "{WEIGHABLE_RESOURCE_CONTAINER_QUERY} TagDictionary entry has no TagName"
+                    )
+                })
+        })
+        .collect::<Result<_>>()?;
+    let stream: Vec<i64> = query
+        .get("QueryTokenStream")
+        .and_then(serde_json::Value::as_array)
+        .with_context(|| format!("{WEIGHABLE_RESOURCE_CONTAINER_QUERY} has no QueryTokenStream"))?
+        .iter()
+        .map(|token| {
+            token.as_i64().with_context(|| {
+                format!("{WEIGHABLE_RESOURCE_CONTAINER_QUERY} has a non-integer token")
+            })
+        })
+        .collect::<Result<_>>()?;
+    let count = i64::try_from(tags.len())?;
+    let expected: Vec<i64> = [0, 1, 1, count].into_iter().chain(0..count).collect();
+    ensure!(
+        stream == expected,
+        "{WEIGHABLE_RESOURCE_CONTAINER_QUERY} uses an unsupported QueryTokenStream"
+    );
+    Ok(tags)
+}
+
+fn item_matches_any_tag(
+    static_row: &serde_json::Map<String, serde_json::Value>,
+    query_tags: &[String],
+) -> Result<bool> {
+    for container_key in ["Manual_Tags", "Generated_Tags"] {
+        let Some(container) = static_row.get(container_key) else {
+            continue;
+        };
+        let container = container
+            .as_object()
+            .with_context(|| format!("an item's {container_key} is not an object"))?;
+        for array_key in ["GameplayTags", "ParentTags"] {
+            let Some(entries) = container.get(array_key) else {
+                continue;
+            };
+            let entries = entries.as_array().with_context(|| {
+                format!("an item's {container_key}.{array_key} is not an array")
+            })?;
+            for entry in entries {
+                let tag = entry
+                    .get("TagName")
+                    .and_then(serde_json::Value::as_str)
+                    .with_context(|| {
+                        format!("an item's {container_key}.{array_key} entry has no TagName")
+                    })?;
+                if query_tags.iter().any(|target| {
+                    tag == target
+                        || tag
+                            .strip_prefix(target.as_str())
+                            .is_some_and(|rest| rest.starts_with('.'))
+                }) {
+                    return Ok(true);
+                }
+            }
+        }
+    }
+    Ok(false)
+}
+
+fn ticked_item_weight_input(
+    tables: &mut DataTables,
+    item: &SavedItem,
+    weighable_tags: &[String],
+) -> Result<ItemWeightInput> {
+    ensure!(
+        item.stats.is_empty(),
+        "a ticked container item carries custom stats"
+    );
+    ensure!(
+        !item.dynamic.iter().any(|&(property, value)| {
+            property == i32::from(DYNAMIC_PROP_ASSOCIATED_INVENTORY_ID) && value >= 0
+        }),
+        "a ticked container item carries a nested inventory"
+    );
+    let item_name = String::from_utf16(&item.row_name).context("saved item row name")?;
+    let static_row = tables
+        .row(ITEMS_STATIC_TABLE, &item_name)?
+        .with_context(|| format!("{ITEMS_STATIC_TABLE} lacks a saved item"))?;
+    if let Some(additional) = static_row.get("AdditionalStats") {
+        let map = additional
+            .as_object()
+            .context("an item's AdditionalStats is not a map")?;
+        if map.keys().any(|key| key.contains("Weight_+")) {
+            bail!("a ticked container item's static row grants a weight stat");
+        }
+    }
+    let Some(itemable_name) = static_row
+        .get("Itemable")
+        .and_then(row_name)
+        .filter(|name| *name != "None")
+    else {
+        return Ok(ItemWeightInput {
+            has_valid_itemable: false,
+            weight_stat: 0,
+            matches_weighable_resource_container: false,
+            fillable_units: None,
+            itemable_stack: None,
+            matching_carry_weight_stat_pct: 0,
+        });
+    };
+    let itemable_row = tables
+        .row(ITEMABLE_TABLE, itemable_name)?
+        .with_context(|| format!("{ITEMABLE_TABLE} lacks an itemable row"))?;
+    let weight_stat = match itemable_row.get("Weight") {
+        None => 0,
+        Some(value) => value
+            .as_i64()
+            .and_then(|weight| i32::try_from(weight).ok())
+            .context("an itemable Weight is out of range")?,
+    };
+    let matches_weighable_resource_container = item_matches_any_tag(&static_row, weighable_tags)?;
+    let dynamic_value = |target: u8| {
+        item.dynamic
+            .iter()
+            .find(|&&(property, _)| property == i32::from(target))
+            .map(|&(_, value)| value)
+    };
+    Ok(ItemWeightInput {
+        has_valid_itemable: true,
+        weight_stat,
+        matches_weighable_resource_container,
+        fillable_units: dynamic_value(DYNAMIC_PROP_FILLABLE_UNITS),
+        itemable_stack: dynamic_value(DYNAMIC_PROP_ITEMABLE_STACK),
+        matching_carry_weight_stat_pct: 0,
+    })
 }
 
 /// A fresh player's inventories (F-836), in the order `D_Inventory`'s
@@ -313,14 +481,16 @@ fn info_inventory(tables: &mut DataTables, name: &[u16]) -> Result<PawnInventory
     })
 }
 
-/// A saved container manager's inventories (`C016`, F-866), in list
-/// order: each one's [`info_inventory`] with its saved
-/// items in their slots, each item's `D_ItemsStatic` row, dynamic data and
-/// by-name stats. The slots' replication key counts one more change per
-/// item, as captured. Fails on a list with empty positions (F-651; how
-/// the original replicates them is unobserved), an item the native server
-/// cannot send yet (a GUID, an owner, alterations, living slots or an
-/// indexed stat), a location outside the slots or a row the tables lack.
+/// A saved container manager's inventories (`C016`, F-866, F-933), in list
+/// order: each one's [`info_inventory`] with its saved items in their slots,
+/// each item's `D_ItemsStatic` row, dynamic data and by-name stats, plus
+/// `CurrentWeight` when `bInventoryWantsTick` is set and recalculates
+/// non-zero. The slots' replication key counts one more change per item, as
+/// captured. Fails on a list with empty positions (F-651; how the original
+/// replicates them is unobserved), an item the native server cannot send yet
+/// (a GUID, an owner, alterations, living slots or an indexed stat), a ticked
+/// container item with custom stats or a nested inventory, a location outside
+/// the slots or a row the tables lack.
 pub fn container_inventories(
     tables: &mut DataTables,
     saved: &SavedContainerManager,
@@ -329,6 +499,7 @@ pub fn container_inventories(
         usize::try_from(saved.count).ok() == Some(saved.containers.len()),
         "the saved inventory list has empty positions"
     );
+    let mut weighable_tags: Option<Vec<String>> = None;
     saved
         .containers
         .iter()
@@ -384,6 +555,35 @@ pub fn container_inventories(
                 });
                 inventory.slots.replication_key += 1;
             }
+            let mut restored = RestoredContainerInventory::from_c016_restore(
+                Some(AUTHORITY_LOCAL_ROLE),
+                container.wants_tick,
+            );
+            if container.wants_tick {
+                let tags = match &weighable_tags {
+                    Some(tags) => tags,
+                    None => weighable_tags.insert(weighable_resource_tags(tables)?),
+                };
+                let mut ordered_items: Vec<&SavedItem> = container.items.iter().collect();
+                ordered_items.sort_unstable_by_key(|item| item.location);
+                let slot_inputs: Vec<ItemWeightInput> = ordered_items
+                    .into_iter()
+                    .map(|item| ticked_item_weight_input(tables, item, tags))
+                    .collect::<Result<_>>()?;
+                let weight = recalculate_inventory_weight(
+                    DEFAULT_CDO_CURRENT_WEIGHT,
+                    true,
+                    true,
+                    false,
+                    false,
+                    &slot_inputs,
+                    &[],
+                )
+                .context("container manager owner is ineligible")?
+                .current_weight;
+                restored.tick_if_enabled(|| weight);
+            }
+            inventory.current_weight = restored.initial_open_weight();
             Ok(inventory)
         })
         .collect()
