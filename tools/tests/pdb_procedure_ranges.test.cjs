@@ -1278,8 +1278,8 @@ test('NI full output keeps names, opaque marker strings and code bytes private',
         niMac: MINI})}), 'ERR_NI_MAC_UNSUPPORTED');
 });
 
-// Source-only preparation: Root must run these authored cases. They establish
-// mapper policy only; no original input or target-specific outcome is implied.
+// Authored cases establish mapper policy only; no original input or
+// target-specific outcome is implied.
 const MAPPING_PROFILE = 'MSF7_procedure_source_mapping_diagnostic_v1';
 const sourceMapping = (f = niFixture(), q = query()) => {
     const p = pack(f); return diagnoseSourceMappingNamedStreamNiMacZero(p.reader, p.exe, p.identity, q);
@@ -1757,8 +1757,8 @@ test('source mapping serializes only the four-field closed schema and retains bo
     finally { JSON.stringify = stringify; }
 });
 
-// Source-only implementation cases; Root alone runs this suite. A tail slot
-// identifies a position, never an accepted flag tuple or a target observation.
+// A tail slot identifies a position, never an accepted flag tuple or a
+// target observation.
 const IDENTITY_MAPPING_PROFILE = 'MSF7_procedure_source_mapping_identity_diagnostic_v1';
 const sourceMappingIdentity = (f = niFixture(), q = query()) => {
     const p = pack(f); return diagnoseSourceMappingIdentityNamedStreamNiMacZero(p.reader, p.exe, p.identity, q);

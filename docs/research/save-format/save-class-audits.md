@@ -55,9 +55,8 @@ exception range (M-1050). Legacy feature refusal (M-1052, M-1053) precedes
 an explicit structural NI-zero profile: the server Info suffix accepts, but
 declaration mapping refuses and the client stays unread (M-1054). Its
 frame check refuses descriptor 8, a positional tail candidate (M-1058,
-M-1059); no frame value or valid tail is qualified. Extents, callee
-effects, owner/row meanings,
-subclasses and live behavior remain open.
+M-1059); no frame value or valid tail is qualified. Extents, callee effects,
+owner/row meanings, subclasses and live behavior remain open.
 
 Saved identifiers do not discriminate the producing build (F-635, F-896).
 Recorder behavior is indexed at the restore-rules spec; row references remain
