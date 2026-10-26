@@ -95,6 +95,8 @@ const canonical = v => v >= 0n && v <= 0xffffffffffffffffn &&
     (v <= 0x7fffffffffffn || v >= 0xffff800000000000n);
 const hex = v => '0x' + v.toString(16);
 const NI_MAC_ZERO_GRAMMAR = 'named_stream_ni_mac_zero_v1';
+// An explicit bounded variant, not a producer/ABI or ownership assertion.
+const ABSOLUTE_TAIL_FRAME_ZERO_GRAMMAR = 'identity_sections_absolute_tail_frame_zero_v1';
 
 function selection(query) {
     need(query && typeof query === 'object' && !Array.isArray(query) &&
@@ -258,7 +260,7 @@ function diagnoseInfoNamedStreamNiMacZero(reader, identity) {
     return diagnoseInfo(reader, identity, true);
 }
 
-function context(reader, exe, identity, niMacZero, mappingSite) {
+function context(reader, exe, identity, niMacZero, mappingSite, segmentMapGrammar) {
     need(Buffer.isBuffer(exe) && exe.length >= 64 && exe.length <= LIMITS.exe && !shared(exe), 'ERR_INPUT_BOUND');
     identityInput(identity);
     const input = boundedReader(reader);
@@ -298,13 +300,17 @@ function context(reader, exe, identity, niMacZero, mappingSite) {
     mappingNeed(live(sectionStream) && m.streams[sectionStream].size === sectionBytes &&
         m.stream(sectionStream, 0, sectionBytes).equals(exe.subarray(table, table + sectionBytes)),
         mappingSite, 'section_binding', 'headers');
+    const absoluteTailFrameZero = segmentMapGrammar === ABSOLUTE_TAIL_FRAME_ZERO_GRAMMAR;
+    let segmentMapProfile = null;
+    if (absoluteTailFrameZero) mappingNeed(sizes[2] !== 0, mappingSite, 'segment_map', 'bytes');
     if (sizes[2] !== 0) {
         // OMFSegMapHeader + SecCount fixed 20-byte OMFSegMapDesc entries.
         mappingNeed(sizes[2] >= 4 && sizes[2] <= 4 + (image.sections.length + 1) * 20,
             mappingSite, 'segment_map', 'bytes');
         const sm = m.stream(3, 64 + sizes[0] + sizes[1], sizes[2]);
         const count = sm.readUInt16LE(), logical = sm.readUInt16LE(2);
-        mappingNeed(logical === count && (count === image.sections.length || count === image.sections.length + 1) &&
+        mappingNeed(logical === count && (absoluteTailFrameZero ? count === image.sections.length + 1 :
+            (count === image.sections.length || count === image.sections.length + 1)) &&
             sizes[2] === 4 + count * 20, mappingSite, 'segment_map', 'counts');
         for (let i = 0; i < count; i++) {
             const at = 4 + i * 20, flags = sm.readUInt16LE(at), absolute = i === image.sections.length;
@@ -313,7 +319,8 @@ function context(reader, exe, identity, niMacZero, mappingSite) {
             // guard has not yet been reached. The opt-in frame helper reads once.
             const member = sm.readUInt16LE(at + 2) !== 0 ? 'overlay' :
                 sm.readUInt16LE(at + 4) !== 0 ? 'group' :
-                !segmentFrameMatches(sm, at, i + 1, mappingSite, absolute) ? 'frame' :
+                !segmentFrameMatches(sm, at, absolute && absoluteTailFrameZero ? 0 : i + 1,
+                    mappingSite, absolute) ? 'frame' :
                 sm.readUInt32LE(at + 12) !== 0 ? 'offset' : null;
             if (member !== null && mappingSite !== null && mappingSite.first === null &&
                 mappingSite.identityDetail === null) {
@@ -329,6 +336,15 @@ function context(reader, exe, identity, niMacZero, mappingSite) {
                     mappingSite, 'segment_map', 'section');
             }
         }
+        // Construct only after the exact presence/count/identity/full-tuple
+        // checks. These facts never enter physical routing or extent arithmetic.
+        if (absoluteTailFrameZero) segmentMapProfile = {
+            grammar: ABSOLUTE_TAIL_FRAME_ZERO_GRAMMAR,
+            physical_section_count: image.sections.length, descriptor_count: count,
+            tail_descriptor_index: image.sections.length, tail_overlay: 0, tail_group: 0,
+            tail_frame: 0, tail_offset: 0, tail_flags: 520, tail_length: 4294967295,
+            tail_routable: false,
+        };
     }
     const mapped = (rva, n) => {
         const sections = image.sections.filter(s => rva >= s.rva && rva + n <= s.rva + s.mappedBytes);
@@ -352,7 +368,7 @@ function context(reader, exe, identity, niMacZero, mappingSite) {
             exe.readUInt32LE(raw + 20) === identity.age && exe[raw + n - 1] === 0, 'ERR_IDENTITY');
     }
     need(cv === 1, 'ERR_IDENTITY');
-    return {m, image, info, sizes, reserved, mappingSite};
+    return {m, image, info, sizes, reserved, mappingSite, segmentMapProfile};
 }
 
 function descriptors(m, bytes) {
@@ -496,10 +512,11 @@ function scanModule(ctx, mod, aggregates, totals) {
         records, supported_procedure_records: procedures, opaque_records: opaque, matching_records: matches};
 }
 
-function inspectProfile(reader, exe, identity, query, niMacZero, mappingSite = null) {
+function inspectProfile(reader, exe, identity, query, niMacZero, mappingSite = null, segmentMapGrammar = null) {
     try {
         // Selector validation is deliberately before any PE parsing or reader I/O.
-        const selected = selection(query), ctx = context(reader, exe, identity, niMacZero, mappingSite), {image, m} = ctx;
+        const selected = selection(query),
+            ctx = context(reader, exe, identity, niMacZero, mappingSite, segmentMapGrammar), {image, m} = ctx;
         for (const a of selected.addresses) {
             mappingNeed(a.value >= image.base && a.value < image.base + BigInt(image.imageBytes),
                 mappingSite, 'selector', 'image_range');
@@ -525,7 +542,8 @@ function inspectProfile(reader, exe, identity, query, niMacZero, mappingSite = n
         need([...aggregates.values()].every(a => a.count > 0), 'ERR_PROCEDURE_ABSENT');
         const result = {
             profile: 'MSF7_DBI_C13_scoped_supported_procedure_declarations' +
-                (niMacZero ? '_' + NI_MAC_ZERO_GRAMMAR : ''),
+                (niMacZero ? '_' + NI_MAC_ZERO_GRAMMAR : '') +
+                (ctx.segmentMapProfile === null ? '' : '_absolute_tail_frame_zero_v1'),
             guid_bytes: identity.guid_bytes, age: identity.age, image_base: hex(image.base),
             routing, selected_modules: scanned, symbol_bytes: symbolBytes, records: totals.records,
             supported_procedure_records: totals.procedures, opaque_records: totals.opaque,
@@ -540,6 +558,7 @@ function inspectProfile(reader, exe, identity, query, niMacZero, mappingSite = n
                 procedure_record_count: a.count, procedure_record_bytes: a.bytes,
                 procedure_records_sha256: a.hash.digest('hex'), extent: a.extent})),
         };
+        if (ctx.segmentMapProfile !== null) result.segment_map_profile = ctx.segmentMapProfile;
         need(Buffer.byteLength(JSON.stringify(result) + '\n') <= LIMITS.output, 'ERR_OUTPUT_BOUND');
         return result;
     } catch (error) {
@@ -555,6 +574,12 @@ function inspect(reader, exe, identity, query) {
 
 function inspectNamedStreamNiMacZero(reader, exe, identity, query) {
     return inspectProfile(reader, exe, identity, query, true);
+}
+
+// Exact NI-zero + present N+1 zero-frame absolute tail only. No retry, union
+// with older map shapes, new diagnostic, or tail-derived physical section.
+function inspectNamedStreamNiMacZeroAbsoluteTailFrameZero(reader, exe, identity, query) {
+    return inspectProfile(reader, exe, identity, query, true, null, ABSOLUTE_TAIL_FRAME_ZERO_GRAMMAR);
 }
 
 // Full strict NI profile traversal, including the ordinary output/conflict
@@ -639,5 +664,6 @@ function diagnoseTailFrameNamedStreamNiMacZero(reader, exe, identity, query) {
 }
 
 module.exports = {inspect, diagnoseInfoFeatures, inspectNamedStreamNiMacZero, diagnoseInfoNamedStreamNiMacZero,
+    inspectNamedStreamNiMacZeroAbsoluteTailFrameZero,
     diagnoseSourceMappingNamedStreamNiMacZero, diagnoseSourceMappingIdentityNamedStreamNiMacZero,
     diagnoseTailFrameNamedStreamNiMacZero, LIMITS};

@@ -36,31 +36,29 @@ Opaque Structs use four fixed-width engine math types (F-900, F-602).
 Construction grids nest per-type row names over pieces in the grid's frame
 (F-643).
 
-Within the tree limits, all 15 prospects type every recorder value losslessly
-(F-766). Reference planning distinguishes instance identity from content and
-classifies recorder fields by their restorers (F-897). Scoped catalog declarations
-bind roots, map-owned paths/tiles and class-owned variables (F-916), extending the earlier
-coverage in F-898. Retained candidates preserve roots, identities, typing and
-bytes within unchanged limits after completed scratch is released (F-920).
-These allowances measure retention, not restoration or RSS.
+All 15 prospects type every recorder value losslessly within tree limits
+(F-766). Reference planning separates instance identity/content and classifies
+recorder fields by restorer (F-897). Scoped catalog declarations bind roots,
+map-owned paths/tiles and class-owned variables (F-916), extending F-898. After
+completed scratch release, candidates retain roots, identities, typing and
+bytes under unchanged limits (F-920): retention, not restoration or RSS.
 
 Strict authored C001 adapters bind source state to placements, owner lifecycle,
 Bool/I32 use gates and stacked inventories with durable actions (F-927).
 Coordinates, layouts and semantics are authored; ordinary import stays closed.
-Reload uses matching `u16` tenths operands but unordered guards differ;
-primary lifecycle, scaling, init and callback qualification: F-930. The
-local removal selector and comparator order have paired bounded traces and authored
-models (F-937). The helper targets have public-symbol matches but no covering
-exception range (M-1050). Legacy feature refusal (M-1052, M-1053) precedes
-an explicit structural NI-zero profile: the server Info suffix accepts, but
-declaration mapping refuses and the client stays unread (M-1054). Its
-frame check refuses descriptor 8, a positional tail candidate (M-1058,
-M-1059); no frame value or valid tail is qualified. Extents, callee effects,
-owner/row meanings, subclasses and live behavior remain open.
+Reload uses matching `u16` tenths operands; unordered guards differ. Primary
+lifecycle, scaling, init and callbacks: F-930. Paired bounded traces and
+authored models cover local removal selection and comparator order (F-937).
+Public symbols match both helpers without covering exception ranges (M-1050).
+Legacy feature guards refuse (M-1052, M-1053). Explicit structural NI-zero
+accepts server Info, then refuses declaration mapping; client unread (M-1054). Descriptor 8 is a positional tail candidate with frame zero
+instead of expected nine (M-1058, M-1059, M-1061). Later tuple fields, valid
+tails, extents, callee effects, owner/row meanings, subclasses and live behavior
+remain open. An explicit zero-tail profile refuses unsupported symbol records;
+no complete profile or extent is accepted (M-1062).
 
 Saved identifiers do not discriminate the producing build (F-635, F-896).
-Recorder behavior is indexed at the restore-rules spec; row references remain
-F-660. Reader allocation and comparator limits remain F-142 and F-198.
+Row references: F-660; reader allocation/comparator limits: F-142, F-198.
 
 ## Open
 
@@ -70,4 +68,4 @@ F-660. Reader allocation and comparator limits remain F-142 and F-198.
 
 ## Artifacts
 
-M-047..M-077, M-079..M-108, M-118..M-130, M-278..M-280, M-351, M-352, M-376..M-384, M-389, M-390, M-401..M-404, M-407..M-410, M-606..M-613, M-616..M-618, M-626, M-627, M-636..M-638, M-727, M-755..M-760, M-766..M-769, M-772..M-777, M-780, M-782, M-784, M-786, M-788, M-790..M-792, M-794..M-808, M-811, M-850, M-851, M-854..M-859, M-873, M-878, M-880, M-900, M-919..M-925, M-926..M-929, M-937..M-943, M-958, M-959; M-983, M-984, M-986, M-987, M-989..M-993; M-990/ev_693319f721fe, M-992/ev_5ad56afa9170, M-995..M-1010, M-1024/ev_053a26045f8e, M-1025, M-1027/ev_c40e7a02c708, M-1028, M-1035..M-1037, M-1044..M-1048, M-1050, M-1052..M-1054, M-1058, M-1059.
+M-047..M-077, M-079..M-108, M-118..M-130, M-278..M-280, M-351, M-352, M-376..M-384, M-389, M-390, M-401..M-404, M-407..M-410, M-606..M-613, M-616..M-618, M-626, M-627, M-636..M-638, M-727, M-755..M-760, M-766..M-769, M-772..M-777, M-780, M-782, M-784, M-786, M-788, M-790..M-792, M-794..M-808, M-811, M-850, M-851, M-854..M-859, M-873, M-878, M-880, M-900, M-919..M-925, M-926..M-929, M-937..M-943, M-958, M-959; M-983, M-984, M-986, M-987, M-989..M-993; M-990/ev_693319f721fe, M-992/ev_5ad56afa9170, M-995..M-1010, M-1024/ev_053a26045f8e, M-1025, M-1027/ev_c40e7a02c708, M-1028, M-1035..M-1037, M-1044..M-1048, M-1050, M-1052..M-1054, M-1058, M-1059, M-1061..M-1062.

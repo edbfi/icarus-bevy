@@ -209,20 +209,21 @@ construction, script owners and data-table rows are out of scope (F-660).
   others. Subclass/Blueprint overrides, downstream callee effects, owner/row
   binding and live execution remain unqualified.
 - `UIcarusFunctionLibrary::RemoveModifierState` local selection matches in
-  25621760/25793767 (F-937): filter `+0x8b & 2`, prefer the first explicit UID
-  match (`-1` disables), otherwise the last opaque-comparison match; request
-  virtual `+0x3c0(0)`. The pure model consumes supplied candidates/results;
-  enumeration and destruction effects remain unqualified. The bounded comparator
-  calls one opaque callee on right then left with distinct scratch slots, then
-  reads left and right result u64s and returns equality. The separate model
-  preserves late reads/aliasing; callee effects and row meanings remain opaque.
-  Both helper targets have public-symbol matches but no covering exception-table
-  range (M-1050). Legacy feature guards refuse both copies (M-1052, M-1053).
-  An explicit structural NI-zero profile accepts the server Info suffix, then
-  declaration mapping refuses; the client is unattempted (M-1054). The server
-  diagnostics isolate descriptor 8, a positional tail candidate, at the frame
-  identity check (M-1058, M-1059); no frame value, valid tail, helper extent
-  or leaf identity is qualified.
+  25621760/25793767 (F-937): filter `+0x8b & 2`, prefer first explicit UID
+  match (`-1` disables), else last opaque-comparison match; request virtual
+  `+0x3c0(0)`. Its pure model takes supplied candidates/results; enumeration
+  and destruction effects stay unqualified. The bounded comparator calls one
+  opaque callee right then left with distinct scratch slots, then reads
+  left/right result u64s and returns equality. Its separate model preserves
+  late reads/aliasing; callee effects and row meanings stay opaque. Public
+  symbols match both helpers without covering exception ranges (M-1050).
+  Legacy feature guards refuse both copies (M-1052, M-1053). An explicit
+  structural NI-zero profile accepts the server Info suffix, then declaration
+  mapping refuses; client unattempted (M-1054). Server descriptor 8 is a
+  positional tail candidate with frame zero instead of expected nine (M-1058,
+  M-1059, M-1061). Later tuple fields, valid tails, helper extents and leaf
+  identity stay unqualified. An explicit zero-tail profile refuses unsupported
+  symbol records without a complete result or extent (M-1062).
 
 ## Candidate
 
@@ -236,4 +237,4 @@ construction, script owners and data-table rows are out of scope (F-660).
 
 F-645..F-681, F-716, F-894, F-902..F-904, F-728, F-734..F-736, F-741..F-744, F-746, F-747,
 F-750, F-897, F-930, F-937; M-642..M-698, M-755..M-792, M-794..M-807, M-858, M-1024, M-1025,
-M-1027, M-1028, M-1035..M-1037, M-1046..M-1048, M-1050, M-1052..M-1054, M-1058, M-1059.
+M-1027, M-1028, M-1035..M-1037, M-1046..M-1048, M-1050, M-1052..M-1054, M-1058, M-1059, M-1061..M-1062.
