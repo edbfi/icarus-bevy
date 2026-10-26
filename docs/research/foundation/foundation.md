@@ -56,8 +56,12 @@ F-878/F-731 (U-034 resolved). Original fixity/export/entry-map/exchange limits:
 F-265/F-266/F-268/F-253. Launcher revision unrun (F-252); runtime windows
 expired (F-218).
 
-Debug idle host cost grows with actor count; the 1,024-actor median exceeds
-a 30 Hz interval in one bounded no-peer run (F-939). Release cost is unmeasured.
+With fresh archetype absence checks, three matched debug runs per version
+give host medians of 29.08–32.08 ms at 1,024 actors versus 38.74–40.25 ms;
+p95 still exceeds a 30 Hz interval (F-939). Ranges overlap at 1/64 actors.
+Earlier one-run host medians at 1/64/1024 actors were 1.17/3.94/41.59 ms; lab
+baselines were 0.50/0.51/1.03 ms (M-1057). Release and ICARUS performance
+remain unmeasured.
 
 ## Open
 
@@ -67,4 +71,4 @@ a 30 Hz interval in one bounded no-peer run (F-939). Release cost is unmeasured.
 
 ## Artifacts
 
-M-001, M-002, M-006, M-009, M-010, M-015..M-022, M-076, M-078, M-109..M-117, M-131..M-165, M-174, M-175, M-178, M-182..M-184, M-191, M-192, M-200, M-203, M-204, M-207, M-208, M-212..M-220, M-225, M-240, M-241, M-251, M-252, M-269, M-270, M-271, M-277, M-311, M-391, M-397..M-399, M-411..M-419, M-452..M-454, M-471..M-475, M-577, M-578, M-770, M-771, M-809, M-810, M-812, M-861, M-862, M-864..M-867, M-870, M-898, M-899, M-915..M-918, M-926..M-972, M-1012..M-1023, M-1040, M-1041, M-1055..M-1057.
+M-001, M-002, M-006, M-009, M-010, M-015..M-022, M-076, M-078, M-109..M-117, M-131..M-165, M-174, M-175, M-178, M-182..M-184, M-191, M-192, M-200, M-203, M-204, M-207, M-208, M-212..M-220, M-225, M-240, M-241, M-251, M-252, M-269, M-270, M-271, M-277, M-311, M-391, M-397..M-399, M-411..M-419, M-452..M-454, M-471..M-475, M-577, M-578, M-770, M-771, M-809, M-810, M-812, M-861, M-862, M-864..M-867, M-870, M-898, M-899, M-915..M-918, M-926..M-972, M-1012..M-1023, M-1040, M-1041, M-1055..M-1057, M-1060.

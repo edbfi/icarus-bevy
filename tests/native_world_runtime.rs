@@ -7,6 +7,7 @@ use std::{
 use bevy::prelude::*;
 use icarus_bevy::{
     config::ServerConfig,
+    native_lifecycle_runtime::NativeOwnerIncarnation,
     native_runtime::{
         NativeActorIdentity, NativeLocalBounds, NativeRotation, NativeScale, NativeVariables,
         NativeWorldContext, native_world_bounds, update_native_actor,
@@ -342,6 +343,125 @@ fn disabling_components_cannot_hide_invalid_topology_from_capture() {
     }
     check::<Disabled>();
     check::<Dormant>();
+}
+
+#[test]
+fn late_lifecycle_components_block_native_operations_and_repair_allows_retry() {
+    let _fixture = FIXTURE_LOCK.lock().unwrap();
+    use bevy::ecs::entity_disabling::{DefaultQueryFilters, Disabled};
+
+    #[derive(Component, Default)]
+    struct Awake;
+
+    #[derive(Component, Default)]
+    struct Dormant;
+
+    fn check<T: Component + Default>(disabling: bool) {
+        let initial = snapshot();
+        let original = &initial.native_world.as_ref().unwrap().actors[0];
+        let mut app = build_app(&ServerConfig::default(), &initial).unwrap();
+        let directory = tempfile::tempdir().unwrap();
+        let mut store = SnapshotStore::open(directory.path()).unwrap();
+        store.save_new(&initial).unwrap();
+        let manifest = fs::read(directory.path().join("manifest.json")).unwrap();
+        let original_bounds = native_world_bounds(app.world_mut(), original.id).unwrap();
+        assert!(
+            app.world()
+                .component_id::<NativeOwnerIncarnation>()
+                .is_none()
+        );
+        assert_eq!(capture(app.world_mut()).unwrap(), initial);
+        // Register the custom default filter after the first clean capture.
+        let marker = app.world_mut().register_component::<T>();
+        if disabling {
+            app.world_mut()
+                .resource_mut::<DefaultQueryFilters>()
+                .register_disabling_component(marker);
+        }
+        let mut proposed = original.transform.clone();
+        proposed.translation = [0.0; 3];
+        let proposed_variables = vec![NativeVariableValue {
+            key: "private_switch".into(),
+            value: NativeValue::Bool(false),
+        }];
+        let mut retained_archetype = None;
+        for remove_component in [true, false] {
+            // First insertion registers the forbidden type after clean capture;
+            // the second repopulates its retained, previously empty archetype.
+            let offender = app
+                .world_mut()
+                .spawn((T::default(), NativeOwnerIncarnation(1)))
+                .id();
+            let archetype = app.world().entity(offender).archetype().id();
+            if let Some(retained) = retained_archetype {
+                assert_eq!(archetype, retained);
+            }
+            let bounds_error = native_world_bounds(app.world_mut(), original.id).unwrap_err();
+            let edit_error = update_native_actor(
+                app.world_mut(),
+                original.id,
+                proposed.clone(),
+                proposed_variables.clone(),
+            )
+            .unwrap_err();
+            let capture_error = capture(app.world_mut())
+                .and_then(|snapshot| store.save(&snapshot))
+                .unwrap_err();
+            for error in [bounds_error, edit_error, capture_error] {
+                assert_eq!(
+                    error.root_cause().to_string(),
+                    "world contains unexpected lifecycle components"
+                );
+            }
+            assert_eq!(store.load().unwrap().unwrap().snapshot, initial);
+            assert_eq!(
+                fs::read(directory.path().join("manifest.json")).unwrap(),
+                manifest
+            );
+            if remove_component {
+                app.world_mut()
+                    .entity_mut(offender)
+                    .remove::<NativeOwnerIncarnation>();
+            } else {
+                app.world_mut().despawn(offender);
+            }
+            assert!(app.world().archetypes()[archetype].is_empty());
+            retained_archetype = Some(archetype);
+            // Rejected edits changed neither the source pose nor its values.
+            assert_eq!(capture(app.world_mut()).unwrap(), initial);
+            assert_eq!(
+                native_world_bounds(app.world_mut(), original.id).unwrap(),
+                original_bounds
+            );
+            update_native_actor(
+                app.world_mut(),
+                original.id,
+                proposed.clone(),
+                proposed_variables.clone(),
+            )
+            .unwrap();
+            let changed = capture(app.world_mut()).unwrap();
+            let changed_actor = &changed.native_world.as_ref().unwrap().actors[0];
+            assert_eq!(changed_actor.transform, proposed);
+            assert_eq!(changed_actor.variables, proposed_variables);
+            update_native_actor(
+                app.world_mut(),
+                original.id,
+                original.transform.clone(),
+                original.variables.clone(),
+            )
+            .unwrap();
+            assert_eq!(capture(app.world_mut()).unwrap(), initial);
+            assert_eq!(
+                fs::read(directory.path().join("manifest.json")).unwrap(),
+                manifest
+            );
+        }
+    }
+
+    check::<Awake>(false);
+    check::<Disabled>(true);
+    check::<Dormant>(true);
 }
 
 #[test]
