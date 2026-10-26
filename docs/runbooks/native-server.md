@@ -1,17 +1,16 @@
 # Native server: run, persistence and inspection
 
-Operating guide for the headless foundation. Design constraints are in
-[architecture](../architecture.md); what is proven is in
-[implementation status](../implementation-status.md).
+Headless foundation guide: [design constraints](../architecture.md) and
+[proven behavior](../implementation-status.md).
 
 ## Run
 
-Requires native Linux and Rust 1.99.1 (pinned with Rustfmt and Clippy). Bevy 0.20.0
-uses headless features; no GPU, display, original game files or Proton are required.
-Basic data comes from the free official dedicated server (Steam app 2089300),
-fetched unattended and anonymously without steamcmd or the game client (F-828,
-F-831), where `run` finds it when `network.data_pak` is unset (`network_listening`
-reports `data_pak` and `data_pak_source`, `configured` or `installed`):
+Requires native Linux, pinned Rust 1.99.1 with Rustfmt/Clippy and headless
+Bevy 0.20.0; no GPU, display, original game files or Proton. Basic data is fetched
+unattended/anonymously from the free official dedicated server (Steam app
+2089300), without steamcmd or the game client (F-828, F-831). With
+`network.data_pak` unset, `run` uses installed data; `network_listening` reports
+`data_pak` and `data_pak_source` (`configured` or `installed`):
 
 ```bash
 target/release/icarus-server install-official-data --data-dir /var/lib/icarus-native
@@ -28,7 +27,7 @@ cargo run --locked --bin icarus-server -- check-config --config config/server.ex
 cargo run --release --locked --bin icarus-server -- run --config config/server.example.toml
 ```
 
-Use SIGINT or SIGTERM to stop and save. For a bounded smoke run:
+For a bounded smoke run:
 
 ```bash
 target/release/icarus-server run --data-dir work/smoke-world --max-ticks 10
@@ -38,21 +37,20 @@ For qualification, `--compressed` (requires `--max-ticks`) runs simulated time
 without pacing: autosave and status intervals count simulated seconds and await
 in-flight autosaves ([synthetic workload](synthetic-workload.md)).
 
-The provisional development default is 30 Hz (at most four catch-up ticks per
-update, not a discovered ICARUS rate). No sockets open unless `[network]` is
-enabled. JSON lifecycle/status/save records go to stderr with `gameplay_ready: false`;
+Development default: provisional 30 Hz, ≤4 catch-up ticks/update, not a
+discovered ICARUS rate. Sockets require enabled `[network]`.
+Lifecycle/status/save JSON goes to stderr with `gameplay_ready: false`;
 tick timings cover foundation systems only, not gameplay performance.
 
-Configuration precedence is CLI → TOML → defaults; unknown fields and invalid
-limits reject, and relative paths resolve from CWD. Config inputs must be an
-opened regular file of at most 64 KiB (regular symlinks allowed; FIFOs and
-oversized inputs fail before state opens, F-671). `check-config` prints effective
-settings without creating `--data-dir`; see `--help` per subcommand.
+Configuration: CLI → TOML → defaults; unknown fields/invalid limits reject;
+relative paths use CWD. Config must open as a regular file ≤64 KiB (regular
+symlinks allowed; FIFOs/oversized files fail before state opens, F-671).
+`check-config` prints effective settings without creating `--data-dir`;
+see each subcommand's `--help`.
 
 ## Network sessions (experimental)
 
-An opt-in `[network]` table (disabled by default) runs the loopback peer lab
-inside `run` (F-875):
+`[network]` enables `run`'s loopback peer lab (default off, F-875):
 
 ```toml
 [network]
@@ -66,27 +64,25 @@ data_pak = "/path/to/IcarusServer/Icarus/Content/Data/data.pak"  # optional, off
 ```
 
 Release profile/socket checks precede opening `--data-dir`; mismatched Hello
-versions receive Upgrade. Updates poll at most 32 datagrams before fixed ticks;
-SIGINT/SIGTERM closes sessions before draining and saving. `network_listening`
-reports address/`version_check`; `status`/`stopped` report session counts.
-Preserved prospects replicate active prospect/mode state (F-804); `data_pak`
-supplies session flags, `LockedMissions` and fresh-pawn vitals/inventories
-(F-830, F-835, F-836).
+gets Upgrade. Updates poll ≤32 datagrams before fixed ticks. SIGINT/SIGTERM
+closes sessions before draining/saving. `network_listening` reports
+address/`version_check`; `status`/`stopped` report session counts. Preserved
+prospects replicate active prospect/mode state (F-804); `data_pak` supplies
+session flags, `LockedMissions`, fresh-pawn vitals/inventories (F-830, F-835, F-836).
 
-For authored schema-4 worlds, add `authored_replication = "replication.json"`
-to `[network]`, or pass `run --authored-replication replication.json`.
-Requires enabled networking and a release profile providing a session plan.
-Strict JSON format 1: regular file, at most 1 MiB, 1–1,024 bindings.
-Complete schema: `AuthoredReplication` in `src/native_replication.rs`.
-Declare catalog/map identity, signed-axis/unit frame,
-archetype paths/checksums/`no_load`, per-actor parameters and schedule explicitly.
-Bound poses require quaternion `[0,0,0,1]` and scale `[1,1,1]`; translation uses
-the declared frame, rotation/velocity are not mapped. Preparation validates all
-bindings and shared static identities before installation. Transient proxies
-are not saved; invalid bindings retire the activation without editing native
-state (F-938). Generic later lab reconfiguration is outside this installation
-contract. Saved-pose mappings (U-025), import, physics, gameplay and stock-client
-behavior remain unqualified; only authored probes are tested:
+For authored schema-4 worlds, set `authored_replication = "replication.json"`
+in `[network]` or pass `run --authored-replication replication.json`.
+Networking must be enabled; the release profile must provide a session plan.
+Strict JSON format 1: regular file ≤1 MiB, 1–1,024 bindings; full schema:
+`AuthoredReplication` in `src/native_replication.rs`. Explicit declarations:
+catalog/map identity, signed-axis/unit frame, archetype paths/checksums/`no_load`,
+per-actor parameters and schedule. Poses require quaternion `[0,0,0,1]` and
+scale `[1,1,1]`; only translation maps through the frame, not rotation/velocity.
+All bindings/shared static identities validate before installation; proxies
+are transient, never saved. Invalid bindings retire activation without native
+state edits (F-938). Generic later lab reconfiguration is outside this contract.
+Saved-pose mappings (U-025), import, physics, gameplay and stock-client behavior
+remain unqualified; tests use authored probes only:
 
 ```bash
 cargo test --locked --test network
@@ -99,29 +95,27 @@ cargo run --locked --release --example session_hold -- --server 127.0.0.1:17777 
   --release-profile config/release.toml --seconds 3600 --sessions 8
 ```
 
-For long holds, `--progress-interval-seconds 60` flushes `incomplete: true`
-aggregate JSON lines to stderr while stdout keeps only the final summary.
-Progress combines each session's latest receive window (including ongoing gaps),
-not a synchronized snapshot, and cannot certify interrupted runs; write failures
-stop probes after bounded work, and single-session setup/close errors report
-error kinds only, like concurrent holds.
+For long holds, `--progress-interval-seconds 60` flushes aggregate
+`incomplete: true` JSON lines to stderr; stdout holds only the final summary.
+Progress combines latest per-session receive windows, including ongoing gaps;
+it is not synchronized and cannot certify interrupted runs. Write failures
+stop probes after bounded work; single/concurrent holds report only error kinds
+for setup/close errors.
 
-Keep the supervisor independent of the terminal and retain both child exit
-receipts plus the service manager's final exit status. Verify actual namespaces,
-affinity and cgroup limits: accepted user-service settings did not enforce
-network isolation or CPU affinity on this host (M-1042). An explicit bubblewrap
-network namespace and `CPUAffinity` passed a loopback probe and supervisor tests
-(M-1043). Bind each run to a fresh scope, frozen inputs and a bounded owned unit;
-an ongoing run establishes no duration result.
+Use a terminal-independent supervisor; retain both child exit receipts and the
+service manager's final exit status. Verify namespaces, affinity and cgroup
+limits: accepted user-service settings failed to enforce network isolation/CPU
+affinity here (M-1042). Explicit bubblewrap network namespace and `CPUAffinity`
+passed a loopback probe/supervisor tests (M-1043). Each run needs a fresh scope,
+frozen inputs and bounded owned unit; ongoing runs prove no duration.
 
 ## Replication scheduling (experimental)
 
-`replication::ReplicationPlugin` runs in `FixedUpdate` between gameplay and
-tick finish, driving `experimental::actor_channel` consider/relevancy/priority
-stages per `NetViewer` into `ReplicationFrame` with UE default net parameters
-(not ICARUS values). Optional `SpatialMode::Grid` (off by default) matches the
-naive relevant set; it sends nothing and models no bandwidth, dormancy,
-ownership or destruction.
+`replication::ReplicationPlugin` runs between gameplay/tick finish in
+`FixedUpdate`: `experimental::actor_channel` consider/relevancy/priority stages
+per `NetViewer` produce `ReplicationFrame` with UE defaults, not ICARUS values.
+Optional `SpatialMode::Grid` (default off) matches the naive relevant set.
+Scheduling sends nothing; bandwidth/dormancy/ownership/destruction are unmodeled.
 
 ```bash
 cargo run --release --locked --example replication_bench -- --viewers 1,4,8
@@ -130,25 +124,24 @@ cargo run --release --locked --example replication_bench -- --viewers 1,4,8
 
 ## Persistence and recovery
 
-Default state location: ignored `work/runtime/`, single-writer advisory lock,
-60 s bounded-worker autosave (authored domain records and clock only, not ICARUS
-gameplay). Entities with a domain ID must have a position before capture (F-482).
-Schema 1 stores records and clock (64 MiB); schema 3 adds a write-once,
-digest-verified `preserved-<sha256>.bin` sidecar (schema 2 still loads, F-567).
-Schemas 4–11 persist authored spatial worlds, C001 fixtures, relationships,
-owner lifecycle, scalars/inventories and owner modifiers (F-919, F-922, F-923,
-F-927, F-931; [authored native worlds](authored-worlds.md)) under a shared
-64 MiB + 4 KiB generation cap (including inline sections and sidecar reference).
-Unsupported schemas fail closed; preservation grants no import acceptance.
+State defaults to ignored `work/runtime/`: single-writer advisory lock,
+60 s bounded-worker autosave of authored domain records/clock only, not ICARUS
+gameplay. Domain-ID entities need positions before capture (F-482).
+Schema 1: records/clock, 64 MiB. Schema 3 adds a write-once, digest-verified
+`preserved-<sha256>.bin` sidecar; schema 2 still loads (F-567).
+Schemas 4–11: authored spatial worlds, C001 fixtures, relationships, owner
+lifecycle, scalars/inventories and owner modifiers (F-919, F-922, F-923, F-927,
+F-931; [authored native worlds](authored-worlds.md)), sharing a 64 MiB + 4 KiB
+generation cap including inline sections and sidecar reference. Unsupported
+schemas fail closed; preservation grants no import acceptance.
 
-Generations are checksummed and synced before atomic manifest publication; two
-generations are retained, recovering from previous on current-file corruption
-while failing closed on corrupt/missing manifests, noncanonical digests,
-unsupported schemas or other I/O errors (F-869, F-870, F-771). Back up before
-manual recovery. SIGINT/SIGTERM freezes simulation, drains work and saves within
-a deadline, exiting nonzero on failure (not a hard process-exit-time guarantee,
-F-869; qualified for local Linux storage only, not network filesystems or
-physical power loss, U-035).
+Generations are checksummed/synced before atomic manifest publication. Two generations remain;
+current-file corruption recovers the previous one. Corrupt/missing manifests,
+noncanonical digests, unsupported schemas and other I/O errors fail closed
+(F-869, F-870, F-771). Back up before manual recovery. SIGINT/SIGTERM freezes
+simulation, drains work and saves by a deadline; failure exits nonzero.
+No hard process-exit-time guarantee (F-869); qualified only for local Linux
+storage, not network filesystems/physical power loss (U-035).
 
 ## Supplied saves
 
@@ -166,17 +159,16 @@ write nothing unless stated:
   and memory (F-567, F-873).
 - `preserve-save --source … --data-dir …`: seeds a fresh tick-0 world holding
   only the preserved prospect; refuses an existing world.
-- `import-save --source … --destination … --dry-run`: prints the dry-run import
-  plan; without `--dry-run` writing is refused (F-898). `--catalog FILE`
-  (regular TOML `<= 4` MiB, `format = 1`) maps `[references]` lists per role
-  (`actor_class`, `actor_path`, `data_row`, `asset_path`, `world_tile`,
-  `class_variable`, `unclassified`); a reference maps only in the roles that
-  list it, and instance names need no list. `--data-pak PATH` also resolves
-  `data_row` references case-insensitively against official server tables.
-  After migration, `ProspectDTKey` must resolve in `D_ProspectList` or an
-  authored `data_row` catalog, while `FactionMissionDTKey` and custom-setting
-  rows use `data_row` resolution (`ProspectMapName` uses `unclassified` in
-  format 1; empty optional refs do not block; F-898).
+- `import-save --source … --destination … --dry-run`: prints an import plan;
+  writing without `--dry-run` is refused (F-898). `--catalog FILE`: regular
+  TOML `<= 4` MiB, `format = 1`, with `[references]` lists for `actor_class`,
+  `actor_path`, `data_row`, `asset_path`, `world_tile`, `class_variable`,
+  `unclassified`. Each reference maps only in listed roles; instance names
+  need no list. `--data-pak PATH` resolves `data_row` case-insensitively against
+  official server tables. After migration, `ProspectDTKey` must resolve in
+  `D_ProspectList` or authored `data_row` catalog; `FactionMissionDTKey`/custom-setting
+  rows use `data_row`; format-1 `ProspectMapName` uses `unclassified`.
+  Empty optional refs do not block (F-898).
 
 Catalog format 2 scopes world references (F-916):
 
@@ -195,23 +187,21 @@ path = "/Game/Authored/ExampleActor"
 class = "ExampleClass"
 ```
 
-Format 2 requires `[world]`, admits only `data_row`, `asset_path` and
-`unclassified` under `[references]`, scopes actor paths/tiles to the declared
-root map and variables to declared classes (exact case, `<= 1,024` UTF-16 units
-per ref, `<= 4` MiB file; duplicate definitions in one scope and undeclared
-placement classes fail before planning; `data.pak` never satisfies world roles;
-F-916). `importable: true` reports reference-planning coverage only (counts
-only; no geometry, adapters or gameplay parity); writing remains refused
-(`world_imported: false`).
+Format 2 requires `[world]`; `[references]` allows only `data_row`, `asset_path`,
+`unclassified`. Actor paths/tiles scope to the declared root map, variables to
+declared classes: exact case, `<= 1,024` UTF-16 units/ref, `<= 4` MiB file.
+Duplicate in-scope definitions/undeclared placement classes fail before planning;
+`data.pak` cannot satisfy world roles (F-916). `importable: true` means reference
+coverage counts only, no geometry/adapters/gameplay parity; writing stays
+refused (`world_imported: false`).
 
-`DecodedImportCandidate::decode` borrows into `plan_decoded_import`,
-`planned_actors_from_candidate` and preservation, retaining migrated roots,
-recorder outcomes and unknown enums under `256` MiB charged bytes and
-`1,048,576` typed elements (releasing completed typing scratch; exhaustion
-rejects all, even dropped records, and does not bound RSS; F-920).
-`inspect-save --candidate-check --source prospect.json` reports counts, retained
-charges, `required_decode_limits` and `remaining_headroom` (which cannot
-guarantee another recorder's preflight) without exposing names/values or
-granting import authority. Value meanings and original-server round trips remain
-unvalidated; [synthetic workload](synthetic-workload.md) tests native
-scheduling/durability only.
+`DecodedImportCandidate::decode` lends migrated roots, recorder outcomes and
+unknown enums to `plan_decoded_import`, `planned_actors_from_candidate` and
+preservation. Limits: `256` MiB charged bytes, `1,048,576` typed elements;
+completed typing scratch releases. Exhaustion rejects all, even dropped records;
+RSS is not bounded (F-920). `inspect-save --candidate-check --source prospect.json`
+reports counts, retained charges, `required_decode_limits` and
+`remaining_headroom` without names/values or import authority. Headroom cannot
+guarantee another recorder's preflight. Value meanings/original-server round
+trips remain unvalidated; [synthetic workload](synthetic-workload.md) tests only
+native scheduling/durability.

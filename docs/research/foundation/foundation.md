@@ -1,7 +1,7 @@
 # Native foundation and reference baseline
 
-Native behavior and qualification; original server build 25621760/client
-25793767 baseline. Save-class, C001 and control-store work have separate digests.
+Native qualification; original baseline: server build 25621760/client 25793767.
+Save-class, C001 and control-store digests are separate.
 
 Before restructure: 96ddb0b:docs/research/foundation/2026-10-13-foundation-receipts.md
 
@@ -12,17 +12,15 @@ Before restructure: 96ddb0b:docs/research/foundation/2026-10-13-foundation-recei
 
 ## Current answer
 
-The independent foundation is not ICARUS-compatible (F-487). Configuration and
-provisional 30 Hz scheduling: F-868. Native snapshots, atomic publication,
-two-generation recovery, stale/failed-worker handling and bounded final save:
-F-869, F-771; incomplete-state rejection: F-482.
+No ICARUS compatibility (F-487). Configuration/provisional 30 Hz: F-868;
+persistence/recovery/stale/failed-worker handling: F-869, F-771;
+incomplete-state rejection: F-482. See the [operating guide](../../runbooks/native-server.md).
 
-Authored schemas 4–10: spatial state (F-919), foundation links (F-922), lifecycle
-(F-923), C001/scalar/inventory persistence (F-927), runtime integrity/callback
-exclusions (F-928). Schema 11 retains opt-in modifier timers/cache and owner
-authority through reload (including near-budget stores), replacement and retry;
-failed steps are atomic (F-931). Procedures and limits:
-[authored worlds](../../runbooks/authored-worlds.md).
+Authored schemas 4–10: F-919, F-922, F-923, F-927; runtime integrity/callback
+exclusions: F-928. Schema 11 retains opt-in modifier timers/cache and owner
+authority through reload (including near-budget stores), replacement/retry;
+failed steps are atomic (F-931). See [authored worlds](../../runbooks/authored-worlds.md)
+for procedures/limits.
 
 Bool/I32 assessment retains provenance and unqualified restore/RepNotify obligations
 even when empty (F-929); fixture exclusions remain in the runbook.
@@ -37,21 +35,19 @@ schedules (F-872, F-873), modeled POSIX crash recovery (F-511) measure neither
 ICARUS performance nor physical power loss. Earlier soaks do not qualify later
 persistence changes (U-035).
 
-Bounded opaque inspection with `world_imported` false: F-880 to F-883;
+Bounded opaque inspection (`world_imported` false): F-880 to F-883;
 lossless schema-3 sidecars: F-567; structured readers: F-886 to F-888.
 Randomized preservation/codecs/readers and bounded peer tables: F-604 to F-607;
-fail-closed corrupted stores: F-611.
+corrupted stores fail closed: F-611.
 
-`run` installs the opt-in authored schema-4 actor bridge (F-938): atomic
-validation, transient proxies and fail-closed retirement. Configuration and
-limits: [native server](../../runbooks/native-server.md). Saved-pose/physics
-mappings remain U-025; stock-client behavior remains unqualified.
+Opt-in schema-4 bridge (F-938): [installation and limits](../../runbooks/native-server.md).
+Saved-pose/physics mappings remain U-025; stock-client behavior is unqualified.
 
-Loopback authored-probe admission, cleanup and version pinning: F-875;
-held-session updates/recovery and controller limits: F-833; historical metrics: F-932; bounded concurrency/partial-bunch
-sweeps: F-877. No ICARUS client has used this layer. One rerun lacks final
-receipts (M-898); a 48 h attempt stopped at the disk guard, without a final
-probe summary; copied reload passes (M-1055).
+Loopback authored-probe admission/cleanup/version pinning: F-875;
+held-session updates/recovery/controller limits: F-833; historical metrics:
+F-932; bounded concurrency/partial-bunch sweeps: F-877. No ICARUS client used
+this layer. Missing rerun receipts: M-898. The 48 h attempt hit the disk guard
+without a final probe summary; copied reload passes (M-1055).
 Input parity (F-828) permits the anonymous, byte-matched dedicated-server
 data.pak fetch (F-829, F-831).
 

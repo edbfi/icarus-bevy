@@ -21,13 +21,12 @@ Address pairs are server / client.
   and `game_state_open` compose the PlayerController and GameState opens
   (F-852, F-794); `run` sends the PlayerController, pawn, GameState and
   PlayerState opens after Join (F-784, F-804).
-- Authored bridge (F-938): `run` installs explicitly bound schema-4 actors
-  ([contract](../../runbooks/native-server.md#network-sessions-experimental)).
-  Motion and hidden/damage use the AActor prefix; hidden feeds priority.
-  Ordered open blocks seed known fields; opaque blocks invalidate them.
-  Open-ACK-gated per-field baselines repair current fields after partial loss;
-  superseded losses cannot revert them. Flag removal requests false/false,
-  not class defaults. No saved-pose, gameplay or stock-client qualification.
+- Authored bridge (F-938): [schema-4 installation](../../runbooks/native-server.md#network-sessions-experimental).
+  Motion/hidden/damage use the AActor prefix; hidden feeds priority. Ordered
+  open blocks seed known fields; opaque blocks invalidate them. Open-ACK-gated
+  per-field baselines repair current fields after partial loss; superseded
+  losses cannot revert them. Flag removal requests false/false, not class
+  defaults. Saved-pose, gameplay and stock-client behavior remain unqualified.
 - Dynamic GUIDs assign on first serialization, by open or reference: GameState
   names managers 74..86 before their opens; components keep one GUID across
   connections (F-794).
