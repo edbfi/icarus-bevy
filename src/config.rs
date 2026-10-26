@@ -151,8 +151,8 @@ pub struct ConfigOptions {
     /// does not enable it.
     #[arg(long)]
     pub network_port: Option<u16>,
-    /// Authored schema-4 replication declaration (strict JSON); requires an
-    /// enabled network and release session plan in the native configuration.
+    /// Authored schema-4 replication declaration (strict JSON). Ignored when
+    /// networking is disabled; otherwise requires a release session plan.
     #[arg(long)]
     pub authored_replication: Option<PathBuf>,
 }
