@@ -46,17 +46,13 @@ bytes under unchanged limits (F-920): retention, not restoration or RSS.
 Strict authored C001 adapters bind source state to placements, owner lifecycle,
 Bool/I32 use gates and stacked inventories with durable actions (F-927).
 Coordinates, layouts and semantics are authored; ordinary import stays closed.
-Reload uses matching `u16` tenths operands; unordered guards differ. Primary
-lifecycle, scaling, init and callbacks: F-930. Paired bounded traces and
-authored models cover local removal selection and comparator order (F-937).
-Public symbols match both helpers without covering exception ranges (M-1050).
-Legacy feature guards refuse (M-1052, M-1053). Explicit structural NI-zero
-accepts server Info, then refuses declaration mapping; client unread (M-1054).
-Descriptor 8 is a positional tail candidate with frame zero instead of expected
-nine (M-1058, M-1059, M-1061). Later tuple fields, valid
-tails, extents, callee effects, owner/row meanings, subclasses and live behavior
-remain open. An explicit zero-tail profile refuses unsupported symbol records;
-no complete profile or extent is accepted (M-1062).
+Reload and primary lifecycle: F-930. Paired bounded traces and authored
+models cover local removal selection and comparator order (F-937). The
+latest full zero-tail query refuses `ERR_SYMBOL_UNSUPPORTED`; no profile
+or extent is accepted (M-1062). The first rejected kind is `0x1168`, not a
+helper classification (M-1065). Prior metadata boundaries and remaining
+unknowns: [spec](../../specs/save-format/restore-rules.md#confirmed)
+(M-1050, M-1052..M-1054, M-1058, M-1059, M-1061).
 
 Saved identifiers do not discriminate the producing build (F-635, F-896).
 Row references: F-660; reader allocation/comparator limits: F-142, F-198.
@@ -69,4 +65,4 @@ Row references: F-660; reader allocation/comparator limits: F-142, F-198.
 
 ## Artifacts
 
-M-047..M-077, M-079..M-108, M-118..M-130, M-278..M-280, M-351, M-352, M-376..M-384, M-389, M-390, M-401..M-404, M-407..M-410, M-606..M-613, M-616..M-618, M-626, M-627, M-636..M-638, M-727, M-755..M-760, M-766..M-769, M-772..M-777, M-780, M-782, M-784, M-786, M-788, M-790..M-792, M-794..M-808, M-811, M-850, M-851, M-854..M-859, M-873, M-878, M-880, M-900, M-919..M-925, M-926..M-929, M-937..M-943, M-958, M-959; M-983, M-984, M-986, M-987, M-989..M-993; M-990/ev_693319f721fe, M-992/ev_5ad56afa9170, M-995..M-1010, M-1024/ev_053a26045f8e, M-1025, M-1027/ev_c40e7a02c708, M-1028, M-1035..M-1037, M-1044..M-1048, M-1050, M-1052..M-1054, M-1058, M-1059, M-1061..M-1062.
+M-047..M-077, M-079..M-108, M-118..M-130, M-278..M-280, M-351, M-352, M-376..M-384, M-389, M-390, M-401..M-404, M-407..M-410, M-606..M-613, M-616..M-618, M-626, M-627, M-636..M-638, M-727, M-755..M-760, M-766..M-769, M-772..M-777, M-780, M-782, M-784, M-786, M-788, M-790..M-792, M-794..M-808, M-811, M-850, M-851, M-854..M-859, M-873, M-878, M-880, M-900, M-919..M-925, M-926..M-929, M-937..M-943, M-958, M-959; M-983, M-984, M-986, M-987, M-989..M-993; M-990/ev_693319f721fe, M-992/ev_5ad56afa9170, M-995..M-1010, M-1024/ev_053a26045f8e, M-1025, M-1027/ev_c40e7a02c708, M-1028, M-1035..M-1037, M-1044..M-1048, M-1050, M-1052..M-1054, M-1058, M-1059, M-1061..M-1062, M-1065.

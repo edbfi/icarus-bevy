@@ -60,9 +60,9 @@ Offline work, in order; connected proof keeps its gates.
    Qualified component lifecycle/scaling/init/callbacks: F-930; modeled local
    removal selector and comparator call/read order: F-937. Owner/row, callee
    and subclass effects stay open. Authored modifier timers/cache survive
-   reload/retries (F-931). Next: identify the first rejected symbol kind
-   from the M-1062 refusal, then qualify overrides, owner/row bindings and
-   coordinates before all-or-nothing import. Ordinary `import-save` stays
+   reload/retries (F-931). Next: qualify exact framing for the first
+   rejected kind (M-1065), then overrides, owner/row bindings and coordinates
+   before all-or-nothing import. Ordinary `import-save` stays
    closed; coverage grants no publication; packaged row meanings stay
    unsupported (F-660). [Procedures](runbooks/authored-worlds.md); native costs:
    F-926.

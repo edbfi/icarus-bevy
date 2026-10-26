@@ -443,6 +443,10 @@ const UNSUPPORTED = new Set([
     0x1148, 0x1149, 0x114a, 0x114b, 0x1154, 0x1155, 0x1156, 0x1157, 0x1158, 0x1168,
 ]);
 
+function legalUnsupportedKind(kind) {
+    return Number.isInteger(kind) && !Object.is(kind, -0) && kind >= 0 && kind <= 0xffff && UNSUPPORTED.has(kind);
+}
+
 function extent(image, segment, offset, size, mappingSite, stage) {
     need(size > 0, 'ERR_PROCEDURE_SIZE');
     // Defensive only under the immutable-input contract: selectors have just
@@ -459,7 +463,7 @@ function extent(image, segment, offset, size, mappingSite, stage) {
         file_span: {start: s.raw + offset, end_exclusive: s.raw + offset + size}};
 }
 
-function scanModule(ctx, mod, aggregates, totals) {
+function scanModule(ctx, mod, aggregates, totals, unsupportedSite) {
     const {m, image} = ctx, code = 'ERR_MODULE_FRAMING', stream = mod.stream_id;
     const tail = mod.sym + mod.c11 + mod.c13;
     need(mod.sym >= 4 && mod.sym % 4 === 0 && mod.c11 === 0 && tail + 4 <= m.streams[stream].size, code);
@@ -485,7 +489,12 @@ function scanModule(ctx, mod, aggregates, totals) {
         need(n >= 4 && n <= LIMITS.record && n % 4 === 0 && at + n <= mod.sym, code);
         need(++totals.records <= LIMITS.records, 'ERR_MODULE_BOUND'); records++;
         need(!EXTERNAL.has(kind), 'ERR_FASTLINK_UNSUPPORTED');
-        need(!UNSUPPORTED.has(kind), 'ERR_SYMBOL_UNSUPPORTED');
+        if (UNSUPPORTED.has(kind)) {
+            // Retain only the already-read discriminator at this exact guard.
+            // The private opt-in site adds no payload/header read or traversal.
+            if (unsupportedSite !== null && unsupportedSite.first === null) unsupportedSite.first = kind;
+            throw new MetadataError('ERR_SYMBOL_UNSUPPORTED');
+        }
         if (PROCEDURES.has(kind)) {
             procedures++;
             const b = read(at, n);
@@ -512,7 +521,8 @@ function scanModule(ctx, mod, aggregates, totals) {
         records, supported_procedure_records: procedures, opaque_records: opaque, matching_records: matches};
 }
 
-function inspectProfile(reader, exe, identity, query, niMacZero, mappingSite = null, segmentMapGrammar = null) {
+function inspectProfile(reader, exe, identity, query, niMacZero, mappingSite = null, segmentMapGrammar = null,
+    unsupportedSite = null) {
     try {
         // Selector validation is deliberately before any PE parsing or reader I/O.
         const selected = selection(query),
@@ -538,7 +548,7 @@ function inspectProfile(reader, exe, identity, query, niMacZero, mappingSite = n
         const aggregates = new Map(selected.addresses.map(a => [a.rva,
             {address: a.address, count: 0, bytes: 0, hash: createHash('sha256'), extent: null}]));
         const totals = {records: 0, procedures: 0, opaque: 0};
-        const scanned = routing.indices.map(i => scanModule(ctx, modules[i], aggregates, totals));
+        const scanned = routing.indices.map(i => scanModule(ctx, modules[i], aggregates, totals, unsupportedSite));
         need([...aggregates.values()].every(a => a.count > 0), 'ERR_PROCEDURE_ABSENT');
         const result = {
             profile: 'MSF7_DBI_C13_scoped_supported_procedure_declarations' +
@@ -580,6 +590,38 @@ function inspectNamedStreamNiMacZero(reader, exe, identity, query) {
 // with older map shapes, new diagnostic, or tail-derived physical section.
 function inspectNamedStreamNiMacZeroAbsoluteTailFrameZero(reader, exe, identity, query) {
     return inspectProfile(reader, exe, identity, query, true, null, ABSOLUTE_TAIL_FRAME_ZERO_GRAMMAR);
+}
+
+// Exact zero-tail grammar only. Refusal is a prefix observation, while acceptance
+// requires the entire ordinary scan, final checks and internal digest work.
+// Discard all accumulated ordinary metadata in either diagnostic branch.
+function diagnoseUnsupportedSymbolNamedStreamNiMacZeroAbsoluteTailFrameZero(reader, exe, identity, query) {
+    const unsupportedSite = {first: null};
+    try {
+        let status = 'accepted_profile';
+        try {
+            inspectProfile(reader, exe, identity, query, true, null, ABSOLUTE_TAIL_FRAME_ZERO_GRAMMAR,
+                unsupportedSite);
+        } catch (error) {
+            if (!(error instanceof MetadataError) || error.code !== 'ERR_SYMBOL_UNSUPPORTED' ||
+                !legalUnsupportedKind(unsupportedSite.first)) throw error;
+            status = 'refused_symbol';
+        }
+        const refused = status === 'refused_symbol';
+        need(refused ? legalUnsupportedKind(unsupportedSite.first) : unsupportedSite.first === null,
+            'ERR_SYMBOL_UNSUPPORTED');
+        const result = {
+            profile: 'MSF7_procedure_unsupported_kind_zero_tail_diagnostic_v1', status,
+            stage: refused ? 'procedure_metadata' : 'complete',
+            guard: refused ? 'unsupported_kind' : null,
+            kind_u16: refused ? unsupportedSite.first : null,
+        };
+        need(Buffer.byteLength(JSON.stringify(result) + '\n') <= 1024, 'ERR_OUTPUT_BOUND');
+        return result;
+    } catch (error) {
+        if (error instanceof MetadataError) throw error;
+        throw new MetadataError('ERR_PDB_FRAMING');
+    }
 }
 
 // Full strict NI profile traversal, including the ordinary output/conflict
@@ -665,5 +707,6 @@ function diagnoseTailFrameNamedStreamNiMacZero(reader, exe, identity, query) {
 
 module.exports = {inspect, diagnoseInfoFeatures, inspectNamedStreamNiMacZero, diagnoseInfoNamedStreamNiMacZero,
     inspectNamedStreamNiMacZeroAbsoluteTailFrameZero,
+    diagnoseUnsupportedSymbolNamedStreamNiMacZeroAbsoluteTailFrameZero,
     diagnoseSourceMappingNamedStreamNiMacZero, diagnoseSourceMappingIdentityNamedStreamNiMacZero,
     diagnoseTailFrameNamedStreamNiMacZero, LIMITS};
