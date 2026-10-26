@@ -64,8 +64,8 @@ median ranges 28.158393–34.245773/25.264452–28.268425 ms; p95
 35.918821–38.149755/32.095349–34.547397 ms. All three paired medians/p95 lower;
 median ranges overlap, p95 ranges do not; one candidate p95 >33.333 ms.
 Attribution limited by fixed inner baseline/host order, extra untimed tests,
-binary layout and uncontrolled host activity. Both resource checks and all four component checks retain error precedence;
-no skip/cache acceptance.
+binary layout and uncontrolled host activity. Both resource checks and all four
+component checks retain error precedence; no skip/cache acceptance.
 No uniform/release/reference/client/ICARUS performance qualification.
 
 ## Open
