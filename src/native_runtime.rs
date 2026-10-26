@@ -245,12 +245,17 @@ pub(crate) fn ensure_no_relationship_state(world: &World) -> Result<()> {
             && !world.contains_resource::<NativeFoundationDependents>(),
         "world contains unexpected native relationship resources"
     );
-    for entity in world.iter_entities() {
+    // Resolve from this world on every call: a type absent at an earlier
+    // validation may have been registered and inserted since then.
+    let forbidden = [
+        world.component_id::<NativeRelationshipIdentity>(),
+        world.component_id::<NativeFoundation>(),
+        world.component_id::<NativeRelationshipsContext>(),
+        world.component_id::<NativeFoundationDependents>(),
+    ];
+    for archetype in world.archetypes().iter().filter(|a| !a.is_empty()) {
         ensure!(
-            !entity.contains::<NativeRelationshipIdentity>()
-                && !entity.contains::<NativeFoundation>()
-                && !entity.contains::<NativeRelationshipsContext>()
-                && !entity.contains::<NativeFoundationDependents>(),
+            !forbidden.iter().flatten().any(|id| archetype.contains(*id)),
             "world contains unexpected native relationship components"
         );
     }
@@ -631,4 +636,236 @@ pub fn native_dependents_of(world: &World, foundation: DomainId) -> Result<Vec<D
         .get(&foundation)
         .context("native foundation reverse index entry missing")?
         .clone())
+}
+
+#[cfg(test)]
+mod relationship_absence_tests {
+    use super::*;
+    use bevy::ecs::{
+        entity_disabling::{DefaultQueryFilters, Disabled},
+        resource::IsResource,
+    };
+
+    use crate::{
+        config::ServerConfig,
+        native_relationships::{NativeRelationshipActorV1, NativeRelationshipsDefinition},
+        native_world::prepare_authored_world,
+        simulation::{WorldSnapshot, build_app, capture},
+    };
+
+    #[derive(Component)]
+    struct Dormant;
+
+    #[derive(Resource)]
+    struct UnrelatedResource;
+
+    fn context() -> NativeRelationshipsContext {
+        let catalog =
+            CompiledNativeCatalog::parse(include_str!("../config/native-world.example.toml"))
+                .unwrap();
+        let definition = NativeRelationshipsDefinition {
+            relationship_format: 1,
+            native_catalog_id: catalog.identity().into(),
+            map: "workshop".into(),
+            actors: ["marker_a", "marker_b"]
+                .into_iter()
+                .enumerate()
+                .map(|(index, placement)| NativeRelationshipActorV1 {
+                    placement: placement.into(),
+                    identity: NativeActorLinkV1 {
+                        name: vec![65 + index as u16],
+                        guid: 1 + index as i32,
+                    },
+                    role: NativeRelationshipRole::Spatial,
+                    foundation: None,
+                })
+                .collect(),
+        };
+        NativeRelationshipsContext {
+            compiled: Arc::new(CompiledNativeRelationships::compile(definition, &catalog).unwrap()),
+            expected: BTreeMap::new(),
+            activation: Arc::new(()),
+        }
+    }
+
+    fn rejects(world: &World, expected: &str) {
+        assert_eq!(
+            ensure_no_relationship_state(world).unwrap_err().to_string(),
+            expected
+        );
+    }
+
+    fn check_component<T: Component>(make: impl Fn() -> T, expected: &str) {
+        let mut world = World::new();
+        assert!(world.component_id::<T>().is_none());
+        ensure_no_relationship_state(&world).unwrap();
+        let component = world.register_component::<T>();
+        ensure_no_relationship_state(&world).unwrap();
+        let offender = world.spawn(make()).id();
+        let archetype = world.entity(offender).archetype().id();
+        rejects(&world, expected);
+        // Resource-derived fixtures also own IsResource. Removing both while
+        // the entity is alive flushes its discard hook and clears the singleton
+        // registration before despawn or reuse of the resource type.
+        world.entity_mut(offender).remove::<(T, IsResource)>();
+        assert!(world.archetypes()[archetype].is_empty());
+        assert!(world.archetypes()[archetype].contains(component));
+        ensure_no_relationship_state(&world).unwrap();
+        world.despawn(offender);
+        let offender = world.spawn(make()).id();
+        assert_eq!(world.entity(offender).archetype().id(), archetype);
+        rejects(&world, expected);
+        world.entity_mut(offender).remove::<(T, IsResource)>();
+        world.despawn(offender);
+        ensure_no_relationship_state(&world).unwrap();
+
+        let offender = world.spawn((Disabled, make())).id();
+        rejects(&world, expected);
+        world.entity_mut(offender).remove::<(T, IsResource)>();
+        world.despawn(offender);
+        ensure_no_relationship_state(&world).unwrap();
+        let disabling = world.register_component::<Dormant>();
+        world
+            .resource_mut::<DefaultQueryFilters>()
+            .register_disabling_component(disabling);
+        let offender = world.spawn((Dormant, make())).id();
+        rejects(&world, expected);
+        world.entity_mut(offender).remove::<(T, IsResource)>();
+        world.despawn(offender);
+        ensure_no_relationship_state(&world).unwrap();
+
+        // The existing singleton marker belongs to UnrelatedResource, so even
+        // Resource-derived forbidden types must be found as components here.
+        world.insert_resource(UnrelatedResource);
+        let offender = world.resource_entity::<UnrelatedResource>().unwrap();
+        world.entity_mut(offender).insert(make());
+        rejects(
+            &world,
+            "world contains unexpected native relationship components",
+        );
+        world.entity_mut(offender).remove::<T>();
+        assert!(world.contains_resource::<UnrelatedResource>());
+        ensure_no_relationship_state(&world).unwrap();
+    }
+
+    #[test]
+    fn all_four_types_reject_live_hidden_and_resource_entities_after_clean_checks() {
+        check_component(
+            || NativeRelationshipIdentity {
+                identity: NativeActorLinkV1 {
+                    name: vec![65],
+                    guid: 1,
+                },
+                role: NativeRelationshipRole::Spatial,
+            },
+            "world contains unexpected native relationship components",
+        );
+        check_component(
+            || NativeFoundation(None),
+            "world contains unexpected native relationship components",
+        );
+        let context = context();
+        check_component(
+            || context.clone(),
+            "world contains unexpected native relationship resources",
+        );
+        check_component(
+            || NativeFoundationDependents(BTreeMap::new()),
+            "world contains unexpected native relationship resources",
+        );
+    }
+
+    fn check_resource_precedence<T: Resource>(make: impl Fn() -> T) {
+        let mut world = World::new();
+        ensure_no_relationship_state(&world).unwrap();
+        let offender = world.spawn((Disabled, NativeFoundation(None))).id();
+        world.insert_resource(make());
+        rejects(
+            &world,
+            "world contains unexpected native relationship resources",
+        );
+        world.remove_resource::<T>().unwrap();
+        rejects(
+            &world,
+            "world contains unexpected native relationship components",
+        );
+        world.despawn(offender);
+        ensure_no_relationship_state(&world).unwrap();
+    }
+
+    #[test]
+    fn each_resource_error_precedes_component_errors_and_repair_allows_retry() {
+        let context = context();
+        check_resource_precedence(|| context.clone());
+        check_resource_precedence(|| NativeFoundationDependents(BTreeMap::new()));
+    }
+
+    #[test]
+    fn late_relationship_component_blocks_legacy_capture_until_repaired() {
+        let initial = WorldSnapshot::default();
+        let mut app = build_app(&ServerConfig::default(), &initial).unwrap();
+        assert_eq!(capture(app.world_mut()).unwrap(), initial);
+        assert!(app.world().component_id::<NativeFoundation>().is_none());
+        let offender = app
+            .world_mut()
+            .spawn((Disabled, NativeFoundation(None)))
+            .id();
+        assert_eq!(
+            capture(app.world_mut())
+                .unwrap_err()
+                .root_cause()
+                .to_string(),
+            "world contains unexpected native relationship components"
+        );
+        app.world_mut().despawn(offender);
+        assert_eq!(capture(app.world_mut()).unwrap(), initial);
+    }
+
+    #[test]
+    fn relationship_activation_rejects_stray_components_before_writes_then_retries() {
+        let catalog = Arc::new(
+            CompiledNativeCatalog::parse(include_str!("../config/native-world.example.toml"))
+                .unwrap(),
+        );
+        let initial = prepare_authored_world(catalog, "workshop")
+            .unwrap()
+            .initial_snapshot();
+        let relationships = context().compiled.initial_snapshot();
+        let native = initial.native_world.as_ref().unwrap();
+        let mut app = build_app(&ServerConfig::default(), &initial).unwrap();
+        assert_eq!(capture(app.world_mut()).unwrap(), initial);
+        let offender = app
+            .world_mut()
+            .spawn((Disabled, NativeFoundation(None)))
+            .id();
+        assert_eq!(
+            activate_relationships(app.world_mut(), native, &relationships)
+                .unwrap_err()
+                .to_string(),
+            "world contains unexpected native relationship components"
+        );
+        assert!(
+            !app.world()
+                .contains_resource::<NativeRelationshipsContext>()
+        );
+        assert!(
+            !app.world()
+                .contains_resource::<NativeFoundationDependents>()
+        );
+        assert!(
+            app.world()
+                .iter_entities()
+                .all(|entity| !entity.contains::<NativeRelationshipIdentity>())
+        );
+        app.world_mut().despawn(offender);
+        assert_eq!(capture(app.world_mut()).unwrap(), initial);
+        activate_relationships(app.world_mut(), native, &relationships).unwrap();
+        assert_eq!(
+            app.world()
+                .resource::<NativeRelationshipsContext>()
+                .expected
+                .len(),
+            native.actors.len()
+        );
+    }
 }

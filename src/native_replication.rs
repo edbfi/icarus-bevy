@@ -608,15 +608,16 @@ fn current_positions(
             && !world.contains_resource::<crate::simulation::C001InertImportState>(),
         "native replication source mode changed"
     );
-    let actors: BTreeMap<_, _> = replication_actors(world, &plan.activation)?
-        .into_iter()
-        .map(|(entity, actor)| (actor.id, (entity, actor)))
-        .collect();
+    // Full validation visits the private native registry in BTreeMap key order,
+    // so this vector is strictly ordered by domain ID, including unbound actors.
+    let actors = replication_actors(world, &plan.activation)?;
     let mut positions = Vec::with_capacity(plan.bindings.len());
     for binding in &plan.bindings {
-        let (entity, actor) = actors
-            .get(&binding.id)
+        let index = actors
+            .binary_search_by_key(&binding.id, |(_, actor)| actor.id)
+            .ok()
             .context("native replication binding lost")?;
+        let (entity, actor) = &actors[index];
         ensure!(
             *entity == binding.source
                 && actor.placement == binding.placement
