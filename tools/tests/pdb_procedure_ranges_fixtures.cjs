@@ -72,6 +72,43 @@ function info({names = [], features = [20140508]} = {}) {
     return b;
 }
 
+// Independently laid out writer-shaped Info. This deliberately does not call
+// info(): legacy fixtures keep their map-immediately-followed-by-features form.
+// InfoStreamBuilder.cpp (LLVM pin above) writes a structural zero after its map;
+// Microsoft's pinned PDB/include/nmtni.h serializes niMac in that position.
+// Options permit malformed synthetic framing; they are not a production writer.
+function namedStreamNiMacZeroInfo({names = [], features = [20140508], niMac = 0, niBytes = 4,
+    capacity = Math.max(1, names.length * 2), present = names.map((_, i) => i), deleted = [],
+    presentWords = present.length ? Math.ceil((Math.max(...present) + 1) / 32) : 0,
+    deletedWords = deleted.length ? Math.ceil((Math.max(...deleted) + 1) / 32) : 0,
+    extraTail = Buffer.alloc(0)} = {}) {
+    const header = Buffer.alloc(28);
+    header.writeUInt32LE(20000404); header.writeUInt32LE(1, 8); Buffer.from(GUID, 'hex').copy(header, 12);
+    const strings = Buffer.concat(names.map(n => Buffer.concat([Buffer.from(n.name), Buffer.alloc(1)])));
+    const stringSize = Buffer.alloc(4); stringSize.writeUInt32LE(strings.length);
+    const hashHeader = Buffer.alloc(8);
+    hashHeader.writeUInt32LE(names.length); hashHeader.writeUInt32LE(capacity, 4);
+    const vector = (indices, words) => {
+        const b = Buffer.alloc(4 + words * 4); b.writeUInt32LE(words);
+        for (const index of indices) {
+            const at = 4 + Math.floor(index / 32) * 4;
+            b.writeUInt32LE((b.readUInt32LE(at) | (1 << (index % 32))) >>> 0, at);
+        }
+        return b;
+    };
+    let key = 0;
+    const pairs = names.map(n => {
+        const b = Buffer.alloc(8); b.writeUInt32LE(key); b.writeUInt32LE(n.stream, 4);
+        key += Buffer.byteLength(n.name) + 1;
+        return b;
+    });
+    const ni = Buffer.alloc(4); ni.writeUInt32LE(niMac);
+    const suffix = Buffer.alloc(features.length * 4);
+    features.forEach((feature, i) => suffix.writeUInt32LE(feature, i * 4));
+    return Buffer.concat([header, stringSize, strings, hashHeader, vector(present, presentWords),
+        vector(deleted, deletedWords), ...pairs, ni.subarray(0, niBytes), suffix, extraTail]);
+}
+
 function contribution({module_index = 0, segment = 1, offset = 0, size = 0x180, width = 28,
     coff_section = 0xabcdef01} = {}) {
     const b = Buffer.alloc(width);
@@ -213,4 +250,5 @@ function repeatedContributions(f, count, {width = 28, declaredBytes = 4 + count 
     return f;
 }
 
-module.exports = {GUID, SC60, SC2, VA, pe, proc, record, info, contribution, segmentMap, fixture, pack, repeatedModule, repeatedContributions};
+module.exports = {GUID, SC60, SC2, VA, pe, proc, record, info, namedStreamNiMacZeroInfo,
+    contribution, segmentMap, fixture, pack, repeatedModule, repeatedContributions};

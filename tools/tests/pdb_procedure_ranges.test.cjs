@@ -5,8 +5,9 @@
 const test = require('node:test');
 const a = require('node:assert/strict');
 const {createHash} = require('node:crypto');
-const {inspect, diagnoseInfoFeatures, LIMITS} = require('../pdb_procedure_ranges.cjs');
-const {fixture, pack, proc, record, info, segmentMap, repeatedModule, repeatedContributions,
+const {inspect, diagnoseInfoFeatures, inspectNamedStreamNiMacZero,
+    diagnoseInfoNamedStreamNiMacZero, LIMITS} = require('../pdb_procedure_ranges.cjs');
+const {fixture, pack, proc, record, info, namedStreamNiMacZeroInfo, segmentMap, repeatedModule, repeatedContributions,
     SC60, SC2, VA} = require('./pdb_procedure_ranges_fixtures.cjs');
 
 const query = (extra = {}) => ({addresses: [VA], ...extra});
@@ -755,4 +756,523 @@ test('success and errors export no names, paths, type payloads, raw records or c
     a.equal(first.unwind_interpretation_confirmed, false); a.equal(first.runtime_behavior_confirmed, false);
     const bad = fixture({modules: [{records: [proc({name: secret}), proc({size: 0, name: secret})]}]});
     fails(bad, 'ERR_PROCEDURE_SIZE');
+});
+
+// Opt-in structural NI grammar. All values below are authored synthetic data;
+// the 136-byte layout does not identify any original input's successor word.
+const NI_PROFILE = 'MSF7_DBI_C13_scoped_supported_procedure_declarations_named_stream_ni_mac_zero_v1';
+const VC110 = 20091201, VC140 = 20140508, MINI = 0x494e494d, NOTM = 0x4d544f4e;
+const niFixture = (options = {}) => fixture({info: namedStreamNiMacZeroInfo(), ...options});
+const runNi = (f = niFixture(), q = query()) => {
+    const p = pack(f); return inspectNamedStreamNiMacZero(p.reader, p.exe, p.identity, q);
+};
+const diagnoseNi = (f = niFixture()) => {
+    const p = pack(f); return diagnoseInfoNamedStreamNiMacZero(p.reader, p.identity);
+};
+function niDiagnosticResult(b, mapEnd, wordCount, refusal = null) {
+    return {profile: 'MSFPDB7_Info_named_stream_ni_mac_zero_diagnostic_v1', info_bytes: b.length,
+        named_map_end_offset: mapEnd, ni_mac_offset: mapEnd, named_stream_ni_mac: 0,
+        feature_start_offset: mapEnd + 4, feature_word_count: wordCount,
+        status: refusal === null ? 'accepted_profile' : 'refused_profile', refusal};
+}
+function niFails(f, code) {
+    redactedThrows(() => diagnoseNi(f), code);
+    for (const q of [query(), query({module_indices: [0]})]) redactedThrows(() => runNi(f, q), code);
+}
+
+test('NI grammar accepts exactly four suffixes with only full-result profile metadata changed', () => {
+    for (const names of [[], [{name: 'MININOTM/opaque/path', stream: 8}],
+        [{name: 'MINI', stream: 8}, {name: 'NOTM', stream: 9}]]) {
+        for (const features of [[], [VC140], [VC110], [VC140, VC110]]) {
+            for (const q of [query(), query({module_indices: [1, 0]})]) {
+                const modules = [{records: [proc(), proc({name: 'second alias'})]},
+                    {records: [proc({kind: 0x1147}), record()]}];
+                const old = run(fixture({info: info({names, features}), modules}), q);
+                const b = namedStreamNiMacZeroInfo({names, features});
+                const result = runNi(niFixture({info: b, modules}), q);
+                a.deepEqual(result, {...old, profile: NI_PROFILE, info_profile: {
+                    grammar: 'named_stream_ni_mac_zero_v1', named_stream_ni_mac: 0,
+                    named_streams: names.length, features,
+                }});
+                a.ok(Buffer.byteLength(JSON.stringify(result) + '\n') <= LIMITS.output);
+                const mapEnd = b.length - 4 - features.length * 4;
+                a.deepEqual(diagnoseNi(niFixture({info: b})), niDiagnosticResult(b, mapEnd, features.length));
+                // The legacy APIs retain their original first-zero refusal.
+                const legacy = diagnose(niFixture({info: b}));
+                a.deepEqual(legacy, diagnosticResult(b, mapEnd, features.length + 1, {
+                    code: 'ERR_FEATURE_UNSUPPORTED', reason: 'unknown_signature', word_index: 0,
+                    word_offset: mapEnd, word_u32: 0, remaining_words: features.length,
+                }));
+                fails(niFixture({info: b, modules}), 'ERR_FEATURE_UNSUPPORTED', q);
+            }
+        }
+    }
+    // Ordinary success still has exactly the old Info metadata, with no NI guess.
+    a.deepEqual(run().info_profile, {named_streams: 0, features: [VC140]});
+});
+
+test('NI diagnostic explicitly separates map end 128, NI 128 and synthetic feature start 132', () => {
+    const b = namedStreamNiMacZeroInfo({names: [{name: 'A'.repeat(67), stream: 8}], features: [VC140]});
+    a.equal(b.length, 136);
+    a.equal(b.readUInt32LE(128), 0); a.equal(b.readUInt32LE(132), VC140);
+    a.deepEqual(diagnoseNi(niFixture({info: b})), niDiagnosticResult(b, 128, 1));
+    a.deepEqual(runNi(niFixture({info: b})).info_profile, {
+        grammar: 'named_stream_ni_mac_zero_v1', named_stream_ni_mac: 0, named_streams: 1, features: [VC140],
+    });
+});
+
+test('NI writer-shaped maps retain sparse and deleted buckets and variable vector extents', () => {
+    const names = [{name: 'MINI', stream: 8}, {name: 'NOTM', stream: 9}];
+    const variants = [
+        {names, capacity: 96, present: [1, 65], deleted: [40], deletedWords: 3},
+        {names, capacity: 96, present: [1, 2], presentWords: 3, deleted: [65]},
+        {names, capacity: 96, present: [31, 32], deleted: [], deletedWords: 0},
+        {names: [], capacity: 96, present: [], presentWords: 3, deleted: [1, 65]},
+        {names: [], capacity: LIMITS.info * 8, present: [], deleted: []},
+        {names: Array.from({length: 33}, (_, i) => ({name: 'entry' + i, stream: 8}))},
+    ];
+    for (const options of variants) {
+        const b = namedStreamNiMacZeroInfo({...options, features: [VC140, VC110]});
+        const f = niFixture({info: b});
+        a.deepEqual(diagnoseNi(f), niDiagnosticResult(b, b.length - 12, 2));
+        a.equal(runNi(f).info_profile.named_streams, options.names.length);
+    }
+});
+
+test('NI is mandatory, complete and zero; nonzero known signatures are never features', () => {
+    for (const niBytes of [0, 1, 2, 3]) {
+        niFails(niFixture({info: namedStreamNiMacZeroInfo({features: [], niBytes})}), 'ERR_PDB_FRAMING');
+    }
+    for (const niMac of [1, 0x12345678, 0xffffffff, VC110, VC140, MINI, NOTM]) {
+        for (const features of [[], [VC140], [MINI], [VC110, NOTM]]) {
+            niFails(niFixture({info: namedStreamNiMacZeroInfo({niMac, features})}), 'ERR_NI_MAC_UNSUPPORTED');
+        }
+    }
+    // An ordinary known feature is not retried or silently shifted to NI.
+    niFails(fixture(), 'ERR_NI_MAC_UNSUPPORTED');
+});
+
+test('NI feature diagnostics keep exact first-refusal ordering and actual suffix offsets', () => {
+    const cases = [];
+    for (const prefix of [[], [VC140]]) {
+        for (const unknown of [0, 1, 0x12345678, 0xffffffff]) {
+            cases.push([[...prefix, unknown, MINI, NOTM], prefix.length,
+                'ERR_FEATURE_UNSUPPORTED', 'unknown_signature']);
+        }
+        for (const [word, reason] of [[MINI, 'minimal_debug_info'], [NOTM, 'no_type_merge']]) {
+            cases.push([[...prefix, word, VC140, 0], prefix.length, 'ERR_FASTLINK_UNSUPPORTED', reason]);
+        }
+        for (const suffix of [[VC110], [VC140], [0], [1], [0x12345678], [0xffffffff], [MINI], [NOTM],
+            [MINI, NOTM, 0], [VC140, VC110]]) {
+            cases.push([[...prefix, VC110, ...suffix], prefix.length,
+                'ERR_FEATURE_UNSUPPORTED', 'vc110_nonterminal']);
+        }
+    }
+    for (const suffix of [[], [0], [MINI], [NOTM], [VC110], [0xffffffff]]) {
+        cases.push([[VC140, VC140, ...suffix], 1, 'ERR_FEATURE_UNSUPPORTED', 'duplicate_vc140']);
+    }
+    cases.push([[0, VC140], 0, 'ERR_FEATURE_UNSUPPORTED', 'unknown_signature']);
+    cases.push([[VC140, 0], 1, 'ERR_FEATURE_UNSUPPORTED', 'unknown_signature']);
+    for (const [features, index, code, reason] of cases) {
+        const b = namedStreamNiMacZeroInfo({features}), f = niFixture({info: b});
+        a.deepEqual(diagnoseNi(f), niDiagnosticResult(b, 48, features.length, {code, reason,
+            word_index: index, word_offset: 52 + index * 4, word_u32: features[index],
+            remaining_words: features.length - index - 1}));
+        for (const q of [query(), query({module_indices: [0]})]) redactedThrows(() => runNi(f, q), code);
+    }
+});
+
+test('NI first refusals and nonzero NI never interpret their successors', () => {
+    const readWord = Buffer.prototype.readUInt32LE;
+    for (const prefix of [[0], [1], [0xffffffff], [MINI], [NOTM], [VC140, VC140],
+        [VC110], [VC140, VC110]]) {
+        for (const successor of [0, 1, 0x12345678, 0xffffffff, VC110, VC140, MINI, NOTM]) {
+            const features = [...prefix, ...Array(6 - prefix.length).fill(successor)];
+            const b = namedStreamNiMacZeroInfo({features}), f = niFixture({info: b});
+            for (const full of [false, true]) {
+                const p = pack(f), visited = [];
+                a.equal(b.length, 76); a.equal(p.directory.length, 60);
+                Buffer.prototype.readUInt32LE = function(offset = 0) {
+                    if (this.length === b.length && offset >= 52) {
+                        a.ok(offset < 52 + prefix.length * 4, 'refused successor must remain uninterpreted');
+                        visited.push(offset);
+                    }
+                    return readWord.call(this, offset);
+                };
+                try {
+                    if (full) redactedThrows(() => inspectNamedStreamNiMacZero(p.reader, p.exe, p.identity, query()),
+                        prefix[0] === MINI || prefix[0] === NOTM ? 'ERR_FASTLINK_UNSUPPORTED' : 'ERR_FEATURE_UNSUPPORTED');
+                    else a.equal(diagnoseInfoNamedStreamNiMacZero(p.reader, p.identity).status, 'refused_profile');
+                } finally { Buffer.prototype.readUInt32LE = readWord; }
+                a.deepEqual(visited, prefix.map((_, i) => 52 + i * 4));
+            }
+        }
+    }
+    const b = namedStreamNiMacZeroInfo({niMac: VC140, features: Array(6).fill(NOTM)});
+    const p = pack(niFixture({info: b}));
+    Buffer.prototype.readUInt32LE = function(offset = 0) {
+        if (this.length === b.length) a.ok(offset < 52, 'nonzero NI must not enter feature walking');
+        return readWord.call(this, offset);
+    };
+    try { redactedThrows(() => diagnoseInfoNamedStreamNiMacZero(p.reader, p.identity), 'ERR_NI_MAC_UNSUPPORTED'); }
+    finally { Buffer.prototype.readUInt32LE = readWord; }
+});
+
+test('NI malformed whole tails take priority over NI or feature interpretation', () => {
+    for (const extra of [1, 2, 3]) for (const niMac of [0, VC140, MINI]) {
+        for (const features of [[], [MINI], [VC110, NOTM], [VC140, VC140], [0xffffffff]]) {
+            niFails(niFixture({info: namedStreamNiMacZeroInfo({niMac, features, extraTail: Buffer.alloc(extra)})}),
+                'ERR_PDB_FRAMING');
+        }
+    }
+});
+
+test('NI named-map validation precedes structural NI and feature errors', () => {
+    const variants = [];
+    const mutate = change => {
+        const b = namedStreamNiMacZeroInfo({names: [{name: 'a', stream: 8}], niMac: VC140, features: [MINI]});
+        change(b); variants.push(b);
+    };
+    // Strings end at 34; present vector at 42/46, deleted at 50, pair
+    // at 54/58, NI at 62. No alignment padding is inserted in this grammar.
+    for (const change of [b => b.writeUInt32LE(65536, 28), b => b[33] = 1,
+        b => b.writeUInt32LE(0, 38), b => b.writeUInt32LE(LIMITS.info * 8 + 1, 38),
+        b => b.writeUInt32LE(0, 34), b => b.writeUInt32LE(4, 34),
+        b => b.writeUInt32LE(4, 46), b => b.writeUInt32LE(2, 42),
+        b => b.writeUInt32LE(1, 54), b => b.writeUInt32LE(0xffffffff, 58),
+        b => b.writeUInt32LE(2, 58)]) mutate(change);
+    variants.push(namedStreamNiMacZeroInfo({names: [{name: 'same', stream: 8}, {name: 'same', stream: 9}]}));
+    const duplicateKey = namedStreamNiMacZeroInfo({names: [{name: 'a', stream: 8}, {name: 'b', stream: 9}]});
+    duplicateKey.writeUInt32LE(0, 64); // Second pair key, following a four-byte string buffer.
+    variants.push(duplicateKey);
+    for (const mask of [1, 4]) {
+        const b = namedStreamNiMacZeroInfo({names: [{name: 'a', stream: 8}], features: [MINI]});
+        b.writeUInt32LE(1, 50);
+        const deleted = Buffer.alloc(4); deleted.writeUInt32LE(mask);
+        variants.push(Buffer.concat([b.subarray(0, 54), deleted, b.subarray(54)]));
+    }
+    variants.push(namedStreamNiMacZeroInfo().subarray(0, 28));
+    variants.push(namedStreamNiMacZeroInfo().subarray(0, 47));
+    for (const b of variants) niFails(niFixture({info: b}), 'ERR_PDB_FRAMING');
+});
+
+test('NI and feature words cross MSF pages at their exact logical offsets', () => {
+    for (const mapEnd of [4090, 4092, 4094, 4096, 4098]) {
+        const b = namedStreamNiMacZeroInfo({names: [{name: 'A'.repeat(mapEnd - 61), stream: 8}],
+            features: [VC140, 0xffffffff]});
+        a.equal(b.length, mapEnd + 12);
+        const f = niFixture({info: b});
+        a.deepEqual(diagnoseNi(f), niDiagnosticResult(b, mapEnd, 2, {
+            code: 'ERR_FEATURE_UNSUPPORTED', reason: 'unknown_signature', word_index: 1,
+            word_offset: mapEnd + 8, word_u32: 0xffffffff, remaining_words: 0,
+        }));
+        const accepted = namedStreamNiMacZeroInfo({names: [{name: 'A'.repeat(mapEnd - 61), stream: 8}],
+            features: [VC140, VC110]});
+        a.equal(runNi(niFixture({info: accepted})).addresses[0].procedure_record_count, 1);
+    }
+});
+
+test('NI Info ceiling is inclusive and extra zeros or unknowns never escape it', () => {
+    for (const features of [[], [VC140], [VC110], [VC140, VC110]]) {
+        const b = namedStreamNiMacZeroInfo({names: [{name: 'A'.repeat(LIMITS.info - 65 - features.length * 4), stream: 8}],
+            features});
+        a.equal(b.length, LIMITS.info);
+        a.deepEqual(diagnoseNi(niFixture({info: b})), niDiagnosticResult(b, b.length - 4 - features.length * 4, features.length));
+        a.equal(runNi(niFixture({info: b})).info_profile.named_streams, 1);
+        for (const extra of [1, 4]) {
+            niFails(niFixture({info: Buffer.concat([b, Buffer.alloc(extra)])}), 'ERR_PDB_FRAMING');
+        }
+    }
+    // 52 bytes before actual features for an empty map and structural NI.
+    const count = (LIMITS.info - 52) / 4;
+    for (const [first, reason] of [[0, 'unknown_signature'], [0xffffffff, 'unknown_signature'],
+        [VC110, 'vc110_nonterminal']]) {
+        const features = [first, ...Array(count - 1).fill(NOTM)];
+        const b = namedStreamNiMacZeroInfo({features}); a.equal(b.length, LIMITS.info);
+        const result = diagnoseNi(niFixture({info: b}));
+        a.deepEqual(result, niDiagnosticResult(b, 48, count, {code: 'ERR_FEATURE_UNSUPPORTED', reason,
+            word_index: 0, word_offset: 52, word_u32: first, remaining_words: count - 1}));
+        a.ok(Buffer.byteLength(JSON.stringify(result) + '\n') <= 1024);
+        redactedThrows(() => runNi(niFixture({info: b})), 'ERR_FEATURE_UNSUPPORTED');
+    }
+    // A four-byte NI addition cannot quietly expand a legacy ceiling fixture.
+    const name = 'A'.repeat(LIMITS.info - 65);
+    a.equal(info({names: [{name, stream: 8}]}).length, LIMITS.info);
+    niFails(niFixture({info: namedStreamNiMacZeroInfo({names: [{name, stream: 8}]})}), 'ERR_PDB_FRAMING');
+});
+
+test('NI diagnostic is Info-only and NI failures precede every DBI or module read for both selectors', () => {
+    const cases = [
+        [{features: []}, 'accepted_profile', null],
+        [{features: [VC140, VC110]}, 'accepted_profile', null],
+        [{features: [MINI]}, 'refused_profile', 'ERR_FASTLINK_UNSUPPORTED'],
+        [{features: [VC110, NOTM]}, 'refused_profile', 'ERR_FEATURE_UNSUPPORTED'],
+        [{features: [0]}, 'refused_profile', 'ERR_FEATURE_UNSUPPORTED'],
+        [{niMac: VC140}, null, 'ERR_NI_MAC_UNSUPPORTED'],
+        [{features: [], niBytes: 0}, null, 'ERR_PDB_FRAMING'],
+        [{features: [MINI], extraTail: Buffer.alloc(1)}, null, 'ERR_PDB_FRAMING'],
+    ];
+    for (const [options, status, code] of cases) {
+        const f = niFixture({info: namedStreamNiMacZeroInfo({
+            names: [{name: 'NEVER_EXPORT_MININOTM/private/path', stream: 9}], ...options})});
+        for (const index of [2, 4, 5, 6, 7]) f.streams[index] = Buffer.from('NEVER_EXPORT_OTHER_STREAM');
+        const p = pack(f), allowed = new Set([0, 3, 4, ...p.entries[1].pages]);
+        for (const index of [3, 8, 9]) f.streams[index].fill(0xff);
+        const reader = {size: p.reader.size, read(o, n) {
+            a.ok(n <= LIMITS.read);
+            for (let page = Math.floor(o / 4096); page <= Math.floor((o + n - 1) / 4096); page++) {
+                a.ok(allowed.has(page), 'only MSF and Info reads are permitted here');
+            }
+            return p.reader.read(o, n);
+        }};
+        if (status === null) redactedThrows(() => diagnoseInfoNamedStreamNiMacZero(reader, p.identity), code);
+        else {
+            const result = diagnoseInfoNamedStreamNiMacZero(reader, p.identity), json = JSON.stringify(result);
+            a.equal(result.status, status);
+            a.deepEqual(Object.keys(result), ['profile', 'info_bytes', 'named_map_end_offset', 'ni_mac_offset',
+                'named_stream_ni_mac', 'feature_start_offset', 'feature_word_count', 'status', 'refusal']);
+            for (const secret of ['NEVER_EXPORT', p.identity.guid_bytes, 'age', 'features', 'selected_modules',
+                'records', 'extent', 'raw', 'symbol', 'export', 'body']) a.ok(!json.includes(secret));
+            a.ok(Buffer.byteLength(json + '\n') <= 1024);
+        }
+        if (code !== null) for (const q of [query(), query({module_indices: [0]})]) {
+            redactedThrows(() => inspectNamedStreamNiMacZero(reader, p.exe, p.identity, q), code);
+        }
+    }
+    const f = niFixture(); f.streams[3] = null; f.streams[8] = null; f.streams[9] = null;
+    a.equal(diagnoseNi(f).status, 'accepted_profile');
+    redactedThrows(() => runNi(f), 'ERR_PDB_FRAMING');
+});
+
+test('NI selectors remain closed and malformed selectors precede reader I/O', () => {
+    let reads = 0;
+    const reader = {size: 4096, read() { reads++; throw Error('/private/NEVER_EXPORT'); }};
+    const bad = [undefined, null, [], {}, query({grammar: 'named_stream_ni_mac_zero_v1'}),
+        query({named_stream_ni_mac: 0}), query({exact_addresses_only: true}),
+        {[Symbol('private')]: 0, addresses: [VA]}];
+    for (const addresses of [undefined, null, [], Array(1), [VA, VA], [7], ['0X140001020'],
+        ['0x0140001020'], ['0x800000000000'], Array(33).fill(VA)]) bad.push({addresses});
+    for (const module_indices of [undefined, null, [], Array(1), [0, 0], [-1], [1.5], ['0'], [65535],
+        Array.from({length: 33}, (_, i) => i)]) bad.push(query({module_indices}));
+    for (const q of bad) {
+        redactedThrows(() => inspectNamedStreamNiMacZero(reader, Buffer.alloc(0), {}, q), 'ERR_SELECTORS');
+        redactedThrows(() => inspect(reader, Buffer.alloc(0), {}, q), 'ERR_SELECTORS');
+    }
+    a.equal(reads, 0);
+});
+
+test('NI diagnostic identity, MSF, directory, stream and input caps keep redacted legacy errors', () => {
+    const p = pack(niFixture()); let reads = 0;
+    const reader = {size: p.reader.size, read(o, n) { reads++; return p.reader.read(o, n); }};
+    for (const identity of [undefined, null, {}, {...p.identity, age: 0}, {...p.identity, age: 1.5},
+        {...p.identity, age: 0x100000000}, {...p.identity, guid_bytes: p.identity.guid_bytes.toUpperCase()}]) {
+        redactedThrows(() => diagnoseInfoNamedStreamNiMacZero(reader, identity), 'ERR_IDENTITY');
+    }
+    for (const input of [null, {}, {size: 56}, ...[0, 55, LIMITS.pdb + 1, NaN, Infinity, 56.5]
+        .map(size => ({...reader, size}))]) {
+        redactedThrows(() => diagnoseInfoNamedStreamNiMacZero(input, p.identity), 'ERR_INPUT_BOUND');
+    }
+    a.equal(reads, 0);
+    for (const size of [56, LIMITS.pdb]) redactedThrows(() => diagnoseInfoNamedStreamNiMacZero({size,
+        read() { reads++; throw Error('/private/NEVER_EXPORT'); }}, p.identity), 'ERR_PDB_FRAMING');
+    a.equal(reads, 2);
+    for (const offset of [0, 8, 12]) {
+        const f = niFixture(); f.streams[1][offset] ^= 1; niFails(f, 'ERR_IDENTITY');
+    }
+    for (const change of [p => p.superblock.writeUInt32LE(512, 32),
+        p => p.superblock.writeUInt32LE(LIMITS.directory + 4, 44),
+        p => p.directory.writeUInt32LE(LIMITS.streams + 1), p => p.blockmap.writeUInt32LE(1),
+        p => p.directory.writeUInt32LE(0xffffffff, 8)]) {
+        const p = pack(niFixture()); change(p);
+        redactedThrows(() => diagnoseInfoNamedStreamNiMacZero(p.reader, p.identity), 'ERR_PDB_FRAMING');
+        redactedThrows(() => inspectNamedStreamNiMacZero(p.reader, p.exe, p.identity, query()), 'ERR_PDB_FRAMING');
+    }
+});
+
+test('NI APIs reject local and foreign shared storage and preserve short-read and exception redaction', () => {
+    const {runInNewContext} = require('node:vm'), foreign = runInNewContext('SharedArrayBuffer');
+    const p = pack(niFixture());
+    for (const Shared of [SharedArrayBuffer, foreign]) {
+        const exe = Buffer.from(new Shared(p.exe.length)); p.exe.copy(exe);
+        let reads = 0;
+        const untouched = {size: p.reader.size, read(o, n) { reads++; return p.reader.read(o, n); }};
+        redactedThrows(() => inspectNamedStreamNiMacZero(untouched, exe, p.identity, query()), 'ERR_INPUT_BOUND');
+        a.equal(reads, 0);
+        for (const infoOnly of [false, true]) {
+            const reader = {size: p.reader.size, read(o, n) {
+                const source = p.reader.read(o, n);
+                if (infoOnly && !p.entries[1].pages.includes(Math.floor(o / 4096))) return source;
+                const b = Buffer.from(new Shared(n)); source.copy(b); return b;
+            }};
+            redactedThrows(() => diagnoseInfoNamedStreamNiMacZero(reader, p.identity), 'ERR_INPUT_BOUND');
+            redactedThrows(() => inspectNamedStreamNiMacZero(reader, p.exe, p.identity, query()), 'ERR_INPUT_BOUND');
+        }
+    }
+    for (const infoOnly of [false, true]) for (const value of [Buffer.alloc(0), Buffer.alloc(55),
+        new Uint8Array(56), null, 'throw']) {
+        const reader = {size: p.reader.size, read(o, n) {
+            if (infoOnly && !p.entries[1].pages.includes(Math.floor(o / 4096))) return p.reader.read(o, n);
+            if (value === 'throw') throw Error('/private/NEVER_EXPORT');
+            return value;
+        }};
+        const code = value === 'throw' ? 'ERR_PDB_FRAMING' : 'ERR_SHORT_READ';
+        redactedThrows(() => diagnoseInfoNamedStreamNiMacZero(reader, p.identity), code);
+        redactedThrows(() => inspectNamedStreamNiMacZero(reader, p.exe, p.identity, query()), code);
+    }
+});
+
+test('NI APIs copy reused reader storage across directory, Info, module page and record cache boundaries', () => {
+    const f = niFixture({info: namedStreamNiMacZeroInfo({names: [{name: 'A'.repeat(4100), stream: 8}],
+        features: [VC140, VC110]}), modules: [{records: [record(), proc({name: Buffer.alloc(65496, 0x41)})]}]});
+    while (f.streams.length < 1500) f.streams.push(null);
+    const p = pack(f), scratch = Buffer.alloc(4096);
+    a.ok(p.directory.length > 4096);
+    const reader = {size: p.reader.size, read(o, n) {
+        a.ok(n <= scratch.length && n <= LIMITS.read);
+        scratch.fill(0); p.reader.read(o, n).copy(scratch); return scratch.subarray(0, n);
+    }};
+    a.deepEqual(diagnoseInfoNamedStreamNiMacZero(reader, p.identity), diagnoseInfoNamedStreamNiMacZero(p.reader, p.identity));
+    a.deepEqual(inspectNamedStreamNiMacZero(reader, p.exe, p.identity, query()), runNi(f));
+});
+
+test('NI accepted Info retains atomic downstream errors and every false coverage flag', () => {
+    const baseline = runNi();
+    for (const key of ['unsupported_semantic_coverage', 'all_pdb_alias_coverage_confirmed', 'whole_pdb_coverage_confirmed',
+        'reference_linkage_confirmed', 'instruction_boundaries_confirmed', 'function_completeness_confirmed',
+        'unique_owner_confirmed', 'purity_confirmed', 'unwind_interpretation_confirmed', 'runtime_behavior_confirmed',
+        'names_exported', 'code_bytes_read']) a.equal(baseline[key], false);
+    a.equal(baseline.declaration_extent_only, true);
+    a.equal(baseline.complete_selected_symbol_record_framing, true);
+    const badRecord = record(); badRecord.writeUInt16LE(0);
+    const cases = [
+        [() => niFixture({moduleInfo: Buffer.alloc(60)}), 'ERR_DBI_MODULE_INFO'],
+        [() => { const f = niFixture(); f.streams[3].writeInt32LE(-1, 24); return f; }, 'ERR_PDB_FRAMING'],
+        [() => { const f = niFixture(); f.streams[3].writeUInt32LE(2, 8); return f; }, 'ERR_IDENTITY'],
+        [() => niFixture({modules: [{signature: 2}]}), 'ERR_MODULE_FRAMING'],
+        [() => niFixture({modules: [{sym: 5}]}), 'ERR_MODULE_FRAMING'],
+        [() => niFixture({modules: [{records: [proc(), badRecord]}]}), 'ERR_MODULE_FRAMING'],
+        [() => niFixture({modules: [{records: [proc(), proc({size: 0})]}]}), 'ERR_PROCEDURE_SIZE'],
+        [() => niFixture({modules: [{records: [proc(), proc({size: 0x31})]}]}), 'ERR_PROCEDURE_CONFLICT'],
+        [() => niFixture({modules: [{records: [record()]}]}), 'ERR_PROCEDURE_ABSENT'],
+        [() => { const f = niFixture(); f.streams[9] = null; return f; }, 'ERR_MODULE_BOUND'],
+        [() => niFixture({modules: [{flags: 0x100}]}), 'ERR_REFERENCE_UNSUPPORTED'],
+        [() => niFixture({modules: [{records: [proc(), record(0x1102)]}]}), 'ERR_SYMBOL_UNSUPPORTED'],
+        ...[0x115f, 0x1160, 0x1161, 0x1167].map(kind =>
+            [() => niFixture({modules: [{records: [proc(), record(kind)]}]}), 'ERR_FASTLINK_UNSUPPORTED']),
+        [() => niFixture({modules: [{records: [proc(), proc({size: 0xffffffff})]}]}), 'ERR_SOURCE_MAPPING'],
+        [() => { const f = niFixture(); f.streams[8][8] ^= 1; return f; }, 'ERR_SOURCE_MAPPING'],
+    ];
+    for (const [make, code] of cases) for (const q of [query(), query({module_indices: [0]})]) {
+        const f = make();
+        a.equal(diagnoseNi(f).status, 'accepted_profile');
+        redactedThrows(() => runNi(f, q), code);
+        f.streams[1] = info(); // Independently qualify the same failure in the legacy path.
+        fails(f, code, q);
+    }
+    // A later bad selector or overlapping module cannot yield a partial result.
+    redactedThrows(() => runNi(niFixture(), query({addresses: [VA, '0x140001021']})), 'ERR_PROCEDURE_ABSENT');
+    const folded = niFixture({modules: [{records: [proc(), proc()]}, {records: [proc({size: 0x31})]}]});
+    redactedThrows(() => runNi(folded), 'ERR_PROCEDURE_CONFLICT');
+    const scoped = runNi(folded, query({module_indices: [0]}));
+    a.equal(scoped.addresses[0].procedure_record_count, 2);
+    a.equal(scoped.routing.scope, 'explicit_modules_only');
+    a.equal(scoped.whole_pdb_coverage_confirmed, false);
+    a.equal(scoped.unique_owner_confirmed, false);
+    // Routing remains scope-sensitive only after accepted Info and DBI framing.
+    const unrouted = niFixture({sc: Buffer.alloc(0)});
+    redactedThrows(() => runNi(unrouted), 'ERR_ROUTING_ABSENT');
+    a.equal(runNi(unrouted, query({module_indices: [0]})).routing.scope, 'explicit_modules_only');
+});
+
+test('NI profile retains every existing cap and bounded selection, directory and chunk behavior', () => {
+    a.deepEqual(LIMITS, {
+        pdb: 1280 * 1024 * 1024, exe: 128 * 1024 * 1024,
+        directory: 4 * 1024 * 1024, read: 4 * 1024 * 1024,
+        streams: 4096, sections: 96, info: 65536, module_info: 4 * 1024 * 1024,
+        descriptors: 65535, modules: 32, selectors: 32,
+        symbols: 256 * 1024 * 1024, records: 2500000, record: 65537,
+        contributions: 256 * 1024 * 1024, contribution_records: 2500000,
+        cache: 65536, output: 65536,
+    });
+    a.ok(Object.isFrozen(LIMITS));
+    const addresses = Array.from({length: 32}, (_, i) => '0x' + (0x140001020n + BigInt(4 * i)).toString(16)).reverse();
+    const records = addresses.map(v => proc({offset: Number(BigInt(v) - 0x140001000n), size: 4, name: ''}));
+    const r = runNi(niFixture({modules: Array.from({length: 32}, () => ({records}))}), query({addresses}));
+    a.deepEqual(r.addresses.map(x => x.address), addresses);
+    a.equal(r.selected_modules.length, 32);
+    a.ok(r.addresses.every(x => x.procedure_record_count === 32));
+    a.ok(Buffer.byteLength(JSON.stringify(r) + '\n') <= LIMITS.output);
+    redactedThrows(() => runNi(niFixture({modules: Array.from({length: 33}, () => ({}))})), 'ERR_MODULE_BOUND');
+    for (const size of [LIMITS.pdb + 1, LIMITS.exe + 1]) {
+        const p = pack(niFixture());
+        if (size === LIMITS.pdb + 1) redactedThrows(() => inspectNamedStreamNiMacZero({size, read() {
+            a.fail('oversized PDB must refuse before reading');
+        }}, p.exe, p.identity, query()), 'ERR_INPUT_BOUND');
+        else redactedThrows(() => inspectNamedStreamNiMacZero(p.reader, Buffer.alloc(size), p.identity, query()), 'ERR_INPUT_BOUND');
+    }
+    const full = niFixture(); while (full.streams.length < LIMITS.streams) full.streams.push(null);
+    a.equal(runNi(full).addresses[0].procedure_record_count, 1);
+    full.streams.push(null);
+    redactedThrows(() => runNi(full), 'ERR_PDB_FRAMING');
+    const p = pack(repeatedContributions(niFixture(), 150000));
+    a.equal(inspectNamedStreamNiMacZero(p.reader, p.exe, p.identity, query()).routing.contribution_records, 150000);
+    a.ok(p.reads.every(x => x.count <= LIMITS.read));
+    for (const [bytes, code] of [[LIMITS.symbols, 'ERR_MODULE_FRAMING'], [LIMITS.symbols + 4, 'ERR_MODULE_BOUND']]) {
+        const f = niFixture({modules: [{sym: bytes, body: repeatedModule(bytes, record(), 2)}]});
+        redactedThrows(() => runNi(f), code);
+    }
+    redactedThrows(() => runNi(repeatedContributions(niFixture(), LIMITS.contribution_records + 1)), 'ERR_ROUTING_BOUND');
+    redactedThrows(() => runNi(repeatedContributions(niFixture(), 1, {declaredBytes: LIMITS.contributions + 4})), 'ERR_ROUTING_BOUND');
+    const moduleName = Buffer.alloc(LIMITS.module_info - 66, 0x41);
+    const atCap = niFixture({modules: [{module_name: moduleName, object_name: ''}]});
+    a.equal(atCap.moduleInfo.length, LIMITS.module_info);
+    a.equal(runNi(atCap).addresses[0].procedure_record_count, 1);
+    redactedThrows(() => runNi(niFixture({modules: [{module_name: Buffer.concat([moduleName, Buffer.alloc(4, 0x41)]),
+        object_name: ''}]})), 'ERR_DBI_MODULE_INFO');
+});
+
+test('NI aggregate record ceiling still rejects the next framed record atomically', () => {
+    const count = LIMITS.records + 1, sym = 4 + 40 + (count - 1) * 4;
+    const f = niFixture({modules: [{sym, body: repeatedModule(sym)}]});
+    a.equal(diagnoseNi(f).status, 'accepted_profile');
+    redactedThrows(() => runNi(f), 'ERR_MODULE_BOUND');
+});
+
+test('NI diagnostic and full result enforce inclusive serialized output ceilings', () => {
+    const stringify = JSON.stringify;
+    for (const [profile, max, call] of [
+        ['MSFPDB7_Info_named_stream_ni_mac_zero_diagnostic_v1', 1024, () => diagnoseNi()],
+        [NI_PROFILE, LIMITS.output, () => runNi()],
+    ]) {
+        // Inject serialization lengths to reach the final guard without
+        // changing production caps or manufacturing unbounded metadata fields.
+        for (const bytes of [max - 1, max]) {
+            JSON.stringify = function(value, ...args) {
+                const json = stringify.call(this, value, ...args);
+                return value && value.profile === profile ? json.padEnd(bytes, ' ') : json;
+            };
+            try {
+                if (bytes === max - 1) a.equal(call().profile, profile); // Plus newline = exact cap.
+                else redactedThrows(call, 'ERR_OUTPUT_BOUND');
+            } finally { JSON.stringify = stringify; }
+        }
+    }
+});
+
+test('NI full output keeps names, opaque marker strings and code bytes private', () => {
+    const secret = 'NEVER_EXPORT_MININOTM/private/path';
+    const b = namedStreamNiMacZeroInfo({names: [{name: secret, stream: 8}], features: [VC140]});
+    const f = niFixture({info: b, modules: [{module_name: secret, object_name: secret,
+        records: [proc({name: secret}), proc({offset: 0x90, name: 'UNSELECTED_SECRET'})]}]});
+    f.exe.write('CODE_BYTES_MUST_NOT_BE_READ', 0x220);
+    const r = runNi(f), json = JSON.stringify(r);
+    for (const word of [secret, 'UNSELECTED_SECRET', 'CODE_BYTES_MUST_NOT_BE_READ', '0x140001090',
+        'type_index', 'record_bytes_hex', 'private.obj']) a.ok(!json.includes(word));
+    f.exe.fill(0x5a, 0x200, 0x800); a.deepEqual(runNi(f), r);
+    a.equal(r.names_exported, false); a.equal(r.code_bytes_read, false);
+    // Marker-shaped strings cannot supply the structural NI or rescue it.
+    niFails(niFixture({info: namedStreamNiMacZeroInfo({names: [{name: 'MININOTM', stream: 8}],
+        features: [], niBytes: 0})}), 'ERR_PDB_FRAMING');
+    niFails(niFixture({info: namedStreamNiMacZeroInfo({names: [{name: 'MININOTM', stream: 8}],
+        niMac: MINI})}), 'ERR_NI_MAC_UNSUPPORTED');
 });

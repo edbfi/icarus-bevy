@@ -6,6 +6,7 @@
 // https://github.com/llvm/llvm-project/blob/llvmorg-20.1.8/llvm/include/llvm/DebugInfo/PDB/Native/HashTable.h
 // https://github.com/llvm/llvm-project/blob/llvmorg-20.1.8/llvm/lib/DebugInfo/PDB/Native/NamedStreamMap.cpp
 // https://github.com/llvm/llvm-project/blob/llvmorg-20.1.8/llvm/lib/DebugInfo/PDB/Native/InfoStream.cpp
+// https://github.com/llvm/llvm-project/blob/llvmorg-20.1.8/llvm/lib/DebugInfo/PDB/Native/InfoStreamBuilder.cpp
 // https://github.com/llvm/llvm-project/blob/llvmorg-20.1.8/llvm/lib/DebugInfo/PDB/Native/ModuleDebugStream.cpp
 // https://github.com/llvm/llvm-project/blob/llvmorg-20.1.8/llvm/lib/DebugInfo/PDB/Native/DbiStreamBuilder.cpp
 // https://github.com/llvm/llvm-project/blob/llvmorg-20.1.8/lld/COFF/PDB.cpp
@@ -15,6 +16,7 @@
 // https://github.com/llvm/llvm-project/blob/llvmorg-20.1.8/llvm/LICENSE.TXT
 // Microsoft primary sources at 805655a28bd8198004be2ac27e6e0290121a5e89:
 // https://github.com/microsoft/microsoft-pdb/blob/805655a28bd8198004be2ac27e6e0290121a5e89/PDB/include/dbicommon.h
+// https://github.com/microsoft/microsoft-pdb/blob/805655a28bd8198004be2ac27e6e0290121a5e89/PDB/include/nmtni.h
 // https://github.com/microsoft/microsoft-pdb/blob/805655a28bd8198004be2ac27e6e0290121a5e89/include/cvinfo.h
 // Microsoft sources: Copyright (c) 2015 Microsoft Corporation, MIT license:
 // https://github.com/microsoft/microsoft-pdb/blob/805655a28bd8198004be2ac27e6e0290121a5e89/LICENSE
@@ -65,6 +67,7 @@ const shared = b => isSharedArrayBuffer(b.buffer);
 const canonical = v => v >= 0n && v <= 0xffffffffffffffffn &&
     (v <= 0x7fffffffffffn || v >= 0xffff800000000000n);
 const hex = v => '0x' + v.toString(16);
+const NI_MAC_ZERO_GRAMMAR = 'named_stream_ni_mac_zero_v1';
 
 function selection(query) {
     need(query && typeof query === 'object' && !Array.isArray(query) &&
@@ -158,10 +161,22 @@ function infoFeatures(b, featureStart) {
     return {features: [...features], refusal: null};
 }
 
-function infoProfile(m, identity) {
-    const {b, count, featureStart} = infoFraming(m, identity);
+function infoLayout(m, identity, niMacZero) {
+    const framed = infoFraming(m, identity);
+    if (!niMacZero) return framed;
+    const namedMapEnd = framed.featureStart;
+    // The opt-in writer grammar has exactly one structural NI after the map.
+    // Whole-tail u32 framing above precedes interpreting this slot or features.
+    need(namedMapEnd + 4 <= framed.b.length, 'ERR_PDB_FRAMING');
+    need(framed.b.readUInt32LE(namedMapEnd) === 0, 'ERR_NI_MAC_UNSUPPORTED');
+    return {...framed, namedMapEnd, featureStart: namedMapEnd + 4};
+}
+
+function infoProfile(m, identity, niMacZero) {
+    const {b, count, featureStart} = infoLayout(m, identity, niMacZero);
     const {features, refusal} = infoFeatures(b, featureStart);
     if (refusal !== null) throw new MetadataError(refusal.code);
+    if (niMacZero) return {grammar: NI_MAC_ZERO_GRAMMAR, named_stream_ni_mac: 0, named_streams: count, features};
     return {named_streams: count, features};
 }
 
@@ -187,13 +202,16 @@ function boundedReader(reader) {
 
 // Explicit info-only diagnostic: accepted_profile grants no procedure, body,
 // ownership or complete input-identity qualification. Only stream 1 is opened.
-function diagnoseInfoFeatures(reader, identity) {
+function diagnoseInfo(reader, identity, niMacZero) {
     try {
         identityInput(identity);
-        const {b, featureStart} = infoFraming(msf(boundedReader(reader)), identity);
+        const {b, namedMapEnd, featureStart} = infoLayout(msf(boundedReader(reader)), identity, niMacZero);
         const {refusal} = infoFeatures(b, featureStart);
         const result = {
-            profile: 'MSFPDB7_Info_feature_guard_diagnostic_v1', info_bytes: b.length,
+            profile: niMacZero ? 'MSFPDB7_Info_named_stream_ni_mac_zero_diagnostic_v1' :
+                'MSFPDB7_Info_feature_guard_diagnostic_v1', info_bytes: b.length,
+            ...(niMacZero ? {named_map_end_offset: namedMapEnd, ni_mac_offset: namedMapEnd,
+                named_stream_ni_mac: 0} : {}),
             feature_start_offset: featureStart, feature_word_count: (b.length - featureStart) / 4,
             status: refusal === null ? 'accepted_profile' : 'refused_profile', refusal,
         };
@@ -205,7 +223,15 @@ function diagnoseInfoFeatures(reader, identity) {
     }
 }
 
-function context(reader, exe, identity) {
+function diagnoseInfoFeatures(reader, identity) {
+    return diagnoseInfo(reader, identity, false);
+}
+
+function diagnoseInfoNamedStreamNiMacZero(reader, identity) {
+    return diagnoseInfo(reader, identity, true);
+}
+
+function context(reader, exe, identity, niMacZero) {
     need(Buffer.isBuffer(exe) && exe.length >= 64 && exe.length <= LIMITS.exe && !shared(exe), 'ERR_INPUT_BOUND');
     identityInput(identity);
     const input = boundedReader(reader);
@@ -213,7 +239,7 @@ function context(reader, exe, identity) {
     try { image = parse(exe); } catch { throw new MetadataError('ERR_SOURCE_MAPPING'); }
     need(canonical(image.base), 'ERR_SOURCE_MAPPING');
     const m = msf(input);
-    const info = infoProfile(m, identity);
+    const info = infoProfile(m, identity, niMacZero);
     need(m.streams[3].size >= 64 && m.streams[3].size !== 0xffffffff, 'ERR_PDB_FRAMING');
     const h = m.stream(3, 0, 64);
     need(h.readInt32LE() === -1 && h.readUInt32LE(4) === 19990903 &&
@@ -425,10 +451,10 @@ function scanModule(ctx, mod, aggregates, totals) {
         records, supported_procedure_records: procedures, opaque_records: opaque, matching_records: matches};
 }
 
-function inspect(reader, exe, identity, query) {
+function inspectProfile(reader, exe, identity, query, niMacZero) {
     try {
         // Selector validation is deliberately before any PE parsing or reader I/O.
-        const selected = selection(query), ctx = context(reader, exe, identity), {image, m} = ctx;
+        const selected = selection(query), ctx = context(reader, exe, identity, niMacZero), {image, m} = ctx;
         for (const a of selected.addresses) {
             need(a.value >= image.base && a.value < image.base + BigInt(image.imageBytes), 'ERR_SOURCE_MAPPING');
             a.rva = Number(a.value - image.base);
@@ -452,7 +478,8 @@ function inspect(reader, exe, identity, query) {
         const scanned = routing.indices.map(i => scanModule(ctx, modules[i], aggregates, totals));
         need([...aggregates.values()].every(a => a.count > 0), 'ERR_PROCEDURE_ABSENT');
         const result = {
-            profile: 'MSF7_DBI_C13_scoped_supported_procedure_declarations',
+            profile: 'MSF7_DBI_C13_scoped_supported_procedure_declarations' +
+                (niMacZero ? '_' + NI_MAC_ZERO_GRAMMAR : ''),
             guid_bytes: identity.guid_bytes, age: identity.age, image_base: hex(image.base),
             routing, selected_modules: scanned, symbol_bytes: symbolBytes, records: totals.records,
             supported_procedure_records: totals.procedures, opaque_records: totals.opaque,
@@ -476,4 +503,12 @@ function inspect(reader, exe, identity, query) {
     }
 }
 
-module.exports = {inspect, diagnoseInfoFeatures, LIMITS};
+function inspect(reader, exe, identity, query) {
+    return inspectProfile(reader, exe, identity, query, false);
+}
+
+function inspectNamedStreamNiMacZero(reader, exe, identity, query) {
+    return inspectProfile(reader, exe, identity, query, true);
+}
+
+module.exports = {inspect, diagnoseInfoFeatures, inspectNamedStreamNiMacZero, diagnoseInfoNamedStreamNiMacZero, LIMITS};
