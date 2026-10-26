@@ -1,19 +1,21 @@
 use icarus_bevy::experimental::modifier_lifecycle::{
     FixModifierActivationAction, FixModifierActivationCandidate, FixModifierActivationGuards,
-    MODIFIER_AUTHORITY_NET_ROLE, MODIFIER_FIX_ACTIVATION_STATE,
+    MODIFIER_AUTHORITY_NET_ROLE, MODIFIER_COMPARATOR_HELPER_MIN_OPERAND_BYTES,
+    MODIFIER_COMPARATOR_HELPER_WORD_OFFSET, MODIFIER_FIX_ACTIVATION_STATE,
     MODIFIER_HIGH_FREQUENCY_TICK_RATE_BITS, MODIFIER_INVALID_STAT_ENUM,
     MODIFIER_SCENE_ATTACH_KEEP_RELATIVE_PACKED, MODIFIER_STAT_SCALE_CENTI_BITS,
     MODIFIER_STAT_SOURCE_KIND, MODIFIER_TIMER_DEFAULT_FIRST_DELAY, ModifierActivateOutcome,
     ModifierAppliedOutcome, ModifierBeginPlayOutcome, ModifierComparatorOperations,
-    ModifierComparatorScratchSlot, ModifierDeactivateOutcome, ModifierEndPlayInputs,
-    ModifierEndPlayOutcome, ModifierInitComponentInputs, ModifierInitComponentOutcome,
-    ModifierLoopingTimerSetup, ModifierOnStatContainerUpdatedInputs,
+    ModifierComparatorScratchSlot, ModifierComparatorServerHelper, ModifierDeactivateOutcome,
+    ModifierEndPlayInputs, ModifierEndPlayOutcome, ModifierInitComponentInputs,
+    ModifierInitComponentOutcome, ModifierLoopingTimerSetup, ModifierOnStatContainerUpdatedInputs,
     ModifierOnStatContainerUpdatedOutcome, ModifierPrimaryVftableSlot, ModifierRemovedOutcome,
     ModifierSceneComponentInitAction, ModifierStateDataSource, ModifierTimerClearTarget,
     ModifierUpdateStatsOutcome, RemoveModifierStateCandidate, RemoveModifierStateSelection,
     RemoveModifierStateSelectionOutcome, RemoveModifierStateVirtualCallRequest,
     SiblingModifierGrantedTags, evaluate_modifier_activate, evaluate_modifier_applied_impl,
-    evaluate_modifier_begin_play, evaluate_modifier_comparator_local, evaluate_modifier_deactivate,
+    evaluate_modifier_begin_play, evaluate_modifier_comparator_local,
+    evaluate_modifier_comparator_server_helper, evaluate_modifier_deactivate,
     evaluate_modifier_end_play, evaluate_modifier_get_state_data,
     evaluate_modifier_init_component_impl, evaluate_modifier_on_stat_container_updated,
     evaluate_modifier_removed_impl, evaluate_modifier_update_stats,
@@ -1221,4 +1223,89 @@ fn local_comparator_aliased_tokens_read_updated_shared_state_twice_after_calls()
         &right
     ));
     operations.assert_order(17, 29, u64::MAX, 0);
+}
+
+fn server_helper_receiver(word: u64, fill: u8, len: usize) -> Vec<u8> {
+    let mut bytes = vec![fill; len];
+    bytes[MODIFIER_COMPARATOR_HELPER_WORD_OFFSET..MODIFIER_COMPARATOR_HELPER_MIN_OPERAND_BYTES]
+        .copy_from_slice(&word.to_le_bytes());
+    bytes
+}
+
+#[test]
+fn server_helper_comparator_compares_only_the_little_endian_word_at_offset_eight() {
+    assert_eq!(MODIFIER_COMPARATOR_HELPER_WORD_OFFSET, 8);
+    assert_eq!(MODIFIER_COMPARATOR_HELPER_MIN_OPERAND_BYTES, 16);
+    let words = [
+        0,
+        1,
+        u64::from(u32::MAX),
+        1_u64 << 32,
+        1_u64 << 63,
+        u64::MAX,
+    ];
+    for left_word in words {
+        for right_word in words {
+            // Bytes before +8 and after +16 differ on purpose: the span reads neither.
+            let left = server_helper_receiver(left_word, 0x11, 24);
+            let right = server_helper_receiver(right_word, 0xee, 16);
+            assert_eq!(
+                evaluate_modifier_comparator_server_helper(&left, &right),
+                Some(left_word == right_word),
+                "left={left_word:#018x}, right={right_word:#018x}"
+            );
+        }
+    }
+    // Each half of the word participates; a byte-order swap is not equal.
+    let left = server_helper_receiver(0x0102_0304_0506_0708, 0, 16);
+    let right = server_helper_receiver(0x0807_0605_0403_0201, 0, 16);
+    assert_eq!(
+        evaluate_modifier_comparator_server_helper(&left, &right),
+        Some(false)
+    );
+}
+
+#[test]
+fn server_helper_comparator_rejects_short_receivers_before_any_call() {
+    let whole = server_helper_receiver(7, 0, 16);
+    for len in [0, 8, 15] {
+        let short = vec![0; len];
+        assert_eq!(
+            evaluate_modifier_comparator_server_helper(&short, &whole),
+            None
+        );
+        assert_eq!(
+            evaluate_modifier_comparator_server_helper(&whole, &short),
+            None
+        );
+    }
+    assert_eq!(
+        evaluate_modifier_comparator_server_helper(&whole, &whole),
+        Some(true)
+    );
+}
+
+#[test]
+fn server_helper_operations_write_each_scratch_slot_and_return_it() {
+    let mut helper = ModifierComparatorServerHelper::default();
+    let right = server_helper_receiver(29, 0xaa, 16);
+    let left = server_helper_receiver(17, 0x55, 16);
+
+    let right_token = helper.normalize(&right, ModifierComparatorScratchSlot::FirstRight);
+    assert_eq!(right_token, ModifierComparatorScratchSlot::FirstRight);
+    let left_token = helper.normalize(&left, ModifierComparatorScratchSlot::SecondLeft);
+    assert_eq!(left_token, ModifierComparatorScratchSlot::SecondLeft);
+    // The second call writes only its own slot, so the right result survives.
+    assert_eq!(helper.read_u64(&left_token), 17);
+    assert_eq!(helper.read_u64(&right_token), 29);
+    assert!(!evaluate_modifier_comparator_local(
+        &mut helper,
+        &left[..],
+        &right[..]
+    ));
+    assert!(evaluate_modifier_comparator_local(
+        &mut helper,
+        &left[..],
+        &left[..]
+    ));
 }
