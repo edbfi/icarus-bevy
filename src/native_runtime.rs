@@ -81,6 +81,35 @@ impl NativeWorldContext {
     pub(crate) fn same_activation(&self, other: &Self) -> bool {
         Arc::ptr_eq(&self.activation, &other.activation)
     }
+
+    pub(crate) fn replication_identity(&self) -> (&str, &str) {
+        (self.catalog.identity(), &self.map)
+    }
+}
+
+/// Read-only bridge seam. Retain the activation pin, validate the entire native
+/// state, and resolve private ECS bindings by domain ID rather than query order.
+pub(crate) fn replication_actors<'a>(
+    world: &'a World,
+    activation: &NativeWorldContext,
+) -> Result<Vec<(Entity, NativeActorView<'a>)>> {
+    let context = world
+        .get_resource::<NativeWorldContext>()
+        .context("native replication context missing")?;
+    ensure!(
+        context.same_activation(activation),
+        "native replication activation changed"
+    );
+    let state = validated_native_state(world, context)?;
+    ensure!(
+        state.foundations.is_none(),
+        "native replication requires a spatial-only world"
+    );
+    Ok(state
+        .actors
+        .into_iter()
+        .map(|actor| (context.expected[&actor.id], actor))
+        .collect())
 }
 
 pub(crate) fn activate(world: &mut World, native: &NativeWorldSnapshot) -> Result<()> {

@@ -21,14 +21,12 @@ Address pairs are server / client.
   and `game_state_open` compose the PlayerController and GameState opens
   (F-852, F-794); `run` sends the PlayerController, pawn, GameState and
   PlayerState opens after Join (F-784, F-804).
-- Authored actor bridge (F-938): opt-in motion and hidden/damage flags use the
-  supported AActor prefix. Hidden feeds scheduler priority; damage is a wire
-  Boolean. Actual ordered open blocks seed known fields; opaque blocks invalidate
-  them. Updates wait for open ACK, compare per-field baselines and repair current
-  fields after any partial loss; superseded losses cannot revert newer fields.
-  Removing managed flags requests an authored false/false reset, not class defaults.
-  Plugins require explicit application registration; no saved-pose, gameplay or
-  stock-client qualification follows.
+- Authored bridge (F-938): [schema-4 installation](../../runbooks/native-server.md#network-sessions-experimental).
+  Motion/hidden/damage use the AActor prefix; hidden feeds priority. Ordered
+  open blocks seed known fields; opaque blocks invalidate them. Open-ACK-gated
+  per-field baselines repair current fields after partial loss; superseded
+  losses cannot revert them. Flag removal requests false/false, not class
+  defaults. Saved-pose, gameplay and stock-client behavior remain unqualified.
 - Dynamic GUIDs assign on first serialization, by open or reference: GameState
   names managers 74..86 before their opens; components keep one GUID across
   connections (F-794).
@@ -236,4 +234,4 @@ Address pairs are server / client.
   M-560, M-570 to M-588, M-602 to M-605, M-614, M-615, M-620 to M-624, M-628 to
   M-635, M-707, M-708, M-710 to M-713, M-717, M-720, M-731 to M-748, M-776,
   M-777, M-782, M-794, M-795, M-797 to M-799, M-801, M-802, M-804, M-805, M-807,
-  M-832, M-834 to M-836, M-841, M-844 to M-848, M-863, M-868, M-869, M-1034.
+  M-832, M-834 to M-836, M-841, M-844 to M-848, M-863, M-868, M-869, M-1034, M-1056.
