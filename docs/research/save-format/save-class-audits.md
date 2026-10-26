@@ -22,47 +22,28 @@ struct-array bounds (F-556, F-900); all 163 Maps per copy frame into
 items and no Set occurs (F-559, F-900). The census began with C009, C013, C028
 and C034 (F-496), then C001 (F-901, F-722; U-023 resolved), the
 player-state candidates and the remaining classes (F-668; F-213). Server
-25621760 matches client 25793767 across `FString`/`FName`, `FFloatProperty`,
-`FVector`, `FArrayProperty`, tagged wrap-around, C013/C028 migration/restore,
-C030 `TextProperty`, `ProspectInfo.ExpireTime` (`Int64Property`),
-`C015`/`C022`/`C032` Map item serializers, all 65 `RecorderComponent`
-`FClassParams`, ctor defaults, vtable/restore dispatch (`C001..C038` and
-`N001..N027`), `UIcarusGameStateRecorder` (`ReadFromProspectSaveState`,
-`RecordToProspectSaveState`, `BeginRecording`, `EndRecording`,
-`FlushDeferredRecorder`, `TryResolveRecorder`, `ResolveOwnerRecorderState`,
-`TryRestoreActorRecorder`, `RetainRecorder`, `PerformStitchingPass`,
-`HasValidOwner`), and all `N001..N027` virtual slot overrides
-([restore-rules spec](../../specs/save-format/restore-rules.md)), 6 of 7
-populated C001 arrays, `CA06`/`DA04`, all 29,762 C028 spans, pin `b40c97e3...`,
-entry-path failure matrices, `FProspectBlob` `SL-004` decode contracts,
-`FAccoladeSaveData`, `FProspectInfo` (`17` props), and `15 / 15`
-`inspect-save --stage-check` qualification (`dddd.json`: `2,744` -> `1` invalid
-`C031`, `2,743` retained (`971` skip-owner, `52` `FindOnly`, `798` `RespawnOnly`,
-`658` `FindOrRespawn`, `264` `ManuallyResolved`, `821` stitching), `2` dynamic
-`C033` -> `2,741` on `M-691`; F-645 to F-680, F-715 to F-720, F-725 to F-728,
-F-731 to F-738, F-741 to F-744, F-746, F-747, F-750, F-893, F-894,
-F-899, F-902 to F-904; U-020 to U-024, U-026, U-028 to U-033, U-039, U-046,
-U-048, U-050, U-053 to U-063 resolved). Every
-opaque Struct payload is one of four fixed-width engine math types (F-900,
-F-602), and construction grids nest per-type row names over placed pieces
-sharing the grid's frame (F-643).
+25621760 matches client 25793767 across the audited string/name, scalar/math,
+array/container and tagged serializers, migration/restore and load-entry failure
+paths (F-715..F-720, F-725..F-728, F-731..F-738, F-741..F-744, F-746,
+F-747, F-750, F-893, F-899). All 65 recorder registrations, constructor
+defaults, dispatch, subsystem operations, owner matching and nested virtual
+overrides are qualified at the [restore-rules spec](../../specs/save-format/restore-rules.md)
+and its source rows (F-645..F-680, F-902..F-904). Completed selected coverage
+also includes 6 of 7 populated C001 arrays, `CA06`/`DA04`, all 29,762 C028
+spans, `SL-004` blob contracts, accolade/prospect structures and `15 / 15`
+`inspect-save --stage-check`; reference-load recorder changes remain F-894.
+Opaque Structs use four fixed-width engine math types (F-900, F-602).
+Construction grids nest per-type row names over pieces in the grid's frame
+(F-643).
 
-Under the hard tree limits every recorder value of all 15 prospects types
-losslessly with no uninterpreted leaf (F-766). Before root-content resolution,
-the dry-run native import plan blocked only on name and path references that
-no native content catalog defined (F-898). Per-instance object names are
-identity, not content, and never block; actor variable records name class
-properties (F-897). Fields whose recorder restores were read classify by property and
-enclosing struct: most name data rows through each table's row handle, and
-FLOD tile records name landscape tiles (F-897). Those earlier plans left 23
-to 26 of 3,528 to 3,782 distinct references unclassified, with 52 find-only
-owners per save (F-898); these counts exclude root-content resolution.
-Scoped catalog declarations now check map-owned paths and tiles and
-class-owned variables, with explicit root-map resolution (F-916). This is
-reference coverage, not native geometry or restoration behavior; the CLI
-still refuses writing. Decoded candidates retain staged roots and every recorder outcome;
-all 15 supplied prospects fit unchanged typing limits after completed scratch
-is released (F-920). These allowances measure retention, not restoration or RSS.
+Within the tree limits, all 15 prospects type every recorder value losslessly
+(F-766). Reference
+planning distinguishes instance identity from content and classifies recorder
+fields by their restorers (F-897). Scoped catalog declarations bind roots,
+map-owned paths/tiles and class-owned variables (F-916), extending the earlier
+coverage in F-898. Retained candidates preserve roots, identities, typing and
+bytes within unchanged limits after completed scratch is released (F-920).
+These allowances measure retention, not restoration or RSS.
 
 Strict authored C001 adapters bind source state to placements, owner lifecycle,
 Bool/I32 use gates and stacked inventories with durable actions (F-927).
@@ -86,7 +67,7 @@ stay at 128 KiB (F-198).
 
 - Packaged data-table row meanings remain out of scope by policy (F-660).
 - Complete further recorder adapters and qualify coordinates before an all-or-nothing official-save writer. Authored consumers (F-927) and reference coverage (F-916) do not qualify original behavior (U-025, U-038, U-045).
-- Heavy-world save work order: the preserved server's offline load/save/reload baseline (F-894, F-736) and connected scenario S1 on server 25956137 (3.0.32, F-701) both frame and preserve byte-identically; build pairing of the original save remains open (U-040), and native interpreted import stays gated (U-038, U-045).
+- Reuse the preserved heavy-world baseline (F-894, F-736) and connected S1 (F-701). Producing-build pairing remains U-040; native import keeps its gates (U-038, U-045).
 
 ## Artifacts
 
