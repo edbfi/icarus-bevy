@@ -16,25 +16,22 @@ Address pairs are server / client.
 ## Confirmed
 
 - NetGUID references, export flags and checksum placement: F-850. Object exports
-  carry the class network checksum of F-853 (`experimental::class_checksum`);
+  carry the F-853 class network checksum (`experimental::class_checksum`);
   package and level exports carry `0` (F-852, F-853). `experimental::session_open`
   and `game_state_open` compose the PlayerController and GameState opens
   (F-852, F-794); `run` sends the PlayerController, pawn, GameState and
   PlayerState opens after Join (F-784, F-804).
-- Authored bridge (F-938): [schema-4 installation](../../runbooks/native-server.md#network-sessions-experimental).
-  Motion/hidden/damage use the AActor prefix; hidden feeds priority. Ordered
-  open blocks seed known fields; opaque blocks invalidate them. Open-ACK-gated
-  per-field baselines repair current fields after partial loss; superseded
-  losses cannot revert them. Flag removal requests false/false, not class
-  defaults. Saved-pose, gameplay and stock-client behavior remain unqualified.
-- Dynamic GUIDs assign on first serialization, by open or reference: GameState
-  names managers 74..86 before their opens; components keep one GUID across
-  connections (F-794).
-- Export repetition (F-796): a stably named object's full path repeats once per
-  bunch until acked (`ShouldSendFullPath` `0x14372bb10`, `IsNetGUIDAcked`
-  `0x1437181b0`, `NotifyBunchCommit` `0x143719b60`, `ReceivedAck` / `ReceivedNak`
-  `0x14371e8b0` / `0x14371e9f0` in server 25956137;
-  `experimental::session_open::ConnectionExports`).
+- Authored bridge (F-938; [schema-4 installation](../../runbooks/native-server.md#network-sessions-experimental)):
+  motion/hidden/damage use the AActor prefix. Ordered open blocks seed known
+  fields; opaque blocks invalidate them; superseded losses cannot revert
+  repaired fields. Flag removal requests false/false, not class defaults.
+  Saved-pose, gameplay and stock-client behavior remain unqualified.
+- Dynamic GUIDs assign on first serialization, by open or reference (F-794);
+  components keep one GUID across connections.
+- Export repetition (F-796), server 25956137: `ShouldSendFullPath`
+  `0x14372bb10`, `IsNetGUIDAcked` `0x1437181b0`, `NotifyBunchCommit`
+  `0x143719b60`, `ReceivedAck` / `ReceivedNak` `0x14371e8b0` / `0x14371e9f0`
+  (`experimental::session_open::ConnectionExports`).
 - Actor opens with components (F-854): GUIDs and exports follow serialization
   order (actor/spawn, actor-block references by handle, component blocks,
   runtime subobject blocks naming their exported class), resolving each block's
@@ -43,24 +40,18 @@ Address pairs are server / client.
   nothing; `UIcarusStatContainer::ReplicatedStatArray` (2) and
   `UInventory::Slots` (4) use custom-delta fast arrays with all items new
   (struct-delta bit, base key 0, no deletes, IDs from 1); empty slots send
-  handles 2 and 10..18 (`experimental::pawn_open`). Fresh-pawn vitals/inventories
-  come from `data.pak` rows (F-836; `network::pawn_content`) and stats from
-  starting grants and virtual-stat formulas (F-839; `pawn_stats`).
+  handles 2 and 10..18 (`experimental::pawn_open`). Vitals and inventories:
+  F-836 (`network::pawn_content`); stats: F-839 (`pawn_stats`).
 - GameState managers: [world managers spec](world-managers.md) (F-859, F-861,
   F-862).
-- GameState active prospect (F-855): handles 51..67 send nondefault saved
-  `ProspectInfo` fields, arrays carrying every element field (`ElapsedTime` from
-  `LevelTimeElapsedSec`; `IsCurrentlyPlaying` for connected members only;
-  `game_state_open::active_prospect_values`, `ProspectInfo::for_session`). C015
-  restores handles 34, 35, 39, 41, 42, and 46 tracks whole world seconds (F-855).
-  `SessionFlags` (47) encodes `D_SessionFlags` 1-byte row indices (F-830;
-  `network::saved_game_state`); `LockedMissions` (50) pairs kept `MissionHistory`
-  `D_FactionMissions` 1-byte rows with lock end ints, refreshed every ~60 s
-  (F-834, F-835; `game_state_open::locked_missions_value`); `bIsOpenWorldProspect`
-  (48) and `bIsOutpostProspect` (49) follow `D_ProspectStats` grants
-  (`WorldIsOpenWorldProspect_?` / `WorldIsOutpostProspect_?` > 0) on
-  `WorldStatList` (F-911; `network::prospect_world_flags`); `RichPresenceGUID`
-  (24) is a fresh 32-hex uppercase GUID per run (F-912; `network::rich_presence_guid`).
+- GameState open values: active prospect 51..67 and C015 handles 34, 35, 39,
+  41, 42, 46 (F-855; arrays carry every element field, `IsCurrentlyPlaying`
+  only for connected members; `game_state_open::active_prospect_values`,
+  `ProspectInfo::for_session`); `SessionFlags` 47 (F-830;
+  `network::saved_game_state`); `LockedMissions` 50 (F-834, F-835;
+  `game_state_open::locked_missions_value`); `bIsOpenWorldProspect` 48 and
+  `bIsOutpostProspect` 49 (F-911; `network::prospect_world_flags`);
+  `RichPresenceGUID` 24 (F-912; `network::rich_presence_guid`).
 - Gameplay-tag net index (F-702; U-065 resolved): `ConstructGameplayTagTree`
   and `ConstructNetIndex` sort by `GetAllNodes` + `FName::LexicalLess`, set
   `InvalidTagNetIndex = N + 1`, `total_bits = 12`, clamped `first_segment = 12`,
@@ -72,17 +63,17 @@ Address pairs are server / client.
   uses `MAX_SINGLE_BUNCH_SIZE_BITS = 7,625` and `MAX_PARTIAL_BUNCH_SIZE_BITS = 7,624`
   (`953` B at `MaxPacket = 1024`, `MaxPacketHandlerBits = 2`), calls
   `AppendExportBunches` (`0x14351fe30` / `0x1437b03d0`, with F-711's pair) and
-  `AppendMustBeMappedGuids`, and sets `bPartialInitial` + `bOpen` on part 0 and
-  `bPartialFinal` + `bClose` on the last (`experimental::sequencing`,
-  `actor_channel`). `ReceivedRawBunch` (`0x143538460` / `0x1437c5cc0`) runs
-  `ReceiveNetGUIDBunch` (`0x143719700` / `0x1439b8bb0`) on `bHasPackageMapExports`
-  before `InRec` ordering; export-only bunches (`ExportNetGUIDHeader`
-  `0x1437089e0` / `0x1439ab670`, `ExportNetGUID` `0x143707e50` / `0x1439aabb0`)
-  carry `bHasRepLayoutExport` (`0` for GUID exports), count and
-  `InternalLoadObject` (`0x1439af1c0`) refs; `ReceivedNextBunch`
-  (`0x143537690` / `0x1437c5500`) reassembles `InPartialBunch`, and
-  `UActorChannel::ReceivedBunch` (`0x143535c60` / `0x1437c43f0`) reads
-  `bHasMustBeMappedGUIDs` before `ProcessBunch` (`0x143530b30` / `0x1437c0c30`).
+  `AppendMustBeMappedGuids`, and flags part 0 `bPartialInitial` + `bOpen`, the
+  last `bPartialFinal` + `bClose` (`experimental::sequencing`, `actor_channel`).
+  `ReceivedRawBunch` (`0x143538460` / `0x1437c5cc0`) runs `ReceiveNetGUIDBunch`
+  (`0x143719700` / `0x1439b8bb0`) on `bHasPackageMapExports` before `InRec`
+  ordering; export-only bunches (`ExportNetGUIDHeader` `0x1437089e0` /
+  `0x1439ab670`, `ExportNetGUID` `0x143707e50` / `0x1439aabb0`) carry
+  `bHasRepLayoutExport` (`0` for GUID exports), count and `InternalLoadObject`
+  (`0x1439af1c0`) refs; `ReceivedNextBunch` (`0x143537690` / `0x1437c5500`)
+  reassembles `InPartialBunch`; `UActorChannel::ReceivedBunch` (`0x143535c60` /
+  `0x1437c43f0`) reads `bHasMustBeMappedGUIDs` before `ProcessBunch`
+  (`0x143530b30` / `0x1437c0c30`).
 - Open bunch, actor hook and dormancy (F-709 to F-711, F-751, F-845, F-849):
   `UPackageMapClient::SerializeNewActor` frames F-845's fields with
   `bQuantized = 1` for Location/Velocity and `0` for Scale3D (client
@@ -118,10 +109,10 @@ Address pairs are server / client.
   handle stream and field headers (`SerializeInt` below
   `FClassNetCache::GetMaxIndex() + 1` `0x1437c2650`, packed bit count, payload;
   `experimental::rep_rpc`). Handle order follows F-846 (native `ConstructUClass`
-  descriptors; cooked `UBlueprintGeneratedClass` exports keep `ChildProperties`
-  order; `experimental::rep_layout`: 64 schemas). Custom-delta fast arrays carry
-  a 1-bit header, packed static index, four 4-B words, 4-B delete IDs and
-  changed elements.
+  descriptors; cooked `UBlueprintGeneratedClass` exports keep `ChildProperties` order;
+  `experimental::rep_layout`: 64 schemas). Custom-delta fast arrays carry a
+  1-bit header, packed static index, four 4-B words, 4-B delete IDs and changed
+  elements.
 - Spawn vectors and property serializers (F-588, F-589, F-593, F-597, F-639,
   F-673 to F-675, F-704 to F-709, F-762, F-843, F-845 to F-848; U-064, U-066
   resolved): spawn vectors/rotators follow F-845 (`<= 24` quantized bits).
@@ -147,9 +138,9 @@ Address pairs are server / client.
     `evaluate_*_net_priority`).
   - `UGameEngine::GetMaxTickRate` (`0x143836250`) clamps `NetServerMaxTickRate`
     to `[1, 1000]` before `0x143993060` / `0x143c5d520` (`DefaultEngine.ini`:
-    `NetServerMaxTickRate=30`, `MaxClientRate=750000`, `MaxInternetClientRate=750000`,
-    `ConfiguredInternetSpeed=640000`, `ConfiguredLanSpeed=912000`,
-    `ConnectionTimeout=360.0`, `InitialConnectTimeout=360.0`,
+    `NetServerMaxTickRate=30`, `MaxClientRate` and `MaxInternetClientRate`
+    `750000`, `ConfiguredInternetSpeed=640000`, `ConfiguredLanSpeed=912000`,
+    `ConnectionTimeout` and `InitialConnectTimeout` `360.0`,
     `ResolutionConnectionTimeout=120.0`).
   - `UNetConnection::IsNetReady` (`0x143991d80`, `evaluate_connection_is_net_ready`):
     `Saturate` sets `QueuedBits = -SendBuffer.GetNumBits()`; ready iff
@@ -186,39 +177,31 @@ Address pairs are server / client.
     after `0.2` (`dot < 0 && dist_sq > 4M`) or `0.4` (`dot < 0 && dist_sq > 250k`,
     or `dot >= 0 && dist_sq > 9,998,244`).
   - `ProcessPrioritizedActors` (`0x1439c1bf0`, `evaluate_process_prioritized_actor`)
-    checks `IsNetReady(0)`, sends `SendDestructionInfo`, skips
-    `IsActorRelevantToConnection` within `1.0` s of `RelevantTime` (F-788),
-    treats `ForceRelevantFrame >= Connection->LastProcessedFrame` (`+0xd4` vs
-    `+0x200`, unsigned; F-851) as recently relevant, sets
-    `RelevantTime = ElapsedTime + 0.5 * SRand()` if relevant, delays unopenable
+    checks `IsNetReady(0)`, sends `SendDestructionInfo`, applies F-788's
+    `RelevantTime` rule and F-851's `ForceRelevantFrame` rule, delays unopenable
     `< 1.0` Hz actors by `0.2 * srands()`, replicates until saturation, and
     closes irrelevant/torn-off channels when
     `has_channel && (!actor_level_initialized || !actor_is_net_startup)`
     (`CloseReason` `4` on `bTearOff`, else `3`).
   - Inlined `MarkRelevantActors` (`0x1439bfa04`, `evaluate_mark_relevant_actor_step`)
     sets `bPendingNetUpdate` when `Channel != nullptr && ElapsedTime - Channel->RelevantTime <= 1.0`
-    or `IsActorRelevantToConnection` (updating `RelevantTime = ElapsedTime + 0.5 * SRand()`
-    when a channel exists), sets `ForceRelevantFrame = ReplicationFrame + 1` when
-    `ForceRelevantFrame >= Connection->LastProcessedFrame` across unprocessed
-    entries, relevant or not, and updates `LastProcessedFrame` (F-851).
+    or `IsActorRelevantToConnection` (refreshing a channel's `RelevantTime` per
+    F-788), then applies F-851's `ForceRelevantFrame` and `LastProcessedFrame`
+    updates.
 - GameState updates (F-805, F-807): ~30 Hz unreliable actor blocks (component
   blocks may follow) carry changed `TimeOfDay` (38), 0.1 s
   `ReplicatedWorldTimeSeconds` (19), whole-second `LevelTimeElapsedSec` (46),
   2 s `ServerFPS` (82) and changed `NetworkingStatus` (68..79; F-810, F-856,
   F-808). Multi-bunch updates split as unreliable partials on consecutive
-  packets (`net.PartialBunchReliableThreshold = 0` in client and pinned server;
-  `ReceivedNextBunch` joins only on the same or next packet, F-825;
-  `LabPeer::actor_update_datagrams`).
+  packets (F-825; `LabPeer::actor_update_datagrams`).
 
 ## Candidate
 
 - Authored native refresh transport (F-936): `PeerLab::refresh_active_prospect`
   validates complete handles 51..67 and the current dynamic open in both byte
-  orders before publishing. Joined peers receive deltas after open ACK;
-  zero/false/empty values clear earlier state, NAK/partial loss repairs, and
-  temporary send pressure leaves the refresh due while clocks advance.
-  Future joins use the latest template. Calls remain explicit; original
-  trigger timing and stock-client behavior remain unqualified (U-070, U-038).
+  orders before publishing; joined peers receive deltas after open ACK and
+  future joins use the latest template. Calls remain explicit; original trigger
+  timing and stock-client behavior remain unqualified (U-070, U-038).
 - `experimental::actor_channel`, `sequencing` and `rep_layout` replay captured
   bunches (F-709 to F-711), `PackageMapState` mappings/must-be-mapped lists and
   scheduling policies; fixtures and randomized checks: F-763, F-764 (F-577,

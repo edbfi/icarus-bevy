@@ -215,17 +215,15 @@ construction, script owners and data-table rows are out of scope (F-660).
   and destruction effects stay unqualified. The bounded comparator calls one
   opaque callee right then left with distinct scratch slots, then reads
   left/right result u64s and returns equality. Its separate model preserves
-  late reads/aliasing; callee effects and row meanings stay opaque. Public
-  symbols match both helpers without exception coverage (M-1050). Legacy
-  feature guards refuse both copies (M-1052, M-1053); structural NI-zero accepts
-  server Info then refuses mapping, client unattempted (M-1054). Descriptor 8
-  is a positional tail candidate: frame 0 vs 9 (M-1058, M-1059, M-1061). Full
-  zero-tail and counted-u32 queries refuse unsupported records, without a
-  complete profile or extent (M-1062, M-1066). Guard kinds `0x1168` then
-  `0x1102` (M-1065, M-1067) do not classify the helper. Exact prefix reads
-  report its first selected ordinal byte as 3 (M-1068); body, enum meaning,
-  later tuple fields, valid tails, helper extents and leaf identity stay
-  unqualified.
+  late reads/aliasing. Both server calls target `0x1410eb490`
+  (M-1046/ev_89fc8bd4555c). PDB metadata routes (M-1050, M-1052..M-1054,
+  M-1058, M-1059, M-1061, M-1062, M-1065..M-1068) declare an 11-byte helper
+  there (M-1071); thunk links/tails stay unread and no complete profile is
+  accepted. Its bytes decode as `mov rax,[rcx+8]; mov [rdx],rax;
+  mov rax,rdx; ret` (F-940): each call copies its receiver's u64 at +8 into
+  the scratch slot, so server equality compares those words. Field and row
+  meaning, aliases and the client helper (its metadata route unattempted)
+  stay unqualified.
 
 ## Candidate
 
@@ -238,5 +236,5 @@ construction, script owners and data-table rows are out of scope (F-660).
 ## Evidence
 
 F-645..F-681, F-716, F-894, F-902..F-904, F-728, F-734..F-736, F-741..F-744, F-746, F-747,
-F-750, F-897, F-930, F-937; M-642..M-698, M-755..M-792, M-794..M-807, M-858, M-1024, M-1025,
-M-1027, M-1028, M-1035..M-1037, M-1046..M-1048, M-1050, M-1052..M-1054, M-1058, M-1059, M-1061..M-1062, M-1065..M-1068.
+F-750, F-897, F-930, F-937, F-940; M-642..M-698, M-755..M-792, M-794..M-807, M-858, M-1024, M-1025,
+M-1027, M-1028, M-1035..M-1037, M-1046..M-1048, M-1050, M-1052..M-1054, M-1058, M-1059, M-1061..M-1062, M-1065..M-1068, M-1071..M-1074.

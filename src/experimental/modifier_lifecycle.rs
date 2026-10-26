@@ -19,7 +19,8 @@
 //!
 //! The optional comparator model below describes physical caller-local operation
 //! order only. Its callbacks retain opaque operands, result tokens and effects;
-//! it is independent of the selection model's supplied comparison bools.
+//! it is independent of the selection model's supplied comparison bools. The
+//! server helper operations mirror the decoded server span only (F-940).
 
 /// `EStatSources` discriminant (`3`) passed by `UModifierStateComponent::Deactivate`
 /// and `UModifierStateComponent::UpdateStats` to `UIcarusStatContainer::RemoveStats_BP`
@@ -1100,4 +1101,78 @@ pub fn evaluate_modifier_comparator_local<O: ModifierComparatorOperations + ?Siz
     let left_word = operations.read_u64(&left_result);
     let right_word = operations.read_u64(&right_result);
     left_word == right_word
+}
+
+/// Receiver byte offset of the `u64` that the declared server `25621760` comparator
+/// helper span copies into its hidden return slot (F-940).
+pub const MODIFIER_COMPARATOR_HELPER_WORD_OFFSET: usize = 8;
+
+/// Smallest receiver byte view the server helper span reads (F-940).
+pub const MODIFIER_COMPARATOR_HELPER_MIN_OPERAND_BYTES: usize =
+    MODIFIER_COMPARATOR_HELPER_WORD_OFFSET + size_of::<u64>();
+
+/// [`ModifierComparatorOperations`] mirroring the decoded server `25621760` helper
+/// span (F-940): `mov rax,[rcx+8]; mov [rdx],rax; mov rax,rdx; ret`. Each call
+/// copies the receiver's little-endian `u64` at `+8` into the supplied scratch slot
+/// and returns that slot; reads take the slot's current word.
+///
+/// Operands are little-endian receiver byte views of at least
+/// [`MODIFIER_COMPARATOR_HELPER_MIN_OPERAND_BYTES`]; use
+/// [`evaluate_modifier_comparator_server_helper`] for checked views; direct
+/// [`evaluate_modifier_comparator_local`] use panics on a shorter view. The word's
+/// meaning, the client counterpart and runtime behavior stay unqualified.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct ModifierComparatorServerHelper {
+    first_right: u64,
+    second_left: u64,
+}
+
+impl ModifierComparatorOperations for ModifierComparatorServerHelper {
+    type Operand = [u8];
+    type ResultToken = ModifierComparatorScratchSlot;
+
+    fn normalize(
+        &mut self,
+        operand: &Self::Operand,
+        scratch_slot: ModifierComparatorScratchSlot,
+    ) -> Self::ResultToken {
+        // A shorter view panics with the standard slice-index message.
+        let mut bytes = [0; size_of::<u64>()];
+        bytes.copy_from_slice(
+            &operand[MODIFIER_COMPARATOR_HELPER_WORD_OFFSET
+                ..MODIFIER_COMPARATOR_HELPER_MIN_OPERAND_BYTES],
+        );
+        let word = u64::from_le_bytes(bytes);
+        match scratch_slot {
+            ModifierComparatorScratchSlot::FirstRight => self.first_right = word,
+            ModifierComparatorScratchSlot::SecondLeft => self.second_left = word,
+        }
+        scratch_slot
+    }
+
+    fn read_u64(&mut self, result_token: &Self::ResultToken) -> u64 {
+        match result_token {
+            ModifierComparatorScratchSlot::FirstRight => self.first_right,
+            ModifierComparatorScratchSlot::SecondLeft => self.second_left,
+        }
+    }
+}
+
+/// Evaluates the local comparator with the decoded server helper span (F-937,
+/// F-940): equality of the two receivers' `u64` words at `+8`.
+///
+/// Returns `None`, before any call, when either receiver view is shorter than
+/// [`MODIFIER_COMPARATOR_HELPER_MIN_OPERAND_BYTES`]. Server `25621760` only; this
+/// grants no row-name interpretation or import authority.
+pub fn evaluate_modifier_comparator_server_helper(left: &[u8], right: &[u8]) -> Option<bool> {
+    if left.len() < MODIFIER_COMPARATOR_HELPER_MIN_OPERAND_BYTES
+        || right.len() < MODIFIER_COMPARATOR_HELPER_MIN_OPERAND_BYTES
+    {
+        return None;
+    }
+    Some(evaluate_modifier_comparator_local(
+        &mut ModifierComparatorServerHelper::default(),
+        left,
+        right,
+    ))
 }
