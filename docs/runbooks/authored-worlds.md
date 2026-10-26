@@ -54,7 +54,8 @@ each `placement` declares positive `identity.guid`, UTF-16 `identity.name`,
 explicit: match GUID plus ASCII-folded name (non-ASCII and unpaired surrogates
 exact); duplicate/unresolved pairs reject. Names: 1–1,024 units, 1,048,576 total
 including links (F-922). Assignment follows F-646/F-650/F-663 except stricter
-unresolved-link rejection; other setter effects/releases are unqualified.
+unresolved-link rejection (server 25621760/client 25793767); other setter
+effects/releases are unqualified.
 
 Schema 6 (otherwise as 4/5): immutable declarations, mutable domain-ID edges,
 optional C001 metadata; links independent of source, unlinked components valid.
@@ -89,17 +90,17 @@ Detached `find_only` attaches live; `find_or_respawn` attaches live/spawns absen
 rejecting failed attachment; `respawn_only` replaces live/spawns absent.
 Replacement keeps domain ID/edited live-endpoint edges, increments incarnation.
 All commands validate before mutation; no forced/manual resolution or
-undeclared spawning. Sequence starts
-at 1, increments, matches `restore_sequence`; exact latest retries preserve
-edits, altered/older reject. Reload never replays policies. Completion is
+undeclared spawning. Sequence starts at 1, increments, matches
+`restore_sequence`; exact latest retries preserve edits, altered/older reject. Reload never replays policies. Completion is
 durable only after autosave or shutdown publishes it.
 
 Owner mutations and capture reject managed-owner ECS hooks, requirements and
 lifecycle observers, even on untouched owners or uninstantiated optional types
 (F-928; modifiers too). Unrelated entity observers are allowed; global raw
-lifecycle-event observers (`On<RemoveEvent>`) block even autosave capture. Flush
-pending commands/registrations first. `live_actors` counts live; `actors`
-includes dormant.
+lifecycle-event observers (`On<RemoveEvent>`) block even autosave capture,
+regardless of intended entity. Flush pending commands/registrations first;
+component `Drop` effects and activation setup are outside this contract.
+`live_actors` counts live; `actors` includes dormant.
 
 ## Authored owner modifiers
 
@@ -115,7 +116,8 @@ icarus-server apply-native-modifier --request modifier-request.json --data-dir a
 Omit creation's `--dry-run` to publish first. Preservation/foundation
 relationships compose; C001/scalar/inventory fixtures never implicitly upgrade.
 Live handles own per-owner modifiers; dormant slots have none; replacement
-retires them.
+retires them, while the same incarnation keeps them across unrelated edits,
+exact restore retry and reload (F-931).
 
 ```json
 {"owner":{"id":1,"incarnation":1},"expected_revision":0,"action":{"type":"add","definition":{"name":"authored_boost","duration":{"type":"timed","seconds":5.0},"contributions":[{"stat":"authored_power","amount":3}]}}}
@@ -137,8 +139,9 @@ or all-owner step unchanged.
 stage changes with `SnapshotStore` preflight. Fixed time advances before
 `Gameplay`; no wall-clock catch-up on restart.
 
-Activation is system-owned; a private health anchor latches errors closed and
-`run` checks it. The apply CLI requires an existing world and strict JSON
+Activation is system-owned and immutable; a private nonclone health anchor
+latches errors closed and `run` checks it. Malformed, transplanted or missing
+components/resources reject. The apply CLI requires an existing world and strict JSON
 ≤64 KiB; symlink path components and FIFOs reject. No `--dry-run`: opening the
 store mutates its lock/directory.
 
@@ -159,6 +162,7 @@ after each call; setup excluded; no relationships/sidecars):
 | indefinite | 0.043 | 0.583 | 4.716 | 18.267 |
 | armed timers | 0.056 | 0.579 | 4.400 | 18.521 |
 
+Dedup lowered nonempty 1,024-owner p95; empty/1-owner cells were mixed.
 1,024 owners is an admission cap, not a 30 Hz guarantee; whole-frame, health,
 catch-up, uniform speedup and RSS stay unqualified.
 

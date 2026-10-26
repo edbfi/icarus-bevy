@@ -215,12 +215,15 @@ construction, script owners and data-table rows are out of scope (F-660).
   and destruction effects stay unqualified. The bounded comparator calls one
   opaque callee right then left with distinct scratch slots, then reads
   left/right result u64s and returns equality. Its separate model preserves
-  late reads/aliasing. PDB metadata routes (M-1050, M-1052..M-1054,
-  M-1058, M-1059, M-1061, M-1062, M-1065..M-1068) end in one declared 11-byte
-  server helper (M-1071), decoded as `mov rax,[rcx+8]; mov [rdx],rax;
+  late reads/aliasing. Both server calls target `0x1410eb490`
+  (M-1046/ev_89fc8bd4555c). PDB metadata routes (M-1050, M-1052..M-1054,
+  M-1058, M-1059, M-1061, M-1062, M-1065..M-1068) declare an 11-byte helper
+  there (M-1071); thunk links/tails stay unread and no complete profile is
+  accepted. Its bytes decode as `mov rax,[rcx+8]; mov [rdx],rax;
   mov rax,rdx; ret` (F-940): each call copies its receiver's u64 at +8 into
   the scratch slot, so server equality compares those words. Field and row
-  meaning, aliases and the client helper stay unqualified.
+  meaning, aliases and the client helper (its metadata route unattempted)
+  stay unqualified.
 
 ## Candidate
 
