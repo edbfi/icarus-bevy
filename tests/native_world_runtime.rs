@@ -9,8 +9,8 @@ use icarus_bevy::{
     config::ServerConfig,
     native_lifecycle_runtime::NativeOwnerIncarnation,
     native_runtime::{
-        NativeActorIdentity, NativeLocalBounds, NativeRotation, NativeScale, NativeVariables,
-        NativeWorldContext, native_world_bounds, update_native_actor,
+        NativeActorIdentity, NativeFoundation, NativeLocalBounds, NativeRotation, NativeScale,
+        NativeVariables, NativeWorldContext, native_world_bounds, update_native_actor,
     },
     native_world::{
         Aabb3, CompiledNativeCatalog, MAX_NATIVE_STRING_UNITS, MAX_NATIVE_VARIABLE_BYTES,
@@ -462,6 +462,100 @@ fn late_lifecycle_components_block_native_operations_and_repair_allows_retry() {
     check::<Awake>(false);
     check::<Disabled>(true);
     check::<Dormant>(true);
+}
+
+#[test]
+fn late_relationship_state_blocks_native_operations_atomically_then_repair_allows_retry() {
+    let _fixture = FIXTURE_LOCK.lock().unwrap();
+    use bevy::ecs::entity_disabling::{DefaultQueryFilters, Disabled};
+
+    #[derive(Component)]
+    struct Dormant;
+
+    #[derive(Resource)]
+    struct UnrelatedResource;
+
+    let initial = snapshot();
+    let original = &initial.native_world.as_ref().unwrap().actors[0];
+    let mut app = build_app(&ServerConfig::default(), &initial).unwrap();
+    let directory = tempfile::tempdir().unwrap();
+    let mut store = SnapshotStore::open(directory.path()).unwrap();
+    store.save_new(&initial).unwrap();
+    let manifest = fs::read(directory.path().join("manifest.json")).unwrap();
+    let bounds = native_world_bounds(app.world_mut(), original.id).unwrap();
+    assert_eq!(capture(app.world_mut()).unwrap(), initial);
+    assert!(app.world().component_id::<NativeFoundation>().is_none());
+    let disabling = app.world_mut().register_component::<Dormant>();
+    app.world_mut()
+        .resource_mut::<DefaultQueryFilters>()
+        .register_disabling_component(disabling);
+    app.insert_resource(UnrelatedResource);
+    let offender = app.world().resource_entity::<UnrelatedResource>().unwrap();
+    app.world_mut()
+        .entity_mut(offender)
+        .insert((Dormant, Disabled));
+    let mut proposed = original.transform.clone();
+    proposed.translation = [0.0; 3];
+    let variables = vec![NativeVariableValue {
+        key: "private_switch".into(),
+        value: NativeValue::Bool(false),
+    }];
+    let mut retained_archetype = None;
+    for _ in 0..2 {
+        app.world_mut()
+            .entity_mut(offender)
+            .insert(NativeFoundation(None));
+        let archetype = app.world().entity(offender).archetype().id();
+        if let Some(retained) = retained_archetype {
+            assert_eq!(archetype, retained);
+        }
+        let bounds_error = native_world_bounds(app.world_mut(), original.id).unwrap_err();
+        let edit_error = update_native_actor(
+            app.world_mut(),
+            original.id,
+            proposed.clone(),
+            variables.clone(),
+        )
+        .unwrap_err();
+        let capture_error = capture(app.world_mut())
+            .and_then(|snapshot| store.save(&snapshot))
+            .unwrap_err();
+        for error in [bounds_error, edit_error, capture_error] {
+            assert_eq!(
+                error.root_cause().to_string(),
+                "world contains unexpected native relationship components"
+            );
+        }
+        assert_eq!(store.load().unwrap().unwrap().snapshot, initial);
+        assert_eq!(
+            fs::read(directory.path().join("manifest.json")).unwrap(),
+            manifest
+        );
+        app.world_mut()
+            .entity_mut(offender)
+            .remove::<NativeFoundation>();
+        assert!(app.world().archetypes()[archetype].is_empty());
+        retained_archetype = Some(archetype);
+        assert!(app.world().contains_resource::<UnrelatedResource>());
+        assert_eq!(capture(app.world_mut()).unwrap(), initial);
+        assert_eq!(
+            native_world_bounds(app.world_mut(), original.id).unwrap(),
+            bounds
+        );
+    }
+    update_native_actor(
+        app.world_mut(),
+        original.id,
+        proposed.clone(),
+        variables.clone(),
+    )
+    .unwrap();
+    let changed = capture(app.world_mut()).unwrap();
+    let changed_actor = &changed.native_world.as_ref().unwrap().actors[0];
+    assert_eq!(changed_actor.transform, proposed);
+    assert_eq!(changed_actor.variables, variables);
+    assert_eq!(store.save(&changed).unwrap().generation, 2);
+    assert_eq!(store.load().unwrap().unwrap().snapshot, changed);
 }
 
 #[test]

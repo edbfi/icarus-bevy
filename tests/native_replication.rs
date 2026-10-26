@@ -50,10 +50,12 @@ use icarus_bevy::{
         MAX_PATH_DEPTH, MAX_STRING_BYTES, NativeReplicationCounts, NativeReplicationSet,
     },
     native_runtime::{
-        NativeActorIdentity, NativeRotation, NativeWorldContext, update_native_actor,
+        NativeActorIdentity, NativeLocalBounds, NativeRotation, NativeVariables,
+        NativeWorldContext, update_native_actor,
     },
     native_world::{
-        CompiledNativeCatalog, NativeCatalogDefinition, NativeTransform, prepare_authored_world,
+        CompiledNativeCatalog, NativeCatalogDefinition, NativeTransform, NativeValue,
+        prepare_authored_world,
     },
     network,
     persistence::SnapshotStore,
@@ -1268,6 +1270,397 @@ fn actor_and_declaration_insertion_order_do_not_change_identity_or_selection() {
     network::teardown(second.world_mut());
 }
 
+fn sparse_fixture(count: usize) -> Fixture {
+    assert!(count >= 7);
+    let mut fixture = Fixture::new();
+    let mut definition = fixture
+        .snapshot
+        .native_world
+        .as_ref()
+        .unwrap()
+        .definitions
+        .clone();
+    definition.classes[0].variables = serde_json::from_value(json!([
+        {"key": "enabled", "default": {"type": "bool", "value": true}}
+    ]))
+    .unwrap();
+    definition.maps[0].placements = (0..count)
+        .map(|index| {
+            serde_json::from_value(json!({
+                "key": format!("sparse_{index:04}"), "class": "spatial", "tile": "tile",
+                "transform": pose_json([(index % 32) as f32 * 2.0,
+                    (index / 32) as f32 * 2.0, 2.0])
+            }))
+            .unwrap()
+        })
+        .collect();
+    fixture.snapshot = prepare_authored_world(
+        Arc::new(CompiledNativeCatalog::compile(definition).unwrap()),
+        "authored",
+    )
+    .unwrap()
+    .initial_snapshot();
+    fixture.declaration["catalog_id"] =
+        json!(fixture.snapshot.native_world.as_ref().unwrap().catalog_id);
+    fixture.declaration["bindings"] =
+        json!([0, count / 2, count - 1].map(|index| binding_json(&format!("sparse_{index:04}"))));
+    fixture
+}
+
+fn proxy_entity(app: &App, id: DomainId) -> Entity {
+    app.world()
+        .iter_entities()
+        .find(|entity| entity.get::<NetActor>().is_some_and(|actor| actor.id == id))
+        .unwrap()
+        .id()
+}
+
+#[test]
+fn sparse_bindings_resolve_first_middle_and_last_across_unordered_large_native_worlds() {
+    for count in [7, MAX_BINDINGS + 1] {
+        for order in [ByteOrder::Little, ByteOrder::Big] {
+            let mut fixture = sparse_fixture(count);
+            let (mut first, first_address) = fixture.app();
+            fixture.declaration["bindings"]
+                .as_array_mut()
+                .unwrap()
+                .reverse();
+            fixture
+                .snapshot
+                .native_world
+                .as_mut()
+                .unwrap()
+                .actors
+                .reverse();
+            let (mut second, second_address) = fixture.app();
+            let expected = [0, count / 2, count - 1].map(|index| {
+                let id = fixture.id(&format!("sparse_{index:04}"));
+                let [x, y, z] = first
+                    .world()
+                    .get::<Position>(native_entity(&first, id))
+                    .unwrap()
+                    .0;
+                let position = [y * 10.0, -x * 10.0, z * 10.0];
+                for app in [&first, &second] {
+                    assert_eq!(
+                        app.world().get::<Position>(proxy_entity(app, id)),
+                        Some(&Position(position))
+                    );
+                }
+                movement(position)
+            });
+            let mut left = Client::connect(&mut first, first_address, order);
+            let mut right = Client::connect(&mut second, second_address, order);
+            let left_bytes = left.join(&mut first);
+            let right_bytes = right.join(&mut second);
+            let left_fields = fields(&left_bytes, &left, true);
+            assert_eq!(left_fields.len(), 3);
+            assert_eq!(left_fields, fields(&right_bytes, &right, true));
+            for value in &expected {
+                assert_eq!(
+                    left_fields
+                        .iter()
+                        .filter(|fields| fields.get(&6) == Some(value))
+                        .count(),
+                    1
+                );
+            }
+            let guids = |bytes: &[Vec<u8>], client: &Client| {
+                actor_bodies(bytes, client)
+                    .into_iter()
+                    .filter_map(|(_, body)| body.spawn.map(|spawn| spawn.actor.guid))
+                    .collect::<Vec<_>>()
+            };
+            let left_guids = guids(&left_bytes, &left);
+            assert_eq!(left_guids.len(), 3);
+            assert_eq!(left_guids, guids(&right_bytes, &right));
+            assert_eq!(
+                first.world().resource::<ReplicationFrame>().decisions,
+                second.world().resource::<ReplicationFrame>().decisions
+            );
+            assert_eq!(
+                first
+                    .world()
+                    .resource::<NativeReplicationCounts>()
+                    .activated,
+                3
+            );
+            assert_eq!(
+                first.world().resource::<PeerLab>().stats().actor_opens_sent,
+                3
+            );
+            let left_native = capture(first.world_mut()).unwrap().native_world;
+            assert_eq!(left_native.as_ref().unwrap().actors.len(), count);
+            assert!(left_native == capture(second.world_mut()).unwrap().native_world);
+            network::teardown(first.world_mut());
+            network::teardown(second.world_mut());
+        }
+    }
+}
+
+fn assert_zero_peer_retired(app: &App, activated: usize) {
+    assert_eq!(
+        *app.world().resource::<NativeReplicationCounts>(),
+        NativeReplicationCounts {
+            activated,
+            rejected: activated,
+            binding_errors: 1,
+            active: false,
+        }
+    );
+    let lab = app.world().resource::<PeerLab>();
+    assert_eq!(lab.peer_count(), 0);
+    assert!(!lab.is_admitting());
+    assert!(!app.world().contains_resource::<SessionReplication>());
+    assert!(!app.world().iter_entities().any(|entity| {
+        entity.contains::<NetActor>()
+            || entity.contains::<NetArchetype>()
+            || entity.contains::<NetViewer>()
+    }));
+}
+
+#[test]
+fn zero_peer_ticks_observe_bypassed_movement_and_bound_or_unbound_corruption_then_latch() {
+    for bound in [false, true] {
+        for defect in ["variables", "identity", "bounds", "required", "position"] {
+            let fixture = sparse_fixture(7);
+            let (mut app, _) = fixture.app();
+            app.insert_resource(TimeUpdateStrategy::FixedTimesteps(1));
+            app.update(); // Prime Bevy's initial zero-delta frame.
+            for _ in 0..3 {
+                app.update();
+            }
+            let moved = fixture.id("sparse_0000");
+            let source = native_entity(&app, moved);
+            app.world_mut()
+                .get_mut::<Position>(source)
+                .unwrap()
+                .bypass_change_detection()
+                .0 = [11.0, 12.0, 13.0];
+            let tick = app.world().resource::<SimulationClock>().tick;
+            app.update();
+            assert_eq!(app.world().resource::<SimulationClock>().tick, tick + 1);
+            assert_eq!(
+                app.world().get::<Position>(proxy_entity(&app, moved)),
+                Some(&Position([120.0, -110.0, 130.0]))
+            );
+            assert!(app.world().resource::<NativeReplicationCounts>().active);
+            assert!(app.world().resource::<PeerLab>().is_admitting());
+            assert_eq!(app.world().resource::<PeerLab>().peer_count(), 0);
+            let before = capture(app.world_mut()).unwrap().native_world;
+            let offender = native_entity(
+                &app,
+                fixture.id(if bound { "sparse_0006" } else { "sparse_0001" }),
+            );
+            let identity = app
+                .world()
+                .get::<NativeActorIdentity>(offender)
+                .unwrap()
+                .clone();
+            let bounds = app
+                .world()
+                .get::<NativeLocalBounds>(offender)
+                .unwrap()
+                .clone();
+            let variables = app
+                .world()
+                .get::<NativeVariables>(offender)
+                .unwrap()
+                .clone();
+            let position = *app.world().get::<Position>(offender).unwrap();
+            match defect {
+                "variables" => {
+                    app.world_mut()
+                        .get_mut::<NativeVariables>(offender)
+                        .unwrap()
+                        .bypass_change_detection()
+                        .0[0]
+                        .value = NativeValue::I32(1)
+                }
+                "identity" => {
+                    app.world_mut()
+                        .get_mut::<NativeActorIdentity>(offender)
+                        .unwrap()
+                        .bypass_change_detection()
+                        .tile = "wrong_tile".into()
+                }
+                "bounds" => {
+                    app.world_mut()
+                        .get_mut::<NativeLocalBounds>(offender)
+                        .unwrap()
+                        .bypass_change_detection()
+                        .0
+                        .min[0] = -1.0
+                }
+                "required" => {
+                    app.world_mut()
+                        .entity_mut(offender)
+                        .remove::<NativeRotation>();
+                }
+                "position" => {
+                    app.world_mut()
+                        .get_mut::<Position>(offender)
+                        .unwrap()
+                        .bypass_change_detection()
+                        .0 = [30_000_000.0; 3]
+                }
+                _ => unreachable!(),
+            }
+            // Snapshot the injected component values, including the absent one,
+            // without relying on capture to accept a deliberately corrupt world.
+            let injected = |app: &App| {
+                app.world()
+                    .iter_entities()
+                    .filter(|entity| entity.contains::<DomainId>())
+                    .map(|entity| {
+                        (
+                            entity.id(),
+                            *entity.get::<DomainId>().unwrap(),
+                            entity.get::<Position>().copied(),
+                            entity.get::<NativeActorIdentity>().cloned(),
+                            entity.get::<NativeRotation>().copied(),
+                            entity.get::<NativeLocalBounds>().cloned(),
+                            entity.get::<NativeVariables>().cloned(),
+                        )
+                    })
+                    .collect::<Vec<_>>()
+            };
+            let corrupt = injected(&app);
+            let tick = app.world().resource::<SimulationClock>().tick;
+            app.update();
+            assert_eq!(app.world().resource::<SimulationClock>().tick, tick + 1);
+            assert_zero_peer_retired(&app, 3);
+            assert!(injected(&app) == corrupt);
+            app.world_mut().entity_mut(offender).insert((
+                identity,
+                bounds,
+                variables,
+                position,
+                NativeRotation([0.0, 0.0, 0.0, 1.0]),
+            ));
+            assert!(capture(app.world_mut()).unwrap().native_world == before);
+            for _ in 0..3 {
+                app.update();
+                assert_zero_peer_retired(&app, 3);
+            }
+            assert!(native_replication::update_flags(app.world_mut(), moved, None).is_err());
+            assert!(capture(app.world_mut()).unwrap().native_world == before);
+            network::teardown(app.world_mut());
+        }
+    }
+}
+
+#[test]
+fn staged_early_movement_and_flag_edits_remain_atomic_when_later_validation_fails() {
+    for order in [ByteOrder::Little, ByteOrder::Big] {
+        for late_proxy in [false, true] {
+            let mut fixture = Fixture::new();
+            fixture.declaration["bindings"]
+                .as_array_mut()
+                .unwrap()
+                .push(binding_json("b"));
+            let (mut app, address) = fixture.app();
+            let mut client = Client::connect(&mut app, address, order);
+            let opened = client.join(&mut app);
+            client.settle(&mut app, &opened);
+            let early = fixture.id("a");
+            let early_source = native_entity(&app, early);
+            let early_proxy = proxy_entity(&app, early);
+            let later_proxy = proxy_entity(&app, fixture.id("b"));
+            let old_position = *app.world().get::<Position>(early_proxy).unwrap();
+            let old_flags = *app.world().get::<NetActorFlags>(early_proxy).unwrap();
+            app.world_mut()
+                .get_mut::<Position>(early_source)
+                .unwrap()
+                .bypass_change_detection()
+                .0 = [11.0, 12.0, 13.0];
+            let native_before = capture(app.world_mut()).unwrap().native_world;
+            if late_proxy {
+                app.world_mut()
+                    .get_mut::<NetActorFlags>(later_proxy)
+                    .unwrap()
+                    .bypass_change_detection()
+                    .hidden = false;
+            } else {
+                app.world_mut()
+                    .resource_mut::<SessionReplication>()
+                    .first_channel += 1;
+            }
+            let error = native_replication::update_flags(app.world_mut(), early, None).unwrap_err();
+            assert_eq!(
+                format!("{error:#}"),
+                if late_proxy {
+                    "native replication proxy lost or changed"
+                } else {
+                    "native replication session binding changed"
+                }
+            );
+            assert_eq!(
+                app.world().get::<Position>(early_proxy),
+                Some(&old_position)
+            );
+            assert_eq!(
+                app.world().get::<NetActorFlags>(early_proxy),
+                Some(&old_flags)
+            );
+            assert!(capture(app.world_mut()).unwrap().native_world == native_before);
+
+            // Complete native validation still wins over either later bridge
+            // failure, with identical error context when another error is added.
+            let unbound = native_entity(&app, fixture.id("unbound"));
+            let identity = app
+                .world()
+                .get::<NativeActorIdentity>(unbound)
+                .unwrap()
+                .clone();
+            app.world_mut()
+                .get_mut::<NativeActorIdentity>(unbound)
+                .unwrap()
+                .bypass_change_detection()
+                .tile = "wrong_tile".into();
+            let first = native_replication::update_flags(app.world_mut(), early, None).unwrap_err();
+            assert!(format!("{first:#}").contains("native actor immutable binding mismatch"));
+            app.world_mut().remove_resource::<SessionReplication>();
+            let second =
+                native_replication::update_flags(app.world_mut(), early, None).unwrap_err();
+            assert_eq!(format!("{first:#}"), format!("{second:#}"));
+            assert_eq!(
+                app.world().get::<Position>(early_proxy),
+                Some(&old_position)
+            );
+            assert_eq!(
+                app.world().get::<NetActorFlags>(early_proxy),
+                Some(&old_flags)
+            );
+            app.world_mut().entity_mut(unbound).insert(identity);
+            let updates = app.world().resource::<PeerLab>().stats().actor_updates_sent;
+            app.update();
+            assert!(!app.world().resource::<NativeReplicationCounts>().active);
+            assert_eq!(
+                app.world()
+                    .resource::<NativeReplicationCounts>()
+                    .binding_errors,
+                1
+            );
+            assert!(!app.world().resource::<PeerLab>().is_admitting());
+            assert_eq!(
+                app.world().resource::<PeerLab>().stats().actor_updates_sent,
+                updates
+            );
+            assert!(!app.world().contains_resource::<SessionReplication>());
+            assert!(
+                !app.world()
+                    .iter_entities()
+                    .any(|entity| entity.contains::<NetActor>()
+                        || entity.contains::<NetArchetype>()
+                        || entity.contains::<NetViewer>())
+            );
+            assert!(capture(app.world_mut()).unwrap().native_world == native_before);
+            network::teardown(app.world_mut());
+        }
+    }
+}
+
 #[derive(Resource, Default)]
 struct EditAfterInput {
     id: Option<DomainId>,
@@ -2171,6 +2564,137 @@ fn late_lifecycle_components_retire_the_authored_host_and_remain_latched_after_r
                 network::teardown(app.world_mut());
             }
         }
+    }
+}
+
+#[test]
+fn late_relationship_component_retires_next_tick_and_close_retries_stay_latched_after_repair() {
+    use bevy::ecs::entity_disabling::DefaultQueryFilters;
+    use icarus_bevy::native_runtime::NativeFoundation;
+
+    #[derive(Component)]
+    struct Filtered;
+
+    #[derive(Resource)]
+    struct UnrelatedResource(u32);
+
+    fn assert_retired(app: &App) {
+        assert_eq!(
+            *app.world().resource::<NativeReplicationCounts>(),
+            NativeReplicationCounts {
+                activated: 1,
+                rejected: 1,
+                binding_errors: 1,
+                active: false,
+            }
+        );
+        assert!(!app.world().resource::<PeerLab>().is_admitting());
+        assert!(!app.world().contains_resource::<SessionReplication>());
+        assert!(!app.world().iter_entities().any(|entity| {
+            entity.contains::<NetActor>()
+                || entity.contains::<NetArchetype>()
+                || entity.contains::<NetViewer>()
+        }));
+    }
+
+    for order in [ByteOrder::Little, ByteOrder::Big] {
+        let fixture = Fixture::new();
+        let (mut app, address) = fixture.app_tuned(Some(|config| config.packet.sent_capacity = 12));
+        let disabling = app.world_mut().register_component::<Filtered>();
+        app.world_mut()
+            .resource_mut::<DefaultQueryFilters>()
+            .register_disabling_component(disabling);
+        app.insert_resource(UnrelatedResource(7));
+        let offender = app.world().resource_entity::<UnrelatedResource>().unwrap();
+        app.world_mut().entity_mut(offender).insert(Filtered);
+        let mut client = Client::connect(&mut app, address, order);
+        let opened = client.join(&mut app);
+        client.settle(&mut app, &opened);
+        let connection = app.world().resource::<PeerLab>().joined_connections()[0];
+        assert!(app.world().resource::<NativeReplicationCounts>().active);
+        assert!(app.world().contains_resource::<SessionReplication>());
+        assert!(app.world().resource::<PeerLab>().is_admitting());
+        assert!(
+            app.world()
+                .resource::<PeerLab>()
+                .is_actor_open(connection, fixture.id("a").0)
+        );
+        // First registration occurs only after clean extraction ticks, including
+        // enough updates to saturate the existing sent-record bound.
+        let queued = fill_update_ring(&mut app, &client, fixture.id("a"));
+        let native_before = capture(app.world_mut()).unwrap().native_world;
+        assert!(app.world().component_id::<NativeFoundation>().is_none());
+        app.world_mut()
+            .entity_mut(offender)
+            .insert(NativeFoundation(None));
+
+        app.update();
+        let retired = drain(&client.socket);
+        assert_retired(&app);
+        let lab = app.world().resource::<PeerLab>();
+        assert!(lab.is_actor_open(connection, fixture.id("a").0));
+        assert!(lab.stats().actor_close_errors > 0);
+        assert_eq!(lab.stats().actor_closes_sent, 0);
+        assert!(app.world().get::<NativeFoundation>(offender) == Some(&NativeFoundation(None)));
+        assert_eq!(app.world().resource::<UnrelatedResource>().0, 7);
+        for actor in &native_before.as_ref().unwrap().actors {
+            let source = native_entity(&app, actor.id);
+            assert_eq!(
+                app.world().get::<Position>(source),
+                Some(&Position(actor.transform.translation))
+            );
+            assert!(
+                app.world().get::<NativeVariables>(source)
+                    == Some(&NativeVariables(actor.variables.clone()))
+            );
+        }
+
+        // Emptying the offending archetype repairs native validation, while
+        // host retirement and its pending reliable close remain latched.
+        let archetype = app.world().entity(offender).archetype().id();
+        app.world_mut()
+            .entity_mut(offender)
+            .remove::<NativeFoundation>();
+        assert!(app.world().archetypes()[archetype].is_empty());
+        assert_eq!(
+            capture(app.world_mut()).unwrap().native_world,
+            native_before
+        );
+        client.accept(&retired);
+        let closed = client.settle(&mut app, &queued);
+        assert_retired(&app);
+        assert!(
+            !app.world()
+                .resource::<PeerLab>()
+                .is_actor_open(connection, fixture.id("a").0)
+        );
+        assert_eq!(
+            retired
+                .iter()
+                .chain(&closed)
+                .flat_map(|bytes| read_packet(bytes, &client.config()).unwrap().bunches)
+                .filter(|bunch| bunch.header.channel_index == 6
+                    && bunch.header.reliable
+                    && bunch.header.close)
+                .count(),
+            1
+        );
+        client.settle(&mut app, &closed);
+        for _ in 0..4 {
+            let bytes = client.step(&mut app);
+            client.accept(&bytes);
+            assert_retired(&app);
+            let lab = app.world().resource::<PeerLab>();
+            assert_eq!(lab.stats().actor_opens_sent, 1);
+            assert_eq!(lab.stats().actor_closes_sent, 1);
+            assert!(!lab.is_actor_open(connection, fixture.id("a").0));
+        }
+        assert_eq!(app.world().resource::<UnrelatedResource>().0, 7);
+        assert_eq!(
+            capture(app.world_mut()).unwrap().native_world,
+            native_before
+        );
+        network::teardown(app.world_mut());
     }
 }
 
