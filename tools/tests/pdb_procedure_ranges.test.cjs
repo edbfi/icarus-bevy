@@ -6,7 +6,8 @@ const test = require('node:test');
 const a = require('node:assert/strict');
 const {createHash} = require('node:crypto');
 const {inspect, diagnoseInfoFeatures, inspectNamedStreamNiMacZero,
-    diagnoseInfoNamedStreamNiMacZero, diagnoseSourceMappingNamedStreamNiMacZero, LIMITS} = require('../pdb_procedure_ranges.cjs');
+    diagnoseInfoNamedStreamNiMacZero, diagnoseSourceMappingNamedStreamNiMacZero,
+    diagnoseSourceMappingIdentityNamedStreamNiMacZero, LIMITS} = require('../pdb_procedure_ranges.cjs');
 const {fixture, pack, proc, record, info, namedStreamNiMacZeroInfo, segmentMap, repeatedModule, repeatedContributions,
     SC60, SC2, VA} = require('./pdb_procedure_ranges_fixtures.cjs');
 
@@ -1753,5 +1754,291 @@ test('source mapping serializes only the four-field closed schema and retains bo
         return stringify.call(this, value, ...args);
     };
     try { redactedThrows(() => sourceMapping(), 'ERR_PDB_FRAMING'); }
+    finally { JSON.stringify = stringify; }
+});
+
+// Source-only implementation cases; Root alone runs this suite. A tail slot
+// identifies a position, never an accepted flag tuple or a target observation.
+const IDENTITY_MAPPING_PROFILE = 'MSF7_procedure_source_mapping_identity_diagnostic_v1';
+const sourceMappingIdentity = (f = niFixture(), q = query()) => {
+    const p = pack(f); return diagnoseSourceMappingIdentityNamedStreamNiMacZero(p.reader, p.exe, p.identity, q);
+};
+function identityMappingResult(result, stage = 'complete', guard = null,
+    descriptor_index = null, descriptor_slot = null, identity_member = null) {
+    const expected = {profile: IDENTITY_MAPPING_PROFILE,
+        status: stage === 'complete' ? 'accepted_profile' : 'refused_mapping', stage, guard,
+        descriptor_index, descriptor_slot, identity_member};
+    a.deepEqual(result, expected);
+    a.deepEqual(Reflect.ownKeys(result), ['profile', 'status', 'stage', 'guard',
+        'descriptor_index', 'descriptor_slot', 'identity_member']);
+    a.equal(JSON.stringify(result) + '\n', JSON.stringify(expected) + '\n');
+    a.ok(Buffer.byteLength(JSON.stringify(result) + '\n') <= 1024);
+    if (identity_member !== null) {
+        a.ok(Number.isInteger(descriptor_index) && descriptor_index >= 0 && descriptor_index <= 96);
+        a.ok(['section', 'tail_candidate'].includes(descriptor_slot));
+        a.ok(['overlay', 'group', 'frame', 'offset'].includes(identity_member));
+    }
+}
+const identityMembers = ['overlay', 'group', 'frame', 'offset'];
+function badIdentityMember(b, index, member, value = 0x7654) {
+    const at = 4 + index * 20;
+    if (member === 'offset') b.writeUInt32LE(value, at + 12);
+    else b.writeUInt16LE(value, at + {overlay: 2, group: 4, frame: 6}[member]);
+}
+
+test('identity diagnostic reports each first bad member in each ordinary and tail slot without values', () => {
+    for (const index of [0, 1, 2, 3]) for (const member of identityMembers) {
+        for (const value of [0x7654, 0xabcd]) {
+            const f = mappedNi(b => badIdentityMember(b, index, member, value));
+            const diagnostic = pack(f), ordinary = pack(f), oldDiagnostic = pack(f);
+            identityMappingResult(diagnoseSourceMappingIdentityNamedStreamNiMacZero(
+                diagnostic.reader, diagnostic.exe, diagnostic.identity, query()),
+            'segment_map', 'identity', index, index === 3 ? 'tail_candidate' : 'section', member);
+            redactedThrows(() => inspectNamedStreamNiMacZero(ordinary.reader, ordinary.exe, ordinary.identity, query()),
+                'ERR_SOURCE_MAPPING');
+            mappingResult(diagnoseSourceMappingNamedStreamNiMacZero(
+                oldDiagnostic.reader, oldDiagnostic.exe, oldDiagnostic.identity, query()), 'segment_map', 'identity');
+            a.deepEqual(diagnostic.reads, ordinary.reads); a.deepEqual(diagnostic.reads, oldDiagnostic.reads);
+            // Both ordinary grammars retain the same code-only error shape.
+            f.streams[1] = info(); fails(f, 'ERR_SOURCE_MAPPING');
+        }
+    }
+    // Zero remains a refused tail frame, with no alternate sentinel contract.
+    identityMappingResult(sourceMappingIdentity(mappedNi(b => badIdentityMember(b, 3, 'frame', 0))),
+        'segment_map', 'identity', 3, 'tail_candidate', 'frame');
+});
+
+test('identity diagnostic preserves short circuit within descriptors, between descriptors and before flags', () => {
+    for (const index of [0, 3]) for (let first = 0; first < identityMembers.length; first++) {
+        const f = mappedNi(b => {
+            for (const member of identityMembers.slice(first)) badIdentityMember(b, index, member);
+            b.writeUInt16LE(0, 4 + index * 20); b.writeUInt32LE(0, 20 + index * 20);
+        });
+        identityMappingResult(sourceMappingIdentity(f), 'segment_map', 'identity', index,
+            index === 3 ? 'tail_candidate' : 'section', identityMembers[first]);
+    }
+    for (let index = 0; index < 3; index++) {
+        const f = mappedNi(b => {
+            badIdentityMember(b, index, 'offset'); badIdentityMember(b, index + 1, 'overlay');
+        });
+        identityMappingResult(sourceMappingIdentity(f), 'segment_map', 'identity', index, 'section', 'offset');
+        for (const field of ['flags', 'length']) {
+            const earlier = mappedNi(b => {
+                badIdentityMember(b, index + 1, 'overlay');
+                if (field === 'flags') b.writeUInt16LE(0, 4 + index * 20);
+                else b.writeUInt32LE(0, 20 + index * 20);
+            });
+            identityMappingResult(sourceMappingIdentity(earlier), 'segment_map', 'section');
+        }
+    }
+    const headersFirst = mappedNi(b => badIdentityMember(b, 0, 'overlay'));
+    headersFirst.streams[8][0] ^= 1;
+    identityMappingResult(sourceMappingIdentity(headersFirst), 'section_binding', 'headers');
+});
+
+test('identity diagnostic preserves every existing mapping refusal and has null detail elsewhere', () => {
+    for (const [label, stage, guard, make, q = query()] of mappingCases) {
+        const diagnostic = pack(make()), ordinary = pack(make());
+        const result = diagnoseSourceMappingIdentityNamedStreamNiMacZero(
+            diagnostic.reader, diagnostic.exe, diagnostic.identity, q);
+        if (stage === 'segment_map' && guard === 'identity') {
+            const member = {'map identity field 2': 'overlay', 'map identity field 4': 'group',
+                'map identity field 6': 'frame', 'map identity field 12': 'offset'}[label];
+            identityMappingResult(result, stage, guard, 0, 'section', member);
+        } else identityMappingResult(result, stage, guard);
+        redactedThrows(() => inspectNamedStreamNiMacZero(ordinary.reader, ordinary.exe, ordinary.identity, q), 'ERR_SOURCE_MAPPING');
+        a.deepEqual(diagnostic.reads, ordinary.reads, label);
+    }
+    // A valid trailing descriptor never becomes a routable physical section.
+    for (const f of [niFixture({sectionMap: segmentMap(), modules: [{records: [proc({segment: 4})]}]}),
+        niFixture({sectionMap: segmentMap(), contributions: [{segment: 4}]})]) {
+        if (f.modules[0].symbols.readUInt16LE(4 + 36) === 4) {
+            identityMappingResult(sourceMappingIdentity(f), 'procedure', 'segment');
+        } else redactedThrows(() => sourceMappingIdentity(f), 'ERR_ROUTING_FRAMING');
+    }
+});
+
+test('identity diagnostic accepts absent, N and N+1 maps only after complete ordinary traversal', () => {
+    for (const sectionMap of [Buffer.alloc(0), segmentMap(false), segmentMap(true)]) {
+        for (const features of [[], [VC140], [VC110], [VC140, VC110]]) {
+            for (const version of [SC60, SC2]) for (const q of [query(), query({module_indices: [1, 0]})]) {
+                const f = niFixture({sectionMap, version, info: namedStreamNiMacZeroInfo({features}),
+                    modules: [{records: [proc()]}, {records: [proc()]}]});
+                const diagnostic = pack(f), ordinary = pack(f);
+                const before = inspectNamedStreamNiMacZero(ordinary.reader, ordinary.exe, ordinary.identity, q);
+                identityMappingResult(diagnoseSourceMappingIdentityNamedStreamNiMacZero(
+                    diagnostic.reader, diagnostic.exe, diagnostic.identity, q));
+                a.deepEqual(diagnostic.reads, ordinary.reads);
+                a.ok(diagnostic.reads.every(r => r.count <= LIMITS.read));
+                a.deepEqual(runNi(f, q), before); mappingResult(sourceMapping(f, q));
+                const old = {...f, streams: f.streams.slice()}; old.streams[1] = info({features});
+                const legacy = run(old, q);
+                a.deepEqual(before, {...legacy, profile: NI_PROFILE, info_profile: {
+                    grammar: 'named_stream_ni_mac_zero_v1', named_stream_ni_mac: 0, named_streams: 0, features,
+                }});
+            }
+        }
+        for (const [records, code] of [
+            [[proc(), record(0x1102)], 'ERR_SYMBOL_UNSUPPORTED'],
+            [[proc(), proc({size: 0x31})], 'ERR_PROCEDURE_CONFLICT'],
+            [[proc(), proc({size: 0})], 'ERR_PROCEDURE_SIZE'],
+        ]) {
+            const f = niFixture({sectionMap, modules: [{records: [proc()]}, {records}]});
+            redactedThrows(() => sourceMappingIdentity(f), code);
+            redactedThrows(() => runNi(f), code);
+        }
+        redactedThrows(() => sourceMappingIdentity(niFixture({sectionMap, modules: [{records: [record()]}]})),
+            'ERR_PROCEDURE_ABSENT');
+    }
+});
+
+// Independently extend the authored PE envelope to the physical-section cap.
+// Extra sections have virtual storage only; none is used for routing or code.
+function identityLimitFixture() {
+    const count = 96, sm = Buffer.alloc(4 + (count + 1) * 20), ordinaryMap = segmentMap(false);
+    sm.writeUInt16LE(count + 1); sm.writeUInt16LE(count + 1, 2);
+    ordinaryMap.copy(sm, 4, 4);
+    for (let i = 3; i <= count; i++) {
+        const at = 4 + i * 20;
+        sm.writeUInt16LE(i === count ? 0x208 : 0x109, at); sm.writeUInt16LE(i + 1, at + 6);
+        sm.writeUInt32LE(i === count ? 0xffffffff : 0x80, at + 16);
+    }
+    const f = niFixture({sectionMap: sm}), old = f.exe, exe = Buffer.alloc(0x1a00);
+    old.copy(exe, 0, 0, f.table + 120); old.copy(exe, 0x1200, 0x200);
+    exe.writeUInt16LE(count, exe.readUInt32LE(60) + 6);
+    exe.writeUInt32LE(0x2000, f.op + 16); exe.writeUInt32LE((count + 2) * 4096, f.op + 56);
+    exe.writeUInt32LE(0x1200, f.op + 60); exe.writeUInt32LE(0x4080, f.op + 112 + 6 * 8);
+    exe.writeUInt32LE(0x40a0, f.debug + 0x1000 + 20);
+    exe.writeUInt32LE(f.rsds + 0x1000, f.debug + 0x1000 + 24);
+    for (let i = 0; i < count; i++) {
+        const at = f.table + i * 40;
+        if (i < 3) exe.writeUInt32LE(old.readUInt32LE(at + 20) + 0x1000, at + 20);
+        else { exe.writeUInt32LE(0x80, at + 8); exe.writeUInt32LE(0x40000040, at + 36); }
+        exe.writeUInt32LE((i + 2) * 4096, at + 12);
+    }
+    f.exe = exe; f.streams[8] = Buffer.from(exe.subarray(f.table, f.table + count * 40));
+    return f;
+}
+
+test('identity diagnostic bounds the zero-based descriptor index through 96', () => {
+    const q = query({addresses: ['0x140002020']}), accepted = identityLimitFixture();
+    identityMappingResult(sourceMappingIdentity(accepted, q));
+    a.equal(runNi(accepted, q).addresses[0].procedure_record_count, 1);
+    for (const index of [0, 95, 96]) for (const member of identityMembers) {
+        const f = identityLimitFixture(), sm = Buffer.from(f.sectionMap);
+        badIdentityMember(sm, index, member);
+        sm.copy(f.streams[3], f.scAt + f.sc.length);
+        const diagnostic = pack(f), ordinary = pack(f);
+        identityMappingResult(diagnoseSourceMappingIdentityNamedStreamNiMacZero(
+            diagnostic.reader, diagnostic.exe, diagnostic.identity, q),
+        'segment_map', 'identity', index, index === 96 ? 'tail_candidate' : 'section', member);
+        redactedThrows(() => inspectNamedStreamNiMacZero(ordinary.reader, ordinary.exe, ordinary.identity, q), 'ERR_SOURCE_MAPPING');
+        a.deepEqual(diagnostic.reads, ordinary.reads);
+    }
+});
+
+test('identity diagnostic keeps nonmapping failures code-only and refuses reader or selector details', () => {
+    for (const [make, code] of [
+        [() => niFixture({info: info()}), 'ERR_NI_MAC_UNSUPPORTED'],
+        [() => niFixture({info: namedStreamNiMacZeroInfo({features: [MINI]})}), 'ERR_FASTLINK_UNSUPPORTED'],
+        [() => niFixture({info: namedStreamNiMacZeroInfo({features: [0]})}), 'ERR_FEATURE_UNSUPPORTED'],
+        [() => changedNi(f => f.exe[f.rsds + 4] ^= 1), 'ERR_IDENTITY'],
+        [() => changedNi(f => f.streams[3].writeUInt16LE(8, f.optionalAt + 6)), 'ERR_OMAP_UNSUPPORTED'],
+        [() => niFixture({moduleInfo: Buffer.alloc(60)}), 'ERR_DBI_MODULE_INFO'],
+        [() => niFixture({sc: Buffer.alloc(0)}), 'ERR_ROUTING_ABSENT'],
+        [() => niFixture({modules: [{signature: 2}]}), 'ERR_MODULE_FRAMING'],
+    ]) {
+        const diagnostic = pack(make()), ordinary = pack(make());
+        redactedThrows(() => diagnoseSourceMappingIdentityNamedStreamNiMacZero(
+            diagnostic.reader, diagnostic.exe, diagnostic.identity, query()), code);
+        redactedThrows(() => inspectNamedStreamNiMacZero(ordinary.reader, ordinary.exe, ordinary.identity, query()), code);
+        a.deepEqual(diagnostic.reads, ordinary.reads);
+    }
+    const p = pack(niFixture()); let reads = 0;
+    const reader = {size: p.reader.size, read(o, n) { reads++; return p.reader.read(o, n); }};
+    for (const q of [undefined, {}, query({grammar: 'NEVER_EXPORT'}), query({addresses: ['0x800000000000']})]) {
+        redactedThrows(() => diagnoseSourceMappingIdentityNamedStreamNiMacZero(reader, p.exe, p.identity, q), 'ERR_SELECTORS');
+    }
+    a.equal(reads, 0);
+    for (const index of [1, 3, 8, 9]) for (const mode of ['throw', 'short', 'shared']) {
+        const broken = {size: p.reader.size, read(o, n) {
+            if (!p.entries[index].pages.includes(Math.floor(o / 4096))) return p.reader.read(o, n);
+            if (mode === 'throw') throw Error('ERR_SOURCE_MAPPING/NEVER_EXPORT/private');
+            return mode === 'shared' ? Buffer.from(new SharedArrayBuffer(n)) : Buffer.alloc(n - 1);
+        }};
+        redactedThrows(() => diagnoseSourceMappingIdentityNamedStreamNiMacZero(broken, p.exe, p.identity, query()),
+            mode === 'throw' ? 'ERR_PDB_FRAMING' : mode === 'shared' ? 'ERR_INPUT_BOUND' : 'ERR_SHORT_READ');
+    }
+});
+
+test('identity diagnostic context is private across nested calls and mutated returned details', () => {
+    const bad = mappedNi(b => badIdentityMember(b, 3, 'offset'));
+    const accepted = pack(niFixture()), outer = pack(bad); let nested = false;
+    const reader = {size: outer.reader.size, read(o, n) {
+        if (!nested) {
+            nested = true;
+            identityMappingResult(sourceMappingIdentity(mappedNi(b => badIdentityMember(b, 0, 'group'))),
+                'segment_map', 'identity', 0, 'section', 'group');
+            identityMappingResult(diagnoseSourceMappingIdentityNamedStreamNiMacZero(
+                accepted.reader, accepted.exe, accepted.identity, query()));
+            mappingResult(sourceMapping(bad), 'segment_map', 'identity');
+            redactedThrows(() => runNi(bad), 'ERR_SOURCE_MAPPING');
+        }
+        return outer.reader.read(o, n);
+    }};
+    const result = diagnoseSourceMappingIdentityNamedStreamNiMacZero(reader, outer.exe, outer.identity, query());
+    identityMappingResult(result, 'segment_map', 'identity', 3, 'tail_candidate', 'offset'); a.equal(nested, true);
+    result.descriptor_index = 999; result.descriptor_slot = 'NEVER_EXPORT'; result.identity_member = 'private';
+    for (let repeat = 0; repeat < 3; repeat++) {
+        identityMappingResult(sourceMappingIdentity());
+        identityMappingResult(sourceMappingIdentity(bad), 'segment_map', 'identity', 3, 'tail_candidate', 'offset');
+        identityMappingResult(sourceMappingIdentity(changedNi(f => f.streams[8][0] ^= 1)), 'section_binding', 'headers');
+        redactedThrows(() => sourceMappingIdentity(niFixture({modules: [{records: [record()]}]})), 'ERR_PROCEDURE_ABSENT');
+        mappingResult(sourceMapping(bad), 'segment_map', 'identity');
+    }
+});
+
+test('identity diagnostic exports only seven redacted fields and retains both serialization bounds', () => {
+    const secret = 'NEVER_EXPORT/private/name', f = niFixture({sectionMap: segmentMap(),
+        info: namedStreamNiMacZeroInfo({names: [{name: secret, stream: 8}]}),
+        modules: [{module_name: secret, object_name: secret, records: [proc({name: secret})]}]});
+    const accepted = sourceMappingIdentity(f); identityMappingResult(accepted);
+    f.exe.fill(0x5a, 0x200, 0x800); a.deepEqual(sourceMappingIdentity(f), accepted);
+    badIdentityMember(f.streams[3].subarray(f.scAt + f.sc.length), 3, 'offset', 0xdeadbeef);
+    const refusal = sourceMappingIdentity(f);
+    identityMappingResult(refusal, 'segment_map', 'identity', 3, 'tail_candidate', 'offset');
+    for (const result of [accepted, refusal]) {
+        const json = JSON.stringify(result);
+        for (const word of [secret, 'deadbeef', '3735928559', 'guid', 'address', 'bytes', 'flags',
+            'records', 'hash', '0x', 'ERR_SOURCE_MAPPING', 'absolute']) a.ok(!json.includes(word));
+        a.ok(Object.values(result).every(v => v === null || typeof v === 'string' || Number.isInteger(v)));
+        a.ok(Object.values(result).every(v => !Array.isArray(v)));
+    }
+    const stringify = JSON.stringify;
+    for (const call of [() => sourceMappingIdentity(), () => sourceMappingIdentity(f)]) {
+        for (const bytes of [1023, 1024]) {
+            JSON.stringify = function(value, ...args) {
+                const json = stringify.call(this, value, ...args);
+                return value && value.profile === IDENTITY_MAPPING_PROFILE ? json.padEnd(bytes, ' ') : json;
+            };
+            try {
+                if (bytes === 1023) a.equal(call().profile, IDENTITY_MAPPING_PROFILE);
+                else redactedThrows(call, 'ERR_OUTPUT_BOUND');
+            } finally { JSON.stringify = stringify; }
+        }
+    }
+    JSON.stringify = function(value, ...args) {
+        const json = stringify.call(this, value, ...args);
+        return value && value.profile === NI_PROFILE ? json.padEnd(LIMITS.output, ' ') : json;
+    };
+    try {
+        redactedThrows(() => sourceMappingIdentity(), 'ERR_OUTPUT_BOUND');
+        identityMappingResult(sourceMappingIdentity(f), 'segment_map', 'identity', 3, 'tail_candidate', 'offset');
+    } finally { JSON.stringify = stringify; }
+    JSON.stringify = function(value, ...args) {
+        if (value && value.profile === IDENTITY_MAPPING_PROFILE) throw Error('NEVER_EXPORT/private-serializer');
+        return stringify.call(this, value, ...args);
+    };
+    try { redactedThrows(() => sourceMappingIdentity(), 'ERR_PDB_FRAMING'); }
     finally { JSON.stringify = stringify; }
 });

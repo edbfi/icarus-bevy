@@ -300,9 +300,19 @@ function context(reader, exe, identity, niMacZero, mappingSite) {
             sizes[2] === 4 + count * 20, mappingSite, 'segment_map', 'counts');
         for (let i = 0; i < count; i++) {
             const at = 4 + i * 20, flags = sm.readUInt16LE(at), absolute = i === image.sections.length;
-            mappingNeed(sm.readUInt16LE(at + 2) === 0 && sm.readUInt16LE(at + 4) === 0 &&
-                sm.readUInt16LE(at + 6) === i + 1 && sm.readUInt32LE(at + 12) === 0,
-                mappingSite, 'segment_map', 'identity');
+            // Preserve the identity predicate's left-to-right short circuit.
+            // Capture no values; the optional last slot is positional only,
+            // since its flags/length check has not yet been reached.
+            const member = sm.readUInt16LE(at + 2) !== 0 ? 'overlay' :
+                sm.readUInt16LE(at + 4) !== 0 ? 'group' :
+                sm.readUInt16LE(at + 6) !== i + 1 ? 'frame' :
+                sm.readUInt32LE(at + 12) !== 0 ? 'offset' : null;
+            if (member !== null && mappingSite !== null && mappingSite.first === null &&
+                mappingSite.identityDetail === null) {
+                mappingSite.identityDetail = {descriptor_index: i,
+                    descriptor_slot: absolute ? 'tail_candidate' : 'section', identity_member: member};
+            }
+            mappingNeed(member === null, mappingSite, 'segment_map', 'identity');
             if (absolute) mappingNeed(flags === 0x208 && sm.readUInt32LE(at + 16) === 0xffffffff,
                 mappingSite, 'segment_map', 'absolute');
             else {
@@ -565,5 +575,40 @@ function diagnoseSourceMappingNamedStreamNiMacZero(reader, exe, identity, query)
     }
 }
 
+// Opt-in identity-site detail only. Full acceptance retains all ordinary
+// checks; the older four-field diagnostic and code-only errors stay unchanged.
+function diagnoseSourceMappingIdentityNamedStreamNiMacZero(reader, exe, identity, query) {
+    const mappingSite = {first: null, identityDetail: null};
+    try {
+        let status = 'accepted_profile';
+        try { inspectProfile(reader, exe, identity, query, true, mappingSite); }
+        catch (error) {
+            if (!(error instanceof MetadataError) || error.code !== 'ERR_SOURCE_MAPPING' ||
+                !legalMappingSite(mappingSite.first)) throw error;
+            status = 'refused_mapping';
+        }
+        const site = mappingSite.first, detail = mappingSite.identityDetail;
+        const identityRefusal = status === 'refused_mapping' && site.stage === 'segment_map' && site.guard === 'identity';
+        need(identityRefusal ? detail !== null && Number.isInteger(detail.descriptor_index) &&
+            detail.descriptor_index >= 0 && detail.descriptor_index <= LIMITS.sections &&
+            (detail.descriptor_slot === 'section' || detail.descriptor_slot === 'tail_candidate') &&
+            ['overlay', 'group', 'frame', 'offset'].includes(detail.identity_member) : detail === null,
+            'ERR_SOURCE_MAPPING');
+        const result = {
+            profile: 'MSF7_procedure_source_mapping_identity_diagnostic_v1', status,
+            stage: status === 'accepted_profile' ? 'complete' : site.stage,
+            guard: status === 'accepted_profile' ? null : site.guard,
+            descriptor_index: identityRefusal ? detail.descriptor_index : null,
+            descriptor_slot: identityRefusal ? detail.descriptor_slot : null,
+            identity_member: identityRefusal ? detail.identity_member : null,
+        };
+        need(Buffer.byteLength(JSON.stringify(result) + '\n') <= 1024, 'ERR_OUTPUT_BOUND');
+        return result;
+    } catch (error) {
+        if (error instanceof MetadataError) throw error;
+        throw new MetadataError('ERR_PDB_FRAMING');
+    }
+}
+
 module.exports = {inspect, diagnoseInfoFeatures, inspectNamedStreamNiMacZero, diagnoseInfoNamedStreamNiMacZero,
-    diagnoseSourceMappingNamedStreamNiMacZero, LIMITS};
+    diagnoseSourceMappingNamedStreamNiMacZero, diagnoseSourceMappingIdentityNamedStreamNiMacZero, LIMITS};
