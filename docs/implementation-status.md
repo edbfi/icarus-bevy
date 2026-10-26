@@ -58,10 +58,10 @@ Offline work, in order; connected proof keeps its gates.
 2. Import (U-045, U-025): typing/coverage are not restoration (F-766, F-916).
    Retained closed Bool/I32 candidates: F-920, F-927, F-929; component
    lifecycle/scaling/init/callbacks: F-930; local removal/comparator call/read
-   models: F-937. Owner/row, callee/subclass effects remain open.
-   Authored reload/retry timers/cache persist (F-931). Next: qualify the
-   declared 11-byte server helper span (M-1071), then overrides, owner/row
-   bindings and coordinates before all-or-nothing import.
+   models: F-937; the server comparator helper compares receiver u64s at +8
+   (F-940). Owner/row and subclass effects remain open. Authored reload/retry
+   timers/cache persist (F-931). Next: overrides, owner/row bindings and
+   coordinates before all-or-nothing import.
    `import-save` stays closed; coverage grants no publication; packaged row
    meanings stay unsupported (F-660). [Procedures](runbooks/authored-worlds.md);
    native costs: F-926.
