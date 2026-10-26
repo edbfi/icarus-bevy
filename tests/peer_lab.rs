@@ -110,6 +110,7 @@ struct Client {
     cookie: [u8; 20],
     sequencer: PacketSequencer,
     control: ReliableChannel<ControlMessage>,
+    packet_config: PacketConfig,
 }
 
 fn socket(lab: SocketAddr) -> UdpSocket {
@@ -166,6 +167,14 @@ impl Client {
             cookie,
             sequencer,
             control,
+            packet_config: app.world().resource::<PeerLab>().config().packet.packet,
+        }
+    }
+
+    fn to_client(&self) -> PacketConfig {
+        PacketConfig {
+            receiver: Receiver::Client,
+            ..self.packet_config
         }
     }
 
@@ -184,7 +193,7 @@ impl Client {
             info: None,
             bunches,
         };
-        let bytes = write_packet(&packet, &to_server()).unwrap();
+        let bytes = write_packet(&packet, &self.packet_config).unwrap();
         (bytes, self.sequencer.commit().unwrap())
     }
 
@@ -213,7 +222,7 @@ impl Client {
     /// with the client-side readers. Returns notifications and the control
     /// messages released in order.
     fn receive_reply(&mut self, datagram: &[u8]) -> (Vec<Notification>, Vec<ControlMessage>) {
-        let packet = read_packet(datagram, &to_client()).unwrap();
+        let packet = read_packet(datagram, &self.to_client()).unwrap();
         let received = self.sequencer.receive(&packet.header).unwrap().unwrap();
         let mut messages = Vec::new();
         for bunch in &packet.bunches {
@@ -791,6 +800,7 @@ fn duplicate_handshake_echo_keeps_live_peer_state() {
         cookie,
         sequencer,
         control,
+        packet_config: to_server(),
     };
     client.exchange(&mut app, short_hello("", 0x0102_0304), false);
     let _ = client.receive_reply(&recv(&client.socket));
@@ -1644,7 +1654,7 @@ fn the_pawn_opens_after_the_controller_with_its_roles_and_references() {
 fn accept_all_headers(client: &mut Client) -> usize {
     let datagrams = drain(client);
     for datagram in &datagrams {
-        let packet = read_packet(datagram, &to_client()).unwrap();
+        let packet = read_packet(datagram, &client.to_client()).unwrap();
         if let Some(received) = client.sequencer.receive(&packet.header).unwrap() {
             client.sequencer.ack_seq(received.sequence, true).unwrap();
         }
@@ -1774,6 +1784,1144 @@ fn decoded_motion_updates(
             movement.clone()
         })
         .collect()
+}
+
+type ActorValues = std::collections::BTreeMap<u32, icarus_bevy::experimental::rep_layout::RepValue>;
+
+fn actor_flags(hidden: bool, can_be_damaged: bool) -> icarus_bevy::replication::NetActorFlags {
+    icarus_bevy::replication::NetActorFlags {
+        hidden,
+        can_be_damaged,
+    }
+}
+
+fn flags_spec(
+    flags: icarus_bevy::replication::NetActorFlags,
+) -> icarus_bevy::experimental::session_open::ActorOpenSpec {
+    use icarus_bevy::experimental::session_open::{authored_movement, world_actor_state_block};
+    let mut spec = motion_spec([0.0; 3], [0.0; 3], [0.0; 3]);
+    spec.blocks = vec![
+        world_actor_state_block(
+            17,
+            Some(authored_movement([0.0; 3], [0.0; 3], [0.0; 3]).unwrap()),
+            Some(flags),
+        )
+        .unwrap(),
+    ];
+    spec
+}
+
+fn opaque_actor_payload() -> Payload {
+    let mut writer = BitWriter::new();
+    writer.write_bits(0xff, 8);
+    Payload::from_writer(writer)
+}
+
+/// Decode actual authored actor updates, including unreliable partials. This
+/// helper deliberately ignores opens and export payloads, which have separate
+/// assertions in the open tests. All actors in these cases use channel 2.
+fn actor_updates(
+    datagrams: &[Vec<u8>],
+    order: icarus_bevy::experimental::archive::ByteOrder,
+) -> Vec<ActorValues> {
+    actor_updates_with_config(datagrams, order, &to_client())
+}
+
+fn actor_updates_with_config(
+    datagrams: &[Vec<u8>],
+    order: icarus_bevy::experimental::archive::ByteOrder,
+    packet_config: &PacketConfig,
+) -> Vec<ActorValues> {
+    use icarus_bevy::experimental::{
+        actor_channel::{ActorChannelCodec, ActorChannelLimits, read_actor_bunch_body},
+        rep_layout::{
+            MovementLevel, RepLayoutCodec, RepLayoutLimits, RotationLevel, actor_rep_layout,
+            parse_rep_properties,
+        },
+        sequencing::{
+            MAX_CONSTRUCTED_PARTIAL_BUNCH_BYTES, PartialBunchReassembler, PartialReceive,
+        },
+    };
+    let codec = RepLayoutCodec {
+        actor: ActorChannelCodec {
+            engine_net_version: 17,
+            exports_enabled: false,
+            has_level: true,
+            order,
+            limits: ActorChannelLimits::default(),
+        },
+        checksums: false,
+        limits: RepLayoutLimits::default(),
+    };
+    let layout = actor_rep_layout(
+        MovementLevel::Whole,
+        MovementLevel::Whole,
+        RotationLevel::Bytes,
+    );
+    let mut partials = PartialBunchReassembler::new();
+    let mut last: Option<(u16, i64)> = None;
+    let mut updates = Vec::new();
+    for datagram in datagrams {
+        let packet = read_packet(datagram, packet_config).unwrap();
+        let sequence = packet.header.sequence;
+        let id = last.map_or(i64::from(sequence), |(previous, id)| {
+            id + i64::from(sequence.wrapping_sub(previous) & 0x3fff)
+        });
+        last = Some((sequence, id));
+        for bunch in packet.bunches {
+            if bunch.header.reliable || bunch.header.channel_index != 2 {
+                continue;
+            }
+            let bunch = if bunch.header.partial {
+                match partials.receive_part(
+                    id,
+                    &bunch.header,
+                    &bunch.payload,
+                    Some(MAX_CONSTRUCTED_PARTIAL_BUNCH_BYTES),
+                ) {
+                    Ok(PartialReceive::Complete { bunch, .. }) => bunch,
+                    _ => continue,
+                }
+            } else {
+                bunch
+            };
+            let body =
+                read_actor_bunch_body(&mut bunch.payload.reader(), false, &codec.actor).unwrap();
+            assert!(body.spawn.is_none());
+            let mut fields = ActorValues::new();
+            for block in body.blocks {
+                let stream = parse_rep_properties(&block.payload, &layout, &codec).unwrap();
+                fields.extend(
+                    stream
+                        .entries
+                        .into_iter()
+                        .map(|entry| (entry.handle, entry.value)),
+                );
+            }
+            updates.push(fields);
+        }
+    }
+    updates
+}
+
+fn send_actor_state(
+    app: &mut App,
+    connection: u32,
+    motion: Option<[[f32; 3]; 3]>,
+    flags: Option<icarus_bevy::replication::NetActorFlags>,
+) -> bool {
+    app.world_mut()
+        .resource_mut::<PeerLab>()
+        .update_actor_properties(connection, 7, motion, flags, 17)
+}
+
+#[test]
+fn actor_flags_are_explicit_deduplicated_and_removed_with_authored_false_resets() {
+    use icarus_bevy::experimental::{
+        archive::ByteOrder, rep_layout::RepValue, session_open::actor_role_block,
+    };
+    for order in [ByteOrder::Little, ByteOrder::Big] {
+        let (mut app, address) = lab_app(PeerLabConfig {
+            admission: Some(PeerLabAdmission::default()),
+            ..Default::default()
+        });
+        let mut client = join_motion_client(&mut app, address, order);
+        let connection = lab(&app).joined_connections()[0];
+        let mut spec = motion_spec([0.0; 3], [0.0; 3], [0.0; 3]);
+        spec.blocks = vec![actor_role_block(17).unwrap()];
+        app.world_mut()
+            .resource_mut::<PeerLab>()
+            .open_actor(connection, 7, spec, 2, 17)
+            .unwrap();
+        acknowledge_lab(&mut app, &mut client);
+        assert!(
+            !send_actor_state(&mut app, connection, None, None),
+            "never-managed stays legacy"
+        );
+        assert!(drain(&client).is_empty());
+        let mut known = ActorValues::new();
+        for flags in [
+            actor_flags(false, false),
+            actor_flags(true, true),
+            actor_flags(false, true),
+            actor_flags(false, false),
+            actor_flags(true, false),
+            actor_flags(true, true),
+        ] {
+            let current = ActorValues::from([
+                (1, RepValue::Bool(flags.hidden)),
+                (4, RepValue::Bool(flags.can_be_damaged)),
+            ]);
+            let expected: ActorValues = current
+                .iter()
+                .filter(|(h, v)| known.get(*h) != Some(*v))
+                .map(|(h, v)| (*h, v.clone()))
+                .collect();
+            assert!(send_actor_state(&mut app, connection, None, Some(flags)));
+            assert_eq!(actor_updates(&drain(&client), order), vec![expected]);
+            assert!(!send_actor_state(&mut app, connection, None, Some(flags)));
+            assert!(drain(&client).is_empty());
+            known = current;
+        }
+        assert!(send_actor_state(&mut app, connection, None, None));
+        assert_eq!(
+            actor_updates(&drain(&client), order),
+            vec![ActorValues::from([
+                (1, RepValue::Bool(false)),
+                (4, RepValue::Bool(false))
+            ])]
+        );
+        assert!(!send_actor_state(&mut app, connection, None, None));
+        assert!(drain(&client).is_empty());
+    }
+}
+
+#[test]
+fn mixed_flags_and_invalid_motion_commit_nothing_and_retry_matches_fresh_control() {
+    use icarus_bevy::experimental::{
+        archive::ByteOrder, rep_layout::RepValue, session_open::authored_movement,
+    };
+    for order in [ByteOrder::Little, ByteOrder::Big] {
+        let (mut app, address) = lab_app(PeerLabConfig {
+            admission: Some(PeerLabAdmission::default()),
+            ..Default::default()
+        });
+        let mut client = join_motion_client(&mut app, address, order);
+        let connection = lab(&app).joined_connections()[0];
+        let spec = flags_spec(actor_flags(false, false));
+        for key in [7, 9] {
+            app.world_mut()
+                .resource_mut::<PeerLab>()
+                .open_actor(connection, key, spec.clone(), 2, 17)
+                .unwrap();
+        }
+        acknowledge_lab(&mut app, &mut client);
+        let before = stats(&app).actor_updates_sent;
+        let guid = format!("{:?}", lab(&app).guid_cache());
+        for field in 0..3 {
+            for bad in [f32::NAN, f32::INFINITY, -f32::INFINITY, f32::MAX] {
+                let mut motion = [[10.0; 3], [90.0; 3], [5.0; 3]];
+                motion[field][0] = bad;
+                assert!(!send_actor_state(
+                    &mut app,
+                    connection,
+                    Some(motion),
+                    Some(actor_flags(true, true))
+                ));
+            }
+        }
+        assert_eq!(stats(&app).actor_updates_sent, before);
+        assert_eq!(format!("{:?}", lab(&app).guid_cache()), guid);
+        assert!(drain(&client).is_empty());
+        let desired = Some([[10.0; 3], [90.0; 3], [5.0; 3]]);
+        assert!(send_actor_state(
+            &mut app,
+            connection,
+            desired,
+            Some(actor_flags(true, true))
+        ));
+        let tried = drain(&client);
+        assert!(
+            app.world_mut()
+                .resource_mut::<PeerLab>()
+                .update_actor_properties(connection, 9, desired, Some(actor_flags(true, true)), 17)
+        );
+        let fresh = drain(&client);
+        let payload = |bytes: &[Vec<u8>]| {
+            read_packet(&bytes[0], &to_client()).unwrap().bunches[0]
+                .payload
+                .clone()
+        };
+        assert_eq!(payload(&tried), payload(&fresh));
+        assert_eq!(
+            actor_updates(&tried, order),
+            vec![ActorValues::from([
+                (1, RepValue::Bool(true)),
+                (4, RepValue::Bool(true)),
+                (
+                    6,
+                    RepValue::Movement(authored_movement([10.0; 3], [90.0; 3], [5.0; 3]).unwrap())
+                ),
+            ])]
+        );
+        let first = read_packet(&tried[0], &to_client())
+            .unwrap()
+            .header
+            .sequence;
+        let second = read_packet(&fresh[0], &to_client())
+            .unwrap()
+            .header
+            .sequence;
+        assert_eq!(
+            second.wrapping_sub(first) & 0x3fff,
+            1,
+            "invalid attempts consumed no packets"
+        );
+    }
+}
+
+#[test]
+fn flag_open_baselines_use_only_actual_ordered_actor_fields() {
+    use icarus_bevy::experimental::{
+        actor_channel::{BlockTarget, ContentBlock, NetGuidRef},
+        archive::ByteOrder,
+        rep_layout::RepValue,
+        session_open::{actor_properties_update_block, actor_role_block},
+    };
+    for order in [ByteOrder::Little, ByteOrder::Big] {
+        for scenario in 0..7 {
+            let (mut app, address) = lab_app(PeerLabConfig {
+                admission: Some(PeerLabAdmission::default()),
+                ..Default::default()
+            });
+            let mut client = join_motion_client(&mut app, address, order);
+            let connection = lab(&app).joined_connections()[0];
+            let mut spec = flags_spec(actor_flags(true, true));
+            let mut expected = ActorValues::new();
+            let desired = match scenario {
+                0 => {
+                    spec.blocks = vec![actor_role_block(17).unwrap()];
+                    expected.extend([(1, RepValue::Bool(false)), (4, RepValue::Bool(false))]);
+                    actor_flags(false, false)
+                }
+                1 => {
+                    // A later known field supersedes that field only.
+                    spec.blocks
+                        .push(actor_properties_update_block(17, None, Some(false), None).unwrap());
+                    actor_flags(false, true)
+                }
+                2..=4 => {
+                    // Malformed/opaque actor data is legal in the generic API,
+                    // but cannot seed a guessed AActor property baseline.
+                    spec.blocks.push(ContentBlock {
+                        has_rep_layout: scenario != 4,
+                        target: BlockTarget::Actor,
+                        payload: opaque_actor_payload(),
+                    });
+                    if scenario == 3 {
+                        spec.blocks.push(
+                            actor_properties_update_block(17, None, Some(false), None).unwrap(),
+                        );
+                    } else {
+                        expected.insert(1, RepValue::Bool(false));
+                    }
+                    expected.insert(4, RepValue::Bool(false));
+                    actor_flags(false, false)
+                }
+                5 => {
+                    let mut non_actor =
+                        actor_properties_update_block(17, None, Some(false), Some(false)).unwrap();
+                    non_actor.target = BlockTarget::SubObject {
+                        object: NetGuidRef::plain(8),
+                        class:
+                            icarus_bevy::experimental::actor_channel::SubObjectClass::StablyNamed,
+                    };
+                    spec.blocks.push(non_actor);
+                    actor_flags(true, true)
+                }
+                _ => {
+                    spec.blocks.push(ContentBlock {
+                        has_rep_layout: true,
+                        target: BlockTarget::Actor,
+                        payload: opaque_actor_payload(),
+                    });
+                    spec.blocks
+                        .push(actor_properties_update_block(17, None, None, Some(false)).unwrap());
+                    expected.insert(1, RepValue::Bool(false));
+                    actor_flags(false, false)
+                }
+            };
+            app.world_mut()
+                .resource_mut::<PeerLab>()
+                .open_actor(connection, 7, spec, 2, 17)
+                .unwrap();
+            acknowledge_lab(&mut app, &mut client);
+            assert_eq!(
+                send_actor_state(&mut app, connection, None, Some(desired)),
+                !expected.is_empty(),
+                "scenario {scenario}"
+            );
+            assert_eq!(
+                actor_updates(&drain(&client), order),
+                if expected.is_empty() {
+                    Vec::new()
+                } else {
+                    vec![expected]
+                }
+            );
+            assert!(!send_actor_state(&mut app, connection, None, Some(desired)));
+        }
+    }
+}
+
+#[test]
+fn flag_changes_wait_for_each_peers_open_ack_and_reopen_has_fresh_knowledge() {
+    use icarus_bevy::experimental::{
+        archive::ByteOrder, rep_layout::RepValue, session_open::actor_role_block,
+    };
+    let (mut app, address) = lab_app(PeerLabConfig {
+        admission: Some(PeerLabAdmission::default()),
+        ..Default::default()
+    });
+    let mut first = join_motion_client(&mut app, address, ByteOrder::Little);
+    let first_id = lab(&app).joined_connections()[0];
+    let mut second = join_motion_client(&mut app, address, ByteOrder::Big);
+    let second_id = *lab(&app)
+        .joined_connections()
+        .iter()
+        .find(|&&id| id != first_id)
+        .unwrap();
+    for connection in [first_id, second_id] {
+        app.world_mut()
+            .resource_mut::<PeerLab>()
+            .open_actor(connection, 7, flags_spec(actor_flags(true, false)), 2, 17)
+            .unwrap();
+        assert!(!send_actor_state(
+            &mut app,
+            connection,
+            None,
+            Some(actor_flags(false, true))
+        ));
+    }
+    acknowledge_lab(&mut app, &mut first);
+    assert!(send_actor_state(
+        &mut app,
+        first_id,
+        None,
+        Some(actor_flags(false, true))
+    ));
+    assert_eq!(
+        actor_updates(&drain(&first), ByteOrder::Little),
+        vec![ActorValues::from([
+            (1, RepValue::Bool(false)),
+            (4, RepValue::Bool(true))
+        ])]
+    );
+    assert!(!send_actor_state(
+        &mut app,
+        second_id,
+        None,
+        Some(actor_flags(false, true))
+    ));
+    acknowledge_lab(&mut app, &mut second);
+    assert!(send_actor_state(
+        &mut app,
+        second_id,
+        None,
+        Some(actor_flags(false, true))
+    ));
+    assert_eq!(
+        actor_updates(&drain(&second), ByteOrder::Big),
+        vec![ActorValues::from([
+            (1, RepValue::Bool(false)),
+            (4, RepValue::Bool(true))
+        ])]
+    );
+    assert!(
+        app.world_mut()
+            .resource_mut::<PeerLab>()
+            .close_actor(first_id, 7, 3)
+    );
+    acknowledge_lab(&mut app, &mut first);
+    let mut legacy = flags_spec(actor_flags(false, false));
+    legacy.blocks = vec![actor_role_block(17).unwrap()];
+    app.world_mut()
+        .resource_mut::<PeerLab>()
+        .open_actor(first_id, 7, legacy, 2, 17)
+        .unwrap();
+    acknowledge_lab(&mut app, &mut first);
+    assert!(
+        !send_actor_state(&mut app, first_id, None, None),
+        "closing cleared the managed marker"
+    );
+    assert!(
+        send_actor_state(&mut app, first_id, None, Some(actor_flags(false, false))),
+        "absent reopened flags are unknown"
+    );
+    assert_eq!(
+        actor_updates(&drain(&first), ByteOrder::Little),
+        vec![ActorValues::from([
+            (1, RepValue::Bool(false)),
+            (4, RepValue::Bool(false))
+        ])]
+    );
+    assert!(
+        !send_actor_state(&mut app, second_id, None, Some(actor_flags(false, true))),
+        "other peer unchanged"
+    );
+}
+
+#[test]
+fn lost_flags_and_motion_repair_independently_and_same_field_a_b_a_supersedes_by_identity() {
+    use icarus_bevy::experimental::{
+        archive::ByteOrder, rep_layout::RepValue, session_open::authored_movement,
+    };
+    for scenario in 0..6 {
+        let (mut app, address) = lab_app(PeerLabConfig {
+            admission: Some(PeerLabAdmission::default()),
+            ..Default::default()
+        });
+        let mut client = join_motion_client(&mut app, address, ByteOrder::Little);
+        let connection = lab(&app).joined_connections()[0];
+        app.world_mut()
+            .resource_mut::<PeerLab>()
+            .open_actor(connection, 7, flags_spec(actor_flags(false, false)), 2, 17)
+            .unwrap();
+        acknowledge_lab(&mut app, &mut client);
+        let moving = Some([[20.0; 3], [90.0; 3], [5.0; 3]]);
+        let mut state = ActorValues::from([
+            (1, RepValue::Bool(false)),
+            (4, RepValue::Bool(false)),
+            (
+                6,
+                RepValue::Movement(authored_movement([0.0; 3], [0.0; 3], [0.0; 3]).unwrap()),
+            ),
+        ]);
+        let (motion, flags, repaired_handles) = match scenario {
+            0 => {
+                assert!(send_actor_state(
+                    &mut app,
+                    connection,
+                    None,
+                    Some(actor_flags(true, false))
+                ));
+                drain(&client); // lose handle 1
+                assert!(send_actor_state(
+                    &mut app,
+                    connection,
+                    moving,
+                    Some(actor_flags(true, false))
+                ));
+                (moving, actor_flags(true, false), vec![1])
+            }
+            1 => {
+                assert!(send_actor_state(
+                    &mut app,
+                    connection,
+                    None,
+                    Some(actor_flags(true, false))
+                ));
+                drain(&client);
+                assert!(send_actor_state(
+                    &mut app,
+                    connection,
+                    None,
+                    Some(actor_flags(true, true))
+                ));
+                (None, actor_flags(true, true), vec![1])
+            }
+            2 => {
+                assert!(send_actor_state(
+                    &mut app,
+                    connection,
+                    None,
+                    Some(actor_flags(false, true))
+                ));
+                drain(&client); // lose handle 4, then send only handle 1
+                assert!(send_actor_state(
+                    &mut app,
+                    connection,
+                    None,
+                    Some(actor_flags(true, true))
+                ));
+                (None, actor_flags(true, true), vec![4])
+            }
+            3 => {
+                assert!(send_actor_state(
+                    &mut app,
+                    connection,
+                    moving,
+                    Some(actor_flags(false, false))
+                ));
+                drain(&client); // lose movement, then send flags
+                assert!(send_actor_state(
+                    &mut app,
+                    connection,
+                    moving,
+                    Some(actor_flags(true, true))
+                ));
+                (moving, actor_flags(true, true), vec![6])
+            }
+            4..=5 => {
+                assert!(send_actor_state(
+                    &mut app,
+                    connection,
+                    None,
+                    Some(actor_flags(true, false))
+                ));
+                drain(&client); // A lost
+                assert!(send_actor_state(
+                    &mut app,
+                    connection,
+                    None,
+                    Some(actor_flags(false, false))
+                ));
+                if scenario == 5 {
+                    drain(&client); // B lost too; the new A must own its identity
+                    assert!(send_actor_state(
+                        &mut app,
+                        connection,
+                        None,
+                        Some(actor_flags(true, false))
+                    ));
+                }
+                (None, actor_flags(scenario == 5, false), Vec::new())
+            }
+            _ => unreachable!(),
+        };
+        let latest = drain(&client);
+        for fields in actor_updates(&latest, ByteOrder::Little) {
+            state.extend(fields);
+        }
+        acknowledge_datagrams(&mut client, &latest);
+        let (report, _) = client.packet(Vec::new());
+        client.send(&report);
+        app.update();
+        accept_all_headers(&mut client);
+        assert_eq!(
+            send_actor_state(&mut app, connection, motion, Some(flags)),
+            !repaired_handles.is_empty()
+        );
+        let repaired = actor_updates(&drain(&client), ByteOrder::Little);
+        if repaired_handles.is_empty() {
+            assert!(
+                repaired.is_empty(),
+                "a superseded packet must not repair by value equality"
+            );
+        } else {
+            assert_eq!(repaired.len(), 1);
+            assert_eq!(
+                repaired[0].keys().copied().collect::<Vec<_>>(),
+                repaired_handles
+            );
+            state.extend(repaired[0].clone());
+            assert_eq!(stats(&app).actor_updates_lost, 1);
+        }
+        assert_eq!(state.get(&1), Some(&RepValue::Bool(flags.hidden)));
+        assert_eq!(state.get(&4), Some(&RepValue::Bool(flags.can_be_damaged)));
+        if motion.is_some() {
+            assert_eq!(
+                state.get(&6),
+                Some(&RepValue::Movement(
+                    authored_movement([20.0; 3], [90.0; 3], [5.0; 3]).unwrap()
+                ))
+            );
+        }
+        assert!(!send_actor_state(&mut app, connection, motion, Some(flags)));
+    }
+}
+
+#[test]
+fn real_replication_plugins_open_all_authored_flags_and_send_selected_changes_after_ack() {
+    use bevy::time::TimeUpdateStrategy;
+    use icarus_bevy::{
+        experimental::{
+            actor_channel::{ActorChannelCodec, ActorChannelLimits, read_actor_bunch_body},
+            archive::ByteOrder,
+            rep_layout::{
+                MovementLevel, RepLayoutCodec, RepLayoutLimits, RepValue, RotationLevel,
+                actor_rep_layout, parse_rep_properties,
+            },
+            session_open::map_level_chain,
+        },
+        replication::{
+            NetActor, NetActorFlags, NetParameters, ReplicationFrame, ReplicationPlugin,
+        },
+        session_replication::{NetArchetype, SessionReplication, SessionReplicationPlugin},
+        simulation::{DomainId, Position},
+    };
+    for order in [ByteOrder::Little, ByteOrder::Big] {
+        for hidden in [false, true] {
+            for damage in [false, true] {
+                let (mut app, address) = lab_app(PeerLabConfig {
+                    admission: Some(PeerLabAdmission::default()),
+                    ..Default::default()
+                });
+                let mut client = join_motion_client(&mut app, address, order);
+                let connection = lab(&app).joined_connections()[0];
+                app.insert_resource(TimeUpdateStrategy::ManualDuration(Duration::from_millis(
+                    34,
+                )))
+                .insert_resource(
+                    SessionReplication::new(
+                        map_level_chain(PeerLabAdmission::default().map_url).unwrap(),
+                        17,
+                        2,
+                        [0.0; 3],
+                    )
+                    .unwrap(),
+                )
+                .add_plugins((ReplicationPlugin::default(), SessionReplicationPlugin));
+                let entity = app
+                    .world_mut()
+                    .spawn((
+                        NetActor {
+                            id: DomainId(7),
+                            params: NetParameters::default(),
+                        },
+                        Position([1_000.0, 0.0, 0.0]),
+                        actor_flags(hidden, damage),
+                        NetArchetype {
+                            archetype: flags_spec(actor_flags(hidden, damage)).archetype,
+                            replicate_movement: false,
+                        },
+                    ))
+                    .id();
+                app.update();
+                assert!(lab(&app).is_actor_open(connection, 7));
+                let opened = drain(&client);
+                let codec = RepLayoutCodec {
+                    actor: ActorChannelCodec {
+                        engine_net_version: 17,
+                        exports_enabled: false,
+                        has_level: true,
+                        order,
+                        limits: ActorChannelLimits::default(),
+                    },
+                    checksums: false,
+                    limits: RepLayoutLimits::default(),
+                };
+                let layout = actor_rep_layout(
+                    MovementLevel::Whole,
+                    MovementLevel::Whole,
+                    RotationLevel::Bytes,
+                );
+                let values: ActorValues = opened
+                    .iter()
+                    .flat_map(|bytes| read_packet(bytes, &to_client()).unwrap().bunches)
+                    .filter(|bunch| {
+                        bunch.header.channel_index == 2 && !bunch.header.has_package_map_exports
+                    })
+                    .flat_map(|bunch| {
+                        read_actor_bunch_body(&mut bunch.payload.reader(), true, &codec.actor)
+                            .unwrap()
+                            .blocks
+                    })
+                    .flat_map(|block| {
+                        parse_rep_properties(&block.payload, &layout, &codec)
+                            .unwrap()
+                            .entries
+                    })
+                    .map(|entry| (entry.handle, entry.value))
+                    .collect();
+                assert_eq!(values.get(&1), Some(&RepValue::Bool(hidden)));
+                assert_eq!(values.get(&4), Some(&RepValue::Bool(damage)));
+                assert!(!values.contains_key(&6));
+                // Change before ACK; the actual scheduler still selects the
+                // colliding-root actor, but the transport must keep it due.
+                app.world_mut()
+                    .entity_mut(entity)
+                    .insert(actor_flags(!hidden, !damage));
+                let mut selected_before_ack = false;
+                for _ in 0..4 {
+                    app.update();
+                    selected_before_ack |= !app
+                        .world()
+                        .resource::<ReplicationFrame>()
+                        .decisions
+                        .connections[0]
+                        .selected
+                        .is_empty();
+                }
+                assert!(selected_before_ack);
+                assert_eq!(stats(&app).actor_updates_sent, 0);
+                assert!(drain(&client).is_empty());
+                acknowledge_datagrams(&mut client, &opened);
+                let (ack, _) = client.packet(Vec::new());
+                client.send(&ack);
+                let mut changed = Vec::new();
+                for _ in 0..4 {
+                    app.update();
+                    changed.extend(drain(&client));
+                }
+                assert_eq!(
+                    actor_updates(&changed, order),
+                    vec![ActorValues::from([
+                        (1, RepValue::Bool(!hidden)),
+                        (4, RepValue::Bool(!damage))
+                    ])]
+                );
+                assert_eq!(stats(&app).actor_updates_sent, 1);
+                for _ in 0..4 {
+                    app.update();
+                }
+                assert!(drain(&client).is_empty());
+                assert_eq!(stats(&app).actor_updates_sent, 1);
+                app.world_mut().entity_mut(entity).remove::<NetActorFlags>();
+                let mut removed = Vec::new();
+                for _ in 0..4 {
+                    app.update();
+                    removed.extend(drain(&client));
+                }
+                let mut reset = ActorValues::new();
+                if !hidden {
+                    reset.insert(1, RepValue::Bool(false));
+                }
+                if !damage {
+                    reset.insert(4, RepValue::Bool(false));
+                }
+                assert_eq!(
+                    actor_updates(&removed, order),
+                    if reset.is_empty() {
+                        Vec::new()
+                    } else {
+                        vec![reset]
+                    }
+                );
+                let frame = app.world().resource::<ReplicationFrame>();
+                assert_eq!(
+                    frame.decisions.connections[0].relevant,
+                    frame.decisions.considered
+                );
+                assert!(frame.decisions.connections[0].closed.is_empty());
+                assert_eq!(stats(&app).actor_closes_sent, 0);
+            }
+        }
+    }
+}
+
+/// A valid tiny lab profile and short authored admission strings. One bunch
+/// per packet forces every 72-bit partial onto its own datagram at 80 bytes;
+/// this is transport configuration, not an expansion of the flag schema.
+/// Both endpoints must use these limits: the bunch payload-length encoding
+/// depends on the maximum packet size, even for messages that fit physically.
+fn small_actor_lab() -> (App, Client, u32) {
+    use icarus_bevy::experimental::{archive::ByteOrder, session_open::PathSegment};
+    let mut config = PeerLabConfig {
+        admission: Some(PeerLabAdmission {
+            map_url: "/L",
+            game_name: "G",
+            ..Default::default()
+        }),
+        ..Default::default()
+    };
+    config.packet.packet.limits.max_packet_bytes = 80;
+    config.packet.max_bunches_per_packet = 1;
+    config.packet.sent_capacity = 32;
+    let (mut app, address) = lab_app(config);
+    let mut client = Client::connect(&mut app, address);
+    let login = ControlMessage::Login {
+        response: ArchiveText::text("0").unwrap(),
+        url: ArchiveText::text("?Name=A").unwrap(),
+        unique_net_id: UniqueNetId {
+            kind: NetIdType::Named(ArchiveText::text("STEAM").unwrap()),
+            value: NetIdValue::from_hex(NET_ID_HEX).unwrap(),
+        },
+        platform: ArchiveText::text("").unwrap(),
+    };
+    for (message, expected) in [
+        (short_hello("", 0), (1, 0, 0)),
+        (login, (1, 1, 0)),
+        (ControlMessage::Join, (1, 1, 1)),
+    ] {
+        let bunch = client.reliable_bunch(message, false);
+        let (datagram, _) = client.packet(vec![bunch]);
+        assert!(datagram.len() <= 80);
+        client.send(&datagram);
+        app.update();
+        accept_all_headers(&mut client);
+        let counted = stats(&app);
+        assert_eq!(
+            (
+                counted.control_challenges_sent,
+                counted.welcomes_sent,
+                counted.joins_succeeded
+            ),
+            expected,
+            "tiny-profile admission must advance at every step: {counted:?}"
+        );
+        assert_eq!(
+            (
+                counted.oversize,
+                counted.data_malformed,
+                counted.invalid_state_messages,
+                counted.reply_errors,
+                counted.ack_errors,
+                counted.failures_sent,
+                counted.peers_failed
+            ),
+            (0, 0, 0, 0, 0, 0, 0),
+            "tiny-profile admission must not fail: {counted:?}"
+        );
+    }
+    acknowledge_lab(&mut app, &mut client);
+    let connections = lab(&app).joined_connections();
+    assert_eq!(connections.len(), 1, "tiny-profile peer must be joined");
+    let connection = connections[0];
+    let mut spec = flags_spec(actor_flags(true, true));
+    spec.archetype = vec![PathSegment::new("D", 0, false)];
+    spec.level = vec![PathSegment::new("L", 0, false)];
+    app.world_mut()
+        .resource_mut::<PeerLab>()
+        .open_actor(connection, 7, spec, 2, 17)
+        .unwrap();
+    acknowledge_lab(&mut app, &mut client);
+    assert!(
+        actor_updates_with_config(&drain(&client), ByteOrder::Little, &client.to_client())
+            .is_empty()
+    );
+    (app, client, connection)
+}
+
+#[test]
+fn any_lost_authored_property_partial_repairs_current_fields_and_all_part_acks_retire() {
+    use icarus_bevy::experimental::{
+        archive::ByteOrder, rep_layout::RepValue, session_open::authored_movement,
+    };
+    let motion_values = [
+        [1_000_000.0, -1_000_000.0, 500_000.0],
+        [90.0, 180.0, 270.0],
+        [500_000.0, 1_000_000.0, -1_000_000.0],
+    ];
+    let motion = Some(motion_values);
+    for loss in 0..3 {
+        let (mut app, mut client, connection) = small_actor_lab();
+        assert!(send_actor_state(
+            &mut app,
+            connection,
+            motion,
+            Some(actor_flags(false, false))
+        ));
+        let sent = drain(&client);
+        let packet_config = client.to_client();
+        assert!(
+            sent.len() >= 3,
+            "actual combined flags/motion must split under the valid tiny limit"
+        );
+        for bytes in &sent {
+            assert!(bytes.len() <= 80);
+            let packet = read_packet(bytes, &packet_config).unwrap();
+            assert_eq!(packet.bunches.len(), 1);
+            assert!(packet.bunches[0].header.partial && !packet.bunches[0].header.reliable);
+        }
+        let complete = actor_updates_with_config(&sent, ByteOrder::Little, &packet_config);
+        assert_eq!(complete.len(), 1);
+        assert_eq!(complete[0].keys().copied().collect::<Vec<_>>(), [1, 4, 6]);
+        let missing = match loss {
+            0 => 0,
+            1 => sent.len() / 2,
+            _ => sent.len() - 1,
+        };
+        let delivered: Vec<_> = sent
+            .into_iter()
+            .enumerate()
+            .filter(|(index, _)| *index != missing)
+            .map(|(_, bytes)| bytes)
+            .collect();
+        assert!(
+            actor_updates_with_config(&delivered, ByteOrder::Little, &packet_config).is_empty()
+        );
+        acknowledge_datagrams(&mut client, &delivered);
+        let flags = if loss == 1 {
+            // Only handle 1 is superseded; a NAK of the old group's middle
+            // must still repair handle 4 and motion.
+            assert!(send_actor_state(
+                &mut app,
+                connection,
+                motion,
+                Some(actor_flags(true, false))
+            ));
+            let newer = drain(&client);
+            assert_eq!(
+                actor_updates_with_config(&newer, ByteOrder::Little, &packet_config),
+                vec![ActorValues::from([(1, RepValue::Bool(true))])]
+            );
+            acknowledge_datagrams(&mut client, &newer);
+            actor_flags(true, false)
+        } else {
+            actor_flags(false, false)
+        };
+        // If the final part was lost, the first keepalive draws a later packet
+        // and the second reports its gap. ACKs for other parts cannot retire it.
+        for _ in 0..2 {
+            acknowledge_lab(&mut app, &mut client);
+        }
+        assert!(send_actor_state(&mut app, connection, motion, Some(flags)));
+        let repaired = drain(&client);
+        let fields = actor_updates_with_config(&repaired, ByteOrder::Little, &packet_config);
+        assert_eq!(fields.len(), 1);
+        assert_eq!(
+            fields[0].keys().copied().collect::<Vec<_>>(),
+            if loss == 1 { vec![4, 6] } else { vec![1, 4, 6] }
+        );
+        let [location, rotation, velocity] = motion_values;
+        assert_eq!(
+            fields[0].get(&6),
+            Some(&RepValue::Movement(
+                authored_movement(location, rotation, velocity).unwrap()
+            ))
+        );
+        assert_eq!(fields[0].get(&4), Some(&RepValue::Bool(false)));
+        acknowledge_datagrams(&mut client, &repaired);
+        acknowledge_lab(&mut app, &mut client);
+        assert!(!send_actor_state(&mut app, connection, motion, Some(flags)));
+        assert!(
+            drain(&client).is_empty(),
+            "all ACKed parts retire the group without another update"
+        );
+        assert_eq!(stats(&app).actor_updates_lost, 1);
+    }
+}
+
+#[test]
+fn property_group_pressure_is_transactional_and_removal_reset_stays_due() {
+    use icarus_bevy::experimental::{archive::ByteOrder, rep_layout::RepValue};
+    let (mut app, mut client, connection) = small_actor_lab();
+    let mut current = true;
+    // The 32-slot ring holds the outstanding lab ACK and these 30 one-part
+    // updates, leaving one slot: enough for a prefix, never a complete group.
+    for _ in 0..30 {
+        assert!(send_actor_state(
+            &mut app,
+            connection,
+            None,
+            Some(actor_flags(!current, !current))
+        ));
+        current = !current;
+    }
+    assert!(current, "the last sent flags are both true");
+    let queued = drain(&client);
+    let before = stats(&app).actor_updates_sent;
+    let motion = Some([[1_000_000.0; 3], [90.0; 3], [1_000_000.0; 3]]);
+    assert!(!send_actor_state(
+        &mut app,
+        connection,
+        motion,
+        Some(actor_flags(!current, !current))
+    ));
+    assert!(
+        !send_actor_state(&mut app, connection, motion, None),
+        "removal plus motion must not partially commit"
+    );
+    assert_eq!(stats(&app).actor_updates_sent, before);
+    assert!(
+        drain(&client).is_empty(),
+        "preflight emits no prefix of a group"
+    );
+    assert_eq!(stats(&app).peers_failed, 0);
+    acknowledge_datagrams(&mut client, &queued);
+    acknowledge_lab(&mut app, &mut client);
+    assert!(send_actor_state(&mut app, connection, motion, None));
+    let reset = drain(&client);
+    let updates = actor_updates_with_config(&reset, ByteOrder::Little, &client.to_client());
+    assert_eq!(updates.len(), 1);
+    assert!(updates[0].contains_key(&6));
+    for handle in [1, 4] {
+        assert_eq!(
+            updates[0].get(&handle),
+            current.then_some(&RepValue::Bool(false))
+        );
+    }
+    assert!(!send_actor_state(&mut app, connection, motion, None));
+    acknowledge_datagrams(&mut client, &reset);
+    acknowledge_lab(&mut app, &mut client);
+    assert!(!send_actor_state(&mut app, connection, motion, None));
+}
+
+#[test]
+fn pending_close_blocks_flag_updates_and_close_reopen_eviction_shutdown_clear_state() {
+    use icarus_bevy::experimental::{
+        archive::ByteOrder, rep_layout::RepValue, session_open::actor_role_block,
+    };
+    let mut config = PeerLabConfig {
+        admission: Some(PeerLabAdmission::default()),
+        idle_timeout: Duration::from_millis(50),
+        ..Default::default()
+    };
+    config.packet.sent_capacity = 12;
+    let (mut app, address) = lab_app(config);
+    let mut client = join_motion_client(&mut app, address, ByteOrder::Little);
+    let connection = lab(&app).joined_connections()[0];
+    app.world_mut()
+        .resource_mut::<PeerLab>()
+        .open_actor(connection, 7, flags_spec(actor_flags(true, true)), 2, 17)
+        .unwrap();
+    acknowledge_lab(&mut app, &mut client);
+    let mut full = false;
+    for value in 1..64 {
+        if !app
+            .world_mut()
+            .resource_mut::<PeerLab>()
+            .update_actor_movement(connection, 7, [value as f32; 3], 17)
+        {
+            full = true;
+            break;
+        }
+    }
+    assert!(full);
+    assert!(
+        !send_actor_state(&mut app, connection, None, None),
+        "removal reset stays due under pressure"
+    );
+    assert!(
+        !app.world_mut()
+            .resource_mut::<PeerLab>()
+            .close_actor(connection, 7, 3)
+    );
+    assert!(lab(&app).is_actor_open(connection, 7));
+    acknowledge_lab(&mut app, &mut client);
+    assert!(
+        !send_actor_state(&mut app, connection, None, Some(actor_flags(false, false))),
+        "pending close blocks sends even after pressure releases"
+    );
+    assert!(drain(&client).is_empty());
+    app.world_mut()
+        .resource_mut::<PeerLab>()
+        .retry_pending_closes();
+    assert!(!lab(&app).is_actor_open(connection, 7));
+    acknowledge_lab(&mut app, &mut client);
+    let mut legacy = flags_spec(actor_flags(false, false));
+    legacy.blocks = vec![actor_role_block(17).unwrap()];
+    app.world_mut()
+        .resource_mut::<PeerLab>()
+        .open_actor(connection, 7, legacy.clone(), 2, 17)
+        .unwrap();
+    acknowledge_lab(&mut app, &mut client);
+    assert!(!send_actor_state(&mut app, connection, None, None));
+    assert!(send_actor_state(
+        &mut app,
+        connection,
+        None,
+        Some(actor_flags(true, true))
+    ));
+    drain(&client); // Keep a flag repair record alive when the peer expires.
+    thread::sleep(Duration::from_millis(150));
+    app.update();
+    assert_eq!(lab(&app).peer_count(), 0);
+    assert_eq!(stats(&app).peers_expired, 1);
+    assert!(!lab(&app).is_actor_open(connection, 7));
+    let mut rejoined = join_motion_client(&mut app, address, ByteOrder::Big);
+    let fresh = lab(&app).joined_connections()[0];
+    assert!(!lab(&app).is_actor_open(fresh, 7));
+    app.world_mut()
+        .resource_mut::<PeerLab>()
+        .open_actor(fresh, 7, legacy, 2, 17)
+        .unwrap();
+    acknowledge_lab(&mut app, &mut rejoined);
+    assert!(!send_actor_state(&mut app, fresh, None, None));
+    assert!(send_actor_state(
+        &mut app,
+        fresh,
+        None,
+        Some(actor_flags(false, false))
+    ));
+    assert_eq!(
+        actor_updates(&drain(&rejoined), ByteOrder::Big),
+        vec![ActorValues::from([
+            (1, RepValue::Bool(false)),
+            (4, RepValue::Bool(false))
+        ])]
+    );
+    assert_eq!(app.world_mut().resource_mut::<PeerLab>().shutdown(), 1);
+    assert_eq!(lab(&app).peer_count(), 0);
+    assert!(!lab(&app).is_actor_open(fresh, 7));
+    assert!(!send_actor_state(
+        &mut app,
+        fresh,
+        None,
+        Some(actor_flags(true, true))
+    ));
+    assert_eq!(app.world_mut().resource_mut::<PeerLab>().shutdown(), 0);
 }
 
 #[test]
@@ -2691,7 +3839,7 @@ fn join_active_prospect_peer(app: &mut App, address: SocketAddr) -> Client {
 
 fn acknowledge_datagrams(client: &mut Client, datagrams: &[Vec<u8>]) {
     for datagram in datagrams {
-        let packet = read_packet(datagram, &to_client()).unwrap();
+        let packet = read_packet(datagram, &client.to_client()).unwrap();
         if let Some(received) = client.sequencer.receive(&packet.header).unwrap() {
             client.sequencer.ack_seq(received.sequence, true).unwrap();
         }

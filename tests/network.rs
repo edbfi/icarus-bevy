@@ -1681,7 +1681,7 @@ fn replication_closes_actors_that_stop_being_relevant() {
 }
 
 #[test]
-fn replicated_movement_opens_at_rest_and_updates_after_a_move() {
+fn replicated_authored_flags_and_movement_open_and_update_together() {
     use bevy::prelude::{FixedUpdate, Query, Res};
     use icarus_bevy::{
         experimental::{
@@ -1695,15 +1695,19 @@ fn replicated_movement_opens_at_rest_and_updates_after_a_move() {
             },
             session_open::{PathSegment, map_level_chain},
         },
-        replication::{NetActor, NetParameters, ReplicationPlugin},
+        replication::{NetActor, NetActorFlags, NetParameters, ReplicationPlugin, ReplicationSet},
         session_replication::{NetArchetype, SessionReplication, SessionReplicationPlugin},
         simulation::{DomainId, Position},
     };
-    /// Authored motion: the actor moves once, a second after start.
-    fn mover(time: Res<bevy::time::Time>, mut actors: Query<&mut Position>) {
+    /// Authored producer runs before selection; hiding keeps its colliding root.
+    fn mover(time: Res<bevy::time::Time>, mut actors: Query<(&mut Position, &mut NetActorFlags)>) {
         if time.elapsed_secs() > 1.0 {
-            for mut position in &mut actors {
+            for (mut position, mut flags) in &mut actors {
                 position.0 = [500.0, -20.0, 30.0];
+                *flags = NetActorFlags {
+                    hidden: false,
+                    can_be_damaged: true,
+                };
             }
         }
     }
@@ -1714,7 +1718,7 @@ fn replicated_movement_opens_at_rest_and_updates_after_a_move() {
         ..enabled(0)
     });
     app.add_plugins((ReplicationPlugin::default(), SessionReplicationPlugin))
-        .add_systems(FixedUpdate, mover)
+        .add_systems(FixedUpdate, mover.before(ReplicationSet))
         .insert_resource(
             SessionReplication::new(
                 map_level_chain(PeerLabAdmission::default().map_url).unwrap(),
@@ -1730,6 +1734,10 @@ fn replicated_movement_opens_at_rest_and_updates_after_a_move() {
             params: NetParameters::default(),
         },
         Position([100.0, 0.0, 0.0]),
+        NetActorFlags {
+            hidden: true,
+            can_be_damaged: false,
+        },
         NetArchetype {
             archetype: vec![
                 PathSegment::new("Default__LabCart_C", 0x0cab_0cab, false),
@@ -1819,6 +1827,27 @@ fn replicated_movement_opens_at_rest_and_updates_after_a_move() {
     };
     assert!(!update.header.open && update.header.channel_name.is_none());
     assert_eq!(location_of(&update.payload, false), (6, [500, -20, 30]));
+    for (bunch, is_open, expected) in [(open, true, [true, false]), (*update, false, [false, true])]
+    {
+        let body = read_actor_bunch_body(&mut bunch.payload.reader(), is_open, &codec).unwrap();
+        let stream =
+            read_rep_properties(&mut body.blocks[0].payload.reader(), &layout, &rep_codec).unwrap();
+        for (handle, value) in [1, 4].into_iter().zip(expected) {
+            assert_eq!(
+                stream
+                    .entries
+                    .iter()
+                    .find(|entry| entry.handle == handle)
+                    .unwrap()
+                    .value,
+                RepValue::Bool(value)
+            );
+        }
+    }
+    assert_eq!(
+        stats.actor_closes_sent, 0,
+        "hiding alone keeps spatial relevance"
+    );
 }
 
 /// A joined probe session held for three seconds keeps receiving GameState

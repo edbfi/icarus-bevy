@@ -986,16 +986,16 @@ pub fn authored_movement(
     })
 }
 
-/// Recover an initial movement baseline only from a composed AActor-default
-/// property block. Generic opens without a decodable handle 6 establish none;
-/// their spawn location/rotation/velocity cannot stand in for that property.
-/// An undecodable actor property block invalidates any earlier baseline, since
-/// it may carry newer movement. A later decodable handle 6 can establish it again.
-pub(super) fn initial_movement(
+/// Recover only actual handles 1, 4 and 6 in transmission order. Neither spawn
+/// fields nor absent properties establish a class default. An opaque actor
+/// property block invalidates all earlier knowledge; later known fields
+/// reestablish only themselves. The separate managed bit remembers explicit
+/// flags even when their values subsequently become unknown.
+pub(super) fn initial_actor_properties(
     blocks: &[ContentBlock],
     engine_net_version: u32,
     order: super::archive::ByteOrder,
-) -> Option<super::rep_layout::RepMovement> {
+) -> (std::collections::BTreeMap<u32, RepValue>, bool) {
     use super::rep_layout::{
         MovementLevel, RepLayoutLimits, RotationLevel, actor_rep_layout, parse_rep_properties,
     };
@@ -1009,24 +1009,28 @@ pub(super) fn initial_movement(
         checksums: false,
         limits: RepLayoutLimits::default(),
     };
-    let mut movement = None;
+    let mut values = std::collections::BTreeMap::new();
+    let mut flags_managed = false;
     for block in blocks
         .iter()
-        .filter(|block| block.has_rep_layout && block.target == BlockTarget::Actor)
+        .filter(|block| block.target == BlockTarget::Actor)
     {
+        if !block.has_rep_layout {
+            values.clear();
+            continue;
+        }
         let Ok(stream) = parse_rep_properties(&block.payload, &layout, &codec) else {
-            movement = None;
+            values.clear();
             continue;
         };
         for entry in stream.entries {
-            if let RepValue::Movement(value) = entry.value
-                && entry.handle == HANDLE_REPLICATED_MOVEMENT
-            {
-                movement = Some(value);
+            if matches!(entry.handle, 1 | 4 | HANDLE_REPLICATED_MOVEMENT) {
+                flags_managed |= matches!(entry.handle, 1 | 4);
+                values.insert(entry.handle, entry.value);
             }
         }
     }
-    movement
+    (values, flags_managed)
 }
 
 /// An actor block on the `AActor` handle prefix (F-703): the world-actor
@@ -1037,9 +1041,17 @@ fn actor_handles_block(
     engine_net_version: u32,
     roles: bool,
     movement: Option<super::rep_layout::RepMovement>,
+    hidden: Option<bool>,
+    can_be_damaged: Option<bool>,
 ) -> Result<ContentBlock> {
     use super::rep_layout::{MovementLevel, RepLayoutLimits, RotationLevel, actor_rep_layout};
     let mut entries = Vec::new();
+    if let Some(hidden) = hidden {
+        entries.push(entry(1, RepValue::Bool(hidden)));
+    }
+    if let Some(can_be_damaged) = can_be_damaged {
+        entries.push(entry(4, RepValue::Bool(can_be_damaged)));
+    }
     if roles {
         entries.push(entry(HANDLE_REMOTE_ROLE, RepValue::Byte(WORLD_REMOTE_ROLE)));
     }
@@ -1080,7 +1092,34 @@ pub fn world_actor_block(
     engine_net_version: u32,
     movement: Option<super::rep_layout::RepMovement>,
 ) -> Result<ContentBlock> {
-    actor_handles_block(engine_net_version, true, movement)
+    world_actor_state_block(engine_net_version, movement, None)
+}
+
+/// Authored initial state on the existing supported AActor prefix. Both flags
+/// are explicit, including false; no CDO/default or subclass claim follows.
+pub fn world_actor_state_block(
+    engine_net_version: u32,
+    movement: Option<super::rep_layout::RepMovement>,
+    flags: Option<crate::replication::NetActorFlags>,
+) -> Result<ContentBlock> {
+    actor_handles_block(
+        engine_net_version,
+        true,
+        movement,
+        flags.map(|flags| flags.hidden),
+        flags.map(|flags| flags.can_be_damaged),
+    )
+}
+
+/// Authored per-field delta. Absent fields are omitted, never inferred false.
+/// Complete movement retains the existing canonical AActor quantization.
+pub fn actor_properties_update_block(
+    engine_net_version: u32,
+    movement: Option<super::rep_layout::RepMovement>,
+    hidden: Option<bool>,
+    can_be_damaged: Option<bool>,
+) -> Result<ContentBlock> {
+    actor_handles_block(engine_net_version, false, movement, hidden, can_be_damaged)
 }
 
 /// A property update carrying only `ReplicatedMovement` (handle 6).
@@ -1088,5 +1127,5 @@ pub fn movement_update_block(
     engine_net_version: u32,
     movement: super::rep_layout::RepMovement,
 ) -> Result<ContentBlock> {
-    actor_handles_block(engine_net_version, false, Some(movement))
+    actor_properties_update_block(engine_net_version, Some(movement), None, None)
 }

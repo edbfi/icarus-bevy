@@ -99,6 +99,18 @@ pub struct NetActor {
     pub params: NetParameters,
 }
 
+/// Opt-in authored AActor handles 1 and 4. These are explicit lab values,
+/// not class defaults or saved-state mappings. `hidden` also feeds scheduling;
+/// `can_be_damaged` is a wire flag only and implements no damage behavior.
+/// Removing this component requests an authored `(false, false)` reset for
+/// previously managed actors, retained per peer until sent. Actors that never
+/// opt in keep their legacy bytes. Hiding retains the modeled colliding root.
+#[derive(Component, Clone, Copy, Debug, PartialEq, Eq)]
+pub struct NetActorFlags {
+    pub hidden: bool,
+    pub can_be_damaged: bool,
+}
+
 /// The `FNetworkObjectInfo` scheduling fields the evaluators read and update.
 /// They start at zero, as does a connection's `LastProcessedFrame`, following
 /// UE engine construction (unverified for ICARUS): on a connection's first
@@ -359,10 +371,14 @@ pub struct RelevancyCandidate {
 /// `AActor::IsNetRelevantFor` for a visible, ownerless actor with a colliding
 /// root component under distance-based relevancy, via the evaluator.
 pub fn is_relevant_to_viewer(candidate: &RelevancyCandidate, viewer: [f32; 3]) -> bool {
+    is_relevant_with_hidden(candidate, viewer, false)
+}
+
+fn is_relevant_with_hidden(candidate: &RelevancyCandidate, viewer: [f32; 3], hidden: bool) -> bool {
     let outcome = evaluate_actor_net_relevancy(&ActorRelevancyInputs {
         b_always_relevant: false,
         b_only_relevant_to_owner: false,
-        b_hidden: false,
+        b_hidden: hidden,
         b_use_owner_relevancy: false,
         is_owned_by_view_target_or_real_viewer: false,
         view_target_is_instigator: false,
@@ -494,11 +510,24 @@ impl RelevancyGrid {
         viewer: [f32; 3],
         out: &mut Vec<usize>,
     ) {
+        self.relevant_matching(candidates.len(), viewer, out, |index| {
+            is_relevant_to_viewer(&candidates[index], viewer)
+        });
+    }
+
+    fn relevant_matching(
+        &self,
+        count: usize,
+        viewer: [f32; 3],
+        out: &mut Vec<usize>,
+        relevant: impl Fn(usize) -> bool,
+    ) {
         let Some(center) = self
             .inverse_cell
             .and_then(|inverse_cell| grid_cell(viewer, inverse_cell))
         else {
-            naive_relevant(candidates, viewer, out);
+            out.clear();
+            out.extend((0..count).filter(|&index| relevant(index)));
             return;
         };
         let mut buckets = [0_usize; 27];
@@ -526,14 +555,14 @@ impl RelevancyGrid {
                 members
                     .iter()
                     .map(|&index| index as usize)
-                    .filter(|&index| is_relevant_to_viewer(&candidates[index], viewer)),
+                    .filter(|&index| relevant(index)),
             );
         }
         out.extend(
             self.unindexed
                 .iter()
                 .copied()
-                .filter(|&index| is_relevant_to_viewer(&candidates[index], viewer)),
+                .filter(|&index| relevant(index)),
         );
         out.sort_unstable();
     }
@@ -545,6 +574,7 @@ struct ActorRow {
     location: [f32; 3],
     params: NetParameters,
     schedule: NetSchedule,
+    hidden: bool,
 }
 
 struct ConsiderEntry {
@@ -600,7 +630,13 @@ fn replicate_actors(
     config: Res<ReplicationConfig>,
     mut state: ResMut<ReplicationState>,
     mut frame: ResMut<ReplicationFrame>,
-    mut actors: Query<(Entity, &NetActor, &Position, &mut NetSchedule)>,
+    mut actors: Query<(
+        Entity,
+        &NetActor,
+        &Position,
+        &mut NetSchedule,
+        Option<&NetActorFlags>,
+    )>,
     viewers: Query<&NetViewer>,
 ) {
     let started = Instant::now();
@@ -611,19 +647,20 @@ fn replicate_actors(
     };
     let mut rows: Vec<ActorRow> = actors
         .iter()
-        .map(|(entity, actor, position, schedule)| ActorRow {
+        .map(|(entity, actor, position, schedule, flags)| ActorRow {
             entity,
             id: actor.id,
             location: position.0,
             params: actor.params,
             schedule: *schedule,
+            hidden: flags.is_some_and(|flags| flags.hidden),
         })
         .collect();
     let viewers: Vec<NetViewer> = viewers.iter().copied().collect();
     let mut result = ReplicationFrame::default();
     state.run_frame(&config, &clock, &mut rows, viewers, &mut result);
     // Rows keep query order, and nothing changes the archetypes in between.
-    for ((entity, _, _, mut schedule), row) in actors.iter_mut().zip(&rows) {
+    for ((entity, _, _, mut schedule, _), row) in actors.iter_mut().zip(&rows) {
         debug_assert_eq!(entity, row.entity);
         if *schedule != row.schedule {
             *schedule = row.schedule;
@@ -852,9 +889,24 @@ impl ReplicationState {
             let stamp = self.next_stamp(entries.len());
             let mut candidate_entries = Vec::new();
             for viewer in viewers {
+                let relevant = |index: usize| {
+                    is_relevant_with_hidden(
+                        &candidates[index],
+                        viewer.location,
+                        rows[entries[index].row].hidden,
+                    )
+                };
                 match &grid {
-                    Some(grid) => grid.relevant(&candidates, viewer.location, &mut scratch),
-                    None => naive_relevant(&candidates, viewer.location, &mut scratch),
+                    Some(grid) => grid.relevant_matching(
+                        candidates.len(),
+                        viewer.location,
+                        &mut scratch,
+                        relevant,
+                    ),
+                    None => {
+                        scratch.clear();
+                        scratch.extend((0..candidates.len()).filter(|&index| relevant(index)));
+                    }
                 }
                 for &index in &scratch {
                     if self.marks[index] != stamp {
@@ -979,7 +1031,7 @@ impl ReplicationState {
                         b_use_owner_relevancy: false,
                         has_owner: false,
                         is_view_target_or_instigator: false,
-                        b_hidden: false,
+                        b_hidden: row.hidden,
                         root_location: Some(candidates[index].location),
                         viewer_location: viewer.location,
                         viewer_dir: viewer.direction,

@@ -42,8 +42,11 @@ lossless schema-3 sidecars: F-567; structured readers: F-886 to F-888.
 Randomized preservation/codecs/readers and bounded peer tables: F-604 to F-607;
 fail-closed corrupted stores: F-611.
 
-Supplied actor pose/motion uses spawn/property quantization, canonical baselines
-and packet repair (F-938); saved-pose/physics mappings remain U-025.
+Authored actor motion uses distinct spawn/property quantizers; hidden/damage
+flags share per-field baselines and partial-loss repair, and hidden feeds priority
+(F-938). Removing managed flags requests an authored false/false reset. These
+opt-in plugins do not register production actors; saved-pose/physics mappings
+remain U-025.
 
 Loopback authored-probe admission, cleanup and version pinning: F-875;
 held-session updates/recovery and controller limits: F-833; historical metrics: F-932; bounded concurrency/partial-bunch

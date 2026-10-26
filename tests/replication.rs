@@ -405,6 +405,73 @@ fn priority_order_matches_direct_evaluator_calls() {
 }
 
 #[test]
+fn authored_hidden_changes_priority_but_keeps_colliding_root_relevant_in_both_modes() {
+    use icarus_bevy::replication::NetActorFlags;
+    let mut histories = Vec::new();
+    for spatial in [SpatialMode::Naive, SpatialMode::Grid] {
+        for budget in [1, 8] {
+            let config = ReplicationConfig {
+                spatial,
+                connection_budget: budget,
+                ..Default::default()
+            };
+            let mut app = app(config);
+            let mut expected = Vec::new();
+            for (id, location, hidden) in [
+                (1, [1_000.0, 0.0, 0.0], true),
+                (2, [1_000.0, 0.0, 0.0], false),
+                (3, [-3_000.0, 0.0, 0.0], true),
+                (4, [-3_000.0, 0.0, 0.0], false),
+            ] {
+                let entity = spawn_actor(&mut app, id, location, NetParameters::default());
+                app.world_mut().entity_mut(entity).insert(NetActorFlags {
+                    hidden,
+                    can_be_damaged: true,
+                });
+                let ActorPriorityOutcome::Computed(priority) =
+                    evaluate_actor_net_priority(&ActorPriorityInputs {
+                        b_use_owner_relevancy: false,
+                        has_owner: false,
+                        is_view_target_or_instigator: false,
+                        b_hidden: hidden,
+                        root_location: Some(location),
+                        viewer_location: [0.0; 3],
+                        viewer_dir: FORWARD,
+                        time: config.spawn_priority_seconds,
+                        net_priority: 1.0,
+                    })
+                else {
+                    panic!("computed priority")
+                };
+                expected.push((DomainId(id), round_net_priority_to_int(priority)));
+            }
+            expected.sort_by_key(|(id, priority)| (std::cmp::Reverse(*priority), *id));
+            assert_eq!(
+                expected.iter().map(|(id, _)| id.0).collect::<Vec<_>>(),
+                [2, 1, 3, 4]
+            );
+            spawn_viewer(&mut app, 1, [0.0; 3], FORWARD);
+            let first = step(&mut app);
+            assert_eq!(selected(&first), expected[..budget.min(4)]);
+            assert_eq!(first.decisions.connections[0].relevant, 4);
+            let mut history = vec![first.decisions];
+            for _ in 0..90 {
+                let frame = step(&mut app);
+                assert_eq!(
+                    frame.decisions.connections[0].relevant,
+                    frame.decisions.considered
+                );
+                assert!(frame.decisions.connections[0].closed.is_empty());
+                history.push(frame.decisions);
+            }
+            histories.push(history);
+        }
+    }
+    assert_eq!(histories[0], histories[2]);
+    assert_eq!(histories[1], histories[3]);
+}
+
+#[test]
 fn budget_truncates_to_the_highest_priorities() {
     for budget in [0, 1, 3, 6] {
         let config = ReplicationConfig {
