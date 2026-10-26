@@ -12,6 +12,7 @@
 // https://github.com/llvm/llvm-project/blob/llvmorg-20.1.8/lld/COFF/PDB.cpp
 // https://github.com/llvm/llvm-project/blob/llvmorg-20.1.8/llvm/include/llvm/DebugInfo/CodeView/CodeViewSymbols.def
 // https://github.com/llvm/llvm-project/blob/llvmorg-20.1.8/llvm/lib/DebugInfo/CodeView/SymbolRecordMapping.cpp
+// https://github.com/llvm/llvm-project/blob/llvmorg-20.1.8/llvm/include/llvm/DebugInfo/CodeView/RecordSerialization.h
 // LLVM sources: Apache-2.0 WITH LLVM-exception; preserved license reference:
 // https://github.com/llvm/llvm-project/blob/llvmorg-20.1.8/llvm/LICENSE.TXT
 // Microsoft primary sources at 805655a28bd8198004be2ac27e6e0290121a5e89:
@@ -500,13 +501,16 @@ function scanModule(ctx, mod, aggregates, totals, unsupportedSite, inlineesGramm
             // Exact LLVM-shaped subset only. The whole prefix-inclusive record
             // is bounded before reading the count; no count-driven allocation,
             // entry traversal, padding guesses or semantic value predicates.
+            // LLVM MaxRecordLength includes RecordPrefix: this explicit profile
+            // uses that 0xff00 serialization cap; older record limits stay intact.
             need(n >= 8 && n <= 0xff00, code);
             const b = read(at, n), count = b.readUInt32LE(4);
             need(count === (n - 8) / 4, code);
-            const records = totals.inlinees.records + 1, entries = totals.inlinees.entries + count;
-            need(Number.isSafeInteger(records) && records > 0 && records <= totals.records &&
-                Number.isSafeInteger(entries) && entries >= 0 && entries <= Math.floor(LIMITS.symbols / 4), code);
-            totals.inlinees.records = records; totals.inlinees.entries = entries;
+            const inlineesRecords = totals.inlinees.records + 1, inlineesEntries = totals.inlinees.entries + count;
+            need(Number.isSafeInteger(inlineesRecords) && inlineesRecords > 0 && inlineesRecords <= totals.records &&
+                Number.isSafeInteger(inlineesEntries) && inlineesEntries >= 0 &&
+                inlineesEntries <= Math.floor(LIMITS.symbols / 4), code);
+            totals.inlinees.records = inlineesRecords; totals.inlinees.entries = inlineesEntries;
         } else if (UNSUPPORTED.has(kind)) {
             // Retain only the already-read discriminator at this exact guard.
             // The private opt-in site adds no payload/header read or traversal.
