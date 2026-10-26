@@ -124,6 +124,7 @@ Scheduling sends nothing; bandwidth/dormancy/ownership/destruction are unmodeled
 ```bash
 cargo run --release --locked --example replication_bench -- --viewers 1,4,8
 # --source <envelope>: planned-actor positions; prints aggregates only
+cargo run --release --locked --example authored_host_bench # F-938 vs no bridge
 ```
 
 ## Persistence and recovery
