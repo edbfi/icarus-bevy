@@ -117,6 +117,36 @@ fn prepared() -> NativeWorldSnapshot {
     .clone()
 }
 
+fn prepared_placement_count(count: usize) -> NativeWorldSnapshot {
+    let mut authored = definition();
+    authored.classes.truncate(1);
+    authored.classes[0].variables.clear();
+    authored.maps.truncate(1);
+    let mut placement = authored.maps[0].placements[0].clone();
+    placement.initial_values.clear();
+    authored.maps[0].placements = (0..count)
+        .map(|rank| {
+            let mut placement = placement.clone();
+            placement.key = format!("p{:05}", rank * 3 + 7);
+            placement
+        })
+        .collect();
+    prepare_authored_world(
+        Arc::new(CompiledNativeCatalog::compile(authored).unwrap()),
+        "authored_map",
+    )
+    .unwrap()
+    .snapshot()
+    .clone()
+}
+
+fn assert_snapshot_error(snapshot: &NativeWorldSnapshot, expected: &str) {
+    let before = snapshot.clone();
+    let error = snapshot.validate().unwrap_err();
+    assert_eq!(format!("{error:#}"), expected);
+    assert_eq!(*snapshot, before);
+}
+
 #[test]
 fn canonical_identity_ignores_all_declaration_order_and_text_formatting() {
     let original = CompiledNativeCatalog::compile(definition()).unwrap();
@@ -409,6 +439,200 @@ fn snapshot_requires_full_topology_stable_ids_exact_bindings_and_schema() {
             .value = NativeValue::I32(20);
     }
     snapshot.validate().unwrap();
+}
+
+#[test]
+fn snapshot_accepts_arbitrary_placement_order_through_the_placement_cap() {
+    for count in [1, 64, 1024, MAX_NATIVE_PLACEMENTS] {
+        let canonical = prepared_placement_count(count);
+        assert_eq!(canonical.actors.last().unwrap().id, DomainId(count as u64));
+        let mut snapshot = canonical.clone();
+        for order in 0..3 {
+            match order {
+                0 => {}
+                1 => snapshot.actors.reverse(),
+                _ => {
+                    // Visit separated ranks first, retaining each ID/key binding.
+                    snapshot.actors = (1..count)
+                        .step_by(2)
+                        .chain((0..count).step_by(2))
+                        .map(|index| canonical.actors[index].clone())
+                        .collect();
+                }
+            }
+            let before = snapshot.clone();
+            snapshot.validate().unwrap();
+            assert_eq!(snapshot, before);
+        }
+        if count == MAX_NATIVE_PLACEMENTS {
+            snapshot.actors.pop();
+            assert_snapshot_error(&snapshot, "native snapshot placement set incomplete");
+            snapshot.actors = canonical.actors.clone();
+            snapshot.actors.push(canonical.actors[0].clone());
+            assert_snapshot_error(&snapshot, "native snapshot placement set incomplete");
+            let mut oversized = canonical.definitions.clone();
+            let mut extra = oversized.maps[0].placements[0].clone();
+            extra.key = "extra".into();
+            oversized.maps[0].placements.push(extra);
+            assert_eq!(
+                format!(
+                    "{:#}",
+                    CompiledNativeCatalog::compile(oversized).unwrap_err()
+                ),
+                "native map index 0: native array limit"
+            );
+        }
+    }
+}
+
+#[test]
+fn snapshot_duplicate_errors_use_input_indices_for_first_middle_and_last_ranks() {
+    let clean = prepared_placement_count(7);
+    for reverse in [false, true] {
+        for rank in [0, 3, 6] {
+            let mut snapshot = clean.clone();
+            if reverse {
+                snapshot.actors.reverse();
+            }
+            let source_index = snapshot
+                .actors
+                .iter()
+                .position(|actor| actor.id == DomainId(rank + 1))
+                .unwrap();
+            let replaced_index = (source_index + 3) % snapshot.actors.len();
+            snapshot.actors[replaced_index] = snapshot.actors[source_index].clone();
+            assert_snapshot_error(
+                &snapshot,
+                &format!(
+                    "native duplicate placement index {}",
+                    source_index.max(replaced_index)
+                ),
+            );
+        }
+    }
+}
+
+#[test]
+fn snapshot_validates_duplicate_actors_before_checking_occupancy_on_every_call() {
+    let catalog = Arc::new(CompiledNativeCatalog::compile(definition()).unwrap());
+    let clean = prepare_authored_world(catalog.clone(), "authored_map")
+        .unwrap()
+        .snapshot()
+        .clone();
+    let corruptions: Vec<fn(&mut NativeWorldSnapshot)> = vec![
+        |s| s.actors[1].variables[0].value = NativeValue::Bool(true),
+        |s| s.actors[1].variables.clear(),
+        |s| s.actors[1].transform.rotation = [0.0; 4],
+        |s| s.actors[1].transform.translation = [1000.0; 3],
+        |s| s.actors[1].id = DomainId(0),
+        |s| s.actors[1].id = DomainId(u64::MAX),
+    ];
+    let reasons = [
+        "native variable type index 0",
+        "native variable schema incomplete",
+        "native transform quaternion is not unit length",
+        "native actor outside tile",
+        "native actor domain identity mismatch",
+        "native actor domain identity mismatch",
+    ];
+    for (corrupt, reason) in corruptions.into_iter().zip(reasons) {
+        let mut snapshot = clean.clone();
+        snapshot.actors[1] = snapshot.actors[0].clone();
+        corrupt(&mut snapshot);
+        for _ in 0..2 {
+            assert_snapshot_error(&snapshot, &format!("native actor index 1: {reason}"));
+        }
+        // Repair only the actor defect: the equal-count duplicate still fails.
+        snapshot.actors[1] = clean.actors[0].clone();
+        for _ in 0..2 {
+            assert_snapshot_error(&snapshot, "native duplicate placement index 1");
+        }
+        snapshot.actors[1] = clean.actors[1].clone();
+        for _ in 0..2 {
+            snapshot.validate().unwrap();
+        }
+        assert_eq!(snapshot, clean);
+        let world = prepare_authored_world(catalog.clone(), "authored_map").unwrap();
+        assert_eq!(*world.snapshot(), clean);
+    }
+}
+
+#[test]
+fn snapshot_reports_the_first_duplicate_or_corrupt_actor_in_input_order() {
+    let clean = prepared_placement_count(3);
+    let mut snapshot = clean.clone();
+    snapshot.actors[1] = snapshot.actors[0].clone();
+    snapshot.actors[2].transform.translation = [1000.0; 3];
+    assert_snapshot_error(&snapshot, "native duplicate placement index 1");
+    snapshot.actors.swap(1, 2);
+    assert_snapshot_error(&snapshot, "native actor index 1: native actor outside tile");
+    snapshot.actors[1] = clean.actors[2].clone();
+    assert_snapshot_error(&snapshot, "native duplicate placement index 2");
+    snapshot.actors[2] = clean.actors[1].clone();
+    snapshot.validate().unwrap();
+}
+
+#[test]
+fn snapshot_map_count_and_placement_errors_precede_actor_defects() {
+    let clean = prepared();
+    let mut snapshot = clean.clone();
+    snapshot.actors.clear();
+    snapshot.map = "private invalid/map".into();
+    assert_snapshot_error(&snapshot, "native snapshot map: native identifier invalid");
+    snapshot.map = "private_missing_map".into();
+    assert_snapshot_error(&snapshot, "native snapshot map binding");
+    snapshot.map = clean.map.clone();
+    assert_snapshot_error(&snapshot, "native snapshot placement set incomplete");
+    for count in [1, 3] {
+        snapshot.actors = vec![clean.actors[0].clone(); count];
+        snapshot.actors[0].placement = "private invalid/placement".into();
+        assert_snapshot_error(&snapshot, "native snapshot placement set incomplete");
+    }
+    snapshot = clean.clone();
+    snapshot.actors[0].placement = "private invalid/placement".into();
+    snapshot.actors[0].id = DomainId(u64::MAX);
+    snapshot.actors[0].variables[0].value = NativeValue::Bool(true);
+    snapshot.actors[0].transform.rotation = [0.0; 4];
+    snapshot.actors[1].id = DomainId(0);
+    assert_snapshot_error(&snapshot, "native actor index 0: native identifier invalid");
+    snapshot.actors[0].placement = "private_missing_placement".into();
+    assert_snapshot_error(
+        &snapshot,
+        "native actor index 0: native actor placement binding",
+    );
+    snapshot.actors.reverse();
+    assert_snapshot_error(
+        &snapshot,
+        "native actor index 0: native actor domain identity mismatch",
+    );
+}
+
+#[test]
+fn snapshot_rejects_extreme_and_cross_placement_ids_before_type_or_pose_errors() {
+    let clean = prepared();
+    for reverse in [false, true] {
+        let mut ordered = clean.clone();
+        if reverse {
+            ordered.actors.reverse();
+        }
+        for index in 0..ordered.actors.len() {
+            for id in [
+                DomainId(0),
+                DomainId(u64::MAX),
+                ordered.actors[1 - index].id,
+            ] {
+                let mut snapshot = ordered.clone();
+                snapshot.actors[index].id = id;
+                snapshot.actors[index].variables[0].value = NativeValue::Bool(true);
+                snapshot.actors[index].transform.rotation = [0.0; 4];
+                assert_snapshot_error(
+                    &snapshot,
+                    &format!("native actor index {index}: native actor domain identity mismatch"),
+                );
+            }
+        }
+        ordered.validate().unwrap();
+    }
 }
 
 #[test]

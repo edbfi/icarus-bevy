@@ -673,11 +673,11 @@ impl CompiledNativeCatalog {
             !map.placements.is_empty() && actors.len() == map.placements.len(),
             "native snapshot placement set incomplete"
         );
-        let mut seen = BTreeSet::new();
+        let mut seen = vec![false; map.placements.len()];
         let mut values = 0;
         let mut value_bytes = 0;
         for (index, actor) in actors.enumerate() {
-            let validate_actor = || -> Result<()> {
+            let validate_actor = || -> Result<usize> {
                 validate_key(actor.placement)?;
                 let rank = map
                     .placements
@@ -708,11 +708,11 @@ impl CompiledNativeCatalog {
                         .contains(&actor.transform.transformed_bounds(&class.local_bounds)?),
                     "native actor outside tile"
                 );
-                Ok(())
+                Ok(rank)
             };
-            validate_actor().with_context(|| format!("native actor index {index}"))?;
+            let rank = validate_actor().with_context(|| format!("native actor index {index}"))?;
             ensure!(
-                seen.insert(actor.placement),
+                !std::mem::replace(&mut seen[rank], true),
                 "native duplicate placement index {index}"
             );
             add_count(
