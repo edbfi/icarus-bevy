@@ -33,7 +33,8 @@ calls and 2,361 stat pairs (F-762; U-064, U-066 resolved).
 Server and client builds match in every scheduling stage, whose constants and
 guards the [spec](../../specs/network/actor-channel.md) lists (F-745, F-748,
 F-749, F-751, F-788, F-851); a native stage drives them over supplied actor
-positions (F-790); the authored pose/motion bridge is qualified in F-938.
+positions (F-790); the authored motion/flags bridge, including hidden-aware
+priority and per-field loss repair, is qualified in F-938.
 Export checksums compute natively (F-853; U-067) and exports
 repeat until acked (F-796). Native composers rebuild the captured
 PlayerController (F-852), GameState (F-794) and pawn (F-854) opens bit for bit,

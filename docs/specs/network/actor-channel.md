@@ -4,7 +4,7 @@
 
 Experimental: static observations of client build 25793767 and server build
 25621760, wire-checked against the 3.0.31 capture (F-704 to F-711, F-761,
-F-845). Last reconciled: 2026-10-25.
+F-845). Last reconciled: 2026-10-26.
 
 ## Scope
 
@@ -21,6 +21,14 @@ Address pairs are server / client.
   and `game_state_open` compose the PlayerController and GameState opens
   (F-852, F-794); `run` sends the PlayerController, pawn, GameState and
   PlayerState opens after Join (F-784, F-804).
+- Authored actor bridge (F-938): opt-in motion and hidden/damage flags use the
+  supported AActor prefix. Hidden feeds scheduler priority; damage is a wire
+  Boolean. Actual ordered open blocks seed known fields; opaque blocks invalidate
+  them. Updates wait for open ACK, compare per-field baselines and repair current
+  fields after any partial loss; superseded losses cannot revert newer fields.
+  Removing managed flags requests an authored false/false reset, not class defaults.
+  Plugins require explicit application registration; no saved-pose, gameplay or
+  stock-client qualification follows.
 - Dynamic GUIDs assign on first serialization, by open or reference: GameState
   names managers 74..86 before their opens; components keep one GUID across
   connections (F-794).
