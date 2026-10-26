@@ -7,7 +7,9 @@ const a = require('node:assert/strict');
 const {createHash} = require('node:crypto');
 const {inspect, diagnoseInfoFeatures, inspectNamedStreamNiMacZero,
     diagnoseInfoNamedStreamNiMacZero, diagnoseSourceMappingNamedStreamNiMacZero,
-    diagnoseSourceMappingIdentityNamedStreamNiMacZero, LIMITS} = require('../pdb_procedure_ranges.cjs');
+    diagnoseSourceMappingIdentityNamedStreamNiMacZero, diagnoseTailFrameNamedStreamNiMacZero,
+    inspectNamedStreamNiMacZeroAbsoluteTailFrameZero,
+    LIMITS} = require('../pdb_procedure_ranges.cjs');
 const {fixture, pack, proc, record, info, namedStreamNiMacZeroInfo, segmentMap, repeatedModule, repeatedContributions,
     SC60, SC2, VA} = require('./pdb_procedure_ranges_fixtures.cjs');
 
@@ -1892,10 +1894,10 @@ test('identity diagnostic accepts absent, N and N+1 maps only after complete ord
     }
 });
 
-// Independently extend the authored PE envelope to the physical-section cap.
+// Independently extend the authored PE envelope up to the physical-section cap.
 // Extra sections have virtual storage only; none is used for routing or code.
-function identityLimitFixture() {
-    const count = 96, sm = Buffer.alloc(4 + (count + 1) * 20), ordinaryMap = segmentMap(false);
+function identityLimitFixture(count = 96) {
+    const sm = Buffer.alloc(4 + (count + 1) * 20), ordinaryMap = segmentMap(false);
     sm.writeUInt16LE(count + 1); sm.writeUInt16LE(count + 1, 2);
     ordinaryMap.copy(sm, 4, 4);
     for (let i = 3; i <= count; i++) {
@@ -2041,4 +2043,769 @@ test('identity diagnostic exports only seven redacted fields and retains both se
     };
     try { redactedThrows(() => sourceMappingIdentity(), 'ERR_PDB_FRAMING'); }
     finally { JSON.stringify = stringify; }
+});
+
+// Exact scalar cases are authored source only; no target value is assumed.
+const TAIL_FRAME_PROFILE = 'MSF7_procedure_tail_frame_diagnostic_v1';
+const tailQuery = () => query({addresses: ['0x140002020']});
+const tailFrame = (f = niFixture(), q = query()) => {
+    const p = pack(f); return diagnoseTailFrameNamedStreamNiMacZero(p.reader, p.exe, p.identity, q);
+};
+function tailFrameResult(result, stage = 'complete', guard = null,
+    descriptor_index = null, descriptor_slot = null, identity_member = null, actual_frame = null) {
+    const expected = {profile: TAIL_FRAME_PROFILE,
+        status: stage === 'complete' ? 'accepted_profile' : 'refused_mapping', stage, guard,
+        descriptor_index, descriptor_slot, identity_member, actual_frame};
+    a.deepEqual(result, expected);
+    a.deepEqual(Reflect.ownKeys(result), ['profile', 'status', 'stage', 'guard',
+        'descriptor_index', 'descriptor_slot', 'identity_member', 'actual_frame']);
+    a.ok(Buffer.byteLength(JSON.stringify(result) + '\n') <= 1024);
+    if (identity_member !== null) {
+        a.ok(Number.isInteger(descriptor_index) && descriptor_index >= 0 && descriptor_index <= 96);
+        a.ok(['section', 'tail_candidate'].includes(descriptor_slot));
+        a.ok(identityMembers.includes(identity_member));
+    }
+    if (actual_frame !== null) {
+        a.equal(stage, 'segment_map'); a.equal(guard, 'identity');
+        a.equal(descriptor_slot, 'tail_candidate'); a.equal(identity_member, 'frame');
+        a.ok(Number.isInteger(actual_frame) && actual_frame >= 0 && actual_frame <= 65535);
+        a.notEqual(actual_frame, descriptor_index + 1);
+    } else a.ok(!(stage === 'segment_map' && guard === 'identity' &&
+        descriptor_slot === 'tail_candidate' && identity_member === 'frame'));
+}
+function tailFrameFixture(count = 8, change = () => {}) {
+    const f = identityLimitFixture(count), sm = Buffer.from(f.sectionMap);
+    change(sm); f.sectionMap = sm; sm.copy(f.streams[3], f.scAt + f.sc.length);
+    return f;
+}
+function tailFrameParity(f, q, stage = 'complete', guard = null,
+    index = null, slot = null, member = null, actual = null) {
+    const diagnostic = pack(f), four = pack(f), seven = pack(f), ordinary = pack(f);
+    const result = diagnoseTailFrameNamedStreamNiMacZero(diagnostic.reader, diagnostic.exe, diagnostic.identity, q);
+    tailFrameResult(result, stage, guard, index, slot, member, actual);
+    mappingResult(diagnoseSourceMappingNamedStreamNiMacZero(four.reader, four.exe, four.identity, q), stage, guard);
+    identityMappingResult(diagnoseSourceMappingIdentityNamedStreamNiMacZero(
+        seven.reader, seven.exe, seven.identity, q), stage, guard, index, slot, member);
+    if (stage === 'complete') {
+        a.deepEqual(inspectNamedStreamNiMacZero(ordinary.reader, ordinary.exe, ordinary.identity, q), runNi(f, q));
+    } else redactedThrows(() => inspectNamedStreamNiMacZero(ordinary.reader, ordinary.exe, ordinary.identity, q),
+        'ERR_SOURCE_MAPPING');
+    for (const p of [four, seven, ordinary]) a.deepEqual(diagnostic.reads, p.reads);
+    a.ok(diagnostic.reads.every(r => r.count <= LIMITS.read));
+    return result;
+}
+
+test('tail frame diagnostic exports exact unsigned u16 mismatches for eight sections and the maximum tail', () => {
+    for (const count of [8, 96]) for (const value of [0, 1, 8, 10, 256, 0x1234, 0x8000, 65535]) {
+        const f = tailFrameFixture(count, b => badIdentityMember(b, count, 'frame', value));
+        tailFrameParity(f, tailQuery(), 'segment_map', 'identity', count, 'tail_candidate', 'frame', value);
+        const legacy = {...f, streams: f.streams.slice()}; legacy.streams[1] = info();
+        fails(legacy, 'ERR_SOURCE_MAPPING', tailQuery());
+    }
+});
+
+test('tail frame diagnostic preserves correct frames, later offset and absolute guards without a scalar', () => {
+    for (const count of [8, 96]) {
+        tailFrameParity(tailFrameFixture(count), tailQuery());
+        for (const field of ['offset', 'flags', 'length']) {
+            const f = tailFrameFixture(count, b => {
+                const at = 4 + count * 20;
+                if (field === 'offset') b.writeUInt32LE(0xdeadbeef, at + 12);
+                else if (field === 'flags') b.writeUInt16LE(0, at);
+                else b.writeUInt32LE(0, at + 16);
+            });
+            if (field === 'offset') tailFrameParity(f, tailQuery(), 'segment_map', 'identity',
+                count, 'tail_candidate', 'offset');
+            else tailFrameParity(f, tailQuery(), 'segment_map', 'absolute');
+        }
+    }
+    for (const sectionMap of [Buffer.alloc(0), segmentMap(false), segmentMap(true)]) {
+        for (const version of [SC60, SC2]) for (const features of [[], [VC140], [VC110], [VC140, VC110]]) {
+            const f = niFixture({sectionMap, version, info: namedStreamNiMacZeroInfo({features}),
+                modules: [{records: [proc()]}, {records: [proc()]}]});
+            for (const q of [query(), query({module_indices: [1, 0]})]) tailFrameParity(f, q);
+        }
+    }
+});
+
+test('tail frame diagnostic preserves overlay, group, header and ordinary descriptor precedence', () => {
+    for (const member of ['overlay', 'group']) {
+        const f = tailFrameFixture(8, b => {
+            badIdentityMember(b, 8, 'frame', 0x8000); badIdentityMember(b, 8, member);
+            if (member === 'overlay') badIdentityMember(b, 8, 'group');
+        });
+        tailFrameParity(f, tailQuery(), 'segment_map', 'identity', 8, 'tail_candidate', member);
+    }
+    for (const index of [0, 7]) {
+        for (const member of identityMembers) {
+            const f = tailFrameFixture(8, b => {
+                badIdentityMember(b, 8, 'frame', 65535); badIdentityMember(b, index, member, 0x8000);
+            });
+            tailFrameParity(f, tailQuery(), 'segment_map', 'identity', index, 'section', member);
+        }
+        for (const field of ['flags', 'length']) {
+            const f = tailFrameFixture(8, b => {
+                badIdentityMember(b, 8, 'frame', 65535);
+                if (field === 'flags') b.writeUInt16LE(0, 4 + index * 20);
+                else b.writeUInt32LE(0, 20 + index * 20);
+            });
+            tailFrameParity(f, tailQuery(), 'segment_map', 'section');
+        }
+    }
+    const headersFirst = tailFrameFixture(8, b => badIdentityMember(b, 8, 'frame', 65535));
+    headersFirst.streams[8][0] ^= 1;
+    tailFrameParity(headersFirst, tailQuery(), 'section_binding', 'headers');
+});
+
+// Trace field reads on the copied map as well as reader requests. This catches
+// a second frame read, eager offset/length reads, and scans of later descriptors.
+function segmentFieldTrace(f, call) {
+    const u16 = Buffer.prototype.readUInt16LE, u32 = Buffer.prototype.readUInt32LE, fields = [];
+    for (const [name, original, width] of [['readUInt16LE', u16, 2], ['readUInt32LE', u32, 4]]) {
+        Buffer.prototype[name] = function(offset = 0, ...args) {
+            if (this.length === f.sectionMap.length && this.equals(f.sectionMap)) fields.push({width, offset});
+            return original.call(this, offset, ...args);
+        };
+    }
+    try { call(); return fields; }
+    finally { Buffer.prototype.readUInt16LE = u16; Buffer.prototype.readUInt32LE = u32; }
+}
+
+test('tail frame diagnostic preserves exact short circuit reads and stops before later guards and descriptors', () => {
+    for (const index of [0, 7, 8]) for (let first = 0; first < identityMembers.length; first++) {
+        const member = identityMembers[first];
+        const f = tailFrameFixture(8, b => {
+            for (const later of identityMembers.slice(first)) badIdentityMember(b, index, later,
+                later === 'offset' ? 0xdeadbeef : 0x1234);
+            b.writeUInt16LE(0, 4 + index * 20); b.writeUInt32LE(0, 20 + index * 20);
+            if (index < 8) badIdentityMember(b, index + 1, 'overlay');
+        });
+        const at = 4 + index * 20, traces = [];
+        for (const api of [diagnoseTailFrameNamedStreamNiMacZero, diagnoseSourceMappingIdentityNamedStreamNiMacZero,
+            diagnoseSourceMappingNamedStreamNiMacZero, inspectNamedStreamNiMacZero]) {
+            const p = pack(f);
+            traces.push(segmentFieldTrace(f, () => {
+                if (api === inspectNamedStreamNiMacZero) redactedThrows(() => api(p.reader, p.exe, p.identity, tailQuery()),
+                    'ERR_SOURCE_MAPPING');
+                else {
+                    const result = api(p.reader, p.exe, p.identity, tailQuery());
+                    if (api === diagnoseTailFrameNamedStreamNiMacZero) tailFrameResult(result, 'segment_map', 'identity',
+                        index, index === 8 ? 'tail_candidate' : 'section', member,
+                        index === 8 && member === 'frame' ? 0x1234 : null);
+                }
+            }));
+            a.ok(!p.reads.some(r => p.entries[9].pages.includes(Math.floor(r.offset / 4096))));
+        }
+        for (const trace of traces) {
+            a.deepEqual(trace, traces[0]);
+            // Existing traversal reads flags before identity. The failing
+            // comparison is the last read, including a single u16 frame read.
+            const expected = [0, 2, 4, 6, 12].slice(0, first + 2)
+                .map(offset => ({width: offset === 12 ? 4 : 2, offset: at + offset}));
+            a.deepEqual(trace.filter(r => r.offset >= at), expected);
+        }
+    }
+});
+
+test('tail frame diagnostic preserves every mapping guard, ordinary frame privacy and nonroutable tails', () => {
+    for (const [label, stage, guard, make, q = query()] of mappingCases) {
+        if (stage === 'segment_map' && guard === 'identity') {
+            const member = {'map identity field 2': 'overlay', 'map identity field 4': 'group',
+                'map identity field 6': 'frame', 'map identity field 12': 'offset'}[label];
+            tailFrameParity(make(), q, stage, guard, 0, 'section', member);
+        } else tailFrameParity(make(), q, stage, guard);
+    }
+    tailFrameParity(niFixture({sectionMap: segmentMap(), modules: [{records: [proc({segment: 4})]}]}),
+        query(), 'procedure', 'segment');
+    redactedThrows(() => tailFrame(niFixture({sectionMap: segmentMap(), contributions: [{segment: 4}]})),
+        'ERR_ROUTING_FRAMING');
+});
+
+test('tail frame diagnostic keeps nonmapping failures code-only through full traversal', () => {
+    for (const [make, code] of [
+        [() => niFixture({info: info()}), 'ERR_NI_MAC_UNSUPPORTED'],
+        [() => niFixture({info: namedStreamNiMacZeroInfo({features: [MINI]})}), 'ERR_FASTLINK_UNSUPPORTED'],
+        [() => niFixture({info: namedStreamNiMacZeroInfo({features: [0]})}), 'ERR_FEATURE_UNSUPPORTED'],
+        [() => changedNi(f => f.exe[f.rsds + 4] ^= 1), 'ERR_IDENTITY'],
+        [() => changedNi(f => f.streams[3].writeUInt16LE(8, f.optionalAt + 6)), 'ERR_OMAP_UNSUPPORTED'],
+        [() => niFixture({moduleInfo: Buffer.alloc(60)}), 'ERR_DBI_MODULE_INFO'],
+        [() => niFixture({sc: Buffer.alloc(0)}), 'ERR_ROUTING_ABSENT'],
+        [() => niFixture({modules: [{signature: 2}]}), 'ERR_MODULE_FRAMING'],
+        [() => niFixture({modules: [{records: [record()]}]}), 'ERR_PROCEDURE_ABSENT'],
+        [() => niFixture({modules: [{records: [proc(), record(0x1102)]}]}), 'ERR_SYMBOL_UNSUPPORTED'],
+        [() => niFixture({modules: [{records: [proc(), proc({size: 0x31})]}]}), 'ERR_PROCEDURE_CONFLICT'],
+        [() => niFixture({modules: [{records: [proc(), proc({size: 0})]}]}), 'ERR_PROCEDURE_SIZE'],
+    ]) {
+        const diagnostic = pack(make()), ordinary = pack(make());
+        redactedThrows(() => diagnoseTailFrameNamedStreamNiMacZero(
+            diagnostic.reader, diagnostic.exe, diagnostic.identity, query()), code);
+        redactedThrows(() => inspectNamedStreamNiMacZero(ordinary.reader, ordinary.exe, ordinary.identity, query()), code);
+        a.deepEqual(diagnostic.reads, ordinary.reads);
+    }
+    const p = pack(niFixture()); let reads = 0;
+    const reader = {size: p.reader.size, read(o, n) { reads++; return p.reader.read(o, n); }};
+    for (const q of [undefined, {}, query({grammar: 'NEVER_EXPORT'}), query({addresses: ['0x800000000000']})]) {
+        redactedThrows(() => diagnoseTailFrameNamedStreamNiMacZero(reader, p.exe, p.identity, q), 'ERR_SELECTORS');
+    }
+    a.equal(reads, 0);
+    for (const index of [1, 3, 8, 9]) for (const mode of ['throw', 'short', 'shared']) {
+        const broken = {size: p.reader.size, read(o, n) {
+            if (!p.entries[index].pages.includes(Math.floor(o / 4096))) return p.reader.read(o, n);
+            if (mode === 'throw') throw Error('ERR_SOURCE_MAPPING/NEVER_EXPORT/private');
+            return mode === 'shared' ? Buffer.from(new SharedArrayBuffer(n)) : Buffer.alloc(n - 1);
+        }};
+        redactedThrows(() => diagnoseTailFrameNamedStreamNiMacZero(broken, p.exe, p.identity, query()),
+            mode === 'throw' ? 'ERR_PDB_FRAMING' : mode === 'shared' ? 'ERR_INPUT_BOUND' : 'ERR_SHORT_READ');
+    }
+});
+
+test('tail frame context is private across repeated, nested, older API and mutated-result calls', () => {
+    const f = tailFrameFixture(8, b => badIdentityMember(b, 8, 'frame', 0x1234)), outer = pack(f);
+    let nested = false;
+    const reader = {size: outer.reader.size, read(o, n) {
+        if (!nested) {
+            nested = true;
+            tailFrameResult(tailFrame(tailFrameFixture(8, b => badIdentityMember(b, 8, 'frame', 65535)), tailQuery()),
+                'segment_map', 'identity', 8, 'tail_candidate', 'frame', 65535);
+            tailFrameResult(tailFrame());
+            tailFrameResult(tailFrame(mappedNi(b => badIdentityMember(b, 0, 'frame', 0))),
+                'segment_map', 'identity', 0, 'section', 'frame');
+            identityMappingResult(sourceMappingIdentity(f, tailQuery()), 'segment_map', 'identity', 8, 'tail_candidate', 'frame');
+            mappingResult(sourceMapping(f, tailQuery()), 'segment_map', 'identity');
+        }
+        return outer.reader.read(o, n);
+    }};
+    const result = diagnoseTailFrameNamedStreamNiMacZero(reader, outer.exe, outer.identity, tailQuery());
+    tailFrameResult(result, 'segment_map', 'identity', 8, 'tail_candidate', 'frame', 0x1234); a.equal(nested, true);
+    result.actual_frame = 9; result.descriptor_index = 999; result.identity_member = 'NEVER_EXPORT';
+    for (let repeat = 0; repeat < 3; repeat++) {
+        tailFrameParity(f, tailQuery(), 'segment_map', 'identity', 8, 'tail_candidate', 'frame', 0x1234);
+        tailFrameParity(niFixture(), query());
+        tailFrameParity(changedNi(b => b.streams[8][0] ^= 1), query(), 'section_binding', 'headers');
+        redactedThrows(() => tailFrame(niFixture({modules: [{records: [record()]}]})), 'ERR_PROCEDURE_ABSENT');
+    }
+});
+
+test('tail frame diagnostic exports only eight redacted fields and enforces both serialization ceilings', () => {
+    const secret = 'NEVER_EXPORT/private/name', f = niFixture({sectionMap: segmentMap(),
+        info: namedStreamNiMacZeroInfo({names: [{name: secret, stream: 8}]}),
+        modules: [{module_name: secret, object_name: secret, records: [proc({name: secret})]}]});
+    const accepted = tailFrame(f); tailFrameResult(accepted);
+    f.exe.fill(0x5a, 0x200, 0x800); a.deepEqual(tailFrame(f), accepted);
+    const sm = f.streams[3].subarray(f.scAt + f.sc.length);
+    badIdentityMember(sm, 3, 'frame', 0x1234); badIdentityMember(sm, 3, 'offset', 0xdeadbeef);
+    const refusal = tailFrame(f); tailFrameResult(refusal, 'segment_map', 'identity', 3, 'tail_candidate', 'frame', 0x1234);
+    for (const result of [accepted, refusal]) {
+        const json = JSON.stringify(result);
+        for (const word of [secret, 'deadbeef', '3735928559', 'guid', 'address', 'bytes', 'flags', 'length',
+            'records', 'hash', '0x', 'ERR_SOURCE_MAPPING', 'absolute']) a.ok(!json.includes(word));
+        a.ok(Object.values(result).every(v => v === null || typeof v === 'string' || Number.isInteger(v)));
+    }
+    const stringify = JSON.stringify;
+    for (const call of [() => tailFrame(), () => tailFrame(f)]) {
+        for (const bytes of [1023, 1024]) {
+            JSON.stringify = function(value, ...args) {
+                const json = stringify.call(this, value, ...args);
+                return value && value.profile === TAIL_FRAME_PROFILE ? json.padEnd(bytes, ' ') : json;
+            };
+            try {
+                if (bytes === 1023) a.equal(call().profile, TAIL_FRAME_PROFILE);
+                else redactedThrows(call, 'ERR_OUTPUT_BOUND');
+            } finally { JSON.stringify = stringify; }
+        }
+    }
+    JSON.stringify = function(value, ...args) {
+        const json = stringify.call(this, value, ...args);
+        return value && value.profile === NI_PROFILE ? json.padEnd(LIMITS.output, ' ') : json;
+    };
+    try {
+        redactedThrows(() => tailFrame(), 'ERR_OUTPUT_BOUND');
+        tailFrameResult(tailFrame(f), 'segment_map', 'identity', 3, 'tail_candidate', 'frame', 0x1234);
+    } finally { JSON.stringify = stringify; }
+    JSON.stringify = function(value, ...args) {
+        if (value && value.profile === TAIL_FRAME_PROFILE) throw Error('NEVER_EXPORT/private-serializer');
+        return stringify.call(this, value, ...args);
+    };
+    try { for (const call of [() => tailFrame(), () => tailFrame(f)]) redactedThrows(call, 'ERR_PDB_FRAMING'); }
+    finally { JSON.stringify = stringify; }
+});
+
+// Independently authored candidate-variant envelopes only. No original tuple,
+// extent, standard producer, ABI or ownership qualification is asserted.
+const ZERO_TAIL_PROFILE = 'MSF7_DBI_C13_scoped_supported_procedure_declarations_' +
+    'named_stream_ni_mac_zero_v1_absolute_tail_frame_zero_v1';
+const runZeroTail = (f = zeroTailFixture(), q = query()) => {
+    const p = pack(f);
+    return inspectNamedStreamNiMacZeroAbsoluteTailFrameZero(p.reader, p.exe, p.identity, q);
+};
+// Replace only the authored DBI map, retaining header mutations and all other
+// substreams. The shared fixture source stays untouched.
+function replaceTestMap(f, sm) {
+    const start = f.scAt + f.sc.length, old = f.streams[3];
+    f.streams[3] = Buffer.concat([old.subarray(0, start), sm, old.subarray(f.optionalAt)]);
+    f.streams[3].writeInt32LE(sm.length, 32);
+    f.sectionMap = sm; f.optionalAt = start + sm.length;
+    return f;
+}
+function authoredZeroTailMap(f) {
+    const n = f.exe.readUInt16LE(f.exe.readUInt32LE(60) + 6), sm = Buffer.alloc(4 + (n + 1) * 20);
+    sm.writeUInt16LE(n + 1); sm.writeUInt16LE(n + 1, 2);
+    for (let i = 0; i < n; i++) {
+        const at = 4 + i * 20, header = f.table + i * 40, flags = f.exe.readUInt32LE(header + 36);
+        sm.writeUInt16LE(0x108 | ((flags >>> 30) & 1) | (((flags >>> 31) & 1) << 1) |
+            (((flags >>> 29) & 1) << 2), at);
+        sm.writeUInt16LE(i + 1, at + 6); sm.writeUInt32LE(f.exe.readUInt32LE(header + 8), at + 16);
+        sm.writeUInt16LE(0xffff, at + 8); sm.writeUInt16LE(0xffff, at + 10);
+    }
+    sm.writeUInt16LE(0x208, 4 + n * 20); sm.writeUInt32LE(0xffffffff, 20 + n * 20);
+    return sm;
+}
+function zeroTailFixture(options = {}) {
+    const f = niFixture(options); return replaceTestMap(f, authoredZeroTailMap(f));
+}
+function ordinalTailTwin(f) {
+    const twin = {...f, streams: f.streams.slice()}, start = f.scAt + f.sc.length;
+    const sm = Buffer.from(f.streams[3].subarray(start, f.optionalAt)), n = sm.readUInt16LE() - 1;
+    sm.writeUInt16LE(n + 1, 10 + n * 20);
+    return replaceTestMap(twin, sm);
+}
+function expectedZeroTailFacts(n) {
+    return {grammar: 'identity_sections_absolute_tail_frame_zero_v1',
+        physical_section_count: n, descriptor_count: n + 1, tail_descriptor_index: n,
+        tail_overlay: 0, tail_group: 0, tail_frame: 0, tail_offset: 0, tail_flags: 520,
+        tail_length: 4294967295, tail_routable: false};
+}
+function zeroTailResultParity(f, q = query()) {
+    const n = f.exe.readUInt16LE(f.exe.readUInt32LE(60) + 6), modern = pack(f), old = pack(ordinalTailTwin(f));
+    const previous = inspectNamedStreamNiMacZero(old.reader, old.exe, old.identity, q);
+    const result = inspectNamedStreamNiMacZeroAbsoluteTailFrameZero(modern.reader, modern.exe, modern.identity, q);
+    a.deepEqual(result, {...previous, profile: ZERO_TAIL_PROFILE, segment_map_profile: expectedZeroTailFacts(n)});
+    a.deepEqual(Reflect.ownKeys(result), [...Reflect.ownKeys(previous), 'segment_map_profile']);
+    a.deepEqual(Reflect.ownKeys(result.segment_map_profile), Reflect.ownKeys(expectedZeroTailFacts(n)));
+    a.equal(Reflect.ownKeys(result.segment_map_profile).length, 11);
+    a.deepEqual(modern.reads, old.reads);
+    a.ok(modern.reads.every(r => r.count <= LIMITS.read));
+    a.ok(Buffer.byteLength(JSON.stringify(result) + '\n') <= 65536);
+    return result;
+}
+function zeroTailNonmappingParity(f, code, q = query()) {
+    const p = pack(f);
+    redactedThrows(() => inspectNamedStreamNiMacZeroAbsoluteTailFrameZero(p.reader, p.exe, p.identity, q), code);
+    for (const api of [inspectNamedStreamNiMacZero, diagnoseSourceMappingNamedStreamNiMacZero,
+        diagnoseSourceMappingIdentityNamedStreamNiMacZero, diagnoseTailFrameNamedStreamNiMacZero]) {
+        const old = pack(ordinalTailTwin(f));
+        redactedThrows(() => api(old.reader, old.exe, old.identity, q), code);
+        a.deepEqual(p.reads, old.reads);
+    }
+}
+function zeroTailMapRefusal(f) {
+    const p = pack(f);
+    redactedThrows(() => inspectNamedStreamNiMacZeroAbsoluteTailFrameZero(p.reader, p.exe, p.identity, query()),
+        'ERR_SOURCE_MAPPING');
+    for (const mod of f.modules) a.ok(!p.reads.some(r =>
+        p.entries[mod.stream].pages.includes(Math.floor(r.offset / 4096))));
+}
+
+test('zero-tail profile accepts eight and 96 sections and the minimum two-section code/metadata envelope', () => {
+    const two = niFixture();
+    two.exe.copy(two.exe, two.table + 40, two.table + 80, two.table + 120);
+    two.exe.writeUInt16LE(2, two.exe.readUInt32LE(60) + 6);
+    two.streams[8] = Buffer.from(two.exe.subarray(two.table, two.table + 80));
+    replaceTestMap(two, authoredZeroTailMap(two));
+    for (const [f, q] of [[two, query()], [zeroTailFixture(), query()],
+        ...[8, 96].map(n => {
+            const f = identityLimitFixture(n); replaceTestMap(f, authoredZeroTailMap(f)); return [f, tailQuery()];
+        })]) {
+        const result = zeroTailResultParity(f, q);
+        a.equal(result.addresses[0].extent.segment, 1);
+        a.equal(result.routing.scope, 'all_matching_section_contribution_modules');
+        a.equal(result.routing.complete_table_framing, true);
+        a.equal(result.selected_modules.length, 1);
+        a.equal(result.addresses[0].extent.size, 0x30);
+    }
+    // PE admits one section, but separate code and noncode debug storage cannot
+    // both fit its permission contract. No exception is added for this variant.
+    const one = niFixture(); one.exe.writeUInt16LE(1, one.exe.readUInt32LE(60) + 6);
+    one.streams[8] = Buffer.from(one.exe.subarray(one.table, one.table + 40));
+    replaceTestMap(one, authoredZeroTailMap(one));
+    zeroTailNonmappingParity(one, 'ERR_IDENTITY');
+    for (const n of [0, 97]) {
+        const f = zeroTailFixture(); f.exe.writeUInt16LE(n, f.exe.readUInt32LE(60) + 6);
+        redactedThrows(() => runZeroTail(f), 'ERR_SOURCE_MAPPING');
+    }
+});
+
+test('zero-tail profile preserves NI grammar, declaration extents/digests and all scoped coverage assertions', () => {
+    const secret = 'NEVER_EXPORT_MININOTM/private/variant';
+    for (const features of [[], [VC140], [VC110], [VC140, VC110]]) {
+        for (const version of [SC60, SC2]) for (const kind of [0x110f, 0x1110, 0x1146, 0x1147]) {
+            const f = zeroTailFixture({version, info: namedStreamNiMacZeroInfo({features,
+                names: [{name: secret, stream: 8}]}), modules: [
+                {module_name: secret, object_name: secret, records: [record(), proc({kind, name: secret}), record(0x114d)]},
+                {records: [proc({kind}), proc({offset: 0x90, size: 0xffffffff})]},
+            ]});
+            for (const q of [query(), query({module_indices: [1, 0]})]) {
+                const r = zeroTailResultParity(f, q);
+                a.equal(r.addresses[0].procedure_record_count, 2);
+                a.equal(r.opaque_records, 2); a.equal(r.names_exported, false); a.equal(r.code_bytes_read, false);
+                a.equal(r.info_profile.grammar, 'named_stream_ni_mac_zero_v1');
+                a.equal(r.info_profile.named_stream_ni_mac, 0);
+                a.equal(r.routing.scope, q.module_indices ? 'explicit_modules_only' : 'all_matching_section_contribution_modules');
+                a.equal(r.routing.complete_table_framing, !q.module_indices);
+                a.ok(!JSON.stringify(r).includes(secret));
+            }
+        }
+    }
+});
+
+test('zero-tail is explicit and every old mapping API retains strict frames and exact diagnostic schemas', () => {
+    for (const n of [3, 8, 96]) {
+        const f = n === 3 ? zeroTailFixture() : identityLimitFixture(n);
+        if (n !== 3) replaceTestMap(f, authoredZeroTailMap(f));
+        const q = n === 3 ? query() : tailQuery();
+        tailFrameParity(f, q, 'segment_map', 'identity', n, 'tail_candidate', 'frame', 0);
+        const legacy = {...f, streams: f.streams.slice()}; legacy.streams[1] = info();
+        fails(legacy, 'ERR_SOURCE_MAPPING', q);
+        const baseline = zeroTailResultParity(f, q);
+        a.equal(diagnoseNi(f).status, 'accepted_profile'); // Info-only APIs do not map sections.
+        a.deepEqual(runZeroTail(f, q), baseline);
+    }
+    for (const sectionMap of [Buffer.alloc(0), segmentMap(false), segmentMap(true)]) {
+        const f = niFixture({sectionMap});
+        const before = runNi(f); tailFrameParity(f, query());
+        zeroTailMapRefusal(f);
+        a.deepEqual(runNi(f), before); a.ok(!Object.hasOwn(before, 'segment_map_profile'));
+        const legacy = {...f, streams: f.streams.slice()}; legacy.streams[1] = info();
+        a.ok(!Object.hasOwn(run(legacy), 'segment_map_profile'));
+    }
+    // Query keys cannot select a profile on either old or new entry point.
+    const p = pack(zeroTailFixture()); let reads = 0;
+    const reader = {size: p.reader.size, read(o, n) { reads++; return p.reader.read(o, n); }};
+    for (const api of [inspect, inspectNamedStreamNiMacZero, inspectNamedStreamNiMacZeroAbsoluteTailFrameZero,
+        diagnoseSourceMappingNamedStreamNiMacZero, diagnoseSourceMappingIdentityNamedStreamNiMacZero,
+        diagnoseTailFrameNamedStreamNiMacZero]) {
+        redactedThrows(() => api(reader, p.exe, p.identity,
+            query({segment_map_profile: 'identity_sections_absolute_tail_frame_zero_v1'})), 'ERR_SELECTORS');
+    }
+    a.equal(reads, 0);
+});
+
+test('zero-tail requires exact present N+1 counts and bytes, positional tail and no extra descriptors', () => {
+    const good = zeroTailFixture().sectionMap;
+    const malformed = [Buffer.alloc(4), good.subarray(0, -4), good.subarray(0, -20),
+        Buffer.concat([good, Buffer.alloc(4)]), Buffer.concat([good, good.subarray(-20)]),
+        Buffer.concat([good.subarray(0, 4), good.subarray(-20), good.subarray(4, -20)])];
+    for (const count of [0, 2, 3, 5, 65535]) for (const offset of [0, 2]) {
+        const b = Buffer.from(good); b.writeUInt16LE(count, offset); malformed.push(b);
+    }
+    const five = Buffer.concat([good, good.subarray(-20)]);
+    five.writeUInt16LE(5); five.writeUInt16LE(5, 2); malformed.push(five);
+    for (const sm of malformed) zeroTailMapRefusal(niFixture({sectionMap: sm}));
+    for (const length of [1, 2, 3]) {
+        redactedThrows(() => runZeroTail(niFixture({sectionMap: good.subarray(0, -length)})), 'ERR_PDB_FRAMING');
+    }
+});
+
+test('zero-tail validates every ordinary identity/flags/length and each full tail tuple member exactly', () => {
+    const base = identityLimitFixture(8); replaceTestMap(base, authoredZeroTailMap(base));
+    const refuse = change => {
+        const f = {...base, streams: base.streams.slice()}, sm = Buffer.from(base.sectionMap);
+        change(sm); replaceTestMap(f, sm); zeroTailMapRefusal(f);
+    };
+    for (let i = 0; i < 8; i++) {
+        for (const member of identityMembers) refuse(b => badIdentityMember(b, i, member,
+            member === 'frame' ? 0 : member === 'offset' ? 0xffffffff : 1));
+        for (const flags of [0, 0x208, 0x8000 | base.sectionMap.readUInt16LE(4 + i * 20),
+            0x200 | base.sectionMap.readUInt16LE(4 + i * 20)]) {
+            refuse(b => b.writeUInt16LE(flags, 4 + i * 20));
+        }
+        refuse(b => b.writeUInt16LE(b.readUInt16LE(4 + i * 20) | 0x80, 4 + i * 20));
+        for (const length of [0, 1, 0xffffffff]) refuse(b => b.writeUInt32LE(length, 20 + i * 20));
+    }
+    for (const member of ['overlay', 'group']) for (const value of [1, 65535]) {
+        refuse(b => badIdentityMember(b, 8, member, value));
+    }
+    for (const frame of [1, 8, 9, 65535]) refuse(b => badIdentityMember(b, 8, 'frame', frame));
+    for (const offset of [1, 0x80000000, 0xffffffff]) refuse(b => badIdentityMember(b, 8, 'offset', offset));
+    for (const flags of [0, 0x108, 0x209, 0x20c, 0x288, 0x308, 0x8208, 65535]) {
+        refuse(b => b.writeUInt16LE(flags, 4 + 8 * 20));
+    }
+    for (const length of [0, 1, 0x80000000, 0xfffffffe]) refuse(b => b.writeUInt32LE(length, 20 + 8 * 20));
+    // Name/class indices remain outside the interpreted mapping contract.
+    const names = zeroTailFixture(), sm = Buffer.from(names.sectionMap);
+    for (let i = 0; i < 4; i++) { sm.writeUInt16LE(123, 12 + i * 20); sm.writeUInt16LE(456, 14 + i * 20); }
+    replaceTestMap(names, sm); zeroTailResultParity(names);
+});
+
+test('zero-tail malformed full tuples leave all old APIs and their first-refusal reads isolated', () => {
+    for (const [change, member] of [
+        [b => badIdentityMember(b, 3, 'overlay', 1), 'overlay'],
+        [b => badIdentityMember(b, 3, 'group', 1), 'group'],
+        [b => badIdentityMember(b, 3, 'offset', 0xffffffff), 'frame'],
+        [b => b.writeUInt16LE(0x209, 64), 'frame'],
+        [b => b.writeUInt32LE(0xfffffffe, 80), 'frame'],
+    ]) {
+        const f = zeroTailFixture(), sm = Buffer.from(f.sectionMap);
+        change(sm); replaceTestMap(f, sm); zeroTailMapRefusal(f);
+        tailFrameParity(f, query(), 'segment_map', 'identity', 3, 'tail_candidate', member,
+            member === 'frame' ? 0 : null);
+        const legacy = {...f, streams: f.streams.slice()}; legacy.streams[1] = info();
+        fails(legacy, 'ERR_SOURCE_MAPPING');
+    }
+});
+
+test('zero-tail keeps identity short circuit order, exact field reads and no second traversal on refusal', () => {
+    for (const index of [0, 2, 3]) for (let first = 0; first < identityMembers.length; first++) {
+        const f = zeroTailFixture(), sm = Buffer.from(f.sectionMap);
+        for (const member of identityMembers.slice(first)) badIdentityMember(sm, index, member,
+            member === 'offset' ? 0xdeadbeef : 0x1234);
+        sm.writeUInt16LE(0, 4 + index * 20); sm.writeUInt32LE(0, 20 + index * 20);
+        replaceTestMap(f, sm);
+        const trace = segmentFieldTrace(f, () => zeroTailMapRefusal(f)), at = 4 + index * 20;
+        a.deepEqual(trace.filter(r => r.offset >= at), [0, 2, 4, 6, 12].slice(0, first + 2)
+            .map(offset => ({width: offset === 12 ? 4 : 2, offset: at + offset})));
+    }
+    const f = zeroTailFixture();
+    const trace = segmentFieldTrace(f, () => runZeroTail(f));
+    a.equal(trace.filter(r => r.offset === 70).length, 1); // Only tail frame read.
+    const bad = Buffer.from(f.sectionMap); bad.writeUInt32LE(1, 80); replaceTestMap(f, bad);
+    zeroTailMapRefusal(f);
+});
+
+test('zero-tail never routes segment zero, N+1 or larger, including nonmatching supported procedures', () => {
+    for (const segment of [0, 4, 65535]) {
+        zeroTailNonmappingParity(zeroTailFixture({contributions: [{}, {segment, offset: 0x90}]}), 'ERR_ROUTING_FRAMING');
+        for (const kind of [0x110f, 0x1110, 0x1146, 0x1147]) for (const offset of [0x20, 0x90]) {
+            const f = zeroTailFixture({modules: [{records: [proc(), proc({kind, segment, offset})]}]});
+            redactedThrows(() => runZeroTail(f), 'ERR_SOURCE_MAPPING');
+            mappingResult(sourceMapping(ordinalTailTwin(f)), 'procedure', 'segment');
+        }
+    }
+    for (const c of [{offset: -1}, {size: -1}, {offset: 0x7fffffff}, {size: 0x7fffffff}, {module_index: 1}]) {
+        zeroTailNonmappingParity(zeroTailFixture({contributions: [{}, c]}), 'ERR_ROUTING_FRAMING');
+    }
+    for (const n of [8, 96]) for (const segment of [0, n + 1]) {
+        const f = identityLimitFixture(n); replaceTestMap(f, authoredZeroTailMap(f));
+        f.streams[3].writeUInt16LE(segment, f.scAt + 4);
+        zeroTailNonmappingParity(f, 'ERR_ROUTING_FRAMING', tailQuery());
+        const g = identityLimitFixture(n); replaceTestMap(g, authoredZeroTailMap(g));
+        g.streams[9].writeUInt16LE(segment, 4 + 36);
+        redactedThrows(() => runZeroTail(g, tailQuery()), 'ERR_SOURCE_MAPPING');
+    }
+});
+
+test('zero-tail preserves every non-map physical mapping guard after exact tuple validation', () => {
+    for (const [, stage, guard, make, q = query()] of mappingCases) {
+        if (stage === 'segment_map') continue;
+        const f = make(); replaceTestMap(f, authoredZeroTailMap(f));
+        redactedThrows(() => runZeroTail(f, q), 'ERR_SOURCE_MAPPING');
+        mappingResult(sourceMapping(ordinalTailTwin(f), q), stage, guard);
+    }
+    const f = zeroTailFixture(); f.streams[3].writeUInt16LE(8, f.optionalAt + 6);
+    zeroTailNonmappingParity(f, 'ERR_OMAP_UNSUPPORTED');
+    for (const change of [g => g.exe[g.rsds + 4] ^= 1,
+        g => g.exe.writeUInt32LE(0x3000, g.debug + 24),
+        g => g.exe.writeUInt32LE(0xe0000040, g.table + 80 + 36),
+        g => g.exe.writeUInt32LE(0x3000, g.op + 128)]) {
+        const g = niFixture(); change(g);
+        if (g.exe.readUInt32LE(g.op + 128)) g.exe.writeUInt32LE(16, g.op + 132);
+        g.streams[8] = Buffer.from(g.exe.subarray(g.table, g.table + 120));
+        replaceTestMap(g, authoredZeroTailMap(g));
+        zeroTailNonmappingParity(g, 'ERR_IDENTITY');
+    }
+});
+
+test('zero-tail preserves NI/name/feature failures without skipping unknown words or resolving FASTLINK', () => {
+    for (const [b, code] of [
+        [info(), 'ERR_NI_MAC_UNSUPPORTED'],
+        [namedStreamNiMacZeroInfo({niBytes: 0, features: []}), 'ERR_PDB_FRAMING'],
+        ...[1, 0xffffffff, MINI].map(niMac => [namedStreamNiMacZeroInfo({niMac}), 'ERR_NI_MAC_UNSUPPORTED']),
+        ...[[MINI], [NOTM]].map(features => [namedStreamNiMacZeroInfo({features}), 'ERR_FASTLINK_UNSUPPORTED']),
+        ...[[0], [0xffffffff], [VC140, VC140], [VC110, VC140]].map(features =>
+            [namedStreamNiMacZeroInfo({features}), 'ERR_FEATURE_UNSUPPORTED']),
+        [namedStreamNiMacZeroInfo({capacity: 0}), 'ERR_PDB_FRAMING'],
+        [namedStreamNiMacZeroInfo({names: [{name: 'NEVER_EXPORT', stream: 65535}]}), 'ERR_PDB_FRAMING'],
+        [namedStreamNiMacZeroInfo({names: [{name: 'a', stream: 8}], present: [], presentWords: 0}), 'ERR_PDB_FRAMING'],
+        [namedStreamNiMacZeroInfo({extraTail: Buffer.alloc(1)}), 'ERR_PDB_FRAMING'],
+    ]) zeroTailNonmappingParity(zeroTailFixture({info: b}), code);
+});
+
+test('zero-tail completes later selected modules and rejects post-match framing, absence, conflict and extent failures', () => {
+    const malformed = record(); malformed.writeUInt16LE(65535);
+    for (const [records, code] of [
+        [[proc(), malformed], 'ERR_MODULE_FRAMING'],
+        [[proc(), record(0x1102)], 'ERR_SYMBOL_UNSUPPORTED'],
+        ...[0x115f, 0x1160, 0x1161, 0x1167].map(kind => [[proc(), record(kind)], 'ERR_FASTLINK_UNSUPPORTED']),
+        [[proc(), proc({size: 0x31})], 'ERR_PROCEDURE_CONFLICT'],
+        [[proc(), proc({size: 0})], 'ERR_PROCEDURE_SIZE'],
+    ]) {
+        zeroTailNonmappingParity(zeroTailFixture({modules: [{records}]}), code);
+        const f = zeroTailFixture({modules: [{records: [proc()]}, {records}]});
+        for (const q of [query(), query({module_indices: [1, 0]})]) zeroTailNonmappingParity(f, code, q);
+        a.equal(runZeroTail(f, query({module_indices: [0]})).addresses[0].procedure_record_count, 1);
+    }
+    for (const options of [{modules: [{records: []}]}, {modules: [{records: [record()]}]}]) {
+        zeroTailNonmappingParity(zeroTailFixture(options), 'ERR_PROCEDURE_ABSENT');
+    }
+    zeroTailNonmappingParity(zeroTailFixture(), 'ERR_PROCEDURE_ABSENT', query({addresses: [VA, '0x140001021']}));
+    const agreed = zeroTailResultParity(zeroTailFixture({modules: [
+        {records: [proc(), proc()]}, {records: [proc()]},
+    ]}));
+    a.equal(agreed.addresses[0].procedure_record_count, 3); a.equal(agreed.unique_owner_confirmed, false);
+    for (const [options, code] of [
+        [{moduleInfo: Buffer.alloc(60)}, 'ERR_DBI_MODULE_INFO'],
+        [{modules: [{signature: 2}]}, 'ERR_MODULE_FRAMING'],
+        [{modules: [{sym: 5}]}, 'ERR_MODULE_FRAMING'],
+        [{modules: [{c11: Buffer.alloc(4)}]}, 'ERR_MODULE_FRAMING'],
+        [{modules: [{flags: 0x100}]}, 'ERR_REFERENCE_UNSUPPORTED'],
+        [{sc: Buffer.alloc(0)}, 'ERR_ROUTING_ABSENT'],
+        [{version: 1}, 'ERR_ROUTING_UNSUPPORTED'],
+    ]) zeroTailNonmappingParity(zeroTailFixture(options), code);
+    for (const change of [f => f.streams[9] = null,
+        f => f.streams[3].writeUInt16LE(8, dbiModuleAt(f) + 34)]) {
+        const f = zeroTailFixture(); change(f); zeroTailNonmappingParity(f, 'ERR_MODULE_BOUND');
+    }
+    for (const options of [{sc: Buffer.alloc(0)}, {version: 1}]) {
+        const r = zeroTailResultParity(zeroTailFixture(options), query({module_indices: [0]}));
+        a.equal(r.routing.scope, 'explicit_modules_only'); a.equal(r.routing.complete_table_framing, false);
+    }
+});
+
+test('zero-tail keeps canonical endpoints and mapped file limits independent of the absolute sentinel', () => {
+    const f = zeroTailFixture({modules: [{records: [proc({offset: 0x27f, size: 1})]}],
+        contributions: [{offset: 0x27f, size: 1}]});
+    f.exe.writeBigUInt64LE(0xffff800000000000n, f.op + 24);
+    const q = query({addresses: ['0xffff80000000127f']});
+    a.equal(zeroTailResultParity(f, q).addresses[0].extent.end_exclusive, '0xffff800000001280');
+    const g = niFixture({modules: [{records: [proc({offset: 0xff0, size: 0x10})]}],
+        contributions: [{offset: 0xff0, size: 0x10}]});
+    const old = g.exe; g.exe = Buffer.alloc(0x1600); old.copy(g.exe);
+    g.exe.writeBigUInt64LE(0x7fffffff0000n, g.op + 24);
+    g.exe.writeUInt32LE(0xf000, g.op + 16); g.exe.writeUInt32LE(0x10000, g.op + 56);
+    g.exe.writeUInt32LE(0xf000, g.table + 12); g.exe.writeUInt32LE(0x1000, g.table + 8);
+    g.exe.writeUInt32LE(0x1000, g.table + 16); g.exe.writeUInt32LE(0x1200, g.table + 40 + 20);
+    g.exe.writeUInt32LE(0x1400, g.table + 80 + 20);
+    old.subarray(0x800, 0xa00).copy(g.exe, 0x1400); g.exe.writeUInt32LE(0x14a0, 0x1480 + 24);
+    g.streams[8] = Buffer.from(g.exe.subarray(g.table, g.table + 120)); replaceTestMap(g, authoredZeroTailMap(g));
+    for (const address of ['0x7ffffffffff0', '0x7fffffffffff']) {
+        redactedThrows(() => runZeroTail(g, query({addresses: [address]})), 'ERR_SOURCE_MAPPING');
+    }
+});
+
+test('zero-tail validates queries before I/O and keeps reader failures code-only and copied/nonshared', () => {
+    const p = pack(zeroTailFixture()); let reads = 0;
+    const reader = {size: p.reader.size, read(o, n) { reads++; return p.reader.read(o, n); }};
+    for (const q of [undefined, {}, query({grammar: 'NEVER_EXPORT'}), query({addresses: ['0x800000000000']}),
+        query({addresses: Array(1)}), query({module_indices: [0, 0]})]) {
+        redactedThrows(() => inspectNamedStreamNiMacZeroAbsoluteTailFrameZero(reader, p.exe, p.identity, q), 'ERR_SELECTORS');
+    }
+    a.equal(reads, 0);
+    for (const index of [1, 3, 8, 9]) for (const mode of ['throw', 'short', 'shared']) {
+        const broken = {size: p.reader.size, read(o, n) {
+            if (!p.entries[index].pages.includes(Math.floor(o / 4096))) return p.reader.read(o, n);
+            if (mode === 'throw') throw Error('ERR_SOURCE_MAPPING/NEVER_EXPORT/private');
+            return mode === 'shared' ? Buffer.from(new SharedArrayBuffer(n)) : Buffer.alloc(n - 1);
+        }};
+        redactedThrows(() => inspectNamedStreamNiMacZeroAbsoluteTailFrameZero(broken, p.exe, p.identity, query()),
+            mode === 'throw' ? 'ERR_PDB_FRAMING' : mode === 'shared' ? 'ERR_INPUT_BOUND' : 'ERR_SHORT_READ');
+    }
+    let borrowed = null;
+    const recycled = {size: p.reader.size, read(o, n) {
+        // Mutating a previously returned buffer must not mutate retained parser
+        // state. Each current read still supplies the correct immutable bytes.
+        if (borrowed !== null) borrowed.fill(0xee);
+        borrowed = p.reader.read(o, n); return borrowed;
+    }};
+    a.deepEqual(inspectNamedStreamNiMacZeroAbsoluteTailFrameZero(recycled, p.exe, p.identity, query()), runZeroTail());
+    for (const size of [55, LIMITS.pdb + 1]) {
+        redactedThrows(() => inspectNamedStreamNiMacZeroAbsoluteTailFrameZero({size, read() {
+            a.fail('reader bounds precede I/O');
+        }}, p.exe, p.identity, query()), 'ERR_INPUT_BOUND');
+    }
+    redactedThrows(() => inspectNamedStreamNiMacZeroAbsoluteTailFrameZero(p.reader,
+        Buffer.from(new SharedArrayBuffer(p.exe.length)), p.identity, query()), 'ERR_INPUT_BOUND');
+});
+
+test('zero-tail retains selection/module/contribution resource caps and bounded reads', () => {
+    const addresses = Array.from({length: 32}, (_, i) => '0x' + (0x140001020n + BigInt(4 * i)).toString(16)).reverse();
+    const records = addresses.map(v => proc({offset: Number(BigInt(v) - 0x140001000n), size: 4, name: ''}));
+    const r = zeroTailResultParity(zeroTailFixture({modules: Array.from({length: 32}, () => ({records}))}), query({addresses}));
+    a.deepEqual(r.addresses.map(v => v.address), addresses); a.equal(r.selected_modules.length, 32);
+    zeroTailNonmappingParity(zeroTailFixture({modules: Array.from({length: 33}, () => ({}))}), 'ERR_MODULE_BOUND');
+    for (const [count, options, code] of [[LIMITS.contribution_records + 1, {}, 'ERR_ROUTING_BOUND'],
+        [1, {declaredBytes: LIMITS.contributions + 4}, 'ERR_ROUTING_BOUND']]) {
+        const f = repeatedContributions(zeroTailFixture(), count, options);
+        redactedThrows(() => runZeroTail(f), code);
+    }
+    const f = repeatedContributions(zeroTailFixture(), 150000), p = pack(f);
+    const result = inspectNamedStreamNiMacZeroAbsoluteTailFrameZero(p.reader, p.exe, p.identity, query());
+    a.equal(result.routing.contribution_records, 150000); a.ok(p.reads.every(v => v.count <= LIMITS.read));
+    for (const [bytes, code] of [[LIMITS.symbols, 'ERR_MODULE_FRAMING'], [LIMITS.symbols + 4, 'ERR_MODULE_BOUND']]) {
+        zeroTailNonmappingParity(zeroTailFixture({modules: [{sym: bytes, body: repeatedModule(bytes, record(), 2)}]}), code);
+    }
+});
+
+test('zero-tail selection stays private across nested calls, older APIs, refusal and mutated result facts', () => {
+    const f = zeroTailFixture(), p = pack(f); let nested = false;
+    const reader = {size: p.reader.size, read(o, n) {
+        if (!nested) {
+            nested = true;
+            redactedThrows(() => runNi(f), 'ERR_SOURCE_MAPPING');
+            tailFrameResult(tailFrame(f), 'segment_map', 'identity', 3, 'tail_candidate', 'frame', 0);
+            mappingResult(sourceMapping()); identityMappingResult(sourceMappingIdentity());
+            redactedThrows(() => runZeroTail(niFixture()), 'ERR_SOURCE_MAPPING');
+            a.equal(runZeroTail().profile, ZERO_TAIL_PROFILE);
+        }
+        return p.reader.read(o, n);
+    }};
+    const r = inspectNamedStreamNiMacZeroAbsoluteTailFrameZero(reader, p.exe, p.identity, query());
+    a.equal(nested, true); a.deepEqual(r, runZeroTail());
+    r.segment_map_profile.tail_frame = 9; r.segment_map_profile.tail_routable = true;
+    for (let repeat = 0; repeat < 3; repeat++) {
+        zeroTailResultParity(f); tailFrameParity(f, query(), 'segment_map', 'identity', 3, 'tail_candidate', 'frame', 0);
+        tailFrameParity(niFixture(), query());
+        const failed = zeroTailFixture(); failed.streams[3].writeUInt32LE(0, failed.optionalAt - 4);
+        redactedThrows(() => runZeroTail(failed), 'ERR_SOURCE_MAPPING');
+        zeroTailResultParity(f);
+    }
+});
+
+test('zero-tail output adds only validated facts, redacts raw data and applies the full unchanged JSON/newline ceiling', () => {
+    const secret = 'NEVER_EXPORT/private/zero-tail', f = zeroTailFixture({
+        info: namedStreamNiMacZeroInfo({names: [{name: secret, stream: 8}]}),
+        modules: [{module_name: secret, object_name: secret, records: [proc({name: secret}),
+            proc({offset: 0x90, name: 'UNSELECTED_SECRET'})]}],
+    });
+    const accepted = zeroTailResultParity(f), json = JSON.stringify(accepted);
+    for (const word of [secret, 'UNSELECTED_SECRET', 'record_bytes_hex', 'private.obj', '0x140001090']) {
+        a.ok(!json.includes(word));
+    }
+    f.exe.fill(0x5a, 0x200, 0x800); a.deepEqual(runZeroTail(f), accepted);
+    const stringify = JSON.stringify;
+    for (const bytes of [65535, 65536]) {
+        let complete = false;
+        JSON.stringify = function(value, ...args) {
+            const out = stringify.call(this, value, ...args);
+            if (!value || value.profile !== ZERO_TAIL_PROFILE) return out;
+            a.deepEqual(value.segment_map_profile, expectedZeroTailFacts(3));
+            a.equal(value.complete_selected_symbol_record_framing, true);
+            a.equal(value.addresses[0].procedure_record_count, 1);
+            complete = true; return out.padEnd(bytes, ' ');
+        };
+        try {
+            if (bytes === 65535) a.equal(runZeroTail().profile, ZERO_TAIL_PROFILE);
+            else redactedThrows(() => runZeroTail(), 'ERR_OUTPUT_BOUND');
+            a.equal(complete, true);
+            // All old result schemas and ceilings are independent of the new one.
+            a.equal(runNi().profile, NI_PROFILE); mappingResult(sourceMapping());
+            identityMappingResult(sourceMappingIdentity()); tailFrameResult(tailFrame());
+        } finally { JSON.stringify = stringify; }
+    }
+    JSON.stringify = function(value, ...args) {
+        if (value && value.profile === ZERO_TAIL_PROFILE) throw Error('NEVER_EXPORT/private/serializer');
+        return stringify.call(this, value, ...args);
+    };
+    try { redactedThrows(() => runZeroTail(), 'ERR_PDB_FRAMING'); }
+    finally { JSON.stringify = stringify; }
+    a.equal(LIMITS.output, 65536);
 });
