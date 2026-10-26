@@ -2011,6 +2011,170 @@ fn unexpected_native_binding_or_proxy_component_changes_fail_closed_without_nati
 }
 
 #[test]
+fn late_lifecycle_components_retire_the_authored_host_and_remain_latched_after_repair() {
+    use bevy::ecs::entity_disabling::{DefaultQueryFilters, Disabled};
+    use icarus_bevy::native_lifecycle_runtime::NativeOwnerIncarnation;
+
+    #[derive(Component)]
+    struct Filtered;
+
+    #[derive(Resource)]
+    struct UnrelatedResource;
+
+    fn assert_retired(app: &App) {
+        assert_eq!(
+            *app.world().resource::<NativeReplicationCounts>(),
+            NativeReplicationCounts {
+                activated: 1,
+                rejected: 1,
+                binding_errors: 1,
+                active: false,
+            }
+        );
+        assert!(!app.world().resource::<PeerLab>().is_admitting());
+        assert!(!app.world().contains_resource::<SessionReplication>());
+        assert_eq!(
+            app.world()
+                .iter_entities()
+                .filter(|entity| entity.contains::<NetActor>()
+                    || entity.contains::<NetArchetype>()
+                    || entity.contains::<NetViewer>())
+                .count(),
+            0
+        );
+    }
+
+    for order in [ByteOrder::Little, ByteOrder::Big] {
+        for variant in ["ordinary", "disabled", "custom_filtered", "resource"] {
+            for pressure in [false, true] {
+                let fixture = Fixture::new();
+                let (mut app, address) =
+                    fixture.app_tuned(Some(|config| config.packet.sent_capacity = 12));
+                let offender = match variant {
+                    "ordinary" => app.world_mut().spawn_empty().id(),
+                    "disabled" => app.world_mut().spawn(Disabled).id(),
+                    "custom_filtered" => {
+                        let disabling = app.world_mut().register_component::<Filtered>();
+                        app.world_mut()
+                            .resource_mut::<DefaultQueryFilters>()
+                            .register_disabling_component(disabling);
+                        app.world_mut().spawn(Filtered).id()
+                    }
+                    "resource" => {
+                        app.insert_resource(UnrelatedResource);
+                        app.world().resource_entity::<UnrelatedResource>().unwrap()
+                    }
+                    _ => unreachable!(),
+                };
+                let mut client = Client::connect(&mut app, address, order);
+                let opened = client.join(&mut app);
+                client.settle(&mut app, &opened);
+                let connection = app.world().resource::<PeerLab>().joined_connections()[0];
+                assert!(app.world().resource::<NativeReplicationCounts>().active);
+                assert!(app.world().contains_resource::<SessionReplication>());
+                assert!(app.world().resource::<PeerLab>().is_admitting());
+                assert!(
+                    app.world()
+                        .resource::<PeerLab>()
+                        .is_actor_open(connection, fixture.id("a").0)
+                );
+                assert_eq!(
+                    app.world()
+                        .iter_entities()
+                        .filter(|entity| entity.contains::<NetViewer>())
+                        .count(),
+                    1
+                );
+                // Several clean host ticks precede first registration: a cached
+                // absent ComponentId must not hide a later lifecycle component.
+                assert!(
+                    app.world()
+                        .component_id::<NativeOwnerIncarnation>()
+                        .is_none()
+                );
+                let queued = if pressure {
+                    fill_update_ring(&mut app, &client, fixture.id("a"))
+                } else {
+                    Vec::new()
+                };
+                let native_before = capture(app.world_mut()).unwrap().native_world;
+                app.world_mut()
+                    .entity_mut(offender)
+                    .insert(NativeOwnerIncarnation(1));
+
+                // Observe retirement on the very next host tick, even when the
+                // reliable close cannot yet be framed under transport pressure.
+                app.update();
+                let retired = drain(&client.socket);
+                assert_retired(&app);
+                let lab = app.world().resource::<PeerLab>();
+                if pressure {
+                    assert!(lab.is_actor_open(connection, fixture.id("a").0));
+                    assert!(lab.stats().actor_close_errors > 0);
+                    assert_eq!(lab.stats().actor_closes_sent, 0);
+                } else {
+                    assert!(!lab.is_actor_open(connection, fixture.id("a").0));
+                    assert_eq!(lab.stats().actor_closes_sent, 1);
+                }
+                assert_eq!(
+                    app.world().get::<NativeOwnerIncarnation>(offender),
+                    Some(&NativeOwnerIncarnation(1))
+                );
+
+                // Repair empties the offending archetype but must not revive
+                // the retired plan or cancel its still-pending channel close.
+                let bad_archetype = app.world().entity(offender).archetype().id();
+                app.world_mut()
+                    .entity_mut(offender)
+                    .remove::<NativeOwnerIncarnation>();
+                assert!(app.world().archetypes()[bad_archetype].is_empty());
+                assert_eq!(
+                    capture(app.world_mut()).unwrap().native_world,
+                    native_before
+                );
+                if variant == "resource" {
+                    assert!(app.world().contains_resource::<UnrelatedResource>());
+                }
+                client.accept(&retired);
+                let closed = client.settle(&mut app, &queued);
+                assert_retired(&app);
+                assert!(
+                    !app.world()
+                        .resource::<PeerLab>()
+                        .is_actor_open(connection, fixture.id("a").0)
+                );
+                assert_eq!(
+                    retired
+                        .iter()
+                        .chain(&closed)
+                        .flat_map(|bytes| read_packet(bytes, &client.config()).unwrap().bunches)
+                        .filter(|bunch| bunch.header.channel_index == 6
+                            && bunch.header.reliable
+                            && bunch.header.close)
+                        .count(),
+                    1
+                );
+                client.settle(&mut app, &closed);
+                for _ in 0..4 {
+                    let bytes = client.step(&mut app);
+                    client.accept(&bytes);
+                    assert_retired(&app);
+                    let lab = app.world().resource::<PeerLab>();
+                    assert_eq!(lab.stats().actor_opens_sent, 1);
+                    assert_eq!(lab.stats().actor_closes_sent, 1);
+                    assert!(!lab.is_actor_open(connection, fixture.id("a").0));
+                }
+                assert_eq!(
+                    capture(app.world_mut()).unwrap().native_world,
+                    native_before
+                );
+                network::teardown(app.world_mut());
+            }
+        }
+    }
+}
+
+#[test]
 fn absent_option_disabled_network_and_cli_configuration_preserve_legacy_behavior() {
     let fixture = Fixture::new();
     let mut config = fixture.config.clone();
@@ -2487,6 +2651,7 @@ fn authored_host_idle_tick_cost() -> anyhow::Result<()> {
                 store_bytes(&config.data_dir)? == unchanged_store,
                 "authored store bytes changed"
             );
+            let raw_samples_ns = nanos.clone();
             nanos.sort_unstable();
             // Even-count median: integer floor of the mean of samples 16 and 17.
             let median = nanos[SAMPLES / 2 - 1] / 2
@@ -2501,7 +2666,7 @@ fn authored_host_idle_tick_cost() -> anyhow::Result<()> {
                 "peers": 0, "warmups": WARMUPS, "count": nanos.len(),
                 "verified_tick_delta_per_update": 1,
                 "median_ns": median, "p95_ns": nanos[(95 * SAMPLES).div_ceil(100) - 1],
-                "max_ns": nanos[SAMPLES - 1]
+                "max_ns": nanos[SAMPLES - 1], "raw_samples_ns": raw_samples_ns
             }));
             // Ordinary App/socket Drop is retained, including during unwinding.
             // No teardown/drop saves state, launches a child, or removes files.
