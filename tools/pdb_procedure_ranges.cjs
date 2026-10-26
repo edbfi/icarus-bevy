@@ -42,6 +42,8 @@
 // within the reported scope, never a complete function/owner/alias census.
 // Inline-site annotation records stay opaque: they do not supply standalone
 // procedure declarations, and their annotation payloads/scopes are unvalidated.
+// Only the explicit inlinees profile frames exact counted-u32 auxiliary lists.
+// Their values remain opaque: no references, ownership or declarations follow.
 // Digests cover complete matching raw records (including names/padding), in
 // ascending module ordinal then symbol offset order; bytes are never exported.
 
@@ -97,6 +99,7 @@ const hex = v => '0x' + v.toString(16);
 const NI_MAC_ZERO_GRAMMAR = 'named_stream_ni_mac_zero_v1';
 // An explicit bounded variant, not a producer/ABI or ownership assertion.
 const ABSOLUTE_TAIL_FRAME_ZERO_GRAMMAR = 'identity_sections_absolute_tail_frame_zero_v1';
+const INLINEES_COUNTED_U32_EXACT_GRAMMAR = 'inlinees_counted_u32_exact_v1';
 
 function selection(query) {
     need(query && typeof query === 'object' && !Array.isArray(query) &&
@@ -463,7 +466,7 @@ function extent(image, segment, offset, size, mappingSite, stage) {
         file_span: {start: s.raw + offset, end_exclusive: s.raw + offset + size}};
 }
 
-function scanModule(ctx, mod, aggregates, totals, unsupportedSite) {
+function scanModule(ctx, mod, aggregates, totals, unsupportedSite, inlineesGrammar) {
     const {m, image} = ctx, code = 'ERR_MODULE_FRAMING', stream = mod.stream_id;
     const tail = mod.sym + mod.c11 + mod.c13;
     need(mod.sym >= 4 && mod.sym % 4 === 0 && mod.c11 === 0 && tail + 4 <= m.streams[stream].size, code);
@@ -489,7 +492,18 @@ function scanModule(ctx, mod, aggregates, totals, unsupportedSite) {
         need(n >= 4 && n <= LIMITS.record && n % 4 === 0 && at + n <= mod.sym, code);
         need(++totals.records <= LIMITS.records, 'ERR_MODULE_BOUND'); records++;
         need(!EXTERNAL.has(kind), 'ERR_FASTLINK_UNSUPPORTED');
-        if (UNSUPPORTED.has(kind)) {
+        if (inlineesGrammar === INLINEES_COUNTED_U32_EXACT_GRAMMAR && kind === 0x1168) {
+            // Exact LLVM-shaped subset only. The whole prefix-inclusive record
+            // is bounded before reading the count; no count-driven allocation,
+            // entry traversal, padding guesses or semantic value predicates.
+            need(n >= 8 && n <= 0xff00, code);
+            const b = read(at, n), count = b.readUInt32LE(4);
+            need(count === (n - 8) / 4, code);
+            const records = totals.inlinees.records + 1, entries = totals.inlinees.entries + count;
+            need(Number.isSafeInteger(records) && records > 0 && records <= totals.records &&
+                Number.isSafeInteger(entries) && entries >= 0 && entries <= Math.floor(LIMITS.symbols / 4), code);
+            totals.inlinees.records = records; totals.inlinees.entries = entries;
+        } else if (UNSUPPORTED.has(kind)) {
             // Retain only the already-read discriminator at this exact guard.
             // The private opt-in site adds no payload/header read or traversal.
             if (unsupportedSite !== null && unsupportedSite.first === null) unsupportedSite.first = kind;
@@ -522,7 +536,7 @@ function scanModule(ctx, mod, aggregates, totals, unsupportedSite) {
 }
 
 function inspectProfile(reader, exe, identity, query, niMacZero, mappingSite = null, segmentMapGrammar = null,
-    unsupportedSite = null) {
+    unsupportedSite = null, inlineesGrammar = null) {
     try {
         // Selector validation is deliberately before any PE parsing or reader I/O.
         const selected = selection(query),
@@ -548,12 +562,16 @@ function inspectProfile(reader, exe, identity, query, niMacZero, mappingSite = n
         const aggregates = new Map(selected.addresses.map(a => [a.rva,
             {address: a.address, count: 0, bytes: 0, hash: createHash('sha256'), extent: null}]));
         const totals = {records: 0, procedures: 0, opaque: 0};
-        const scanned = routing.indices.map(i => scanModule(ctx, modules[i], aggregates, totals, unsupportedSite));
+        const inlineesExact = inlineesGrammar === INLINEES_COUNTED_U32_EXACT_GRAMMAR;
+        if (inlineesExact) totals.inlinees = {grammar: INLINEES_COUNTED_U32_EXACT_GRAMMAR, records: 0, entries: 0};
+        const scanned = routing.indices.map(i => scanModule(ctx, modules[i], aggregates, totals, unsupportedSite,
+            inlineesGrammar));
         need([...aggregates.values()].every(a => a.count > 0), 'ERR_PROCEDURE_ABSENT');
         const result = {
             profile: 'MSF7_DBI_C13_scoped_supported_procedure_declarations' +
                 (niMacZero ? '_' + NI_MAC_ZERO_GRAMMAR : '') +
-                (ctx.segmentMapProfile === null ? '' : '_absolute_tail_frame_zero_v1'),
+                (ctx.segmentMapProfile === null ? '' : '_absolute_tail_frame_zero_v1') +
+                (inlineesExact ? '_' + INLINEES_COUNTED_U32_EXACT_GRAMMAR : ''),
             guid_bytes: identity.guid_bytes, age: identity.age, image_base: hex(image.base),
             routing, selected_modules: scanned, symbol_bytes: symbolBytes, records: totals.records,
             supported_procedure_records: totals.procedures, opaque_records: totals.opaque,
@@ -569,6 +587,11 @@ function inspectProfile(reader, exe, identity, query, niMacZero, mappingSite = n
                 procedure_records_sha256: a.hash.digest('hex'), extent: a.extent})),
         };
         if (ctx.segmentMapProfile !== null) result.segment_map_profile = ctx.segmentMapProfile;
+        if (inlineesExact) {
+            need(totals.inlinees.records <= totals.opaque && totals.records === totals.procedures + totals.opaque,
+                'ERR_MODULE_FRAMING');
+            result.inlinees_profile = totals.inlinees;
+        }
         need(Buffer.byteLength(JSON.stringify(result) + '\n') <= LIMITS.output, 'ERR_OUTPUT_BOUND');
         return result;
     } catch (error) {
@@ -590,6 +613,13 @@ function inspectNamedStreamNiMacZero(reader, exe, identity, query) {
 // with older map shapes, new diagnostic, or tail-derived physical section.
 function inspectNamedStreamNiMacZeroAbsoluteTailFrameZero(reader, exe, identity, query) {
     return inspectProfile(reader, exe, identity, query, true, null, ABSOLUTE_TAIL_FRAME_ZERO_GRAMMAR);
+}
+
+// Same exact NI-zero / zero-frame-tail envelope, with one closed auxiliary
+// grammar. This per-call selector is disabled for every older API/diagnostic.
+function inspectNamedStreamNiMacZeroAbsoluteTailFrameZeroInlineesExact(reader, exe, identity, query) {
+    return inspectProfile(reader, exe, identity, query, true, null, ABSOLUTE_TAIL_FRAME_ZERO_GRAMMAR,
+        null, INLINEES_COUNTED_U32_EXACT_GRAMMAR);
 }
 
 // Exact zero-tail grammar only. Refusal is a prefix observation, while acceptance
@@ -707,6 +737,7 @@ function diagnoseTailFrameNamedStreamNiMacZero(reader, exe, identity, query) {
 
 module.exports = {inspect, diagnoseInfoFeatures, inspectNamedStreamNiMacZero, diagnoseInfoNamedStreamNiMacZero,
     inspectNamedStreamNiMacZeroAbsoluteTailFrameZero,
+    inspectNamedStreamNiMacZeroAbsoluteTailFrameZeroInlineesExact,
     diagnoseUnsupportedSymbolNamedStreamNiMacZeroAbsoluteTailFrameZero,
     diagnoseSourceMappingNamedStreamNiMacZero, diagnoseSourceMappingIdentityNamedStreamNiMacZero,
     diagnoseTailFrameNamedStreamNiMacZero, LIMITS};

@@ -9,6 +9,7 @@ const {inspect, diagnoseInfoFeatures, inspectNamedStreamNiMacZero,
     diagnoseInfoNamedStreamNiMacZero, diagnoseSourceMappingNamedStreamNiMacZero,
     diagnoseSourceMappingIdentityNamedStreamNiMacZero, diagnoseTailFrameNamedStreamNiMacZero,
     inspectNamedStreamNiMacZeroAbsoluteTailFrameZero,
+    inspectNamedStreamNiMacZeroAbsoluteTailFrameZeroInlineesExact,
     diagnoseUnsupportedSymbolNamedStreamNiMacZeroAbsoluteTailFrameZero,
     LIMITS} = require('../pdb_procedure_ranges.cjs');
 const {fixture, pack, proc, record, info, namedStreamNiMacZeroInfo, segmentMap, repeatedModule, repeatedContributions,
@@ -3208,5 +3209,477 @@ test('unsupported-symbol calls leave serialized old inspector and diagnostic res
         a.deepEqual(calls.map(call => JSON.stringify(call())), before);
         zeroTailNonmappingParity(zeroTailFixture({modules: [{records: [proc(), record(0x0104)]}]}), 'ERR_SYMBOL_UNSUPPORTED');
         a.deepEqual(runZeroTail(zero).segment_map_profile, expectedZeroTailFacts(3));
+    }
+});
+
+// Authored auxiliary framing only: these values are arbitrary u32 slots, never
+// target IDs, references or evidence of valid semantic CodeView relationships.
+const INLINEES_GRAMMAR = 'inlinees_counted_u32_exact_v1';
+const INLINEES_PROFILE = ZERO_TAIL_PROFILE + '_' + INLINEES_GRAMMAR;
+const runInlinees = (f = zeroTailFixture(), q = query()) => {
+    const p = pack(f);
+    return inspectNamedStreamNiMacZeroAbsoluteTailFrameZeroInlineesExact(p.reader, p.exe, p.identity, q);
+};
+function inlineesRecord(values = [], {count = values.length, bytes = 8 + values.length * 4} = {}) {
+    const b = record(0x1168, bytes);
+    if (bytes >= 8) b.writeUInt32LE(count, 4);
+    values.forEach((v, i) => { if (12 + i * 4 <= bytes) b.writeUInt32LE(v, 8 + i * 4); });
+    return b;
+}
+function inlineesFacts(result, records, entries) {
+    a.equal(result.profile, INLINEES_PROFILE);
+    a.deepEqual(result.inlinees_profile, {grammar: INLINEES_GRAMMAR, records, entries});
+    a.deepEqual(Reflect.ownKeys(result.inlinees_profile), ['grammar', 'records', 'entries']);
+    a.ok(Number.isSafeInteger(records) && records >= 0 && Number.isSafeInteger(entries) && entries >= 0);
+    a.ok(records <= result.opaque_records);
+    a.equal(result.records, result.supported_procedure_records + result.opaque_records);
+    for (const m of result.selected_modules) a.equal(m.records, m.supported_procedure_records + m.opaque_records);
+    a.ok(Buffer.byteLength(JSON.stringify(result) + '\n') <= LIMITS.output);
+    return result;
+}
+function inlineesNoListParity(f = zeroTailFixture(), q = query()) {
+    const modern = pack(f), previous = pack(f);
+    const before = inspectNamedStreamNiMacZeroAbsoluteTailFrameZero(previous.reader, previous.exe, previous.identity, q);
+    const result = inspectNamedStreamNiMacZeroAbsoluteTailFrameZeroInlineesExact(modern.reader, modern.exe, modern.identity, q);
+    a.deepEqual(result, {...before, profile: INLINEES_PROFILE,
+        inlinees_profile: {grammar: INLINEES_GRAMMAR, records: 0, entries: 0}});
+    a.deepEqual(Reflect.ownKeys(result), [...Reflect.ownKeys(before), 'inlinees_profile']);
+    a.deepEqual(modern.reads, previous.reads);
+    return inlineesFacts(result, 0, 0);
+}
+function inlineesRefusalParity(f, code, q = query()) {
+    const modern = pack(f), previous = pack(f);
+    redactedThrows(() => inspectNamedStreamNiMacZeroAbsoluteTailFrameZeroInlineesExact(
+        modern.reader, modern.exe, modern.identity, q), code);
+    redactedThrows(() => inspectNamedStreamNiMacZeroAbsoluteTailFrameZero(
+        previous.reader, previous.exe, previous.identity, q), code);
+    a.deepEqual(modern.reads, previous.reads);
+}
+
+test('inlinees absent still emits its fixed profile and zero counters with identical old metadata, digests and reads', () => {
+    for (const q of [query(), query({module_indices: [0]})]) {
+        const r = inlineesNoListParity(zeroTailFixture(), q);
+        a.equal(r.routing.scope, Object.hasOwn(q, 'module_indices') ?
+            'explicit_modules_only' : 'all_matching_section_contribution_modules');
+    }
+    inlineesNoListParity(zeroTailFixture({modules: [{records: [record(0x114d), proc(), record(0x115d), record()]}]}));
+    for (const n of [8, 96]) {
+        const f = identityLimitFixture(n); replaceTestMap(f, authoredZeroTailMap(f));
+        inlineesNoListParity(f, tailQuery());
+    }
+});
+
+test('inlinees accepts exact empty lists before and after a match as opaque physical records only', () => {
+    const empty = inlineesRecord(); a.equal(empty.toString('hex'), '0600681100000000');
+    const p = proc(), f = zeroTailFixture({modules: [{records: [empty, p, empty]}]});
+    const r = inlineesFacts(runInlinees(f), 2, 0), old = runZeroTail();
+    a.deepEqual(r.addresses, old.addresses); a.equal(r.records, 3); a.equal(r.opaque_records, 2);
+    a.equal(r.selected_modules[0].opaque_records, 2); a.equal(r.supported_procedure_records, 1);
+    a.equal(r.symbol_bytes, 4 + p.length + 16);
+    a.deepEqual(r.segment_map_profile, old.segment_map_profile);
+});
+
+test('inlinees accepts every u32 pattern, repeats and unsorted slots and sums lists across all selected modules', () => {
+    const values = [0, 0xfff, 0x1000, 0x80000000, 0xffffffff, 0xf1f2f3f4, 0x20, 0x1020];
+    for (const value of values) inlineesFacts(runInlinees(zeroTailFixture({modules: [
+        {records: [inlineesRecord([value]), proc()]},
+    ]})), 1, 1);
+    const list = inlineesRecord([0xffffffff, 0, 0x80000000, 0, 0xfff]);
+    const f = zeroTailFixture({modules: [{records: [list, proc(), list]},
+        {records: [proc(), inlineesRecord(), list, record(0x114d), record(0x115d), record()]}]});
+    for (const q of [query(), query({module_indices: [1, 0]})]) {
+        const r = inlineesFacts(runInlinees(f, q), 4, 15);
+        a.deepEqual(r.routing.indices, [0, 1]); a.equal(r.addresses[0].procedure_record_count, 2);
+        a.deepEqual(r.selected_modules.map(m => m.opaque_records), [2, 5]);
+        a.equal(r.opaque_records, 7); a.equal(r.records, 9);
+        a.equal(r.addresses[0].procedure_records_sha256, createHash('sha256').update(proc()).update(proc()).digest('hex'));
+    }
+    inlineesFacts(runInlinees(f, query({module_indices: [1]})), 2, 5);
+});
+
+test('inlinees maximum exact record crosses the 64 KiB cache and reads only its count without interpreting slots', () => {
+    const list = inlineesRecord(Array(16318).fill(0xffffffff)); a.equal(list.length, 65280);
+    const f = zeroTailFixture({modules: [{records: [record(0x7777, 65516), list, proc()]}]}), p = pack(f);
+    const readWord = Buffer.prototype.readUInt32LE, fields = [];
+    Buffer.prototype.readUInt32LE = function(offset = 0) {
+        if (this.length === 65280) fields.push(offset);
+        return readWord.call(this, offset);
+    };
+    let r;
+    try { r = inspectNamedStreamNiMacZeroAbsoluteTailFrameZeroInlineesExact(p.reader, p.exe, p.identity, query()); }
+    finally { Buffer.prototype.readUInt32LE = readWord; }
+    inlineesFacts(r, 1, 16318); a.deepEqual(fields, [4]); a.equal(r.opaque_records, 2);
+    a.ok(p.reads.every(({offset, count}) => count <= LIMITS.read && offset + count <= p.reader.size));
+    a.ok(p.reads.some(v => p.entries[9].pages[16] === Math.floor(v.offset / 4096)));
+    a.deepEqual(r.addresses, runZeroTail().addresses);
+    // All general-kind behavior and its larger record ceiling stay independent.
+    inlineesNoListParity(zeroTailFixture({modules: [{records: [record(0x7777, 65536), proc()]}]}));
+});
+
+test('inlinees refuses missing or truncated count/payload, invalid outer framing and overflow-oriented counts', () => {
+    const bad = [
+        ...[4, 5, 6, 7, 9, 10, 11].map(bytes => inlineesRecord([], {bytes})),
+        ...[1, 2, 0x3ffffffe, 0x40000000, 0x80000000, 0xffffffff].map(count => inlineesRecord([], {count})),
+        ...[0, 2, 0x40000001, 0xffffffff].map(count => inlineesRecord([0], {count})),
+    ];
+    const shortPayload = inlineesRecord([0]); shortPayload.writeUInt16LE(14); bad.push(shortPayload);
+    for (const reclen of [0, 1, 2, 3, 65535]) {
+        const b = inlineesRecord(); b.writeUInt16LE(reclen); bad.push(b);
+    }
+    for (const b of bad) {
+        redactedThrows(() => runInlinees(zeroTailFixture({modules: [{records: [proc(), inlineesRecord(), b]}]})),
+            'ERR_MODULE_FRAMING');
+    }
+    // A bounded aligned symbol extent with a final header claiming bytes beyond it.
+    const f = zeroTailFixture({modules: [{records: [proc(), inlineesRecord([0])]}]});
+    f.streams[3].writeUInt32LE(f.modules[0].symbols.length - 4, dbiModuleAt(f) + 36);
+    redactedThrows(() => runInlinees(f), 'ERR_MODULE_FRAMING');
+});
+
+test('inlinees rejects every unexplained tail including zeros, invocation-like words and LF_PAD-like bytes', () => {
+    for (const word of [0, 1, 17, 0x80000000, 0xf1f2f3f4, 0xffffffff]) {
+        for (const b of [inlineesRecord([word], {count: 0}), inlineesRecord([0x1000, word], {count: 1})]) {
+            redactedThrows(() => runInlinees(zeroTailFixture({modules: [{records: [proc(), b]}]})),
+                'ERR_MODULE_FRAMING');
+        }
+    }
+    for (const extra of [1, 2, 3]) {
+        const b = inlineesRecord([0x1000], {bytes: 12 + extra}); b.fill(0xf0 + extra, 12);
+        redactedThrows(() => runInlinees(zeroTailFixture({modules: [{records: [proc(), b]}]})), 'ERR_MODULE_FRAMING');
+    }
+});
+
+test('inlinees exact equation does not bypass its stricter 0xff00 inclusive serialization ceiling', () => {
+    for (const entries of [16319, 16382]) {
+        const b = inlineesRecord(Array(entries).fill(0));
+        a.equal(b.length, 8 + 4 * entries); a.ok(b.length > 65280 && b.length <= 65536);
+        redactedThrows(() => runInlinees(zeroTailFixture({modules: [{records: [proc(), b]}]})), 'ERR_MODULE_FRAMING');
+    }
+    a.equal(LIMITS.record, 65537); a.equal(LIMITS.cache, 65536);
+});
+
+test('inlinees retains all remaining 54 unsupported kinds and all four external kinds at every record position', () => {
+    const remaining = guardedSymbolKinds.filter(k => k !== 0x1168); a.equal(remaining.length, 54);
+    for (const kind of [...remaining, 0x115f, 0x1160, 0x1161, 0x1167]) {
+        const code = remaining.includes(kind) ? 'ERR_SYMBOL_UNSUPPORTED' : 'ERR_FASTLINK_UNSUPPORTED';
+        for (const records of [[record(kind), inlineesRecord(), proc()],
+            [inlineesRecord([0xffffffff]), record(kind), proc()],
+            [proc(), inlineesRecord(), record(kind)], [inlineesRecord(), proc(), record(kind)]]) {
+            redactedThrows(() => runInlinees(zeroTailFixture({modules: [{records}]})), code);
+        }
+        // Automatic union must include the second matching contribution module.
+        const f = zeroTailFixture({modules: [{records: [inlineesRecord(), proc()]},
+            {records: [proc(), inlineesRecord(), record(kind)]}]});
+        redactedThrows(() => runInlinees(f), code);
+        inlineesFacts(runInlinees(f, query({module_indices: [0]})), 1, 0);
+    }
+});
+
+test('inlinees cannot satisfy absence or bypass late malformed records, conflicting extents or other selected modules', () => {
+    const list = inlineesRecord([0x20, 0x1020, 0x40001020]);
+    redactedThrows(() => runInlinees(zeroTailFixture({modules: [{records: [list]}]})), 'ERR_PROCEDURE_ABSENT');
+    redactedThrows(() => runInlinees(zeroTailFixture({modules: [{records: [list, proc()]}]}),
+        query({addresses: [VA, '0x140001021']})), 'ERR_PROCEDURE_ABSENT');
+    const malformed = record(); malformed.writeUInt16LE(65535);
+    for (const [records, code] of [
+        [[list, proc(), inlineesRecord([0], {count: 2})], 'ERR_MODULE_FRAMING'],
+        [[proc(), list, malformed], 'ERR_MODULE_FRAMING'],
+        [[proc(), list, proc({size: 0x31})], 'ERR_PROCEDURE_CONFLICT'],
+        [[proc(), list, proc({size: 0})], 'ERR_PROCEDURE_SIZE'],
+        [[proc(), list, proc({segment: 4})], 'ERR_SOURCE_MAPPING'],
+    ]) {
+        redactedThrows(() => runInlinees(zeroTailFixture({modules: [{records}]})), code);
+        const f = zeroTailFixture({modules: [{records: [proc(), list]}, {records}]});
+        for (const q of [query(), query({module_indices: [1, 0]})]) redactedThrows(() => runInlinees(f, q), code);
+        inlineesFacts(runInlinees(f, query({module_indices: [0]})), 1, 3);
+    }
+    const conflict = zeroTailFixture({modules: [{records: [proc(), list]},
+        {records: [inlineesRecord(), proc({size: 0x31})]}]});
+    redactedThrows(() => runInlinees(conflict), 'ERR_PROCEDURE_CONFLICT');
+});
+
+test('inlinees opt-in preserves exact NI-zero, tail, mapping, identity, routing and physical guards', () => {
+    for (const [, stage, , make, q = query()] of mappingCases) {
+        if (stage === 'segment_map') continue;
+        const f = make(); replaceTestMap(f, authoredZeroTailMap(f));
+        inlineesRefusalParity(f, 'ERR_SOURCE_MAPPING', q);
+    }
+    for (const makeMap of [() => Buffer.alloc(0), () => segmentMap(false), () => segmentMap(true),
+        f => { const b = authoredZeroTailMap(f); b.writeUInt32LE(1, b.length - 8); return b; },
+        f => { const b = authoredZeroTailMap(f); b.writeUInt32LE(0, b.length - 4); return b; }]) {
+        const f = zeroTailFixture(); replaceTestMap(f, makeMap(f)); inlineesRefusalParity(f, 'ERR_SOURCE_MAPPING');
+    }
+    for (const index of [0, 2, 3]) for (const offset of [0, 2, 4, 6, 12, 16]) {
+        const f = zeroTailFixture(), sm = authoredZeroTailMap(f), at = 4 + index * 20 + offset;
+        if (offset >= 12) sm.writeUInt32LE(offset === 12 ? 1 : 0, at);
+        else sm.writeUInt16LE(offset === 0 ? 0 : 9, at);
+        replaceTestMap(f, sm); inlineesRefusalParity(f, 'ERR_SOURCE_MAPPING');
+    }
+    for (const [b, code] of [
+        [info(), 'ERR_NI_MAC_UNSUPPORTED'], [namedStreamNiMacZeroInfo({niBytes: 0, features: []}), 'ERR_PDB_FRAMING'],
+        [namedStreamNiMacZeroInfo({niMac: 1}), 'ERR_NI_MAC_UNSUPPORTED'],
+        ...[MINI, NOTM].map(feature => [namedStreamNiMacZeroInfo({features: [feature]}), 'ERR_FASTLINK_UNSUPPORTED']),
+        ...[[0], [0xffffffff], [VC140, VC140], [VC110, VC140]].map(features =>
+            [namedStreamNiMacZeroInfo({features}), 'ERR_FEATURE_UNSUPPORTED']),
+        [namedStreamNiMacZeroInfo({capacity: 0}), 'ERR_PDB_FRAMING'],
+    ]) inlineesRefusalParity(zeroTailFixture({info: b}), code);
+    for (const [options, code] of [
+        [{modules: [{signature: 2}]}, 'ERR_MODULE_FRAMING'], [{modules: [{c11: Buffer.alloc(4)}]}, 'ERR_MODULE_FRAMING'],
+        [{modules: [{flags: 0x100}]}, 'ERR_REFERENCE_UNSUPPORTED'], [{sc: Buffer.alloc(0)}, 'ERR_ROUTING_ABSENT'],
+        [{version: 1}, 'ERR_ROUTING_UNSUPPORTED'], [{contributions: [{module_index: 1}]}, 'ERR_ROUTING_FRAMING'],
+    ]) inlineesRefusalParity(zeroTailFixture(options), code);
+    for (const [change, code] of [
+        [f => f.streams[3].writeUInt16LE(8, f.optionalAt + 6), 'ERR_OMAP_UNSUPPORTED'],
+        [f => f.streams[3].writeUInt16LE(4, 56), 'ERR_REFERENCE_UNSUPPORTED'],
+        [f => f.exe[f.rsds + 4] ^= 1, 'ERR_IDENTITY'],
+        [f => f.streams[1].writeUInt32LE(2, 8), 'ERR_IDENTITY'],
+        [f => f.streams[8][0] ^= 1, 'ERR_SOURCE_MAPPING'],
+        [f => f.streams[3].writeUInt16LE(8, dbiModuleAt(f) + 34), 'ERR_MODULE_BOUND'],
+        [f => f.streams[9] = null, 'ERR_MODULE_BOUND'],
+    ]) { const f = zeroTailFixture(); change(f); inlineesRefusalParity(f, code); }
+    for (const options of [{sc: Buffer.alloc(0)}, {version: 1}]) {
+        const r = inlineesNoListParity(zeroTailFixture(options), query({module_indices: [0]}));
+        a.equal(r.routing.scope, 'explicit_modules_only'); a.equal(r.routing.complete_table_framing, false);
+    }
+    for (const segment of [0, 4, 65535]) {
+        const f = zeroTailFixture({modules: [{records: [inlineesRecord(), proc({segment})]}]});
+        redactedThrows(() => runInlinees(f), 'ERR_SOURCE_MAPPING');
+    }
+});
+
+test('inlinees rejects closed-query violations before any I/O including grammar knobs, sparse arrays and inherited keys', () => {
+    const p = pack(zeroTailFixture()); let reads = 0;
+    const reader = {size: p.reader.size, read() { reads++; throw Error('NEVER_EXPORT'); }};
+    const qs = [undefined, null, [], {}, Object.create({addresses: [VA]}),
+        query({grammar: INLINEES_GRAMMAR}), query({inlinees: true}), query({inlinees_profile: {}}),
+        query({addresses: Array(1)}), query({addresses: [VA, VA]}), query({addresses: ['0x800000000000']}),
+        query({module_indices: undefined}), query({module_indices: [0, 0]}), query({module_indices: Array(1)}),
+        query({[Symbol('NEVER_EXPORT')]: true}), query({addresses: ['0x0140001020']}),
+        query({addresses: Array.from({length: 33}, (_, i) => '0x' + (0x140001020n + BigInt(i)).toString(16))})];
+    for (const q of qs) redactedThrows(() => inspectNamedStreamNiMacZeroAbsoluteTailFrameZeroInlineesExact(
+        reader, p.exe, p.identity, q), 'ERR_SELECTORS');
+    a.equal(reads, 0);
+    const q = Object.assign(Object.create(null), query()); inlineesNoListParity(zeroTailFixture(), q);
+});
+
+test('inlinees immutable-reader failures stay copied, nonshared, exact and code-only through a cross-cache list', () => {
+    const list = inlineesRecord(Array(16318).fill(0xf1f2f3f4)), f = zeroTailFixture({modules: [
+        {records: [record(0x7777, 65516), list, proc()]},
+    ]}), p = pack(f), ForeignShared = require('node:vm').runInNewContext('SharedArrayBuffer');
+    const call = reader => inspectNamedStreamNiMacZeroAbsoluteTailFrameZeroInlineesExact(reader, p.exe, p.identity, query());
+    for (const index of [1, 3, 8, 9]) for (const mode of ['throw', 'short', 'long', 'view', 'shared', 'foreign']) {
+        const page = index === 9 ? p.entries[9].pages[16] : p.entries[index].pages[0];
+        const reader = {size: p.reader.size, read(o, n) {
+            if (Math.floor(o / 4096) !== page) return p.reader.read(o, n);
+            if (mode === 'throw') throw Error('NEVER_EXPORT/private/inlinees');
+            if (mode === 'short') return Buffer.alloc(n - 1);
+            if (mode === 'long') return Buffer.alloc(n + 1);
+            if (mode === 'view') return new Uint8Array(n);
+            return Buffer.from(new (mode === 'foreign' ? ForeignShared : SharedArrayBuffer)(n));
+        }};
+        redactedThrows(() => call(reader), mode === 'throw' ? 'ERR_PDB_FRAMING' :
+            ['shared', 'foreign'].includes(mode) ? 'ERR_INPUT_BOUND' : 'ERR_SHORT_READ');
+    }
+    let borrowed = null;
+    const reader = {size: p.reader.size, read(o, n) {
+        if (borrowed !== null) borrowed.fill(0xee);
+        borrowed = p.reader.read(o, n); return borrowed;
+    }};
+    a.deepEqual(call(reader), runInlinees(f));
+    for (const size of [55, LIMITS.pdb + 1, NaN]) redactedThrows(() => call({size, read() {
+        a.fail('reader size must refuse before I/O');
+    }}), 'ERR_INPUT_BOUND');
+    redactedThrows(() => inspectNamedStreamNiMacZeroAbsoluteTailFrameZeroInlineesExact(p.reader,
+        Buffer.from(new SharedArrayBuffer(p.exe.length)), p.identity, query()), 'ERR_INPUT_BOUND');
+});
+
+test('inlinees keeps real unchanged selector/module/symbol/record/contribution caps and preflight precedence', () => {
+    a.equal(LIMITS.selectors, 32); a.equal(LIMITS.modules, 32); a.equal(LIMITS.symbols, 256 * 1024 * 1024);
+    a.equal(LIMITS.records, 2500000); a.equal(LIMITS.read, 4 * 1024 * 1024);
+    const addresses = Array.from({length: 32}, (_, i) => '0x' + (0x140001020n + BigInt(i * 4)).toString(16));
+    const records = [inlineesRecord([0xffffffff]), ...addresses.map(v => proc({
+        offset: Number(BigInt(v) - 0x140001000n), size: 4, name: '',
+    }))];
+    const r = inlineesFacts(runInlinees(zeroTailFixture({modules: Array.from({length: 32}, () => ({records}))}),
+        query({addresses})), 32, 32);
+    a.deepEqual(r.addresses.map(x => x.address), addresses); a.equal(r.selected_modules.length, 32);
+    inlineesRefusalParity(zeroTailFixture({modules: Array.from({length: 33}, () => ({}))}), 'ERR_MODULE_BOUND');
+    for (const sym of [LIMITS.symbols, LIMITS.symbols + 4]) inlineesRefusalParity(zeroTailFixture({modules: [
+        {sym, body: repeatedModule(sym, record(), 2)},
+    ]}), sym === LIMITS.symbols ? 'ERR_MODULE_FRAMING' : 'ERR_MODULE_BOUND');
+    for (const [count, options] of [[LIMITS.contribution_records + 1, {}],
+        [1, {declaredBytes: LIMITS.contributions + 4}]]) {
+        inlineesRefusalParity(repeatedContributions(zeroTailFixture(), count, options), 'ERR_ROUTING_BOUND');
+    }
+    // Sparse authored input exercises the real production record ceiling. The
+    // final valid empty list must hit the record guard before its interpretation.
+    const sym = 4 + 40 + (LIMITS.records - 1) * 4 + 8, original = repeatedModule(sym);
+    const last = inlineesRecord(), body = {...original, read(o, n) {
+        const b = original.read(o, n);
+        for (let i = 0; i < last.length; i++) if (sym - 8 + i >= o && sym - 8 + i < o + n) {
+            b[sym - 8 + i - o] = last[i];
+        }
+        return b;
+    }};
+    redactedThrows(() => runInlinees(zeroTailFixture({modules: [{sym, body}]})), 'ERR_MODULE_BOUND');
+    // Stream uniqueness and module flags are preflighted even when the first
+    // module already contains a successful declaration and auxiliary list.
+    const duplicate = zeroTailFixture({modules: [{records: [proc(), inlineesRecord()]}, {stream: 9}]});
+    redactedThrows(() => runInlinees(duplicate), 'ERR_MODULE_BOUND');
+    const flags = zeroTailFixture({modules: [{records: [proc(), inlineesRecord()]}, {flags: 0x100}]});
+    redactedThrows(() => runInlinees(flags), 'ERR_REFERENCE_UNSUPPORTED');
+});
+
+test('inlinees selection and aggregate counters stay isolated across nested, repeated, old and diagnostic calls', () => {
+    const f = zeroTailFixture({modules: [{records: [inlineesRecord([0, 0xffffffff]), proc()]}]}), p = pack(f);
+    const expected = runInlinees(f); let nested = false;
+    const reader = {size: p.reader.size, read(o, n) {
+        if (!nested) {
+            nested = true;
+            a.deepEqual(runInlinees(f), expected); inlineesFacts(runInlinees(), 0, 0);
+            redactedThrows(() => runZeroTail(f), 'ERR_SYMBOL_UNSUPPORTED');
+            unsupportedSymbolResult(unsupportedSymbol(f), 0x1168);
+            redactedThrows(() => runInlinees(zeroTailFixture({modules: [{records: [inlineesRecord([], {count: 1})]}]})),
+                'ERR_MODULE_FRAMING');
+        }
+        return p.reader.read(o, n);
+    }};
+    a.deepEqual(inspectNamedStreamNiMacZeroAbsoluteTailFrameZeroInlineesExact(reader, p.exe, p.identity, query()), expected);
+    a.equal(nested, true); expected.inlinees_profile.entries = 999; expected.inlinees_profile.extra = 'NEVER_EXPORT';
+    for (let repeat = 0; repeat < 3; repeat++) {
+        inlineesFacts(runInlinees(f), 1, 2); inlineesNoListParity();
+        redactedThrows(() => runZeroTail(f), 'ERR_SYMBOL_UNSUPPORTED'); unsupportedSymbolResult(unsupportedSymbol(f), 0x1168);
+    }
+});
+
+test('inlinees leaves every previous success, diagnostic contract and all 55 refusal kinds unchanged', () => {
+    const calls = [() => run(), () => runNi(), () => runZeroTail(), () => diagnose(), () => diagnoseNi(),
+        () => sourceMapping(), () => sourceMappingIdentity(), () => tailFrame(), () => unsupportedSymbol()];
+    const before = calls.map(call => JSON.stringify(call()));
+    for (const b of [inlineesRecord(), inlineesRecord([0xffffffff]), inlineesRecord([], {count: 0xffffffff})]) {
+        const zero = zeroTailFixture({modules: [{records: [proc(), b]}]}), ni = ordinalTailTwin(zero);
+        zeroTailNonmappingParity(zero, 'ERR_SYMBOL_UNSUPPORTED'); unsupportedSymbolParity(zero, {kind: 0x1168});
+        const strict = {...ni, streams: ni.streams.slice()}; strict.streams[1] = info(); fails(strict, 'ERR_SYMBOL_UNSUPPORTED');
+    }
+    for (const kind of guardedSymbolKinds) {
+        const f = zeroTailFixture({modules: [{records: [proc(), record(kind)]}]});
+        unsupportedSymbolParity(f, {kind}); zeroTailNonmappingParity(f, 'ERR_SYMBOL_UNSUPPORTED');
+    }
+    inlineesFacts(runInlinees(zeroTailFixture({modules: [{records: [inlineesRecord([0]), proc()]}]})), 1, 1);
+    a.deepEqual(calls.map(call => JSON.stringify(call())), before);
+    // The existing discriminator still stops at 0x1168 without a payload read,
+    // including malformed lists and later records that the new profile reaches.
+    const f = zeroTailFixture({modules: [{records: [proc(), inlineesRecord(), record(0x0104)]}]});
+    unsupportedSymbolParity(f, {kind: 0x1168}); redactedThrows(() => runInlinees(f), 'ERR_SYMBOL_UNSUPPORTED');
+});
+
+test('inlinees schema adds only aggregate framing facts and preserves redaction and the exact UTF-8/newline output bound', () => {
+    const secret = 'NEVER_EXPORT/private/inlinees', f = zeroTailFixture({
+        info: namedStreamNiMacZeroInfo({names: [{name: secret, stream: 8}]}),
+        modules: [{module_name: secret, object_name: secret, records: [proc({name: secret}),
+            inlineesRecord([0xdeadbeef, 0xdeadbeef, 0xf1f2f3f4])]}],
+    });
+    const r = inlineesFacts(runInlinees(f), 1, 3), old = runZeroTail();
+    a.deepEqual(Reflect.ownKeys(r), [...Reflect.ownKeys(old), 'inlinees_profile']);
+    a.deepEqual(Reflect.ownKeys(r.selected_modules[0]), Reflect.ownKeys(old.selected_modules[0]));
+    a.deepEqual(Reflect.ownKeys(r.addresses[0]), Reflect.ownKeys(old.addresses[0]));
+    for (const key of Object.keys(old).filter(k => typeof old[k] === 'boolean')) a.equal(r[key], old[key]);
+    const json = JSON.stringify(r);
+    for (const word of [secret, 'deadbeef', '3735928559', 'f1f2f3f4', 'record_bytes_hex', 'entries_values',
+        'payloads_validated', 'inlinee_ids']) a.ok(!json.includes(word));
+    f.exe.fill(0x55, 0x200, 0x800); a.deepEqual(runInlinees(f), r);
+    const stringify = JSON.stringify;
+    for (const bytes of [65535, 65536]) {
+        let complete = false;
+        JSON.stringify = function(value, ...args) {
+            const out = stringify.call(this, value, ...args);
+            if (!value || value.profile !== INLINEES_PROFILE) return out;
+            a.deepEqual(value.inlinees_profile, {grammar: INLINEES_GRAMMAR, records: 1, entries: 3});
+            complete = true;
+            const padding = bytes - Buffer.byteLength(out);
+            return out + 'é'.repeat(Math.floor(padding / 2)) + (padding % 2 ? ' ' : '');
+        };
+        try {
+            if (bytes === 65535) a.equal(runInlinees(f).profile, INLINEES_PROFILE);
+            else redactedThrows(() => runInlinees(f), 'ERR_OUTPUT_BOUND');
+            a.equal(complete, true); a.equal(runZeroTail().profile, ZERO_TAIL_PROFILE);
+            unsupportedSymbolResult(unsupportedSymbol());
+        } finally { JSON.stringify = stringify; }
+    }
+    JSON.stringify = function(value, ...args) {
+        if (value && value.profile === INLINEES_PROFILE) throw Error('NEVER_EXPORT/private/serializer');
+        return stringify.call(this, value, ...args);
+    };
+    try { redactedThrows(() => runInlinees(f), 'ERR_PDB_FRAMING'); }
+    finally { JSON.stringify = stringify; }
+    a.equal(LIMITS.output, 65536);
+});
+
+// Defensive VM fault injection only: real callers cannot supply the lexical
+// grammar selector, scan totals or retained counter state. These tests do not
+// claim such states are reachable under the immutable-reader contract and do
+// not alter any production limit, exports or the shared fixture module.
+function inlineesDefensiveHarness() {
+    const filename = require.resolve('../pdb_procedure_ranges.cjs');
+    const source = require('node:fs').readFileSync(filename, 'utf8');
+    const sandbox = {module: {exports: {}}, require: require('node:module').createRequire(filename), Buffer};
+    require('node:vm').runInNewContext(source + `
+module.exports = {scanModule,
+    grammar: INLINEES_COUNTED_U32_EXACT_GRAMMAR,
+    api: inspectNamedStreamNiMacZeroAbsoluteTailFrameZeroInlineesExact,
+    old: inspectNamedStreamNiMacZeroAbsoluteTailFrameZero,
+    setInspector(fn) { inspectProfile = fn; }};
+`, sandbox, {filename});
+    return sandbox.module.exports;
+}
+function inlineesDefensiveScan(h, b, totals, grammar = h.grammar) {
+    const body = Buffer.concat([Buffer.from([4, 0, 0, 0]), b, Buffer.alloc(4)]), sym = 4 + b.length;
+    const m = {streams: [{size: body.length}], stream(i, o, n) {
+        a.equal(i, 0); a.ok(o >= 0 && o + n <= body.length); return Buffer.from(body.subarray(o, o + n));
+    }};
+    return h.scanModule({m, image: {sections: []}},
+        {stream_id: 0, module_index: 0, sym, c11: 0, c13: 0}, new Map(), totals, null, grammar);
+}
+
+test('inlinees defensive VM injection verifies exact lexical selector and post-validation counter updates', () => {
+    const h = inlineesDefensiveHarness(); a.equal(h.grammar, INLINEES_GRAMMAR);
+    const makeTotals = () => ({records: 0, procedures: 0, opaque: 0,
+        inlinees: {grammar: INLINEES_GRAMMAR, records: 0, entries: 0}});
+    for (const b of [inlineesRecord([], {count: 1}), inlineesRecord([0], {count: 0}),
+        inlineesRecord([], {count: 0xffffffff}), record(0x1168), inlineesRecord(Array(16319).fill(0))]) {
+        const totals = makeTotals();
+        redactedThrows(() => inlineesDefensiveScan(h, b, totals), 'ERR_MODULE_FRAMING');
+        a.deepEqual(totals.inlinees, makeTotals().inlinees);
+        a.equal(totals.records, 1); a.equal(totals.opaque, 0);
+    }
+    for (const selector of [null, true, 0x1168, 'inlinees_counted_u32', 'INLINEES_COUNTED_U32_EXACT_V1', {}]) {
+        const totals = makeTotals();
+        redactedThrows(() => inlineesDefensiveScan(h, inlineesRecord(), totals, selector), 'ERR_SYMBOL_UNSUPPORTED');
+        a.deepEqual(totals.inlinees, makeTotals().inlinees);
+    }
+    const totals = makeTotals(), r = inlineesDefensiveScan(h, inlineesRecord([0, 0xffffffff]), totals);
+    a.equal(r.records, 1); a.equal(r.opaque_records, 1); a.equal(r.supported_procedure_records, 0);
+    a.equal(totals.records, 1); a.equal(totals.opaque, 1); a.equal(totals.inlinees.records, 1);
+    a.equal(totals.inlinees.entries, 2);
+    let called = false;
+    h.setInspector((...args) => {
+        called = true;
+        a.equal(args[4], true); a.equal(args[5], null);
+        a.equal(args[6], 'identity_sections_absolute_tail_frame_zero_v1');
+        a.equal(args[7], null); a.equal(args[8], INLINEES_GRAMMAR);
+    });
+    h.api(); a.equal(called, true);
+    h.setInspector((...args) => { a.equal(args.length, 7); a.equal(args[8], undefined); }); h.old();
+    a.ok(!Object.hasOwn(require('../pdb_procedure_ranges.cjs'), 'scanModule'));
+});
+
+test('inlinees defensive VM injection checks nonnegative exact aggregate bounds without weakening real caps', () => {
+    const h = inlineesDefensiveHarness();
+    for (const [records, entries] of [[-1, 0], [NaN, 0], [Infinity, 0], [1, 0],
+        [0, -1], [0, NaN], [0, Infinity], [0, 0.5], [0, Math.floor(LIMITS.symbols / 4) + 1]]) {
+        const totals = {records: 0, procedures: 0, opaque: 0,
+            inlinees: {grammar: INLINEES_GRAMMAR, records, entries}};
+        redactedThrows(() => inlineesDefensiveScan(h, inlineesRecord(), totals), 'ERR_MODULE_FRAMING');
+        a.ok(Object.is(totals.inlinees.records, records)); a.ok(Object.is(totals.inlinees.entries, entries));
     }
 });
