@@ -63,6 +63,25 @@ class MetadataError extends Error {
     constructor(code) { super(code); this.code = code; }
 }
 function need(ok, code) { if (!ok) throw new MetadataError(code); }
+// Only the explicit diagnostic supplies this per-call context. Ordinary
+// exceptions keep their code-only shape; successful guards never set a site.
+function mappingNeed(ok, mappingSite, stage, guard) {
+    if (ok) return;
+    if (mappingSite !== null && mappingSite.first === null) mappingSite.first = {stage, guard};
+    throw new MetadataError('ERR_SOURCE_MAPPING');
+}
+function legalMappingSite(site) {
+    if (site === null) return false;
+    const {stage, guard} = site;
+    switch (stage) {
+    case 'pe': return guard === 'parse' || guard === 'base_canonical';
+    case 'section_binding': return guard === 'headers';
+    case 'segment_map': return ['bytes', 'counts', 'identity', 'absolute', 'section'].includes(guard);
+    case 'selector': return ['image_range', 'mapped_section', 'extent', 'extent_segment'].includes(guard);
+    case 'procedure': return ['segment', 'start_rva', 'extent', 'extent_segment'].includes(guard);
+    default: return false;
+    }
+}
 const shared = b => isSharedArrayBuffer(b.buffer);
 const canonical = v => v >= 0n && v <= 0xffffffffffffffffn &&
     (v <= 0x7fffffffffffn || v >= 0xffff800000000000n);
@@ -231,13 +250,13 @@ function diagnoseInfoNamedStreamNiMacZero(reader, identity) {
     return diagnoseInfo(reader, identity, true);
 }
 
-function context(reader, exe, identity, niMacZero) {
+function context(reader, exe, identity, niMacZero, mappingSite) {
     need(Buffer.isBuffer(exe) && exe.length >= 64 && exe.length <= LIMITS.exe && !shared(exe), 'ERR_INPUT_BOUND');
     identityInput(identity);
     const input = boundedReader(reader);
     let image;
-    try { image = parse(exe); } catch { throw new MetadataError('ERR_SOURCE_MAPPING'); }
-    need(canonical(image.base), 'ERR_SOURCE_MAPPING');
+    try { image = parse(exe); } catch { mappingNeed(false, mappingSite, 'pe', 'parse'); }
+    mappingNeed(canonical(image.base), mappingSite, 'pe', 'base_canonical');
     const m = msf(input);
     const info = infoProfile(m, identity, niMacZero);
     need(m.streams[3].size >= 64 && m.streams[3].size !== 0xffffffff, 'ERR_PDB_FRAMING');
@@ -268,23 +287,28 @@ function context(reader, exe, identity, niMacZero) {
     }
     const sectionStream = dbg.readUInt16LE(10), pe = exe.readUInt32LE(60), op = pe + 24;
     const table = op + exe.readUInt16LE(pe + 20), sectionBytes = image.sections.length * 40;
-    need(live(sectionStream) && m.streams[sectionStream].size === sectionBytes &&
-        m.stream(sectionStream, 0, sectionBytes).equals(exe.subarray(table, table + sectionBytes)), 'ERR_SOURCE_MAPPING');
+    mappingNeed(live(sectionStream) && m.streams[sectionStream].size === sectionBytes &&
+        m.stream(sectionStream, 0, sectionBytes).equals(exe.subarray(table, table + sectionBytes)),
+        mappingSite, 'section_binding', 'headers');
     if (sizes[2] !== 0) {
         // OMFSegMapHeader + SecCount fixed 20-byte OMFSegMapDesc entries.
-        need(sizes[2] >= 4 && sizes[2] <= 4 + (image.sections.length + 1) * 20, 'ERR_SOURCE_MAPPING');
+        mappingNeed(sizes[2] >= 4 && sizes[2] <= 4 + (image.sections.length + 1) * 20,
+            mappingSite, 'segment_map', 'bytes');
         const sm = m.stream(3, 64 + sizes[0] + sizes[1], sizes[2]);
         const count = sm.readUInt16LE(), logical = sm.readUInt16LE(2);
-        need(logical === count && (count === image.sections.length || count === image.sections.length + 1) &&
-            sizes[2] === 4 + count * 20, 'ERR_SOURCE_MAPPING');
+        mappingNeed(logical === count && (count === image.sections.length || count === image.sections.length + 1) &&
+            sizes[2] === 4 + count * 20, mappingSite, 'segment_map', 'counts');
         for (let i = 0; i < count; i++) {
             const at = 4 + i * 20, flags = sm.readUInt16LE(at), absolute = i === image.sections.length;
-            need(sm.readUInt16LE(at + 2) === 0 && sm.readUInt16LE(at + 4) === 0 &&
-                sm.readUInt16LE(at + 6) === i + 1 && sm.readUInt32LE(at + 12) === 0, 'ERR_SOURCE_MAPPING');
-            if (absolute) need(flags === 0x208 && sm.readUInt32LE(at + 16) === 0xffffffff, 'ERR_SOURCE_MAPPING');
+            mappingNeed(sm.readUInt16LE(at + 2) === 0 && sm.readUInt16LE(at + 4) === 0 &&
+                sm.readUInt16LE(at + 6) === i + 1 && sm.readUInt32LE(at + 12) === 0,
+                mappingSite, 'segment_map', 'identity');
+            if (absolute) mappingNeed(flags === 0x208 && sm.readUInt32LE(at + 16) === 0xffffffff,
+                mappingSite, 'segment_map', 'absolute');
             else {
                 const s = image.sections[i], expected = 0x108 | (s.readable ? 1 : 0) | (s.writable ? 2 : 0) | (s.executable ? 4 : 0);
-                need(flags === expected && sm.readUInt32LE(at + 16) === exe.readUInt32LE(table + i * 40 + 8), 'ERR_SOURCE_MAPPING');
+                mappingNeed(flags === expected && sm.readUInt32LE(at + 16) === exe.readUInt32LE(table + i * 40 + 8),
+                    mappingSite, 'segment_map', 'section');
             }
         }
     }
@@ -310,7 +334,7 @@ function context(reader, exe, identity, niMacZero) {
             exe.readUInt32LE(raw + 20) === identity.age && exe[raw + n - 1] === 0, 'ERR_IDENTITY');
     }
     need(cv === 1, 'ERR_IDENTITY');
-    return {m, image, info, sizes, reserved};
+    return {m, image, info, sizes, reserved, mappingSite};
 }
 
 function descriptors(m, bytes) {
@@ -385,14 +409,17 @@ const UNSUPPORTED = new Set([
     0x1148, 0x1149, 0x114a, 0x114b, 0x1154, 0x1155, 0x1156, 0x1157, 0x1158, 0x1168,
 ]);
 
-function extent(image, segment, offset, size) {
+function extent(image, segment, offset, size, mappingSite, stage) {
     need(size > 0, 'ERR_PROCEDURE_SIZE');
-    need(segment >= 1 && segment <= image.sections.length, 'ERR_SOURCE_MAPPING');
+    // Defensive only under the immutable-input contract: selectors have just
+    // found an in-range section; supported records have passed procedure/segment.
+    // Neither public caller can independently reach extent_segment today.
+    mappingNeed(segment >= 1 && segment <= image.sections.length, mappingSite, stage, 'extent_segment');
     const s = image.sections[segment - 1], start = s.rva + offset, end = start + size;
     const va = image.base + BigInt(start), exclusive = image.base + BigInt(end);
-    need(offset + size <= s.mappedBytes && start < end && end <= image.imageBytes &&
+    mappingNeed(offset + size <= s.mappedBytes && start < end && end <= image.imageBytes &&
         end <= 0x100000000 && canonical(va) && canonical(exclusive - 1n) && canonical(exclusive) &&
-        s.code && s.readable && s.executable && !s.writable && !s.resourceOverlap, 'ERR_SOURCE_MAPPING');
+        s.code && s.readable && s.executable && !s.writable && !s.resourceOverlap, mappingSite, stage, 'extent');
     return {segment, section_id: s.id, section_offset: offset, start_rva: start, end_rva: end,
         size, start: hex(va), end_inclusive: hex(exclusive - 1n), end_exclusive: hex(exclusive),
         file_span: {start: s.raw + offset, end_exclusive: s.raw + offset + size}};
@@ -434,12 +461,12 @@ function scanModule(ctx, mod, aggregates, totals) {
             need(b.subarray(nul + 1).every(v => v === 0) ||
                 b.subarray(nul + 1).every((v, i) => v === 0xf0 + padding - i), code);
             const segment = b.readUInt16LE(36), offset = b.readUInt32LE(32), size = b.readUInt32LE(16);
-            need(segment >= 1 && segment <= image.sections.length, 'ERR_SOURCE_MAPPING');
+            mappingNeed(segment >= 1 && segment <= image.sections.length, ctx.mappingSite, 'procedure', 'segment');
             const rva = image.sections[segment - 1].rva + offset;
-            need(rva <= 0xffffffff, 'ERR_SOURCE_MAPPING');
+            mappingNeed(rva <= 0xffffffff, ctx.mappingSite, 'procedure', 'start_rva');
             const selected = aggregates.get(rva);
             if (selected) {
-                const mapping = extent(image, segment, offset, size);
+                const mapping = extent(image, segment, offset, size, ctx.mappingSite, 'procedure');
                 need(selected.extent === null || JSON.stringify(selected.extent) === JSON.stringify(mapping), 'ERR_PROCEDURE_CONFLICT');
                 selected.extent = mapping; selected.count++; selected.bytes += n; selected.hash.update(b); matches++;
             }
@@ -451,16 +478,17 @@ function scanModule(ctx, mod, aggregates, totals) {
         records, supported_procedure_records: procedures, opaque_records: opaque, matching_records: matches};
 }
 
-function inspectProfile(reader, exe, identity, query, niMacZero) {
+function inspectProfile(reader, exe, identity, query, niMacZero, mappingSite = null) {
     try {
         // Selector validation is deliberately before any PE parsing or reader I/O.
-        const selected = selection(query), ctx = context(reader, exe, identity, niMacZero), {image, m} = ctx;
+        const selected = selection(query), ctx = context(reader, exe, identity, niMacZero, mappingSite), {image, m} = ctx;
         for (const a of selected.addresses) {
-            need(a.value >= image.base && a.value < image.base + BigInt(image.imageBytes), 'ERR_SOURCE_MAPPING');
+            mappingNeed(a.value >= image.base && a.value < image.base + BigInt(image.imageBytes),
+                mappingSite, 'selector', 'image_range');
             a.rva = Number(a.value - image.base);
             const segment = image.sections.findIndex(s => a.rva >= s.rva && a.rva < s.rva + s.mappedBytes) + 1;
-            need(segment > 0, 'ERR_SOURCE_MAPPING');
-            extent(image, segment, a.rva - image.sections[segment - 1].rva, 1);
+            mappingNeed(segment > 0, mappingSite, 'selector', 'mapped_section');
+            extent(image, segment, a.rva - image.sections[segment - 1].rva, 1, mappingSite, 'selector');
         }
         const modules = descriptors(m, ctx.sizes[0]);
         const routing = route(ctx, modules, selected.addresses, selected.modules);
@@ -511,4 +539,31 @@ function inspectNamedStreamNiMacZero(reader, exe, identity, query) {
     return inspectProfile(reader, exe, identity, query, true);
 }
 
-module.exports = {inspect, diagnoseInfoFeatures, inspectNamedStreamNiMacZero, diagnoseInfoNamedStreamNiMacZero, LIMITS};
+// Full strict NI profile traversal, including the ordinary output/conflict
+// checks and existing internal digests. Discard that result; export only a
+// closed first-refusal site or complete acceptance, never partial coverage.
+function diagnoseSourceMappingNamedStreamNiMacZero(reader, exe, identity, query) {
+    const mappingSite = {first: null};
+    try {
+        let status = 'accepted_profile';
+        try { inspectProfile(reader, exe, identity, query, true, mappingSite); }
+        catch (error) {
+            if (!(error instanceof MetadataError) || error.code !== 'ERR_SOURCE_MAPPING' ||
+                !legalMappingSite(mappingSite.first)) throw error;
+            status = 'refused_mapping';
+        }
+        const result = {
+            profile: 'MSF7_procedure_source_mapping_diagnostic_v1', status,
+            stage: status === 'accepted_profile' ? 'complete' : mappingSite.first.stage,
+            guard: status === 'accepted_profile' ? null : mappingSite.first.guard,
+        };
+        need(Buffer.byteLength(JSON.stringify(result) + '\n') <= 1024, 'ERR_OUTPUT_BOUND');
+        return result;
+    } catch (error) {
+        if (error instanceof MetadataError) throw error;
+        throw new MetadataError('ERR_PDB_FRAMING');
+    }
+}
+
+module.exports = {inspect, diagnoseInfoFeatures, inspectNamedStreamNiMacZero, diagnoseInfoNamedStreamNiMacZero,
+    diagnoseSourceMappingNamedStreamNiMacZero, LIMITS};
