@@ -13,11 +13,10 @@
 //! [`NetActorFlags`] adds explicit handles 1 and 4 to opens and updates; removal
 //! requests the lab reset `(false, false)` for previously managed actors.
 //! A channel the stage closes (no longer relevant `3`, torn off `4`; F-749)
-//! gets its close bunch first
-//! ([`PeerLab::close_actor`]). Actor GUIDs are driver-wide and stable per
-//! [`DomainId`]. Other properties are not replicated. Archetypes are
-//! caller data; nothing here reads original files or demonstrates ICARUS
-//! compatibility.
+//! gets its close bunch first ([`PeerLab::close_actor`]). Actor GUIDs are
+//! driver-wide and stable per [`DomainId`]. Other properties are not replicated.
+//! Archetypes are caller data; nothing here reads original files or demonstrates
+//! ICARUS compatibility.
 use bevy::prelude::*;
 
 use crate::{
