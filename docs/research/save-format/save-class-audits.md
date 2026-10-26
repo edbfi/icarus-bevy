@@ -51,8 +51,9 @@ lifecycle, scaling, init and callbacks: F-930. Paired bounded traces and
 authored models cover local removal selection and comparator order (F-937).
 Public symbols match both helpers without covering exception ranges (M-1050).
 Legacy feature guards refuse (M-1052, M-1053). Explicit structural NI-zero
-accepts server Info, then refuses declaration mapping; client unread (M-1054). Descriptor 8 is a positional tail candidate with frame zero
-instead of expected nine (M-1058, M-1059, M-1061). Later tuple fields, valid
+accepts server Info, then refuses declaration mapping; client unread (M-1054).
+Descriptor 8 is a positional tail candidate with frame zero instead of expected
+nine (M-1058, M-1059, M-1061). Later tuple fields, valid
 tails, extents, callee effects, owner/row meanings, subclasses and live behavior
 remain open. An explicit zero-tail profile refuses unsupported symbol records;
 no complete profile or extent is accepted (M-1062).
