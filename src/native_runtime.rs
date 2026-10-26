@@ -1,9 +1,6 @@
 //! Fixed-topology authored spatial objects. Bounds are authored geometry limits,
 //! not collision, navigation, gameplay or original-save restoration.
-use std::{
-    collections::{BTreeMap, BTreeSet},
-    sync::Arc,
-};
+use std::{collections::BTreeMap, sync::Arc};
 
 use anyhow::{Context, Result, ensure};
 use bevy::prelude::{Component, Entity, Resource, World};
@@ -74,6 +71,8 @@ pub struct NativeWorldContext {
     catalog: Arc<CompiledNativeCatalog>,
     map: String,
     expected: BTreeMap<DomainId, Entity>,
+    /// The values of `expected`, sorted for membership checks.
+    entities: Arc<[Entity]>,
     activation: Arc<()>,
 }
 
@@ -105,10 +104,12 @@ pub(crate) fn replication_actors<'a>(
         state.foundations.is_none(),
         "native replication requires a spatial-only world"
     );
-    Ok(state
-        .actors
-        .into_iter()
-        .map(|actor| (context.expected[&actor.id], actor))
+    // Validation emits exactly one actor per registry entry, in registry order.
+    Ok(context
+        .expected
+        .values()
+        .copied()
+        .zip(state.actors)
         .collect())
 }
 
@@ -147,10 +148,13 @@ pub(crate) fn activate(world: &mut World, native: &NativeWorldSnapshot) -> Resul
             .id();
         expected.insert(actor.id, entity);
     }
+    let mut entities: Vec<_> = expected.values().copied().collect();
+    entities.sort_unstable();
     world.insert_resource(NativeWorldContext {
         catalog,
         map: native.map.clone(),
         expected,
+        entities: entities.into(),
         activation: Arc::new(()),
     });
     Ok(())
@@ -373,51 +377,69 @@ fn validated_native_actors<'a>(
 ) -> Result<Vec<NativeActorView<'a>>> {
     // The registry detects removal of identity or complete actor deletion;
     // optional-component queries alone cannot observe either failure.
-    let expected_entities: BTreeSet<_> = context.expected.values().copied().collect();
     // Persistence checks must include entities hidden by Disabled or any
     // application-registered default query filter, without altering those filters.
-    for entity in world.iter_entities() {
-        if let Some(id) = entity.get::<DomainId>() {
-            ensure!(
-                context.expected.get(id) == Some(&entity.id()),
-                "native world contains an unexpected or duplicate domain entity"
-            );
+    // Archetypes are visited in `iter_entities` order and skipped only when no
+    // entity in them can fail, so the first error is unchanged. Component IDs
+    // are resolved on every call; an unregistered type cannot be present.
+    let domain = world.component_id::<DomainId>();
+    let native = [
+        world.component_id::<NativeActorIdentity>(),
+        world.component_id::<NativeRotation>(),
+        world.component_id::<NativeScale>(),
+        world.component_id::<NativeVariables>(),
+        world.component_id::<NativeLocalBounds>(),
+    ];
+    for archetype in world.archetypes().iter() {
+        let has_domain = domain.is_some_and(|id| archetype.contains(id));
+        let has_native = native.iter().flatten().any(|id| archetype.contains(*id));
+        if !has_domain && !has_native {
+            continue;
         }
-        if entity.contains::<NativeActorIdentity>()
-            || entity.contains::<NativeRotation>()
-            || entity.contains::<NativeScale>()
-            || entity.contains::<NativeVariables>()
-            || entity.contains::<NativeLocalBounds>()
-        {
+        for entity in archetype.entities() {
+            let entity = entity.id();
+            let id = if has_domain {
+                world.entity(entity).get::<DomainId>()
+            } else {
+                None
+            };
+            if let Some(id) = id {
+                ensure!(
+                    context.expected.get(id) == Some(&entity),
+                    "native world contains an unexpected or duplicate domain entity"
+                );
+            }
+            // A domain entity that passed above is its registry entry.
             ensure!(
-                expected_entities.contains(&entity.id()),
+                !has_native || id.is_some() || context.entities.binary_search(&entity).is_ok(),
                 "native world contains an unregistered object"
             );
         }
     }
     let mut actors = Vec::with_capacity(context.expected.len());
     for (id, entity) in &context.expected {
-        ensure!(
-            world.get::<DomainId>(*entity) == Some(id),
-            "native actor lacks its expected domain identity"
-        );
-        let identity = world
-            .get::<NativeActorIdentity>(*entity)
+        let entity = world
+            .get_entity(*entity)
+            .ok()
+            .filter(|entity| entity.get::<DomainId>() == Some(id))
+            .context("native actor lacks its expected domain identity")?;
+        let identity = entity
+            .get::<NativeActorIdentity>()
             .context("native actor lacks required placement identity")?;
-        let position = world
-            .get::<Position>(*entity)
+        let position = entity
+            .get::<Position>()
             .context("native actor lacks required position")?;
-        let rotation = world
-            .get::<NativeRotation>(*entity)
+        let rotation = entity
+            .get::<NativeRotation>()
             .context("native actor lacks required rotation")?;
-        let scale = world
-            .get::<NativeScale>(*entity)
+        let scale = entity
+            .get::<NativeScale>()
             .context("native actor lacks required scale")?;
-        let variables = world
-            .get::<NativeVariables>(*entity)
+        let variables = entity
+            .get::<NativeVariables>()
             .context("native actor lacks required variable state")?;
-        let bounds = world
-            .get::<NativeLocalBounds>(*entity)
+        let bounds = entity
+            .get::<NativeLocalBounds>()
             .context("native actor lacks required local bounds")?;
         let class = context
             .catalog
