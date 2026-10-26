@@ -70,6 +70,14 @@ function mappingNeed(ok, mappingSite, stage, guard) {
     if (mappingSite !== null && mappingSite.first === null) mappingSite.first = {stage, guard};
     throw new MetadataError('ERR_SOURCE_MAPPING');
 }
+function segmentFrameMatches(sm, at, expected, mappingSite, tailCandidate) {
+    const frame = sm.readUInt16LE(at + 6), matches = frame === expected;
+    // Only the exact-tail diagnostic owns this field. Retain the comparison's
+    // value only at a failing positional tail, never in either older API.
+    if (!matches && tailCandidate && mappingSite !== null &&
+        Object.hasOwn(mappingSite, 'actualFrame') && mappingSite.first === null) mappingSite.actualFrame = frame;
+    return matches;
+}
 function legalMappingSite(site) {
     if (site === null) return false;
     const {stage, guard} = site;
@@ -301,11 +309,11 @@ function context(reader, exe, identity, niMacZero, mappingSite) {
         for (let i = 0; i < count; i++) {
             const at = 4 + i * 20, flags = sm.readUInt16LE(at), absolute = i === image.sections.length;
             // Preserve the identity predicate's left-to-right short circuit.
-            // Capture no values; the optional last slot is positional only,
-            // since its flags/length check has not yet been reached.
+            // The optional last slot is positional only, since its flags/length
+            // guard has not yet been reached. The opt-in frame helper reads once.
             const member = sm.readUInt16LE(at + 2) !== 0 ? 'overlay' :
                 sm.readUInt16LE(at + 4) !== 0 ? 'group' :
-                sm.readUInt16LE(at + 6) !== i + 1 ? 'frame' :
+                !segmentFrameMatches(sm, at, i + 1, mappingSite, absolute) ? 'frame' :
                 sm.readUInt32LE(at + 12) !== 0 ? 'offset' : null;
             if (member !== null && mappingSite !== null && mappingSite.first === null &&
                 mappingSite.identityDetail === null) {
@@ -577,8 +585,9 @@ function diagnoseSourceMappingNamedStreamNiMacZero(reader, exe, identity, query)
 
 // Opt-in identity-site detail only. Full acceptance retains all ordinary
 // checks; the older four-field diagnostic and code-only errors stay unchanged.
-function diagnoseSourceMappingIdentityNamedStreamNiMacZero(reader, exe, identity, query) {
+function diagnoseMappingIdentityProfile(reader, exe, identity, query, tailFrame) {
     const mappingSite = {first: null, identityDetail: null};
+    if (tailFrame) mappingSite.actualFrame = null;
     try {
         let status = 'accepted_profile';
         try { inspectProfile(reader, exe, identity, query, true, mappingSite); }
@@ -595,13 +604,22 @@ function diagnoseSourceMappingIdentityNamedStreamNiMacZero(reader, exe, identity
             ['overlay', 'group', 'frame', 'offset'].includes(detail.identity_member) : detail === null,
             'ERR_SOURCE_MAPPING');
         const result = {
-            profile: 'MSF7_procedure_source_mapping_identity_diagnostic_v1', status,
+            profile: tailFrame ? 'MSF7_procedure_tail_frame_diagnostic_v1' :
+                'MSF7_procedure_source_mapping_identity_diagnostic_v1', status,
             stage: status === 'accepted_profile' ? 'complete' : site.stage,
             guard: status === 'accepted_profile' ? null : site.guard,
             descriptor_index: identityRefusal ? detail.descriptor_index : null,
             descriptor_slot: identityRefusal ? detail.descriptor_slot : null,
             identity_member: identityRefusal ? detail.identity_member : null,
         };
+        if (tailFrame) {
+            const frameRefusal = identityRefusal && detail.descriptor_slot === 'tail_candidate' &&
+                detail.identity_member === 'frame';
+            need(frameRefusal ? Number.isInteger(mappingSite.actualFrame) && mappingSite.actualFrame >= 0 &&
+                mappingSite.actualFrame <= 0xffff && mappingSite.actualFrame !== detail.descriptor_index + 1 :
+                mappingSite.actualFrame === null, 'ERR_SOURCE_MAPPING');
+            result.actual_frame = mappingSite.actualFrame;
+        }
         need(Buffer.byteLength(JSON.stringify(result) + '\n') <= 1024, 'ERR_OUTPUT_BOUND');
         return result;
     } catch (error) {
@@ -610,5 +628,16 @@ function diagnoseSourceMappingIdentityNamedStreamNiMacZero(reader, exe, identity
     }
 }
 
+function diagnoseSourceMappingIdentityNamedStreamNiMacZero(reader, exe, identity, query) {
+    return diagnoseMappingIdentityProfile(reader, exe, identity, query, false);
+}
+
+// Separate opt-in scalar diagnostic. A mismatch remains refused; this grants
+// no alternate mapping, tail routing, partial coverage or fallback traversal.
+function diagnoseTailFrameNamedStreamNiMacZero(reader, exe, identity, query) {
+    return diagnoseMappingIdentityProfile(reader, exe, identity, query, true);
+}
+
 module.exports = {inspect, diagnoseInfoFeatures, inspectNamedStreamNiMacZero, diagnoseInfoNamedStreamNiMacZero,
-    diagnoseSourceMappingNamedStreamNiMacZero, diagnoseSourceMappingIdentityNamedStreamNiMacZero, LIMITS};
+    diagnoseSourceMappingNamedStreamNiMacZero, diagnoseSourceMappingIdentityNamedStreamNiMacZero,
+    diagnoseTailFrameNamedStreamNiMacZero, LIMITS};
