@@ -195,9 +195,9 @@ use super::rep_layout::RepValue;
 use super::server_fps::ServerFpsMeter;
 use super::session_open::{
     ActorKey, ActorOpenSpec, ConnectionExports, NetGuidCache, PlayerControllerOpenPlan,
-    PlayerStateOpenPlan, PlayerStateOpenState, authored_movement, compose_actor_open,
-    compose_player_controller_open, compose_player_state_open, initial_movement,
-    movement_update_block, replicated_unique_net_id,
+    PlayerStateOpenPlan, PlayerStateOpenState, actor_properties_update_block, authored_movement,
+    compose_actor_open, compose_player_controller_open, compose_player_state_open,
+    initial_actor_properties, replicated_unique_net_id,
 };
 use super::time_of_day::TimeOfDayClock;
 
@@ -530,13 +530,14 @@ pub struct PeerLabStats {
     pub actor_closes_sent: u64,
     /// Replicated actor channel closes that could not be framed.
     pub actor_close_errors: u64,
-    /// Movement updates sent through [`PeerLab::update_actor_movement`].
+    /// Actor property updates sent through [`PeerLab::update_actor_movement`],
+    /// [`PeerLab::update_actor_motion`] or [`PeerLab::update_actor_properties`].
     pub actor_updates_sent: u64,
-    /// Movement updates that could not be composed or framed.
+    /// Actor property updates that could not be composed or framed.
     pub actor_update_errors: u64,
-    /// Naks of in-flight movement updates, superseded ones included.
+    /// Naks of in-flight actor property updates, superseded ones included.
     pub actor_update_naks: u64,
-    /// Naked movement updates that were still the latest and are due again.
+    /// Naked actor property updates with still-current fields that are due again.
     pub actor_updates_lost: u64,
     /// Failure notices sent by [`PeerLab::shutdown`] (F-782).
     pub shutdown_failures_sent: u64,
@@ -804,6 +805,22 @@ impl GameStateReplica {
     }
 }
 
+/// Small, fixed-prefix actor state. Missing values are unknown/due. Packet
+/// records live only while a sent-ring notification can still arrive. Each
+/// field has its own latest logical update (the group's final packet ID).
+#[derive(Default)]
+struct ActorReplica {
+    sent: BTreeMap<u32, RepValue>,
+    flags_managed: bool,
+    last_packet: BTreeMap<u32, u32>,
+}
+
+struct ActorPropertyPacket {
+    key: u64,
+    update: u32,
+    handles: Vec<u32>,
+}
+
 struct PeerEntry {
     peer: LabPeer,
     /// The cookie that created this peer; compared only, never reported.
@@ -829,15 +846,13 @@ struct PeerEntry {
     /// Closes that could not be framed yet (key -> reason), retried by
     /// [`PeerLab::retry_pending_closes`]; their actors stay open meanwhile.
     pending_closes: BTreeMap<u64, u32>,
-    /// Complete quantized property 6 last sent, initially only if the open
-    /// actually carried it. A latest-packet NAK makes it due again.
-    actor_movements: BTreeMap<u64, super::rep_layout::RepMovement>,
-    /// Movement updates awaiting the client's ack or nak: packet ID -> actor.
-    /// Bounded by the existing sent-record ring; notifications or close remove
-    /// records, and a full ring rejects further packets.
-    movement_in_flight: BTreeMap<u32, u64>,
-    /// Each actor's latest movement update packet; only its nak repairs.
-    last_movement_packet: BTreeMap<u64, u32>,
+    actor_properties: BTreeMap<u64, ActorReplica>,
+    /// All parts of one logical update share its handles and identity. ACKs
+    /// retire individual parts; any NAK repairs still-current fields only.
+    /// Superseded records remain for NAK counting, bounded by the sent ring:
+    /// every removed ring entry notifies ACK/NAK; actor close and peer teardown
+    /// also discard their records.
+    actor_property_packets: BTreeMap<u32, ActorPropertyPacket>,
     /// The GameState's updated values, once its open was sent.
     game_state: Option<GameStateReplica>,
     /// Ping from the round trips of acked packets (F-815).
@@ -1107,6 +1122,43 @@ impl PeerLab {
         velocity: [f32; 3],
         engine_net_version: u32,
     ) -> bool {
+        self.send_actor_properties(
+            connection,
+            key,
+            authored_movement(location, rotation, velocity).map(Some),
+            None,
+            engine_net_version,
+        )
+    }
+
+    /// Replicate selected authored state atomically. `motion` is
+    /// `[location, pitch/yaw/roll degrees, linear velocity]`, or absent for an
+    /// actor without movement replication. `flags` supplies both explicit
+    /// Booleans; removing previously managed flags requests the authored reset
+    /// `(false, false)` until sent (not official class defaults). Never-managed
+    /// actors emit neither flag. Pending closes and unacked opens block sends.
+    pub fn update_actor_properties(
+        &mut self,
+        connection: u32,
+        key: u64,
+        motion: Option<[[f32; 3]; 3]>,
+        flags: Option<crate::replication::NetActorFlags>,
+        engine_net_version: u32,
+    ) -> bool {
+        let movement = motion
+            .map(|[location, rotation, velocity]| authored_movement(location, rotation, velocity))
+            .transpose();
+        self.send_actor_properties(connection, key, movement, Some(flags), engine_net_version)
+    }
+
+    fn send_actor_properties(
+        &mut self,
+        connection: u32,
+        key: u64,
+        movement: anyhow::Result<Option<super::rep_layout::RepMovement>>,
+        flags: Option<Option<crate::replication::NetActorFlags>>,
+        engine_net_version: u32,
+    ) -> bool {
         let Some((address, entry)) = self
             .peers
             .iter_mut()
@@ -1118,19 +1170,50 @@ impl PeerLab {
         let Some(channel) = entry.opened_actors.get(&key).copied() else {
             return false;
         };
-        if !entry.peer.actor_channel_settled(channel) {
+        if entry.pending_closes.contains_key(&key) || !entry.peer.actor_channel_settled(channel) {
             return false;
         }
-        let movement = match authored_movement(location, rotation, velocity) {
+        let movement = match movement {
             Ok(movement) => movement,
             Err(_) => {
                 bump(&mut self.stats.actor_update_errors);
                 return false;
             }
         };
-        if entry.actor_movements.get(&key) == Some(&movement) {
+        let Some(replica) = entry.actor_properties.get(&key) else {
+            return false;
+        };
+        let mut values = BTreeMap::new();
+        if let Some(movement) = movement {
+            values.insert(6, RepValue::Movement(movement));
+        }
+        let requested_flags = flags.flatten();
+        if let Some(flags) = flags {
+            let flags = flags.or_else(|| {
+                replica
+                    .flags_managed
+                    .then_some(crate::replication::NetActorFlags {
+                        hidden: false,
+                        can_be_damaged: false,
+                    })
+            });
+            if let Some(flags) = flags {
+                values.insert(1, RepValue::Bool(flags.hidden));
+                values.insert(4, RepValue::Bool(flags.can_be_damaged));
+            }
+        }
+        values.retain(|handle, value| replica.sent.get(handle) != Some(value));
+        if values.is_empty() {
             return false;
         }
+        let movement = match values.get(&6) {
+            Some(RepValue::Movement(value)) => Some(value.clone()),
+            _ => None,
+        };
+        let boolean = |handle| match values.get(&handle) {
+            Some(RepValue::Bool(value)) => Some(*value),
+            _ => None,
+        };
         let codec = ActorChannelCodec {
             engine_net_version,
             exports_enabled: false,
@@ -1138,20 +1221,20 @@ impl PeerLab {
             order: entry.peer.connection_byte_order(),
             limits: ActorChannelLimits::default(),
         };
-        let packet_id = entry.peer.sequencer().out_packet_id();
-        let sent = movement_update_block(engine_net_version, movement.clone())
-            .and_then(|block| {
-                encode_actor_bunch_body(
-                    &ActorBunchBody {
-                        spawn: None,
-                        blocks: vec![block],
-                    },
-                    &codec,
-                )
-            })
-            .and_then(|payload| entry.peer.actor_update(channel, payload));
-        let datagram = match sent {
-            Ok(datagram) => datagram,
+        let sent =
+            actor_properties_update_block(engine_net_version, movement, boolean(1), boolean(4))
+                .and_then(|block| {
+                    encode_actor_bunch_body(
+                        &ActorBunchBody {
+                            spawn: None,
+                            blocks: vec![block],
+                        },
+                        &codec,
+                    )
+                })
+                .and_then(|payload| entry.peer.actor_update_datagrams(channel, payload));
+        let datagrams = match sent {
+            Ok(datagrams) => datagrams,
             Err(_) => {
                 bump(&mut self.stats.actor_update_errors);
                 if entry.peer.is_failed() {
@@ -1162,14 +1245,33 @@ impl PeerLab {
             }
         };
         entry.ack_pending = false;
-        if !self.send(&datagram, address) {
-            // Not recorded: the next selection builds the update again.
+        let mut delivered = true;
+        for (datagram, _) in &datagrams {
+            delivered &= self.send(datagram, address);
+        }
+        if !delivered {
+            // No baseline or identity commits until every local send succeeds.
             return false;
         }
         if let Some(entry) = self.peers.get_mut(&address) {
-            entry.actor_movements.insert(key, movement);
-            entry.movement_in_flight.insert(packet_id, key);
-            entry.last_movement_packet.insert(key, packet_id);
+            let replica = entry.actor_properties.get_mut(&key).unwrap();
+            replica.flags_managed |= requested_flags.is_some();
+            let update = datagrams.last().unwrap().1;
+            let handles: Vec<_> = values.keys().copied().collect();
+            for (handle, value) in values {
+                replica.sent.insert(handle, value);
+                replica.last_packet.insert(handle, update);
+            }
+            for (_, packet_id) in datagrams {
+                entry.actor_property_packets.insert(
+                    packet_id,
+                    ActorPropertyPacket {
+                        key,
+                        update,
+                        handles: handles.clone(),
+                    },
+                );
+            }
         }
         bump(&mut self.stats.actor_updates_sent);
         true
@@ -1220,9 +1322,10 @@ impl PeerLab {
         };
         entry.pending_closes.remove(&key);
         entry.opened_actors.remove(&key);
-        entry.actor_movements.remove(&key);
-        entry.movement_in_flight.retain(|_, actor| *actor != key);
-        entry.last_movement_packet.remove(&key);
+        entry.actor_properties.remove(&key);
+        entry
+            .actor_property_packets
+            .retain(|_, packet| packet.key != key);
         entry.ack_pending = false;
         if self.send(&datagram, address) {
             bump(&mut self.stats.actor_closes_sent);
@@ -1258,7 +1361,7 @@ impl PeerLab {
         let guid = cache.actor_guid(ActorKey::World(key));
         open.actor = guid;
         let mut exports = entry.exports.clone();
-        let movement = initial_movement(
+        let (values, flags_managed) = initial_actor_properties(
             &open.blocks,
             engine_net_version,
             entry.peer.connection_byte_order(),
@@ -1297,11 +1400,22 @@ impl PeerLab {
         entry.exports = exports;
         entry.ack_pending = false;
         entry.opened_actors.insert(key, channel);
-        if let Some(movement) = movement {
-            entry.actor_movements.insert(key, movement);
-        }
+        entry.actor_properties.insert(
+            key,
+            ActorReplica {
+                flags_managed,
+                ..ActorReplica::default()
+            },
+        );
         self.guid_cache = cache;
         if self.send_all(&sent, address) {
+            if let Some(replica) = self
+                .peers
+                .get_mut(&address)
+                .and_then(|entry| entry.actor_properties.get_mut(&key))
+            {
+                replica.sent = values;
+            }
             bump(&mut self.stats.actor_opens_sent);
         }
         Some(channel)
@@ -2092,9 +2206,8 @@ impl PeerLab {
                         connection_id: None,
                         opened_actors: BTreeMap::new(),
                         pending_closes: BTreeMap::new(),
-                        actor_movements: BTreeMap::new(),
-                        movement_in_flight: BTreeMap::new(),
-                        last_movement_packet: BTreeMap::new(),
+                        actor_properties: BTreeMap::new(),
+                        actor_property_packets: BTreeMap::new(),
                         game_state: None,
                         ping: PingEstimator::new(),
                     },
@@ -2121,7 +2234,18 @@ impl PeerLab {
                         bump(&mut self.stats.data_accepted);
                         let world_seconds = now.duration_since(self.started).as_secs_f64();
                         for packet_id in &summary.acked {
-                            entry.movement_in_flight.remove(packet_id);
+                            if let Some(packet) = entry.actor_property_packets.remove(packet_id)
+                                && !entry.actor_property_packets.values().any(|other| {
+                                    other.key == packet.key && other.update == packet.update
+                                })
+                                && let Some(replica) = entry.actor_properties.get_mut(&packet.key)
+                            {
+                                // Only the final part's ACK retires the logical
+                                // update identity; sent values remain known.
+                                replica
+                                    .last_packet
+                                    .retain(|_, update| *update != packet.update);
+                            }
                             // Each acked packet's round trip is a ping sample.
                             if let Some(sent) = entry.peer.sent_at(*packet_id) {
                                 entry.ping.update(
@@ -2145,17 +2269,29 @@ impl PeerLab {
                                 entry.exports.received_nak(packet_id);
                             }
                         }
-                        // A lost movement update is sent again, as UE re-sends
-                        // the properties of a naked packet: forget the sent
-                        // movement unless a newer update has gone out since.
+                        // Losing any part loses the logical update. Only fields
+                        // it still owns become due; unrelated newer flags or
+                        // movement cannot supersede its repair identity.
                         for packet_id in &summary.naked {
-                            let Some(key) = entry.movement_in_flight.remove(packet_id) else {
+                            let Some(packet) = entry.actor_property_packets.remove(packet_id)
+                            else {
                                 continue;
                             };
                             bump(&mut self.stats.actor_update_naks);
-                            if entry.last_movement_packet.get(&key) == Some(packet_id) {
-                                entry.last_movement_packet.remove(&key);
-                                entry.actor_movements.remove(&key);
+                            entry.actor_property_packets.retain(|_, other| {
+                                other.key != packet.key || other.update != packet.update
+                            });
+                            let mut lost = false;
+                            if let Some(replica) = entry.actor_properties.get_mut(&packet.key) {
+                                for handle in packet.handles {
+                                    if replica.last_packet.get(&handle) == Some(&packet.update) {
+                                        replica.last_packet.remove(&handle);
+                                        replica.sent.remove(&handle);
+                                        lost = true;
+                                    }
+                                }
+                            }
+                            if lost {
                                 bump(&mut self.stats.actor_updates_lost);
                             }
                         }

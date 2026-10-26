@@ -7,7 +7,7 @@ full text under `retired/`. Admission and columns follow `.agents/rules/docs.md`
 
 Before restructure: 96ddb0b:docs/ledgers/findings.md
 
-Last reconciled: 2026-10-25
+Last reconciled: 2026-10-26
 
 | ID | Claim | Kind | Evidence | Scope and limits | Unknowns | Status |
 | --- | --- | --- | --- | --- | --- | --- |
@@ -65,4 +65,4 @@ Last reconciled: 2026-10-25
 | F-929 | C001 Bool/I32 assessment borrows candidates and exact authored owner/property bindings with header provenance; invalid records reject all under independent byte/element limits; callbacks stay unqualified, empty results cannot activate | observed | authored-test; M-965..M-972 | high; authored fixtures only; no official import or performance proof | U-025, U-045 | active |
 | F-931 | Authored modifier timers/cache survive reload, replacement and retries, including near-budget two-generation stores; advances are atomic and publication faults preserve committed state | observed | authored-test; M-1012, M-1013, M-1033 | high; schema 11 extends 7; authored flat stats/timers only; no official callbacks/import/client or cost proof | U-025, U-045 | active |
 | F-932 | Earlier native holds reported 0 save failures/tick misses, p99 <=151 us, gaps <=278 ms and RSS ~113 MB flat | measured | authored-test; M-849, M-861, M-865, M-1019 | high; 8 h RSS until swapped; 8 h probe pre-#57; no 10.1 h stats or later-code/ICARUS performance proof | U-035 | active |
-| F-938 | Opt-in actors replicate authored position/rotation/linear velocity with separate spawn/handle-6 quantizers, canonical baselines, open ACK gating and latest-packet repair | measured | authored-test; M-829, M-831, M-1040 | high; 3.0.32 AActor defaults, flags 0; no saved-pose/physics/subclass/client proof | U-025, U-038, U-052 | active |
+| F-938 | Opt-in actors replicate authored motion and hidden/damage flags with canonical per-field baselines, open ACK gating and partial-loss repair; hidden affects priority | measured | authored-test; M-829, M-831, M-1040, M-1051 | high; authored 3.0.32 AActor prefix; no pose import, gameplay/default/physics/subclass/client proof | U-025, U-038, U-052 | active |

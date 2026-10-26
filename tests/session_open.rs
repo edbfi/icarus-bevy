@@ -18,6 +18,83 @@ fn codec() -> ActorChannelCodec {
 }
 
 #[test]
+fn authored_actor_flags_preserve_explicit_false_sorted_handles_and_legacy_bytes() {
+    use icarus_bevy::{
+        experimental::{
+            rep_layout::{
+                MovementLevel, RepLayoutCodec, RepLayoutLimits, RepValue, RotationLevel,
+                actor_rep_layout, parse_rep_properties,
+            },
+            session_open::{
+                actor_properties_update_block, authored_movement, movement_update_block,
+                world_actor_block, world_actor_state_block,
+            },
+        },
+        replication::NetActorFlags,
+    };
+    let movement = authored_movement([1.0; 3], [90.0; 3], [2.0; 3]).unwrap();
+    for motion in [None, Some(movement.clone())] {
+        assert_eq!(
+            world_actor_state_block(17, motion.clone(), None).unwrap(),
+            world_actor_block(17, motion.clone()).unwrap()
+        );
+        for hidden in [false, true] {
+            for can_be_damaged in [false, true] {
+                let flags = NetActorFlags {
+                    hidden,
+                    can_be_damaged,
+                };
+                let block = world_actor_state_block(17, motion.clone(), Some(flags)).unwrap();
+                for order in [ByteOrder::Little, ByteOrder::Big] {
+                    let rep = RepLayoutCodec {
+                        actor: ActorChannelCodec { order, ..codec() },
+                        checksums: false,
+                        limits: RepLayoutLimits::default(),
+                    };
+                    let layout = actor_rep_layout(
+                        MovementLevel::Whole,
+                        MovementLevel::Whole,
+                        RotationLevel::Bytes,
+                    );
+                    let stream = parse_rep_properties(&block.payload, &layout, &rep).unwrap();
+                    let handles: Vec<_> = stream.entries.iter().map(|e| e.handle).collect();
+                    assert_eq!(
+                        handles,
+                        if motion.is_some() {
+                            vec![1, 4, 5, 6, 14]
+                        } else {
+                            vec![1, 4, 5, 14]
+                        }
+                    );
+                    assert_eq!(stream.entries[0].value, RepValue::Bool(hidden));
+                    assert_eq!(stream.entries[1].value, RepValue::Bool(can_be_damaged));
+                    let update = actor_properties_update_block(
+                        17,
+                        motion.clone(),
+                        Some(hidden),
+                        Some(can_be_damaged),
+                    )
+                    .unwrap();
+                    let decoded = parse_rep_properties(&update.payload, &layout, &rep).unwrap();
+                    assert_eq!(decoded.entries[0].value, RepValue::Bool(hidden));
+                    assert_eq!(decoded.entries[1].value, RepValue::Bool(can_be_damaged));
+                    assert!(
+                        decoded
+                            .entries
+                            .iter()
+                            .all(|e| matches!(e.handle, 1 | 4 | 6))
+                    );
+                }
+            }
+        }
+    }
+    assert_eq!(
+        movement_update_block(17, movement.clone()).unwrap(),
+        actor_properties_update_block(17, Some(movement), None, None).unwrap()
+    );
+}
+
+#[test]
 fn authored_spawn_motion_and_property_six_keep_their_independent_precision() {
     use icarus_bevy::experimental::{
         actor_channel::read_actor_bunch_body,
@@ -100,7 +177,7 @@ fn authored_spawn_motion_and_property_six_keep_their_independent_precision() {
 #[test]
 fn invalid_spawn_motion_rejects_before_guid_or_export_changes_and_can_retry() {
     use icarus_bevy::experimental::session_open::{
-        ActorOpenSpec, authored_movement, compose_actor_open,
+        ActorOpenSpec, authored_movement, compose_actor_open, world_actor_state_block,
     };
     // Both values fit property-6 defaults but exceed the independent spawn
     // representations. Valid property data must not bypass spawn validation.
@@ -113,7 +190,17 @@ fn invalid_spawn_motion_rejects_before_guid_or_export_changes_and_can_retry() {
             location: Some([0.0; 3]),
             rotation: Some([0.0; 3]),
             velocity: Some([0.0; 3]),
-            blocks: Vec::new(),
+            blocks: vec![
+                world_actor_state_block(
+                    17,
+                    Some(authored_movement([0.0; 3], [0.0; 3], [0.0; 3]).unwrap()),
+                    Some(icarus_bevy::replication::NetActorFlags {
+                        hidden: true,
+                        can_be_damaged: true,
+                    }),
+                )
+                .unwrap(),
+            ],
         };
         let mut cache = NetGuidCache::new();
         let mut exports = ConnectionExports::new();
