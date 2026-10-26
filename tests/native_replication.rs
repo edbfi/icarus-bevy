@@ -2135,3 +2135,402 @@ fn bounded_native_binary_run_uses_the_same_authored_configuration_path() {
     let saved = store.load().unwrap().unwrap().snapshot;
     assert_eq!(saved.native_world, fixture.snapshot.native_world);
 }
+
+#[test]
+#[ignore = "bounded authored idle-cost measurement; explicit run only"]
+fn authored_host_idle_tick_cost() -> anyhow::Result<()> {
+    use std::path::{Path, PathBuf};
+
+    const COUNTS: [usize; 3] = [1, 64, 1024];
+    const WARMUPS: usize = 8;
+    const SAMPLES: usize = 32;
+    const TOTAL_BUDGET: Duration = Duration::from_secs(10);
+
+    fn validate_parameters(counts: &[usize], warmups: usize, samples: usize, budget: Duration) {
+        assert_eq!(counts, [1, 64, 1024]);
+        assert_eq!(warmups, 8);
+        assert_eq!(samples, 32);
+        assert_eq!(budget, Duration::from_secs(10));
+        assert!(
+            counts
+                .iter()
+                .all(|count| (1..=MAX_BINDINGS).contains(count))
+        );
+        if !cfg!(debug_assertions) {
+            panic!("authored idle-cost selection requires the debug test profile");
+        }
+    }
+
+    fn check_budget(started: Instant, budget: Duration) {
+        assert!(
+            started.elapsed() < budget,
+            "authored idle-cost cooperative total budget exhausted; retain all artifacts"
+        );
+    }
+
+    // Reuse the existing authored pose/binding/release helpers, but not Fixture's
+    // TempDir ownership: its implicit Drop removes artifacts even on unwind.
+    struct IdleCostInput {
+        count: usize,
+        catalog: Value,
+        snapshot: WorldSnapshot,
+        declaration: Value,
+    }
+
+    fn input(count: usize) -> anyhow::Result<IdleCostInput> {
+        let mut placements = Vec::with_capacity(count);
+        let mut bindings = Vec::with_capacity(count);
+        for index in 0..count {
+            let placement = format!("idle_{index:04}");
+            // At most a 32 x 32 grid: coordinates 0..=62 m, z=2 m.
+            // Unit-scale half-meter bounds fit wholly inside [-128,128]^3.
+            let x = (index % 32) as f32 * 2.0;
+            let y = (index / 32) as f32 * 2.0;
+            authored_movement([y * 10.0, -x * 10.0, 20.0], [0.0; 3], [0.0; 3])?;
+            placements.push(json!({
+                "key": placement, "class": "spatial", "tile": "tile",
+                "transform": pose_json([x, y, 2.0])
+            }));
+            bindings.push(binding_json(&placement));
+        }
+        let catalog = json!({
+            "native_format": 1, "frame": "right_handed_z_up_meters",
+            "classes": [{"key": "spatial", "kind": "spatial_object_v1", "variables": [],
+                "local_bounds": {"min": [-0.5, -0.5, -0.5], "max": [0.5, 0.5, 0.5]}}],
+            "maps": [{"key": "authored", "tiles": [{"key": "tile",
+                "bounds": {"min": [-128.0, -128.0, -128.0], "max": [128.0, 128.0, 128.0]}}],
+                "placements": placements}]
+        });
+        let definition: NativeCatalogDefinition = serde_json::from_value(catalog.clone())?;
+        let prepared = prepare_authored_world(
+            Arc::new(CompiledNativeCatalog::compile(definition)?),
+            "authored",
+        )?;
+        let snapshot = prepared.initial_snapshot();
+        snapshot.validate()?;
+        assert_eq!(snapshot.schema_version, 4);
+        assert_eq!(snapshot.tick, 0);
+        assert!(snapshot.preserved_prospect.is_none());
+        assert_eq!(snapshot.native_world.as_ref().unwrap().actors.len(), count);
+        let declaration = json!({
+            "format": 1, "catalog_id": snapshot.native_world.as_ref().unwrap().catalog_id,
+            "map": "authored", "frame": {"axes": [2, -1, 3], "units": 10.0},
+            "first_channel": 6,
+            "schedule": {
+                "connection_budget": 32, "max_consider_list": 1024, "max_connections": 8,
+                "max_viewers_per_connection": 1, "net_server_max_tick_rate": 30,
+                "max_connections_to_tick_per_server_frame": 0,
+                "relevant_timeout_seconds": 5.0, "spawn_priority_seconds": 1.0,
+                "use_adaptive_net_update_frequency": false, "seed": 19
+            },
+            "bindings": bindings
+        });
+        AuthoredReplication::parse(&serde_json::to_string(&declaration)?)?;
+        Ok(IdleCostInput {
+            count,
+            catalog,
+            snapshot,
+            declaration,
+        })
+    }
+
+    fn write_json(path: impl AsRef<Path>, value: &impl serde::Serialize) -> anyhow::Result<()> {
+        fs::write(path, serde_json::to_vec(value)?)?;
+        Ok(())
+    }
+
+    fn host_configuration(dir: &Path) -> ServerConfig {
+        ServerConfig {
+            data_dir: dir.join("state"),
+            network: NetworkConfig {
+                enabled: true,
+                port: 0,
+                release_profile: Some(dir.join("release.toml")),
+                authored_replication: Some(dir.join("replication.json")),
+                ..Default::default()
+            },
+            ..Default::default()
+        }
+    }
+
+    // Read only this freshly created authored store. Bound both entry count and
+    // bytes; no recursion, symlinks, original/private inputs, or hashes.
+    fn store_bytes(path: &Path) -> anyhow::Result<BTreeMap<PathBuf, Vec<u8>>> {
+        let mut files = BTreeMap::new();
+        let mut total = 0usize;
+        for entry in fs::read_dir(path)? {
+            let entry = entry?;
+            assert!(files.len() < 4, "unexpected authored store entry count");
+            assert!(
+                entry.file_type()?.is_file(),
+                "unexpected authored store entry type"
+            );
+            assert!(entry.metadata()?.len() <= 4 * 1024 * 1024);
+            let bytes = fs::read(entry.path())?;
+            total = total.checked_add(bytes.len()).unwrap();
+            assert!(total <= 8 * 1024 * 1024);
+            files.insert(PathBuf::from(entry.file_name()), bytes);
+        }
+        assert_eq!(files.len(), 3); // server.lock, manifest.json, snapshot-1.json
+        Ok(files)
+    }
+
+    fn verify_idle(app: &mut App, input: &IdleCostInput, host: bool) -> anyhow::Result<()> {
+        let lab = app.world().resource::<PeerLab>();
+        assert!(lab.is_admitting());
+        assert_eq!(lab.peer_count(), 0);
+        assert_eq!(lab.peak_peer_count(), 0);
+        assert_eq!(lab.stats().received, 0);
+        assert_eq!(lab.stats().peers_created, 0);
+        assert_eq!(lab.stats().io_errors, 0);
+        assert!(lab.joined_connections().is_empty());
+        let entities = app.world().iter_entities();
+        assert_eq!(
+            entities
+                .filter(|entity| entity.contains::<NativeActorIdentity>())
+                .count(),
+            input.count
+        );
+        assert_eq!(
+            app.world()
+                .iter_entities()
+                .filter(|entity| entity.contains::<DomainId>())
+                .count(),
+            input.count
+        );
+        assert_eq!(
+            app.world()
+                .iter_entities()
+                .filter(|entity| entity.contains::<NetViewer>())
+                .count(),
+            0
+        );
+        let proxies: Vec<_> = app
+            .world()
+            .iter_entities()
+            .filter(|entity| entity.contains::<NetActor>())
+            .collect();
+        assert_eq!(proxies.len(), if host { input.count } else { 0 });
+        assert!(proxies.iter().all(|entity| {
+            !entity.contains::<DomainId>()
+                && !entity.contains::<NativeActorIdentity>()
+                && entity.contains::<NetArchetype>()
+                && entity.contains::<NetSchedule>()
+                && entity.contains::<Position>()
+                && entity.contains::<NetActorFlags>()
+        }));
+        assert_eq!(app.is_plugin_added::<ReplicationPlugin>(), host);
+        assert_eq!(app.world().contains_resource::<SessionReplication>(), host);
+        if host {
+            let counts = app.world().resource::<NativeReplicationCounts>();
+            assert!(counts.active);
+            assert_eq!(counts.activated, input.count);
+            assert_eq!(counts.rejected, 0);
+            assert_eq!(counts.binding_errors, 0);
+            // The scheduler does not increment its connection frame without peers.
+            let decisions = &app.world().resource::<ReplicationFrame>().decisions;
+            assert_eq!(decisions.replication_frame, 0);
+        } else {
+            assert!(!app.world().contains_resource::<NativeReplicationCounts>());
+            assert!(!app.world().contains_resource::<ReplicationFrame>());
+        }
+        let mut snapshot = capture(app.world_mut())?;
+        assert_eq!(
+            snapshot.tick,
+            app.world().resource::<SimulationClock>().tick
+        );
+        snapshot.tick = input.snapshot.tick;
+        // All persistent fields must match; only the verified clock may advance.
+        assert!(
+            snapshot == input.snapshot,
+            "authored persistent domain state changed"
+        );
+        Ok(())
+    }
+
+    fn step(
+        app: &mut App,
+        input: &IdleCostInput,
+        host: bool,
+        measured: bool,
+        started: Instant,
+        budget: Duration,
+    ) -> anyhow::Result<Option<u64>> {
+        let before = app.world().resource::<SimulationClock>().tick;
+        check_budget(started, budget); // BEFORE every timed update (and warmup).
+        let elapsed = if measured {
+            let sample_started = Instant::now();
+            app.update(); // Entire App update: every schedule, fixed work and lab poll.
+            Some(sample_started.elapsed())
+        } else {
+            app.update();
+            None
+        };
+        check_budget(started, budget); // Immediately after update/timer; cooperative.
+        assert_eq!(
+            app.world()
+                .resource::<SimulationClock>()
+                .tick
+                .checked_sub(before),
+            Some(1)
+        );
+        verify_idle(app, input, host)?; // All correctness checks OUTSIDE timing.
+        check_budget(started, budget);
+        Ok(elapsed.map(|duration| u64::try_from(duration.as_nanos()).unwrap()))
+    }
+
+    validate_parameters(&COUNTS, WARMUPS, SAMPLES, TOTAL_BUDGET);
+    let started = Instant::now(); // Total includes preparation and correctness work.
+    // Preflight the complete finite selection before fixtures, files or sockets.
+    let preflight_host = host_configuration(Path::new("work/authored-idle-cost-preflight"));
+    preflight_host.validate()?; // Validation only: does not open these paths.
+    let mut preflight_baseline = preflight_host.clone();
+    preflight_baseline.network.authored_replication = None;
+    preflight_baseline.validate()?;
+    let inputs = COUNTS
+        .into_iter()
+        .map(input)
+        .collect::<anyhow::Result<Vec<_>>>()?;
+    check_budget(started, TOTAL_BUDGET);
+    let run_dir = PathBuf::from(
+        std::env::var_os("ICARUS_AUTHORED_IDLE_COST_DIR").ok_or_else(|| {
+            anyhow::anyhow!("set an absent idle-cost child inside an owned work case")
+        })?,
+    );
+    anyhow::ensure!(
+        run_dir.is_absolute() && run_dir.file_name().is_some(),
+        "idle-cost child must be absolute"
+    );
+    let parent = run_dir
+        .parent()
+        .ok_or_else(|| anyhow::anyhow!("idle-cost parent missing"))?;
+    let canonical_parent = fs::canonicalize(parent)?;
+    let work = fs::canonicalize(Path::new(env!("CARGO_MANIFEST_DIR")).join("work"))?;
+    anyhow::ensure!(
+        canonical_parent.starts_with(&work)
+            && canonical_parent != work
+            && parent == canonical_parent,
+        "idle-cost parent must be a canonical owned work case"
+    );
+    // Caller prepares the parent case/scope. Refuse an existing child; never replace.
+    fs::create_dir(&run_dir)?;
+    write_json(
+        run_dir.join("case.json"),
+        &json!({
+            "state": "open", "owner": "authored_host_idle_tick_cost",
+            "purpose": "Bounded debug whole-App-update authored idle/no-peer measurement",
+            "counts": COUNTS, "warmups": WARMUPS, "samples": SAMPLES,
+            "cooperative_seconds": 10, "required_outer_timeout_seconds": 60,
+            "retention": "all artifacts on success and error; Root closes interrupted case"
+        }),
+    )?;
+    let mut rows = Vec::with_capacity(COUNTS.len() * 2);
+    for input in &inputs {
+        check_budget(started, TOTAL_BUDGET);
+        let dir = run_dir.join(format!("actors-{}", input.count));
+        fs::create_dir(&dir)?;
+        fs::write(dir.join("release.toml"), RELEASE)?;
+        write_json(dir.join("catalog.json"), &input.catalog)?;
+        write_json(dir.join("initial-snapshot.json"), &input.snapshot)?;
+        write_json(dir.join("replication.json"), &input.declaration)?;
+        let host_config = host_configuration(&dir);
+        let mut baseline_config = host_config.clone();
+        baseline_config.network.authored_replication = None;
+        host_config.validate()?;
+        baseline_config.validate()?;
+        assert!(host_config.network.data_pak.is_none());
+        let mut matched = host_config.clone();
+        matched.network.authored_replication = None;
+        assert!(toml::to_string(&matched)? == toml::to_string(&baseline_config)?);
+        fs::write(dir.join("host.toml"), toml::to_string(&host_config)?)?;
+        fs::write(
+            dir.join("baseline.toml"),
+            toml::to_string(&baseline_config)?,
+        )?;
+        let mut store = SnapshotStore::open(&host_config.data_dir)?;
+        store.save_new(&input.snapshot)?; // Setup only; no worker/autosave installed.
+        assert!(store.load()?.unwrap().snapshot == input.snapshot);
+        let unchanged_store = store_bytes(&host_config.data_dir)?;
+        for (mode, config, host) in [
+            ("baseline_lab_option_absent", &baseline_config, false),
+            ("explicit_host_bridge", &host_config, true),
+        ] {
+            check_budget(started, TOTAL_BUDGET);
+            let mut app = build_app(config, &input.snapshot)?;
+            let bound = network::bind(&config.network)?.unwrap();
+            let address = network::install_configured(&mut app, bound, &config.network)?;
+            assert!(address.ip().is_loopback());
+            app.insert_resource(TimeUpdateStrategy::FixedTimesteps(1));
+            verify_idle(&mut app, input, host)?;
+            // Bevy's first update initializes time with zero delta. This priming
+            // call is separate from the eight actual one-tick warmups.
+            let before = app.world().resource::<SimulationClock>().tick;
+            check_budget(started, TOTAL_BUDGET);
+            app.update();
+            check_budget(started, TOTAL_BUDGET);
+            assert_eq!(app.world().resource::<SimulationClock>().tick, before);
+            verify_idle(&mut app, input, host)?;
+            for _ in 0..WARMUPS {
+                step(&mut app, input, host, false, started, TOTAL_BUDGET)?;
+            }
+            let mut nanos = Vec::with_capacity(SAMPLES);
+            for _ in 0..SAMPLES {
+                nanos.push(step(&mut app, input, host, true, started, TOTAL_BUDGET)?.unwrap());
+            }
+            assert_eq!(nanos.len(), SAMPLES);
+            assert_eq!(
+                app.world().resource::<SimulationClock>().tick,
+                (WARMUPS + SAMPLES) as u64
+            );
+            assert!(store.load()?.unwrap().snapshot == input.snapshot);
+            assert!(
+                store_bytes(&config.data_dir)? == unchanged_store,
+                "authored store bytes changed"
+            );
+            nanos.sort_unstable();
+            // Even-count median: integer floor of the mean of samples 16 and 17.
+            let median = nanos[SAMPLES / 2 - 1] / 2
+                + nanos[SAMPLES / 2] / 2
+                + (nanos[SAMPLES / 2 - 1] % 2 + nanos[SAMPLES / 2] % 2) / 2;
+            rows.push(json!({
+                "mode": mode, "profile": "debug", "workload": "idle/no-peer",
+                "actors": input.count, "declared_bindings": input.count,
+                "bound_actors": if host { input.count } else { 0 },
+                "active_native_actors": input.count,
+                "active_proxies": if host { input.count } else { 0 },
+                "peers": 0, "warmups": WARMUPS, "count": nanos.len(),
+                "verified_tick_delta_per_update": 1,
+                "median_ns": median, "p95_ns": nanos[(95 * SAMPLES).div_ceil(100) - 1],
+                "max_ns": nanos[SAMPLES - 1]
+            }));
+            // Ordinary App/socket Drop is retained, including during unwinding.
+            // No teardown/drop saves state, launches a child, or removes files.
+            drop(app);
+            check_budget(started, TOTAL_BUDGET);
+        }
+        assert!(store_bytes(&host_config.data_dir)? == unchanged_store);
+        drop(store); // Releases advisory lock; retains every file.
+    }
+    assert_eq!(rows.len(), 6);
+    let summary = json!({
+        "measurement": "whole_app_update_elapsed_ns", "profile": "debug",
+        "workload": "idle/no-peer", "complete": true,
+        "cooperative_total_limit_seconds": 10, "required_outer_timeout_seconds": 60,
+        "rows": rows
+    });
+    check_budget(started, TOTAL_BUDGET);
+    write_json(run_dir.join("summary.json"), &summary)?;
+    check_budget(started, TOTAL_BUDGET);
+    write_json(
+        run_dir.join("case.json"),
+        &json!({
+            "state": "closed", "owner": "authored_host_idle_tick_cost",
+            "purpose": "Bounded debug whole-App-update authored idle/no-peer measurement",
+            "retention": "all authored fixtures and stores retained", "aggregate_rows": 6
+        }),
+    )?;
+    check_budget(started, TOTAL_BUDGET);
+    println!("{}", serde_json::to_string(&summary)?);
+    check_budget(started, TOTAL_BUDGET);
+    Ok(())
+}
