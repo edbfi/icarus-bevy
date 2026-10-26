@@ -12,8 +12,8 @@
 //! open is acked ([`PeerLab::update_actor_properties`]). Optional authored
 //! [`NetActorFlags`] adds explicit handles 1 and 4 to opens and updates; removal
 //! requests the lab reset `(false, false)` for previously managed actors.
-//! A channel the stage closes
-//! (no longer relevant `3`, torn off `4`; F-749) gets its close bunch first
+//! A channel the stage closes (no longer relevant `3`, torn off `4`; F-749)
+//! gets its close bunch first
 //! ([`PeerLab::close_actor`]). Actor GUIDs are driver-wide and stable per
 //! [`DomainId`]. Other properties are not replicated. Archetypes are
 //! caller data; nothing here reads original files or demonstrates ICARUS
@@ -65,10 +65,10 @@ pub struct SessionReplication {
     pub viewer_location: [f32; 3],
     /// Every opened actor's initial block ([`actor_role_block`], F-791).
     actor_block: ContentBlock,
-    /// Open attempts skipped because authored motion could not be quantized for
-    /// `ReplicatedMovement` (outside the packed range). It counts attempts:
-    /// the actor stays unopened and is retried, and counted, each time it is
-    /// selected. Update failures count in the lab's `actor_update_errors`.
+    /// Open attempts skipped because authored motion could not be quantized or
+    /// an authored movement/flag block could not be composed. The actor stays
+    /// unopened and is retried, and counted, each time it is selected. Update
+    /// failures count in the lab's `actor_update_errors`.
     pub movement_errors: u64,
 }
 
