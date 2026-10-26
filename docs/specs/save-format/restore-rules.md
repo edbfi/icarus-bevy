@@ -217,7 +217,10 @@ construction, script owners and data-table rows are out of scope (F-660).
   reads left and right result u64s and returns equality. The separate model
   preserves late reads/aliasing; callee effects and row meanings remain opaque.
   Both helper targets have public-symbol matches but no covering exception-table
-  range (M-1050). This supplies no procedure extent or leaf-function identity.
+  range (M-1050). Legacy feature guards refuse both copies (M-1052, M-1053).
+  An explicit structural NI-zero profile accepts the server Info suffix, then
+  declaration mapping refuses; the client is unattempted (M-1054). No helper
+  extent, mapping cause or leaf identity follows.
 
 ## Candidate
 
@@ -231,4 +234,4 @@ construction, script owners and data-table rows are out of scope (F-660).
 
 F-645..F-681, F-716, F-894, F-902..F-904, F-728, F-734..F-736, F-741..F-744, F-746, F-747,
 F-750, F-897, F-930, F-937; M-642..M-698, M-755..M-792, M-794..M-807, M-858, M-1024, M-1025,
-M-1027, M-1028, M-1035..M-1037, M-1046..M-1048, M-1050.
+M-1027, M-1028, M-1035..M-1037, M-1046..M-1048, M-1050, M-1052..M-1054.
