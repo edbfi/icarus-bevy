@@ -24,22 +24,23 @@ and C034 (F-496), then C001 (F-901, F-722; U-023 resolved), the
 player-state candidates and the remaining classes (F-668; F-213). Server
 25621760 matches client 25793767 across the audited string/name, scalar/math,
 array/container and tagged serializers, migration/restore and load-entry failure
-paths (F-715..F-720, F-725..F-728, F-731..F-738, F-741..F-744, F-746,
-F-747, F-750, F-893, F-899). All 65 recorder registrations, constructor
+paths (F-715..F-720, F-725..F-728, F-732..F-738, F-742..F-744,
+F-893, F-899). All 65 recorder registrations, constructor
 defaults, dispatch, subsystem operations, owner matching and nested virtual
 overrides are qualified at the [restore-rules spec](../../specs/save-format/restore-rules.md)
-and its source rows (F-645..F-680, F-902..F-904). Completed selected coverage
+and its source rows (F-645..F-680, F-741, F-746, F-747, F-750,
+F-902..F-904). Completed selected coverage
 also includes 6 of 7 populated C001 arrays, `CA06`/`DA04`, all 29,762 C028
 spans, `SL-004` blob contracts, accolade/prospect structures and `15 / 15`
 `inspect-save --stage-check`; reference-load recorder changes remain F-894.
+A bounded comparison of load times is F-731.
 Opaque Structs use four fixed-width engine math types (F-900, F-602).
 Construction grids nest per-type row names over pieces in the grid's frame
 (F-643).
 
 Within the tree limits, all 15 prospects type every recorder value losslessly
-(F-766). Reference
-planning distinguishes instance identity from content and classifies recorder
-fields by their restorers (F-897). Scoped catalog declarations bind roots,
+(F-766). Reference planning distinguishes instance identity from content and
+classifies recorder fields by their restorers (F-897). Scoped catalog declarations bind roots,
 map-owned paths/tiles and class-owned variables (F-916), extending the earlier
 coverage in F-898. Retained candidates preserve roots, identities, typing and
 bytes within unchanged limits after completed scratch is released (F-920).
