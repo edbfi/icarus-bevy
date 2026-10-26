@@ -120,6 +120,10 @@ be demonstrated rather than assumed.
   batch disk growth at 20 GiB, then reassess. Targeted Ghidra runs use a 4 GiB
   heap, two CPUs, at most 24 selected functions, 30 seconds per decompilation and
   15 minutes overall. Bound every experiment and clean it up on timeout.
+- Shared Cargo targets can reuse another checkout's executable despite a fresh
+  event naming the current manifest (M-1069). Force the library and selected
+  test to compile on checkout transitions, verify embedded manifest identity
+  and distinct comparison artifacts; preserve frozen inputs and existing caches.
 - At milestones, reconcile stale documentation and clean reproducible scratch
   from owned work as `.agents/rules/work.md` directs. Preserve original inputs,
   private saves/backups, evidence, provenance, licenses and user changes.
