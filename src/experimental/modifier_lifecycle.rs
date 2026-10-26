@@ -1118,7 +1118,8 @@ pub const MODIFIER_COMPARATOR_HELPER_MIN_OPERAND_BYTES: usize =
 ///
 /// Operands are little-endian receiver byte views of at least
 /// [`MODIFIER_COMPARATOR_HELPER_MIN_OPERAND_BYTES`]; use
-/// [`evaluate_modifier_comparator_server_helper`] for checked views. The word's
+/// [`evaluate_modifier_comparator_server_helper`] for checked views; direct
+/// [`evaluate_modifier_comparator_local`] use panics on a shorter view. The word's
 /// meaning, the client counterpart and runtime behavior stay unqualified.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct ModifierComparatorServerHelper {
@@ -1135,14 +1136,13 @@ impl ModifierComparatorOperations for ModifierComparatorServerHelper {
         operand: &Self::Operand,
         scratch_slot: ModifierComparatorScratchSlot,
     ) -> Self::ResultToken {
-        let word = operand
-            .get(
-                MODIFIER_COMPARATOR_HELPER_WORD_OFFSET
-                    ..MODIFIER_COMPARATOR_HELPER_MIN_OPERAND_BYTES,
-            )
-            .and_then(|bytes| <[u8; 8]>::try_from(bytes).ok())
-            .map(u64::from_le_bytes)
-            .expect("server helper operand shorter than its +8 u64");
+        // A shorter view panics with the standard slice-index message.
+        let mut bytes = [0; size_of::<u64>()];
+        bytes.copy_from_slice(
+            &operand[MODIFIER_COMPARATOR_HELPER_WORD_OFFSET
+                ..MODIFIER_COMPARATOR_HELPER_MIN_OPERAND_BYTES],
+        );
+        let word = u64::from_le_bytes(bytes);
         match scratch_slot {
             ModifierComparatorScratchSlot::FirstRight => self.first_right = word,
             ModifierComparatorScratchSlot::SecondLeft => self.second_left = word,

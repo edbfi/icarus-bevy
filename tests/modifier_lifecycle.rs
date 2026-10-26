@@ -1309,3 +1309,11 @@ fn server_helper_operations_write_each_scratch_slot_and_return_it() {
         &left[..]
     ));
 }
+
+#[test]
+#[should_panic(expected = "range end index 16 out of range")]
+fn server_helper_operations_panic_on_short_views_outside_the_checked_entry() {
+    let short = [0_u8; 15];
+    ModifierComparatorServerHelper::default()
+        .normalize(&short[..], ModifierComparatorScratchSlot::FirstRight);
+}
