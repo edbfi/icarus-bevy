@@ -1136,6 +1136,9 @@ pub struct BoundNetwork {
     /// The release's plans of the managers that open only with a save's
     /// state ([`apply_saved_game_state`]).
     pub saved_managers: Vec<(ManagerSlot, ManagerOpenPlan)>,
+    /// Bound to the same release/version/level as this host's controller plan.
+    /// Kept private so an authored declaration cannot replace session identity.
+    authored_session: Option<crate::session_replication::SessionReplication>,
 }
 
 /// Load and validate the configured release profile (bounded regular-file
@@ -1172,6 +1175,20 @@ pub fn bind(network: &NetworkConfig) -> Result<Option<BoundNetwork>> {
         return Ok(None);
     }
     network.validate()?;
+    bind_with_parameters(network, peer_lab_config(network))
+}
+
+/// Bind with explicit authored lab transport/admission parameters. This shares
+/// the production release/session planning path; limits and map come from the
+/// caller rather than a second test-only installation path.
+pub fn bind_with_parameters(
+    network: &NetworkConfig,
+    mut config: PeerLabConfig,
+) -> Result<Option<BoundNetwork>> {
+    if !network.enabled {
+        return Ok(None);
+    }
+    network.validate()?;
     let profile = release_profile(network)?;
     // The tables run reads are loaded here, so a pak without them fails
     // before the socket binds rather than at the first apply.
@@ -1183,7 +1200,6 @@ pub fn bind(network: &NetworkConfig) -> Result<Option<BoundNetwork>> {
                 .with_context(|| format!("load network.data_pak {}", path.display()))
         })
         .transpose()?;
-    let mut config = peer_lab_config(network);
     if let Some(profile) = &profile {
         config = config.with_release_profile(profile);
     }
@@ -1192,6 +1208,19 @@ pub fn bind(network: &NetworkConfig) -> Result<Option<BoundNetwork>> {
             .player_controller_open_plan(admission.map_url, SPAWN_LOCATION)
             .context("compose the PlayerController open plan")?,
         _ => None,
+    };
+    let authored_session = if network.authored_replication.is_some() {
+        let plan = plan
+            .as_ref()
+            .context("authored native replication requires a release session plan")?;
+        Some(crate::session_replication::SessionReplication::new(
+            plan.profile.level.clone(),
+            plan.engine_net_version,
+            MANAGER_FIRST_CHANNEL,
+            plan.spawn_location,
+        )?)
+    } else {
+        None
     };
     let address = SocketAddrV4::new(network.bind, network.port);
     let mut lab = PeerLab::bind_address(address, config)
@@ -1254,6 +1283,7 @@ pub fn bind(network: &NetworkConfig) -> Result<Option<BoundNetwork>> {
         release: profile.map(|profile| profile.pin),
         tables,
         saved_managers,
+        authored_session,
     }))
 }
 
@@ -1262,6 +1292,92 @@ pub fn install(app: &mut App, lab: PeerLab) -> Result<SocketAddr> {
     let address = lab.local_addr().context("network session socket address")?;
     app.insert_resource(lab).add_plugins(PeerLabPlugin);
     Ok(address)
+}
+
+/// Production installation path used by `run`, including optional authored
+/// native replication. All preparation precedes plugin/resource publication.
+pub fn install_configured(
+    app: &mut App,
+    bound: BoundNetwork,
+    network: &NetworkConfig,
+) -> Result<SocketAddr> {
+    ensure!(
+        !app.world().contains_resource::<PeerLab>() && !app.is_plugin_added::<PeerLabPlugin>(),
+        "network lab or plugin already installed"
+    );
+    bound
+        .lab
+        .local_addr()
+        .context("network session socket address")?;
+    if let Some(path) = &network.authored_replication {
+        ensure!(
+            network.enabled,
+            "authored native replication requires enabled networking"
+        );
+        let declaration = crate::native_replication::AuthoredReplication::load(path)?;
+        let mut session = bound
+            .authored_session
+            .context("authored native replication session plan missing")?;
+        let release = bound
+            .release
+            .as_ref()
+            .context("authored native replication release pin missing")?;
+        let admission = bound
+            .lab
+            .config()
+            .admission
+            .as_ref()
+            .context("authored native replication admission plan missing")?;
+        ensure!(
+            bound.lab.config().local_network_version == Some(release.network_checksum)
+                && session.level
+                    == crate::experimental::session_open::map_level_chain(admission.map_url)?,
+            "authored native replication release or level binding changed"
+        );
+        // This production host installs managers consecutively from 6 and
+        // appends saved manager/quest plans consecutively. Reserve the entire
+        // configured range, including opens that encounter transient pressure.
+        // PeerLab still chooses the actual free channel on every connection.
+        let additional = bound
+            .lab
+            .manager_open_count()
+            .checked_add(bound.lab.quest_open_count())
+            .and_then(|count| u32::try_from(count).ok())
+            .context("native replication reserved channel overflow")?;
+        session.first_channel = MANAGER_FIRST_CHANNEL
+            .checked_add(additional)
+            .context("native replication reserved channel overflow")?;
+        let authored_paths: Vec<Vec<_>> = declaration
+            .bindings
+            .iter()
+            .map(|binding| {
+                binding
+                    .archetype
+                    .iter()
+                    .map(|segment| {
+                        crate::experimental::session_open::PathSegment::new(
+                            &segment.path,
+                            segment.checksum,
+                            segment.no_load,
+                        )
+                    })
+                    .collect()
+            })
+            .collect();
+        bound.lab.validate_static_paths(
+            std::iter::once(session.level.as_slice())
+                .chain(authored_paths.iter().map(Vec::as_slice)),
+            bound.saved_managers.iter().map(|(_, plan)| plan),
+        )?;
+        let plan = crate::native_replication::prepare(
+            app.world_mut(),
+            declaration,
+            session,
+            bound.lab.config().packet.packet.limits.max_channels,
+        )?;
+        crate::native_replication::install(app, plan)?;
+    }
+    install(app, bound.lab)
 }
 
 /// Current counts, the counts kept by [`teardown`], or `None` when the
@@ -1293,6 +1409,8 @@ pub fn teardown(world: &mut World) -> Option<SessionCounts> {
         drop(lab);
         world.insert_resource(ClosedSessions(counts));
     }
+    crate::native_replication::teardown(world);
+    crate::session_replication::clear_viewers(world);
     world
         .get_resource::<ClosedSessions>()
         .map(|closed| closed.0.clone())

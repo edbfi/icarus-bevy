@@ -29,7 +29,7 @@ use crate::{
         },
     },
     replication::{NetActor, NetActorFlags, NetViewer, ReplicationFrame, ReplicationSet},
-    simulation::{DomainId, Position},
+    simulation::{DomainId, Position, SimulationSet},
 };
 
 /// The archetype chain (`Default__<Class>_C`, then its package) a replicated
@@ -94,30 +94,68 @@ impl SessionReplication {
 #[derive(Component, Clone, Copy, Debug, PartialEq, Eq)]
 struct SessionViewer(u32);
 
+/// Explicit bridge order, including deferred viewer spawns/removals.
+#[derive(SystemSet, Clone, Debug, Hash, PartialEq, Eq)]
+pub enum SessionReplicationSet {
+    Viewers,
+    Send,
+}
+
+/// Remove only viewers owned by this bridge, including disabled entities.
+pub(crate) fn clear_viewers(world: &mut World) {
+    let entities: Vec<_> = world
+        .iter_entities()
+        .filter(|entity| entity.contains::<SessionViewer>())
+        .map(|entity| entity.id())
+        .collect();
+    for entity in entities {
+        world.despawn(entity);
+    }
+}
+
 /// Add after [`crate::replication::ReplicationPlugin`] with a [`PeerLab`] and
-/// a [`SessionReplication`] resource; both systems skip ticks without them.
+/// a [`SessionReplication`] resource. Sending skips ticks without them; viewer
+/// synchronization still runs so removing either resource clears owned viewers.
 pub struct SessionReplicationPlugin;
 
 impl Plugin for SessionReplicationPlugin {
     fn build(&self, app: &mut App) {
-        app.add_systems(
+        app.configure_sets(
             FixedUpdate,
             (
-                sync_viewers.before(ReplicationSet),
-                open_selected_actors.after(ReplicationSet),
-            )
-                .run_if(resource_exists::<PeerLab>)
-                .run_if(resource_exists::<SessionReplication>),
+                SessionReplicationSet::Viewers
+                    .after(SimulationSet::Gameplay)
+                    .before(ReplicationSet),
+                SessionReplicationSet::Send
+                    .after(ReplicationSet)
+                    .before(SimulationSet::Finish),
+            ),
+        )
+        .add_systems(
+            FixedUpdate,
+            (
+                sync_viewers.in_set(SessionReplicationSet::Viewers),
+                open_selected_actors
+                    .in_set(SessionReplicationSet::Send)
+                    .run_if(resource_exists::<PeerLab>)
+                    .run_if(resource_exists::<SessionReplication>),
+            ),
         );
     }
 }
 
 fn sync_viewers(
     mut commands: Commands,
-    lab: Res<PeerLab>,
-    session: Res<SessionReplication>,
+    lab: Option<Res<PeerLab>>,
+    session: Option<Res<SessionReplication>>,
     viewers: Query<(Entity, &SessionViewer)>,
 ) {
+    let (Some(lab), Some(session)) = (lab, session) else {
+        for (entity, _) in &viewers {
+            commands.entity(entity).despawn();
+        }
+        return;
+    };
     let joined = lab.joined_connections();
     let mut present = Vec::new();
     for (entity, viewer) in &viewers {
