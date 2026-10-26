@@ -92,7 +92,7 @@ function selection(query) {
     return {addresses, modules};
 }
 
-function infoProfile(m, identity) {
+function infoFraming(m, identity) {
     const code = 'ERR_PDB_FRAMING', size = m.streams[1].size;
     need(size >= 48 && size <= LIMITS.info, code);
     const b = m.stream(1, 0, size);
@@ -135,29 +135,46 @@ function infoProfile(m, identity) {
         need(!names.has(name), code); names.add(name);
     }
     need((b.length - at) % 4 === 0, code);
-    const features = new Set();
-    while (at < b.length) {
-        const feature = word();
-        need(feature !== 0x494e494d && feature !== 0x4d544f4e, 'ERR_FASTLINK_UNSUPPORTED');
-        need((feature === 20091201 || feature === 20140508) && !features.has(feature), 'ERR_FEATURE_UNSUPPORTED');
-        features.add(feature);
-        // VC110 terminates LLVM's feature parser. Do not hide an unchecked tail.
-        need(feature !== 20091201 || at === b.length, 'ERR_FEATURE_UNSUPPORTED');
-    }
-    return {named_streams: count, features: [...features]};
+    return {b, count, featureStart: at};
 }
 
-function context(reader, exe, identity) {
-    need(Buffer.isBuffer(exe) && exe.length >= 64 && exe.length <= LIMITS.exe && !shared(exe), 'ERR_INPUT_BOUND');
+function infoFeatures(b, featureStart) {
+    const features = new Set();
+    let at = featureStart;
+    const refuse = (code, reason, feature) => ({features: [...features], refusal: {
+        code, reason, word_index: (at - featureStart) / 4 - 1, word_offset: at - 4,
+        word_u32: feature, remaining_words: (b.length - at) / 4,
+    }});
+    while (at < b.length) {
+        const feature = b.readUInt32LE(at); at += 4;
+        if (feature === 0x494e494d) return refuse('ERR_FASTLINK_UNSUPPORTED', 'minimal_debug_info', feature);
+        if (feature === 0x4d544f4e) return refuse('ERR_FASTLINK_UNSUPPORTED', 'no_type_merge', feature);
+        if (feature !== 20091201 && feature !== 20140508) return refuse('ERR_FEATURE_UNSUPPORTED', 'unknown_signature', feature);
+        if (features.has(feature)) return refuse('ERR_FEATURE_UNSUPPORTED', 'duplicate_vc140', feature);
+        features.add(feature);
+        // VC110 terminates LLVM's feature parser. Do not hide an unchecked tail.
+        if (feature === 20091201 && at !== b.length) return refuse('ERR_FEATURE_UNSUPPORTED', 'vc110_nonterminal', feature);
+    }
+    return {features: [...features], refusal: null};
+}
+
+function infoProfile(m, identity) {
+    const {b, count, featureStart} = infoFraming(m, identity);
+    const {features, refusal} = infoFeatures(b, featureStart);
+    if (refusal !== null) throw new MetadataError(refusal.code);
+    return {named_streams: count, features};
+}
+
+function identityInput(identity) {
     need(identity && typeof identity.guid_bytes === 'string' && /^[0-9a-f]{32}$/.test(identity.guid_bytes) &&
         Number.isInteger(identity.age) && identity.age > 0 && identity.age <= 0xffffffff, 'ERR_IDENTITY');
+}
+
+function boundedReader(reader) {
     need(reader && Number.isSafeInteger(reader.size) && reader.size >= 56 && reader.size <= LIMITS.pdb &&
         typeof reader.read === 'function', 'ERR_INPUT_BOUND');
-    let image;
-    try { image = parse(exe); } catch { throw new MetadataError('ERR_SOURCE_MAPPING'); }
-    need(canonical(image.base), 'ERR_SOURCE_MAPPING');
     const size = reader.size;
-    const m = msf({size, read(o, n) {
+    return {size, read(o, n) {
         need(Number.isSafeInteger(o) && Number.isSafeInteger(n) && o >= 0 && n >= 0 &&
             n <= LIMITS.read && o + n <= size, 'ERR_INPUT_BOUND');
         let b;
@@ -165,7 +182,37 @@ function context(reader, exe, identity) {
         need(Buffer.isBuffer(b) && b.length === n, 'ERR_SHORT_READ');
         need(!shared(b), 'ERR_INPUT_BOUND');
         return Buffer.from(b);
-    }});
+    }};
+}
+
+// Explicit info-only diagnostic: accepted_profile grants no procedure, body,
+// ownership or complete input-identity qualification. Only stream 1 is opened.
+function diagnoseInfoFeatures(reader, identity) {
+    try {
+        identityInput(identity);
+        const {b, featureStart} = infoFraming(msf(boundedReader(reader)), identity);
+        const {refusal} = infoFeatures(b, featureStart);
+        const result = {
+            profile: 'MSFPDB7_Info_feature_guard_diagnostic_v1', info_bytes: b.length,
+            feature_start_offset: featureStart, feature_word_count: (b.length - featureStart) / 4,
+            status: refusal === null ? 'accepted_profile' : 'refused_profile', refusal,
+        };
+        need(Buffer.byteLength(JSON.stringify(result) + '\n') <= 1024, 'ERR_OUTPUT_BOUND');
+        return result;
+    } catch (error) {
+        if (error instanceof MetadataError) throw error;
+        throw new MetadataError('ERR_PDB_FRAMING');
+    }
+}
+
+function context(reader, exe, identity) {
+    need(Buffer.isBuffer(exe) && exe.length >= 64 && exe.length <= LIMITS.exe && !shared(exe), 'ERR_INPUT_BOUND');
+    identityInput(identity);
+    const input = boundedReader(reader);
+    let image;
+    try { image = parse(exe); } catch { throw new MetadataError('ERR_SOURCE_MAPPING'); }
+    need(canonical(image.base), 'ERR_SOURCE_MAPPING');
+    const m = msf(input);
     const info = infoProfile(m, identity);
     need(m.streams[3].size >= 64 && m.streams[3].size !== 0xffffffff, 'ERR_PDB_FRAMING');
     const h = m.stream(3, 0, 64);
@@ -429,4 +476,4 @@ function inspect(reader, exe, identity, query) {
     }
 }
 
-module.exports = {inspect, LIMITS};
+module.exports = {inspect, diagnoseInfoFeatures, LIMITS};

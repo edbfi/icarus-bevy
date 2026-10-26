@@ -5,7 +5,7 @@
 const test = require('node:test');
 const a = require('node:assert/strict');
 const {createHash} = require('node:crypto');
-const {inspect, LIMITS} = require('../pdb_procedure_ranges.cjs');
+const {inspect, diagnoseInfoFeatures, LIMITS} = require('../pdb_procedure_ranges.cjs');
 const {fixture, pack, proc, record, info, segmentMap, repeatedModule, repeatedContributions,
     SC60, SC2, VA} = require('./pdb_procedure_ranges_fixtures.cjs');
 
@@ -14,12 +14,23 @@ const run = (f = fixture(), q = query()) => {
     const p = pack(f); return inspect(p.reader, p.exe, p.identity, q);
 };
 function fails(f, code, q = query()) {
-    a.throws(() => run(f, q), error => {
+    redactedThrows(() => run(f, q), code);
+}
+function redactedThrows(call, code) {
+    a.throws(call, error => {
         a.equal(error.code, code); a.equal(error.message, code);
         a.deepEqual(Object.keys(error), ['code']);
         a.equal(JSON.stringify(error), JSON.stringify({code}));
         return true;
     });
+}
+function diagnose(f = fixture()) {
+    const p = pack(f); return diagnoseInfoFeatures(p.reader, p.identity);
+}
+function diagnosticResult(b, featureStart, wordCount, refusal = null) {
+    return {profile: 'MSFPDB7_Info_feature_guard_diagnostic_v1', info_bytes: b.length,
+        feature_start_offset: featureStart, feature_word_count: wordCount,
+        status: refusal === null ? 'accepted_profile' : 'refused_profile', refusal};
 }
 function sectionChange(f, change) {
     change(f.exe, f.table);
@@ -391,6 +402,197 @@ test('FASTLINK, NoTypeMerge, unknown feature signatures and invalid VC110 tail r
     fails(fixture({info: info({features: [20140508, 20140508]})}), 'ERR_FEATURE_UNSUPPORTED');
 });
 
+test('explicit info diagnostics accept only the existing profiles with a closed bounded schema', () => {
+    for (const names of [[], [{name: 'MININOTM/private-name', stream: 8}],
+        [{name: 'MINI', stream: 8}, {name: 'NOTM', stream: 9}]]) {
+        for (const features of [[], [20091201], [20140508], [20140508, 20091201]]) {
+            const b = info({names, features}), result = diagnose(fixture({info: b}));
+            // Empty map = 48 bytes; each name adds its NUL, pair, and the
+            // nonempty present vector adds one word for these small maps.
+            const start = 48 + names.reduce((n, x) => n + Buffer.byteLength(x.name) + 1 + 8, 0) +
+                (names.length ? 4 : 0);
+            a.deepEqual(result, diagnosticResult(b, start, features.length));
+            a.ok(Buffer.byteLength(JSON.stringify(result) + '\n') <= 1024);
+            a.ok(!JSON.stringify(result).includes('private-name'));
+        }
+    }
+});
+
+test('diagnostics identify every first feature guard with exact unsigned words and offset arithmetic', () => {
+    const vc110 = 20091201, vc140 = 20140508, mini = 0x494e494d, notm = 0x4d544f4e;
+    const cases = [
+        [[0xffffffff, mini], 0, 'ERR_FEATURE_UNSUPPORTED', 'unknown_signature'],
+        [[vc140, 0, notm], 1, 'ERR_FEATURE_UNSUPPORTED', 'unknown_signature'],
+        [[vc140, vc140, mini], 1, 'ERR_FEATURE_UNSUPPORTED', 'duplicate_vc140'],
+        [[vc140, vc140, vc110], 1, 'ERR_FEATURE_UNSUPPORTED', 'duplicate_vc140'],
+        [[mini, vc140, notm], 0, 'ERR_FASTLINK_UNSUPPORTED', 'minimal_debug_info'],
+        [[vc140, mini, vc110], 1, 'ERR_FASTLINK_UNSUPPORTED', 'minimal_debug_info'],
+        [[notm, mini], 0, 'ERR_FASTLINK_UNSUPPORTED', 'no_type_merge'],
+        [[vc140, notm, mini], 1, 'ERR_FASTLINK_UNSUPPORTED', 'no_type_merge'],
+    ];
+    for (const prefix of [[], [vc140]]) for (const suffix of [[vc110], [vc140], [0], [mini], [notm],
+        [mini, notm, 0xffffffff]]) {
+        cases.push([[...prefix, vc110, ...suffix], prefix.length, 'ERR_FEATURE_UNSUPPORTED', 'vc110_nonterminal']);
+    }
+    for (const [features, index, code, reason] of cases) {
+        const b = info({features}), f = fixture({info: b}), result = diagnose(f);
+        a.deepEqual(result, diagnosticResult(b, 48, features.length, {code, reason,
+            word_index: index, word_offset: 48 + index * 4, word_u32: features[index],
+            remaining_words: features.length - index - 1}));
+        a.ok(Buffer.byteLength(JSON.stringify(result) + '\n') <= 1024);
+        fails(f, code); // Ordinary API still throws only its original code.
+        fails(f, code, query({module_indices: [0]}));
+    }
+});
+
+test('diagnostic feature walking never interprets any word after its first refusal', () => {
+    const readWord = Buffer.prototype.readUInt32LE;
+    for (const prefix of [[0xffffffff], [0x494e494d], [0x4d544f4e],
+        [20140508, 20140508], [20140508, 20091201]]) {
+        const features = [...prefix, ...Array(6 - prefix.length).fill(0x12345678)];
+        const b = info({features}), p = pack(fixture({info: b})), visited = [];
+        // This fixture's 72-byte info buffer is distinct from its 56-byte
+        // superblock read, 60-byte directory, and four-byte block map.
+        a.equal(b.length, 72); a.equal(p.directory.length, 60);
+        Buffer.prototype.readUInt32LE = function(offset = 0) {
+            if (this.length === b.length && offset >= 48) {
+                a.ok(offset < 48 + prefix.length * 4, 'feature suffix must remain uninterpreted');
+                visited.push(offset);
+            }
+            return readWord.call(this, offset);
+        };
+        try { a.equal(diagnoseInfoFeatures(p.reader, p.identity).status, 'refused_profile'); }
+        finally { Buffer.prototype.readUInt32LE = readWord; }
+        a.deepEqual(visited, prefix.map((_, i) => 48 + i * 4));
+    }
+});
+
+test('accepted and refused diagnostics read only MSF framing and info, even with invalid later streams', () => {
+    for (const [features, status] of [[[], 'accepted_profile'], [[20140508, 20091201], 'accepted_profile'],
+        [[20140508, 20140508], 'refused_profile'], [[20091201, 0x494e494d], 'refused_profile'],
+        [[0x4d544f4e], 'refused_profile']]) {
+        const f = fixture({info: info({names: [{name: 'NEVER_EXPORT_NAME', stream: 9}], features})});
+        for (const index of [2, 4, 5, 6, 7]) f.streams[index] = Buffer.from('NEVER_EXPORT_OTHER_STREAM');
+        const p = pack(f), allowed = new Set([0, 3, 4, ...p.entries[1].pages]);
+        for (const index of [3, 8, 9]) f.streams[index].fill(0xff);
+        const reader = {size: p.reader.size, read(o, n) {
+            a.ok(n <= LIMITS.read);
+            for (let page = Math.floor(o / 4096); page <= Math.floor((o + n - 1) / 4096); page++) {
+                a.ok(allowed.has(page), 'diagnostic may not read DBI/module/symbol/type/section streams');
+            }
+            return p.reader.read(o, n);
+        }};
+        const result = diagnoseInfoFeatures(reader, p.identity), json = JSON.stringify(result);
+        a.equal(result.status, status);
+        for (const secret of ['NEVER_EXPORT_NAME', 'NEVER_EXPORT_OTHER_STREAM', p.identity.guid_bytes,
+            'selected_modules', 'records', 'extent']) {
+            a.ok(!json.includes(secret));
+        }
+        a.ok(p.reads.some(r => p.entries[1].pages.includes(Math.floor(r.offset / 4096))));
+    }
+    const f = fixture(); f.streams[3] = null; f.streams[8] = null; f.streams[9] = null;
+    a.equal(diagnose(f).status, 'accepted_profile');
+    fails(f, 'ERR_PDB_FRAMING');
+});
+
+test('diagnostic offsets remain info-relative across MSF pages and at the info ceiling', () => {
+    for (const bytes of [4094, 4096, 4098, LIMITS.info]) {
+        const b = info({names: [{name: 'A'.repeat(bytes - 69), stream: 8}],
+            features: [20140508, 0xffffffff]});
+        a.equal(b.length, bytes);
+        const result = diagnose(fixture({info: b}));
+        a.deepEqual(result, diagnosticResult(b, bytes - 8, 2, {code: 'ERR_FEATURE_UNSUPPORTED',
+            reason: 'unknown_signature', word_index: 1, word_offset: bytes - 4,
+            word_u32: 0xffffffff, remaining_words: 0}));
+    }
+    // Many framed words are counted without walking the suffix after VC110.
+    const features = [20091201, ...Array((LIMITS.info - 48) / 4 - 1).fill(0x494e494d)];
+    const b = info({features}); a.equal(b.length, LIMITS.info);
+    a.deepEqual(diagnose(fixture({info: b})), diagnosticResult(b, 48, features.length, {
+        code: 'ERR_FEATURE_UNSUPPORTED', reason: 'vc110_nonterminal', word_index: 0,
+        word_offset: 48, word_u32: 20091201, remaining_words: features.length - 1}));
+    const full = info({names: [{name: 'A'.repeat(LIMITS.info - 65), stream: 8}]});
+    a.equal(full.length, LIMITS.info); a.equal(diagnose(fixture({info: full})).status, 'accepted_profile');
+    redactedThrows(() => diagnose(fixture({info: Buffer.concat([full, Buffer.alloc(1)])})), 'ERR_PDB_FRAMING');
+});
+
+test('diagnostics enforce identity and reader bounds before I/O with unchanged code-only errors', () => {
+    const p = pack(fixture()); let reads = 0;
+    const reader = {size: p.reader.size, read(o, n) { reads++; return p.reader.read(o, n); }};
+    for (const identity of [undefined, null, {}, {guid_bytes: p.identity.guid_bytes, age: 0},
+        {...p.identity, age: 0x100000000}, {...p.identity, age: 1.5},
+        {...p.identity, guid_bytes: p.identity.guid_bytes.toUpperCase()}]) {
+        redactedThrows(() => diagnoseInfoFeatures(reader, identity), 'ERR_IDENTITY');
+    }
+    for (const input of [null, {}, {size: 56}, ...[0, 55, LIMITS.pdb + 1, NaN, Infinity, 56.5]
+        .map(size => ({...reader, size}))]) {
+        redactedThrows(() => diagnoseInfoFeatures(input, p.identity), 'ERR_INPUT_BOUND');
+    }
+    a.equal(reads, 0);
+    for (const off of [0, 8, 12]) {
+        const f = fixture(); f.streams[1][off] ^= 1;
+        redactedThrows(() => diagnose(f), 'ERR_IDENTITY');
+    }
+    for (const size of [56, LIMITS.pdb]) {
+        redactedThrows(() => diagnoseInfoFeatures({size, read() {
+            reads++; throw Error('/private/NEVER_EXPORT');
+        }}, p.identity), 'ERR_PDB_FRAMING');
+    }
+    a.equal(reads, 2); // Both inclusive reader size bounds reach the first read.
+});
+
+test('diagnostics retain structural MSF and named-map bounds as framing errors', () => {
+    for (const change of [p => p.superblock.writeUInt32LE(512, 32),
+        p => p.superblock.writeUInt32LE(LIMITS.directory + 4, 44),
+        p => p.directory.writeUInt32LE(LIMITS.streams + 1),
+        p => p.blockmap.writeUInt32LE(1),
+        p => p.directory.writeUInt32LE(0xffffffff, 4 + 1 * 4)]) {
+        const p = pack(fixture()); change(p);
+        redactedThrows(() => diagnoseInfoFeatures(p.reader, p.identity), 'ERR_PDB_FRAMING');
+    }
+    for (const change of [b => b.writeUInt32LE(LIMITS.info * 8 + 1, 38),
+        b => b.writeUInt32LE(4, 34)]) {
+        const b = info({names: [{name: 'a', stream: 8}], features: [0x494e494d]}); change(b);
+        redactedThrows(() => diagnose(fixture({info: b})), 'ERR_PDB_FRAMING');
+    }
+});
+
+test('diagnostic shared and foreign-realm shared reads, short reads and reader exceptions remain redacted', () => {
+    const {runInNewContext} = require('node:vm'), foreign = runInNewContext('SharedArrayBuffer');
+    const p = pack(fixture());
+    for (const Shared of [SharedArrayBuffer, foreign]) for (const infoOnly of [false, true]) {
+        const reader = {size: p.reader.size, read(o, n) {
+            const source = p.reader.read(o, n);
+            if (infoOnly && !p.entries[1].pages.includes(Math.floor(o / 4096))) return source;
+            const b = Buffer.from(new Shared(n)); source.copy(b); return b;
+        }};
+        redactedThrows(() => diagnoseInfoFeatures(reader, p.identity), 'ERR_INPUT_BOUND');
+    }
+    for (const infoOnly of [false, true]) for (const value of [Buffer.alloc(0), Buffer.alloc(55),
+        new Uint8Array(56), null, 'throw']) {
+        const reader = {size: p.reader.size, read(o, n) {
+            if (infoOnly && !p.entries[1].pages.includes(Math.floor(o / 4096))) return p.reader.read(o, n);
+            if (value === 'throw') throw Error('/private/NEVER_EXPORT');
+            return value;
+        }};
+        redactedThrows(() => diagnoseInfoFeatures(reader, p.identity),
+            value === 'throw' ? 'ERR_PDB_FRAMING' : 'ERR_SHORT_READ');
+    }
+});
+
+test('diagnostics copy exact reader results before another read can reuse their backing storage', () => {
+    const f = fixture({info: info({names: [{name: 'A'.repeat(4100), stream: 8}],
+        features: [20140508, 20091201]})});
+    while (f.streams.length < 1500) f.streams.push(null); // Two directory pages retain the block map.
+    const p = pack(f), scratch = Buffer.alloc(4096);
+    a.ok(p.directory.length > 4096);
+    const reader = {size: p.reader.size, read(o, n) {
+        a.ok(n <= scratch.length && n <= LIMITS.read);
+        scratch.fill(0); p.reader.read(o, n).copy(scratch); return scratch.subarray(0, n);
+    }};
+    a.deepEqual(diagnoseInfoFeatures(reader, p.identity), diagnoseInfoFeatures(p.reader, p.identity));
+});
+
 test('info named-map lengths, occupancy, bit vectors, keys, stream IDs and feature framing are validated', () => {
     const variants = [];
     const mutate = fn => { const b = info({names: [{name: 'a', stream: 8}]}); fn(b); variants.push(b); };
@@ -406,13 +608,19 @@ test('info named-map lengths, occupancy, bit vectors, keys, stream IDs and featu
     mutate(b => b.writeUInt32LE(0xffffffff, 58));
     mutate(b => b.writeUInt32LE(2, 58)); // Absent TPI stream.
     variants.push(Buffer.concat([info(), Buffer.from([1])]));
+    for (const length of [1, 2, 3]) {
+        variants.push(Buffer.concat([info({features: [0x494e494d]}), Buffer.alloc(length)]));
+    }
     variants.push(info().subarray(0, 28));
     const duplicate = info({names: [{name: 'same', stream: 8}, {name: 'same', stream: 9}]}); variants.push(duplicate);
     // Present and deleted intersect (add a deleted word before the key/value).
     const base = info({names: [{name: 'a', stream: 8}]}); base.writeUInt32LE(1, 50);
     const bit = Buffer.alloc(4); bit.writeUInt32LE(1);
     variants.push(Buffer.concat([base.subarray(0, 54), bit, base.subarray(54)]));
-    for (const b of variants) fails(fixture({info: b}), 'ERR_PDB_FRAMING');
+    for (const b of variants) {
+        fails(fixture({info: b}), 'ERR_PDB_FRAMING');
+        redactedThrows(() => diagnose(fixture({info: b})), 'ERR_PDB_FRAMING');
+    }
 });
 
 test('identity, DBI age/machine, RSDS, section equality, absent streams and OMAP fail closed', () => {
