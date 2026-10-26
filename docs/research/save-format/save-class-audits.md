@@ -51,8 +51,9 @@ Coordinates, layouts and semantics are authored; ordinary import stays closed.
 Reload uses matching `u16` tenths operands but unordered guards differ;
 primary lifecycle, scaling, init and callback qualification: F-930. The
 local removal selector and comparator order have paired bounded traces and authored
-models (F-937). Callee effects, owner/row meanings, subclasses and live behavior
-remain open.
+models (F-937). The helper targets have public-symbol matches but no covering
+exception range (M-1050); procedure extents and callee effects remain open, as do
+owner/row meanings, subclasses and live behavior.
 
 No saved class identifier, field or type name, or recorder version tells the
 older server from the newer client, and the prospect carries no version string
