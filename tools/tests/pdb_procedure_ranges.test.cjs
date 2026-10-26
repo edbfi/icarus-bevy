@@ -12,6 +12,7 @@ const {inspect, diagnoseInfoFeatures, inspectNamedStreamNiMacZero,
     inspectNamedStreamNiMacZeroAbsoluteTailFrameZeroInlineesExact,
     diagnoseUnsupportedSymbolNamedStreamNiMacZeroAbsoluteTailFrameZero,
     diagnoseUnsupportedSymbolNamedStreamNiMacZeroAbsoluteTailFrameZeroInlineesExact,
+    diagnoseThunk32OrdinalNamedStreamNiMacZeroAbsoluteTailFrameZeroInlineesExact,
     LIMITS} = require('../pdb_procedure_ranges.cjs');
 const {fixture, pack, proc, record, info, namedStreamNiMacZeroInfo, segmentMap, repeatedModule, repeatedContributions,
     SC60, SC2, VA} = require('./pdb_procedure_ranges_fixtures.cjs');
@@ -4127,5 +4128,550 @@ test('inlinees unsupported diagnostic leaves previous API results, profiles, err
             if (kind !== 0x1168) unsupportedInlineesParity(f, {kind});
             else unsupportedInlineesParity(f, {code: 'ERR_MODULE_FRAMING'});
         }
+    }
+});
+
+const THUNK_ORDINAL_PROFILE = 'MSF7_procedure_thunk32_ordinal_exact_inlinees_diagnostic_v1';
+function thunkOrdinal(f = zeroTailFixture(), q = query()) {
+    const p = pack(f);
+    return diagnoseThunk32OrdinalNamedStreamNiMacZeroAbsoluteTailFrameZeroInlineesExact(p.reader, p.exe, p.identity, q);
+}
+function thunkOrdinalResult(result, ordinal = null) {
+    a.deepEqual(Reflect.ownKeys(result), ['profile', 'status', 'stage', 'guard', 'ordinal_u8']);
+    a.deepEqual(result, {profile: THUNK_ORDINAL_PROFILE,
+        status: ordinal === null ? 'accepted_profile' : 'refused_symbol',
+        stage: ordinal === null ? 'complete' : 'procedure_metadata',
+        guard: ordinal === null ? null : 'unsupported_kind', ordinal_u8: ordinal});
+    a.ok(Buffer.byteLength(JSON.stringify(result) + '\n') <= 1024);
+}
+// Synthetic raw layout only; arbitrary bytes deliberately make no full thunk
+// grammar assertion (in particular, the name need not contain a terminator).
+function ordinalRecord(ordinal, bytes = 28, fill = 0xa7) {
+    const b = record(0x1102, bytes); b.fill(fill, 4); b[24] = ordinal; return b;
+}
+function invokeThunk(p, reader = p.reader, q = query()) {
+    return diagnoseThunk32OrdinalNamedStreamNiMacZeroAbsoluteTailFrameZeroInlineesExact(reader, p.exe, p.identity, q);
+}
+function modulePhysicalIntervals(p, stream, start, end) {
+    const intervals = [];
+    for (let pos = start; pos < end;) {
+        const take = Math.min(end - pos, 4096 - pos % 4096);
+        intervals.push({offset: p.entries[stream].pages[Math.floor(pos / 4096)] * 4096 + pos % 4096, count: take});
+        pos += take;
+    }
+    return intervals;
+}
+function observedModuleIntervals(p, stream) {
+    const intervals = [];
+    for (const read of p.reads) for (let i = 0; i < p.entries[stream].pages.length; i++) {
+        const page = p.entries[stream].pages[i] * 4096,
+            start = Math.max(read.offset, page), end = Math.min(read.offset + read.count, page + 4096);
+        if (start < end) intervals.push({offset: i * 4096 + start - page, count: end - start});
+    }
+    return intervals;
+}
+function excludesPhysical(p, forbidden, fault = null) {
+    const attempts = [];
+    return {attempts, reader: {size: p.reader.size, read(o, n) {
+        attempts.push({offset: o, count: n});
+        for (const span of forbidden) if (o < span.offset + span.count && span.offset < o + n) {
+            if (fault !== null) return fault(o, n);
+            throw Error('NEVER_EXPORT/excluded-physical-sentinel');
+        }
+        return p.reader.read(o, n);
+    }}};
+}
+
+test('thunk ordinal retains all 256 raw u8 values without interpreting fixed fields, invalid names or tails', () => {
+    for (let ordinal = 0; ordinal <= 255; ordinal++) for (const fill of [0, 0xff]) {
+        const b = ordinalRecord(ordinal, ordinal % 2 ? 28 : 64, fill);
+        thunkOrdinalResult(thunkOrdinal(zeroTailFixture({modules: [{records: [b]}]})), ordinal);
+    }
+    for (const bytes of [28, 32, 65532, 65536]) {
+        const b = ordinalRecord(231, bytes); b.fill(0xf3, 25);
+        thunkOrdinalResult(thunkOrdinal(zeroTailFixture({modules: [{records: [b]}]})), 231);
+    }
+});
+
+test('thunk exact reads exclude physical fixed fields, suffix and later records across MSF and old cache boundaries', () => {
+    for (const thunkAt of [4, 4068, 4072, 4092, 65508, 65512, 65532, 65536]) {
+        const before = thunkAt === 4 ? [] : [inlineesRecord([0xffffffff, 0]), proc({name: 'earlier name'})];
+        const used = 4 + before.reduce((n, b) => n + b.length, 0);
+        if (used < thunkAt) before.push(record(0x7777, thunkAt - used));
+        const b = ordinalRecord(197, 65536), later = record(0x7777, 65536);
+        const p = pack(zeroTailFixture({modules: [{records: [...before, b, later]}, {records: [proc()]}]}));
+        const forbidden = [...modulePhysicalIntervals(p, 9, thunkAt + 4, thunkAt + 24),
+            ...modulePhysicalIntervals(p, 9, thunkAt + 25, p.modules[0].symbols.length),
+            ...modulePhysicalIntervals(p, 12, 0, p.modules[1].body.length)];
+        const guarded = excludesPhysical(p, forbidden);
+        thunkOrdinalResult(invokeThunk(p, guarded.reader), 197);
+        const observed = observedModuleIntervals(p, 9), expected = [{offset: 0, count: 4},
+            {offset: p.modules[0].symbols.length, count: 4}];
+        let at = 4;
+        for (const previous of before) {
+            expected.push({offset: at, count: 4});
+            if ([0x110f, 0x1168].includes(previous.readUInt16LE(2))) {
+                for (const span of modulePhysicalIntervals(p, 9, at, at + previous.length)) {
+                    const pageIndex = p.entries[9].pages.indexOf(Math.floor(span.offset / 4096));
+                    expected.push({offset: pageIndex * 4096 + span.offset % 4096, count: span.count});
+                }
+            }
+            at += previous.length;
+        }
+        expected.push({offset: thunkAt, count: 4}, {offset: thunkAt + 24, count: 1});
+        a.deepEqual(observed, expected);
+        a.deepEqual(observedModuleIntervals(p, 12), []);
+        a.ok(guarded.attempts.every(r => r.count <= LIMITS.read));
+    }
+});
+
+test('ordinal path scans every preceding module without cache prefetch and stops at the first selected thunk', () => {
+    const first = [inlineesRecord([0xffffffff]), proc(), record(0x7777, 65536)], second =
+        [inlineesRecord(), proc(), ordinalRecord(82), ordinalRecord(91)];
+    const p = pack(zeroTailFixture({modules: [{records: first}, {records: second}, {records: [ordinalRecord(17)]}]}));
+    const at = 4 + second[0].length + second[1].length;
+    const forbidden = [...modulePhysicalIntervals(p, 12, at + 4, at + 24),
+        ...modulePhysicalIntervals(p, 12, at + 25, p.modules[1].symbols.length),
+        ...modulePhysicalIntervals(p, 15, 0, p.modules[2].body.length)];
+    thunkOrdinalResult(invokeThunk(p, excludesPhysical(p, forbidden).reader, query({module_indices: [2, 1, 0]})), 82);
+    const oldCacheRead = p.entries[9].pages[0] * 4096;
+    a.ok(!p.reads.some(r => r.offset === oldCacheRead && r.count === 4096));
+    const scoped = pack(zeroTailFixture({modules: [{records: first}, {records: second}, {records: [ordinalRecord(17)]}]}));
+    thunkOrdinalResult(invokeThunk(scoped, scoped.reader, query({module_indices: [2]})), 17);
+});
+
+test('required earlier procedure and inlinees bodies cross MSF and cache boundaries without touching a later thunk payload', () => {
+    for (const before of [[proc({name: Buffer.alloc(65496, 0x41)}), inlineesRecord(Array(16318).fill(0xffffffff))],
+        [record(0x7777, 4088), proc({name: Buffer.alloc(65496, 0x42)}), inlineesRecord([0xffffffff, 0])],
+        [record(0x7777, 65524), inlineesRecord([0, 0xffffffff]), proc()]]) {
+        const at = 4 + before.reduce((n, b) => n + b.length, 0),
+            p = pack(zeroTailFixture({modules: [{records: [...before, ordinalRecord(139, 65536)]}]}));
+        const forbidden = [...modulePhysicalIntervals(p, 9, at + 4, at + 24),
+            ...modulePhysicalIntervals(p, 9, at + 25, p.modules[0].symbols.length)];
+        thunkOrdinalResult(invokeThunk(p, excludesPhysical(p, forbidden).reader), 139);
+        const expected = [{offset: 0, count: 4}, {offset: p.modules[0].symbols.length, count: 4}];
+        let pos = 4;
+        for (const b of before) {
+            expected.push({offset: pos, count: 4});
+            if ([0x110f, 0x1168].includes(b.readUInt16LE(2))) {
+                for (let done = 0; done < b.length;) {
+                    const take = Math.min(b.length - done, 4096 - (pos + done) % 4096);
+                    expected.push({offset: pos + done, count: take}); done += take;
+                }
+            }
+            pos += b.length;
+        }
+        expected.push({offset: at, count: 4}, {offset: at + 24, count: 1});
+        a.deepEqual(observedModuleIntervals(p, 9), expected);
+    }
+});
+
+test('new exact diagnostic can avoid an excluded-byte reader fault that legacy speculative prefetch encounters', () => {
+    const f = zeroTailFixture({modules: [{records: [proc(), inlineesRecord(), ordinalRecord(157, 64)]}]}),
+        at = 4 + proc().length + inlineesRecord().length;
+    const exact = pack(f), cached = pack(f), excluded = p => [
+        ...modulePhysicalIntervals(p, 9, at + 4, at + 24),
+        ...modulePhysicalIntervals(p, 9, at + 25, p.modules[0].symbols.length)];
+    thunkOrdinalResult(invokeThunk(exact, excludesPhysical(exact, excluded(exact)).reader), 157);
+    redactedThrows(() => inspectNamedStreamNiMacZeroAbsoluteTailFrameZeroInlineesExact(
+        excludesPhysical(cached, excluded(cached)).reader, cached.exe, cached.identity, query()), 'ERR_PDB_FRAMING');
+    // Distinct read/error timing is intentional for the new wrapper only.
+    unsupportedInlineesParity(f, {kind: 0x1102});
+});
+
+test('thunk n=4..24, misalignment, overrun and truncated prefixes refuse before any ordinal read', () => {
+    for (let n = 4; n <= 27; n++) {
+        const b = record(0x1102, 28); b.writeUInt16LE(n - 2);
+        const p = pack(zeroTailFixture({modules: [{records: [b]}]})), forbidden = modulePhysicalIntervals(p, 9, 8, 32);
+        redactedThrows(() => invokeThunk(p, excludesPhysical(p, forbidden).reader), 'ERR_MODULE_FRAMING');
+        a.deepEqual(observedModuleIntervals(p, 9), [{offset: 0, count: 4}, {offset: 32, count: 4}, {offset: 4, count: 4}]);
+    }
+    for (const length of [0, 1, 29, 65535]) {
+        const b = ordinalRecord(3); b.writeUInt16LE(length);
+        const p = pack(zeroTailFixture({modules: [{records: [b]}]}));
+        redactedThrows(() => invokeThunk(p, excludesPhysical(p, modulePhysicalIntervals(p, 9, 8, 32)).reader),
+            'ERR_MODULE_FRAMING');
+    }
+    for (const size of [5, 6, 7]) {
+        const body = Buffer.alloc(size + 4); body.writeUInt32LE(4);
+        const p = pack(zeroTailFixture({modules: [{sym: size, body}]}));
+        redactedThrows(() => invokeThunk(p), 'ERR_MODULE_FRAMING');
+    }
+});
+
+test('all other 53 unsupported kinds and external guards retain priority, with no forward search or ordinal I/O', () => {
+    const external = [0x115f, 0x1160, 0x1161, 0x1167];
+    a.equal(inlineesGuardedKinds.filter(k => k !== 0x1102).length, 53);
+    for (const kind of [...inlineesGuardedKinds.filter(k => k !== 0x1102), ...external]) {
+        const f = zeroTailFixture({modules: [{records: [record(kind), ordinalRecord(44)]}]}), p = pack(f);
+        const forbidden = modulePhysicalIntervals(p, 9, 8, p.modules[0].symbols.length);
+        redactedThrows(() => invokeThunk(p, excludesPhysical(p, forbidden).reader),
+            external.includes(kind) ? 'ERR_FASTLINK_UNSUPPORTED' : 'ERR_SYMBOL_UNSUPPORTED');
+        const across = pack(zeroTailFixture({modules: [{records: [record(kind)]}, {records: [ordinalRecord(44)]}]}));
+        redactedThrows(() => invokeThunk(across, excludesPhysical(across,
+            modulePhysicalIntervals(across, 12, 0, across.modules[1].body.length)).reader,
+        query({module_indices: [1, 0]})), external.includes(kind) ? 'ERR_FASTLINK_UNSUPPORTED' : 'ERR_SYMBOL_UNSUPPORTED');
+        thunkOrdinalResult(thunkOrdinal(zeroTailFixture({modules: [{records: [ordinalRecord(44), record(kind)]}]})), 44);
+    }
+    for (const [bad, code] of [[inlineesRecord([], {count: 1}), 'ERR_MODULE_FRAMING'],
+        [proc({segment: 0}), 'ERR_SOURCE_MAPPING'], [proc({size: 0}), 'ERR_PROCEDURE_SIZE']]) {
+        const p = pack(zeroTailFixture({modules: [{records: [bad, ordinalRecord(44)]}]}));
+        const at = 4 + bad.length;
+        redactedThrows(() => invokeThunk(p, excludesPhysical(p,
+            modulePhysicalIntervals(p, 9, at, p.modules[0].symbols.length)).reader), code);
+    }
+});
+
+test('thunk ordinal preserves context, global module, module header and reference-count prerequisites', () => {
+    const cases = [
+        [f => { f.streams[1].writeUInt32LE(0, 8); }, 'ERR_IDENTITY'],
+        [f => { f.streams[3].writeUInt16LE(8, f.optionalAt + 6); }, 'ERR_OMAP_UNSUPPORTED'],
+        [f => { f.streams[3].writeUInt16LE(0x100, dbiModuleAt(f, 1) + 32); }, 'ERR_REFERENCE_UNSUPPORTED'],
+        [f => { f.streams[3].writeUInt16LE(9, dbiModuleAt(f, 1) + 34); }, 'ERR_MODULE_BOUND'],
+        [f => { f.streams[9].writeUInt32LE(2); }, 'ERR_MODULE_FRAMING'],
+        [f => { f.streams[9].writeUInt32LE(1, f.modules[0].symbols.length); }, 'ERR_MODULE_FRAMING'],
+    ];
+    for (const [change, code] of cases) {
+        const f = zeroTailFixture({modules: [{records: [ordinalRecord(12)]}, {}]}); change(f);
+        const p = pack(f), forbidden = modulePhysicalIntervals(p, 9, 4, p.modules[0].symbols.length);
+        redactedThrows(() => invokeThunk(p, excludesPhysical(p, forbidden).reader), code);
+    }
+    for (const change of [f => ordinalTailTwin(f), f => replaceTestMap(f, segmentMap(false)),
+        f => replaceTestMap(f, Buffer.alloc(0))]) {
+        const f = zeroTailFixture({modules: [{records: [ordinalRecord(12)]}]}), p = pack(change(f));
+        redactedThrows(() => invokeThunk(p), 'ERR_SOURCE_MAPPING');
+    }
+    for (const [options, code] of [
+        [{info: info()}, 'ERR_NI_MAC_UNSUPPORTED'],
+        [{info: namedStreamNiMacZeroInfo({features: [MINI]})}, 'ERR_FASTLINK_UNSUPPORTED'],
+        [{info: namedStreamNiMacZeroInfo({features: [0]})}, 'ERR_FEATURE_UNSUPPORTED'],
+        [{version: 1}, 'ERR_ROUTING_UNSUPPORTED'], [{sc: Buffer.alloc(0)}, 'ERR_ROUTING_ABSENT'],
+        [{moduleInfo: Buffer.alloc(60)}, 'ERR_DBI_MODULE_INFO'],
+    ]) {
+        const p = pack(zeroTailFixture({...options, modules: [{records: [ordinalRecord(12)]}]}));
+        redactedThrows(() => invokeThunk(p, excludesPhysical(p,
+            modulePhysicalIntervals(p, 9, 0, p.modules[0].body.length)).reader), code);
+    }
+});
+
+test('ordinal path keeps module-count, aggregate-symbol and routing caps before selected symbol reads', () => {
+    for (const f of [zeroTailFixture({modules: Array.from({length: 33}, () => ({records: [ordinalRecord(12)]}))}),
+        zeroTailFixture({modules: [{sym: LIMITS.symbols + 4,
+            body: repeatedModule(LIMITS.symbols + 4, ordinalRecord(12))}]})]) {
+        const p = pack(f), reader = excludesPhysical(p, modulePhysicalIntervals(p, 9, 0, p.entries[9].size)).reader;
+        redactedThrows(() => invokeThunk(p, reader), 'ERR_MODULE_BOUND');
+        a.deepEqual(observedModuleIntervals(p, 9), []);
+    }
+    const p = pack(repeatedContributions(zeroTailFixture({modules: [{records: [ordinalRecord(12)]}]}),
+        1, {declaredBytes: LIMITS.contributions + 4}));
+    redactedThrows(() => invokeThunk(p, excludesPhysical(p,
+        modulePhysicalIntervals(p, 9, 0, p.modules[0].body.length)).reader), 'ERR_ROUTING_BOUND');
+});
+
+test('MSF globally rejects reused or aliased physical pages before any ordinal or module reads', () => {
+    const pageSlot = (p, stream, index = 0) => 4 + p.entries.length * 4 +
+        p.entries.slice(0, stream).reduce((n, e) => n + e.pages.length * 4, 0) + index * 4;
+    for (const mutation of ['same-stream', 'other-stream', 'info-alias', 'directory-alias', 'blockmap-alias']) {
+        const p = pack(zeroTailFixture({modules: [{records: [ordinalRecord(11, 65536)]}, {}]}));
+        if (mutation === 'same-stream') p.directory.writeUInt32LE(p.entries[9].pages[0], pageSlot(p, 9, 1));
+        if (mutation === 'other-stream') p.directory.writeUInt32LE(p.entries[9].pages[0], pageSlot(p, 12));
+        if (mutation === 'info-alias') p.directory.writeUInt32LE(p.entries[9].pages[0], pageSlot(p, 1));
+        if (mutation === 'directory-alias') p.directory.writeUInt32LE(4, pageSlot(p, 9));
+        if (mutation === 'blockmap-alias') p.directory.writeUInt32LE(3, pageSlot(p, 9));
+        redactedThrows(() => invokeThunk(p), 'ERR_PDB_FRAMING');
+        a.deepEqual(observedModuleIntervals(p, 9), []);
+        a.deepEqual(observedModuleIntervals(p, 12), []);
+    }
+});
+
+test('ordinal byte physical reader faults fail closed after the prefix without fabricating a zero ordinal', () => {
+    let typed;
+    try { runInlinees(zeroTailFixture({modules: [{records: [record(0x1102)]}]})); }
+    catch (error) { typed = error; }
+    a.equal(typed.code, 'ERR_SYMBOL_UNSUPPORTED');
+    const ForeignShared = require('node:vm').runInNewContext('SharedArrayBuffer');
+    for (const thunkAt of [4, 4072, 65512]) for (const mode of
+        ['throw', 'string', 'forged', 'typed', 'short', 'shared', 'foreign']) {
+        const records = thunkAt === 4 ? [] : [record(0x7777, thunkAt - 4)];
+        records.push(ordinalRecord(0));
+        const p = pack(zeroTailFixture({modules: [{records}]}));
+        const target = modulePhysicalIntervals(p, 9, thunkAt + 24, thunkAt + 25)[0];
+        const fault = excludesPhysical(p, [target], (o, n) => {
+            a.equal(o, target.offset); a.equal(n, 1);
+            if (mode === 'throw') throw Error('NEVER_EXPORT/private-reader');
+            if (mode === 'string') throw 'ERR_SYMBOL_UNSUPPORTED';
+            if (mode === 'forged') throw {code: 'ERR_SYMBOL_UNSUPPORTED', ordinal_u8: 0};
+            if (mode === 'typed') throw typed;
+            if (mode === 'short') return Buffer.alloc(0);
+            return Buffer.from(mode === 'shared' ? new SharedArrayBuffer(n) : new ForeignShared(n));
+        });
+        redactedThrows(() => invokeThunk(p, fault.reader), mode === 'short' ? 'ERR_SHORT_READ' :
+            mode === 'shared' || mode === 'foreign' ? 'ERR_INPUT_BOUND' : 'ERR_PDB_FRAMING');
+        a.equal(fault.attempts.filter(r => r.offset === target.offset && r.count === 1).length, 1);
+        const observed = observedModuleIntervals(p, 9);
+        a.deepEqual(observed.at(-1), {offset: thunkAt, count: 4});
+    }
+});
+
+test('ordinal diagnostic copies reused input buffers and rejects prerequisite stream read faults', () => {
+    const f = zeroTailFixture({modules: [{records: [inlineesRecord([0xffffffff]), proc(), ordinalRecord(173)]}]});
+    const ForeignShared = require('node:vm').runInNewContext('SharedArrayBuffer');
+    for (const index of [1, 3, 8, 9]) for (const mode of ['throw', 'short', 'shared', 'foreign']) {
+        const p = pack(f), reader = {size: p.reader.size, read(o, n) {
+            if (!p.entries[index].pages.includes(Math.floor(o / 4096))) return p.reader.read(o, n);
+            if (mode === 'throw') throw Error('NEVER_EXPORT/private-stream');
+            if (mode === 'short') return Buffer.alloc(n - 1);
+            return Buffer.from(mode === 'shared' ? new SharedArrayBuffer(n) : new ForeignShared(n));
+        }};
+        redactedThrows(() => invokeThunk(p, reader), mode === 'short' ? 'ERR_SHORT_READ' :
+            mode === 'throw' ? 'ERR_PDB_FRAMING' : 'ERR_INPUT_BOUND');
+    }
+    const p = pack(f); let previous = null;
+    const reader = {size: p.reader.size, read(o, n) {
+        if (previous !== null) previous.fill(0xee);
+        previous = p.reader.read(o, n); return previous;
+    }};
+    thunkOrdinalResult(invokeThunk(p, reader), 173);
+    thunkOrdinalResult(thunkOrdinal(f), 173);
+});
+
+test('ordinal selectors are validated before PE or reader access and retain the exact whitelist', () => {
+    let io = 0, pe = 0;
+    const reader = {get size() { io++; throw Error('NEVER_EXPORT'); }, read() { io++; }},
+        exe = {get length() { pe++; throw Error('NEVER_EXPORT'); }};
+    for (const q of [null, {}, [], {addresses: []}, {addresses: Array(1)},
+        query({addresses: [VA, VA]}), query({module_indices: undefined}),
+        query({module_indices: [1, 1]}), query({module_indices: Array(1)}),
+        query({exact: true}), query({profile: THUNK_ORDINAL_PROFILE}), query({retry: true}),
+        query({ordinal_u8: 0}), query({[Symbol('private')]: 1})]) {
+        redactedThrows(() => diagnoseThunk32OrdinalNamedStreamNiMacZeroAbsoluteTailFrameZeroInlineesExact(
+            reader, exe, {}, q), 'ERR_SELECTORS');
+    }
+    a.equal(io, 0); a.equal(pe, 0);
+    thunkOrdinalResult(thunkOrdinal(zeroTailFixture(), Object.assign(Object.create(null), query())));
+});
+
+test('no-thunk acceptance requires full later exact-inlinees scanning, selected procedures and conflict checks', () => {
+    const clean = zeroTailFixture({modules: [{records: [inlineesRecord([0xffffffff]), proc()]},
+        {records: [proc(), inlineesRecord([0, 0xffffffff]), proc({offset: 0x90, size: 0xffffffff})]}]});
+    const p = pack(clean); thunkOrdinalResult(invokeThunk(p));
+    a.ok(observedModuleIntervals(p, 12).some(r => r.offset === 4 && r.count === 4));
+    const malformed = record(); malformed.writeUInt16LE(65535);
+    for (const [bad, code] of [[malformed, 'ERR_MODULE_FRAMING'],
+        [inlineesRecord([], {count: 1}), 'ERR_MODULE_FRAMING'],
+        [proc({size: 0x31}), 'ERR_PROCEDURE_CONFLICT'], [proc({segment: 0}), 'ERR_SOURCE_MAPPING'],
+        [record(0x115f), 'ERR_FASTLINK_UNSUPPORTED'], [record(0x0104), 'ERR_SYMBOL_UNSUPPORTED']]) {
+        for (const modules of [[{records: [inlineesRecord(), proc(), bad]}],
+            [{records: [inlineesRecord(), proc()]}, {records: [inlineesRecord(), bad]}]]) {
+            redactedThrows(() => thunkOrdinal(zeroTailFixture({modules})), code);
+        }
+    }
+    redactedThrows(() => thunkOrdinal(zeroTailFixture({modules: [{records: [inlineesRecord([0, 1])]}]})),
+        'ERR_PROCEDURE_ABSENT');
+    redactedThrows(() => thunkOrdinal(clean, query({addresses: [VA, '0x140001021']})), 'ERR_PROCEDURE_ABSENT');
+    const failed = pack(clean), last = modulePhysicalIntervals(failed, 12, 4,
+        failed.modules[1].symbols.length);
+    redactedThrows(() => invokeThunk(failed, excludesPhysical(failed, last).reader), 'ERR_PDB_FRAMING');
+});
+
+test('ordinal refusal bypasses later checks while no-thunk acceptance finishes ordinary digests and output checks', () => {
+    const clean = zeroTailFixture({modules: [{records: [inlineesRecord([0, 0xffffffff]), proc()]}]}),
+        refused = zeroTailFixture({modules: [{records: [ordinalRecord(63)]},
+            {records: [inlineesRecord([], {count: 1})]}]}), stringify = JSON.stringify;
+    let finished = false;
+    JSON.stringify = function(value, ...args) {
+        if (!value || value.profile !== INLINEES_PROFILE) return stringify.call(this, value, ...args);
+        a.equal(value.selected_modules.length, 1); a.equal(value.complete_selected_symbol_record_framing, true);
+        a.equal(value.inlinees_profile.entries, 2);
+        a.equal(value.addresses[0].procedure_records_sha256,
+            createHash('sha256').update(clean.modules[0].symbols.subarray(4 + inlineesRecord([0, 0xffffffff]).length)).digest('hex'));
+        finished = true; return 'x'.repeat(LIMITS.output);
+    };
+    try {
+        redactedThrows(() => thunkOrdinal(clean), 'ERR_OUTPUT_BOUND'); a.equal(finished, true);
+        finished = false; thunkOrdinalResult(thunkOrdinal(refused), 63); a.equal(finished, false);
+    } finally { JSON.stringify = stringify; }
+});
+
+test('ordinal calls isolate capture across nested, failed and accepted calls and preserve every old API read trace', () => {
+    const clean = zeroTailFixture({modules: [{records: [inlineesRecord([0]), proc()]}]}),
+        refused = zeroTailFixture({modules: [{records: [inlineesRecord(), ordinalRecord(208)]}]}), p = pack(refused);
+    let nested = false;
+    const reader = {size: p.reader.size, read(o, n) {
+        if (!nested) {
+            nested = true;
+            thunkOrdinalResult(thunkOrdinal(clean));
+            thunkOrdinalResult(thunkOrdinal(zeroTailFixture({modules: [{records: [ordinalRecord(19)]}]})), 19);
+            redactedThrows(() => thunkOrdinal(zeroTailFixture({modules: [{records: [record(0x1102)]}]})), 'ERR_MODULE_FRAMING');
+        }
+        return p.reader.read(o, n);
+    }};
+    thunkOrdinalResult(invokeThunk(p, reader), 208); a.equal(nested, true);
+    const calls = [inspect, inspectNamedStreamNiMacZero, inspectNamedStreamNiMacZeroAbsoluteTailFrameZero,
+        inspectNamedStreamNiMacZeroAbsoluteTailFrameZeroInlineesExact,
+        diagnoseUnsupportedSymbolNamedStreamNiMacZeroAbsoluteTailFrameZero,
+        diagnoseUnsupportedSymbolNamedStreamNiMacZeroAbsoluteTailFrameZeroInlineesExact];
+    // The legacy zero-tail full API must retain its inlinees refusal.
+    const fixtures = [fixture(), niFixture(), zeroTailFixture(), clean, clean, clean];
+    for (let i = 0; i < calls.length; i++) {
+        const before = pack(fixtures[i]), after = pack(fixtures[i]);
+        const result = calls[i](before.reader, before.exe, before.identity, query());
+        thunkOrdinalResult(thunkOrdinal(refused), 208); thunkOrdinalResult(thunkOrdinal(clean));
+        a.deepEqual(calls[i](after.reader, after.exe, after.identity, query()), result);
+        a.deepEqual(after.reads, before.reads);
+    }
+    const legacyBefore = pack(clean), legacyAfter = pack(clean);
+    redactedThrows(() => inspectNamedStreamNiMacZeroAbsoluteTailFrameZero(
+        legacyBefore.reader, legacyBefore.exe, legacyBefore.identity, query()), 'ERR_SYMBOL_UNSUPPORTED');
+    thunkOrdinalResult(thunkOrdinal(refused), 208); thunkOrdinalResult(thunkOrdinal(clean));
+    redactedThrows(() => inspectNamedStreamNiMacZeroAbsoluteTailFrameZero(
+        legacyAfter.reader, legacyAfter.exe, legacyAfter.identity, query()), 'ERR_SYMBOL_UNSUPPORTED');
+    a.deepEqual(legacyAfter.reads, legacyBefore.reads);
+    for (const kind of guardedSymbolKinds) {
+        const f = zeroTailFixture({modules: [{records: [proc(), record(kind)]}]});
+        unsupportedSymbolParity(f, {kind});
+        if (kind === 0x1168) unsupportedInlineesParity(f, {code: 'ERR_MODULE_FRAMING'});
+        else unsupportedInlineesParity(f, {kind});
+    }
+});
+
+// Test-only lexical VM fault injection. These private sites, inspector
+// replacements and record totals are unreachable through the public API.
+// They exercise defensive branches, not immutable-input reachability claims.
+function thunkOrdinalHarness() {
+    const filename = require.resolve('../pdb_procedure_ranges.cjs'),
+        source = require('node:fs').readFileSync(filename, 'utf8'),
+        sandbox = {module: {exports: {}}, require: require('node:module').createRequire(filename), Buffer};
+    require('node:vm').runInNewContext(source + `
+module.exports = {legalThunk32Ordinal, MetadataError, scanModule,
+    diagnose: diagnoseThunk32OrdinalNamedStreamNiMacZeroAbsoluteTailFrameZeroInlineesExact,
+    setInspector(fn) { inspectProfile = fn; }};
+`, sandbox, {filename});
+    return sandbox.module.exports;
+}
+
+test('ordinal defensive VM injection requires a primitive u8 and the identical privately captured typed refusal', () => {
+    const h = thunkOrdinalHarness();
+    for (let value = 0; value <= 255; value++) a.equal(h.legalThunk32Ordinal(value), true);
+    for (const value of [null, undefined, -0, -1, 256, 1.5, NaN, Infinity, '0', 0n, new Number(0), {}, []]) {
+        a.equal(h.legalThunk32Ordinal(value), false);
+        const error = new h.MetadataError('ERR_SYMBOL_UNSUPPORTED');
+        h.setInspector((...args) => { args[9].ordinal = value; args[9].error = error; throw error; });
+        a.throws(() => h.diagnose(), actual => actual === error);
+    }
+    const captured = new h.MetadataError('ERR_SYMBOL_UNSUPPORTED');
+    for (const error of [new h.MetadataError('ERR_SYMBOL_UNSUPPORTED'), new h.MetadataError('ERR_MODULE_FRAMING'),
+        {code: 'ERR_SYMBOL_UNSUPPORTED'}, 'ERR_SYMBOL_UNSUPPORTED', Error('NEVER_EXPORT')]) {
+        h.setInspector((...args) => { args[9].ordinal = 7; args[9].error = captured; throw error; });
+        if (error instanceof h.MetadataError) a.throws(() => h.diagnose(), actual => actual === error);
+        else redactedThrows(() => h.diagnose(), 'ERR_PDB_FRAMING');
+    }
+    const wrongCode = new h.MetadataError('ERR_MODULE_FRAMING');
+    h.setInspector((...args) => { args[9].ordinal = 7; args[9].error = wrongCode; throw wrongCode; });
+    a.throws(() => h.diagnose(), actual => actual === wrongCode);
+    for (const [ordinal, error] of [[0, null], [null, captured], [7, captured]]) {
+        h.setInspector((...args) => { args[9].ordinal = ordinal; args[9].error = error; });
+        redactedThrows(() => h.diagnose(), 'ERR_SYMBOL_UNSUPPORTED');
+    }
+    let calls = 0;
+    h.setInspector((...args) => {
+        calls++; a.equal(args.length, 10); a.equal(args[4], true); a.equal(args[5], null);
+        a.equal(args[6], 'identity_sections_absolute_tail_frame_zero_v1');
+        a.equal(args[7], null); a.equal(args[8], INLINEES_GRAMMAR);
+        a.deepEqual(Reflect.ownKeys(args[9]), ['ordinal', 'error']);
+        a.equal(args[9].ordinal, null); a.equal(args[9].error, null);
+        args[9].ordinal = 255; args[9].error = captured; throw captured;
+    });
+    const r = h.diagnose(); a.equal(r.ordinal_u8, 255); a.equal(r.profile, THUNK_ORDINAL_PROFILE); a.equal(calls, 1);
+    a.equal(Object.hasOwn(require('../pdb_procedure_ranges.cjs'), 'legalThunk32Ordinal'), false);
+});
+
+test('ordinal defensive VM injection keeps the record cap and earlier inlinees accounting ahead of capture', () => {
+    const h = thunkOrdinalHarness(), b = ordinalRecord(12), body = Buffer.concat([
+        Buffer.from([4, 0, 0, 0]), b, Buffer.alloc(4)]), reads = [], site = {ordinal: null, error: null};
+    const m = {streams: [{size: body.length}], stream(i, o, n) {
+        reads.push({offset: o, count: n}); return Buffer.from(body.subarray(o, o + n));
+    }};
+    redactedThrows(() => h.scanModule({m, image: {sections: []}}, {stream_id: 0,
+        module_index: 0, sym: 4 + b.length, c11: 0, c13: 0}, new Map(),
+    {records: LIMITS.records, procedures: 0, opaque: 0}, null, INLINEES_GRAMMAR, site), 'ERR_MODULE_BOUND');
+    a.deepEqual(reads, [{offset: 0, count: 4}, {offset: 32, count: 4}, {offset: 4, count: 4}]);
+    a.deepEqual(site, {ordinal: null, error: null});
+    const list = inlineesRecord(), withList = Buffer.concat([Buffer.from([4, 0, 0, 0]), list, b, Buffer.alloc(4)]);
+    for (const inlinees of [{records: Infinity, entries: 0}, {records: 0, entries: -1},
+        {records: 0, entries: Math.floor(LIMITS.symbols / 4) + 1}]) {
+        const listReads = [], listSite = {ordinal: null, error: null};
+        const listMsf = {streams: [{size: withList.length}], stream(i, o, n) {
+            listReads.push({offset: o, count: n}); return Buffer.from(withList.subarray(o, o + n));
+        }};
+        redactedThrows(() => h.scanModule({m: listMsf, image: {sections: []}}, {stream_id: 0,
+            module_index: 0, sym: withList.length - 4, c11: 0, c13: 0}, new Map(),
+        {records: 0, procedures: 0, opaque: 0, inlinees}, null, INLINEES_GRAMMAR, listSite), 'ERR_MODULE_FRAMING');
+        a.deepEqual(listReads, [{offset: 0, count: 4}, {offset: withList.length - 4, count: 4},
+            {offset: 4, count: 4}, {offset: 4, count: list.length}]);
+        a.deepEqual(listSite, {ordinal: null, error: null});
+    }
+});
+
+test('ordinal redacts forged typed reader and query errors and cannot reuse a previous captured exception', () => {
+    const h = thunkOrdinalHarness(), p = pack(zeroTailFixture());
+    let previous;
+    h.setInspector((...args) => {
+        previous = new h.MetadataError('ERR_SYMBOL_UNSUPPORTED');
+        args[9].ordinal = 23; args[9].error = previous; throw previous;
+    });
+    a.equal(h.diagnose().ordinal_u8, 23);
+    h.setInspector(() => { throw previous; });
+    a.throws(() => h.diagnose(), error => error === previous);
+    for (const error of [previous, {code: 'ERR_SYMBOL_UNSUPPORTED', ordinal_u8: 23}, 'ERR_SYMBOL_UNSUPPORTED']) {
+        const reader = {size: p.reader.size, read() { throw error; }};
+        redactedThrows(() => invokeThunk(p, reader), 'ERR_PDB_FRAMING');
+    }
+    let genuine;
+    try { runInlinees(zeroTailFixture({modules: [{records: [record(0x1102)]}]})); }
+    catch (error) { genuine = error; }
+    let io = 0;
+    a.throws(() => diagnoseThunk32OrdinalNamedStreamNiMacZeroAbsoluteTailFrameZeroInlineesExact(
+        {get size() { io++; return p.reader.size; }}, p.exe, p.identity,
+        {get addresses() { throw genuine; }}), error => error === genuine);
+    a.equal(io, 0);
+});
+
+test('ordinal exports exactly five primitive fields, discards ordinary results and enforces UTF-8 bounds including newline', () => {
+    const secret = 'NEVER_EXPORT/private/ordinal', clean = zeroTailFixture({
+        info: namedStreamNiMacZeroInfo({names: [{name: secret, stream: 8}]}), modules: [
+            {module_name: secret, object_name: secret, records: [proc({name: secret}), inlineesRecord([0xdeadbeef])]}]}),
+        refused = zeroTailFixture({modules: [{module_name: secret, object_name: secret,
+            records: [proc({name: secret}), ordinalRecord(254, 65536)]}]}), stringify = JSON.stringify;
+    for (const [f, ordinal] of [[clean, null], [refused, 254]]) {
+        const result = thunkOrdinal(f); thunkOrdinalResult(result, ordinal);
+        for (const forbidden of [secret, 'kind_u16', 'address', 'index', 'length', 'count', 'name', 'hash',
+            'payload', 'bytes', 'extent', 'selected_modules', 'guid', 'deadbeef', '0x']) {
+            a.ok(!JSON.stringify(result).includes(forbidden));
+        }
+        result.ordinal_u8 = 9; result.extra = secret; thunkOrdinalResult(thunkOrdinal(f), ordinal);
+        for (const bytes of [1023, 1024]) {
+            JSON.stringify = function(value, ...args) {
+                const out = stringify.call(this, value, ...args);
+                if (!value || value.profile !== THUNK_ORDINAL_PROFILE) return out;
+                const padding = bytes - Buffer.byteLength(out);
+                return out + 'é'.repeat(Math.floor(padding / 2)) + (padding % 2 ? ' ' : '');
+            };
+            try {
+                if (bytes === 1023) a.equal(thunkOrdinal(f).profile, THUNK_ORDINAL_PROFILE);
+                else redactedThrows(() => thunkOrdinal(f), 'ERR_OUTPUT_BOUND');
+            } finally { JSON.stringify = stringify; }
+        }
+    }
+    for (const profile of [INLINEES_PROFILE, THUNK_ORDINAL_PROFILE]) {
+        JSON.stringify = function(value, ...args) {
+            if (value && value.profile === profile) throw Error('NEVER_EXPORT/private-serializer');
+            return stringify.call(this, value, ...args);
+        };
+        try {
+            redactedThrows(() => thunkOrdinal(clean), 'ERR_PDB_FRAMING');
+            if (profile === THUNK_ORDINAL_PROFILE) redactedThrows(() => thunkOrdinal(refused), 'ERR_PDB_FRAMING');
+            else thunkOrdinalResult(thunkOrdinal(refused), 254);
+        } finally { JSON.stringify = stringify; }
     }
 });

@@ -11,6 +11,9 @@
 // https://github.com/llvm/llvm-project/blob/llvmorg-20.1.8/llvm/lib/DebugInfo/PDB/Native/DbiStreamBuilder.cpp
 // https://github.com/llvm/llvm-project/blob/llvmorg-20.1.8/lld/COFF/PDB.cpp
 // https://github.com/llvm/llvm-project/blob/llvmorg-20.1.8/llvm/include/llvm/DebugInfo/CodeView/CodeViewSymbols.def
+// https://github.com/llvm/llvm-project/blob/llvmorg-20.1.8/llvm/include/llvm/DebugInfo/CodeView/SymbolRecord.h
+// https://github.com/llvm/llvm-project/blob/llvmorg-20.1.8/llvm/include/llvm/DebugInfo/CodeView/CodeView.h
+// https://github.com/llvm/llvm-project/blob/llvmorg-20.1.8/llvm/include/llvm/DebugInfo/CodeView/CodeViewRecordIO.h
 // https://github.com/llvm/llvm-project/blob/llvmorg-20.1.8/llvm/lib/DebugInfo/CodeView/SymbolRecordMapping.cpp
 // https://github.com/llvm/llvm-project/blob/llvmorg-20.1.8/llvm/include/llvm/DebugInfo/CodeView/RecordSerialization.h
 // LLVM sources: Apache-2.0 WITH LLVM-exception; preserved license reference:
@@ -455,6 +458,10 @@ function legalInlineesUnsupportedKind(kind) {
     return legalUnsupportedKind(kind) && kind !== 0x1168;
 }
 
+function legalThunk32Ordinal(value) {
+    return Number.isInteger(value) && !Object.is(value, -0) && value >= 0 && value <= 255;
+}
+
 function extent(image, segment, offset, size, mappingSite, stage) {
     need(size > 0, 'ERR_PROCEDURE_SIZE');
     // Defensive only under the immutable-input contract: selectors have just
@@ -471,7 +478,7 @@ function extent(image, segment, offset, size, mappingSite, stage) {
         file_span: {start: s.raw + offset, end_exclusive: s.raw + offset + size}};
 }
 
-function scanModule(ctx, mod, aggregates, totals, unsupportedSite, inlineesGrammar) {
+function scanModule(ctx, mod, aggregates, totals, unsupportedSite, inlineesGrammar, thunkSite = null) {
     const {m, image} = ctx, code = 'ERR_MODULE_FRAMING', stream = mod.stream_id;
     const tail = mod.sym + mod.c11 + mod.c13;
     need(mod.sym >= 4 && mod.sym % 4 === 0 && mod.c11 === 0 && tail + 4 <= m.streams[stream].size, code);
@@ -481,6 +488,11 @@ function scanModule(ctx, mod, aggregates, totals, unsupportedSite, inlineesGramm
     let cache = null, cacheAt = -1;
     const read = (o, n) => {
         need(o >= 4 && n >= 0 && n <= LIMITS.record && o + n <= mod.sym, code);
+        // Only the ordinal wrapper selects this path, from the first read of
+        // every selected module. A preceding record must not prefetch a later
+        // thunk's excluded bytes. MSF stream() splits exact requests at pages.
+        // Reader failure timing may differ from the legacy speculative cache.
+        if (thunkSite !== null) return m.stream(stream, o, n);
         const out = Buffer.alloc(n); let done = 0;
         while (done < n) {
             const pos = o + done, base = Math.floor(pos / LIMITS.cache) * LIMITS.cache;
@@ -512,6 +524,17 @@ function scanModule(ctx, mod, aggregates, totals, unsupportedSite, inlineesGramm
                 inlineesEntries <= Math.floor(LIMITS.symbols / 4), code);
             totals.inlinees.records = inlineesRecords; totals.inlinees.entries = inlineesEntries;
         } else if (UNSUPPORTED.has(kind)) {
+            if (thunkSite !== null && kind === 0x1102) {
+                // Public serialized prefix: uint8 ordinal at +24. Bound the
+                // record first (effective aligned minimum 28), then read only
+                // that byte. Links/address/length [4,24) and name/variant
+                // [25,n) are neither read nor interpreted; no enum predicate.
+                need(n >= 25, code);
+                const ordinal = read(at + 24, 1).readUInt8();
+                const error = new MetadataError('ERR_SYMBOL_UNSUPPORTED');
+                thunkSite.ordinal = ordinal; thunkSite.error = error;
+                throw error;
+            }
             // Retain only the already-read discriminator at this exact guard.
             // The private opt-in site adds no payload/header read or traversal.
             if (unsupportedSite !== null && unsupportedSite.first === null) unsupportedSite.first = kind;
@@ -544,7 +567,7 @@ function scanModule(ctx, mod, aggregates, totals, unsupportedSite, inlineesGramm
 }
 
 function inspectProfile(reader, exe, identity, query, niMacZero, mappingSite = null, segmentMapGrammar = null,
-    unsupportedSite = null, inlineesGrammar = null) {
+    unsupportedSite = null, inlineesGrammar = null, thunkSite = null) {
     try {
         // Selector validation is deliberately before any PE parsing or reader I/O.
         const selected = selection(query),
@@ -573,7 +596,7 @@ function inspectProfile(reader, exe, identity, query, niMacZero, mappingSite = n
         const inlineesExact = inlineesGrammar === INLINEES_COUNTED_U32_EXACT_GRAMMAR;
         if (inlineesExact) totals.inlinees = {grammar: INLINEES_COUNTED_U32_EXACT_GRAMMAR, records: 0, entries: 0};
         const scanned = routing.indices.map(i => scanModule(ctx, modules[i], aggregates, totals, unsupportedSite,
-            inlineesGrammar));
+            inlineesGrammar, thunkSite));
         need([...aggregates.values()].every(a => a.count > 0), 'ERR_PROCEDURE_ABSENT');
         const result = {
             profile: 'MSF7_DBI_C13_scoped_supported_procedure_declarations' +
@@ -696,6 +719,39 @@ function diagnoseUnsupportedSymbolNamedStreamNiMacZeroAbsoluteTailFrameZeroInlin
     }
 }
 
+// Prefix-only diagnostic in the exact-inlinees envelope. Capture only this
+// call's own typed refusal; all other failures remain code-only. Acceptance
+// requires the full ordinary scan, digests and final/output checks. Discard
+// ordinary metadata in both branches. No thunk body grammar is accepted.
+function diagnoseThunk32OrdinalNamedStreamNiMacZeroAbsoluteTailFrameZeroInlineesExact(reader, exe, identity, query) {
+    const thunkSite = {ordinal: null, error: null};
+    try {
+        let status = 'accepted_profile';
+        try {
+            inspectProfile(reader, exe, identity, query, true, null, ABSOLUTE_TAIL_FRAME_ZERO_GRAMMAR,
+                null, INLINEES_COUNTED_U32_EXACT_GRAMMAR, thunkSite);
+        } catch (error) {
+            if (!(error instanceof MetadataError) || error !== thunkSite.error ||
+                error.code !== 'ERR_SYMBOL_UNSUPPORTED' || !legalThunk32Ordinal(thunkSite.ordinal)) throw error;
+            status = 'refused_symbol';
+        }
+        const refused = status === 'refused_symbol';
+        need(refused ? legalThunk32Ordinal(thunkSite.ordinal) :
+            thunkSite.ordinal === null && thunkSite.error === null, 'ERR_SYMBOL_UNSUPPORTED');
+        const result = {
+            profile: 'MSF7_procedure_thunk32_ordinal_exact_inlinees_diagnostic_v1', status,
+            stage: refused ? 'procedure_metadata' : 'complete',
+            guard: refused ? 'unsupported_kind' : null,
+            ordinal_u8: refused ? thunkSite.ordinal : null,
+        };
+        need(Buffer.byteLength(JSON.stringify(result) + '\n') <= 1024, 'ERR_OUTPUT_BOUND');
+        return result;
+    } catch (error) {
+        if (error instanceof MetadataError) throw error;
+        throw new MetadataError('ERR_PDB_FRAMING');
+    }
+}
+
 // Full strict NI profile traversal, including the ordinary output/conflict
 // checks and existing internal digests. Discard that result; export only a
 // closed first-refusal site or complete acceptance, never partial coverage.
@@ -782,5 +838,6 @@ module.exports = {inspect, diagnoseInfoFeatures, inspectNamedStreamNiMacZero, di
     inspectNamedStreamNiMacZeroAbsoluteTailFrameZeroInlineesExact,
     diagnoseUnsupportedSymbolNamedStreamNiMacZeroAbsoluteTailFrameZero,
     diagnoseUnsupportedSymbolNamedStreamNiMacZeroAbsoluteTailFrameZeroInlineesExact,
+    diagnoseThunk32OrdinalNamedStreamNiMacZeroAbsoluteTailFrameZeroInlineesExact,
     diagnoseSourceMappingNamedStreamNiMacZero, diagnoseSourceMappingIdentityNamedStreamNiMacZero,
     diagnoseTailFrameNamedStreamNiMacZero, LIMITS};
