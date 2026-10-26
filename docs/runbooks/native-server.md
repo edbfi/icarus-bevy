@@ -65,16 +65,28 @@ release_profile = "config/release.toml"  # optional Hello version pin
 data_pak = "/path/to/IcarusServer/Icarus/Content/Data/data.pak"  # optional, official server's data tables
 ```
 
-Release profile and socket bind precede opening `--data-dir`; failure exits
-nonzero, and mismatched Hello versions receive Upgrade. Updates poll at most 32
-datagrams before fixed ticks; SIGINT/SIGTERM stops admission and closes sessions
-before draining and saving. `network_listening` reports address and `version_check`;
-`status` and `stopped` report `sessions` counts. Worlds seeded by `preserve-save`
-replicate active prospect and game-mode state (`active_prospect_replicated`,
-F-804); with `data_pak` (F-828), saved session flags, `LockedMissions` and
-fresh-pawn vitals/inventories replicate from table rows (`unmapped_session_flags`,
-`locked_missions`; F-830, F-835, F-836). No ICARUS client compatibility,
-identity check, replication or gameplay is implied; only authored probes are tested:
+Release profile/socket checks precede opening `--data-dir`; mismatched Hello
+versions receive Upgrade. Updates poll at most 32 datagrams before fixed ticks;
+SIGINT/SIGTERM closes sessions before draining and saving. `network_listening`
+reports address/`version_check`; `status`/`stopped` report session counts.
+Preserved prospects replicate active prospect/mode state (F-804); `data_pak`
+supplies session flags, `LockedMissions` and fresh-pawn vitals/inventories
+(F-830, F-835, F-836).
+
+For authored schema-4 worlds, add `authored_replication = "replication.json"`
+to `[network]`, or pass `run --authored-replication replication.json`.
+Requires enabled networking and a release profile providing a session plan.
+Strict JSON format 1: regular file, at most 1 MiB, 1–1,024 bindings.
+Complete schema: `AuthoredReplication` in `src/native_replication.rs`.
+Declare catalog/map identity, signed-axis/unit frame,
+archetype paths/checksums/`no_load`, per-actor parameters and schedule explicitly.
+Bound poses require quaternion `[0,0,0,1]` and scale `[1,1,1]`; translation uses
+the declared frame, rotation/velocity are not mapped. Preparation validates all
+bindings and shared static identities before installation. Transient proxies
+are not saved; invalid bindings retire the activation without editing native
+state (F-938). Generic later lab reconfiguration is outside this installation
+contract. Saved-pose mappings (U-025), import, physics, gameplay and stock-client
+behavior remain unqualified; only authored probes are tested:
 
 ```bash
 cargo test --locked --test network
