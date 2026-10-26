@@ -213,22 +213,27 @@ pub(crate) fn ensure_no_lifecycle_state(world: &World) -> Result<()> {
             && !world.contains_resource::<C001InventoryOwnerImportState>(),
         "world contains unexpected lifecycle resources"
     );
-    for entity in world.iter_entities() {
+    // Resolve from this world on every call: even a previously unregistered
+    // type may have been inserted since the last clean validation.
+    let forbidden = [
+        world.component_id::<ModifierRuntimeAnchor>(),
+        world.component_id::<NativeOwnerIncarnation>(),
+        world.component_id::<NativeOwnerName>(),
+        world.component_id::<NativeOwnerRecorder>(),
+        world.component_id::<NativeLifecycleContext>(),
+        world.component_id::<DormantNativeSlots>(),
+        world.component_id::<C001OwnerImportState>(),
+        world.component_id::<NativeScalarOwnerContractsState>(),
+        world.component_id::<C001ScalarOwnerImportState>(),
+        world.component_id::<ScalarOwnerDerived>(),
+        world.component_id::<NativeInventoryContractsState>(),
+        world.component_id::<C001InventoryOwnerImportState>(),
+        world.component_id::<InventoryOwnerState>(),
+        world.component_id::<ModifierOwnerState>(),
+    ];
+    for archetype in world.archetypes().iter().filter(|a| !a.is_empty()) {
         ensure!(
-            !entity.contains::<ModifierRuntimeAnchor>()
-                && !entity.contains::<NativeOwnerIncarnation>()
-                && !entity.contains::<NativeOwnerName>()
-                && !entity.contains::<NativeOwnerRecorder>()
-                && !entity.contains::<NativeLifecycleContext>()
-                && !entity.contains::<DormantNativeSlots>()
-                && !entity.contains::<C001OwnerImportState>()
-                && !entity.contains::<NativeScalarOwnerContractsState>()
-                && !entity.contains::<C001ScalarOwnerImportState>()
-                && !entity.contains::<ScalarOwnerDerived>()
-                && !entity.contains::<NativeInventoryContractsState>()
-                && !entity.contains::<C001InventoryOwnerImportState>()
-                && !entity.contains::<InventoryOwnerState>()
-                && !entity.contains::<ModifierOwnerState>(),
+            !forbidden.iter().flatten().any(|id| archetype.contains(*id)),
             "world contains unexpected lifecycle components"
         );
     }
@@ -2203,6 +2208,10 @@ pub fn lifecycle_world_bounds(world: &World, owner: OwnerHandle) -> Result<Aabb3
 #[cfg(test)]
 use crate::scalar_owner_fixture as scalar_fixture;
 
+#[cfg(test)]
+#[path = "../tests/common/c001_owners.rs"]
+mod owner_fixture;
+
 /// A timer failure latches the activation closed; subsequent capture and CLI
 /// progress checks fail instead of publishing a partially advanced world.
 pub fn modifier_runtime_health(world: &World) -> Result<()> {
@@ -2396,6 +2405,182 @@ mod tests {
         native_world::prepare_authored_world,
         simulation::{build_app, capture},
     };
+
+    mod absence {
+        use super::*;
+        use bevy::ecs::entity_disabling::{DefaultQueryFilters, Disabled};
+
+        #[derive(Component)]
+        struct Dormant;
+
+        #[derive(Resource)]
+        struct UnrelatedResource;
+
+        fn rejects_state(world: &World, expected: &str) {
+            assert_eq!(
+                ensure_no_lifecycle_state(world).unwrap_err().to_string(),
+                expected
+            );
+        }
+
+        fn check_component<T: Component>(make: impl Fn() -> T) {
+            check_component_error(make, "world contains unexpected lifecycle components");
+        }
+
+        fn check_component_error<T: Component>(make: impl Fn() -> T, expected: &str) {
+            let mut world = World::new();
+            assert!(world.component_id::<T>().is_none());
+            ensure_no_lifecycle_state(&world).unwrap();
+            let component = world.register_component::<T>();
+            // Registration alone has no live value to reject.
+            ensure_no_lifecycle_state(&world).unwrap();
+            let offender = world.spawn(make()).id();
+            let archetype = world.entity(offender).archetype().id();
+            rejects_state(&world, expected);
+            world.entity_mut(offender).remove::<T>();
+            assert!(world.archetypes()[archetype].is_empty());
+            assert!(world.archetypes()[archetype].contains(component));
+            ensure_no_lifecycle_state(&world).unwrap();
+            world.despawn(offender);
+            // An already observed empty archetype must be checked when reused.
+            let offender = world.spawn(make()).id();
+            assert_eq!(world.entity(offender).archetype().id(), archetype);
+            rejects_state(&world, expected);
+            world.despawn(offender);
+            ensure_no_lifecycle_state(&world).unwrap();
+
+            let offender = world.spawn((Disabled, make())).id();
+            rejects_state(&world, expected);
+            world.despawn(offender);
+            ensure_no_lifecycle_state(&world).unwrap();
+            let disabling = world.register_component::<Dormant>();
+            world
+                .resource_mut::<DefaultQueryFilters>()
+                .register_disabling_component(disabling);
+            let offender = world.spawn((Dormant, make())).id();
+            rejects_state(&world, expected);
+            world.despawn(offender);
+            ensure_no_lifecycle_state(&world).unwrap();
+
+            // The blacklist covers resource entities too, independently of
+            // which component supplies that entity's singleton resource.
+            world.insert_resource(UnrelatedResource);
+            let entity = world.resource_entity::<UnrelatedResource>().unwrap();
+            world.entity_mut(entity).insert(make());
+            rejects_state(&world, expected);
+            world.entity_mut(entity).remove::<T>();
+            assert!(world.contains_resource::<UnrelatedResource>());
+            ensure_no_lifecycle_state(&world).unwrap();
+        }
+
+        fn check_resource<T: Resource>(make: impl Fn() -> T) {
+            let mut world = World::new();
+            ensure_no_lifecycle_state(&world).unwrap();
+            world.insert_resource(make());
+            rejects_state(&world, "world contains unexpected lifecycle resources");
+            world.remove_resource::<T>().unwrap();
+            ensure_no_lifecycle_state(&world).unwrap();
+
+            // An existing singleton marker for an unrelated type prevents the
+            // required marker for T from claiming this entity. Its T value is
+            // still forbidden by the component guard, independently of the
+            // eight singleton resource guards.
+            let mut world = World::new();
+            world.insert_resource(UnrelatedResource);
+            let entity = world.resource_entity::<UnrelatedResource>().unwrap();
+            world.entity_mut(entity).insert(make());
+            assert!(!world.contains_resource::<T>());
+            rejects_state(&world, "world contains unexpected lifecycle components");
+            world.entity_mut(entity).remove::<T>();
+            assert!(world.contains_resource::<UnrelatedResource>());
+            ensure_no_lifecycle_state(&world).unwrap();
+        }
+
+        #[test]
+        fn complete_blacklist_checks_live_archetypes_and_all_resource_guards() {
+            let mut lifecycle = app();
+            let scalar = scalar_app();
+            let inventory = inventory_app();
+            let owners = build_app(&ServerConfig::default(), &owner_fixture::imported()).unwrap();
+            let modifiers = build_app(
+                &ServerConfig::default(),
+                &crate::native_modifiers::enable_modifier_owners(
+                    capture(lifecycle.world_mut()).unwrap(),
+                )
+                .unwrap(),
+            )
+            .unwrap();
+            check_resource(|| ModifierRuntimeAnchor {
+                definitions: Arc::clone(
+                    &modifiers
+                        .world()
+                        .resource::<ModifierRuntimeAnchor>()
+                        .definitions,
+                ),
+            });
+            check_component(|| NativeOwnerIncarnation(1));
+            check_component(|| NativeOwnerName(vec![65]));
+            check_component(|| {
+                NativeOwnerRecorder(RecorderComponentRecord {
+                    kind: RecorderKind::SpatialStateV1,
+                    guid: 1,
+                })
+            });
+            check_resource(|| {
+                lifecycle
+                    .world()
+                    .resource::<NativeLifecycleContext>()
+                    .clone()
+            });
+            check_resource(|| lifecycle.world().resource::<DormantNativeSlots>().clone());
+            check_resource(|| owners.world().resource::<C001OwnerImportState>().clone());
+            check_resource(|| {
+                scalar
+                    .world()
+                    .resource::<NativeScalarOwnerContractsState>()
+                    .clone()
+            });
+            check_resource(|| {
+                scalar
+                    .world()
+                    .resource::<C001ScalarOwnerImportState>()
+                    .clone()
+            });
+            check_component(|| {
+                scalar
+                    .world()
+                    .get::<ScalarOwnerDerived>(scalar_entity(scalar.world(), DomainId(2)))
+                    .unwrap()
+                    .clone()
+            });
+            check_resource(|| {
+                inventory
+                    .world()
+                    .resource::<NativeInventoryContractsState>()
+                    .clone()
+            });
+            check_resource(|| {
+                inventory
+                    .world()
+                    .resource::<C001InventoryOwnerImportState>()
+                    .clone()
+            });
+            check_component(|| {
+                inventory
+                    .world()
+                    .get::<InventoryOwnerState>(scalar_entity(inventory.world(), DomainId(2)))
+                    .unwrap()
+                    .clone()
+            });
+            check_component(|| {
+                modifiers
+                    .world()
+                    .get::<ModifierOwnerState>(scalar_entity(modifiers.world(), DomainId(1)))
+                    .unwrap()
+                    .clone()
+            });
+        }
+    }
 
     fn app() -> bevy::prelude::App {
         let catalog = Arc::new(
