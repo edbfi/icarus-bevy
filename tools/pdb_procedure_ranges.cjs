@@ -11,6 +11,10 @@
 // https://github.com/llvm/llvm-project/blob/llvmorg-20.1.8/llvm/lib/DebugInfo/PDB/Native/DbiStreamBuilder.cpp
 // https://github.com/llvm/llvm-project/blob/llvmorg-20.1.8/lld/COFF/PDB.cpp
 // https://github.com/llvm/llvm-project/blob/llvmorg-20.1.8/llvm/include/llvm/DebugInfo/CodeView/CodeViewSymbols.def
+// https://github.com/llvm/llvm-project/blob/llvmorg-20.1.8/llvm/include/llvm/DebugInfo/CodeView/SymbolRecord.h
+// https://github.com/llvm/llvm-project/blob/llvmorg-20.1.8/llvm/include/llvm/DebugInfo/CodeView/CodeView.h
+// https://github.com/llvm/llvm-project/blob/llvmorg-20.1.8/llvm/include/llvm/DebugInfo/CodeView/CodeViewRecordIO.h
+// https://github.com/llvm/llvm-project/blob/llvmorg-20.1.8/llvm/lib/DebugInfo/CodeView/CodeViewRecordIO.cpp
 // https://github.com/llvm/llvm-project/blob/llvmorg-20.1.8/llvm/lib/DebugInfo/CodeView/SymbolRecordMapping.cpp
 // https://github.com/llvm/llvm-project/blob/llvmorg-20.1.8/llvm/include/llvm/DebugInfo/CodeView/RecordSerialization.h
 // LLVM sources: Apache-2.0 WITH LLVM-exception; preserved license reference:
@@ -45,6 +49,9 @@
 // procedure declarations, and their annotation payloads/scopes are unvalidated.
 // Only the explicit inlinees profile frames exact counted-u32 auxiliary lists.
 // Their values remain opaque: no references, ownership or declarations follow.
+// Only the explicit ordinal-3 framing profile admits THUNK32 common fields and
+// a terminated name, with an unread opaque tail and disjoint declared interval.
+// This frames no variant grammar and establishes no actual thunk body extent.
 // Digests cover complete matching raw records (including names/padding), in
 // ascending module ordinal then symbol offset order; bytes are never exported.
 
@@ -101,6 +108,8 @@ const NI_MAC_ZERO_GRAMMAR = 'named_stream_ni_mac_zero_v1';
 // An explicit bounded variant, not a producer/ABI or ownership assertion.
 const ABSOLUTE_TAIL_FRAME_ZERO_GRAMMAR = 'identity_sections_absolute_tail_frame_zero_v1';
 const INLINEES_COUNTED_U32_EXACT_GRAMMAR = 'inlinees_counted_u32_exact_v1';
+const THUNK32_FRAMED_OPAQUE_TAIL_GRAMMAR = 'thunk32_ordinal3_common_prefix_namez_opaque_tail_disjoint_v1';
+const THUNK32_FRAMING_CAPS = Object.freeze({records: 256, name: 1024, names: 65536});
 
 function selection(query) {
     need(query && typeof query === 'object' && !Array.isArray(query) &&
@@ -455,11 +464,15 @@ function legalInlineesUnsupportedKind(kind) {
     return legalUnsupportedKind(kind) && kind !== 0x1168;
 }
 
+function legalThunk32Ordinal(value) {
+    return Number.isInteger(value) && !Object.is(value, -0) && value >= 0 && value <= 255;
+}
+
 function extent(image, segment, offset, size, mappingSite, stage) {
     need(size > 0, 'ERR_PROCEDURE_SIZE');
-    // Defensive only under the immutable-input contract: selectors have just
-    // found an in-range section; supported records have passed procedure/segment.
-    // Neither public caller can independently reach extent_segment today.
+    // Selectors have found an in-range section; supported procedures have
+    // passed their segment guard. The explicit thunk framing mode checks its
+    // declared segment here, without exposing a mapping-diagnostic site.
     mappingNeed(segment >= 1 && segment <= image.sections.length, mappingSite, stage, 'extent_segment');
     const s = image.sections[segment - 1], start = s.rva + offset, end = start + size;
     const va = image.base + BigInt(start), exclusive = image.base + BigInt(end);
@@ -471,8 +484,10 @@ function extent(image, segment, offset, size, mappingSite, stage) {
         file_span: {start: s.raw + offset, end_exclusive: s.raw + offset + size}};
 }
 
-function scanModule(ctx, mod, aggregates, totals, unsupportedSite, inlineesGrammar) {
+function scanModule(ctx, mod, aggregates, totals, unsupportedSite, inlineesGrammar, thunkSite = null,
+    thunkGrammar = null) {
     const {m, image} = ctx, code = 'ERR_MODULE_FRAMING', stream = mod.stream_id;
+    const thunkFraming = thunkGrammar === THUNK32_FRAMED_OPAQUE_TAIL_GRAMMAR;
     const tail = mod.sym + mod.c11 + mod.c13;
     need(mod.sym >= 4 && mod.sym % 4 === 0 && mod.c11 === 0 && tail + 4 <= m.streams[stream].size, code);
     need(m.stream(stream, 0, 4).readUInt32LE() === 4, code);
@@ -481,6 +496,11 @@ function scanModule(ctx, mod, aggregates, totals, unsupportedSite, inlineesGramm
     let cache = null, cacheAt = -1;
     const read = (o, n) => {
         need(o >= 4 && n >= 0 && n <= LIMITS.record && o + n <= mod.sym, code);
+        // The ordinal diagnostic and independent framing profile select exact
+        // reads from the start. A preceding record must not prefetch a later
+        // thunk's excluded bytes. MSF stream() splits exact requests at pages.
+        // Reader failure timing may differ from the legacy speculative cache.
+        if (thunkSite !== null || thunkFraming) return m.stream(stream, o, n);
         const out = Buffer.alloc(n); let done = 0;
         while (done < n) {
             const pos = o + done, base = Math.floor(pos / LIMITS.cache) * LIMITS.cache;
@@ -491,6 +511,7 @@ function scanModule(ctx, mod, aggregates, totals, unsupportedSite, inlineesGramm
         return out;
     };
     let records = 0, procedures = 0, opaque = 0, matches = 0;
+    let thunks = 0, inlinees = 0;
     for (let at = 4; at < mod.sym;) {
         need(at + 4 <= mod.sym, code);
         const h = read(at, 4), n = h.readUInt16LE() + 2, kind = h.readUInt16LE(2);
@@ -511,7 +532,43 @@ function scanModule(ctx, mod, aggregates, totals, unsupportedSite, inlineesGramm
                 Number.isSafeInteger(inlineesEntries) && inlineesEntries >= 0 &&
                 inlineesEntries <= Math.floor(LIMITS.symbols / 4), code);
             totals.inlinees.records = inlineesRecords; totals.inlinees.entries = inlineesEntries;
+            inlinees++;
+        } else if (thunkFraming && kind === 0x1102) {
+            // Independent common-prefix/name framing only. Bound before any
+            // body read; the 257th candidate cannot trigger another ordinal.
+            need(n >= 28 && n <= 0xff00, code);
+            need(totals.thunks.intervals.length < THUNK32_FRAMING_CAPS.records, 'ERR_MODULE_BOUND');
+            need(read(at + 24, 1).readUInt8() === 3, 'ERR_SYMBOL_UNSUPPORTED');
+            const b = read(at + 16, 8), offset = b.readUInt32LE(), segment = b.readUInt16LE(4),
+                size = b.readUInt16LE(6);
+            const mapping = extent(image, segment, offset, size, null, 'procedure');
+            for (const rva of aggregates.keys()) {
+                need(rva < mapping.start_rva || rva >= mapping.end_rva, 'ERR_PROCEDURE_CONFLICT');
+            }
+            let terminated = false;
+            for (let pos = 25; pos < n && pos - 25 < THUNK32_FRAMING_CAPS.name; pos++) {
+                need(totals.thunks.nameBytes < THUNK32_FRAMING_CAPS.names, 'ERR_MODULE_BOUND');
+                const byte = read(at + pos, 1).readUInt8();
+                totals.thunks.nameBytes++;
+                if (byte === 0) { terminated = true; break; }
+            }
+            need(terminated, code);
+            // Retain only a bounded mapped interval, never the name. Links and
+            // the entire post-NUL tail are never read, retained or hashed.
+            totals.thunks.intervals.push({start: mapping.start_rva, end: mapping.end_rva});
+            thunks++;
         } else if (UNSUPPORTED.has(kind)) {
+            if (thunkSite !== null && kind === 0x1102) {
+                // Public serialized prefix: uint8 ordinal at +24. Bound the
+                // record first (effective aligned minimum 28), then read only
+                // that byte. Links/address/length [4,24) and name/variant
+                // [25,n) are neither read nor interpreted; no enum predicate.
+                need(n >= 25, code);
+                const ordinal = read(at + 24, 1).readUInt8();
+                const error = new MetadataError('ERR_SYMBOL_UNSUPPORTED');
+                thunkSite.ordinal = ordinal; thunkSite.error = error;
+                throw error;
+            }
             // Retain only the already-read discriminator at this exact guard.
             // The private opt-in site adds no payload/header read or traversal.
             if (unsupportedSite !== null && unsupportedSite.first === null) unsupportedSite.first = kind;
@@ -539,12 +596,17 @@ function scanModule(ctx, mod, aggregates, totals, unsupportedSite, inlineesGramm
         at += n;
     }
     totals.procedures += procedures; totals.opaque += opaque;
-    return {module_index: mod.module_index, stream_id: stream, symbol_bytes: mod.sym,
+    const result = {module_index: mod.module_index, stream_id: stream, symbol_bytes: mod.sym,
         records, supported_procedure_records: procedures, opaque_records: opaque, matching_records: matches};
+    if (thunkFraming) {
+        need(records === procedures + opaque && thunks + inlinees <= opaque, code);
+        result.thunk_records = thunks;
+    }
+    return result;
 }
 
 function inspectProfile(reader, exe, identity, query, niMacZero, mappingSite = null, segmentMapGrammar = null,
-    unsupportedSite = null, inlineesGrammar = null) {
+    unsupportedSite = null, inlineesGrammar = null, thunkSite = null, thunkGrammar = null) {
     try {
         // Selector validation is deliberately before any PE parsing or reader I/O.
         const selected = selection(query),
@@ -571,15 +633,24 @@ function inspectProfile(reader, exe, identity, query, niMacZero, mappingSite = n
             {address: a.address, count: 0, bytes: 0, hash: createHash('sha256'), extent: null}]));
         const totals = {records: 0, procedures: 0, opaque: 0};
         const inlineesExact = inlineesGrammar === INLINEES_COUNTED_U32_EXACT_GRAMMAR;
+        const thunkFraming = thunkGrammar === THUNK32_FRAMED_OPAQUE_TAIL_GRAMMAR;
         if (inlineesExact) totals.inlinees = {grammar: INLINEES_COUNTED_U32_EXACT_GRAMMAR, records: 0, entries: 0};
+        if (thunkFraming) totals.thunks = {intervals: [], nameBytes: 0};
         const scanned = routing.indices.map(i => scanModule(ctx, modules[i], aggregates, totals, unsupportedSite,
-            inlineesGrammar));
+            inlineesGrammar, thunkSite, thunkGrammar));
+        if (thunkFraming) {
+            for (const t of totals.thunks.intervals) for (const a of aggregates.values()) {
+                if (a.extent !== null) need(t.start >= a.extent.end_rva || a.extent.start_rva >= t.end,
+                    'ERR_PROCEDURE_CONFLICT');
+            }
+        }
         need([...aggregates.values()].every(a => a.count > 0), 'ERR_PROCEDURE_ABSENT');
         const result = {
             profile: 'MSF7_DBI_C13_scoped_supported_procedure_declarations' +
                 (niMacZero ? '_' + NI_MAC_ZERO_GRAMMAR : '') +
                 (ctx.segmentMapProfile === null ? '' : '_absolute_tail_frame_zero_v1') +
-                (inlineesExact ? '_' + INLINEES_COUNTED_U32_EXACT_GRAMMAR : ''),
+                (inlineesExact ? '_' + INLINEES_COUNTED_U32_EXACT_GRAMMAR : '') +
+                (thunkFraming ? '_framing_' + THUNK32_FRAMED_OPAQUE_TAIL_GRAMMAR : ''),
             guid_bytes: identity.guid_bytes, age: identity.age, image_base: hex(image.base),
             routing, selected_modules: scanned, symbol_bytes: symbolBytes, records: totals.records,
             supported_procedure_records: totals.procedures, opaque_records: totals.opaque,
@@ -599,6 +670,14 @@ function inspectProfile(reader, exe, identity, query, niMacZero, mappingSite = n
             need(totals.inlinees.records <= totals.opaque && totals.records === totals.procedures + totals.opaque,
                 'ERR_MODULE_FRAMING');
             result.inlinees_profile = totals.inlinees;
+        }
+        if (thunkFraming) {
+            const count = totals.thunks.intervals.length;
+            need(totals.records === totals.procedures + totals.opaque &&
+                count + totals.inlinees.records <= totals.opaque &&
+                scanned.reduce((sum, mod) => sum + mod.thunk_records, 0) === count, 'ERR_MODULE_FRAMING');
+            result.thunk32_profile = {grammar: THUNK32_FRAMED_OPAQUE_TAIL_GRAMMAR, records: count,
+                variant_data_read: false, variant_data_validated: false};
         }
         need(Buffer.byteLength(JSON.stringify(result) + '\n') <= LIMITS.output, 'ERR_OUTPUT_BOUND');
         return result;
@@ -628,6 +707,13 @@ function inspectNamedStreamNiMacZeroAbsoluteTailFrameZero(reader, exe, identity,
 function inspectNamedStreamNiMacZeroAbsoluteTailFrameZeroInlineesExact(reader, exe, identity, query) {
     return inspectProfile(reader, exe, identity, query, true, null, ABSOLUTE_TAIL_FRAME_ZERO_GRAMMAR,
         null, INLINEES_COUNTED_U32_EXACT_GRAMMAR);
+}
+
+// Explicit ordinal-3 common-prefix/name framing, opaque unread remaining tail,
+// and disjoint declared intervals. Never full thunk or variant validation.
+function inspectNamedStreamNiMacZeroAbsoluteTailFrameZeroInlineesExactThunk3FramedOpaqueTail(reader, exe, identity, query) {
+    return inspectProfile(reader, exe, identity, query, true, null, ABSOLUTE_TAIL_FRAME_ZERO_GRAMMAR,
+        null, INLINEES_COUNTED_U32_EXACT_GRAMMAR, null, THUNK32_FRAMED_OPAQUE_TAIL_GRAMMAR);
 }
 
 // Exact zero-tail grammar only. Refusal is a prefix observation, while acceptance
@@ -687,6 +773,39 @@ function diagnoseUnsupportedSymbolNamedStreamNiMacZeroAbsoluteTailFrameZeroInlin
             stage: refused ? 'procedure_metadata' : 'complete',
             guard: refused ? 'unsupported_kind' : null,
             kind_u16: refused ? unsupportedSite.first : null,
+        };
+        need(Buffer.byteLength(JSON.stringify(result) + '\n') <= 1024, 'ERR_OUTPUT_BOUND');
+        return result;
+    } catch (error) {
+        if (error instanceof MetadataError) throw error;
+        throw new MetadataError('ERR_PDB_FRAMING');
+    }
+}
+
+// Prefix-only diagnostic in the exact-inlinees envelope. Capture only this
+// call's own typed refusal; all other failures remain code-only. Acceptance
+// requires the full ordinary scan, digests and final/output checks. Discard
+// ordinary metadata in both branches. No thunk body grammar is accepted.
+function diagnoseThunk32OrdinalNamedStreamNiMacZeroAbsoluteTailFrameZeroInlineesExact(reader, exe, identity, query) {
+    const thunkSite = {ordinal: null, error: null};
+    try {
+        let status = 'accepted_profile';
+        try {
+            inspectProfile(reader, exe, identity, query, true, null, ABSOLUTE_TAIL_FRAME_ZERO_GRAMMAR,
+                null, INLINEES_COUNTED_U32_EXACT_GRAMMAR, thunkSite);
+        } catch (error) {
+            if (!(error instanceof MetadataError) || error !== thunkSite.error ||
+                error.code !== 'ERR_SYMBOL_UNSUPPORTED' || !legalThunk32Ordinal(thunkSite.ordinal)) throw error;
+            status = 'refused_symbol';
+        }
+        const refused = status === 'refused_symbol';
+        need(refused ? legalThunk32Ordinal(thunkSite.ordinal) :
+            thunkSite.ordinal === null && thunkSite.error === null, 'ERR_SYMBOL_UNSUPPORTED');
+        const result = {
+            profile: 'MSF7_procedure_thunk32_ordinal_exact_inlinees_diagnostic_v1', status,
+            stage: refused ? 'procedure_metadata' : 'complete',
+            guard: refused ? 'unsupported_kind' : null,
+            ordinal_u8: refused ? thunkSite.ordinal : null,
         };
         need(Buffer.byteLength(JSON.stringify(result) + '\n') <= 1024, 'ERR_OUTPUT_BOUND');
         return result;
@@ -780,7 +899,9 @@ function diagnoseTailFrameNamedStreamNiMacZero(reader, exe, identity, query) {
 module.exports = {inspect, diagnoseInfoFeatures, inspectNamedStreamNiMacZero, diagnoseInfoNamedStreamNiMacZero,
     inspectNamedStreamNiMacZeroAbsoluteTailFrameZero,
     inspectNamedStreamNiMacZeroAbsoluteTailFrameZeroInlineesExact,
+    inspectNamedStreamNiMacZeroAbsoluteTailFrameZeroInlineesExactThunk3FramedOpaqueTail,
     diagnoseUnsupportedSymbolNamedStreamNiMacZeroAbsoluteTailFrameZero,
     diagnoseUnsupportedSymbolNamedStreamNiMacZeroAbsoluteTailFrameZeroInlineesExact,
+    diagnoseThunk32OrdinalNamedStreamNiMacZeroAbsoluteTailFrameZeroInlineesExact,
     diagnoseSourceMappingNamedStreamNiMacZero, diagnoseSourceMappingIdentityNamedStreamNiMacZero,
     diagnoseTailFrameNamedStreamNiMacZero, LIMITS};
