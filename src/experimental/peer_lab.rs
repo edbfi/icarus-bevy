@@ -163,6 +163,7 @@ use serde::Serialize;
 use super::actor_channel::{
     ActorBunchBody, ActorChannelCodec, ActorChannelLimits, encode_actor_bunch_body,
 };
+use super::actor_open::{Block, Reference};
 use super::admission::{
     ActorChannelFailureAction, AdmissionPolicy, ClientLoginState, ConnectionLoginAdmission,
     DEFAULT_MAX_CLIENT_RATE, FIND_PLAYER_START_ERROR, JoinSpawnContext, Occupancy,
@@ -194,10 +195,11 @@ use super::release::ReleaseProfile;
 use super::rep_layout::RepValue;
 use super::server_fps::ServerFpsMeter;
 use super::session_open::{
-    ActorKey, ActorOpenSpec, ConnectionExports, NetGuidCache, PlayerControllerOpenPlan,
-    PlayerStateOpenPlan, PlayerStateOpenState, actor_properties_update_block, authored_movement,
-    compose_actor_open, compose_player_controller_open, compose_player_state_open,
-    initial_actor_properties, replicated_unique_net_id,
+    ActorKey, ActorOpenSpec, ConnectionExports, NetGuidCache, PathSegment,
+    PlayerControllerOpenPlan, PlayerStateOpenPlan, PlayerStateOpenState,
+    actor_properties_update_block, authored_movement, compose_actor_open,
+    compose_player_controller_open, compose_player_state_open, initial_actor_properties,
+    replicated_unique_net_id,
 };
 use super::time_of_day::TimeOfDayClock;
 
@@ -1727,6 +1729,94 @@ impl PeerLab {
     /// Number of enabled `C019` quest actor opens (`F-934`).
     pub fn quest_open_count(&self) -> usize {
         self.quest_opens.len()
+    }
+
+    /// Validate shared static identities without assigning GUIDs or changing
+    /// plans/export state. Include deferred manager plans as well as enabled
+    /// opens: the host may attach those managers after binding. Dynamic actors
+    /// and their named components use separate GUID keys, not static paths.
+    pub(crate) fn validate_static_paths<'a>(
+        &'a self,
+        paths: impl IntoIterator<Item = &'a [PathSegment]>,
+        additional_managers: impl IntoIterator<Item = &'a ManagerOpenPlan>,
+    ) -> Result<()> {
+        let mut paths: Vec<_> = paths.into_iter().collect();
+        if let Some(plan) = &self.player_controller_open {
+            paths.extend([
+                plan.profile.archetype.as_slice(),
+                plan.profile.level.as_slice(),
+            ]);
+        }
+        if let Some((plan, _, _)) = &self.pawn_open {
+            paths.extend([
+                plan.archetype.as_slice(),
+                plan.level.as_slice(),
+                plan.content.inventory_class.as_slice(),
+            ]);
+        }
+        if let Some(session) = &self.game_state_open {
+            let plan = &session.plan;
+            paths.extend([
+                plan.archetype.as_slice(),
+                plan.level.as_slice(),
+                plan.game_mode_class.as_slice(),
+                plan.spectator_class.as_slice(),
+            ]);
+        }
+        if let Some(plan) = &self.player_state_open {
+            paths.extend([plan.archetype.as_slice(), plan.level.as_slice()]);
+        }
+        for plan in self
+            .manager_opens
+            .iter()
+            .map(|(_, plan, _)| plan)
+            .chain(additional_managers)
+        {
+            paths.extend([plan.archetype.as_slice(), plan.level.as_slice()]);
+            if let Some(owned) = &plan.inventories {
+                paths.push(owned.blocks.inventory_class.as_slice());
+            }
+            for component in &plan.components {
+                if let Block::Composed(block) = &component.block {
+                    for reference in block.references.values() {
+                        if let Reference::Static(chain) = reference {
+                            paths.push(chain.as_slice());
+                        }
+                    }
+                }
+            }
+        }
+        if let Some(base) = &self.quest_open_base {
+            paths.push(base.level.as_slice());
+        }
+        for (plan, _) in &self.quest_opens {
+            paths.extend([plan.archetype.as_slice(), plan.level.as_slice()]);
+            for reference in plan.references.values() {
+                if let Reference::Static(chain) = reference {
+                    paths.push(chain.as_slice());
+                }
+            }
+        }
+        let mut identities = BTreeMap::new();
+        for chain in paths {
+            for (index, segment) in chain.iter().enumerate() {
+                // Match NetGuidCache::assign_static: every suffix has its own
+                // key, containing path strings only. Metadata must agree even
+                // when only an outer/package is shared with another chain.
+                let key: Vec<_> = chain[index..]
+                    .iter()
+                    .map(|part| part.path.as_str())
+                    .collect();
+                let identity = (segment.checksum, segment.no_load);
+                ensure!(
+                    identities
+                        .insert(key, identity)
+                        .is_none_or(|previous| previous == identity),
+                    "configured static path identity conflict"
+                );
+            }
+        }
+        Ok(())
     }
 
     /// Also open the saved quest actor `plan` (`C019`, `F-934`) on each joined

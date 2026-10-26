@@ -1023,6 +1023,18 @@ fn install_official_data(data_dir: &std::path::Path, branch: &str) -> Result<ser
     Ok(record)
 }
 
+fn with_native_replication_counts(
+    mut record: serde_json::Value,
+    world: &bevy::prelude::World,
+) -> serde_json::Value {
+    if let Some(counts) =
+        world.get_resource::<icarus_bevy::native_replication::NativeReplicationCounts>()
+    {
+        record["native_replication"] = json!(counts);
+    }
+    record
+}
+
 fn run(options: ConfigOptions, max_ticks: Option<u64>, compressed: bool) -> Result<()> {
     let mut config = options.resolve()?;
     // The official data tables an install step fetched into the data
@@ -1112,7 +1124,7 @@ fn run(options: ConfigOptions, max_ticks: Option<u64>, compressed: bool) -> Resu
         }
     }
     let network_address = bound
-        .map(|bound| network::install(&mut app, bound.lab))
+        .map(|bound| network::install_configured(&mut app, bound, &config.network))
         .transpose()?;
     app.finish();
     app.cleanup();
@@ -1150,13 +1162,16 @@ fn run(options: ConfigOptions, max_ticks: Option<u64>, compressed: bool) -> Resu
         // never a client-supplied value.
         eprintln!(
             "{}",
-            json!({"event": "network_listening", "experimental": true,
+            with_native_replication_counts(
+                json!({"event": "network_listening", "experimental": true,
             "address": address.to_string(), "max_players": config.network.max_players,
             "session_timeout_seconds": config.network.session_timeout_seconds,
             "version_check": pinned_build.is_some(), "release_build_id": pinned_build,
             "data_pak": config.network.data_pak.as_ref().map(|path| path.display().to_string()),
             "data_pak_source": data_pak_source,
-            "icarus_compatible": false, "gameplay_ready": false})
+            "icarus_compatible": false, "gameplay_ready": false}),
+                app.world()
+            )
         );
     }
 
@@ -1203,7 +1218,8 @@ fn run(options: ConfigOptions, max_ticks: Option<u64>, compressed: bool) -> Resu
             let metrics = app.world().resource::<TickMetrics>();
             eprintln!(
                 "{}",
-                json!({"event": "status", "tick": tick,
+                with_native_replication_counts(
+                    json!({"event": "status", "tick": tick,
                 "gameplay_ready": false, "save_in_flight": writer.is_busy(),
                 "save_failures": autosave.failures,
                 "seconds_since_save": autosave.last_commit.map(|time| now.saturating_sub(time).as_secs()),
@@ -1213,7 +1229,9 @@ fn run(options: ConfigOptions, max_ticks: Option<u64>, compressed: bool) -> Resu
                 "max_tick_micros": metrics.max_tick_micros,
                 "tick_p50_micros": metrics.tick_micros.quantile_micros(50),
                 "tick_p99_micros": metrics.tick_micros.quantile_micros(99),
-                "sessions": network::session_counts(app.world())})
+                "sessions": network::session_counts(app.world())}),
+                    app.world()
+                )
             );
             last_status = now;
         }
@@ -1247,8 +1265,11 @@ fn run(options: ConfigOptions, max_ticks: Option<u64>, compressed: bool) -> Resu
     }
     eprintln!(
         "{}",
-        json!({"event": "stopped", "tick": app.world().resource::<SimulationClock>().tick,
-        "gameplay_ready": false, "sessions": sessions})
+        with_native_replication_counts(
+            json!({"event": "stopped", "tick": app.world().resource::<SimulationClock>().tick,
+        "gameplay_ready": false, "sessions": sessions}),
+            app.world()
+        )
     );
     Ok(())
 }

@@ -73,6 +73,11 @@ pub struct NetworkConfig {
     /// their indices (saved session flags; F-830).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub data_pak: Option<PathBuf>,
+    /// Independently authored, strict JSON declaration for schema-4 native
+    /// spatial replication. Relative paths use the working directory. Ignored
+    /// when networking is disabled; absence retains ordinary session behavior.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub authored_replication: Option<PathBuf>,
 }
 
 impl Default for NetworkConfig {
@@ -85,6 +90,7 @@ impl Default for NetworkConfig {
             session_timeout_seconds: 30,
             release_profile: None,
             data_pak: None,
+            authored_replication: None,
         }
     }
 }
@@ -115,6 +121,12 @@ impl NetworkConfig {
                 .is_none_or(|path| !path.as_os_str().is_empty()),
             "network.data_pak is empty"
         );
+        ensure!(
+            self.authored_replication
+                .as_ref()
+                .is_none_or(|path| !path.as_os_str().is_empty()),
+            "network.authored_replication is empty"
+        );
         Ok(())
     }
 
@@ -139,6 +151,10 @@ pub struct ConfigOptions {
     /// does not enable it.
     #[arg(long)]
     pub network_port: Option<u16>,
+    /// Authored schema-4 replication declaration (strict JSON); requires an
+    /// enabled network and release session plan in the native configuration.
+    #[arg(long)]
+    pub authored_replication: Option<PathBuf>,
 }
 
 impl ConfigOptions {
@@ -162,6 +178,9 @@ impl ConfigOptions {
         }
         if let Some(port) = self.network_port {
             config.network.port = port;
+        }
+        if let Some(path) = &self.authored_replication {
+            config.network.authored_replication = Some(path.clone());
         }
         config.validate()?;
         Ok(config)
