@@ -11,6 +11,7 @@ const {inspect, diagnoseInfoFeatures, inspectNamedStreamNiMacZero,
     inspectNamedStreamNiMacZeroAbsoluteTailFrameZero,
     inspectNamedStreamNiMacZeroAbsoluteTailFrameZeroInlineesExact,
     diagnoseUnsupportedSymbolNamedStreamNiMacZeroAbsoluteTailFrameZero,
+    diagnoseUnsupportedSymbolNamedStreamNiMacZeroAbsoluteTailFrameZeroInlineesExact,
     LIMITS} = require('../pdb_procedure_ranges.cjs');
 const {fixture, pack, proc, record, info, namedStreamNiMacZeroInfo, segmentMap, repeatedModule, repeatedContributions,
     SC60, SC2, VA} = require('./pdb_procedure_ranges_fixtures.cjs');
@@ -3681,5 +3682,450 @@ test('inlinees defensive VM injection checks nonnegative exact aggregate bounds 
             inlinees: {grammar: INLINEES_GRAMMAR, records, entries}};
         redactedThrows(() => inlineesDefensiveScan(h, inlineesRecord(), totals), 'ERR_MODULE_FRAMING');
         a.ok(Object.is(totals.inlinees.records, records)); a.ok(Object.is(totals.inlinees.entries, entries));
+    }
+});
+
+const INLINEES_UNSUPPORTED_KIND_PROFILE = 'MSF7_procedure_unsupported_kind_inlinees_exact_diagnostic_v1';
+const inlineesGuardedKinds = guardedSymbolKinds.filter(kind => kind !== 0x1168);
+function unsupportedInlinees(f = zeroTailFixture(), q = query()) {
+    const p = pack(f);
+    return diagnoseUnsupportedSymbolNamedStreamNiMacZeroAbsoluteTailFrameZeroInlineesExact(
+        p.reader, p.exe, p.identity, q);
+}
+function unsupportedInlineesResult(result, kind = null) {
+    a.deepEqual(result, {profile: INLINEES_UNSUPPORTED_KIND_PROFILE,
+        status: kind === null ? 'accepted_profile' : 'refused_symbol',
+        stage: kind === null ? 'complete' : 'procedure_metadata',
+        guard: kind === null ? null : 'unsupported_kind', kind_u16: kind});
+    a.deepEqual(Reflect.ownKeys(result), ['profile', 'status', 'stage', 'guard', 'kind_u16']);
+    a.ok(Object.values(result).every(v => v === null || typeof v === 'string' || typeof v === 'number'));
+    if (kind !== null) {
+        a.ok(Number.isSafeInteger(result.kind_u16) && result.kind_u16 >= 0 && result.kind_u16 <= 0xffff);
+        a.equal(Object.is(result.kind_u16, -0), false);
+        a.ok(inlineesGuardedKinds.includes(result.kind_u16));
+    }
+    a.ok(Buffer.byteLength(JSON.stringify(result) + '\n', 'utf8') <= 1024);
+}
+function unsupportedInlineesParity(f, {kind = null, code = null, q = query()} = {}) {
+    const diagnostic = pack(f), full = pack(f);
+    const call = () => diagnoseUnsupportedSymbolNamedStreamNiMacZeroAbsoluteTailFrameZeroInlineesExact(
+        diagnostic.reader, diagnostic.exe, diagnostic.identity, q);
+    if (code !== null) redactedThrows(call, code);
+    else unsupportedInlineesResult(call(), kind);
+    if (code !== null || kind !== null) redactedThrows(() =>
+        inspectNamedStreamNiMacZeroAbsoluteTailFrameZeroInlineesExact(full.reader, full.exe, full.identity, q),
+        code || 'ERR_SYMBOL_UNSUPPORTED');
+    else a.equal(inspectNamedStreamNiMacZeroAbsoluteTailFrameZeroInlineesExact(
+        full.reader, full.exe, full.identity, q).profile, INLINEES_PROFILE);
+    a.deepEqual(diagnostic.reads, full.reads);
+    a.ok(diagnostic.reads.every(r => r.count <= LIMITS.read));
+    return diagnostic;
+}
+
+test('inlinees unsupported diagnostic reports exactly the remaining 54 kinds at multiple positions and later modules', () => {
+    a.equal(guardedSymbolKinds.length, 55); a.equal(inlineesGuardedKinds.length, 54);
+    a.equal(new Set(inlineesGuardedKinds).size, 54);
+    for (const kind of inlineesGuardedKinds) {
+        for (const records of [[record(kind), inlineesRecord(), proc()],
+            [inlineesRecord([0xffffffff]), record(kind), proc()],
+            [proc(), inlineesRecord(), record(kind)], [inlineesRecord(), proc(), record(kind)]]) {
+            const f = zeroTailFixture({modules: [{records}]});
+            for (const q of [query(), query({module_indices: [0]})]) unsupportedInlineesParity(f, {kind, q});
+        }
+        const f = zeroTailFixture({modules: [{records: [inlineesRecord(), proc()]},
+            {records: [proc(), inlineesRecord([0, 0xffffffff]), record(kind)]}]});
+        for (const q of [query(), query({module_indices: [1, 0]})]) unsupportedInlineesParity(f, {kind, q});
+        unsupportedInlineesParity(f, {q: query({module_indices: [0]})});
+    }
+});
+
+test('inlinees unsupported diagnostic chooses the first remaining guard in physical and sorted selected-module order', () => {
+    for (const [first, second] of [[0x0104, 0x1158], [0x1158, 0x0104]]) {
+        unsupportedInlineesParity(zeroTailFixture({modules: [{records: [inlineesRecord(),
+            proc(), record(first), inlineesRecord(), record(second)]}]}), {kind: first});
+        const f = zeroTailFixture({modules: [{records: [inlineesRecord(), proc(), record(first)]},
+            {records: [inlineesRecord([0xffffffff]), record(second), proc()]}],
+        contributions: [{module_index: 1}, {module_index: 0}]});
+        for (const q of [query(), query({module_indices: [1, 0]})]) unsupportedInlineesParity(f, {kind: first, q});
+        unsupportedInlineesParity(f, {kind: second, q: query({module_indices: [1]})});
+    }
+    unsupportedInlineesParity(zeroTailFixture({modules: [{records: [inlineesRecord([0]),
+        proc({offset: 0x90}), record(0x112c)]}]}), {kind: 0x112c});
+});
+
+test('inlinees unsupported diagnostic skips only validated exact lists and keeps malformed-list refusal precedence', () => {
+    for (const values of [[], [0], [0xffffffff, 0, 0x80000000, 0], Array(16318).fill(0xffffffff)]) {
+        const f = zeroTailFixture({modules: [{records: [inlineesRecord(values), proc(), inlineesRecord()]}]});
+        unsupportedInlineesParity(f);
+        unsupportedSymbolResult(unsupportedSymbol(f), 0x1168);
+        redactedThrows(() => runZeroTail(f), 'ERR_SYMBOL_UNSUPPORTED');
+    }
+    const badLists = [record(0x1168), inlineesRecord([], {count: 1}), inlineesRecord([0], {count: 0}),
+        inlineesRecord([], {count: 0xffffffff}), inlineesRecord(Array(16319).fill(0)),
+        ...[5, 6, 7, 9, 10, 11].map(bytes => inlineesRecord([], {bytes}))];
+    for (const bad of badLists) {
+        for (const modules of [[{records: [proc(), inlineesRecord(), bad, record(0x0104)]}],
+            [{records: [inlineesRecord(), proc()]}, {records: [bad, record(0x0104)]}]]) {
+            unsupportedInlineesParity(zeroTailFixture({modules}), {code: 'ERR_MODULE_FRAMING'});
+        }
+        // A later malformed list is never interpreted past an earlier guard.
+        // Preserve whole-symbol-stream alignment so its earlier framing guard
+        // does not independently reject the deliberately malformed suffix.
+        const alignedBad = Buffer.concat([bad, Buffer.alloc((4 - bad.length % 4) % 4)]);
+        unsupportedInlineesParity(zeroTailFixture({modules: [{records: [inlineesRecord(),
+            record(0x0104), alignedBad]}]}), {kind: 0x0104});
+    }
+});
+
+test('inlinees unsupported diagnostic preserves external, outer-record and selected-stream preflight precedence', () => {
+    for (const kind of [0x115f, 0x1160, 0x1161, 0x1167]) {
+        for (const modules of [[{records: [inlineesRecord(), proc(), record(kind), record(0x0104)]}],
+            [{records: [inlineesRecord(), proc()]}, {records: [record(kind), record(0x0104)]}]]) {
+            unsupportedInlineesParity(zeroTailFixture({modules}), {code: 'ERR_FASTLINK_UNSUPPORTED'});
+        }
+        unsupportedInlineesParity(zeroTailFixture({modules: [{records: [inlineesRecord(),
+            record(0x0104), record(kind)]}]}), {kind: 0x0104});
+    }
+    for (const length of [0, 1, 3, 65534, 65535]) {
+        const bad = record(0x0104); bad.writeUInt16LE(length);
+        unsupportedInlineesParity(zeroTailFixture({modules: [{records: [inlineesRecord(), proc(), bad]}]}),
+            {code: 'ERR_MODULE_FRAMING'});
+    }
+    for (const [change, code] of [
+        [f => f.streams[12] = null, 'ERR_MODULE_BOUND'],
+        [f => f.streams[3].writeUInt16LE(9, dbiModuleAt(f, 1) + 34), 'ERR_MODULE_BOUND'],
+        [f => f.streams[3].writeUInt16LE(8, dbiModuleAt(f, 1) + 34), 'ERR_MODULE_BOUND'],
+        [f => f.streams[3].writeUInt16LE(0x100, dbiModuleAt(f, 1) + 32), 'ERR_REFERENCE_UNSUPPORTED'],
+    ]) {
+        const f = zeroTailFixture({modules: [{records: [inlineesRecord(), record(0x0104)]}, {}]});
+        change(f); unsupportedInlineesParity(f, {code});
+    }
+    for (const options of [{signature: 2}, {sym: 5}, {c11: Buffer.alloc(4)}]) {
+        unsupportedInlineesParity(zeroTailFixture({modules: [{...options,
+            records: [inlineesRecord(), record(0x0104)]}]}), {code: 'ERR_MODULE_FRAMING'});
+    }
+});
+
+test('inlinees unsupported diagnostic retains real resource limits and the record ceiling before kind capture', () => {
+    unsupportedInlineesParity(zeroTailFixture({modules: Array.from({length: 33}, () =>
+        ({records: [inlineesRecord(), record(0x0104)]}))}), {code: 'ERR_MODULE_BOUND'});
+    const tooManySymbols = LIMITS.symbols + 4;
+    unsupportedInlineesParity(zeroTailFixture({modules: [{sym: tooManySymbols,
+        body: repeatedModule(tooManySymbols, record(0x0104))}]}), {code: 'ERR_MODULE_BOUND'});
+    for (const [count, options] of [[LIMITS.contribution_records + 1, {}],
+        [1, {declaredBytes: LIMITS.contributions + 4}]]) unsupportedInlineesParity(
+        repeatedContributions(zeroTailFixture(), count, options), {code: 'ERR_ROUTING_BOUND'});
+    // Real sparse authored input: final record is the first beyond the ceiling.
+    const sym = 4 + 40 + LIMITS.records * 4, original = repeatedModule(sym);
+    const body = {...original, read(o, n) {
+        const b = original.read(o, n);
+        for (const [at, byte] of [[sym - 2, 4], [sym - 1, 1]]) if (at >= o && at < o + n) b[at - o] = byte;
+        return b;
+    }};
+    unsupportedInlineesParity(zeroTailFixture({modules: [{sym, body}]}), {code: 'ERR_MODULE_BOUND'});
+});
+
+test('inlinees unsupported diagnostic acceptance requires every selected module and all final metadata checks', () => {
+    const clean = zeroTailFixture({modules: [{records: [inlineesRecord(), proc()]},
+        {records: [inlineesRecord([0, 0xffffffff]), proc(), proc({offset: 0x90, size: 0xffffffff})]}]});
+    for (const q of [query(), query({module_indices: [1, 0]})]) {
+        const p = unsupportedInlineesParity(clean, {q});
+        a.ok(p.reads.some(r => p.entries[12].pages.includes(Math.floor(r.offset / 4096))));
+    }
+    const malformed = record(); malformed.writeUInt16LE(65535);
+    for (const [bad, code] of [[malformed, 'ERR_MODULE_FRAMING'],
+        [inlineesRecord([], {count: 1}), 'ERR_MODULE_FRAMING'], [proc({size: 0x31}), 'ERR_PROCEDURE_CONFLICT'],
+        [proc({size: 0}), 'ERR_PROCEDURE_SIZE'], [proc({segment: 4}), 'ERR_SOURCE_MAPPING'],
+        [record(0x115f), 'ERR_FASTLINK_UNSUPPORTED']]) {
+        for (const modules of [[{records: [inlineesRecord(), proc(), bad]}],
+            [{records: [inlineesRecord(), proc()]}, {records: [inlineesRecord(), bad]}]]) {
+            unsupportedInlineesParity(zeroTailFixture({modules}), {code});
+        }
+    }
+    unsupportedInlineesParity(zeroTailFixture({modules: [{records: [inlineesRecord([0x20, 0x1020])]}]}),
+        {code: 'ERR_PROCEDURE_ABSENT'});
+    unsupportedInlineesParity(clean, {q: query({addresses: [VA, '0x140001021']}), code: 'ERR_PROCEDURE_ABSENT'});
+    const stringify = JSON.stringify; let complete = false;
+    JSON.stringify = function(value, ...args) {
+        const out = stringify.call(this, value, ...args);
+        if (!value || value.profile !== INLINEES_PROFILE) return out;
+        complete = true; a.equal(value.complete_selected_symbol_record_framing, true);
+        a.equal(value.selected_modules.length, 2); a.equal(value.inlinees_profile.entries, 2);
+        return out.padEnd(LIMITS.output, ' ');
+    };
+    try {
+        redactedThrows(() => unsupportedInlinees(clean), 'ERR_OUTPUT_BOUND'); a.equal(complete, true);
+        unsupportedInlineesResult(unsupportedInlinees(zeroTailFixture({modules: [
+            {records: [inlineesRecord(), record(0x0104)]}]})), 0x0104);
+    } finally { JSON.stringify = stringify; }
+});
+
+test('inlinees unsupported diagnostic adds no reads or later interpretation after its first guard', () => {
+    const f = zeroTailFixture({modules: [{records: [inlineesRecord(), proc(), record(0x0104),
+        record(0x7777, 65536), record(0x7777, 65536), record(0x1158)]},
+    {records: [inlineesRecord([], {count: 1})]}]});
+    unsupportedInlineesParity(f, {kind: 0x0104});
+    const p = pack(f); let forbidden = 0, headers = 0;
+    const reader = {size: p.reader.size, read(o, n) {
+        for (const index of [9, 12]) for (let i = 0; i < p.entries[index].pages.length; i++) {
+            const page = p.entries[index].pages[i];
+            if (o >= page * 4096 && o < (page + 1) * 4096) {
+                const logical = i * 4096 + o % 4096;
+                // Existing signature/trailer and first-cache prefetch are allowed.
+                if (index === 12 || (logical >= LIMITS.cache && logical < f.modules[0].symbols.length)) {
+                    forbidden++; throw Error('NEVER_EXPORT/later-cache-or-module');
+                }
+            }
+        }
+        return p.reader.read(o, n);
+    }};
+    const u16 = Buffer.prototype.readUInt16LE;
+    Buffer.prototype.readUInt16LE = function(offset = 0) {
+        if (this.length === 4 && offset === 2) { headers++; a.ok(headers <= 3); }
+        return u16.call(this, offset);
+    };
+    try { unsupportedInlineesResult(diagnoseUnsupportedSymbolNamedStreamNiMacZeroAbsoluteTailFrameZeroInlineesExact(
+        reader, p.exe, p.identity, query()), 0x0104); }
+    finally { Buffer.prototype.readUInt16LE = u16; }
+    a.equal(headers, 3); a.equal(forbidden, 0);
+});
+
+test('inlinees unsupported diagnostic keeps NI-zero, exact-tail, identity, feature and routing gates before symbols', () => {
+    for (const [options, code] of [
+        [{info: info()}, 'ERR_NI_MAC_UNSUPPORTED'],
+        [{info: namedStreamNiMacZeroInfo({niMac: 1})}, 'ERR_NI_MAC_UNSUPPORTED'],
+        [{info: namedStreamNiMacZeroInfo({niBytes: 0, features: []})}, 'ERR_PDB_FRAMING'],
+        ...[MINI, NOTM].map(feature => [{info: namedStreamNiMacZeroInfo({features: [feature]})}, 'ERR_FASTLINK_UNSUPPORTED']),
+        [{info: namedStreamNiMacZeroInfo({features: [0]})}, 'ERR_FEATURE_UNSUPPORTED'],
+        [{info: namedStreamNiMacZeroInfo({features: [20140508, 20140508]})}, 'ERR_FEATURE_UNSUPPORTED'],
+        [{version: 1}, 'ERR_ROUTING_UNSUPPORTED'], [{sc: Buffer.alloc(0)}, 'ERR_ROUTING_ABSENT'],
+        [{moduleInfo: Buffer.alloc(60)}, 'ERR_DBI_MODULE_INFO'],
+    ]) unsupportedInlineesParity(zeroTailFixture({...options, modules: [
+        {records: [inlineesRecord(), record(0x0104)]}]}), {code});
+    for (const sectionMap of [Buffer.alloc(0), segmentMap(false), segmentMap(true)]) {
+        unsupportedInlineesParity(niFixture({sectionMap, modules: [
+            {records: [inlineesRecord(), record(0x0104)]}]}), {code: 'ERR_SOURCE_MAPPING'});
+    }
+    for (const [change, code] of [[f => f.exe[f.rsds + 4] ^= 1, 'ERR_IDENTITY'],
+        [f => f.streams[3].writeUInt16LE(8, f.optionalAt + 6), 'ERR_OMAP_UNSUPPORTED'],
+        [f => f.streams[8][0] ^= 1, 'ERR_SOURCE_MAPPING'],
+        [f => f.sectionMap.writeUInt16LE(4, 70), 'ERR_SOURCE_MAPPING']]) {
+        const f = zeroTailFixture({modules: [{records: [inlineesRecord(), record(0x0104)]}]});
+        change(f);
+        if (code === 'ERR_SOURCE_MAPPING') replaceTestMap(f, f.sectionMap);
+        unsupportedInlineesParity(f, {code});
+    }
+    for (const [, stage, , make, q = query()] of mappingCases) {
+        if (stage === 'segment_map') continue;
+        const f = make(); replaceTestMap(f, authoredZeroTailMap(f));
+        unsupportedInlineesParity(f, {code: 'ERR_SOURCE_MAPPING', q});
+    }
+});
+
+test('inlinees unsupported diagnostic rejects closed-query violations before reader or PE access', () => {
+    const p = pack(zeroTailFixture()); let reads = 0, peReads = 0;
+    const reader = {get size() { reads++; throw Error('NEVER_EXPORT'); }, read() { reads++; }};
+    const exe = new Proxy({}, {get() { peReads++; throw Error('NEVER_EXPORT'); }});
+    const inherited = Object.assign(Object.create({diagnose: true}), query());
+    const symbol = query(); symbol[Symbol('NEVER_EXPORT')] = true;
+    for (const q of [undefined, {}, inherited, symbol, query({diagnose: true}), query({inlinees: true}),
+        query({grammar: INLINEES_GRAMMAR}), query({addresses: Array(1)}), query({module_indices: Array(1)}),
+        query({module_indices: [0, 0]}), query({addresses: Array(33).fill(VA)}),
+        query({addresses: ['0x0140001020']}), query({module_indices: Array.from({length: 33}, (_, i) => i)})]) {
+        redactedThrows(() => diagnoseUnsupportedSymbolNamedStreamNiMacZeroAbsoluteTailFrameZeroInlineesExact(
+            reader, exe, p.identity, q), 'ERR_SELECTORS');
+    }
+    a.equal(reads, 0); a.equal(peReads, 0);
+    unsupportedInlineesParity(zeroTailFixture(), {q: Object.assign(Object.create(null), query())});
+});
+
+test('inlinees unsupported diagnostic isolates nested, repeated, shared-reader and older API calls', () => {
+    const clean = zeroTailFixture({modules: [{records: [inlineesRecord([0, 0xffffffff]), proc()]}]}),
+        refused = zeroTailFixture({modules: [{records: [inlineesRecord(), record(0x1158)]}]});
+    for (const [f, kind] of [[clean, null], [refused, 0x1158]]) {
+        const p = pack(f); let nested = false;
+        const reader = {size: p.reader.size, read(o, n) {
+            if (!nested) {
+                nested = true;
+                unsupportedInlineesResult(unsupportedInlinees(refused), 0x1158);
+                unsupportedInlineesResult(unsupportedInlinees(clean));
+                unsupportedSymbolResult(unsupportedSymbol(clean), 0x1168);
+                inlineesFacts(runInlinees(clean), 1, 2);
+            }
+            return p.reader.read(o, n);
+        }};
+        for (let repeat = 0; repeat < 3; repeat++) {
+            unsupportedInlineesResult(diagnoseUnsupportedSymbolNamedStreamNiMacZeroAbsoluteTailFrameZeroInlineesExact(
+                reader, p.exe, p.identity, query()), kind);
+            redactedThrows(() => unsupportedInlinees(zeroTailFixture({modules: [
+                {records: [inlineesRecord([], {count: 1})]}]})), 'ERR_MODULE_FRAMING');
+            unsupportedInlineesResult(unsupportedInlinees());
+        }
+        a.equal(nested, true);
+    }
+    const p = pack(clean), full = inspectNamedStreamNiMacZeroAbsoluteTailFrameZeroInlineesExact(
+        p.reader, p.exe, p.identity, query());
+    unsupportedInlineesResult(diagnoseUnsupportedSymbolNamedStreamNiMacZeroAbsoluteTailFrameZeroInlineesExact(
+        p.reader, p.exe, p.identity, query()));
+    a.deepEqual(inspectNamedStreamNiMacZeroAbsoluteTailFrameZeroInlineesExact(
+        p.reader, p.exe, p.identity, query()), full);
+});
+
+test('inlinees unsupported diagnostic redacts forged or typed reader errors, refuses shared storage and copies reused buffers', () => {
+    const f = zeroTailFixture({modules: [{records: [inlineesRecord(), proc(), record(0x0104)]}]}), p = pack(f);
+    let typed;
+    try { runInlinees(f); } catch (error) { typed = error; }
+    a.equal(typed.code, 'ERR_SYMBOL_UNSUPPORTED');
+    const ForeignShared = require('node:vm').runInNewContext('SharedArrayBuffer');
+    for (const index of [1, 3, 8, 9]) for (const mode of ['error', 'string', 'forged', 'typed', 'short', 'shared', 'foreign']) {
+        const reader = {size: p.reader.size, read(o, n) {
+            if (!p.entries[index].pages.includes(Math.floor(o / 4096))) return p.reader.read(o, n);
+            if (mode === 'error') throw Error('ERR_SYMBOL_UNSUPPORTED/NEVER_EXPORT');
+            if (mode === 'string') throw 'ERR_SYMBOL_UNSUPPORTED';
+            if (mode === 'forged') throw {code: 'ERR_SYMBOL_UNSUPPORTED', message: 'NEVER_EXPORT'};
+            if (mode === 'typed') throw typed;
+            if (mode === 'short') return Buffer.alloc(n - 1);
+            return Buffer.from(mode === 'shared' ? new SharedArrayBuffer(n) : new ForeignShared(n));
+        }};
+        redactedThrows(() => diagnoseUnsupportedSymbolNamedStreamNiMacZeroAbsoluteTailFrameZeroInlineesExact(
+            reader, p.exe, p.identity, query()), mode === 'short' ? 'ERR_SHORT_READ' :
+            mode === 'shared' || mode === 'foreign' ? 'ERR_INPUT_BOUND' : 'ERR_PDB_FRAMING');
+    }
+    let borrowed = null;
+    const reader = {size: p.reader.size, read(o, n) {
+        if (borrowed !== null) borrowed.fill(0xee);
+        borrowed = p.reader.read(o, n); return borrowed;
+    }};
+    unsupportedInlineesResult(diagnoseUnsupportedSymbolNamedStreamNiMacZeroAbsoluteTailFrameZeroInlineesExact(
+        reader, p.exe, p.identity, query()), 0x0104);
+    // A previously genuine typed error is insufficient without this call's site.
+    let io = 0;
+    a.throws(() => diagnoseUnsupportedSymbolNamedStreamNiMacZeroAbsoluteTailFrameZeroInlineesExact(
+        {get size() { io++; return p.reader.size; }}, p.exe, p.identity,
+        {get addresses() { throw typed; }}), error => error === typed);
+    a.equal(io, 0);
+    for (const forged of ['ERR_SYMBOL_UNSUPPORTED', {code: 'ERR_SYMBOL_UNSUPPORTED'}]) redactedThrows(() =>
+        diagnoseUnsupportedSymbolNamedStreamNiMacZeroAbsoluteTailFrameZeroInlineesExact(p.reader, p.exe, p.identity,
+            {get addresses() { throw forged; }}), 'ERR_PDB_FRAMING');
+});
+
+// Test-only lexical VM fault injection. Real callers cannot mutate the private
+// capture or inspector, or obtain non-u16 discriminator values from a header.
+// These cases exercise defensive branches, not reachable immutable-input states.
+function unsupportedInlineesHarness() {
+    const filename = require.resolve('../pdb_procedure_ranges.cjs');
+    const source = require('node:fs').readFileSync(filename, 'utf8');
+    const sandbox = {module: {exports: {}}, require: require('node:module').createRequire(filename), Buffer};
+    require('node:vm').runInNewContext(source + `
+module.exports = {legalInlineesUnsupportedKind, MetadataError,
+    diagnose: diagnoseUnsupportedSymbolNamedStreamNiMacZeroAbsoluteTailFrameZeroInlineesExact,
+    setInspector(fn) { inspectProfile = fn; }};
+`, sandbox, {filename});
+    return sandbox.module.exports;
+}
+
+test('inlinees unsupported defensive VM injection accepts only exact 54 membership and a typed captured guard', () => {
+    const h = unsupportedInlineesHarness();
+    for (const kind of inlineesGuardedKinds) a.equal(h.legalInlineesUnsupportedKind(kind), true);
+    for (const kind of [null, undefined, -0, 0, -1, 1.5, NaN, Infinity, 0x10000, '260', 260n,
+        new Number(260), {}, [], 0x110f, 0x1147, 0x115f, 0x1167, 0x1168, 0x7777]) {
+        a.equal(h.legalInlineesUnsupportedKind(kind), false);
+        const error = new h.MetadataError('ERR_SYMBOL_UNSUPPORTED');
+        h.setInspector((...args) => { args[7].first = kind; throw error; });
+        a.throws(() => h.diagnose(), actual => actual === error);
+    }
+    for (const [site, error] of [[null, new h.MetadataError('ERR_SYMBOL_UNSUPPORTED')],
+        [0x0104, new h.MetadataError('ERR_PROCEDURE_ABSENT')],
+        [0x0104, {code: 'ERR_SYMBOL_UNSUPPORTED'}], [0x0104, 'ERR_SYMBOL_UNSUPPORTED'],
+        [0x0104, Error('ERR_SYMBOL_UNSUPPORTED/NEVER_EXPORT')]]) {
+        h.setInspector((...args) => { args[7].first = site; throw error; });
+        if (error instanceof h.MetadataError) a.throws(() => h.diagnose(), actual => actual === error);
+        else redactedThrows(() => h.diagnose(), 'ERR_PDB_FRAMING');
+    }
+    h.setInspector((...args) => { args[7].first = 0x0104; });
+    redactedThrows(() => h.diagnose(), 'ERR_SYMBOL_UNSUPPORTED');
+    let calls = 0;
+    h.setInspector((...args) => {
+        calls++; a.equal(args.length, 9); a.equal(args[4], true); a.equal(args[5], null);
+        a.equal(args[6], 'identity_sections_absolute_tail_frame_zero_v1');
+        a.deepEqual(Reflect.ownKeys(args[7]), ['first']); a.equal(args[7].first, null);
+        a.equal(args[8], INLINEES_GRAMMAR);
+        args[7].first = 0x0104; throw new h.MetadataError('ERR_SYMBOL_UNSUPPORTED');
+    });
+    // VM object prototypes differ; compare the primitive fields individually.
+    const r = h.diagnose(); a.equal(r.kind_u16, 0x0104); a.equal(r.profile, INLINEES_UNSUPPORTED_KIND_PROFILE);
+    a.equal(calls, 1);
+    a.ok(!Object.hasOwn(require('../pdb_procedure_ranges.cjs'), 'legalInlineesUnsupportedKind'));
+});
+
+test('inlinees unsupported diagnostic exports exactly five primitive fields and discards full metadata in both branches', () => {
+    const secret = 'NEVER_EXPORT/private/inlinees-unsupported', base = {
+        info: namedStreamNiMacZeroInfo({names: [{name: secret, stream: 8}]}),
+        modules: [{module_name: secret, object_name: secret,
+            records: [inlineesRecord([0xdeadbeef, 0xf1f2f3f4]), proc({name: secret})]}],
+    };
+    for (const kind of [null, 0x0104]) {
+        const records = [...base.modules[0].records];
+        if (kind !== null) { const bad = record(kind, 32); bad.fill(0x5a, 4); records.push(bad); }
+        const f = zeroTailFixture({...base, modules: [{...base.modules[0], records}]});
+        const result = unsupportedInlinees(f), json = JSON.stringify(result);
+        unsupportedInlineesResult(result, kind);
+        for (const word of [secret, 'module', 'stream', 'offset', 'ordinal', 'length', 'record', 'name',
+            'address', 'guid', 'sha', 'digest', 'extent', 'coverage', 'buffer', 'stack', 'deadbeef', '0x']) {
+            a.ok(!json.includes(word));
+        }
+        result.kind_u16 = 0x7777; result.extra = secret;
+        unsupportedInlineesResult(unsupportedInlinees(f), kind);
+    }
+});
+
+test('inlinees unsupported diagnostic enforces UTF-8 newline output boundaries and serializer-error redaction', () => {
+    const clean = zeroTailFixture({modules: [{records: [inlineesRecord([0]), proc()]}]}),
+        refused = zeroTailFixture({modules: [{records: [inlineesRecord(), record(0x0104)]}]}),
+        stringify = JSON.stringify;
+    for (const f of [clean, refused]) for (const bytes of [1023, 1024]) {
+        JSON.stringify = function(value, ...args) {
+            const out = stringify.call(this, value, ...args);
+            if (!value || value.profile !== INLINEES_UNSUPPORTED_KIND_PROFILE) return out;
+            const padding = bytes - Buffer.byteLength(out);
+            return out + 'é'.repeat(Math.floor(padding / 2)) + (padding % 2 ? ' ' : '');
+        };
+        try {
+            if (bytes === 1023) a.equal(unsupportedInlinees(f).profile, INLINEES_UNSUPPORTED_KIND_PROFILE);
+            else redactedThrows(() => unsupportedInlinees(f), 'ERR_OUTPUT_BOUND');
+        } finally { JSON.stringify = stringify; }
+    }
+    for (const profile of [INLINEES_PROFILE, INLINEES_UNSUPPORTED_KIND_PROFILE]) {
+        JSON.stringify = function(value, ...args) {
+            if (value && value.profile === profile) throw Error('NEVER_EXPORT/private-serializer');
+            return stringify.call(this, value, ...args);
+        };
+        try {
+            redactedThrows(() => unsupportedInlinees(clean), 'ERR_PDB_FRAMING');
+            if (profile === INLINEES_UNSUPPORTED_KIND_PROFILE) redactedThrows(() => unsupportedInlinees(refused), 'ERR_PDB_FRAMING');
+            else unsupportedInlineesResult(unsupportedInlinees(refused), 0x0104);
+        } finally { JSON.stringify = stringify; }
+    }
+});
+
+test('inlinees unsupported diagnostic leaves previous API results, profiles, errors and the full-inlinees API unchanged', () => {
+    const strict = fixture(), ni = niFixture(), zero = zeroTailFixture(),
+        lists = zeroTailFixture({modules: [{records: [inlineesRecord([0, 0xffffffff]), proc()]}]});
+    const calls = [() => run(strict), () => runNi(ni), () => runZeroTail(zero), () => runInlinees(zero),
+        () => runInlinees(lists), () => diagnose(strict), () => diagnoseNi(ni), () => sourceMapping(ni),
+        () => sourceMappingIdentity(ni), () => tailFrame(ni), () => unsupportedSymbol(zero),
+        () => unsupportedSymbol(lists)];
+    const before = calls.map(call => JSON.stringify(call()));
+    for (let repeat = 0; repeat < 2; repeat++) {
+        unsupportedInlineesResult(unsupportedInlinees(lists));
+        unsupportedInlineesResult(unsupportedInlinees(zeroTailFixture({modules: [
+            {records: [inlineesRecord(), record(0x0104)]}]})), 0x0104);
+        a.deepEqual(calls.map(call => JSON.stringify(call())), before);
+        for (const kind of guardedSymbolKinds) {
+            const f = zeroTailFixture({modules: [{records: [proc(), record(kind)]}]});
+            unsupportedSymbolParity(f, {kind});
+            if (kind !== 0x1168) unsupportedInlineesParity(f, {kind});
+            else unsupportedInlineesParity(f, {code: 'ERR_MODULE_FRAMING'});
+        }
     }
 });

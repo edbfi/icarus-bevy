@@ -450,6 +450,10 @@ function legalUnsupportedKind(kind) {
     return Number.isInteger(kind) && !Object.is(kind, -0) && kind >= 0 && kind <= 0xffff && UNSUPPORTED.has(kind);
 }
 
+function legalInlineesUnsupportedKind(kind) {
+    return legalUnsupportedKind(kind) && kind !== 0x1168;
+}
+
 function extent(image, segment, offset, size, mappingSite, stage) {
     need(size > 0, 'ERR_PROCEDURE_SIZE');
     // Defensive only under the immutable-input contract: selectors have just
@@ -654,6 +658,40 @@ function diagnoseUnsupportedSymbolNamedStreamNiMacZeroAbsoluteTailFrameZero(read
     }
 }
 
+// Separate opt-in diagnostic over the full exact-inlinees traversal. Only the
+// remaining 54 guard discriminators may be reported, after the ordinary record
+// guards. Exact lists still require validation; no retry or second query occurs.
+// Acceptance requires every full metadata/final/output check before discarding
+// that metadata. A refused discriminator describes only the first failing guard.
+function diagnoseUnsupportedSymbolNamedStreamNiMacZeroAbsoluteTailFrameZeroInlineesExact(reader, exe, identity, query) {
+    const unsupportedSite = {first: null};
+    try {
+        let status = 'accepted_profile';
+        try {
+            inspectProfile(reader, exe, identity, query, true, null, ABSOLUTE_TAIL_FRAME_ZERO_GRAMMAR,
+                unsupportedSite, INLINEES_COUNTED_U32_EXACT_GRAMMAR);
+        } catch (error) {
+            if (!(error instanceof MetadataError) || error.code !== 'ERR_SYMBOL_UNSUPPORTED' ||
+                !legalInlineesUnsupportedKind(unsupportedSite.first)) throw error;
+            status = 'refused_symbol';
+        }
+        const refused = status === 'refused_symbol';
+        need(refused ? legalInlineesUnsupportedKind(unsupportedSite.first) : unsupportedSite.first === null,
+            'ERR_SYMBOL_UNSUPPORTED');
+        const result = {
+            profile: 'MSF7_procedure_unsupported_kind_inlinees_exact_diagnostic_v1', status,
+            stage: refused ? 'procedure_metadata' : 'complete',
+            guard: refused ? 'unsupported_kind' : null,
+            kind_u16: refused ? unsupportedSite.first : null,
+        };
+        need(Buffer.byteLength(JSON.stringify(result) + '\n') <= 1024, 'ERR_OUTPUT_BOUND');
+        return result;
+    } catch (error) {
+        if (error instanceof MetadataError) throw error;
+        throw new MetadataError('ERR_PDB_FRAMING');
+    }
+}
+
 // Full strict NI profile traversal, including the ordinary output/conflict
 // checks and existing internal digests. Discard that result; export only a
 // closed first-refusal site or complete acceptance, never partial coverage.
@@ -739,5 +777,6 @@ module.exports = {inspect, diagnoseInfoFeatures, inspectNamedStreamNiMacZero, di
     inspectNamedStreamNiMacZeroAbsoluteTailFrameZero,
     inspectNamedStreamNiMacZeroAbsoluteTailFrameZeroInlineesExact,
     diagnoseUnsupportedSymbolNamedStreamNiMacZeroAbsoluteTailFrameZero,
+    diagnoseUnsupportedSymbolNamedStreamNiMacZeroAbsoluteTailFrameZeroInlineesExact,
     diagnoseSourceMappingNamedStreamNiMacZero, diagnoseSourceMappingIdentityNamedStreamNiMacZero,
     diagnoseTailFrameNamedStreamNiMacZero, LIMITS};
