@@ -36,6 +36,9 @@ use icarus_bevy::{
 };
 use serde_json::Value;
 
+#[path = "common/c001_scalar_owners.rs"]
+mod scalar;
+
 /// Synthetic identity material; asserted never to appear in any record.
 const NAME_SENTINEL: &str = "SENTINEL-NAME-5b1e";
 const NET_ID_HEX: &str = "0123456789ABCDEF7654";
@@ -918,12 +921,15 @@ fn compose_lab_pawn(
         .pawn_open_plan(PeerLabAdmission::default().map_url)
         .unwrap()
         .unwrap();
+    let mut content = network::pawn_content(None).unwrap();
+    content.icarus_uid =
+        Some(icarus_bevy::actor_uids::FIRST_NATIVE_OBJECT_ID + connection as i32 - 1);
     let state = PawnOpenState {
         key: pawn_key(connection),
         controller: guids.actor,
         player_state: guids.player_state,
         location: network::SPAWN_LOCATION,
-        content: network::pawn_content(None).unwrap(),
+        content,
     };
     compose_pawn_open(
         cache,
@@ -934,6 +940,419 @@ fn compose_lab_pawn(
         ByteOrder::Little,
     )
     .unwrap()
+}
+
+/// Decode handle 46 from the pawn's actor block, using the same packet framing
+/// as the existing exact-byte pawn-open assertions.
+fn sent_pawn_uid(profile: &ReleaseProfile, datagrams: &[Vec<u8>]) -> Option<i32> {
+    use icarus_bevy::experimental::{
+        actor_channel::{ActorChannelCodec, ActorChannelLimits, read_actor_bunch_body},
+        archive::ByteOrder,
+        packet::read_packet,
+        pawn_open::PAWN_CHANNEL_INDEX,
+        peer_lab::PeerLabAdmission,
+        rep_layout::{RepLayoutCodec, RepLayoutLimits, RepValue, read_rep_properties},
+    };
+    let packet_config = PacketConfig {
+        receiver: PacketReceiver::Client,
+        ..probe_config().packet
+    };
+    let plan = profile
+        .pawn_open_plan(PeerLabAdmission::default().map_url)
+        .unwrap()
+        .unwrap();
+    let actor = ActorChannelCodec {
+        engine_net_version: profile.engine_network_version,
+        exports_enabled: false,
+        has_level: true,
+        order: ByteOrder::Little,
+        limits: ActorChannelLimits::default(),
+    };
+    for bytes in datagrams {
+        let packet = read_packet(bytes, &packet_config).unwrap();
+        for bunch in packet.bunches {
+            if bunch.header.channel_index != PAWN_CHANNEL_INDEX
+                || bunch.header.has_package_map_exports
+            {
+                continue;
+            }
+            let body = read_actor_bunch_body(&mut bunch.payload.reader(), true, &actor).unwrap();
+            let codec = RepLayoutCodec {
+                actor,
+                checksums: false,
+                limits: RepLayoutLimits::default(),
+            };
+            let properties =
+                read_rep_properties(&mut body.blocks[0].payload.reader(), &plan.layout, &codec)
+                    .unwrap();
+            let uid = properties
+                .entries
+                .into_iter()
+                .find(|entry| entry.handle == 46)
+                .unwrap();
+            let RepValue::Int(uid) = uid.value else {
+                panic!("IcarusUID is an i32")
+            };
+            return Some(uid);
+        }
+    }
+    None
+}
+
+/// Authored actor/inventory-owner recorder bodies; no supplied save or original
+/// distribution is read. The UID scan must also cover unreplicated classes.
+fn uid_save_payload(records: &[Vec<scalar::Tag>]) -> Vec<u8> {
+    use scalar::{Tag, stream, units};
+    let records_body: Vec<_> = records
+        .iter()
+        .flat_map(|fields| {
+            let body = [stream(fields), vec![0; 4]].concat();
+            stream(&[
+                Tag::text(
+                    "ComponentClassName",
+                    "StrProperty",
+                    &units("AuthoredInventoryOwner"),
+                ),
+                Tag::array(
+                    "BinaryData",
+                    "ByteProperty",
+                    [
+                        i32::try_from(body.len()).unwrap().to_le_bytes().to_vec(),
+                        body,
+                    ]
+                    .concat(),
+                ),
+            ])
+        })
+        .collect();
+    stream(&[Tag::array(
+        "StateRecorderBlobs",
+        "StructProperty",
+        [
+            i32::try_from(records.len()).unwrap().to_le_bytes().to_vec(),
+            Tag::structure("StateRecorderBlobs", "StateRecorderBlob", records_body).bytes(),
+        ]
+        .concat(),
+    )])
+}
+
+#[test]
+fn saved_actor_uid_scan_covers_all_recorders_and_rejects_partial_namespaces() {
+    use icarus_bevy::prospect::saved_actor_uids_from_payload;
+    use scalar::Tag;
+    let payload = uid_save_payload(&[
+        vec![Tag::integer("IcarusActorGUID", 65_536)],
+        vec![Tag::integer("IcarusActorGUID", -1)],
+        vec![Tag::integer("IcarusActorGUID", 0)],
+        vec![Tag::integer("IcarusActorGUID", 65_536)],
+        vec![Tag::integer("IcarusActorGUID", 65_537)],
+        vec![Tag::integer("RelevantActorIcarusUID", 123)],
+    ]);
+    assert_eq!(
+        saved_actor_uids_from_payload(&payload).unwrap(),
+        [65_536, 65_536, 65_537]
+    );
+    for invalid in [
+        vec![
+            Tag::integer("IcarusActorGUID", 1),
+            Tag::integer("IcarusActorGUID", 2),
+        ],
+        vec![Tag::text(
+            "IcarusActorGUID",
+            "StrProperty",
+            &scalar::units("invalid"),
+        )],
+        vec![{
+            let mut field = Tag::integer("IcarusActorGUID", 1);
+            field.index = 1;
+            field
+        }],
+        vec![{
+            let mut field = Tag::integer("IcarusActorGUID", 1);
+            field.payload.pop();
+            field
+        }],
+    ] {
+        assert!(
+            saved_actor_uids_from_payload(&uid_save_payload(&[
+                vec![Tag::integer("IcarusActorGUID", 5)],
+                invalid,
+            ]))
+            .is_err()
+        );
+    }
+}
+
+#[test]
+fn pinned_run_pawns_have_distinct_positive_uids_avoiding_the_loaded_save() {
+    use icarus_bevy::{
+        persistence::SnapshotStore,
+        preservation::{PreserveLimits, PreservedSection},
+    };
+    let profile = ReleaseProfile::load(&release_toml()).unwrap();
+    let pinned = profile.pin.network_checksum;
+    let directory = tempfile::tempdir().unwrap();
+    let config = pinned_server_config(directory.path(), &release_toml());
+    let state = directory.path().join("state");
+    let seeded = [65_536, 65_537, 65_538];
+    let payload = uid_save_payload(
+        &seeded
+            .iter()
+            .map(|uid| vec![scalar::Tag::integer("IcarusActorGUID", *uid)])
+            .collect::<Vec<_>>(),
+    );
+    let preserved =
+        PreservedSection::from_inner_payload(&payload, PreserveLimits::default()).unwrap();
+    {
+        let mut store = SnapshotStore::open(&state).unwrap();
+        store
+            .save(&WorldSnapshot {
+                schema_version: icarus_bevy::simulation::SNAPSHOT_SCHEMA_REFERENCED,
+                preserved_prospect: Some(preserved.into()),
+                ..WorldSnapshot::default()
+            })
+            .unwrap();
+    }
+    let mut server = spawn_run(&config, &state);
+    let (address, _) = listening_address(&mut server);
+    let (first, first_bytes) = join_pinned_open(address, pinned, 7);
+    let (second, second_bytes) = join_pinned_open(address, pinned, 7);
+    let first_uid = sent_pawn_uid(&profile, &first_bytes).unwrap();
+    let second_uid = sent_pawn_uid(&profile, &second_bytes).unwrap();
+    assert!(first_uid > 0 && second_uid > 0);
+    assert_ne!(first_uid, second_uid);
+    assert!(!seeded.contains(&first_uid) && !seeded.contains(&second_uid));
+    first.close().unwrap();
+    second.close().unwrap();
+    sigterm(&server);
+    assert!(server.wait_exit().success());
+}
+
+#[test]
+fn unprofiled_run_preserves_opaque_actor_values_without_enabling_uids() {
+    use icarus_bevy::{
+        persistence::SnapshotStore,
+        preservation::{PreserveLimits, PreservedSection},
+    };
+    let directory = tempfile::tempdir().unwrap();
+    let config = server_config(directory.path());
+    let state = directory.path().join("state");
+    let payload = uid_save_payload(&[vec![scalar::Tag::text(
+        "IcarusActorGUID",
+        "StrProperty",
+        &scalar::units("opaque authored value"),
+    )]]);
+    assert!(icarus_bevy::prospect::saved_actor_uids_from_payload(&payload).is_err());
+    let preserved =
+        PreservedSection::from_inner_payload(&payload, PreserveLimits::default()).unwrap();
+    {
+        let mut store = SnapshotStore::open(&state).unwrap();
+        store
+            .save(&WorldSnapshot {
+                schema_version: icarus_bevy::simulation::SNAPSHOT_SCHEMA_REFERENCED,
+                preserved_prospect: Some(preserved.into()),
+                ..WorldSnapshot::default()
+            })
+            .unwrap();
+    }
+    let mut server = spawn_run(&config, &state);
+    let (address, _) = listening_address(&mut server);
+    let client = join(address);
+    client.close().unwrap();
+    sigterm(&server);
+    assert!(server.wait_exit().success());
+    let store = SnapshotStore::open(&state).unwrap();
+    let restored = store.load().unwrap().unwrap();
+    assert_eq!(
+        restored
+            .snapshot
+            .preserved_prospect
+            .unwrap()
+            .decode()
+            .unwrap()
+            .to_inner_payload()
+            .unwrap(),
+        payload
+    );
+}
+
+fn uid_lab(library: icarus_bevy::actor_uids::ActorUidLibrary) -> (PeerLab, ReleaseProfile) {
+    uid_lab_with(library, network::peer_lab_config(&enabled(0)))
+}
+
+fn uid_lab_with(
+    library: icarus_bevy::actor_uids::ActorUidLibrary,
+    config: icarus_bevy::experimental::peer_lab::PeerLabConfig,
+) -> (PeerLab, ReleaseProfile) {
+    use icarus_bevy::experimental::{pawn_open::PAWN_CHANNEL_INDEX, peer_lab::PeerLabAdmission};
+    let profile = ReleaseProfile::load(&release_toml()).unwrap();
+    let admission = PeerLabAdmission::default();
+    let mut lab = PeerLab::bind(0, config.with_release_profile(&profile)).unwrap();
+    lab.enable_player_controller_open(
+        profile
+            .player_controller_open_plan(admission.map_url, network::SPAWN_LOCATION)
+            .unwrap()
+            .unwrap(),
+    )
+    .unwrap();
+    lab.enable_pawn_open(
+        profile.pawn_open_plan(admission.map_url).unwrap().unwrap(),
+        PAWN_CHANNEL_INDEX,
+        network::pawn_content(None).unwrap(),
+    )
+    .unwrap();
+    lab.enable_actor_uids(library).unwrap();
+    (lab, profile)
+}
+
+#[test]
+fn loopback_pawn_uids_are_distinct_avoid_saved_uids_and_reuse_after_close() {
+    use icarus_bevy::actor_uids::ActorUidLibrary;
+    // Force bounded random/sequential fallbacks: first gets 7, second gets 8;
+    // after the first closes, a later random draw can grant 7 again.
+    let (mut lab, profile) = uid_lab(ActorUidLibrary::with_random(|| 7));
+    let pinned = profile.pin.network_checksum;
+    let seeded: Vec<_> = (65_536..=65_540).collect();
+    let payload = uid_save_payload(
+        &seeded
+            .iter()
+            .map(|uid| vec![scalar::Tag::integer("IcarusActorGUID", *uid)])
+            .collect::<Vec<_>>(),
+    );
+    lab.seed_actor_uids(icarus_bevy::prospect::saved_actor_uids_from_payload(&payload).unwrap())
+        .unwrap();
+    let mut app = build_app(&ServerConfig::default(), &WorldSnapshot::default()).unwrap();
+    let address = network::install(&mut app, lab).unwrap();
+    let ((first, first_bytes, second, second_bytes), _) = with_server(&mut app, move || {
+        let (first, first_bytes) = join_pinned_open(address, pinned, 2);
+        let (second, second_bytes) = join_pinned_open(address, pinned, 2);
+        (first, first_bytes, second, second_bytes)
+    });
+    let first_uid = sent_pawn_uid(&profile, &first_bytes).unwrap();
+    let second_uid = sent_pawn_uid(&profile, &second_bytes).unwrap();
+    assert_eq!((first_uid, second_uid), (7, 8));
+    assert!(!seeded.contains(&first_uid) && !seeded.contains(&second_uid));
+    with_server(&mut app, move || first.close().unwrap());
+    assert_eq!(counts(&app).closed_by_client, 1);
+    let ((third, third_bytes), _) =
+        with_server(&mut app, move || join_pinned_open(address, pinned, 2));
+    assert_eq!(sent_pawn_uid(&profile, &third_bytes), Some(first_uid));
+    with_server(&mut app, move || {
+        second.close().unwrap();
+        third.close().unwrap();
+    });
+    assert_eq!(counts(&app).closed_by_client, 3);
+    assert_eq!(
+        app.world().resource::<PeerLab>().stats().pawn_open_errors,
+        0
+    );
+}
+
+/// Join one pinned peer from a socket bound to `local`, returning the client.
+fn join_pinned_from(local: SocketAddr, server: SocketAddr, version: u32) -> ProbeClient {
+    let socket = UdpSocket::bind(local).unwrap();
+    socket.connect(server).unwrap();
+    let mut client = ProbeClient::connect(socket, probe_config()).unwrap();
+    client.hello(version, "").unwrap();
+    client.send_control(&[login()], false).unwrap();
+    client.collect(Duration::from_secs(3), 1).unwrap();
+    let (_, packet_id) = client
+        .send_control(
+            &[
+                ControlMessage::Netspeed { rate: 100_000 },
+                ControlMessage::Join,
+            ],
+            false,
+        )
+        .unwrap();
+    let collected = client.collect(Duration::from_secs(3), 2).unwrap();
+    assert!(collected.acked.contains(&packet_id), "Join acknowledged");
+    client
+}
+
+fn claimed(app: &App) -> Vec<i32> {
+    app.world()
+        .resource::<PeerLab>()
+        .claimed_actor_uids()
+        .to_vec()
+}
+
+#[test]
+fn pawn_uids_are_freed_on_idle_expiry_replacement_and_shutdown() {
+    use icarus_bevy::actor_uids::{ActorUidLibrary, FIRST_NATIVE_OBJECT_ID};
+    let mut config = network::peer_lab_config(&enabled(0));
+    config.idle_timeout = Duration::from_millis(150);
+    // One claim slot: a leaked UID would refuse every later pawn open.
+    let (lab, profile) = uid_lab_with(ActorUidLibrary::with_limit(1, || 7).unwrap(), config);
+    let pinned = profile.pin.network_checksum;
+    let mut app = build_app(&ServerConfig::default(), &WorldSnapshot::default()).unwrap();
+    let server = network::install(&mut app, lab).unwrap();
+
+    // Idle expiry.
+    let (client, _) = with_server(&mut app, move || join_pinned_open(server, pinned, 2).0);
+    assert_eq!(claimed(&app), [FIRST_NATIVE_OBJECT_ID]);
+    thread::sleep(Duration::from_millis(300));
+    app.update();
+    assert_eq!(counts(&app).closed_by_timeout, 1);
+    assert!(claimed(&app).is_empty());
+    drop(client);
+
+    // Replacement: the same address completes a new handshake.
+    let local = UdpSocket::bind("127.0.0.1:0")
+        .unwrap()
+        .local_addr()
+        .unwrap();
+    let (client, _) = with_server(&mut app, move || join_pinned_from(local, server, pinned));
+    assert_eq!(claimed(&app), [FIRST_NATIVE_OBJECT_ID + 1]);
+    drop(client);
+    let (client, _) = with_server(&mut app, move || {
+        let socket = UdpSocket::bind(local).unwrap();
+        socket.connect(server).unwrap();
+        ProbeClient::connect(socket, probe_config()).unwrap()
+    });
+    assert_eq!(app.world().resource::<PeerLab>().stats().peers_replaced, 1);
+    assert!(claimed(&app).is_empty());
+    drop(client);
+
+    // Shutdown.
+    let (client, _) = with_server(&mut app, move || join_pinned_open(server, pinned, 2).0);
+    assert_eq!(claimed(&app), [FIRST_NATIVE_OBJECT_ID + 2]);
+    // The unjoined replacement connection is still live, too.
+    assert_eq!(app.world_mut().resource_mut::<PeerLab>().shutdown(), 2);
+    assert!(claimed(&app).is_empty());
+    assert_eq!(
+        app.world().resource::<PeerLab>().stats().pawn_open_errors,
+        0
+    );
+    drop(client);
+}
+
+#[test]
+fn loopback_pawn_uid_capacity_and_nonpositive_grants_refuse_the_open() {
+    use icarus_bevy::actor_uids::ActorUidLibrary;
+    for (index, library) in [
+        ActorUidLibrary::with_limit(0, || 0).unwrap(),
+        ActorUidLibrary::with_random(|| 0),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let (mut lab, profile) = uid_lab(library);
+        if index == 1 {
+            lab.seed_actor_uids([65_536, 65_537]).unwrap();
+        }
+        let pinned = profile.pin.network_checksum;
+        let mut app = build_app(&ServerConfig::default(), &WorldSnapshot::default()).unwrap();
+        let address = network::install(&mut app, lab).unwrap();
+        let ((client, bytes), _) =
+            with_server(&mut app, move || join_pinned_open(address, pinned, 1));
+        assert_eq!(sent_pawn_uid(&profile, &bytes), None);
+        let stats = app.world().resource::<PeerLab>().stats();
+        assert_eq!(stats.player_controller_opens_sent, 1);
+        assert_eq!(stats.pawn_opens_sent, 0);
+        assert_eq!(stats.pawn_open_errors, 1);
+        with_server(&mut app, move || client.close().unwrap());
+    }
 }
 
 /// Compose the GameState open the lab sends after each PlayerController open
