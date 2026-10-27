@@ -76,9 +76,15 @@ an unreadable one fails startup. Desired IDs count from 65,536 per world; the
 search uses an authored xorshift64 PRNG (seed 1), not MSVC `rand`. Claim,
 reservation and remap stores cap at 262,144 entries each. A failed claim skips
 the pawn open and counts `open_errors`; session removal frees the UID. When a
-joined client sends its character slot, a saved player character matching its
-login ID and slot gives the pawn its saved UID (F-953); that UID stays claimed
-after the session ends. Saves the strict staging refuses only disable this.
+joined client sends its character slot, `run` asks it for its user and
+character profiles on the controller's backend proxy and replicates them on its
+PlayerState; a request failing three times closes the session (the original
+kicks). It then asks for the client's loadout and bestiary; once both have
+answered and the pawn is open, `run` replicates `PlayerCharacterID`, and a saved
+player character matching the login ID and the profile's slot gives the pawn its
+saved UID (F-962). That UID stays claimed after the session ends. A client that
+never answers never completes; the original's timeout only logs (F-959). Saves
+the strict staging refuses only disable the saved-UID restore.
 
 For authored schema-4 worlds, set `authored_replication = "replication.json"`
 in `[network]` or pass `run --authored-replication replication.json`.
