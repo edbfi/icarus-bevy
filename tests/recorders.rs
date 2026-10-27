@@ -3,8 +3,9 @@ use icarus_bevy::experimental::prospect_info::{AssociatedMember, CustomGameSetti
 use icarus_bevy::experimental::recorders::{
     MAX_RECORDER_FIELDS, MAX_RECORDERS, RecorderArray, StagedLegacyDisposition,
     StagedProspectSaveState, StagedRecorderDecision, StagedRootEnumField, StagedRootEnumValue,
-    StagedRootMigration, StagedRootPresence, StagedRootValues, lookup_recorder_ctor_defaults,
-    read_recorders, stage_prospect_save_state, stage_prospect_save_state_with_decisions,
+    StagedRootMigration, StagedRootPresence, StagedRootValues, find_saved_player_character,
+    lookup_recorder_ctor_defaults, read_recorders, saved_player_characters,
+    stage_prospect_save_state, stage_prospect_save_state_with_decisions,
     stage_prospect_save_state_with_root_values,
 };
 use icarus_bevy::experimental::restore_rules::{
@@ -2300,4 +2301,186 @@ fn owned_enum_staging_preserves_field_specific_static_diagnostics() {
             assert!(!message.contains("private"));
         }
     }
+}
+
+fn player_character_save(records: &[Vec<u8>]) -> Vec<u8> {
+    let member = |user: &str, slot: i32| {
+        [
+            tag("UserID", "StrProperty", 0, &[0], &string(user)),
+            tag("ChrSlot", "IntProperty", 0, &[0], &slot.to_le_bytes()),
+            END.to_vec(),
+        ]
+        .concat()
+    };
+    let members_shared = tag(
+        "AssociatedMembers",
+        "StructProperty",
+        0,
+        &[string("AssociatedMemberInfo"), vec![0; 17]].concat(),
+        &[member("user-alpha", 1), member("user-beta", 0)].concat(),
+    );
+    let members_array = tag(
+        "AssociatedMembers",
+        "ArrayProperty",
+        0,
+        &[string("StructProperty"), vec![0]].concat(),
+        &[&2_i32.to_le_bytes(), members_shared.as_slice()].concat(),
+    );
+    let info = tag(
+        "ProspectInfo",
+        "StructProperty",
+        0,
+        &[string("ProspectInfo"), vec![0; 17]].concat(),
+        &[
+            tag("ProspectID", "StrProperty", 0, &[0], &string("p-val")),
+            members_array,
+            END.to_vec(),
+        ]
+        .concat(),
+    );
+    let blobs = tag(
+        "StateRecorderBlobs",
+        "ArrayProperty",
+        0,
+        &[string("StructProperty"), vec![0]].concat(),
+        &[
+            &i32::try_from(records.len()).unwrap().to_le_bytes(),
+            shared(&records.concat()).as_slice(),
+        ]
+        .concat(),
+    );
+    [
+        tag("Version", "IntProperty", 0, &[0], &2_i32.to_le_bytes()),
+        info,
+        blobs,
+        END.to_vec(),
+    ]
+    .concat()
+}
+
+fn player_state_record(version: Option<i32>, user: &str, slot: i32, uid: Option<i32>) -> Vec<u8> {
+    let mut tags = Vec::new();
+    if let Some(version) = version {
+        tags.push(tag(
+            "PlayerStateRecorderVersion",
+            "IntProperty",
+            0,
+            &[0],
+            &version.to_le_bytes(),
+        ));
+    }
+    tags.push(player_char_id_struct("PlayerCharacterID", user, slot));
+    if let Some(uid) = uid {
+        tags.push(tag(
+            "IcarusActorGUID",
+            "IntProperty",
+            0,
+            &[0],
+            &uid.to_le_bytes(),
+        ));
+    }
+    recorder_element(
+        "/Script/Icarus.PlayerStateRecorderComponent",
+        &tags.concat(),
+    )
+}
+
+fn units(text: &str) -> Vec<u16> {
+    text.encode_utf16().collect()
+}
+
+#[test]
+fn saved_player_characters_keep_only_validated_c026_records_in_order() {
+    let player_recorder = recorder_element(
+        "/Script/Icarus.PlayerRecorderComponent",
+        &[
+            tag(
+                "PlayerRecorderVersion",
+                "IntProperty",
+                0,
+                &[0],
+                &1_i32.to_le_bytes(),
+            ),
+            player_char_id_struct("PlayerCharacterID", "user-alpha", 1),
+            tag(
+                "IcarusActorGUID",
+                "IntProperty",
+                0,
+                &[0],
+                &70_009_i32.to_le_bytes(),
+            ),
+        ]
+        .concat(),
+    );
+    let stream = player_character_save(&[
+        player_state_record(Some(1), "user-beta", 0, Some(70_001)),
+        // Version 0 fails Validate (F-904): not restorable.
+        player_state_record(None, "user-beta", 0, Some(70_002)),
+        player_recorder,
+        player_state_record(Some(1), "user-alpha", 1, Some(70_003)),
+        // Not an associated member of the active prospect: Validate rejects it.
+        player_state_record(Some(1), "user-missing", 0, Some(70_004)),
+        player_state_record(Some(2), "user-alpha", 1, None),
+    ]);
+    let parsed = read_root(&stream, PROFILE).unwrap();
+    let characters = saved_player_characters(&parsed.tags, PROFILE, MAX_COMPONENT_BYTES).unwrap();
+    let summary: Vec<_> = characters
+        .iter()
+        .map(|c| {
+            (
+                String::from_utf16(&c.player_id).unwrap(),
+                c.chr_slot,
+                c.icarus_uid,
+            )
+        })
+        .collect();
+    assert_eq!(
+        summary,
+        [
+            ("user-beta".to_owned(), 0, 70_001),
+            ("user-alpha".to_owned(), 1, 70_003),
+            ("user-alpha".to_owned(), 1, -1),
+        ]
+    );
+    assert!(!format!("{characters:?}").contains("user-"));
+
+    // The original's Stricmp: ASCII case folds, the slot must be equal, and
+    // the first unresolved match wins; restored ones are skipped.
+    let found = find_saved_player_character(&characters, &units("USER-BETA"), 0, &[]);
+    assert_eq!(found.map(|(i, c)| (i, c.icarus_uid)), Some((0, 70_001)));
+    assert!(find_saved_player_character(&characters, &units("user-beta"), 1, &[]).is_none());
+    assert!(find_saved_player_character(&characters, &units("user-beta"), 0, &[0]).is_none());
+    let found = find_saved_player_character(&characters, &units("user-alpha"), 1, &[1]);
+    assert_eq!(found.map(|(i, c)| (i, c.icarus_uid)), Some((2, -1)));
+    assert!(find_saved_player_character(&characters, &units("user-betä"), 0, &[]).is_none());
+}
+
+#[test]
+fn saved_player_characters_reject_malformed_uids_and_accept_empty_saves() {
+    let bad_uid = recorder_element(
+        "/Script/Icarus.PlayerStateRecorderComponent",
+        &[
+            tag(
+                "PlayerStateRecorderVersion",
+                "IntProperty",
+                0,
+                &[0],
+                &1_i32.to_le_bytes(),
+            ),
+            player_char_id_struct("PlayerCharacterID", "user-beta", 0),
+            tag("IcarusActorGUID", "StrProperty", 0, &[0], &string("70001")),
+        ]
+        .concat(),
+    );
+    let stream = player_character_save(&[bad_uid]);
+    let parsed = read_root(&stream, PROFILE).unwrap();
+    assert!(saved_player_characters(&parsed.tags, PROFILE, MAX_COMPONENT_BYTES).is_err());
+
+    let stream = player_character_save(&[]);
+    let parsed = read_root(&stream, PROFILE).unwrap();
+    assert!(
+        saved_player_characters(&parsed.tags, PROFILE, MAX_COMPONENT_BYTES)
+            .unwrap()
+            .is_empty()
+    );
 }

@@ -18,7 +18,7 @@ use super::prospect_info::{
 };
 use super::restore_rules::{
     LobbyPrivacy, OwnerResolvePolicy, PROSPECT_SAVE_STATE_CURRENT_VERSION,
-    ProspectAssociatedMember, RecorderCtorDefaults, evaluate_requires_stitching,
+    ProspectAssociatedMember, RecorderCtorDefaults, evaluate_requires_stitching, names_match,
     no_recorder_record_valid, non_blob_recorder_ctor_defaults, player_record_valid,
     prospect_ids_match, recorder_ctor_defaults, resolve_prospect_player_list,
     resource_deposit_record_valid, rocket_record_valid, validate_rocket_spawn_record,
@@ -1504,6 +1504,103 @@ pub fn stage_prospect_save_state(
         expected_prospect_id,
     )
     .map(|(staged, _)| staged)
+}
+
+/// One saved player character a returning player's pawn restores from: a
+/// `C026` `PlayerStateRecorderComponent` that `Validate` retains, with its
+/// `PlayerCharacterID` and the `IcarusActorGUID` its restore claims (F-950).
+#[derive(Clone, PartialEq, Eq)]
+pub struct SavedPlayerCharacter {
+    pub player_id: Vec<u16>,
+    pub chr_slot: i32,
+    /// `-1` when the record carries none.
+    pub icarus_uid: i32,
+}
+
+impl std::fmt::Debug for SavedPlayerCharacter {
+    // Player IDs are private identifiers; keep them out of debug output.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SavedPlayerCharacter")
+            .field("player_id_units", &self.player_id.len())
+            .field("chr_slot", &self.chr_slot)
+            .field("icarus_uid", &self.icarus_uid)
+            .finish()
+    }
+}
+
+/// Every retained `C026` player character, in recorder-array order, after the
+/// same strict staging and `Validate` (`v >= 1`, member list) as
+/// [`stage_prospect_save_state`]. Staging errors reject the whole save.
+pub fn saved_player_characters(
+    roots: &[RootTag<'_>],
+    profile: TagProfile,
+    component_byte_limit: usize,
+) -> Result<Vec<SavedPlayerCharacter>> {
+    let (staged, decisions) =
+        stage_prospect_save_state_with_decisions(roots, profile, component_byte_limit, None)?;
+    if staged.parsed_recorder_count == 0 {
+        return Ok(Vec::new());
+    }
+    let recorders = read_recorders(roots, profile)?;
+    ensure!(
+        recorders.records().len() == decisions.len(),
+        "staged decisions do not cover every recorder"
+    );
+    let mut characters = Vec::new();
+    for (recorder, decision) in recorders.records().iter().zip(&decisions) {
+        if !decision.retained {
+            continue;
+        }
+        let class_units =
+            decode_exact_string_units(recorder.class_value, "invalid saved recorder class string")?;
+        if !units_eq_ascii(&class_units, "/Script/Icarus.PlayerStateRecorderComponent") {
+            continue;
+        }
+        let component =
+            read_base_component_with_limit(recorder.binary_data, profile, component_byte_limit)
+                .context("invalid saved player character component")?;
+        let mut player_id = Vec::new();
+        let mut chr_slot = -1_i32;
+        let mut icarus_uid = -1_i32;
+        for field in component.fields() {
+            let ParsedRecord::Property(prop) = read_record(field.record, profile)? else {
+                bail!("unexpected saved player character terminator");
+            };
+            if is_name(&prop.name, "PlayerCharacterID") {
+                (player_id, chr_slot) =
+                    parse_player_character_id_struct(prop.tag.payload, profile)?;
+            } else if is_name(&prop.name, "IcarusActorGUID") {
+                ensure!(
+                    prop.tag.kind == TagKind::Int && prop.index == 0 && prop.tag.payload.len() == 4,
+                    "IcarusActorGUID must be 4-byte IntProperty"
+                );
+                icarus_uid = i32::from_le_bytes(prop.tag.payload.try_into()?);
+            }
+        }
+        characters.push(SavedPlayerCharacter {
+            player_id,
+            chr_slot,
+            icarus_uid,
+        });
+    }
+    Ok(characters)
+}
+
+/// The first saved character whose `PlayerCharacterID` matches, as the
+/// original's restore scan takes the first unresolved accepting recorder:
+/// equal `ChrSlot` and `PlayerID` under `Stricmp` (F-949). `skip` lists
+/// characters already restored this session.
+pub fn find_saved_player_character<'a>(
+    characters: &'a [SavedPlayerCharacter],
+    player_id: &[u16],
+    chr_slot: i32,
+    skip: &[usize],
+) -> Option<(usize, &'a SavedPlayerCharacter)> {
+    characters.iter().enumerate().find(|(index, character)| {
+        !skip.contains(index)
+            && character.chr_slot == chr_slot
+            && names_match(&character.player_id, player_id)
+    })
 }
 
 /// One recorder's staging outcome, in recorder-array order.
