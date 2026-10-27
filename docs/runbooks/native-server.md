@@ -99,6 +99,8 @@ cargo run --locked --release --example session_hold -- --server 127.0.0.1:17777 
   --release-profile config/release.toml --seconds 3600 --sessions 8
 ```
 
+`--seconds` accepts up to 72 h 2 min (259,320 s): each session's clock starts
+at its own Join, so 72 hours after full admission needs the margin.
 For long holds, `--progress-interval-seconds 60` flushes aggregate
 `incomplete: true` JSON lines to stderr; stdout holds only the final summary.
 Progress combines latest per-session receive windows, including ongoing gaps;

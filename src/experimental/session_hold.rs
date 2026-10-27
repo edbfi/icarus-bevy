@@ -44,8 +44,10 @@ use super::{
     sequencing::{MAX_CONSTRUCTED_PARTIAL_BUNCH_BYTES, PartialBunchReassembler, PartialReceive},
 };
 
-/// Longest accepted [`HoldConfig::duration`]: 72 hours.
-pub const MAX_HOLD: Duration = Duration::from_secs(72 * 3600);
+/// Longest accepted [`HoldConfig::duration`]: 72 hours plus a two-minute
+/// admission margin. Each session's clock starts at its own Join, before every
+/// session is admitted, so a 72-hour run measured from full admission needs it.
+pub const MAX_HOLD: Duration = Duration::from_secs(72 * 3600 + 120);
 /// Largest accepted [`MultiHoldConfig::sessions`].
 pub const MAX_HOLD_SESSIONS: usize = 64;
 /// Synthetic Login identity of session 0; never logged by the server.
@@ -432,7 +434,7 @@ fn validate(config: &HoldConfig) -> Result<()> {
     );
     ensure!(
         (Duration::from_secs(1)..=MAX_HOLD).contains(&config.duration),
-        "a hold lasts 1 s to 72 h"
+        "a hold lasts 1 s to 72 h 2 min"
     );
     // A zero socket timeout is rejected by the OS deep in the handshake.
     ensure!(
