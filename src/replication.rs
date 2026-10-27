@@ -992,8 +992,8 @@ impl ReplicationState {
             let channel = channels[index];
             // The union of relevant, channeled and force-relevant entries.
             // Prioritization has no cross-actor effects or random inputs, and
-            // the total sort below fixes processing/marking order. Visiting
-            // each member once avoids the old duplicate evaluator/lookups.
+            // the total sort below fixes processing/marking order, so each
+            // member is evaluated once.
             if self.marks[index] != stamp
                 && channel.is_none()
                 && (row.schedule.force_relevant_frame as u32)
