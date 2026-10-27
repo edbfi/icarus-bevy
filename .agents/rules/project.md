@@ -96,11 +96,12 @@ be demonstrated rather than assumed.
   When a task needs missing input or authorization, continue independent work and
   report the precise dependency; never manufacture evidence or approval.
 - Use project skills for the actual task. The user permits a suitable number of
-  subagents and model/effort selection: GPT-6 Astra for difficult reasoning and
-  GPT-6.1 Sol for scoped implementation or review. Whenever parallel delegation
-  could save time or improve quality, use collaboration tools, whether acting as
-  the root agent or a subagent. Give agents explicit ownership;
-  the lead integrates, validates, commits and pushes. Bound aggregate resources.
+  subagents; the lead picks provider, model and effort from what the session
+  offers, strongest for hard reasoning, lighter for scoped work, never assuming
+  a vendor. Whenever parallel delegation could save time or improve quality,
+  use collaboration tools, whether acting as the root agent or a subagent. Give
+  agents explicit ownership; the lead integrates, validates, commits and pushes.
+  Bound aggregate resources.
 - Commit coherent tested increments frequently using Conventional Commits and
   `git commit -s`; push the feature branch after each completed increment or small
   related batch. Preserve history, keep hooks enabled, and verify remote delivery.
