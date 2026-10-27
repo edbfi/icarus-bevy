@@ -1545,6 +1545,14 @@ impl PeerLab {
         self.actor_uids.is_some()
     }
 
+    /// UIDs currently claimed, in claim order: saved seeds, then live pawns.
+    /// Empty when native UID allocation is not configured.
+    pub fn claimed_actor_uids(&self) -> &[i32] {
+        self.actor_uids
+            .as_ref()
+            .map_or(&[], crate::actor_uids::ActorUidLibrary::claimed)
+    }
+
     /// Occupy every positive saved actor UID before joins. This protects even
     /// actors whose replication is unsupported; it does not import them.
     pub fn seed_actor_uids(&mut self, uids: impl IntoIterator<Item = i32>) -> Result<()> {

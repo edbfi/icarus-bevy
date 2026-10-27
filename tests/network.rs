@@ -1177,14 +1177,17 @@ fn unprofiled_run_preserves_opaque_actor_values_without_enabling_uids() {
 }
 
 fn uid_lab(library: icarus_bevy::actor_uids::ActorUidLibrary) -> (PeerLab, ReleaseProfile) {
+    uid_lab_with(library, network::peer_lab_config(&enabled(0)))
+}
+
+fn uid_lab_with(
+    library: icarus_bevy::actor_uids::ActorUidLibrary,
+    config: icarus_bevy::experimental::peer_lab::PeerLabConfig,
+) -> (PeerLab, ReleaseProfile) {
     use icarus_bevy::experimental::{pawn_open::PAWN_CHANNEL_INDEX, peer_lab::PeerLabAdmission};
     let profile = ReleaseProfile::load(&release_toml()).unwrap();
     let admission = PeerLabAdmission::default();
-    let mut lab = PeerLab::bind(
-        0,
-        network::peer_lab_config(&enabled(0)).with_release_profile(&profile),
-    )
-    .unwrap();
+    let mut lab = PeerLab::bind(0, config.with_release_profile(&profile)).unwrap();
     lab.enable_player_controller_open(
         profile
             .player_controller_open_plan(admission.map_url, network::SPAWN_LOCATION)
@@ -1243,6 +1246,85 @@ fn loopback_pawn_uids_are_distinct_avoid_saved_uids_and_reuse_after_close() {
         app.world().resource::<PeerLab>().stats().pawn_open_errors,
         0
     );
+}
+
+/// Join one pinned peer from a socket bound to `local`, returning the client.
+fn join_pinned_from(local: SocketAddr, server: SocketAddr, version: u32) -> ProbeClient {
+    let socket = UdpSocket::bind(local).unwrap();
+    socket.connect(server).unwrap();
+    let mut client = ProbeClient::connect(socket, probe_config()).unwrap();
+    client.hello(version, "").unwrap();
+    client.send_control(&[login()], false).unwrap();
+    client.collect(Duration::from_secs(3), 1).unwrap();
+    let (_, packet_id) = client
+        .send_control(
+            &[
+                ControlMessage::Netspeed { rate: 100_000 },
+                ControlMessage::Join,
+            ],
+            false,
+        )
+        .unwrap();
+    let collected = client.collect(Duration::from_secs(3), 2).unwrap();
+    assert!(collected.acked.contains(&packet_id), "Join acknowledged");
+    client
+}
+
+fn claimed(app: &App) -> Vec<i32> {
+    app.world()
+        .resource::<PeerLab>()
+        .claimed_actor_uids()
+        .to_vec()
+}
+
+#[test]
+fn pawn_uids_are_freed_on_idle_expiry_replacement_and_shutdown() {
+    use icarus_bevy::actor_uids::{ActorUidLibrary, FIRST_NATIVE_OBJECT_ID};
+    let mut config = network::peer_lab_config(&enabled(0));
+    config.idle_timeout = Duration::from_millis(150);
+    // One claim slot: a leaked UID would refuse every later pawn open.
+    let (lab, profile) = uid_lab_with(ActorUidLibrary::with_limit(1, || 7).unwrap(), config);
+    let pinned = profile.pin.network_checksum;
+    let mut app = build_app(&ServerConfig::default(), &WorldSnapshot::default()).unwrap();
+    let server = network::install(&mut app, lab).unwrap();
+
+    // Idle expiry.
+    let (client, _) = with_server(&mut app, move || join_pinned_open(server, pinned, 2).0);
+    assert_eq!(claimed(&app), [FIRST_NATIVE_OBJECT_ID]);
+    thread::sleep(Duration::from_millis(300));
+    app.update();
+    assert_eq!(counts(&app).closed_by_timeout, 1);
+    assert!(claimed(&app).is_empty());
+    drop(client);
+
+    // Replacement: the same address completes a new handshake.
+    let local = UdpSocket::bind("127.0.0.1:0")
+        .unwrap()
+        .local_addr()
+        .unwrap();
+    let (client, _) = with_server(&mut app, move || join_pinned_from(local, server, pinned));
+    assert_eq!(claimed(&app), [FIRST_NATIVE_OBJECT_ID + 1]);
+    drop(client);
+    let (client, _) = with_server(&mut app, move || {
+        let socket = UdpSocket::bind(local).unwrap();
+        socket.connect(server).unwrap();
+        ProbeClient::connect(socket, probe_config()).unwrap()
+    });
+    assert_eq!(app.world().resource::<PeerLab>().stats().peers_replaced, 1);
+    assert!(claimed(&app).is_empty());
+    drop(client);
+
+    // Shutdown.
+    let (client, _) = with_server(&mut app, move || join_pinned_open(server, pinned, 2).0);
+    assert_eq!(claimed(&app), [FIRST_NATIVE_OBJECT_ID + 2]);
+    // The unjoined replacement connection is still live, too.
+    assert_eq!(app.world_mut().resource_mut::<PeerLab>().shutdown(), 2);
+    assert!(claimed(&app).is_empty());
+    assert_eq!(
+        app.world().resource::<PeerLab>().stats().pawn_open_errors,
+        0
+    );
+    drop(client);
 }
 
 #[test]
