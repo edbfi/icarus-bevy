@@ -582,3 +582,122 @@ fn outputs_carry_domain_ids_not_entities() {
         );
     }
 }
+
+#[test]
+fn channel_state_replays_the_baseline_across_windows_and_actor_viewer_changes() {
+    use sha2::{Digest, Sha256};
+
+    let mut app = app(ReplicationConfig {
+        max_consider_list: 19,
+        connection_budget: 5,
+        max_connections_to_tick_per_server_frame: 2,
+        relevant_timeout_seconds: 1.1,
+        seed: 912,
+        ..Default::default()
+    });
+    let scene = random_scene(0x5eed_0013, 96, 3);
+    populate(&mut app, &scene, false);
+    let mut frames = Vec::new();
+    for frame in 0..420 {
+        match frame {
+            25 => {
+                let mut query = app.world_mut().query::<(&NetActor, &mut Position)>();
+                for (actor, mut position) in query.iter_mut(app.world_mut()) {
+                    if actor.id.0 % 3 == 0 {
+                        position.0 = [1_000_000.0; 3];
+                    }
+                }
+            }
+            50 => {
+                let mut query = app.world_mut().query::<(Entity, &NetActor)>();
+                let removed: Vec<_> = query
+                    .iter(app.world())
+                    .filter(|(_, actor)| actor.id.0 % 4 == 0)
+                    .map(|(entity, _)| entity)
+                    .collect();
+                for entity in removed {
+                    app.world_mut().despawn(entity);
+                }
+            }
+            75 => {
+                for index in 0..16 {
+                    spawn_actor(
+                        &mut app,
+                        // Includes new low IDs, IDs between surviving actors and
+                        // duplicates; channel membership must follow domain IDs.
+                        979 + index * 7,
+                        [0.0; 3],
+                        NetParameters {
+                            net_update_frequency: 2.0,
+                            ..Default::default()
+                        },
+                    );
+                }
+            }
+            100 => {
+                let mut query = app.world_mut().query::<&mut NetViewer>();
+                for mut viewer in query.iter_mut(app.world_mut()) {
+                    viewer.location = [0.0; 3];
+                    viewer.direction = [-1.0, 0.0, 0.0];
+                }
+                let mut config = app.world_mut().resource_mut::<ReplicationConfig>();
+                config.max_consider_list = 96;
+                config.connection_budget = 128;
+            }
+            150 => {
+                app.world_mut()
+                    .resource_mut::<ReplicationConfig>()
+                    .connection_budget = 0;
+            }
+            175 => {
+                let mut config = app.world_mut().resource_mut::<ReplicationConfig>();
+                config.connection_budget = 7;
+                config.max_connections = 1;
+                config.max_consider_list = 13;
+            }
+            // Past the one-second recent-channel fast path, saturated frames
+            // refresh the relevance time of channels left unprocessed, and
+            // actors that then leave relevance close by that stored time.
+            200 => {
+                let mut config = app.world_mut().resource_mut::<ReplicationConfig>();
+                config.connection_budget = 3;
+                config.max_connections = 3;
+                config.max_consider_list = 40;
+            }
+            225 | 300 | 350 => {
+                let modulus = if frame == 225 { 5 } else { 2 };
+                let mut query = app.world_mut().query::<(&NetActor, &mut Position)>();
+                for (actor, mut position) in query.iter_mut(app.world_mut()) {
+                    if actor.id.0 % modulus == 0 {
+                        position.0 = [1_000_000.0; 3];
+                    }
+                }
+            }
+            260 => {
+                let mut query = app.world_mut().query::<&mut Position>();
+                for mut position in query.iter_mut(app.world_mut()) {
+                    position.0 = [0.0; 3];
+                }
+            }
+            _ => {}
+        }
+        frames.push(step(&mut app).decisions);
+    }
+    assert!(frames.iter().any(|frame| frame.duplicate_ids > 0));
+    assert!(frames.iter().any(|frame| frame.consider_overflow > 0));
+    assert!(
+        frames
+            .iter()
+            .flat_map(|frame| &frame.connections)
+            .any(|connection| !connection.closed.is_empty())
+    );
+    // Frozen from the unmodified origin/main 13786b3 scheduler.
+    // This includes priorities, order, closes, saturation and all frame counts;
+    // later frames also expose changes in RNG consumption or stored channel times.
+    let digest = Sha256::digest(serde_json::to_vec(&frames).unwrap());
+    let hex: String = digest.iter().map(|byte| format!("{byte:02x}")).collect();
+    assert_eq!(
+        hex,
+        "11b5b0527d8aef46c980335aaf73eac2cc4c27865e5394ea593a83fe7f9ddfa4"
+    );
+}
