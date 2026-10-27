@@ -51,15 +51,18 @@ F-265/F-266/F-268/F-253; unrun launcher: F-252; expired runtime windows: F-218.
 Debug idle (F-939): archetype checks (M-1060), lookup maps (M-1063),
 relationship guards (M-1064) and occupancy slots (M-1070), each in 3 matched
 pairs of 32 samples/mode without peers; host 1,024 medians fell from about
-40 to 25–30 ms, with overlapping ranges for lookup-only and occupancy work.
-M-1057 gives one-run debug medians at 1/64/1024 actors.
+40 to 25–32 ms, with overlapping ranges for lookup-only and occupancy work and
+one candidate p95 above 33.333 ms. M-1057 gives one-run debug medians at
+1/64/1024 actors.
 
 Release idle (F-941, M-1075): the authored bridge's 1,024-actor median cost
 over a matched no-bridge app fell from 874–970 to 470–484 us across 3 pairs
-by exact archetype scans, single-entity reads, an ID-indexed placement fast
-path and unchanged-position write skips; 1/64 ranges overlap. Every tick still
-validates every binding with unchanged error precedence. No reference/client/
-ICARUS qualification.
+for one candidate combining exact archetype scans, single-entity reads, an
+ID-indexed placement fast path and unchanged-position write skips; 1/64
+ranges overlap. Every tick still validates every binding with unchanged error
+precedence. Whole binaries are compared: fixed mode order, binary layout and
+host activity limit attribution, and no single change is measured. No
+reference/client/ICARUS qualification.
 
 ## Open
 
