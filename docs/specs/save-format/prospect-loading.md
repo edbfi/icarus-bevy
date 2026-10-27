@@ -114,7 +114,8 @@ Acceptance conditions for any importer
   skip-owner flag; any other field rejects. Independently authored inert
   geometry has no variables, and native-frame coordinates transfer without
   conversion or normalization. Schema 5 keeps the preserved source and immutable
-  identity and binding metadata beside mutable poses, cross-checked on reload.
+  identity, timestamp, root-presence and binding metadata beside mutable poses,
+  cross-checked on reload.
   Original coordinates, official loadability and
   faithful save import stay unqualified.
 - `DecodedImportCandidate` retains migrated root values, exact UTF-16 recorder
@@ -130,7 +131,8 @@ Acceptance conditions for any importer
   migration, the 17 `FProspectInfo` tags, optional `ProspectID` matching, base
   framing, 65-class ctor defaults plus tag overlays (`bSkipDefaultOwnerResolution`,
   `OwnerResolvePolicy`, `ParentCharacterUID` -> `RequiresStitching`) and
-  per-recorder `Validate` (`+0x408`), and count `C033` `bIsPhysicsDynamic` across
+  per-recorder `Validate` (`+0x408`, incl. `N018` `false` and `N022`
+  rocket-spawn), and count `C033` `bIsPhysicsDynamic` across
   all 15 saves (`dddd.json`: F-680, F-747; `world_imported: false`; F-736, F-738,
   F-746).
 - All 65 `RecorderComponent` `FClassParams`, ctor defaults and vtable overrides
