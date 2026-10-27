@@ -586,6 +586,8 @@ struct ConsiderEntry {
 struct Prioritized {
     entry: usize,
     priority: i32,
+    /// `entries[entry].id`, held inline so sorting reads no other slice.
+    id: DomainId,
 }
 
 struct FrameClock {
@@ -1045,9 +1047,11 @@ impl ReplicationState {
             prioritized.push(Prioritized {
                 entry: index,
                 priority: round_net_priority_to_int(best),
+                id: entry.id,
             });
         }
-        prioritized.sort_unstable_by_key(|item| (Reverse(item.priority), entries[item.entry].id));
+        // IDs are distinct, so this total order is the one an indirect key gives.
+        prioritized.sort_unstable_by_key(|item| (Reverse(item.priority), item.id));
 
         let mut selected = Vec::new();
         let mut closed_channels = 0;

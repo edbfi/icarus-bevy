@@ -1397,6 +1397,64 @@ fn the_game_state_open_follows_the_controller_over_several_datagrams() {
     assert!(carrying >= 2, "the GameState spans datagrams");
 }
 
+/// Without a free actor channel an open is refused before any state is
+/// cloned: it counts one error, sends nothing and assigns no GUID, and keeps
+/// refusing until a channel frees.
+#[test]
+fn exhausted_actor_channels_refuse_opens_without_state_changes() {
+    use icarus_bevy::experimental::session_open::{ActorOpenSpec, PathSegment, map_level_chain};
+    let mut config = PeerLabConfig {
+        admission: Some(PeerLabAdmission::default()),
+        ..PeerLabConfig::default()
+    };
+    // Channels 2..=4 are the only actor channels.
+    config.packet.packet.limits.max_channels = 5;
+    let (mut app, address) = lab_app(config);
+    let mut client = Client::connect(&mut app, address);
+    client.exchange(&mut app, short_hello("", 0), false);
+    client.exchange(&mut app, login(), false);
+    client.exchange(&mut app, ControlMessage::Join, false);
+    accept_all_headers(&mut client);
+    let connection = lab(&app).joined_connections()[0];
+    let spec = ActorOpenSpec {
+        actor: 0,
+        archetype: vec![
+            PathSegment::new("Default__LabCart_C", 0x0cab_0cab, false),
+            PathSegment::new("/Game/Lab/LabCart", 0, false),
+        ],
+        level: map_level_chain(PeerLabAdmission::default().map_url).unwrap(),
+        location: Some([0.0; 3]),
+        rotation: None,
+        velocity: None,
+        blocks: Vec::new(),
+    };
+    let mut lab_mut = app.world_mut().resource_mut::<PeerLab>();
+    for (key, channel) in [(7, 2), (8, 3), (9, 4)] {
+        assert_eq!(
+            lab_mut.open_actor(connection, key, spec.clone(), 2, 17),
+            Some(channel)
+        );
+    }
+    let opens = lab_mut.stats().actor_opens_sent;
+    let errors = lab_mut.stats().actor_open_errors;
+    let guids = format!("{:?}", lab_mut.guid_cache());
+    for attempt in 1..=3 {
+        assert_eq!(
+            lab_mut.open_actor(connection, 10 + attempt, spec.clone(), 2, 17),
+            None
+        );
+        assert_eq!(lab_mut.stats().actor_open_errors, errors + attempt);
+        assert_eq!(lab_mut.stats().actor_opens_sent, opens);
+        assert_eq!(format!("{:?}", lab_mut.guid_cache()), guids);
+        assert!(!lab_mut.is_actor_open(connection, 10 + attempt));
+    }
+    assert_eq!(lab_mut.peer_count(), 1);
+    assert_eq!(lab_mut.joined_connections(), [connection]);
+    // Already open is not an error.
+    assert_eq!(lab_mut.open_actor(connection, 7, spec, 2, 17), None);
+    assert_eq!(lab_mut.stats().actor_open_errors, errors + 3);
+}
+
 #[test]
 fn exports_repeat_until_their_packet_is_acked_and_again_after_a_nak() {
     use icarus_bevy::experimental::session_open::{ActorOpenSpec, PathSegment, map_level_chain};

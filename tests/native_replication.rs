@@ -3,6 +3,8 @@
 //! actor components, and establish no ICARUS/stock-client compatibility.
 #[path = "common/c001_inventory_owners.rs"]
 mod inventory_fixture;
+#[path = "common/loopback_client.rs"]
+mod loopback;
 #[path = "common/c001_owners.rs"]
 mod owner_fixture;
 #[path = "common/c001_scalar_owners.rs"]
@@ -12,8 +14,7 @@ mod source;
 use std::{
     collections::BTreeMap,
     fs,
-    io::ErrorKind,
-    net::{SocketAddr, UdpSocket},
+    net::SocketAddr,
     sync::Arc,
     time::{Duration, Instant},
 };
@@ -24,24 +25,15 @@ use icarus_bevy::{
     experimental::{
         actor_channel::{ActorChannelCodec, ActorChannelLimits, read_actor_bunch_body},
         archive::ByteOrder,
-        control_messages::{
-            ArchiveText, ControlCodec, ControlMessage, NetIdType, NetIdValue, UniqueNetId,
-            encode_control_message,
-        },
-        handshake::{decode, initial_request},
-        packet::{
-            BitWriter, Bunch, BunchHeader, Name, Packet, PacketConfig, Payload, Receiver,
-            read_packet, write_packet,
-        },
-        packet_lab::client_cookie_seeds,
+        packet::{BitWriter, Payload, read_packet},
         peer_lab::{PeerLab, PeerLabAdmission, PeerLabConfig},
         rep_layout::{
             MovementLevel, RepLayoutCodec, RepLayoutLimits, RepValue, RotationLevel,
             actor_rep_layout, parse_rep_properties,
         },
         sequencing::{
-            MAX_CONSTRUCTED_PARTIAL_BUNCH_BYTES, PacketSequencer, PartialBunchReassembler,
-            PartialReceive, ReliableChannel, reconstruct_reliable_sequence, wire_reliable_sequence,
+            MAX_CONSTRUCTED_PARTIAL_BUNCH_BYTES, PartialBunchReassembler, PartialReceive,
+            reconstruct_reliable_sequence,
         },
         session_open::{authored_movement, map_level_chain},
     },
@@ -68,6 +60,7 @@ use icarus_bevy::{
         DomainId, Position, SimulationClock, SimulationSet, WorldSnapshot, build_app, capture,
     },
 };
+use loopback::{Client, drain};
 use serde_json::{Value, json};
 
 // An unknown, independently authored release/profile with no shipped content
@@ -276,208 +269,6 @@ fn prepare(app: &mut App, value: Value) -> anyhow::Result<native_replication::Pr
         session(),
         1024,
     )
-}
-
-/// Authored client sequencing harness, matching the existing peer-lab patterns.
-/// Datagrams may be deliberately withheld from accept() to model loss/late ACK.
-struct Client {
-    socket: UdpSocket,
-    sequencer: PacketSequencer,
-    control: ReliableChannel<ControlMessage>,
-    packet: PacketConfig,
-    order: ByteOrder,
-}
-
-fn drain(socket: &UdpSocket) -> Vec<Vec<u8>> {
-    let mut datagrams = Vec::new();
-    loop {
-        let mut buffer = [0; 2048];
-        match socket.recv(&mut buffer) {
-            Ok(length) => datagrams.push(buffer[..length].to_vec()),
-            Err(error) if error.kind() == ErrorKind::WouldBlock => break,
-            Err(error) => panic!("{error}"),
-        }
-    }
-    datagrams
-}
-
-impl Client {
-    fn connect(app: &mut App, address: SocketAddr, order: ByteOrder) -> Self {
-        let socket = UdpSocket::bind("127.0.0.1:0").unwrap();
-        socket.connect(address).unwrap();
-        socket.set_nonblocking(true).unwrap();
-        socket.send(&initial_request()).unwrap();
-        app.update();
-        let challenge = drain(&socket).pop().expect("challenge");
-        let cookie = decode(&challenge).unwrap().cookie;
-        socket.send(&challenge).unwrap();
-        app.update();
-        assert_eq!(
-            decode(&drain(&socket).pop().expect("handshake ack"))
-                .unwrap()
-                .cookie,
-            cookie
-        );
-        let (incoming, outgoing) = client_cookie_seeds(&cookie);
-        let sequencer = PacketSequencer::new(incoming, outgoing, 64).unwrap();
-        let control = sequencer.new_channel();
-        let mut client = Self {
-            socket,
-            sequencer,
-            control,
-            packet: app.world().resource::<PeerLab>().config().packet.packet,
-            order,
-        };
-        for message in [
-            ControlMessage::Hello {
-                first_field: u8::from(matches!(order, ByteOrder::Little)),
-                version: 1447163286,
-                token: ArchiveText::text("").unwrap(),
-            },
-            ControlMessage::Login {
-                response: ArchiveText::text("0").unwrap(),
-                url: ArchiveText::text("?Name=A").unwrap(),
-                unique_net_id: UniqueNetId {
-                    kind: NetIdType::Named(ArchiveText::text("STEAM").unwrap()),
-                    value: NetIdValue::from_hex("0123456789ABCDEF7654").unwrap(),
-                },
-                platform: ArchiveText::text("").unwrap(),
-            },
-        ] {
-            client.control(app, message);
-            let replies = drain(&client.socket);
-            assert!(!replies.is_empty());
-            client.accept(&replies);
-        }
-        client
-    }
-
-    fn config(&self) -> PacketConfig {
-        PacketConfig {
-            receiver: Receiver::Client,
-            ..self.packet
-        }
-    }
-
-    fn send(&mut self, bunches: Vec<Bunch>) {
-        let packet = Packet {
-            magic: 0,
-            header: self.sequencer.header().unwrap(),
-            info: None,
-            bunches,
-        };
-        let bytes = write_packet(&packet, &self.packet).unwrap();
-        self.sequencer.commit().unwrap();
-        self.socket.send(&bytes).unwrap();
-    }
-
-    fn control(&mut self, app: &mut App, message: ControlMessage) {
-        let sequence = self
-            .control
-            .send_reliable(self.sequencer.out_packet_id(), message.clone())
-            .unwrap();
-        let mut payload = BitWriter::new();
-        payload.write_bytes(
-            &encode_control_message(
-                &message,
-                &ControlCodec {
-                    order: self.order,
-                    ..Default::default()
-                },
-            )
-            .unwrap(),
-        );
-        self.send(vec![Bunch {
-            header: BunchHeader {
-                control: false,
-                open: false,
-                close: false,
-                close_reason: None,
-                paused: false,
-                reliable: true,
-                channel_index: 0,
-                has_package_map_exports: false,
-                has_must_be_mapped_guids: false,
-                partial: false,
-                reliable_sequence_raw: Some(wire_reliable_sequence(sequence)),
-                partial_initial: false,
-                partial_final: false,
-                channel_name: Some(Name::Hardcoded(255)),
-            },
-            payload: Payload::from_writer(payload),
-        }]);
-        app.update();
-    }
-
-    fn join(&mut self, app: &mut App) -> Vec<Vec<u8>> {
-        self.control(app, ControlMessage::Join);
-        let mut opened = drain(&self.socket);
-        for _ in 0..4 {
-            app.update();
-            opened.extend(drain(&self.socket));
-        }
-        assert!(
-            !app.world()
-                .resource::<PeerLab>()
-                .joined_connections()
-                .is_empty()
-        );
-        opened
-    }
-
-    fn accept(&mut self, datagrams: &[Vec<u8>]) {
-        for datagram in datagrams {
-            let packet = read_packet(datagram, &self.config()).unwrap();
-            if let Some(received) = self.sequencer.receive(&packet.header).unwrap() {
-                self.sequencer.ack_seq(received.sequence, true).unwrap();
-            }
-        }
-    }
-
-    fn step(&mut self, app: &mut App) -> Vec<Vec<u8>> {
-        self.send(Vec::new());
-        app.update();
-        let mut bytes = drain(&self.socket);
-        for _ in 0..4 {
-            app.update();
-            bytes.extend(drain(&self.socket));
-        }
-        bytes
-    }
-
-    fn settle(&mut self, app: &mut App, datagrams: &[Vec<u8>]) -> Vec<Vec<u8>> {
-        self.accept(datagrams);
-        let bytes = self.step(app);
-        self.accept(&bytes);
-        bytes
-    }
-
-    fn disconnect(&mut self, app: &mut App) {
-        let sequence = self.control.out_reliable() + 1;
-        self.send(vec![Bunch {
-            header: BunchHeader {
-                control: true,
-                open: false,
-                close: true,
-                close_reason: Some(0),
-                paused: false,
-                reliable: true,
-                channel_index: 0,
-                has_package_map_exports: false,
-                has_must_be_mapped_guids: false,
-                partial: false,
-                reliable_sequence_raw: Some(wire_reliable_sequence(sequence)),
-                partial_initial: false,
-                partial_final: false,
-                channel_name: Some(Name::Hardcoded(255)),
-            },
-            payload: Payload::from_writer(BitWriter::new()),
-        }]);
-        for _ in 0..4 {
-            app.update();
-        }
-        drain(&self.socket);
-    }
 }
 
 type Fields = BTreeMap<u32, RepValue>;
