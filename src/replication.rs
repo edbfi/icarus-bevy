@@ -889,7 +889,7 @@ impl ReplicationState {
             let viewers = &grouped[&connection_id];
             let relevancy_started = Instant::now();
             let stamp = self.next_stamp(entries.len());
-            let mut candidate_entries = Vec::new();
+            let mut relevant_count = 0;
             for viewer in viewers {
                 let relevant = |index: usize| {
                     is_relevant_with_hidden(
@@ -913,11 +913,10 @@ impl ReplicationState {
                 for &index in &scratch {
                     if self.marks[index] != stamp {
                         self.marks[index] = stamp;
-                        candidate_entries.push(index);
+                        relevant_count += 1;
                     }
                 }
             }
-            let relevant_count = candidate_entries.len();
             result.timings.relevancy_nanos += nanos_since(relevancy_started);
 
             let prioritize_started = Instant::now();
@@ -932,8 +931,7 @@ impl ReplicationState {
                 viewers,
                 stamp,
             };
-            let connection_frame =
-                self.replicate_connection(&context, &job, rows, &mut entries, candidate_entries);
+            let connection_frame = self.replicate_connection(&context, &job, rows, &mut entries);
             result.timings.prioritize_nanos += nanos_since(prioritize_started);
             decisions.connections.push(ConnectionFrame {
                 relevant: relevant_count,
@@ -956,7 +954,6 @@ impl ReplicationState {
         job: &ConnectionJob<'_>,
         rows: &mut [ActorRow],
         entries: &mut [ConsiderEntry],
-        mut candidate_entries: Vec<usize>,
     ) -> ConnectionFrame {
         let FrameContext {
             config,
@@ -970,32 +967,40 @@ impl ReplicationState {
             stamp,
         } = *job;
         let mut connection = self.connections.remove(&connection_id).unwrap_or_default();
-        for id in connection.channels.keys() {
-            if let Ok(index) = entries.binary_search_by_key(id, |entry| entry.id) {
-                candidate_entries.push(index);
-            }
-        }
-        // Entries force-relevant to this connection, by the same unsigned test
-        // ProcessPrioritizedActors applies (F-772), on the live schedule so an
-        // earlier connection's mark steps this frame are included.
-        let last_processed = connection.last_processed_frame as u32;
-        candidate_entries.extend(
-            entries
-                .iter()
-                .enumerate()
-                .filter(|(_, entry)| {
-                    rows[entry.row].schedule.force_relevant_frame as u32 >= last_processed
-                })
-                .map(|(index, _)| index),
-        );
+        // Both inputs ascend by ID. Read each considered actor's channel once
+        // and use its entry index throughout prioritization and marking. This
+        // view lasts only this connection/frame; channels outside the consider
+        // window remain in the map, and changes merge back before the next job.
+        let mut open = connection.channels.iter().peekable();
+        let mut channels: Vec<Option<Channel>> = entries
+            .iter()
+            .map(|entry| {
+                while open.peek().is_some_and(|(id, _)| **id < entry.id) {
+                    open.next();
+                }
+                open.peek()
+                    .filter(|(id, _)| **id == entry.id)
+                    .map(|(_, channel)| **channel)
+            })
+            .collect();
         self.driver_net_tag = self.driver_net_tag.wrapping_add(1);
         let driver_net_tag = self.driver_net_tag;
 
-        let mut prioritized = Vec::with_capacity(candidate_entries.len());
-        for index in candidate_entries {
-            let entry = &mut entries[index];
+        let mut prioritized = Vec::with_capacity(entries.len());
+        for (index, entry) in entries.iter_mut().enumerate() {
             let row = &rows[entry.row];
-            let channel = connection.channels.get(&row.id).copied();
+            let channel = channels[index];
+            // The union of relevant, channeled and force-relevant entries.
+            // Prioritization has no cross-actor effects or random inputs, and
+            // the total sort below fixes processing/marking order, so each
+            // member is evaluated once.
+            if self.marks[index] != stamp
+                && channel.is_none()
+                && (row.schedule.force_relevant_frame as u32)
+                    < connection.last_processed_frame as u32
+            {
+                continue;
+            }
             // The evaluator yields the disposition and the elapsed time GetNetPriority
             // scales; the viewer maximum is rounded by the same evaluator rule.
             let outcome = evaluate_prioritize_actor(&PrioritizeActorInputs {
@@ -1060,7 +1065,7 @@ impl ReplicationState {
         let mut processed = prioritized.len();
         for (position, item) in prioritized.iter().enumerate() {
             let row = &rows[entries[item.entry].row];
-            let channel = connection.channels.get(&row.id).copied();
+            let channel = channels[item.entry];
             let outcome = evaluate_process_prioritized_actor(&ProcessPrioritizedActorInputs {
                 connection_is_net_ready: selected.len() < config.connection_budget,
                 is_destruction_info: false,
@@ -1109,13 +1114,14 @@ impl ReplicationState {
                 ProcessPrioritizedActorOutcome::SkipAlreadyReplicatingOrAckedNetTemporary {
                     updated_relevant_time: Some(relevant_time),
                 } => {
-                    if let Some(channel) = connection.channels.get_mut(&row.id) {
+                    if let Some(channel) = &mut channels[item.entry] {
                         channel.relevant_time = relevant_time;
                     }
                     None
                 }
                 ProcessPrioritizedActorOutcome::CloseChannel { close_reason } => {
                     connection.channels.remove(&row.id);
+                    channels[item.entry] = None;
                     closed_channels += 1;
                     closed.push(ClosedActor {
                         id: row.id,
@@ -1136,6 +1142,7 @@ impl ReplicationState {
                 if let Some(relevant_time) = updated_relevant_time {
                     channel.relevant_time = relevant_time;
                 }
+                channels[item.entry] = Some(*channel);
                 selected.push(SelectedActor {
                     id: row.id,
                     priority: item.priority,
@@ -1148,7 +1155,7 @@ impl ReplicationState {
 
         for item in &prioritized[processed..] {
             let row = &mut rows[entries[item.entry].row];
-            let channel = connection.channels.get_mut(&row.id);
+            let channel = channels[item.entry].as_mut();
             let outcome = evaluate_mark_relevant_actor_step(&MarkRelevantActorStepInputs {
                 actor_info_present: true,
                 has_channel: channel.is_some(),
@@ -1169,6 +1176,20 @@ impl ReplicationState {
                 (channel, outcome.updated_channel_relevant_time)
             {
                 channel.relevant_time = relevant_time;
+            }
+        }
+        // A second sorted merge publishes the channel-time changes without a
+        // tree search for each unprocessed actor. Opens/closes above already
+        // updated map membership; unconsidered channels keep their old state.
+        let mut snapshots = entries.iter().zip(channels).peekable();
+        for (id, channel) in &mut connection.channels {
+            while snapshots.peek().is_some_and(|(entry, _)| entry.id < *id) {
+                snapshots.next();
+            }
+            if let Some((entry, Some(snapshot))) = snapshots.peek()
+                && entry.id == *id
+            {
+                *channel = *snapshot;
             }
         }
         connection.last_processed_frame = frame_number;
