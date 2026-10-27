@@ -678,12 +678,26 @@ impl CompiledNativeCatalog {
         let mut value_bytes = 0;
         for (index, actor) in actors.enumerate() {
             let validate_actor = || -> Result<usize> {
-                validate_key(actor.placement)?;
-                let rank = map
-                    .placements
-                    .binary_search_by(|v| v.key.as_str().cmp(actor.placement))
+                // Exact fast path: compiled keys are valid, unique and sorted,
+                // so a key equal to the identity's rank (ID - 1) passes
+                // validate_key and is exactly what the search would return.
+                let rank = match usize::try_from(actor.id.0)
                     .ok()
-                    .context("native actor placement binding")?;
+                    .and_then(|id| id.checked_sub(1))
+                    .filter(|rank| {
+                        map.placements
+                            .get(*rank)
+                            .is_some_and(|v| v.key == actor.placement)
+                    }) {
+                    Some(rank) => rank,
+                    None => {
+                        validate_key(actor.placement)?;
+                        map.placements
+                            .binary_search_by(|v| v.key.as_str().cmp(actor.placement))
+                            .ok()
+                            .context("native actor placement binding")?
+                    }
+                };
                 let placement = &map.placements[rank];
                 ensure!(
                     actor.id.0 == rank as u64 + 1,

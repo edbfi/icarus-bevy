@@ -271,6 +271,16 @@ impl AuthoredFrame {
     }
 
     fn position(&self, pose: &NativeTransform) -> Result<[f32; 3]> {
+        self.position_after(pose, None)
+    }
+
+    /// `accepted` is a position this frame produced earlier. The codec check
+    /// is a pure function of its input, so a bit-identical result is not rechecked.
+    fn position_after(
+        &self,
+        pose: &NativeTransform,
+        accepted: Option<[f32; 3]>,
+    ) -> Result<[f32; 3]> {
         ensure!(
             pose.rotation == [0.0, 0.0, 0.0, 1.0] && pose.scale == [1.0; 3],
             "native replication v1 requires identity rotation and unit native scale"
@@ -287,10 +297,16 @@ impl AuthoredFrame {
         );
         // Use the existing property quantizer even when movement is disabled:
         // later edits must not introduce a position this contract cannot send.
-        authored_movement(position, [0.0; 3], [0.0; 3])
-            .map_err(|_| anyhow::anyhow!("native replication position outside codec limits"))?;
+        if accepted.is_none_or(|accepted| !same_bits(accepted, position)) {
+            authored_movement(position, [0.0; 3], [0.0; 3])
+                .map_err(|_| anyhow::anyhow!("native replication position outside codec limits"))?;
+        }
         Ok(position)
     }
+}
+
+fn same_bits(a: [f32; 3], b: [f32; 3]) -> bool {
+    a.map(f32::to_bits) == b.map(f32::to_bits)
 }
 
 impl AuthoredParameters {
@@ -598,11 +614,13 @@ fn validate_open(
     Ok(())
 }
 
+/// Each position is paired with whether its proxy's stored Position differs
+/// bitwise from it, so the caller writes only proxies whose value changes.
 fn current_positions(
     world: &World,
     plan: &PreparedReplication,
     startup: bool,
-) -> Result<Vec<[f32; 3]>> {
+) -> Result<Vec<([f32; 3], bool)>> {
     ensure!(
         !world.contains_resource::<crate::simulation::PreservedProspectState>()
             && !world.contains_resource::<crate::simulation::C001InertImportState>(),
@@ -629,7 +647,11 @@ fn current_positions(
             !startup || actor.transform == binding.pose,
             "native replication prepared pose changed"
         );
-        let position = plan.declaration.frame.position(&actor.transform)?;
+        // binding.position is always a position this frame accepted earlier.
+        let position = plan
+            .declaration
+            .frame
+            .position_after(&actor.transform, Some(binding.position))?;
         if startup || position != binding.position {
             validate_open(
                 binding.id,
@@ -639,29 +661,34 @@ fn current_positions(
                 &plan.session,
             )?;
         }
+        let mut stale = false;
         if let Some(proxy) = binding.proxy {
+            let proxy = world.get_entity(proxy).ok();
+            let current = proxy.and_then(|proxy| proxy.get::<Position>());
             ensure!(
-                world
-                    .get::<NativeProxy>(proxy)
-                    .is_some_and(|proxy| proxy.0 == binding.id)
-                    && world.get::<NetActor>(proxy) == Some(&binding.actor)
-                    && world.get::<NetArchetype>(proxy) == Some(&binding.archetype)
-                    && world.get::<NetSchedule>(proxy).is_some()
-                    && world.get::<Position>(proxy) == Some(&Position(binding.position))
-                    && world.get::<NetActorFlags>(proxy).copied() == binding.flags
-                    && world.get::<NetMotion>(proxy).is_none()
-                    && world
-                        .get::<bevy::ecs::entity_disabling::Disabled>(proxy)
-                        .is_none(),
+                proxy.is_some_and(|proxy| {
+                    proxy
+                        .get::<NativeProxy>()
+                        .is_some_and(|proxy| proxy.0 == binding.id)
+                        && proxy.get::<NetActor>() == Some(&binding.actor)
+                        && proxy.get::<NetArchetype>() == Some(&binding.archetype)
+                        && proxy.contains::<NetSchedule>()
+                        && current == Some(&Position(binding.position))
+                        && proxy.get::<NetActorFlags>().copied() == binding.flags
+                        && !proxy.contains::<NetMotion>()
+                        && !proxy.contains::<bevy::ecs::entity_disabling::Disabled>()
+                }),
                 "native replication proxy lost or changed"
             );
+            stale = current.is_none_or(|current| !same_bits(current.0, position));
         }
         ensure!(
-            world.get::<NetActor>(binding.source).is_none()
-                && world.get::<NetArchetype>(binding.source).is_none(),
+            world.get_entity(binding.source).ok().is_none_or(|source| {
+                !source.contains::<NetActor>() && !source.contains::<NetArchetype>()
+            }),
             "native replication source components conflict"
         );
-        positions.push(position);
+        positions.push((position, stale));
     }
     if !startup {
         let session = world
@@ -674,24 +701,35 @@ fn current_positions(
                 && session.viewer_location == plan.session.viewer_location,
             "native replication session binding changed"
         );
-        let proxies: BTreeSet<_> = plan
+        // Bound proxies passed the loop above: each carries NetActor and its
+        // binding's unique NativeProxy ID, so they are distinct carriers. Equal
+        // counts then mean no other entity, including a Disabled or otherwise
+        // filtered one, carries a bridge component. An unregistered type has no
+        // carrier; IDs are resolved from this world on every call.
+        let components = [
+            world.component_id::<NetActor>(),
+            world.component_id::<NetArchetype>(),
+            world.component_id::<NetMotion>(),
+            world.component_id::<NetActorFlags>(),
+            world.component_id::<NativeProxy>(),
+        ];
+        let carriers: usize = world
+            .archetypes()
+            .iter()
+            .filter(|archetype| {
+                components
+                    .iter()
+                    .flatten()
+                    .any(|id| archetype.contains(*id))
+            })
+            .map(|archetype| archetype.entities().len())
+            .sum();
+        let proxies = plan
             .bindings
             .iter()
-            .filter_map(|binding| binding.proxy)
-            .collect();
-        for entity in world.iter_entities() {
-            if entity.contains::<NetActor>()
-                || entity.contains::<NetArchetype>()
-                || entity.contains::<NetMotion>()
-                || entity.contains::<NetActorFlags>()
-                || entity.contains::<NativeProxy>()
-            {
-                ensure!(
-                    proxies.contains(&entity.id()),
-                    "native replication topology changed"
-                );
-            }
-        }
+            .filter(|binding| binding.proxy.is_some())
+            .count();
+        ensure!(carriers == proxies, "native replication topology changed");
     }
     Ok(positions)
 }
@@ -832,8 +870,9 @@ fn extract(world: &mut World) {
     if !state.failed {
         match current_positions(world, &state.plan, false) {
             Ok(positions) => {
-                for (binding, position) in state.plan.bindings.iter_mut().zip(positions) {
-                    if let Some(proxy) = binding.proxy {
+                for (binding, (position, stale)) in state.plan.bindings.iter_mut().zip(positions) {
+                    // An unchanged proxy already holds these exact bits.
+                    if stale && let Some(proxy) = binding.proxy {
                         world.entity_mut(proxy).insert(Position(position));
                     }
                     binding.position = position;

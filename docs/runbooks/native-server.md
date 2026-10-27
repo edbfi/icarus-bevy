@@ -83,7 +83,8 @@ All bindings/shared static identities validate before installation; proxies
 are transient, never saved. Invalid bindings retire activation without native
 state edits (F-938). Every fixed tick validates bindings, even without peers:
 direct ECS corruption must retire activation and stop admission on the next
-tick, independently of connection count. F-939 measures this integrity cost.
+tick, independently of connection count. F-939 (debug) and F-941 (release)
+measure this integrity cost.
 Generic later lab reconfiguration is outside this contract.
 Saved-pose mappings (U-025), import, physics, gameplay and stock-client behavior
 remain unqualified; tests use authored probes only:
@@ -124,6 +125,7 @@ Scheduling sends nothing; bandwidth/dormancy/ownership/destruction are unmodeled
 ```bash
 cargo run --release --locked --example replication_bench -- --viewers 1,4,8
 # --source <envelope>: planned-actor positions; prints aggregates only
+cargo run --release --locked --example authored_host_bench # F-938 vs no bridge
 ```
 
 ## Persistence and recovery
