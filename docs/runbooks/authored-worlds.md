@@ -8,9 +8,9 @@ Running, autosave and recovery: [native server](native-server.md).
 
 Creation preflights before destination access; `--dry-run` writes nothing,
 omission publishes, existing/recoverable worlds reject. Strict JSON/TOML, format
-1. Fixtures pin payload SHA-256, catalog/map, UTF-16 identities/unchanged
-sidecar. Owner-fixture commands share `--source`, `--catalog`, `--lifecycle`,
-`--bindings`, `--data-dir` and optional `--dry-run`; `run` needs no creation
+1. Fixtures pin payload SHA-256, catalog/map, UTF-16 identities and the
+unchanged sidecar. Owner-fixture commands share `--source`, `--catalog`,
+`--lifecycle`, `--bindings`, `--data-dir` and optional `--dry-run`; `run` needs no creation
 inputs.
 
 Coordinates: metres, right-handed, Z-up, quaternion `[x,y,z,w]`; bindings declare
@@ -26,8 +26,8 @@ retain acceptance; older schemas reject new fields, even null.
 Runtime calls validate membership, contexts/generations, indices and
 domain-ID/incarnation handles; mutations stage changes and lifecycle modes
 preflight storage. Missing, malformed, stale, transplanted or hidden unregistered
-state rejects; replacement invalidates handles. Costs scale with source/world
-size; tick-loop use is unqualified (F-926).
+state rejects; replacement invalidates handles. Costs scale with world size;
+tick-loop use is unqualified (F-926).
 
 ## Spatial worlds and inert source fixtures
 
@@ -60,8 +60,8 @@ effects/releases are unqualified.
 Schema 6 (otherwise as 4/5): immutable declarations, mutable domain-ID edges,
 optional C001 metadata; links independent of source, unlinked components valid.
 `reassign_native_foundation` edits (`None` unlinks; no-ops succeed);
-`native_foundation_of`/`native_dependents_of` query. No
-parenting/support/collapse, destruction propagation or tame permissions.
+`native_foundation_of`/`native_dependents_of` query. No parenting, support,
+collapse, destruction propagation or tame permissions.
 
 ## Owner lifecycle
 
@@ -97,9 +97,9 @@ durable only after autosave or shutdown publishes it.
 Owner mutations and capture reject managed-owner ECS hooks, requirements and
 lifecycle observers, even on untouched owners or uninstantiated optional types
 (F-928; modifiers too). Unrelated entity observers are allowed; global raw
-lifecycle-event observers (`On<RemoveEvent>`) block even autosave capture,
-regardless of intended entity. Flush pending commands/registrations first;
-component `Drop` effects and activation setup are outside this contract.
+lifecycle-event observers (`On<RemoveEvent>`) block even autosave capture.
+Flush pending commands/registrations first; component `Drop` effects and
+activation setup are outside this contract.
 `live_actors` counts live; `actors` includes dormant.
 
 ## Authored owner modifiers
@@ -141,9 +141,9 @@ stage changes with `SnapshotStore` preflight. Fixed time advances before
 
 Activation is system-owned and immutable; a private nonclone health anchor
 latches errors closed and `run` checks it. Malformed, transplanted or missing
-components/resources reject. The apply CLI requires an existing world and strict JSON
-≤64 KiB; symlink path components and FIFOs reject. No `--dry-run`: opening the
-store mutates its lock/directory.
+components/resources reject. The apply CLI requires an existing world and strict
+JSON ≤64 KiB; symlink path components and FIFOs reject. It has no `--dry-run`:
+opening the store mutates its lock/directory.
 
 Limits: 1,024 live owners, 64 entries/owner, 16 contributions/definition,
 128 stat names/owner, 4,096 entries/world, 8 MiB charged capacities.
@@ -153,8 +153,8 @@ Limits: 1,024 live owners, 64 entries/owner, 16 contributions/definition,
 Full capture and preflight encode run every fixed step, even without armed
 timers; catch-up repeats that cost (F-926). Release Rust 1.99.1/Bevy 0.20.0, two
 pinned EPYC 9534 CPUs, five matched pairs (three fresh apps × ten calls/cell;
-five-run median p95 ms; four entries per nonempty owner; exact state verified
-after each call; setup excluded; no relationships/sidecars):
+five-run median p95 ms; four entries per nonempty owner; state verified after
+each call; setup excluded; no relationships/sidecars):
 
 | State per owner | 1 owner | 32 | 256 | 1,024 |
 | --- | --- | --- | --- | --- |
@@ -162,9 +162,9 @@ after each call; setup excluded; no relationships/sidecars):
 | indefinite | 0.043 | 0.583 | 4.716 | 18.267 |
 | armed timers | 0.056 | 0.579 | 4.400 | 18.521 |
 
-Dedup lowered nonempty 1,024-owner p95; empty/1-owner cells were mixed.
 1,024 owners is an admission cap, not a 30 Hz guarantee; whole-frame, health,
-catch-up, uniform speedup and RSS stay unqualified.
+catch-up, uniform speedup and RSS stay unqualified (F-926: same-borrow charging
+dedup lowered nonempty 1,024-owner p95; empty/1-owner cells were mixed).
 
 ```bash
 cargo run --release --locked --example native_modifier_bench -- --seconds 120
@@ -189,8 +189,8 @@ reconstruction; restore preflight repeats reconstruction/receipt verification.
 
 Library-only `native_import::c001_variables::prepare_c001_variables` (F-929)
 pins payload, catalog/maps, recorder ordinals, UTF-16 owner/property identities,
-placements/classes and native types, covering every retained, losslessly typed
-C001 recorder and both arrays (exact shared headers even when empty). Bindings
+placements/classes and native types over every retained, losslessly typed C001
+recorder and both arrays (exact shared headers even when empty). Bindings
 assert `save_game = true`; official schema/handlers remain open (F-735, F-897).
 Independent array/element-tag/record-type/name-field/value-field names support
 multiple Bool/I32 properties and signed I32 extrema. Duplicate/incomplete

@@ -33,8 +33,7 @@ Validate physics/navigation semantics before accepting a backend or optimization
 
 ## Interfaces
 
-Planned CLI interfaces (see the [native server runbook](runbooks/native-server.md) for
-implemented commands and experimental inspection):
+Planned CLI interfaces (implemented commands: [native server runbook](runbooks/native-server.md)):
 
 - `icarus-server run`
 - `icarus-server check-config`
@@ -45,12 +44,10 @@ Provide official-settings import/mapping and report unsupported settings.
 
 ## Release tracking
 
-ICARUS ships weekly, and each release moves both what the stock client sends
-and what the server runs: the Hello network version hashes the project version
-string, compared for exact equality (F-541, F-563), and server code,
-gameplay-tag tables and paks change between weekly builds (F-700, F-702).
-Weekly churn is a permanent operating constraint, so the architecture must
-treat release-specific protocol facts as data rather than scattered code
+ICARUS ships weekly. The Hello network version hashes the project version
+string and is compared for exact equality (F-541, F-563); server code,
+gameplay-tag tables and paks change between builds (F-700, F-702).
+Release-specific protocol facts are therefore data, not scattered code
 constants:
 
 - `config/release.toml` pins one official build (`[release]` plus optional
@@ -60,14 +57,12 @@ constants:
   (anonymous app info); the daily `Release watch` workflow opens an issue when
   the pin falls behind and closes resolved or superseded release issues.
   `pin --install DIR` rewrites the pin, and `diff --older DIR --newer DIR`
-  compares build IDs, versions, checksums, PE section sizes and
-  `DefaultGameplayTags.ini` tag/node counts.
-- **Design for weekly updates:** `ReleaseProfile` isolates per-release protocol
-  metadata (project version, network checksum, tag net-index widths and
-  `NetworkGameplayTagNodeIndexHash`, `FClassNetCache` bounds and `FRowHandle`
-  table widths) behind a data-driven profile consumed by `PeerLabConfig` and
-  `examples/capture_decode`, paired with `release_watch.py diff` and capture
-  replay so weekly updates are mechanical unless wire semantics change.
+  compares build IDs, versions, checksums, PE section sizes and tag/node counts.
+- `ReleaseProfile` isolates per-release protocol metadata (project version,
+  network checksum, tag net-index widths and `NetworkGameplayTagNodeIndexHash`,
+  `FClassNetCache` bounds and `FRowHandle` table widths) for `PeerLabConfig` and
+  `examples/capture_decode`; with `release_watch.py diff` and capture replay,
+  weekly updates are mechanical unless wire semantics change.
 - `render_pin` writes `[release]` only, and `ReleaseProfile::parse` fails
   closed on an unknown `build_id` without `[tags]`: a new build needs a built-in
   profile or a qualified `[tags]` section.
@@ -85,10 +80,9 @@ manifest publication, preceding valid generation retained. Autosave defaults to
 60 seconds. Acknowledge only durable publication; validate/migrate before activation.
 Capture requires all components declared by the current native domain schema;
 an identified entity with missing required data must fail before publication.
-Authored schemas 4–11 (F-919, F-922, F-923, F-927, F-931) each pin their
+Authored schemas 4–11 (F-919, F-922, F-923, F-927, F-931) pin their
 activation, reject incomplete state and never promote implicitly; bounds imply
-neither physics nor navigation, and reference coverage grants no import
-authority. Their contracts live in the
+neither physics nor navigation. Contracts: the
 [authored-worlds runbook](runbooks/authored-worlds.md).
 Supplied-save state may ride along as one lossless, value-opaque preserved
 section that reconstructs the verified payload byte-identically, is carried
@@ -115,27 +109,22 @@ Rust **1.99.1** and Bevy **0.20.0**, verified current stable on 2026-10-25 (F-87
 ([Rust](https://static.rust-lang.org/dist/channel-rust-1.99.1.toml),
 [Bevy](https://crates.io/crates/bevy/0.20.0)). Pin Rust in `rust-toolchain.toml`
 with matching Rustfmt and Clippy; commit `Cargo.lock`; use one toolchain for
-development, CI, benchmarks and releases. Routine stable upgrades are authorized:
-verify upstream release metadata, migrate APIs, update pins and lockfile together,
-and record concrete blockers when an upgrade cannot pass.
-
-The Bevy skill under `.agents/skills/bevy/` is installed from `edbfi/skills`
-with `bunx skills`; `skills-lock.json` records source and content hash. Python
-helpers target stable 3.15.0 under the basedpyright gate described in
-[`.agents/rules/project.md`](../.agents/rules/project.md).
+development, CI, benchmarks and releases. Routine stable upgrades are authorized
+and migrate APIs, pins and lockfile together; the Bevy skill and upgrade rules
+are in [`.agents/rules/project.md`](../.agents/rules/project.md). Python helpers
+target stable 3.15.0 under the basedpyright gate.
 
 ## Repository boundaries
 
 | Location | Contents |
 | --- | --- |
-| `icarus-orig/` | Ignored original server files and preserved installations |
-| `icarus-client-orig/` | Ignored user-owned original client binaries and manifests |
+| `icarus-orig/`, `icarus-client-orig/` | Ignored original server files and installations; user-owned client binaries and manifests |
 | `reference-data/` | Ignored user-supplied save archives and private inventories; preserved inputs, not backed up by Git |
-| `work/` | Ignored cases, captures, dumps, private saves, generated analysis and benchmarks |
+| `work/` | Ignored scratch: cases, captures, dumps, private saves, analysis, benchmarks |
 | `src/`, `tests/`, `benches/`, `tools/` | Reusable implementation, authored tests and research tools |
 | `docs/`, `evidence/` | Plan, specifications, ledgers, digests, runbooks, frozen history and the evidence index |
 
 Keep reference installations immutable during experiments; put runtime data and
 disposable copies in a case directory. Commit only authored or reviewed,
-redistributable fixtures. Keep raw saves, player identifiers, names and member
-paths out of tracked fixtures, public reports, CI artifacts and uploads.
+redistributable fixtures; keep raw saves, player identifiers, names and member
+paths out of fixtures, public reports, CI artifacts and uploads.
