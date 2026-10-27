@@ -70,6 +70,13 @@ address/`version_check`; `status`/`stopped` report session counts. Preserved
 prospects replicate active prospect/mode state (F-804); `data_pak` supplies
 session flags, `LockedMissions`, fresh-pawn vitals/inventories (F-830, F-835, F-836).
 
+Each pawn open carries a distinct positive `IcarusUID` (handle 46, F-948).
+Positive saved actor-recorder `IcarusActorGUID`s occupy the namespace first;
+an unreadable one fails startup. Desired IDs count from 65,536 per world; the
+search uses an authored xorshift64 PRNG (seed 1), not MSVC `rand`. Claim,
+reservation and remap stores cap at 262,144 entries each. A failed claim skips
+the pawn open and counts `open_errors`; session removal frees the UID.
+
 For authored schema-4 worlds, set `authored_replication = "replication.json"`
 in `[network]` or pass `run --authored-replication replication.json`.
 Ignored while networking is disabled. Enabled networking requires a release
