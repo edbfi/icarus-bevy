@@ -104,3 +104,73 @@ pub fn character(slot: i32) -> Fixture {
     assert_eq!(fixture.rpc.len(), 44);
     fixture
 }
+
+/// Fully populated prospect, including both array element layouts.
+pub fn prospect() -> (
+    icarus_bevy::experimental::prospect_info::ProspectInfo,
+    Fixture,
+) {
+    use icarus_bevy::experimental::prospect_info::{
+        AssociatedMember, CustomGameSetting, ProspectInfo,
+    };
+    let units = |value: &str| value.encode_utf16().collect();
+    let info = ProspectInfo {
+        prospect_id: units("prospect"),
+        claimed_account_id: units("owner"),
+        claimed_account_character: 3,
+        prospect_dt_key: units("row"),
+        faction_mission_dt_key: units("mission"),
+        lobby_name: units("lobby"),
+        expire_time: 123_456_789,
+        prospect_state: 2,
+        associated_members: vec![AssociatedMember {
+            account_name: units("account"),
+            character_name: units("character"),
+            user_id: units("member"),
+            chr_slot: 9,
+            experience: -12,
+            status: 3,
+            settled: true,
+            is_currently_playing: false,
+        }],
+        cost: -4,
+        reward: 8,
+        difficulty: 4,
+        insurance: true,
+        no_respawns: true,
+        elapsed_time: 321,
+        selected_drop_point: 2,
+        custom_settings: vec![CustomGameSetting {
+            setting_row_name: units("setting"),
+            setting_value: -3,
+        }],
+    };
+    let mut fixture = Fixture::new();
+    fixture.value(text("prospect"));
+    fixture.value(text("owner"));
+    fixture.value(RepValue::Int(3));
+    for value in ["row", "mission", "lobby"] {
+        fixture.value(text(value));
+    }
+    fixture.value(RepValue::Int64(123_456_789));
+    fixture.value(RepValue::Enum(2));
+    fixture.array(vec![vec![
+        text("account"),
+        text("character"),
+        text("member"),
+        RepValue::Int(9),
+        RepValue::Int(-12),
+        RepValue::Enum(3),
+        RepValue::Bool(true),
+        RepValue::Bool(false),
+    ]]);
+    fixture.value(RepValue::Int(-4));
+    fixture.value(RepValue::Int(8));
+    fixture.value(RepValue::Enum(4));
+    fixture.value(RepValue::Bool(true));
+    fixture.value(RepValue::Bool(true));
+    fixture.value(RepValue::Int(321));
+    fixture.value(RepValue::Int(2));
+    fixture.array(vec![vec![text("setting"), RepValue::Int(-3)]]);
+    (info, fixture)
+}

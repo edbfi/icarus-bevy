@@ -147,6 +147,25 @@ fn join(app: &mut App, client: &mut Client) {
     client.settle(app, &opened);
 }
 
+fn enable_pawn(app: &mut App) {
+    use icarus_bevy::experimental::pawn_open::{PAWN_CHANNEL_INDEX, PawnContent};
+    let profile = ReleaseProfile::load(
+        &std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("config/release.toml"),
+    )
+    .unwrap();
+    app.world_mut()
+        .resource_mut::<PeerLab>()
+        .enable_pawn_open(
+            profile
+                .pawn_open_plan(PeerLabAdmission::default().map_url)
+                .unwrap()
+                .unwrap(),
+            PAWN_CHANNEL_INDEX,
+            PawnContent::default(),
+        )
+        .unwrap();
+}
+
 fn address(client: &Client) -> SocketAddrV4 {
     let std::net::SocketAddr::V4(address) = client.socket.local_addr().unwrap() else {
         panic!("IPv4")
@@ -605,9 +624,13 @@ fn response_field(character: bool, success: bool, slot: i32, order: ByteOrder) -
 
 fn proxy_body(proxy: u32, fields: &[FieldHeader], order: ByteOrder) -> Payload {
     use icarus_bevy::experimental::rep_rpc::BACKEND_PROXY_FIELD_INDEX_BOUND;
+    subobject_body(proxy, fields, BACKEND_PROXY_FIELD_INDEX_BOUND, order)
+}
+
+fn subobject_body(object: u32, fields: &[FieldHeader], bound: u32, order: ByteOrder) -> Payload {
     let mut writer = BitWriter::new();
     for field in fields {
-        write_field_header(&mut writer, field, BACKEND_PROXY_FIELD_INDEX_BOUND).unwrap();
+        write_field_header(&mut writer, field, bound).unwrap();
     }
     encode_actor_bunch_body(
         &ActorBunchBody {
@@ -615,7 +638,7 @@ fn proxy_body(proxy: u32, fields: &[FieldHeader], order: ByteOrder) -> Payload {
             blocks: vec![ContentBlock {
                 has_rep_layout: false,
                 target: BlockTarget::SubObject {
-                    object: NetGuidRef::plain(proxy),
+                    object: NetGuidRef::plain(object),
                     class: SubObjectClass::StablyNamed,
                 },
                 payload: Payload::from_writer(writer),
@@ -624,6 +647,92 @@ fn proxy_body(proxy: u32, fields: &[FieldHeader], order: ByteOrder) -> Payload {
         &codec(order),
     )
     .unwrap()
+}
+
+/// Decode the three follow-up calls, asserting they occupy one reliable step
+/// and retain their order even though PlayerData appears in two blocks.
+fn completion_requests(client: &Client, replies: &[Vec<u8>]) -> [(u32, FieldHeader); 3] {
+    use icarus_bevy::experimental::{
+        actor_channel::read_actor_bunch_body,
+        packet::read_packet,
+        rep_rpc::{
+            BESTIARY_MANAGER_FIELD_INDEX_BOUND, PLAYER_DATA_FIELD_INDEX_BOUND, read_field_header,
+        },
+    };
+    let mut steps = Vec::new();
+    for bytes in replies {
+        for bunch in read_packet(bytes, &client.config()).unwrap().bunches {
+            if bunch.header.channel_index != CONTROLLER || bunch.header.open {
+                continue;
+            }
+            assert!(bunch.header.reliable && !bunch.header.partial);
+            let body =
+                read_actor_bunch_body(&mut bunch.payload.reader(), false, &codec(client.order))
+                    .unwrap();
+            assert_eq!(body.blocks.len(), 3);
+            for (block, bound) in body.blocks.iter().zip([
+                PLAYER_DATA_FIELD_INDEX_BOUND,
+                BESTIARY_MANAGER_FIELD_INDEX_BOUND,
+                PLAYER_DATA_FIELD_INDEX_BOUND,
+            ]) {
+                let BlockTarget::SubObject { object, .. } = &block.target else {
+                    panic!("subobject");
+                };
+                assert!(!block.has_rep_layout);
+                let mut reader = block.payload.reader();
+                steps.push((
+                    object.guid,
+                    read_field_header(&mut reader, bound, 65_536).unwrap(),
+                ));
+                assert!(reader.at_end());
+            }
+        }
+    }
+    let steps: [_; 3] = steps.try_into().unwrap();
+    assert_eq!(steps[0].0, steps[2].0);
+    assert_ne!(steps[0].0, steps[1].0);
+    assert_eq!(
+        [steps[0].1.index, steps[1].1.index, steps[2].1.index],
+        [16, 4, 2]
+    );
+    steps
+}
+
+fn answer_initialisation(
+    app: &mut App,
+    client: &mut Client,
+    sequence: u32,
+    object: u32,
+    bestiary: bool,
+) -> Vec<Vec<u8>> {
+    use icarus_bevy::experimental::rep_rpc::{
+        BESTIARY_MANAGER_FIELD_INDEX_BOUND, PLAYER_DATA_FIELD_INDEX_BOUND,
+        SERVER_RECEIVE_BESTIARY_DATA, SERVER_RECEIVE_LOADOUT,
+    };
+    // Deliberately opaque and not byte-aligned: the native receiver must skip it.
+    let mut writer = BitWriter::new();
+    for bit in [true, false, true, true, false] {
+        writer.write_bit(bit);
+    }
+    let field = FieldHeader {
+        index: if bestiary {
+            SERVER_RECEIVE_BESTIARY_DATA
+        } else {
+            SERVER_RECEIVE_LOADOUT
+        },
+        payload: Payload::from_writer(writer),
+    };
+    let payload = subobject_body(
+        object,
+        &[field],
+        if bestiary {
+            BESTIARY_MANAGER_FIELD_INDEX_BOUND
+        } else {
+            PLAYER_DATA_FIELD_INDEX_BOUND
+        },
+        client.order,
+    );
+    send(app, client, actor(CONTROLLER, sequence, payload))
 }
 
 fn respond(
@@ -714,19 +823,57 @@ fn profile_exchange_replicates_all_handles_verbatim_in_both_byte_orders() {
     use icarus_bevy::experimental::control_messages::ArchiveText;
     for order in [ByteOrder::Little, ByteOrder::Big] {
         let (mut app, mut client) = setup(true, true, order);
+        enable_pawn(&mut app);
         join(&mut app, &mut client);
         let first = client.sequencer.initial_reliable().1 + 1;
         let proxy = begin_profile(&mut app, &mut client, first);
         let replies = respond(&mut app, &mut client, first + 1, proxy, false, true);
         assert_character_request(&client, &replies, proxy);
-        assert!(profile_updates(&client, &replies).is_empty());
-        let replies = respond(&mut app, &mut client, first + 2, proxy, true, true);
-        let updates = profile_updates(&client, &replies);
-        assert_eq!(updates.len(), 1);
+        let mut updates = profile_updates(&client, &replies);
         assert_eq!(
             updates[0]
                 .entries
                 .iter()
+                .map(|entry| entry.handle)
+                .collect::<Vec<_>>(),
+            (27..=32).collect::<Vec<_>>()
+        );
+        let replies = respond(&mut app, &mut client, first + 2, proxy, true, true);
+        updates.extend(profile_updates(&client, &replies));
+        assert_eq!(
+            updates[1]
+                .entries
+                .iter()
+                .map(|entry| entry.handle)
+                .collect::<Vec<_>>(),
+            (33..=76).collect::<Vec<_>>()
+        );
+        let followups = completion_requests(&client, &replies);
+        // The two answer orders both complete, only on the second answer.
+        let answers = if matches!(order, ByteOrder::Little) {
+            [(followups[0].0, false), (followups[1].0, true)]
+        } else {
+            [(followups[1].0, true), (followups[0].0, false)]
+        };
+        let replies =
+            answer_initialisation(&mut app, &mut client, first + 3, answers[0].0, answers[0].1);
+        assert!(profile_updates(&client, &replies).is_empty());
+        let replies =
+            answer_initialisation(&mut app, &mut client, first + 4, answers[1].0, answers[1].1);
+        updates.extend(profile_updates(&client, &replies));
+        assert_eq!(updates.len(), 3);
+        assert_eq!(
+            updates[2]
+                .entries
+                .iter()
+                .map(|entry| entry.handle)
+                .collect::<Vec<_>>(),
+            [77, 78]
+        );
+        assert_eq!(
+            updates
+                .iter()
+                .flat_map(|update| &update.entries)
                 .map(|entry| entry.handle)
                 .collect::<Vec<_>>(),
             (27..=78).collect::<Vec<_>>()
@@ -738,9 +885,9 @@ fn profile_exchange_replicates_all_handles_verbatim_in_both_byte_orders() {
             RepValue::Int(7),
         ]);
         assert_eq!(
-            updates[0]
-                .entries
+            updates
                 .iter()
+                .flat_map(|update| &update.entries)
                 .map(|entry| entry.value.clone())
                 .collect::<Vec<_>>(),
             expected
@@ -756,18 +903,403 @@ fn profile_exchange_replicates_all_handles_verbatim_in_both_byte_orders() {
                 counts.profile_character_responses_received,
                 counts.profile_updates_sent
             ),
-            (1, 1, 1, 1, 1)
+            (1, 1, 1, 1, 2)
         );
+        assert_eq!(
+            (
+                counts.loadout_requests_sent,
+                counts.bestiary_requests_sent,
+                counts.associated_prospects_sent,
+                counts.loadout_responses_received,
+                counts.bestiary_responses_received,
+                counts.players_initialised,
+                counts.player_character_id_updates_sent
+            ),
+            (1, 1, 1, 1, 1, 1, 1)
+        );
+        assert_eq!(counts.initialisation_answers_ignored, 0);
         assert_eq!(counts.profile_exchange_errors, 0);
         let status = serde_json::to_string(&counts).unwrap();
         assert!(!status.contains("authored") && !status.contains("012345"));
-        let debug = format!("{:?}", updates[0]);
+        let debug = format!("{updates:?}");
         assert!(
             !debug.contains("authored")
                 && !debug.contains("012345")
                 && !debug.contains("9876543210")
         );
     }
+}
+
+#[test]
+fn followup_rpcs_use_profile_slot_dedicated_host_and_current_prospect() {
+    use icarus_bevy::experimental::{
+        control_messages::ArchiveText,
+        game_state_open::{
+            GAME_STATE_CHANNEL_INDEX, GameStateManagers, GameStateOpenState, active_prospect_values,
+        },
+        rep_rpc::{
+            add_associated_prospect_parameters, client_prepare_loadout_parameters,
+            parse_rpc_payload,
+        },
+        session_open::ActorKey,
+    };
+    for order in [ByteOrder::Little, ByteOrder::Big] {
+        // No GameState, template-only state, and a newer explicit refresh.
+        for mode in 0..3 {
+            let (mut app, mut client) = setup(true, true, order);
+            let (info, fixture) = profiles::prospect();
+            if mode != 0 {
+                let release = ReleaseProfile::load(
+                    &std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("config/release.toml"),
+                )
+                .unwrap();
+                let mut lab = app.world_mut().resource_mut::<PeerLab>();
+                lab.enable_game_state_open(
+                    release
+                        .game_state_open_plan(PeerLabAdmission::default().map_url)
+                        .unwrap()
+                        .unwrap(),
+                    GameStateOpenState {
+                        key: ActorKey::Session(8_001),
+                        managers: GameStateManagers::default(),
+                        values: active_prospect_values(&info).unwrap(),
+                        weather: Vec::new(),
+                    },
+                    GAME_STATE_CHANNEL_INDEX,
+                )
+                .unwrap();
+            }
+            join(&mut app, &mut client);
+            let first = client.sequencer.initial_reliable().1 + 1;
+            let proxy = begin_profile(&mut app, &mut client, first);
+            respond(&mut app, &mut client, first + 1, proxy, false, true);
+            let mut prospect =
+                if mode == 0 {
+                    (51..=67)
+                        .map(|handle| {
+                            match icarus_bevy::experimental::game_state_open::class_default(handle)
+                                .unwrap()
+                            {
+                                RepValue::DynamicArray(_) => RpcItem::Array(Vec::new()),
+                                value => RpcItem::Value(value),
+                            }
+                        })
+                        .collect::<Vec<_>>()
+                } else {
+                    fixture.rpc
+                };
+            if mode == 2 {
+                let mut latest = info;
+                latest.lobby_name = "newest".encode_utf16().collect();
+                app.world_mut()
+                    .resource_mut::<PeerLab>()
+                    .refresh_active_prospect(&latest)
+                    .unwrap();
+                prospect[5] = RpcItem::Value(RepValue::Str(ArchiveText::text("newest").unwrap()));
+            }
+            let replies = respond(&mut app, &mut client, first + 2, proxy, true, true);
+            let calls = completion_requests(&client, &replies);
+            let host = vec![
+                RpcItem::Value(RepValue::Byte(2)),
+                RpcItem::Value(RepValue::Str(ArchiveText::new(&[]).unwrap())),
+                RpcItem::Value(RepValue::Str(ArchiveText::new(&[]).unwrap())),
+                RpcItem::Value(RepValue::Str(ArchiveText::new(&[]).unwrap())),
+            ];
+            let slot = RpcArgument::Sent(vec![RpcItem::Value(RepValue::Int(7))]);
+            // 2 presence bits + 32-bit slot + 2-bit enum byte + 3 empty strings.
+            assert_eq!(calls[0].1.payload.bit_len(), 132);
+            assert_eq!(
+                parse_rpc_payload(
+                    &calls[0].1.payload,
+                    &client_prepare_loadout_parameters(),
+                    &rep_codec(order)
+                )
+                .unwrap(),
+                [slot.clone(), RpcArgument::Sent(host.clone())]
+            );
+            assert_eq!(calls[1].1.payload.bit_len(), 0);
+            prospect.extend(host);
+            assert_eq!(
+                parse_rpc_payload(
+                    &calls[2].1.payload,
+                    &add_associated_prospect_parameters(),
+                    &rep_codec(order)
+                )
+                .unwrap(),
+                [slot, RpcArgument::Sent(prospect)]
+            );
+        }
+    }
+}
+
+#[test]
+fn initialisation_answers_before_requests_and_repeats_are_counted_and_ignored() {
+    let (mut app, mut client) = setup(true, true, ByteOrder::Little);
+    enable_pawn(&mut app);
+    let opened = client.join(&mut app);
+    client.settle(&mut app, &opened);
+    let [proxy, player_data, bestiary] = controller_components(&client, &opened);
+    let first = client.sequencer.initial_reliable().1 + 1;
+    for (offset, object, bestiary_answer) in [(0, player_data, false), (1, bestiary, true)] {
+        let replies = answer_initialisation(
+            &mut app,
+            &mut client,
+            first + offset,
+            object,
+            bestiary_answer,
+        );
+        assert!(profile_updates(&client, &replies).is_empty());
+    }
+    assert_eq!(begin_profile(&mut app, &mut client, first + 2), proxy);
+    respond(&mut app, &mut client, first + 3, proxy, false, true);
+    let replies = respond(&mut app, &mut client, first + 4, proxy, true, true);
+    let requests = completion_requests(&client, &replies);
+    assert_eq!((requests[0].0, requests[1].0), (player_data, bestiary));
+    for offset in [5, 6] {
+        let replies =
+            answer_initialisation(&mut app, &mut client, first + offset, player_data, false);
+        assert!(profile_updates(&client, &replies).is_empty());
+    }
+    let replies = answer_initialisation(&mut app, &mut client, first + 7, bestiary, true);
+    assert_eq!(profile_updates(&client, &replies).len(), 1);
+    for (offset, object, bestiary_answer) in [(8, player_data, false), (9, bestiary, true)] {
+        let replies = answer_initialisation(
+            &mut app,
+            &mut client,
+            first + offset,
+            object,
+            bestiary_answer,
+        );
+        assert!(profile_updates(&client, &replies).is_empty());
+    }
+    let counts = app.world().resource::<PeerLab>().session_counts();
+    assert_eq!(
+        (
+            counts.loadout_responses_received,
+            counts.bestiary_responses_received,
+            counts.initialisation_answers_ignored
+        ),
+        (4, 3, 5)
+    );
+    assert_eq!(
+        (
+            counts.players_initialised,
+            counts.player_character_id_updates_sent
+        ),
+        (1, 1)
+    );
+}
+
+#[test]
+fn initialisation_waits_for_both_answers_and_an_open_pawn() {
+    for (pawn, answers) in [
+        (true, vec![false]),
+        (true, vec![true]),
+        (false, vec![false, true]),
+    ] {
+        let (mut app, mut client) = setup(true, true, ByteOrder::Little);
+        if pawn {
+            enable_pawn(&mut app);
+        }
+        join(&mut app, &mut client);
+        let first = client.sequencer.initial_reliable().1 + 1;
+        let proxy = begin_profile(&mut app, &mut client, first);
+        respond(&mut app, &mut client, first + 1, proxy, false, true);
+        let replies = respond(&mut app, &mut client, first + 2, proxy, true, true);
+        let requests = completion_requests(&client, &replies);
+        for (offset, bestiary) in answers.into_iter().enumerate() {
+            let replies = answer_initialisation(
+                &mut app,
+                &mut client,
+                first + 3 + offset as u32,
+                requests[usize::from(bestiary)].0,
+                bestiary,
+            );
+            assert!(profile_updates(&client, &replies).is_empty());
+        }
+        for _ in 0..8 {
+            app.update();
+        }
+        let lab = app.world().resource::<PeerLab>();
+        assert!(lab.has_peer(address(&client)));
+        assert_eq!(
+            (
+                lab.stats().players_initialised,
+                lab.stats().player_character_id_updates_sent,
+                lab.stats().returning_pawns_restored,
+                lab.stats().profile_players_failed
+            ),
+            (0, 0, 0, 0)
+        );
+        assert_eq!(
+            (
+                lab.stats().loadout_requests_sent,
+                lab.stats().bestiary_requests_sent
+            ),
+            (1, 1)
+        );
+    }
+}
+
+#[test]
+fn initialisation_payloads_skip_exactly_to_following_fields_on_each_component() {
+    use icarus_bevy::experimental::rep_rpc::{
+        BESTIARY_MANAGER_FIELD_INDEX_BOUND, PLAYER_DATA_FIELD_INDEX_BOUND,
+    };
+    for order in [ByteOrder::Little, ByteOrder::Big] {
+        let (mut app, mut client) = setup(true, true, order);
+        enable_pawn(&mut app);
+        join(&mut app, &mut client);
+        let first = client.sequencer.initial_reliable().1 + 1;
+        let proxy = begin_profile(&mut app, &mut client, first);
+        respond(&mut app, &mut client, first + 1, proxy, false, true);
+        let replies = respond(&mut app, &mut client, first + 2, proxy, true, true);
+        let requests = completion_requests(&client, &replies);
+        for (offset, request, bound, answer, unknown) in [
+            (3, &requests[0], PLAYER_DATA_FIELD_INDEX_BOUND, 24, 25),
+            (4, &requests[1], BESTIARY_MANAGER_FIELD_INDEX_BOUND, 6, 5),
+        ] {
+            let mut bits = BitWriter::new();
+            for bit in [true, false, false, true, false, true, true] {
+                bits.write_bit(bit);
+            }
+            let fields = [
+                FieldHeader {
+                    index: answer,
+                    payload: Payload::from_writer(bits),
+                },
+                FieldHeader {
+                    index: unknown,
+                    payload: Payload::from_writer(BitWriter::new()),
+                },
+                FieldHeader {
+                    index: answer,
+                    payload: Payload::from_writer(BitWriter::new()),
+                },
+            ];
+            let replies = send(
+                &mut app,
+                &mut client,
+                actor(
+                    CONTROLLER,
+                    first + offset,
+                    subobject_body(request.0, &fields, bound, order),
+                ),
+            );
+            assert_eq!(
+                profile_updates(&client, &replies).len(),
+                usize::from(offset == 4)
+            );
+        }
+        let stats = app.world().resource::<PeerLab>().stats();
+        assert_eq!(
+            (
+                stats.loadout_responses_received,
+                stats.bestiary_responses_received,
+                stats.controller_fields_ignored,
+                stats.initialisation_answers_ignored
+            ),
+            (2, 2, 2, 2)
+        );
+        assert_eq!(
+            (stats.players_initialised, stats.actor_bunches_malformed),
+            (1, 0)
+        );
+    }
+}
+
+#[test]
+fn malformed_trailing_block_prevents_both_initialisation_answers_from_applying() {
+    use icarus_bevy::experimental::{
+        actor_channel::read_actor_bunch_body,
+        rep_rpc::{BESTIARY_MANAGER_FIELD_INDEX_BOUND, PLAYER_DATA_FIELD_INDEX_BOUND},
+    };
+    let (mut app, mut client) = setup(true, true, ByteOrder::Little);
+    enable_pawn(&mut app);
+    join(&mut app, &mut client);
+    let first = client.sequencer.initial_reliable().1 + 1;
+    let proxy = begin_profile(&mut app, &mut client, first);
+    respond(&mut app, &mut client, first + 1, proxy, false, true);
+    let replies = respond(&mut app, &mut client, first + 2, proxy, true, true);
+    let requests = completion_requests(&client, &replies);
+    let mut blocks = Vec::new();
+    for (request, bound, index) in [
+        (&requests[0], PLAYER_DATA_FIELD_INDEX_BOUND, 24),
+        (&requests[1], BESTIARY_MANAGER_FIELD_INDEX_BOUND, 6),
+    ] {
+        let payload = subobject_body(
+            request.0,
+            &[FieldHeader {
+                index,
+                payload: Payload::from_writer(BitWriter::new()),
+            }],
+            bound,
+            client.order,
+        );
+        blocks.extend(
+            read_actor_bunch_body(&mut payload.reader(), false, &codec(client.order))
+                .unwrap()
+                .blocks,
+        );
+    }
+    let valid = encode_actor_bunch_body(
+        &ActorBunchBody {
+            spawn: None,
+            blocks: blocks.clone(),
+        },
+        &codec(client.order),
+    )
+    .unwrap();
+    let mut bits = BitWriter::new();
+    bits.write_bit(true);
+    blocks.push(ContentBlock {
+        has_rep_layout: false,
+        target: BlockTarget::Actor,
+        payload: Payload::from_writer(bits),
+    });
+    let malformed = encode_actor_bunch_body(
+        &ActorBunchBody {
+            spawn: None,
+            blocks,
+        },
+        &codec(client.order),
+    )
+    .unwrap();
+    let replies = send(
+        &mut app,
+        &mut client,
+        actor(CONTROLLER, first + 3, malformed),
+    );
+    assert!(profile_updates(&client, &replies).is_empty());
+    let stats = app.world().resource::<PeerLab>().stats();
+    assert_eq!(
+        (
+            stats.actor_bunches_malformed,
+            stats.loadout_responses_received,
+            stats.bestiary_responses_received,
+            stats.players_initialised
+        ),
+        (1, 0, 0, 0)
+    );
+    // Malformed input consumed this sequence: a corrected duplicate cannot apply.
+    let replies = send(
+        &mut app,
+        &mut client,
+        actor(CONTROLLER, first + 3, valid.clone()),
+    );
+    assert!(profile_updates(&client, &replies).is_empty());
+    let replies = send(&mut app, &mut client, actor(CONTROLLER, first + 4, valid));
+    assert_eq!(profile_updates(&client, &replies).len(), 1);
+    let stats = app.world().resource::<PeerLab>().stats();
+    assert_eq!(
+        (
+            stats.actor_duplicate_reliable,
+            stats.loadout_responses_received,
+            stats.bestiary_responses_received,
+            stats.players_initialised
+        ),
+        (1, 1, 1, 1)
+    );
 }
 
 #[test]
@@ -836,7 +1368,7 @@ fn three_profile_failures_remove_the_session_for_each_kind() {
             (lab.stats().profile_players_failed, lab.stats().peers_failed),
             (1, 1)
         );
-        assert_eq!(lab.stats().profile_updates_sent, 0);
+        assert_eq!(lab.stats().profile_updates_sent, u64::from(character));
         assert_eq!(
             if character {
                 lab.stats().profile_character_failures
@@ -848,12 +1380,8 @@ fn three_profile_failures_remove_the_session_for_each_kind() {
     }
 }
 
-#[test]
-fn profile_responses_without_matching_requests_are_ignored() {
-    let (mut app, mut client) = setup(true, true, ByteOrder::Little);
-    let opened = client.join(&mut app);
-    client.settle(&mut app, &opened);
-    // Obtain the actual proxy reference from controller handle 22.
+fn controller_components(client: &Client, opened: &[Vec<u8>]) -> [u32; 3] {
+    // Actual component references from controller handles 22..24.
     use icarus_bevy::experimental::{
         actor_channel::read_player_controller_open_bunch_body, packet::read_packet,
         rep_layout::read_rep_properties,
@@ -867,9 +1395,9 @@ fn profile_responses_without_matching_requests_are_ignored() {
         .unwrap()
         .unwrap()
         .actor_layout;
-    let mut proxy = None;
+    let mut components = [None; 3];
     for bytes in opened {
-        for bunch in read_packet(&bytes, &client.config()).unwrap().bunches {
+        for bunch in read_packet(bytes, &client.config()).unwrap().bunches {
             if bunch.header.channel_index != CONTROLLER
                 || bunch.header.has_package_map_exports
                 || (!bunch.header.open && !bunch.header.partial_final)
@@ -887,13 +1415,24 @@ fn profile_responses_without_matching_requests_are_ignored() {
                 &rep_codec(client.order),
             )
             .unwrap();
-            proxy = values.entries.iter().find_map(|entry| match &entry.value {
-                RepValue::Object(id) if entry.handle == 22 => Some(id.guid),
-                _ => None,
-            });
+            for entry in values.entries {
+                if let RepValue::Object(id) = entry.value
+                    && (22..=24).contains(&entry.handle)
+                {
+                    components[(entry.handle - 22) as usize] = Some(id.guid);
+                }
+            }
         }
     }
-    let proxy = proxy.unwrap();
+    components.map(Option::unwrap)
+}
+
+#[test]
+fn profile_responses_without_matching_requests_are_ignored() {
+    let (mut app, mut client) = setup(true, true, ByteOrder::Little);
+    let opened = client.join(&mut app);
+    client.settle(&mut app, &opened);
+    let [proxy, _, _] = controller_components(&client, &opened);
     let first = client.sequencer.initial_reliable().1 + 1;
     respond(&mut app, &mut client, first, proxy, false, true);
     respond(&mut app, &mut client, first + 1, proxy, true, true);
@@ -922,7 +1461,7 @@ fn profile_responses_without_matching_requests_are_ignored() {
             stats.profile_user_failures,
             stats.profile_character_failures
         ),
-        (1, 0, 0)
+        (2, 0, 0)
     );
 }
 
@@ -998,12 +1537,11 @@ fn malformed_profile_bunch_is_atomic_and_consumes_its_reliable_sequence() {
 }
 
 #[test]
-fn larger_profiles_replicate_as_one_reliable_player_state_update_in_parts() {
+fn larger_profiles_replicate_as_separate_reliable_player_state_updates_in_parts() {
     use icarus_bevy::experimental::{
         actor_channel::read_actor_bunch_body,
-        control_messages::ArchiveText,
         packet::read_packet,
-        rep_layout::read_rep_properties,
+        rep_layout::{PropertyStream, RepArray, RepEntry, read_rep_properties},
         rep_rpc::backend_profile_response_parameters,
         sequencing::{PartialBunchReassembler, PartialReceive},
         session_open::PLAYER_STATE_CHANNEL_INDEX,
@@ -1012,18 +1550,38 @@ fn larger_profiles_replicate_as_one_reliable_player_state_update_in_parts() {
     join(&mut app, &mut client);
     let first = client.sequencer.initial_reliable().1 + 1;
     let proxy = begin_profile(&mut app, &mut client, first);
-    let mut expected = Vec::new();
-    let mut reply = Vec::new();
-    for (offset, character) in [(1, false), (2, true)] {
+    for (sequence, character) in (first + 1..).zip([false, true]) {
         let mut fixture = if character {
             profiles::character(7)
         } else {
             profiles::user()
         };
-        let name = RepValue::Str(ArchiveText::text(&"X".repeat(450)).unwrap());
-        fixture.properties[0] = name.clone();
-        fixture.rpc[0] = RpcItem::Value(name);
-        expected.extend(fixture.properties);
+        // A property array carries per-element handles that RPC arrays omit.
+        // Keep the incoming RPC within one packet; the outgoing update splits.
+        let (array, count) = if character {
+            (8, 150_u16)
+        } else {
+            (2, 180_u16)
+        };
+        fixture.rpc[array] = RpcItem::Array(
+            (0..count)
+                .map(|value| vec![RpcItem::Value(RepValue::Int(i32::from(value)))])
+                .collect(),
+        );
+        fixture.properties[array] = RepValue::DynamicArray(RepArray {
+            count,
+            stream: PropertyStream {
+                entries: (0..count)
+                    .map(|value| RepEntry {
+                        handle: u32::from(value) + 1,
+                        checksum: None,
+                        value: RepValue::Int(i32::from(value)),
+                    })
+                    .collect(),
+                terminator_checksum: None,
+            },
+        });
+        let expected = fixture.properties;
         let mut items = vec![RpcItem::Value(RepValue::Bool(true))];
         items.extend(fixture.rpc);
         let field = FieldHeader {
@@ -1036,67 +1594,71 @@ fn larger_profiles_replicate_as_one_reliable_player_state_update_in_parts() {
             .unwrap(),
         };
         let payload = proxy_body(proxy, &[field], client.order);
-        reply = send(
-            &mut app,
-            &mut client,
-            actor(CONTROLLER, first + offset, payload),
-        );
-    }
-    expected.extend([
-        RepValue::Str(ArchiveText::text("0123456789ABCDEF7654").unwrap()),
-        RepValue::Int(7),
-    ]);
-    let mut reassembler = PartialBunchReassembler::new();
-    let mut complete = None;
-    let mut parts = 0;
-    for bytes in reply {
-        for bunch in read_packet(&bytes, &client.config()).unwrap().bunches {
-            if bunch.header.channel_index != PLAYER_STATE_CHANNEL_INDEX {
-                continue;
-            }
-            assert!(bunch.header.partial && bunch.header.reliable && !bunch.header.open);
-            parts += 1;
-            if let PartialReceive::Complete { bunch, .. } = reassembler
-                .receive_part(parts, &bunch.header, &bunch.payload, Some(65_536))
-                .unwrap()
-            {
-                complete = Some(bunch);
+        let reply = send(&mut app, &mut client, actor(CONTROLLER, sequence, payload));
+        let mut reassembler = PartialBunchReassembler::new();
+        let mut complete = None;
+        let mut parts = 0;
+        for bytes in reply {
+            for bunch in read_packet(&bytes, &client.config()).unwrap().bunches {
+                if bunch.header.channel_index != PLAYER_STATE_CHANNEL_INDEX {
+                    continue;
+                }
+                assert!(bunch.header.partial && bunch.header.reliable && !bunch.header.open);
+                parts += 1;
+                if let PartialReceive::Complete { bunch, .. } = reassembler
+                    .receive_part(parts, &bunch.header, &bunch.payload, Some(65_536))
+                    .unwrap()
+                {
+                    complete = Some(bunch);
+                }
             }
         }
+        assert!(parts > 1);
+        let body = read_actor_bunch_body(
+            &mut complete.unwrap().payload.reader(),
+            false,
+            &codec(client.order),
+        )
+        .unwrap();
+        let release = ReleaseProfile::load(
+            &std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("config/release.toml"),
+        )
+        .unwrap();
+        let layout = release
+            .player_state_open_plan(PeerLabAdmission::default().map_url)
+            .unwrap()
+            .unwrap()
+            .layout;
+        let stream = read_rep_properties(
+            &mut body.blocks[0].payload.reader(),
+            &layout,
+            &rep_codec(client.order),
+        )
+        .unwrap();
+        assert_eq!(
+            stream
+                .entries
+                .iter()
+                .map(|entry| entry.handle)
+                .collect::<Vec<_>>(),
+            if character {
+                (33..=76).collect::<Vec<_>>()
+            } else {
+                (27..=32).collect::<Vec<_>>()
+            }
+        );
+        assert_eq!(
+            stream
+                .entries
+                .iter()
+                .map(|entry| entry.value.clone())
+                .collect::<Vec<_>>(),
+            expected
+        );
     }
-    assert!(parts > 1);
-    let body = read_actor_bunch_body(
-        &mut complete.unwrap().payload.reader(),
-        false,
-        &codec(client.order),
-    )
-    .unwrap();
-    let release = ReleaseProfile::load(
-        &std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("config/release.toml"),
-    )
-    .unwrap();
-    let layout = release
-        .player_state_open_plan(PeerLabAdmission::default().map_url)
-        .unwrap()
-        .unwrap()
-        .layout;
-    let stream = read_rep_properties(
-        &mut body.blocks[0].payload.reader(),
-        &layout,
-        &rep_codec(client.order),
-    )
-    .unwrap();
-    assert_eq!(
-        stream
-            .entries
-            .iter()
-            .map(|entry| entry.value.clone())
-            .collect::<Vec<_>>(),
-        expected
-    );
     let stats = app.world().resource::<PeerLab>().stats();
     assert_eq!(
         (stats.profile_updates_sent, stats.profile_exchange_errors),
-        (1, 0)
+        (2, 0)
     );
 }

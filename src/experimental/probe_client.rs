@@ -297,6 +297,52 @@ impl ProbeClient {
         )
     }
 
+    /// Answer ClientPrepareLoadout with caller-authored opaque parameters.
+    pub fn send_loadout_response(
+        &mut self,
+        channel_index: u32,
+        player_data: u32,
+        payload: Payload,
+        codec: &ActorChannelCodec,
+    ) -> Result<(Vec<u8>, u32)> {
+        self.send_target_rpc(
+            channel_index,
+            BlockTarget::SubObject {
+                object: NetGuidRef::plain(player_data),
+                class: SubObjectClass::StablyNamed,
+            },
+            &FieldHeader {
+                index: super::rep_rpc::SERVER_RECEIVE_LOADOUT,
+                payload,
+            },
+            super::rep_rpc::PLAYER_DATA_FIELD_INDEX_BOUND,
+            codec,
+        )
+    }
+
+    /// Answer Client_RequestBestiaryData; item decoding remains later work.
+    pub fn send_bestiary_response(
+        &mut self,
+        channel_index: u32,
+        bestiary: u32,
+        payload: Payload,
+        codec: &ActorChannelCodec,
+    ) -> Result<(Vec<u8>, u32)> {
+        self.send_target_rpc(
+            channel_index,
+            BlockTarget::SubObject {
+                object: NetGuidRef::plain(bestiary),
+                class: SubObjectClass::StablyNamed,
+            },
+            &FieldHeader {
+                index: super::rep_rpc::SERVER_RECEIVE_BESTIARY_DATA,
+                payload,
+            },
+            super::rep_rpc::BESTIARY_MANAGER_FIELD_INDEX_BOUND,
+            codec,
+        )
+    }
+
     /// Send a field on the actor or a caller-selected subobject using the
     /// same reliable sequence space as every other RPC on this channel.
     pub fn send_target_rpc(

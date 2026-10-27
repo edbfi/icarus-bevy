@@ -3073,8 +3073,8 @@ fn send_character_slot(
         .collect()
 }
 
-/// Finish the native exchange using the proxy GUID carried by its request.
-/// The saved-UID trigger must not run on Begin or on the user profile alone.
+/// Finish the native exchange using the component GUIDs in its requests.
+/// Saved UID restore waits for both loadout and bestiary answers.
 fn exchange_profiles(
     client: &mut ProbeClient,
     engine: u32,
@@ -3084,12 +3084,13 @@ fn exchange_profiles(
     use icarus_bevy::experimental::{
         actor_channel::{ActorChannelCodec, BlockTarget, read_actor_bunch_body},
         archive::ByteOrder,
-        packet::read_packet,
+        packet::{BitWriter, Payload, read_packet},
         probe_client::ProbeProfileResponse,
         rep_layout::RepLayoutCodec,
         rep_rpc::{
-            BACKEND_PROXY_FIELD_INDEX_BOUND, CLIENT_REQUEST_GET_CHARACTER_PROFILE,
-            CLIENT_REQUEST_GET_USER_PROFILE, read_field_header,
+            BACKEND_PROXY_FIELD_INDEX_BOUND, BESTIARY_MANAGER_FIELD_INDEX_BOUND,
+            CLIENT_REQUEST_GET_CHARACTER_PROFILE, CLIENT_REQUEST_GET_USER_PROFILE,
+            PLAYER_DATA_FIELD_INDEX_BOUND, read_field_header,
         },
         session_open::PLAYER_CONTROLLER_CHANNEL_INDEX,
     };
@@ -3140,7 +3141,7 @@ fn exchange_profiles(
         }
         panic!("no profile request")
     };
-    // No pawn update may precede a character-profile success.
+    // No pawn update may precede both initialisation answers.
     let has_pawn = |replies: &[Vec<u8>]| {
         replies.iter().any(|bytes| {
             read_packet(
@@ -3198,13 +3199,100 @@ fn exchange_profiles(
             &codec,
         )
         .unwrap();
-    client
+    let replies: Vec<_> = client
         .collect(Duration::from_millis(250), 32)
         .unwrap()
         .replies
         .into_iter()
         .map(|reply| reply.bytes)
-        .collect()
+        .collect();
+    assert!(!has_pawn(&replies));
+    let mut components = None;
+    for bytes in &replies {
+        for bunch in read_packet(
+            bytes,
+            &PacketConfig {
+                receiver: PacketReceiver::Client,
+                ..probe_config().packet
+            },
+        )
+        .unwrap()
+        .bunches
+        {
+            if bunch.header.channel_index != PLAYER_CONTROLLER_CHANNEL_INDEX || bunch.header.open {
+                continue;
+            }
+            let body =
+                read_actor_bunch_body(&mut bunch.payload.reader(), false, &codec.actor).unwrap();
+            assert_eq!(body.blocks.len(), 3);
+            let mut guids = Vec::new();
+            for ((block, bound), index) in body
+                .blocks
+                .iter()
+                .zip([
+                    PLAYER_DATA_FIELD_INDEX_BOUND,
+                    BESTIARY_MANAGER_FIELD_INDEX_BOUND,
+                    PLAYER_DATA_FIELD_INDEX_BOUND,
+                ])
+                .zip([16, 4, 2])
+            {
+                let BlockTarget::SubObject { object, .. } = &block.target else {
+                    panic!("component");
+                };
+                let mut reader = block.payload.reader();
+                assert_eq!(
+                    read_field_header(&mut reader, bound, 65_536).unwrap().index,
+                    index
+                );
+                assert!(reader.at_end());
+                guids.push(object.guid);
+            }
+            assert_eq!(guids[0], guids[2]);
+            components = Some((guids[0], guids[1]));
+        }
+    }
+    let (player_data, bestiary) = components.unwrap();
+    // Exercise both completion orders across the saved-slot matching cases.
+    let bestiary_first = requested_slot != 3;
+    for bestiary_answer in [bestiary_first, !bestiary_first] {
+        let mut writer = BitWriter::new();
+        for bit in [true, false, true] {
+            writer.write_bit(bit);
+        }
+        let payload = Payload::from_writer(writer);
+        if bestiary_answer {
+            client
+                .send_bestiary_response(
+                    PLAYER_CONTROLLER_CHANNEL_INDEX,
+                    bestiary,
+                    payload,
+                    &codec.actor,
+                )
+                .unwrap();
+        } else {
+            client
+                .send_loadout_response(
+                    PLAYER_CONTROLLER_CHANNEL_INDEX,
+                    player_data,
+                    payload,
+                    &codec.actor,
+                )
+                .unwrap();
+        }
+        let replies: Vec<_> = client
+            .collect(Duration::from_millis(250), 32)
+            .unwrap()
+            .replies
+            .into_iter()
+            .map(|reply| reply.bytes)
+            .collect();
+        if bestiary_answer == bestiary_first {
+            assert!(!has_pawn(&replies));
+        } else {
+            return replies;
+        }
+    }
+    unreachable!()
 }
 
 /// The `IcarusUID` of a reliable, non-open pawn property bunch, if any.
