@@ -104,35 +104,35 @@ Acceptance conditions for any importer
 ## Candidate
 
 - `C001InertPlacementV1` accepts an explicitly bound authored fixture only
-  (F-921). Source version 2, recorder version 3, exact C001 identity, neutral
-  prospect behavior and complete one-to-one native placement coverage are
-  required. Class, path, object-name and GUID bind exactly; no CRC-only dispatch,
-  dropped record, partial result, respawn or stitching is admitted. The closed
-  component fields are class/path/object-name, positive GUID, recorded version,
-  false sublevel flag and complete transform, with optional supported find
-  policy and false skip-owner flag. Any additional field rejects the input.
-  Independently authored inert geometry has no variables. Explicit native-frame
-  coordinates transfer translation, quaternion and scale without conversion or
-  normalization. Schema 5 requires the preserved source and immutable identity,
-  timestamp, root-presence and binding metadata alongside mutable native poses;
-  reload cross-checks that metadata against the preserved bytes. This does not
-  qualify original coordinates, official loadability or faithful save import.
+  (F-921; storage and limits: [authored-worlds runbook](../../runbooks/authored-worlds.md#spatial-worlds-and-inert-source-fixtures)).
+  It requires source version 2, recorder version 3, exact C001 identity, neutral
+  prospect behavior and complete one-to-one native placement coverage. Class,
+  path, object-name and GUID bind exactly; no CRC-only dispatch, dropped record,
+  partial result, respawn or stitching is admitted. The closed component fields
+  are class/path/object-name, positive GUID, recorded version, false sublevel
+  flag and complete transform, with optional supported find policy and false
+  skip-owner flag; any other field rejects. Independently authored inert
+  geometry has no variables, and native-frame coordinates transfer without
+  conversion or normalization. Schema 5 keeps the preserved source and immutable
+  identity and binding metadata beside mutable poses, cross-checked on reload.
+  Original coordinates, official loadability and
+  faithful save import stay unqualified.
 - `DecodedImportCandidate` retains migrated root values, exact UTF-16 recorder
   identities, decisions, optional typing outcomes and unchanged preserved bytes
-  from one envelope decode (F-920). Unknown root enums remain explicit;
-  allocation allowances bound retained typing plus each sequential scratch
-  reservation. Count-only inspection separates retained charges from required
-  decode limits. Borrowed assessment and actor
-  projection do not supply restoration adapters or authorize publication.
+  from one envelope decode (F-920). Unknown root enums stay explicit; allocation
+  allowances bound retained typing plus each sequential scratch reservation, and
+  count-only inspection separates retained charges from required decode limits.
+  Borrowed assessment and actor projection supply no restoration adapters and
+  authorize no publication.
 - `stage_prospect_save_state` (`experimental::recorders`), `stage_prospect`
   (`prospect`) and `icarus-server inspect-save --stage-check` validate the
   `FProspectSaveState` root schema, out-of-order tags, `PostLoadSerialize`
-  migration, 17 `FProspectInfo` tags, optional `ProspectID` matching, base
-  framing, 65-class ctor defaults + tag overlays (`bSkipDefaultOwnerResolution`,
-  `OwnerResolvePolicy`, `ParentCharacterUID` -> `RequiresStitching`), per-recorder
-  `Validate` (`+0x408`, incl. `N018` `false` and `N022` rocket-spawn), and `C033`
-  `bIsPhysicsDynamic` counts across all 15 saves (`dddd.json` stage counts
-  F-680, F-747; `world_imported: false`; F-736, F-738, F-746).
+  migration, the 17 `FProspectInfo` tags, optional `ProspectID` matching, base
+  framing, 65-class ctor defaults plus tag overlays (`bSkipDefaultOwnerResolution`,
+  `OwnerResolvePolicy`, `ParentCharacterUID` -> `RequiresStitching`) and
+  per-recorder `Validate` (`+0x408`), and count `C033` `bIsPhysicsDynamic` across
+  all 15 saves (`dddd.json`: F-680, F-747; `world_imported: false`; F-736, F-738,
+  F-746).
 - All 65 `RecorderComponent` `FClassParams`, ctor defaults and vtable overrides
   ([restore rules](restore-rules.md)), and `C001` provenance
   ([C001 digest](../../research/save-format/c001-constructor.md)) match across
