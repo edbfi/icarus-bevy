@@ -146,8 +146,8 @@ Address pairs are server / client.
     `QueuedBits + SendBuffer.GetNumBits() <= 0` or within `+0x1ba0`.
     `UChannel::IsNetReady` (`0x1437bd690`):
     `NumOutRec < 255` and connection ready.
-  - `UNetDriver::ServerReplicateActors` (`0x1439bf100`) increments `ReplicationFrame`
-    (`+0x420`), runs `PrepConnections`, sets
+  - `UNetDriver::ServerReplicateActors` (`0x1439bf100`) increments
+    `ReplicationFrame` (`+0x420`), runs `PrepConnections`, sets
     `ServerTickTime = (MaxTickRate <= 0.0) ? DeltaSeconds : 1.0 / MaxTickRate`
     and `bCPUSaturated = (MaxTickRate > 0.0 && DeltaSeconds > 1.2 * ServerTickTime)`,
     runs `BuildConsiderList`, then per connection `PrioritizeActors`,
@@ -200,7 +200,8 @@ Address pairs are server / client.
   timing and stock-client behavior remain unqualified (U-070, U-038).
 - `experimental::actor_channel`, `sequencing` and `rep_layout` replay captured
   bunches (F-709 to F-711), `PackageMapState` mappings and scheduling policies;
-  fixtures and randomized checks: F-763, F-764 (F-577, F-604, F-673, F-761, F-845).
+  fixtures and randomized checks: F-763, F-764 (F-577, F-604, F-673, F-761,
+  F-845).
 
 ## Open questions
 

@@ -9,8 +9,8 @@ Running, autosave and recovery: [native server](native-server.md).
 Creation preflights before destination access; `--dry-run` writes nothing,
 omission publishes, existing/recoverable worlds reject. Strict JSON/TOML, format
 1. Fixtures pin payload SHA-256, catalog/map, UTF-16 identities and the
-unchanged sidecar. Owner-fixture commands share `--source`, `--catalog`, `--lifecycle`,
-`--bindings`, `--data-dir` and optional `--dry-run`; `run` needs no creation
+unchanged sidecar. Owner-fixture commands share `--source`, `--catalog`,
+`--lifecycle`, `--bindings`, `--data-dir` and optional `--dry-run`; `run` needs no creation
 inputs.
 
 Coordinates: metres, right-handed, Z-up, quaternion `[x,y,z,w]`; bindings declare
