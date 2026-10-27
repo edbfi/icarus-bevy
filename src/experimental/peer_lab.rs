@@ -1359,6 +1359,16 @@ impl PeerLab {
         if entry.opened_actors.contains_key(&key) {
             return None;
         }
+        // Without a free channel nothing can change: fail before cloning the
+        // driver GUID cache and the peer's exports.
+        let Some(channel) = entry.peer.free_actor_channel(first_channel) else {
+            bump(&mut self.stats.actor_open_errors);
+            if entry.peer.is_failed() {
+                self.peers.remove(&address);
+                bump(&mut self.stats.peers_failed);
+            }
+            return None;
+        };
         let mut cache = self.guid_cache.clone();
         let guid = cache.actor_guid(ActorKey::World(key));
         open.actor = guid;
@@ -1368,26 +1378,21 @@ impl PeerLab {
             engine_net_version,
             entry.peer.connection_byte_order(),
         );
-        let sent = entry
-            .peer
-            .free_actor_channel(first_channel)
-            .context("no free actor channel")
-            .and_then(|channel| {
-                let composed = compose_actor_open(
-                    &mut cache,
-                    &mut exports,
-                    &open,
-                    channel,
-                    engine_net_version,
-                    entry.peer.connection_byte_order(),
-                )?;
-                let export_payloads: Vec<Payload> = composed.exports.into_iter().collect();
-                let sent = entry
-                    .peer
-                    .reliable_actor_open_datagrams(&composed.bunch, &export_payloads)?;
-                Ok((channel, sent))
-            });
-        let (channel, sent) = match sent {
+        let sent = compose_actor_open(
+            &mut cache,
+            &mut exports,
+            &open,
+            channel,
+            engine_net_version,
+            entry.peer.connection_byte_order(),
+        )
+        .and_then(|composed| {
+            let export_payloads: Vec<Payload> = composed.exports.into_iter().collect();
+            entry
+                .peer
+                .reliable_actor_open_datagrams(&composed.bunch, &export_payloads)
+        });
+        let sent = match sent {
             Ok(sent) => sent,
             Err(_) => {
                 bump(&mut self.stats.actor_open_errors);

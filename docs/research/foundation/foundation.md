@@ -48,29 +48,27 @@ Toolchain/headless/typing/CI: F-879, F-484, F-497; client identity:
 F-878/F-731 (U-034 resolved). Original fixity/export/entry-map/exchange:
 F-265/F-266/F-268/F-253; unrun launcher: F-252; expired runtime windows: F-218.
 
-Debug idle (F-939): M-1060 archetype checks, 3 matched pairs,
-32 samples/mode, no peers; host 1,024 medians 38.74–40.25 to 29.08–32.08 ms,
-candidate p95 35.14–36.30 ms; 1/64 ranges overlap. M-1057 one-run medians
-at 1/64/1024: host 1.17/3.94/41.59 ms; lab 0.50/0.51/1.03 ms.
+Debug idle (F-939): archetype checks (M-1060), lookup maps (M-1063),
+relationship guards (M-1064) and occupancy slots (M-1070), each in 3 matched
+pairs of 32 samples/mode without peers; host 1,024 medians fell from about
+40 to 25–32 ms, with overlapping ranges for lookup-only and occupancy work and
+one candidate p95 above 33.333 ms. M-1057 gives one-run debug medians at
+1/64/1024 actors.
 
-M-1063 lookup-map-only: 6 runs/3 pairs/32 samples/row; median ranges
-overlap at all counts/both modes. Host 1,024 parent 28.67–31.76 versus
-candidate 30.12–30.55 ms; no demonstrated latency gain; allocations/RSS unmeasured.
+Release idle (F-941, M-1075): the authored bridge's 1,024-actor median cost
+over a matched no-bridge app fell from 874–970 to 470–484 us across 3 pairs
+for one candidate combining exact archetype scans, single-entity reads, an
+ID-indexed placement fast path and unchanged-position write skips; 1/64
+ranges overlap. Every tick still validates every binding with unchanged error
+precedence. Whole binaries are compared: fixed mode order, binary layout and
+host activity limit attribution, and no single change is measured. No
+reference/client/ICARUS qualification.
 
-M-1064 relationship guards: debug whole-App idle, no peers; P,C,C,P,P,C,
-three pairs/32 samples per mode. Host 1,024 parent/candidate
-median ranges 28.158393–34.245773/25.264452–28.268425 ms; p95
-35.918821–38.149755/32.095349–34.547397 ms. All three paired medians/p95 lower;
-median ranges overlap, p95 ranges do not; one candidate p95 >33.333 ms.
-
-M-1070 occupancy: same six-run/32-sample plan; host 1,024 median ranges
-25.575957–29.820501/25.364539–26.486241 ms, all paired medians lower; p95
-28.894777–37.174165/29.410961–32.260263 ms. Both ranges overlap, paired p95
-varies; 1/64 median ranges overlap.
-
-Fixed inner baseline/host order, extra untimed tests, binary layout and
-uncontrolled host activity limit attribution. Validation/error precedence stays
-complete; no skip/cache. No uniform/release/reference/client/ICARUS qualification.
+Joined peers (F-942, M-1076): with 2 or 8 authored loopback peers whose 250
+actor channels are full, the same 1,024-actor cost fell from 1.7–2.0 to
+1.0–1.1 ms and from 4.3–5.1 to 2.8–2.9 ms for one candidate combining
+cheaper refused opens, identity-rotation bounds and an inline sort key, with
+unchanged decisions. Whole binaries are compared; no single change is measured.
 
 ## Open
 
@@ -80,4 +78,4 @@ complete; no skip/cache. No uniform/release/reference/client/ICARUS qualificatio
 
 ## Artifacts
 
-M-001, M-002, M-006, M-009, M-010, M-015..M-022, M-076, M-078, M-109..M-117, M-131..M-165, M-174, M-175, M-178, M-182..M-184, M-191, M-192, M-200, M-203, M-204, M-207, M-208, M-212..M-220, M-225, M-240, M-241, M-251, M-252, M-269, M-270, M-271, M-277, M-311, M-391, M-397..M-399, M-411..M-419, M-452..M-454, M-471..M-475, M-577, M-578, M-770, M-771, M-809, M-810, M-812, M-861, M-862, M-864..M-867, M-870, M-898, M-899, M-915..M-918, M-926..M-972, M-1012..M-1023, M-1040, M-1041, M-1055..M-1057, M-1060, M-1063, M-1064, M-1069, M-1070.
+M-001, M-002, M-006, M-009, M-010, M-015..M-022, M-076, M-078, M-109..M-117, M-131..M-165, M-174, M-175, M-178, M-182..M-184, M-191, M-192, M-200, M-203, M-204, M-207, M-208, M-212..M-220, M-225, M-240, M-241, M-251, M-252, M-269, M-270, M-271, M-277, M-311, M-391, M-397..M-399, M-411..M-419, M-452..M-454, M-471..M-475, M-577, M-578, M-770, M-771, M-809, M-810, M-812, M-861, M-862, M-864..M-867, M-870, M-898, M-899, M-915..M-918, M-926..M-972, M-1012..M-1023, M-1040, M-1041, M-1055..M-1057, M-1060, M-1063, M-1064, M-1069, M-1070, M-1075, M-1076.

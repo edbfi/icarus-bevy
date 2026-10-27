@@ -266,6 +266,50 @@ impl NativeTransform {
     pub fn transformed_bounds(&self, local: &Aabb3) -> Result<Aabb3> {
         self.validate()?;
         local.validate()?;
+        let (min, max) = if self.rotation == [0.0, 0.0, 0.0, 1.0] {
+            self.identity_extremes(local)?
+        } else {
+            self.corner_extremes(local)?
+        };
+        let result = Aabb3 {
+            min: min.map(|v| {
+                let f = v as f32;
+                if f64::from(f) > v { f.next_down() } else { f }
+            }),
+            max: max.map(|v| {
+                let f = v as f32;
+                if f64::from(f) < v { f.next_up() } else { f }
+            }),
+        };
+        result.validate().context("native transformed bounds")?;
+        Ok(result)
+    }
+
+    /// Identity rotation: every corner coordinate is translation plus local
+    /// times scale (an exact f64 product) under one rounding, as in
+    /// [`Self::corner_extremes`], and rounding is monotonic, so per-axis
+    /// extremes need no corner loop. Only the sign of an exact zero may differ,
+    /// which no bounds comparison observes.
+    fn identity_extremes(&self, local: &Aabb3) -> Result<([f64; 3], [f64; 3])> {
+        let mut min = [0.0; 3];
+        let mut max = [0.0; 3];
+        for i in 0..3 {
+            let translation = f64::from(self.translation[i]);
+            let scale = f64::from(self.scale[i]);
+            let low = f64::from(local.min[i]) * scale;
+            let high = f64::from(local.max[i]) * scale;
+            min[i] = translation + low.min(high);
+            max[i] = translation + low.max(high);
+            ensure!(
+                min[i].is_finite() && max[i].is_finite(),
+                "native transformed bounds nonfinite"
+            );
+        }
+        Ok((min, max))
+    }
+
+    /// Transform all eight corners by the rotation matrix.
+    fn corner_extremes(&self, local: &Aabb3) -> Result<([f64; 3], [f64; 3])> {
         let [x, y, z, w] = self.rotation.map(f64::from);
         let matrix = [
             [
@@ -302,18 +346,7 @@ impl NativeTransform {
                 max[i] = max[i].max(value);
             }
         }
-        let result = Aabb3 {
-            min: min.map(|v| {
-                let f = v as f32;
-                if f64::from(f) > v { f.next_down() } else { f }
-            }),
-            max: max.map(|v| {
-                let f = v as f32;
-                if f64::from(f) < v { f.next_up() } else { f }
-            }),
-        };
-        result.validate().context("native transformed bounds")?;
-        Ok(result)
+        Ok((min, max))
     }
 }
 
@@ -678,12 +711,26 @@ impl CompiledNativeCatalog {
         let mut value_bytes = 0;
         for (index, actor) in actors.enumerate() {
             let validate_actor = || -> Result<usize> {
-                validate_key(actor.placement)?;
-                let rank = map
-                    .placements
-                    .binary_search_by(|v| v.key.as_str().cmp(actor.placement))
+                // Exact fast path: compiled keys are valid, unique and sorted,
+                // so a key equal to the identity's rank (ID - 1) passes
+                // validate_key and is exactly what the search would return.
+                let rank = match usize::try_from(actor.id.0)
                     .ok()
-                    .context("native actor placement binding")?;
+                    .and_then(|id| id.checked_sub(1))
+                    .filter(|rank| {
+                        map.placements
+                            .get(*rank)
+                            .is_some_and(|v| v.key == actor.placement)
+                    }) {
+                    Some(rank) => rank,
+                    None => {
+                        validate_key(actor.placement)?;
+                        map.placements
+                            .binary_search_by(|v| v.key.as_str().cmp(actor.placement))
+                            .ok()
+                            .context("native actor placement binding")?
+                    }
+                };
                 let placement = &map.placements[rank];
                 ensure!(
                     actor.id.0 == rank as u64 + 1,
@@ -814,3 +861,53 @@ redacted_debug!(NativeTileDefinition,);
 redacted_debug!(NativeTransform,);
 redacted_debug!(Aabb3,);
 redacted_debug!(NativeValue,);
+
+#[cfg(test)]
+mod tests {
+    use super::{Aabb3, NativeTransform};
+
+    /// Identity extremes equal the general corner transform, up to the sign of
+    /// zero, across signs, zeros, mixed magnitudes and extreme finite values.
+    #[test]
+    fn identity_extremes_match_the_corner_transform() {
+        let values = [
+            0.0_f32,
+            -0.0,
+            1.0,
+            -1.0,
+            0.5,
+            -2.75,
+            1.0e-30,
+            -3.0e7,
+            1.0e30,
+            -f32::MAX,
+            f32::MAX,
+            f32::MIN_POSITIVE,
+        ];
+        let mut checked = 0;
+        for (index, translation) in values.iter().enumerate() {
+            for scale in [1.0_f32, 2.5, 1.0e-20, 3.0e20, f32::MIN_POSITIVE, f32::MAX] {
+                for (low, high) in [(-0.5_f32, 0.5), (0.0, 0.0), (-0.0, 0.0), (-1.0e30, 7.0)] {
+                    let other = values[(index * 7 + 3) % values.len()];
+                    let transform = NativeTransform {
+                        translation: [*translation, other, -*translation],
+                        rotation: [0.0, 0.0, 0.0, 1.0],
+                        scale: [scale, scale.min(0.75), 1.0],
+                    };
+                    let local = Aabb3 {
+                        min: [low, low, -high],
+                        max: [high, high, -low],
+                    };
+                    if transform.validate().is_err() || local.validate().is_err() {
+                        continue;
+                    }
+                    let fast = transform.identity_extremes(&local).unwrap();
+                    let corners = transform.corner_extremes(&local).unwrap();
+                    assert_eq!(fast, corners, "{transform:?} {local:?}");
+                    checked += 1;
+                }
+            }
+        }
+        assert!(checked > 100, "{checked}");
+    }
+}
