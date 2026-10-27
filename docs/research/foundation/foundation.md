@@ -65,10 +65,10 @@ host activity limit attribution, and no single change is measured. No
 reference/client/ICARUS qualification.
 
 Joined peers (F-942, M-1076): with 2 or 8 authored loopback peers whose 250
-actor channels are full, the same 1,024-actor cost fell by about 45% after
-refused opens stopped cloning GUID/export state and rescanning channels,
-identity-rotation bounds skipped the corner transform and the priority sort
-read its key inline; 8 peers still cost about 2.8 ms. Decisions are unchanged.
+actor channels are full, the same 1,024-actor cost fell from 1.7–2.0 to
+1.0–1.1 ms and from 4.3–5.1 to 2.8–2.9 ms for one candidate combining
+cheaper refused opens, identity-rotation bounds and an inline sort key, with
+unchanged decisions. Whole binaries are compared; no single change is measured.
 
 ## Open
 
