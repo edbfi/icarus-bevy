@@ -2076,7 +2076,7 @@ fn concurrent_held_sessions_beyond_the_player_limit_are_refused() {
 #[test]
 fn concurrent_hold_session_counts_are_bounded() {
     use icarus_bevy::experimental::session_hold::{
-        HoldConfig, MAX_HOLD_SESSIONS, MultiHoldConfig, run_holds,
+        HoldConfig, MAX_HOLD, MAX_HOLD_SESSIONS, MultiHoldConfig, run_holds,
     };
     let hold = HoldConfig {
         // Nothing listens here; validation must fail first.
@@ -2094,15 +2094,19 @@ fn concurrent_hold_session_counts_are_bounded() {
         .unwrap_err();
         assert!(error.to_string().contains("sessions"), "{error}");
     }
-    let error = run_holds(&MultiHoldConfig {
-        hold: HoldConfig {
-            duration: Duration::ZERO,
-            ..hold
-        },
-        sessions: 4,
-    })
-    .unwrap_err();
-    assert!(error.to_string().contains("hold lasts"), "{error}");
+    for duration in [Duration::ZERO, MAX_HOLD + Duration::from_secs(1)] {
+        let error = run_holds(&MultiHoldConfig {
+            hold: HoldConfig {
+                duration,
+                ..hold.clone()
+            },
+            sessions: 4,
+        })
+        .unwrap_err();
+        assert!(error.to_string().contains("hold lasts"), "{error}");
+    }
+    // 72 hours after full admission fits, with the admission margin.
+    assert_eq!(MAX_HOLD, Duration::from_secs(72 * 3600 + 120));
 }
 
 #[test]
