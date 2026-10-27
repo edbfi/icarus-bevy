@@ -1604,8 +1604,10 @@ impl PeerLab {
     /// The caller supplies current `ElapsedTime` and each member's
     /// `IsCurrentlyPlaying`; [`super::prospect_info::ProspectInfo::for_session`]
     /// can compose those from explicitly supplied state. This operation
-    /// establishes no original trigger timing (F-822; U-070), and lab Login,
-    /// Join, disconnect and clock ticks never call it automatically.
+    /// establishes no original trigger timing (F-822; U-070). Login,
+    /// disconnect and clock ticks never call it automatically; Join calls it
+    /// only under [`Self::enable_member_refresh`], whose stored prospect each
+    /// successful call here replaces.
     ///
     /// Validate enums, codec kinds/widths, resource bounds and both byte
     /// orders against the configured release before changing either state,
@@ -1663,6 +1665,11 @@ impl PeerLab {
         }
         session.state = state;
         session.active_prospect = Some(values);
+        // A later member Join starts from the latest prospect, not the one
+        // member refresh was enabled with.
+        if let Some(base) = &mut session.member_refresh {
+            base.clone_from(info);
+        }
         Ok(())
     }
 
@@ -1672,7 +1679,8 @@ impl PeerLab {
     /// Each member is currently playing iff a joined peer's login ID equals
     /// its `UserID` (F-945): the ID's string form, uppercase hexadecimal for
     /// encoded IDs, compared ignoring ASCII case (the original's compare
-    /// rule is unread). `ElapsedTime` and every other field stay as given.
+    /// rule is unread). `ElapsedTime` and every other field stay as last
+    /// supplied: `info`, or the latest [`Self::refresh_active_prospect`].
     /// Joins of unassociated players, which the original adds as members
     /// and saves, and disconnects (no direct original caller refreshes
     /// then) change nothing. Validated as [`Self::refresh_active_prospect`]
