@@ -1,10 +1,9 @@
 # Independent ICARUS Linux dedicated server
 
-This is the canonical plan: goal, constraints, milestones, exit criteria and
-release targets. [Implementation status](implementation-status.md) records what
-exists and what is next; [gates](gates.md) is the only home of preconditions that
-block actions; [architecture](architecture.md) holds design constraints,
-repository boundaries and the toolchain; research workflow rules live in
+The canonical plan: goal, constraints, milestones, exit criteria and release
+targets. See [implementation status](implementation-status.md) (what exists and
+what is next), [gates](gates.md) (the only home of preconditions that block
+actions), [architecture](architecture.md) and research rules in
 [`.agents/rules/project.md`](../.agents/rules/project.md). This document
 authorizes no tool execution or target activity.
 
@@ -23,7 +22,9 @@ long-session degradation; joining, reconnecting and session cleanup; large world
 with substantial bases, tamed animals, production, environmental activity and
 many players. A handshake or small playable slice is an intermediate milestone.
 Completion requires all applicable server behavior in the pinned release,
-including supported content variants, with an explicit compatibility matrix.
+including supported content variants, with an explicit compatibility matrix,
+demonstrated compatibility, reliability and performance improvement, and the
+independent Rust/Bevy, no-original-assets rules.
 
 ### Independence and provenance
 
@@ -31,13 +32,13 @@ including supported content variants, with an explicit compatibility matrix.
   Bevy provides the application, ECS and scheduling foundation; legitimate Linux
   platform SDKs may provide authentication and discovery.
 - No dependency on the original server executable, Unreal runtime, Wine or Proton.
-- **Input parity:** the native server may need no more than the official
-  dedicated server needs. What that free, public distribution ships (its data
-  tables and other basic data) may be used where needed, fetched unattended at
-  install time by our own fetcher (F-828, F-831); anything only the game client
-  provides is never a runtime or build input. Better still is needing nothing
-  official at all: where reverse engineering or independently authored data can
-  replace an official file, prefer that, toward a fully standalone binary.
+- **Input parity** (F-828, F-831;
+  [project rules](../.agents/rules/project.md#input-parity)): the native server
+  may need no more than the official dedicated server needs. What that free,
+  public distribution ships (data tables and other basic data) may be fetched
+  unattended at install time by our own fetcher; anything only the game client
+  provides is never a runtime or build input. Needing nothing official is better
+  still, toward a fully standalone binary.
 - Otherwise do not extract or reuse original art, audio, terrain, collision,
   navigation or gameplay data tables; record provenance of independently
   authored data.
@@ -102,7 +103,3 @@ builds, copied-world trials, then a limited pilot, with backup/restore and
 rollback procedures. For each official update, preserve a baseline, compare
 binaries and protocols, rerun affected scenarios and publish support status.
 Unknown versions are not supported by assumption.
-
-Completion requires demonstrated compatibility, reliability and performance
-improvement while preserving the independent Rust/Bevy and no-original-assets
-rules.

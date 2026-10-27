@@ -104,12 +104,12 @@ initialization, compression or integrity protection.
 ## Candidate
 
 - The `experimental` control, packet, sequencing, admission and lab modules
-  model the headers, the 20-entry fallback table, unique-net-id forms (F-543, F-844),
-  `clamp_client_netspeed`, `evaluate_pc_swap_target`,
+  model the headers, the 20-entry fallback table, unique-net-id forms (F-543,
+  F-844), `clamp_client_netspeed`, `evaluate_pc_swap_target`,
   `evaluate_actor_channel_failure` (F-740), and disconnected loopback
   negotiation through `Hello`, `Challenge`, `Login`, `PreLogin`, `Welcome`,
-  `Netspeed`, `Swap`, `Debug` and `Join` / `SplitJoin` (F-874, F-689,
-  F-712 to F-714, F-858).
+  `Netspeed`, `Swap`, `Debug` and `Join` / `SplitJoin` (F-874, F-689, F-712 to
+  F-714, F-858).
 - `UWorld::NotifyControlMessage` (F-563, F-713, F-740) and `WelcomePlayer`
   (`0x1439fdeb0`, F-580): `IsClientMsgTypeValid` admits only
   `ExpectedClientLoginMsgType` (`0` Hello, `5` Login) in `ClientLoginState`

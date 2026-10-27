@@ -80,7 +80,7 @@ Address pairs are server / client.
   `SerializeOptionalValue<FVector>` `0x14399cac0`, `FRotator::NetSerialize`
   `0x141ed36b0`, `SerializeCompressedShort` `0x141eeb7d0` / `0x141ed7810`).
   `ProcessBunch` and `UActorChannel::ReplicateActor` (`0x14353a820` /
-  `0x1437c7f00`, `evaluate_actor_channel_replicate_actor`) call
+  `0x1437c7f00`) call
   `OnActorChannelOpen` / `OnSerializeNewActor`: empty on `AActor` (`0x1408c9710`),
   1-B `uint8 NetPlayerIndex` (`+0x3d4`) on `APlayerController` (`0x1438384d0` /
   `0x143ae73a0`, `0x143838b70` / `0x143ae79d0`).
@@ -130,35 +130,32 @@ Address pairs are server / client.
     `APlayerController` (`0x1434e9040`), `AOnlineBeacon` (`0x1409cc210`:
     `GetNetConnection` equality if `bOnlyRelevantToOwner`, else
     `Class == RealViewer->Class`), and `IsWithinNetRelevancyDistance`
-    (`0x1435d6240`; `evaluate_*_net_relevancy`).
+    (`0x1435d6240`).
   - `GetNetPriority`: `AActor` (`0x1435d14e0`; `4.0` `ViewTarget`/`Instigator`
     boost precedes `!bHidden && RootComponent`), `APlayerController`
     (`0x143adfc40`), `AMatineeActor` (`0x143b3f6c0`; adds
-    `1.0 - CreationTime / WorldTime` when `InChannel == nullptr`;
-    `evaluate_*_net_priority`).
+    `1.0 - CreationTime / WorldTime` when `InChannel == nullptr`).
   - `UGameEngine::GetMaxTickRate` (`0x143836250`) clamps `NetServerMaxTickRate`
     to `[1, 1000]` before `0x143993060` / `0x143c5d520` (`DefaultEngine.ini`:
     `NetServerMaxTickRate=30`, `MaxClientRate` and `MaxInternetClientRate`
     `750000`, `ConfiguredInternetSpeed=640000`, `ConfiguredLanSpeed=912000`,
     `ConnectionTimeout` and `InitialConnectTimeout` `360.0`,
     `ResolutionConnectionTimeout=120.0`).
-  - `UNetConnection::IsNetReady` (`0x143991d80`, `evaluate_connection_is_net_ready`):
+  - `UNetConnection::IsNetReady` (`0x143991d80`):
     `Saturate` sets `QueuedBits = -SendBuffer.GetNumBits()`; ready iff
     `QueuedBits + SendBuffer.GetNumBits() <= 0` or within `+0x1ba0`.
-    `UChannel::IsNetReady` (`0x1437bd690`, `evaluate_channel_is_net_ready`):
+    `UChannel::IsNetReady` (`0x1437bd690`):
     `NumOutRec < 255` and connection ready.
-  - `UNetDriver::ServerReplicateActors` (`0x1439bf100`,
-    `evaluate_server_replicate_actors_frame`) increments `ReplicationFrame`
-    (`+0x420`), runs `PrepConnections`, sets
+  - `UNetDriver::ServerReplicateActors` (`0x1439bf100`) increments
+    `ReplicationFrame` (`+0x420`), runs `PrepConnections`, sets
     `ServerTickTime = (MaxTickRate <= 0.0) ? DeltaSeconds : 1.0 / MaxTickRate`
     and `bCPUSaturated = (MaxTickRate > 0.0 && DeltaSeconds > 1.2 * ServerTickTime)`,
     runs `BuildConsiderList`, then per connection `PrioritizeActors`,
     `ProcessPrioritizedActors` and inlined `MarkRelevantActors`, rotating
     `ClientConnections` left by `NumClientsToTick` when `< ClientConnections.Num()`.
-  - `PrepConnections` (`0x1439c0b20`, `evaluate_prep_connections_tick_budget`,
-    `is_connection_ready_for_replication`) throttles `NumClientsToTick`; ready iff
+  - `PrepConnections` (`0x1439c0b20`) throttles `NumClientsToTick`; ready iff
     `ViewTarget != nullptr && State == USOCK_Open (3) && ElapsedTime - LastReceiveTime < 1.5`.
-  - `BuildConsiderList` (`0x1439c0530`, `evaluate_consider_list_actor`) removes
+  - `BuildConsiderList` (`0x1439c0530`) removes
     `PendingKill`, `ROLE_None` and initialized `bNetStartup && DORM_Initial (4)`,
     skips mismatched `NetDriverName` or future `NextUpdateTime`, lerps
     `OptimalNetUpdateDelta` from `1 / NetUpdateFrequency` to
@@ -166,8 +163,7 @@ Address pairs are server / client.
     `clamp((LastNetUpdateDelta - 2.0) * 0.2, 0.0, 1.0)` when `LastNetUpdateDelta > 2.0`
     (`MinNetUpdateFrequency = 2.0` if `0.0`), updates `NextUpdateTime`/`LastNetUpdateTime`
     when `!bPendingNetUpdate`, clears it and calls `CallPreReplication` (`0x14332f4f0`).
-  - `PrioritizeActors` (`0x1439c0e70`, `evaluate_prioritize_actor`,
-    `round_net_priority_to_int`, `evaluate_destruction_info_priority`) closes
+  - `PrioritizeActors` (`0x1439c0e70`) closes
     expired `bOnlyRelevantToOwner` channels (`CloseReason = 3`), calls
     `StartBecomingDormant` on `DORM_DormantAll (2)` / `DORM_DormantPartial (3)`,
     uses `SpawnPrioritySeconds` without a channel else `ElapsedTime - LastUpdateTime`
@@ -176,14 +172,14 @@ Address pairs are server / client.
     and truncates `DestroyedStartupOrDormantActors` via `cvttss2si` (`0x143724c2a`)
     after `0.2` (`dot < 0 && dist_sq > 4M`) or `0.4` (`dot < 0 && dist_sq > 250k`,
     or `dot >= 0 && dist_sq > 9,998,244`).
-  - `ProcessPrioritizedActors` (`0x1439c1bf0`, `evaluate_process_prioritized_actor`)
+  - `ProcessPrioritizedActors` (`0x1439c1bf0`)
     checks `IsNetReady(0)`, sends `SendDestructionInfo`, applies F-788's
     `RelevantTime` rule and F-851's `ForceRelevantFrame` rule, delays unopenable
     `< 1.0` Hz actors by `0.2 * srands()`, replicates until saturation, and
     closes irrelevant/torn-off channels when
     `has_channel && (!actor_level_initialized || !actor_is_net_startup)`
     (`CloseReason` `4` on `bTearOff`, else `3`).
-  - Inlined `MarkRelevantActors` (`0x1439bfa04`, `evaluate_mark_relevant_actor_step`)
+  - Inlined `MarkRelevantActors` (`0x1439bfa04`)
     sets `bPendingNetUpdate` when `Channel != nullptr && ElapsedTime - Channel->RelevantTime <= 1.0`
     or `IsActorRelevantToConnection` (refreshing a channel's `RelevantTime` per
     F-788), then applies F-851's `ForceRelevantFrame` and `LastProcessedFrame`
@@ -203,9 +199,9 @@ Address pairs are server / client.
   future joins use the latest template. Calls remain explicit; original trigger
   timing and stock-client behavior remain unqualified (U-070, U-038).
 - `experimental::actor_channel`, `sequencing` and `rep_layout` replay captured
-  bunches (F-709 to F-711), `PackageMapState` mappings/must-be-mapped lists and
-  scheduling policies; fixtures and randomized checks: F-763, F-764 (F-577,
-  F-604, F-673, F-761, F-845).
+  bunches (F-709 to F-711), `PackageMapState` mappings and scheduling policies;
+  fixtures and randomized checks: F-763, F-764 (F-577, F-604, F-673, F-761,
+  F-845).
 
 ## Open questions
 
