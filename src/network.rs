@@ -1247,6 +1247,9 @@ pub fn bind_with_parameters(
         };
         if let Some(pawn) = pawn {
             lab.enable_pawn_open(pawn, PAWN_CHANNEL_INDEX, pawn_content(tables.as_mut())?)?;
+            // Authored deterministic PRNG seed; actor allocation is unrelated
+            // to the cryptographic randomness used for handshake cookies.
+            lab.enable_actor_uids(crate::actor_uids::ActorUidLibrary::new(1))?;
         }
         let game_state = match (&profile, &config.admission) {
             (Some(profile), Some(admission)) => profile

@@ -860,6 +860,8 @@ struct ActorPropertyPacket {
 
 struct PeerEntry {
     peer: LabPeer,
+    /// Owned until this connection is removed, including idle/failure paths.
+    pawn_uid: Option<i32>,
     /// The cookie that created this peer; compared only, never reported.
     cookie: [u8; 20],
     last_seen: Instant,
@@ -1011,6 +1013,9 @@ pub struct PeerLab {
     /// Opt-in pawn open after the PlayerController open: the plan, its
     /// channel and every player's content.
     pawn_open: Option<(PawnOpenPlan, u32, PawnContent)>,
+    /// Native run's opt-in UID owner; bare lab experiments retain templates.
+    actor_uids: Option<crate::actor_uids::ActorUidLibrary>,
+    next_pawn_object_id: Option<i32>,
     /// Opt-in GameState open after the PlayerController open.
     game_state_open: Option<GameStateSession>,
     /// Opt-in PlayerState open after the PlayerController open.
@@ -1087,6 +1092,8 @@ impl PeerLab {
             peak_peers: 0,
             player_controller_open: None,
             pawn_open: None,
+            actor_uids: None,
+            next_pawn_object_id: Some(crate::actor_uids::FIRST_NATIVE_OBJECT_ID),
             game_state_open: None,
             player_state_open: None,
             manager_opens: Vec::new(),
@@ -1278,7 +1285,7 @@ impl PeerLab {
             Err(_) => {
                 bump(&mut self.stats.actor_update_errors);
                 if entry.peer.is_failed() {
-                    self.peers.remove(&address);
+                    self.remove_peer(address);
                     bump(&mut self.stats.peers_failed);
                 }
                 return false;
@@ -1352,7 +1359,7 @@ impl PeerLab {
             Err(_) => {
                 bump(&mut self.stats.actor_close_errors);
                 if entry.peer.is_failed() {
-                    self.peers.remove(&address);
+                    self.remove_peer(address);
                     bump(&mut self.stats.peers_failed);
                 } else {
                     entry.pending_closes.insert(key, reason);
@@ -1402,7 +1409,7 @@ impl PeerLab {
         let Some(channel) = entry.peer.free_actor_channel(first_channel) else {
             bump(&mut self.stats.actor_open_errors);
             if entry.peer.is_failed() {
-                self.peers.remove(&address);
+                self.remove_peer(address);
                 bump(&mut self.stats.peers_failed);
             }
             return None;
@@ -1435,7 +1442,7 @@ impl PeerLab {
             Err(_) => {
                 bump(&mut self.stats.actor_open_errors);
                 if entry.peer.is_failed() {
-                    self.peers.remove(&address);
+                    self.remove_peer(address);
                     bump(&mut self.stats.peers_failed);
                 }
                 return None;
@@ -1514,6 +1521,51 @@ impl PeerLab {
         );
         self.pawn_open = Some((plan, channel_index, content));
         Ok(())
+    }
+
+    /// Assign each pawn a UID in a world-wide namespace. Configure and seed
+    /// before admitting peers. Only handle 46 varies from the shared content.
+    /// The authored object counter starts at 65,536, advances once per attempt,
+    /// and fails closed at i32 exhaustion. It is not an engine object index.
+    pub fn enable_actor_uids(&mut self, library: crate::actor_uids::ActorUidLibrary) -> Result<()> {
+        ensure!(
+            self.peers.is_empty(),
+            "configure actor UIDs before admitting peers"
+        );
+        ensure!(
+            self.actor_uids.is_none(),
+            "actor UIDs are already configured"
+        );
+        self.actor_uids = Some(library);
+        Ok(())
+    }
+
+    /// Whether native per-pawn UID allocation is configured.
+    pub fn has_actor_uids(&self) -> bool {
+        self.actor_uids.is_some()
+    }
+
+    /// Occupy every positive saved actor UID before joins. This protects even
+    /// actors whose replication is unsupported; it does not import them.
+    pub fn seed_actor_uids(&mut self, uids: impl IntoIterator<Item = i32>) -> Result<()> {
+        ensure!(
+            self.peers.is_empty(),
+            "seed actor UIDs before admitting peers"
+        );
+        if let Some(library) = &mut self.actor_uids {
+            library.seed_saved(uids)?;
+        }
+        Ok(())
+    }
+
+    // Native policy releases a pawn's UID at every session removal. The
+    // original's FreeUniqueID call timing has not been established.
+    fn remove_peer(&mut self, address: SocketAddrV4) -> Option<PeerEntry> {
+        let entry = self.peers.remove(&address)?;
+        if let (Some(uid), Some(library)) = (entry.pawn_uid, &mut self.actor_uids) {
+            library.free(uid);
+        }
+        Some(entry)
     }
 
     /// After [`enable_player_controller_open`](Self::enable_player_controller_open),
@@ -2221,7 +2273,9 @@ impl PeerLab {
             self.send_shutdown_notice(*address, true);
         }
         let removed = self.peers.len();
-        self.peers.clear();
+        for address in addresses {
+            self.remove_peer(address);
+        }
         self.stats.peers_shutdown = self.stats.peers_shutdown.saturating_add(removed as u64);
         removed
     }
@@ -2345,8 +2399,16 @@ impl PeerLab {
     fn expire_idle(&mut self, now: Instant) {
         let timeout = self.config.idle_timeout;
         let before = self.peers.len();
-        self.peers
-            .retain(|_, entry| now.saturating_duration_since(entry.last_seen) <= timeout);
+        let expired: Vec<_> = self
+            .peers
+            .iter()
+            .filter_map(|(address, entry)| {
+                (now.saturating_duration_since(entry.last_seen) > timeout).then_some(*address)
+            })
+            .collect();
+        for address in expired {
+            self.remove_peer(address);
+        }
         let expired = (before - self.peers.len()) as u64;
         self.stats.peers_expired = self.stats.peers_expired.saturating_add(expired);
     }
@@ -2404,10 +2466,12 @@ impl PeerLab {
                 } else {
                     &mut self.stats.peers_created
                 });
+                self.remove_peer(address);
                 self.peers.insert(
                     address,
                     PeerEntry {
                         peer,
+                        pawn_uid: None,
                         cookie,
                         last_seen: now,
                         ack_pending: false,
@@ -2536,7 +2600,7 @@ impl PeerLab {
             Err(_) => {
                 bump(&mut self.stats.data_malformed);
                 if entry.peer.is_failed() {
-                    self.peers.remove(&address);
+                    self.remove_peer(address);
                     bump(&mut self.stats.peers_failed);
                 }
                 return;
@@ -2544,7 +2608,7 @@ impl PeerLab {
         };
         self.answer(address, &messages);
         // Decoded messages are dropped here; nothing of them is retained.
-        if close && self.peers.remove(&address).is_some() {
+        if close && self.remove_peer(address).is_some() {
             bump(&mut self.stats.peers_closed_by_client);
         }
     }
@@ -2634,7 +2698,7 @@ impl PeerLab {
                 Err(_) => bump(&mut self.stats.reply_errors),
             }
         }
-        self.peers.remove(&address);
+        self.remove_peer(address);
         bump(&mut self.stats.peers_closed_by_channel_failure);
         true
     }
@@ -2846,7 +2910,7 @@ impl PeerLab {
             Err(_) => {
                 bump(&mut self.stats.reply_errors);
                 if entry.peer.is_failed() {
-                    self.peers.remove(&address);
+                    self.remove_peer(address);
                     bump(&mut self.stats.peers_failed);
                 }
                 return false;
@@ -2861,7 +2925,7 @@ impl PeerLab {
                 entry.admission.on_welcome_sent();
             }
             Reply::Upgrade(_) | Reply::Failure(_) => {
-                self.peers.remove(&address);
+                self.remove_peer(address);
                 bump(&mut self.stats.peers_closed);
             }
             Reply::OpenPlayerController => {}
@@ -2908,7 +2972,7 @@ impl PeerLab {
             Err(_) => {
                 bump(&mut self.stats.player_controller_open_errors);
                 if entry.peer.is_failed() {
-                    self.peers.remove(&address);
+                    self.remove_peer(address);
                     bump(&mut self.stats.peers_failed);
                 }
                 return false;
@@ -2969,6 +3033,27 @@ impl PeerLab {
         let Some(connection) = entry.connection_id else {
             return;
         };
+        let mut content = content.clone();
+        let mut claimed = None;
+        if let Some(library) = &mut self.actor_uids {
+            let grant = self.next_pawn_object_id.and_then(|desired| {
+                self.next_pawn_object_id = desired.checked_add(1);
+                library.try_claim(desired, None).ok()
+            });
+            match grant {
+                Some(uid) if uid > 0 => {
+                    content.icarus_uid = Some(uid);
+                    claimed = Some(uid);
+                }
+                other => {
+                    if let Some(uid) = other {
+                        library.free(uid);
+                    }
+                    bump(&mut self.stats.pawn_open_errors);
+                    return;
+                }
+            }
+        }
         let mut cache = self.guid_cache.clone();
         let mut exports = entry.exports.clone();
         let state = PawnOpenState {
@@ -2976,7 +3061,7 @@ impl PeerLab {
             controller,
             player_state,
             location: controller_plan.spawn_location,
-            content: content.clone(),
+            content,
         };
         let sent = compose_pawn_open(
             &mut cache,
@@ -2996,13 +3081,17 @@ impl PeerLab {
             Ok(sent) => sent,
             Err(_) => {
                 bump(&mut self.stats.pawn_open_errors);
+                if let (Some(uid), Some(library)) = (claimed, &mut self.actor_uids) {
+                    library.free(uid);
+                }
                 if entry.peer.is_failed() {
-                    self.peers.remove(&address);
+                    self.remove_peer(address);
                     bump(&mut self.stats.peers_failed);
                 }
                 return;
             }
         };
+        entry.pawn_uid = claimed;
         commit_exports(&mut exports, &sent);
         entry.exports = exports;
         entry.ack_pending = false;
@@ -3051,7 +3140,7 @@ impl PeerLab {
             Err(_) => {
                 bump(&mut self.stats.game_state_open_errors);
                 if entry.peer.is_failed() {
-                    self.peers.remove(&address);
+                    self.remove_peer(address);
                     bump(&mut self.stats.peers_failed);
                 }
                 return;
@@ -3138,7 +3227,7 @@ impl PeerLab {
             Err(_) => {
                 bump(&mut self.stats.player_state_open_errors);
                 if entry.peer.is_failed() {
-                    self.peers.remove(&address);
+                    self.remove_peer(address);
                     bump(&mut self.stats.peers_failed);
                 }
                 return;
@@ -3184,7 +3273,7 @@ impl PeerLab {
             Err(_) => {
                 bump(&mut self.stats.manager_open_errors);
                 if entry.peer.is_failed() {
-                    self.peers.remove(&address);
+                    self.remove_peer(address);
                     bump(&mut self.stats.peers_failed);
                 }
                 return;
@@ -3229,7 +3318,7 @@ impl PeerLab {
             Err(_) => {
                 bump(&mut self.stats.quest_open_errors);
                 if entry.peer.is_failed() {
-                    self.peers.remove(&address);
+                    self.remove_peer(address);
                     bump(&mut self.stats.peers_failed);
                 }
                 return;
@@ -3257,7 +3346,7 @@ impl PeerLab {
             }
         }
         for address in failed {
-            self.peers.remove(&address);
+            self.remove_peer(address);
             bump(&mut self.stats.ack_errors);
             bump(&mut self.stats.peers_failed);
         }
@@ -3474,7 +3563,7 @@ impl PeerLab {
             }
         }
         for address in failed {
-            self.peers.remove(&address);
+            self.remove_peer(address);
             bump(&mut self.stats.peers_failed);
         }
         for (address, datagrams, values) in outgoing {
