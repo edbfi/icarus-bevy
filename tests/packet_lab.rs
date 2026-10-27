@@ -912,6 +912,64 @@ fn actor_close_holds_its_channel_until_acknowledged() {
     peer.reliable_actor_open(&open, &[]).unwrap();
 }
 
+/// The ordered free-channel search matches the plain linear definition for
+/// every start index, including the control channel, gaps and a full range.
+#[test]
+fn free_actor_channel_matches_the_linear_search() {
+    let mut peer = peer();
+    let mut client = Client::new();
+    let (opening, _) = client.send(Vec::new());
+    peer.receive(&opening).unwrap();
+    let limit = peer.config().packet.limits.max_channels;
+    let control = peer.config().control_channel_index;
+    let linear = |peer: &LabPeer, first: u32| {
+        (first..limit).find(|index| *index != control && !peer.has_actor_channel(*index))
+    };
+    let mut open = Vec::new();
+    for channel in [3, 4, 6, 7, 8, 12, limit - 2, limit - 1] {
+        if channel == control {
+            continue;
+        }
+        let datagram = peer
+            .reliable_actor_open(&actor_open_bunch(channel, &[0x11; 4]), &[])
+            .unwrap();
+        accept_header(&mut client, &datagram);
+        open.push(channel);
+        for first in 0..=limit + 1 {
+            assert_eq!(
+                peer.free_actor_channel(first),
+                linear(&peer, first),
+                "{first} {open:?}"
+            );
+        }
+    }
+    // Fill every index, so the exhausted result is remembered; opening never
+    // frees an index, and an acknowledged close frees one again.
+    for channel in (0..limit).filter(|index| *index != control && !open.contains(index)) {
+        let datagram = peer
+            .reliable_actor_open(&actor_open_bunch(channel, &[0x11; 4]), &[])
+            .unwrap();
+        accept_header(&mut client, &datagram);
+    }
+    for first in [5, 0, 3, limit] {
+        assert_eq!(peer.free_actor_channel(first), None);
+        assert_eq!(linear(&peer, first), None);
+    }
+    let close = peer.reliable_actor_close(7, 3).unwrap();
+    assert_eq!(peer.free_actor_channel(0), None, "held until acknowledged");
+    accept_header(&mut client, &close);
+    let (ack, _) = client.send(Vec::new());
+    peer.receive(&ack).unwrap();
+    for first in 0..=limit + 1 {
+        assert_eq!(
+            peer.free_actor_channel(first),
+            linear(&peer, first),
+            "{first}"
+        );
+    }
+    assert_eq!(peer.free_actor_channel(3), Some(7));
+}
+
 /// Accept a lab datagram's header as the client, whatever its bunches.
 fn accept_header(client: &mut Client, datagram: &[u8]) {
     let packet = read_packet(datagram, &to_client()).unwrap();

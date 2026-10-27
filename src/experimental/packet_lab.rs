@@ -360,6 +360,11 @@ pub struct LabPeer {
     control_close: Option<(u32, u32)>,
     /// Actor channels whose close bunch was sent; removed once acked.
     closing_actors: std::collections::BTreeSet<u32>,
+    /// The lowest `first` for which [`Self::free_actor_channel`] found no free
+    /// index since an actor channel was last removed (`u32::MAX`: none).
+    /// Opening a channel can never free one, so the result stays `None` for
+    /// that start and every higher one until a removal resets this.
+    no_free_actor_channel_from: std::sync::atomic::AtomicU32,
     /// Mirrors `UControlChannel::bNeedsHeaderInspection` (`+0x68`, F-712):
     /// cleared when the first delivered control bunch starting with `Hello`
     /// sets `Connection->bNeedsByteSwapping` (`+0x158`).
@@ -410,6 +415,7 @@ impl LabPeer {
             resend: VecDeque::new(),
             control_close: None,
             closing_actors: std::collections::BTreeSet::new(),
+            no_free_actor_channel_from: std::sync::atomic::AtomicU32::new(u32::MAX),
             header_inspection_pending: true,
             failed: false,
             sent_at: VecDeque::new(),
@@ -650,6 +656,7 @@ impl LabPeer {
                 for index in released {
                     self.closing_actors.remove(&index);
                     self.actors.remove(&index);
+                    *self.no_free_actor_channel_from.get_mut() = u32::MAX;
                     self.resend.retain(
                         |entry| !matches!(entry, Resend::Actor(channel, _) if *channel == index),
                     );
@@ -764,9 +771,28 @@ impl LabPeer {
     /// control channel nor an actor channel this peer opened, below the
     /// channel limit.
     pub fn free_actor_channel(&self, first: u32) -> Option<u32> {
-        (first..self.config.packet.limits.max_channels).find(|index| {
-            *index != self.config.control_channel_index && !self.actors.contains_key(index)
-        })
+        use std::sync::atomic::Ordering::Relaxed;
+        let end = self.config.packet.limits.max_channels;
+        if first >= end || first >= self.no_free_actor_channel_from.load(Relaxed) {
+            return None;
+        }
+        // One ordered pass over the occupied indices: the first index that is
+        // neither occupied nor the control channel is the lowest free one.
+        let mut occupied = self.actors.range(first..end).map(|(index, _)| *index);
+        let mut next = occupied.next();
+        for index in first..end {
+            if index == self.config.control_channel_index {
+                continue;
+            }
+            while next.is_some_and(|taken| taken < index) {
+                next = occupied.next();
+            }
+            if next != Some(index) {
+                return Some(index);
+            }
+        }
+        self.no_free_actor_channel_from.fetch_min(first, Relaxed);
+        None
     }
 
     /// Whether this peer opened actor channel `index`.
