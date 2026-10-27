@@ -1998,13 +1998,15 @@ pub struct PlayerStateRecordPlan<U, S, C> {
     pub b_is_alive: bool,
     /// `Health` (`recorder + 0x1f4` = `500`, from `StatComponent + 0x1d8`).
     pub health: i32,
-    /// `LastSeatIndex` (`recorder + 0x218` = `536`, from
-    /// `AIcarusPlayerCharacter + 0xa50`).
-    pub last_seat_index: i32,
-    /// `bIsLastInputGamepad` (`recorder + 0x21c` = `540`, from
-    /// `AIcarusPlayerCharacter + 0xa54`).
-    pub b_is_last_input_gamepad: bool,
-    /// `(Water, Food, Oxygen, Temperature)` (`recorder + 0x1f8..0x208`) written
+    /// `RespawnCount` (`recorder + 0x218` = `536`, from
+    /// `AIcarusPlayerCharacter + 0xa50`; reflected name, M-1094).
+    pub respawn_count: i32,
+    /// `HasGrantedLoadout` (`recorder + 0x21c` = `540`, from
+    /// `AIcarusPlayerCharacter + 0xa54`; reflected name, M-1094).
+    pub has_granted_loadout: bool,
+    /// `(FoodLevel, WaterLevel, OxygenLevel, RadiationLevel)` (`recorder +
+    /// 0x1f8..0x208`, reflected names, M-1094; restored through
+    /// `USurvivalCharacterState::SetFood`/`SetWater`/`SetOxygen`/`SetRadiation`) written
     /// iff `StatComponent` is a `UIcarusStatComponent` (`0x141cbcbb0` client);
     /// `None` preserves existing `+0x1f8..0x208`.
     pub survival_stats: Option<(i32, i32, i32, i32)>,
@@ -2040,8 +2042,8 @@ pub fn evaluate_player_state_record<U, S: Clone, C: Clone>(
     root_component_location_rotation: Option<([f32; 3], [f32; 3])>,
     b_is_alive: bool,
     health: i32,
-    last_seat_index: i32,
-    b_is_last_input_gamepad: bool,
+    respawn_count: i32,
+    has_granted_loadout: bool,
     icarus_stat_component_values: Option<(i32, i32, i32, i32)>,
     stomach_component_contents: Option<&[S]>,
     cosmetic_armour_overrides: &[C],
@@ -2067,8 +2069,8 @@ pub fn evaluate_player_state_record<U, S: Clone, C: Clone>(
         rotation,
         b_is_alive,
         health,
-        last_seat_index,
-        b_is_last_input_gamepad,
+        respawn_count,
+        has_granted_loadout,
         survival_stats: icarus_stat_component_values,
         stomach_contents: stomach_component_contents.map(<[S]>::to_vec),
         cosmetic_armour_overrides: cosmetic_armour_overrides.to_vec(),
