@@ -55,7 +55,7 @@ pairs of 32 samples/mode without peers; host 1,024 medians fell from about
 one candidate p95 above 33.333 ms. M-1057 gives one-run debug medians at
 1/64/1024 actors.
 
-Release idle (F-952, M-1075): the authored bridge's 1,024-actor median cost
+Release idle (F-941, M-1075): the authored bridge's 1,024-actor median cost
 over a matched no-bridge app fell from 874–970 to 470–484 us across 3 pairs
 for one candidate combining exact archetype scans, single-entity reads, an
 ID-indexed placement fast path and unchanged-position write skips; 1/64
