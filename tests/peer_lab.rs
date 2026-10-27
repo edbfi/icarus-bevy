@@ -4643,3 +4643,134 @@ fn an_oversized_networking_status_reaches_every_connection_in_partial_bunches() 
         48
     );
 }
+
+fn member_prospect(user_ids: &[&str]) -> icarus_bevy::experimental::prospect_info::ProspectInfo {
+    use icarus_bevy::experimental::prospect_info::{AssociatedMember, ProspectInfo};
+    ProspectInfo {
+        prospect_id: "prospect".encode_utf16().collect(),
+        prospect_state: 2,
+        elapsed_time: 71,
+        associated_members: user_ids
+            .iter()
+            .map(|id| AssociatedMember {
+                user_id: id.encode_utf16().collect(),
+                chr_slot: 1,
+                ..Default::default()
+            })
+            .collect(),
+        ..Default::default()
+    }
+}
+
+#[test]
+fn a_members_join_refreshes_who_is_currently_playing() {
+    use icarus_bevy::experimental::game_state_open::{active_prospect_update_values, handle};
+    // The login ID renders as NET_ID_HEX; the member names it in lowercase.
+    let initial = member_prospect(&[&NET_ID_HEX.to_ascii_lowercase(), "76561190000000000"]);
+    let (mut app, address, layout) = active_prospect_lab(PeerLabConfig::default(), &initial);
+    app.world_mut()
+        .resource_mut::<PeerLab>()
+        .enable_member_refresh(initial.clone())
+        .unwrap();
+    let error = app
+        .world_mut()
+        .resource_mut::<PeerLab>()
+        .enable_member_refresh(initial.clone())
+        .unwrap_err();
+    assert!(error.to_string().contains("already enabled"), "{error}");
+    let mut client = join_active_prospect_peer(&mut app, address);
+    assert_eq!(stats(&app).member_refreshes, 1);
+    assert_eq!(stats(&app).member_refreshes_unassociated, 0);
+    let pending = drain(&client);
+    acknowledge_datagrams(&mut client, &pending);
+    let updates = game_state_updates(&prospect_update_step(&mut app, &mut client), &layout);
+    let mut playing = initial.clone();
+    playing.associated_members[0].is_currently_playing = true;
+    let expected = active_prospect_update_values(&playing).unwrap();
+    let seen: std::collections::BTreeMap<_, _> = updates
+        .iter()
+        .flat_map(|values| values.iter())
+        .filter(|(h, _)| handle::ACTIVE_PROSPECT.contains(h))
+        .map(|(h, v)| (*h, v.clone()))
+        .collect();
+    assert!(!seen.is_empty(), "the refresh reaches the joined member");
+    for (h, value) in &seen {
+        assert_eq!(Some(value), expected.get(h), "handle {h}");
+    }
+}
+
+#[test]
+fn an_unassociated_join_leaves_the_active_prospect_unchanged() {
+    use icarus_bevy::experimental::game_state_open::handle;
+    let initial = member_prospect(&["76561190000000000"]);
+    let (mut app, address, layout) = active_prospect_lab(PeerLabConfig::default(), &initial);
+    app.world_mut()
+        .resource_mut::<PeerLab>()
+        .enable_member_refresh(initial)
+        .unwrap();
+    let mut client = join_active_prospect_peer(&mut app, address);
+    assert_eq!(stats(&app).member_refreshes, 0);
+    assert_eq!(stats(&app).member_refreshes_unassociated, 1);
+    let pending = drain(&client);
+    acknowledge_datagrams(&mut client, &pending);
+    for _ in 0..2 {
+        for update in game_state_updates(&prospect_update_step(&mut app, &mut client), &layout) {
+            assert!(!update.keys().any(|h| handle::ACTIVE_PROSPECT.contains(h)));
+        }
+    }
+}
+
+#[test]
+fn member_refresh_needs_a_game_state_open_and_valid_enumerators() {
+    let mut bound = PeerLab::bind(0, PeerLabConfig::default()).unwrap();
+    let error = bound
+        .enable_member_refresh(member_prospect(&["a"]))
+        .unwrap_err();
+    assert!(error.to_string().contains("GameState"), "{error}");
+    let initial = member_prospect(&["a"]);
+    let (mut app, ..) = active_prospect_lab(PeerLabConfig::default(), &initial);
+    let mut invalid = initial;
+    invalid.prospect_state = u8::MAX;
+    assert!(
+        app.world_mut()
+            .resource_mut::<PeerLab>()
+            .enable_member_refresh(invalid)
+            .is_err()
+    );
+}
+
+#[test]
+fn a_member_join_keeps_an_explicit_refresh_and_recomputes_only_who_plays() {
+    use icarus_bevy::experimental::game_state_open::{active_prospect_update_values, handle};
+    let initial = member_prospect(&[NET_ID_HEX]);
+    let (mut app, address, layout) = active_prospect_lab(PeerLabConfig::default(), &initial);
+    app.world_mut()
+        .resource_mut::<PeerLab>()
+        .enable_member_refresh(initial.clone())
+        .unwrap();
+    // An explicit refresh before the Join supplies a newer clock.
+    let mut newer = initial.clone();
+    newer.elapsed_time = 500;
+    app.world_mut()
+        .resource_mut::<PeerLab>()
+        .refresh_active_prospect(&newer)
+        .unwrap();
+    let mut client = join_active_prospect_peer(&mut app, address);
+    assert_eq!(stats(&app).member_refreshes, 1);
+    let pending = drain(&client);
+    acknowledge_datagrams(&mut client, &pending);
+    let updates = game_state_updates(&prospect_update_step(&mut app, &mut client), &layout);
+    let mut playing = newer;
+    playing.associated_members[0].is_currently_playing = true;
+    let expected = active_prospect_update_values(&playing).unwrap();
+    let seen: std::collections::BTreeMap<_, _> = updates
+        .iter()
+        .flat_map(|values| values.iter())
+        .filter(|(h, _)| handle::ACTIVE_PROSPECT.contains(h))
+        .map(|(h, v)| (*h, v.clone()))
+        .collect();
+    assert!(!seen.is_empty());
+    for (h, value) in &seen {
+        assert_eq!(Some(value), expected.get(h), "handle {h}");
+    }
+}

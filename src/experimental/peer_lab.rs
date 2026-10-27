@@ -81,7 +81,10 @@
 //!   `LockedMissions` when a minute's refresh changed it (with
 //!   [`PeerLab::enable_locked_missions`], F-834). Explicit
 //!   [`PeerLab::refresh_active_prospect`] calls supply complete prospect
-//!   values; polling and lab Login/Join never infer a prospect refresh. An
+//!   values; polling and Login never infer a prospect refresh. With
+//!   [`PeerLab::enable_member_refresh`], a Join whose login ID names an
+//!   associated member refreshes it as the original's spawn completion does
+//!   (F-822, F-945). An
 //!   update over one bunch (a long `NetworkingStatus`) goes out through
 //!   [`LabPeer::actor_update_datagrams`] as unreliable partial bunches in
 //!   consecutive datagrams (`game_state_update_datagrams`). A naked update's
@@ -213,6 +216,30 @@ pub const CLOSE_REASON_DESTROYED: u32 = 0;
 /// `AGameSession::GetNextPlayerID`'s first value (`NextPlayerID` in `.data`,
 /// post-incremented by `RegisterPlayer`; F-784).
 pub const FIRST_PLAYER_ID: i32 = 256;
+/// A login unique net ID's string form, as a member's `UserID` names it
+/// (F-945): encoded IDs render as uppercase hexadecimal (a Steam ID's
+/// decimal digits unchanged), text IDs as their text, absent IDs as empty.
+fn login_user_id(id: &super::control_messages::UniqueNetId) -> Vec<u16> {
+    use super::control_messages::NetIdValue;
+    match &id.value {
+        NetIdValue::Text(text) => text.units().to_vec(),
+        value => value.hex().unwrap_or_default().encode_utf16().collect(),
+    }
+}
+
+/// UTF-16 IDs equal ignoring ASCII case.
+fn same_user_id(left: &[u16], right: &[u16]) -> bool {
+    let fold = |unit: u16| match u8::try_from(unit) {
+        Ok(byte) => u16::from(byte.to_ascii_lowercase()),
+        Err(_) => unit,
+    };
+    left.len() == right.len()
+        && left
+            .iter()
+            .zip(right)
+            .all(|(&left, &right)| fold(left) == fold(right))
+}
+
 /// Lab text of the Failure reply to Login or Join after admission stopped;
 /// not an original message.
 pub const SHUTTING_DOWN_MESSAGE: &str = "icarus-bevy peer lab: server is shutting down";
@@ -497,6 +524,14 @@ pub struct PeerLabStats {
     /// Datagrams sent carrying GameState updates: one per update unless it
     /// was split into partial bunches over several.
     pub game_state_update_datagrams: u64,
+    /// Active prospect refreshes after a member's Join (F-822, F-945).
+    pub member_refreshes: u64,
+    /// Joins whose login ID names no associated member: the original adds
+    /// such a player as a member and saves, which is not modelled, so no
+    /// refresh follows.
+    pub member_refreshes_unassociated: u64,
+    /// Member refreshes that could not be validated or composed.
+    pub member_refresh_errors: u64,
     /// GameState updates that could not be composed or framed.
     pub game_state_update_errors: u64,
     /// Naked GameState updates whose values were still the latest and are
@@ -876,6 +911,9 @@ struct GameStateSession {
     /// Complete values supplied by the last explicit refresh, including
     /// defaults. None leaves legacy template-only initialization unchanged.
     active_prospect: Option<BTreeMap<u32, RepValue>>,
+    /// The prospect that a member's Join refreshes, with its
+    /// `IsCurrentlyPlaying` flags recomputed ([`PeerLab::enable_member_refresh`]).
+    member_refresh: Option<super::prospect_info::ProspectInfo>,
     channel_index: u32,
     /// The restored `LevelTimeElapsedSec`, advanced with the world time at
     /// each send.
@@ -1516,6 +1554,7 @@ impl PeerLab {
             plan,
             state,
             active_prospect: None,
+            member_refresh: None,
             channel_index,
             level_time: None,
             locked_missions: Vec::new(),
@@ -1565,8 +1604,10 @@ impl PeerLab {
     /// The caller supplies current `ElapsedTime` and each member's
     /// `IsCurrentlyPlaying`; [`super::prospect_info::ProspectInfo::for_session`]
     /// can compose those from explicitly supplied state. This operation
-    /// establishes no original trigger timing (F-822; U-070), and lab Login,
-    /// Join, disconnect and clock ticks never call it automatically.
+    /// establishes no original trigger timing (F-822; U-070). Login,
+    /// disconnect and clock ticks never call it automatically; Join calls it
+    /// only under [`Self::enable_member_refresh`], whose stored prospect each
+    /// successful call here replaces.
     ///
     /// Validate enums, codec kinds/widths, resource bounds and both byte
     /// orders against the configured release before changing either state,
@@ -1624,7 +1665,87 @@ impl PeerLab {
         }
         session.state = state;
         session.active_prospect = Some(values);
+        // A later member Join starts from the latest prospect, not the one
+        // member refresh was enabled with.
+        if let Some(base) = &mut session.member_refresh {
+            base.clone_from(info);
+        }
         Ok(())
+    }
+
+    /// Refresh `info` as the active prospect whenever a Join's login ID
+    /// names one of its associated members, as the original's spawn
+    /// completion refreshes an associated player's prospect (F-822).
+    /// Each member is currently playing iff a joined peer's login ID equals
+    /// its `UserID` (F-945): the ID's string form, uppercase hexadecimal for
+    /// encoded IDs, compared ignoring ASCII case (the original's compare
+    /// rule is unread). `ElapsedTime` and every other field stay as last
+    /// supplied: `info`, or the latest [`Self::refresh_active_prospect`].
+    /// Joins of unassociated players, which the original adds as members
+    /// and saves, and disconnects (no direct original caller refreshes
+    /// then) change nothing. Validated as [`Self::refresh_active_prospect`]
+    /// would be before anything changes.
+    pub fn enable_member_refresh(
+        &mut self,
+        info: super::prospect_info::ProspectInfo,
+    ) -> Result<()> {
+        let Some(session) = &self.game_state_open else {
+            bail!("no GameState open is enabled");
+        };
+        info.validate_enumerators()?;
+        active_prospect_update_values(&info)?;
+        ensure!(
+            session.member_refresh.is_none(),
+            "member refresh is already enabled"
+        );
+        if let Some(session) = &mut self.game_state_open {
+            session.member_refresh = Some(info);
+        }
+        Ok(())
+    }
+
+    /// The refresh a Join of `address` causes under
+    /// [`Self::enable_member_refresh`], counted in the stats.
+    fn refresh_members_after_join(&mut self, address: SocketAddrV4) {
+        let Some(base) = self
+            .game_state_open
+            .as_ref()
+            .and_then(|session| session.member_refresh.as_ref())
+        else {
+            return;
+        };
+        let joined: Vec<Vec<u16>> = self
+            .peers
+            .iter()
+            .filter(|(other, peer)| {
+                **other == address || peer.admission.state == ClientLoginState::Joined
+            })
+            .filter_map(|(_, peer)| peer.login_unique_id.as_ref().map(login_user_id))
+            .collect();
+        let Some(joiner) = self
+            .peers
+            .get(&address)
+            .and_then(|peer| peer.login_unique_id.as_ref())
+            .map(login_user_id)
+        else {
+            return;
+        };
+        if !base
+            .associated_members
+            .iter()
+            .any(|member| same_user_id(&member.user_id, &joiner))
+        {
+            bump(&mut self.stats.member_refreshes_unassociated);
+            return;
+        }
+        let mut info = base.clone();
+        for member in &mut info.associated_members {
+            member.is_currently_playing = joined.iter().any(|id| same_user_id(&member.user_id, id));
+        }
+        match self.refresh_active_prospect(&info) {
+            Ok(()) => bump(&mut self.stats.member_refreshes),
+            Err(_) => bump(&mut self.stats.member_refresh_errors),
+        }
     }
 
     /// After the GameState open, also open the world's managers (F-859) on
@@ -2829,6 +2950,7 @@ impl PeerLab {
                 self.send_manager_open(address, index);
             }
         }
+        self.refresh_members_after_join(address);
         true
     }
 
