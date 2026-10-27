@@ -1087,6 +1087,17 @@ fn run(options: ConfigOptions, max_ticks: Option<u64>, compressed: bool) -> Resu
         app.insert_resource(TimeUpdateStrategy::FixedTimesteps(1));
     }
     let mut bound = bound;
+    if let (Some(bound), Some(section)) = (&mut bound, &snapshot.preserved_prospect)
+        && bound.lab.has_actor_uids()
+    {
+        let payload = section.decode()?.to_inner_payload()?;
+        let uids = icarus_bevy::prospect::saved_actor_uids_from_payload(&payload)
+            .context("read the loaded world's actor UID namespace")?;
+        bound
+            .lab
+            .seed_actor_uids(uids)
+            .context("seed the loaded world's actor UID namespace")?;
+    }
     if let Some(bound) = &mut bound
         && bound.lab.has_game_state_open()
     {

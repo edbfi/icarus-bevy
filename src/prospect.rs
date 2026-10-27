@@ -311,6 +311,52 @@ pub fn read_saved_prospect(reader: impl Read) -> Result<SavedProspect> {
     saved_prospect_from_payload(&decode_envelope(reader)?.payload)
 }
 
+/// Read the occupied actor namespace from every recorder, including actor
+/// inventory owners and classes not yet replicated. Only top-level saved
+/// `IcarusActorGUID` defines ownership; item GUIDs and actor references do not.
+/// Missing/nonpositive IDs occupy nothing. Framing/type/duplicate errors reject
+/// the whole scan, so a loaded world's namespace can never be partially seeded.
+pub fn saved_actor_uids_from_payload(payload: &[u8]) -> Result<Vec<i32>> {
+    let profile = TagProfile::MemoryArchive522;
+    let roots = read_root(payload, profile)?;
+    let recorders = read_recorders(&roots.tags, profile)?;
+    // MAX_RECORDERS bounds this vector below the UID library's default cap.
+    let mut uids = Vec::new();
+    for recorder in recorders.records() {
+        let component = read_base_component_with_limit(
+            recorder.binary_data,
+            profile,
+            MAX_BOUNDED_COMPONENT_BYTES,
+        )
+        .context("invalid saved actor UID component")?;
+        let mut seen = false;
+        for field in component.fields() {
+            let ParsedRecord::Property(property) = read_record(field.record, profile)? else {
+                continue;
+            };
+            if is_name(&property.name, "IcarusActorGUID") {
+                ensure!(!seen, "duplicate saved actor UID");
+                seen = true;
+                ensure!(
+                    property.tag.kind == crate::experimental::tagged::TagKind::Int
+                        && property.index == 0,
+                    "invalid saved actor UID type or index"
+                );
+                let bytes = property
+                    .tag
+                    .payload
+                    .try_into()
+                    .context("invalid saved actor UID width")?;
+                let uid = i32::from_le_bytes(bytes);
+                if uid > 0 {
+                    uids.push(uid);
+                }
+            }
+        }
+    }
+    Ok(uids)
+}
+
 /// [`read_saved_prospect`] on an inner payload, such as a preserved
 /// world's (`PreservedProspect::to_inner_payload`).
 pub fn saved_prospect_from_payload(payload: &[u8]) -> Result<SavedProspect> {
