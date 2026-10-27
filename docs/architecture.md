@@ -68,11 +68,9 @@ constants:
   table widths) behind a data-driven profile consumed by `PeerLabConfig` and
   `examples/capture_decode`, paired with `release_watch.py diff` and capture
   replay so weekly updates are mechanical unless wire semantics change.
-- Because `render_pin` writes `[release]` only and `ReleaseProfile::parse`
-  fails closed on unknown `build_id` values without an explicit `[tags]`
-  section, bumping the pin to a new weekly build requires either adding a
-  built-in `ReleaseProfile` for that build ID or supplying `[tags]` in
-  `config/release.toml` after qualifying its tag table.
+- `render_pin` writes `[release]` only, and `ReleaseProfile::parse` fails
+  closed on an unknown `build_id` without `[tags]`: a new build needs a built-in
+  profile or a qualified `[tags]` section.
 - A bump is version- and profile-only until the weekly diff shows otherwise:
   compare the two builds' sections, public symbols and replicated layouts, and
   re-run the compatibility scenarios. Compatibility claims name the build they
@@ -87,17 +85,10 @@ manifest publication, preceding valid generation retained. Autosave defaults to
 60 seconds. Acknowledge only durable publication; validate/migrate before activation.
 Capture requires all components declared by the current native domain schema;
 an identified entity with missing required data must fail before publication.
-Authored schemas retain spatial worlds (4; F-919), bound C001 inert-fixture
-provenance (5; F-927), foundation edges (6; F-922), live/dormant owner slots
-with transactional replacement and retry completion (7; F-923), and authored
-C001 owner restoration (8), scalar use-gate state (9) and stacked inventories
-(10) with immutable source provenance (F-927). Schema 11 explicitly extends
-lifecycle 7 with authored modifier timers/cache; replacement retires the prior
-incarnation, while retry/reload retains current progress (F-931). C001 fixture
-modes have no implicit promotion. Each mode pins its activation and rejects
-incomplete state. Bounds imply neither
-physics nor navigation; reference coverage grants no import authority. Detailed
-creation and editing contracts live in the
+Authored schemas 4–11 (F-919, F-922, F-923, F-927, F-931) each pin their
+activation, reject incomplete state and never promote implicitly; bounds imply
+neither physics nor navigation, and reference coverage grants no import
+authority. Their contracts live in the
 [authored-worlds runbook](runbooks/authored-worlds.md).
 Supplied-save state may ride along as one lossless, value-opaque preserved
 section that reconstructs the verified payload byte-identically, is carried
