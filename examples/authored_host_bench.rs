@@ -2,8 +2,12 @@
 //! bridge (F-938) against a matched networking-only baseline; not an ICARUS
 //! benchmark. Catalog, release profile and bindings are independently authored
 //! in the shapes of the `authored_host_idle_tick_cost` test, served on loopback
-//! with no peers. Both modes live in one process and alternate every frame, in
-//! swapped order each frame. Only aggregates are printed.
+//! with no peers or with `--peers` joined authored loopback peers that
+//! acknowledge every packet outside timing. Both modes live in one process and
+//! alternate every frame, in swapped order each frame. Only aggregates are printed.
+#[path = "../tests/common/loopback_client.rs"]
+mod loopback;
+
 use std::{
     fs,
     io::Write,
@@ -17,7 +21,7 @@ use bevy::{app::App, time::TimeUpdateStrategy};
 use clap::Parser;
 use icarus_bevy::{
     config::{NetworkConfig, ServerConfig},
-    experimental::{peer_lab::PeerLab, session_open::authored_movement},
+    experimental::{archive::ByteOrder, peer_lab::PeerLab, session_open::authored_movement},
     native_replication::{AuthoredReplication, MAX_BINDINGS, NativeReplicationCounts},
     native_runtime::NativeActorIdentity,
     native_world::{CompiledNativeCatalog, NativeCatalogDefinition, prepare_authored_world},
@@ -26,6 +30,7 @@ use icarus_bevy::{
     session_replication::{NetArchetype, SessionReplication},
     simulation::{DomainId, Position, SimulationClock, WorldSnapshot, build_app, capture},
 };
+use loopback::{Client, drain};
 use serde_json::{Value, json};
 
 #[derive(Parser)]
@@ -39,6 +44,12 @@ struct Options {
     /// Untimed one-tick frames per mode before timing.
     #[arg(long, default_value_t = 20)]
     warmup_frames: usize,
+    /// Joined authored loopback peers per mode, 0..=8 (the declared connection cap).
+    #[arg(long, default_value_t = 0)]
+    peers: usize,
+    /// Untimed update bound for every peer to open every bound actor.
+    #[arg(long, default_value_t = 4096)]
+    open_frames: usize,
     /// Cooperative total wall-time limit, checked before every update.
     #[arg(long, default_value_t = 60)]
     budget_seconds: u64,
@@ -72,6 +83,9 @@ archetype = [
 components = [{ name = "A", checksum = 1 }, { name = "B", checksum = 2 }, { name = "C", checksum = 3 }]
 "#;
 
+/// The declared first actor channel.
+const FIRST_CHANNEL: u32 = 6;
+
 struct Budget {
     started: Instant,
     limit: Duration,
@@ -90,6 +104,8 @@ impl Budget {
 
 struct Input {
     count: usize,
+    /// Bound actor IDs, in placement order.
+    ids: Vec<u64>,
     snapshot: WorldSnapshot,
     declaration: Value,
 }
@@ -147,10 +163,11 @@ fn input(count: usize) -> Result<Input> {
     ensure!(snapshot.schema_version == 4, "expected a schema-4 snapshot");
     ensure!(snapshot.tick == 0 && snapshot.preserved_prospect.is_none());
     ensure!(world.actors.len() == count, "authored actor count differs");
+    let ids = world.actors.iter().map(|actor| actor.id.0).collect();
     let declaration = json!({
         "format": 1, "catalog_id": world.catalog_id,
         "map": "authored", "frame": {"axes": [2, -1, 3], "units": 10.0},
-        "first_channel": 6,
+        "first_channel": FIRST_CHANNEL,
         "schedule": {
             "connection_budget": 32, "max_consider_list": 1024, "max_connections": 8,
             "max_viewers_per_connection": 1, "net_server_max_tick_rate": 30,
@@ -163,6 +180,7 @@ fn input(count: usize) -> Result<Input> {
     AuthoredReplication::parse(&serde_json::to_string(&declaration)?)?;
     Ok(Input {
         count,
+        ids,
         snapshot,
         declaration,
     })
@@ -196,22 +214,50 @@ fn count_with<T: bevy::ecs::component::Component>(app: &App) -> usize {
         .count()
 }
 
-/// Cheap idle invariants, always outside timing.
-fn verify_idle(app: &App, input: &Input, host: bool) -> Result<()> {
+/// Cheap invariants, always outside timing. `peers` must be joined and kept;
+/// with none, the loopback socket must have seen no traffic at all.
+fn verify_idle(app: &App, input: &Input, host: bool, peers: usize) -> Result<()> {
     let lab = app.world().resource::<PeerLab>();
     ensure!(lab.is_admitting(), "lab stopped admitting");
-    ensure!(
-        lab.peer_count() == 0
-            && lab.peak_peer_count() == 0
-            && lab.stats().received == 0
-            && lab.stats().peers_created == 0
-            && lab.joined_connections().is_empty(),
-        "unexpected peer traffic on the loopback socket"
-    );
-    ensure!(lab.stats().io_errors == 0, "lab socket I/O errors");
+    let stats = lab.stats();
+    if peers == 0 {
+        ensure!(
+            lab.peer_count() == 0
+                && lab.peak_peer_count() == 0
+                && stats.received == 0
+                && stats.peers_created == 0
+                && lab.joined_connections().is_empty(),
+            "unexpected peer traffic on the loopback socket"
+        );
+    } else {
+        ensure!(
+            lab.peer_count() == peers
+                && lab.peak_peer_count() == peers
+                && stats.peers_created == peers as u64
+                && lab.joined_connections().len() == peers,
+            "joined peer set changed"
+        );
+        ensure!(
+            stats.peers_replaced == 0
+                && stats.peers_rejected == 0
+                && stats.peers_expired == 0
+                && stats.peers_failed == 0
+                && stats.peers_closed == 0
+                && stats.data_rejected == 0
+                && stats.data_malformed == 0
+                && stats.ack_errors == 0
+                && stats.reply_errors == 0
+                && stats.actor_channel_failures == 0,
+            "peer session errors"
+        );
+    }
+    ensure!(stats.io_errors == 0, "lab socket I/O errors");
     ensure!(count_with::<NativeActorIdentity>(app) == input.count);
     ensure!(count_with::<DomainId>(app) == input.count);
-    ensure!(count_with::<NetViewer>(app) == 0, "unexpected viewers");
+    ensure!(
+        count_with::<NetViewer>(app) == if host { peers } else { 0 },
+        "unexpected viewers"
+    );
     let proxies: Vec<_> = app
         .world()
         .iter_entities()
@@ -249,7 +295,7 @@ fn verify_idle(app: &App, input: &Input, host: bool) -> Result<()> {
         );
         let frame = app.world().resource::<ReplicationFrame>();
         ensure!(
-            frame.decisions.replication_frame == 0,
+            peers > 0 || frame.decisions.replication_frame == 0,
             "scheduler advanced without peers"
         );
     } else {
@@ -270,8 +316,70 @@ fn verify_unchanged(app: &mut App, input: &Input) -> Result<()> {
     Ok(())
 }
 
-/// Production `run` order: build, bind, install, finish, cleanup.
-fn stage(config: &ServerConfig, input: &Input, host: bool) -> Result<App> {
+struct Mode {
+    app: App,
+    host: bool,
+    peers: Vec<Client>,
+}
+
+impl Mode {
+    /// Untimed: each peer acknowledges everything received and sends one
+    /// packet, which the next update polls.
+    fn acknowledge(&mut self) {
+        for peer in &mut self.peers {
+            let datagrams = drain(&peer.socket);
+            peer.accept(&datagrams);
+            peer.send(Vec::new());
+        }
+    }
+
+    /// Bound actors open on each joined connection.
+    fn open_counts(&self, input: &Input) -> Vec<usize> {
+        let lab = self.app.world().resource::<PeerLab>();
+        lab.joined_connections()
+            .iter()
+            .map(|connection| {
+                input
+                    .ids
+                    .iter()
+                    .filter(|id| lab.is_actor_open(*connection, **id))
+                    .count()
+            })
+            .collect()
+    }
+
+    /// Every peer has as many bound actors open as its actor channels allow.
+    fn saturated(&self, input: &Input) -> bool {
+        let capacity = actor_channels(&self.app).min(input.count);
+        let counts = self.open_counts(input);
+        counts.len() == self.peers.len() && counts.iter().all(|count| *count == capacity)
+    }
+
+    fn verify(&self, input: &Input) -> Result<()> {
+        verify_idle(&self.app, input, self.host, self.peers.len())?;
+        if self.host && !self.peers.is_empty() {
+            ensure!(self.saturated(input), "a peer's open bound actors changed");
+        }
+        Ok(())
+    }
+}
+
+/// Channels from the declared first actor channel to the lab's channel limit.
+fn actor_channels(app: &App) -> usize {
+    let limit = app
+        .world()
+        .resource::<PeerLab>()
+        .config()
+        .packet
+        .packet
+        .limits
+        .max_channels;
+    limit.saturating_sub(FIRST_CHANNEL) as usize
+}
+
+/// Production `run` order: build, bind, install, finish, cleanup; then join
+/// `peers` authored loopback peers.
+fn stage(config: &ServerConfig, input: &Input, host: bool, peers: usize) -> Result<Mode> {
     let mut app = build_app(config, &input.snapshot)?;
     let bound = network::bind(&config.network)?.context("networking disabled")?;
     let address = network::install_configured(&mut app, bound, &config.network)?;
@@ -279,18 +387,34 @@ fn stage(config: &ServerConfig, input: &Input, host: bool) -> Result<App> {
     app.insert_resource(TimeUpdateStrategy::FixedTimesteps(1));
     app.finish();
     app.cleanup();
-    verify_idle(&app, input, host)?;
+    verify_idle(&app, input, host, 0)?;
     // Bevy's first update initializes time with zero delta; not a warmup.
     let before = app.world().resource::<SimulationClock>().tick;
     app.update();
     ensure!(app.world().resource::<SimulationClock>().tick == before);
-    verify_idle(&app, input, host)?;
-    Ok(app)
+    verify_idle(&app, input, host, 0)?;
+    let mut clients = Vec::with_capacity(peers);
+    for index in 0..peers {
+        let mut client =
+            Client::connect_indexed(&mut app, address, ByteOrder::Little, u8::try_from(index)?);
+        let opened = client.join(&mut app);
+        client.accept(&opened);
+        clients.push(client);
+    }
+    verify_idle(&app, input, host, peers)?;
+    Ok(Mode {
+        app,
+        host,
+        peers: clients,
+    })
 }
 
-/// One verified one-tick update; returns its wall time in nanoseconds.
-fn step(app: &mut App, budget: &Budget) -> Result<u64> {
+/// One verified one-tick update; returns its wall time in nanoseconds. Peer
+/// acknowledgements are sent before, and outside, the timed update.
+fn step(mode: &mut Mode, budget: &Budget) -> Result<u64> {
     budget.check()?;
+    mode.acknowledge();
+    let app = &mut mode.app;
     let before = app.world().resource::<SimulationClock>().tick;
     let started = Instant::now();
     app.update(); // Whole App: every schedule, fixed work and lab poll.
@@ -328,7 +452,8 @@ fn stats(mut nanos: Vec<u64>) -> Stats {
     }
 }
 
-fn measure(options: &Options, input: &Input, budget: &Budget) -> Result<[Stats; 2]> {
+/// Both modes' timings and the bound actors open on every host peer.
+fn measure(options: &Options, input: &Input, budget: &Budget) -> Result<([Stats; 2], usize)> {
     let dir = tempfile::tempdir()?;
     fs::write(dir.path().join("release.toml"), RELEASE)?;
     fs::write(
@@ -337,10 +462,28 @@ fn measure(options: &Options, input: &Input, budget: &Budget) -> Result<[Stats; 
     )?;
     let (baseline_config, host_config) = configurations(dir.path())?;
     budget.check()?;
-    let mut apps = [
-        stage(&baseline_config, input, false)?,
-        stage(&host_config, input, true)?,
+    let mut modes = [
+        stage(&baseline_config, input, false, options.peers)?,
+        stage(&host_config, input, true, options.peers)?,
     ];
+    // Both modes take the same untimed updates until every peer has opened as
+    // many bound actors as its actor channels allow, so timing starts from a
+    // fully opened steady state.
+    let mut opening = 0;
+    while options.peers > 0 && !modes[1].saturated(input) {
+        ensure!(
+            opening < options.open_frames,
+            "peers did not fill their actor channels within {} updates",
+            options.open_frames
+        );
+        for mode in &mut modes {
+            step(mode, budget)?;
+        }
+        opening += 1;
+    }
+    let started = modes
+        .each_ref()
+        .map(|mode| mode.app.world().resource::<SimulationClock>().tick);
     let mut nanos = [
         Vec::with_capacity(options.frames),
         Vec::with_capacity(options.frames),
@@ -348,23 +491,24 @@ fn measure(options: &Options, input: &Input, budget: &Budget) -> Result<[Stats; 
     for frame in 0..options.warmup_frames + options.frames {
         // Alternate which mode runs first to cancel order effects.
         let order = if frame % 2 == 0 { [0, 1] } else { [1, 0] };
-        for mode in order {
-            let elapsed = step(&mut apps[mode], budget)?;
+        for index in order {
+            let elapsed = step(&mut modes[index], budget)?;
             if frame >= options.warmup_frames {
-                nanos[mode].push(elapsed);
+                nanos[index].push(elapsed);
             }
         }
     }
     let ticks = (options.warmup_frames + options.frames) as u64;
-    for (mode, app) in apps.iter_mut().enumerate() {
-        ensure!(app.world().resource::<SimulationClock>().tick == ticks);
-        verify_idle(app, input, mode == 1)?;
-        verify_unchanged(app, input)?;
+    for (mode, started) in modes.iter_mut().zip(started) {
+        ensure!(mode.app.world().resource::<SimulationClock>().tick == started + ticks);
+        mode.verify(input)?;
+        verify_unchanged(&mut mode.app, input)?;
     }
-    drop(apps); // Sockets close before the temporary directory is removed.
+    let open = modes[1].open_counts(input).into_iter().min().unwrap_or(0);
+    drop(modes); // Sockets close before the temporary directory is removed.
     dir.close()?;
     let [baseline, host] = nanos;
-    Ok([stats(baseline), stats(host)])
+    Ok(([stats(baseline), stats(host)], open))
 }
 
 fn main() -> Result<()> {
@@ -374,6 +518,11 @@ fn main() -> Result<()> {
         "frames must be 1..100000"
     );
     ensure!(options.warmup_frames <= 10_000, "warmup must be 0..10000");
+    ensure!(options.peers <= 8, "peers must be 0..8");
+    ensure!(
+        (1..=100_000).contains(&options.open_frames),
+        "open frames must be 1..100000"
+    );
     ensure!(
         (1..=3_600).contains(&options.budget_seconds),
         "budget must be 1..3600 seconds"
@@ -401,8 +550,13 @@ fn main() -> Result<()> {
         started: Instant::now(),
         limit: Duration::from_secs(options.budget_seconds),
     };
+    let workload = if options.peers == 0 {
+        "idle/no-peer".to_owned()
+    } else {
+        format!("idle/{}-joined-peer", options.peers)
+    };
     println!(
-        "authored host bench ({profile}; not an ICARUS benchmark): idle/no-peer whole App::update, \
+        "authored host bench ({profile}; not an ICARUS benchmark): {workload} whole App::update, \
          {} frames after {} warmups, modes alternate per frame",
         options.frames, options.warmup_frames
     );
@@ -414,7 +568,7 @@ fn main() -> Result<()> {
     for &count in &options.actors {
         budget.check()?;
         let input = input(count)?;
-        let [baseline, host] = measure(&options, &input, &budget)?;
+        let ([baseline, host], open) = measure(&options, &input, &budget)?;
         let delta = ((host.median - baseline.median) * 10.0).round() / 10.0;
         let mut modes = Vec::with_capacity(2);
         for (mode, stats) in [("baseline", &baseline), ("host", &host)] {
@@ -426,14 +580,14 @@ fn main() -> Result<()> {
                 "min_micros": stats.min, "median_micros": stats.median,
                 "p95_micros": stats.p95, "max_micros": stats.max}));
         }
-        println!("{count:>6} host-baseline median delta: {delta:+.1} us");
-        runs.push(json!({"actors": count, "bound_actors": count, "peers": 0,
+        println!("{count:>6} host-baseline median delta: {delta:+.1} us; {open} open per peer");
+        runs.push(json!({"actors": count, "bound_actors": count, "peers": options.peers, "open_actors_per_peer": open,
             "modes": modes, "host_minus_baseline_median_micros": delta}));
     }
     if let Some(path) = &options.json {
         let summary = json!({"event": "authored_host_measurement",
             "measurement": "whole_app_update_elapsed", "profile": profile,
-            "workload": "idle/no-peer", "frames": options.frames,
+            "workload": workload, "frames": options.frames,
             "warmup_frames": options.warmup_frames, "alternating": true,
             "budget_seconds": options.budget_seconds, "runs": runs,
             "icarus_compatible": false});
