@@ -75,7 +75,10 @@ Positive saved actor-recorder `IcarusActorGUID`s occupy the namespace first;
 an unreadable one fails startup. Desired IDs count from 65,536 per world; the
 search uses an authored xorshift64 PRNG (seed 1), not MSVC `rand`. Claim,
 reservation and remap stores cap at 262,144 entries each. A failed claim skips
-the pawn open and counts `open_errors`; session removal frees the UID.
+the pawn open and counts `open_errors`; session removal frees the UID. When a
+joined client sends its character slot, a saved player character matching its
+login ID and slot gives the pawn its saved UID (F-953); that UID stays claimed
+after the session ends. Saves the strict staging refuses only disable this.
 
 For authored schema-4 worlds, set `authored_replication = "replication.json"`
 in `[network]` or pass `run --authored-replication replication.json`.

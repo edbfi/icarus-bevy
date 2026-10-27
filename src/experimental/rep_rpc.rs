@@ -371,6 +371,29 @@ pub const BP_TAME_BASE_FIELD_INDEX_BOUND: u32 = 86;
 /// (`10 + 4 + 74 + 13 + 29 + 25 + 27 + 1 = 183`).
 pub const BP_ICARUS_PLAYER_CONTROLLER_SURVIVAL_FIELD_INDEX_BOUND: u32 = 183;
 
+/// F-951 / controller net fields: reliable NetServer RPC on the pinned
+/// Survival PlayerController, with one non-bool int32 parameter `ChrSlot`.
+/// Flags 0x280cc0: Net | NetReliable | Native | Event | NetServer.
+pub const SERVER_BEGIN_PLAYER_INITIALISATION_FIELD_INDEX: u32 = 124;
+
+/// Decode exactly one `ChrSlot`; an absent value retains the initialized zero
+/// as the RPC parameter reader specifies. F-951 / controller net fields.
+pub fn parse_begin_player_initialisation(payload: &Payload, codec: &RepLayoutCodec) -> Result<i32> {
+    let arguments = parse_rpc_payload(
+        payload,
+        &[RpcParameter::Value(vec![RepCommand::Int])],
+        codec,
+    )?;
+    match arguments.as_slice() {
+        [RpcArgument::NotSent] => Ok(0),
+        [RpcArgument::Sent(items)] => match items.as_slice() {
+            [RpcItem::Value(RepValue::Int(slot))] => Ok(*slot),
+            _ => anyhow::bail!("invalid character slot argument"),
+        },
+        _ => anyhow::bail!("invalid character slot parameters"),
+    }
+}
+
 /// Maximum registered enumerator value (`EViewTargetBlendFunction::VTBlend_MAX = 5`,
 /// `0x143df5290`, F-708).
 pub const VIEW_TARGET_BLEND_FUNCTION_MAX_VALUE: i64 = 5;
@@ -445,14 +468,18 @@ pub fn icarus_character_rpc_parameters(field_index: u32) -> Option<Vec<RpcParame
 /// - `51`: `APlayerController::ClientSetViewTarget(A: AActor*, TransitionParams: FViewTargetTransitionParams)`;
 /// - `54`: `APlayerController::ClientStartOnlineSession()`;
 /// - `62`: `APlayerController::ClientUpdateMultipleLevelsStreamingStatus(LevelStatuses: TArray<FUpdateLevelStreamingLevelStatus>)`;
-/// - `63`: `APlayerController::ClientVoiceHandshakeComplete()`.
+/// - `63`: `APlayerController::ClientVoiceHandshakeComplete()`;
+/// - `124`: `AIcarusPlayerController::Server_BeginPlayerInitialisation(ChrSlot: int32)`
+///   (F-951 / controller net fields; client-to-server, reliable).
 pub fn player_controller_rpc_parameters(field_index: u32) -> Option<Vec<RpcParameter>> {
     match field_index {
         13 => Some(vec![
             RpcParameter::Value(vec![RepCommand::Rotator]),
             RpcParameter::Bool,
         ]),
-        18 => Some(vec![RpcParameter::Value(vec![RepCommand::Int])]),
+        18 | SERVER_BEGIN_PLAYER_INITIALISATION_FIELD_INDEX => {
+            Some(vec![RpcParameter::Value(vec![RepCommand::Int])])
+        }
         21 => Some(vec![RpcParameter::Bool]),
         23 | 54 | 63 => Some(vec![]),
         40 | 49 => Some(vec![RpcParameter::Value(vec![RepCommand::Object])]),

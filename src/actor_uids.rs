@@ -109,6 +109,11 @@ impl ActorUidLibrary {
         &self.remaps
     }
 
+    /// Whether `uid` is currently claimed (by a pawn or a saved seed).
+    pub fn is_claimed(&self, uid: i32) -> bool {
+        self.claimed_index.contains(&uid)
+    }
+
     pub fn available(&self, uid: i32, requester: Option<u64>) -> bool {
         if self.claimed_index.contains(&uid) {
             return false;

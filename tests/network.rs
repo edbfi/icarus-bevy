@@ -1546,6 +1546,62 @@ fn pinned_join_is_answered_with_the_composed_player_controller_open() {
 }
 
 #[test]
+fn pinned_probe_sends_begin_player_initialisation_on_actor_channel() {
+    use icarus_bevy::experimental::{
+        actor_channel::{ActorChannelCodec, ActorChannelLimits},
+        archive::ByteOrder,
+        packet::{BitWriter, Payload},
+        rep_rpc::{
+            BP_ICARUS_PLAYER_CONTROLLER_SURVIVAL_FIELD_INDEX_BOUND, FieldHeader,
+            SERVER_BEGIN_PLAYER_INITIALISATION_FIELD_INDEX,
+        },
+        session_open::PLAYER_CONTROLLER_CHANNEL_INDEX,
+    };
+    let profile = ReleaseProfile::load(&release_toml()).unwrap();
+    let pinned = profile.pin.network_checksum;
+    let (mut app, address) = server_app(&NetworkConfig {
+        release_profile: Some(release_toml()),
+        ..enabled(0)
+    });
+    let (mut client, _) = with_server(&mut app, move || {
+        let (mut client, _) = join_pinned_open(address, pinned, 1);
+        let mut parameter = BitWriter::new();
+        parameter.write_bit(true);
+        parameter.write_bytes(&3_i32.to_le_bytes());
+        let (_, packet_id) = client
+            .send_actor_rpc(
+                PLAYER_CONTROLLER_CHANNEL_INDEX,
+                &FieldHeader {
+                    index: SERVER_BEGIN_PLAYER_INITIALISATION_FIELD_INDEX,
+                    payload: Payload::from_writer(parameter),
+                },
+                BP_ICARUS_PLAYER_CONTROLLER_SURVIVAL_FIELD_INDEX_BOUND,
+                &ActorChannelCodec {
+                    engine_net_version: profile.engine_network_version,
+                    exports_enabled: false,
+                    has_level: true,
+                    order: ByteOrder::Little,
+                    limits: ActorChannelLimits::default(),
+                },
+            )
+            .unwrap();
+        let replies = client.collect(Duration::from_secs(3), 32).unwrap();
+        assert!(replies.acked.contains(&packet_id));
+        client
+    });
+    let snapshot = counts(&app);
+    assert_eq!(
+        (snapshot.joined, snapshot.initialisation_slots_recorded),
+        (1, 1)
+    );
+    assert_eq!(snapshot.initialisation_calls_ignored, 0);
+    with_server(&mut app, move || {
+        client.keepalive().unwrap();
+    });
+    assert_eq!(counts(&app).joined, 1);
+}
+
+#[test]
 fn teardown_sends_host_closed_failure_then_control_close() {
     use icarus_bevy::experimental::{
         packet::read_packet,
@@ -2890,4 +2946,379 @@ fn only_a_player_joining_alone_is_host() {
         })
         .collect();
     assert_eq!(hosts, [true, false]);
+}
+
+/// An authored, stageable prospect: one associated member and its saved
+/// player character (`C026`) with an `IcarusActorGUID`. No supplied save.
+fn returning_character_payload(user: &str, slot: i32, uid: i32) -> Vec<u8> {
+    returning_characters_payload(user, slot, &[uid])
+}
+
+/// [`returning_character_payload`] with one saved character per UID, all for
+/// the same member and slot.
+fn returning_characters_payload(user: &str, slot: i32, uids: &[i32]) -> Vec<u8> {
+    use scalar::{Tag, stream, units};
+    let member = stream(&[
+        Tag::text("UserID", "StrProperty", &units(user)),
+        Tag::integer("ChrSlot", slot),
+    ]);
+    let members = Tag::array(
+        "AssociatedMembers",
+        "StructProperty",
+        [
+            1_i32.to_le_bytes().to_vec(),
+            Tag::structure("AssociatedMembers", "AssociatedMemberInfo", member).bytes(),
+        ]
+        .concat(),
+    );
+    let info = Tag::structure(
+        "ProspectInfo",
+        "ProspectInfo",
+        stream(&[
+            Tag::text("ProspectID", "StrProperty", &units("p-val")),
+            members,
+        ]),
+    );
+    let records: Vec<u8> = uids
+        .iter()
+        .flat_map(|uid| {
+            let character = stream(&[
+                Tag::integer("PlayerStateRecorderVersion", 1),
+                Tag::structure(
+                    "PlayerCharacterID",
+                    "PlayerCharacterID",
+                    stream(&[
+                        Tag::text("PlayerID", "StrProperty", &units(user)),
+                        Tag::integer("ChrSlot", slot),
+                    ]),
+                ),
+                Tag::integer("IcarusActorGUID", *uid),
+            ]);
+            let body = [character, vec![0; 4]].concat();
+            stream(&[
+                Tag::text(
+                    "ComponentClassName",
+                    "StrProperty",
+                    &units("/Script/Icarus.PlayerStateRecorderComponent"),
+                ),
+                Tag::array(
+                    "BinaryData",
+                    "ByteProperty",
+                    [
+                        i32::try_from(body.len()).unwrap().to_le_bytes().to_vec(),
+                        body,
+                    ]
+                    .concat(),
+                ),
+            ])
+        })
+        .collect();
+    let blobs = Tag::array(
+        "StateRecorderBlobs",
+        "StructProperty",
+        [
+            i32::try_from(uids.len()).unwrap().to_le_bytes().to_vec(),
+            Tag::structure("StateRecorderBlobs", "StateRecorderBlob", records).bytes(),
+        ]
+        .concat(),
+    );
+    stream(&[Tag::integer("Version", 2), info, blobs])
+}
+
+/// Send `Server_BeginPlayerInitialisation(slot)` on the controller channel
+/// and return every datagram collected afterwards.
+fn send_character_slot(
+    client: &mut icarus_bevy::experimental::probe_client::ProbeClient,
+    profile_net_version: u32,
+    slot: i32,
+) -> Vec<Vec<u8>> {
+    use icarus_bevy::experimental::{
+        actor_channel::{ActorChannelCodec, ActorChannelLimits},
+        archive::ByteOrder,
+        packet::{BitWriter, Payload},
+        rep_rpc::{
+            BP_ICARUS_PLAYER_CONTROLLER_SURVIVAL_FIELD_INDEX_BOUND, FieldHeader,
+            SERVER_BEGIN_PLAYER_INITIALISATION_FIELD_INDEX,
+        },
+        session_open::PLAYER_CONTROLLER_CHANNEL_INDEX,
+    };
+    let mut parameter = BitWriter::new();
+    parameter.write_bit(true);
+    parameter.write_bytes(&slot.to_le_bytes());
+    let (_, packet_id) = client
+        .send_actor_rpc(
+            PLAYER_CONTROLLER_CHANNEL_INDEX,
+            &FieldHeader {
+                index: SERVER_BEGIN_PLAYER_INITIALISATION_FIELD_INDEX,
+                payload: Payload::from_writer(parameter),
+            },
+            BP_ICARUS_PLAYER_CONTROLLER_SURVIVAL_FIELD_INDEX_BOUND,
+            &ActorChannelCodec {
+                engine_net_version: profile_net_version,
+                exports_enabled: false,
+                has_level: true,
+                order: ByteOrder::Little,
+                limits: ActorChannelLimits::default(),
+            },
+        )
+        .unwrap();
+    let replies = client.collect(Duration::from_secs(2), 32).unwrap();
+    assert!(replies.acked.contains(&packet_id));
+    replies
+        .replies
+        .into_iter()
+        .map(|reply| reply.bytes)
+        .collect()
+}
+
+/// The `IcarusUID` of a reliable, non-open pawn property bunch, if any.
+fn pawn_uid_update(profile: &ReleaseProfile, datagrams: &[Vec<u8>]) -> Option<i32> {
+    use icarus_bevy::experimental::{
+        actor_channel::{ActorChannelCodec, ActorChannelLimits, read_actor_bunch_body},
+        archive::ByteOrder,
+        packet::read_packet,
+        pawn_open::PAWN_CHANNEL_INDEX,
+        peer_lab::PeerLabAdmission,
+        rep_layout::{RepLayoutCodec, RepLayoutLimits, RepValue, read_rep_properties},
+    };
+    let packet_config = PacketConfig {
+        receiver: PacketReceiver::Client,
+        ..probe_config().packet
+    };
+    let plan = profile
+        .pawn_open_plan(PeerLabAdmission::default().map_url)
+        .unwrap()
+        .unwrap();
+    let actor = ActorChannelCodec {
+        engine_net_version: profile.engine_network_version,
+        exports_enabled: false,
+        has_level: true,
+        order: ByteOrder::Little,
+        limits: ActorChannelLimits::default(),
+    };
+    let codec = RepLayoutCodec {
+        actor,
+        checksums: false,
+        limits: RepLayoutLimits::default(),
+    };
+    for bytes in datagrams {
+        let Ok(packet) = read_packet(bytes, &packet_config) else {
+            continue;
+        };
+        for bunch in packet.bunches {
+            let header = &bunch.header;
+            if header.channel_index != PAWN_CHANNEL_INDEX || header.open || !header.reliable {
+                continue;
+            }
+            let body = read_actor_bunch_body(&mut bunch.payload.reader(), false, &actor).unwrap();
+            let properties =
+                read_rep_properties(&mut body.blocks[0].payload.reader(), &plan.layout, &codec)
+                    .unwrap();
+            assert_eq!(properties.entries.len(), 1, "only IcarusUID changes");
+            let RepValue::Int(uid) = properties.entries[0].value else {
+                panic!("IcarusUID is an i32")
+            };
+            assert_eq!(properties.entries[0].handle, 46);
+            return Some(uid);
+        }
+    }
+    None
+}
+
+#[test]
+fn returning_pawns_retake_their_saved_uid_once_per_live_session() {
+    use icarus_bevy::{actor_uids::FIRST_NATIVE_OBJECT_ID, prospect};
+    let profile = ReleaseProfile::load(&release_toml()).unwrap();
+    let pinned = profile.pin.network_checksum;
+    let engine = profile.engine_network_version;
+    // The probe logs in with NET_ID_HEX; the saved ID differs only in ASCII case.
+    let payload = returning_character_payload(&NET_ID_HEX.to_ascii_lowercase(), 3, 70_001);
+    let network = NetworkConfig {
+        release_profile: Some(release_toml()),
+        ..enabled(0)
+    };
+    let mut lab = network::bind(&network).unwrap().unwrap().lab;
+    lab.seed_actor_uids(prospect::saved_actor_uids_from_payload(&payload).unwrap())
+        .unwrap();
+    let characters = prospect::saved_player_characters_from_payload(&payload).unwrap();
+    assert_eq!(characters.len(), 1);
+    lab.enable_returning_characters(characters).unwrap();
+    let mut app = build_app(&ServerConfig::default(), &WorldSnapshot::default()).unwrap();
+    let address = network::install(&mut app, lab).unwrap();
+    let claimed = |app: &App| {
+        let mut uids = app
+            .world()
+            .resource::<PeerLab>()
+            .claimed_actor_uids()
+            .to_vec();
+        uids.sort_unstable();
+        uids
+    };
+    assert_eq!(claimed(&app), [70_001]);
+
+    // A wrong slot leaves the fresh UID; the right one restores the saved UID.
+    let ((first, first_open, unmatched), _) = with_server(&mut app, move || {
+        let (mut client, bytes) = join_pinned_open(address, pinned, 7);
+        let unmatched = send_character_slot(&mut client, engine, 5);
+        (client, bytes, unmatched)
+    });
+    assert_eq!(
+        sent_pawn_uid(&profile, &first_open),
+        Some(FIRST_NATIVE_OBJECT_ID)
+    );
+    assert_eq!(pawn_uid_update(&profile, &unmatched), None);
+    let ((second, second_open, restored), _) = with_server(&mut app, move || {
+        let (mut client, bytes) = join_pinned_open(address, pinned, 7);
+        let restored = send_character_slot(&mut client, engine, 3);
+        (client, bytes, restored)
+    });
+    assert_eq!(
+        sent_pawn_uid(&profile, &second_open),
+        Some(FIRST_NATIVE_OBJECT_ID + 1)
+    );
+    assert_eq!(pawn_uid_update(&profile, &restored), Some(70_001));
+    assert_eq!(claimed(&app), [FIRST_NATIVE_OBJECT_ID, 70_001]);
+    {
+        let stats = app.world().resource::<PeerLab>().stats();
+        assert_eq!(
+            (
+                stats.returning_pawns_restored,
+                stats.returning_pawns_unmatched
+            ),
+            (1, 1)
+        );
+        assert_eq!(stats.returning_pawn_errors, 0);
+    }
+
+    // A live session holds the character; another session with the same
+    // login cannot take it again.
+    let ((third, third_reply), _) = with_server(&mut app, move || {
+        let (mut client, _) = join_pinned_open(address, pinned, 7);
+        let reply = send_character_slot(&mut client, engine, 3);
+        (client, reply)
+    });
+    assert_eq!(pawn_uid_update(&profile, &third_reply), None);
+    assert_eq!(
+        app.world()
+            .resource::<PeerLab>()
+            .stats()
+            .returning_pawns_unmatched,
+        2
+    );
+
+    // Closing keeps the saved UID claimed for its record and frees the
+    // character for the next session.
+    with_server(&mut app, move || {
+        second.close().unwrap();
+        third.close().unwrap();
+    });
+    assert_eq!(claimed(&app), [FIRST_NATIVE_OBJECT_ID, 70_001]);
+    let ((fourth, reply), _) = with_server(&mut app, move || {
+        let (mut client, _) = join_pinned_open(address, pinned, 7);
+        let reply = send_character_slot(&mut client, engine, 3);
+        (client, reply)
+    });
+    assert_eq!(pawn_uid_update(&profile, &reply), Some(70_001));
+    assert_eq!(
+        app.world()
+            .resource::<PeerLab>()
+            .stats()
+            .returning_pawns_restored,
+        2
+    );
+    with_server(&mut app, move || {
+        first.close().unwrap();
+        fourth.close().unwrap();
+    });
+    assert_eq!(claimed(&app), [70_001]);
+}
+
+#[test]
+fn returning_characters_need_a_staged_save_and_actor_uids() {
+    use icarus_bevy::prospect;
+    // Version 0 drops every recorder; an unregistered class does not stage.
+    let legacy = uid_save_payload(&[vec![scalar::Tag::integer("IcarusActorGUID", 5)]]);
+    assert!(
+        prospect::saved_player_characters_from_payload(&legacy)
+            .unwrap()
+            .is_empty()
+    );
+    let known = b"PlayerStateRecorderComponent".to_vec();
+    let unknown = b"PlayerStateRecorderComponenX".to_vec();
+    let mut unstaged = returning_character_payload("someone", 0, 9);
+    let at = unstaged
+        .windows(known.len())
+        .position(|window| window == known.as_slice())
+        .unwrap();
+    unstaged[at..at + known.len()].copy_from_slice(&unknown);
+    assert!(prospect::saved_player_characters_from_payload(&unstaged).is_err());
+    let profile = ReleaseProfile::load(&release_toml()).unwrap();
+    let mut bare = PeerLab::bind(
+        0,
+        network::peer_lab_config(&enabled(0)).with_release_profile(&profile),
+    )
+    .unwrap();
+    assert!(bare.enable_returning_characters(Vec::new()).is_err());
+}
+
+#[test]
+fn returning_pawns_never_share_a_saved_uid_across_duplicate_records() {
+    use icarus_bevy::prospect;
+    let profile = ReleaseProfile::load(&release_toml()).unwrap();
+    let pinned = profile.pin.network_checksum;
+    let engine = profile.engine_network_version;
+    // Two saved records for one character share a UID; a third has its own.
+    let payload = returning_characters_payload(NET_ID_HEX, 3, &[70_001, 70_001, 70_002]);
+    let network = NetworkConfig {
+        release_profile: Some(release_toml()),
+        ..enabled(0)
+    };
+    let mut lab = network::bind(&network).unwrap().unwrap().lab;
+    lab.seed_actor_uids(prospect::saved_actor_uids_from_payload(&payload).unwrap())
+        .unwrap();
+    lab.enable_returning_characters(
+        prospect::saved_player_characters_from_payload(&payload).unwrap(),
+    )
+    .unwrap();
+    let mut app = build_app(&ServerConfig::default(), &WorldSnapshot::default()).unwrap();
+    let address = network::install(&mut app, lab).unwrap();
+    let mut updates = Vec::new();
+    let mut clients = Vec::new();
+    for _ in 0..3 {
+        let ((client, reply), _) = with_server(&mut app, move || {
+            let (mut client, _) = join_pinned_open(address, pinned, 7);
+            let reply = send_character_slot(&mut client, engine, 3);
+            (client, reply)
+        });
+        updates.push(pawn_uid_update(&profile, &reply));
+        clients.push(client);
+    }
+    // The duplicate of a held UID is skipped; the distinct record is used.
+    assert_eq!(updates, [Some(70_001), Some(70_002), None]);
+    let mut claimed = app
+        .world()
+        .resource::<PeerLab>()
+        .claimed_actor_uids()
+        .to_vec();
+    claimed.sort_unstable();
+    claimed.dedup();
+    assert_eq!(
+        claimed.len(),
+        app.world().resource::<PeerLab>().claimed_actor_uids().len(),
+        "no UID is claimed twice"
+    );
+    assert!(claimed.contains(&70_001) && claimed.contains(&70_002));
+    let stats = app.world().resource::<PeerLab>().stats();
+    assert_eq!(
+        (
+            stats.returning_pawns_restored,
+            stats.returning_pawns_unmatched
+        ),
+        (2, 1)
+    );
+    with_server(&mut app, move || {
+        for client in clients {
+            client.close().unwrap();
+        }
+    });
 }

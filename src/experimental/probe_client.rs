@@ -11,6 +11,7 @@
 //! Run against the original only through the approved offline launcher.
 
 use std::{
+    collections::BTreeMap,
     io::ErrorKind,
     net::UdpSocket,
     time::{Duration, Instant},
@@ -19,6 +20,9 @@ use std::{
 use anyhow::{Context, Result, bail, ensure};
 
 use super::{
+    actor_channel::{
+        ActorBunchBody, ActorChannelCodec, BlockTarget, ContentBlock, encode_actor_bunch_body,
+    },
     control_messages::{
         ArchiveText, ControlCodec, ControlMessage, Decoded, encode_control_message,
         read_control_messages,
@@ -29,7 +33,9 @@ use super::{
         read_data_prefix, read_packet, read_packet_header, split_termination, write_packet,
     },
     packet_lab::client_cookie_seeds,
+    rep_rpc::{FieldHeader, write_field_header},
     sequencing::{PacketSequencer, ReliableChannel, ReliableReceive, wire_reliable_sequence},
+    session_open::ACTOR_CHANNEL_NAME_INDEX,
 };
 
 /// The control channel's hard-coded name index (F-525).
@@ -112,6 +118,8 @@ pub struct ProbeClient {
     config: ProbeConfig,
     sequencer: PacketSequencer,
     control: ReliableChannel<ControlMessage>,
+    /// Last sent reliable sequence per actor channel; no automatic RPC resend.
+    actor_sequences: BTreeMap<u32, u32>,
     handshake: HandshakeReport,
 }
 
@@ -160,6 +168,7 @@ impl ProbeClient {
             config,
             sequencer,
             control,
+            actor_sequences: BTreeMap::new(),
             handshake: HandshakeReport {
                 challenge,
                 challenge_datagram,
@@ -227,6 +236,75 @@ impl ProbeClient {
             });
         }
         self.send_packet(bunches)
+    }
+
+    /// Send an authored RPC field in the actor's own content block, using the
+    /// given channel's next reliable sequence. The caller supplies the class
+    /// field bound and codec; this does not open the server's actor channel.
+    pub fn send_actor_rpc(
+        &mut self,
+        channel_index: u32,
+        field: &FieldHeader,
+        index_bound: u32,
+        codec: &ActorChannelCodec,
+    ) -> Result<(Vec<u8>, u32)> {
+        let mut fields = BitWriter::new();
+        write_field_header(&mut fields, field, index_bound)?;
+        let payload = encode_actor_bunch_body(
+            &ActorBunchBody {
+                spawn: None,
+                blocks: vec![ContentBlock {
+                    has_rep_layout: false,
+                    target: BlockTarget::Actor,
+                    payload: Payload::from_writer(fields),
+                }],
+            },
+            codec,
+        )?;
+        self.send_actor_payload(channel_index, payload)
+    }
+
+    /// Send a caller-authored actor body, including deliberately malformed
+    /// payloads for native tests. Only channel sequence counters are retained;
+    /// the probe does not implement actor RPC resend scheduling.
+    pub fn send_actor_payload(
+        &mut self,
+        channel_index: u32,
+        payload: Payload,
+    ) -> Result<(Vec<u8>, u32)> {
+        ensure!(
+            channel_index != 0 && channel_index < self.config.packet.limits.max_channels,
+            "actor channel is control or out of range"
+        );
+        let last = self
+            .actor_sequences
+            .get(&channel_index)
+            .copied()
+            .unwrap_or(self.sequencer.initial_reliable().1);
+        let sequence = last
+            .checked_add(1)
+            .context("reliable sequence counter exhausted")?;
+        let sent = self.send_packet(vec![Bunch {
+            header: BunchHeader {
+                control: false,
+                open: false,
+                close: false,
+                close_reason: None,
+                paused: false,
+                reliable: true,
+                channel_index,
+                has_package_map_exports: false,
+                has_must_be_mapped_guids: false,
+                partial: false,
+                reliable_sequence_raw: Some(wire_reliable_sequence(sequence)),
+                partial_initial: false,
+                partial_final: false,
+                channel_name: Some(Name::Hardcoded(ACTOR_CHANNEL_NAME_INDEX)),
+            },
+            payload,
+        }])?;
+        self.actor_sequences.insert(channel_index, sequence);
+        Ok(sent)
     }
 
     /// Send a packet without bunches: it carries the acks of every packet
