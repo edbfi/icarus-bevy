@@ -198,7 +198,9 @@ use super::packet::Payload;
 use super::packet_lab::{
     ActorOpenSent, DeliveredSummary, LabPeer, PacketDisposition, PacketLabConfig,
 };
-use super::pawn_open::{PawnContent, PawnOpenPlan, PawnOpenState, compose_pawn_open};
+use super::pawn_open::{
+    PawnContent, PawnOpenPlan, PawnOpenState, compose_pawn_icarus_uid_update, compose_pawn_open,
+};
 use super::ping::PingEstimator;
 use super::quest_open::{QuestOpenBasePlan, QuestOpenPlan, compose_quest_open};
 use super::release::ReleaseProfile;
@@ -535,6 +537,12 @@ pub struct PeerLabStats {
     pub initialisation_slots_recorded: u64,
     /// Slot -1, missing PlayerState or a repeated call; no failure wire is sent.
     pub initialisation_calls_ignored: u64,
+    /// Returning pawns given their saved UID (F-950).
+    pub returning_pawns_restored: u64,
+    /// Recorded slots with no free matching saved character.
+    pub returning_pawns_unmatched: u64,
+    /// Matches whose saved UID was unusable or whose update failed.
+    pub returning_pawn_errors: u64,
     /// Pawn opens sent after the PlayerController open (F-797).
     pub pawn_opens_sent: u64,
     /// Pawn opens that could not be composed or framed.
@@ -661,6 +669,7 @@ pub struct SessionCounts {
     pub player_controller_opens_sent: u64,
     pub initialisation_slots_recorded: u64,
     pub initialisation_calls_ignored: u64,
+    pub returning_pawns_restored: u64,
     /// Pawn, GameState, PlayerState, world manager and saved quest opens sent
     /// after Join.
     pub pawn_opens_sent: u64,
@@ -888,6 +897,9 @@ struct PeerEntry {
     peer: LabPeer,
     /// Owned until this connection is removed, including idle/failure paths.
     pawn_uid: Option<i32>,
+    /// The saved character this pawn restored (F-950); its UID stays claimed
+    /// for the saved record when the session ends.
+    restored_character: Option<usize>,
     /// The cookie that created this peer; compared only, never reported.
     cookie: [u8; 20],
     last_seen: Instant,
@@ -1090,6 +1102,10 @@ pub struct PeerLab {
     pawn_open: Option<(PawnOpenPlan, u32, PawnContent)>,
     /// Native run's opt-in UID owner; bare lab experiments retain templates.
     actor_uids: Option<crate::actor_uids::ActorUidLibrary>,
+    /// Saved player characters returning pawns restore from (F-950), and the
+    /// ones live sessions hold.
+    returning_characters: Vec<super::recorders::SavedPlayerCharacter>,
+    restored_characters: Vec<usize>,
     next_pawn_object_id: Option<i32>,
     /// Opt-in GameState open after the PlayerController open.
     game_state_open: Option<GameStateSession>,
@@ -1168,6 +1184,8 @@ impl PeerLab {
             player_controller_open: None,
             pawn_open: None,
             actor_uids: None,
+            returning_characters: Vec::new(),
+            restored_characters: Vec::new(),
             next_pawn_object_id: Some(crate::actor_uids::FIRST_NATIVE_OBJECT_ID),
             game_state_open: None,
             player_state_open: None,
@@ -1641,11 +1659,103 @@ impl PeerLab {
         Ok(())
     }
 
+    /// Let returning players' pawns retake their saved UIDs (F-950): when a
+    /// joined session sends its character slot (F-951), the first saved
+    /// character matching its login ID and slot (F-949) that no live session
+    /// holds gives the pawn its seeded UID. Configure after
+    /// [`seed_actor_uids`](Self::seed_actor_uids) and before admitting peers.
+    pub fn enable_returning_characters(
+        &mut self,
+        characters: Vec<super::recorders::SavedPlayerCharacter>,
+    ) -> Result<()> {
+        ensure!(
+            self.peers.is_empty(),
+            "configure returning characters before admitting peers"
+        );
+        ensure!(
+            self.actor_uids.is_some(),
+            "returning characters need actor UIDs"
+        );
+        self.returning_characters = characters;
+        Ok(())
+    }
+
+    /// F-950: the original's character restore frees the pawn's BeginPlay UID
+    /// and claims its saved one; the client sees the changed `IcarusUID`.
+    /// Natively the saved UID is already claimed as a seed, so ownership moves
+    /// to the pawn once the update is sent. The update goes out as a reliable
+    /// bunch on the pawn channel (native policy: no loss repair needed).
+    fn restore_returning_pawn_uid(&mut self, address: SocketAddrV4) {
+        let (Some((plan, channel, _)), Some(library)) = (&self.pawn_open, &mut self.actor_uids)
+        else {
+            return;
+        };
+        let Some(entry) = self.peers.get_mut(&address) else {
+            return;
+        };
+        let (Some(fresh), Some(slot), Some(id), None) = (
+            entry.pawn_uid,
+            entry.character_slot,
+            entry.login_unique_id.as_ref(),
+            entry.restored_character,
+        ) else {
+            return;
+        };
+        let user = login_user_id(id);
+        let Some((index, character)) = super::recorders::find_saved_player_character(
+            &self.returning_characters,
+            &user,
+            slot,
+            &self.restored_characters,
+        ) else {
+            bump(&mut self.stats.returning_pawns_unmatched);
+            return;
+        };
+        let saved = character.icarus_uid;
+        if saved <= 0 || saved == fresh || !library.is_claimed(saved) {
+            bump(&mut self.stats.returning_pawn_errors);
+            return;
+        }
+        let sent = compose_pawn_icarus_uid_update(
+            &plan.layout,
+            plan.engine_net_version,
+            saved,
+            entry.peer.connection_byte_order(),
+        )
+        .and_then(|payload| entry.peer.reliable_actor_bunch(*channel, payload));
+        let datagram = match sent {
+            Ok(datagram) => datagram,
+            Err(_) => {
+                bump(&mut self.stats.returning_pawn_errors);
+                if entry.peer.is_failed() {
+                    self.remove_peer(address);
+                    bump(&mut self.stats.peers_failed);
+                }
+                return;
+            }
+        };
+        // The seed and the fresh claim are both ours; freeing them and
+        // claiming the saved UID again keeps every count unchanged.
+        library.free(fresh);
+        library.free(saved);
+        let grant = library.try_claim(saved, None);
+        debug_assert_eq!(grant, Ok(saved), "freeing two claims leaves room");
+        entry.pawn_uid = grant.ok();
+        entry.restored_character = Some(index);
+        entry.ack_pending = false;
+        self.restored_characters.push(index);
+        bump(&mut self.stats.returning_pawns_restored);
+        self.send(&datagram, address);
+    }
+
     // Native policy releases a pawn's UID at every session removal. The
     // original's FreeUniqueID call timing has not been established.
     fn remove_peer(&mut self, address: SocketAddrV4) -> Option<PeerEntry> {
         let entry = self.peers.remove(&address)?;
-        if let (Some(uid), Some(library)) = (entry.pawn_uid, &mut self.actor_uids) {
+        if let Some(index) = entry.restored_character {
+            // The saved record keeps its UID, as its seed did before the join.
+            self.restored_characters.retain(|held| *held != index);
+        } else if let (Some(uid), Some(library)) = (entry.pawn_uid, &mut self.actor_uids) {
             library.free(uid);
         }
         Some(entry)
@@ -2418,6 +2528,7 @@ impl PeerLab {
             player_controller_opens_sent: self.stats.player_controller_opens_sent,
             initialisation_slots_recorded: self.stats.initialisation_slots_recorded,
             initialisation_calls_ignored: self.stats.initialisation_calls_ignored,
+            returning_pawns_restored: self.stats.returning_pawns_restored,
             pawn_opens_sent: self.stats.pawn_opens_sent,
             game_state_opens_sent: self.stats.game_state_opens_sent,
             player_state_opens_sent: self.stats.player_state_opens_sent,
@@ -2565,6 +2676,7 @@ impl PeerLab {
                     PeerEntry {
                         peer,
                         pawn_uid: None,
+                        restored_character: None,
                         cookie,
                         last_seen: now,
                         ack_pending: false,
@@ -2600,6 +2712,7 @@ impl PeerLab {
             return;
         };
         let mut close = false;
+        let mut slot_recorded = false;
         let messages = match entry.peer.receive(&self.buffer[..length]) {
             Ok(received) => {
                 let summary = received.summary();
@@ -2735,6 +2848,7 @@ impl PeerLab {
                                     bump(&mut self.stats.initialisation_calls_ignored);
                                 } else {
                                     entry.character_slot = Some(slot);
+                                    slot_recorded = true;
                                     bump(&mut self.stats.initialisation_slots_recorded);
                                 }
                             }
@@ -2754,6 +2868,9 @@ impl PeerLab {
             }
         };
         self.answer(address, &messages);
+        if slot_recorded {
+            self.restore_returning_pawn_uid(address);
+        }
         // Decoded messages are dropped here; nothing of them is retained.
         if close && self.remove_peer(address).is_some() {
             bump(&mut self.stats.peers_closed_by_client);

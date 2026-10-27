@@ -357,6 +357,22 @@ pub fn saved_actor_uids_from_payload(payload: &[u8]) -> Result<Vec<i32>> {
     Ok(uids)
 }
 
+/// The saved player characters a returning player's pawn may restore from
+/// (F-950): every `C026` record the original's strict staging and `Validate`
+/// retain. A save that does not stage is an error; no partial list is
+/// returned.
+pub fn saved_player_characters_from_payload(
+    payload: &[u8],
+) -> Result<Vec<crate::experimental::recorders::SavedPlayerCharacter>> {
+    let profile = TagProfile::MemoryArchive522;
+    let roots = read_root(payload, profile)?;
+    crate::experimental::recorders::saved_player_characters(
+        &roots.tags,
+        profile,
+        MAX_BOUNDED_COMPONENT_BYTES,
+    )
+}
+
 /// [`read_saved_prospect`] on an inner payload, such as a preserved
 /// world's (`PreservedProspect::to_inner_payload`).
 pub fn saved_prospect_from_payload(payload: &[u8]) -> Result<SavedProspect> {

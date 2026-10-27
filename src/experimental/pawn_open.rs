@@ -24,8 +24,8 @@ use super::archive::ByteOrder;
 use super::control_messages::ArchiveText;
 use super::packet::{BitWriter, Payload};
 use super::rep_layout::{
-    GameplayTag, NetworkName, PropertyStream, RepArray, RepCommand, RepLayoutCodec,
-    RepLayoutLimits, RepValue, StatPairRepState,
+    GameplayTag, NetworkName, PropertyStream, RepArray, RepCommand, RepEntry, RepLayoutCodec,
+    RepLayoutLimits, RepValue, StatPairRepState, encode_rep_properties,
 };
 use super::rep_rpc::{
     CustomDeltaHeader, FAST_ARRAY_COUNT_CAP, FastArrayDelta, FastArrayItem, FastArrayItemLayout,
@@ -659,4 +659,46 @@ pub fn compose_pawn_open(
     };
     let (composed, _) = compose_component_actor_open(cache, exports, &open, channel_index, order)?;
     Ok(composed)
+}
+
+/// Frame a pawn property update carrying only `IcarusUID` (handle 46) on its
+/// open channel: an actor bunch body without spawn holding one actor block.
+/// The original changes a returning pawn's UID when its saved recorder
+/// restores (F-950); `layout` is the pawn plan's. Nonpositive UIDs reject.
+pub fn compose_pawn_icarus_uid_update(
+    layout: &[RepCommand],
+    engine_net_version: u32,
+    icarus_uid: i32,
+    order: ByteOrder,
+) -> Result<Payload> {
+    use super::actor_channel::{
+        ActorBunchBody, BlockTarget, ContentBlock, encode_actor_bunch_body,
+    };
+    ensure!(icarus_uid > 0, "a pawn IcarusUID update is positive");
+    let codec = actor_codec(engine_net_version, order);
+    let rep_codec = RepLayoutCodec {
+        actor: codec,
+        checksums: false,
+        limits: RepLayoutLimits::default(),
+    };
+    let stream = PropertyStream {
+        entries: vec![RepEntry {
+            handle: handle::ICARUS_UID,
+            checksum: None,
+            value: RepValue::Int(icarus_uid),
+        }],
+        terminator_checksum: None,
+    };
+    let block = ContentBlock {
+        has_rep_layout: true,
+        target: BlockTarget::Actor,
+        payload: encode_rep_properties(&stream, layout, &rep_codec)?,
+    };
+    encode_actor_bunch_body(
+        &ActorBunchBody {
+            spawn: None,
+            blocks: vec![block],
+        },
+        &codec,
+    )
 }

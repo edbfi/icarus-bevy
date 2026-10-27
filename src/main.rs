@@ -1097,6 +1097,22 @@ fn run(options: ConfigOptions, max_ticks: Option<u64>, compressed: bool) -> Resu
             .lab
             .seed_actor_uids(uids)
             .context("seed the loaded world's actor UID namespace")?;
+        // Returning pawns are an addition to a world that already loads, so a
+        // save the strict staging refuses only disables them (F-950).
+        match icarus_bevy::prospect::saved_player_characters_from_payload(&payload) {
+            Ok(characters) => {
+                let count = characters.len();
+                bound.lab.enable_returning_characters(characters)?;
+                eprintln!(
+                    "{}",
+                    json!({"event": "returning_characters_loaded", "characters": count})
+                );
+            }
+            Err(_) => eprintln!(
+                "{}",
+                json!({"event": "returning_characters_unavailable", "reason": "save did not stage"})
+            ),
+        }
     }
     if let Some(bound) = &mut bound
         && bound.lab.has_game_state_open()

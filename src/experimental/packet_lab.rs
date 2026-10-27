@@ -997,6 +997,74 @@ impl LabPeer {
         Ok(datagram)
     }
 
+    /// Send `payload` (an actor bunch body without spawn) as one reliable
+    /// bunch on open actor channel `index`'s next sequence, in a datagram with
+    /// the ack state and resends; it is resent until acked, like an open.
+    /// Fails without a state change when the channel is not open, is closing,
+    /// has [`MAX_PENDING_RELIABLE`] bunches unacked or the bunch needs a split.
+    pub fn reliable_actor_bunch(&mut self, index: u32, payload: Payload) -> Result<Vec<u8>> {
+        self.ensure_usable()?;
+        ensure!(
+            !self.closing_actors.contains(&index),
+            "actor channel {index} is closing"
+        );
+        let channel = self
+            .actors
+            .get(&index)
+            .with_context(|| format!("actor channel {index} is not open"))?;
+        ensure!(
+            channel.out_bunches().len() < MAX_PENDING_RELIABLE,
+            "{MAX_PENDING_RELIABLE} outgoing reliable bunches are unacknowledged"
+        );
+        let max_single = max_single_bunch_size_bits(
+            self.config.packet.limits.max_packet_bytes,
+            PACKET_HANDLER_BITS,
+        )?;
+        ensure!(
+            payload.bit_len() <= max_single,
+            "a reliable actor bunch must fit one bunch"
+        );
+        let sequence = channel
+            .out_reliable()
+            .checked_add(1)
+            .context("reliable sequence counter exhausted")?;
+        let bunch = Bunch {
+            header: BunchHeader {
+                control: false,
+                open: false,
+                close: false,
+                close_reason: None,
+                paused: false,
+                reliable: true,
+                channel_index: index,
+                has_package_map_exports: false,
+                has_must_be_mapped_guids: false,
+                partial: false,
+                reliable_sequence_raw: Some(wire_reliable_sequence(sequence)),
+                partial_initial: false,
+                partial_final: false,
+                channel_name: Some(Name::Hardcoded(ACTOR_CHANNEL_NAME_INDEX)),
+            },
+            payload,
+        };
+        let (datagram, packet_id, resends) = self.assemble(std::slice::from_ref(&bunch))?;
+        let committed = self.sequencer.commit()?;
+        self.note_sent(committed);
+        let recorded = (|| {
+            ensure!(committed == packet_id, "committed packet ID mismatch");
+            self.record_resends(packet_id, &resends)?;
+            let channel = self
+                .actors
+                .get_mut(&index)
+                .context("actor channel vanished")?;
+            let assigned = channel.send_reliable(packet_id, bunch)?;
+            ensure!(assigned == sequence, "outgoing reliable sequence mismatch");
+            Ok(())
+        })();
+        self.fail_on_error(recorded)?;
+        Ok(datagram)
+    }
+
     /// Whether actor channel `index` is open, not closing, and has every
     /// reliable bunch acked (its open included).
     pub fn actor_channel_settled(&self, index: u32) -> bool {
