@@ -55,7 +55,10 @@ Joining players are not yet appended to `History` (F-865).
 Explicit native prospect refreshes retain current values and future-open
 templates, clear defaults and repair loss after open ACK; invalid combined
 opens reject atomically and temporary pressure preserves clocks (F-936).
-These are authored loopback tests; original trigger timing remains U-070.
+A saved member's Join refreshes who is playing by login ID, as the original's
+spawn completion does (F-822, F-945); unassociated joins, which the original adds
+from character records, change nothing (F-946). These are authored loopback
+tests; original trigger timing remains U-070.
 
 ## Open
 
