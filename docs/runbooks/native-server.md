@@ -126,6 +126,7 @@ Scheduling sends nothing; bandwidth/dormancy/ownership/destruction are unmodeled
 cargo run --release --locked --example replication_bench -- --viewers 1,4,8
 # --source <envelope>: planned-actor positions; prints aggregates only
 cargo run --release --locked --example authored_host_bench # F-938 vs no bridge
+# --peers N (0..=8) joins authored loopback peers; each opens at most 250 actors
 ```
 
 ## Persistence and recovery
