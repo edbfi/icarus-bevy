@@ -28,6 +28,7 @@ pub mod pawn_open;
 pub mod peer_lab;
 pub mod ping;
 pub mod probe_client;
+mod profile_exchange;
 pub mod property_tree;
 pub mod prospect_info;
 pub mod quest_open;

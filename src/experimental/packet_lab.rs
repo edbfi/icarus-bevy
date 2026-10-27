@@ -94,13 +94,27 @@ pub const MAX_CONSTRUCTED_BUNCH_BYTES: usize = 65_536;
 type Resends = Vec<(Resend, Bunch)>;
 
 /// The datagrams of an actor open, in send order, with their packet IDs.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct ActorOpenSent {
     pub datagrams: Vec<Vec<u8>>,
     pub packet_ids: Vec<u32>,
     /// The packet carrying the last export-only part, if any: the packet the
     /// open's exports are committed to (`NotifyBunchCommit`, F-796).
     pub exports_packet_id: Option<u32>,
+}
+
+impl std::fmt::Debug for ActorOpenSent {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("ActorOpenSent")
+            .field(
+                "datagram_bytes",
+                &self.datagrams.iter().map(Vec::len).collect::<Vec<_>>(),
+            )
+            .field("packet_ids", &self.packet_ids)
+            .field("exports_packet_id", &self.exports_packet_id)
+            .finish()
+    }
 }
 
 /// Parts laid out over consecutive datagrams on a copy of the sequencer;
@@ -1063,6 +1077,100 @@ impl LabPeer {
         })();
         self.fail_on_error(recorded)?;
         Ok(datagram)
+    }
+
+    /// Reliable property/RPC payload on an existing actor channel, split under
+    /// the same limits and transactional packet planning as actor opens. Every
+    /// part is retained for ACK/NAK repair. Planning failures change no state.
+    pub fn reliable_actor_bunch_datagrams(
+        &mut self,
+        index: u32,
+        payload: Payload,
+    ) -> Result<ActorOpenSent> {
+        self.ensure_usable()?;
+        ensure!(
+            !self.closing_actors.contains(&index),
+            "actor channel is closing"
+        );
+        let channel = self
+            .actors
+            .get(&index)
+            .context("actor channel is not open")?;
+        let first = channel
+            .out_reliable()
+            .checked_add(1)
+            .context("reliable sequence counter exhausted")?;
+        let template = Bunch {
+            header: BunchHeader {
+                control: false,
+                open: false,
+                close: false,
+                close_reason: None,
+                paused: false,
+                reliable: true,
+                channel_index: index,
+                has_package_map_exports: false,
+                has_must_be_mapped_guids: false,
+                partial: false,
+                reliable_sequence_raw: Some(wire_reliable_sequence(first)),
+                partial_initial: false,
+                partial_final: false,
+                channel_name: Some(Name::Hardcoded(ACTOR_CHANNEL_NAME_INDEX)),
+            },
+            payload,
+        };
+        let max_single = max_single_bunch_size_bits(
+            self.config.packet.limits.max_packet_bytes,
+            PACKET_HANDLER_BITS,
+        )?;
+        let parts = split_outgoing_bunch(
+            &template,
+            &[],
+            max_single,
+            Some(MAX_CONSTRUCTED_BUNCH_BYTES),
+        )?;
+        ensure!(
+            channel.out_bunches().len() + parts.len() <= MAX_PENDING_RELIABLE,
+            "reliable actor window is full"
+        );
+        let Layout {
+            sequencer,
+            resends,
+            datagrams,
+        } = self.lay_out(&parts, MAX_PENDING_RELIABLE)?;
+        let first_packet = datagrams
+            .first()
+            .context("reliable update has no datagrams")?
+            .1;
+        self.sequencer = sequencer;
+        let mut sent = ActorOpenSent {
+            datagrams: Vec::new(),
+            packet_ids: Vec::new(),
+            exports_packet_id: None,
+        };
+        let recorded = (|| {
+            self.record_resends(first_packet, &resends)?;
+            for (datagram, packet_id, carried) in datagrams {
+                self.note_sent(packet_id);
+                let channel = self
+                    .actors
+                    .get_mut(&index)
+                    .context("actor channel vanished")?;
+                for part in carried {
+                    let raw = part.header.reliable_sequence_raw;
+                    let assigned = channel.send_reliable(packet_id, part)?;
+                    ensure!(
+                        raw == Some(wire_reliable_sequence(assigned)),
+                        "outgoing reliable sequence mismatch"
+                    );
+                }
+                sent.datagrams.push(datagram);
+                sent.packet_ids.push(packet_id);
+            }
+            Ok(())
+        })();
+        self.fail_on_error(recorded)?;
+        Ok(sent)
     }
 
     /// Whether actor channel `index` is open, not closing, and has every

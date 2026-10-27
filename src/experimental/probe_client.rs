@@ -21,7 +21,8 @@ use anyhow::{Context, Result, bail, ensure};
 
 use super::{
     actor_channel::{
-        ActorBunchBody, ActorChannelCodec, BlockTarget, ContentBlock, encode_actor_bunch_body,
+        ActorBunchBody, ActorChannelCodec, BlockTarget, ContentBlock, NetGuidRef, SubObjectClass,
+        encode_actor_bunch_body,
     },
     control_messages::{
         ArchiveText, ControlCodec, ControlMessage, Decoded, encode_control_message,
@@ -121,6 +122,14 @@ pub struct ProbeClient {
     /// Last sent reliable sequence per actor channel; no automatic RPC resend.
     actor_sequences: BTreeMap<u32, u32>,
     handshake: HandshakeReport,
+}
+
+/// Authored flattened profile response. Values have no Debug representation.
+pub struct ProbeProfileResponse {
+    pub character: bool,
+    pub success: bool,
+    /// RPC items excluding the leading Success flag.
+    pub profile: Vec<super::rep_rpc::RpcItem>,
 }
 
 impl ProbeClient {
@@ -248,6 +257,56 @@ impl ProbeClient {
         index_bound: u32,
         codec: &ActorChannelCodec,
     ) -> Result<(Vec<u8>, u32)> {
+        self.send_target_rpc(channel_index, BlockTarget::Actor, field, index_bound, codec)
+    }
+
+    /// Reply to a profile request on the controller's BackendProxy subobject.
+    pub fn send_profile_response(
+        &mut self,
+        channel_index: u32,
+        proxy: u32,
+        response: ProbeProfileResponse,
+        codec: &super::rep_layout::RepLayoutCodec,
+    ) -> Result<(Vec<u8>, u32)> {
+        use super::rep_rpc::{self, RpcArgument, RpcItem};
+        let mut items = vec![RpcItem::Value(super::rep_layout::RepValue::Bool(
+            response.success,
+        ))];
+        items.extend(response.profile);
+        let field = FieldHeader {
+            index: if response.character {
+                rep_rpc::RESPONSE_GET_CHARACTER_PROFILE
+            } else {
+                rep_rpc::RESPONSE_GET_USER_PROFILE
+            },
+            payload: rep_rpc::encode_rpc_payload(
+                &rep_rpc::backend_profile_response_parameters(response.character),
+                &[RpcArgument::Sent(items)],
+                codec,
+            )?,
+        };
+        self.send_target_rpc(
+            channel_index,
+            BlockTarget::SubObject {
+                object: NetGuidRef::plain(proxy),
+                class: SubObjectClass::StablyNamed,
+            },
+            &field,
+            rep_rpc::BACKEND_PROXY_FIELD_INDEX_BOUND,
+            &codec.actor,
+        )
+    }
+
+    /// Send a field on the actor or a caller-selected subobject using the
+    /// same reliable sequence space as every other RPC on this channel.
+    pub fn send_target_rpc(
+        &mut self,
+        channel_index: u32,
+        target: BlockTarget,
+        field: &FieldHeader,
+        index_bound: u32,
+        codec: &ActorChannelCodec,
+    ) -> Result<(Vec<u8>, u32)> {
         let mut fields = BitWriter::new();
         write_field_header(&mut fields, field, index_bound)?;
         let payload = encode_actor_bunch_body(
@@ -255,7 +314,7 @@ impl ProbeClient {
                 spawn: None,
                 blocks: vec![ContentBlock {
                     has_rep_layout: false,
-                    target: BlockTarget::Actor,
+                    target,
                     payload: Payload::from_writer(fields),
                 }],
             },

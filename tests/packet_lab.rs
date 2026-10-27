@@ -1659,3 +1659,100 @@ fn update_datagram_failures_leave_the_state_unchanged() {
     );
     assert_eq!(reassemble_update(&sent).1.unwrap(), update_bunch(payload));
 }
+
+#[test]
+fn reliable_profile_sized_updates_match_single_bunch_framing() {
+    for bits in [0, 4000, 7625] {
+        let mut single = update_peer(16);
+        let mut split = update_peer(16);
+        let id = single.sequencer().out_packet_id();
+        let expected = single.reliable_actor_bunch(4, bits_payload(bits)).unwrap();
+        let sent = split
+            .reliable_actor_bunch_datagrams(4, bits_payload(bits))
+            .unwrap();
+        assert_eq!(sent.datagrams, [expected]);
+        assert_eq!(sent.packet_ids, [id]);
+        assert_eq!(sent.exports_packet_id, None);
+        assert!(!format!("{sent:?}").contains(&format!("{:?}", sent.datagrams)));
+        assert_eq!(format!("{split:?}"), format!("{single:?}"));
+    }
+}
+
+#[test]
+fn reliable_profile_updates_split_and_repair_lost_parts() {
+    let mut peer = peer();
+    let mut client = Client::new();
+    let opened = peer
+        .reliable_actor_open(&actor_open_bunch(4, &[1]), &[])
+        .unwrap();
+    accept_header(&mut client, &opened);
+    let (ack, _) = client.send(Vec::new());
+    peer.receive(&ack).unwrap();
+    assert!(peer.actor_channel_settled(4));
+    let payload = bits_payload(16_000);
+    let sent = peer
+        .reliable_actor_bunch_datagrams(4, payload.clone())
+        .unwrap();
+    assert_eq!(sent.datagrams.len(), 3);
+    assert_eq!(peer.pending_actor_reliable(4), Some(3));
+    let mut reassembler = PartialBunchReassembler::new();
+    let mut complete = None;
+    let mut originals = Vec::new();
+    for (index, datagram) in sent.datagrams.iter().enumerate() {
+        let bunches = read_packet(datagram, &to_client()).unwrap().bunches;
+        assert_eq!(bunches.len(), 1);
+        let part = &bunches[0];
+        assert!(part.header.reliable && part.header.partial && !part.header.open);
+        let received = reassembler
+            .receive_part(
+                index as i64 + 1,
+                &part.header,
+                &part.payload,
+                Some(MAX_CONSTRUCTED_PARTIAL_BUNCH_BYTES),
+            )
+            .unwrap();
+        if let PartialReceive::Complete { bunch, .. } = received {
+            complete = Some(bunch);
+        }
+        originals.push(part.clone());
+    }
+    assert_eq!(complete.unwrap().payload, payload);
+    // Losing the middle packet schedules exactly its reliable part for resend.
+    accept_header(&mut client, &sent.datagrams[0]);
+    accept_header(&mut client, &sent.datagrams[2]);
+    let (ack, _) = client.send(Vec::new());
+    let received = peer.receive(&ack).unwrap();
+    let summary = received.summary();
+    assert_eq!(summary.naked, [sent.packet_ids[1]]);
+    assert_eq!(peer.pending_resends(), 1);
+    let repaired = peer.ack_packet().unwrap();
+    let repaired = read_packet(&repaired, &to_client()).unwrap();
+    assert_eq!(repaired.bunches, [originals[1].clone()]);
+}
+
+#[test]
+fn reliable_profile_update_preflight_failures_leave_channel_state_unchanged() {
+    let mut peer = update_peer(3);
+    for (channel, bits) in [
+        (5, 8),
+        (4, 24_000),
+        (4, (MAX_CONSTRUCTED_PARTIAL_BUNCH_BYTES + 1) * 8),
+    ] {
+        let before = format!("{peer:?}");
+        let next = peer.sequencer().out_packet_id();
+        assert!(
+            peer.reliable_actor_bunch_datagrams(channel, bits_payload(bits))
+                .is_err()
+        );
+        assert_eq!(format!("{peer:?}"), before);
+        assert_eq!(peer.sequencer().out_packet_id(), next);
+        assert!(!peer.is_failed());
+    }
+    assert_eq!(
+        peer.reliable_actor_bunch_datagrams(4, bits_payload(16_000))
+            .unwrap()
+            .datagrams
+            .len(),
+        3
+    );
+}

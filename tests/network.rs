@@ -36,6 +36,8 @@ use icarus_bevy::{
 };
 use serde_json::Value;
 
+#[path = "common/profiles.rs"]
+mod profiles;
 #[path = "common/c001_scalar_owners.rs"]
 mod scalar;
 
@@ -3071,6 +3073,140 @@ fn send_character_slot(
         .collect()
 }
 
+/// Finish the native exchange using the proxy GUID carried by its request.
+/// The saved-UID trigger must not run on Begin or on the user profile alone.
+fn exchange_profiles(
+    client: &mut ProbeClient,
+    engine: u32,
+    requested_slot: i32,
+    profile_slot: i32,
+) -> Vec<Vec<u8>> {
+    use icarus_bevy::experimental::{
+        actor_channel::{ActorChannelCodec, BlockTarget, read_actor_bunch_body},
+        archive::ByteOrder,
+        packet::read_packet,
+        probe_client::ProbeProfileResponse,
+        rep_layout::RepLayoutCodec,
+        rep_rpc::{
+            BACKEND_PROXY_FIELD_INDEX_BOUND, CLIENT_REQUEST_GET_CHARACTER_PROFILE,
+            CLIENT_REQUEST_GET_USER_PROFILE, read_field_header,
+        },
+        session_open::PLAYER_CONTROLLER_CHANNEL_INDEX,
+    };
+    let codec = RepLayoutCodec {
+        actor: ActorChannelCodec {
+            engine_net_version: engine,
+            exports_enabled: false,
+            has_level: true,
+            order: ByteOrder::Little,
+            limits: Default::default(),
+        },
+        checksums: false,
+        limits: Default::default(),
+    };
+    let replies = send_character_slot(client, engine, requested_slot);
+    let request = |replies: &[Vec<u8>], expected| {
+        for bytes in replies {
+            for bunch in read_packet(
+                bytes,
+                &PacketConfig {
+                    receiver: PacketReceiver::Client,
+                    ..probe_config().packet
+                },
+            )
+            .unwrap()
+            .bunches
+            {
+                if bunch.header.channel_index != PLAYER_CONTROLLER_CHANNEL_INDEX
+                    || bunch.header.open
+                {
+                    continue;
+                }
+                assert!(bunch.header.reliable);
+                let body = read_actor_bunch_body(&mut bunch.payload.reader(), false, &codec.actor)
+                    .unwrap();
+                for block in body.blocks {
+                    if let BlockTarget::SubObject { object, .. } = block.target {
+                        let mut reader = block.payload.reader();
+                        let field =
+                            read_field_header(&mut reader, BACKEND_PROXY_FIELD_INDEX_BOUND, 65_536)
+                                .unwrap();
+                        assert!(reader.at_end());
+                        assert_eq!(field.index, expected);
+                        return object.guid;
+                    }
+                }
+            }
+        }
+        panic!("no profile request")
+    };
+    // No pawn update may precede a character-profile success.
+    let has_pawn = |replies: &[Vec<u8>]| {
+        replies.iter().any(|bytes| {
+            read_packet(
+                bytes,
+                &PacketConfig {
+                    receiver: PacketReceiver::Client,
+                    ..probe_config().packet
+                },
+            )
+            .unwrap()
+            .bunches
+            .iter()
+            .any(|bunch| {
+                bunch.header.channel_index
+                    == icarus_bevy::experimental::pawn_open::PAWN_CHANNEL_INDEX
+                    && !bunch.header.open
+            })
+        })
+    };
+    assert!(!has_pawn(&replies));
+    let proxy = request(&replies, CLIENT_REQUEST_GET_USER_PROFILE);
+    client
+        .send_profile_response(
+            PLAYER_CONTROLLER_CHANNEL_INDEX,
+            proxy,
+            ProbeProfileResponse {
+                character: false,
+                success: true,
+                profile: profiles::user().rpc,
+            },
+            &codec,
+        )
+        .unwrap();
+    let replies: Vec<_> = client
+        .collect(Duration::from_millis(250), 32)
+        .unwrap()
+        .replies
+        .into_iter()
+        .map(|reply| reply.bytes)
+        .collect();
+    assert!(!has_pawn(&replies));
+    assert_eq!(
+        request(&replies, CLIENT_REQUEST_GET_CHARACTER_PROFILE),
+        proxy
+    );
+    client
+        .send_profile_response(
+            PLAYER_CONTROLLER_CHANNEL_INDEX,
+            proxy,
+            ProbeProfileResponse {
+                character: true,
+                success: true,
+                profile: profiles::character(profile_slot).rpc,
+            },
+            &codec,
+        )
+        .unwrap();
+    client
+        .collect(Duration::from_millis(250), 32)
+        .unwrap()
+        .replies
+        .into_iter()
+        .map(|reply| reply.bytes)
+        .collect()
+}
+
 /// The `IcarusUID` of a reliable, non-open pawn property bunch, if any.
 fn pawn_uid_update(profile: &ReleaseProfile, datagrams: &[Vec<u8>]) -> Option<i32> {
     use icarus_bevy::experimental::{
@@ -3156,10 +3292,10 @@ fn returning_pawns_retake_their_saved_uid_once_per_live_session() {
     };
     assert_eq!(claimed(&app), [70_001]);
 
-    // A wrong slot leaves the fresh UID; the right one restores the saved UID.
+    // The profile's slot controls restore, even when Begin requested another slot.
     let ((first, first_open, unmatched), _) = with_server(&mut app, move || {
         let (mut client, bytes) = join_pinned_open(address, pinned, 7);
-        let unmatched = send_character_slot(&mut client, engine, 5);
+        let unmatched = exchange_profiles(&mut client, engine, 3, 5);
         (client, bytes, unmatched)
     });
     assert_eq!(
@@ -3169,7 +3305,7 @@ fn returning_pawns_retake_their_saved_uid_once_per_live_session() {
     assert_eq!(pawn_uid_update(&profile, &unmatched), None);
     let ((second, second_open, restored), _) = with_server(&mut app, move || {
         let (mut client, bytes) = join_pinned_open(address, pinned, 7);
-        let restored = send_character_slot(&mut client, engine, 3);
+        let restored = exchange_profiles(&mut client, engine, 5, 3);
         (client, bytes, restored)
     });
     assert_eq!(
@@ -3194,7 +3330,7 @@ fn returning_pawns_retake_their_saved_uid_once_per_live_session() {
     // login cannot take it again.
     let ((third, third_reply), _) = with_server(&mut app, move || {
         let (mut client, _) = join_pinned_open(address, pinned, 7);
-        let reply = send_character_slot(&mut client, engine, 3);
+        let reply = exchange_profiles(&mut client, engine, 3, 3);
         (client, reply)
     });
     assert_eq!(pawn_uid_update(&profile, &third_reply), None);
@@ -3215,7 +3351,7 @@ fn returning_pawns_retake_their_saved_uid_once_per_live_session() {
     assert_eq!(claimed(&app), [FIRST_NATIVE_OBJECT_ID, 70_001]);
     let ((fourth, reply), _) = with_server(&mut app, move || {
         let (mut client, _) = join_pinned_open(address, pinned, 7);
-        let reply = send_character_slot(&mut client, engine, 3);
+        let reply = exchange_profiles(&mut client, engine, 3, 3);
         (client, reply)
     });
     assert_eq!(pawn_uid_update(&profile, &reply), Some(70_001));
@@ -3287,7 +3423,7 @@ fn returning_pawns_never_share_a_saved_uid_across_duplicate_records() {
     for _ in 0..3 {
         let ((client, reply), _) = with_server(&mut app, move || {
             let (mut client, _) = join_pinned_open(address, pinned, 7);
-            let reply = send_character_slot(&mut client, engine, 3);
+            let reply = exchange_profiles(&mut client, engine, 3, 3);
             (client, reply)
         });
         updates.push(pawn_uid_update(&profile, &reply));

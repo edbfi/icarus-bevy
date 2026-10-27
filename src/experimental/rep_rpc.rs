@@ -376,6 +376,24 @@ pub const BP_ICARUS_PLAYER_CONTROLLER_SURVIVAL_FIELD_INDEX_BOUND: u32 = 183;
 /// Flags 0x280cc0: Net | NetReliable | Native | Event | NetServer.
 pub const SERVER_BEGIN_PLAYER_INITIALISATION_FIELD_INDEX: u32 = 124;
 
+/// Pinned plain `UBackendProxyComponent` class cache bound.
+pub const BACKEND_PROXY_FIELD_INDEX_BOUND: u32 = 149;
+pub const CLIENT_REQUEST_GET_USER_PROFILE: u32 = 25;
+pub const CLIENT_REQUEST_GET_CHARACTER_PROFILE: u32 = 23;
+pub const RESPONSE_GET_USER_PROFILE: u32 = 110;
+pub const RESPONSE_GET_CHARACTER_PROFILE: u32 = 108;
+
+/// One struct parameter: Success followed by the flattened profile commands.
+pub fn backend_profile_response_parameters(character: bool) -> Vec<RpcParameter> {
+    let mut commands = vec![RepCommand::Bool];
+    commands.extend(if character {
+        super::rep_layout::online_profile_character_rep_layout()
+    } else {
+        super::rep_layout::online_profile_user_rep_layout()
+    });
+    vec![RpcParameter::Value(commands)]
+}
+
 /// Decode exactly one `ChrSlot`; an absent value retains the initialized zero
 /// as the RPC parameter reader specifies. F-951 / controller net fields.
 pub fn parse_begin_player_initialisation(payload: &Payload, codec: &RepLayoutCodec) -> Result<i32> {

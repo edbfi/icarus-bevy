@@ -29,6 +29,8 @@ use icarus_bevy::{
 #[path = "common/loopback_client.rs"]
 mod loopback_client;
 use loopback_client::{Client, drain};
+#[path = "common/profiles.rs"]
+mod profiles;
 
 fn codec(order: ByteOrder) -> ActorChannelCodec {
     ActorChannelCodec {
@@ -158,7 +160,7 @@ fn slot(app: &App, client: &Client) -> Option<i32> {
         .character_slot(address(client))
 }
 
-fn send(app: &mut App, client: &mut Client, bunch: Bunch) {
+fn send(app: &mut App, client: &mut Client, bunch: Bunch) -> Vec<Vec<u8>> {
     client.send(vec![bunch]);
     app.update();
     let replies = drain(&client.socket);
@@ -168,6 +170,7 @@ fn send(app: &mut App, client: &mut Client, bunch: Bunch) {
     assert!(lab.has_peer(address(client)));
     assert_eq!(lab.stats().peers_failed, 0);
     assert_eq!(lab.stats().failures_sent, 0);
+    replies
 }
 
 #[test]
@@ -519,4 +522,581 @@ fn initialisation_rpc_absent_parameter_uses_zero_and_consumes_exactly() {
             i32::MIN
         );
     }
+}
+
+fn requests(client: &Client, replies: &[Vec<u8>]) -> Vec<(u32, FieldHeader)> {
+    use icarus_bevy::experimental::{
+        actor_channel::read_actor_bunch_body,
+        packet::read_packet,
+        rep_rpc::{BACKEND_PROXY_FIELD_INDEX_BOUND, read_field_header},
+    };
+    let mut requests = Vec::new();
+    for bytes in replies {
+        for bunch in read_packet(bytes, &client.config()).unwrap().bunches {
+            if bunch.header.channel_index != CONTROLLER || bunch.header.open {
+                continue;
+            }
+            assert!(bunch.header.reliable);
+            let body =
+                read_actor_bunch_body(&mut bunch.payload.reader(), false, &codec(client.order))
+                    .unwrap();
+            for block in body.blocks {
+                let BlockTarget::SubObject { object, .. } = block.target else {
+                    continue;
+                };
+                assert!(!block.has_rep_layout);
+                let mut reader = block.payload.reader();
+                while !reader.at_end() {
+                    requests.push((
+                        object.guid,
+                        read_field_header(&mut reader, BACKEND_PROXY_FIELD_INDEX_BOUND, 65_536)
+                            .unwrap(),
+                    ));
+                }
+            }
+        }
+    }
+    requests
+}
+
+fn begin_profile(app: &mut App, client: &mut Client, sequence: u32) -> u32 {
+    use icarus_bevy::experimental::rep_rpc::CLIENT_REQUEST_GET_USER_PROFILE;
+    let replies = send(
+        app,
+        client,
+        actor(
+            CONTROLLER,
+            sequence,
+            body(&[field(3, client.order)], client.order),
+        ),
+    );
+    let requests = requests(client, &replies);
+    assert_eq!(requests.len(), 1);
+    assert_eq!(requests[0].1.index, CLIENT_REQUEST_GET_USER_PROFILE);
+    assert_eq!(requests[0].1.payload.bit_len(), 0);
+    requests[0].0
+}
+
+fn response_field(character: bool, success: bool, slot: i32, order: ByteOrder) -> FieldHeader {
+    use icarus_bevy::experimental::rep_rpc::{
+        RESPONSE_GET_CHARACTER_PROFILE, RESPONSE_GET_USER_PROFILE,
+        backend_profile_response_parameters,
+    };
+    let mut items = vec![RpcItem::Value(RepValue::Bool(success))];
+    items.extend(if character {
+        profiles::character(slot).rpc
+    } else {
+        profiles::user().rpc
+    });
+    FieldHeader {
+        index: if character {
+            RESPONSE_GET_CHARACTER_PROFILE
+        } else {
+            RESPONSE_GET_USER_PROFILE
+        },
+        payload: encode_rpc_payload(
+            &backend_profile_response_parameters(character),
+            &[RpcArgument::Sent(items)],
+            &rep_codec(order),
+        )
+        .unwrap(),
+    }
+}
+
+fn proxy_body(proxy: u32, fields: &[FieldHeader], order: ByteOrder) -> Payload {
+    use icarus_bevy::experimental::rep_rpc::BACKEND_PROXY_FIELD_INDEX_BOUND;
+    let mut writer = BitWriter::new();
+    for field in fields {
+        write_field_header(&mut writer, field, BACKEND_PROXY_FIELD_INDEX_BOUND).unwrap();
+    }
+    encode_actor_bunch_body(
+        &ActorBunchBody {
+            spawn: None,
+            blocks: vec![ContentBlock {
+                has_rep_layout: false,
+                target: BlockTarget::SubObject {
+                    object: NetGuidRef::plain(proxy),
+                    class: SubObjectClass::StablyNamed,
+                },
+                payload: Payload::from_writer(writer),
+            }],
+        },
+        &codec(order),
+    )
+    .unwrap()
+}
+
+fn respond(
+    app: &mut App,
+    client: &mut Client,
+    sequence: u32,
+    proxy: u32,
+    character: bool,
+    success: bool,
+) -> Vec<Vec<u8>> {
+    send(
+        app,
+        client,
+        actor(
+            CONTROLLER,
+            sequence,
+            proxy_body(
+                proxy,
+                &[response_field(character, success, 7, client.order)],
+                client.order,
+            ),
+        ),
+    )
+}
+
+fn assert_character_request(client: &Client, replies: &[Vec<u8>], proxy: u32) {
+    use icarus_bevy::experimental::rep_rpc::{
+        CLIENT_REQUEST_GET_CHARACTER_PROFILE, parse_rpc_payload,
+    };
+    let requests = requests(client, replies);
+    assert_eq!(requests.len(), 1);
+    assert_eq!(
+        (requests[0].0, requests[0].1.index),
+        (proxy, CLIENT_REQUEST_GET_CHARACTER_PROFILE)
+    );
+    assert_eq!(
+        parse_rpc_payload(
+            &requests[0].1.payload,
+            &[RpcParameter::Value(vec![RepCommand::Int])],
+            &rep_codec(client.order)
+        )
+        .unwrap(),
+        [RpcArgument::Sent(vec![RpcItem::Value(RepValue::Int(3))])]
+    );
+}
+
+fn profile_updates(
+    client: &Client,
+    replies: &[Vec<u8>],
+) -> Vec<icarus_bevy::experimental::rep_layout::PropertyStream> {
+    use icarus_bevy::experimental::{
+        actor_channel::read_actor_bunch_body, packet::read_packet, rep_layout::read_rep_properties,
+        session_open::PLAYER_STATE_CHANNEL_INDEX,
+    };
+    let release = ReleaseProfile::load(
+        &std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("config/release.toml"),
+    )
+    .unwrap();
+    let layout = release
+        .player_state_open_plan(PeerLabAdmission::default().map_url)
+        .unwrap()
+        .unwrap()
+        .layout;
+    let mut updates = Vec::new();
+    for bytes in replies {
+        for bunch in read_packet(bytes, &client.config()).unwrap().bunches {
+            if bunch.header.channel_index != PLAYER_STATE_CHANNEL_INDEX || bunch.header.open {
+                continue;
+            }
+            assert!(bunch.header.reliable && !bunch.header.partial);
+            let body =
+                read_actor_bunch_body(&mut bunch.payload.reader(), false, &codec(client.order))
+                    .unwrap();
+            assert_eq!(body.blocks.len(), 1);
+            assert_eq!(body.blocks[0].target, BlockTarget::Actor);
+            assert!(body.blocks[0].has_rep_layout);
+            let mut reader = body.blocks[0].payload.reader();
+            updates
+                .push(read_rep_properties(&mut reader, &layout, &rep_codec(client.order)).unwrap());
+            assert!(reader.at_end());
+        }
+    }
+    updates
+}
+
+#[test]
+fn profile_exchange_replicates_all_handles_verbatim_in_both_byte_orders() {
+    use icarus_bevy::experimental::control_messages::ArchiveText;
+    for order in [ByteOrder::Little, ByteOrder::Big] {
+        let (mut app, mut client) = setup(true, true, order);
+        join(&mut app, &mut client);
+        let first = client.sequencer.initial_reliable().1 + 1;
+        let proxy = begin_profile(&mut app, &mut client, first);
+        let replies = respond(&mut app, &mut client, first + 1, proxy, false, true);
+        assert_character_request(&client, &replies, proxy);
+        assert!(profile_updates(&client, &replies).is_empty());
+        let replies = respond(&mut app, &mut client, first + 2, proxy, true, true);
+        let updates = profile_updates(&client, &replies);
+        assert_eq!(updates.len(), 1);
+        assert_eq!(
+            updates[0]
+                .entries
+                .iter()
+                .map(|entry| entry.handle)
+                .collect::<Vec<_>>(),
+            (27..=78).collect::<Vec<_>>()
+        );
+        let mut expected = profiles::user().properties;
+        expected.extend(profiles::character(7).properties);
+        expected.extend([
+            RepValue::Str(ArchiveText::text("0123456789ABCDEF7654").unwrap()),
+            RepValue::Int(7),
+        ]);
+        assert_eq!(
+            updates[0]
+                .entries
+                .iter()
+                .map(|entry| entry.value.clone())
+                .collect::<Vec<_>>(),
+            expected
+        );
+        // Requested slot is retained independently of the profile's ChrSlot.
+        assert_eq!(slot(&app, &client), Some(3));
+        let counts = app.world().resource::<PeerLab>().session_counts();
+        assert_eq!(
+            (
+                counts.profile_user_requests_sent,
+                counts.profile_character_requests_sent,
+                counts.profile_user_responses_received,
+                counts.profile_character_responses_received,
+                counts.profile_updates_sent
+            ),
+            (1, 1, 1, 1, 1)
+        );
+        assert_eq!(counts.profile_exchange_errors, 0);
+        let status = serde_json::to_string(&counts).unwrap();
+        assert!(!status.contains("authored") && !status.contains("012345"));
+        let debug = format!("{:?}", updates[0]);
+        assert!(
+            !debug.contains("authored")
+                && !debug.contains("012345")
+                && !debug.contains("9876543210")
+        );
+    }
+}
+
+#[test]
+fn profile_failure_retries_are_separate_and_user_retry_can_succeed() {
+    let (mut app, mut client) = setup(true, true, ByteOrder::Little);
+    join(&mut app, &mut client);
+    let first = client.sequencer.initial_reliable().1 + 1;
+    let proxy = begin_profile(&mut app, &mut client, first);
+    let replies = respond(&mut app, &mut client, first + 1, proxy, false, false);
+    assert_eq!(requests(&client, &replies)[0].1.index, 25);
+    let replies = respond(&mut app, &mut client, first + 2, proxy, false, true);
+    assert_character_request(&client, &replies, proxy);
+    for offset in 3..5 {
+        let replies = respond(&mut app, &mut client, first + offset, proxy, true, false);
+        assert_character_request(&client, &replies, proxy);
+    }
+    let replies = respond(&mut app, &mut client, first + 5, proxy, true, true);
+    assert_eq!(profile_updates(&client, &replies).len(), 1);
+    let stats = app.world().resource::<PeerLab>().stats();
+    assert_eq!(
+        (
+            stats.profile_user_failures,
+            stats.profile_character_failures
+        ),
+        (1, 2)
+    );
+    assert_eq!(
+        (
+            stats.profile_user_requests_sent,
+            stats.profile_character_requests_sent
+        ),
+        (2, 3)
+    );
+    assert_eq!(stats.profile_players_failed, 0);
+}
+
+#[test]
+fn three_profile_failures_remove_the_session_for_each_kind() {
+    for character in [false, true] {
+        let (mut app, mut client) = setup(true, true, ByteOrder::Little);
+        join(&mut app, &mut client);
+        let mut sequence = client.sequencer.initial_reliable().1 + 1;
+        let proxy = begin_profile(&mut app, &mut client, sequence);
+        sequence += 1;
+        if character {
+            respond(&mut app, &mut client, sequence, proxy, false, true);
+            sequence += 1;
+        }
+        for _ in 0..2 {
+            respond(&mut app, &mut client, sequence, proxy, character, false);
+            sequence += 1;
+        }
+        client.send(vec![actor(
+            CONTROLLER,
+            sequence,
+            proxy_body(
+                proxy,
+                &[response_field(character, false, 7, client.order)],
+                client.order,
+            ),
+        )]);
+        app.update();
+        let lab = app.world().resource::<PeerLab>();
+        assert!(!lab.has_peer(address(&client)));
+        assert_eq!(
+            (lab.stats().profile_players_failed, lab.stats().peers_failed),
+            (1, 1)
+        );
+        assert_eq!(lab.stats().profile_updates_sent, 0);
+        assert_eq!(
+            if character {
+                lab.stats().profile_character_failures
+            } else {
+                lab.stats().profile_user_failures
+            },
+            3
+        );
+    }
+}
+
+#[test]
+fn profile_responses_without_matching_requests_are_ignored() {
+    let (mut app, mut client) = setup(true, true, ByteOrder::Little);
+    let opened = client.join(&mut app);
+    client.settle(&mut app, &opened);
+    // Obtain the actual proxy reference from controller handle 22.
+    use icarus_bevy::experimental::{
+        actor_channel::read_player_controller_open_bunch_body, packet::read_packet,
+        rep_layout::read_rep_properties,
+    };
+    let release = ReleaseProfile::load(
+        &std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("config/release.toml"),
+    )
+    .unwrap();
+    let layout = release
+        .player_controller_open_plan(PeerLabAdmission::default().map_url, [0.0; 3])
+        .unwrap()
+        .unwrap()
+        .actor_layout;
+    let mut proxy = None;
+    for bytes in opened {
+        for bunch in read_packet(&bytes, &client.config()).unwrap().bunches {
+            if bunch.header.channel_index != CONTROLLER
+                || bunch.header.has_package_map_exports
+                || (!bunch.header.open && !bunch.header.partial_final)
+            {
+                continue;
+            }
+            let body = read_player_controller_open_bunch_body(
+                &mut bunch.payload.reader(),
+                &codec(client.order),
+            )
+            .unwrap();
+            let values = read_rep_properties(
+                &mut body.blocks[0].payload.reader(),
+                &layout,
+                &rep_codec(client.order),
+            )
+            .unwrap();
+            proxy = values.entries.iter().find_map(|entry| match &entry.value {
+                RepValue::Object(id) if entry.handle == 22 => Some(id.guid),
+                _ => None,
+            });
+        }
+    }
+    let proxy = proxy.unwrap();
+    let first = client.sequencer.initial_reliable().1 + 1;
+    respond(&mut app, &mut client, first, proxy, false, true);
+    respond(&mut app, &mut client, first + 1, proxy, true, true);
+    assert_eq!(begin_profile(&mut app, &mut client, first + 2), proxy);
+    respond(&mut app, &mut client, first + 3, proxy, true, true);
+    respond(&mut app, &mut client, first + 4, proxy, false, true);
+    respond(&mut app, &mut client, first + 5, proxy, false, true);
+    respond(&mut app, &mut client, first + 6, proxy, true, true);
+    for (offset, character) in [(7, false), (8, true)] {
+        let replies = respond(
+            &mut app,
+            &mut client,
+            first + offset,
+            proxy,
+            character,
+            false,
+        );
+        assert!(requests(&client, &replies).is_empty());
+        assert!(profile_updates(&client, &replies).is_empty());
+    }
+    let stats = app.world().resource::<PeerLab>().stats();
+    assert_eq!(stats.profile_responses_ignored, 6);
+    assert_eq!(
+        (
+            stats.profile_updates_sent,
+            stats.profile_user_failures,
+            stats.profile_character_failures
+        ),
+        (1, 0, 0)
+    );
+}
+
+#[test]
+fn malformed_profile_bunch_is_atomic_and_consumes_its_reliable_sequence() {
+    use icarus_bevy::experimental::rep_rpc::RESPONSE_GET_USER_PROFILE;
+    let (mut app, mut client) = setup(true, true, ByteOrder::Little);
+    join(&mut app, &mut client);
+    let first = client.sequencer.initial_reliable().1 + 1;
+    let proxy = begin_profile(&mut app, &mut client, first);
+    // A valid success followed by a truncated struct must not advance phase.
+    let mut truncated = BitWriter::new();
+    truncated.write_bit(true);
+    let malformed = FieldHeader {
+        index: RESPONSE_GET_USER_PROFILE,
+        payload: Payload::from_writer(truncated),
+    };
+    let replies = send(
+        &mut app,
+        &mut client,
+        actor(
+            CONTROLLER,
+            first + 1,
+            proxy_body(
+                proxy,
+                &[response_field(false, true, 7, ByteOrder::Little), malformed],
+                ByteOrder::Little,
+            ),
+        ),
+    );
+    assert!(requests(&client, &replies).is_empty());
+    let stats = app.world().resource::<PeerLab>().stats();
+    assert_eq!(stats.actor_bunches_malformed, 1);
+    assert_eq!(stats.profile_user_responses_received, 0);
+    assert_eq!(stats.profile_character_requests_sent, 0);
+    let replies = respond(&mut app, &mut client, first + 2, proxy, false, true);
+    assert_character_request(&client, &replies, proxy);
+    // Likewise a successful character reply cannot partly apply on trailing junk.
+    let mut malformed = response_field(true, true, 7, ByteOrder::Little);
+    let mut bits = BitWriter::new();
+    let mut reader = malformed.payload.reader();
+    while !reader.at_end() {
+        bits.write_bit(reader.read_bit());
+    }
+    bits.write_bit(false);
+    malformed.payload = Payload::from_writer(bits);
+    let replies = send(
+        &mut app,
+        &mut client,
+        actor(
+            CONTROLLER,
+            first + 3,
+            proxy_body(proxy, &[malformed], ByteOrder::Little),
+        ),
+    );
+    assert!(profile_updates(&client, &replies).is_empty());
+    assert_eq!(
+        app.world()
+            .resource::<PeerLab>()
+            .stats()
+            .profile_character_responses_received,
+        0
+    );
+    let replies = respond(&mut app, &mut client, first + 4, proxy, true, true);
+    assert_eq!(profile_updates(&client, &replies).len(), 1);
+    assert_eq!(
+        app.world()
+            .resource::<PeerLab>()
+            .stats()
+            .actor_bunches_malformed,
+        2
+    );
+}
+
+#[test]
+fn larger_profiles_replicate_as_one_reliable_player_state_update_in_parts() {
+    use icarus_bevy::experimental::{
+        actor_channel::read_actor_bunch_body,
+        control_messages::ArchiveText,
+        packet::read_packet,
+        rep_layout::read_rep_properties,
+        rep_rpc::backend_profile_response_parameters,
+        sequencing::{PartialBunchReassembler, PartialReceive},
+        session_open::PLAYER_STATE_CHANNEL_INDEX,
+    };
+    let (mut app, mut client) = setup(true, true, ByteOrder::Little);
+    join(&mut app, &mut client);
+    let first = client.sequencer.initial_reliable().1 + 1;
+    let proxy = begin_profile(&mut app, &mut client, first);
+    let mut expected = Vec::new();
+    let mut reply = Vec::new();
+    for (offset, character) in [(1, false), (2, true)] {
+        let mut fixture = if character {
+            profiles::character(7)
+        } else {
+            profiles::user()
+        };
+        let name = RepValue::Str(ArchiveText::text(&"X".repeat(450)).unwrap());
+        fixture.properties[0] = name.clone();
+        fixture.rpc[0] = RpcItem::Value(name);
+        expected.extend(fixture.properties);
+        let mut items = vec![RpcItem::Value(RepValue::Bool(true))];
+        items.extend(fixture.rpc);
+        let field = FieldHeader {
+            index: if character { 108 } else { 110 },
+            payload: encode_rpc_payload(
+                &backend_profile_response_parameters(character),
+                &[RpcArgument::Sent(items)],
+                &rep_codec(client.order),
+            )
+            .unwrap(),
+        };
+        let payload = proxy_body(proxy, &[field], client.order);
+        reply = send(
+            &mut app,
+            &mut client,
+            actor(CONTROLLER, first + offset, payload),
+        );
+    }
+    expected.extend([
+        RepValue::Str(ArchiveText::text("0123456789ABCDEF7654").unwrap()),
+        RepValue::Int(7),
+    ]);
+    let mut reassembler = PartialBunchReassembler::new();
+    let mut complete = None;
+    let mut parts = 0;
+    for bytes in reply {
+        for bunch in read_packet(&bytes, &client.config()).unwrap().bunches {
+            if bunch.header.channel_index != PLAYER_STATE_CHANNEL_INDEX {
+                continue;
+            }
+            assert!(bunch.header.partial && bunch.header.reliable && !bunch.header.open);
+            parts += 1;
+            if let PartialReceive::Complete { bunch, .. } = reassembler
+                .receive_part(parts, &bunch.header, &bunch.payload, Some(65_536))
+                .unwrap()
+            {
+                complete = Some(bunch);
+            }
+        }
+    }
+    assert!(parts > 1);
+    let body = read_actor_bunch_body(
+        &mut complete.unwrap().payload.reader(),
+        false,
+        &codec(client.order),
+    )
+    .unwrap();
+    let release = ReleaseProfile::load(
+        &std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("config/release.toml"),
+    )
+    .unwrap();
+    let layout = release
+        .player_state_open_plan(PeerLabAdmission::default().map_url)
+        .unwrap()
+        .unwrap()
+        .layout;
+    let stream = read_rep_properties(
+        &mut body.blocks[0].payload.reader(),
+        &layout,
+        &rep_codec(client.order),
+    )
+    .unwrap();
+    assert_eq!(
+        stream
+            .entries
+            .iter()
+            .map(|entry| entry.value.clone())
+            .collect::<Vec<_>>(),
+        expected
+    );
+    let stats = app.world().resource::<PeerLab>().stats();
+    assert_eq!(
+        (stats.profile_updates_sent, stats.profile_exchange_errors),
+        (1, 0)
+    );
 }
