@@ -104,7 +104,17 @@ pub(crate) fn replication_actors<'a>(
         state.foundations.is_none(),
         "native replication requires a spatial-only world"
     );
-    // Validation emits exactly one actor per registry entry, in registry order.
+    // Validation emits exactly one actor per registry entry, in registry order;
+    // pair by position only after confirming that order.
+    ensure!(
+        state.actors.len() == context.expected.len()
+            && state
+                .actors
+                .iter()
+                .zip(context.expected.keys())
+                .all(|(actor, id)| actor.id == *id),
+        "native replication actor order changed"
+    );
     Ok(context
         .expected
         .values()

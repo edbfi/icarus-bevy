@@ -55,7 +55,7 @@ use icarus_bevy::{
         NetActor, NetActorFlags, NetSchedule, NetViewer, ReplicationConfig, ReplicationFrame,
         ReplicationPlugin,
     },
-    session_replication::{NetArchetype, SessionReplication},
+    session_replication::{NetArchetype, NetMotion, SessionReplication},
     simulation::{
         DomainId, Position, SimulationClock, SimulationSet, WorldSnapshot, build_app, capture,
     },
@@ -1339,6 +1339,128 @@ fn zero_peer_ticks_observe_bypassed_movement_and_bound_or_unbound_corruption_the
             network::teardown(app.world_mut());
         }
     }
+}
+
+/// The per-archetype carrier count rejects any extra bridge-component carrier,
+/// including one hidden by `Disabled`, on the next tick.
+#[test]
+fn zero_peer_ticks_retire_on_extra_bridge_component_carriers() {
+    for disabled in [false, true] {
+        for carrier in ["actor", "archetype", "motion", "flags"] {
+            let fixture = sparse_fixture(7);
+            let (mut app, _) = fixture.app();
+            app.insert_resource(TimeUpdateStrategy::FixedTimesteps(1));
+            app.update(); // Prime Bevy's initial zero-delta frame.
+            app.update();
+            assert!(app.world().resource::<NativeReplicationCounts>().active);
+            let moved = fixture.id("sparse_0000");
+            let proxy = proxy_entity(&app, moved);
+            let actor = *app.world().get::<NetActor>(proxy).unwrap();
+            let archetype = app.world().get::<NetArchetype>(proxy).unwrap().clone();
+            let flags = *app.world().get::<NetActorFlags>(proxy).unwrap();
+            let before = capture(app.world_mut()).unwrap().native_world;
+            let mut extra = app.world_mut().spawn_empty();
+            match carrier {
+                "actor" => extra.insert(actor),
+                "archetype" => extra.insert(archetype),
+                "motion" => extra.insert(NetMotion::default()),
+                "flags" => extra.insert(flags),
+                _ => unreachable!(),
+            };
+            if disabled {
+                extra.insert(bevy::ecs::entity_disabling::Disabled);
+            }
+            let error = native_replication::update_flags(app.world_mut(), moved, None).unwrap_err();
+            assert!(
+                format!("{error:#}").contains("native replication topology changed"),
+                "{carrier} {disabled}: {error:#}"
+            );
+            app.update();
+            assert_eq!(
+                *app.world().resource::<NativeReplicationCounts>(),
+                NativeReplicationCounts {
+                    activated: 3,
+                    rejected: 3,
+                    binding_errors: 1,
+                    active: false,
+                },
+                "{carrier} {disabled}"
+            );
+            assert!(!app.world().resource::<PeerLab>().is_admitting());
+            assert!(capture(app.world_mut()).unwrap().native_world == before);
+            network::teardown(app.world_mut());
+        }
+    }
+}
+
+/// Proxies are rewritten only when their stored bits differ from the current
+/// position: idle ticks leave them untouched, a sign-of-zero drift is repaired
+/// to the exact bits, a source move is written once and other drift retires.
+#[test]
+fn zero_peer_ticks_rewrite_proxy_positions_only_when_their_bits_differ() {
+    let fixture = sparse_fixture(7);
+    let (mut app, _) = fixture.app();
+    app.insert_resource(TimeUpdateStrategy::FixedTimesteps(1));
+    app.update(); // Prime Bevy's initial zero-delta frame.
+    app.update();
+    let moved = fixture.id("sparse_0000");
+    let proxy = proxy_entity(&app, moved);
+    let bits = |app: &App| {
+        app.world()
+            .get::<Position>(proxy)
+            .unwrap()
+            .0
+            .map(f32::to_bits)
+    };
+    let changed = |app: &App| {
+        app.world()
+            .entity(proxy)
+            .get_ref::<Position>()
+            .unwrap()
+            .last_changed()
+    };
+    // Native [0, 0, 2] m maps through axes [2, -1, 3] to [0, -0, 20].
+    let exact = [0.0_f32, -0.0, 20.0].map(f32::to_bits);
+    assert_eq!(bits(&app), exact);
+    let idle = changed(&app);
+    for _ in 0..3 {
+        app.update();
+        assert_eq!(changed(&app), idle, "idle tick rewrote an unchanged proxy");
+    }
+    app.world_mut()
+        .get_mut::<Position>(proxy)
+        .unwrap()
+        .bypass_change_detection()
+        .0 = [0.0, 0.0, 20.0];
+    app.update();
+    assert!(app.world().resource::<NativeReplicationCounts>().active);
+    assert_eq!(bits(&app), exact, "sign-of-zero drift not repaired");
+    let repaired = changed(&app);
+    assert_ne!(repaired, idle);
+    app.update();
+    assert_eq!(changed(&app), repaired);
+    let source = native_entity(&app, moved);
+    app.world_mut()
+        .get_mut::<Position>(source)
+        .unwrap()
+        .bypass_change_detection()
+        .0 = [11.0, 12.0, 13.0];
+    app.update();
+    assert_eq!(bits(&app), [120.0_f32, -110.0, 130.0].map(f32::to_bits));
+    let written = changed(&app);
+    assert_ne!(written, repaired);
+    app.update();
+    assert_eq!(changed(&app), written, "a moved proxy was written twice");
+    app.world_mut()
+        .get_mut::<Position>(proxy)
+        .unwrap()
+        .bypass_change_detection()
+        .0 = [1.0, 1.0, 1.0];
+    let error = native_replication::update_flags(app.world_mut(), moved, None).unwrap_err();
+    assert!(format!("{error:#}").contains("native replication proxy lost or changed"));
+    app.update();
+    assert!(!app.world().resource::<NativeReplicationCounts>().active);
+    network::teardown(app.world_mut());
 }
 
 #[test]
