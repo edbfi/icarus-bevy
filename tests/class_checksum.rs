@@ -354,3 +354,99 @@ fn backend_proxy_component_matches_the_controller_subobject_checksum() {
         4_100_406_609
     );
 }
+
+/// A fast-array item: `FFastArraySerializerItem`'s three fields are
+/// `CPF_RepSkip`, then a row handle (`FRowHandle` fields) and the item's own.
+fn fast_array_item(struct_name: &str, row: (&str, &str), fields: Vec<P>) -> P {
+    let skipped = |name: &str, offset| P {
+        rep_skip: true,
+        ..P::leaf(name, "int32", offset)
+    };
+    let mut all = vec![
+        skipped("ReplicationID", 0),
+        skipped("ReplicationKey", 4),
+        skipped("MostRecentArrayReplicationKey", 8),
+        P::structure(
+            row.0,
+            row.1,
+            12,
+            vec![
+                P::leaf("DataTablePtr", "TWeakObjectPtr<UIcarusDataTable>", 0),
+                P::leaf("RowName", "FName", 8),
+                P::leaf("DataTableName", "FName", 16),
+            ],
+        ),
+    ];
+    all.extend(fields);
+    P::structure(struct_name, struct_name, 0, all)
+}
+
+/// A `FFastArraySerializer` property whose only own field is its item array.
+fn fast_array(name: &str, struct_name: &str, offset: i32, item: P) -> P {
+    let skipped = |name: &str, cpp: &str, offset| P {
+        rep_skip: true,
+        ..P::leaf(name, cpp, offset)
+    };
+    let items = item.name.clone();
+    P::structure(
+        name,
+        struct_name,
+        offset,
+        vec![
+            skipped("ArrayReplicationKey", "int32", 84),
+            skipped("DeltaFlags", "EFastArraySerializerDeltaFlags", 256),
+            P::array(&items, 264, item),
+        ],
+    )
+}
+
+#[test]
+fn bestiary_manager_component_matches_the_controller_subobject_checksum() {
+    // M-1092: `UBestiaryManagerComponent`'s two replicated fast arrays fold
+    // over `UActorComponent` to the checksum of the controller's
+    // `BestiaryManagerComponent` subobject, so its net cache (bound 7) indexes
+    // `Client_RequestBestiaryData` and `Server_ReceiveBestiaryData`.
+    let actor_component = class_checksum(
+        0,
+        &[
+            P::leaf("bIsActive", "uint8", 138),
+            P::leaf("bReplicates", "uint8", 136),
+        ],
+    );
+    let beast = fast_array_item(
+        "BestiaryFastArrayItem",
+        ("BestiaryRowHandle", "BestiaryDataRowHandle"),
+        vec![P::leaf("PointScore", "int32", 36)],
+    );
+    let fish = fast_array_item(
+        "FishDataFastArrayItem",
+        ("FishRow", "FishDataRowHandle"),
+        vec![
+            P::leaf("MaxQuality", "int32", 36),
+            P::leaf("MaxWeight", "int32", 40),
+            P::leaf("MaxLength", "int32", 44),
+            P::leaf("CaughtCount", "int32", 48),
+        ],
+    );
+    let own = [
+        fast_array(
+            "BeastEntries",
+            "BestiaryFastArray",
+            192,
+            P {
+                name: "BestiaryEntries".to_owned(),
+                ..beast
+            },
+        ),
+        fast_array(
+            "FishEntries",
+            "FishDataFastArray",
+            536,
+            P {
+                name: "FishEntries".to_owned(),
+                ..fish
+            },
+        ),
+    ];
+    assert_eq!(class_checksum(actor_component, &own), 2_451_266_650);
+}
