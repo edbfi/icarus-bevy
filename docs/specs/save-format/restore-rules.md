@@ -13,7 +13,8 @@ Last reconciled: 2026-10-26.
 Recorder validate, stitch and restore rules across all 65 `/Script/Icarus.*RecorderComponent`
 classes (`C001..C038`, `N001..N027`); save decoding, class lookup, object
 construction, script owners and data-table rows are out of scope (F-660).
-Rust implementations carry the addresses below; grep an address in `src/` for its function.
+The doc comments of `experimental::restore_rules` carry most addresses below;
+addresses with no native function here keep their helper name or stand alone.
 
 ## Confirmed
 
@@ -22,7 +23,8 @@ Rust implementations carry the addresses below; grep an address in `src/` for it
   `RespawnOnly` (`1`) destroys `+0x450` actors (`0x143331760`) before `+0x458`;
   `FindOrRespawn` (`2`) tries `+0x450` then `+0x458`; `ManuallyResolved` (`3`)
   keeps the recorder; then `+0x468` runs (F-902).
-- Restore dispatch and ctor defaults (`C001..C038`, `N001..N027`): all 65 classes inherit `+0xa0 = 0x1418aaf70` and match ctor
+- Restore dispatch and ctor defaults (`C001..C038`, `N001..N027`): all 65
+  classes inherit `+0xa0 = 0x1418aaf70` and match ctor
   flags and slots `+0xa0..+0x4c0` across server 25621760 and client 25793767
   (F-902, F-904, F-746, F-747):
   - `C001..C038`: `+0xb0` (`bSaveModifiers`) `1`, but `0` on
@@ -56,22 +58,25 @@ Rust implementations carry the addresses below; grep an address in `src/` for it
     `+0x1e0 < 1` or `list.rejects()`.
   - `N018` (`UNoRecorderComponent`, `0x1408cb520`)
     is always `false`.
-  - `C025` (`0x1418e8850`/`0x1418f9de0`) and `C026`
-    (`0x1418e8b10`/`0x1418f9e80`) require
-    `v >= 1 && !list.rejects()`; `C029`
-    (`0x1418e9280`/`0x1418f9f70`) requires
+  - `C025` (`0x1418e8850`/`0x1418f9de0`, `evaluate_player_recorder_record`)
+    and `C026` (`0x1418e8b10`/`0x1418f9e80`, `evaluate_player_state_record`)
+    require `v >= 1 && !list.rejects()`; `C029` (`0x1418e9280`/`0x1418f9f70`,
+    `evaluate_rocket_record`) requires
     `!list.rejects()` and restores iff listed and `v > 0`.
-  - `C028` (`0x1418e90b0`/`0x1418f9f20`) rejects `"Super_Cooled_Ice"` (`0x144a71800`);
+  - `C028` (`0x1418e90b0`/`0x1418f9f20`) rejects `"Super_Cooled_Ice"`
+    (`0x144a71800`);
     subclass `N020` (`UResourceDepositIceRecorderComponent`) overrides `+0x408`
     back to base `true`; `+0x460` (`0x1418f76c0`) grants stat `0xbe` iff
     `+0x1cc && !GetStat(0xbe)` (F-645, F-902).
-  - `C031` and `C034` (F-680; `C034` `0x1418e96c0`) reject `RespawnOnly && bIsVoxelFullyMined`; `+0x460`
+  - `C031` and `C034` (F-680; `C034` `0x1418e96c0`) reject
+    `RespawnOnly && bIsVoxelFullyMined`; `+0x460`
     (`0x1418f7bb0`) scales if `+0xb2 == 1`,
     builds a `1.1x` sphere if `+0x1d0 && !+0x1c8`, and restores voxels and `+0x45c`
     unless `+0x548 & 0x1000` (F-645).
 - Stitching matches GUID plus ASCII `Stricmp` (F-663): `C009`
-  (F-646); `C010` (`0x1418acbf0`, `< 0.1` fallback); `C018` (`0x1418f70f0`)
-  and `C019` (`0x1418f7180`; both F-650); `C027` (`0x14177ac40`/`0x14177ec20`,
+  (F-646); `C010` (`0x1418acbf0`, `< 0.1` fallback); `C018` (`0x1418f70f0`,
+  `evaluate_quest_manager_record`) and `C019` (`0x1418f7180`,
+  `evaluate_quest_record`; both F-650); `C027` (`0x14177ac40`/`0x14177ec20`,
   F-676). `C007` (F-657), `C017`
   (`0x1413fd880`/`0x14140c8f0`/`0x141446df0`/`0x1413cfe80`) and `C025`
   (F-648) match GUID. `C013` (`0x1418ac8f0`) destroys
@@ -103,7 +108,8 @@ Rust implementations carry the addresses below; grep an address in `src/` for it
     re-indexes the swapped-in tail in `+0xd8`, zeroes `WORD [+0xd1]`
     (`bIsRecording`, `bOwnerCallbacksBound`) and drops its spawn location from
     `+0xd8`; `FlushDeferredRecorder` re-runs `BeginRecording`.
-  - `TryRestoreActorRecorder` (`0x1414bf530`/`0x1414f6650`) checks `+0xd8` when `RootComponent`
+  - `TryRestoreActorRecorder` (`0x1414bf530`/`0x1414f6650`) checks `+0xd8`
+    when `RootComponent`
     has non-zero translation and `Mobility != 2`, then scans `+0x28` with
     `+0x478`, calls `ResolveOwnerRecorderState` (`0x1414b6fc0`/`0x1414ef1e0`), and runs
     `+0x468` iff `ManuallyResolved && RequiresStitching()` (`+0x470`).
