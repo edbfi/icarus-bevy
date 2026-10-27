@@ -2951,6 +2951,12 @@ fn only_a_player_joining_alone_is_host() {
 /// An authored, stageable prospect: one associated member and its saved
 /// player character (`C026`) with an `IcarusActorGUID`. No supplied save.
 fn returning_character_payload(user: &str, slot: i32, uid: i32) -> Vec<u8> {
+    returning_characters_payload(user, slot, &[uid])
+}
+
+/// [`returning_character_payload`] with one saved character per UID, all for
+/// the same member and slot.
+fn returning_characters_payload(user: &str, slot: i32, uids: &[i32]) -> Vec<u8> {
     use scalar::{Tag, stream, units};
     let member = stream(&[
         Tag::text("UserID", "StrProperty", &units(user)),
@@ -2973,41 +2979,46 @@ fn returning_character_payload(user: &str, slot: i32, uid: i32) -> Vec<u8> {
             members,
         ]),
     );
-    let character = stream(&[
-        Tag::integer("PlayerStateRecorderVersion", 1),
-        Tag::structure(
-            "PlayerCharacterID",
-            "PlayerCharacterID",
+    let records: Vec<u8> = uids
+        .iter()
+        .flat_map(|uid| {
+            let character = stream(&[
+                Tag::integer("PlayerStateRecorderVersion", 1),
+                Tag::structure(
+                    "PlayerCharacterID",
+                    "PlayerCharacterID",
+                    stream(&[
+                        Tag::text("PlayerID", "StrProperty", &units(user)),
+                        Tag::integer("ChrSlot", slot),
+                    ]),
+                ),
+                Tag::integer("IcarusActorGUID", *uid),
+            ]);
+            let body = [character, vec![0; 4]].concat();
             stream(&[
-                Tag::text("PlayerID", "StrProperty", &units(user)),
-                Tag::integer("ChrSlot", slot),
-            ]),
-        ),
-        Tag::integer("IcarusActorGUID", uid),
-    ]);
-    let body = [character, vec![0; 4]].concat();
-    let record = stream(&[
-        Tag::text(
-            "ComponentClassName",
-            "StrProperty",
-            &units("/Script/Icarus.PlayerStateRecorderComponent"),
-        ),
-        Tag::array(
-            "BinaryData",
-            "ByteProperty",
-            [
-                i32::try_from(body.len()).unwrap().to_le_bytes().to_vec(),
-                body,
-            ]
-            .concat(),
-        ),
-    ]);
+                Tag::text(
+                    "ComponentClassName",
+                    "StrProperty",
+                    &units("/Script/Icarus.PlayerStateRecorderComponent"),
+                ),
+                Tag::array(
+                    "BinaryData",
+                    "ByteProperty",
+                    [
+                        i32::try_from(body.len()).unwrap().to_le_bytes().to_vec(),
+                        body,
+                    ]
+                    .concat(),
+                ),
+            ])
+        })
+        .collect();
     let blobs = Tag::array(
         "StateRecorderBlobs",
         "StructProperty",
         [
-            1_i32.to_le_bytes().to_vec(),
-            Tag::structure("StateRecorderBlobs", "StateRecorderBlob", record).bytes(),
+            i32::try_from(uids.len()).unwrap().to_le_bytes().to_vec(),
+            Tag::structure("StateRecorderBlobs", "StateRecorderBlob", records).bytes(),
         ]
         .concat(),
     );
@@ -3248,4 +3259,66 @@ fn returning_characters_need_a_staged_save_and_actor_uids() {
     )
     .unwrap();
     assert!(bare.enable_returning_characters(Vec::new()).is_err());
+}
+
+#[test]
+fn returning_pawns_never_share_a_saved_uid_across_duplicate_records() {
+    use icarus_bevy::prospect;
+    let profile = ReleaseProfile::load(&release_toml()).unwrap();
+    let pinned = profile.pin.network_checksum;
+    let engine = profile.engine_network_version;
+    // Two saved records for one character share a UID; a third has its own.
+    let payload = returning_characters_payload(NET_ID_HEX, 3, &[70_001, 70_001, 70_002]);
+    let network = NetworkConfig {
+        release_profile: Some(release_toml()),
+        ..enabled(0)
+    };
+    let mut lab = network::bind(&network).unwrap().unwrap().lab;
+    lab.seed_actor_uids(prospect::saved_actor_uids_from_payload(&payload).unwrap())
+        .unwrap();
+    lab.enable_returning_characters(
+        prospect::saved_player_characters_from_payload(&payload).unwrap(),
+    )
+    .unwrap();
+    let mut app = build_app(&ServerConfig::default(), &WorldSnapshot::default()).unwrap();
+    let address = network::install(&mut app, lab).unwrap();
+    let mut updates = Vec::new();
+    let mut clients = Vec::new();
+    for _ in 0..3 {
+        let ((client, reply), _) = with_server(&mut app, move || {
+            let (mut client, _) = join_pinned_open(address, pinned, 7);
+            let reply = send_character_slot(&mut client, engine, 3);
+            (client, reply)
+        });
+        updates.push(pawn_uid_update(&profile, &reply));
+        clients.push(client);
+    }
+    // The duplicate of a held UID is skipped; the distinct record is used.
+    assert_eq!(updates, [Some(70_001), Some(70_002), None]);
+    let mut claimed = app
+        .world()
+        .resource::<PeerLab>()
+        .claimed_actor_uids()
+        .to_vec();
+    claimed.sort_unstable();
+    claimed.dedup();
+    assert_eq!(
+        claimed.len(),
+        app.world().resource::<PeerLab>().claimed_actor_uids().len(),
+        "no UID is claimed twice"
+    );
+    assert!(claimed.contains(&70_001) && claimed.contains(&70_002));
+    let stats = app.world().resource::<PeerLab>().stats();
+    assert_eq!(
+        (
+            stats.returning_pawns_restored,
+            stats.returning_pawns_unmatched
+        ),
+        (2, 1)
+    );
+    with_server(&mut app, move || {
+        for client in clients {
+            client.close().unwrap();
+        }
+    });
 }

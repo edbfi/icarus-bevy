@@ -1702,11 +1702,25 @@ impl PeerLab {
             return;
         };
         let user = login_user_id(id);
+        // A save may hold several records with one UID; a UID a live session
+        // already holds must not be handed out again, so every record that
+        // shares it is skipped along with the held records themselves.
+        let held: Vec<usize> = self
+            .returning_characters
+            .iter()
+            .enumerate()
+            .filter(|(_, character)| {
+                self.restored_characters
+                    .iter()
+                    .any(|held| self.returning_characters[*held].icarus_uid == character.icarus_uid)
+            })
+            .map(|(index, _)| index)
+            .collect();
         let Some((index, character)) = super::recorders::find_saved_player_character(
             &self.returning_characters,
             &user,
             slot,
-            &self.restored_characters,
+            &held,
         ) else {
             bump(&mut self.stats.returning_pawns_unmatched);
             return;
@@ -1734,13 +1748,11 @@ impl PeerLab {
                 return;
             }
         };
-        // The seed and the fresh claim are both ours; freeing them and
-        // claiming the saved UID again keeps every count unchanged.
+        // The saved UID's seed claim becomes the pawn's: it stays claimed
+        // throughout (no re-claim a reservation could remap) and only the
+        // fresh claim is released.
         library.free(fresh);
-        library.free(saved);
-        let grant = library.try_claim(saved, None);
-        debug_assert_eq!(grant, Ok(saved), "freeing two claims leaves room");
-        entry.pawn_uid = grant.ok();
+        entry.pawn_uid = Some(saved);
         entry.restored_character = Some(index);
         entry.ack_pending = false;
         self.restored_characters.push(index);
