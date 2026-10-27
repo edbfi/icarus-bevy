@@ -171,3 +171,186 @@ fn spelling_helpers_keep_engine_quirks() {
     assert!(matches!(array.children, Children::ArrayInner(_)));
     assert_eq!(array.cpp_type, "TArray");
 }
+
+fn meta_resource(name: &str, offset: i32) -> P {
+    P::structure(
+        name,
+        "MetaResource",
+        offset,
+        vec![
+            P::leaf("MetaRow", "FString", 0),
+            P::leaf("Count", "int32", 16),
+        ],
+    )
+}
+
+fn type_value(name: &str, struct_name: &str) -> P {
+    P::structure(
+        name,
+        struct_name,
+        0,
+        vec![P::leaf("Type", "int32", 0), P::leaf("Value", "int32", 4)],
+    )
+}
+
+fn meta_item(name: &str, offset: i32) -> P {
+    P::structure(
+        name,
+        "MetaItem",
+        offset,
+        vec![
+            P::leaf("ItemStaticRow", "FString", 0),
+            P::array(
+                "Properties",
+                16,
+                type_value("Properties", "DynamicProperty"),
+            ),
+            P::array("Stats", 32, type_value("Stats", "Stat")),
+            P::leaf("ID", "FString", 48),
+        ],
+    )
+}
+
+fn dropship(name: &str, offset: i32) -> P {
+    P::structure(
+        name,
+        "Dropship",
+        offset,
+        vec![
+            P::leaf("Name", "FString", 0),
+            P::leaf("Type", "EDropshipType", 16),
+            P::leaf("DropshipID", "int32", 20),
+            P::leaf("InUse", "bool", 24),
+            meta_item("TOP_Part", 32),
+            meta_item("MID_Part", 96),
+            meta_item("BTM_Part", 160),
+        ],
+    )
+}
+
+fn prospect_info(name: &str) -> P {
+    let member = P::structure(
+        "AssociatedMembers",
+        "AssociatedMemberInfo",
+        0,
+        vec![
+            P::leaf("AccountName", "FString", 0),
+            P::leaf("CharacterName", "FString", 16),
+            P::leaf("UserID", "FString", 32),
+            P::leaf("ChrSlot", "int32", 48),
+            P::leaf("Experience", "int32", 52),
+            P::leaf("Status", "EProspectLocation", 56),
+            P::leaf("Settled", "bool", 57),
+            P::leaf("IsCurrentlyPlaying", "bool", 58),
+        ],
+    );
+    let setting = P::structure(
+        "CustomSettings",
+        "CustomGameSetting",
+        0,
+        vec![
+            P::leaf("SettingRowName", "FString", 0),
+            P::leaf("SettingValue", "int32", 16),
+        ],
+    );
+    P::structure(
+        name,
+        "ProspectInfo",
+        0,
+        vec![
+            P::leaf("ProspectID", "FString", 0),
+            P::leaf("ClaimedAccountID", "FString", 16),
+            P::leaf("ClaimedAccountCharacter", "int32", 32),
+            P::leaf("ProspectDTKey", "FString", 40),
+            P::leaf("FactionMissionDTKey", "FString", 56),
+            P::leaf("LobbyName", "FString", 72),
+            P::leaf("ExpireTime", "int64", 88),
+            P::leaf("ProspectState", "EProspectState", 96),
+            P::array("AssociatedMembers", 104, member),
+            P::leaf("Cost", "int32", 120),
+            P::leaf("Reward", "int32", 124),
+            P::leaf("Difficulty", "EMissionDifficulty", 128),
+            P::leaf("Insurance", "bool", 129),
+            P::leaf("NoRespawns", "bool", 130),
+            P::leaf("ElapsedTime", "int32", 132),
+            P::leaf("SelectedDropPoint", "int32", 136),
+            P::array("CustomSettings", 144, setting),
+        ],
+    )
+}
+
+fn notification(name: &str) -> P {
+    let attachment = P::structure(
+        "Attachments",
+        "Attachment",
+        72,
+        vec![
+            P::array("Items", 0, meta_item("Items", 0)),
+            P::array("Exotics", 16, meta_resource("Exotics", 0)),
+            P::leaf("Credits", "int32", 32),
+        ],
+    );
+    P::structure(
+        name,
+        "Notification",
+        0,
+        vec![
+            P::leaf("NotificationUID", "FString", 0),
+            P::leaf("Type", "ENotificationType", 16),
+            P::leaf("Title", "FString", 24),
+            P::leaf("Message", "FString", 40),
+            P::leaf("ProspectID", "FString", 56),
+            attachment,
+            P::leaf("Read", "bool", 112),
+            P::leaf("SentToPlayer", "bool", 113),
+        ],
+    )
+}
+
+/// `UBackendProxyComponent`'s own replicated properties, read from the pinned
+/// 3.0.32 server's reflection tables (M-1091).
+fn backend_proxy_component() -> Vec<P> {
+    let loadout = P::structure(
+        "CharacterLoadout",
+        "CharacterLoadout",
+        848,
+        vec![
+            meta_item("EnviroSuit", 0),
+            dropship("Dropship", 64),
+            P::array("MetaItems", 288, meta_item("MetaItems", 0)),
+            P::leaf("Valid", "bool", 304),
+        ],
+    );
+    vec![
+        P::array("MetaResources", 704, meta_resource("MetaResources", 0)),
+        P::leaf("Credits", "int32", 720),
+        P::array("MetaInventory", 728, meta_item("MetaInventory", 0)),
+        P::array("LoadoutInventory", 744, meta_item("LoadoutInventory", 0)),
+        P::array("Dropships", 760, dropship("Dropships", 0)),
+        P::leaf("PreparedDropship", "int32", 776),
+        meta_item("PreparedEnvirosuit", 784),
+        loadout,
+        P::leaf("PreparedLoadout", "bool", 1160),
+        P::array("Prospects", 1168, prospect_info("Prospects")),
+        P::array("Notifications", 1184, notification("Notifications")),
+    ]
+}
+
+#[test]
+fn backend_proxy_component_matches_the_controller_subobject_checksum() {
+    // The controller's `BackendProxyComponent` subobject exports this checksum
+    // (`ReleasePlayerControllerProfile::icarus_survival`, F-779/F-780), so the
+    // subobject is a plain `UBackendProxyComponent`, whose net cache indexes its
+    // profile RPCs (F-954).
+    let actor_component = class_checksum(
+        0,
+        &[
+            P::leaf("bIsActive", "uint8", 138),
+            P::leaf("bReplicates", "uint8", 136),
+        ],
+    );
+    assert_eq!(
+        class_checksum(actor_component, &backend_proxy_component()),
+        4_100_406_609
+    );
+}
