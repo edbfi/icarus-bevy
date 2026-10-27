@@ -655,6 +655,9 @@ pub fn fresh_player_vitals(tables: &mut DataTables) -> Result<CharacterVitals> {
 /// `SecondsPerGameDay`.
 pub struct SavedGameState {
     pub values: BTreeMap<u32, RepValue>,
+    /// The active prospect the values replicate (no member playing), which
+    /// a member's Join refreshes ([`PeerLab::enable_member_refresh`]).
+    pub prospect: crate::experimental::prospect_info::ProspectInfo,
     pub level_time_elapsed_sec: Option<i32>,
     pub time_of_day: Option<TimeOfDayClock>,
     /// Saved session flags that the data tables do not list (or all of
@@ -790,11 +793,10 @@ pub fn saved_game_state(
         .game_mode
         .as_ref()
         .map(|mode| mode.level_time_elapsed_sec);
-    let mut values = active_prospect_values(
-        &saved
-            .info
-            .for_session(level_time.unwrap_or(saved.info.elapsed_time), |_| false),
-    )?;
+    let prospect = saved
+        .info
+        .for_session(level_time.unwrap_or(saved.info.elapsed_time), |_| false);
+    let mut values = active_prospect_values(&prospect)?;
     let mut unmapped_session_flags = 0;
     let mut locked = Vec::new();
     if let Some(mode) = &saved.game_mode {
@@ -910,6 +912,7 @@ pub fn saved_game_state(
     };
     Ok(SavedGameState {
         values,
+        prospect,
         level_time_elapsed_sec: level_time,
         time_of_day,
         unmapped_session_flags,
@@ -962,7 +965,8 @@ pub struct AppliedGameState {
 /// the other managers: the QuestManager with the saved quest state (F-861),
 /// the InventoryContainerManager with the saved container inventories (F-866),
 /// the PlayerHistoryTracker with the saved history (F-862) and the FLOD
-/// manager with the saved tile count (F-914).
+/// manager with the saved tile count (F-914). A Join naming a saved
+/// associated member refreshes the active prospect (F-822, F-945).
 pub fn apply_saved_game_state(
     lab: &mut PeerLab,
     section: &PreservedSection,
@@ -1051,6 +1055,7 @@ pub fn apply_saved_game_state(
         saved.skipped_managers.push((ManagerSlot::Quest, reason));
     }
     lab.extend_game_state_values(saved.values)?;
+    lab.enable_member_refresh(saved.prospect)?;
     let locked_missions = saved.locked_missions.len();
     if let Some(level_time) = saved.level_time_elapsed_sec {
         lab.set_game_state_level_time(level_time)?;
