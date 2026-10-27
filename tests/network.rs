@@ -1546,6 +1546,62 @@ fn pinned_join_is_answered_with_the_composed_player_controller_open() {
 }
 
 #[test]
+fn pinned_probe_sends_begin_player_initialisation_on_actor_channel() {
+    use icarus_bevy::experimental::{
+        actor_channel::{ActorChannelCodec, ActorChannelLimits},
+        archive::ByteOrder,
+        packet::{BitWriter, Payload},
+        rep_rpc::{
+            BP_ICARUS_PLAYER_CONTROLLER_SURVIVAL_FIELD_INDEX_BOUND, FieldHeader,
+            SERVER_BEGIN_PLAYER_INITIALISATION_FIELD_INDEX,
+        },
+        session_open::PLAYER_CONTROLLER_CHANNEL_INDEX,
+    };
+    let profile = ReleaseProfile::load(&release_toml()).unwrap();
+    let pinned = profile.pin.network_checksum;
+    let (mut app, address) = server_app(&NetworkConfig {
+        release_profile: Some(release_toml()),
+        ..enabled(0)
+    });
+    let (mut client, _) = with_server(&mut app, move || {
+        let (mut client, _) = join_pinned_open(address, pinned, 1);
+        let mut parameter = BitWriter::new();
+        parameter.write_bit(true);
+        parameter.write_bytes(&3_i32.to_le_bytes());
+        let (_, packet_id) = client
+            .send_actor_rpc(
+                PLAYER_CONTROLLER_CHANNEL_INDEX,
+                &FieldHeader {
+                    index: SERVER_BEGIN_PLAYER_INITIALISATION_FIELD_INDEX,
+                    payload: Payload::from_writer(parameter),
+                },
+                BP_ICARUS_PLAYER_CONTROLLER_SURVIVAL_FIELD_INDEX_BOUND,
+                &ActorChannelCodec {
+                    engine_net_version: profile.engine_network_version,
+                    exports_enabled: false,
+                    has_level: true,
+                    order: ByteOrder::Little,
+                    limits: ActorChannelLimits::default(),
+                },
+            )
+            .unwrap();
+        let replies = client.collect(Duration::from_secs(3), 32).unwrap();
+        assert!(replies.acked.contains(&packet_id));
+        client
+    });
+    let snapshot = counts(&app);
+    assert_eq!(
+        (snapshot.joined, snapshot.initialisation_slots_recorded),
+        (1, 1)
+    );
+    assert_eq!(snapshot.initialisation_calls_ignored, 0);
+    with_server(&mut app, move || {
+        client.keepalive().unwrap();
+    });
+    assert_eq!(counts(&app).joined, 1);
+}
+
+#[test]
 fn teardown_sends_host_closed_failure_then_control_close() {
     use icarus_bevy::experimental::{
         packet::read_packet,

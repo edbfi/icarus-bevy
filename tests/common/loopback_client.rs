@@ -60,6 +60,17 @@ impl Client {
         order: ByteOrder,
         index: u8,
     ) -> Self {
+        Self::connect_version(app, address, order, index, 1447163286)
+    }
+
+    /// Select the Hello network checksum for tests of a pinned release.
+    pub fn connect_version(
+        app: &mut App,
+        address: SocketAddr,
+        order: ByteOrder,
+        index: u8,
+        version: u32,
+    ) -> Self {
         let socket = UdpSocket::bind("127.0.0.1:0").unwrap();
         socket.connect(address).unwrap();
         socket.set_nonblocking(true).unwrap();
@@ -88,7 +99,7 @@ impl Client {
         for message in [
             ControlMessage::Hello {
                 first_field: u8::from(matches!(order, ByteOrder::Little)),
-                version: 1447163286,
+                version,
                 token: ArchiveText::text("").unwrap(),
             },
             ControlMessage::Login {

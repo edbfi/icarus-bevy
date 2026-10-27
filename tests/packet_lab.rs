@@ -738,6 +738,123 @@ fn actor_open_bunch(channel_index: u32, payload_bytes: &[u8]) -> Bunch {
     }
 }
 
+fn incoming_actor(channel: u32, sequence: u32, marker: u8) -> Bunch {
+    let mut bunch = actor_open_bunch(channel, &[marker]);
+    bunch.header.control = false;
+    bunch.header.open = false;
+    bunch.header.reliable_sequence_raw = Some(wire_reliable_sequence(sequence));
+    bunch
+}
+
+#[test]
+fn actor_receive_orders_duplicates_and_isolates_channels() {
+    let mut peer = peer();
+    let mut client = Client::new();
+    for channel in [2, 3] {
+        peer.reliable_actor_open(&actor_open_bunch(channel, &[1]), &[])
+            .unwrap();
+    }
+    let first = peer.sequencer().initial_reliable().0 + 1;
+    let later = incoming_actor(2, first + 1, 2);
+    let (packet, _) = client.send(vec![
+        later.clone(),
+        later.clone(),
+        incoming_actor(3, first, 9),
+    ]);
+    let received = peer.receive(&packet).unwrap();
+    assert_eq!(received.summary().actor_queued_reliable, 1);
+    assert_eq!(received.summary().actor_duplicate_reliable, 1);
+    assert_eq!(received.actor_bunches(), &[incoming_actor(3, first, 9)]);
+    let (packet, _) = client.send(vec![incoming_actor(2, first, 1)]);
+    let received = peer.receive(&packet).unwrap();
+    assert_eq!(received.summary().actor_queued_reliable, 0);
+    assert_eq!(
+        received.actor_bunches(),
+        &[incoming_actor(2, first, 1), later.clone()]
+    );
+    let (packet, _) = client.send(vec![later, incoming_actor(4, first, 0)]);
+    let received = peer.receive(&packet).unwrap();
+    assert_eq!(received.summary().actor_duplicate_reliable, 1);
+    assert_eq!(received.summary().ignored_bunches, 1);
+    assert!(received.actor_bunches().is_empty());
+    assert!(!peer.is_failed());
+}
+
+#[test]
+fn actor_receive_drops_unsupported_forms_without_reliable_gaps() {
+    let mut peer = peer();
+    let mut client = Client::new();
+    peer.reliable_actor_open(&actor_open_bunch(2, &[1]), &[])
+        .unwrap();
+    let first = peer.sequencer().initial_reliable().0 + 1;
+    let mut unsupported = Vec::new();
+    for offset in 0..6 {
+        let mut bunch = incoming_actor(2, first + offset, 1);
+        match offset {
+            0 => {
+                bunch.header.partial = true;
+                bunch.header.partial_initial = true;
+            }
+            1 => bunch.header.has_package_map_exports = true,
+            2 => bunch.header.has_must_be_mapped_guids = true,
+            3 => {
+                bunch.header.open = true;
+                bunch.header.control = true;
+                bunch.header.channel_name = Some(Name::Hardcoded(255));
+            }
+            4 => {
+                bunch.header.close = true;
+                bunch.header.control = true;
+                bunch.header.close_reason = Some(0);
+            }
+            _ => bunch.header.paused = true,
+        }
+        unsupported.push(bunch);
+    }
+    let valid = incoming_actor(2, first + 6, 7);
+    unsupported.push(valid.clone());
+    let (packet, _) = client.send(unsupported);
+    let received = peer.receive(&packet).unwrap();
+    assert_eq!(received.summary().actor_bunches_dropped, 6);
+    assert_eq!(received.actor_bunches(), &[valid]);
+    assert!(!peer.is_failed());
+}
+
+#[test]
+fn actor_receive_queue_overflow_is_bounded_and_does_not_fail_the_peer() {
+    let mut peer = peer();
+    let mut client = Client::new();
+    peer.reliable_actor_open(&actor_open_bunch(2, &[1]), &[])
+        .unwrap();
+    let first = peer.sequencer().initial_reliable().0 + 1;
+    let queued: Vec<_> = (1..=255)
+        .map(|offset| incoming_actor(2, first + offset, 1))
+        .collect();
+    for chunk in queued.chunks(32) {
+        let (packet, _) = client.send(chunk.to_vec());
+        let received = peer.receive(&packet).unwrap();
+        assert!(received.actor_bunches().is_empty());
+    }
+    let (packet, _) = client.send(vec![incoming_actor(2, first + 256, 2)]);
+    let received = peer.receive(&packet).unwrap();
+    assert_eq!(received.summary().actor_queued_reliable, 255);
+    assert_eq!(received.summary().actor_bunches_dropped, 1);
+    assert!(!peer.is_failed());
+    let ack = read_packet(&peer.ack_packet().unwrap(), &to_client()).unwrap();
+    assert_eq!(
+        ack.header.history[0] & 1,
+        0,
+        "overflow requests retransmission"
+    );
+    let (packet, _) = client.send(vec![incoming_actor(2, first, 0)]);
+    let received = peer.receive(&packet).unwrap();
+    assert_eq!(received.actor_bunches().len(), 256);
+    assert_eq!(received.summary().actor_queued_reliable, 0);
+    // An explicitly resent overflow entry can still follow the drained queue.
+    let (packet, _) = client.send(vec![incoming_actor(2, first + 256, 2)]);
+    assert_eq!(peer.receive(&packet).unwrap().actor_bunches().len(), 1);
+}
+
 #[test]
 fn actor_open_splits_exports_and_body_and_resends_them_unchanged() {
     let mut peer = peer();

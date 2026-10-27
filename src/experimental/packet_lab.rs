@@ -42,6 +42,11 @@
 //! Control bunches are identified as `control_receive` does: an open bunch
 //! named with hard-coded index 255, or one on the configured control channel
 //! index (default 0); both identifications are inferred (F-522, F-525).
+//! Incoming actor bunches use the reliable state of channels opened here.
+//! Unsupported actor forms consume their reliable sequence and are dropped:
+//! unlike control decode errors they cannot fail the peer or block later RPCs.
+//! A full reliable queue drops the excess bunch and marks its packet undelivered
+//! in ack history, permitting retransmission when space becomes available.
 //! Summaries and `Debug` output carry kinds, counts and lengths only: never
 //! payload bytes, token or string contents, numeric message fields or cookies.
 use std::collections::{BTreeMap, VecDeque};
@@ -284,9 +289,13 @@ pub struct ReceiveSummary {
     pub resend_queued: usize,
     pub bunch_count: usize,
     pub control_bunches: usize,
-    /// Non-control bunches: not interpreted, yet the packet is acknowledged
-    /// as delivered (a lab choice).
+    /// Bunches on unknown or closing actor channels, acknowledged and ignored.
     pub ignored_bunches: usize,
+    pub actor_bunches: usize,
+    /// Unsupported actor forms or reliable queue overflow, counted and dropped.
+    pub actor_bunches_dropped: usize,
+    pub actor_duplicate_reliable: usize,
+    pub actor_queued_reliable: usize,
     /// Reliable control bunches already delivered or already queued; dropped.
     pub duplicate_reliable: usize,
     /// Control messages released by this packet, in delivery order.
@@ -305,6 +314,7 @@ pub struct ReceiveSummary {
 pub struct PeerReceive {
     summary: ReceiveSummary,
     messages: Vec<Decoded>,
+    actor_bunches: Vec<Bunch>,
 }
 
 impl std::fmt::Debug for PeerReceive {
@@ -324,6 +334,12 @@ impl PeerReceive {
     /// Delivered messages in delivery order, matching `summary().delivered`.
     pub fn messages(&self) -> &[Decoded] {
         &self.messages
+    }
+
+    /// Whole reliable actor bunches released in each channel's receive order.
+    /// Payload decoding belongs to the opt-in session policy.
+    pub fn actor_bunches(&self) -> &[Bunch] {
+        &self.actor_bunches
     }
 
     /// The delivered messages, consuming the result.
@@ -513,6 +529,9 @@ impl LabPeer {
 
     fn is_control(&self, bunch: &Bunch) -> bool {
         let header = &bunch.header;
+        if self.actors.contains_key(&header.channel_index) {
+            return false;
+        }
         (header.open && header.channel_name == Some(Name::Hardcoded(INFERRED_CONTROL_NAME_INDEX)))
             || header.channel_index == self.config.control_channel_index
     }
@@ -597,7 +616,8 @@ impl LabPeer {
     ///
     /// Order: bounded parse and control decode (pure), the sequence gate and
     /// notify update, ordered control delivery through the channel's reliable
-    /// queue, then `ack_seq(sequence, delivered = true)`. A stale or duplicate
+    /// queue and actor delivery, then ack history (undelivered on actor queue
+    /// overflow, delivered otherwise). A stale or duplicate
     /// packet is reported as [`PacketDisposition::Rejected`], not an error.
     pub fn receive(&mut self, datagram: &[u8]) -> Result<PeerReceive> {
         self.ensure_usable()?;
@@ -614,6 +634,10 @@ impl LabPeer {
             bunch_count: bunches.len(),
             control_bunches,
             ignored_bunches: bunches.len() - control_bunches,
+            actor_bunches: 0,
+            actor_bunches_dropped: 0,
+            actor_duplicate_reliable: 0,
+            actor_queued_reliable: self.actors.values().map(ReliableChannel::queued_len).sum(),
             duplicate_reliable: 0,
             delivered: Vec::new(),
             queued_reliable: self.control.queued_len(),
@@ -627,6 +651,7 @@ impl LabPeer {
             return Ok(PeerReceive {
                 summary,
                 messages: Vec::new(),
+                actor_bunches: Vec::new(),
             });
         };
         summary.disposition = PacketDisposition::Accepted {
@@ -685,11 +710,70 @@ impl LabPeer {
         }
         let delivered = self.deliver(staged, &mut summary);
         let messages = self.fail_on_error(delivered)?;
-        let acked = self.sequencer.ack_seq(received.sequence, true);
+        let (actor_bunches, actors_accepted) = self.deliver_actors(bunches, &mut summary);
+        let acked = self.sequencer.ack_seq(received.sequence, actors_accepted);
         self.fail_on_error(acked)?;
         summary.queued_reliable = self.control.queued_len();
         summary.delivered = messages.iter().map(DeliveredSummary::of).collect();
-        Ok(PeerReceive { summary, messages })
+        Ok(PeerReceive {
+            summary,
+            messages,
+            actor_bunches,
+        })
+    }
+
+    fn deliver_actors(
+        &mut self,
+        bunches: Vec<Bunch>,
+        summary: &mut ReceiveSummary,
+    ) -> (Vec<Bunch>, bool) {
+        let mut delivered = Vec::new();
+        let mut accepted = true;
+        for bunch in bunches {
+            if self.is_control(&bunch) || self.closing_actors.contains(&bunch.header.channel_index)
+            {
+                continue;
+            }
+            let Some(channel) = self.actors.get_mut(&bunch.header.channel_index) else {
+                continue;
+            };
+            summary.ignored_bunches -= 1;
+            summary.actor_bunches += 1;
+            let Some(raw) = bunch.header.reliable_sequence_raw else {
+                summary.actor_bunches_dropped += 1;
+                continue;
+            };
+            // Decode only after ordered delivery: even unsupported forms occupy
+            // their sequence, so dropping one cannot leave a permanent gap.
+            // Queue errors are non-mutating (sequencing::ReliableChannel).
+            // Overflow is a bounded lab drop, not the control path's peer failure.
+            match channel.receive_reliable(raw, bunch) {
+                Ok(ReliableReceive::Delivered(bunches)) => {
+                    for bunch in bunches {
+                        let header = &bunch.header;
+                        if header.partial
+                            || header.has_package_map_exports
+                            || header.has_must_be_mapped_guids
+                            || header.open
+                            || header.close
+                            || header.paused
+                        {
+                            summary.actor_bunches_dropped += 1;
+                        } else {
+                            delivered.push(bunch);
+                        }
+                    }
+                }
+                Ok(ReliableReceive::Queued) => {}
+                Ok(ReliableReceive::Duplicate) => summary.actor_duplicate_reliable += 1,
+                Err(_) => {
+                    summary.actor_bunches_dropped += 1;
+                    accepted = false;
+                }
+            }
+        }
+        summary.actor_queued_reliable = self.actors.values().map(ReliableChannel::queued_len).sum();
+        (delivered, accepted)
     }
 
     fn deliver(
