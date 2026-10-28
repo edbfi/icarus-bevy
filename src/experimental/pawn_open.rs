@@ -60,18 +60,29 @@ pub mod handle {
     pub const GAMEPLAY_TAGS: u32 = 50;
     /// `AIcarusPlayerCharacter::InventoryComponent`.
     pub const INVENTORY_COMPONENT: u32 = 56;
+    /// `AIcarusPlayerCharacter::ReplicatedControlRotation` (`FRotator`).
+    pub const REPLICATED_CONTROL_ROTATION: u32 = 58;
+    /// `AIcarusPlayerCharacter::RespawnCount` (`FIntProperty`).
+    pub const RESPAWN_COUNT: u32 = 63;
+    /// `AIcarusPlayerCharacter::HasGrantedLoadout` (`FBoolProperty`).
+    pub const HAS_GRANTED_LOADOUT: u32 = 64;
+    /// `AIcarusPlayerCharacter::CosmeticArmourOverrides` (item-static row
+    /// indices).
+    pub const COSMETIC_ARMOUR_OVERRIDES: u32 = 66;
     /// `bServerFrozenMovement` (`FBoolProperty`).
     pub const SERVER_FROZEN_MOVEMENT: u32 = 67;
 }
 
 /// Handles of the `UPlayerCharacterState` layout (`player_character_state_rep_layout`)
-/// that [`CharacterVitals`] writes.
+/// that [`CharacterVitals`] and a saved character's restore write.
 pub mod character_state_handle {
     /// `UActorState::Health` and `MaxHealth`.
     pub const HEALTH: u32 = 3;
     pub const MAX_HEALTH: u32 = 4;
     /// `UActorState::CurrentBiome` (1-byte row index).
     pub const CURRENT_BIOME: u32 = 11;
+    /// `UActorState::CurrentAliveState` (`EAliveState`, 1 bit).
+    pub const CURRENT_ALIVE_STATE: u32 = 12;
     /// `UCharacterState::Stamina` and `MaxStamina`.
     pub const STAMINA: u32 = 13;
     pub const MAX_STAMINA: u32 = 14;
@@ -81,9 +92,15 @@ pub mod character_state_handle {
     pub const OXYGEN: u32 = 18;
     pub const WATER: u32 = 19;
     pub const FOOD: u32 = 20;
+    pub const MIN_OXYGEN: u32 = 21;
     pub const MAX_OXYGEN: u32 = 22;
+    pub const MIN_WATER: u32 = 23;
     pub const MAX_WATER: u32 = 24;
+    pub const MIN_FOOD: u32 = 25;
     pub const MAX_FOOD: u32 = 26;
+    pub const RADIATION: u32 = 28;
+    pub const MIN_RADIATION: u32 = 29;
+    pub const MAX_RADIATION: u32 = 30;
     /// The last handle of the layout (`AIDetectionPercentage`).
     pub const LAST: u32 = 32;
 }

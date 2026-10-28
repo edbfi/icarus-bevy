@@ -1,0 +1,426 @@
+//! A returning player's pawn restored from its saved `C026` record (F-960).
+//!
+//! `UPlayerStateRecorderComponent::UpdateOwnerToDatabaseState` restores a
+//! survival pawn in order: it teleports it to `Location`, sets the
+//! controller's control rotation from `Rotation` (replicated on the pawn as
+//! `ReplicatedControlRotation`), copies `RespawnCount` and
+//! `HasGrantedLoadout`; a dead record only sets the unreplicated
+//! `bWasDeadOnReload` and leaves a death transition to stitching, otherwise
+//! a recorded `Health` goes through `SetHealth`; each recorded level goes
+//! through its setter; the stomach is cleared and every valid saved entry
+//! added; valid, unique cosmetic overrides replace the pawn's when any
+//! remain. The setters clamp to the state's current replicated bounds
+//! (F-961).
+//!
+//! [`restore_saved_pawn`] turns a record into the replicated values that
+//! restore changes; [`compose_restored_pawn_update`] frames them as one
+//! reliable pawn property update. Item-static row indices are the caller's
+//! (the server data.pak's `D_ItemsStatic` order, F-830).
+use std::collections::BTreeMap;
+
+use anyhow::{Result, bail, ensure};
+
+use super::actor_channel::{
+    ActorBunchBody, BlockTarget, CompressedRotator, ContentBlock, NetGuidRef, SubObjectClass,
+    encode_actor_bunch_body,
+};
+use super::archive::ByteOrder;
+use super::packet::Payload;
+use super::pawn_open::{PawnComponent, PawnOpenPlan, character_state_handle, handle};
+use super::recorders::SavedPlayerState;
+use super::rep_layout::{
+    ICARUS_ROW_HANDLE_NONE, PropertyStream, RepArray, RepCommand, RepLayoutCodec, RepLayoutLimits,
+    RepValue, encode_rep_properties, stomach_component_rep_layout,
+};
+use super::restore_rules::{UNRECORDED_LEVEL, filter_restored_cosmetic_armour_overrides};
+use super::session_open::{
+    ActorKey, ComponentBlock, ComponentExport, ConnectionExports, NetGuidCache, actor_codec, entry,
+};
+
+/// `UStomachComponent::StomachContents` (`stomach_component_rep_layout`).
+pub const STOMACH_CONTENTS_HANDLE: u32 = 3;
+
+/// Why a saved record's restore is not composed.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PawnRestoreGap {
+    /// `bIsAlive` is false: the original sets only the unreplicated
+    /// `bWasDeadOnReload` and kills the pawn at stitching, whose wire is
+    /// unread (F-961).
+    DeadOnSave,
+    /// The record omits `Location` or `Rotation`, whose constructed default
+    /// comes from two engine globals not yet identified (F-963).
+    Omitted(&'static str),
+}
+
+/// A saved stomach entry whose food resolved to an item-static row.
+#[derive(Clone, PartialEq, Eq)]
+pub struct RestoredStomachContent {
+    pub food_row: u16,
+    /// The saved modifier row name.
+    pub modifier_name: Vec<u16>,
+}
+
+impl std::fmt::Debug for RestoredStomachContent {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("RestoredStomachContent")
+    }
+}
+
+/// The replicated values a restore changes, by handle.
+#[derive(Clone, PartialEq)]
+pub struct RestoredPawn {
+    /// The teleport target. Not composed: the teleport's wire is unread.
+    pub location: [f32; 3],
+    /// Pawn actor values (`ReplicatedControlRotation`, `RespawnCount`,
+    /// `HasGrantedLoadout` and, when any remain, `CosmeticArmourOverrides`).
+    pub pawn: BTreeMap<u32, RepValue>,
+    /// `UPlayerCharacterState` values that differ from the current ones.
+    pub character_state: BTreeMap<u32, RepValue>,
+    /// The stomach's new contents; `None` when it was and stays empty.
+    pub stomach: Option<Vec<RestoredStomachContent>>,
+}
+
+impl std::fmt::Debug for RestoredPawn {
+    // Restored values come from supplied saves; show handles and counts.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("RestoredPawn")
+            .field("pawn", &self.pawn.keys().collect::<Vec<_>>())
+            .field(
+                "character_state",
+                &self.character_state.keys().collect::<Vec<_>>(),
+            )
+            .field("stomach", &self.stomach.as_ref().map(Vec::len))
+            .finish_non_exhaustive()
+    }
+}
+
+/// The pawn's current replicated state the restore's setters read.
+#[derive(Clone, Copy, Debug)]
+pub struct CurrentPawnState<'a> {
+    /// `UPlayerCharacterState` values by handle, as the pawn last sent
+    /// them (for a fresh pawn, [`super::pawn_open::PawnContent`]'s).
+    pub character_state: &'a BTreeMap<u32, RepValue>,
+    /// Entries in the pawn's stomach.
+    pub stomach_contents: usize,
+}
+
+/// `SetOxygen`/`SetWater`/`SetFood`/`SetRadiation`: below `min` gives
+/// `min`, at or above `max` gives `max` (F-961).
+pub fn clamp_level(value: i32, min: i32, max: i32) -> i32 {
+    if value < min {
+        min
+    } else if value < max {
+        value
+    } else {
+        max
+    }
+}
+
+/// `SetHealth`: negative gives 0, at or above `max_health` gives
+/// `max_health` (F-961).
+pub fn clamp_health(value: i32, max_health: i32) -> i32 {
+    if value < 0 {
+        0
+    } else if value < max_health {
+        value
+    } else {
+        max_health
+    }
+}
+
+fn current_int(current: &BTreeMap<u32, RepValue>, handle: u32) -> Result<i32> {
+    match current.get(&handle) {
+        Some(RepValue::Int(value)) => Ok(*value),
+        Some(_) => bail!("current character state handle {handle} is not an integer"),
+        None => bail!("the current character state lacks handle {handle}"),
+    }
+}
+
+/// A level bound as the pawn last sent it, else the constructed
+/// `USurvivalCharacterState` default the open leaves unsent (F-963): every
+/// minimum 0, `MaxOxygen`/`MaxWater`/`MaxFood` 100, `MaxRadiation` 1,000.
+fn current_bound(current: &BTreeMap<u32, RepValue>, handle: u32) -> Result<i32> {
+    use character_state_handle as h;
+    if current.contains_key(&handle) {
+        return current_int(current, handle);
+    }
+    Ok(match handle {
+        h::MIN_OXYGEN | h::MIN_WATER | h::MIN_FOOD | h::MIN_RADIATION => 0,
+        h::MAX_OXYGEN | h::MAX_WATER | h::MAX_FOOD => 100,
+        h::MAX_RADIATION => 1_000,
+        _ => bail!("no constructed default for character state handle {handle}"),
+    })
+}
+
+/// An item-static row index that fits a 2-byte row handle naming a row.
+fn item_row(
+    resolve: &mut impl FnMut(&[u16]) -> Result<Option<usize>>,
+    name: &[u16],
+) -> Result<Option<u16>> {
+    Ok(resolve(name)?
+        .and_then(|row| u16::try_from(row).ok())
+        .filter(|row| *row != ICARUS_ROW_HANDLE_NONE))
+}
+
+/// The replicated values `UpdateOwnerToDatabaseState` gives a survival pawn
+/// from `saved` (F-960, F-961), or why it is not composed. `item_row_index`
+/// resolves an item-static row name to its row index; a name it does not
+/// resolve is an invalid row, dropped from the cosmetic overrides and the
+/// stomach. Level and health bounds are `current`'s; a recorded level
+/// whose bounds `current` lacks is an error.
+pub fn restore_saved_pawn(
+    saved: &SavedPlayerState,
+    current: &CurrentPawnState<'_>,
+    mut item_row_index: impl FnMut(&[u16]) -> Result<Option<usize>>,
+) -> Result<std::result::Result<RestoredPawn, PawnRestoreGap>> {
+    use PawnRestoreGap::Omitted;
+    use character_state_handle as h;
+    let Some(location) = saved.location else {
+        return Ok(Err(Omitted("Location")));
+    };
+    let Some([pitch, yaw, roll]) = saved.rotation else {
+        return Ok(Err(Omitted("Rotation")));
+    };
+    // A save omits fields equal to the recorder's constructed defaults, so an
+    // omitted field restores as that default (F-963): RespawnCount 0,
+    // HasGrantedLoadout false, bIsAlive true, Health and levels -1.
+    let respawn_count = saved.respawn_count.unwrap_or(0);
+    let has_granted_loadout = saved.has_granted_loadout.unwrap_or(false);
+    if saved.is_alive == Some(false) {
+        return Ok(Err(PawnRestoreGap::DeadOnSave));
+    }
+    let health = saved.health.unwrap_or(UNRECORDED_LEVEL);
+    // The setters' order: (saved, field, level, min, max handles).
+    let mut levels = Vec::with_capacity(4);
+    for (level, level_handle, min, max) in [
+        (saved.oxygen_level, h::OXYGEN, h::MIN_OXYGEN, h::MAX_OXYGEN),
+        (saved.food_level, h::FOOD, h::MIN_FOOD, h::MAX_FOOD),
+        (saved.water_level, h::WATER, h::MIN_WATER, h::MAX_WATER),
+        (
+            saved.radiation_level,
+            h::RADIATION,
+            h::MIN_RADIATION,
+            h::MAX_RADIATION,
+        ),
+    ] {
+        let level = level.unwrap_or(UNRECORDED_LEVEL);
+        if level != UNRECORDED_LEVEL {
+            levels.push((level, level_handle, min, max));
+        }
+    }
+
+    let mut pawn = BTreeMap::from([
+        (
+            handle::REPLICATED_CONTROL_ROTATION,
+            RepValue::Rotator(CompressedRotator::from_degrees(pitch, yaw, roll)?),
+        ),
+        (handle::RESPAWN_COUNT, RepValue::Int(respawn_count)),
+        (
+            handle::HAS_GRANTED_LOADOUT,
+            RepValue::Bool(has_granted_loadout),
+        ),
+    ]);
+
+    let state = current.character_state;
+    let mut character_state = BTreeMap::new();
+    let mut set = |handle: u32, value: RepValue| {
+        if state.get(&handle) != Some(&value) {
+            character_state.insert(handle, value);
+        }
+    };
+    if health != UNRECORDED_LEVEL {
+        let health = clamp_health(health, current_int(state, h::MAX_HEALTH)?);
+        set(h::HEALTH, RepValue::Int(health));
+        set(
+            h::CURRENT_ALIVE_STATE,
+            RepValue::Enum(u32::from(health < 1)),
+        );
+    }
+    for (level, level_handle, min, max) in levels {
+        let (min, max) = (current_bound(state, min)?, current_bound(state, max)?);
+        set(level_handle, RepValue::Int(clamp_level(level, min, max)));
+    }
+
+    let mut contents = Vec::new();
+    for content in &saved.stomach_contents {
+        if let Some(food_row) = item_row(&mut item_row_index, &content.food_row_name)? {
+            contents.push(RestoredStomachContent {
+                food_row,
+                modifier_name: content.modifier_name.clone(),
+            });
+        }
+    }
+    let stomach = (current.stomach_contents > 0 || !contents.is_empty()).then_some(contents);
+
+    let mut overrides = Vec::with_capacity(saved.cosmetic_armour_overrides.len());
+    for name in &saved.cosmetic_armour_overrides {
+        overrides.push(match item_row(&mut item_row_index, name)? {
+            Some(row) => (row, true),
+            None => (ICARUS_ROW_HANDLE_NONE, false),
+        });
+    }
+    let (rows, apply) = filter_restored_cosmetic_armour_overrides(&overrides);
+    if apply {
+        pawn.insert(
+            handle::COSMETIC_ARMOUR_OVERRIDES,
+            RepValue::DynamicArray(RepArray {
+                count: u16::try_from(rows.len())?,
+                stream: PropertyStream {
+                    entries: rows
+                        .into_iter()
+                        .zip(1..)
+                        .map(|(row, element)| entry(element, RepValue::UInt16(row)))
+                        .collect(),
+                    terminator_checksum: None,
+                },
+            }),
+        );
+    }
+
+    Ok(Ok(RestoredPawn {
+        location,
+        pawn,
+        character_state,
+        stomach,
+    }))
+}
+
+/// A pawn component's GUID, which its open exported and the client acked.
+fn acked_component(
+    cache: &mut NetGuidCache,
+    exports: &mut ConnectionExports,
+    key: ActorKey,
+    actor: u32,
+    component: &PawnComponent,
+) -> Result<u32> {
+    let reference = cache.export_keyed_subobject(
+        exports,
+        key,
+        actor,
+        &ComponentExport {
+            name: component.name.clone(),
+            checksum: component.checksum,
+            block: ComponentBlock::None,
+        },
+    )?;
+    if reference.export.is_some() {
+        exports.begin_bunch();
+        bail!("pawn component {} is not acked yet", component.name);
+    }
+    Ok(reference.guid)
+}
+
+fn rep_block(
+    target: BlockTarget,
+    values: &BTreeMap<u32, RepValue>,
+    layout: &[RepCommand],
+    codec: &RepLayoutCodec,
+) -> Result<ContentBlock> {
+    let stream = PropertyStream {
+        entries: values
+            .iter()
+            .map(|(handle, value)| entry(*handle, value.clone()))
+            .collect(),
+        terminator_checksum: None,
+    };
+    Ok(ContentBlock {
+        has_rep_layout: true,
+        target,
+        payload: encode_rep_properties(&stream, layout, codec)?,
+    })
+}
+
+/// Frame `restored` as one pawn property update on the pawn's open channel
+/// for the connection `exports` tracks: an actor bunch body without spawn
+/// holding the pawn's actor block, then its `ActorState` and, when the
+/// stomach changes, its stomach component (`stomach_component`, an index
+/// into the plan's components) blocks, each only when it carries values.
+/// The pawn's open must be acked. Restored stomach entries reject: the
+/// replicated entry's `ModifierID` comes from `AddSaveDataToStomach`, which
+/// is unread; clearing a stomach composes.
+pub fn compose_restored_pawn_update(
+    cache: &mut NetGuidCache,
+    exports: &mut ConnectionExports,
+    plan: &PawnOpenPlan,
+    key: ActorKey,
+    stomach_component: usize,
+    restored: &RestoredPawn,
+    order: ByteOrder,
+) -> Result<Payload> {
+    ensure!(
+        plan.actor_state < plan.components.len() && stomach_component < plan.components.len(),
+        "pawn component index out of range"
+    );
+    ensure!(
+        restored
+            .character_state
+            .keys()
+            .all(|handle| (3..=character_state_handle::LAST).contains(handle)),
+        "character state handles lie in 3..=32"
+    );
+    ensure!(
+        restored.stomach.as_ref().is_none_or(Vec::is_empty),
+        "restored stomach entries are not composed: AddSaveDataToStomach is unread"
+    );
+    let codec = actor_codec(plan.engine_net_version, order);
+    let rep_codec = RepLayoutCodec {
+        actor: codec,
+        checksums: false,
+        limits: RepLayoutLimits::default(),
+    };
+    exports.begin_bunch();
+    let actor = cache.actor_guid(key);
+    let mut blocks = Vec::new();
+    if !restored.pawn.is_empty() {
+        blocks.push(rep_block(
+            BlockTarget::Actor,
+            &restored.pawn,
+            &plan.layout,
+            &rep_codec,
+        )?);
+    }
+    let mut component_block = |index: usize, values: &BTreeMap<u32, RepValue>, layout| {
+        let guid = acked_component(cache, exports, key, actor, &plan.components[index])?;
+        rep_block(
+            BlockTarget::SubObject {
+                object: NetGuidRef::plain(guid),
+                class: SubObjectClass::StablyNamed,
+            },
+            values,
+            layout,
+            &rep_codec,
+        )
+    };
+    if !restored.character_state.is_empty() {
+        blocks.push(component_block(
+            plan.actor_state,
+            &restored.character_state,
+            &plan.content.character_state_layout,
+        )?);
+    }
+    if restored.stomach.is_some() {
+        let cleared = BTreeMap::from([(
+            STOMACH_CONTENTS_HANDLE,
+            RepValue::DynamicArray(RepArray {
+                count: 0,
+                stream: PropertyStream {
+                    entries: Vec::new(),
+                    terminator_checksum: None,
+                },
+            }),
+        )]);
+        blocks.push(component_block(
+            stomach_component,
+            &cleared,
+            &stomach_component_rep_layout(),
+        )?);
+    }
+    ensure!(!blocks.is_empty(), "a restored pawn update carries values");
+    encode_actor_bunch_body(
+        &ActorBunchBody {
+            spawn: None,
+            blocks,
+        },
+        &codec,
+    )
+}

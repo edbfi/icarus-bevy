@@ -25,6 +25,7 @@ pub mod modifier_lifecycle;
 pub mod packet;
 pub mod packet_lab;
 pub mod pawn_open;
+pub mod pawn_restore;
 pub mod peer_lab;
 pub mod ping;
 pub mod probe_client;
