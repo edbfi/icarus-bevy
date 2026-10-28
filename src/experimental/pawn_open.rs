@@ -115,7 +115,7 @@ pub const INVENTORY_SLOTS_FIELD_INDEX: u32 = 4;
 /// `UInventory` handles the open writes (`inventory_rep_layout`).
 const INVENTORY_IS_ACTIVE: u32 = 2;
 const INVENTORY_OWNING_COMPONENT: u32 = 3;
-const INVENTORY_CURRENT_WEIGHT: u32 = 4;
+pub(crate) const INVENTORY_CURRENT_WEIGHT: u32 = 4;
 const INVENTORY_INFO_ROW: u32 = 7;
 
 /// `FInventorySlot` handles a slot writes (`inventory_slot_commands`): the

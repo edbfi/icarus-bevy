@@ -5,7 +5,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use icarus_bevy::experimental::{
     inventory_restore::{
         InventoryInfo, InventoryRestoreGap, InventoryRestoreTables, InventoryRole, ItemInfo,
-        ItemTraits, SlotChange, restore_inventories,
+        ItemTraits, ItemWeight, SlotChange, inventory_weight, restore_inventories,
     },
     pawn_open::{FastArrayContent, InventorySlot, PawnInventory},
     prospect_info::{SavedActorInventory, SavedItem},
@@ -50,7 +50,9 @@ fn tags(list: &[&str]) -> BTreeSet<String> {
 
 /// Items: 0 ore, 1 backpack (6 backpack slots), 2 suit (1 oxygen, 1 water,
 /// 1 upgrade slot), 3 oxygen tank, 4 canteen, 5 sword (durable, actionable),
-/// 6 module, 7 torch (utility, actionable, itemable).
+/// 6 module, 7 torch (utility, actionable, itemable). Weights: ore 100,
+/// backpack 1000 (a bag), suit 2000, tank 500, canteen 500 (a resource
+/// container), module unmodelled, the rest weightless.
 fn tables() -> InventoryRestoreTables {
     let item = |list: &[&str], traits: ItemTraits, grants: &[(&str, i32)]| ItemInfo {
         tags: tags(list),
@@ -59,6 +61,7 @@ fn tables() -> InventoryRestoreTables {
             .iter()
             .map(|(stat, value)| ((*stat).to_owned(), *value))
             .collect(),
+        weight: ItemWeight::Weightless,
     };
     let itemable = ItemTraits {
         itemable: true,
@@ -103,6 +106,26 @@ fn tables() -> InventoryRestoreTables {
             &[],
         ),
     ];
+    let mut items = items;
+    let unit = |weight| ItemWeight::Unit {
+        weight,
+        resource_container: false,
+        bag: false,
+    };
+    for (row, weight) in [(0, 100), (1, 1_000), (2, 2_000), (3, 500)] {
+        items[row].weight = unit(weight);
+    }
+    items[1].weight = ItemWeight::Unit {
+        weight: 1_000,
+        resource_container: false,
+        bag: true,
+    };
+    items[4].weight = ItemWeight::Unit {
+        weight: 500,
+        resource_container: true,
+        bag: false,
+    };
+    items[6].weight = ItemWeight::Unmodelled;
     let names = [
         "Ore", "Backpack", "Suit", "Tank", "Canteen", "Sword", "Module", "Torch",
     ];
@@ -217,7 +240,7 @@ fn saved_items_restore_in_place_and_waiting_items_fill_stat_grown_slots_first() 
         saved(
             4,
             vec![
-                saved_item(1, "Canteen", &[(7, 1)]),
+                saved_item(1, "Canteen", &[(7, 1), (10, 38)]),
                 saved_item(0, "Tank", &[(7, 1)]),
             ],
         ),
@@ -282,6 +305,22 @@ fn saved_items_restore_in_place_and_waiting_items_fill_stat_grown_slots_first() 
     assert_eq!((suit.base_key, suit.restored.slots.replication_key), (2, 6));
     // Upgrade: one granted slot holding the module.
     assert_eq!(layout(&by_index[&4].restored.slots.items), [Some((6, 1))]);
+    // Weights: stacked unit weights, the canteen's stored units added; the
+    // module's is not modelled (F-982).
+    assert_eq!(
+        restores
+            .iter()
+            .map(|restore| (restore.inventory, restore.weight))
+            .collect::<Vec<_>>(),
+        [
+            (0, Some(300)),
+            (1, Some(3_000)),
+            (2, Some(3_000)),
+            (3, Some(1_038)),
+            (4, None),
+        ]
+    );
+    assert_eq!(suit.restored.current_weight, Some(1_038));
     // Equipment is restored in place and sizes nothing itself.
     assert_eq!(
         layout(&by_index[&2].restored.slots.items),
@@ -377,4 +416,34 @@ fn tag_queries_match_any_all_none_and_nested_expressions_over_parents() {
             "TagDictionary": [{"TagName": "A"}]}}))
         .is_err()
     );
+}
+
+#[test]
+fn linked_bags_and_own_weight_stats_leave_the_weight_unsent() {
+    let tables = tables();
+    let slot = |item: SavedItem| {
+        let restores = restore_inventories(&opened(), &[saved(2, vec![item])], &tables)
+            .unwrap()
+            .unwrap();
+        restores[0].restored.slots.items.clone()
+    };
+    let plain = slot(saved_item(0, "Ore", &[(7, 4)]));
+    assert_eq!(inventory_weight(&tables, &plain), Some(400));
+    // A linked bag adds its own inventory's weight, which is not modelled;
+    // an unlinked bag (-1) and another item's linked inventory add nothing.
+    let linked = slot(saved_item(0, "Backpack", &[(7, 1), (13, 0)]));
+    assert_eq!(inventory_weight(&tables, &linked), None);
+    let unlinked = slot(saved_item(0, "Backpack", &[(7, 1), (13, -1)]));
+    assert_eq!(inventory_weight(&tables, &unlinked), Some(1_000));
+    let tool = slot(saved_item(0, "Ore", &[(7, 4), (13, 0)]));
+    assert_eq!(inventory_weight(&tables, &tool), Some(400));
+    let weighted = slot(SavedItem {
+        stats: vec![(-1, units("BaseWeight_+"), 5)],
+        ..saved_item(0, "Ore", &[(7, 4)])
+    });
+    assert_eq!(inventory_weight(&tables, &weighted), None);
+    // An item without a stack weighs nothing.
+    let mut unstacked = plain.clone();
+    unstacked[0].item.as_mut().unwrap().dynamic.clear();
+    assert_eq!(inventory_weight(&tables, &unstacked), Some(0));
 }

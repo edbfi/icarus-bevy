@@ -26,17 +26,18 @@ use super::actor_channel::{
 };
 use super::archive::ByteOrder;
 use super::inventory_restore::{InventoryRestore, SlotChange};
+use super::inventory_weight::DEFAULT_CDO_CURRENT_WEIGHT;
 use super::modifier_restore::RestoredModifier;
 use super::packet::Payload;
 use super::pawn_open::{
-    INVENTORY_SLOTS_FIELD_INDEX, InventorySlot, PawnComponent, PawnOpenPlan,
-    character_state_handle, fast_array_delta_field, handle, slot_stream,
+    INVENTORY_CURRENT_WEIGHT, INVENTORY_SLOTS_FIELD_INDEX, InventorySlot, PawnComponent,
+    PawnOpenPlan, character_state_handle, fast_array_delta_field, handle, slot_stream,
 };
 use super::recorders::SavedPlayerState;
 use super::rep_layout::{
     ICARUS_ROW_HANDLE_NONE, PropertyStream, RepArray, RepCommand, RepLayoutCodec, RepLayoutLimits,
     RepValue, encode_rep_properties, modifier_state_component_rep_layout,
-    stomach_component_rep_layout,
+    stomach_component_rep_layout, write_rep_properties,
 };
 use super::rep_rpc::{FastArrayDelta, FastArrayItem, FieldHeader, write_field_header};
 use super::restore_rules::{UNRECORDED_LEVEL, filter_restored_cosmetic_armour_overrides};
@@ -328,8 +329,9 @@ fn restored_inventory_block(
     key: ActorKey,
     class: u32,
     inventory: &InventoryRestore,
-    order: ByteOrder,
+    codec: &RepLayoutCodec,
 ) -> Result<ContentBlock> {
+    let order = codec.actor.order;
     let mut changed = Vec::with_capacity(inventory.changes.len());
     for (id, change) in &inventory.changes {
         let stream = match change {
@@ -370,6 +372,26 @@ fn restored_inventory_block(
         order,
     )?;
     let mut writer = super::packet::BitWriter::new();
+    // A changed weight goes as a property ahead of the slots (F-982); an
+    // open without one holds the CDO's.
+    let weight = inventory.weight.filter(|weight| {
+        *weight
+            != inventory
+                .opened
+                .current_weight
+                .unwrap_or(DEFAULT_CDO_CURRENT_WEIGHT)
+    });
+    if let Some(weight) = weight {
+        write_rep_properties(
+            &mut writer,
+            &PropertyStream {
+                entries: vec![entry(INVENTORY_CURRENT_WEIGHT, RepValue::Int(weight))],
+                terminator_checksum: None,
+            },
+            &plan.content.inventory_layout,
+            codec,
+        )?;
+    }
     write_field_header(
         &mut writer,
         &FieldHeader {
@@ -379,7 +401,7 @@ fn restored_inventory_block(
         plan.content.inventory_bound,
     )?;
     Ok(ContentBlock {
-        has_rep_layout: false,
+        has_rep_layout: weight.is_some(),
         target: BlockTarget::SubObject {
             object: NetGuidRef::plain(
                 cache.subobject_guid(key, u32::try_from(inventory.inventory)?),
@@ -531,7 +553,7 @@ pub fn compose_restored_pawn_update(
         exported.push(class);
         for inventory in &restored.inventories {
             blocks.push(restored_inventory_block(
-                cache, plan, key, guid, inventory, order,
+                cache, plan, key, guid, inventory, &rep_codec,
             )?);
         }
     }

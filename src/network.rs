@@ -60,7 +60,10 @@ use crate::{
             MATCH_STATE_IN_PROGRESS, NetworkingStatus, active_prospect_values, handle,
             saved_game_mode_values, session_flags_value,
         },
-        inventory_restore::{InventoryInfo, InventoryRestoreTables, InventoryRole, ItemInfo},
+        inventory_restore::{
+            InventoryInfo, InventoryRestoreTables, InventoryRole, ItemInfo, ItemWeight,
+            WEIGHT_STAT_SUFFIX,
+        },
         inventory_weight::{
             AUTHORITY_LOCAL_ROLE, DEFAULT_CDO_CURRENT_WEIGHT, DYNAMIC_PROP_ASSOCIATED_INVENTORY_ID,
             DYNAMIC_PROP_FILLABLE_UNITS, DYNAMIC_PROP_ITEMABLE_STACK, ItemWeightInput,
@@ -477,6 +480,49 @@ fn granted_stat_name(key: &str) -> Option<&str> {
     key.strip_prefix("(Value=\"")?.strip_suffix("\")")
 }
 
+/// The `D_TagQueries` row whose items bind a linked inventory as a child
+/// bag, whose weight adds to its inventory's (F-933).
+const BAG_QUERY: &str = "Any_Bag";
+
+/// What item weights read besides the item row.
+struct Weighing {
+    /// `Itemable` row name to its `Weight`; `None` when out of range.
+    weights: BTreeMap<String, Option<i32>>,
+    resource_tags: Vec<String>,
+    bag_query: crate::experimental::tag_query::TagQuery,
+}
+
+/// An item row's weight in `RecalculateWeight` (F-933) given its tags with
+/// parents: unmodelled without `weighing` or when its `AdditionalStats`
+/// names a weight stat.
+fn item_weight(
+    row: &serde_json::Map<String, serde_json::Value>,
+    tags: &std::collections::BTreeSet<String>,
+    weighing: Option<&Weighing>,
+) -> Result<ItemWeight> {
+    let Some(weighing) = weighing else {
+        return Ok(ItemWeight::Unmodelled);
+    };
+    if row
+        .get("AdditionalStats")
+        .and_then(serde_json::Value::as_object)
+        .is_some_and(|stats| stats.keys().any(|key| key.contains(WEIGHT_STAT_SUFFIX)))
+    {
+        return Ok(ItemWeight::Unmodelled);
+    }
+    let Some(itemable) = names_row(row, "Itemable") else {
+        return Ok(ItemWeight::Weightless);
+    };
+    Ok(match weighing.weights.get(&itemable).copied().flatten() {
+        Some(weight) => ItemWeight::Unit {
+            weight,
+            resource_container: item_matches_any_tag(row, &weighing.resource_tags)?,
+            bag: weighing.bag_query.matches(tags),
+        },
+        None => ItemWeight::Unmodelled,
+    })
+}
+
 /// A row handle field that names a row (not `None`).
 fn names_row(row: &serde_json::Map<String, serde_json::Value>, field: &str) -> Option<String> {
     row.get(field)
@@ -553,6 +599,40 @@ pub fn inventory_restore_tables(
             })
             .collect()
     };
+    // Weights need every Itemable row's weight, the weighable resource
+    // container query and the bag query (F-933); without them no weight is
+    // modelled.
+    let bag_query = tables
+        .row(TAG_QUERIES_TABLE, BAG_QUERY)?
+        .map(|row| {
+            crate::experimental::tag_query::TagQuery::from_row(&serde_json::Value::Object(row))
+        })
+        .transpose()?;
+    let weighing = if let Some(bag_query) = bag_query
+        && tables.has_table(ITEMABLE_TABLE)
+        && tables
+            .row(TAG_QUERIES_TABLE, WEIGHABLE_RESOURCE_CONTAINER_QUERY)?
+            .is_some()
+    {
+        let weights: BTreeMap<String, Option<i32>> = tables
+            .objects(ITEMABLE_TABLE)?
+            .iter()
+            .filter_map(|row| {
+                let weight = match row.get("Weight") {
+                    None => Some(0),
+                    Some(value) => value.as_i64().and_then(|weight| i32::try_from(weight).ok()),
+                };
+                Some((row.get("Name")?.as_str()?.to_owned(), weight))
+            })
+            .collect();
+        Some(Weighing {
+            weights,
+            resource_tags: weighable_resource_tags(tables)?,
+            bag_query,
+        })
+    } else {
+        None
+    };
     let mut items = Vec::new();
     let mut item_rows = BTreeMap::new();
     for (index, row) in tables.objects(ITEMS_STATIC_TABLE)?.iter().enumerate() {
@@ -570,8 +650,10 @@ pub fn inventory_restore_tables(
             }
         }
         let has = |field: &str| names_row(row, field).is_some();
+        let tags = tag_names(row);
+        let weight = item_weight(row, &tags, weighing.as_ref())?;
         items.push(ItemInfo {
-            tags: tag_names(row),
+            tags,
             traits: crate::experimental::inventory_restore::ItemTraits {
                 actionable: has("Actionable"),
                 combustible: has("Combustible"),
@@ -586,6 +668,7 @@ pub fn inventory_restore_tables(
                 living: has("LivingItem"),
             },
             grants,
+            weight,
         });
     }
     let queries = tables
