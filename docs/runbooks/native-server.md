@@ -86,7 +86,7 @@ saved UID once every joined controller has sent `ServerFriendsListUpdated`, as t
 original finalises (F-973, F-975); `run` then sends the record's saved pawn state, with levels
 and health clamped as the original does (F-964), and its saved inventories as
 the original restores them, unless a default it cannot compute is missing
-(F-979); a new player, whom no saved
+(F-979), and its saved modifiers (F-981); a new player, whom no saved
 controller matches, is added to the replicated History (F-967). That UID stays
 claimed after the session ends. A client that
 never answers never completes; the original's timeout only logs (F-959). A save
