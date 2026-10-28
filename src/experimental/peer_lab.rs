@@ -3155,13 +3155,8 @@ impl PeerLab {
                     .context("no PlayerState channel")?,
                 payload,
             )?;
-            match kind {
-                ProfileKind::User => entry.profiles.user = values,
-                ProfileKind::Character => {
-                    entry.profiles.character_slot =
-                        Some(profile_exchange::character_slot(&values)?);
-                    entry.profiles.character = values;
-                }
+            if kind == ProfileKind::Character {
+                entry.profiles.character_slot = Some(profile_exchange::character_slot(&values)?);
             }
             entry.ack_pending = false;
             Ok::<_, anyhow::Error>(sent)
