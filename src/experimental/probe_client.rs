@@ -190,6 +190,16 @@ impl ProbeClient {
         &self.handshake
     }
 
+    pub fn config(&self) -> &ProbeConfig {
+        &self.config
+    }
+
+    /// The cookie-derived initial incoming and outgoing reliable sequences
+    /// every channel starts from.
+    pub fn initial_reliable(&self) -> (u32, u32) {
+        self.sequencer.initial_reliable()
+    }
+
     /// Send one reliable Hello opening the control channel, then collect
     /// replies for the reply window. An empty `token` asks for a challenge
     /// (F-563).

@@ -2,6 +2,7 @@
 #![allow(dead_code)]
 use icarus_bevy::experimental::{
     control_messages::ArchiveText,
+    probe_initialise::{authored_character_profile, authored_user_profile},
     rep_layout::{PropertyStream, RepArray, RepEntry, RepValue},
     rep_rpc::RpcItem,
 };
@@ -17,6 +18,30 @@ impl Fixture {
             rpc: Vec::new(),
             properties: Vec::new(),
         }
+    }
+    /// Authored RPC items with their property values; arrays hold values only.
+    fn from_rpc(items: Vec<RpcItem>) -> Self {
+        let mut fixture = Self::new();
+        for item in items {
+            match item {
+                RpcItem::Value(value) => fixture.value(value),
+                RpcItem::Array(elements) => fixture.array(
+                    elements
+                        .into_iter()
+                        .map(|element| {
+                            element
+                                .into_iter()
+                                .map(|item| match item {
+                                    RpcItem::Value(value) => value,
+                                    RpcItem::Array(_) => panic!("nested profile array"),
+                                })
+                                .collect()
+                        })
+                        .collect(),
+                ),
+            }
+        }
+        fixture
     }
     fn value(&mut self, value: RepValue) {
         self.rpc.push(RpcItem::Value(value.clone()));
@@ -52,55 +77,14 @@ fn text(value: &str) -> RepValue {
     RepValue::Str(ArchiveText::text(value).unwrap())
 }
 
+/// The probe's authored user profile.
 pub fn user() -> Fixture {
-    let mut fixture = Fixture::new();
-    fixture.value(text("authored-profile-user"));
-    fixture.array(vec![
-        vec![text("Ore"), RepValue::Int(17)],
-        vec![text(""), RepValue::Int(-8)],
-    ]);
-    fixture.array(vec![vec![RepValue::Int(42)], vec![RepValue::Int(-1)]]);
-    fixture.array(vec![vec![text("Talent"), RepValue::Int(3)]]);
-    fixture.value(RepValue::Int(8));
-    fixture.value(RepValue::Int(19));
-    fixture
+    Fixture::from_rpc(authored_user_profile().unwrap())
 }
 
+/// The probe's authored character profile, `slot` its ChrSlot.
 pub fn character(slot: i32) -> Fixture {
-    let mut fixture = Fixture::new();
-    fixture.value(text("authored-character"));
-    fixture.value(RepValue::Int(slot));
-    fixture.value(RepValue::Int(41));
-    fixture.value(RepValue::Int(-99));
-    fixture.value(RepValue::Bool(true));
-    fixture.value(RepValue::Bool(false));
-    fixture.value(text("authored-prospect"));
-    fixture.value(RepValue::Enum(1));
-    fixture.array(vec![vec![RepValue::Int(9)], vec![RepValue::Int(-7)]]);
-    fixture.array(vec![vec![text("Skill"), RepValue::Int(13)]]);
-    for value in -10..0 {
-        fixture.value(RepValue::Int(value));
-    }
-    fixture.value(RepValue::Bool(true));
-    for value in 21..26 {
-        fixture.value(RepValue::Int(value));
-    }
-    fixture.value(RepValue::Bool(false));
-    fixture.value(RepValue::Int(27));
-    for value in [1.5_f32, -3.25, 0.0] {
-        fixture.value(RepValue::Float(value.to_bits()));
-    }
-    for value in 31..38 {
-        fixture.value(RepValue::Int(value));
-    }
-    for value in [0.25_f32, -0.0, 100.5, 1.0] {
-        fixture.value(RepValue::Float(value.to_bits()));
-    }
-    fixture.array(vec![
-        vec![text("Effect"), RepValue::Int(-12)],
-        vec![text("Other"), RepValue::Int(6)],
-    ]);
-    fixture.value(RepValue::Int64(-9_876_543_210));
+    let fixture = Fixture::from_rpc(authored_character_profile(slot).unwrap());
     assert_eq!(fixture.rpc.len(), 44);
     fixture
 }

@@ -717,3 +717,67 @@ fn actor_rpc_layouts_round_trip_with_class_net_cache_bounds() {
         lvl_args
     );
 }
+
+#[test]
+fn initialisation_answers_round_trip_through_their_parameter_layouts() {
+    use icarus_bevy::experimental::{
+        probe_initialise::{
+            begin_player_initialisation_field, bestiary_response_payload, initialise_codec,
+            loadout_response_payload,
+        },
+        rep_rpc::{
+            SERVER_BEGIN_PLAYER_INITIALISATION_FIELD_INDEX, parse_begin_player_initialisation,
+            server_receive_bestiary_data_parameters, server_receive_loadout_parameters,
+        },
+    };
+    let codec = initialise_codec(17);
+    let loadout = server_receive_loadout_parameters();
+    let payload = loadout_response_payload(&codec).unwrap();
+    assert_eq!(payload.bit_len(), 1, "one clear presence bit");
+    assert_eq!(
+        parse_rpc_payload(&payload, &loadout, &codec).unwrap(),
+        [RpcArgument::NotSent]
+    );
+    // FPlayerLoadoutData is not modelled: a sent value fails closed both ways.
+    let sent = [RpcArgument::Sent(vec![RpcItem::Value(RepValue::Int(0))])];
+    assert!(encode_rpc_payload(&loadout, &sent, &codec).is_err());
+    let mut writer = BitWriter::new();
+    writer.write_bit(true);
+    writer.write_bytes(&[0; 8]);
+    assert!(parse_rpc_payload(&Payload::from_writer(writer), &loadout, &codec).is_err());
+
+    let bestiary = server_receive_bestiary_data_parameters();
+    let payload = bestiary_response_payload(&codec).unwrap();
+    assert_eq!(payload.bit_len(), 2);
+    assert_eq!(
+        parse_rpc_payload(&payload, &bestiary, &codec).unwrap(),
+        [RpcArgument::NotSent, RpcArgument::NotSent]
+    );
+    // Sent empty arrays are a set bit and a zero count each.
+    let empty = vec![RpcArgument::Sent(vec![RpcItem::Array(Vec::new())]); 2];
+    let payload = encode_rpc_payload(&bestiary, &empty, &codec).unwrap();
+    assert_eq!(payload.bit_len(), 2 * 17);
+    assert_eq!(
+        parse_rpc_payload(&payload, &bestiary, &codec).unwrap(),
+        empty
+    );
+    // An element's typed row handle has no recorded width and fails closed.
+    let mut writer = BitWriter::new();
+    writer.write_bit(true);
+    writer.write_bytes(&1_u16.to_le_bytes());
+    writer.write_bytes(&[0; 8]);
+    writer.write_bit(false);
+    assert!(parse_rpc_payload(&Payload::from_writer(writer), &bestiary, &codec).is_err());
+
+    // ChrSlot 0 goes as a clear bit, as the engine's sender omits a zero value;
+    // both forms read back as the slot.
+    for (slot, bits) in [(3, 33), (0, 1), (-1, 33)] {
+        let field = begin_player_initialisation_field(slot, &codec).unwrap();
+        assert_eq!(field.index, SERVER_BEGIN_PLAYER_INITIALISATION_FIELD_INDEX);
+        assert_eq!(field.payload.bit_len(), bits);
+        assert_eq!(
+            parse_begin_player_initialisation(&field.payload, &codec).unwrap(),
+            slot
+        );
+    }
+}

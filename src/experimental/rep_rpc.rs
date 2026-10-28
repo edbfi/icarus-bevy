@@ -35,9 +35,9 @@ use anyhow::{Context, Result, ensure};
 use super::actor_channel::read_packed;
 use super::packet::{BitReader, BitWriter, Payload};
 use super::rep_layout::{
-    Budget, PropertyStream, RepCommand, RepLayoutCodec, RepValue, append_bits, copy_bits,
-    enum_byte_bits, read_stream, read_u16, read_u32, read_value, validate_layout, write_stream,
-    write_u16, write_u32, write_value,
+    Budget, PropertyStream, RepCommand, RepLayoutCodec, RepValue, UnsupportedItem, append_bits,
+    copy_bits, enum_byte_bits, read_stream, read_u16, read_u32, read_value, validate_layout,
+    write_stream, write_u16, write_u32, write_value,
 };
 
 /// Largest dynamic-array count the client accepts in RPC parameters.
@@ -408,6 +408,36 @@ pub fn client_prepare_loadout_parameters() -> Vec<RpcParameter> {
     vec![
         RpcParameter::Value(vec![RepCommand::Int]),
         RpcParameter::Value(last_prospect_host_info_commands()),
+    ]
+}
+
+/// `UPlayerDataComponent::ServerReceiveLoadout(ClientsLoadout:
+/// FPlayerLoadoutData)`: one struct parameter. Its eleven members (two
+/// `FItemData` trees, a `FDropship` whose `Type` enum width is unrecorded, a
+/// prospect and host info) are not modelled, so a sent value fails closed and
+/// only the clear presence bit encodes.
+pub fn server_receive_loadout_parameters() -> Vec<RpcParameter> {
+    vec![RpcParameter::Value(vec![RepCommand::Unsupported(
+        UnsupportedItem::OtherNativeStruct,
+    )])]
+}
+
+/// `UBestiaryManagerComponent::Server_ReceiveBestiaryData(ClientBestiaryData:
+/// TArray<FBestiaryFastArrayItem>, ClientFishData:
+/// TArray<FFishDataFastArrayItem>)`. The fast-array item bases replicate
+/// nothing; each element is its typed row handle (`BestiaryRowHandle`,
+/// `FishRow`), whose table width is unrecorded and so fails closed, then
+/// `PointScore`, or `MaxQuality`, `MaxWeight`, `MaxLength` and `CaughtCount`.
+/// Empty arrays, sent or not, encode exactly.
+pub fn server_receive_bestiary_data_parameters() -> Vec<RpcParameter> {
+    let row = || RepCommand::Unsupported(UnsupportedItem::OtherNativeStruct);
+    let mut fish = vec![row()];
+    fish.extend(std::iter::repeat_n(RepCommand::Int, 4));
+    vec![
+        RpcParameter::Value(vec![RepCommand::DynamicArray {
+            element: vec![row(), RepCommand::Int],
+        }]),
+        RpcParameter::Value(vec![RepCommand::DynamicArray { element: fish }]),
     ]
 }
 
