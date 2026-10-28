@@ -278,6 +278,7 @@ fn restored_stat_formulas_combine_their_bases() {
         "ExposureResistance_+%",
         "BaseItemWear_+%",
         "BaseItemWearAtNight_+%",
+        "BaseItemWearAtDay_+%",
         "BaseKnifeItemWear_+%",
         "BaseLureItemWear_+%",
         "BaseFirearmItemWear_+%",
@@ -355,8 +356,8 @@ fn restored_stat_formulas_combine_their_bases() {
     assert_eq!(knife.value("ItemWear_+%"), -34);
     assert_eq!(knife.value("LureItemWear_+%"), -24);
     assert_eq!(knife.value("SprainModifierDuration_+%"), -40);
-    // A lure (13) by day (3), on foot and unburdened: fishing's resistance,
-    // the lure's wear twice for item wear (its tool entry), once for lures.
+    // A lure (13) by day (3), on foot and unburdened: fishing's resistance;
+    // item wear and lure wear each add the day's wear and the lure's once.
     let lure = stats(&[
         ("ToolType_Enum", 13),
         ("TimeOfDay_Enum", 3),
@@ -367,13 +368,14 @@ fn restored_stat_formulas_combine_their_bases() {
         ("BaseMountedExposureResistance_+%", 7),
         ("BaseItemWear_+%", -20),
         ("BaseItemWearAtNight_+%", -4),
+        ("BaseItemWearAtDay_+%", -2),
         ("BaseLureItemWear_+%", -30),
     ]);
     assert_eq!(lure.value("PhysicalDamageResistance_%"), 75);
     assert_eq!(lure.value("StaminaActionCost_+%"), -15);
     assert_eq!(lure.value("ExposureResistance_+%"), 0);
-    assert_eq!(lure.value("ItemWear_+%"), -50);
-    assert_eq!(lure.value("LureItemWear_+%"), -50);
+    assert_eq!(lure.value("ItemWear_+%"), -52);
+    assert_eq!(lure.value("LureItemWear_+%"), -52);
     // A firearm (10) adds its own wear.
     let rifle = stats(&[("ToolType_Enum", 10), ("BaseFirearmItemWear_+%", -50)]);
     assert_eq!(rifle.value("IsFirearm_?"), 1);
