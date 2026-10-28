@@ -66,7 +66,7 @@ sends its character slot and profiles (F-951). `run` follows that sequence on au
 loopback peers, restores the saved UID at completion and sends the saved
 pawn state; new players join the History (F-954, F-964, F-967, F-975). The original
 finalises players only after every controller's friends list (F-973); the probe,
-initialising as a saved character, captured its restore of a returning pawn (F-972, F-974). The profile answers
+initialising as a saved character, captured its restore of a returning pawn (F-972, F-974); `run` restores its inventories the same way (F-978, F-979). The profile answers
 carry the PlayerState's own profile trees on a verified `UBackendProxyComponent`
 (F-955); failures re-request up to three times before a kick, and completion
 also waits for the client's loadout and bestiary answers (F-956 to F-958);
@@ -89,4 +89,4 @@ only then does the game mode initialise the player for the prospect (F-959).
 
 ## Artifacts
 
-M-420..M-449, M-455..M-470, M-570..M-576, M-581..M-588, M-600..M-605, M-707..M-717, M-720, M-728..M-748, M-776, M-777, M-782, M-794, M-795, M-797..M-799, M-801, M-802, M-804, M-805, M-807, M-813..M-819, M-832, M-834 to M-836, M-838 to M-848, M-852, M-853, M-860, M-863, M-868, M-869, M-879, M-881 to M-887, M-891 to M-896, M-901 to M-913, M-1027 to M-1030, M-1034, M-1083 to M-1087, M-1089 to M-1093, M-1096, M-1099, M-1102, M-1105 to M-1108.
+M-420..M-449, M-455..M-470, M-570..M-576, M-581..M-588, M-600..M-605, M-707..M-717, M-720, M-728..M-748, M-776, M-777, M-782, M-794, M-795, M-797..M-799, M-801, M-802, M-804, M-805, M-807, M-813..M-819, M-832, M-834 to M-836, M-838 to M-848, M-852, M-853, M-860, M-863, M-868, M-869, M-879, M-881 to M-887, M-891 to M-896, M-901 to M-913, M-1027 to M-1030, M-1034, M-1083 to M-1087, M-1089 to M-1093, M-1096, M-1099, M-1102, M-1105 to M-1108, M-1110, M-1112.
