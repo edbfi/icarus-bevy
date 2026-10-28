@@ -1,12 +1,14 @@
 //! A fresh player's replicated pawn stats from the official server's data
-//! tables (F-838, F-839).
+//! tables (F-838, F-839), and the virtual-stat formulas a returning player's
+//! restored stats add (F-984).
 //!
 //! The original sums every stat over its sources and derives the virtual
 //! stats from integer formulas over other stats; the pawn replicates every
 //! `bIsReplicated` `D_Stats` row whose value is nonzero, in row order. A
 //! fresh player's only source is the starting grant (`D_CharacterStartingStats`
 //! `Base_Stats`). The formulas below are written here by stat name for the
-//! virtual stats that a fresh player's replicated stats depend on; any other
+//! virtual stats that a fresh or a restored player's replicated stats depend
+//! on; any other
 //! stat reads as its summed sources, which for a fresh player matches the
 //! original only because no grant feeds another virtual stat. Enumerated
 //! keys (tool types, atmospheres, times of day) are the original's enum
@@ -156,6 +158,10 @@ const ATMOSPHERE_BIOMES: [(i32, &str); 16] = [
     (17, "Jungle"),
     (18, "Jungle"),
 ];
+
+/// The item wear stats each time of day selects.
+const ITEM_WEAR_TIMES: [(i32, &str); 2] =
+    [(1, "BaseItemWearAtNight_+%"), (3, "BaseItemWearAtDay_+%")];
 
 /// Tool types the original counts as firearms.
 const FIREARMS: [i32; 3] = [10, 11, 12];
@@ -504,6 +510,114 @@ fn formula(name: &str) -> Option<Formula> {
                 .0
                 .min(99),
             )
+        },
+        // A returning pawn's restored stats (F-984).
+        "BackpackSlots_+" => |s| s.get("BaseBackpackSlots_+"),
+        "UpgradeSlots_+" => |s| s.get("BaseUpgradeSlots_+"),
+        "OxygenSlots_+" => |s| s.get("BaseOxygenSlots_+"),
+        "WaterSlots_+" => |s| s.get("BaseWaterSlots_+"),
+        "FoodStomachSlots_+" => |s| s.get("BaseFoodStomachSlots_+"),
+        "BacterialModifierDuration_+%" => |s| s.get("BaseBacterialModifierDuration_+%"),
+        "ParasiticModifierDuration_+%" => |s| s.get("BaseParasiticModifierDuration_+%"),
+        "PoisonModifierDuration_+%" => |s| s.get("BasePoisonModifierDuration_+%"),
+        "PhysicalTraumaModifierDuration_+%" => |s| s.get("BasePhysicalTraumaModifierDuration_+%"),
+        "MountedExposureResistance_+%" => |s| s.get("BaseMountedExposureResistance_+%"),
+        "FallDamageResistance_%" => |s| Wrapping(s.value("BaseFallDamageResistance_%").min(99)),
+        "SprainModifierDuration_+%" => {
+            |s| s.get("BaseSprainModifierDuration_+%") + s.get("BaseModifierDuration_+%")
+        }
+        "PhysicalDamageResistance_%" => |s| {
+            let base = s.get("BasePhysicalDamageResistance_%")
+                + s.select(
+                    TOOL_TYPE,
+                    &[(13, "BasePhysicalDamageResistanceWhileFishing_%")],
+                );
+            Wrapping(
+                ((s.get("BasePhysicalDamageResistance_+%") + HUNDRED) * base / HUNDRED)
+                    .0
+                    .min(99),
+            )
+        },
+        "MeleeDamageResistance_+%" => |s| {
+            s.get("BaseMeleeDamageResistance_+%")
+                + s.select(
+                    TOOL_TYPE,
+                    &[(4, "BaseCarryingSpearMeleeDamageResistance_+%")],
+                )
+        },
+        "MeleeDamageResistance_%" => |s| {
+            let base = s.get("BaseMeleeDamageResistance_%") + s.get("PhysicalDamageResistance_%");
+            Wrapping(
+                (base * (s.get("MeleeDamageResistance_+%") + HUNDRED) / HUNDRED)
+                    .0
+                    .min(99),
+            )
+        },
+        "ProjectileDamageResistance_%" => |s| {
+            Wrapping(
+                (s.scaled(
+                    "BaseProjectileDamageResistance_%",
+                    "BaseProjectileDamageResistance_+%",
+                    None,
+                ) + s.get("PhysicalDamageResistance_%"))
+                .0
+                .min(99),
+            )
+        },
+        "StaminaActionCost_+%" => |s| {
+            s.get("BaseStaminaActionCost_+%")
+                + s.when(
+                    "IsOverencumbered_?",
+                    "BaseOverEncumberedStaminaActionCost_+%",
+                )
+        },
+        "JumpingStaminaActionCost_+%" => {
+            |s| s.get("BaseJumpingStaminaActionCost_+%") + s.get("StaminaActionCost_+%")
+        }
+        "SprintingStaminaActionCost_+%" => {
+            |s| s.get("BaseSprintingStaminaActionCost_+%") + s.get("StaminaActionCost_+%")
+        }
+        "ToolStaminaActionCost_+%" => |s| {
+            s.get("StaminaActionCost_+%")
+                + s.get("BaseToolStaminaActionCost_+%")
+                + s.select(
+                    TOOL_TYPE,
+                    &[
+                        (1, "BaseAxeStaminaActionCost_+%"),
+                        (2, "BasePickaxeStaminaActionCost_+%"),
+                        (3, "BaseKnifeStaminaActionCost_+%"),
+                        (4, "BaseSpearStaminaActionCost_+%"),
+                        (7, "BaseBowStaminaActionCost_+%"),
+                    ],
+                )
+        },
+        "ExposureResistance_+%" => |s| {
+            s.get("BaseExposureResistance_+%")
+                + s.atmosphere("ExposureResistance_+%")
+                + s.when("IsMounted_?", "MountedExposureResistance_+%")
+        },
+        "ItemWear_+%" => |s| {
+            s.get("BaseItemWear_+%")
+                + s.select(TIME_OF_DAY, &ITEM_WEAR_TIMES)
+                + s.select(
+                    TOOL_TYPE,
+                    &[
+                        (1, "BaseAxeItemWear_+%"),
+                        (2, "BasePickaxeItemWear_+%"),
+                        (3, "BaseKnifeItemWear_+%"),
+                        (5, "BaseSickleItemWear_+%"),
+                        (7, "BaseBowItemWear_+%"),
+                        (8, "BaseFirewhackerItemWear_+%"),
+                        (9, "BaseRepairHammerItemWear_+%"),
+                        (13, "BaseLureItemWear_+%"),
+                    ],
+                )
+                + s.when("IsFirearm_?", "BaseFirearmItemWear_+%")
+        },
+        "LureItemWear_+%" => |s| {
+            s.get("BaseItemWear_+%")
+                + s.select(TIME_OF_DAY, &ITEM_WEAR_TIMES)
+                + s.select(TOOL_TYPE, &[(13, "BaseLureItemWear_+%")])
         },
         _ => return None,
     };
