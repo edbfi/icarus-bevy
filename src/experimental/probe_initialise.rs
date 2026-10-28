@@ -44,9 +44,11 @@ use super::{
         CLIENT_PREPARE_LOADOUT, CLIENT_REQUEST_BESTIARY_DATA, CLIENT_REQUEST_GET_CHARACTER_PROFILE,
         CLIENT_REQUEST_GET_USER_PROFILE, FieldHeader, PLAYER_DATA_FIELD_INDEX_BOUND, RpcArgument,
         RpcItem, RpcParameter, SERVER_BEGIN_PLAYER_INITIALISATION_FIELD_INDEX,
-        add_associated_prospect_parameters, client_prepare_loadout_parameters, encode_rpc_payload,
-        parse_rpc_payload, player_controller_rpc_parameters, read_field_header,
-        server_receive_bestiary_data_parameters, server_receive_loadout_parameters,
+        SERVER_FRIENDS_LIST_UPDATED_FIELD_INDEX, add_associated_prospect_parameters,
+        client_prepare_loadout_parameters, encode_rpc_payload, parse_rpc_payload,
+        player_controller_rpc_parameters, read_field_header,
+        server_friends_list_updated_parameters, server_receive_bestiary_data_parameters,
+        server_receive_loadout_parameters,
     },
     sequencing::{
         MAX_CONSTRUCTED_PARTIAL_BUNCH_BYTES, PartialBunchReassembler, PartialReceive,
@@ -149,6 +151,19 @@ pub fn begin_player_initialisation_field(
     Ok(FieldHeader {
         index: SERVER_BEGIN_PLAYER_INITIALISATION_FIELD_INDEX,
         payload: encode_rpc_payload(&parameters, &[int_argument(chr_slot)], codec)?,
+    })
+}
+
+/// `ServerFriendsListUpdated` with no friends: the empty array equals its
+/// zero default, so it goes as a clear presence bit.
+pub fn friends_list_updated_field(codec: &RepLayoutCodec) -> Result<FieldHeader> {
+    Ok(FieldHeader {
+        index: SERVER_FRIENDS_LIST_UPDATED_FIELD_INDEX,
+        payload: encode_rpc_payload(
+            &server_friends_list_updated_parameters(),
+            &[RpcArgument::NotSent],
+            codec,
+        )?,
     })
 }
 
@@ -395,6 +410,11 @@ pub enum InitialiseEvent {
         slot_sent: bool,
         packet_id: u32,
     },
+    /// An empty `ServerFriendsListUpdated`, sent right after Begin.
+    FriendsListSent {
+        channel: u32,
+        packet_id: u32,
+    },
     ProfileRequest {
         profile: &'static str,
         requested_slot: Option<i32>,
@@ -421,6 +441,7 @@ pub enum InitialiseEvent {
 pub struct InitialiseSummary {
     pub controller_channel: Option<u32>,
     pub begin_sent: bool,
+    pub friends_list_sent: bool,
     pub user_profiles_answered: u32,
     pub character_profiles_answered: u32,
     pub loadouts_answered: u32,
@@ -568,6 +589,15 @@ impl PlayerInitialiser {
                         slot_sent: self.config.chr_slot != 0,
                         packet_id,
                     });
+                    let field = friends_list_updated_field(&self.codec)?;
+                    let (_, packet_id) = client.send_actor_rpc(
+                        channel,
+                        &field,
+                        BP_ICARUS_PLAYER_CONTROLLER_SURVIVAL_FIELD_INDEX_BOUND,
+                        &self.codec.actor,
+                    )?;
+                    self.summary.friends_list_sent = true;
+                    events.push(InitialiseEvent::FriendsListSent { channel, packet_id });
                 }
                 Ok(Some(_)) => {}
                 Ok(None) => notes.push("open: unresolved archetype".to_owned()),

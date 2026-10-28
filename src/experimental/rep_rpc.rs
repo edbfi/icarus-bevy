@@ -376,6 +376,20 @@ pub const BP_ICARUS_PLAYER_CONTROLLER_SURVIVAL_FIELD_INDEX_BOUND: u32 = 183;
 /// Flags 0x280cc0: Net | NetReliable | Native | Event | NetServer.
 pub const SERVER_BEGIN_PLAYER_INITIALISATION_FIELD_INDEX: u32 = 124;
 
+/// Reliable NetServer RPC `AIcarusPlayerController::ServerFriendsListUpdated(
+/// NewFriendIds: TArray<FString>)`, local field 25 after
+/// `Server_BeginPlayerInitialisation`'s 23. Its call makes the controller's
+/// friend IDs ready, which the authority's connected-player finalisation
+/// waits for (F-973).
+pub const SERVER_FRIENDS_LIST_UPDATED_FIELD_INDEX: u32 = 126;
+
+/// `ServerFriendsListUpdated`'s one parameter, an array of strings.
+pub fn server_friends_list_updated_parameters() -> Vec<RpcParameter> {
+    vec![RpcParameter::Value(vec![RepCommand::DynamicArray {
+        element: vec![RepCommand::Str],
+    }])]
+}
+
 /// Pinned plain `UBackendProxyComponent` class cache bound.
 pub const BACKEND_PROXY_FIELD_INDEX_BOUND: u32 = 149;
 pub const CLIENT_REQUEST_GET_USER_PROFILE: u32 = 25;

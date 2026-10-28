@@ -4687,6 +4687,7 @@ fn the_initialising_probe_restores_its_saved_character_through_the_native_exchan
                 "archetype":"/Game/BP/Player/BP_IcarusPlayerControllerSurvival.Default__BP_IcarusPlayerControllerSurvival_C"}),
             json!({"event":"begin_sent", "channel":PLAYER_CONTROLLER_CHANNEL_INDEX, "chr_slot":3,
                 "slot_sent":true}),
+            json!({"event":"friends_list_sent", "channel":PLAYER_CONTROLLER_CHANNEL_INDEX}),
             json!({"event":"profile_request", "profile":"user", "requested_slot":null}),
             json!({"event":"profile_answered", "profile":"user", "chr_slot":null}),
             json!({"event":"profile_request", "profile":"character", "requested_slot":3}),
