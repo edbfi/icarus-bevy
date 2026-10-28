@@ -3615,7 +3615,8 @@ inventory_class = [{ path = "Bag", checksum = 9 }, { path = "/Script/P", checksu
             )
         );
         // An omitted placement restores as zero (F-963) and Location is never sent.
-        let gap = matches!(case, Case::Dead | Case::Stomach);
+        // Restored stomach entries are dropped from an update that still goes.
+        let gap = case == Case::Dead;
         let error = matches!(
             case,
             Case::RestoreError | Case::MissingStomach | Case::FramingError
@@ -3631,7 +3632,7 @@ inventory_class = [{ path = "Bag", checksum = 9 }, { path = "/Script/P", checksu
                 (handle::RESPAWN_COUNT, RepValue::Int(2)),
                 (handle::HAS_GRANTED_LOADOUT, RepValue::Bool(true)),
             ]);
-            if matches!(case, Case::Full | Case::Omitted) {
+            if matches!(case, Case::Full | Case::Omitted | Case::Stomach) {
                 pawn.insert(
                     handle::COSMETIC_ARMOUR_OVERRIDES,
                     RepValue::DynamicArray(RepArray {
@@ -3690,8 +3691,17 @@ inventory_class = [{ path = "Bag", checksum = 9 }, { path = "/Script/P", checksu
             (u64::from(sent), u64::from(gap), u64::from(error)),
             "{case:?}"
         );
+        assert_eq!(
+            stats.returning_pawn_stomach_entries_dropped,
+            u64::from(case == Case::Stomach),
+            "{case:?}"
+        );
         let counts = counts(&app);
         assert_eq!(counts.joined, 1, "gap/error keeps the session");
+        assert_eq!(
+            counts.returning_pawn_stomach_entries_dropped,
+            stats.returning_pawn_stomach_entries_dropped
+        );
         assert_eq!(
             (
                 counts.returning_pawn_updates_sent,

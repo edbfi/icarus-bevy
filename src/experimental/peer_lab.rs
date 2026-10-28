@@ -581,8 +581,12 @@ pub struct PeerLabStats {
     pub returning_pawn_errors: u64,
     /// Reliable saved pawn content updates sent after UID restoration (F-960).
     pub returning_pawn_updates_sent: u64,
-    /// Dead-on-save records or unsupported restored stomach entries.
+    /// Dead-on-save records; their update is withheld.
     pub returning_pawn_update_gaps: u64,
+    /// Restored stomach entries left out of a sent update: their modifier IDs
+    /// need the unimplemented modifier restore, so the pawn keeps the empty
+    /// stomach its open sent (F-963).
+    pub returning_pawn_stomach_entries_dropped: u64,
     /// Restore, composition or framing failures; the UID restore is retained.
     pub returning_pawn_update_errors: u64,
     /// Pawn opens sent after the PlayerController open (F-797).
@@ -732,6 +736,7 @@ pub struct SessionCounts {
     pub returning_pawns_restored: u64,
     pub returning_pawn_updates_sent: u64,
     pub returning_pawn_update_gaps: u64,
+    pub returning_pawn_stomach_entries_dropped: u64,
     pub returning_pawn_update_errors: u64,
     /// Pawn, GameState, PlayerState, world manager and saved quest opens sent
     /// after Join.
@@ -1912,18 +1917,18 @@ impl PeerLab {
                         .iter()
                         .position(|row| row.eq_ignore_ascii_case(&name)))
                 })?;
-            let Ok(restored) = restored else {
+            let Ok(mut restored) = restored else {
                 return Ok(None);
             };
-            // The composer refuses AddSaveDataToStomach's unread ModifierID.
-            // Treat that refusal as a gap, like a dead-on-save record.
-            if restored
-                .stomach
-                .as_ref()
-                .is_some_and(|entries| !entries.is_empty())
-            {
-                return Ok(None);
-            }
+            // The composer refuses AddSaveDataToStomach's unread ModifierID, so
+            // restored stomach entries are left out and the rest still goes.
+            let dropped = match restored.stomach.take() {
+                Some(entries) if !entries.is_empty() => entries.len(),
+                kept => {
+                    restored.stomach = kept;
+                    0
+                }
+            };
             let stomach = plan
                 .components
                 .iter()
@@ -1945,10 +1950,14 @@ impl PeerLab {
             self.guid_cache = cache;
             entry.exports = exports;
             entry.ack_pending = false;
-            Ok::<_, anyhow::Error>(Some(datagram))
+            Ok::<_, anyhow::Error>(Some((datagram, dropped)))
         })();
         match sent {
-            Ok(Some(datagram)) => {
+            Ok(Some((datagram, dropped))) => {
+                self.stats.returning_pawn_stomach_entries_dropped = self
+                    .stats
+                    .returning_pawn_stomach_entries_dropped
+                    .saturating_add(dropped as u64);
                 if self.send(&datagram, address) {
                     bump(&mut self.stats.returning_pawn_updates_sent);
                 }
@@ -2759,6 +2768,9 @@ impl PeerLab {
             returning_pawns_restored: self.stats.returning_pawns_restored,
             returning_pawn_updates_sent: self.stats.returning_pawn_updates_sent,
             returning_pawn_update_gaps: self.stats.returning_pawn_update_gaps,
+            returning_pawn_stomach_entries_dropped: self
+                .stats
+                .returning_pawn_stomach_entries_dropped,
             returning_pawn_update_errors: self.stats.returning_pawn_update_errors,
             pawn_opens_sent: self.stats.pawn_opens_sent,
             game_state_opens_sent: self.stats.game_state_opens_sent,
