@@ -748,6 +748,7 @@ fn restored_inventories_send_their_slot_deltas_on_the_runtime_subobjects() {
             (2, SlotChange::Changed(restored_slots[1].clone())),
             (3, SlotChange::Added(added)),
         ],
+        weight: Some(250),
     };
     let restored = RestoredPawn {
         inventories: vec![inventory],
@@ -788,8 +789,19 @@ fn restored_inventories_send_their_slot_deltas_on_the_runtime_subobjects() {
         panic!("class-named inventory");
     };
     assert!(exports_acked(&exports, class.guid));
-    assert!(!block.has_rep_layout);
+    // The changed weight goes as a property ahead of the slots.
+    assert!(block.has_rep_layout);
     let mut reader = block.payload.reader();
+    let properties =
+        read_rep_properties(&mut reader, &plan.content.inventory_layout, &rep_codec).unwrap();
+    assert_eq!(
+        properties
+            .entries
+            .iter()
+            .map(|entry| (entry.handle, entry.value.clone()))
+            .collect::<Vec<_>>(),
+        [(4, RepValue::Int(250))]
+    );
     let field = read_field_header(&mut reader, plan.content.inventory_bound, 1 << 20).unwrap();
     assert!(reader.at_end());
     assert_eq!(field.index, 4);

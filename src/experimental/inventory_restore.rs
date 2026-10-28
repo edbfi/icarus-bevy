@@ -16,11 +16,20 @@
 //! delta the client receives. Defaults the original computes from data this
 //! module does not model are gaps: they suppress the restore instead of
 //! sending a guess.
+//!
+//! Each changed inventory's `CurrentWeight` follows `RecalculateWeight` on
+//! the pawn (F-933, F-982): every stacked item's `Itemable` weight, plus a
+//! weighable resource container's stored units, times its stack. Carry-weight
+//! stats read 0; a bag with a linked inventory (whose weight adds) or an item
+//! with a weight stat of its own leaves the inventory's weight unsent.
 use std::collections::{BTreeMap, BTreeSet};
 
 use anyhow::{Result, ensure};
 
 use super::control_messages::ArchiveText;
+use super::inventory_weight::{
+    DEFAULT_CDO_CURRENT_WEIGHT, ItemWeightInput, recalculate_inventory_weight,
+};
 use super::pawn_open::{InventorySlot, PawnInventory, SlotItem};
 use super::prospect_info::{SavedActorInventory, SavedItem};
 use super::tag_query::TagQuery;
@@ -66,6 +75,27 @@ pub struct ItemInfo {
     /// Stats the item grants while equipped: its `Equippable` row's
     /// `GrantedStats` and `Armour` row's `ArmourStats`, by stat name.
     pub grants: BTreeMap<String, i32>,
+    pub weight: ItemWeight,
+}
+
+/// What one item weighs in `RecalculateWeight` (F-933).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum ItemWeight {
+    /// Not `Itemable`: it weighs nothing.
+    #[default]
+    Weightless,
+    /// Its `Itemable` row's `Weight`, whether it is a weighable resource
+    /// container (`Any_Weighable_Resource_Container`), whose stored units
+    /// add, and whether it is a bag (`Any_Bag`), whose linked inventory's
+    /// weight adds.
+    Unit {
+        weight: i32,
+        resource_container: bool,
+        bag: bool,
+    },
+    /// Its weight depends on stats this module does not model (a `Weight_+`
+    /// in its static `AdditionalStats`), or weights are not modelled at all.
+    Unmodelled,
 }
 
 /// Which of the stat-sized inventories a pawn inventory is (F-971).
@@ -146,7 +176,66 @@ pub struct InventoryRestore {
     pub base_key: i32,
     /// Changed slots in ID order.
     pub changes: Vec<(i32, SlotChange)>,
+    /// The restored `CurrentWeight`; `None` when an item's weight is not
+    /// modelled.
+    pub weight: Option<i32>,
 }
+
+/// `RecalculateWeight` over `slots` on the pawn, an owner with a stat
+/// container whose carry-weight stats read 0 (F-933); `None` when an item's
+/// weight is not modelled: a bag with a linked inventory (whose weight adds),
+/// a `Weight_+` stat of its own, or an unmodelled row. Other items' linked
+/// inventories add nothing.
+pub fn inventory_weight(tables: &InventoryRestoreTables, slots: &[InventorySlot]) -> Option<i32> {
+    let mut inputs = Vec::new();
+    for item in slots.iter().filter_map(|slot| slot.item.as_ref()) {
+        let value = |property: u32| {
+            item.dynamic
+                .iter()
+                .find(|(saved, _)| *saved == property)
+                .map(|(_, value)| *value)
+        };
+        if item
+            .stats
+            .iter()
+            .any(|(name, _)| String::from_utf16_lossy(name.units()).contains(WEIGHT_STAT_SUFFIX))
+        {
+            return None;
+        }
+        let linked = value(property::LINKED_INVENTORY).is_some_and(|linked| linked >= 0);
+        let (weight, resource_container) = match tables.items.get(usize::from(item.row))?.weight {
+            ItemWeight::Weightless => continue,
+            ItemWeight::Unmodelled => return None,
+            ItemWeight::Unit { bag: true, .. } if linked => return None,
+            ItemWeight::Unit {
+                weight,
+                resource_container,
+                ..
+            } => (weight, resource_container),
+        };
+        inputs.push(ItemWeightInput {
+            has_valid_itemable: true,
+            weight_stat: weight,
+            matches_weighable_resource_container: resource_container,
+            fillable_units: value(property::FILLABLE_STORED_UNITS),
+            itemable_stack: value(property::ITEMABLE_STACK),
+            matching_carry_weight_stat_pct: 0,
+        });
+    }
+    recalculate_inventory_weight(
+        DEFAULT_CDO_CURRENT_WEIGHT,
+        true,
+        false,
+        true,
+        false,
+        &inputs,
+        &[],
+    )
+    .map(|outcome| outcome.current_weight)
+}
+
+/// The stat name part that makes an item's own stat a weight stat.
+pub const WEIGHT_STAT_SUFFIX: &str = "Weight_+";
 
 /// One inventory's slots while restore runs, with its replication key.
 struct Working {
@@ -457,6 +546,7 @@ pub fn restore_inventories(
         if changes.is_empty() {
             continue;
         }
+        let weight = inventory_weight(tables, &inventory.slots);
         restores.push(InventoryRestore {
             inventory: index,
             opened: opened.clone(),
@@ -466,9 +556,11 @@ pub fn restore_inventories(
                     replication_key: inventory.key,
                     items: inventory.slots,
                 },
+                current_weight: weight.or(opened.current_weight),
                 ..opened.clone()
             },
             changes,
+            weight,
         });
     }
     Ok(Ok(restores))

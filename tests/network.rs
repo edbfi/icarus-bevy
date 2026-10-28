@@ -4768,6 +4768,7 @@ fn returning_pawns_restore_their_saved_inventories_in_the_update() {
         packet::read_packet,
         pawn_open::PAWN_CHANNEL_INDEX,
         prospect_info::{SavedActorInventory, SavedItem},
+        rep_layout::{RepLayoutCodec, RepValue, read_rep_properties},
     };
     use icarus_bevy::prospect;
     use scalar::units;
@@ -4799,7 +4800,15 @@ fn returning_pawns_restore_their_saved_inventories_in_the_update() {
                 {"Name": "Any_Oxygen", "Query": {"QueryTokenStream": [], "TagDictionary": []}},
                 {"Name": "Any_Food", "Query": {"QueryTokenStream": [], "TagDictionary": []}},
                 {"Name": "Any_Water", "Query": {"QueryTokenStream": [], "TagDictionary": []}},
+                {"Name": "Any_Weighable_Resource_Container", "Query": {"QueryTokenStream": [0, 1, 1, 1, 0],
+                 "TagDictionary": [{"TagName": "Item.Container"}]}},
+                {"Name": "Any_Bag", "Query": {"QueryTokenStream": [0, 1, 1, 1, 0],
+                 "TagDictionary": [{"TagName": "Item.Bag"}]}},
             ]})),
+        ),
+        (
+            "Items/D_Itemable.json",
+            json(serde_json::json!({"Rows": [{"Name": "Item_Ore", "Weight": 10}]})),
         ),
         (
             "Items/D_ItemsStatic.json",
@@ -4879,7 +4888,7 @@ fn returning_pawns_restore_their_saved_inventories_in_the_update() {
             order: ByteOrder::Little,
             limits: Default::default(),
         };
-        let inventory_blocks: usize = reply
+        let inventory_blocks: Vec<_> = reply
             .iter()
             .flat_map(|bytes| {
                 read_packet(
@@ -4893,12 +4902,12 @@ fn returning_pawns_restore_their_saved_inventories_in_the_update() {
                 .bunches
             })
             .filter(|bunch| bunch.header.channel_index == PAWN_CHANNEL_INDEX && !bunch.header.open)
-            .map(|bunch| {
+            .flat_map(|bunch| {
                 assert!(!bunch.header.partial);
                 read_actor_bunch_body(&mut bunch.payload.reader(), false, &codec)
                     .unwrap()
                     .blocks
-                    .iter()
+                    .into_iter()
                     .filter(|block| {
                         matches!(
                             block.target,
@@ -4908,10 +4917,32 @@ fn returning_pawns_restore_their_saved_inventories_in_the_update() {
                             }
                         )
                     })
-                    .count()
+                    .collect::<Vec<_>>()
             })
-            .sum();
-        assert_eq!(inventory_blocks, usize::from(!gap));
+            .collect();
+        assert_eq!(inventory_blocks.len(), usize::from(!gap));
+        // Three ore of weight 10: the restored weight goes ahead of the
+        // slots (F-982).
+        if let Some(block) = inventory_blocks.first() {
+            let plan = profile
+                .pawn_open_plan("/Game/Maps/Terrain_016_OLY/Terrain_016")
+                .unwrap()
+                .unwrap();
+            assert!(block.has_rep_layout);
+            let properties = read_rep_properties(
+                &mut block.payload.reader(),
+                &plan.content.inventory_layout,
+                &RepLayoutCodec {
+                    actor: codec,
+                    checksums: false,
+                    limits: Default::default(),
+                },
+            )
+            .unwrap();
+            assert_eq!(properties.entries.len(), 1);
+            assert_eq!(properties.entries[0].handle, 4);
+            assert_eq!(properties.entries[0].value, RepValue::Int(30));
+        }
         let stats = app.world().resource::<PeerLab>().stats();
         assert_eq!(
             (
