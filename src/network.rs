@@ -1247,6 +1247,11 @@ pub fn bind_with_parameters(
         };
         if let Some(pawn) = pawn {
             lab.enable_pawn_open(pawn, PAWN_CHANNEL_INDEX, pawn_content(tables.as_mut())?)?;
+            if let Some(tables) = tables.as_mut()
+                && tables.has_table(ITEMS_STATIC_TABLE)
+            {
+                lab.enable_pawn_restore_item_rows(tables.rows(ITEMS_STATIC_TABLE)?)?;
+            }
             // Authored deterministic PRNG seed; actor allocation is unrelated
             // to the cryptographic randomness used for handshake cookies.
             lab.enable_actor_uids(crate::actor_uids::ActorUidLibrary::new(1))?;

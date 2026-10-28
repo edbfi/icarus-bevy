@@ -225,7 +225,7 @@ fn health_below_one_gives_the_dead_alive_state() {
 }
 
 #[test]
-fn dead_and_unplaced_records_are_unsupported() {
+fn dead_records_are_unsupported() {
     let state = current_state();
     let current = CurrentPawnState {
         character_state: &state,
@@ -253,18 +253,6 @@ fn dead_and_unplaced_records_are_unsupported() {
         }),
         PawnRestoreGap::DeadOnSave
     );
-    // Location and Rotation default from engine globals not yet identified.
-    assert_eq!(
-        gap(SavedPlayerState::default()),
-        PawnRestoreGap::Omitted("Location")
-    );
-    assert_eq!(
-        gap(SavedPlayerState {
-            rotation: None,
-            ..saved()
-        }),
-        PawnRestoreGap::Omitted("Rotation")
-    );
 }
 
 #[test]
@@ -276,12 +264,7 @@ fn omitted_fields_restore_as_the_recorders_constructed_defaults() {
         character_state: &state,
         stomach_contents: 0,
     };
-    let record = SavedPlayerState {
-        location: saved().location,
-        rotation: saved().rotation,
-        ..SavedPlayerState::default()
-    };
-    let restored = restore_saved_pawn(&record, &current, row_of)
+    let restored = restore_saved_pawn(&SavedPlayerState::default(), &current, row_of)
         .unwrap()
         .unwrap();
     assert!(restored.character_state.is_empty());

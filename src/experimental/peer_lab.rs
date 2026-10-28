@@ -204,6 +204,7 @@ use super::packet_lab::{
 use super::pawn_open::{
     PawnContent, PawnOpenPlan, PawnOpenState, compose_pawn_icarus_uid_update, compose_pawn_open,
 };
+use super::pawn_restore::{CurrentPawnState, compose_restored_pawn_update, restore_saved_pawn};
 use super::ping::PingEstimator;
 use super::profile_exchange::{
     self, InitialisationAnswer, ProfileExchange, ProfileKind, ProfileResponse,
@@ -578,6 +579,12 @@ pub struct PeerLabStats {
     pub returning_pawns_unmatched: u64,
     /// Matches whose saved UID was unusable or whose update failed.
     pub returning_pawn_errors: u64,
+    /// Reliable saved pawn content updates sent after UID restoration (F-960).
+    pub returning_pawn_updates_sent: u64,
+    /// Dead-on-save records or unsupported restored stomach entries.
+    pub returning_pawn_update_gaps: u64,
+    /// Restore, composition or framing failures; the UID restore is retained.
+    pub returning_pawn_update_errors: u64,
     /// Pawn opens sent after the PlayerController open (F-797).
     pub pawn_opens_sent: u64,
     /// Pawn opens that could not be composed or framed.
@@ -723,6 +730,9 @@ pub struct SessionCounts {
     pub players_initialised: u64,
     pub player_character_id_updates_sent: u64,
     pub returning_pawns_restored: u64,
+    pub returning_pawn_updates_sent: u64,
+    pub returning_pawn_update_gaps: u64,
+    pub returning_pawn_update_errors: u64,
     /// Pawn, GameState, PlayerState, world manager and saved quest opens sent
     /// after Join.
     pub pawn_opens_sent: u64,
@@ -948,6 +958,8 @@ struct ActorPropertyPacket {
 
 struct PeerEntry {
     peer: LabPeer,
+    /// Character-state values actually composed into this session's pawn open.
+    pawn_character_state: Option<BTreeMap<u32, RepValue>>,
     /// Owned until this connection is removed, including idle/failure paths.
     pawn_uid: Option<i32>,
     /// The saved character this pawn restored (F-950); its UID stays claimed
@@ -1203,6 +1215,8 @@ pub struct PeerLab {
     /// Opt-in pawn open after the PlayerController open: the plan, its
     /// channel and every player's content.
     pawn_open: Option<(PawnOpenPlan, u32, PawnContent)>,
+    /// D_ItemsStatic names in the same row order used by run's row handles.
+    pawn_restore_item_rows: Vec<String>,
     /// Native run's opt-in UID owner; bare lab experiments retain templates.
     actor_uids: Option<crate::actor_uids::ActorUidLibrary>,
     /// Saved player characters returning pawns restore from (F-950), and the
@@ -1286,6 +1300,7 @@ impl PeerLab {
             peak_peers: 0,
             player_controller_open: None,
             pawn_open: None,
+            pawn_restore_item_rows: Vec::new(),
             actor_uids: None,
             returning_characters: Vec::new(),
             restored_characters: Vec::new(),
@@ -1783,6 +1798,17 @@ impl PeerLab {
         Ok(())
     }
 
+    /// Configure saved cosmetic/food row resolution from run's data.pak.
+    /// Without a table no saved item-static names resolve.
+    pub fn enable_pawn_restore_item_rows(&mut self, rows: &[String]) -> Result<()> {
+        ensure!(
+            self.peers.is_empty(),
+            "configure pawn rows before admitting peers"
+        );
+        self.pawn_restore_item_rows = rows.to_vec();
+        Ok(())
+    }
+
     /// F-950: the original's character restore frees the pawn's BeginPlay UID
     /// and claims its saved one; the client sees the changed `IcarusUID`.
     /// Natively the saved UID is already claimed as a seed, so ownership moves
@@ -1861,6 +1887,75 @@ impl PeerLab {
         self.restored_characters.push(index);
         bump(&mut self.stats.returning_pawns_restored);
         self.send(&datagram, address);
+        self.restore_returning_pawn_state(address, index);
+    }
+
+    /// F-960: content follows the UID restore. A gap or error keeps both the
+    /// session and its saved UID; Location is never passed to a wire encoder.
+    fn restore_returning_pawn_state(&mut self, address: SocketAddrV4, index: usize) {
+        let sent = (|| {
+            let (plan, channel, _) = self.pawn_open.as_ref().context("no pawn plan")?;
+            let entry = self.peers.get_mut(&address).context("no returning peer")?;
+            let current = CurrentPawnState {
+                character_state: entry
+                    .pawn_character_state
+                    .as_ref()
+                    .context("no pawn state")?,
+                // PawnContent opens Stomach without any entries.
+                stomach_contents: 0,
+            };
+            let restored =
+                restore_saved_pawn(&self.returning_characters[index].state, &current, |name| {
+                    let name = String::from_utf16_lossy(name);
+                    Ok(self
+                        .pawn_restore_item_rows
+                        .iter()
+                        .position(|row| row.eq_ignore_ascii_case(&name)))
+                })?;
+            let Ok(restored) = restored else {
+                return Ok(None);
+            };
+            // The composer refuses AddSaveDataToStomach's unread ModifierID.
+            // Treat that refusal as a gap, like a dead-on-save record.
+            if restored
+                .stomach
+                .as_ref()
+                .is_some_and(|entries| !entries.is_empty())
+            {
+                return Ok(None);
+            }
+            let stomach = plan
+                .components
+                .iter()
+                .position(|component| component.name == "Stomach")
+                .context("no pawn stomach component")?;
+            let key = pawn_key(entry.connection_id.context("no pawn connection")?);
+            let mut cache = self.guid_cache.clone();
+            let mut exports = entry.exports.clone();
+            let payload = compose_restored_pawn_update(
+                &mut cache,
+                &mut exports,
+                plan,
+                key,
+                stomach,
+                &restored,
+                entry.peer.connection_byte_order(),
+            )?;
+            let datagram = entry.peer.reliable_actor_bunch(*channel, payload)?;
+            self.guid_cache = cache;
+            entry.exports = exports;
+            entry.ack_pending = false;
+            Ok::<_, anyhow::Error>(Some(datagram))
+        })();
+        match sent {
+            Ok(Some(datagram)) => {
+                if self.send(&datagram, address) {
+                    bump(&mut self.stats.returning_pawn_updates_sent);
+                }
+            }
+            Ok(None) => bump(&mut self.stats.returning_pawn_update_gaps),
+            Err(_) => bump(&mut self.stats.returning_pawn_update_errors),
+        }
     }
 
     // Native policy releases a pawn's UID at every session removal. The
@@ -2662,6 +2757,9 @@ impl PeerLab {
             players_initialised: self.stats.players_initialised,
             player_character_id_updates_sent: self.stats.player_character_id_updates_sent,
             returning_pawns_restored: self.stats.returning_pawns_restored,
+            returning_pawn_updates_sent: self.stats.returning_pawn_updates_sent,
+            returning_pawn_update_gaps: self.stats.returning_pawn_update_gaps,
+            returning_pawn_update_errors: self.stats.returning_pawn_update_errors,
             pawn_opens_sent: self.stats.pawn_opens_sent,
             game_state_opens_sent: self.stats.game_state_opens_sent,
             player_state_opens_sent: self.stats.player_state_opens_sent,
@@ -2807,6 +2905,7 @@ impl PeerLab {
                 self.peers.insert(
                     address,
                     PeerEntry {
+                        pawn_character_state: None,
                         peer,
                         pawn_uid: None,
                         restored_character: None,
@@ -3792,6 +3891,7 @@ impl PeerLab {
             }
         };
         entry.pawn_uid = claimed;
+        entry.pawn_character_state = Some(state.content.character_state);
         commit_exports(&mut exports, &sent);
         entry.exports = exports;
         entry.ack_pending = false;

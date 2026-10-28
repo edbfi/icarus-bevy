@@ -36,6 +36,7 @@ use icarus_bevy::{
 };
 use serde_json::Value;
 
+mod pak_writer;
 #[path = "common/profiles.rs"]
 mod profiles;
 #[path = "common/c001_scalar_owners.rs"]
@@ -2959,6 +2960,15 @@ fn returning_character_payload(user: &str, slot: i32, uid: i32) -> Vec<u8> {
 /// [`returning_character_payload`] with one saved character per UID, all for
 /// the same member and slot.
 fn returning_characters_payload(user: &str, slot: i32, uids: &[i32]) -> Vec<u8> {
+    returning_characters_payload_with_state(user, slot, uids, &[])
+}
+
+fn returning_characters_payload_with_state(
+    user: &str,
+    slot: i32,
+    uids: &[i32],
+    state: &[scalar::Tag],
+) -> Vec<u8> {
     use scalar::{Tag, stream, units};
     let member = stream(&[
         Tag::text("UserID", "StrProperty", &units(user)),
@@ -2984,7 +2994,7 @@ fn returning_characters_payload(user: &str, slot: i32, uids: &[i32]) -> Vec<u8> 
     let records: Vec<u8> = uids
         .iter()
         .flat_map(|uid| {
-            let character = stream(&[
+            let mut tags = vec![
                 Tag::integer("PlayerStateRecorderVersion", 1),
                 Tag::structure(
                     "PlayerCharacterID",
@@ -2995,7 +3005,9 @@ fn returning_characters_payload(user: &str, slot: i32, uids: &[i32]) -> Vec<u8> 
                     ]),
                 ),
                 Tag::integer("IcarusActorGUID", *uid),
-            ]);
+            ];
+            tags.extend_from_slice(state);
+            let character = stream(&tags);
             let body = [character, vec![0; 4]].concat();
             stream(&[
                 Tag::text(
@@ -3338,15 +3350,369 @@ fn pawn_uid_update(profile: &ReleaseProfile, datagrams: &[Vec<u8>]) -> Option<i3
             let properties =
                 read_rep_properties(&mut body.blocks[0].payload.reader(), &plan.layout, &codec)
                     .unwrap();
-            assert_eq!(properties.entries.len(), 1, "only IcarusUID changes");
-            let RepValue::Int(uid) = properties.entries[0].value else {
-                panic!("IcarusUID is an i32")
-            };
-            assert_eq!(properties.entries[0].handle, 46);
-            return Some(uid);
+            if let Some(property) = properties
+                .entries
+                .iter()
+                .find(|property| property.handle == 46)
+            {
+                assert_eq!(properties.entries.len(), 1, "only IcarusUID changes");
+                let RepValue::Int(uid) = property.value else {
+                    panic!("IcarusUID is an i32")
+                };
+                return Some(uid);
+            }
         }
     }
     None
+}
+
+type DecodedPawnBlock = (
+    icarus_bevy::experimental::actor_channel::BlockTarget,
+    std::collections::BTreeMap<u32, icarus_bevy::experimental::rep_layout::RepValue>,
+);
+
+/// Decode all non-open pawn bunches, including the UID update, in wire order.
+fn pawn_property_updates(
+    profile: &ReleaseProfile,
+    datagrams: &[Vec<u8>],
+) -> Vec<Vec<DecodedPawnBlock>> {
+    use icarus_bevy::experimental::{
+        actor_channel::{ActorChannelCodec, BlockTarget, read_actor_bunch_body},
+        archive::ByteOrder,
+        packet::read_packet,
+        pawn_open::PAWN_CHANNEL_INDEX,
+        peer_lab::PeerLabAdmission,
+        rep_layout::{RepLayoutCodec, read_rep_properties},
+    };
+    let plan = profile
+        .pawn_open_plan(PeerLabAdmission::default().map_url)
+        .unwrap()
+        .unwrap();
+    let codec = RepLayoutCodec {
+        actor: ActorChannelCodec {
+            engine_net_version: profile.engine_network_version,
+            exports_enabled: false,
+            has_level: true,
+            order: ByteOrder::Little,
+            limits: Default::default(),
+        },
+        checksums: false,
+        limits: Default::default(),
+    };
+    let mut updates = Vec::new();
+    for bytes in datagrams {
+        let packet = read_packet(
+            bytes,
+            &PacketConfig {
+                receiver: PacketReceiver::Client,
+                ..probe_config().packet
+            },
+        )
+        .unwrap();
+        for bunch in packet.bunches {
+            if bunch.header.channel_index != PAWN_CHANNEL_INDEX || bunch.header.open {
+                continue;
+            }
+            assert!(bunch.header.reliable);
+            assert!(!bunch.header.partial);
+            assert!(!bunch.header.has_package_map_exports);
+            let mut reader = bunch.payload.reader();
+            let body = read_actor_bunch_body(&mut reader, false, &codec.actor).unwrap();
+            assert!(reader.at_end());
+            assert!(body.spawn.is_none());
+            updates.push(
+                body.blocks
+                    .into_iter()
+                    .map(|block| {
+                        assert!(block.has_rep_layout);
+                        let layout = if block.target == BlockTarget::Actor {
+                            &plan.layout
+                        } else {
+                            &plan.content.character_state_layout
+                        };
+                        let mut reader = block.payload.reader();
+                        let properties = read_rep_properties(&mut reader, layout, &codec).unwrap();
+                        assert!(reader.at_end());
+                        (
+                            block.target,
+                            properties
+                                .entries
+                                .into_iter()
+                                .map(|entry| (entry.handle, entry.value))
+                                .collect(),
+                        )
+                    })
+                    .collect(),
+            );
+        }
+    }
+    updates
+}
+
+#[test]
+fn returning_pawns_send_supported_saved_content_after_the_uid() {
+    use icarus_bevy::{
+        experimental::{
+            actor_channel::{BlockTarget, CompressedRotator, SubObjectClass},
+            pawn_open::{character_state_handle as h, handle},
+            recorders::SavedStomachContent,
+            rep_layout::{PropertyStream, RepArray, RepEntry, RepValue},
+        },
+        prospect,
+    };
+    use scalar::{Tag, units};
+    use std::collections::BTreeMap;
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    enum Case {
+        Full,
+        Dead,
+        Unrecorded,
+        NoPak,
+        Stomach,
+        Omitted,
+        RestoreError,
+        MissingStomach,
+        FramingError,
+    }
+    for case in [
+        Case::Full,
+        Case::Dead,
+        Case::Unrecorded,
+        Case::NoPak,
+        Case::Stomach,
+        Case::Omitted,
+        Case::RestoreError,
+        Case::MissingStomach,
+        Case::FramingError,
+    ] {
+        let profile = ReleaseProfile::load(&release_toml()).unwrap();
+        let pinned = profile.pin.network_checksum;
+        let engine = profile.engine_network_version;
+        let float3 = |name, kind, values: [f32; 3]| {
+            Tag::structure(
+                name,
+                kind,
+                values.into_iter().flat_map(f32::to_le_bytes).collect(),
+            )
+        };
+        let mut state = vec![
+            float3("Location", "Vector", [123.0, -456.0, 789.0]),
+            float3("Rotation", "Rotator", [0.0, 90.0, 0.0]),
+            Tag::integer("RespawnCount", 2),
+            Tag::boolean("HasGrantedLoadout", true),
+        ];
+        if case != Case::Unrecorded {
+            state.extend([
+                Tag::integer("Health", 125),
+                Tag::integer("OxygenLevel", 900),
+                Tag::integer("WaterLevel", -4),
+                Tag::integer("FoodLevel", 50),
+                Tag::integer("RadiationLevel", 900),
+                Tag::array(
+                    "CosmeticArmourOverrides",
+                    "NameProperty",
+                    [
+                        4_i32.to_le_bytes().to_vec(),
+                        scalar::string("Armour_Head_A"),
+                        scalar::string("Missing"),
+                        scalar::string("Armour_Head_A"),
+                        scalar::string("Armour_Chest_B"),
+                    ]
+                    .concat(),
+                ),
+            ]);
+        }
+        if case == Case::Dead {
+            state.push(Tag::boolean("bIsAlive", false));
+        }
+        if case == Case::Omitted {
+            state.remove(0);
+        }
+        let payload = returning_characters_payload_with_state(NET_ID_HEX, 3, &[70_001], &state);
+        let directory = tempfile::tempdir().unwrap();
+        let pak = directory.path().join("data.pak");
+        let rows: Vec<_> = if case == Case::FramingError {
+            (0..1_024)
+                .map(|row| format!("AuthoredArmour_{row}"))
+                .collect()
+        } else {
+            ["Armour_Chest_B", "Meat_Cooked", "Armour_Head_A"]
+                .map(str::to_owned)
+                .to_vec()
+        };
+        fs::write(
+            &pak,
+            pak_writer::official_pak(&[
+                (
+                    "Flags/D_SessionFlags.json",
+                    pak_writer::table_json(&["Flag_A"]),
+                ),
+                (
+                    "Items/D_ItemsStatic.json",
+                    pak_writer::table_json(&rows.iter().map(String::as_str).collect::<Vec<_>>()),
+                ),
+            ]),
+        )
+        .unwrap();
+        let profile_path = if case == Case::MissingStomach {
+            let path = directory.path().join("release.toml");
+            let mut text = fs::read_to_string(release_toml()).unwrap();
+            text.push_str(r#"
+[pawn]
+archetype = [{ path = "Default__P_C", checksum = 1 }, { path = "/Game/P", checksum = 0 }]
+components = [{ name = "S", checksum = 2 }, { name = "I", checksum = 3 }, { name = "A", checksum = 4 }]
+stat_container = "S"
+inventory_component = "I"
+actor_state = "A"
+inventory_class = [{ path = "Bag", checksum = 9 }, { path = "/Script/P", checksum = 0 }]
+"#);
+            fs::write(&path, text).unwrap();
+            path
+        } else {
+            release_toml()
+        };
+        let config = NetworkConfig {
+            release_profile: Some(profile_path),
+            data_pak: (case != Case::NoPak).then_some(pak),
+            ..enabled(0)
+        };
+        let mut lab = network::bind(&config).unwrap().unwrap().lab;
+        lab.seed_actor_uids(prospect::saved_actor_uids_from_payload(&payload).unwrap())
+            .unwrap();
+        let mut characters = prospect::saved_player_characters_from_payload(&payload).unwrap();
+        if case == Case::Stomach || case == Case::NoPak {
+            characters[0]
+                .state
+                .stomach_contents
+                .push(SavedStomachContent {
+                    food_row_name: units("Meat_Cooked"),
+                    modifier_name: units("AuthoredModifier"),
+                });
+        }
+        if case == Case::RestoreError {
+            characters[0].state.rotation = Some([f32::NAN, 0.0, 0.0]);
+        }
+        if case == Case::FramingError {
+            characters[0].state.cosmetic_armour_overrides =
+                rows.iter().map(|row| units(row)).collect();
+        }
+        lab.enable_returning_characters(characters).unwrap();
+        let mut app = build_app(&ServerConfig::default(), &WorldSnapshot::default()).unwrap();
+        let address = network::install(&mut app, lab).unwrap();
+        let ((client, reply), _) = with_server(&mut app, move || {
+            let (mut client, _) = join_pinned_open(address, pinned, 7);
+            let reply = exchange_profiles(&mut client, engine, 3, 3);
+            (client, reply)
+        });
+        assert_eq!(pawn_uid_update(&profile, &reply), Some(70_001), "{case:?}");
+        let updates = pawn_property_updates(&profile, &reply);
+        assert_eq!(updates[0].len(), 1);
+        assert_eq!(
+            updates[0][0],
+            (
+                BlockTarget::Actor,
+                BTreeMap::from([(handle::ICARUS_UID, RepValue::Int(70_001))])
+            )
+        );
+        // An omitted placement restores as zero (F-963) and Location is never sent.
+        let gap = matches!(case, Case::Dead | Case::Stomach);
+        let error = matches!(
+            case,
+            Case::RestoreError | Case::MissingStomach | Case::FramingError
+        );
+        let sent = !gap && !error;
+        assert_eq!(updates.len(), 1 + usize::from(sent), "{case:?}");
+        if sent {
+            let mut pawn = BTreeMap::from([
+                (
+                    handle::REPLICATED_CONTROL_ROTATION,
+                    RepValue::Rotator(CompressedRotator::from_degrees(0.0, 90.0, 0.0).unwrap()),
+                ),
+                (handle::RESPAWN_COUNT, RepValue::Int(2)),
+                (handle::HAS_GRANTED_LOADOUT, RepValue::Bool(true)),
+            ]);
+            if matches!(case, Case::Full | Case::Omitted) {
+                pawn.insert(
+                    handle::COSMETIC_ARMOUR_OVERRIDES,
+                    RepValue::DynamicArray(RepArray {
+                        count: 2,
+                        stream: PropertyStream {
+                            entries: [2, 0]
+                                .into_iter()
+                                .zip(1..)
+                                .map(|(row, handle)| RepEntry {
+                                    handle,
+                                    value: RepValue::UInt16(row),
+                                    checksum: None,
+                                })
+                                .collect(),
+                            terminator_checksum: None,
+                        },
+                    }),
+                );
+            }
+            assert_eq!(updates[1][0], (BlockTarget::Actor, pawn));
+            if case == Case::Unrecorded {
+                assert_eq!(
+                    updates[1].len(),
+                    1,
+                    "only pawn handles when levels are unrecorded"
+                );
+            } else {
+                assert_eq!(updates[1].len(), 2);
+                let BlockTarget::SubObject { object, class } = &updates[1][1].0 else {
+                    panic!("ActorState block");
+                };
+                assert_ne!(object.guid, 0);
+                assert_eq!(*class, SubObjectClass::StablyNamed);
+                let mut expected = BTreeMap::from([
+                    (h::WATER, RepValue::Int(0)),
+                    (h::FOOD, RepValue::Int(50)),
+                    (h::RADIATION, RepValue::Int(900)),
+                ]);
+                if case != Case::NoPak {
+                    expected.insert(h::HEALTH, RepValue::Int(125));
+                }
+                // No pak: health clamps to the lab maximum (already 100).
+                expected.insert(h::CURRENT_ALIVE_STATE, RepValue::Enum(0));
+                assert_eq!(updates[1][1].1, expected);
+            }
+        }
+        let stats = app.world().resource::<PeerLab>().stats();
+        assert_eq!(stats.returning_pawns_restored, 1);
+        assert_eq!(stats.returning_pawn_errors, 0);
+        assert_eq!(
+            (
+                stats.returning_pawn_updates_sent,
+                stats.returning_pawn_update_gaps,
+                stats.returning_pawn_update_errors
+            ),
+            (u64::from(sent), u64::from(gap), u64::from(error)),
+            "{case:?}"
+        );
+        let counts = counts(&app);
+        assert_eq!(counts.joined, 1, "gap/error keeps the session");
+        assert_eq!(
+            (
+                counts.returning_pawn_updates_sent,
+                counts.returning_pawn_update_gaps,
+                counts.returning_pawn_update_errors
+            ),
+            (
+                stats.returning_pawn_updates_sent,
+                stats.returning_pawn_update_gaps,
+                stats.returning_pawn_update_errors
+            )
+        );
+        let status = serde_json::to_string(&counts).unwrap();
+        let debug = format!("{:?}", app.world().resource::<PeerLab>());
+        for text in [&status, &debug] {
+            for private in [NET_ID_HEX, "Armour_Head_A", "AuthoredModifier", "70001"] {
+                assert!(!text.contains(private));
+            }
+        }
+        with_server(&mut app, move || client.close().unwrap());
+    }
 }
 
 #[test]
@@ -3391,6 +3757,10 @@ fn returning_pawns_retake_their_saved_uid_once_per_live_session() {
         Some(FIRST_NATIVE_OBJECT_ID)
     );
     assert_eq!(pawn_uid_update(&profile, &unmatched), None);
+    assert!(pawn_property_updates(&profile, &unmatched).is_empty());
+    assert_eq!(counts(&app).returning_pawn_updates_sent, 0);
+    assert_eq!(counts(&app).returning_pawn_update_gaps, 0);
+    assert_eq!(counts(&app).returning_pawn_update_errors, 0);
     let ((second, second_open, restored), _) = with_server(&mut app, move || {
         let (mut client, bytes) = join_pinned_open(address, pinned, 7);
         let restored = exchange_profiles(&mut client, engine, 5, 3);

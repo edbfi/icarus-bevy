@@ -47,9 +47,6 @@ pub enum PawnRestoreGap {
     /// `bWasDeadOnReload` and kills the pawn at stitching, whose wire is
     /// unread (F-961).
     DeadOnSave,
-    /// The record omits `Location` or `Rotation`, whose constructed default
-    /// comes from two engine globals not yet identified (F-963).
-    Omitted(&'static str),
 }
 
 /// A saved stomach entry whose food resolved to an item-static row.
@@ -173,17 +170,13 @@ pub fn restore_saved_pawn(
     current: &CurrentPawnState<'_>,
     mut item_row_index: impl FnMut(&[u16]) -> Result<Option<usize>>,
 ) -> Result<std::result::Result<RestoredPawn, PawnRestoreGap>> {
-    use PawnRestoreGap::Omitted;
     use character_state_handle as h;
-    let Some(location) = saved.location else {
-        return Ok(Err(Omitted("Location")));
-    };
-    let Some([pitch, yaw, roll]) = saved.rotation else {
-        return Ok(Err(Omitted("Rotation")));
-    };
     // A save omits fields equal to the recorder's constructed defaults, so an
-    // omitted field restores as that default (F-963): RespawnCount 0,
-    // HasGrantedLoadout false, bIsAlive true, Health and levels -1.
+    // omitted field restores as that default (F-963): zero placement,
+    // RespawnCount 0, HasGrantedLoadout false, bIsAlive true, Health and
+    // levels -1.
+    let location = saved.location.unwrap_or([0.0; 3]);
+    let [pitch, yaw, roll] = saved.rotation.unwrap_or([0.0; 3]);
     let respawn_count = saved.respawn_count.unwrap_or(0);
     let has_granted_loadout = saved.has_granted_loadout.unwrap_or(false);
     if saved.is_alive == Some(false) {
