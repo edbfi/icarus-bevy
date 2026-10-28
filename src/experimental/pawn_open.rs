@@ -123,12 +123,14 @@ const INVENTORY_INFO_ROW: u32 = 7;
 /// (13), then `Query` (14), `Locked` (15), `LastItem` (16), `Slotable` (17)
 /// and `Index` (18). An item slot adds its nonempty dynamic data (3) and
 /// stats (7); the other item arrays (1, 4..=6, 8, 9) stay unsent (F-866).
-mod slot_handle {
+pub(crate) mod slot_handle {
     pub const ITEM_ROW: u32 = 2;
     /// `ItemData.ItemDynamicData`: (`EDynamicItemProperties`, value) pairs.
     pub const ITEM_DYNAMIC: u32 = 3;
     /// `ItemData.CustomProperties.Stats`: (stat name, value) pairs.
     pub const ITEM_STATS: u32 = 7;
+    /// `ItemData.CustomProperties.Alterations`: alteration names.
+    pub const ITEM_ALTERATIONS: u32 = 8;
     /// `ItemData.bIsItemInstance`.
     pub const ITEM_FLAG: u32 = 10;
     pub const ITEM_STRING: u32 = 11;
@@ -269,6 +271,27 @@ pub struct SlotItem {
     pub row: u16,
     pub dynamic: Vec<(u32, i32)>,
     pub stats: Vec<(ArchiveText, i32)>,
+    /// `CustomProperties.Alterations` names.
+    pub alterations: Vec<ArchiveText>,
+    /// `DatabaseGUID`; empty by default.
+    pub guid: ArchiveText,
+    /// `ItemOwnerLookupId`; -1 by default.
+    pub owner_lookup_id: i32,
+}
+
+impl SlotItem {
+    /// An item of `row` with no dynamic data, stats or alterations and the
+    /// default GUID and owner lookup ID.
+    pub fn new(row: u16) -> Result<Self> {
+        Ok(Self {
+            row,
+            dynamic: Vec::new(),
+            stats: Vec::new(),
+            alterations: Vec::new(),
+            guid: ArchiveText::new(&[])?,
+            owner_lookup_id: -1,
+        })
+    }
 }
 
 /// An inventory slot: its query row and index, and its item if any.
@@ -341,11 +364,6 @@ fn fast_array_field(
     engine_net_version: u32,
     order: ByteOrder,
 ) -> Result<CustomField> {
-    let codec = RepLayoutCodec {
-        actor: actor_codec(engine_net_version, order),
-        checksums: false,
-        limits: RepLayoutLimits::default(),
-    };
     let delta = FastArrayDelta {
         array_replication_key: replication_key,
         base_replication_key: 0,
@@ -355,6 +373,23 @@ fn fast_array_field(
             .zip(1..)
             .map(|(stream, id)| (id, FastArrayItem::Delta(stream)))
             .collect(),
+    };
+    fast_array_delta_field(index, &delta, element, engine_net_version, order)
+}
+
+/// A custom-delta fast-array field carrying `delta` (items as property
+/// streams over `element`), as an open or a later update sends it.
+pub fn fast_array_delta_field(
+    index: u32,
+    delta: &FastArrayDelta,
+    element: &[RepCommand],
+    engine_net_version: u32,
+    order: ByteOrder,
+) -> Result<CustomField> {
+    let codec = RepLayoutCodec {
+        actor: actor_codec(engine_net_version, order),
+        checksums: false,
+        limits: RepLayoutLimits::default(),
     };
     let mut writer = BitWriter::new();
     write_custom_delta_header(
@@ -368,7 +403,7 @@ fn fast_array_field(
     )?;
     write_fast_array_delta(
         &mut writer,
-        &delta,
+        delta,
         &FastArrayItemLayout::Delta(element.to_vec()),
         &codec,
         FAST_ARRAY_COUNT_CAP,
@@ -414,7 +449,7 @@ fn pair_array(pairs: impl ExactSizeIterator<Item = (RepValue, RepValue)>) -> Res
 /// nonempty dynamic data and stats and `bIsItemInstance`, or the empty
 /// slot's defaults, then the slot's own fields (`LastItem` is the item's
 /// row).
-fn slot_stream(slot: &InventorySlot) -> Result<PropertyStream> {
+pub fn slot_stream(slot: &InventorySlot) -> Result<PropertyStream> {
     use slot_handle as h;
     let row = slot.item.as_ref().map_or(NO_ROW, |item| item.row);
     let mut entries = vec![(h::ITEM_ROW, RepValue::UInt16(row))];
@@ -443,11 +478,41 @@ fn slot_stream(slot: &InventorySlot) -> Result<PropertyStream> {
                 }))?,
             ));
         }
+        if !item.alterations.is_empty() {
+            let count = u16::try_from(item.alterations.len())?;
+            entries.push((
+                h::ITEM_ALTERATIONS,
+                RepValue::DynamicArray(RepArray {
+                    count,
+                    stream: PropertyStream {
+                        entries: item
+                            .alterations
+                            .iter()
+                            .zip(1..)
+                            .map(|(name, handle)| {
+                                entry(
+                                    handle,
+                                    RepValue::NetworkName(NetworkName::String {
+                                        text: name.clone(),
+                                        number: 0,
+                                    }),
+                                )
+                            })
+                            .collect(),
+                        terminator_checksum: None,
+                    },
+                }),
+            ));
+        }
     }
+    let (guid, owner) = match &slot.item {
+        Some(item) => (item.guid.clone(), item.owner_lookup_id),
+        None => (ArchiveText::new(&[])?, -1),
+    };
     entries.extend([
         (h::ITEM_FLAG, RepValue::Bool(slot.item.is_some())),
-        (h::ITEM_STRING, RepValue::Str(ArchiveText::new(&[])?)),
-        (h::ITEM_INTEGER, RepValue::Int(-1)),
+        (h::ITEM_STRING, RepValue::Str(guid)),
+        (h::ITEM_INTEGER, RepValue::Int(owner)),
         (h::ITEM_TAGS, RepValue::GameplayTagContainer(None)),
         (h::QUERY, RepValue::UInt16(slot.query_row)),
         (h::LOCKED, RepValue::Bool(false)),

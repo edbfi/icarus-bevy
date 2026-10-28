@@ -60,6 +60,7 @@ use crate::{
             MATCH_STATE_IN_PROGRESS, NetworkingStatus, active_prospect_values, handle,
             saved_game_mode_values, session_flags_value,
         },
+        inventory_restore::{InventoryInfo, InventoryRestoreTables, InventoryRole, ItemInfo},
         inventory_weight::{
             AUTHORITY_LOCAL_ROLE, DEFAULT_CDO_CURRENT_WEIGHT, DYNAMIC_PROP_ASSOCIATED_INVENTORY_ID,
             DYNAMIC_PROP_FILLABLE_UNITS, DYNAMIC_PROP_ITEMABLE_STACK, ItemWeightInput,
@@ -416,6 +417,211 @@ pub fn player_inventories(tables: &mut DataTables) -> Result<Vec<PawnInventory>>
         .collect()
 }
 
+/// The `D_InventoryID` table: an inventory's `InventoryID` is its row index.
+pub const INVENTORY_ID_TABLE: &str = "D_InventoryID";
+
+/// The tables [`inventory_restore_tables`] reads besides the pawn content's.
+pub const INVENTORY_RESTORE_TABLES: [&str; 6] = [
+    ITEMS_STATIC_TABLE,
+    TAG_QUERIES_TABLE,
+    INVENTORY_ID_TABLE,
+    "D_Decayable",
+    "D_Equippable",
+    "D_Armour",
+];
+
+/// A `Base<X>_+` stat name in a `GrantedStats`/`ArmourStats` key
+/// (`(Value="<name>")`).
+fn granted_stat_name(key: &str) -> Option<&str> {
+    key.strip_prefix("(Value=\"")?.strip_suffix("\")")
+}
+
+/// A row handle field that names a row (not `None`).
+fn names_row(row: &serde_json::Map<String, serde_json::Value>, field: &str) -> Option<String> {
+    row.get(field)
+        .and_then(row_name)
+        .filter(|name| !name.is_empty() && *name != "None")
+        .map(str::to_owned)
+}
+
+/// The data tables a returning pawn's inventory restore reads (F-969 to
+/// F-971, F-976): every item row's tags, `VerifyItem` traits and equipped
+/// grants, every slot query, and the pawn's `inventories` (as opened, in
+/// the `D_Inventory` `Player` order) with their IDs, roles, starting slots
+/// and slot templates.
+pub fn inventory_restore_tables(
+    tables: &mut DataTables,
+    inventories: &[PawnInventory],
+) -> Result<InventoryRestoreTables> {
+    let spoil_times: BTreeMap<String, f64> = tables
+        .objects("D_Decayable")?
+        .iter()
+        .filter_map(|row| {
+            Some((
+                row.get("Name")?.as_str()?.to_owned(),
+                row.get("SpoilTime")
+                    .and_then(serde_json::Value::as_f64)
+                    .unwrap_or(0.0),
+            ))
+        })
+        .collect();
+    let grants_of = |tables: &mut DataTables,
+                     table: &str,
+                     field: &str|
+     -> Result<BTreeMap<String, BTreeMap<String, i32>>> {
+        Ok(tables
+            .objects(table)?
+            .iter()
+            .filter_map(|row| {
+                let name = row.get("Name")?.as_str()?.to_owned();
+                let grants = row
+                    .get(field)
+                    .and_then(serde_json::Value::as_object)
+                    .map(|stats| {
+                        stats
+                            .iter()
+                            .filter_map(|(key, value)| {
+                                Some((
+                                    granted_stat_name(key)?.to_owned(),
+                                    i32::try_from(value.as_i64()?).ok()?,
+                                ))
+                            })
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                Some((name, grants))
+            })
+            .collect())
+    };
+    let equippable = grants_of(tables, "D_Equippable", "GrantedStats")?;
+    let armour = grants_of(tables, "D_Armour", "ArmourStats")?;
+    let tag_names = |row: &serde_json::Map<String, serde_json::Value>| {
+        let generated = row.get("Generated_Tags");
+        ["GameplayTags", "ParentTags"]
+            .into_iter()
+            .filter_map(|list| generated?.get(list)?.as_array())
+            .flatten()
+            .filter_map(|tag| tag.get("TagName")?.as_str())
+            // A container holds each tag's parents too, as the engine's
+            // explicit-and-parent tag set does.
+            .flat_map(|tag| {
+                tag.match_indices('.')
+                    .map(|(at, _)| tag[..at].to_owned())
+                    .chain(std::iter::once(tag.to_owned()))
+                    .collect::<Vec<_>>()
+            })
+            .collect()
+    };
+    let mut items = Vec::new();
+    let mut item_rows = BTreeMap::new();
+    for (index, row) in tables.objects(ITEMS_STATIC_TABLE)?.iter().enumerate() {
+        let index = u16::try_from(index).context("too many item rows")?;
+        if let Some(name) = row.get("Name").and_then(serde_json::Value::as_str) {
+            item_rows.entry(name.to_ascii_lowercase()).or_insert(index);
+        }
+        let mut grants: BTreeMap<String, i32> = BTreeMap::new();
+        for (field, source) in [("Equippable", &equippable), ("Armour", &armour)] {
+            if let Some(stats) = names_row(row, field).and_then(|name| source.get(&name)) {
+                for (stat, value) in stats {
+                    let total = grants.entry(stat.clone()).or_default();
+                    *total = total.wrapping_add(*value);
+                }
+            }
+        }
+        let has = |field: &str| names_row(row, field).is_some();
+        items.push(ItemInfo {
+            tags: tag_names(row),
+            traits: crate::experimental::inventory_restore::ItemTraits {
+                actionable: has("Actionable"),
+                combustible: has("Combustible"),
+                transmutable: has("Transmutable"),
+                itemable: has("Itemable"),
+                fillable: has("Fillable"),
+                durable: has("Durable"),
+                decaying: names_row(row, "Decayable")
+                    .and_then(|name| spoil_times.get(&name))
+                    .is_some_and(|time| *time > 0.0),
+                inventory_container: has("InventoryContainer"),
+                living: has("LivingItem"),
+            },
+            grants,
+        });
+    }
+    let queries = tables
+        .objects(TAG_QUERIES_TABLE)?
+        .iter()
+        .map(|row| {
+            crate::experimental::tag_query::TagQuery::from_row(&serde_json::Value::Object(
+                row.clone(),
+            ))
+            .ok()
+        })
+        .collect();
+    let query_row = |tables: &mut DataTables, name: &str| -> Result<u16> {
+        let index = tables
+            .row_index(
+                TAG_QUERIES_TABLE,
+                &name.encode_utf16().collect::<Vec<u16>>(),
+            )?
+            .with_context(|| format!("{TAG_QUERIES_TABLE} lacks {name}"))?;
+        Ok(u16::try_from(index)?)
+    };
+    let suit_queries = [
+        query_row(tables, "Any_Oxygen")?,
+        query_row(tables, "Any_Food")?,
+        query_row(tables, "Any_Water")?,
+    ];
+    let info_rows = tables.objects(INVENTORY_INFO_TABLE)?.to_vec();
+    let mut restore_inventories = Vec::with_capacity(inventories.len());
+    for inventory in inventories {
+        let info = info_rows
+            .get(usize::from(inventory.info_row))
+            .context("an inventory's info row is missing")?;
+        let id_name = info
+            .get("InventoryID")
+            .and_then(|id| id.get("Value"))
+            .and_then(serde_json::Value::as_str)
+            .context("an inventory info row has no InventoryID")?;
+        let inventory_id = tables
+            .row_index(
+                INVENTORY_ID_TABLE,
+                &id_name.encode_utf16().collect::<Vec<u16>>(),
+            )?
+            .with_context(|| format!("{INVENTORY_ID_TABLE} lacks an inventory ID"))?;
+        let role = match id_name {
+            "Backpack" => InventoryRole::Backpack,
+            "Upgrade" => InventoryRole::Upgrade,
+            "Suit" => InventoryRole::Suit,
+            "Equipment" => InventoryRole::Equipment,
+            _ => InventoryRole::Other,
+        };
+        let starting_slots = match info.get("StartingSlots") {
+            None => 0,
+            Some(value) => value
+                .as_i64()
+                .and_then(|slots| i32::try_from(slots).ok())
+                .context("an inventory's StartingSlots is not an integer")?,
+        };
+        let template_query = match info.get("SlotTemplate").and_then(row_name) {
+            Some(name) => query_row(tables, name)?,
+            None => u16::MAX,
+        };
+        restore_inventories.push(InventoryInfo {
+            inventory_id: i32::try_from(inventory_id)?,
+            role,
+            starting_slots,
+            template_query,
+        });
+    }
+    Ok(InventoryRestoreTables {
+        items,
+        item_rows,
+        queries,
+        inventories: restore_inventories,
+        suit_queries,
+    })
+}
+
 /// The inventory a `D_InventoryInfo` row describes, empty: its row and its
 /// `StartingSlots` empty slots (none when omitted), slot `i` querying the
 /// `SlotOverrides` entry at `Location` `i`, else the `SlotTemplate`, as a
@@ -518,7 +724,7 @@ pub fn container_inventories(
                 ensure!(
                     item.guid.is_empty()
                         && item.owner_lookup_id == -1
-                        && item.alterations == 0
+                        && item.alterations.is_empty()
                         && item.living_slots == 0,
                     "a saved item carries fields the native server does not send yet"
                 );
@@ -553,9 +759,9 @@ pub fn container_inventories(
                     .context("a saved item lies outside its inventory's slots")?;
                 ensure!(slot.item.is_none(), "two saved items share a slot");
                 slot.item = Some(SlotItem {
-                    row,
                     dynamic,
                     stats,
+                    ..SlotItem::new(row)?
                 });
                 inventory.slots.replication_key += 1;
             }
@@ -1246,11 +1452,25 @@ pub fn bind_with_parameters(
             _ => None,
         };
         if let Some(pawn) = pawn {
-            lab.enable_pawn_open(pawn, PAWN_CHANNEL_INDEX, pawn_content(tables.as_mut())?)?;
+            let content = pawn_content(tables.as_mut())?;
+            let inventories = content.inventories.clone();
+            lab.enable_pawn_open(pawn, PAWN_CHANNEL_INDEX, content)?;
             if let Some(tables) = tables.as_mut()
                 && tables.has_table(ITEMS_STATIC_TABLE)
             {
                 lab.enable_pawn_restore_item_rows(tables.rows(ITEMS_STATIC_TABLE)?)?;
+                // A data.pak without the item trait and query tables leaves
+                // saved inventories unrestored; one with them must build.
+                if !inventories.is_empty()
+                    && INVENTORY_RESTORE_TABLES
+                        .iter()
+                        .all(|table| tables.has_table(table))
+                {
+                    lab.enable_inventory_restore(
+                        inventory_restore_tables(tables, &inventories)
+                            .context("build the inventory restore tables")?,
+                    )?;
+                }
             }
             // Authored deterministic PRNG seed; actor allocation is unrelated
             // to the cryptographic randomness used for handshake cookies.

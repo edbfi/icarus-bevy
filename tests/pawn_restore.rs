@@ -670,3 +670,158 @@ fn the_update_needs_an_acked_open_and_no_stomach_entries() {
     let body = read_actor_bunch_body(&mut payload.reader(), false, &codec).unwrap();
     assert_eq!(body.blocks.len(), 1);
 }
+
+#[test]
+fn restored_inventories_send_their_slot_deltas_on_the_runtime_subobjects() {
+    use icarus_bevy::experimental::{
+        control_messages::ArchiveText,
+        inventory_restore::{InventoryRestore, SlotChange},
+        pawn_open::{FastArrayContent, InventorySlot, PawnInventory, SlotItem},
+        rep_rpc::{
+            FAST_ARRAY_COUNT_CAP, FastArrayItem, FastArrayItemLayout, read_custom_delta_header,
+            read_fast_array_delta, read_field_header,
+        },
+    };
+    let (profile, plan, stomach) = plan();
+    let key = ActorKey::Session(7);
+    let empty = |count: i32| PawnInventory {
+        info_row: 0,
+        current_weight: None,
+        slots: FastArrayContent {
+            replication_key: 2,
+            items: (0..count)
+                .map(|index| InventorySlot::empty(9, index))
+                .collect(),
+        },
+    };
+    // The open carries two inventories; the second is restored.
+    let mut cache = NetGuidCache::new();
+    let mut exports = ConnectionExports::new();
+    let state = PawnOpenState {
+        key,
+        controller: 2,
+        player_state: 4,
+        location: [0.0, 0.0, 0.0],
+        content: PawnContent {
+            character_state: current_state(),
+            inventories: vec![empty(1), empty(2)],
+            ..PawnContent::default()
+        },
+    };
+    compose_pawn_open(
+        &mut cache,
+        &mut exports,
+        &plan,
+        &state,
+        3,
+        ByteOrder::Little,
+    )
+    .unwrap();
+    exports.commit_bunch(1);
+    exports.received_ack(1);
+
+    let item = SlotItem {
+        dynamic: vec![(7, 5)],
+        guid: ArchiveText::new(&units("GUID")).unwrap(),
+        owner_lookup_id: 0,
+        ..SlotItem::new(40).unwrap()
+    };
+    let mut restored_slots = empty(2).slots.items;
+    restored_slots[1].item = Some(item.clone());
+    let added = InventorySlot {
+        item: Some(item),
+        ..InventorySlot::empty(9, 2)
+    };
+    restored_slots.push(added.clone());
+    let inventory = InventoryRestore {
+        inventory: 1,
+        opened: empty(2),
+        restored: PawnInventory {
+            slots: FastArrayContent {
+                replication_key: 9,
+                items: restored_slots.clone(),
+            },
+            ..empty(2)
+        },
+        base_key: 4,
+        changes: vec![
+            (2, SlotChange::Changed(restored_slots[1].clone())),
+            (3, SlotChange::Added(added)),
+        ],
+    };
+    let restored = RestoredPawn {
+        inventories: vec![inventory],
+        ..restore(&SavedPlayerState::default(), &current_state())
+    };
+    let payload = compose_restored_pawn_update(
+        &mut cache,
+        &mut exports,
+        &plan,
+        key,
+        stomach,
+        &restored,
+        ByteOrder::Little,
+    )
+    .unwrap();
+    assert_eq!(exports.bunch_exports().count(), 0);
+
+    let codec = ActorChannelCodec {
+        engine_net_version: profile.engine_network_version,
+        exports_enabled: false,
+        has_level: true,
+        order: ByteOrder::Little,
+        limits: ActorChannelLimits::default(),
+    };
+    let rep_codec = RepLayoutCodec {
+        actor: codec,
+        checksums: false,
+        limits: RepLayoutLimits::default(),
+    };
+    let body = read_actor_bunch_body(&mut payload.reader(), false, &codec).unwrap();
+    let block = body.blocks.last().unwrap();
+    let BlockTarget::SubObject { object, class } = &block.target else {
+        panic!("inventory block");
+    };
+    // The second runtime subobject, named by its acked class.
+    assert_eq!(object.guid, cache.subobject_guid(key, 1));
+    let SubObjectClass::Class(class) = class else {
+        panic!("class-named inventory");
+    };
+    assert!(exports_acked(&exports, class.guid));
+    assert!(!block.has_rep_layout);
+    let mut reader = block.payload.reader();
+    let field = read_field_header(&mut reader, plan.content.inventory_bound, 1 << 20).unwrap();
+    assert!(reader.at_end());
+    assert_eq!(field.index, 4);
+    let mut field_reader = field.payload.reader();
+    read_custom_delta_header(&mut field_reader, profile.engine_network_version, 1).unwrap();
+    let delta = read_fast_array_delta(
+        &mut field_reader,
+        &FastArrayItemLayout::Delta(plan.content.slot_layout.clone()),
+        &rep_codec,
+        FAST_ARRAY_COUNT_CAP,
+    )
+    .unwrap();
+    assert!(field_reader.at_end());
+    assert_eq!(
+        (delta.array_replication_key, delta.base_replication_key),
+        (9, 4)
+    );
+    let handles = |index: usize| match &delta.changed[index].1 {
+        FastArrayItem::Delta(stream) => stream
+            .entries
+            .iter()
+            .map(|entry| entry.handle)
+            .collect::<Vec<_>>(),
+        FastArrayItem::Whole(_) => panic!("delta items"),
+    };
+    // A changed slot sends what differs from its open; an added one all.
+    assert_eq!(delta.changed[0].0, 2);
+    assert_eq!(handles(0), [2, 3, 10, 11, 12, 16]);
+    assert_eq!(delta.changed[1].0, 3);
+    assert_eq!(handles(1), [2, 3, 10, 11, 12, 13, 14, 15, 16, 17, 18]);
+}
+
+fn exports_acked(exports: &ConnectionExports, guid: u32) -> bool {
+    exports.is_acked(guid)
+}

@@ -463,7 +463,7 @@ fn ticked_containers_recalculate_nondefault_current_weight_and_fail_closed() {
         stats: Vec::new(),
         guid: Vec::new(),
         owner_lookup_id: -1,
-        alterations: 0,
+        alterations: Vec::new(),
         living_slots: 0,
     };
 

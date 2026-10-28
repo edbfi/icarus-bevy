@@ -83,7 +83,7 @@ use icarus_bevy::experimental::{
         world_talent_manager_rep_layout, write_rep_properties,
     },
     rep_rpc::{
-        FAST_ARRAY_COUNT_CAP, FastArrayItemLayout, FieldHeader, RpcParameter,
+        FAST_ARRAY_COUNT_CAP, FastArrayItem, FastArrayItemLayout, FieldHeader, RpcParameter,
         bp_icarus_player_state_rpc_parameters, encode_rpc_payload, icarus_character_rpc_parameters,
         parse_rpc_payload, player_controller_rpc_parameters, read_custom_delta_header,
         read_fast_array_delta, read_field_header, write_custom_delta_header,
@@ -358,8 +358,109 @@ fn value_json(value: &icarus_bevy::experimental::rep_layout::RepValue) -> Value 
         RepValue::Str(text) => json!({"str": String::from_utf16_lossy(text.units())}),
         RepValue::UniqueNetId(id) => json!({"unique_net_id": format!("{:?}", id.kind),
             "value": format!("{:?}", id.value)}),
+        RepValue::UInt16(number) => json!({"uint16": number}),
+        RepValue::UInt32(number) => json!({"uint32": number}),
+        RepValue::Int64(number) => json!({"int64": number}),
+        RepValue::NetworkName(name) => json!({"name": network_name_json(name)}),
+        RepValue::RowHandle(handle) => {
+            json!({"row_handle": {"table": handle.table_index, "row": handle.row_index}})
+        }
+        RepValue::StatPairRepState(pair) => json!({"stat": pair.stat, "value": pair.value}),
+        RepValue::GameplayTag(tag) => json!({"tag": tag_json(tag)}),
+        RepValue::GameplayTagContainer(tags) => {
+            json!({"tags": tags.as_ref().map(|tags| tags.iter().map(tag_json).collect::<Vec<_>>())})
+        }
+        RepValue::DynamicArray(array) => json!({"array": {"count": array.count,
+            "entries": stream_json(&array.stream)}}),
         other => json!({"kind": format!("{other:?}")}),
     }
+}
+
+fn network_name_json(name: &icarus_bevy::experimental::rep_layout::NetworkName) -> Value {
+    use icarus_bevy::experimental::rep_layout::NetworkName;
+    match name {
+        NetworkName::Hardcoded(index) => json!({"hardcoded": index}),
+        NetworkName::String { text, number } => {
+            json!({"text": String::from_utf16_lossy(text.units()), "number": number})
+        }
+    }
+}
+
+fn tag_json(tag: &icarus_bevy::experimental::rep_layout::GameplayTag) -> Value {
+    use icarus_bevy::experimental::rep_layout::GameplayTag;
+    match tag {
+        GameplayTag::Name(name) => network_name_json(name),
+        GameplayTag::NetIndex(index) => json!({"net_index": index}),
+    }
+}
+
+fn stream_json(stream: &icarus_bevy::experimental::rep_layout::PropertyStream) -> Vec<Value> {
+    stream
+        .entries
+        .iter()
+        .map(|entry| json!([entry.handle, value_json(&entry.value)]))
+        .collect()
+}
+
+/// A sub-object block's decoded values for `--values-channel` (private
+/// detail): its rep-layout properties and each custom-delta field's fast
+/// array (keys, deletions and changed items with their properties). Only
+/// the Stat Container, inventory and plain rep-layout schemas are covered.
+fn block_values_json(
+    schema: &str,
+    block: &ContentBlock,
+    profile: &ReleaseProfile,
+) -> Result<Value> {
+    let codec = rep_codec();
+    let (layout, item, bound) = match schema {
+        "UIcarusStatContainer" => (
+            actor_component_rep_layout(),
+            Some(vec![RepCommand::StatPairRepState]),
+            profile.class_net_cache.stat_container,
+        ),
+        "UInventory" => (
+            inventory_rep_layout(),
+            Some(inventory_slot_commands(profile.tags.tag_encoding())),
+            profile.class_net_cache.inventory,
+        ),
+        _ => (schema_commands(schema, profile), None, 0),
+    };
+    let mut reader = block.payload.reader();
+    let properties = if block.has_rep_layout {
+        stream_json(&read_rep_properties(&mut reader, &layout, &codec)?)
+    } else {
+        Vec::new()
+    };
+    let mut fields = Vec::new();
+    if let Some(item) = item {
+        let item_layout = FastArrayItemLayout::Delta(item);
+        while !reader.at_end() {
+            let header = read_field_header(&mut reader, bound, codec.limits.max_opaque_bits)?;
+            let mut field_reader = header.payload.reader();
+            let delta_header =
+                read_custom_delta_header(&mut field_reader, profile.engine_network_version, 1)?;
+            let delta = read_fast_array_delta(
+                &mut field_reader,
+                &item_layout,
+                &codec,
+                FAST_ARRAY_COUNT_CAP,
+            )?;
+            fields.push(json!({
+                "index": header.index,
+                "header": format!("{delta_header:?}"),
+                "array_key": delta.array_replication_key,
+                "base_key": delta.base_replication_key,
+                "deleted": delta.deleted_ids,
+                "changed": delta.changed.iter().map(|(id, item)| match item {
+                    FastArrayItem::Delta(stream) => json!({"id": id, "entries": stream_json(stream)}),
+                    FastArrayItem::Whole(_) => json!({"id": id, "whole": true}),
+                }).collect::<Vec<_>>(),
+            }));
+        }
+    } else if !reader.at_end() {
+        fields.push(json!({"remaining_bits": reader.remaining()}));
+    }
+    Ok(json!({"properties": properties, "fields": fields}))
 }
 
 /// Resolve an actor channel's archetype name to a known native or cooked
@@ -2363,6 +2464,27 @@ impl<'a> Decoder<'a> {
                     "body_bits":complete.payload.as_ref().map(Payload::bit_len),
                     "payload_hex":block.payload.bytes().iter().map(|byte| format!("{byte:02x}")).collect::<String>()}),
                 )?;
+            }
+            let channel_values = self.values_channel == Some(complete.header.channel_index);
+            if channel_values
+                && !matches!(block.target, BlockTarget::Actor)
+                && (block.has_rep_layout || block.payload.bit_len() > 0)
+                && let Some((schema_name, _)) = replayed
+            {
+                let values = block_values_json(schema_name, block, &self.profile)
+                    .map_err(|error| format!("{error:#}"));
+                let kind = if complete.header.open {
+                    "open_block_values"
+                } else {
+                    "update_block_values"
+                };
+                self.write_detail(json!({"kind":kind,
+                    "datagram":arrival.datagram, "ms":arrival.ms,
+                    "channel":complete.header.channel_index, "schema":schema_name,
+                    "object_path":object_path, "class_path":class_path,
+                    "target":format!("{:?}", summary.object),
+                    "has_rep_layout":block.has_rep_layout,
+                    "payload_bits":block.payload.bit_len(), "values":values}))?;
             }
             blocks.push(json!({
                 "summary": summary,
