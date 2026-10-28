@@ -2043,7 +2043,7 @@ impl<'a> Decoder<'a> {
                 }
                 resolved
             }
-            SubObjectClass::StablyNamed | SubObjectClass::Delete => {
+            SubObjectClass::StablyNamed | SubObjectClass::Delete | SubObjectClass::ClientSent => {
                 self.subobject_classes.get(&object.guid).cloned()
             }
         };

@@ -604,6 +604,9 @@ pub enum SubObjectClass {
     Class(NetGuidRef),
     /// A zero class reference: the sub-object is deleted.
     Delete,
+    /// A client's block: the server reads only the sub-object reference, no
+    /// stably-named bit or class (F-972).
+    ClientSent,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -697,6 +700,7 @@ pub enum BlockKind {
     StablyNamed,
     Class,
     Delete,
+    ClientSent,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -749,6 +753,7 @@ impl ContentBlock {
                     SubObjectClass::StablyNamed => (BlockKind::StablyNamed, None),
                     SubObjectClass::Class(class) => (BlockKind::Class, Some(class.summary())),
                     SubObjectClass::Delete => (BlockKind::Delete, None),
+                    SubObjectClass::ClientSent => (BlockKind::ClientSent, None),
                 };
                 (kind, Some(object.summary()), class)
             }
@@ -1309,13 +1314,32 @@ pub fn read_content_block(
     reader: &mut BitReader<'_>,
     codec: &ActorChannelCodec,
 ) -> Result<ContentBlock> {
+    read_block(reader, codec, false)
+}
+
+/// Read one content block a client sent, as the server does: a sub-object
+/// block ends its header at the sub-object reference (F-972).
+pub fn read_client_content_block(
+    reader: &mut BitReader<'_>,
+    codec: &ActorChannelCodec,
+) -> Result<ContentBlock> {
+    read_block(reader, codec, true)
+}
+
+fn read_block(
+    reader: &mut BitReader<'_>,
+    codec: &ActorChannelCodec,
+    from_client: bool,
+) -> Result<ContentBlock> {
     let has_rep_layout = read_flag(reader, "content block rep-layout bit")?;
     let is_actor = read_flag(reader, "content block actor bit")?;
     let target = if is_actor {
         BlockTarget::Actor
     } else {
         let object = read_guid_ref(reader, codec).context("content block sub-object")?;
-        let class = if read_flag(reader, "content block stably-named bit")? {
+        let class = if from_client {
+            SubObjectClass::ClientSent
+        } else if read_flag(reader, "content block stably-named bit")? {
             SubObjectClass::StablyNamed
         } else {
             let class = read_guid_ref(reader, codec).context("content block class")?;
@@ -1386,6 +1410,7 @@ pub fn write_content_block(
                     write_guid_ref(writer, &NetGuidRef::null(), codec)?;
                     return Ok(());
                 }
+                SubObjectClass::ClientSent => {}
             }
         }
     }
@@ -1401,6 +1426,24 @@ pub fn read_actor_bunch_body(
     open: bool,
     codec: &ActorChannelCodec,
 ) -> Result<ActorBunchBody> {
+    read_body(reader, open, codec, false)
+}
+
+/// Read a whole actor bunch body a client sent (never an open), as the
+/// server does (F-972).
+pub fn read_client_actor_bunch_body(
+    reader: &mut BitReader<'_>,
+    codec: &ActorChannelCodec,
+) -> Result<ActorBunchBody> {
+    read_body(reader, false, codec, true)
+}
+
+fn read_body(
+    reader: &mut BitReader<'_>,
+    open: bool,
+    codec: &ActorChannelCodec,
+    from_client: bool,
+) -> Result<ActorBunchBody> {
     let spawn = if open {
         Some(read_spawn(reader, codec).context("spawn record")?)
     } else {
@@ -1414,7 +1457,8 @@ pub fn read_actor_bunch_body(
             "actor bunch exceeds the content block limit"
         );
         blocks.push(
-            read_content_block(reader, codec).with_context(|| format!("content block {index}"))?,
+            read_block(reader, codec, from_client)
+                .with_context(|| format!("content block {index}"))?,
         );
     }
     Ok(ActorBunchBody { spawn, blocks })

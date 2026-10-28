@@ -299,7 +299,7 @@ impl ProbeClient {
             channel_index,
             BlockTarget::SubObject {
                 object: NetGuidRef::plain(proxy),
-                class: SubObjectClass::StablyNamed,
+                class: SubObjectClass::ClientSent,
             },
             &field,
             rep_rpc::BACKEND_PROXY_FIELD_INDEX_BOUND,
@@ -319,7 +319,7 @@ impl ProbeClient {
             channel_index,
             BlockTarget::SubObject {
                 object: NetGuidRef::plain(player_data),
-                class: SubObjectClass::StablyNamed,
+                class: SubObjectClass::ClientSent,
             },
             &FieldHeader {
                 index: super::rep_rpc::SERVER_RECEIVE_LOADOUT,
@@ -342,7 +342,7 @@ impl ProbeClient {
             channel_index,
             BlockTarget::SubObject {
                 object: NetGuidRef::plain(bestiary),
-                class: SubObjectClass::StablyNamed,
+                class: SubObjectClass::ClientSent,
             },
             &FieldHeader {
                 index: super::rep_rpc::SERVER_RECEIVE_BESTIARY_DATA,

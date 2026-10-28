@@ -174,7 +174,7 @@ use serde::Serialize;
 
 use super::actor_channel::{
     ActorBunchBody, ActorChannelCodec, ActorChannelLimits, BlockTarget, encode_actor_bunch_body,
-    read_actor_bunch_body,
+    read_client_actor_bunch_body,
 };
 use super::actor_open::{Block, Reference};
 use super::admission::{
@@ -1051,7 +1051,7 @@ fn controller_initialisation_calls(
     components: [Option<u32>; 3],
 ) -> Result<(Vec<ControllerCall>, usize)> {
     let actor = actor_codec(engine_net_version, order);
-    let body = read_actor_bunch_body(&mut payload.reader(), false, &actor)?;
+    let body = read_client_actor_bunch_body(&mut payload.reader(), &actor)?;
     let codec = RepLayoutCodec {
         actor,
         checksums: false,
