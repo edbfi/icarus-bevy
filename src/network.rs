@@ -67,6 +67,7 @@ use crate::{
             RestoredContainerInventory, recalculate_inventory_weight,
         },
         manager_open::{ManagerOpenPlan, ManagerSlot},
+        modifier_restore::{ModifierRestoreTables, ModifierRow},
         pawn_open::{
             CharacterVitals, FastArrayContent, InventorySlot, PAWN_CHANNEL_INDEX, PawnContent,
             PawnInventory, SlotItem,
@@ -429,6 +430,46 @@ pub const INVENTORY_RESTORE_TABLES: [&str; 6] = [
     "D_Equippable",
     "D_Armour",
 ];
+
+/// The `D_ModifierStates` table: a modifier's row handle is its row index.
+pub const MODIFIER_STATES_TABLE: &str = "D_ModifierStates";
+
+/// What a returning pawn's modifier restore reads of `D_ModifierStates`
+/// (F-980): each row's `SaveToDatabase`, `Behaviour` class and
+/// `ModifierEffectivenessAffectors` stats.
+pub fn modifier_restore_tables(tables: &mut DataTables) -> Result<ModifierRestoreTables> {
+    let mut restore = ModifierRestoreTables::default();
+    for (index, row) in tables.objects(MODIFIER_STATES_TABLE)?.iter().enumerate() {
+        let index = u16::try_from(index).context("too many modifier rows")?;
+        if let Some(name) = row.get("Name").and_then(serde_json::Value::as_str) {
+            restore
+                .row_index
+                .entry(name.to_ascii_lowercase())
+                .or_insert(index);
+        }
+        restore.rows.push(ModifierRow {
+            saves: row
+                .get("SaveToDatabase")
+                .and_then(serde_json::Value::as_bool)
+                .unwrap_or(true),
+            behaviour: row
+                .get("Behaviour")
+                .and_then(serde_json::Value::as_str)
+                .filter(|path| !path.is_empty() && *path != "None")
+                .map(str::to_owned),
+            effectiveness_affectors: row
+                .get("ModifierEffectivenessAffectors")
+                .and_then(serde_json::Value::as_array)
+                .into_iter()
+                .flatten()
+                .filter_map(|stat| stat.get("Value")?.as_str())
+                .filter(|stat| *stat != "None")
+                .map(str::to_owned)
+                .collect(),
+        });
+    }
+    Ok(restore)
+}
 
 /// A `Base<X>_+` stat name in a `GrantedStats`/`ArmourStats` key
 /// (`(Value="<name>")`).
@@ -1469,6 +1510,12 @@ pub fn bind_with_parameters(
                     lab.enable_inventory_restore(
                         inventory_restore_tables(tables, &inventories)
                             .context("build the inventory restore tables")?,
+                    )?;
+                }
+                if tables.has_table(MODIFIER_STATES_TABLE) {
+                    lab.enable_modifier_restore(
+                        modifier_restore_tables(tables)
+                            .context("build the modifier restore tables")?,
                     )?;
                 }
             }

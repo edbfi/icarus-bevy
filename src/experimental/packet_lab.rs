@@ -1087,6 +1087,19 @@ impl LabPeer {
         index: u32,
         payload: Payload,
     ) -> Result<ActorOpenSent> {
+        self.reliable_actor_update_datagrams(index, payload, &[])
+    }
+
+    /// [`Self::reliable_actor_bunch_datagrams`] after export-only parts
+    /// carrying `exports` (NetGUID export prefixes the payload's references
+    /// need), as an open sends them; `exports_packet_id` is the packet of the
+    /// last export part.
+    pub fn reliable_actor_update_datagrams(
+        &mut self,
+        index: u32,
+        payload: Payload,
+        exports: &[Payload],
+    ) -> Result<ActorOpenSent> {
         self.ensure_usable()?;
         ensure!(
             !self.closing_actors.contains(&index),
@@ -1125,7 +1138,7 @@ impl LabPeer {
         )?;
         let parts = split_outgoing_bunch(
             &template,
-            &[],
+            exports,
             max_single,
             Some(MAX_CONSTRUCTED_BUNCH_BYTES),
         )?;
@@ -1152,6 +1165,12 @@ impl LabPeer {
             self.record_resends(first_packet, &resends)?;
             for (datagram, packet_id, carried) in datagrams {
                 self.note_sent(packet_id);
+                if carried
+                    .iter()
+                    .any(|part| part.header.has_package_map_exports)
+                {
+                    sent.exports_packet_id = Some(packet_id);
+                }
                 let channel = self
                     .actors
                     .get_mut(&index)

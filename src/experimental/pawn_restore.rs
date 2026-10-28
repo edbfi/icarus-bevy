@@ -26,6 +26,7 @@ use super::actor_channel::{
 };
 use super::archive::ByteOrder;
 use super::inventory_restore::{InventoryRestore, SlotChange};
+use super::modifier_restore::RestoredModifier;
 use super::packet::Payload;
 use super::pawn_open::{
     INVENTORY_SLOTS_FIELD_INDEX, InventorySlot, PawnComponent, PawnOpenPlan,
@@ -34,10 +35,12 @@ use super::pawn_open::{
 use super::recorders::SavedPlayerState;
 use super::rep_layout::{
     ICARUS_ROW_HANDLE_NONE, PropertyStream, RepArray, RepCommand, RepLayoutCodec, RepLayoutLimits,
-    RepValue, encode_rep_properties, stomach_component_rep_layout,
+    RepValue, encode_rep_properties, modifier_state_component_rep_layout,
+    stomach_component_rep_layout,
 };
 use super::rep_rpc::{FastArrayDelta, FastArrayItem, FieldHeader, write_field_header};
 use super::restore_rules::{UNRECORDED_LEVEL, filter_restored_cosmetic_armour_overrides};
+use super::session_open::exports_of;
 use super::session_open::{
     ActorKey, ComponentBlock, ComponentExport, ConnectionExports, NetGuidCache, actor_codec, entry,
 };
@@ -81,6 +84,8 @@ pub struct RestoredPawn {
     /// The restored inventories that change (F-978); empty when the save's
     /// inventories were not restored.
     pub inventories: Vec<InventoryRestore>,
+    /// The restored modifiers, new runtime sub-objects (F-980).
+    pub modifiers: Vec<RestoredModifier>,
     /// The stomach's new contents; `None` when it was and stays empty.
     pub stomach: Option<Vec<RestoredStomachContent>>,
 }
@@ -96,6 +101,7 @@ impl std::fmt::Debug for RestoredPawn {
             )
             .field("stomach", &self.stomach.as_ref().map(Vec::len))
             .field("inventories", &self.inventories.len())
+            .field("modifiers", &self.modifiers.len())
             .finish_non_exhaustive()
     }
 }
@@ -284,6 +290,7 @@ pub fn restore_saved_pawn(
         pawn,
         character_state,
         inventories: Vec::new(),
+        modifiers: Vec::new(),
         stomach,
     }))
 }
@@ -432,8 +439,10 @@ fn rep_block(
 /// for the connection `exports` tracks: an actor bunch body without spawn
 /// holding the pawn's actor block, then its `ActorState` and, when the
 /// stomach changes, its stomach component (`stomach_component`, an index
-/// into the plan's components) blocks, each only when it carries values.
-/// The pawn's open must be acked. Restored stomach entries reject: the
+/// into the plan's components) blocks, each only when it carries values,
+/// then each restored inventory's slot delta and each restored modifier as a
+/// new class-named sub-object, with the classes the connection has not
+/// acked exported ahead of the body. The pawn's open must be acked. Restored stomach entries reject: the
 /// replicated entry's `ModifierID` comes from `AddSaveDataToStomach`, which
 /// is unread; clearing a stomach composes.
 pub fn compose_restored_pawn_update(
@@ -444,7 +453,7 @@ pub fn compose_restored_pawn_update(
     stomach_component: usize,
     restored: &RestoredPawn,
     order: ByteOrder,
-) -> Result<Payload> {
+) -> Result<RestoredPawnUpdate> {
     ensure!(
         plan.actor_state < plan.components.len() && stomach_component < plan.components.len(),
         "pawn component index out of range"
@@ -513,24 +522,63 @@ pub fn compose_restored_pawn_update(
             &stomach_component_rep_layout(),
         )?);
     }
+    // Classes the connection does not hold yet are exported ahead of the
+    // body, as an open exports them.
+    let mut exported = Vec::new();
     if !restored.inventories.is_empty() {
         let class = cache.export_static(exports, &plan.content.inventory_class)?;
-        if class.export.is_some() {
-            exports.begin_bunch();
-            bail!("the pawn's inventory class is not acked yet");
-        }
+        let guid = class.guid;
+        exported.push(class);
         for inventory in &restored.inventories {
             blocks.push(restored_inventory_block(
-                cache, plan, key, class.guid, inventory, order,
+                cache, plan, key, guid, inventory, order,
             )?);
         }
     }
+    for modifier in &restored.modifiers {
+        let class = cache.export_static(exports, &modifier.class)?;
+        let class_guid = class.guid;
+        exported.push(class);
+        let mut values = BTreeMap::from([
+            (2, RepValue::Bool(true)),
+            (3, RepValue::UInt16(modifier.row)),
+            (4, RepValue::Object(NetGuidRef::plain(actor))),
+            (5, RepValue::Int(modifier.uid)),
+            (6, RepValue::Float(modifier.lifetime.to_bits())),
+        ]);
+        if modifier.final_effectiveness != 0 {
+            values.insert(7, RepValue::Int(modifier.final_effectiveness));
+        }
+        if modifier.remaining_tenths != 0 {
+            values.insert(8, RepValue::UInt16(modifier.remaining_tenths));
+        }
+        blocks.push(rep_block(
+            BlockTarget::SubObject {
+                object: NetGuidRef::plain(cache.subobject_guid(key, modifier.subobject)),
+                class: SubObjectClass::Class(NetGuidRef::plain(class_guid)),
+            },
+            &values,
+            &modifier_state_component_rep_layout(),
+            &rep_codec,
+        )?);
+    }
     ensure!(!blocks.is_empty(), "a restored pawn update carries values");
-    encode_actor_bunch_body(
-        &ActorBunchBody {
-            spawn: None,
-            blocks,
-        },
-        &codec,
-    )
+    Ok(RestoredPawnUpdate {
+        exports: exports_of(&exported, &codec)?,
+        payload: encode_actor_bunch_body(
+            &ActorBunchBody {
+                spawn: None,
+                blocks,
+            },
+            &codec,
+        )?,
+    })
+}
+
+/// A restored pawn update: its body and the export-only prefix the body's
+/// class references need, if any.
+#[derive(Clone, Debug)]
+pub struct RestoredPawnUpdate {
+    pub exports: Option<Payload>,
+    pub payload: Payload,
 }
