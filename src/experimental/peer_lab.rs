@@ -106,7 +106,10 @@
 //!   read as content blocks and fields. F-951 / controller net fields: field
 //!   124 (bound 183) receives `Server_BeginPlayerInitialisation(ChrSlot)` once
 //!   per session. Missing PlayerState, slot -1 and repeats count and do nothing;
-//!   the original failure wire is unknown. Other fields/subobjects are skipped.
+//!   the original failure wire is unknown. The controller's BackendProxy then
+//!   requests user and character profiles with independent three-failure limits.
+//!   Successful profiles replicate PlayerState handles 27..78; only then does
+//!   the profile's ChrSlot trigger saved-UID restore. Other fields/subobjects are skipped.
 //!   Malformed actor payloads are dropped after consuming their reliable sequence.
 //!
 //! - Login, Join and SplitJoin after [`PeerLab::stop_admission`]: Failure
@@ -202,13 +205,18 @@ use super::pawn_open::{
     PawnContent, PawnOpenPlan, PawnOpenState, compose_pawn_icarus_uid_update, compose_pawn_open,
 };
 use super::ping::PingEstimator;
+use super::profile_exchange::{
+    self, InitialisationAnswer, ProfileExchange, ProfileKind, ProfileResponse,
+};
 use super::quest_open::{QuestOpenBasePlan, QuestOpenPlan, compose_quest_open};
 use super::release::ReleaseProfile;
 use super::rep_layout::{RepLayoutCodec, RepValue};
 use super::rep_rpc::{
-    BP_ICARUS_PLAYER_CONTROLLER_SURVIVAL_FIELD_INDEX_BOUND,
-    SERVER_BEGIN_PLAYER_INITIALISATION_FIELD_INDEX, parse_begin_player_initialisation,
-    read_field_header,
+    BACKEND_PROXY_FIELD_INDEX_BOUND, BESTIARY_MANAGER_FIELD_INDEX_BOUND,
+    BP_ICARUS_PLAYER_CONTROLLER_SURVIVAL_FIELD_INDEX_BOUND, PLAYER_DATA_FIELD_INDEX_BOUND,
+    RESPONSE_GET_CHARACTER_PROFILE, RESPONSE_GET_USER_PROFILE,
+    SERVER_BEGIN_PLAYER_INITIALISATION_FIELD_INDEX, SERVER_RECEIVE_BESTIARY_DATA,
+    SERVER_RECEIVE_LOADOUT, parse_begin_player_initialisation, read_field_header,
 };
 use super::server_fps::ServerFpsMeter;
 use super::session_open::{
@@ -537,9 +545,36 @@ pub struct PeerLabStats {
     pub initialisation_slots_recorded: u64,
     /// Slot -1, missing PlayerState or a repeated call; no failure wire is sent.
     pub initialisation_calls_ignored: u64,
+    pub profile_user_requests_sent: u64,
+    pub profile_character_requests_sent: u64,
+    /// Successful responses accepted while their request was outstanding.
+    pub profile_user_responses_received: u64,
+    pub profile_character_responses_received: u64,
+    /// Unsuccessful outstanding responses (separate retry budgets, limit 3).
+    pub profile_user_failures: u64,
+    pub profile_character_failures: u64,
+    /// Unsolicited, wrong-phase or repeated profile responses.
+    pub profile_responses_ignored: u64,
+    /// Sessions removed on retry exhaustion, vanished PlayerState or exchange error.
+    pub profile_players_failed: u64,
+    /// Composition/framing failures; fail closed rather than strand a request.
+    pub profile_exchange_errors: u64,
+    /// Separate reliable ActiveUserProfile and ActiveCharacter updates sent.
+    pub profile_updates_sent: u64,
+    pub loadout_requests_sent: u64,
+    pub bestiary_requests_sent: u64,
+    pub associated_prospects_sent: u64,
+    /// Every recognized answer, including ignored answers; payloads stay opaque.
+    pub loadout_responses_received: u64,
+    pub bestiary_responses_received: u64,
+    /// Answers before their requests, duplicates and answers after completion.
+    pub initialisation_answers_ignored: u64,
+    /// Both answers accepted with an open pawn and PlayerState.
+    pub players_initialised: u64,
+    pub player_character_id_updates_sent: u64,
     /// Returning pawns given their saved UID (F-950).
     pub returning_pawns_restored: u64,
-    /// Recorded slots with no free matching saved character.
+    /// Completed players with no free matching saved character.
     pub returning_pawns_unmatched: u64,
     /// Matches whose saved UID was unusable or whose update failed.
     pub returning_pawn_errors: u64,
@@ -669,6 +704,24 @@ pub struct SessionCounts {
     pub player_controller_opens_sent: u64,
     pub initialisation_slots_recorded: u64,
     pub initialisation_calls_ignored: u64,
+    pub profile_user_requests_sent: u64,
+    pub profile_character_requests_sent: u64,
+    pub profile_user_responses_received: u64,
+    pub profile_character_responses_received: u64,
+    pub profile_user_failures: u64,
+    pub profile_character_failures: u64,
+    pub profile_responses_ignored: u64,
+    pub profile_players_failed: u64,
+    pub profile_exchange_errors: u64,
+    pub profile_updates_sent: u64,
+    pub loadout_requests_sent: u64,
+    pub bestiary_requests_sent: u64,
+    pub associated_prospects_sent: u64,
+    pub loadout_responses_received: u64,
+    pub bestiary_responses_received: u64,
+    pub initialisation_answers_ignored: u64,
+    pub players_initialised: u64,
+    pub player_character_id_updates_sent: u64,
     pub returning_pawns_restored: u64,
     /// Pawn, GameState, PlayerState, world manager and saved quest opens sent
     /// after Join.
@@ -924,6 +977,10 @@ struct PeerEntry {
     player_state_channel: Option<u32>,
     /// F-951 / controller net fields: the first accepted ChrSlot this session.
     character_slot: Option<i32>,
+    backend_proxy: Option<u32>,
+    player_data: Option<u32>,
+    bestiary: Option<u32>,
+    profiles: ProfileExchange,
     /// Replicated actors this connection opened, by caller key.
     opened_actors: BTreeMap<u64, u32>,
     /// Closes that could not be framed yet (key -> reason), retried by
@@ -949,6 +1006,12 @@ struct RegisteredPlayer {
     name_units: Vec<u16>,
 }
 
+enum ControllerCall {
+    Begin(i32),
+    Profile(ProfileResponse),
+    Initialisation(InitialisationAnswer),
+}
+
 /// Stage a complete controller bunch before applying any calls: malformed
 /// trailing input must not partially mutate session state. Subobject payloads
 /// are never interpreted as calls on the controller itself.
@@ -956,7 +1019,8 @@ fn controller_initialisation_calls(
     payload: &Payload,
     engine_net_version: u32,
     order: super::archive::ByteOrder,
-) -> Result<(Vec<i32>, usize)> {
+    components: [Option<u32>; 3],
+) -> Result<(Vec<ControllerCall>, usize)> {
     let actor = actor_codec(engine_net_version, order);
     let body = read_actor_bunch_body(&mut payload.reader(), false, &actor)?;
     let codec = RepLayoutCodec {
@@ -964,32 +1028,71 @@ fn controller_initialisation_calls(
         checksums: false,
         limits: Default::default(),
     };
-    let mut slots = Vec::new();
+    let mut calls = Vec::new();
     let mut ignored = 0;
     for block in body.blocks {
-        if block.target != BlockTarget::Actor {
-            continue;
-        }
+        let (component, bound) = match &block.target {
+            BlockTarget::Actor => (None, BP_ICARUS_PLAYER_CONTROLLER_SURVIVAL_FIELD_INDEX_BOUND),
+            BlockTarget::SubObject { object, .. } => {
+                let Some(index) = components
+                    .iter()
+                    .position(|guid| *guid == Some(object.guid))
+                else {
+                    continue;
+                };
+                (
+                    Some(index),
+                    [
+                        BACKEND_PROXY_FIELD_INDEX_BOUND,
+                        PLAYER_DATA_FIELD_INDEX_BOUND,
+                        BESTIARY_MANAGER_FIELD_INDEX_BOUND,
+                    ][index],
+                )
+            }
+        };
         ensure!(
             !block.has_rep_layout,
             "client controller properties unsupported"
         );
         let mut reader = block.payload.reader();
         while !reader.at_end() {
-            // F-951 / controller net fields: the pinned class uses bound 183.
-            let field = read_field_header(
-                &mut reader,
-                BP_ICARUS_PLAYER_CONTROLLER_SURVIVAL_FIELD_INDEX_BOUND,
-                actor.limits.max_payload_bits,
-            )?;
-            if field.index == SERVER_BEGIN_PLAYER_INITIALISATION_FIELD_INDEX {
-                slots.push(parse_begin_player_initialisation(&field.payload, &codec)?);
+            let field = read_field_header(&mut reader, bound, actor.limits.max_payload_bits)?;
+            if component.is_none() && field.index == SERVER_BEGIN_PLAYER_INITIALISATION_FIELD_INDEX
+            {
+                calls.push(ControllerCall::Begin(parse_begin_player_initialisation(
+                    &field.payload,
+                    &codec,
+                )?));
+            } else if component == Some(0)
+                && matches!(
+                    field.index,
+                    RESPONSE_GET_USER_PROFILE | RESPONSE_GET_CHARACTER_PROFILE
+                )
+            {
+                let kind = if field.index == RESPONSE_GET_USER_PROFILE {
+                    ProfileKind::User
+                } else {
+                    ProfileKind::Character
+                };
+                calls.push(ControllerCall::Profile(profile_exchange::parse_response(
+                    &field.payload,
+                    kind,
+                    &codec,
+                )?));
+            } else if component == Some(1) && field.index == SERVER_RECEIVE_LOADOUT {
+                calls.push(ControllerCall::Initialisation(
+                    InitialisationAnswer::Loadout,
+                ));
+            } else if component == Some(2) && field.index == SERVER_RECEIVE_BESTIARY_DATA {
+                calls.push(ControllerCall::Initialisation(
+                    InitialisationAnswer::Bestiary,
+                ));
             } else {
                 ignored += 1;
             }
         }
     }
-    Ok((slots, ignored))
+    Ok((calls, ignored))
 }
 
 /// The GameState every joined connection is opened with (F-794).
@@ -1695,7 +1798,7 @@ impl PeerLab {
         };
         let (Some(fresh), Some(slot), Some(id), None) = (
             entry.pawn_uid,
-            entry.character_slot,
+            entry.profiles.character_slot,
             entry.login_unique_id.as_ref(),
             entry.restored_character,
         ) else {
@@ -2540,6 +2643,24 @@ impl PeerLab {
             player_controller_opens_sent: self.stats.player_controller_opens_sent,
             initialisation_slots_recorded: self.stats.initialisation_slots_recorded,
             initialisation_calls_ignored: self.stats.initialisation_calls_ignored,
+            profile_user_requests_sent: self.stats.profile_user_requests_sent,
+            profile_character_requests_sent: self.stats.profile_character_requests_sent,
+            profile_user_responses_received: self.stats.profile_user_responses_received,
+            profile_character_responses_received: self.stats.profile_character_responses_received,
+            profile_user_failures: self.stats.profile_user_failures,
+            profile_character_failures: self.stats.profile_character_failures,
+            profile_responses_ignored: self.stats.profile_responses_ignored,
+            profile_players_failed: self.stats.profile_players_failed,
+            profile_exchange_errors: self.stats.profile_exchange_errors,
+            profile_updates_sent: self.stats.profile_updates_sent,
+            loadout_requests_sent: self.stats.loadout_requests_sent,
+            bestiary_requests_sent: self.stats.bestiary_requests_sent,
+            associated_prospects_sent: self.stats.associated_prospects_sent,
+            loadout_responses_received: self.stats.loadout_responses_received,
+            bestiary_responses_received: self.stats.bestiary_responses_received,
+            initialisation_answers_ignored: self.stats.initialisation_answers_ignored,
+            players_initialised: self.stats.players_initialised,
+            player_character_id_updates_sent: self.stats.player_character_id_updates_sent,
             returning_pawns_restored: self.stats.returning_pawns_restored,
             pawn_opens_sent: self.stats.pawn_opens_sent,
             game_state_opens_sent: self.stats.game_state_opens_sent,
@@ -2704,6 +2825,10 @@ impl PeerLab {
                         player_controller_channel: None,
                         player_state_channel: None,
                         character_slot: None,
+                        backend_proxy: None,
+                        player_data: None,
+                        bestiary: None,
+                        profiles: ProfileExchange::default(),
                         opened_actors: BTreeMap::new(),
                         pending_closes: BTreeMap::new(),
                         actor_properties: BTreeMap::new(),
@@ -2724,7 +2849,7 @@ impl PeerLab {
             return;
         };
         let mut close = false;
-        let mut slot_recorded = false;
+        let mut staged_calls = Vec::new();
         let messages = match entry.peer.receive(&self.buffer[..length]) {
             Ok(received) => {
                 let summary = received.summary();
@@ -2834,10 +2959,11 @@ impl PeerLab {
                                 bump(&mut self.stats.actor_bunches_ignored);
                                 continue;
                             }
-                            let Ok((slots, ignored)) = controller_initialisation_calls(
+                            let Ok((calls, ignored)) = controller_initialisation_calls(
                                 &bunch.payload,
                                 plan.engine_net_version,
                                 entry.peer.connection_byte_order(),
+                                [entry.backend_proxy, entry.player_data, entry.bestiary],
                             ) else {
                                 bump(&mut self.stats.actor_bunches_malformed);
                                 continue;
@@ -2846,24 +2972,7 @@ impl PeerLab {
                                 .stats
                                 .controller_fields_ignored
                                 .saturating_add(ignored as u64);
-                            for slot in slots {
-                                // F-951 / controller net fields: the original fails
-                                // missing PlayerState (0x29) and ChrSlot -1 (0x28).
-                                // Its failure wire is unknown; keep the native session live.
-                                if slot == -1
-                                    || entry.character_slot.is_some()
-                                    || entry.player.is_none()
-                                    || entry.player_state_channel.is_none_or(|channel| {
-                                        !entry.peer.has_actor_channel(channel)
-                                    })
-                                {
-                                    bump(&mut self.stats.initialisation_calls_ignored);
-                                } else {
-                                    entry.character_slot = Some(slot);
-                                    slot_recorded = true;
-                                    bump(&mut self.stats.initialisation_slots_recorded);
-                                }
-                            }
+                            staged_calls.extend(calls);
                         }
                     }
                     PacketDisposition::Rejected => bump(&mut self.stats.data_rejected),
@@ -2879,13 +2988,324 @@ impl PeerLab {
                 return;
             }
         };
-        self.answer(address, &messages);
-        if slot_recorded {
-            self.restore_returning_pawn_uid(address);
+        for call in staged_calls {
+            self.controller_call(address, call);
         }
+        self.answer(address, &messages);
         // Decoded messages are dropped here; nothing of them is retained.
         if close && self.remove_peer(address).is_some() {
             bump(&mut self.stats.peers_closed_by_client);
+        }
+    }
+
+    fn fail_profile_exchange(&mut self, address: SocketAddrV4) {
+        if self.remove_peer(address).is_some() {
+            bump(&mut self.stats.profile_players_failed);
+            bump(&mut self.stats.peers_failed);
+        }
+    }
+
+    fn request_profile(&mut self, address: SocketAddrV4, kind: ProfileKind) {
+        let sent = (|| {
+            let plan = self
+                .player_controller_open
+                .as_ref()
+                .context("no controller plan")?;
+            let entry = self.peers.get_mut(&address).context("no profile peer")?;
+            let codec = RepLayoutCodec {
+                actor: actor_codec(plan.engine_net_version, entry.peer.connection_byte_order()),
+                checksums: false,
+                limits: Default::default(),
+            };
+            let payload = profile_exchange::request(
+                entry.backend_proxy.context("no BackendProxy")?,
+                kind,
+                entry.character_slot.context("no character slot")?,
+                &codec,
+            )?;
+            let datagram = entry.peer.reliable_actor_bunch(
+                entry
+                    .player_controller_channel
+                    .context("no controller channel")?,
+                payload,
+            )?;
+            entry.profiles.outstanding = Some(kind);
+            entry.ack_pending = false;
+            Ok::<_, anyhow::Error>(datagram)
+        })();
+        match sent {
+            Ok(datagram) => {
+                if self.send(&datagram, address) {
+                    bump(match kind {
+                        ProfileKind::User => &mut self.stats.profile_user_requests_sent,
+                        ProfileKind::Character => &mut self.stats.profile_character_requests_sent,
+                    });
+                }
+            }
+            Err(_) => {
+                bump(&mut self.stats.profile_exchange_errors);
+                self.fail_profile_exchange(address);
+            }
+        }
+    }
+
+    fn controller_call(&mut self, address: SocketAddrV4, call: ControllerCall) {
+        let Some(entry) = self.peers.get_mut(&address) else {
+            return;
+        };
+        match call {
+            ControllerCall::Begin(slot) => {
+                // Preserve the existing native policy for invalid/repeated Begin calls.
+                if slot == -1
+                    || entry.character_slot.is_some()
+                    || entry.player.is_none()
+                    || entry
+                        .player_state_channel
+                        .is_none_or(|channel| !entry.peer.has_actor_channel(channel))
+                {
+                    bump(&mut self.stats.initialisation_calls_ignored);
+                    return;
+                }
+                entry.character_slot = Some(slot);
+                bump(&mut self.stats.initialisation_slots_recorded);
+                self.request_profile(address, ProfileKind::User);
+            }
+            ControllerCall::Profile(response) => {
+                if entry.profiles.outstanding != Some(response.kind) {
+                    bump(&mut self.stats.profile_responses_ignored);
+                    return;
+                }
+                if entry
+                    .player_state_channel
+                    .is_none_or(|channel| !entry.peer.has_actor_channel(channel))
+                {
+                    // Original reason 0x27; its error-text wire is unknown.
+                    self.fail_profile_exchange(address);
+                    return;
+                }
+                entry.profiles.outstanding = None;
+                if !response.success {
+                    let (failures, counter) = match response.kind {
+                        ProfileKind::User => (
+                            &mut entry.profiles.user_failures,
+                            &mut self.stats.profile_user_failures,
+                        ),
+                        ProfileKind::Character => (
+                            &mut entry.profiles.character_failures,
+                            &mut self.stats.profile_character_failures,
+                        ),
+                    };
+                    *failures += 1;
+                    bump(counter);
+                    if *failures >= 3 {
+                        // Original reasons 0x30 (user) and 0x25 (character).
+                        self.fail_profile_exchange(address);
+                    } else {
+                        self.request_profile(address, response.kind);
+                    }
+                    return;
+                }
+                self.accept_profile(address, response.kind, response.values);
+            }
+            ControllerCall::Initialisation(answer) => {
+                let (received, answered) = match answer {
+                    InitialisationAnswer::Loadout => (
+                        &mut self.stats.loadout_responses_received,
+                        &mut entry.profiles.has_loadout,
+                    ),
+                    InitialisationAnswer::Bestiary => (
+                        &mut self.stats.bestiary_responses_received,
+                        &mut entry.profiles.has_bestiary,
+                    ),
+                };
+                bump(received);
+                if !entry.profiles.initialisation_requested || *answered || entry.profiles.completed
+                {
+                    bump(&mut self.stats.initialisation_answers_ignored);
+                    return;
+                }
+                *answered = true;
+                self.complete_player_initialisation(address);
+            }
+        }
+    }
+
+    fn accept_profile(&mut self, address: SocketAddrV4, kind: ProfileKind, values: Vec<RepValue>) {
+        let sent = (|| {
+            let plan = self
+                .player_state_open
+                .as_ref()
+                .context("no PlayerState plan")?;
+            let entry = self.peers.get_mut(&address).context("no profile peer")?;
+            let codec = RepLayoutCodec {
+                actor: actor_codec(plan.engine_net_version, entry.peer.connection_byte_order()),
+                checksums: false,
+                limits: Default::default(),
+            };
+            let (first, count) = match kind {
+                ProfileKind::User => (27, 6),
+                ProfileKind::Character => (33, 44),
+            };
+            ensure!(values.len() == count, "profile command count");
+            let payload =
+                profile_exchange::player_state_update(first, &values, &plan.layout, &codec)?;
+            let sent = entry.peer.reliable_actor_bunch_datagrams(
+                entry
+                    .player_state_channel
+                    .context("no PlayerState channel")?,
+                payload,
+            )?;
+            if kind == ProfileKind::Character {
+                entry.profiles.character_slot = Some(profile_exchange::character_slot(&values)?);
+            }
+            entry.ack_pending = false;
+            Ok::<_, anyhow::Error>(sent)
+        })();
+        match sent {
+            Ok(sent) => {
+                bump(match kind {
+                    ProfileKind::User => &mut self.stats.profile_user_responses_received,
+                    ProfileKind::Character => &mut self.stats.profile_character_responses_received,
+                });
+                // The reliable parts are queued for ACK/NAK repair, so a failed
+                // send only affects the counter, never the exchange's progress.
+                if self.send_all(&sent, address) {
+                    bump(&mut self.stats.profile_updates_sent);
+                }
+                match kind {
+                    ProfileKind::User => self.request_profile(address, ProfileKind::Character),
+                    ProfileKind::Character => self.request_initialisation(address),
+                }
+            }
+            Err(_) => {
+                bump(&mut self.stats.profile_exchange_errors);
+                self.fail_profile_exchange(address);
+            }
+        }
+    }
+
+    fn request_initialisation(&mut self, address: SocketAddrV4) {
+        let sent = (|| {
+            let plan = self
+                .player_controller_open
+                .as_ref()
+                .context("no controller plan")?;
+            let session = self.game_state_open.as_ref();
+            // Use the same complete current values as the GameState, filling
+            // unsent defaults. Template-only sessions may also carry a prospect.
+            let prospect = (51..=67)
+                .map(|handle| {
+                    session
+                        .and_then(|session| {
+                            session
+                                .active_prospect
+                                .as_ref()
+                                .unwrap_or(&session.state.values)
+                                .get(&handle)
+                        })
+                        .cloned()
+                        .or_else(|| class_default(handle))
+                        .context("missing prospect field")
+                })
+                .collect::<Result<Vec<_>>>()?;
+            let entry = self
+                .peers
+                .get_mut(&address)
+                .context("no initialisation peer")?;
+            let codec = RepLayoutCodec {
+                actor: actor_codec(plan.engine_net_version, entry.peer.connection_byte_order()),
+                checksums: false,
+                limits: Default::default(),
+            };
+            let payload = profile_exchange::initialisation_requests(
+                entry.player_data.context("no PlayerDataComponent")?,
+                entry.bestiary.context("no BestiaryManagerComponent")?,
+                entry.profiles.character_slot.context("no profile slot")?,
+                &prospect,
+                &codec,
+            )?;
+            let sent = entry.peer.reliable_actor_bunch_datagrams(
+                entry
+                    .player_controller_channel
+                    .context("no controller channel")?,
+                payload,
+            )?;
+            entry.profiles.initialisation_requested = true;
+            entry.ack_pending = false;
+            Ok::<_, anyhow::Error>(sent)
+        })();
+        match sent {
+            Ok(sent) => {
+                if self.send_all(&sent, address) {
+                    bump(&mut self.stats.loadout_requests_sent);
+                    bump(&mut self.stats.bestiary_requests_sent);
+                    bump(&mut self.stats.associated_prospects_sent);
+                }
+            }
+            Err(_) => {
+                bump(&mut self.stats.profile_exchange_errors);
+                self.fail_profile_exchange(address);
+            }
+        }
+    }
+
+    fn complete_player_initialisation(&mut self, address: SocketAddrV4) {
+        let Some(entry) = self.peers.get(&address) else {
+            return;
+        };
+        if entry.profiles.completed
+            || !entry.profiles.has_loadout
+            || !entry.profiles.has_bestiary
+            || self
+                .pawn_open
+                .as_ref()
+                .is_none_or(|(_, channel, _)| !entry.peer.has_actor_channel(*channel))
+        {
+            return;
+        }
+        let sent = (|| {
+            let plan = self
+                .player_state_open
+                .as_ref()
+                .context("no PlayerState plan")?;
+            let entry = self
+                .peers
+                .get_mut(&address)
+                .context("no initialisation peer")?;
+            let codec = RepLayoutCodec {
+                actor: actor_codec(plan.engine_net_version, entry.peer.connection_byte_order()),
+                checksums: false,
+                limits: Default::default(),
+            };
+            let user = login_user_id(entry.login_unique_id.as_ref().context("no login user ID")?);
+            let values = profile_exchange::player_character_id(
+                &user,
+                entry.profiles.character_slot.context("no profile slot")?,
+            )?;
+            let payload = profile_exchange::player_state_update(77, &values, &plan.layout, &codec)?;
+            let sent = entry.peer.reliable_actor_bunch_datagrams(
+                entry
+                    .player_state_channel
+                    .context("no PlayerState channel")?,
+                payload,
+            )?;
+            entry.profiles.completed = true;
+            entry.ack_pending = false;
+            Ok::<_, anyhow::Error>(sent)
+        })();
+        match sent {
+            Ok(sent) => {
+                bump(&mut self.stats.players_initialised);
+                // Queued for repair as above: only the counter depends on the send.
+                if self.send_all(&sent, address) {
+                    bump(&mut self.stats.player_character_id_updates_sent);
+                }
+                self.restore_returning_pawn_uid(address);
+            }
+            Err(_) => {
+                bump(&mut self.stats.profile_exchange_errors);
+                self.fail_profile_exchange(address);
+            }
         }
     }
 
@@ -3255,6 +3675,9 @@ impl PeerLab {
             }
         };
         entry.player_controller_channel = Some(plan.channel_index);
+        entry.backend_proxy = guids.components.first().copied();
+        entry.player_data = guids.components.get(1).copied();
+        entry.bestiary = guids.components.get(2).copied();
         commit_exports(&mut exports, &sent);
         entry.exports = exports;
         entry.ack_pending = false;
@@ -3375,6 +3798,7 @@ impl PeerLab {
         self.guid_cache = cache;
         if self.send_all(&sent, address) {
             bump(&mut self.stats.pawn_opens_sent);
+            self.complete_player_initialisation(address);
         }
     }
 
@@ -3635,7 +4059,7 @@ impl PeerLab {
         }
     }
 
-    /// Send every datagram of an open; true when all went out whole.
+    /// Send every datagram of an open or reliable update; true when all went out whole.
     fn send_all(&mut self, sent: &ActorOpenSent, address: SocketAddrV4) -> bool {
         let mut delivered = true;
         for datagram in &sent.datagrams {
@@ -4044,6 +4468,27 @@ mod tests {
         assert!(entry.peer.actor_channel_settled(channel));
         assert!(entry.peer.sequencer().notify().sent_records().is_empty());
         (socket, address, client)
+    }
+
+    #[test]
+    fn an_outstanding_profile_response_fails_a_peer_without_player_state() {
+        let mut lab = prospect_refresh_lab();
+        let (_socket, address, _client) = acked_game_state_peer(&mut lab);
+        lab.peers.get_mut(&address).unwrap().profiles.outstanding = Some(ProfileKind::User);
+        lab.controller_call(
+            address,
+            ControllerCall::Profile(ProfileResponse {
+                kind: ProfileKind::User,
+                success: true,
+                values: Vec::new(),
+            }),
+        );
+        assert!(!lab.has_peer(address));
+        assert_eq!(
+            (lab.stats.profile_players_failed, lab.stats.peers_failed),
+            (1, 1)
+        );
+        assert_eq!(lab.stats.profile_user_responses_received, 0);
     }
 
     fn receive_game_state_update(

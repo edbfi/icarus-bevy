@@ -376,6 +376,61 @@ pub const BP_ICARUS_PLAYER_CONTROLLER_SURVIVAL_FIELD_INDEX_BOUND: u32 = 183;
 /// Flags 0x280cc0: Net | NetReliable | Native | Event | NetServer.
 pub const SERVER_BEGIN_PLAYER_INITIALISATION_FIELD_INDEX: u32 = 124;
 
+/// Pinned plain `UBackendProxyComponent` class cache bound.
+pub const BACKEND_PROXY_FIELD_INDEX_BOUND: u32 = 149;
+pub const CLIENT_REQUEST_GET_USER_PROFILE: u32 = 25;
+pub const CLIENT_REQUEST_GET_CHARACTER_PROFILE: u32 = 23;
+pub const RESPONSE_GET_USER_PROFILE: u32 = 110;
+pub const RESPONSE_GET_CHARACTER_PROFILE: u32 = 108;
+
+/// Pinned controller subobjects (F-958).
+pub const PLAYER_DATA_FIELD_INDEX_BOUND: u32 = 26;
+pub const BESTIARY_MANAGER_FIELD_INDEX_BOUND: u32 = 7;
+pub const CLIENT_PREPARE_LOADOUT: u32 = 16;
+pub const SERVER_RECEIVE_LOADOUT: u32 = 24;
+pub const CLIENT_REQUEST_BESTIARY_DATA: u32 = 4;
+pub const SERVER_RECEIVE_BESTIARY_DATA: u32 = 6;
+pub const ADD_ASSOCIATED_PROSPECT: u32 = 2;
+
+/// `FLastProspectHostInfo`: enum byte (including `_MAX` = 3), then three strings.
+pub fn last_prospect_host_info_commands() -> Vec<RepCommand> {
+    vec![
+        RepCommand::Byte {
+            enum_bits: Some(enum_byte_bits(3)),
+        },
+        RepCommand::Str,
+        RepCommand::Str,
+        RepCommand::Str,
+    ]
+}
+
+pub fn client_prepare_loadout_parameters() -> Vec<RpcParameter> {
+    vec![
+        RpcParameter::Value(vec![RepCommand::Int]),
+        RpcParameter::Value(last_prospect_host_info_commands()),
+    ]
+}
+
+pub fn add_associated_prospect_parameters() -> Vec<RpcParameter> {
+    let mut commands = super::rep_layout::prospect_info_commands();
+    commands.extend(last_prospect_host_info_commands());
+    vec![
+        RpcParameter::Value(vec![RepCommand::Int]),
+        RpcParameter::Value(commands),
+    ]
+}
+
+/// One struct parameter: Success followed by the flattened profile commands.
+pub fn backend_profile_response_parameters(character: bool) -> Vec<RpcParameter> {
+    let mut commands = vec![RepCommand::Bool];
+    commands.extend(if character {
+        super::rep_layout::online_profile_character_rep_layout()
+    } else {
+        super::rep_layout::online_profile_user_rep_layout()
+    });
+    vec![RpcParameter::Value(commands)]
+}
+
 /// Decode exactly one `ChrSlot`; an absent value retains the initialized zero
 /// as the RPC parameter reader specifies. F-951 / controller net fields.
 pub fn parse_begin_player_initialisation(payload: &Payload, codec: &RepLayoutCodec) -> Result<i32> {

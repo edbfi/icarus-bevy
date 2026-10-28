@@ -2909,8 +2909,22 @@ pub fn icarus_player_state_rep_layout(
     rotation: RotationLevel,
 ) -> Vec<RepCommand> {
     let mut commands = player_state_rep_layout(location, velocity, rotation);
-    let str_int_pair = || vec![RepCommand::Str, RepCommand::Int];
+    commands.extend(online_profile_user_rep_layout());
+    commands.extend(online_profile_character_rep_layout());
     commands.extend([
+        RepCommand::Str,
+        RepCommand::Int,
+        RepCommand::Bool,
+        RepCommand::Object,
+    ]);
+    commands
+}
+
+/// Flattened `FOnlineProfileUser`: PlayerState handles 27..32 and the
+/// BackendProxy's `FResGetUserProfile` parameter share these six commands.
+pub fn online_profile_user_rep_layout() -> Vec<RepCommand> {
+    let str_int_pair = || vec![RepCommand::Str, RepCommand::Int];
+    vec![
         RepCommand::Str,
         RepCommand::DynamicArray {
             element: str_int_pair(),
@@ -2923,6 +2937,14 @@ pub fn icarus_player_state_rep_layout(
         },
         RepCommand::Int,
         RepCommand::Int,
+    ]
+}
+
+/// Flattened `FOnlineProfileCharacter`: PlayerState handles 33..76 and the
+/// BackendProxy's `FResGetCharacterProfile` parameter share these 44 commands.
+pub fn online_profile_character_rep_layout() -> Vec<RepCommand> {
+    let str_int_pair = || vec![RepCommand::Str, RepCommand::Int];
+    let mut commands = vec![
         RepCommand::Str,
         RepCommand::Int,
         RepCommand::Int,
@@ -2939,7 +2961,7 @@ pub fn icarus_player_state_rep_layout(
         RepCommand::DynamicArray {
             element: str_int_pair(),
         },
-    ]);
+    ];
     commands.extend(std::iter::repeat_n(RepCommand::Int, 10));
     commands.push(RepCommand::Bool);
     commands.extend(std::iter::repeat_n(RepCommand::Int, 5));
@@ -2957,10 +2979,6 @@ pub fn icarus_player_state_rep_layout(
             element: str_int_pair(),
         },
         RepCommand::Int64,
-        RepCommand::Str,
-        RepCommand::Int,
-        RepCommand::Bool,
-        RepCommand::Object,
     ]);
     commands
 }
