@@ -86,7 +86,8 @@ in, join and hold the connection from `probe_delay_seconds` after start
 client does (character slot, friends list, profile, loadout and bestiary answers;
 F-973, F-974), then keeps
 recording; the session allows `initialise` beside `join` and binds
-`initialise_player_id` (1 to 64 letters, digits, `_` or `-`) and
+`initialise_player_id` (1 to 64 letters, digits, `_` or `-`, starting with a
+letter or digit) and
 `initialise_chr_slot` (0 to 99). A saved character's id is private: it stays in
 the case.
 
