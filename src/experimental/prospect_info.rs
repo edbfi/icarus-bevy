@@ -859,6 +859,90 @@ fn saved_item(tree: &TypedTree) -> Result<SavedItem> {
     })
 }
 
+/// One owner inventory an actor recorder saved (`InventorySaveData`, the
+/// base recorder's `SavedInventories`): its `InventoryID`, a `D_InventoryID`
+/// row index the restore matches against the owner's inventories (F-969),
+/// and its saved items in saved order. `Debug` shows no values.
+#[derive(Clone, Default, PartialEq, Eq)]
+pub struct SavedActorInventory {
+    pub id: i32,
+    pub items: Vec<SavedItem>,
+}
+
+impl std::fmt::Debug for SavedActorInventory {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("SavedActorInventory")
+            .field("items", &self.items.len())
+            .finish_non_exhaustive()
+    }
+}
+
+/// One saved modifier (`ModifierStateSaveData`, the base recorder's
+/// `Modifiers`): its `D_ModifierStates` row name, remaining time, initial
+/// lifetime, duration buff and effectiveness. `Debug` shows no values.
+#[derive(Clone, Default, PartialEq)]
+pub struct SavedModifierState {
+    pub row_name: Vec<u16>,
+    pub time_remaining: f32,
+    pub initial_lifetime: f32,
+    pub duration_buff: f32,
+    pub effectiveness: i32,
+}
+
+impl std::fmt::Debug for SavedModifierState {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("SavedModifierState")
+    }
+}
+
+/// Type a recorder's inherited `SavedInventories` and `Modifiers`, in saved
+/// order; missing reads as empty.
+pub fn saved_actor_state(
+    tree: &TypedTree,
+) -> Result<(Vec<SavedActorInventory>, Vec<SavedModifierState>)> {
+    let fields = Fields {
+        tree,
+        what: "ActorStateRecorderComponent",
+    };
+    let inventories = fields
+        .structs("SavedInventories")?
+        .iter()
+        .map(|tree| {
+            let fields = Fields {
+                tree,
+                what: "InventorySaveData",
+            };
+            Ok(SavedActorInventory {
+                id: fields.int("InventoryID")?,
+                items: fields
+                    .structs("Slots")?
+                    .iter()
+                    .map(saved_item)
+                    .collect::<Result<_>>()?,
+            })
+        })
+        .collect::<Result<_>>()?;
+    let modifiers = fields
+        .structs("Modifiers")?
+        .iter()
+        .map(|tree| {
+            let fields = Fields {
+                tree,
+                what: "ModifierStateSaveData",
+            };
+            Ok(SavedModifierState {
+                row_name: fields.name("RowName")?,
+                time_remaining: fields.float("TimeRemaining")?,
+                initial_lifetime: fields.float("InitialModifierLifeTime")?,
+                duration_buff: fields.float("DurationBuffModifier")?,
+                effectiveness: fields.int("ModifierEffectiveness")?,
+            })
+        })
+        .collect::<Result<_>>()?;
+    Ok((inventories, modifiers))
+}
+
 /// Type a `C013` (`FLODRecorderComponent`) component's `Record.NumTiles`,
 /// the FLOD manager's tile count (F-914); missing reads as 0.
 pub fn saved_flod_tile_count(tree: &TypedTree) -> Result<i32> {

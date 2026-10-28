@@ -2718,6 +2718,147 @@ fn saved_player_characters_read_every_restored_field() {
     assert_eq!(characters[0].state, SavedPlayerState::default());
 }
 
+fn struct_array_tag(field: &str, struct_name: &str, elements: &[Vec<u8>]) -> Vec<u8> {
+    let shared = tag(
+        field,
+        "StructProperty",
+        0,
+        &[string(struct_name), vec![0; 17]].concat(),
+        &elements.concat(),
+    );
+    tag(
+        field,
+        "ArrayProperty",
+        0,
+        &[string("StructProperty"), vec![0]].concat(),
+        &[
+            i32::try_from(elements.len())
+                .unwrap()
+                .to_le_bytes()
+                .as_slice(),
+            shared.as_slice(),
+        ]
+        .concat(),
+    )
+}
+
+fn struct_element(fields: &[Vec<u8>]) -> Vec<u8> {
+    [fields.concat(), END.to_vec()].concat()
+}
+
+fn name_tag(field: &str, value: &str) -> Vec<u8> {
+    tag(field, "NameProperty", 0, &[0], &string(value))
+}
+
+fn float_tag(field: &str, value: f32) -> Vec<u8> {
+    tag(field, "FloatProperty", 0, &[0], &value.to_le_bytes())
+}
+
+#[test]
+fn saved_player_characters_read_inherited_inventories_and_modifiers() {
+    let slot = |location: i32, row: &str, stack: i32| {
+        struct_element(&[
+            int_tag("Location", location),
+            name_tag("ItemStaticData", row),
+            struct_array_tag(
+                "DynamicData",
+                "InventorySlotDynamicData",
+                &[struct_element(&[
+                    int_tag("Index", 7),
+                    int_tag("Value", stack),
+                ])],
+            ),
+        ])
+    };
+    let record = restored_player_state_record(&[
+        struct_array_tag(
+            "SavedInventories",
+            "InventorySaveData",
+            &[
+                struct_element(&[
+                    struct_array_tag(
+                        "Slots",
+                        "InventorySlotSaveData",
+                        &[slot(11, "private-item-a", 1), slot(3, "private-item-b", 9)],
+                    ),
+                    int_tag("InventoryID", 2),
+                ]),
+                struct_element(&[
+                    struct_array_tag("Slots", "InventorySlotSaveData", &[]),
+                    int_tag("InventoryID", 4),
+                ]),
+            ],
+        ),
+        struct_array_tag(
+            "Modifiers",
+            "ModifierStateSaveData",
+            &[struct_element(&[
+                name_tag("RowName", "private-modifier"),
+                float_tag("TimeRemaining", 12.5),
+                float_tag("InitialModifierLifeTime", 100.0),
+                float_tag("DurationBuffModifier", 0.0),
+                int_tag("ModifierEffectiveness", 100),
+            ])],
+        ),
+    ]);
+    let stream = player_character_save(&[record]);
+    let parsed = read_root(&stream, PROFILE).unwrap();
+    let characters = saved_player_characters(&parsed.tags, PROFILE, MAX_COMPONENT_BYTES).unwrap();
+    let character = &characters[0];
+    let inventories: Vec<_> = character
+        .inventories
+        .iter()
+        .map(|inventory| {
+            (
+                inventory.id,
+                inventory
+                    .items
+                    .iter()
+                    .map(|item| {
+                        (
+                            item.location,
+                            String::from_utf16(&item.row_name).unwrap(),
+                            item.dynamic.clone(),
+                        )
+                    })
+                    .collect::<Vec<_>>(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        inventories,
+        [
+            (
+                2,
+                vec![
+                    (11, "private-item-a".to_owned(), vec![(7, 1)]),
+                    (3, "private-item-b".to_owned(), vec![(7, 9)]),
+                ]
+            ),
+            (4, Vec::new()),
+        ]
+    );
+    let modifier = &character.modifiers[..];
+    assert_eq!(modifier.len(), 1);
+    assert_eq!(modifier[0].row_name, units("private-modifier"));
+    assert_eq!(
+        (
+            modifier[0].time_remaining,
+            modifier[0].initial_lifetime,
+            modifier[0].effectiveness
+        ),
+        (12.5, 100.0, 100)
+    );
+    let debug = format!("{characters:?}");
+    assert!(!debug.contains("private"), "{debug}");
+
+    // Absent collections read as empty.
+    let stream = player_character_save(&[restored_player_state_record(&[])]);
+    let parsed = read_root(&stream, PROFILE).unwrap();
+    let characters = saved_player_characters(&parsed.tags, PROFILE, MAX_COMPONENT_BYTES).unwrap();
+    assert!(characters[0].inventories.is_empty() && characters[0].modifiers.is_empty());
+}
+
 #[test]
 fn saved_player_characters_reject_malformed_restored_fields() {
     let truncated_names = tag(

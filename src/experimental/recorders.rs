@@ -12,9 +12,10 @@ use super::checksum_utf16;
 use super::component::{
     BaseComponent, MAX_BOUNDED_COMPONENT_BYTES, read_base_component_with_limit,
 };
+use super::property_tree::{BaseComponentTree, MAX_TREE_DEPTH, MAX_TREE_NODES, TreeLimits};
 use super::prospect_info::{
     AssociatedMember, CustomGameSetting, MISSION_DIFFICULTIES, PROSPECT_LOCATIONS, PROSPECT_STATES,
-    ProspectInfo,
+    ProspectInfo, SavedActorInventory, SavedModifierState, saved_actor_state,
 };
 use super::restore_rules::{
     LobbyPrivacy, OwnerResolvePolicy, PROSPECT_SAVE_STATE_CURRENT_VERSION,
@@ -24,11 +25,12 @@ use super::restore_rules::{
     resource_deposit_record_valid, rocket_record_valid, validate_rocket_spawn_record,
     voxel_record_valid,
 };
-use super::struct_array::read_tagged_struct_array_with_limit;
+use super::struct_array::{MAX_BOUNDED_STRUCT_ARRAY_BYTES, read_tagged_struct_array_with_limit};
 use super::tagged::{
     MAX_HEADER_STRING_UNITS, MAX_INPUT_BYTES, MAX_ROOT_TAGS, ParsedRecord, PropertyRecord, RootTag,
     TagKind, TagProfile, is_name, read_record, read_root,
 };
+use super::typed_value::TypedComponent;
 
 pub const MAX_RECORDERS: usize = 16_384;
 pub const MAX_RECORDER_FIELDS: usize = 65_536;
@@ -1517,6 +1519,11 @@ pub struct SavedPlayerCharacter {
     /// `-1` when the record carries none.
     pub icarus_uid: i32,
     pub state: SavedPlayerState,
+    /// The inherited actor-state inventories the base restore applies
+    /// (F-965, F-969), in saved order.
+    pub inventories: Vec<SavedActorInventory>,
+    /// The inherited actor-state modifiers, in saved order.
+    pub modifiers: Vec<SavedModifierState>,
 }
 
 impl std::fmt::Debug for SavedPlayerCharacter {
@@ -1527,6 +1534,8 @@ impl std::fmt::Debug for SavedPlayerCharacter {
             .field("chr_slot", &self.chr_slot)
             .field("icarus_uid", &self.icarus_uid)
             .field("state", &self.state)
+            .field("inventories", &self.inventories)
+            .field("modifiers", &self.modifiers.len())
             .finish()
     }
 }
@@ -1866,11 +1875,27 @@ pub fn saved_player_characters(
                 icarus_uid = i32::from_le_bytes(prop.tag.payload.try_into()?);
             }
         }
+        let tree = BaseComponentTree::parse(
+            recorder.binary_data,
+            profile,
+            component_byte_limit,
+            TreeLimits {
+                max_depth: MAX_TREE_DEPTH,
+                max_nodes: MAX_TREE_NODES,
+                struct_array_bytes: MAX_BOUNDED_STRUCT_ARRAY_BYTES,
+                container_struct_bytes: None,
+            },
+        )
+        .context("invalid saved player character tree")?;
+        let (typed, _) = TypedComponent::from_component(&tree)?;
+        let (inventories, modifiers) = saved_actor_state(&typed.tree)?;
         characters.push(SavedPlayerCharacter {
             player_id,
             chr_slot,
             icarus_uid,
             state,
+            inventories,
+            modifiers,
         });
     }
     Ok(characters)
