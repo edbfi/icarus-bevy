@@ -757,8 +757,8 @@ fn pinned_run_upgrades_a_mismatched_hello_and_admits_the_pinned_version() {
         ("pawn_opens_sent", 1),
         ("game_state_opens_sent", 1),
         ("player_state_opens_sent", 1),
-        // Without a loaded save only the three bound managers open.
-        ("manager_opens_sent", 3),
+        // Fresh worlds also open the tracker used by new-player completion.
+        ("manager_opens_sent", 4),
         ("open_errors", 0),
         ("io_errors", 0),
         ("closed_by_client", 1),
@@ -2969,6 +2969,16 @@ fn returning_characters_payload_with_state(
     uids: &[i32],
     state: &[scalar::Tag],
 ) -> Vec<u8> {
+    saved_player_records_payload(user, slot, uids, state, false)
+}
+
+fn saved_player_records_payload(
+    user: &str,
+    slot: i32,
+    uids: &[i32],
+    state: &[scalar::Tag],
+    controller: bool,
+) -> Vec<u8> {
     use scalar::{Tag, stream, units};
     let member = stream(&[
         Tag::text("UserID", "StrProperty", &units(user)),
@@ -2995,7 +3005,14 @@ fn returning_characters_payload_with_state(
         .iter()
         .flat_map(|uid| {
             let mut tags = vec![
-                Tag::integer("PlayerStateRecorderVersion", 1),
+                Tag::integer(
+                    if controller {
+                        "PlayerRecorderVersion"
+                    } else {
+                        "PlayerStateRecorderVersion"
+                    },
+                    1,
+                ),
                 Tag::structure(
                     "PlayerCharacterID",
                     "PlayerCharacterID",
@@ -3013,7 +3030,11 @@ fn returning_characters_payload_with_state(
                 Tag::text(
                     "ComponentClassName",
                     "StrProperty",
-                    &units("/Script/Icarus.PlayerStateRecorderComponent"),
+                    &units(if controller {
+                        "/Script/Icarus.PlayerRecorderComponent"
+                    } else {
+                        "/Script/Icarus.PlayerStateRecorderComponent"
+                    }),
                 ),
                 Tag::array(
                     "BinaryData",
@@ -3370,6 +3391,476 @@ type DecodedPawnBlock = (
     icarus_bevy::experimental::actor_channel::BlockTarget,
     std::collections::BTreeMap<u32, icarus_bevy::experimental::rep_layout::RepValue>,
 );
+
+/// Decode History from tracker opens or reliable updates. These small opens
+/// split only their exports from the complete body; Open is on that export
+/// part, and the following body is the final partial (as in sent_pawn_uid).
+fn tracker_histories(
+    profile: &ReleaseProfile,
+    channel: u32,
+    datagrams: &[Vec<u8>],
+    open: bool,
+) -> Vec<icarus_bevy::experimental::rep_layout::RepValue> {
+    use icarus_bevy::experimental::{
+        actor_channel::{ActorChannelCodec, BlockTarget, read_actor_bunch_body},
+        archive::ByteOrder,
+        manager_open::{ManagerSlot, PLAYER_HISTORY_HANDLE},
+        packet::read_packet,
+        peer_lab::PeerLabAdmission,
+        rep_layout::{RepLayoutCodec, read_rep_properties},
+    };
+    let plan = profile
+        .manager_open_plan(
+            ManagerSlot::PlayerHistory,
+            PeerLabAdmission::default().map_url,
+        )
+        .unwrap()
+        .unwrap();
+    let codec = RepLayoutCodec {
+        actor: ActorChannelCodec {
+            engine_net_version: profile.engine_network_version,
+            exports_enabled: false,
+            has_level: true,
+            order: ByteOrder::Little,
+            limits: Default::default(),
+        },
+        checksums: false,
+        limits: Default::default(),
+    };
+    let mut histories = Vec::new();
+    let mut opening = false;
+    for bytes in datagrams {
+        let packet = read_packet(
+            bytes,
+            &PacketConfig {
+                receiver: PacketReceiver::Client,
+                ..probe_config().packet
+            },
+        )
+        .unwrap();
+        for bunch in packet.bunches {
+            if bunch.header.channel_index != channel {
+                continue;
+            }
+            if bunch.header.has_package_map_exports {
+                opening |= bunch.header.open;
+                continue;
+            }
+            let is_open = opening || bunch.header.open;
+            opening = false;
+            if is_open != open {
+                continue;
+            }
+            assert!(bunch.header.reliable);
+            if bunch.header.partial {
+                assert!(is_open && bunch.header.partial_final && !bunch.header.partial_initial);
+            }
+            let mut reader = bunch.payload.reader();
+            let body = read_actor_bunch_body(&mut reader, open, &codec.actor).unwrap();
+            assert!(reader.at_end());
+            assert_eq!(body.spawn.is_some(), open);
+            assert_eq!(body.blocks[0].target, BlockTarget::Actor);
+            let mut reader = body.blocks[0].payload.reader();
+            let stream = read_rep_properties(&mut reader, &plan.layout, &codec).unwrap();
+            assert!(reader.at_end());
+            if !open {
+                assert_eq!(body.blocks.len(), 1);
+                assert_eq!(stream.entries.len(), 1, "only History changes");
+            }
+            histories.extend(
+                stream
+                    .entries
+                    .into_iter()
+                    .filter(|entry| entry.handle == PLAYER_HISTORY_HANDLE)
+                    .map(|entry| entry.value),
+            );
+        }
+    }
+    histories
+}
+
+#[test]
+fn new_players_append_history_for_every_open_tracker_and_later_opens() {
+    use icarus_bevy::experimental::{
+        manager_open::{ManagerSlot, PLAYER_HISTORY_HANDLE},
+        prospect_info::PlayerHistoryEntry,
+    };
+    let profile = ReleaseProfile::load(&release_toml()).unwrap();
+    let pinned = profile.pin.network_checksum;
+    let engine = profile.engine_network_version;
+    let config = NetworkConfig {
+        release_profile: Some(release_toml()),
+        ..enabled(0)
+    };
+    let mut bound = network::bind(&config).unwrap().unwrap();
+    let saved_entry = PlayerHistoryEntry {
+        user_id: "previous-player".encode_utf16().collect(),
+        chr_slot: 2,
+        cached_character_name: "previous-name".encode_utf16().collect(),
+    };
+    let plan = bound
+        .saved_managers
+        .iter()
+        .find(|(slot, _)| *slot == ManagerSlot::PlayerHistory)
+        .unwrap()
+        .1
+        .clone()
+        .with_player_history(std::slice::from_ref(&saved_entry))
+        .unwrap();
+    let channel = bound
+        .lab
+        .add_manager_open(ManagerSlot::PlayerHistory, plan.clone())
+        .unwrap();
+    let mut app = build_app(&ServerConfig::default(), &WorldSnapshot::default()).unwrap();
+    let address = network::install(&mut app, bound.lab).unwrap();
+    let ((mut first, mut second), _) = with_server(&mut app, move || {
+        let (first, _) = join_pinned_open(address, pinned, 32);
+        let (second, _) = join_pinned_open(address, pinned, 32);
+        (first, second)
+    });
+    assert_eq!(
+        counts(&app).player_history_appends,
+        0,
+        "Join alone does not add History"
+    );
+    let ((first_client, second_client, first_updates, second_updates), _) =
+        with_server(&mut app, move || {
+            let second_updates = exchange_profiles(&mut second, engine, 9, 3);
+            let first_updates = first
+                .collect(Duration::from_millis(250), 32)
+                .unwrap()
+                .replies
+                .into_iter()
+                .map(|reply| reply.bytes)
+                .collect::<Vec<_>>();
+            (first, second, first_updates, second_updates)
+        });
+    let expected = plan
+        .clone()
+        .with_player_history(&[
+            saved_entry,
+            PlayerHistoryEntry {
+                user_id: NET_ID_HEX.encode_utf16().collect(),
+                chr_slot: 3,
+                cached_character_name: "authored-character".encode_utf16().collect(),
+            },
+        ])
+        .unwrap()
+        .values[&PLAYER_HISTORY_HANDLE]
+        .clone();
+    for updates in [&first_updates, &second_updates] {
+        assert_eq!(
+            tracker_histories(&profile, channel, updates, false),
+            std::slice::from_ref(&expected)
+        );
+    }
+    let ((third, opens), _) = with_server(&mut app, move || join_pinned_open(address, pinned, 32));
+    assert_eq!(
+        tracker_histories(&profile, channel, &opens, true),
+        [expected]
+    );
+    let status = counts(&app);
+    assert_eq!(
+        (
+            status.player_history_appends,
+            status.player_history_duplicates,
+            status.player_history_errors
+        ),
+        (1, 0, 0)
+    );
+    let stats = app.world().resource::<PeerLab>().stats();
+    assert_eq!(status.player_history_appends, stats.player_history_appends);
+    for text in [
+        serde_json::to_string(&status).unwrap(),
+        format!("{:?}", app.world().resource::<PeerLab>()),
+    ] {
+        for private in [
+            NET_ID_HEX,
+            NAME_SENTINEL,
+            "authored-character",
+            "authored-profile-user",
+        ] {
+            assert!(!text.contains(private));
+        }
+    }
+    with_server(&mut app, move || {
+        first_client.close().unwrap();
+        second_client.close().unwrap();
+        third.close().unwrap();
+    });
+}
+
+#[test]
+fn only_saved_controllers_choose_returning_history_and_duplicates_keep_their_name() {
+    use icarus_bevy::{
+        experimental::{
+            manager_open::{ManagerSlot, PLAYER_HISTORY_HANDLE},
+            prospect_info::PlayerHistoryEntry,
+        },
+        prospect,
+    };
+    #[derive(Clone, Copy, Debug)]
+    enum Case {
+        Controller,
+        OtherSlot,
+        CharacterOnly,
+        Duplicate,
+    }
+    for case in [
+        Case::Controller,
+        Case::OtherSlot,
+        Case::CharacterOnly,
+        Case::Duplicate,
+    ] {
+        let profile = ReleaseProfile::load(&release_toml()).unwrap();
+        let pinned = profile.pin.network_checksum;
+        let engine = profile.engine_network_version;
+        let payload = saved_player_records_payload(
+            &NET_ID_HEX.to_ascii_lowercase(),
+            3,
+            &[70_001],
+            &[],
+            !matches!(case, Case::CharacterOnly),
+        );
+        let mut bound = network::bind(&NetworkConfig {
+            release_profile: Some(release_toml()),
+            ..enabled(0)
+        })
+        .unwrap()
+        .unwrap();
+        bound
+            .lab
+            .enable_saved_player_controllers(
+                prospect::saved_player_controllers_from_payload(&payload).unwrap(),
+            )
+            .unwrap();
+        bound
+            .lab
+            .seed_actor_uids(prospect::saved_actor_uids_from_payload(&payload).unwrap())
+            .unwrap();
+        bound
+            .lab
+            .enable_returning_characters(
+                prospect::saved_player_characters_from_payload(&payload).unwrap(),
+            )
+            .unwrap();
+        if matches!(case, Case::Duplicate) {
+            bound
+                .lab
+                .enable_saved_player_controllers(Vec::new())
+                .unwrap();
+        }
+        let plan = bound
+            .saved_managers
+            .iter()
+            .find(|(slot, _)| *slot == ManagerSlot::PlayerHistory)
+            .unwrap()
+            .1
+            .clone();
+        let plan = if matches!(case, Case::Duplicate) {
+            plan.with_player_history(&[PlayerHistoryEntry {
+                user_id: NET_ID_HEX.to_ascii_lowercase().encode_utf16().collect(),
+                chr_slot: 3,
+                cached_character_name: "old-cached-name".encode_utf16().collect(),
+            }])
+            .unwrap()
+        } else {
+            plan
+        };
+        let original = plan.values.get(&PLAYER_HISTORY_HANDLE).cloned();
+        let channel = bound
+            .lab
+            .add_manager_open(ManagerSlot::PlayerHistory, plan)
+            .unwrap();
+        let mut app = build_app(&ServerConfig::default(), &WorldSnapshot::default()).unwrap();
+        let address = network::install(&mut app, bound.lab).unwrap();
+        let ((client, replies), _) = with_server(&mut app, move || {
+            let (mut client, _) = join_pinned_open(address, pinned, 32);
+            let replies = exchange_profiles(
+                &mut client,
+                engine,
+                1,
+                if matches!(case, Case::OtherSlot) {
+                    4
+                } else {
+                    3
+                },
+            );
+            (client, replies)
+        });
+        let append = matches!(case, Case::OtherSlot | Case::CharacterOnly);
+        assert_eq!(
+            tracker_histories(&profile, channel, &replies, false).len(),
+            usize::from(append),
+            "{case:?}"
+        );
+        let stats = app.world().resource::<PeerLab>().stats();
+        assert_eq!(
+            (
+                stats.player_history_appends,
+                stats.player_history_duplicates,
+                stats.player_history_errors
+            ),
+            (
+                u64::from(append),
+                u64::from(matches!(case, Case::Duplicate)),
+                0
+            ),
+            "{case:?}"
+        );
+        let status = counts(&app);
+        assert_eq!(
+            (
+                status.player_history_appends,
+                status.player_history_duplicates,
+                status.player_history_errors
+            ),
+            (
+                stats.player_history_appends,
+                stats.player_history_duplicates,
+                stats.player_history_errors
+            )
+        );
+        assert_eq!(status.joined, 1);
+        if matches!(case, Case::CharacterOnly) {
+            assert_eq!(
+                stats.returning_pawns_restored, 1,
+                "C026 does not choose the C025 path"
+            );
+        }
+        let ((later, opens), _) =
+            with_server(&mut app, move || join_pinned_open(address, pinned, 32));
+        if matches!(case, Case::Duplicate) {
+            assert_eq!(
+                tracker_histories(&profile, channel, &opens, true),
+                [original.unwrap()]
+            );
+        }
+        if matches!(case, Case::Controller) {
+            assert!(tracker_histories(&profile, channel, &opens, true).is_empty());
+        }
+        with_server(&mut app, move || {
+            client.close().unwrap();
+            later.close().unwrap();
+        });
+    }
+}
+
+#[test]
+fn history_bounds_count_errors_and_keep_the_completed_session() {
+    use icarus_bevy::experimental::{
+        manager_open::ManagerSlot, prospect_info::PlayerHistoryEntry, rep_layout::RepLayoutLimits,
+    };
+    let profile = ReleaseProfile::load(&release_toml()).unwrap();
+    let pinned = profile.pin.network_checksum;
+    let engine = profile.engine_network_version;
+    let mut bound = network::bind(&NetworkConfig {
+        release_profile: Some(release_toml()),
+        ..enabled(0)
+    })
+    .unwrap()
+    .unwrap();
+    let entries: Vec<_> = (0..RepLayoutLimits::default().max_array_elements)
+        .map(|index| PlayerHistoryEntry {
+            user_id: format!("saved-{index}").encode_utf16().collect(),
+            chr_slot: 0,
+            cached_character_name: Vec::new(),
+        })
+        .collect();
+    let plan = bound
+        .saved_managers
+        .iter()
+        .find(|(slot, _)| *slot == ManagerSlot::PlayerHistory)
+        .unwrap()
+        .1
+        .clone()
+        .with_player_history(&entries)
+        .unwrap();
+    let channel = bound
+        .lab
+        .add_manager_open(ManagerSlot::PlayerHistory, plan)
+        .unwrap();
+    let mut app = build_app(&ServerConfig::default(), &WorldSnapshot::default()).unwrap();
+    let address = network::install(&mut app, bound.lab).unwrap();
+    let ((client, replies), _) = with_server(&mut app, move || {
+        let (mut client, _) = join_pinned_open(address, pinned, 32);
+        let replies = exchange_profiles(&mut client, engine, 3, 3);
+        (client, replies)
+    });
+    assert!(tracker_histories(&profile, channel, &replies, false).is_empty());
+    let stats = app.world().resource::<PeerLab>().stats();
+    assert_eq!(
+        (
+            stats.player_history_appends,
+            stats.player_history_duplicates,
+            stats.player_history_errors
+        ),
+        (0, 0, 1)
+    );
+    assert_eq!(stats.players_initialised, 1);
+    let status = counts(&app);
+    assert_eq!(status.player_history_errors, stats.player_history_errors);
+    assert_eq!(status.joined, 1);
+    with_server(&mut app, move || client.close().unwrap());
+}
+
+#[test]
+fn production_run_installs_history_and_loads_c025_or_uses_the_new_player_path() {
+    use icarus_bevy::{
+        persistence::SnapshotStore,
+        preservation::{PreserveLimits, PreservedSection},
+    };
+    for (saved, returning) in [(false, false), (true, true), (true, false)] {
+        let profile = ReleaseProfile::load(&release_toml()).unwrap();
+        let directory = tempfile::tempdir().unwrap();
+        let config = pinned_server_config(directory.path(), &release_toml());
+        let state = directory.path().join("state");
+        if saved {
+            let payload = if returning {
+                saved_player_records_payload(
+                    &NET_ID_HEX.to_ascii_lowercase(),
+                    3,
+                    &[70_001],
+                    &[],
+                    true,
+                )
+            } else {
+                // UID scanning can load this legacy input, but strict staging
+                // refuses it. C025 absence must still permit a new player.
+                uid_save_payload(&[])
+            };
+            let preserved =
+                PreservedSection::from_inner_payload(&payload, PreserveLimits::default()).unwrap();
+            let mut store = SnapshotStore::open(&state).unwrap();
+            store
+                .save(&WorldSnapshot {
+                    schema_version: icarus_bevy::simulation::SNAPSHOT_SCHEMA_REFERENCED,
+                    preserved_prospect: Some(preserved.into()),
+                    ..WorldSnapshot::default()
+                })
+                .unwrap();
+        }
+        let mut server = spawn_run(&config, &state);
+        let (address, _) = listening_address(&mut server);
+        let (mut client, _) = join_pinned_open(address, profile.pin.network_checksum, 32);
+        let replies = exchange_profiles(&mut client, profile.engine_network_version, 9, 3);
+        // Three bound managers occupy 6..8; the empty tracker follows at 9.
+        assert_eq!(
+            tracker_histories(&profile, 9, &replies, false).len(),
+            usize::from(!returning)
+        );
+        client.close().unwrap();
+        sigterm(&server);
+        assert!(server.wait_exit().success());
+        let stopped = server.event("stopped");
+        assert_eq!(
+            stopped["sessions"]["player_history_appends"],
+            u64::from(!returning)
+        );
+        assert_eq!(stopped["sessions"]["player_history_errors"], 0);
+        assert_eq!(stopped["sessions"]["player_history_duplicates"], 0);
+    }
+}
 
 /// Decode all non-open pawn bunches, including the UID update, in wire order.
 fn pawn_property_updates(

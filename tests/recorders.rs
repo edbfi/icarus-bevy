@@ -2443,6 +2443,16 @@ fn saved_player_characters_keep_only_validated_c026_records_in_order() {
         ]
     );
     assert!(!format!("{characters:?}").contains("user-"));
+    let controllers = icarus_bevy::experimental::recorders::saved_player_controllers(
+        &parsed.tags,
+        PROFILE,
+        MAX_COMPONENT_BYTES,
+    )
+    .unwrap();
+    assert_eq!(controllers.len(), 1);
+    assert_eq!(controllers[0].player_id, units("user-alpha"));
+    assert_eq!(controllers[0].chr_slot, 1);
+    assert!(!format!("{controllers:?}").contains("user-"));
 
     // The original's Stricmp: ASCII case folds, the slot must be equal, and
     // the first unresolved match wins; restored ones are skipped.
@@ -2453,6 +2463,70 @@ fn saved_player_characters_keep_only_validated_c026_records_in_order() {
     let found = find_saved_player_character(&characters, &units("user-alpha"), 1, &[1]);
     assert_eq!(found.map(|(i, c)| (i, c.icarus_uid)), Some((2, -1)));
     assert!(find_saved_player_character(&characters, &units("user-betä"), 0, &[]).is_none());
+}
+
+#[test]
+fn saved_player_controllers_use_strict_staging_and_retention() {
+    use icarus_bevy::experimental::recorders::saved_player_controllers;
+    let controller = |version, user, slot| {
+        recorder_element(
+            "/Script/Icarus.PlayerRecorderComponent",
+            &[
+                tag(
+                    "PlayerRecorderVersion",
+                    "IntProperty",
+                    0,
+                    &[0],
+                    &i32::to_le_bytes(version),
+                ),
+                player_char_id_struct("PlayerCharacterID", user, slot),
+            ]
+            .concat(),
+        )
+    };
+    let stream = player_character_save(&[
+        controller(1, "user-beta", 0),
+        controller(0, "user-beta", 0),
+        controller(1, "not-a-member", 0),
+        controller(2, "USER-ALPHA", 1),
+        player_state_record(Some(1), "user-alpha", 1, Some(70_001)),
+    ]);
+    let parsed = read_root(&stream, PROFILE).unwrap();
+    let saved = saved_player_controllers(&parsed.tags, PROFILE, MAX_COMPONENT_BYTES).unwrap();
+    assert_eq!(saved.len(), 2);
+    assert_eq!(
+        (&saved[0].player_id, saved[0].chr_slot),
+        (&units("user-beta"), 0)
+    );
+    assert_eq!(
+        (&saved[1].player_id, saved[1].chr_slot),
+        (&units("USER-ALPHA"), 1)
+    );
+
+    let malformed = recorder_element(
+        "/Script/Icarus.PlayerRecorderComponent",
+        &[
+            tag(
+                "PlayerRecorderVersion",
+                "StrProperty",
+                0,
+                &[0],
+                &string("1"),
+            ),
+            player_char_id_struct("PlayerCharacterID", "user-alpha", 1),
+        ]
+        .concat(),
+    );
+    let stream = player_character_save(&[controller(1, "user-beta", 0), malformed]);
+    let parsed = read_root(&stream, PROFILE).unwrap();
+    assert!(saved_player_controllers(&parsed.tags, PROFILE, MAX_COMPONENT_BYTES).is_err());
+    let stream = player_character_save(&[]);
+    let parsed = read_root(&stream, PROFILE).unwrap();
+    assert!(
+        saved_player_controllers(&parsed.tags, PROFILE, MAX_COMPONENT_BYTES)
+            .unwrap()
+            .is_empty()
+    );
 }
 
 #[test]

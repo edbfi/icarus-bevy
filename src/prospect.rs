@@ -373,6 +373,20 @@ pub fn saved_player_characters_from_payload(
     )
 }
 
+/// C025 identities for the completion-time returning/new-player decision
+/// (F-947). Strict staging errors reject the complete list.
+pub fn saved_player_controllers_from_payload(
+    payload: &[u8],
+) -> Result<Vec<crate::experimental::recorders::SavedPlayerController>> {
+    let profile = TagProfile::MemoryArchive522;
+    let roots = read_root(payload, profile)?;
+    crate::experimental::recorders::saved_player_controllers(
+        &roots.tags,
+        profile,
+        MAX_BOUNDED_COMPONENT_BYTES,
+    )
+}
+
 /// [`read_saved_prospect`] on an inner payload, such as a preserved
 /// world's (`PreservedProspect::to_inner_payload`).
 pub fn saved_prospect_from_payload(payload: &[u8]) -> Result<SavedProspect> {

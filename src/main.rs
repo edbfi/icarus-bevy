@@ -1113,12 +1113,35 @@ fn run(options: ConfigOptions, max_ticks: Option<u64>, compressed: bool) -> Resu
                 json!({"event": "returning_characters_unavailable", "reason": "save did not stage"})
             ),
         }
+        match icarus_bevy::prospect::saved_player_controllers_from_payload(&payload) {
+            Ok(controllers) => {
+                let count = controllers.len();
+                bound.lab.enable_saved_player_controllers(controllers)?;
+                eprintln!(
+                    "{}",
+                    json!({"event": "saved_player_controllers_loaded", "controllers": count})
+                );
+            }
+            Err(_) => eprintln!(
+                "{}",
+                json!({"event": "saved_player_controllers_unavailable", "reason": "save did not stage"})
+            ),
+        }
     }
     if let Some(bound) = &mut bound
         && bound.lab.has_game_state_open()
     {
         network::apply_server_settings(&mut bound.lab, config.autosave_seconds)?;
     }
+    let default_history = bound.as_ref().and_then(|bound| {
+        bound
+            .saved_managers
+            .iter()
+            .find(|(slot, _)| {
+                *slot == icarus_bevy::experimental::manager_open::ManagerSlot::PlayerHistory
+            })
+            .map(|(_, plan)| plan.clone())
+    });
     if let (Some(bound), Some(section)) = (&mut bound, &snapshot.preserved_prospect)
         && bound.lab.has_game_state_open()
     {
@@ -1149,6 +1172,16 @@ fn run(options: ConfigOptions, max_ticks: Option<u64>, compressed: bool) -> Resu
                 json!({"event": "active_prospect_unavailable", "warning": "the preserved prospect supplies no replicated active prospect", "error": format!("{error:#}")})
             ),
         }
+    }
+    // New players need a tracker even in a fresh world or when strict save
+    // staging supplied no C024 history. A successfully loaded history wins.
+    if let (Some(bound), Some(plan)) = (&mut bound, default_history)
+        && !bound.lab.has_player_history_open()
+    {
+        bound.lab.add_manager_open(
+            icarus_bevy::experimental::manager_open::ManagerSlot::PlayerHistory,
+            plan,
+        )?;
     }
     let network_address = bound
         .map(|bound| network::install_configured(&mut app, bound, &config.network))

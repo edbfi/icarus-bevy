@@ -1751,6 +1751,67 @@ fn read_saved_player_state_field(
     Ok(true)
 }
 
+/// A retained `C025` controller identity used to choose the returning-player
+/// path (F-947). Identifiers never appear in Debug output.
+#[derive(Clone, PartialEq, Eq)]
+pub struct SavedPlayerController {
+    pub player_id: Vec<u16>,
+    pub chr_slot: i32,
+}
+
+impl std::fmt::Debug for SavedPlayerController {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("SavedPlayerController")
+    }
+}
+
+/// Every C025 controller retained by strict staging and Validate, in saved
+/// order. Refused saves return no partial identities.
+pub fn saved_player_controllers(
+    roots: &[RootTag<'_>],
+    profile: TagProfile,
+    component_byte_limit: usize,
+) -> Result<Vec<SavedPlayerController>> {
+    let (staged, decisions) =
+        stage_prospect_save_state_with_decisions(roots, profile, component_byte_limit, None)?;
+    if staged.parsed_recorder_count == 0 {
+        return Ok(Vec::new());
+    }
+    let recorders = read_recorders(roots, profile)?;
+    ensure!(
+        recorders.records().len() == decisions.len(),
+        "staged decisions do not cover every recorder"
+    );
+    let mut controllers = Vec::new();
+    for (recorder, decision) in recorders.records().iter().zip(&decisions) {
+        if !decision.retained {
+            continue;
+        }
+        let class =
+            decode_exact_string_units(recorder.class_value, "invalid saved recorder class string")?;
+        if !units_eq_ascii(&class, "/Script/Icarus.PlayerRecorderComponent") {
+            continue;
+        }
+        let component =
+            read_base_component_with_limit(recorder.binary_data, profile, component_byte_limit)?;
+        let mut identity = SavedPlayerController {
+            player_id: Vec::new(),
+            chr_slot: -1,
+        };
+        for field in component.fields() {
+            let ParsedRecord::Property(prop) = read_record(field.record, profile)? else {
+                bail!("unexpected saved controller terminator");
+            };
+            if is_name(&prop.name, "PlayerCharacterID") {
+                (identity.player_id, identity.chr_slot) =
+                    parse_player_character_id_struct(prop.tag.payload, profile)?;
+            }
+        }
+        controllers.push(identity);
+    }
+    Ok(controllers)
+}
+
 /// Every retained `C026` player character, in recorder-array order, after the
 /// same strict staging and `Validate` (`v >= 1`, member list) as
 /// [`stage_prospect_save_state`]. Staging errors, and a restored field of
