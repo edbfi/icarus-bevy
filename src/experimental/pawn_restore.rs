@@ -321,8 +321,8 @@ fn slot_values(slot: &InventorySlot) -> Result<BTreeMap<u32, RepValue>> {
 /// A restored inventory's block (F-978): its runtime subobject with its
 /// class, and the slots fast array's delta from the key the client holds;
 /// a changed slot sends the properties that differ from its open, an added
-/// slot every property. `CurrentWeight` is not sent: the pawn inventory
-/// weight is not modelled.
+/// slot every property. A restored `CurrentWeight` that differs from the
+/// open's goes as a property ahead of the slots (F-982).
 fn restored_inventory_block(
     cache: &mut NetGuidCache,
     plan: &PawnOpenPlan,
