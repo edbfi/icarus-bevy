@@ -82,7 +82,9 @@ PlayerState; a request failing three times closes the session (the original
 kicks). It then asks for the client's loadout and bestiary; once both have
 answered and the pawn is open, `run` replicates `PlayerCharacterID`, and a saved
 player character matching the login ID and the profile's slot gives the pawn its
-saved UID (F-962). That UID stays claimed after the session ends. A client that
+saved UID (F-962); `run` then sends the record's saved pawn state, with levels
+and health clamped as the original does (F-964). That UID stays claimed after
+the session ends. A client that
 never answers never completes; the original's timeout only logs (F-959). Saves
 the strict staging refuses only disable the saved-UID restore.
 
