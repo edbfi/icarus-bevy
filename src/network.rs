@@ -420,6 +420,16 @@ pub fn player_inventories(tables: &mut DataTables) -> Result<Vec<PawnInventory>>
 /// The `D_InventoryID` table: an inventory's `InventoryID` is its row index.
 pub const INVENTORY_ID_TABLE: &str = "D_InventoryID";
 
+/// The tables [`inventory_restore_tables`] reads besides the pawn content's.
+pub const INVENTORY_RESTORE_TABLES: [&str; 6] = [
+    ITEMS_STATIC_TABLE,
+    TAG_QUERIES_TABLE,
+    INVENTORY_ID_TABLE,
+    "D_Decayable",
+    "D_Equippable",
+    "D_Armour",
+];
+
 /// A `Base<X>_+` stat name in a `GrantedStats`/`ArmourStats` key
 /// (`(Value="<name>")`).
 fn granted_stat_name(key: &str) -> Option<&str> {
@@ -1449,12 +1459,17 @@ pub fn bind_with_parameters(
                 && tables.has_table(ITEMS_STATIC_TABLE)
             {
                 lab.enable_pawn_restore_item_rows(tables.rows(ITEMS_STATIC_TABLE)?)?;
-                // A data.pak without the item trait and query tables only
-                // leaves saved inventories unrestored.
+                // A data.pak without the item trait and query tables leaves
+                // saved inventories unrestored; one with them must build.
                 if !inventories.is_empty()
-                    && let Ok(restore) = inventory_restore_tables(tables, &inventories)
+                    && INVENTORY_RESTORE_TABLES
+                        .iter()
+                        .all(|table| tables.has_table(table))
                 {
-                    lab.enable_inventory_restore(restore)?;
+                    lab.enable_inventory_restore(
+                        inventory_restore_tables(tables, &inventories)
+                            .context("build the inventory restore tables")?,
+                    )?;
                 }
             }
             // Authored deterministic PRNG seed; actor allocation is unrelated
