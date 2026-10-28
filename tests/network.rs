@@ -4936,7 +4936,9 @@ fn returning_pawns_restore_their_saved_inventories_in_the_update() {
 
 #[test]
 fn returning_pawns_restore_their_saved_modifiers_in_the_update() {
-    use icarus_bevy::experimental::prospect_info::SavedModifierState;
+    use icarus_bevy::experimental::{
+        modifier_restore::KNOWN_BEHAVIOURS, prospect_info::SavedModifierState,
+    };
     use icarus_bevy::prospect;
     use scalar::units;
     let json = |value: serde_json::Value| serde_json::to_vec(&value).unwrap();
@@ -4951,6 +4953,7 @@ fn returning_pawns_restore_their_saved_modifiers_in_the_update() {
                 {"Name": "Plain"},
                 {"Name": "Unsaved", "SaveToDatabase": false},
                 {"Name": "Other", "Behaviour": "/Game/Other.Other_C"},
+                {"Name": "Drink", "Behaviour": KNOWN_BEHAVIOURS[2]},
             ]})),
         ),
         (
@@ -4983,8 +4986,14 @@ fn returning_pawns_restore_their_saved_modifiers_in_the_update() {
         duration_buff: 1.0,
         effectiveness: -1,
     };
-    // One restores, one is not saved and one names an unobserved class.
-    characters[0].modifiers = vec![modifier("Plain"), modifier("Unsaved"), modifier("Other")];
+    // A native and a Blueprint one restore; one is not saved and one names
+    // an unobserved class.
+    characters[0].modifiers = vec![
+        modifier("Plain"),
+        modifier("Unsaved"),
+        modifier("Other"),
+        modifier("Drink"),
+    ];
     lab.enable_returning_characters(characters).unwrap();
     let mut app = build_app(&ServerConfig::default(), &WorldSnapshot::default()).unwrap();
     let address = network::install(&mut app, lab).unwrap();
@@ -5000,7 +5009,7 @@ fn returning_pawns_restore_their_saved_modifiers_in_the_update() {
             stats.returning_modifier_gaps,
             stats.returning_pawn_update_errors,
         ),
-        (1, 1, 1, 0)
+        (1, 2, 1, 0)
     );
     let counts = counts(&app);
     assert_eq!(
@@ -5008,6 +5017,6 @@ fn returning_pawns_restore_their_saved_modifiers_in_the_update() {
             counts.returning_modifiers_sent,
             counts.returning_modifier_gaps
         ),
-        (1, 1)
+        (2, 1)
     );
 }
