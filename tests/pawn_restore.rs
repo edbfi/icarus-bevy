@@ -504,7 +504,7 @@ fn the_restored_update_decodes_through_the_readers() {
         checksums: false,
         limits: RepLayoutLimits::default(),
     };
-    let body = read_actor_bunch_body(&mut payload.reader(), false, &codec).unwrap();
+    let body = read_actor_bunch_body(&mut payload.payload.reader(), false, &codec).unwrap();
     assert!(body.spawn.is_none());
     assert_eq!(body.blocks.len(), 3);
     let decode = |index: usize, layout: &[RepCommand]| {
@@ -667,7 +667,7 @@ fn the_update_needs_an_acked_open_and_no_stomach_entries() {
         order: ByteOrder::Little,
         limits: ActorChannelLimits::default(),
     };
-    let body = read_actor_bunch_body(&mut payload.reader(), false, &codec).unwrap();
+    let body = read_actor_bunch_body(&mut payload.payload.reader(), false, &codec).unwrap();
     assert_eq!(body.blocks.len(), 1);
 }
 
@@ -777,7 +777,7 @@ fn restored_inventories_send_their_slot_deltas_on_the_runtime_subobjects() {
         checksums: false,
         limits: RepLayoutLimits::default(),
     };
-    let body = read_actor_bunch_body(&mut payload.reader(), false, &codec).unwrap();
+    let body = read_actor_bunch_body(&mut payload.payload.reader(), false, &codec).unwrap();
     let block = body.blocks.last().unwrap();
     let BlockTarget::SubObject { object, class } = &block.target else {
         panic!("inventory block");
@@ -824,4 +824,103 @@ fn restored_inventories_send_their_slot_deltas_on_the_runtime_subobjects() {
 
 fn exports_acked(exports: &ConnectionExports, guid: u32) -> bool {
     exports.is_acked(guid)
+}
+
+#[test]
+fn restored_modifiers_are_class_named_subobjects_with_their_classes_exported() {
+    use icarus_bevy::experimental::modifier_restore::{MODIFIER_CLASS_CHECKSUM, RestoredModifier};
+    use icarus_bevy::experimental::rep_layout::modifier_state_component_rep_layout;
+    use icarus_bevy::experimental::session_open::PathSegment;
+
+    let (profile, plan, stomach) = plan();
+    let key = ActorKey::Session(7);
+    let (mut cache, mut exports) = opened(&plan, key);
+    let modifier = |uid: i32, final_effectiveness: i32, remaining_tenths: u16| RestoredModifier {
+        row: 40,
+        uid,
+        lifetime: 300.0,
+        final_effectiveness,
+        remaining_tenths,
+        class: vec![
+            PathSegment::new("ModifierStateComponent", MODIFIER_CLASS_CHECKSUM, false),
+            PathSegment::new("/Script/Icarus", 0, false),
+        ],
+        subobject: u32::try_from(uid).unwrap() - 1,
+    };
+    let restored = RestoredPawn {
+        modifiers: vec![modifier(1, -31, 2954), modifier(2, 0, 0)],
+        ..restore(&SavedPlayerState::default(), &current_state())
+    };
+    let update = compose_restored_pawn_update(
+        &mut cache,
+        &mut exports,
+        &plan,
+        key,
+        stomach,
+        &restored,
+        ByteOrder::Little,
+    )
+    .unwrap();
+    // The class is new to the connection: exported once, ahead of the body.
+    assert!(update.exports.is_some());
+
+    let codec = ActorChannelCodec {
+        engine_net_version: profile.engine_network_version,
+        exports_enabled: false,
+        has_level: true,
+        order: ByteOrder::Little,
+        limits: ActorChannelLimits::default(),
+    };
+    let rep_codec = RepLayoutCodec {
+        actor: codec,
+        checksums: false,
+        limits: RepLayoutLimits::default(),
+    };
+    let body = read_actor_bunch_body(&mut update.payload.reader(), false, &codec).unwrap();
+    let blocks = &body.blocks[body.blocks.len() - 2..];
+    let mut classes = Vec::new();
+    for (index, block) in blocks.iter().enumerate() {
+        let BlockTarget::SubObject { object, class } = &block.target else {
+            panic!("modifier block");
+        };
+        assert_eq!(
+            object.guid,
+            cache.subobject_guid(key, u32::try_from(index).unwrap())
+        );
+        let SubObjectClass::Class(class) = class else {
+            panic!("class-named modifier");
+        };
+        assert!(!exports_acked(&exports, class.guid));
+        classes.push(class.guid);
+        assert!(block.has_rep_layout);
+        let mut reader = block.payload.reader();
+        let stream = read_rep_properties(
+            &mut reader,
+            &modifier_state_component_rep_layout(),
+            &rep_codec,
+        )
+        .unwrap();
+        assert!(reader.at_end());
+        let values = stream
+            .entries
+            .into_iter()
+            .map(|entry| (entry.handle, entry.value))
+            .collect::<BTreeMap<_, _>>();
+        assert_eq!(values[&2], RepValue::Bool(true));
+        assert_eq!(values[&3], RepValue::UInt16(40));
+        let RepValue::Object(owner) = &values[&4] else {
+            panic!("owner");
+        };
+        assert_eq!(owner.guid, cache.actor_guid(key));
+        assert_eq!(values[&5], RepValue::Int(i32::try_from(index).unwrap() + 1));
+        assert_eq!(values[&6], RepValue::Float(300.0_f32.to_bits()));
+        // Zero effectiveness and remaining time stay at the defaults.
+        if index == 0 {
+            assert_eq!(values[&7], RepValue::Int(-31));
+            assert_eq!(values[&8], RepValue::UInt16(2954));
+        } else {
+            assert!(!values.contains_key(&7) && !values.contains_key(&8));
+        }
+    }
+    assert_eq!(classes[0], classes[1]);
 }

@@ -4933,3 +4933,90 @@ fn returning_pawns_restore_their_saved_inventories_in_the_update() {
         );
     }
 }
+
+#[test]
+fn returning_pawns_restore_their_saved_modifiers_in_the_update() {
+    use icarus_bevy::experimental::{
+        modifier_restore::KNOWN_BEHAVIOURS, prospect_info::SavedModifierState,
+    };
+    use icarus_bevy::prospect;
+    use scalar::units;
+    let json = |value: serde_json::Value| serde_json::to_vec(&value).unwrap();
+    let tables = vec![
+        (
+            "Items/D_ItemsStatic.json",
+            json(serde_json::json!({"Rows": [{"Name": "Ore"}]})),
+        ),
+        (
+            "Modifiers/D_ModifierStates.json",
+            json(serde_json::json!({"Rows": [
+                {"Name": "Plain"},
+                {"Name": "Unsaved", "SaveToDatabase": false},
+                {"Name": "Other", "Behaviour": "/Game/Other.Other_C"},
+                {"Name": "Drink", "Behaviour": KNOWN_BEHAVIOURS[2]},
+            ]})),
+        ),
+        (
+            "Flags/D_SessionFlags.json",
+            pak_writer::table_json(&["Flag_A"]),
+        ),
+    ];
+    let profile = ReleaseProfile::load(&release_toml()).unwrap();
+    let pinned = profile.pin.network_checksum;
+    let engine = profile.engine_network_version;
+    let payload = returning_characters_payload_with_state(NET_ID_HEX, 3, &[70_001], &[]);
+    let directory = tempfile::tempdir().unwrap();
+    let pak = directory.path().join("data.pak");
+    fs::write(&pak, pak_writer::official_pak(&tables)).unwrap();
+    let mut lab = network::bind(&NetworkConfig {
+        release_profile: Some(release_toml()),
+        data_pak: Some(pak),
+        ..enabled(0)
+    })
+    .unwrap()
+    .unwrap()
+    .lab;
+    lab.seed_actor_uids(prospect::saved_actor_uids_from_payload(&payload).unwrap())
+        .unwrap();
+    let mut characters = prospect::saved_player_characters_from_payload(&payload).unwrap();
+    let modifier = |row: &str| SavedModifierState {
+        row_name: units(row),
+        time_remaining: 100.0,
+        initial_lifetime: 300.0,
+        duration_buff: 1.0,
+        effectiveness: -1,
+    };
+    // A native and a Blueprint one restore; one is not saved and one names
+    // an unobserved class.
+    characters[0].modifiers = vec![
+        modifier("Plain"),
+        modifier("Unsaved"),
+        modifier("Other"),
+        modifier("Drink"),
+    ];
+    lab.enable_returning_characters(characters).unwrap();
+    let mut app = build_app(&ServerConfig::default(), &WorldSnapshot::default()).unwrap();
+    let address = network::install(&mut app, lab).unwrap();
+    with_server(&mut app, move || {
+        let (mut client, _) = join_pinned_open(address, pinned, 7);
+        exchange_profiles(&mut client, engine, 3, 3);
+    });
+    let stats = app.world().resource::<PeerLab>().stats();
+    assert_eq!(
+        (
+            stats.returning_pawn_updates_sent,
+            stats.returning_modifiers_sent,
+            stats.returning_modifier_gaps,
+            stats.returning_pawn_update_errors,
+        ),
+        (1, 2, 1, 0)
+    );
+    let counts = counts(&app);
+    assert_eq!(
+        (
+            counts.returning_modifiers_sent,
+            counts.returning_modifier_gaps
+        ),
+        (2, 1)
+    );
+}
