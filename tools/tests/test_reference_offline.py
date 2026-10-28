@@ -561,6 +561,7 @@ class InvocationTests(unittest.TestCase):
             self.assertEqual(approved.initialise, ("7656119800000001", 2))
             updates: list[JsonObject] = [
                 {"initialise_player_id": ""}, {"initialise_player_id": "a b"},
+                {"initialise_player_id": "-7656119800000001"},
                 {"initialise_player_id": "x" * 65}, {"initialise_chr_slot": -1},
                 {"initialise_chr_slot": 100},
                 {"allowed_modes": ["startup", "handshake", "hello", "initialise"]},

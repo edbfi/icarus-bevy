@@ -37,7 +37,7 @@ REFERENCE_EXE = Path("Icarus/Binaries/Win64/IcarusServer-Win64-Shipping.exe")
 MODES = frozenset({"startup", "resume", "missing", "truncated-json", "save-load", "handshake",
                    "complete-stateless", "hello", "join", "initialise"})
 # A saved character's player id as the probe logs in with it (F-858, F-949).
-PLAYER_ID = re.compile(r"[A-Za-z0-9_-]{1,64}")
+PLAYER_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]{0,63}")
 PROSPECT_FILE = re.compile(r"[A-Za-z0-9_-]{1,64}\.json")
 PROSPECTS = Path("Icarus/Saved/PlayerData/DedicatedServer/Prospects")
 PLAYER_DATA = Path("Icarus/Saved/PlayerData")
@@ -246,7 +246,7 @@ def validate_session(root: Path, args: Arguments, now: datetime.datetime) -> App
         player_id = string_field(session, "initialise_player_id")
         chr_slot = integer_field(session, "initialise_chr_slot")
         if PLAYER_ID.fullmatch(player_id) is None or not 0 <= chr_slot <= 99:
-            raise ValueError("initialise needs a 1..64 character player id and a 0..99 slot")
+            raise ValueError("initialise needs a 1..64 character player id (no leading - or _) and a 0..99 slot")
         initialise = (player_id, chr_slot)
     elif any(key in session for key in ("initialise_player_id", "initialise_chr_slot")):
         raise ValueError("initialise binding requires initialise authorization")
