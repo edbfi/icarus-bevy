@@ -1823,8 +1823,9 @@ pub fn saved_player_controllers(
 
 /// Every retained `C026` player character, in recorder-array order, after the
 /// same strict staging and `Validate` (`v >= 1`, member list) as
-/// [`stage_prospect_save_state`]. Staging errors, and a restored field of
-/// the wrong type or shape, reject the whole save.
+/// [`stage_prospect_save_state`]. Staging errors, and a restored field
+/// (including an inherited `SavedInventories` or `Modifiers` element) of the
+/// wrong type or shape, reject the whole save.
 pub fn saved_player_characters(
     roots: &[RootTag<'_>],
     profile: TagProfile,

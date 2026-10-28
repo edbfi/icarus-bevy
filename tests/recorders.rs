@@ -2852,6 +2852,32 @@ fn saved_player_characters_read_inherited_inventories_and_modifiers() {
     let debug = format!("{characters:?}");
     assert!(!debug.contains("private"), "{debug}");
 
+    // A wrong-typed inherited field rejects the save, as a restored one does.
+    for (field, message) in [
+        (
+            struct_array_tag(
+                "SavedInventories",
+                "InventorySaveData",
+                &[struct_element(&[name_tag("InventoryID", "private-id")])],
+            ),
+            "InventorySaveData.InventoryID is not an IntProperty",
+        ),
+        (
+            struct_array_tag(
+                "Modifiers",
+                "ModifierStateSaveData",
+                &[struct_element(&[int_tag("TimeRemaining", 3)])],
+            ),
+            "ModifierStateSaveData.TimeRemaining is not a FloatProperty",
+        ),
+    ] {
+        let stream = player_character_save(&[restored_player_state_record(&[field])]);
+        let parsed = read_root(&stream, PROFILE).unwrap();
+        let error =
+            saved_player_characters(&parsed.tags, PROFILE, MAX_COMPONENT_BYTES).unwrap_err();
+        assert!(format!("{error:#}").contains(message), "{error:#}");
+    }
+
     // Absent collections read as empty.
     let stream = player_character_save(&[restored_player_state_record(&[])]);
     let parsed = read_root(&stream, PROFILE).unwrap();
