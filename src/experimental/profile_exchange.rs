@@ -39,8 +39,6 @@ pub(crate) struct ProfileExchange {
     pub outstanding: Option<ProfileKind>,
     pub user_failures: u8,
     pub character_failures: u8,
-    pub user: Vec<RepValue>,
-    pub character: Vec<RepValue>,
     pub character_slot: Option<i32>,
     pub initialisation_requested: bool,
     pub has_loadout: bool,
