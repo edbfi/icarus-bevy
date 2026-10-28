@@ -3172,12 +3172,14 @@ impl PeerLab {
                     ProfileKind::User => &mut self.stats.profile_user_responses_received,
                     ProfileKind::Character => &mut self.stats.profile_character_responses_received,
                 });
+                // The reliable parts are queued for ACK/NAK repair, so a failed
+                // send only affects the counter, never the exchange's progress.
                 if self.send_all(&sent, address) {
                     bump(&mut self.stats.profile_updates_sent);
-                    match kind {
-                        ProfileKind::User => self.request_profile(address, ProfileKind::Character),
-                        ProfileKind::Character => self.request_initialisation(address),
-                    }
+                }
+                match kind {
+                    ProfileKind::User => self.request_profile(address, ProfileKind::Character),
+                    ProfileKind::Character => self.request_initialisation(address),
                 }
             }
             Err(_) => {
@@ -3298,11 +3300,12 @@ impl PeerLab {
         })();
         match sent {
             Ok(sent) => {
+                bump(&mut self.stats.players_initialised);
+                // Queued for repair as above: only the counter depends on the send.
                 if self.send_all(&sent, address) {
-                    bump(&mut self.stats.players_initialised);
                     bump(&mut self.stats.player_character_id_updates_sent);
-                    self.restore_returning_pawn_uid(address);
                 }
+                self.restore_returning_pawn_uid(address);
             }
             Err(_) => {
                 bump(&mut self.stats.profile_exchange_errors);
