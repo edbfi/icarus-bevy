@@ -1993,13 +1993,15 @@ impl PeerLab {
             let mut inventory_gap = false;
             if let Some(tables) = &self.inventory_restore {
                 let (_, _, content) = self.pawn_open.as_ref().context("no pawn content")?;
+                // Any failure, gap or error, leaves the inventories out of an
+                // update that still restores the rest of the pawn.
                 match restore_inventories(
                     &content.inventories,
                     &self.returning_characters[index].inventories,
                     tables,
-                )? {
-                    Ok(inventories) => restored.inventories = inventories,
-                    Err(_) => inventory_gap = true,
+                ) {
+                    Ok(Ok(inventories)) => restored.inventories = inventories,
+                    Ok(Err(_)) | Err(_) => inventory_gap = true,
                 }
             }
             // The composer refuses AddSaveDataToStomach's unread ModifierID, so
@@ -2028,8 +2030,10 @@ impl PeerLab {
                 &restored,
                 entry.peer.connection_byte_order(),
             )?;
-            // Restored inventories outgrow one datagram; that update is split
-            // into reliable partial bunches as large opens are.
+            // Restored inventories can outgrow one datagram; that update is
+            // split into reliable partial bunches as large opens are. Without
+            // them the update keeps its single-bunch limit, which refuses an
+            // oversized update instead of splitting it.
             let datagrams = if restored.inventories.is_empty() {
                 vec![entry.peer.reliable_actor_bunch(*channel, payload)?]
             } else {
