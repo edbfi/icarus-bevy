@@ -1,11 +1,11 @@
 use icarus_bevy::experimental::component::MAX_COMPONENT_BYTES;
 use icarus_bevy::experimental::prospect_info::{AssociatedMember, CustomGameSetting, ProspectInfo};
 use icarus_bevy::experimental::recorders::{
-    MAX_RECORDER_FIELDS, MAX_RECORDERS, RecorderArray, StagedLegacyDisposition,
-    StagedProspectSaveState, StagedRecorderDecision, StagedRootEnumField, StagedRootEnumValue,
-    StagedRootMigration, StagedRootPresence, StagedRootValues, find_saved_player_character,
-    lookup_recorder_ctor_defaults, read_recorders, saved_player_characters,
-    stage_prospect_save_state, stage_prospect_save_state_with_decisions,
+    MAX_RECORDER_FIELDS, MAX_RECORDERS, RecorderArray, SavedPlayerState, SavedStomachContent,
+    StagedLegacyDisposition, StagedProspectSaveState, StagedRecorderDecision, StagedRootEnumField,
+    StagedRootEnumValue, StagedRootMigration, StagedRootPresence, StagedRootValues,
+    find_saved_player_character, lookup_recorder_ctor_defaults, read_recorders,
+    saved_player_characters, stage_prospect_save_state, stage_prospect_save_state_with_decisions,
     stage_prospect_save_state_with_root_values,
 };
 use icarus_bevy::experimental::restore_rules::{
@@ -2443,6 +2443,16 @@ fn saved_player_characters_keep_only_validated_c026_records_in_order() {
         ]
     );
     assert!(!format!("{characters:?}").contains("user-"));
+    let controllers = icarus_bevy::experimental::recorders::saved_player_controllers(
+        &parsed.tags,
+        PROFILE,
+        MAX_COMPONENT_BYTES,
+    )
+    .unwrap();
+    assert_eq!(controllers.len(), 1);
+    assert_eq!(controllers[0].player_id, units("user-alpha"));
+    assert_eq!(controllers[0].chr_slot, 1);
+    assert!(!format!("{controllers:?}").contains("user-"));
 
     // The original's Stricmp: ASCII case folds, the slot must be equal, and
     // the first unresolved match wins; restored ones are skipped.
@@ -2453,6 +2463,70 @@ fn saved_player_characters_keep_only_validated_c026_records_in_order() {
     let found = find_saved_player_character(&characters, &units("user-alpha"), 1, &[1]);
     assert_eq!(found.map(|(i, c)| (i, c.icarus_uid)), Some((2, -1)));
     assert!(find_saved_player_character(&characters, &units("user-betä"), 0, &[]).is_none());
+}
+
+#[test]
+fn saved_player_controllers_use_strict_staging_and_retention() {
+    use icarus_bevy::experimental::recorders::saved_player_controllers;
+    let controller = |version, user, slot| {
+        recorder_element(
+            "/Script/Icarus.PlayerRecorderComponent",
+            &[
+                tag(
+                    "PlayerRecorderVersion",
+                    "IntProperty",
+                    0,
+                    &[0],
+                    &i32::to_le_bytes(version),
+                ),
+                player_char_id_struct("PlayerCharacterID", user, slot),
+            ]
+            .concat(),
+        )
+    };
+    let stream = player_character_save(&[
+        controller(1, "user-beta", 0),
+        controller(0, "user-beta", 0),
+        controller(1, "not-a-member", 0),
+        controller(2, "USER-ALPHA", 1),
+        player_state_record(Some(1), "user-alpha", 1, Some(70_001)),
+    ]);
+    let parsed = read_root(&stream, PROFILE).unwrap();
+    let saved = saved_player_controllers(&parsed.tags, PROFILE, MAX_COMPONENT_BYTES).unwrap();
+    assert_eq!(saved.len(), 2);
+    assert_eq!(
+        (&saved[0].player_id, saved[0].chr_slot),
+        (&units("user-beta"), 0)
+    );
+    assert_eq!(
+        (&saved[1].player_id, saved[1].chr_slot),
+        (&units("USER-ALPHA"), 1)
+    );
+
+    let malformed = recorder_element(
+        "/Script/Icarus.PlayerRecorderComponent",
+        &[
+            tag(
+                "PlayerRecorderVersion",
+                "StrProperty",
+                0,
+                &[0],
+                &string("1"),
+            ),
+            player_char_id_struct("PlayerCharacterID", "user-alpha", 1),
+        ]
+        .concat(),
+    );
+    let stream = player_character_save(&[controller(1, "user-beta", 0), malformed]);
+    let parsed = read_root(&stream, PROFILE).unwrap();
+    assert!(saved_player_controllers(&parsed.tags, PROFILE, MAX_COMPONENT_BYTES).is_err());
+    let stream = player_character_save(&[]);
+    let parsed = read_root(&stream, PROFILE).unwrap();
+    assert!(
+        saved_player_controllers(&parsed.tags, PROFILE, MAX_COMPONENT_BYTES)
+            .unwrap()
+            .is_empty()
+    );
 }
 
 #[test]
@@ -2483,4 +2557,247 @@ fn saved_player_characters_reject_malformed_uids_and_accept_empty_saves() {
             .unwrap()
             .is_empty()
     );
+}
+
+fn name_array_tag(field: &str, names: &[&str]) -> Vec<u8> {
+    let payload = [
+        i32::try_from(names.len()).unwrap().to_le_bytes().to_vec(),
+        names.iter().flat_map(|name| string(name)).collect(),
+    ]
+    .concat();
+    tag(
+        field,
+        "ArrayProperty",
+        0,
+        &[string("NameProperty"), vec![0]].concat(),
+        &payload,
+    )
+}
+
+fn float3_tag(field: &str, struct_name: &str, values: [f32; 3]) -> Vec<u8> {
+    let payload: Vec<u8> = values
+        .iter()
+        .flat_map(|value| value.to_le_bytes())
+        .collect();
+    tag(
+        field,
+        "StructProperty",
+        0,
+        &[string(struct_name), vec![0; 17]].concat(),
+        &payload,
+    )
+}
+
+fn stomach_tag(entries: &[Vec<u8>]) -> Vec<u8> {
+    let shared = tag(
+        "StomachContents",
+        "StructProperty",
+        0,
+        &[string("StomachContentSaveData"), vec![0; 17]].concat(),
+        &entries.concat(),
+    );
+    tag(
+        "StomachContents",
+        "ArrayProperty",
+        0,
+        &[string("StructProperty"), vec![0]].concat(),
+        &[
+            i32::try_from(entries.len())
+                .unwrap()
+                .to_le_bytes()
+                .as_slice(),
+            shared.as_slice(),
+        ]
+        .concat(),
+    )
+}
+
+fn stomach_entry(fields: &[(&str, &str)]) -> Vec<u8> {
+    let mut entry: Vec<u8> = fields
+        .iter()
+        .flat_map(|(field, value)| tag(field, "NameProperty", 0, &[0], &string(value)))
+        .collect();
+    entry.extend_from_slice(END);
+    entry
+}
+
+fn int_tag(field: &str, value: i32) -> Vec<u8> {
+    tag(field, "IntProperty", 0, &[0], &value.to_le_bytes())
+}
+
+fn bool_tag(field: &str, value: bool) -> Vec<u8> {
+    tag(field, "BoolProperty", 0, &[u8::from(value), 0], &[])
+}
+
+fn restored_player_state_record(extra: &[Vec<u8>]) -> Vec<u8> {
+    recorder_element(
+        "/Script/Icarus.PlayerStateRecorderComponent",
+        &[
+            int_tag("PlayerStateRecorderVersion", 1),
+            player_char_id_struct("PlayerCharacterID", "user-beta", 0),
+            int_tag("IcarusActorGUID", 70_001),
+            extra.concat(),
+        ]
+        .concat(),
+    )
+}
+
+#[test]
+fn saved_player_characters_read_every_restored_field() {
+    let record = restored_player_state_record(&[
+        float3_tag("Location", "Vector", [100.5, -2.0, 3.25]),
+        float3_tag("Rotation", "Rotator", [-10.0, 90.0, 0.0]),
+        bool_tag("bIsAlive", true),
+        int_tag("Health", 480),
+        int_tag("FoodLevel", 900),
+        int_tag("WaterLevel", -1),
+        int_tag("OxygenLevel", 700),
+        int_tag("RadiationLevel", 3),
+        stomach_tag(&[
+            stomach_entry(&[
+                ("FoodRowName", "private-food-a"),
+                ("ModifierName", "private-mod-a"),
+            ]),
+            // Field order is free; an omitted name is empty.
+            stomach_entry(&[("ModifierName", "private-mod-b")]),
+        ]),
+        int_tag("RespawnCount", 2),
+        bool_tag("HasGrantedLoadout", true),
+        name_array_tag(
+            "CosmeticArmourOverrides",
+            &["private-armour-a", "private-armour-b"],
+        ),
+    ]);
+    let stream = player_character_save(&[record]);
+    let parsed = read_root(&stream, PROFILE).unwrap();
+    let characters = saved_player_characters(&parsed.tags, PROFILE, MAX_COMPONENT_BYTES).unwrap();
+    assert_eq!(characters.len(), 1);
+    assert_eq!(characters[0].icarus_uid, 70_001);
+    let state = &characters[0].state;
+    assert_eq!(state.location, Some([100.5, -2.0, 3.25]));
+    assert_eq!(state.rotation, Some([-10.0, 90.0, 0.0]));
+    assert_eq!(state.is_alive, Some(true));
+    assert_eq!(state.health, Some(480));
+    assert_eq!(
+        (
+            state.food_level,
+            state.water_level,
+            state.oxygen_level,
+            state.radiation_level
+        ),
+        (Some(900), Some(-1), Some(700), Some(3))
+    );
+    assert_eq!(
+        state.stomach_contents,
+        [
+            SavedStomachContent {
+                food_row_name: units("private-food-a"),
+                modifier_name: units("private-mod-a"),
+            },
+            SavedStomachContent {
+                food_row_name: Vec::new(),
+                modifier_name: units("private-mod-b"),
+            },
+        ]
+    );
+    assert_eq!(state.respawn_count, Some(2));
+    assert_eq!(state.has_granted_loadout, Some(true));
+    assert_eq!(
+        state.cosmetic_armour_overrides,
+        [units("private-armour-a"), units("private-armour-b")]
+    );
+    let debug = format!("{characters:?}");
+    for private in ["user-", "private", "100.5", "480", "900"] {
+        assert!(!debug.contains(private), "{debug}");
+    }
+
+    // A record without them leaves scalars unset and arrays empty.
+    let stream = player_character_save(&[restored_player_state_record(&[])]);
+    let parsed = read_root(&stream, PROFILE).unwrap();
+    let characters = saved_player_characters(&parsed.tags, PROFILE, MAX_COMPONENT_BYTES).unwrap();
+    assert_eq!(characters[0].state, SavedPlayerState::default());
+}
+
+#[test]
+fn saved_player_characters_reject_malformed_restored_fields() {
+    let truncated_names = tag(
+        "CosmeticArmourOverrides",
+        "ArrayProperty",
+        0,
+        &[string("NameProperty"), vec![0]].concat(),
+        &[2_i32.to_le_bytes().to_vec(), string("private-armour-a")].concat(),
+    );
+    let malformed = [
+        (
+            tag("Health", "StrProperty", 0, &[0], &string("480")),
+            "Health must be",
+        ),
+        (
+            tag("FoodLevel", "IntProperty", 0, &[0], &[1, 0]),
+            "FoodLevel must be",
+        ),
+        (
+            float3_tag("Location", "Rotator", [0.0; 3]),
+            "Location must be",
+        ),
+        (
+            tag(
+                "Rotation",
+                "StructProperty",
+                0,
+                &[string("Rotator"), vec![0; 17]].concat(),
+                &[0; 8],
+            ),
+            "Rotation must be",
+        ),
+        (
+            tag("bIsAlive", "IntProperty", 0, &[0], &1_i32.to_le_bytes()),
+            "invalid BoolProperty tag",
+        ),
+        (
+            stomach_tag(&[stomach_entry(&[("Food", "private-food-a")])]),
+            "unmapped StomachContentSaveData property",
+        ),
+        (
+            stomach_tag(&[stomach_entry(&[
+                ("FoodRowName", "private-food-a"),
+                ("FoodRowName", "private-food-b"),
+            ])]),
+            "duplicate StomachContentSaveData property",
+        ),
+        (
+            stomach_tag(&[[
+                tag(
+                    "FoodRowName",
+                    "StrProperty",
+                    0,
+                    &[0],
+                    &string("private-food-a"),
+                ),
+                END.to_vec(),
+            ]
+            .concat()]),
+            "names must be NameProperty",
+        ),
+        (
+            tag(
+                "CosmeticArmourOverrides",
+                "ArrayProperty",
+                0,
+                &[string("StrProperty"), vec![0]].concat(),
+                &0_i32.to_le_bytes(),
+            ),
+            "CosmeticArmourOverrides must be",
+        ),
+        (truncated_names, "CosmeticArmourOverrides must be"),
+    ];
+    for (field, expected) in malformed {
+        let stream = player_character_save(&[restored_player_state_record(&[field])]);
+        let parsed = read_root(&stream, PROFILE).unwrap();
+        let error =
+            saved_player_characters(&parsed.tags, PROFILE, MAX_COMPONENT_BYTES).unwrap_err();
+        let error = format!("{error:#}");
+        assert!(error.contains(expected), "{error}");
+        assert!(!error.contains("private"), "{error}");
+    }
 }

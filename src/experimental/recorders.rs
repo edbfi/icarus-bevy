@@ -1508,13 +1508,15 @@ pub fn stage_prospect_save_state(
 
 /// One saved player character a returning player's pawn restores from: a
 /// `C026` `PlayerStateRecorderComponent` that `Validate` retains, with its
-/// `PlayerCharacterID` and the `IcarusActorGUID` its restore claims (F-950).
-#[derive(Clone, PartialEq, Eq)]
+/// `PlayerCharacterID`, the `IcarusActorGUID` its restore claims (F-950) and
+/// the fields its restore applies to the pawn (F-960).
+#[derive(Clone, PartialEq)]
 pub struct SavedPlayerCharacter {
     pub player_id: Vec<u16>,
     pub chr_slot: i32,
     /// `-1` when the record carries none.
     pub icarus_uid: i32,
+    pub state: SavedPlayerState,
 }
 
 impl std::fmt::Debug for SavedPlayerCharacter {
@@ -1524,13 +1526,296 @@ impl std::fmt::Debug for SavedPlayerCharacter {
             .field("player_id_units", &self.player_id.len())
             .field("chr_slot", &self.chr_slot)
             .field("icarus_uid", &self.icarus_uid)
+            .field("state", &self.state)
             .finish()
     }
 }
 
+/// The `C026` fields `UpdateOwnerToDatabaseState` applies to a survival pawn
+/// (F-960), by their reflected names. A scalar the record omits is `None`:
+/// the original then keeps the recorder's constructed default (F-718), which
+/// has not been read. An omitted array is empty.
+#[derive(Clone, Default, PartialEq)]
+pub struct SavedPlayerState {
+    pub location: Option<[f32; 3]>,
+    /// `[Pitch, Yaw, Roll]`.
+    pub rotation: Option<[f32; 3]>,
+    pub is_alive: Option<bool>,
+    pub health: Option<i32>,
+    /// `-1` is unrecorded (F-648).
+    pub food_level: Option<i32>,
+    pub water_level: Option<i32>,
+    pub oxygen_level: Option<i32>,
+    pub radiation_level: Option<i32>,
+    pub stomach_contents: Vec<SavedStomachContent>,
+    pub respawn_count: Option<i32>,
+    pub has_granted_loadout: Option<bool>,
+    /// Item-static row names.
+    pub cosmetic_armour_overrides: Vec<Vec<u16>>,
+}
+
+impl std::fmt::Debug for SavedPlayerState {
+    // Saved values are supplied data; show only which fields are present.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SavedPlayerState")
+            .field("location", &self.location.is_some())
+            .field("rotation", &self.rotation.is_some())
+            .field("is_alive", &self.is_alive.is_some())
+            .field("health", &self.health.is_some())
+            .field("food_level", &self.food_level.is_some())
+            .field("water_level", &self.water_level.is_some())
+            .field("oxygen_level", &self.oxygen_level.is_some())
+            .field("radiation_level", &self.radiation_level.is_some())
+            .field("stomach_contents", &self.stomach_contents.len())
+            .field("respawn_count", &self.respawn_count.is_some())
+            .field("has_granted_loadout", &self.has_granted_loadout.is_some())
+            .field(
+                "cosmetic_armour_overrides",
+                &self.cosmetic_armour_overrides.len(),
+            )
+            .finish()
+    }
+}
+
+/// One saved `FStomachContentSaveData`: its food's item-static row name and
+/// its modifier's row name; an omitted name is empty.
+#[derive(Clone, Default, PartialEq, Eq)]
+pub struct SavedStomachContent {
+    pub food_row_name: Vec<u16>,
+    pub modifier_name: Vec<u16>,
+}
+
+impl std::fmt::Debug for SavedStomachContent {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("SavedStomachContent")
+    }
+}
+
+fn int_tag_value(property: &PropertyRecord<'_>, message: &'static str) -> Result<i32> {
+    ensure!(
+        property.tag.kind == TagKind::Int && property.tag.payload.len() == 4,
+        message
+    );
+    Ok(i32::from_le_bytes(property.tag.payload.try_into()?))
+}
+
+/// A natively serialized `Vector` or `Rotator` struct: three 4-byte floats.
+fn float3_struct_value(
+    property: &PropertyRecord<'_>,
+    struct_name: &str,
+    message: &'static str,
+) -> Result<[f32; 3]> {
+    ensure!(
+        property.tag.kind == TagKind::Struct
+            && extra_is(property, struct_name)
+            && property.tag.payload.len() == 12,
+        message
+    );
+    let (words, _) = property.tag.payload.as_chunks::<4>();
+    Ok([0, 1, 2].map(|index| f32::from_le_bytes(words[index])))
+}
+
+/// An `ArrayProperty<NameProperty>`: a count, then that many names.
+fn name_array_value(property: &PropertyRecord<'_>, message: &'static str) -> Result<Vec<Vec<u16>>> {
+    ensure!(
+        property.tag.kind == TagKind::Array && extra_is(property, "NameProperty"),
+        message
+    );
+    let payload = property.tag.payload;
+    let count = payload.get(..4).context(message)?;
+    let count = usize::try_from(i32::from_le_bytes(count.try_into()?)).context(message)?;
+    let mut rest = &payload[4..];
+    // Every name takes at least its 4-byte length.
+    ensure!(count <= rest.len() / 4, message);
+    let mut names = Vec::with_capacity(count);
+    for _ in 0..count {
+        let length = rest.get(..4).context(message)?;
+        ensure!(
+            i32::from_le_bytes(length.try_into()?).unsigned_abs() as usize
+                <= MAX_HEADER_STRING_UNITS,
+            "string exceeds research unit limit"
+        );
+        let decoded = decode_string(rest, ByteOrder::Little).context(message)?;
+        names.push(decoded.units);
+        rest = &rest[decoded.consumed..];
+    }
+    ensure!(rest.is_empty(), message);
+    Ok(names)
+}
+
+fn parse_stomach_contents(
+    property: &PropertyRecord<'_>,
+    profile: TagProfile,
+    component_byte_limit: usize,
+) -> Result<Vec<SavedStomachContent>> {
+    ensure!(
+        property.tag.kind == TagKind::Array && extra_is(property, "StructProperty"),
+        "StomachContents must be ArrayProperty<StructProperty>"
+    );
+    let array =
+        read_tagged_struct_array_with_limit(property.tag.payload, profile, component_byte_limit)
+            .context("invalid StomachContents struct array")?;
+    let ParsedRecord::Property(shared) = read_record(array.shared().record, profile)? else {
+        bail!("invalid StomachContents shared struct header");
+    };
+    ensure!(
+        shared.index == 0
+            && is_name(&shared.name, "StomachContents")
+            && extra_is(&shared, "StomachContentSaveData"),
+        "StomachContents shared header must be StructProperty(StomachContentSaveData)"
+    );
+    let mut contents = Vec::with_capacity(array.elements().len());
+    for element in array.elements() {
+        let mut seen: Vec<Vec<u16>> = Vec::with_capacity(element.fields().len());
+        let mut content = SavedStomachContent::default();
+        for field in element.fields() {
+            let ParsedRecord::Property(prop) = read_record(field.record, profile)? else {
+                bail!("unexpected StomachContentSaveData terminator");
+            };
+            ensure!(
+                prop.tag.record.len() == field.record.len() && prop.index == 0,
+                "invalid StomachContentSaveData field header"
+            );
+            ensure!(
+                !seen.iter().any(|prior| prior == &prop.name),
+                "duplicate StomachContentSaveData property"
+            );
+            seen.push(prop.name.clone());
+            let target = if is_name(&prop.name, "FoodRowName") {
+                &mut content.food_row_name
+            } else if is_name(&prop.name, "ModifierName") {
+                &mut content.modifier_name
+            } else {
+                bail!("unmapped StomachContentSaveData property");
+            };
+            ensure!(
+                prop.tag.kind == TagKind::Name,
+                "StomachContentSaveData names must be NameProperty"
+            );
+            *target =
+                decode_exact_string_units(prop.tag.payload, "invalid StomachContentSaveData name")?;
+        }
+        contents.push(content);
+    }
+    Ok(contents)
+}
+
+/// Reads one restored `C026` field into `state`; `false` when `prop` is not
+/// one of them. A restored field of the wrong shape rejects the save.
+fn read_saved_player_state_field(
+    state: &mut SavedPlayerState,
+    prop: &PropertyRecord<'_>,
+    profile: TagProfile,
+    component_byte_limit: usize,
+) -> Result<bool> {
+    let name = prop.name.as_slice();
+    let int = |message| int_tag_value(prop, message).map(Some);
+    if is_name(name, "Location") {
+        state.location = Some(float3_struct_value(
+            prop,
+            "Vector",
+            "Location must be StructProperty(Vector)",
+        )?);
+    } else if is_name(name, "Rotation") {
+        state.rotation = Some(float3_struct_value(
+            prop,
+            "Rotator",
+            "Rotation must be StructProperty(Rotator)",
+        )?);
+    } else if is_name(name, "bIsAlive") {
+        state.is_alive = Some(bool_tag_value(prop)?);
+    } else if is_name(name, "Health") {
+        state.health = int("Health must be 4-byte IntProperty")?;
+    } else if is_name(name, "FoodLevel") {
+        state.food_level = int("FoodLevel must be 4-byte IntProperty")?;
+    } else if is_name(name, "WaterLevel") {
+        state.water_level = int("WaterLevel must be 4-byte IntProperty")?;
+    } else if is_name(name, "OxygenLevel") {
+        state.oxygen_level = int("OxygenLevel must be 4-byte IntProperty")?;
+    } else if is_name(name, "RadiationLevel") {
+        state.radiation_level = int("RadiationLevel must be 4-byte IntProperty")?;
+    } else if is_name(name, "StomachContents") {
+        state.stomach_contents = parse_stomach_contents(prop, profile, component_byte_limit)?;
+    } else if is_name(name, "RespawnCount") {
+        state.respawn_count = int("RespawnCount must be 4-byte IntProperty")?;
+    } else if is_name(name, "HasGrantedLoadout") {
+        state.has_granted_loadout = Some(bool_tag_value(prop)?);
+    } else if is_name(name, "CosmeticArmourOverrides") {
+        state.cosmetic_armour_overrides = name_array_value(
+            prop,
+            "CosmeticArmourOverrides must be ArrayProperty<NameProperty>",
+        )?;
+    } else {
+        return Ok(false);
+    }
+    Ok(true)
+}
+
+/// A retained `C025` controller identity used to choose the returning-player
+/// path (F-947). Identifiers never appear in Debug output.
+#[derive(Clone, PartialEq, Eq)]
+pub struct SavedPlayerController {
+    pub player_id: Vec<u16>,
+    pub chr_slot: i32,
+}
+
+impl std::fmt::Debug for SavedPlayerController {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("SavedPlayerController")
+    }
+}
+
+/// Every C025 controller retained by strict staging and Validate, in saved
+/// order. Refused saves return no partial identities.
+pub fn saved_player_controllers(
+    roots: &[RootTag<'_>],
+    profile: TagProfile,
+    component_byte_limit: usize,
+) -> Result<Vec<SavedPlayerController>> {
+    let (staged, decisions) =
+        stage_prospect_save_state_with_decisions(roots, profile, component_byte_limit, None)?;
+    if staged.parsed_recorder_count == 0 {
+        return Ok(Vec::new());
+    }
+    let recorders = read_recorders(roots, profile)?;
+    ensure!(
+        recorders.records().len() == decisions.len(),
+        "staged decisions do not cover every recorder"
+    );
+    let mut controllers = Vec::new();
+    for (recorder, decision) in recorders.records().iter().zip(&decisions) {
+        if !decision.retained {
+            continue;
+        }
+        let class =
+            decode_exact_string_units(recorder.class_value, "invalid saved recorder class string")?;
+        if !units_eq_ascii(&class, "/Script/Icarus.PlayerRecorderComponent") {
+            continue;
+        }
+        let component =
+            read_base_component_with_limit(recorder.binary_data, profile, component_byte_limit)?;
+        let mut identity = SavedPlayerController {
+            player_id: Vec::new(),
+            chr_slot: -1,
+        };
+        for field in component.fields() {
+            let ParsedRecord::Property(prop) = read_record(field.record, profile)? else {
+                bail!("unexpected saved controller terminator");
+            };
+            if is_name(&prop.name, "PlayerCharacterID") {
+                (identity.player_id, identity.chr_slot) =
+                    parse_player_character_id_struct(prop.tag.payload, profile)?;
+            }
+        }
+        controllers.push(identity);
+    }
+    Ok(controllers)
+}
+
 /// Every retained `C026` player character, in recorder-array order, after the
 /// same strict staging and `Validate` (`v >= 1`, member list) as
-/// [`stage_prospect_save_state`]. Staging errors reject the whole save.
+/// [`stage_prospect_save_state`]. Staging errors, and a restored field of
+/// the wrong type or shape, reject the whole save.
 pub fn saved_player_characters(
     roots: &[RootTag<'_>],
     profile: TagProfile,
@@ -1562,10 +1847,14 @@ pub fn saved_player_characters(
         let mut player_id = Vec::new();
         let mut chr_slot = -1_i32;
         let mut icarus_uid = -1_i32;
+        let mut state = SavedPlayerState::default();
         for field in component.fields() {
             let ParsedRecord::Property(prop) = read_record(field.record, profile)? else {
                 bail!("unexpected saved player character terminator");
             };
+            if read_saved_player_state_field(&mut state, &prop, profile, component_byte_limit)? {
+                continue;
+            }
             if is_name(&prop.name, "PlayerCharacterID") {
                 (player_id, chr_slot) =
                     parse_player_character_id_struct(prop.tag.payload, profile)?;
@@ -1581,6 +1870,7 @@ pub fn saved_player_characters(
             player_id,
             chr_slot,
             icarus_uid,
+            state,
         });
     }
     Ok(characters)

@@ -17,7 +17,7 @@
 //! references its saved tiles (`C013`).
 use std::collections::BTreeMap;
 
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, ensure};
 
 use super::actor_channel::NetGuidRef;
 use super::actor_open::{
@@ -300,7 +300,9 @@ impl ManagerOpenPlan {
     /// history is the class default and adds nothing. Fails on more
     /// entries than an array counts or on a string that cannot be sent.
     pub fn with_player_history(mut self, history: &[PlayerHistoryEntry]) -> Result<Self> {
+        let count = u16::try_from(history.len())?;
         if history.is_empty() {
+            self.values.remove(&PLAYER_HISTORY_HANDLE);
             return Ok(self);
         }
         let mut entries = Vec::with_capacity(3 * history.len());
@@ -324,7 +326,7 @@ impl ManagerOpenPlan {
         self.values.insert(
             PLAYER_HISTORY_HANDLE,
             RepValue::DynamicArray(RepArray {
-                count: u16::try_from(history.len())?,
+                count,
                 stream: PropertyStream {
                     entries,
                     terminator_checksum: None,
@@ -333,6 +335,114 @@ impl ManagerOpenPlan {
         );
         Ok(self)
     }
+
+    /// AddPlayer (F-865): append only when no entry has this case-insensitive
+    /// user ID and slot. A duplicate keeps its cached name. History is held in
+    /// the open plan so future opens use the same complete array.
+    pub fn add_player_to_history(
+        &mut self,
+        user_id: ArchiveText,
+        chr_slot: i32,
+        character_name: ArchiveText,
+    ) -> Result<bool> {
+        let empty = RepArray {
+            count: 0,
+            stream: PropertyStream {
+                entries: Vec::new(),
+                terminator_checksum: None,
+            },
+        };
+        let history = match self.values.get(&PLAYER_HISTORY_HANDLE) {
+            Some(RepValue::DynamicArray(history)) => history,
+            None => &empty,
+            _ => anyhow::bail!("History must be an array"),
+        };
+        ensure!(
+            history.stream.entries.len() == 3 * usize::from(history.count),
+            "History must carry every field"
+        );
+        let mut duplicate = false;
+        for (index, fields) in history.stream.entries.as_chunks::<3>().0.iter().enumerate() {
+            for (offset, field) in fields.iter().enumerate() {
+                ensure!(
+                    field.handle as usize == 3 * index + offset + 1,
+                    "History fields must be in order"
+                );
+            }
+            let (RepValue::Str(id), RepValue::Int(slot), RepValue::Str(_)) =
+                (&fields[0].value, &fields[1].value, &fields[2].value)
+            else {
+                anyhow::bail!("invalid History fields");
+            };
+            duplicate |=
+                *slot == chr_slot && super::restore_rules::names_match(id.units(), user_id.units());
+        }
+        if duplicate {
+            return Ok(false);
+        }
+        let count = history.count.checked_add(1).context("History is full")?;
+        let limits = super::rep_layout::RepLayoutLimits::default();
+        ensure!(
+            count <= limits.max_array_elements && 3 * usize::from(count) < limits.max_entries,
+            "History exceeds the property codec budget"
+        );
+        let mut history = history.clone();
+        for value in [
+            RepValue::Str(user_id),
+            RepValue::Int(chr_slot),
+            RepValue::Str(character_name),
+        ] {
+            history.stream.entries.push(RepEntry {
+                handle: u32::try_from(history.stream.entries.len() + 1)?,
+                checksum: None,
+                value,
+            });
+        }
+        history.count = count;
+        self.values
+            .insert(PLAYER_HISTORY_HANDLE, RepValue::DynamicArray(history));
+        Ok(true)
+    }
+}
+
+/// A whole-array History property update, without spawn or exports. Encoding
+/// applies the same bounded property codec as the tracker open.
+pub fn compose_player_history_update(
+    plan: &ManagerOpenPlan,
+    order: ByteOrder,
+) -> Result<super::packet::Payload> {
+    use super::actor_channel::{
+        ActorBunchBody, BlockTarget, ContentBlock, encode_actor_bunch_body,
+    };
+    use super::rep_layout::{RepLayoutCodec, encode_rep_properties};
+    let codec = RepLayoutCodec {
+        actor: super::session_open::actor_codec(plan.engine_net_version, order),
+        checksums: false,
+        limits: Default::default(),
+    };
+    let stream = PropertyStream {
+        entries: vec![RepEntry {
+            handle: PLAYER_HISTORY_HANDLE,
+            checksum: None,
+            value: plan
+                .values
+                .get(&PLAYER_HISTORY_HANDLE)
+                .context("no History")?
+                .clone(),
+        }],
+        terminator_checksum: None,
+    };
+    encode_actor_bunch_body(
+        &ActorBunchBody {
+            spawn: None,
+            blocks: vec![ContentBlock {
+                has_rep_layout: true,
+                target: BlockTarget::Actor,
+                payload: encode_rep_properties(&stream, &plan.layout, &codec)?,
+            }],
+        },
+        &codec.actor,
+    )
 }
 
 /// Compose the manager `plan` keyed `key` for one connection on

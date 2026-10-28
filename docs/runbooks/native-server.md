@@ -82,9 +82,14 @@ PlayerState; a request failing three times closes the session (the original
 kicks). It then asks for the client's loadout and bestiary; once both have
 answered and the pawn is open, `run` replicates `PlayerCharacterID`, and a saved
 player character matching the login ID and the profile's slot gives the pawn its
-saved UID (F-962). That UID stays claimed after the session ends. A client that
-never answers never completes; the original's timeout only logs (F-959). Saves
-the strict staging refuses only disable the saved-UID restore.
+saved UID (F-962); `run` then sends the record's saved pawn state, with levels
+and health clamped as the original does (F-964); a new player, whom no saved
+controller matches, is added to the replicated History (F-967). That UID stays
+claimed after the session ends. A client that
+never answers never completes; the original's timeout only logs (F-959). A save
+the strict staging refuses supplies no saved characters, controllers or
+History: returning-player restore is off, and every joiner counts as new and is
+added to the History the tracker starts empty with.
 
 For authored schema-4 worlds, set `authored_replication = "replication.json"`
 in `[network]` or pass `run --authored-replication replication.json`.

@@ -40,6 +40,7 @@ pub(crate) struct ProfileExchange {
     pub user_failures: u8,
     pub character_failures: u8,
     pub character_slot: Option<i32>,
+    pub character_name: Option<ArchiveText>,
     pub initialisation_requested: bool,
     pub has_loadout: bool,
     pub has_bestiary: bool,

@@ -72,6 +72,83 @@ fn sha256(payload: &Payload) -> String {
         .collect()
 }
 
+#[test]
+fn history_add_player_preserves_duplicates_and_refuses_codec_and_array_bounds() {
+    use icarus_bevy::experimental::{
+        control_messages::ArchiveText,
+        manager_open::{PLAYER_HISTORY_HANDLE, compose_player_history_update},
+        prospect_info::PlayerHistoryEntry,
+        rep_layout::{RepArray, RepLayoutLimits, RepValue},
+    };
+    let plan = ReleaseProfile::release_3_0_31()
+        .manager_open_plan(ManagerSlot::PlayerHistory, "/Game/Maps/Test/Test")
+        .unwrap()
+        .unwrap();
+    let text = |value: &str| ArchiveText::text(value).unwrap();
+    let mut live = plan.clone();
+    assert!(
+        live.add_player_to_history(text("USER"), 3, text("First 名"))
+            .unwrap()
+    );
+    let unchanged = live.clone();
+    assert!(
+        !live
+            .add_player_to_history(text("user"), 3, text("Replacement"))
+            .unwrap()
+    );
+    assert_eq!(live, unchanged);
+    assert!(
+        live.add_player_to_history(text("user"), 4, text("Other slot"))
+            .unwrap()
+    );
+    for order in [ByteOrder::Little, ByteOrder::Big] {
+        compose_player_history_update(&live, order).unwrap();
+    }
+    // The open and update codecs budget every field, not only array elements.
+    let count = (RepLayoutLimits::default().max_entries - 1) / 3;
+    let entries: Vec<_> = (0..count)
+        .map(|index| PlayerHistoryEntry {
+            user_id: format!("user-{index}").encode_utf16().collect(),
+            chr_slot: 0,
+            cached_character_name: Vec::new(),
+        })
+        .collect();
+    let mut full = plan.clone().with_player_history(&entries).unwrap();
+    let unchanged = full.clone();
+    assert!(
+        full.add_player_to_history(text("new"), 0, text("name"))
+            .is_err()
+    );
+    assert_eq!(full, unchanged);
+
+    let too_many = vec![
+        PlayerHistoryEntry {
+            user_id: Vec::new(),
+            chr_slot: 0,
+            cached_character_name: Vec::new()
+        };
+        usize::from(u16::MAX) + 1
+    ];
+    assert!(plan.clone().with_player_history(&too_many).is_err());
+    // A malformed stored array is rejected without editing the plan.
+    live.values.insert(
+        PLAYER_HISTORY_HANDLE,
+        RepValue::DynamicArray(RepArray {
+            count: u16::MAX,
+            stream: match unchanged.values[&PLAYER_HISTORY_HANDLE].clone() {
+                RepValue::DynamicArray(array) => array.stream,
+                _ => unreachable!(),
+            },
+        }),
+    );
+    let unchanged = live.clone();
+    assert!(
+        live.add_player_to_history(text("new"), 0, text("name"))
+            .is_err()
+    );
+    assert_eq!(live, unchanged);
+}
+
 /// Assign static GUIDs until the next one is `next`.
 fn burn_static_to(cache: &mut NetGuidCache, next: u32) {
     for index in 0.. {
