@@ -8,9 +8,8 @@
 //! fresh player's only source is the starting grant (`D_CharacterStartingStats`
 //! `Base_Stats`). The formulas below are written here by stat name for the
 //! virtual stats that a fresh or a restored player's replicated stats depend
-//! on; any other
-//! stat reads as its summed sources, which for a fresh player matches the
-//! original only because no grant feeds another virtual stat. Enumerated
+//! on; any other stat reads as its summed sources, which for a fresh player
+//! matches the original only because no grant feeds another virtual stat. Enumerated
 //! keys (tool types, atmospheres, times of day) are the original's enum
 //! values, as its selections use them. Arithmetic wraps as the original's
 //! 32-bit integers do.
