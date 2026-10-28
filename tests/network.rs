@@ -3060,12 +3060,43 @@ fn saved_player_records_payload(
     stream(&[Tag::integer("Version", 2), info, blobs])
 }
 
-/// Send `Server_BeginPlayerInitialisation(slot)` on the controller channel
+/// Send `Server_BeginPlayerInitialisation(slot)` and the empty friends list
+/// the authority's finalisation waits for (F-973) on the controller channel
 /// and return every datagram collected afterwards.
 fn send_character_slot(
     client: &mut icarus_bevy::experimental::probe_client::ProbeClient,
     profile_net_version: u32,
     slot: i32,
+) -> Vec<Vec<u8>> {
+    send_character_slot_with(client, profile_net_version, slot, true)
+}
+
+/// `ServerFriendsListUpdated` with no friends on the controller channel.
+fn send_friends_list_updated(
+    client: &mut icarus_bevy::experimental::probe_client::ProbeClient,
+    profile_net_version: u32,
+) {
+    use icarus_bevy::experimental::{
+        probe_initialise::{friends_list_updated_field, initialise_codec},
+        rep_rpc::BP_ICARUS_PLAYER_CONTROLLER_SURVIVAL_FIELD_INDEX_BOUND,
+        session_open::PLAYER_CONTROLLER_CHANNEL_INDEX,
+    };
+    let codec = initialise_codec(profile_net_version);
+    client
+        .send_actor_rpc(
+            PLAYER_CONTROLLER_CHANNEL_INDEX,
+            &friends_list_updated_field(&codec).unwrap(),
+            BP_ICARUS_PLAYER_CONTROLLER_SURVIVAL_FIELD_INDEX_BOUND,
+            &codec.actor,
+        )
+        .unwrap();
+}
+
+fn send_character_slot_with(
+    client: &mut icarus_bevy::experimental::probe_client::ProbeClient,
+    profile_net_version: u32,
+    slot: i32,
+    send_friends_list: bool,
 ) -> Vec<Vec<u8>> {
     use icarus_bevy::experimental::{
         actor_channel::{ActorChannelCodec, ActorChannelLimits},
@@ -3097,6 +3128,9 @@ fn send_character_slot(
             },
         )
         .unwrap();
+    if send_friends_list {
+        send_friends_list_updated(client, profile_net_version);
+    }
     let replies = client.collect(Duration::from_secs(2), 32).unwrap();
     assert!(replies.acked.contains(&packet_id));
     replies
@@ -3513,6 +3547,7 @@ fn new_players_append_history_for_every_open_tracker_and_later_opens() {
         .unwrap();
     let mut app = build_app(&ServerConfig::default(), &WorldSnapshot::default()).unwrap();
     let address = network::install(&mut app, bound.lab).unwrap();
+    let profile_for_gate = profile.clone();
     let ((mut first, mut second), _) = with_server(&mut app, move || {
         let (first, _) = join_pinned_open(address, pinned, 32);
         let (second, _) = join_pinned_open(address, pinned, 32);
@@ -3525,7 +3560,18 @@ fn new_players_append_history_for_every_open_tracker_and_later_opens() {
     );
     let ((first_client, second_client, first_updates, second_updates), _) =
         with_server(&mut app, move || {
-            let second_updates = exchange_profiles(&mut second, engine, 9, 3);
+            // The first controller has not sent its friends list, so the
+            // completed second player does not finalise (F-973).
+            let blocked = exchange_profiles(&mut second, engine, 9, 3);
+            assert!(tracker_histories(&profile_for_gate, channel, &blocked, false).is_empty());
+            send_friends_list_updated(&mut first, engine);
+            let second_updates = second
+                .collect(Duration::from_millis(250), 32)
+                .unwrap()
+                .replies
+                .into_iter()
+                .map(|reply| reply.bytes)
+                .collect::<Vec<_>>();
             let first_updates = first
                 .collect(Duration::from_millis(250), 32)
                 .unwrap()
