@@ -6,7 +6,7 @@ here instead of restating them.
 
 Before restructure: 96ddb0b:docs/gates.md
 
-Last reconciled: 2026-10-22
+Last reconciled: 2026-10-28
 
 ## Before any C001 original-code case
 
@@ -64,13 +64,13 @@ Last reconciled: 2026-10-22
   `NotifyControlMessage` (`CONTROL01` `0x1439ee7f0`, `.pdata` 256371) dispatch,
   and S1 runtime exercise are qualified (F-520, F-544, F-701, F-723, F-724,
   F-729; U-007 to U-010, U-013, U-015 to U-018, U-043 resolved); native
-  connected sessions remain gated (U-038).
+  connected sessions need their own case (U-038).
 - Client and server archive/outer framing, `UControlChannel` byte-order
   persistence (`Connection + 0x158`), 20 fallback layouts (`0..18`, `21`, `22`),
   32,767 queued-bunch bounds, `IsClientMsgTypeValid` state gating,
   `PreLogin`/`InitNewPlayer` checks and 0 registered version/PreLogin callbacks
   are bound in `experimental` (F-688, F-710 to F-714, F-729, F-740; U-014, U-037,
-  U-044, U-051 resolved); connected sessions keep their own gate (U-038, U-052).
+  U-044, U-051 resolved); connected sessions need their own case (U-038, U-052).
 - Older server build 25621760 and client build 25793767 remain distinct;
   addresses and assumptions do not transfer automatically.
 
@@ -99,11 +99,15 @@ Last reconciled: 2026-10-22
 ## Before any original-server or client run
 
 - Each runtime experiment requires its own case scope and current launcher
-  session; historical authorization windows remain expired (F-218, F-252). The
-  user authorized (2026-10-15) offline original-server save-load runs with the
-  supplied save and local server binaries, and (2026-10-16) fetching and
-  running the matched official dedicated server on this host with connected
-  stock-client testing per approved scenario (S1 completed, F-701; later
-  scenarios require explicit scenario approval).
-- Connected stock-client experiments against the native server and reference
-  captures remain deferred by the user (F-421; U-038, U-052).
+  session; historical authorization windows remain expired (F-218, F-252).
+- The user authorized (2026-10-28, F-968) offline and online research: network
+  and Steam access, fetching and running the matched official dedicated server,
+  original-runtime runs, and connected stock-client scenarios against the
+  original or the native server, without per-scenario approval. This replaces
+  the per-scenario approval and the connected-test deferral (F-421; U-038,
+  U-047, U-052). Offline routes are preferred when they answer equally well.
+- Every run still needs its own `work/` case with scope, exact inputs and
+  hashes, limits and literal commands; original execution only through the
+  [launchers](runbooks/original-server-launcher.md); bounded runs with
+  cleanup. A scenario needing the user's stock client, Steam login or
+  credentials is prepared completely and requested with exact steps.
