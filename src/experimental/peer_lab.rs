@@ -195,6 +195,7 @@ use super::handshake_lab::{
     CookieAuthority, HANDSHAKE_BYTES, HandshakeReply, PACKETS_PER_UPDATE, bind_loopback,
     lab_seconds,
 };
+use super::inventory_restore::{InventoryRestoreTables, restore_inventories};
 use super::manager_open::{
     ManagerOpenPlan, ManagerSlot, compose_manager_open, compose_player_history_update,
 };
@@ -597,6 +598,11 @@ pub struct PeerLabStats {
     pub returning_pawn_stomach_entries_dropped: u64,
     /// Restore, composition or framing failures; the UID restore is retained.
     pub returning_pawn_update_errors: u64,
+    /// Restored inventories sent in returning-pawn updates (F-978).
+    pub returning_inventories_sent: u64,
+    /// Saved inventories left out of a sent update because their restore
+    /// meets a gap (an unread default, an unplaced item).
+    pub returning_inventory_gaps: u64,
     /// New-player AddPlayer outcomes (F-865); returning C025 players skip it.
     pub player_history_appends: u64,
     pub player_history_duplicates: u64,
@@ -753,6 +759,8 @@ pub struct SessionCounts {
     pub returning_pawn_update_gaps: u64,
     pub returning_pawn_stomach_entries_dropped: u64,
     pub returning_pawn_update_errors: u64,
+    pub returning_inventories_sent: u64,
+    pub returning_inventory_gaps: u64,
     pub player_history_appends: u64,
     pub player_history_duplicates: u64,
     pub player_history_errors: u64,
@@ -1247,6 +1255,8 @@ pub struct PeerLab {
     pawn_open: Option<(PawnOpenPlan, u32, PawnContent)>,
     /// D_ItemsStatic names in the same row order used by run's row handles.
     pawn_restore_item_rows: Vec<String>,
+    /// The data tables a returning pawn's inventory restore reads (F-978).
+    inventory_restore: Option<InventoryRestoreTables>,
     /// Native run's opt-in UID owner; bare lab experiments retain templates.
     actor_uids: Option<crate::actor_uids::ActorUidLibrary>,
     /// Saved player characters returning pawns restore from (F-950), and the
@@ -1332,6 +1342,7 @@ impl PeerLab {
             player_controller_open: None,
             pawn_open: None,
             pawn_restore_item_rows: Vec::new(),
+            inventory_restore: None,
             actor_uids: None,
             returning_characters: Vec::new(),
             saved_player_controllers: Vec::new(),
@@ -1862,6 +1873,17 @@ impl PeerLab {
         Ok(())
     }
 
+    /// Also restore a returning pawn's saved inventories (F-969 to F-971,
+    /// F-978) from these tables, built for the pawn content's inventories.
+    pub fn enable_inventory_restore(&mut self, tables: InventoryRestoreTables) -> Result<()> {
+        ensure!(
+            self.peers.is_empty(),
+            "configure inventory restore before admitting peers"
+        );
+        self.inventory_restore = Some(tables);
+        Ok(())
+    }
+
     /// F-950: the original's character restore frees the pawn's BeginPlay UID
     /// and claims its saved one; the client sees the changed `IcarusUID`.
     /// Natively the saved UID is already claimed as a seed, so ownership moves
@@ -1968,6 +1990,18 @@ impl PeerLab {
             let Ok(mut restored) = restored else {
                 return Ok(None);
             };
+            let mut inventory_gap = false;
+            if let Some(tables) = &self.inventory_restore {
+                let (_, _, content) = self.pawn_open.as_ref().context("no pawn content")?;
+                match restore_inventories(
+                    &content.inventories,
+                    &self.returning_characters[index].inventories,
+                    tables,
+                )? {
+                    Ok(inventories) => restored.inventories = inventories,
+                    Err(_) => inventory_gap = true,
+                }
+            }
             // The composer refuses AddSaveDataToStomach's unread ModifierID, so
             // restored stomach entries are left out and the rest still goes.
             let dropped = match restored.stomach.take() {
@@ -1994,20 +2028,41 @@ impl PeerLab {
                 &restored,
                 entry.peer.connection_byte_order(),
             )?;
-            let datagram = entry.peer.reliable_actor_bunch(*channel, payload)?;
+            // Restored inventories outgrow one datagram; that update is split
+            // into reliable partial bunches as large opens are.
+            let datagrams = if restored.inventories.is_empty() {
+                vec![entry.peer.reliable_actor_bunch(*channel, payload)?]
+            } else {
+                entry
+                    .peer
+                    .reliable_actor_bunch_datagrams(*channel, payload)?
+                    .datagrams
+            };
             self.guid_cache = cache;
             entry.exports = exports;
             entry.ack_pending = false;
-            Ok::<_, anyhow::Error>(Some((datagram, dropped)))
+            let inventories = restored.inventories.len();
+            Ok::<_, anyhow::Error>(Some((datagrams, dropped, inventories, inventory_gap)))
         })();
         match sent {
-            Ok(Some((datagram, dropped))) => {
+            Ok(Some((datagrams, dropped, inventories, inventory_gap))) => {
                 self.stats.returning_pawn_stomach_entries_dropped = self
                     .stats
                     .returning_pawn_stomach_entries_dropped
                     .saturating_add(dropped as u64);
-                if self.send(&datagram, address) {
+                if inventory_gap {
+                    bump(&mut self.stats.returning_inventory_gaps);
+                }
+                let mut delivered = true;
+                for datagram in &datagrams {
+                    delivered &= self.send(datagram, address);
+                }
+                if delivered {
                     bump(&mut self.stats.returning_pawn_updates_sent);
+                    self.stats.returning_inventories_sent = self
+                        .stats
+                        .returning_inventories_sent
+                        .saturating_add(inventories as u64);
                 }
             }
             Ok(None) => bump(&mut self.stats.returning_pawn_update_gaps),
@@ -2822,6 +2877,8 @@ impl PeerLab {
                 .stats
                 .returning_pawn_stomach_entries_dropped,
             returning_pawn_update_errors: self.stats.returning_pawn_update_errors,
+            returning_inventories_sent: self.stats.returning_inventories_sent,
+            returning_inventory_gaps: self.stats.returning_inventory_gaps,
             player_history_appends: self.stats.player_history_appends,
             player_history_duplicates: self.stats.player_history_duplicates,
             player_history_errors: self.stats.player_history_errors,

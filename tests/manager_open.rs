@@ -350,6 +350,7 @@ fn container_inventories_compose_as_listed_subobjects() {
         row: 42,
         dynamic: vec![(7, 15)],
         stats: vec![(ArchiveText::new(&units("Potency")).unwrap(), 3)],
+        ..SlotItem::new(42).unwrap()
     };
     let inventories = vec![
         PawnInventory {

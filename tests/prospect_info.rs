@@ -883,6 +883,7 @@ fn saved_containers_map_to_inventories() {
                     row: 2,
                     dynamic: vec![(7, 4)],
                     stats: vec![(ArchiveText::new(&units("Potency")).unwrap(), 3)],
+                    ..SlotItem::new(2).unwrap()
                 }),
                 ..InventorySlot::empty(1, 1)
             },

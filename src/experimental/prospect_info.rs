@@ -736,7 +736,7 @@ pub fn saved_player_history(tree: &TypedTree) -> Result<Vec<PlayerHistoryEntry>>
 /// One saved item (`InventorySlotSaveData`): its slot `Location`, its
 /// `D_ItemsStatic` row name, its `DynamicData` (property index, value)
 /// pairs, its `AdditionalStats` (stat index, name, value) triples, its
-/// `ItemGuid` and `ItemOwnerLookupId`, and how many `Alterations` and
+/// `ItemGuid` and `ItemOwnerLookupId`, its `Alterations` names and how many
 /// `LivingItemSlots` it has. `Debug` shows no values.
 #[derive(Clone, Default, PartialEq, Eq)]
 pub struct SavedItem {
@@ -746,7 +746,7 @@ pub struct SavedItem {
     pub stats: Vec<(i32, Vec<u16>, i32)>,
     pub guid: Vec<u16>,
     pub owner_lookup_id: i32,
-    pub alterations: usize,
+    pub alterations: Vec<Vec<u16>>,
     pub living_slots: usize,
 }
 
@@ -854,7 +854,17 @@ fn saved_item(tree: &TypedTree) -> Result<SavedItem> {
         stats,
         guid: fields.string("ItemGuid")?,
         owner_lookup_id: fields.int("ItemOwnerLookupId")?,
-        alterations: fields.structs("Alterations")?.len(),
+        alterations: fields
+            .structs("Alterations")?
+            .iter()
+            .map(|tree| {
+                Fields {
+                    tree,
+                    what: "InventorySlotAlterationData",
+                }
+                .string("Name")
+            })
+            .collect::<Result<_>>()?,
         living_slots: fields.structs("LivingItemSlots")?.len(),
     })
 }

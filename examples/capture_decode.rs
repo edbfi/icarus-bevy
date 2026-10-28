@@ -2465,14 +2465,20 @@ impl<'a> Decoder<'a> {
                     "payload_hex":block.payload.bytes().iter().map(|byte| format!("{byte:02x}")).collect::<String>()}),
                 )?;
             }
-            if update_values
+            let channel_values = self.values_channel == Some(complete.header.channel_index);
+            if channel_values
                 && !matches!(block.target, BlockTarget::Actor)
                 && (block.has_rep_layout || block.payload.bit_len() > 0)
                 && let Some((schema_name, _)) = replayed
             {
                 let values = block_values_json(schema_name, block, &self.profile)
                     .map_err(|error| format!("{error:#}"));
-                self.write_detail(json!({"kind":"update_block_values",
+                let kind = if complete.header.open {
+                    "open_block_values"
+                } else {
+                    "update_block_values"
+                };
+                self.write_detail(json!({"kind":kind,
                     "datagram":arrival.datagram, "ms":arrival.ms,
                     "channel":complete.header.channel_index, "schema":schema_name,
                     "object_path":object_path, "class_path":class_path,

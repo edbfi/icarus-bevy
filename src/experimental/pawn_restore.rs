@@ -25,13 +25,18 @@ use super::actor_channel::{
     encode_actor_bunch_body,
 };
 use super::archive::ByteOrder;
+use super::inventory_restore::{InventoryRestore, SlotChange};
 use super::packet::Payload;
-use super::pawn_open::{PawnComponent, PawnOpenPlan, character_state_handle, handle};
+use super::pawn_open::{
+    INVENTORY_SLOTS_FIELD_INDEX, InventorySlot, PawnComponent, PawnOpenPlan,
+    character_state_handle, fast_array_delta_field, handle, slot_stream,
+};
 use super::recorders::SavedPlayerState;
 use super::rep_layout::{
     ICARUS_ROW_HANDLE_NONE, PropertyStream, RepArray, RepCommand, RepLayoutCodec, RepLayoutLimits,
     RepValue, encode_rep_properties, stomach_component_rep_layout,
 };
+use super::rep_rpc::{FastArrayDelta, FastArrayItem, FieldHeader, write_field_header};
 use super::restore_rules::{UNRECORDED_LEVEL, filter_restored_cosmetic_armour_overrides};
 use super::session_open::{
     ActorKey, ComponentBlock, ComponentExport, ConnectionExports, NetGuidCache, actor_codec, entry,
@@ -73,6 +78,9 @@ pub struct RestoredPawn {
     pub pawn: BTreeMap<u32, RepValue>,
     /// `UPlayerCharacterState` values that differ from the current ones.
     pub character_state: BTreeMap<u32, RepValue>,
+    /// The restored inventories that change (F-978); empty when the save's
+    /// inventories were not restored.
+    pub inventories: Vec<InventoryRestore>,
     /// The stomach's new contents; `None` when it was and stays empty.
     pub stomach: Option<Vec<RestoredStomachContent>>,
 }
@@ -87,6 +95,7 @@ impl std::fmt::Debug for RestoredPawn {
                 &self.character_state.keys().collect::<Vec<_>>(),
             )
             .field("stomach", &self.stomach.as_ref().map(Vec::len))
+            .field("inventories", &self.inventories.len())
             .finish_non_exhaustive()
     }
 }
@@ -274,8 +283,104 @@ pub fn restore_saved_pawn(
         location,
         pawn,
         character_state,
+        inventories: Vec::new(),
         stomach,
     }))
+}
+
+/// One slot's properties by handle; an omitted array is its empty default.
+fn slot_values(slot: &InventorySlot) -> Result<BTreeMap<u32, RepValue>> {
+    use super::pawn_open::slot_handle as h;
+    let empty = || {
+        RepValue::DynamicArray(RepArray {
+            count: 0,
+            stream: PropertyStream {
+                entries: Vec::new(),
+                terminator_checksum: None,
+            },
+        })
+    };
+    let mut values: BTreeMap<u32, RepValue> = [h::ITEM_DYNAMIC, h::ITEM_STATS, h::ITEM_ALTERATIONS]
+        .into_iter()
+        .map(|handle| (handle, empty()))
+        .collect();
+    for entry in slot_stream(slot)?.entries {
+        values.insert(entry.handle, entry.value);
+    }
+    Ok(values)
+}
+
+/// A restored inventory's block (F-978): its runtime subobject with its
+/// class, and the slots fast array's delta from the key the client holds;
+/// a changed slot sends the properties that differ from its open, an added
+/// slot every property. `CurrentWeight` is not sent: the pawn inventory
+/// weight is not modelled.
+fn restored_inventory_block(
+    cache: &mut NetGuidCache,
+    plan: &PawnOpenPlan,
+    key: ActorKey,
+    class: u32,
+    inventory: &InventoryRestore,
+    order: ByteOrder,
+) -> Result<ContentBlock> {
+    let mut changed = Vec::with_capacity(inventory.changes.len());
+    for (id, change) in &inventory.changes {
+        let stream = match change {
+            SlotChange::Added(slot) => slot_stream(slot)?,
+            SlotChange::Changed(slot) => {
+                let index = usize::try_from(*id - 1)?;
+                let before = slot_values(
+                    inventory
+                        .opened
+                        .slots
+                        .items
+                        .get(index)
+                        .ok_or_else(|| anyhow::anyhow!("a changed slot the open lacks"))?,
+                )?;
+                let after = slot_values(slot)?;
+                PropertyStream {
+                    entries: after
+                        .into_iter()
+                        .filter(|(handle, value)| before.get(handle) != Some(value))
+                        .map(|(handle, value)| entry(handle, value))
+                        .collect(),
+                    terminator_checksum: None,
+                }
+            }
+        };
+        changed.push((*id, FastArrayItem::Delta(stream)));
+    }
+    let field = fast_array_delta_field(
+        INVENTORY_SLOTS_FIELD_INDEX,
+        &FastArrayDelta {
+            array_replication_key: inventory.restored.slots.replication_key,
+            base_replication_key: inventory.base_key,
+            deleted_ids: Vec::new(),
+            changed,
+        },
+        &plan.content.slot_layout,
+        plan.engine_net_version,
+        order,
+    )?;
+    let mut writer = super::packet::BitWriter::new();
+    write_field_header(
+        &mut writer,
+        &FieldHeader {
+            index: field.index,
+            payload: field.payload,
+        },
+        plan.content.inventory_bound,
+    )?;
+    Ok(ContentBlock {
+        has_rep_layout: false,
+        target: BlockTarget::SubObject {
+            object: NetGuidRef::plain(
+                cache.subobject_guid(key, u32::try_from(inventory.inventory)?),
+            ),
+            class: SubObjectClass::Class(NetGuidRef::plain(class)),
+        },
+        payload: Payload::from_writer(writer),
+    })
 }
 
 /// A pawn component's GUID, which its open exported and the client acked.
@@ -407,6 +512,18 @@ pub fn compose_restored_pawn_update(
             &cleared,
             &stomach_component_rep_layout(),
         )?);
+    }
+    if !restored.inventories.is_empty() {
+        let class = cache.export_static(exports, &plan.content.inventory_class)?;
+        if class.export.is_some() {
+            exports.begin_bunch();
+            bail!("the pawn's inventory class is not acked yet");
+        }
+        for inventory in &restored.inventories {
+            blocks.push(restored_inventory_block(
+                cache, plan, key, class.guid, inventory, order,
+            )?);
+        }
     }
     ensure!(!blocks.is_empty(), "a restored pawn update carries values");
     encode_actor_bunch_body(
