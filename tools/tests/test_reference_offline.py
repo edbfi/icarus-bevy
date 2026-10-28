@@ -544,6 +544,56 @@ class InvocationTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "--join-probe"):
                 _ = fixture.approve()
 
+    def test_initialise_mode_binds_one_player_id_and_slot(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            fixture = Fixture(directory)
+            fixture.args.handshake_probe = True
+            fixture.args.hello_probe = True
+            fixture.args.join_probe = True
+            fixture.args.initialise_probe = True
+            fixture.args.seconds = 600
+            fixture.session.update(allowed_modes=["startup", "handshake", "hello", "join", "initialise"],
+                                   hello_version=7, join_seconds=300, initialise_player_id="7656119800000001",
+                                   initialise_chr_slot=2, observation_seconds=600, run_timeout_seconds=720,
+                                   probe=str(fixture.probe), probe_sha256=digest(fixture.probe))
+            fixture.write()
+            approved = fixture.approve()
+            self.assertEqual(approved.initialise, ("7656119800000001", 2))
+            updates: list[JsonObject] = [
+                {"initialise_player_id": ""}, {"initialise_player_id": "a b"},
+                {"initialise_player_id": "x" * 65}, {"initialise_chr_slot": -1},
+                {"initialise_chr_slot": 100},
+                {"allowed_modes": ["startup", "handshake", "hello", "initialise"]},
+            ]
+            for update in updates:
+                with self.subTest(update=update):
+                    fixture.write(update)
+                    with self.assertRaises(ValueError):
+                        _ = fixture.approve()
+            fixture.write()
+            run = fixture.case / "run"
+            run.mkdir()
+            docker = DockerFixture(handshake=True)
+            clock = Clock()
+            with patch("tools.run_reference_offline.command", new=docker), \
+                 patch("tools.run_reference_offline.time.monotonic", new=clock), \
+                 patch("tools.run_reference_offline.time.sleep", new=clock.sleep), \
+                 patch("tools.run_reference_offline.available_memory", return_value=4 * 1024**3), \
+                 patch("tools.run_reference_offline.shutil.disk_usage", new=disk_space):
+                _ = observe(fixture.args, approved, run, NAME, TOKEN, ["docker", "run"])
+            probe_index = next(i for i, call in enumerate(docker.calls) if call[1] == "exec")
+            self.assertEqual(docker.calls[probe_index][6:], [
+                "--hello", "7", "--join", "300", "--initialise", "--player-id", "7656119800000001",
+                "--chr-slot", "2"])
+            fixture.args.join_probe = False
+            with self.assertRaisesRegex(ValueError, "--initialise-probe"):
+                _ = fixture.approve()
+            fixture.args.join_probe = True
+            fixture.args.initialise_probe = False
+            fixture.write({"allowed_modes": ["startup", "handshake", "hello", "join"]})
+            with self.assertRaisesRegex(ValueError, "initialise binding"):
+                _ = fixture.approve()
+
     def test_save_load_binds_one_case_local_prospect_copy(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             fixture = Fixture(directory)

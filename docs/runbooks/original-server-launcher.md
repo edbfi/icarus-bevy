@@ -81,6 +81,13 @@ beside `handshake` and binds `hello_version`, an unsigned 32-bit value.
 `--join-probe` adds `--join <join_seconds>` (30 to 600): synthetic ids log
 in, join and hold the connection from `probe_delay_seconds` after start
 (F-858); allow `join` too.
+`--initialise-probe` (with `--join-probe`) adds `--initialise --player-id <id>
+--chr-slot <n>`: the probe logs in as that player id and initialises as a stock
+client does (character slot, profile, loadout and bestiary answers), then keeps
+recording; the session allows `initialise` beside `join` and binds
+`initialise_player_id` (1 to 64 letters, digits, `_` or `-`) and
+`initialise_chr_slot` (0 to 99). A saved character's id is private: it stays in
+the case.
 
 ## Save-load mode
 
