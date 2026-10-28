@@ -4759,3 +4759,177 @@ fn the_initialising_probe_restores_its_saved_character_through_the_native_exchan
     assert_eq!(status.initialisation_calls_ignored, 0);
     with_server(&mut app, move || client.close().unwrap());
 }
+
+#[test]
+fn returning_pawns_restore_their_saved_inventories_in_the_update() {
+    use icarus_bevy::experimental::{
+        actor_channel::{ActorChannelCodec, BlockTarget, SubObjectClass, read_actor_bunch_body},
+        archive::ByteOrder,
+        packet::read_packet,
+        pawn_open::PAWN_CHANNEL_INDEX,
+        prospect_info::{SavedActorInventory, SavedItem},
+    };
+    use icarus_bevy::prospect;
+    use scalar::units;
+    let json = |value: serde_json::Value| serde_json::to_vec(&value).unwrap();
+    // Hands (D_InventoryID 1) has three slots: Any, Any, Fists.
+    let tables = vec![
+        (
+            "Inventory/D_InventoryInfo.json",
+            json(serde_json::json!({"Rows": [
+                {"Name": "Unused", "StartingSlots": 4, "InventoryID": {"Value": "Undefined"}},
+                {"Name": "Hands", "SlotTemplate": {"RowName": "Any"}, "StartingSlots": 3,
+                 "InventoryID": {"Value": "Hands"},
+                 "SlotOverrides": [{"Query": {"RowName": "Fists", "DataTableName": "D_TagQueries"}, "Location": 2}]},
+                {"Name": "Bag", "SlotTemplate": {"RowName": "Any"}, "InventoryID": {"Value": "Bag"}},
+            ]})),
+        ),
+        (
+            "Inventory/D_InventoryID.json",
+            pak_writer::table_json(&["Undefined", "Hands", "Bag"]),
+        ),
+        (
+            "Tags/D_TagQueries.json",
+            json(serde_json::json!({"Rows": [
+                {"Name": "Q0", "Query": {"QueryTokenStream": [], "TagDictionary": []}},
+                // ALL() of no expressions: every item.
+                {"Name": "Any", "Query": {"QueryTokenStream": [0, 1, 5, 0], "TagDictionary": []}},
+                {"Name": "Fists", "Query": {"QueryTokenStream": [0, 1, 1, 1, 0],
+                 "TagDictionary": [{"TagName": "Item.Fist"}]}},
+                {"Name": "Any_Oxygen", "Query": {"QueryTokenStream": [], "TagDictionary": []}},
+                {"Name": "Any_Food", "Query": {"QueryTokenStream": [], "TagDictionary": []}},
+                {"Name": "Any_Water", "Query": {"QueryTokenStream": [], "TagDictionary": []}},
+            ]})),
+        ),
+        (
+            "Items/D_ItemsStatic.json",
+            json(serde_json::json!({"Rows": [
+                {"Name": "Ore", "Itemable": {"RowName": "Item_Ore"},
+                 "Generated_Tags": {"GameplayTags": [{"TagName": "Item.Resource.Ore"}], "ParentTags": []}},
+                {"Name": "Sword", "Durable": {"RowName": "Sword"},
+                 "Generated_Tags": {"GameplayTags": [{"TagName": "Item.Weapon"}], "ParentTags": []}},
+            ]})),
+        ),
+        (
+            "Traits/D_Decayable.json",
+            json(serde_json::json!({"Rows": []})),
+        ),
+        (
+            "Traits/D_Equippable.json",
+            json(serde_json::json!({"Rows": []})),
+        ),
+        (
+            "Traits/D_Armour.json",
+            json(serde_json::json!({"Rows": []})),
+        ),
+        (
+            "Flags/D_SessionFlags.json",
+            pak_writer::table_json(&["Flag_A"]),
+        ),
+    ];
+    for gap in [false, true] {
+        let profile = ReleaseProfile::load(&release_toml()).unwrap();
+        let pinned = profile.pin.network_checksum;
+        let engine = profile.engine_network_version;
+        let payload = returning_characters_payload_with_state(NET_ID_HEX, 3, &[70_001], &[]);
+        let directory = tempfile::tempdir().unwrap();
+        let pak = directory.path().join("data.pak");
+        fs::write(&pak, pak_writer::official_pak(&tables)).unwrap();
+        let mut lab = network::bind(&NetworkConfig {
+            release_profile: Some(release_toml()),
+            data_pak: Some(pak),
+            ..enabled(0)
+        })
+        .unwrap()
+        .unwrap()
+        .lab;
+        lab.seed_actor_uids(prospect::saved_actor_uids_from_payload(&payload).unwrap())
+            .unwrap();
+        let mut characters = prospect::saved_player_characters_from_payload(&payload).unwrap();
+        let item = |row: &str, dynamic: &[(i32, i32)]| SavedItem {
+            location: 0,
+            row_name: units(row),
+            dynamic: dynamic.to_vec(),
+            owner_lookup_id: -1,
+            ..SavedItem::default()
+        };
+        // A durable item without its saved durability is a gap (F-976).
+        characters[0].inventories = vec![SavedActorInventory {
+            id: 1,
+            items: vec![if gap {
+                item("Sword", &[])
+            } else {
+                item("Ore", &[(7, 3)])
+            }],
+        }];
+        lab.enable_returning_characters(characters).unwrap();
+        let mut app = build_app(&ServerConfig::default(), &WorldSnapshot::default()).unwrap();
+        let address = network::install(&mut app, lab).unwrap();
+        let ((_client, reply), _) = with_server(&mut app, move || {
+            let (mut client, _) = join_pinned_open(address, pinned, 7);
+            let reply = exchange_profiles(&mut client, engine, 3, 3);
+            (client, reply)
+        });
+        // The restore update carries one class-named inventory block unless
+        // the inventories meet a gap.
+        let codec = ActorChannelCodec {
+            engine_net_version: engine,
+            exports_enabled: false,
+            has_level: true,
+            order: ByteOrder::Little,
+            limits: Default::default(),
+        };
+        let inventory_blocks: usize = reply
+            .iter()
+            .flat_map(|bytes| {
+                read_packet(
+                    bytes,
+                    &PacketConfig {
+                        receiver: PacketReceiver::Client,
+                        ..probe_config().packet
+                    },
+                )
+                .unwrap()
+                .bunches
+            })
+            .filter(|bunch| bunch.header.channel_index == PAWN_CHANNEL_INDEX && !bunch.header.open)
+            .map(|bunch| {
+                assert!(!bunch.header.partial);
+                read_actor_bunch_body(&mut bunch.payload.reader(), false, &codec)
+                    .unwrap()
+                    .blocks
+                    .iter()
+                    .filter(|block| {
+                        matches!(
+                            block.target,
+                            BlockTarget::SubObject {
+                                class: SubObjectClass::Class(_),
+                                ..
+                            }
+                        )
+                    })
+                    .count()
+            })
+            .sum();
+        assert_eq!(inventory_blocks, usize::from(!gap));
+        let stats = app.world().resource::<PeerLab>().stats();
+        assert_eq!(
+            (
+                stats.returning_pawn_updates_sent,
+                stats.returning_inventories_sent,
+                stats.returning_inventory_gaps,
+                stats.returning_pawn_update_errors,
+            ),
+            (1, u64::from(!gap), u64::from(gap), 0),
+            "gap {gap}"
+        );
+        let counts = counts(&app);
+        assert_eq!(
+            (
+                counts.returning_inventories_sent,
+                counts.returning_inventory_gaps
+            ),
+            (u64::from(!gap), u64::from(gap))
+        );
+    }
+}
