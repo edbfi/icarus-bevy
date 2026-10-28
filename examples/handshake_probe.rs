@@ -14,7 +14,11 @@ use icarus_bevy::experimental::{
     handshake,
     packet::{BunchLimits, PacketConfig, Receiver},
     peer_lab::PeerLabConfig,
-    probe_client::{ProbeClient, ProbeConfig, ReplyDecode},
+    probe_client::{ProbeClient, ProbeConfig, ReplyDatagram, ReplyDecode},
+    probe_initialise::{
+        InitialiseConfig, InitialiseEvent, PlayerInitialiser, player_unique_net_id,
+    },
+    release::ENGINE_NETWORK_VERSION,
 };
 use serde_json::json;
 
@@ -31,6 +35,17 @@ struct Options {
     /// then send Netspeed and Join and hold the connection this many seconds.
     #[arg(long, requires = "hello")]
     join: Option<u64>,
+    /// After the Join, initialise as a player: log in with one NULL-type id
+    /// whose text is `--player-id`, find the PlayerController's channel, send
+    /// `Server_BeginPlayerInitialisation(--chr-slot)` and answer its profile,
+    /// loadout and bestiary requests while recording every reply.
+    #[arg(long, requires_all = ["join", "player_id", "chr_slot"])]
+    initialise: bool,
+    /// The login id's text; never logged.
+    #[arg(long, requires = "initialise")]
+    player_id: Option<String>,
+    #[arg(long, requires = "initialise", allow_hyphen_values = true)]
+    chr_slot: Option<i32>,
 }
 
 /// Channel-index ceiling for decoding replies; observation only.
@@ -50,7 +65,11 @@ fn main() -> Result<()> {
     socket.connect("127.0.0.1:17777")?;
     if let (Some(version), Some(seconds)) = (options.hello, options.join) {
         drop(socket);
-        return join(version, seconds);
+        let player = options
+            .initialise
+            .then(|| options.player_id.zip(options.chr_slot))
+            .flatten();
+        return join(version, seconds, player);
     }
     if let Some(version) = options.hello {
         return hello(socket, version);
@@ -236,12 +255,26 @@ fn identities() -> Result<Vec<(&'static str, UniqueNetId)>> {
 
 /// Hello, Login with each synthetic id until a Welcome, then Netspeed and
 /// Join, then acknowledge everything, record every reply and send keepalives
-/// for `seconds`.
-fn join(version: u32, seconds: u64) -> Result<()> {
-    for (label, unique_net_id) in identities()? {
+/// for `seconds`. With `player` (id text, slot), the one identity is that
+/// NULL-type id and the hold initialises the player.
+fn join(version: u32, seconds: u64, player: Option<(String, i32)>) -> Result<()> {
+    let identities = match &player {
+        Some((player_id, _)) => vec![("null-text-player", player_unique_net_id(player_id)?)],
+        None => identities()?,
+    };
+    for (label, unique_net_id) in identities {
         let socket = UdpSocket::bind("127.0.0.1:0")?;
         socket.connect("127.0.0.1:17777")?;
         let mut client = ProbeClient::connect(socket, probe_config())?;
+        let mut initialiser = player.as_ref().map(|(_, chr_slot)| {
+            PlayerInitialiser::new(
+                &client,
+                InitialiseConfig {
+                    chr_slot: *chr_slot,
+                    engine_net_version: ENGINE_NETWORK_VERSION,
+                },
+            )
+        });
         let report = client.hello(version, "")?;
         if !report
             .messages()
@@ -261,6 +294,12 @@ fn join(version: u32, seconds: u64) -> Result<()> {
         };
         client.send_control(&[login], false)?;
         let collected = client.collect(Duration::from_secs(5), 64)?;
+        if let Some(initialiser) = &mut initialiser {
+            // Every accepted datagram is fed, so reliable order holds.
+            for reply in report.replies.iter().chain(&collected.replies) {
+                print_events(initialiser.on_reply(&mut client, reply)?, 0)?;
+            }
+        }
         let mut welcomed = false;
         for message in collected.messages() {
             let detail = match message {
@@ -295,13 +334,40 @@ fn join(version: u32, seconds: u64) -> Result<()> {
             false,
         )?;
         println!("{}", json!({"event":"join_sent", "identity":label}));
-        return hold(&mut client, seconds);
+        let Some(mut initialiser) = initialiser else {
+            return hold(&mut client, seconds, &mut |_, _, _| Ok(()));
+        };
+        hold(&mut client, seconds, &mut |client, ms, reply| {
+            print_events(initialiser.on_reply(client, reply)?, ms)
+        })?;
+        println!(
+            "{}",
+            json!({"event":"initialise_done", "complete":initialiser.is_complete(),
+            "summary":initialiser.summary(), "notes":initialiser.notes()})
+        );
+        return Ok(());
     }
     println!("{}", json!({"event":"no_identity_welcomed"}));
     Ok(())
 }
 
-fn hold(client: &mut ProbeClient, seconds: u64) -> Result<()> {
+/// Each initialisation step as one JSON line, at `ms` into the hold.
+fn print_events(events: Vec<InitialiseEvent>, ms: u64) -> Result<()> {
+    for event in events {
+        let mut value = serde_json::to_value(&event)?;
+        value["ms"] = json!(ms);
+        println!("{value}");
+    }
+    Ok(())
+}
+
+/// Record every reply until `seconds` pass or the server falls silent,
+/// passing each to `on_reply` after it is printed.
+fn hold(
+    client: &mut ProbeClient,
+    seconds: u64,
+    on_reply: &mut dyn FnMut(&mut ProbeClient, u64, &ReplyDatagram) -> Result<()>,
+) -> Result<()> {
     let start = Instant::now();
     let mut last_datagram = Instant::now();
     let mut last_report = Instant::now();
@@ -316,10 +382,12 @@ fn hold(client: &mut ProbeClient, seconds: u64) -> Result<()> {
         }
         for reply in &collected.replies {
             // Every reply, raw, for offline replication decoding; case-private.
+            let ms = start.elapsed().as_millis() as u64;
             println!(
                 "{}",
-                json!({"event":"reply", "ms":start.elapsed().as_millis() as u64, "hex":hex(&reply.bytes)})
+                json!({"event":"reply", "ms":ms, "hex":hex(&reply.bytes)})
             );
+            on_reply(client, ms, reply)?;
             datagrams += 1;
             bytes += reply.bytes.len() as u64;
             match &reply.decode {

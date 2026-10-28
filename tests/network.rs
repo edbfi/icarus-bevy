@@ -3060,12 +3060,43 @@ fn saved_player_records_payload(
     stream(&[Tag::integer("Version", 2), info, blobs])
 }
 
-/// Send `Server_BeginPlayerInitialisation(slot)` on the controller channel
+/// Send `Server_BeginPlayerInitialisation(slot)` and the empty friends list
+/// the authority's finalisation waits for (F-973) on the controller channel
 /// and return every datagram collected afterwards.
 fn send_character_slot(
     client: &mut icarus_bevy::experimental::probe_client::ProbeClient,
     profile_net_version: u32,
     slot: i32,
+) -> Vec<Vec<u8>> {
+    send_character_slot_with(client, profile_net_version, slot, true)
+}
+
+/// `ServerFriendsListUpdated` with no friends on the controller channel.
+fn send_friends_list_updated(
+    client: &mut icarus_bevy::experimental::probe_client::ProbeClient,
+    profile_net_version: u32,
+) {
+    use icarus_bevy::experimental::{
+        probe_initialise::{friends_list_updated_field, initialise_codec},
+        rep_rpc::BP_ICARUS_PLAYER_CONTROLLER_SURVIVAL_FIELD_INDEX_BOUND,
+        session_open::PLAYER_CONTROLLER_CHANNEL_INDEX,
+    };
+    let codec = initialise_codec(profile_net_version);
+    client
+        .send_actor_rpc(
+            PLAYER_CONTROLLER_CHANNEL_INDEX,
+            &friends_list_updated_field(&codec).unwrap(),
+            BP_ICARUS_PLAYER_CONTROLLER_SURVIVAL_FIELD_INDEX_BOUND,
+            &codec.actor,
+        )
+        .unwrap();
+}
+
+fn send_character_slot_with(
+    client: &mut icarus_bevy::experimental::probe_client::ProbeClient,
+    profile_net_version: u32,
+    slot: i32,
+    send_friends_list: bool,
 ) -> Vec<Vec<u8>> {
     use icarus_bevy::experimental::{
         actor_channel::{ActorChannelCodec, ActorChannelLimits},
@@ -3097,6 +3128,9 @@ fn send_character_slot(
             },
         )
         .unwrap();
+    if send_friends_list {
+        send_friends_list_updated(client, profile_net_version);
+    }
     let replies = client.collect(Duration::from_secs(2), 32).unwrap();
     assert!(replies.acked.contains(&packet_id));
     replies
@@ -3513,6 +3547,7 @@ fn new_players_append_history_for_every_open_tracker_and_later_opens() {
         .unwrap();
     let mut app = build_app(&ServerConfig::default(), &WorldSnapshot::default()).unwrap();
     let address = network::install(&mut app, bound.lab).unwrap();
+    let profile_for_gate = profile.clone();
     let ((mut first, mut second), _) = with_server(&mut app, move || {
         let (first, _) = join_pinned_open(address, pinned, 32);
         let (second, _) = join_pinned_open(address, pinned, 32);
@@ -3525,7 +3560,18 @@ fn new_players_append_history_for_every_open_tracker_and_later_opens() {
     );
     let ((first_client, second_client, first_updates, second_updates), _) =
         with_server(&mut app, move || {
-            let second_updates = exchange_profiles(&mut second, engine, 9, 3);
+            // The first controller has not sent its friends list, so the
+            // completed second player does not finalise (F-973).
+            let blocked = exchange_profiles(&mut second, engine, 9, 3);
+            assert!(tracker_histories(&profile_for_gate, channel, &blocked, false).is_empty());
+            send_friends_list_updated(&mut first, engine);
+            let second_updates = second
+                .collect(Duration::from_millis(250), 32)
+                .unwrap()
+                .replies
+                .into_iter()
+                .map(|reply| reply.bytes)
+                .collect::<Vec<_>>();
             let first_updates = first
                 .collect(Duration::from_millis(250), 32)
                 .unwrap()
@@ -4416,4 +4462,300 @@ fn returning_pawns_never_share_a_saved_uid_across_duplicate_records() {
             client.close().unwrap();
         }
     });
+}
+
+/// The initialising probe's synthetic NULL-type login text; its saved
+/// character carries exactly this PlayerID.
+const PLAYER_TEXT: &str = "IcarusProbe-Player-7c1F";
+
+#[test]
+fn the_initialising_probe_login_id_decodes_to_its_exact_text() {
+    use icarus_bevy::experimental::{
+        admission::{check_unique_net_id_compatible, unique_net_id_is_valid},
+        control_messages::{Decoded, encode_control_message, read_control_messages},
+        packet::BitReader,
+        peer_lab::PeerLabAdmission,
+        probe_initialise::player_unique_net_id,
+        session_open::replicated_unique_net_id,
+    };
+    let admission = PeerLabAdmission::default();
+    // A decimal Steam-like text stays text: it is never sent as encoded hex.
+    for text in [PLAYER_TEXT, "76561190000000042"] {
+        let login = ControlMessage::Login {
+            response: ArchiveText::text("0").unwrap(),
+            url: ArchiveText::text("?Name=IcarusProbe").unwrap(),
+            unique_net_id: player_unique_net_id(text).unwrap(),
+            platform: ArchiveText::text("").unwrap(),
+        };
+        let codec = ControlCodec::default();
+        let bytes = encode_control_message(&login, &codec).unwrap();
+        let decoded = read_control_messages(
+            &mut BitReader::new(&bytes, bytes.len() * 8).unwrap(),
+            &codec,
+        )
+        .unwrap();
+        let [Decoded::Message(ControlMessage::Login { unique_net_id, .. })] = decoded.as_slice()
+        else {
+            panic!("one Login")
+        };
+        assert_eq!(
+            unique_net_id.kind,
+            NetIdType::Named(ArchiveText::text("NULL").unwrap())
+        );
+        let NetIdValue::Text(value) = &unique_net_id.value else {
+            panic!("a text id")
+        };
+        assert_eq!(value.units(), text.encode_utf16().collect::<Vec<_>>());
+        assert!(unique_net_id_is_valid(unique_net_id));
+        check_unique_net_id_compatible(
+            unique_net_id,
+            admission.default_subsystem,
+            admission.compatible_subsystems,
+            admission.indexed_subsystems,
+        )
+        .unwrap();
+        // Replicated by NULL's index with the text unchanged.
+        let replicated = replicated_unique_net_id(unique_net_id, admission.indexed_subsystems);
+        assert_eq!(replicated.kind, NetIdType::Indexed(1));
+        assert_eq!(replicated.value, unique_net_id.value);
+    }
+    assert!(player_unique_net_id("").is_err());
+}
+
+#[test]
+fn the_initialiser_finds_a_player_controller_open_on_any_channel() {
+    use icarus_bevy::experimental::{
+        archive::ByteOrder,
+        packet::{Packet, PacketHeader},
+        peer_lab::PeerLabAdmission,
+        probe_initialise::{ActorChannelTracker, initialise_codec},
+        sequencing::{
+            MAX_CONSTRUCTED_PARTIAL_BUNCH_BYTES, max_single_bunch_size_bits, split_outgoing_bunch,
+        },
+        session_open::{ConnectionExports, NetGuidCache, compose_player_controller_open},
+    };
+    let profile = ReleaseProfile::load(&release_toml()).unwrap();
+    let mut plan = profile
+        .player_controller_open_plan(PeerLabAdmission::default().map_url, network::SPAWN_LOCATION)
+        .unwrap()
+        .unwrap();
+    plan.channel_index = 37;
+    let mut cache = NetGuidCache::new();
+    cache.register_level(&plan.profile.level);
+    let open = compose_player_controller_open(
+        &mut cache,
+        &mut ConnectionExports::new(),
+        &plan,
+        0,
+        ByteOrder::Little,
+    )
+    .unwrap();
+    // The incoming reliable seed wraps: the parts carry 0 and 1.
+    let seed = 1023;
+    let mut bunch = open.bunch.clone();
+    bunch.header.reliable_sequence_raw = Some(0);
+    let parts = split_outgoing_bunch(
+        &bunch,
+        std::slice::from_ref(&open.exports),
+        max_single_bunch_size_bits(1024, 2).unwrap(),
+        Some(MAX_CONSTRUCTED_PARTIAL_BUNCH_BYTES),
+    )
+    .unwrap();
+    assert_eq!(parts.len(), 2, "exports, then the body");
+    let packet = |sequence, part: &icarus_bevy::experimental::packet::Bunch| Packet {
+        magic: 0,
+        header: PacketHeader {
+            sequence,
+            acked_sequence: 0,
+            history: vec![0],
+        },
+        info: None,
+        bunches: vec![part.clone()],
+    };
+    let mut tracker = ActorChannelTracker::new(
+        PacketConfig {
+            receiver: PacketReceiver::Client,
+            ..probe_config().packet
+        },
+        initialise_codec(profile.engine_network_version).actor,
+        seed,
+    );
+    let mut notes = Vec::new();
+    // The body arrives first and waits for the export part.
+    assert!(
+        tracker
+            .feed_packet(packet(10, &parts[1]), &mut notes)
+            .is_empty()
+    );
+    let complete = tracker.feed_packet(packet(11, &parts[0]), &mut notes);
+    assert!(notes.is_empty(), "{notes:?}");
+    let [open_bunch] = complete.as_slice() else {
+        panic!("one complete open")
+    };
+    assert_eq!(
+        (open_bunch.channel_index, open_bunch.open, open_bunch.parts),
+        (37, true, 2)
+    );
+    assert_eq!(open_bunch.payload, open.bunch.payload);
+    assert_eq!(
+        tracker.open_archetype(open_bunch).unwrap().as_deref(),
+        Some(
+            "/Game/BP/Player/BP_IcarusPlayerControllerSurvival.Default__BP_IcarusPlayerControllerSurvival_C"
+        )
+    );
+    // A resent part is dropped by reliable order.
+    assert!(
+        tracker
+            .feed_packet(packet(12, &parts[0]), &mut notes)
+            .is_empty()
+    );
+    assert_eq!(notes, ["channel 37: duplicate reliable bunch"]);
+}
+
+/// Join with the initialising probe's NULL-type text id and run its
+/// initialisation until it completes, then two more windows. Returns the
+/// client, the events without packet IDs, the notes and the datagrams of
+/// those two windows.
+fn initialise_player(
+    server: SocketAddr,
+    version: u32,
+    engine: u32,
+    slot: i32,
+) -> (
+    ProbeClient,
+    Vec<Value>,
+    std::collections::BTreeMap<String, u64>,
+    Vec<Vec<u8>>,
+) {
+    use icarus_bevy::experimental::probe_initialise::{
+        InitialiseConfig, PlayerInitialiser, player_unique_net_id,
+    };
+    let mut client = connect(server);
+    let mut initialiser = PlayerInitialiser::new(
+        &client,
+        InitialiseConfig {
+            chr_slot: slot,
+            engine_net_version: engine,
+        },
+    );
+    let report = client.hello(version, "").unwrap();
+    client
+        .send_control(
+            &[ControlMessage::Login {
+                response: ArchiveText::text("0").unwrap(),
+                url: ArchiveText::text(&format!("?Name={NAME_SENTINEL}")).unwrap(),
+                unique_net_id: player_unique_net_id(PLAYER_TEXT).unwrap(),
+                platform: ArchiveText::text("").unwrap(),
+            }],
+            false,
+        )
+        .unwrap();
+    let welcome = client.collect(Duration::from_secs(3), 1).unwrap();
+    assert!(matches!(
+        welcome.messages().collect::<Vec<_>>().as_slice(),
+        [ControlMessage::Welcome { .. }]
+    ));
+    let mut events = Vec::new();
+    for reply in report.replies.iter().chain(&welcome.replies) {
+        events.extend(initialiser.on_reply(&mut client, reply).unwrap());
+    }
+    client
+        .send_control(
+            &[
+                ControlMessage::Netspeed { rate: 100_000 },
+                ControlMessage::Join,
+            ],
+            false,
+        )
+        .unwrap();
+    let deadline = Instant::now() + Duration::from_secs(20);
+    let mut datagrams = Vec::new();
+    let mut after = 0;
+    while after < 2 {
+        let complete = initialiser.is_complete();
+        let collected = client.collect(Duration::from_millis(250), 64).unwrap();
+        for reply in &collected.replies {
+            if complete {
+                datagrams.push(reply.bytes.clone());
+            }
+            events.extend(initialiser.on_reply(&mut client, reply).unwrap());
+        }
+        client.keepalive().unwrap();
+        after += usize::from(initialiser.is_complete());
+        assert!(
+            Instant::now() < deadline,
+            "incomplete: {:?} {:?}",
+            initialiser.summary(),
+            initialiser.notes()
+        );
+    }
+    let events = events
+        .iter()
+        .map(|event| {
+            let mut value = serde_json::to_value(event).unwrap();
+            value.as_object_mut().unwrap().remove("packet_id");
+            value
+        })
+        .collect();
+    (client, events, initialiser.notes().clone(), datagrams)
+}
+
+#[test]
+fn the_initialising_probe_restores_its_saved_character_through_the_native_exchange() {
+    use icarus_bevy::{experimental::session_open::PLAYER_CONTROLLER_CHANNEL_INDEX, prospect};
+    use serde_json::json;
+    let profile = ReleaseProfile::load(&release_toml()).unwrap();
+    let pinned = profile.pin.network_checksum;
+    let engine = profile.engine_network_version;
+    let payload = returning_character_payload(PLAYER_TEXT, 3, 70_001);
+    let mut lab = network::bind(&NetworkConfig {
+        release_profile: Some(release_toml()),
+        ..enabled(0)
+    })
+    .unwrap()
+    .unwrap()
+    .lab;
+    lab.seed_actor_uids(prospect::saved_actor_uids_from_payload(&payload).unwrap())
+        .unwrap();
+    lab.enable_returning_characters(
+        prospect::saved_player_characters_from_payload(&payload).unwrap(),
+    )
+    .unwrap();
+    let mut app = build_app(&ServerConfig::default(), &WorldSnapshot::default()).unwrap();
+    let address = network::install(&mut app, lab).unwrap();
+    let ((client, events, notes, datagrams), _) = with_server(&mut app, move || {
+        initialise_player(address, pinned, engine, 3)
+    });
+    assert_eq!(
+        events,
+        [
+            json!({"event":"controller_channel", "channel":PLAYER_CONTROLLER_CHANNEL_INDEX,
+                "archetype":"/Game/BP/Player/BP_IcarusPlayerControllerSurvival.Default__BP_IcarusPlayerControllerSurvival_C"}),
+            json!({"event":"begin_sent", "channel":PLAYER_CONTROLLER_CHANNEL_INDEX, "chr_slot":3,
+                "slot_sent":true}),
+            json!({"event":"friends_list_sent", "channel":PLAYER_CONTROLLER_CHANNEL_INDEX}),
+            json!({"event":"profile_request", "profile":"user", "requested_slot":null}),
+            json!({"event":"profile_answered", "profile":"user", "chr_slot":null}),
+            json!({"event":"profile_request", "profile":"character", "requested_slot":3}),
+            json!({"event":"profile_answered", "profile":"character", "chr_slot":3}),
+            json!({"event":"loadout_answered", "requested_slot":3}),
+            json!({"event":"bestiary_answered"}),
+            json!({"event":"associated_prospect", "requested_slot":3}),
+        ]
+    );
+    assert!(notes.is_empty(), "{notes:?}");
+    // The native server completed: the pawn took the saved UID.
+    assert_eq!(pawn_uid_update(&profile, &datagrams), Some(70_001));
+    let stats = app.world().resource::<PeerLab>().stats();
+    assert_eq!(
+        (stats.returning_pawns_restored, stats.returning_pawn_errors),
+        (1, 0)
+    );
+    let status = counts(&app);
+    assert_eq!(
+        (status.joined, status.initialisation_slots_recorded),
+        (1, 1)
+    );
+    assert_eq!(status.initialisation_calls_ignored, 0);
+    with_server(&mut app, move || client.close().unwrap());
 }

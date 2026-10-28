@@ -35,7 +35,9 @@ from tools.runtime_types import JsonObject, integer_field, json_object, parse_co
 IMAGE = "ghcr.io/pelican-eggs/steamcmd@sha256:967e40780cb46a5343bd7a5fd372612d1a1b90fbc95fdd803d74ec5b3bede237"
 REFERENCE_EXE = Path("Icarus/Binaries/Win64/IcarusServer-Win64-Shipping.exe")
 MODES = frozenset({"startup", "resume", "missing", "truncated-json", "save-load", "handshake",
-                   "complete-stateless", "hello", "join"})
+                   "complete-stateless", "hello", "join", "initialise"})
+# A saved character's player id as the probe logs in with it (F-858, F-949).
+PLAYER_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]{0,63}")
 PROSPECT_FILE = re.compile(r"[A-Za-z0-9_-]{1,64}\.json")
 PROSPECTS = Path("Icarus/Saved/PlayerData/DedicatedServer/Prospects")
 PLAYER_DATA = Path("Icarus/Saved/PlayerData")
@@ -54,6 +56,7 @@ class Arguments(argparse.Namespace):
     complete_stateless: bool = False
     hello_probe: bool = False
     join_probe: bool = False
+    initialise_probe: bool = False
 
 
 def command(args: Sequence[str], timeout: float = 30, check: bool = True) -> subprocess.CompletedProcess[str]:
@@ -119,6 +122,8 @@ def selected_modes(args: Arguments) -> frozenset[str]:
         raise ValueError("--hello-probe requires --handshake-probe without --complete-stateless")
     if args.join_probe and not args.hello_probe:
         raise ValueError("--join-probe requires --hello-probe")
+    if args.initialise_probe and not args.join_probe:
+        raise ValueError("--initialise-probe requires --join-probe")
     if args.startup_probe not in {"none", "resume"} or args.load_fixture not in {"none", "missing", "truncated-json"}:
         raise ValueError("unknown experiment mode")
     if sum((args.load_fixture != "none", args.startup_probe != "none", args.save_load)) > 1:
@@ -135,6 +140,8 @@ def selected_modes(args: Arguments) -> frozenset[str]:
         modes.add("hello")
     if args.join_probe:
         modes.add("join")
+    if args.initialise_probe:
+        modes.add("initialise")
     return frozenset(modes)
 
 
@@ -150,6 +157,7 @@ class ApprovedRun:
     shutdown_seconds: int | None
     hello_version: int | None
     join_seconds: int | None
+    initialise: tuple[str, int] | None
     probe_delay_seconds: int
     observation_seconds: int
     lifetime_seconds: int
@@ -230,6 +238,18 @@ def validate_session(root: Path, args: Arguments, now: datetime.datetime) -> App
             raise ValueError("join_seconds must be 30..600")
     elif "join_seconds" in session:
         raise ValueError("join_seconds requires join authorization")
+    initialise: tuple[str, int] | None = None
+    if "initialise" in allowed:
+        # The joined probe initialises as this saved character's player.
+        if "join" not in allowed:
+            raise ValueError("initialise requires join authorization")
+        player_id = string_field(session, "initialise_player_id")
+        chr_slot = integer_field(session, "initialise_chr_slot")
+        if PLAYER_ID.fullmatch(player_id) is None or not 0 <= chr_slot <= 99:
+            raise ValueError("initialise needs a 1..64 character player id (no leading - or _) and a 0..99 slot")
+        initialise = (player_id, chr_slot)
+    elif any(key in session for key in ("initialise_player_id", "initialise_chr_slot")):
+        raise ValueError("initialise binding requires initialise authorization")
     probe_delay = 40
     if "probe_delay_seconds" in session:
         if "handshake" not in allowed:
@@ -262,7 +282,8 @@ def validate_session(root: Path, args: Arguments, now: datetime.datetime) -> App
     if not start <= now < end or now + datetime.timedelta(seconds=lifetime) >= end:
         raise ValueError("session is future, expired or has insufficient approved time")
     return ApprovedRun(case, session_path, session, hashlib.sha256(raw_session).hexdigest(),
-                       reference, probe, save_input, shutdown, hello_version, join_seconds, probe_delay,
+                       reference, probe, save_input, shutdown, hello_version, join_seconds, initialise,
+                       probe_delay,
                        observation, lifetime, max_runs)
 
 
@@ -484,6 +505,11 @@ def observe(args: Arguments, approved: ApprovedRun, run: Path,
                             raise ValueError("missing authorized join hold")
                         probe_argv += ["--join", str(approved.join_seconds)]
                         cap = approved.join_seconds + 60
+                    if args.initialise_probe:
+                        if approved.initialise is None:
+                            raise ValueError("missing authorized initialisation")
+                        player_id, chr_slot = approved.initialise
+                        probe_argv += ["--initialise", "--player-id", player_id, "--chr-slot", str(chr_slot)]
                     _ = (run / "probe-invocation.json").write_text(json.dumps(probe_argv) + "\n")
                     probe = observation.run(probe_argv, cap=cap, check=False)
                     _ = (run / "probe.jsonl").write_text(probe.stdout)
@@ -557,6 +583,7 @@ def main() -> None:
     _ = parser.add_argument("--complete-stateless", action="store_true")
     _ = parser.add_argument("--hello-probe", action="store_true")
     _ = parser.add_argument("--join-probe", action="store_true")
+    _ = parser.add_argument("--initialise-probe", action="store_true")
     args = parser.parse_args(namespace=Arguments())
     root = Path(__file__).resolve().parents[1]
     approved = validate_session(root, args, datetime.datetime.now(datetime.UTC))

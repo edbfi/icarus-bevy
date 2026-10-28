@@ -174,7 +174,7 @@ use serde::Serialize;
 
 use super::actor_channel::{
     ActorBunchBody, ActorChannelCodec, ActorChannelLimits, BlockTarget, encode_actor_bunch_body,
-    read_actor_bunch_body,
+    read_client_actor_bunch_body,
 };
 use super::actor_open::{Block, Reference};
 use super::admission::{
@@ -218,8 +218,9 @@ use super::rep_rpc::{
     BACKEND_PROXY_FIELD_INDEX_BOUND, BESTIARY_MANAGER_FIELD_INDEX_BOUND,
     BP_ICARUS_PLAYER_CONTROLLER_SURVIVAL_FIELD_INDEX_BOUND, PLAYER_DATA_FIELD_INDEX_BOUND,
     RESPONSE_GET_CHARACTER_PROFILE, RESPONSE_GET_USER_PROFILE,
-    SERVER_BEGIN_PLAYER_INITIALISATION_FIELD_INDEX, SERVER_RECEIVE_BESTIARY_DATA,
-    SERVER_RECEIVE_LOADOUT, parse_begin_player_initialisation, read_field_header,
+    SERVER_BEGIN_PLAYER_INITIALISATION_FIELD_INDEX, SERVER_FRIENDS_LIST_UPDATED_FIELD_INDEX,
+    SERVER_RECEIVE_BESTIARY_DATA, SERVER_RECEIVE_LOADOUT, parse_begin_player_initialisation,
+    read_field_header,
 };
 use super::server_fps::ServerFpsMeter;
 use super::session_open::{
@@ -574,6 +575,11 @@ pub struct PeerLabStats {
     pub initialisation_answers_ignored: u64,
     /// Both answers accepted with an open pawn and PlayerState.
     pub players_initialised: u64,
+    /// Controllers' `ServerFriendsListUpdated` calls accepted (F-973).
+    pub friends_lists_received: u64,
+    /// Completed players finalised once every joined controller sent its
+    /// friends list (F-973).
+    pub players_finalised: u64,
     pub player_character_id_updates_sent: u64,
     /// Returning pawns given their saved UID (F-950).
     pub returning_pawns_restored: u64,
@@ -739,6 +745,8 @@ pub struct SessionCounts {
     pub bestiary_responses_received: u64,
     pub initialisation_answers_ignored: u64,
     pub players_initialised: u64,
+    pub friends_lists_received: u64,
+    pub players_finalised: u64,
     pub player_character_id_updates_sent: u64,
     pub returning_pawns_restored: u64,
     pub returning_pawn_updates_sent: u64,
@@ -1037,6 +1045,7 @@ struct RegisteredPlayer {
 
 enum ControllerCall {
     Begin(i32),
+    FriendsList,
     Profile(ProfileResponse),
     Initialisation(InitialisationAnswer),
 }
@@ -1051,7 +1060,7 @@ fn controller_initialisation_calls(
     components: [Option<u32>; 3],
 ) -> Result<(Vec<ControllerCall>, usize)> {
     let actor = actor_codec(engine_net_version, order);
-    let body = read_actor_bunch_body(&mut payload.reader(), false, &actor)?;
+    let body = read_client_actor_bunch_body(&mut payload.reader(), &actor)?;
     let codec = RepLayoutCodec {
         actor,
         checksums: false,
@@ -1092,6 +1101,10 @@ fn controller_initialisation_calls(
                     &field.payload,
                     &codec,
                 )?));
+            } else if component.is_none() && field.index == SERVER_FRIENDS_LIST_UPDATED_FIELD_INDEX
+            {
+                // Its friend IDs are not interpreted.
+                calls.push(ControllerCall::FriendsList);
             } else if component == Some(0)
                 && matches!(
                     field.index,
@@ -2799,6 +2812,8 @@ impl PeerLab {
             bestiary_responses_received: self.stats.bestiary_responses_received,
             initialisation_answers_ignored: self.stats.initialisation_answers_ignored,
             players_initialised: self.stats.players_initialised,
+            friends_lists_received: self.stats.friends_lists_received,
+            players_finalised: self.stats.players_finalised,
             player_character_id_updates_sent: self.stats.player_character_id_updates_sent,
             returning_pawns_restored: self.stats.returning_pawns_restored,
             returning_pawn_updates_sent: self.stats.returning_pawn_updates_sent,
@@ -3220,6 +3235,14 @@ impl PeerLab {
                 bump(&mut self.stats.initialisation_slots_recorded);
                 self.request_profile(address, ProfileKind::User);
             }
+            ControllerCall::FriendsList => {
+                if entry.player.is_none() || entry.profiles.friend_ids_ready {
+                    bump(&mut self.stats.initialisation_calls_ignored);
+                    return;
+                }
+                entry.profiles.friend_ids_ready = true;
+                bump(&mut self.stats.friends_lists_received);
+            }
             ControllerCall::Profile(response) => {
                 if entry.profiles.outstanding != Some(response.kind) {
                     bump(&mut self.stats.profile_responses_ignored);
@@ -3454,13 +3477,40 @@ impl PeerLab {
                 if self.send_all(&sent, address) {
                     bump(&mut self.stats.player_character_id_updates_sent);
                 }
-                self.restore_returning_pawn_uid(address);
-                self.add_new_player_to_history(address);
             }
             Err(_) => {
                 bump(&mut self.stats.profile_exchange_errors);
                 self.fail_profile_exchange(address);
             }
+        }
+    }
+
+    /// `UConnectedPlayers::TryResolveConnectedPlayersState` (F-973): while
+    /// any joined controller has not sent its friends list, no player
+    /// finalises; then each completed player finalises once, which restores
+    /// a returning pawn and adds a new player to History.
+    fn finalise_connected_players(&mut self) {
+        if self
+            .peers
+            .values()
+            .any(|entry| entry.player.is_some() && !entry.profiles.friend_ids_ready)
+        {
+            return;
+        }
+        let ready: Vec<SocketAddrV4> = self
+            .peers
+            .iter()
+            .filter(|(_, entry)| entry.profiles.completed && !entry.profiles.finalised)
+            .map(|(address, _)| *address)
+            .collect();
+        for address in ready {
+            let Some(entry) = self.peers.get_mut(&address) else {
+                continue;
+            };
+            entry.profiles.finalised = true;
+            bump(&mut self.stats.players_finalised);
+            self.restore_returning_pawn_uid(address);
+            self.add_new_player_to_history(address);
         }
     }
 
@@ -4362,6 +4412,7 @@ impl PeerLab {
             }
             self.data(address, length, now);
         }
+        self.finalise_connected_players();
         self.send_acks();
         self.update_game_state();
     }

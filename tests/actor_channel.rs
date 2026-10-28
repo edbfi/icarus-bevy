@@ -26,12 +26,12 @@ use icarus_bevy::experimental::actor_channel::{
     evaluate_player_controller_net_relevancy, evaluate_prep_connections_tick_budget,
     evaluate_prioritize_actor, evaluate_process_prioritized_actor, guid_kind,
     is_connection_ready_for_replication, is_within_net_relevancy_distance, parse_actor_bunch,
-    parse_player_controller_open_bunch, quantize_angle, read_actor_bunch_body, read_content_block,
-    read_export_prefix, read_guid_ref, read_must_be_mapped_guids,
-    read_player_controller_open_bunch_body, read_rotator, read_spawn, round_net_priority_to_int,
-    write_actor_bunch_body, write_content_block, write_export_prefix, write_guid_ref,
-    write_must_be_mapped_guids, write_player_controller_open_bunch_body, write_rotator,
-    write_spawn,
+    parse_player_controller_open_bunch, quantize_angle, read_actor_bunch_body,
+    read_client_actor_bunch_body, read_content_block, read_export_prefix, read_guid_ref,
+    read_must_be_mapped_guids, read_player_controller_open_bunch_body, read_rotator, read_spawn,
+    round_net_priority_to_int, write_actor_bunch_body, write_content_block, write_export_prefix,
+    write_guid_ref, write_must_be_mapped_guids, write_player_controller_open_bunch_body,
+    write_rotator, write_spawn,
 };
 use icarus_bevy::experimental::archive::ByteOrder;
 use icarus_bevy::experimental::control_messages::ArchiveText;
@@ -2925,4 +2925,47 @@ fn server_replicate_actors_frame_is_net_ready_mark_relevant_and_replicate_actor(
             queue_partial_initial_retry: false,
         }
     );
+}
+
+#[test]
+fn client_subobject_blocks_end_their_header_at_the_object() {
+    // F-972: the server reads a client's sub-object block as rep-layout bit,
+    // actor bit and object reference, then the payload count; no stably-named
+    // bit or class follows.
+    let codec = codec(14, false, true);
+    let mut payload = BitWriter::new();
+    payload.write_bits(0b1011, 4);
+    let block = ContentBlock {
+        has_rep_layout: false,
+        target: BlockTarget::SubObject {
+            object: NetGuidRef::plain(44),
+            class: SubObjectClass::ClientSent,
+        },
+        payload: Payload::from_writer(payload),
+    };
+    let mut writer = BitWriter::new();
+    write_content_block(&mut writer, &block, &codec).unwrap();
+    let mut expected = BitWriter::new();
+    expected.write_bit(false);
+    expected.write_bit(false);
+    write_guid_ref(&mut expected, &NetGuidRef::plain(44), &codec).unwrap();
+    expected.write_int_packed(4);
+    expected.write_bits(0b1011, 4);
+    assert_eq!(writer.bit_len(), expected.bit_len());
+    assert_eq!(Payload::from_writer(writer), Payload::from_writer(expected));
+
+    let body = encode_actor_bunch_body(
+        &ActorBunchBody {
+            spawn: None,
+            blocks: vec![block.clone()],
+        },
+        &codec,
+    )
+    .unwrap();
+    let read = read_client_actor_bunch_body(&mut body.reader(), &codec).unwrap();
+    assert_eq!(read.blocks, [block]);
+    // Read in the server-sent form, the first payload-count bit is taken as
+    // the stably-named bit and the count shifts, as the original's rejection
+    // of the earlier probe encoding showed (M-1105).
+    assert!(read_actor_bunch_body(&mut body.reader(), false, &codec).is_err());
 }

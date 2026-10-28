@@ -82,7 +82,8 @@ PlayerState; a request failing three times closes the session (the original
 kicks). It then asks for the client's loadout and bestiary; once both have
 answered and the pawn is open, `run` replicates `PlayerCharacterID`, and a saved
 player character matching the login ID and the profile's slot gives the pawn its
-saved UID (F-962); `run` then sends the record's saved pawn state, with levels
+saved UID once every joined controller has sent `ServerFriendsListUpdated`, as the
+original finalises (F-973, F-975); `run` then sends the record's saved pawn state, with levels
 and health clamped as the original does (F-964); a new player, whom no saved
 controller matches, is added to the replicated History (F-967). That UID stays
 claimed after the session ends. A client that

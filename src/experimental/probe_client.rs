@@ -190,6 +190,16 @@ impl ProbeClient {
         &self.handshake
     }
 
+    pub fn config(&self) -> &ProbeConfig {
+        &self.config
+    }
+
+    /// The cookie-derived initial incoming and outgoing reliable sequences
+    /// every channel starts from.
+    pub fn initial_reliable(&self) -> (u32, u32) {
+        self.sequencer.initial_reliable()
+    }
+
     /// Send one reliable Hello opening the control channel, then collect
     /// replies for the reply window. An empty `token` asks for a challenge
     /// (F-563).
@@ -289,7 +299,7 @@ impl ProbeClient {
             channel_index,
             BlockTarget::SubObject {
                 object: NetGuidRef::plain(proxy),
-                class: SubObjectClass::StablyNamed,
+                class: SubObjectClass::ClientSent,
             },
             &field,
             rep_rpc::BACKEND_PROXY_FIELD_INDEX_BOUND,
@@ -309,7 +319,7 @@ impl ProbeClient {
             channel_index,
             BlockTarget::SubObject {
                 object: NetGuidRef::plain(player_data),
-                class: SubObjectClass::StablyNamed,
+                class: SubObjectClass::ClientSent,
             },
             &FieldHeader {
                 index: super::rep_rpc::SERVER_RECEIVE_LOADOUT,
@@ -332,7 +342,7 @@ impl ProbeClient {
             channel_index,
             BlockTarget::SubObject {
                 object: NetGuidRef::plain(bestiary),
-                class: SubObjectClass::StablyNamed,
+                class: SubObjectClass::ClientSent,
             },
             &FieldHeader {
                 index: super::rep_rpc::SERVER_RECEIVE_BESTIARY_DATA,

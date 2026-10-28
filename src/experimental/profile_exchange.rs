@@ -45,6 +45,10 @@ pub(crate) struct ProfileExchange {
     pub has_loadout: bool,
     pub has_bestiary: bool,
     pub completed: bool,
+    /// The controller's `ServerFriendsListUpdated` arrived (F-973).
+    pub friend_ids_ready: bool,
+    /// Finalised: restored or added as a new player (F-973).
+    pub finalised: bool,
 }
 
 pub(crate) struct ProfileResponse {

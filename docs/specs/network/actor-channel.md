@@ -4,7 +4,7 @@
 
 Experimental: static observations of client build 25793767 and server build
 25621760, wire-checked against the 3.0.31 capture (F-704 to F-711, F-761,
-F-845). Last reconciled: 2026-10-26.
+F-845). Last reconciled: 2026-10-28.
 
 ## Scope
 
@@ -103,7 +103,9 @@ Address pairs are server / client.
     `bPendingDormancy = 1` across `ReplicationMap` (`+0xa0`); `bClose` with
     `CloseReason == 1` (`ChannelCloseReason::Dormancy`) sets
     `NetDormancy = DORM_DormantAll` (`2`) in `CleanUp` and keeps the actor.
-- Content blocks (F-644, F-703 to F-709, F-846, F-849): F-849 framing feeds
+- Content blocks (F-644, F-703 to F-709, F-846, F-849): a client's sub-object
+  block carries no stably-named bit or class after its reference (F-972).
+  F-849 framing feeds
   `FObjectReplicator::ReplicateProperties` (`0x1437f6b80`).
   `FRepLayout::ReceiveProperties` (`0x143b20720`) reads `bDoChecksum`, the F-846
   handle stream and field headers (`SerializeInt` below

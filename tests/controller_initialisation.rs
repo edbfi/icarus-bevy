@@ -428,7 +428,7 @@ fn subobject_rpc_does_not_initialise_the_controller() {
                 has_rep_layout: false,
                 target: BlockTarget::SubObject {
                     object: NetGuidRef::plain(44),
-                    class: SubObjectClass::StablyNamed,
+                    class: SubObjectClass::ClientSent,
                 },
                 payload: fields_payload(&[field(3, ByteOrder::Little)]),
             }],
@@ -639,7 +639,7 @@ fn subobject_body(object: u32, fields: &[FieldHeader], bound: u32, order: ByteOr
                 has_rep_layout: false,
                 target: BlockTarget::SubObject {
                     object: NetGuidRef::plain(object),
-                    class: SubObjectClass::StablyNamed,
+                    class: SubObjectClass::ClientSent,
                 },
                 payload: Payload::from_writer(writer),
             }],
@@ -1211,7 +1211,7 @@ fn initialisation_payloads_skip_exactly_to_following_fields_on_each_component() 
 #[test]
 fn malformed_trailing_block_prevents_both_initialisation_answers_from_applying() {
     use icarus_bevy::experimental::{
-        actor_channel::read_actor_bunch_body,
+        actor_channel::read_client_actor_bunch_body,
         rep_rpc::{BESTIARY_MANAGER_FIELD_INDEX_BOUND, PLAYER_DATA_FIELD_INDEX_BOUND},
     };
     let (mut app, mut client) = setup(true, true, ByteOrder::Little);
@@ -1237,7 +1237,7 @@ fn malformed_trailing_block_prevents_both_initialisation_answers_from_applying()
             client.order,
         );
         blocks.extend(
-            read_actor_bunch_body(&mut payload.reader(), false, &codec(client.order))
+            read_client_actor_bunch_body(&mut payload.reader(), &codec(client.order))
                 .unwrap()
                 .blocks,
         );

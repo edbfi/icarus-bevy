@@ -4,6 +4,7 @@ import contextlib
 import hashlib
 import io
 import json
+import os
 from pathlib import Path
 import subprocess
 import sys
@@ -13,6 +14,10 @@ from typing import final
 import unittest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+# Git hooks export GIT_INDEX_FILE and friends; fixture repositories (and the
+# lint's own git calls on them) must never act on the caller's repository.
+for _variable in [name for name in os.environ if name.startswith("GIT_")]:
+    del os.environ[_variable]
 from tools import docs_lint  # noqa: E402
 
 DIGEST = "a" * 64
