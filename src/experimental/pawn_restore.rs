@@ -536,9 +536,10 @@ fn rep_block(
 /// then each restored inventory's slot delta and each restored modifier as a
 /// new class-named sub-object, with the classes the connection has not
 /// acked exported ahead of the body; restored stats go as the stat
-/// container's delta right after the actor block (F-989). The pawn's open must be acked. Restored stomach entries reject: the
-/// replicated entry's `ModifierID` comes from `AddSaveDataToStomach`, which
-/// is unread; clearing a stomach composes.
+/// container's delta right after the actor block (F-989). The pawn's open
+/// must be acked. Restored stomach entries reject: the replicated entry's
+/// `ModifierID` comes from `AddSaveDataToStomach`, which is unread; clearing
+/// a stomach composes.
 pub fn compose_restored_pawn_update(
     cache: &mut NetGuidCache,
     exports: &mut ConnectionExports,

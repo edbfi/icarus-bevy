@@ -2177,10 +2177,11 @@ impl PeerLab {
                 entry.peer.connection_byte_order(),
             )?;
             // Restored inventories, modifiers and stats can outgrow one
-            // datagram and need class exports; that update is split into reliable partial
-            // bunches after its export parts, as large opens are. Without
-            // them the update keeps its single-bunch limit, which refuses an
-            // oversized update instead of splitting it.
+            // datagram and need class exports; that update is split into
+            // reliable partial bunches after its export parts, as large
+            // opens are. Without them the update keeps its single-bunch
+            // limit, which refuses an oversized update instead of splitting
+            // it.
             let datagrams = if restored.inventories.is_empty()
                 && restored.modifiers.is_empty()
                 && restored.stats.is_none()
