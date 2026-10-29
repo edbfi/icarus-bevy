@@ -2123,6 +2123,14 @@ impl PeerLab {
             let Ok(mut restored) = restored else {
                 return Ok(None);
             };
+            // The original restores TotalExperience from the character
+            // profile's XP, the debt not subtracted (F-990).
+            if let Some(xp) = entry.profiles.character_xp {
+                bounded.insert(
+                    super::pawn_open::character_state_handle::TOTAL_EXPERIENCE,
+                    RepValue::Int(xp),
+                );
+            }
             // The bounds the stats moved go with the levels clamped to them.
             for (handle, value) in &bounded {
                 if open_state.get(handle) != Some(value) {
@@ -3569,6 +3577,7 @@ impl PeerLab {
             )?;
             if kind == ProfileKind::Character {
                 entry.profiles.character_slot = Some(profile_exchange::character_slot(&values)?);
+                entry.profiles.character_xp = Some(profile_exchange::character_xp(&values)?);
                 let Some(RepValue::Str(name)) = values.first() else {
                     bail!("character profile needs CharacterName");
                 };
