@@ -86,6 +86,8 @@ pub mod character_state_handle {
     /// `UCharacterState::Stamina` and `MaxStamina`.
     pub const STAMINA: u32 = 13;
     pub const MAX_STAMINA: u32 = 14;
+    /// `UCharacterState::TotalExperience`.
+    pub const TOTAL_EXPERIENCE: u32 = 15;
     /// `UCharacterState::GrowthRowHandle` (1-byte row index).
     pub const GROWTH_ROW: u32 = 16;
     /// `USurvivalCharacterState` levels and maxima.

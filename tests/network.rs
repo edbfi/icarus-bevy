@@ -4190,20 +4190,17 @@ inventory_class = [{ path = "Bag", checksum = 9 }, { path = "/Script/P", checksu
                 );
             }
             assert_eq!(updates[1][0], (BlockTarget::Actor, pawn));
-            if case == Case::Unrecorded {
-                assert_eq!(
-                    updates[1].len(),
-                    1,
-                    "only pawn handles when levels are unrecorded"
-                );
-            } else {
-                assert_eq!(updates[1].len(), 2);
-                let BlockTarget::SubObject { object, class } = &updates[1][1].0 else {
-                    panic!("ActorState block");
-                };
-                assert_ne!(object.guid, 0);
-                assert_eq!(*class, SubObjectClass::StablyNamed);
-                let mut expected = BTreeMap::from([
+            // ActorState always carries the profile's XP as TotalExperience
+            // (F-990); unrecorded levels add nothing else.
+            assert_eq!(updates[1].len(), 2);
+            let BlockTarget::SubObject { object, class } = &updates[1][1].0 else {
+                panic!("ActorState block");
+            };
+            assert_ne!(object.guid, 0);
+            assert_eq!(*class, SubObjectClass::StablyNamed);
+            let mut expected = BTreeMap::from([(h::TOTAL_EXPERIENCE, RepValue::Int(41))]);
+            if case != Case::Unrecorded {
+                expected.extend([
                     (h::WATER, RepValue::Int(0)),
                     (h::FOOD, RepValue::Int(50)),
                     (h::RADIATION, RepValue::Int(900)),
@@ -4213,8 +4210,8 @@ inventory_class = [{ path = "Bag", checksum = 9 }, { path = "/Script/P", checksu
                 }
                 // No pak: health clamps to the lab maximum (already 100).
                 expected.insert(h::CURRENT_ALIVE_STATE, RepValue::Enum(0));
-                assert_eq!(updates[1][1].1, expected);
             }
+            assert_eq!(updates[1][1].1, expected);
         }
         let stats = app.world().resource::<PeerLab>().stats();
         assert_eq!(stats.returning_pawns_restored, 1);
@@ -5278,5 +5275,13 @@ fn returning_pawns_restore_their_stats_and_the_bounds_they_set() {
             .entries
             .iter()
             .any(|entry| entry.handle == h::MAX_HEALTH && entry.value == RepValue::Int(300))
+    );
+    // TotalExperience from the character profile's XP (41), its debt (-99)
+    // not subtracted (F-990).
+    assert!(
+        state
+            .entries
+            .iter()
+            .any(|entry| entry.handle == h::TOTAL_EXPERIENCE && entry.value == RepValue::Int(41))
     );
 }

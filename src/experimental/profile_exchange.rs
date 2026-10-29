@@ -41,6 +41,8 @@ pub(crate) struct ProfileExchange {
     pub character_failures: u8,
     pub character_slot: Option<i32>,
     pub character_name: Option<ArchiveText>,
+    /// The character profile's `XP` (F-990).
+    pub character_xp: Option<i32>,
     pub initialisation_requested: bool,
     pub has_loadout: bool,
     pub has_bestiary: bool,
@@ -151,6 +153,15 @@ pub(crate) fn request(
         },
         &codec.actor,
     )
+}
+
+/// `FOnlineProfileCharacter::XP`, the profile's third property after
+/// `CharacterName` and `ChrSlot` (F-990).
+pub(crate) fn character_xp(values: &[RepValue]) -> Result<i32> {
+    let Some(RepValue::Int(xp)) = values.get(2) else {
+        anyhow::bail!("character profile needs XP")
+    };
+    Ok(*xp)
 }
 
 pub(crate) fn character_slot(values: &[RepValue]) -> Result<i32> {
