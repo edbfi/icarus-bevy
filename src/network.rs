@@ -85,6 +85,7 @@ use crate::{
         rep_layout::{DYNAMIC_ITEM_PROPERTIES_MAX_VALUE, NetworkName, RepValue},
         server_fps::{DEFAULT_SAMPLES, ServerFpsMeter},
         session_open::ActorKey,
+        stat_restore::{ItemStatInfo, SetBonus, StatRestoreTables},
         time_of_day::{RateCurve, TimeOfDayClock},
     },
     preservation::PreservedSection,
@@ -472,6 +473,147 @@ pub fn modifier_restore_tables(tables: &mut DataTables) -> Result<ModifierRestor
         });
     }
     Ok(restore)
+}
+
+/// The tables [`stat_restore_tables`] reads besides the item rows.
+pub const STAT_RESTORE_TABLES: [&str; 7] = [
+    crate::pawn_stats::STATS_TABLE,
+    STARTING_STATS_TABLE,
+    "D_Armour",
+    "D_ArmourSets",
+    "D_ArmourSetBonus",
+    "D_Alterations",
+    MODIFIER_STATES_TABLE,
+];
+
+/// Each carrying stat's `D_TagQueries` row (F-987).
+const CARRYING_QUERIES: [(&str, &str); 5] = [
+    ("Any_Tool", "IsCarryingTool_?"),
+    ("Any_AnimalCorpse", "IsCarryingAnimal_?"),
+    ("Any_Radar", "IsCarryingRadar_?"),
+    ("Any_Exotic", "IsCarryingExotic_?"),
+    ("Any_Extractor", "IsCarryingExtractor_?"),
+];
+
+/// A stat map field (`StatsGranted`, `Stats`, `GrantedStats`) of `row` by
+/// stat name; entries that are not `(Value="<stat>")` to an int are skipped.
+fn stat_map(
+    row: &serde_json::Map<String, serde_json::Value>,
+    field: &str,
+) -> BTreeMap<String, i32> {
+    row.get(field)
+        .and_then(serde_json::Value::as_object)
+        .map(|stats| {
+            stats
+                .iter()
+                .filter_map(|(key, value)| {
+                    Some((
+                        granted_stat_name(key)?.to_owned(),
+                        i32::try_from(value.as_i64()?).ok()?,
+                    ))
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// The data tables a returning pawn's stat restore reads (F-983 to F-987):
+/// the stat rows, the starting grants, every item row's armour set and
+/// attachment stats, the set bonuses, every modifier's grants, the
+/// `Overburdened` row and the carrying queries.
+pub fn stat_restore_tables(tables: &mut DataTables) -> Result<StatRestoreTables> {
+    use crate::pawn_stats::{REPLICATED_FIELD, STATS_TABLE};
+    let names = tables.rows(STATS_TABLE)?.to_vec();
+    let replicated = (0..names.len())
+        .map(|row| Ok(tables.row_bool(STATS_TABLE, REPLICATED_FIELD, row)? == Some(true)))
+        .collect::<Result<Vec<_>>>()?;
+    let starting = stat_map(
+        &tables
+            .row(STARTING_STATS_TABLE, STARTING_STATS_ROW)?
+            .with_context(|| format!("{STARTING_STATS_TABLE} has no {STARTING_STATS_ROW} row"))?,
+        "StatsGranted",
+    );
+    let by_name = |tables: &mut DataTables,
+                   table: &str|
+     -> Result<BTreeMap<String, serde_json::Map<String, serde_json::Value>>> {
+        Ok(tables
+            .objects(table)?
+            .iter()
+            .filter_map(|row| Some((row.get("Name")?.as_str()?.to_owned(), row.clone())))
+            .collect())
+    };
+    let armour = by_name(tables, "D_Armour")?;
+    let alterations = by_name(tables, "D_Alterations")?;
+    let bonuses = by_name(tables, "D_ArmourSetBonus")?;
+    let mut set_bonuses = BTreeMap::new();
+    for (set, row) in by_name(tables, "D_ArmourSets")? {
+        let rows = row
+            .get("SetBonus")
+            .and_then(serde_json::Value::as_array)
+            .into_iter()
+            .flatten()
+            .filter_map(row_name)
+            .filter_map(|name| bonuses.get(name))
+            .map(|bonus| {
+                let required = bonus
+                    .get("RequiredGear")
+                    .and_then(serde_json::Value::as_i64)
+                    .and_then(|count| i32::try_from(count).ok())
+                    .unwrap_or(0);
+                SetBonus {
+                    required,
+                    grants: stat_map(bonus, "StatsGranted"),
+                }
+            })
+            .collect();
+        set_bonuses.insert(set, rows);
+    }
+    let items = tables
+        .objects(ITEMS_STATIC_TABLE)?
+        .iter()
+        .map(|row| ItemStatInfo {
+            armour_set: names_row(row, "Armour")
+                .and_then(|name| armour.get(&name))
+                .and_then(|armour| names_row(armour, "ArmourSet")),
+            attachment: names_row(row, "Attachments")
+                .and_then(|name| alterations.get(&name))
+                .map(|alteration| stat_map(alteration, "Stats"))
+                .unwrap_or_default(),
+        })
+        .collect();
+    let modifiers = tables.objects(MODIFIER_STATES_TABLE)?.to_vec();
+    let modifier_grants = modifiers
+        .iter()
+        .map(|row| stat_map(row, "GrantedStats"))
+        .collect();
+    let overburdened = modifiers
+        .iter()
+        .position(|row| row.get("Name").and_then(serde_json::Value::as_str) == Some("Overburdened"))
+        .context("D_ModifierStates has no Overburdened row")?;
+    let carrying = CARRYING_QUERIES
+        .iter()
+        .map(|(query, stat)| {
+            let row = tables
+                .row(TAG_QUERIES_TABLE, query)?
+                .with_context(|| format!("{TAG_QUERIES_TABLE} lacks {query}"))?;
+            Ok((
+                crate::experimental::tag_query::TagQuery::from_row(&serde_json::Value::Object(
+                    row,
+                ))?,
+                (*stat).to_owned(),
+            ))
+        })
+        .collect::<Result<_>>()?;
+    Ok(StatRestoreTables {
+        names,
+        replicated,
+        starting,
+        items,
+        set_bonuses,
+        modifier_grants,
+        overburdened: u16::try_from(overburdened)?,
+        carrying,
+    })
 }
 
 /// A `Base<X>_+` stat name in a `GrantedStats`/`ArmourStats` key
