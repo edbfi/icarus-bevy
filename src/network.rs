@@ -1446,6 +1446,26 @@ pub fn apply_saved_game_state(
     saved_managers: Vec<(ManagerSlot, ManagerOpenPlan)>,
 ) -> Result<AppliedGameState> {
     let mut saved = saved_game_state(section, tables)?;
+    // The container inventories a returning pawn's items link (F-985).
+    if let Some(inventories) = &saved.inventory_containers {
+        lab.set_linked_inventories(
+            inventories
+                .iter()
+                .zip(0_i32..)
+                .map(|(inventory, index)| {
+                    (
+                        index,
+                        inventory
+                            .slots
+                            .items
+                            .iter()
+                            .filter_map(|slot| slot.item.as_ref().map(|item| item.row))
+                            .collect(),
+                    )
+                })
+                .collect(),
+        )?;
+    }
     let mut quest_plans = Vec::new();
     if !saved.quests.is_empty() {
         let built = match lab.quest_open_base() {
@@ -1741,6 +1761,18 @@ pub fn bind_with_parameters(
                     lab.enable_modifier_restore(
                         modifier_restore_tables(tables)
                             .context("build the modifier restore tables")?,
+                    )?;
+                }
+                // Stats follow the inventories, so they need the inventory
+                // restore's tables as well as their own.
+                if !inventories.is_empty()
+                    && INVENTORY_RESTORE_TABLES
+                        .iter()
+                        .chain(&STAT_RESTORE_TABLES)
+                        .all(|table| tables.has_table(table))
+                {
+                    lab.enable_stat_restore(
+                        stat_restore_tables(tables).context("build the stat restore tables")?,
                     )?;
                 }
             }

@@ -936,3 +936,91 @@ fn restored_modifiers_are_class_named_subobjects_with_their_classes_exported() {
     }
     assert_eq!(classes[0], classes[1]);
 }
+
+#[test]
+fn restored_stats_send_their_delta_on_the_stat_container_first() {
+    use icarus_bevy::experimental::{
+        rep_layout::StatPairRepState,
+        rep_rpc::{
+            FAST_ARRAY_COUNT_CAP, FastArrayItem, FastArrayItemLayout, read_custom_delta_header,
+            read_fast_array_delta, read_field_header,
+        },
+        stat_restore::StatDelta,
+    };
+    let (profile, plan, stomach) = plan();
+    let key = ActorKey::Session(7);
+    let (mut cache, mut exports) = opened(&plan, key);
+    let pair = |stat, value| StatPairRepState { stat, value };
+    let restored = RestoredPawn {
+        stats: Some(StatDelta {
+            base_key: 58,
+            array_key: 60,
+            changed: vec![(1, pair(0, 614)), (59, pair(46, 53))],
+        }),
+        ..restore(&saved(), &current_state())
+    };
+    let update = compose_restored_pawn_update(
+        &mut cache,
+        &mut exports,
+        &plan,
+        key,
+        stomach,
+        &restored,
+        ByteOrder::Little,
+    )
+    .unwrap();
+    let codec = ActorChannelCodec {
+        engine_net_version: profile.engine_network_version,
+        exports_enabled: false,
+        has_level: true,
+        order: ByteOrder::Little,
+        limits: ActorChannelLimits::default(),
+    };
+    let rep_codec = RepLayoutCodec {
+        actor: codec,
+        checksums: false,
+        limits: RepLayoutLimits::default(),
+    };
+    let body = read_actor_bunch_body(&mut update.payload.reader(), false, &codec).unwrap();
+    // The pawn's own block, then the stat container's, then ActorState's.
+    assert!(matches!(body.blocks[0].target, BlockTarget::Actor));
+    let stat_guid = component_guid(&mut cache, &mut exports, &plan, key, plan.stat_container);
+    let block = &body.blocks[1];
+    let BlockTarget::SubObject { object, class } = &block.target else {
+        panic!("stat container block");
+    };
+    assert_eq!(object.guid, stat_guid);
+    assert!(matches!(class, SubObjectClass::StablyNamed));
+    assert!(!block.has_rep_layout);
+    let mut reader = block.payload.reader();
+    let field = read_field_header(&mut reader, plan.content.stat_container_bound, 1 << 20).unwrap();
+    assert!(reader.at_end());
+    let mut field_reader = field.payload.reader();
+    read_custom_delta_header(&mut field_reader, profile.engine_network_version, 1).unwrap();
+    let delta = read_fast_array_delta(
+        &mut field_reader,
+        &FastArrayItemLayout::Delta(vec![RepCommand::StatPairRepState]),
+        &rep_codec,
+        FAST_ARRAY_COUNT_CAP,
+    )
+    .unwrap();
+    assert_eq!(
+        (delta.array_replication_key, delta.base_replication_key),
+        (60, 58)
+    );
+    let items: Vec<(i32, RepValue)> = delta
+        .changed
+        .iter()
+        .map(|(id, item)| match item {
+            FastArrayItem::Delta(stream) => (*id, stream.entries[0].value.clone()),
+            FastArrayItem::Whole(_) => panic!("delta items"),
+        })
+        .collect();
+    assert_eq!(
+        items,
+        [
+            (1, RepValue::StatPairRepState(pair(0, 614))),
+            (59, RepValue::StatPairRepState(pair(46, 53))),
+        ]
+    );
+}
