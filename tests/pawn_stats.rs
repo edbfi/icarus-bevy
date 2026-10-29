@@ -236,3 +236,148 @@ fn extreme_grants_wrap_instead_of_overflowing() {
     assert_eq!(stats.value("MovementSpeed_+"), 0);
     assert_eq!(stats.value("SprintSpeed_+"), 0);
 }
+
+/// The formulas a returning pawn's restored stats add (F-984), on authored
+/// sources.
+#[test]
+fn restored_stat_formulas_combine_their_bases() {
+    let names: Vec<String> = [
+        "ToolType_Enum",
+        "Atmosphere_Enum",
+        "TimeOfDay_Enum",
+        "IsMounted_?",
+        "IsOverencumbered_?",
+        "BaseBackpackSlots_+",
+        "BackpackSlots_+",
+        "BaseFallDamageResistance_%",
+        "FallDamageResistance_%",
+        "BasePhysicalDamageResistance_%",
+        "BasePhysicalDamageResistance_+%",
+        "BasePhysicalDamageResistanceWhileFishing_%",
+        "PhysicalDamageResistance_%",
+        "BaseMeleeDamageResistance_%",
+        "BaseMeleeDamageResistance_+%",
+        "BaseCarryingSpearMeleeDamageResistance_+%",
+        "MeleeDamageResistance_+%",
+        "MeleeDamageResistance_%",
+        "BaseProjectileDamageResistance_%",
+        "BaseProjectileDamageResistance_+%",
+        "ProjectileDamageResistance_%",
+        "BaseStaminaActionCost_+%",
+        "BaseOverEncumberedStaminaActionCost_+%",
+        "StaminaActionCost_+%",
+        "BaseJumpingStaminaActionCost_+%",
+        "JumpingStaminaActionCost_+%",
+        "BaseToolStaminaActionCost_+%",
+        "BaseKnifeStaminaActionCost_+%",
+        "ToolStaminaActionCost_+%",
+        "BaseExposureResistance_+%",
+        "BaseCaveExposureResistance_+%",
+        "BaseMountedExposureResistance_+%",
+        "MountedExposureResistance_+%",
+        "ExposureResistance_+%",
+        "BaseItemWear_+%",
+        "BaseItemWearAtNight_+%",
+        "BaseItemWearAtDay_+%",
+        "BaseKnifeItemWear_+%",
+        "BaseLureItemWear_+%",
+        "BaseFirearmItemWear_+%",
+        "IsFirearm_?",
+        "ItemWear_+%",
+        "LureItemWear_+%",
+        "BaseSprainModifierDuration_+%",
+        "BaseModifierDuration_+%",
+        "SprainModifierDuration_+%",
+    ]
+    .iter()
+    .map(|name| name.to_string())
+    .collect();
+    let at = |name: &str| names.iter().position(|row| row == name).unwrap();
+    let stats = |grants: &[(&str, i32)]| {
+        StatValues::new(
+            &names,
+            grants
+                .iter()
+                .map(|(name, value)| (at(name), *value))
+                .collect(),
+        )
+    };
+    // A knife (3) in a cave (0) at night (1), mounted and overencumbered.
+    let knife = stats(&[
+        ("ToolType_Enum", 3),
+        ("Atmosphere_Enum", 0),
+        ("TimeOfDay_Enum", 1),
+        ("IsMounted_?", 1),
+        ("IsOverencumbered_?", 1),
+        ("BaseBackpackSlots_+", 6),
+        ("BaseFallDamageResistance_%", 150),
+        ("BasePhysicalDamageResistance_%", 45),
+        ("BasePhysicalDamageResistance_+%", 10),
+        ("BasePhysicalDamageResistanceWhileFishing_%", 30),
+        ("BaseMeleeDamageResistance_%", 5),
+        ("BaseMeleeDamageResistance_+%", 20),
+        ("BaseCarryingSpearMeleeDamageResistance_+%", 50),
+        ("BaseProjectileDamageResistance_%", 7),
+        ("BaseProjectileDamageResistance_+%", 50),
+        ("BaseStaminaActionCost_+%", -15),
+        ("BaseOverEncumberedStaminaActionCost_+%", 40),
+        ("BaseJumpingStaminaActionCost_+%", -60),
+        ("BaseToolStaminaActionCost_+%", 10),
+        ("BaseKnifeStaminaActionCost_+%", -5),
+        ("BaseExposureResistance_+%", 25),
+        ("BaseCaveExposureResistance_+%", 3),
+        ("BaseMountedExposureResistance_+%", 7),
+        ("BaseItemWear_+%", -20),
+        ("BaseItemWearAtNight_+%", -4),
+        ("BaseKnifeItemWear_+%", -10),
+        ("BaseLureItemWear_+%", -30),
+        ("BaseFirearmItemWear_+%", -50),
+        ("BaseSprainModifierDuration_+%", -50),
+        ("BaseModifierDuration_+%", 10),
+    ]);
+    assert_eq!(knife.value("BackpackSlots_+"), 6);
+    // Resistances cap at 99.
+    assert_eq!(knife.value("FallDamageResistance_%"), 99);
+    // (10 + 100) * 45 / 100; fishing's bonus only with a lure (13).
+    assert_eq!(knife.value("PhysicalDamageResistance_%"), 49);
+    // The spear's bonus only with a spear (4): (5 + 49) * (20 + 100) / 100.
+    assert_eq!(knife.value("MeleeDamageResistance_+%"), 20);
+    assert_eq!(knife.value("MeleeDamageResistance_%"), 64);
+    // (50 + 100) * 7 / 100 + 49.
+    assert_eq!(knife.value("ProjectileDamageResistance_%"), 59);
+    // Overencumbered: -15 + 40; jumping and the knife add their own.
+    assert_eq!(knife.value("StaminaActionCost_+%"), 25);
+    assert_eq!(knife.value("JumpingStaminaActionCost_+%"), -35);
+    assert_eq!(knife.value("ToolStaminaActionCost_+%"), 30);
+    // Base, the cave's and, mounted, the mounted pass-through.
+    assert_eq!(knife.value("MountedExposureResistance_+%"), 7);
+    assert_eq!(knife.value("ExposureResistance_+%"), 35);
+    // Base, night's and the knife's; no firearm or lure term.
+    assert_eq!(knife.value("ItemWear_+%"), -34);
+    assert_eq!(knife.value("LureItemWear_+%"), -24);
+    assert_eq!(knife.value("SprainModifierDuration_+%"), -40);
+    // A lure (13) by day (3), on foot and unburdened: fishing's resistance;
+    // item wear and lure wear each add the day's wear and the lure's once.
+    let lure = stats(&[
+        ("ToolType_Enum", 13),
+        ("TimeOfDay_Enum", 3),
+        ("BasePhysicalDamageResistance_%", 45),
+        ("BasePhysicalDamageResistanceWhileFishing_%", 30),
+        ("BaseStaminaActionCost_+%", -15),
+        ("BaseOverEncumberedStaminaActionCost_+%", 40),
+        ("BaseMountedExposureResistance_+%", 7),
+        ("BaseItemWear_+%", -20),
+        ("BaseItemWearAtNight_+%", -4),
+        ("BaseItemWearAtDay_+%", -2),
+        ("BaseLureItemWear_+%", -30),
+    ]);
+    assert_eq!(lure.value("PhysicalDamageResistance_%"), 75);
+    assert_eq!(lure.value("StaminaActionCost_+%"), -15);
+    assert_eq!(lure.value("ExposureResistance_+%"), 0);
+    assert_eq!(lure.value("ItemWear_+%"), -52);
+    assert_eq!(lure.value("LureItemWear_+%"), -52);
+    // A firearm (10) adds its own wear.
+    let rifle = stats(&[("ToolType_Enum", 10), ("BaseFirearmItemWear_+%", -50)]);
+    assert_eq!(rifle.value("IsFirearm_?"), 1);
+    assert_eq!(rifle.value("ItemWear_+%"), -50);
+}
