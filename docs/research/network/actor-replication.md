@@ -66,7 +66,7 @@ sends its character slot and profiles (F-951). `run` follows that sequence on au
 loopback peers, restores the saved UID at completion and sends the saved
 pawn state; new players join the History (F-954, F-964, F-967, F-975). The original
 finalises players only after every controller's friends list (F-973); the probe,
-initialising as a saved character, captured its restore of a returning pawn (F-972, F-974); `run` restores its inventories, weights and modifiers the same way (F-978 to F-982). The profile answers
+initialising as a saved character, captured its restore of a returning pawn (F-972, F-974); `run` restores its inventories, weights, modifiers and stats the same way (F-978 to F-989). The profile answers
 carry the PlayerState's own profile trees on a verified `UBackendProxyComponent`
 (F-955); failures re-request up to three times before a kick, and completion
 also waits for the client's loadout and bestiary answers (F-956 to F-958);
