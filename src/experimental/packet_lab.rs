@@ -68,7 +68,7 @@ use super::packet::{
 };
 use super::sequencing::{
     MAX_QUEUED_RELIABLE, PacketSequencer, ReliableChannel, ReliableReceive, SEQUENCE_MASK,
-    max_single_bunch_size_bits, split_outgoing_bunch, wire_reliable_sequence,
+    SendCapacityError, max_single_bunch_size_bits, split_outgoing_bunch, wire_reliable_sequence,
 };
 use super::session_open::ACTOR_CHANNEL_NAME_INDEX;
 
@@ -1028,7 +1028,9 @@ impl LabPeer {
             .with_context(|| format!("actor channel {index} is not open"))?;
         ensure!(
             channel.out_bunches().len() < MAX_PENDING_RELIABLE,
-            "{MAX_PENDING_RELIABLE} outgoing reliable bunches are unacknowledged"
+            SendCapacityError::ReliableBunchQueue {
+                capacity: MAX_PENDING_RELIABLE,
+            }
         );
         let max_single = max_single_bunch_size_bits(
             self.config.packet.limits.max_packet_bytes,
@@ -1144,7 +1146,11 @@ impl LabPeer {
         )?;
         ensure!(
             channel.out_bunches().len() + parts.len() <= MAX_PENDING_RELIABLE,
-            "reliable actor window is full"
+            SendCapacityError::ReliableActorWindow {
+                pending: channel.out_bunches().len(),
+                additional: parts.len(),
+                capacity: MAX_PENDING_RELIABLE,
+            }
         );
         let Layout {
             sequencer,

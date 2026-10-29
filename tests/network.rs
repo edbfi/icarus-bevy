@@ -5285,3 +5285,200 @@ fn returning_pawns_restore_their_stats_and_the_bounds_they_set() {
             .any(|entry| entry.handle == h::TOTAL_EXPERIENCE && entry.value == RepValue::Int(41))
     );
 }
+
+#[test]
+fn returning_pawns_retry_queue_pressure_after_the_other_controllers_friends_list() {
+    use icarus_bevy::{
+        actor_uids::ActorUidLibrary,
+        experimental::{
+            actor_channel::BlockTarget,
+            packet_lab::DEFAULT_SENT_CAPACITY,
+            pawn_open::character_state_handle as h,
+            peer_lab::PeerLabAdmission,
+            rep_layout::RepValue,
+            session_open::{ActorOpenSpec, PathSegment, map_level_chain},
+        },
+        prospect,
+    };
+    use scalar::Tag;
+
+    // Full ring refuses the UID; one free record admits the UID but refuses
+    // state. A dead saved pawn remains a terminal semantic gap after retry.
+    for (free_records, dead) in [(0, false), (1, false), (0, true)] {
+        let (mut lab, profile) = uid_lab(ActorUidLibrary::with_random(|| 7));
+        let pinned = profile.pin.network_checksum;
+        let engine = profile.engine_network_version;
+        let map = PeerLabAdmission::default().map_url;
+        lab.enable_player_state_open(profile.player_state_open_plan(map).unwrap().unwrap())
+            .unwrap();
+        let payload = returning_characters_payload_with_state(
+            NET_ID_HEX,
+            3,
+            &[70_001],
+            &[Tag::integer("Health", 60), Tag::boolean("bIsAlive", !dead)],
+        );
+        lab.seed_actor_uids(prospect::saved_actor_uids_from_payload(&payload).unwrap())
+            .unwrap();
+        lab.enable_returning_characters(
+            prospect::saved_player_characters_from_payload(&payload).unwrap(),
+        )
+        .unwrap();
+        let mut app = build_app(&ServerConfig::default(), &WorldSnapshot::default()).unwrap();
+        let address = network::install(&mut app, lab).unwrap();
+        let ((mut first, mut second, first_open), _) = with_server(&mut app, move || {
+            // Controller, pawn and PlayerState; no clocks or manager traffic.
+            let (mut first, first_open) = join_pinned_open(address, pinned, 3);
+            let (second, _) = join_pinned_open(address, pinned, 3);
+            exchange_profiles(&mut first, engine, 3, 3);
+            (first, second, first_open)
+        });
+        let fresh_uid = sent_pawn_uid(&profile, &first_open).unwrap();
+        assert_eq!(
+            app.world()
+                .resource::<PeerLab>()
+                .stats()
+                .players_initialised,
+            1
+        );
+        assert_eq!(
+            app.world().resource::<PeerLab>().stats().players_finalised,
+            0
+        );
+        let connection = app.world().resource::<PeerLab>().joined_connections()[0];
+        let actor = 42;
+        let opened = app.world_mut().resource_mut::<PeerLab>().open_actor(
+            connection,
+            actor,
+            ActorOpenSpec {
+                actor: 0,
+                archetype: vec![
+                    PathSegment::new("Default__Pressure_C", 0x1234_5678, false),
+                    PathSegment::new("/Game/Lab/Pressure", 0, false),
+                ],
+                level: map_level_chain(map).unwrap(),
+                location: Some([0.0; 3]),
+                rotation: None,
+                velocity: None,
+                blocks: Vec::new(),
+            },
+            8,
+            engine,
+        );
+        assert!(opened.is_some());
+        // Drain and ACK every prior packet, then consume the resulting ACK.
+        // It is the only outstanding server record. Probe collection records
+        // headers locally but never sends an ACK on its own.
+        let opened = first.collect(Duration::from_millis(250), 32).unwrap();
+        assert!(!opened.replies.is_empty());
+        first.keepalive().unwrap();
+        app.world_mut().resource_mut::<PeerLab>().poll();
+        assert_eq!(
+            first
+                .collect(Duration::from_secs(2), 1)
+                .unwrap()
+                .replies
+                .len(),
+            1
+        );
+        for step in 0..DEFAULT_SENT_CAPACITY - 1 - free_records {
+            assert!(
+                app.world_mut()
+                    .resource_mut::<PeerLab>()
+                    .update_actor_movement(
+                        connection,
+                        actor,
+                        [step as f32 + 1.0, 0.0, 0.0],
+                        engine,
+                    )
+            );
+            // Drain each UDP datagram without acknowledging it to the server,
+            // so socket-buffer capacity cannot turn pressure into packet loss.
+            assert_eq!(
+                first
+                    .collect(Duration::from_secs(2), 1)
+                    .unwrap()
+                    .replies
+                    .len(),
+                1
+            );
+        }
+        send_friends_list_updated(&mut second, engine);
+        app.world_mut().resource_mut::<PeerLab>().poll();
+        let before = app.world().resource::<PeerLab>().stats().clone();
+        assert_eq!(before.players_finalised, 1);
+        assert_eq!(before.returning_pawns_restored, free_records as u64);
+        assert_eq!(before.returning_pawn_updates_sent, 0);
+        assert_eq!(before.returning_pawn_errors, u64::from(free_records == 0));
+        assert_eq!(before.returning_pawn_update_errors, free_records as u64);
+        assert_eq!(before.peers_failed, 0);
+        assert_eq!(claimed(&app).contains(&fresh_uid), free_records == 0);
+        for _ in 0..8 {
+            app.world_mut().resource_mut::<PeerLab>().poll();
+        }
+        assert_eq!(
+            app.world().resource::<PeerLab>().stats(),
+            &before,
+            "pressure is not retried without notification progress"
+        );
+
+        let mut restored_packets = Vec::new();
+        if free_records == 1 {
+            let queued_uid = first.collect(Duration::from_secs(2), 1).unwrap();
+            assert_eq!(queued_uid.replies.len(), 1);
+            restored_packets.extend(queued_uid.replies.into_iter().map(|reply| reply.bytes));
+        }
+        first.keepalive().unwrap();
+        app.world_mut().resource_mut::<PeerLab>().poll();
+        let expected = 1 + usize::from(!dead) - free_records;
+        let repaired = first.collect(Duration::from_secs(2), expected).unwrap();
+        assert_eq!(repaired.replies.len(), expected);
+        restored_packets.extend(repaired.replies.into_iter().map(|reply| reply.bytes));
+        assert_eq!(pawn_uid_update(&profile, &restored_packets), Some(70_001));
+        let updates = pawn_property_updates(&profile, &restored_packets);
+        assert_eq!(updates.len(), 1 + usize::from(!dead));
+        if !dead {
+            assert!(updates[1].iter().any(|(target, values)| {
+                matches!(target, BlockTarget::SubObject { .. })
+                    && values.get(&h::HEALTH) == Some(&RepValue::Int(60))
+                    && values.get(&h::TOTAL_EXPERIENCE) == Some(&RepValue::Int(41))
+            }));
+        }
+        let restored = app.world().resource::<PeerLab>().stats();
+        assert_eq!(restored.returning_pawns_restored, 1);
+        assert_eq!(restored.returning_pawn_updates_sent, u64::from(!dead));
+        assert_eq!(restored.returning_pawn_update_gaps, u64::from(dead));
+        assert_eq!(restored.returning_pawn_errors, before.returning_pawn_errors);
+        assert_eq!(
+            restored.returning_pawn_update_errors,
+            before.returning_pawn_update_errors
+        );
+        assert!(!claimed(&app).contains(&fresh_uid));
+        assert_eq!(
+            claimed(&app).iter().filter(|uid| **uid == 70_001).count(),
+            1
+        );
+        // ACK the restore, then advance notification progress once more.
+        // Neither a completed restore nor the dead-save gap may run again.
+        for _ in 0..2 {
+            first.keepalive().unwrap();
+            app.world_mut().resource_mut::<PeerLab>().poll();
+            let ack = first.collect(Duration::from_secs(2), 1).unwrap();
+            assert_eq!(ack.replies.len(), 1);
+            let packets: Vec<_> = ack.replies.into_iter().map(|reply| reply.bytes).collect();
+            assert!(pawn_property_updates(&profile, &packets).is_empty());
+        }
+        let final_stats = app.world().resource::<PeerLab>().stats();
+        assert_eq!(final_stats.returning_pawns_restored, 1);
+        assert_eq!(final_stats.returning_pawn_updates_sent, u64::from(!dead));
+        assert_eq!(final_stats.returning_pawn_update_gaps, u64::from(dead));
+        assert_eq!(
+            final_stats.returning_pawn_update_errors,
+            before.returning_pawn_update_errors
+        );
+        assert_eq!(final_stats.io_errors, 0);
+        first.close().unwrap();
+        second.close().unwrap();
+        app.world_mut().resource_mut::<PeerLab>().poll();
+        assert_eq!(claimed(&app), [70_001]);
+    }
+}

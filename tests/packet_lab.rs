@@ -14,7 +14,7 @@ use icarus_bevy::experimental::packet_lab::{
 };
 use icarus_bevy::experimental::sequencing::{
     MAX_CONSTRUCTED_PARTIAL_BUNCH_BYTES, Notification, PacketSequencer, PartialBunchReassembler,
-    PartialReceive, ReliableChannel, ReliableReceive, wire_reliable_sequence,
+    PartialReceive, ReliableChannel, ReliableReceive, SendCapacityError, wire_reliable_sequence,
 };
 
 // Independently authored synthetic client built from the experimental codec and
@@ -1740,10 +1740,25 @@ fn reliable_profile_update_preflight_failures_leave_channel_state_unchanged() {
     ] {
         let before = format!("{peer:?}");
         let next = peer.sequencer().out_packet_id();
-        assert!(
-            peer.reliable_actor_bunch_datagrams(channel, bits_payload(bits))
-                .is_err()
-        );
+        let error = peer
+            .reliable_actor_bunch_datagrams(channel, bits_payload(bits))
+            .unwrap_err();
+        let capacity = error.downcast_ref::<SendCapacityError>();
+        if channel == 4 && bits == 24_000 {
+            assert_eq!(
+                capacity,
+                Some(&SendCapacityError::SentRecordRing { capacity: 3 })
+            );
+            assert_eq!(error.to_string(), "sent-record ring is full (3 records)");
+            // This update cannot fit even though there is no sent traffic
+            // left to acknowledge. Its typed error is not a retry promise.
+            assert!(peer.sequencer().notify().sent_records().is_empty());
+        } else {
+            assert!(
+                capacity.is_none(),
+                "semantic/size errors are not queue pressure"
+            );
+        }
         assert_eq!(format!("{peer:?}"), before);
         assert_eq!(peer.sequencer().out_packet_id(), next);
         assert!(!peer.is_failed());
@@ -1755,4 +1770,67 @@ fn reliable_profile_update_preflight_failures_leave_channel_state_unchanged() {
             .len(),
         3
     );
+}
+
+#[test]
+fn reliable_actor_sends_classify_live_ring_pressure_without_committing() {
+    let mut peer = update_peer(3);
+    for _ in 0..3 {
+        peer.reliable_actor_bunch(4, bits_payload(8)).unwrap();
+    }
+    assert_eq!(peer.sequencer().notify().sent_records().len(), 3);
+    let before = format!("{peer:?}");
+    let next = peer.sequencer().out_packet_id();
+    let errors = [
+        peer.reliable_actor_bunch(4, bits_payload(8)).unwrap_err(),
+        peer.reliable_actor_bunch_datagrams(4, bits_payload(16_000))
+            .unwrap_err(),
+    ];
+    for error in errors {
+        assert_eq!(
+            error.downcast_ref::<SendCapacityError>(),
+            Some(&SendCapacityError::SentRecordRing { capacity: 3 })
+        );
+        assert_eq!(error.to_string(), "sent-record ring is full (3 records)");
+    }
+    assert_eq!(format!("{peer:?}"), before);
+    assert_eq!(peer.sequencer().out_packet_id(), next);
+    assert!(!peer.is_failed());
+}
+
+#[test]
+fn reliable_actor_sends_classify_channel_pressure_without_committing() {
+    let mut peer = update_peer(MAX_PENDING_RELIABLE + 2);
+    for _ in 0..MAX_PENDING_RELIABLE {
+        peer.reliable_actor_bunch(4, bits_payload(8)).unwrap();
+    }
+    assert_eq!(peer.pending_actor_reliable(4), Some(MAX_PENDING_RELIABLE));
+    let before = format!("{peer:?}");
+    let next = peer.sequencer().out_packet_id();
+    let single = peer.reliable_actor_bunch(4, bits_payload(8)).unwrap_err();
+    assert_eq!(
+        single.downcast_ref::<SendCapacityError>(),
+        Some(&SendCapacityError::ReliableBunchQueue {
+            capacity: MAX_PENDING_RELIABLE
+        })
+    );
+    assert_eq!(
+        single.to_string(),
+        "255 outgoing reliable bunches are unacknowledged"
+    );
+    let multipart = peer
+        .reliable_actor_bunch_datagrams(4, bits_payload(16_000))
+        .unwrap_err();
+    assert_eq!(
+        multipart.downcast_ref::<SendCapacityError>(),
+        Some(&SendCapacityError::ReliableActorWindow {
+            pending: MAX_PENDING_RELIABLE,
+            additional: 3,
+            capacity: MAX_PENDING_RELIABLE,
+        })
+    );
+    assert_eq!(multipart.to_string(), "reliable actor window is full");
+    assert_eq!(format!("{peer:?}"), before);
+    assert_eq!(peer.sequencer().out_packet_id(), next);
+    assert!(!peer.is_failed());
 }

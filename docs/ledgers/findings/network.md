@@ -7,7 +7,7 @@ full text under `retired/`. Admission and columns follow `.agents/rules/docs.md`
 
 Before restructure: 96ddb0b:docs/ledgers/findings.md
 
-Last reconciled: 2026-10-27
+Last reconciled: 2026-10-29
 
 | ID | Claim | Kind | Evidence | Scope and limits | Unknowns | Status |
 | --- | --- | --- | --- | --- | --- | --- |
@@ -123,7 +123,7 @@ Last reconciled: 2026-10-27
 | F-973 | Pinned 3.0.32 finalises connected players (restore or new-player path) only once the match started and no connected controller lacks IsServerFriendIdsReady, which the client's ServerFriendsListUpdated (controller field 126) sets; completion (PlayerCharacterID) precedes it | observed | static-decompile, runtime-capture; M-1105, M-1108 | high; 3.0.32 offline | U-069 | active |
 | F-974 | Offline 3.0.32 restores the probe as a saved character: NULL login id with the saved PlayerID text, Begin(slot), both profiles, clear-bit loadout/bestiary, empty friends list; then one reliable 6-part pawn bunch carries stats, state, stomach, 6 inventories, 5 modifiers | observed | runtime-capture; M-1105 | high; 1 run, 1 character; values not yet decoded | U-069 | active |
 | F-975 | Native run initialises as the original: slot, profiles (3 failures close), loadout, bestiary and AssociatedProspect requests; both answers with the pawn open set PlayerCharacterID; once every joined controller sent its friends list it restores a saved UID or appends History | measured | authored-test; M-1096, M-1107 | high; loopback; payloads, kick wire unsent | U-069 | active |
-| F-964 | Native run, after restoring a returning pawn's saved UID, sends one reliable update of its C026 state as the original restores it: control rotation, RespawnCount, HasGrantedLoadout, clamped health and alive state, levels unless -1, valid unique cosmetic overrides; gaps keep the UID | measured | authored-test; M-1099 | high; loopback; Location, death, stomach unsent | U-069 | active |
+| F-964 | Native run sends supported C026 state after the saved UID (F-960, F-961), re-exports unacknowledged components and retries blocked UID/state sends after queue progress | measured | authored-test; M-1099, M-1124 | high; loopback; export states injected; Location, death, stomach entries unsent; no stock-client proof | U-069 | active |
 | F-967 | Native run appends a new player (no saved C025 controller matches its PlayerCharacterID) to the replicated History at completion as AddPlayer does: (user ID, ChrSlot, character name) unless the user ID case-insensitively and slot are present; later tracker opens carry it | measured | authored-test; M-1102 | high; loopback; rest of the new-player path not native | U-069 | active |
 | F-979 | Native run restores a returning pawn's saved inventories in its reliable restore update as the original (F-978): for the save's record 2 all six inventories' changed slots equal the capture's, keys but Vision's; gaps send none | measured | authored-test, runtime-capture; M-1110, M-1112 | high; loopback; weight, multipliers, a runtime tag unsent | U-069 | active |
 | F-981 | Native run restores a returning pawn's saved modifiers in its restore update as the original (F-980): class-named sub-objects after the inventories; for record 2 all four equal run init-03's row, UID, lifetime, effectiveness and remaining time | measured | authored-test, runtime-capture; M-1110, M-1114 | high; loopback; affector stats 0; no ticking or weight modifiers | U-069 | active |

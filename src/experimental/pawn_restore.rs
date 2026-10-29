@@ -425,21 +425,11 @@ fn restored_inventory_block(
 /// The stat container's block (F-988): its replicated stat array's delta
 /// from the key the client holds, the stably-named component's only field.
 fn restored_stat_block(
-    cache: &mut NetGuidCache,
-    exports: &mut ConnectionExports,
     plan: &PawnOpenPlan,
-    key: ActorKey,
-    actor: u32,
+    guid: u32,
     stats: &StatDelta,
     order: ByteOrder,
 ) -> Result<ContentBlock> {
-    let guid = acked_component(
-        cache,
-        exports,
-        key,
-        actor,
-        &plan.components[plan.stat_container],
-    )?;
     let field = fast_array_delta_field(
         STAT_ARRAY_FIELD_INDEX,
         &FastArrayDelta {
@@ -483,15 +473,16 @@ fn restored_stat_block(
     })
 }
 
-/// A pawn component's GUID, which its open exported and the client acked.
-fn acked_component(
+/// A pawn component's GUID with its path while the connection still needs
+/// an export (F-796), including after its open's export packet was lost.
+fn component_reference(
     cache: &mut NetGuidCache,
     exports: &mut ConnectionExports,
     key: ActorKey,
     actor: u32,
     component: &PawnComponent,
-) -> Result<u32> {
-    let reference = cache.export_keyed_subobject(
+) -> Result<NetGuidRef> {
+    cache.export_keyed_subobject(
         exports,
         key,
         actor,
@@ -500,12 +491,7 @@ fn acked_component(
             checksum: component.checksum,
             block: ComponentBlock::None,
         },
-    )?;
-    if reference.export.is_some() {
-        exports.begin_bunch();
-        bail!("pawn component {} is not acked yet", component.name);
-    }
-    Ok(reference.guid)
+    )
 }
 
 fn rep_block(
@@ -536,9 +522,10 @@ fn rep_block(
 /// then each restored inventory's slot delta and each restored modifier as a
 /// new class-named sub-object, with the classes the connection has not
 /// acked exported ahead of the body; restored stats go as the stat
-/// container's delta right after the actor block (F-989). The pawn's open
-/// must be acked. Restored stomach entries reject: the replicated entry's
-/// `ModifierID` comes from `AddSaveDataToStomach`, which is unread; clearing
+/// container's delta right after the actor block (F-989). The caller sends
+/// the update reliably after the pawn's open; any unacknowledged component
+/// paths are exported ahead of its body. Restored stomach entries reject:
+/// their `ModifierID` comes from `AddSaveDataToStomach`, which is unread; clearing
 /// a stomach composes.
 pub fn compose_restored_pawn_update(
     cache: &mut NetGuidCache,
@@ -573,6 +560,7 @@ pub fn compose_restored_pawn_update(
     exports.begin_bunch();
     let actor = cache.actor_guid(key);
     let mut blocks = Vec::new();
+    let mut exported = Vec::new();
     if !restored.pawn.is_empty() {
         blocks.push(rep_block(
             BlockTarget::Actor,
@@ -584,12 +572,20 @@ pub fn compose_restored_pawn_update(
     // The stat container's block follows the actor's, as the original's
     // restore bunch orders them.
     if let Some(stats) = &restored.stats {
-        blocks.push(restored_stat_block(
-            cache, exports, plan, key, actor, stats, order,
-        )?);
+        let reference = component_reference(
+            cache,
+            exports,
+            key,
+            actor,
+            &plan.components[plan.stat_container],
+        )?;
+        blocks.push(restored_stat_block(plan, reference.guid, stats, order)?);
+        exported.push(reference);
     }
     let mut component_block = |index: usize, values: &BTreeMap<u32, RepValue>, layout| {
-        let guid = acked_component(cache, exports, key, actor, &plan.components[index])?;
+        let reference = component_reference(cache, exports, key, actor, &plan.components[index])?;
+        let guid = reference.guid;
+        exported.push(reference);
         rep_block(
             BlockTarget::SubObject {
                 object: NetGuidRef::plain(guid),
@@ -624,9 +620,7 @@ pub fn compose_restored_pawn_update(
             &stomach_component_rep_layout(),
         )?);
     }
-    // Classes the connection does not hold yet are exported ahead of the
-    // body, as an open exports them.
-    let mut exported = Vec::new();
+    // Classes share the prefix with the required component paths.
     if !restored.inventories.is_empty() {
         let class = cache.export_static(exports, &plan.content.inventory_class)?;
         let guid = class.guid;
@@ -678,7 +672,7 @@ pub fn compose_restored_pawn_update(
 }
 
 /// A restored pawn update: its body and the export-only prefix the body's
-/// class references need, if any.
+/// component and class references need, if any.
 #[derive(Clone, Debug)]
 pub struct RestoredPawnUpdate {
     pub exports: Option<Payload>,

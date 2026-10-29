@@ -41,6 +41,46 @@ pub const MAX_CONSTRUCTED_PARTIAL_BUNCH_BYTES: usize = 65_536;
 pub const MAX_SINGLE_BUNCH_OVERHEAD_BITS: usize = 0x235;
 const WORD_BITS: u16 = 32;
 
+/// A bounded outgoing queue refused a send without committing it. Callers
+/// can downcast an anyhow error to this type without matching text.
+/// A capacity error alone does not promise progress: a multipart payload
+/// that cannot fit an empty queue must not be retried as temporary pressure.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SendCapacityError {
+    /// One packet could not enter the sent-record ring. During multipart
+    /// planning this can describe a cloned ring, not the live queue.
+    SentRecordRing { capacity: usize },
+    /// A single reliable actor bunch would exceed its channel's window.
+    ReliableBunchQueue { capacity: usize },
+    /// A reliable actor update's parts would exceed its channel's window.
+    ReliableActorWindow {
+        pending: usize,
+        additional: usize,
+        capacity: usize,
+    },
+}
+
+impl std::fmt::Display for SendCapacityError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::SentRecordRing { capacity } => {
+                write!(formatter, "sent-record ring is full ({capacity} records)")
+            }
+            Self::ReliableBunchQueue { capacity } => {
+                write!(
+                    formatter,
+                    "{capacity} outgoing reliable bunches are unacknowledged"
+                )
+            }
+            Self::ReliableActorWindow { .. } => {
+                formatter.write_str("reliable actor window is full")
+            }
+        }
+    }
+}
+
+impl std::error::Error for SendCapacityError {}
+
 /// `(a - b)` modulo 2^14.
 pub fn sequence_difference(a: u16, b: u16) -> u16 {
     a.wrapping_sub(b) & SEQUENCE_MASK
@@ -206,8 +246,9 @@ impl PacketNotify {
     pub fn commit(&mut self) -> Result<u16> {
         ensure!(
             self.sent.len() < self.sent_capacity,
-            "sent-record ring is full ({} records)",
-            self.sent_capacity
+            SendCapacityError::SentRecordRing {
+                capacity: self.sent_capacity,
+            }
         );
         let sequence = self.out_seq;
         self.sent.push_back(SentRecord {
