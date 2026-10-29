@@ -314,3 +314,70 @@ fn the_tables_build_from_data_pak_rows() {
         ]
     );
 }
+
+#[test]
+fn the_delta_keeps_open_ids_and_appends_new_stats_in_row_order() {
+    use icarus_bevy::experimental::{pawn_open::FastArrayContent, stat_restore::stat_delta};
+    let pair = |stat, value| StatPairRepState { stat, value };
+    let open = FastArrayContent {
+        replication_key: 3,
+        items: vec![pair(0, 300), pair(3, 200), pair(9, 5)],
+    };
+    // Stat 0 changes, 3 stays, 9 drops to 0; 4 and 7 are new.
+    let restored = [pair(0, 614), pair(3, 200), pair(4, 1), pair(7, -20)];
+    let delta = stat_delta(&open, &restored).unwrap().unwrap();
+    assert_eq!(delta.base_key, 3);
+    assert_eq!(
+        delta.changed,
+        [
+            (1, pair(0, 614)),
+            (3, pair(9, 0)),
+            (4, pair(4, 1)),
+            (5, pair(7, -20))
+        ]
+    );
+    // One key step per item sent.
+    assert_eq!(delta.array_key, 7);
+    assert_eq!(stat_delta(&open, &open.items).unwrap(), None);
+}
+
+#[test]
+fn the_restored_maxima_bound_the_character_state() {
+    use icarus_bevy::experimental::{
+        pawn_open::character_state_handle as h,
+        stat_restore::{RestoredStats, stat_bounds},
+    };
+    let names: Vec<String> = [
+        "MaximumHealth_+",
+        "MaximumStamina_+",
+        "MaximumOxygen_+",
+        "MaximumWater_+",
+        "MaximumFood_+",
+    ]
+    .iter()
+    .map(|name| (*name).to_owned())
+    .collect();
+    let pair = |stat, value| StatPairRepState { stat, value };
+    let stats = RestoredStats {
+        items: vec![
+            pair(0, 614),
+            pair(1, 218),
+            pair(2, 300),
+            pair(3, 310),
+            pair(4, 320),
+        ],
+        overburdened: false,
+    };
+    assert_eq!(
+        stat_bounds(&stats, &names),
+        [
+            (h::MAX_HEALTH, 614),
+            // Stamina refills to its maximum.
+            (h::STAMINA, 218),
+            (h::MAX_STAMINA, 218),
+            (h::MAX_OXYGEN, 300),
+            (h::MAX_WATER, 310),
+            (h::MAX_FOOD, 320),
+        ]
+    );
+}

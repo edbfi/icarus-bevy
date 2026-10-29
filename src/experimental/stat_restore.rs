@@ -17,7 +17,7 @@ use std::collections::BTreeMap;
 use anyhow::{Context, Result};
 
 use super::inventory_restore::{InventoryRestoreTables, InventoryRole};
-use super::pawn_open::InventorySlot;
+use super::pawn_open::{FastArrayContent, InventorySlot};
 use super::rep_layout::StatPairRepState;
 use super::tag_query::TagQuery;
 use crate::pawn_stats::StatValues;
@@ -247,4 +247,79 @@ fn evaluate<'a>(
         sources.insert(*row, *value);
     }
     Ok(StatValues::new(&tables.names, sources))
+}
+
+/// The stat fast array's delta from the open's stats to the restored ones:
+/// the client's key, the new key, and the items to send by ID.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct StatDelta {
+    pub base_key: i32,
+    pub array_key: i32,
+    pub changed: Vec<(i32, StatPairRepState)>,
+}
+
+/// The delta from `open` (items IDs 1 up, as the open sends them) to
+/// `restored`: each open item whose value changed keeps its ID (0 when its
+/// stat no longer has one), each new stat takes the next ID in row order;
+/// the key moves on by one per item sent. `None` when nothing changes.
+pub fn stat_delta(
+    open: &FastArrayContent<StatPairRepState>,
+    restored: &[StatPairRepState],
+) -> Result<Option<StatDelta>> {
+    let values: BTreeMap<u32, i32> = restored
+        .iter()
+        .map(|pair| (pair.stat, pair.value))
+        .collect();
+    let mut changed = Vec::new();
+    for (pair, id) in open.items.iter().zip(1_i32..) {
+        let value = values.get(&pair.stat).copied().unwrap_or(0);
+        if value != pair.value {
+            changed.push((
+                id,
+                StatPairRepState {
+                    stat: pair.stat,
+                    value,
+                },
+            ));
+        }
+    }
+    let known: std::collections::BTreeSet<u32> = open.items.iter().map(|pair| pair.stat).collect();
+    let mut next = i32::try_from(open.items.len())?;
+    for pair in restored.iter().filter(|pair| !known.contains(&pair.stat)) {
+        next = next.checked_add(1).context("too many stats")?;
+        changed.push((next, *pair));
+    }
+    if changed.is_empty() {
+        return Ok(None);
+    }
+    Ok(Some(StatDelta {
+        base_key: open.replication_key,
+        array_key: open
+            .replication_key
+            .checked_add(i32::try_from(changed.len())?)
+            .context("stat key overflows")?,
+        changed,
+    }))
+}
+
+/// The character-state bounds the restored stats set, as (handle, value):
+/// the maxima, and stamina refilled to its maximum as a restored pawn's is.
+pub fn stat_bounds(stats: &RestoredStats, names: &[String]) -> Vec<(u32, i32)> {
+    use super::pawn_open::character_state_handle as h;
+    let value = |name: &str| {
+        names
+            .iter()
+            .position(|row| row == name)
+            .and_then(|row| stats.items.iter().find(|pair| pair.stat as usize == row))
+            .map_or(0, |pair| pair.value)
+    };
+    let stamina = value("MaximumStamina_+");
+    vec![
+        (h::MAX_HEALTH, value("MaximumHealth_+")),
+        (h::STAMINA, stamina),
+        (h::MAX_STAMINA, stamina),
+        (h::MAX_OXYGEN, value("MaximumOxygen_+")),
+        (h::MAX_WATER, value("MaximumWater_+")),
+        (h::MAX_FOOD, value("MaximumFood_+")),
+    ]
 }

@@ -195,18 +195,20 @@ use super::handshake_lab::{
     CookieAuthority, HANDSHAKE_BYTES, HandshakeReply, PACKETS_PER_UPDATE, bind_loopback,
     lab_seconds,
 };
-use super::inventory_restore::{InventoryRestoreTables, restore_inventories};
+use super::inventory_restore::{InventoryRestore, InventoryRestoreTables, restore_inventories};
+use super::inventory_weight::DEFAULT_CDO_CURRENT_WEIGHT;
 use super::manager_open::{
     ManagerOpenPlan, ManagerSlot, compose_manager_open, compose_player_history_update,
 };
-use super::modifier_restore::{ModifierRestoreTables, restore_modifiers};
+use super::modifier_restore::{ModifierRestoreTables, RestoredModifier, restore_modifiers};
 use super::packet::BunchLimits;
 use super::packet::Payload;
 use super::packet_lab::{
     ActorOpenSent, DeliveredSummary, LabPeer, PacketDisposition, PacketLabConfig,
 };
 use super::pawn_open::{
-    PawnContent, PawnOpenPlan, PawnOpenState, compose_pawn_icarus_uid_update, compose_pawn_open,
+    InventorySlot, PawnContent, PawnInventory, PawnOpenPlan, PawnOpenState,
+    compose_pawn_icarus_uid_update, compose_pawn_open,
 };
 use super::pawn_restore::{CurrentPawnState, compose_restored_pawn_update, restore_saved_pawn};
 use super::ping::PingEstimator;
@@ -231,6 +233,9 @@ use super::session_open::{
     actor_properties_update_block, authored_movement, compose_actor_open,
     compose_player_controller_open, compose_player_state_open, initial_actor_properties,
     replicated_unique_net_id,
+};
+use super::stat_restore::{
+    PawnStatInputs, RestoredStats, StatRestoreTables, restore_stats, stat_bounds, stat_delta,
 };
 use super::time_of_day::TimeOfDayClock;
 
@@ -608,6 +613,10 @@ pub struct PeerLabStats {
     pub returning_modifiers_sent: u64,
     /// Saved modifiers left out (a repeated row, an unknown class).
     pub returning_modifier_gaps: u64,
+    /// Returning-pawn updates that carried restored stats (F-988).
+    pub returning_stats_sent: u64,
+    /// Updates whose stats were left out (an inventory or weight gap).
+    pub returning_stat_gaps: u64,
     /// New-player AddPlayer outcomes (F-865); returning C025 players skip it.
     pub player_history_appends: u64,
     pub player_history_duplicates: u64,
@@ -768,6 +777,8 @@ pub struct SessionCounts {
     pub returning_inventory_gaps: u64,
     pub returning_modifiers_sent: u64,
     pub returning_modifier_gaps: u64,
+    pub returning_stats_sent: u64,
+    pub returning_stat_gaps: u64,
     pub player_history_appends: u64,
     pub player_history_duplicates: u64,
     pub player_history_errors: u64,
@@ -1266,6 +1277,12 @@ pub struct PeerLab {
     inventory_restore: Option<InventoryRestoreTables>,
     /// `D_ModifierStates` for a returning pawn's modifier restore (F-980).
     modifier_restore: Option<ModifierRestoreTables>,
+    /// The data tables a returning pawn's stat restore reads (F-988).
+    stat_restore: Option<StatRestoreTables>,
+    /// The saved container inventories' item rows by `InventoryIndex`
+    /// (`C016`): the inventories a returning pawn's items link; `None`
+    /// until a loaded world supplies them, which leaves stats unrestored.
+    linked_inventories: Option<BTreeMap<i32, Vec<u16>>>,
     /// Native run's opt-in UID owner; bare lab experiments retain templates.
     actor_uids: Option<crate::actor_uids::ActorUidLibrary>,
     /// Saved player characters returning pawns restore from (F-950), and the
@@ -1353,6 +1370,8 @@ impl PeerLab {
             pawn_restore_item_rows: Vec::new(),
             inventory_restore: None,
             modifier_restore: None,
+            stat_restore: None,
+            linked_inventories: None,
             actor_uids: None,
             returning_characters: Vec::new(),
             saved_player_controllers: Vec::new(),
@@ -1894,6 +1913,30 @@ impl PeerLab {
         Ok(())
     }
 
+    /// Also restore a returning pawn's stats (F-988) from `tables`, once a
+    /// loaded world supplies its container inventories
+    /// ([`Self::set_linked_inventories`]); they need the inventory restore
+    /// too.
+    pub fn enable_stat_restore(&mut self, tables: StatRestoreTables) -> Result<()> {
+        ensure!(
+            self.peers.is_empty(),
+            "configure stat restore before admitting peers"
+        );
+        self.stat_restore = Some(tables);
+        Ok(())
+    }
+
+    /// The loaded world's container inventories' item rows by
+    /// `InventoryIndex` (`C016`), which a returning pawn's items link.
+    pub fn set_linked_inventories(&mut self, linked: BTreeMap<i32, Vec<u16>>) -> Result<()> {
+        ensure!(
+            self.peers.is_empty(),
+            "set the linked inventories before admitting peers"
+        );
+        self.linked_inventories = Some(linked);
+        Ok(())
+    }
+
     /// Also restore a returning pawn's saved modifiers (F-980).
     pub fn enable_modifier_restore(&mut self, tables: ModifierRestoreTables) -> Result<()> {
         ensure!(
@@ -1991,11 +2034,81 @@ impl PeerLab {
         let sent = (|| {
             let (plan, channel, _) = self.pawn_open.as_ref().context("no pawn plan")?;
             let entry = self.peers.get_mut(&address).context("no returning peer")?;
-            let current = CurrentPawnState {
-                character_state: entry
-                    .pawn_character_state
+            let (_, _, content) = self.pawn_open.as_ref().context("no pawn content")?;
+            let mut inventory_gap = false;
+            let mut inventories = Vec::new();
+            if let Some(tables) = &self.inventory_restore {
+                // Any failure, gap or error, leaves the inventories out of an
+                // update that still restores the rest of the pawn.
+                match restore_inventories(
+                    &content.inventories,
+                    &self.returning_characters[index].inventories,
+                    tables,
+                ) {
+                    Ok(Ok(restored)) => inventories = restored,
+                    Ok(Err(_)) | Err(_) => inventory_gap = true,
+                }
+            }
+            let mut modifiers = Vec::new();
+            let mut modifier_gaps = 0;
+            if let Some(tables) = &self.modifier_restore {
+                // A fresh pawn's modifier UIDs start at 1; its runtime
+                // sub-objects after the open's inventories take the next
+                // indices. Effectiveness affectors read as a fresh pawn's
+                // 0: the stats they read follow the modifiers.
+                let (restored, gaps) = restore_modifiers(
+                    &self.returning_characters[index].modifiers,
+                    tables,
+                    1,
+                    u32::try_from(content.inventories.len())?,
+                    |_| 0,
+                );
+                modifiers = restored;
+                modifier_gaps = gaps.len();
+            }
+            let open_state = entry
+                .pawn_character_state
+                .as_ref()
+                .context("no pawn state")?;
+            // The restored stats need every inventory's final slots and
+            // weight (F-988); a gap in either leaves them, and the bounds
+            // they set, out.
+            let mut stat_gap = false;
+            let mut stats = None;
+            if let (Some(tables), Some(inventory_tables), Some(open_stats)) =
+                (&self.stat_restore, &self.inventory_restore, &content.stats)
+            {
+                let restored_stats = self
+                    .linked_inventories
                     .as_ref()
-                    .context("no pawn state")?,
+                    .filter(|_| !inventory_gap)
+                    .and_then(|linked| {
+                        restored_pawn_stats(
+                            tables,
+                            inventory_tables,
+                            &content.inventories,
+                            &inventories,
+                            linked,
+                            &modifiers,
+                        )
+                        .ok()
+                    })
+                    .flatten();
+                match restored_stats {
+                    Some(restored) => {
+                        stats = Some((stat_delta(open_stats, &restored.items)?, restored))
+                    }
+                    None => stat_gap = true,
+                }
+            }
+            let mut bounded = open_state.clone();
+            if let (Some((_, restored)), Some(tables)) = (&stats, &self.stat_restore) {
+                for (handle, value) in stat_bounds(restored, &tables.names) {
+                    bounded.insert(handle, RepValue::Int(value));
+                }
+            }
+            let current = CurrentPawnState {
+                character_state: &bounded,
                 // PawnContent opens Stomach without any entries.
                 stomach_contents: 0,
             };
@@ -2010,37 +2123,25 @@ impl PeerLab {
             let Ok(mut restored) = restored else {
                 return Ok(None);
             };
-            let mut inventory_gap = false;
-            if let Some(tables) = &self.inventory_restore {
-                let (_, _, content) = self.pawn_open.as_ref().context("no pawn content")?;
-                // Any failure, gap or error, leaves the inventories out of an
-                // update that still restores the rest of the pawn.
-                match restore_inventories(
-                    &content.inventories,
-                    &self.returning_characters[index].inventories,
-                    tables,
-                ) {
-                    Ok(Ok(inventories)) => restored.inventories = inventories,
-                    Ok(Err(_)) | Err(_) => inventory_gap = true,
+            // The bounds the stats moved go with the levels clamped to them.
+            for (handle, value) in &bounded {
+                if open_state.get(handle) != Some(value) {
+                    restored
+                        .character_state
+                        .entry(*handle)
+                        .or_insert_with(|| value.clone());
                 }
             }
-            let mut modifier_gaps = 0;
-            if let Some(tables) = &self.modifier_restore {
-                let (_, _, content) = self.pawn_open.as_ref().context("no pawn content")?;
-                // A fresh pawn's modifier UIDs start at 1; its runtime
-                // sub-objects after the open's inventories take the next
-                // indices. Restored stats are not modelled, so every
-                // effectiveness affector reads as a fresh pawn's 0.
-                let (modifiers, gaps) = restore_modifiers(
-                    &self.returning_characters[index].modifiers,
-                    tables,
-                    1,
-                    u32::try_from(content.inventories.len())?,
-                    |_| 0,
-                );
-                restored.modifiers = modifiers;
-                modifier_gaps = gaps.len();
-            }
+            restored.inventories = inventories;
+            restored.modifiers = modifiers;
+            let stats_sent = match stats {
+                Some((delta, _)) => {
+                    let sent = delta.is_some();
+                    restored.stats = delta;
+                    sent
+                }
+                None => false,
+            };
             // The composer refuses AddSaveDataToStomach's unread ModifierID, so
             // restored stomach entries are left out and the rest still goes.
             let dropped = match restored.stomach.take() {
@@ -2067,12 +2168,15 @@ impl PeerLab {
                 &restored,
                 entry.peer.connection_byte_order(),
             )?;
-            // Restored inventories and modifiers can outgrow one datagram and
-            // need class exports; that update is split into reliable partial
+            // Restored inventories, modifiers and stats can outgrow one
+            // datagram and need class exports; that update is split into reliable partial
             // bunches after its export parts, as large opens are. Without
             // them the update keeps its single-bunch limit, which refuses an
             // oversized update instead of splitting it.
-            let datagrams = if restored.inventories.is_empty() && restored.modifiers.is_empty() {
+            let datagrams = if restored.inventories.is_empty()
+                && restored.modifiers.is_empty()
+                && restored.stats.is_none()
+            {
                 exports.begin_bunch();
                 vec![entry.peer.reliable_actor_bunch(*channel, update.payload)?]
             } else {
@@ -2092,8 +2196,9 @@ impl PeerLab {
                 datagrams,
                 dropped,
                 restored_counts,
-                inventory_gap,
+                (inventory_gap, stat_gap),
                 modifier_gaps,
+                stats_sent,
             )))
         })();
         match sent {
@@ -2101,9 +2206,13 @@ impl PeerLab {
                 datagrams,
                 dropped,
                 (inventories, modifiers),
-                inventory_gap,
+                (inventory_gap, stat_gap),
                 modifier_gaps,
+                stats_sent,
             ))) => {
+                if stat_gap {
+                    bump(&mut self.stats.returning_stat_gaps);
+                }
                 self.stats.returning_modifier_gaps = self
                     .stats
                     .returning_modifier_gaps
@@ -2129,6 +2238,9 @@ impl PeerLab {
                         .stats
                         .returning_modifiers_sent
                         .saturating_add(modifiers as u64);
+                    if stats_sent {
+                        bump(&mut self.stats.returning_stats_sent);
+                    }
                 }
             }
             Ok(None) => bump(&mut self.stats.returning_pawn_update_gaps),
@@ -2947,6 +3059,8 @@ impl PeerLab {
             returning_inventory_gaps: self.stats.returning_inventory_gaps,
             returning_modifiers_sent: self.stats.returning_modifiers_sent,
             returning_modifier_gaps: self.stats.returning_modifier_gaps,
+            returning_stats_sent: self.stats.returning_stats_sent,
+            returning_stat_gaps: self.stats.returning_stat_gaps,
             player_history_appends: self.stats.player_history_appends,
             player_history_duplicates: self.stats.player_history_duplicates,
             player_history_errors: self.stats.player_history_errors,
@@ -4743,6 +4857,62 @@ impl Plugin for PeerLabPlugin {
 
 fn poll_peer_lab(mut lab: ResMut<PeerLab>) {
     lab.poll();
+}
+
+/// A returning pawn's restored stats (F-988) from its opened inventories,
+/// their restores and its restored modifiers; `None` when an inventory's
+/// weight is not modelled.
+fn restored_pawn_stats(
+    tables: &StatRestoreTables,
+    inventory_tables: &InventoryRestoreTables,
+    opened: &[PawnInventory],
+    restores: &[InventoryRestore],
+    linked: &BTreeMap<i32, Vec<u16>>,
+    modifiers: &[RestoredModifier],
+) -> Result<Option<RestoredStats>> {
+    let mut slots: Vec<&[InventorySlot]> = opened
+        .iter()
+        .map(|inventory| inventory.slots.items.as_slice())
+        .collect();
+    let mut weight: i32 = 0;
+    let mut weights: Vec<Option<i32>> = opened
+        .iter()
+        .map(|inventory| {
+            Some(
+                inventory
+                    .current_weight
+                    .unwrap_or(DEFAULT_CDO_CURRENT_WEIGHT),
+            )
+        })
+        .collect();
+    for restore in restores {
+        let index = restore.inventory;
+        *slots
+            .get_mut(index)
+            .context("a restore names no inventory")? = &restore.restored.slots.items;
+        weights[index] = restore.weight;
+    }
+    for inventory_weight in weights {
+        let Some(inventory_weight) = inventory_weight else {
+            return Ok(None);
+        };
+        weight = weight.wrapping_add(inventory_weight);
+    }
+    let inputs = PawnStatInputs {
+        inventories: inventory_tables
+            .inventories
+            .iter()
+            .zip(slots)
+            .map(|(info, slots)| (info.role, slots))
+            .collect(),
+        linked,
+        modifiers: modifiers
+            .iter()
+            .map(|modifier| (modifier.row, modifier.final_effectiveness))
+            .collect(),
+        weight,
+    };
+    Ok(Some(restore_stats(tables, inventory_tables, &inputs)?))
 }
 
 #[cfg(test)]

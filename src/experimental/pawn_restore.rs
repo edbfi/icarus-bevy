@@ -31,7 +31,8 @@ use super::modifier_restore::RestoredModifier;
 use super::packet::Payload;
 use super::pawn_open::{
     INVENTORY_CURRENT_WEIGHT, INVENTORY_SLOTS_FIELD_INDEX, InventorySlot, PawnComponent,
-    PawnOpenPlan, character_state_handle, fast_array_delta_field, handle, slot_stream,
+    PawnOpenPlan, STAT_ARRAY_FIELD_INDEX, character_state_handle, fast_array_delta_field, handle,
+    slot_stream,
 };
 use super::recorders::SavedPlayerState;
 use super::rep_layout::{
@@ -45,6 +46,7 @@ use super::session_open::exports_of;
 use super::session_open::{
     ActorKey, ComponentBlock, ComponentExport, ConnectionExports, NetGuidCache, actor_codec, entry,
 };
+use super::stat_restore::StatDelta;
 
 /// `UStomachComponent::StomachContents` (`stomach_component_rep_layout`).
 pub const STOMACH_CONTENTS_HANDLE: u32 = 3;
@@ -87,6 +89,9 @@ pub struct RestoredPawn {
     pub inventories: Vec<InventoryRestore>,
     /// The restored modifiers, new runtime sub-objects (F-980).
     pub modifiers: Vec<RestoredModifier>,
+    /// The restored stats' delta from the open's (F-988); `None` when they
+    /// were not restored or did not change.
+    pub stats: Option<StatDelta>,
     /// The stomach's new contents; `None` when it was and stays empty.
     pub stomach: Option<Vec<RestoredStomachContent>>,
 }
@@ -103,6 +108,10 @@ impl std::fmt::Debug for RestoredPawn {
             .field("stomach", &self.stomach.as_ref().map(Vec::len))
             .field("inventories", &self.inventories.len())
             .field("modifiers", &self.modifiers.len())
+            .field(
+                "stats",
+                &self.stats.as_ref().map(|stats| stats.changed.len()),
+            )
             .finish_non_exhaustive()
     }
 }
@@ -292,6 +301,7 @@ pub fn restore_saved_pawn(
         character_state,
         inventories: Vec::new(),
         modifiers: Vec::new(),
+        stats: None,
         stomach,
     }))
 }
@@ -412,6 +422,67 @@ fn restored_inventory_block(
     })
 }
 
+/// The stat container's block (F-988): its replicated stat array's delta
+/// from the key the client holds, the stably-named component's only field.
+fn restored_stat_block(
+    cache: &mut NetGuidCache,
+    exports: &mut ConnectionExports,
+    plan: &PawnOpenPlan,
+    key: ActorKey,
+    actor: u32,
+    stats: &StatDelta,
+    order: ByteOrder,
+) -> Result<ContentBlock> {
+    let guid = acked_component(
+        cache,
+        exports,
+        key,
+        actor,
+        &plan.components[plan.stat_container],
+    )?;
+    let field = fast_array_delta_field(
+        STAT_ARRAY_FIELD_INDEX,
+        &FastArrayDelta {
+            array_replication_key: stats.array_key,
+            base_replication_key: stats.base_key,
+            deleted_ids: Vec::new(),
+            changed: stats
+                .changed
+                .iter()
+                .map(|(id, pair)| {
+                    (
+                        *id,
+                        FastArrayItem::Delta(PropertyStream {
+                            entries: vec![entry(1, RepValue::StatPairRepState(*pair))],
+                            terminator_checksum: None,
+                        }),
+                    )
+                })
+                .collect(),
+        },
+        &[RepCommand::StatPairRepState],
+        plan.engine_net_version,
+        order,
+    )?;
+    let mut writer = super::packet::BitWriter::new();
+    write_field_header(
+        &mut writer,
+        &FieldHeader {
+            index: field.index,
+            payload: field.payload,
+        },
+        plan.content.stat_container_bound,
+    )?;
+    Ok(ContentBlock {
+        has_rep_layout: false,
+        target: BlockTarget::SubObject {
+            object: NetGuidRef::plain(guid),
+            class: SubObjectClass::StablyNamed,
+        },
+        payload: Payload::from_writer(writer),
+    })
+}
+
 /// A pawn component's GUID, which its open exported and the client acked.
 fn acked_component(
     cache: &mut NetGuidCache,
@@ -464,7 +535,8 @@ fn rep_block(
 /// into the plan's components) blocks, each only when it carries values,
 /// then each restored inventory's slot delta and each restored modifier as a
 /// new class-named sub-object, with the classes the connection has not
-/// acked exported ahead of the body. The pawn's open must be acked. Restored stomach entries reject: the
+/// acked exported ahead of the body; restored stats go as the stat
+/// container's delta right after the actor block (F-989). The pawn's open must be acked. Restored stomach entries reject: the
 /// replicated entry's `ModifierID` comes from `AddSaveDataToStomach`, which
 /// is unread; clearing a stomach composes.
 pub fn compose_restored_pawn_update(
@@ -506,6 +578,13 @@ pub fn compose_restored_pawn_update(
             &restored.pawn,
             &plan.layout,
             &rep_codec,
+        )?);
+    }
+    // The stat container's block follows the actor's, as the original's
+    // restore bunch orders them.
+    if let Some(stats) = &restored.stats {
+        blocks.push(restored_stat_block(
+            cache, exports, plan, key, actor, stats, order,
         )?);
     }
     let mut component_block = |index: usize, values: &BTreeMap<u32, RepValue>, layout| {

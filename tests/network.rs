@@ -5051,3 +5051,232 @@ fn returning_pawns_restore_their_saved_modifiers_in_the_update() {
         (2, 1)
     );
 }
+
+#[test]
+fn returning_pawns_restore_their_stats_and_the_bounds_they_set() {
+    use icarus_bevy::experimental::{
+        actor_channel::{ActorChannelCodec, BlockTarget, SubObjectClass, read_actor_bunch_body},
+        archive::ByteOrder,
+        packet::read_packet,
+        pawn_open::{PAWN_CHANNEL_INDEX, character_state_handle as h},
+        prospect_info::{SavedActorInventory, SavedItem},
+        rep_layout::{
+            RepCommand, RepLayoutCodec, RepValue, StatPairRepState,
+            player_character_state_rep_layout, read_rep_properties,
+        },
+        rep_rpc::{
+            FAST_ARRAY_COUNT_CAP, FastArrayItem, FastArrayItemLayout, read_custom_delta_header,
+            read_fast_array_delta, read_field_header,
+        },
+    };
+    use icarus_bevy::prospect;
+    use scalar::units;
+    let json = |value: serde_json::Value| serde_json::to_vec(&value).unwrap();
+    let query = |name: &str, tag: &str| {
+        serde_json::json!({"Name": name, "Query": {"QueryTokenStream": [0, 1, 1, 1, 0],
+            "TagDictionary": [{"TagName": tag}]}})
+    };
+    let empty = || json(serde_json::json!({"Rows": []}));
+    // Bag is the Equipment inventory, with one slot; a helmet adds 50 to
+    // BaseMaximumHealth_+ (the starting grants give 250).
+    let tables = vec![
+        (
+            "Inventory/D_InventoryInfo.json",
+            json(serde_json::json!({"Rows": [
+                {"Name": "Unused", "StartingSlots": 4, "InventoryID": {"Value": "Undefined"}},
+                {"Name": "Hands", "SlotTemplate": {"RowName": "Any"}, "StartingSlots": 3,
+                 "InventoryID": {"Value": "Hands"}},
+                {"Name": "Bag", "SlotTemplate": {"RowName": "Any"}, "StartingSlots": 1,
+                 "InventoryID": {"Value": "Equipment"}},
+            ]})),
+        ),
+        (
+            "Inventory/D_InventoryID.json",
+            pak_writer::table_json(&["Undefined", "Hands", "Equipment"]),
+        ),
+        (
+            "Tags/D_TagQueries.json",
+            json(serde_json::json!({"Rows": [
+                {"Name": "Q0", "Query": {"QueryTokenStream": [], "TagDictionary": []}},
+                {"Name": "Any", "Query": {"QueryTokenStream": [0, 1, 5, 0], "TagDictionary": []}},
+                {"Name": "Any_Oxygen", "Query": {"QueryTokenStream": [], "TagDictionary": []}},
+                {"Name": "Any_Food", "Query": {"QueryTokenStream": [], "TagDictionary": []}},
+                {"Name": "Any_Water", "Query": {"QueryTokenStream": [], "TagDictionary": []}},
+                query("Any_Weighable_Resource_Container", "Item.Container"),
+                query("Any_Bag", "Item.Bag"),
+                query("Any_Tool", "Item.Tool"),
+                query("Any_AnimalCorpse", "Harvest.Knife"),
+                query("Any_Radar", "Item.Radar"),
+                query("Any_Exotic", "Item.Meta.Resource"),
+                query("Any_Extractor", "Item.Extractor"),
+            ]})),
+        ),
+        (
+            "Items/D_ItemsStatic.json",
+            json(serde_json::json!({"Rows": [
+                {"Name": "Helmet", "Itemable": {"RowName": "Item_Helmet"},
+                 "Armour": {"RowName": "Plate_Head"},
+                 "Generated_Tags": {"GameplayTags": [{"TagName": "Item.Armour"}], "ParentTags": []}},
+            ]})),
+        ),
+        (
+            "Items/D_Itemable.json",
+            json(serde_json::json!({"Rows": [{"Name": "Item_Helmet", "Weight": 500}]})),
+        ),
+        (
+            "Traits/D_Armour.json",
+            json(serde_json::json!({"Rows": [{"Name": "Plate_Head",
+                "ArmourStats": {"(Value=\"BaseMaximumHealth_+\")": 50}}]})),
+        ),
+        ("Armour/D_ArmourSets.json", empty()),
+        ("Armour/D_ArmourSetBonus.json", empty()),
+        ("Alterations/D_Alterations.json", empty()),
+        (
+            "Modifiers/D_ModifierStates.json",
+            json(serde_json::json!({"Rows": [{"Name": "Overburdened"}]})),
+        ),
+        ("Traits/D_Decayable.json", empty()),
+        ("Traits/D_Equippable.json", empty()),
+        (
+            "Flags/D_SessionFlags.json",
+            pak_writer::table_json(&["Flag_A"]),
+        ),
+    ];
+    let profile = ReleaseProfile::load(&release_toml()).unwrap();
+    let pinned = profile.pin.network_checksum;
+    let engine = profile.engine_network_version;
+    let payload = returning_characters_payload_with_state(NET_ID_HEX, 3, &[70_001], &[]);
+    let directory = tempfile::tempdir().unwrap();
+    let pak = directory.path().join("data.pak");
+    fs::write(&pak, pak_writer::official_pak(&tables)).unwrap();
+    let mut lab = network::bind(&NetworkConfig {
+        release_profile: Some(release_toml()),
+        data_pak: Some(pak),
+        ..enabled(0)
+    })
+    .unwrap()
+    .unwrap()
+    .lab;
+    lab.seed_actor_uids(prospect::saved_actor_uids_from_payload(&payload).unwrap())
+        .unwrap();
+    // No loaded world: no container inventories to link.
+    lab.set_linked_inventories(std::collections::BTreeMap::new())
+        .unwrap();
+    let mut characters = prospect::saved_player_characters_from_payload(&payload).unwrap();
+    characters[0].inventories = vec![SavedActorInventory {
+        id: 2,
+        items: vec![SavedItem {
+            location: 0,
+            row_name: units("Helmet"),
+            dynamic: vec![(7, 1)],
+            owner_lookup_id: -1,
+            ..SavedItem::default()
+        }],
+    }];
+    lab.enable_returning_characters(characters).unwrap();
+    let mut app = build_app(&ServerConfig::default(), &WorldSnapshot::default()).unwrap();
+    let address = network::install(&mut app, lab).unwrap();
+    let ((_client, reply), _) = with_server(&mut app, move || {
+        let (mut client, _) = join_pinned_open(address, pinned, 7);
+        let reply = exchange_profiles(&mut client, engine, 3, 3);
+        (client, reply)
+    });
+    let stats = app.world().resource::<PeerLab>().stats();
+    assert_eq!(
+        (
+            stats.returning_pawn_updates_sent,
+            stats.returning_stats_sent,
+            stats.returning_stat_gaps,
+            stats.returning_pawn_update_errors,
+        ),
+        (1, 1, 0, 0)
+    );
+    let codec = ActorChannelCodec {
+        engine_net_version: engine,
+        exports_enabled: false,
+        has_level: true,
+        order: ByteOrder::Little,
+        limits: Default::default(),
+    };
+    let rep_codec = RepLayoutCodec {
+        actor: codec,
+        checksums: false,
+        limits: Default::default(),
+    };
+    let blocks: Vec<_> = reply
+        .iter()
+        .flat_map(|bytes| {
+            read_packet(
+                bytes,
+                &PacketConfig {
+                    receiver: PacketReceiver::Client,
+                    ..probe_config().packet
+                },
+            )
+            .unwrap()
+            .bunches
+        })
+        .filter(|bunch| bunch.header.channel_index == PAWN_CHANNEL_INDEX && !bunch.header.open)
+        .flat_map(|bunch| {
+            assert!(!bunch.header.partial);
+            read_actor_bunch_body(&mut bunch.payload.reader(), false, &codec)
+                .unwrap()
+                .blocks
+        })
+        .collect();
+    // The stat container's block comes first of the components, then
+    // ActorState's.
+    let first = blocks
+        .iter()
+        .position(|block| {
+            matches!(
+                block.target,
+                BlockTarget::SubObject {
+                    class: SubObjectClass::StablyNamed,
+                    ..
+                }
+            )
+        })
+        .unwrap();
+    let stat = &blocks[first];
+    assert!(!stat.has_rep_layout);
+    let plan = profile
+        .pawn_open_plan("/Game/Maps/Terrain_016_OLY/Terrain_016")
+        .unwrap()
+        .unwrap();
+    let mut reader = stat.payload.reader();
+    let field = read_field_header(&mut reader, plan.content.stat_container_bound, 1 << 20).unwrap();
+    let mut field_reader = field.payload.reader();
+    read_custom_delta_header(&mut field_reader, engine, 1).unwrap();
+    let delta = read_fast_array_delta(
+        &mut field_reader,
+        &FastArrayItemLayout::Delta(vec![RepCommand::StatPairRepState]),
+        &rep_codec,
+        FAST_ARRAY_COUNT_CAP,
+    )
+    .unwrap();
+    // MaximumHealth_+ (row 0, the open's item 1): 250 + 50.
+    let FastArrayItem::Delta(item) = &delta.changed[0].1 else {
+        panic!("delta item");
+    };
+    assert_eq!(delta.changed[0].0, 1);
+    assert_eq!(
+        item.entries[0].value,
+        RepValue::StatPairRepState(StatPairRepState {
+            stat: 0,
+            value: 300
+        })
+    );
+    let state = read_rep_properties(
+        &mut blocks[first + 1].payload.reader(),
+        &player_character_state_rep_layout(),
+        &rep_codec,
+    )
+    .unwrap();
+    assert!(
+        state
+            .entries
+            .iter()
+            .any(|entry| entry.handle == h::MAX_HEALTH && entry.value == RepValue::Int(300))
+    );
+}
