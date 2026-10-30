@@ -31,8 +31,8 @@ use super::modifier_restore::RestoredModifier;
 use super::packet::Payload;
 use super::pawn_open::{
     INVENTORY_CURRENT_WEIGHT, INVENTORY_SLOTS_FIELD_INDEX, InventorySlot, PawnComponent,
-    PawnOpenPlan, STAT_ARRAY_FIELD_INDEX, character_state_handle, fast_array_delta_field, handle,
-    slot_stream,
+    PawnOpenPlan, PawnTemperatureState, STAT_ARRAY_FIELD_INDEX, character_state_handle,
+    fast_array_delta_field, handle, slot_stream,
 };
 use super::recorders::SavedPlayerState;
 use super::rep_layout::{
@@ -685,10 +685,37 @@ pub fn compose_modifier_time_update(
     modifiers: &[RestoredModifier],
     order: ByteOrder,
 ) -> Result<RestoredPawnUpdate> {
+    compose_live_pawn_update(cache, exports, plan, key, None, modifiers, order)
+}
+
+/// Compose explicitly supplied temperatures and modifier wire times as one
+/// pawn update. Temperatures use the pawn's existing ActorState component;
+/// modifiers retain their original runtime object/class identities. Unknown
+/// temperature fields are omitted, while explicit zeroes are encoded.
+/// Callers own calculations, callback effects and reliable delivery ordering.
+/// On failure neither the GUID cache nor connection exports are changed.
+pub fn compose_live_pawn_update(
+    cache: &mut NetGuidCache,
+    exports: &mut ConnectionExports,
+    plan: &PawnOpenPlan,
+    key: ActorKey,
+    temperatures: Option<&PawnTemperatureState>,
+    modifiers: &[RestoredModifier],
+    order: ByteOrder,
+) -> Result<RestoredPawnUpdate> {
+    let temperature_values = temperatures
+        .map(PawnTemperatureState::values)
+        .unwrap_or_default();
     ensure!(
-        !modifiers.is_empty(),
-        "a modifier time update carries values"
+        !temperature_values.is_empty() || !modifiers.is_empty(),
+        "a live pawn update carries values"
     );
+    if !temperature_values.is_empty() {
+        ensure!(
+            plan.actor_state < plan.components.len(),
+            "pawn component index out of range"
+        );
+    }
     let mut uids = BTreeSet::new();
     let mut subobjects = BTreeSet::new();
     for modifier in modifiers {
@@ -710,6 +737,26 @@ pub fn compose_modifier_time_update(
     next_exports.begin_bunch();
     let mut blocks = Vec::new();
     let mut exported = Vec::new();
+    if !temperature_values.is_empty() {
+        let actor = next_cache.actor_guid(key)?;
+        let reference = component_reference(
+            &mut next_cache,
+            &mut next_exports,
+            key,
+            actor,
+            &plan.components[plan.actor_state],
+        )?;
+        blocks.push(rep_block(
+            BlockTarget::SubObject {
+                object: NetGuidRef::plain(reference.guid),
+                class: SubObjectClass::StablyNamed,
+            },
+            &temperature_values,
+            &plan.content.character_state_layout,
+            &rep_codec,
+        )?);
+        exported.push(reference);
+    }
     for modifier in modifiers {
         let class = next_cache.export_static(&mut next_exports, &modifier.class)?;
         let class_guid = class.guid;

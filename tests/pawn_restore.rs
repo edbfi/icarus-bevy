@@ -1255,3 +1255,226 @@ fn invalid_modifier_time_batches_preserve_guid_and_export_state() {
         assert_eq!(format!("{exports:?}"), before_exports);
     }
 }
+
+#[test]
+fn temperature_patches_preserve_unknowns_and_clear_explicit_zero() {
+    use icarus_bevy::experimental::pawn_open::PawnTemperatureState;
+
+    let mut state = PawnTemperatureState {
+        external: Some(-300),
+        internal: Some(3700),
+        ..Default::default()
+    };
+    state.merge(PawnTemperatureState {
+        external: Some(0),
+        modified_internal: Some(3600),
+        ..Default::default()
+    });
+    state.merge(PawnTemperatureState::default());
+    let values = state.values();
+    assert_eq!(
+        values,
+        BTreeMap::from([
+            (8, RepValue::Int(0)),
+            (10, RepValue::Int(3600)),
+            (27, RepValue::Int(3700)),
+        ])
+    );
+    assert_eq!(PawnTemperatureState::from_values(&values).unwrap(), state);
+    assert!(!state.is_empty());
+    assert!(PawnTemperatureState::default().is_empty());
+    assert!(
+        PawnTemperatureState::from_values(&BTreeMap::from([(3, RepValue::Bool(true))]))
+            .unwrap()
+            .is_empty()
+    );
+    for handle in [8, 9, 10, 27] {
+        assert!(
+            PawnTemperatureState::from_values(&BTreeMap::from([(
+                handle,
+                RepValue::Float(1.0_f32.to_bits())
+            )]))
+            .is_err()
+        );
+    }
+}
+
+#[test]
+fn live_pawn_updates_combine_temperature_and_modifier_blocks_with_existing_identities() {
+    use icarus_bevy::experimental::{
+        pawn_open::PawnTemperatureState, pawn_restore::compose_live_pawn_update,
+        rep_layout::modifier_state_component_rep_layout,
+    };
+
+    for order in [ByteOrder::Little, ByteOrder::Big] {
+        let (_, plan, stomach) = plan();
+        let key = ActorKey::Session(7);
+        let (mut cache, mut exports) = opened(&plan, key);
+        let actor_state_guid =
+            component_guid(&mut cache, &mut exports, &plan, key, plan.actor_state);
+        let restored = RestoredPawn {
+            modifiers: modifier_time_fixtures(),
+            ..restore(&SavedPlayerState::default(), &current_state())
+        };
+        compose_restored_pawn_update(
+            &mut cache,
+            &mut exports,
+            &plan,
+            key,
+            stomach,
+            &restored,
+            order,
+        )
+        .unwrap();
+        exports.commit_bunch(2);
+        exports.received_ack(2);
+        let next_dynamic = cache.clone().assign_dynamic().unwrap();
+        let temperatures = PawnTemperatureState {
+            external: Some(0),
+            modified_external: Some(-117),
+            modified_internal: None,
+            internal: Some(i32::MAX),
+        };
+        let mut modifiers = restored.modifiers;
+        modifiers[0].remaining_tenths = 0;
+        let codec = ActorChannelCodec {
+            engine_net_version: plan.engine_net_version,
+            exports_enabled: false,
+            has_level: true,
+            order,
+            limits: ActorChannelLimits::default(),
+        };
+        let rep_codec = RepLayoutCodec {
+            actor: codec,
+            checksums: false,
+            limits: RepLayoutLimits::default(),
+        };
+        for selected_modifiers in [&[][..], &modifiers[..]] {
+            let update = compose_live_pawn_update(
+                &mut cache,
+                &mut exports,
+                &plan,
+                key,
+                Some(&temperatures),
+                selected_modifiers,
+                order,
+            )
+            .unwrap();
+            assert!(update.exports.is_none());
+            assert_eq!(cache.clone().assign_dynamic().unwrap(), next_dynamic);
+            let mut reader = update.payload.reader();
+            let body = read_actor_bunch_body(&mut reader, false, &codec).unwrap();
+            assert!(reader.at_end());
+            assert!(body.spawn.is_none());
+            assert_eq!(body.blocks.len(), 1 + selected_modifiers.len());
+            assert_eq!(
+                body.blocks[0].target,
+                BlockTarget::SubObject {
+                    object: icarus_bevy::experimental::actor_channel::NetGuidRef::plain(
+                        actor_state_guid
+                    ),
+                    class: SubObjectClass::StablyNamed,
+                }
+            );
+            let mut reader = body.blocks[0].payload.reader();
+            let values = read_rep_properties(
+                &mut reader,
+                &plan.content.character_state_layout,
+                &rep_codec,
+            )
+            .unwrap()
+            .entries
+            .into_iter()
+            .map(|entry| (entry.handle, entry.value))
+            .collect::<BTreeMap<_, _>>();
+            assert!(reader.at_end());
+            assert_eq!(values, temperatures.values());
+            assert!(!values.contains_key(&10));
+            for (block, modifier) in body.blocks[1..].iter().zip(selected_modifiers) {
+                let BlockTarget::SubObject {
+                    object,
+                    class: SubObjectClass::Class(class),
+                } = &block.target
+                else {
+                    panic!("dynamic modifier block");
+                };
+                assert_eq!(
+                    object.guid,
+                    cache.subobject_guid(key, modifier.subobject).unwrap()
+                );
+                assert_eq!(
+                    class.guid,
+                    cache
+                        .export_static(&mut exports, &modifier.class)
+                        .unwrap()
+                        .guid
+                );
+                let mut reader = block.payload.reader();
+                let values = read_rep_properties(
+                    &mut reader,
+                    &modifier_state_component_rep_layout(),
+                    &rep_codec,
+                )
+                .unwrap()
+                .entries;
+                assert!(reader.at_end());
+                assert_eq!(values.len(), 1);
+                assert_eq!(values[0].handle, 8);
+                assert_eq!(values[0].value, RepValue::UInt16(modifier.remaining_tenths));
+            }
+        }
+    }
+}
+
+#[test]
+fn live_pawn_update_failures_leave_combined_guid_and_export_state_unchanged() {
+    use icarus_bevy::experimental::{
+        pawn_open::PawnTemperatureState, pawn_restore::compose_live_pawn_update,
+    };
+
+    let (_, original_plan, _) = plan();
+    let key = ActorKey::Session(7);
+    let temperatures = PawnTemperatureState {
+        internal: Some(0),
+        ..Default::default()
+    };
+    for case in [
+        "empty",
+        "component-index",
+        "wrong-layout",
+        "modifier-export",
+    ] {
+        let mut plan = original_plan.clone();
+        let mut modifiers = modifier_time_fixtures();
+        match case {
+            "component-index" => plan.actor_state = plan.components.len(),
+            "wrong-layout" => plan.content.character_state_layout[26] = RepCommand::Float,
+            "modifier-export" => modifiers[1].class[0].path = "x".repeat(1025),
+            _ => {}
+        }
+        let mut cache = NetGuidCache::new();
+        let mut exports = ConnectionExports::new();
+        let before_cache = format!("{cache:?}");
+        let before_exports = format!("{exports:?}");
+        let temperature_patch = if case == "empty" {
+            PawnTemperatureState::default()
+        } else {
+            temperatures
+        };
+        assert!(
+            compose_live_pawn_update(
+                &mut cache,
+                &mut exports,
+                &plan,
+                key,
+                Some(&temperature_patch),
+                if case == "empty" { &[] } else { &modifiers },
+                ByteOrder::Little,
+            )
+            .is_err(),
+            "{case}"
+        );
+        assert_eq!(format!("{cache:?}"), before_cache, "{case}");
+        assert_eq!(format!("{exports:?}"), before_exports, "{case}");
+    }
+}

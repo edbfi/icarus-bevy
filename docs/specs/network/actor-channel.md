@@ -206,10 +206,12 @@ Address pairs are server / client.
   precedes countdown; intervals consume at most one period. AutoDestroy tests
   role 3, not time. Listener effects, scheduling and refresh remain open (U-069).
 
+- Internal-temperature setter ordering and notification boundary: F-997.
+
 ## Candidate
 
-Native setters notify before reliable publication; resolved batches retain
-independent raw/wire values (F-995). No stock-client qualification.
+Native modifier and temperature updates share reliable delivery (F-995, F-998).
+No automatic climate, ticking or stock-client qualification.
 
 - Authored native refresh transport (F-936): `PeerLab::refresh_active_prospect`
   validates complete handles 51..67 and the current dynamic open in both byte

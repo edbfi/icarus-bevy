@@ -54,6 +54,7 @@ pub mod struct_array;
 pub mod tag_dictionary;
 pub mod tag_query;
 pub mod tagged;
+pub mod temperature;
 pub mod time_of_day;
 pub mod typed_value;
 

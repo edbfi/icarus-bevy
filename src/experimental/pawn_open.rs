@@ -74,11 +74,15 @@ pub mod handle {
 }
 
 /// Handles of the `UPlayerCharacterState` layout (`player_character_state_rep_layout`)
-/// that [`CharacterVitals`] and a saved character's restore write.
+/// that vitals, saved-character restore and explicit temperature updates write.
 pub mod character_state_handle {
     /// `UActorState::Health` and `MaxHealth`.
     pub const HEALTH: u32 = 3;
     pub const MAX_HEALTH: u32 = 4;
+    /// `UActorState` temperature fields (`FIntProperty`).
+    pub const EXTERNAL_TEMPERATURE: u32 = 8;
+    pub const MODIFIED_EXTERNAL_TEMPERATURE: u32 = 9;
+    pub const MODIFIED_INTERNAL_TEMPERATURE: u32 = 10;
     /// `UActorState::CurrentBiome` (1-byte row index).
     pub const CURRENT_BIOME: u32 = 11;
     /// `UActorState::CurrentAliveState` (`EAliveState`, 1 bit).
@@ -100,11 +104,72 @@ pub mod character_state_handle {
     pub const MAX_WATER: u32 = 24;
     pub const MIN_FOOD: u32 = 25;
     pub const MAX_FOOD: u32 = 26;
+    /// `USurvivalCharacterState::InternalTemperature` (`FIntProperty`).
+    pub const INTERNAL_TEMPERATURE: u32 = 27;
     pub const RADIATION: u32 = 28;
     pub const MIN_RADIATION: u32 = 29;
     pub const MAX_RADIATION: u32 = 30;
     /// The last handle of the layout (`AIDetectionPercentage`).
     pub const LAST: u32 = 32;
+}
+
+/// Explicitly supplied temperature state or a patch to it. `None` means
+/// unknown/no update; `Some(0)` clears the corresponding wire value. No climate,
+/// temperature calculation, defaults or callback effects are implied.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct PawnTemperatureState {
+    pub external: Option<i32>,
+    pub modified_external: Option<i32>,
+    pub modified_internal: Option<i32>,
+    pub internal: Option<i32>,
+}
+
+impl PawnTemperatureState {
+    /// Retain known values unless this patch explicitly replaces them.
+    pub fn merge(&mut self, patch: Self) {
+        self.external = patch.external.or(self.external);
+        self.modified_external = patch.modified_external.or(self.modified_external);
+        self.modified_internal = patch.modified_internal.or(self.modified_internal);
+        self.internal = patch.internal.or(self.internal);
+    }
+
+    pub const fn is_empty(&self) -> bool {
+        self.external.is_none()
+            && self.modified_external.is_none()
+            && self.modified_internal.is_none()
+            && self.internal.is_none()
+    }
+
+    /// Known values by qualified `UPlayerCharacterState` handle.
+    pub fn values(&self) -> BTreeMap<u32, RepValue> {
+        use character_state_handle as h;
+        [
+            (h::EXTERNAL_TEMPERATURE, self.external),
+            (h::MODIFIED_EXTERNAL_TEMPERATURE, self.modified_external),
+            (h::MODIFIED_INTERNAL_TEMPERATURE, self.modified_internal),
+            (h::INTERNAL_TEMPERATURE, self.internal),
+        ]
+        .into_iter()
+        .filter_map(|(handle, value)| value.map(|value| (handle, RepValue::Int(value))))
+        .collect()
+    }
+
+    /// Read admitted pawn values; unrelated handles are ignored, but a
+    /// supplied temperature with the wrong codec type is an error.
+    pub fn from_values(values: &BTreeMap<u32, RepValue>) -> Result<Self> {
+        use character_state_handle as h;
+        let integer = |handle| match values.get(&handle) {
+            None => Ok(None),
+            Some(RepValue::Int(value)) => Ok(Some(*value)),
+            Some(_) => anyhow::bail!("temperature field must be an integer"),
+        };
+        Ok(Self {
+            external: integer(h::EXTERNAL_TEMPERATURE)?,
+            modified_external: integer(h::MODIFIED_EXTERNAL_TEMPERATURE)?,
+            modified_internal: integer(h::MODIFIED_INTERNAL_TEMPERATURE)?,
+            internal: integer(h::INTERNAL_TEMPERATURE)?,
+        })
+    }
 }
 
 /// `UIcarusStatContainer::ReplicatedStatArray`'s field index: the first
