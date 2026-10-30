@@ -7,7 +7,7 @@ full text under `retired/`. Admission and columns follow `.agents/rules/docs.md`
 
 Before restructure: 96ddb0b:docs/ledgers/findings.md
 
-Last reconciled: 2026-10-29
+Last reconciled: 2026-10-30
 
 | ID | Claim | Kind | Evidence | Scope and limits | Unknowns | Status |
 | --- | --- | --- | --- | --- | --- | --- |
@@ -136,3 +136,4 @@ Last reconciled: 2026-10-29
 | F-988 | Native stat_restore models a returning pawn's restored stats from F-983 to F-987's sources through F-984's formulas: for record 2 all 90 equal run init-03's after its restore bunch; the restore update does not send them yet | measured | authored-test, runtime-capture; M-1110, M-1121 | high; offline model; item IDs, keys and stat-bounded state not modelled | U-069 | active |
 | F-989 | Native run sends a returning pawn's restored stats (F-988) as a stat-container delta after its actor block and bounds its state by them: for record 2 the stats and Health, MaxHealth, Stamina, MaxStamina, Food equal run init-03's; gaps leave stats out | measured | authored-test, runtime-capture; M-1110, M-1122 | high; loopback; IDs, keys, Overburdened object differ | U-069 | active |
 | F-990 | Offline 3.0.32's restore sets a returning pawn's TotalExperience (handle 15) to its character profile's XP, FOnlineProfileCharacter's third property, XP_Debt not subtracted (run init-03: 41); no native setter read copies it. Native run does the same | observed | runtime-capture, static-bytes, authored-test; M-1110, M-1123 | high; 1 run; new players unread | U-069 | active |
+| F-992 | GUID-tagged replay separates 5,779 modifier updates across five objects: two count down, one increases 90 times, one reaches zero; decoder aggregates match the retained report | observed | runtime-capture; M-1110, M-1128 | high; 3.0.32 probe; arrival times only; increase trigger and destruction unproved | U-069 | active |

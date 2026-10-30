@@ -4,7 +4,7 @@
 
 Experimental: static observations of client build 25793767 and server build
 25621760, wire-checked against the 3.0.31 capture (F-704 to F-711, F-761,
-F-845). Last reconciled: 2026-10-28.
+F-845). Last reconciled: 2026-10-30.
 
 ## Scope
 
@@ -193,6 +193,13 @@ Address pairs are server / client.
   F-808). Multi-bunch updates split as unreliable partials on consecutive
   packets (F-825; `LabPeer::actor_update_datagrams`).
 
+- Returning modifier time (F-991): with nearest-even rounding, scale seconds
+  by ten in f32, double, subtract from -0.5, convert to an integer, then
+  negate its arithmetic half and clamp below zero. Values above 65535 leave
+  the previous wire field unchanged. Native restore starts that field at zero;
+  tiny fractions can disappear in f32 arithmetic. Live clock, refresh and
+  destruction behavior remain unimplemented (U-069).
+
 ## Candidate
 
 - Authored native refresh transport (F-936): `PeerLab::refresh_active_prospect`
@@ -215,4 +222,4 @@ Address pairs are server / client.
   M-560, M-570 to M-588, M-602 to M-605, M-614, M-615, M-620 to M-624, M-628 to
   M-635, M-707, M-708, M-710 to M-713, M-717, M-720, M-731 to M-748, M-776,
   M-777, M-782, M-794, M-795, M-797 to M-799, M-801, M-802, M-804, M-805, M-807,
-  M-832, M-834 to M-836, M-841, M-844 to M-848, M-863, M-868, M-869, M-1034, M-1056.
+  M-832, M-834 to M-836, M-841, M-844 to M-848, M-863, M-868, M-869, M-1034, M-1056, M-1126 to M-1129.

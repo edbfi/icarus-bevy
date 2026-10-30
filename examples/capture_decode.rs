@@ -104,9 +104,9 @@ struct Options {
     input: PathBuf,
     /// Per-item detail JSONL; must lie under this checkout's `work/`.
     detail: PathBuf,
-    /// Also record the decoded values of every later actor block on this
-    /// channel (`update_actor_values`), with its arrival time. Both decode
-    /// passes write their rows, so select one `pass` before counting.
+    /// Also record decoded actor and sub-object values on this channel,
+    /// including arrival times and sub-object GUIDs in the private detail.
+    /// Both decode passes write their rows, so select one `pass` before counting.
     #[arg(long)]
     values_channel: Option<u32>,
 }
@@ -2467,7 +2467,7 @@ impl<'a> Decoder<'a> {
             }
             let channel_values = self.values_channel == Some(complete.header.channel_index);
             if channel_values
-                && !matches!(block.target, BlockTarget::Actor)
+                && let BlockTarget::SubObject { object, .. } = &block.target
                 && (block.has_rep_layout || block.payload.bit_len() > 0)
                 && let Some((schema_name, _)) = replayed
             {
@@ -2482,6 +2482,7 @@ impl<'a> Decoder<'a> {
                     "datagram":arrival.datagram, "ms":arrival.ms,
                     "channel":complete.header.channel_index, "schema":schema_name,
                     "object_path":object_path, "class_path":class_path,
+                    "object_guid":object.guid,
                     "target":format!("{:?}", summary.object),
                     "has_rep_layout":block.has_rep_layout,
                     "payload_bits":block.payload.bit_len(), "values":values}))?;

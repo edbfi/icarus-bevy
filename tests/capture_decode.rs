@@ -338,3 +338,155 @@ fn refuses_detail_output_outside_work() -> Result<()> {
     );
     Ok(())
 }
+
+#[test]
+fn private_values_follow_same_class_subobjects_across_reordered_updates() -> Result<()> {
+    use icarus_bevy::experimental::{
+        release::ReleaseProfile,
+        rep_layout::{
+            PropertyStream, RepEntry, RepLayoutCodec, RepValue, encode_rep_properties,
+            modifier_state_component_rep_layout,
+        },
+    };
+
+    let mut export = BitWriter::new();
+    export.write_bit(false);
+    export.write_u32(1);
+    export.write_int_packed(5);
+    export.write_bits(0x01, 8);
+    export.write_int_packed(0);
+    let class = b"ModifierStateComponent\0";
+    export.write_u32(class.len() as u32);
+    export.write_bytes(class);
+    let initial = Bunch {
+        header: BunchHeader {
+            control: true,
+            open: true,
+            has_package_map_exports: true,
+            partial: true,
+            partial_initial: true,
+            ..header(Some(100))
+        },
+        payload: Payload::from_writer(export),
+    };
+    let block = |guid: u32, uid: Option<i32>, remaining: u16| -> Result<ContentBlock> {
+        let mut entries = Vec::new();
+        if let Some(uid) = uid {
+            entries.push(RepEntry {
+                handle: 5,
+                checksum: None,
+                value: RepValue::Int(uid),
+            });
+        }
+        entries.push(RepEntry {
+            handle: 8,
+            checksum: None,
+            value: RepValue::UInt16(remaining),
+        });
+        Ok(ContentBlock {
+            has_rep_layout: true,
+            target: BlockTarget::SubObject {
+                object: NetGuidRef::plain(guid),
+                class: SubObjectClass::Class(NetGuidRef::plain(5)),
+            },
+            payload: encode_rep_properties(
+                &PropertyStream {
+                    entries,
+                    terminator_checksum: None,
+                },
+                &modifier_state_component_rep_layout(),
+                &RepLayoutCodec {
+                    actor: codec(),
+                    checksums: false,
+                    limits: Default::default(),
+                },
+            )?,
+        })
+    };
+    let opened = Bunch {
+        header: BunchHeader {
+            partial: true,
+            partial_final: true,
+            ..header(Some(101))
+        },
+        payload: encode_actor_bunch_body(
+            &ActorBunchBody {
+                spawn: Some(SpawnRecord {
+                    actor: NetGuidRef::plain(3),
+                    dynamic: None,
+                }),
+                blocks: vec![block(10, Some(9001), 100)?, block(12, Some(9002), 200)?],
+            },
+            &codec(),
+        )?,
+    };
+    let updated = Bunch {
+        header: header(Some(102)),
+        payload: encode_actor_bunch_body(
+            &ActorBunchBody {
+                spawn: None,
+                blocks: vec![block(12, None, 199)?, block(10, None, 99)?],
+            },
+            &codec(),
+        )?,
+    };
+    let root = tempfile::tempdir()?;
+    let work = root.path().join("work");
+    fs::create_dir(&work)?;
+    let input = work.join("probe.jsonl");
+    let lines = [
+        json!({"event":"reply", "ms":1, "hex":datagram(10, vec![initial])?}),
+        json!({"event":"reply", "ms":2, "hex":datagram(11, vec![opened])?}),
+        json!({"event":"reply", "ms":3, "hex":datagram(12, vec![updated])?}),
+    ];
+    fs::write(
+        &input,
+        lines
+            .iter()
+            .map(|line| format!("{line}\n"))
+            .collect::<String>(),
+    )?;
+    let ordinary = work.join("ordinary.jsonl");
+    let ordinary_report = capture_decode::run_in(&input, &ordinary, &work)?;
+    assert!(!fs::read_to_string(ordinary)?.contains("\"object_guid\""));
+
+    let detail = work.join("values.jsonl");
+    let report = capture_decode::run_recording(
+        &input,
+        &detail,
+        &work,
+        &ReleaseProfile::release_3_0_32(),
+        Some(3),
+    )?;
+    assert_eq!(report["passes"], ordinary_report["passes"]);
+    assert_eq!(report["wire"], ordinary_report["wire"]);
+    let rows: Vec<Value> = fs::read_to_string(detail)?
+        .lines()
+        .map(serde_json::from_str)
+        .collect::<Result<_, _>>()?;
+    let values: Vec<_> = rows
+        .iter()
+        .filter(|row| {
+            row["pass"] == "export_hypothesis"
+                && matches!(
+                    row["kind"].as_str(),
+                    Some("open_block_values" | "update_block_values")
+                )
+        })
+        .collect();
+    assert_eq!(values.len(), 4);
+    for (row, (guid, ms, remaining)) in
+        values
+            .iter()
+            .zip([(10, 2, 100), (12, 2, 200), (12, 3, 199), (10, 3, 99)])
+    {
+        assert_eq!(row["object_guid"], guid);
+        assert_eq!(row["ms"], ms);
+        assert!(row["object_path"].is_null());
+        assert_eq!(row["class_path"], "ModifierStateComponent");
+        let properties = row["values"]["Ok"]["properties"].as_array().unwrap();
+        let timer = properties.iter().find(|entry| entry[0] == 8).unwrap();
+        assert_eq!(timer[1]["uint16"], remaining);
+    }
+    Ok(())
+}
