@@ -207,6 +207,10 @@ Address pairs are server / client.
 
 ## Candidate
 
+Explicit restored-modifier time batches use native reliable delivery, retain
+raw/wire state separately and wait for the initial restore ACK (F-995). This
+qualifies no timer callbacks, automatic ticking or stock-client behavior.
+
 - Authored native refresh transport (F-936): `PeerLab::refresh_active_prospect`
   validates complete handles 51..67 and the current dynamic open in both byte
   orders before publishing; joined peers receive deltas after open ACK and

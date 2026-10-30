@@ -201,6 +201,7 @@ use super::manager_open::{
     ManagerOpenPlan, ManagerSlot, compose_manager_open, compose_player_history_update,
 };
 use super::modifier_restore::{ModifierRestoreTables, RestoredModifier, restore_modifiers};
+use super::modifier_timing::RemainingTime;
 use super::packet::BunchLimits;
 use super::packet::Payload;
 use super::packet_lab::{
@@ -210,7 +211,10 @@ use super::pawn_open::{
     InventorySlot, PawnContent, PawnInventory, PawnOpenPlan, PawnOpenState,
     compose_pawn_icarus_uid_update, compose_pawn_open,
 };
-use super::pawn_restore::{CurrentPawnState, compose_restored_pawn_update, restore_saved_pawn};
+use super::pawn_restore::{
+    CurrentPawnState, compose_modifier_time_update, compose_restored_pawn_update,
+    restore_saved_pawn,
+};
 use super::ping::PingEstimator;
 use super::profile_exchange::{
     self, InitialisationAnswer, ProfileExchange, ProfileKind, ProfileResponse,
@@ -611,6 +615,10 @@ pub struct PeerLabStats {
     pub returning_inventory_gaps: u64,
     /// Restored modifiers sent in returning-pawn updates (F-980).
     pub returning_modifiers_sent: u64,
+    /// Explicit modifier time batches accepted by the reliable transport.
+    pub modifier_time_updates_queued: u64,
+    /// Modifier time composition or transport framing failures.
+    pub modifier_time_update_errors: u64,
     /// Saved modifiers left out (a repeated row, an unknown class).
     pub returning_modifier_gaps: u64,
     /// Returning-pawn updates that carried restored stats (F-988).
@@ -777,6 +785,8 @@ pub struct SessionCounts {
     pub returning_inventory_gaps: u64,
     pub returning_modifiers_sent: u64,
     pub returning_modifier_gaps: u64,
+    pub modifier_time_updates_queued: u64,
+    pub modifier_time_update_errors: u64,
     pub returning_stats_sent: u64,
     pub returning_stat_gaps: u64,
     pub player_history_appends: u64,
@@ -1020,6 +1030,11 @@ struct PeerEntry {
     /// The saved character this pawn restored (F-950); its UID stays claimed
     /// for the saved record when the session ends.
     restored_character: Option<usize>,
+    /// Successfully queued initial restore, retained only for this connection.
+    restored_modifiers: Vec<RestoredModifier>,
+    /// Baselines owned by the reliable queue; NAK retransmission stays there.
+    queued_modifier_times: BTreeMap<i32, u16>,
+    modifier_time_retry_ready: bool,
     pending_pawn_restore: Option<PendingPawnRestore>,
     pawn_restore_retry_ready: bool,
     /// The cookie that created this peer; compared only, never reported.
@@ -2192,6 +2207,151 @@ impl PeerLab {
         Ok(())
     }
 
+    /// A copy of a successfully restored modifier's current caller-owned time.
+    /// Raw seconds and wire tenths are independent; neither polling nor reading
+    /// this state advances it. State lasts only for this connection.
+    pub fn restored_modifier_time(&self, connection_id: u32, uid: i32) -> Option<RemainingTime> {
+        let entry = self
+            .peers
+            .values()
+            .find(|entry| entry.connection_id == Some(connection_id))?;
+        let modifier = entry
+            .restored_modifiers
+            .iter()
+            .find(|modifier| modifier.uid == uid)?;
+        Some(RemainingTime {
+            seconds: modifier.remaining_seconds,
+            replicated_tenths: modifier.remaining_tenths,
+        })
+    }
+
+    /// Publish explicitly resolved modifier times, atomically for one connection.
+    /// The caller owns setter authority, quantization and callback effects. In
+    /// particular, raw floating-point bits need not quantize to the supplied wire
+    /// value (F-991 retains the old wire value on overflow). This API performs no
+    /// ticking, expiry, stat recalculation or persistence. It cannot create a
+    /// modifier or move one between peers. Unknown or duplicate IDs reject the
+    /// whole batch. Only wire changes send; raw-only changes remain local.
+    ///
+    /// Polling coalesces the newest values while the pawn's reliable channel is
+    /// unsettled. Successfully queued updates use reliable delivery; capacity
+    /// refusals retry after ACK/NAK progress. This is native delivery policy,
+    /// not a claim about the original's timer scheduling or reliability policy.
+    pub fn refresh_restored_modifier_times(
+        &mut self,
+        connection_id: u32,
+        updates: &[(i32, RemainingTime)],
+    ) -> Result<()> {
+        let entry = self
+            .peers
+            .values_mut()
+            .find(|entry| entry.connection_id == Some(connection_id))
+            .context("no restored modifier connection")?;
+        ensure!(
+            updates.len() <= entry.restored_modifiers.len(),
+            "modifier update count exceeds restored state"
+        );
+        let mut seen = std::collections::BTreeSet::new();
+        for (uid, _) in updates {
+            ensure!(seen.insert(*uid), "duplicate modifier update");
+            ensure!(
+                entry
+                    .restored_modifiers
+                    .iter()
+                    .any(|modifier| modifier.uid == *uid),
+                "unknown restored modifier"
+            );
+        }
+        for (uid, value) in updates {
+            let modifier = entry
+                .restored_modifiers
+                .iter_mut()
+                .find(|modifier| modifier.uid == *uid)
+                .expect("validated modifier");
+            modifier.remaining_seconds = value.seconds;
+            modifier.remaining_tenths = value.replicated_tenths;
+        }
+        if !updates.is_empty() {
+            entry.modifier_time_retry_ready = true;
+        }
+        Ok(())
+    }
+
+    fn update_restored_modifier_times(&mut self) {
+        let Some((plan, channel, _)) = &self.pawn_open else {
+            return;
+        };
+        let mut outgoing = Vec::new();
+        let mut failed = Vec::new();
+        for (address, entry) in &mut self.peers {
+            if !entry.modifier_time_retry_ready || !entry.peer.actor_channel_settled(*channel) {
+                continue;
+            }
+            entry.modifier_time_retry_ready = false;
+            let due: Vec<_> = entry
+                .restored_modifiers
+                .iter()
+                .filter(|modifier| {
+                    entry.queued_modifier_times.get(&modifier.uid)
+                        != Some(&modifier.remaining_tenths)
+                })
+                .cloned()
+                .collect();
+            if due.is_empty() {
+                continue;
+            }
+            let sent = (|| {
+                let key = pawn_key(entry.connection_id.context("no modifier connection")?);
+                let mut cache = self.guid_cache.clone();
+                let mut exports = entry.exports.clone();
+                let update = compose_modifier_time_update(
+                    &mut cache,
+                    &mut exports,
+                    plan,
+                    key,
+                    &due,
+                    entry.peer.connection_byte_order(),
+                )?;
+                let sent = entry.peer.reliable_actor_update_datagrams(
+                    *channel,
+                    update.payload,
+                    update.exports.as_slice(),
+                )?;
+                commit_exports(&mut exports, &sent);
+                self.guid_cache = cache;
+                entry.exports = exports;
+                Ok::<_, anyhow::Error>(sent)
+            })();
+            match sent {
+                Ok(sent) => {
+                    for modifier in due {
+                        entry
+                            .queued_modifier_times
+                            .insert(modifier.uid, modifier.remaining_tenths);
+                    }
+                    entry.ack_pending = false;
+                    bump(&mut self.stats.modifier_time_updates_queued);
+                    outgoing.push((*address, sent));
+                }
+                Err(_) => {
+                    // No partial queue or baseline publication. ACK/NAK progress
+                    // or an explicit refresh re-enables this connection's retry.
+                    bump(&mut self.stats.modifier_time_update_errors);
+                    if entry.peer.is_failed() {
+                        failed.push(*address);
+                    }
+                }
+            }
+        }
+        for (address, sent) in outgoing {
+            self.send_all(&sent, address);
+        }
+        for address in failed {
+            self.remove_peer(address);
+            bump(&mut self.stats.peers_failed);
+        }
+    }
+
     /// F-950: the original's character restore frees the pawn's BeginPlay UID
     /// and claims its saved one; the client sees the changed `IcarusUID`.
     /// Natively the saved UID is already claimed as a seed, so ownership moves
@@ -2446,6 +2606,12 @@ impl PeerLab {
             entry.exports = exports;
             entry.ack_pending = false;
             let restored_counts = (restored.inventories.len(), restored.modifiers.len());
+            entry.queued_modifier_times = restored
+                .modifiers
+                .iter()
+                .map(|modifier| (modifier.uid, modifier.remaining_tenths))
+                .collect();
+            entry.restored_modifiers = restored.modifiers;
             Ok::<_, anyhow::Error>(Some((
                 datagrams,
                 dropped,
@@ -3321,6 +3487,8 @@ impl PeerLab {
             returning_inventory_gaps: self.stats.returning_inventory_gaps,
             returning_modifiers_sent: self.stats.returning_modifiers_sent,
             returning_modifier_gaps: self.stats.returning_modifier_gaps,
+            modifier_time_updates_queued: self.stats.modifier_time_updates_queued,
+            modifier_time_update_errors: self.stats.modifier_time_update_errors,
             returning_stats_sent: self.stats.returning_stats_sent,
             returning_stat_gaps: self.stats.returning_stat_gaps,
             player_history_appends: self.stats.player_history_appends,
@@ -3475,6 +3643,9 @@ impl PeerLab {
                         peer,
                         pawn_uid: None,
                         restored_character: None,
+                        restored_modifiers: Vec::new(),
+                        queued_modifier_times: BTreeMap::new(),
+                        modifier_time_retry_ready: false,
                         pending_pawn_restore: None,
                         pawn_restore_retry_ready: false,
                         cookie,
@@ -3543,6 +3714,11 @@ impl PeerLab {
                             && (!summary.acked.is_empty() || !summary.naked.is_empty())
                         {
                             entry.pawn_restore_retry_ready = true;
+                        }
+                        if !entry.restored_modifiers.is_empty()
+                            && (!summary.acked.is_empty() || !summary.naked.is_empty())
+                        {
+                            entry.modifier_time_retry_ready = true;
                         }
                         if entry.player_history_pending
                             && (!summary.acked.is_empty() || !summary.naked.is_empty())
@@ -5003,6 +5179,7 @@ impl PeerLab {
         self.retry_pending_pawn_restores();
         self.finalise_connected_players();
         self.retry_pending_player_history();
+        self.update_restored_modifier_times();
         self.send_acks();
         self.update_game_state();
     }

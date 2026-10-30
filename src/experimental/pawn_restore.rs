@@ -16,7 +16,7 @@
 //! restore changes; [`compose_restored_pawn_update`] frames them as one
 //! reliable pawn property update. Item-static row indices are the caller's
 //! (the server data.pak's `D_ItemsStatic` order, F-830).
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use anyhow::{Result, bail, ensure};
 
@@ -669,6 +669,74 @@ pub fn compose_restored_pawn_update(
             &codec,
         )?,
     })
+}
+
+/// Compose explicit remaining-time values for previously restored modifiers.
+/// The caller retains their UID, subobject index and class identities and waits
+/// until the initial reliable restore has been acknowledged before sending this
+/// update. This encodes the supplied wire field, including zero, independently
+/// of raw seconds; it neither runs a setter nor assumes callback effects.
+/// On failure, the GUID cache and connection exports are unchanged.
+pub fn compose_modifier_time_update(
+    cache: &mut NetGuidCache,
+    exports: &mut ConnectionExports,
+    plan: &PawnOpenPlan,
+    key: ActorKey,
+    modifiers: &[RestoredModifier],
+    order: ByteOrder,
+) -> Result<RestoredPawnUpdate> {
+    ensure!(
+        !modifiers.is_empty(),
+        "a modifier time update carries values"
+    );
+    let mut uids = BTreeSet::new();
+    let mut subobjects = BTreeSet::new();
+    for modifier in modifiers {
+        ensure!(uids.insert(modifier.uid), "duplicate modifier UID");
+        ensure!(
+            subobjects.insert(modifier.subobject),
+            "duplicate modifier subobject"
+        );
+        ensure!(!modifier.class.is_empty(), "empty modifier class");
+    }
+    let codec = actor_codec(plan.engine_net_version, order);
+    let rep_codec = RepLayoutCodec {
+        actor: codec,
+        checksums: false,
+        limits: RepLayoutLimits::default(),
+    };
+    let mut next_cache = cache.clone();
+    let mut next_exports = exports.clone();
+    next_exports.begin_bunch();
+    let mut blocks = Vec::new();
+    let mut exported = Vec::new();
+    for modifier in modifiers {
+        let class = next_cache.export_static(&mut next_exports, &modifier.class)?;
+        let class_guid = class.guid;
+        exported.push(class);
+        blocks.push(rep_block(
+            BlockTarget::SubObject {
+                object: NetGuidRef::plain(next_cache.subobject_guid(key, modifier.subobject)?),
+                class: SubObjectClass::Class(NetGuidRef::plain(class_guid)),
+            },
+            &BTreeMap::from([(8, RepValue::UInt16(modifier.remaining_tenths))]),
+            &modifier_state_component_rep_layout(),
+            &rep_codec,
+        )?);
+    }
+    let update = RestoredPawnUpdate {
+        exports: exports_of(&exported, &codec)?,
+        payload: encode_actor_bunch_body(
+            &ActorBunchBody {
+                spawn: None,
+                blocks,
+            },
+            &codec,
+        )?,
+    };
+    *cache = next_cache;
+    *exports = next_exports;
+    Ok(update)
 }
 
 /// A restored pawn update: its body and the export-only prefix the body's

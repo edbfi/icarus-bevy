@@ -932,6 +932,7 @@ fn restored_modifiers_are_class_named_subobjects_with_their_classes_exported() {
         uid,
         lifetime: 300.0,
         final_effectiveness,
+        remaining_seconds,
         remaining_tenths: remaining_tenths(remaining_seconds),
         class: vec![
             PathSegment::new("ModifierStateComponent", MODIFIER_CLASS_CHECKSUM, false),
@@ -1105,4 +1106,152 @@ fn restored_stats_send_their_delta_on_the_stat_container_first() {
             (59, RepValue::StatPairRepState(pair(46, 53))),
         ]
     );
+}
+
+fn modifier_time_fixtures() -> Vec<icarus_bevy::experimental::modifier_restore::RestoredModifier> {
+    use icarus_bevy::experimental::modifier_restore::{MODIFIER_CLASS_CHECKSUM, RestoredModifier};
+    use icarus_bevy::experimental::session_open::PathSegment;
+
+    (0..2)
+        .map(|index| RestoredModifier {
+            row: 40 + u16::try_from(index).unwrap(),
+            uid: i32::try_from(index).unwrap() + 1,
+            lifetime: 300.0,
+            final_effectiveness: 0,
+            remaining_seconds: 12.34,
+            remaining_tenths: 124,
+            class: vec![
+                PathSegment::new("ModifierStateComponent", MODIFIER_CLASS_CHECKSUM, false),
+                PathSegment::new("/Script/Icarus", 0, false),
+            ],
+            subobject: index + 6,
+        })
+        .collect()
+}
+
+#[test]
+fn modifier_time_updates_reuse_dynamic_objects_and_clear_zero_in_both_byte_orders() {
+    use icarus_bevy::experimental::pawn_restore::compose_modifier_time_update;
+    use icarus_bevy::experimental::rep_layout::modifier_state_component_rep_layout;
+
+    for order in [ByteOrder::Little, ByteOrder::Big] {
+        let (_, plan, stomach) = plan();
+        let key = ActorKey::Session(7);
+        let (mut cache, mut exports) = opened(&plan, key);
+        let restored = RestoredPawn {
+            modifiers: modifier_time_fixtures(),
+            ..restore(&SavedPlayerState::default(), &current_state())
+        };
+        let initial = compose_restored_pawn_update(
+            &mut cache,
+            &mut exports,
+            &plan,
+            key,
+            stomach,
+            &restored,
+            order,
+        )
+        .unwrap();
+        exports.commit_bunch(2);
+        let codec = ActorChannelCodec {
+            engine_net_version: plan.engine_net_version,
+            exports_enabled: false,
+            has_level: true,
+            order,
+            limits: ActorChannelLimits::default(),
+        };
+        let rep_codec = RepLayoutCodec {
+            actor: codec,
+            checksums: false,
+            limits: RepLayoutLimits::default(),
+        };
+        let initial_body =
+            read_actor_bunch_body(&mut initial.payload.reader(), false, &codec).unwrap();
+        let targets: Vec<_> = initial_body.blocks[initial_body.blocks.len() - 2..]
+            .iter()
+            .map(|block| block.target.clone())
+            .collect();
+        assert_ne!(targets[0], targets[1]);
+        let next_dynamic = cache.clone().assign_dynamic().unwrap();
+        let mut changed = restored.modifiers;
+        changed[0].remaining_seconds = -0.01;
+        changed[0].remaining_tenths = 0;
+        // Wire state is supplied independently: overflow can preserve it.
+        changed[1].remaining_seconds = 7000.0;
+        changed[1].remaining_tenths = 123;
+        let pending =
+            compose_modifier_time_update(&mut cache, &mut exports, &plan, key, &changed, order)
+                .unwrap();
+        assert!(
+            pending.exports.is_some(),
+            "unacknowledged class paths repeat"
+        );
+        exports.received_ack(2);
+        let update =
+            compose_modifier_time_update(&mut cache, &mut exports, &plan, key, &changed, order)
+                .unwrap();
+        assert!(update.exports.is_none());
+        assert_eq!(update.payload, pending.payload);
+        assert_eq!(cache.clone().assign_dynamic().unwrap(), next_dynamic);
+        let mut reader = update.payload.reader();
+        let body = read_actor_bunch_body(&mut reader, false, &codec).unwrap();
+        assert!(reader.at_end());
+        assert!(body.spawn.is_none());
+        assert_eq!(body.blocks.len(), 2);
+        for ((block, target), expected) in body.blocks.iter().zip(&targets).zip([0, 123]) {
+            assert_eq!(&block.target, target);
+            assert!(block.has_rep_layout);
+            let mut reader = block.payload.reader();
+            let stream = read_rep_properties(
+                &mut reader,
+                &modifier_state_component_rep_layout(),
+                &rep_codec,
+            )
+            .unwrap();
+            assert!(reader.at_end());
+            assert_eq!(stream.entries.len(), 1);
+            assert_eq!(stream.entries[0].handle, 8);
+            assert_eq!(stream.entries[0].value, RepValue::UInt16(expected));
+        }
+    }
+}
+
+#[test]
+fn invalid_modifier_time_batches_preserve_guid_and_export_state() {
+    use icarus_bevy::experimental::pawn_restore::compose_modifier_time_update;
+
+    let (_, plan, _) = plan();
+    let key = ActorKey::Session(7);
+    let (mut cache, mut exports) = opened(&plan, key);
+    let mut duplicate_uid = modifier_time_fixtures();
+    duplicate_uid[1].uid = duplicate_uid[0].uid;
+    let mut duplicate_object = modifier_time_fixtures();
+    duplicate_object[1].subobject = duplicate_object[0].subobject;
+    let mut empty_class = modifier_time_fixtures();
+    empty_class[1].class.clear();
+    let mut oversized_class = modifier_time_fixtures();
+    oversized_class[1].class[0].path = "x".repeat(1025);
+    for invalid in [
+        Vec::new(),
+        duplicate_uid,
+        duplicate_object,
+        empty_class,
+        oversized_class,
+    ] {
+        let before_cache = format!("{cache:?}");
+        let before_exports = format!("{exports:?}");
+        assert!(
+            compose_modifier_time_update(
+                &mut cache,
+                &mut exports,
+                &plan,
+                key,
+                &invalid,
+                ByteOrder::Little,
+            )
+            .is_err()
+        );
+        assert_eq!(format!("{cache:?}"), before_cache);
+        assert_eq!(format!("{exports:?}"), before_exports);
+    }
 }
