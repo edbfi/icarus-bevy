@@ -54,7 +54,8 @@ resolved; unsupported quest classes and `Check()` graphs fail closed (U-076).
 New-player `History` appends coalesce across temporary per-peer send pressure
 (F-865, F-967).
 
-Native prospect refresh transport: F-936.
+Native prospect refresh transport: F-936. Profile initialization defers
+temporary send pressure without repeating queued phases (F-975).
 A saved member's Join refreshes who is playing by login ID, as the original's
 spawn completion does (F-822, F-945); unassociated joins, which the original adds
 from character records, change nothing (F-946). These are authored loopback
