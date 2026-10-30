@@ -1046,6 +1046,9 @@ struct PeerEntry {
     player_state_channel: Option<u32>,
     /// Set only after this connection's tracker open was reliably queued.
     player_history_channel: Option<u32>,
+    /// The latest published History has not yet been queued for this peer.
+    player_history_pending: bool,
+    player_history_retry_ready: bool,
     /// F-951 / controller net fields: the first accepted ChrSlot this session.
     character_slot: Option<i32>,
     backend_proxy: Option<u32>,
@@ -1077,12 +1080,7 @@ struct PeerEntry {
 
 /// Capacity planning may fill a cloned queue even when the live queue is
 /// empty. Only outstanding traffic that can drain makes a refusal retryable.
-fn defer_pawn_restore(
-    entry: &mut PeerEntry,
-    error: &anyhow::Error,
-    stage: PendingPawnRestore,
-    channel: u32,
-) {
+fn transport_capacity_can_drain(entry: &PeerEntry, error: &anyhow::Error, channel: u32) -> bool {
     use super::sequencing::SendCapacityError;
     let temporary = match error.downcast_ref::<SendCapacityError>() {
         Some(SendCapacityError::SentRecordRing { .. }) => {
@@ -1099,7 +1097,16 @@ fn defer_pawn_restore(
         }) => *pending > 0 && additional <= capacity,
         None => false,
     };
-    if temporary && !entry.peer.is_failed() {
+    temporary && !entry.peer.is_failed()
+}
+
+fn defer_pawn_restore(
+    entry: &mut PeerEntry,
+    error: &anyhow::Error,
+    stage: PendingPawnRestore,
+    channel: u32,
+) {
+    if transport_capacity_can_drain(entry, error, channel) {
         entry.pending_pawn_restore = Some(stage);
         entry.pawn_restore_retry_ready = false;
     }
@@ -3485,6 +3492,8 @@ impl PeerLab {
                         player_controller_channel: None,
                         player_state_channel: None,
                         player_history_channel: None,
+                        player_history_pending: false,
+                        player_history_retry_ready: false,
                         character_slot: None,
                         backend_proxy: None,
                         player_data: None,
@@ -3534,6 +3543,11 @@ impl PeerLab {
                             && (!summary.acked.is_empty() || !summary.naked.is_empty())
                         {
                             entry.pawn_restore_retry_ready = true;
+                        }
+                        if entry.player_history_pending
+                            && (!summary.acked.is_empty() || !summary.naked.is_empty())
+                        {
+                            entry.player_history_retry_ready = true;
                         }
                         bump(&mut self.stats.data_accepted);
                         let world_seconds = now.duration_since(self.started).as_secs_f64();
@@ -4113,14 +4127,35 @@ impl PeerLab {
         };
         self.manager_opens[index].1 = plan;
         bump(&mut self.stats.player_history_appends);
+        for entry in self.peers.values_mut() {
+            if entry
+                .player_history_channel
+                .is_some_and(|channel| entry.peer.has_actor_channel(channel))
+            {
+                entry.player_history_pending = true;
+                entry.player_history_retry_ready = true;
+            }
+        }
+    }
+
+    /// Coalesce unsent publications into the latest whole array. Successful
+    /// queueing transfers delivery to the reliable transport; capacity refusal
+    /// waits for ACK/NAK progress, while semantic failures remain terminal.
+    fn retry_pending_player_history(&mut self) {
+        let Some(index) = self
+            .manager_opens
+            .iter()
+            .position(|(key, ..)| *key == ManagerSlot::PlayerHistory.key())
+        else {
+            return;
+        };
         let addresses: Vec<_> = self
             .peers
-            .iter()
+            .iter_mut()
             .filter_map(|(address, entry)| {
-                entry
-                    .player_history_channel
-                    .filter(|channel| entry.peer.has_actor_channel(*channel))
-                    .map(|_| *address)
+                (std::mem::take(&mut entry.player_history_retry_ready)
+                    && entry.player_history_pending)
+                    .then_some(*address)
             })
             .collect();
         for address in addresses {
@@ -4128,22 +4163,29 @@ impl PeerLab {
                 .peers
                 .get_mut(&address)
                 .expect("collected history peer");
+            let Some(channel) = entry
+                .player_history_channel
+                .filter(|channel| entry.peer.has_actor_channel(*channel))
+            else {
+                entry.player_history_pending = false;
+                continue;
+            };
             let sent = compose_player_history_update(
                 &self.manager_opens[index].1,
                 entry.peer.connection_byte_order(),
             )
-            .and_then(|payload| {
-                entry.peer.reliable_actor_bunch_datagrams(
-                    entry.player_history_channel.expect("opened tracker"),
-                    payload,
-                )
-            });
+            .and_then(|payload| entry.peer.reliable_actor_bunch_datagrams(channel, payload));
             match sent {
                 Ok(sent) => {
+                    entry.player_history_pending = false;
                     entry.ack_pending = false;
                     self.send_all(&sent, address);
                 }
-                Err(_) => bump(&mut self.stats.player_history_errors),
+                Err(error) => {
+                    entry.player_history_pending =
+                        transport_capacity_can_drain(entry, &error, channel);
+                    bump(&mut self.stats.player_history_errors);
+                }
             }
         }
     }
@@ -4827,6 +4869,8 @@ impl PeerLab {
         self.guid_cache = cache;
         if *key == ManagerSlot::PlayerHistory.key() {
             entry.player_history_channel = Some(*channel);
+            entry.player_history_pending = false;
+            entry.player_history_retry_ready = false;
         }
         if self.send_all(&sent, address) {
             bump(&mut self.stats.manager_opens_sent);
@@ -4958,6 +5002,7 @@ impl PeerLab {
         }
         self.retry_pending_pawn_restores();
         self.finalise_connected_players();
+        self.retry_pending_player_history();
         self.send_acks();
         self.update_game_state();
     }

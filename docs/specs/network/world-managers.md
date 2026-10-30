@@ -55,11 +55,11 @@ Framing is in [actor channel bunches](actor-channel.md).
   apart from domain ids; F-861, F-934; `with_quest_state`). A saved faction
   mission the tables lack or an unopenable `C019` quest skips the QuestManager.
 - PlayerHistoryTracker (`Default__PlayerHistoryTracker`, checksum 243959002):
-  handle 19 `History` carries the save's C024 `SavedHistoryData`, every
-  element field (`UserId`, `ChrSlot`, `CachedCharacterName`) in saved order
-  (F-862; `with_player_history`). The original appends a player in
-  `InitialisePlayerForProspect` unless an entry has the same user ID
-  (case-insensitive) and slot; an existing entry is not refreshed (F-865).
+  handle 19 preserves C024 `SavedHistoryData`'s ordered `UserId`, `ChrSlot`
+  and `CachedCharacterName` (F-862). Original `AddPlayer` deduplicates by
+  case-insensitive user ID and slot without refreshing names (F-865).
+  Native History delivery coalesces temporary per-peer capacity refusals into
+  the latest reliable array after ACK/NAK progress; later opens include it (F-967).
 - InventoryContainerManager (`Default__InventoryContainerManager`, checksum
   3504939521, no components): handle 19 `Inventories` lists its runtime
   `UInventory` subobjects' GUIDs in block order. Each block sends `bIsActive`,
