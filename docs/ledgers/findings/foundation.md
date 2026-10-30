@@ -7,7 +7,7 @@ full text under `retired/`. Admission and columns follow `.agents/rules/docs.md`
 
 Before restructure: 96ddb0b:docs/ledgers/findings.md
 
-Last reconciled: 2026-10-26
+Last reconciled: 2026-10-30
 
 | ID | Claim | Kind | Evidence | Scope and limits | Unknowns | Status |
 | --- | --- | --- | --- | --- | --- | --- |
@@ -19,7 +19,7 @@ Last reconciled: 2026-10-26
 | F-771 | Unsupported schemas and corrupt/missing manifests fail closed; import-save reads only the supplied source to plan, refuses without --dry-run, and never writes or touches the destination | observed | authored-test; M-808 | high; native persistence/CLI |  | active |
 | F-871 | Synthetic 100,000-entity runs keep exact state and no missed ticks: a historical 7,200 s soak (719 saves) and a 120 s run (60 saves, 28,924 KiB peak RSS); the object-gated store passes 22 generations; 24 kill cycles keep acked ticks | observed | runtime-capture; M-132..M-137, M-212, M-213, M-218; cac76ec | high; synthetic; soak predates later store changes | U-035, U-049 | active |
 | F-239 | Real FS probe passes ENOSPC/EACCES with unchanged acknowledged state, restoration, retries and reopen; N-003 fixed error classification via typed I/O kind. | observed | runtime-capture; M-138 | high; 256 KiB unprivileged tmpfs, gen 4/tick 40, 1,100 entities; Historical failed run preserved | U-035 | active |
-| F-879 | Rust 1.99.1 and Bevy 0.20.0 (headless: no rendering, window or audio) are pinned with a lockfile, current stable on 2026-10-25, and Dependabot updates Cargo weekly; the release executable links only the loader, libc and libgcc_s on this host | observed | upstream-metadata, review; M-076, M-078, M-184, M-287, M-718, M-1026 | high; toolchain only; host-specific links |  | active |
+| F-879 | Rust 1.99.1 and Bevy 0.20.1 are locked, current stable on 2026-10-30; Cargo gets weekly Dependabot updates; the headless release has no rendering, window or audio and links only loader, libc and libgcc_s on this host | observed | upstream-metadata, authored-test; M-076, M-078, M-184, M-287, M-718, M-1026, M-1125 | high; toolchain only; host-specific links |  | active |
 | F-252 | Offline reference launcher enforces bindings, attempt quotas, cleanup reserve and container ownership; 30 mocked tests and basedpyright 0/0 pass. | observed | authored-test; M-145 | high; launcher revision; This revision has not executed the original server |  | active |
 | F-264 | Client intake supports matched-build static comparison; connected testing with the stock Windows client is deferred. | observed | review; M-113; build 25793767 | high; client intake; Matched-client behavior untested; packaged assets not required | U-038 | active |
 | F-265 | Reference inventory hashed the original baseline; static inspection recorded executable identity, imports and diagnostic anchors. | observed | static-bytes; M-157, M-158; build 25621760 | high; original files; Behavior unverified |  | active |

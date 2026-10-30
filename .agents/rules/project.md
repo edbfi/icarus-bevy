@@ -9,7 +9,8 @@ be demonstrated rather than assumed.
 
 - Use `.agents/skills/bevy/SKILL.md` for Bevy development.
 - The Bevy skill is installed from `edbfi/skills` using `bunx skills`; keep
-  `skills-lock.json` with updates. The application and skill target Bevy 0.20.0.
+  `skills-lock.json` with updates. The application targets Bevy 0.20.1;
+  the retained skill's API baseline is Bevy 0.20.0.
 - Target the latest stable project dependencies and Rust toolchain, as requested
   by the user. Verify current upstream releases, migrate APIs and run checks when
   updating; retain exact toolchain/release pins and the lockfile for reproducible

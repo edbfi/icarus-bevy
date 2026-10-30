@@ -7,7 +7,7 @@ the [unknowns ledger](ledgers/unknowns.md); preconditions live only in
 
 Before restructure: 96ddb0b:docs/implementation-status.md
 
-Last reconciled: 2026-10-28
+Last reconciled: 2026-10-30
 
 ## Summary
 
@@ -44,7 +44,7 @@ What the foundation does is in the
 | M0: reference baseline | In progress | 435 files hashed; build 25621760; isolated entry-map startup observed; supplied save integrity/outer format characterized; server/client PE/PDB identities and MSF streams verified (F-878; U-034 resolved); producing save build log pending (U-040) |
 | M1: original bug reproduction | Pending | Offline startup did not reproduce reported crashes; no official bug is marked reproduced or fixed (F-217); controlled workloads still required |
 | M2: interoperability/data feasibility | In progress, partial observations | Stateless exchange observed; the official server's data.pak fetches natively and its tables drive row handles (F-830, F-831); authenticated protocol, world-data and import feasibility gates remain open |
-| M3: Bevy gameplay slice | In progress, foundation only | Rust 1.99.1 / Bevy 0.20.0 foundation tested; opt-in loopback session layer admits authored probes (F-875); stock-client slice pending M2 |
+| M3: Bevy gameplay slice | In progress, foundation only | Rust 1.99.1 / Bevy 0.20.1 foundation tested; opt-in loopback session layer admits authored probes (F-875); stock-client slice pending M2 |
 | M4: complete behavior | Pending | All required compatibility matrix entries must pass |
 | M5: migration/hardening | Pending, native hardening underway | Real native filesystem faults pass; real saves preserve losslessly in native generations and run through autosaves (F-567, F-873); randomized inputs never panic the readers or the peer lab, and corrupted stores load a committed snapshot or fail closed (F-604 to F-607, F-611); every supplied value types losslessly and a dry-run import plan reports field-level blockers (F-766, F-898); value meanings and migration fidelity remain unvalidated |
 | M6: optimization/qualification | Pending | Matched reference workloads and full release gates required |
