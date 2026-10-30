@@ -5265,25 +5265,8 @@ fn returning_pawns_restore_their_saved_modifiers_in_the_update() {
     );
 }
 
-#[test]
-fn returning_pawns_restore_their_stats_and_the_bounds_they_set() {
-    use icarus_bevy::experimental::{
-        actor_channel::{ActorChannelCodec, BlockTarget, SubObjectClass, read_actor_bunch_body},
-        archive::ByteOrder,
-        packet::read_packet,
-        pawn_open::{PAWN_CHANNEL_INDEX, character_state_handle as h},
-        prospect_info::{SavedActorInventory, SavedItem},
-        rep_layout::{
-            RepCommand, RepLayoutCodec, RepValue, StatPairRepState,
-            player_character_state_rep_layout, read_rep_properties,
-        },
-        rep_rpc::{
-            FAST_ARRAY_COUNT_CAP, FastArrayItem, FastArrayItemLayout, read_custom_delta_header,
-            read_fast_array_delta, read_field_header,
-        },
-    };
-    use icarus_bevy::prospect;
-    use scalar::units;
+/// Independently authored gameplay inputs shared by restored-stat coverage tests.
+fn restored_stat_fixture_tables() -> Vec<(&'static str, Vec<u8>)> {
     let json = |value: serde_json::Value| serde_json::to_vec(&value).unwrap();
     let query = |name: &str, tag: &str| {
         serde_json::json!({"Name": name, "Query": {"QueryTokenStream": [0, 1, 1, 1, 0],
@@ -5292,7 +5275,7 @@ fn returning_pawns_restore_their_stats_and_the_bounds_they_set() {
     let empty = || json(serde_json::json!({"Rows": []}));
     // Bag is the Equipment inventory, with one slot; a helmet adds 50 to
     // BaseMaximumHealth_+ (the starting grants give 250).
-    let tables = vec![
+    vec![
         (
             "Inventory/D_InventoryInfo.json",
             json(serde_json::json!({"Rows": [
@@ -5354,7 +5337,29 @@ fn returning_pawns_restore_their_stats_and_the_bounds_they_set() {
             "Flags/D_SessionFlags.json",
             pak_writer::table_json(&["Flag_A"]),
         ),
-    ];
+    ]
+}
+
+#[test]
+fn returning_pawns_restore_their_stats_and_the_bounds_they_set() {
+    use icarus_bevy::experimental::{
+        actor_channel::{ActorChannelCodec, BlockTarget, SubObjectClass, read_actor_bunch_body},
+        archive::ByteOrder,
+        packet::read_packet,
+        pawn_open::{PAWN_CHANNEL_INDEX, character_state_handle as h},
+        prospect_info::{SavedActorInventory, SavedItem},
+        rep_layout::{
+            RepCommand, RepLayoutCodec, RepValue, StatPairRepState,
+            player_character_state_rep_layout, read_rep_properties,
+        },
+        rep_rpc::{
+            FAST_ARRAY_COUNT_CAP, FastArrayItem, FastArrayItemLayout, read_custom_delta_header,
+            read_fast_array_delta, read_field_header,
+        },
+    };
+    use icarus_bevy::prospect;
+    use scalar::units;
+    let tables = restored_stat_fixture_tables();
     let profile = ReleaseProfile::load(&release_toml()).unwrap();
     let pinned = profile.pin.network_checksum;
     let engine = profile.engine_network_version;
@@ -6284,4 +6289,318 @@ fn restored_modifier_time_loss_uses_existing_reliable_retransmission() {
             .peers_failed,
         0
     );
+}
+
+#[test]
+fn returning_stat_coverage_preserves_independent_fields_without_guessing_bounds() {
+    use icarus_bevy::{
+        actor_uids::ActorUidLibrary,
+        data_pak::DataTables,
+        experimental::{
+            actor_channel::{BlockTarget, SubObjectClass, read_actor_bunch_body},
+            pawn_open::{PAWN_CHANNEL_INDEX, character_state_handle as h, handle as pawn_handle},
+            peer_lab::PeerLabAdmission,
+            probe_initialise::{ActorChannelTracker, initialise_codec},
+            prospect_info::{SavedActorInventory, SavedItem, SavedModifierState},
+            recorders::SavedPlayerState,
+            rep_layout::{RepValue, player_character_state_rep_layout, read_rep_properties},
+        },
+        prospect,
+    };
+    use scalar::units;
+
+    for (case, gap, stats_sent, health) in [
+        ("complete", false, true, Some(350)),
+        ("unknown-behaviour", true, false, None),
+        ("repeated-row", true, false, None),
+        ("invalid-index", true, false, None),
+        ("missing-modifier-model", true, false, None),
+        ("missing-stat-model", true, false, None),
+        ("missing-inventory-model", true, false, None),
+        ("inventory-gap", true, false, None),
+        ("missing-inventory-empty", true, false, None),
+        ("empty-inventory", false, false, None),
+        ("opening-items", false, true, Some(300)),
+        ("opening-items-without-stats", true, false, None),
+        ("opening-weight", false, true, Some(175)),
+        ("opening-weight-without-stats", true, false, None),
+        ("negative", false, true, Some(300)),
+        ("unsaved", false, true, Some(300)),
+        ("invalid-name", false, true, Some(300)),
+        ("missing-model-negative", false, true, Some(300)),
+        ("missing-model-nan", false, true, Some(300)),
+        ("unchanged-without-models", false, false, None),
+    ] {
+        let mut tables = restored_stat_fixture_tables();
+        let modifier_table = tables
+            .iter_mut()
+            .find(|(name, _)| *name == "Modifiers/D_ModifierStates.json")
+            .unwrap();
+        modifier_table.1 = serde_json::to_vec(&serde_json::json!({"Rows": [
+            {"Name": "Overburdened", "GrantedStats": {"(Value=\"BaseMaximumHealth_+\")": -75}},
+            {"Name": "Boost", "GrantedStats": {"(Value=\"BaseMaximumHealth_+\")": 100}},
+            {"Name": "Unknown", "Behaviour": "/Game/Authored/Unknown.Unknown_C", "GrantedStats": {"(Value=\"BaseMaximumHealth_+\")": 200}},
+            {"Name": "Unsaved", "SaveToDatabase": false, "GrantedStats": {"(Value=\"BaseMaximumHealth_+\")": 500}}
+        ]})).unwrap();
+        let directory = tempfile::tempdir().unwrap();
+        let pak = directory.path().join("data.pak");
+        fs::write(&pak, pak_writer::official_pak(&tables)).unwrap();
+        let gameplay = pak_writer::authored_gameplay(&pak);
+        let mut tables = DataTables::runtime(&pak, &gameplay).unwrap();
+        let mut content = network::pawn_content(Some(&mut tables)).unwrap();
+        if matches!(case, "opening-weight" | "opening-weight-without-stats") {
+            content.inventories[0].current_weight = Some(100_001);
+        }
+        if matches!(case, "opening-items" | "opening-items-without-stats") {
+            let equipment = content
+                .inventories
+                .iter_mut()
+                .find(|inventory| inventory.info_row == 2)
+                .unwrap();
+            equipment.slots.items[0].item = Some(icarus_bevy::experimental::pawn_open::SlotItem {
+                dynamic: vec![(7, 1)],
+                ..icarus_bevy::experimental::pawn_open::SlotItem::new(0).unwrap()
+            });
+            equipment.slots.replication_key += 1;
+            equipment.current_weight = Some(500);
+        }
+        let inventories = content.inventories.clone();
+        let profile = ReleaseProfile::load(&release_toml()).unwrap();
+        let pinned = profile.pin.network_checksum;
+        let engine = profile.engine_network_version;
+        let map = PeerLabAdmission::default().map_url;
+        let pawn = profile.pawn_open_plan(map).unwrap().unwrap();
+        let mut lab = PeerLab::bind(
+            0,
+            network::peer_lab_config(&enabled(0)).with_release_profile(&profile),
+        )
+        .unwrap();
+        lab.enable_player_controller_open(
+            profile
+                .player_controller_open_plan(map, network::SPAWN_LOCATION)
+                .unwrap()
+                .unwrap(),
+        )
+        .unwrap();
+        lab.enable_player_state_open(profile.player_state_open_plan(map).unwrap().unwrap())
+            .unwrap();
+        lab.enable_pawn_open(pawn.clone(), PAWN_CHANNEL_INDEX, content)
+            .unwrap();
+        lab.enable_actor_uids(ActorUidLibrary::with_random(|| 7))
+            .unwrap();
+        lab.enable_pawn_restore_item_rows(tables.rows(network::ITEMS_STATIC_TABLE).unwrap())
+            .unwrap();
+        if !matches!(
+            case,
+            "missing-inventory-model" | "missing-inventory-empty" | "unchanged-without-models"
+        ) {
+            lab.enable_inventory_restore(
+                network::inventory_restore_tables(&mut tables, &inventories).unwrap(),
+            )
+            .unwrap();
+        }
+        if !matches!(
+            case,
+            "missing-modifier-model"
+                | "missing-model-negative"
+                | "missing-model-nan"
+                | "unchanged-without-models"
+        ) {
+            let mut modifiers = network::modifier_restore_tables(&mut tables).unwrap();
+            if case == "invalid-index" {
+                modifiers.row_index.insert("boost".into(), u16::MAX);
+            }
+            lab.enable_modifier_restore(modifiers).unwrap();
+        }
+        if !matches!(
+            case,
+            "missing-stat-model"
+                | "opening-items-without-stats"
+                | "opening-weight-without-stats"
+                | "unchanged-without-models"
+        ) {
+            lab.enable_stat_restore(network::stat_restore_tables(&mut tables).unwrap())
+                .unwrap();
+        }
+        lab.set_linked_inventories(std::collections::BTreeMap::new())
+            .unwrap();
+        let payload = returning_characters_payload_with_state(NET_ID_HEX, 3, &[70_001], &[]);
+        lab.seed_actor_uids(prospect::saved_actor_uids_from_payload(&payload).unwrap())
+            .unwrap();
+        let mut characters = prospect::saved_player_characters_from_payload(&payload).unwrap();
+        characters[0].state = SavedPlayerState {
+            health: Some(350),
+            oxygen_level: Some(17),
+            food_level: Some(19),
+            water_level: Some(23),
+            radiation_level: Some(29),
+            respawn_count: Some(3),
+            has_granted_loadout: Some(true),
+            ..Default::default()
+        };
+        if !matches!(
+            case,
+            "unchanged-without-models" | "opening-weight" | "opening-weight-without-stats"
+        ) {
+            characters[0].inventories = vec![SavedActorInventory {
+                id: 2,
+                items: vec![SavedItem {
+                    location: 0,
+                    row_name: units("Helmet"),
+                    dynamic: vec![(7, 1)],
+                    owner_lookup_id: -1,
+                    living_slots: usize::from(case == "inventory-gap"),
+                    ..Default::default()
+                }],
+            }];
+            let modifier = |name: &str, remaining| SavedModifierState {
+                row_name: units(name),
+                time_remaining: remaining,
+                initial_lifetime: 300.0,
+                duration_buff: 1.0,
+                effectiveness: -1,
+            };
+            if matches!(
+                case,
+                "missing-inventory-empty"
+                    | "empty-inventory"
+                    | "opening-items"
+                    | "opening-items-without-stats"
+            ) {
+                characters[0].inventories[0].items.clear();
+            }
+            characters[0].modifiers = match case {
+                "missing-inventory-empty"
+                | "empty-inventory"
+                | "opening-items"
+                | "opening-items-without-stats" => Vec::new(),
+                "unknown-behaviour" => vec![modifier("Boost", 100.0), modifier("Unknown", 100.0)],
+                "repeated-row" => vec![modifier("Boost", 100.0), modifier("Boost", 100.0)],
+                "negative" | "missing-model-negative" => vec![modifier("Boost", -1.0)],
+                "missing-model-nan" => vec![modifier("Boost", f32::NAN)],
+                "unsaved" => vec![modifier("Unsaved", 100.0)],
+                "invalid-name" => vec![modifier("Absent", 100.0)],
+                _ => vec![modifier("Boost", 100.0)],
+            };
+        }
+        lab.enable_returning_characters(characters).unwrap();
+        let mut app = build_app(&ServerConfig::default(), &WorldSnapshot::default()).unwrap();
+        let address = network::install(&mut app, lab).unwrap();
+        let ((mut client, packets), _) = with_server(&mut app, move || {
+            let (mut client, mut packets) = join_pinned_open(address, pinned, 32);
+            packets.extend(exchange_profiles(&mut client, engine, 3, 3));
+            (client, packets)
+        });
+        let stats = app.world().resource::<PeerLab>().stats();
+        assert_eq!(stats.returning_pawn_updates_sent, 1, "{case}");
+        assert_eq!(stats.returning_stat_gaps, u64::from(gap), "{case}");
+        assert_eq!(stats.returning_stats_sent, u64::from(stats_sent), "{case}");
+        assert_eq!(stats.returning_pawn_update_errors, 0, "{case}");
+        let codec = initialise_codec(engine);
+        let mut tracker = ActorChannelTracker::new(
+            PacketConfig {
+                receiver: PacketReceiver::Client,
+                ..probe_config().packet
+            },
+            codec.actor,
+            client.initial_reliable().0,
+        );
+        let mut state = std::collections::BTreeMap::new();
+        let mut actor = std::collections::BTreeMap::new();
+        let mut stat_blocks = 0;
+        let mut notes = Vec::new();
+        let state_layout = player_character_state_rep_layout();
+        for packet in &packets {
+            for bunch in tracker.feed(packet, &mut notes).unwrap() {
+                if bunch.channel_index != PAWN_CHANNEL_INDEX || bunch.open {
+                    continue;
+                }
+                for block in read_actor_bunch_body(&mut bunch.payload.reader(), false, &codec.actor)
+                    .unwrap()
+                    .blocks
+                {
+                    let destination = match block.target {
+                        BlockTarget::Actor => Some((&mut actor, &pawn.layout)),
+                        BlockTarget::SubObject {
+                            class: SubObjectClass::StablyNamed,
+                            ..
+                        } if block.has_rep_layout => Some((&mut state, &state_layout)),
+                        BlockTarget::SubObject {
+                            class: SubObjectClass::StablyNamed,
+                            ..
+                        } => {
+                            stat_blocks += 1;
+                            None
+                        }
+                        _ => None,
+                    };
+                    if let Some((output, layout)) = destination {
+                        output.extend(
+                            read_rep_properties(&mut block.payload.reader(), layout, &codec)
+                                .unwrap()
+                                .entries
+                                .into_iter()
+                                .map(|entry| (entry.handle, entry.value)),
+                        );
+                    }
+                }
+            }
+        }
+        assert!(notes.is_empty(), "{case}: {notes:?}");
+        assert_eq!(stat_blocks, usize::from(stats_sent), "{case}");
+        assert_eq!(
+            state.get(&h::HEALTH),
+            health.map(RepValue::Int).as_ref(),
+            "{case}"
+        );
+        for handle in [
+            h::OXYGEN,
+            h::FOOD,
+            h::WATER,
+            h::MAX_HEALTH,
+            h::MAX_OXYGEN,
+            h::MAX_FOOD,
+            h::MAX_WATER,
+            h::STAMINA,
+            h::MAX_STAMINA,
+            h::CURRENT_ALIVE_STATE,
+        ] {
+            if gap {
+                assert!(
+                    !state.contains_key(&handle),
+                    "{case}: unexpected handle {handle}"
+                );
+            }
+        }
+        assert_eq!(state.get(&h::RADIATION), Some(&RepValue::Int(29)), "{case}");
+        assert_eq!(
+            state.get(&h::TOTAL_EXPERIENCE),
+            Some(&RepValue::Int(41)),
+            "{case}"
+        );
+        assert_eq!(
+            actor.get(&pawn_handle::RESPAWN_COUNT),
+            Some(&RepValue::Int(3)),
+            "{case}"
+        );
+        assert_eq!(
+            actor.get(&pawn_handle::HAS_GRANTED_LOADOUT),
+            Some(&RepValue::Bool(true)),
+            "{case}"
+        );
+        // A later ACK must not repeat the restore or turn an unknown input into
+        // an inferred baseline. The original record remains the retained input.
+        client.keepalive().unwrap();
+        app.world_mut().resource_mut::<PeerLab>().poll();
+        assert_eq!(
+            app.world()
+                .resource::<PeerLab>()
+                .stats()
+                .returning_pawn_updates_sent,
+            1,
+            "{case}"
+        );
+        client.close().unwrap();
+        app.world_mut().resource_mut::<PeerLab>().poll();
+    }
 }

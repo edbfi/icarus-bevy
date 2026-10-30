@@ -447,3 +447,23 @@ fn linked_bags_and_own_weight_stats_leave_the_weight_unsent() {
     unstacked[0].item.as_mut().unwrap().dynamic.clear();
     assert_eq!(inventory_weight(&tables, &unstacked), Some(0));
 }
+
+#[test]
+fn an_explicit_empty_saved_inventory_preserves_unchanged_opening_items() {
+    use icarus_bevy::experimental::pawn_open::SlotItem;
+    let mut current = opened();
+    current[0].slots.items[0].item = Some(SlotItem {
+        dynamic: vec![(7, 2)],
+        ..SlotItem::new(0).unwrap()
+    });
+    current[0].slots.replication_key += 1;
+    let original = current.clone();
+    let restored = restore_inventories(&current, &[saved(2, Vec::new())], &tables())
+        .unwrap()
+        .unwrap();
+    assert!(
+        restored.is_empty(),
+        "empty saved inventory is not a clear operation"
+    );
+    assert_eq!(current, original);
+}

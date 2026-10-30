@@ -86,6 +86,8 @@ pub struct RestoredModifier {
 pub enum ModifierRestoreGap {
     RepeatedRow,
     UnknownBehaviour,
+    /// A configured name resolves outside the supplied row definitions.
+    InvalidRowIndex,
 }
 
 /// The component class chain for a `Behaviour` path, or the native class.
@@ -140,6 +142,7 @@ pub fn restore_modifiers(
             continue;
         };
         let Some(info) = tables.rows.get(usize::from(row)) else {
+            gaps.push(ModifierRestoreGap::InvalidRowIndex);
             continue;
         };
         if !info.saves {

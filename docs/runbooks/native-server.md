@@ -97,7 +97,9 @@ saved UID once every joined controller has sent `ServerFriendsListUpdated`, as t
 original finalises (F-973, F-975); `run` then sends the record's saved pawn state, with levels
 and health clamped as the original does (F-964), and its saved inventories as
 the original restores them, unless a default it cannot compute is missing
-(F-979) with their weights (F-982), its saved modifiers (F-981) and its stats with the bounds they set (F-989); a new player, whom no saved
+(F-979) with their weights (F-982), its saved modifiers (F-981) and its stats with the bounds they set (F-989).
+Incomplete inventory/modifier/stat inputs withhold derived stats and saved
+health, oxygen, food and water (F-989); independent fields still restore. A new player, whom no saved
 controller matches, is added to the replicated History (F-967). That UID stays
 claimed after the session ends. A client that
 never answers never completes; the original's timeout only logs (F-959). A save
@@ -112,9 +114,7 @@ the whole batch. Only changed wire values send, including zero. Updates coalesce
 behind the pawn channel's reliable ACKs and retry capacity pressure after packet
 progress; existing reliable transport repairs loss. Polling does not tick timers
 or execute callbacks, and these connection-local changes are not persisted.
-Reconnect restores the saved values. `restored_modifier_time` returns a copy;
-`modifier_time_updates_queued` and `modifier_time_update_errors` count delivery
-attempts without exposing values.
+Reconnect restores saved values. `restored_modifier_time` returns a copy.
 
 Authored schema-4/7/11 hosts opt in with `[network].authored_replication` or
 `run --authored-replication replication.json`. Disabled networking ignores it;
