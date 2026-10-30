@@ -2375,14 +2375,62 @@ pub fn advance_native_modifiers(world: &mut World, elapsed: std::time::Duration)
     Ok(())
 }
 
+/// Closure-owned timing authority. The persisted tick supplies fractional phase;
+/// a new run's validated rate applies prospectively to retained timer durations.
+pub(crate) struct ModifierTickClock {
+    tick_hz: u32,
+    expected_tick: u64,
+    fixed_interval: std::time::Duration,
+}
+
+impl ModifierTickClock {
+    /// Called only after the server configuration and snapshot are validated.
+    pub(crate) fn new(config: &crate::config::ServerConfig, tick: u64) -> Self {
+        Self {
+            tick_hz: config.tick_hz,
+            expected_tick: tick,
+            fixed_interval: config.tick_interval(),
+        }
+    }
+
+    fn step(&self, world: &World) -> Result<(std::time::Duration, u64)> {
+        let tick = world
+            .get_resource::<SimulationClock>()
+            .context("modifier simulation clock missing")?
+            .tick;
+        ensure!(
+            tick == self.expected_tick,
+            "modifier simulation clock changed"
+        );
+        let next = tick.checked_add(1).context("modifier tick exhausted")?;
+        let fixed = world
+            .get_resource::<bevy::prelude::Time<bevy::prelude::Fixed>>()
+            .context("modifier fixed clock missing")?;
+        ensure!(
+            fixed.timestep() == self.fixed_interval && fixed.delta() == self.fixed_interval,
+            "modifier fixed interval changed"
+        );
+        // Subtract rational endpoints instead of repeatedly rounding 1 / hz.
+        // Any hz consecutive steps consume exactly one second, including when
+        // a save/reload splits that interval. u128 covers every persisted tick.
+        let nanos = |tick| u128::from(tick) * 1_000_000_000 / u128::from(self.tick_hz);
+        let elapsed = u64::try_from(nanos(next) - nanos(tick))?;
+        Ok((std::time::Duration::from_nanos(elapsed), next))
+    }
+}
+
 /// Installed only for schema 11, before ordinary gameplay/replication. A failed
 /// preparation changes no owner state and prevents all later publication.
-pub(crate) fn tick_native_modifiers(world: &mut World, activation: &NativeLifecycleContext) {
-    let result = world
-        .get_resource::<bevy::prelude::Time<bevy::prelude::Fixed>>()
-        .map(|time| time.delta())
-        .context("modifier fixed clock missing")
-        .and_then(|elapsed| advance_native_modifiers(world, elapsed));
+pub(crate) fn tick_native_modifiers(
+    world: &mut World,
+    activation: &NativeLifecycleContext,
+    clock: &mut ModifierTickClock,
+) {
+    let result = clock.step(world).and_then(|(elapsed, next)| {
+        advance_native_modifiers(world, elapsed)?;
+        clock.expected_tick = next;
+        Ok(())
+    });
     if result.is_err() {
         // The system closure owns this activation, even when caller-owned
         // resources are missing or transplanted. Never latch a foreign app.

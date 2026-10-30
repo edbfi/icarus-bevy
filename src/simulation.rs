@@ -670,10 +670,16 @@ pub fn build_app(config: &ServerConfig, snapshot: &WorldSnapshot) -> Result<App>
     }
     if snapshot.schema_version == SNAPSHOT_SCHEMA_MODIFIER_OWNERS {
         let activation = app.world().resource::<NativeLifecycleContext>().clone();
+        let mut clock =
+            crate::native_lifecycle_runtime::ModifierTickClock::new(config, snapshot.tick);
         app.add_systems(
             FixedUpdate,
             (move |world: &mut World| {
-                crate::native_lifecycle_runtime::tick_native_modifiers(world, &activation)
+                crate::native_lifecycle_runtime::tick_native_modifiers(
+                    world,
+                    &activation,
+                    &mut clock,
+                )
             })
             .after(SimulationSet::Input)
             .before(SimulationSet::Gameplay),

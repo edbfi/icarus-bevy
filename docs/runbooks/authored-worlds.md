@@ -136,8 +136,13 @@ with a final range check; removal/expiry overflow rejects the whole operation
 or all-owner step unchanged.
 `native_owner_modifiers` returns a validated copy;
 `native_lifecycle_runtime::{apply_native_modifier, advance_native_modifiers}`
-stage changes with `SnapshotStore` preflight. Fixed time advances before
-`Gameplay`; no wall-clock catch-up on restart.
+stage changes with `SnapshotStore` preflight. Before `Gameplay`, tick `n`
+consumes `floor((n+1)*1e9/hz)-floor(n*1e9/hz)` nanoseconds (F-931).
+The persisted tick preserves fractional phase across reload; a new configured
+rate applies only to future steps, leaving remaining nanoseconds unchanged.
+Unexpected tick progression, fixed-interval changes or tick exhaustion latch
+publication closed before any timer changes. This is an authored policy; no
+original-clock parity or wall-clock catch-up on restart is implied.
 
 Activation is system-owned and immutable; a private nonclone health anchor
 latches errors closed and `run` checks it. Malformed, transplanted or missing

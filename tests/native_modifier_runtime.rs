@@ -15,7 +15,7 @@ use icarus_bevy::{
     native_modifiers::*,
     native_world::{CompiledNativeCatalog, prepare_authored_world},
     persistence::SnapshotStore,
-    simulation::{DomainId, WorldSnapshot, build_app, capture},
+    simulation::{DomainId, SimulationClock, WorldSnapshot, build_app, capture},
 };
 use std::{sync::Arc, time::Duration};
 
@@ -53,6 +53,47 @@ fn fixture() -> WorldSnapshot {
 }
 fn app() -> App {
     build_app(&ServerConfig::default(), &fixture()).unwrap()
+}
+
+fn fixed_app(tick_hz: u32, snapshot: &WorldSnapshot) -> App {
+    let mut app = build_app(
+        &ServerConfig {
+            tick_hz,
+            ..Default::default()
+        },
+        snapshot,
+    )
+    .unwrap();
+    app.insert_resource(bevy::time::TimeUpdateStrategy::FixedTimesteps(1));
+    // Bevy's first update initializes time without running a fixed step.
+    app.update();
+    assert_eq!(
+        app.world().resource::<SimulationClock>().tick,
+        snapshot.tick
+    );
+    app
+}
+
+fn fixed_steps(app: &mut App, count: u32) {
+    let before = app.world().resource::<SimulationClock>().tick;
+    for _ in 0..count {
+        app.update();
+    }
+    assert_eq!(
+        app.world().resource::<SimulationClock>().tick,
+        before + u64::from(count)
+    );
+}
+
+fn remaining_nanos(app: &App, id: u64) -> u64 {
+    let state = native_owner_modifiers(app.world(), handle(app, id)).unwrap();
+    match state.entries[0].timer {
+        ModifierTimer::Timed {
+            remaining_nanos,
+            armed: true,
+        } => remaining_nanos,
+        _ => panic!("expected a running timer"),
+    }
 }
 fn handle(app: &App, id: u64) -> OwnerHandle {
     native_owner_handle(app.world(), DomainId(id)).unwrap()
@@ -153,6 +194,109 @@ fn live_timer_capture_durable_reload_and_expiration_preserve_current_progress() 
     let snapshot = capture(reloaded.world_mut()).unwrap();
     store.save(&snapshot).unwrap();
     assert_eq!(store.load().unwrap().unwrap().snapshot, snapshot);
+}
+
+#[test]
+fn fixed_timers_expire_at_exact_configured_second_boundaries() {
+    for hz in [30, 60] {
+        let mut app = fixed_app(hz, &fixture());
+        add(&mut app, 1, "one_second", Some(1.0), 7);
+        fixed_steps(&mut app, hz - 1);
+        let expected = NANOS_PER_SECOND - u64::from(hz - 1) * NANOS_PER_SECOND / u64::from(hz);
+        assert_eq!(remaining_nanos(&app, 1), expected, "rate {hz}");
+        fixed_steps(&mut app, 1);
+        let state = native_owner_modifiers(app.world(), handle(&app, 1)).unwrap();
+        assert!(state.entries.is_empty(), "rate {hz}");
+        assert!(state.cache.is_empty(), "rate {hz}");
+        assert_eq!(state.next_id, 2);
+    }
+}
+
+#[test]
+fn fixed_timer_phase_survives_durable_reload_at_a_fractional_tick() {
+    let mut uninterrupted = fixed_app(30, &fixture());
+    add(&mut uninterrupted, 1, "one_second", Some(1.0), 7);
+    fixed_steps(&mut uninterrupted, 7);
+    let split = capture(uninterrupted.world_mut()).unwrap();
+    assert_eq!(remaining_nanos(&uninterrupted, 1), 766_666_667);
+    let directory = tempfile::tempdir().unwrap();
+    let mut store = SnapshotStore::open(directory.path()).unwrap();
+    store.save_new(&split).unwrap();
+    let loaded = store.load().unwrap().unwrap().snapshot;
+    let mut resumed = fixed_app(30, &loaded);
+    assert_eq!(capture(resumed.world_mut()).unwrap(), split);
+    // Seven plus fourteen ticks crosses a rounding boundary that resetting
+    // the fractional phase at reload would miss by one nanosecond.
+    fixed_steps(&mut uninterrupted, 14);
+    fixed_steps(&mut resumed, 14);
+    assert_eq!(remaining_nanos(&resumed, 1), 300_000_000);
+    assert_eq!(
+        capture(resumed.world_mut()).unwrap(),
+        capture(uninterrupted.world_mut()).unwrap()
+    );
+    fixed_steps(&mut uninterrupted, 9);
+    fixed_steps(&mut resumed, 9);
+    let final_state = capture(resumed.world_mut()).unwrap();
+    assert_eq!(final_state, capture(uninterrupted.world_mut()).unwrap());
+    assert!(
+        final_state.native_modifiers.unwrap().owners[0]
+            .entries
+            .is_empty()
+    );
+}
+
+#[test]
+fn reconfigured_rate_preserves_remaining_time_and_changes_only_future_steps() {
+    let mut original = fixed_app(30, &fixture());
+    add(&mut original, 1, "one_second", Some(1.0), 7);
+    fixed_steps(&mut original, 10);
+    let saved = capture(original.world_mut()).unwrap();
+    assert_eq!(remaining_nanos(&original, 1), 666_666_667);
+    let mut resumed = fixed_app(60, &saved);
+    assert_eq!(capture(resumed.world_mut()).unwrap(), saved);
+    fixed_steps(&mut resumed, 20);
+    // The persisted tick (10) selects the new rate's phase. Future elapsed
+    // time is floor(30e9/60)-floor(10e9/60) = 333,333,334 ns.
+    assert_eq!(remaining_nanos(&resumed, 1), 333_333_333);
+    fixed_steps(&mut resumed, 20);
+    let state = native_owner_modifiers(resumed.world(), handle(&resumed, 1)).unwrap();
+    assert!(state.entries.is_empty());
+    assert!(state.cache.is_empty());
+}
+
+#[test]
+fn changed_public_tick_or_fixed_interval_latches_modifier_clock_closed() {
+    use icarus_bevy::native_lifecycle_runtime::modifier_runtime_health;
+    for corrupt_tick in [Some(0), Some(8), None] {
+        let mut app = fixed_app(30, &fixture());
+        add(&mut app, 1, "timed", Some(1.0), 7);
+        fixed_steps(&mut app, 1);
+        if let Some(tick) = corrupt_tick {
+            app.world_mut().resource_mut::<SimulationClock>().tick = tick;
+        } else {
+            app.insert_resource(Time::<Fixed>::from_duration(Duration::from_millis(50)));
+        }
+        app.update();
+        assert!(modifier_runtime_health(app.world()).is_err());
+        // Restoring caller-visible resources cannot reopen the failed authority.
+        app.world_mut().resource_mut::<SimulationClock>().tick = 2;
+        app.insert_resource(Time::<Fixed>::from_duration(
+            ServerConfig::default().tick_interval(),
+        ));
+        assert!(capture(app.world_mut()).is_err());
+    }
+}
+
+#[test]
+fn exhausted_simulation_tick_cannot_publish_another_modifier_step() {
+    use icarus_bevy::native_lifecycle_runtime::modifier_runtime_health;
+    let mut snapshot = fixture();
+    snapshot.tick = u64::MAX;
+    let mut app = fixed_app(30, &snapshot);
+    add(&mut app, 1, "timed", Some(1.0), 7);
+    app.update();
+    assert!(modifier_runtime_health(app.world()).is_err());
+    assert!(capture(app.world_mut()).is_err());
 }
 
 #[test]

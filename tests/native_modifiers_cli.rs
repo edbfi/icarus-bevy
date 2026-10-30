@@ -421,10 +421,10 @@ fn applied_timer_persists_progress_restarts_and_expires_without_repeating_add() 
         ModifierTimer::Timed {
             remaining_nanos,
             armed: true,
-        } => assert!((600_000_000..700_000_000).contains(&remaining_nanos)),
+        } => assert_eq!(remaining_nanos, 666_666_667),
         _ => panic!("timer did not retain current progress"),
     }
-    let output = run(root.path(), 30);
+    let output = run(root.path(), 20);
     value_free(&output);
     assert!(output.status.success());
     let expired = load(&root.path().join("world"));
