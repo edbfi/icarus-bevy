@@ -105,9 +105,9 @@ preserve verified gameplay semantics.
 
 ## Toolchain
 
-Rust **1.99.1** and Bevy **0.20.0**, verified current stable on 2026-10-25 (F-879)
+Rust **1.99.1** and Bevy **0.20.1**, verified current stable on 2026-10-30 (F-879)
 ([Rust](https://static.rust-lang.org/dist/channel-rust-1.99.1.toml),
-[Bevy](https://crates.io/crates/bevy/0.20.0)). Pin Rust in `rust-toolchain.toml`
+[Bevy](https://crates.io/crates/bevy/0.20.1)). Pin Rust in `rust-toolchain.toml`
 with matching Rustfmt and Clippy; commit `Cargo.lock`; use one toolchain for
 development, CI, benchmarks and releases. Routine stable upgrades are authorized
 and migrate APIs, pins and lockfile together; the Bevy skill and upgrade rules

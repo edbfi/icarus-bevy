@@ -9,7 +9,7 @@ official-save import remain unimplemented and unvalidated. Offline research has 
 ## Quick start
 
 Requires native Linux and Rust 1.99.1 (pinned with Rustfmt and Clippy). Bevy
-0.20.0 runs headless; no GPU, display, original game files or Proton are needed.
+0.20.1 runs headless; no GPU, display, original game files or Proton are needed.
 
 ```bash
 cargo build --release --locked

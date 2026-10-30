@@ -19,7 +19,7 @@ path = "src/bin/icarus-fetch.rs"
 aes = "0.9.3"
 anyhow = "1"
 base64 = "0.23.1"
-bevy = { version = "=0.20.0", default-features = false, features = ["std", "async_executor", "multi_threaded", "bevy_state", "bevy_log"] }
+bevy = { version = "=0.20.1", default-features = false, features = ["std", "async_executor", "multi_threaded", "bevy_state", "bevy_log"] }
 cbc = { version = "0.2.1", features = ["alloc"] }
 clap = { version = "4", features = ["derive"] }
 crc32fast = "1.5.2"

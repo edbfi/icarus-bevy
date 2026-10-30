@@ -6,7 +6,7 @@ Headless foundation guide: [design constraints](../architecture.md) and
 ## Run
 
 Requires native Linux, pinned Rust 1.99.1 with Rustfmt/Clippy and headless
-Bevy 0.20.0; no GPU, display, original game files or Proton. Basic data is fetched
+Bevy 0.20.1; no GPU, display, original game files or Proton. Basic data is fetched
 unattended/anonymously from the free official dedicated server (Steam app
 2089300), without steamcmd or the game client (F-828, F-831). With
 `network.data_pak` unset, `run` uses installed data; `network_listening` reports
