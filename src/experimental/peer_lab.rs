@@ -159,7 +159,7 @@
 //! cookies, tokens, challenge strings, URLs, unique net ids, versions, sequence
 //! values or numeric message fields.
 use std::{
-    collections::{BTreeMap, HashMap},
+    collections::{BTreeMap, BTreeSet, HashMap},
     fmt, io,
     net::{SocketAddr, SocketAddrV4, UdpSocket},
     time::{Duration, Instant},
@@ -1054,6 +1054,11 @@ struct PeerEntry {
     profiles: ProfileExchange,
     /// Replicated actors this connection opened, by caller key.
     opened_actors: BTreeMap<u64, u32>,
+    opened_incarnations: BTreeMap<u64, u64>,
+    /// Slot to (incarnation, channel), retained until the reliable close drains.
+    retiring_incarnations: BTreeMap<u64, (u64, u32)>,
+    /// Legacy closes also reserve their slot against incarnation registration.
+    closing_legacy_actors: BTreeMap<u32, u64>,
     /// Closes that could not be framed yet (key -> reason), retried by
     /// [`PeerLab::retry_pending_closes`]; their actors stay open meanwhile.
     pending_closes: BTreeMap<u64, u32>,
@@ -1342,6 +1347,8 @@ pub struct PeerLab {
     quest_opens: Vec<(QuestOpenPlan, u32)>,
     /// Driver-wide NetGUIDs, replicated actors keyed by the caller's key.
     guid_cache: NetGuidCache,
+    desired_incarnations: BTreeMap<u64, u64>,
+    highest_incarnations: BTreeMap<u64, u64>,
     /// `AGameSession::GetNextPlayerID`'s counter (F-784): 256 first.
     next_player_id: i32,
     /// Next lab connection ID (from 1) for joined peers.
@@ -1421,6 +1428,8 @@ impl PeerLab {
             quest_open_base: None,
             quest_opens: Vec::new(),
             guid_cache: NetGuidCache::new(),
+            desired_incarnations: BTreeMap::new(),
+            highest_incarnations: BTreeMap::new(),
             next_player_id: FIRST_PLAYER_ID,
             next_connection_id: 1,
         }
@@ -1436,6 +1445,126 @@ impl PeerLab {
             .collect();
         ids.sort_unstable();
         ids
+    }
+
+    /// Reconcile independently authored slot identities before actor selection.
+    /// Registration is cumulative and bounded; removed slots retain their high-water mark.
+    pub(crate) fn reconcile_actor_incarnations(
+        &mut self,
+        desired: &BTreeMap<u64, u64>,
+    ) -> Result<()> {
+        // The legacy bridge has no versioned actors to reconcile.
+        if desired.is_empty() && self.highest_incarnations.is_empty() {
+            return Ok(());
+        }
+        ensure!(
+            desired.len() <= 1024,
+            "native actor incarnation slot limit exceeded"
+        );
+        let additional = desired
+            .keys()
+            .filter(|key| !self.highest_incarnations.contains_key(*key))
+            .count();
+        ensure!(
+            self.highest_incarnations.len() + additional <= 1024,
+            "native actor incarnation slot limit exceeded"
+        );
+        for (&key, &incarnation) in desired {
+            ensure!(
+                incarnation > 0
+                    && self
+                        .highest_incarnations
+                        .get(&key)
+                        .is_none_or(|highest| incarnation >= *highest),
+                "native actor incarnation regressed or is zero"
+            );
+            ensure!(
+                self.peers.values().all(|entry| {
+                    (!entry.opened_actors.contains_key(&key)
+                        || entry.opened_incarnations.contains_key(&key))
+                        && !entry
+                            .closing_legacy_actors
+                            .values()
+                            .any(|closed| *closed == key)
+                }),
+                "native actor incarnation conflicts with a legacy actor"
+            );
+        }
+        self.highest_incarnations
+            .extend(desired.iter().map(|(&key, &inc)| (key, inc)));
+        self.desired_incarnations.clone_from(desired);
+        let stale: Vec<_> = self
+            .peers
+            .values()
+            .filter_map(|entry| entry.connection_id.map(|id| (id, entry)))
+            .flat_map(|(connection, entry)| {
+                entry
+                    .opened_incarnations
+                    .iter()
+                    .filter_map(move |(&key, &inc)| {
+                        (desired.get(&key) != Some(&inc)).then_some((connection, key))
+                    })
+            })
+            .collect();
+        for (connection, key) in stale {
+            self.close_actor(connection, key, 3);
+        }
+        self.retry_pending_closes();
+        self.prune_incarnation_guids();
+        Ok(())
+    }
+
+    fn prune_incarnation_guids(&mut self) {
+        let mut retained: BTreeSet<_> = self
+            .desired_incarnations
+            .iter()
+            .map(|(&key, &inc)| (key, inc))
+            .collect();
+        for entry in self.peers.values() {
+            retained.extend(
+                entry
+                    .opened_incarnations
+                    .iter()
+                    .map(|(&key, &inc)| (key, inc)),
+            );
+            retained.extend(
+                entry
+                    .retiring_incarnations
+                    .iter()
+                    .map(|(&key, &(inc, _))| (key, inc)),
+            );
+        }
+        self.guid_cache.retain_incarnations(&retained);
+    }
+
+    /// Number of per-peer incarnation closes awaiting acknowledgement.
+    pub fn retiring_incarnation_count(&self) -> usize {
+        self.peers
+            .values()
+            .map(|entry| entry.retiring_incarnations.len())
+            .sum()
+    }
+
+    /// Native incarnation GUIDs retained by current desired or per-peer identities.
+    pub fn incarnation_guid_count(&self) -> usize {
+        self.guid_cache.incarnation_count()
+    }
+
+    /// Whether the desired incarnation is open and has no pending retirement.
+    pub(crate) fn is_actor_incarnation_open(
+        &self,
+        connection: u32,
+        key: u64,
+        incarnation: u64,
+    ) -> bool {
+        self.desired_incarnations.get(&key) == Some(&incarnation)
+            && self.peers.values().any(|entry| {
+                entry.connection_id == Some(connection)
+                    && entry.opened_incarnations.get(&key) == Some(&incarnation)
+                    && entry.opened_actors.contains_key(&key)
+                    && !entry.pending_closes.contains_key(&key)
+                    && !entry.retiring_incarnations.contains_key(&key)
+            })
     }
 
     /// Retry every pending close (see [`close_actor`](Self::close_actor));
@@ -1539,6 +1668,11 @@ impl PeerLab {
             return false;
         };
         if entry.pending_closes.contains_key(&key) || !entry.peer.actor_channel_settled(channel) {
+            return false;
+        }
+        if let Some(incarnation) = entry.opened_incarnations.get(&key)
+            && self.desired_incarnations.get(&key) != Some(incarnation)
+        {
             return false;
         }
         let movement = match movement {
@@ -1690,6 +1824,13 @@ impl PeerLab {
         };
         entry.pending_closes.remove(&key);
         entry.opened_actors.remove(&key);
+        if let Some(incarnation) = entry.opened_incarnations.remove(&key) {
+            entry
+                .retiring_incarnations
+                .insert(key, (incarnation, channel));
+        } else {
+            entry.closing_legacy_actors.insert(channel, key);
+        }
         entry.actor_properties.remove(&key);
         entry
             .actor_property_packets
@@ -1712,6 +1853,51 @@ impl PeerLab {
         &mut self,
         connection: u32,
         key: u64,
+        open: ActorOpenSpec,
+        first_channel: u32,
+        engine_net_version: u32,
+    ) -> Option<u32> {
+        if self.highest_incarnations.contains_key(&key) {
+            return None;
+        }
+        self.open_actor_version(
+            connection,
+            key,
+            None,
+            open,
+            first_channel,
+            engine_net_version,
+        )
+    }
+
+    /// Open the current native incarnation once this peer's old close is acknowledged.
+    pub(crate) fn open_actor_incarnation(
+        &mut self,
+        connection: u32,
+        key: u64,
+        incarnation: u64,
+        open: ActorOpenSpec,
+        first_channel: u32,
+        engine_net_version: u32,
+    ) -> Option<u32> {
+        if self.desired_incarnations.get(&key) != Some(&incarnation) {
+            return None;
+        }
+        self.open_actor_version(
+            connection,
+            key,
+            Some(incarnation),
+            open,
+            first_channel,
+            engine_net_version,
+        )
+    }
+
+    fn open_actor_version(
+        &mut self,
+        connection: u32,
+        key: u64,
+        incarnation: Option<u64>,
         mut open: ActorOpenSpec,
         first_channel: u32,
         engine_net_version: u32,
@@ -1722,7 +1908,8 @@ impl PeerLab {
             .find(|(_, entry)| entry.connection_id == Some(connection))
             .map(|(address, _)| *address)?;
         let entry = self.peers.get_mut(&address)?;
-        if entry.opened_actors.contains_key(&key) {
+        if entry.opened_actors.contains_key(&key) || entry.retiring_incarnations.contains_key(&key)
+        {
             return None;
         }
         // Without a free channel nothing can change: fail before cloning the
@@ -1736,7 +1923,17 @@ impl PeerLab {
             return None;
         };
         let mut cache = self.guid_cache.clone();
-        let guid = cache.actor_guid(ActorKey::World(key));
+        let guid = match incarnation {
+            Some(incarnation) => cache.incarnation_guid(key, incarnation),
+            None => cache.actor_guid(ActorKey::World(key)),
+        };
+        let guid = match guid {
+            Ok(guid) => guid,
+            Err(_) => {
+                bump(&mut self.stats.actor_open_errors);
+                return None;
+            }
+        };
         open.actor = guid;
         let mut exports = entry.exports.clone();
         let (values, flags_managed) = initial_actor_properties(
@@ -1773,6 +1970,9 @@ impl PeerLab {
         entry.exports = exports;
         entry.ack_pending = false;
         entry.opened_actors.insert(key, channel);
+        if let Some(incarnation) = incarnation {
+            entry.opened_incarnations.insert(key, incarnation);
+        }
         entry.actor_properties.insert(
             key,
             ActorReplica {
@@ -2312,6 +2512,7 @@ impl PeerLab {
         } else if let (Some(uid), Some(library)) = (entry.pawn_uid, &mut self.actor_uids) {
             library.free(uid);
         }
+        self.prune_incarnation_guids();
         Some(entry)
     }
 
@@ -3290,6 +3491,9 @@ impl PeerLab {
                         bestiary: None,
                         profiles: ProfileExchange::default(),
                         opened_actors: BTreeMap::new(),
+                        opened_incarnations: BTreeMap::new(),
+                        retiring_incarnations: BTreeMap::new(),
+                        closing_legacy_actors: BTreeMap::new(),
                         pending_closes: BTreeMap::new(),
                         actor_properties: BTreeMap::new(),
                         actor_property_packets: BTreeMap::new(),
@@ -3309,12 +3513,21 @@ impl PeerLab {
             return;
         };
         let mut close = false;
+        let mut incarnation_released = false;
         let mut staged_calls = Vec::new();
         let messages = match entry.peer.receive(&self.buffer[..length]) {
             Ok(received) => {
                 let summary = received.summary();
                 match summary.disposition {
                     PacketDisposition::Accepted { .. } => {
+                        let retiring = entry.retiring_incarnations.len();
+                        entry.retiring_incarnations.retain(|_, (_, channel)| {
+                            !summary.released_actor_channels.contains(channel)
+                        });
+                        incarnation_released = entry.retiring_incarnations.len() != retiring;
+                        for channel in &summary.released_actor_channels {
+                            entry.closing_legacy_actors.remove(channel);
+                        }
                         entry.last_seen = now;
                         entry.ack_pending = true;
                         if entry.pending_pawn_restore.is_some()
@@ -3453,6 +3666,9 @@ impl PeerLab {
                 return;
             }
         };
+        if incarnation_released {
+            self.prune_incarnation_guids();
+        }
         for call in staged_calls {
             self.controller_call(address, call);
         }
@@ -5008,6 +5224,52 @@ fn restored_pawn_stats(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn incarnation_registration_validates_whole_map_and_retains_high_water_marks() {
+        let mut lab = PeerLab::bind(0, PeerLabConfig::default()).unwrap();
+        let desired = BTreeMap::from([(10, 3), (20, 2)]);
+        lab.reconcile_actor_incarnations(&desired).unwrap();
+        for invalid in [
+            BTreeMap::from([(10, 4), (20, 0)]),
+            BTreeMap::from([(10, 4), (20, 1)]),
+        ] {
+            assert!(lab.reconcile_actor_incarnations(&invalid).is_err());
+            assert_eq!(lab.desired_incarnations, desired);
+            assert_eq!(lab.highest_incarnations, desired);
+        }
+        lab.reconcile_actor_incarnations(&BTreeMap::new()).unwrap();
+        assert!(
+            lab.reconcile_actor_incarnations(&BTreeMap::from([(10, 2)]))
+                .is_err()
+        );
+        lab.reconcile_actor_incarnations(&BTreeMap::from([(10, 4)]))
+            .unwrap();
+        assert_eq!(lab.highest_incarnations.get(&20), Some(&2));
+    }
+
+    #[test]
+    fn incarnation_slots_are_cumulatively_bounded_and_unused_guids_are_pruned() {
+        let mut lab = PeerLab::bind(0, PeerLabConfig::default()).unwrap();
+        let desired: BTreeMap<_, _> = (0..1024).map(|slot| (slot, 1)).collect();
+        lab.reconcile_actor_incarnations(&desired).unwrap();
+        let first = lab.guid_cache.incarnation_guid(0, 1).unwrap();
+        lab.reconcile_actor_incarnations(&desired).unwrap();
+        assert_eq!(lab.guid_cache.incarnation_count(), 1);
+        lab.reconcile_actor_incarnations(&BTreeMap::new()).unwrap();
+        assert_eq!(lab.guid_cache.incarnation_count(), 0);
+        assert!(
+            lab.reconcile_actor_incarnations(&BTreeMap::from([(1024, 1)]))
+                .is_err()
+        );
+        assert!(lab.desired_incarnations.is_empty());
+        assert_eq!(lab.highest_incarnations.len(), 1024);
+        lab.reconcile_actor_incarnations(&BTreeMap::from([(0, 2)]))
+            .unwrap();
+        let replacement = lab.guid_cache.incarnation_guid(0, 2).unwrap();
+        assert_ne!(first, replacement);
+        assert_eq!(lab.retiring_incarnation_count(), 0);
+    }
 
     fn prospect_refresh_lab() -> PeerLab {
         use super::super::{game_state_open::GAME_STATE_CHANNEL_INDEX, release::ReleaseProfile};

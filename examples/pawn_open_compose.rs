@@ -331,7 +331,7 @@ fn prepared(
         )?;
     }
     for _ in 0..file.burn_dynamic {
-        cache.assign_dynamic();
+        cache.assign_dynamic()?;
     }
     exports.commit_bunch(1);
     if file.earlier_acked {

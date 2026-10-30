@@ -185,10 +185,10 @@ fn manager_opens_match_the_captured_bit_lengths_and_digests() {
             assert_eq!(held.guid, outer);
         }
         burn_static_to(&mut cache, captured.archetype);
-        while cache.assign_dynamic() + 2 < captured.actor {}
+        while cache.assign_dynamic().unwrap() + 2 < captured.actor {}
         let key = ActorKey::World(1);
-        assert_eq!(cache.actor_guid(key), captured.actor);
-        while cache.assign_dynamic() + 2 < captured.first_component {}
+        assert_eq!(cache.actor_guid(key).unwrap(), captured.actor);
+        while cache.assign_dynamic().unwrap() + 2 < captured.first_component {}
         exports.commit_bunch(1);
         exports.received_ack(1);
         let open = compose_manager_open(
@@ -307,7 +307,10 @@ fn saved_quest_state_composes_into_the_quest_manager_open() {
     let RepValue::Object(initial) = &values[&quest_handle::INITIAL_QUEST] else {
         panic!("an initial quest reference");
     };
-    assert_eq!(initial.guid, cache.actor_guid(ActorKey::Saved(9_001)));
+    assert_eq!(
+        initial.guid,
+        cache.actor_guid(ActorKey::Saved(9_001)).unwrap()
+    );
     let RepValue::DynamicArray(actors) = &values[&quest_handle::RELEVANT_PERSISTENT_ACTORS] else {
         panic!("relevant persistent actors");
     };
@@ -319,10 +322,10 @@ fn saved_quest_state_composes_into_the_quest_manager_open() {
     let RepValue::Object(base) = &actors.stream.entries[1].value else {
         panic!("a persistent actor reference");
     };
-    assert_eq!(base.guid, cache.actor_guid(ActorKey::Saved(501)));
+    assert_eq!(base.guid, cache.actor_guid(ActorKey::Saved(501)).unwrap());
     assert_ne!(base.guid, initial.guid);
     // Saved links never share a GUID with a domain actor of the same id.
-    assert_ne!(cache.actor_guid(ActorKey::World(501)), base.guid);
+    assert_ne!(cache.actor_guid(ActorKey::World(501)).unwrap(), base.guid);
 }
 
 /// Saved container inventories compose into the InventoryContainerManager
@@ -427,7 +430,10 @@ fn container_inventories_compose_as_listed_subobjects() {
             panic!("a subobject block");
         };
         assert_eq!(object.guid, listed[index]);
-        assert_eq!(object.guid, cache.subobject_guid(key, index as u32));
+        assert_eq!(
+            object.guid,
+            cache.subobject_guid(key, index as u32).unwrap()
+        );
         let mut reader = block.payload.reader();
         let properties =
             read_rep_properties(&mut reader, &blocks.inventory_layout, &rep_codec).unwrap();
@@ -665,7 +671,7 @@ fn flod_tiles_compose_as_keyed_tile_references() {
         })
         .collect();
     let expected: Vec<u32> = (0..3)
-        .map(|index| cache.actor_guid(ActorKey::FlodTile(index)))
+        .map(|index| cache.actor_guid(ActorKey::FlodTile(index)).unwrap())
         .collect();
     assert_eq!(guids, expected);
 }

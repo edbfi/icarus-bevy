@@ -65,7 +65,7 @@ use icarus_bevy::{
         NetActor, NetActorFlags, NetSchedule, NetViewer, ReplicationConfig, ReplicationFrame,
         ReplicationPlugin,
     },
-    session_replication::{NetArchetype, NetMotion, SessionReplication},
+    session_replication::{NetArchetype, NetIncarnation, NetMotion, SessionReplication},
     simulation::{
         DomainId, Position, SimulationClock, SimulationSet, WorldSnapshot, build_app, capture,
     },
@@ -288,17 +288,22 @@ fn restore_lifecycle_slot(app: &mut App, id: DomainId) {
         .iter()
         .find(|slot| slot.placement == actor.placement)
         .unwrap();
+    let guid = i32::try_from(100 + id.0).unwrap();
     let batch = RestoreBatch {
         lifecycle_id: lifecycle.lifecycle_id.clone(),
         sequence: lifecycle.restore_sequence + 1,
         recorders: vec![RestoreRecorder {
-            guid: i32::try_from(100 + id.0).unwrap(),
+            guid,
             kind: RecorderKind::SpatialStateV1,
             target_placement: actor.placement.clone(),
             owner_name: declaration.owner_name.clone(),
             policy: ResolvePolicy::RespawnOnly,
             source: RecorderSource::Detached {
-                expected_prior_binding: None,
+                expected_prior_binding: lifecycle
+                    .bindings
+                    .iter()
+                    .find(|binding| binding.guid == guid)
+                    .map(|binding| binding.owner),
             },
             create_if_missing: true,
             expected_presence: slot.presence,
@@ -501,6 +506,390 @@ fn fields(bytes: &[Vec<u8>], client: &Client, opens: bool) -> Vec<Fields> {
 
 fn movement(position: [f32; 3]) -> RepValue {
     RepValue::Movement(authored_movement(position, [0.0; 3], [0.0; 3]).unwrap())
+}
+
+fn replacement_fixture(modifiers: bool) -> Fixture {
+    let mut fixture = lifecycle_fixture(modifiers);
+    fixture.declaration["owner_replacement"] = json!("after_close_ack");
+    fixture
+}
+
+fn opened_guid_at(bytes: &[Vec<u8>], client: &Client, position: [f32; 3]) -> u32 {
+    let guids = actor_bodies(bytes, client)
+        .into_iter()
+        .filter(|(open, _)| *open)
+        .map(|(_, body)| body.spawn.unwrap().actor.guid);
+    let matching: Vec<_> = guids
+        .zip(fields(bytes, client, true))
+        .filter_map(|(guid, fields)| (fields.get(&6) == Some(&movement(position))).then_some(guid))
+        .collect();
+    assert_eq!(
+        matching.len(),
+        1,
+        "exactly one open at the authored position"
+    );
+    matching[0]
+}
+
+fn reliable_world_closes(bytes: &[Vec<u8>], client: &Client) -> Vec<(u32, Option<u32>)> {
+    bytes
+        .iter()
+        .flat_map(|bytes| read_packet(bytes, &client.config()).unwrap().bunches)
+        .filter(|bunch| {
+            bunch.header.channel_index >= 6 && bunch.header.close && bunch.header.reliable
+        })
+        .map(|bunch| {
+            (
+                bunch.header.channel_index,
+                bunch.header.reliable_sequence_raw,
+            )
+        })
+        .collect()
+}
+
+#[test]
+fn opted_in_replacements_wait_for_each_peers_close_ack_and_coalesce_to_latest_owner() {
+    for modifiers in [false, true] {
+        for order in [ByteOrder::Little, ByteOrder::Big] {
+            let fixture = replacement_fixture(modifiers);
+            let (mut app, address) = fixture.app();
+            restore_lifecycle_slot(&mut app, fixture.id("b"));
+            let mut fast = Client::connect(&mut app, address, order);
+            let initial_fast = fast.join(&mut app);
+            let first_guid = opened_guid_at(&initial_fast, &fast, [20.0, -10.0, 30.0]);
+            let unaffected_guid = opened_guid_at(&initial_fast, &fast, [50.0, -40.0, 60.0]);
+            fast.settle(&mut app, &initial_fast);
+            let mut slow = Client::connect_indexed(&mut app, address, order, 1);
+            let initial_slow = slow.join(&mut app);
+            assert_eq!(
+                opened_guid_at(&initial_slow, &slow, [20.0, -10.0, 30.0]),
+                first_guid
+            );
+            assert_eq!(
+                opened_guid_at(&initial_slow, &slow, [50.0, -40.0, 60.0]),
+                unaffected_guid
+            );
+            slow.settle(&mut app, &initial_slow);
+            let prior = drain(&fast.socket);
+            fast.settle(&mut app, &prior);
+            let proxy = proxy_entity(&app, fixture.id("a"));
+
+            restore_lifecycle_slot(&mut app, fixture.id("a"));
+            edit_lifecycle(&mut app, fixture.id("a"), [21.0, 22.0, 23.0]);
+            edit_lifecycle(&mut app, fixture.id("b"), [31.0, 32.0, 33.0]);
+            let fast_close = tick_bytes(&mut app, &fast);
+            let mut slow_pending = drain(&slow.socket);
+            for (bytes, client) in [(&fast_close, &fast), (&slow_pending, &slow)] {
+                assert_eq!(reliable_world_closes(bytes, client).len(), 1);
+                assert!(fields(bytes, client, true).is_empty());
+                assert_eq!(
+                    fields(bytes, client, false),
+                    [Fields::from([(6, movement([320.0, -310.0, 330.0]))])]
+                );
+            }
+            assert_eq!(proxy_entity(&app, fixture.id("a")), proxy);
+            assert_eq!(
+                app.world()
+                    .resource::<PeerLab>()
+                    .retiring_incarnation_count(),
+                2
+            );
+            let fast_reopened = fast.settle(&mut app, &fast_close);
+            let second_guid = opened_guid_at(&fast_reopened, &fast, [220.0, -210.0, 230.0]);
+            assert_ne!(second_guid, first_guid);
+            assert_eq!(
+                app.world()
+                    .resource::<PeerLab>()
+                    .retiring_incarnation_count(),
+                1
+            );
+
+            // Two native restores before extraction expose only the latest
+            // incarnation. The slow peer still owes its original close ACK.
+            restore_lifecycle_slot(&mut app, fixture.id("a"));
+            restore_lifecycle_slot(&mut app, fixture.id("a"));
+            edit_lifecycle(&mut app, fixture.id("a"), [51.0, 52.0, 53.0]);
+            let after_restore = capture(app.world_mut()).unwrap();
+            let fast_second_close = tick_bytes(&mut app, &fast);
+            assert_eq!(reliable_world_closes(&fast_second_close, &fast).len(), 1);
+            assert!(fields(&fast_second_close, &fast, true).is_empty());
+            let fast_latest = fast.settle(&mut app, &fast_second_close);
+            let latest_guid = opened_guid_at(&fast_latest, &fast, [520.0, -510.0, 530.0]);
+            assert_ne!(latest_guid, first_guid);
+            assert_ne!(latest_guid, second_guid);
+            slow_pending.extend(drain(&slow.socket));
+            assert!(fields(&slow_pending, &slow, true).is_empty());
+            assert_eq!(reliable_world_closes(&slow_pending, &slow).len(), 1);
+            let slow_latest = slow.settle(&mut app, &slow_pending);
+            assert_eq!(
+                opened_guid_at(&slow_latest, &slow, [520.0, -510.0, 530.0]),
+                latest_guid
+            );
+            assert_eq!(fields(&slow_latest, &slow, true).len(), 1);
+            fast.settle(&mut app, &fast_latest);
+            slow.settle(&mut app, &slow_latest);
+            assert_eq!(
+                app.world()
+                    .resource::<PeerLab>()
+                    .retiring_incarnation_count(),
+                0
+            );
+            assert_eq!(
+                app.world().resource::<PeerLab>().incarnation_guid_count(),
+                2
+            );
+            assert_eq!(
+                app.world().resource::<NativeReplicationCounts>().activated,
+                2
+            );
+            assert!(app.world().resource::<NativeReplicationCounts>().active);
+            assert_eq!(proxy_entity(&app, fixture.id("a")), proxy);
+            assert_lifecycle_spatial_state(&mut app, &after_restore);
+            network::teardown(app.world_mut());
+        }
+    }
+}
+
+#[test]
+fn opted_in_replacement_waits_through_lost_close_nak_and_retransmission() {
+    for order in [ByteOrder::Little, ByteOrder::Big] {
+        let fixture = replacement_fixture(true);
+        let (mut app, address) = fixture.app();
+        restore_lifecycle_slot(&mut app, fixture.id("b"));
+        let mut client = Client::connect(&mut app, address, order);
+        let opened = client.join(&mut app);
+        let old_guid = opened_guid_at(&opened, &client, [20.0, -10.0, 30.0]);
+        client.settle(&mut app, &opened);
+        restore_lifecycle_slot(&mut app, fixture.id("a"));
+        edit_lifecycle(&mut app, fixture.id("a"), [11.0, 12.0, 13.0]);
+        let lost = tick_bytes(&mut app, &client);
+        let original_close = reliable_world_closes(&lost, &client);
+        assert_eq!(original_close.len(), 1);
+        assert!(fields(&lost, &client, true).is_empty());
+        // A later unrelated actor update makes the omitted close packet a NAK.
+        edit_lifecycle(&mut app, fixture.id("b"), [21.0, 22.0, 23.0]);
+        let later = tick_bytes(&mut app, &client);
+        assert_eq!(
+            fields(&later, &client, false),
+            [Fields::from([(6, movement([220.0, -210.0, 230.0]))])]
+        );
+        assert!(fields(&later, &client, true).is_empty());
+        let resent = client.settle(&mut app, &later);
+        assert_eq!(reliable_world_closes(&resent, &client), original_close);
+        assert!(fields(&resent, &client, true).is_empty());
+        assert_eq!(
+            app.world()
+                .resource::<PeerLab>()
+                .retiring_incarnation_count(),
+            1
+        );
+        let still_waiting = tick_bytes(&mut app, &client);
+        assert!(fields(&still_waiting, &client, true).is_empty());
+        let reopened = client.settle(&mut app, &resent);
+        let new_guid = opened_guid_at(&reopened, &client, [120.0, -110.0, 130.0]);
+        assert_ne!(new_guid, old_guid);
+        assert_eq!(
+            app.world()
+                .resource::<PeerLab>()
+                .retiring_incarnation_count(),
+            0
+        );
+        assert!(app.world().resource::<NativeReplicationCounts>().active);
+        network::teardown(app.world_mut());
+    }
+}
+
+#[test]
+fn opted_in_replacement_under_pressure_requires_close_ack_after_capacity_recovers() {
+    for modifiers in [false, true] {
+        let fixture = replacement_fixture(modifiers);
+        let (mut app, address) = fixture.app_tuned(Some(|config| config.packet.sent_capacity = 12));
+        let mut client = Client::connect(&mut app, address, ByteOrder::Little);
+        let opened = client.join(&mut app);
+        let old_guid = opened_guid_at(&opened, &client, [20.0, -10.0, 30.0]);
+        client.settle(&mut app, &opened);
+        let mut queued = Vec::new();
+        for step in 1..=128 {
+            edit_lifecycle(&mut app, fixture.id("a"), [step as f32, 8.0, 9.0]);
+            queued.extend(tick_bytes(&mut app, &client));
+            if app
+                .world()
+                .resource::<PeerLab>()
+                .stats()
+                .actor_update_errors
+                > 0
+            {
+                break;
+            }
+        }
+        assert!(
+            app.world()
+                .resource::<PeerLab>()
+                .stats()
+                .actor_update_errors
+                > 0
+        );
+        let updates = app.world().resource::<PeerLab>().stats().actor_updates_sent;
+        restore_lifecycle_slot(&mut app, fixture.id("a"));
+        edit_lifecycle(&mut app, fixture.id("a"), [41.0, 42.0, 43.0]);
+        let native = capture(app.world_mut()).unwrap();
+        let blocked = tick_bytes(&mut app, &client);
+        assert!(actor_bodies(&blocked, &client).is_empty());
+        assert!(reliable_world_closes(&blocked, &client).is_empty());
+        assert!(app.world().resource::<PeerLab>().stats().actor_close_errors > 0);
+        assert_eq!(
+            app.world().resource::<PeerLab>().stats().actor_updates_sent,
+            updates
+        );
+        client.accept(&blocked);
+        let closed = client.settle(&mut app, &queued);
+        assert_eq!(reliable_world_closes(&closed, &client).len(), 1);
+        assert!(fields(&closed, &client, true).is_empty());
+        assert_eq!(
+            app.world().resource::<PeerLab>().stats().actor_updates_sent,
+            updates
+        );
+        let reopened = client.settle(&mut app, &closed);
+        assert_ne!(
+            opened_guid_at(&reopened, &client, [420.0, -410.0, 430.0]),
+            old_guid
+        );
+        assert!(app.world().resource::<NativeReplicationCounts>().active);
+        assert_lifecycle_spatial_state(&mut app, &native);
+        network::teardown(app.world_mut());
+    }
+}
+
+#[test]
+fn opted_in_replacement_churn_prunes_guids_and_disconnect_releases_old_barriers() {
+    let fixture = replacement_fixture(false);
+    let (mut app, address) = fixture.app();
+    for _ in 0..16 {
+        restore_lifecycle_slot(&mut app, fixture.id("a"));
+        for _ in 0..3 {
+            app.update();
+        }
+        assert!(app.world().resource::<NativeReplicationCounts>().active);
+        assert_eq!(
+            app.world().resource::<PeerLab>().incarnation_guid_count(),
+            0
+        );
+        assert_eq!(
+            app.world()
+                .resource::<PeerLab>()
+                .retiring_incarnation_count(),
+            0
+        );
+    }
+    let mut client = Client::connect(&mut app, address, ByteOrder::Little);
+    let opened = client.join(&mut app);
+    let mut previous_guid = opened_guid_at(&opened, &client, [20.0, -10.0, 30.0]);
+    client.settle(&mut app, &opened);
+    for _ in 0..8 {
+        restore_lifecycle_slot(&mut app, fixture.id("a"));
+        let closed = tick_bytes(&mut app, &client);
+        assert_eq!(reliable_world_closes(&closed, &client).len(), 1);
+        assert!(fields(&closed, &client, true).is_empty());
+        let reopened = client.settle(&mut app, &closed);
+        let next_guid = opened_guid_at(&reopened, &client, [20.0, -10.0, 30.0]);
+        assert!(next_guid > previous_guid);
+        previous_guid = next_guid;
+        client.settle(&mut app, &reopened);
+        assert_eq!(
+            app.world().resource::<PeerLab>().incarnation_guid_count(),
+            1
+        );
+        assert_eq!(
+            app.world()
+                .resource::<PeerLab>()
+                .retiring_incarnation_count(),
+            0
+        );
+    }
+    restore_lifecycle_slot(&mut app, fixture.id("a"));
+    let unacked_close = tick_bytes(&mut app, &client);
+    assert_eq!(reliable_world_closes(&unacked_close, &client).len(), 1);
+    client.disconnect(&mut app);
+    assert_eq!(app.world().resource::<PeerLab>().peer_count(), 0);
+    assert_eq!(
+        app.world()
+            .resource::<PeerLab>()
+            .retiring_incarnation_count(),
+        0
+    );
+    assert_eq!(
+        app.world().resource::<PeerLab>().incarnation_guid_count(),
+        0
+    );
+    let native = capture(app.world_mut()).unwrap();
+    let mut returning = Client::connect(&mut app, address, ByteOrder::Big);
+    let reopened = returning.join(&mut app);
+    assert!(opened_guid_at(&reopened, &returning, [20.0, -10.0, 30.0]) > previous_guid);
+    assert!(reliable_world_closes(&reopened, &returning).is_empty());
+    assert_eq!(
+        app.world().resource::<NativeReplicationCounts>().activated,
+        1
+    );
+    assert_lifecycle_spatial_state(&mut app, &native);
+    network::teardown(app.world_mut());
+}
+
+#[test]
+fn replacement_policy_and_prepared_owner_changes_reject_before_installation() {
+    for value in [json!("unknown"), json!(0), Value::Null, json!({})] {
+        let mut fixture = replacement_fixture(false);
+        fixture.declaration["owner_replacement"] = value;
+        let mut app = build_app(&fixture.config, &fixture.snapshot).unwrap();
+        assert!(prepare(&mut app, fixture.declaration).is_err());
+        assert!(!app.is_plugin_added::<ReplicationPlugin>());
+        assert!(capture(app.world_mut()).unwrap() == fixture.snapshot);
+    }
+    let mut spatial = Fixture::new();
+    spatial.declaration["owner_replacement"] = json!("after_close_ack");
+    let mut app = build_app(&spatial.config, &spatial.snapshot).unwrap();
+    assert!(prepare(&mut app, spatial.declaration).is_err());
+    assert!(!app.is_plugin_added::<ReplicationPlugin>());
+    for modifiers in [false, true] {
+        let fixture = replacement_fixture(modifiers);
+        let mut app = build_app(&fixture.config, &fixture.snapshot).unwrap();
+        let plan = prepare(&mut app, fixture.declaration.clone()).unwrap();
+        restore_lifecycle_slot(&mut app, fixture.id("a"));
+        let native = capture(app.world_mut()).unwrap();
+        assert!(native_replication::install(&mut app, plan).is_err());
+        assert!(!app.is_plugin_added::<ReplicationPlugin>());
+        assert!(!app.world().contains_resource::<NativeReplicationCounts>());
+        assert!(capture(app.world_mut()).unwrap() == native);
+    }
+}
+
+#[test]
+fn incarnation_marker_tampering_retires_the_opted_in_host_without_peers() {
+    for corruption in 0..4 {
+        let fixture = replacement_fixture(false);
+        let (mut app, _) = fixture.app();
+        let proxy = proxy_entity(&app, fixture.id("a"));
+        assert_eq!(app.world().get::<NetIncarnation>(proxy).unwrap().0, 1);
+        match corruption {
+            0 => {
+                app.world_mut().entity_mut(proxy).remove::<NetIncarnation>();
+            }
+            1 => {
+                app.world_mut().entity_mut(proxy).insert(NetIncarnation(2));
+            }
+            2 => {
+                app.world_mut().spawn(NetIncarnation(1));
+            }
+            _ => {
+                let native = native_entity(&app, fixture.id("a"));
+                app.world_mut().entity_mut(native).insert(NetIncarnation(1));
+            }
+        }
+        for _ in 0..3 {
+            app.update();
+        }
+        assert_zero_peer_retired(&app, 1);
+        network::teardown(app.world_mut());
+    }
 }
 
 #[test]
@@ -711,12 +1100,16 @@ fn lifecycle_timed_modifiers_advance_and_reload_without_proxy_identity_churn() {
             ModifierAction, ModifierDefinition, ModifierDuration, ModifierRequest, ModifierTimer,
         },
     };
-    let mut fixture = lifecycle_fixture(true);
+    let mut fixture = replacement_fixture(true);
     let (mut app, _) = fixture.app();
     app.insert_resource(TimeUpdateStrategy::FixedTimesteps(1));
     app.update();
     let owner = native_owner_handle(app.world(), fixture.id("a")).unwrap();
     let proxy = proxy_entity(&app, owner.id);
+    assert_eq!(
+        app.world().get::<NetIncarnation>(proxy).unwrap().0,
+        owner.incarnation
+    );
     apply_native_modifier(
         app.world_mut(),
         &ModifierRequest {
@@ -736,6 +1129,10 @@ fn lifecycle_timed_modifiers_advance_and_reload_without_proxy_identity_churn() {
         app.update();
     }
     assert_eq!(proxy_entity(&app, owner.id), proxy);
+    assert_eq!(
+        app.world().get::<NetIncarnation>(proxy).unwrap().0,
+        owner.incarnation
+    );
     assert_eq!(
         native_owner_modifiers(app.world(), owner).unwrap().entries[0].timer,
         ModifierTimer::Timed {
@@ -766,6 +1163,10 @@ fn lifecycle_timed_modifiers_advance_and_reload_without_proxy_identity_churn() {
             .is_empty()
     );
     assert_eq!(proxy_entity(&reloaded, owner.id), proxy);
+    assert_eq!(
+        reloaded.world().get::<NetIncarnation>(proxy).unwrap().0,
+        owner.incarnation
+    );
     assert!(
         reloaded
             .world()
@@ -1151,7 +1552,7 @@ fn invalid_last_binding_is_atomic_and_diagnostics_are_structural() {
     let before = capture(app.world_mut()).unwrap();
     let entities = app.world().iter_entities().count();
     let bound = network::bind(&fixture.config.network).unwrap().unwrap();
-    let next_guid = bound.lab.guid_cache().clone().assign_dynamic();
+    let next_guid = bound.lab.guid_cache().clone().assign_dynamic().unwrap();
     let error = network::install_configured(&mut app, bound, &fixture.config.network)
         .expect_err("reject invalid last binding");
     assert!(!format!("{error:#}").contains("SENTINEL_UNKNOWN_PLACEMENT"));
@@ -1164,14 +1565,18 @@ fn invalid_last_binding_is_atomic_and_diagnostics_are_structural() {
     // A successful retry starts with exactly a fresh lab's GUID allocation.
     fixture.write_declaration();
     let bound = network::bind(&fixture.config.network).unwrap().unwrap();
-    assert_eq!(bound.lab.guid_cache().clone().assign_dynamic(), next_guid);
+    assert_eq!(
+        bound.lab.guid_cache().clone().assign_dynamic().unwrap(),
+        next_guid
+    );
     network::install_configured(&mut app, bound, &fixture.config.network).unwrap();
     assert_eq!(
         app.world()
             .resource::<PeerLab>()
             .guid_cache()
             .clone()
-            .assign_dynamic(),
+            .assign_dynamic()
+            .unwrap(),
         next_guid
     );
     network::teardown(app.world_mut());
@@ -1302,7 +1707,7 @@ inventory_class = [{ path = "InventoryClass", checksum = 56 }, { path = "/Lab/In
             let before = capture(app.world_mut()).unwrap();
             let entities = app.world().iter_entities().count();
             let bound = bind(&fixture.config.network);
-            let next_dynamic = bound.lab.guid_cache().clone().assign_dynamic();
+            let next_dynamic = bound.lab.guid_cache().clone().assign_dynamic().unwrap();
             let next_static = bound
                 .lab
                 .guid_cache()
@@ -1329,7 +1734,10 @@ inventory_class = [{ path = "InventoryClass", checksum = 56 }, { path = "/Lab/In
                     2
                 );
                 let lab = app.world().resource::<PeerLab>();
-                assert_eq!(lab.guid_cache().clone().assign_dynamic(), next_dynamic);
+                assert_eq!(
+                    lab.guid_cache().clone().assign_dynamic().unwrap(),
+                    next_dynamic
+                );
                 assert_eq!(
                     lab.guid_cache().clone().assign_static(&[PathSegment::new(
                         "/Lab/Unassigned",

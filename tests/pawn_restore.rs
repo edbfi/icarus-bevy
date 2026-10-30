@@ -450,7 +450,7 @@ fn component_guid(
     key: ActorKey,
     index: usize,
 ) -> u32 {
-    let actor = cache.actor_guid(key);
+    let actor = cache.actor_guid(key).unwrap();
     let reference = cache
         .export_keyed_subobject(
             exports,
@@ -660,7 +660,7 @@ fn restored_components_reexport_until_acknowledged_including_after_a_nak() {
             );
             assert_eq!(
                 map.resolve_outer_guid(reference.guid),
-                Some(cache.actor_guid(key))
+                Some(cache.actor_guid(key).unwrap())
             );
             assert!(!exports.is_acked(reference.guid));
             let BlockTarget::SubObject { object, class } = &block.target else {
@@ -862,7 +862,7 @@ fn restored_inventories_send_their_slot_deltas_on_the_runtime_subobjects() {
         panic!("inventory block");
     };
     // The second runtime subobject, named by its acked class.
-    assert_eq!(object.guid, cache.subobject_guid(key, 1));
+    assert_eq!(object.guid, cache.subobject_guid(key, 1).unwrap());
     let SubObjectClass::Class(class) = class else {
         panic!("class-named inventory");
     };
@@ -977,7 +977,9 @@ fn restored_modifiers_are_class_named_subobjects_with_their_classes_exported() {
         };
         assert_eq!(
             object.guid,
-            cache.subobject_guid(key, u32::try_from(index).unwrap())
+            cache
+                .subobject_guid(key, u32::try_from(index).unwrap())
+                .unwrap()
         );
         let SubObjectClass::Class(class) = class else {
             panic!("class-named modifier");
@@ -1003,7 +1005,7 @@ fn restored_modifiers_are_class_named_subobjects_with_their_classes_exported() {
         let RepValue::Object(owner) = &values[&4] else {
             panic!("owner");
         };
-        assert_eq!(owner.guid, cache.actor_guid(key));
+        assert_eq!(owner.guid, cache.actor_guid(key).unwrap());
         assert_eq!(values[&5], RepValue::Int(i32::try_from(index).unwrap() + 1));
         assert_eq!(values[&6], RepValue::Float(300.0_f32.to_bits()));
         // Zero effectiveness and remaining time stay at the defaults.

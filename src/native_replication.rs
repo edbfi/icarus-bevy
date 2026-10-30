@@ -32,7 +32,9 @@ use crate::{
         NetActor, NetActorFlags, NetParameters, NetSchedule, NetViewer, ReplicationConfig,
         ReplicationFrame, ReplicationPlugin, ReplicationSet, ReplicationState, SpatialMode,
     },
-    session_replication::{NetArchetype, NetMotion, SessionReplication, SessionReplicationPlugin},
+    session_replication::{
+        NetArchetype, NetIncarnation, NetMotion, SessionReplication, SessionReplicationPlugin,
+    },
     simulation::{DomainId, Position, SNAPSHOT_SCHEMA_NATIVE, SimulationSet, capture},
 };
 
@@ -67,6 +69,8 @@ object_dto! {
         /// Required only in format 2: pins the authored lifecycle definition.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         pub lifecycle_id: Option<String>,
+        #[serde(default, skip_serializing_if = "OwnerReplacement::is_default")]
+        pub owner_replacement: OwnerReplacement,
         pub map: String,
         pub frame: AuthoredFrame,
         pub schedule: AuthoredSchedule,
@@ -75,6 +79,32 @@ object_dto! {
         pub bindings: Vec<AuthoredBinding>,
     }
 }
+/// Authored transport policy, independent of original owner replacement semantics.
+#[derive(Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum OwnerReplacement {
+    #[default]
+    RetireBridge,
+    AfterCloseAck,
+}
+
+impl OwnerReplacement {
+    fn is_default(&self) -> bool {
+        *self == Self::RetireBridge
+    }
+}
+
+fn net_incarnation(
+    policy: OwnerReplacement,
+    source: Option<(Entity, u64)>,
+) -> Option<NetIncarnation> {
+    if policy == OwnerReplacement::AfterCloseAck {
+        source.map(|(_, incarnation)| NetIncarnation(incarnation))
+    } else {
+        None
+    }
+}
+
 object_dto! {
     pub struct AuthoredFrame {
         /// Output axes select signed native axes: 1=x, 2=y, 3=z.
@@ -168,7 +198,9 @@ impl AuthoredReplication {
     fn validate(&self) -> Result<()> {
         ensure!(
             match self.format {
-                1 => self.lifecycle_id.is_none(),
+                1 =>
+                    self.lifecycle_id.is_none()
+                        && self.owner_replacement == OwnerReplacement::RetireBridge,
                 2 => self.lifecycle_id.as_ref().is_some_and(|id| {
                     id.len() == 64
                         && id
@@ -507,6 +539,7 @@ fn ensure_uninstalled(world: &World) -> Result<()> {
             !entity.contains::<NetActor>()
                 && !entity.contains::<NetArchetype>()
                 && !entity.contains::<NetMotion>()
+                && !entity.contains::<NetIncarnation>()
                 && !entity.contains::<NetActorFlags>()
                 && !entity.contains::<NetViewer>()
                 && !entity.contains::<NativeProxy>(),
@@ -680,7 +713,7 @@ fn validate_open(
         let mut cache = NetGuidCache::new();
         let mut exports = ConnectionExports::new();
         let spec = ActorOpenSpec {
-            actor: cache.actor_guid(ActorKey::World(id.0)),
+            actor: cache.actor_guid(ActorKey::World(id.0))?,
             archetype: archetype.archetype.clone(),
             level: session.level.clone(),
             location: Some(position),
@@ -730,7 +763,10 @@ fn current_positions(
         let actor = &actors[index];
         ensure!(
             (actor.live == binding.source
-                || (!startup && binding.source.is_none() && actor.live.is_some()))
+                || (!startup && binding.source.is_none() && actor.live.is_some())
+                || (!startup
+                    && plan.declaration.owner_replacement == OwnerReplacement::AfterCloseAck
+                    && matches!((binding.source, actor.live), (Some((old_entity, old_inc)), Some((entity, inc))) if old_entity != entity && old_inc < inc)))
                 && actor.placement == binding.placement
                 && actor.class == binding.class
                 && actor.tile == binding.tile,
@@ -769,6 +805,8 @@ fn current_positions(
                         && current == Some(&Position(binding.position))
                         && proxy.get::<NetActorFlags>().copied() == binding.flags
                         && !proxy.contains::<NetMotion>()
+                        && proxy.get::<NetIncarnation>().copied()
+                            == net_incarnation(plan.declaration.owner_replacement, binding.source)
                         && !proxy.contains::<bevy::ecs::entity_disabling::Disabled>()
                 }),
                 "native replication proxy lost or changed"
@@ -810,6 +848,7 @@ fn current_positions(
             world.component_id::<NetActor>(),
             world.component_id::<NetArchetype>(),
             world.component_id::<NetMotion>(),
+            world.component_id::<NetIncarnation>(),
             world.component_id::<NetActorFlags>(),
             world.component_id::<NativeProxy>(),
         ];
@@ -853,7 +892,7 @@ pub fn install(app: &mut App, mut plan: PreparedReplication) -> Result<()> {
     let mut count = 0;
     for binding in &mut plan.bindings {
         if binding.source.is_some() {
-            spawn_proxy(app.world_mut(), binding);
+            spawn_proxy(app.world_mut(), binding, plan.declaration.owner_replacement);
             count += 1;
         }
     }
@@ -884,7 +923,7 @@ pub fn install(app: &mut App, mut plan: PreparedReplication) -> Result<()> {
     Ok(())
 }
 
-fn spawn_proxy(world: &mut World, binding: &mut Binding) {
+fn spawn_proxy(world: &mut World, binding: &mut Binding, policy: OwnerReplacement) {
     let mut proxy = world.spawn((
         NativeProxy(binding.id),
         binding.actor,
@@ -893,6 +932,9 @@ fn spawn_proxy(world: &mut World, binding: &mut Binding) {
     ));
     if let Some(flags) = binding.flags {
         proxy.insert(flags);
+    }
+    if let Some(incarnation) = net_incarnation(policy, binding.source) {
+        proxy.insert(incarnation);
     }
     binding.proxy = Some(proxy.id());
 }
@@ -937,6 +979,10 @@ pub fn update_flags(world: &mut World, id: DomainId, flags: Option<AuthoredFlags
 fn retire(world: &mut World, plan: &PreparedReplication) {
     if let Some(mut lab) = world.get_resource_mut::<PeerLab>() {
         lab.stop_admission();
+        if plan.declaration.owner_replacement == OwnerReplacement::AfterCloseAck {
+            // An empty desired set suppresses every old update while closes drain.
+            let _ = lab.reconcile_actor_incarnations(&BTreeMap::new());
+        }
         for connection in lab.joined_connections() {
             for binding in &plan.bindings {
                 // Existing explicit channel retirement; no replacement/despawn
@@ -985,11 +1031,21 @@ fn extract(world: &mut World) {
                             .insert(Position(projection.position));
                     }
                     binding.position = projection.position;
-                    if binding.source.is_none() && projection.source.is_some() {
-                        spawn_proxy(world, binding);
-                        activated += 1;
-                    }
+                    let was_dormant = binding.source.is_none();
+                    let replaced = binding.source != projection.source;
                     binding.source = projection.source;
+                    if was_dormant && binding.source.is_some() {
+                        spawn_proxy(world, binding, state.plan.declaration.owner_replacement);
+                        activated += 1;
+                    } else if replaced
+                        && let Some(proxy) = binding.proxy
+                        && let Some(incarnation) = net_incarnation(
+                            state.plan.declaration.owner_replacement,
+                            binding.source,
+                        )
+                    {
+                        world.entity_mut(proxy).insert(incarnation);
+                    }
                 }
                 if let Some(mut counts) = world.get_resource_mut::<NativeReplicationCounts>() {
                     counts.activated += activated;

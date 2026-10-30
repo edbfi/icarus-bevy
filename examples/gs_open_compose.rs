@@ -338,7 +338,7 @@ fn main() -> Result<()> {
         )?;
     }
     for _ in 0..file.burn_dynamic {
-        cache.assign_dynamic();
+        cache.assign_dynamic()?;
     }
     // The client had acked those exports when the capture's open went out.
     exports.commit_bunch(1);
@@ -375,8 +375,13 @@ fn main() -> Result<()> {
         .iter()
         .enumerate()
         .filter(|(_, handle)| supplied_managers.contains_key(handle))
-        .map(|(index, handle)| (*handle, cache.actor_guid(ActorKey::World(index as u64 + 1))))
-        .collect();
+        .map(|(index, handle)| {
+            Ok((
+                *handle,
+                cache.actor_guid(ActorKey::World(index as u64 + 1))?,
+            ))
+        })
+        .collect::<Result<_>>()?;
     let composed_exports = open.exports.context("exports")?;
     let supplied_exports = payload(&file.exports_hex, file.exports_bits)?;
     println!(

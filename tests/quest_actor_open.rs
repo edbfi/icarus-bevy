@@ -611,8 +611,8 @@ fn quest_actor_opens_match_m707_captured_export_digests_and_net_guids() {
         )
         .unwrap();
     // Reserve AQuestManager's actor GUID 74 at GameState open, as in M-707.
-    while cache.assign_dynamic() + 2 < 74 {}
-    assert_eq!(cache.actor_guid(ManagerSlot::Quest.key()), 74);
+    while cache.assign_dynamic().unwrap() + 2 < 74 {}
+    assert_eq!(cache.actor_guid(ManagerSlot::Quest.key()).unwrap(), 74);
     exports.commit_bunch(1);
     exports.received_ack(1);
 
@@ -621,7 +621,7 @@ fn quest_actor_opens_match_m707_captured_export_digests_and_net_guids() {
             burn_static_to(&mut cache, next_stat);
         }
         if let Some(next_dyn) = captured.next_dynamic {
-            while cache.assign_dynamic() + 2 < next_dyn {}
+            while cache.assign_dynamic().unwrap() + 2 < next_dyn {}
         }
         let plan = base.quest_plan(quest).unwrap();
         let open = compose_quest_open(
@@ -632,7 +632,10 @@ fn quest_actor_opens_match_m707_captured_export_digests_and_net_guids() {
             ByteOrder::Little,
         )
         .unwrap();
-        assert_eq!(cache.actor_guid(quest.key), captured.expected_actor_guid);
+        assert_eq!(
+            cache.actor_guid(quest.key).unwrap(),
+            captured.expected_actor_guid
+        );
         let open_exports = open.exports.expect("quest open exports");
         assert_eq!(
             open_exports.bit_len(),
@@ -677,7 +680,7 @@ fn quest_actor_opens_match_m707_captured_export_digests_and_net_guids() {
     // Channel 126 (`AQuestManager`) exports match M-707 bit-for-bit and reuse
     // Construction_C's assigned NetGUID `632` for `InitialQuest`!
     burn_static_to(&mut cache, 821);
-    while cache.assign_dynamic() + 2 < 3086 {}
+    while cache.assign_dynamic().unwrap() + 2 < 3086 {}
     let qm_plan = profile
         .manager_open_plan(ManagerSlot::Quest, map)
         .unwrap()

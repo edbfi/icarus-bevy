@@ -131,7 +131,7 @@ fn guids_and_exports_follow_serialization_order() {
     assert_eq!(guids.actor, 2);
     assert_eq!(guids.components, [Some(8), None, Some(4)]);
     assert_eq!(guids.subobjects, [10, 12]);
-    assert_eq!(cache.actor_guid(ActorKey::World(77)), 6);
+    assert_eq!(cache.actor_guid(ActorKey::World(77)).unwrap(), 6);
     // Exports: archetype, level, State, Stats, then the subobject class once.
     let mut map = PackageMapState::new();
     let decoded = map
@@ -229,7 +229,7 @@ fn invalid_references_and_duplicate_components_fail_before_any_assignment() {
             compose_component_actor_open(&mut cache, &mut exports, &broken, 3, ByteOrder::Little)
                 .is_err()
         );
-        assert_eq!(cache.assign_dynamic(), 2, "nothing was assigned");
+        assert_eq!(cache.assign_dynamic().unwrap(), 2, "nothing was assigned");
     }
 }
 
@@ -338,7 +338,7 @@ fn invalid_block_contents_fail_before_any_assignment() {
             compose_component_actor_open(&mut cache, &mut exports, &open, 3, ByteOrder::Little)
                 .is_err()
         );
-        assert_eq!(cache.assign_dynamic(), 2, "nothing was assigned");
+        assert_eq!(cache.assign_dynamic().unwrap(), 2, "nothing was assigned");
     }
     // A field index at its bound fails at encoding.
     let mut open = open();

@@ -414,7 +414,7 @@ fn builtin_game_state_identifiers_compose_the_captured_export_prefix() {
             .unwrap();
     }
     for _ in 0..33 {
-        cache.assign_dynamic();
+        cache.assign_dynamic().unwrap();
     }
     // The client had acked them (F-796).
     exports.commit_bunch(1);
@@ -444,8 +444,8 @@ fn builtin_game_state_identifiers_compose_the_captured_export_prefix() {
         ByteOrder::Little,
     )
     .unwrap();
-    assert_eq!(cache.actor_guid(ActorKey::Session(0)), 68);
-    assert_eq!(cache.actor_guid(ActorKey::World(6)), 84);
+    assert_eq!(cache.actor_guid(ActorKey::Session(0)).unwrap(), 68);
+    assert_eq!(cache.actor_guid(ActorKey::World(6)).unwrap(), 84);
     // SHA-256 of the capture's 298-byte, 2,377-bit GameState export prefix.
     let payload = open.exports.unwrap();
     assert_eq!(payload.bit_len(), 2_377);

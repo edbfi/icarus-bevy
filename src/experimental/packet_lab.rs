@@ -299,6 +299,8 @@ pub struct ReceiveSummary {
     pub naked: Vec<u32>,
     /// Outgoing reliable control bunches released by acks in this packet.
     pub released_reliable: usize,
+    /// Closing actor channels released after all their reliable bunches were acked.
+    pub released_actor_channels: Vec<u32>,
     /// Outgoing reliable control bunches newly queued for resend by naks.
     pub resend_queued: usize,
     pub bunch_count: usize,
@@ -644,6 +646,7 @@ impl LabPeer {
             acked: Vec::new(),
             naked: Vec::new(),
             released_reliable: 0,
+            released_actor_channels: Vec::new(),
             resend_queued: 0,
             bunch_count: bunches.len(),
             control_bunches,
@@ -693,6 +696,7 @@ impl LabPeer {
                     })
                     .collect();
                 for index in released {
+                    summary.released_actor_channels.push(index);
                     self.closing_actors.remove(&index);
                     self.actors.remove(&index);
                     *self.no_free_actor_channel_from.get_mut() = u32::MAX;

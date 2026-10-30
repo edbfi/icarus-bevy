@@ -136,9 +136,9 @@ fn game_state_open_composes_references_in_the_captured_order() {
     .unwrap();
     // GameState 2; Players 4 and Dialogue 6 by property; managers by handle
     // order (QuestManager 8, FLOD 10); Weather last (12).
-    assert_eq!(cache.actor_guid(GAME_STATE), 2);
-    assert_eq!(cache.actor_guid(QUESTS), 8);
-    assert_eq!(cache.actor_guid(FLOD), 10);
+    assert_eq!(cache.actor_guid(GAME_STATE).unwrap(), 2);
+    assert_eq!(cache.actor_guid(QUESTS).unwrap(), 8);
+    assert_eq!(cache.actor_guid(FLOD).unwrap(), 10);
     // Archetype, game mode and spectator chains (the level was exported),
     // then the three components.
     let statics: Vec<u32> = exported_guids(&open);
@@ -217,7 +217,7 @@ fn every_connection_gets_the_same_guids_with_its_own_exports() {
     assert_eq!(one.exports, two.exports);
     assert_eq!(one.bunch.payload, two.bunch.payload);
     // A manager's own open later reuses the GUID the GameState named.
-    assert_eq!(cache.actor_guid(FLOD), 10);
+    assert_eq!(cache.actor_guid(FLOD).unwrap(), 10);
     // Until a packet carrying them is acked, every open exports the paths
     // again (F-796); afterwards it exports nothing.
     let mut reopen = |exports: &mut ConnectionExports| {
@@ -237,7 +237,7 @@ fn every_connection_gets_the_same_guids_with_its_own_exports() {
 fn a_manager_opened_first_keeps_its_guid_in_the_game_state() {
     let plan = plan();
     let mut cache = NetGuidCache::new();
-    let flod = cache.actor_guid(FLOD);
+    let flod = cache.actor_guid(FLOD).unwrap();
     let mut exports = ConnectionExports::new();
     let open = compose_game_state_open(
         &mut cache,
@@ -266,11 +266,11 @@ fn a_manager_opened_first_keeps_its_guid_in_the_game_state() {
 #[test]
 fn session_and_world_keys_never_share_a_guid() {
     let mut cache = NetGuidCache::new();
-    let session = cache.actor_guid(ActorKey::Session(7));
-    let world = cache.actor_guid(ActorKey::World(7));
+    let session = cache.actor_guid(ActorKey::Session(7)).unwrap();
+    let world = cache.actor_guid(ActorKey::World(7)).unwrap();
     assert_ne!(session, world);
-    assert_eq!(cache.actor_guid(ActorKey::Session(7)), session);
-    assert_eq!(cache.actor_guid(ActorKey::World(7)), world);
+    assert_eq!(cache.actor_guid(ActorKey::Session(7)).unwrap(), session);
+    assert_eq!(cache.actor_guid(ActorKey::World(7)).unwrap(), world);
 }
 
 #[test]
@@ -335,7 +335,7 @@ fn composed_skipped_and_out_of_range_handles_are_rejected() {
             "handle {handle} accepted"
         );
         // Validation precedes every assignment.
-        assert_eq!(cache.assign_dynamic(), 2);
+        assert_eq!(cache.assign_dynamic().unwrap(), 2);
     }
     // A value of the wrong type fails in the layout encoder.
     let mut state = state();

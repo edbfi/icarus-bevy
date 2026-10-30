@@ -462,7 +462,10 @@ pub fn compose_manager_open(
         values.insert(*handle, keyed_actor_array(cache, actors)?);
     }
     for (handle, actors) in &plan.actor_arrays {
-        let guids: Vec<u32> = actors.iter().map(|key| cache.actor_guid(*key)).collect();
+        let guids = actors
+            .iter()
+            .map(|key| cache.actor_guid(*key))
+            .collect::<Result<Vec<_>>>()?;
         values.insert(*handle, object_array(&guids)?);
     }
     // The inventories get their GUIDs where the actor block lists them,
@@ -475,7 +478,7 @@ pub fn compose_manager_open(
     {
         let guids = (0..u32::try_from(owned.inventories.len())?)
             .map(|index| cache.subobject_guid(key, index))
-            .collect::<Vec<_>>();
+            .collect::<Result<Vec<_>>>()?;
         values.insert(owned.handle, object_array(&guids)?);
         for inventory in &owned.inventories {
             subobjects.push(inventory_subobject(
@@ -543,7 +546,7 @@ fn keyed_actor_array(
             handle: 2 * element + 2,
             checksum: None,
             value: RepValue::Object(NetGuidRef {
-                guid: cache.actor_guid(*key),
+                guid: cache.actor_guid(*key)?,
                 export: None,
             }),
         });

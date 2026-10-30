@@ -25,9 +25,10 @@ Address pairs are server / client.
   motion/hidden/damage use the AActor prefix. Ordered open blocks seed known
   fields; opaque blocks invalidate them; superseded losses cannot revert
   repaired fields. Flag removal requests false/false, not class defaults.
-  Schema-7/11 slots activate from dormancy; bound incarnation replacement retires
-  the bridge. Modifier state stays native. Saved-pose, gameplay and stock-client
-  behavior remain unqualified.
+  Schema-7/11 slots activate from dormancy. Replacement defaults to bridge
+  retirement; opt-in replacement waits per peer for old close ACK before a fresh
+  incarnation GUID opens. Modifier state stays native. Original replacement,
+  saved-pose, gameplay and stock-client behavior remain unqualified.
 - Dynamic GUIDs assign on first serialization, by open or reference (F-794);
   components keep one GUID across connections.
 - Export repetition (F-796), server 25956137: `ShouldSendFullPath`
