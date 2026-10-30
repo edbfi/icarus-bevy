@@ -55,13 +55,21 @@ pub fn set_internal_temperature(
 pub struct TemperatureTickState {
     /// Whether the reference tested at receiver +0x218 is non-null.
     pub required_reference_present: bool,
+    /// Whether the temperature singleton is cached; false requests acquisition.
     pub singleton_cached: bool,
+    /// Sampling threshold in seconds; a tick samples only after exceeding it.
     pub sample_interval_seconds: f32,
+    /// Accumulated sampling time in seconds; one interval is removed per sample.
     pub sample_elapsed_seconds: f32,
+    /// Retained fractional internal-temperature adjustment in temperature units.
     pub internal_remainder: f32,
+    /// Latest environmental sample, in integer temperature units.
     pub external: i32,
+    /// Environmental temperature after the external stat adjustment.
     pub modified_external: i32,
+    /// Internal target after the internal stat adjustment.
     pub modified_internal: i32,
+    /// Current internal temperature, in integer temperature units.
     pub internal: i32,
 }
 

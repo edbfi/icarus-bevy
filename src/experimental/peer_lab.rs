@@ -159,42 +159,6 @@
 //! cookies, tokens, challenge strings, URLs, unique net ids, versions, sequence
 //! values or numeric message fields.
 
-/// Explicit per-pawn timing inputs for [`PeerLab::tick_pawn_temperature`].
-/// No defaults or original constructor/clock semantics are implied.
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub struct PawnTemperatureTickContext {
-    /// Whether the reference tested at receiver +0x218 is non-null.
-    pub required_reference_present: bool,
-    pub singleton_cached: bool,
-    pub sample_interval_seconds: f32,
-    pub sample_elapsed_seconds: f32,
-    pub internal_remainder: f32,
-}
-
-impl PawnTemperatureTickContext {
-    fn state(
-        self,
-        temperatures: Option<PawnTemperatureState>,
-    ) -> Result<super::temperature::TemperatureTickState> {
-        let t = temperatures.context("pawn open has not been queued")?;
-        Ok(super::temperature::TemperatureTickState {
-            required_reference_present: self.required_reference_present,
-            singleton_cached: self.singleton_cached,
-            sample_interval_seconds: self.sample_interval_seconds,
-            sample_elapsed_seconds: self.sample_elapsed_seconds,
-            internal_remainder: self.internal_remainder,
-            external: t.external.context("unknown external temperature")?,
-            modified_external: t
-                .modified_external
-                .context("unknown modified external temperature")?,
-            modified_internal: t
-                .modified_internal
-                .context("unknown modified internal temperature")?,
-            internal: t.internal.context("unknown internal temperature")?,
-        })
-    }
-}
-
 use std::{
     collections::{BTreeMap, BTreeSet, HashMap},
     fmt, io,
@@ -280,6 +244,46 @@ use super::stat_restore::{
     PawnStatInputs, RestoredStats, StatRestoreTables, restore_stats, stat_bounds, stat_delta,
 };
 use super::time_of_day::TimeOfDayClock;
+
+/// Explicit per-pawn timing inputs for [`PeerLab::tick_pawn_temperature`].
+/// No defaults or original constructor/clock semantics are implied.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct PawnTemperatureTickContext {
+    /// Whether the reference tested at receiver +0x218 is non-null.
+    pub required_reference_present: bool,
+    /// Whether the temperature singleton is cached; false requests acquisition.
+    pub singleton_cached: bool,
+    /// Sampling threshold in seconds; a tick samples only after exceeding it.
+    pub sample_interval_seconds: f32,
+    /// Accumulated sampling time in seconds; one interval is removed per sample.
+    pub sample_elapsed_seconds: f32,
+    /// Retained fractional internal-temperature adjustment in temperature units.
+    pub internal_remainder: f32,
+}
+
+impl PawnTemperatureTickContext {
+    fn state(
+        self,
+        temperatures: Option<PawnTemperatureState>,
+    ) -> Result<super::temperature::TemperatureTickState> {
+        let t = temperatures.context("pawn open has not been queued")?;
+        Ok(super::temperature::TemperatureTickState {
+            required_reference_present: self.required_reference_present,
+            singleton_cached: self.singleton_cached,
+            sample_interval_seconds: self.sample_interval_seconds,
+            sample_elapsed_seconds: self.sample_elapsed_seconds,
+            internal_remainder: self.internal_remainder,
+            external: t.external.context("unknown external temperature")?,
+            modified_external: t
+                .modified_external
+                .context("unknown modified external temperature")?,
+            modified_internal: t
+                .modified_internal
+                .context("unknown modified internal temperature")?,
+            internal: t.internal.context("unknown internal temperature")?,
+        })
+    }
+}
 
 /// Lab text of the Failure reply to Login; not an original message.
 pub const ADMISSION_DISABLED_MESSAGE: &str = "icarus-bevy peer lab: game admission is disabled";
