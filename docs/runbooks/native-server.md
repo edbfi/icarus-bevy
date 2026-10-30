@@ -114,7 +114,8 @@ lifetime handler before publication (F-995, F-996).
 Equal/unordered requests skip notification; accepted raw-only changes notify.
 Changed wire values, including zero, coalesce behind reliable ACKs; transport
 repairs loss and retries pressure after packet progress. Polling never replays
-handlers or ticks timers. No original listeners or persistence. Reconnect restores saved values; `restored_modifier_time` returns a copy.
+handlers or ticks timers. No original listeners or persistence. Reconnect
+restores saved values; `restored_modifier_time` returns a copy.
 
 Authored schema-4/7/11 hosts opt in with `[network].authored_replication` or
 `run --authored-replication replication.json`. Disabled networking ignores it;
