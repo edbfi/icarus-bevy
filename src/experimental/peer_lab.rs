@@ -201,7 +201,9 @@ use super::manager_open::{
     ManagerOpenPlan, ManagerSlot, compose_manager_open, compose_player_history_update,
 };
 use super::modifier_restore::{ModifierRestoreTables, RestoredModifier, restore_modifiers};
-use super::modifier_timing::RemainingTime;
+use super::modifier_timing::{
+    RemainingTime, RemainingTimeChange, on_rep_remaining_time, set_remaining_time,
+};
 use super::packet::BunchLimits;
 use super::packet::Payload;
 use super::packet_lab::{
@@ -2223,6 +2225,36 @@ impl PeerLab {
             seconds: modifier.remaining_seconds,
             replicated_tenths: modifier.remaining_tenths,
         })
+    }
+
+    /// Apply the pinned setter and OnRep ordering for this native-authority
+    /// modifier, with caller-owned lifetime-notification effects. The connection
+    /// and modifier must already exist before the handler can run. An accepted
+    /// setter invokes it exactly once, including raw-only changes and overflow
+    /// that retains the previous wire value; rejected setters do not invoke it.
+    /// Authority preserves the accepted raw value at the OnRep boundary.
+    ///
+    /// The handler's final raw/wire state is retained for the same reliable,
+    /// coalescing publication as [`Self::refresh_restored_modifier_times`].
+    /// Polling and transport retries never invoke the handler again. The return
+    /// value describes the setter before notification: `wire_changed` does not
+    /// include handler effects. No ticking, expiry or persistence is inferred.
+    pub fn set_restored_modifier_time(
+        &mut self,
+        connection_id: u32,
+        uid: i32,
+        requested_seconds: f32,
+        notify_lifetime_updated: impl FnOnce(&mut RemainingTime),
+    ) -> Result<RemainingTimeChange> {
+        let mut state = self
+            .restored_modifier_time(connection_id, uid)
+            .context("no restored modifier for connection")?;
+        let change = set_remaining_time(&mut state, Some(3), requested_seconds);
+        if change.call_on_rep {
+            on_rep_remaining_time(&mut state, Some(3), notify_lifetime_updated);
+            self.refresh_restored_modifier_times(connection_id, &[(uid, state)])?;
+        }
+        Ok(change)
     }
 
     /// Publish explicitly resolved modifier times, atomically for one connection.
