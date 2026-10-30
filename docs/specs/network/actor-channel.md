@@ -193,12 +193,14 @@ Address pairs are server / client.
   F-808). Multi-bunch updates split as unreliable partials on consecutive
   packets (F-825; `LabPeer::actor_update_datagrams`).
 
-- Returning modifier time (F-991): with nearest-even rounding, scale seconds
-  by ten in f32, double, subtract from -0.5, convert to an integer, then
-  negate its arithmetic half and clamp below zero. Values above 65535 leave
-  the previous wire field unchanged. Native restore starts that field at zero;
-  tiny fractions can disappear in f32 arithmetic. Live clock, refresh and
-  destruction behavior remain unimplemented (U-069).
+- Modifier time (F-991, F-994): the authority setter rejects equal/unordered
+  requests. Quantize f32 seconds times ten, double, subtract from -0.5,
+  nearest-even integer conversion, then negate the arithmetic half and clamp
+  below zero. Overflow retains the old wire field; fresh restore starts at zero.
+  Accepted raw writes call OnRep even with unchanged wire. Tick's authority tag
+  refusal precedes countdown; its interval path consumes at most one period.
+  AutoDestroy tests role 3, not remaining time. The native call model excludes
+  callee effects, live scheduling and refresh (U-069).
 
 ## Candidate
 

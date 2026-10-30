@@ -111,15 +111,7 @@ fn class_chain(behaviour: Option<&str>) -> Option<Vec<PathSegment>> {
 /// This rounds positive fractional tenths upward except where f32 precision
 /// absorbs the fraction. Out-of-range values leave the new field at 0.
 pub fn remaining_tenths(remaining: f32) -> u16 {
-    let scaled = remaining * 10.0;
-    let rounded = (-0.5 - (scaled + scaled)).round_ties_even();
-    // Only this interval can yield 1..=65535 after the signed shift.
-    // Rejecting the rest also handles non-finite float-to-int conversions;
-    // their x86 indefinite integer cannot update a new component's field.
-    if !(-2.0 * f32::from(u16::MAX)..0.0).contains(&rounded) {
-        return 0;
-    }
-    (-((rounded as i32) >> 1)) as u16
+    super::modifier_timing::quantize_remaining_time(remaining).unwrap_or(0)
 }
 
 /// Restore `saved` onto a pawn whose modifier UIDs start at `first_uid`,
