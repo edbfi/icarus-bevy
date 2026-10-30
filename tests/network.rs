@@ -37,6 +37,8 @@ use icarus_bevy::{
 use serde_json::Value;
 
 mod pak_writer;
+#[path = "common/profile_pressure.rs"]
+mod profile_pressure;
 #[path = "common/profiles.rs"]
 mod profiles;
 #[path = "common/c001_scalar_owners.rs"]

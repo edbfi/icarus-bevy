@@ -88,10 +88,10 @@ search uses an authored xorshift64 PRNG (seed 1), not MSVC `rand`. Claim,
 reservation and remap stores cap at 262,144 entries each. A failed claim skips
 the pawn open and counts `open_errors`; session removal frees the UID. When a
 joined client sends its character slot, `run` asks it for its user and
-character profiles on the controller's backend proxy and replicates them on its
-PlayerState; a request failing three times closes the session (the original
-kicks). It then asks for the client's loadout and bestiary; once both have
-answered and the pawn is open, `run` replicates `PlayerCharacterID`, and a saved
+character profiles through its backend proxy. Three failed responses close the
+session. Temporary send pressure retains one unsent initialization step per
+peer; ACK/NAK progress retries it without repeating queued steps. It then asks
+for loadout and bestiary; once both have answered and the pawn is open, `run` replicates `PlayerCharacterID`, and a saved
 player character matching the login ID and the profile's slot gives the pawn its
 saved UID once every joined controller has sent `ServerFriendsListUpdated`, as the
 original finalises (F-973, F-975); `run` then sends the record's saved pawn state, with levels
