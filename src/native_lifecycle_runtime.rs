@@ -185,6 +185,116 @@ impl NativeLifecycleContext {
         Arc::ptr_eq(&self.definitions, &other.definitions)
             && other.generation == self.definitions.current_generation.load(Ordering::Relaxed)
     }
+
+    pub(crate) fn replication_identity(&self) -> (&str, &str, &str) {
+        (
+            self.definitions.catalog.identity(),
+            &self.lifecycle.definition.map,
+            self.definitions.lifecycle.identity(),
+        )
+    }
+}
+
+/// Validated authored slot, including dormant placements with no live entity.
+/// The incarnation belongs to the live owner, never to its spatial declaration.
+pub(crate) struct LifecycleReplicationSlot {
+    pub id: DomainId,
+    pub placement: String,
+    pub class: String,
+    pub tile: String,
+    pub transform: NativeTransform,
+    pub live: Option<(Entity, u64)>,
+}
+
+/// Capture the complete lifecycle world once before exposing any spatial slot.
+/// A retained activation pin accepts legitimate generation advances, but never
+/// a different loaded contract or a stale context reinserted into the world.
+pub(crate) fn replication_slots(
+    world: &World,
+    activation: &NativeLifecycleContext,
+) -> Result<Vec<LifecycleReplicationSlot>> {
+    use bevy::ecs::entity_disabling::Disabled;
+
+    let context = world
+        .get_resource::<NativeLifecycleContext>()
+        .context("lifecycle replication context missing")?;
+    ensure!(
+        activation.same_activation(context),
+        "lifecycle replication activation changed"
+    );
+    ensure!(
+        matches!(
+            context.definitions.mode,
+            SourceMode::Lifecycle | SourceMode::ModifierOwners
+        ),
+        "lifecycle replication requires an authored schema-7 or schema-11 world"
+    );
+    let snapshot = capture_lifecycle(world)?;
+    ensure!(
+        matches!(
+            snapshot.schema_version,
+            SNAPSHOT_SCHEMA_LIFECYCLE | SNAPSHOT_SCHEMA_MODIFIER_OWNERS
+        ) && snapshot.preserved_prospect.is_none()
+            && snapshot.native_import.is_none()
+            && snapshot.native_owner_import.is_none()
+            && snapshot.native_scalar_contracts.is_none()
+            && snapshot.native_scalar_owner_import.is_none()
+            && snapshot.native_inventory_contracts.is_none()
+            && snapshot.native_inventory_owner_import.is_none()
+            && snapshot.native_inventories.is_none(),
+        "lifecycle replication requires authored state without imports or preserved state"
+    );
+    let lifecycle = snapshot
+        .native_lifecycle
+        .context("lifecycle replication slots missing")?;
+    let native = snapshot
+        .native_world
+        .context("lifecycle replication spatial state missing")?;
+    let mut actors: BTreeMap<_, _> = native
+        .actors
+        .into_iter()
+        .map(|actor| (actor.id, actor))
+        .collect();
+    ensure!(
+        actors.len() == lifecycle.slots.len(),
+        "lifecycle replication spatial membership differs from slots"
+    );
+    let mut slots = Vec::with_capacity(lifecycle.slots.len());
+    for slot in lifecycle.slots {
+        let actor = actors
+            .remove(&slot.id)
+            .context("lifecycle replication slot lacks spatial state")?;
+        let live = match slot.presence {
+            Presence::Absent => {
+                ensure!(
+                    !context.live.contains_key(&slot.id),
+                    "dormant replication slot has a live owner"
+                );
+                None
+            }
+            Presence::Live => {
+                let entity = *context
+                    .live
+                    .get(&slot.id)
+                    .context("live replication slot lacks an owner")?;
+                ensure!(
+                    world.get::<Disabled>(entity).is_none(),
+                    "live replication owner is disabled"
+                );
+                Some((entity, slot.incarnation))
+            }
+        };
+        slots.push(LifecycleReplicationSlot {
+            id: actor.id,
+            placement: actor.placement,
+            class: actor.class,
+            tile: actor.tile,
+            transform: actor.transform,
+            live,
+        });
+    }
+    slots.sort_unstable_by_key(|slot| slot.id);
+    Ok(slots)
 }
 
 #[derive(Resource, Clone)]

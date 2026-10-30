@@ -105,11 +105,11 @@ the strict staging refuses supplies no saved characters, controllers or
 History: returning-player restore is off, and every joiner counts as new and is
 added to the History the tracker starts empty with.
 
-For authored schema-4 worlds, set `authored_replication = "replication.json"`
+For authored schema-4, -7 or -11 worlds, set `authored_replication = "replication.json"`
 in `[network]` or pass `run --authored-replication replication.json`.
 Ignored while networking is disabled. Enabled networking requires a release
 profile with a session plan.
-Strict JSON format 1: regular file ≤1 MiB, 1–1,024 bindings; full schema:
+Strict JSON: regular file ≤1 MiB, 1–1,024 bindings; full schema:
 `AuthoredReplication` in `src/native_replication.rs`. Explicit declarations:
 catalog/map identity, signed-axis/unit frame, archetype paths/checksums/`no_load`,
 per-actor parameters and schedule. Poses require quaternion `[0,0,0,1]` and
@@ -118,9 +118,15 @@ All bindings/shared static identities validate before installation; proxies
 are transient, never saved. Invalid bindings retire activation without native
 state edits (F-938). Every fixed tick validates bindings, even without peers:
 direct ECS corruption must retire activation and stop admission on the next
-tick, independently of connection count. F-939 (debug) and F-941 (release)
-measure this integrity cost.
-Generic later lab reconfiguration is outside this contract.
+tick, independently of connection count. Schema-4 integrity cost: F-939
+(debug), F-941 (release); lifecycle cost is unmeasured.
+Format 1 accepts schema 4. Format 2 requires `lifecycle_id` from the authored
+schema-7/11 snapshot. Bindings may name dormant slots: they open when spawned.
+Unchanged incarnations retain identity across pose edits and generation changes;
+replacing a bound owner retires the whole bridge, with reliable-close retries.
+Dormant flag edits take effect at activation. Modifier timers remain native
+state; this bridge sends no modifier containers. `activated` counts live bindings
+exposed since installation. Generic lab reconfiguration is outside this contract.
 Saved-pose mappings (U-025), import, physics, gameplay and stock-client behavior
 remain unqualified; tests use authored probes only:
 

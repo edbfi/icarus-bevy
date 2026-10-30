@@ -1,7 +1,8 @@
-//! Opt-in, independently authored schema-4 host integration. This declaration
+//! Opt-in, independently authored spatial/lifecycle host integration. This declaration
 //! supplies lab identities and coordinates; it makes no original-save mapping
 //! or stock-client compatibility claim. Native state remains authoritative.
 use std::{
+    borrow::Cow,
     collections::{BTreeMap, BTreeSet},
     fs::OpenOptions,
     io::Read,
@@ -24,6 +25,7 @@ use crate::{
             authored_movement, compose_actor_open, world_actor_state_block,
         },
     },
+    native_lifecycle_runtime::{NativeLifecycleContext, replication_slots},
     native_runtime::{NativeWorldContext, replication_actors},
     native_world::NativeTransform,
     replication::{
@@ -62,6 +64,9 @@ object_dto! {
     pub struct AuthoredReplication {
         pub format: u32,
         pub catalog_id: String,
+        /// Required only in format 2: pins the authored lifecycle definition.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub lifecycle_id: Option<String>,
         pub map: String,
         pub frame: AuthoredFrame,
         pub schedule: AuthoredSchedule,
@@ -161,7 +166,19 @@ impl AuthoredReplication {
     }
 
     fn validate(&self) -> Result<()> {
-        ensure!(self.format == 1, "native replication format unsupported");
+        ensure!(
+            match self.format {
+                1 => self.lifecycle_id.is_none(),
+                2 => self.lifecycle_id.as_ref().is_some_and(|id| {
+                    id.len() == 64
+                        && id
+                            .bytes()
+                            .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+                }),
+                _ => false,
+            },
+            "native replication format or lifecycle identity invalid"
+        );
         ensure!(
             self.catalog_id.len() == 64
                 && self
@@ -384,9 +401,54 @@ impl AuthoredFlags {
     }
 }
 
+enum Activation {
+    Spatial(NativeWorldContext),
+    Lifecycle(Box<NativeLifecycleContext>),
+}
+
+struct SourceSlot<'a> {
+    id: DomainId,
+    live: Option<(Entity, u64)>,
+    placement: Cow<'a, str>,
+    class: Cow<'a, str>,
+    tile: Cow<'a, str>,
+    transform: NativeTransform,
+}
+
+impl Activation {
+    /// Preserve the spatial borrowed path. Lifecycle capture validates the entire
+    /// live/dormant world once, never once per binding.
+    fn slots<'a>(&self, world: &'a World) -> Result<Vec<SourceSlot<'a>>> {
+        match self {
+            Self::Spatial(pin) => Ok(replication_actors(world, pin)?
+                .into_iter()
+                .map(|(entity, actor)| SourceSlot {
+                    id: actor.id,
+                    live: Some((entity, 0)),
+                    placement: actor.placement.into(),
+                    class: actor.class.into(),
+                    tile: actor.tile.into(),
+                    transform: actor.transform,
+                })
+                .collect()),
+            Self::Lifecycle(pin) => Ok(replication_slots(world, pin)?
+                .into_iter()
+                .map(|slot| SourceSlot {
+                    id: slot.id,
+                    live: slot.live,
+                    placement: slot.placement.into(),
+                    class: slot.class.into(),
+                    tile: slot.tile.into(),
+                    transform: slot.transform,
+                })
+                .collect()),
+        }
+    }
+}
+
 struct Binding {
     id: DomainId,
-    source: Entity,
+    source: Option<(Entity, u64)>,
     placement: String,
     class: String,
     tile: String,
@@ -400,7 +462,7 @@ struct Binding {
 
 /// No runtime entity or input strings are exposed through Debug/diagnostics.
 pub struct PreparedReplication {
-    activation: NativeWorldContext,
+    activation: Activation,
     declaration: AuthoredReplication,
     session: SessionReplication,
     bindings: Vec<Binding>,
@@ -511,27 +573,52 @@ pub fn prepare(
         }
     }
     let snapshot = capture(world)?;
-    ensure!(
-        snapshot.schema_version == SNAPSHOT_SCHEMA_NATIVE && snapshot.preserved_prospect.is_none(),
-        "native replication requires authored schema 4 without preserved state"
-    );
-    let activation = world
-        .get_resource::<NativeWorldContext>()
-        .context("native replication activation missing")?
-        .clone();
-    let (catalog, map) = activation.replication_identity();
-    ensure!(
-        catalog == declaration.catalog_id && map == declaration.map,
-        "native replication catalog or map binding mismatch"
-    );
-    let actors = replication_actors(world, &activation)?;
+    let activation = match declaration.format {
+        1 => {
+            ensure!(
+                snapshot.schema_version == SNAPSHOT_SCHEMA_NATIVE
+                    && snapshot.preserved_prospect.is_none(),
+                "native replication requires authored schema 4 without preserved state"
+            );
+            let pin = world
+                .get_resource::<NativeWorldContext>()
+                .context("native replication activation missing")?
+                .clone();
+            let (catalog, map) = pin.replication_identity();
+            ensure!(
+                catalog == declaration.catalog_id && map == declaration.map,
+                "native replication catalog or map binding mismatch"
+            );
+            Activation::Spatial(pin)
+        }
+        2 => {
+            ensure!(
+                snapshot.preserved_prospect.is_none(),
+                "native replication preserved state unsupported"
+            );
+            let pin = world
+                .get_resource::<NativeLifecycleContext>()
+                .context("native replication lifecycle activation missing")?
+                .clone();
+            let (catalog, map, lifecycle) = pin.replication_identity();
+            ensure!(
+                catalog == declaration.catalog_id
+                    && map == declaration.map
+                    && Some(lifecycle) == declaration.lifecycle_id.as_deref(),
+                "native replication lifecycle binding mismatch"
+            );
+            Activation::Lifecycle(Box::new(pin))
+        }
+        _ => unreachable!("declaration validated"),
+    };
+    let actors = activation.slots(world)?;
     let by_placement: BTreeMap<_, _> = actors
-        .into_iter()
-        .map(|(entity, actor)| (actor.placement, (entity, actor)))
+        .iter()
+        .map(|actor| (actor.placement.as_ref(), actor))
         .collect();
     let mut bindings = Vec::with_capacity(declaration.bindings.len());
     for authored in &declaration.bindings {
-        let (source, native) = by_placement
+        let native = by_placement
             .get(authored.placement.as_str())
             .context("native replication placement missing")?;
         let position = declaration.frame.position(&native.transform)?;
@@ -547,10 +634,10 @@ pub fn prepare(
         validate_open(native.id, position, &archetype, flags, &session)?;
         bindings.push(Binding {
             id: native.id,
-            source: *source,
-            placement: native.placement.to_owned(),
-            class: native.class.to_owned(),
-            tile: native.tile.to_owned(),
+            source: native.live,
+            placement: native.placement.to_string(),
+            class: native.class.to_string(),
+            tile: native.tile.to_string(),
             pose: native.transform.clone(),
             position,
             actor: NetActor {
@@ -614,13 +701,18 @@ fn validate_open(
     Ok(())
 }
 
-/// Each position is paired with whether its proxy's stored Position differs
-/// bitwise from it, so the caller writes only proxies whose value changes.
+struct Projection {
+    position: [f32; 3],
+    stale: bool,
+    source: Option<(Entity, u64)>,
+}
+
+/// Stage all bindings before publishing any change, including dormant activation.
 fn current_positions(
     world: &World,
     plan: &PreparedReplication,
     startup: bool,
-) -> Result<Vec<([f32; 3], bool)>> {
+) -> Result<Vec<Projection>> {
     ensure!(
         !world.contains_resource::<crate::simulation::PreservedProspectState>()
             && !world.contains_resource::<crate::simulation::C001InertImportState>(),
@@ -628,16 +720,17 @@ fn current_positions(
     );
     // Full validation visits the private native registry in BTreeMap key order,
     // so this vector is strictly ordered by domain ID, including unbound actors.
-    let actors = replication_actors(world, &plan.activation)?;
+    let actors = plan.activation.slots(world)?;
     let mut positions = Vec::with_capacity(plan.bindings.len());
     for binding in &plan.bindings {
         let index = actors
-            .binary_search_by_key(&binding.id, |(_, actor)| actor.id)
+            .binary_search_by_key(&binding.id, |actor| actor.id)
             .ok()
             .context("native replication binding lost")?;
-        let (entity, actor) = &actors[index];
+        let actor = &actors[index];
         ensure!(
-            *entity == binding.source
+            (actor.live == binding.source
+                || (!startup && binding.source.is_none() && actor.live.is_some()))
                 && actor.placement == binding.placement
                 && actor.class == binding.class
                 && actor.tile == binding.tile,
@@ -683,12 +776,19 @@ fn current_positions(
             stale = current.is_none_or(|current| !same_bits(current.0, position));
         }
         ensure!(
-            world.get_entity(binding.source).ok().is_none_or(|source| {
-                !source.contains::<NetActor>() && !source.contains::<NetArchetype>()
-            }),
+            actor
+                .live
+                .and_then(|(entity, _)| world.get_entity(entity).ok())
+                .is_none_or(|source| {
+                    !source.contains::<NetActor>() && !source.contains::<NetArchetype>()
+                }),
             "native replication source components conflict"
         );
-        positions.push((position, stale));
+        positions.push(Projection {
+            position,
+            stale,
+            source: actor.live,
+        });
     }
     if !startup {
         let session = world
@@ -745,22 +845,17 @@ pub fn install(app: &mut App, mut plan: PreparedReplication) -> Result<()> {
     );
     let snapshot = capture(app.world_mut())?;
     ensure!(
-        snapshot.schema_version == SNAPSHOT_SCHEMA_NATIVE && snapshot.preserved_prospect.is_none(),
-        "native replication requires authored schema 4 without preserved state"
+        snapshot.preserved_prospect.is_none(),
+        "native replication preserved state unsupported"
     );
+    // Revalidate the pinned mode, whole source world and staged membership.
     current_positions(app.world(), &plan, true)?;
-    let count = plan.bindings.len();
+    let mut count = 0;
     for binding in &mut plan.bindings {
-        let mut proxy = app.world_mut().spawn((
-            NativeProxy(binding.id),
-            binding.actor,
-            Position(binding.position),
-            binding.archetype.clone(),
-        ));
-        if let Some(flags) = binding.flags {
-            proxy.insert(flags);
+        if binding.source.is_some() {
+            spawn_proxy(app.world_mut(), binding);
+            count += 1;
         }
-        binding.proxy = Some(proxy.id());
     }
     app.add_plugins((
         ReplicationPlugin {
@@ -789,6 +884,19 @@ pub fn install(app: &mut App, mut plan: PreparedReplication) -> Result<()> {
     Ok(())
 }
 
+fn spawn_proxy(world: &mut World, binding: &mut Binding) {
+    let mut proxy = world.spawn((
+        NativeProxy(binding.id),
+        binding.actor,
+        Position(binding.position),
+        binding.archetype.clone(),
+    ));
+    if let Some(flags) = binding.flags {
+        proxy.insert(flags);
+    }
+    binding.proxy = Some(proxy.id());
+}
+
 /// Explicit authored flag edits reuse the bridge's per-field transport. No
 /// native variable or class default supplies these values.
 pub fn update_flags(world: &mut World, id: DomainId, flags: Option<AuthoredFlags>) -> Result<()> {
@@ -804,12 +912,9 @@ pub fn update_flags(world: &mut World, id: DomainId, flags: Option<AuthoredFlags
             .iter()
             .find(|binding| binding.id == id)
             .context("native replication flag binding missing")?;
-        (
-            binding.proxy.context("native replication proxy missing")?,
-            flags.as_ref().map(AuthoredFlags::flags),
-        )
+        (binding.proxy, flags.as_ref().map(AuthoredFlags::flags))
     };
-    {
+    if let Some(proxy) = proxy {
         let mut entity = world.entity_mut(proxy);
         if let Some(flags) = flags {
             entity.insert(flags);
@@ -870,12 +975,24 @@ fn extract(world: &mut World) {
     if !state.failed {
         match current_positions(world, &state.plan, false) {
             Ok(positions) => {
-                for (binding, (position, stale)) in state.plan.bindings.iter_mut().zip(positions) {
-                    // An unchanged proxy already holds these exact bits.
-                    if stale && let Some(proxy) = binding.proxy {
-                        world.entity_mut(proxy).insert(Position(position));
+                let mut activated = 0;
+                for (binding, projection) in state.plan.bindings.iter_mut().zip(positions) {
+                    if projection.stale
+                        && let Some(proxy) = binding.proxy
+                    {
+                        world
+                            .entity_mut(proxy)
+                            .insert(Position(projection.position));
                     }
-                    binding.position = position;
+                    binding.position = projection.position;
+                    if binding.source.is_none() && projection.source.is_some() {
+                        spawn_proxy(world, binding);
+                        activated += 1;
+                    }
+                    binding.source = projection.source;
+                }
+                if let Some(mut counts) = world.get_resource_mut::<NativeReplicationCounts>() {
+                    counts.activated += activated;
                 }
             }
             Err(_) => {

@@ -37,6 +37,16 @@ use icarus_bevy::{
         },
         session_open::{authored_movement, map_level_chain},
     },
+    native_lifecycle::{
+        CompiledNativeLifecycle, LifecycleDefinition, Presence, RecorderKind, RecorderSource,
+        ResolvePolicy, RestoreBatch, RestoreRecorder, SlotDeclaration, SpawnComponent,
+        prepare_lifecycle_world,
+    },
+    native_lifecycle_runtime::{
+        NativeLifecycleContext, modifier_runtime_health, native_owner_handle,
+        restore_native_owners, update_lifecycle_actor,
+    },
+    native_modifiers::enable_modifier_owners,
     native_replication::{
         self, AuthoredFlags, AuthoredReplication, MAX_BINDINGS, MAX_DECLARATION_BYTES,
         MAX_PATH_DEPTH, MAX_STRING_BYTES, NativeReplicationCounts, NativeReplicationSet,
@@ -215,6 +225,112 @@ impl Fixture {
     }
 }
 
+fn lifecycle_fixture(modifiers: bool) -> Fixture {
+    let mut fixture = Fixture::new();
+    let native = fixture.snapshot.native_world.as_ref().unwrap();
+    let catalog = CompiledNativeCatalog::compile(native.definitions.clone()).unwrap();
+    let definition = LifecycleDefinition {
+        lifecycle_format: 1,
+        native_catalog_id: native.catalog_id.clone(),
+        map: native.map.clone(),
+        slots: ["a", "b", "unbound"]
+            .into_iter()
+            .enumerate()
+            .map(|(index, placement)| SlotDeclaration {
+                placement: placement.into(),
+                owner_name: vec![65 + index as u16],
+                recorder_kind: RecorderKind::SpatialStateV1,
+                initial_presence: if placement == "b" {
+                    Presence::Absent
+                } else {
+                    Presence::Live
+                },
+                initial_component: None,
+                spawn_component: SpawnComponent::DeclaredKind,
+            })
+            .collect(),
+    };
+    let compiled = CompiledNativeLifecycle::compile(definition, &catalog).unwrap();
+    fixture.snapshot = prepare_lifecycle_world(fixture.snapshot, &compiled)
+        .unwrap()
+        .into_snapshot();
+    if modifiers {
+        fixture.snapshot = enable_modifier_owners(fixture.snapshot).unwrap();
+    }
+    fixture.declaration["format"] = json!(2);
+    fixture.declaration["lifecycle_id"] = json!(
+        fixture
+            .snapshot
+            .native_lifecycle
+            .as_ref()
+            .unwrap()
+            .lifecycle_id
+    );
+    fixture.declaration["bindings"] = json!([binding_json("a"), binding_json("b")]);
+    fixture
+}
+
+fn restore_lifecycle_slot(app: &mut App, id: DomainId) {
+    let snapshot = capture(app.world_mut()).unwrap();
+    let lifecycle = snapshot.native_lifecycle.as_ref().unwrap();
+    let actor = snapshot
+        .native_world
+        .as_ref()
+        .unwrap()
+        .actors
+        .iter()
+        .find(|actor| actor.id == id)
+        .unwrap();
+    let slot = lifecycle.slots.iter().find(|slot| slot.id == id).unwrap();
+    let declaration = lifecycle
+        .definition
+        .slots
+        .iter()
+        .find(|slot| slot.placement == actor.placement)
+        .unwrap();
+    let batch = RestoreBatch {
+        lifecycle_id: lifecycle.lifecycle_id.clone(),
+        sequence: lifecycle.restore_sequence + 1,
+        recorders: vec![RestoreRecorder {
+            guid: i32::try_from(100 + id.0).unwrap(),
+            kind: RecorderKind::SpatialStateV1,
+            target_placement: actor.placement.clone(),
+            owner_name: declaration.owner_name.clone(),
+            policy: ResolvePolicy::RespawnOnly,
+            source: RecorderSource::Detached {
+                expected_prior_binding: None,
+            },
+            create_if_missing: true,
+            expected_presence: slot.presence,
+            expected_incarnation: slot.incarnation,
+            transform: actor.transform.clone(),
+            variables: actor.variables.clone(),
+        }],
+    };
+    restore_native_owners(app.world_mut(), &batch).unwrap();
+}
+
+fn edit_lifecycle(app: &mut App, id: DomainId, translation: [f32; 3]) {
+    let owner = native_owner_handle(app.world(), id).unwrap();
+    update_lifecycle_actor(
+        app.world_mut(),
+        owner,
+        NativeTransform {
+            translation,
+            ..Default::default()
+        },
+        Vec::new(),
+    )
+    .unwrap();
+    assert!(native_owner_handle(app.world(), id).unwrap() == owner);
+}
+
+fn assert_lifecycle_spatial_state(app: &mut App, expected: &WorldSnapshot) {
+    let mut actual = capture(app.world_mut()).unwrap();
+    actual.tick = expected.tick;
+    assert!(actual == *expected);
+}
+
 fn pose_json(translation: [f32; 3]) -> Value {
     json!({"translation": translation, "rotation": [0.0, 0.0, 0.0, 1.0], "scale": [1.0, 1.0, 1.0]})
 }
@@ -385,6 +501,549 @@ fn fields(bytes: &[Vec<u8>], client: &Client, opens: bool) -> Vec<Fields> {
 
 fn movement(position: [f32; 3]) -> RepValue {
     RepValue::Movement(authored_movement(position, [0.0; 3], [0.0; 3]).unwrap())
+}
+
+#[test]
+fn lifecycle_hosts_activate_dormant_bindings_move_and_late_join_in_both_orders() {
+    for modifiers in [false, true] {
+        for order in [ByteOrder::Little, ByteOrder::Big] {
+            let fixture = lifecycle_fixture(modifiers);
+            let (mut app, address) = fixture.app();
+            assert!(capture(app.world_mut()).unwrap() == fixture.snapshot);
+            assert_eq!(
+                app.world().resource::<NativeReplicationCounts>().activated,
+                1
+            );
+            assert!(!app.world().iter_entities().any(|entity| {
+                entity.get::<DomainId>() == Some(&fixture.id("b"))
+                    || entity
+                        .get::<NetActor>()
+                        .is_some_and(|actor| actor.id == fixture.id("b"))
+            }));
+            let original_owner = native_owner_handle(app.world(), fixture.id("a")).unwrap();
+            let original_entity = native_entity(&app, fixture.id("a"));
+            let mut client = Client::connect(&mut app, address, order);
+            let opened = client.join(&mut app);
+            let initial = fields(&opened, &client, true);
+            assert_eq!(initial.len(), 1);
+            assert_eq!(initial[0].get(&6), Some(&movement([20.0, -10.0, 30.0])));
+            client.settle(&mut app, &opened);
+            assert_lifecycle_spatial_state(&mut app, &fixture.snapshot);
+
+            // Replacement elsewhere advances the authority generation, but
+            // preserves this binding's owner and existing transport identity.
+            let old_unbound = native_entity(&app, fixture.id("unbound"));
+            restore_lifecycle_slot(&mut app, fixture.id("unbound"));
+            assert_ne!(native_entity(&app, fixture.id("unbound")), old_unbound);
+            let after_unbound = capture(app.world_mut()).unwrap();
+            let unchanged = tick_bytes(&mut app, &client);
+            assert!(actor_bodies(&unchanged, &client).is_empty());
+            client.settle(&mut app, &unchanged);
+            assert!(app.world().resource::<NativeReplicationCounts>().active);
+            assert_eq!(native_entity(&app, fixture.id("a")), original_entity);
+            assert!(native_owner_handle(app.world(), fixture.id("a")).unwrap() == original_owner);
+            assert_lifecycle_spatial_state(&mut app, &after_unbound);
+
+            restore_lifecycle_slot(&mut app, fixture.id("b"));
+            let after_spawn = capture(app.world_mut()).unwrap();
+            let spawned = tick_bytes(&mut app, &client);
+            let spawn_fields = fields(&spawned, &client, true);
+            assert_eq!(spawn_fields.len(), 1);
+            assert_eq!(
+                spawn_fields[0].get(&6),
+                Some(&movement([50.0, -40.0, 60.0]))
+            );
+            assert_eq!(
+                app.world().resource::<NativeReplicationCounts>().activated,
+                2
+            );
+            assert_eq!(
+                app.world().resource::<PeerLab>().stats().actor_opens_sent,
+                2
+            );
+            client.settle(&mut app, &spawned);
+            assert_lifecycle_spatial_state(&mut app, &after_spawn);
+
+            edit_lifecycle(&mut app, fixture.id("b"), [11.0, 12.0, 13.0]);
+            let after_edit = capture(app.world_mut()).unwrap();
+            let changed = tick_bytes(&mut app, &client);
+            assert_eq!(
+                fields(&changed, &client, false),
+                [Fields::from([(6, movement([120.0, -110.0, 130.0]))])]
+            );
+            client.settle(&mut app, &changed);
+            assert_lifecycle_spatial_state(&mut app, &after_edit);
+            let mut late = Client::connect_indexed(&mut app, address, order, 1);
+            let late_opened = late.join(&mut app);
+            let late_fields = fields(&late_opened, &late, true);
+            assert_eq!(late_fields.len(), 2);
+            for expected in [[20.0, -10.0, 30.0], [120.0, -110.0, 130.0]] {
+                assert!(
+                    late_fields
+                        .iter()
+                        .any(|fields| fields.get(&6) == Some(&movement(expected)))
+                );
+            }
+            assert_eq!(
+                app.world().resource::<NativeReplicationCounts>().activated,
+                2
+            );
+            assert_lifecycle_spatial_state(&mut app, &after_edit);
+            network::teardown(app.world_mut());
+        }
+    }
+}
+
+#[test]
+fn lifecycle_all_dormant_bindings_activate_without_peers_and_preserve_native_state() {
+    for modifiers in [false, true] {
+        let mut fixture = lifecycle_fixture(modifiers);
+        let mut definition = fixture
+            .snapshot
+            .native_lifecycle
+            .as_ref()
+            .unwrap()
+            .definition
+            .clone();
+        for slot in &mut definition.slots {
+            slot.initial_presence = Presence::Absent;
+        }
+        let catalog = Arc::new(
+            CompiledNativeCatalog::compile(
+                fixture
+                    .snapshot
+                    .native_world
+                    .as_ref()
+                    .unwrap()
+                    .definitions
+                    .clone(),
+            )
+            .unwrap(),
+        );
+        let compiled = CompiledNativeLifecycle::compile(definition, &catalog).unwrap();
+        let base = prepare_authored_world(catalog, "authored")
+            .unwrap()
+            .initial_snapshot();
+        fixture.snapshot = prepare_lifecycle_world(base, &compiled)
+            .unwrap()
+            .into_snapshot();
+        if modifiers {
+            fixture.snapshot = enable_modifier_owners(fixture.snapshot).unwrap();
+        }
+        fixture.declaration["lifecycle_id"] = json!(
+            fixture
+                .snapshot
+                .native_lifecycle
+                .as_ref()
+                .unwrap()
+                .lifecycle_id
+        );
+        let (mut app, _) = fixture.app();
+        for _ in 0..3 {
+            app.update();
+        }
+        assert!(app.world().resource::<NativeReplicationCounts>().active);
+        assert_eq!(
+            app.world().resource::<NativeReplicationCounts>().activated,
+            0
+        );
+        assert!(
+            !app.world()
+                .iter_entities()
+                .any(|entity| { entity.contains::<DomainId>() || entity.contains::<NetActor>() })
+        );
+        assert_lifecycle_spatial_state(&mut app, &fixture.snapshot);
+        restore_lifecycle_slot(&mut app, fixture.id("b"));
+        let after_first = capture(app.world_mut()).unwrap();
+        for _ in 0..3 {
+            app.update();
+        }
+        assert_eq!(
+            app.world().resource::<NativeReplicationCounts>().activated,
+            1
+        );
+        assert_eq!(
+            app.world()
+                .iter_entities()
+                .filter(|entity| entity.contains::<NetActor>())
+                .count(),
+            1
+        );
+        assert_eq!(
+            app.world()
+                .get::<Position>(proxy_entity(&app, fixture.id("b"))),
+            Some(&Position([50.0, -40.0, 60.0]))
+        );
+        assert_lifecycle_spatial_state(&mut app, &after_first);
+        restore_lifecycle_slot(&mut app, fixture.id("unbound"));
+        restore_lifecycle_slot(&mut app, fixture.id("a"));
+        let after_all = capture(app.world_mut()).unwrap();
+        for _ in 0..3 {
+            app.update();
+        }
+        assert!(app.world().resource::<NativeReplicationCounts>().active);
+        assert_eq!(
+            app.world().resource::<NativeReplicationCounts>().activated,
+            2
+        );
+        assert_eq!(
+            app.world()
+                .iter_entities()
+                .filter(|entity| entity.contains::<NetActor>())
+                .count(),
+            2
+        );
+        assert_eq!(app.world().resource::<PeerLab>().peer_count(), 0);
+        assert_eq!(
+            app.world().resource::<PeerLab>().stats().actor_opens_sent,
+            0
+        );
+        assert_lifecycle_spatial_state(&mut app, &after_all);
+        network::teardown(app.world_mut());
+    }
+}
+
+#[test]
+fn lifecycle_timed_modifiers_advance_and_reload_without_proxy_identity_churn() {
+    use icarus_bevy::{
+        native_lifecycle_runtime::{apply_native_modifier, native_owner_modifiers},
+        native_modifiers::{
+            ModifierAction, ModifierDefinition, ModifierDuration, ModifierRequest, ModifierTimer,
+        },
+    };
+    let mut fixture = lifecycle_fixture(true);
+    let (mut app, _) = fixture.app();
+    app.insert_resource(TimeUpdateStrategy::FixedTimesteps(1));
+    app.update();
+    let owner = native_owner_handle(app.world(), fixture.id("a")).unwrap();
+    let proxy = proxy_entity(&app, owner.id);
+    apply_native_modifier(
+        app.world_mut(),
+        &ModifierRequest {
+            owner,
+            expected_revision: 0,
+            action: ModifierAction::Add {
+                definition: ModifierDefinition {
+                    name: "authored_timer".into(),
+                    duration: ModifierDuration::Timed { seconds: 1.0 },
+                    contributions: vec![],
+                },
+            },
+        },
+    )
+    .unwrap();
+    for _ in 0..15 {
+        app.update();
+    }
+    assert_eq!(proxy_entity(&app, owner.id), proxy);
+    assert_eq!(
+        native_owner_modifiers(app.world(), owner).unwrap().entries[0].timer,
+        ModifierTimer::Timed {
+            remaining_nanos: 500_000_000,
+            armed: true
+        }
+    );
+    assert!(app.world().resource::<NativeReplicationCounts>().active);
+    let saved = capture(app.world_mut()).unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    let mut store = SnapshotStore::open(dir.path()).unwrap();
+    store.save_new(&saved).unwrap();
+    let loaded = store.load().unwrap().unwrap().snapshot;
+    assert!(loaded == saved);
+    network::teardown(app.world_mut());
+    fixture.snapshot = loaded;
+    let (mut reloaded, _) = fixture.app();
+    reloaded.insert_resource(TimeUpdateStrategy::FixedTimesteps(1));
+    reloaded.update();
+    let proxy = proxy_entity(&reloaded, owner.id);
+    for _ in 0..15 {
+        reloaded.update();
+    }
+    assert!(
+        native_owner_modifiers(reloaded.world(), owner)
+            .unwrap()
+            .entries
+            .is_empty()
+    );
+    assert_eq!(proxy_entity(&reloaded, owner.id), proxy);
+    assert!(
+        reloaded
+            .world()
+            .resource::<NativeReplicationCounts>()
+            .active
+    );
+    assert_eq!(
+        reloaded
+            .world()
+            .resource::<NativeReplicationCounts>()
+            .activated,
+        1
+    );
+    network::teardown(reloaded.world_mut());
+}
+
+#[test]
+fn lifecycle_declarations_require_matching_identity_and_reject_spatial_or_imported_modes() {
+    for modifiers in [false, true] {
+        let fixture = lifecycle_fixture(modifiers);
+        let mutations: Vec<fn(&mut Value)> = vec![
+            |value| {
+                value.as_object_mut().unwrap().remove("lifecycle_id");
+            },
+            |value| value["lifecycle_id"] = Value::Null,
+            |value| value["lifecycle_id"] = json!("0".repeat(64)),
+            |value| value["lifecycle_id"] = json!("F".repeat(64)),
+            |value| value["format"] = json!(1),
+            |value| value["bindings"][1]["placement"] = json!("undeclared"),
+        ];
+        for mutate in mutations {
+            let mut app = build_app(&fixture.config, &fixture.snapshot).unwrap();
+            let mut declaration = fixture.declaration.clone();
+            mutate(&mut declaration);
+            assert!(prepare(&mut app, declaration).is_err());
+            assert!(capture(app.world_mut()).unwrap() == fixture.snapshot);
+            assert!(!app.is_plugin_added::<ReplicationPlugin>());
+            assert!(!app.world().contains_resource::<NativeReplicationCounts>());
+        }
+        let spatial = Fixture::new();
+        let mut app = build_app(&spatial.config, &spatial.snapshot).unwrap();
+        assert!(prepare(&mut app, fixture.declaration.clone()).is_err());
+        assert!(capture(app.world_mut()).unwrap() == spatial.snapshot);
+    }
+    let fixture = lifecycle_fixture(false);
+    for imported in [
+        owner_fixture::imported(),
+        scalar::imported(),
+        inventory_fixture::imported(),
+    ] {
+        let mut declaration = fixture.declaration.clone();
+        let native = imported.native_world.as_ref().unwrap();
+        declaration["catalog_id"] = json!(native.catalog_id);
+        declaration["map"] = json!(native.map);
+        declaration["lifecycle_id"] =
+            json!(imported.native_lifecycle.as_ref().unwrap().lifecycle_id);
+        let mut app = build_app(&fixture.config, &imported).unwrap();
+        let error = prepare(&mut app, declaration)
+            .err()
+            .expect("imported mode rejects");
+        assert!(format!("{error:#}").contains("preserved state unsupported"));
+        assert!(capture(app.world_mut()).unwrap() == imported);
+    }
+}
+
+#[test]
+fn lifecycle_bound_replacement_retires_without_reusing_identity_and_retries_close() {
+    for modifiers in [false, true] {
+        for order in [ByteOrder::Little, ByteOrder::Big] {
+            let fixture = lifecycle_fixture(modifiers);
+            let (mut app, address) =
+                fixture.app_tuned(Some(|config| config.packet.sent_capacity = 12));
+            let mut client = Client::connect(&mut app, address, order);
+            let opened = client.join(&mut app);
+            client.settle(&mut app, &opened);
+            let mut queued = Vec::new();
+            for step in 1..=128 {
+                edit_lifecycle(&mut app, fixture.id("a"), [step as f32, 8.0, 9.0]);
+                queued.extend(tick_bytes(&mut app, &client));
+                if app
+                    .world()
+                    .resource::<PeerLab>()
+                    .stats()
+                    .actor_update_errors
+                    > 0
+                {
+                    break;
+                }
+            }
+            assert!(
+                app.world()
+                    .resource::<PeerLab>()
+                    .stats()
+                    .actor_update_errors
+                    > 0
+            );
+            let updates = app.world().resource::<PeerLab>().stats().actor_updates_sent;
+            let old_owner = native_owner_handle(app.world(), fixture.id("a")).unwrap();
+            let old_entity = native_entity(&app, fixture.id("a"));
+            restore_lifecycle_slot(&mut app, fixture.id("a"));
+            let replacement = native_owner_handle(app.world(), fixture.id("a")).unwrap();
+            assert_eq!(replacement.id, old_owner.id);
+            assert_ne!(replacement.incarnation, old_owner.incarnation);
+            assert_ne!(native_entity(&app, fixture.id("a")), old_entity);
+            let native_after = capture(app.world_mut()).unwrap();
+            let blocked = tick_bytes(&mut app, &client);
+            let connection = app.world().resource::<PeerLab>().joined_connections()[0];
+            assert!(
+                app.world()
+                    .resource::<PeerLab>()
+                    .is_actor_open(connection, fixture.id("a").0)
+            );
+            assert!(app.world().resource::<PeerLab>().stats().actor_close_errors > 0);
+            assert!(!app.world().resource::<NativeReplicationCounts>().active);
+            assert_eq!(
+                app.world()
+                    .resource::<NativeReplicationCounts>()
+                    .binding_errors,
+                1
+            );
+            assert!(actor_bodies(&blocked, &client).is_empty());
+            assert_eq!(
+                app.world().resource::<PeerLab>().stats().actor_updates_sent,
+                updates
+            );
+            assert_eq!(
+                app.world().resource::<PeerLab>().stats().actor_opens_sent,
+                1
+            );
+            assert!(
+                !app.world().iter_entities().any(|entity| {
+                    entity.contains::<NetActor>() || entity.contains::<NetViewer>()
+                })
+            );
+            assert_lifecycle_spatial_state(&mut app, &native_after);
+            client.accept(&blocked);
+            let closed = client.settle(&mut app, &queued);
+            assert!(
+                !app.world()
+                    .resource::<PeerLab>()
+                    .is_actor_open(connection, fixture.id("a").0)
+            );
+            assert_eq!(
+                closed
+                    .iter()
+                    .flat_map(|bytes| read_packet(bytes, &client.config()).unwrap().bunches)
+                    .filter(|bunch| bunch.header.channel_index >= 6
+                        && bunch.header.close
+                        && bunch.header.reliable)
+                    .count(),
+                1
+            );
+            assert!(actor_bodies(&closed, &client).is_empty());
+            client.settle(&mut app, &closed);
+            assert_eq!(
+                app.world().resource::<PeerLab>().stats().actor_opens_sent,
+                1
+            );
+            assert_eq!(
+                app.world().resource::<PeerLab>().stats().actor_updates_sent,
+                updates
+            );
+            assert_eq!(
+                app.world().resource::<PeerLab>().stats().actor_closes_sent,
+                1
+            );
+            assert_lifecycle_spatial_state(&mut app, &native_after);
+            network::teardown(app.world_mut());
+        }
+    }
+}
+
+#[test]
+fn lifecycle_zero_peer_validation_retires_on_stale_disabled_or_corrupt_unbound_owner() {
+    use bevy::ecs::entity_disabling::Disabled;
+
+    for modifiers in [false, true] {
+        for corruption in 0..3 {
+            let fixture = lifecycle_fixture(modifiers);
+            let (mut app, _) = fixture.app();
+            for _ in 0..3 {
+                app.update();
+            }
+            let stale = app.world().resource::<NativeLifecycleContext>().clone();
+            restore_lifecycle_slot(&mut app, fixture.id("unbound"));
+            let current = app.world().resource::<NativeLifecycleContext>().clone();
+            let unbound = native_entity(&app, fixture.id("unbound"));
+            match corruption {
+                0 => {
+                    app.insert_resource(stale);
+                }
+                1 => {
+                    app.world_mut().entity_mut(unbound).insert(Disabled);
+                }
+                _ => {
+                    app.world_mut()
+                        .entity_mut(unbound)
+                        .insert(Position([f32::NAN; 3]));
+                }
+            }
+            for _ in 0..3 {
+                app.update();
+            }
+            assert_zero_peer_retired(&app, 1);
+            app.insert_resource(current);
+            app.world_mut().entity_mut(unbound).remove::<Disabled>();
+            app.world_mut()
+                .entity_mut(unbound)
+                .insert(Position([7.0, 8.0, 9.0]));
+            for _ in 0..3 {
+                app.update();
+            }
+            assert_zero_peer_retired(&app, 1);
+            network::teardown(app.world_mut());
+        }
+    }
+}
+
+#[test]
+fn lifecycle_modifier_clock_failure_retires_the_zero_peer_bridge_and_stays_latched() {
+    let fixture = lifecycle_fixture(true);
+    let (mut app, _) = fixture.app();
+    for _ in 0..3 {
+        app.update();
+    }
+    assert!(modifier_runtime_health(app.world()).is_ok());
+    app.insert_resource(Time::<Fixed>::from_duration(Duration::from_millis(50)));
+    for _ in 0..3 {
+        app.update();
+    }
+    assert!(modifier_runtime_health(app.world()).is_err());
+    assert_zero_peer_retired(&app, 1);
+    app.insert_resource(Time::<Fixed>::from_duration(fixture.config.tick_interval()));
+    for _ in 0..3 {
+        app.update();
+    }
+    assert!(modifier_runtime_health(app.world()).is_err());
+    assert_zero_peer_retired(&app, 1);
+    network::teardown(app.world_mut());
+}
+
+#[test]
+fn lifecycle_dormant_activation_is_not_published_when_another_owner_is_invalid() {
+    for modifiers in [false, true] {
+        let fixture = lifecycle_fixture(modifiers);
+        let (mut app, address) = fixture.app();
+        let mut client = Client::connect(&mut app, address, ByteOrder::Little);
+        let opened = client.join(&mut app);
+        client.settle(&mut app, &opened);
+        restore_lifecycle_slot(&mut app, fixture.id("b"));
+        let unbound = native_entity(&app, fixture.id("unbound"));
+        app.world_mut()
+            .entity_mut(unbound)
+            .remove::<NativeLocalBounds>();
+        let retired = tick_bytes(&mut app, &client);
+        assert!(actor_bodies(&retired, &client).is_empty());
+        assert_eq!(
+            app.world().resource::<PeerLab>().stats().actor_opens_sent,
+            1
+        );
+        assert_eq!(
+            app.world().resource::<NativeReplicationCounts>().activated,
+            1
+        );
+        assert_eq!(
+            app.world()
+                .resource::<NativeReplicationCounts>()
+                .binding_errors,
+            1
+        );
+        assert!(!app.world().resource::<NativeReplicationCounts>().active);
+        assert!(
+            !app.world()
+                .iter_entities()
+                .any(|entity| entity.contains::<NetActor>())
+        );
+        network::teardown(app.world_mut());
+    }
 }
 
 #[test]
