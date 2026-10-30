@@ -123,6 +123,7 @@ caller-owned effects, read current values and retain final values/timing.
 Polling and retries never replay callbacks. No automatic climate, expiry,
 destruction or persistence is inferred. Disconnect drops timing; reconnect
 requires configuration again. Getters return copies.
+Counts are exposed by `PeerLabStats` and `SessionCounts`.
 
 Authored schema-4/7/11 hosts opt in with `[network].authored_replication` or
 `run --authored-replication replication.json`. Disabled networking ignores it;
