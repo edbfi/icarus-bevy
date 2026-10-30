@@ -272,19 +272,19 @@ impl Serializer<'_> {
                     RepValue::Object(NetGuidRef::plain(self.component(*index)?))
                 }
                 Reference::Actor(key) => {
-                    RepValue::Object(NetGuidRef::plain(self.cache.actor_guid(*key)))
+                    RepValue::Object(NetGuidRef::plain(self.cache.actor_guid(*key)?))
                 }
                 Reference::Actors(keys) => {
                     let entries = keys
                         .iter()
                         .zip(1u32..)
                         .map(|(key, item_handle)| {
-                            entry(
+                            Ok(entry(
                                 item_handle,
-                                RepValue::Object(NetGuidRef::plain(self.cache.actor_guid(*key))),
-                            )
+                                RepValue::Object(NetGuidRef::plain(self.cache.actor_guid(*key)?)),
+                            ))
                         })
-                        .collect();
+                        .collect::<Result<Vec<_>>>()?;
                     RepValue::DynamicArray(RepArray {
                         count: u16::try_from(keys.len())?,
                         stream: PropertyStream {
@@ -296,7 +296,7 @@ impl Serializer<'_> {
                 Reference::KeyedActors(items) => {
                     let mut entries = Vec::with_capacity(2 * items.len());
                     for ((key, actor), index) in items.iter().zip(0u32..) {
-                        let guid = self.cache.actor_guid(*actor);
+                        let guid = self.cache.actor_guid(*actor)?;
                         entries.push(entry(2 * index + 1, RepValue::Str(key.clone())));
                         entries.push(entry(
                             2 * index + 2,
@@ -314,7 +314,7 @@ impl Serializer<'_> {
                 Reference::NamedActors(items) => {
                     let mut entries = Vec::with_capacity(2 * items.len());
                     for ((name, actor), index) in items.iter().zip(0u32..) {
-                        let guid = self.cache.actor_guid(*actor);
+                        let guid = self.cache.actor_guid(*actor)?;
                         entries.push(entry(2 * index + 1, RepValue::NetworkName(name.clone())));
                         entries.push(entry(
                             2 * index + 2,
@@ -414,7 +414,7 @@ pub fn compose_component_actor_open(
         checksums: false,
         limits: RepLayoutLimits::default(),
     };
-    let actor = cache.actor_guid(open.key);
+    let actor = cache.actor_guid(open.key)?;
     exports.begin_bunch();
     let mut serializer = Serializer {
         cache,
@@ -457,7 +457,7 @@ pub fn compose_component_actor_open(
         let class = serializer.static_object(&item.class)?;
         let guid = serializer
             .cache
-            .subobject_guid(open.key, u32::try_from(index)?);
+            .subobject_guid(open.key, u32::try_from(index)?)?;
         subobject_guids.push(guid);
         let content = serializer.block(&item.block, &rep_codec)?;
         blocks.push(ContentBlock {

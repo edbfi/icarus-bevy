@@ -1022,11 +1022,81 @@ fn actor_close_holds_its_channel_until_acknowledged() {
     // Once the client acknowledges the close, the index is free again.
     accept_header(&mut client, &close);
     let (ack, _) = client.send(Vec::new());
-    peer.receive(&ack).unwrap();
+    assert_eq!(
+        peer.receive(&ack)
+            .unwrap()
+            .summary()
+            .released_actor_channels,
+        [4]
+    );
     assert!(!peer.actor_channel_closing(4));
     assert!(!peer.has_actor_channel(4));
     assert_eq!(peer.free_actor_channel(4), Some(4));
     peer.reliable_actor_open(&open, &[]).unwrap();
+    let (ack, _) = client.send(Vec::new());
+    assert!(
+        peer.receive(&ack)
+            .unwrap()
+            .summary()
+            .released_actor_channels
+            .is_empty()
+    );
+}
+
+#[test]
+fn lost_actor_close_releases_once_after_retransmit_ack_and_channel_reuse() {
+    let mut peer = peer();
+    let mut client = Client::new();
+    let (opening, _) = client.send(Vec::new());
+    peer.receive(&opening).unwrap();
+    let open = actor_open_bunch(4, &[0x11; 4]);
+    let datagram = peer.reliable_actor_open(&open, &[]).unwrap();
+    accept_header(&mut client, &datagram);
+    let (ack, _) = client.send(Vec::new());
+    assert!(
+        peer.receive(&ack)
+            .unwrap()
+            .summary()
+            .released_actor_channels
+            .is_empty()
+    );
+
+    let close_id = peer.sequencer().out_packet_id();
+    let close = peer.reliable_actor_close(4, 3).unwrap();
+    // Receive a later packet while deliberately dropping the close.
+    accept_header(&mut client, &peer.ack_packet().unwrap());
+    let (nak, _) = client.send(Vec::new());
+    let received = peer.receive(&nak).unwrap();
+    assert_eq!(received.summary().naked, [close_id]);
+    assert!(received.summary().released_actor_channels.is_empty());
+    assert!(peer.actor_channel_closing(4));
+    let resent = peer.ack_packet().unwrap();
+    assert_eq!(
+        read_packet(&resent, &to_client()).unwrap().bunches,
+        read_packet(&close, &to_client()).unwrap().bunches
+    );
+    accept_header(&mut client, &resent);
+    let (ack, _) = client.send(Vec::new());
+    assert_eq!(
+        peer.receive(&ack)
+            .unwrap()
+            .summary()
+            .released_actor_channels,
+        [4]
+    );
+    assert!(!peer.has_actor_channel(4));
+
+    let reopened = peer.reliable_actor_open(&open, &[]).unwrap();
+    accept_header(&mut client, &reopened);
+    let (ack, _) = client.send(Vec::new());
+    assert!(
+        peer.receive(&ack)
+            .unwrap()
+            .summary()
+            .released_actor_channels
+            .is_empty()
+    );
+    assert!(peer.actor_channel_settled(4));
 }
 
 /// The ordered free-channel search matches the plain linear definition for

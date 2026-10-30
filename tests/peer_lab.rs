@@ -1660,7 +1660,7 @@ fn the_pawn_opens_after_the_controller_with_its_roles_and_references() {
     let mut cache_view = lab(&app).guid_cache().clone();
     assert_eq!(
         spawn.actor.guid,
-        cache_view.actor_guid(pawn_key(connection))
+        cache_view.actor_guid(pawn_key(connection)).unwrap()
     );
     assert_eq!(open.blocks.len(), 4, "actor block and three components");
     let rep_codec = RepLayoutCodec {

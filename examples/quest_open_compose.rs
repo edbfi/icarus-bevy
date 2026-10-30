@@ -117,13 +117,13 @@ fn advance_dynamic_to(
     next: u32,
 ) -> Result<()> {
     while let Some((guid, key)) = preassigned.next_if(|(guid, _)| *guid < next) {
-        while cache.assign_dynamic() + 2 < *guid {}
+        while u64::from(cache.assign_dynamic()?) + 2 < u64::from(*guid) {}
         ensure!(
-            cache.actor_guid(*key) == *guid,
+            cache.actor_guid(*key)? == *guid,
             "preassigned dynamic GUID {guid} unreachable"
         );
     }
-    while cache.assign_dynamic() + 2 < next {}
+    while u64::from(cache.assign_dynamic()?) + 2 < u64::from(next) {}
     Ok(())
 }
 
@@ -248,7 +248,7 @@ fn main() -> Result<()> {
             supplied.channel,
             ByteOrder::Little,
         )?;
-        let actor_guid = cache.actor_guid(quest.key);
+        let actor_guid = cache.actor_guid(quest.key)?;
         let composed_exports = composed.exports.context("quest open exports")?;
         let supplied_exports = payload(&supplied.exports_hex, supplied.exports_bits)?;
         let supplied_body = payload(&supplied.body_hex, supplied.body_bits)?;

@@ -154,11 +154,11 @@ fn main() -> Result<()> {
             );
         }
         burn_static_to(&mut cache, supplied.archetype)?;
-        while cache.assign_dynamic() + 2 < supplied.actor {}
+        while u64::from(cache.assign_dynamic()?) + 2 < u64::from(supplied.actor) {}
         let key = ActorKey::World(1);
-        ensure!(cache.actor_guid(key) == supplied.actor, "actor GUID");
+        ensure!(cache.actor_guid(key)? == supplied.actor, "actor GUID");
         let first = *supplied.components.first().context("a component GUID")?;
-        while cache.assign_dynamic() + 2 < first {}
+        while u64::from(cache.assign_dynamic()?) + 2 < u64::from(first) {}
         exports.commit_bunch(1);
         exports.received_ack(1);
         let composed = compose_manager_open(

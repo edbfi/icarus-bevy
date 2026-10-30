@@ -14,7 +14,9 @@
 //! requests the lab reset `(false, false)` for previously managed actors.
 //! A channel the stage closes (no longer relevant `3`, torn off `4`; F-749)
 //! gets its close bunch first ([`PeerLab::close_actor`]). Actor GUIDs are
-//! driver-wide and stable per [`DomainId`]. Other properties are not replicated.
+//! driver-wide and stable per [`DomainId`], or per [`NetIncarnation`] when opted
+//! in. Incarnation replacement waits for each peer's reliable close ACK. Other
+//! properties are not replicated.
 //! Archetypes are caller data; nothing here reads original files or demonstrates
 //! ICARUS compatibility.
 use bevy::prelude::*;
@@ -41,6 +43,12 @@ pub struct NetArchetype {
     /// changes to its quantized fields are sent as updates.
     pub replicate_movement: bool,
 }
+
+/// Optional incarnation identity for reference-free authored spatial actors.
+/// The native bridge owns this marker and rejects missing or altered values.
+/// Replacement waits for each peer's old reliable close ACK independently.
+#[derive(Component, Clone, Copy, Debug, PartialEq, Eq)]
+pub struct NetIncarnation(pub u64);
 
 /// Optional authored motion for this bridge only. Position remains the spatial
 /// input to replication scheduling. Absence means zero rotation and velocity;
@@ -188,6 +196,7 @@ type AuthoredActors<'world, 'state> = Query<
         &'static NetArchetype,
         Option<&'static NetMotion>,
         Option<&'static NetActorFlags>,
+        Option<&'static NetIncarnation>,
     ),
 >;
 
@@ -196,7 +205,23 @@ fn open_selected_actors(
     mut session: ResMut<SessionReplication>,
     frame: Res<ReplicationFrame>,
     actors: AuthoredActors,
+    incarnations: Query<(&NetActor, &NetIncarnation)>,
 ) {
+    // Reconcile ALL desired versions, including unscheduled actors and zero
+    // peers. Replacement retirement cannot depend on relevance or tick budget.
+    let mut desired = std::collections::BTreeMap::new();
+    for (actor, incarnation) in &incarnations {
+        if desired.insert(actor.id.0, incarnation.0).is_some() {
+            lab.stop_admission();
+            let _ = lab.reconcile_actor_incarnations(&std::collections::BTreeMap::new());
+            return;
+        }
+    }
+    if lab.reconcile_actor_incarnations(&desired).is_err() {
+        lab.stop_admission();
+        let _ = lab.reconcile_actor_incarnations(&std::collections::BTreeMap::new());
+        return;
+    }
     lab.retry_pending_closes();
     if frame
         .decisions
@@ -218,16 +243,25 @@ fn open_selected_actors(
     }
     let by_id: std::collections::BTreeMap<DomainId, _> = actors
         .iter()
-        .map(|(actor, position, archetype, motion, flags)| {
-            (actor.id, (position, archetype, motion, flags))
+        .map(|(actor, position, archetype, motion, flags, incarnation)| {
+            (actor.id, (position, archetype, motion, flags, incarnation))
         })
         .collect();
     for connection in &frame.decisions.connections {
         for selected in &connection.selected {
-            let Some((position, archetype, motion, flags)) = by_id.get(&selected.id) else {
+            let Some((position, archetype, motion, flags, incarnation)) = by_id.get(&selected.id)
+            else {
                 continue;
             };
-            if lab.is_actor_open(connection.connection, selected.id.0) {
+            let is_open = match incarnation {
+                Some(incarnation) => lab.is_actor_incarnation_open(
+                    connection.connection,
+                    selected.id.0,
+                    incarnation.0,
+                ),
+                None => lab.is_actor_open(connection.connection, selected.id.0),
+            };
+            if is_open {
                 let movement = archetype.replicate_movement.then(|| {
                     let motion = motion.copied().unwrap_or_default();
                     [position.0, motion.rotation_degrees, motion.linear_velocity]
@@ -279,13 +313,24 @@ fn open_selected_actors(
                 velocity: motion.map(|motion| motion.linear_velocity),
                 blocks: vec![block],
             };
-            lab.open_actor(
-                connection.connection,
-                selected.id.0,
-                spec,
-                session.first_channel,
-                session.engine_net_version,
-            );
+            if let Some(incarnation) = incarnation {
+                lab.open_actor_incarnation(
+                    connection.connection,
+                    selected.id.0,
+                    incarnation.0,
+                    spec,
+                    session.first_channel,
+                    session.engine_net_version,
+                );
+            } else {
+                lab.open_actor(
+                    connection.connection,
+                    selected.id.0,
+                    spec,
+                    session.first_channel,
+                    session.engine_net_version,
+                );
+            }
         }
     }
 }

@@ -21,7 +21,7 @@
 //! [`super::class_checksum`].
 use std::collections::{BTreeMap, BTreeSet};
 
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, ensure};
 
 use super::actor_channel::{
     ActorChannelCodec, BlockTarget, ContentBlock, DynamicSpawn, ExportPath, GuidExport, NetGuidRef,
@@ -114,6 +114,8 @@ pub struct NetGuidCache {
     /// Dynamic GUIDs of keyed world objects: an actor, one of its stably
     /// named components, or one of its runtime subobjects.
     keyed: BTreeMap<(ActorKey, KeyedPart), u32>,
+    /// Bridge-only identities, separate from generic keyed actor references.
+    incarnations: BTreeMap<(u64, u64), u32>,
 }
 
 /// One connection's `NetGUIDAckStatus` (F-796): a GUID's full path is sent
@@ -195,10 +197,15 @@ impl NetGuidCache {
         Self::default()
     }
 
-    /// Next dynamic GUID (even, from 2).
-    pub fn assign_dynamic(&mut self) -> u32 {
-        self.dynamic_index += 1;
-        self.dynamic_index << 1
+    /// Next dynamic GUID (even, from 2). Exhaustion leaves the cache unchanged.
+    pub fn assign_dynamic(&mut self) -> Result<u32> {
+        let index = self
+            .dynamic_index
+            .checked_add(1)
+            .filter(|index| *index <= u32::MAX >> 1)
+            .context("dynamic NetGUID space exhausted")?;
+        self.dynamic_index = index;
+        Ok(index << 1)
     }
 
     /// The driver-wide dynamic GUID of the world actor `key`, assigned on
@@ -206,25 +213,49 @@ impl NetGuidCache {
     /// serialized, whether by its own open or by a reference from another
     /// actor's properties (the GameState's references precede the opens of
     /// the actors they name, F-794).
-    pub fn actor_guid(&mut self, key: ActorKey) -> u32 {
+    pub fn actor_guid(&mut self, key: ActorKey) -> Result<u32> {
         self.keyed_guid(key, KeyedPart::Actor)
     }
 
     /// The driver-wide dynamic GUID of runtime subobject `index` of the keyed
     /// actor `key` (never exported: its block names its class), assigned on
     /// first use.
-    pub fn subobject_guid(&mut self, key: ActorKey, index: u32) -> u32 {
+    pub fn subobject_guid(&mut self, key: ActorKey, index: u32) -> Result<u32> {
         self.keyed_guid(key, KeyedPart::Subobject(index))
     }
 
-    fn keyed_guid(&mut self, key: ActorKey, part: KeyedPart) -> u32 {
+    fn keyed_guid(&mut self, key: ActorKey, part: KeyedPart) -> Result<u32> {
         let entry = (key, part);
         if let Some(guid) = self.keyed.get(&entry) {
-            return *guid;
+            return Ok(*guid);
         }
-        let guid = self.assign_dynamic();
+        let guid = self.assign_dynamic()?;
         self.keyed.insert(entry, guid);
-        guid
+        Ok(guid)
+    }
+
+    /// Identity of one authored live slot incarnation. Generic actor-reference
+    /// composition cannot name these identities through `ActorKey`.
+    pub(crate) fn incarnation_guid(&mut self, slot: u64, incarnation: u64) -> Result<u32> {
+        ensure!(incarnation != 0, "live incarnation must be nonzero");
+        let key = (slot, incarnation);
+        if let Some(guid) = self.incarnations.get(&key) {
+            return Ok(*guid);
+        }
+        let guid = self.assign_dynamic()?;
+        self.incarnations.insert(key, guid);
+        Ok(guid)
+    }
+
+    /// Forget only retired incarnation mappings. Numeric GUIDs remain consumed
+    /// for the lifetime of this driver, including when a pair is requested again.
+    pub(crate) fn retain_incarnations(&mut self, retained: &BTreeSet<(u64, u64)>) {
+        self.incarnations.retain(|key, _| retained.contains(key));
+    }
+
+    /// Aggregate retained bridge identities; this exposes no private mapping.
+    pub fn incarnation_count(&self) -> usize {
+        self.incarnations.len()
     }
 
     /// A component of the keyed world actor `key` (actor GUID `actor`): its
@@ -238,7 +269,7 @@ impl NetGuidCache {
         actor: u32,
         component: &ComponentExport,
     ) -> Result<NetGuidRef> {
-        let guid = self.keyed_guid(key, KeyedPart::Component(component.name.clone()));
+        let guid = self.keyed_guid(key, KeyedPart::Component(component.name.clone()))?;
         if !exports.should_send_full_path(guid) {
             return Ok(NetGuidRef::plain(guid));
         }
@@ -325,7 +356,7 @@ impl NetGuidCache {
         actor: u32,
         component: &ComponentExport,
     ) -> Result<(u32, NetGuidRef)> {
-        let guid = self.assign_dynamic();
+        let guid = self.assign_dynamic()?;
         exports.bunch.insert(guid);
         Ok((guid, subobject_export(guid, actor, component)?))
     }
@@ -344,10 +375,10 @@ impl NetGuidCache {
         exports: &mut ConnectionExports,
         profile: &PlayerControllerProfile,
     ) -> Result<(PlayerControllerGuids, Vec<NetGuidRef>)> {
-        let actor = self.assign_dynamic();
+        let actor = self.assign_dynamic()?;
         let archetype_ref = self.export_static(exports, &profile.archetype)?;
         let level_ref = self.export_static(exports, &profile.level)?;
-        let player_state = self.assign_dynamic();
+        let player_state = self.assign_dynamic()?;
         let mut references = vec![archetype_ref.clone(), level_ref.clone()];
         let mut components = Vec::with_capacity(profile.components.len());
         for component in &profile.components {
@@ -1128,4 +1159,98 @@ pub fn movement_update_block(
     movement: super::rep_layout::RepMovement,
 ) -> Result<ContentBlock> {
     actor_properties_update_block(engine_net_version, Some(movement), None, None)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn dynamic_guid_exhaustion_is_atomic_and_cached_identities_remain_available() {
+        let mut cache = NetGuidCache::new();
+        let key = ActorKey::World(7);
+        let actor = cache.actor_guid(key).unwrap();
+        let subobject = cache.subobject_guid(key, 0).unwrap();
+        let component = cache
+            .keyed_guid(key, KeyedPart::Component("root".into()))
+            .unwrap();
+        let incarnation = cache.incarnation_guid(7, 1).unwrap();
+        cache.assign_static(&[PathSegment::new("/Authored/Level", 0, true)]);
+        cache.dynamic_index = (u32::MAX >> 1) - 1;
+        assert_eq!(cache.assign_dynamic().unwrap(), 0xffff_fffe);
+        let exhausted = cache.clone();
+
+        assert!(cache.assign_dynamic().is_err());
+        assert!(cache.actor_guid(ActorKey::World(8)).is_err());
+        assert!(cache.subobject_guid(key, 1).is_err());
+        assert!(
+            cache
+                .keyed_guid(key, KeyedPart::Component("new".into()))
+                .is_err()
+        );
+        assert!(cache.incarnation_guid(7, 2).is_err());
+        assert!(cache.incarnation_guid(7, 0).is_err());
+        assert_eq!(cache.dynamic_index, exhausted.dynamic_index);
+        assert_eq!(cache.static_index, exhausted.static_index);
+        assert_eq!(cache.keyed, exhausted.keyed);
+        assert_eq!(cache.statics, exhausted.statics);
+        assert_eq!(cache.incarnations, exhausted.incarnations);
+
+        assert_eq!(cache.actor_guid(key).unwrap(), actor);
+        assert_eq!(cache.subobject_guid(key, 0).unwrap(), subobject);
+        assert_eq!(
+            cache
+                .keyed_guid(key, KeyedPart::Component("root".into()))
+                .unwrap(),
+            component
+        );
+        assert_eq!(cache.incarnation_guid(7, 1).unwrap(), incarnation);
+        assert_eq!(cache.dynamic_index, exhausted.dynamic_index);
+        cache.retain_incarnations(&BTreeSet::new());
+        assert_eq!(cache.incarnation_count(), 0);
+        assert!(cache.incarnation_guid(7, 1).is_err());
+        assert_eq!(cache.dynamic_index, exhausted.dynamic_index);
+        assert_eq!(cache.actor_guid(key).unwrap(), actor);
+    }
+
+    #[test]
+    fn incarnation_namespace_and_pruning_preserve_other_identities_without_reusing_guids() {
+        let mut cache = NetGuidCache::new();
+        assert!(cache.incarnation_guid(9, 0).is_err());
+        assert_eq!(cache.dynamic_index, 0);
+        assert_eq!(cache.incarnation_count(), 0);
+        let world = cache.actor_guid(ActorKey::World(9)).unwrap();
+        let session = cache.actor_guid(ActorKey::Session(9)).unwrap();
+        let subobject = cache.subobject_guid(ActorKey::World(9), 1).unwrap();
+        let first = cache.incarnation_guid(9, 1).unwrap();
+        let second = cache.incarnation_guid(9, 2).unwrap();
+        let other_slot = cache.incarnation_guid(10, 1).unwrap();
+        let ids = BTreeSet::from([world, session, subobject, first, second, other_slot]);
+        assert_eq!(ids.len(), 6);
+        assert!(ids.iter().all(|guid| *guid != 0 && guid & 1 == 0));
+        assert_eq!(cache.incarnation_guid(9, 1).unwrap(), first);
+        assert_eq!(cache.incarnation_count(), 3);
+        let path = [PathSegment::new("/Authored/Archetype", 42, false)];
+        let static_guid = cache.assign_static(&path);
+        let before_prune = cache.clone();
+        cache.retain_incarnations(&BTreeSet::from([(9, 2)]));
+        assert_eq!(cache.incarnation_count(), 1);
+        assert_eq!(cache.dynamic_index, before_prune.dynamic_index);
+        assert_eq!(cache.keyed, before_prune.keyed);
+        assert_eq!(cache.statics, before_prune.statics);
+        assert_eq!(cache.static_index, before_prune.static_index);
+        assert_eq!(cache.incarnation_guid(9, 2).unwrap(), second);
+        assert_eq!(cache.actor_guid(ActorKey::World(9)).unwrap(), world);
+        assert_eq!(cache.actor_guid(ActorKey::Session(9)).unwrap(), session);
+        assert_eq!(
+            cache.subobject_guid(ActorKey::World(9), 1).unwrap(),
+            subobject
+        );
+        assert_eq!(cache.assign_static(&path), static_guid);
+        let reassigned = cache.incarnation_guid(9, 1).unwrap();
+        assert!(!ids.contains(&reassigned));
+        assert!(reassigned > other_slot);
+        assert_eq!(cache.incarnation_count(), 2);
+        assert_eq!(cache.dynamic_index, before_prune.dynamic_index + 1);
+    }
 }

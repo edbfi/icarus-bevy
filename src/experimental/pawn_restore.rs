@@ -414,7 +414,7 @@ fn restored_inventory_block(
         has_rep_layout: weight.is_some(),
         target: BlockTarget::SubObject {
             object: NetGuidRef::plain(
-                cache.subobject_guid(key, u32::try_from(inventory.inventory)?),
+                cache.subobject_guid(key, u32::try_from(inventory.inventory)?)?,
             ),
             class: SubObjectClass::Class(NetGuidRef::plain(class)),
         },
@@ -558,7 +558,7 @@ pub fn compose_restored_pawn_update(
         limits: RepLayoutLimits::default(),
     };
     exports.begin_bunch();
-    let actor = cache.actor_guid(key);
+    let actor = cache.actor_guid(key)?;
     let mut blocks = Vec::new();
     let mut exported = Vec::new();
     if !restored.pawn.is_empty() {
@@ -650,7 +650,7 @@ pub fn compose_restored_pawn_update(
         }
         blocks.push(rep_block(
             BlockTarget::SubObject {
-                object: NetGuidRef::plain(cache.subobject_guid(key, modifier.subobject)),
+                object: NetGuidRef::plain(cache.subobject_guid(key, modifier.subobject)?),
                 class: SubObjectClass::Class(NetGuidRef::plain(class_guid)),
             },
             &values,

@@ -256,10 +256,10 @@ fn main() -> Result<()> {
         assigned.push((supplied.actor, manager));
         assigned.sort_unstable_by_key(|(guid, _)| *guid);
         for (guid, key) in &assigned {
-            while cache.assign_dynamic() + 2 < *guid {}
-            ensure!(cache.actor_guid(*key) == *guid, "GUID {guid} unreachable");
+            while u64::from(cache.assign_dynamic()?) + 2 < u64::from(*guid) {}
+            ensure!(cache.actor_guid(*key)? == *guid, "GUID {guid} unreachable");
         }
-        while cache.assign_dynamic() + 2 < first_component {}
+        while u64::from(cache.assign_dynamic()?) + 2 < u64::from(first_component) {}
         exports.commit_bunch(1);
         exports.received_ack(1);
         let composed = compose_manager_open(

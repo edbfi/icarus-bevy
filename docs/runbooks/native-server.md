@@ -105,30 +105,30 @@ the strict staging refuses supplies no saved characters, controllers or
 History: returning-player restore is off, and every joiner counts as new and is
 added to the History the tracker starts empty with.
 
-For authored schema-4, -7 or -11 worlds, set `authored_replication = "replication.json"`
-in `[network]` or pass `run --authored-replication replication.json`.
-Ignored while networking is disabled. Enabled networking requires a release
-profile with a session plan.
-Strict JSON: regular file ≤1 MiB, 1–1,024 bindings; full schema:
-`AuthoredReplication` in `src/native_replication.rs`. Explicit declarations:
-catalog/map identity, signed-axis/unit frame, archetype paths/checksums/`no_load`,
-per-actor parameters and schedule. Poses require quaternion `[0,0,0,1]` and
-scale `[1,1,1]`; only translation maps through the frame, not rotation/velocity.
-All bindings/shared static identities validate before installation; proxies
-are transient, never saved. Invalid bindings retire activation without native
-state edits (F-938). Every fixed tick validates bindings, even without peers:
-direct ECS corruption must retire activation and stop admission on the next
-tick, independently of connection count. Schema-4 integrity cost: F-939
-(debug), F-941 (release); lifecycle cost is unmeasured.
-Format 1 accepts schema 4. Format 2 requires `lifecycle_id` from the authored
-schema-7/11 snapshot. Bindings may name dormant slots: they open when spawned.
-Unchanged incarnations retain identity across pose edits and generation changes;
-replacing a bound owner retires the whole bridge, with reliable-close retries.
-Dormant flag edits take effect at activation. Modifier timers remain native
-state; this bridge sends no modifier containers. `activated` counts live bindings
-exposed since installation. Generic lab reconfiguration is outside this contract.
-Saved-pose mappings (U-025), import, physics, gameplay and stock-client behavior
-remain unqualified; tests use authored probes only:
+Authored schema-4/7/11 hosts opt in with `[network].authored_replication` or
+`run --authored-replication replication.json`. Disabled networking ignores it;
+enabled networking needs a release session plan. Strict JSON (regular file
+≤1 MiB, 1–1,024 bindings): `AuthoredReplication` in `src/native_replication.rs`.
+Declare catalog/map, signed-axis/unit frame, archetype paths/checksums/`no_load`,
+parameters and schedule. Only translation maps; quaternion must be `[0,0,0,1]`
+and scale `[1,1,1]`. Proxies never enter persistence (F-938).
+
+Format 1 accepts schema 4; format 2 pins `lifecycle_id` from a schema-7/11 snapshot.
+Dormant slots activate when spawned, with any pending authored flag edits.
+Format 2 defaults to `"owner_replacement": "retire_bridge"`: replacing a bound
+owner retires the bridge. Opt into `"after_close_ack"` to replace owners while
+unrelated actors continue. Each peer must ACK its old reliable close before the
+latest incarnation opens with a fresh GUID; blocked replacements coalesce.
+Old identities remain only while desired, open or awaiting ACK; GUID numbers
+never recycle, and exhausted allocation refuses new opens.
+
+Every tick validates the full source and proxy bindings, including with no peers.
+Corruption retires the bridge and stops admission without editing native state.
+`activated` counts live bindings exposed since installation. Modifier timers stay
+native; this bridge sends no modifier containers. Generic lab reconfiguration,
+original replacement semantics, saved-pose mappings (U-025), import, physics,
+gameplay and stock-client behavior remain unqualified. Costs: schema 4 only
+(F-939, F-941); lifecycle cost is unmeasured. Tests use authored probes:
 
 ```bash
 cargo test --locked --test network
