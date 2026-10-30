@@ -918,19 +918,21 @@ fn exports_acked(exports: &ConnectionExports, guid: u32) -> bool {
 
 #[test]
 fn restored_modifiers_are_class_named_subobjects_with_their_classes_exported() {
-    use icarus_bevy::experimental::modifier_restore::{MODIFIER_CLASS_CHECKSUM, RestoredModifier};
+    use icarus_bevy::experimental::modifier_restore::{
+        MODIFIER_CLASS_CHECKSUM, RestoredModifier, remaining_tenths,
+    };
     use icarus_bevy::experimental::rep_layout::modifier_state_component_rep_layout;
     use icarus_bevy::experimental::session_open::PathSegment;
 
     let (profile, plan, stomach) = plan();
     let key = ActorKey::Session(7);
     let (mut cache, mut exports) = opened(&plan, key);
-    let modifier = |uid: i32, final_effectiveness: i32, remaining_tenths: u16| RestoredModifier {
+    let modifier = |uid: i32, final_effectiveness: i32, remaining_seconds: f32| RestoredModifier {
         row: 40,
         uid,
         lifetime: 300.0,
         final_effectiveness,
-        remaining_tenths,
+        remaining_tenths: remaining_tenths(remaining_seconds),
         class: vec![
             PathSegment::new("ModifierStateComponent", MODIFIER_CLASS_CHECKSUM, false),
             PathSegment::new("/Script/Icarus", 0, false),
@@ -938,7 +940,7 @@ fn restored_modifiers_are_class_named_subobjects_with_their_classes_exported() {
         subobject: u32::try_from(uid).unwrap() - 1,
     };
     let restored = RestoredPawn {
-        modifiers: vec![modifier(1, -31, 2954), modifier(2, 0, 0)],
+        modifiers: vec![modifier(1, -31, 295.49), modifier(2, 0, 0.0)],
         ..restore(&SavedPlayerState::default(), &current_state())
     };
     let update = compose_restored_pawn_update(
@@ -1007,7 +1009,7 @@ fn restored_modifiers_are_class_named_subobjects_with_their_classes_exported() {
         // Zero effectiveness and remaining time stay at the defaults.
         if index == 0 {
             assert_eq!(values[&7], RepValue::Int(-31));
-            assert_eq!(values[&8], RepValue::UInt16(2954));
+            assert_eq!(values[&8], RepValue::UInt16(2955));
         } else {
             assert!(!values.contains_key(&7) && !values.contains_key(&8));
         }
