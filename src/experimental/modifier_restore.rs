@@ -70,6 +70,9 @@ pub struct RestoredModifier {
     /// `CachedFinalEffectiveness`: the stored effectiveness (saved less 100)
     /// plus the affector stats.
     pub final_effectiveness: i32,
+    /// Raw restored binary32 seconds, independent of wire quantization.
+    /// The computed restore input, not callback-adjusted runtime state.
+    pub remaining_seconds: f32,
     /// `ReplicatedRemainingTime`: whole tenths of a second.
     pub remaining_tenths: u16,
     /// The component class with its package.
@@ -170,6 +173,7 @@ pub fn restore_modifiers(
                 .fold(effectiveness.wrapping_sub(100), |total, name| {
                     total.wrapping_add(stat(name))
                 }),
+            remaining_seconds: remaining,
             remaining_tenths: remaining_tenths(remaining),
             class,
             subobject: first_subobject.wrapping_add(u32::try_from(restored.len()).unwrap_or(0)),

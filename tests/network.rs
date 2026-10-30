@@ -5699,3 +5699,589 @@ fn returning_pawns_retry_queue_pressure_after_the_other_controllers_friends_list
         assert_eq!(claimed(&app), [70_001]);
     }
 }
+
+/// Authored returning modifiers and a real loopback peer. The tracker keeps
+/// the exact object/class bindings from the initial restore for later deltas.
+struct ModifierTimeFixture {
+    app: App,
+    client: ProbeClient,
+    socket: UdpSocket,
+    profile: ReleaseProfile,
+    tracker: icarus_bevy::experimental::probe_initialise::ActorChannelTracker,
+    targets: std::collections::BTreeMap<i32, icarus_bevy::experimental::actor_channel::BlockTarget>,
+    address: SocketAddr,
+    connection: u32,
+}
+
+impl ModifierTimeFixture {
+    fn new() -> Self {
+        use icarus_bevy::{
+            actor_uids::ActorUidLibrary,
+            experimental::{
+                modifier_restore::{ModifierRestoreTables, ModifierRow},
+                peer_lab::PeerLabAdmission,
+                prospect_info::SavedModifierState,
+            },
+            prospect,
+        };
+        let (mut lab, profile) = uid_lab(ActorUidLibrary::with_random(|| 7));
+        lab.enable_player_state_open(
+            profile
+                .player_state_open_plan(PeerLabAdmission::default().map_url)
+                .unwrap()
+                .unwrap(),
+        )
+        .unwrap();
+        lab.enable_modifier_restore(ModifierRestoreTables {
+            rows: vec![
+                ModifierRow {
+                    saves: true,
+                    ..Default::default()
+                };
+                2
+            ],
+            row_index: std::collections::BTreeMap::from([
+                ("first".into(), 0),
+                ("second".into(), 1),
+            ]),
+        })
+        .unwrap();
+        let payload = returning_characters_payload_with_state(NET_ID_HEX, 3, &[70_001], &[]);
+        lab.seed_actor_uids(prospect::saved_actor_uids_from_payload(&payload).unwrap())
+            .unwrap();
+        let mut characters = prospect::saved_player_characters_from_payload(&payload).unwrap();
+        characters[0].modifiers = ["First", "Second"]
+            .into_iter()
+            .map(|name| SavedModifierState {
+                row_name: name.encode_utf16().collect(),
+                time_remaining: 100.5,
+                initial_lifetime: 300.0,
+                duration_buff: 2.0,
+                effectiveness: -1,
+            })
+            .collect();
+        lab.enable_returning_characters(characters).unwrap();
+        let mut app = build_app(&ServerConfig::default(), &WorldSnapshot::default()).unwrap();
+        let address = network::install(&mut app, lab).unwrap();
+        let (client, socket, tracker, targets) = Self::join(&mut app, address, &profile);
+        let connection = app.world().resource::<PeerLab>().joined_connections()[0];
+        Self {
+            app,
+            client,
+            socket,
+            profile,
+            tracker,
+            targets,
+            address,
+            connection,
+        }
+    }
+
+    fn join(
+        app: &mut App,
+        address: SocketAddr,
+        profile: &ReleaseProfile,
+    ) -> (
+        ProbeClient,
+        UdpSocket,
+        icarus_bevy::experimental::probe_initialise::ActorChannelTracker,
+        std::collections::BTreeMap<i32, icarus_bevy::experimental::actor_channel::BlockTarget>,
+    ) {
+        use icarus_bevy::experimental::{
+            probe_initialise::{ActorChannelTracker, initialise_codec},
+            rep_layout::RepValue,
+        };
+        let version = profile.pin.network_checksum;
+        let engine = profile.engine_network_version;
+        let ((client, socket, packets), _) = with_server(app, move || {
+            let socket = UdpSocket::bind("127.0.0.1:0").unwrap();
+            socket.connect(address).unwrap();
+            let mut client =
+                ProbeClient::connect(socket.try_clone().unwrap(), probe_config()).unwrap();
+            client.hello(version, "").unwrap();
+            client.send_control(&[login()], false).unwrap();
+            client.collect(Duration::from_secs(3), 1).unwrap();
+            client
+                .send_control(
+                    &[
+                        ControlMessage::Netspeed { rate: 100_000 },
+                        ControlMessage::Join,
+                    ],
+                    false,
+                )
+                .unwrap();
+            let mut packets: Vec<_> = client
+                .collect(Duration::from_millis(250), 32)
+                .unwrap()
+                .replies
+                .into_iter()
+                .map(|reply| reply.bytes)
+                .collect();
+            packets.extend(exchange_profiles(&mut client, engine, 3, 3));
+            (client, socket, packets)
+        });
+        let mut tracker = ActorChannelTracker::new(
+            PacketConfig {
+                receiver: PacketReceiver::Client,
+                ..probe_config().packet
+            },
+            initialise_codec(engine).actor,
+            client.initial_reliable().0,
+        );
+        let targets = Self::decode(&mut tracker, engine, &packets)
+            .into_iter()
+            .map(|(target, values)| {
+                let RepValue::Int(uid) = values[&5] else {
+                    panic!("modifier UID");
+                };
+                assert_eq!(values[&8], RepValue::UInt16(503));
+                (uid, target)
+            })
+            .collect::<std::collections::BTreeMap<_, _>>();
+        assert_eq!(targets.len(), 2);
+        (client, socket, tracker, targets)
+    }
+
+    fn decode(
+        tracker: &mut icarus_bevy::experimental::probe_initialise::ActorChannelTracker,
+        engine: u32,
+        packets: &[Vec<u8>],
+    ) -> Vec<DecodedPawnBlock> {
+        use icarus_bevy::experimental::{
+            actor_channel::{BlockTarget, SubObjectClass, read_actor_bunch_body},
+            pawn_open::PAWN_CHANNEL_INDEX,
+            probe_initialise::initialise_codec,
+            rep_layout::{modifier_state_component_rep_layout, read_rep_properties},
+        };
+        let codec = initialise_codec(engine);
+        let mut result = Vec::new();
+        let mut notes = Vec::new();
+        for bytes in packets {
+            for bunch in tracker.feed(bytes, &mut notes).unwrap() {
+                if bunch.channel_index != PAWN_CHANNEL_INDEX || bunch.open {
+                    continue;
+                }
+                let body = read_actor_bunch_body(&mut bunch.payload.reader(), false, &codec.actor)
+                    .unwrap();
+                for block in body.blocks {
+                    if !matches!(
+                        block.target,
+                        BlockTarget::SubObject {
+                            class: SubObjectClass::Class(_),
+                            ..
+                        }
+                    ) {
+                        continue;
+                    }
+                    assert!(block.has_rep_layout);
+                    let mut reader = block.payload.reader();
+                    let values = read_rep_properties(
+                        &mut reader,
+                        &modifier_state_component_rep_layout(),
+                        &codec,
+                    )
+                    .unwrap();
+                    assert!(reader.at_end());
+                    result.push((
+                        block.target,
+                        values
+                            .entries
+                            .into_iter()
+                            .map(|entry| (entry.handle, entry.value))
+                            .collect(),
+                    ));
+                }
+            }
+        }
+        assert!(notes.is_empty(), "{notes:?}");
+        result
+    }
+
+    fn collect(&mut self) -> Vec<DecodedPawnBlock> {
+        let packets: Vec<_> = self
+            .client
+            .collect(Duration::from_millis(30), 64)
+            .unwrap()
+            .replies
+            .into_iter()
+            .map(|reply| reply.bytes)
+            .collect();
+        Self::decode(
+            &mut self.tracker,
+            self.profile.engine_network_version,
+            &packets,
+        )
+    }
+
+    fn ack(&mut self) -> Vec<DecodedPawnBlock> {
+        self.client.keepalive().unwrap();
+        self.app.world_mut().resource_mut::<PeerLab>().poll();
+        self.collect()
+    }
+
+    fn refresh(
+        &mut self,
+        updates: &[(
+            i32,
+            icarus_bevy::experimental::modifier_timing::RemainingTime,
+        )],
+    ) {
+        self.app
+            .world_mut()
+            .resource_mut::<PeerLab>()
+            .refresh_restored_modifier_times(self.connection, updates)
+            .unwrap();
+    }
+
+    fn assert_time_blocks(&self, blocks: &[DecodedPawnBlock], expected: &[(i32, u16)]) {
+        use icarus_bevy::experimental::rep_layout::RepValue;
+        let expected: Vec<_> = expected
+            .iter()
+            .map(|(uid, tenths)| {
+                (
+                    self.targets[uid].clone(),
+                    std::collections::BTreeMap::from([(8, RepValue::UInt16(*tenths))]),
+                )
+            })
+            .collect();
+        assert_eq!(blocks, expected);
+    }
+}
+
+#[test]
+fn restored_modifier_times_retain_raw_bits_and_send_only_explicit_wire_changes() {
+    use icarus_bevy::experimental::modifier_timing::RemainingTime;
+    let mut fixture = ModifierTimeFixture::new();
+    let initial = fixture
+        .app
+        .world()
+        .resource::<PeerLab>()
+        .restored_modifier_time(fixture.connection, 1)
+        .unwrap();
+    assert_eq!(initial.seconds, 50.25);
+    assert_eq!(initial.replicated_tenths, 503);
+    // The restore is still reliable-pending. Refresh coalesces without
+    // publishing ahead of the subobjects whose initial export it depends on.
+    fixture.refresh(&[(
+        1,
+        RemainingTime {
+            seconds: 8.0,
+            replicated_tenths: 80,
+        },
+    )]);
+    fixture.refresh(&[
+        (
+            1,
+            RemainingTime {
+                seconds: 7.0,
+                replicated_tenths: 70,
+            },
+        ),
+        (
+            2,
+            RemainingTime {
+                seconds: 6.0,
+                replicated_tenths: 60,
+            },
+        ),
+    ]);
+    fixture.app.world_mut().resource_mut::<PeerLab>().poll();
+    assert!(fixture.collect().is_empty());
+    let changed = fixture.ack();
+    fixture.assert_time_blocks(&changed, &[(1, 70), (2, 60)]);
+    // A new desired value waits for the preceding reliable update too.
+    fixture.refresh(&[(
+        1,
+        RemainingTime {
+            seconds: -0.25,
+            replicated_tenths: 0,
+        },
+    )]);
+    fixture.app.world_mut().resource_mut::<PeerLab>().poll();
+    assert!(fixture.collect().is_empty());
+    let zero = fixture.ack();
+    fixture.assert_time_blocks(&zero, &[(1, 0)]);
+    assert!(fixture.ack().is_empty());
+    let raw_bits = 0x7fc0_1234;
+    fixture.refresh(&[(
+        1,
+        RemainingTime {
+            seconds: f32::from_bits(raw_bits),
+            replicated_tenths: 0,
+        },
+    )]);
+    fixture
+        .app
+        .insert_resource(TimeUpdateStrategy::ManualDuration(Duration::from_millis(
+            100,
+        )));
+    for _ in 0..8 {
+        fixture.app.update();
+    }
+    assert!(
+        fixture.collect().is_empty(),
+        "ticks do not infer modifier effects or time updates"
+    );
+    let raw = fixture
+        .app
+        .world()
+        .resource::<PeerLab>()
+        .restored_modifier_time(fixture.connection, 1)
+        .unwrap();
+    assert_eq!(raw.seconds.to_bits(), raw_bits);
+    assert_eq!(raw.replicated_tenths, 0);
+    let second = fixture
+        .app
+        .world()
+        .resource::<PeerLab>()
+        .restored_modifier_time(fixture.connection, 2)
+        .unwrap();
+    let next = RemainingTime {
+        seconds: f32::INFINITY,
+        replicated_tenths: 42,
+    };
+    for updates in [vec![(1, next), (99, next)], vec![(1, next), (1, next)]] {
+        assert!(
+            fixture
+                .app
+                .world_mut()
+                .resource_mut::<PeerLab>()
+                .refresh_restored_modifier_times(fixture.connection, &updates)
+                .is_err()
+        );
+        assert_eq!(
+            fixture
+                .app
+                .world()
+                .resource::<PeerLab>()
+                .restored_modifier_time(fixture.connection, 1)
+                .unwrap()
+                .seconds
+                .to_bits(),
+            raw_bits
+        );
+        assert_eq!(
+            fixture
+                .app
+                .world()
+                .resource::<PeerLab>()
+                .restored_modifier_time(fixture.connection, 2)
+                .unwrap(),
+            second
+        );
+    }
+    assert!(
+        fixture
+            .app
+            .world_mut()
+            .resource_mut::<PeerLab>()
+            .refresh_restored_modifier_times(u32::MAX, &[(1, next)])
+            .is_err()
+    );
+    assert!(
+        fixture
+            .app
+            .world()
+            .resource::<PeerLab>()
+            .restored_modifier_time(fixture.connection, 99)
+            .is_none()
+    );
+}
+
+#[test]
+fn restored_modifier_times_retry_packet_pressure_and_reset_on_reconnect() {
+    use icarus_bevy::experimental::{
+        modifier_timing::RemainingTime,
+        packet_lab::DEFAULT_SENT_CAPACITY,
+        peer_lab::PeerLabAdmission,
+        session_open::{ActorOpenSpec, PathSegment, map_level_chain},
+    };
+    let mut fixture = ModifierTimeFixture::new();
+    assert!(fixture.ack().is_empty());
+    let map = PeerLabAdmission::default().map_url;
+    let engine = fixture.profile.engine_network_version;
+    assert!(
+        fixture
+            .app
+            .world_mut()
+            .resource_mut::<PeerLab>()
+            .open_actor(
+                fixture.connection,
+                42,
+                ActorOpenSpec {
+                    actor: 0,
+                    archetype: vec![
+                        PathSegment::new("Default__ModifierPressure_C", 0x1234_5678, false),
+                        PathSegment::new("/Game/Lab/ModifierPressure", 0, false)
+                    ],
+                    level: map_level_chain(map).unwrap(),
+                    location: Some([0.0; 3]),
+                    rotation: None,
+                    velocity: None,
+                    blocks: Vec::new(),
+                },
+                8,
+                engine
+            )
+            .is_some()
+    );
+    assert!(fixture.collect().is_empty());
+    assert!(fixture.ack().is_empty());
+    let mut queued = 0;
+    for step in 1..=DEFAULT_SENT_CAPACITY {
+        if !fixture
+            .app
+            .world_mut()
+            .resource_mut::<PeerLab>()
+            .update_actor_movement(fixture.connection, 42, [step as f32, 0.0, 0.0], engine)
+        {
+            break;
+        }
+        queued += 1;
+        assert!(fixture.collect().is_empty());
+    }
+    assert!(queued > 0 && queued < DEFAULT_SENT_CAPACITY);
+    fixture.refresh(&[(
+        1,
+        RemainingTime {
+            seconds: 4.0,
+            replicated_tenths: 40,
+        },
+    )]);
+    fixture.app.world_mut().resource_mut::<PeerLab>().poll();
+    let errors = fixture
+        .app
+        .world()
+        .resource::<PeerLab>()
+        .stats()
+        .modifier_time_update_errors;
+    assert!(errors > 0);
+    for _ in 0..8 {
+        fixture.app.world_mut().resource_mut::<PeerLab>().poll();
+    }
+    assert_eq!(
+        fixture
+            .app
+            .world()
+            .resource::<PeerLab>()
+            .stats()
+            .modifier_time_update_errors,
+        errors
+    );
+    fixture.refresh(&[(
+        1,
+        RemainingTime {
+            seconds: 3.0,
+            replicated_tenths: 30,
+        },
+    )]);
+    let changed = fixture.ack();
+    fixture.assert_time_blocks(&changed, &[(1, 30)]);
+    assert!(fixture.ack().is_empty());
+    let old_connection = fixture.connection;
+    fixture.client.close().unwrap();
+    fixture.app.world_mut().resource_mut::<PeerLab>().poll();
+    assert!(
+        fixture
+            .app
+            .world()
+            .resource::<PeerLab>()
+            .restored_modifier_time(old_connection, 1)
+            .is_none()
+    );
+    let (client, socket, tracker, targets) =
+        ModifierTimeFixture::join(&mut fixture.app, fixture.address, &fixture.profile);
+    fixture.client = client;
+    fixture.socket = socket;
+    fixture.tracker = tracker;
+    fixture.targets = targets;
+    fixture.connection = fixture
+        .app
+        .world()
+        .resource::<PeerLab>()
+        .joined_connections()[0];
+    assert_ne!(fixture.connection, old_connection);
+    assert_eq!(
+        fixture
+            .app
+            .world()
+            .resource::<PeerLab>()
+            .restored_modifier_time(fixture.connection, 1)
+            .unwrap(),
+        RemainingTime {
+            seconds: 50.25,
+            replicated_tenths: 503
+        }
+    );
+    assert!(
+        fixture
+            .app
+            .world_mut()
+            .resource_mut::<PeerLab>()
+            .refresh_restored_modifier_times(
+                old_connection,
+                &[(
+                    1,
+                    RemainingTime {
+                        seconds: 1.0,
+                        replicated_tenths: 10
+                    }
+                )]
+            )
+            .is_err()
+    );
+    assert!(fixture.ack().is_empty());
+}
+
+#[test]
+fn restored_modifier_time_loss_uses_existing_reliable_retransmission() {
+    use icarus_bevy::experimental::modifier_timing::RemainingTime;
+    let mut fixture = ModifierTimeFixture::new();
+    assert!(fixture.ack().is_empty());
+    fixture.refresh(&[(
+        1,
+        RemainingTime {
+            seconds: 2.0,
+            replicated_tenths: 20,
+        },
+    )]);
+    fixture.app.world_mut().resource_mut::<PeerLab>().poll();
+    let queued = fixture
+        .app
+        .world()
+        .resource::<PeerLab>()
+        .stats()
+        .modifier_time_updates_queued;
+    assert!(queued > 0);
+    // Read through the cloned socket so the probe never acknowledges this
+    // packet. Its next received packet exposes the gap to normal NAK repair.
+    fixture
+        .socket
+        .set_read_timeout(Some(Duration::from_secs(2)))
+        .unwrap();
+    let mut discarded = [0; 2048];
+    assert!(fixture.socket.recv(&mut discarded).unwrap() > 0);
+    assert!(fixture.ack().is_empty());
+    let resent = fixture.ack();
+    fixture.assert_time_blocks(&resent, &[(1, 20)]);
+    assert_eq!(
+        fixture
+            .app
+            .world()
+            .resource::<PeerLab>()
+            .stats()
+            .modifier_time_updates_queued,
+        queued,
+        "transport repair must not queue another logical update"
+    );
+    assert!(fixture.ack().is_empty());
+    assert_eq!(
+        fixture
+            .app
+            .world()
+            .resource::<PeerLab>()
+            .stats()
+            .peers_failed,
+        0
+    );
+}

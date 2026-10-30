@@ -146,6 +146,25 @@ fn the_duration_buff_divides_the_remaining_time() {
     let (restored, gaps) = restore_modifiers(&[fractional], &tables(), 1, 0, |_| 0);
     assert!(gaps.is_empty());
     assert_eq!(restored[0].remaining_tenths, 2);
+    assert_eq!(
+        restored[0].remaining_seconds.to_bits(),
+        (0.3_f32 / 2.0).to_bits()
+    );
+    assert_ne!(
+        restored[0].remaining_seconds,
+        f32::from(restored[0].remaining_tenths) / 10.0
+    );
+}
+
+#[test]
+fn raw_remaining_time_survives_wire_overflow_and_signed_zero() {
+    for seconds in [7000.0, f32::INFINITY, -0.0, f32::from_bits(1)] {
+        let (restored, gaps) =
+            restore_modifiers(&[saved("Plain", seconds, -1)], &tables(), 1, 0, |_| 0);
+        assert!(gaps.is_empty());
+        assert_eq!(restored[0].remaining_seconds.to_bits(), seconds.to_bits());
+        assert_eq!(restored[0].remaining_tenths, 0);
+    }
 }
 
 #[test]
