@@ -6,10 +6,11 @@ Headless foundation guide: [design constraints](../architecture.md) and
 ## Run
 
 Requires native Linux, pinned Rust 1.99.1 with Rustfmt/Clippy and headless
-Bevy 0.20.1; no GPU, display, original game files or Proton. Basic data is fetched
+Bevy 0.20.1; no GPU, display or Proton. Protocol row identities are fetched
 unattended/anonymously from the free official dedicated server (Steam app
 2089300), without steamcmd or the game client (F-828, F-831). With
-`network.data_pak` unset, `run` uses installed data; `network_listening` reports
+`network.data_pak` unset, `run` discovers installed data. Either source requires
+`network.authored_gameplay` (F-993); `network_listening` reports
 `data_pak` and `data_pak_source` (`configured` or `installed`):
 
 ```bash
@@ -60,15 +61,25 @@ port = 17777                # 0 selects an ephemeral port; CLI: --network-port
 max_players = 8             # admission occupancy limit, 1..=64
 session_timeout_seconds = 30  # idle eviction, 1..=600, monotonic real time
 release_profile = "config/release.toml"  # optional Hello version pin
-data_pak = "/path/to/IcarusServer/Icarus/Content/Data/data.pak"  # optional, official server's data tables
+data_pak = "/path/to/IcarusServer/Icarus/Content/Data/data.pak"  # protocol row identities
+authored_gameplay = "/path/to/authored-gameplay.json"  # required with configured/installed pak
 ```
 
 Release profile/socket checks precede opening `--data-dir`; mismatched Hello
 gets Upgrade. Updates poll ≤32 datagrams before fixed ticks. SIGINT/SIGTERM
 closes sessions before draining/saving. `network_listening` reports
 address/`version_check`; `status`/`stopped` report session counts. Preserved
-prospects replicate active prospect/mode state (F-804); `data_pak` supplies
-session flags, `LockedMissions`, fresh-pawn vitals/inventories (F-830, F-835, F-836).
+prospects replicate active prospect/mode state (F-804). The pak supplies row
+names/order; authored input supplies gameplay values (F-993).
+
+`authored_gameplay` is a regular JSON file up to 8 MiB:
+`{"schema_version":1,"tables":{"D_Example":[{"Name":"Example","Value":7}]}}`.
+Each supplied table must match its catalog's complete row count, names and order.
+The example is schematic, not a playable profile. Author values independently;
+never export or copy original gameplay tables. Missing tables cannot fall back
+to the pak. Omitted object fields retain the native parser's defaults; this
+does not establish complete gameplay coverage or compatibility. Without either
+input, the existing authored lab defaults remain available.
 
 Each pawn open carries a distinct positive `IcarusUID` (handle 46, F-948).
 Positive saved actor-recorder `IcarusActorGUID`s occupy the namespace first;

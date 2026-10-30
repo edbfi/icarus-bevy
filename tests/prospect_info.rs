@@ -1419,8 +1419,9 @@ fn run_replicates_a_preserved_worlds_prospect() {
     std::fs::write(
         &config,
         format!(
-            "[network]\nenabled = true\nport = 0\nrelease_profile = {}\n",
-            toml::Value::String(release.display().to_string())
+            "[network]\nenabled = true\nport = 0\nrelease_profile = {}\nauthored_gameplay = {}\n",
+            toml::Value::String(release.display().to_string()),
+            toml::Value::String(pak_writer::authored_gameplay(&pak).display().to_string())
         ),
     )
     .unwrap();

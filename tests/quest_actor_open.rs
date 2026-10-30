@@ -1165,6 +1165,7 @@ fn apply_saved_game_state_opens_quests_before_quest_manager_and_skips_closed_on_
         release_profile: Some(
             std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("config/release.toml"),
         ),
+        authored_gameplay: Some(pak_writer::authored_gameplay(&pak_path)),
         data_pak: Some(pak_path.clone()),
         ..NetworkConfig::default()
     };
@@ -1305,6 +1306,7 @@ fn quest_opens_exceed_legacy_32_channel_bound_under_default_256_limit() {
         release_profile: Some(
             std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("config/release.toml"),
         ),
+        authored_gameplay: Some(pak_writer::authored_gameplay(&pak_path)),
         data_pak: Some(pak_path),
         ..NetworkConfig::default()
     };
@@ -1342,6 +1344,7 @@ fn channel_exhaustion_skips_quests_and_quest_manager_atomically_without_dropping
         release_profile: Some(
             std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("config/release.toml"),
         ),
+        authored_gameplay: Some(pak_writer::authored_gameplay(&pak_path)),
         data_pak: Some(pak_path),
         ..NetworkConfig::default()
     };

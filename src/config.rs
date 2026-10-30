@@ -73,6 +73,10 @@ pub struct NetworkConfig {
     /// their indices (saved session flags; F-830).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub data_pak: Option<PathBuf>,
+    /// Independently authored gameplay JSON, required when a data pak supplies
+    /// protocol row identities. Never an export of packaged gameplay values.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub authored_gameplay: Option<PathBuf>,
     /// Independently authored, strict JSON declaration for schema-4 native
     /// spatial replication. Relative paths use the working directory. Ignored
     /// when networking is disabled; absence retains ordinary session behavior.
@@ -90,6 +94,7 @@ impl Default for NetworkConfig {
             session_timeout_seconds: 30,
             release_profile: None,
             data_pak: None,
+            authored_gameplay: None,
             authored_replication: None,
         }
     }
@@ -120,6 +125,12 @@ impl NetworkConfig {
                 .as_ref()
                 .is_none_or(|path| !path.as_os_str().is_empty()),
             "network.data_pak is empty"
+        );
+        ensure!(
+            self.authored_gameplay
+                .as_ref()
+                .is_none_or(|path| !path.as_os_str().is_empty()),
+            "network.authored_gameplay is empty"
         );
         ensure!(
             self.authored_replication

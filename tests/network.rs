@@ -4110,6 +4110,7 @@ inventory_class = [{ path = "Bag", checksum = 9 }, { path = "/Script/P", checksu
         };
         let config = NetworkConfig {
             release_profile: Some(profile_path),
+            authored_gameplay: (case != Case::NoPak).then(|| pak_writer::authored_gameplay(&pak)),
             data_pak: (case != Case::NoPak).then_some(pak),
             ..enabled(0)
         };
@@ -4843,6 +4844,7 @@ fn returning_pawns_restore_their_saved_inventories_in_the_update() {
         fs::write(&pak, pak_writer::official_pak(&tables)).unwrap();
         let mut lab = network::bind(&NetworkConfig {
             release_profile: Some(release_toml()),
+            authored_gameplay: Some(pak_writer::authored_gameplay(&pak)),
             data_pak: Some(pak),
             ..enabled(0)
         })
@@ -4998,6 +5000,7 @@ fn returning_pawns_restore_their_saved_modifiers_in_the_update() {
     fs::write(&pak, pak_writer::official_pak(&tables)).unwrap();
     let mut lab = network::bind(&NetworkConfig {
         release_profile: Some(release_toml()),
+        authored_gameplay: Some(pak_writer::authored_gameplay(&pak)),
         data_pak: Some(pak),
         ..enabled(0)
     })
@@ -5148,6 +5151,7 @@ fn returning_pawns_restore_their_stats_and_the_bounds_they_set() {
     fs::write(&pak, pak_writer::official_pak(&tables)).unwrap();
     let mut lab = network::bind(&NetworkConfig {
         release_profile: Some(release_toml()),
+        authored_gameplay: Some(pak_writer::authored_gameplay(&pak)),
         data_pak: Some(pak),
         ..enabled(0)
     })

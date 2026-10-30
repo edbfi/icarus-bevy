@@ -1,17 +1,18 @@
 //! Data tables from the official dedicated server's `Icarus/Content/Data/data.pak`.
 //!
 //! The free, public dedicated server ships its data tables as JSON members of
-//! an unencrypted Unreal pak (version 11, F-829); the native server may use
-//! that basic data, fetched at install time, but never the game client's
-//! (F-828). A replicated row handle's index is the row's position in its
+//! an unencrypted Unreal pak (version 11, F-829). Runtime use is restricted
+//! to row names and ordering; gameplay values come from an independently
+//! authored profile. A replicated row handle's index is the row's position in its
 //! table's `Rows` array (F-830). This reader is independently authored from
 //! the pak layout the repository's own pak metadata tool reads; it accepts
 //! only unencrypted version-11 paks with stored or Zlib members, within fixed
 //! bounds, and reports names and counts only in its errors.
 use std::{
     collections::BTreeMap,
-    fs::File,
+    fs::{File, OpenOptions},
     io::{Read, Seek, SeekFrom},
+    os::unix::fs::OpenOptionsExt,
     path::Path,
 };
 
@@ -28,6 +29,20 @@ pub const MAX_MEMBER_BYTES: u64 = 64 * 1024 * 1024;
 pub const MAX_MEMBERS: usize = 100_000;
 /// Most rows a table may hold.
 pub const MAX_TABLE_ROWS: usize = 65_536;
+/// Largest independently authored gameplay profile.
+pub const MAX_GAMEPLAY_BYTES: u64 = 8 * 1024 * 1024;
+
+type TableObjects = Vec<serde_json::Map<String, serde_json::Value>>;
+
+/// Gameplay definitions authored separately from the official identity catalog.
+/// Each supplied table covers every catalog row in the same order. Omitted
+/// object fields retain the native parser's defaults; omitted tables do not.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct AuthoredGameplay {
+    schema_version: u32,
+    tables: BTreeMap<String, TableObjects>,
+}
 
 const FOOTER_BYTES: u64 = 221;
 const PAK_MAGIC: u32 = 0x5A6F_12E1;
@@ -471,7 +486,9 @@ pub struct DataTables {
     pak: DataPak,
     rows: BTreeMap<String, Vec<String>>,
     bools: BTreeMap<(String, String), Vec<Option<bool>>>,
-    objects: BTreeMap<String, Vec<serde_json::Map<String, serde_json::Value>>>,
+    objects: BTreeMap<String, TableObjects>,
+    /// Runtime must never fill an absent object table from the pak.
+    authored_only: bool,
 }
 
 impl std::fmt::Debug for DataTables {
@@ -484,13 +501,65 @@ impl std::fmt::Debug for DataTables {
 }
 
 impl DataTables {
+    /// Unrestricted reader for explicitly scoped research and authored fixtures.
+    /// Server startup must use [`Self::runtime`] instead.
     pub fn open(path: &Path) -> Result<Self> {
         Ok(Self {
             pak: DataPak::open(path)?,
             rows: BTreeMap::new(),
             bools: BTreeMap::new(),
             objects: BTreeMap::new(),
+            authored_only: false,
         })
+    }
+
+    /// Use the pak only for row identities, and a bounded independently authored
+    /// JSON file for every object value. Validate all supplied tables before use.
+    pub fn runtime(pak_path: &Path, gameplay_path: &Path) -> Result<Self> {
+        let file = OpenOptions::new()
+            .read(true)
+            .custom_flags(crate::nonblocking_flag())
+            .open(gameplay_path)
+            .context("open authored gameplay profile")?;
+        let metadata = file.metadata()?;
+        ensure!(
+            metadata.is_file(),
+            "authored gameplay requires a regular file"
+        );
+        ensure!(
+            metadata.len() <= MAX_GAMEPLAY_BYTES,
+            "authored gameplay byte limit"
+        );
+        let mut bytes = Vec::new();
+        file.take(MAX_GAMEPLAY_BYTES + 1).read_to_end(&mut bytes)?;
+        ensure!(
+            bytes.len() as u64 <= MAX_GAMEPLAY_BYTES,
+            "authored gameplay byte limit"
+        );
+        let profile: AuthoredGameplay = serde_json::from_slice(&bytes)
+            .map_err(|error| crate::json_parse_error("authored gameplay JSON", error))?;
+        ensure!(
+            profile.schema_version == 1,
+            "unsupported authored gameplay schema"
+        );
+        let mut tables = Self::open(pak_path)?;
+        tables.authored_only = true;
+        for (name, objects) in profile.tables {
+            ensure!(
+                objects.len() <= MAX_TABLE_ROWS,
+                "authored gameplay row limit"
+            );
+            let rows = tables.rows(&name)?;
+            ensure!(
+                rows.len() == objects.len()
+                    && rows.iter().zip(&objects).all(|(name, row)| {
+                        row.get("Name").and_then(serde_json::Value::as_str) == Some(name)
+                    }),
+                "authored gameplay rows must match catalog count, names and order"
+            );
+            tables.objects.insert(name, objects);
+        }
+        Ok(tables)
     }
 
     /// Whether the pak holds data table `table`.
@@ -518,6 +587,10 @@ impl DataTables {
         table: &str,
     ) -> Result<&[serde_json::Map<String, serde_json::Value>]> {
         if !self.objects.contains_key(table) {
+            ensure!(
+                !self.authored_only,
+                "missing authored gameplay table {table}; packaged gameplay fallback is forbidden"
+            );
             let rows = self.pak.table_objects(table)?;
             self.objects.insert(table.to_owned(), rows);
         }
@@ -542,7 +615,15 @@ impl DataTables {
     pub fn row_bool(&mut self, table: &str, field: &str, index: usize) -> Result<Option<bool>> {
         let key = (table.to_owned(), field.to_owned());
         if !self.bools.contains_key(&key) {
-            let column = self.pak.table_bool_column(table, field)?;
+            let column = self
+                .objects(table)?
+                .iter()
+                .map(|row| match row.get(field) {
+                    None => Ok(None),
+                    Some(serde_json::Value::Bool(value)) => Ok(Some(*value)),
+                    Some(_) => bail!("data table {table} has a non-bool {field}"),
+                })
+                .collect::<Result<_>>()?;
             self.bools.insert(key.clone(), column);
         }
         Ok(self.bools[&key].get(index).copied().flatten())

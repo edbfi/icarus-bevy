@@ -75,6 +75,197 @@ fn row_indices_follow_the_rows_order() {
 }
 
 #[test]
+fn runtime_reads_authored_values_with_catalog_row_identity() {
+    let root = TempDir::new().unwrap();
+    let path = pak_file(
+        &root,
+        &pak_writer::official_pak(&[("Flags/D_SessionFlags.json", table_json(&["Authored_Flag"]))]),
+    );
+    let authored = pak_writer::authored_gameplay(&path);
+    let mut profile: serde_json::Value =
+        serde_json::from_slice(&fs::read(&authored).unwrap()).unwrap();
+    profile["tables"]["D_CharacterStartingStats"][0]["StatsGranted"]["(Value=\"BaseMaximumHealth_+\")"] =
+        713.into();
+    profile["tables"]["D_FactionMissions"][0]["bUseOpenWorldRetryTimeout"] = false.into();
+    fs::write(&authored, serde_json::to_vec(&profile).unwrap()).unwrap();
+    let mut bound = icarus_bevy::network::bind(&icarus_bevy::config::NetworkConfig {
+        enabled: true,
+        port: 0,
+        data_pak: Some(path.clone()),
+        authored_gameplay: Some(authored.clone()),
+        ..Default::default()
+    })
+    .unwrap()
+    .unwrap();
+    let tables = bound.tables.as_mut().unwrap();
+    assert_eq!(
+        icarus_bevy::network::fresh_player_vitals(tables)
+            .unwrap()
+            .health,
+        713
+    );
+    assert_eq!(
+        tables
+            .row_bool("D_FactionMissions", "bUseOpenWorldRetryTimeout", 0)
+            .unwrap(),
+        Some(false)
+    );
+    assert_eq!(
+        tables.rows("D_CharacterGrowth").unwrap(),
+        ["Creature", "Player"]
+    );
+    assert_eq!(
+        tables
+            .row_index(
+                "D_CharacterGrowth",
+                &"Player".encode_utf16().collect::<Vec<_>>()
+            )
+            .unwrap(),
+        Some(1)
+    );
+    let mut reference = DataTables::open(&path).unwrap();
+    assert_eq!(
+        icarus_bevy::network::fresh_player_vitals(&mut reference)
+            .unwrap()
+            .health,
+        250
+    );
+    assert_eq!(
+        reference
+            .row_bool("D_FactionMissions", "bUseOpenWorldRetryTimeout", 0)
+            .unwrap(),
+        None
+    );
+
+    // Names remain available for a metadata-only table, but neither object nor
+    // bool access can fall back to the packaged values, including after caching.
+    profile["tables"]
+        .as_object_mut()
+        .unwrap()
+        .remove("D_CharacterStartingStats");
+    fs::write(&authored, serde_json::to_vec(&profile).unwrap()).unwrap();
+    let mut missing = DataTables::runtime(&path, &authored).unwrap();
+    assert_eq!(
+        missing.rows("D_CharacterStartingStats").unwrap(),
+        ["Base_Stats"]
+    );
+    for _ in 0..2 {
+        assert!(
+            missing
+                .objects("D_CharacterStartingStats")
+                .unwrap_err()
+                .to_string()
+                .contains("missing authored gameplay")
+        );
+        assert!(
+            missing
+                .row_bool("D_CharacterStartingStats", "Flag", 0)
+                .is_err()
+        );
+    }
+}
+
+#[test]
+fn authored_gameplay_rejects_misaligned_rows_and_invalid_inputs() {
+    let root = TempDir::new().unwrap();
+    let path = pak_file(
+        &root,
+        &write_pak(&[("D_Test.json", &table_json(&["A", "B"]), false)]),
+    );
+    let authored = root.path().join("gameplay.json");
+    for rows in [
+        serde_json::json!([{"Name":"A"}]),
+        serde_json::json!([{"Name":"B"},{"Name":"A"}]),
+        serde_json::json!([{"Name":"A"},{"Name":"A"}]),
+        serde_json::json!([{"Name":"A"},{"Name":"Unknown"}]),
+    ] {
+        fs::write(
+            &authored,
+            serde_json::to_vec(&serde_json::json!({"schema_version":1,"tables":{"D_Test": rows}}))
+                .unwrap(),
+        )
+        .unwrap();
+        assert!(
+            DataTables::runtime(&path, &authored)
+                .unwrap_err()
+                .to_string()
+                .contains("catalog count, names and order")
+        );
+    }
+    for value in [
+        serde_json::json!({"schema_version":2,"tables":{}}),
+        serde_json::json!({"schema_version":1,"tables":{},"unknown":1}),
+        serde_json::json!({"schema_version":1,"tables":{"D_Missing":[]}}),
+    ] {
+        fs::write(&authored, serde_json::to_vec(&value).unwrap()).unwrap();
+        assert!(DataTables::runtime(&path, &authored).is_err());
+    }
+    fs::File::create(&authored)
+        .unwrap()
+        .set_len(icarus_bevy::data_pak::MAX_GAMEPLAY_BYTES + 1)
+        .unwrap();
+    assert!(
+        DataTables::runtime(&path, &authored)
+            .unwrap_err()
+            .to_string()
+            .contains("byte limit")
+    );
+    assert!(DataTables::runtime(&path, root.path()).is_err());
+    let fifo = root.path().join("gameplay.fifo");
+    rustix::fs::mkfifoat(
+        rustix::fs::CWD,
+        &fifo,
+        rustix::fs::Mode::RUSR | rustix::fs::Mode::WUSR,
+    )
+    .unwrap();
+    assert!(DataTables::runtime(&path, &fifo).is_err());
+}
+
+#[test]
+fn runtime_requires_both_identity_catalog_and_authored_gameplay() {
+    for (pak, gameplay) in [(true, false), (false, true)] {
+        let config = icarus_bevy::config::NetworkConfig {
+            enabled: true,
+            port: 0,
+            data_pak: pak.then(|| "absent.pak".into()),
+            authored_gameplay: gameplay.then(|| "absent.json".into()),
+            ..Default::default()
+        };
+        let error = icarus_bevy::network::bind(&config).err().unwrap();
+        assert!(error.to_string().contains("configured together"));
+    }
+}
+
+#[test]
+fn installed_pak_does_not_enable_packaged_gameplay_without_an_authored_profile() {
+    let root = TempDir::new().unwrap();
+    let pak = root
+        .path()
+        .join(icarus_bevy::network::OFFICIAL_DIR)
+        .join(icarus_bevy::network::OFFICIAL_DATA_PAK);
+    fs::create_dir_all(pak.parent().unwrap()).unwrap();
+    // Discovery checks existence, but startup must reject the absent authored
+    // profile before trying to interpret even the catalog.
+    fs::write(&pak, b"not a pak").unwrap();
+    let config = root.path().join("server.toml");
+    fs::write(&config, "[network]\nenabled = true\n").unwrap();
+    let result = std::process::Command::new(env!("CARGO_BIN_EXE_icarus-server"))
+        .args(["run", "--data-dir"])
+        .arg(root.path())
+        .arg("--config")
+        .arg(config)
+        .args(["--network-port", "0", "--max-ticks", "1", "--compressed"])
+        .output()
+        .unwrap();
+    assert!(!result.status.success());
+    let error = String::from_utf8(result.stderr).unwrap();
+    assert!(
+        error.contains("network.authored_gameplay must be configured together"),
+        "{error}"
+    );
+}
+
+#[test]
 fn malformed_paks_fail_closed() {
     let root = TempDir::new().unwrap();
     let good = write_pak(&[("D_X.json", &table_json(&["A"]), false)]);
@@ -149,6 +340,7 @@ fn a_data_pak_without_the_session_flags_table_fails_before_binding() {
     let network = icarus_bevy::config::NetworkConfig {
         enabled: true,
         port: 0,
+        authored_gameplay: Some(pak_writer::authored_gameplay(&path)),
         data_pak: Some(path),
         ..Default::default()
     };
@@ -223,6 +415,7 @@ fn a_data_pak_without_the_faction_missions_table_fails_before_binding() {
     let network = icarus_bevy::config::NetworkConfig {
         enabled: true,
         port: 0,
+        authored_gameplay: Some(pak_writer::authored_gameplay(&path)),
         data_pak: Some(path),
         ..Default::default()
     };
@@ -312,6 +505,7 @@ fn missing_or_malformed_player_rows_fail_before_binding() {
         let network = icarus_bevy::config::NetworkConfig {
             enabled: true,
             port: 0,
+            authored_gameplay: Some(pak_writer::authored_gameplay(&path)),
             data_pak: Some(path),
             ..Default::default()
         };
@@ -331,6 +525,7 @@ fn missing_or_malformed_player_rows_fail_before_binding() {
     let network = icarus_bevy::config::NetworkConfig {
         enabled: true,
         port: 0,
+        authored_gameplay: Some(pak_writer::authored_gameplay(&path)),
         data_pak: Some(path),
         ..Default::default()
     };
