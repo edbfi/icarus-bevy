@@ -4,7 +4,7 @@
 //! not the original algorithm) with one [`LabPeer`] per IPv4 loopback address:
 //! a peer is created (or replaced) when the lab sends it a handshake
 //! acknowledgement, its later data datagrams pass through [`LabPeer::receive`]
-//! and every accepted packet is answered with [`LabPeer::ack_packet`]. When
+//! and accepted packets are acknowledged when send capacity permits. When
 //! [`PeerLabConfig::admission`] is `None` (default), no admission, identity
 //! check, Welcome, channel other than control, or gameplay runs; delivered
 //! control messages are counted by kind and then discarded, except that Hello
@@ -630,7 +630,7 @@ pub struct PeerLabStats {
     pub profile_responses_ignored: u64,
     /// Sessions removed on retry exhaustion, vanished PlayerState or exchange error.
     pub profile_players_failed: u64,
-    /// Composition/framing failures; fail closed rather than strand a request.
+    /// Composition/framing refusals; drainable capacity waits for ACK/NAK progress.
     pub profile_exchange_errors: u64,
     /// Separate reliable ActiveUserProfile and ActiveCharacter updates sent.
     pub profile_updates_sent: u64,
@@ -1085,6 +1085,15 @@ enum PendingPawnRestore {
     State(usize),
 }
 
+/// At most one unsent phase is retained; queued phases belong to the reliable
+/// transport and are never replayed by this state machine.
+enum PendingProfileExchange {
+    Request(ProfileKind),
+    Publish(ProfileKind, Vec<RepValue>),
+    Initialisation,
+    Complete,
+}
+
 struct PeerEntry {
     peer: LabPeer,
     /// Character-state values actually composed into this session's pawn open.
@@ -1110,6 +1119,7 @@ struct PeerEntry {
     cookie: [u8; 20],
     last_seen: Instant,
     ack_pending: bool,
+    ack_capacity_blocked: bool,
     admission: ConnectionLoginAdmission,
     login_url_units: Vec<u16>,
     spectator: bool,
@@ -1139,6 +1149,8 @@ struct PeerEntry {
     player_data: Option<u32>,
     bestiary: Option<u32>,
     profiles: ProfileExchange,
+    pending_profile_exchange: Option<PendingProfileExchange>,
+    profile_exchange_retry_ready: bool,
     /// Replicated actors this connection opened, by caller key.
     opened_actors: BTreeMap<u64, u32>,
     opened_incarnations: BTreeMap<u64, u64>,
@@ -4059,6 +4071,7 @@ impl PeerLab {
                         cookie,
                         last_seen: now,
                         ack_pending: false,
+                        ack_capacity_blocked: false,
                         admission: ConnectionLoginAdmission::new(),
                         login_url_units: Vec::new(),
                         spectator: false,
@@ -4078,6 +4091,8 @@ impl PeerLab {
                         player_data: None,
                         bestiary: None,
                         profiles: ProfileExchange::default(),
+                        pending_profile_exchange: None,
+                        profile_exchange_retry_ready: false,
                         opened_actors: BTreeMap::new(),
                         opened_incarnations: BTreeMap::new(),
                         retiring_incarnations: BTreeMap::new(),
@@ -4118,6 +4133,12 @@ impl PeerLab {
                         }
                         entry.last_seen = now;
                         entry.ack_pending = true;
+                        if !summary.acked.is_empty() || !summary.naked.is_empty() {
+                            entry.ack_capacity_blocked = false;
+                            if entry.pending_profile_exchange.is_some() {
+                                entry.profile_exchange_retry_ready = true;
+                            }
+                        }
                         if entry.pending_pawn_restore.is_some()
                             && (!summary.acked.is_empty() || !summary.naked.is_empty())
                         {
@@ -4285,6 +4306,57 @@ impl PeerLab {
         }
     }
 
+    fn defer_or_fail_profile_exchange(
+        &mut self,
+        address: SocketAddrV4,
+        error: &anyhow::Error,
+        pending: PendingProfileExchange,
+    ) {
+        bump(&mut self.stats.profile_exchange_errors);
+        if let Some(entry) = self.peers.get_mut(&address) {
+            let channel = match &pending {
+                PendingProfileExchange::Request(_) | PendingProfileExchange::Initialisation => {
+                    entry.player_controller_channel
+                }
+                PendingProfileExchange::Publish(..) | PendingProfileExchange::Complete => {
+                    entry.player_state_channel
+                }
+            };
+            if channel.is_some_and(|channel| transport_capacity_can_drain(entry, error, channel)) {
+                entry.pending_profile_exchange = Some(pending);
+                entry.profile_exchange_retry_ready = false;
+                return;
+            }
+        }
+        self.fail_profile_exchange(address);
+    }
+
+    fn retry_pending_profile_exchanges(&mut self) {
+        let ready: Vec<_> = self
+            .peers
+            .iter_mut()
+            .filter_map(|(address, entry)| {
+                if !std::mem::take(&mut entry.profile_exchange_retry_ready) {
+                    return None;
+                }
+                entry
+                    .pending_profile_exchange
+                    .take()
+                    .map(|pending| (*address, pending))
+            })
+            .collect();
+        for (address, pending) in ready {
+            match pending {
+                PendingProfileExchange::Request(kind) => self.request_profile(address, kind),
+                PendingProfileExchange::Publish(kind, values) => {
+                    self.accept_profile(address, kind, values);
+                }
+                PendingProfileExchange::Initialisation => self.request_initialisation(address),
+                PendingProfileExchange::Complete => self.complete_player_initialisation(address),
+            }
+        }
+    }
+
     fn request_profile(&mut self, address: SocketAddrV4, kind: ProfileKind) {
         let sent = (|| {
             let plan = self
@@ -4322,9 +4394,12 @@ impl PeerLab {
                     });
                 }
             }
-            Err(_) => {
-                bump(&mut self.stats.profile_exchange_errors);
-                self.fail_profile_exchange(address);
+            Err(error) => {
+                self.defer_or_fail_profile_exchange(
+                    address,
+                    &error,
+                    PendingProfileExchange::Request(kind),
+                );
             }
         }
     }
@@ -4435,6 +4510,17 @@ impl PeerLab {
                 ProfileKind::Character => (33, 44),
             };
             ensure!(values.len() == count, "profile command count");
+            // Validate caller-visible state before committing reliable traffic.
+            let character = if kind == ProfileKind::Character {
+                let slot = profile_exchange::character_slot(&values)?;
+                let xp = profile_exchange::character_xp(&values)?;
+                let Some(RepValue::Str(name)) = values.first() else {
+                    bail!("character profile needs CharacterName");
+                };
+                Some((slot, xp, name.clone()))
+            } else {
+                None
+            };
             let payload =
                 profile_exchange::player_state_update(first, &values, &plan.layout, &codec)?;
             let sent = entry.peer.reliable_actor_bunch_datagrams(
@@ -4443,13 +4529,10 @@ impl PeerLab {
                     .context("no PlayerState channel")?,
                 payload,
             )?;
-            if kind == ProfileKind::Character {
-                entry.profiles.character_slot = Some(profile_exchange::character_slot(&values)?);
-                entry.profiles.character_xp = Some(profile_exchange::character_xp(&values)?);
-                let Some(RepValue::Str(name)) = values.first() else {
-                    bail!("character profile needs CharacterName");
-                };
-                entry.profiles.character_name = Some(name.clone());
+            if let Some((slot, xp, name)) = character {
+                entry.profiles.character_slot = Some(slot);
+                entry.profiles.character_xp = Some(xp);
+                entry.profiles.character_name = Some(name);
             }
             entry.ack_pending = false;
             Ok::<_, anyhow::Error>(sent)
@@ -4470,9 +4553,12 @@ impl PeerLab {
                     ProfileKind::Character => self.request_initialisation(address),
                 }
             }
-            Err(_) => {
-                bump(&mut self.stats.profile_exchange_errors);
-                self.fail_profile_exchange(address);
+            Err(error) => {
+                self.defer_or_fail_profile_exchange(
+                    address,
+                    &error,
+                    PendingProfileExchange::Publish(kind, values),
+                );
             }
         }
     }
@@ -4535,9 +4621,12 @@ impl PeerLab {
                     bump(&mut self.stats.associated_prospects_sent);
                 }
             }
-            Err(_) => {
-                bump(&mut self.stats.profile_exchange_errors);
-                self.fail_profile_exchange(address);
+            Err(error) => {
+                self.defer_or_fail_profile_exchange(
+                    address,
+                    &error,
+                    PendingProfileExchange::Initialisation,
+                );
             }
         }
     }
@@ -4547,6 +4636,7 @@ impl PeerLab {
             return;
         };
         if entry.profiles.completed
+            || entry.pending_profile_exchange.is_some()
             || !entry.profiles.has_loadout
             || !entry.profiles.has_bestiary
             || self
@@ -4594,9 +4684,12 @@ impl PeerLab {
                     bump(&mut self.stats.player_character_id_updates_sent);
                 }
             }
-            Err(_) => {
-                bump(&mut self.stats.profile_exchange_errors);
-                self.fail_profile_exchange(address);
+            Err(error) => {
+                self.defer_or_fail_profile_exchange(
+                    address,
+                    &error,
+                    PendingProfileExchange::Complete,
+                );
             }
         }
     }
@@ -5516,12 +5609,27 @@ impl PeerLab {
         let mut failed = Vec::new();
         let mut acks = Vec::new();
         for (address, entry) in &mut self.peers {
-            if !std::mem::take(&mut entry.ack_pending) {
+            if !entry.ack_pending || entry.ack_capacity_blocked {
                 continue;
             }
             match entry.peer.ack_packet() {
-                Ok(datagram) => acks.push((*address, datagram)),
-                Err(_) => failed.push(*address),
+                Ok(datagram) => {
+                    entry.ack_pending = false;
+                    acks.push((*address, datagram));
+                }
+                Err(error) => {
+                    if matches!(
+                        error.downcast_ref::<super::sequencing::SendCapacityError>(),
+                        Some(super::sequencing::SendCapacityError::SentRecordRing { .. })
+                    ) && transport_capacity_can_drain(entry, &error, 0)
+                    {
+                        // Keep the ACK intent, but wait for packet notification
+                        // progress before attempting another allocation.
+                        entry.ack_capacity_blocked = true;
+                    } else {
+                        failed.push(*address);
+                    }
+                }
             }
         }
         for address in failed {
@@ -5590,6 +5698,7 @@ impl PeerLab {
             }
             self.data(address, length, now);
         }
+        self.retry_pending_profile_exchanges();
         self.retry_pending_pawn_restores();
         self.finalise_connected_players();
         self.retry_pending_player_history();
