@@ -24,6 +24,7 @@ pub mod inventory_weight;
 pub mod manager_open;
 pub mod modifier_lifecycle;
 pub mod modifier_restore;
+pub mod modifier_timing;
 pub mod packet;
 pub mod packet_lab;
 pub mod pawn_open;
