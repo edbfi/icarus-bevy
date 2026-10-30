@@ -6,7 +6,7 @@ here instead of restating them.
 
 Before restructure: 96ddb0b:docs/gates.md
 
-Last reconciled: 2026-10-28
+Last reconciled: 2026-10-30
 
 ## Before any C001 original-code case
 
@@ -81,20 +81,23 @@ Last reconciled: 2026-10-28
   configuration and packaged data, including use of derived protocol metadata
   in the independent server. This clears the decision gate, not either
   technical unknown or a compatibility claim.
-- Original assets, gameplay data tables, code and binaries remain research
-  inputs only and must not ship with the replacement. Each analysis still
+- Original assets, gameplay data tables, code and binaries must not ship
+  with the replacement. The standing instruction also forbids extracting or
+  reusing packaged gameplay tables; author behavior and world data independently. Each analysis still
   needs a bounded case scope and session; runtime and connected experiments
   retain their separate gates below.
 - The user decided (2026-10-22, F-828) that the shipped server must not
   depend on the game client, which is not publicly available, or on data
-  derived only from it. Basic data it needs to work may come from the free,
+  derived only from it. Protocol identities may come from the free,
   public dedicated-server distribution, fetched at install time without an
-  interactive confirmation (container installs); the native Rust fetcher
+  interactive confirmation (container installs); gameplay values must come
+  from independently authored input (F-993). The native Rust fetcher
   `icarus-fetch` now does this anonymously without steamcmd (F-831, U-073).
   The requirement must be documented for operators. Nothing original is committed or
   redistributed. Client-derived metadata counts toward the shipped server only
   once re-derived from or checked against that distribution; for 3.0.32
-  every table `run` uses is (F-832; U-072 resolved).
+  the earlier table-source qualification is F-832 (U-072 resolved). It does
+  not authorize reuse of their gameplay values.
 
 ## Before any original-server or client run
 

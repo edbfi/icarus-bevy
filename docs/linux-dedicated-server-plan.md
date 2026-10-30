@@ -34,12 +34,12 @@ independent Rust/Bevy, no-original-assets rules.
 - No dependency on the original server executable, Unreal runtime, Wine or Proton.
 - **Input parity** (F-828, F-831;
   [project rules](../.agents/rules/project.md#input-parity)): the native server
-  may need no more than the official dedicated server needs. What that free,
-  public distribution ships (data tables and other basic data) may be fetched
+  may need no more than the official dedicated server needs. Protocol row identities from that free,
+  public distribution may be fetched
   unattended at install time by our own fetcher; anything only the game client
   provides is never a runtime or build input. Needing nothing official is better
   still, toward a fully standalone binary.
-- Otherwise do not extract or reuse original art, audio, terrain, collision,
+- Do not extract or reuse original art, audio, terrain, collision,
   navigation or gameplay data tables; record provenance of independently
   authored data.
 - Record protocol identifiers and experimentally established behavior in

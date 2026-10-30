@@ -71,10 +71,11 @@ be demonstrated rather than assumed.
 # Input parity
 
 - The native server may need no more than the official dedicated server needs
-  (user decision, F-828). It may use what the free, public dedicated-server
-  distribution ships, fetched unattended at install time by our own fetcher;
+  (user decision, F-828). Protocol identities may come from the free, public dedicated-server
+  distribution, fetched unattended at install time by our own fetcher;
   it must never require the game client or anything derived only from it.
-  Prefer removing even that dependency through reverse engineering or
+  Do not extract or reuse packaged gameplay tables; author behavior and world
+  data independently. Prefer removing even the identity dependency through reverse engineering or
   independently authored data, toward a fully standalone binary. The client
   stays a research cross-check only.
 

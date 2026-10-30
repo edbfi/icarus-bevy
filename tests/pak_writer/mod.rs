@@ -4,6 +4,38 @@ use std::io::Write;
 
 use flate2::{Compression, write::ZlibEncoder};
 
+/// Supply the same authored definitions on both sides of a fixture. This is
+/// test-only and must never be used to turn original gameplay data into a profile.
+#[allow(dead_code)]
+pub fn authored_gameplay(pak_path: &std::path::Path) -> std::path::PathBuf {
+    let mut pak = icarus_bevy::data_pak::DataPak::open(pak_path).unwrap();
+    let members = pak.members().map(str::to_owned).collect::<Vec<_>>();
+    let mut tables = serde_json::Map::new();
+    for member in members {
+        let Some(name) = member
+            .rsplit('/')
+            .next()
+            .and_then(|name| name.strip_suffix(".json"))
+        else {
+            continue;
+        };
+        let value: serde_json::Value = serde_json::from_slice(&pak.read(&member).unwrap()).unwrap();
+        if let Some(rows) = value.get("Rows") {
+            tables.insert(name.to_owned(), rows.clone());
+        }
+    }
+    let profile = pak_path.with_extension("authored.json");
+    std::fs::write(
+        &profile,
+        serde_json::to_vec(&serde_json::json!({
+            "schema_version": 1, "tables": tables
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+    profile
+}
+
 fn fstring(text: &str) -> Vec<u8> {
     let mut bytes = Vec::new();
     bytes.extend_from_slice(&i32::try_from(text.len() + 1).unwrap().to_le_bytes());

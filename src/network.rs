@@ -190,7 +190,7 @@ const LAB_VITALS: CharacterVitals = CharacterVitals {
 };
 
 /// The pawn content `run` opens every player's pawn with: movement frozen
-/// at open (as captured, F-797). With the official server's data tables a
+/// at open (as captured, F-797). With authored gameplay input a
 /// fresh player's vitals, empty inventories and replicated stats come from
 /// them ([`fresh_player_vitals`], [`player_inventories`], F-836;
 /// [`crate::pawn_stats::fresh_player_stats`], F-839); without, lab vitals,
@@ -1628,7 +1628,7 @@ pub fn peer_lab_config(network: &NetworkConfig) -> PeerLabConfig {
 pub struct BoundNetwork {
     pub lab: PeerLab,
     pub release: Option<ReleasePin>,
-    /// The official server's data tables, when `data_pak` is set.
+    /// Protocol row identities and independently authored gameplay values.
     pub tables: Option<DataTables>,
     /// The release's plans of the managers that open only with a save's
     /// state ([`apply_saved_game_state`]).
@@ -1652,9 +1652,9 @@ pub fn release_profile(network: &NetworkConfig) -> Result<Option<ReleaseProfile>
         .transpose()
 }
 
-/// Open a data pak and load the tables `run` reads from it.
-fn load_data_tables(path: &std::path::Path) -> Result<DataTables> {
-    let mut tables = DataTables::open(path)?;
+/// Bind pak row identities to authored gameplay before planning the session.
+fn load_data_tables(path: &std::path::Path, gameplay: &std::path::Path) -> Result<DataTables> {
+    let mut tables = DataTables::runtime(path, gameplay)?;
     tables.rows(SESSION_FLAGS_TABLE)?;
     tables.rows(FACTION_MISSIONS_TABLE)?;
     tables.row_bool(FACTION_MISSIONS_TABLE, RETRY_TIMEOUT_FIELD, 0)?;
@@ -1687,14 +1687,24 @@ pub fn bind_with_parameters(
     }
     network.validate()?;
     let profile = release_profile(network)?;
+    ensure!(
+        network.data_pak.is_some() == network.authored_gameplay.is_some(),
+        "network.data_pak and network.authored_gameplay must be configured together; packaged gameplay values are not runtime inputs"
+    );
     // The tables run reads are loaded here, so a pak without them fails
     // before the socket binds rather than at the first apply.
     let mut tables = network
         .data_pak
         .as_deref()
         .map(|path| {
-            load_data_tables(path)
-                .with_context(|| format!("load network.data_pak {}", path.display()))
+            load_data_tables(
+                path,
+                network
+                    .authored_gameplay
+                    .as_deref()
+                    .expect("validated pair"),
+            )
+            .with_context(|| format!("load network.data_pak {}", path.display()))
         })
         .transpose()?;
     if let Some(profile) = &profile {

@@ -1037,8 +1037,8 @@ fn with_native_replication_counts(
 
 fn run(options: ConfigOptions, max_ticks: Option<u64>, compressed: bool) -> Result<()> {
     let mut config = options.resolve()?;
-    // The official data tables an install step fetched into the data
-    // directory serve when no data pak is configured.
+    // An installed pak supplies protocol row identities when no catalog is
+    // configured. bind still requires independently authored gameplay input.
     let mut data_pak_source = config.network.data_pak.as_ref().map(|_| "configured");
     if config.network.enabled && config.network.data_pak.is_none() {
         let installed = config
