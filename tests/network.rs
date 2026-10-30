@@ -1187,6 +1187,14 @@ fn uid_lab_with(
     library: icarus_bevy::actor_uids::ActorUidLibrary,
     config: icarus_bevy::experimental::peer_lab::PeerLabConfig,
 ) -> (PeerLab, ReleaseProfile) {
+    uid_lab_with_content(library, config, network::pawn_content(None).unwrap())
+}
+
+fn uid_lab_with_content(
+    library: icarus_bevy::actor_uids::ActorUidLibrary,
+    config: icarus_bevy::experimental::peer_lab::PeerLabConfig,
+    content: icarus_bevy::experimental::pawn_open::PawnContent,
+) -> (PeerLab, ReleaseProfile) {
     use icarus_bevy::experimental::{pawn_open::PAWN_CHANNEL_INDEX, peer_lab::PeerLabAdmission};
     let profile = ReleaseProfile::load(&release_toml()).unwrap();
     let admission = PeerLabAdmission::default();
@@ -1201,7 +1209,7 @@ fn uid_lab_with(
     lab.enable_pawn_open(
         profile.pawn_open_plan(admission.map_url).unwrap().unwrap(),
         PAWN_CHANNEL_INDEX,
-        network::pawn_content(None).unwrap(),
+        content,
     )
     .unwrap();
     lab.enable_actor_uids(library).unwrap();
@@ -5720,6 +5728,12 @@ struct ModifierTimeFixture {
 
 impl ModifierTimeFixture {
     fn new() -> Self {
+        Self::with_temperature(Default::default())
+    }
+
+    fn with_temperature(
+        temperature: icarus_bevy::experimental::pawn_open::PawnTemperatureState,
+    ) -> Self {
         use icarus_bevy::{
             actor_uids::ActorUidLibrary,
             experimental::{
@@ -5729,7 +5743,13 @@ impl ModifierTimeFixture {
             },
             prospect,
         };
-        let (mut lab, profile) = uid_lab(ActorUidLibrary::with_random(|| 7));
+        let mut content = network::pawn_content(None).unwrap();
+        content.character_state.extend(temperature.values());
+        let (mut lab, profile) = uid_lab_with_content(
+            ActorUidLibrary::with_random(|| 7),
+            network::peer_lab_config(&enabled(0)),
+            content,
+        );
         lab.enable_player_state_open(
             profile
                 .player_state_open_plan(PeerLabAdmission::default().map_url)
@@ -5852,11 +5872,35 @@ impl ModifierTimeFixture {
         engine: u32,
         packets: &[Vec<u8>],
     ) -> Vec<DecodedPawnBlock> {
+        use icarus_bevy::experimental::actor_channel::{BlockTarget, SubObjectClass};
+        Self::decode_live(tracker, engine, packets)
+            .into_iter()
+            .flatten()
+            .filter(|(target, _)| {
+                matches!(
+                    target,
+                    BlockTarget::SubObject {
+                        class: SubObjectClass::Class(_),
+                        ..
+                    }
+                )
+            })
+            .collect()
+    }
+
+    fn decode_live(
+        tracker: &mut icarus_bevy::experimental::probe_initialise::ActorChannelTracker,
+        engine: u32,
+        packets: &[Vec<u8>],
+    ) -> Vec<Vec<DecodedPawnBlock>> {
         use icarus_bevy::experimental::{
             actor_channel::{BlockTarget, SubObjectClass, read_actor_bunch_body},
             pawn_open::PAWN_CHANNEL_INDEX,
             probe_initialise::initialise_codec,
-            rep_layout::{modifier_state_component_rep_layout, read_rep_properties},
+            rep_layout::{
+                modifier_state_component_rep_layout, player_character_state_rep_layout,
+                read_rep_properties,
+            },
         };
         let codec = initialise_codec(engine);
         let mut result = Vec::new();
@@ -5868,26 +5912,28 @@ impl ModifierTimeFixture {
                 }
                 let body = read_actor_bunch_body(&mut bunch.payload.reader(), false, &codec.actor)
                     .unwrap();
+                let mut blocks = Vec::new();
                 for block in body.blocks {
-                    if !matches!(
-                        block.target,
+                    let layout = match &block.target {
                         BlockTarget::SubObject {
                             class: SubObjectClass::Class(_),
                             ..
+                        } => modifier_state_component_rep_layout(),
+                        BlockTarget::SubObject {
+                            object,
+                            class: SubObjectClass::StablyNamed,
+                        } if tracker.package_map().resolve_path(object.guid)
+                            == Some("ActorState") =>
+                        {
+                            player_character_state_rep_layout()
                         }
-                    ) {
-                        continue;
-                    }
+                        _ => continue,
+                    };
                     assert!(block.has_rep_layout);
                     let mut reader = block.payload.reader();
-                    let values = read_rep_properties(
-                        &mut reader,
-                        &modifier_state_component_rep_layout(),
-                        &codec,
-                    )
-                    .unwrap();
+                    let values = read_rep_properties(&mut reader, &layout, &codec).unwrap();
                     assert!(reader.at_end());
-                    result.push((
+                    blocks.push((
                         block.target,
                         values
                             .entries
@@ -5896,6 +5942,9 @@ impl ModifierTimeFixture {
                             .collect(),
                     ));
                 }
+                if !blocks.is_empty() {
+                    result.push(blocks);
+                }
             }
         }
         assert!(notes.is_empty(), "{notes:?}");
@@ -5903,6 +5952,23 @@ impl ModifierTimeFixture {
     }
 
     fn collect(&mut self) -> Vec<DecodedPawnBlock> {
+        use icarus_bevy::experimental::actor_channel::{BlockTarget, SubObjectClass};
+        self.collect_live()
+            .into_iter()
+            .flatten()
+            .filter(|(target, _)| {
+                matches!(
+                    target,
+                    BlockTarget::SubObject {
+                        class: SubObjectClass::Class(_),
+                        ..
+                    }
+                )
+            })
+            .collect()
+    }
+
+    fn collect_live(&mut self) -> Vec<Vec<DecodedPawnBlock>> {
         let packets: Vec<_> = self
             .client
             .collect(Duration::from_millis(30), 64)
@@ -5911,7 +5977,7 @@ impl ModifierTimeFixture {
             .into_iter()
             .map(|reply| reply.bytes)
             .collect();
-        Self::decode(
+        Self::decode_live(
             &mut self.tracker,
             self.profile.engine_network_version,
             &packets,
@@ -5922,6 +5988,43 @@ impl ModifierTimeFixture {
         self.client.keepalive().unwrap();
         self.app.world_mut().resource_mut::<PeerLab>().poll();
         self.collect()
+    }
+
+    fn ack_live(&mut self) -> Vec<Vec<DecodedPawnBlock>> {
+        self.client.keepalive().unwrap();
+        self.app.world_mut().resource_mut::<PeerLab>().poll();
+        self.collect_live()
+    }
+
+    fn refresh_temperature(
+        &mut self,
+        patch: icarus_bevy::experimental::pawn_open::PawnTemperatureState,
+    ) {
+        self.app
+            .world_mut()
+            .resource_mut::<PeerLab>()
+            .refresh_pawn_temperature(self.connection, patch)
+            .unwrap();
+    }
+
+    fn assert_temperature_block(
+        &self,
+        block: &DecodedPawnBlock,
+        expected: icarus_bevy::experimental::pawn_open::PawnTemperatureState,
+    ) {
+        use icarus_bevy::experimental::actor_channel::{BlockTarget, SubObjectClass};
+        let BlockTarget::SubObject {
+            object,
+            class: SubObjectClass::StablyNamed,
+        } = &block.0
+        else {
+            panic!("stable ActorState target");
+        };
+        assert_eq!(
+            self.tracker.package_map().resolve_path(object.guid),
+            Some("ActorState")
+        );
+        assert_eq!(block.1, expected.values());
     }
 
     fn refresh(
@@ -5951,6 +6054,375 @@ impl ModifierTimeFixture {
             .collect();
         assert_eq!(blocks, expected);
     }
+}
+
+#[test]
+fn pawn_temperatures_coalesce_with_modifier_times_and_retain_actor_state_identity() {
+    use icarus_bevy::experimental::{
+        modifier_timing::RemainingTime,
+        pawn_open::{PAWN_CHANNEL_INDEX, PawnTemperatureState},
+        peer_lab::PeerLabAdmission,
+    };
+    let mut fixture = ModifierTimeFixture::new();
+    assert_eq!(
+        fixture
+            .app
+            .world()
+            .resource::<PeerLab>()
+            .pawn_temperature(fixture.connection),
+        Some(PawnTemperatureState::default())
+    );
+    let initial = PawnTemperatureState {
+        external: Some(-12),
+        modified_external: Some(0),
+        modified_internal: Some(7),
+        internal: Some(37),
+    };
+    {
+        let mut lab = fixture.app.world_mut().resource_mut::<PeerLab>();
+        assert_eq!(lab.pawn_temperature(u32::MAX), None);
+        assert!(lab.refresh_pawn_temperature(u32::MAX, initial).is_err());
+        assert_eq!(
+            lab.pawn_temperature(fixture.connection),
+            Some(PawnTemperatureState::default())
+        );
+        let plan = fixture
+            .profile
+            .pawn_open_plan(PeerLabAdmission::default().map_url)
+            .unwrap()
+            .unwrap();
+        assert!(
+            lab.enable_pawn_open(
+                plan,
+                PAWN_CHANNEL_INDEX,
+                network::pawn_content(None).unwrap()
+            )
+            .is_err()
+        );
+    }
+    fixture.refresh_temperature(initial);
+    fixture.refresh(&[(
+        1,
+        RemainingTime {
+            seconds: 2.0,
+            replicated_tenths: 20,
+        },
+    )]);
+    fixture.app.world_mut().resource_mut::<PeerLab>().poll();
+    assert!(
+        fixture.collect_live().is_empty(),
+        "initial restore remains unacknowledged"
+    );
+    fixture.refresh_temperature(PawnTemperatureState {
+        external: Some(-10),
+        ..Default::default()
+    });
+    let mut latest = initial;
+    latest.external = Some(-10);
+    assert_eq!(
+        fixture
+            .app
+            .world()
+            .resource::<PeerLab>()
+            .pawn_temperature(fixture.connection),
+        Some(latest)
+    );
+    let updates = fixture.ack_live();
+    assert_eq!(updates.len(), 1, "both producers share one logical bunch");
+    assert_eq!(updates[0].len(), 2);
+    fixture.assert_temperature_block(&updates[0][0], latest);
+    fixture.assert_time_blocks(&updates[0][1..], &[(1, 20)]);
+    let actor_state = updates[0][0].0.clone();
+    fixture.refresh_temperature(PawnTemperatureState {
+        external: Some(0),
+        ..Default::default()
+    });
+    fixture.refresh(&[(
+        2,
+        RemainingTime {
+            seconds: 3.0,
+            replicated_tenths: 30,
+        },
+    )]);
+    fixture.app.world_mut().resource_mut::<PeerLab>().poll();
+    assert!(
+        fixture.collect_live().is_empty(),
+        "pending live update gates both producers"
+    );
+    let updates = fixture.ack_live();
+    assert_eq!(updates.len(), 1);
+    assert_eq!(updates[0].len(), 2);
+    assert_eq!(updates[0][0].0, actor_state);
+    fixture.assert_temperature_block(
+        &updates[0][0],
+        PawnTemperatureState {
+            external: Some(0),
+            ..Default::default()
+        },
+    );
+    fixture.assert_time_blocks(&updates[0][1..], &[(2, 30)]);
+    latest.external = Some(0);
+    assert_eq!(
+        fixture
+            .app
+            .world()
+            .resource::<PeerLab>()
+            .pawn_temperature(fixture.connection),
+        Some(latest)
+    );
+    assert!(fixture.ack_live().is_empty());
+    fixture.refresh_temperature(latest);
+    fixture.refresh_temperature(PawnTemperatureState::default());
+    for _ in 0..8 {
+        fixture.app.world_mut().resource_mut::<PeerLab>().poll();
+    }
+    assert!(
+        fixture.collect_live().is_empty(),
+        "unchanged values and ticks do not publish"
+    );
+    let stats = fixture.app.world().resource::<PeerLab>().stats();
+    assert_eq!(stats.pawn_temperature_updates_queued, 2);
+    assert_eq!(stats.modifier_time_updates_queued, 2);
+    assert_eq!(stats.pawn_temperature_update_errors, 0);
+}
+
+#[test]
+fn pawn_temperatures_start_from_only_the_fields_in_the_queued_open() {
+    use icarus_bevy::experimental::pawn_open::PawnTemperatureState;
+    let initial = PawnTemperatureState {
+        external: Some(0),
+        internal: Some(36),
+        ..Default::default()
+    };
+    let mut fixture = ModifierTimeFixture::with_temperature(initial);
+    assert_eq!(
+        fixture
+            .app
+            .world()
+            .resource::<PeerLab>()
+            .pawn_temperature(fixture.connection),
+        Some(initial)
+    );
+    assert!(fixture.ack_live().is_empty());
+    fixture.refresh_temperature(initial);
+    fixture.app.world_mut().resource_mut::<PeerLab>().poll();
+    assert!(
+        fixture.collect_live().is_empty(),
+        "opening values are already queued"
+    );
+    let patch = PawnTemperatureState {
+        modified_external: Some(0),
+        internal: Some(0),
+        ..Default::default()
+    };
+    fixture.refresh_temperature(patch);
+    fixture.app.world_mut().resource_mut::<PeerLab>().poll();
+    let updates = fixture.collect_live();
+    assert_eq!(updates.len(), 1);
+    assert_eq!(updates[0].len(), 1);
+    fixture.assert_temperature_block(&updates[0][0], patch);
+    assert_eq!(
+        fixture
+            .app
+            .world()
+            .resource::<PeerLab>()
+            .pawn_temperature(fixture.connection),
+        Some(PawnTemperatureState {
+            external: Some(0),
+            modified_external: Some(0),
+            modified_internal: None,
+            internal: Some(0)
+        })
+    );
+    assert!(fixture.ack_live().is_empty());
+    assert_eq!(
+        fixture
+            .app
+            .world()
+            .resource::<PeerLab>()
+            .stats()
+            .modifier_time_updates_queued,
+        0
+    );
+}
+
+#[test]
+fn pawn_temperatures_are_unavailable_when_the_pawn_open_fails() {
+    use icarus_bevy::{
+        actor_uids::ActorUidLibrary,
+        experimental::{pawn_open::PawnTemperatureState, rep_layout::RepValue},
+    };
+    let mut content = network::pawn_content(None).unwrap();
+    content.character_state.insert(8, RepValue::Byte(0));
+    let (lab, profile) = uid_lab_with_content(
+        ActorUidLibrary::with_random(|| 7),
+        network::peer_lab_config(&enabled(0)),
+        content,
+    );
+    let pinned = profile.pin.network_checksum;
+    let mut app = build_app(&ServerConfig::default(), &WorldSnapshot::default()).unwrap();
+    let address = network::install(&mut app, lab).unwrap();
+    let ((client, bytes), _) = with_server(&mut app, move || join_pinned_open(address, pinned, 1));
+    assert_eq!(sent_pawn_uid(&profile, &bytes), None);
+    let mut lab = app.world_mut().resource_mut::<PeerLab>();
+    let connection = lab.joined_connections()[0];
+    assert_eq!(lab.stats().pawn_open_errors, 1);
+    assert_eq!(lab.pawn_temperature(connection), None);
+    assert!(
+        lab.refresh_pawn_temperature(
+            connection,
+            PawnTemperatureState {
+                external: Some(0),
+                ..Default::default()
+            }
+        )
+        .is_err()
+    );
+    assert_eq!(lab.pawn_temperature(connection), None);
+    assert_eq!(lab.stats().pawn_temperature_updates_queued, 0);
+    with_server(&mut app, move || client.close().unwrap());
+}
+
+#[test]
+fn pawn_internal_temperature_setter_publishes_handler_state_without_replaying_calls() {
+    use icarus_bevy::experimental::{
+        pawn_open::PawnTemperatureState, temperature::InternalTemperatureCalls,
+    };
+    #[derive(Default)]
+    struct Calls {
+        reads: Vec<(u16, i32)>,
+        notifications: Vec<(i32, i32)>,
+    }
+    impl InternalTemperatureCalls for Calls {
+        fn stat(&mut self, state: &mut i32, key: u16) -> i32 {
+            self.reads.push((key, *state));
+            *state = 91;
+            match key {
+                0xa2 => 50,
+                0xa0 => -10,
+                _ => panic!("unexpected stat key"),
+            }
+        }
+        fn temperature_updated(&mut self, state: &mut i32, value: i32) {
+            self.notifications.push((*state, value));
+            *state = -8;
+        }
+    }
+    let mut fixture = ModifierTimeFixture::with_temperature(PawnTemperatureState {
+        internal: Some(37),
+        ..Default::default()
+    });
+    let mut calls = Calls::default();
+    assert!(
+        fixture
+            .app
+            .world_mut()
+            .resource_mut::<PeerLab>()
+            .set_pawn_internal_temperature(fixture.connection, 100, &mut calls)
+            .unwrap()
+    );
+    assert_eq!(calls.reads, [(0xa2, 37), (0xa0, 91)]);
+    assert_eq!(calls.notifications, [(50, 50)]);
+    let final_state = PawnTemperatureState {
+        internal: Some(-8),
+        ..Default::default()
+    };
+    assert_eq!(
+        fixture
+            .app
+            .world()
+            .resource::<PeerLab>()
+            .pawn_temperature(fixture.connection),
+        Some(final_state)
+    );
+    fixture.app.world_mut().resource_mut::<PeerLab>().poll();
+    assert!(fixture.collect_live().is_empty());
+    let updates = fixture.ack_live();
+    assert_eq!(updates.len(), 1);
+    assert_eq!(updates[0].len(), 1);
+    fixture.assert_temperature_block(&updates[0][0], final_state);
+    assert!(fixture.ack_live().is_empty());
+    assert_eq!(calls.reads.len(), 2);
+    assert_eq!(calls.notifications.len(), 1);
+    assert!(
+        !fixture
+            .app
+            .world_mut()
+            .resource_mut::<PeerLab>()
+            .set_pawn_internal_temperature(fixture.connection, -8, &mut calls)
+            .unwrap()
+    );
+    assert_eq!(
+        calls.reads,
+        [(0xa2, 37), (0xa0, 91), (0xa2, -8), (0xa0, 91)]
+    );
+    assert_eq!(calls.notifications, [(50, 50)]);
+    assert_eq!(
+        fixture
+            .app
+            .world()
+            .resource::<PeerLab>()
+            .pawn_temperature(fixture.connection),
+        Some(final_state),
+        "getter mutations are overwritten even when notification is not requested"
+    );
+    for _ in 0..8 {
+        fixture.app.world_mut().resource_mut::<PeerLab>().poll();
+    }
+    assert!(fixture.collect_live().is_empty());
+    assert_eq!(calls.reads.len(), 4);
+    assert_eq!(calls.notifications.len(), 1);
+    assert_eq!(
+        fixture
+            .app
+            .world()
+            .resource::<PeerLab>()
+            .stats()
+            .pawn_temperature_updates_queued,
+        1
+    );
+}
+
+#[test]
+fn pawn_internal_temperature_setter_rejects_unknown_state_before_caller_effects() {
+    use icarus_bevy::experimental::{
+        pawn_open::PawnTemperatureState, temperature::InternalTemperatureCalls,
+    };
+    struct Uncalled;
+    impl InternalTemperatureCalls for Uncalled {
+        fn stat(&mut self, _: &mut i32, _: u16) -> i32 {
+            panic!("unknown pawn state must not read stats")
+        }
+        fn temperature_updated(&mut self, _: &mut i32, _: i32) {
+            panic!("unknown pawn state must not notify")
+        }
+    }
+    let mut fixture = ModifierTimeFixture::new();
+    {
+        let mut lab = fixture.app.world_mut().resource_mut::<PeerLab>();
+        assert!(
+            lab.set_pawn_internal_temperature(u32::MAX, 0, &mut Uncalled)
+                .is_err()
+        );
+        assert!(
+            lab.set_pawn_internal_temperature(fixture.connection, 0, &mut Uncalled)
+                .is_err()
+        );
+        assert_eq!(
+            lab.pawn_temperature(fixture.connection),
+            Some(PawnTemperatureState::default())
+        );
+    }
+    assert!(fixture.ack_live().is_empty());
+    assert_eq!(
+        fixture
+            .app
+            .world()
+            .resource::<PeerLab>()
+            .stats()
+            .pawn_temperature_updates_queued,
+        0
+    );
 }
 
 #[test]
@@ -6098,6 +6570,7 @@ fn restored_modifier_times_retry_packet_pressure_and_reset_on_reconnect() {
     use icarus_bevy::experimental::{
         modifier_timing::RemainingTime,
         packet_lab::DEFAULT_SENT_CAPACITY,
+        pawn_open::PawnTemperatureState,
         peer_lab::PeerLabAdmission,
         session_open::{ActorOpenSpec, PathSegment, map_level_chain},
     };
@@ -6146,6 +6619,10 @@ fn restored_modifier_times_retry_packet_pressure_and_reset_on_reconnect() {
         assert!(fixture.collect().is_empty());
     }
     assert!(queued > 0 && queued < DEFAULT_SENT_CAPACITY);
+    fixture.refresh_temperature(PawnTemperatureState {
+        external: Some(4),
+        ..Default::default()
+    });
     fixture.refresh(&[(
         1,
         RemainingTime {
@@ -6161,6 +6638,15 @@ fn restored_modifier_times_retry_packet_pressure_and_reset_on_reconnect() {
         .stats()
         .modifier_time_update_errors;
     assert!(errors > 0);
+    assert_eq!(
+        fixture
+            .app
+            .world()
+            .resource::<PeerLab>()
+            .stats()
+            .pawn_temperature_update_errors,
+        errors
+    );
     for _ in 0..8 {
         fixture.app.world_mut().resource_mut::<PeerLab>().poll();
     }
@@ -6180,12 +6666,28 @@ fn restored_modifier_times_retry_packet_pressure_and_reset_on_reconnect() {
             replicated_tenths: 30,
         },
     )]);
-    let changed = fixture.ack();
-    fixture.assert_time_blocks(&changed, &[(1, 30)]);
-    assert!(fixture.ack().is_empty());
+    let patch = PawnTemperatureState {
+        external: Some(3),
+        ..Default::default()
+    };
+    fixture.refresh_temperature(patch);
+    let changed = fixture.ack_live();
+    assert_eq!(changed.len(), 1);
+    assert_eq!(changed[0].len(), 2);
+    fixture.assert_temperature_block(&changed[0][0], patch);
+    fixture.assert_time_blocks(&changed[0][1..], &[(1, 30)]);
+    assert!(fixture.ack_live().is_empty());
     let old_connection = fixture.connection;
     fixture.client.close().unwrap();
     fixture.app.world_mut().resource_mut::<PeerLab>().poll();
+    assert_eq!(
+        fixture
+            .app
+            .world()
+            .resource::<PeerLab>()
+            .pawn_temperature(old_connection),
+        None
+    );
     assert!(
         fixture
             .app
@@ -6206,6 +6708,22 @@ fn restored_modifier_times_retry_packet_pressure_and_reset_on_reconnect() {
         .resource::<PeerLab>()
         .joined_connections()[0];
     assert_ne!(fixture.connection, old_connection);
+    assert_eq!(
+        fixture
+            .app
+            .world()
+            .resource::<PeerLab>()
+            .pawn_temperature(fixture.connection),
+        Some(PawnTemperatureState::default())
+    );
+    assert!(
+        fixture
+            .app
+            .world_mut()
+            .resource_mut::<PeerLab>()
+            .refresh_pawn_temperature(old_connection, patch)
+            .is_err()
+    );
     assert_eq!(
         fixture
             .app
@@ -6240,9 +6758,16 @@ fn restored_modifier_times_retry_packet_pressure_and_reset_on_reconnect() {
 
 #[test]
 fn restored_modifier_time_loss_uses_existing_reliable_retransmission() {
-    use icarus_bevy::experimental::modifier_timing::RemainingTime;
+    use icarus_bevy::experimental::{
+        modifier_timing::RemainingTime, pawn_open::PawnTemperatureState,
+    };
     let mut fixture = ModifierTimeFixture::new();
     assert!(fixture.ack().is_empty());
+    let patch = PawnTemperatureState {
+        internal: Some(37),
+        ..Default::default()
+    };
+    fixture.refresh_temperature(patch);
     fixture.refresh(&[(
         1,
         RemainingTime {
@@ -6266,9 +6791,21 @@ fn restored_modifier_time_loss_uses_existing_reliable_retransmission() {
         .unwrap();
     let mut discarded = [0; 2048];
     assert!(fixture.socket.recv(&mut discarded).unwrap() > 0);
-    assert!(fixture.ack().is_empty());
-    let resent = fixture.ack();
-    fixture.assert_time_blocks(&resent, &[(1, 20)]);
+    assert!(fixture.ack_live().is_empty());
+    let resent = fixture.ack_live();
+    assert_eq!(resent.len(), 1);
+    assert_eq!(resent[0].len(), 2);
+    fixture.assert_temperature_block(&resent[0][0], patch);
+    fixture.assert_time_blocks(&resent[0][1..], &[(1, 20)]);
+    assert_eq!(
+        fixture
+            .app
+            .world()
+            .resource::<PeerLab>()
+            .stats()
+            .pawn_temperature_updates_queued,
+        1
+    );
     assert_eq!(
         fixture
             .app
@@ -6279,7 +6816,7 @@ fn restored_modifier_time_loss_uses_existing_reliable_retransmission() {
         queued,
         "transport repair must not queue another logical update"
     );
-    assert!(fixture.ack().is_empty());
+    assert!(fixture.ack_live().is_empty());
     assert_eq!(
         fixture
             .app

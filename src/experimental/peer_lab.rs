@@ -210,12 +210,11 @@ use super::packet_lab::{
     ActorOpenSent, DeliveredSummary, LabPeer, PacketDisposition, PacketLabConfig,
 };
 use super::pawn_open::{
-    InventorySlot, PawnContent, PawnInventory, PawnOpenPlan, PawnOpenState,
+    InventorySlot, PawnContent, PawnInventory, PawnOpenPlan, PawnOpenState, PawnTemperatureState,
     compose_pawn_icarus_uid_update, compose_pawn_open,
 };
 use super::pawn_restore::{
-    CurrentPawnState, compose_modifier_time_update, compose_restored_pawn_update,
-    restore_saved_pawn,
+    CurrentPawnState, compose_live_pawn_update, compose_restored_pawn_update, restore_saved_pawn,
 };
 use super::ping::PingEstimator;
 use super::profile_exchange::{
@@ -621,6 +620,9 @@ pub struct PeerLabStats {
     pub modifier_time_updates_queued: u64,
     /// Modifier time composition or transport framing failures.
     pub modifier_time_update_errors: u64,
+    /// Temperature batches accepted by the pawn's reliable transport.
+    pub pawn_temperature_updates_queued: u64,
+    pub pawn_temperature_update_errors: u64,
     /// Saved modifiers left out because restore coverage is unavailable.
     pub returning_modifier_gaps: u64,
     /// Returning-pawn updates that carried restored stats (F-988).
@@ -789,6 +791,8 @@ pub struct SessionCounts {
     pub returning_modifier_gaps: u64,
     pub modifier_time_updates_queued: u64,
     pub modifier_time_update_errors: u64,
+    pub pawn_temperature_updates_queued: u64,
+    pub pawn_temperature_update_errors: u64,
     pub returning_stats_sent: u64,
     pub returning_stat_gaps: u64,
     pub player_history_appends: u64,
@@ -1027,6 +1031,8 @@ struct PeerEntry {
     peer: LabPeer,
     /// Character-state values actually composed into this session's pawn open.
     pawn_character_state: Option<BTreeMap<u32, RepValue>>,
+    pawn_temperature: Option<PawnTemperatureState>,
+    queued_pawn_temperature: Option<PawnTemperatureState>,
     /// Owned until this connection is removed, including idle/failure paths.
     pawn_uid: Option<i32>,
     /// The saved character this pawn restored (F-950); its UID stays claimed
@@ -1036,7 +1042,7 @@ struct PeerEntry {
     restored_modifiers: Vec<RestoredModifier>,
     /// Baselines owned by the reliable queue; NAK retransmission stays there.
     queued_modifier_times: BTreeMap<i32, u16>,
-    modifier_time_retry_ready: bool,
+    pawn_property_retry_ready: bool,
     pending_pawn_restore: Option<PendingPawnRestore>,
     pawn_restore_retry_ready: bool,
     /// The cookie that created this peer; compared only, never reported.
@@ -2053,6 +2059,12 @@ impl PeerLab {
         channel_index: u32,
         content: PawnContent,
     ) -> Result<()> {
+        ensure!(
+            self.peers
+                .values()
+                .all(|entry| entry.pawn_character_state.is_none()),
+            "configure pawn opens before a pawn open is queued"
+        );
         let Some(controller) = &self.player_controller_open else {
             bail!("the pawn open follows the PlayerController open");
         };
@@ -2304,22 +2316,84 @@ impl PeerLab {
             modifier.remaining_tenths = value.replicated_tenths;
         }
         if !updates.is_empty() {
-            entry.modifier_time_retry_ready = true;
+            entry.pawn_property_retry_ready = true;
         }
         Ok(())
     }
 
-    fn update_restored_modifier_times(&mut self) {
+    /// Latest explicitly supplied temperatures for a successfully queued pawn
+    /// open. Unknown fields remain `None`; zero is a known value.
+    pub fn pawn_temperature(&self, connection_id: u32) -> Option<PawnTemperatureState> {
+        self.peers
+            .values()
+            .find(|entry| entry.connection_id == Some(connection_id))?
+            .pawn_temperature
+    }
+
+    /// Apply the qualified internal-temperature setter to a known pawn value.
+    /// The caller supplies both stat reads and notification effects; no bounds
+    /// or initial temperature are inferred. Validation precedes every caller
+    /// effect. The final value, including callback mutations, is retained for
+    /// reliable publication even when the setter did not request notification.
+    /// Polling and delivery retries never replay these calls. The return value
+    /// reports the setter's notification decision, not whether a packet queued.
+    pub fn set_pawn_internal_temperature(
+        &mut self,
+        connection_id: u32,
+        requested: i32,
+        calls: &mut impl super::temperature::InternalTemperatureCalls,
+    ) -> Result<bool> {
+        let mut value = self
+            .pawn_temperature(connection_id)
+            .and_then(|temperature| temperature.internal)
+            .context("no known internal temperature for pawn connection")?;
+        let notify = super::temperature::set_internal_temperature(&mut value, requested, calls);
+        self.refresh_pawn_temperature(
+            connection_id,
+            PawnTemperatureState {
+                internal: Some(value),
+                ..Default::default()
+            },
+        )?;
+        Ok(notify)
+    }
+
+    /// Atomically merge known temperature fields for this connection's pawn.
+    /// `None` leaves a field unchanged. The caller owns calculation and timing;
+    /// this does not infer climate, callbacks, ticking or persistence. Reliable
+    /// publication coalesces with modifier times after the pawn channel settles.
+    pub fn refresh_pawn_temperature(
+        &mut self,
+        connection_id: u32,
+        patch: PawnTemperatureState,
+    ) -> Result<()> {
+        let entry = self
+            .peers
+            .values_mut()
+            .find(|entry| entry.connection_id == Some(connection_id))
+            .context("no pawn temperature connection")?;
+        let current = entry
+            .pawn_temperature
+            .as_mut()
+            .context("pawn open has not been queued")?;
+        current.merge(patch);
+        if !patch.is_empty() {
+            entry.pawn_property_retry_ready = true;
+        }
+        Ok(())
+    }
+
+    fn update_pawn_properties(&mut self) {
         let Some((plan, channel, _)) = &self.pawn_open else {
             return;
         };
         let mut outgoing = Vec::new();
         let mut failed = Vec::new();
         for (address, entry) in &mut self.peers {
-            if !entry.modifier_time_retry_ready || !entry.peer.actor_channel_settled(*channel) {
+            if !entry.pawn_property_retry_ready || !entry.peer.actor_channel_settled(*channel) {
                 continue;
             }
-            entry.modifier_time_retry_ready = false;
+            entry.pawn_property_retry_ready = false;
             let due: Vec<_> = entry
                 .restored_modifiers
                 .iter()
@@ -2329,18 +2403,36 @@ impl PeerLab {
                 })
                 .cloned()
                 .collect();
-            if due.is_empty() {
+            let temperature_due = match (entry.pawn_temperature, entry.queued_pawn_temperature) {
+                (Some(current), Some(queued)) => PawnTemperatureState {
+                    external: current
+                        .external
+                        .filter(|_| current.external != queued.external),
+                    modified_external: current
+                        .modified_external
+                        .filter(|_| current.modified_external != queued.modified_external),
+                    modified_internal: current
+                        .modified_internal
+                        .filter(|_| current.modified_internal != queued.modified_internal),
+                    internal: current
+                        .internal
+                        .filter(|_| current.internal != queued.internal),
+                },
+                _ => PawnTemperatureState::default(),
+            };
+            if due.is_empty() && temperature_due.is_empty() {
                 continue;
             }
             let sent = (|| {
-                let key = pawn_key(entry.connection_id.context("no modifier connection")?);
+                let key = pawn_key(entry.connection_id.context("no pawn connection")?);
                 let mut cache = self.guid_cache.clone();
                 let mut exports = entry.exports.clone();
-                let update = compose_modifier_time_update(
+                let update = compose_live_pawn_update(
                     &mut cache,
                     &mut exports,
                     plan,
                     key,
+                    (!temperature_due.is_empty()).then_some(&temperature_due),
                     &due,
                     entry.peer.connection_byte_order(),
                 )?;
@@ -2356,19 +2448,34 @@ impl PeerLab {
             })();
             match sent {
                 Ok(sent) => {
+                    if !due.is_empty() {
+                        bump(&mut self.stats.modifier_time_updates_queued);
+                    }
                     for modifier in due {
                         entry
                             .queued_modifier_times
                             .insert(modifier.uid, modifier.remaining_tenths);
                     }
                     entry.ack_pending = false;
-                    bump(&mut self.stats.modifier_time_updates_queued);
+                    if !temperature_due.is_empty() {
+                        entry
+                            .queued_pawn_temperature
+                            .as_mut()
+                            .expect("temperature baseline exists")
+                            .merge(temperature_due);
+                        bump(&mut self.stats.pawn_temperature_updates_queued);
+                    }
                     outgoing.push((*address, sent));
                 }
                 Err(_) => {
                     // No partial queue or baseline publication. ACK/NAK progress
                     // or an explicit refresh re-enables this connection's retry.
-                    bump(&mut self.stats.modifier_time_update_errors);
+                    if !due.is_empty() {
+                        bump(&mut self.stats.modifier_time_update_errors);
+                    }
+                    if !temperature_due.is_empty() {
+                        bump(&mut self.stats.pawn_temperature_update_errors);
+                    }
                     if entry.peer.is_failed() {
                         failed.push(*address);
                     }
@@ -3556,6 +3663,8 @@ impl PeerLab {
             returning_modifier_gaps: self.stats.returning_modifier_gaps,
             modifier_time_updates_queued: self.stats.modifier_time_updates_queued,
             modifier_time_update_errors: self.stats.modifier_time_update_errors,
+            pawn_temperature_updates_queued: self.stats.pawn_temperature_updates_queued,
+            pawn_temperature_update_errors: self.stats.pawn_temperature_update_errors,
             returning_stats_sent: self.stats.returning_stats_sent,
             returning_stat_gaps: self.stats.returning_stat_gaps,
             player_history_appends: self.stats.player_history_appends,
@@ -3707,12 +3816,14 @@ impl PeerLab {
                     address,
                     PeerEntry {
                         pawn_character_state: None,
+                        pawn_temperature: None,
+                        queued_pawn_temperature: None,
                         peer,
                         pawn_uid: None,
                         restored_character: None,
                         restored_modifiers: Vec::new(),
                         queued_modifier_times: BTreeMap::new(),
-                        modifier_time_retry_ready: false,
+                        pawn_property_retry_ready: false,
                         pending_pawn_restore: None,
                         pawn_restore_retry_ready: false,
                         cookie,
@@ -3782,10 +3893,11 @@ impl PeerLab {
                         {
                             entry.pawn_restore_retry_ready = true;
                         }
-                        if !entry.restored_modifiers.is_empty()
+                        if (entry.pawn_temperature.is_some()
+                            || !entry.restored_modifiers.is_empty())
                             && (!summary.acked.is_empty() || !summary.naked.is_empty())
                         {
-                            entry.modifier_time_retry_ready = true;
+                            entry.pawn_property_retry_ready = true;
                         }
                         if entry.player_history_pending
                             && (!summary.acked.is_empty() || !summary.naked.is_empty())
@@ -4887,21 +4999,24 @@ impl PeerLab {
             location: controller_plan.spawn_location,
             content,
         };
-        let sent = compose_pawn_open(
-            &mut cache,
-            &mut exports,
-            plan,
-            &state,
-            *channel,
-            entry.peer.connection_byte_order(),
-        )
-        .and_then(|open| {
-            let export_payloads: Vec<Payload> = open.exports.into_iter().collect();
-            entry
-                .peer
-                .reliable_actor_open_datagrams(&open.bunch, &export_payloads)
-        });
-        let sent = match sent {
+        let sent = PawnTemperatureState::from_values(&state.content.character_state).and_then(
+            |temperature| {
+                let open = compose_pawn_open(
+                    &mut cache,
+                    &mut exports,
+                    plan,
+                    &state,
+                    *channel,
+                    entry.peer.connection_byte_order(),
+                )?;
+                let export_payloads: Vec<Payload> = open.exports.into_iter().collect();
+                let sent = entry
+                    .peer
+                    .reliable_actor_open_datagrams(&open.bunch, &export_payloads)?;
+                Ok((sent, temperature))
+            },
+        );
+        let (sent, temperature) = match sent {
             Ok(sent) => sent,
             Err(_) => {
                 bump(&mut self.stats.pawn_open_errors);
@@ -4916,6 +5031,8 @@ impl PeerLab {
             }
         };
         entry.pawn_uid = claimed;
+        entry.pawn_temperature = Some(temperature);
+        entry.queued_pawn_temperature = Some(temperature);
         entry.pawn_character_state = Some(state.content.character_state);
         commit_exports(&mut exports, &sent);
         entry.exports = exports;
@@ -5246,7 +5363,7 @@ impl PeerLab {
         self.retry_pending_pawn_restores();
         self.finalise_connected_players();
         self.retry_pending_player_history();
-        self.update_restored_modifier_times();
+        self.update_pawn_properties();
         self.send_acks();
         self.update_game_state();
     }

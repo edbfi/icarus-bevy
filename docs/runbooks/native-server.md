@@ -107,15 +107,16 @@ the strict staging refuses supplies no saved characters, controllers or
 History: returning-player restore is off, and every joiner counts as new and is
 added to the History the tracker starts empty with.
 
-`PeerLab::refresh_restored_modifier_times` accepts
-raw/wire pairs; batches reject unknown/duplicate UIDs atomically.
-`set_restored_modifier_time` applies the authority setter and a caller-supplied
-lifetime handler before publication (F-995, F-996).
-Equal/unordered requests skip notification; accepted raw-only changes notify.
-Changed wire values, including zero, coalesce behind reliable ACKs; transport
-repairs loss and retries pressure after packet progress. Polling never replays
-handlers or ticks timers. No original listeners or persistence. Reconnect
-restores saved values; `restored_modifier_time` returns a copy.
+Library APIs publish explicit pawn state (F-995, F-998):
+`PeerLab::refresh_restored_modifier_times` validates UID/raw/wire batches;
+`refresh_pawn_temperature` merges supplied fields (`None` unchanged, zero explicit).
+`set_restored_modifier_time` and `set_pawn_internal_temperature` run setter order
+with caller-owned effects before publication (F-996, F-997). The latter requires
+known internal temperature and caller-supplied stat reads. Both update families
+share reliable ACK gating, coalescing, pressure retries and loss recovery.
+Polling never replays callbacks or simulates time/climate. Nothing is persisted;
+reconnect uses the new pawn open and saved values. Getters return copies.
+Counts are exposed by `PeerLabStats` and `SessionCounts`.
 
 Authored schema-4/7/11 hosts opt in with `[network].authored_replication` or
 `run --authored-replication replication.json`. Disabled networking ignores it;
