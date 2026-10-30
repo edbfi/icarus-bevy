@@ -622,6 +622,7 @@ pub struct PeerLabStats {
     pub modifier_time_update_errors: u64,
     /// Temperature batches accepted by the pawn's reliable transport.
     pub pawn_temperature_updates_queued: u64,
+    /// Temperature composition or transport framing failures.
     pub pawn_temperature_update_errors: u64,
     /// Saved modifiers left out because restore coverage is unavailable.
     pub returning_modifier_gaps: u64,
