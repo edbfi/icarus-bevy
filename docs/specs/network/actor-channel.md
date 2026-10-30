@@ -207,11 +207,17 @@ Address pairs are server / client.
   role 3, not time. Listener effects, scheduling and refresh remain open (U-069).
 
 - Internal-temperature setter ordering and notification boundary: F-997.
+  TemperatureTick (F-999) samples only when elapsed time exceeds the interval,
+  consumes one period, then adjusts internal temperature on every admitted call.
+  Stat reads and notifications preserve local order. Binary32 fractional state
+  uses asymmetric integer conversion; `temperature::tick_temperature` defines
+  the qualified arithmetic. Initial values and callee effects remain explicit.
 
 ## Candidate
 
 Native modifier and temperature updates share reliable delivery (F-995, F-998).
-No automatic climate, ticking or stock-client qualification.
+Explicit ticks retain connection-local timing (F-1000). No automatic climate,
+scheduling or stock-client qualification.
 
 - Authored native refresh transport (F-936): `PeerLab::refresh_active_prospect`
   validates complete handles 51..67 and the current dynamic open in both byte
@@ -229,8 +235,6 @@ No automatic climate, ticking or stock-client qualification.
 
 ## Evidence
 
-- M-420 to M-437, M-438 to M-449, M-455 to M-470, M-475 to M-548, M-552 to
-  M-560, M-570 to M-588, M-602 to M-605, M-614, M-615, M-620 to M-624, M-628 to
-  M-635, M-707, M-708, M-710 to M-713, M-717, M-720, M-731 to M-748, M-776,
-  M-777, M-782, M-794, M-795, M-797 to M-799, M-801, M-802, M-804, M-805, M-807,
-  M-832, M-834 to M-836, M-841, M-844 to M-848, M-863, M-868, M-869, M-1034, M-1056, M-1126 to M-1129.
+M-707, M-708, M-813, M-819, M-832, M-841, M-844..M-848, M-1056,
+M-1126..M-1129, M-1147..M-1149. The cited finding rows retain the earlier
+static and capture observations.

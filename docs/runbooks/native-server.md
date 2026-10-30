@@ -114,6 +114,10 @@ Library APIs publish explicit pawn state (F-995, F-998):
 with caller-owned effects before publication (F-996, F-997). The latter requires
 known internal temperature and caller-supplied stat reads. Both update families
 share reliable ACK gating, coalescing, pressure retries and loss recovery.
+`configure_pawn_temperature_tick` requires all four temperatures plus explicit
+reference/cache flags, interval, elapsed time and fractional remainder.
+`tick_pawn_temperature` runs F-999 once with caller-owned sampling/stat/setter
+effects, retains connection-local timing and reads current pawn values (F-1000).
 Polling never replays callbacks or simulates time/climate. Nothing is persisted;
 reconnect uses the new pawn open and saved values. Getters return copies.
 Counts are exposed by `PeerLabStats` and `SessionCounts`.

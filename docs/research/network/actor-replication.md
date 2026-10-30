@@ -69,7 +69,8 @@ finalises players only after every controller's friends list (F-973); the probe,
 initialising as a saved character, captured its restore of a returning pawn (F-972, F-974); `run` restores inventories, weights, modifiers and stats; incomplete inputs withhold dependent levels (F-978 to F-989);
 modifier and temperature call models preserve local order
 (F-991, F-994, F-996, F-997). Native time/temperature updates share reliable delivery
-(F-995, F-998); automatic ticking and climate remain open. GUID-tagged replay distinguishes countdown,
+(F-995, F-998); full temperature tick order and connection-owned explicit
+ticking are qualified (F-999, F-1000). Automatic scheduling and climate remain open. GUID-tagged replay distinguishes countdown,
 increases and zero without inferring their causes (F-992). Profile answers use the PlayerState's trees and verified backend component
 (F-955); retry/kick and loadout/bestiary gates precede prospect initialization
 (F-956 to F-959).
@@ -91,4 +92,4 @@ increases and zero without inferring their causes (F-992). Profile answers use t
 
 ## Artifacts
 
-M-1139..M-1146; M-1132..M-1134; M-420..M-449, M-455..M-470, M-570..M-576, M-581..M-588, M-600..M-605, M-707..M-717, M-720, M-728..M-748, M-776, M-777, M-782, M-794, M-795, M-797..M-799, M-801, M-802, M-804, M-805, M-807, M-813..M-819, M-832, M-834 to M-836, M-838 to M-848, M-852, M-853, M-860, M-863, M-868, M-869, M-879, M-881 to M-887, M-891 to M-896, M-901 to M-913, M-1027 to M-1030, M-1034, M-1083 to M-1087, M-1089 to M-1093, M-1096, M-1099, M-1102, M-1105 to M-1108, M-1110, M-1112, M-1126 to M-1129.
+M-707, M-813, M-819, M-832, M-838..M-848, M-1083..M-1093, M-1096, M-1099, M-1102, M-1105..M-1108, M-1110, M-1112, M-1126..M-1149. Earlier observations remain indexed by the cited finding rows.

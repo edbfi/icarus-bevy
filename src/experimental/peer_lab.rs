@@ -158,6 +158,7 @@
 //! Stats and `Debug` carry counts and message kinds only: never payload bytes,
 //! cookies, tokens, challenge strings, URLs, unique net ids, versions, sequence
 //! values or numeric message fields.
+
 use std::{
     collections::{BTreeMap, BTreeSet, HashMap},
     fmt, io,
@@ -243,6 +244,46 @@ use super::stat_restore::{
     PawnStatInputs, RestoredStats, StatRestoreTables, restore_stats, stat_bounds, stat_delta,
 };
 use super::time_of_day::TimeOfDayClock;
+
+/// Explicit per-pawn timing inputs for [`PeerLab::tick_pawn_temperature`].
+/// No defaults or original constructor/clock semantics are implied.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct PawnTemperatureTickContext {
+    /// Whether the reference tested at receiver +0x218 is non-null.
+    pub required_reference_present: bool,
+    /// Whether the temperature singleton is cached; false requests acquisition.
+    pub singleton_cached: bool,
+    /// Sampling threshold in seconds; a tick samples only after exceeding it.
+    pub sample_interval_seconds: f32,
+    /// Accumulated sampling time in seconds; one interval is removed per sample.
+    pub sample_elapsed_seconds: f32,
+    /// Retained fractional internal-temperature adjustment in temperature units.
+    pub internal_remainder: f32,
+}
+
+impl PawnTemperatureTickContext {
+    fn state(
+        self,
+        temperatures: Option<PawnTemperatureState>,
+    ) -> Result<super::temperature::TemperatureTickState> {
+        let t = temperatures.context("pawn open has not been queued")?;
+        Ok(super::temperature::TemperatureTickState {
+            required_reference_present: self.required_reference_present,
+            singleton_cached: self.singleton_cached,
+            sample_interval_seconds: self.sample_interval_seconds,
+            sample_elapsed_seconds: self.sample_elapsed_seconds,
+            internal_remainder: self.internal_remainder,
+            external: t.external.context("unknown external temperature")?,
+            modified_external: t
+                .modified_external
+                .context("unknown modified external temperature")?,
+            modified_internal: t
+                .modified_internal
+                .context("unknown modified internal temperature")?,
+            internal: t.internal.context("unknown internal temperature")?,
+        })
+    }
+}
 
 /// Lab text of the Failure reply to Login; not an original message.
 pub const ADMISSION_DISABLED_MESSAGE: &str = "icarus-bevy peer lab: game admission is disabled";
@@ -1033,6 +1074,7 @@ struct PeerEntry {
     /// Character-state values actually composed into this session's pawn open.
     pawn_character_state: Option<BTreeMap<u32, RepValue>>,
     pawn_temperature: Option<PawnTemperatureState>,
+    pawn_temperature_tick: Option<PawnTemperatureTickContext>,
     queued_pawn_temperature: Option<PawnTemperatureState>,
     /// Owned until this connection is removed, including idle/failure paths.
     pawn_uid: Option<i32>,
@@ -2381,6 +2423,75 @@ impl PeerLab {
         if !patch.is_empty() {
             entry.pawn_property_retry_ready = true;
         }
+        Ok(())
+    }
+
+    /// Set every caller-owned timing field for explicit temperature ticks.
+    /// Requires a queued pawn open and four known temperature values. Repeating
+    /// this call intentionally replaces the timing context; it starts no clock.
+    pub fn configure_pawn_temperature_tick(
+        &mut self,
+        connection_id: u32,
+        context: PawnTemperatureTickContext,
+    ) -> Result<()> {
+        let entry = self
+            .peers
+            .values_mut()
+            .find(|entry| entry.connection_id == Some(connection_id))
+            .context("no pawn temperature connection")?;
+        context.state(entry.pawn_temperature)?;
+        entry.pawn_temperature_tick = Some(context);
+        Ok(())
+    }
+
+    /// A copy of the current per-connection timing context. Removing the peer
+    /// discards it; reconnect requires explicit configuration again.
+    pub fn pawn_temperature_tick_context(
+        &self,
+        connection_id: u32,
+    ) -> Option<PawnTemperatureTickContext> {
+        self.peers
+            .values()
+            .find(|entry| entry.connection_id == Some(connection_id))?
+            .pawn_temperature_tick
+    }
+
+    /// Run one temperature tick with caller-supplied elapsed time and effects.
+    /// Validation precedes all effects. Reads the latest pawn temperatures,
+    /// including explicit patches/setters since the previous tick, then retains
+    /// the final values and timing context. Polling only delivers the coalesced
+    /// result; ACK/pressure/loss retries never replay calls. This is not an
+    /// automatic scheduler, climate profile or persistence adapter.
+    pub fn tick_pawn_temperature(
+        &mut self,
+        connection_id: u32,
+        delta_seconds: f32,
+        calls: &mut impl super::temperature::TemperatureTickCalls,
+    ) -> Result<()> {
+        let entry = self
+            .peers
+            .values_mut()
+            .find(|entry| entry.connection_id == Some(connection_id))
+            .context("no pawn temperature connection")?;
+        let context = entry
+            .pawn_temperature_tick
+            .context("pawn temperature tick is not configured")?;
+        let mut state = context.state(entry.pawn_temperature)?;
+        super::temperature::tick_temperature(&mut state, delta_seconds, calls);
+        entry.pawn_temperature_tick = Some(PawnTemperatureTickContext {
+            required_reference_present: state.required_reference_present,
+            singleton_cached: state.singleton_cached,
+            sample_interval_seconds: state.sample_interval_seconds,
+            sample_elapsed_seconds: state.sample_elapsed_seconds,
+            internal_remainder: state.internal_remainder,
+        });
+        entry.pawn_temperature = Some(PawnTemperatureState {
+            external: Some(state.external),
+            modified_external: Some(state.modified_external),
+            modified_internal: Some(state.modified_internal),
+            internal: Some(state.internal),
+        });
+        entry.pawn_property_retry_ready = true;
         Ok(())
     }
 
@@ -3818,6 +3929,7 @@ impl PeerLab {
                     PeerEntry {
                         pawn_character_state: None,
                         pawn_temperature: None,
+                        pawn_temperature_tick: None,
                         queued_pawn_temperature: None,
                         peer,
                         pawn_uid: None,
