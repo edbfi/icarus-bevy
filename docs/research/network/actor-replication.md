@@ -36,7 +36,8 @@ F-749, F-751, F-788, F-851); a native stage drives them over supplied actor
 positions (F-790); the authored motion/flags bridge, including hidden-aware
 priority and per-field loss repair, is qualified in F-938.
 Export checksums compute natively (F-853; U-067) and exports
-repeat until acked (F-796). Native composers rebuild the captured
+repeat until acked, including returning-pawn component restores (F-796, F-964).
+Native composers rebuild the captured
 PlayerController (F-852), GameState (F-794) and pawn (F-854) opens bit for bit,
 including session pawn contents (F-854) and saved GameState prospect/mode
 values (F-855); `run` sends all four opens after Join (F-804). TimeOfDay
@@ -63,8 +64,8 @@ IcarusUID by the original's search order around saved actor UIDs (F-943, F-944,
 F-948); a returning player's controller and pawn recorders match by PlayerCharacterID,
 and the pawn then retakes its saved UID (F-947, F-949, F-950); the client
 sends its character slot and profiles (F-951). `run` follows that sequence on authored
-loopback peers, restores the saved UID at completion and sends the saved
-pawn state; new players join the History (F-954, F-964, F-967, F-975). The original
+loopback peers: UID/state sends retry temporary queue pressure (F-964),
+and new players join History (F-954, F-967, F-975). The original
 finalises players only after every controller's friends list (F-973); the probe,
 initialising as a saved character, captured its restore of a returning pawn (F-972, F-974); `run` restores its inventories, weights, modifiers and stats the same way (F-978 to F-989). The profile answers
 carry the PlayerState's own profile trees on a verified `UBackendProxyComponent`

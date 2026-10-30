@@ -577,45 +577,123 @@ fn the_restored_update_decodes_through_the_readers() {
 }
 
 #[test]
-fn the_update_needs_an_acked_open_and_no_stomach_entries() {
+fn restored_components_reexport_until_acknowledged_including_after_a_nak() {
+    use icarus_bevy::experimental::{
+        actor_channel::PackageMapState, rep_layout::StatPairRepState, stat_restore::StatDelta,
+    };
+
+    let (_, plan, stomach) = plan();
+    let key = ActorKey::Session(7);
+    let restored = RestoredPawn {
+        stats: Some(StatDelta {
+            base_key: 1,
+            array_key: 2,
+            changed: vec![(
+                1,
+                StatPairRepState {
+                    stat: 0,
+                    value: 150,
+                },
+            )],
+        }),
+        stomach: Some(Vec::new()),
+        ..restore(&saved(), &current_state())
+    };
+    let codec = ActorChannelCodec {
+        engine_net_version: plan.engine_net_version,
+        exports_enabled: false,
+        has_level: true,
+        order: ByteOrder::Little,
+        limits: ActorChannelLimits::default(),
+    };
+    for lost in [false, true] {
+        let mut cache = NetGuidCache::new();
+        let mut exports = ConnectionExports::new();
+        let state = PawnOpenState {
+            key,
+            controller: 2,
+            player_state: 4,
+            location: [0.0, 0.0, 0.0],
+            content: PawnContent::default(),
+        };
+        compose_pawn_open(
+            &mut cache,
+            &mut exports,
+            &plan,
+            &state,
+            3,
+            ByteOrder::Little,
+        )
+        .unwrap();
+        exports.commit_bunch(1);
+        if lost {
+            exports.received_nak(1);
+            // ACKing a later reliable repair does not recreate removed export
+            // status; the restore must include the paths again.
+            exports.received_ack(2);
+        }
+        let update = compose_restored_pawn_update(
+            &mut cache,
+            &mut exports,
+            &plan,
+            key,
+            stomach,
+            &restored,
+            ByteOrder::Little,
+        )
+        .unwrap();
+        let mut map = PackageMapState::new();
+        let mut reader = update.exports.as_ref().unwrap().reader();
+        let references = map.consume_export_prefix(&mut reader, &codec).unwrap();
+        assert!(reader.at_end());
+        assert_eq!(references.len(), 3);
+        let body = read_actor_bunch_body(&mut update.payload.reader(), false, &codec).unwrap();
+        assert_eq!(body.blocks.len(), 4);
+        for ((reference, block), index) in references.iter().zip(&body.blocks[1..]).zip([
+            plan.stat_container,
+            plan.actor_state,
+            stomach,
+        ]) {
+            assert_eq!(
+                map.resolve_path(reference.guid),
+                Some(plan.components[index].name.as_str())
+            );
+            assert_eq!(
+                map.resolve_outer_guid(reference.guid),
+                Some(cache.actor_guid(key))
+            );
+            assert!(!exports.is_acked(reference.guid));
+            let BlockTarget::SubObject { object, class } = &block.target else {
+                panic!("component block");
+            };
+            assert_eq!(object.guid, reference.guid);
+            assert!(object.export.is_none());
+            assert_eq!(class, &SubObjectClass::StablyNamed);
+        }
+        assert_eq!(exports.bunch_exports().count(), 3);
+        exports.commit_bunch(3);
+        exports.received_ack(3);
+        let acked = compose_restored_pawn_update(
+            &mut cache,
+            &mut exports,
+            &plan,
+            key,
+            stomach,
+            &restored,
+            ByteOrder::Little,
+        )
+        .unwrap();
+        assert!(acked.exports.is_none());
+        assert_eq!(acked.payload, update.payload);
+        assert_eq!(exports.bunch_exports().count(), 0);
+    }
+}
+
+#[test]
+fn the_update_rejects_stomach_entries_and_invalid_component_indices() {
     let (_, plan, stomach) = plan();
     let key = ActorKey::Session(7);
     let mut restored = restore(&saved(), &current_state());
-    assert!(!restored.character_state.is_empty());
-
-    // The open went out but is not acked: its components are still exported.
-    let mut cache = NetGuidCache::new();
-    let mut exports = ConnectionExports::new();
-    let state = PawnOpenState {
-        key,
-        controller: 2,
-        player_state: 4,
-        location: [0.0, 0.0, 0.0],
-        content: PawnContent::default(),
-    };
-    compose_pawn_open(
-        &mut cache,
-        &mut exports,
-        &plan,
-        &state,
-        3,
-        ByteOrder::Little,
-    )
-    .unwrap();
-    exports.commit_bunch(1);
-    let error = compose_restored_pawn_update(
-        &mut cache,
-        &mut exports,
-        &plan,
-        key,
-        stomach,
-        &restored,
-        ByteOrder::Little,
-    )
-    .unwrap_err();
-    assert!(error.to_string().contains("not acked"), "{error}");
-    assert_eq!(exports.bunch_exports().count(), 0);
-
     let (mut cache, mut exports) = opened(&plan, key);
     restored.stomach = Some(vec![RestoredStomachContent {
         food_row: 3,

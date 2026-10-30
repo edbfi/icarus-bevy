@@ -1005,6 +1005,12 @@ struct ActorPropertyPacket {
     handles: Vec<u32>,
 }
 
+#[derive(Clone, Copy)]
+enum PendingPawnRestore {
+    Uid,
+    State(usize),
+}
+
 struct PeerEntry {
     peer: LabPeer,
     /// Character-state values actually composed into this session's pawn open.
@@ -1014,6 +1020,8 @@ struct PeerEntry {
     /// The saved character this pawn restored (F-950); its UID stays claimed
     /// for the saved record when the session ends.
     restored_character: Option<usize>,
+    pending_pawn_restore: Option<PendingPawnRestore>,
+    pawn_restore_retry_ready: bool,
     /// The cookie that created this peer; compared only, never reported.
     cookie: [u8; 20],
     last_seen: Instant,
@@ -1060,6 +1068,36 @@ struct PeerEntry {
     game_state: Option<GameStateReplica>,
     /// Ping from the round trips of acked packets (F-815).
     ping: PingEstimator,
+}
+
+/// Capacity planning may fill a cloned queue even when the live queue is
+/// empty. Only outstanding traffic that can drain makes a refusal retryable.
+fn defer_pawn_restore(
+    entry: &mut PeerEntry,
+    error: &anyhow::Error,
+    stage: PendingPawnRestore,
+    channel: u32,
+) {
+    use super::sequencing::SendCapacityError;
+    let temporary = match error.downcast_ref::<SendCapacityError>() {
+        Some(SendCapacityError::SentRecordRing { .. }) => {
+            !entry.peer.sequencer().notify().sent_records().is_empty()
+        }
+        Some(SendCapacityError::ReliableBunchQueue { .. }) => entry
+            .peer
+            .pending_actor_reliable(channel)
+            .is_some_and(|pending| pending > 0),
+        Some(SendCapacityError::ReliableActorWindow {
+            pending,
+            additional,
+            capacity,
+        }) => *pending > 0 && additional <= capacity,
+        None => false,
+    };
+    if temporary && !entry.peer.is_failed() {
+        entry.pending_pawn_restore = Some(stage);
+        entry.pawn_restore_retry_ready = false;
+    }
 }
 
 /// A player registered by `AGameSession::RegisterPlayer` (F-784): its
@@ -2006,8 +2044,9 @@ impl PeerLab {
         .and_then(|payload| entry.peer.reliable_actor_bunch(*channel, payload));
         let datagram = match sent {
             Ok(datagram) => datagram,
-            Err(_) => {
+            Err(error) => {
                 bump(&mut self.stats.returning_pawn_errors);
+                defer_pawn_restore(entry, &error, PendingPawnRestore::Uid, *channel);
                 if entry.peer.is_failed() {
                     self.remove_peer(address);
                     bump(&mut self.stats.peers_failed);
@@ -2176,15 +2215,14 @@ impl PeerLab {
                 &restored,
                 entry.peer.connection_byte_order(),
             )?;
-            // Restored inventories, modifiers and stats can outgrow one
-            // datagram and need class exports; that update is split into
-            // reliable partial bunches after its export parts, as large
-            // opens are. Without them the update keeps its single-bunch
-            // limit, which refuses an oversized update instead of splitting
-            // it.
+            // Unacknowledged component paths need exports even for a
+            // state-only restore. Keep those exports ahead of the body on
+            // the same reliable channel, as for inventory/modifier classes.
+            // Otherwise state-only updates retain their single-bunch limit.
             let datagrams = if restored.inventories.is_empty()
                 && restored.modifiers.is_empty()
                 && restored.stats.is_none()
+                && update.exports.is_none()
             {
                 exports.begin_bunch();
                 vec![entry.peer.reliable_actor_bunch(*channel, update.payload)?]
@@ -2253,7 +2291,14 @@ impl PeerLab {
                 }
             }
             Ok(None) => bump(&mut self.stats.returning_pawn_update_gaps),
-            Err(_) => bump(&mut self.stats.returning_pawn_update_errors),
+            Err(error) => {
+                bump(&mut self.stats.returning_pawn_update_errors);
+                if let (Some(entry), Some((_, channel, _))) =
+                    (self.peers.get_mut(&address), &self.pawn_open)
+                {
+                    defer_pawn_restore(entry, &error, PendingPawnRestore::State(index), *channel);
+                }
+            }
         }
     }
 
@@ -3222,6 +3267,8 @@ impl PeerLab {
                         peer,
                         pawn_uid: None,
                         restored_character: None,
+                        pending_pawn_restore: None,
+                        pawn_restore_retry_ready: false,
                         cookie,
                         last_seen: now,
                         ack_pending: false,
@@ -3270,6 +3317,11 @@ impl PeerLab {
                     PacketDisposition::Accepted { .. } => {
                         entry.last_seen = now;
                         entry.ack_pending = true;
+                        if entry.pending_pawn_restore.is_some()
+                            && (!summary.acked.is_empty() || !summary.naked.is_empty())
+                        {
+                            entry.pawn_restore_retry_ready = true;
+                        }
                         bump(&mut self.stats.data_accepted);
                         let world_seconds = now.duration_since(self.started).as_secs_f64();
                         for packet_id in &summary.acked {
@@ -3760,6 +3812,33 @@ impl PeerLab {
             bump(&mut self.stats.players_finalised);
             self.restore_returning_pawn_uid(address);
             self.add_new_player_to_history(address);
+        }
+    }
+
+    /// Resume only a transport-capacity refusal after packet notifications
+    /// released space. The UID stage and the state stage never repeat once
+    /// queued; semantic gaps and empty-queue capacity refusals remain terminal.
+    fn retry_pending_pawn_restores(&mut self) {
+        let ready: Vec<_> = self
+            .peers
+            .iter_mut()
+            .filter_map(|(address, entry)| {
+                if !std::mem::take(&mut entry.pawn_restore_retry_ready) {
+                    return None;
+                }
+                entry
+                    .pending_pawn_restore
+                    .take()
+                    .map(|stage| (*address, stage))
+            })
+            .collect();
+        for (address, stage) in ready {
+            match stage {
+                PendingPawnRestore::Uid => self.restore_returning_pawn_uid(address),
+                PendingPawnRestore::State(index) => {
+                    self.restore_returning_pawn_state(address, index)
+                }
+            }
         }
     }
 
@@ -4661,6 +4740,7 @@ impl PeerLab {
             }
             self.data(address, length, now);
         }
+        self.retry_pending_pawn_restores();
         self.finalise_connected_players();
         self.send_acks();
         self.update_game_state();
@@ -5073,6 +5153,161 @@ mod tests {
         assert!(entry.peer.actor_channel_settled(channel));
         assert!(entry.peer.sequencer().notify().sent_records().is_empty());
         (socket, address, client)
+    }
+
+    #[test]
+    fn returning_restore_reexports_unacknowledged_components_once() {
+        use super::super::{
+            actor_channel::{BlockTarget, read_actor_bunch_body, read_export_prefix},
+            archive::ByteOrder,
+            control_messages::{NetIdType, NetIdValue, UniqueNetId},
+            packet::{PacketConfig, Receiver, read_packet},
+            pawn_open::{PAWN_CHANNEL_INDEX, character_state_handle as h},
+            recorders::{SavedPlayerCharacter, SavedPlayerState},
+            release::ReleaseProfile,
+            rep_layout::read_rep_properties,
+            sequencing::{PartialBunchReassembler, PartialReceive},
+        };
+
+        // Exercise the finalisation path with pending, lost and acknowledged
+        // open exports. Only the export delivery state differs; every value
+        // is authored. No inventory, modifier or stat delta can select the
+        // multi-datagram path on behalf of the component export.
+        for export_state in ["pending", "lost", "acked"] {
+            let mut lab = prospect_refresh_lab();
+            let plan = ReleaseProfile::release_3_0_32()
+                .pawn_open_plan(PeerLabAdmission::default().map_url)
+                .unwrap()
+                .unwrap();
+            let layout = plan.content.character_state_layout.clone();
+            let engine = plan.engine_net_version;
+            lab.enable_pawn_open(
+                plan,
+                PAWN_CHANNEL_INDEX,
+                PawnContent {
+                    character_state: BTreeMap::from([
+                        (h::HEALTH, RepValue::Int(100)),
+                        (h::MAX_HEALTH, RepValue::Int(100)),
+                    ]),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+            lab.enable_actor_uids(crate::actor_uids::ActorUidLibrary::new(1))
+                .unwrap();
+            lab.seed_actor_uids([70_001]).unwrap();
+            lab.enable_returning_characters(vec![SavedPlayerCharacter {
+                player_id: "AuthoredPlayer".encode_utf16().collect(),
+                chr_slot: 3,
+                icarus_uid: 70_001,
+                state: SavedPlayerState {
+                    health: Some(37),
+                    ..Default::default()
+                },
+                inventories: Vec::new(),
+                modifiers: Vec::new(),
+            }])
+            .unwrap();
+            let (socket, address, _client) = acked_game_state_peer(&mut lab);
+            let entry = lab.peers.get_mut(&address).unwrap();
+            entry.connection_id = Some(1);
+            entry.login_unique_id = Some(UniqueNetId {
+                kind: NetIdType::Named(ArchiveText::text("NULL").unwrap()),
+                value: NetIdValue::Text(ArchiveText::text("AuthoredPlayer").unwrap()),
+            });
+            entry.profiles.character_slot = Some(3);
+            entry.profiles.completed = true;
+            entry.profiles.friend_ids_ready = true;
+            let first_packet = entry.peer.sequencer().out_packet_id();
+            lab.send_pawn_open(address, 2, 4);
+            assert_eq!(lab.stats.pawn_opens_sent, 1);
+            let entry = lab.peers.get_mut(&address).unwrap();
+            let after_open = entry.peer.sequencer().out_packet_id();
+            let mut buffer = [0; 2048];
+            for packet in first_packet..after_open {
+                socket.recv(&mut buffer).unwrap();
+                match export_state {
+                    "lost" => entry.exports.received_nak(packet),
+                    "acked" => entry.exports.received_ack(packet),
+                    _ => {}
+                }
+            }
+            lab.finalise_connected_players();
+            assert_eq!(lab.stats.returning_pawns_restored, 1, "{export_state}");
+            assert_eq!(lab.stats.returning_pawn_updates_sent, 1, "{export_state}");
+            assert_eq!(lab.stats.returning_pawn_update_errors, 0, "{export_state}");
+            let count = lab.peers[&address].peer.sequencer().out_packet_id() - after_open;
+            let codec = RepLayoutCodec {
+                actor: actor_codec(engine, ByteOrder::Little),
+                checksums: false,
+                limits: Default::default(),
+            };
+            let mut exported_component = None;
+            let mut health = None;
+            let mut reassembler = PartialBunchReassembler::new();
+            let mut sequence = 0;
+            for _ in 0..count {
+                let length = socket.recv(&mut buffer).unwrap();
+                let packet = read_packet(
+                    &buffer[..length],
+                    &PacketConfig {
+                        receiver: Receiver::Client,
+                        ..lab.config.packet.packet
+                    },
+                )
+                .unwrap();
+                for bunch in packet.bunches {
+                    sequence += 1;
+                    assert_eq!(bunch.header.channel_index, PAWN_CHANNEL_INDEX);
+                    assert!(bunch.header.reliable);
+                    assert!(!bunch.header.open);
+                    let mut reader = bunch.payload.reader();
+                    let payload = if bunch.header.has_package_map_exports {
+                        let refs = read_export_prefix(&mut reader, &codec.actor).unwrap();
+                        assert_eq!(refs.len(), 1);
+                        assert!(health.is_none(), "exports precede restored state");
+                        exported_component = Some(refs[0].guid);
+                        assert!(reader.at_end());
+                        Payload::from_writer(super::super::packet::BitWriter::new())
+                    } else {
+                        bunch.payload
+                    };
+                    let payload = if bunch.header.partial {
+                        let PartialReceive::Complete { bunch, .. } = reassembler
+                            .receive_part(sequence, &bunch.header, &payload, Some(4096))
+                            .unwrap()
+                        else {
+                            continue;
+                        };
+                        bunch.payload
+                    } else {
+                        payload
+                    };
+                    let body =
+                        read_actor_bunch_body(&mut payload.reader(), false, &codec.actor).unwrap();
+                    for block in body.blocks {
+                        let BlockTarget::SubObject { object, .. } = block.target else {
+                            continue; // The UID and pawn-property blocks.
+                        };
+                        if export_state != "acked" {
+                            assert_eq!(exported_component, Some(object.guid));
+                        }
+                        let properties =
+                            read_rep_properties(&mut block.payload.reader(), &layout, &codec)
+                                .unwrap();
+                        health = properties.entries.into_iter().find_map(|property| {
+                            (property.handle == h::HEALTH).then_some(property.value)
+                        });
+                    }
+                }
+            }
+            assert_eq!(health, Some(RepValue::Int(37)));
+            assert_eq!(exported_component.is_some(), export_state != "acked");
+            lab.finalise_connected_players();
+            assert_eq!(lab.stats.players_finalised, 1);
+            assert_eq!(lab.stats.returning_pawn_updates_sent, 1);
+            assert_eq!(lab.claimed_actor_uids(), &[70_001]);
+        }
     }
 
     #[test]
