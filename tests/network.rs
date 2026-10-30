@@ -7399,3 +7399,347 @@ fn native_modifier_setter_rejections_leave_time_and_notification_untouched() {
         0
     );
 }
+
+#[derive(Default)]
+struct AuthoredTemperatureTickCalls {
+    reads: Vec<(u16, i32)>,
+    requests: Vec<i32>,
+}
+
+impl icarus_bevy::experimental::temperature::TemperatureTickCalls for AuthoredTemperatureTickCalls {
+    fn stat(
+        &mut self,
+        state: &mut icarus_bevy::experimental::temperature::TemperatureTickState,
+        key: u16,
+    ) -> i32 {
+        self.reads.push((key, state.internal));
+        match key {
+            0x9d => 1,
+            0xa8 | 0xaa => 100,
+            _ => panic!("unexpected stat read"),
+        }
+    }
+    fn cache_temperature_singleton(
+        &mut self,
+        _: &mut icarus_bevy::experimental::temperature::TemperatureTickState,
+    ) {
+        panic!("authored context already has its singleton")
+    }
+    fn environmental_temperature(
+        &mut self,
+        _: &mut icarus_bevy::experimental::temperature::TemperatureTickState,
+    ) -> i32 {
+        panic!("authored sample interval has not elapsed")
+    }
+    fn external_temperature_updated(
+        &mut self,
+        _: &mut icarus_bevy::experimental::temperature::TemperatureTickState,
+        _: i32,
+    ) {
+        panic!("no environmental sample")
+    }
+    fn set_internal_temperature(
+        &mut self,
+        state: &mut icarus_bevy::experimental::temperature::TemperatureTickState,
+        requested: i32,
+    ) {
+        self.requests.push(requested);
+        state.internal = requested;
+    }
+}
+
+fn authored_temperature_tick_context()
+-> icarus_bevy::experimental::peer_lab::PawnTemperatureTickContext {
+    icarus_bevy::experimental::peer_lab::PawnTemperatureTickContext {
+        required_reference_present: true,
+        singleton_cached: true,
+        sample_interval_seconds: 100.0,
+        sample_elapsed_seconds: 0.0,
+        internal_remainder: 0.25,
+    }
+}
+
+fn authored_tick_temperatures() -> icarus_bevy::experimental::pawn_open::PawnTemperatureState {
+    icarus_bevy::experimental::pawn_open::PawnTemperatureState {
+        external: Some(0),
+        modified_external: Some(0),
+        modified_internal: Some(100),
+        internal: Some(0),
+    }
+}
+
+#[test]
+fn pawn_temperature_tick_requires_known_connection_complete_values_and_configuration() {
+    use icarus_bevy::experimental::pawn_open::PawnTemperatureState;
+    let mut fixture = ModifierTimeFixture::new();
+    let context = authored_temperature_tick_context();
+    let mut calls = AuthoredTemperatureTickCalls::default();
+    let mut lab = fixture.app.world_mut().resource_mut::<PeerLab>();
+    assert!(
+        lab.configure_pawn_temperature_tick(u32::MAX, context)
+            .is_err()
+    );
+    assert!(
+        lab.tick_pawn_temperature(u32::MAX, 1.0, &mut calls)
+            .is_err()
+    );
+    // Progressively supplying fields still rejects until all four are known.
+    for patch in [
+        PawnTemperatureState::default(),
+        PawnTemperatureState {
+            external: Some(0),
+            ..Default::default()
+        },
+        PawnTemperatureState {
+            modified_external: Some(0),
+            ..Default::default()
+        },
+        PawnTemperatureState {
+            modified_internal: Some(100),
+            ..Default::default()
+        },
+    ] {
+        lab.refresh_pawn_temperature(fixture.connection, patch)
+            .unwrap();
+        assert!(
+            lab.configure_pawn_temperature_tick(fixture.connection, context)
+                .is_err()
+        );
+        assert!(
+            lab.tick_pawn_temperature(fixture.connection, 1.0, &mut calls)
+                .is_err()
+        );
+        assert_eq!(lab.pawn_temperature_tick_context(fixture.connection), None);
+    }
+    lab.refresh_pawn_temperature(fixture.connection, authored_tick_temperatures())
+        .unwrap();
+    assert!(
+        lab.tick_pawn_temperature(fixture.connection, 1.0, &mut calls)
+            .is_err()
+    );
+    assert!(calls.reads.is_empty());
+    assert!(calls.requests.is_empty());
+    lab.configure_pawn_temperature_tick(fixture.connection, context)
+        .unwrap();
+    assert_eq!(
+        lab.pawn_temperature_tick_context(fixture.connection),
+        Some(context)
+    );
+    assert_eq!(
+        lab.pawn_temperature(fixture.connection),
+        Some(authored_tick_temperatures())
+    );
+}
+
+#[test]
+fn pawn_temperature_ticks_retain_fractional_progress_and_publish_latest_values_after_ack() {
+    use icarus_bevy::experimental::{
+        pawn_open::PawnTemperatureState, temperature::InternalTemperatureCalls,
+    };
+    struct Bounds;
+    impl InternalTemperatureCalls for Bounds {
+        fn stat(&mut self, _: &mut i32, key: u16) -> i32 {
+            match key {
+                0xa2 => 1000,
+                0xa0 => -1000,
+                _ => panic!("unexpected bound"),
+            }
+        }
+        fn temperature_updated(&mut self, _: &mut i32, _: i32) {}
+    }
+    let mut fixture = ModifierTimeFixture::with_temperature(authored_tick_temperatures());
+    let mut calls = AuthoredTemperatureTickCalls::default();
+    {
+        let mut lab = fixture.app.world_mut().resource_mut::<PeerLab>();
+        lab.configure_pawn_temperature_tick(
+            fixture.connection,
+            authored_temperature_tick_context(),
+        )
+        .unwrap();
+        lab.tick_pawn_temperature(fixture.connection, 0.5, &mut calls)
+            .unwrap();
+        lab.tick_pawn_temperature(fixture.connection, 0.25, &mut calls)
+            .unwrap();
+        assert_eq!(
+            lab.pawn_temperature(fixture.connection).unwrap().internal,
+            Some(62)
+        );
+        let context = lab
+            .pawn_temperature_tick_context(fixture.connection)
+            .unwrap();
+        assert_eq!(
+            (context.sample_elapsed_seconds, context.internal_remainder),
+            (0.75, 0.75)
+        );
+        lab.poll();
+    }
+    assert!(
+        fixture.collect_live().is_empty(),
+        "restore is still awaiting ACK"
+    );
+    fixture.refresh_temperature(PawnTemperatureState {
+        modified_internal: Some(70),
+        ..Default::default()
+    });
+    let context = {
+        let mut lab = fixture.app.world_mut().resource_mut::<PeerLab>();
+        assert!(
+            lab.set_pawn_internal_temperature(fixture.connection, 69, &mut Bounds)
+                .unwrap()
+        );
+        lab.tick_pawn_temperature(fixture.connection, 0.5, &mut calls)
+            .unwrap();
+        assert_eq!(
+            lab.pawn_temperature(fixture.connection).unwrap().internal,
+            Some(70)
+        );
+        lab.pawn_temperature_tick_context(fixture.connection)
+            .unwrap()
+    };
+    assert_eq!(
+        (context.sample_elapsed_seconds, context.internal_remainder),
+        (1.25, 0.25)
+    );
+    assert_eq!(
+        calls.reads,
+        [
+            (0x9d, 0),
+            (0xaa, 0),
+            (0x9d, 50),
+            (0xaa, 50),
+            (0x9d, 69),
+            (0xaa, 69)
+        ]
+    );
+    assert_eq!(calls.requests, [50, 62, 70]);
+    let updates = fixture.ack_live();
+    assert_eq!(updates.len(), 1);
+    assert_eq!(updates[0].len(), 1);
+    fixture.assert_temperature_block(
+        &updates[0][0],
+        PawnTemperatureState {
+            modified_internal: Some(70),
+            internal: Some(70),
+            ..Default::default()
+        },
+    );
+    assert!(fixture.ack_live().is_empty());
+    for _ in 0..4 {
+        fixture.app.world_mut().resource_mut::<PeerLab>().poll();
+    }
+    assert_eq!(
+        fixture
+            .app
+            .world()
+            .resource::<PeerLab>()
+            .pawn_temperature_tick_context(fixture.connection),
+        Some(context)
+    );
+    assert_eq!(calls.reads.len(), 6);
+    assert_eq!(calls.requests, [50, 62, 70]);
+    assert!(fixture.collect_live().is_empty());
+}
+
+#[test]
+fn pawn_temperature_tick_contexts_are_per_connection_and_discarded_on_close() {
+    let mut fixture = ModifierTimeFixture::with_temperature(authored_tick_temperatures());
+    let address = fixture.address;
+    let version = fixture.profile.pin.network_checksum;
+    let ((second, _), _) = with_server(&mut fixture.app, move || {
+        join_pinned_open(address, version, 3)
+    });
+    let second_connection = fixture
+        .app
+        .world()
+        .resource::<PeerLab>()
+        .joined_connections()
+        .into_iter()
+        .find(|id| *id != fixture.connection)
+        .unwrap();
+    let context = authored_temperature_tick_context();
+    let mut calls = AuthoredTemperatureTickCalls::default();
+    {
+        let mut lab = fixture.app.world_mut().resource_mut::<PeerLab>();
+        assert_eq!(
+            lab.pawn_temperature(second_connection),
+            Some(authored_tick_temperatures())
+        );
+        lab.configure_pawn_temperature_tick(fixture.connection, context)
+            .unwrap();
+        lab.configure_pawn_temperature_tick(second_connection, context)
+            .unwrap();
+        lab.tick_pawn_temperature(fixture.connection, 0.5, &mut calls)
+            .unwrap();
+        assert_eq!(
+            lab.pawn_temperature_tick_context(second_connection),
+            Some(context)
+        );
+        assert_eq!(
+            lab.pawn_temperature(second_connection),
+            Some(authored_tick_temperatures())
+        );
+        lab.tick_pawn_temperature(second_connection, 0.25, &mut calls)
+            .unwrap();
+        assert_eq!(
+            lab.pawn_temperature(second_connection).unwrap().internal,
+            Some(25)
+        );
+        assert_eq!(
+            lab.pawn_temperature(fixture.connection).unwrap().internal,
+            Some(50)
+        );
+        assert_eq!(
+            lab.pawn_temperature_tick_context(fixture.connection)
+                .unwrap()
+                .sample_elapsed_seconds,
+            0.5
+        );
+        assert_eq!(
+            lab.pawn_temperature_tick_context(second_connection)
+                .unwrap()
+                .sample_elapsed_seconds,
+            0.25
+        );
+    }
+    second.close().unwrap();
+    fixture.app.world_mut().resource_mut::<PeerLab>().poll();
+    {
+        let mut lab = fixture.app.world_mut().resource_mut::<PeerLab>();
+        assert_eq!(lab.pawn_temperature_tick_context(second_connection), None);
+        assert!(
+            lab.tick_pawn_temperature(second_connection, 1.0, &mut calls)
+                .is_err()
+        );
+        assert_eq!(
+            lab.pawn_temperature(fixture.connection).unwrap().internal,
+            Some(50)
+        );
+    }
+    let ((third, _), _) = with_server(&mut fixture.app, move || {
+        join_pinned_open(address, version, 3)
+    });
+    let third_connection = fixture
+        .app
+        .world()
+        .resource::<PeerLab>()
+        .joined_connections()
+        .into_iter()
+        .find(|id| *id != fixture.connection)
+        .unwrap();
+    assert_ne!(third_connection, second_connection);
+    {
+        let mut lab = fixture.app.world_mut().resource_mut::<PeerLab>();
+        assert_eq!(lab.pawn_temperature_tick_context(third_connection), None);
+        assert_eq!(
+            lab.pawn_temperature(third_connection),
+            Some(authored_tick_temperatures())
+        );
+        assert!(
+            lab.tick_pawn_temperature(third_connection, 1.0, &mut calls)
+                .is_err()
+        );
+    }
+    assert_eq!(calls.requests, [50, 25]);
+    third.close().unwrap();
+    fixture.app.world_mut().resource_mut::<PeerLab>().poll();
+}
