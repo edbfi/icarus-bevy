@@ -36,7 +36,7 @@ schema-3 lossless sidecars: F-567; readers: F-886 to F-888; randomized
 preservation/codecs/readers/bounded peers: F-604 to F-607; corrupt stores:
 F-611.
 
-Schema-4 bridge: F-938 ([installation/limits](../../runbooks/native-server.md)).
+Schema-4/7/11 spatial bridge with dormant activation: F-938 ([installation/limits](../../runbooks/native-server.md)).
 Saved-pose/physics: U-025; stock client unqualified.
 
 Loopback admission/cleanup/pins: F-875; session limits: F-833; metrics:

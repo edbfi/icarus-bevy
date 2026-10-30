@@ -77,7 +77,7 @@ pub struct NetworkConfig {
     /// protocol row identities. Never an export of packaged gameplay values.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub authored_gameplay: Option<PathBuf>,
-    /// Independently authored, strict JSON declaration for schema-4 native
+    /// Independently authored, strict JSON declaration for schema-4/7/11 native
     /// spatial replication. Relative paths use the working directory. Ignored
     /// when networking is disabled; absence retains ordinary session behavior.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -162,7 +162,7 @@ pub struct ConfigOptions {
     /// does not enable it.
     #[arg(long)]
     pub network_port: Option<u16>,
-    /// Authored schema-4 replication declaration (strict JSON). Ignored when
+    /// Authored schema-4/7/11 replication declaration (strict JSON). Ignored when
     /// networking is disabled; otherwise requires a release session plan.
     #[arg(long)]
     pub authored_replication: Option<PathBuf>,

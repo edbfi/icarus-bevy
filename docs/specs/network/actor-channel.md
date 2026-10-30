@@ -21,11 +21,13 @@ Address pairs are server / client.
   and `game_state_open` compose the PlayerController and GameState opens
   (F-852, F-794); `run` sends the PlayerController, pawn, GameState and
   PlayerState opens after Join (F-784, F-804).
-- Authored bridge (F-938; [schema-4 installation](../../runbooks/native-server.md#network-sessions-experimental)):
+- Authored bridge (F-938; [authored installation](../../runbooks/native-server.md#network-sessions-experimental)):
   motion/hidden/damage use the AActor prefix. Ordered open blocks seed known
   fields; opaque blocks invalidate them; superseded losses cannot revert
   repaired fields. Flag removal requests false/false, not class defaults.
-  Saved-pose, gameplay and stock-client behavior remain unqualified.
+  Schema-7/11 slots activate from dormancy; bound incarnation replacement retires
+  the bridge. Modifier state stays native. Saved-pose, gameplay and stock-client
+  behavior remain unqualified.
 - Dynamic GUIDs assign on first serialization, by open or reference (F-794);
   components keep one GUID across connections.
 - Export repetition (F-796), server 25956137: `ShouldSendFullPath`
