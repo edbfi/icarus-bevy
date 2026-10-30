@@ -51,7 +51,8 @@ Saved manager/quest opens, bitwise capture comparisons and the 15-prospect
 census: F-859, F-861, F-862, F-864, F-866, F-867, F-914, F-933 to F-935;
 [world managers](../../specs/network/world-managers.md). U-074 and U-075 are
 resolved; unsupported quest classes and `Check()` graphs fail closed (U-076).
-Joining new players are appended to `History` (F-865, F-967).
+New-player `History` appends coalesce across temporary per-peer send pressure
+(F-865, F-967).
 
 Explicit native prospect refreshes retain current values and future-open
 templates, clear defaults and repair loss after open ACK; invalid combined

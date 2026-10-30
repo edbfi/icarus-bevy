@@ -3637,6 +3637,219 @@ fn new_players_append_history_for_every_open_tracker_and_later_opens() {
 }
 
 #[test]
+fn player_history_pressure_coalesces_appends_and_converges_after_ack_and_reconnect() {
+    use icarus_bevy::{
+        actor_uids::ActorUidLibrary,
+        experimental::{
+            game_state_open::GAME_STATE_CHANNEL_INDEX,
+            manager_open::{ManagerSlot, PLAYER_HISTORY_HANDLE},
+            packet_lab::DEFAULT_SENT_CAPACITY,
+            peer_lab::PeerLabAdmission,
+            prospect_info::PlayerHistoryEntry,
+            session_open::{ActorOpenSpec, PathSegment, map_level_chain},
+        },
+    };
+
+    let (mut lab, profile) = uid_lab(ActorUidLibrary::with_random(|| 7));
+    let pinned = profile.pin.network_checksum;
+    let engine = profile.engine_network_version;
+    let map = PeerLabAdmission::default().map_url;
+    lab.enable_player_state_open(profile.player_state_open_plan(map).unwrap().unwrap())
+        .unwrap();
+    let history = profile
+        .manager_open_plan(ManagerSlot::PlayerHistory, map)
+        .unwrap()
+        .unwrap();
+    lab.enable_game_state_open(
+        profile.game_state_open_plan(map).unwrap().unwrap(),
+        network::game_state_values().unwrap(),
+        GAME_STATE_CHANNEL_INDEX,
+    )
+    .unwrap();
+    let channel = network::MANAGER_FIRST_CHANNEL;
+    lab.enable_manager_opens(vec![(ManagerSlot::PlayerHistory, history.clone())], channel)
+        .unwrap();
+    let expected = history
+        .with_player_history(&[3, 4].map(|slot| PlayerHistoryEntry {
+            user_id: NET_ID_HEX.encode_utf16().collect(),
+            chr_slot: slot,
+            cached_character_name: "authored-character".encode_utf16().collect(),
+        }))
+        .unwrap()
+        .values[&PLAYER_HISTORY_HANDLE]
+        .clone();
+    let mut app = build_app(&ServerConfig::default(), &WorldSnapshot::default()).unwrap();
+    let address = network::install(&mut app, lab).unwrap();
+    let ((mut blocked, healthy), _) = with_server(&mut app, move || {
+        // No GameState clocks. B's absent friends list
+        // keeps A's completed profiles from finalising until after saturation.
+        let (mut first, _) = join_pinned_open(address, pinned, 32);
+        let (second, _) = join_pinned_open(address, pinned, 32);
+        exchange_profiles(&mut first, engine, 3, 3);
+        (first, second)
+    });
+    assert_eq!(counts(&app).player_history_appends, 0);
+    assert_eq!(
+        app.world().resource::<PeerLab>().stats().players_finalised,
+        0
+    );
+    let connection = app.world().resource::<PeerLab>().joined_connections()[0];
+    let pressure_actor = 42;
+    assert!(
+        app.world_mut()
+            .resource_mut::<PeerLab>()
+            .open_actor(
+                connection,
+                pressure_actor,
+                ActorOpenSpec {
+                    actor: 0,
+                    archetype: vec![
+                        PathSegment::new("Default__HistoryPressure_C", 0x1234_5678, false),
+                        PathSegment::new("/Game/Lab/HistoryPressure", 0, false),
+                    ],
+                    level: map_level_chain(map).unwrap(),
+                    location: Some([0.0; 3]),
+                    rotation: None,
+                    velocity: None,
+                    blocks: Vec::new(),
+                },
+                16,
+                engine,
+            )
+            .is_some()
+    );
+    assert!(
+        !blocked
+            .collect(Duration::from_millis(250), 32)
+            .unwrap()
+            .replies
+            .is_empty()
+    );
+    blocked.keepalive().unwrap();
+    app.world_mut().resource_mut::<PeerLab>().poll();
+    assert_eq!(
+        blocked
+            .collect(Duration::from_secs(2), 1)
+            .unwrap()
+            .replies
+            .len(),
+        1
+    );
+    // Fill the remaining records through public movement sends, draining UDP
+    // without ACKs. Other session packets may already occupy several records.
+    let mut queued = 0;
+    for step in 1..=DEFAULT_SENT_CAPACITY {
+        if !app
+            .world_mut()
+            .resource_mut::<PeerLab>()
+            .update_actor_movement(connection, pressure_actor, [step as f32, 0.0, 0.0], engine)
+        {
+            break;
+        }
+        queued += 1;
+        assert_eq!(
+            blocked
+                .collect(Duration::from_secs(2), 1)
+                .unwrap()
+                .replies
+                .len(),
+            1
+        );
+    }
+    assert!(queued > 0 && queued < DEFAULT_SENT_CAPACITY);
+    assert!(
+        app.world()
+            .resource::<PeerLab>()
+            .stats()
+            .actor_update_errors
+            > 0
+    );
+    let ((healthy, healthy_updates), _) = with_server(&mut app, move || {
+        let mut healthy = healthy;
+        // FriendsList finalises A, then these answers finalise B. Both History
+        // revisions must remain deliverable while A has no outgoing capacity.
+        let updates = exchange_profiles(&mut healthy, engine, 4, 4);
+        (healthy, updates)
+    });
+    assert_eq!(counts(&app).player_history_appends, 2);
+    assert_eq!(
+        app.world().resource::<PeerLab>().stats().players_finalised,
+        2
+    );
+    assert_eq!(
+        tracker_histories(&profile, channel, &healthy_updates, false),
+        std::slice::from_ref(&expected),
+        "an independently healthy peer receives the complete latest History"
+    );
+    let errors = counts(&app).player_history_errors;
+    assert!(errors > 0, "History encounters the saturated send queue");
+    for _ in 0..8 {
+        app.world_mut().resource_mut::<PeerLab>().poll();
+    }
+    assert_eq!(
+        counts(&app).player_history_errors,
+        errors,
+        "a blocked revision does not spin without notification progress"
+    );
+    let before_ack: Vec<_> = blocked
+        .collect(Duration::from_millis(50), 32)
+        .unwrap()
+        .replies
+        .into_iter()
+        .map(|reply| reply.bytes)
+        .collect();
+    assert!(tracker_histories(&profile, channel, &before_ack, false).is_empty());
+
+    // The real ACK releases A's full ring. Only the latest unsent revision
+    // should be queued, not an obsolete intermediate array or a new append.
+    blocked.keepalive().unwrap();
+    app.world_mut().resource_mut::<PeerLab>().poll();
+    let repaired: Vec<_> = blocked
+        .collect(Duration::from_millis(250), 32)
+        .unwrap()
+        .replies
+        .into_iter()
+        .map(|reply| reply.bytes)
+        .collect();
+    assert_eq!(
+        tracker_histories(&profile, channel, &repaired, false),
+        std::slice::from_ref(&expected)
+    );
+    assert_eq!(counts(&app).player_history_appends, 2);
+    assert_eq!(counts(&app).player_history_duplicates, 0);
+
+    // ACK the queued revision and advance once more: successful delivery must
+    // not trigger another application-level send on subsequent ACK progress.
+    for _ in 0..2 {
+        blocked.keepalive().unwrap();
+        app.world_mut().resource_mut::<PeerLab>().poll();
+        let packets: Vec<_> = blocked
+            .collect(Duration::from_millis(250), 32)
+            .unwrap()
+            .replies
+            .into_iter()
+            .map(|reply| reply.bytes)
+            .collect();
+        assert!(tracker_histories(&profile, channel, &packets, false).is_empty());
+    }
+    blocked.close().unwrap();
+    app.world_mut().resource_mut::<PeerLab>().poll();
+    let ((reconnected, opens), _) =
+        with_server(&mut app, move || join_pinned_open(address, pinned, 32));
+    assert_eq!(
+        tracker_histories(&profile, channel, &opens, true),
+        [expected]
+    );
+    assert_eq!(counts(&app).player_history_appends, 2);
+    assert_eq!(app.world().resource::<PeerLab>().stats().peers_failed, 0);
+    assert_eq!(app.world().resource::<PeerLab>().stats().io_errors, 0);
+    reconnected.close().unwrap();
+    healthy.close().unwrap();
+    app.world_mut().resource_mut::<PeerLab>().poll();
+    assert_eq!(app.world().resource::<PeerLab>().peer_count(), 0);
+}
+
+#[test]
 fn only_saved_controllers_choose_returning_history_and_duplicates_keep_their_name() {
     use icarus_bevy::{
         experimental::{
