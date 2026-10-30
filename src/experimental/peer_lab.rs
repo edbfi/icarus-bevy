@@ -619,11 +619,11 @@ pub struct PeerLabStats {
     pub modifier_time_updates_queued: u64,
     /// Modifier time composition or transport framing failures.
     pub modifier_time_update_errors: u64,
-    /// Saved modifiers left out (a repeated row, an unknown class).
+    /// Saved modifiers left out because restore coverage is unavailable.
     pub returning_modifier_gaps: u64,
     /// Returning-pawn updates that carried restored stats (F-988).
     pub returning_stats_sent: u64,
-    /// Updates whose stats were left out (an inventory or weight gap).
+    /// Updates whose stats or dependent levels lack complete restore inputs.
     pub returning_stat_gaps: u64,
     /// New-player AddPlayer outcomes (F-865); returning C025 players skip it.
     pub player_history_appends: u64,
@@ -2441,7 +2441,11 @@ impl PeerLab {
             let (plan, channel, _) = self.pawn_open.as_ref().context("no pawn plan")?;
             let entry = self.peers.get_mut(&address).context("no returning peer")?;
             let (_, _, content) = self.pawn_open.as_ref().context("no pawn content")?;
-            let mut inventory_gap = false;
+            let saved = &self.returning_characters[index];
+            // Without a restore model, saved inputs are unknown, not evidence
+            // that their contribution or the inventory resize pass is a no-op.
+            let mut inventory_gap =
+                self.inventory_restore.is_none() && !saved.inventories.is_empty();
             let mut inventories = Vec::new();
             if let Some(tables) = &self.inventory_restore {
                 // Any failure, gap or error, leaves the inventories out of an
@@ -2456,7 +2460,17 @@ impl PeerLab {
                 }
             }
             let mut modifiers = Vec::new();
-            let mut modifier_gaps = 0;
+            let mut modifier_gaps = if self.modifier_restore.is_none() {
+                saved
+                    .modifiers
+                    .iter()
+                    .filter(|modifier| {
+                        !modifier.time_remaining.is_nan() && modifier.time_remaining >= 0.0
+                    })
+                    .count()
+            } else {
+                0
+            };
             if let Some(tables) = &self.modifier_restore {
                 // A fresh pawn's modifier UIDs start at 1; its runtime
                 // sub-objects after the open's inventories take the next
@@ -2476,10 +2490,22 @@ impl PeerLab {
                 .pawn_character_state
                 .as_ref()
                 .context("no pawn state")?;
-            // The restored stats need every inventory's final slots and
-            // weight (F-988); a gap in either leaves them, and the bounds
-            // they set, out.
-            let mut stat_gap = false;
+            // Derived stats and the levels clamped by them require every
+            // source. A partial modifier or inventory restore cannot establish
+            // the final bounds; opening defaults are not a substitute.
+            let source_gap = inventory_gap || modifier_gaps != 0;
+            // Even unchanged opening items contribute equipment/attachment and
+            // carrying grants; an empty slot delta does not prove unchanged stats.
+            let stats_required = !inventories.is_empty()
+                || !modifiers.is_empty()
+                || content.inventories.iter().any(|inventory| {
+                    inventory.slots.items.iter().any(|slot| slot.item.is_some())
+                        || inventory
+                            .current_weight
+                            .unwrap_or(DEFAULT_CDO_CURRENT_WEIGHT)
+                            != DEFAULT_CDO_CURRENT_WEIGHT
+                });
+            let mut stat_gap = source_gap || stats_required;
             let mut stats = None;
             if let (Some(tables), Some(inventory_tables), Some(open_stats)) =
                 (&self.stat_restore, &self.inventory_restore, &content.stats)
@@ -2487,7 +2513,7 @@ impl PeerLab {
                 let restored_stats = self
                     .linked_inventories
                     .as_ref()
-                    .filter(|_| !inventory_gap)
+                    .filter(|_| !source_gap)
                     .and_then(|linked| {
                         restored_pawn_stats(
                             tables,
@@ -2502,7 +2528,8 @@ impl PeerLab {
                     .flatten();
                 match restored_stats {
                     Some(restored) => {
-                        stats = Some((stat_delta(open_stats, &restored.items)?, restored))
+                        stats = Some((stat_delta(open_stats, &restored.items)?, restored));
+                        stat_gap = false;
                     }
                     None => stat_gap = true,
                 }
@@ -2518,14 +2545,22 @@ impl PeerLab {
                 // PawnContent opens Stomach without any entries.
                 stomach_contents: 0,
             };
-            let restored =
-                restore_saved_pawn(&self.returning_characters[index].state, &current, |name| {
-                    let name = String::from_utf16_lossy(name);
-                    Ok(self
-                        .pawn_restore_item_rows
-                        .iter()
-                        .position(|row| row.eq_ignore_ascii_case(&name)))
-                })?;
+            let mut state = saved.state.clone();
+            if stat_gap {
+                // Omit only inputs whose restored bounds are unqualified.
+                // Preserve the retained save and independently known fields.
+                state.health = None;
+                state.oxygen_level = None;
+                state.food_level = None;
+                state.water_level = None;
+            }
+            let restored = restore_saved_pawn(&state, &current, |name| {
+                let name = String::from_utf16_lossy(name);
+                Ok(self
+                    .pawn_restore_item_rows
+                    .iter()
+                    .position(|row| row.eq_ignore_ascii_case(&name)))
+            })?;
             let Ok(mut restored) = restored else {
                 return Ok(None);
             };

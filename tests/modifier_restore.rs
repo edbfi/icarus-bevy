@@ -184,3 +184,24 @@ fn repeated_rows_and_unobserved_classes_are_left_out_as_gaps() {
         ]
     );
 }
+
+#[test]
+fn configured_out_of_range_modifier_row_is_a_gap_but_unknown_name_is_not() {
+    let mut tables = tables();
+    tables.row_index.insert("broken".into(), u16::MAX);
+    let (restored, gaps) = restore_modifiers(
+        &[
+            saved("Missing", 1.0, -1),
+            saved("Broken", 1.0, -1),
+            saved("Plain", 1.0, -1),
+        ],
+        &tables,
+        1,
+        0,
+        |_| 0,
+    );
+    assert_eq!(gaps, [ModifierRestoreGap::InvalidRowIndex]);
+    assert_eq!(restored.len(), 1);
+    assert_eq!(restored[0].row, 0);
+    assert_eq!(restored[0].uid, 1);
+}
