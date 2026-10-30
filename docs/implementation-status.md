@@ -58,8 +58,8 @@ Offline work, in order; connected proof keeps its gates.
    Retained closed Bool/I32 candidates: F-920, F-927, F-929; component
    lifecycle/scaling/init/callbacks: F-930; local removal/comparator call/read
    models: F-937; the server comparator helper compares receiver u64s at +8
-   (F-940). Owner/row and subclass effects remain open. Authored reload/retry
-   timers/cache persist (F-931). Next: overrides, owner/row bindings and
+   (F-940). Owner/row and subclass effects remain open. Authored timers use rational tick time with persisted phase; timers/cache
+   survive reload/retry (F-931). Next: overrides, owner/row bindings and
    coordinates before all-or-nothing import.
    `import-save` stays closed; coverage grants no publication; packaged row
    meanings stay unsupported (F-660). [Procedures](runbooks/authored-worlds.md);
