@@ -107,20 +107,22 @@ the strict staging refuses supplies no saved characters, controllers or
 History: returning-player restore is off, and every joiner counts as new and is
 added to the History the tracker starts empty with.
 
-Library APIs publish explicit pawn state (F-995, F-998):
-`PeerLab::refresh_restored_modifier_times` validates UID/raw/wire batches;
-`refresh_pawn_temperature` merges supplied fields (`None` unchanged, zero explicit).
-`set_restored_modifier_time` and `set_pawn_internal_temperature` run setter order
-with caller-owned effects before publication (F-996, F-997). The latter requires
-known internal temperature and caller-supplied stat reads. Both update families
-share reliable ACK gating, coalescing, pressure retries and loss recovery.
-`configure_pawn_temperature_tick` requires all four temperatures plus explicit
+Explicit library APIs (F-995, F-998, F-1000) share reliable ACK gating,
+coalescing, pressure retries and loss repair. `refresh_restored_modifier_times`
+validates UID/raw/wire batches; `refresh_pawn_temperature` merges known fields
+(`None` unchanged, zero explicit). `set_restored_modifier_time` and
+`set_pawn_internal_temperature` run qualified setter order with caller-owned
+effects before publication; temperature requires a known value and stat reads.
+
+`configure_pawn_temperature_tick` requires all four temperatures and explicit
 reference/cache flags, interval, elapsed time and fractional remainder.
-`tick_pawn_temperature` runs F-999 once with caller-owned sampling/stat/setter
-effects, retains connection-local timing and reads current pawn values (F-1000).
-Polling never replays callbacks or simulates time/climate. Nothing is persisted;
-reconnect uses the new pawn open and saved values. Getters return copies.
-Counts are exposed by `PeerLabStats` and `SessionCounts`.
+`configure_restored_modifier_tick` requires an existing restored UID and
+explicit owner role, interval enablement, elapsed time and interval.
+`tick_pawn_temperature` / `tick_restored_modifier` accept elapsed time and
+caller-owned effects, read current values and retain final values/timing.
+Polling and retries never replay callbacks. No automatic climate, expiry,
+destruction or persistence is inferred. Disconnect drops timing; reconnect
+requires configuration again. Getters return copies.
 
 Authored schema-4/7/11 hosts opt in with `[network].authored_replication` or
 `run --authored-replication replication.json`. Disabled networking ignores it;
