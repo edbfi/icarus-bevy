@@ -196,20 +196,20 @@ Address pairs are server / client.
   F-808). Multi-bunch updates split as unreliable partials on consecutive
   packets (F-825; `LabPeer::actor_update_datagrams`).
 
-- Modifier time (F-991, F-994): the authority setter rejects equal/unordered
-  requests. Quantize f32 seconds times ten, double, subtract from -0.5,
-  nearest-even integer conversion, then negate the arithmetic half and clamp
-  below zero. Overflow retains the old wire field; fresh restore starts at zero.
-  Accepted raw writes call OnRep even with unchanged wire. Tick's authority tag
-  refusal precedes countdown; its interval path consumes at most one period.
-  AutoDestroy tests role 3, not remaining time. The native call model excludes
-  callee effects, live scheduling and refresh (U-069).
+- Modifier time (F-991, F-994, F-996): authority rejects equal/unordered
+  requests. Quantize f32 `s = seconds * 10`,
+  `r = round_ties_even(-0.5 - (s + s))`, then `max(0, -(i32(r) >> 1))`.
+  Out-of-range integer/u16 conversion retains wire (fresh restore starts at zero).
+  Accepted raw writes call OnRep even with unchanged wire. OnRep reconstructs
+  raw seconds as wire times binary32 0.1 only for a present nonauthority owner,
+  then requests the optional lifetime multicast. Tick's authority tag refusal
+  precedes countdown; intervals consume at most one period. AutoDestroy tests
+  role 3, not time. Listener effects, scheduling and refresh remain open (U-069).
 
 ## Candidate
 
-Explicit restored-modifier time batches use native reliable delivery, retain
-raw/wire state separately and wait for the initial restore ACK (F-995). This
-qualifies no timer callbacks, automatic ticking or stock-client behavior.
+Native setters notify before reliable publication; resolved batches retain
+independent raw/wire values (F-995). No stock-client qualification.
 
 - Authored native refresh transport (F-936): `PeerLab::refresh_active_prospect`
   validates complete handles 51..67 and the current dynamic open in both byte

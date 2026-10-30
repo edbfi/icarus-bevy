@@ -1,5 +1,5 @@
-//! Pinned 3.0.32 modifier timer transitions (F-991). These are caller-local
-//! rules from M-1126, not a running component, persistence adapter or clock.
+//! Pinned 3.0.32 modifier timer transitions (F-991, F-994, F-996). These are
+//! caller-local rules, not a running component, persistence adapter or clock.
 //! Calls outside the qualified fragments are supplied explicitly: they may
 //! mutate the state before the next local read. A virtual destruction request
 //! does not prove destruction; a callback request does not prove its effects.
@@ -13,7 +13,8 @@ use std::cmp::Ordering;
 /// Raw remaining time and its independently stored wire field.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct RemainingTime {
-    /// Component `+0x110`, binary32 seconds, not reconstructed from the wire.
+    /// Component `+0x110`, binary32 seconds. The setter retains raw input;
+    /// OnRep reconstructs this from the wire only for a present nonauthority owner.
     pub seconds: f32,
     /// Component `+0x3bc`, whole tenths.
     pub replicated_tenths: u16,
@@ -65,6 +66,26 @@ pub fn set_remaining_time(
         call_on_rep: true,
         wire_changed: state.replicated_tenths != previous,
     }
+}
+
+/// `OnRep_RemainingTime` (0x1416ef430): a present owner whose role byte is
+/// not 3 replaces raw seconds with wire tenths multiplied by binary32
+/// `0x3dcccccd`. Authority and absent-owner paths preserve raw bits.
+///
+/// The caller boundary runs exactly once after this local write, even when
+/// seconds did not change. It owns shared `FModifierLifetimeUpdated` delegate
+/// lookup, conditional multicast dispatch, shared-reference release, and all
+/// their effects. Invoking the boundary does not imply a listener was called.
+/// Mutations it makes are retained; no timer or destruction behavior is inferred.
+pub fn on_rep_remaining_time(
+    state: &mut RemainingTime,
+    owner_role_byte: Option<u8>,
+    notify_lifetime_updated: impl FnOnce(&mut RemainingTime),
+) {
+    if owner_role_byte.is_some_and(|role| role != 3) {
+        state.seconds = f32::from(state.replicated_tenths) * f32::from_bits(0x3dcc_cccd);
+    }
+    notify_lifetime_updated(state);
 }
 
 /// Fields read locally by TickComponent after its base call. Owner role byte

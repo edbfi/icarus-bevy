@@ -6604,3 +6604,261 @@ fn returning_stat_coverage_preserves_independent_fields_without_guessing_bounds(
         app.world_mut().resource_mut::<PeerLab>().poll();
     }
 }
+
+#[test]
+fn native_modifier_setter_notifies_once_and_publishes_handler_resolved_time() {
+    use icarus_bevy::experimental::modifier_timing::{RemainingTime, RemainingTimeChange};
+    use std::cell::Cell;
+
+    let mut fixture = ModifierTimeFixture::new();
+    assert!(fixture.ack().is_empty());
+    let notified = Cell::new(0);
+    let raw_only = fixture
+        .app
+        .world_mut()
+        .resource_mut::<PeerLab>()
+        .set_restored_modifier_time(fixture.connection, 1, 50.26, |state| {
+            notified.set(notified.get() + 1);
+            assert_eq!(
+                *state,
+                RemainingTime {
+                    seconds: 50.26,
+                    replicated_tenths: 503
+                }
+            );
+        })
+        .unwrap();
+    assert_eq!(
+        raw_only,
+        RemainingTimeChange {
+            call_on_rep: true,
+            wire_changed: false
+        }
+    );
+    assert_eq!(notified.get(), 1);
+    assert_eq!(
+        fixture
+            .app
+            .world()
+            .resource::<PeerLab>()
+            .restored_modifier_time(fixture.connection, 1)
+            .unwrap()
+            .seconds,
+        50.26
+    );
+    fixture.app.world_mut().resource_mut::<PeerLab>().poll();
+    assert!(
+        fixture.collect().is_empty(),
+        "accepted raw-only changes notify without sending"
+    );
+    assert_eq!(notified.get(), 1);
+
+    let overflow = fixture
+        .app
+        .world_mut()
+        .resource_mut::<PeerLab>()
+        .set_restored_modifier_time(fixture.connection, 1, f32::MAX, |state| {
+            notified.set(notified.get() + 1);
+            assert_eq!(
+                *state,
+                RemainingTime {
+                    seconds: f32::MAX,
+                    replicated_tenths: 503
+                }
+            );
+        })
+        .unwrap();
+    assert_eq!(overflow, raw_only);
+    assert_eq!(
+        fixture
+            .app
+            .world()
+            .resource::<PeerLab>()
+            .restored_modifier_time(fixture.connection, 1)
+            .unwrap()
+            .seconds,
+        f32::MAX
+    );
+    fixture.app.world_mut().resource_mut::<PeerLab>().poll();
+    assert!(fixture.collect().is_empty());
+    assert_eq!(notified.get(), 2);
+
+    // The setter would change the wire to 124; the caller's notification
+    // instead restores its previous wire field and overrides raw seconds.
+    let overridden = fixture
+        .app
+        .world_mut()
+        .resource_mut::<PeerLab>()
+        .set_restored_modifier_time(fixture.connection, 1, 12.34, |state| {
+            notified.set(notified.get() + 1);
+            assert_eq!(
+                *state,
+                RemainingTime {
+                    seconds: 12.34,
+                    replicated_tenths: 124
+                }
+            );
+            *state = RemainingTime {
+                seconds: 60.0,
+                replicated_tenths: 503,
+            };
+        })
+        .unwrap();
+    assert_eq!(
+        overridden,
+        RemainingTimeChange {
+            call_on_rep: true,
+            wire_changed: true
+        }
+    );
+    fixture.app.world_mut().resource_mut::<PeerLab>().poll();
+    assert!(
+        fixture.collect().is_empty(),
+        "publish the handler's final wire value"
+    );
+    assert_eq!(notified.get(), 3);
+
+    // Conversely, a raw-only setter can notify a handler that changes the
+    // wire field. Its own return value still describes the pre-handler write.
+    let final_bits = 0x7fc0_5678;
+    let changed = fixture
+        .app
+        .world_mut()
+        .resource_mut::<PeerLab>()
+        .set_restored_modifier_time(fixture.connection, 1, 50.27, |state| {
+            notified.set(notified.get() + 1);
+            assert_eq!(
+                *state,
+                RemainingTime {
+                    seconds: 50.27,
+                    replicated_tenths: 503
+                }
+            );
+            *state = RemainingTime {
+                seconds: f32::from_bits(final_bits),
+                replicated_tenths: 17,
+            };
+        })
+        .unwrap();
+    assert_eq!(changed, raw_only);
+    let retained = fixture
+        .app
+        .world()
+        .resource::<PeerLab>()
+        .restored_modifier_time(fixture.connection, 1)
+        .unwrap();
+    assert_eq!(retained.seconds.to_bits(), final_bits);
+    assert_eq!(retained.replicated_tenths, 17);
+    fixture.app.world_mut().resource_mut::<PeerLab>().poll();
+    let packets = fixture.collect();
+    fixture.assert_time_blocks(&packets, &[(1, 17)]);
+    assert_eq!(notified.get(), 4);
+    assert!(fixture.ack().is_empty());
+    for _ in 0..3 {
+        fixture.app.world_mut().resource_mut::<PeerLab>().poll();
+    }
+    assert!(fixture.collect().is_empty());
+    assert_eq!(
+        notified.get(),
+        4,
+        "ACKs and polling never replay caller effects"
+    );
+}
+
+#[test]
+fn native_modifier_setter_rejections_leave_time_and_notification_untouched() {
+    use icarus_bevy::experimental::modifier_timing::{RemainingTime, RemainingTimeChange};
+
+    let mut fixture = ModifierTimeFixture::new();
+    assert!(fixture.ack().is_empty());
+    let initial = fixture
+        .app
+        .world()
+        .resource::<PeerLab>()
+        .restored_modifier_time(fixture.connection, 1)
+        .unwrap();
+    for requested in [initial.seconds, f32::NAN] {
+        let change = fixture
+            .app
+            .world_mut()
+            .resource_mut::<PeerLab>()
+            .set_restored_modifier_time(fixture.connection, 1, requested, |_| {
+                panic!("rejected setter must not notify")
+            })
+            .unwrap();
+        assert_eq!(change, RemainingTimeChange::default());
+        assert_eq!(
+            fixture
+                .app
+                .world()
+                .resource::<PeerLab>()
+                .restored_modifier_time(fixture.connection, 1)
+                .unwrap(),
+            initial
+        );
+    }
+    for (connection, uid) in [(u32::MAX, 1), (fixture.connection, 99)] {
+        assert!(
+            fixture
+                .app
+                .world_mut()
+                .resource_mut::<PeerLab>()
+                .set_restored_modifier_time(connection, uid, 1.0, |_| panic!(
+                    "unknown identity must not notify"
+                ))
+                .is_err()
+        );
+        assert_eq!(
+            fixture
+                .app
+                .world()
+                .resource::<PeerLab>()
+                .restored_modifier_time(fixture.connection, 1)
+                .unwrap(),
+            initial
+        );
+    }
+    // The resolved-state API remains independent. Preserve its wire value
+    // while admitting special raw values to exercise setter comparisons.
+    for (bits, requested) in [
+        (0.0_f32.to_bits(), -0.0),
+        ((-0.0_f32).to_bits(), 0.0),
+        (0x7fc0_1234, 1.0),
+    ] {
+        fixture.refresh(&[(
+            1,
+            RemainingTime {
+                seconds: f32::from_bits(bits),
+                replicated_tenths: initial.replicated_tenths,
+            },
+        )]);
+        let change = fixture
+            .app
+            .world_mut()
+            .resource_mut::<PeerLab>()
+            .set_restored_modifier_time(fixture.connection, 1, requested, |_| {
+                panic!("equal or unordered input must not notify")
+            })
+            .unwrap();
+        assert_eq!(change, RemainingTimeChange::default());
+        let retained = fixture
+            .app
+            .world()
+            .resource::<PeerLab>()
+            .restored_modifier_time(fixture.connection, 1)
+            .unwrap();
+        assert_eq!(retained.seconds.to_bits(), bits);
+        assert_eq!(retained.replicated_tenths, initial.replicated_tenths);
+    }
+    fixture.app.world_mut().resource_mut::<PeerLab>().poll();
+    assert!(fixture.collect().is_empty());
+    assert_eq!(
+        fixture
+            .app
+            .world()
+            .resource::<PeerLab>()
+            .stats()
+            .modifier_time_updates_queued,
+        0
+    );
+}

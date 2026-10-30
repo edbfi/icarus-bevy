@@ -107,14 +107,15 @@ the strict staging refuses supplies no saved characters, controllers or
 History: returning-player restore is off, and every joiner counts as new and is
 added to the History the tracker starts empty with.
 
-Library callers can publish resolved restored-modifier times through
-`PeerLab::refresh_restored_modifier_times(connection_id, &[(uid, RemainingTime)])`.
-Raw seconds and wire tenths remain independent; unknown or duplicate UIDs reject
-the whole batch. Only changed wire values send, including zero. Updates coalesce
-behind the pawn channel's reliable ACKs and retry capacity pressure after packet
-progress; existing reliable transport repairs loss. Polling does not tick timers
-or execute callbacks, and these connection-local changes are not persisted.
-Reconnect restores saved values. `restored_modifier_time` returns a copy.
+`PeerLab::refresh_restored_modifier_times` accepts
+raw/wire pairs; batches reject unknown/duplicate UIDs atomically.
+`set_restored_modifier_time` applies the authority setter and a caller-supplied
+lifetime handler before publication (F-995, F-996).
+Equal/unordered requests skip notification; accepted raw-only changes notify.
+Changed wire values, including zero, coalesce behind reliable ACKs; transport
+repairs loss and retries pressure after packet progress. Polling never replays
+handlers or ticks timers. No original listeners or persistence. Reconnect
+restores saved values; `restored_modifier_time` returns a copy.
 
 Authored schema-4/7/11 hosts opt in with `[network].authored_replication` or
 `run --authored-replication replication.json`. Disabled networking ignores it;

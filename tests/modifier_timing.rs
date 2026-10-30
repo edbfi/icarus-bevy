@@ -1,7 +1,7 @@
 //! Authored transition fixtures; no original process or packaged data.
 use icarus_bevy::experimental::modifier_timing::{
     ModifierTickCalls, ModifierTickState, RemainingTime, auto_destroy_requested,
-    quantize_remaining_time, set_remaining_time, tick_modifier,
+    on_rep_remaining_time, quantize_remaining_time, set_remaining_time, tick_modifier,
 };
 
 fn state() -> ModifierTickState {
@@ -83,6 +83,83 @@ impl ModifierTickCalls for Calls {
         self.log.push("apply");
         if let Some(effect) = self.apply {
             effect(state);
+        }
+    }
+}
+
+#[test]
+fn on_rep_converts_every_wire_value_with_the_exact_binary32_coefficient() {
+    for tenths in 0..=u16::MAX {
+        let mut value = RemainingTime {
+            seconds: f32::NAN,
+            replicated_tenths: tenths,
+        };
+        // 0x3dcccccd is exactly 13421773 / 2^27. The integer product
+        // fits f64's 53-bit significand, so only the final cast rounds.
+        let expected = (f64::from(tenths) * 13_421_773.0 / 134_217_728.0) as f32;
+        let mut notifications = 0;
+        on_rep_remaining_time(&mut value, Some(2), |state| {
+            notifications += 1;
+            assert_eq!(state.seconds.to_bits(), expected.to_bits());
+            assert_eq!(state.replicated_tenths, tenths);
+        });
+        assert_eq!(notifications, 1);
+        assert_eq!(value.seconds.to_bits(), expected.to_bits());
+        assert_eq!(value.replicated_tenths, tenths);
+    }
+    let mut value = RemainingTime {
+        seconds: 0.0,
+        replicated_tenths: 9,
+    };
+    on_rep_remaining_time(&mut value, Some(2), |_| {});
+    assert_eq!(value.seconds.to_bits(), 0x3f66_6667);
+    assert_ne!(value.seconds.to_bits(), (9.0_f32 / 10.0).to_bits());
+}
+
+#[test]
+fn on_rep_role_gate_preserves_authority_and_absent_owner_raw_bits() {
+    for role in std::iter::once(None).chain((0..=u8::MAX).map(Some)) {
+        for bits in [0x7fc0_1234, 0x8000_0000, 0x0000_0000] {
+            let mut value = RemainingTime {
+                seconds: f32::from_bits(bits),
+                replicated_tenths: 9,
+            };
+            let expected_bits = if role.is_none() || role == Some(3) {
+                bits
+            } else {
+                0x3f66_6667
+            };
+            let mut notifications = 0;
+            on_rep_remaining_time(&mut value, role, |state| {
+                notifications += 1;
+                assert_eq!(state.seconds.to_bits(), expected_bits);
+            });
+            assert_eq!(notifications, 1);
+            assert_eq!(value.seconds.to_bits(), expected_bits);
+            assert_eq!(value.replicated_tenths, 9);
+        }
+    }
+}
+
+#[test]
+fn on_rep_notifies_unchanged_zero_and_retains_notification_mutations() {
+    for role in [None, Some(3), Some(2)] {
+        for (seconds, tenths) in [(0.0_f32, 0), (1.0, 10)] {
+            let mut value = RemainingTime {
+                seconds,
+                replicated_tenths: tenths,
+            };
+            let mut notifications = 0;
+            on_rep_remaining_time(&mut value, role, |state| {
+                notifications += 1;
+                assert_eq!(state.seconds.to_bits(), seconds.to_bits());
+                assert_eq!(state.replicated_tenths, tenths);
+                state.seconds = f32::from_bits(0x7fc0_5678);
+                state.replicated_tenths = 83;
+            });
+            assert_eq!(notifications, 1);
+            assert_eq!(value.seconds.to_bits(), 0x7fc0_5678);
+            assert_eq!(value.replicated_tenths, 83);
         }
     }
 }
