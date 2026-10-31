@@ -62,6 +62,101 @@ pub struct ClientLogon {
     pub client_language: Option<String>,
     #[prost(uint32, optional, tag = "7")]
     pub client_os_type: Option<u32>,
+    /// Game servers send their private address XOR [`PRIVATE_IP_MASK`].
+    #[prost(message, optional, tag = "11")]
+    pub obfuscated_private_ip: Option<IpAddress>,
+    /// The application a game server serves; absent for user logons.
+    #[prost(int32, optional, tag = "94")]
+    pub game_server_app_id: Option<i32>,
+}
+
+/// The XOR mask Steam clients apply to a reported private IPv4 address.
+pub const PRIVATE_IP_MASK: u32 = 0xBAAD_F00D;
+
+/// `CMsgIPAddress`, IPv4 form only.
+#[derive(Clone, PartialEq, prost::Message)]
+pub struct IpAddress {
+    #[prost(fixed32, optional, tag = "1")]
+    pub v4: Option<u32>,
+}
+
+/// `CMsgGSServerType`: what a logged-on game server serves and where.
+#[derive(Clone, PartialEq, prost::Message)]
+pub struct GsServerType {
+    #[prost(uint32, optional, tag = "1")]
+    pub app_id_served: Option<u32>,
+    /// `EServerFlags`: active 1, secure 2, dedicated 4, Linux 8, passworded 16.
+    #[prost(uint32, optional, tag = "2")]
+    pub flags: Option<u32>,
+    #[prost(uint32, optional, tag = "4")]
+    pub game_port: Option<u32>,
+    #[prost(string, optional, tag = "5")]
+    pub game_dir: Option<String>,
+    #[prost(string, optional, tag = "6")]
+    pub game_version: Option<String>,
+    #[prost(uint32, optional, tag = "7")]
+    pub game_query_port: Option<u32>,
+}
+
+/// `CMsgGSStatusReply`.
+#[derive(Clone, PartialEq, prost::Message)]
+pub struct GsStatusReply {
+    #[prost(bool, optional, tag = "1")]
+    pub is_secure: Option<bool>,
+}
+
+/// `CMsgGameServerData.Player`.
+#[derive(Clone, PartialEq, prost::Message)]
+pub struct GameServerPlayer {
+    #[prost(fixed64, optional, tag = "1")]
+    pub steam_id: Option<u64>,
+}
+
+/// `CMsgGameServerData`: the details a server browser lists.
+#[derive(Clone, PartialEq, prost::Message)]
+pub struct GameServerData {
+    #[prost(uint32, optional, tag = "3")]
+    pub query_port: Option<u32>,
+    #[prost(uint32, optional, tag = "4")]
+    pub game_port: Option<u32>,
+    #[prost(uint32, optional, tag = "5")]
+    pub spectator_port: Option<u32>,
+    #[prost(uint32, optional, tag = "6")]
+    pub app_id: Option<u32>,
+    #[prost(string, optional, tag = "7")]
+    pub gamedir: Option<String>,
+    #[prost(string, optional, tag = "8")]
+    pub version: Option<String>,
+    #[prost(string, optional, tag = "9")]
+    pub product: Option<String>,
+    #[prost(string, optional, tag = "10")]
+    pub region: Option<String>,
+    #[prost(message, repeated, tag = "11")]
+    pub players: Vec<GameServerPlayer>,
+    #[prost(uint32, optional, tag = "12")]
+    pub max_players: Option<u32>,
+    #[prost(uint32, optional, tag = "13")]
+    pub bot_count: Option<u32>,
+    #[prost(bool, optional, tag = "14")]
+    pub password: Option<bool>,
+    #[prost(bool, optional, tag = "15")]
+    pub secure: Option<bool>,
+    #[prost(bool, optional, tag = "16")]
+    pub dedicated: Option<bool>,
+    #[prost(string, optional, tag = "17")]
+    pub os: Option<String>,
+    #[prost(string, optional, tag = "18")]
+    pub game_data: Option<String>,
+    #[prost(string, optional, tag = "20")]
+    pub game_type: Option<String>,
+    #[prost(string, optional, tag = "21")]
+    pub map: Option<String>,
+    #[prost(string, optional, tag = "22")]
+    pub server_name: Option<String>,
+    #[prost(uint32, optional, tag = "24")]
+    pub revision: Option<u32>,
+    #[prost(string, optional, tag = "29")]
+    pub game_description: Option<String>,
 }
 
 /// `CMsgClientLogonResponse`.

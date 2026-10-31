@@ -17,7 +17,7 @@ use super::proto::{Multi, ProtoHeader};
 /// Bit set on the EMsg of every protobuf-headed message.
 pub const PROTO_MASK: u32 = 0x8000_0000;
 
-/// EMsg values used by the fetcher.
+/// EMsg values used by the fetcher and the game-server presence.
 pub mod emsg {
     pub const MULTI: u32 = 1;
     pub const SERVICE_METHOD_RESPONSE: u32 = 147;
@@ -26,6 +26,9 @@ pub mod emsg {
     pub const CLIENT_LOG_OFF: u32 = 706;
     pub const CLIENT_LOG_ON_RESPONSE: u32 = 751;
     pub const CLIENT_LOGGED_OFF: u32 = 757;
+    pub const GS_STATUS_REPLY: u32 = 774;
+    pub const GS_SERVER_TYPE: u32 = 908;
+    pub const AM_GAME_SERVER_UPDATE: u32 = 4331;
     pub const CLIENT_GET_DEPOT_DECRYPTION_KEY: u32 = 5438;
     pub const CLIENT_GET_DEPOT_DECRYPTION_KEY_RESPONSE: u32 = 5439;
     pub const CLIENT_LOGON: u32 = 5514;
