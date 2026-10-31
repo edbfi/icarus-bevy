@@ -13,6 +13,11 @@ from `tools/capture.Dockerfile`) and a byte cap (`capture_max_bytes`). A
 sidecar then shares only the server container's network namespace, records
 the game and query UDP ports with tcpdump as an unprivileged user, and is
 stopped before the server; a capture reaching its cap is stopped early.
+
+`connection_method: "direct"` writes an Engine.ini turning off
+`bUseSteamNetworking` and `bAllowP2PPacketRelay`, with which the server
+advertises `CONMETHOD=Direct` and clients join over the game UDP port instead
+of Steam P2P; without it the server keeps its packaged configuration.
 """
 
 import argparse
@@ -52,6 +57,8 @@ MIN_CAPTURE_BYTES = 1024**2
 MAX_CAPTURE_BYTES = 2 * 1024**3
 CAPTURE_FILE = "game.pcap"
 CAPTURE_FILTER = f"udp port {GAME_PORT} or udp port {QUERY_PORT}"
+ENGINE_INI = Path("Icarus/Saved/Config/WindowsServer/Engine.ini")
+DIRECT_ENGINE_INI = "[OnlineSubsystemSteam]\nbUseSteamNetworking=False\nbAllowP2PPacketRelay=False\n"
 SCENARIO_ID = re.compile(r"[a-z0-9][a-z0-9-]{0,23}")
 SERVER_LOG = Path("Icarus/Saved/Logs/Icarus.log")
 PROSPECT_LOADED = "Prospect file loaded"
@@ -103,6 +110,7 @@ class ApprovedRun:
     max_runs: int
     capture_image: str | None = None
     capture_max_bytes: int = 0
+    direct: bool = False
 
 
 def validate_session(root: Path, args: Arguments, now: datetime.datetime) -> ApprovedRun:
@@ -166,6 +174,12 @@ def validate_session(root: Path, args: Arguments, now: datetime.datetime) -> App
             raise ValueError("capture_image must be a local image ID (sha256:<64 hex>)")
         if not MIN_CAPTURE_BYTES <= capture_max_bytes <= MAX_CAPTURE_BYTES:
             raise ValueError("capture_max_bytes must be 1 MiB..2 GiB")
+    direct = False
+    if "connection_method" in session:
+        method = string_field(session, "connection_method")
+        if method not in ("default", "direct"):
+            raise ValueError("connection_method must be default or direct")
+        direct = method == "direct"
     start = datetime.datetime.fromisoformat(string_field(session, "start_utc"))
     end = datetime.datetime.fromisoformat(string_field(session, "end_utc"))
     if start.utcoffset() is None or end.utcoffset() is None:
@@ -174,7 +188,7 @@ def validate_session(root: Path, args: Arguments, now: datetime.datetime) -> App
         raise ValueError("session is future, expired or has insufficient approved time")
     return ApprovedRun(case, session, hashlib.sha256(raw).hexdigest(), reference, save_input, scenario,
                        not_joined, empty, players, observation, lifetime, max_runs, capture_image,
-                       capture_max_bytes)
+                       capture_max_bytes, direct)
 
 
 @contextmanager
@@ -215,6 +229,10 @@ def prepare_launch(root: Path, approved: ApprovedRun, run: Path, name: str, toke
         raise ValueError("save copy digest mismatch")
     (home / SERVER_SETTINGS).parent.mkdir(parents=True)
     _ = (home / SERVER_SETTINGS).write_text(server_settings(approved, password))
+    engine: str | None = None
+    if approved.direct:
+        _ = (home / ENGINE_INI).write_text(DIRECT_ENGINE_INI)
+        engine = digest(home / ENGINE_INI)
     steam: JsonObject = {}
     for bits in ("32", "64"):
         source = regular_path(STEAMCLIENT_ROOT / f"linux{bits}/steamclient.so")
@@ -253,6 +271,7 @@ def prepare_launch(root: Path, approved: ApprovedRun, run: Path, name: str, toke
         "timeout_seconds": approved.lifetime_seconds, "observation_seconds": approved.observation_seconds,
         "approval": approved.session, "session_sha256": approved.session_sha256,
         "save_copy_sha256": digest(home / relative), "steamclient": steam, "server_settings_sha256": digest(home / SERVER_SETTINGS),
+        "engine_ini_sha256": engine,
         "helpers": {str(path.relative_to(root)): digest(path) for path in helpers},
     }
     with (approved.case / "commands.jsonl").open("a") as stream:

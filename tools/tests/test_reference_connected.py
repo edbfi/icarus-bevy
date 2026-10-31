@@ -9,8 +9,8 @@ import unittest
 
 from unittest.mock import patch
 
-from tools.run_reference_connected import (CAPTURE_FILTER, GAME_PORT, QUERY_PORT, ApprovedRun, Arguments,
-    capture_launch, prepare_launch, returned_to_lobby, server_settings, validate_session)
+from tools.run_reference_connected import (CAPTURE_FILTER, DIRECT_ENGINE_INI, ENGINE_INI, GAME_PORT, QUERY_PORT,
+    ApprovedRun, Arguments, capture_launch, prepare_launch, returned_to_lobby, server_settings, validate_session)
 from tools.run_reference_offline import IMAGE, REFERENCE_EXE, digest
 from tools.runtime_types import JsonObject, json_object, parse_json
 
@@ -166,6 +166,31 @@ class ConnectedTests(unittest.TestCase):
             fixture.write()
             with self.assertRaises(ValueError):
                 _ = capture_launch(fixture.approve(), fixture.case / "other", "name", "token", server)
+
+    def test_direct_connection_method_writes_only_the_steam_networking_switches(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            fixture = Fixture(directory)
+            steam = fixture.root / "steamcmd"
+            for bits in ("32", "64"):
+                (steam / f"linux{bits}").mkdir(parents=True)
+                _ = (steam / f"linux{bits}/steamclient.so").write_bytes(b"authored")
+            for method, written in (("default", False), ("direct", True)):
+                with self.subTest(method=method):
+                    fixture.write({"connection_method": method})
+                    approved = fixture.approve()
+                    run = fixture.case / ("run-" + method)
+                    run.mkdir()
+                    with patch("tools.run_reference_connected.STEAMCLIENT_ROOT", new=steam):
+                        _ = prepare_launch(ROOT, approved, run, "icarus-connected-authored", "token", "abcd1234")
+                    engine = run / "home" / ENGINE_INI
+                    self.assertEqual(engine.is_file(), written)
+                    if written:
+                        self.assertEqual(engine.read_text(), DIRECT_ENGINE_INI)
+                    record = json_object(parse_json((run / "invocation.json").read_text()))
+                    self.assertEqual(record["engine_ini_sha256"] is not None, written)
+            fixture.write({"connection_method": "p2p"})
+            with self.assertRaises(ValueError):
+                _ = fixture.approve()
 
     def test_lobby_return_needs_load_then_save_then_lobby(self) -> None:
         load, save, lobby = ("Prospect file loaded. Loading map...", "-------  Saving and shutting down  -------",
