@@ -46,6 +46,7 @@ pub mod rep_text;
 pub mod restore_rules;
 pub mod sequencing;
 pub mod server_fps;
+pub mod server_query;
 pub mod session_churn;
 pub mod session_hold;
 pub mod session_open;
