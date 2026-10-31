@@ -51,6 +51,7 @@ pub mod session_churn;
 pub mod session_hold;
 pub mod session_open;
 pub mod stat_restore;
+pub mod steam_auth;
 pub mod struct_array;
 pub mod tag_dictionary;
 pub mod tag_query;

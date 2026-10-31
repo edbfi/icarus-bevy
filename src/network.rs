@@ -1680,7 +1680,30 @@ pub fn bind(network: &NetworkConfig) -> Result<Option<BoundNetwork>> {
 /// caller rather than a second test-only installation path.
 pub fn bind_with_parameters(
     network: &NetworkConfig,
+    config: PeerLabConfig,
+) -> Result<Option<BoundNetwork>> {
+    bind_session(network, config, None)
+}
+
+/// Connected research with explicit admission parameters, including the map
+/// shared by Welcome and every release-specific actor-open plan.
+pub fn bind_authenticated_with_parameters(
+    network: &NetworkConfig,
+    config: PeerLabConfig,
+    address: SocketAddrV4,
+    authenticator: crate::steam_service::AuthClient,
+) -> Result<Option<BoundNetwork>> {
+    ensure!(
+        network.release_profile.is_some(),
+        "authenticated listener requires a release profile"
+    );
+    bind_session(network, config, Some((address, authenticator)))
+}
+
+fn bind_session(
+    network: &NetworkConfig,
     mut config: PeerLabConfig,
+    authentication: Option<(SocketAddrV4, crate::steam_service::AuthClient)>,
 ) -> Result<Option<BoundNetwork>> {
     if !network.enabled {
         return Ok(None);
@@ -1730,8 +1753,13 @@ pub fn bind_with_parameters(
         None
     };
     let address = SocketAddrV4::new(network.bind, network.port);
-    let mut lab = PeerLab::bind_address(address, config)
-        .context("bind the experimental network session socket")?;
+    let mut lab = match authentication {
+        Some((address, authenticator)) => {
+            PeerLab::bind_authenticated(address, config, authenticator)
+        }
+        None => PeerLab::bind_address(address, config),
+    }
+    .context("bind the experimental network session socket")?;
     let mut saved_managers = Vec::new();
     if let Some(plan) = plan {
         lab.enable_player_controller_open(plan)?;

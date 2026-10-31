@@ -3501,6 +3501,27 @@ pub fn bp_mount_horse_rep_layout(
     commands
 }
 
+/// Qualified pawn actor layout. Handles in native state retain the legacy
+/// numbering; the selected release translates them only when composing wire data.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PawnLayoutVersion {
+    /// 3.0.31/32: 89 Blueprint pawn handles.
+    #[default]
+    Legacy,
+    /// 3.0.34: `bIsReworkedCharacter` follows `IsMale` at handle 60.
+    ReworkedCharacter,
+}
+
+impl PawnLayoutVersion {
+    /// Translate a canonical legacy actor handle, rejecting zero and handles
+    /// outside that layout. Component handles are never translated here.
+    pub fn wire_handle(self, legacy: u32) -> Result<u32> {
+        ensure!((1..=89).contains(&legacy), "invalid canonical pawn handle");
+        Ok(legacy + u32::from(self == Self::ReworkedCharacter && legacy >= 60))
+    }
+}
+
 /// Statically observed 66-handle rep layout of `AIcarusPlayerCharacter`:
 /// `AIcarusCharacter` handles 1..55, then handles 56..66 (`InventoryComponent`,
 /// `BlockInputActions`, `ReplicatedControlRotation`, `IsMale`, flattened
@@ -3583,6 +3604,23 @@ pub fn bp_icarus_player_character_survival_rep_layout(
         RepCommand::Bool,
         RepCommand::Object,
     ]);
+    commands
+}
+
+/// Release-selected pawn actor layout. The 3.0.34 native Boolean adds one
+/// handle after legacy `IsMale`; all later inherited and Blueprint handles shift.
+pub fn bp_icarus_player_character_survival_rep_layout_for_version(
+    location: MovementLevel,
+    velocity: MovementLevel,
+    rotation: RotationLevel,
+    tag_encoding: TagEncoding,
+    version: PawnLayoutVersion,
+) -> Vec<RepCommand> {
+    let mut commands =
+        bp_icarus_player_character_survival_rep_layout(location, velocity, rotation, tag_encoding);
+    if version == PawnLayoutVersion::ReworkedCharacter {
+        commands.insert(59, RepCommand::Bool);
+    }
     commands
 }
 

@@ -179,6 +179,61 @@ fn at<'a>(report: &'a Value, pointer: &str) -> &'a Value {
 }
 
 #[test]
+fn handler_frames_do_not_consume_connection_sequences_or_expose_credentials() -> Result<()> {
+    use icarus_bevy::experimental::{
+        handshake::initial_request,
+        steam_auth::{SteamAuthMessage, encode_datagram},
+    };
+    let root = tempfile::tempdir()?;
+    let work = root.path().join("work");
+    fs::create_dir(&work)?;
+    let input = work.join("probe.jsonl");
+    let hex = |bytes: Vec<u8>| bytes.iter().map(|b| format!("{b:02x}")).collect::<String>();
+    let handler = [
+        initial_request().to_vec(),
+        encode_datagram(
+            &SteamAuthMessage::UserData {
+                ticket: "123456ABCDEF".encode_utf16().collect(),
+                steam_id: 42,
+            },
+            ByteOrder::Little,
+            0,
+            0,
+        )?,
+        encode_datagram(
+            &SteamAuthMessage::Result { accepted: true },
+            ByteOrder::Little,
+            0,
+            0,
+        )?,
+    ];
+    let mut rows = vec![json!({"event":"reply", "hex":datagram(10, vec![])?})];
+    rows.extend(
+        handler
+            .into_iter()
+            .map(|frame| json!({"event":"reply", "hex":hex(frame)})),
+    );
+    rows.push(json!({"event":"reply", "hex":datagram(11, vec![])?}));
+    fs::write(
+        &input,
+        rows.iter()
+            .map(|row| format!("{row}\n"))
+            .collect::<String>(),
+    )?;
+    let detail = work.join("detail.jsonl");
+    let report = capture_decode::run_in(&input, &detail, &work)?;
+    assert_eq!(at(&report, "/wire/datagrams"), 5);
+    assert_eq!(at(&report, "/wire/packets_decoded"), 2);
+    assert_eq!(at(&report, "/wire/packets_missing"), 0);
+    assert_eq!(at(&report, "/wire/stateless_handshakes"), 1);
+    assert_eq!(at(&report, "/wire/auth_messages/user_data"), 1);
+    assert_eq!(at(&report, "/wire/auth_messages/result_success"), 1);
+    assert!(!report.to_string().contains("123456ABCDEF"));
+    assert!(!fs::read_to_string(detail)?.contains("123456ABCDEF"));
+    Ok(())
+}
+
+#[test]
 fn reassembles_partials_and_separates_the_export_hypothesis() -> Result<()> {
     let root = tempfile::tempdir()?;
     let work = root.path().join("work");

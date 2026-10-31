@@ -81,6 +81,8 @@ pub struct RestoredPawn {
     pub location: [f32; 3],
     /// Pawn actor values (`ReplicatedControlRotation`, `RespawnCount`,
     /// `HasGrantedLoadout` and, when any remain, `CosmeticArmourOverrides`).
+    /// Keys use canonical 3.0.31/32 handles; the composer maps them once to
+    /// the selected release. Never place release-specific wire handles here.
     pub pawn: BTreeMap<u32, RepValue>,
     /// `UPlayerCharacterState` values that differ from the current ones.
     pub character_state: BTreeMap<u32, RepValue>,
@@ -557,14 +559,19 @@ pub fn compose_restored_pawn_update(
         checksums: false,
         limits: RepLayoutLimits::default(),
     };
+    let pawn_values = restored
+        .pawn
+        .iter()
+        .map(|(&handle, value)| Ok((plan.layout_version.wire_handle(handle)?, value.clone())))
+        .collect::<Result<BTreeMap<_, _>>>()?;
     exports.begin_bunch();
     let actor = cache.actor_guid(key)?;
     let mut blocks = Vec::new();
     let mut exported = Vec::new();
-    if !restored.pawn.is_empty() {
+    if !pawn_values.is_empty() {
         blocks.push(rep_block(
             BlockTarget::Actor,
-            &restored.pawn,
+            &pawn_values,
             &plan.layout,
             &rep_codec,
         )?);

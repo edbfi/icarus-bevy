@@ -4415,7 +4415,12 @@ inventory_class = [{ path = "Bag", checksum = 9 }, { path = "/Script/P", checksu
                     }),
                 );
             }
-            assert_eq!(updates[1][0], (BlockTarget::Actor, pawn));
+            let version = profile.pawn.as_ref().unwrap().layout_version;
+            let wire_pawn = pawn
+                .into_iter()
+                .map(|(handle, value)| (version.wire_handle(handle).unwrap(), value))
+                .collect();
+            assert_eq!(updates[1][0], (BlockTarget::Actor, wire_pawn));
             // ActorState always carries the profile's XP as TotalExperience
             // (F-990); unrecorded levels add nothing else.
             assert_eq!(updates[1].len(), 2);
@@ -7120,12 +7125,22 @@ fn returning_stat_coverage_preserves_independent_fields_without_guessing_bounds(
             "{case}"
         );
         assert_eq!(
-            actor.get(&pawn_handle::RESPAWN_COUNT),
+            actor.get(
+                &pawn
+                    .layout_version
+                    .wire_handle(pawn_handle::RESPAWN_COUNT)
+                    .unwrap()
+            ),
             Some(&RepValue::Int(3)),
             "{case}"
         );
         assert_eq!(
-            actor.get(&pawn_handle::HAS_GRANTED_LOADOUT),
+            actor.get(
+                &pawn
+                    .layout_version
+                    .wire_handle(pawn_handle::HAS_GRANTED_LOADOUT)
+                    .unwrap()
+            ),
             Some(&RepValue::Bool(true)),
             "{case}"
         );

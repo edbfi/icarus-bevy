@@ -27,10 +27,10 @@ use super::{
     quest_open::QuestOpenBasePlan,
     rep_layout::{
         ICARUS_ROW_HANDLE_NONE, ICARUS_ROW_HANDLE_TABLE_COUNT, ICARUS_TWO_BYTE_ROW_TABLES,
-        ICARUS_ZERO_ROW_TABLES, MovementLevel, RepValue, RotationLevel, TagEncoding,
-        actor_component_rep_layout, actor_rep_layout, actor_state_rep_layout,
-        bp_icarus_player_character_survival_rep_layout, bp_icarus_player_state_rep_layout,
-        flod_rep_layout, icarus_game_state_survival_rep_layout,
+        ICARUS_ZERO_ROW_TABLES, MovementLevel, PawnLayoutVersion, RepValue, RotationLevel,
+        TagEncoding, actor_component_rep_layout, actor_rep_layout, actor_state_rep_layout,
+        bp_icarus_player_character_survival_rep_layout_for_version,
+        bp_icarus_player_state_rep_layout, flod_rep_layout, icarus_game_state_survival_rep_layout,
         icarus_player_controller_survival_rep_layout, inventory_container_manager_rep_layout,
         inventory_rep_layout, inventory_slot_commands, player_character_state_rep_layout,
         player_history_tracker_rep_layout, quest_manager_rep_layout, quest_rep_layout,
@@ -68,6 +68,8 @@ pub const TAG_NET_INDEX_HASH_3_0_31: u32 = 0xdc78_0a27;
 /// Observed gameplay-tag net-index hash (`NetworkGameplayTagNodeIndexHash`,
 /// F-702) for 3.0.32 (`build_id = 25956137`, 2,302 unique sorted nodes).
 pub const TAG_NET_INDEX_HASH_3_0_32: u32 = 0x6d0f_676f;
+/// Qualified gameplay-tag net-index hash for server 26313077 (3.0.34).
+pub const TAG_NET_INDEX_HASH_3_0_34: u32 = 0x28cb_0f35;
 
 /// The string the engine hashes into the Hello network version.
 pub fn network_version_string(project_version: &str) -> String {
@@ -668,6 +670,9 @@ pub struct ReleasePawnComponent {
 #[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct ReleasePawnProfile {
+    /// Actor-property schema selected independently of exported class checksums.
+    #[serde(default)]
+    pub layout_version: PawnLayoutVersion,
     pub archetype: Vec<ReleasePathSegment>,
     pub components: Vec<ReleasePawnComponent>,
     /// The component `StatContainer` (handle 47) names.
@@ -704,6 +709,7 @@ impl ReleasePawnProfile {
             rep_bools: vec![(2, true)],
         };
         Self {
+            layout_version: PawnLayoutVersion::Legacy,
             archetype: vec![
                 segment("Default__BP_IcarusPlayerCharacterSurvival_C", 430_507_263),
                 segment("/Game/BP/Player/BP_IcarusPlayerCharacterSurvival", 0),
@@ -1058,14 +1064,37 @@ impl ReleaseProfile {
         }
     }
 
+    /// Built-in profile for the qualified 3.0.34 server (`26313077`). The
+    /// pawn adds `bIsReworkedCharacter`; other retained identities are unchanged.
+    /// This profile does not qualify stock-client gameplay or quest class opens.
+    pub fn release_3_0_34() -> Self {
+        let mut profile = Self::release_3_0_32();
+        let project_version = "3.0.34.159385-rel-DangerousHorizons".to_owned();
+        profile.pin = ReleasePin {
+            app_id: DEDICATED_SERVER_APP_ID,
+            build_id: 26_313_077,
+            network_checksum: network_checksum(&project_version),
+            project_version,
+        };
+        profile.tags.ini_tag_count = 1_921;
+        profile.tags.unique_node_count = 2_335;
+        profile.tags.net_index_hash = TAG_NET_INDEX_HASH_3_0_34;
+        if let Some(pawn) = &mut profile.pawn {
+            pawn.layout_version = PawnLayoutVersion::ReworkedCharacter;
+            pawn.archetype[0].checksum = 537_502_963;
+        }
+        profile
+    }
+
     /// Built-in tag profile for a qualified build ID (`25793607`/`25793767` for
-    /// 3.0.31, `25956137` for 3.0.32). Any other build ID requires an explicit
-    /// `[tags]` section in the TOML profile so a weekly pin update cannot
+    /// 3.0.31, `25956137` for 3.0.32, `26313077` for 3.0.34). Other build IDs
+    /// require an explicit `[tags]` section so a weekly pin update cannot
     /// silently inherit an older build's tag metadata.
     fn default_tags_for_build(build_id: u64) -> Result<ReleaseTagProfile> {
         match build_id {
             25_793_607 | 25_793_767 => Ok(Self::release_3_0_31().tags),
             25_956_137 => Ok(Self::release_3_0_32().tags),
+            26_313_077 => Ok(Self::release_3_0_34().tags),
             _ => bail!(
                 "no built-in tag profile for build_id {build_id}; supply an explicit [tags] section"
             ),
@@ -1078,7 +1107,7 @@ impl ReleaseProfile {
         build_id: u64,
     ) -> Option<ReleasePlayerControllerProfile> {
         match build_id {
-            25_793_607 | 25_793_767 | 25_956_137 => {
+            25_793_607 | 25_793_767 | 25_956_137 | 26_313_077 => {
                 Some(ReleasePlayerControllerProfile::icarus_survival())
             }
             _ => None,
@@ -1089,7 +1118,7 @@ impl ReleaseProfile {
     /// elsewhere, so a pin bump never inherits an older build's checksums.
     fn default_player_state_for_build(build_id: u64) -> Option<ReleasePlayerStateProfile> {
         match build_id {
-            25_793_607 | 25_793_767 | 25_956_137 => {
+            25_793_607 | 25_793_767 | 25_956_137 | 26_313_077 => {
                 Some(ReleasePlayerStateProfile::icarus_survival())
             }
             _ => None,
@@ -1100,7 +1129,9 @@ impl ReleaseProfile {
     /// elsewhere, so a pin bump never inherits an older build's checksums.
     fn default_managers_for_build(build_id: u64) -> Option<ReleaseManagersProfile> {
         match build_id {
-            25_793_607 | 25_793_767 | 25_956_137 => Some(ReleaseManagersProfile::icarus_survival()),
+            25_793_607 | 25_793_767 | 25_956_137 | 26_313_077 => {
+                Some(ReleaseManagersProfile::icarus_survival())
+            }
             _ => None,
         }
     }
@@ -1109,7 +1140,7 @@ impl ReleaseProfile {
     /// elsewhere, so a pin bump never inherits an older build's checksums.
     fn default_game_state_for_build(build_id: u64) -> Option<ReleaseGameStateProfile> {
         match build_id {
-            25_793_607 | 25_793_767 | 25_956_137 => {
+            25_793_607 | 25_793_767 | 25_956_137 | 26_313_077 => {
                 Some(ReleaseGameStateProfile::icarus_survival())
             }
             _ => None,
@@ -1121,6 +1152,7 @@ impl ReleaseProfile {
     fn default_pawn_for_build(build_id: u64) -> Option<ReleasePawnProfile> {
         match build_id {
             25_793_607 | 25_793_767 | 25_956_137 => Some(ReleasePawnProfile::icarus_survival()),
+            26_313_077 => Self::release_3_0_34().pawn,
             _ => None,
         }
     }
@@ -1492,12 +1524,14 @@ impl ReleaseProfile {
             stat_container,
             actor_state,
             inventory_component,
-            layout: bp_icarus_player_character_survival_rep_layout(
+            layout: bp_icarus_player_character_survival_rep_layout_for_version(
                 MovementLevel::Hundredths,
                 MovementLevel::Whole,
                 RotationLevel::Bytes,
                 self.tags.tag_encoding(),
+                pawn.layout_version,
             ),
+            layout_version: pawn.layout_version,
             content: self.pawn_content_plan(pawn),
             engine_net_version: self.engine_network_version,
         }))

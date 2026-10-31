@@ -1131,6 +1131,18 @@ fn synthetic_quest_pak(dir: &std::path::Path, quest_rows_json: &str) -> std::pat
     pak
 }
 
+/// These authored quest scenarios use the qualified 3.0.32 class metadata,
+/// independently of the repository's moving release pin.
+fn qualified_quest_release(dir: &std::path::Path) -> std::path::PathBuf {
+    let path = dir.join("quest_release.toml");
+    std::fs::write(
+        &path,
+        "[release]\napp_id = 2089300\nbuild_id = 25956137\nproject_version = \"3.0.32.158743-rel-DangerousHorizons\"\nnetwork_checksum = 243431684\n",
+    )
+    .unwrap();
+    path
+}
+
 #[test]
 fn apply_saved_game_state_opens_quests_before_quest_manager_and_skips_closed_on_failure() {
     let temp = tempfile::tempdir().unwrap();
@@ -1165,9 +1177,7 @@ fn apply_saved_game_state_opens_quests_before_quest_manager_and_skips_closed_on_
     let net_cfg = NetworkConfig {
         enabled: true,
         port: 0,
-        release_profile: Some(
-            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("config/release.toml"),
-        ),
+        release_profile: Some(qualified_quest_release(temp.path())),
         authored_gameplay: Some(pak_writer::authored_gameplay(&pak_path)),
         data_pak: Some(pak_path.clone()),
         ..NetworkConfig::default()
@@ -1306,9 +1316,7 @@ fn quest_opens_exceed_legacy_32_channel_bound_under_default_256_limit() {
     let net_cfg = NetworkConfig {
         enabled: true,
         port: 0,
-        release_profile: Some(
-            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("config/release.toml"),
-        ),
+        release_profile: Some(qualified_quest_release(temp.path())),
         authored_gameplay: Some(pak_writer::authored_gameplay(&pak_path)),
         data_pak: Some(pak_path),
         ..NetworkConfig::default()
@@ -1344,9 +1352,7 @@ fn channel_exhaustion_skips_quests_and_quest_manager_atomically_without_dropping
     let net_cfg = NetworkConfig {
         enabled: true,
         port: 0,
-        release_profile: Some(
-            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("config/release.toml"),
-        ),
+        release_profile: Some(qualified_quest_release(temp.path())),
         authored_gameplay: Some(pak_writer::authored_gameplay(&pak_path)),
         data_pak: Some(pak_path),
         ..NetworkConfig::default()

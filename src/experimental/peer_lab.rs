@@ -148,9 +148,8 @@
 //!   channel's reliable close bunch (reason 0, `Destroyed`) in another. Nothing
 //!   is resent afterwards: the peers are removed at once.
 //! - At most [`PACKETS_PER_UPDATE`] datagrams per update. The receive buffer is
-//!   one byte longer than the configured maximum datagram size
-//!   (`limits.max_packet_bytes`), so a longer, kernel-truncated datagram is
-//!   detected and rejected as oversize.
+//!   one byte longer than the larger enabled game/auth datagram allowance,
+//!   detecting kernel truncation. Each family keeps its own size limit.
 //! - At most one ack packet per peer per update, sent after the receive loop
 //!   when that peer had at least one accepted data packet. Stale or duplicate
 //!   packets are not acknowledged.
@@ -172,6 +171,13 @@ use bevy::{
     prelude::{App, IntoScheduleConfigs, Plugin, ResMut, Resource, resource_exists},
 };
 use serde::Serialize;
+use sha2::{Digest, Sha256};
+
+use crate::{
+    steam_auth::{AuthOutcome, VerifiedTicket, decode_ticket_hex},
+    steam_presence::ICARUS_APP_ID,
+    steam_service::AuthClient,
+};
 
 use super::actor_channel::{
     ActorBunchBody, ActorChannelCodec, ActorChannelLimits, BlockTarget, encode_actor_bunch_body,
@@ -540,6 +546,8 @@ pub struct PeerLabStats {
     pub peers_expired: u64,
     /// Peers removed after a failed receive or ack.
     pub peers_failed: u64,
+    /// Peers removed by ticket verification or a negative Steam auth outcome.
+    pub peers_auth_closed: u64,
     /// Non-handshake datagrams from addresses without a peer.
     pub unknown_peer: u64,
     /// Data packets that passed the sequence gate.
@@ -812,6 +820,8 @@ pub struct SessionCounts {
     pub upgrades_sent: u64,
     /// Sessions removed after a receive, reply or ack failure.
     pub closed_failed: u64,
+    /// Sessions removed by local ticket rejection or a negative Steam outcome.
+    pub closed_by_authentication: u64,
     /// Sessions removed by shutdown.
     pub closed_by_shutdown: u64,
     /// PlayerController opens sent after Join.
@@ -1096,6 +1106,10 @@ enum PendingProfileExchange {
 
 struct PeerEntry {
     peer: LabPeer,
+    auth_request: Option<u64>,
+    auth_identity: Option<u64>,
+    auth_accepted: bool,
+    auth_ticket_digest: Option<[u8; 32]>,
     /// Character-state values actually composed into this session's pawn open.
     pawn_character_state: Option<BTreeMap<u32, RepValue>>,
     pawn_temperature: Option<PawnTemperatureState>,
@@ -1404,6 +1418,7 @@ impl GameStateSession {
 #[derive(Resource)]
 pub struct PeerLab {
     socket: UdpSocket,
+    authenticator: Option<AuthClient>,
     authority: CookieAuthority,
     started: Instant,
     config: PeerLabConfig,
@@ -1501,9 +1516,48 @@ impl PeerLab {
         Ok(Self::with_socket(socket, authority, config))
     }
 
+    /// Bind a native game listener whose peers must complete Steam ticket
+    /// verification before any connection packet is processed. The CM worker
+    /// owns validation and revocation; failure of that worker closes all peers.
+    /// This enables connected qualification, not a compatibility claim.
+    pub fn bind_authenticated(
+        address: SocketAddrV4,
+        config: PeerLabConfig,
+        authenticator: AuthClient,
+    ) -> Result<Self> {
+        config.validate()?;
+        ensure!(
+            config.local_network_version.is_some(),
+            "authenticated listener requires a release pin"
+        );
+        ensure!(
+            config.admission.is_some(),
+            "authenticated listener requires admission policy"
+        );
+        ensure!(
+            !address.ip().is_multicast() && !address.ip().is_broadcast(),
+            "invalid game bind address"
+        );
+        let authority = CookieAuthority::random().context("cookie secret")?;
+        let socket = UdpSocket::bind(address).context("bind authenticated game listener")?;
+        socket.set_nonblocking(true)?;
+        let mut lab = Self::with_socket(socket, authority, config);
+        lab.authenticator = Some(authenticator);
+        // Authentication FString bodies can exceed the connection packet cap.
+        // Keep one extra byte to detect kernel truncation at either limit.
+        lab.buffer.resize(
+            lab.buffer
+                .len()
+                .max(super::steam_auth::MAX_DATAGRAM_BYTES + 1),
+            0,
+        );
+        Ok(lab)
+    }
+
     fn with_socket(socket: UdpSocket, authority: CookieAuthority, config: PeerLabConfig) -> Self {
         Self {
             socket,
+            authenticator: None,
             authority,
             started: Instant::now(),
             peers: HashMap::with_capacity(config.max_peers),
@@ -3093,6 +3147,11 @@ impl PeerLab {
     // original's FreeUniqueID call timing has not been established.
     fn remove_peer(&mut self, address: SocketAddrV4) -> Option<PeerEntry> {
         let entry = self.peers.remove(&address)?;
+        if let (Some(auth), Some(request)) = (&self.authenticator, entry.auth_request) {
+            // Queue failure marks the service unusable; the next poll closes
+            // every peer. Never silently drop an EndAuthSession operation.
+            let _ = auth.end(request);
+        }
         if let Some(index) = entry.restored_character {
             // The saved record keeps its UID, as its seed did before the join.
             self.restored_characters.retain(|held| *held != index);
@@ -3866,6 +3925,7 @@ impl PeerLab {
             closed_by_reply: self.stats.peers_closed,
             upgrades_sent: self.stats.upgrades_sent,
             closed_failed: self.stats.peers_failed,
+            closed_by_authentication: self.stats.peers_auth_closed,
             closed_by_shutdown: self.stats.peers_shutdown,
             player_controller_opens_sent: self.stats.player_controller_opens_sent,
             initialisation_slots_recorded: self.stats.initialisation_slots_recorded,
@@ -4055,6 +4115,10 @@ impl PeerLab {
                 self.peers.insert(
                     address,
                     PeerEntry {
+                        auth_request: None,
+                        auth_identity: None,
+                        auth_accepted: false,
+                        auth_ticket_digest: None,
                         pawn_character_state: None,
                         pawn_temperature: None,
                         pawn_temperature_tick: None,
@@ -4111,6 +4175,14 @@ impl PeerLab {
     }
 
     fn data(&mut self, address: SocketAddrV4, length: usize, now: Instant) {
+        if self.authenticator.is_some()
+            && !self
+                .peers
+                .get(&address)
+                .is_some_and(|peer| peer.auth_accepted)
+        {
+            return;
+        }
         let Some(entry) = self.peers.get_mut(&address) else {
             bump(&mut self.stats.unknown_peer);
             return;
@@ -4975,6 +5047,25 @@ impl PeerLab {
             ControlMessage::Login {
                 url, unique_net_id, ..
             } => {
+                if self.authenticator.is_some() {
+                    use super::control_messages::NetIdType;
+                    let steam_type = match &unique_net_id.kind {
+                        NetIdType::Indexed(3) => true,
+                        NetIdType::Named(name) => {
+                            name.units() == "STEAM".encode_utf16().collect::<Vec<_>>()
+                        }
+                        _ => false,
+                    };
+                    let expected = self
+                        .peers
+                        .get(&address)
+                        .filter(|peer| peer.auth_accepted)
+                        .and_then(|peer| peer.auth_identity)
+                        .map(|id| id.to_string().encode_utf16().collect::<Vec<_>>());
+                    if !steam_type || expected.as_ref() != Some(&login_user_id(unique_net_id)) {
+                        return Some(Reply::Failure("Steam authentication identity mismatch"));
+                    }
+                }
                 bump(&mut self.stats.logins_received);
                 let count = self
                     .stats
@@ -5020,6 +5111,9 @@ impl PeerLab {
                 bump(&mut self.stats.netspeeds_updated);
                 None
             }
+            ControlMessage::SplitJoin { .. } if self.authenticator.is_some() => Some(
+                Reply::Failure("Steam authenticated split joins are unsupported"),
+            ),
             ControlMessage::Join | ControlMessage::SplitJoin { .. }
                 if self.config.admission.is_some() && !self.admitting =>
             {
@@ -5663,10 +5757,116 @@ impl PeerLab {
         }
     }
 
+    fn auth_result(&mut self, address: SocketAddrV4, accepted: bool) {
+        use super::{
+            archive::ByteOrder,
+            steam_auth::{SteamAuthMessage, encode_datagram},
+        };
+        if let Ok(datagram) = encode_datagram(
+            &SteamAuthMessage::Result { accepted },
+            ByteOrder::Little,
+            0,
+            0,
+        ) {
+            self.send(&datagram, address);
+        }
+    }
+
+    fn poll_authentication(&mut self) {
+        let Some(auth) = self.authenticator.clone() else {
+            return;
+        };
+        let Ok(events) = auth.drain_events() else {
+            self.shutdown();
+            return;
+        };
+        for event in events {
+            let address = self.peers.iter().find_map(|(address, peer)| {
+                (peer.auth_request == Some(event.request_id)).then_some(*address)
+            });
+            let Some(address) = address else { continue };
+            if event.outcome == AuthOutcome::Accepted {
+                if let Some(peer) = self.peers.get_mut(&address) {
+                    peer.auth_accepted = true;
+                    peer.last_seen = Instant::now();
+                }
+                self.auth_result(address, true);
+            } else {
+                self.auth_result(address, false);
+                self.remove_peer(address);
+                bump(&mut self.stats.peers_auth_closed);
+            }
+        }
+    }
+
+    fn receive_authentication(&mut self, address: SocketAddrV4, length: usize) {
+        use super::{
+            archive::ByteOrder,
+            steam_auth::{SteamAuthMessage, decode_datagram},
+        };
+        let Some(peer) = self.peers.get(&address) else {
+            return;
+        };
+        let message = decode_datagram(&self.buffer[..length], ByteOrder::Little, 0, 0);
+        if matches!(message, Ok(SteamAuthMessage::RequestResendResult)) {
+            if peer.auth_accepted {
+                self.auth_result(address, true);
+            }
+            return;
+        }
+        let digest: [u8; 32] = Sha256::digest(&self.buffer[..length]).into();
+        if peer.auth_ticket_digest == Some(digest) {
+            if peer.auth_accepted {
+                self.auth_result(address, true);
+            }
+            return;
+        }
+        // A connection gets one ticket. Replacing it needs a new cookie/peer;
+        // this prevents late validation from applying to a different identity.
+        if peer.auth_request.is_some() {
+            self.auth_result(address, false);
+            self.remove_peer(address);
+            bump(&mut self.stats.peers_auth_closed);
+            return;
+        }
+        let attempt = (|| -> Result<(u64, u64)> {
+            let SteamAuthMessage::UserData { ticket, steam_id } = message? else {
+                bail!("unexpected client authentication message");
+            };
+            let bytes = decode_ticket_hex(&ticket)?;
+            let now = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)?
+                .as_secs();
+            let verified = VerifiedTicket::verify(&bytes, steam_id, ICARUS_APP_ID, now)?;
+            let auth = self
+                .authenticator
+                .as_ref()
+                .context("authentication unavailable")?;
+            let request = auth.allocate_request_id()?;
+            auth.begin(request, verified)?;
+            Ok((request, steam_id))
+        })();
+        match attempt {
+            Ok((request, identity)) => {
+                if let Some(peer) = self.peers.get_mut(&address) {
+                    peer.auth_request = Some(request);
+                    peer.auth_identity = Some(identity);
+                    peer.auth_ticket_digest = Some(digest);
+                }
+            }
+            Err(_) => {
+                self.auth_result(address, false);
+                self.remove_peer(address);
+                bump(&mut self.stats.peers_auth_closed);
+            }
+        }
+    }
+
     /// One bounded update: expire idle peers, process at most
     /// [`PACKETS_PER_UPDATE`] datagrams, then send pending acks. The
     /// [`PeerLabPlugin`] runs this once per app update.
     pub fn poll(&mut self) {
+        self.poll_authentication();
         self.expire_idle(Instant::now());
         let max = self.config.max_datagram_bytes();
         for _ in 0..PACKETS_PER_UPDATE {
@@ -5683,7 +5883,14 @@ impl PeerLab {
                 bump(&mut self.stats.non_ipv4);
                 continue;
             };
-            if length > max {
+            let authentication =
+                self.authenticator.is_some() && length > 0 && self.buffer[0] & 3 == 2;
+            let limit = if authentication {
+                super::steam_auth::MAX_DATAGRAM_BYTES
+            } else {
+                max
+            };
+            if length > limit {
                 bump(&mut self.stats.oversize);
                 continue;
             };
@@ -5696,7 +5903,11 @@ impl PeerLab {
                 bump(&mut self.stats.handshake_rejected);
                 continue;
             }
-            self.data(address, length, now);
+            if authentication {
+                self.receive_authentication(address, length);
+            } else {
+                self.data(address, length, now);
+            }
         }
         self.retry_pending_profile_exchanges();
         self.retry_pending_pawn_restores();
@@ -5966,9 +6177,365 @@ fn restored_pawn_stats(
     Ok(Some(restore_stats(tables, inventory_tables, &inputs)?))
 }
 
+impl Drop for PeerLab {
+    fn drop(&mut self) {
+        if let Some(auth) = &self.authenticator {
+            for peer in self.peers.values() {
+                if let Some(request) = peer.auth_request {
+                    let _ = auth.end(request);
+                }
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn pending_auth_peer() -> (
+        PeerLab,
+        UdpSocket,
+        SocketAddrV4,
+        crate::steam_service::TestBackend,
+    ) {
+        use super::super::handshake::initial_request;
+        let (auth, backend) = AuthClient::test_bridge(8);
+        let mut lab = PeerLab::bind_authenticated(
+            SocketAddrV4::new(std::net::Ipv4Addr::LOCALHOST, 0),
+            PeerLabConfig {
+                local_network_version: Some(4087436304),
+                admission: Some(PeerLabAdmission::default()),
+                ..PeerLabConfig::default()
+            },
+            auth,
+        )
+        .unwrap();
+        let socket = UdpSocket::bind("127.0.0.1:0").unwrap();
+        socket.connect(lab.local_addr().unwrap()).unwrap();
+        socket
+            .set_read_timeout(Some(Duration::from_secs(1)))
+            .unwrap();
+        let SocketAddr::V4(address) = socket.local_addr().unwrap() else {
+            unreachable!()
+        };
+        let mut bytes = [0; 2048];
+        socket.send(&initial_request()).unwrap();
+        lab.poll();
+        let count = socket.recv(&mut bytes).unwrap();
+        socket.send(&bytes[..count]).unwrap();
+        lab.poll();
+        socket.recv(&mut bytes).unwrap();
+        let peer = lab.peers.get_mut(&address).unwrap();
+        // The signed-ticket validator is tested in steam_auth. This helper
+        // starts at the asynchronous validation boundary, without credentials.
+        peer.auth_request = Some(1);
+        peer.auth_identity = Some(0x0110_0001_0000_002a);
+        (lab, socket, address, backend)
+    }
+
+    #[test]
+    fn authentication_gates_packets_and_revocation_removes_the_session() {
+        use super::super::{
+            archive::ByteOrder,
+            steam_auth::{SteamAuthMessage, decode_datagram},
+        };
+        use crate::steam_auth::AuthEvent;
+        let (mut lab, socket, address, backend) = pending_auth_peer();
+        let header = lab.peers[&address].peer.sequencer().header().unwrap();
+        let failures = lab.stats.peers_failed;
+        // Even malformed game input cannot advance or fail the packet peer
+        // before Steam acceptance.
+        lab.buffer[0] = 0;
+        lab.data(address, 1, Instant::now());
+        assert_eq!(lab.stats.peers_failed, failures);
+        assert_eq!(
+            lab.peers[&address].peer.sequencer().header().unwrap(),
+            header
+        );
+        backend
+            .event(AuthEvent {
+                request_id: 1,
+                outcome: AuthOutcome::Accepted,
+            })
+            .unwrap();
+        lab.poll();
+        assert!(lab.peers[&address].auth_accepted);
+        let mut bytes = [0; 128];
+        let count = socket.recv(&mut bytes).unwrap();
+        assert_eq!(
+            decode_datagram(&bytes[..count], ByteOrder::Little, 0, 0).unwrap(),
+            SteamAuthMessage::Result { accepted: true }
+        );
+        assert_eq!(
+            lab.peers[&address].peer.sequencer().header().unwrap(),
+            header
+        );
+        backend
+            .event(AuthEvent {
+                request_id: 1,
+                outcome: AuthOutcome::Revoked,
+            })
+            .unwrap();
+        lab.poll();
+        assert!(!lab.has_peer(address));
+        assert_eq!(backend.ended_requests(), [1]);
+        assert_eq!(lab.session_counts().closed_by_authentication, 1);
+        backend
+            .event(AuthEvent {
+                request_id: 1,
+                outcome: AuthOutcome::Accepted,
+            })
+            .unwrap();
+        lab.poll();
+        assert!(!lab.has_peer(address));
+    }
+
+    #[test]
+    fn authentication_has_its_own_datagram_bound_without_enlarging_game_packets() {
+        use super::super::{
+            archive::ByteOrder,
+            steam_auth::{MAX_DATAGRAM_BYTES, SteamAuthMessage, decode_datagram, encode_datagram},
+        };
+        let (mut lab, socket, address, _backend) = pending_auth_peer();
+        lab.peers.get_mut(&address).unwrap().auth_request = None;
+        // Both input families retain truncation detection and independent caps.
+        socket
+            .send(&vec![0; lab.config.max_datagram_bytes() + 1])
+            .unwrap();
+        let mut oversized_auth = vec![0; MAX_DATAGRAM_BYTES + 2];
+        oversized_auth[0] = 2;
+        socket.send(&oversized_auth).unwrap();
+        lab.poll();
+        assert_eq!(lab.stats.oversize, 2);
+        assert!(lab.has_peer(address));
+        let auth = encode_datagram(
+            &SteamAuthMessage::UserData {
+                ticket: vec![u16::from(b'0'); 1024],
+                steam_id: 0x0110_0001_0000_002a,
+            },
+            ByteOrder::Little,
+            0,
+            0,
+        )
+        .unwrap();
+        assert!(auth.len() > lab.config.max_datagram_bytes());
+        socket.send(&auth).unwrap();
+        lab.poll();
+        // The whole auth frame reaches verification. Its authored bogus ticket
+        // must be rejected explicitly, rather than silently discarded as large.
+        assert_eq!(lab.stats.oversize, 2);
+        assert!(!lab.has_peer(address));
+        assert_eq!(lab.session_counts().closed_by_authentication, 1);
+        let mut reply = [0; 128];
+        let count = socket.recv(&mut reply).unwrap();
+        assert_eq!(
+            decode_datagram(&reply[..count], ByteOrder::Little, 0, 0).unwrap(),
+            SteamAuthMessage::Result { accepted: false }
+        );
+    }
+
+    #[test]
+    fn authentication_resends_wait_for_acceptance_without_starting_another_request() {
+        use super::super::{
+            archive::ByteOrder,
+            steam_auth::{SteamAuthMessage, encode_datagram},
+        };
+        for accepted in [false, true] {
+            let (mut lab, socket, address, backend) = pending_auth_peer();
+            socket.set_nonblocking(true).unwrap();
+            let ticket = encode_datagram(
+                &SteamAuthMessage::UserData {
+                    ticket: vec![u16::from(b'0'); 2],
+                    steam_id: 0x0110_0001_0000_002a,
+                },
+                ByteOrder::Little,
+                0,
+                0,
+            )
+            .unwrap();
+            let peer = lab.peers.get_mut(&address).unwrap();
+            peer.auth_ticket_digest = Some(Sha256::digest(&ticket).into());
+            peer.auth_accepted = accepted;
+            let resend = encode_datagram(
+                &SteamAuthMessage::RequestResendResult,
+                ByteOrder::Little,
+                0,
+                0,
+            )
+            .unwrap();
+            let expected = encode_datagram(
+                &SteamAuthMessage::Result { accepted: true },
+                ByteOrder::Little,
+                0,
+                0,
+            )
+            .unwrap();
+            for datagram in [&resend, &ticket] {
+                socket.send(datagram).unwrap();
+                lab.poll();
+                let mut reply = [0; 128];
+                if accepted {
+                    let count = socket.recv(&mut reply).unwrap();
+                    assert_eq!(&reply[..count], expected);
+                } else {
+                    assert_eq!(
+                        socket.recv(&mut reply).unwrap_err().kind(),
+                        io::ErrorKind::WouldBlock
+                    );
+                }
+                assert!(lab.has_peer(address));
+                assert_eq!(lab.peers[&address].auth_request, Some(1));
+                assert_eq!(lab.session_counts().closed_by_authentication, 0);
+                // This also rejects an unexpected Begin command.
+                assert!(backend.ended_requests().is_empty());
+            }
+        }
+    }
+
+    #[test]
+    fn a_second_authentication_ticket_closes_once_and_ignores_late_acceptance() {
+        use super::super::{
+            archive::ByteOrder,
+            steam_auth::{SteamAuthMessage, encode_datagram},
+        };
+        for accepted in [false, true] {
+            let (mut lab, socket, address, backend) = pending_auth_peer();
+            let old = encode_datagram(
+                &SteamAuthMessage::UserData {
+                    ticket: vec![u16::from(b'0'); 2],
+                    steam_id: 0x0110_0001_0000_002a,
+                },
+                ByteOrder::Little,
+                0,
+                0,
+            )
+            .unwrap();
+            let replacement = encode_datagram(
+                &SteamAuthMessage::UserData {
+                    ticket: vec![u16::from(b'1'); 2],
+                    steam_id: 0x0110_0001_0000_002b,
+                },
+                ByteOrder::Little,
+                0,
+                0,
+            )
+            .unwrap();
+            let peer = lab.peers.get_mut(&address).unwrap();
+            peer.auth_ticket_digest = Some(Sha256::digest(&old).into());
+            peer.auth_accepted = accepted;
+            socket.send(&replacement).unwrap();
+            lab.poll();
+            let mut reply = [0; 128];
+            let count = socket.recv(&mut reply).unwrap();
+            assert_eq!(
+                &reply[..count],
+                encode_datagram(
+                    &SteamAuthMessage::Result { accepted: false },
+                    ByteOrder::Little,
+                    0,
+                    0,
+                )
+                .unwrap()
+            );
+            assert!(!lab.has_peer(address));
+            assert_eq!(lab.session_counts().closed_by_authentication, 1);
+            assert_eq!(backend.ended_requests(), [1]);
+            backend
+                .event(crate::steam_auth::AuthEvent {
+                    request_id: 1,
+                    outcome: AuthOutcome::Accepted,
+                })
+                .unwrap();
+            lab.poll();
+            assert!(!lab.has_peer(address));
+            assert_eq!(lab.session_counts().closed_by_authentication, 1);
+            assert!(backend.ended_requests().is_empty());
+        }
+    }
+
+    #[test]
+    fn negative_authentication_outcomes_are_counted_once() {
+        for outcome in [
+            AuthOutcome::Rejected,
+            AuthOutcome::Revoked,
+            AuthOutcome::TimedOut,
+            AuthOutcome::Expired,
+            AuthOutcome::Disconnected,
+        ] {
+            let (mut lab, _socket, address, backend) = pending_auth_peer();
+            let event = crate::steam_auth::AuthEvent {
+                request_id: 1,
+                outcome,
+            };
+            backend.event(event).unwrap();
+            lab.poll();
+            assert!(!lab.has_peer(address));
+            assert_eq!(lab.session_counts().closed_by_authentication, 1);
+            assert_eq!(backend.ended_requests(), [1]);
+            backend.event(event).unwrap();
+            lab.poll();
+            assert_eq!(lab.session_counts().closed_by_authentication, 1);
+            assert!(backend.ended_requests().is_empty());
+        }
+    }
+
+    #[test]
+    fn service_failure_and_drop_release_pending_sessions() {
+        let (mut lab, _socket, address, backend) = pending_auth_peer();
+        backend.fail();
+        lab.poll();
+        assert!(!lab.has_peer(address));
+        assert!(!lab.is_admitting());
+        let (lab, _socket, _address, backend) = pending_auth_peer();
+        drop(lab);
+        assert_eq!(backend.ended_requests(), [1]);
+    }
+
+    #[test]
+    fn stale_acceptance_cannot_authenticate_a_replacement_request() {
+        let (mut lab, _socket, address, backend) = pending_auth_peer();
+        lab.peers.get_mut(&address).unwrap().auth_request = Some(2);
+        backend
+            .event(crate::steam_auth::AuthEvent {
+                request_id: 1,
+                outcome: AuthOutcome::Accepted,
+            })
+            .unwrap();
+        lab.poll();
+        assert!(!lab.peers[&address].auth_accepted);
+    }
+
+    #[test]
+    fn login_identity_must_match_the_accepted_ticket() {
+        use super::super::control_messages::{NetIdType, NetIdValue, UniqueNetId};
+        let (mut lab, _socket, address, _backend) = pending_auth_peer();
+        lab.peers.get_mut(&address).unwrap().auth_accepted = true;
+        let identity = lab.peers[&address].auth_identity.unwrap();
+        let login = |kind, id: u64| ControlMessage::Login {
+            response: ArchiveText::text("").unwrap(),
+            url: ArchiveText::text("/Game/Maps/Entry?Name=Authored").unwrap(),
+            unique_net_id: UniqueNetId {
+                kind,
+                value: NetIdValue::Text(ArchiveText::text(&id.to_string()).unwrap()),
+            },
+            platform: ArchiveText::text("Steam").unwrap(),
+        };
+        for message in [
+            login(NetIdType::Indexed(3), identity + 1),
+            login(NetIdType::Default, identity),
+        ] {
+            assert!(matches!(
+                lab.reply_for(address, &message),
+                Some(Reply::Failure("Steam authentication identity mismatch"))
+            ));
+        }
+        // Matching identity crosses the auth guard; any subsequent admission
+        // decision belongs to the separately tested game admission policy.
+        let before = lab.stats.logins_received;
+        let _ = lab.reply_for(address, &login(NetIdType::Indexed(3), identity));
+        assert_eq!(lab.stats.logins_received, before + 1);
+    }
 
     #[test]
     fn incarnation_registration_validates_whole_map_and_retains_high_water_marks() {

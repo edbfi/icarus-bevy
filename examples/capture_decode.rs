@@ -48,19 +48,20 @@ use icarus_bevy::experimental::{
     peer_lab::PeerLabConfig,
     release::ReleaseProfile,
     rep_layout::{
-        MovementLevel, RepCommand, RepLayoutCodec, RepLayoutLimits, RotationLevel,
-        actionable_component_rep_layout, actor_component_rep_layout, actor_rep_layout,
-        actor_state_rep_layout, audio_context_component_rep_layout,
+        MovementLevel, PawnLayoutVersion, RepCommand, RepLayoutCodec, RepLayoutLimits,
+        RotationLevel, actionable_component_rep_layout, actor_component_rep_layout,
+        actor_rep_layout, actor_state_rep_layout, audio_context_component_rep_layout,
         bp_atmosphere_controller_rep_layout, bp_bed_base_rep_layout, bp_building_base_rep_layout,
         bp_dropship_rep_layout, bp_dropship_seat_rep_layout, bp_flammable_actor_rep_layout,
-        bp_icarus_player_character_survival_rep_layout, bp_icarus_player_state_rep_layout,
-        bp_interactable_butcher_animal_rep_layout, bp_main_level_teleport_rep_layout,
-        bp_map_manager_rep_layout, bp_meta_deposit_rep_layout, bp_mount_base_rep_layout,
-        bp_mount_horse_rep_layout, bp_oil_geyser_rep_layout, bp_part_base_rep_layout,
-        bp_part_btm_mk1_rep_layout, bp_part_mid_mk1_rep_layout, bp_portable_beacon_rep_layout,
-        bp_prebuilt_base_rep_layout, bp_seat_base_rep_layout, bp_seat_mount_rep_layout,
-        bp_sheltered_component_rep_layout, bp_swimming_component_rep_layout,
-        bp_tame_base_rep_layout, bp_ui_projection_component_mount_status_rep_layout,
+        bp_icarus_player_character_survival_rep_layout_for_version,
+        bp_icarus_player_state_rep_layout, bp_interactable_butcher_animal_rep_layout,
+        bp_main_level_teleport_rep_layout, bp_map_manager_rep_layout, bp_meta_deposit_rep_layout,
+        bp_mount_base_rep_layout, bp_mount_horse_rep_layout, bp_oil_geyser_rep_layout,
+        bp_part_base_rep_layout, bp_part_btm_mk1_rep_layout, bp_part_mid_mk1_rep_layout,
+        bp_portable_beacon_rep_layout, bp_prebuilt_base_rep_layout, bp_seat_base_rep_layout,
+        bp_seat_mount_rep_layout, bp_sheltered_component_rep_layout,
+        bp_swimming_component_rep_layout, bp_tame_base_rep_layout,
+        bp_ui_projection_component_mount_status_rep_layout,
         bp_ui_projection_component_player_rep_layout, bp_world_boss_spawner_rep_layout,
         bp_world_object_rep_layout, bpc_environmental_buildup_rep_layout,
         character_state_rep_layout, child_actor_component_rep_layout,
@@ -109,6 +110,9 @@ struct Options {
     /// Both decode passes write their rows, so select one `pass` before counting.
     #[arg(long)]
     values_channel: Option<u32>,
+    /// Explicit release metadata; defaults to the retained 3.0.32 capture profile.
+    #[arg(long)]
+    release_profile: Option<PathBuf>,
 }
 
 /// The probe's channel-index ceiling for replies (handshake_probe).
@@ -741,7 +745,16 @@ fn schema_commands(schema: &str, profile: &ReleaseProfile) -> Vec<RepCommand> {
         "BP_Tame_Base_C" => bp_tame_base_rep_layout(char_loc, vel, rot, tag_encoding),
         "BP_Mount_Horse_C" => bp_mount_horse_rep_layout(char_loc, vel, rot, tag_encoding),
         "BP_IcarusPlayerCharacterSurvival_C" => {
-            bp_icarus_player_character_survival_rep_layout(char_loc, vel, rot, tag_encoding)
+            bp_icarus_player_character_survival_rep_layout_for_version(
+                char_loc,
+                vel,
+                rot,
+                tag_encoding,
+                profile
+                    .pawn
+                    .as_ref()
+                    .map_or(PawnLayoutVersion::Legacy, |pawn| pawn.layout_version),
+            )
         }
         "AActor" => actor_rep_layout(loc, vel, rot),
         "AWorldSettings" => world_settings_rep_layout(loc, vel, rot),
@@ -1318,6 +1331,8 @@ struct PassStats {
 #[derive(Default, Serialize)]
 struct WireStats {
     datagrams: u64,
+    stateless_handshakes: u64,
+    auth_messages: Tally,
     packets_decoded: u64,
     packets_failed: Tally,
     packets_stale_or_duplicate: u64,
@@ -1426,6 +1441,28 @@ impl<'a> Decoder<'a> {
 
     fn feed(&mut self, datagram: usize, ms: Option<u64>, bytes: &[u8]) -> Result<()> {
         self.wire.datagrams += 1;
+        // Handler handshakes have no connection sequence header. Classify only
+        // complete valid frames, leaving malformed packets in the error tally.
+        if bytes.first().is_some_and(|first| first & 1 != 0)
+            && icarus_bevy::experimental::handshake::decode_frame(bytes).is_ok()
+        {
+            self.wire.stateless_handshakes += 1;
+            return Ok(());
+        }
+        if bytes.first().is_some_and(|first| first & 3 == 2) {
+            use icarus_bevy::experimental::steam_auth::{SteamAuthMessage, decode_datagram};
+            if let Ok(message) = decode_datagram(bytes, ByteOrder::Little, 0, 0) {
+                let kind = match message {
+                    SteamAuthMessage::UserData { .. } => "user_data",
+                    SteamAuthMessage::Result { accepted: true } => "result_success",
+                    SteamAuthMessage::Result { accepted: false } => "result_failure",
+                    SteamAuthMessage::RequestResendKey => "resend_key",
+                    SteamAuthMessage::RequestResendResult => "resend_result",
+                };
+                bump(&mut self.wire.auth_messages, kind);
+                return Ok(());
+            }
+        }
         let packet = match read_packet(bytes, &self.config) {
             Ok(packet) => packet,
             Err(error) => {
@@ -2726,11 +2763,17 @@ pub fn run_recording(
 
 fn main() -> Result<()> {
     let options = Options::parse();
+    let profile = options
+        .release_profile
+        .as_deref()
+        .map(ReleaseProfile::load)
+        .transpose()?
+        .unwrap_or_else(ReleaseProfile::release_3_0_32);
     let report = run_recording(
         &options.input,
         &options.detail,
         &repository_work(),
-        &ReleaseProfile::release_3_0_32(),
+        &profile,
         options.values_channel,
     )?;
     println!("{}", serde_json::to_string_pretty(&report)?);

@@ -24,8 +24,8 @@ use super::archive::ByteOrder;
 use super::control_messages::ArchiveText;
 use super::packet::{BitWriter, Payload};
 use super::rep_layout::{
-    GameplayTag, NetworkName, PropertyStream, RepArray, RepCommand, RepEntry, RepLayoutCodec,
-    RepLayoutLimits, RepValue, StatPairRepState, encode_rep_properties,
+    GameplayTag, NetworkName, PawnLayoutVersion, PropertyStream, RepArray, RepCommand, RepEntry,
+    RepLayoutCodec, RepLayoutLimits, RepValue, StatPairRepState, encode_rep_properties,
 };
 use super::rep_rpc::{
     CustomDeltaHeader, FAST_ARRAY_COUNT_CAP, FastArrayDelta, FastArrayItem, FastArrayItemLayout,
@@ -35,8 +35,9 @@ use super::session_open::{
     ActorKey, ComposedActorOpen, ConnectionExports, NetGuidCache, PathSegment, actor_codec, entry,
 };
 
-/// Handles of the `BP_IcarusPlayerCharacterSurvival_C` layout the pawn open
-/// writes (F-797).
+/// Canonical 3.0.31/32 handles of the `BP_IcarusPlayerCharacterSurvival_C`
+/// layout (F-797). Translate actor handles through the plan's layout version
+/// when writing a newer release; component handles have separate layouts.
 pub mod handle {
     /// `AActor::RemoteRole`.
     pub const REMOTE_ROLE: u32 = 5;
@@ -267,6 +268,8 @@ pub struct PawnOpenPlan {
     pub inventory_component: usize,
     /// The `BP_IcarusPlayerCharacterSurvival_C` layout.
     pub layout: Vec<RepCommand>,
+    /// Mapping from canonical actor handles to this release's wire handles.
+    pub layout_version: PawnLayoutVersion,
     pub content: PawnContentPlan,
     pub engine_net_version: u32,
 }
@@ -709,7 +712,11 @@ pub fn compose_pawn_open(
         );
     }
     if content.frozen_movement {
-        values.insert(handle::SERVER_FROZEN_MOVEMENT, RepValue::Bool(true));
+        values.insert(
+            plan.layout_version
+                .wire_handle(handle::SERVER_FROZEN_MOVEMENT)?,
+            RepValue::Bool(true),
+        );
     }
     let blocks = &plan.content;
     let stats = content

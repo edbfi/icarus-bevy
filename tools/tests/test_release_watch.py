@@ -155,7 +155,7 @@ class ReleaseWatchTests(unittest.TestCase):
 
     def test_tracked_pin_matches_the_renderer(self) -> None:
         tracked = Path(__file__).resolve().parents[2] / "config/release.toml"
-        self.assertEqual(tracked.read_text(), render_pin(pinned_build(tracked), "3.0.32.158743-rel-DangerousHorizons"))
+        self.assertEqual(tracked.read_text(), render_pin(pinned_build(tracked), "3.0.34.159385-rel-DangerousHorizons"))
 
 
 if __name__ == "__main__":

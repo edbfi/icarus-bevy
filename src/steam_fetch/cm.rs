@@ -9,8 +9,9 @@
 //! implemented).
 
 use std::{
+    cell::Cell,
     collections::VecDeque,
-    io,
+    io::{self, Read, Write},
     net::{TcpStream, ToSocketAddrs},
     sync::Arc,
     time::{Duration, Instant},
@@ -25,7 +26,7 @@ use super::{
     frame::{self, Packet, emsg},
     proto::{
         ClientHeartBeat, ClientHello, ClientLoggedOff, ClientLogon, ClientLogonResponse, IpAddress,
-        PRIVATE_IP_MASK, ProtoHeader,
+        Multi, PRIVATE_IP_MASK, ProtoHeader,
     },
 };
 
@@ -105,7 +106,152 @@ impl Default for CmLimits {
     }
 }
 
-type Stream = StreamOwned<ClientConnection, TcpStream>;
+/// A socket timeout applies to each syscall. This wrapper additionally applies
+/// one absolute deadline to every nested TLS/WebSocket read and write, so a
+/// slowly arriving record or frame cannot reset the operation's budget.
+struct DeadlineTcp {
+    socket: TcpStream,
+    deadline: Cell<Option<Instant>>,
+    read_timeout: Cell<Option<Duration>>,
+    write_timeout: Cell<Option<Duration>>,
+}
+
+impl DeadlineTcp {
+    fn new(socket: TcpStream) -> io::Result<Self> {
+        let read_timeout = Cell::new(socket.read_timeout()?);
+        let write_timeout = Cell::new(socket.write_timeout()?);
+        Ok(Self {
+            socket,
+            deadline: Cell::new(None),
+            read_timeout,
+            write_timeout,
+        })
+    }
+
+    fn set_read_timeout(&self, timeout: Option<Duration>) -> io::Result<()> {
+        self.socket.set_read_timeout(timeout)?;
+        self.read_timeout.set(timeout);
+        Ok(())
+    }
+
+    fn set_deadline(&self, deadline: Option<Instant>) -> io::Result<()> {
+        self.deadline.set(deadline);
+        if deadline.is_none() {
+            self.socket.set_read_timeout(self.read_timeout.get())?;
+            self.socket.set_write_timeout(self.write_timeout.get())?;
+        }
+        Ok(())
+    }
+
+    fn timeout(&self, configured: Option<Duration>) -> io::Result<Option<Duration>> {
+        let Some(deadline) = self.deadline.get() else {
+            return Ok(configured);
+        };
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            return Err(io::Error::new(
+                io::ErrorKind::TimedOut,
+                "CM operation deadline reached",
+            ));
+        }
+        Ok(Some(
+            configured.map_or(remaining, |timeout| timeout.min(remaining)),
+        ))
+    }
+}
+
+impl Read for DeadlineTcp {
+    fn read(&mut self, bytes: &mut [u8]) -> io::Result<usize> {
+        self.socket
+            .set_read_timeout(self.timeout(self.read_timeout.get())?)?;
+        self.socket.read(bytes)
+    }
+}
+
+impl Write for DeadlineTcp {
+    fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+        self.socket
+            .set_write_timeout(self.timeout(self.write_timeout.get())?)?;
+        self.socket.write(bytes)
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        self.socket
+            .set_write_timeout(self.timeout(self.write_timeout.get())?)?;
+        self.socket.flush()
+    }
+}
+
+type Stream = StreamOwned<ClientConnection, DeadlineTcp>;
+
+const MAX_WORKER_DECODE_BYTES: usize = 256 * 1024;
+const MAX_WORKER_FRAME_PACKETS: usize = 1024;
+
+/// The service needs small control messages. Bound aggregate nested expansion,
+/// rather than allowing every nested gzip to spend the full frame budget.
+fn decode_worker_frame(
+    bytes: &[u8],
+    max_unzipped: usize,
+    deadline: Instant,
+) -> Result<Vec<Packet>> {
+    fn expand(
+        bytes: &[u8],
+        depth: usize,
+        budget: &mut usize,
+        deadline: Instant,
+        out: &mut Vec<Packet>,
+    ) -> Result<()> {
+        ensure!(Instant::now() < deadline, "CM decoding deadline reached");
+        *budget = budget
+            .checked_sub(bytes.len())
+            .context("CM worker decoding budget exceeded")?;
+        let packet = frame::decode(bytes)?;
+        if packet.emsg != emsg::MULTI {
+            ensure!(
+                out.len() < MAX_WORKER_FRAME_PACKETS,
+                "CM worker packet budget exceeded"
+            );
+            out.push(packet);
+            return Ok(());
+        }
+        ensure!(packet.proto && depth < 2, "invalid CM worker Multi nesting");
+        let multi = Multi::decode(packet.body.as_slice()).context("CM worker Multi")?;
+        let body = multi.message_body.unwrap_or_default();
+        let payload = match multi.size_unzipped.unwrap_or(0) as usize {
+            0 => body,
+            size => {
+                *budget = budget
+                    .checked_sub(size)
+                    .context("CM worker expansion budget exceeded")?;
+                let mut payload = Vec::with_capacity(size);
+                flate2::read::GzDecoder::new(body.as_slice())
+                    .take(size as u64 + 1)
+                    .read_to_end(&mut payload)
+                    .context("CM worker gzip")?;
+                ensure!(payload.len() == size, "CM worker gzip length mismatch");
+                payload
+            }
+        };
+        let mut rest = payload.as_slice();
+        while !rest.is_empty() {
+            ensure!(Instant::now() < deadline, "CM decoding deadline reached");
+            ensure!(rest.len() >= 4, "truncated CM worker Multi length");
+            let length = u32::from_le_bytes(rest[..4].try_into().expect("checked length")) as usize;
+            ensure!(
+                length <= rest.len() - 4,
+                "CM worker Multi length exceeds body"
+            );
+            expand(&rest[4..4 + length], depth + 1, budget, deadline, out)?;
+            rest = &rest[4 + length..];
+        }
+        Ok(())
+    }
+    let mut packets = Vec::new();
+    let mut budget = MAX_WORKER_DECODE_BYTES.min(max_unzipped);
+    expand(bytes, 0, &mut budget, deadline, &mut packets)?;
+    ensure!(Instant::now() < deadline, "CM decoding deadline reached");
+    Ok(packets)
+}
 
 /// Result of a successful anonymous logon.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -179,7 +325,7 @@ impl CmSession {
         tcp.set_write_timeout(Some(timeouts.handshake))?;
         let name = ServerName::try_from(host.to_owned()).context("CM TLS server name")?;
         let conn = ClientConnection::new(tls, name).context("start CM TLS")?;
-        let stream = StreamOwned::new(conn, tcp);
+        let stream = StreamOwned::new(conn, DeadlineTcp::new(tcp)?);
         let config = WebSocketConfig::default()
             .max_message_size(Some(limits.max_message))
             .max_frame_size(Some(limits.max_message));
@@ -249,11 +395,29 @@ impl CmSession {
     /// As [`Self::recv_matching`], returning `None` at `deadline`.
     fn recv_matching_until(
         &mut self,
-        mut matches: impl FnMut(&Packet) -> bool,
+        matches: impl FnMut(&Packet) -> bool,
         deadline: Instant,
     ) -> Result<Option<Packet>> {
+        self.recv_matching_until_inner(matches, deadline, false)
+    }
+
+    fn recv_matching_until_inner(
+        &mut self,
+        mut matches: impl FnMut(&Packet) -> bool,
+        deadline: Instant,
+        bounded: bool,
+    ) -> Result<Option<Packet>> {
         loop {
+            if bounded && Instant::now() >= deadline {
+                return Ok(None);
+            }
             while let Some(packet) = self.pending.pop_front() {
+                if bounded {
+                    ensure!(
+                        packet.body.len() <= MAX_WORKER_DECODE_BYTES,
+                        "CM worker pending packet exceeds byte budget"
+                    );
+                }
                 if packet.emsg == emsg::CLIENT_LOGGED_OFF {
                     let eresult = ClientLoggedOff::decode(packet.body.as_slice())
                         .ok()
@@ -274,7 +438,11 @@ impl CmSession {
             self.heartbeat_if_due()?;
             match self.ws.read() {
                 Ok(Message::Binary(bytes)) => {
-                    let packets = frame::decode_expanded(&bytes, self.limits.max_unzipped)?;
+                    let packets = if bounded {
+                        decode_worker_frame(&bytes, self.limits.max_unzipped, deadline)?
+                    } else {
+                        frame::decode_expanded(&bytes, self.limits.max_unzipped)?
+                    };
                     self.pending.extend(packets);
                 }
                 Ok(Message::Close(frame)) => bail!("CM closed the connection: {frame:?}"),
@@ -387,6 +555,22 @@ impl CmSession {
         self.send_raw(emsg, &header, body)
     }
 
+    /// Send under a worker-selected socket write bound. A partial write error
+    /// is fatal to the caller's service; it must not replay this message blindly.
+    pub fn send_bounded(&mut self, emsg: u32, body: &[u8], timeout: Duration) -> Result<()> {
+        ensure!(
+            !timeout.is_zero() && timeout <= Duration::from_secs(1),
+            "invalid CM write window"
+        );
+        self.ws
+            .get_ref()
+            .sock
+            .set_deadline(Some(Instant::now() + timeout))?;
+        let result = self.send(emsg, body);
+        self.ws.get_ref().sock.set_deadline(None)?;
+        result
+    }
+
     /// Service heartbeats and return the messages that arrive within `wait`
     /// (at least one socket tick). A logoff from the CM is an error.
     pub fn poll(&mut self, wait: Duration) -> Result<Vec<Packet>> {
@@ -398,6 +582,43 @@ impl CmSession {
                 None => return Ok(packets),
             }
         }
+    }
+
+    /// Drain at most `max_packets` with a bounded read window, retaining later
+    /// packets for the next call. The existing WebSocket and Multi byte limits
+    /// bound each decoded frame. No unmatched message is discarded.
+    pub fn poll_bounded(&mut self, wait: Duration, max_packets: usize) -> Result<Vec<Packet>> {
+        ensure!(
+            !wait.is_zero() && wait <= Duration::from_secs(1),
+            "invalid CM poll window"
+        );
+        ensure!(
+            (1..=1024).contains(&max_packets),
+            "invalid CM poll packet bound"
+        );
+        let deadline = Instant::now() + wait;
+        self.ws.get_ref().sock.set_deadline(Some(deadline))?;
+        let result = (|| {
+            self.heartbeat_if_due()?;
+            let mut packets = Vec::with_capacity(max_packets);
+            let mut remaining_bytes = MAX_WORKER_DECODE_BYTES;
+            while packets.len() < max_packets && Instant::now() < deadline {
+                match self.recv_matching_until_inner(|_| true, deadline, true)? {
+                    Some(packet) => {
+                        if packet.body.len() > remaining_bytes {
+                            self.pending.push_front(packet);
+                            break;
+                        }
+                        remaining_bytes -= packet.body.len();
+                        packets.push(packet);
+                    }
+                    None => break,
+                }
+            }
+            Ok(packets)
+        })();
+        self.ws.get_ref().sock.set_deadline(None)?;
+        result
     }
 
     /// Send a job request and return the first response of `response_emsg`
@@ -473,11 +694,121 @@ impl CmSession {
         let _ = self.ws.close(None);
         let _ = self.ws.flush();
     }
+
+    /// Best-effort logoff with a short bounded write timeout for owned workers.
+    pub fn close_bounded(self, timeout: Duration) {
+        let timeout = timeout.clamp(Duration::from_millis(1), Duration::from_secs(1));
+        let _ = self
+            .ws
+            .get_ref()
+            .sock
+            .set_deadline(Some(Instant::now() + timeout));
+        self.close();
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn socket_pair() -> (TcpStream, TcpStream) {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let client = TcpStream::connect(listener.local_addr().unwrap()).unwrap();
+        let (server, _) = listener.accept().unwrap();
+        (client, server)
+    }
+
+    #[test]
+    fn a_trickling_frame_cannot_reset_the_absolute_read_deadline() {
+        let (client, mut server) = socket_pair();
+        client
+            .set_read_timeout(Some(Duration::from_secs(1)))
+            .unwrap();
+        server
+            .set_write_timeout(Some(Duration::from_secs(1)))
+            .unwrap();
+        let sender = std::thread::spawn(move || {
+            for _ in 0..40 {
+                if server.write_all(&[0x5a]).is_err() {
+                    break;
+                }
+                std::thread::sleep(Duration::from_millis(10));
+            }
+        });
+        let mut socket = DeadlineTcp::new(client).unwrap();
+        socket
+            .set_deadline(Some(Instant::now() + Duration::from_millis(80)))
+            .unwrap();
+        let error = socket.read_exact(&mut [0; 40]).unwrap_err();
+        assert!(matches!(
+            error.kind(),
+            io::ErrorKind::TimedOut | io::ErrorKind::WouldBlock
+        ));
+        drop(socket);
+        sender.join().unwrap();
+    }
+
+    #[test]
+    fn expired_deadline_blocks_writes_and_clear_restores_configured_timeouts() {
+        let (client, mut server) = socket_pair();
+        client
+            .set_read_timeout(Some(Duration::from_secs(2)))
+            .unwrap();
+        client
+            .set_write_timeout(Some(Duration::from_secs(3)))
+            .unwrap();
+        let mut socket = DeadlineTcp::new(client).unwrap();
+        socket.set_deadline(Some(Instant::now())).unwrap();
+        assert_eq!(
+            socket.write(&[1]).unwrap_err().kind(),
+            io::ErrorKind::TimedOut
+        );
+        assert_eq!(
+            socket.read(&mut [0]).unwrap_err().kind(),
+            io::ErrorKind::TimedOut
+        );
+        socket.set_deadline(None).unwrap();
+        assert_eq!(
+            socket.socket.read_timeout().unwrap(),
+            Some(Duration::from_secs(2))
+        );
+        assert_eq!(
+            socket.socket.write_timeout().unwrap(),
+            Some(Duration::from_secs(3))
+        );
+        socket.write_all(&[7]).unwrap();
+        server
+            .set_read_timeout(Some(Duration::from_secs(1)))
+            .unwrap();
+        let mut read = [0];
+        server.read_exact(&mut read).unwrap();
+        assert_eq!(read, [7]);
+    }
+
+    #[test]
+    fn worker_decode_limits_total_nested_expansion_packets_and_time() {
+        let deadline = Instant::now() + Duration::from_secs(10);
+        let small = frame::encode(emsg::GS_STATUS_REPLY, &ProtoHeader::default(), &[8, 0]);
+        let nested = frame::encode_multi(
+            &[frame::encode_multi(std::slice::from_ref(&small), true)],
+            true,
+        );
+        let result = decode_worker_frame(&nested, MAX_WORKER_DECODE_BYTES, deadline).unwrap();
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].body, [8, 0]);
+        assert!(decode_worker_frame(&small, MAX_WORKER_DECODE_BYTES, Instant::now()).is_err());
+        let many = frame::encode_multi(&vec![small; MAX_WORKER_FRAME_PACKETS + 1], true);
+        assert!(decode_worker_frame(&many, MAX_WORKER_DECODE_BYTES, deadline).is_err());
+        // Each child expansion fits, but their aggregate work exceeds the cap.
+        let large = frame::encode(
+            emsg::GS_STATUS_REPLY,
+            &ProtoHeader::default(),
+            &vec![0; 70 * 1024],
+        );
+        let child = frame::encode_multi(&[large], true);
+        let nested = frame::encode_multi(&[child.clone(), child], true);
+        assert!(decode_worker_frame(&nested, MAX_WORKER_DECODE_BYTES, deadline).is_err());
+    }
 
     #[test]
     fn anonymous_identity_and_endpoints() {
