@@ -1,6 +1,6 @@
 # Current-client control stores and initial control archive
 
-Static control dispatch and captured negotiation. Wire rules:
+Static dispatch: client 25793767 and server 25621760; S2: 3.0.34. Wire rules:
 [control negotiation](../../specs/network/control-negotiation.md); promotion:
 [gates](../../gates.md#before-promoting-control-store-or-negotiation-findings).
 
@@ -8,21 +8,20 @@ Before restructure: 96ddb0b:docs/research/network/2026-10-13-control-stores.md
 
 ## Question cluster
 
-- Which table constants do World and Pending store after their constructor calls, and at which displacements?
-- What do the constructor metadata intervals and fixed instruction windows bound?
-- Which public symbols and notify slots connect the tables to NotifyControlMessage?
-- Which archive path and callers feed the control dispatcher?
+- Which tables do World and Pending store, where, and within what bounds?
+- Which notify slots and archive callers reach control dispatch?
 
 ## Current answer
 
 UWorld and UPendingNetGame store primary and FNetworkNotify tables at +0 and
 +0x28, preserving the receiver across base constructors (F-478, F-504,
 F-544, F-723; U-007, U-009, U-013 resolved). Complete constructor/destructor
-bounds: F-501 to F-505, F-723, F-724 (U-008, U-017, U-018 resolved).
+bounds: F-501 to F-505, F-723, F-724 (U-008, U-017, U-018 resolved;
+client destructor `0x143ca6730`).
 The tables abut without RTTI locators; their notify slot reaches
 `UWorld::NotifyControlMessage`, exercised by S1 (F-480, F-506, F-546, F-701,
-F-724, F-729; U-010, U-015, U-016, U-019 resolved). Listen and InitNetDriver
-pass the notify subobject to InitBase (F-520, F-723, F-724; U-043 resolved).
+F-724, F-729; U-010, U-015, U-016, U-019 resolved). Client Listen (`0x1439ecd8b`) and InitNetDriver
+(`0x1437b7f6f`) pass the notify subobject to InitBase (F-520, F-723, F-724; U-043 resolved).
 
 ReceivedBunch preserves Hello byte order, dispatches destruction locally and
 other messages through the notify slot, with 20 fallback layouts (F-284,
