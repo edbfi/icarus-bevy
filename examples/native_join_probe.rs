@@ -2,6 +2,7 @@
 //! Uses authored empty-world defaults and release-specific initialization.
 //! No compatibility, gameplay, or official-save import claim.
 use std::{
+    collections::BTreeMap,
     net::{Ipv4Addr, SocketAddrV4, UdpSocket},
     path::PathBuf,
     sync::{
@@ -17,7 +18,10 @@ use bevy::prelude::{App, MinimalPlugins};
 use clap::Parser;
 use icarus_bevy::{
     config::NetworkConfig,
-    experimental::{peer_lab::PeerLab, prospect_info::ProspectInfo, release::ReleaseProfile},
+    experimental::{
+        game_state_open::handle, manager_open::ManagerSlot, peer_lab::PeerLab,
+        prospect_info::ProspectInfo, release::ReleaseProfile, rep_layout::RepValue,
+    },
     network,
     steam_fetch::net::{self, HttpTimeouts, Tls},
     steam_presence::{
@@ -128,6 +132,17 @@ fn main() -> Result<()> {
     )?
     .context("network disabled")?;
     bound.lab.refresh_active_prospect(&prospect)?;
+    // Independently authored empty-world initialization, supplied before any
+    // connection is polled. Connected world entry remains unqualified.
+    bound.lab.extend_game_state_values(BTreeMap::from([
+        (handle::SEED, RepValue::Int(1)),
+        (handle::SEED_INITIALISED, RepValue::Bool(true)),
+    ]))?;
+    let flod = profile
+        .manager_open_plan(ManagerSlot::Flod, PROBE_MAP)?
+        .context("probe release has no FLOD manager plan")?
+        .with_flod_tiles(0)?;
+    bound.lab.add_manager_open(ManagerSlot::Flod, flod)?;
     network::apply_server_settings(&mut bound.lab, 60)?;
     let mut app = App::new();
     app.add_plugins(MinimalPlugins);

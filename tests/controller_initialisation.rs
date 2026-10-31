@@ -108,20 +108,29 @@ fn actor(channel: u32, sequence: u32, payload: Payload) -> Bunch {
 }
 
 fn setup(controller: bool, player_state: bool, order: ByteOrder) -> (App, Client) {
+    setup_with_capacity(controller, player_state, order, None)
+}
+
+fn setup_with_capacity(
+    controller: bool,
+    player_state: bool,
+    order: ByteOrder,
+    sent_capacity: Option<usize>,
+) -> (App, Client) {
     let profile = ReleaseProfile::load(
         &std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("config/release.toml"),
     )
     .unwrap();
     let admission = PeerLabAdmission::default();
     let map = admission.map_url;
-    let mut lab = PeerLab::bind(
-        0,
-        PeerLabConfig {
-            admission: Some(admission),
-            ..PeerLabConfig::default().with_release_profile(&profile)
-        },
-    )
-    .unwrap();
+    let mut config = PeerLabConfig {
+        admission: Some(admission),
+        ..PeerLabConfig::default().with_release_profile(&profile)
+    };
+    if let Some(capacity) = sent_capacity {
+        config.packet.sent_capacity = capacity;
+    }
+    let mut lab = PeerLab::bind(0, config).unwrap();
     if controller {
         lab.enable_player_controller_open(
             profile
@@ -226,6 +235,132 @@ fn joined_pinned_session_records_character_slot_once() {
         (1, 1)
     );
     assert_eq!(counts.joined, 1);
+}
+
+/// The controller can deliver Begin before its PlayerState open fits. In the
+/// ACK-bearing case that very RPC frees the capacity needed by the open.
+#[test]
+fn begin_survives_deferred_player_state_and_preserves_the_first_slot() {
+    use icarus_bevy::experimental::rep_rpc::CLIENT_REQUEST_GET_USER_PROFILE;
+
+    for ack_with_begin in [false, true] {
+        let (mut app, mut client) = setup_with_capacity(true, true, ByteOrder::Little, Some(1));
+        let opened = client.join(&mut app);
+        let stats = app.world().resource::<PeerLab>().stats();
+        assert_eq!(stats.player_controller_opens_sent, 1);
+        assert_eq!(stats.player_state_opens_sent, 0);
+        assert!(stats.player_state_open_errors > 0);
+        if ack_with_begin {
+            client.accept(&opened);
+        }
+        let first = client.sequencer.initial_reliable().1 + 1;
+        client.send(vec![actor(
+            CONTROLLER,
+            first,
+            body(
+                &[field(3, ByteOrder::Little), field(7, ByteOrder::Little)],
+                ByteOrder::Little,
+            ),
+        )]);
+        app.update();
+        let replies = drain(&client.socket);
+        let mut observed_requests = requests(&client, &replies);
+        client.accept(&replies);
+        if !ack_with_begin {
+            assert_eq!(
+                app.world()
+                    .resource::<PeerLab>()
+                    .stats()
+                    .player_state_opens_sent,
+                0,
+                "Begin alone cannot release the occupied sent ring"
+            );
+            client.accept(&opened);
+        }
+        for _ in 0..8 {
+            let replies = client.step(&mut app);
+            observed_requests.extend(requests(&client, &replies));
+            client.accept(&replies);
+        }
+        assert_eq!(slot(&app, &client), Some(3));
+        assert_eq!(observed_requests.len(), 1);
+        assert_eq!(
+            observed_requests[0].1.index,
+            CLIENT_REQUEST_GET_USER_PROFILE
+        );
+        assert_eq!(observed_requests[0].1.payload.bit_len(), 0);
+        let stats = app.world().resource::<PeerLab>().stats();
+        assert_eq!(stats.player_state_opens_sent, 1);
+        assert_eq!(stats.initialisation_slots_recorded, 1);
+        assert_eq!(stats.initialisation_calls_ignored, 1);
+        assert_eq!(stats.profile_user_requests_sent, 1);
+        assert_eq!(stats.peers_failed, 0);
+
+        // A later reliable duplicate neither changes the retained slot nor
+        // starts another profile exchange after the pending Begin is consumed.
+        let replies = send(
+            &mut app,
+            &mut client,
+            actor(
+                CONTROLLER,
+                first + 1,
+                body(&[field(9, ByteOrder::Little)], ByteOrder::Little),
+            ),
+        );
+        assert!(requests(&client, &replies).is_empty());
+        for _ in 0..4 {
+            let replies = client.step(&mut app);
+            assert!(requests(&client, &replies).is_empty());
+            client.accept(&replies);
+        }
+        let stats = app.world().resource::<PeerLab>().stats();
+        assert_eq!(stats.initialisation_slots_recorded, 1);
+        assert_eq!(stats.initialisation_calls_ignored, 2);
+        assert_eq!(stats.profile_user_requests_sent, 1);
+        assert_eq!(slot(&app, &client), Some(3));
+    }
+}
+
+#[test]
+fn disconnect_discards_begin_waiting_for_player_state() {
+    let (mut app, mut client) = setup_with_capacity(true, true, ByteOrder::Little, Some(1));
+    let opened = client.join(&mut app);
+    assert!(!opened.is_empty());
+    assert_eq!(
+        app.world()
+            .resource::<PeerLab>()
+            .stats()
+            .player_state_opens_sent,
+        0
+    );
+    // Withhold the controller-open ACK so Begin remains pending when the
+    // reliable close arrives. No initialization may resume after removal.
+    let first = client.sequencer.initial_reliable().1 + 1;
+    client.send(vec![actor(
+        CONTROLLER,
+        first,
+        body(&[field(3, ByteOrder::Little)], ByteOrder::Little),
+    )]);
+    app.update();
+    let replies = drain(&client.socket);
+    assert!(requests(&client, &replies).is_empty());
+    assert_eq!(
+        app.world()
+            .resource::<PeerLab>()
+            .stats()
+            .profile_user_requests_sent,
+        0
+    );
+    client.disconnect(&mut app);
+    for _ in 0..4 {
+        app.update();
+    }
+    let lab = app.world().resource::<PeerLab>();
+    assert!(!lab.has_peer(address(&client)));
+    assert_eq!(lab.stats().player_state_opens_sent, 0);
+    assert_eq!(lab.stats().profile_user_requests_sent, 0);
+    assert_eq!(lab.stats().peers_failed, 0);
+    assert_eq!(slot(&app, &client), None);
 }
 
 #[test]

@@ -1287,6 +1287,156 @@ fn player_controller_channel_failure_closes_the_connection() {
     );
 }
 
+/// Initial manager opens must survive cumulative sent-ring pressure. Every
+/// manager fits an empty small ring; only the synchronous Join burst exceeds it.
+#[test]
+fn initial_manager_opens_resume_after_acknowledgements_release_capacity() {
+    use std::collections::BTreeSet;
+
+    use icarus_bevy::experimental::{
+        archive::ByteOrder,
+        game_state_open::{GAME_STATE_CHANNEL_INDEX, GameStateOpenState},
+        manager_open::compose_manager_open,
+        packet_lab::LabPeer,
+        release::ReleaseProfile,
+        session_open::{ActorKey, ConnectionExports, NetGuidCache},
+    };
+
+    fn accept_opens(client: &mut Client, channels: &mut BTreeSet<u32>) {
+        for datagram in drain(client) {
+            let packet = read_packet(&datagram, &client.to_client()).unwrap();
+            for bunch in &packet.bunches {
+                if bunch.header.open && (6..=12).contains(&bunch.header.channel_index) {
+                    channels.insert(bunch.header.channel_index);
+                }
+            }
+            if let Some(received) = client.sequencer.receive(&packet.header).unwrap() {
+                client.sequencer.ack_seq(received.sequence, true).unwrap();
+            }
+        }
+    }
+
+    // The roomy run is a control for malformed plans or an invalid Join.
+    for sent_capacity in [256, 8] {
+        let profile = ReleaseProfile::release_3_0_32();
+        let map = PeerLabAdmission::default().map_url;
+        let mut config = PeerLabConfig {
+            admission: Some(PeerLabAdmission::default()),
+            ..PeerLabConfig::default()
+        };
+        config.packet.sent_capacity = sent_capacity;
+        let mut managers = profile.manager_open_plans(map).unwrap();
+        managers.extend(profile.saved_manager_open_plans(map).unwrap());
+        assert_eq!(managers.len(), 7);
+
+        // Distinguish temporary aggregate pressure from a single open that
+        // cannot fit even after every outstanding packet is acknowledged.
+        for (slot, plan) in &managers {
+            let mut cache = NetGuidCache::new();
+            let mut exports = ConnectionExports::new();
+            let open = compose_manager_open(
+                &mut cache,
+                &mut exports,
+                plan,
+                slot.key(),
+                6,
+                ByteOrder::Little,
+            )
+            .unwrap();
+            let payloads: Vec<_> = open.exports.into_iter().collect();
+            let mut empty = LabPeer::from_cookie(&[0; 20], config.packet).unwrap();
+            let sent = empty
+                .reliable_actor_open_datagrams(&open.bunch, &payloads)
+                .expect("each manager fits an empty configured ring");
+            assert!(!sent.datagrams.is_empty());
+        }
+
+        let mut bound = PeerLab::bind(0, config).unwrap();
+        bound
+            .enable_player_controller_open(
+                profile
+                    .player_controller_open_plan(map, [0.0; 3])
+                    .unwrap()
+                    .unwrap(),
+            )
+            .unwrap();
+        bound
+            .enable_game_state_open(
+                profile.game_state_open_plan(map).unwrap().unwrap(),
+                GameStateOpenState {
+                    key: ActorKey::Session(0),
+                    managers: Default::default(),
+                    values: Default::default(),
+                    weather: Vec::new(),
+                },
+                GAME_STATE_CHANNEL_INDEX,
+            )
+            .unwrap();
+        bound
+            .enable_player_state_open(profile.player_state_open_plan(map).unwrap().unwrap())
+            .unwrap();
+        bound.enable_manager_opens(managers, 6).unwrap();
+        let address = bound.local_addr().unwrap();
+        let mut app = build_app(&ServerConfig::default(), &WorldSnapshot::default()).unwrap();
+        app.insert_resource(bound).add_plugins(PeerLabPlugin);
+        let mut client = Client::connect(&mut app, address);
+        client.exchange(&mut app, short_hello("", 0), false);
+        accept_all_headers(&mut client);
+        client.exchange(&mut app, login(), false);
+        accept_all_headers(&mut client);
+        client.exchange(&mut app, ControlMessage::Join, false);
+
+        let initial = stats(&app);
+        assert_eq!(initial.joins_succeeded, 1);
+        assert_eq!(initial.player_controller_opens_sent, 1);
+        assert_eq!(initial.game_state_opens_sent, 1);
+        assert_eq!(initial.player_state_opens_sent, 1);
+        assert_eq!(initial.player_controller_open_errors, 0);
+        assert_eq!(initial.game_state_open_errors, 0);
+        assert_eq!(initial.player_state_open_errors, 0);
+        if sent_capacity == 8 {
+            // Three preceding opens plus seven managers need at least ten
+            // datagrams; no client ACK runs inside the synchronous send burst.
+            assert!(
+                initial.manager_opens_sent < 7,
+                "small ring exercises pressure"
+            );
+        } else {
+            assert_eq!(initial.manager_opens_sent, 7);
+            assert_eq!(initial.manager_open_errors, 0);
+        }
+
+        let mut channels = BTreeSet::new();
+        for _ in 0..16 {
+            accept_opens(&mut client, &mut channels);
+            let (ack, _) = client.packet(Vec::new());
+            client.send(&ack);
+            app.update();
+        }
+        accept_opens(&mut client, &mut channels);
+        assert_eq!(
+            stats(&app).manager_opens_sent,
+            7,
+            "all seven initial managers eventually open at capacity {sent_capacity}"
+        );
+        assert_eq!(channels, (6..=12).collect());
+        assert!(lab(&app).has_peer(client.address()));
+        assert_eq!(stats(&app).peers_failed, 0);
+        assert_eq!(stats(&app).io_errors, 0);
+
+        // A repeated Join and further ACKs cannot restart the completed opens.
+        client.exchange(&mut app, ControlMessage::Join, false);
+        for _ in 0..4 {
+            accept_opens(&mut client, &mut channels);
+            let (ack, _) = client.packet(Vec::new());
+            client.send(&ack);
+            app.update();
+        }
+        assert_eq!(stats(&app).manager_opens_sent, 7);
+        assert_eq!(stats(&app).duplicate_joins_ignored, 1);
+    }
+}
+
 #[test]
 fn the_game_state_open_follows_the_controller_over_several_datagrams() {
     use icarus_bevy::experimental::{
