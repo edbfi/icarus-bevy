@@ -70,8 +70,8 @@ finalises players only after every controller's friends list (F-973); the probe,
 initialising as a saved character, captured its restore of a returning pawn (F-972, F-974); `run` restores inventories, weights, modifiers and stats; incomplete inputs withhold dependent levels (F-978 to F-989);
 modifier and temperature call models preserve local order
 (F-991, F-994, F-996, F-997). Native time/temperature updates share reliable delivery
-(F-995, F-998); full temperature tick order and connection-owned explicit
-ticking are qualified (F-999, F-1000). Automatic scheduling and climate remain open. GUID-tagged replay distinguishes countdown,
+(F-995, F-998); temperature tick order and connection-owned temperature/modifier
+ticks are qualified (F-999, F-1000). Automatic scheduling and climate remain open. GUID-tagged replay distinguishes countdown,
 increases and zero without inferring their causes (F-992). Profile answers use the PlayerState's trees and verified backend component
 (F-955); retry/kick and loadout/bestiary gates precede prospect initialization
 (F-956 to F-959).

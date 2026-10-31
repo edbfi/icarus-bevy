@@ -216,7 +216,7 @@ Address pairs are server / client.
 ## Candidate
 
 Native modifier and temperature updates share reliable delivery (F-995, F-998).
-Explicit ticks retain connection-local timing (F-1000). No automatic climate,
+Explicit temperature/modifier ticks retain connection-local timing (F-1000). No automatic climate,
 scheduling or stock-client qualification.
 
 - Authored native refresh transport (F-936): `PeerLab::refresh_active_prospect`

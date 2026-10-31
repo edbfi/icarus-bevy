@@ -36,6 +36,8 @@ use icarus_bevy::{
 };
 use serde_json::Value;
 
+#[path = "common/modifier_tick.rs"]
+mod modifier_tick;
 mod pak_writer;
 #[path = "common/profile_pressure.rs"]
 mod profile_pressure;

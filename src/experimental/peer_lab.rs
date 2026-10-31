@@ -245,6 +245,22 @@ use super::stat_restore::{
 };
 use super::time_of_day::TimeOfDayClock;
 
+/// Explicit per-modifier inputs for [`PeerLab::tick_restored_modifier`].
+/// No constructor, row or scheduling defaults are inferred. Remaining time
+/// comes from the modifier's latest retained raw and wire values.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct RestoredModifierTickContext {
+    /// The setter's direct owner-role lookup, distinct from the callback's
+    /// GetOwnerRole result. Neither is inferred from the other's value.
+    pub owner_role_byte: Option<u8>,
+    /// Whether the modifier's interval path is enabled.
+    pub interval_enabled: bool,
+    /// Accumulated interval time in seconds.
+    pub accumulated_seconds: f32,
+    /// The threshold and period subtracted by an admitted interval path.
+    pub interval_seconds: f32,
+}
+
 /// Explicit per-pawn timing inputs for [`PeerLab::tick_pawn_temperature`].
 /// No defaults or original constructor/clock semantics are implied.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -1092,6 +1108,8 @@ struct PeerEntry {
     restored_character: Option<usize>,
     /// Successfully queued initial restore, retained only for this connection.
     restored_modifiers: Vec<RestoredModifier>,
+    /// Explicit contexts exist only for members of restored_modifiers.
+    restored_modifier_ticks: BTreeMap<i32, RestoredModifierTickContext>,
     /// Baselines owned by the reliable queue; NAK retransmission stays there.
     queued_modifier_times: BTreeMap<i32, u16>,
     pawn_property_retry_ready: bool,
@@ -2376,6 +2394,103 @@ impl PeerLab {
         Ok(())
     }
 
+    /// Configure every caller-owned tick field for an existing restored
+    /// modifier. Repeating this call replaces its context without changing
+    /// remaining time. Unknown connections and UIDs cannot allocate contexts.
+    pub fn configure_restored_modifier_tick(
+        &mut self,
+        connection_id: u32,
+        uid: i32,
+        context: RestoredModifierTickContext,
+    ) -> Result<()> {
+        let entry = self
+            .peers
+            .values_mut()
+            .find(|entry| entry.connection_id == Some(connection_id))
+            .context("no restored modifier connection")?;
+        ensure!(
+            entry
+                .restored_modifiers
+                .iter()
+                .any(|modifier| modifier.uid == uid),
+            "unknown restored modifier"
+        );
+        entry.restored_modifier_ticks.insert(uid, context);
+        Ok(())
+    }
+
+    /// Current explicit context for this connection's restored modifier.
+    /// Disconnect discards all contexts; reconnect requires configuration again.
+    pub fn restored_modifier_tick_context(
+        &self,
+        connection_id: u32,
+        uid: i32,
+    ) -> Option<RestoredModifierTickContext> {
+        self.peers
+            .values()
+            .find(|entry| entry.connection_id == Some(connection_id))?
+            .restored_modifier_ticks
+            .get(&uid)
+            .copied()
+    }
+
+    /// Run one qualified modifier tick with caller-supplied elapsed time and
+    /// effects. Validation precedes every callback. Reads the latest remaining
+    /// time, including patches/setters since the previous tick, then retains
+    /// the final raw/wire values and callback-mutated context.
+    ///
+    /// Publication coalesces reliably with pawn temperatures; polling, queue
+    /// pressure and loss repair never replay callbacks. A destruction request
+    /// remains a caller effect: it does not remove this modifier or context.
+    /// This API infers no automatic clock, expiry, row effects or persistence.
+    pub fn tick_restored_modifier(
+        &mut self,
+        connection_id: u32,
+        uid: i32,
+        delta_seconds: f32,
+        calls: &mut impl super::modifier_timing::ModifierTickCalls,
+    ) -> Result<()> {
+        let entry = self
+            .peers
+            .values_mut()
+            .find(|entry| entry.connection_id == Some(connection_id))
+            .context("no restored modifier connection")?;
+        let context = entry
+            .restored_modifier_ticks
+            .get(&uid)
+            .copied()
+            .context("restored modifier tick is not configured")?;
+        let modifier = entry
+            .restored_modifiers
+            .iter_mut()
+            .find(|modifier| modifier.uid == uid)
+            .context("unknown restored modifier")?;
+        let mut state = super::modifier_timing::ModifierTickState {
+            remaining: RemainingTime {
+                seconds: modifier.remaining_seconds,
+                replicated_tenths: modifier.remaining_tenths,
+            },
+            owner_role_byte: context.owner_role_byte,
+            interval_enabled: context.interval_enabled,
+            accumulated_seconds: context.accumulated_seconds,
+            interval_seconds: context.interval_seconds,
+        };
+        super::modifier_timing::tick_modifier(&mut state, delta_seconds, calls);
+        modifier.remaining_seconds = state.remaining.seconds;
+        modifier.remaining_tenths = state.remaining.replicated_tenths;
+        entry.restored_modifier_ticks.insert(
+            uid,
+            RestoredModifierTickContext {
+                owner_role_byte: state.owner_role_byte,
+                interval_enabled: state.interval_enabled,
+                accumulated_seconds: state.accumulated_seconds,
+                interval_seconds: state.interval_seconds,
+            },
+        );
+        entry.pawn_property_retry_ready = true;
+        Ok(())
+    }
+
     /// Latest explicitly supplied temperatures for a successfully queued pawn
     /// open. Unknown fields remain `None`; zero is a known value.
     pub fn pawn_temperature(&self, connection_id: u32) -> Option<PawnTemperatureState> {
@@ -2910,6 +3025,7 @@ impl PeerLab {
                 .map(|modifier| (modifier.uid, modifier.remaining_tenths))
                 .collect();
             entry.restored_modifiers = restored.modifiers;
+            entry.restored_modifier_ticks.clear();
             Ok::<_, anyhow::Error>(Some((
                 datagrams,
                 dropped,
@@ -3947,6 +4063,7 @@ impl PeerLab {
                         pawn_uid: None,
                         restored_character: None,
                         restored_modifiers: Vec::new(),
+                        restored_modifier_ticks: BTreeMap::new(),
                         queued_modifier_times: BTreeMap::new(),
                         pawn_property_retry_ready: false,
                         pending_pawn_restore: None,
