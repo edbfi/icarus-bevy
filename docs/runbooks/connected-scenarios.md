@@ -27,6 +27,12 @@ time-driven state. Map, harvest and build actions need a real player.
    prints the server name and password, and stops once the server has saved
    and loaded its lobby after the last player left, or at the deadline.
    `GetServersAtAddress` on Steam's web API shows the registration.
+   Optional session fields: `connection_method: "direct"` turns off Steam
+   networking so the server advertises `CONMETHOD=Direct` and clients join
+   over UDP 17777 (F-1003); `capture_image` (built from
+   `tools/capture.Dockerfile`) and `capture_max_bytes` record the game and
+   query ports in `capture/game.pcap`. `examples/a2s_query` reads the A2S
+   answers through `127.0.0.1:27015`.
 4. The user joins: start Icarus, select the character of that world, **Join
    Session**, switch the browser to dedicated servers, pick
    `icarus-research-<scenario>`, enter the password, follow the steps below,
@@ -56,6 +62,11 @@ S1, player actions (about 15 minutes, one player, the supplied prospect):
 2. Open the map, place one marker, close it.
 3. Harvest one grown crop, if any, and plant one seed in one plot; note which.
 4. Leave.
+
+S2, direct join capture (about 5 minutes, one player, the S1 prospect, direct
+method and capture): join, stand still for a minute, leave. It records a
+stock client's stateless handshake, Steam authentication and control exchange
+in the clear for the native server (U-038, U-078).
 
 Later scenarios (build or remove one piece, feed a tame, a second player) are
 written here before they are run.

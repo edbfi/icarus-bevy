@@ -2,6 +2,7 @@
 
 import datetime
 import json
+import os
 from pathlib import Path
 import stat
 import tempfile
@@ -9,8 +10,8 @@ import unittest
 
 from unittest.mock import patch
 
-from tools.run_reference_connected import (GAME_PORT, QUERY_PORT, ApprovedRun, Arguments, prepare_launch,
-    returned_to_lobby, server_settings, validate_session)
+from tools.run_reference_connected import (CAPTURE_FILTER, DIRECT_ENGINE_INI, ENGINE_INI, GAME_PORT, QUERY_PORT,
+    ApprovedRun, Arguments, capture_launch, prepare_launch, returned_to_lobby, server_settings, validate_session)
 from tools.run_reference_offline import IMAGE, REFERENCE_EXE, digest
 from tools.runtime_types import JsonObject, json_object, parse_json
 
@@ -114,6 +115,85 @@ class ConnectedTests(unittest.TestCase):
             record = json_object(parse_json((run / "invocation.json").read_text()))
             self.assertNotIn("abcd1234", json.dumps(record))
             self.assertEqual(record["save_copy_sha256"], digest(fixture.save))
+
+    def test_capture_binding_needs_a_local_image_id_and_a_bounded_cap(self) -> None:
+        image = "sha256:" + "a" * 64
+        with tempfile.TemporaryDirectory() as directory:
+            fixture = Fixture(directory)
+            self.assertIsNone(fixture.approve().capture_image)
+            fixture.write({"capture_image": image, "capture_max_bytes": 64 * 1024**2})
+            approved = fixture.approve()
+            self.assertEqual((approved.capture_image, approved.capture_max_bytes), (image, 64 * 1024**2))
+            updates: list[JsonObject] = [
+                {"capture_image": image}, {"capture_max_bytes": 64 * 1024**2},
+                {"capture_image": "alpine:latest", "capture_max_bytes": 64 * 1024**2},
+                {"capture_image": "sha256:" + "A" * 64, "capture_max_bytes": 64 * 1024**2},
+                {"capture_image": image, "capture_max_bytes": 1024**2 - 1},
+                {"capture_image": image, "capture_max_bytes": 2 * 1024**3 + 1},
+            ]
+            for update in updates:
+                with self.subTest(update=update):
+                    fixture.write(update)
+                    with self.assertRaises(ValueError):
+                        _ = fixture.approve()
+
+    def test_capture_sidecar_shares_only_the_server_namespace_unprivileged(self) -> None:
+        image = "sha256:" + "b" * 64
+        server = "c" * 64
+        with tempfile.TemporaryDirectory() as directory:
+            fixture = Fixture(directory)
+            fixture.write({"capture_image": image, "capture_max_bytes": 64 * 1024**2})
+            approved = fixture.approve()
+            run = fixture.case / "run"
+            run.mkdir()
+            argv = capture_launch(approved, run, "icarus-connected-authored-capture", "token", server)
+            self.assertTrue((run / "capture").is_dir())
+            mode = stat.S_IMODE((run / "capture").stat().st_mode)
+            self.assertEqual(mode, 0o700 if os.getuid() == 1000 else 0o1733)
+            self.assertEqual(argv[argv.index("--network") + 1], "container:" + server)
+            self.assertNotIn("--publish", argv)
+            self.assertNotIn("--privileged", argv)
+            caps = [argv[i + 1] for i, value in enumerate(argv) if value == "--cap-add"]
+            self.assertEqual(sorted(caps), ["NET_RAW", "SETGID", "SETUID"])
+            self.assertEqual(argv[argv.index("--cap-drop") + 1], "ALL")
+            self.assertIn("--read-only", argv)
+            self.assertIn(f"type=bind,src={run / 'capture'},dst=/capture", argv)
+            self.assertEqual(argv[argv.index("--label") + 1], "icarus.research.run=icarus-connected-authored-capture")
+            command = argv[argv.index(image):]
+            self.assertEqual(command[1], "tcpdump")
+            self.assertEqual(command[command.index("-Z") + 1], "capture")
+            self.assertEqual(command[-1], CAPTURE_FILTER)
+            self.assertEqual(CAPTURE_FILTER, f"udp port {GAME_PORT} or udp port {QUERY_PORT}")
+            with self.assertRaises(ValueError):
+                _ = capture_launch(approved, fixture.case / "other", "name", "token", "not-an-id")
+            fixture.write()
+            with self.assertRaises(ValueError):
+                _ = capture_launch(fixture.approve(), fixture.case / "other", "name", "token", server)
+
+    def test_direct_connection_method_writes_only_the_steam_networking_switches(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            fixture = Fixture(directory)
+            steam = fixture.root / "steamcmd"
+            for bits in ("32", "64"):
+                (steam / f"linux{bits}").mkdir(parents=True)
+                _ = (steam / f"linux{bits}/steamclient.so").write_bytes(b"authored")
+            for method, written in (("default", False), ("direct", True)):
+                with self.subTest(method=method):
+                    fixture.write({"connection_method": method})
+                    approved = fixture.approve()
+                    run = fixture.case / ("run-" + method)
+                    run.mkdir()
+                    with patch("tools.run_reference_connected.STEAMCLIENT_ROOT", new=steam):
+                        _ = prepare_launch(ROOT, approved, run, "icarus-connected-authored", "token", "abcd1234")
+                    engine = run / "home" / ENGINE_INI
+                    self.assertEqual(engine.is_file(), written)
+                    if written:
+                        self.assertEqual(engine.read_text(), DIRECT_ENGINE_INI)
+                    record = json_object(parse_json((run / "invocation.json").read_text()))
+                    self.assertEqual(record["engine_ini_sha256"] is not None, written)
+            fixture.write({"connection_method": "p2p"})
+            with self.assertRaises(ValueError):
+                _ = fixture.approve()
 
     def test_lobby_return_needs_load_then_save_then_lobby(self) -> None:
         load, save, lobby = ("Prospect file loaded. Loading map...", "-------  Saving and shutting down  -------",

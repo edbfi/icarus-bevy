@@ -340,7 +340,8 @@ def owned_container(text: str, name: str, token: str, expected_id: str | None) -
 
 
 def cleanup_container(run: Path, name: str, token: str, expected_id: str | None,
-                      budget: Budget) -> JsonObject:
+                      budget: Budget, label: str = "") -> JsonObject:
+    """Stop and remove a verified owned container; `label` prefixes its receipt names."""
     cleanup: JsonObject = {"removed": False}
     previous_term = signal.signal(signal.SIGTERM, signal.SIG_IGN)
     previous_int = signal.signal(signal.SIGINT, signal.SIG_IGN)
@@ -350,15 +351,15 @@ def cleanup_container(run: Path, name: str, token: str, expected_id: str | None,
         container = owned_container(inspected.stdout, name, token, expected_id)
         cleanup["container_id"] = container
         try:
-            _ = (run / "container-before-stop.json").write_text(inspected.stdout)
+            _ = (run / (label + "container-before-stop.json")).write_text(inspected.stdout)
             logs = budget.run(["docker", "logs", container],
                               cap=min(10, (budget.deadline - time.monotonic()) / 6))
-            _ = (run / "console-before.log").write_text(logs.stdout + logs.stderr)
+            _ = (run / (label + "console-before.log")).write_text(logs.stdout + logs.stderr)
             _ = budget.run(["docker", "stop", "--time", "10", container],
                            cap=min(15, (budget.deadline - time.monotonic()) / 3))
             logs = budget.run(["docker", "logs", container],
                               cap=min(10, (budget.deadline - time.monotonic()) / 4))
-            _ = (run / "console-after.log").write_text(logs.stdout + logs.stderr)
+            _ = (run / (label + "console-after.log")).write_text(logs.stdout + logs.stderr)
         finally:
             # Log/stop failures cannot bypass removal of an already verified ID.
             _ = budget.run(["docker", "rm", "--force", container],
@@ -373,7 +374,7 @@ def cleanup_container(run: Path, name: str, token: str, expected_id: str | None,
         raise
     finally:
         try:
-            _ = (run / "cleanup.json").write_text(json.dumps(cleanup, indent=2) + "\n")
+            _ = (run / (label + "cleanup.json")).write_text(json.dumps(cleanup, indent=2) + "\n")
         finally:
             _ = signal.signal(signal.SIGTERM, previous_term)
             _ = signal.signal(signal.SIGINT, previous_int)

@@ -7,6 +7,17 @@ game and query UDP ports published, behind a generated join password. It loads
 one case-local save copy, and the run ends once the server has saved and
 returned to its lobby after the last player left, or at the session's deadline.
 Container ownership, budgets and cleanup are the offline launcher's.
+
+A session may bind a local capture image (`capture_image`, an image ID built
+from `tools/capture.Dockerfile`) and a byte cap (`capture_max_bytes`). A
+sidecar then shares only the server container's network namespace, records
+the game and query UDP ports with tcpdump as an unprivileged user, and is
+stopped before the server; a capture reaching its cap is stopped early.
+
+`connection_method: "direct"` writes an Engine.ini turning off
+`bUseSteamNetworking` and `bAllowP2PPacketRelay`, with which the server
+advertises `CONMETHOD=Direct` and clients join over the game UDP port instead
+of Steam P2P; without it the server keeps its packaged configuration.
 """
 
 import argparse
@@ -41,6 +52,15 @@ GAME_PORT = 17777
 QUERY_PORT = 27015
 MAX_OBSERVATION_SECONDS = 2700
 CLEANUP_SECONDS = 120
+CAPTURE_IMAGE = re.compile(r"sha256:[0-9a-f]{64}")
+MIN_CAPTURE_BYTES = 1024**2
+MAX_CAPTURE_BYTES = 2 * 1024**3
+CAPTURE_FILE = "game.pcap"
+CAPTURE_FILTER = f"udp port {GAME_PORT} or udp port {QUERY_PORT}"
+CAPTURE_START_SECONDS = 15
+CAPTURE_UID = 1000
+ENGINE_INI = Path("Icarus/Saved/Config/WindowsServer/Engine.ini")
+DIRECT_ENGINE_INI = "[OnlineSubsystemSteam]\nbUseSteamNetworking=False\nbAllowP2PPacketRelay=False\n"
 SCENARIO_ID = re.compile(r"[a-z0-9][a-z0-9-]{0,23}")
 SERVER_LOG = Path("Icarus/Saved/Logs/Icarus.log")
 PROSPECT_LOADED = "Prospect file loaded"
@@ -90,6 +110,9 @@ class ApprovedRun:
     observation_seconds: int
     lifetime_seconds: int
     max_runs: int
+    capture_image: str | None = None
+    capture_max_bytes: int = 0
+    direct: bool = False
 
 
 def validate_session(root: Path, args: Arguments, now: datetime.datetime) -> ApprovedRun:
@@ -142,6 +165,23 @@ def validate_session(root: Path, args: Arguments, now: datetime.datetime) -> App
         raise ValueError("server timers or player cap out of bounds")
     if not 1 <= max_runs <= 4:
         raise ValueError("max_runs must be 1..4")
+    capture_image: str | None = None
+    capture_max_bytes = 0
+    if ("capture_image" in session) != ("capture_max_bytes" in session):
+        raise ValueError("capture_image and capture_max_bytes are bound together")
+    if "capture_image" in session:
+        capture_image = string_field(session, "capture_image")
+        capture_max_bytes = integer_field(session, "capture_max_bytes")
+        if CAPTURE_IMAGE.fullmatch(capture_image) is None:
+            raise ValueError("capture_image must be a local image ID (sha256:<64 hex>)")
+        if not MIN_CAPTURE_BYTES <= capture_max_bytes <= MAX_CAPTURE_BYTES:
+            raise ValueError("capture_max_bytes must be 1 MiB..2 GiB")
+    direct = False
+    if "connection_method" in session:
+        method = string_field(session, "connection_method")
+        if method not in ("default", "direct"):
+            raise ValueError("connection_method must be default or direct")
+        direct = method == "direct"
     start = datetime.datetime.fromisoformat(string_field(session, "start_utc"))
     end = datetime.datetime.fromisoformat(string_field(session, "end_utc"))
     if start.utcoffset() is None or end.utcoffset() is None:
@@ -149,7 +189,8 @@ def validate_session(root: Path, args: Arguments, now: datetime.datetime) -> App
     if not start <= now < end or now + datetime.timedelta(seconds=lifetime) >= end:
         raise ValueError("session is future, expired or has insufficient approved time")
     return ApprovedRun(case, session, hashlib.sha256(raw).hexdigest(), reference, save_input, scenario,
-                       not_joined, empty, players, observation, lifetime, max_runs)
+                       not_joined, empty, players, observation, lifetime, max_runs, capture_image,
+                       capture_max_bytes, direct)
 
 
 @contextmanager
@@ -190,6 +231,10 @@ def prepare_launch(root: Path, approved: ApprovedRun, run: Path, name: str, toke
         raise ValueError("save copy digest mismatch")
     (home / SERVER_SETTINGS).parent.mkdir(parents=True)
     _ = (home / SERVER_SETTINGS).write_text(server_settings(approved, password))
+    engine: str | None = None
+    if approved.direct:
+        _ = (home / ENGINE_INI).write_text(DIRECT_ENGINE_INI)
+        engine = digest(home / ENGINE_INI)
     steam: JsonObject = {}
     for bits in ("32", "64"):
         source = regular_path(STEAMCLIENT_ROOT / f"linux{bits}/steamclient.so")
@@ -228,12 +273,41 @@ def prepare_launch(root: Path, approved: ApprovedRun, run: Path, name: str, toke
         "timeout_seconds": approved.lifetime_seconds, "observation_seconds": approved.observation_seconds,
         "approval": approved.session, "session_sha256": approved.session_sha256,
         "save_copy_sha256": digest(home / relative), "steamclient": steam, "server_settings_sha256": digest(home / SERVER_SETTINGS),
+        "engine_ini_sha256": engine,
         "helpers": {str(path.relative_to(root)): digest(path) for path in helpers},
     }
     with (approved.case / "commands.jsonl").open("a") as stream:
         _ = stream.write(json.dumps(record) + "\n")
     _ = (run / "invocation.json").write_text(json.dumps(record, indent=2) + "\n")
     return argv
+
+
+def capture_launch(approved: ApprovedRun, run: Path, name: str, token: str, server: str) -> list[str]:
+    """The sidecar joins only the server's network namespace; tcpdump opens the
+    interface as root with NET_RAW, then drops to the image's uid 1000 user
+    before writing the capture into the run's own directory."""
+    if approved.capture_image is None or re.fullmatch(r"[0-9a-f]{64}", server) is None:
+        raise ValueError("capture needs a bound image and the verified server ID")
+    capture = run / "capture"
+    capture.mkdir()
+    # tcpdump writes as the image's uid 1000. Another launching user keeps the
+    # directory but lets uid 1000 create files it cannot list or delete.
+    capture.chmod(0o700 if os.getuid() == CAPTURE_UID else 0o1733)
+    return ["docker", "run", "--detach", "--pull", "never", "--name", name,
+            "--label", "icarus.research.run=" + name, "--label", "icarus.research.owner=" + token,
+            "--cidfile", str(run / "capture-container.cid"), "--network", "container:" + server,
+            "--read-only", "--cap-drop", "ALL", "--cap-add", "NET_RAW", "--cap-add", "SETUID",
+            "--cap-add", "SETGID", "--security-opt", "no-new-privileges", "--memory", "256m",
+            "--cpus", "0.5", "--pids-limit", "32",
+            "--mount", f"type=bind,src={capture},dst=/capture",
+            approved.capture_image, "tcpdump", "-i", "eth0", "-p", "-n", "-U", "-s", "0",
+            "-Z", "capture", "-w", "/capture/" + CAPTURE_FILE, CAPTURE_FILTER]
+
+
+def capture_running(budget: Budget, name: str, token: str, container: str) -> bool:
+    inspected = budget.run(["docker", "inspect", name])
+    _ = owned_container(inspected.stdout, name, token, container)
+    return parse_container_state(inspected.stdout).running
 
 
 def returned_to_lobby(log: str) -> bool:
@@ -259,6 +333,10 @@ def observe(approved: ApprovedRun, run: Path, name: str, token: str, argv: list[
     previous = signal.signal(signal.SIGTERM, interrupted)
     previous_int = signal.signal(signal.SIGINT, interrupted)
     container: str | None = None
+    capture_name = name + "-capture"
+    capture_id: str | None = None
+    capture_started = False
+    capture: JsonObject = {}
     ended = "deadline"
     try:
         result = observation.run(argv, cap=45)
@@ -266,6 +344,22 @@ def observe(approved: ApprovedRun, run: Path, name: str, token: str, argv: list[
         if re.fullmatch(r"[0-9a-f]{64}", candidate) is None:
             raise RuntimeError("unexpected container ID")
         container = candidate
+        if approved.capture_image is not None:
+            capture_argv = capture_launch(approved, run, capture_name, token, container)
+            with (approved.case / "commands.jsonl").open("a") as stream:
+                _ = stream.write(json.dumps({"time": datetime.datetime.now(datetime.UTC).isoformat(),
+                                             "capture_argv": capture_argv}) + "\n")
+            capture_started = True
+            started = observation.run(capture_argv, cap=30).stdout.strip()
+            if re.fullmatch(r"[0-9a-f]{64}", started) is None:
+                raise RuntimeError("unexpected capture container ID")
+            capture_id = started
+            pcap = run / "capture" / CAPTURE_FILE
+            started_by = time.monotonic() + CAPTURE_START_SECONDS
+            while not pcap.is_file():
+                if not capture_running(observation, capture_name, token, capture_id) or time.monotonic() > started_by:
+                    raise RuntimeError("capture sidecar did not start writing its capture")
+                time.sleep(1)
         log = run / "home" / SERVER_LOG
         with (run / "resource-samples.jsonl").open("x") as samples:
             while time.monotonic() < observation.deadline:
@@ -273,9 +367,20 @@ def observe(approved: ApprovedRun, run: Path, name: str, token: str, argv: list[
                     raise RuntimeError("resource floor reached during observation")
                 inspected = observation.run(["docker", "inspect", container])
                 _ = owned_container(inspected.stdout, name, token, container)
+                # A server exit can take the shared namespace and the sidecar
+                # with it; record the exit before judging the sidecar.
                 if not parse_container_state(inspected.stdout).running:
                     ended = "exited"
                     break
+                pcap = run / "capture" / CAPTURE_FILE
+                if capture_id is not None and not capture_running(observation, capture_name, token, capture_id):
+                    raise RuntimeError("capture sidecar stopped during the run")
+                if (capture_id is not None and "truncated" not in capture and pcap.is_file()
+                        and pcap.stat().st_size >= approved.capture_max_bytes):
+                    capture.update(cleanup_container(run, capture_name, token, capture_id, observation,
+                                                     label="capture-"))
+                    capture["truncated"] = True
+                    capture_id = None
                 if log.is_file() and returned_to_lobby(log.read_text(errors="replace")):
                     ended = "lobby"
                     break
@@ -286,11 +391,23 @@ def observe(approved: ApprovedRun, run: Path, name: str, token: str, argv: list[
         _ = (run / "observed.json").write_text(json.dumps({"seconds": time.monotonic() - start, "ended": ended}) + "\n")
     finally:
         try:
-            cleanup = cleanup_container(run, name, token, container, budget)
+            try:
+                # The sidecar shares the server's namespace, so it stops first.
+                if capture_started and "truncated" not in capture:
+                    capture.update(cleanup_container(run, capture_name, token, capture_id, budget,
+                                                     label="capture-"))
+            finally:
+                cleanup = cleanup_container(run, name, token, container, budget)
         finally:
             _ = signal.signal(signal.SIGTERM, previous)
             _ = signal.signal(signal.SIGINT, previous_int)
     cleanup["ended"] = ended
+    if capture_started:
+        pcap = run / "capture" / CAPTURE_FILE
+        capture["file"] = str(pcap.relative_to(run)) if pcap.is_file() else None
+        capture["bytes"] = pcap.stat().st_size if pcap.is_file() else 0
+        capture["sha256"] = digest(pcap) if pcap.is_file() else None
+        cleanup["capture"] = capture
     return cleanup
 
 
