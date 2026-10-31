@@ -6,7 +6,9 @@
 //! port. Which fields and rules the original ICARUS server answers with is an
 //! observation for a recorded case, not something this module asserts. Strings
 //! are kept as raw bytes (NUL-terminated on the wire, no interior NUL), so a
-//! decode followed by an encode reproduces the datagram. Split responses use
+//! decode followed by an encode reproduces the datagram, except an `A2S_INFO`
+//! answer that omits its extra-data flag byte, which re-encodes with a zero
+//! flag byte. Split responses use
 //! the Source layout (`-2`, 32-bit ID, total, number, 16-bit size); compressed
 //! splits are rejected. Every read is bounded by the datagram.
 
