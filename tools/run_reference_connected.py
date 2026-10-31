@@ -58,6 +58,7 @@ MAX_CAPTURE_BYTES = 2 * 1024**3
 CAPTURE_FILE = "game.pcap"
 CAPTURE_FILTER = f"udp port {GAME_PORT} or udp port {QUERY_PORT}"
 CAPTURE_START_SECONDS = 15
+CAPTURE_UID = 1000
 ENGINE_INI = Path("Icarus/Saved/Config/WindowsServer/Engine.ini")
 DIRECT_ENGINE_INI = "[OnlineSubsystemSteam]\nbUseSteamNetworking=False\nbAllowP2PPacketRelay=False\n"
 SCENARIO_ID = re.compile(r"[a-z0-9][a-z0-9-]{0,23}")
@@ -289,8 +290,9 @@ def capture_launch(approved: ApprovedRun, run: Path, name: str, token: str, serv
         raise ValueError("capture needs a bound image and the verified server ID")
     capture = run / "capture"
     capture.mkdir()
-    # tcpdump writes as the image's uid 1000, whichever host user launches.
-    capture.chmod(0o777)
+    # tcpdump writes as the image's uid 1000. Another launching user keeps the
+    # directory but lets uid 1000 create files it cannot list or delete.
+    capture.chmod(0o700 if os.getuid() == CAPTURE_UID else 0o1733)
     return ["docker", "run", "--detach", "--pull", "never", "--name", name,
             "--label", "icarus.research.run=" + name, "--label", "icarus.research.owner=" + token,
             "--cidfile", str(run / "capture-container.cid"), "--network", "container:" + server,
@@ -365,6 +367,11 @@ def observe(approved: ApprovedRun, run: Path, name: str, token: str, argv: list[
                     raise RuntimeError("resource floor reached during observation")
                 inspected = observation.run(["docker", "inspect", container])
                 _ = owned_container(inspected.stdout, name, token, container)
+                # A server exit can take the shared namespace and the sidecar
+                # with it; record the exit before judging the sidecar.
+                if not parse_container_state(inspected.stdout).running:
+                    ended = "exited"
+                    break
                 pcap = run / "capture" / CAPTURE_FILE
                 if capture_id is not None and not capture_running(observation, capture_name, token, capture_id):
                     raise RuntimeError("capture sidecar stopped during the run")
@@ -374,9 +381,6 @@ def observe(approved: ApprovedRun, run: Path, name: str, token: str, argv: list[
                                                      label="capture-"))
                     capture["truncated"] = True
                     capture_id = None
-                if not parse_container_state(inspected.stdout).running:
-                    ended = "exited"
-                    break
                 if log.is_file() and returned_to_lobby(log.read_text(errors="replace")):
                     ended = "lobby"
                     break
