@@ -44,10 +44,13 @@ a 20-entry skip table inside `ReceivedPacket`'s framing (F-284, F-514 to F-539,
 F-579, F-712 to F-714, F-740, F-857; U-014, U-044 resolved;
 [control negotiation](../../specs/network/control-negotiation.md)).
 
+S2's original 3.0.34 direct join and Steam auth success are captured (F-1006),
+after selecting `IpNetDriver` (F-1005). Native auth remains open (U-038, U-078).
+
 ## Open
 
 - Stock-client authenticated session against the native server (U-038).
 
 ## Artifacts
 
-M-005, M-012, M-023..M-046, M-281..M-283, M-288..M-297, M-301, M-302, M-315..M-346, M-353..M-357, M-370, M-371, M-749..M-754, M-763..M-765, M-770, M-771, M-776, M-777, M-780, M-791.
+M-005, M-012, M-023..M-046, M-281..M-283, M-288..M-297, M-301, M-302, M-315..M-346, M-353..M-357, M-370, M-371, M-749..M-754, M-763..M-765, M-770, M-771, M-776, M-777, M-780, M-791; M-1157..M-1162.
