@@ -490,9 +490,9 @@ impl TestBackend {
             .commands()
             .unwrap()
             .into_iter()
-            .filter_map(|command| match command {
-                Command::End(id) => Some(id),
-                Command::Begin(..) => None,
+            .map(|command| match command {
+                Command::End(id) => id,
+                Command::Begin(..) => panic!("unexpected Begin command in test backend"),
             })
             .collect()
     }

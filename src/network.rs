@@ -1685,17 +1685,6 @@ pub fn bind_with_parameters(
     bind_session(network, config, None)
 }
 
-/// Explicit connected-research entry point using the normal session plans.
-/// `network` retains its local configuration checks; the separately supplied
-/// public address is usable only with the live Steam authentication service.
-pub fn bind_authenticated(
-    network: &NetworkConfig,
-    address: SocketAddrV4,
-    authenticator: crate::steam_service::AuthClient,
-) -> Result<Option<BoundNetwork>> {
-    bind_authenticated_with_parameters(network, peer_lab_config(network), address, authenticator)
-}
-
 /// Connected research with explicit admission parameters, including the map
 /// shared by Welcome and every release-specific actor-open plan.
 pub fn bind_authenticated_with_parameters(

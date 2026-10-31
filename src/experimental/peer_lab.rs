@@ -546,6 +546,8 @@ pub struct PeerLabStats {
     pub peers_expired: u64,
     /// Peers removed after a failed receive or ack.
     pub peers_failed: u64,
+    /// Peers removed by ticket verification or a negative Steam auth outcome.
+    pub peers_auth_closed: u64,
     /// Non-handshake datagrams from addresses without a peer.
     pub unknown_peer: u64,
     /// Data packets that passed the sequence gate.
@@ -818,6 +820,8 @@ pub struct SessionCounts {
     pub upgrades_sent: u64,
     /// Sessions removed after a receive, reply or ack failure.
     pub closed_failed: u64,
+    /// Sessions removed by local ticket rejection or a negative Steam outcome.
+    pub closed_by_authentication: u64,
     /// Sessions removed by shutdown.
     pub closed_by_shutdown: u64,
     /// PlayerController opens sent after Join.
@@ -3921,6 +3925,7 @@ impl PeerLab {
             closed_by_reply: self.stats.peers_closed,
             upgrades_sent: self.stats.upgrades_sent,
             closed_failed: self.stats.peers_failed,
+            closed_by_authentication: self.stats.peers_auth_closed,
             closed_by_shutdown: self.stats.peers_shutdown,
             player_controller_opens_sent: self.stats.player_controller_opens_sent,
             initialisation_slots_recorded: self.stats.initialisation_slots_recorded,
@@ -5789,6 +5794,7 @@ impl PeerLab {
             } else {
                 self.auth_result(address, false);
                 self.remove_peer(address);
+                bump(&mut self.stats.peers_auth_closed);
             }
         }
     }
@@ -5820,6 +5826,7 @@ impl PeerLab {
         if peer.auth_request.is_some() {
             self.auth_result(address, false);
             self.remove_peer(address);
+            bump(&mut self.stats.peers_auth_closed);
             return;
         }
         let attempt = (|| -> Result<(u64, u64)> {
@@ -5850,6 +5857,7 @@ impl PeerLab {
             Err(_) => {
                 self.auth_result(address, false);
                 self.remove_peer(address);
+                bump(&mut self.stats.peers_auth_closed);
             }
         }
     }
@@ -6272,6 +6280,7 @@ mod tests {
         lab.poll();
         assert!(!lab.has_peer(address));
         assert_eq!(backend.ended_requests(), [1]);
+        assert_eq!(lab.session_counts().closed_by_authentication, 1);
         backend
             .event(AuthEvent {
                 request_id: 1,
@@ -6317,12 +6326,158 @@ mod tests {
         // must be rejected explicitly, rather than silently discarded as large.
         assert_eq!(lab.stats.oversize, 2);
         assert!(!lab.has_peer(address));
+        assert_eq!(lab.session_counts().closed_by_authentication, 1);
         let mut reply = [0; 128];
         let count = socket.recv(&mut reply).unwrap();
         assert_eq!(
             decode_datagram(&reply[..count], ByteOrder::Little, 0, 0).unwrap(),
             SteamAuthMessage::Result { accepted: false }
         );
+    }
+
+    #[test]
+    fn authentication_resends_wait_for_acceptance_without_starting_another_request() {
+        use super::super::{
+            archive::ByteOrder,
+            steam_auth::{SteamAuthMessage, encode_datagram},
+        };
+        for accepted in [false, true] {
+            let (mut lab, socket, address, backend) = pending_auth_peer();
+            socket.set_nonblocking(true).unwrap();
+            let ticket = encode_datagram(
+                &SteamAuthMessage::UserData {
+                    ticket: vec![u16::from(b'0'); 2],
+                    steam_id: 0x0110_0001_0000_002a,
+                },
+                ByteOrder::Little,
+                0,
+                0,
+            )
+            .unwrap();
+            let peer = lab.peers.get_mut(&address).unwrap();
+            peer.auth_ticket_digest = Some(Sha256::digest(&ticket).into());
+            peer.auth_accepted = accepted;
+            let resend = encode_datagram(
+                &SteamAuthMessage::RequestResendResult,
+                ByteOrder::Little,
+                0,
+                0,
+            )
+            .unwrap();
+            let expected = encode_datagram(
+                &SteamAuthMessage::Result { accepted: true },
+                ByteOrder::Little,
+                0,
+                0,
+            )
+            .unwrap();
+            for datagram in [&resend, &ticket] {
+                socket.send(datagram).unwrap();
+                lab.poll();
+                let mut reply = [0; 128];
+                if accepted {
+                    let count = socket.recv(&mut reply).unwrap();
+                    assert_eq!(&reply[..count], expected);
+                } else {
+                    assert_eq!(
+                        socket.recv(&mut reply).unwrap_err().kind(),
+                        io::ErrorKind::WouldBlock
+                    );
+                }
+                assert!(lab.has_peer(address));
+                assert_eq!(lab.peers[&address].auth_request, Some(1));
+                assert_eq!(lab.session_counts().closed_by_authentication, 0);
+                // This also rejects an unexpected Begin command.
+                assert!(backend.ended_requests().is_empty());
+            }
+        }
+    }
+
+    #[test]
+    fn a_second_authentication_ticket_closes_once_and_ignores_late_acceptance() {
+        use super::super::{
+            archive::ByteOrder,
+            steam_auth::{SteamAuthMessage, encode_datagram},
+        };
+        for accepted in [false, true] {
+            let (mut lab, socket, address, backend) = pending_auth_peer();
+            let old = encode_datagram(
+                &SteamAuthMessage::UserData {
+                    ticket: vec![u16::from(b'0'); 2],
+                    steam_id: 0x0110_0001_0000_002a,
+                },
+                ByteOrder::Little,
+                0,
+                0,
+            )
+            .unwrap();
+            let replacement = encode_datagram(
+                &SteamAuthMessage::UserData {
+                    ticket: vec![u16::from(b'1'); 2],
+                    steam_id: 0x0110_0001_0000_002b,
+                },
+                ByteOrder::Little,
+                0,
+                0,
+            )
+            .unwrap();
+            let peer = lab.peers.get_mut(&address).unwrap();
+            peer.auth_ticket_digest = Some(Sha256::digest(&old).into());
+            peer.auth_accepted = accepted;
+            socket.send(&replacement).unwrap();
+            lab.poll();
+            let mut reply = [0; 128];
+            let count = socket.recv(&mut reply).unwrap();
+            assert_eq!(
+                &reply[..count],
+                encode_datagram(
+                    &SteamAuthMessage::Result { accepted: false },
+                    ByteOrder::Little,
+                    0,
+                    0,
+                )
+                .unwrap()
+            );
+            assert!(!lab.has_peer(address));
+            assert_eq!(lab.session_counts().closed_by_authentication, 1);
+            assert_eq!(backend.ended_requests(), [1]);
+            backend
+                .event(crate::steam_auth::AuthEvent {
+                    request_id: 1,
+                    outcome: AuthOutcome::Accepted,
+                })
+                .unwrap();
+            lab.poll();
+            assert!(!lab.has_peer(address));
+            assert_eq!(lab.session_counts().closed_by_authentication, 1);
+            assert!(backend.ended_requests().is_empty());
+        }
+    }
+
+    #[test]
+    fn negative_authentication_outcomes_are_counted_once() {
+        for outcome in [
+            AuthOutcome::Rejected,
+            AuthOutcome::Revoked,
+            AuthOutcome::TimedOut,
+            AuthOutcome::Expired,
+            AuthOutcome::Disconnected,
+        ] {
+            let (mut lab, _socket, address, backend) = pending_auth_peer();
+            let event = crate::steam_auth::AuthEvent {
+                request_id: 1,
+                outcome,
+            };
+            backend.event(event).unwrap();
+            lab.poll();
+            assert!(!lab.has_peer(address));
+            assert_eq!(lab.session_counts().closed_by_authentication, 1);
+            assert_eq!(backend.ended_requests(), [1]);
+            backend.event(event).unwrap();
+            lab.poll();
+            assert_eq!(lab.session_counts().closed_by_authentication, 1);
+            assert!(backend.ended_requests().is_empty());
+        }
     }
 
     #[test]
