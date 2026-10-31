@@ -285,3 +285,101 @@ fn long_rule_sets_are_split_within_a_datagram() {
         Response::Rules(advert.rules())
     );
 }
+
+#[test]
+fn a_fixed_guess_is_never_a_valid_challenge() {
+    let start = Instant::now();
+    let mut responder = QueryResponder::with_secret([3; 32], start);
+    let advert = authored_advert();
+    for host in 1..=64u8 {
+        let from: SocketAddr = format!("198.51.100.{host}:5000").parse().unwrap();
+        for guess in [0, -1] {
+            assert!(matches!(
+                ask(
+                    &mut responder,
+                    &advert,
+                    from,
+                    Request::Rules { challenge: guess },
+                    start
+                ),
+                Response::Challenge(value) if value >= 0
+            ));
+        }
+    }
+}
+
+#[test]
+fn prospect_info_precedes_the_prospect_rule_and_player_names_are_checked() {
+    let advert = Advert {
+        prospect_info: Some("AAAA".to_owned()),
+        ..authored_advert()
+    };
+    let keys: Vec<Vec<u8>> = advert.rules().into_iter().map(|rule| rule.key).collect();
+    let info = keys
+        .iter()
+        .position(|key| key == b"ProspectInfo_s")
+        .unwrap();
+    let prospect = keys.iter().position(|key| key == b"P_s").unwrap();
+    assert_eq!(prospect, info + 1);
+
+    for name in ["a\0b", "a\nb", &"x".repeat(64)] {
+        let advert = Advert {
+            players: vec![AdvertPlayer {
+                steam_id: 1,
+                name: name.to_owned(),
+                connected_seconds: 1.0,
+            }],
+            ..authored_advert()
+        };
+        assert!(advert.validate().is_err(), "{name:?}");
+    }
+    let unfinished = Advert {
+        players: vec![AdvertPlayer {
+            steam_id: 1,
+            name: "a,b".to_owned(),
+            connected_seconds: f32::NAN,
+        }],
+        ..authored_advert()
+    };
+    assert!(unfinished.validate().is_err());
+}
+
+#[test]
+fn game_server_messages_use_the_public_field_numbers() {
+    use icarus_bevy::steam_fetch::{
+        cm::obfuscate_private_ip,
+        proto::{ClientLogon, GameServerData},
+    };
+    use prost::Message as _;
+
+    // Tag 11 (CMsgIPAddress, fixed32 v4 = 127.0.0.1 ^ 0xBAADF00D) and tag 94
+    // (int32 game_server_app_id = 1149460).
+    let logon = ClientLogon {
+        obfuscated_private_ip: Some(obfuscate_private_ip("127.0.0.1".parse().unwrap())),
+        game_server_app_id: Some(1_149_460),
+        ..ClientLogon::default()
+    };
+    assert_eq!(
+        logon.encode_to_vec(),
+        [
+            0x5a, 0x05, 0x0d, 0x0c, 0xf0, 0xad, 0xc5, 0xf0, 0x05, 0x94, 0x94, 0x46
+        ]
+    );
+
+    // Tags 1, 2, 4, 5, 6 and 7 of CMsgGSServerType.
+    let mut expected = vec![0x08, 0x94, 0x94, 0x46, 0x10, 0x0f, 0x20, 0xf1, 0x8a, 0x01];
+    expected.extend_from_slice(b"\x2a\x06Icarus\x32\x070.0.0.1");
+    expected.extend_from_slice(&[0x38, 0x87, 0xd3, 0x01]);
+    assert_eq!(authored_advert().server_type().encode_to_vec(), expected);
+
+    // Tag 20 (game_type) then tag 24 (revision) of CMsgGameServerData.
+    let data = GameServerData {
+        game_type: Some("a".to_owned()),
+        revision: Some(3),
+        ..GameServerData::default()
+    };
+    assert_eq!(
+        data.encode_to_vec(),
+        [0xa2, 0x01, 0x01, b'a', 0xc0, 0x01, 0x03]
+    );
+}

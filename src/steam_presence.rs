@@ -119,6 +119,14 @@ impl Advert {
             self.players.len() <= usize::from(self.max_players),
             "more players than the advertised maximum"
         );
+        ensure!(
+            self.players.iter().all(|player| {
+                player.name.len() <= MAX_NAME_BYTES
+                    && !player.name.chars().any(char::is_control)
+                    && player.connected_seconds.is_finite()
+            }),
+            "player names must be at most {MAX_NAME_BYTES} bytes without control characters"
+        );
         if let Some(info) = &self.prospect_info {
             ensure!(
                 info.len() <= 4_096
@@ -323,8 +331,8 @@ impl QueryResponder {
         hash.update(from.ip().to_string().as_bytes());
         hash.update(window.to_le_bytes());
         let digest = hash.finalize();
-        // Never the "request a challenge" value.
-        i32::from_le_bytes([digest[0], digest[1], digest[2], digest[3]]).max(0)
+        // Uniform over non-negative values, so never "request a challenge".
+        i32::from_le_bytes([digest[0], digest[1], digest[2], digest[3] & 0x7f])
     }
 
     fn window(&self, now: Instant) -> u64 {
@@ -337,26 +345,27 @@ impl QueryResponder {
             || (window > 0 && challenge == self.challenge(from, window - 1))
     }
 
-    /// The datagrams answering `datagram` from `from`; malformed requests get
-    /// none.
-    pub fn answer(
-        &mut self,
-        advert: &Advert,
-        from: SocketAddr,
-        datagram: &[u8],
-        now: Instant,
-    ) -> Result<Vec<Vec<u8>>> {
+    /// Decide what `datagram` from `from` earns without touching the advert:
+    /// nothing (malformed), a fresh challenge, or a verified request.
+    pub fn admit(&self, from: SocketAddr, datagram: &[u8], now: Instant) -> Result<Admission> {
         let Ok(request) = parse_request(datagram) else {
-            return Ok(Vec::new());
+            return Ok(Admission::Ignore);
         };
         let challenge = match request {
             Request::Info { challenge } => challenge,
             Request::Players { challenge } | Request::Rules { challenge } => Some(challenge),
         };
-        if !challenge.is_some_and(|value| self.valid(from, value, now)) {
-            let fresh = self.challenge(from, self.window(now));
-            return Ok(vec![encode_response(&Response::Challenge(fresh))?]);
+        if challenge.is_some_and(|value| self.valid(from, value, now)) {
+            return Ok(Admission::Answer(request));
         }
+        let fresh = self.challenge(from, self.window(now));
+        Ok(Admission::Reply(vec![encode_response(
+            &Response::Challenge(fresh),
+        )?]))
+    }
+
+    /// The datagrams answering a verified request.
+    pub fn answer_request(&mut self, advert: &Advert, request: Request) -> Result<Vec<Vec<u8>>> {
         let response = match request {
             Request::Info { .. } => Response::Info(advert.info()),
             Request::Players { .. } => Response::Players(advert.players()),
@@ -366,9 +375,36 @@ impl QueryResponder {
         self.split_id = self.split_id.wrapping_add(1) & i32::MAX;
         split_response(&message, self.split_id, MAX_DATAGRAM - 12)
     }
+
+    /// The datagrams answering `datagram` from `from`; malformed requests get
+    /// none.
+    pub fn answer(
+        &mut self,
+        advert: &Advert,
+        from: SocketAddr,
+        datagram: &[u8],
+        now: Instant,
+    ) -> Result<Vec<Vec<u8>>> {
+        match self.admit(from, datagram, now)? {
+            Admission::Ignore => Ok(Vec::new()),
+            Admission::Reply(replies) => Ok(replies),
+            Admission::Answer(request) => self.answer_request(advert, request),
+        }
+    }
+}
+
+/// What a query datagram earns.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Admission {
+    Ignore,
+    Reply(Vec<Vec<u8>>),
+    Answer(Request),
 }
 
 /// Serve A2S on `socket` until `stop` is set; returns the datagrams answered.
+/// A request that cannot be answered or sent is dropped; only a failing
+/// socket read ends the service. The advert is copied only for verified
+/// requests.
 pub fn serve_queries(socket: &UdpSocket, advert: &Mutex<Advert>, stop: &AtomicBool) -> Result<u64> {
     socket.set_read_timeout(Some(Duration::from_millis(250)))?;
     let mut responder = QueryResponder::new()?;
@@ -390,13 +426,24 @@ pub fn serve_queries(socket: &UdpSocket, advert: &Mutex<Advert>, stop: &AtomicBo
         if size > MAX_DATAGRAM {
             continue;
         }
-        let snapshot = advert
-            .lock()
-            .map_err(|_| anyhow::anyhow!("advert lock poisoned"))?
-            .clone();
-        for reply in responder.answer(&snapshot, from, &buffer[..size], Instant::now())? {
-            socket.send_to(&reply, from)?;
-            answered += 1;
+        let replies = match responder.admit(from, &buffer[..size], Instant::now()) {
+            Ok(Admission::Ignore) | Err(_) => continue,
+            Ok(Admission::Reply(replies)) => replies,
+            Ok(Admission::Answer(request)) => {
+                let snapshot = advert
+                    .lock()
+                    .map_err(|_| anyhow::anyhow!("advert lock poisoned"))?
+                    .clone();
+                match responder.answer_request(&snapshot, request) {
+                    Ok(replies) => replies,
+                    Err(_) => continue,
+                }
+            }
+        };
+        for reply in replies {
+            if socket.send_to(&reply, from).is_ok() {
+                answered += 1;
+            }
         }
     }
     Ok(answered)
@@ -485,10 +532,11 @@ pub fn keep_listed(
     first.validate()?;
     session.send(emsg::GS_SERVER_TYPE, &first.server_type().encode_to_vec())?;
     let mut revision = 1;
-    let mut listed = first.clone();
+    // Only what the master sees decides a refresh; the revision is excluded.
+    let mut listed = first.game_server_data(0);
     session.send(
         emsg::AM_GAME_SERVER_UPDATE,
-        &listed.game_server_data(revision).encode_to_vec(),
+        &first.game_server_data(revision).encode_to_vec(),
     )?;
     report.updates_sent = 1;
     let mut last_update = Instant::now();
@@ -496,13 +544,17 @@ pub fn keep_listed(
         for packet in session.poll(Duration::from_secs(1))? {
             if packet.emsg == emsg::GS_STATUS_REPLY {
                 report.status_replies += 1;
-                report.secure = GsStatusReply::decode(packet.body.as_slice())
+                if let Some(secure) = GsStatusReply::decode(packet.body.as_slice())
                     .ok()
-                    .and_then(|reply| reply.is_secure);
+                    .and_then(|reply| reply.is_secure)
+                {
+                    report.secure = Some(secure);
+                }
             }
         }
         let current = snapshot(advert)?;
-        if current != listed || last_update.elapsed() >= timing.refresh {
+        let data = current.game_server_data(0);
+        if data != listed || last_update.elapsed() >= timing.refresh {
             current.validate()?;
             revision += 1;
             session.send(
@@ -510,7 +562,7 @@ pub fn keep_listed(
                 &current.game_server_data(revision).encode_to_vec(),
             )?;
             report.updates_sent += 1;
-            listed = current;
+            listed = data;
             last_update = Instant::now();
         }
     }

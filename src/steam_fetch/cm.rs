@@ -41,6 +41,13 @@ pub const ANONYMOUS_GAME_SERVER_STEAM_ID: u64 = (1u64 << 56) | (4u64 << 52);
 /// EResult values the fetcher distinguishes.
 pub const ERESULT_OK: i32 = 1;
 
+/// A private IPv4 address as Steam clients report it at logon.
+pub fn obfuscate_private_ip(ip: std::net::Ipv4Addr) -> IpAddress {
+    IpAddress {
+        v4: Some(u32::from(ip) ^ PRIVATE_IP_MASK),
+    }
+}
+
 /// Human name for an EResult, for diagnostics.
 pub fn eresult_name(value: i32) -> &'static str {
     match value {
@@ -316,9 +323,7 @@ impl CmSession {
         let logon = ClientLogon {
             protocol_version: Some(PROTOCOL_VERSION),
             client_os_type: Some(OS_TYPE_LINUX_UNKNOWN),
-            obfuscated_private_ip: Some(IpAddress {
-                v4: Some(u32::from(private_ipv4) ^ PRIVATE_IP_MASK),
-            }),
+            obfuscated_private_ip: Some(obfuscate_private_ip(private_ipv4)),
             game_server_app_id: Some(i32::try_from(app_id).context("game server app id")?),
             ..ClientLogon::default()
         };

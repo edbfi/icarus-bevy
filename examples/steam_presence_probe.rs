@@ -67,24 +67,30 @@ fn main() -> Result<()> {
         None => ReleasePin::load(&cli.release)?.project_version,
     };
     ensure!(cli.query_bind.is_ipv4(), "the query responder binds IPv4");
+    // Every local check precedes the Steam logon, so a bad argument costs no
+    // session.
+    let version_tag = version_tag(&project_version)?;
     let query = UdpSocket::bind(cli.query_bind).context("bind the query port")?;
+    let mut advert = Advert {
+        server_steam_id: 0,
+        name: cli.name,
+        map: String::new(),
+        game_port: cli.game_port,
+        query_port: cli.query_bind.port(),
+        max_players: cli.max_players,
+        players: Vec::new(),
+        version_tag,
+        prospect: cli.prospect,
+        prospect_info: None,
+    };
+    advert.validate()?;
     let tls = Tls::from_native_roots()?;
     let agent = net::http_agent(&tls, &HttpTimeouts::default());
     let timing = RegistrationTiming::default();
     let (mut session, logon, endpoint) = logon_game_server(&tls, &agent, cli.private_ip, timing)?;
+    advert.server_steam_id = logon.steam_id;
     let handles = PresenceHandles {
-        advert: Arc::new(Mutex::new(Advert {
-            server_steam_id: logon.steam_id,
-            name: cli.name,
-            map: String::new(),
-            game_port: cli.game_port,
-            query_port: cli.query_bind.port(),
-            max_players: cli.max_players,
-            players: Vec::new(),
-            version_tag: version_tag(&project_version)?,
-            prospect: cli.prospect,
-            prospect_info: None,
-        })),
+        advert: Arc::new(Mutex::new(advert)),
         stop: Arc::new(AtomicBool::new(false)),
     };
     let responder = {
